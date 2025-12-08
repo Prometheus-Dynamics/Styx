@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/capture",
+    "crates/codec",
+    "crates/styx",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "1.0.0"
+authors = ["Mathias Petersen"]
+
+[workspace.dependencies]
+smallvec = "1.15.1"
+thiserror = "2.0.17"
+tokio = "1.48.0"
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
+ffmpeg-next = { version = "8.0.0", features = ["codec", "format", "software-scaling"] }
+v4l = "0.14"
+libcamera = { version = "0.6", default-features = false, features = ["libcamera_semver_versioning"] }
+once_cell = "1.19.0"
+tokio-util = { version = "0.7.13", features = ["io"] }
+futures-core = "0.3.31"
+futures-util = { version = "0.3.31", features = ["io"] }
+serde = { version = "1.0.217", features = ["derive"] }
+utoipa = { version = "5.4.0", default-features = false, features = ["macros"] }

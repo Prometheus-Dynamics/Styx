@@ -1,0 +1,30 @@
+[package]
+name = "styx-libcamera"
+version = "0.1.0"
+edition = "2024"
+description = "Libcamera probing backend for Styx capture descriptors."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sozo/Styx"
+homepage = "https://github.com/sozo/Styx"
+documentation = "https://docs.rs/styx-libcamera"
+readme = "README.md"
+keywords = ["media", "video", "libcamera", "capture"]
+categories = ["multimedia::video", "api-bindings"]
+rust-version = "1.85"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+styx-core = { package = "styx-core-rs", path = "../core", version = "0.1.0" }
+styx-capture = { path = "../capture", version = "0.1.0" }
+smallvec = "1.15.1"
+libcamera = { version = "0.6", default-features = false, features = ["libcamera_semver_versioning"], optional = true }
+libcamera-sys = { version = "0.6", optional = true }
+
+[features]
+default = []
+# Enable vendor/RPi draft controls when probing so the control list includes ISP knobs like
+# `NoiseReductionMode` instead of opaque `ctrl_*` IDs.
+probe = ["libcamera", "libcamera-sys", "libcamera/vendor_draft"]
+vendor_rpi = ["probe", "libcamera/vendor_rpi"]

@@ -1,0 +1,25 @@
+[package]
+name = "styx-v4l2"
+version = "0.1.0"
+edition = "2024"
+description = "V4L2 probing backend for Styx capture descriptors."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sozo/Styx"
+homepage = "https://github.com/sozo/Styx"
+documentation = "https://docs.rs/styx-v4l2"
+readme = "README.md"
+keywords = ["media", "video", "v4l2", "capture"]
+categories = ["multimedia::video", "api-bindings"]
+rust-version = "1.85"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+styx-core = { package = "styx-core-rs", path = "../core", version = "0.1.0" }
+styx-capture = { path = "../capture", version = "0.1.0" }
+smallvec = "1.15.1"
+v4l = "0.14"
+
+[features]
+default = []

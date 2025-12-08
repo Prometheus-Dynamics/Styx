@@ -1,0 +1,27 @@
+[package]
+name = "styx-capture"
+version = "0.1.0"
+edition = "2024"
+description = "Capture descriptors and zero-copy capture trait for Styx."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sozo/Styx"
+homepage = "https://github.com/sozo/Styx"
+documentation = "https://docs.rs/styx-capture"
+readme = "README.md"
+keywords = ["media", "video", "capture", "zero-copy"]
+categories = ["multimedia::video"]
+rust-version = "1.85"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+styx-core = { package = "styx-core-rs", path = "../core", version = "0.1.0" }
+smallvec = "1.15.1"
+serde = { version = "1.0.217", features = ["derive"], optional = true }
+utoipa = { version = "5.4.0", default-features = false, features = ["macros"], optional = true }
+
+[features]
+default = []
+serde = ["dep:serde", "styx-core/serde", "smallvec/serde"]
+schema = ["serde", "dep:utoipa", "styx-core/schema"]

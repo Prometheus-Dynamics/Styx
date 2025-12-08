@@ -1,0 +1,32 @@
+[package]
+name = "styx-core-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Core zero-copy buffers, formats, queues, and controls for Styx."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sozo/Styx"
+homepage = "https://github.com/sozo/Styx"
+documentation = "https://docs.rs/styx-core-rs"
+readme = "README.md"
+keywords = ["media", "video", "zero-copy", "buffers", "queue"]
+categories = ["multimedia::video", "data-structures"]
+rust-version = "1.85"
+
+[lib]
+name = "styx_core"
+path = "src/lib.rs"
+
+[features]
+default = []
+async = ["tokio"]
+serde = ["dep:serde", "smallvec/serde"]
+schema = ["dep:utoipa", "serde"]
+
+[dependencies]
+crossbeam-queue = "0.3.12"
+smallvec = "1.15.1"
+tokio = { version = "1.48.0", features = ["sync", "rt"], optional = true }
+parking_lot = "0.12.5"
+thiserror = "2.0.17"
+serde = { version = "1.0.217", features = ["derive"], optional = true }
+utoipa = { version = "5.4.0", default-features = false, features = ["macros"], optional = true }
