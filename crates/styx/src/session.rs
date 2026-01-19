@@ -27,9 +27,33 @@ impl<T> HookStore<T> {
             HookStore::Local(h) => h.take().expect("hook missing"),
         }
     }
+
+    fn put(&mut self, hook: T) {
+        match self {
+            HookStore::Local(h) => {
+                *h = Some(hook);
+            }
+        }
+    }
 }
 
 use crate::capture_api::{CaptureHandle, CaptureRequest};
+
+#[cfg(feature = "hooks")]
+fn apply_image_transform(img: DynamicImage, transform: FrameTransform) -> DynamicImage {
+    let rotated = match transform.rotation {
+        Rotation90::Deg0 => img,
+        Rotation90::Deg90 => img.rotate90(),
+        Rotation90::Deg180 => img.rotate180(),
+        Rotation90::Deg270 => img.rotate270(),
+    };
+    if transform.mirror {
+        rotated.fliph()
+    } else {
+        rotated
+    }
+}
+
 
 /// Builder for a capture→decode→hook→encode pipeline.
 ///
@@ -59,6 +83,8 @@ pub struct MediaPipelineBuilder<'a> {
     hook: Option<HookStore<HookFn>>,
     #[cfg(feature = "hooks")]
     frame_hook: Option<HookStore<FrameHookFn>>,
+    #[cfg(feature = "hooks")]
+    frame_transform: FrameTransform,
     decode_enabled: bool,
     encode_enabled: bool,
 }
@@ -77,6 +103,8 @@ impl<'a> MediaPipelineBuilder<'a> {
             hook: None,
             #[cfg(feature = "hooks")]
             frame_hook: None,
+            #[cfg(feature = "hooks")]
+            frame_transform: FrameTransform::default(),
             decode_enabled: true,
             encode_enabled: true,
         }
@@ -190,6 +218,33 @@ impl<'a> MediaPipelineBuilder<'a> {
         self
     }
 
+    /// Apply a fixed frame transform between decode and encode.
+    ///
+    /// Requires the `hooks` feature.
+    #[cfg(feature = "hooks")]
+    pub fn frame_transform(mut self, transform: FrameTransform) -> Self {
+        self.frame_transform = transform;
+        self
+    }
+
+    /// Rotate the stream in 90-degree steps.
+    ///
+    /// Requires the `hooks` feature.
+    #[cfg(feature = "hooks")]
+    pub fn rotate(mut self, rotation: Rotation90) -> Self {
+        self.frame_transform.rotation = rotation;
+        self
+    }
+
+    /// Mirror the stream horizontally.
+    ///
+    /// Requires the `hooks` feature.
+    #[cfg(feature = "hooks")]
+    pub fn mirror(mut self, mirror: bool) -> Self {
+        self.frame_transform.mirror = mirror;
+        self
+    }
+
     /// Start the pipeline.
     ///
     /// This spins up capture workers and returns a running `MediaPipeline`.
@@ -203,6 +258,8 @@ impl<'a> MediaPipelineBuilder<'a> {
             hook: self.hook,
             #[cfg(feature = "hooks")]
             frame_hook: self.frame_hook,
+            #[cfg(feature = "hooks")]
+            frame_transform: self.frame_transform,
             metrics: crate::metrics::PipelineMetrics::default(),
             decode_enabled: self.decode_enabled,
             encode_enabled: self.encode_enabled,
@@ -221,6 +278,8 @@ pub struct MediaPipeline {
     hook: Option<HookStore<HookFn>>,
     #[cfg(feature = "hooks")]
     frame_hook: Option<HookStore<FrameHookFn>>,
+    #[cfg(feature = "hooks")]
+    frame_transform: FrameTransform,
     metrics: crate::metrics::PipelineMetrics,
     decode_enabled: bool,
     encode_enabled: bool,
@@ -410,6 +469,14 @@ impl MediaPipeline {
         self.encode_enabled = enabled;
     }
 
+    /// Update the frame transform.
+    ///
+    /// Requires the `hooks` feature.
+    #[cfg(feature = "hooks")]
+    pub fn set_frame_transform(&mut self, transform: FrameTransform) {
+        self.frame_transform = transform;
+    }
+
     /// Access pipeline metrics (capture/decode/encode).
     pub fn metrics(&self) -> crate::metrics::PipelineMetrics {
         self.metrics.clone()
@@ -451,21 +518,39 @@ impl MediaPipeline {
         if let Some(hook) = &mut self.frame_hook {
             let mut h = hook.take();
             cur = (h)(cur);
+            hook.put(h);
         }
         #[cfg(feature = "hooks")]
-        if let Some(hook) = &mut self.hook {
-            let ts = cur.meta().timestamp;
-            match frame_to_dynamic_image(&cur) {
-                Some(img) => {
-                    let mut h = hook.take();
-                    let img = (h)(img);
-                    if let Some(f) = dynamic_image_to_frame(img, ts) {
-                        cur = f;
-                    } else {
-                        return RecvOutcome::Closed;
-                    }
+        {
+            let mut transform_applied = false;
+            if !self.frame_transform.is_identity() {
+                if let Ok(frame) = transform_packed_frame(&cur, self.frame_transform) {
+                    cur = frame;
+                    transform_applied = true;
                 }
-                None => return RecvOutcome::Closed,
+            }
+            let needs_image = self.hook.is_some()
+                || (!self.frame_transform.is_identity() && !transform_applied);
+            if needs_image {
+                let ts = cur.meta().timestamp;
+                match frame_to_dynamic_image(&cur) {
+                    Some(mut img) => {
+                        if !self.frame_transform.is_identity() && !transform_applied {
+                            img = apply_image_transform(img, self.frame_transform);
+                        }
+                        if let Some(hook) = &mut self.hook {
+                            let mut h = hook.take();
+                            img = (h)(img);
+                            hook.put(h);
+                        }
+                        if let Some(f) = dynamic_image_to_frame(img, ts) {
+                            cur = f;
+                        } else {
+                            return RecvOutcome::Closed;
+                        }
+                    }
+                    None => return RecvOutcome::Closed,
+                }
             }
         }
         if let Some(enc) = &self.encoder

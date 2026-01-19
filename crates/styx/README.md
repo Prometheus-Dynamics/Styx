@@ -48,6 +48,8 @@ let device = /* virtual or probed device */;
 let decoder = Arc::new(PassthroughDecoder::new(device.backends[0].descriptor.modes[0].format.code));
 let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(device))
     .decoder(decoder)
+    .rotate(Rotation90::Deg90)    // Optional 90-degree rotation
+    .mirror(true)                 // Optional horizontal mirror
     .frame_hook(|frame| frame)     // works on FrameLease
     .hook(|img| img.flipv())       // DynamicImage hook (feature `hooks`)
     .start()?;

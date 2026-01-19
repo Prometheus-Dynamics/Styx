@@ -588,6 +588,7 @@ pub mod prelude {
     pub use crate::preview::PreviewWindow;
     pub use crate::probe_all;
     pub use crate::session::{MediaPipeline, MediaPipelineBuilder};
+    pub use styx_core::prelude::{FrameTransform, Rotation90};
     pub use crate::{BackendHandle, BackendKind, ProbedBackend, ProbedDevice};
     pub use styx_capture::prelude::*;
     pub use styx_codec::prelude::*;
