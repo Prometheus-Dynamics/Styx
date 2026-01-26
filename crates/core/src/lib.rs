@@ -10,10 +10,11 @@ pub mod transform;
 pub mod prelude {
     pub use crate::{
         buffer::{
-            BufferLease, BufferPool, BufferPoolMetrics, ExternalBacking, FrameLease, FrameMeta,
-            Plane, PlaneLayout, PlaneMut, plane_layout_from_dims, plane_layout_with_stride,
+            BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats, ExternalBacking,
+            FrameLease, FrameMeta, Plane, PlaneLayout, PlaneMut, plane_layout_from_dims,
+            plane_layout_with_stride,
         },
-        controls::{Access, ControlId, ControlKind, ControlMeta, ControlValue},
+        controls::{Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlValue},
         format::{ColorSpace, FourCc, Interval, IntervalStepwise, MediaFormat, Resolution},
         metrics::Metrics,
         queue::{BoundedRx, BoundedTx, RecvOutcome, SendOutcome, bounded, newest, unbounded},

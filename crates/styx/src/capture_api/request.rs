@@ -41,6 +41,17 @@ pub enum CaptureError {
     Backend(String),
 }
 
+/// TDN output stream selection policy (libcamera PiSP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum TdnOutputMode {
+    Off,
+    #[default]
+    Auto,
+    Force,
+}
+
 impl CaptureError {
     /// Stable string code for error classification.
     pub fn code(&self) -> &'static str {
@@ -83,7 +94,7 @@ pub struct CaptureRequest<'a> {
     mode: Option<ModeId>,
     interval: Option<Interval>,
     controls: Vec<(ControlId, ControlValue)>,
-    enable_tdn_output: bool,
+    tdn_output_mode: TdnOutputMode,
 }
 
 impl<'a> CaptureRequest<'a> {
@@ -95,7 +106,7 @@ impl<'a> CaptureRequest<'a> {
             mode: None,
             interval: None,
             controls: Vec::new(),
-            enable_tdn_output: false,
+            tdn_output_mode: TdnOutputMode::default(),
         }
     }
 
@@ -141,7 +152,17 @@ impl<'a> CaptureRequest<'a> {
     ///
     /// Requires the `libcamera` backend and hardware support.
     pub fn enable_tdn_output(mut self, enable: bool) -> Self {
-        self.enable_tdn_output = enable;
+        self.tdn_output_mode = if enable {
+            TdnOutputMode::Force
+        } else {
+            TdnOutputMode::Off
+        };
+        self
+    }
+
+    /// Configure how (or if) a TDN output stream is requested.
+    pub fn tdn_output_mode(mut self, mode: TdnOutputMode) -> Self {
+        self.tdn_output_mode = mode;
         self
     }
 
@@ -153,7 +174,7 @@ impl<'a> CaptureRequest<'a> {
         let mode = pick_mode(backend, self.mode)?;
         validate_config(backend, mode, self.interval, &self.controls)?;
         let interval = self.interval.or_else(|| default_interval(mode));
-        start_backend(backend, mode.clone(), interval, self.controls, self.enable_tdn_output)
+        start_backend(backend, mode.clone(), interval, self.controls, self.tdn_output_mode)
     }
 }
 

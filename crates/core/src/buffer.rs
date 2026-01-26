@@ -144,6 +144,16 @@ pub struct BufferPool {
     metrics: Arc<Metrics>,
 }
 
+#[derive(Clone, Debug)]
+pub struct BufferPoolStats {
+    pub chunk_size: usize,
+    pub free: usize,
+    pub max_free: usize,
+    pub hits: u64,
+    pub misses: u64,
+    pub allocations: u64,
+}
+
 impl BufferPool {
     /// Create a pool with `capacity` preallocated buffers of `chunk_size` bytes.
     pub fn with_capacity(capacity: usize, chunk_size: usize) -> Self {
@@ -191,6 +201,18 @@ impl BufferPool {
     /// Access metrics counters for this pool.
     pub fn metrics(&self) -> BufferPoolMetrics {
         BufferPoolMetrics(self.metrics.clone())
+    }
+
+    pub fn stats(&self) -> BufferPoolStats {
+        let free = self.inner.free.lock().map(|list| list.len()).unwrap_or(0);
+        BufferPoolStats {
+            chunk_size: self.inner.chunk_size,
+            free,
+            max_free: self.inner.max_free,
+            hits: self.metrics.hits(),
+            misses: self.metrics.misses(),
+            allocations: self.metrics.allocations(),
+        }
     }
 }
 

@@ -6,6 +6,18 @@ use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
 use yuvutils_rs::{YuvPackedImage, YuvRange, YuvStandardMatrix};
 
+#[inline]
+fn normalized_packed_stride(plane: &Plane<'_>, width: usize, height: usize, bytes_per_pixel: usize) -> usize {
+    let min_stride = width.saturating_mul(bytes_per_pixel);
+    let mut stride = plane.stride().max(min_stride);
+    if let Some(tight_len) = min_stride.checked_mul(height) {
+        if plane.data().len() == tight_len {
+            stride = min_stride;
+        }
+    }
+    stride
+}
+
 #[inline(always)]
 fn map_colorspace(color: ColorSpace) -> (YuvRange, YuvStandardMatrix) {
     match color {
@@ -62,7 +74,7 @@ impl YuyvToRgbDecoder {
             .into_iter()
             .next()
             .ok_or_else(|| CodecError::Codec("yuyv frame missing plane".into()))?;
-        let stride = plane.stride().max(width * 2);
+        let stride = normalized_packed_stride(&plane, width, height, 2);
         let required = stride
             .checked_mul(height)
             .ok_or_else(|| CodecError::Codec("yuyv stride overflow".into()))?;
@@ -194,7 +206,7 @@ impl YuyvToLumaDecoder {
             .into_iter()
             .next()
             .ok_or_else(|| CodecError::Codec("yuyv frame missing plane".into()))?;
-        let stride = plane.stride().max(width * 2);
+        let stride = normalized_packed_stride(&plane, width, height, 2);
         let required = stride
             .checked_mul(height)
             .ok_or_else(|| CodecError::Codec("yuyv stride overflow".into()))?;

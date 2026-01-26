@@ -17,7 +17,7 @@ use styx_codec::prelude::{Nv12ToBgrDecoder, Nv12ToRgbDecoder, YuyvToRgbDecoder};
 use styx_core::prelude::*;
 
 use crate::capture_api::{
-    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, WorkerHandle,
+    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, TdnOutputMode, WorkerHandle,
 };
 use crate::metrics::StageMetrics;
 use crate::prelude::{Interval, Mode, ModeId};
@@ -52,6 +52,16 @@ fn cv_i32(value: &ControlValue) -> Option<i32> {
         ControlValue::Int(v) => Some(*v),
         ControlValue::Uint(v) => (*v).try_into().ok(),
         _ => None,
+    }
+}
+
+fn control_value_enabled(value: &ControlValue) -> bool {
+    match value {
+        ControlValue::None => false,
+        ControlValue::Bool(v) => *v,
+        ControlValue::Int(v) => *v != 0,
+        ControlValue::Uint(v) => *v != 0,
+        ControlValue::Float(v) => *v != 0.0,
     }
 }
 
@@ -289,7 +299,7 @@ pub(super) fn start_libcamera(
     interval: Option<Interval>,
     controls: Vec<(ControlId, ControlValue)>,
     descriptor: CaptureDescriptor,
-    enable_tdn_output: bool,
+    tdn_output_mode: TdnOutputMode,
 ) -> Result<CaptureHandle, CaptureError> {
     use libcamera::camera::CameraConfigurationStatus;
     use libcamera::framebuffer_map::MemoryMappedFrameBuffer;
@@ -311,6 +321,31 @@ pub(super) fn start_libcamera(
         .into_iter()
         .filter(|(id, _)| writable_controls.contains(id))
         .collect();
+    let requires_tdn_output = requested_controls.iter().any(|(id, value)| {
+        if !control_value_enabled(value) {
+            return false;
+        }
+        descriptor
+            .controls
+            .iter()
+            .find(|meta| meta.id == *id)
+            .is_some_and(|meta| meta.metadata.requires_tdn_output)
+    });
+    let enable_tdn_output = match tdn_output_mode {
+        TdnOutputMode::Off => false,
+        TdnOutputMode::Auto => requires_tdn_output,
+        TdnOutputMode::Force => true,
+    };
+    if enable_tdn_output && !is_rpi_pisp_sensor_i2c(&id) {
+        return Err(CaptureError::InvalidConfig(
+            "tdn output not supported for this device".into(),
+        ));
+    }
+    if requires_tdn_output && !enable_tdn_output {
+        return Err(CaptureError::InvalidConfig(
+            "tdn output required by requested controls".into(),
+        ));
+    }
 
     let fps_controls = LibcameraFpsControls {
         ae_enable: find_control_id(&descriptor, "AeEnable")
@@ -321,6 +356,7 @@ pub(super) fn start_libcamera(
     let requested_control_ids: HashSet<ControlId> =
         requested_controls.iter().map(|(id, _)| *id).collect();
 
+    let enable_tdn_output_for_thread = enable_tdn_output;
     let id_for_thread = id.clone();
     let writable_controls_for_thread = writable_controls.clone();
     let requested_controls_for_thread = requested_controls.clone();
@@ -365,7 +401,7 @@ pub(super) fn start_libcamera(
                 .map_err(|e| CaptureError::Backend(e.to_string()))?;
 
             let role = stream_role_for_request(mode_for_thread.format.code);
-            let enable_tdn_output = enable_tdn_output && is_rpi_pisp_sensor_i2c(&id_for_thread);
+            let enable_tdn_output = enable_tdn_output_for_thread;
             let mut roles = vec![role];
             if enable_tdn_output {
                 roles.push(libcamera::stream::StreamRole::VideoRecording);
@@ -373,6 +409,11 @@ pub(super) fn start_libcamera(
             let mut cfgs = cam
                 .generate_configuration(&roles)
                 .ok_or_else(|| CaptureError::Backend("generate_configuration failed".into()))?;
+            if enable_tdn_output && cfgs.get(1).is_none() {
+                return Err(CaptureError::Backend(
+                    "tdn output stream unavailable".into(),
+                ));
+            }
             let requested_code = mode_for_thread.format.code;
             if is_rpi_pisp_sensor_i2c(&id_for_thread) && pisp_disallowed_fourcc(requested_code) {
                 return Err(CaptureError::Backend(format!(
@@ -511,6 +552,11 @@ pub(super) fn start_libcamera(
                 None
             };
             let cfg_stride = cfg.get_stride() as usize;
+            let tdn_stride = if enable_tdn_output {
+                cfgs.get(1).map(|cfg| cfg.get_stride() as usize)
+            } else {
+                None
+            };
             let mut alloc = libcamera::framebuffer_allocator::FrameBufferAllocator::new(&cam);
             let bufs = alloc
                 .alloc(&stream)
@@ -736,10 +782,20 @@ pub(super) fn start_libcamera(
                             readback_state.insert(ControlId(id), val);
                         }
 
-                        let framebuffer: &MemoryMappedFrameBuffer<FrameBuffer> =
-                            match req.buffer(&stream) {
-                                Some(fb) => fb,
-                                None => break,
+                        let (framebuffer, active_stride): (&MemoryMappedFrameBuffer<FrameBuffer>, usize) =
+                            if let Some(tdn_stream) = &tdn_stream {
+                                match req.buffer(tdn_stream) {
+                                    Some(fb) => (fb, tdn_stride.unwrap_or(cfg_stride)),
+                                    None => match req.buffer(&stream) {
+                                        Some(fb) => (fb, cfg_stride),
+                                        None => break,
+                                    },
+                                }
+                            } else {
+                                match req.buffer(&stream) {
+                                    Some(fb) => (fb, cfg_stride),
+                                    None => break,
+                                }
                             };
                         let meta = match framebuffer.metadata() {
                             Some(m) => m,
@@ -776,8 +832,8 @@ pub(super) fn start_libcamera(
                             // Prefer libcamera-provided stride when present; otherwise infer stride
                             // from the total plane length for NV12 (Y + UV).
                             let inferred = total_len / denom;
-                            let stride = if cfg_stride > 0 {
-                                cfg_stride
+                            let stride = if active_stride > 0 {
+                                active_stride
                             } else {
                                 inferred.max(width).max(1)
                             };
@@ -815,14 +871,14 @@ pub(super) fn start_libcamera(
                                         len = len.min(slice_len);
                                     }
                                     let plane_height = plane_height_for_format(code, idx, height);
-                                    let stride = if idx == 0 && cfg_stride > 0 {
+                                    let stride = if idx == 0 && active_stride > 0 {
                                         // Some libcamera backends only report a single stride; keep it
                                         // for the first plane but clamp to the mapped slice.
                                         if plane_height == 0 {
-                                            cfg_stride
+                                            active_stride
                                         } else {
                                             let max_stride = slice_len / plane_height;
-                                            cfg_stride.min(max_stride.max(1))
+                                            active_stride.min(max_stride.max(1))
                                         }
                                     } else {
                                         infer_stride(len, slice_len, plane_height)

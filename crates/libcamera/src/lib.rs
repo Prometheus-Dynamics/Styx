@@ -21,7 +21,7 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(feature = "probe")]
 use std::time::{Duration, Instant};
 #[cfg(feature = "probe")]
-use styx_core::controls::{Access, ControlKind, ControlValue};
+use styx_core::controls::{Access, ControlKind, ControlMetadata, ControlValue};
 
 /// Libcamera device information with a descriptor built from advertised formats.
 #[derive(Clone)]
@@ -407,7 +407,7 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
 
         // libcamera-rs currently doesn't expose some draft controls via `ControlId::from_id`,
         // so patch up well-known PiSP controls by numeric ID.
-        let (name, menu) = match (id, name.as_str(), menu.as_ref()) {
+        let (name, menu, metadata) = match (id, name.as_str(), menu.as_ref()) {
             // libcamera::controls::draft::NoiseReductionMode
             (10002, "ctrl_10002", Some(existing)) if existing.iter().all(|s| s.is_empty()) => (
                 "NoiseReductionMode".to_string(),
@@ -418,6 +418,7 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
                     "NoiseReductionModeMinimal".into(),
                     "NoiseReductionModeZSL".into(),
                 ]),
+                ControlMetadata { requires_tdn_output: true },
             ),
             (10002, "ctrl_10002", None) => (
                 "NoiseReductionMode".to_string(),
@@ -428,8 +429,9 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
                     "NoiseReductionModeMinimal".into(),
                     "NoiseReductionModeZSL".into(),
                 ]),
+                ControlMetadata { requires_tdn_output: true },
             ),
-            _ => (name, menu),
+            _ => (name, menu, ControlMetadata::default()),
         };
 
         // Skip unsupported libcamera control types entirely rather than exposing "Unknown".
@@ -446,6 +448,7 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
             default,
             step: None,
             menu,
+            metadata,
         });
     }
     out

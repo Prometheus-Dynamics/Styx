@@ -1,5 +1,5 @@
 use image::DynamicImage;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use styx_core::prelude::*;
 
 use crate::decoder::ImageDecode;
@@ -183,10 +183,30 @@ pub fn dynamic_image_to_frame(img: DynamicImage, timestamp: u64) -> Option<Frame
     img.into_frame(timestamp)
 }
 
+static DYNAMIC_IMAGE_POOL: OnceLock<Mutex<(BufferPool, usize)>> = OnceLock::new();
+
 fn static_pool(chunk: usize) -> BufferPool {
-    static POOL: OnceLock<BufferPool> = OnceLock::new();
-    POOL.get_or_init(|| BufferPool::with_limits(2, chunk, 4))
-        .clone()
+    let lock =
+        DYNAMIC_IMAGE_POOL.get_or_init(|| Mutex::new((BufferPool::with_limits(2, chunk, 4), chunk)));
+    let mut guard = lock.lock().unwrap();
+    if guard.1 < chunk {
+        *guard = (BufferPool::with_limits(2, chunk, 4), chunk);
+    }
+    guard.0.clone()
+}
+
+pub fn dynamic_image_pool_stats() -> Option<BufferPoolStats> {
+    let lock = DYNAMIC_IMAGE_POOL.get()?;
+    let guard = lock.lock().ok()?;
+    Some(guard.0.stats())
+}
+
+pub fn reset_dynamic_image_pool() {
+    if let Some(lock) = DYNAMIC_IMAGE_POOL.get() {
+        if let Ok(mut guard) = lock.lock() {
+            *guard = (BufferPool::with_limits(0, 1, 0), 1);
+        }
+    }
 }
 
 #[cfg(all(test, feature = "image"))]

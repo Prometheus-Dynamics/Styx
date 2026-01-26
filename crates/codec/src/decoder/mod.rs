@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 #[cfg(feature = "image")]
 use styx_core::prelude::{
-    BufferPool, ColorSpace, FourCc, FrameLease, FrameMeta, MediaFormat, Resolution,
+    BufferPool, BufferPoolStats, ColorSpace, FourCc, FrameLease, FrameMeta, MediaFormat, Resolution,
 };
 #[cfg(feature = "image")]
 use yuvutils_rs::{
@@ -61,6 +61,13 @@ thread_local! {
 }
 
 #[cfg(feature = "image")]
+#[derive(Clone, Debug)]
+pub struct PackedFramePoolStats {
+    pub min_len: usize,
+    pub stats: BufferPoolStats,
+}
+
+#[cfg(feature = "image")]
 const PACKED_FRAME_POOL_SLOTS: usize = 4;
 
 #[cfg(feature = "image")]
@@ -99,6 +106,20 @@ pub fn clear_packed_frame_pools_all_threads() {
     rayon::broadcast(|_| clear_packed_frame_pools());
 }
 
+#[cfg(feature = "image")]
+pub fn packed_frame_pool_stats() -> Vec<PackedFramePoolStats> {
+    PACKED_FRAME_POOLS.with(|pools| {
+        pools
+            .borrow()
+            .iter()
+            .map(|(len, pool)| PackedFramePoolStats {
+                min_len: *len,
+                stats: pool.stats(),
+            })
+            .collect()
+    })
+}
+
 /// Convert an owned `FrameLease` into a `DynamicImage`.
 ///
 /// This is preferred over [`frame_to_dynamic_image`] when the caller can give up the frame, as it
@@ -129,18 +150,81 @@ pub fn frame_lease_to_dynamic_image(frame: FrameLease) -> Result<DynamicImage, F
         return Err(frame);
     }
 
-    // External-backed frames do not own their underlying CPU buffer; we must copy.
-    if frame.is_external() {
-        return frame_to_dynamic_image(&frame).ok_or(frame);
-    }
-
     let meta = frame.meta();
     let width = meta.format.resolution.width.get();
     let height = meta.format.resolution.height.get();
 
-    // For NV12/NV21, treat plane0 as luma and ignore UV. We intentionally avoid trying to "steal"
-    // the underlying buffer because these formats are typically multi-plane.
+    // External-backed frames do not own their underlying CPU buffer; we must copy.
+    if frame.is_external() {
+        if code == FourCc::new(*b"NV12") || code == FourCc::new(*b"NV21") {
+            let planes = frame.planes();
+            if planes.is_empty() {
+                drop(planes);
+                return Err(frame);
+            }
+            let plane = &planes[0];
+            let stride = plane.stride().max(width as usize);
+            let expected = width as usize;
+            let required = stride.saturating_mul(height as usize);
+            if plane.data().len() < required {
+                drop(planes);
+                return Err(frame);
+            }
+            let out = if stride == expected {
+                let required = expected.saturating_mul(height as usize);
+                plane.data()[..required].to_vec()
+            } else {
+                let required = expected.saturating_mul(height as usize);
+                let mut out = vec![0u8; required];
+                let dst: *mut u8 = out.as_mut_ptr();
+                let src: *const u8 = plane.data().as_ptr();
+                for y in 0..height as usize {
+                    let src_off = y.saturating_mul(stride);
+                    let dst_off = y.saturating_mul(expected);
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(src.add(src_off), dst.add(dst_off), expected);
+                    }
+                }
+                out
+            };
+            drop(planes);
+            let Some(img) = image::GrayImage::from_raw(width, height, out) else {
+                return Err(frame);
+            };
+            return Ok(DynamicImage::ImageLuma8(img));
+        }
+        return frame_to_dynamic_image(&frame).ok_or(frame);
+    }
+
+    // For NV12/NV21, treat plane0 as luma and ignore UV. If the frame owns its buffers and the
+    // luma plane is tightly packed, take the Y plane without copying.
     if code == FourCc::new(*b"NV12") || code == FourCc::new(*b"NV21") {
+        let layouts = frame.layouts();
+        if let Some(layout) = layouts.first() {
+            let expected = width as usize;
+            let stride = layout.stride.max(expected);
+            let required = stride.saturating_mul(height as usize);
+            if layout.offset == 0 && stride == expected {
+                let planes = frame.planes();
+                if let Some(plane) = planes.first() {
+                    if plane.data().len() >= required && layout.len >= required {
+                        drop(planes);
+                        let (_meta, _layouts, buffers) = frame.into_parts();
+                        let mut buf = match buffers.into_iter().next() {
+                            Some(buf) => buf,
+                            None => {
+                                let img = image::GrayImage::new(width, height);
+                                return Ok(DynamicImage::ImageLuma8(img));
+                            }
+                        };
+                        buf.truncate(required);
+                        let img = image::GrayImage::from_raw(width, height, buf)
+                            .unwrap_or_else(|| image::GrayImage::new(width, height));
+                        return Ok(DynamicImage::ImageLuma8(img));
+                    }
+                }
+            }
+        }
         let planes = frame.planes();
         if planes.is_empty() {
             drop(planes);

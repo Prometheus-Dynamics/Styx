@@ -1021,6 +1021,10 @@ impl CodecRegistry {
             Arc::new(decoder::raw::Nv12ToRgbDecoder::new(max_width, max_height)),
         );
         self.register(
+            FourCc::new(*b"NV12"),
+            Arc::new(decoder::raw::Nv12ToLumaDecoder::new(max_width, max_height)),
+        );
+        self.register(
             FourCc::new(*b"I420"),
             Arc::new(decoder::raw::I420ToRgbDecoder::new(max_width, max_height)),
         );
@@ -1596,7 +1600,9 @@ pub mod prelude {
     #[cfg(feature = "image")]
     pub use crate::image_any::ImageAnyDecoder;
     #[cfg(feature = "image")]
-    pub use crate::image_utils::{CodecImageExt, dynamic_image_to_frame};
+    pub use crate::image_utils::{CodecImageExt, dynamic_image_to_frame, dynamic_image_pool_stats, reset_dynamic_image_pool};
+    #[cfg(feature = "image")]
+    pub use crate::decoder::{PackedFramePoolStats, packed_frame_pool_stats};
     #[cfg(feature = "codec-mozjpeg")]
     pub use crate::jpeg_encoder::MozjpegEncoder;
     #[cfg(feature = "codec-turbojpeg")]

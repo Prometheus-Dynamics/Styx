@@ -22,11 +22,21 @@ pub enum Access {
     ReadWrite,
 }
 
+/// Optional control metadata flags.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct ControlMetadata {
+    /// Control requires a dedicated TDN output stream to be enabled.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub requires_tdn_output: bool,
+}
+
 /// Simplified control metadata.
 ///
 /// # Example
 /// ```rust
-/// use styx_core::prelude::{Access, ControlId, ControlKind, ControlMeta, ControlValue};
+/// use styx_core::prelude::{Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlValue};
 ///
 /// let meta = ControlMeta {
 ///     id: ControlId(1),
@@ -38,6 +48,7 @@ pub enum Access {
 ///     default: ControlValue::Uint(16),
 ///     step: Some(ControlValue::Uint(1)),
 ///     menu: None,
+///     metadata: ControlMetadata::default(),
 /// };
 /// assert!(meta.validate(&ControlValue::Uint(32)));
 /// ```
@@ -65,6 +76,9 @@ pub struct ControlMeta {
     /// Optional enumerated menu entries (for menu controls).
     #[cfg_attr(feature = "serde", serde(default))]
     pub menu: Option<Vec<String>>,
+    /// Optional metadata flags.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub metadata: ControlMetadata,
 }
 
 /// Control kind/type metadata.
@@ -201,7 +215,7 @@ impl ControlMeta {
     ///
     /// # Example
     /// ```rust
-    /// use styx_core::prelude::{Access, ControlId, ControlKind, ControlMeta, ControlValue};
+    /// use styx_core::prelude::{Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlValue};
     ///
     /// let meta = ControlMeta {
     ///     id: ControlId(1),
@@ -213,6 +227,7 @@ impl ControlMeta {
     ///     default: ControlValue::Int(0),
     ///     step: Some(ControlValue::Int(1)),
     ///     menu: None,
+    ///     metadata: ControlMetadata::default(),
     /// };
     /// assert!(meta.validate(&ControlValue::Int(5)));
     /// ```

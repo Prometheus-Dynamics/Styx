@@ -13,7 +13,7 @@ use super::file_backend;
 use super::libcamera_backend;
 #[cfg(feature = "netcam")]
 use super::netcam_backend;
-use super::request::CaptureError;
+use super::request::{CaptureError, TdnOutputMode};
 #[cfg(feature = "v4l2")]
 use super::v4l2_backend;
 use super::virtual_backend;
@@ -121,6 +121,11 @@ impl CaptureHandle {
 
     /// Stop the capture worker.
     pub fn stop(mut self) {
+        self.teardown_in_place();
+    }
+
+    /// Stop the capture worker without consuming the handle.
+    pub fn stop_in_place(&mut self) {
         self.teardown_in_place();
     }
 
@@ -302,7 +307,7 @@ pub(crate) fn start_backend(
     mode: Mode,
     interval: Option<Interval>,
     #[allow(unused_variables)] controls: Vec<(ControlId, ControlValue)>,
-    #[allow(unused_variables)] enable_tdn_output: bool,
+    #[allow(unused_variables)] tdn_output_mode: TdnOutputMode,
 ) -> Result<CaptureHandle, CaptureError> {
     let descriptor = backend.descriptor.clone();
     match backend.kind {
@@ -315,7 +320,7 @@ pub(crate) fn start_backend(
         BackendKind::V4l2 => Err(CaptureError::BackendMissing(BackendKind::V4l2)),
         #[cfg(feature = "libcamera")]
         BackendKind::Libcamera => {
-            libcamera_backend::start_libcamera(backend, mode, interval, controls, descriptor, enable_tdn_output)
+            libcamera_backend::start_libcamera(backend, mode, interval, controls, descriptor, tdn_output_mode)
         }
         #[cfg(not(feature = "libcamera"))]
         BackendKind::Libcamera => Err(CaptureError::BackendMissing(BackendKind::Libcamera)),

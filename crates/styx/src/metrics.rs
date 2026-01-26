@@ -9,6 +9,15 @@ use std::{
 
 const DEFAULT_WINDOW: usize = 120;
 
+#[derive(Clone, Debug, Default)]
+pub struct PipelineMemoryStats {
+    pub transform_pool: Option<styx_core::buffer::BufferPoolStats>,
+    #[cfg(feature = "hooks")]
+    pub image_pool: Option<styx_core::buffer::BufferPoolStats>,
+    #[cfg(feature = "hooks")]
+    pub packed_pools: Vec<styx_codec::decoder::PackedFramePoolStats>,
+}
+
 /// Rolling timing metrics for a pipeline stage.
 ///
 /// # Example

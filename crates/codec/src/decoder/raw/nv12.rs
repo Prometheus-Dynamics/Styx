@@ -228,6 +228,125 @@ impl ImageDecode for Nv12ToRgbDecoder {
     }
 }
 
+/// CPU NV12 (Y plane + interleaved UV) → GREY decoder (extract luma plane).
+pub struct Nv12ToLumaDecoder {
+    descriptor: CodecDescriptor,
+    pool: BufferPool,
+}
+
+impl Nv12ToLumaDecoder {
+    pub fn new(max_width: u32, max_height: u32) -> Self {
+        let bytes = max_width as usize * max_height as usize;
+        Self::with_pool(BufferPool::with_limits(2, bytes, 4))
+    }
+
+    pub fn with_pool(pool: BufferPool) -> Self {
+        Self {
+            descriptor: CodecDescriptor {
+                kind: CodecKind::Decoder,
+                input: FourCc::new(*b"NV12"),
+                output: FourCc::new(*b"GREY"),
+                name: "yuv2luma",
+                impl_name: "nv12-luma",
+            },
+            pool,
+        }
+    }
+
+    /// Decode into a caller-provided tightly-packed GREY buffer.
+    ///
+    /// `dst` must be at least `width * height` bytes.
+    pub fn decode_into(&self, input: &FrameLease, dst: &mut [u8]) -> Result<FrameMeta, CodecError> {
+        let meta = input.meta();
+        if meta.format.code != self.descriptor.input {
+            return Err(CodecError::FormatMismatch {
+                expected: self.descriptor.input,
+                actual: meta.format.code,
+            });
+        }
+        let width = meta.format.resolution.width.get() as usize;
+        let height = meta.format.resolution.height.get() as usize;
+        let planes = input.planes();
+        let (y_plane, y_stride) = if planes.len() >= 2 {
+            let y_plane = &planes[0];
+            let stride = y_plane.stride().max(width);
+            let required = stride
+                .checked_mul(height)
+                .ok_or_else(|| CodecError::Codec("nv12 y stride overflow".into()))?;
+            if y_plane.data().len() < required {
+                return Err(CodecError::Codec("nv12 y plane buffer too short".into()));
+            }
+            (&y_plane.data()[..required], stride)
+        } else if planes.len() == 1 {
+            let plane = &planes[0];
+            let stride = plane.stride().max(width);
+            let required = stride
+                .checked_mul(height)
+                .ok_or_else(|| CodecError::Codec("nv12 y stride overflow".into()))?;
+            if plane.data().len() < required {
+                return Err(CodecError::Codec("nv12 packed plane buffer too short".into()));
+            }
+            (&plane.data()[..required], stride)
+        } else {
+            return Err(CodecError::Codec("nv12 frame missing planes".into()));
+        };
+
+        let out_len = width
+            .checked_mul(height)
+            .ok_or_else(|| CodecError::Codec("nv12 luma output overflow".into()))?;
+        if dst.len() < out_len {
+            return Err(CodecError::Codec("nv12 luma dst buffer too short".into()));
+        }
+        let dst = &mut dst[..out_len];
+
+        if y_stride == width {
+            dst.copy_from_slice(&y_plane[..out_len]);
+        } else {
+            for y in 0..height {
+                let src_off = y * y_stride;
+                let dst_off = y * width;
+                let src_row = &y_plane[src_off..src_off + width];
+                let dst_row = &mut dst[dst_off..dst_off + width];
+                dst_row.copy_from_slice(src_row);
+            }
+        }
+
+        Ok(FrameMeta::new(
+            MediaFormat::new(
+                self.descriptor.output,
+                meta.format.resolution,
+                meta.format.color,
+            ),
+            meta.timestamp,
+        ))
+    }
+}
+
+impl Codec for Nv12ToLumaDecoder {
+    fn descriptor(&self) -> &CodecDescriptor {
+        &self.descriptor
+    }
+
+    fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
+        let layout = plane_layout_from_dims(
+            input.meta().format.resolution.width,
+            input.meta().format.resolution.height,
+            1,
+        );
+        let mut buf = self.pool.lease();
+        unsafe { buf.resize_uninit(layout.len) };
+        let meta = self.decode_into(&input, buf.as_mut_slice())?;
+        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+    }
+}
+
+#[cfg(feature = "image")]
+impl ImageDecode for Nv12ToLumaDecoder {
+    fn decode_image(&self, frame: FrameLease) -> Result<image::DynamicImage, CodecError> {
+        process_to_dynamic(self, frame)
+    }
+}
+
 /// CPU NV12 (Y plane + interleaved UV) → BGR24 decoder.
 pub struct Nv12ToBgrDecoder {
     descriptor: CodecDescriptor,

@@ -20,7 +20,7 @@ pub use bgr::BgrToRgbDecoder;
 pub use bgra::BgraToRgbDecoder;
 pub use i420::I420ToRgbDecoder;
 pub use mono::{Mono8ToRgbDecoder, Mono16ToRgbDecoder};
-pub use nv12::{Nv12ToBgrDecoder, Nv12ToRgbDecoder};
+pub use nv12::{Nv12ToBgrDecoder, Nv12ToLumaDecoder, Nv12ToRgbDecoder};
 pub use passthrough::PassthroughDecoder;
 pub use rgb48::Rgb48ToRgbDecoder;
 pub use rgba::RgbaToRgbDecoder;

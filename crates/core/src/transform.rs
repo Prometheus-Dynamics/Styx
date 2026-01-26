@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::{Mutex, OnceLock};
 
-use crate::buffer::{BufferPool, FrameLease, FrameMeta, plane_layout_from_dims};
+use crate::buffer::{BufferPool, BufferPoolStats, FrameLease, FrameMeta, plane_layout_from_dims};
 use crate::format::{FourCc, MediaFormat, Resolution};
 
 /// Rotation in 90-degree steps.
@@ -70,9 +70,10 @@ fn packed_bytes_per_pixel(code: FourCc) -> Option<usize> {
     }
 }
 
+static TRANSFORM_POOL: OnceLock<Mutex<(BufferPool, usize)>> = OnceLock::new();
+
 fn transform_pool(min_size: usize) -> BufferPool {
-    static POOL: OnceLock<Mutex<(BufferPool, usize)>> = OnceLock::new();
-    let lock = POOL.get_or_init(|| {
+    let lock = TRANSFORM_POOL.get_or_init(|| {
         Mutex::new((BufferPool::with_limits(2, min_size, 4), min_size))
     });
     let mut guard = lock.lock().unwrap();
@@ -80,6 +81,20 @@ fn transform_pool(min_size: usize) -> BufferPool {
         *guard = (BufferPool::with_limits(2, min_size, 4), min_size);
     }
     guard.0.clone()
+}
+
+pub fn transform_pool_stats() -> Option<BufferPoolStats> {
+    let lock = TRANSFORM_POOL.get()?;
+    let guard = lock.lock().ok()?;
+    Some(guard.0.stats())
+}
+
+pub fn reset_transform_pool() {
+    if let Some(lock) = TRANSFORM_POOL.get() {
+        if let Ok(mut guard) = lock.lock() {
+            *guard = (BufferPool::with_limits(0, 1, 0), 1);
+        }
+    }
 }
 
 /// Rotate/mirror a tightly-packed single-plane frame.

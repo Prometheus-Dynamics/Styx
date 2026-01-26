@@ -25,7 +25,7 @@ pub(super) mod v4l2_backend;
 pub(super) mod virtual_backend;
 
 pub use handle::{CaptureHandle, ControlPlane, WorkerHandle};
-pub use request::{CaptureError, CaptureRequest, start_capture};
+pub use request::{CaptureError, CaptureRequest, TdnOutputMode, start_capture};
 pub use tunables::{
     CaptureTunables, DEFAULT_NETCAM_BACKOFF_MAX_MS, DEFAULT_NETCAM_BACKOFF_START_MS,
     DEFAULT_NETCAM_TIMEOUT_SECS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN, DEFAULT_POOL_SPARE,
@@ -164,6 +164,7 @@ pub fn make_file_device(
                 default: ControlValue::Uint((1_000 / fps.max(1)) as u32),
                 step: Some(ControlValue::Uint(1)),
                 menu: None,
+                metadata: ControlMetadata::default(),
             },
             ControlMeta {
                 id: crate::capture_api::file_backend::CTRL_FILE_START_MS,
@@ -175,6 +176,7 @@ pub fn make_file_device(
                 default: ControlValue::Uint(0),
                 step: Some(ControlValue::Uint(1)),
                 menu: None,
+                metadata: ControlMetadata::default(),
             },
             ControlMeta {
                 id: crate::capture_api::file_backend::CTRL_FILE_STOP_MS,
@@ -186,6 +188,7 @@ pub fn make_file_device(
                 default: ControlValue::Uint(0),
                 step: Some(ControlValue::Uint(1)),
                 menu: None,
+                metadata: ControlMetadata::default(),
             },
             ControlMeta {
                 id: crate::capture_api::file_backend::CTRL_FILE_IMAGE_FPS,
@@ -197,6 +200,7 @@ pub fn make_file_device(
                 default: ControlValue::Uint(60),
                 step: Some(ControlValue::Uint(1)),
                 menu: None,
+                metadata: ControlMetadata::default(),
             },
             ControlMeta {
                 id: crate::capture_api::file_backend::CTRL_FILE_VIDEO_FPS,
@@ -208,6 +212,7 @@ pub fn make_file_device(
                 default: ControlValue::Uint(0),
                 step: Some(ControlValue::Uint(1)),
                 menu: None,
+                metadata: ControlMetadata::default(),
             },
         ],
     };

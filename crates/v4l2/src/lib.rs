@@ -3,7 +3,7 @@ use smallvec::smallvec;
 use std::num::NonZeroU32;
 use std::panic::catch_unwind;
 use styx_capture::prelude::*;
-use styx_core::controls::{Access, ControlKind, ControlValue};
+use styx_core::controls::{Access, ControlKind, ControlMetadata, ControlValue};
 use v4l::format::Colorspace as V4lColorspace;
 use v4l::{capability::Flags, framesize::FrameSizeEnum, prelude::*, video::Capture};
 
@@ -246,6 +246,7 @@ fn map_control(ctrl: v4l::control::Description) -> Result<ControlMeta, Box<dyn s
         default,
         step,
         menu,
+        metadata: ControlMetadata::default(),
     })
 }
 

@@ -580,10 +580,10 @@ pub mod prelude {
     #[cfg(feature = "netcam")]
     pub use crate::capture_api::make_netcam_device;
     pub use crate::capture_api::{
-        CaptureError, CaptureHandle, CaptureRequest, CaptureTunables, StyxConfig,
+        CaptureError, CaptureHandle, CaptureRequest, CaptureTunables, StyxConfig, TdnOutputMode,
         set_capture_tunables, start_capture,
     };
-    pub use crate::metrics::{PipelineMetrics, StageMetrics};
+    pub use crate::metrics::{PipelineMemoryStats, PipelineMetrics, StageMetrics};
     #[cfg(feature = "preview-window")]
     pub use crate::preview::PreviewWindow;
     pub use crate::probe_all;

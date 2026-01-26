@@ -353,7 +353,7 @@ impl MediaPipeline {
                     RecvOutcome::Data(_) => {}
                     RecvOutcome::Empty => tokio::task::yield_now().await,
                     RecvOutcome::Closed => {
-                        self.capture.stop();
+                        self.capture.stop_in_place();
                         break;
                     }
                 }
@@ -443,8 +443,9 @@ impl MediaPipeline {
     }
 
     /// Stop the pipeline and capture.
-    pub fn stop(self) {
-        self.capture.stop();
+    pub fn stop(mut self) {
+        self.capture.stop_in_place();
+        self.cleanup_pools();
     }
 
     /// Replace the capture handle, stopping the old one.
@@ -482,6 +483,16 @@ impl MediaPipeline {
         self.metrics.clone()
     }
 
+    pub fn memory_stats(&self) -> crate::metrics::PipelineMemoryStats {
+        crate::metrics::PipelineMemoryStats {
+            transform_pool: styx_core::transform::transform_pool_stats(),
+            #[cfg(feature = "hooks")]
+            image_pool: styx_codec::image_utils::dynamic_image_pool_stats(),
+            #[cfg(feature = "hooks")]
+            packed_pools: styx_codec::decoder::packed_frame_pool_stats(),
+        }
+    }
+
     /// Spawn a blocking worker that pumps the pipeline until closed.
     ///
     /// This runs on a dedicated thread.
@@ -492,7 +503,7 @@ impl MediaPipeline {
                     RecvOutcome::Data(_) => {}
                     RecvOutcome::Empty => thread::yield_now(),
                     RecvOutcome::Closed => {
-                        self.capture.stop();
+                        self.capture.stop_in_place();
                         break;
                     }
                 }
@@ -566,6 +577,22 @@ impl MediaPipeline {
             }
         }
         RecvOutcome::Data(cur)
+    }
+
+    fn cleanup_pools(&self) {
+        #[cfg(feature = "hooks")]
+        {
+            styx_codec::decoder::clear_packed_frame_pools_all_threads();
+            styx_codec::image_utils::reset_dynamic_image_pool();
+        }
+        styx_core::transform::reset_transform_pool();
+    }
+}
+
+impl Drop for MediaPipeline {
+    fn drop(&mut self) {
+        self.capture.stop_in_place();
+        self.cleanup_pools();
     }
 }
 
