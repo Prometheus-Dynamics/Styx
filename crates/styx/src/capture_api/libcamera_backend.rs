@@ -25,6 +25,7 @@ use crate::{BackendHandle, BackendKind, ProbedBackend};
 
 #[cfg(feature = "v4l2")]
 const V4L2_CID_VBLANK: u32 = 0x009e0901;
+const LIBCAMERA_FRAME_DURATION_LIMITS: ControlId = ControlId(30);
 
 #[derive(Clone, Copy, Debug)]
 struct LibcameraFpsControls {
@@ -63,6 +64,22 @@ fn control_value_enabled(value: &ControlValue) -> bool {
         ControlValue::Uint(v) => *v != 0,
         ControlValue::Float(v) => *v != 0.0,
     }
+}
+
+fn supports_frame_duration_limits(descriptor: &CaptureDescriptor) -> bool {
+    descriptor
+        .controls
+        .iter()
+        .any(|meta| meta.id == LIBCAMERA_FRAME_DURATION_LIMITS)
+}
+
+fn is_control_apply_error(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("set controls")
+        || msg.contains("unable to set controls")
+        || msg.contains("failed to set controls")
+        || msg.contains("permission denied")
+        || msg.contains("invalid argument")
 }
 
 fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
@@ -355,6 +372,7 @@ pub(super) fn start_libcamera(
     };
     let requested_control_ids: HashSet<ControlId> =
         requested_controls.iter().map(|(id, _)| *id).collect();
+    let supports_frame_duration = supports_frame_duration_limits(&descriptor);
 
     let enable_tdn_output_for_thread = enable_tdn_output;
     let id_for_thread = id.clone();
@@ -364,6 +382,7 @@ pub(super) fn start_libcamera(
     let fps_controls_for_thread = fps_controls;
     let requested_control_ids_for_thread = requested_control_ids;
     let descriptor_for_thread = descriptor.clone();
+    let supports_frame_duration_for_thread = supports_frame_duration;
 
     let requested_fps = interval
         .map(|i| i.denominator.get() as f64 / i.numerator.get().max(1) as f64)
@@ -623,7 +642,9 @@ pub(super) fn start_libcamera(
             let ctrl_list = build_libcamera_controls(&requested_controls_for_thread)?;
             let mut ctrl_list = ctrl_list;
             let mut frame_duration: Option<i64> = None;
-            if let Some(interval) = interval_for_thread {
+            if let Some(interval) = interval_for_thread
+                && supports_frame_duration_for_thread
+            {
                 // libcamera expects frame duration limits in microseconds (min/max).
                 // Our Interval follows the V4L2 convention of "seconds per frame" (numerator/denominator).
                 let num = interval.numerator.get() as u64;
@@ -664,7 +685,7 @@ pub(super) fn start_libcamera(
                         .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
                 }
             }
-            let start_ctrls = if ctrl_list.is_empty() {
+            let mut start_ctrls = if ctrl_list.is_empty() {
                 None
             } else {
                 Some(ctrl_list)
@@ -672,10 +693,11 @@ pub(super) fn start_libcamera(
             // Only track/apply controls explicitly requested by the caller.
             let mut control_state: HashMap<ControlId, ControlValue> = HashMap::new();
             let mut readback_state: HashMap<ControlId, ControlValue> = HashMap::new();
+            let mut controls_enabled = true;
             for (id, val) in &requested_controls_for_thread {
                 control_state.insert(*id, val.clone());
             }
-            if interval_for_thread.is_some() {
+            if interval_for_thread.is_some() && supports_frame_duration_for_thread {
                 if let Some(ae_id) = fps_controls_for_thread.ae_enable
                     && !requested_control_ids_for_thread.contains(&ae_id)
                 {
@@ -702,8 +724,19 @@ pub(super) fn start_libcamera(
 
             let req_rx = cam.subscribe_request_completed();
             let (ret_tx, ret_rx) = mpsc::channel::<Request>();
-            cam.start(start_ctrls.as_ref().map(|c| &**c))
-                .map_err(|e| CaptureError::Backend(e.to_string()))?;
+            if let Err(err) = cam.start(start_ctrls.as_ref().map(|c| &**c)) {
+                let msg = err.to_string();
+                if start_ctrls.is_some() && is_control_apply_error(&msg) {
+                    controls_enabled = false;
+                    start_ctrls = None;
+                    control_state.clear();
+                    frame_duration = None;
+                    cam.start(None)
+                        .map_err(|e| CaptureError::Backend(e.to_string()))?;
+                } else {
+                    return Err(CaptureError::Backend(msg));
+                }
+            }
             for req in requests {
                 cam.queue_request(req)
                     .map_err(|(_, e)| CaptureError::Backend(e.to_string()))?;
@@ -721,6 +754,12 @@ pub(super) fn start_libcamera(
                 while let Ok(msg) = ctrl_rx.try_recv() {
                     match msg {
                         ControlMessage::Wake => {
+                            if !controls_enabled {
+                                let _ = pending_controls_for_thread
+                                    .lock()
+                                    .map(|mut guard| guard.updates.clear());
+                                continue;
+                            }
                             let updates = {
                                 let mut guard = pending_controls_for_thread.lock().expect("libcamera pending lock poisoned");
                                 std::mem::take(&mut guard.updates)
