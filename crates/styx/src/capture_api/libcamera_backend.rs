@@ -685,7 +685,7 @@ pub(super) fn start_libcamera(
                         .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
                 }
             }
-            let mut start_ctrls = if ctrl_list.is_empty() {
+            let start_ctrls = if ctrl_list.is_empty() {
                 None
             } else {
                 Some(ctrl_list)
@@ -728,7 +728,6 @@ pub(super) fn start_libcamera(
                 let msg = err.to_string();
                 if start_ctrls.is_some() && is_control_apply_error(&msg) {
                     controls_enabled = false;
-                    start_ctrls = None;
                     control_state.clear();
                     frame_duration = None;
                     cam.start(None)
