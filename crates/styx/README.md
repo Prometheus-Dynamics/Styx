@@ -17,6 +17,7 @@ styx = "0.1.0"
 - `BackendHandle/BackendKind`, `ProbedDevice`, `ProbedBackend`: describe discovered devices and selected backends.
 - `capture_api`: helpers for synthetic backends (`make_netcam_device`, `make_file_device`) and tunables.
 - `session`: `MediaPipeline` for capture→decode→hook→encode flows (sync-first; async helpers when `async` is enabled).
+- `recording` (feature `hooks`): record pipeline output frames to disk for replay.
 - `preview` (feature `preview-window`): simple RGBA/RGB preview window for examples.
 
 ## Typical usage
@@ -67,6 +68,21 @@ StyxConfig::new()
     .capture_pool(4, 1 << 20, 8)
     .netcam_timeouts(10)
     .apply();
+```
+
+Record output frames for replay with the file backend:
+```rust,ignore
+use styx::prelude::*;
+
+let recorder = FrameRecorder::new("./recordings", RecordingOptions::default())?;
+let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
+    .record_output(recorder)
+    .start()?;
+
+while let RecvOutcome::Data(_) = pipeline.next() {}
+let recorder = pipeline.stop_with_recorder().expect("recorder");
+let replay = make_file_device("replay", recorder.into_paths(), 30, true);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ## Examples

@@ -56,6 +56,11 @@ File replay backend (enable `file-backend`):
 cargo run -p styx --example file_replay --features "file-backend preview-window" -- frame1.png frame2.png
 ```
 
+Record stream output and replay via the file backend:
+```bash
+cargo run -p styx --example record_and_replay --features "file-backend" -- ./recordings 60
+```
+
 Libcamera → FFmpeg decode/encode preview (requires `libcamera`, `codec-ffmpeg`, `preview-window`; camera must expose MJPG/H264/H265):
 ```bash
 cargo run -p styx --example libcamera_ffmpeg_preview --features "libcamera codec-ffmpeg preview-window" --release
@@ -68,6 +73,7 @@ cargo run -p styx --example libcamera_ffmpeg_preview --features "libcamera codec
 - `mjpeg_decode`: register MJPEG decoder and run through the codec registry (embedded sample).
 - `netcam_capture`: MJPEG netcam device builder + decode pipeline.
 - `file_replay`: replay images/videos as frames with control overrides.
+- `record_and_replay`: record frames to disk and replay them via the file backend.
 - `probe_and_select`: probe v4l2/libcamera devices and stream the first available.
 - `libcamera_ffmpeg_preview`: libcamera capture with FFmpeg decode/encode and a preview window (requires MJPG/H264/H265 support).
 

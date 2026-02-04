@@ -10,6 +10,8 @@ use image::DynamicImage;
 use styx_codec::decoder::frame_to_dynamic_image;
 #[cfg(feature = "hooks")]
 use styx_codec::image_utils::dynamic_image_to_frame;
+#[cfg(feature = "hooks")]
+use crate::recording::FrameRecorder;
 use styx_codec::prelude::*;
 #[cfg(feature = "hooks")]
 type HookFn = Box<dyn FnMut(DynamicImage) -> DynamicImage + Send>;
@@ -85,6 +87,8 @@ pub struct MediaPipelineBuilder<'a> {
     frame_hook: Option<HookStore<FrameHookFn>>,
     #[cfg(feature = "hooks")]
     frame_transform: FrameTransform,
+    #[cfg(feature = "hooks")]
+    output_recorder: Option<FrameRecorder>,
     decode_enabled: bool,
     encode_enabled: bool,
 }
@@ -105,6 +109,8 @@ impl<'a> MediaPipelineBuilder<'a> {
             frame_hook: None,
             #[cfg(feature = "hooks")]
             frame_transform: FrameTransform::default(),
+            #[cfg(feature = "hooks")]
+            output_recorder: None,
             decode_enabled: true,
             encode_enabled: true,
         }
@@ -124,6 +130,15 @@ impl<'a> MediaPipelineBuilder<'a> {
     /// Encoders run after hooks to produce compressed output.
     pub fn encoder(mut self, codec: Arc<dyn Codec>) -> Self {
         self.encoder = Some(codec);
+        self
+    }
+
+    /// Record the final output frames to disk using the provided recorder.
+    ///
+    /// Requires the `hooks` feature.
+    #[cfg(feature = "hooks")]
+    pub fn record_output(mut self, recorder: FrameRecorder) -> Self {
+        self.output_recorder = Some(recorder);
         self
     }
 
@@ -260,6 +275,8 @@ impl<'a> MediaPipelineBuilder<'a> {
             frame_hook: self.frame_hook,
             #[cfg(feature = "hooks")]
             frame_transform: self.frame_transform,
+            #[cfg(feature = "hooks")]
+            output_recorder: self.output_recorder,
             metrics: crate::metrics::PipelineMetrics::default(),
             decode_enabled: self.decode_enabled,
             encode_enabled: self.encode_enabled,
@@ -280,6 +297,8 @@ pub struct MediaPipeline {
     frame_hook: Option<HookStore<FrameHookFn>>,
     #[cfg(feature = "hooks")]
     frame_transform: FrameTransform,
+    #[cfg(feature = "hooks")]
+    output_recorder: Option<FrameRecorder>,
     metrics: crate::metrics::PipelineMetrics,
     decode_enabled: bool,
     encode_enabled: bool,
@@ -366,6 +385,22 @@ impl MediaPipeline {
         &self.capture
     }
 
+    /// Access the output recorder, if configured.
+    ///
+    /// Requires the `hooks` feature.
+    #[cfg(feature = "hooks")]
+    pub fn output_recorder(&self) -> Option<&FrameRecorder> {
+        self.output_recorder.as_ref()
+    }
+
+    /// Take ownership of the output recorder, if configured.
+    ///
+    /// Requires the `hooks` feature.
+    #[cfg(feature = "hooks")]
+    pub fn take_output_recorder(&mut self) -> Option<FrameRecorder> {
+        self.output_recorder.take()
+    }
+
     /// Swap the decoder at runtime.
     ///
     /// Pass `None` to disable decoding.
@@ -446,6 +481,16 @@ impl MediaPipeline {
     pub fn stop(mut self) {
         self.capture.stop_in_place();
         self.cleanup_pools();
+    }
+
+    /// Stop the pipeline and return the output recorder, if any.
+    ///
+    /// Requires the `hooks` feature.
+    #[cfg(feature = "hooks")]
+    pub fn stop_with_recorder(mut self) -> Option<FrameRecorder> {
+        self.capture.stop_in_place();
+        self.cleanup_pools();
+        self.output_recorder.take()
     }
 
     /// Replace the capture handle, stopping the old one.
@@ -575,6 +620,10 @@ impl MediaPipeline {
                 }
                 Err(_) => return RecvOutcome::Closed,
             }
+        }
+        #[cfg(feature = "hooks")]
+        if let Some(recorder) = &mut self.output_recorder {
+            let _ = recorder.record(&cur);
         }
         RecvOutcome::Data(cur)
     }

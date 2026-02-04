@@ -21,6 +21,8 @@ pub use thiserror;
 
 pub mod capture_api;
 mod metrics;
+#[cfg(feature = "hooks")]
+pub mod recording;
 pub mod session;
 
 /// Unified device descriptor for probed backends.
@@ -588,6 +590,8 @@ pub mod prelude {
     pub use crate::preview::PreviewWindow;
     pub use crate::probe_all;
     pub use crate::session::{MediaPipeline, MediaPipelineBuilder};
+    #[cfg(feature = "hooks")]
+    pub use crate::recording::{FrameRecorder, RecordingError, RecordingFormat, RecordingOptions};
     pub use styx_core::prelude::{FrameTransform, Rotation90};
     pub use crate::{BackendHandle, BackendKind, ProbedBackend, ProbedDevice};
     pub use styx_capture::prelude::*;
