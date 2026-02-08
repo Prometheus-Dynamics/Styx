@@ -186,8 +186,8 @@ pub fn dynamic_image_to_frame(img: DynamicImage, timestamp: u64) -> Option<Frame
 static DYNAMIC_IMAGE_POOL: OnceLock<Mutex<(BufferPool, usize)>> = OnceLock::new();
 
 fn static_pool(chunk: usize) -> BufferPool {
-    let lock =
-        DYNAMIC_IMAGE_POOL.get_or_init(|| Mutex::new((BufferPool::with_limits(2, chunk, 4), chunk)));
+    let lock = DYNAMIC_IMAGE_POOL
+        .get_or_init(|| Mutex::new((BufferPool::with_limits(2, chunk, 4), chunk)));
     let mut guard = lock.lock().unwrap();
     if guard.1 < chunk {
         *guard = (BufferPool::with_limits(2, chunk, 4), chunk);
@@ -225,9 +225,8 @@ mod tests {
         assert_eq!(frame.meta().format.code, FourCc::new(*b"RG24"));
         assert_eq!(frame.meta().timestamp, 7);
 
-        let img = DynamicImage::ImageRgba8(
-            image::RgbaImage::from_raw(1, 1, vec![6, 7, 8, 9]).unwrap(),
-        );
+        let img =
+            DynamicImage::ImageRgba8(image::RgbaImage::from_raw(1, 1, vec![6, 7, 8, 9]).unwrap());
         let frame = img.into_frame(0).unwrap();
         assert_eq!(frame.meta().format.code, FourCc::new(*b"RGBA"));
     }

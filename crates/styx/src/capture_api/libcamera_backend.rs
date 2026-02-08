@@ -87,7 +87,11 @@ fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
         LcValue::None => Some(ControlValue::None),
         LcValue::Bool(v) if v.len() == 1 => v.get(0).copied().map(ControlValue::Bool),
         LcValue::Int32(v) if v.len() == 1 => v.get(0).copied().map(ControlValue::Int),
-        LcValue::Int64(v) if v.len() == 1 => v.get(0).copied().and_then(|n| i32::try_from(n).ok()).map(ControlValue::Int),
+        LcValue::Int64(v) if v.len() == 1 => v
+            .get(0)
+            .copied()
+            .and_then(|n| i32::try_from(n).ok())
+            .map(ControlValue::Int),
         LcValue::Int64(v) if v.len() == 2 => {
             let a = v.get(0).copied()?;
             let b = v.get(1).copied()?;
@@ -97,7 +101,9 @@ fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
                 None
             }
         }
-        LcValue::Uint16(v) if v.len() == 1 => v.get(0).copied().map(|n| ControlValue::Uint(n as u32)),
+        LcValue::Uint16(v) if v.len() == 1 => {
+            v.get(0).copied().map(|n| ControlValue::Uint(n as u32))
+        }
         LcValue::Uint32(v) if v.len() == 1 => v.get(0).copied().map(ControlValue::Uint),
         LcValue::Float(v) if v.len() == 1 => v.get(0).copied().map(ControlValue::Float),
         _ => None,
@@ -396,7 +402,8 @@ pub(super) fn start_libcamera(
     let (setup_tx, setup_rx) = mpsc::channel();
     let (stop_tx, stop_rx) = mpsc::channel();
     let (ctrl_tx, ctrl_rx) = mpsc::channel();
-    let pending_controls = std::sync::Arc::new(std::sync::Mutex::new(PendingControlState::default()));
+    let pending_controls =
+        std::sync::Arc::new(std::sync::Mutex::new(PendingControlState::default()));
     let mode_for_thread = mode.clone();
 
     let pending_controls_for_thread = pending_controls.clone();
@@ -441,7 +448,8 @@ pub(super) fn start_libcamera(
                 )));
             }
             let libcamera_code = normalize_requested_fourcc_for_libcamera(requested_code);
-            let is_rgb24_request = matches!(&libcamera_code.to_u32().to_le_bytes(), b"RGB3" | b"BGR3");
+            let is_rgb24_request =
+                matches!(&libcamera_code.to_u32().to_le_bytes(), b"RGB3" | b"BGR3");
             let emulate_rgb24 = is_rgb24_request && is_rpi_pisp_sensor_i2c(&id_for_thread);
 
             // PiSP (rpi/pisp) currently asserts/crashes in libcamera when validating sensor-camera
@@ -452,8 +460,15 @@ pub(super) fn start_libcamera(
                 let mut cfg = cfgs
                     .get_mut(0)
                     .ok_or_else(|| CaptureError::Backend("missing stream config".into()))?;
-                let desired_format = if emulate_rgb24 { FourCc::new(*b"NV12") } else { libcamera_code };
-                cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(desired_format.to_u32(), 0));
+                let desired_format = if emulate_rgb24 {
+                    FourCc::new(*b"NV12")
+                } else {
+                    libcamera_code
+                };
+                cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
+                    desired_format.to_u32(),
+                    0,
+                ));
                 cfg.set_size(Size::new(
                     mode_for_thread.format.resolution.width.get(),
                     mode_for_thread.format.resolution.height.get(),
@@ -462,7 +477,10 @@ pub(super) fn start_libcamera(
 
                 if enable_tdn_output {
                     if let Some(mut tdn_cfg) = cfgs.get_mut(1) {
-                        tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(desired_format.to_u32(), 0));
+                        tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
+                            desired_format.to_u32(),
+                            0,
+                        ));
                         tdn_cfg.set_size(Size::new(
                             mode_for_thread.format.resolution.width.get(),
                             mode_for_thread.format.resolution.height.get(),
@@ -518,7 +536,8 @@ pub(super) fn start_libcamera(
             let validated_res = Resolution::new(validated_size.width, validated_size.height)
                 .unwrap_or(mode_for_thread.format.resolution);
             let validated_code = map_pixel_format_to_fourcc(validated_pix);
-            let wire_format = MediaFormat::new(validated_code, validated_res, mode_for_thread.format.color);
+            let wire_format =
+                MediaFormat::new(validated_code, validated_res, mode_for_thread.format.color);
             let output_format = if emulate_rgb24 {
                 MediaFormat::new(requested_code, validated_res, mode_for_thread.format.color)
             } else {
@@ -613,12 +632,18 @@ pub(super) fn start_libcamera(
             let mut requests = Vec::new();
             if let Some(tdn_stream) = &tdn_stream {
                 let Some(mapped_tdn) = mapped_tdn else {
-                    return Err(CaptureError::Backend("tdn output buffers unavailable".into()));
+                    return Err(CaptureError::Backend(
+                        "tdn output buffers unavailable".into(),
+                    ));
                 };
                 if mapped_tdn.is_empty() {
-                    return Err(CaptureError::Backend("tdn output buffers unavailable".into()));
+                    return Err(CaptureError::Backend(
+                        "tdn output buffers unavailable".into(),
+                    ));
                 }
-                for ((i, buf), tdn_buf) in mapped.into_iter().enumerate().zip(mapped_tdn.into_iter()) {
+                for ((i, buf), tdn_buf) in
+                    mapped.into_iter().enumerate().zip(mapped_tdn.into_iter())
+                {
                     let mut req = cam
                         .create_request(Some(i as u64))
                         .ok_or_else(|| CaptureError::Backend("request create failed".into()))?;
@@ -760,7 +785,9 @@ pub(super) fn start_libcamera(
                                 continue;
                             }
                             let updates = {
-                                let mut guard = pending_controls_for_thread.lock().expect("libcamera pending lock poisoned");
+                                let mut guard = pending_controls_for_thread
+                                    .lock()
+                                    .expect("libcamera pending lock poisoned");
                                 std::mem::take(&mut guard.updates)
                             };
                             for (id, val) in updates {
@@ -788,7 +815,10 @@ pub(super) fn start_libcamera(
                             }
                         }
                         ControlMessage::Get(id, resp_tx) => {
-                            let pending = pending_controls_for_thread.lock().ok().and_then(|guard| guard.get(&id));
+                            let pending = pending_controls_for_thread
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.get(&id));
                             let resp = readback_state
                                 .get(&id)
                                 .cloned()
@@ -816,25 +846,29 @@ pub(super) fn start_libcamera(
                         // `readback_state` is best-effort and only tracks scalar control types that
                         // fit into Styx's ControlValue.
                         for (id, val) in req.metadata() {
-                            let Some(val) = from_lc_value(&val) else { continue };
+                            let Some(val) = from_lc_value(&val) else {
+                                continue;
+                            };
                             readback_state.insert(ControlId(id), val);
                         }
 
-                        let (framebuffer, active_stride): (&MemoryMappedFrameBuffer<FrameBuffer>, usize) =
-                            if let Some(tdn_stream) = &tdn_stream {
-                                match req.buffer(tdn_stream) {
-                                    Some(fb) => (fb, tdn_stride.unwrap_or(cfg_stride)),
-                                    None => match req.buffer(&stream) {
-                                        Some(fb) => (fb, cfg_stride),
-                                        None => break,
-                                    },
-                                }
-                            } else {
-                                match req.buffer(&stream) {
+                        let (framebuffer, active_stride): (
+                            &MemoryMappedFrameBuffer<FrameBuffer>,
+                            usize,
+                        ) = if let Some(tdn_stream) = &tdn_stream {
+                            match req.buffer(tdn_stream) {
+                                Some(fb) => (fb, tdn_stride.unwrap_or(cfg_stride)),
+                                None => match req.buffer(&stream) {
                                     Some(fb) => (fb, cfg_stride),
                                     None => break,
-                                }
-                            };
+                                },
+                            }
+                        } else {
+                            match req.buffer(&stream) {
+                                Some(fb) => (fb, cfg_stride),
+                                None => break,
+                            }
+                        };
                         let meta = match framebuffer.metadata() {
                             Some(m) => m,
                             None => break,
@@ -933,8 +967,12 @@ pub(super) fn start_libcamera(
                                 plane_ptrs.push((data.as_ptr(), data.len()));
                             }
                         }
-                        let backing =
-                            LibcameraBacking::new(req, ret_tx.clone(), plane_ptrs, shutting_down.clone());
+                        let backing = LibcameraBacking::new(
+                            req,
+                            ret_tx.clone(),
+                            plane_ptrs,
+                            shutting_down.clone(),
+                        );
                         let meta = FrameMeta::new(wire_format, timestamp);
                         let frame = FrameLease::from_external(meta, layouts, backing);
                         let frame = if let Some(emulation) = &emulation {
@@ -1011,7 +1049,10 @@ pub(super) fn start_libcamera(
 
     Ok(CaptureHandle {
         backend: BackendKind::Libcamera,
-        control: ControlPlane::Libcamera { tx: ctrl_tx, pending: pending_controls },
+        control: ControlPlane::Libcamera {
+            tx: ctrl_tx,
+            pending: pending_controls,
+        },
         descriptor,
         mode,
         interval,

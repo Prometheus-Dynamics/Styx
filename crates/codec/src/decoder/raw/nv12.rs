@@ -284,7 +284,9 @@ impl Nv12ToLumaDecoder {
                 .checked_mul(height)
                 .ok_or_else(|| CodecError::Codec("nv12 y stride overflow".into()))?;
             if plane.data().len() < required {
-                return Err(CodecError::Codec("nv12 packed plane buffer too short".into()));
+                return Err(CodecError::Codec(
+                    "nv12 packed plane buffer too short".into(),
+                ));
             }
             (&plane.data()[..required], stride)
         } else {

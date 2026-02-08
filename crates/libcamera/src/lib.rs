@@ -55,7 +55,11 @@ pub fn probe_devices() -> Vec<LibcameraDeviceInfo> {
         let cameras = manager.cameras();
         if debug_enabled() {
             let ids: Vec<String> = cameras.iter().map(|c| c.id().to_string()).collect();
-            eprintln!("libcamera probe: discovered {} camera(s): {:?}", ids.len(), ids);
+            eprintln!(
+                "libcamera probe: discovered {} camera(s): {:?}",
+                ids.len(),
+                ids
+            );
         }
 
         for camera in cameras.iter() {
@@ -186,10 +190,13 @@ pub fn manager() -> Result<&'static CameraManager, String> {
 /// other code to hold a `'static` reference for enumeration/capture.
 #[cfg(feature = "probe")]
 pub fn with_manager_mut<R>(f: impl FnOnce(&mut CameraManager) -> R) -> Result<R, String> {
-    let shared = MANAGER.get().or_else(|| {
-        let _ = manager();
-        MANAGER.get()
-    }).ok_or_else(|| "failed to init libcamera manager".to_string())?;
+    let shared = MANAGER
+        .get()
+        .or_else(|| {
+            let _ = manager();
+            MANAGER.get()
+        })
+        .ok_or_else(|| "failed to init libcamera manager".to_string())?;
     let _guard = shared.lock.lock().map_err(|e| e.to_string())?;
     let mgr = unsafe { &mut *shared.manager.get() };
     Ok(f(mgr))
@@ -363,7 +370,11 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
         // that aren't covered by the generated `TryFrom` tables.
         let name = ControlId::from_id(id)
             .map(|cid| cid.name().to_string())
-            .or_else(|| ControlId::try_from(id).ok().map(|cid| cid.name().to_string()))
+            .or_else(|| {
+                ControlId::try_from(id)
+                    .ok()
+                    .map(|cid| cid.name().to_string())
+            })
             .unwrap_or_else(|| format!("ctrl_{id}"));
         let min = convert_value(&info.min());
         let max = convert_value(&info.max());
@@ -418,7 +429,9 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
                     "NoiseReductionModeMinimal".into(),
                     "NoiseReductionModeZSL".into(),
                 ]),
-                ControlMetadata { requires_tdn_output: true },
+                ControlMetadata {
+                    requires_tdn_output: true,
+                },
             ),
             (10002, "ctrl_10002", None) => (
                 "NoiseReductionMode".to_string(),
@@ -429,7 +442,9 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
                     "NoiseReductionModeMinimal".into(),
                     "NoiseReductionModeZSL".into(),
                 ]),
-                ControlMetadata { requires_tdn_output: true },
+                ControlMetadata {
+                    requires_tdn_output: true,
+                },
             ),
             _ => (name, menu, ControlMetadata::default()),
         };

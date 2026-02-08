@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "file-backend-video")]
 use ffmpeg_next::{
@@ -85,16 +85,17 @@ pub(super) fn start_file(
         let mut elapsed: u64 = 0;
         loop {
             for path in &paths {
-                let (delay_ms, start_ms, stop_ms, video_fps, duration_override_ms) = match worker_state.lock() {
-                    Ok(state) => (
-                        effective_delay_ms(&state),
-                        state.start_ms,
-                        state.stop_ms,
-                        state.video_fps,
-                        state.duration_override_ms,
-                    ),
-                    Err(_) => (16, 0, 0, 0, None),
-                };
+                let (delay_ms, start_ms, stop_ms, video_fps, duration_override_ms) =
+                    match worker_state.lock() {
+                        Ok(state) => (
+                            effective_delay_ms(&state),
+                            state.start_ms,
+                            state.stop_ms,
+                            state.video_fps,
+                            state.duration_override_ms,
+                        ),
+                        Err(_) => (16, 0, 0, 0, None),
+                    };
                 let image_delay = Duration::from_millis(delay_ms);
                 if elapsed < start_ms as u64 {
                     elapsed = elapsed.saturating_add(delay_ms);
@@ -155,7 +156,9 @@ pub(super) fn start_file(
 
     Ok(CaptureHandle {
         backend: BackendKind::File,
-        control: ControlPlane::File { state: control_state },
+        control: ControlPlane::File {
+            state: control_state,
+        },
         descriptor,
         mode,
         interval: Some(interval),
@@ -166,10 +169,7 @@ pub(super) fn start_file(
     })
 }
 
-fn decode_rgb(
-    path: &PathBuf,
-    bytes: Option<&[u8]>,
-) -> Result<(Vec<u8>, Resolution), CaptureError> {
+fn decode_rgb(path: &PathBuf, bytes: Option<&[u8]>) -> Result<(Vec<u8>, Resolution), CaptureError> {
     let owned;
     let data = if let Some(b) = bytes {
         b
@@ -199,8 +199,12 @@ fn is_jpeg_path(path: &PathBuf) -> bool {
 
 fn decode_jpeg_rgb(data: &[u8]) -> Result<(Vec<u8>, Resolution), CaptureError> {
     let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(data));
-    let pixels = decoder.decode().map_err(|e| CaptureError::Backend(e.to_string()))?;
-    let info = decoder.info().ok_or_else(|| CaptureError::Backend("jpeg metadata missing".into()))?;
+    let pixels = decoder
+        .decode()
+        .map_err(|e| CaptureError::Backend(e.to_string()))?;
+    let info = decoder
+        .info()
+        .ok_or_else(|| CaptureError::Backend("jpeg metadata missing".into()))?;
     let res = Resolution::new(info.width as u32, info.height as u32)
         .ok_or_else(|| CaptureError::Backend("invalid jpeg dims".into()))?;
     match info.pixel_format {
@@ -214,7 +218,9 @@ fn decode_jpeg_rgb(data: &[u8]) -> Result<(Vec<u8>, Resolution), CaptureError> {
             }
             Ok((rgb, res))
         }
-        other => Err(CaptureError::Backend(format!("unsupported jpeg pixel format: {other:?}"))),
+        other => Err(CaptureError::Backend(format!(
+            "unsupported jpeg pixel format: {other:?}"
+        ))),
     }
 }
 
@@ -378,7 +384,9 @@ pub(crate) fn apply_file_control(
     id: ControlId,
     value: ControlValue,
 ) -> Result<(), CaptureError> {
-    let mut guard = state.lock().map_err(|_| CaptureError::ControlApply("file control lock poisoned".into()))?;
+    let mut guard = state
+        .lock()
+        .map_err(|_| CaptureError::ControlApply("file control lock poisoned".into()))?;
     match (id, value) {
         (CTRL_FILE_DURATION_MS, ControlValue::Uint(v)) => {
             guard.duration_override_ms = Some(v.max(1) as u64);
@@ -406,10 +414,14 @@ pub(crate) fn read_file_control(
     state: &FileControlStateHandle,
     id: ControlId,
 ) -> Result<ControlValue, CaptureError> {
-    let guard = state.lock().map_err(|_| CaptureError::ControlApply("file control lock poisoned".into()))?;
+    let guard = state
+        .lock()
+        .map_err(|_| CaptureError::ControlApply("file control lock poisoned".into()))?;
     match id {
         CTRL_FILE_DURATION_MS => {
-            let ms = guard.duration_override_ms.unwrap_or_else(|| effective_delay_ms(&guard));
+            let ms = guard
+                .duration_override_ms
+                .unwrap_or_else(|| effective_delay_ms(&guard));
             Ok(ControlValue::Uint(ms.min(u64::from(u32::MAX)) as u32))
         }
         CTRL_FILE_START_MS => Ok(ControlValue::Uint(guard.start_ms)),

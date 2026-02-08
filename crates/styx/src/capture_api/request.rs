@@ -71,7 +71,10 @@ impl CaptureError {
 
     /// Whether the error may succeed when retried.
     pub fn retryable(&self) -> bool {
-        matches!(self, CaptureError::BackendUnavailable(_) | CaptureError::Backend(_))
+        matches!(
+            self,
+            CaptureError::BackendUnavailable(_) | CaptureError::Backend(_)
+        )
     }
 }
 
@@ -174,7 +177,13 @@ impl<'a> CaptureRequest<'a> {
         let mode = pick_mode(backend, self.mode)?;
         validate_config(backend, mode, self.interval, &self.controls)?;
         let interval = self.interval.or_else(|| default_interval(mode));
-        start_backend(backend, mode.clone(), interval, self.controls, self.tdn_output_mode)
+        start_backend(
+            backend,
+            mode.clone(),
+            interval,
+            self.controls,
+            self.tdn_output_mode,
+        )
     }
 }
 

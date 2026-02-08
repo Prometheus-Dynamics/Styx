@@ -731,7 +731,9 @@ impl CodecRegistryHandle {
             .ok_or(RegistryError::NotFound(fourcc))?;
         let list: Vec<&Arc<dyn Codec>> = list_all
             .iter()
-            .filter(|c| c.descriptor().kind == kind && c.descriptor().name.eq_ignore_ascii_case(codec_name))
+            .filter(|c| {
+                c.descriptor().kind == kind && c.descriptor().name.eq_ignore_ascii_case(codec_name)
+            })
             .collect();
         if list.is_empty() {
             return Err(RegistryError::NotFound(fourcc));
@@ -1592,6 +1594,8 @@ pub mod prelude {
         BgrToRgbDecoder, BgraToRgbDecoder, I420ToRgbDecoder, Nv12ToBgrDecoder, Nv12ToRgbDecoder,
         PassthroughDecoder, RgbaToRgbDecoder, YuyvToRgbDecoder,
     };
+    #[cfg(feature = "image")]
+    pub use crate::decoder::{PackedFramePoolStats, packed_frame_pool_stats};
     #[cfg(feature = "codec-ffmpeg")]
     pub use crate::ffmpeg::{
         FfmpegH264Decoder, FfmpegH264Encoder, FfmpegH265Decoder, FfmpegH265Encoder,
@@ -1600,9 +1604,9 @@ pub mod prelude {
     #[cfg(feature = "image")]
     pub use crate::image_any::ImageAnyDecoder;
     #[cfg(feature = "image")]
-    pub use crate::image_utils::{CodecImageExt, dynamic_image_to_frame, dynamic_image_pool_stats, reset_dynamic_image_pool};
-    #[cfg(feature = "image")]
-    pub use crate::decoder::{PackedFramePoolStats, packed_frame_pool_stats};
+    pub use crate::image_utils::{
+        CodecImageExt, dynamic_image_pool_stats, dynamic_image_to_frame, reset_dynamic_image_pool,
+    };
     #[cfg(feature = "codec-mozjpeg")]
     pub use crate::jpeg_encoder::MozjpegEncoder;
     #[cfg(feature = "codec-turbojpeg")]

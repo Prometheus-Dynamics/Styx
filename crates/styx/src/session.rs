@@ -5,13 +5,13 @@ use std::thread;
 use std::time::Instant;
 
 #[cfg(feature = "hooks")]
+use crate::recording::FrameRecorder;
+#[cfg(feature = "hooks")]
 use image::DynamicImage;
 #[cfg(feature = "hooks")]
 use styx_codec::decoder::frame_to_dynamic_image;
 #[cfg(feature = "hooks")]
 use styx_codec::image_utils::dynamic_image_to_frame;
-#[cfg(feature = "hooks")]
-use crate::recording::FrameRecorder;
 use styx_codec::prelude::*;
 #[cfg(feature = "hooks")]
 type HookFn = Box<dyn FnMut(DynamicImage) -> DynamicImage + Send>;
@@ -55,7 +55,6 @@ fn apply_image_transform(img: DynamicImage, transform: FrameTransform) -> Dynami
         rotated
     }
 }
-
 
 /// Builder for a capture→decode→hook→encode pipeline.
 ///
@@ -585,8 +584,8 @@ impl MediaPipeline {
                     transform_applied = true;
                 }
             }
-            let needs_image = self.hook.is_some()
-                || (!self.frame_transform.is_identity() && !transform_applied);
+            let needs_image =
+                self.hook.is_some() || (!self.frame_transform.is_identity() && !transform_applied);
             if needs_image {
                 let ts = cur.meta().timestamp;
                 match frame_to_dynamic_image(&cur) {
