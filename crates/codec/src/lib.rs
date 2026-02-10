@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+use std::any::Any;
 use std::{
     collections::VecDeque,
     sync::{
@@ -79,7 +80,7 @@ pub struct CodecDescriptor {
 ///     }
 /// }
 /// ```
-pub trait Codec: Send + Sync + 'static {
+pub trait Codec: Any + Send + Sync + 'static {
     /// Describes what this codec expects and produces.
     fn descriptor(&self) -> &CodecDescriptor;
 
