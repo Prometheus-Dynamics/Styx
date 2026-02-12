@@ -212,6 +212,15 @@ impl FfmpegVideoEncoder {
         Ok(())
     }
 
+    fn clear_state(&self) -> Result<(), CodecError> {
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|e| CodecError::Codec(format!("ffmpeg encoder lock poisoned: {e}")))?;
+        *guard = None;
+        Ok(())
+    }
+
     fn encode(&self, frame: &FrameLease) -> Result<FrameLease, CodecError> {
         let meta = frame.meta();
         let src_width = meta.format.resolution.width.get();
@@ -503,27 +512,32 @@ impl FfmpegH264Encoder {
     }
 
     pub fn new_v4l2m2m_rgb24() -> Result<Self, CodecError> {
-        FfmpegVideoEncoder::new_by_name(
+        let enc = FfmpegVideoEncoder::new_by_name(
             "h264_v4l2m2m",
             "h264",
             "h264_v4l2m2m",
             FourCc::new(*b"RG24"),
             FourCc::new(*b"H264"),
             FfmpegEncoderOptions::default(),
-        )
-        .map(Self)
+        )?;
+        // FFmpeg can be built with the v4l2m2m encoders even when the runtime image/kernel does
+        // not expose any usable V4L2 mem2mem encoder device. Probe early so we don't register an
+        // encoder that will only fail (and spam logs) once the first frame arrives.
+        probe_v4l2m2m_encoder(&enc)?;
+        Ok(Self(enc))
     }
 
     pub fn new_v4l2m2m_nv12() -> Result<Self, CodecError> {
-        FfmpegVideoEncoder::new_by_name(
+        let enc = FfmpegVideoEncoder::new_by_name(
             "h264_v4l2m2m",
             "h264",
             "h264_v4l2m2m",
             FourCc::new(*b"NV12"),
             FourCc::new(*b"H264"),
             FfmpegEncoderOptions::default(),
-        )
-        .map(Self)
+        )?;
+        probe_v4l2m2m_encoder(&enc)?;
+        Ok(Self(enc))
     }
 
     pub fn with_options(opts: FfmpegEncoderOptions) -> Result<Self, CodecError> {
@@ -584,27 +598,29 @@ impl FfmpegH265Encoder {
     }
 
     pub fn new_v4l2m2m_rgb24() -> Result<Self, CodecError> {
-        FfmpegVideoEncoder::new_by_name(
+        let enc = FfmpegVideoEncoder::new_by_name(
             "hevc_v4l2m2m",
             "h265",
             "hevc_v4l2m2m",
             FourCc::new(*b"RG24"),
             FourCc::new(*b"H265"),
             FfmpegEncoderOptions::default(),
-        )
-        .map(Self)
+        )?;
+        probe_v4l2m2m_encoder(&enc)?;
+        Ok(Self(enc))
     }
 
     pub fn new_v4l2m2m_nv12() -> Result<Self, CodecError> {
-        FfmpegVideoEncoder::new_by_name(
+        let enc = FfmpegVideoEncoder::new_by_name(
             "hevc_v4l2m2m",
             "h265",
             "hevc_v4l2m2m",
             FourCc::new(*b"NV12"),
             FourCc::new(*b"H265"),
             FfmpegEncoderOptions::default(),
-        )
-        .map(Self)
+        )?;
+        probe_v4l2m2m_encoder(&enc)?;
+        Ok(Self(enc))
     }
 
     pub fn with_options(opts: FfmpegEncoderOptions) -> Result<Self, CodecError> {
@@ -955,4 +971,84 @@ fn write_input_frame(
 
 fn is_again(err: &FfmpegError) -> bool {
     matches!(err, FfmpegError::Other { errno } if *errno == EAGAIN)
+}
+
+fn probe_v4l2m2m_encoder(enc: &FfmpegVideoEncoder) -> Result<(), CodecError> {
+    // Probe the encoder at registration time so we only expose v4l2m2m implementations when
+    // the runtime has a usable backing /dev/video* device. This avoids selecting a "hardware"
+    // encoder that will only fail on the first real frame.
+    let probes = [(640_u32, 480_u32), (1280_u32, 720_u32)];
+    let mut last_err: Option<CodecError> = None;
+
+    for (w, h) in probes {
+        // Force a real `send_frame` through the encoder. Some FFmpeg backends defer touching the
+        // V4L2 device until the first frame is queued, so `open_as()` alone is not sufficient.
+        let res = (|| {
+            let input = enc.descriptor.input;
+            let resolution = Resolution::new(w, h)
+                .ok_or_else(|| CodecError::Codec("invalid probe resolution".into()))?;
+            let meta = FrameMeta::new(MediaFormat::new(input, resolution, ColorSpace::Unknown), 0);
+
+            let frame = match input {
+                FourCc { .. } if input == FourCc::new(*b"RG24") => {
+                    let bytes = (w as usize)
+                        .saturating_mul(h as usize)
+                        .saturating_mul(3);
+                    let pool = BufferPool::with_capacity(1, bytes.max(1));
+                    let mut buf = pool.lease();
+                    buf.resize(bytes);
+                    buf.as_mut_slice().fill(0);
+                    let stride = (w as usize).saturating_mul(3).max(1);
+                    FrameLease::single_plane(meta, buf, bytes, stride)
+                }
+                FourCc { .. } if input == FourCc::new(*b"NV12") => {
+                    let y_len = (w as usize).saturating_mul(h as usize);
+                    let uv_len = (w as usize)
+                        .saturating_mul(h as usize)
+                        .saturating_div(2);
+                    let pool = BufferPool::with_capacity(2, y_len.max(uv_len).max(1));
+
+                    let mut y = pool.lease();
+                    y.resize(y_len);
+                    y.as_mut_slice().fill(0);
+
+                    let mut uv = pool.lease();
+                    uv.resize(uv_len);
+                    uv.as_mut_slice().fill(0);
+
+                    FrameLease::multi_plane(
+                        meta,
+                        smallvec::smallvec![y, uv],
+                        smallvec::smallvec![
+                            PlaneLayout { offset: 0, len: y_len, stride: w as usize },
+                            PlaneLayout { offset: 0, len: uv_len, stride: w as usize },
+                        ],
+                    )
+                }
+                other => {
+                    return Err(CodecError::Codec(format!(
+                        "unsupported v4l2m2m probe input: {other:?}"
+                    )));
+                }
+            };
+
+            // `encode_all` is streaming-friendly and may return zero packets; we only care that
+            // the backend can be initialized and accept frames without errors.
+            let _ = enc.encode_all(&frame)?;
+            Ok(())
+        })();
+
+        match res {
+            Ok(()) => {
+                let _ = enc.clear_state();
+                return Ok(());
+            }
+            Err(err) => {
+                let _ = enc.clear_state();
+                last_err = Some(err);
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| CodecError::Codec("v4l2m2m probe failed".into())))
 }
