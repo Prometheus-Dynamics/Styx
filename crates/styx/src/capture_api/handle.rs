@@ -1,7 +1,7 @@
 use std::{mem, time::Instant};
 
-    #[cfg(feature = "libcamera")]
-    use crate::capture_api::libcamera_backend::{ControlMessage, PendingControlState};
+#[cfg(feature = "libcamera")]
+use crate::capture_api::libcamera_backend::{ControlMessage, PendingControlState};
 use crate::metrics::StageMetrics;
 use crate::{BackendKind, ProbedBackend};
 
@@ -222,7 +222,9 @@ impl CaptureHandle {
             #[cfg(feature = "libcamera")]
             ControlPlane::Libcamera { tx, pending } => {
                 {
-                    let mut guard = pending.lock().map_err(|_| CaptureError::ControlApply("libcamera pending lock poisoned".into()))?;
+                    let mut guard = pending.lock().map_err(|_| {
+                        CaptureError::ControlApply("libcamera pending lock poisoned".into())
+                    })?;
                     if matches!(_value, ControlValue::None) {
                         guard.insert(_id, None);
                     } else {
@@ -319,9 +321,14 @@ pub(crate) fn start_backend(
         #[cfg(not(feature = "v4l2"))]
         BackendKind::V4l2 => Err(CaptureError::BackendMissing(BackendKind::V4l2)),
         #[cfg(feature = "libcamera")]
-        BackendKind::Libcamera => {
-            libcamera_backend::start_libcamera(backend, mode, interval, controls, descriptor, tdn_output_mode)
-        }
+        BackendKind::Libcamera => libcamera_backend::start_libcamera(
+            backend,
+            mode,
+            interval,
+            controls,
+            descriptor,
+            tdn_output_mode,
+        ),
         #[cfg(not(feature = "libcamera"))]
         BackendKind::Libcamera => Err(CaptureError::BackendMissing(BackendKind::Libcamera)),
         #[cfg(feature = "netcam")]

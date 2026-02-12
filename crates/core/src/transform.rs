@@ -73,9 +73,8 @@ fn packed_bytes_per_pixel(code: FourCc) -> Option<usize> {
 static TRANSFORM_POOL: OnceLock<Mutex<(BufferPool, usize)>> = OnceLock::new();
 
 fn transform_pool(min_size: usize) -> BufferPool {
-    let lock = TRANSFORM_POOL.get_or_init(|| {
-        Mutex::new((BufferPool::with_limits(2, min_size, 4), min_size))
-    });
+    let lock = TRANSFORM_POOL
+        .get_or_init(|| Mutex::new((BufferPool::with_limits(2, min_size, 4), min_size)));
     let mut guard = lock.lock().unwrap();
     if guard.1 < min_size {
         *guard = (BufferPool::with_limits(2, min_size, 4), min_size);
@@ -104,9 +103,8 @@ pub fn transform_packed_frame(
 ) -> Result<FrameLease, TransformError> {
     let meta = frame.meta();
     let format = meta.format;
-    let bpp = packed_bytes_per_pixel(format.code).ok_or(TransformError::UnsupportedFormat(
-        format.code,
-    ))?;
+    let bpp = packed_bytes_per_pixel(format.code)
+        .ok_or(TransformError::UnsupportedFormat(format.code))?;
     let res = format.resolution;
     let width = res.width.get() as usize;
     let height = res.height.get() as usize;
@@ -130,8 +128,8 @@ pub fn transform_packed_frame(
         Rotation90::Deg90 | Rotation90::Deg270 => (height, width),
         Rotation90::Deg0 | Rotation90::Deg180 => (width, height),
     };
-    let out_res =
-        Resolution::new(out_width as u32, out_height as u32).ok_or(TransformError::InvalidResolution)?;
+    let out_res = Resolution::new(out_width as u32, out_height as u32)
+        .ok_or(TransformError::InvalidResolution)?;
     let out_stride = out_width
         .checked_mul(bpp)
         .ok_or(TransformError::InvalidResolution)?;

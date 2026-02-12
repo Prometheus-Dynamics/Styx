@@ -41,7 +41,11 @@ unsafe fn rgb48_row_to_rgb24_neon(src: &[u8], dst: &mut [u8], width: usize, swap
             let r16 = u16::from_le_bytes([*src.get_unchecked(si), *src.get_unchecked(si + 1)]);
             let g16 = u16::from_le_bytes([*src.get_unchecked(si + 2), *src.get_unchecked(si + 3)]);
             let b16 = u16::from_le_bytes([*src.get_unchecked(si + 4), *src.get_unchecked(si + 5)]);
-            let (r16, g16, b16) = if swap_rb { (b16, g16, r16) } else { (r16, g16, b16) };
+            let (r16, g16, b16) = if swap_rb {
+                (b16, g16, r16)
+            } else {
+                (r16, g16, b16)
+            };
             let di = x * 3;
             *dst_ptr.add(di) = (r16 >> 8) as u8;
             *dst_ptr.add(di + 1) = (g16 >> 8) as u8;
@@ -129,10 +133,7 @@ impl Rgb48ToRgbDecoder {
                         return;
                     }
                 }
-                for (dst_px, src_px) in dst_line
-                    .chunks_exact_mut(3)
-                    .zip(src_line.chunks_exact(6))
-                {
+                for (dst_px, src_px) in dst_line.chunks_exact_mut(3).zip(src_line.chunks_exact(6)) {
                     let r16 = u16::from_le_bytes([src_px[0], src_px[1]]);
                     let g16 = u16::from_le_bytes([src_px[2], src_px[3]]);
                     let b16 = u16::from_le_bytes([src_px[4], src_px[5]]);
@@ -173,9 +174,7 @@ impl Codec for Rgb48ToRgbDecoder {
         unsafe { buf.resize_uninit(layout.len) };
         let meta = self.decode_into(&input, buf.as_mut_slice())?;
 
-        Ok(unsafe {
-            FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride)
-        })
+        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
     }
 }
 

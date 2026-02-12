@@ -7,7 +7,12 @@ use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
 use yuvutils_rs::{YuvPackedImage, YuvRange, YuvStandardMatrix};
 
 #[inline]
-fn normalized_packed_stride(plane: &Plane<'_>, width: usize, height: usize, bytes_per_pixel: usize) -> usize {
+fn normalized_packed_stride(
+    plane: &Plane<'_>,
+    width: usize,
+    height: usize,
+    bytes_per_pixel: usize,
+) -> usize {
     let min_stride = width.saturating_mul(bytes_per_pixel);
     let mut stride = plane.stride().max(min_stride);
     if let Some(tight_len) = min_stride.checked_mul(height) {
@@ -305,7 +310,10 @@ mod tests {
         buf.resize(bytes.len());
         buf.as_mut_slice().copy_from_slice(bytes);
         FrameLease::single_plane(
-            FrameMeta::new(MediaFormat::new(FourCc::new(*b"YUYV"), res, ColorSpace::Srgb), 1),
+            FrameMeta::new(
+                MediaFormat::new(FourCc::new(*b"YUYV"), res, ColorSpace::Srgb),
+                1,
+            ),
             buf,
             bytes.len(),
             stride,

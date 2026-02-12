@@ -1,6 +1,6 @@
+use rayon::prelude::*;
 use std::sync::Arc;
 use styx_core::prelude::*;
-use rayon::prelude::*;
 
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
 
@@ -447,14 +447,7 @@ impl Codec for BayerToRgbDecoder {
         unsafe { buf.resize_uninit(layout.len) };
         let meta = self.decode_into(&input, buf.as_mut_slice())?;
 
-        Ok(unsafe {
-            FrameLease::single_plane_uninit(
-                meta,
-                buf,
-                layout.len,
-                layout.stride,
-            )
-        })
+        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
     }
 }
 
@@ -476,8 +469,7 @@ fn unpack_mipi_packed_to_u16_le(
                 12 => unpack_raw12_row(dst_row, src_row, width),
                 _ => {
                     for (x, dst_px) in dst_row.iter_mut().enumerate().take(width) {
-                        let v =
-                            sample_at(data, stride, 0, bit_depth, x, y, width, height) as u16;
+                        let v = sample_at(data, stride, 0, bit_depth, x, y, width, height) as u16;
                         *dst_px = v.to_le();
                     }
                 }
@@ -892,10 +884,12 @@ fn demosaic_bilinear_u16_le(
 
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
-    unsafe fn avg2_u16(a: std::arch::aarch64::uint16x8_t, b: std::arch::aarch64::uint16x8_t) -> std::arch::aarch64::uint16x8_t {
+    unsafe fn avg2_u16(
+        a: std::arch::aarch64::uint16x8_t,
+        b: std::arch::aarch64::uint16x8_t,
+    ) -> std::arch::aarch64::uint16x8_t {
         use std::arch::aarch64::{
-            vaddq_u32, vcombine_u16, vget_high_u16, vget_low_u16, vmovn_u32, vmovl_u16,
-            vshrq_n_u32,
+            vaddq_u32, vcombine_u16, vget_high_u16, vget_low_u16, vmovl_u16, vmovn_u32, vshrq_n_u32,
         };
         unsafe {
             let a0 = vmovl_u16(vget_low_u16(a));
@@ -917,8 +911,7 @@ fn demosaic_bilinear_u16_le(
         d: std::arch::aarch64::uint16x8_t,
     ) -> std::arch::aarch64::uint16x8_t {
         use std::arch::aarch64::{
-            vaddq_u32, vcombine_u16, vget_high_u16, vget_low_u16, vmovn_u32, vmovl_u16,
-            vshrq_n_u32,
+            vaddq_u32, vcombine_u16, vget_high_u16, vget_low_u16, vmovl_u16, vmovn_u32, vshrq_n_u32,
         };
 
         unsafe {
@@ -939,7 +932,10 @@ fn demosaic_bilinear_u16_le(
 
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
-    unsafe fn shift_u16x8_to_u8(v: std::arch::aarch64::uint16x8_t, shift: u32) -> std::arch::aarch64::uint8x8_t {
+    unsafe fn shift_u16x8_to_u8(
+        v: std::arch::aarch64::uint16x8_t,
+        shift: u32,
+    ) -> std::arch::aarch64::uint8x8_t {
         use std::arch::aarch64::{vmovn_u16, vshrn_n_u16};
         unsafe {
             match shift {
@@ -990,316 +986,318 @@ fn demosaic_bilinear_u16_le(
 
             #[cfg(target_arch = "aarch64")]
             unsafe {
-                        use std::arch::aarch64::{
-                            uint16x8_t, uint8x8x3_t, vbslq_u16, vld1q_u16, vmvnq_u16, vst3_u8,
-                        };
+                use std::arch::aarch64::{
+                    uint8x8x3_t, uint16x8_t, vbslq_u16, vld1q_u16, vmvnq_u16, vst3_u8,
+                };
 
-                        // For the vector loop we always start at x=1; x parity does not change as we step by 8.
-                        const MASK_START_EVEN: [u16; 8] = [0xFFFF, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0x0000];
-                        let mask_start_even: uint16x8_t = vld1q_u16(MASK_START_EVEN.as_ptr());
-                        let mask_x_is_even: uint16x8_t = if (1usize & 1) == 0 {
-                            mask_start_even
-                        } else {
-                            vmvnq_u16(mask_start_even)
-                        };
+                // For the vector loop we always start at x=1; x parity does not change as we step by 8.
+                const MASK_START_EVEN: [u16; 8] = [
+                    0xFFFF, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0x0000,
+                ];
+                let mask_start_even: uint16x8_t = vld1q_u16(MASK_START_EVEN.as_ptr());
+                let mask_x_is_even: uint16x8_t = if (1usize & 1) == 0 {
+                    mask_start_even
+                } else {
+                    vmvnq_u16(mask_start_even)
+                };
 
-                        let row_up = src_u16.as_ptr().add(ym1 * stride_px);
-                        let row = src_u16.as_ptr().add(y * stride_px);
-                        let row_dn = src_u16.as_ptr().add(yp1 * stride_px);
+                let row_up = src_u16.as_ptr().add(ym1 * stride_px);
+                let row = src_u16.as_ptr().add(y * stride_px);
+                let row_dn = src_u16.as_ptr().add(yp1 * stride_px);
 
-                        let mut x = 1usize;
-                        while x + 8 <= width - 1 {
-                            let c = vld1q_u16(row.add(x));
-                            let l = vld1q_u16(row.add(x - 1));
-                            let r = vld1q_u16(row.add(x + 1));
-                            let u = vld1q_u16(row_up.add(x));
-                            let d = vld1q_u16(row_dn.add(x));
-                            let ul = vld1q_u16(row_up.add(x - 1));
-                            let ur = vld1q_u16(row_up.add(x + 1));
-                            let dl = vld1q_u16(row_dn.add(x - 1));
-                            let dr = vld1q_u16(row_dn.add(x + 1));
+                let mut x = 1usize;
+                while x + 8 <= width - 1 {
+                    let c = vld1q_u16(row.add(x));
+                    let l = vld1q_u16(row.add(x - 1));
+                    let r = vld1q_u16(row.add(x + 1));
+                    let u = vld1q_u16(row_up.add(x));
+                    let d = vld1q_u16(row_dn.add(x));
+                    let ul = vld1q_u16(row_up.add(x - 1));
+                    let ur = vld1q_u16(row_up.add(x + 1));
+                    let dl = vld1q_u16(row_dn.add(x - 1));
+                    let dr = vld1q_u16(row_dn.add(x + 1));
 
-                            let g_lrud = avg4_u16(l, r, u, d);
-                            let diag = avg4_u16(ul, ur, dl, dr);
-                            let lr2 = avg2_u16(l, r);
-                            let ud2 = avg2_u16(u, d);
+                    let g_lrud = avg4_u16(l, r, u, d);
+                    let diag = avg4_u16(ul, ur, dl, dr);
+                    let lr2 = avg2_u16(l, r);
+                    let ud2 = avg2_u16(u, d);
 
-                            let y_is_even = (y & 1) == 0;
-                            let (r_even, g_even, b_even, r_odd, g_odd, b_odd) = match pattern {
-                                BayerPattern::RGGB => {
-                                    if y_is_even {
-                                        // even x: R, odd x: G (on red row)
-                                        (c, g_lrud, diag, lr2, c, ud2)
-                                    } else {
-                                        // even x: G (on blue row), odd x: B
-                                        (ud2, c, lr2, diag, g_lrud, c)
-                                    }
-                                }
-                                BayerPattern::BGGR => {
-                                    if y_is_even {
-                                        // even x: B, odd x: G (on blue row)
-                                        (diag, g_lrud, c, ud2, c, lr2)
-                                    } else {
-                                        // even x: G (on red row), odd x: R
-                                        (lr2, c, ud2, c, g_lrud, diag)
-                                    }
-                                }
-                                BayerPattern::GBRG => {
-                                    if y_is_even {
-                                        // even x: G (on blue row), odd x: B
-                                        (ud2, c, lr2, diag, g_lrud, c)
-                                    } else {
-                                        // even x: R, odd x: G (on red row)
-                                        (c, g_lrud, diag, lr2, c, ud2)
-                                    }
-                                }
-                                BayerPattern::GRBG => {
-                                    if y_is_even {
-                                        // even x: G (on red row), odd x: R
-                                        (lr2, c, ud2, c, g_lrud, diag)
-                                    } else {
-                                        // even x: B, odd x: G (on blue row)
-                                        (diag, g_lrud, c, ud2, c, lr2)
-                                    }
-                                }
-                            };
-
-                            let r16 = vbslq_u16(mask_x_is_even, r_even, r_odd);
-                            let g16 = vbslq_u16(mask_x_is_even, g_even, g_odd);
-                            let b16 = vbslq_u16(mask_x_is_even, b_even, b_odd);
-
-                            let r8 = shift_u16x8_to_u8(r16, shift);
-                            let g8 = shift_u16x8_to_u8(g16, shift);
-                            let b8 = shift_u16x8_to_u8(b16, shift);
-                            let rgb = uint8x8x3_t(r8, g8, b8);
-                            vst3_u8(out_row.as_mut_ptr().add(x * 3), rgb);
-
-                            x += 8;
+                    let y_is_even = (y & 1) == 0;
+                    let (r_even, g_even, b_even, r_odd, g_odd, b_odd) = match pattern {
+                        BayerPattern::RGGB => {
+                            if y_is_even {
+                                // even x: R, odd x: G (on red row)
+                                (c, g_lrud, diag, lr2, c, ud2)
+                            } else {
+                                // even x: G (on blue row), odd x: B
+                                (ud2, c, lr2, diag, g_lrud, c)
+                            }
                         }
-
-                        // Tail.
-                        for x in x..(width - 1) {
-                            let xm1 = x - 1;
-                            let xp1 = x + 1;
-                            let c = read(src_u16, stride_px, x, y);
-                            let l = read(src_u16, stride_px, xm1, y);
-                            let r = read(src_u16, stride_px, xp1, y);
-                            let u = read(src_u16, stride_px, x, ym1);
-                            let d = read(src_u16, stride_px, x, yp1);
-                            let ul = read(src_u16, stride_px, xm1, ym1);
-                            let ur = read(src_u16, stride_px, xp1, ym1);
-                            let dl = read(src_u16, stride_px, xm1, yp1);
-                            let dr = read(src_u16, stride_px, xp1, yp1);
-
-                            let (r16, g16, b16) = match pattern {
-                                BayerPattern::BGGR => match ((y & 1) == 0, (x & 1) == 0) {
-                                    (true, true) => {
-                                        let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                        let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                        (r as u16, g as u16, c)
-                                    }
-                                    (true, false) => {
-                                        let b = (l as u32 + r as u32) / 2;
-                                        let r = (u as u32 + d as u32) / 2;
-                                        (r as u16, c, b as u16)
-                                    }
-                                    (false, true) => {
-                                        let r = (l as u32 + r as u32) / 2;
-                                        let b = (u as u32 + d as u32) / 2;
-                                        (r as u16, c, b as u16)
-                                    }
-                                    (false, false) => {
-                                        let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                        let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                        (c, g as u16, b as u16)
-                                    }
-                                },
-                                BayerPattern::RGGB => match ((y & 1) == 0, (x & 1) == 0) {
-                                    (true, true) => {
-                                        let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                        let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                        (c, g as u16, b as u16)
-                                    }
-                                    (true, false) => {
-                                        let r = (l as u32 + r as u32) / 2;
-                                        let b = (u as u32 + d as u32) / 2;
-                                        (r as u16, c, b as u16)
-                                    }
-                                    (false, true) => {
-                                        let b = (l as u32 + r as u32) / 2;
-                                        let r = (u as u32 + d as u32) / 2;
-                                        (r as u16, c, b as u16)
-                                    }
-                                    (false, false) => {
-                                        let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                        let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                        (r as u16, g as u16, c)
-                                    }
-                                },
-                                BayerPattern::GBRG => match ((y & 1) == 0, (x & 1) == 0) {
-                                    (true, true) => {
-                                        let r = (u as u32 + d as u32) / 2;
-                                        let b = (l as u32 + r as u32) / 2;
-                                        (r as u16, c, b as u16)
-                                    }
-                                    (true, false) => {
-                                        let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                        let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                        (r as u16, g as u16, c)
-                                    }
-                                    (false, true) => {
-                                        let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                        let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                        (c, g as u16, b as u16)
-                                    }
-                                    (false, false) => {
-                                        let r = (l as u32 + r as u32) / 2;
-                                        let b = (u as u32 + d as u32) / 2;
-                                        (r as u16, c, b as u16)
-                                    }
-                                },
-                                BayerPattern::GRBG => match ((y & 1) == 0, (x & 1) == 0) {
-                                    (true, true) => {
-                                        let r = (l as u32 + r as u32) / 2;
-                                        let b = (u as u32 + d as u32) / 2;
-                                        (r as u16, c, b as u16)
-                                    }
-                                    (true, false) => {
-                                        let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                        let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                        (c, g as u16, b as u16)
-                                    }
-                                    (false, true) => {
-                                        let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                        let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                        (r as u16, g as u16, c)
-                                    }
-                                    (false, false) => {
-                                        let b = (l as u32 + r as u32) / 2;
-                                        let r = (u as u32 + d as u32) / 2;
-                                        (r as u16, c, b as u16)
-                                    }
-                                },
-                            };
-
-                            let off = x * 3;
-                            out_row[off] = to_u8(r16, shift);
-                            out_row[off + 1] = to_u8(g16, shift);
-                            out_row[off + 2] = to_u8(b16, shift);
+                        BayerPattern::BGGR => {
+                            if y_is_even {
+                                // even x: B, odd x: G (on blue row)
+                                (diag, g_lrud, c, ud2, c, lr2)
+                            } else {
+                                // even x: G (on red row), odd x: R
+                                (lr2, c, ud2, c, g_lrud, diag)
+                            }
                         }
-                        return;
+                        BayerPattern::GBRG => {
+                            if y_is_even {
+                                // even x: G (on blue row), odd x: B
+                                (ud2, c, lr2, diag, g_lrud, c)
+                            } else {
+                                // even x: R, odd x: G (on red row)
+                                (c, g_lrud, diag, lr2, c, ud2)
+                            }
+                        }
+                        BayerPattern::GRBG => {
+                            if y_is_even {
+                                // even x: G (on red row), odd x: R
+                                (lr2, c, ud2, c, g_lrud, diag)
+                            } else {
+                                // even x: B, odd x: G (on blue row)
+                                (diag, g_lrud, c, ud2, c, lr2)
+                            }
+                        }
+                    };
+
+                    let r16 = vbslq_u16(mask_x_is_even, r_even, r_odd);
+                    let g16 = vbslq_u16(mask_x_is_even, g_even, g_odd);
+                    let b16 = vbslq_u16(mask_x_is_even, b_even, b_odd);
+
+                    let r8 = shift_u16x8_to_u8(r16, shift);
+                    let g8 = shift_u16x8_to_u8(g16, shift);
+                    let b8 = shift_u16x8_to_u8(b16, shift);
+                    let rgb = uint8x8x3_t(r8, g8, b8);
+                    vst3_u8(out_row.as_mut_ptr().add(x * 3), rgb);
+
+                    x += 8;
+                }
+
+                // Tail.
+                for x in x..(width - 1) {
+                    let xm1 = x - 1;
+                    let xp1 = x + 1;
+                    let c = read(src_u16, stride_px, x, y);
+                    let l = read(src_u16, stride_px, xm1, y);
+                    let r = read(src_u16, stride_px, xp1, y);
+                    let u = read(src_u16, stride_px, x, ym1);
+                    let d = read(src_u16, stride_px, x, yp1);
+                    let ul = read(src_u16, stride_px, xm1, ym1);
+                    let ur = read(src_u16, stride_px, xp1, ym1);
+                    let dl = read(src_u16, stride_px, xm1, yp1);
+                    let dr = read(src_u16, stride_px, xp1, yp1);
+
+                    let (r16, g16, b16) = match pattern {
+                        BayerPattern::BGGR => match ((y & 1) == 0, (x & 1) == 0) {
+                            (true, true) => {
+                                let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                                let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                                (r as u16, g as u16, c)
+                            }
+                            (true, false) => {
+                                let b = (l as u32 + r as u32) / 2;
+                                let r = (u as u32 + d as u32) / 2;
+                                (r as u16, c, b as u16)
+                            }
+                            (false, true) => {
+                                let r = (l as u32 + r as u32) / 2;
+                                let b = (u as u32 + d as u32) / 2;
+                                (r as u16, c, b as u16)
+                            }
+                            (false, false) => {
+                                let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                                let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                                (c, g as u16, b as u16)
+                            }
+                        },
+                        BayerPattern::RGGB => match ((y & 1) == 0, (x & 1) == 0) {
+                            (true, true) => {
+                                let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                                let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                                (c, g as u16, b as u16)
+                            }
+                            (true, false) => {
+                                let r = (l as u32 + r as u32) / 2;
+                                let b = (u as u32 + d as u32) / 2;
+                                (r as u16, c, b as u16)
+                            }
+                            (false, true) => {
+                                let b = (l as u32 + r as u32) / 2;
+                                let r = (u as u32 + d as u32) / 2;
+                                (r as u16, c, b as u16)
+                            }
+                            (false, false) => {
+                                let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                                let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                                (r as u16, g as u16, c)
+                            }
+                        },
+                        BayerPattern::GBRG => match ((y & 1) == 0, (x & 1) == 0) {
+                            (true, true) => {
+                                let r = (u as u32 + d as u32) / 2;
+                                let b = (l as u32 + r as u32) / 2;
+                                (r as u16, c, b as u16)
+                            }
+                            (true, false) => {
+                                let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                                let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                                (r as u16, g as u16, c)
+                            }
+                            (false, true) => {
+                                let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                                let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                                (c, g as u16, b as u16)
+                            }
+                            (false, false) => {
+                                let r = (l as u32 + r as u32) / 2;
+                                let b = (u as u32 + d as u32) / 2;
+                                (r as u16, c, b as u16)
+                            }
+                        },
+                        BayerPattern::GRBG => match ((y & 1) == 0, (x & 1) == 0) {
+                            (true, true) => {
+                                let r = (l as u32 + r as u32) / 2;
+                                let b = (u as u32 + d as u32) / 2;
+                                (r as u16, c, b as u16)
+                            }
+                            (true, false) => {
+                                let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                                let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                                (c, g as u16, b as u16)
+                            }
+                            (false, true) => {
+                                let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                                let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                                (r as u16, g as u16, c)
+                            }
+                            (false, false) => {
+                                let b = (l as u32 + r as u32) / 2;
+                                let r = (u as u32 + d as u32) / 2;
+                                (r as u16, c, b as u16)
+                            }
+                        },
+                    };
+
+                    let off = x * 3;
+                    out_row[off] = to_u8(r16, shift);
+                    out_row[off + 1] = to_u8(g16, shift);
+                    out_row[off + 2] = to_u8(b16, shift);
+                }
+                return;
             }
 
             #[cfg(not(target_arch = "aarch64"))]
             for x in 1..(width - 1) {
-                        let xm1 = x - 1;
-                        let xp1 = x + 1;
-                        let c = read(src_u16, stride_px, x, y);
-                        let l = read(src_u16, stride_px, xm1, y);
-                        let r = read(src_u16, stride_px, xp1, y);
-                        let u = read(src_u16, stride_px, x, ym1);
-                        let d = read(src_u16, stride_px, x, yp1);
-                        let ul = read(src_u16, stride_px, xm1, ym1);
-                        let ur = read(src_u16, stride_px, xp1, ym1);
-                        let dl = read(src_u16, stride_px, xm1, yp1);
-                        let dr = read(src_u16, stride_px, xp1, yp1);
+                let xm1 = x - 1;
+                let xp1 = x + 1;
+                let c = read(src_u16, stride_px, x, y);
+                let l = read(src_u16, stride_px, xm1, y);
+                let r = read(src_u16, stride_px, xp1, y);
+                let u = read(src_u16, stride_px, x, ym1);
+                let d = read(src_u16, stride_px, x, yp1);
+                let ul = read(src_u16, stride_px, xm1, ym1);
+                let ur = read(src_u16, stride_px, xp1, ym1);
+                let dl = read(src_u16, stride_px, xm1, yp1);
+                let dr = read(src_u16, stride_px, xp1, yp1);
 
-                        let (r16, g16, b16) = match pattern {
-                            BayerPattern::BGGR => match ((y & 1) == 0, (x & 1) == 0) {
-                                (true, true) => {
-                                    let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                    let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                    (r as u16, g as u16, c)
-                                }
-                                (true, false) => {
-                                    let b = (l as u32 + r as u32) / 2;
-                                    let r = (u as u32 + d as u32) / 2;
-                                    (r as u16, c, b as u16)
-                                }
-                                (false, true) => {
-                                    let r = (l as u32 + r as u32) / 2;
-                                    let b = (u as u32 + d as u32) / 2;
-                                    (r as u16, c, b as u16)
-                                }
-                                (false, false) => {
-                                    let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                    let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                    (c, g as u16, b as u16)
-                                }
-                            },
-                            BayerPattern::RGGB => match ((y & 1) == 0, (x & 1) == 0) {
-                                (true, true) => {
-                                    let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                    let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                    (c, g as u16, b as u16)
-                                }
-                                (true, false) => {
-                                    let r = (l as u32 + r as u32) / 2;
-                                    let b = (u as u32 + d as u32) / 2;
-                                    (r as u16, c, b as u16)
-                                }
-                                (false, true) => {
-                                    let b = (l as u32 + r as u32) / 2;
-                                    let r = (u as u32 + d as u32) / 2;
-                                    (r as u16, c, b as u16)
-                                }
-                                (false, false) => {
-                                    let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                    let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                    (r as u16, g as u16, c)
-                                }
-                            },
-                            BayerPattern::GBRG => match ((y & 1) == 0, (x & 1) == 0) {
-                                (true, true) => {
-                                    let r = (u as u32 + d as u32) / 2;
-                                    let b = (l as u32 + r as u32) / 2;
-                                    (r as u16, c, b as u16)
-                                }
-                                (true, false) => {
-                                    let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                    let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                    (r as u16, g as u16, c)
-                                }
-                                (false, true) => {
-                                    let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                    let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                    (c, g as u16, b as u16)
-                                }
-                                (false, false) => {
-                                    let r = (l as u32 + r as u32) / 2;
-                                    let b = (u as u32 + d as u32) / 2;
-                                    (r as u16, c, b as u16)
-                                }
-                            },
-                            BayerPattern::GRBG => match ((y & 1) == 0, (x & 1) == 0) {
-                                (true, true) => {
-                                    let r = (l as u32 + r as u32) / 2;
-                                    let b = (u as u32 + d as u32) / 2;
-                                    (r as u16, c, b as u16)
-                                }
-                                (true, false) => {
-                                    let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                    let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                    (c, g as u16, b as u16)
-                                }
-                                (false, true) => {
-                                    let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
-                                    let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
-                                    (r as u16, g as u16, c)
-                                }
-                                (false, false) => {
-                                    let b = (l as u32 + r as u32) / 2;
-                                    let r = (u as u32 + d as u32) / 2;
-                                    (r as u16, c, b as u16)
-                                }
-                            },
-                        };
+                let (r16, g16, b16) = match pattern {
+                    BayerPattern::BGGR => match ((y & 1) == 0, (x & 1) == 0) {
+                        (true, true) => {
+                            let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                            let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                            (r as u16, g as u16, c)
+                        }
+                        (true, false) => {
+                            let b = (l as u32 + r as u32) / 2;
+                            let r = (u as u32 + d as u32) / 2;
+                            (r as u16, c, b as u16)
+                        }
+                        (false, true) => {
+                            let r = (l as u32 + r as u32) / 2;
+                            let b = (u as u32 + d as u32) / 2;
+                            (r as u16, c, b as u16)
+                        }
+                        (false, false) => {
+                            let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                            let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                            (c, g as u16, b as u16)
+                        }
+                    },
+                    BayerPattern::RGGB => match ((y & 1) == 0, (x & 1) == 0) {
+                        (true, true) => {
+                            let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                            let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                            (c, g as u16, b as u16)
+                        }
+                        (true, false) => {
+                            let r = (l as u32 + r as u32) / 2;
+                            let b = (u as u32 + d as u32) / 2;
+                            (r as u16, c, b as u16)
+                        }
+                        (false, true) => {
+                            let b = (l as u32 + r as u32) / 2;
+                            let r = (u as u32 + d as u32) / 2;
+                            (r as u16, c, b as u16)
+                        }
+                        (false, false) => {
+                            let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                            let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                            (r as u16, g as u16, c)
+                        }
+                    },
+                    BayerPattern::GBRG => match ((y & 1) == 0, (x & 1) == 0) {
+                        (true, true) => {
+                            let r = (u as u32 + d as u32) / 2;
+                            let b = (l as u32 + r as u32) / 2;
+                            (r as u16, c, b as u16)
+                        }
+                        (true, false) => {
+                            let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                            let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                            (r as u16, g as u16, c)
+                        }
+                        (false, true) => {
+                            let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                            let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                            (c, g as u16, b as u16)
+                        }
+                        (false, false) => {
+                            let r = (l as u32 + r as u32) / 2;
+                            let b = (u as u32 + d as u32) / 2;
+                            (r as u16, c, b as u16)
+                        }
+                    },
+                    BayerPattern::GRBG => match ((y & 1) == 0, (x & 1) == 0) {
+                        (true, true) => {
+                            let r = (l as u32 + r as u32) / 2;
+                            let b = (u as u32 + d as u32) / 2;
+                            (r as u16, c, b as u16)
+                        }
+                        (true, false) => {
+                            let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                            let b = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                            (c, g as u16, b as u16)
+                        }
+                        (false, true) => {
+                            let g = (l as u32 + r as u32 + u as u32 + d as u32) / 4;
+                            let r = (ul as u32 + ur as u32 + dl as u32 + dr as u32) / 4;
+                            (r as u16, g as u16, c)
+                        }
+                        (false, false) => {
+                            let b = (l as u32 + r as u32) / 2;
+                            let r = (u as u32 + d as u32) / 2;
+                            (r as u16, c, b as u16)
+                        }
+                    },
+                };
 
-                        let off = x * 3;
-                        out_row[off] = to_u8(r16, shift);
-                        out_row[off + 1] = to_u8(g16, shift);
-                        out_row[off + 2] = to_u8(b16, shift);
-                    }
+                let off = x * 3;
+                out_row[off] = to_u8(r16, shift);
+                out_row[off + 1] = to_u8(g16, shift);
+                out_row[off + 2] = to_u8(b16, shift);
+            }
         });
 }
 
@@ -1396,9 +1394,18 @@ mod tests {
         let unpacked_fourcc = FourCc::new(*b"RG10");
         let packed_info = bayer_info(packed_fourcc).unwrap();
         let unpacked_info = bayer_info(unpacked_fourcc).unwrap();
-        let packed_dec = BayerToRgbDecoder::new(packed_fourcc, packed_info, res.width.get(), res.height.get());
-        let unpacked_dec =
-            BayerToRgbDecoder::new(unpacked_fourcc, unpacked_info, res.width.get(), res.height.get());
+        let packed_dec = BayerToRgbDecoder::new(
+            packed_fourcc,
+            packed_info,
+            res.width.get(),
+            res.height.get(),
+        );
+        let unpacked_dec = BayerToRgbDecoder::new(
+            unpacked_fourcc,
+            unpacked_info,
+            res.width.get(),
+            res.height.get(),
+        );
 
         let pool = BufferPool::with_limits(2, packed.len().max(unpacked.len()), 4);
 

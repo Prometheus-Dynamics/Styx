@@ -178,14 +178,7 @@ impl Codec for Mono8ToRgbDecoder {
         unsafe { buf.resize_uninit(layout.len) };
         let meta = self.decode_into(&input, buf.as_mut_slice())?;
 
-        Ok(unsafe {
-            FrameLease::single_plane_uninit(
-                meta,
-                buf,
-                layout.len,
-                layout.stride,
-            )
-        })
+        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
     }
 }
 
@@ -400,14 +393,7 @@ impl Codec for Mono16ToRgbDecoder {
         unsafe { buf.resize_uninit(layout.len) };
         let meta = self.decode_into(&input, buf.as_mut_slice())?;
 
-        Ok(unsafe {
-            FrameLease::single_plane_uninit(
-                meta,
-                buf,
-                layout.len,
-                layout.stride,
-            )
-        })
+        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
     }
 }
 

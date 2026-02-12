@@ -126,9 +126,8 @@ impl RgbaToRgbDecoder {
                 }
                 #[cfg(not(target_arch = "aarch64"))]
                 {
-                    for (dst_px, src_px) in dst_line
-                        .chunks_exact_mut(3)
-                        .zip(src_line.chunks_exact(4))
+                    for (dst_px, src_px) in
+                        dst_line.chunks_exact_mut(3).zip(src_line.chunks_exact(4))
                     {
                         dst_px[0] = src_px[0];
                         dst_px[1] = src_px[1];
@@ -163,14 +162,7 @@ impl Codec for RgbaToRgbDecoder {
         unsafe { buf.resize_uninit(layout.len) };
         let meta = self.decode_into(&input, buf.as_mut_slice())?;
 
-        Ok(unsafe {
-            FrameLease::single_plane_uninit(
-                meta,
-                buf,
-                layout.len,
-                layout.stride,
-            )
-        })
+        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
     }
 }
 

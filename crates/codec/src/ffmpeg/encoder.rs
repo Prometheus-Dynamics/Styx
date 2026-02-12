@@ -77,9 +77,8 @@ impl FfmpegVideoEncoder {
         opts: FfmpegEncoderOptions,
     ) -> Result<Self, CodecError> {
         init_ffmpeg()?;
-        let codec = codec::encoder::find_by_name(codec_name).ok_or_else(|| {
-            CodecError::Codec(format!("ffmpeg encoder {codec_name} not found"))
-        })?;
+        let codec = codec::encoder::find_by_name(codec_name)
+            .ok_or_else(|| CodecError::Codec(format!("ffmpeg encoder {codec_name} not found")))?;
         let (pool_min, pool_max, pool_spare) = opts.pool_limits.unwrap_or((2, 1 << 20, 4));
         Ok(Self {
             descriptor: CodecDescriptor {
@@ -228,10 +227,7 @@ impl FfmpegVideoEncoder {
             .as_mut()
             .ok_or_else(|| CodecError::Codec("ffmpeg encoder state missing".into()))?;
         self.push_frame(state, frame)?;
-        let data = state
-            .queued
-            .pop_front()
-            .ok_or(CodecError::Backpressure)?;
+        let data = state.queued.pop_front().ok_or(CodecError::Backpressure)?;
         let mut meta = meta.clone();
         if let Some(res) = Resolution::new(dst_width, dst_height) {
             meta.format = MediaFormat::new(meta.format.code, res, meta.format.color);
@@ -282,7 +278,11 @@ impl FfmpegVideoEncoder {
                         .send_frame(dst)
                         .map_err(|e| CodecError::Codec(format!("ffmpeg send_frame failed: {e}")))?;
                 }
-                Err(err) => return Err(CodecError::Codec(format!("ffmpeg send_frame failed: {err}"))),
+                Err(err) => {
+                    return Err(CodecError::Codec(format!(
+                        "ffmpeg send_frame failed: {err}"
+                    )));
+                }
             }
         } else {
             let send_result = state.encoder.send_frame(&state.src_frame);
@@ -295,7 +295,11 @@ impl FfmpegVideoEncoder {
                         .send_frame(&state.src_frame)
                         .map_err(|e| CodecError::Codec(format!("ffmpeg send_frame failed: {e}")))?;
                 }
-                Err(err) => return Err(CodecError::Codec(format!("ffmpeg send_frame failed: {err}"))),
+                Err(err) => {
+                    return Err(CodecError::Codec(format!(
+                        "ffmpeg send_frame failed: {err}"
+                    )));
+                }
             }
         }
         self.drain_packets(state)
@@ -313,7 +317,11 @@ impl FfmpegVideoEncoder {
                 }
                 Err(err) if is_again(&err) => break,
                 Err(FfmpegError::Eof) => break,
-                Err(err) => return Err(CodecError::Codec(format!("ffmpeg receive_packet failed: {err}"))),
+                Err(err) => {
+                    return Err(CodecError::Codec(format!(
+                        "ffmpeg receive_packet failed: {err}"
+                    )));
+                }
             }
         }
         Ok(())

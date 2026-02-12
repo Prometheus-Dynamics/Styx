@@ -258,9 +258,8 @@ where
         crate::capture_api::capture_pool_limits(4, expected_pixels.saturating_mul(3), 8);
     let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
     let mut line = Vec::with_capacity(1024);
-    let mut buf = Vec::with_capacity(
-        (expected_pixels.saturating_mul(3)).min(NETCAM_MAX_JPEG_BYTES),
-    );
+    let mut buf =
+        Vec::with_capacity((expected_pixels.saturating_mul(3)).min(NETCAM_MAX_JPEG_BYTES));
     loop {
         line.clear();
         if reader
@@ -428,7 +427,18 @@ fn jpeg_dimensions(buf: &[u8]) -> Option<(u32, u32)> {
         // SOF0..SOF15 (except DHT/DAC/etc) - include baseline/progressive lossless variants.
         let is_sof = matches!(
             marker,
-            0xC0 | 0xC1 | 0xC2 | 0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD | 0xCE | 0xCF
+            0xC0 | 0xC1
+                | 0xC2
+                | 0xC3
+                | 0xC5
+                | 0xC6
+                | 0xC7
+                | 0xC9
+                | 0xCA
+                | 0xCB
+                | 0xCD
+                | 0xCE
+                | 0xCF
         );
         // Standalone markers without length.
         let has_length = !matches!(marker, 0xD8 | 0xD9) && !(0xD0..=0xD7).contains(&marker);
@@ -480,12 +490,12 @@ fn mjpeg_loop(
     } else {
         1280usize * 720usize
     };
-    let (pool_min, pool_bytes, pool_spare) = crate::capture_api::capture_pool_limits(4, expected_pixels.saturating_mul(3), 8);
+    let (pool_min, pool_bytes, pool_spare) =
+        crate::capture_api::capture_pool_limits(4, expected_pixels.saturating_mul(3), 8);
     let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
     let mut line = Vec::with_capacity(1024);
-    let mut buf = Vec::with_capacity(
-        (expected_pixels.saturating_mul(3)).min(NETCAM_MAX_JPEG_BYTES),
-    );
+    let mut buf =
+        Vec::with_capacity((expected_pixels.saturating_mul(3)).min(NETCAM_MAX_JPEG_BYTES));
     loop {
         line.clear();
         if reader

@@ -200,8 +200,7 @@ impl NvToRgbDecoder {
             .enumerate()
             .for_each(|(y, dst_line)| {
                 let y_line = &y_plane_data[y * y_stride..][..width];
-                let uv_line =
-                    &uv_plane_data[(y / subsample_v) * uv_stride..][..chroma_width * 2];
+                let uv_line = &uv_plane_data[(y / subsample_v) * uv_stride..][..chroma_width * 2];
                 for x in 0..width {
                     let uv_base = (x / subsample_h) * 2;
                     let (u, v) = unsafe {
@@ -432,10 +431,8 @@ impl PlanarYuvToRgbDecoder {
             .enumerate()
             .for_each(|(y, dst_line)| {
                 let y_line = &y_plane_data[y * y_stride..][..width];
-                let u_line =
-                    &u_plane_data[(y / subsample_v) * u_stride..][..chroma_width];
-                let v_line =
-                    &v_plane_data[(y / subsample_v) * v_stride..][..chroma_width];
+                let u_line = &u_plane_data[(y / subsample_v) * u_stride..][..chroma_width];
+                let v_line = &v_plane_data[(y / subsample_v) * v_stride..][..chroma_width];
                 for x in 0..width {
                     let chroma_idx = x / subsample_h;
                     let u = unsafe { *u_line.get_unchecked(chroma_idx) as i32 };
