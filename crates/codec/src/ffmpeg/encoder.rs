@@ -991,9 +991,7 @@ fn probe_v4l2m2m_encoder(enc: &FfmpegVideoEncoder) -> Result<(), CodecError> {
 
             let frame = match input {
                 FourCc { .. } if input == FourCc::new(*b"RG24") => {
-                    let bytes = (w as usize)
-                        .saturating_mul(h as usize)
-                        .saturating_mul(3);
+                    let bytes = (w as usize).saturating_mul(h as usize).saturating_mul(3);
                     let pool = BufferPool::with_capacity(1, bytes.max(1));
                     let mut buf = pool.lease();
                     buf.resize(bytes);
@@ -1003,9 +1001,7 @@ fn probe_v4l2m2m_encoder(enc: &FfmpegVideoEncoder) -> Result<(), CodecError> {
                 }
                 FourCc { .. } if input == FourCc::new(*b"NV12") => {
                     let y_len = (w as usize).saturating_mul(h as usize);
-                    let uv_len = (w as usize)
-                        .saturating_mul(h as usize)
-                        .saturating_div(2);
+                    let uv_len = (w as usize).saturating_mul(h as usize).saturating_div(2);
                     let pool = BufferPool::with_capacity(2, y_len.max(uv_len).max(1));
 
                     let mut y = pool.lease();
@@ -1020,8 +1016,16 @@ fn probe_v4l2m2m_encoder(enc: &FfmpegVideoEncoder) -> Result<(), CodecError> {
                         meta,
                         smallvec::smallvec![y, uv],
                         smallvec::smallvec![
-                            PlaneLayout { offset: 0, len: y_len, stride: w as usize },
-                            PlaneLayout { offset: 0, len: uv_len, stride: w as usize },
+                            PlaneLayout {
+                                offset: 0,
+                                len: y_len,
+                                stride: w as usize
+                            },
+                            PlaneLayout {
+                                offset: 0,
+                                len: uv_len,
+                                stride: w as usize
+                            },
                         ],
                     )
                 }
