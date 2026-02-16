@@ -30,17 +30,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = make_file_device("file-replay", paths, fps, true);
     let backend = &device.backends[0];
 
-    let mut request = CaptureRequest::new(&device);
-    if let Some(ctrl) = backend
-        .descriptor
-        .controls
-        .iter()
-        .find(|c| c.name == "file.image_fps")
-    {
-        request = request.control(ctrl.id, ControlValue::Uint(fps));
-    }
+    let request = CaptureRequest::new(&device);
 
-    let mut handle = request.start()?;
+    let handle = request.start()?;
     println!("available controls:");
     for ctrl in &backend.descriptor.controls {
         println!(

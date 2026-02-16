@@ -4,6 +4,7 @@ use ffmpeg_next::frame::Video as FfFrame;
 use styx_core::prelude::*;
 
 /// Copy an FFmpeg RGBA frame into a pooled `FrameLease`.
+#[allow(dead_code)]
 pub(crate) fn blit_rgba_frame(
     rgb: &FfFrame,
     res: Resolution,

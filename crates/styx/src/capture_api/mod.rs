@@ -40,7 +40,7 @@ use crate::{BackendHandle, DeviceIdentity};
 #[allow(unused_imports)]
 use crate::{BackendKind, ProbedBackend, ProbedDevice};
 #[cfg(feature = "file-backend")]
-use image::GenericImageView;
+use std::collections::{HashMap, HashSet};
 #[cfg(any(feature = "netcam", feature = "file-backend"))]
 use std::num::NonZeroU32;
 use styx_capture::prelude::*;
@@ -54,6 +54,45 @@ fn interval_from_fps(fps: u32) -> Interval {
     Interval {
         numerator: NonZeroU32::new(1).unwrap(),
         denominator: NonZeroU32::new(fps.max(1)).unwrap(),
+    }
+}
+
+#[cfg(feature = "file-backend")]
+fn sanitize_file_control_token(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_underscore = false;
+    for ch in name.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            '_'
+        };
+        if mapped == '_' {
+            if prev_underscore {
+                continue;
+            }
+            prev_underscore = true;
+        } else {
+            prev_underscore = false;
+        }
+        out.push(mapped);
+    }
+    let token = out.trim_matches('_');
+    if token.is_empty() {
+        "file".to_string()
+    } else {
+        token.to_string()
+    }
+}
+
+#[cfg(feature = "file-backend")]
+fn unique_file_control_token(base: &str, seen: &mut HashMap<String, usize>) -> String {
+    let entry = seen.entry(base.to_string()).or_insert(0);
+    *entry = entry.saturating_add(1);
+    if *entry == 1 {
+        base.to_string()
+    } else {
+        format!("{base}_{}", *entry)
     }
 }
 
@@ -111,7 +150,7 @@ pub fn make_netcam_device(
     }
 }
 
-/// Create a synthetic file device that replays images as frames.
+/// Create a synthetic file device that replays image/video files as frames.
 ///
 /// # Example
 /// ```rust,ignore
@@ -128,93 +167,137 @@ pub fn make_file_device(
     fps: u32,
     loop_forever: bool,
 ) -> ProbedDevice {
-    let mut res = Resolution::new(1, 1).unwrap();
-    for p in &paths {
-        if let Ok(bytes) = std::fs::read(p) {
-            if let Ok(img) = image::load_from_memory(&bytes) {
-                let (w, h) = img.dimensions();
-                if let Some(r) = Resolution::new(w, h) {
-                    res = r;
-                }
-                break;
+    let media_infos: Vec<_> = paths
+        .iter()
+        .map(crate::capture_api::file_backend::inspect_file_media)
+        .collect();
+
+    let mut seen_resolutions = HashSet::<(u32, u32)>::new();
+    let mut resolutions = Vec::new();
+    for info in &media_infos {
+        if let Some(res) = info.resolution {
+            let key = (res.width.get(), res.height.get());
+            if seen_resolutions.insert(key) {
+                resolutions.push(res);
             }
         }
     }
+    if resolutions.is_empty() {
+        resolutions.push(Resolution::new(1, 1).unwrap());
+    }
+    resolutions.sort_by(|a, b| {
+        let area_a = u64::from(a.width.get()).saturating_mul(u64::from(a.height.get()));
+        let area_b = u64::from(b.width.get()).saturating_mul(u64::from(b.height.get()));
+        area_b
+            .cmp(&area_a)
+            .then_with(|| b.width.get().cmp(&a.width.get()))
+            .then_with(|| b.height.get().cmp(&a.height.get()))
+    });
+
     let interval = interval_from_fps(fps.max(1));
-    let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
-    let mode = Mode {
-        id: ModeId {
-            format: format.clone(),
-            interval: Some(interval),
-        },
-        format,
-        intervals: smallvec::smallvec![interval],
-        interval_stepwise: None,
-    };
+    let modes = resolutions
+        .iter()
+        .map(|res| {
+            let format = MediaFormat::new(FourCc::new(*b"RG24"), *res, ColorSpace::Srgb);
+            Mode {
+                id: ModeId {
+                    format,
+                    interval: Some(interval),
+                },
+                format,
+                intervals: smallvec::smallvec![interval],
+                interval_stepwise: None,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut controls = Vec::new();
+    let mut seen_tokens = HashMap::<String, usize>::new();
+    let mut image_index = 0usize;
+    #[cfg(feature = "file-backend-video")]
+    let mut video_index = 0usize;
+    for info in &media_infos {
+        let base = sanitize_file_control_token(&info.name);
+        let token = unique_file_control_token(&base, &mut seen_tokens);
+        match info.kind {
+            #[cfg(feature = "file-backend-video")]
+            crate::capture_api::file_backend::FileMediaKind::Video => {
+                controls.push(ControlMeta {
+                    id: crate::capture_api::file_backend::control_id_file_video_playback_speed(
+                        video_index,
+                    ),
+                    name: crate::capture_api::file_backend::control_name_file_video_playback_speed(
+                        &token,
+                    ),
+                    kind: ControlKind::Float,
+                    access: Access::ReadWrite,
+                    min: ControlValue::Float(0.05),
+                    max: ControlValue::Float(16.0),
+                    default: ControlValue::Float(1.0),
+                    step: Some(ControlValue::Float(0.05)),
+                    menu: None,
+                    metadata: ControlMetadata::default(),
+                });
+                controls.push(ControlMeta {
+                    id: crate::capture_api::file_backend::control_id_file_video_start_frame(
+                        video_index,
+                    ),
+                    name: crate::capture_api::file_backend::control_name_file_video_start_frame(
+                        &token,
+                    ),
+                    kind: ControlKind::Uint,
+                    access: Access::ReadWrite,
+                    min: ControlValue::Uint(0),
+                    max: ControlValue::Uint(u32::MAX),
+                    default: ControlValue::Uint(0),
+                    step: Some(ControlValue::Uint(1)),
+                    menu: None,
+                    metadata: ControlMetadata::default(),
+                });
+                controls.push(ControlMeta {
+                    id: crate::capture_api::file_backend::control_id_file_video_stop_frame(
+                        video_index,
+                    ),
+                    name: crate::capture_api::file_backend::control_name_file_video_stop_frame(
+                        &token,
+                    ),
+                    kind: ControlKind::Uint,
+                    access: Access::ReadWrite,
+                    min: ControlValue::Uint(0),
+                    max: ControlValue::Uint(u32::MAX),
+                    default: ControlValue::Uint(info.frame_count.unwrap_or(0)),
+                    step: Some(ControlValue::Uint(1)),
+                    menu: None,
+                    metadata: ControlMetadata::default(),
+                });
+                video_index = video_index.saturating_add(1);
+            }
+            crate::capture_api::file_backend::FileMediaKind::Image => {
+                controls.push(ControlMeta {
+                    id: crate::capture_api::file_backend::control_id_file_image_duration_frames(
+                        image_index,
+                    ),
+                    name: crate::capture_api::file_backend::control_name_file_image_duration_frames(
+                        &token,
+                    ),
+                    kind: ControlKind::Uint,
+                    access: Access::ReadWrite,
+                    min: ControlValue::Uint(1),
+                    max: ControlValue::Uint(3600),
+                    default: ControlValue::Uint(1),
+                    step: Some(ControlValue::Uint(1)),
+                    menu: None,
+                    metadata: ControlMetadata::default(),
+                });
+                image_index = image_index.saturating_add(1);
+            }
+            crate::capture_api::file_backend::FileMediaKind::Unknown => {}
+        }
+    }
+
     let descriptor = CaptureDescriptor {
-        modes: vec![mode.clone()],
-        controls: vec![
-            ControlMeta {
-                id: crate::capture_api::file_backend::CTRL_FILE_DURATION_MS,
-                name: "file.duration_ms".into(),
-                kind: ControlKind::Uint,
-                access: Access::ReadWrite,
-                min: ControlValue::Uint(1),
-                max: ControlValue::Uint(120_000),
-                default: ControlValue::Uint((1_000 / fps.max(1)) as u32),
-                step: Some(ControlValue::Uint(1)),
-                menu: None,
-                metadata: ControlMetadata::default(),
-            },
-            ControlMeta {
-                id: crate::capture_api::file_backend::CTRL_FILE_START_MS,
-                name: "file.start_ms".into(),
-                kind: ControlKind::Uint,
-                access: Access::ReadWrite,
-                min: ControlValue::Uint(0),
-                max: ControlValue::Uint(u32::MAX),
-                default: ControlValue::Uint(0),
-                step: Some(ControlValue::Uint(1)),
-                menu: None,
-                metadata: ControlMetadata::default(),
-            },
-            ControlMeta {
-                id: crate::capture_api::file_backend::CTRL_FILE_STOP_MS,
-                name: "file.stop_ms".into(),
-                kind: ControlKind::Uint,
-                access: Access::ReadWrite,
-                min: ControlValue::Uint(0),
-                max: ControlValue::Uint(u32::MAX),
-                default: ControlValue::Uint(0),
-                step: Some(ControlValue::Uint(1)),
-                menu: None,
-                metadata: ControlMetadata::default(),
-            },
-            ControlMeta {
-                id: crate::capture_api::file_backend::CTRL_FILE_IMAGE_FPS,
-                name: "file.image_fps".into(),
-                kind: ControlKind::Uint,
-                access: Access::ReadWrite,
-                min: ControlValue::Uint(1),
-                max: ControlValue::Uint(240),
-                default: ControlValue::Uint(60),
-                step: Some(ControlValue::Uint(1)),
-                menu: None,
-                metadata: ControlMetadata::default(),
-            },
-            ControlMeta {
-                id: crate::capture_api::file_backend::CTRL_FILE_VIDEO_FPS,
-                name: "file.video_fps".into(),
-                kind: ControlKind::Uint,
-                access: Access::ReadWrite,
-                min: ControlValue::Uint(0),
-                max: ControlValue::Uint(240),
-                default: ControlValue::Uint(0),
-                step: Some(ControlValue::Uint(1)),
-                menu: None,
-                metadata: ControlMetadata::default(),
-            },
-        ],
+        modes: modes.clone(),
+        controls,
     };
     let backend = ProbedBackend {
         kind: BackendKind::File,
