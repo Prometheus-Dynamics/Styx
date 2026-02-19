@@ -5,7 +5,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -337,6 +337,16 @@ fn is_hardware_impl(name: &str) -> bool {
     ]
     .iter()
     .any(|tok| n.contains(tok))
+}
+
+static V4L2M2M_PROBE_DISABLED: AtomicBool = AtomicBool::new(false);
+
+fn v4l2m2m_probe_enabled() -> bool {
+    !V4L2M2M_PROBE_DISABLED.load(Ordering::Relaxed)
+}
+
+fn disable_v4l2m2m_probe() {
+    V4L2M2M_PROBE_DISABLED.store(true, Ordering::Relaxed);
 }
 
 /// Thread-safe handle for codec registration/lookups.
@@ -1379,11 +1389,16 @@ impl CodecRegistry {
                 FourCc::new(*b"NV12"),
                 Arc::new(FfmpegH264Encoder::new_nv12()?),
             );
-            if let Ok(enc) = FfmpegH264Encoder::new_v4l2m2m_rgb24() {
-                self.register(FourCc::new(*b"RG24"), Arc::new(enc));
-            }
-            if let Ok(enc) = FfmpegH264Encoder::new_v4l2m2m_nv12() {
-                self.register(FourCc::new(*b"NV12"), Arc::new(enc));
+            if v4l2m2m_probe_enabled() {
+                match FfmpegH264Encoder::new_v4l2m2m_rgb24() {
+                    Ok(enc) => self.register(FourCc::new(*b"RG24"), Arc::new(enc)),
+                    Err(_) => disable_v4l2m2m_probe(),
+                }
+                if v4l2m2m_probe_enabled()
+                    && let Ok(enc) = FfmpegH264Encoder::new_v4l2m2m_nv12()
+                {
+                    self.register(FourCc::new(*b"NV12"), Arc::new(enc));
+                }
             }
             self.register(
                 FourCc::new(*b"YUYV"),
@@ -1400,11 +1415,17 @@ impl CodecRegistry {
                 FourCc::new(*b"NV12"),
                 Arc::new(FfmpegH265Encoder::new_nv12()?),
             );
-            if let Ok(enc) = FfmpegH265Encoder::new_v4l2m2m_rgb24() {
-                self.register(FourCc::new(*b"RG24"), Arc::new(enc));
-            }
-            if let Ok(enc) = FfmpegH265Encoder::new_v4l2m2m_nv12() {
-                self.register(FourCc::new(*b"NV12"), Arc::new(enc));
+            if v4l2m2m_probe_enabled() {
+                if let Ok(enc) = FfmpegH265Encoder::new_v4l2m2m_rgb24() {
+                    self.register(FourCc::new(*b"RG24"), Arc::new(enc));
+                } else {
+                    disable_v4l2m2m_probe();
+                }
+                if v4l2m2m_probe_enabled()
+                    && let Ok(enc) = FfmpegH265Encoder::new_v4l2m2m_nv12()
+                {
+                    self.register(FourCc::new(*b"NV12"), Arc::new(enc));
+                }
             }
             self.register(
                 FourCc::new(*b"YUYV"),

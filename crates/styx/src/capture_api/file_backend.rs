@@ -298,18 +298,14 @@ pub(super) fn start_file(
                         ),
                         Err(_) => (1.0, 0, 0),
                     };
-                    if let Ok(next_ts) = decode_video(
-                        path,
-                        &tx,
-                        &mode_clone,
-                        timestamp_ns,
-                        frame_delay_ms,
-                        speed,
-                        start_frame,
-                        stop_frame,
-                    ) {
-                        timestamp_ns = next_ts;
-                        continue;
+                    if let Ok(result) = decode_video(path, &tx, &mode_clone, timestamp_ns, frame_delay_ms, speed, start_frame, stop_frame) {
+                        match result {
+                            VideoDecodeResult::Advanced(next_ts) => {
+                                timestamp_ns = next_ts;
+                                continue;
+                            }
+                            VideoDecodeResult::QueueClosed => return,
+                        }
                     }
                 }
 
@@ -499,7 +495,7 @@ fn decode_video(
     playback_speed: f32,
     start_frame: u32,
     stop_frame: u32,
-) -> Result<u64, CaptureError> {
+) -> Result<VideoDecodeResult, CaptureError> {
     ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
     let mut ictx = format::input(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
     let stream_idx = ictx
@@ -571,7 +567,7 @@ fn decode_video(
             .send_packet(&packet)
             .map_err(|e| CaptureError::Backend(e.to_string()))?;
         while decoder.receive_frame(&mut decoded).is_ok() {
-            if push_video_frame(
+            match push_video_frame(
                 &decoded,
                 &mut scaler,
                 &mut rgb,
@@ -585,14 +581,16 @@ fn decode_video(
                 start_frame,
                 stop_frame,
             )? {
-                return Ok(timestamp_ns);
+                VideoFramePushResult::Continue => {}
+                VideoFramePushResult::StopFrame => return Ok(VideoDecodeResult::Advanced(timestamp_ns)),
+                VideoFramePushResult::QueueClosed => return Ok(VideoDecodeResult::QueueClosed),
             }
         }
     }
 
     decoder.send_eof().ok();
     while decoder.receive_frame(&mut decoded).is_ok() {
-        if push_video_frame(
+        match push_video_frame(
             &decoded,
             &mut scaler,
             &mut rgb,
@@ -606,11 +604,26 @@ fn decode_video(
             start_frame,
             stop_frame,
         )? {
-            return Ok(timestamp_ns);
+            VideoFramePushResult::Continue => {}
+            VideoFramePushResult::StopFrame => return Ok(VideoDecodeResult::Advanced(timestamp_ns)),
+            VideoFramePushResult::QueueClosed => return Ok(VideoDecodeResult::QueueClosed),
         }
     }
 
-    Ok(timestamp_ns)
+    Ok(VideoDecodeResult::Advanced(timestamp_ns))
+}
+
+#[cfg(feature = "file-backend-video")]
+enum VideoDecodeResult {
+    Advanced(u64),
+    QueueClosed,
+}
+
+#[cfg(feature = "file-backend-video")]
+enum VideoFramePushResult {
+    Continue,
+    StopFrame,
+    QueueClosed,
 }
 
 #[cfg(feature = "file-backend-video")]
@@ -628,9 +641,9 @@ fn push_video_frame(
     frame_index: &mut u32,
     start_frame: u32,
     stop_frame: u32,
-) -> Result<bool, CaptureError> {
+) -> Result<VideoFramePushResult, CaptureError> {
     if stop_frame > 0 && *frame_index > stop_frame {
-        return Ok(true);
+        return Ok(VideoFramePushResult::StopFrame);
     }
 
     scaler
@@ -640,14 +653,18 @@ fn push_video_frame(
     if *frame_index >= start_frame {
         let frame = blit_rgb24_frame(rgb, output_res, layout, pool, *timestamp_ns);
         if let SendOutcome::Closed = tx.send(frame) {
-            return Ok(true);
+            return Ok(VideoFramePushResult::QueueClosed);
         }
         *timestamp_ns = timestamp_ns.saturating_add(delay_ms.saturating_mul(1_000_000));
         thread::sleep(Duration::from_millis(delay_ms));
     }
 
     *frame_index = frame_index.saturating_add(1);
-    Ok(stop_frame > 0 && *frame_index > stop_frame)
+    if stop_frame > 0 && *frame_index > stop_frame {
+        Ok(VideoFramePushResult::StopFrame)
+    } else {
+        Ok(VideoFramePushResult::Continue)
+    }
 }
 
 #[derive(Debug, Clone)]
