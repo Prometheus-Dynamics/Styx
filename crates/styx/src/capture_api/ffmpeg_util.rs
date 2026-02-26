@@ -1,7 +1,42 @@
 #![cfg(any(feature = "netcam-video", feature = "file-backend-video"))]
 
+use ffmpeg_next::{
+    codec::{self, Id},
+    decoder,
+};
 use ffmpeg_next::frame::Video as FfFrame;
 use styx_core::prelude::*;
+
+/// Open a video decoder with a best-effort hardware preference for H.264/H.265.
+///
+/// We first try explicit hardware decoder names that are common on Linux SBCs and
+/// fall back to FFmpeg's default decoder resolution when unavailable.
+pub(crate) fn open_preferred_video_decoder(
+    parameters: &codec::Parameters,
+) -> Result<decoder::Video, ffmpeg_next::Error> {
+    let candidates: &[&str] = match parameters.id() {
+        Id::H264 => &["h264_v4l2request", "h264_v4l2m2m"],
+        Id::HEVC => &["hevc_v4l2request", "hevc_v4l2m2m"],
+        _ => &[],
+    };
+
+    for name in candidates {
+        let Some(codec_impl) = codec::decoder::find_by_name(name) else {
+            continue;
+        };
+        let mut context = codec::Context::new_with_codec(codec_impl);
+        if context.set_parameters(parameters.clone()).is_err() {
+            continue;
+        }
+        if let Ok(video) = context.decoder().video() {
+            return Ok(video);
+        }
+    }
+
+    codec::Context::from_parameters(parameters.clone())?
+        .decoder()
+        .video()
+}
 
 /// Copy an FFmpeg RGBA frame into a pooled `FrameLease`.
 #[allow(dead_code)]

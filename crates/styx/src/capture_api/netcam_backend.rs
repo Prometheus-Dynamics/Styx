@@ -7,7 +7,7 @@ const NETCAM_MAX_JPEG_BYTES: usize = 32 << 20; // 32 MiB safety cap.
 
 #[cfg(feature = "netcam-video")]
 use ffmpeg_next::{
-    codec, format,
+    format,
     frame::Video as FfFrame,
     media::Type as StreamType,
     software::scaling::{context::Context as ScalingContext, flag::Flags},
@@ -25,7 +25,7 @@ use tokio_util::bytes::Bytes;
 use tokio_util::io::StreamReader;
 
 #[cfg(feature = "netcam-video")]
-use crate::capture_api::ffmpeg_util::blit_rgba_frame;
+use crate::capture_api::ffmpeg_util::{blit_rgba_frame, open_preferred_video_decoder};
 use crate::capture_api::{
     CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, WorkerHandle,
 };
@@ -642,11 +642,7 @@ fn ffmpeg_loop(
         let stream = ictx
             .stream(stream_idx)
             .ok_or_else(|| CaptureError::Backend("stream missing".into()))?;
-        let ctx_decoder = codec::Context::from_parameters(stream.parameters())
-            .map_err(|e| CaptureError::Backend(e.to_string()))?;
-        let mut decoder = ctx_decoder
-            .decoder()
-            .video()
+        let mut decoder = open_preferred_video_decoder(&stream.parameters())
             .map_err(|e| CaptureError::Backend(e.to_string()))?;
         let mut scaler = ScalingContext::get(
             decoder.format(),

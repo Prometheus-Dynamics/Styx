@@ -7,7 +7,7 @@ use std::time::Duration;
 
 #[cfg(feature = "file-backend-video")]
 use ffmpeg_next::{
-    codec, format,
+    format,
     frame::Video as FfFrame,
     media::Type as StreamType,
     software::scaling::{context::Context as ScalingContext, flag::Flags},
@@ -17,7 +17,7 @@ use std::num::NonZeroU32;
 use styx_core::prelude::*;
 
 #[cfg(feature = "file-backend-video")]
-use crate::capture_api::ffmpeg_util::blit_rgb24_frame;
+use crate::capture_api::ffmpeg_util::{blit_rgb24_frame, open_preferred_video_decoder};
 use crate::capture_api::{
     CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, WorkerHandle,
 };
@@ -174,11 +174,7 @@ fn probe_video_metadata(path: &PathBuf) -> Result<(Resolution, Option<u32>), Cap
         .best(StreamType::Video)
         .ok_or_else(|| CaptureError::Backend("no video stream".into()))?;
 
-    let ctx_decoder = codec::Context::from_parameters(stream.parameters())
-        .map_err(|e| CaptureError::Backend(e.to_string()))?;
-    let decoder = ctx_decoder
-        .decoder()
-        .video()
+    let decoder = open_preferred_video_decoder(&stream.parameters())
         .map_err(|e| CaptureError::Backend(e.to_string()))?;
 
     let res = Resolution::new(decoder.width() as u32, decoder.height() as u32)
@@ -507,11 +503,7 @@ fn decode_video(
         .stream(stream_idx)
         .ok_or_else(|| CaptureError::Backend("stream missing".into()))?;
 
-    let ctx_decoder = codec::Context::from_parameters(stream.parameters())
-        .map_err(|e| CaptureError::Backend(e.to_string()))?;
-    let mut decoder = ctx_decoder
-        .decoder()
-        .video()
+    let mut decoder = open_preferred_video_decoder(&stream.parameters())
         .map_err(|e| CaptureError::Backend(e.to_string()))?;
 
     let output_res = mode.format.resolution;

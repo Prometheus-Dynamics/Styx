@@ -646,6 +646,38 @@ impl FfmpegH264Decoder {
         )
         .map(Self)
     }
+
+    pub fn new_v4l2request_rgb24() -> Result<Self, CodecError> {
+        FfmpegVideoDecoder::new_by_name(
+            "h264_v4l2request",
+            "h264",
+            "h264_v4l2request",
+            FourCc::new(*b"H264"),
+            FourCc::new(*b"RG24"),
+            false,
+            None,
+            None,
+            false,
+            false,
+        )
+        .map(Self)
+    }
+
+    pub fn new_v4l2m2m_rgb24() -> Result<Self, CodecError> {
+        FfmpegVideoDecoder::new_by_name(
+            "h264_v4l2m2m",
+            "h264",
+            "h264_v4l2m2m",
+            FourCc::new(*b"H264"),
+            FourCc::new(*b"RG24"),
+            false,
+            None,
+            None,
+            false,
+            false,
+        )
+        .map(Self)
+    }
 }
 
 impl Codec for FfmpegH264Decoder {
@@ -742,6 +774,46 @@ impl FfmpegH265Decoder {
             FourCc::new(*b"H265"),
             FourCc::new(*b"NV12"),
             true,
+            None,
+            None,
+            false,
+            false,
+        )
+        .map(Self)
+    }
+
+    pub fn new_v4l2request_rgb24() -> Result<Self, CodecError> {
+        Self::new_v4l2request_rgb24_for_input(FourCc::new(*b"H265"))
+    }
+
+    pub fn new_v4l2request_rgb24_for_input(input: FourCc) -> Result<Self, CodecError> {
+        FfmpegVideoDecoder::new_by_name(
+            "hevc_v4l2request",
+            "h265",
+            "hevc_v4l2request",
+            input,
+            FourCc::new(*b"RG24"),
+            false,
+            None,
+            None,
+            false,
+            false,
+        )
+        .map(Self)
+    }
+
+    pub fn new_v4l2m2m_rgb24() -> Result<Self, CodecError> {
+        Self::new_v4l2m2m_rgb24_for_input(FourCc::new(*b"H265"))
+    }
+
+    pub fn new_v4l2m2m_rgb24_for_input(input: FourCc) -> Result<Self, CodecError> {
+        FfmpegVideoDecoder::new_by_name(
+            "hevc_v4l2m2m",
+            "h265",
+            "hevc_v4l2m2m",
+            input,
+            FourCc::new(*b"RG24"),
+            false,
             None,
             None,
             false,

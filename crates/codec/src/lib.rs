@@ -1342,7 +1342,10 @@ impl CodecRegistry {
                     None,
                 )?),
             );
-            if let Ok(dec) = FfmpegH264Decoder::new_v4l2request_nv12_zero_copy() {
+            if let Ok(dec) = FfmpegH264Decoder::new_v4l2request_rgb24() {
+                self.register(FourCc::new(*b"H264"), Arc::new(dec));
+            }
+            if let Ok(dec) = FfmpegH264Decoder::new_v4l2m2m_rgb24() {
                 self.register(FourCc::new(*b"H264"), Arc::new(dec));
             }
             let h265 = Arc::new(FfmpegH265Decoder::with_options_for_input(
@@ -1360,11 +1363,18 @@ impl CodecRegistry {
                 None,
             )?);
             self.register(FourCc::new(*b"HEVC"), hevc);
-            if let Ok(dec) = FfmpegH265Decoder::new_v4l2request_nv12_zero_copy() {
+            if let Ok(dec) = FfmpegH265Decoder::new_v4l2request_rgb24() {
                 let dec = Arc::new(dec);
-                self.register(FourCc::new(*b"H265"), dec.clone());
-                // Note: the v4l2request decoder advertises `H265` input. Registering it under `HEVC`
-                // would cause a format mismatch if upstream frames are labeled as `HEVC`.
+                self.register(FourCc::new(*b"H265"), dec);
+            }
+            if let Ok(dec) = FfmpegH265Decoder::new_v4l2request_rgb24_for_input(FourCc::new(*b"HEVC")) {
+                self.register(FourCc::new(*b"HEVC"), Arc::new(dec));
+            }
+            if let Ok(dec) = FfmpegH265Decoder::new_v4l2m2m_rgb24() {
+                self.register(FourCc::new(*b"H265"), Arc::new(dec));
+            }
+            if let Ok(dec) = FfmpegH265Decoder::new_v4l2m2m_rgb24_for_input(FourCc::new(*b"HEVC")) {
+                self.register(FourCc::new(*b"HEVC"), Arc::new(dec));
             }
             self.register(
                 FourCc::new(*b"RG24"),
