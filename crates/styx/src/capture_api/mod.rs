@@ -222,6 +222,14 @@ pub fn make_file_device(
         match info.kind {
             #[cfg(feature = "file-backend-video")]
             crate::capture_api::file_backend::FileMediaKind::Video => {
+                let frame_max = info
+                    .frame_count
+                    .map(|count| count.saturating_sub(1))
+                    .unwrap_or(u32::MAX);
+                let stop_default = info
+                    .frame_count
+                    .map(|count| count.saturating_sub(1))
+                    .unwrap_or(0);
                 controls.push(ControlMeta {
                     id: crate::capture_api::file_backend::control_id_file_video_playback_speed(
                         video_index,
@@ -248,7 +256,7 @@ pub fn make_file_device(
                     kind: ControlKind::Uint,
                     access: Access::ReadWrite,
                     min: ControlValue::Uint(0),
-                    max: ControlValue::Uint(u32::MAX),
+                    max: ControlValue::Uint(frame_max),
                     default: ControlValue::Uint(0),
                     step: Some(ControlValue::Uint(1)),
                     menu: None,
@@ -264,8 +272,8 @@ pub fn make_file_device(
                     kind: ControlKind::Uint,
                     access: Access::ReadWrite,
                     min: ControlValue::Uint(0),
-                    max: ControlValue::Uint(u32::MAX),
-                    default: ControlValue::Uint(info.frame_count.unwrap_or(0)),
+                    max: ControlValue::Uint(frame_max),
+                    default: ControlValue::Uint(stop_default),
                     step: Some(ControlValue::Uint(1)),
                     menu: None,
                     metadata: ControlMetadata::default(),

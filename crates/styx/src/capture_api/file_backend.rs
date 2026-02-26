@@ -174,7 +174,7 @@ fn probe_video_metadata(path: &PathBuf) -> Result<(Resolution, Option<u32>), Cap
         .best(StreamType::Video)
         .ok_or_else(|| CaptureError::Backend("no video stream".into()))?;
 
-    let decoder = open_preferred_video_decoder(&stream.parameters())
+    let decoder = open_preferred_video_decoder(&stream.parameters(), false)
         .map_err(|e| CaptureError::Backend(e.to_string()))?;
 
     let res = Resolution::new(decoder.width() as u32, decoder.height() as u32)
@@ -231,14 +231,26 @@ pub(super) fn start_file(
         }
     }
 
-    let control_state = Arc::new(Mutex::new(parse_controls(&controls, image_count, {
+    #[cfg(feature = "file-backend-video")]
+    let mut video_frame_max: Vec<Option<u32>> = Vec::with_capacity(video_count);
+    #[cfg(feature = "file-backend-video")]
+    for (idx, slot) in video_slot_by_path.iter().enumerate() {
+        if slot.is_some() {
+            video_frame_max.push(media_infos[idx].frame_count.map(|count| count.saturating_sub(1)));
+        }
+    }
+
+    let control_state = Arc::new(Mutex::new(parse_controls(
+        &controls,
+        image_count,
+        {
         #[cfg(feature = "file-backend-video")]
         {
-            video_count
+            video_frame_max
         }
         #[cfg(not(feature = "file-backend-video"))]
         {
-            0
+            Vec::new()
         }
     })));
     let queue_depth = crate::capture_api::capture_queue_depth();
@@ -294,7 +306,16 @@ pub(super) fn start_file(
                         ),
                         Err(_) => (1.0, 0, 0),
                     };
-                    if let Ok(result) = decode_video(path, &tx, &mode_clone, timestamp_ns, frame_delay_ms, speed, start_frame, stop_frame) {
+                    if let Ok(result) = decode_video(
+                        path,
+                        &tx,
+                        &mode_clone,
+                        timestamp_ns,
+                        frame_delay_ms,
+                        speed,
+                        start_frame,
+                        stop_frame,
+                    ) {
                         match result {
                             VideoDecodeResult::Advanced(next_ts) => {
                                 timestamp_ns = next_ts;
@@ -503,7 +524,7 @@ fn decode_video(
         .stream(stream_idx)
         .ok_or_else(|| CaptureError::Backend("stream missing".into()))?;
 
-    let mut decoder = open_preferred_video_decoder(&stream.parameters())
+    let mut decoder = open_preferred_video_decoder(&stream.parameters(), false)
         .map_err(|e| CaptureError::Backend(e.to_string()))?;
 
     let output_res = mode.format.resolution;
@@ -550,6 +571,7 @@ fn decode_video(
     let delay_ms = delay_ms.max(1);
 
     let mut frame_index: u32 = 0;
+    let mut emitted_frames: u32 = 0;
 
     for (stream, packet) in ictx.packets() {
         if stream.index() != stream_idx {
@@ -570,11 +592,14 @@ fn decode_video(
                 &mut timestamp_ns,
                 delay_ms,
                 &mut frame_index,
+                &mut emitted_frames,
                 start_frame,
                 stop_frame,
             )? {
                 VideoFramePushResult::Continue => {}
-                VideoFramePushResult::StopFrame => return Ok(VideoDecodeResult::Advanced(timestamp_ns)),
+                VideoFramePushResult::StopFrame => {
+                    return Ok(VideoDecodeResult::Advanced(timestamp_ns));
+                }
                 VideoFramePushResult::QueueClosed => return Ok(VideoDecodeResult::QueueClosed),
             }
         }
@@ -593,13 +618,22 @@ fn decode_video(
             &mut timestamp_ns,
             delay_ms,
             &mut frame_index,
+            &mut emitted_frames,
             start_frame,
             stop_frame,
         )? {
             VideoFramePushResult::Continue => {}
-            VideoFramePushResult::StopFrame => return Ok(VideoDecodeResult::Advanced(timestamp_ns)),
+            VideoFramePushResult::StopFrame => {
+                return Ok(VideoDecodeResult::Advanced(timestamp_ns));
+            }
             VideoFramePushResult::QueueClosed => return Ok(VideoDecodeResult::QueueClosed),
         }
+    }
+
+    if emitted_frames == 0 {
+        // Invalid/empty ranges can produce zero output frames; avoid a tight decode spin.
+        thread::sleep(Duration::from_millis(delay_ms));
+        timestamp_ns = timestamp_ns.saturating_add(delay_ms.saturating_mul(1_000_000));
     }
 
     Ok(VideoDecodeResult::Advanced(timestamp_ns))
@@ -631,6 +665,7 @@ fn push_video_frame(
     timestamp_ns: &mut u64,
     delay_ms: u64,
     frame_index: &mut u32,
+    emitted_frames: &mut u32,
     start_frame: u32,
     stop_frame: u32,
 ) -> Result<VideoFramePushResult, CaptureError> {
@@ -647,6 +682,7 @@ fn push_video_frame(
         if let SendOutcome::Closed = tx.send(frame) {
             return Ok(VideoFramePushResult::QueueClosed);
         }
+        *emitted_frames = emitted_frames.saturating_add(1);
         *timestamp_ns = timestamp_ns.saturating_add(delay_ms.saturating_mul(1_000_000));
         thread::sleep(Duration::from_millis(delay_ms));
     }
@@ -665,6 +701,7 @@ pub struct FileControlState {
     pub video_playback_speed: Vec<f32>,
     pub video_start_frame: Vec<u32>,
     pub video_stop_frame: Vec<u32>,
+    pub video_frame_max: Vec<Option<u32>>,
 }
 
 pub(crate) type FileControlStateHandle = Arc<Mutex<FileControlState>>;
@@ -727,13 +764,15 @@ pub(crate) fn read_file_control(
 fn parse_controls(
     controls: &[(ControlId, ControlValue)],
     image_count: usize,
-    video_count: usize,
+    video_frame_max: Vec<Option<u32>>,
 ) -> FileControlState {
+    let video_count = video_frame_max.len();
     let mut state = FileControlState {
         image_duration_frames: vec![1; image_count],
         video_playback_speed: vec![1.0; video_count],
         video_start_frame: vec![0; video_count],
         video_stop_frame: vec![0; video_count],
+        video_frame_max,
     };
 
     for (id, val) in controls {
@@ -763,28 +802,54 @@ fn apply_control_to_state(
     }
 
     if let Some(index) = decode_indexed_control_id(id, CTRL_FILE_VIDEO_START_FRAME_BASE) {
+        let frame_max = state.video_frame_max.get(index).copied().flatten();
         let slot = state
             .video_start_frame
             .get_mut(index)
             .ok_or(CaptureError::ControlUnsupported)?;
-        *slot = match value {
+        let mut next = match value {
             ControlValue::Uint(v) => v,
             ControlValue::Int(v) if v >= 0 => v as u32,
             _ => return Err(CaptureError::ControlUnsupported),
         };
+        if let Some(max) = frame_max {
+            next = next.min(max);
+        }
+        *slot = next;
+        if let Some(stop_slot) = state.video_stop_frame.get_mut(index) {
+            if let Some(max) = frame_max {
+                *stop_slot = (*stop_slot).min(max);
+            }
+            if *slot > *stop_slot {
+                *stop_slot = *slot;
+            }
+        }
         return Ok(());
     }
 
     if let Some(index) = decode_indexed_control_id(id, CTRL_FILE_VIDEO_STOP_FRAME_BASE) {
+        let frame_max = state.video_frame_max.get(index).copied().flatten();
         let slot = state
             .video_stop_frame
             .get_mut(index)
             .ok_or(CaptureError::ControlUnsupported)?;
-        *slot = match value {
+        let mut next = match value {
             ControlValue::Uint(v) => v,
             ControlValue::Int(v) if v >= 0 => v as u32,
             _ => return Err(CaptureError::ControlUnsupported),
         };
+        if let Some(max) = frame_max {
+            next = next.min(max);
+        }
+        *slot = next;
+        if let Some(start_slot) = state.video_start_frame.get_mut(index) {
+            if let Some(max) = frame_max {
+                *start_slot = (*start_slot).min(max);
+            }
+            if *slot < *start_slot {
+                *start_slot = *slot;
+            }
+        }
         return Ok(());
     }
 
@@ -802,4 +867,86 @@ fn apply_control_to_state(
     }
 
     Err(CaptureError::ControlUnsupported)
+}
+
+#[cfg(all(test, feature = "file-backend-video"))]
+mod tests {
+    use super::*;
+
+    fn state_with_one_video() -> FileControlState {
+        FileControlState {
+            image_duration_frames: vec![],
+            video_playback_speed: vec![1.0],
+            video_start_frame: vec![0],
+            video_stop_frame: vec![0],
+            video_frame_max: vec![None],
+        }
+    }
+
+    #[test]
+    fn start_frame_updates_stop_when_crossing() {
+        let mut state = state_with_one_video();
+        apply_control_to_state(
+            &mut state,
+            control_id_file_video_stop_frame(0),
+            ControlValue::Uint(100),
+        )
+        .expect("set stop");
+        apply_control_to_state(
+            &mut state,
+            control_id_file_video_start_frame(0),
+            ControlValue::Uint(150),
+        )
+        .expect("set start");
+
+        assert_eq!(state.video_start_frame[0], 150);
+        assert_eq!(state.video_stop_frame[0], 150);
+    }
+
+    #[test]
+    fn stop_frame_updates_start_when_crossing() {
+        let mut state = state_with_one_video();
+        apply_control_to_state(
+            &mut state,
+            control_id_file_video_start_frame(0),
+            ControlValue::Uint(200),
+        )
+        .expect("set start");
+        apply_control_to_state(
+            &mut state,
+            control_id_file_video_stop_frame(0),
+            ControlValue::Uint(120),
+        )
+        .expect("set stop");
+
+        assert_eq!(state.video_start_frame[0], 120);
+        assert_eq!(state.video_stop_frame[0], 120);
+    }
+
+    #[test]
+    fn frame_window_clamps_to_known_max() {
+        let mut state = FileControlState {
+            image_duration_frames: vec![],
+            video_playback_speed: vec![1.0],
+            video_start_frame: vec![0],
+            video_stop_frame: vec![0],
+            video_frame_max: vec![Some(42)],
+        };
+
+        apply_control_to_state(
+            &mut state,
+            control_id_file_video_start_frame(0),
+            ControlValue::Uint(1000),
+        )
+        .expect("set start");
+        apply_control_to_state(
+            &mut state,
+            control_id_file_video_stop_frame(0),
+            ControlValue::Uint(2000),
+        )
+        .expect("set stop");
+
+        assert_eq!(state.video_start_frame[0], 42);
+        assert_eq!(state.video_stop_frame[0], 42);
+    }
 }

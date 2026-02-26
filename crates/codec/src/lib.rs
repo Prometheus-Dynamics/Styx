@@ -1367,7 +1367,9 @@ impl CodecRegistry {
                 let dec = Arc::new(dec);
                 self.register(FourCc::new(*b"H265"), dec);
             }
-            if let Ok(dec) = FfmpegH265Decoder::new_v4l2request_rgb24_for_input(FourCc::new(*b"HEVC")) {
+            if let Ok(dec) =
+                FfmpegH265Decoder::new_v4l2request_rgb24_for_input(FourCc::new(*b"HEVC"))
+            {
                 self.register(FourCc::new(*b"HEVC"), Arc::new(dec));
             }
             if let Ok(dec) = FfmpegH265Decoder::new_v4l2m2m_rgb24() {

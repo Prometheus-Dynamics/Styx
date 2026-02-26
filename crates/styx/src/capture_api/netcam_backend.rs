@@ -642,7 +642,7 @@ fn ffmpeg_loop(
         let stream = ictx
             .stream(stream_idx)
             .ok_or_else(|| CaptureError::Backend("stream missing".into()))?;
-        let mut decoder = open_preferred_video_decoder(&stream.parameters())
+        let mut decoder = open_preferred_video_decoder(&stream.parameters(), true)
             .map_err(|e| CaptureError::Backend(e.to_string()))?;
         let mut scaler = ScalingContext::get(
             decoder.format(),

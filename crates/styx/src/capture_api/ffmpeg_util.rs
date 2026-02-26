@@ -1,10 +1,10 @@
 #![cfg(any(feature = "netcam-video", feature = "file-backend-video"))]
 
+use ffmpeg_next::frame::Video as FfFrame;
 use ffmpeg_next::{
     codec::{self, Id},
     decoder,
 };
-use ffmpeg_next::frame::Video as FfFrame;
 use styx_core::prelude::*;
 
 /// Open a video decoder with a best-effort hardware preference for H.264/H.265.
@@ -13,11 +13,16 @@ use styx_core::prelude::*;
 /// fall back to FFmpeg's default decoder resolution when unavailable.
 pub(crate) fn open_preferred_video_decoder(
     parameters: &codec::Parameters,
+    prefer_hardware: bool,
 ) -> Result<decoder::Video, ffmpeg_next::Error> {
-    let candidates: &[&str] = match parameters.id() {
-        Id::H264 => &["h264_v4l2request", "h264_v4l2m2m"],
-        Id::HEVC => &["hevc_v4l2request", "hevc_v4l2m2m"],
-        _ => &[],
+    let candidates: &[&str] = if prefer_hardware {
+        match parameters.id() {
+            Id::H264 => &["h264_v4l2request", "h264_v4l2m2m"],
+            Id::HEVC => &["hevc_v4l2request", "hevc_v4l2m2m"],
+            _ => &[],
+        }
+    } else {
+        &[]
     };
 
     for name in candidates {
