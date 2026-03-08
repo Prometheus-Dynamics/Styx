@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 styx-core = { package = "styx-core-rs", path = "../core", version = "0.1.0" }
 smallvec = "1.15.1"
-serde = { version = "1.0.217", features = ["derive"], optional = true }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
 utoipa = { version = "5.4.0", default-features = false, features = ["macros"], optional = true }
 
 [features]
