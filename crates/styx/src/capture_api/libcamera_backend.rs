@@ -3,15 +3,16 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 #[cfg(feature = "v4l2")]
 use std::path::Path;
+use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libcamera::framebuffer::AsFrameBuffer;
 use libcamera::framebuffer_allocator::FrameBuffer;
 use libcamera::request::Request;
 use libcamera::request::ReuseFlag;
 use libcamera::{control::ControlList as LcControlList, control_value::ControlValue as LcValue};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use styx_codec::Codec;
 use styx_codec::prelude::{Nv12ToBgrDecoder, Nv12ToRgbDecoder, YuyvToRgbDecoder};
 use styx_core::prelude::*;
@@ -26,35 +27,6 @@ use crate::{BackendHandle, BackendKind, ProbedBackend};
 #[cfg(feature = "v4l2")]
 const V4L2_CID_VBLANK: u32 = 0x009e0901;
 const LIBCAMERA_FRAME_DURATION_LIMITS: ControlId = ControlId(30);
-
-#[derive(Clone, Copy, Debug)]
-struct LibcameraFpsControls {
-    ae_enable: Option<ControlId>,
-    exposure_time: Option<ControlId>,
-}
-
-fn find_control_id(descriptor: &CaptureDescriptor, name: &str) -> Option<ControlId> {
-    descriptor
-        .controls
-        .iter()
-        .find(|c| c.name == name)
-        .map(|c| c.id)
-}
-
-fn find_control_meta<'a>(
-    descriptor: &'a CaptureDescriptor,
-    id: ControlId,
-) -> Option<&'a ControlMeta> {
-    descriptor.controls.iter().find(|c| c.id == id)
-}
-
-fn cv_i32(value: &ControlValue) -> Option<i32> {
-    match value {
-        ControlValue::Int(v) => Some(*v),
-        ControlValue::Uint(v) => (*v).try_into().ok(),
-        _ => None,
-    }
-}
 
 fn control_value_enabled(value: &ControlValue) -> bool {
     match value {
@@ -218,6 +190,22 @@ fn plane_height_for_format(code: FourCc, plane_idx: usize, height: usize) -> usi
     height
 }
 
+fn wait_for_backings_to_drain(
+    outstanding_backings: &AtomicUsize,
+    timeout: Duration,
+) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if outstanding_backings.load(Ordering::Acquire) == 0 {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn infer_stride(bytes_used: usize, plane_len: usize, plane_height: usize) -> usize {
     if plane_height == 0 {
         return bytes_used.max(plane_len);
@@ -370,14 +358,6 @@ pub(super) fn start_libcamera(
         ));
     }
 
-    let fps_controls = LibcameraFpsControls {
-        ae_enable: find_control_id(&descriptor, "AeEnable")
-            .filter(|id| writable_controls.contains(id)),
-        exposure_time: find_control_id(&descriptor, "ExposureTime")
-            .filter(|id| writable_controls.contains(id)),
-    };
-    let requested_control_ids: HashSet<ControlId> =
-        requested_controls.iter().map(|(id, _)| *id).collect();
     let supports_frame_duration = supports_frame_duration_limits(&descriptor);
 
     let enable_tdn_output_for_thread = enable_tdn_output;
@@ -385,9 +365,6 @@ pub(super) fn start_libcamera(
     let writable_controls_for_thread = writable_controls.clone();
     let requested_controls_for_thread = requested_controls.clone();
     let interval_for_thread = interval;
-    let fps_controls_for_thread = fps_controls;
-    let requested_control_ids_for_thread = requested_control_ids;
-    let descriptor_for_thread = descriptor.clone();
     let supports_frame_duration_for_thread = supports_frame_duration;
 
     let requested_fps = interval
@@ -404,9 +381,11 @@ pub(super) fn start_libcamera(
     let (ctrl_tx, ctrl_rx) = mpsc::channel();
     let pending_controls =
         std::sync::Arc::new(std::sync::Mutex::new(PendingControlState::default()));
+    let outstanding_backings = Arc::new(AtomicUsize::new(0));
     let mode_for_thread = mode.clone();
 
     let pending_controls_for_thread = pending_controls.clone();
+    let outstanding_backings_for_thread = outstanding_backings.clone();
     let worker = thread::spawn(move || {
         let res: Result<Mode, CaptureError> = (|| {
             let shutting_down = std::sync::Arc::new(AtomicBool::new(false));
@@ -682,33 +661,6 @@ pub(super) fn start_libcamera(
                     .set_raw(30, LcValue::from([duration, duration]))
                     .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
 
-                // For high FPS, keep exposure <= frame duration and consider disabling AE.
-                if let Some(ae_id) = fps_controls_for_thread.ae_enable
-                    && !requested_control_ids_for_thread.contains(&ae_id)
-                {
-                    let _ = ctrl_list
-                        .set_raw(ae_id.0, LcValue::from(false))
-                        .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
-                }
-
-                if let Some(exposure_id) = fps_controls_for_thread.exposure_time
-                    && !requested_control_ids_for_thread.contains(&exposure_id)
-                {
-                    let margin_us: i64 = 200;
-                    let mut desired = (duration - margin_us).max(1);
-                    if let Some(meta) = find_control_meta(&descriptor_for_thread, exposure_id) {
-                        if let Some(min) = cv_i32(&meta.min) {
-                            desired = desired.max(min as i64);
-                        }
-                        if let Some(max) = cv_i32(&meta.max) {
-                            desired = desired.min(max as i64);
-                        }
-                    }
-                    let desired_i32 = desired.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-                    let _ = ctrl_list
-                        .set_raw(exposure_id.0, LcValue::from(desired_i32))
-                        .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
-                }
             }
             let start_ctrls = if ctrl_list.is_empty() {
                 None
@@ -722,31 +674,6 @@ pub(super) fn start_libcamera(
             for (id, val) in &requested_controls_for_thread {
                 control_state.insert(*id, val.clone());
             }
-            if interval_for_thread.is_some() && supports_frame_duration_for_thread {
-                if let Some(ae_id) = fps_controls_for_thread.ae_enable
-                    && !requested_control_ids_for_thread.contains(&ae_id)
-                {
-                    control_state.insert(ae_id, ControlValue::Bool(false));
-                }
-                if let Some(exposure_id) = fps_controls_for_thread.exposure_time
-                    && !requested_control_ids_for_thread.contains(&exposure_id)
-                    && let Some(duration) = frame_duration
-                {
-                    let margin_us: i64 = 200;
-                    let mut desired = (duration - margin_us).max(1);
-                    if let Some(meta) = find_control_meta(&descriptor_for_thread, exposure_id) {
-                        if let Some(min) = cv_i32(&meta.min) {
-                            desired = desired.max(min as i64);
-                        }
-                        if let Some(max) = cv_i32(&meta.max) {
-                            desired = desired.min(max as i64);
-                        }
-                    }
-                    let desired_i32 = desired.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-                    control_state.insert(exposure_id, ControlValue::Int(desired_i32));
-                }
-            }
-
             let req_rx = cam.subscribe_request_completed();
             let (ret_tx, ret_rx) = mpsc::channel::<Request>();
             if let Err(err) = cam.start(start_ctrls.as_ref().map(|c| &**c)) {
@@ -769,10 +696,38 @@ pub(super) fn start_libcamera(
             let _ = setup_tx.send(Ok(validated_mode.clone()));
 
             let mut failure: Option<CaptureError> = None;
+            let mut pending_requeue: Vec<Request> = Vec::new();
+            let mut requeue_fail_since: Option<Instant> = None;
             loop {
                 while let Ok(mut ret_req) = ret_rx.try_recv() {
                     ret_req.reuse(ReuseFlag::REUSE_BUFFERS);
-                    let _ = queue_with_controls(&cam, ret_req, &control_state, frame_duration);
+                    pending_requeue.push(ret_req);
+                }
+                if !pending_requeue.is_empty() {
+                    let mut still_pending = Vec::with_capacity(pending_requeue.len());
+                    for ret_req in pending_requeue.drain(..) {
+                        match queue_with_controls(&cam, ret_req, &control_state, frame_duration) {
+                            Ok(()) => {}
+                            Err(ret_req) => still_pending.push(ret_req),
+                        }
+                    }
+                    if still_pending.is_empty() {
+                        requeue_fail_since = None;
+                    } else {
+                        if requeue_fail_since.is_none() {
+                            requeue_fail_since = Some(Instant::now());
+                        }
+                        if requeue_fail_since
+                            .is_some_and(|since| since.elapsed() >= Duration::from_secs(2))
+                        {
+                            failure = Some(CaptureError::Backend(format!(
+                                "libcamera request requeue stalled for {} buffers",
+                                still_pending.len()
+                            )));
+                            break;
+                        }
+                    }
+                    pending_requeue = still_pending;
                 }
                 // Handle control messages.
                 while let Ok(msg) = ctrl_rx.try_recv() {
@@ -972,6 +927,7 @@ pub(super) fn start_libcamera(
                             ret_tx.clone(),
                             plane_ptrs,
                             shutting_down.clone(),
+                            outstanding_backings_for_thread.clone(),
                         );
                         let meta = FrameMeta::new(wire_format, timestamp);
                         let frame = FrameLease::from_external(meta, layouts, backing);
@@ -1028,10 +984,12 @@ pub(super) fn start_libcamera(
             }
         })();
 
-        // After the capture worker exits, try to stop the shared CameraManager (best-effort).
-        // This releases large PiSP/IPA allocations so idle memory stays low once all cameras
-        // are closed.
-        let _ = styx_libcamera::try_stop_if_idle();
+        // Give any frames still being unwound by downstream consumers a short chance to release
+        // their libcamera request/framebuffer backing before we attempt to stop the shared
+        // CameraManager. Stopping too early can race with request/framebuffer destruction.
+        if wait_for_backings_to_drain(&outstanding_backings_for_thread, Duration::from_secs(2)) {
+            let _ = styx_libcamera::try_stop_if_idle();
+        }
 
         if let Err(e) = res {
             let _ = setup_tx.send(Err(e));
@@ -1091,7 +1049,7 @@ fn queue_with_controls(
     mut req: libcamera::request::Request,
     controls: &HashMap<ControlId, ControlValue>,
     frame_duration: Option<i64>,
-) -> Result<(), ()> {
+) -> Result<(), libcamera::request::Request> {
     {
         let list = req.controls_mut();
         for (id, val) in controls {
@@ -1103,7 +1061,7 @@ fn queue_with_controls(
             let _ = list.set_raw(30, LcValue::from([duration, duration]));
         }
     }
-    cam.queue_request(req).map_err(|_| ())
+    cam.queue_request(req).map_err(|(req, _)| req)
 }
 
 struct LibcameraBacking {
@@ -1111,6 +1069,7 @@ struct LibcameraBacking {
     planes: Vec<(*const u8, usize)>,
     ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
     shutting_down: std::sync::Arc<AtomicBool>,
+    outstanding_backings: Arc<AtomicUsize>,
 }
 
 impl LibcameraBacking {
@@ -1119,12 +1078,15 @@ impl LibcameraBacking {
         ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
         planes: Vec<(*const u8, usize)>,
         shutting_down: std::sync::Arc<AtomicBool>,
+        outstanding_backings: Arc<AtomicUsize>,
     ) -> std::sync::Arc<Self> {
+        outstanding_backings.fetch_add(1, Ordering::AcqRel);
         std::sync::Arc::new(Self {
             req: std::sync::Mutex::new(Some(req)),
             planes,
             ret_tx,
             shutting_down,
+            outstanding_backings,
         })
     }
 }
@@ -1143,11 +1105,13 @@ impl ExternalBacking for LibcameraBacking {
 impl Drop for LibcameraBacking {
     fn drop(&mut self) {
         if self.shutting_down.load(Ordering::Acquire) {
+            self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
             return;
         }
         if let Some(req) = self.req.lock().unwrap().take() {
             let _ = self.ret_tx.send(req);
         }
+        self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

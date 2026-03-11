@@ -19,6 +19,22 @@ use super::v4l2_backend;
 use super::virtual_backend;
 use styx_capture::prelude::*;
 
+#[cfg(target_os = "linux")]
+fn trim_process_allocator() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+
+    // Capture teardown drops libcamera/v4l2 worker state and frame buffers. Ask glibc to release
+    // any fully free arena pages so repeated restart loops do not ratchet process RSS forever.
+    unsafe {
+        let _ = malloc_trim(0);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn trim_process_allocator() {}
+
 /// Control plane handle for applying backend-specific controls.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -155,6 +171,8 @@ impl CaptureHandle {
                 }
             }
         }
+        while let RecvOutcome::Data(_frame) = self.rx.recv() {}
+        trim_process_allocator();
     }
 
     /// Reconfigure capture by stopping this session and starting a new one from a request.

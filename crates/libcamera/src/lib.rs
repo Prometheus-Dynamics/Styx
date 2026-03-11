@@ -160,8 +160,19 @@ unsafe impl Send for SharedManager {}
 unsafe impl Sync for SharedManager {}
 
 #[cfg(feature = "probe")]
+fn ensure_started(shared: &SharedManager) -> Result<(), String> {
+    let _guard = shared.lock.lock().map_err(|e| e.to_string())?;
+    let mgr = unsafe { &mut *shared.manager.get() };
+    if !mgr.is_started() {
+        mgr.start().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "probe")]
 pub fn manager() -> Result<&'static CameraManager, String> {
     if let Some(mgr) = MANAGER.get() {
+        ensure_started(mgr)?;
         return Ok(unsafe { &*mgr.manager.get() });
     }
 
@@ -178,6 +189,9 @@ pub fn manager() -> Result<&'static CameraManager, String> {
             lock: Mutex::new(()),
         })
         .map_err(|_| "failed to set libcamera manager".to_string())?;
+    if let Some(shared) = MANAGER.get() {
+        ensure_started(shared)?;
+    }
     MANAGER
         .get()
         .map(|m| unsafe { &*m.manager.get() })
@@ -207,21 +221,15 @@ pub fn with_manager_mut<R>(f: impl FnOnce(&mut CameraManager) -> R) -> Result<R,
 /// This releases large PiSP/IPA allocations (seen as `/memfd:pisp_*`) so idle memory stays low.
 #[cfg(feature = "probe")]
 pub fn try_stop_if_idle() -> Result<(), String> {
-    // NOTE: On some PiSP/libcamera builds, calling `try_stop()` while any downstream resources are
-    // still unwinding (requests/framebuffers/backings) can crash libcamera with errors like:
-    //   "Removing media device /dev/media* while still in use"
-    // Prefer safety/stability; opt-in to stopping via env for memory-sensitive scenarios.
-    let enabled = std::env::var("STYX_LIBCAMERA_STOP_IF_IDLE")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    if !enabled {
+    let Some(shared) = MANAGER.get() else {
+        return Ok(());
+    };
+    let _guard = shared.lock.lock().map_err(|e| e.to_string())?;
+    let mgr = unsafe { &mut *shared.manager.get() };
+    if !mgr.is_started() {
         return Ok(());
     }
-
-    with_manager_mut(|mgr| {
-        let _ = mgr.try_stop();
-    })
+    mgr.try_stop().map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "probe")]
