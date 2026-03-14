@@ -486,6 +486,14 @@ impl ExternalBacking for FfmpegBacking {
             _ => None,
         }
     }
+
+    fn backing_bytes(&self) -> Option<usize> {
+        Some((0..3).map(|idx| self.frame.data(idx).len()).sum())
+    }
+
+    fn backing_kind(&self) -> &'static str {
+        "ffmpeg_frame"
+    }
 }
 
 /// MJPEG decoder via FFmpeg.

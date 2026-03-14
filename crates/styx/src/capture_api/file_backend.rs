@@ -236,14 +236,15 @@ pub(super) fn start_file(
     #[cfg(feature = "file-backend-video")]
     for (idx, slot) in video_slot_by_path.iter().enumerate() {
         if slot.is_some() {
-            video_frame_max.push(media_infos[idx].frame_count.map(|count| count.saturating_sub(1)));
+            video_frame_max.push(
+                media_infos[idx]
+                    .frame_count
+                    .map(|count| count.saturating_sub(1)),
+            );
         }
     }
 
-    let control_state = Arc::new(Mutex::new(parse_controls(
-        &controls,
-        image_count,
-        {
+    let control_state = Arc::new(Mutex::new(parse_controls(&controls, image_count, {
         #[cfg(feature = "file-backend-video")]
         {
             video_frame_max
@@ -395,6 +396,7 @@ pub(super) fn start_file(
         stop_tx: None,
         worker: Some(worker),
         metrics: StageMetrics::default(),
+        external_backings: Vec::new(),
     })
 }
 

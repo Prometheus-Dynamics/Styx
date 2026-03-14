@@ -149,6 +149,7 @@ pub(super) fn start_netcam(
         stop_tx: None,
         worker: Some(worker),
         metrics: StageMetrics::default(),
+        external_backings: Vec::new(),
     })
 }
 

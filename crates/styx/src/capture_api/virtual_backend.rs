@@ -42,5 +42,6 @@ pub(super) fn start_virtual(
         stop_tx: None,
         worker: Some(WorkerHandle::Thread(worker)),
         metrics: StageMetrics::default(),
+        external_backings: Vec::new(),
     })
 }

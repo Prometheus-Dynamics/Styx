@@ -1,4 +1,4 @@
-use std::{mem, time::Instant};
+use std::{mem, sync::Arc, time::Instant};
 
 #[cfg(feature = "libcamera")]
 use crate::capture_api::libcamera_backend::{ControlMessage, PendingControlState};
@@ -82,6 +82,7 @@ pub struct CaptureHandle {
     pub(crate) stop_tx: Option<std::sync::mpsc::Sender<()>>,
     pub(super) worker: Option<WorkerHandle>,
     pub(crate) metrics: StageMetrics,
+    pub(crate) external_backings: Vec<Arc<crate::metrics::ExternalBackingTracker>>,
 }
 
 /// Worker handle for capture backends.
@@ -219,6 +220,28 @@ impl CaptureHandle {
     /// Capture timing metrics (per-frame wait/receive durations).
     pub fn metrics(&self) -> StageMetrics {
         self.metrics.clone()
+    }
+
+    /// Snapshot capture/decode/transform pool usage visible to this process.
+    pub fn memory_stats(&self) -> crate::metrics::PipelineMemoryStats {
+        crate::metrics::PipelineMemoryStats {
+            capture_queue: Some(crate::metrics::QueueMemoryStats {
+                depth: self.rx.len() as u64,
+                capacity: self.rx.capacity() as u64,
+            }),
+            external_backings: self
+                .external_backings
+                .iter()
+                .map(|tracker| tracker.snapshot())
+                .collect(),
+            transform_pool: styx_core::transform::transform_pool_stats(),
+            #[cfg(feature = "hooks")]
+            image_pool: styx_codec::image_utils::dynamic_image_pool_stats(),
+            #[cfg(feature = "hooks")]
+            packed_pools: styx_codec::decoder::packed_frame_pool_stats(),
+            #[cfg(feature = "hooks")]
+            staging_copy: Some(styx_codec::decoder::staging_copy_stats().into()),
+        }
     }
 
     /// Apply a control to the active backend (best-effort).

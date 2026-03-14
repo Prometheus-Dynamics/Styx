@@ -75,6 +75,16 @@ impl<T> BoundedTx<T> {
     pub fn close(&self) {
         self.inner.closed.store(true, Ordering::Release);
     }
+
+    /// Current queue depth.
+    pub fn len(&self) -> usize {
+        self.inner.queue.len()
+    }
+
+    /// Queue capacity.
+    pub fn capacity(&self) -> usize {
+        self.inner.queue.capacity()
+    }
 }
 
 #[cfg(feature = "async")]
@@ -128,6 +138,16 @@ impl<T> BoundedRx<T> {
     /// Mark the queue as closed; senders will see `Closed` and exit.
     pub fn close(&self) {
         self.inner.closed.store(true, Ordering::Release);
+    }
+
+    /// Current queue depth.
+    pub fn len(&self) -> usize {
+        self.inner.queue.len()
+    }
+
+    /// Queue capacity.
+    pub fn capacity(&self) -> usize {
+        self.inner.queue.capacity()
     }
 }
 

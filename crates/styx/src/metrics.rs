@@ -11,11 +11,100 @@ const DEFAULT_WINDOW: usize = 120;
 
 #[derive(Clone, Debug, Default)]
 pub struct PipelineMemoryStats {
+    pub capture_queue: Option<QueueMemoryStats>,
+    pub external_backings: Vec<ExternalBackingStats>,
     pub transform_pool: Option<styx_core::buffer::BufferPoolStats>,
     #[cfg(feature = "hooks")]
     pub image_pool: Option<styx_core::buffer::BufferPoolStats>,
     #[cfg(feature = "hooks")]
     pub packed_pools: Vec<styx_codec::decoder::PackedFramePoolStats>,
+    #[cfg(feature = "hooks")]
+    pub staging_copy: Option<StagingCopyStats>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct QueueMemoryStats {
+    pub depth: u64,
+    pub capacity: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ExternalBackingStats {
+    pub label: String,
+    pub current_buffers: u64,
+    pub current_bytes: u64,
+    pub peak_buffers: u64,
+    pub peak_bytes: u64,
+}
+
+#[derive(Debug)]
+pub struct ExternalBackingTracker {
+    label: &'static str,
+    current_buffers: AtomicU64,
+    current_bytes: AtomicU64,
+    peak_buffers: AtomicU64,
+    peak_bytes: AtomicU64,
+}
+
+impl ExternalBackingTracker {
+    pub fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            current_buffers: AtomicU64::new(0),
+            current_bytes: AtomicU64::new(0),
+            peak_buffers: AtomicU64::new(0),
+            peak_bytes: AtomicU64::new(0),
+        }
+    }
+
+    pub fn acquire(&self, bytes: usize) {
+        let bytes = bytes as u64;
+        let buffers = self
+            .current_buffers
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let current_bytes = self
+            .current_bytes
+            .fetch_add(bytes, Ordering::Relaxed)
+            .saturating_add(bytes);
+        self.peak_buffers.fetch_max(buffers, Ordering::Relaxed);
+        self.peak_bytes.fetch_max(current_bytes, Ordering::Relaxed);
+    }
+
+    pub fn release(&self, bytes: usize) {
+        let bytes = bytes as u64;
+        self.current_buffers.fetch_sub(1, Ordering::Relaxed);
+        self.current_bytes.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> ExternalBackingStats {
+        ExternalBackingStats {
+            label: self.label.to_string(),
+            current_buffers: self.current_buffers.load(Ordering::Relaxed),
+            current_bytes: self.current_bytes.load(Ordering::Relaxed),
+            peak_buffers: self.peak_buffers.load(Ordering::Relaxed),
+            peak_bytes: self.peak_bytes.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[cfg(feature = "hooks")]
+#[derive(Clone, Debug, Default)]
+pub struct StagingCopyStats {
+    pub copies: u64,
+    pub bytes: u64,
+    pub peak_copy_bytes: u64,
+}
+
+#[cfg(feature = "hooks")]
+impl From<styx_codec::decoder::StagingCopyStats> for StagingCopyStats {
+    fn from(value: styx_codec::decoder::StagingCopyStats) -> Self {
+        Self {
+            copies: value.copies,
+            bytes: value.bytes,
+            peak_copy_bytes: value.peak_copy_bytes,
+        }
+    }
 }
 
 /// Rolling timing metrics for a pipeline stage.

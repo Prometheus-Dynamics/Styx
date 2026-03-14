@@ -528,12 +528,17 @@ impl MediaPipeline {
     }
 
     pub fn memory_stats(&self) -> crate::metrics::PipelineMemoryStats {
+        let capture = self.capture.memory_stats();
         crate::metrics::PipelineMemoryStats {
-            transform_pool: styx_core::transform::transform_pool_stats(),
+            capture_queue: capture.capture_queue,
+            external_backings: capture.external_backings,
+            transform_pool: styx_core::transform::transform_pool_stats().or(capture.transform_pool),
             #[cfg(feature = "hooks")]
             image_pool: styx_codec::image_utils::dynamic_image_pool_stats(),
             #[cfg(feature = "hooks")]
             packed_pools: styx_codec::decoder::packed_frame_pool_stats(),
+            #[cfg(feature = "hooks")]
+            staging_copy: Some(styx_codec::decoder::staging_copy_stats().into()),
         }
     }
 

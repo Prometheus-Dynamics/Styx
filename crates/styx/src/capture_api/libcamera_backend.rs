@@ -20,7 +20,7 @@ use styx_core::prelude::*;
 use crate::capture_api::{
     CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, TdnOutputMode, WorkerHandle,
 };
-use crate::metrics::StageMetrics;
+use crate::metrics::{ExternalBackingTracker, StageMetrics};
 use crate::prelude::{Interval, Mode, ModeId};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
@@ -190,10 +190,7 @@ fn plane_height_for_format(code: FourCc, plane_idx: usize, height: usize) -> usi
     height
 }
 
-fn wait_for_backings_to_drain(
-    outstanding_backings: &AtomicUsize,
-    timeout: Duration,
-) -> bool {
+fn wait_for_backings_to_drain(outstanding_backings: &AtomicUsize, timeout: Duration) -> bool {
     let start = std::time::Instant::now();
     loop {
         if outstanding_backings.load(Ordering::Acquire) == 0 {
@@ -382,10 +379,12 @@ pub(super) fn start_libcamera(
     let pending_controls =
         std::sync::Arc::new(std::sync::Mutex::new(PendingControlState::default()));
     let outstanding_backings = Arc::new(AtomicUsize::new(0));
+    let backing_tracker = Arc::new(ExternalBackingTracker::new("libcamera_dmabuf"));
     let mode_for_thread = mode.clone();
 
     let pending_controls_for_thread = pending_controls.clone();
     let outstanding_backings_for_thread = outstanding_backings.clone();
+    let backing_tracker_for_thread = backing_tracker.clone();
     let worker = thread::spawn(move || {
         let res: Result<Mode, CaptureError> = (|| {
             let shutting_down = std::sync::Arc::new(AtomicBool::new(false));
@@ -660,7 +659,6 @@ pub(super) fn start_libcamera(
                 let _ = ctrl_list
                     .set_raw(30, LcValue::from([duration, duration]))
                     .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
-
             }
             let start_ctrls = if ctrl_list.is_empty() {
                 None
@@ -928,6 +926,7 @@ pub(super) fn start_libcamera(
                             plane_ptrs,
                             shutting_down.clone(),
                             outstanding_backings_for_thread.clone(),
+                            backing_tracker_for_thread.clone(),
                         );
                         let meta = FrameMeta::new(wire_format, timestamp);
                         let frame = FrameLease::from_external(meta, layouts, backing);
@@ -1018,6 +1017,7 @@ pub(super) fn start_libcamera(
         stop_tx: Some(stop_tx),
         worker: Some(WorkerHandle::Thread(worker)),
         metrics: StageMetrics::default(),
+        external_backings: vec![backing_tracker],
     })
 }
 
@@ -1070,6 +1070,8 @@ struct LibcameraBacking {
     ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
     shutting_down: std::sync::Arc<AtomicBool>,
     outstanding_backings: Arc<AtomicUsize>,
+    tracker: Arc<ExternalBackingTracker>,
+    backing_bytes: usize,
 }
 
 impl LibcameraBacking {
@@ -1079,14 +1081,19 @@ impl LibcameraBacking {
         planes: Vec<(*const u8, usize)>,
         shutting_down: std::sync::Arc<AtomicBool>,
         outstanding_backings: Arc<AtomicUsize>,
+        tracker: Arc<ExternalBackingTracker>,
     ) -> std::sync::Arc<Self> {
+        let backing_bytes = planes.iter().map(|(_, len)| *len).sum::<usize>();
         outstanding_backings.fetch_add(1, Ordering::AcqRel);
+        tracker.acquire(backing_bytes);
         std::sync::Arc::new(Self {
             req: std::sync::Mutex::new(Some(req)),
             planes,
             ret_tx,
             shutting_down,
             outstanding_backings,
+            tracker,
+            backing_bytes,
         })
     }
 }
@@ -1100,18 +1107,28 @@ impl ExternalBacking for LibcameraBacking {
             .get(index)
             .map(|(ptr, len)| unsafe { std::slice::from_raw_parts(*ptr, *len) })
     }
+
+    fn backing_bytes(&self) -> Option<usize> {
+        Some(self.backing_bytes)
+    }
+
+    fn backing_kind(&self) -> &'static str {
+        "libcamera_dmabuf"
+    }
 }
 
 impl Drop for LibcameraBacking {
     fn drop(&mut self) {
         if self.shutting_down.load(Ordering::Acquire) {
             self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
+            self.tracker.release(self.backing_bytes);
             return;
         }
         if let Some(req) = self.req.lock().unwrap().take() {
             let _ = self.ret_tx.send(req);
         }
         self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
+        self.tracker.release(self.backing_bytes);
     }
 }
 

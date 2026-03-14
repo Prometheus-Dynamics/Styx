@@ -16,6 +16,8 @@ pub struct Metrics {
     misses: AtomicU64,
     allocations: AtomicU64,
     backpressure: AtomicU64,
+    leases_out: AtomicU64,
+    peak_leases_out: AtomicU64,
 }
 
 impl Metrics {
@@ -39,6 +41,20 @@ impl Metrics {
         self.backpressure.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record a checked-out pooled buffer.
+    pub fn lease_acquired(&self) {
+        let current = self
+            .leases_out
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.peak_leases_out.fetch_max(current, Ordering::Relaxed);
+    }
+
+    /// Record a returned/dropped lease.
+    pub fn lease_released(&self) {
+        self.leases_out.fetch_sub(1, Ordering::Relaxed);
+    }
+
     /// Snapshot of hits.
     pub fn hits(&self) -> u64 {
         self.hits.load(Ordering::Relaxed)
@@ -58,6 +74,16 @@ impl Metrics {
     pub fn backpressure_count(&self) -> u64 {
         self.backpressure.load(Ordering::Relaxed)
     }
+
+    /// Snapshot of currently checked-out buffers.
+    pub fn leases_out(&self) -> u64 {
+        self.leases_out.load(Ordering::Relaxed)
+    }
+
+    /// High-water mark of concurrently checked-out buffers.
+    pub fn peak_leases_out(&self) -> u64 {
+        self.peak_leases_out.load(Ordering::Relaxed)
+    }
 }
 
 impl Clone for Metrics {
@@ -71,6 +97,12 @@ impl Clone for Metrics {
         cloned
             .backpressure
             .store(self.backpressure_count(), Ordering::Relaxed);
+        cloned
+            .leases_out
+            .store(self.leases_out(), Ordering::Relaxed);
+        cloned
+            .peak_leases_out
+            .store(self.peak_leases_out(), Ordering::Relaxed);
         cloned
     }
 }

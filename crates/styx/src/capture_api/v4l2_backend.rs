@@ -186,5 +186,6 @@ pub(super) fn start_v4l2(
         stop_tx: Some(stop_tx),
         worker: Some(WorkerHandle::Thread(worker)),
         metrics: StageMetrics::default(),
+        external_backings: Vec::new(),
     })
 }

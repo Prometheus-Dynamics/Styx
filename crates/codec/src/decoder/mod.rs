@@ -11,6 +11,8 @@ use rayon::prelude::*;
 #[cfg(feature = "image")]
 use std::cell::RefCell;
 #[cfg(feature = "image")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "image")]
 use styx_core::prelude::{
     BufferPool, BufferPoolStats, ColorSpace, FourCc, FrameLease, FrameMeta, MediaFormat, Resolution,
 };
@@ -118,6 +120,38 @@ pub fn packed_frame_pool_stats() -> Vec<PackedFramePoolStats> {
             })
             .collect()
     })
+}
+
+#[cfg(feature = "image")]
+#[derive(Clone, Debug, Default)]
+pub struct StagingCopyStats {
+    pub copies: u64,
+    pub bytes: u64,
+    pub peak_copy_bytes: u64,
+}
+
+#[cfg(feature = "image")]
+static STAGING_COPY_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "image")]
+static STAGING_COPY_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "image")]
+static STAGING_COPY_PEAK_BYTES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "image")]
+fn record_staging_copy(bytes: usize) {
+    let bytes = bytes as u64;
+    STAGING_COPY_COUNT.fetch_add(1, Ordering::Relaxed);
+    STAGING_COPY_BYTES.fetch_add(bytes, Ordering::Relaxed);
+    STAGING_COPY_PEAK_BYTES.fetch_max(bytes, Ordering::Relaxed);
+}
+
+#[cfg(feature = "image")]
+pub fn staging_copy_stats() -> StagingCopyStats {
+    StagingCopyStats {
+        copies: STAGING_COPY_COUNT.load(Ordering::Relaxed),
+        bytes: STAGING_COPY_BYTES.load(Ordering::Relaxed),
+        peak_copy_bytes: STAGING_COPY_PEAK_BYTES.load(Ordering::Relaxed),
+    }
 }
 
 /// Convert an owned `FrameLease` into a `DynamicImage`.
@@ -538,6 +572,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             plane_data.len() >= required_src && required_src >= STAGE_THRESHOLD_BYTES;
 
         if use_contiguous_stage {
+            record_staging_copy(required_src);
             let mut staged = vec![0u8; required_src];
             staged.copy_from_slice(&plane_data[..required_src]);
             return copy_strided_packed(&staged, src_stride, dst_stride, height);

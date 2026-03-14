@@ -12,6 +12,16 @@ use crate::{format::MediaFormat, metrics::Metrics};
 pub trait ExternalBacking: Send + Sync {
     /// Borrow a plane by index; lifetime must be tied to `self`.
     fn plane_data(&self, index: usize) -> Option<&[u8]>;
+
+    /// Total externally-backed bytes exposed by this frame, when known.
+    fn backing_bytes(&self) -> Option<usize> {
+        None
+    }
+
+    /// Human-readable backing kind for diagnostics.
+    fn backing_kind(&self) -> &'static str {
+        "external"
+    }
 }
 
 /// Metadata associated with a frame.
@@ -123,6 +133,7 @@ impl BufferLease {
 
 impl Drop for BufferLease {
     fn drop(&mut self) {
+        self.pool.metrics.lease_released();
         if let Some(buf) = self.buf.take() {
             self.pool.recycle(buf);
         }
@@ -148,7 +159,14 @@ pub struct BufferPool {
 pub struct BufferPoolStats {
     pub chunk_size: usize,
     pub free: usize,
+    pub free_bytes: usize,
     pub max_free: usize,
+    pub retained: usize,
+    pub retained_bytes: usize,
+    pub in_use: usize,
+    pub in_use_bytes: usize,
+    pub peak_in_use: usize,
+    pub peak_in_use_bytes: usize,
     pub hits: u64,
     pub misses: u64,
     pub allocations: u64,
@@ -166,13 +184,15 @@ impl BufferPool {
         for _ in 0..capacity {
             free.push(vec![0; chunk_size]);
         }
+        let metrics = Arc::new(Metrics::default());
         Self {
             inner: Arc::new(PoolInner {
                 free: Mutex::new(free),
                 chunk_size,
                 max_free,
+                metrics: metrics.clone(),
             }),
-            metrics: Arc::new(Metrics::default()),
+            metrics,
         }
     }
 
@@ -192,6 +212,7 @@ impl BufferPool {
                 self.metrics.alloc();
                 vec![0; self.inner.chunk_size]
             });
+        self.metrics.lease_acquired();
         BufferLease {
             pool: self.inner.clone(),
             buf: Some(buf),
@@ -205,10 +226,23 @@ impl BufferPool {
 
     pub fn stats(&self) -> BufferPoolStats {
         let free = self.inner.free.lock().map(|list| list.len()).unwrap_or(0);
+        let free_bytes = free.saturating_mul(self.inner.chunk_size);
+        let in_use = self.metrics.leases_out() as usize;
+        let in_use_bytes = in_use.saturating_mul(self.inner.chunk_size);
+        let retained = free.saturating_add(in_use);
+        let retained_bytes = retained.saturating_mul(self.inner.chunk_size);
+        let peak_in_use = self.metrics.peak_leases_out() as usize;
         BufferPoolStats {
             chunk_size: self.inner.chunk_size,
             free,
+            free_bytes,
             max_free: self.inner.max_free,
+            retained,
+            retained_bytes,
+            in_use,
+            in_use_bytes,
+            peak_in_use,
+            peak_in_use_bytes: peak_in_use.saturating_mul(self.inner.chunk_size),
             hits: self.metrics.hits(),
             misses: self.metrics.misses(),
             allocations: self.metrics.allocations(),
@@ -220,6 +254,7 @@ struct PoolInner {
     free: Mutex<Vec<Vec<u8>>>,
     chunk_size: usize,
     max_free: usize,
+    metrics: Arc<Metrics>,
 }
 
 impl PoolInner {
@@ -432,6 +467,25 @@ impl FrameLease {
     /// must copy.
     pub fn is_external(&self) -> bool {
         self.external.is_some()
+    }
+
+    /// Total logical bytes described by this frame's plane layouts.
+    pub fn payload_bytes(&self) -> usize {
+        self.layouts.iter().map(|layout| layout.len).sum()
+    }
+
+    /// External backing bytes when the backing can report them; falls back to logical payload size.
+    pub fn external_backing_bytes(&self) -> Option<usize> {
+        self.external.as_ref().map(|backing| {
+            backing
+                .backing_bytes()
+                .unwrap_or_else(|| self.payload_bytes())
+        })
+    }
+
+    /// External backing kind when present.
+    pub fn external_backing_kind(&self) -> Option<&'static str> {
+        self.external.as_ref().map(|backing| backing.backing_kind())
     }
 
     /// Iterate planes as borrowed slices (zero-copy).
