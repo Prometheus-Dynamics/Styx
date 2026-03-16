@@ -264,7 +264,7 @@ impl CaptureHandle {
             ControlPlane::Libcamera { tx, pending } => {
                 {
                     let mut guard = pending.lock().map_err(|_| {
-                        CaptureError::ControlApply("libcamera pending lock poisoned".into())
+                        CaptureError::control_apply("libcamera pending lock poisoned")
                     })?;
                     if matches!(_value, ControlValue::None) {
                         guard.insert(_id, None);
@@ -273,7 +273,7 @@ impl CaptureHandle {
                     }
                 }
                 tx.send(ControlMessage::Wake)
-                    .map_err(|_| CaptureError::ControlApply("libcamera channel closed".into()))
+                    .map_err(|_| CaptureError::control_apply("libcamera channel closed"))
             }
             #[cfg(feature = "file-backend")]
             ControlPlane::File { state } => file_backend::apply_file_control(state, _id, _value),
@@ -299,10 +299,10 @@ impl CaptureHandle {
             ControlPlane::Libcamera { tx, .. } => {
                 let (resp_tx, resp_rx) = std::sync::mpsc::channel();
                 tx.send(ControlMessage::Get(_id, resp_tx))
-                    .map_err(|_| CaptureError::ControlApply("libcamera channel closed".into()))?;
+                    .map_err(|_| CaptureError::control_apply("libcamera channel closed"))?;
                 resp_rx
                     .recv()
-                    .map_err(|_| CaptureError::ControlApply("libcamera response closed".into()))?
+                    .map_err(|_| CaptureError::control_apply("libcamera response closed"))?
             }
             #[cfg(feature = "file-backend")]
             ControlPlane::File { state } => file_backend::read_file_control(state, _id),

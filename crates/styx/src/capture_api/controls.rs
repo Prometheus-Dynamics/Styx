@@ -18,7 +18,7 @@ pub(crate) fn apply_v4l2_controls(
         let v = to_v4l_value(value)?;
         let ctrl = Control { id: id.0, value: v };
         dev.set_control(ctrl)
-            .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
+            .map_err(|e| CaptureError::control_apply(e.to_string()))?;
     }
     Ok(())
 }
@@ -41,7 +41,7 @@ pub(crate) fn read_v4l2_control(path: &str, id: ControlId) -> Result<ControlValu
     let dev = v4l::Device::with_path(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
     let ctrl = dev
         .control(id.0)
-        .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
+        .map_err(|e| CaptureError::control_apply(e.to_string()))?;
     match ctrl.value {
         v4l::control::Value::Integer(v) => Ok(ControlValue::Int(v as i32)),
         v4l::control::Value::Boolean(v) => Ok(ControlValue::Bool(v)),

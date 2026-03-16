@@ -715,7 +715,7 @@ pub(crate) fn apply_file_control(
 ) -> Result<(), CaptureError> {
     let mut guard = state
         .lock()
-        .map_err(|_| CaptureError::ControlApply("file control lock poisoned".into()))?;
+        .map_err(|_| CaptureError::control_apply("file control lock poisoned"))?;
     apply_control_to_state(&mut guard, id, value)
 }
 
@@ -725,7 +725,7 @@ pub(crate) fn read_file_control(
 ) -> Result<ControlValue, CaptureError> {
     let guard = state
         .lock()
-        .map_err(|_| CaptureError::ControlApply("file control lock poisoned".into()))?;
+        .map_err(|_| CaptureError::control_apply("file control lock poisoned"))?;
 
     if let Some(index) = decode_indexed_control_id(id, CTRL_FILE_VIDEO_PLAYBACK_SPEED_BASE) {
         return guard

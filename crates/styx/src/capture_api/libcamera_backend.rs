@@ -4,6 +4,7 @@ use std::fs;
 #[cfg(feature = "v4l2")]
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -18,7 +19,8 @@ use styx_codec::prelude::{Nv12ToBgrDecoder, Nv12ToRgbDecoder, YuyvToRgbDecoder};
 use styx_core::prelude::*;
 
 use crate::capture_api::{
-    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, TdnOutputMode, WorkerHandle,
+    CaptureDescriptor, CaptureError, CaptureHandle, ControlApplyKind, ControlPlane, TdnOutputMode,
+    WorkerHandle,
 };
 use crate::metrics::{ExternalBackingTracker, StageMetrics};
 use crate::prelude::{Interval, Mode, ModeId};
@@ -27,6 +29,16 @@ use crate::{BackendHandle, BackendKind, ProbedBackend};
 #[cfg(feature = "v4l2")]
 const V4L2_CID_VBLANK: u32 = 0x009e0901;
 const LIBCAMERA_FRAME_DURATION_LIMITS: ControlId = ControlId(30);
+
+fn stop_when_idle_enabled() -> bool {
+    std::env::var("STYX_LIBCAMERA_STOP_WHEN_IDLE")
+        .ok()
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
+        })
+        .unwrap_or(false)
+}
 
 fn control_value_enabled(value: &ControlValue) -> bool {
     match value {
@@ -38,6 +50,23 @@ fn control_value_enabled(value: &ControlValue) -> bool {
     }
 }
 
+fn processed_stream_role_override() -> Option<libcamera::stream::StreamRole> {
+    let value = std::env::var("STYX_LIBCAMERA_PROCESSED_STREAM_ROLE")
+        .ok()?
+        .trim()
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "viewfinder" | "view-finder" | "vf" => Some(libcamera::stream::StreamRole::ViewFinder),
+        "video" | "recording" | "video-recording" | "video_recording" => {
+            Some(libcamera::stream::StreamRole::VideoRecording)
+        }
+        "still" | "still-capture" | "still_capture" => {
+            Some(libcamera::stream::StreamRole::StillCapture)
+        }
+        _ => None,
+    }
+}
+
 fn supports_frame_duration_limits(descriptor: &CaptureDescriptor) -> bool {
     descriptor
         .controls
@@ -45,13 +74,41 @@ fn supports_frame_duration_limits(descriptor: &CaptureDescriptor) -> bool {
         .any(|meta| meta.id == LIBCAMERA_FRAME_DURATION_LIMITS)
 }
 
-fn is_control_apply_error(message: &str) -> bool {
+fn classify_libcamera_control_apply_kind(message: &str) -> ControlApplyKind {
     let msg = message.to_ascii_lowercase();
-    msg.contains("set controls")
+    if msg.contains("permission denied") {
+        ControlApplyKind::PermissionDenied
+    } else if msg.contains("invalid argument") {
+        ControlApplyKind::InvalidArgument
+    } else if msg.contains("set controls")
         || msg.contains("unable to set controls")
         || msg.contains("failed to set controls")
-        || msg.contains("permission denied")
-        || msg.contains("invalid argument")
+    {
+        ControlApplyKind::SetControlsRejected
+    } else {
+        ControlApplyKind::Other
+    }
+}
+
+fn classify_libcamera_control_apply_message(message: impl Into<String>) -> CaptureError {
+    let message = message.into();
+    let kind = classify_libcamera_control_apply_kind(&message);
+    CaptureError::classified_control_apply(kind, message)
+}
+
+fn classify_libcamera_backend_message(message: impl Into<String>) -> CaptureError {
+    let message = message.into();
+    let msg = message.to_ascii_lowercase();
+    if msg.contains("device or resource busy")
+        || msg.contains("camera in running state")
+        || msg.contains("resource busy")
+    {
+        CaptureError::LibcameraBusy(message)
+    } else if msg.contains("tdn output not enabled") || msg.contains("tdn enabled") {
+        CaptureError::LibcameraTdnConfigurationMismatch(message)
+    } else {
+        CaptureError::Backend(message)
+    }
 }
 
 fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
@@ -94,7 +151,7 @@ fn stream_role_for_request(code: FourCc) -> libcamera::stream::StreamRole {
         | b"BA12" | b"BG12" | b"GB12" | b"RG12" | b"BYR2" | b"R16 " | b"GREY" | b"Y10P"
         | b"Y12P" | b"Y14P" | b"Y16 " => libcamera::stream::StreamRole::Raw,
         // ISP-processed formats (NV12/RGB/etc) typically come from ViewFinder on PiSP.
-        _ => libcamera::stream::StreamRole::ViewFinder,
+        _ => processed_stream_role_override().unwrap_or(libcamera::stream::StreamRole::ViewFinder),
     }
 }
 
@@ -224,6 +281,120 @@ fn infer_stride(bytes_used: usize, plane_len: usize, plane_height: usize) -> usi
     stride
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct BackingPlaneView {
+    fd: i32,
+    offset: usize,
+    len: usize,
+}
+
+struct MappedPlaneRange {
+    ptr: *mut core::ffi::c_void,
+    len: usize,
+    map_offset: usize,
+}
+
+struct LazyMappedBackingState {
+    mmaps: HashMap<i32, MappedPlaneRange>,
+    mapped_bytes: usize,
+}
+
+impl Drop for LazyMappedBackingState {
+    fn drop(&mut self) {
+        for (_fd, range) in self.mmaps.drain() {
+            unsafe {
+                libc::munmap(range.ptr, range.len);
+            }
+        }
+    }
+}
+
+fn unique_backing_plane_bytes(planes: &[BackingPlaneView]) -> usize {
+    let mut seen = HashSet::new();
+    planes
+        .iter()
+        .filter(|plane| seen.insert((plane.fd, plane.offset, plane.len)))
+        .map(|plane| plane.len)
+        .sum()
+}
+
+fn map_backing_planes(planes: &[BackingPlaneView]) -> Option<LazyMappedBackingState> {
+    struct MapInfo {
+        start: usize,
+        end: usize,
+        total_len: usize,
+    }
+
+    let page_size = {
+        let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if ps > 0 { ps as usize } else { 4096 }
+    };
+
+    let mut map_info: HashMap<i32, MapInfo> = HashMap::new();
+    for plane in planes {
+        let end = plane.offset.checked_add(plane.len)?;
+        let info = map_info.entry(plane.fd).or_insert_with(|| {
+            let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+            let ret = unsafe { libc::fstat(plane.fd, st.as_mut_ptr()) };
+            let total_len = if ret != 0 {
+                0
+            } else {
+                let st = unsafe { st.assume_init() };
+                st.st_size as usize
+            };
+            MapInfo {
+                start: plane.offset,
+                end,
+                total_len,
+            }
+        });
+
+        if info.total_len > 0 && end > info.total_len {
+            return None;
+        }
+
+        let aligned_start = plane.offset - (plane.offset % page_size);
+        info.start = info.start.min(aligned_start);
+        info.end = info.end.max(end);
+    }
+
+    let mut mapped_bytes = 0usize;
+    let mut mmaps = HashMap::new();
+    for (fd, info) in map_info {
+        let map_len = info.end.saturating_sub(info.start);
+        if map_len == 0 {
+            continue;
+        }
+        let addr = unsafe {
+            libc::mmap64(
+                core::ptr::null_mut(),
+                map_len,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                fd,
+                info.start as _,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            return None;
+        }
+        mapped_bytes = mapped_bytes.saturating_add(map_len);
+        mmaps.insert(
+            fd,
+            MappedPlaneRange {
+                ptr: addr,
+                len: map_len,
+                map_offset: info.start,
+            },
+        );
+    }
+
+    Some(LazyMappedBackingState {
+        mmaps,
+        mapped_bytes,
+    })
+}
+
 #[cfg(feature = "v4l2")]
 fn find_sensor_subdev_for_libcamera_id(id: &str) -> Option<String> {
     fn sensor_name_from_id(id: &str) -> Option<&str> {
@@ -310,7 +481,6 @@ pub(super) fn start_libcamera(
     tdn_output_mode: TdnOutputMode,
 ) -> Result<CaptureHandle, CaptureError> {
     use libcamera::camera::CameraConfigurationStatus;
-    use libcamera::framebuffer_map::MemoryMappedFrameBuffer;
     use libcamera::geometry::Size;
     use std::sync::mpsc;
     use std::sync::mpsc::RecvTimeoutError;
@@ -379,30 +549,50 @@ pub(super) fn start_libcamera(
     let pending_controls =
         std::sync::Arc::new(std::sync::Mutex::new(PendingControlState::default()));
     let outstanding_backings = Arc::new(AtomicUsize::new(0));
-    let backing_tracker = Arc::new(ExternalBackingTracker::new("libcamera_dmabuf"));
+    let lease_backing_tracker = Arc::new(ExternalBackingTracker::new("libcamera_dmabuf_lease"));
+    let request_pool_tracker =
+        Arc::new(ExternalBackingTracker::new("libcamera_dmabuf_request_pool"));
+    let tdn_request_pool_tracker = Arc::new(ExternalBackingTracker::new(
+        "libcamera_dmabuf_tdn_request_pool",
+    ));
     let mode_for_thread = mode.clone();
 
     let pending_controls_for_thread = pending_controls.clone();
     let outstanding_backings_for_thread = outstanding_backings.clone();
-    let backing_tracker_for_thread = backing_tracker.clone();
+    let lease_backing_tracker_for_thread = lease_backing_tracker.clone();
     let worker = thread::spawn(move || {
         let res: Result<Mode, CaptureError> = (|| {
             let shutting_down = std::sync::Arc::new(AtomicBool::new(false));
             let _shutdown_guard = ShutdownGuard(shutting_down.clone());
-            let mgr = styx_libcamera::manager().map_err(|e| CaptureError::Backend(e))?;
-            let cameras = mgr.cameras();
-            let cam = (0..cameras.len()).find_map(|idx| {
-                let cam = cameras.get(idx)?;
-                if cam.id() == id_for_thread {
-                    Some(cam)
-                } else {
-                    None
+            let mgr = styx_libcamera::manager().map_err(classify_libcamera_backend_message)?;
+            let camera_lookup_started = Instant::now();
+            let mut last_seen_camera_ids: Vec<String> = Vec::new();
+            let mut cam = loop {
+                let cameras = mgr.cameras();
+                last_seen_camera_ids = (0..cameras.len())
+                    .filter_map(|idx| cameras.get(idx).map(|cam| cam.id().to_string()))
+                    .collect();
+                let cam = (0..cameras.len()).find_map(|idx| {
+                    let cam = cameras.get(idx)?;
+                    if cam.id() == id_for_thread {
+                        Some(cam)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(cam) = cam {
+                    break cam;
                 }
-            });
-            let mut cam = cam
-                .ok_or_else(|| CaptureError::Backend("camera not found".into()))?
-                .acquire()
-                .map_err(|e| CaptureError::Backend(e.to_string()))?;
+                if camera_lookup_started.elapsed() >= Duration::from_secs(3) {
+                    return Err(CaptureError::LibcameraCameraNotFound {
+                        requested: id_for_thread.clone(),
+                        seen: last_seen_camera_ids.clone(),
+                    });
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            .acquire()
+            .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
 
             let role = stream_role_for_request(mode_for_thread.format.code);
             let enable_tdn_output = enable_tdn_output_for_thread;
@@ -412,11 +602,9 @@ pub(super) fn start_libcamera(
             }
             let mut cfgs = cam
                 .generate_configuration(&roles)
-                .ok_or_else(|| CaptureError::Backend("generate_configuration failed".into()))?;
+                .ok_or(CaptureError::LibcameraGenerateConfigurationFailed)?;
             if enable_tdn_output && cfgs.get(1).is_none() {
-                return Err(CaptureError::Backend(
-                    "tdn output stream unavailable".into(),
-                ));
+                return Err(CaptureError::LibcameraTdnOutputUnavailable);
             }
             let requested_code = mode_for_thread.format.code;
             if is_rpi_pisp_sensor_i2c(&id_for_thread) && pisp_disallowed_fourcc(requested_code) {
@@ -434,7 +622,9 @@ pub(super) fn start_libcamera(
             // configs that request RGB24/BGR24. To keep the API true to the requested format, we
             // capture YUV (NV12 preferred) and convert to the requested RGB/BGR in software.
             {
-                let depth_u32 = u32::try_from(queue_depth).unwrap_or(4).clamp(4, 12);
+                // Default queue depth is still 4, but low-memory profiles can deliberately run
+                // with a single in-flight buffer to reduce libcamera/TDN pool residency.
+                let depth_u32 = u32::try_from(queue_depth).unwrap_or(4).clamp(1, 12);
                 let mut cfg = cfgs
                     .get_mut(0)
                     .ok_or_else(|| CaptureError::Backend("missing stream config".into()))?;
@@ -494,7 +684,7 @@ pub(super) fn start_libcamera(
                 }
             }
             cam.configure(&mut cfgs)
-                .map_err(|e| CaptureError::Backend(e.to_string()))?;
+                .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
 
             if let Some(interval) = interval_for_thread {
                 let num = interval.numerator.get() as f64;
@@ -576,68 +766,49 @@ pub(super) fn start_libcamera(
             let mut alloc = libcamera::framebuffer_allocator::FrameBufferAllocator::new(&cam);
             let bufs = alloc
                 .alloc(&stream)
-                .map_err(|e| CaptureError::Backend(e.to_string()))?;
+                .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
             let tdn_bufs = if let Some(tdn_stream) = &tdn_stream {
                 Some(
                     alloc
                         .alloc(tdn_stream)
-                        .map_err(|e| CaptureError::Backend(e.to_string()))?,
+                        .map_err(|e| classify_libcamera_backend_message(e.to_string()))?,
                 )
             } else {
                 None
             };
-            let mapped = bufs
-                .into_iter()
-                .map(|buf| {
-                    MemoryMappedFrameBuffer::new(buf)
-                        .map_err(|e| CaptureError::Backend(e.to_string()))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let mapped_tdn = if let Some(tdn_bufs) = tdn_bufs {
-                Some(
-                    tdn_bufs
-                        .into_iter()
-                        .map(|buf| {
-                            MemoryMappedFrameBuffer::new(buf)
-                                .map_err(|e| CaptureError::Backend(e.to_string()))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                )
-            } else {
-                None
-            };
+            let primary_buffers: Vec<FrameBuffer> = bufs.into_iter().collect();
+            let tdn_buffers: Option<Vec<FrameBuffer>> =
+                tdn_bufs.map(|bufs| bufs.into_iter().collect());
 
             let mut requests = Vec::new();
             if let Some(tdn_stream) = &tdn_stream {
-                let Some(mapped_tdn) = mapped_tdn else {
-                    return Err(CaptureError::Backend(
-                        "tdn output buffers unavailable".into(),
-                    ));
+                let Some(tdn_buffers) = tdn_buffers else {
+                    return Err(CaptureError::LibcameraTdnOutputUnavailable);
                 };
-                if mapped_tdn.is_empty() {
-                    return Err(CaptureError::Backend(
-                        "tdn output buffers unavailable".into(),
-                    ));
+                if tdn_buffers.is_empty() {
+                    return Err(CaptureError::LibcameraTdnOutputUnavailable);
                 }
-                for ((i, buf), tdn_buf) in
-                    mapped.into_iter().enumerate().zip(mapped_tdn.into_iter())
+                for ((i, buf), tdn_buf) in primary_buffers
+                    .into_iter()
+                    .enumerate()
+                    .zip(tdn_buffers.into_iter())
                 {
                     let mut req = cam
                         .create_request(Some(i as u64))
                         .ok_or_else(|| CaptureError::Backend("request create failed".into()))?;
                     req.add_buffer(&stream, buf)
-                        .map_err(|e| CaptureError::Backend(e.to_string()))?;
+                        .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
                     req.add_buffer(tdn_stream, tdn_buf)
-                        .map_err(|e| CaptureError::Backend(e.to_string()))?;
+                        .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
                     requests.push(req);
                 }
             } else {
-                for (i, buf) in mapped.into_iter().enumerate() {
+                for (i, buf) in primary_buffers.into_iter().enumerate() {
                     let mut req = cam
                         .create_request(Some(i as u64))
                         .ok_or_else(|| CaptureError::Backend("request create failed".into()))?;
                     req.add_buffer(&stream, buf)
-                        .map_err(|e| CaptureError::Backend(e.to_string()))?;
+                        .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
                     requests.push(req);
                 }
             }
@@ -658,7 +829,7 @@ pub(super) fn start_libcamera(
                 // Control id 30 is FrameDurationLimits in libcamera.
                 let _ = ctrl_list
                     .set_raw(30, LcValue::from([duration, duration]))
-                    .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
+                    .map_err(|e| classify_libcamera_control_apply_message(e.to_string()))?;
             }
             let start_ctrls = if ctrl_list.is_empty() {
                 None
@@ -676,19 +847,21 @@ pub(super) fn start_libcamera(
             let (ret_tx, ret_rx) = mpsc::channel::<Request>();
             if let Err(err) = cam.start(start_ctrls.as_ref().map(|c| &**c)) {
                 let msg = err.to_string();
-                if start_ctrls.is_some() && is_control_apply_error(&msg) {
+                if start_ctrls.is_some()
+                    && classify_libcamera_control_apply_kind(&msg) != ControlApplyKind::Other
+                {
                     controls_enabled = false;
                     control_state.clear();
                     frame_duration = None;
                     cam.start(None)
-                        .map_err(|e| CaptureError::Backend(e.to_string()))?;
+                        .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
                 } else {
-                    return Err(CaptureError::Backend(msg));
+                    return Err(classify_libcamera_backend_message(msg));
                 }
             }
             for req in requests {
                 cam.queue_request(req)
-                    .map_err(|(_, e)| CaptureError::Backend(e.to_string()))?;
+                    .map_err(|(_, e)| classify_libcamera_backend_message(e.to_string()))?;
             }
 
             let _ = setup_tx.send(Ok(validated_mode.clone()));
@@ -805,128 +978,162 @@ pub(super) fn start_libcamera(
                             readback_state.insert(ControlId(id), val);
                         }
 
-                        let (framebuffer, active_stride): (
-                            &MemoryMappedFrameBuffer<FrameBuffer>,
-                            usize,
-                        ) = if let Some(tdn_stream) = &tdn_stream {
-                            match req.buffer(tdn_stream) {
-                                Some(fb) => (fb, tdn_stride.unwrap_or(cfg_stride)),
-                                None => match req.buffer(&stream) {
+                        let (framebuffer, active_stride): (&FrameBuffer, usize) =
+                            if let Some(tdn_stream) = &tdn_stream {
+                                match req.buffer(tdn_stream) {
+                                    Some(fb) => (fb, tdn_stride.unwrap_or(cfg_stride)),
+                                    None => match req.buffer(&stream) {
+                                        Some(fb) => (fb, cfg_stride),
+                                        None => break,
+                                    },
+                                }
+                            } else {
+                                match req.buffer(&stream) {
                                     Some(fb) => (fb, cfg_stride),
                                     None => break,
-                                },
-                            }
-                        } else {
-                            match req.buffer(&stream) {
-                                Some(fb) => (fb, cfg_stride),
-                                None => break,
-                            }
-                        };
-                        let meta = match framebuffer.metadata() {
-                            Some(m) => m,
-                            None => break,
-                        };
-                        let timestamp = meta.timestamp();
-                        let planes_meta = meta.planes();
-                        let plane_slices = framebuffer.data();
-                        let height = wire_format.resolution.height.get() as usize;
-                        let mut layouts = smallvec::SmallVec::<[PlaneLayout; 3]>::new();
-                        let mut plane_ptrs: Vec<(*const u8, usize)> = Vec::new();
-
-                        // PiSP/libcamera streams often expose NV12/NV21 as a single contiguous plane
-                        // (or a second empty plane). Split it into 2 logical planes so downstream
-                        // NV12 decoders can operate.
-                        let code = wire_format.code;
-                        let is_nv12 =
-                            code == FourCc::new(*b"NV12") || code == FourCc::new(*b"NV21");
-                        if is_nv12 && !plane_slices.is_empty() {
-                            let slice = plane_slices[0];
-                            let slice_len = slice.len();
-                            let total_len = planes_meta
-                                .get(0)
-                                .map(|m| m.bytes_used as usize)
-                                .filter(|n| *n > 0)
-                                .map(|n| n.min(slice_len))
-                                .unwrap_or(slice_len);
-
-                            let width = wire_format.resolution.width.get() as usize;
-                            let y_height = height;
-                            let uv_height = height / 2;
-                            let denom = y_height.saturating_add(uv_height).max(1);
-
-                            // Prefer libcamera-provided stride when present; otherwise infer stride
-                            // from the total plane length for NV12 (Y + UV).
-                            let inferred = total_len / denom;
-                            let stride = if active_stride > 0 {
-                                active_stride
-                            } else {
-                                inferred.max(width).max(1)
+                                }
                             };
+                        let (timestamp, layouts, plane_views) = {
+                            let meta = match framebuffer.metadata() {
+                                Some(m) => m,
+                                None => break,
+                            };
+                            let timestamp = meta.timestamp();
+                            let planes_meta = meta.planes();
+                            let framebuffer_planes = framebuffer.planes();
+                            let height = wire_format.resolution.height.get() as usize;
+                            let mut layouts = smallvec::SmallVec::<[PlaneLayout; 3]>::new();
+                            let mut plane_views: Vec<BackingPlaneView> = Vec::new();
 
-                            let y_len = stride.saturating_mul(y_height);
-                            let uv_len = stride.saturating_mul(uv_height);
-                            if y_len.saturating_add(uv_len) <= total_len && uv_height > 0 {
-                                layouts.push(PlaneLayout {
-                                    offset: 0,
-                                    len: y_len,
-                                    stride,
-                                });
-                                layouts.push(PlaneLayout {
-                                    offset: y_len,
-                                    len: uv_len,
-                                    stride,
-                                });
-                                plane_ptrs.push((slice.as_ptr(), total_len));
-                                plane_ptrs.push((slice.as_ptr(), total_len));
-                            }
-                        }
+                            // PiSP/libcamera streams often expose NV12/NV21 as a single contiguous plane
+                            // (or a second empty plane). Split it into 2 logical planes so downstream
+                            // NV12 decoders can operate.
+                            let code = wire_format.code;
+                            let is_nv12 =
+                                code == FourCc::new(*b"NV12") || code == FourCc::new(*b"NV21");
+                            if is_nv12 && !framebuffer_planes.is_empty() {
+                                let first_plane = framebuffer_planes.get(0);
+                                let Some(first_plane) = first_plane else {
+                                    break;
+                                };
+                                let Some(first_offset) = first_plane.offset() else {
+                                    break;
+                                };
+                                let slice_len = first_plane.len();
+                                let total_len = planes_meta
+                                    .get(0)
+                                    .map(|m| m.bytes_used as usize)
+                                    .filter(|n| *n > 0)
+                                    .map(|n| n.min(slice_len))
+                                    .unwrap_or(slice_len);
 
-                        // Default: treat libcamera planes as-is.
-                        if layouts.is_empty() {
-                            layouts = planes_meta
-                                .into_iter()
-                                .enumerate()
-                                .map(|(idx, plane_meta)| {
-                                    let slice_len =
-                                        plane_slices.get(idx).map(|s| s.len()).unwrap_or_default();
-                                    let mut len = plane_meta.bytes_used as usize;
-                                    if len == 0 {
-                                        len = slice_len;
-                                    } else {
-                                        len = len.min(slice_len);
-                                    }
-                                    let plane_height = plane_height_for_format(code, idx, height);
-                                    let stride = if idx == 0 && active_stride > 0 {
-                                        // Some libcamera backends only report a single stride; keep it
-                                        // for the first plane but clamp to the mapped slice.
-                                        if plane_height == 0 {
-                                            active_stride
-                                        } else {
-                                            let max_stride = slice_len / plane_height;
-                                            active_stride.min(max_stride.max(1))
-                                        }
-                                    } else {
-                                        infer_stride(len, slice_len, plane_height)
-                                    };
-                                    PlaneLayout {
+                                let width = wire_format.resolution.width.get() as usize;
+                                let y_height = height;
+                                let uv_height = height / 2;
+                                let denom = y_height.saturating_add(uv_height).max(1);
+
+                                // Prefer libcamera-provided stride when present; otherwise infer stride
+                                // from the total plane length for NV12 (Y + UV).
+                                let inferred = total_len / denom;
+                                let stride = if active_stride > 0 {
+                                    active_stride
+                                } else {
+                                    inferred.max(width).max(1)
+                                };
+
+                                let y_len = stride.saturating_mul(y_height);
+                                let uv_len = stride.saturating_mul(uv_height);
+                                if y_len.saturating_add(uv_len) <= total_len && uv_height > 0 {
+                                    layouts.push(PlaneLayout {
                                         offset: 0,
-                                        len,
+                                        len: y_len,
                                         stride,
-                                    }
-                                })
-                                .collect::<smallvec::SmallVec<[_; 3]>>();
-
-                            for data in &plane_slices {
-                                plane_ptrs.push((data.as_ptr(), data.len()));
+                                    });
+                                    layouts.push(PlaneLayout {
+                                        offset: y_len,
+                                        len: uv_len,
+                                        stride,
+                                    });
+                                    plane_views.push(BackingPlaneView {
+                                        fd: first_plane.fd(),
+                                        offset: first_offset,
+                                        len: total_len,
+                                    });
+                                    plane_views.push(BackingPlaneView {
+                                        fd: first_plane.fd(),
+                                        offset: first_offset,
+                                        len: total_len,
+                                    });
+                                }
                             }
+
+                            // Default: treat libcamera planes as-is.
+                            if layouts.is_empty() {
+                                layouts = planes_meta
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(idx, plane_meta)| {
+                                        let slice_len = framebuffer_planes
+                                            .get(idx)
+                                            .map(|plane| plane.len())
+                                            .unwrap_or_default();
+                                        let mut len = plane_meta.bytes_used as usize;
+                                        if len == 0 {
+                                            len = slice_len;
+                                        } else {
+                                            len = len.min(slice_len);
+                                        }
+                                        let plane_height =
+                                            plane_height_for_format(code, idx, height);
+                                        let stride = if idx == 0 && active_stride > 0 {
+                                            // Some libcamera backends only report a single stride; keep it
+                                            // for the first plane but clamp to the mapped slice.
+                                            if plane_height == 0 {
+                                                active_stride
+                                            } else {
+                                                let max_stride = slice_len / plane_height;
+                                                active_stride.min(max_stride.max(1))
+                                            }
+                                        } else {
+                                            infer_stride(len, slice_len, plane_height)
+                                        };
+                                        PlaneLayout {
+                                            offset: 0,
+                                            len,
+                                            stride,
+                                        }
+                                    })
+                                    .collect::<smallvec::SmallVec<[_; 3]>>();
+
+                                for idx in 0..framebuffer_planes.len() {
+                                    let Some(plane) = framebuffer_planes.get(idx) else {
+                                        break;
+                                    };
+                                    let Some(offset) = plane.offset() else {
+                                        break;
+                                    };
+                                    plane_views.push(BackingPlaneView {
+                                        fd: plane.fd(),
+                                        offset,
+                                        len: plane.len(),
+                                    });
+                                }
+                            }
+                            (timestamp, layouts, plane_views)
+                        };
+                        if plane_views.len() != layouts.len() {
+                            failure = Some(CaptureError::Backend(
+                                "libcamera plane layout mismatch".into(),
+                            ));
+                            break;
                         }
                         let backing = LibcameraBacking::new(
                             req,
                             ret_tx.clone(),
-                            plane_ptrs,
+                            plane_views,
                             shutting_down.clone(),
                             outstanding_backings_for_thread.clone(),
-                            backing_tracker_for_thread.clone(),
+                            lease_backing_tracker_for_thread.clone(),
                         );
                         let meta = FrameMeta::new(wire_format, timestamp);
                         let frame = FrameLease::from_external(meta, layouts, backing);
@@ -986,7 +1193,16 @@ pub(super) fn start_libcamera(
         // Give any frames still being unwound by downstream consumers a short chance to release
         // their libcamera request/framebuffer backing before we attempt to stop the shared
         // CameraManager. Stopping too early can race with request/framebuffer destruction.
-        if wait_for_backings_to_drain(&outstanding_backings_for_thread, Duration::from_secs(2)) {
+        //
+        // PiSP dual-stream TDN sessions are currently unsafe to finalise by tearing the shared
+        // CameraManager down immediately on worker exit. In practice the old TDN-enabled backend
+        // can throw `BackEnd::finalise: TDN output not enabled when TDN enabled` during
+        // finalisation if we stop the manager as part of an on->off restart. Leave the shared
+        // manager running in that case; a later non-TDN idle stop can still reclaim it.
+        if stop_when_idle_enabled()
+            && !enable_tdn_output_for_thread
+            && wait_for_backings_to_drain(&outstanding_backings_for_thread, Duration::from_secs(2))
+        {
             let _ = styx_libcamera::try_stop_if_idle();
         }
 
@@ -995,9 +1211,11 @@ pub(super) fn start_libcamera(
         }
     });
 
-    let setup = setup_rx
-        .recv()
-        .unwrap_or_else(|_| Err(CaptureError::Backend("libcamera thread failed".into())));
+    let setup = setup_rx.recv().unwrap_or_else(|_| {
+        Err(classify_libcamera_backend_message(
+            "libcamera thread failed",
+        ))
+    });
 
     let mode = match setup {
         Ok(mode) => mode,
@@ -1017,7 +1235,11 @@ pub(super) fn start_libcamera(
         stop_tx: Some(stop_tx),
         worker: Some(WorkerHandle::Thread(worker)),
         metrics: StageMetrics::default(),
-        external_backings: vec![backing_tracker],
+        external_backings: vec![
+            lease_backing_tracker,
+            request_pool_tracker,
+            tdn_request_pool_tracker,
+        ],
     })
 }
 
@@ -1028,7 +1250,7 @@ fn build_libcamera_controls(
     for (id, value) in controls {
         let v = to_lc_value(value)?;
         list.set_raw(id.0, v)
-            .map_err(|e| CaptureError::ControlApply(e.to_string()))?;
+            .map_err(|e| classify_libcamera_control_apply_message(e.to_string()))?;
     }
     Ok(list)
 }
@@ -1066,7 +1288,8 @@ fn queue_with_controls(
 
 struct LibcameraBacking {
     req: std::sync::Mutex<Option<libcamera::request::Request>>,
-    planes: Vec<(*const u8, usize)>,
+    planes: Vec<BackingPlaneView>,
+    mapped: OnceLock<Option<LazyMappedBackingState>>,
     ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
     shutting_down: std::sync::Arc<AtomicBool>,
     outstanding_backings: Arc<AtomicUsize>,
@@ -1078,23 +1301,35 @@ impl LibcameraBacking {
     fn new(
         req: libcamera::request::Request,
         ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
-        planes: Vec<(*const u8, usize)>,
+        planes: Vec<BackingPlaneView>,
         shutting_down: std::sync::Arc<AtomicBool>,
         outstanding_backings: Arc<AtomicUsize>,
         tracker: Arc<ExternalBackingTracker>,
     ) -> std::sync::Arc<Self> {
-        let backing_bytes = planes.iter().map(|(_, len)| *len).sum::<usize>();
+        let backing_bytes = unique_backing_plane_bytes(&planes);
         outstanding_backings.fetch_add(1, Ordering::AcqRel);
-        tracker.acquire(backing_bytes);
         std::sync::Arc::new(Self {
             req: std::sync::Mutex::new(Some(req)),
             planes,
+            mapped: OnceLock::new(),
             ret_tx,
             shutting_down,
             outstanding_backings,
             tracker,
             backing_bytes,
         })
+    }
+
+    fn mapped_state(&self) -> Option<&LazyMappedBackingState> {
+        self.mapped
+            .get_or_init(|| {
+                let mapped = map_backing_planes(&self.planes);
+                if let Some(state) = mapped.as_ref() {
+                    self.tracker.acquire(state.mapped_bytes);
+                }
+                mapped
+            })
+            .as_ref()
     }
 }
 
@@ -1103,9 +1338,12 @@ unsafe impl Sync for LibcameraBacking {}
 
 impl ExternalBacking for LibcameraBacking {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        self.planes
-            .get(index)
-            .map(|(ptr, len)| unsafe { std::slice::from_raw_parts(*ptr, *len) })
+        let plane = self.planes.get(index)?;
+        let mapped = self.mapped_state()?;
+        let range = mapped.mmaps.get(&plane.fd)?;
+        let offset = plane.offset.checked_sub(range.map_offset)?;
+        let ptr: *const u8 = range.ptr.cast();
+        Some(unsafe { std::slice::from_raw_parts(ptr.add(offset), plane.len) })
     }
 
     fn backing_bytes(&self) -> Option<usize> {
@@ -1119,16 +1357,18 @@ impl ExternalBacking for LibcameraBacking {
 
 impl Drop for LibcameraBacking {
     fn drop(&mut self) {
+        if let Some(mapped) = self.mapped.take().flatten() {
+            self.tracker.release(mapped.mapped_bytes);
+            drop(mapped);
+        }
         if self.shutting_down.load(Ordering::Acquire) {
             self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
-            self.tracker.release(self.backing_bytes);
             return;
         }
         if let Some(req) = self.req.lock().unwrap().take() {
             let _ = self.ret_tx.send(req);
         }
         self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
-        self.tracker.release(self.backing_bytes);
     }
 }
 

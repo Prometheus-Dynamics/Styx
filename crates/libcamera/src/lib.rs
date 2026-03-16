@@ -38,20 +38,8 @@ pub fn probe_devices() -> Vec<LibcameraDeviceInfo> {
         return cached;
     }
 
-    let mut devices = Vec::new();
-
-    let manager = match manager() {
-        Ok(mgr) => mgr,
-        Err(err) => {
-            if debug_enabled() {
-                eprintln!("libcamera manager init failed: {err}");
-            }
-            write_probe_cache(&devices);
-            return devices;
-        }
-    };
-
-    {
+    let devices = match with_manager_mut(|manager| {
+        let mut devices = Vec::new();
         let cameras = manager.cameras();
         if debug_enabled() {
             let ids: Vec<String> = cameras.iter().map(|c| c.id().to_string()).collect();
@@ -75,10 +63,18 @@ pub fn probe_devices() -> Vec<LibcameraDeviceInfo> {
                 }
             }
         }
-    }
-    if stop_when_idle_enabled() {
-        let _ = try_stop_if_idle();
-    }
+
+        devices
+    }) {
+        Ok(devices) => devices,
+        Err(err) => {
+            if debug_enabled() {
+                eprintln!("libcamera manager init failed: {err}");
+            }
+            write_probe_cache(&[]);
+            return Vec::new();
+        }
+    };
     write_probe_cache(&devices);
     devices
 }
@@ -111,18 +107,6 @@ fn probe_cache_ttl() -> Duration {
 #[cfg(feature = "probe")]
 fn debug_enabled() -> bool {
     std::env::var_os("STYX_LIBCAMERA_DEBUG").is_some()
-}
-
-#[cfg(feature = "probe")]
-fn stop_when_idle_enabled() -> bool {
-    matches!(
-        std::env::var("STYX_LIBCAMERA_STOP_WHEN_IDLE")
-            .ok()
-            .as_deref()
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("1") | Some("true") | Some("yes") | Some("on")
-    )
 }
 
 #[cfg(feature = "probe")]
@@ -213,6 +197,9 @@ pub fn with_manager_mut<R>(f: impl FnOnce(&mut CameraManager) -> R) -> Result<R,
         .ok_or_else(|| "failed to init libcamera manager".to_string())?;
     let _guard = shared.lock.lock().map_err(|e| e.to_string())?;
     let mgr = unsafe { &mut *shared.manager.get() };
+    if !mgr.is_started() {
+        mgr.start().map_err(|e| e.to_string())?;
+    }
     Ok(f(mgr))
 }
 
@@ -350,6 +337,21 @@ fn map_pixel_format_to_fourcc(pf: libcamera::pixel_format::PixelFormat) -> FourC
 
 #[cfg(feature = "probe")]
 fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
+    fn value_cardinality(value: &LcValue) -> Option<usize> {
+        match value {
+            LcValue::None => Some(0),
+            LcValue::Bool(v) => Some(v.len()),
+            LcValue::Byte(v) => Some(v.len()),
+            LcValue::Uint16(v) => Some(v.len()),
+            LcValue::Uint32(v) => Some(v.len()),
+            LcValue::Int32(v) => Some(v.len()),
+            LcValue::Int64(v) => Some(v.len()),
+            LcValue::Float(v) => Some(v.len()),
+            LcValue::String(v) => Some(v.len()),
+            _ => None,
+        }
+    }
+
     fn kind_from_type(control_type: ControlType) -> ControlKind {
         match control_type {
             ControlType::Bool => ControlKind::Bool,
@@ -374,6 +376,23 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
 
     let mut out = Vec::new();
     for (id, info) in map.into_iter() {
+        let min_raw = info.min();
+        let max_raw = info.max();
+        let default_raw = info.def();
+        let values = info.values();
+        let multivalue = [
+            value_cardinality(&min_raw),
+            value_cardinality(&max_raw),
+            value_cardinality(&default_raw),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|len| len > 1)
+            || values
+                .iter()
+                .filter_map(value_cardinality)
+                .any(|len| len > 1);
+
         // Prefer dynamic lookup so we include draft/vendor controls (e.g. NoiseReductionMode)
         // that aren't covered by the generated `TryFrom` tables.
         let name = ControlId::from_id(id)
@@ -384,17 +403,16 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
                     .map(|cid| cid.name().to_string())
             })
             .unwrap_or_else(|| format!("ctrl_{id}"));
-        let min = convert_value(&info.min());
-        let max = convert_value(&info.max());
-        let default = convert_value(&info.def());
-        let control_type = ControlType::from(&info.def());
+        let min = convert_value(&min_raw);
+        let max = convert_value(&max_raw);
+        let default = convert_value(&default_raw);
+        let control_type = ControlType::from(&default_raw);
         let mut kind = kind_from_type(control_type);
 
         // If libcamera provides a bounded list of accepted values, treat it as a menu.
         // Note: We only surface a menu when the allowed values are a contiguous 0..N range.
         // This preserves the existing "menu value == index" semantics used by the rest of Styx.
         let mut menu: Option<Vec<String>> = None;
-        let values = info.values();
         if !values.is_empty() {
             let mut allowed = values
                 .iter()
@@ -461,11 +479,25 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
         if matches!(kind, ControlKind::Unknown) {
             continue;
         }
+        let access = if id == 30 || multivalue {
+            Access::ReadOnly
+        } else {
+            Access::ReadWrite
+        };
+
         out.push(ControlMeta {
             id: ControlId(id),
             name,
             kind,
-            access: Access::ReadWrite,
+            // Multi-value libcamera controls (for example `FrameDurationLimits`) cannot be
+            // round-tripped safely through Styx's scalar `ControlValue`. Expose them as read-only
+            // metadata so they remain visible, but do not feed their flattened values back into
+            // libcamera on restart/reconfigure.
+            //
+            // `FrameDurationLimits` is additionally forced read-only even when libcamera reports a
+            // scalar-looking default/min/max, because the live control value is still a two-value
+            // span and writing it back as a scalar can wedge or abort restart paths.
+            access,
             min,
             max,
             default,

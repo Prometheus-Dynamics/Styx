@@ -25,7 +25,7 @@ pub(super) mod v4l2_backend;
 pub(super) mod virtual_backend;
 
 pub use handle::{CaptureHandle, ControlPlane, WorkerHandle};
-pub use request::{CaptureError, CaptureRequest, TdnOutputMode, start_capture};
+pub use request::{CaptureError, CaptureRequest, ControlApplyKind, TdnOutputMode, start_capture};
 pub use tunables::{
     CaptureTunables, DEFAULT_NETCAM_BACKOFF_MAX_MS, DEFAULT_NETCAM_BACKOFF_START_MS,
     DEFAULT_NETCAM_TIMEOUT_SECS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN, DEFAULT_POOL_SPARE,
