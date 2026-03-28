@@ -14,7 +14,7 @@ pub struct TurbojpegDecoder {
 
 impl TurbojpegDecoder {
     pub fn new(output: FourCc) -> Self {
-        Self::with_pool(output, BufferPool::with_limits(2, 1 << 20, 4))
+        Self::with_pool(output, BufferPool::lazy(1 << 20, 4))
     }
 
     pub fn with_pool(output: FourCc, pool: BufferPool) -> Self {

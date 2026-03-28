@@ -11,7 +11,7 @@ pub struct MozjpegEncoder {
 
 impl MozjpegEncoder {
     pub fn new(input: FourCc, quality: i32) -> Self {
-        Self::with_pool(input, quality, BufferPool::with_limits(2, 1 << 20, 4))
+        Self::with_pool(input, quality, BufferPool::lazy(1 << 20, 4))
     }
 
     pub fn with_pool(input: FourCc, quality: i32, pool: BufferPool) -> Self {

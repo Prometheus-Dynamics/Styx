@@ -53,6 +53,11 @@ struct ScalingCache {
 }
 
 impl FfmpegVideoDecoder {
+    fn pool_from_limits(pool_limits: Option<(usize, usize, usize)>) -> BufferPool {
+        let (_min, max, spare) = pool_limits.unwrap_or((2, 1 << 20, 4));
+        BufferPool::lazy(max, spare)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: Id,
@@ -69,7 +74,6 @@ impl FfmpegVideoDecoder {
         init_ffmpeg()?;
         let codec = codec::decoder::find(id)
             .ok_or_else(|| CodecError::Codec(format!("ffmpeg codec {id:?} not found")))?;
-        let (min, max, spare) = pool_limits.unwrap_or((2, 1 << 20, 4));
         Ok(Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
@@ -79,7 +83,7 @@ impl FfmpegVideoDecoder {
                 impl_name,
             },
             codec,
-            pool: BufferPool::with_limits(min, max, spare),
+            pool: Self::pool_from_limits(pool_limits),
             thread_count,
             state: Mutex::new(None),
             zero_copy,
@@ -104,7 +108,6 @@ impl FfmpegVideoDecoder {
         init_ffmpeg()?;
         let codec = codec::decoder::find_by_name(decoder_name)
             .ok_or_else(|| CodecError::Codec(format!("ffmpeg decoder {decoder_name} not found")))?;
-        let (min, max, spare) = pool_limits.unwrap_or((2, 1 << 20, 4));
         Ok(Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
@@ -114,7 +117,7 @@ impl FfmpegVideoDecoder {
                 impl_name,
             },
             codec,
-            pool: BufferPool::with_limits(min, max, spare),
+            pool: Self::pool_from_limits(pool_limits),
             thread_count,
             state: Mutex::new(None),
             zero_copy,

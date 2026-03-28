@@ -79,7 +79,7 @@ impl Rgb48ToRgbDecoder {
                 name: "rgb48torgb24",
                 impl_name,
             },
-            pool: BufferPool::with_limits(2, bytes, 4),
+            pool: BufferPool::lazy(bytes, 4),
             swap_rb,
         }
     }

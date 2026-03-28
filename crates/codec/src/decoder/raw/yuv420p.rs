@@ -40,12 +40,7 @@ impl Yuv420pToRgbDecoder {
         max_height: u32,
     ) -> Self {
         let bytes = max_width as usize * max_height as usize * 3;
-        Self::with_pool(
-            input,
-            impl_name,
-            uv_is_uv,
-            BufferPool::with_limits(2, bytes, 4),
-        )
+        Self::with_pool(input, impl_name, uv_is_uv, BufferPool::lazy(bytes, 4))
     }
 
     pub fn with_pool(

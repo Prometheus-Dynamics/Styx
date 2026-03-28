@@ -325,8 +325,8 @@ impl BayerToRgbDecoder {
                 name: "bayer2rgb",
                 impl_name: "bayer-bilinear",
             },
-            pool: BufferPool::with_limits(2, bytes, 4),
-            packed_pool: BufferPool::with_limits(2, packed_bytes, 4),
+            pool: BufferPool::lazy(bytes, 4),
+            packed_pool: BufferPool::lazy(packed_bytes, 4),
             info,
         }
     }

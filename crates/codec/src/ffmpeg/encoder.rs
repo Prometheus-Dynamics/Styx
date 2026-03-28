@@ -41,6 +41,11 @@ pub struct FfmpegVideoEncoder {
 }
 
 impl FfmpegVideoEncoder {
+    fn pool_from_options(opts: &FfmpegEncoderOptions) -> BufferPool {
+        let (_pool_min, pool_max, pool_spare) = opts.pool_limits.unwrap_or((2, 1 << 20, 4));
+        BufferPool::lazy(pool_max, pool_spare)
+    }
+
     pub fn new(
         id: Id,
         name: &'static str,
@@ -52,7 +57,6 @@ impl FfmpegVideoEncoder {
         init_ffmpeg()?;
         let codec = codec::encoder::find(id)
             .ok_or_else(|| CodecError::Codec(format!("ffmpeg encoder {id:?} not found")))?;
-        let (pool_min, pool_max, pool_spare) = opts.pool_limits.unwrap_or((2, 1 << 20, 4));
         Ok(Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Encoder,
@@ -62,7 +66,7 @@ impl FfmpegVideoEncoder {
                 impl_name,
             },
             codec,
-            pool: BufferPool::with_limits(pool_min, pool_max, pool_spare),
+            pool: Self::pool_from_options(&opts),
             state: Mutex::new(None),
             opts: Mutex::new(opts),
         })
@@ -79,7 +83,6 @@ impl FfmpegVideoEncoder {
         init_ffmpeg()?;
         let codec = codec::encoder::find_by_name(codec_name)
             .ok_or_else(|| CodecError::Codec(format!("ffmpeg encoder {codec_name} not found")))?;
-        let (pool_min, pool_max, pool_spare) = opts.pool_limits.unwrap_or((2, 1 << 20, 4));
         Ok(Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Encoder,
@@ -89,7 +92,7 @@ impl FfmpegVideoEncoder {
                 impl_name,
             },
             codec,
-            pool: BufferPool::with_limits(pool_min, pool_max, pool_spare),
+            pool: Self::pool_from_options(&opts),
             state: Mutex::new(None),
             opts: Mutex::new(opts),
         })

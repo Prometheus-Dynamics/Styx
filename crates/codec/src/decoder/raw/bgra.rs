@@ -48,7 +48,7 @@ impl BgraToRgbDecoder {
     pub fn new(max_width: u32, max_height: u32) -> Self {
         let bytes = max_width as usize * max_height as usize * 3;
         Self::with_input(
-            BufferPool::with_limits(2, bytes, 4),
+            BufferPool::lazy(bytes, 4),
             FourCc::new(*b"BGRA"),
             "bgra-strip",
         )
@@ -78,7 +78,7 @@ impl BgraToRgbDecoder {
         max_height: u32,
     ) -> Self {
         let bytes = max_width as usize * max_height as usize * 3;
-        Self::with_input(BufferPool::with_limits(2, bytes, 4), input, impl_name)
+        Self::with_input(BufferPool::lazy(bytes, 4), input, impl_name)
     }
 
     /// Decode into a caller-provided tightly-packed RGB24 buffer.

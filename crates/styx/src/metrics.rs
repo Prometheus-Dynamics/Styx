@@ -58,23 +58,50 @@ impl ExternalBackingTracker {
     }
 
     pub fn acquire(&self, bytes: usize) {
+        self.acquire_many(1, bytes);
+    }
+
+    pub fn acquire_many(&self, buffers: usize, bytes: usize) {
+        let buffers = buffers as u64;
         let bytes = bytes as u64;
-        let buffers = self
-            .current_buffers
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let current_bytes = self
-            .current_bytes
-            .fetch_add(bytes, Ordering::Relaxed)
-            .saturating_add(bytes);
-        self.peak_buffers.fetch_max(buffers, Ordering::Relaxed);
+        if buffers == 0 && bytes == 0 {
+            return;
+        }
+        let current_buffers = if buffers == 0 {
+            self.current_buffers.load(Ordering::Relaxed)
+        } else {
+            self.current_buffers
+                .fetch_add(buffers, Ordering::Relaxed)
+                .saturating_add(buffers)
+        };
+        let current_bytes = if bytes == 0 {
+            self.current_bytes.load(Ordering::Relaxed)
+        } else {
+            self.current_bytes
+                .fetch_add(bytes, Ordering::Relaxed)
+                .saturating_add(bytes)
+        };
+        self.peak_buffers
+            .fetch_max(current_buffers, Ordering::Relaxed);
         self.peak_bytes.fetch_max(current_bytes, Ordering::Relaxed);
     }
 
     pub fn release(&self, bytes: usize) {
+        self.release_many(1, bytes);
+    }
+
+    pub fn release_many(&self, buffers: usize, bytes: usize) {
+        let buffers = buffers as u64;
         let bytes = bytes as u64;
-        self.current_buffers.fetch_sub(1, Ordering::Relaxed);
-        self.current_bytes.fetch_sub(bytes, Ordering::Relaxed);
+        if buffers == 0 && bytes == 0 {
+            return;
+        }
+        if buffers > 0 {
+            self.current_buffers.fetch_sub(buffers, Ordering::Relaxed);
+        }
+        if bytes > 0 {
+            self.current_bytes.fetch_sub(bytes, Ordering::Relaxed);
+        }
     }
 
     pub fn snapshot(&self) -> ExternalBackingStats {

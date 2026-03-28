@@ -178,6 +178,20 @@ impl BufferPool {
         Self::with_limits(capacity, chunk_size, capacity)
     }
 
+    /// Create a pool that starts empty and grows on demand while still reusing returned buffers.
+    pub fn lazy(chunk_size: usize, max_free: usize) -> Self {
+        let metrics = Arc::new(Metrics::default());
+        Self {
+            inner: Arc::new(PoolInner {
+                free: Mutex::new(Vec::new()),
+                chunk_size,
+                max_free,
+                metrics: metrics.clone(),
+            }),
+            metrics,
+        }
+    }
+
     /// Create a pool with `capacity` preallocated buffers and a maximum retained free list.
     pub fn with_limits(capacity: usize, chunk_size: usize, max_free: usize) -> Self {
         let mut free = Vec::with_capacity(capacity);
@@ -639,5 +653,27 @@ pub fn plane_layout_with_stride(
         offset: 0,
         len,
         stride,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lazy_pool_starts_empty_and_recycles_on_release() {
+        let pool = BufferPool::lazy(16, 2);
+        let stats = pool.stats();
+        assert_eq!(stats.free, 0);
+        assert_eq!(stats.retained, 0);
+
+        let lease = pool.lease();
+        assert_eq!(pool.stats().in_use, 1);
+        drop(lease);
+
+        let stats = pool.stats();
+        assert_eq!(stats.free, 1);
+        assert_eq!(stats.retained, 1);
+        assert_eq!(stats.retained_bytes, 16);
     }
 }

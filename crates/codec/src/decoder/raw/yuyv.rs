@@ -44,7 +44,7 @@ pub struct YuyvToRgbDecoder {
 impl YuyvToRgbDecoder {
     pub fn new(max_width: u32, max_height: u32) -> Self {
         let bytes = max_width as usize * max_height as usize * 3;
-        Self::with_pool(BufferPool::with_limits(2, bytes, 4))
+        Self::with_pool(BufferPool::lazy(bytes, 4))
     }
 
     pub fn with_pool(pool: BufferPool) -> Self {
@@ -177,7 +177,7 @@ pub struct YuyvToLumaDecoder {
 impl YuyvToLumaDecoder {
     pub fn new(max_width: u32, max_height: u32) -> Self {
         let bytes = max_width as usize * max_height as usize;
-        Self::with_pool(BufferPool::with_limits(2, bytes, 4))
+        Self::with_pool(BufferPool::lazy(bytes, 4))
     }
 
     pub fn with_pool(pool: BufferPool) -> Self {

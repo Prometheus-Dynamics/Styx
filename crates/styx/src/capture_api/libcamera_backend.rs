@@ -13,6 +13,7 @@ use libcamera::framebuffer_allocator::FrameBuffer;
 use libcamera::request::Request;
 use libcamera::request::ReuseFlag;
 use libcamera::{control::ControlList as LcControlList, control_value::ControlValue as LcValue};
+use smallvec::SmallVec;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use styx_codec::Codec;
 use styx_codec::prelude::{Nv12ToBgrDecoder, Nv12ToRgbDecoder, YuyvToRgbDecoder};
@@ -38,6 +39,16 @@ fn stop_when_idle_enabled() -> bool {
             !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
         })
         .unwrap_or(false)
+}
+
+fn prefault_request_pools_enabled() -> bool {
+    std::env::var("STYX_LIBCAMERA_PREFAULT_REQUEST_POOLS")
+        .ok()
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "0" | "false" | "no" | "off")
+        })
+        .unwrap_or(true)
 }
 
 fn control_value_enabled(value: &ControlValue) -> bool {
@@ -260,6 +271,11 @@ fn wait_for_backings_to_drain(outstanding_backings: &AtomicUsize, timeout: Durat
     }
 }
 
+fn system_page_size() -> usize {
+    let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if ps > 0 { ps as usize } else { 4096 }
+}
+
 fn infer_stride(bytes_used: usize, plane_len: usize, plane_height: usize) -> usize {
     if plane_height == 0 {
         return bytes_used.max(plane_len);
@@ -288,6 +304,7 @@ struct BackingPlaneView {
     len: usize,
 }
 
+#[derive(Clone, Copy)]
 struct MappedPlaneRange {
     ptr: *mut core::ffi::c_void,
     len: usize,
@@ -295,13 +312,13 @@ struct MappedPlaneRange {
 }
 
 struct LazyMappedBackingState {
-    mmaps: HashMap<i32, MappedPlaneRange>,
+    mmaps: SmallVec<[(i32, MappedPlaneRange); 3]>,
     mapped_bytes: usize,
 }
 
 impl Drop for LazyMappedBackingState {
     fn drop(&mut self) {
-        for (_fd, range) in self.mmaps.drain() {
+        for (_fd, range) in self.mmaps.drain(..) {
             unsafe {
                 libc::munmap(range.ptr, range.len);
             }
@@ -310,12 +327,44 @@ impl Drop for LazyMappedBackingState {
 }
 
 fn unique_backing_plane_bytes(planes: &[BackingPlaneView]) -> usize {
-    let mut seen = HashSet::new();
+    let mut seen = SmallVec::<[(i32, usize, usize); 4]>::new();
     planes
         .iter()
-        .filter(|plane| seen.insert((plane.fd, plane.offset, plane.len)))
+        .filter(|plane| {
+            let key = (plane.fd, plane.offset, plane.len);
+            if seen.iter().any(|existing| *existing == key) {
+                false
+            } else {
+                seen.push(key);
+                true
+            }
+        })
         .map(|plane| plane.len)
         .sum()
+}
+
+fn framebuffer_backing_planes(buffer: &FrameBuffer) -> SmallVec<[BackingPlaneView; 3]> {
+    let planes = buffer.planes();
+    let mut views = SmallVec::<[BackingPlaneView; 3]>::with_capacity(planes.len());
+    for idx in 0..planes.len() {
+        let Some(plane) = planes.get(idx) else {
+            break;
+        };
+        views.push(BackingPlaneView {
+            fd: plane.fd(),
+            offset: plane.offset().unwrap_or(0),
+            len: plane.len(),
+        });
+    }
+    views
+}
+
+fn framebuffers_backing_planes(buffers: &[FrameBuffer]) -> SmallVec<[BackingPlaneView; 12]> {
+    let mut views = SmallVec::<[BackingPlaneView; 12]>::new();
+    for buffer in buffers {
+        views.extend(framebuffer_backing_planes(buffer));
+    }
+    views
 }
 
 fn map_backing_planes(planes: &[BackingPlaneView]) -> Option<LazyMappedBackingState> {
@@ -325,15 +374,14 @@ fn map_backing_planes(planes: &[BackingPlaneView]) -> Option<LazyMappedBackingSt
         total_len: usize,
     }
 
-    let page_size = {
-        let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        if ps > 0 { ps as usize } else { 4096 }
-    };
+    let page_size = system_page_size();
 
-    let mut map_info: HashMap<i32, MapInfo> = HashMap::new();
+    let mut map_info = SmallVec::<[(i32, MapInfo); 3]>::new();
     for plane in planes {
         let end = plane.offset.checked_add(plane.len)?;
-        let info = map_info.entry(plane.fd).or_insert_with(|| {
+        let info = if let Some((_, info)) = map_info.iter_mut().find(|(fd, _)| *fd == plane.fd) {
+            info
+        } else {
             let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
             let ret = unsafe { libc::fstat(plane.fd, st.as_mut_ptr()) };
             let total_len = if ret != 0 {
@@ -342,12 +390,19 @@ fn map_backing_planes(planes: &[BackingPlaneView]) -> Option<LazyMappedBackingSt
                 let st = unsafe { st.assume_init() };
                 st.st_size as usize
             };
-            MapInfo {
-                start: plane.offset,
-                end,
-                total_len,
-            }
-        });
+            map_info.push((
+                plane.fd,
+                MapInfo {
+                    start: plane.offset,
+                    end,
+                    total_len,
+                },
+            ));
+            &mut map_info
+                .last_mut()
+                .expect("backing map info entry just pushed")
+                .1
+        };
 
         if info.total_len > 0 && end > info.total_len {
             return None;
@@ -359,7 +414,7 @@ fn map_backing_planes(planes: &[BackingPlaneView]) -> Option<LazyMappedBackingSt
     }
 
     let mut mapped_bytes = 0usize;
-    let mut mmaps = HashMap::new();
+    let mut mmaps = SmallVec::<[(i32, MappedPlaneRange); 3]>::new();
     for (fd, info) in map_info {
         let map_len = info.end.saturating_sub(info.start);
         if map_len == 0 {
@@ -379,20 +434,76 @@ fn map_backing_planes(planes: &[BackingPlaneView]) -> Option<LazyMappedBackingSt
             return None;
         }
         mapped_bytes = mapped_bytes.saturating_add(map_len);
-        mmaps.insert(
+        mmaps.push((
             fd,
             MappedPlaneRange {
                 ptr: addr,
                 len: map_len,
                 map_offset: info.start,
             },
-        );
+        ));
     }
 
     Some(LazyMappedBackingState {
         mmaps,
         mapped_bytes,
     })
+}
+
+fn prefault_backing_planes(planes: &[BackingPlaneView]) {
+    let Some(mapped) = map_backing_planes(planes) else {
+        return;
+    };
+    let page_size = system_page_size();
+    let mut touched = 0u8;
+    for (_, range) in mapped.mmaps.iter() {
+        let ptr = range.ptr.cast::<u8>();
+        let mut offset = 0usize;
+        while offset < range.len {
+            unsafe {
+                touched ^= std::ptr::read_volatile(ptr.add(offset));
+            }
+            offset = offset.saturating_add(page_size);
+        }
+        if range.len > 0 {
+            unsafe {
+                touched ^= std::ptr::read_volatile(ptr.add(range.len - 1));
+            }
+        }
+    }
+    std::hint::black_box(touched);
+}
+
+struct RequestPoolBackingLease {
+    tracker: Arc<ExternalBackingTracker>,
+    buffers: usize,
+    bytes: usize,
+}
+
+impl RequestPoolBackingLease {
+    fn new(tracker: Arc<ExternalBackingTracker>, framebuffers: &[FrameBuffer]) -> Self {
+        let buffers = framebuffers.len();
+        let planes = framebuffers_backing_planes(framebuffers);
+        let bytes = unique_backing_plane_bytes(&planes);
+        tracker.acquire_many(buffers, bytes);
+        if prefault_request_pools_enabled() && !planes.is_empty() {
+            // Libcamera request pools are persistent across the whole capture session. Touch them
+            // once up front so the working set does not trickle in over the first minutes of
+            // preview and look like a leak.
+            prefault_backing_planes(&planes);
+        }
+        Self {
+            tracker,
+            buffers,
+            bytes,
+        }
+    }
+}
+
+impl Drop for RequestPoolBackingLease {
+    fn drop(&mut self) {
+        self.tracker.release_many(self.buffers, self.bytes);
+    }
 }
 
 #[cfg(feature = "v4l2")]
@@ -560,16 +671,17 @@ pub(super) fn start_libcamera(
     let pending_controls_for_thread = pending_controls.clone();
     let outstanding_backings_for_thread = outstanding_backings.clone();
     let lease_backing_tracker_for_thread = lease_backing_tracker.clone();
+    let request_pool_tracker_for_thread = request_pool_tracker.clone();
+    let tdn_request_pool_tracker_for_thread = tdn_request_pool_tracker.clone();
     let worker = thread::spawn(move || {
         let res: Result<Mode, CaptureError> = (|| {
             let shutting_down = std::sync::Arc::new(AtomicBool::new(false));
             let _shutdown_guard = ShutdownGuard(shutting_down.clone());
             let mgr = styx_libcamera::manager().map_err(classify_libcamera_backend_message)?;
             let camera_lookup_started = Instant::now();
-            let mut last_seen_camera_ids: Vec<String> = Vec::new();
             let mut cam = loop {
                 let cameras = mgr.cameras();
-                last_seen_camera_ids = (0..cameras.len())
+                let seen_camera_ids = (0..cameras.len())
                     .filter_map(|idx| cameras.get(idx).map(|cam| cam.id().to_string()))
                     .collect();
                 let cam = (0..cameras.len()).find_map(|idx| {
@@ -586,7 +698,7 @@ pub(super) fn start_libcamera(
                 if camera_lookup_started.elapsed() >= Duration::from_secs(3) {
                     return Err(CaptureError::LibcameraCameraNotFound {
                         requested: id_for_thread.clone(),
-                        seen: last_seen_camera_ids.clone(),
+                        seen: seen_camera_ids,
                     });
                 }
                 thread::sleep(Duration::from_millis(100));
@@ -779,6 +891,11 @@ pub(super) fn start_libcamera(
             let primary_buffers: Vec<FrameBuffer> = bufs.into_iter().collect();
             let tdn_buffers: Option<Vec<FrameBuffer>> =
                 tdn_bufs.map(|bufs| bufs.into_iter().collect());
+            let _primary_request_pool_lease =
+                RequestPoolBackingLease::new(request_pool_tracker_for_thread, &primary_buffers);
+            let _tdn_request_pool_lease = tdn_buffers.as_ref().map(|buffers| {
+                RequestPoolBackingLease::new(tdn_request_pool_tracker_for_thread, buffers)
+            });
 
             let mut requests = Vec::new();
             if let Some(tdn_stream) = &tdn_stream {
@@ -1003,7 +1120,7 @@ pub(super) fn start_libcamera(
                             let framebuffer_planes = framebuffer.planes();
                             let height = wire_format.resolution.height.get() as usize;
                             let mut layouts = smallvec::SmallVec::<[PlaneLayout; 3]>::new();
-                            let mut plane_views: Vec<BackingPlaneView> = Vec::new();
+                            let mut plane_views = SmallVec::<[BackingPlaneView; 3]>::new();
 
                             // PiSP/libcamera streams often expose NV12/NV21 as a single contiguous plane
                             // (or a second empty plane). Split it into 2 logical planes so downstream
@@ -1288,7 +1405,7 @@ fn queue_with_controls(
 
 struct LibcameraBacking {
     req: std::sync::Mutex<Option<libcamera::request::Request>>,
-    planes: Vec<BackingPlaneView>,
+    planes: SmallVec<[BackingPlaneView; 3]>,
     mapped: OnceLock<Option<LazyMappedBackingState>>,
     ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
     shutting_down: std::sync::Arc<AtomicBool>,
@@ -1301,7 +1418,7 @@ impl LibcameraBacking {
     fn new(
         req: libcamera::request::Request,
         ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
-        planes: Vec<BackingPlaneView>,
+        planes: SmallVec<[BackingPlaneView; 3]>,
         shutting_down: std::sync::Arc<AtomicBool>,
         outstanding_backings: Arc<AtomicUsize>,
         tracker: Arc<ExternalBackingTracker>,
@@ -1340,7 +1457,7 @@ impl ExternalBacking for LibcameraBacking {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
         let plane = self.planes.get(index)?;
         let mapped = self.mapped_state()?;
-        let range = mapped.mmaps.get(&plane.fd)?;
+        let (_, range) = mapped.mmaps.iter().find(|(fd, _)| *fd == plane.fd)?;
         let offset = plane.offset.checked_sub(range.map_offset)?;
         let ptr: *const u8 = range.ptr.cast();
         Some(unsafe { std::slice::from_raw_parts(ptr.add(offset), plane.len) })

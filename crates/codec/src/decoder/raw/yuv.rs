@@ -52,7 +52,7 @@ impl NvToRgbDecoder {
             subsample_h,
             subsample_v,
             uv_is_uv,
-            BufferPool::with_limits(2, bytes, 4),
+            BufferPool::lazy(bytes, 4),
         )
     }
 
@@ -288,7 +288,7 @@ impl PlanarYuvToRgbDecoder {
             subsample_h,
             subsample_v,
             u_first,
-            BufferPool::with_limits(2, bytes, 4),
+            BufferPool::lazy(bytes, 4),
         )
     }
 
@@ -500,12 +500,7 @@ impl Packed422ToRgbDecoder {
         max_height: u32,
     ) -> Self {
         let bytes = max_width as usize * max_height as usize * 3;
-        Self::with_pool(
-            input,
-            impl_name,
-            byte_order,
-            BufferPool::with_limits(2, bytes, 4),
-        )
+        Self::with_pool(input, impl_name, byte_order, BufferPool::lazy(bytes, 4))
     }
 
     pub fn with_pool(
