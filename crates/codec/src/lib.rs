@@ -1455,14 +1455,44 @@ impl CodecRegistry {
             Arc::new(jpeg_encoder::MozjpegEncoder::new(FourCc::new(*b"RG24"), 85)),
         );
 
-        // Optional turbojpeg decoder.
+        // Optional turbojpeg encoder/decoder.
         #[cfg(feature = "codec-turbojpeg")]
-        self.register(
-            FourCc::new(*b"MJPG"),
-            Arc::new(mjpeg_turbojpeg::TurbojpegDecoder::new(FourCc::new(
-                *b"RG24",
-            ))),
-        );
+        {
+            self.register(
+                FourCc::new(*b"R8  "),
+                Arc::new(mjpeg_turbojpeg::TurbojpegEncoder::new(
+                    FourCc::new(*b"R8  "),
+                    85,
+                )),
+            );
+            self.register(
+                FourCc::new(*b"GREY"),
+                Arc::new(mjpeg_turbojpeg::TurbojpegEncoder::new(
+                    FourCc::new(*b"GREY"),
+                    85,
+                )),
+            );
+            self.register(
+                FourCc::new(*b"RG24"),
+                Arc::new(mjpeg_turbojpeg::TurbojpegEncoder::new(
+                    FourCc::new(*b"RG24"),
+                    85,
+                )),
+            );
+            self.register(
+                FourCc::new(*b"RGBA"),
+                Arc::new(mjpeg_turbojpeg::TurbojpegEncoder::new(
+                    FourCc::new(*b"RGBA"),
+                    85,
+                )),
+            );
+            self.register(
+                FourCc::new(*b"MJPG"),
+                Arc::new(mjpeg_turbojpeg::TurbojpegDecoder::new(FourCc::new(
+                    *b"RG24",
+                ))),
+            );
+        }
 
         // Optional zune-jpeg decoder.
         #[cfg(feature = "codec-zune")]
@@ -1644,7 +1674,7 @@ pub mod prelude {
     #[cfg(feature = "codec-mozjpeg")]
     pub use crate::jpeg_encoder::MozjpegEncoder;
     #[cfg(feature = "codec-turbojpeg")]
-    pub use crate::mjpeg_turbojpeg::TurbojpegDecoder;
+    pub use crate::mjpeg_turbojpeg::{TurbojpegDecoder, TurbojpegEncoder};
     #[cfg(feature = "codec-zune")]
     pub use crate::mjpeg_zune::ZuneMjpegDecoder;
     pub use crate::{

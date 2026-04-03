@@ -185,6 +185,8 @@ pub(super) fn start_v4l2(
         rx,
         stop_tx: Some(stop_tx),
         worker: Some(WorkerHandle::Thread(worker)),
+        #[cfg(feature = "libcamera")]
+        libcamera_idle_stop_allowed: false,
         metrics: StageMetrics::default(),
         external_backings: Vec::new(),
     })

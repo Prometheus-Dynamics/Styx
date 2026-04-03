@@ -20,6 +20,18 @@ fn map_colorspace(color: ColorSpace) -> (YuvRange, YuvStandardMatrix) {
     }
 }
 
+#[inline(always)]
+fn preferred_yuv_conversion_mode() -> YuvConversionMode {
+    #[cfg(target_arch = "aarch64")]
+    {
+        YuvConversionMode::Fast
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        YuvConversionMode::Balanced
+    }
+}
+
 /// CPU NV12 (Y plane + interleaved UV) → RGB24 decoder.
 pub struct Nv12ToRgbDecoder {
     descriptor: CodecDescriptor,
@@ -146,7 +158,7 @@ impl Nv12ToRgbDecoder {
             row_bytes as u32,
             range,
             matrix,
-            YuvConversionMode::Balanced,
+            preferred_yuv_conversion_mode(),
         )
         .is_err()
         {
@@ -475,7 +487,7 @@ impl Nv12ToBgrDecoder {
             row_bytes as u32,
             range,
             matrix,
-            YuvConversionMode::Balanced,
+            preferred_yuv_conversion_mode(),
         )
         .is_err()
         {

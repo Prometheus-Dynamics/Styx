@@ -395,6 +395,8 @@ pub(super) fn start_file(
         rx,
         stop_tx: None,
         worker: Some(worker),
+        #[cfg(feature = "libcamera")]
+        libcamera_idle_stop_allowed: false,
         metrics: StageMetrics::default(),
         external_backings: Vec::new(),
     })

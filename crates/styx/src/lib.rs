@@ -23,6 +23,7 @@ pub mod capture_api;
 mod metrics;
 #[cfg(feature = "hooks")]
 pub mod recording;
+pub mod runtime_codec;
 pub mod session;
 
 /// Unified device descriptor for probed backends.
@@ -582,8 +583,8 @@ pub mod prelude {
     #[cfg(feature = "netcam")]
     pub use crate::capture_api::make_netcam_device;
     pub use crate::capture_api::{
-        CaptureError, CaptureHandle, CaptureRequest, CaptureTunables, StyxConfig, TdnOutputMode,
-        set_capture_tunables, start_capture,
+        CaptureError, CaptureHandle, CaptureRequest, CaptureStartPolicy, CaptureTunables,
+        StyxConfig, TdnOutputMode, set_capture_tunables, start_capture,
     };
     pub use crate::metrics::{PipelineMemoryStats, PipelineMetrics, StageMetrics};
     #[cfg(feature = "preview-window")]
@@ -591,6 +592,12 @@ pub mod prelude {
     pub use crate::probe_all;
     #[cfg(feature = "hooks")]
     pub use crate::recording::{FrameRecorder, RecordingError, RecordingFormat, RecordingOptions};
+    pub use crate::runtime_codec::{
+        EncoderFamilySpec, RuntimeCodecCapability, RuntimeCodecInventory,
+        default_decoder_ids_by_capture_format, default_decoder_selector_for_capture_format,
+        default_stream_encoder_selector, encoder_family_for_descriptor,
+        encoder_family_for_selector, preview_format_for_encoder_selector, runtime_codec_inventory,
+    };
     pub use crate::session::{MediaPipeline, MediaPipelineBuilder};
     pub use crate::{BackendHandle, BackendKind, ProbedBackend, ProbedDevice};
     pub use styx_capture::prelude::*;

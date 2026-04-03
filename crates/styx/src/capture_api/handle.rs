@@ -13,7 +13,7 @@ use super::file_backend;
 use super::libcamera_backend;
 #[cfg(feature = "netcam")]
 use super::netcam_backend;
-use super::request::{CaptureError, TdnOutputMode};
+use super::request::{CaptureError, CaptureStartPolicy, TdnOutputMode};
 #[cfg(feature = "v4l2")]
 use super::v4l2_backend;
 use super::virtual_backend;
@@ -65,6 +65,8 @@ pub struct CaptureHandle {
     pub(crate) rx: BoundedRx<FrameLease>,
     pub(crate) stop_tx: Option<std::sync::mpsc::Sender<()>>,
     pub(super) worker: Option<WorkerHandle>,
+    #[cfg(feature = "libcamera")]
+    pub(crate) libcamera_idle_stop_allowed: bool,
     pub(crate) metrics: StageMetrics,
     pub(crate) external_backings: Vec<Arc<crate::metrics::ExternalBackingTracker>>,
 }
@@ -157,6 +159,10 @@ impl CaptureHandle {
             }
         }
         while let RecvOutcome::Data(_frame) = self.rx.recv() {}
+        #[cfg(feature = "libcamera")]
+        if self.libcamera_idle_stop_allowed {
+            libcamera_backend::stop_manager_if_idle();
+        }
     }
 
     /// Reconfigure capture by stopping this session and starting a new one from a request.
@@ -171,6 +177,17 @@ impl CaptureHandle {
         Ok(handle)
     }
 
+    /// Reconfigure capture using Styx-owned retry and fallback behavior.
+    pub fn reconfigure_with_policy(
+        self,
+        request: super::CaptureRequest<'_>,
+        policy: CaptureStartPolicy,
+    ) -> Result<CaptureHandle, CaptureError> {
+        let mut handle = self;
+        handle.reconfigure_in_place_with_policy(request, policy)?;
+        Ok(handle)
+    }
+
     /// Reconfigure capture in-place by stopping the current worker before starting a new one.
     ///
     /// This fully restarts the camera, which is required when changing resolution or pixel formats.
@@ -181,6 +198,18 @@ impl CaptureHandle {
         self.teardown_in_place();
         let mut new_capture = request.start()?;
         // Swap to avoid double-drop; the torn-down handle will drop harmlessly.
+        mem::swap(self, &mut new_capture);
+        Ok(())
+    }
+
+    /// Reconfigure capture in-place using Styx-owned retry and fallback behavior.
+    pub fn reconfigure_in_place_with_policy(
+        &mut self,
+        request: super::CaptureRequest<'_>,
+        policy: CaptureStartPolicy,
+    ) -> Result<(), CaptureError> {
+        self.teardown_in_place();
+        let mut new_capture = request.start_with_policy(policy)?;
         mem::swap(self, &mut new_capture);
         Ok(())
     }
@@ -332,10 +361,10 @@ pub(crate) fn start_backend(
     backend: &ProbedBackend,
     mode: Mode,
     interval: Option<Interval>,
+    descriptor: CaptureDescriptor,
     #[allow(unused_variables)] controls: Vec<(ControlId, ControlValue)>,
     #[allow(unused_variables)] tdn_output_mode: TdnOutputMode,
 ) -> Result<CaptureHandle, CaptureError> {
-    let descriptor = backend.descriptor.clone();
     match backend.kind {
         BackendKind::Virtual => virtual_backend::start_virtual(mode, interval, descriptor),
         #[cfg(feature = "v4l2")]

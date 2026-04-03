@@ -34,6 +34,19 @@ pub trait ImageDecode {
 }
 
 #[cfg(feature = "image")]
+#[inline(always)]
+fn preferred_yuv_conversion_mode() -> YuvConversionMode {
+    #[cfg(target_arch = "aarch64")]
+    {
+        YuvConversionMode::Fast
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        YuvConversionMode::Balanced
+    }
+}
+
+#[cfg(feature = "image")]
 pub(crate) fn process_to_dynamic<D: Codec>(
     decoder: &D,
     frame: FrameLease,
@@ -971,7 +984,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
                 height,
             };
             let (range, matrix) = map_colorspace(color);
-            let mode = YuvConversionMode::Balanced;
+            let mode = preferred_yuv_conversion_mode();
             let is_nv12 = code == FourCc::new(*b"NV12");
             let ok = if is_nv12 {
                 yuvutils_rs::yuv_nv12_to_rgb(&bi, &mut rgb, dst_stride as u32, range, matrix, mode)

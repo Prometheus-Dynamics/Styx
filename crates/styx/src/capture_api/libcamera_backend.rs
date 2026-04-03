@@ -41,6 +41,12 @@ fn stop_when_idle_enabled() -> bool {
         .unwrap_or(false)
 }
 
+pub(super) fn stop_manager_if_idle() {
+    if stop_when_idle_enabled() {
+        let _ = styx_libcamera::try_stop_if_idle();
+    }
+}
+
 fn prefault_request_pools_enabled() -> bool {
     std::env::var("STYX_LIBCAMERA_PREFAULT_REQUEST_POOLS")
         .ok()
@@ -1351,6 +1357,7 @@ pub(super) fn start_libcamera(
         rx,
         stop_tx: Some(stop_tx),
         worker: Some(WorkerHandle::Thread(worker)),
+        libcamera_idle_stop_allowed: !enable_tdn_output_for_thread,
         metrics: StageMetrics::default(),
         external_backings: vec![
             lease_backing_tracker,

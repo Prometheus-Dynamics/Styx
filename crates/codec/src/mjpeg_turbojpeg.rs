@@ -1,10 +1,170 @@
+use std::sync::Mutex;
+
 use styx_core::prelude::*;
 use turbojpeg::Image as TjImage;
-use turbojpeg::{Decompressor, PixelFormat as TjPixelFormat};
+use turbojpeg::{
+    Compressor, Decompressor, OutputBuf, PixelFormat as TjPixelFormat, Subsamp as TjSubsamp,
+};
 
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+
+#[derive(Debug)]
+struct TurbojpegEncoderState {
+    compressor: Compressor,
+}
+
+/// MJPEG encoder using libturbojpeg.
+pub struct TurbojpegEncoder {
+    descriptor: CodecDescriptor,
+    pool: BufferPool,
+    quality: i32,
+    state: Mutex<Option<TurbojpegEncoderState>>,
+}
+
+impl TurbojpegEncoder {
+    pub fn new(input: FourCc, quality: i32) -> Self {
+        Self::with_pool(input, quality, BufferPool::lazy(1 << 20, 4))
+    }
+
+    pub fn with_pool(input: FourCc, quality: i32, pool: BufferPool) -> Self {
+        Self {
+            descriptor: CodecDescriptor {
+                kind: CodecKind::Encoder,
+                input,
+                output: FourCc::new(*b"MJPG"),
+                name: "mjpeg",
+                impl_name: "turbojpeg",
+            },
+            pool,
+            quality: quality.clamp(1, 100),
+            state: Mutex::new(None),
+        }
+    }
+
+    fn encode_packed(
+        &self,
+        meta: &FrameMeta,
+        pixels: &[u8],
+        pitch: usize,
+        format: TjPixelFormat,
+        subsamp: TjSubsamp,
+    ) -> Result<FrameLease, CodecError> {
+        let width = meta.format.resolution.width.get().max(1) as usize;
+        let height = meta.format.resolution.height.get().max(1) as usize;
+        let required = pitch
+            .checked_mul(height)
+            .ok_or_else(|| CodecError::Codec("turbojpeg input stride overflow".into()))?;
+        if pixels.len() < required {
+            return Err(CodecError::Codec(
+                "turbojpeg input frame shorter than declared stride".into(),
+            ));
+        }
+
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|_| CodecError::Codec("turbojpeg encoder mutex poisoned".into()))?;
+        if guard.is_none() {
+            let mut compressor =
+                Compressor::new().map_err(|err| CodecError::Codec(err.to_string()))?;
+            compressor
+                .set_quality(self.quality)
+                .map_err(|err| CodecError::Codec(err.to_string()))?;
+            compressor
+                .set_optimize(false)
+                .map_err(|err| CodecError::Codec(err.to_string()))?;
+            *guard = Some(TurbojpegEncoderState { compressor });
+        }
+        let state = guard
+            .as_mut()
+            .ok_or_else(|| CodecError::Codec("turbojpeg encoder unavailable".into()))?;
+        let mut output = OutputBuf::new_owned();
+        state
+            .compressor
+            .set_subsamp(subsamp)
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+        let view = TjImage {
+            pixels: &pixels[..required],
+            width,
+            pitch,
+            height,
+            format,
+        };
+        state
+            .compressor
+            .compress(view, &mut output)
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+
+        let encoded = &output[..];
+        let mut buf = self.pool.lease();
+        buf.resize(encoded.len());
+        buf.as_mut_slice()[..encoded.len()].copy_from_slice(encoded);
+        Ok(FrameLease::single_plane(
+            FrameMeta::new(
+                MediaFormat::new(
+                    self.descriptor.output,
+                    meta.format.resolution,
+                    meta.format.color,
+                ),
+                meta.timestamp,
+            ),
+            buf,
+            encoded.len(),
+            encoded.len(),
+        ))
+    }
+}
+
+impl Codec for TurbojpegEncoder {
+    fn descriptor(&self) -> &CodecDescriptor {
+        &self.descriptor
+    }
+
+    fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
+        let meta = input.meta();
+        if meta.format.code != self.descriptor.input {
+            return Err(CodecError::FormatMismatch {
+                expected: self.descriptor.input,
+                actual: meta.format.code,
+            });
+        }
+        let plane = input
+            .planes()
+            .into_iter()
+            .next()
+            .ok_or_else(|| CodecError::Codec("turbojpeg frame missing plane".into()))?;
+        let width = meta.format.resolution.width.get().max(1) as usize;
+        match &meta.format.code.to_u32().to_le_bytes() {
+            b"R8  " | b"GREY" => self.encode_packed(
+                meta,
+                plane.data(),
+                plane.stride().max(width),
+                TjPixelFormat::GRAY,
+                TjSubsamp::Gray,
+            ),
+            b"RG24" => self.encode_packed(
+                meta,
+                plane.data(),
+                plane.stride().max(width * 3),
+                TjPixelFormat::RGB,
+                TjSubsamp::Sub2x2,
+            ),
+            b"RGBA" => self.encode_packed(
+                meta,
+                plane.data(),
+                plane.stride().max(width * 4),
+                TjPixelFormat::RGBA,
+                TjSubsamp::Sub2x2,
+            ),
+            _ => Err(CodecError::Codec(format!(
+                "unsupported turbojpeg encoder input {}",
+                meta.format.code
+            ))),
+        }
+    }
+}
 
 /// MJPEG decoder using libturbojpeg.
 pub struct TurbojpegDecoder {
@@ -87,5 +247,29 @@ impl Codec for TurbojpegDecoder {
 impl ImageDecode for TurbojpegDecoder {
     fn decode_image(&self, frame: FrameLease) -> Result<image::DynamicImage, CodecError> {
         process_to_dynamic(self, frame)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turbojpeg_encoder_encodes_gray_frames() {
+        let res = Resolution::new(2, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"GREY"), res, ColorSpace::Unknown);
+        let mut buf = BufferPool::with_limits(1, 4, 1).lease();
+        buf.resize(4);
+        buf.as_mut_slice().copy_from_slice(&[0, 64, 128, 255]);
+        let frame = FrameLease::single_plane(FrameMeta::new(fmt, 7), buf, 4, 2);
+
+        let encoded = TurbojpegEncoder::new(FourCc::new(*b"GREY"), 85)
+            .process(frame)
+            .expect("encode frame");
+        let plane = encoded.planes().into_iter().next().expect("encoded plane");
+
+        assert_eq!(encoded.meta().format.code, FourCc::new(*b"MJPG"));
+        assert_eq!(encoded.meta().timestamp, 7);
+        assert!(!plane.data().is_empty());
     }
 }

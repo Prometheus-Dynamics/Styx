@@ -1,4 +1,5 @@
 use crate::{BackendKind, ProbedBackend, ProbedDevice};
+use std::time::Duration;
 use styx_capture::prelude::*;
 
 use super::handle::start_backend;
@@ -74,6 +75,39 @@ pub enum TdnOutputMode {
     #[default]
     Auto,
     Force,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureStartPolicy {
+    pub max_attempts: usize,
+    pub retry_backoff: Duration,
+    pub retry_transient_errors: bool,
+    pub retry_without_controls_on_control_errors: bool,
+    pub retry_with_tdn_disabled: bool,
+}
+
+impl Default for CaptureStartPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            retry_backoff: Duration::ZERO,
+            retry_transient_errors: false,
+            retry_without_controls_on_control_errors: false,
+            retry_with_tdn_disabled: false,
+        }
+    }
+}
+
+impl CaptureStartPolicy {
+    pub fn resilient() -> Self {
+        Self {
+            max_attempts: 30,
+            retry_backoff: Duration::from_millis(250),
+            retry_transient_errors: true,
+            retry_without_controls_on_control_errors: true,
+            retry_with_tdn_disabled: true,
+        }
+    }
 }
 
 impl CaptureError {
@@ -205,6 +239,7 @@ mod error_tests {
 /// let _ = handle.recv();
 /// # Ok::<(), styx::capture_api::CaptureError>(())
 /// ```
+#[derive(Debug, Clone)]
 pub struct CaptureRequest<'a> {
     device: &'a ProbedDevice,
     backend: Option<BackendKind>,
@@ -283,21 +318,111 @@ impl<'a> CaptureRequest<'a> {
         self
     }
 
+    /// Resolve the canonical backend descriptor that this request will use.
+    pub fn resolved_descriptor(&self) -> Result<CaptureDescriptor, CaptureError> {
+        let (_, mode, descriptor) = self.resolve_backend_mode()?;
+        Ok(minimize_capture_descriptor(&descriptor, &mode.id))
+    }
+
     /// Start capture after validating backend/mode/interval/controls.
     ///
     /// Returns a running `CaptureHandle` that can receive frames.
     pub fn start(self) -> Result<super::handle::CaptureHandle, CaptureError> {
+        self.start_with_policy(CaptureStartPolicy::default())
+    }
+
+    /// Start capture using Styx-owned retry and fallback behavior.
+    pub fn start_with_policy(
+        mut self,
+        policy: CaptureStartPolicy,
+    ) -> Result<super::handle::CaptureHandle, CaptureError> {
+        let attempts = policy.max_attempts.max(1);
+        for attempt in 0..attempts {
+            let (backend, mode, descriptor) = self.resolve_backend_mode()?;
+            let interval = self.interval.or_else(|| default_interval(&mode));
+            match start_backend(
+                backend,
+                mode,
+                interval,
+                descriptor,
+                self.controls.clone(),
+                self.tdn_output_mode,
+            ) {
+                Ok(handle) => return Ok(handle),
+                Err(err) => {
+                    if policy.retry_with_tdn_disabled
+                        && self.try_disable_noise_reduction(backend.kind, &err)
+                    {
+                        sleep_before_retry(policy.retry_backoff);
+                        continue;
+                    }
+                    if policy.retry_without_controls_on_control_errors
+                        && self.try_drop_controls(backend.kind, &err)
+                    {
+                        sleep_before_retry(policy.retry_backoff);
+                        continue;
+                    }
+                    if policy.retry_transient_errors
+                        && err.is_transient_start()
+                        && attempt + 1 < attempts
+                    {
+                        sleep_before_retry(policy.retry_backoff);
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        Err(CaptureError::Backend(
+            "capture start policy exhausted without returning a result".into(),
+        ))
+    }
+
+    fn resolve_backend_mode(
+        &self,
+    ) -> Result<(&'a ProbedBackend, Mode, CaptureDescriptor), CaptureError> {
         let backend = pick_backend(self.device, self.backend)?;
-        let mode = pick_mode(backend, self.mode)?;
-        validate_config(backend, mode, self.interval, &self.controls)?;
-        let interval = self.interval.or_else(|| default_interval(mode));
-        start_backend(
-            backend,
-            mode.clone(),
-            interval,
-            self.controls,
-            self.tdn_output_mode,
-        )
+        let mode = pick_mode(backend, self.mode.clone())?.clone();
+        validate_config(backend, &mode, self.interval, &self.controls)?;
+        Ok((backend, mode, backend.descriptor.clone()))
+    }
+
+    fn try_disable_noise_reduction(&mut self, backend: BackendKind, err: &CaptureError) -> bool {
+        const NOISE_REDUCTION_MODE: u32 = 10002;
+        if backend != BackendKind::Libcamera || !err.requires_disabling_tdn() {
+            return false;
+        }
+
+        let mut updated = false;
+        for (id, value) in &mut self.controls {
+            if id.0 == NOISE_REDUCTION_MODE {
+                if !matches!(value, ControlValue::Int(0)) {
+                    *value = ControlValue::Int(0);
+                    updated = true;
+                }
+                self.tdn_output_mode = TdnOutputMode::Off;
+                return updated;
+            }
+        }
+
+        self.controls
+            .push((ControlId(NOISE_REDUCTION_MODE), ControlValue::Int(0)));
+        self.tdn_output_mode = TdnOutputMode::Off;
+        true
+    }
+
+    fn try_drop_controls(&mut self, backend: BackendKind, err: &CaptureError) -> bool {
+        if backend != BackendKind::Libcamera
+            || self.controls.is_empty()
+            || !err.requires_dropping_controls()
+        {
+            return false;
+        }
+
+        self.controls.clear();
+        self.tdn_output_mode = TdnOutputMode::Off;
+        true
     }
 }
 
@@ -521,6 +646,65 @@ mod tests {
         let picked = pick_mode(&backend, Some(requested_id)).expect("pick");
         assert_eq!(picked.id.format.code, FourCc::new(*b"RGGB"));
     }
+
+    #[test]
+    fn resolved_descriptor_returns_only_selected_mode() {
+        let fmt_primary = MediaFormat::new(
+            FourCc::new(*b"RG24"),
+            Resolution::new(640, 480).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let fmt_secondary = MediaFormat::new(
+            FourCc::new(*b"RG24"),
+            Resolution::new(1280, 720).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let requested_mode = Mode {
+            id: ModeId {
+                format: fmt_secondary,
+                interval: None,
+            },
+            format: fmt_secondary,
+            intervals: smallvec::smallvec![],
+            interval_stepwise: None,
+        };
+        let backend = ProbedBackend {
+            kind: BackendKind::Virtual,
+            handle: BackendHandle::Virtual,
+            descriptor: CaptureDescriptor {
+                modes: vec![
+                    Mode {
+                        id: ModeId {
+                            format: fmt_primary,
+                            interval: None,
+                        },
+                        format: fmt_primary,
+                        intervals: smallvec::smallvec![],
+                        interval_stepwise: None,
+                    },
+                    requested_mode.clone(),
+                ],
+                controls: vec![],
+            },
+            properties: vec![],
+        };
+        let device = ProbedDevice {
+            identity: crate::DeviceIdentity {
+                display: "virtual".to_string(),
+                keys: vec!["virtual".to_string()],
+            },
+            backends: vec![backend],
+        };
+
+        let descriptor = CaptureRequest::new(&device)
+            .backend(BackendKind::Virtual)
+            .mode(requested_mode.id.clone())
+            .resolved_descriptor()
+            .expect("resolve descriptor");
+
+        assert_eq!(descriptor.modes.len(), 1);
+        assert_eq!(descriptor.modes[0].id, requested_mode.id);
+    }
 }
 
 fn default_interval(mode: &Mode) -> Option<Interval> {
@@ -528,6 +712,27 @@ fn default_interval(mode: &Mode) -> Option<Interval> {
         .first()
         .copied()
         .or_else(|| mode.interval_stepwise.map(|s| s.min))
+}
+
+fn minimize_capture_descriptor(
+    descriptor: &CaptureDescriptor,
+    selected_mode: &ModeId,
+) -> CaptureDescriptor {
+    let controls = descriptor.controls.clone();
+    let modes = descriptor
+        .modes
+        .iter()
+        .find(|mode| &mode.id == selected_mode)
+        .cloned()
+        .into_iter()
+        .collect();
+    CaptureDescriptor { modes, controls }
+}
+
+fn sleep_before_retry(delay: Duration) {
+    if !delay.is_zero() {
+        std::thread::sleep(delay);
+    }
 }
 
 fn validate_config(
