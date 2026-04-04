@@ -114,7 +114,7 @@ pub struct SimulationPose {
 impl Default for SimulationPose {
     fn default() -> Self {
         Self {
-            translation_m: [0.0, 0.0, 0.0],
+            translation_m: [0.0, 0.0, 3.0],
             rotation_deg: [0.0, 0.0, 0.0],
         }
     }
@@ -166,20 +166,15 @@ impl Default for SimulationLensConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum SimulationOutputMode {
+    #[default]
     Rgb,
     Depth,
     Normals,
     Segmentation,
-}
-
-impl Default for SimulationOutputMode {
-    fn default() -> Self {
-        Self::Rgb
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -228,7 +223,7 @@ pub fn make_netcam_device(
     let format = MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb);
     let mode = Mode {
         id: ModeId {
-            format: format.clone(),
+            format,
             interval: Some(interval),
         },
         format,
@@ -451,7 +446,12 @@ pub fn make_simulation_device(
     let res = Resolution::new(config.sensor.width.max(1), config.sensor.height.max(1))
         .unwrap_or_else(|| Resolution::new(1, 1).unwrap());
     let interval = interval_from_fps(config.sensor.fps.max(1));
-    let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+    let format = match config.output_mode {
+        SimulationOutputMode::Depth => {
+            MediaFormat::new(FourCc::new(*b"D32F"), res, ColorSpace::Unknown)
+        }
+        _ => MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
+    };
     let mode = Mode {
         id: ModeId {
             format,

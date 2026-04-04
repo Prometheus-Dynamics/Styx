@@ -1,23 +1,29 @@
 use std::f32::consts::PI;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use bevy::app::App;
-use bevy::asset::AssetPlugin;
+use bevy::asset::{weak_handle, Asset, AssetPlugin, Assets};
+use bevy::core_pipeline::prepass::{DepthPrepass, NormalPrepass};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::image::{Image, TextureFormatPixelInfo};
+use bevy::pbr::{Material, MaterialPlugin, MeshMaterial3d, NotShadowCaster, StandardMaterial};
 use bevy::prelude::*;
+use bevy::reflect::TypePath;
 use bevy::render::camera::{Exposure, PhysicalCameraParameters, RenderTarget, Viewport};
 use bevy::render::render_asset::{RenderAssetUsages, RenderAssets};
 use bevy::render::render_graph::{self, RenderGraph, RenderGraphContext, RenderLabel};
 use bevy::render::render_resource::{
-    Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, ImageCopyBuffer,
-    ImageDataLayout, Maintain, MapMode, TextureDimension, TextureFormat, TextureUsages,
+    AsBindGroup, Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d,
+    MapMode, ShaderRef, TexelCopyBufferInfo, TexelCopyBufferLayout,
+    TextureDimension, TextureFormat, TextureUsages,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue};
 use bevy::render::texture::GpuImage;
+use bevy::render::view::Msaa;
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
 use bevy::window::{ExitCondition, WindowPlugin};
 use bevy::winit::WinitPlugin;
@@ -47,6 +53,37 @@ const CTRL_SIM_SENSOR_HEIGHT: ControlId = ControlId(0xF300_000A);
 const CTRL_SIM_NEAR_PLANE: ControlId = ControlId(0xF300_000B);
 const CTRL_SIM_FAR_PLANE: ControlId = ControlId(0xF300_000C);
 const CTRL_SIM_OUTPUT_MODE: ControlId = ControlId(0xF300_000D);
+
+const PREPASS_OUTPUT_SHADER_HANDLE: Handle<Shader> =
+    weak_handle!("73545978-7072-6570-6173-735f6f757400");
+const PREPASS_OUTPUT_SHADER: &str = r#"
+#import bevy_pbr::forward_io::VertexOutput
+#import bevy_pbr::prepass_utils::{prepass_depth, prepass_normal}
+
+@group(2) @binding(0) var<uniform> material: vec4<f32>;
+
+fn linearize_depth(depth: f32, near_m: f32, far_m: f32) -> f32 {
+    let z_ndc = depth * 2.0 - 1.0;
+    return (2.0 * near_m * far_m) / max(far_m + near_m - z_ndc * (far_m - near_m), 0.0001);
+}
+
+@fragment
+fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    if u32(material.x) == 1u {
+        let depth = prepass_depth(in.position, 0u);
+        let linear_depth = linearize_depth(depth, material.y, material.z);
+        return vec4<f32>(linear_depth, linear_depth, linear_depth, 1.0);
+    }
+
+#ifdef NORMAL_PREPASS
+    let normal = prepass_normal(in.position, 0u);
+    let rgb = normal * 0.5 + vec3<f32>(0.5, 0.5, 0.5);
+    return vec4<f32>(rgb, 1.0);
+#else
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+#endif
+}
+"#;
 
 pub(crate) fn control_id_translation_x() -> ControlId {
     CTRL_SIM_TRANSLATION_X
@@ -107,31 +144,55 @@ pub struct SimulationControlState {
 
 pub(crate) type SimulationControlStateHandle = Arc<Mutex<SimulationControlState>>;
 
-#[derive(Resource, Deref)]
-struct MainWorldReceiver(Receiver<Vec<u8>>);
+#[derive(Debug)]
+enum ReadbackPacket {
+    Color(Vec<u8>),
+    Depth(Vec<u8>),
+}
 
 #[derive(Resource, Deref)]
-struct RenderWorldSender(Sender<Vec<u8>>);
+struct MainWorldReceiver(Receiver<ReadbackPacket>);
+
+#[derive(Resource, Deref)]
+struct RenderWorldSender(Sender<ReadbackPacket>);
 
 #[derive(Clone, Default, Resource, Deref, DerefMut)]
 struct ImageCopiers(Vec<ImageCopier>);
+
+#[derive(Clone, Copy)]
+enum ReadbackKind {
+    Color,
+    Depth,
+}
 
 #[derive(Clone, Component)]
 struct ImageCopier {
     buffer: Buffer,
     src_image: Handle<Image>,
+    kind: ReadbackKind,
 }
 
 impl ImageCopier {
-    fn new(src_image: Handle<Image>, size: Extent3d, render_device: &RenderDevice) -> Self {
-        let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(size.width as usize) * 4;
+    fn new(
+        src_image: Handle<Image>,
+        size: Extent3d,
+        bytes_per_pixel: usize,
+        kind: ReadbackKind,
+        render_device: &RenderDevice,
+    ) -> Self {
+        let padded_bytes_per_row =
+            RenderDevice::align_copy_bytes_per_row(size.width as usize * bytes_per_pixel);
         let buffer = render_device.create_buffer(&BufferDescriptor {
             label: None,
             size: padded_bytes_per_row as u64 * size.height as u64,
             usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Self { buffer, src_image }
+        Self {
+            buffer,
+            src_image,
+            kind,
+        }
     }
 }
 
@@ -140,6 +201,69 @@ struct ImageCopyNodeLabel;
 
 #[derive(Default)]
 struct ImageCopyNode;
+
+#[derive(Resource, Debug, Clone)]
+struct SimulationViewState {
+    output_mode: SimulationOutputMode,
+    near_m: f32,
+    far_m: f32,
+    base_clear_color: Color,
+}
+
+#[derive(Resource, Clone)]
+struct SimulationSceneKey(String);
+
+#[derive(Component)]
+struct SimulationPrepassOverlay;
+
+#[derive(Component, Clone)]
+struct OriginalStandardMaterial(Handle<StandardMaterial>);
+
+#[derive(Component, Clone)]
+struct SegmentationStandardMaterial(Handle<StandardMaterial>);
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct PrepassOutputMaterial {
+    #[uniform(0)]
+    settings: [f32; 4],
+}
+
+impl Material for PrepassOutputMaterial {
+    fn fragment_shader() -> ShaderRef {
+        PREPASS_OUTPUT_SHADER_HANDLE.into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Opaque
+    }
+}
+
+struct SimulationVisualizationPlugin;
+
+impl Plugin for SimulationVisualizationPlugin {
+    fn build(&self, app: &mut App) {
+        app.world_mut()
+            .resource_mut::<Assets<Shader>>()
+            .insert(
+                PREPASS_OUTPUT_SHADER_HANDLE.id(),
+                Shader::from_wgsl(PREPASS_OUTPUT_SHADER, file!()),
+            );
+
+        app.add_plugins(MaterialPlugin::<PrepassOutputMaterial> {
+            prepass_enabled: false,
+            ..default()
+        })
+            .add_systems(
+                Update,
+                (
+                    register_segmentation_materials,
+                    apply_segmentation_materials,
+                    update_visualization_entities,
+                )
+                    .chain(),
+            );
+    }
+}
 
 pub(crate) fn apply_simulation_control(
     state: &SimulationControlStateHandle,
@@ -217,18 +341,22 @@ pub(super) fn start_simulation(
 
     let worker_fn = move || {
         let output_res = mode_clone.format.resolution;
-        let frame_len = (output_res.width.get() as usize)
+        let rgb_frame_len = (output_res.width.get() as usize)
             .saturating_mul(output_res.height.get() as usize)
             .saturating_mul(3);
+        let depth_frame_len = (output_res.width.get() as usize)
+            .saturating_mul(output_res.height.get() as usize)
+            .saturating_mul(4);
         let (pool_min, pool_bytes, pool_spare) =
-            crate::capture_api::capture_pool_limits(4, frame_len, 8);
+            crate::capture_api::capture_pool_limits(4, rgb_frame_len.max(depth_frame_len), 8);
         let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
         let mut runtime = match BevySimulationRuntime::new(&scene_path, &config) {
             Ok(runtime) => runtime,
             Err(_) => return,
         };
         let mut timestamp_ns = 0u64;
-        let mut latest_rgb = vec![0u8; frame_len];
+        let mut latest_rgb = vec![0u8; rgb_frame_len];
+        let mut latest_depth = vec![0u8; depth_frame_len];
 
         loop {
             let snapshot = match state_for_worker.lock() {
@@ -237,17 +365,14 @@ pub(super) fn start_simulation(
             };
             runtime.sync_state(&snapshot);
             runtime.update();
-            if let Some(rgba) = runtime.drain_latest_rgba() {
-                rgba_to_rgb(&rgba, output_res.width.get(), output_res.height.get(), &mut latest_rgb);
-                apply_output_mode(
-                    &mut latest_rgb,
-                    output_res.width.get(),
-                    output_res.height.get(),
-                    snapshot.output_mode,
-                );
-            }
+            runtime.drain_latest(&snapshot, &mut latest_rgb, &mut latest_depth);
 
-            let frame = build_frame_from_rgb(&latest_rgb, &mode_clone, &pool, timestamp_ns);
+            let frame = match snapshot.output_mode {
+                SimulationOutputMode::Depth => {
+                    build_frame_from_depth(&latest_depth, output_res, &pool, timestamp_ns)
+                }
+                _ => build_frame_from_rgb(&latest_rgb, &mode_clone, &pool, timestamp_ns),
+            };
             if let SendOutcome::Closed = tx.send(frame) {
                 return;
             }
@@ -312,18 +437,15 @@ fn apply_control_to_state(
     id: ControlId,
     value: ControlValue,
 ) -> Result<(), CaptureError> {
-    match id {
-        CTRL_SIM_OUTPUT_MODE => {
-            state.output_mode = match value {
-                ControlValue::Uint(0) | ControlValue::Int(0) => SimulationOutputMode::Rgb,
-                ControlValue::Uint(1) | ControlValue::Int(1) => SimulationOutputMode::Depth,
-                ControlValue::Uint(2) | ControlValue::Int(2) => SimulationOutputMode::Normals,
-                ControlValue::Uint(3) | ControlValue::Int(3) => SimulationOutputMode::Segmentation,
-                _ => return Err(CaptureError::ControlUnsupported),
-            };
-            return Ok(());
-        }
-        _ => {}
+    if id == CTRL_SIM_OUTPUT_MODE {
+        state.output_mode = match value {
+            ControlValue::Uint(0) | ControlValue::Int(0) => SimulationOutputMode::Rgb,
+            ControlValue::Uint(1) | ControlValue::Int(1) => SimulationOutputMode::Depth,
+            ControlValue::Uint(2) | ControlValue::Int(2) => SimulationOutputMode::Normals,
+            ControlValue::Uint(3) | ControlValue::Int(3) => SimulationOutputMode::Segmentation,
+            _ => return Err(CaptureError::ControlUnsupported),
+        };
+        return Ok(());
     }
 
     let float = match value {
@@ -367,7 +489,30 @@ fn build_frame_from_rgb(rgb: &[u8], mode: &Mode, pool: &BufferPool, timestamp: u
     dst[..copy_len].copy_from_slice(&rgb[..copy_len]);
     FrameLease::single_plane(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"RG24"), res, mode.format.color),
+            MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
+            timestamp,
+        ),
+        lease,
+        layout.len,
+        layout.stride,
+    )
+}
+
+fn build_frame_from_depth(
+    depth: &[u8],
+    resolution: Resolution,
+    pool: &BufferPool,
+    timestamp: u64,
+) -> FrameLease {
+    let layout = plane_layout_from_dims(resolution.width, resolution.height, 4);
+    let mut lease = pool.lease();
+    lease.resize(layout.len);
+    let dst = lease.as_mut_slice();
+    let copy_len = dst.len().min(depth.len());
+    dst[..copy_len].copy_from_slice(&depth[..copy_len]);
+    FrameLease::single_plane(
+        FrameMeta::new(
+            MediaFormat::new(FourCc::new(*b"D32F"), resolution, ColorSpace::Unknown),
             timestamp,
         ),
         lease,
@@ -392,6 +537,7 @@ fn rgba_to_rgb(rgba: &[u8], width: u32, height: u32, out: &mut Vec<u8>) {
 struct BevySimulationRuntime {
     app: App,
     sensor_entity: Entity,
+    depth_sensor_entity: Entity,
     output_width: u32,
     output_height: u32,
 }
@@ -404,14 +550,22 @@ impl BevySimulationRuntime {
         let scene_asset_path = scene_asset_path(scene_path)?;
         let render_width = config.sensor.width.max(1);
         let render_height = config.sensor.height.max(1);
-
-        let mut app = App::new();
-        app.insert_resource(ClearColor(Color::srgba(
+        let base_clear_color = Color::srgba(
             config.clear_color_rgba[0],
             config.clear_color_rgba[1],
             config.clear_color_rgba[2],
             config.clear_color_rgba[3],
-        )));
+        );
+
+        let mut app = App::new();
+        app.insert_resource(ClearColor(base_clear_color));
+        app.insert_resource(SimulationSceneKey(scene_path.display().to_string()));
+        app.insert_resource(SimulationViewState {
+            output_mode: config.output_mode,
+            near_m: config.sensor.near_m,
+            far_m: config.sensor.far_m,
+            base_clear_color,
+        });
         app.add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
@@ -426,7 +580,7 @@ impl BevySimulationRuntime {
                 })
                 .disable::<WinitPlugin>(),
         );
-        app.add_plugins(ImageCopyPlugin);
+        app.add_plugins((ImageCopyPlugin, SimulationVisualizationPlugin));
         app.finish();
         app.cleanup();
 
@@ -450,12 +604,43 @@ impl BevySimulationRuntime {
                     | TextureUsages::TEXTURE_BINDING;
             images.add(render_target_image)
         };
+        let depth_image_handle = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            let mut render_target_image = Image::new_fill(
+                size,
+                TextureDimension::D2,
+                &[0; 16],
+                TextureFormat::Rgba32Float,
+                RenderAssetUsages::default(),
+            );
+            render_target_image.texture_descriptor.usage |=
+                TextureUsages::COPY_SRC
+                    | TextureUsages::RENDER_ATTACHMENT
+                    | TextureUsages::TEXTURE_BINDING;
+            images.add(render_target_image)
+        };
 
-        let image_copier = {
+        let (image_copier, depth_image_copier) = {
             let render_device = app.sub_app(RenderApp).world().resource::<RenderDevice>();
-            ImageCopier::new(image_handle.clone(), size, &render_device)
+            (
+                ImageCopier::new(
+                    image_handle.clone(),
+                    size,
+                    4,
+                    ReadbackKind::Color,
+                    render_device,
+                ),
+                ImageCopier::new(
+                    depth_image_handle.clone(),
+                    size,
+                    16,
+                    ReadbackKind::Depth,
+                    render_device,
+                ),
+            )
         };
         app.world_mut().spawn(image_copier);
+        app.world_mut().spawn(depth_image_copier);
 
         let scene_handle = {
             let asset_server = app.world().resource::<AssetServer>();
@@ -471,6 +656,7 @@ impl BevySimulationRuntime {
         app.world_mut().insert_resource(AmbientLight {
             color: Color::srgb(0.8, 0.82, 0.85),
             brightness: 500.0,
+            affects_lightmapped_meshes: true,
         });
         app.world_mut().spawn((
             Name::new("simulation_key_light"),
@@ -483,13 +669,14 @@ impl BevySimulationRuntime {
         ));
 
         let projection = perspective_projection_from_config(config);
+        let sensor_transform = transform_from_pose(config.pose.translation_m, config.pose.rotation_deg);
         let sensor_entity = app
             .world_mut()
             .spawn((
                 Name::new("simulation_sensor"),
                 Camera3d::default(),
                 Camera {
-                    target: RenderTarget::Image(image_handle.clone()),
+                    target: RenderTarget::Image(image_handle.clone().into()),
                     viewport: Some(Viewport {
                         physical_position: UVec2::ZERO,
                         physical_size: UVec2::new(render_width, render_height),
@@ -497,62 +684,247 @@ impl BevySimulationRuntime {
                     }),
                     ..default()
                 },
+                Msaa::Off,
+                DepthPrepass,
+                NormalPrepass,
                 Tonemapping::None,
                 projection,
                 Exposure::from_physical_camera(physical_camera_params_from_config(config)),
-                transform_from_pose(config.pose.translation_m, config.pose.rotation_deg),
+                sensor_transform,
+                GlobalTransform::default(),
+            ))
+            .id();
+        let depth_sensor_entity = app
+            .world_mut()
+            .spawn((
+                Name::new("simulation_depth_sensor"),
+                Camera3d::default(),
+                Camera {
+                    target: RenderTarget::Image(depth_image_handle.clone().into()),
+                    viewport: Some(Viewport {
+                        physical_position: UVec2::ZERO,
+                        physical_size: UVec2::new(render_width, render_height),
+                        ..default()
+                    }),
+                    is_active: matches!(config.output_mode, SimulationOutputMode::Depth),
+                    ..default()
+                },
+                Msaa::Off,
+                DepthPrepass,
+                Tonemapping::None,
+                perspective_projection_from_config(config),
+                Exposure::from_physical_camera(physical_camera_params_from_config(config)),
+                sensor_transform,
                 GlobalTransform::default(),
             ))
             .id();
 
+        let overlay_material = {
+            let mut materials = app.world_mut().resource_mut::<Assets<PrepassOutputMaterial>>();
+            materials.add(PrepassOutputMaterial {
+                settings: [2.0, config.sensor.near_m, config.sensor.far_m, 0.0],
+            })
+        };
+        let depth_overlay_material = {
+            let mut materials = app.world_mut().resource_mut::<Assets<PrepassOutputMaterial>>();
+            materials.add(PrepassOutputMaterial {
+                settings: [1.0, config.sensor.near_m, config.sensor.far_m, 0.0],
+            })
+        };
+        let overlay_mesh = {
+            let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+            meshes.add(Rectangle::new(100.0, 100.0))
+        };
+        let overlay_entity = app
+            .world_mut()
+            .spawn((
+                Name::new("simulation_prepass_overlay"),
+                Mesh3d(overlay_mesh.clone()),
+                MeshMaterial3d(overlay_material),
+                Transform::from_xyz(0.0, 0.0, -0.2),
+                Visibility::Hidden,
+                NotShadowCaster,
+                SimulationPrepassOverlay,
+            ))
+            .id();
+        app.world_mut().entity_mut(sensor_entity).add_child(overlay_entity);
+        let depth_overlay_entity = app
+            .world_mut()
+            .spawn((
+                Name::new("simulation_depth_overlay"),
+                Mesh3d(overlay_mesh.clone()),
+                MeshMaterial3d(depth_overlay_material),
+                Transform::from_xyz(0.0, 0.0, -0.2),
+                Visibility::Visible,
+                NotShadowCaster,
+            ))
+            .id();
+        app.world_mut()
+            .entity_mut(depth_sensor_entity)
+            .add_child(depth_overlay_entity);
+
         Ok(Self {
             app,
             sensor_entity,
+            depth_sensor_entity,
             output_width: render_width,
             output_height: render_height,
         })
     }
 
     fn sync_state(&mut self, state: &SimulationControlState) {
-        if let Ok(mut entity) = self.app.world_mut().get_entity_mut(self.sensor_entity) {
-            if let Some(mut transform) = entity.get_mut::<Transform>() {
-                *transform = transform_from_pose(state.translation_m, state.rotation_deg);
-            }
-            if let Some(mut projection) = entity.get_mut::<Projection>() {
-                *projection = Projection::Perspective(PerspectiveProjection {
-                    fov: fov_radians(state.sensor_height_mm, state.focal_length_mm),
-                    aspect_ratio: self.output_width as f32 / self.output_height.max(1) as f32,
-                    near: state.near_m,
-                    far: state.far_m,
-                });
-            }
-            if let Some(mut exposure) = entity.get_mut::<Exposure>() {
-                *exposure = Exposure::from_physical_camera(PhysicalCameraParameters {
-                    aperture_f_stops: state.aperture_f_stop,
-                    shutter_speed_s: 1.0 / 30.0,
-                    sensitivity_iso: 100.0,
-                    sensor_height: state.sensor_height_mm / 1000.0,
-                });
-            }
+        if let Some(mut view_state) = self.app.world_mut().get_resource_mut::<SimulationViewState>() {
+            view_state.output_mode = state.output_mode;
+            view_state.near_m = state.near_m;
+            view_state.far_m = state.far_m;
         }
+
+        sync_camera_entity(
+            &mut self.app,
+            self.sensor_entity,
+            state,
+            self.output_width,
+            self.output_height,
+            true,
+        );
+        sync_camera_entity(
+            &mut self.app,
+            self.depth_sensor_entity,
+            state,
+            self.output_width,
+            self.output_height,
+            matches!(state.output_mode, SimulationOutputMode::Depth),
+        );
     }
 
     fn update(&mut self) {
         self.app.update();
     }
 
-    fn drain_latest_rgba(&mut self) -> Option<Vec<u8>> {
+    fn drain_latest(
+        &mut self,
+        _state: &SimulationControlState,
+        latest_rgb: &mut Vec<u8>,
+        latest_depth: &mut Vec<u8>,
+    ) {
         let receiver = self.app.world().resource::<MainWorldReceiver>();
-        let mut latest = None;
-        while let Ok(buffer) = receiver.try_recv() {
-            latest = Some(shrink_padded_rgba(
-                &buffer,
-                self.output_width,
-                self.output_height,
-            ));
+        while let Ok(packet) = receiver.try_recv() {
+            match packet {
+                ReadbackPacket::Color(buffer) => {
+                    let rgba = shrink_padded_rgba(&buffer, self.output_width, self.output_height);
+                    rgba_to_rgb(
+                        &rgba,
+                        self.output_width,
+                        self.output_height,
+                        latest_rgb,
+                    );
+                }
+                ReadbackPacket::Depth(buffer) => {
+                    rgba32float_depth_to_meters(
+                        &buffer,
+                        self.output_width,
+                        self.output_height,
+                        latest_depth,
+                    );
+                }
+            }
         }
-        latest
     }
+}
+
+type SegmentationMaterialQuery<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static MeshMaterial3d<StandardMaterial>, Option<&'static Name>),
+    Added<MeshMaterial3d<StandardMaterial>>,
+>;
+
+fn register_segmentation_materials(
+    mut commands: Commands,
+    scene_key: Res<SimulationSceneKey>,
+    query: SegmentationMaterialQuery,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (entity, material, name) in query.iter() {
+        let segmentation_id = stable_segmentation_id(&scene_key.0, name);
+        let segmentation_handle = materials.add(StandardMaterial {
+            base_color: segmentation_color_for_id(segmentation_id),
+            unlit: true,
+            perceptual_roughness: 1.0,
+            metallic: 0.0,
+            reflectance: 0.0,
+            ..default()
+        });
+        commands.entity(entity).insert((
+            OriginalStandardMaterial(material.0.clone()),
+            SegmentationStandardMaterial(segmentation_handle),
+        ));
+    }
+}
+
+fn apply_segmentation_materials(
+    view_state: Res<SimulationViewState>,
+    mut query: Query<(
+        &mut MeshMaterial3d<StandardMaterial>,
+        &OriginalStandardMaterial,
+        &SegmentationStandardMaterial,
+    )>,
+) {
+    let use_segmentation = matches!(view_state.output_mode, SimulationOutputMode::Segmentation);
+    for (mut current, original, segmentation) in query.iter_mut() {
+        let next = if use_segmentation {
+            &segmentation.0
+        } else {
+            &original.0
+        };
+        if current.0 != *next {
+            current.0 = next.clone();
+        }
+    }
+}
+
+fn update_visualization_entities(
+    view_state: Res<SimulationViewState>,
+    mut clear_color: ResMut<ClearColor>,
+    mut overlay_query: Query<(&MeshMaterial3d<PrepassOutputMaterial>, &mut Visibility), With<SimulationPrepassOverlay>>,
+    mut materials: ResMut<Assets<PrepassOutputMaterial>>,
+) {
+    let show_normals = matches!(view_state.output_mode, SimulationOutputMode::Normals);
+
+    *clear_color = ClearColor(match view_state.output_mode {
+        SimulationOutputMode::Rgb => view_state.base_clear_color,
+        _ => Color::BLACK,
+    });
+
+    for (material_handle, mut visibility) in overlay_query.iter_mut() {
+        *visibility = if show_normals {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        if let Some(material) = materials.get_mut(&material_handle.0) {
+            material.settings[0] = 2.0;
+            material.settings[1] = view_state.near_m;
+            material.settings[2] = view_state.far_m;
+        }
+    }
+}
+
+fn segmentation_color_for_id(id: u32) -> Color {
+    let hashed = id.wrapping_mul(0x45d9f3b).rotate_left(13);
+    let bytes = hashed.to_le_bytes();
+    let r = bytes[0].max(32);
+    let g = bytes[1].max(32);
+    let b = bytes[2].max(32);
+    Color::srgb_u8(r, g, b)
+}
+
+fn stable_segmentation_id(scene_key: &str, name: Option<&Name>) -> u32 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    scene_key.hash(&mut hasher);
+    name.map(|value| value.as_str()).unwrap_or("unnamed").hash(&mut hasher);
+    let bytes = hasher.finish().to_le_bytes();
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]).max(1)
 }
 
 fn transform_from_pose(translation_m: [f32; 3], rotation_deg: [f32; 3]) -> Transform {
@@ -567,6 +939,40 @@ fn transform_from_pose(translation_m: [f32; 3], rotation_deg: [f32; 3]) -> Trans
         rotation_deg[1].to_radians(),
         rotation_deg[2].to_radians(),
     ))
+}
+
+fn sync_camera_entity(
+    app: &mut App,
+    entity_id: Entity,
+    state: &SimulationControlState,
+    output_width: u32,
+    output_height: u32,
+    is_active: bool,
+) {
+    if let Ok(mut entity) = app.world_mut().get_entity_mut(entity_id) {
+        if let Some(mut camera) = entity.get_mut::<Camera>() {
+            camera.is_active = is_active;
+        }
+        if let Some(mut transform) = entity.get_mut::<Transform>() {
+            *transform = transform_from_pose(state.translation_m, state.rotation_deg);
+        }
+        if let Some(mut projection) = entity.get_mut::<Projection>() {
+            *projection = Projection::Perspective(PerspectiveProjection {
+                fov: fov_radians(state.sensor_height_mm, state.focal_length_mm),
+                aspect_ratio: output_width as f32 / output_height.max(1) as f32,
+                near: state.near_m,
+                far: state.far_m,
+            });
+        }
+        if let Some(mut exposure) = entity.get_mut::<Exposure>() {
+            *exposure = Exposure::from_physical_camera(PhysicalCameraParameters {
+                aperture_f_stops: state.aperture_f_stop,
+                shutter_speed_s: 1.0 / 30.0,
+                sensitivity_iso: 100.0,
+                sensor_height: state.sensor_height_mm / 1000.0,
+            });
+        }
+    }
 }
 
 fn perspective_projection_from_config(config: &SimulationDeviceConfig) -> Projection {
@@ -604,6 +1010,28 @@ fn shrink_padded_rgba(buffer: &[u8], width: u32, height: u32) -> Vec<u8> {
         .take(height as usize)
         .flat_map(|row| row[..row_bytes.min(row.len())].iter().copied())
         .collect()
+}
+
+fn rgba32float_depth_to_meters(buffer: &[u8], width: u32, height: u32, out: &mut Vec<u8>) {
+    let dst_row_bytes = width as usize * 4;
+    let src_row_bytes = width as usize * 16;
+    let aligned_src_row_bytes = RenderDevice::align_copy_bytes_per_row(src_row_bytes);
+    let needed = dst_row_bytes.saturating_mul(height as usize);
+    if out.len() != needed {
+        out.resize(needed, 0);
+    }
+
+    for (row_index, row) in buffer
+        .chunks(aligned_src_row_bytes)
+        .take(height as usize)
+        .enumerate()
+    {
+        let src = &row[..src_row_bytes.min(row.len())];
+        let dst = &mut out[row_index * dst_row_bytes..(row_index + 1) * dst_row_bytes];
+        for (src_px, dst_px) in src.chunks_exact(16).zip(dst.chunks_exact_mut(4)) {
+            dst_px.copy_from_slice(&src_px[..4]);
+        }
+    }
 }
 
 fn scene_asset_path(scene_path: &Path) -> Result<String, CaptureError> {
@@ -676,25 +1104,21 @@ impl render_graph::Node for ImageCopyNode {
             let block_dimensions = src_image.texture_format.block_dimensions();
             let block_size = src_image.texture_format.block_copy_size(None).unwrap_or(4);
             let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(
-                (src_image.size.x as usize / block_dimensions.0 as usize) * block_size as usize,
+                (src_image.size.width as usize / block_dimensions.0 as usize) * block_size as usize,
             );
             let texture_extent = Extent3d {
-                width: src_image.size.x,
-                height: src_image.size.y,
+                width: src_image.size.width,
+                height: src_image.size.height,
                 depth_or_array_layers: 1,
             };
 
             encoder.copy_texture_to_buffer(
                 src_image.texture.as_image_copy(),
-                ImageCopyBuffer {
+                TexelCopyBufferInfo {
                     buffer: &image_copier.buffer,
-                    layout: ImageDataLayout {
+                    layout: TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some(
-                            std::num::NonZero::<u32>::new(padded_bytes_per_row as u32)
-                                .unwrap()
-                                .into(),
-                        ),
+                        bytes_per_row: Some(padded_bytes_per_row as u32),
                         rows_per_image: None,
                     },
                 },
@@ -704,6 +1128,7 @@ impl render_graph::Node for ImageCopyNode {
             let render_queue = world.resource::<RenderQueue>();
             render_queue.submit(std::iter::once(encoder.finish()));
         }
+
         Ok(())
     }
 }
@@ -719,75 +1144,14 @@ fn receive_image_from_buffer(
         buffer_slice.map_async(MapMode::Read, move |result| {
             let _ = ready_tx.send(result);
         });
-        let _ = render_device.poll(Maintain::Wait);
+        let _ = render_device.poll(wgpu::Maintain::Wait);
         if let Ok(Ok(())) = ready_rx.recv() {
-            let _ = sender.send(buffer_slice.get_mapped_range().to_vec());
+            let packet = match image_copier.kind {
+                ReadbackKind::Color => ReadbackPacket::Color(buffer_slice.get_mapped_range().to_vec()),
+                ReadbackKind::Depth => ReadbackPacket::Depth(buffer_slice.get_mapped_range().to_vec()),
+            };
+            let _ = sender.send(packet);
         }
         image_copier.buffer.unmap();
     }
-}
-
-fn apply_output_mode(rgb: &mut [u8], width: u32, height: u32, mode: SimulationOutputMode) {
-    match mode {
-        SimulationOutputMode::Rgb => {}
-        SimulationOutputMode::Depth => {
-            for px in rgb.chunks_exact_mut(3) {
-                let depth = ((u16::from(px[0]) + u16::from(px[1]) + u16::from(px[2])) / 3) as u8;
-                px[0] = depth;
-                px[1] = depth;
-                px[2] = depth;
-            }
-        }
-        SimulationOutputMode::Normals => {
-            if width < 3 || height < 3 {
-                return;
-            }
-            let mut out = rgb.to_vec();
-            let row_stride = width as usize * 3;
-            for y in 1..(height as usize - 1) {
-                for x in 1..(width as usize - 1) {
-                    let idx = y * row_stride + x * 3;
-                    let left = luma_at(rgb, idx - 3);
-                    let right = luma_at(rgb, idx + 3);
-                    let up = luma_at(rgb, idx - row_stride);
-                    let down = luma_at(rgb, idx + row_stride);
-                    let nx = (right - left).clamp(-1.0, 1.0) * 0.5 + 0.5;
-                    let ny = (down - up).clamp(-1.0, 1.0) * 0.5 + 0.5;
-                    out[idx] = (nx * 255.0) as u8;
-                    out[idx + 1] = (ny * 255.0) as u8;
-                    out[idx + 2] = 255;
-                }
-            }
-            rgb.copy_from_slice(&out);
-        }
-        SimulationOutputMode::Segmentation => {
-            for px in rgb.chunks_exact_mut(3) {
-                let luma = ((u16::from(px[0]) + u16::from(px[1]) + u16::from(px[2])) / 3) as u8;
-                if luma < 64 {
-                    px[0] = 0;
-                    px[1] = 0;
-                    px[2] = 0;
-                } else if luma < 128 {
-                    px[0] = 255;
-                    px[1] = 0;
-                    px[2] = 0;
-                } else if luma < 192 {
-                    px[0] = 0;
-                    px[1] = 255;
-                    px[2] = 0;
-                } else {
-                    px[0] = 0;
-                    px[1] = 0;
-                    px[2] = 255;
-                }
-            }
-        }
-    }
-}
-
-fn luma_at(rgb: &[u8], idx: usize) -> f32 {
-    let r = rgb.get(idx).copied().unwrap_or(0) as f32 / 255.0;
-    let g = rgb.get(idx + 1).copied().unwrap_or(0) as f32 / 255.0;
-    let b = rgb.get(idx + 2).copied().unwrap_or(0) as f32 / 255.0;
-    0.2126 * r + 0.7152 * g + 0.0722 * b
 }

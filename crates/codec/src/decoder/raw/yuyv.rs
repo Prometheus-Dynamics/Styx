@@ -15,10 +15,10 @@ fn normalized_packed_stride(
 ) -> usize {
     let min_stride = width.saturating_mul(bytes_per_pixel);
     let mut stride = plane.stride().max(min_stride);
-    if let Some(tight_len) = min_stride.checked_mul(height) {
-        if plane.data().len() == tight_len {
-            stride = min_stride;
-        }
+    if let Some(tight_len) = min_stride.checked_mul(height)
+        && plane.data().len() == tight_len
+    {
+        stride = min_stride;
     }
     stride
 }

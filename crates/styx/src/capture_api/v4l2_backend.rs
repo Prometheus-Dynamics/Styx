@@ -25,8 +25,8 @@ fn is_encoded_bitstream(code: FourCc) -> bool {
 fn min_stride_for_fourcc(code: FourCc, width: usize) -> usize {
     match &code.to_u32().to_le_bytes() {
         // MIPI packed RAW10/RAW12 bayer.
-        b"pBAA" | b"pGAA" | b"pgAA" | b"pRAA" => ((width + 3) / 4) * 5,
-        b"pBCC" | b"pGCC" | b"pgCC" | b"pRCC" => ((width + 1) / 2) * 3,
+        b"pBAA" | b"pGAA" | b"pgAA" | b"pRAA" => width.div_ceil(4) * 5,
+        b"pBCC" | b"pGCC" | b"pgCC" | b"pRCC" => width.div_ceil(2) * 3,
 
         // 8-bit bayer.
         b"BA81" | b"RGGB" | b"GRBG" | b"GBRG" | b"BGGR" => width,

@@ -60,10 +60,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
                 let decoded_fmt = decoded.meta().format.code;
-                if let Some(win) = preview.as_mut() {
-                    if let Err(e) = win.show(&decoded) {
-                        eprintln!("preview failed: {e}");
-                    }
+                if let Some(win) = preview.as_mut()
+                    && let Err(e) = win.show(&decoded)
+                {
+                    eprintln!("preview failed: {e}");
                 }
                 let encoded = match encoder.process(decoded) {
                     Ok(f) => f,
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
                 let encoded_fmt = encoded.meta().format.code;
-                let bytes = encoded.planes().get(0).map(|p| p.data().len()).unwrap_or(0);
+                let bytes = encoded.planes().first().map(|p| p.data().len()).unwrap_or(0);
                 println!(
                     "#{frames:06} src={:?} decoded={decoded_fmt:?} encoded={encoded_fmt:?} bytes={bytes}",
                     mode.id.format.code

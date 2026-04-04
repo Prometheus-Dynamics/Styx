@@ -101,7 +101,7 @@ fn probe_cache_ttl() -> Duration {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(DEFAULT_MS);
-    Duration::from_millis(ms.max(0))
+    Duration::from_millis(ms)
 }
 
 #[cfg(feature = "probe")]
@@ -114,9 +114,7 @@ fn read_probe_cache() -> Option<Vec<LibcameraDeviceInfo>> {
     let cache = PROBE_CACHE.get_or_init(|| Mutex::new(ProbeCache::default()));
     let ttl = probe_cache_ttl();
     let guard = cache.lock().ok()?;
-    let Some(last) = guard.last_probe_at else {
-        return None;
-    };
+    let last = guard.last_probe_at?;
     if last.elapsed() <= ttl {
         return Some(guard.cached_devices.clone());
     }
@@ -254,7 +252,7 @@ fn build_info(camera: &Camera) -> Result<LibcameraDeviceInfo, Box<dyn std::error
                     let format = MediaFormat::new(fourcc, res, color);
                     modes.push(Mode {
                         id: ModeId {
-                            format: format.clone(),
+                            format,
                             interval: None,
                         },
                         format,

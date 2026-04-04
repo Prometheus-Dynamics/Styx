@@ -202,10 +202,10 @@ pub fn dynamic_image_pool_stats() -> Option<BufferPoolStats> {
 }
 
 pub fn reset_dynamic_image_pool() {
-    if let Some(lock) = DYNAMIC_IMAGE_POOL.get() {
-        if let Ok(mut guard) = lock.lock() {
-            *guard = (BufferPool::with_limits(0, 1, 0), 1);
-        }
+    if let Some(lock) = DYNAMIC_IMAGE_POOL.get()
+        && let Ok(mut guard) = lock.lock()
+    {
+        *guard = (BufferPool::with_limits(0, 1, 0), 1);
     }
 }
 

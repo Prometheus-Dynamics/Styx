@@ -82,7 +82,7 @@ impl PreviewWindow {
         }
 
         let planes = frame.planes();
-        let Some(plane) = planes.get(0) else {
+        let Some(plane) = planes.first() else {
             return Err("frame missing plane".into());
         };
         let code = meta.format.code;
@@ -94,6 +94,8 @@ impl PreviewWindow {
             self.blit_rgba(plane, false)?;
         } else if code == FourCc::new(*b"BGRA") {
             self.blit_rgba(plane, true)?;
+        } else if code == FourCc::new(*b"D32F") {
+            self.blit_depth32f(plane)?;
         } else {
             return Err(format!("unsupported preview format {:?}", code));
         }
@@ -153,6 +155,53 @@ impl PreviewWindow {
                 let (r, b) = if swap_rb { (b, r) } else { (r, b) };
                 self.buffer[y * self.width + x] =
                     (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | (b as u32);
+            }
+        }
+        Ok(())
+    }
+
+    fn blit_depth32f(&mut self, plane: &Plane<'_>) -> Result<(), String> {
+        let stride = plane.stride().max(self.width.saturating_mul(4));
+        let data = plane.data();
+        let required = stride
+            .checked_mul(self.height)
+            .ok_or_else(|| "frame stride overflow".to_string())?;
+        if data.len() < required {
+            return Err("frame too small for depth32f".into());
+        }
+
+        let mut max_depth = 0.0f32;
+        for y in 0..self.height {
+            let row = &data[y * stride..];
+            for x in 0..self.width {
+                let i = x * 4;
+                if i + 4 > row.len() {
+                    break;
+                }
+                let depth = f32::from_ne_bytes([row[i], row[i + 1], row[i + 2], row[i + 3]]);
+                if depth.is_finite() && depth > max_depth {
+                    max_depth = depth;
+                }
+            }
+        }
+        let max_depth = max_depth.max(1.0);
+
+        for y in 0..self.height {
+            let row = &data[y * stride..];
+            for x in 0..self.width {
+                let i = x * 4;
+                if i + 4 > row.len() {
+                    break;
+                }
+                let depth = f32::from_ne_bytes([row[i], row[i + 1], row[i + 2], row[i + 3]]);
+                let normalized = if depth.is_finite() && depth >= 0.0 {
+                    1.0 - (depth / max_depth).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let value = (normalized * 255.0) as u32;
+                self.buffer[y * self.width + x] =
+                    (0xFF << 24) | (value << 16) | (value << 8) | value;
             }
         }
         Ok(())

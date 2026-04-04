@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     meta.format.code,
                     meta.format.resolution.width,
                     meta.format.resolution.height,
-                    frame.planes().get(0).map(|p| p.data().len()).unwrap_or(0)
+                    frame.planes().first().map(|p| p.data().len()).unwrap_or(0)
                 );
             }
             RecvOutcome::Empty => continue,
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         meta.format.code,
                         meta.format.resolution.width,
                         meta.format.resolution.height,
-                        frame.planes().get(0).map(|p| p.data().len()).unwrap_or(0)
+                        frame.planes().first().map(|p| p.data().len()).unwrap_or(0)
                     );
                 }
                 RecvOutcome::Empty => continue,
@@ -97,7 +97,7 @@ fn virtual_device() -> ProbedDevice {
     let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
     let mode = Mode {
         id: ModeId {
-            format: format.clone(),
+            format,
             interval: None,
         },
         format,

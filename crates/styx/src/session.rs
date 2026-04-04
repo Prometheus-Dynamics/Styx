@@ -583,11 +583,11 @@ impl MediaPipeline {
         #[cfg(feature = "hooks")]
         {
             let mut transform_applied = false;
-            if !self.frame_transform.is_identity() {
-                if let Ok(frame) = transform_packed_frame(&cur, self.frame_transform) {
-                    cur = frame;
-                    transform_applied = true;
-                }
+            if !self.frame_transform.is_identity()
+                && let Ok(frame) = transform_packed_frame(&cur, self.frame_transform)
+            {
+                cur = frame;
+                transform_applied = true;
             }
             let needs_image =
                 self.hook.is_some() || (!self.frame_transform.is_identity() && !transform_applied);

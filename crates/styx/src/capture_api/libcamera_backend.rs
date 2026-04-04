@@ -131,15 +131,15 @@ fn classify_libcamera_backend_message(message: impl Into<String>) -> CaptureErro
 fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
     match value {
         LcValue::None => Some(ControlValue::None),
-        LcValue::Bool(v) if v.len() == 1 => v.get(0).copied().map(ControlValue::Bool),
-        LcValue::Int32(v) if v.len() == 1 => v.get(0).copied().map(ControlValue::Int),
+        LcValue::Bool(v) if v.len() == 1 => v.first().copied().map(ControlValue::Bool),
+        LcValue::Int32(v) if v.len() == 1 => v.first().copied().map(ControlValue::Int),
         LcValue::Int64(v) if v.len() == 1 => v
-            .get(0)
+            .first()
             .copied()
             .and_then(|n| i32::try_from(n).ok())
             .map(ControlValue::Int),
         LcValue::Int64(v) if v.len() == 2 => {
-            let a = v.get(0).copied()?;
+            let a = v.first().copied()?;
             let b = v.get(1).copied()?;
             if a == b {
                 i32::try_from(a).ok().map(ControlValue::Int)
@@ -148,10 +148,10 @@ fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
             }
         }
         LcValue::Uint16(v) if v.len() == 1 => {
-            v.get(0).copied().map(|n| ControlValue::Uint(n as u32))
+            v.first().copied().map(|n| ControlValue::Uint(n as u32))
         }
-        LcValue::Uint32(v) if v.len() == 1 => v.get(0).copied().map(ControlValue::Uint),
-        LcValue::Float(v) if v.len() == 1 => v.get(0).copied().map(ControlValue::Float),
+        LcValue::Uint32(v) if v.len() == 1 => v.first().copied().map(ControlValue::Uint),
+        LcValue::Float(v) if v.len() == 1 => v.first().copied().map(ControlValue::Float),
         _ => None,
     }
 }
@@ -338,7 +338,7 @@ fn unique_backing_plane_bytes(planes: &[BackingPlaneView]) -> usize {
         .iter()
         .filter(|plane| {
             let key = (plane.fd, plane.offset, plane.len);
-            if seen.iter().any(|existing| *existing == key) {
+            if seen.contains(&key) {
                 false
             } else {
                 seen.push(key);
@@ -761,18 +761,18 @@ pub(super) fn start_libcamera(
                 ));
                 cfg.set_buffer_count(depth_u32);
 
-                if enable_tdn_output {
-                    if let Some(mut tdn_cfg) = cfgs.get_mut(1) {
-                        tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
-                            desired_format.to_u32(),
-                            0,
-                        ));
-                        tdn_cfg.set_size(Size::new(
-                            mode_for_thread.format.resolution.width.get(),
-                            mode_for_thread.format.resolution.height.get(),
-                        ));
-                        tdn_cfg.set_buffer_count(depth_u32);
-                    }
+                if enable_tdn_output
+                    && let Some(mut tdn_cfg) = cfgs.get_mut(1)
+                {
+                    tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
+                        desired_format.to_u32(),
+                        0,
+                    ));
+                    tdn_cfg.set_size(Size::new(
+                        mode_for_thread.format.resolution.width.get(),
+                        mode_for_thread.format.resolution.height.get(),
+                    ));
+                    tdn_cfg.set_buffer_count(depth_u32);
                 }
             }
             if matches!(cfgs.validate(), CameraConfigurationStatus::Invalid) {
@@ -786,13 +786,13 @@ pub(super) fn start_libcamera(
                             0,
                         ));
                     }
-                    if enable_tdn_output {
-                        if let Some(mut tdn_cfg) = cfgs.get_mut(1) {
-                            tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
-                                FourCc::new(*b"YUYV").to_u32(),
-                                0,
-                            ));
-                        }
+                    if enable_tdn_output
+                        && let Some(mut tdn_cfg) = cfgs.get_mut(1)
+                    {
+                        tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
+                            FourCc::new(*b"YUYV").to_u32(),
+                            0,
+                        ));
                     }
                     if matches!(cfgs.validate(), CameraConfigurationStatus::Invalid) {
                         return Err(CaptureError::Backend("config invalid".into()));
@@ -950,7 +950,7 @@ pub(super) fn start_libcamera(
                 let duration = duration_us.clamp(1, i64::MAX as u64) as i64;
                 frame_duration = Some(duration);
                 // Control id 30 is FrameDurationLimits in libcamera.
-                let _ = ctrl_list
+                ctrl_list
                     .set_raw(30, LcValue::from([duration, duration]))
                     .map_err(|e| classify_libcamera_control_apply_message(e.to_string()))?;
             }
@@ -968,7 +968,7 @@ pub(super) fn start_libcamera(
             }
             let req_rx = cam.subscribe_request_completed();
             let (ret_tx, ret_rx) = mpsc::channel::<Request>();
-            if let Err(err) = cam.start(start_ctrls.as_ref().map(|c| &**c)) {
+            if let Err(err) = cam.start(start_ctrls.as_deref()) {
                 let msg = err.to_string();
                 if start_ctrls.is_some()
                     && classify_libcamera_control_apply_kind(&msg) != ControlApplyKind::Other
@@ -1340,10 +1340,7 @@ pub(super) fn start_libcamera(
         ))
     });
 
-    let mode = match setup {
-        Ok(mode) => mode,
-        Err(e) => return Err(e),
-    };
+    let mode = setup?;
 
     Ok(CaptureHandle {
         backend: BackendKind::Libcamera,
@@ -1383,8 +1380,8 @@ fn to_lc_value(value: &ControlValue) -> Result<LcValue, CaptureError> {
     let val = match value {
         ControlValue::None => LcValue::None,
         ControlValue::Bool(v) => LcValue::from(*v),
-        ControlValue::Int(v) => LcValue::from(*v as i32),
-        ControlValue::Uint(v) => LcValue::from(*v as u32),
+        ControlValue::Int(v) => LcValue::from(*v),
+        ControlValue::Uint(v) => LcValue::from(*v),
         ControlValue::Float(v) => LcValue::from(*v),
     };
     Ok(val)

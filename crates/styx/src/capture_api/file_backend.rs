@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -151,7 +151,7 @@ pub(crate) fn inspect_file_media(path: &PathBuf) -> FileMediaInfo {
     }
 }
 
-fn is_video_path(path: &PathBuf) -> bool {
+fn is_video_path(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => is_video_ext(ext),
         None => false,
@@ -166,7 +166,7 @@ fn is_video_ext(ext: &str) -> bool {
 }
 
 #[cfg(feature = "file-backend-video")]
-fn probe_video_metadata(path: &PathBuf) -> Result<(Resolution, Option<u32>), CaptureError> {
+fn probe_video_metadata(path: &Path) -> Result<(Resolution, Option<u32>), CaptureError> {
     ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
     let ictx = format::input(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
     let stream = ictx
@@ -311,11 +311,13 @@ pub(super) fn start_file(
                         path,
                         &tx,
                         &mode_clone,
-                        timestamp_ns,
-                        frame_delay_ms,
-                        speed,
-                        start_frame,
-                        stop_frame,
+                        VideoDecodeOptions {
+                            timestamp_ns,
+                            fallback_frame_interval_ms: frame_delay_ms,
+                            playback_speed: speed,
+                            start_frame,
+                            stop_frame,
+                        },
                     ) {
                         match result {
                             VideoDecodeResult::Advanced(next_ts) => {
@@ -408,7 +410,7 @@ fn interval_to_delay_ms(interval: Interval) -> u64 {
     ((1_000u64.saturating_mul(num)).saturating_add(den / 2) / den).max(1)
 }
 
-fn decode_rgb(path: &PathBuf, bytes: Option<&[u8]>) -> Result<(Vec<u8>, Resolution), CaptureError> {
+fn decode_rgb(path: &Path, bytes: Option<&[u8]>) -> Result<(Vec<u8>, Resolution), CaptureError> {
     let owned;
     let data = if let Some(b) = bytes {
         b
@@ -416,10 +418,10 @@ fn decode_rgb(path: &PathBuf, bytes: Option<&[u8]>) -> Result<(Vec<u8>, Resoluti
         owned = fs::read(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
         owned.as_slice()
     };
-    if is_jpeg_path(path) {
-        if let Ok(result) = decode_jpeg_rgb(data) {
-            return Ok(result);
-        }
+    if is_jpeg_path(path)
+        && let Ok(result) = decode_jpeg_rgb(data)
+    {
+        return Ok(result);
     }
     let img = image::load_from_memory(data).map_err(|e| CaptureError::Backend(e.to_string()))?;
     let rgb = img.to_rgb8();
@@ -429,7 +431,7 @@ fn decode_rgb(path: &PathBuf, bytes: Option<&[u8]>) -> Result<(Vec<u8>, Resoluti
     Ok((rgb.into_raw(), res))
 }
 
-fn is_jpeg_path(path: &PathBuf) -> bool {
+fn is_jpeg_path(path: &Path) -> bool {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) => matches!(ext.to_ascii_lowercase().as_str(), "jpg" | "jpeg"),
         None => false,
@@ -507,16 +509,28 @@ fn build_frame_from_rgb(rgb: &[u8], mode: &Mode, pool: &BufferPool, timestamp: u
 }
 
 #[cfg(feature = "file-backend-video")]
-fn decode_video(
-    path: &PathBuf,
-    tx: &styx_core::queue::BoundedTx<FrameLease>,
-    mode: &Mode,
-    mut timestamp_ns: u64,
+struct VideoDecodeOptions {
+    timestamp_ns: u64,
     fallback_frame_interval_ms: u64,
     playback_speed: f32,
     start_frame: u32,
     stop_frame: u32,
+}
+
+#[cfg(feature = "file-backend-video")]
+fn decode_video(
+    path: &Path,
+    tx: &styx_core::queue::BoundedTx<FrameLease>,
+    mode: &Mode,
+    options: VideoDecodeOptions,
 ) -> Result<VideoDecodeResult, CaptureError> {
+    let VideoDecodeOptions {
+        mut timestamp_ns,
+        fallback_frame_interval_ms,
+        playback_speed,
+        start_frame,
+        stop_frame,
+    } = options;
     ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
     let mut ictx = format::input(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
     let stream_idx = ictx

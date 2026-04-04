@@ -89,10 +89,10 @@ pub fn transform_pool_stats() -> Option<BufferPoolStats> {
 }
 
 pub fn reset_transform_pool() {
-    if let Some(lock) = TRANSFORM_POOL.get() {
-        if let Ok(mut guard) = lock.lock() {
-            *guard = (BufferPool::with_limits(0, 1, 0), 1);
-        }
+    if let Some(lock) = TRANSFORM_POOL.get()
+        && let Ok(mut guard) = lock.lock()
+    {
+        *guard = (BufferPool::with_limits(0, 1, 0), 1);
     }
 }
 

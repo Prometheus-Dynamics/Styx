@@ -52,7 +52,7 @@ pub(crate) fn blit_rgba_frame(
     pool: &BufferPool,
     timestamp: u64,
 ) -> FrameLease {
-    let stride = rgb.stride(0) as usize;
+    let stride = rgb.stride(0);
     let data = rgb.data(0);
     let mut lease = pool.lease();
     lease.resize(layout.len);
@@ -82,7 +82,7 @@ pub(crate) fn blit_rgb24_frame(
     pool: &BufferPool,
     timestamp: u64,
 ) -> FrameLease {
-    let stride = rgba.stride(0) as usize;
+    let stride = rgba.stride(0);
     let data = rgba.data(0);
     let width = res.width.get() as usize;
     let mut lease = pool.lease();

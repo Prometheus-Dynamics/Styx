@@ -10,7 +10,7 @@ documentation = "https://docs.rs/styx-v4l2"
 readme = "README.md"
 keywords = ["media", "video", "v4l2", "capture"]
 categories = ["multimedia::video", "api-bindings"]
-rust-version = "1.85"
+rust-version = "1.94"
 
 [lib]
 path = "src/lib.rs"

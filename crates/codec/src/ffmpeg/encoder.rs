@@ -405,10 +405,10 @@ impl FfmpegVideoEncoder {
     }
 
     fn target_resolution(&self, src_width: u32, src_height: u32) -> (u32, u32) {
-        if let Ok(opts) = self.opts.lock() {
-            if let Some(res) = opts.output_resolution {
-                return (res.width.get(), res.height.get());
-            }
+        if let Ok(opts) = self.opts.lock()
+            && let Some(res) = opts.output_resolution
+        {
+            return (res.width.get(), res.height.get());
         }
         (src_width, src_height)
     }
@@ -692,12 +692,12 @@ impl FfmpegVideoEncoder {
         if bitrate == 0 {
             return;
         }
-        if let Ok(mut guard) = self.state.lock() {
-            if let Some(state) = guard.as_mut() {
-                state
-                    .encoder
-                    .set_bit_rate(usize::try_from(bitrate).unwrap_or(usize::MAX));
-            }
+        if let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut()
+        {
+            state
+                .encoder
+                .set_bit_rate(usize::try_from(bitrate).unwrap_or(usize::MAX));
         }
         if let Ok(mut opts) = self.opts.lock() {
             opts.bitrate = bitrate;
@@ -709,13 +709,12 @@ impl FfmpegVideoEncoder {
         if let Ok(mut locked) = self.opts.lock() {
             locked.gop = gop;
         }
-        if let Some(g) = gop {
-            if let Ok(mut guard) = self.state.lock() {
-                if let Some(state) = guard.as_mut() {
-                    let gop_u32: u32 = g.try_into().unwrap_or(u32::MAX);
-                    state.encoder.set_gop(gop_u32);
-                }
-            }
+        if let Some(g) = gop
+            && let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut()
+        {
+            let gop_u32: u32 = g.try_into().unwrap_or(u32::MAX);
+            state.encoder.set_gop(gop_u32);
         }
     }
 
@@ -724,12 +723,11 @@ impl FfmpegVideoEncoder {
         if let Ok(mut locked) = self.opts.lock() {
             locked.framerate = framerate;
         }
-        if let Some((num, den)) = framerate {
-            if let Ok(mut guard) = self.state.lock() {
-                if let Some(state) = guard.as_mut() {
-                    state.encoder.set_time_base((den as i32, num as i32));
-                }
-            }
+        if let Some((num, den)) = framerate
+            && let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut()
+        {
+            state.encoder.set_time_base((den as i32, num as i32));
         }
     }
 

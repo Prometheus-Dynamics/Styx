@@ -33,6 +33,15 @@ use crate::metrics::StageMetrics;
 use crate::prelude::{Interval, Mode};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
+struct MjpegLoopContext<'a> {
+    boundary: &'a str,
+    width: u32,
+    height: u32,
+    fps: u32,
+    start: &'a Instant,
+    frame_idx: &'a mut u64,
+}
+
 /// Basic MJPEG-over-HTTP backend. Expects `multipart/x-mixed-replace` with JPEG parts.
 pub(super) fn start_netcam(
     backend: &ProbedBackend,
@@ -70,26 +79,26 @@ pub(super) fn start_netcam(
         let mut consecutive_failures: u32 = 0;
         loop {
             // First try MJPEG.
-            if let Ok(resp) = client.get(&url_for_thread).send() {
-                if let Some(boundary) = resp
+            if let Ok(resp) = client.get(&url_for_thread).send()
+                && let Some(boundary) = resp
                     .headers()
                     .get("content-type")
                     .and_then(|h| h.to_str().ok())
                     .and_then(parse_boundary)
-                {
-                    if mjpeg_loop(
-                        resp,
-                        tx_for_thread.as_ref(),
-                        &boundary,
+                && mjpeg_loop(
+                    resp,
+                    tx_for_thread.as_ref(),
+                    MjpegLoopContext {
+                        boundary: &boundary,
                         width,
                         height,
                         fps,
-                        &start,
-                        &mut frame_idx,
-                    ) {
-                        return;
-                    }
-                }
+                        start: &start,
+                        frame_idx: &mut frame_idx,
+                    },
+                )
+            {
+                return;
             }
             // Fallback to FFmpeg for H264/H265/other container streams.
             #[cfg(feature = "netcam-video")]
@@ -179,34 +188,33 @@ async fn async_netcam_worker(
     let mut backoff = Duration::from_millis(tunables.backoff_start_ms);
     let mut consecutive_failures: u32 = 0;
     loop {
-        if let Ok(resp) = client.get(&url).send().await {
-            if let Some(boundary) = resp
+        if let Ok(resp) = client.get(&url).send().await
+            && let Some(boundary) = resp
                 .headers()
                 .get("content-type")
                 .and_then(|h| h.to_str().ok())
                 .and_then(parse_boundary)
-            {
-                let stream = resp
-                    .bytes_stream()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
-                let reader = StreamReader::new(stream);
-                let mut reader = tokio::io::BufReader::new(reader);
-                if async_mjpeg_loop(
-                    &mut reader,
-                    tx.as_ref(),
-                    &boundary,
+        {
+            let stream = resp.bytes_stream().map_err(std::io::Error::other);
+            let reader = StreamReader::new(stream);
+            let mut reader = tokio::io::BufReader::new(reader);
+            if async_mjpeg_loop(
+                &mut reader,
+                tx.as_ref(),
+                MjpegLoopContext {
+                    boundary: &boundary,
                     width,
                     height,
                     fps,
-                    &start,
-                    &mut frame_idx,
-                )
-                .await
-                {
-                    return;
-                } else {
-                    continue;
-                }
+                    start: &start,
+                    frame_idx: &mut frame_idx,
+                },
+            )
+            .await
+            {
+                return;
+            } else {
+                continue;
             }
         }
         #[cfg(feature = "netcam-video")]
@@ -214,7 +222,6 @@ async fn async_netcam_worker(
             if let Ok(()) = tokio::task::spawn_blocking({
                 let url = url.clone();
                 let tx = tx.clone();
-                let start = start.clone();
                 let mut frame_idx = frame_idx;
                 move || ffmpeg_loop(&url, &tx, &start, &mut frame_idx)
             })
@@ -239,17 +246,20 @@ async fn async_netcam_worker(
 async fn async_mjpeg_loop<S>(
     reader: &mut tokio::io::BufReader<StreamReader<S, Bytes>>,
     tx: &styx_core::queue::BoundedTx<FrameLease>,
-    boundary: &str,
-    width: u32,
-    height: u32,
-    fps: u32,
-    start: &Instant,
-    frame_idx: &mut u64,
+    ctx: MjpegLoopContext<'_>,
 ) -> bool
 where
     S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin,
 {
     use tokio::io::AsyncBufReadExt;
+    let MjpegLoopContext {
+        boundary,
+        width,
+        height,
+        fps,
+        start,
+        frame_idx,
+    } = ctx;
 
     let expected_pixels = if width > 0 && height > 0 {
         width as usize * height as usize
@@ -295,13 +305,11 @@ where
             if let Some(rest) = line
                 .strip_prefix(b"Content-Length:")
                 .or_else(|| line.strip_prefix(b"content-length:"))
-            {
-                if let Some(v) = std::str::from_utf8(rest)
+                && let Some(v) = std::str::from_utf8(rest)
                     .ok()
                     .and_then(|s| s.trim().parse::<usize>().ok())
-                {
-                    content_length = Some(v.min(NETCAM_MAX_JPEG_BYTES));
-                }
+            {
+                content_length = Some(v.min(NETCAM_MAX_JPEG_BYTES));
             }
         }
         buf.clear();
@@ -480,13 +488,16 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 fn mjpeg_loop(
     resp: reqwest::blocking::Response,
     tx: &styx_core::queue::BoundedTx<FrameLease>,
-    boundary: &str,
-    width: u32,
-    height: u32,
-    fps: u32,
-    start: &Instant,
-    frame_idx: &mut u64,
+    ctx: MjpegLoopContext<'_>,
 ) -> bool {
+    let MjpegLoopContext {
+        boundary,
+        width,
+        height,
+        fps,
+        start,
+        frame_idx,
+    } = ctx;
     let mut reader = BufReader::new(resp);
     let expected_pixels = if width > 0 && height > 0 {
         width as usize * height as usize
@@ -531,13 +542,11 @@ fn mjpeg_loop(
             if let Some(rest) = line
                 .strip_prefix(b"Content-Length:")
                 .or_else(|| line.strip_prefix(b"content-length:"))
-            {
-                if let Some(v) = std::str::from_utf8(rest)
+                && let Some(v) = std::str::from_utf8(rest)
                     .ok()
                     .and_then(|s| s.trim().parse::<usize>().ok())
-                {
-                    content_length = Some(v.min(NETCAM_MAX_JPEG_BYTES));
-                }
+            {
+                content_length = Some(v.min(NETCAM_MAX_JPEG_BYTES));
             }
         }
         // Read JPEG until next boundary.
@@ -562,7 +571,7 @@ fn mjpeg_loop(
             }
             None => loop {
                 match reader.fill_buf() {
-                    Ok(data) if data.is_empty() => break,
+                    Ok([]) => break,
                     Ok(data) => {
                         if let Some(idx) = find_subslice(data, boundary.as_bytes()) {
                             buf.extend_from_slice(&data[..idx]);
@@ -677,7 +686,7 @@ fn ffmpeg_loop(
             if stream.index() != stream_idx {
                 continue;
             }
-            if let Err(_) = decoder.send_packet(&packet) {
+            if decoder.send_packet(&packet).is_err() {
                 break;
             }
             while decoder.receive_frame(&mut decoded).is_ok() {

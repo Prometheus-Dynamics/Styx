@@ -119,6 +119,7 @@ pub enum BackendHandle {
     },
     #[cfg(feature = "simulation-bevy")]
     Simulation {
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         scene_path: PathBuf,
         config: crate::capture_api::SimulationDeviceConfig,
     },
@@ -489,7 +490,7 @@ pub fn probe_all_with_errors() -> ProbeResult {
     #[cfg(feature = "v4l2")]
     {
         let (v4l2_devices, v4l2_errors) =
-            match catch_unwind(AssertUnwindSafe(|| styx_v4l2::probe_devices())) {
+            match catch_unwind(AssertUnwindSafe(styx_v4l2::probe_devices)) {
                 Ok(res) => res,
                 Err(_) => (Vec::new(), vec!["v4l2 probe panicked".to_string()]),
             };

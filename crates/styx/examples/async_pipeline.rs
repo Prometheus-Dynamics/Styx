@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "#{frames:02} ts={} fmt={:?} stride={}",
                     meta.timestamp,
                     meta.format.code,
-                    frame.plane_strides().get(0).copied().unwrap_or_default()
+                    frame.plane_strides().first().copied().unwrap_or_default()
                 );
             }
             RecvOutcome::Empty => tokio::time::sleep(Duration::from_millis(2)).await,
@@ -60,7 +60,7 @@ fn virtual_device() -> ProbedDevice {
     let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
     let mode = Mode {
         id: ModeId {
-            format: format.clone(),
+            format,
             interval: None,
         },
         format,

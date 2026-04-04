@@ -81,6 +81,11 @@ impl<T> BoundedTx<T> {
         self.inner.queue.len()
     }
 
+    /// Whether the queue currently contains no items.
+    pub fn is_empty(&self) -> bool {
+        self.inner.queue.is_empty()
+    }
+
     /// Queue capacity.
     pub fn capacity(&self) -> usize {
         self.inner.queue.capacity()
@@ -143,6 +148,11 @@ impl<T> BoundedRx<T> {
     /// Current queue depth.
     pub fn len(&self) -> usize {
         self.inner.queue.len()
+    }
+
+    /// Whether the queue currently contains no items.
+    pub fn is_empty(&self) -> bool {
+        self.inner.queue.is_empty()
     }
 
     /// Queue capacity.

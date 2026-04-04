@@ -555,7 +555,7 @@ fn demosaic_bilinear_to_rg24(
     bit_depth: u8,
     bytes_per_sample: usize,
 ) {
-    if bytes_per_sample == 2 && stride % 2 == 0 {
+    if bytes_per_sample == 2 && stride.is_multiple_of(2) {
         demosaic_bilinear_u16_le(dst, data, stride / 2, width, height, pattern, bit_depth);
         return;
     }

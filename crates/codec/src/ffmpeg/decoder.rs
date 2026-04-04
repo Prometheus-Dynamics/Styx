@@ -320,19 +320,18 @@ impl FfmpegVideoDecoder {
         src: &FfFrame,
         target: PixelFormat,
     ) -> Result<FfFrame, CodecError> {
-        if let Some(cached) = cache {
-            if cached.width == src.width()
-                && cached.height == src.height()
-                && cached.src_fmt == src.format()
-                && cached.dst_fmt == target
-            {
-                cached
-                    .scaler
-                    .0
-                    .run(src, &mut cached.scratch)
-                    .map_err(|e| CodecError::Codec(e.to_string()))?;
-                return Ok(cached.scratch.clone());
-            }
+        if let Some(cached) = cache
+            && cached.width == src.width()
+            && cached.height == src.height()
+            && cached.src_fmt == src.format()
+            && cached.dst_fmt == target
+        {
+            cached
+                .scaler
+                .0
+                .run(src, &mut cached.scratch)
+                .map_err(|e| CodecError::Codec(e.to_string()))?;
+            return Ok(cached.scratch.clone());
         }
 
         let mut scaler = ffmpeg_next::software::scaling::context::Context::get(

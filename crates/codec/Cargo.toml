@@ -10,7 +10,7 @@ documentation = "https://docs.rs/styx-codec"
 readme = "README.md"
 keywords = ["media", "video", "codec", "mjpeg"]
 categories = ["multimedia::video", "multimedia::encoding"]
-rust-version = "1.85"
+rust-version = "1.94"
 
 [lib]
 path = "src/lib.rs"
@@ -20,12 +20,12 @@ styx-core = { package = "styx-core-rs", path = "../core", version = "0.1.0" }
 styx-capture = { path = "../capture", version = "0.1.0" }
 thiserror = "2.0.18"
 jpeg-decoder = "0.3.2"
-zune-jpeg = { version = "0.5.12", optional = true }
+zune-jpeg = { version = "0.5.15", optional = true }
 zune-core = { version = "0.5.1", optional = true }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"], optional = true }
 mozjpeg = { version = "0.10.13", optional = true }
 turbojpeg = { version = "1.4.0", optional = true }
-ffmpeg-next = { version = "8.0.0", features = ["codec", "format", "software-scaling"], optional = true }
+ffmpeg-next = { version = "8.1.0", features = ["codec", "format", "software-scaling"], optional = true }
 smallvec = "1.15.1"
 yuvutils-rs = { version = "0.8.3", features = ["fast_mode"] }
 rayon = "1.11.0"

@@ -10,7 +10,7 @@ documentation = "https://docs.rs/styx-capture"
 readme = "README.md"
 keywords = ["media", "video", "capture", "zero-copy"]
 categories = ["multimedia::video"]
-rust-version = "1.85"
+rust-version = "1.94"
 
 [lib]
 path = "src/lib.rs"

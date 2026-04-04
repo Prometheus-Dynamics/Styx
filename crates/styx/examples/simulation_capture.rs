@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "#{frames:03} ts={} fmt={:?} stride={}",
                     meta.timestamp,
                     meta.format.code,
-                    frame.plane_strides().get(0).copied().unwrap_or_default()
+                    frame.plane_strides().first().copied().unwrap_or_default()
                 );
                 #[cfg(feature = "preview-window")]
                 if let Some(win) = preview.as_mut() {

@@ -253,22 +253,23 @@ pub fn frame_lease_to_dynamic_image(frame: FrameLease) -> Result<DynamicImage, F
             let required = stride.saturating_mul(height as usize);
             if layout.offset == 0 && stride == expected {
                 let planes = frame.planes();
-                if let Some(plane) = planes.first() {
-                    if plane.data().len() >= required && layout.len >= required {
-                        drop(planes);
-                        let (_meta, _layouts, buffers) = frame.into_parts();
-                        let mut buf = match buffers.into_iter().next() {
-                            Some(buf) => buf,
-                            None => {
-                                let img = image::GrayImage::new(width, height);
-                                return Ok(DynamicImage::ImageLuma8(img));
-                            }
-                        };
-                        buf.truncate(required);
-                        let img = image::GrayImage::from_raw(width, height, buf)
-                            .unwrap_or_else(|| image::GrayImage::new(width, height));
-                        return Ok(DynamicImage::ImageLuma8(img));
-                    }
+                if let Some(plane) = planes.first()
+                    && plane.data().len() >= required
+                    && layout.len >= required
+                {
+                    drop(planes);
+                    let (_meta, _layouts, buffers) = frame.into_parts();
+                    let mut buf = match buffers.into_iter().next() {
+                        Some(buf) => buf,
+                        None => {
+                            let img = image::GrayImage::new(width, height);
+                            return Ok(DynamicImage::ImageLuma8(img));
+                        }
+                    };
+                    buf.truncate(required);
+                    let img = image::GrayImage::from_raw(width, height, buf)
+                        .unwrap_or_else(|| image::GrayImage::new(width, height));
+                    return Ok(DynamicImage::ImageLuma8(img));
                 }
             }
         }
