@@ -42,15 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     #[cfg(feature = "preview-window")]
-    let mut preview = {
-        let fmt = backend.descriptor.modes[0].format;
-        PreviewWindow::new(
-            "file-replay",
-            fmt.resolution.width.get(),
-            fmt.resolution.height.get(),
-        )
-        .ok()
-    };
+    let mut preview = PreviewWindow::for_descriptor("file-replay", &backend.descriptor).ok();
 
     let mut frames = 0;
     while frames < 90 {
@@ -66,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 #[cfg(feature = "preview-window")]
                 if let Some(win) = preview.as_mut() {
-                    let _ = win.show(&frame);
+                    let _ = win.show_if_open(&frame);
                 }
             }
             RecvOutcome::Empty => continue,

@@ -13,6 +13,8 @@ use super::file_backend;
 use super::libcamera_backend;
 #[cfg(feature = "netcam")]
 use super::netcam_backend;
+#[cfg(feature = "simulation-bevy")]
+use super::simulation_backend;
 use super::request::{CaptureError, CaptureStartPolicy, TdnOutputMode};
 #[cfg(feature = "v4l2")]
 use super::v4l2_backend;
@@ -36,6 +38,10 @@ pub enum ControlPlane {
     #[cfg(feature = "file-backend")]
     File {
         state: file_backend::FileControlStateHandle,
+    },
+    #[cfg(feature = "simulation-bevy")]
+    Simulation {
+        state: simulation_backend::SimulationControlStateHandle,
     },
     Virtual,
 }
@@ -289,6 +295,10 @@ impl CaptureHandle {
             }
             #[cfg(feature = "file-backend")]
             ControlPlane::File { state } => file_backend::apply_file_control(state, _id, _value),
+            #[cfg(feature = "simulation-bevy")]
+            ControlPlane::Simulation { state } => {
+                simulation_backend::apply_simulation_control(state, _id, _value)
+            }
         }
     }
 
@@ -318,6 +328,10 @@ impl CaptureHandle {
             }
             #[cfg(feature = "file-backend")]
             ControlPlane::File { state } => file_backend::read_file_control(state, _id),
+            #[cfg(feature = "simulation-bevy")]
+            ControlPlane::Simulation { state } => {
+                simulation_backend::read_simulation_control(state, _id)
+            }
             _ => Err(CaptureError::ControlUnsupported),
         }
     }
@@ -394,5 +408,11 @@ pub(crate) fn start_backend(
         }
         #[cfg(not(feature = "file-backend"))]
         BackendKind::File => Err(CaptureError::BackendMissing(BackendKind::File)),
+        #[cfg(feature = "simulation-bevy")]
+        BackendKind::Simulation => {
+            simulation_backend::start_simulation(backend, mode, interval, controls, descriptor)
+        }
+        #[cfg(not(feature = "simulation-bevy"))]
+        BackendKind::Simulation => Err(CaptureError::BackendMissing(BackendKind::Simulation)),
     }
 }

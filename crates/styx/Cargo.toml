@@ -38,6 +38,8 @@ once_cell = "1.21.3"
 libc = "0.2"
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 utoipa = { version = "5.4.0", default-features = false, features = ["macros"], optional = true }
+bevy = { version = "0.15.3", default-features = false, features = ["bevy_asset", "bevy_scene", "bevy_gltf", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_winit", "png", "x11"], optional = true }
+crossbeam-channel = { version = "0.5.15", optional = true }
 
 [features]
 default = ["hooks"]
@@ -54,6 +56,7 @@ netcam-video = ["dep:ffmpeg-next"]
 file-backend = ["dep:image", "dep:jpeg-decoder"]
 file-backend-video = ["dep:ffmpeg-next"]
 preview-window = ["dep:minifb"]
+simulation-bevy = ["dep:bevy", "dep:crossbeam-channel"]
 examples = ["preview-window", "async"]
 serde = [
     "dep:serde",

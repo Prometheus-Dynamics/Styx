@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 #[cfg(feature = "v4l2")]
 use std::panic::{AssertUnwindSafe, catch_unwind};
-#[cfg(feature = "file-backend")]
+#[cfg(any(feature = "file-backend", feature = "simulation-bevy"))]
 use std::path::PathBuf;
 
 pub use styx_capture as capture;
@@ -78,6 +78,7 @@ pub enum BackendKind {
     Virtual,
     Netcam,
     File,
+    Simulation,
 }
 
 /// Backend-specific handle used for configuration/streaming.
@@ -116,6 +117,11 @@ pub enum BackendHandle {
         fps: u32,
         loop_forever: bool,
     },
+    #[cfg(feature = "simulation-bevy")]
+    Simulation {
+        scene_path: PathBuf,
+        config: crate::capture_api::SimulationDeviceConfig,
+    },
 }
 
 impl BackendHandle {
@@ -131,6 +137,8 @@ impl BackendHandle {
             BackendHandle::Netcam { .. } => BackendKind::Netcam,
             #[cfg(feature = "file-backend")]
             BackendHandle::File { .. } => BackendKind::File,
+            #[cfg(feature = "simulation-bevy")]
+            BackendHandle::Simulation { .. } => BackendKind::Simulation,
         }
     }
 }
@@ -167,6 +175,11 @@ impl serde::Serialize for BackendHandle {
                     fps: u32,
                     loop_forever: bool,
                 },
+                #[cfg(feature = "simulation-bevy")]
+                Simulation {
+                    scene_path: String,
+                    config: crate::capture_api::SimulationDeviceConfig,
+                },
             }
 
             let human = match self {
@@ -200,6 +213,11 @@ impl serde::Serialize for BackendHandle {
                     fps: *fps,
                     loop_forever: *loop_forever,
                 },
+                #[cfg(feature = "simulation-bevy")]
+                BackendHandle::Simulation { scene_path, config } => HumanHandle::Simulation {
+                    scene_path: scene_path.to_string_lossy().to_string(),
+                    config: config.clone(),
+                },
             };
             human.serialize(serializer)
         } else {
@@ -222,6 +240,11 @@ impl serde::Serialize for BackendHandle {
                     paths: Vec<String>,
                     fps: u32,
                     loop_forever: bool,
+                },
+                #[cfg(feature = "simulation-bevy")]
+                Simulation {
+                    scene_path: String,
+                    config: crate::capture_api::SimulationDeviceConfig,
                 },
             }
             let bin = match self {
@@ -254,6 +277,11 @@ impl serde::Serialize for BackendHandle {
                         .collect(),
                     fps: *fps,
                     loop_forever: *loop_forever,
+                },
+                #[cfg(feature = "simulation-bevy")]
+                BackendHandle::Simulation { scene_path, config } => BinaryHandle::Simulation {
+                    scene_path: scene_path.to_string_lossy().to_string(),
+                    config: config.clone(),
                 },
             };
             bin.serialize(serializer)
@@ -293,6 +321,11 @@ impl<'de> serde::Deserialize<'de> for BackendHandle {
                     fps: u32,
                     loop_forever: bool,
                 },
+                #[cfg(feature = "simulation-bevy")]
+                Simulation {
+                    scene_path: String,
+                    config: crate::capture_api::SimulationDeviceConfig,
+                },
             }
             let human = HumanHandle::deserialize(deserializer)?;
             let handle = match human {
@@ -323,6 +356,11 @@ impl<'de> serde::Deserialize<'de> for BackendHandle {
                     fps,
                     loop_forever,
                 },
+                #[cfg(feature = "simulation-bevy")]
+                HumanHandle::Simulation { scene_path, config } => BackendHandle::Simulation {
+                    scene_path: PathBuf::from(scene_path),
+                    config,
+                },
             };
             Ok(handle)
         } else {
@@ -345,6 +383,11 @@ impl<'de> serde::Deserialize<'de> for BackendHandle {
                     paths: Vec<String>,
                     fps: u32,
                     loop_forever: bool,
+                },
+                #[cfg(feature = "simulation-bevy")]
+                Simulation {
+                    scene_path: String,
+                    config: crate::capture_api::SimulationDeviceConfig,
                 },
             }
             let bin = BinaryHandle::deserialize(deserializer)?;
@@ -375,6 +418,11 @@ impl<'de> serde::Deserialize<'de> for BackendHandle {
                     paths: paths.into_iter().map(PathBuf::from).collect(),
                     fps,
                     loop_forever,
+                },
+                #[cfg(feature = "simulation-bevy")]
+                BinaryHandle::Simulation { scene_path, config } => BackendHandle::Simulation {
+                    scene_path: PathBuf::from(scene_path),
+                    config,
                 },
             };
             Ok(handle)
@@ -582,6 +630,11 @@ pub mod prelude {
     pub use crate::capture_api::make_file_device;
     #[cfg(feature = "netcam")]
     pub use crate::capture_api::make_netcam_device;
+    #[cfg(feature = "simulation-bevy")]
+    pub use crate::capture_api::{
+        SimulationDeviceConfig, SimulationLensConfig, SimulationOutputMode, SimulationPose,
+        SimulationSensorConfig, make_simulation_device,
+    };
     pub use crate::capture_api::{
         CaptureError, CaptureHandle, CaptureRequest, CaptureStartPolicy, CaptureTunables,
         StyxConfig, TdnOutputMode, set_capture_tunables, start_capture,

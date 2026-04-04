@@ -27,12 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .start()?;
 
     #[cfg(feature = "preview-window")]
-    let mut preview = PreviewWindow::new(
-        "styx capture+decode",
-        mode.format.resolution.width.get(),
-        mode.format.resolution.height.get(),
-    )
-    .ok();
+    let mut preview = PreviewWindow::for_mode("styx capture+decode", &mode).ok();
 
     let mut frames = 0;
     while frames < 30 {
@@ -55,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 #[cfg(feature = "preview-window")]
                 if let Some(win) = preview.as_mut() {
-                    let _ = win.show(&frame);
+                    let _ = win.show_if_open(&frame);
                 }
             }
             RecvOutcome::Empty => continue,

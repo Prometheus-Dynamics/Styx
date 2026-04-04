@@ -14,13 +14,16 @@ fn main() -> Result<(), CaptureError> {
     let device = virtual_device();
     let mode = device.backends[0].descriptor.modes[0].clone();
 
-    let handle = CaptureRequest::new(&device).mode(mode.id).start()?;
+    let handle = CaptureRequest::new(&device).mode(mode.id.clone()).start()?;
     println!(
         "virtual capture on {:?} at {:?} (interval {:?})",
         handle.backend(),
         handle.mode().format,
         handle.interval()
     );
+
+    #[cfg(feature = "preview-window")]
+    let mut preview = PreviewWindow::for_mode("styx virtual", &mode).ok();
 
     let mut frames = 0;
     while frames < 12 {
@@ -38,6 +41,10 @@ fn main() -> Result<(), CaptureError> {
                     "#{frames:02} ts={} format={:?} first_byte={}",
                     meta.timestamp, meta.format.code, first
                 );
+                #[cfg(feature = "preview-window")]
+                if let Some(win) = preview.as_mut() {
+                    let _ = win.show_if_open(&frame);
+                }
             }
             RecvOutcome::Empty => continue,
             RecvOutcome::Closed => break,

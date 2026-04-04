@@ -12,7 +12,7 @@
 //! # Ok::<(), styx::capture_api::CaptureError>(())
 //! ```
 pub mod controls;
-#[cfg(any(feature = "netcam", feature = "file-backend"))]
+#[cfg(any(feature = "netcam", feature = "file-backend", feature = "simulation-bevy"))]
 pub(super) mod ffmpeg_util;
 #[cfg(feature = "file-backend")]
 pub(super) mod file_backend;
@@ -20,6 +20,8 @@ pub(super) mod file_backend;
 pub(super) mod libcamera_backend;
 #[cfg(feature = "netcam")]
 pub(super) mod netcam_backend;
+#[cfg(feature = "simulation-bevy")]
+pub(super) mod simulation_backend;
 #[cfg(feature = "v4l2")]
 pub(super) mod v4l2_backend;
 pub(super) mod virtual_backend;
@@ -38,21 +40,23 @@ pub use tunables::{
 pub(crate) use tunables::{capture_pool_limits, capture_queue_depth, netcam_tunables};
 
 #[allow(unused_imports)]
-#[cfg(any(feature = "netcam", feature = "file-backend"))]
+#[cfg(any(feature = "netcam", feature = "file-backend", feature = "simulation-bevy"))]
 use crate::{BackendHandle, DeviceIdentity};
 #[allow(unused_imports)]
 use crate::{BackendKind, ProbedBackend, ProbedDevice};
 #[cfg(feature = "file-backend")]
 use std::collections::{HashMap, HashSet};
-#[cfg(any(feature = "netcam", feature = "file-backend"))]
+#[cfg(any(feature = "netcam", feature = "file-backend", feature = "simulation-bevy"))]
 use std::num::NonZeroU32;
+#[cfg(feature = "simulation-bevy")]
+use std::path::PathBuf;
 use styx_capture::prelude::*;
 
 mod handle;
 mod request;
 mod tunables;
 
-#[cfg(any(feature = "netcam", feature = "file-backend"))]
+#[cfg(any(feature = "netcam", feature = "file-backend", feature = "simulation-bevy"))]
 fn interval_from_fps(fps: u32) -> Interval {
     Interval {
         numerator: NonZeroU32::new(1).unwrap(),
@@ -96,6 +100,108 @@ fn unique_file_control_token(base: &str, seen: &mut HashMap<String, usize>) -> S
         base.to_string()
     } else {
         format!("{base}_{}", *entry)
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SimulationPose {
+    pub translation_m: [f32; 3],
+    pub rotation_deg: [f32; 3],
+}
+
+impl Default for SimulationPose {
+    fn default() -> Self {
+        Self {
+            translation_m: [0.0, 0.0, 0.0],
+            rotation_deg: [0.0, 0.0, 0.0],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SimulationSensorConfig {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub sensor_width_mm: f32,
+    pub sensor_height_mm: f32,
+    pub near_m: f32,
+    pub far_m: f32,
+}
+
+impl Default for SimulationSensorConfig {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            sensor_width_mm: 36.0,
+            sensor_height_mm: 24.0,
+            near_m: 0.05,
+            far_m: 2_000.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SimulationLensConfig {
+    pub focal_length_mm: f32,
+    pub aperture_f_stop: f32,
+    pub focus_distance_m: f32,
+}
+
+impl Default for SimulationLensConfig {
+    fn default() -> Self {
+        Self {
+            focal_length_mm: 35.0,
+            aperture_f_stop: 2.8,
+            focus_distance_m: 5.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum SimulationOutputMode {
+    Rgb,
+    Depth,
+    Normals,
+    Segmentation,
+}
+
+impl Default for SimulationOutputMode {
+    fn default() -> Self {
+        Self::Rgb
+    }
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SimulationDeviceConfig {
+    pub sensor: SimulationSensorConfig,
+    pub lens: SimulationLensConfig,
+    pub pose: SimulationPose,
+    pub output_mode: SimulationOutputMode,
+    pub clear_color_rgba: [f32; 4],
+}
+
+impl Default for SimulationDeviceConfig {
+    fn default() -> Self {
+        Self {
+            sensor: SimulationSensorConfig::default(),
+            lens: SimulationLensConfig::default(),
+            pose: SimulationPose::default(),
+            output_mode: SimulationOutputMode::Rgb,
+            clear_color_rgba: [0.03, 0.04, 0.05, 1.0],
+        }
     }
 }
 
@@ -327,6 +433,233 @@ pub fn make_file_device(
                 .iter()
                 .filter_map(|p| p.to_str().map(|s| s.to_string()))
                 .collect(),
+        },
+        backends: vec![backend],
+    }
+}
+
+/// Create a synthetic simulation device that loads a scene file into a Bevy world.
+///
+/// The initial implementation wires scene ingest and camera/sensor controls into the
+/// capture API so downstream code can treat simulation like any other capture source.
+#[cfg(feature = "simulation-bevy")]
+pub fn make_simulation_device(
+    name: &str,
+    scene_path: PathBuf,
+    config: SimulationDeviceConfig,
+) -> ProbedDevice {
+    let res = Resolution::new(config.sensor.width.max(1), config.sensor.height.max(1))
+        .unwrap_or_else(|| Resolution::new(1, 1).unwrap());
+    let interval = interval_from_fps(config.sensor.fps.max(1));
+    let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+    let mode = Mode {
+        id: ModeId {
+            format,
+            interval: Some(interval),
+        },
+        format,
+        intervals: smallvec::smallvec![interval],
+        interval_stepwise: None,
+    };
+
+    let controls = vec![
+        ControlMeta {
+            id: simulation_backend::control_id_output_mode(),
+            name: "simulation.output.mode".into(),
+            kind: ControlKind::Menu,
+            access: Access::ReadWrite,
+            min: ControlValue::Uint(0),
+            max: ControlValue::Uint(3),
+            default: ControlValue::Uint(match config.output_mode {
+                SimulationOutputMode::Rgb => 0,
+                SimulationOutputMode::Depth => 1,
+                SimulationOutputMode::Normals => 2,
+                SimulationOutputMode::Segmentation => 3,
+            }),
+            step: Some(ControlValue::Uint(1)),
+            menu: Some(vec![
+                "rgb".into(),
+                "depth".into(),
+                "normals".into(),
+                "segmentation".into(),
+            ]),
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_translation_x(),
+            name: "simulation.sensor.translation_x_m".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(-10_000.0),
+            max: ControlValue::Float(10_000.0),
+            default: ControlValue::Float(config.pose.translation_m[0]),
+            step: Some(ControlValue::Float(0.01)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_translation_y(),
+            name: "simulation.sensor.translation_y_m".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(-10_000.0),
+            max: ControlValue::Float(10_000.0),
+            default: ControlValue::Float(config.pose.translation_m[1]),
+            step: Some(ControlValue::Float(0.01)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_translation_z(),
+            name: "simulation.sensor.translation_z_m".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(-10_000.0),
+            max: ControlValue::Float(10_000.0),
+            default: ControlValue::Float(config.pose.translation_m[2]),
+            step: Some(ControlValue::Float(0.01)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_rotation_roll(),
+            name: "simulation.sensor.rotation_roll_deg".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(-360.0),
+            max: ControlValue::Float(360.0),
+            default: ControlValue::Float(config.pose.rotation_deg[0]),
+            step: Some(ControlValue::Float(0.1)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_rotation_pitch(),
+            name: "simulation.sensor.rotation_pitch_deg".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(-360.0),
+            max: ControlValue::Float(360.0),
+            default: ControlValue::Float(config.pose.rotation_deg[1]),
+            step: Some(ControlValue::Float(0.1)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_rotation_yaw(),
+            name: "simulation.sensor.rotation_yaw_deg".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(-360.0),
+            max: ControlValue::Float(360.0),
+            default: ControlValue::Float(config.pose.rotation_deg[2]),
+            step: Some(ControlValue::Float(0.1)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_focal_length(),
+            name: "simulation.lens.focal_length_mm".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(1.0),
+            max: ControlValue::Float(5_000.0),
+            default: ControlValue::Float(config.lens.focal_length_mm),
+            step: Some(ControlValue::Float(0.1)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_aperture_f_stop(),
+            name: "simulation.lens.aperture_f_stop".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(0.7),
+            max: ControlValue::Float(64.0),
+            default: ControlValue::Float(config.lens.aperture_f_stop),
+            step: Some(ControlValue::Float(0.1)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_focus_distance(),
+            name: "simulation.lens.focus_distance_m".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(0.01),
+            max: ControlValue::Float(100_000.0),
+            default: ControlValue::Float(config.lens.focus_distance_m),
+            step: Some(ControlValue::Float(0.01)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_sensor_width(),
+            name: "simulation.sensor.width_mm".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(0.1),
+            max: ControlValue::Float(1_000.0),
+            default: ControlValue::Float(config.sensor.sensor_width_mm),
+            step: Some(ControlValue::Float(0.01)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_sensor_height(),
+            name: "simulation.sensor.height_mm".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(0.1),
+            max: ControlValue::Float(1_000.0),
+            default: ControlValue::Float(config.sensor.sensor_height_mm),
+            step: Some(ControlValue::Float(0.01)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_near_plane(),
+            name: "simulation.sensor.near_m".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(0.001),
+            max: ControlValue::Float(100.0),
+            default: ControlValue::Float(config.sensor.near_m),
+            step: Some(ControlValue::Float(0.001)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+        ControlMeta {
+            id: simulation_backend::control_id_far_plane(),
+            name: "simulation.sensor.far_m".into(),
+            kind: ControlKind::Float,
+            access: Access::ReadWrite,
+            min: ControlValue::Float(0.01),
+            max: ControlValue::Float(1_000_000.0),
+            default: ControlValue::Float(config.sensor.far_m),
+            step: Some(ControlValue::Float(0.1)),
+            menu: None,
+            metadata: ControlMetadata::default(),
+        },
+    ];
+
+    let descriptor = CaptureDescriptor {
+        modes: vec![mode.clone()],
+        controls,
+    };
+    let backend = ProbedBackend {
+        kind: BackendKind::Simulation,
+        handle: BackendHandle::Simulation {
+            scene_path: scene_path.clone(),
+            config: config.clone(),
+        },
+        descriptor,
+        properties: vec![("scene_path".into(), scene_path.to_string_lossy().to_string())],
+    };
+    ProbedDevice {
+        identity: DeviceIdentity {
+            display: name.to_string(),
+            keys: vec![scene_path.to_string_lossy().to_string()],
         },
         backends: vec![backend],
     }

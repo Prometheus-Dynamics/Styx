@@ -1,9 +1,9 @@
 //! Minimal preview window for examples (feature `preview-window`).
 
-use std::time::Duration;
-
 use minifb::{Window, WindowOptions};
+use styx_capture::Mode;
 use styx_core::prelude::*;
+use styx_capture::CaptureDescriptor;
 
 /// Simple RGBA/RGB preview window backed by minifb.
 ///
@@ -27,13 +27,39 @@ impl PreviewWindow {
         let width = width.max(1) as usize;
         let height = height.max(1) as usize;
         let mut window = Window::new(title, width, height, WindowOptions::default())?;
-        window.limit_update_rate(Some(Duration::from_millis(16)));
+        window.set_target_fps(60);
         Ok(Self {
             window,
             buffer: vec![0; width * height],
             width,
             height,
         })
+    }
+
+    /// Create a preview window sized from a [`Mode`].
+    pub fn for_mode(title: &str, mode: &Mode) -> Result<Self, minifb::Error> {
+        let res = mode.format.resolution;
+        Self::new(title, res.width.get(), res.height.get())
+    }
+
+    /// Create a preview window sized from the first mode in a capture descriptor.
+    pub fn for_descriptor(title: &str, descriptor: &CaptureDescriptor) -> Result<Self, String> {
+        let mode = descriptor
+            .modes
+            .first()
+            .ok_or_else(|| "capture descriptor has no modes".to_string())?;
+        Self::for_mode(title, mode).map_err(|e| e.to_string())
+    }
+
+    /// Create a preview window sized from a frame's metadata.
+    pub fn for_frame(title: &str, frame: &FrameLease) -> Result<Self, minifb::Error> {
+        let res = frame.meta().format.resolution;
+        Self::new(title, res.width.get(), res.height.get())
+    }
+
+    /// Returns true while the preview window remains open.
+    pub fn is_open(&self) -> bool {
+        self.window.is_open()
     }
 
     /// Display a frame; supports RG24/RGBA/BGR3/BGRA planes.
@@ -75,6 +101,11 @@ impl PreviewWindow {
         self.window
             .update_with_buffer(&self.buffer, self.width, self.height)
             .map_err(|e| e.to_string())
+    }
+
+    /// Display a frame and return `false` once the window has been closed.
+    pub fn show_if_open(&mut self, frame: &FrameLease) -> bool {
+        self.show(frame).is_ok()
     }
 
     fn blit_rgb24(&mut self, plane: &Plane<'_>, swap_rb: bool) -> Result<(), String> {
