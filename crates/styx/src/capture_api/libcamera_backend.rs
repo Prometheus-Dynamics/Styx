@@ -761,9 +761,7 @@ pub(super) fn start_libcamera(
                 ));
                 cfg.set_buffer_count(depth_u32);
 
-                if enable_tdn_output
-                    && let Some(mut tdn_cfg) = cfgs.get_mut(1)
-                {
+                if enable_tdn_output && let Some(mut tdn_cfg) = cfgs.get_mut(1) {
                     tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
                         desired_format.to_u32(),
                         0,
@@ -786,9 +784,7 @@ pub(super) fn start_libcamera(
                             0,
                         ));
                     }
-                    if enable_tdn_output
-                        && let Some(mut tdn_cfg) = cfgs.get_mut(1)
-                    {
+                    if enable_tdn_output && let Some(mut tdn_cfg) = cfgs.get_mut(1) {
                         tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
                             FourCc::new(*b"YUYV").to_u32(),
                             0,

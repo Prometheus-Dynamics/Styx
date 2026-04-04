@@ -1,9 +1,9 @@
 //! Minimal preview window for examples (feature `preview-window`).
 
 use minifb::{Window, WindowOptions};
+use styx_capture::CaptureDescriptor;
 use styx_capture::Mode;
 use styx_core::prelude::*;
-use styx_capture::CaptureDescriptor;
 
 /// Simple RGBA/RGB preview window backed by minifb.
 ///

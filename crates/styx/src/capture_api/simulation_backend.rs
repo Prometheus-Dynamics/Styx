@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use bevy::app::App;
-use bevy::asset::{weak_handle, Asset, AssetPlugin, Assets};
+use bevy::asset::{Asset, AssetPlugin, Assets, weak_handle};
 use bevy::core_pipeline::prepass::{DepthPrepass, NormalPrepass};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::image::{Image, TextureFormatPixelInfo};
@@ -18,8 +18,8 @@ use bevy::render::render_asset::{RenderAssetUsages, RenderAssets};
 use bevy::render::render_graph::{self, RenderGraph, RenderGraphContext, RenderLabel};
 use bevy::render::render_resource::{
     AsBindGroup, Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d,
-    MapMode, ShaderRef, TexelCopyBufferInfo, TexelCopyBufferLayout,
-    TextureDimension, TextureFormat, TextureUsages,
+    MapMode, ShaderRef, TexelCopyBufferInfo, TexelCopyBufferLayout, TextureDimension,
+    TextureFormat, TextureUsages,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue};
 use bevy::render::texture::GpuImage;
@@ -242,26 +242,24 @@ struct SimulationVisualizationPlugin;
 
 impl Plugin for SimulationVisualizationPlugin {
     fn build(&self, app: &mut App) {
-        app.world_mut()
-            .resource_mut::<Assets<Shader>>()
-            .insert(
-                PREPASS_OUTPUT_SHADER_HANDLE.id(),
-                Shader::from_wgsl(PREPASS_OUTPUT_SHADER, file!()),
-            );
+        app.world_mut().resource_mut::<Assets<Shader>>().insert(
+            PREPASS_OUTPUT_SHADER_HANDLE.id(),
+            Shader::from_wgsl(PREPASS_OUTPUT_SHADER, file!()),
+        );
 
         app.add_plugins(MaterialPlugin::<PrepassOutputMaterial> {
             prepass_enabled: false,
             ..default()
         })
-            .add_systems(
-                Update,
-                (
-                    register_segmentation_materials,
-                    apply_segmentation_materials,
-                    update_visualization_entities,
-                )
-                    .chain(),
-            );
+        .add_systems(
+            Update,
+            (
+                register_segmentation_materials,
+                apply_segmentation_materials,
+                update_visualization_entities,
+            )
+                .chain(),
+        );
     }
 }
 
@@ -325,7 +323,9 @@ pub(super) fn start_simulation(
         )));
     }
     if scene_path.parent().is_none() {
-        return Err(CaptureError::Backend("simulation scene has no parent directory".into()));
+        return Err(CaptureError::Backend(
+            "simulation scene has no parent directory".into(),
+        ));
     }
 
     let state = Arc::new(Mutex::new(parse_controls(&config, &controls)));
@@ -544,9 +544,9 @@ struct BevySimulationRuntime {
 
 impl BevySimulationRuntime {
     fn new(scene_path: &Path, config: &SimulationDeviceConfig) -> Result<Self, CaptureError> {
-        let asset_root = scene_path
-            .parent()
-            .ok_or_else(|| CaptureError::Backend("simulation scene has no parent directory".into()))?;
+        let asset_root = scene_path.parent().ok_or_else(|| {
+            CaptureError::Backend("simulation scene has no parent directory".into())
+        })?;
         let scene_asset_path = scene_asset_path(scene_path)?;
         let render_width = config.sensor.width.max(1);
         let render_height = config.sensor.height.max(1);
@@ -598,10 +598,9 @@ impl BevySimulationRuntime {
                 TextureFormat::bevy_default(),
                 RenderAssetUsages::default(),
             );
-            render_target_image.texture_descriptor.usage |=
-                TextureUsages::COPY_SRC
-                    | TextureUsages::RENDER_ATTACHMENT
-                    | TextureUsages::TEXTURE_BINDING;
+            render_target_image.texture_descriptor.usage |= TextureUsages::COPY_SRC
+                | TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::TEXTURE_BINDING;
             images.add(render_target_image)
         };
         let depth_image_handle = {
@@ -613,10 +612,9 @@ impl BevySimulationRuntime {
                 TextureFormat::Rgba32Float,
                 RenderAssetUsages::default(),
             );
-            render_target_image.texture_descriptor.usage |=
-                TextureUsages::COPY_SRC
-                    | TextureUsages::RENDER_ATTACHMENT
-                    | TextureUsages::TEXTURE_BINDING;
+            render_target_image.texture_descriptor.usage |= TextureUsages::COPY_SRC
+                | TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::TEXTURE_BINDING;
             images.add(render_target_image)
         };
 
@@ -669,7 +667,8 @@ impl BevySimulationRuntime {
         ));
 
         let projection = perspective_projection_from_config(config);
-        let sensor_transform = transform_from_pose(config.pose.translation_m, config.pose.rotation_deg);
+        let sensor_transform =
+            transform_from_pose(config.pose.translation_m, config.pose.rotation_deg);
         let sensor_entity = app
             .world_mut()
             .spawn((
@@ -720,13 +719,17 @@ impl BevySimulationRuntime {
             .id();
 
         let overlay_material = {
-            let mut materials = app.world_mut().resource_mut::<Assets<PrepassOutputMaterial>>();
+            let mut materials = app
+                .world_mut()
+                .resource_mut::<Assets<PrepassOutputMaterial>>();
             materials.add(PrepassOutputMaterial {
                 settings: [2.0, config.sensor.near_m, config.sensor.far_m, 0.0],
             })
         };
         let depth_overlay_material = {
-            let mut materials = app.world_mut().resource_mut::<Assets<PrepassOutputMaterial>>();
+            let mut materials = app
+                .world_mut()
+                .resource_mut::<Assets<PrepassOutputMaterial>>();
             materials.add(PrepassOutputMaterial {
                 settings: [1.0, config.sensor.near_m, config.sensor.far_m, 0.0],
             })
@@ -747,7 +750,9 @@ impl BevySimulationRuntime {
                 SimulationPrepassOverlay,
             ))
             .id();
-        app.world_mut().entity_mut(sensor_entity).add_child(overlay_entity);
+        app.world_mut()
+            .entity_mut(sensor_entity)
+            .add_child(overlay_entity);
         let depth_overlay_entity = app
             .world_mut()
             .spawn((
@@ -773,7 +778,11 @@ impl BevySimulationRuntime {
     }
 
     fn sync_state(&mut self, state: &SimulationControlState) {
-        if let Some(mut view_state) = self.app.world_mut().get_resource_mut::<SimulationViewState>() {
+        if let Some(mut view_state) = self
+            .app
+            .world_mut()
+            .get_resource_mut::<SimulationViewState>()
+        {
             view_state.output_mode = state.output_mode;
             view_state.near_m = state.near_m;
             view_state.far_m = state.far_m;
@@ -812,12 +821,7 @@ impl BevySimulationRuntime {
             match packet {
                 ReadbackPacket::Color(buffer) => {
                     let rgba = shrink_padded_rgba(&buffer, self.output_width, self.output_height);
-                    rgba_to_rgb(
-                        &rgba,
-                        self.output_width,
-                        self.output_height,
-                        latest_rgb,
-                    );
+                    rgba_to_rgb(&rgba, self.output_width, self.output_height, latest_rgb);
                 }
                 ReadbackPacket::Depth(buffer) => {
                     rgba32float_depth_to_meters(
@@ -835,7 +839,11 @@ impl BevySimulationRuntime {
 type SegmentationMaterialQuery<'w, 's> = Query<
     'w,
     's,
-    (Entity, &'static MeshMaterial3d<StandardMaterial>, Option<&'static Name>),
+    (
+        Entity,
+        &'static MeshMaterial3d<StandardMaterial>,
+        Option<&'static Name>,
+    ),
     Added<MeshMaterial3d<StandardMaterial>>,
 >;
 
@@ -886,7 +894,10 @@ fn apply_segmentation_materials(
 fn update_visualization_entities(
     view_state: Res<SimulationViewState>,
     mut clear_color: ResMut<ClearColor>,
-    mut overlay_query: Query<(&MeshMaterial3d<PrepassOutputMaterial>, &mut Visibility), With<SimulationPrepassOverlay>>,
+    mut overlay_query: Query<
+        (&MeshMaterial3d<PrepassOutputMaterial>, &mut Visibility),
+        With<SimulationPrepassOverlay>,
+    >,
     mut materials: ResMut<Assets<PrepassOutputMaterial>>,
 ) {
     let show_normals = matches!(view_state.output_mode, SimulationOutputMode::Normals);
@@ -922,7 +933,9 @@ fn segmentation_color_for_id(id: u32) -> Color {
 fn stable_segmentation_id(scene_key: &str, name: Option<&Name>) -> u32 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     scene_key.hash(&mut hasher);
-    name.map(|value| value.as_str()).unwrap_or("unnamed").hash(&mut hasher);
+    name.map(|value| value.as_str())
+        .unwrap_or("unnamed")
+        .hash(&mut hasher);
     let bytes = hasher.finish().to_le_bytes();
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]).max(1)
 }
@@ -996,7 +1009,9 @@ fn physical_camera_params_from_config(config: &SimulationDeviceConfig) -> Physic
 fn fov_radians(sensor_height_mm: f32, focal_length_mm: f32) -> f32 {
     let sensor_height = sensor_height_mm.max(0.1);
     let focal_length = focal_length_mm.max(0.1);
-    2.0 * (sensor_height / (2.0 * focal_length)).atan().clamp(0.01, PI - 0.01)
+    2.0 * (sensor_height / (2.0 * focal_length))
+        .atan()
+        .clamp(0.01, PI - 0.01)
 }
 
 fn shrink_padded_rgba(buffer: &[u8], width: u32, height: u32) -> Vec<u8> {
@@ -1147,8 +1162,12 @@ fn receive_image_from_buffer(
         let _ = render_device.poll(wgpu::Maintain::Wait);
         if let Ok(Ok(())) = ready_rx.recv() {
             let packet = match image_copier.kind {
-                ReadbackKind::Color => ReadbackPacket::Color(buffer_slice.get_mapped_range().to_vec()),
-                ReadbackKind::Depth => ReadbackPacket::Depth(buffer_slice.get_mapped_range().to_vec()),
+                ReadbackKind::Color => {
+                    ReadbackPacket::Color(buffer_slice.get_mapped_range().to_vec())
+                }
+                ReadbackKind::Depth => {
+                    ReadbackPacket::Depth(buffer_slice.get_mapped_range().to_vec())
+                }
             };
             let _ = sender.send(packet);
         }

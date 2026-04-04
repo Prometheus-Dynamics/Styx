@@ -13,9 +13,9 @@ use super::file_backend;
 use super::libcamera_backend;
 #[cfg(feature = "netcam")]
 use super::netcam_backend;
+use super::request::{CaptureError, CaptureStartPolicy, TdnOutputMode};
 #[cfg(feature = "simulation-bevy")]
 use super::simulation_backend;
-use super::request::{CaptureError, CaptureStartPolicy, TdnOutputMode};
 #[cfg(feature = "v4l2")]
 use super::v4l2_backend;
 use super::virtual_backend;

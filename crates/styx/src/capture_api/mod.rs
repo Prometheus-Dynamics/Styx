@@ -12,7 +12,11 @@
 //! # Ok::<(), styx::capture_api::CaptureError>(())
 //! ```
 pub mod controls;
-#[cfg(any(feature = "netcam", feature = "file-backend", feature = "simulation-bevy"))]
+#[cfg(any(
+    feature = "netcam",
+    feature = "file-backend",
+    feature = "simulation-bevy"
+))]
 pub(super) mod ffmpeg_util;
 #[cfg(feature = "file-backend")]
 pub(super) mod file_backend;
@@ -40,13 +44,21 @@ pub use tunables::{
 pub(crate) use tunables::{capture_pool_limits, capture_queue_depth, netcam_tunables};
 
 #[allow(unused_imports)]
-#[cfg(any(feature = "netcam", feature = "file-backend", feature = "simulation-bevy"))]
+#[cfg(any(
+    feature = "netcam",
+    feature = "file-backend",
+    feature = "simulation-bevy"
+))]
 use crate::{BackendHandle, DeviceIdentity};
 #[allow(unused_imports)]
 use crate::{BackendKind, ProbedBackend, ProbedDevice};
 #[cfg(feature = "file-backend")]
 use std::collections::{HashMap, HashSet};
-#[cfg(any(feature = "netcam", feature = "file-backend", feature = "simulation-bevy"))]
+#[cfg(any(
+    feature = "netcam",
+    feature = "file-backend",
+    feature = "simulation-bevy"
+))]
 use std::num::NonZeroU32;
 #[cfg(feature = "simulation-bevy")]
 use std::path::PathBuf;
@@ -56,7 +68,11 @@ mod handle;
 mod request;
 mod tunables;
 
-#[cfg(any(feature = "netcam", feature = "file-backend", feature = "simulation-bevy"))]
+#[cfg(any(
+    feature = "netcam",
+    feature = "file-backend",
+    feature = "simulation-bevy"
+))]
 fn interval_from_fps(fps: u32) -> Interval {
     Interval {
         numerator: NonZeroU32::new(1).unwrap(),
@@ -654,7 +670,10 @@ pub fn make_simulation_device(
             config: config.clone(),
         },
         descriptor,
-        properties: vec![("scene_path".into(), scene_path.to_string_lossy().to_string())],
+        properties: vec![(
+            "scene_path".into(),
+            scene_path.to_string_lossy().to_string(),
+        )],
     };
     ProbedDevice {
         identity: DeviceIdentity {

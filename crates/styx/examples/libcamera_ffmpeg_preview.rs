@@ -73,7 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
                 let encoded_fmt = encoded.meta().format.code;
-                let bytes = encoded.planes().first().map(|p| p.data().len()).unwrap_or(0);
+                let bytes = encoded
+                    .planes()
+                    .first()
+                    .map(|p| p.data().len())
+                    .unwrap_or(0);
                 println!(
                     "#{frames:06} src={:?} decoded={decoded_fmt:?} encoded={encoded_fmt:?} bytes={bytes}",
                     mode.id.format.code

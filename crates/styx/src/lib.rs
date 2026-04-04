@@ -631,14 +631,14 @@ pub mod prelude {
     pub use crate::capture_api::make_file_device;
     #[cfg(feature = "netcam")]
     pub use crate::capture_api::make_netcam_device;
+    pub use crate::capture_api::{
+        CaptureError, CaptureHandle, CaptureRequest, CaptureStartPolicy, CaptureTunables,
+        StyxConfig, TdnOutputMode, set_capture_tunables, start_capture,
+    };
     #[cfg(feature = "simulation-bevy")]
     pub use crate::capture_api::{
         SimulationDeviceConfig, SimulationLensConfig, SimulationOutputMode, SimulationPose,
         SimulationSensorConfig, make_simulation_device,
-    };
-    pub use crate::capture_api::{
-        CaptureError, CaptureHandle, CaptureRequest, CaptureStartPolicy, CaptureTunables,
-        StyxConfig, TdnOutputMode, set_capture_tunables, start_capture,
     };
     pub use crate::metrics::{PipelineMemoryStats, PipelineMetrics, StageMetrics};
     #[cfg(feature = "preview-window")]

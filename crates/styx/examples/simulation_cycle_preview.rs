@@ -20,7 +20,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/simulation/BoxTextured.glb")
         });
 
-    let device = make_simulation_device("simulation", scene_path, SimulationDeviceConfig::default());
+    let device =
+        make_simulation_device("simulation", scene_path, SimulationDeviceConfig::default());
     let backend = &device.backends[0];
     let output_mode_ctrl = backend
         .descriptor
@@ -51,7 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frames += 1;
                 if frames.is_multiple_of(30) {
                     cycle_index = (cycle_index + 1) % cycle.len();
-                    handle.set_control(output_mode_ctrl, ControlValue::Uint(cycle[cycle_index].1))?;
+                    handle
+                        .set_control(output_mode_ctrl, ControlValue::Uint(cycle[cycle_index].1))?;
                     println!("mode -> {}", cycle[cycle_index].0);
                 }
                 if !preview.show_if_open(&frame) {
