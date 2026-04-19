@@ -4,10 +4,6 @@ All notable changes to this workspace should be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
-## [Unreleased]
-
-- Document ongoing repo-level changes here before the next release cut.
-
 ## [1.0.0] - 2026-04-19
 
 - Standardized the workspace layout, docs, CI, linting, and helper scripts.
