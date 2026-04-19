@@ -54,6 +54,7 @@ bevy = { version = "0.16.1", default-features = false, features = ["bevy_asset",
 crossbeam-channel = "0.5.15"
 wgpu = "24"
 libcamera-sys = "0.7"
+inotify = { version = "0.11.1", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

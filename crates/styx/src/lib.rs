@@ -25,6 +25,7 @@ mod metrics;
 pub mod recording;
 pub mod runtime_codec;
 pub mod session;
+pub mod watch;
 
 /// Unified device descriptor for probed backends.
 ///
@@ -69,7 +70,7 @@ pub struct ProbedBackend {
 ///
 /// The `Virtual`/`Netcam`/`File` kinds map to synthetic backends created via
 /// helpers in `styx::capture_api`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum BackendKind {
@@ -482,19 +483,45 @@ pub fn probe_all() -> Vec<ProbedDevice> {
 ///
 /// Prefer this when you want observability into backend failures.
 pub fn probe_all_with_errors() -> ProbeResult {
+    probe_all_with_errors_with_options(false)
+}
+
+pub(crate) fn probe_all_with_errors_with_options(_force_refresh: bool) -> ProbeResult {
+    probe_backends_with_errors_with_options(
+        _force_refresh,
+        &[
+            #[cfg(feature = "v4l2")]
+            BackendKind::V4l2,
+            #[cfg(feature = "libcamera")]
+            BackendKind::Libcamera,
+        ],
+    )
+}
+
+pub(crate) fn probe_backends_with_errors_with_options(
+    _force_refresh: bool,
+    _backends: &[BackendKind],
+) -> ProbeResult {
     #[allow(unused_mut)]
     let mut devices: Vec<ProbedDevice> = Vec::new();
     #[allow(unused_mut)]
     let mut errors: Vec<String> = Vec::new();
 
     #[cfg(feature = "v4l2")]
-    {
+    if _backends.contains(&BackendKind::V4l2) {
         let (v4l2_devices, v4l2_errors) =
             match catch_unwind(AssertUnwindSafe(styx_v4l2::probe_devices)) {
                 Ok(res) => res,
-                Err(_) => (Vec::new(), vec!["v4l2 probe panicked".to_string()]),
+                Err(_) => (
+                    Vec::new(),
+                    vec![prefix_backend_error(BackendKind::V4l2, "probe panicked")],
+                ),
             };
-        errors.extend(v4l2_errors);
+        errors.extend(
+            v4l2_errors
+                .into_iter()
+                .map(|error| prefix_backend_error(BackendKind::V4l2, error)),
+        );
         for dev in v4l2_devices {
             let backend = ProbedBackend {
                 kind: BackendKind::V4l2,
@@ -508,8 +535,18 @@ pub fn probe_all_with_errors() -> ProbeResult {
         }
     }
     #[cfg(feature = "libcamera")]
-    {
-        for dev in styx_libcamera::probe_devices() {
+    if _backends.contains(&BackendKind::Libcamera) {
+        let (libcamera_devices, libcamera_errors) = if _force_refresh {
+            styx_libcamera::probe_devices_uncached_with_errors()
+        } else {
+            styx_libcamera::probe_devices_with_errors()
+        };
+        errors.extend(
+            libcamera_errors
+                .into_iter()
+                .map(|error| prefix_backend_error(BackendKind::Libcamera, error)),
+        );
+        for dev in libcamera_devices {
             let backend = ProbedBackend {
                 kind: BackendKind::Libcamera,
                 handle: BackendHandle::Libcamera { id: dev.id.clone() },
@@ -626,6 +663,23 @@ fn extract_vid_pid(s: &str) -> Option<String> {
     None
 }
 
+#[cfg(any(feature = "v4l2", feature = "libcamera"))]
+pub(crate) fn prefix_backend_error(backend: BackendKind, error: impl Into<String>) -> String {
+    format!("{}{}", backend_error_prefix(backend), error.into())
+}
+
+#[cfg(any(feature = "v4l2", feature = "libcamera"))]
+pub(crate) fn backend_error_prefix(backend: BackendKind) -> &'static str {
+    match backend {
+        BackendKind::V4l2 => "v4l2: ",
+        BackendKind::Libcamera => "libcamera: ",
+        BackendKind::Virtual => "virtual: ",
+        BackendKind::Netcam => "netcam: ",
+        BackendKind::File => "file: ",
+        BackendKind::Simulation => "simulation: ",
+    }
+}
+
 pub mod prelude {
     #[cfg(feature = "file-backend")]
     pub use crate::capture_api::make_file_device;
@@ -653,6 +707,15 @@ pub mod prelude {
         encoder_family_for_selector, preview_format_for_encoder_selector, runtime_codec_inventory,
     };
     pub use crate::session::{MediaPipeline, MediaPipelineBuilder};
+    #[cfg(all(feature = "hotplug", feature = "libcamera"))]
+    pub use crate::watch::LibcameraHotplugWatcher;
+    #[cfg(all(feature = "hotplug", target_os = "linux"))]
+    pub use crate::watch::LinuxVideoFsWatcher;
+    pub use crate::watch::{
+        ChangedDevice, CompositeWatcher, DeviceWatchEvent, DeviceWatcher, InventoryDiff,
+        InventoryEvent, InventoryEventCursor, InventoryEventPoll, InventoryEventRetentionStats,
+        InventoryEventSubscription, WatchRefreshReport, WatchRuntime, WatchRuntimeConfig,
+    };
     pub use crate::{BackendHandle, BackendKind, ProbedBackend, ProbedDevice};
     pub use styx_capture::prelude::*;
     pub use styx_codec::prelude::*;

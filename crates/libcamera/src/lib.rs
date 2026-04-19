@@ -5,6 +5,7 @@ use styx_capture::prelude::*;
 use libcamera::{
     camera::Camera,
     camera_manager::CameraManager,
+    camera_manager::HotplugEvent,
     color_space::{ColorSpace as LcColorSpace, Primaries as LcPrimaries, Range as LcRange},
     control,
     control_value::{ControlType, ControlValue as LcValue},
@@ -17,9 +18,13 @@ use smallvec::smallvec;
 #[cfg(feature = "probe")]
 use std::cell::UnsafeCell;
 #[cfg(feature = "probe")]
+use std::sync::mpsc;
+#[cfg(feature = "probe")]
 use std::sync::{Mutex, OnceLock};
 #[cfg(feature = "probe")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "probe")]
+use std::time::Instant;
 #[cfg(feature = "probe")]
 use styx_core::controls::{Access, ControlKind, ControlMetadata, ControlValue};
 
@@ -34,12 +39,46 @@ pub struct LibcameraDeviceInfo {
 /// Probe available libcamera devices and return descriptors.
 #[cfg(feature = "probe")]
 pub fn probe_devices() -> Vec<LibcameraDeviceInfo> {
-    if let Some(cached) = read_probe_cache() {
-        return cached;
+    probe_devices_with_errors().0
+}
+
+/// Probe available libcamera devices and return descriptors plus any probe errors.
+#[cfg(feature = "probe")]
+pub fn probe_devices_with_errors() -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
+    probe_devices_inner(false)
+}
+
+/// Probe available libcamera devices and bypass the short-lived cache.
+#[cfg(feature = "probe")]
+pub fn probe_devices_uncached() -> Vec<LibcameraDeviceInfo> {
+    probe_devices_uncached_with_errors().0
+}
+
+#[cfg(feature = "probe")]
+pub fn probe_devices_uncached_with_errors() -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
+    probe_devices_inner(true)
+}
+
+#[cfg(feature = "probe")]
+fn probe_devices_inner(force_refresh: bool) -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
+    if !force_refresh && let Some(cached) = read_probe_cache() {
+        return (cached, Vec::new());
     }
 
-    let devices = match with_manager_mut(|manager| {
+    let (devices, errors) = collect_devices();
+    write_probe_cache(&devices);
+    (devices, errors)
+}
+
+#[cfg(feature = "probe")]
+fn collect_devices() -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
+    if let Some(cached) = read_probe_cache() {
+        let _ = cached;
+    }
+
+    let (devices, errors) = match with_manager_mut(|manager| {
         let mut devices = Vec::new();
+        let mut errors = Vec::new();
         let cameras = manager.cameras();
         if debug_enabled() {
             let ids: Vec<String> = cameras.iter().map(|c| c.id().to_string()).collect();
@@ -54,6 +93,10 @@ pub fn probe_devices() -> Vec<LibcameraDeviceInfo> {
             match build_info(&camera) {
                 Ok(info) => devices.push(info),
                 Err(err) => {
+                    errors.push(format!(
+                        "failed to build descriptor for {}: {err}",
+                        camera.id()
+                    ));
                     if debug_enabled() {
                         eprintln!(
                             "libcamera probe: failed to build descriptor for {}: {err}",
@@ -64,19 +107,21 @@ pub fn probe_devices() -> Vec<LibcameraDeviceInfo> {
             }
         }
 
-        devices
+        (devices, errors)
     }) {
-        Ok(devices) => devices,
+        Ok(result) => result,
         Err(err) => {
             if debug_enabled() {
                 eprintln!("libcamera manager init failed: {err}");
             }
             write_probe_cache(&[]);
-            return Vec::new();
+            return (
+                Vec::new(),
+                vec![format!("camera manager init failed: {err}")],
+            );
         }
     };
-    write_probe_cache(&devices);
-    devices
+    (devices, errors)
 }
 
 #[cfg(feature = "probe")]
@@ -199,6 +244,12 @@ pub fn with_manager_mut<R>(f: impl FnOnce(&mut CameraManager) -> R) -> Result<R,
         mgr.start().map_err(|e| e.to_string())?;
     }
     Ok(f(mgr))
+}
+
+/// Subscribe to libcamera hotplug events through the shared camera manager.
+#[cfg(feature = "probe")]
+pub fn subscribe_hotplug_events() -> Result<mpsc::Receiver<HotplugEvent>, String> {
+    with_manager_mut(|manager| manager.subscribe_hotplug_events())
 }
 
 /// Best-effort attempt to stop libcamera when no camera handles are alive.
@@ -637,8 +688,11 @@ impl CaptureSource for LibcameraCapture {
 }
 
 pub mod prelude {
-    #[cfg(feature = "probe")]
-    pub use crate::probe_devices;
     pub use crate::{LibcameraCapture, LibcameraDeviceInfo};
+    #[cfg(feature = "probe")]
+    pub use crate::{
+        probe_devices, probe_devices_uncached, probe_devices_uncached_with_errors,
+        probe_devices_with_errors, subscribe_hotplug_events,
+    };
     pub use styx_capture::prelude::*;
 }

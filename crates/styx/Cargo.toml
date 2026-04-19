@@ -41,6 +41,7 @@ utoipa = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
+inotify = { workspace = true, optional = true }
 
 [features]
 default = ["hooks"]
@@ -58,6 +59,7 @@ file-backend = ["dep:image", "dep:jpeg-decoder"]
 file-backend-video = ["dep:ffmpeg-next"]
 preview-window = ["dep:minifb"]
 simulation-bevy = ["dep:bevy", "dep:crossbeam-channel", "dep:wgpu"]
+hotplug = ["dep:inotify"]
 examples = ["preview-window", "async"]
 serde = [
     "dep:serde",

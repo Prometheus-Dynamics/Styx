@@ -14,6 +14,7 @@ styx = "1.0.0"
 ## What it provides
 - `styx::prelude`: re-exports core/capture/codec preludes plus capture API (`CaptureRequest`, `CaptureHandle`, `StyxConfig`, `start_capture`, `set_capture_tunables`, etc.), pipeline types (`MediaPipelineBuilder`, `MediaPipeline`), metrics, and backend handles.
 - `probe_all`: merge v4l2/libcamera probe results when enabled.
+- `watch`: inventory watch/runtime layer with retained events, blocking subscriptions, hotplug watchers, and async wrappers when `async` is enabled.
 - `BackendHandle/BackendKind`, `ProbedDevice`, `ProbedBackend`: describe discovered devices and selected backends.
 - `capture_api`: helpers for synthetic backends (`make_netcam_device`, `make_file_device`) and tunables.
 - `session`: `MediaPipeline` for capture→decode→hook→encode flows (sync-first; async helpers when `async` is enabled).
@@ -87,3 +88,6 @@ let replay = make_file_device("replay", recorder.into_paths(), 30, true);
 
 ## Examples
 All examples live in `crates/styx/examples` and are runnable from this crate; see the workspace README for the full list and required feature flags.
+
+- `watch_inventory`: synchronous inventory watch loop
+- `async_watch_inventory`: Tokio-backed inventory watch loop
