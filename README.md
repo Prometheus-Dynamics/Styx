@@ -1,91 +1,78 @@
-# Styx (sync-first, zero-copy media stack)
+# Styx
 
-Styx is a layered Rust stack for building capture→decode→process→encode pipelines with zero-copy frames and predictable backpressure. The workspace is organized into small crates (core primitives, capture descriptors/backends, codecs/registry) and a facade crate `styx` that re-exports everything end users need.
+Styx is a Rust workspace for sync-first, zero-copy media pipelines. The workspace is organized around a facade crate, focused support crates, feature-gated backend adapters, and example-driven validation.
 
-## Documentation
-- Crate docs: <https://docs.rs/styx>
-- Examples live in `crates/styx/examples` and are feature-gated; see the quick start commands below.
+## Workspace Layout
 
-## Install
+- `crates/styx`: facade crate for end users; re-exports the main capture, pipeline, hook, and backend surfaces.
+- `crates/core`: pooled buffers, formats, queues, controls, and low-level media primitives.
+- `crates/capture`: capture descriptors, validation, `CaptureSource`, and virtual capture helpers.
+- `crates/codec`: codec traits, registry, MJPEG/raw decoding, and optional FFmpeg/JPEG integrations.
+- `crates/libcamera`, `crates/v4l2`: optional system backends for probing and capture.
+
+## Getting Started
+
+Add the facade crate:
+
 ```toml
 [dependencies]
-styx = "0.1.0"
+styx = "1.0.0"
 ```
 
-## Crate map
-- `crates/styx` — facade for end users; exports the prelude, capture API, pipeline builder, metrics, and backend helpers.
-- `crates/core` — buffer pools, frame layouts, bounded/newest queues, FourCc/format types, controls, and simple metrics counters.
-- `crates/capture` — descriptors/config validation, the `CaptureSource` trait, virtual capture backend helpers, and pool-based frame builders.
-- `crates/codec` — unified `Codec` trait, codec registry, MJPEG/raw decoders, and feature-gated FFmpeg/mozjpeg/turbojpeg/zune integrations.
-- Optional backends: `crates/libcamera` and `crates/v4l2` enable probing/streaming from system devices (behind features on the `styx` crate).
+Useful example entry points:
 
-## Features (enable on the `styx` crate)
-- `hooks` (default): enable image/frame hooks inside the pipeline.
-- `async`: async capture/pipeline helpers.
-- `preview-window`: simple minifb preview window for examples.
-- `codec-ffmpeg`: FFmpeg encoders/decoders (H264/H265/MJPEG) via `ffmpeg-next`.
-- `codec-mozjpeg`, `codec-turbojpeg`, `codec-zune`: alternate JPEG implementations.
-- `v4l2`, `libcamera`: probe/stream physical devices.
-- `netcam`, `netcam-video`: MJPEG-over-HTTP or FFmpeg streaming for network cameras.
-- `file-backend`, `file-backend-video`: replay stills or videos as a capture source.
-- `examples`: convenience bundle for example features (`preview-window`, `async`).
+- `cargo run -p styx --example capture_virtual`
+- `cargo run -p styx --example capture_and_decode --features preview-window`
+- `cargo run -p styx --example async_pipeline --features async`
+- `cargo run -p styx --example netcam_capture --features "netcam preview-window" -- http://cam/mjpeg`
+- `cargo run -p styx --example file_replay --features "file-backend preview-window" -- frame1.png frame2.png`
+- `cargo run -p styx --example libcamera_ffmpeg_preview --features "libcamera codec-ffmpeg preview-window" --release`
 
-## Quick start
-Virtual capture with metrics (no extra features needed):
+## Features
+
+- `hooks` (default): frame and image hook support inside the pipeline.
+- `async`: async capture and pipeline helpers.
+- `preview-window`: lightweight preview window support for examples.
+- `codec-ffmpeg`, `codec-mozjpeg`, `codec-turbojpeg`, `codec-zune`: alternate codec integrations.
+- `v4l2`, `libcamera`: physical capture backends.
+- `netcam`, `netcam-video`: network camera capture.
+- `file-backend`, `file-backend-video`: disk-backed replay sources.
+- `examples`: convenience bundle for example-oriented features.
+
+## Development
+
+Common workspace commands:
+
 ```bash
-cargo run -p styx --example capture_virtual
+./scripts/repo-clean.sh
+cargo fmt --all -- --check
+./scripts/check-file-sizes.sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo doc --workspace --no-deps
 ```
 
-Capture → decode pipeline with hooks and optional preview window:
-```bash
-cargo run -p styx --example capture_and_decode --features preview-window
-```
+Optional Docker-backed facade validation:
 
-Async pipeline (enable `async`):
-```bash
-cargo run -p styx --example async_pipeline --features async
-```
+- `cargo test -p styx --test docker_facade_examples -- --ignored --nocapture`
 
-Netcam MJPEG pipeline (enable `netcam`, optionally `preview-window`):
-```bash
-cargo run -p styx --example netcam_capture --features "netcam preview-window" -- http://cam/mjpeg
-```
+## Documentation Index
 
-File replay backend (enable `file-backend`):
-```bash
-cargo run -p styx --example file_replay --features "file-backend preview-window" -- frame1.png frame2.png
-```
-
-Record stream output and replay via the file backend:
-```bash
-cargo run -p styx --example record_and_replay --features "file-backend" -- ./recordings 60
-```
-
-Libcamera → FFmpeg decode/encode preview (requires `libcamera`, `codec-ffmpeg`, `preview-window`; camera must expose MJPG/H264/H265):
-```bash
-cargo run -p styx --example libcamera_ffmpeg_preview --features "libcamera codec-ffmpeg preview-window" --release
-```
-
-## Examples (all live under `crates/styx/examples`)
-- `capture_virtual`: tune `StyxConfig`, stream virtual frames, and print metrics.
-- `capture_and_decode`: virtual capture into a pipeline with frame hooks and optional preview.
-- `async_pipeline`: async variant of the pipeline.
-- `mjpeg_decode`: register MJPEG decoder and run through the codec registry (embedded sample).
-- `netcam_capture`: MJPEG netcam device builder + decode pipeline.
-- `file_replay`: replay images/videos as frames with control overrides.
-- `record_and_replay`: record frames to disk and replay them via the file backend.
-- `probe_and_select`: probe v4l2/libcamera devices and stream the first available.
-- `libcamera_ffmpeg_preview`: libcamera capture with FFmpeg decode/encode and a preview window (requires MJPG/H264/H265 support).
-
-## Development notes
-- Everything exposed to end users is re-exported from `styx::prelude` (plus a few top-level types like `BackendHandle/BackendKind` and probing helpers).
-- Buffers are pooled (`BufferPool`/`FrameLease`) to avoid allocations; use the provided layout helpers to honor strides and zero-copy constraints.
-- Capture backends push frames over bounded queues; configure depth/pool sizes via `StyxConfig`/`set_capture_tunables`.
-- Codecs are registered in `CodecRegistry`; selection is configurable via policies, impl priorities, and hardware bias flags.
-
-See the per-crate READMEs in `crates/core`, `crates/capture`, `crates/codec`, and `crates/styx` for deeper API notes.
+- [docs/README.md](docs/README.md): repository documentation index
+- [docs/development.md](docs/development.md): repo layout, commands, and validation conventions
+- [docs/testing.md](docs/testing.md): test surfaces, example expectations, and CI notes
+- [CHANGELOG.md](CHANGELOG.md): release history and notable workspace changes
+- [testing/README.md](testing/README.md): local and CI validation entry points
+- [scripts/ci.sh](scripts/ci.sh): shared local CI entry point
+- [scripts/repo-clean.sh](scripts/repo-clean.sh): pre-commit cleanup and verification entry point
+- [crates/styx/README.md](crates/styx/README.md): facade API notes
+- [crates/core/README.md](crates/core/README.md): core primitives
+- [crates/capture/README.md](crates/capture/README.md): capture traits and descriptors
+- [crates/codec/README.md](crates/codec/README.md): codec registry and integrations
 
 ## License
+
 Licensed under either of:
+
 - Apache License, Version 2.0
 - MIT License

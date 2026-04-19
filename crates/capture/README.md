@@ -8,7 +8,7 @@ Capture descriptors/config validation and the `CaptureSource` trait for zero-cop
 ## Install
 ```toml
 [dependencies]
-styx-capture = "0.1.0"
+styx-capture = "1.0.0"
 ```
 
 ## Key types

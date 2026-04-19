@@ -46,6 +46,7 @@ pub struct ExternalBackingTracker {
     peak_bytes: AtomicU64,
 }
 
+#[cfg_attr(not(feature = "libcamera"), allow(dead_code))]
 impl ExternalBackingTracker {
     pub fn new(label: &'static str) -> Self {
         Self {

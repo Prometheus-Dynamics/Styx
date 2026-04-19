@@ -3,20 +3,33 @@ members = [
     "crates/core",
     "crates/capture",
     "crates/codec",
+    "crates/libcamera",
     "crates/styx",
+    "crates/v4l2",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 edition = "2024"
 version = "1.0.0"
 authors = ["Mathias Petersen"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Prometheus-Dynamics/Styx"
+homepage = "https://github.com/Prometheus-Dynamics/Styx"
+rust-version = "1.94"
 
 [workspace.dependencies]
+styx = { path = "crates/styx", version = "1.0.0" }
+styx-core = { package = "styx-core-rs", path = "crates/core", version = "1.0.0" }
+styx-capture = { path = "crates/capture", version = "1.0.0" }
+styx-codec = { path = "crates/codec", version = "1.0.0" }
+styx-libcamera = { path = "crates/libcamera", version = "1.0.0" }
+styx-v4l2 = { path = "crates/v4l2", version = "1.0.0" }
+crossbeam-queue = "0.3.12"
 smallvec = "1.15.1"
 thiserror = "2.0.18"
-tokio = "1.51.0"
-image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
+tokio = "1.52.1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 ffmpeg-next = { version = "8.1.0", features = ["codec", "format", "software-scaling"] }
 v4l = "0.14"
 libcamera = { version = "0.7", default-features = false, features = ["libcamera_semver_versioning"] }
@@ -26,3 +39,38 @@ futures-core = "0.3.32"
 futures-util = { version = "0.3.32", features = ["io"] }
 serde = { version = "1.0.228", features = ["derive"] }
 utoipa = { version = "5.4.0", default-features = false, features = ["macros"] }
+parking_lot = "0.12.5"
+jpeg-decoder = "0.3.2"
+zune-jpeg = "0.5.15"
+zune-core = "0.5.1"
+mozjpeg = "0.10.13"
+turbojpeg = "1.4.0"
+yuvutils-rs = { version = "0.8.3", features = ["fast_mode"] }
+rayon = "1.11.0"
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls", "stream"] }
+minifb = "0.28.0"
+libc = "0.2"
+bevy = { version = "0.16.1", default-features = false, features = ["bevy_asset", "bevy_scene", "bevy_gltf", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_winit", "png", "x11"] }
+crossbeam-channel = "0.5.15"
+wgpu = "24"
+libcamera-sys = "0.7"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_lifetimes = "deny"
+unused_attributes = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[workspace.metadata.prometheus-dependency-policy]
+error_handling = "Library crates use thiserror for typed errors."
+instrumentation = "Structured instrumentation uses tracing when a workspace needs runtime diagnostics."
+centralization = "Shared internal crates and common third-party crates belong in workspace.dependencies."
+implementation_variants = [
+    "Styx keeps codec-ffmpeg, codec-zune, codec-mozjpeg, and codec-turbojpeg as stable feature-gated codec backends.",
+]

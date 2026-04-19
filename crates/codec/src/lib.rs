@@ -5,10 +5,13 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
+
+#[cfg(feature = "codec-ffmpeg")]
+use std::sync::atomic::AtomicBool;
 
 use styx_core::prelude::*;
 /// Encoders/decoders share the same entry-point; the kind distinguishes behavior.
@@ -339,12 +342,15 @@ fn is_hardware_impl(name: &str) -> bool {
     .any(|tok| n.contains(tok))
 }
 
+#[cfg(feature = "codec-ffmpeg")]
 static V4L2M2M_PROBE_DISABLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "codec-ffmpeg")]
 fn v4l2m2m_probe_enabled() -> bool {
     !V4L2M2M_PROBE_DISABLED.load(Ordering::Relaxed)
 }
 
+#[cfg(feature = "codec-ffmpeg")]
 fn disable_v4l2m2m_probe() {
     V4L2M2M_PROBE_DISABLED.store(true, Ordering::Relaxed);
 }

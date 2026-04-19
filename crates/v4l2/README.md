@@ -10,7 +10,7 @@ formats, intervals, and controls.
 ## Install
 ```toml
 [dependencies]
-styx-v4l2 = "0.1.0"
+styx-v4l2 = "1.0.0"
 ```
 
 ## Usage

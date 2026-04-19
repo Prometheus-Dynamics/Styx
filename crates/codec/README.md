@@ -8,7 +8,7 @@ Unified codec trait plus a registry for pluggable encoders/decoders. Includes MJ
 ## Install
 ```toml
 [dependencies]
-styx-codec = "0.1.0"
+styx-codec = "1.0.0"
 ```
 
 ## Codec trait

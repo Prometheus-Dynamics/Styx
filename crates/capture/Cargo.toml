@@ -1,25 +1,25 @@
 [package]
 name = "styx-capture"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Capture descriptors and zero-copy capture trait for Styx."
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/Prometheus-Dynamics/Styx"
-homepage = "https://github.com/Prometheus-Dynamics/Styx"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/styx-capture"
 readme = "README.md"
 keywords = ["media", "video", "capture", "zero-copy"]
 categories = ["multimedia::video"]
-rust-version = "1.94"
+rust-version.workspace = true
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
-styx-core = { package = "styx-core-rs", path = "../core", version = "0.1.0" }
-smallvec = "1.15.1"
-serde = { version = "1.0.228", features = ["derive"], optional = true }
-utoipa = { version = "5.4.0", default-features = false, features = ["macros"], optional = true }
+styx-core.workspace = true
+smallvec.workspace = true
+serde = { workspace = true, features = ["derive"], optional = true }
+utoipa = { workspace = true, optional = true }
 
 [features]
 default = []

@@ -10,7 +10,7 @@ capture API.
 ## Install
 ```toml
 [dependencies]
-styx-libcamera = "0.1.0"
+styx-libcamera = "1.0.0"
 ```
 
 ## Features

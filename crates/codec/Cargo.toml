@@ -1,36 +1,36 @@
 [package]
 name = "styx-codec"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Codec registry and MJPEG/raw codecs for the Styx media stack."
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/Prometheus-Dynamics/Styx"
-homepage = "https://github.com/Prometheus-Dynamics/Styx"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/styx-codec"
 readme = "README.md"
 keywords = ["media", "video", "codec", "mjpeg"]
 categories = ["multimedia::video", "multimedia::encoding"]
-rust-version = "1.94"
+rust-version.workspace = true
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
-styx-core = { package = "styx-core-rs", path = "../core", version = "0.1.0" }
-styx-capture = { path = "../capture", version = "0.1.0" }
-thiserror = "2.0.18"
-jpeg-decoder = "0.3.2"
-zune-jpeg = { version = "0.5.15", optional = true }
-zune-core = { version = "0.5.1", optional = true }
-image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"], optional = true }
-mozjpeg = { version = "0.10.13", optional = true }
-turbojpeg = { version = "1.4.0", optional = true }
-ffmpeg-next = { version = "8.1.0", features = ["codec", "format", "software-scaling"], optional = true }
-smallvec = "1.15.1"
-yuvutils-rs = { version = "0.8.3", features = ["fast_mode"] }
-rayon = "1.11.0"
-serde = { version = "1.0.228", features = ["derive"], optional = true }
-utoipa = { version = "5.4.0", default-features = false, features = ["macros"], optional = true }
+styx-core.workspace = true
+styx-capture.workspace = true
+thiserror.workspace = true
+jpeg-decoder.workspace = true
+zune-jpeg = { workspace = true, optional = true }
+zune-core = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+mozjpeg = { workspace = true, optional = true }
+turbojpeg = { workspace = true, optional = true }
+ffmpeg-next = { workspace = true, optional = true }
+smallvec.workspace = true
+yuvutils-rs.workspace = true
+rayon.workspace = true
+serde = { workspace = true, features = ["derive"], optional = true }
+utoipa = { workspace = true, optional = true }
 
 [features]
 default = []

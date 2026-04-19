@@ -8,7 +8,7 @@ The end-user entry point that re-exports the layered stack (`styx-core`, `styx-c
 ## Install
 ```toml
 [dependencies]
-styx = "0.1.0"
+styx = "1.0.0"
 ```
 
 ## What it provides

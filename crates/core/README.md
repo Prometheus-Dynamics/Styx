@@ -8,7 +8,7 @@ Core primitives shared across the stack: buffer pools, frame leases/layouts, bou
 ## Install
 ```toml
 [dependencies]
-styx-core-rs = "0.1.0"
+styx-core-rs = "1.0.0"
 ```
 
 ## Modules
