@@ -58,7 +58,7 @@ fn docker_async_pipeline_reports_async_samples() {
 fn docker_record_and_replay_writes_and_replays_frames() {
     let facade = DockerFacade::start();
     let output = facade.run_output(
-        "rm -rf /tmp/styx-recordings && /workspace/target/debug/examples/record_and_replay /tmp/styx-recordings 6 && test -f /tmp/styx-recordings/frame-0000.png && echo frame-0000.png:ok",
+        "rm -rf /tmp/styx-recordings && /workspace/target/debug/examples/record_and_replay /tmp/styx-recordings 6 && test -f /tmp/styx-recordings/frame_000000.png && echo frame_000000.png:ok",
     );
     assert!(
         output.status.success(),
@@ -69,5 +69,5 @@ fn docker_record_and_replay_writes_and_replays_frames() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("recorded 6 frames to /tmp/styx-recordings"));
     assert!(stdout.contains("replay #5"));
-    assert!(stdout.contains("frame-0000.png:ok"));
+    assert!(stdout.contains("frame_000000.png:ok"));
 }

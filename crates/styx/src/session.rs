@@ -349,7 +349,7 @@ impl MediaPipeline {
         match self.capture.recv_async().await {
             RecvOutcome::Data(frame) => {
                 self.metrics.capture.record(capture_start.elapsed());
-                tokio::task::block_in_place(|| self.process_frame(frame))
+                self.process_frame(frame)
             }
             RecvOutcome::Empty => {
                 // Yield to avoid hot spin when capture queue is momentarily empty.
