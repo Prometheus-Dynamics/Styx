@@ -9,7 +9,7 @@ Styx splits validation into default workspace checks and facade-example coverage
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo run -p styx --example capture_virtual`
-- `cargo run -p styx --example capture_and_decode --features preview-window`
+- `cargo run -p styx --example low_latency_preview --features preview-window`
 
 ## Docker Surface
 

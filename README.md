@@ -22,8 +22,11 @@ styx = "1.0.0"
 Useful example entry points:
 
 - `cargo run -p styx --example capture_virtual`
-- `cargo run -p styx --example capture_and_decode --features preview-window`
+- `cargo run -p styx --example low_latency_preview --features preview-window`
+- `cargo run -p styx --features file-backend --example reliable_recording -- /tmp/styx-recordings 30`
+- `cargo run -p styx --example latest_frame_fanout`
 - `cargo run -p styx --example async_pipeline --features async`
+- `cargo run -p styx --example v4l2_hardware_bench --features v4l2`
 - `cargo run -p styx --example netcam_capture --features "netcam preview-window" -- http://cam/mjpeg`
 - `cargo run -p styx --example file_replay --features "file-backend preview-window" -- frame1.png frame2.png`
 - `cargo run -p styx --example libcamera_ffmpeg_preview --features "libcamera codec-ffmpeg preview-window" --release`
@@ -50,6 +53,14 @@ cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo doc --workspace --no-deps
+```
+
+Perf-smoke commands:
+
+```bash
+cargo run -p styx --example perf_smoke --release --quiet
+cargo run -p styx --features file-backend --example file_replay_perf --quiet
+cargo run -p styx --features codec-mozjpeg --example encode_perf --quiet
 ```
 
 Optional Docker-backed facade validation:

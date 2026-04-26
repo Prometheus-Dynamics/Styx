@@ -55,6 +55,8 @@ crossbeam-channel = "0.5.15"
 wgpu = "24"
 libcamera-sys = "0.7"
 inotify = { version = "0.11.1", default-features = false }
+criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
+tracing = "0.1.41"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

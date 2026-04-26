@@ -6,6 +6,6 @@ COPY . .
 
 RUN cargo build -p styx --features "async,file-backend" \
     --example capture_virtual \
-    --example capture_and_decode \
+    --example low_latency_preview \
     --example async_pipeline \
-    --example record_and_replay
+    --example reliable_recording

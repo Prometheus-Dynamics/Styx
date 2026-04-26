@@ -21,19 +21,19 @@ fn docker_capture_virtual_reports_virtual_frames() {
 
 #[test]
 #[ignore = "requires docker"]
-fn docker_capture_and_decode_reports_pipeline_metrics() {
+fn docker_low_latency_preview_reports_pipeline_health() {
     let facade = DockerFacade::start();
-    let output = facade.run_output("/workspace/target/debug/examples/capture_and_decode");
+    let output = facade.run_output("/workspace/target/debug/examples/low_latency_preview");
     assert!(
         output.status.success(),
-        "capture_and_decode failed\n{}",
+        "low_latency_preview failed\n{}",
         output_text(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("#30"));
-    assert!(stdout.contains("capture avg_ms="));
-    assert!(stdout.contains("decode avg_ms="));
+    assert!(stdout.contains("#060"));
+    assert!(stdout.contains("preview fps="));
+    assert!(stdout.contains("copies="));
 }
 
 #[test]
@@ -55,19 +55,18 @@ fn docker_async_pipeline_reports_async_samples() {
 
 #[test]
 #[ignore = "requires docker"]
-fn docker_record_and_replay_writes_and_replays_frames() {
+fn docker_reliable_recording_writes_frames() {
     let facade = DockerFacade::start();
     let output = facade.run_output(
-        "rm -rf /tmp/styx-recordings && /workspace/target/debug/examples/record_and_replay /tmp/styx-recordings 6 && test -f /tmp/styx-recordings/frame_000000.png && echo frame_000000.png:ok",
+        "rm -rf /tmp/styx-recordings && /workspace/target/debug/examples/reliable_recording /tmp/styx-recordings 6 && test -f /tmp/styx-recordings/frame_000000.png && echo frame_000000.png:ok",
     );
     assert!(
         output.status.success(),
-        "record_and_replay failed\n{}",
+        "reliable_recording failed\n{}",
         output_text(&output)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("recorded 6 frames to /tmp/styx-recordings"));
-    assert!(stdout.contains("replay #5"));
     assert!(stdout.contains("frame_000000.png:ok"));
 }

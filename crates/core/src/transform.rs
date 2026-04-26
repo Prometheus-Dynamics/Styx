@@ -1,7 +1,10 @@
 use std::fmt;
 use std::sync::{Mutex, OnceLock};
 
-use crate::buffer::{BufferPool, BufferPoolStats, FrameLease, FrameMeta, plane_layout_from_dims};
+use crate::buffer::{
+    BufferPool, BufferPoolStats, FrameLease, FrameResidency, ResidencyTransition,
+    ResidencyTransitionReason, plane_layout_from_dims,
+};
 use crate::format::{FourCc, MediaFormat, Resolution};
 
 /// Rotation in 90-degree steps.
@@ -72,6 +75,14 @@ fn packed_bytes_per_pixel(code: FourCc) -> Option<usize> {
 
 static TRANSFORM_POOL: OnceLock<Mutex<(BufferPool, usize)>> = OnceLock::new();
 
+#[derive(Clone, Debug)]
+pub struct TransformResidencyCapabilities {
+    pub accepted_inputs: &'static [FrameResidency],
+    pub possible_outputs: &'static [FrameResidency],
+    pub preserves_input_residency: bool,
+    pub forces_copy: bool,
+}
+
 fn transform_pool(min_size: usize) -> BufferPool {
     let lock = TRANSFORM_POOL
         .get_or_init(|| Mutex::new((BufferPool::with_limits(2, min_size, 4), min_size)));
@@ -93,6 +104,19 @@ pub fn reset_transform_pool() {
         && let Ok(mut guard) = lock.lock()
     {
         *guard = (BufferPool::with_limits(0, 1, 0), 1);
+    }
+}
+
+pub fn packed_transform_residency_capabilities() -> TransformResidencyCapabilities {
+    TransformResidencyCapabilities {
+        accepted_inputs: &[
+            FrameResidency::HostOwned,
+            FrameResidency::HostExternal,
+            FrameResidency::Dmabuf,
+        ],
+        possible_outputs: &[FrameResidency::HostOwned],
+        preserves_input_residency: false,
+        forces_copy: true,
     }
 }
 
@@ -162,8 +186,17 @@ pub fn transform_packed_frame(
         }
     }
     let out_format = MediaFormat::new(format.code, out_res, format.color);
+    let mut out_meta = meta.clone();
+    out_meta.format = out_format;
+    out_meta.residency = Some(FrameResidency::HostOwned);
+    out_meta.last_transition = Some(ResidencyTransition {
+        from: frame.residency(),
+        to: FrameResidency::HostOwned,
+        reason: ResidencyTransitionReason::PackedTransform,
+        copied: true,
+    });
     Ok(FrameLease::single_plane(
-        FrameMeta::new(out_format, meta.timestamp),
+        out_meta,
         buf,
         layout.len,
         layout.stride,
@@ -173,7 +206,7 @@ pub fn transform_packed_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buffer::BufferPool;
+    use crate::buffer::{BufferPool, FrameMeta};
     use crate::format::ColorSpace;
 
     fn make_frame_rg24(width: u32, height: u32, pixels: &[u8]) -> FrameLease {

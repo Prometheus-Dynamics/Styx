@@ -35,6 +35,12 @@ jobs:
       - name: Build example surface
         run: cargo check -p styx --examples --features "examples,file-backend,netcam"
 
+      - name: Run perf smoke surface
+        run: |
+          cargo run -p styx --example perf_smoke --release --quiet
+          cargo run -p styx --features file-backend --example file_replay_perf --quiet
+          cargo run -p styx --features codec-mozjpeg --example encode_perf --quiet
+
   docs-and-lints:
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -58,6 +58,6 @@ Selection can be influenced via:
 - Raw color converters: YUYV/NV12/I420 → RGB, RGBA/BGRA/BGR → RGB, passthrough.
 - Optional FFmpeg (`codec-ffmpeg`): H264/H265/MJPEG encoders/decoders.
 - Optional JPEG (`codec-mozjpeg`, `codec-turbojpeg`, `codec-zune`): alternate MJPEG backends.
-- Optional `image` feature: `ImageAnyDecoder` and helpers for `DynamicImage` conversions.
+- Optional `dynamic-image` feature: compatibility helpers for `DynamicImage` conversions.
 
 See `crates/styx/examples/mjpeg_decode.rs` for an end-to-end registry/decode usage example.

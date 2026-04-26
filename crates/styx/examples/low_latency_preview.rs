@@ -1,52 +1,40 @@
-use std::sync::Arc;
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use styx::DeviceIdentity;
 use styx::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // A preview path should prefer freshness over completeness. A depth of 1
+    // minimizes queued latency, and the small pool keeps the virtual path honest.
+    StyxConfig::new()
+        .capture_queue_depth(1)
+        .capture_pool(2, 1 << 18, 2)
+        .apply();
+
     let device = virtual_device();
     let mode = device.backends[0].descriptor.modes[0].clone();
-
-    let decoder = Arc::new(PassthroughDecoder::new(mode.format.code));
-
-    let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
-        .decoder(decoder)
-        // Mutate the raw frame before decode.
-        .frame_hook(|mut frame| {
-            if let Some(mut plane) = frame.planes_mut().into_iter().next() {
-                let stride = plane.stride().max(1);
-                for (idx, byte) in plane.data().iter_mut().take(stride.min(32)).enumerate() {
-                    *byte = byte.wrapping_add(idx as u8);
-                }
-            }
-            frame
-        })
-        // Apply an image-level hook (requires `hooks` feature, enabled by default).
-        .hook(|img| img.grayscale())
+    let request = CaptureRequest::new(&device).mode(mode.id.clone());
+    let mut pipeline = MediaPipelineBuilder::new(request)
+        // Preview does not need decode or encode on this RG24 source.
+        .decode_enabled(false)
+        .encode_enabled(false)
         .start()?;
 
     #[cfg(feature = "preview-window")]
-    let mut preview = PreviewWindow::for_mode("styx capture+decode", &mode).ok();
+    let mut preview = PreviewWindow::for_mode("styx low-latency preview", &mode).ok();
 
     let mut frames = 0;
-    while frames < 30 {
+    while frames < 60 {
         match pipeline.next_blocking(Duration::from_millis(2)) {
             RecvOutcome::Data(frame) => {
                 frames += 1;
                 let meta = frame.meta();
-                let first = frame
-                    .planes()
-                    .first()
-                    .and_then(|p| p.data().first())
-                    .copied()
-                    .unwrap_or_default();
                 println!(
-                    "#{frames:02} ts={} fmt={:?} stride={} first_byte={}",
+                    "#{frames:03} ts={} fmt={:?} stride={}",
                     meta.timestamp,
                     meta.format.code,
-                    frame.plane_strides().first().copied().unwrap_or_default(),
-                    first
+                    frame.plane_strides().first().copied().unwrap_or_default()
                 );
                 #[cfg(feature = "preview-window")]
                 if let Some(win) = preview.as_mut() {
@@ -58,12 +46,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let metrics = pipeline.metrics();
+    let report = pipeline.health_report();
     println!(
-        "capture avg_ms={:.2?} decode avg_ms={:.2?} processed={}",
-        metrics.capture.avg_millis(),
-        metrics.decode.avg_millis(),
-        metrics.capture.samples()
+        "preview fps={:.1?} queue={}/{} drops={} backpressure={} copies={} latency_p50_ms={:.2?}",
+        report.output_fps,
+        report.capture_queue_depth,
+        report.capture_queue_capacity,
+        report.drop_count,
+        report.capture_backpressure_count,
+        report.copy_count,
+        report.latency_p50_ms
     );
 
     pipeline.stop();
@@ -72,14 +64,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn virtual_device() -> ProbedDevice {
     let res = Resolution::new(640, 360).unwrap();
+    let interval = Interval {
+        numerator: NonZeroU32::new(1).unwrap(),
+        denominator: NonZeroU32::new(30).unwrap(),
+    };
     let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
     let mode = Mode {
         id: ModeId {
             format,
-            interval: None,
+            interval: Some(interval),
         },
         format,
-        intervals: Vec::new().into(),
+        intervals: vec![interval].into(),
         interval_stepwise: None,
     };
     let descriptor = CaptureDescriptor {
@@ -94,7 +90,7 @@ fn virtual_device() -> ProbedDevice {
     };
     ProbedDevice {
         identity: DeviceIdentity {
-            display: "virtual-pipeline".into(),
+            display: "virtual-low-latency-preview".into(),
             keys: vec!["virtual".into()],
         },
         backends: vec![backend],

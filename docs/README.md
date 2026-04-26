@@ -5,6 +5,7 @@ This directory holds repository-level documentation for the Styx workspace.
 ## Guides
 
 - [development.md](development.md): repository layout, validation commands, and contribution expectations
+- [performance.md](performance.md): benchmark surfaces and performance-validation notes
 - [testing.md](testing.md): default and example-oriented validation surfaces
 
 ## Where To Start

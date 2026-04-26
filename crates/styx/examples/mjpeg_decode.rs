@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use styx::codec::decoder::frame_to_dynamic_image;
 use styx::prelude::*;
 
 const SAMPLE_JPEG: [u8; 633] = [
@@ -59,14 +58,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         decoded.meta().format.code
     );
 
-    match frame_to_dynamic_image(&decoded) {
-        Some(img) => println!(
-            "converted to DynamicImage ({:?}, {}x{})",
-            img.color(),
-            img.width(),
-            img.height()
-        ),
-        None => println!("conversion to DynamicImage not supported for this FourCc"),
+    let image = decoded.materialize_owned();
+    println!(
+        "image frame {}x{} fourcc={} residency={}",
+        image.meta().format.resolution.width,
+        image.meta().format.resolution.height,
+        image.meta().format.code,
+        image.residency()
+    );
+
+    if let Some(gray) = image.to_luma8() {
+        println!(
+            "converted to luma frame fourcc={} stride={}",
+            gray.meta().format.code,
+            gray.plane_strides().first().copied().unwrap_or_default()
+        );
     }
 
     let stats = handle.stats();

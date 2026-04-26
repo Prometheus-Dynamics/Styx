@@ -43,10 +43,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let metrics = pipeline.metrics();
+    let end_to_end = metrics.end_to_end.snapshot();
+    let source_to_sink = metrics.source_to_sink.snapshot();
+    let copies = metrics.copies.snapshot();
     println!(
-        "async capture avg_ms={:.2?} decode avg_ms={:.2?} samples={}",
+        "async capture avg_ms={:.2?} decode avg_ms={:.2?} e2e_p50_ms={:.2?} e2e_p95_ms={:.2?} source_p50_ms={:.2?} source_p95_ms={:.2?} copies={} bytes_moved={} samples={}",
         metrics.capture.avg_millis(),
         metrics.decode.avg_millis(),
+        end_to_end.p50_millis,
+        end_to_end.p95_millis,
+        source_to_sink.p50_millis,
+        source_to_sink.p95_millis,
+        copies.copies,
+        copies.bytes_moved,
         metrics.capture.samples()
     );
 

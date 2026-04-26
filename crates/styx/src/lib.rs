@@ -694,7 +694,10 @@ pub mod prelude {
         SimulationDeviceConfig, SimulationLensConfig, SimulationOutputMode, SimulationPose,
         SimulationSensorConfig, make_simulation_device,
     };
-    pub use crate::metrics::{PipelineMemoryStats, PipelineMetrics, StageMetrics};
+    pub use crate::metrics::{
+        CopyMetrics, CopyStats, HealthReport, PipelineMemoryStats, PipelineMetrics,
+        QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot, StageMetrics, StageSnapshot,
+    };
     #[cfg(feature = "preview-window")]
     pub use crate::preview::PreviewWindow;
     pub use crate::probe_all;

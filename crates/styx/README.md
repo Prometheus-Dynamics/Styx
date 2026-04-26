@@ -53,13 +53,16 @@ let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(device))
     .rotate(Rotation90::Deg90)    // Optional 90-degree rotation
     .mirror(true)                 // Optional horizontal mirror
     .frame_hook(|frame| frame)     // works on FrameLease
-    .hook(|img| img.flipv())       // DynamicImage hook (feature `hooks`)
+    .hook(|frame| frame.flipv())   // image helpers on FrameLease (feature `hooks`)
     .start()?;
 
 while let RecvOutcome::Data(frame) = pipeline.next() {
     println!("pipeline frame {:?}", frame.meta().format);
 }
 ```
+
+`DynamicImage` compatibility is available only through the optional
+`dynamic-image` feature; the default hook/runtime path operates directly on `FrameLease`.
 
 Global tunables for queues/pools/netcam backoff:
 ```rust,ignore
@@ -89,5 +92,12 @@ let replay = make_file_device("replay", recorder.into_paths(), 30, true);
 ## Examples
 All examples live in `crates/styx/examples` and are runnable from this crate; see the workspace README for the full list and required feature flags.
 
+- Canonical facade flows:
+  - `capture_virtual`
+  - `low_latency_preview`
+  - `reliable_recording`
+  - `latest_frame_fanout`
+  - `file_replay`
+  - `netcam_capture`
 - `watch_inventory`: synchronous inventory watch loop
 - `async_watch_inventory`: Tokio-backed inventory watch loop

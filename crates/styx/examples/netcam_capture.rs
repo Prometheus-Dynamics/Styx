@@ -31,6 +31,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
 
+    // Network sources need retry/backoff knobs up front. The slightly deeper
+    // queue absorbs bursty arrival without immediately dropping to empty.
     StyxConfig::new()
         .netcam_timeouts(10)
         .netcam_backoff(500, 5_000)
@@ -38,8 +40,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .apply();
 
     let device = make_netcam_device("netcam", &url, width, height, fps);
+    let mode = device.backends[0]
+        .descriptor
+        .modes
+        .first()
+        .ok_or("netcam device missing modes")?
+        .id
+        .clone();
     let decoder = Arc::new(MjpegDecoder::new(FourCc::new(*b"RG24")));
-    let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
+    let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device).mode(mode))
         .decoder(decoder)
         .start()?;
 

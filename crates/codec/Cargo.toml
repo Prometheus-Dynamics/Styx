@@ -34,7 +34,8 @@ utoipa = { workspace = true, optional = true }
 
 [features]
 default = []
-image = ["dep:image"]
+dynamic-image = ["dep:image", "image"]
+image = []
 codec-zune = ["zune-jpeg", "zune-core"]
 codec-mozjpeg = ["mozjpeg"]
 codec-turbojpeg = ["turbojpeg"]

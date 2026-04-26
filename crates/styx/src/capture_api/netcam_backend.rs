@@ -392,7 +392,14 @@ where
             FrameMeta::new(
                 MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb),
                 timestamp,
-            ),
+            )
+            .with_capture_instant(std::time::Instant::now())
+            .with_transition(ResidencyTransition {
+                from: FrameResidency::CompressedPacket,
+                to: FrameResidency::CompressedPacket,
+                reason: ResidencyTransitionReason::NetcamIngress,
+                copied: false,
+            }),
             lease,
             layout.len,
             layout.stride,
@@ -617,7 +624,14 @@ fn mjpeg_loop(
             FrameMeta::new(
                 MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb),
                 timestamp,
-            ),
+            )
+            .with_capture_instant(std::time::Instant::now())
+            .with_transition(ResidencyTransition {
+                from: FrameResidency::CompressedPacket,
+                to: FrameResidency::CompressedPacket,
+                reason: ResidencyTransitionReason::NetcamIngress,
+                copied: false,
+            }),
             lease,
             layout.len,
             layout.stride,

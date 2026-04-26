@@ -202,7 +202,14 @@ pub fn build_frame_from_pool(
         format.resolution.height,
         bytes_per_pixel,
     );
-    let meta = FrameMeta::new(format, timestamp);
+    let meta = FrameMeta::new(format, timestamp)
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::HostOwned,
+            to: FrameResidency::HostOwned,
+            reason: ResidencyTransitionReason::Capture,
+            copied: false,
+        });
     FrameLease::single_plane(meta, pool.lease(), layout.len, layout.stride)
 }
 

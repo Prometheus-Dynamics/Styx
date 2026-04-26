@@ -115,15 +115,39 @@ impl CaptureHandle {
     /// Blocking receive with a configurable sleep to avoid busy-waiting.
     pub fn recv_blocking(&self, wait: std::time::Duration) -> RecvOutcome<FrameLease> {
         loop {
-            match self.recv() {
-                RecvOutcome::Empty => {
-                    if !wait.is_zero() {
-                        std::thread::sleep(wait);
-                    } else {
-                        std::thread::yield_now();
+            match self.recv_timeout(wait) {
+                styx_core::queue::RecvWaitOutcome::Data(frame) => {
+                    return RecvOutcome::Data(frame);
+                }
+                styx_core::queue::RecvWaitOutcome::Closed => return RecvOutcome::Closed,
+                styx_core::queue::RecvWaitOutcome::Timeout => {
+                    if wait.is_zero() {
+                        continue;
                     }
                 }
-                other => return other,
+            }
+        }
+    }
+
+    /// Receive with explicit timeout semantics.
+    pub fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> styx_core::queue::RecvWaitOutcome<FrameLease> {
+        let start = Instant::now();
+        let outcome = if timeout.is_zero() {
+            self.rx.recv_blocking()
+        } else {
+            self.rx.recv_timeout(timeout)
+        };
+        match outcome {
+            styx_core::queue::RecvWaitOutcome::Data(frame) => {
+                self.metrics.record(start.elapsed());
+                styx_core::queue::RecvWaitOutcome::Data(frame)
+            }
+            styx_core::queue::RecvWaitOutcome::Closed => styx_core::queue::RecvWaitOutcome::Closed,
+            styx_core::queue::RecvWaitOutcome::Timeout => {
+                styx_core::queue::RecvWaitOutcome::Timeout
             }
         }
     }
@@ -240,6 +264,10 @@ impl CaptureHandle {
         self.metrics.clone()
     }
 
+    pub fn queue_stats(&self) -> crate::metrics::QueueTelemetryStats {
+        self.rx.stats().into()
+    }
+
     /// Snapshot capture/decode/transform pool usage visible to this process.
     pub fn memory_stats(&self) -> crate::metrics::PipelineMemoryStats {
         crate::metrics::PipelineMemoryStats {
@@ -253,12 +281,46 @@ impl CaptureHandle {
                 .map(|tracker| tracker.snapshot())
                 .collect(),
             transform_pool: styx_core::transform::transform_pool_stats(),
-            #[cfg(feature = "hooks")]
+            #[cfg(all(feature = "hooks", feature = "dynamic-image"))]
             image_pool: styx_codec::image_utils::dynamic_image_pool_stats(),
-            #[cfg(feature = "hooks")]
+            #[cfg(all(feature = "hooks", feature = "dynamic-image"))]
             packed_pools: styx_codec::decoder::packed_frame_pool_stats(),
-            #[cfg(feature = "hooks")]
+            #[cfg(all(feature = "hooks", feature = "dynamic-image"))]
             staging_copy: Some(styx_codec::decoder::staging_copy_stats().into()),
+        }
+    }
+
+    pub fn health_report(&self) -> crate::metrics::HealthReport {
+        let queue = self.queue_stats();
+        let capture = self.metrics.snapshot();
+        let memory = self.memory_stats();
+        let external_inflight_buffers = memory
+            .external_backings
+            .iter()
+            .map(|stats| stats.current_buffers)
+            .sum();
+        let external_inflight_bytes = memory
+            .external_backings
+            .iter()
+            .map(|stats| stats.current_bytes)
+            .sum();
+        crate::metrics::HealthReport {
+            output_fps: capture.fps,
+            capture_queue_depth: queue.depth,
+            capture_queue_capacity: queue.capacity,
+            capture_backpressure_count: queue.send_backpressure,
+            drop_count: queue.send_timeouts,
+            capture_wait_p50_ms: capture.p50_millis,
+            capture_wait_p95_ms: capture.p95_millis,
+            latency_p50_ms: None,
+            latency_p95_ms: None,
+            source_latency_p50_ms: None,
+            source_latency_p95_ms: None,
+            copy_count: 0,
+            bytes_moved: 0,
+            external_inflight_buffers,
+            external_inflight_bytes,
+            recent_residency_transitions: Vec::new(),
         }
     }
 
@@ -358,15 +420,10 @@ impl CaptureSource for CaptureHandle {
     }
 
     fn next_frame(&self) -> Option<FrameLease> {
-        loop {
-            match self.rx.recv() {
-                RecvOutcome::Data(frame) => return Some(frame),
-                RecvOutcome::Closed => return None,
-                RecvOutcome::Empty => {
-                    std::thread::yield_now();
-                    continue;
-                }
-            }
+        match self.rx.recv_blocking() {
+            styx_core::queue::RecvWaitOutcome::Data(frame) => Some(frame),
+            styx_core::queue::RecvWaitOutcome::Closed => None,
+            styx_core::queue::RecvWaitOutcome::Timeout => None,
         }
     }
 }

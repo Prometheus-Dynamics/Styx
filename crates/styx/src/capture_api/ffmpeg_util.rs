@@ -67,7 +67,14 @@ pub(crate) fn blit_rgba_frame(
         FrameMeta::new(
             MediaFormat::new(FourCc::new(*b"RGBA"), res, ColorSpace::Srgb),
             timestamp,
-        ),
+        )
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::HostOwned,
+            to: FrameResidency::HostOwned,
+            reason: ResidencyTransitionReason::Capture,
+            copied: true,
+        }),
         lease,
         layout.len,
         layout.stride,
@@ -106,7 +113,14 @@ pub(crate) fn blit_rgb24_frame(
         FrameMeta::new(
             MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
             timestamp,
-        ),
+        )
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::HostOwned,
+            to: FrameResidency::HostOwned,
+            reason: ResidencyTransitionReason::Capture,
+            copied: true,
+        }),
         lease,
         layout.len,
         layout.stride,

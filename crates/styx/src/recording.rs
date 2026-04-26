@@ -2,8 +2,8 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use image::{DynamicImage, ImageFormat};
-use styx_codec::decoder::frame_to_dynamic_image;
+use image::{ColorType, ImageFormat, save_buffer_with_format};
+use styx_codec::prelude::FrameLeaseImageExt;
 use styx_core::prelude::{FourCc, FrameLease};
 
 /// Recording output format.
@@ -152,20 +152,17 @@ impl FrameRecorder {
                 if is_jpeg_fourcc(code) {
                     write_encoded_frame(frame, &path)?;
                 } else {
-                    let img = frame_to_image(frame, code)?;
-                    img.save_with_format(&path, ImageFormat::Png)?;
+                    save_frame_image(frame, &path, ImageFormat::Png)?;
                 }
             }
             RecordingFormat::Png => {
-                let img = frame_to_image(frame, code)?;
-                img.save_with_format(&path, ImageFormat::Png)?;
+                save_frame_image(frame, &path, ImageFormat::Png)?;
             }
             RecordingFormat::Jpeg => {
                 if is_jpeg_fourcc(code) {
                     write_encoded_frame(frame, &path)?;
                 } else {
-                    let img = frame_to_image(frame, code)?;
-                    img.save_with_format(&path, ImageFormat::Jpeg)?;
+                    save_frame_image(frame, &path, ImageFormat::Jpeg)?;
                 }
             }
         }
@@ -193,18 +190,49 @@ impl FrameRecorder {
     }
 }
 
-fn frame_to_image(frame: &FrameLease, code: FourCc) -> Result<DynamicImage, RecordingError> {
-    if let Some(img) = frame_to_dynamic_image(frame) {
-        return Ok(img);
+fn save_frame_image(
+    frame: &FrameLease,
+    path: &Path,
+    format: ImageFormat,
+) -> Result<(), RecordingError> {
+    let code = frame.meta().format.code;
+    let save = |raw: &[u8], width: u32, height: u32, color: ColorType| {
+        save_buffer_with_format(path, raw, width, height, color, format)
+            .map_err(RecordingError::from)
+    };
+
+    let image = frame.materialize_owned();
+    let res = image.meta().format.resolution;
+    let width = res.width.get();
+    let height = res.height.get();
+
+    if code == FourCc::new(*b"R8  ") || code == FourCc::new(*b"GREY") {
+        let plane = image
+            .planes()
+            .into_iter()
+            .next()
+            .ok_or(RecordingError::EmptyFrame)?;
+        return save(plane.data(), width, height, ColorType::L8);
     }
-    if is_jpeg_fourcc(code) {
-        let planes = frame.planes();
-        let plane = planes.first().ok_or(RecordingError::EmptyFrame)?;
-        if plane.data().is_empty() {
-            return Err(RecordingError::EmptyFrame);
-        }
-        return Ok(image::load_from_memory(plane.data())?);
+
+    if let Some(rgb) = frame.materialize_owned().to_rgb8() {
+        let plane = rgb
+            .planes()
+            .into_iter()
+            .next()
+            .ok_or(RecordingError::EmptyFrame)?;
+        return save(plane.data(), width, height, ColorType::Rgb8);
     }
+
+    if let Some(rgba) = frame.materialize_owned().to_rgba8() {
+        let plane = rgba
+            .planes()
+            .into_iter()
+            .next()
+            .ok_or(RecordingError::EmptyFrame)?;
+        return save(plane.data(), width, height, ColorType::Rgba8);
+    }
+
     Err(RecordingError::UnsupportedFormat(code.to_string()))
 }
 

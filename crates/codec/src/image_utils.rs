@@ -183,6 +183,25 @@ pub fn dynamic_image_to_frame(img: DynamicImage, timestamp: u64) -> Option<Frame
     img.into_frame(timestamp)
 }
 
+pub fn dynamic_image_to_frame_with_format(
+    img: DynamicImage,
+    fourcc: FourCc,
+    timestamp: u64,
+) -> Option<FrameLease> {
+    match fourcc {
+        code if code == FourCc::new(*b"R8  ") || code == FourCc::new(*b"GREY") => {
+            DynamicImage::ImageLuma8(img.into_luma8()).into_frame(timestamp)
+        }
+        code if code == FourCc::new(*b"RG24") => {
+            DynamicImage::ImageRgb8(img.into_rgb8()).into_frame(timestamp)
+        }
+        code if code == FourCc::new(*b"RGBA") => {
+            DynamicImage::ImageRgba8(img.into_rgba8()).into_frame(timestamp)
+        }
+        _ => None,
+    }
+}
+
 static DYNAMIC_IMAGE_POOL: OnceLock<Mutex<(BufferPool, usize)>> = OnceLock::new();
 
 fn static_pool(chunk: usize) -> BufferPool {

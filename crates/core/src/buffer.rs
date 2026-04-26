@@ -1,664 +1,25 @@
-use smallvec::{SmallVec, smallvec};
-use std::{
-    num::NonZeroU32,
-    sync::{Arc, Mutex},
+mod frame;
+mod meta;
+mod pool;
+
+pub use frame::{
+    ExternalBacking, FrameLease, Plane, PlaneLayout, PlaneMut, plane_layout_from_dims,
+    plane_layout_with_stride,
 };
-
-use crate::{format::MediaFormat, metrics::Metrics};
-
-/// External backing for frames when zero-copy sharing external memory.
-///
-/// Implementations can map DMA buffers or other shared memory into slices.
-pub trait ExternalBacking: Send + Sync {
-    /// Borrow a plane by index; lifetime must be tied to `self`.
-    fn plane_data(&self, index: usize) -> Option<&[u8]>;
-
-    /// Total externally-backed bytes exposed by this frame, when known.
-    fn backing_bytes(&self) -> Option<usize> {
-        None
-    }
-
-    /// Human-readable backing kind for diagnostics.
-    fn backing_kind(&self) -> &'static str {
-        "external"
-    }
-}
-
-/// Metadata associated with a frame.
-///
-/// # Example
-/// ```rust
-/// use styx_core::prelude::{ColorSpace, FourCc, FrameMeta, MediaFormat, Resolution};
-///
-/// let res = Resolution::new(640, 480).unwrap();
-/// let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
-/// let meta = FrameMeta::new(fmt, 123);
-/// assert_eq!(meta.timestamp, 123);
-/// ```
-#[derive(Debug, Clone)]
-pub struct FrameMeta {
-    /// Format describing layout and resolution.
-    pub format: MediaFormat,
-    /// Timestamp in ticks or nanoseconds (caller-defined).
-    pub timestamp: u64,
-}
-
-impl FrameMeta {
-    /// Create metadata with the given format and timestamp.
-    pub fn new(format: MediaFormat, timestamp: u64) -> Self {
-        Self { format, timestamp }
-    }
-}
-
-/// Handle to a pooled buffer.
-///
-/// When dropped, the buffer is returned to the originating pool so downstream
-/// stages can reuse memory without reallocations.
-///
-/// # Example
-/// ```rust
-/// use styx_core::prelude::BufferPool;
-///
-/// let pool = BufferPool::with_capacity(2, 1024);
-/// let mut lease = pool.lease();
-/// lease.resize(16);
-/// assert_eq!(lease.len(), 16);
-/// ```
-pub struct BufferLease {
-    pool: Arc<PoolInner>,
-    buf: Option<Vec<u8>>,
-}
-
-impl BufferLease {
-    /// Borrow as an immutable slice.
-    pub fn as_slice(&self) -> &[u8] {
-        self.buf.as_deref().unwrap_or(&[])
-    }
-
-    /// Borrow as a mutable slice.
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        self.buf.as_deref_mut().unwrap_or(&mut [])
-    }
-
-    /// Current length of the buffer.
-    pub fn len(&self) -> usize {
-        self.buf.as_ref().map(|b| b.len()).unwrap_or(0)
-    }
-
-    /// Whether the buffer is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Ensure the buffer capacity fits `len` bytes and set its length.
-    pub fn resize(&mut self, len: usize) {
-        if let Some(buf) = self.buf.as_mut() {
-            if buf.capacity() < len {
-                buf.reserve(len - buf.capacity());
-            }
-            buf.resize(len, 0);
-        }
-    }
-
-    /// Set length without initializing; caller must fully write before read.
-    ///
-    /// # Safety
-    /// The buffer contents are uninitialized for any newly exposed bytes.
-    pub unsafe fn resize_uninit(&mut self, len: usize) {
-        if let Some(buf) = self.buf.as_mut() {
-            if buf.capacity() < len {
-                buf.reserve(len - buf.capacity());
-            }
-            unsafe {
-                buf.set_len(len);
-            }
-        }
-    }
-
-    /// Replace the leased backing buffer with an owned `Vec<u8>`.
-    ///
-    /// This is useful for "zero-copy moves" where a stage already owns a `Vec<u8>` and wants to
-    /// hand it off as a pooled buffer without another full-frame memcpy.
-    pub fn replace_owned(&mut self, buf: Vec<u8>) {
-        if let Some(old) = self.buf.take() {
-            self.pool.recycle(old);
-        }
-        self.buf = Some(buf);
-    }
-
-    fn take(mut self) -> Vec<u8> {
-        self.buf.take().unwrap_or_default()
-    }
-}
-
-impl Drop for BufferLease {
-    fn drop(&mut self) {
-        self.pool.metrics.lease_released();
-        if let Some(buf) = self.buf.take() {
-            self.pool.recycle(buf);
-        }
-    }
-}
-
-/// Simple buffer pool that hands out reusable owned buffers.
-///
-/// # Example
-/// ```rust
-/// use styx_core::prelude::BufferPool;
-///
-/// let pool = BufferPool::with_limits(4, 1 << 20, 8);
-/// let _lease = pool.lease();
-/// ```
-#[derive(Clone)]
-pub struct BufferPool {
-    inner: Arc<PoolInner>,
-    metrics: Arc<Metrics>,
-}
-
-#[derive(Clone, Debug)]
-pub struct BufferPoolStats {
-    pub chunk_size: usize,
-    pub free: usize,
-    pub free_bytes: usize,
-    pub max_free: usize,
-    pub retained: usize,
-    pub retained_bytes: usize,
-    pub in_use: usize,
-    pub in_use_bytes: usize,
-    pub peak_in_use: usize,
-    pub peak_in_use_bytes: usize,
-    pub hits: u64,
-    pub misses: u64,
-    pub allocations: u64,
-}
-
-impl BufferPool {
-    /// Create a pool with `capacity` preallocated buffers of `chunk_size` bytes.
-    pub fn with_capacity(capacity: usize, chunk_size: usize) -> Self {
-        Self::with_limits(capacity, chunk_size, capacity)
-    }
-
-    /// Create a pool that starts empty and grows on demand while still reusing returned buffers.
-    pub fn lazy(chunk_size: usize, max_free: usize) -> Self {
-        let metrics = Arc::new(Metrics::default());
-        Self {
-            inner: Arc::new(PoolInner {
-                free: Mutex::new(Vec::new()),
-                chunk_size,
-                max_free,
-                metrics: metrics.clone(),
-            }),
-            metrics,
-        }
-    }
-
-    /// Create a pool with `capacity` preallocated buffers and a maximum retained free list.
-    pub fn with_limits(capacity: usize, chunk_size: usize, max_free: usize) -> Self {
-        let mut free = Vec::with_capacity(capacity);
-        for _ in 0..capacity {
-            free.push(vec![0; chunk_size]);
-        }
-        let metrics = Arc::new(Metrics::default());
-        Self {
-            inner: Arc::new(PoolInner {
-                free: Mutex::new(free),
-                chunk_size,
-                max_free,
-                metrics: metrics.clone(),
-            }),
-            metrics,
-        }
-    }
-
-    /// Acquire a buffer, allocating if the pool is empty.
-    pub fn lease(&self) -> BufferLease {
-        let buf = self
-            .inner
-            .free
-            .lock()
-            .unwrap()
-            .pop()
-            .inspect(|_| {
-                self.metrics.hit();
-            })
-            .unwrap_or_else(|| {
-                self.metrics.miss();
-                self.metrics.alloc();
-                vec![0; self.inner.chunk_size]
-            });
-        self.metrics.lease_acquired();
-        BufferLease {
-            pool: self.inner.clone(),
-            buf: Some(buf),
-        }
-    }
-
-    /// Access metrics counters for this pool.
-    pub fn metrics(&self) -> BufferPoolMetrics {
-        BufferPoolMetrics(self.metrics.clone())
-    }
-
-    pub fn stats(&self) -> BufferPoolStats {
-        let free = self.inner.free.lock().map(|list| list.len()).unwrap_or(0);
-        let free_bytes = free.saturating_mul(self.inner.chunk_size);
-        let in_use = self.metrics.leases_out() as usize;
-        let in_use_bytes = in_use.saturating_mul(self.inner.chunk_size);
-        let retained = free.saturating_add(in_use);
-        let retained_bytes = retained.saturating_mul(self.inner.chunk_size);
-        let peak_in_use = self.metrics.peak_leases_out() as usize;
-        BufferPoolStats {
-            chunk_size: self.inner.chunk_size,
-            free,
-            free_bytes,
-            max_free: self.inner.max_free,
-            retained,
-            retained_bytes,
-            in_use,
-            in_use_bytes,
-            peak_in_use,
-            peak_in_use_bytes: peak_in_use.saturating_mul(self.inner.chunk_size),
-            hits: self.metrics.hits(),
-            misses: self.metrics.misses(),
-            allocations: self.metrics.allocations(),
-        }
-    }
-}
-
-struct PoolInner {
-    free: Mutex<Vec<Vec<u8>>>,
-    chunk_size: usize,
-    max_free: usize,
-    metrics: Arc<Metrics>,
-}
-
-impl PoolInner {
-    fn recycle(&self, mut buf: Vec<u8>) {
-        buf.clear();
-        let mut free = self.free.lock().unwrap();
-        if free.len() < self.max_free {
-            free.push(buf);
-        }
-    }
-}
-
-/// Observability for buffer pool behavior.
-///
-/// # Example
-/// ```rust
-/// use styx_core::prelude::BufferPool;
-///
-/// let pool = BufferPool::with_capacity(1, 128);
-/// let metrics = pool.metrics();
-/// let _ = metrics.hits();
-/// ```
-#[derive(Clone)]
-pub struct BufferPoolMetrics(Arc<Metrics>);
-
-impl BufferPoolMetrics {
-    pub fn hits(&self) -> u64 {
-        self.0.hits()
-    }
-
-    pub fn misses(&self) -> u64 {
-        self.0.misses()
-    }
-
-    pub fn allocations(&self) -> u64 {
-        self.0.allocations()
-    }
-}
-
-/// Plane view over a buffer.
-///
-/// Accessed via `FrameLease::planes`.
-#[derive(Debug, Clone, Copy)]
-pub struct Plane<'a> {
-    data: &'a [u8],
-    stride: usize,
-}
-
-/// Mutable plane view.
-///
-/// Accessed via `FrameLease::planes_mut`.
-#[derive(Debug)]
-pub struct PlaneMut<'a> {
-    data: &'a mut [u8],
-    stride: usize,
-}
-
-impl<'a> Plane<'a> {
-    /// Access the raw bytes.
-    pub fn data(&self) -> &'a [u8] {
-        self.data
-    }
-
-    /// Stride in bytes for this plane.
-    pub fn stride(&self) -> usize {
-        self.stride
-    }
-}
-
-impl<'a> PlaneMut<'a> {
-    /// Mutable access to plane bytes.
-    pub fn data(&mut self) -> &mut [u8] {
-        self.data
-    }
-
-    /// Stride in bytes for this plane.
-    pub fn stride(&self) -> usize {
-        self.stride
-    }
-}
-
-/// Plane layout information stored with a frame.
-///
-/// # Example
-/// ```rust
-/// use std::num::NonZeroU32;
-/// use styx_core::prelude::plane_layout_from_dims;
-///
-/// let layout = plane_layout_from_dims(
-///     NonZeroU32::new(4).unwrap(),
-///     NonZeroU32::new(4).unwrap(),
-///     3,
-/// );
-/// assert_eq!(layout.stride, 12);
-/// ```
-#[derive(Debug, Clone, Copy)]
-pub struct PlaneLayout {
-    /// Byte offset into the owning buffer.
-    pub offset: usize,
-    /// Length of the plane in bytes.
-    pub len: usize,
-    /// Stride in bytes.
-    pub stride: usize,
-}
-
-/// Frame container holding one or more planes plus metadata.
-///
-/// # Example
-/// ```rust
-/// use styx_core::prelude::*;
-///
-/// let pool = BufferPool::with_capacity(1, 256);
-/// let res = Resolution::new(4, 4).unwrap();
-/// let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
-/// let layout = plane_layout_from_dims(res.width, res.height, 3);
-/// let meta = FrameMeta::new(fmt, 0);
-/// let frame = FrameLease::single_plane(meta, pool.lease(), layout.len, layout.stride);
-/// assert_eq!(frame.planes().len(), 1);
-/// ```
-pub struct FrameLease {
-    meta: FrameMeta,
-    buffers: SmallVec<[BufferLease; 3]>,
-    layouts: SmallVec<[PlaneLayout; 3]>,
-    external: Option<Arc<dyn ExternalBacking>>,
-}
-
-impl FrameLease {
-    /// Construct a single-plane frame using the provided buffer.
-    pub fn single_plane(
-        meta: FrameMeta,
-        mut buffer: BufferLease,
-        len: usize,
-        stride: usize,
-    ) -> Self {
-        buffer.resize(len);
-        Self {
-            meta,
-            layouts: smallvec![PlaneLayout {
-                offset: 0,
-                len,
-                stride,
-            }],
-            buffers: smallvec![buffer],
-            external: None,
-        }
-    }
-
-    /// Construct a single-plane frame assuming the caller will fully initialize the buffer.
-    ///
-    /// # Safety
-    /// The caller must write every byte of the buffer before the frame is read.
-    pub unsafe fn single_plane_uninit(
-        meta: FrameMeta,
-        mut buffer: BufferLease,
-        len: usize,
-        stride: usize,
-    ) -> Self {
-        unsafe {
-            buffer.resize_uninit(len);
-        }
-        Self {
-            meta,
-            layouts: smallvec![PlaneLayout {
-                offset: 0,
-                len,
-                stride,
-            }],
-            buffers: smallvec![buffer],
-            external: None,
-        }
-    }
-
-    /// Construct a multi-plane frame from a list of buffers and layouts.
-    pub fn multi_plane(
-        meta: FrameMeta,
-        buffers: SmallVec<[BufferLease; 3]>,
-        layouts: SmallVec<[PlaneLayout; 3]>,
-    ) -> Self {
-        debug_assert_eq!(buffers.len(), layouts.len());
-        Self {
-            meta,
-            buffers,
-            layouts,
-            external: None,
-        }
-    }
-
-    /// Construct a frame from an external backing (zero-copy).
-    pub fn from_external(
-        meta: FrameMeta,
-        layouts: SmallVec<[PlaneLayout; 3]>,
-        backing: Arc<dyn ExternalBacking>,
-    ) -> Self {
-        Self {
-            meta,
-            buffers: SmallVec::new(),
-            layouts,
-            external: Some(backing),
-        }
-    }
-
-    /// Metadata describing this frame.
-    pub fn meta(&self) -> &FrameMeta {
-        &self.meta
-    }
-
-    /// Returns true when the frame data is backed by an external zero-copy mapping (e.g. DMA / mmap).
-    ///
-    /// In this case the frame does not own CPU buffers, so consumers that need an owned `Vec<u8>`
-    /// must copy.
-    pub fn is_external(&self) -> bool {
-        self.external.is_some()
-    }
-
-    /// Total logical bytes described by this frame's plane layouts.
-    pub fn payload_bytes(&self) -> usize {
-        self.layouts.iter().map(|layout| layout.len).sum()
-    }
-
-    /// External backing bytes when the backing can report them; falls back to logical payload size.
-    pub fn external_backing_bytes(&self) -> Option<usize> {
-        self.external.as_ref().map(|backing| {
-            backing
-                .backing_bytes()
-                .unwrap_or_else(|| self.payload_bytes())
-        })
-    }
-
-    /// External backing kind when present.
-    pub fn external_backing_kind(&self) -> Option<&'static str> {
-        self.external.as_ref().map(|backing| backing.backing_kind())
-    }
-
-    /// Iterate planes as borrowed slices (zero-copy).
-    pub fn planes(&self) -> SmallVec<[Plane<'_>; 3]> {
-        if let Some(backing) = &self.external {
-            self.layouts
-                .iter()
-                .enumerate()
-                .map(|(idx, layout)| {
-                    let slice = backing
-                        .plane_data(idx)
-                        .map(|s| {
-                            let end = layout.offset.saturating_add(layout.len);
-                            s.get(layout.offset..end).unwrap_or(&[])
-                        })
-                        .unwrap_or(&[]);
-                    Plane {
-                        data: slice,
-                        stride: layout.stride,
-                    }
-                })
-                .collect()
-        } else {
-            self.layouts
-                .iter()
-                .zip(self.buffers.iter())
-                .map(|(layout, buf)| {
-                    let slice = buf
-                        .as_slice()
-                        .get(layout.offset..layout.offset + layout.len)
-                        .unwrap_or(&[]);
-                    Plane {
-                        data: slice,
-                        stride: layout.stride,
-                    }
-                })
-                .collect()
-        }
-    }
-
-    /// Iterate mutable planes for in-place writes.
-    pub fn planes_mut(&mut self) -> SmallVec<[PlaneMut<'_>; 3]> {
-        if self.external.is_some() {
-            return self
-                .layouts
-                .iter()
-                .map(|layout| PlaneMut {
-                    data: &mut [],
-                    stride: layout.stride,
-                })
-                .collect();
-        }
-        self.layouts
-            .iter()
-            .zip(self.buffers.iter_mut())
-            .map(|(layout, buf)| {
-                let len = layout.offset + layout.len;
-                if buf.len() < len {
-                    buf.resize(len);
-                }
-                let slice = buf
-                    .as_mut_slice()
-                    .get_mut(layout.offset..layout.offset + layout.len)
-                    .unwrap_or(&mut []);
-                PlaneMut {
-                    data: slice,
-                    stride: layout.stride,
-                }
-            })
-            .collect()
-    }
-
-    /// Return a copy of plane layouts.
-    pub fn layouts(&self) -> SmallVec<[PlaneLayout; 3]> {
-        self.layouts.clone()
-    }
-
-    /// Return strides for each plane.
-    pub fn plane_strides(&self) -> SmallVec<[usize; 3]> {
-        self.layouts.iter().map(|l| l.stride).collect()
-    }
-
-    /// Convert into owned buffers and metadata.
-    #[allow(clippy::type_complexity)]
-    pub fn into_parts(
-        self,
-    ) -> (
-        FrameMeta,
-        SmallVec<[PlaneLayout; 3]>,
-        SmallVec<[Vec<u8>; 3]>,
-    ) {
-        let layouts = self.layouts.clone();
-        if self.external.is_some() {
-            (self.meta, layouts, SmallVec::new())
-        } else {
-            let buffers = self.buffers.into_iter().map(|lease| lease.take()).collect();
-            (self.meta, layouts, buffers)
-        }
-    }
-}
-
-/// Helper for building geometry consistently.
-///
-/// # Example
-/// ```rust
-/// use std::num::NonZeroU32;
-/// use styx_core::prelude::plane_layout_from_dims;
-///
-/// let layout = plane_layout_from_dims(
-///     NonZeroU32::new(2).unwrap(),
-///     NonZeroU32::new(3).unwrap(),
-///     4,
-/// );
-/// assert_eq!(layout.len, 24);
-/// ```
-pub fn plane_layout_from_dims(
-    width: NonZeroU32,
-    height: NonZeroU32,
-    bytes_per_pixel: usize,
-) -> PlaneLayout {
-    let stride = width.get() as usize * bytes_per_pixel;
-    let len = stride * height.get() as usize;
-    PlaneLayout {
-        offset: 0,
-        len,
-        stride,
-    }
-}
-
-/// Helper to construct a layout when stride is already known.
-///
-/// # Example
-/// ```rust
-/// use std::num::NonZeroU32;
-/// use styx_core::prelude::plane_layout_with_stride;
-///
-/// let layout = plane_layout_with_stride(
-///     NonZeroU32::new(2).unwrap(),
-///     NonZeroU32::new(3).unwrap(),
-///     8,
-/// );
-/// assert_eq!(layout.len, 24);
-/// ```
-pub fn plane_layout_with_stride(
-    _width: NonZeroU32,
-    height: NonZeroU32,
-    stride: usize,
-) -> PlaneLayout {
-    let len = stride * height.get() as usize;
-    PlaneLayout {
-        offset: 0,
-        len,
-        stride,
-    }
-}
+pub use meta::{
+    BackendFrameMeta, FrameMeta, FrameMutability, FrameResidency, ResidencyTransition,
+    ResidencyTransitionReason, V4l2FrameMeta,
+};
+pub use pool::{BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::{ColorSpace, FourCc, MediaFormat, Resolution};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     #[test]
     fn lazy_pool_starts_empty_and_recycles_on_release() {
@@ -675,5 +36,168 @@ mod tests {
         assert_eq!(stats.free, 1);
         assert_eq!(stats.retained, 1);
         assert_eq!(stats.retained_bytes, 16);
+    }
+
+    #[test]
+    fn frame_meta_can_carry_v4l2_backend_details() {
+        let res = Resolution::new(2, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let meta = FrameMeta::new(fmt, 123).with_backend(BackendFrameMeta::V4l2(V4l2FrameMeta {
+            sequence: 7,
+            bytes_used: 42,
+            field: 1,
+            flags: 2,
+            zero_copy: true,
+        }));
+
+        let v4l2 = meta.v4l2().expect("missing v4l2 metadata");
+        assert_eq!(v4l2.sequence, 7);
+        assert_eq!(v4l2.bytes_used, 42);
+        assert_eq!(v4l2.field, 1);
+        assert_eq!(v4l2.flags, 2);
+        assert!(v4l2.zero_copy);
+    }
+
+    #[test]
+    fn frame_meta_can_carry_capture_instant() {
+        let res = Resolution::new(2, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let before = std::time::Instant::now();
+        let meta = FrameMeta::new(fmt, 123).with_capture_instant(before);
+
+        assert_eq!(meta.capture_instant(), Some(before));
+    }
+
+    #[test]
+    fn owned_mjpeg_frames_default_to_compressed_packet_residency() {
+        let res = Resolution::new(2, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb);
+        let pool = BufferPool::with_capacity(1, 16);
+        let frame = FrameLease::single_plane(FrameMeta::new(fmt, 7), pool.lease(), 8, 8);
+
+        assert_eq!(frame.residency(), FrameResidency::CompressedPacket);
+        assert_eq!(frame.mutability(), FrameMutability::Mutable);
+    }
+
+    struct TestBacking {
+        plane: Vec<u8>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl ExternalBacking for TestBacking {
+        fn plane_data(&self, index: usize) -> Option<&[u8]> {
+            match index {
+                0 => Some(&self.plane),
+                _ => None,
+            }
+        }
+
+        fn backing_bytes(&self) -> Option<usize> {
+            Some(self.plane.len())
+        }
+
+        fn backing_kind(&self) -> &'static str {
+            "test_external"
+        }
+
+        fn residency(&self) -> FrameResidency {
+            FrameResidency::Dmabuf
+        }
+    }
+
+    impl Drop for TestBacking {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn external_frame_reports_backing_details_and_borrowed_plane() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let res = Resolution::new(2, 1).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let layout = PlaneLayout {
+            offset: 0,
+            len: 6,
+            stride: 6,
+        };
+        let frame = FrameLease::from_external(
+            FrameMeta::new(fmt, 99),
+            smallvec::smallvec![layout],
+            Arc::new(TestBacking {
+                plane: vec![1, 2, 3, 4, 5, 6],
+                drops: Arc::clone(&drops),
+            }),
+        );
+
+        assert!(frame.is_external());
+        assert_eq!(frame.external_backing_kind(), Some("test_external"));
+        assert_eq!(frame.external_backing_bytes(), Some(6));
+        assert_eq!(frame.payload_bytes(), 6);
+        assert_eq!(frame.residency(), FrameResidency::Dmabuf);
+        assert_eq!(frame.mutability(), FrameMutability::ReadOnly);
+        {
+            let planes = frame.planes();
+            assert_eq!(planes.len(), 1);
+            assert_eq!(planes[0].data(), &[1, 2, 3, 4, 5, 6]);
+            assert_eq!(planes[0].stride(), 6);
+        }
+
+        drop(frame);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn external_frame_into_parts_does_not_try_to_take_owned_buffers() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let res = Resolution::new(1, 1).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let layout = PlaneLayout {
+            offset: 0,
+            len: 3,
+            stride: 3,
+        };
+        let frame = FrameLease::from_external(
+            FrameMeta::new(fmt, 77),
+            smallvec::smallvec![layout],
+            Arc::new(TestBacking {
+                plane: vec![9, 8, 7],
+                drops: Arc::clone(&drops),
+            }),
+        );
+
+        let (meta, layouts, buffers) = frame.into_parts();
+        assert_eq!(meta.timestamp, 77);
+        assert_eq!(layouts.len(), 1);
+        assert!(buffers.is_empty());
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn materialize_owned_copies_external_frame_into_mutable_host_buffers() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let res = Resolution::new(2, 1).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let layout = PlaneLayout {
+            offset: 0,
+            len: 6,
+            stride: 6,
+        };
+        let frame = FrameLease::from_external(
+            FrameMeta::new(fmt, 12),
+            smallvec::smallvec![layout],
+            Arc::new(TestBacking {
+                plane: vec![10, 20, 30, 40, 50, 60],
+                drops: Arc::clone(&drops),
+            }),
+        );
+
+        let owned = frame.materialize_owned();
+        assert!(!owned.is_external());
+        assert_eq!(owned.residency(), FrameResidency::HostOwned);
+        assert_eq!(owned.mutability(), FrameMutability::Mutable);
+        let planes = owned.planes();
+        assert_eq!(planes.len(), 1);
+        assert_eq!(planes[0].data(), &[10, 20, 30, 40, 50, 60]);
     }
 }

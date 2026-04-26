@@ -37,6 +37,24 @@ impl Codec for PassthroughDecoder {
         }
         Ok(input)
     }
+
+    fn residency_capabilities(&self) -> crate::CodecResidencyCapabilities {
+        crate::CodecResidencyCapabilities {
+            accepted_inputs: &[
+                FrameResidency::HostOwned,
+                FrameResidency::HostExternal,
+                FrameResidency::Dmabuf,
+                FrameResidency::CompressedPacket,
+            ],
+            possible_outputs: &[
+                FrameResidency::HostOwned,
+                FrameResidency::HostExternal,
+                FrameResidency::Dmabuf,
+                FrameResidency::CompressedPacket,
+            ],
+            preserves_input_residency: true,
+        }
+    }
 }
 
 #[cfg(feature = "image")]
