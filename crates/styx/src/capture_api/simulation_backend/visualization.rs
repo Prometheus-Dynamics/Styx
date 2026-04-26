@@ -2,20 +2,19 @@ use std::f32::consts::PI;
 use std::hash::{Hash, Hasher};
 
 use bevy::app::App;
-use bevy::asset::{Asset, Assets, weak_handle};
-use bevy::core_pipeline::prepass::{DepthPrepass, NormalPrepass};
-use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::pbr::{Material, MaterialPlugin, MeshMaterial3d, NotShadowCaster, StandardMaterial};
+use bevy::asset::{Asset, Assets, uuid_handle};
+use bevy::camera::{Exposure, PhysicalCameraParameters};
+use bevy::light::NotShadowCaster;
+use bevy::pbr::{Material, MaterialPlugin, MeshMaterial3d, StandardMaterial};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
-use bevy::render::camera::{Exposure, PhysicalCameraParameters, RenderTarget, Viewport};
-use bevy::render::render_resource::{AsBindGroup, Extent3d, ShaderRef};
-use bevy::render::view::Msaa;
+use bevy::render::render_resource::{AsBindGroup, Extent3d};
+use bevy::shader::ShaderRef;
 
 use crate::capture_api::{SimulationDeviceConfig, SimulationOutputMode};
 
 const PREPASS_OUTPUT_SHADER_HANDLE: Handle<Shader> =
-    weak_handle!("73545978-7072-6570-6173-735f6f757400");
+    uuid_handle!("73545978-7072-6570-6173-735f6f757400");
 const PREPASS_OUTPUT_SHADER: &str = r#"
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::prepass_utils::{prepass_depth, prepass_normal}
@@ -85,24 +84,21 @@ pub(super) struct SimulationVisualizationPlugin;
 
 impl Plugin for SimulationVisualizationPlugin {
     fn build(&self, app: &mut App) {
-        app.world_mut().resource_mut::<Assets<Shader>>().insert(
+        let _ = app.world_mut().resource_mut::<Assets<Shader>>().insert(
             PREPASS_OUTPUT_SHADER_HANDLE.id(),
             Shader::from_wgsl(PREPASS_OUTPUT_SHADER, file!()),
         );
 
-        app.add_plugins(MaterialPlugin::<PrepassOutputMaterial> {
-            prepass_enabled: false,
-            ..default()
-        })
-        .add_systems(
-            Update,
-            (
-                register_segmentation_materials,
-                apply_segmentation_materials,
-                update_visualization_entities,
-            )
-                .chain(),
-        );
+        app.add_plugins(MaterialPlugin::<PrepassOutputMaterial>::default())
+            .add_systems(
+                Update,
+                (
+                    register_segmentation_materials,
+                    apply_segmentation_materials,
+                    update_visualization_entities,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -245,6 +241,7 @@ pub(super) fn sync_camera_entity(
                 aspect_ratio: output_width as f32 / output_height.max(1) as f32,
                 near: state.near_m,
                 far: state.far_m,
+                ..default()
             });
         }
         if let Some(mut exposure) = entity.get_mut::<Exposure>() {
@@ -264,6 +261,7 @@ pub(super) fn perspective_projection_from_config(config: &SimulationDeviceConfig
         aspect_ratio: config.sensor.width.max(1) as f32 / config.sensor.height.max(1) as f32,
         near: config.sensor.near_m,
         far: config.sensor.far_m,
+        ..default()
     })
 }
 

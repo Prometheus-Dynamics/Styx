@@ -17,13 +17,13 @@ use crate::metrics::StageMetrics;
 use crate::prelude::{Interval, Mode};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
-pub use state::{
-    SimulationControlState, SimulationControlStateHandle, apply_simulation_control,
-    control_id_aperture_f_stop, control_id_far_plane, control_id_focal_length,
-    control_id_focus_distance, control_id_near_plane, control_id_output_mode,
-    control_id_rotation_pitch, control_id_rotation_roll, control_id_rotation_yaw,
-    control_id_sensor_height, control_id_sensor_width, control_id_translation_x,
-    control_id_translation_y, control_id_translation_z, read_simulation_control,
+pub(crate) use state::{
+    SimulationControlStateHandle, apply_simulation_control, control_id_aperture_f_stop,
+    control_id_far_plane, control_id_focal_length, control_id_focus_distance,
+    control_id_near_plane, control_id_output_mode, control_id_rotation_pitch,
+    control_id_rotation_roll, control_id_rotation_yaw, control_id_sensor_height,
+    control_id_sensor_width, control_id_translation_x, control_id_translation_y,
+    control_id_translation_z, read_simulation_control,
 };
 
 use runtime::BevySimulationRuntime;

@@ -46,17 +46,16 @@ zune-core = "0.5.1"
 mozjpeg = "0.10.13"
 turbojpeg = "1.4.0"
 yuvutils-rs = { version = "0.8.3", features = ["fast_mode"] }
-rayon = "1.11.0"
+rayon = "1.12.0"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls", "stream"] }
 minifb = "0.28.0"
 libc = "0.2"
-bevy = { version = "0.16.1", default-features = false, features = ["bevy_asset", "bevy_scene", "bevy_gltf", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_winit", "png", "x11"] }
+bevy = { version = "0.18.1", default-features = false, features = ["bevy_asset", "bevy_scene", "bevy_gltf", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_winit", "png", "x11"] }
 crossbeam-channel = "0.5.15"
-wgpu = "24"
 libcamera-sys = "0.7"
 inotify = { version = "0.11.1", default-features = false }
-criterion = { version = "0.5.1", default-features = false, features = ["cargo_bench_support"] }
-tracing = "0.1.41"
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+tracing = "0.1.44"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

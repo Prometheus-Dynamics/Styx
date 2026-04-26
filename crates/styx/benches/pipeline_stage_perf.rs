@@ -1,6 +1,7 @@
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use image::codecs::jpeg::JpegEncoder as ImageJpegEncoder;
 use image::{ColorType, RgbImage};
+use std::hint::black_box;
 use styx::prelude::*;
 
 fn build_sample_jpeg(width: u32, height: u32, quality: u8) -> Vec<u8> {

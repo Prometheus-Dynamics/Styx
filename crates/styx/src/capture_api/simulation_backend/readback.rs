@@ -1,16 +1,15 @@
 use bevy::app::App;
-use bevy::ecs::query::QueryData;
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_graph::{self, RenderGraph, RenderGraphContext, RenderLabel};
 use bevy::render::render_resource::{
-    Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, MapMode,
+    Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, MapMode, PollType,
     TexelCopyBufferInfo, TexelCopyBufferLayout,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue};
 use bevy::render::texture::GpuImage;
-use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSet};
+use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSystems};
 use crossbeam_channel::{Receiver, Sender};
 
 #[derive(Debug)]
@@ -85,7 +84,10 @@ impl Plugin for ImageCopyPlugin {
         render_app
             .insert_resource(RenderWorldSender(sender))
             .add_systems(ExtractSchedule, image_copy_extract)
-            .add_systems(Render, receive_image_from_buffer.after(RenderSet::Render));
+            .add_systems(
+                Render,
+                receive_image_from_buffer.after(RenderSystems::Render),
+            );
     }
 }
 
@@ -161,7 +163,7 @@ fn receive_image_from_buffer(
         buffer_slice.map_async(MapMode::Read, move |result| {
             let _ = ready_tx.send(result);
         });
-        let _ = render_device.poll(wgpu::Maintain::Wait);
+        let _ = render_device.poll(PollType::wait_indefinitely());
         if let Ok(Ok(())) = ready_rx.recv() {
             let packet = match image_copier.kind {
                 ReadbackKind::Color => {

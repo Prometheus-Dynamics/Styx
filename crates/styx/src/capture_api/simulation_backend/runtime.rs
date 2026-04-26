@@ -1,11 +1,12 @@
 use std::path::Path;
 
 use bevy::app::App;
-use bevy::asset::{AssetPlugin, Assets};
+use bevy::asset::{AssetPlugin, Assets, RenderAssetUsages};
+use bevy::camera::{Exposure, ImageRenderTarget, RenderTarget, Viewport};
 use bevy::image::{Image, TextureFormatPixelInfo};
+use bevy::light::GlobalAmbientLight;
 use bevy::prelude::*;
-use bevy::render::camera::{Exposure, RenderTarget, Viewport};
-use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::RenderApp;
 use bevy::render::render_resource::{TextureDimension, TextureFormat, TextureUsages};
 use bevy::render::renderer::RenderDevice;
 use bevy::render::view::Msaa;
@@ -140,7 +141,7 @@ impl BevySimulationRuntime {
             GlobalTransform::default(),
         ));
 
-        app.world_mut().insert_resource(AmbientLight {
+        app.world_mut().insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.8, 0.82, 0.85),
             brightness: 500.0,
             affects_lightmapped_meshes: true,
@@ -164,7 +165,6 @@ impl BevySimulationRuntime {
                 Name::new("simulation_sensor"),
                 Camera3d::default(),
                 Camera {
-                    target: RenderTarget::Image(image_handle.clone().into()),
                     viewport: Some(Viewport {
                         physical_position: UVec2::ZERO,
                         physical_size: UVec2::new(render_width, render_height),
@@ -172,6 +172,7 @@ impl BevySimulationRuntime {
                     }),
                     ..default()
                 },
+                RenderTarget::Image(ImageRenderTarget::from(image_handle.clone())),
                 Msaa::Off,
                 bevy::core_pipeline::prepass::DepthPrepass,
                 bevy::core_pipeline::prepass::NormalPrepass,
@@ -188,7 +189,6 @@ impl BevySimulationRuntime {
                 Name::new("simulation_depth_sensor"),
                 Camera3d::default(),
                 Camera {
-                    target: RenderTarget::Image(depth_image_handle.clone().into()),
                     viewport: Some(Viewport {
                         physical_position: UVec2::ZERO,
                         physical_size: UVec2::new(render_width, render_height),
@@ -197,6 +197,7 @@ impl BevySimulationRuntime {
                     is_active: matches!(config.output_mode, SimulationOutputMode::Depth),
                     ..default()
                 },
+                RenderTarget::Image(ImageRenderTarget::from(depth_image_handle.clone())),
                 Msaa::Off,
                 bevy::core_pipeline::prepass::DepthPrepass,
                 bevy::core_pipeline::tonemapping::Tonemapping::None,
@@ -278,7 +279,7 @@ impl BevySimulationRuntime {
 }
 
 fn shrink_padded_rgba(buffer: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let row_bytes = width as usize * TextureFormat::bevy_default().pixel_size();
+    let row_bytes = width as usize * TextureFormat::bevy_default().pixel_size().unwrap_or(4);
     let aligned_row_bytes = RenderDevice::align_copy_bytes_per_row(row_bytes);
     if row_bytes == aligned_row_bytes {
         return buffer[..row_bytes.saturating_mul(height as usize).min(buffer.len())].to_vec();
