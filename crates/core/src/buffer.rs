@@ -3,14 +3,20 @@ mod meta;
 mod pool;
 
 pub use frame::{
-    ExternalBacking, FrameLease, Plane, PlaneLayout, PlaneMut, plane_layout_from_dims,
-    plane_layout_with_stride,
+    ExternalBacking, FrameLease, FrameLeaseDescriptor, FramePlaneDescriptor, Plane, PlaneLayout,
+    PlaneMut, plane_layout_from_dims, plane_layout_with_stride,
 };
+
+#[cfg(unix)]
+pub use frame::{FrameBackingExport, FrameExportError, FrameFdPlane};
 pub use meta::{
     BackendFrameMeta, FrameMeta, FrameMutability, FrameResidency, ResidencyTransition,
     ResidencyTransitionReason, V4l2FrameMeta,
 };
 pub use pool::{BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats};
+
+#[cfg(target_os = "linux")]
+pub use pool::{SharedBufferLease, SharedBufferPool};
 
 #[cfg(test)]
 mod tests {
@@ -199,5 +205,145 @@ mod tests {
         let planes = owned.planes();
         assert_eq!(planes.len(), 1);
         assert_eq!(planes[0].data(), &[10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn frame_descriptor_round_trips_layout_metadata() {
+        let res = Resolution::new(4, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"NV12"), res, ColorSpace::Bt709);
+        let pool = BufferPool::with_capacity(2, 16);
+        let frame = FrameLease::multi_plane(
+            FrameMeta::new(fmt, 1234),
+            smallvec::smallvec![pool.lease(), pool.lease()],
+            smallvec::smallvec![
+                PlaneLayout {
+                    offset: 0,
+                    len: 8,
+                    stride: 4,
+                },
+                PlaneLayout {
+                    offset: 8,
+                    len: 4,
+                    stride: 4,
+                },
+            ],
+        );
+
+        let descriptor = frame.descriptor();
+        assert_eq!(descriptor.width, 4);
+        assert_eq!(descriptor.height, 2);
+        assert_eq!(descriptor.fourcc, FourCc::new(*b"NV12"));
+        assert_eq!(descriptor.timestamp, 1234);
+        assert_eq!(descriptor.color, ColorSpace::Bt709);
+        assert_eq!(descriptor.layouts(), frame.layouts());
+        assert_eq!(frame.layout_slice(), frame.layouts().as_slice());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn memfd_import_exposes_shared_backing_without_copying() {
+        use std::ffi::CString;
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+        let name = CString::new("styx-core-test-frame").unwrap();
+        let raw_fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(raw_fd >= 0);
+        let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+        assert_eq!(unsafe { libc::ftruncate(fd.as_raw_fd(), 6) }, 0);
+        let bytes = [1u8, 2, 3, 4, 5, 6];
+        let written = unsafe { libc::write(fd.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) };
+        assert_eq!(written, bytes.len() as isize);
+
+        let res = Resolution::new(2, 1).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let layout = PlaneLayout {
+            offset: 0,
+            len: 6,
+            stride: 6,
+        };
+        let frame =
+            FrameLease::from_memfd(FrameMeta::new(fmt, 22), smallvec::smallvec![layout], fd);
+
+        assert!(frame.is_external());
+        assert_eq!(frame.external_backing_kind(), Some("memfd"));
+        assert_eq!(frame.external_backing_bytes(), Some(6));
+        assert_eq!(frame.residency(), FrameResidency::HostExternal);
+        let planes = frame.planes();
+        assert_eq!(planes[0].data(), &bytes);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn export_or_copy_memfd_materializes_owned_frame_for_import() {
+        use std::os::fd::AsRawFd;
+
+        let res = Resolution::new(2, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let layout = plane_layout_from_dims(res.width, res.height, 3);
+        let pool = BufferPool::with_capacity(1, layout.len);
+        let mut lease = pool.lease();
+        lease.resize(layout.len);
+        for (idx, byte) in lease.as_mut_slice().iter_mut().enumerate() {
+            *byte = idx as u8;
+        }
+        let frame =
+            FrameLease::single_plane(FrameMeta::new(fmt, 44), lease, layout.len, layout.stride);
+
+        let (descriptor, export) = frame.export_or_copy_memfd().unwrap();
+        let FrameBackingExport::Memfd { fd, len } = export else {
+            panic!("owned frame should fall back to memfd");
+        };
+        assert_eq!(len, layout.len);
+
+        let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+        assert_eq!(unsafe { libc::fstat(fd.as_raw_fd(), st.as_mut_ptr()) }, 0);
+        let st = unsafe { st.assume_init() };
+        assert_eq!(st.st_size as usize, layout.len);
+
+        let imported = FrameLease::from_memfd_import(descriptor, fd).unwrap();
+        let planes = imported.planes();
+        assert_eq!(planes.len(), 1);
+        assert_eq!(
+            planes[0].data(),
+            &(0u8..layout.len as u8).collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shared_buffer_pool_frame_exports_without_fallback_copy() {
+        let res = Resolution::new(2, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let layout = plane_layout_from_dims(res.width, res.height, 3);
+        let pool = SharedBufferPool::with_capacity(1, layout.len).unwrap();
+        let mut lease = pool.lease().unwrap();
+        lease.try_resize(layout.len).unwrap();
+        for (idx, byte) in lease.as_mut_slice().iter_mut().enumerate() {
+            *byte = 255u8.saturating_sub(idx as u8);
+        }
+
+        let frame = FrameLease::single_plane_shared(
+            FrameMeta::new(fmt, 55),
+            lease,
+            layout.len,
+            layout.stride,
+        )
+        .unwrap();
+        assert!(frame.is_external());
+        assert_eq!(frame.external_backing_kind(), Some("memfd_pool"));
+        assert_eq!(frame.external_backing_bytes(), Some(layout.len));
+
+        let (descriptor, export) = frame.export_or_copy_memfd().unwrap();
+        let FrameBackingExport::Memfd { fd, len } = export else {
+            panic!("shared buffer frame should export as memfd");
+        };
+        assert_eq!(len, layout.len);
+
+        let imported = FrameLease::from_memfd_import(descriptor, fd).unwrap();
+        let planes = imported.planes();
+        let expected: Vec<u8> = (0..layout.len)
+            .map(|idx| 255u8.saturating_sub(idx as u8))
+            .collect();
+        assert_eq!(planes[0].data(), expected.as_slice());
     }
 }

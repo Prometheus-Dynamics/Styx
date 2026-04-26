@@ -159,6 +159,15 @@ impl Codec for YuyvToRgbDecoder {
         let meta = self.decode_into(&input, buf.as_mut_slice())?;
         Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
     }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+    }
 }
 
 #[cfg(feature = "image")]
@@ -291,6 +300,15 @@ impl Codec for YuyvToLumaDecoder {
         unsafe { buf.resize_uninit(layout.len) };
         let meta = self.decode_into(&input, buf.as_mut_slice())?;
         Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
     }
 }
 

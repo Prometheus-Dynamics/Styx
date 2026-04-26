@@ -1,6 +1,11 @@
 //! Raw format decoders (pixel format conversions).
 
 use styx_core::prelude::ColorSpace;
+#[cfg(target_os = "linux")]
+use styx_core::prelude::*;
+
+#[cfg(target_os = "linux")]
+use crate::CodecError;
 
 mod bayer;
 mod bgr;
@@ -27,6 +32,93 @@ pub use rgba::RgbaToRgbDecoder;
 pub use yuv::{NvToRgbDecoder, Packed422ToRgbDecoder, PlanarYuvToRgbDecoder};
 pub use yuv420p::Yuv420pToRgbDecoder;
 pub use yuyv::{YuyvToLumaDecoder, YuyvToRgbDecoder};
+
+#[cfg(target_os = "linux")]
+pub trait RawDecodeInto {
+    fn output_bytes_per_pixel(&self) -> usize;
+    fn decode_into(&self, input: &FrameLease, dst: &mut [u8]) -> Result<FrameMeta, CodecError>;
+}
+
+#[cfg(target_os = "linux")]
+pub trait SharedRawDecodeExt: RawDecodeInto {
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<FrameLease, CodecError> {
+        let layout = plane_layout_from_dims(
+            input.meta().format.resolution.width,
+            input.meta().format.resolution.height,
+            self.output_bytes_per_pixel(),
+        );
+        let mut lease = pool
+            .lease()
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+        lease
+            .try_resize(layout.len)
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+        let meta = self.decode_into(input, lease.as_mut_slice())?;
+        FrameLease::single_plane_shared(meta, lease, layout.len, layout.stride)
+            .map_err(|err| CodecError::Codec(err.to_string()))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl<T: RawDecodeInto + ?Sized> SharedRawDecodeExt for T {}
+
+#[cfg(target_os = "linux")]
+macro_rules! impl_raw_decode_into {
+    ($ty:ty, $bpp:expr) => {
+        impl RawDecodeInto for $ty {
+            fn output_bytes_per_pixel(&self) -> usize {
+                $bpp
+            }
+
+            fn decode_into(
+                &self,
+                input: &FrameLease,
+                dst: &mut [u8],
+            ) -> Result<FrameMeta, CodecError> {
+                <$ty>::decode_into(self, input, dst)
+            }
+        }
+    };
+}
+
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(BayerToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(BgrToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(BgraToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(I420ToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(Mono8ToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(Mono16ToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(Nv12ToBgrDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(Nv12ToLumaDecoder, 1);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(Nv12ToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(NvToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(Packed422ToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(PlanarYuvToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(Rgb48ToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(RgbaToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(Yuv420pToRgbDecoder, 3);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(YuyvToLumaDecoder, 1);
+#[cfg(target_os = "linux")]
+impl_raw_decode_into!(YuyvToRgbDecoder, 3);
 
 #[derive(Clone, Copy)]
 struct YuvCoeffs {

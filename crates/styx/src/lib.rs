@@ -155,6 +155,7 @@ impl serde::Serialize for BackendHandle {
             #[derive(serde::Serialize)]
             #[serde(tag = "type", rename_all = "snake_case")]
             enum HumanHandle<'a> {
+                _Marker(std::marker::PhantomData<&'a ()>),
                 #[cfg(feature = "v4l2")]
                 V4l2 {
                     path: &'a str,
@@ -225,6 +226,7 @@ impl serde::Serialize for BackendHandle {
         } else {
             #[derive(serde::Serialize)]
             enum BinaryHandle<'a> {
+                _Marker(std::marker::PhantomData<&'a ()>),
                 #[cfg(feature = "v4l2")]
                 V4l2(&'a str),
                 #[cfg(feature = "libcamera")]

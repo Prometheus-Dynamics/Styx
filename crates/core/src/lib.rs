@@ -11,9 +11,10 @@ pub mod prelude {
     pub use crate::{
         buffer::{
             BackendFrameMeta, BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats,
-            ExternalBacking, FrameLease, FrameMeta, FrameMutability, FrameResidency, Plane,
-            PlaneLayout, PlaneMut, ResidencyTransition, ResidencyTransitionReason, V4l2FrameMeta,
-            plane_layout_from_dims, plane_layout_with_stride,
+            ExternalBacking, FrameLease, FrameLeaseDescriptor, FrameMeta, FrameMutability,
+            FramePlaneDescriptor, FrameResidency, Plane, PlaneLayout, PlaneMut,
+            ResidencyTransition, ResidencyTransitionReason, V4l2FrameMeta, plane_layout_from_dims,
+            plane_layout_with_stride,
         },
         controls::{Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlValue},
         format::{ColorSpace, FourCc, Interval, IntervalStepwise, MediaFormat, Resolution},
@@ -27,4 +28,10 @@ pub mod prelude {
             packed_transform_residency_capabilities, transform_packed_frame,
         },
     };
+
+    #[cfg(unix)]
+    pub use crate::buffer::{FrameBackingExport, FrameExportError, FrameFdPlane};
+
+    #[cfg(target_os = "linux")]
+    pub use crate::buffer::{SharedBufferLease, SharedBufferPool};
 }

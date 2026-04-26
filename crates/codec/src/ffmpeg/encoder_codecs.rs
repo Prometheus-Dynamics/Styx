@@ -55,6 +55,15 @@ impl Codec for FfmpegMjpegEncoder {
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         self.0.process(input)
     }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        self.0.process_shared(input, pool)
+    }
 }
 
 pub struct FfmpegH264Encoder(pub FfmpegVideoEncoder);
@@ -138,6 +147,15 @@ impl Codec for FfmpegH264Encoder {
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         self.0.process(input)
     }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        self.0.process_shared(input, pool)
+    }
 }
 
 pub struct FfmpegH265Encoder(pub FfmpegVideoEncoder);
@@ -220,5 +238,14 @@ impl Codec for FfmpegH265Encoder {
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         self.0.process(input)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        self.0.process_shared(input, pool)
     }
 }

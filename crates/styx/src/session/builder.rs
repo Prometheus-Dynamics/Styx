@@ -45,6 +45,14 @@ pub struct MediaPipelineBuilder<'a> {
     output_recorder: Option<FrameRecorder>,
     decode_enabled: bool,
     encode_enabled: bool,
+    #[cfg(target_os = "linux")]
+    shared_decode_enabled: bool,
+    #[cfg(target_os = "linux")]
+    owned_decode_fallback_enabled: bool,
+    #[cfg(target_os = "linux")]
+    shared_encode_enabled: bool,
+    #[cfg(target_os = "linux")]
+    owned_encode_fallback_enabled: bool,
 }
 
 impl<'a> MediaPipelineBuilder<'a> {
@@ -67,6 +75,14 @@ impl<'a> MediaPipelineBuilder<'a> {
             output_recorder: None,
             decode_enabled: true,
             encode_enabled: true,
+            #[cfg(target_os = "linux")]
+            shared_decode_enabled: true,
+            #[cfg(target_os = "linux")]
+            owned_decode_fallback_enabled: false,
+            #[cfg(target_os = "linux")]
+            shared_encode_enabled: true,
+            #[cfg(target_os = "linux")]
+            owned_encode_fallback_enabled: false,
         }
     }
 
@@ -110,6 +126,30 @@ impl<'a> MediaPipelineBuilder<'a> {
     /// Disabling encode yields the post-hook frame as the output.
     pub fn encode_enabled(mut self, enabled: bool) -> Self {
         self.encode_enabled = enabled;
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn shared_decode_output(mut self, enabled: bool) -> Self {
+        self.shared_decode_enabled = enabled;
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn owned_decode_fallback(mut self, enabled: bool) -> Self {
+        self.owned_decode_fallback_enabled = enabled;
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn shared_encode_output(mut self, enabled: bool) -> Self {
+        self.shared_encode_enabled = enabled;
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn owned_encode_fallback(mut self, enabled: bool) -> Self {
+        self.owned_encode_fallback_enabled = enabled;
         self
     }
 
@@ -228,6 +268,18 @@ impl<'a> MediaPipelineBuilder<'a> {
             metrics: crate::metrics::PipelineMetrics::default(),
             decode_enabled: self.decode_enabled,
             encode_enabled: self.encode_enabled,
+            #[cfg(target_os = "linux")]
+            shared_decode_enabled: self.shared_decode_enabled,
+            #[cfg(target_os = "linux")]
+            owned_decode_fallback_enabled: self.owned_decode_fallback_enabled,
+            #[cfg(target_os = "linux")]
+            shared_decode_pool: None,
+            #[cfg(target_os = "linux")]
+            shared_encode_enabled: self.shared_encode_enabled,
+            #[cfg(target_os = "linux")]
+            owned_encode_fallback_enabled: self.owned_encode_fallback_enabled,
+            #[cfg(target_os = "linux")]
+            shared_encode_pool: None,
         })
     }
 }

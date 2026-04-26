@@ -17,8 +17,17 @@ pub(super) fn start_virtual(
     descriptor: CaptureDescriptor,
 ) -> Result<CaptureHandle, CaptureError> {
     let (pool_min, pool_bytes, pool_spare) = crate::capture_api::capture_pool_limits(4, 1 << 20, 8);
-    let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
-    let capture = VirtualCapture::new(mode.clone(), pool, 3);
+    #[cfg(target_os = "linux")]
+    let capture = {
+        let pool = SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare)
+            .map_err(|err| CaptureError::Backend(format!("virtual shared pool failed: {err}")))?;
+        VirtualCapture::new_shared(mode.clone(), pool, 3)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let capture = {
+        let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
+        VirtualCapture::new(mode.clone(), pool, 3)
+    };
     let queue_depth = crate::capture_api::capture_queue_depth();
     let (tx, rx) = bounded(queue_depth);
     let worker = thread::spawn(move || {

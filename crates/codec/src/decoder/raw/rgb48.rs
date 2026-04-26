@@ -176,6 +176,15 @@ impl Codec for Rgb48ToRgbDecoder {
 
         Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
     }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+    }
 }
 
 #[cfg(feature = "image")]

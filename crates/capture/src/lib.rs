@@ -213,6 +213,29 @@ pub fn build_frame_from_pool(
     FrameLease::single_plane(meta, pool.lease(), layout.len, layout.stride)
 }
 
+#[cfg(target_os = "linux")]
+pub fn build_frame_from_shared_pool(
+    format: MediaFormat,
+    pool: &SharedBufferPool,
+    timestamp: u64,
+    bytes_per_pixel: usize,
+) -> Result<FrameLease, FrameExportError> {
+    let layout = plane_layout_from_dims(
+        format.resolution.width,
+        format.resolution.height,
+        bytes_per_pixel,
+    );
+    let meta = FrameMeta::new(format, timestamp)
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::HostExternal,
+            to: FrameResidency::HostExternal,
+            reason: ResidencyTransitionReason::Capture,
+            copied: false,
+        });
+    FrameLease::single_plane_shared(meta, pool.lease()?, layout.len, layout.stride)
+}
+
 /// Utility to create a mode id list from formats.
 ///
 /// # Example
@@ -242,6 +265,8 @@ pub fn modes_from_formats(formats: impl IntoIterator<Item = MediaFormat>) -> Vec
 pub mod virtual_backend;
 
 pub mod prelude {
+    #[cfg(target_os = "linux")]
+    pub use crate::build_frame_from_shared_pool;
     pub use crate::{
         CaptureConfig, CaptureDescriptor, CaptureSource, Mode, ModeId, build_frame_from_pool,
         modes_from_formats, virtual_backend::VirtualCapture,

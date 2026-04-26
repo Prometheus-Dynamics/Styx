@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 use libcamera::framebuffer::AsFrameBuffer;
 use libcamera::framebuffer_allocator::FrameBuffer;
 use smallvec::SmallVec;
-use styx_core::prelude::{ExternalBacking, FrameResidency};
+use std::os::fd::{FromRawFd, OwnedFd};
+use styx_core::prelude::{
+    ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane, FrameResidency,
+};
 
 use crate::metrics::ExternalBackingTracker;
 
@@ -326,6 +329,22 @@ impl ExternalBacking for LibcameraBacking {
 
     fn residency(&self) -> FrameResidency {
         FrameResidency::Dmabuf
+    }
+
+    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
+        let mut planes = Vec::with_capacity(self.planes.len());
+        for plane in &self.planes {
+            let fd = unsafe { libc::dup(plane.fd) };
+            if fd < 0 {
+                return Err(FrameExportError::Fd(std::io::Error::last_os_error()));
+            }
+            planes.push(FrameFdPlane {
+                fd: unsafe { OwnedFd::from_raw_fd(fd) },
+                offset: plane.offset,
+                len: plane.len,
+            });
+        }
+        Ok(Some(FrameBackingExport::DmabufPlanes { planes }))
     }
 }
 

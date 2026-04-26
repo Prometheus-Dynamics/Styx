@@ -78,6 +78,59 @@ impl Codec for ZuneMjpegDecoder {
             layout.stride,
         ))
     }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        if input.meta().format.code != self.descriptor.input {
+            return Err(CodecError::FormatMismatch {
+                expected: self.descriptor.input,
+                actual: input.meta().format.code,
+            });
+        }
+        let plane = input
+            .planes()
+            .into_iter()
+            .next()
+            .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
+
+        let mut decoder = JpegDecoder::new(ZCursor::new(plane.data()));
+        let pixels = decoder
+            .decode()
+            .map_err(|e| CodecError::Codec(e.to_string()))?;
+        let info = decoder
+            .info()
+            .ok_or_else(|| CodecError::Codec("jpeg missing info".into()))?;
+
+        let resolution = Resolution::new(info.width as u32, info.height as u32)
+            .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
+        let format = MediaFormat::new(
+            self.descriptor.output,
+            resolution,
+            input.meta().format.color,
+        );
+        let layout = plane_layout_from_dims(resolution.width, resolution.height, 3);
+        let mut lease = pool
+            .lease()
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+        lease
+            .try_resize(layout.len)
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+        let copy_len = pixels.len().min(layout.len);
+        lease.as_mut_slice()[..copy_len].copy_from_slice(&pixels[..copy_len]);
+
+        FrameLease::single_plane_shared(
+            FrameMeta::new(format, input.meta().timestamp),
+            lease,
+            layout.len,
+            layout.stride,
+        )
+        .map(Some)
+        .map_err(|err| CodecError::Codec(err.to_string()))
+    }
 }
 
 #[cfg(feature = "image")]

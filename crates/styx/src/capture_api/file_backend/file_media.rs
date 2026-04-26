@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "file-backend-video")]
 use std::thread;
+#[cfg(feature = "file-backend-video")]
 use std::time::Duration;
 
 #[cfg(feature = "file-backend-video")]
@@ -14,8 +16,12 @@ use ffmpeg_next::{
 use styx_core::prelude::*;
 
 use crate::capture_api::CaptureError;
+#[cfg(all(feature = "file-backend-video", not(target_os = "linux")))]
+use crate::capture_api::ffmpeg_util::blit_rgb24_frame;
+#[cfg(all(feature = "file-backend-video", target_os = "linux"))]
+use crate::capture_api::ffmpeg_util::blit_shared_rgb24_frame;
 #[cfg(feature = "file-backend-video")]
-use crate::capture_api::ffmpeg_util::{blit_rgb24_frame, open_preferred_video_decoder};
+use crate::capture_api::ffmpeg_util::open_preferred_video_decoder;
 use crate::prelude::{Interval, Mode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +216,7 @@ pub(crate) fn rgb24_to_mode(
     Ok(resized.into_raw())
 }
 
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn build_frame_from_rgb(
     rgb: &[u8],
     mode: &Mode,
@@ -232,6 +239,38 @@ pub(crate) fn build_frame_from_rgb(
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,
             to: FrameResidency::HostOwned,
+            reason: ResidencyTransitionReason::FileReplay,
+            copied: false,
+        }),
+        lease,
+        layout.len,
+        layout.stride,
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn build_shared_frame_from_rgb(
+    rgb: &[u8],
+    mode: &Mode,
+    pool: &SharedBufferPool,
+    timestamp: u64,
+) -> Result<FrameLease, FrameExportError> {
+    let res = mode.format.resolution;
+    let layout = plane_layout_from_dims(res.width, res.height, 3);
+    let mut lease = pool.lease()?;
+    lease.try_resize(layout.len)?;
+    let dst = lease.as_mut_slice();
+    let copy_len = dst.len().min(rgb.len());
+    dst[..copy_len].copy_from_slice(&rgb[..copy_len]);
+    FrameLease::single_plane_shared(
+        FrameMeta::new(
+            MediaFormat::new(FourCc::new(*b"RG24"), res, mode.format.color),
+            timestamp,
+        )
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::HostExternal,
+            to: FrameResidency::HostExternal,
             reason: ResidencyTransitionReason::FileReplay,
             copied: false,
         }),
@@ -306,6 +345,10 @@ pub(crate) fn decode_video(
     let layout = plane_layout_from_dims(output_res.width, output_res.height, 3);
     let (pool_min, pool_bytes, pool_spare) =
         crate::capture_api::capture_pool_limits(4, layout.len, 8);
+    #[cfg(target_os = "linux")]
+    let pool = SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare)
+        .map_err(|e| CaptureError::Backend(e.to_string()))?;
+    #[cfg(not(target_os = "linux"))]
     let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
 
     let rate = stream.avg_frame_rate();
@@ -411,7 +454,8 @@ fn push_video_frame(
     tx: &styx_core::queue::BoundedTx<FrameLease>,
     output_res: Resolution,
     layout: PlaneLayout,
-    pool: &BufferPool,
+    #[cfg(target_os = "linux")] pool: &SharedBufferPool,
+    #[cfg(not(target_os = "linux"))] pool: &BufferPool,
     timestamp_ns: &mut u64,
     delay_ms: u64,
     frame_index: &mut u32,
@@ -428,6 +472,10 @@ fn push_video_frame(
         .map_err(|e| CaptureError::Backend(e.to_string()))?;
 
     if *frame_index >= start_frame {
+        #[cfg(target_os = "linux")]
+        let frame = blit_shared_rgb24_frame(rgb, output_res, layout, pool, *timestamp_ns)
+            .map_err(|e| CaptureError::Backend(e.to_string()))?;
+        #[cfg(not(target_os = "linux"))]
         let frame = blit_rgb24_frame(rgb, output_res, layout, pool, *timestamp_ns);
         if let SendOutcome::Closed = tx.send(frame) {
             return Ok(VideoFramePushResult::QueueClosed);

@@ -24,8 +24,12 @@ use tokio_util::bytes::Bytes;
 #[cfg(feature = "async")]
 use tokio_util::io::StreamReader;
 
+#[cfg(all(feature = "netcam-video", not(target_os = "linux")))]
+use crate::capture_api::ffmpeg_util::blit_rgba_frame;
+#[cfg(all(feature = "netcam-video", target_os = "linux"))]
+use crate::capture_api::ffmpeg_util::blit_shared_rgba_frame;
 #[cfg(feature = "netcam-video")]
-use crate::capture_api::ffmpeg_util::{blit_rgba_frame, open_preferred_video_decoder};
+use crate::capture_api::ffmpeg_util::open_preferred_video_decoder;
 use crate::capture_api::{
     CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, WorkerHandle,
 };
@@ -269,6 +273,12 @@ where
     };
     let (pool_min, pool_bytes, pool_spare) =
         crate::capture_api::capture_pool_limits(4, expected_pixels.saturating_mul(3), 8);
+    #[cfg(target_os = "linux")]
+    let pool = match SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare) {
+        Ok(pool) => pool,
+        Err(_) => return false,
+    };
+    #[cfg(not(target_os = "linux"))]
     let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
     let mut line = Vec::with_capacity(1024);
     let mut buf =
@@ -380,30 +390,44 @@ where
             len: buf.len(),
             stride: buf.len(),
         };
-        let mut lease = pool.lease();
-        lease.resize(buf.len());
-        lease.as_mut_slice().copy_from_slice(&buf);
         let timestamp = start
             .elapsed()
             .as_nanos()
             .saturating_sub(0)
             .min(u64::MAX as u128) as u64;
-        let frame = FrameLease::single_plane(
-            FrameMeta::new(
-                MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb),
-                timestamp,
-            )
-            .with_capture_instant(std::time::Instant::now())
-            .with_transition(ResidencyTransition {
-                from: FrameResidency::CompressedPacket,
-                to: FrameResidency::CompressedPacket,
-                reason: ResidencyTransitionReason::NetcamIngress,
-                copied: false,
-            }),
-            lease,
-            layout.len,
-            layout.stride,
-        );
+        let meta = FrameMeta::new(
+            MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb),
+            timestamp,
+        )
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::CompressedPacket,
+            to: FrameResidency::CompressedPacket,
+            reason: ResidencyTransitionReason::NetcamIngress,
+            copied: false,
+        });
+        #[cfg(target_os = "linux")]
+        let frame = {
+            let mut lease = match pool.lease() {
+                Ok(lease) => lease,
+                Err(_) => continue,
+            };
+            if lease.try_resize(buf.len()).is_err() {
+                continue;
+            }
+            lease.as_mut_slice().copy_from_slice(&buf);
+            match FrameLease::single_plane_shared(meta, lease, layout.len, layout.stride) {
+                Ok(frame) => frame,
+                Err(_) => continue,
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let frame = {
+            let mut lease = pool.lease();
+            lease.resize(buf.len());
+            lease.as_mut_slice().copy_from_slice(&buf);
+            FrameLease::single_plane(meta, lease, layout.len, layout.stride)
+        };
         *frame_idx = frame_idx.saturating_add(1);
         if let SendOutcome::Closed = tx.send(frame) {
             return true;
@@ -513,6 +537,12 @@ fn mjpeg_loop(
     };
     let (pool_min, pool_bytes, pool_spare) =
         crate::capture_api::capture_pool_limits(4, expected_pixels.saturating_mul(3), 8);
+    #[cfg(target_os = "linux")]
+    let pool = match SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare) {
+        Ok(pool) => pool,
+        Err(_) => return false,
+    };
+    #[cfg(not(target_os = "linux"))]
     let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
     let mut line = Vec::with_capacity(1024);
     let mut buf =
@@ -612,30 +642,44 @@ fn mjpeg_loop(
             len: buf.len(),
             stride: buf.len(),
         };
-        let mut lease = pool.lease();
-        lease.resize(buf.len());
-        lease.as_mut_slice().copy_from_slice(&buf);
         let timestamp = start
             .elapsed()
             .as_nanos()
             .saturating_sub(0)
             .min(u64::MAX as u128) as u64;
-        let frame = FrameLease::single_plane(
-            FrameMeta::new(
-                MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb),
-                timestamp,
-            )
-            .with_capture_instant(std::time::Instant::now())
-            .with_transition(ResidencyTransition {
-                from: FrameResidency::CompressedPacket,
-                to: FrameResidency::CompressedPacket,
-                reason: ResidencyTransitionReason::NetcamIngress,
-                copied: false,
-            }),
-            lease,
-            layout.len,
-            layout.stride,
-        );
+        let meta = FrameMeta::new(
+            MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb),
+            timestamp,
+        )
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::CompressedPacket,
+            to: FrameResidency::CompressedPacket,
+            reason: ResidencyTransitionReason::NetcamIngress,
+            copied: false,
+        });
+        #[cfg(target_os = "linux")]
+        let frame = {
+            let mut lease = match pool.lease() {
+                Ok(lease) => lease,
+                Err(_) => continue,
+            };
+            if lease.try_resize(buf.len()).is_err() {
+                continue;
+            }
+            lease.as_mut_slice().copy_from_slice(&buf);
+            match FrameLease::single_plane_shared(meta, lease, layout.len, layout.stride) {
+                Ok(frame) => frame,
+                Err(_) => continue,
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let frame = {
+            let mut lease = pool.lease();
+            lease.resize(buf.len());
+            lease.as_mut_slice().copy_from_slice(&buf);
+            FrameLease::single_plane(meta, lease, layout.len, layout.stride)
+        };
         *frame_idx = frame_idx.saturating_add(1);
         if let SendOutcome::Closed = tx.send(frame) {
             return true;
@@ -655,6 +699,9 @@ fn ffmpeg_loop(
     frame_idx: &mut u64,
 ) -> Result<(), CaptureError> {
     ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
+    #[cfg(target_os = "linux")]
+    let mut pool: Option<SharedBufferPool> = None;
+    #[cfg(not(target_os = "linux"))]
     let mut pool: Option<BufferPool> = None;
     loop {
         let mut ictx = match format::input(url) {
@@ -691,11 +738,21 @@ fn ffmpeg_loop(
         let res = Resolution::new(decoder.width() as u32, decoder.height() as u32)
             .ok_or_else(|| CaptureError::Backend("invalid video resolution".into()))?;
         let layout = plane_layout_from_dims(res.width, res.height, 4);
-        let pool_ref = pool.get_or_insert_with(|| {
-            let (pool_min, pool_bytes, pool_spare) =
-                crate::capture_api::capture_pool_limits(4, layout.len, 8);
-            BufferPool::with_limits(pool_min, pool_bytes, pool_spare)
-        });
+        let (pool_min, pool_bytes, pool_spare) =
+            crate::capture_api::capture_pool_limits(4, layout.len, 8);
+        #[cfg(target_os = "linux")]
+        let pool_ref = {
+            if pool.is_none() {
+                pool = Some(
+                    SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare)
+                        .map_err(|e| CaptureError::Backend(e.to_string()))?,
+                );
+            }
+            pool.as_ref().unwrap()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let pool_ref =
+            pool.get_or_insert_with(|| BufferPool::with_limits(pool_min, pool_bytes, pool_spare));
         for (stream, packet) in ictx.packets() {
             if stream.index() != stream_idx {
                 continue;
@@ -708,6 +765,12 @@ fn ffmpeg_loop(
                     continue;
                 }
                 let ts = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+                #[cfg(target_os = "linux")]
+                let frame = match blit_shared_rgba_frame(&rgb, res, layout, pool_ref, ts) {
+                    Ok(frame) => frame,
+                    Err(_) => continue,
+                };
+                #[cfg(not(target_os = "linux"))]
                 let frame = blit_rgba_frame(&rgb, res, layout, pool_ref, ts);
                 *frame_idx = frame_idx.saturating_add(1);
                 if let SendOutcome::Closed = tx.send(frame) {
@@ -721,6 +784,12 @@ fn ffmpeg_loop(
                 continue;
             }
             let ts = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            #[cfg(target_os = "linux")]
+            let frame = match blit_shared_rgba_frame(&rgb, res, layout, pool_ref, ts) {
+                Ok(frame) => frame,
+                Err(_) => continue,
+            };
+            #[cfg(not(target_os = "linux"))]
             let frame = blit_rgba_frame(&rgb, res, layout, pool_ref, ts);
             *frame_idx = frame_idx.saturating_add(1);
             if let SendOutcome::Closed = tx.send(frame) {

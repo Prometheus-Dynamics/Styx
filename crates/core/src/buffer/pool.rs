@@ -1,5 +1,13 @@
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "linux")]
+use std::{
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    ptr::NonNull,
+};
+
+#[cfg(target_os = "linux")]
+use super::frame::{ExternalBacking, FrameBackingExport, FrameExportError};
 use crate::metrics::Metrics;
 
 /// Handle to a pooled buffer.
@@ -206,4 +214,283 @@ impl BufferPoolMetrics {
     pub fn allocations(&self) -> u64 {
         self.0.allocations()
     }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct SharedBufferPool {
+    inner: Arc<SharedPoolInner>,
+}
+
+#[cfg(target_os = "linux")]
+impl SharedBufferPool {
+    pub fn with_capacity(capacity: usize, chunk_size: usize) -> Result<Self, FrameExportError> {
+        Self::with_limits(capacity, chunk_size, capacity)
+    }
+
+    pub fn with_limits(
+        capacity: usize,
+        chunk_size: usize,
+        max_free: usize,
+    ) -> Result<Self, FrameExportError> {
+        let chunk_size = chunk_size.max(1);
+        let inner = Arc::new(SharedPoolInner {
+            free: Mutex::new(Vec::with_capacity(capacity)),
+            chunk_size,
+            max_free,
+        });
+        for _ in 0..capacity {
+            inner.recycle(create_sized_memfd(chunk_size)?);
+        }
+        Ok(Self { inner })
+    }
+
+    pub fn lease(&self) -> Result<SharedBufferLease, FrameExportError> {
+        let fd = self
+            .inner
+            .free
+            .lock()
+            .unwrap()
+            .pop()
+            .map(Ok)
+            .unwrap_or_else(|| create_sized_memfd(self.inner.chunk_size))?;
+        SharedBufferLease::new(self.inner.clone(), fd, self.inner.chunk_size)
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct SharedPoolInner {
+    free: Mutex<Vec<OwnedFd>>,
+    chunk_size: usize,
+    max_free: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl SharedPoolInner {
+    fn recycle(&self, fd: OwnedFd) {
+        let mut free = self.free.lock().unwrap();
+        if free.len() < self.max_free {
+            free.push(fd);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub struct SharedBufferLease {
+    pool: Arc<SharedPoolInner>,
+    fd: Option<OwnedFd>,
+    ptr: Option<NonNull<u8>>,
+    len: usize,
+    capacity: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl SharedBufferLease {
+    fn new(
+        pool: Arc<SharedPoolInner>,
+        fd: OwnedFd,
+        capacity: usize,
+    ) -> Result<Self, FrameExportError> {
+        let ptr = map_fd(&fd, capacity, libc::PROT_READ | libc::PROT_WRITE)?;
+        Ok(Self {
+            pool,
+            fd: Some(fd),
+            ptr: Some(ptr),
+            len: 0,
+            capacity,
+        })
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        let Some(ptr) = self.ptr else {
+            return &[];
+        };
+        unsafe { std::slice::from_raw_parts(ptr.as_ptr(), self.len) }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        let Some(ptr) = self.ptr else {
+            return &mut [];
+        };
+        unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr(), self.len) }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn try_resize(&mut self, len: usize) -> Result<(), FrameExportError> {
+        if len <= self.capacity {
+            self.len = len;
+            return Ok(());
+        }
+        let fd = self
+            .fd
+            .as_ref()
+            .ok_or(FrameExportError::InvalidDescriptor)?;
+        if let Some(ptr) = self.ptr.take() {
+            unmap_ptr(ptr, self.capacity);
+        }
+        resize_fd(fd, len)?;
+        self.ptr = Some(map_fd(fd, len, libc::PROT_READ | libc::PROT_WRITE)?);
+        self.capacity = len;
+        self.len = len;
+        Ok(())
+    }
+
+    pub(super) fn into_external_backing(mut self, plane_count: usize) -> Arc<dyn ExternalBacking> {
+        let fd = self.fd.take().expect("shared lease fd missing");
+        let ptr = self.ptr.take().expect("shared lease mapping missing");
+        Arc::new(SharedBufferBacking {
+            pool: self.pool.clone(),
+            fd: Some(fd),
+            ptr,
+            len: self.len,
+            capacity: self.capacity,
+            plane_count,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for SharedBufferLease {
+    fn drop(&mut self) {
+        if let Some(ptr) = self.ptr.take() {
+            unmap_ptr(ptr, self.capacity);
+        }
+        if let Some(fd) = self.fd.take()
+            && self.capacity == self.pool.chunk_size
+        {
+            self.pool.recycle(fd);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe impl Send for SharedBufferLease {}
+
+#[cfg(target_os = "linux")]
+struct SharedBufferBacking {
+    pool: Arc<SharedPoolInner>,
+    fd: Option<OwnedFd>,
+    ptr: NonNull<u8>,
+    len: usize,
+    capacity: usize,
+    plane_count: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl ExternalBacking for SharedBufferBacking {
+    fn plane_data(&self, index: usize) -> Option<&[u8]> {
+        if index >= self.plane_count {
+            return None;
+        }
+        Some(unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) })
+    }
+
+    fn backing_bytes(&self) -> Option<usize> {
+        Some(self.len)
+    }
+
+    fn backing_kind(&self) -> &'static str {
+        "memfd_pool"
+    }
+
+    fn residency(&self) -> super::meta::FrameResidency {
+        super::meta::FrameResidency::HostExternal
+    }
+
+    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
+        let fd = self
+            .fd
+            .as_ref()
+            .ok_or(FrameExportError::InvalidDescriptor)?;
+        Ok(Some(FrameBackingExport::Memfd {
+            fd: dup_owned_fd(fd)?,
+            len: self.len,
+        }))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for SharedBufferBacking {
+    fn drop(&mut self) {
+        unmap_ptr(self.ptr, self.capacity);
+        if let Some(fd) = self.fd.take()
+            && self.capacity == self.pool.chunk_size
+        {
+            self.pool.recycle(fd);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe impl Send for SharedBufferBacking {}
+
+#[cfg(target_os = "linux")]
+unsafe impl Sync for SharedBufferBacking {}
+
+#[cfg(target_os = "linux")]
+fn create_sized_memfd(len: usize) -> Result<OwnedFd, FrameExportError> {
+    let name = std::ffi::CString::new("styx-shared-buffer").map_err(|err| {
+        FrameExportError::Fd(std::io::Error::new(std::io::ErrorKind::InvalidInput, err))
+    })?;
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(FrameExportError::Fd(std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    resize_fd(&fd, len)?;
+    Ok(fd)
+}
+
+#[cfg(target_os = "linux")]
+fn resize_fd(fd: &OwnedFd, len: usize) -> Result<(), FrameExportError> {
+    if unsafe { libc::ftruncate(fd.as_raw_fd(), len as libc::off_t) } != 0 {
+        return Err(FrameExportError::Fd(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn map_fd(fd: &OwnedFd, len: usize, prot: i32) -> Result<NonNull<u8>, FrameExportError> {
+    let addr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            prot,
+            libc::MAP_SHARED,
+            fd.as_raw_fd(),
+            0,
+        )
+    };
+    if addr == libc::MAP_FAILED {
+        return Err(FrameExportError::Mmap(std::io::Error::last_os_error()));
+    }
+    NonNull::new(addr.cast::<u8>())
+        .ok_or_else(|| FrameExportError::Mmap(std::io::Error::other("memfd mmap returned null")))
+}
+
+#[cfg(target_os = "linux")]
+fn unmap_ptr(ptr: NonNull<u8>, len: usize) {
+    unsafe {
+        libc::munmap(ptr.as_ptr().cast(), len);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn dup_owned_fd(fd: &OwnedFd) -> Result<OwnedFd, FrameExportError> {
+    let duplicated = unsafe { libc::dup(fd.as_raw_fd()) };
+    if duplicated < 0 {
+        return Err(FrameExportError::Fd(std::io::Error::last_os_error()));
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
 }

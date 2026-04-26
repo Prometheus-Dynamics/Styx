@@ -169,6 +169,15 @@ impl Codec for BgrToRgbDecoder {
 
         Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
     }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+    }
 }
 
 #[cfg(test)]
@@ -197,6 +206,33 @@ mod tests {
         dec.decode_into(&frame, &mut out).unwrap();
 
         assert_eq!(plane.data(), out.as_slice());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_shared_outputs_exportable_memfd_frame() {
+        use crate::decoder::raw::SharedRawDecodeExt;
+
+        let res = Resolution::new(2, 1).unwrap();
+        let format = MediaFormat::new(FourCc::new(*b"BGR3"), res, ColorSpace::Srgb);
+        let mut buf = BufferPool::with_limits(1, 6, 1).lease();
+        buf.resize(6);
+        buf.as_mut_slice().copy_from_slice(&[1, 2, 3, 4, 5, 6]);
+        let frame = FrameLease::single_plane(FrameMeta::new(format, 123), buf, 6, 6);
+
+        let dec = BgrToRgbDecoder::with_pool(BufferPool::with_limits(1, 6, 1));
+        let pool = SharedBufferPool::with_capacity(1, 6).unwrap();
+        let out = SharedRawDecodeExt::process_shared(&dec, &frame, &pool).unwrap();
+        assert_eq!(out.external_backing_kind(), Some("memfd_pool"));
+        assert_eq!(out.planes()[0].data(), &[3, 2, 1, 6, 5, 4]);
+
+        let (descriptor, backing) = out.export_or_copy_memfd().unwrap();
+        let FrameBackingExport::Memfd { fd, len } = backing else {
+            panic!("shared raw decode should export as memfd");
+        };
+        assert_eq!(len, 6);
+        let imported = FrameLease::from_memfd_import(descriptor, fd).unwrap();
+        assert_eq!(imported.planes()[0].data(), &[3, 2, 1, 6, 5, 4]);
     }
 }
 

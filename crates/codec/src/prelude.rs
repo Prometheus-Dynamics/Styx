@@ -2,6 +2,8 @@ pub use crate::decoder::raw::{
     BgrToRgbDecoder, BgraToRgbDecoder, I420ToRgbDecoder, Nv12ToBgrDecoder, Nv12ToRgbDecoder,
     PassthroughDecoder, RgbaToRgbDecoder, YuyvToRgbDecoder,
 };
+#[cfg(target_os = "linux")]
+pub use crate::decoder::raw::{RawDecodeInto, SharedRawDecodeExt};
 #[cfg(feature = "image")]
 pub use crate::decoder::{PackedFramePoolStats, packed_frame_pool_stats};
 #[cfg(feature = "codec-ffmpeg")]

@@ -8,6 +8,8 @@ use turbojpeg::{
 
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
+#[cfg(target_os = "linux")]
+use crate::shared_packet_frame;
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
 
 #[derive(Debug)]
@@ -115,6 +117,64 @@ impl TurbojpegEncoder {
             encoded.len(),
         ))
     }
+
+    #[cfg(target_os = "linux")]
+    fn encode_packed_shared(
+        &self,
+        meta: &FrameMeta,
+        pixels: &[u8],
+        pitch: usize,
+        format: TjPixelFormat,
+        subsamp: TjSubsamp,
+        pool: &SharedBufferPool,
+    ) -> Result<FrameLease, CodecError> {
+        let width = meta.format.resolution.width.get().max(1) as usize;
+        let height = meta.format.resolution.height.get().max(1) as usize;
+        let required = pitch
+            .checked_mul(height)
+            .ok_or_else(|| CodecError::Codec("turbojpeg input stride overflow".into()))?;
+        if pixels.len() < required {
+            return Err(CodecError::Codec(
+                "turbojpeg input frame shorter than declared stride".into(),
+            ));
+        }
+
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|_| CodecError::Codec("turbojpeg encoder mutex poisoned".into()))?;
+        if guard.is_none() {
+            let mut compressor =
+                Compressor::new().map_err(|err| CodecError::Codec(err.to_string()))?;
+            compressor
+                .set_quality(self.quality)
+                .map_err(|err| CodecError::Codec(err.to_string()))?;
+            compressor
+                .set_optimize(false)
+                .map_err(|err| CodecError::Codec(err.to_string()))?;
+            *guard = Some(TurbojpegEncoderState { compressor });
+        }
+        let state = guard
+            .as_mut()
+            .ok_or_else(|| CodecError::Codec("turbojpeg encoder unavailable".into()))?;
+        let mut output = OutputBuf::new_owned();
+        state
+            .compressor
+            .set_subsamp(subsamp)
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+        let view = TjImage {
+            pixels: &pixels[..required],
+            width,
+            pitch,
+            height,
+            format,
+        };
+        state
+            .compressor
+            .compress(view, &mut output)
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+        shared_packet_frame(&self.descriptor, meta, &output, pool)
+    }
 }
 
 impl Codec for TurbojpegEncoder {
@@ -163,6 +223,60 @@ impl Codec for TurbojpegEncoder {
                 meta.format.code
             ))),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        let meta = input.meta();
+        if meta.format.code != self.descriptor.input {
+            return Err(CodecError::FormatMismatch {
+                expected: self.descriptor.input,
+                actual: meta.format.code,
+            });
+        }
+        let plane = input
+            .planes()
+            .into_iter()
+            .next()
+            .ok_or_else(|| CodecError::Codec("turbojpeg frame missing plane".into()))?;
+        let width = meta.format.resolution.width.get().max(1) as usize;
+        let frame = match &meta.format.code.to_u32().to_le_bytes() {
+            b"R8  " | b"GREY" => self.encode_packed_shared(
+                meta,
+                plane.data(),
+                plane.stride().max(width),
+                TjPixelFormat::GRAY,
+                TjSubsamp::Gray,
+                pool,
+            )?,
+            b"RG24" => self.encode_packed_shared(
+                meta,
+                plane.data(),
+                plane.stride().max(width * 3),
+                TjPixelFormat::RGB,
+                TjSubsamp::Sub2x2,
+                pool,
+            )?,
+            b"RGBA" => self.encode_packed_shared(
+                meta,
+                plane.data(),
+                plane.stride().max(width * 4),
+                TjPixelFormat::RGBA,
+                TjSubsamp::Sub2x2,
+                pool,
+            )?,
+            _ => {
+                return Err(CodecError::Codec(format!(
+                    "unsupported turbojpeg encoder input {}",
+                    meta.format.code
+                )));
+            }
+        };
+        Ok(Some(frame))
     }
 }
 
@@ -240,6 +354,62 @@ impl Codec for TurbojpegDecoder {
             layout.len,
             layout.stride,
         ))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        if input.meta().format.code != self.descriptor.input {
+            return Err(CodecError::FormatMismatch {
+                expected: self.descriptor.input,
+                actual: input.meta().format.code,
+            });
+        }
+        let plane = input
+            .planes()
+            .into_iter()
+            .next()
+            .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
+
+        let mut tj = Decompressor::new().map_err(|e| CodecError::Codec(e.to_string()))?;
+        let header = tj
+            .read_header(plane.data())
+            .map_err(|e| CodecError::Codec(e.to_string()))?;
+        let resolution = Resolution::new(header.width as u32, header.height as u32)
+            .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
+        let format = MediaFormat::new(
+            self.descriptor.output,
+            resolution,
+            input.meta().format.color,
+        );
+        let layout = plane_layout_from_dims(resolution.width, resolution.height, 3);
+        let mut lease = pool
+            .lease()
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+        lease
+            .try_resize(layout.len)
+            .map_err(|err| CodecError::Codec(err.to_string()))?;
+        let mut image = TjImage {
+            pixels: lease.as_mut_slice(),
+            width: header.width,
+            pitch: layout.stride,
+            height: header.height,
+            format: TjPixelFormat::RGB,
+        };
+        tj.decompress(plane.data(), image.as_deref_mut())
+            .map_err(|e| CodecError::Codec(e.to_string()))?;
+
+        FrameLease::single_plane_shared(
+            FrameMeta::new(format, input.meta().timestamp),
+            lease,
+            layout.len,
+            layout.stride,
+        )
+        .map(Some)
+        .map_err(|err| CodecError::Codec(err.to_string()))
     }
 }
 

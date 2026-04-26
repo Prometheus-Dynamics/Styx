@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use libcamera::framebuffer::AsFrameBuffer;
 use libcamera::framebuffer_allocator::FrameBuffer;
 use libcamera::request::ReuseFlag;
 use smallvec::SmallVec;
@@ -34,8 +35,7 @@ use self::util::{
     classify_libcamera_backend_message, classify_libcamera_control_apply_kind,
     control_value_enabled, from_lc_value, map_pixel_format_to_fourcc,
     normalize_requested_fourcc_for_libcamera, pisp_disallowed_fourcc, plane_height_for_format,
-    processed_stream_role_override, stream_role_for_request, supports_frame_duration_limits,
-    to_lc_value,
+    stream_role_for_request, supports_frame_duration_limits,
 };
 
 pub(super) fn stop_manager_if_idle() {

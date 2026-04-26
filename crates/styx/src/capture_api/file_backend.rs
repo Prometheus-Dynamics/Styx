@@ -19,7 +19,9 @@ use crate::prelude::{Interval, Mode};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
 pub(crate) use file_controls::*;
-use file_media::*;
+#[cfg(target_os = "linux")]
+use file_media::build_shared_frame_from_rgb;
+pub(crate) use file_media::*;
 
 pub(super) fn start_file(
     backend: &ProbedBackend,
@@ -123,6 +125,12 @@ pub(super) fn start_file(
             (output_res.width.get() * output_res.height.get() * 3) as usize,
             8,
         );
+        #[cfg(target_os = "linux")]
+        let pool = match SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare) {
+            Ok(pool) => pool,
+            Err(_) => return,
+        };
+        #[cfg(not(target_os = "linux"))]
         let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
         let mut timestamp_ns: u64 = 0;
 
@@ -186,6 +194,17 @@ pub(super) fn start_file(
 
                     if let Some(rgb) = rgb_cache.get(path) {
                         for _ in 0..duration_frames {
+                            #[cfg(target_os = "linux")]
+                            let frame = match build_shared_frame_from_rgb(
+                                rgb,
+                                &mode_clone,
+                                &pool,
+                                timestamp_ns,
+                            ) {
+                                Ok(frame) => frame,
+                                Err(_) => return,
+                            };
+                            #[cfg(not(target_os = "linux"))]
                             let frame = build_frame_from_rgb(rgb, &mode_clone, &pool, timestamp_ns);
                             if let SendOutcome::Closed = tx.send(frame) {
                                 return;

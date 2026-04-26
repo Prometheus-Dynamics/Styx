@@ -12,6 +12,8 @@ use ffmpeg_next::{
 };
 use styx_core::prelude::*;
 
+#[cfg(target_os = "linux")]
+use crate::shared_packet_frame;
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
 
 use super::util::{SendSyncScalingContext, init_ffmpeg, pixel_format_for_fourcc};
@@ -164,7 +166,7 @@ impl FfmpegVideoEncoder {
         // Hardware encoders (v4l2m2m) often require low-latency settings.
         enc_ctx.set_max_b_frames(0);
         if let Some(gop) = opts.gop {
-            let gop_u32: u32 = gop.try_into().unwrap_or(u32::MAX);
+            let gop_u32 = u32::try_from(gop).unwrap_or(u32::MAX);
             enc_ctx.set_gop(gop_u32);
         } else {
             // Default to a 1-second GOP at the default timebase (120fps).
@@ -246,6 +248,35 @@ impl FfmpegVideoEncoder {
         }
         drop(guard);
         Ok(self.packet_to_frame(&meta, data))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn encode_shared(
+        &self,
+        frame: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<FrameLease, CodecError> {
+        let meta = frame.meta();
+        let src_width = meta.format.resolution.width.get();
+        let src_height = meta.format.resolution.height.get();
+        let (dst_width, dst_height) = self.target_resolution(src_width, src_height);
+
+        self.ensure_state(src_width, src_height, dst_width, dst_height)?;
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|e| CodecError::Codec(format!("ffmpeg encoder lock poisoned: {e}")))?;
+        let state = guard
+            .as_mut()
+            .ok_or_else(|| CodecError::Codec("ffmpeg encoder state missing".into()))?;
+        self.push_frame(state, frame)?;
+        let data = state.queued.pop_front().ok_or(CodecError::Backpressure)?;
+        let mut meta = meta.clone();
+        if let Some(res) = Resolution::new(dst_width, dst_height) {
+            meta.format = MediaFormat::new(meta.format.code, res, meta.format.color);
+        }
+        drop(guard);
+        self.packet_to_shared_frame(&meta, &data, pool)
     }
 
     fn push_frame(&self, state: &mut EncoderState, frame: &FrameLease) -> Result<(), CodecError> {
@@ -358,6 +389,16 @@ impl FfmpegVideoEncoder {
         )
     }
 
+    #[cfg(target_os = "linux")]
+    fn packet_to_shared_frame(
+        &self,
+        meta: &FrameMeta,
+        data: &[u8],
+        pool: &SharedBufferPool,
+    ) -> Result<FrameLease, CodecError> {
+        shared_packet_frame(&self.descriptor, meta, data, pool)
+    }
+
     /// Encode a frame and return every produced packet (streaming-friendly).
     pub fn encode_all(&self, frame: &FrameLease) -> Result<Vec<FrameLease>, CodecError> {
         let mut meta = frame.meta().clone();
@@ -428,10 +469,27 @@ impl Codec for FfmpegVideoEncoder {
         }
         self.encode(&input)
     }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        if input.meta().format.code != self.descriptor.input {
+            return Err(CodecError::FormatMismatch {
+                expected: self.descriptor.input,
+                actual: input.meta().format.code,
+            });
+        }
+        self.encode_shared(input, pool).map(Some)
+    }
 }
 
+#[path = "encoder_codecs.rs"]
 mod encoder_codecs;
 pub use encoder_codecs::{FfmpegH264Encoder, FfmpegH265Encoder, FfmpegMjpegEncoder};
+#[path = "encoder_tuning.rs"]
 mod encoder_tuning;
 pub use encoder_tuning::FfmpegEncoderOptions;
 

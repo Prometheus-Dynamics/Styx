@@ -27,7 +27,11 @@ pub(crate) use state::{
 };
 
 use runtime::BevySimulationRuntime;
-use state::{build_frame_from_depth, build_frame_from_rgb, interval_to_delay_ms, parse_controls};
+#[cfg(not(target_os = "linux"))]
+use state::{build_frame_from_depth, build_frame_from_rgb};
+#[cfg(target_os = "linux")]
+use state::{build_shared_frame_from_depth, build_shared_frame_from_rgb};
+use state::{interval_to_delay_ms, parse_controls};
 
 pub(super) fn start_simulation(
     backend: &ProbedBackend,
@@ -73,6 +77,12 @@ pub(super) fn start_simulation(
             .saturating_mul(4);
         let (pool_min, pool_bytes, pool_spare) =
             crate::capture_api::capture_pool_limits(4, rgb_frame_len.max(depth_frame_len), 8);
+        #[cfg(target_os = "linux")]
+        let pool = match SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare) {
+            Ok(pool) => pool,
+            Err(_) => return,
+        };
+        #[cfg(not(target_os = "linux"))]
         let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
         let mut runtime = match BevySimulationRuntime::new(&scene_path, &config) {
             Ok(runtime) => runtime,
@@ -93,9 +103,41 @@ pub(super) fn start_simulation(
 
             let frame = match snapshot.output_mode {
                 crate::capture_api::SimulationOutputMode::Depth => {
-                    build_frame_from_depth(&latest_depth, output_res, &pool, timestamp_ns)
+                    #[cfg(target_os = "linux")]
+                    {
+                        match build_shared_frame_from_depth(
+                            &latest_depth,
+                            output_res,
+                            &pool,
+                            timestamp_ns,
+                        ) {
+                            Ok(frame) => frame,
+                            Err(_) => break,
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        build_frame_from_depth(&latest_depth, output_res, &pool, timestamp_ns)
+                    }
                 }
-                _ => build_frame_from_rgb(&latest_rgb, &mode_clone, &pool, timestamp_ns),
+                _ => {
+                    #[cfg(target_os = "linux")]
+                    {
+                        match build_shared_frame_from_rgb(
+                            &latest_rgb,
+                            &mode_clone,
+                            &pool,
+                            timestamp_ns,
+                        ) {
+                            Ok(frame) => frame,
+                            Err(_) => break,
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        build_frame_from_rgb(&latest_rgb, &mode_clone, &pool, timestamp_ns)
+                    }
+                }
             };
             if let SendOutcome::Closed = tx.send(frame) {
                 return;

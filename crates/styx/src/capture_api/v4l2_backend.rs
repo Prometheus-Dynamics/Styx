@@ -1,4 +1,5 @@
 use std::mem;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -182,6 +183,24 @@ impl V4l2MmapManager {
         self.buffers.get(index).map(|buffer| buffer.len)
     }
 
+    fn export_dmabuf(&self, index: usize) -> std::io::Result<OwnedFd> {
+        let mut expbuf = v4l2_exportbuffer {
+            type_: self.buf_type as u32,
+            index: index as u32,
+            plane: 0,
+            flags: libc::O_CLOEXEC as u32,
+            ..unsafe { mem::zeroed() }
+        };
+        unsafe {
+            v4l2::ioctl(
+                self.handle.fd(),
+                v4l2::vidioc::VIDIOC_EXPBUF,
+                &mut expbuf as *mut _ as *mut std::os::raw::c_void,
+            )?;
+            Ok(OwnedFd::from_raw_fd(expbuf.fd))
+        }
+    }
+
     fn stop_stream(&self) -> std::io::Result<()> {
         let mut state = self.state.lock().unwrap();
         self.stop_stream_locked(&mut state)
@@ -304,6 +323,23 @@ impl ExternalBacking for V4l2MmapBacking {
 
     fn backing_kind(&self) -> &'static str {
         "v4l2_mmap"
+    }
+
+    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
+        let Some(index) = *self.index.lock().unwrap() else {
+            return Err(FrameExportError::InvalidDescriptor);
+        };
+        let fd = self
+            .manager
+            .export_dmabuf(index)
+            .map_err(FrameExportError::Fd)?;
+        Ok(Some(FrameBackingExport::DmabufPlanes {
+            planes: vec![FrameFdPlane {
+                fd,
+                offset: 0,
+                len: self.bytes,
+            }],
+        }))
     }
 }
 
@@ -454,7 +490,7 @@ pub(super) fn start_v4l2(
     let tracker_for_worker = Arc::clone(&backing_tracker);
     let worker = thread::spawn(move || {
         let zero_copy_enabled = supports_v4l2_mmap_zero_copy(mode_clone.format.code);
-        let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
+        let shared_pool = SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare);
         let height = mode_clone.format.resolution.height.get() as usize;
         let width = mode_clone.format.resolution.width.get() as usize;
         let min_stride = min_stride_for_fourcc(mode_clone.format.code, width);
@@ -486,7 +522,7 @@ pub(super) fn start_v4l2(
                             } else if encoded {
                                 FrameResidency::CompressedPacket
                             } else {
-                                FrameResidency::HostOwned
+                                FrameResidency::HostExternal
                             },
                             reason: ResidencyTransitionReason::Capture,
                             copied: !zero_copy_enabled,
@@ -532,13 +568,31 @@ pub(super) fn start_v4l2(
                         );
                         FrameLease::from_external(meta, smallvec![layout], backing)
                     } else {
-                        let mut lease = pool.lease();
-                        lease.resize(bytes_used);
+                        let Ok(pool) = &shared_pool else {
+                            let _ = manager_for_worker.recycle(index);
+                            continue;
+                        };
+                        let Ok(mut lease) = pool.lease() else {
+                            let _ = manager_for_worker.recycle(index);
+                            continue;
+                        };
+                        if lease.try_resize(bytes_used).is_err() {
+                            let _ = manager_for_worker.recycle(index);
+                            continue;
+                        }
                         if let Some(src) = manager_for_worker.mapped_plane(index) {
                             lease.as_mut_slice()[..bytes_used].copy_from_slice(&src[..bytes_used]);
                         }
                         let _ = manager_for_worker.recycle(index);
-                        FrameLease::multi_plane(meta, smallvec![lease], smallvec![layout])
+                        match FrameLease::single_plane_shared(
+                            meta,
+                            lease,
+                            layout.len,
+                            layout.stride,
+                        ) {
+                            Ok(frame) => frame,
+                            Err(_) => continue,
+                        }
                     };
                     match tx.send_timeout(frame, Duration::from_millis(10)) {
                         SendWaitOutcome::Closed(_frame) => {

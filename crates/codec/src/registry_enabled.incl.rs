@@ -355,6 +355,9 @@ impl CodecRegistry {
                     None,
                 )?),
             );
+            if let Ok(dec) = FfmpegH264Decoder::new_v4l2request_nv12_zero_copy() {
+                self.register(FourCc::new(*b"H264"), Arc::new(dec));
+            }
             if let Ok(dec) = FfmpegH264Decoder::new_v4l2request_rgb24() {
                 self.register(FourCc::new(*b"H264"), Arc::new(dec));
             }
@@ -381,6 +384,14 @@ impl CodecRegistry {
             );
             if let Ok(dec) = FfmpegH265Decoder::new_v4l2request_rgb24() {
                 self.register(FourCc::new(*b"H265"), Arc::new(dec));
+            }
+            if let Ok(dec) = FfmpegH265Decoder::new_v4l2request_nv12_zero_copy() {
+                self.register(FourCc::new(*b"H265"), Arc::new(dec));
+            }
+            if let Ok(dec) =
+                FfmpegH265Decoder::new_v4l2request_nv12_zero_copy_for_input(FourCc::new(*b"HEVC"))
+            {
+                self.register(FourCc::new(*b"HEVC"), Arc::new(dec));
             }
             if let Ok(dec) =
                 FfmpegH265Decoder::new_v4l2request_rgb24_for_input(FourCc::new(*b"HEVC"))

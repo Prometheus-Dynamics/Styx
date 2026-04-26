@@ -191,6 +191,7 @@ pub(super) fn interval_to_delay_ms(interval: Interval) -> u64 {
     ((1_000u64.saturating_mul(num)).saturating_add(den / 2) / den).max(1)
 }
 
+#[cfg(not(target_os = "linux"))]
 pub(super) fn build_frame_from_rgb(
     rgb: &[u8],
     mode: &Mode,
@@ -222,6 +223,7 @@ pub(super) fn build_frame_from_rgb(
     )
 }
 
+#[cfg(not(target_os = "linux"))]
 pub(super) fn build_frame_from_depth(
     depth: &[u8],
     resolution: Resolution,
@@ -243,6 +245,69 @@ pub(super) fn build_frame_from_depth(
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,
             to: FrameResidency::HostOwned,
+            reason: ResidencyTransitionReason::Capture,
+            copied: false,
+        }),
+        lease,
+        layout.len,
+        layout.stride,
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn build_shared_frame_from_rgb(
+    rgb: &[u8],
+    mode: &Mode,
+    pool: &SharedBufferPool,
+    timestamp: u64,
+) -> Result<FrameLease, FrameExportError> {
+    let res = mode.format.resolution;
+    let layout = plane_layout_from_dims(res.width, res.height, 3);
+    let mut lease = pool.lease()?;
+    lease.try_resize(layout.len)?;
+    let dst = lease.as_mut_slice();
+    let copy_len = dst.len().min(rgb.len());
+    dst[..copy_len].copy_from_slice(&rgb[..copy_len]);
+    FrameLease::single_plane_shared(
+        FrameMeta::new(
+            MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
+            timestamp,
+        )
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::HostExternal,
+            to: FrameResidency::HostExternal,
+            reason: ResidencyTransitionReason::Capture,
+            copied: false,
+        }),
+        lease,
+        layout.len,
+        layout.stride,
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn build_shared_frame_from_depth(
+    depth: &[u8],
+    resolution: Resolution,
+    pool: &SharedBufferPool,
+    timestamp: u64,
+) -> Result<FrameLease, FrameExportError> {
+    let layout = plane_layout_from_dims(resolution.width, resolution.height, 4);
+    let mut lease = pool.lease()?;
+    lease.try_resize(layout.len)?;
+    let dst = lease.as_mut_slice();
+    let copy_len = dst.len().min(depth.len());
+    dst[..copy_len].copy_from_slice(&depth[..copy_len]);
+    FrameLease::single_plane_shared(
+        FrameMeta::new(
+            MediaFormat::new(FourCc::new(*b"D32F"), resolution, ColorSpace::Unknown),
+            timestamp,
+        )
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::HostExternal,
+            to: FrameResidency::HostExternal,
             reason: ResidencyTransitionReason::Capture,
             copied: false,
         }),

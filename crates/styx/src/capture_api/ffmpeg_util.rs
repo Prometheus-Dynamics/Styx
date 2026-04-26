@@ -81,7 +81,47 @@ pub(crate) fn blit_rgba_frame(
     )
 }
 
+/// Copy an FFmpeg RGBA frame into exportable shared memory.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) fn blit_shared_rgba_frame(
+    rgb: &FfFrame,
+    res: Resolution,
+    layout: PlaneLayout,
+    pool: &SharedBufferPool,
+    timestamp: u64,
+) -> Result<FrameLease, styx_core::buffer::FrameExportError> {
+    let stride = rgb.stride(0);
+    let data = rgb.data(0);
+    let mut lease = pool.lease()?;
+    lease.try_resize(layout.len)?;
+    for (y, chunk) in lease.as_mut_slice().chunks_mut(layout.stride).enumerate() {
+        let start = y * stride;
+        let end = start + layout.stride.min(data.len().saturating_sub(start));
+        if end > start && end <= data.len() {
+            chunk[..end - start].copy_from_slice(&data[start..end]);
+        }
+    }
+    FrameLease::single_plane_shared(
+        FrameMeta::new(
+            MediaFormat::new(FourCc::new(*b"RGBA"), res, ColorSpace::Srgb),
+            timestamp,
+        )
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::HostOwned,
+            to: FrameResidency::HostExternal,
+            reason: ResidencyTransitionReason::Capture,
+            copied: true,
+        }),
+        lease,
+        layout.len,
+        layout.stride,
+    )
+}
+
 /// Convert an FFmpeg RGBA frame into packed `RG24` output.
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn blit_rgb24_frame(
     rgba: &FfFrame,
     res: Resolution,
@@ -118,6 +158,53 @@ pub(crate) fn blit_rgb24_frame(
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,
             to: FrameResidency::HostOwned,
+            reason: ResidencyTransitionReason::Capture,
+            copied: true,
+        }),
+        lease,
+        layout.len,
+        layout.stride,
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) fn blit_shared_rgb24_frame(
+    rgba: &FfFrame,
+    res: Resolution,
+    layout: PlaneLayout,
+    pool: &SharedBufferPool,
+    timestamp: u64,
+) -> Result<FrameLease, styx_core::buffer::FrameExportError> {
+    let stride = rgba.stride(0);
+    let data = rgba.data(0);
+    let width = res.width.get() as usize;
+    let mut lease = pool.lease()?;
+    lease.try_resize(layout.len)?;
+    let dst = lease.as_mut_slice();
+    for y in 0..res.height.get() as usize {
+        let src_row = y.saturating_mul(stride);
+        let dst_row = y.saturating_mul(layout.stride);
+        for x in 0..width {
+            let src_idx = src_row.saturating_add(x * 4);
+            let dst_idx = dst_row.saturating_add(x * 3);
+            if src_idx + 2 >= data.len() || dst_idx + 2 >= dst.len() {
+                break;
+            }
+            dst[dst_idx] = data[src_idx];
+            dst[dst_idx + 1] = data[src_idx + 1];
+            dst[dst_idx + 2] = data[src_idx + 2];
+        }
+    }
+    FrameLease::single_plane_shared(
+        FrameMeta::new(
+            MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
+            timestamp,
+        )
+        .with_capture_instant(std::time::Instant::now())
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::HostOwned,
+            to: FrameResidency::HostExternal,
             reason: ResidencyTransitionReason::Capture,
             copied: true,
         }),

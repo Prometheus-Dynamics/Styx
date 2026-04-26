@@ -78,6 +78,15 @@ impl Codec for FfmpegMjpegDecoder {
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         self.0.process(input)
     }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        self.0.process_shared(input, pool)
+    }
 }
 
 #[cfg(feature = "image")]
@@ -146,7 +155,7 @@ impl FfmpegH264Decoder {
         FfmpegVideoDecoder::new_by_name(
             "h264_v4l2request",
             "h264",
-            "h264_v4l2request",
+            "h264_v4l2request_nv12",
             FourCc::new(*b"H264"),
             FourCc::new(*b"NV12"),
             true,
@@ -198,6 +207,15 @@ impl Codec for FfmpegH264Decoder {
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         self.0.process(input)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        self.0.process_shared(input, pool)
     }
 }
 
@@ -277,11 +295,15 @@ impl FfmpegH265Decoder {
     }
 
     pub fn new_v4l2request_nv12_zero_copy() -> Result<Self, CodecError> {
+        Self::new_v4l2request_nv12_zero_copy_for_input(FourCc::new(*b"H265"))
+    }
+
+    pub fn new_v4l2request_nv12_zero_copy_for_input(input: FourCc) -> Result<Self, CodecError> {
         FfmpegVideoDecoder::new_by_name(
             "hevc_v4l2request",
             "h265",
-            "hevc_v4l2request",
-            FourCc::new(*b"H265"),
+            "hevc_v4l2request_nv12",
+            input,
             FourCc::new(*b"NV12"),
             true,
             None,
@@ -340,6 +362,15 @@ impl Codec for FfmpegH265Decoder {
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         self.0.process(input)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        input: &FrameLease,
+        pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        self.0.process_shared(input, pool)
     }
 }
 

@@ -52,6 +52,11 @@ pub(crate) const PACKET_OR_HOST_INPUTS: &[FrameResidency] = &[
     FrameResidency::Dmabuf,
 ];
 pub(crate) const HOST_ONLY_OUTPUTS: &[FrameResidency] = &[FrameResidency::HostOwned];
+pub(crate) const HOST_OR_DMA_OUTPUTS: &[FrameResidency] = &[
+    FrameResidency::HostOwned,
+    FrameResidency::HostExternal,
+    FrameResidency::Dmabuf,
+];
 pub(crate) const COMPRESSED_OUTPUTS: &[FrameResidency] = &[FrameResidency::CompressedPacket];
 
 pub(crate) fn is_compressed_fourcc(code: FourCc) -> bool {
@@ -62,11 +67,48 @@ pub(crate) fn is_compressed_fourcc(code: FourCc) -> bool {
         || code == FourCc::new(*b"HEVC")
 }
 
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) fn shared_packet_frame(
+    descriptor: &CodecDescriptor,
+    meta: &FrameMeta,
+    data: &[u8],
+    pool: &SharedBufferPool,
+) -> Result<FrameLease, CodecError> {
+    let mut lease = pool
+        .lease()
+        .map_err(|err| CodecError::Codec(err.to_string()))?;
+    lease
+        .try_resize(data.len())
+        .map_err(|err| CodecError::Codec(err.to_string()))?;
+    lease.as_mut_slice().copy_from_slice(data);
+    FrameLease::single_plane_shared(
+        FrameMeta::new(
+            MediaFormat::new(descriptor.output, meta.format.resolution, meta.format.color),
+            meta.timestamp,
+        )
+        .with_residency(FrameResidency::CompressedPacket),
+        lease,
+        data.len(),
+        data.len(),
+    )
+    .map_err(|err| CodecError::Codec(err.to_string()))
+}
+
 /// Unified codec trait for zero-copy processing.
 pub trait Codec: Any + Send + Sync + 'static {
     fn descriptor(&self) -> &CodecDescriptor;
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError>;
+
+    #[cfg(target_os = "linux")]
+    fn process_shared(
+        &self,
+        _input: &FrameLease,
+        _pool: &SharedBufferPool,
+    ) -> Result<Option<FrameLease>, CodecError> {
+        Ok(None)
+    }
 
     fn residency_capabilities(&self) -> CodecResidencyCapabilities {
         let descriptor = self.descriptor();
@@ -77,7 +119,7 @@ pub trait Codec: Any + Send + Sync + 'static {
                 } else {
                     HOST_OR_DMA_INPUTS
                 },
-                possible_outputs: HOST_ONLY_OUTPUTS,
+                possible_outputs: HOST_OR_DMA_OUTPUTS,
                 preserves_input_residency: false,
             },
             CodecKind::Encoder => CodecResidencyCapabilities {

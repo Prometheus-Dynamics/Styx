@@ -77,6 +77,18 @@ pub struct MediaPipeline {
     pub(super) metrics: crate::metrics::PipelineMetrics,
     pub(super) decode_enabled: bool,
     pub(super) encode_enabled: bool,
+    #[cfg(target_os = "linux")]
+    pub(super) shared_decode_enabled: bool,
+    #[cfg(target_os = "linux")]
+    pub(super) owned_decode_fallback_enabled: bool,
+    #[cfg(target_os = "linux")]
+    pub(super) shared_decode_pool: Option<(SharedBufferPool, usize)>,
+    #[cfg(target_os = "linux")]
+    pub(super) shared_encode_enabled: bool,
+    #[cfg(target_os = "linux")]
+    pub(super) owned_encode_fallback_enabled: bool,
+    #[cfg(target_os = "linux")]
+    pub(super) shared_encode_pool: Option<(SharedBufferPool, usize)>,
 }
 
 impl MediaPipeline {
@@ -251,6 +263,26 @@ impl MediaPipeline {
         self.encode_enabled = enabled;
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn enable_shared_decode_output(&mut self, enabled: bool) {
+        self.shared_decode_enabled = enabled;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn enable_owned_decode_fallback(&mut self, enabled: bool) {
+        self.owned_decode_fallback_enabled = enabled;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn enable_shared_encode_output(&mut self, enabled: bool) {
+        self.shared_encode_enabled = enabled;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn enable_owned_encode_fallback(&mut self, enabled: bool) {
+        self.owned_encode_fallback_enabled = enabled;
+    }
+
     #[cfg(feature = "hooks")]
     pub fn set_frame_transform(&mut self, transform: FrameTransform) {
         self.frame_transform = transform;
@@ -336,7 +368,7 @@ impl MediaPipeline {
         let mut current_residency = cur.residency();
         self.metrics.copies.record_input(&cur);
         if self.decode_enabled
-            && let Some(dec) = &self.decoder
+            && let Some(dec) = self.decoder.clone()
         {
             let capabilities = dec.residency_capabilities();
             if !stage_accepts_residency(capabilities.accepted_inputs, current_residency) {
@@ -345,7 +377,31 @@ impl MediaPipeline {
             let span = tracing::trace_span!("decode_stage");
             let _enter = span.enter();
             let t = Instant::now();
-            match dec.process(cur) {
+            #[cfg(target_os = "linux")]
+            let decoded = if self.shared_decode_enabled {
+                let allow_owned_fallback = self.owned_decode_fallback_enabled;
+                match self.shared_decode_pool_for(&cur) {
+                    Ok(pool) => match dec.process_shared(&cur, pool) {
+                        Ok(Some(frame)) => Ok(frame),
+                        Ok(None) => dec.process(cur).and_then(|frame| {
+                            require_exportable_codec_output(
+                                "decoder",
+                                dec.as_ref(),
+                                frame,
+                                allow_owned_fallback,
+                            )
+                        }),
+                        Err(err) => Err(err),
+                    },
+                    Err(err) => Err(CodecError::Codec(err.to_string())),
+                }
+            } else {
+                dec.process(cur)
+            };
+            #[cfg(not(target_os = "linux"))]
+            let decoded = dec.process(cur);
+
+            match decoded {
                 Ok(f) => {
                     self.metrics.decode.record(t.elapsed());
                     cur = f;
@@ -423,7 +479,7 @@ impl MediaPipeline {
                 current_residency = cur.residency();
             }
         }
-        if let Some(enc) = &self.encoder
+        if let Some(enc) = self.encoder.clone()
             && self.encode_enabled
         {
             let capabilities = enc.residency_capabilities();
@@ -433,7 +489,31 @@ impl MediaPipeline {
             let span = tracing::trace_span!("encode_stage");
             let _enter = span.enter();
             let t = Instant::now();
-            match enc.process(cur) {
+            #[cfg(target_os = "linux")]
+            let encoded = if self.shared_encode_enabled {
+                let allow_owned_fallback = self.owned_encode_fallback_enabled;
+                match self.shared_encode_pool_for(&cur) {
+                    Ok(pool) => match enc.process_shared(&cur, pool) {
+                        Ok(Some(frame)) => Ok(frame),
+                        Ok(None) => enc.process(cur).and_then(|frame| {
+                            require_exportable_codec_output(
+                                "encoder",
+                                enc.as_ref(),
+                                frame,
+                                allow_owned_fallback,
+                            )
+                        }),
+                        Err(err) => Err(err),
+                    },
+                    Err(err) => Err(CodecError::Codec(err.to_string())),
+                }
+            } else {
+                enc.process(cur)
+            };
+            #[cfg(not(target_os = "linux"))]
+            let encoded = enc.process(cur);
+
+            match encoded {
                 Ok(f) => {
                     self.metrics.encode.record(t.elapsed());
                     cur = f;
@@ -466,6 +546,52 @@ impl MediaPipeline {
         RecvOutcome::Data(cur)
     }
 
+    #[cfg(target_os = "linux")]
+    fn shared_decode_pool_for(
+        &mut self,
+        frame: &FrameLease,
+    ) -> Result<&SharedBufferPool, FrameExportError> {
+        let res = frame.meta().format.resolution;
+        let bytes = (res.width.get() as usize)
+            .saturating_mul(res.height.get() as usize)
+            .saturating_mul(4)
+            .max(1);
+        let recreate = self
+            .shared_decode_pool
+            .as_ref()
+            .map(|(_, capacity)| *capacity < bytes)
+            .unwrap_or(true);
+        if recreate {
+            self.shared_decode_pool = Some((SharedBufferPool::with_limits(2, bytes, 4)?, bytes));
+        }
+        Ok(&self
+            .shared_decode_pool
+            .as_ref()
+            .expect("shared decode pool initialized")
+            .0)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn shared_encode_pool_for(
+        &mut self,
+        frame: &FrameLease,
+    ) -> Result<&SharedBufferPool, FrameExportError> {
+        let bytes = frame.payload_bytes().max(1 << 20);
+        let recreate = self
+            .shared_encode_pool
+            .as_ref()
+            .map(|(_, capacity)| *capacity < bytes)
+            .unwrap_or(true);
+        if recreate {
+            self.shared_encode_pool = Some((SharedBufferPool::with_limits(2, bytes, 4)?, bytes));
+        }
+        Ok(&self
+            .shared_encode_pool
+            .as_ref()
+            .expect("shared encode pool initialized")
+            .0)
+    }
+
     fn cleanup_pools(&self) {
         #[cfg(all(feature = "hooks", feature = "dynamic-image"))]
         {
@@ -480,6 +606,26 @@ impl Drop for MediaPipeline {
     fn drop(&mut self) {
         self.capture.stop_in_place();
         self.cleanup_pools();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn require_exportable_codec_output(
+    stage: &str,
+    codec: &dyn Codec,
+    frame: FrameLease,
+    allow_owned_fallback: bool,
+) -> Result<FrameLease, CodecError> {
+    if allow_owned_fallback {
+        return Ok(frame);
+    }
+    match frame.export_backing() {
+        Ok(_) => Ok(frame),
+        Err(err) => Err(CodecError::Codec(format!(
+            "{stage} {}:{} produced non-exportable output: {err}",
+            codec.descriptor().name,
+            codec.descriptor().impl_name
+        ))),
     }
 }
 

@@ -1,10 +1,7 @@
-use std::collections::HashSet;
 #[cfg(feature = "v4l2")]
 use std::fs;
 #[cfg(feature = "v4l2")]
 use std::path::Path;
-use std::thread;
-use std::time::Duration;
 
 use libcamera::control_value::ControlValue as LcValue;
 use styx_core::controls::{ControlId, ControlValue};
