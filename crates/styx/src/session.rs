@@ -1,5 +1,6 @@
 //! Unified pipeline that wires capture, decode, hook, and encode in one object.
 
+#[cfg(feature = "hooks")]
 use styx_codec::prelude::FrameLease;
 
 #[cfg(feature = "hooks")]

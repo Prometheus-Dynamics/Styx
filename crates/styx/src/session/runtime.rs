@@ -9,6 +9,7 @@ use styx_codec::prelude::*;
 #[cfg(feature = "hooks")]
 use crate::recording::FrameRecorder;
 
+#[cfg(feature = "hooks")]
 use super::{FrameHookFn, HookFn, HookStore};
 use crate::capture_api::CaptureHandle;
 
