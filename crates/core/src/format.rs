@@ -37,6 +37,34 @@ impl From<u32> for FourCc {
     }
 }
 
+impl From<[u8; 4]> for FourCc {
+    fn from(value: [u8; 4]) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&[u8; 4]> for FourCc {
+    fn from(value: &[u8; 4]) -> Self {
+        Self(*value)
+    }
+}
+
+impl TryFrom<&str> for FourCc {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl TryFrom<String> for FourCc {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.as_str().try_into()
+    }
+}
+
 impl fmt::Display for FourCc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(s) = self.as_str() {

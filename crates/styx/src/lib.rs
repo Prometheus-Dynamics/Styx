@@ -688,7 +688,8 @@ pub mod prelude {
     #[cfg(feature = "netcam")]
     pub use crate::capture_api::make_netcam_device;
     pub use crate::capture_api::{
-        CaptureError, CaptureHandle, CaptureRequest, CaptureStartPolicy, CaptureTunables,
+        CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, CaptureError,
+        CaptureHandle, CaptureRequest, CaptureStartPolicy, CaptureTunables, SelectedCamera,
         StyxConfig, TdnOutputMode, set_capture_tunables, start_capture,
     };
     #[cfg(feature = "simulation-bevy")]

@@ -28,6 +28,8 @@ pub enum CaptureError {
     BackendMissing(BackendKind),
     #[error("no modes advertised by backend")]
     NoModes,
+    #[error("no camera matched request")]
+    NoCameraMatchingRequest,
     #[error("mode {0:?} not advertised by backend")]
     InvalidMode(ModeId),
     #[error("capture config rejected: {0}")]
@@ -132,6 +134,7 @@ impl CaptureError {
             CaptureError::BackendUnavailable(_) => "backend_unavailable",
             CaptureError::BackendMissing(_) => "backend_missing",
             CaptureError::NoModes => "no_modes",
+            CaptureError::NoCameraMatchingRequest => "no_camera_matching_request",
             CaptureError::InvalidMode(_) => "invalid_mode",
             CaptureError::InvalidConfig(_) => "invalid_config",
             CaptureError::NotImplemented(_) => "not_implemented",
@@ -193,6 +196,457 @@ impl CaptureError {
                     | ControlApplyKind::PermissionDenied,
                 ..
             }
+        )
+    }
+}
+
+const DEFAULT_CAMERA_FORMATS: &[FourCc] = &[
+    FourCc::new(*b"RG24"),
+    FourCc::new(*b"RGB3"),
+    FourCc::new(*b"BGR3"),
+    FourCc::new(*b"BG24"),
+    FourCc::new(*b"RGBA"),
+    FourCc::new(*b"BGRA"),
+    FourCc::new(*b"NV12"),
+    FourCc::new(*b"YUYV"),
+    FourCc::new(*b"I420"),
+    FourCc::new(*b"MJPG"),
+    FourCc::new(*b"JPEG"),
+    FourCc::new(*b"R8  "),
+    FourCc::new(*b"GREY"),
+];
+
+const DEFAULT_CAMERA_BACKEND_PRIORITY: &[BackendKind] = &[
+    BackendKind::V4l2,
+    BackendKind::Libcamera,
+    BackendKind::Virtual,
+    BackendKind::Netcam,
+    BackendKind::File,
+    BackendKind::Simulation,
+];
+
+pub trait CameraFormat {
+    fn into_fourcc(self) -> FourCc;
+}
+
+impl CameraFormat for FourCc {
+    fn into_fourcc(self) -> FourCc {
+        self
+    }
+}
+
+impl CameraFormat for [u8; 4] {
+    fn into_fourcc(self) -> FourCc {
+        FourCc::new(self)
+    }
+}
+
+impl CameraFormat for &[u8; 4] {
+    fn into_fourcc(self) -> FourCc {
+        FourCc::new(*self)
+    }
+}
+
+impl CameraFormat for &str {
+    fn into_fourcc(self) -> FourCc {
+        self.parse()
+            .expect("camera format strings must be exactly four bytes")
+    }
+}
+
+impl CameraFormat for String {
+    fn into_fourcc(self) -> FourCc {
+        self.as_str().into_fourcc()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraIntervalPreference {
+    Default,
+    Fastest,
+    Slowest,
+    Exact(Interval),
+    None,
+}
+
+pub type CameraStartPolicy = CaptureStartPolicy;
+
+/// High-level camera selector for the common "open the best usable camera" path.
+///
+/// `CameraRequest` keeps the same control as `CaptureRequest`, but moves probing,
+/// backend choice, mode choice, and interval choice into one reusable policy.
+#[derive(Debug, Clone)]
+pub struct CameraRequest {
+    devices: Vec<ProbedDevice>,
+    format_priority: Vec<FourCc>,
+    backend_priority: Vec<BackendKind>,
+    resolution_priority: Vec<(u32, u32)>,
+    min_width: Option<u32>,
+    min_height: Option<u32>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    interval_preference: CameraIntervalPreference,
+    controls: Vec<(ControlId, ControlValue)>,
+    tdn_output_mode: TdnOutputMode,
+}
+
+impl CameraRequest {
+    pub fn new() -> Self {
+        Self {
+            devices: crate::probe_all(),
+            format_priority: DEFAULT_CAMERA_FORMATS.to_vec(),
+            backend_priority: DEFAULT_CAMERA_BACKEND_PRIORITY.to_vec(),
+            resolution_priority: Vec::new(),
+            min_width: None,
+            min_height: None,
+            max_width: None,
+            max_height: None,
+            interval_preference: CameraIntervalPreference::Fastest,
+            controls: Vec::new(),
+            tdn_output_mode: TdnOutputMode::default(),
+        }
+    }
+
+    pub fn from_devices(devices: Vec<ProbedDevice>) -> Self {
+        Self {
+            devices,
+            ..Self::empty()
+        }
+    }
+
+    fn empty() -> Self {
+        Self {
+            devices: Vec::new(),
+            format_priority: DEFAULT_CAMERA_FORMATS.to_vec(),
+            backend_priority: DEFAULT_CAMERA_BACKEND_PRIORITY.to_vec(),
+            resolution_priority: Vec::new(),
+            min_width: None,
+            min_height: None,
+            max_width: None,
+            max_height: None,
+            interval_preference: CameraIntervalPreference::Fastest,
+            controls: Vec::new(),
+            tdn_output_mode: TdnOutputMode::default(),
+        }
+    }
+
+    pub fn format_priority<T: CameraFormat>(
+        mut self,
+        formats: impl IntoIterator<Item = T>,
+    ) -> Self {
+        self.format_priority = formats.into_iter().map(CameraFormat::into_fourcc).collect();
+        self
+    }
+
+    pub fn backend_priority(mut self, priority: impl IntoIterator<Item = BackendKind>) -> Self {
+        self.backend_priority = priority.into_iter().collect();
+        self
+    }
+
+    pub fn resolution_priority(mut self, priority: impl IntoIterator<Item = (u32, u32)>) -> Self {
+        self.resolution_priority = priority.into_iter().collect();
+        self
+    }
+
+    pub fn min_resolution(mut self, width: u32, height: u32) -> Self {
+        self.min_width = Some(width);
+        self.min_height = Some(height);
+        self
+    }
+
+    pub fn max_resolution(mut self, width: u32, height: u32) -> Self {
+        self.max_width = Some(width);
+        self.max_height = Some(height);
+        self
+    }
+
+    pub fn interval_preference(mut self, preference: CameraIntervalPreference) -> Self {
+        self.interval_preference = preference;
+        self
+    }
+
+    pub fn fastest_interval(mut self) -> Self {
+        self.interval_preference = CameraIntervalPreference::Fastest;
+        self
+    }
+
+    pub fn slowest_interval(mut self) -> Self {
+        self.interval_preference = CameraIntervalPreference::Slowest;
+        self
+    }
+
+    pub fn default_interval(mut self) -> Self {
+        self.interval_preference = CameraIntervalPreference::Default;
+        self
+    }
+
+    pub fn exact_interval(mut self, interval: Interval) -> Self {
+        self.interval_preference = CameraIntervalPreference::Exact(interval);
+        self
+    }
+
+    pub fn no_interval(mut self) -> Self {
+        self.interval_preference = CameraIntervalPreference::None;
+        self
+    }
+
+    pub fn control(mut self, id: ControlId, value: ControlValue) -> Self {
+        self.controls.push((id, value));
+        self
+    }
+
+    pub fn enable_tdn_output(mut self, enable: bool) -> Self {
+        self.tdn_output_mode = if enable {
+            TdnOutputMode::Force
+        } else {
+            TdnOutputMode::Off
+        };
+        self
+    }
+
+    pub fn tdn_output_mode(mut self, mode: TdnOutputMode) -> Self {
+        self.tdn_output_mode = mode;
+        self
+    }
+
+    pub fn select(&self) -> Result<SelectedCamera, CaptureError> {
+        self.select_all()?
+            .into_iter()
+            .next()
+            .ok_or(CaptureError::NoCameraMatchingRequest)
+    }
+
+    pub fn select_all(&self) -> Result<Vec<SelectedCamera>, CaptureError> {
+        let mut candidates = self.candidates();
+        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.score()));
+        let mut seen_devices = std::collections::HashSet::new();
+        let mut selected = Vec::new();
+        for candidate in candidates {
+            if !seen_devices.insert(candidate.device_index) {
+                continue;
+            }
+            selected.push(SelectedCamera {
+                device: self.devices[candidate.device_index].clone(),
+                backend: candidate.backend,
+                mode: candidate.mode,
+                interval: candidate.interval,
+                controls: self.controls.clone(),
+                tdn_output_mode: self.tdn_output_mode,
+            });
+        }
+        if selected.is_empty() {
+            Err(CaptureError::NoCameraMatchingRequest)
+        } else {
+            Ok(selected)
+        }
+    }
+
+    pub fn select_many(&self, count: usize) -> Result<Vec<SelectedCamera>, CaptureError> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let selected: Vec<_> = self.select_all()?.into_iter().take(count).collect();
+        if selected.is_empty() {
+            Err(CaptureError::NoCameraMatchingRequest)
+        } else {
+            Ok(selected)
+        }
+    }
+
+    pub fn start(self) -> Result<super::handle::CaptureHandle, CaptureError> {
+        self.start_with_policy(CaptureStartPolicy::default())
+    }
+
+    pub fn start_with_policy(
+        self,
+        policy: CaptureStartPolicy,
+    ) -> Result<super::handle::CaptureHandle, CaptureError> {
+        self.select()?.start_with_policy(policy)
+    }
+
+    pub fn start_all(self) -> Result<Vec<super::handle::CaptureHandle>, CaptureError> {
+        self.start_all_with_policy(CaptureStartPolicy::default())
+    }
+
+    pub fn start_many(
+        self,
+        count: usize,
+    ) -> Result<Vec<super::handle::CaptureHandle>, CaptureError> {
+        self.start_many_with_policy(count, CaptureStartPolicy::default())
+    }
+
+    pub fn start_all_with_policy(
+        self,
+        policy: CaptureStartPolicy,
+    ) -> Result<Vec<super::handle::CaptureHandle>, CaptureError> {
+        self.select_all()?
+            .into_iter()
+            .map(|selected| selected.start_with_policy(policy))
+            .collect()
+    }
+
+    pub fn start_many_with_policy(
+        self,
+        count: usize,
+        policy: CaptureStartPolicy,
+    ) -> Result<Vec<super::handle::CaptureHandle>, CaptureError> {
+        self.select_many(count)?
+            .into_iter()
+            .map(|selected| selected.start_with_policy(policy))
+            .collect()
+    }
+
+    fn candidates(&self) -> Vec<CameraCandidate> {
+        let mut candidates = Vec::new();
+        for (device_index, device) in self.devices.iter().enumerate() {
+            for backend in &device.backends {
+                let Some(backend_priority) = self.backend_rank(backend.kind) else {
+                    continue;
+                };
+                for mode in &backend.descriptor.modes {
+                    let Some(format_priority) = self.format_rank(mode.format.code) else {
+                        continue;
+                    };
+                    let Some(interval) = self.interval_for_mode(mode) else {
+                        continue;
+                    };
+                    let width = mode.format.resolution.width.get();
+                    let height = mode.format.resolution.height.get();
+                    let Some(resolution_priority) = self.resolution_rank(width, height) else {
+                        continue;
+                    };
+                    let fits_requested_size = self.min_width.is_none_or(|min| width >= min)
+                        && self.min_height.is_none_or(|min| height >= min)
+                        && self.max_width.is_none_or(|max| width <= max)
+                        && self.max_height.is_none_or(|max| height <= max);
+                    if !fits_requested_size {
+                        continue;
+                    }
+                    let area = width as u64 * height as u64;
+                    let fps_milli = interval.map(interval_fps_milli).unwrap_or(0);
+                    let candidate = CameraCandidate {
+                        device_index,
+                        backend: backend.kind,
+                        mode: mode.id.clone(),
+                        interval,
+                        backend_priority,
+                        format_priority,
+                        resolution_priority,
+                        fps_milli,
+                        area,
+                    };
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates
+    }
+
+    fn backend_rank(&self, backend: BackendKind) -> Option<u8> {
+        self.backend_priority
+            .iter()
+            .position(|candidate| *candidate == backend)
+            .map(|index| (self.backend_priority.len().saturating_sub(index)) as u8)
+    }
+
+    fn format_rank(&self, code: FourCc) -> Option<u8> {
+        self.format_priority
+            .iter()
+            .position(|candidate| *candidate == code)
+            .map(|index| (self.format_priority.len().saturating_sub(index)) as u8)
+    }
+
+    fn resolution_rank(&self, width: u32, height: u32) -> Option<u8> {
+        if self.resolution_priority.is_empty() {
+            return Some(1);
+        }
+        self.resolution_priority
+            .iter()
+            .position(|candidate| *candidate == (width, height))
+            .map(|index| (self.resolution_priority.len().saturating_sub(index)) as u8)
+    }
+
+    fn interval_for_mode(&self, mode: &Mode) -> Option<Option<Interval>> {
+        match self.interval_preference {
+            CameraIntervalPreference::Default => Some(default_interval(mode)),
+            CameraIntervalPreference::Fastest => Some(fastest_interval(mode)),
+            CameraIntervalPreference::Slowest => Some(slowest_interval(mode)),
+            CameraIntervalPreference::Exact(interval) => {
+                if mode.intervals.is_empty() || mode.intervals.contains(&interval) {
+                    Some(Some(interval))
+                } else {
+                    None
+                }
+            }
+            CameraIntervalPreference::None => Some(None),
+        }
+    }
+}
+
+impl Default for CameraRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectedCamera {
+    pub device: ProbedDevice,
+    pub backend: BackendKind,
+    pub mode: ModeId,
+    pub interval: Option<Interval>,
+    pub controls: Vec<(ControlId, ControlValue)>,
+    pub tdn_output_mode: TdnOutputMode,
+}
+
+impl SelectedCamera {
+    pub fn capture_request(&self) -> CaptureRequest<'_> {
+        let mut request = CaptureRequest::new(&self.device)
+            .backend(self.backend)
+            .mode(self.mode.clone())
+            .tdn_output_mode(self.tdn_output_mode);
+        if let Some(interval) = self.interval {
+            request = request.interval(interval);
+        }
+        for (id, value) in &self.controls {
+            request = request.control(*id, value.clone());
+        }
+        request
+    }
+
+    pub fn start(&self) -> Result<super::handle::CaptureHandle, CaptureError> {
+        self.capture_request().start()
+    }
+
+    pub fn start_with_policy(
+        &self,
+        policy: CaptureStartPolicy,
+    ) -> Result<super::handle::CaptureHandle, CaptureError> {
+        self.capture_request().start_with_policy(policy)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CameraCandidate {
+    device_index: usize,
+    backend: BackendKind,
+    mode: ModeId,
+    interval: Option<Interval>,
+    backend_priority: u8,
+    format_priority: u8,
+    resolution_priority: u8,
+    fps_milli: u64,
+    area: u64,
+}
+
+impl CameraCandidate {
+    fn score(&self) -> (u8, u8, u8, u64, u64) {
+        (
+            self.format_priority,
+            self.resolution_priority,
+            self.backend_priority,
+            self.fps_milli,
+            self.area,
         )
     }
 }
@@ -444,6 +898,29 @@ pub fn start_capture(
     CaptureRequest::new(device)
         .backend_preferred(preferred)
         .start()
+}
+
+fn fastest_interval(mode: &Mode) -> Option<Interval> {
+    mode.intervals
+        .iter()
+        .copied()
+        .max_by(|a, b| interval_fps_milli(*a).cmp(&interval_fps_milli(*b)))
+        .or_else(|| mode.interval_stepwise.map(|s| s.min))
+}
+
+fn slowest_interval(mode: &Mode) -> Option<Interval> {
+    mode.intervals
+        .iter()
+        .copied()
+        .min_by(|a, b| interval_fps_milli(*a).cmp(&interval_fps_milli(*b)))
+        .or_else(|| mode.interval_stepwise.map(|s| s.max))
+}
+
+fn interval_fps_milli(interval: Interval) -> u64 {
+    (interval.denominator.get() as u64)
+        .saturating_mul(1_000)
+        .checked_div(interval.numerator.get().max(1) as u64)
+        .unwrap_or(0)
 }
 
 fn pick_backend(
@@ -704,6 +1181,234 @@ mod tests {
 
         assert_eq!(descriptor.modes.len(), 1);
         assert_eq!(descriptor.modes[0].id, requested_mode.id);
+    }
+
+    #[test]
+    fn camera_request_selects_best_matching_mode() {
+        let small = MediaFormat::new(
+            FourCc::new(*b"RG24"),
+            Resolution::new(640, 480).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let large = MediaFormat::new(
+            FourCc::new(*b"RG24"),
+            Resolution::new(1920, 1080).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let slow = Interval {
+            numerator: std::num::NonZeroU32::new(1).unwrap(),
+            denominator: std::num::NonZeroU32::new(30).unwrap(),
+        };
+        let fast = Interval {
+            numerator: std::num::NonZeroU32::new(1).unwrap(),
+            denominator: std::num::NonZeroU32::new(60).unwrap(),
+        };
+        let modes = vec![
+            Mode {
+                id: ModeId {
+                    format: large,
+                    interval: Some(slow),
+                },
+                format: large,
+                intervals: smallvec::smallvec![slow],
+                interval_stepwise: None,
+            },
+            Mode {
+                id: ModeId {
+                    format: small,
+                    interval: Some(fast),
+                },
+                format: small,
+                intervals: smallvec::smallvec![slow, fast],
+                interval_stepwise: None,
+            },
+        ];
+        let device = ProbedDevice {
+            identity: crate::DeviceIdentity {
+                display: "virtual".to_string(),
+                keys: vec!["virtual".to_string()],
+            },
+            backends: vec![ProbedBackend {
+                kind: BackendKind::Virtual,
+                handle: BackendHandle::Virtual,
+                descriptor: CaptureDescriptor {
+                    modes,
+                    controls: vec![],
+                },
+                properties: vec![],
+            }],
+        };
+
+        let selected = CameraRequest::from_devices(vec![device])
+            .max_resolution(640, 480)
+            .select()
+            .expect("camera selection");
+
+        assert_eq!(selected.backend, BackendKind::Virtual);
+        assert_eq!(selected.mode.format.resolution, small.resolution);
+        assert_eq!(selected.interval, Some(fast));
+    }
+
+    #[test]
+    fn camera_request_uses_backend_priority() {
+        let fmt = MediaFormat::new(
+            FourCc::new(*b"RG24"),
+            Resolution::new(640, 480).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let mode = Mode {
+            id: ModeId {
+                format: fmt,
+                interval: None,
+            },
+            format: fmt,
+            intervals: smallvec::smallvec![],
+            interval_stepwise: None,
+        };
+        let device = ProbedDevice {
+            identity: crate::DeviceIdentity {
+                display: "dual".to_string(),
+                keys: vec!["dual".to_string()],
+            },
+            backends: vec![
+                ProbedBackend {
+                    kind: BackendKind::Libcamera,
+                    handle: BackendHandle::Virtual,
+                    descriptor: CaptureDescriptor {
+                        modes: vec![mode.clone()],
+                        controls: vec![],
+                    },
+                    properties: vec![],
+                },
+                ProbedBackend {
+                    kind: BackendKind::V4l2,
+                    handle: BackendHandle::Virtual,
+                    descriptor: CaptureDescriptor {
+                        modes: vec![mode],
+                        controls: vec![],
+                    },
+                    properties: vec![],
+                },
+            ],
+        };
+
+        let selected = CameraRequest::from_devices(vec![device])
+            .backend_priority([BackendKind::Libcamera, BackendKind::V4l2])
+            .select()
+            .expect("camera selection");
+
+        assert_eq!(selected.backend, BackendKind::Libcamera);
+    }
+
+    #[test]
+    fn camera_request_accepts_string_format_priority_and_selects_all() {
+        let rg24 = MediaFormat::new(
+            FourCc::new(*b"RG24"),
+            Resolution::new(640, 480).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let nv12 = MediaFormat::new(
+            FourCc::new(*b"NV12"),
+            Resolution::new(640, 480).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let make_backend = |kind, format| ProbedBackend {
+            kind,
+            handle: BackendHandle::Virtual,
+            descriptor: CaptureDescriptor {
+                modes: vec![Mode {
+                    id: ModeId {
+                        format,
+                        interval: None,
+                    },
+                    format,
+                    intervals: smallvec::smallvec![],
+                    interval_stepwise: None,
+                }],
+                controls: vec![],
+            },
+            properties: vec![],
+        };
+        let first_device = ProbedDevice {
+            identity: crate::DeviceIdentity {
+                display: "formats-a".to_string(),
+                keys: vec!["formats-a".to_string()],
+            },
+            backends: vec![
+                make_backend(BackendKind::Virtual, rg24),
+                make_backend(BackendKind::File, nv12),
+            ],
+        };
+        let second_device = ProbedDevice {
+            identity: crate::DeviceIdentity {
+                display: "formats-b".to_string(),
+                keys: vec!["formats-b".to_string()],
+            },
+            backends: vec![make_backend(BackendKind::Virtual, rg24)],
+        };
+
+        let selected = CameraRequest::from_devices(vec![first_device, second_device])
+            .backend_priority([BackendKind::Virtual, BackendKind::File])
+            .format_priority(["NV12", "RG24"])
+            .min_resolution(320, 240)
+            .select_many(2)
+            .expect("camera selection");
+
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].mode.format.code, FourCc::new(*b"NV12"));
+    }
+
+    #[test]
+    fn camera_request_filters_and_ranks_resolution_priority() {
+        let small = MediaFormat::new(
+            FourCc::new(*b"RG24"),
+            Resolution::new(640, 480).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let preferred = MediaFormat::new(
+            FourCc::new(*b"RG24"),
+            Resolution::new(1280, 720).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let fallback = MediaFormat::new(
+            FourCc::new(*b"RG24"),
+            Resolution::new(1920, 1080).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let modes = [small, fallback, preferred]
+            .into_iter()
+            .map(|format| Mode {
+                id: ModeId {
+                    format,
+                    interval: None,
+                },
+                format,
+                intervals: smallvec::smallvec![],
+                interval_stepwise: None,
+            })
+            .collect();
+        let device = ProbedDevice {
+            identity: crate::DeviceIdentity {
+                display: "resolutions".to_string(),
+                keys: vec!["resolutions".to_string()],
+            },
+            backends: vec![ProbedBackend {
+                kind: BackendKind::Virtual,
+                handle: BackendHandle::Virtual,
+                descriptor: CaptureDescriptor {
+                    modes,
+                    controls: vec![],
+                },
+                properties: vec![],
+            }],
+        };
+
+        let selected = CameraRequest::from_devices(vec![device])
+            .resolution_priority([(1280, 720), (1920, 1080)])
+            .select()
+            .expect("camera selection");
+
+        assert_eq!(selected.mode.format.resolution, preferred.resolution);
     }
 }
 

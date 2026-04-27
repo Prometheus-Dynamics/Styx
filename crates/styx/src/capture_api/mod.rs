@@ -32,7 +32,8 @@ pub(super) mod virtual_backend;
 
 pub use handle::{CaptureHandle, ControlPlane, WorkerHandle};
 pub use request::{
-    CaptureError, CaptureRequest, CaptureStartPolicy, ControlApplyKind, TdnOutputMode,
+    CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, CaptureError,
+    CaptureRequest, CaptureStartPolicy, ControlApplyKind, SelectedCamera, TdnOutputMode,
     start_capture,
 };
 pub use tunables::{
