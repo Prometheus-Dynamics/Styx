@@ -1,6 +1,7 @@
 use std::mem;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::ptr::NonNull;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -47,6 +48,7 @@ struct V4l2MmapState {
 
 struct V4l2MmapBacking {
     manager: Arc<V4l2MmapManager>,
+    recycle_tx: Sender<usize>,
     index: Mutex<Option<usize>>,
     tracker: Arc<ExternalBackingTracker>,
     bytes: usize,
@@ -118,17 +120,20 @@ impl V4l2MmapManager {
     }
 
     fn dequeue(&self) -> std::io::Result<(usize, V4l2Metadata)> {
-        let mut state = self.state.lock().unwrap();
-        if !state.active {
-            for index in 0..self.buffers.len() {
-                if !state.queued[index] && !state.checked_out[index] {
-                    self.queue_locked(index, &mut state)?;
+        let timeout_ms = {
+            let mut state = self.state.lock().unwrap();
+            if !state.active {
+                for index in 0..self.buffers.len() {
+                    if !state.queued[index] && !state.checked_out[index] {
+                        self.queue_locked(index, &mut state)?;
+                    }
                 }
+                self.stream_on_locked(&mut state)?;
             }
-            self.stream_on_locked(&mut state)?;
-        }
+            state.timeout_ms
+        };
 
-        if self.handle.poll(libc::POLLIN, state.timeout_ms)? == 0 {
+        if self.handle.poll(libc::POLLIN, timeout_ms)? == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "VIDIOC_DQBUF",
@@ -148,6 +153,7 @@ impl V4l2MmapManager {
             )?;
         }
         let index = v4l2_buf.index as usize;
+        let mut state = self.state.lock().unwrap();
         state.queued[index] = false;
         state.checked_out[index] = true;
         Ok((
@@ -292,6 +298,7 @@ impl Drop for V4l2MmapManager {
 impl V4l2MmapBacking {
     fn new(
         manager: Arc<V4l2MmapManager>,
+        recycle_tx: Sender<usize>,
         index: usize,
         tracker: Arc<ExternalBackingTracker>,
         bytes: usize,
@@ -299,6 +306,7 @@ impl V4l2MmapBacking {
         tracker.acquire(bytes);
         Arc::new(Self {
             manager,
+            recycle_tx,
             index: Mutex::new(Some(index)),
             tracker,
             bytes,
@@ -347,8 +355,14 @@ impl Drop for V4l2MmapBacking {
     fn drop(&mut self) {
         self.tracker.release(self.bytes);
         if let Some(index) = self.index.lock().unwrap().take() {
-            let _ = self.manager.recycle(index);
+            let _ = self.recycle_tx.send(index);
         }
+    }
+}
+
+fn drain_recycled_buffers(manager: &V4l2MmapManager, recycle_rx: &Receiver<usize>) {
+    while let Ok(index) = recycle_rx.try_recv() {
+        let _ = manager.recycle(index);
     }
 }
 
@@ -484,6 +498,7 @@ pub(super) fn start_v4l2(
     let queue_depth = crate::capture_api::capture_queue_depth();
     let (tx, rx) = bounded(queue_depth);
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let (recycle_tx, recycle_rx) = std::sync::mpsc::channel::<usize>();
     let mode_clone = mode.clone();
     let backing_tracker = Arc::new(ExternalBackingTracker::new("v4l2_mmap"));
     let manager_for_worker = Arc::clone(&manager);
@@ -496,7 +511,9 @@ pub(super) fn start_v4l2(
         let min_stride = min_stride_for_fourcc(mode_clone.format.code, width);
         let encoded = is_encoded_bitstream(mode_clone.format.code);
         loop {
+            drain_recycled_buffers(&manager_for_worker, &recycle_rx);
             if stop_rx.try_recv().is_ok() {
+                drain_recycled_buffers(&manager_for_worker, &recycle_rx);
                 let _ = manager_for_worker.stop_stream();
                 break;
             }
@@ -562,6 +579,7 @@ pub(super) fn start_v4l2(
                     let frame = if zero_copy_enabled {
                         let backing = V4l2MmapBacking::new(
                             Arc::clone(&manager_for_worker),
+                            recycle_tx.clone(),
                             index,
                             Arc::clone(&tracker_for_worker),
                             bytes_used,

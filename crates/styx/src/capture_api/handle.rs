@@ -112,8 +112,19 @@ impl CaptureHandle {
         }
     }
 
-    /// Blocking receive with a configurable sleep to avoid busy-waiting.
+    /// Receive with bounded waiting.
+    ///
+    /// Returns `RecvOutcome::Empty` when no frame arrives before `wait` elapses.
     pub fn recv_blocking(&self, wait: std::time::Duration) -> RecvOutcome<FrameLease> {
+        match self.recv_timeout(wait) {
+            styx_core::queue::RecvWaitOutcome::Data(frame) => RecvOutcome::Data(frame),
+            styx_core::queue::RecvWaitOutcome::Closed => RecvOutcome::Closed,
+            styx_core::queue::RecvWaitOutcome::Timeout => RecvOutcome::Empty,
+        }
+    }
+
+    /// Wait until a frame arrives or the capture closes.
+    pub fn recv_next_blocking(&self, wait: std::time::Duration) -> RecvOutcome<FrameLease> {
         loop {
             match self.recv_timeout(wait) {
                 styx_core::queue::RecvWaitOutcome::Data(frame) => {
