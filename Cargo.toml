@@ -26,7 +26,7 @@ styx-capture = { path = "crates/capture", version = "2.0.0" }
 styx-codec = { path = "crates/codec", version = "2.0.0" }
 styx-libcamera = { path = "crates/libcamera", version = "2.0.0" }
 styx-v4l2 = { path = "crates/v4l2", version = "2.0.0" }
-daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "ae98541285caeb48da7ff2fa3c101d5daf15e482", version = "2.0.0", default-features = false }
+daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "main", version = "2.0.0", default-features = false }
 crossbeam-queue = "0.3.12"
 smallvec = "1.15.1"
 thiserror = "2.0.18"
