@@ -75,6 +75,7 @@ jobs:
           libavformat-dev
           libavutil-dev
           libcamera-dev
+          libturbojpeg0-dev
           libpostproc-dev
           libswresample-dev
           libswscale-dev

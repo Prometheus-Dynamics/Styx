@@ -37,6 +37,7 @@ jobs:
             libpostproc-dev \
             libswresample-dev \
             libswscale-dev \
+            libturbojpeg0-dev \
             libv4l-dev \
             pkg-config
 
