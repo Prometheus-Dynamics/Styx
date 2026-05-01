@@ -225,7 +225,7 @@ impl_raw_decode_into!(YuyvToLumaDecoder, 1);
 #[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(YuyvToRgbDecoder, 3);
 
-#[cfg(feature = "raw-decoders")]
+#[cfg(any(feature = "raw-decoders", feature = "image"))]
 #[derive(Clone, Copy)]
 struct YuvCoeffs {
     r_v: i32,
@@ -235,7 +235,7 @@ struct YuvCoeffs {
     full_range: bool,
 }
 
-#[cfg(feature = "raw-decoders")]
+#[cfg(any(feature = "raw-decoders", feature = "image"))]
 const BT709: YuvCoeffs = YuvCoeffs {
     r_v: 459,
     g_u: 55,
@@ -245,7 +245,7 @@ const BT709: YuvCoeffs = YuvCoeffs {
 };
 
 // Full-range Rec.601 coefficients (Y range 0..255).
-#[cfg(feature = "raw-decoders")]
+#[cfg(any(feature = "raw-decoders", feature = "image"))]
 const BT601_FULL: YuvCoeffs = YuvCoeffs {
     r_v: 359,
     g_u: 88,
@@ -254,7 +254,7 @@ const BT601_FULL: YuvCoeffs = YuvCoeffs {
     full_range: true,
 };
 
-#[cfg(feature = "raw-decoders")]
+#[cfg(any(feature = "raw-decoders", feature = "image"))]
 const BT2020: YuvCoeffs = YuvCoeffs {
     r_v: 430,
     g_u: 48,
@@ -265,7 +265,7 @@ const BT2020: YuvCoeffs = YuvCoeffs {
 
 /// Integer conversion with clamping using limited-range YUV coefficients.
 #[inline(always)]
-#[cfg(feature = "raw-decoders")]
+#[cfg(any(feature = "raw-decoders", feature = "image"))]
 pub(crate) fn yuv_to_rgb(y: i32, u: i32, v: i32, color: ColorSpace) -> (u8, u8, u8) {
     let coeffs = match color {
         ColorSpace::Bt709 => BT709,

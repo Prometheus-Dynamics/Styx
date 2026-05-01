@@ -21,7 +21,7 @@ styx = "2.0.0"
 - `graph` (feature `graph-pipeline`): Daedalus-backed `FrameLease` transport, source/sink nodes, media edge policies, and graph telemetry.
 - `service`: retained runtime event stream for inventory, health, sink, recording, and graph-control events.
 - `capabilities`: capture/codec/transform/backing inventory plus path explanation helpers for planner integration.
-- `recording` (feature `hooks`): record pipeline output frames to disk for replay.
+- `recording` (feature `hooks`): record encoded frames directly, or attach an encoder to record raw frames without the `image` crate.
 - `preview` (feature `preview-window`): simple RGBA/RGB preview window for examples.
 
 ## Typical usage
@@ -76,7 +76,9 @@ loop {
 ```
 
 The pipeline hook/runtime path operates directly on `FrameLease`; Styx does not
-materialize a generic image object as part of the media pipeline.
+materialize a generic image object as part of the media pipeline. Enable
+`image` only when hook closures need image-crate/DynamicImage helpers or when
+recording raw frames through the PNG/JPEG image-crate fallback.
 
 Request-local tunables for queues/pools/netcam backoff:
 ```rust,no_run

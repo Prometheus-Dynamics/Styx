@@ -1,10 +1,14 @@
-use std::borrow::Cow;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "image")]
 use image::{ColorType, ImageFormat, save_buffer_with_format};
+#[cfg(feature = "image")]
+use std::borrow::Cow;
+use styx_codec::prelude::{Codec, CodecError};
 use styx_core::prelude::{FourCc, FrameLease};
 
 /// Recording output format.
@@ -88,8 +92,11 @@ pub struct RecordingFrameIndexEntry {
 pub enum RecordingError {
     #[error("recording io error: {0}")]
     Io(#[from] std::io::Error),
+    #[cfg(feature = "image")]
     #[error("recording image error: {0}")]
     Image(#[from] image::ImageError),
+    #[error("recording codec error: {0}")]
+    Codec(#[from] CodecError),
     #[error("frame contains no data")]
     EmptyFrame,
     #[error("frame format {0} is not supported for recording")]
@@ -125,6 +132,7 @@ pub struct FrameRecorder {
     paths: Vec<PathBuf>,
     metadata: RecordingSessionMetadata,
     index_path: PathBuf,
+    encoder: Option<Arc<dyn Codec>>,
     error_count: usize,
     last_error: Option<String>,
 }
@@ -157,9 +165,19 @@ impl FrameRecorder {
             paths: Vec::new(),
             metadata,
             index_path,
+            encoder: None,
             error_count: 0,
             last_error: None,
         })
+    }
+
+    /// Attach an encoder used when recording raw frames as compressed packets.
+    ///
+    /// This lets recording work without the `image` feature when the selected
+    /// encoder can turn the pipeline output format into MJPEG/JPEG frames.
+    pub fn with_encoder(mut self, encoder: Arc<dyn Codec>) -> Self {
+        self.encoder = Some(encoder);
+        self
     }
 
     /// Record a single frame to disk.
@@ -206,24 +224,39 @@ impl FrameRecorder {
 
     fn record_inner(&mut self, frame: &FrameLease) -> Result<PathBuf, RecordingError> {
         let code = frame.meta().format.code;
-        let ext = self.options.format.extension_for(code);
+        let ext = self.recording_extension(code);
         let path = self.next_path(ext);
 
         match self.options.format {
             RecordingFormat::Auto => {
                 if is_jpeg_fourcc(code) {
                     write_encoded_frame(frame, &path)?;
+                } else if self.encoder.is_some() {
+                    let encoded = self.encode_frame(frame)?;
+                    write_encoded_frame(&encoded, &path)?;
                 } else {
+                    #[cfg(not(feature = "image"))]
+                    return Err(RecordingError::UnsupportedFormat(code.to_string()));
+                    #[cfg(feature = "image")]
                     save_frame_image(frame, &path, ImageFormat::Png)?;
                 }
             }
             RecordingFormat::Png => {
+                #[cfg(not(feature = "image"))]
+                return Err(RecordingError::UnsupportedFormat(code.to_string()));
+                #[cfg(feature = "image")]
                 save_frame_image(frame, &path, ImageFormat::Png)?;
             }
             RecordingFormat::Jpeg => {
                 if is_jpeg_fourcc(code) {
                     write_encoded_frame(frame, &path)?;
+                } else if self.encoder.is_some() {
+                    let encoded = self.encode_frame(frame)?;
+                    write_encoded_frame(&encoded, &path)?;
                 } else {
+                    #[cfg(not(feature = "image"))]
+                    return Err(RecordingError::UnsupportedFormat(code.to_string()));
+                    #[cfg(feature = "image")]
                     save_frame_image(frame, &path, ImageFormat::Jpeg)?;
                 }
             }
@@ -263,6 +296,25 @@ impl FrameRecorder {
             format!("{}_{index:0width$}.{ext}", self.options.prefix)
         };
         self.dir.join(name)
+    }
+
+    fn recording_extension(&self, code: FourCc) -> &'static str {
+        if matches!(self.options.format, RecordingFormat::Auto)
+            && !is_jpeg_fourcc(code)
+            && let Some(encoder) = &self.encoder
+        {
+            return extension_for_encoded_fourcc(encoder.descriptor().output);
+        }
+        self.options.format.extension_for(code)
+    }
+
+    fn encode_frame(&self, frame: &FrameLease) -> Result<FrameLease, RecordingError> {
+        let encoder = self.encoder.as_ref().ok_or_else(|| {
+            RecordingError::UnsupportedFormat(frame.meta().format.code.to_string())
+        })?;
+        encoder
+            .process(frame.materialize_owned())
+            .map_err(RecordingError::from)
     }
 }
 
@@ -335,6 +387,7 @@ fn json_escape(value: &str) -> String {
         .collect()
 }
 
+#[cfg(feature = "image")]
 fn save_frame_image(
     frame: &FrameLease,
     path: &Path,
@@ -368,6 +421,7 @@ fn save_frame_image(
     Err(RecordingError::UnsupportedFormat(code.to_string()))
 }
 
+#[cfg(feature = "image")]
 fn packed_plane_bytes(frame: &FrameLease, bytes_per_pixel: usize) -> Option<Cow<'_, [u8]>> {
     let plane = frame.planes().into_iter().next()?;
     let res = frame.meta().format.resolution;
@@ -410,6 +464,18 @@ fn is_jpeg_fourcc(code: FourCc) -> bool {
     code.is_jpeg_encoded()
 }
 
+fn extension_for_encoded_fourcc(code: FourCc) -> &'static str {
+    if code.is_jpeg_encoded() {
+        "jpg"
+    } else {
+        match &code.to_u32().to_le_bytes() {
+            b"H264" => "h264",
+            b"H265" | b"HEVC" => "h265",
+            _ => "bin",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +484,7 @@ mod tests {
         BufferPool, ColorSpace, FrameMeta, MediaFormat, Resolution, plane_layout_from_dims,
     };
 
+    #[cfg(feature = "image")]
     #[test]
     fn recorder_writes_session_metadata_and_index() {
         let dir = std::env::temp_dir().join(format!(
@@ -448,6 +515,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(feature = "image")]
     #[test]
     fn packed_plane_bytes_removes_row_padding() {
         let frame = test_rg24_frame_with_stride(2, 2, 8, 1);

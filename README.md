@@ -62,7 +62,8 @@ blocking task/thread, then use async receive/control APIs for coordination.
 
 ## Features
 
-- `hooks`: frame and image hook support inside the pipeline.
+- `hooks`: `FrameLease` hook and recording support inside the pipeline without pulling the `image` crate.
+- `image`: DynamicImage conversion helpers and PNG/JPEG image-crate recording fallback for raw frames.
 - `async`: Tokio-backed async capture and pipeline helpers.
   Use `MediaPipeline::spawn_tokio_worker` or `spawn_blocking_worker` for CPU-heavy decode,
   encode, graph, hook, or sink pipelines; `next_async` keeps receive async but processes frames
