@@ -16,7 +16,6 @@ pub use styx_libcamera as libcamera;
 #[cfg(feature = "v4l2")]
 pub use styx_v4l2 as v4l2;
 #[cfg(feature = "preview-window")]
-#[cfg(feature = "preview-window")]
 pub mod preview;
 
 pub use thiserror;
@@ -35,6 +34,8 @@ pub mod runtime_codec;
 mod serde_impls;
 pub mod service;
 pub mod session;
+#[cfg(feature = "simulation-bevy")]
+pub mod simulation;
 pub mod watch;
 
 #[cfg(feature = "preview-window")]
@@ -139,7 +140,7 @@ pub enum BackendHandle {
     Simulation {
         #[cfg_attr(feature = "schema", schema(value_type = String))]
         scene_path: PathBuf,
-        config: crate::capture_api::SimulationDeviceConfig,
+        config: crate::simulation::SimulationDeviceConfig,
     },
 }
 

@@ -40,7 +40,7 @@ impl Serialize for BackendHandle {
                 #[cfg(feature = "simulation-bevy")]
                 Simulation {
                     scene_path: String,
-                    config: crate::capture_api::SimulationDeviceConfig,
+                    config: crate::simulation::SimulationDeviceConfig,
                 },
             }
 
@@ -107,7 +107,7 @@ impl Serialize for BackendHandle {
                 #[cfg(feature = "simulation-bevy")]
                 Simulation {
                     scene_path: String,
-                    config: crate::capture_api::SimulationDeviceConfig,
+                    config: crate::simulation::SimulationDeviceConfig,
                 },
             }
             let bin = match self {
@@ -186,7 +186,7 @@ impl<'de> Deserialize<'de> for BackendHandle {
                 #[cfg(feature = "simulation-bevy")]
                 Simulation {
                     scene_path: String,
-                    config: crate::capture_api::SimulationDeviceConfig,
+                    config: crate::simulation::SimulationDeviceConfig,
                 },
             }
             let human = HumanHandle::deserialize(deserializer)?;
@@ -249,7 +249,7 @@ impl<'de> Deserialize<'de> for BackendHandle {
                 #[cfg(feature = "simulation-bevy")]
                 Simulation {
                     scene_path: String,
-                    config: crate::capture_api::SimulationDeviceConfig,
+                    config: crate::simulation::SimulationDeviceConfig,
                 },
             }
             let bin = BinaryHandle::deserialize(deserializer)?;

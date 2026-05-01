@@ -13,7 +13,8 @@ use bevy::render::view::Msaa;
 use bevy::window::{ExitCondition, WindowPlugin};
 use bevy::winit::WinitPlugin;
 
-use crate::capture_api::{CaptureError, SimulationDeviceConfig, SimulationOutputMode};
+use crate::capture_api::CaptureError;
+use crate::simulation::{SimulationDeviceConfig, SimulationOutputMode};
 
 use super::readback::{
     ImageCopier, ImageCopyPlugin, MainWorldReceiver, ReadbackKind, ReadbackPacket,

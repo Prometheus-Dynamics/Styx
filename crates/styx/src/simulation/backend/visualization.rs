@@ -11,7 +11,7 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::{AsBindGroup, Extent3d};
 use bevy::shader::ShaderRef;
 
-use crate::capture_api::{SimulationDeviceConfig, SimulationOutputMode};
+use crate::simulation::{SimulationDeviceConfig, SimulationOutputMode};
 
 const PREPASS_OUTPUT_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("73545978-7072-6570-6173-735f6f757400");

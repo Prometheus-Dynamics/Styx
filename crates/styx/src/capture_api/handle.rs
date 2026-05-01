@@ -15,15 +15,15 @@ use super::libcamera_backend;
 #[cfg(feature = "netcam")]
 use super::netcam_backend;
 use super::request::{CaptureError, CaptureStartPolicy, TdnOutputMode};
-#[cfg(feature = "simulation-bevy")]
-use super::simulation_backend;
 use super::tunables::StyxConfig;
 #[cfg(feature = "v4l2")]
 use super::v4l2_backend;
 use super::virtual_backend;
+#[cfg(feature = "simulation-bevy")]
+use crate::simulation::backend as simulation_backend;
 use styx_capture::prelude::*;
 
-pub(super) fn enqueue_capture_frame(
+pub(crate) fn enqueue_capture_frame(
     tx: &BoundedTx<FrameLease>,
     frame: FrameLease,
     backend: &'static str,
@@ -78,8 +78,8 @@ pub struct CaptureHandle {
     pub(crate) interval: Option<Interval>,
     pub(crate) rx: BoundedRx<FrameLease>,
     pub(crate) stop_tx: Option<std::sync::mpsc::Sender<()>>,
-    pub(super) worker: Option<WorkerHandle>,
-    pub(super) aux_workers: Vec<WorkerHandle>,
+    pub(crate) worker: Option<WorkerHandle>,
+    pub(crate) aux_workers: Vec<WorkerHandle>,
     #[cfg(feature = "libcamera")]
     pub(crate) libcamera_idle_stop_allowed: bool,
     #[cfg(feature = "libcamera")]

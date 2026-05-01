@@ -9,7 +9,7 @@ use super::controls::{apply_v4l2_controls, read_v4l2_control};
 #[cfg(feature = "file-backend")]
 use super::file_backend;
 #[cfg(feature = "simulation-bevy")]
-use super::simulation_backend;
+use crate::simulation::backend as simulation_backend;
 use styx_capture::prelude::{ControlId, ControlValue};
 
 /// Control plane handle for applying backend-specific controls.

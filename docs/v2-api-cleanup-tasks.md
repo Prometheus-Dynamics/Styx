@@ -134,14 +134,18 @@ workflows.
   - Keep direct backend types available when they are useful as lower-level
     building blocks.
 
-- [ ] Move simulation capture out of core.
+- [x] Move simulation capture out of core.
   - Removed simulation convenience exports from the main prelude; examples now
-    import simulation APIs explicitly from `styx::capture_api`.
-  - Treat simulation as example-only.
-  - Move simulation backend code, assets, and workflow helpers into the
-    `examples` crate.
-  - Remove simulation from the core prelude and core capture API.
-  - Keep only minimal test fixtures in core if unit tests need synthetic frames.
+    import simulation APIs explicitly from `styx::simulation`.
+  - Moved simulation config/device construction out of `capture_api` and into
+    the feature-gated `styx::simulation` module.
+  - Moved the simulation backend implementation under `styx::simulation::backend`
+    so capture core only dispatches to it when the `simulation-bevy` feature is
+    enabled.
+  - Moved simulation assets into the `examples` crate.
+  - Kept the feature-gated runtime backend inside `styx` until a public backend
+    extension trait exists; no simulation API is exported through the core
+    prelude or capture facade.
 
 - [x] Replace `MediaPipelineBuilder::record_output` with generic sink wiring.
   - Remove the recording-specific builder shortcut from the generic pipeline

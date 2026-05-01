@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 use styx_core::controls::{ControlId, ControlValue};
 use styx_core::prelude::*;
 
-use crate::capture_api::{CaptureError, SimulationDeviceConfig, SimulationOutputMode};
+use crate::capture_api::CaptureError;
 use crate::prelude::{Interval, Mode};
+use crate::simulation::{SimulationDeviceConfig, SimulationOutputMode};
 
 const CTRL_SIM_TRANSLATION_X: ControlId = ControlId(0xF300_0000);
 const CTRL_SIM_TRANSLATION_Y: ControlId = ControlId(0xF300_0001);

@@ -11,13 +11,12 @@ use std::time::Duration;
 use styx_core::controls::{ControlId, ControlValue};
 use styx_core::prelude::*;
 
-use super::handle::enqueue_capture_frame;
-use crate::capture_api::{
-    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle,
-};
+use crate::capture_api::handle::enqueue_capture_frame;
+use crate::capture_api::{CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle};
 use crate::metrics::StageMetrics;
 use crate::prelude::{Interval, Mode};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
+use styx_capture::CaptureDescriptor;
 
 pub(crate) use state::{
     SimulationControlStateHandle, apply_simulation_control, control_id_aperture_f_stop,
@@ -35,7 +34,7 @@ use state::{build_frame_from_depth, build_frame_from_rgb};
 use state::{build_shared_frame_from_depth, build_shared_frame_from_rgb};
 use state::{interval_to_delay_ms, parse_controls};
 
-pub(super) fn start_simulation(
+pub(crate) fn start_simulation(
     backend: &ProbedBackend,
     mode: Mode,
     interval: Option<Interval>,
@@ -115,7 +114,7 @@ pub(super) fn start_simulation(
             runtime.drain_latest(&snapshot, &mut latest_rgb, &mut latest_depth);
 
             let frame = match snapshot.output_mode {
-                crate::capture_api::SimulationOutputMode::Depth => {
+                crate::simulation::SimulationOutputMode::Depth => {
                     #[cfg(target_os = "linux")]
                     {
                         match build_shared_frame_from_depth(

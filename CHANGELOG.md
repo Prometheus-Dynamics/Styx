@@ -58,6 +58,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Changed virtual, netcam, and file replay examples to use request-based source builders:
   `CaptureRequest::virtual_source`, `CaptureRequest::netcam_source`, and
   `CaptureRequest::file_source`.
+- Changed simulation support to live under the explicit `styx::simulation` feature module instead
+  of the core capture API surface; simulation examples now import simulation APIs directly.
 - Split capture, codec, core buffer/format/queue, V4L2 probing, and libcamera probing concerns
   into dedicated crates while keeping `styx` as the high-level facade crate.
 - Reorganized examples into top-level workflow groups for quickstart, capture, graph, codecs,
@@ -109,6 +111,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Removed virtual/netcam/file demo constructors from the main prelude; use the request-based
   source builders for application code or import lower-level constructors from `capture_api` when
   needed.
+- Removed simulation assets from the facade crate and moved them under the examples crate.
 - Removed legacy compatibility assumptions around backend startup and feature availability:
   disabled optional backends now report typed `BackendMissing` errors instead of being hidden
   behind implicit fallback behavior.
