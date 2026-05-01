@@ -9,16 +9,17 @@
 ///
 /// If the format is not supported by this fast-path, the original frame is returned as
 /// `Err(frame)` so the caller can route it through a decoder.
+// Returning the original frame avoids an allocation and preserves ownership for fallback decode.
 #[allow(clippy::result_large_err)]
 pub fn frame_lease_to_dynamic_image(frame: FrameLease) -> Result<DynamicImage, FrameLease> {
     let code = frame.meta().format.code;
 
-    let is_packed = code == FourCc::new(*b"R8  ")
-        || code == FourCc::new(*b"GREY")
-        || code == FourCc::new(*b"NV12")
-        || code == FourCc::new(*b"NV21")
-        || code == FourCc::new(*b"RG24")
-        || code == FourCc::new(*b"RGBA");
+    let is_packed = code == FourCc::R8
+        || code == FourCc::GREY
+        || code == FourCc::NV12
+        || code == FourCc::NV21
+        || code == FourCc::RG24
+        || code == FourCc::RGBA;
 
     if !is_packed {
         return Err(frame);
@@ -29,7 +30,7 @@ pub fn frame_lease_to_dynamic_image(frame: FrameLease) -> Result<DynamicImage, F
     let height = meta.format.resolution.height.get();
 
     if frame.is_external() {
-        if code == FourCc::new(*b"NV12") || code == FourCc::new(*b"NV21") {
+        if code == FourCc::NV12 || code == FourCc::NV21 {
             let planes = frame.planes();
             if planes.is_empty() {
                 drop(planes);
@@ -69,7 +70,7 @@ pub fn frame_lease_to_dynamic_image(frame: FrameLease) -> Result<DynamicImage, F
         return frame_to_dynamic_image(&frame).ok_or(frame);
     }
 
-    if code == FourCc::new(*b"NV12") || code == FourCc::new(*b"NV21") {
+    if code == FourCc::NV12 || code == FourCc::NV21 {
         let layouts = frame.layouts();
         if let Some(layout) = layouts.first() {
             let expected = width as usize;
@@ -82,8 +83,8 @@ pub fn frame_lease_to_dynamic_image(frame: FrameLease) -> Result<DynamicImage, F
                     && layout.len >= required
                 {
                     drop(planes);
-                    let (_meta, _layouts, buffers) = frame.into_parts();
-                    let mut buf = match buffers.into_iter().next() {
+                    let parts = frame.into_parts();
+                    let mut buf = match parts.buffers.into_iter().next() {
                         Some(buf) => buf,
                         None => {
                             let img = image::GrayImage::new(width, height);
@@ -134,12 +135,12 @@ pub fn frame_lease_to_dynamic_image(frame: FrameLease) -> Result<DynamicImage, F
         return Ok(DynamicImage::ImageLuma8(img));
     }
 
-    let (bytes_per_pixel, wrap) = if code == FourCc::new(*b"R8  ") || code == FourCc::new(*b"GREY")
+    let (bytes_per_pixel, wrap) = if code == FourCc::R8 || code == FourCc::GREY
     {
         (1usize, 0u8)
-    } else if code == FourCc::new(*b"RG24") {
+    } else if code == FourCc::RG24 {
         (3usize, 1u8)
-    } else if code == FourCc::new(*b"RGBA") {
+    } else if code == FourCc::RGBA {
         (4usize, 2u8)
     } else {
         return Err(frame);
@@ -162,9 +163,13 @@ pub fn frame_lease_to_dynamic_image(frame: FrameLease) -> Result<DynamicImage, F
 
     let can_take_zero_copy = plane_stride == expected_stride && plane_len >= required;
     if can_take_zero_copy {
-        let (_meta, layouts, mut buffers) = frame.into_parts();
-        let layout = *layouts.first().expect("frame has at least one plane layout");
-        let buf = buffers
+        let mut parts = frame.into_parts();
+        let layout = *parts
+            .layouts
+            .first()
+            .expect("frame has at least one plane layout");
+        let buf = parts
+            .buffers
             .pop()
             .expect("non-external packed frame has an owned buffer");
 
@@ -252,21 +257,21 @@ fn copy_packed_to_image(
     }
 
     match code {
-        c if c == FourCc::new(*b"R8  ") || c == FourCc::new(*b"GREY") => {
+        c if c == FourCc::R8 || c == FourCc::GREY => {
             let mut out = Vec::new();
             copy_strided(&mut out, expected_stride, stride, height, data);
             DynamicImage::ImageLuma8(
                 image::GrayImage::from_raw(width, height, out).expect("length validated"),
             )
         }
-        c if c == FourCc::new(*b"RG24") => {
+        c if c == FourCc::RG24 => {
             let mut out = Vec::new();
             copy_strided(&mut out, expected_stride, stride, height, data);
             DynamicImage::ImageRgb8(
                 image::RgbImage::from_raw(width, height, out).expect("length validated"),
             )
         }
-        c if c == FourCc::new(*b"RGBA") => {
+        c if c == FourCc::RGBA => {
             let mut out = Vec::new();
             copy_strided(&mut out, expected_stride, stride, height, data);
             DynamicImage::ImageRgba8(
@@ -291,7 +296,7 @@ pub fn dynamic_image_to_rg24_frame(img: DynamicImage, timestamp: u64) -> Option<
             let pool = packed_frame_pool(len);
             let mut buf = pool.lease();
             buf.replace_owned(raw);
-            let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+            let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
             Some(FrameLease::single_plane(
                 FrameMeta::new(format, timestamp),
                 buf,
@@ -309,7 +314,7 @@ pub fn dynamic_image_to_rg24_frame(img: DynamicImage, timestamp: u64) -> Option<
             let mut buf = pool.lease();
             buf.resize(len);
             buf.as_mut_slice().copy_from_slice(&rgb);
-            let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+            let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
             Some(FrameLease::single_plane(
                 FrameMeta::new(format, timestamp),
                 buf,
@@ -343,7 +348,7 @@ pub fn dynamic_image_ref_to_rg24_frame(img: &DynamicImage, timestamp: u64) -> Op
         buf.as_mut_slice().copy_from_slice(&raw[..len]);
     }
 
-    let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+    let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
     Some(FrameLease::single_plane(
         FrameMeta::new(format, timestamp),
         buf,
@@ -361,7 +366,7 @@ mod tests {
     #[test]
     fn rejects_short_rgb_buffer() {
         let res = Resolution::new(2, 2).unwrap();
-        let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let stride = res.width.get() as usize * 3;
         let len = stride * res.height.get() as usize - 1;
         let mut buf = BufferPool::with_limits(1, len, 1).lease();
@@ -401,7 +406,7 @@ mod tests {
     #[test]
     fn process_to_dynamic_prefers_input_conversion() {
         let res = Resolution::new(2, 1).unwrap();
-        let format = MediaFormat::new(FourCc::new(*b"BGRA"), res, ColorSpace::Srgb);
+        let format = MediaFormat::new(FourCc::BGRA, res, ColorSpace::Srgb);
         let stride = res.width.get() as usize * 4;
         let len = stride * res.height.get() as usize;
         let mut buf = BufferPool::with_limits(1, len, 1).lease();
@@ -410,7 +415,7 @@ mod tests {
             .copy_from_slice(&[255, 0, 0, 255, 0, 0, 255, 255]);
         let frame = FrameLease::single_plane(FrameMeta::new(format, 0), buf, len, stride);
 
-        let codec = NoopCodec::new(FourCc::new(*b"BGRA"));
+        let codec = NoopCodec::new(FourCc::BGRA);
         let out = process_to_dynamic(&codec, frame).unwrap();
         let rgba = out.into_rgba8();
         assert_eq!(rgba.as_raw(), &[0, 0, 255, 255, 255, 0, 0, 255]);

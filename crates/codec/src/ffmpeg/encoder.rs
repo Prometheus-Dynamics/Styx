@@ -372,8 +372,8 @@ impl FfmpegVideoEncoder {
 
     fn packet_to_frame(&self, meta: &FrameMeta, data: Vec<u8>) -> FrameLease {
         let mut buf = self.pool.lease();
-        buf.resize(data.len());
-        buf.as_mut_slice().copy_from_slice(&data);
+        let len = data.len();
+        buf.replace_owned(data);
         FrameLease::single_plane(
             FrameMeta::new(
                 MediaFormat::new(
@@ -384,8 +384,8 @@ impl FfmpegVideoEncoder {
                 meta.timestamp,
             ),
             buf,
-            data.len(),
-            data.len(),
+            len,
+            len,
         )
     }
 
@@ -507,7 +507,7 @@ fn pick_encoder_pixel_format(
         // Some wrappers (notably V4L2 mem2mem) don't always report pixel formats through
         // libavcodec, but they still accept standard YUV inputs. Default to NV12 for video,
         // and a JPEG-friendly format for MJPEG.
-        return Some(if output == FourCc::new(*b"MJPG") {
+        return Some(if output == FourCc::MJPG {
             PixelFormat::YUVJ420P
         } else {
             PixelFormat::NV12
@@ -518,7 +518,7 @@ fn pick_encoder_pixel_format(
         return Some(input);
     }
 
-    if output == FourCc::new(*b"MJPG") {
+    if output == FourCc::MJPG {
         for candidate in [
             PixelFormat::YUVJ420P,
             PixelFormat::YUVJ422P,

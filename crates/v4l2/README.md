@@ -10,16 +10,17 @@ formats, intervals, and controls.
 ## Install
 ```toml
 [dependencies]
-styx-v4l2 = "1.0.0"
+styx-v4l2 = "2.0.0"
 ```
 
 ## Usage
 Enable the `v4l2` feature on the `styx` crate to access probing helpers:
-```rust,ignore
-use styx::prelude::*;
+```rust
+use styx_v4l2::probe_devices;
 
-let devices = probe_all();
+let (devices, errors) = probe_devices();
 for device in devices {
-    println!("{} backends: {}", device.identity.name, device.backends.len());
+    println!("{} modes: {}", device.path, device.descriptor.modes.len());
 }
+assert!(errors.iter().all(|err| !err.is_empty()));
 ```

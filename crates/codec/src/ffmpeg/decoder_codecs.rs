@@ -5,7 +5,7 @@ pub struct FfmpegMjpegDecoder(pub FfmpegVideoDecoder);
 
 impl FfmpegMjpegDecoder {
     pub fn new_rgb24() -> Result<Self, CodecError> {
-        Self::new_rgb24_for_input(FourCc::new(*b"MJPG"))
+        Self::new_rgb24_for_input(FourCc::MJPG)
     }
 
     pub fn new_rgb24_for_input(input: FourCc) -> Result<Self, CodecError> {
@@ -14,7 +14,7 @@ impl FfmpegMjpegDecoder {
             "mjpeg",
             "ffmpeg",
             input,
-            FourCc::new(*b"RG24"),
+            FourCc::RG24,
             false,
             None,
             None,
@@ -29,8 +29,8 @@ impl FfmpegMjpegDecoder {
             Id::MJPEG,
             "mjpeg",
             "ffmpeg",
-            FourCc::new(*b"MJPG"),
-            FourCc::new(*b"NV12"),
+            FourCc::MJPG,
+            FourCc::NV12,
             true,
             None,
             None,
@@ -45,7 +45,7 @@ impl FfmpegMjpegDecoder {
         threads: Option<usize>,
         pool_limits: Option<(usize, usize, usize)>,
     ) -> Result<Self, CodecError> {
-        Self::with_options_for_input(FourCc::new(*b"MJPG"), zero_copy, threads, pool_limits)
+        Self::with_options_for_input(FourCc::MJPG, zero_copy, threads, pool_limits)
     }
 
     pub fn with_options_for_input(
@@ -59,7 +59,7 @@ impl FfmpegMjpegDecoder {
             "mjpeg",
             "ffmpeg",
             input,
-            FourCc::new(*b"RG24"),
+            FourCc::RG24,
             zero_copy,
             threads,
             pool_limits,
@@ -104,8 +104,8 @@ impl FfmpegH264Decoder {
             Id::H264,
             "h264",
             "ffmpeg",
-            FourCc::new(*b"H264"),
-            FourCc::new(*b"RG24"),
+            FourCc::H264,
+            FourCc::RG24,
             false,
             None,
             None,
@@ -120,8 +120,8 @@ impl FfmpegH264Decoder {
             Id::H264,
             "h264",
             "ffmpeg",
-            FourCc::new(*b"H264"),
-            FourCc::new(*b"NV12"),
+            FourCc::H264,
+            FourCc::NV12,
             true,
             None,
             None,
@@ -140,8 +140,8 @@ impl FfmpegH264Decoder {
             Id::H264,
             "h264",
             "ffmpeg",
-            FourCc::new(*b"H264"),
-            FourCc::new(*b"RG24"),
+            FourCc::H264,
+            FourCc::RG24,
             zero_copy,
             threads,
             pool_limits,
@@ -156,8 +156,8 @@ impl FfmpegH264Decoder {
             "h264_v4l2request",
             "h264",
             "h264_v4l2request_nv12",
-            FourCc::new(*b"H264"),
-            FourCc::new(*b"NV12"),
+            FourCc::H264,
+            FourCc::NV12,
             true,
             None,
             None,
@@ -172,8 +172,8 @@ impl FfmpegH264Decoder {
             "h264_v4l2request",
             "h264",
             "h264_v4l2request",
-            FourCc::new(*b"H264"),
-            FourCc::new(*b"RG24"),
+            FourCc::H264,
+            FourCc::RG24,
             false,
             None,
             None,
@@ -188,8 +188,8 @@ impl FfmpegH264Decoder {
             "h264_v4l2m2m",
             "h264",
             "h264_v4l2m2m",
-            FourCc::new(*b"H264"),
-            FourCc::new(*b"RG24"),
+            FourCc::H264,
+            FourCc::RG24,
             false,
             None,
             None,
@@ -230,7 +230,7 @@ pub struct FfmpegH265Decoder(pub FfmpegVideoDecoder);
 
 impl FfmpegH265Decoder {
     pub fn new_rgb24() -> Result<Self, CodecError> {
-        Self::new_rgb24_for_input(FourCc::new(*b"H265"))
+        Self::new_rgb24_for_input(FourCc::H265)
     }
 
     pub fn new_rgb24_for_input(input: FourCc) -> Result<Self, CodecError> {
@@ -239,7 +239,7 @@ impl FfmpegH265Decoder {
             "h265",
             "ffmpeg",
             input,
-            FourCc::new(*b"RG24"),
+            FourCc::RG24,
             false,
             None,
             None,
@@ -254,8 +254,8 @@ impl FfmpegH265Decoder {
             Id::HEVC,
             "h265",
             "ffmpeg",
-            FourCc::new(*b"H265"),
-            FourCc::new(*b"NV12"),
+            FourCc::H265,
+            FourCc::NV12,
             true,
             None,
             None,
@@ -270,7 +270,7 @@ impl FfmpegH265Decoder {
         threads: Option<usize>,
         pool_limits: Option<(usize, usize, usize)>,
     ) -> Result<Self, CodecError> {
-        Self::with_options_for_input(FourCc::new(*b"H265"), zero_copy, threads, pool_limits)
+        Self::with_options_for_input(FourCc::H265, zero_copy, threads, pool_limits)
     }
 
     pub fn with_options_for_input(
@@ -284,7 +284,7 @@ impl FfmpegH265Decoder {
             "h265",
             "ffmpeg",
             input,
-            FourCc::new(*b"RG24"),
+            FourCc::RG24,
             zero_copy,
             threads,
             pool_limits,
@@ -295,7 +295,7 @@ impl FfmpegH265Decoder {
     }
 
     pub fn new_v4l2request_nv12_zero_copy() -> Result<Self, CodecError> {
-        Self::new_v4l2request_nv12_zero_copy_for_input(FourCc::new(*b"H265"))
+        Self::new_v4l2request_nv12_zero_copy_for_input(FourCc::H265)
     }
 
     pub fn new_v4l2request_nv12_zero_copy_for_input(input: FourCc) -> Result<Self, CodecError> {
@@ -304,7 +304,7 @@ impl FfmpegH265Decoder {
             "h265",
             "hevc_v4l2request_nv12",
             input,
-            FourCc::new(*b"NV12"),
+            FourCc::NV12,
             true,
             None,
             None,
@@ -315,7 +315,7 @@ impl FfmpegH265Decoder {
     }
 
     pub fn new_v4l2request_rgb24() -> Result<Self, CodecError> {
-        Self::new_v4l2request_rgb24_for_input(FourCc::new(*b"H265"))
+        Self::new_v4l2request_rgb24_for_input(FourCc::H265)
     }
 
     pub fn new_v4l2request_rgb24_for_input(input: FourCc) -> Result<Self, CodecError> {
@@ -324,7 +324,7 @@ impl FfmpegH265Decoder {
             "h265",
             "hevc_v4l2request",
             input,
-            FourCc::new(*b"RG24"),
+            FourCc::RG24,
             false,
             None,
             None,
@@ -335,7 +335,7 @@ impl FfmpegH265Decoder {
     }
 
     pub fn new_v4l2m2m_rgb24() -> Result<Self, CodecError> {
-        Self::new_v4l2m2m_rgb24_for_input(FourCc::new(*b"H265"))
+        Self::new_v4l2m2m_rgb24_for_input(FourCc::H265)
     }
 
     pub fn new_v4l2m2m_rgb24_for_input(input: FourCc) -> Result<Self, CodecError> {
@@ -344,7 +344,7 @@ impl FfmpegH265Decoder {
             "h265",
             "hevc_v4l2m2m",
             input,
-            FourCc::new(*b"RG24"),
+            FourCc::RG24,
             false,
             None,
             None,

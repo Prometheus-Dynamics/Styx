@@ -75,7 +75,7 @@ impl Rgb48ToRgbDecoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input,
-                output: FourCc::new(*b"RG24"),
+                output: FourCc::RG24,
                 name: "rgb48torgb24",
                 impl_name,
             },

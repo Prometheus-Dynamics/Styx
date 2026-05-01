@@ -1,5 +1,8 @@
 //! Raw format decoders (pixel format conversions).
 
+#[cfg(feature = "raw-decoders")]
+use rayon::prelude::*;
+#[cfg(feature = "raw-decoders")]
 use styx_core::prelude::ColorSpace;
 #[cfg(target_os = "linux")]
 use styx_core::prelude::*;
@@ -7,30 +10,52 @@ use styx_core::prelude::*;
 #[cfg(target_os = "linux")]
 use crate::CodecError;
 
+#[cfg(feature = "raw-decoders")]
 mod bayer;
+#[cfg(feature = "raw-decoders")]
 mod bgr;
+#[cfg(feature = "raw-decoders")]
 mod bgra;
+#[cfg(feature = "raw-decoders")]
 mod i420;
+#[cfg(feature = "raw-decoders")]
 mod mono;
+#[cfg(feature = "raw-decoders")]
 mod nv12;
 mod passthrough;
+#[cfg(feature = "raw-decoders")]
 mod rgb48;
+#[cfg(feature = "raw-decoders")]
 mod rgba;
+#[cfg(feature = "raw-decoders")]
 mod yuv;
+#[cfg(feature = "raw-decoders")]
 mod yuv420p;
+#[cfg(feature = "raw-decoders")]
 mod yuyv;
 
+#[cfg(feature = "raw-decoders")]
 pub use bayer::{BayerToRgbDecoder, bayer_decoder_for, bayer_info};
+#[cfg(feature = "raw-decoders")]
 pub use bgr::BgrToRgbDecoder;
+#[cfg(feature = "raw-decoders")]
 pub use bgra::BgraToRgbDecoder;
+#[cfg(feature = "raw-decoders")]
 pub use i420::I420ToRgbDecoder;
+#[cfg(feature = "raw-decoders")]
 pub use mono::{Mono8ToRgbDecoder, Mono16ToRgbDecoder};
+#[cfg(feature = "raw-decoders")]
 pub use nv12::{Nv12ToBgrDecoder, Nv12ToLumaDecoder, Nv12ToRgbDecoder};
 pub use passthrough::PassthroughDecoder;
+#[cfg(feature = "raw-decoders")]
 pub use rgb48::Rgb48ToRgbDecoder;
+#[cfg(feature = "raw-decoders")]
 pub use rgba::RgbaToRgbDecoder;
+#[cfg(feature = "raw-decoders")]
 pub use yuv::{NvToRgbDecoder, Packed422ToRgbDecoder, PlanarYuvToRgbDecoder};
+#[cfg(feature = "raw-decoders")]
 pub use yuv420p::Yuv420pToRgbDecoder;
+#[cfg(feature = "raw-decoders")]
 pub use yuyv::{YuyvToLumaDecoder, YuyvToRgbDecoder};
 
 #[cfg(target_os = "linux")]
@@ -66,7 +91,27 @@ pub trait SharedRawDecodeExt: RawDecodeInto {
 #[cfg(target_os = "linux")]
 impl<T: RawDecodeInto + ?Sized> SharedRawDecodeExt for T {}
 
+#[cfg(feature = "raw-decoders")]
+pub(crate) fn decode_strided_rows_to_rgb24(
+    src: &[u8],
+    dst: &mut [u8],
+    row_count: usize,
+    src_stride: usize,
+    src_row_bytes: usize,
+    dst_row_bytes: usize,
+    convert_row: impl Fn(&[u8], &mut [u8]) + Sync,
+) {
+    dst.par_chunks_mut(dst_row_bytes)
+        .take(row_count)
+        .enumerate()
+        .for_each(|(y, dst_line)| {
+            let src_line = &src[y * src_stride..][..src_row_bytes];
+            convert_row(src_line, dst_line);
+        });
+}
+
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 macro_rules! impl_raw_decode_into {
     ($ty:ty, $bpp:expr) => {
         impl RawDecodeInto for $ty {
@@ -86,40 +131,58 @@ macro_rules! impl_raw_decode_into {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(BayerToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(BgrToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(BgraToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(I420ToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(Mono8ToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(Mono16ToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(Nv12ToBgrDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(Nv12ToLumaDecoder, 1);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(Nv12ToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(NvToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(Packed422ToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(PlanarYuvToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(Rgb48ToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(RgbaToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(Yuv420pToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(YuyvToLumaDecoder, 1);
 #[cfg(target_os = "linux")]
+#[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(YuyvToRgbDecoder, 3);
 
+#[cfg(feature = "raw-decoders")]
 #[derive(Clone, Copy)]
 struct YuvCoeffs {
     r_v: i32,
@@ -129,6 +192,7 @@ struct YuvCoeffs {
     full_range: bool,
 }
 
+#[cfg(feature = "raw-decoders")]
 const BT709: YuvCoeffs = YuvCoeffs {
     r_v: 459,
     g_u: 55,
@@ -138,6 +202,7 @@ const BT709: YuvCoeffs = YuvCoeffs {
 };
 
 // Full-range Rec.601 coefficients (Y range 0..255).
+#[cfg(feature = "raw-decoders")]
 const BT601_FULL: YuvCoeffs = YuvCoeffs {
     r_v: 359,
     g_u: 88,
@@ -146,6 +211,7 @@ const BT601_FULL: YuvCoeffs = YuvCoeffs {
     full_range: true,
 };
 
+#[cfg(feature = "raw-decoders")]
 const BT2020: YuvCoeffs = YuvCoeffs {
     r_v: 430,
     g_u: 48,
@@ -156,6 +222,7 @@ const BT2020: YuvCoeffs = YuvCoeffs {
 
 /// Integer conversion with clamping using limited-range YUV coefficients.
 #[inline(always)]
+#[cfg(feature = "raw-decoders")]
 pub(crate) fn yuv_to_rgb(y: i32, u: i32, v: i32, color: ColorSpace) -> (u8, u8, u8) {
     let coeffs = match color {
         ColorSpace::Bt709 => BT709,

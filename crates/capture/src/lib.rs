@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![deny(clippy::print_stderr, clippy::print_stdout)]
 
 use smallvec::SmallVec;
 
@@ -11,7 +12,7 @@ use styx_core::prelude::*;
 /// use styx_capture::prelude::*;
 ///
 /// let res = Resolution::new(640, 480).unwrap();
-/// let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+/// let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
 /// let id = ModeId { format, interval: None };
 /// assert_eq!(id.format.code.to_string(), "RG24");
 /// ```
@@ -31,14 +32,8 @@ pub struct ModeId {
 /// ```rust
 /// use styx_capture::prelude::*;
 ///
-/// let res = Resolution::new(320, 240).unwrap();
-/// let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
-/// let mode = Mode {
-///     id: ModeId { format, interval: None },
-///     format,
-///     intervals: smallvec::smallvec![],
-///     interval_stepwise: None,
-/// };
+/// let format = MediaFormat::srgb(FourCc::RG24, 320, 240).unwrap();
+/// let mode = Mode::new(format);
 /// assert_eq!(mode.format.code.to_string(), "RG24");
 /// ```
 #[derive(Debug, Clone)]
@@ -57,21 +52,42 @@ pub struct Mode {
     pub interval_stepwise: Option<IntervalStepwise>,
 }
 
+impl Mode {
+    /// Create a mode for a format without advertised frame intervals.
+    pub fn new(format: MediaFormat) -> Self {
+        Self {
+            id: ModeId {
+                format,
+                interval: None,
+            },
+            format,
+            intervals: SmallVec::new(),
+            interval_stepwise: None,
+        }
+    }
+
+    /// Create a mode for a format with one advertised frame interval.
+    pub fn with_interval(format: MediaFormat, interval: Interval) -> Self {
+        Self {
+            id: ModeId {
+                format,
+                interval: Some(interval),
+            },
+            format,
+            intervals: smallvec::smallvec![interval],
+            interval_stepwise: None,
+        }
+    }
+}
+
 /// Descriptor for a capture device/source.
 ///
 /// # Example
 /// ```rust
 /// use styx_capture::prelude::*;
 ///
-/// let res = Resolution::new(320, 240).unwrap();
-/// let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
-/// let mode = Mode {
-///     id: ModeId { format, interval: None },
-///     format,
-///     intervals: smallvec::smallvec![],
-///     interval_stepwise: None,
-/// };
-/// let descriptor = CaptureDescriptor { modes: vec![mode], controls: Vec::new() };
+/// let format = MediaFormat::srgb(FourCc::RG24, 320, 240).unwrap();
+/// let descriptor = CaptureDescriptor::new([Mode::new(format)]);
 /// assert_eq!(descriptor.modes.len(), 1);
 /// ```
 #[derive(Debug, Clone)]
@@ -84,21 +100,31 @@ pub struct CaptureDescriptor {
     pub controls: Vec<ControlMeta>,
 }
 
+impl CaptureDescriptor {
+    /// Build a descriptor with no controls.
+    pub fn new(modes: impl IntoIterator<Item = Mode>) -> Self {
+        Self {
+            modes: modes.into_iter().collect(),
+            controls: Vec::new(),
+        }
+    }
+
+    /// Attach controls to a descriptor.
+    pub fn with_controls(mut self, controls: Vec<ControlMeta>) -> Self {
+        self.controls = controls;
+        self
+    }
+}
+
 /// User-selected configuration validated against a descriptor.
 ///
 /// # Example
 /// ```rust
 /// use styx_capture::prelude::*;
 ///
-/// let res = Resolution::new(320, 240).unwrap();
-/// let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
-/// let mode = Mode {
-///     id: ModeId { format, interval: None },
-///     format,
-///     intervals: smallvec::smallvec![],
-///     interval_stepwise: None,
-/// };
-/// let descriptor = CaptureDescriptor { modes: vec![mode.clone()], controls: Vec::new() };
+/// let format = MediaFormat::srgb(FourCc::RG24, 320, 240).unwrap();
+/// let mode = Mode::new(format);
+/// let descriptor = CaptureDescriptor::new([mode.clone()]);
 /// let cfg = CaptureConfig { mode: mode.id.clone(), interval: None, controls: vec![] };
 /// assert!(cfg.validate(&descriptor).is_ok());
 /// ```
@@ -162,14 +188,23 @@ impl CaptureConfig {
 /// Trait implemented by capture backends that yield zero-copy frames.
 ///
 /// # Example
-/// ```rust,ignore
+/// ```rust
 /// use styx_capture::prelude::*;
 ///
-/// struct MySource;
+/// struct MySource {
+///     descriptor: CaptureDescriptor,
+/// }
+///
 /// impl CaptureSource for MySource {
-///     fn descriptor(&self) -> &CaptureDescriptor { unimplemented!() }
+///     fn descriptor(&self) -> &CaptureDescriptor { &self.descriptor }
 ///     fn next_frame(&self) -> Option<FrameLease> { None }
 /// }
+///
+/// let format = MediaFormat::srgb(FourCc::RG24, 320, 180).unwrap();
+/// let source = MySource {
+///     descriptor: CaptureDescriptor::new([Mode::new(format)]),
+/// };
+/// assert_eq!(source.descriptor().modes.len(), 1);
 /// ```
 pub trait CaptureSource: Send + Sync {
     /// Descriptor for this source.
@@ -177,6 +212,18 @@ pub trait CaptureSource: Send + Sync {
 
     /// Pull the next frame; concrete backends decide how to block/yield.
     fn next_frame(&self) -> Option<FrameLease>;
+
+    /// Pull the next frame with explicit queue-style semantics.
+    ///
+    /// The default adapts legacy `next_frame` implementations by treating `None`
+    /// as closure. Backends with nonblocking or timeout behavior can override this
+    /// to return `RecvOutcome::Empty` when no frame is currently ready.
+    fn try_next_frame(&self) -> RecvOutcome<FrameLease> {
+        match self.next_frame() {
+            Some(frame) => RecvOutcome::Data(frame),
+            None => RecvOutcome::Closed,
+        }
+    }
 }
 
 /// Helper to construct a simple frame from a pooled buffer.
@@ -187,7 +234,7 @@ pub trait CaptureSource: Send + Sync {
 ///
 /// let pool = BufferPool::with_capacity(1, 64);
 /// let res = Resolution::new(2, 2).unwrap();
-/// let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+/// let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
 /// let frame = build_frame_from_pool(format, &pool, 0, 3);
 /// assert_eq!(frame.meta().format.code.to_string(), "RG24");
 /// ```
@@ -243,23 +290,12 @@ pub fn build_frame_from_shared_pool(
 /// use styx_capture::prelude::*;
 ///
 /// let res = Resolution::new(2, 2).unwrap();
-/// let formats = [MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb)];
+/// let formats = [MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb)];
 /// let modes = modes_from_formats(formats);
 /// assert_eq!(modes.len(), 1);
 /// ```
 pub fn modes_from_formats(formats: impl IntoIterator<Item = MediaFormat>) -> Vec<Mode> {
-    formats
-        .into_iter()
-        .map(|format| Mode {
-            id: ModeId {
-                format,
-                interval: None,
-            },
-            format,
-            intervals: SmallVec::new(),
-            interval_stepwise: None,
-        })
-        .collect()
+    formats.into_iter().map(Mode::new).collect()
 }
 
 pub mod virtual_backend;

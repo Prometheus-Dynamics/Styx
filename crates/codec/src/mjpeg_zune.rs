@@ -21,7 +21,7 @@ impl ZuneMjpegDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"MJPG"),
+                input: FourCc::MJPG,
                 output,
                 name: "mjpeg",
                 impl_name: "zune-jpeg",

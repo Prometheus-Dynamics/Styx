@@ -223,6 +223,15 @@ pub struct SharedBufferPool {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedBufferPoolStats {
+    pub chunk_size: usize,
+    pub free: usize,
+    pub free_bytes: usize,
+    pub max_free: usize,
+}
+
+#[cfg(target_os = "linux")]
 impl SharedBufferPool {
     pub fn with_capacity(capacity: usize, chunk_size: usize) -> Result<Self, FrameExportError> {
         Self::with_limits(capacity, chunk_size, capacity)
@@ -255,6 +264,16 @@ impl SharedBufferPool {
             .map(Ok)
             .unwrap_or_else(|| create_sized_memfd(self.inner.chunk_size))?;
         SharedBufferLease::new(self.inner.clone(), fd, self.inner.chunk_size)
+    }
+
+    pub fn stats(&self) -> SharedBufferPoolStats {
+        let free = self.inner.free.lock().unwrap().len();
+        SharedBufferPoolStats {
+            chunk_size: self.inner.chunk_size,
+            free,
+            free_bytes: free.saturating_mul(self.inner.chunk_size),
+            max_free: self.inner.max_free,
+        }
     }
 }
 
@@ -375,6 +394,8 @@ impl Drop for SharedBufferLease {
 }
 
 #[cfg(target_os = "linux")]
+// SAFETY: the lease has unique ownership of the writable mmap and fd while it is live. Moving it
+// to another thread does not create aliases, and `Drop` unmaps before recycling the fd.
 unsafe impl Send for SharedBufferLease {}
 
 #[cfg(target_os = "linux")]
@@ -433,9 +454,13 @@ impl Drop for SharedBufferBacking {
 }
 
 #[cfg(target_os = "linux")]
+// SAFETY: the backing owns the mmap/fd pair after conversion from `SharedBufferLease`. It exposes
+// immutable slices only, unmaps in `Drop`, and recycles the fd only after the backing is dropped.
 unsafe impl Send for SharedBufferBacking {}
 
 #[cfg(target_os = "linux")]
+// SAFETY: shared access is read-only through `ExternalBacking`; there is no mutation through this
+// type after publication, and the mapping remains valid for the backing's lifetime.
 unsafe impl Sync for SharedBufferBacking {}
 
 #[cfg(target_os = "linux")]

@@ -68,7 +68,7 @@ impl NvToRgbDecoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input,
-                output: FourCc::new(*b"RG24"),
+                output: FourCc::RG24,
                 name: "yuv2rgb",
                 impl_name,
             },
@@ -313,7 +313,7 @@ impl PlanarYuvToRgbDecoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input,
-                output: FourCc::new(*b"RG24"),
+                output: FourCc::RG24,
                 name: "yuv2rgb",
                 impl_name,
             },
@@ -531,7 +531,7 @@ impl Packed422ToRgbDecoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input,
-                output: FourCc::new(*b"RG24"),
+                output: FourCc::RG24,
                 name: "yuv2rgb",
                 impl_name,
             },

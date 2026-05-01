@@ -53,7 +53,7 @@ impl Yuv420pToRgbDecoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input,
-                output: FourCc::new(*b"RG24"),
+                output: FourCc::RG24,
                 name: "yuv2rgb",
                 impl_name,
             },

@@ -198,7 +198,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
     }
 
     match code {
-        c if c == FourCc::new(*b"R8  ") || c == FourCc::new(*b"GREY") => {
+        c if c == FourCc::R8 || c == FourCc::GREY => {
             let plane = planes.into_iter().next()?;
             let stride = plane.stride().max(width as usize);
             let required = stride.checked_mul(height as usize)?;
@@ -214,7 +214,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             let out = copy_strided_packed_external(plane.data(), stride, expected, height as usize);
             image::GrayImage::from_raw(width, height, out).map(DynamicImage::ImageLuma8)
         }
-        c if c == FourCc::new(*b"RG24") => {
+        c if c == FourCc::RG24 => {
             let plane = planes.into_iter().next()?;
             let stride = plane.stride().max(width as usize * 3);
             let required = stride.checked_mul(height as usize)?;
@@ -230,7 +230,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             let out = copy_strided_packed_external(plane.data(), stride, expected, height as usize);
             image::RgbImage::from_raw(width, height, out).map(DynamicImage::ImageRgb8)
         }
-        c if c == FourCc::new(*b"RGBA") => {
+        c if c == FourCc::RGBA => {
             let plane = planes.into_iter().next()?;
             let stride = plane.stride().max(width as usize * 4);
             let required = stride.checked_mul(height as usize)?;
@@ -247,7 +247,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             let out = copy_strided_packed_external(plane.data(), stride, expected, height as usize);
             image::RgbaImage::from_raw(width, height, out).map(DynamicImage::ImageRgba8)
         }
-        c if c == FourCc::new(*b"BGR3") || c == FourCc::new(*b"BG24") => {
+        c if c == FourCc::BGR3 || c == FourCc::BG24 => {
             let plane = planes.into_iter().next()?;
             let stride = plane.stride().max(width as usize * 3);
             let required = stride.checked_mul(height as usize)?;
@@ -262,7 +262,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             );
             image::RgbImage::from_raw(width, height, out).map(DynamicImage::ImageRgb8)
         }
-        c if c == FourCc::new(*b"BGRA") => {
+        c if c == FourCc::BGRA => {
             let plane = planes.into_iter().next()?;
             let stride = plane.stride().max(width as usize * 4);
             let required = stride.checked_mul(height as usize)?;
@@ -277,7 +277,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             );
             image::RgbaImage::from_raw(width, height, out).map(DynamicImage::ImageRgba8)
         }
-        c if c == FourCc::new(*b"XB24") || c == FourCc::new(*b"XR24") => {
+        c if c == FourCc::XB24 || c == FourCc::XR24 => {
             let plane = planes.into_iter().next()?;
             let stride = plane.stride().max(width as usize * 4);
             let required = stride.checked_mul(height as usize)?;
@@ -288,7 +288,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             let len = dst_stride.checked_mul(height as usize)?;
             let mut out = vec![0u8; len];
             let src = &plane.data()[..required];
-            let xb24 = c == FourCc::new(*b"XB24");
+            let xb24 = c == FourCc::XB24;
             out.par_chunks_mut(dst_stride).enumerate().for_each(|(y, dst_line)| {
                 let start = y * stride;
                 let src_line = &src[start..start + (width as usize * 4)];
@@ -306,7 +306,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             });
             image::RgbImage::from_raw(width, height, out).map(DynamicImage::ImageRgb8)
         }
-        c if c == FourCc::new(*b"YUYV") => {
+        c if c == FourCc::YUYV => {
             let plane = planes.into_iter().next()?;
             let stride = plane.stride().max((width as usize) * 2);
             let required = stride.checked_mul(height as usize)?;
@@ -363,7 +363,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             }
             image::RgbImage::from_raw(width, height, rgb).map(DynamicImage::ImageRgb8)
         }
-        c if c == FourCc::new(*b"NV12") || c == FourCc::new(*b"NV21") => {
+        c if c == FourCc::NV12 || c == FourCc::NV21 => {
             if planes.len() < 2 {
                 return None;
             }
@@ -393,7 +393,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             };
             let (range, matrix) = map_colorspace(color);
             let mode = preferred_yuv_conversion_mode();
-            let is_nv12 = c == FourCc::new(*b"NV12");
+            let is_nv12 = c == FourCc::NV12;
             let ok = if is_nv12 {
                 yuvutils_rs::yuv_nv12_to_rgb(&bi, &mut rgb, dst_stride as u32, range, matrix, mode)
             } else {
@@ -422,7 +422,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             }
             image::RgbImage::from_raw(width, height, rgb).map(DynamicImage::ImageRgb8)
         }
-        c if c == FourCc::new(*b"I420") => {
+        c if c == FourCc::I420 => {
             if planes.len() < 3 {
                 return None;
             }

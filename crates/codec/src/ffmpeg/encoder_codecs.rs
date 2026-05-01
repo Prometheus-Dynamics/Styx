@@ -8,8 +8,8 @@ impl FfmpegMjpegEncoder {
             Id::MJPEG,
             "mjpeg",
             "ffmpeg",
-            FourCc::new(*b"RG24"),
-            FourCc::new(*b"MJPG"),
+            FourCc::RG24,
+            FourCc::MJPG,
             FfmpegEncoderOptions::default(),
         )
         .map(Self)
@@ -20,30 +20,22 @@ impl FfmpegMjpegEncoder {
             Id::MJPEG,
             "mjpeg",
             "ffmpeg",
-            FourCc::new(*b"NV12"),
-            FourCc::new(*b"MJPG"),
+            FourCc::NV12,
+            FourCc::MJPG,
             FfmpegEncoderOptions::default(),
         )
         .map(Self)
     }
 
     pub fn with_options(opts: FfmpegEncoderOptions) -> Result<Self, CodecError> {
-        Self::with_options_for_input(FourCc::new(*b"RG24"), opts)
+        Self::with_options_for_input(FourCc::RG24, opts)
     }
 
     pub fn with_options_for_input(
         input: FourCc,
         opts: FfmpegEncoderOptions,
     ) -> Result<Self, CodecError> {
-        FfmpegVideoEncoder::new(
-            Id::MJPEG,
-            "mjpeg",
-            "ffmpeg",
-            input,
-            FourCc::new(*b"MJPG"),
-            opts,
-        )
-        .map(Self)
+        FfmpegVideoEncoder::new(Id::MJPEG, "mjpeg", "ffmpeg", input, FourCc::MJPG, opts).map(Self)
     }
 }
 
@@ -74,8 +66,8 @@ impl FfmpegH264Encoder {
             Id::H264,
             "h264",
             "ffmpeg",
-            FourCc::new(*b"RG24"),
-            FourCc::new(*b"H264"),
+            FourCc::RG24,
+            FourCc::H264,
             FfmpegEncoderOptions::default(),
         )
         .map(Self)
@@ -86,8 +78,8 @@ impl FfmpegH264Encoder {
             Id::H264,
             "h264",
             "ffmpeg",
-            FourCc::new(*b"NV12"),
-            FourCc::new(*b"H264"),
+            FourCc::NV12,
+            FourCc::H264,
             FfmpegEncoderOptions::default(),
         )
         .map(Self)
@@ -98,8 +90,8 @@ impl FfmpegH264Encoder {
             "h264_v4l2m2m",
             "h264",
             "h264_v4l2m2m",
-            FourCc::new(*b"RG24"),
-            FourCc::new(*b"H264"),
+            FourCc::RG24,
+            FourCc::H264,
             FfmpegEncoderOptions::default(),
         )?;
         probe_v4l2m2m_encoder(&enc)?;
@@ -111,8 +103,8 @@ impl FfmpegH264Encoder {
             "h264_v4l2m2m",
             "h264",
             "h264_v4l2m2m",
-            FourCc::new(*b"NV12"),
-            FourCc::new(*b"H264"),
+            FourCc::NV12,
+            FourCc::H264,
             FfmpegEncoderOptions::default(),
         )?;
         probe_v4l2m2m_encoder(&enc)?;
@@ -120,22 +112,14 @@ impl FfmpegH264Encoder {
     }
 
     pub fn with_options(opts: FfmpegEncoderOptions) -> Result<Self, CodecError> {
-        Self::with_options_for_input(FourCc::new(*b"RG24"), opts)
+        Self::with_options_for_input(FourCc::RG24, opts)
     }
 
     pub fn with_options_for_input(
         input: FourCc,
         opts: FfmpegEncoderOptions,
     ) -> Result<Self, CodecError> {
-        FfmpegVideoEncoder::new(
-            Id::H264,
-            "h264",
-            "ffmpeg",
-            input,
-            FourCc::new(*b"H264"),
-            opts,
-        )
-        .map(Self)
+        FfmpegVideoEncoder::new(Id::H264, "h264", "ffmpeg", input, FourCc::H264, opts).map(Self)
     }
 }
 
@@ -166,8 +150,8 @@ impl FfmpegH265Encoder {
             Id::HEVC,
             "h265",
             "ffmpeg",
-            FourCc::new(*b"RG24"),
-            FourCc::new(*b"H265"),
+            FourCc::RG24,
+            FourCc::H265,
             FfmpegEncoderOptions::default(),
         )
         .map(Self)
@@ -178,8 +162,8 @@ impl FfmpegH265Encoder {
             Id::HEVC,
             "h265",
             "ffmpeg",
-            FourCc::new(*b"NV12"),
-            FourCc::new(*b"H265"),
+            FourCc::NV12,
+            FourCc::H265,
             FfmpegEncoderOptions::default(),
         )
         .map(Self)
@@ -190,8 +174,8 @@ impl FfmpegH265Encoder {
             "hevc_v4l2m2m",
             "h265",
             "hevc_v4l2m2m",
-            FourCc::new(*b"RG24"),
-            FourCc::new(*b"H265"),
+            FourCc::RG24,
+            FourCc::H265,
             FfmpegEncoderOptions::default(),
         )?;
         probe_v4l2m2m_encoder(&enc)?;
@@ -203,8 +187,8 @@ impl FfmpegH265Encoder {
             "hevc_v4l2m2m",
             "h265",
             "hevc_v4l2m2m",
-            FourCc::new(*b"NV12"),
-            FourCc::new(*b"H265"),
+            FourCc::NV12,
+            FourCc::H265,
             FfmpegEncoderOptions::default(),
         )?;
         probe_v4l2m2m_encoder(&enc)?;
@@ -212,22 +196,14 @@ impl FfmpegH265Encoder {
     }
 
     pub fn with_options(opts: FfmpegEncoderOptions) -> Result<Self, CodecError> {
-        Self::with_options_for_input(FourCc::new(*b"RG24"), opts)
+        Self::with_options_for_input(FourCc::RG24, opts)
     }
 
     pub fn with_options_for_input(
         input: FourCc,
         opts: FfmpegEncoderOptions,
     ) -> Result<Self, CodecError> {
-        FfmpegVideoEncoder::new(
-            Id::HEVC,
-            "h265",
-            "ffmpeg",
-            input,
-            FourCc::new(*b"H265"),
-            opts,
-        )
-        .map(Self)
+        FfmpegVideoEncoder::new(Id::HEVC, "h265", "ffmpeg", input, FourCc::H265, opts).map(Self)
     }
 }
 

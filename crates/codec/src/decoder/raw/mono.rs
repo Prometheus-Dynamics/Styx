@@ -87,8 +87,8 @@ impl Mono8ToRgbDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"R8  "),
-                output: FourCc::new(*b"RG24"),
+                input: FourCc::R8,
+                output: FourCc::RG24,
                 name: "mono2rgb",
                 impl_name: "mono8-replicate",
             },
@@ -199,6 +199,7 @@ impl ImageDecode for Mono8ToRgbDecoder {
 }
 
 #[cfg(test)]
+// This module still keeps compact inline tests next to decoder helpers.
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
@@ -223,16 +224,13 @@ mod tests {
         buf.as_mut_slice().copy_from_slice(&src);
 
         let frame = FrameLease::single_plane(
-            FrameMeta::new(
-                MediaFormat::new(FourCc::new(*b"R8  "), res, ColorSpace::Unknown),
-                0,
-            ),
+            FrameMeta::new(MediaFormat::new(FourCc::R8, res, ColorSpace::Unknown), 0),
             buf,
             stride * height,
             stride,
         );
         let out = decoder.process(frame).unwrap();
-        assert_eq!(out.meta().format.code, FourCc::new(*b"RG24"));
+        assert_eq!(out.meta().format.code, FourCc::RG24);
         let planes = out.planes();
         assert_eq!(planes.len(), 1);
         let data = planes[0].data();
@@ -270,16 +268,13 @@ mod tests {
         buf.as_mut_slice().copy_from_slice(&src);
 
         let frame = FrameLease::single_plane(
-            FrameMeta::new(
-                MediaFormat::new(FourCc::new(*b"R16 "), res, ColorSpace::Unknown),
-                0,
-            ),
+            FrameMeta::new(MediaFormat::new(FourCc::R16, res, ColorSpace::Unknown), 0),
             buf,
             src.len(),
             stride,
         );
         let out = decoder.process(frame).unwrap();
-        assert_eq!(out.meta().format.code, FourCc::new(*b"RG24"));
+        assert_eq!(out.meta().format.code, FourCc::RG24);
         let planes = out.planes();
         assert_eq!(planes.len(), 1);
         let data = planes[0].data();
@@ -311,8 +306,8 @@ impl Mono16ToRgbDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"R16 "),
-                output: FourCc::new(*b"RG24"),
+                input: FourCc::R16,
+                output: FourCc::RG24,
                 name: "mono2rgb",
                 impl_name: "mono16-replicate",
             },

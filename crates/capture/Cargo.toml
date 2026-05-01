@@ -25,3 +25,6 @@ utoipa = { workspace = true, optional = true }
 default = []
 serde = ["dep:serde", "styx-core/serde", "smallvec/serde"]
 schema = ["serde", "dep:utoipa", "styx-core/schema"]
+
+[lints]
+workspace = true

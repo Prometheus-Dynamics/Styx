@@ -1,10 +1,13 @@
 use styx_core::prelude::*;
 
+#[cfg(any(feature = "codec-jpeg-decoder", feature = "raw-decoders"))]
 use crate::Codec;
+#[cfg(feature = "raw-decoders")]
 use crate::decoder::raw::{
     I420ToRgbDecoder, Mono8ToRgbDecoder, Nv12ToLumaDecoder, Nv12ToRgbDecoder, YuyvToLumaDecoder,
     YuyvToRgbDecoder,
 };
+#[cfg(feature = "codec-jpeg-decoder")]
 use crate::mjpeg::MjpegDecoder;
 
 #[cfg(feature = "dynamic-image")]
@@ -29,7 +32,7 @@ pub trait FrameLeaseImageExt {
     #[cfg(feature = "dynamic-image")]
     fn to_dynamic_image(&self) -> Option<DynamicImage>;
     #[cfg(feature = "dynamic-image")]
-    fn into_dynamic_image(self) -> Result<DynamicImage, FrameLease>;
+    fn into_dynamic_image(self) -> Result<DynamicImage, Box<FrameLease>>;
     #[cfg(feature = "dynamic-image")]
     fn from_dynamic_image(img: DynamicImage, timestamp: u64) -> Option<FrameLease>;
 }
@@ -108,12 +111,12 @@ impl FrameLeaseImageExt for FrameLease {
     }
 
     #[cfg(feature = "dynamic-image")]
-    fn into_dynamic_image(self) -> Result<DynamicImage, FrameLease> {
+    fn into_dynamic_image(self) -> Result<DynamicImage, Box<FrameLease>> {
         match frame_lease_to_dynamic_image(self) {
             Ok(img) => Ok(img),
             Err(frame) => match frame_to_dynamic_image(&frame) {
                 Some(img) => Ok(img),
-                None => Err(frame),
+                None => Err(Box::new(frame)),
             },
         }
     }
@@ -125,35 +128,13 @@ impl FrameLeaseImageExt for FrameLease {
 }
 
 fn supports_luma_conversion(code: FourCc) -> bool {
-    code == FourCc::new(*b"R8  ")
-        || code == FourCc::new(*b"GREY")
-        || code == FourCc::new(*b"RG24")
-        || code == FourCc::new(*b"RGB3")
-        || code == FourCc::new(*b"BGR3")
-        || code == FourCc::new(*b"BG24")
-        || code == FourCc::new(*b"RGBA")
-        || code == FourCc::new(*b"BGRA")
-        || code == FourCc::new(*b"NV12")
-        || code == FourCc::new(*b"YUYV")
-        || code == FourCc::new(*b"I420")
-        || code == FourCc::new(*b"MJPG")
-        || code == FourCc::new(*b"JPEG")
+    code.packed_bytes_per_pixel().is_some()
+        || matches!(code, FourCc::NV12 | FourCc::YUYV | FourCc::I420)
+        || code.is_jpeg_encoded()
 }
 
 fn packed_bytes_per_pixel(code: FourCc) -> Option<usize> {
-    if code == FourCc::new(*b"R8  ") || code == FourCc::new(*b"GREY") {
-        Some(1)
-    } else if code == FourCc::new(*b"RG24")
-        || code == FourCc::new(*b"RGB3")
-        || code == FourCc::new(*b"BGR3")
-        || code == FourCc::new(*b"BG24")
-    {
-        Some(3)
-    } else if code == FourCc::new(*b"RGBA") || code == FourCc::new(*b"BGRA") {
-        Some(4)
-    } else {
-        None
-    }
+    code.packed_bytes_per_pixel()
 }
 
 fn make_single_plane_frame(
@@ -181,28 +162,36 @@ fn make_single_plane_frame(
 
 fn convert_to_rgb8(frame: FrameLease) -> Option<FrameLease> {
     let meta = frame.meta().clone();
-    let res = meta.format.resolution;
-    let width = res.width.get();
-    let height = res.height.get();
     let code = meta.format.code;
 
-    if code == FourCc::new(*b"RG24") {
+    if code == FourCc::RG24 {
         return Some(frame);
     }
-    if code == FourCc::new(*b"MJPG") || code == FourCc::new(*b"JPEG") {
-        let decoder = MjpegDecoder::new_for_input(code, FourCc::new(*b"RG24"));
+    #[cfg(feature = "codec-jpeg-decoder")]
+    if code.is_jpeg_encoded() {
+        let decoder = MjpegDecoder::new_for_input(code, FourCc::RG24);
         return decoder.process(frame).ok();
     }
-    if code == FourCc::new(*b"NV12") {
+    #[cfg(feature = "raw-decoders")]
+    let res = meta.format.resolution;
+    #[cfg(feature = "raw-decoders")]
+    let width = res.width.get();
+    #[cfg(feature = "raw-decoders")]
+    let height = res.height.get();
+    #[cfg(feature = "raw-decoders")]
+    if code == FourCc::NV12 {
         return Nv12ToRgbDecoder::new(width, height).process(frame).ok();
     }
-    if code == FourCc::new(*b"YUYV") {
+    #[cfg(feature = "raw-decoders")]
+    if code == FourCc::YUYV {
         return YuyvToRgbDecoder::new(width, height).process(frame).ok();
     }
-    if code == FourCc::new(*b"I420") {
+    #[cfg(feature = "raw-decoders")]
+    if code == FourCc::I420 {
         return I420ToRgbDecoder::new(width, height).process(frame).ok();
     }
-    if code == FourCc::new(*b"R8  ") || code == FourCc::new(*b"GREY") {
+    #[cfg(feature = "raw-decoders")]
+    if matches!(code, FourCc::R8 | FourCc::GREY) {
         return Mono8ToRgbDecoder::new(width, height).process(frame).ok();
     }
 
@@ -216,22 +205,14 @@ fn convert_to_rgba(frame: FrameLease) -> Option<FrameLease> {
     let height = res.height.get() as usize;
     let code = meta.format.code;
 
-    if code == FourCc::new(*b"RGBA") {
+    if code == FourCc::RGBA {
         return Some(frame);
     }
 
-    let rgb_frame = if code == FourCc::new(*b"RG24")
-        || code == FourCc::new(*b"RGB3")
-        || code == FourCc::new(*b"BGR3")
-        || code == FourCc::new(*b"BG24")
-        || code == FourCc::new(*b"BGRA")
-        || code == FourCc::new(*b"R8  ")
-        || code == FourCc::new(*b"GREY")
-        || code == FourCc::new(*b"NV12")
-        || code == FourCc::new(*b"YUYV")
-        || code == FourCc::new(*b"I420")
-        || code == FourCc::new(*b"MJPG")
-        || code == FourCc::new(*b"JPEG")
+    let rgb_frame = if code.packed_bytes_per_pixel().is_some()
+        || (cfg!(feature = "raw-decoders")
+            && matches!(code, FourCc::NV12 | FourCc::YUYV | FourCc::I420))
+        || (cfg!(feature = "codec-jpeg-decoder") && code.is_jpeg_encoded())
     {
         frame.to_rgb8()?
     } else {
@@ -252,33 +233,33 @@ fn convert_to_rgba(frame: FrameLease) -> Option<FrameLease> {
             dst_px[3] = 255;
         }
     }
-    make_single_plane_frame(
-        &meta,
-        FourCc::new(*b"RGBA"),
-        ColorSpace::Srgb,
-        width * 4,
-        out,
-    )
+    make_single_plane_frame(&meta, FourCc::RGBA, ColorSpace::Srgb, width * 4, out)
 }
 
 fn convert_to_luma8(frame: FrameLease) -> Option<FrameLease> {
     let meta = frame.meta().clone();
-    let res = meta.format.resolution;
-    let width = res.width.get();
-    let height = res.height.get();
     let code = meta.format.code;
 
-    if code == FourCc::new(*b"R8  ") || code == FourCc::new(*b"GREY") {
+    if matches!(code, FourCc::R8 | FourCc::GREY) {
         return Some(frame);
     }
-    if code == FourCc::new(*b"NV12") {
+    #[cfg(feature = "raw-decoders")]
+    let res = meta.format.resolution;
+    #[cfg(feature = "raw-decoders")]
+    let width = res.width.get();
+    #[cfg(feature = "raw-decoders")]
+    let height = res.height.get();
+    #[cfg(feature = "raw-decoders")]
+    if code == FourCc::NV12 {
         return Nv12ToLumaDecoder::new(width, height).process(frame).ok();
     }
-    if code == FourCc::new(*b"YUYV") {
+    #[cfg(feature = "raw-decoders")]
+    if code == FourCc::YUYV {
         return YuyvToLumaDecoder::new(width, height).process(frame).ok();
     }
-    if code == FourCc::new(*b"MJPG") || code == FourCc::new(*b"JPEG") {
-        let decoder = MjpegDecoder::new_for_input(code, FourCc::new(*b"RG24"));
+    #[cfg(feature = "codec-jpeg-decoder")]
+    if code.is_jpeg_encoded() {
+        let decoder = MjpegDecoder::new_for_input(code, FourCc::RG24);
         let rgb = decoder.process(frame).ok()?;
         return convert_rgb_to_luma(rgb);
     }
@@ -293,7 +274,7 @@ fn convert_packed_to_rgb(frame: FrameLease) -> Option<FrameLease> {
     let height = res.height.get() as usize;
     let plane = frame.planes().into_iter().next()?;
     match meta.format.code {
-        code if code == FourCc::new(*b"RGB3") || code == FourCc::new(*b"RG24") => {
+        FourCc::RGB3 | FourCc::RG24 => {
             let src = plane.data();
             let stride = plane.stride().max(width * 3);
             let mut out = vec![0u8; width * height * 3];
@@ -302,15 +283,9 @@ fn convert_packed_to_rgb(frame: FrameLease) -> Option<FrameLease> {
                 let dst_row = &mut out[y * width * 3..(y + 1) * width * 3];
                 dst_row.copy_from_slice(src_row);
             }
-            make_single_plane_frame(
-                &meta,
-                FourCc::new(*b"RG24"),
-                meta.format.color,
-                width * 3,
-                out,
-            )
+            make_single_plane_frame(&meta, FourCc::RG24, meta.format.color, width * 3, out)
         }
-        code if code == FourCc::new(*b"BGR3") || code == FourCc::new(*b"BG24") => {
+        FourCc::BGR3 | FourCc::BG24 => {
             let src = plane.data();
             let stride = plane.stride().max(width * 3);
             let mut out = vec![0u8; width * height * 3];
@@ -323,15 +298,9 @@ fn convert_packed_to_rgb(frame: FrameLease) -> Option<FrameLease> {
                     dst_px[2] = src_px[0];
                 }
             }
-            make_single_plane_frame(
-                &meta,
-                FourCc::new(*b"RG24"),
-                ColorSpace::Srgb,
-                width * 3,
-                out,
-            )
+            make_single_plane_frame(&meta, FourCc::RG24, ColorSpace::Srgb, width * 3, out)
         }
-        code if code == FourCc::new(*b"RGBA") => {
+        FourCc::RGBA => {
             let src = plane.data();
             let stride = plane.stride().max(width * 4);
             let mut out = vec![0u8; width * height * 3];
@@ -342,15 +311,9 @@ fn convert_packed_to_rgb(frame: FrameLease) -> Option<FrameLease> {
                     dst_px.copy_from_slice(&src_px[..3]);
                 }
             }
-            make_single_plane_frame(
-                &meta,
-                FourCc::new(*b"RG24"),
-                ColorSpace::Srgb,
-                width * 3,
-                out,
-            )
+            make_single_plane_frame(&meta, FourCc::RG24, ColorSpace::Srgb, width * 3, out)
         }
-        code if code == FourCc::new(*b"BGRA") => {
+        FourCc::BGRA => {
             let src = plane.data();
             let stride = plane.stride().max(width * 4);
             let mut out = vec![0u8; width * height * 3];
@@ -363,13 +326,7 @@ fn convert_packed_to_rgb(frame: FrameLease) -> Option<FrameLease> {
                     dst_px[2] = src_px[0];
                 }
             }
-            make_single_plane_frame(
-                &meta,
-                FourCc::new(*b"RG24"),
-                ColorSpace::Srgb,
-                width * 3,
-                out,
-            )
+            make_single_plane_frame(&meta, FourCc::RG24, ColorSpace::Srgb, width * 3, out)
         }
         _ => None,
     }
@@ -394,13 +351,7 @@ fn convert_rgb_to_luma(frame: FrameLease) -> Option<FrameLease> {
             *dst = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
         }
     }
-    make_single_plane_frame(
-        &meta,
-        FourCc::new(*b"R8  "),
-        ColorSpace::Unknown,
-        width,
-        out,
-    )
+    make_single_plane_frame(&meta, FourCc::R8, ColorSpace::Unknown, width, out)
 }
 
 fn convert_packed_to_luma(frame: FrameLease) -> Option<FrameLease> {
@@ -411,10 +362,8 @@ fn convert_packed_to_luma(frame: FrameLease) -> Option<FrameLease> {
     let plane = frame.planes().into_iter().next()?;
     let src = plane.data();
     match meta.format.code {
-        code if code == FourCc::new(*b"RG24") || code == FourCc::new(*b"RGB3") => {
-            convert_rgb_to_luma(frame)
-        }
-        code if code == FourCc::new(*b"BGR3") || code == FourCc::new(*b"BG24") => {
+        FourCc::RG24 | FourCc::RGB3 => convert_rgb_to_luma(frame),
+        FourCc::BGR3 | FourCc::BG24 => {
             let stride = plane.stride().max(width * 3);
             let mut out = vec![0u8; width * height];
             for y in 0..height {
@@ -427,22 +376,16 @@ fn convert_packed_to_luma(frame: FrameLease) -> Option<FrameLease> {
                     *dst = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
                 }
             }
-            make_single_plane_frame(
-                &meta,
-                FourCc::new(*b"R8  "),
-                ColorSpace::Unknown,
-                width,
-                out,
-            )
+            make_single_plane_frame(&meta, FourCc::R8, ColorSpace::Unknown, width, out)
         }
-        code if code == FourCc::new(*b"RGBA") || code == FourCc::new(*b"BGRA") => {
+        FourCc::RGBA | FourCc::BGRA => {
             let stride = plane.stride().max(width * 4);
             let mut out = vec![0u8; width * height];
             for y in 0..height {
                 let src_row = &src[y * stride..][..width * 4];
                 let dst_row = &mut out[y * width..(y + 1) * width];
                 for (dst, src_px) in dst_row.iter_mut().zip(src_row.chunks_exact(4)) {
-                    let (r, g, b) = if meta.format.code == FourCc::new(*b"RGBA") {
+                    let (r, g, b) = if meta.format.code == FourCc::RGBA {
                         (src_px[0] as u32, src_px[1] as u32, src_px[2] as u32)
                     } else {
                         (src_px[2] as u32, src_px[1] as u32, src_px[0] as u32)
@@ -450,13 +393,7 @@ fn convert_packed_to_luma(frame: FrameLease) -> Option<FrameLease> {
                     *dst = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
                 }
             }
-            make_single_plane_frame(
-                &meta,
-                FourCc::new(*b"R8  "),
-                ColorSpace::Unknown,
-                width,
-                out,
-            )
+            make_single_plane_frame(&meta, FourCc::R8, ColorSpace::Unknown, width, out)
         }
         _ => None,
     }

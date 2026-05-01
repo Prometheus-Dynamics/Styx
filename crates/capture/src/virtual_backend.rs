@@ -13,7 +13,7 @@ use crate::{CaptureConfig, CaptureDescriptor, CaptureSource, Mode};
 ///
 /// let pool = BufferPool::with_capacity(1, 128);
 /// let res = Resolution::new(4, 4).unwrap();
-/// let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+/// let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
 /// let mode = Mode {
 ///     id: ModeId { format, interval: None },
 ///     format,

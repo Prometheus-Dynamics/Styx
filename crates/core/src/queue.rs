@@ -79,6 +79,10 @@ pub struct QueueStats {
     pub send_timeouts: u64,
     pub recv_empty: u64,
     pub recv_timeouts: u64,
+    pub async_send_waits: u64,
+    pub async_recv_waits: u64,
+    pub async_send_wakes: u64,
+    pub async_recv_wakes: u64,
 }
 
 /// Bounded sender handle.
@@ -98,6 +102,7 @@ pub struct BoundedTx<T> {
 impl<T> BoundedTx<T> {
     /// Attempt to send without blocking.
     pub fn send(&self, value: T) -> SendOutcome {
+        let state = self.inner.wait_state.lock();
         if self.inner.closed.load(Ordering::Acquire) {
             return SendOutcome::Closed;
         }
@@ -107,6 +112,7 @@ impl<T> BoundedTx<T> {
             .push(value)
             .map(|_| SendOutcome::Ok)
             .unwrap_or(SendOutcome::Full);
+        drop(state);
         if matches!(outcome, SendOutcome::Full) {
             self.inner.send_backpressure.fetch_add(1, Ordering::Relaxed);
         }
@@ -118,8 +124,7 @@ impl<T> BoundedTx<T> {
 
     /// Close the queue to further sends.
     pub fn close(&self) {
-        self.inner.closed.store(true, Ordering::Release);
-        self.inner.notify_closed();
+        self.inner.close();
     }
 
     /// Current queue depth.
@@ -141,11 +146,13 @@ impl<T> BoundedTx<T> {
     pub fn send_wait(&self, mut value: T, timeout: Option<Duration>) -> SendWaitOutcome<T> {
         let deadline = timeout.map(|wait| Instant::now() + wait);
         loop {
+            let mut state = self.inner.wait_state.lock();
             if self.inner.closed.load(Ordering::Acquire) {
                 return SendWaitOutcome::Closed(value);
             }
             match self.inner.queue.push(value) {
                 Ok(()) => {
+                    drop(state);
                     self.inner.notify_recv_ready();
                     return SendWaitOutcome::Ok;
                 }
@@ -154,7 +161,6 @@ impl<T> BoundedTx<T> {
                 }
             }
 
-            let mut state = self.inner.wait_state.lock();
             let send_version = state.send_version;
             if self.inner.closed.load(Ordering::Acquire) {
                 return SendWaitOutcome::Closed(value);
@@ -200,17 +206,22 @@ impl<T> BoundedTx<T> {
     /// Async helper that yields on backpressure.
     pub async fn send_async(&self, mut value: T) -> SendOutcome {
         loop {
+            let notified = self.inner.send_notify.notified();
+            let state = self.inner.wait_state.lock();
             if self.inner.closed.load(Ordering::Acquire) {
                 return SendOutcome::Closed;
             }
             match self.inner.queue.push(value) {
                 Ok(()) => {
+                    drop(state);
                     self.inner.notify_recv_ready();
                     return SendOutcome::Ok;
                 }
                 Err(v) => {
+                    drop(state);
                     value = v;
-                    self.inner.send_notify.notified().await;
+                    self.inner.async_send_waits.fetch_add(1, Ordering::Relaxed);
+                    notified.await;
                 }
             }
         }
@@ -252,8 +263,7 @@ impl<T> BoundedRx<T> {
 
     /// Mark the queue as closed; senders will see `Closed` and exit.
     pub fn close(&self) {
-        self.inner.closed.store(true, Ordering::Release);
-        self.inner.notify_closed();
+        self.inner.close();
     }
 
     /// Current queue depth.
@@ -275,13 +285,21 @@ impl<T> BoundedRx<T> {
     pub fn recv_wait(&self, timeout: Option<Duration>) -> RecvWaitOutcome<T> {
         let deadline = timeout.map(|wait| Instant::now() + wait);
         loop {
-            match self.recv() {
-                RecvOutcome::Data(value) => return RecvWaitOutcome::Data(value),
-                RecvOutcome::Closed => return RecvWaitOutcome::Closed,
-                RecvOutcome::Empty => {}
+            let mut state = self.inner.wait_state.lock();
+            match self.inner.queue.pop() {
+                Some(value) => {
+                    drop(state);
+                    self.inner.notify_send_ready();
+                    return RecvWaitOutcome::Data(value);
+                }
+                None => {
+                    if self.inner.closed.load(Ordering::Acquire) {
+                        return RecvWaitOutcome::Closed;
+                    }
+                    self.inner.recv_empty.fetch_add(1, Ordering::Relaxed);
+                }
             }
 
-            let mut state = self.inner.wait_state.lock();
             let recv_version = state.recv_version;
             if self.inner.closed.load(Ordering::Acquire) && self.inner.queue.is_empty() {
                 return RecvWaitOutcome::Closed;
@@ -327,8 +345,12 @@ impl<T> BoundedRx<T> {
     /// Async helper that waits until data or closure.
     pub async fn recv_async(&self) -> RecvOutcome<T> {
         loop {
+            let notified = self.inner.recv_notify.notified();
             match self.recv() {
-                RecvOutcome::Empty => self.inner.recv_notify.notified().await,
+                RecvOutcome::Empty => {
+                    self.inner.async_recv_waits.fetch_add(1, Ordering::Relaxed);
+                    notified.await;
+                }
                 other => return other,
             }
         }
@@ -342,6 +364,10 @@ struct QueueInner<T> {
     send_timeouts: AtomicU64,
     recv_empty: AtomicU64,
     recv_timeouts: AtomicU64,
+    async_send_waits: AtomicU64,
+    async_recv_waits: AtomicU64,
+    async_send_wakes: AtomicU64,
+    async_recv_wakes: AtomicU64,
     wait_state: Mutex<QueueWaitState>,
     recv_cv: Condvar,
     send_cv: Condvar,
@@ -365,6 +391,28 @@ impl<T> QueueInner<T> {
             send_timeouts: self.send_timeouts.load(Ordering::Relaxed),
             recv_empty: self.recv_empty.load(Ordering::Relaxed),
             recv_timeouts: self.recv_timeouts.load(Ordering::Relaxed),
+            async_send_waits: self.async_send_waits.load(Ordering::Relaxed),
+            async_recv_waits: self.async_recv_waits.load(Ordering::Relaxed),
+            async_send_wakes: self.async_send_wakes.load(Ordering::Relaxed),
+            async_recv_wakes: self.async_recv_wakes.load(Ordering::Relaxed),
+        }
+    }
+
+    fn close(&self) {
+        {
+            let mut state = self.wait_state.lock();
+            self.closed.store(true, Ordering::Release);
+            state.recv_version = state.recv_version.saturating_add(1);
+            state.send_version = state.send_version.saturating_add(1);
+        }
+        self.recv_cv.notify_all();
+        self.send_cv.notify_all();
+        #[cfg(feature = "async")]
+        {
+            self.async_recv_wakes.fetch_add(1, Ordering::Relaxed);
+            self.async_send_wakes.fetch_add(1, Ordering::Relaxed);
+            self.recv_notify.notify_waiters();
+            self.send_notify.notify_waiters();
         }
     }
 
@@ -375,7 +423,9 @@ impl<T> QueueInner<T> {
         }
         self.recv_cv.notify_all();
         #[cfg(feature = "async")]
-        self.recv_notify.notify_waiters();
+        self.async_recv_wakes.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "async")]
+        self.recv_notify.notify_one();
     }
 
     fn notify_send_ready(&self) {
@@ -385,22 +435,9 @@ impl<T> QueueInner<T> {
         }
         self.send_cv.notify_all();
         #[cfg(feature = "async")]
-        self.send_notify.notify_waiters();
-    }
-
-    fn notify_closed(&self) {
-        {
-            let mut state = self.wait_state.lock();
-            state.recv_version = state.recv_version.saturating_add(1);
-            state.send_version = state.send_version.saturating_add(1);
-        }
-        self.recv_cv.notify_all();
-        self.send_cv.notify_all();
+        self.async_send_wakes.fetch_add(1, Ordering::Relaxed);
         #[cfg(feature = "async")]
-        {
-            self.recv_notify.notify_waiters();
-            self.send_notify.notify_waiters();
-        }
+        self.send_notify.notify_one();
     }
 }
 
@@ -424,6 +461,10 @@ pub fn bounded<T>(capacity: usize) -> (BoundedTx<T>, BoundedRx<T>) {
         send_timeouts: AtomicU64::new(0),
         recv_empty: AtomicU64::new(0),
         recv_timeouts: AtomicU64::new(0),
+        async_send_waits: AtomicU64::new(0),
+        async_recv_waits: AtomicU64::new(0),
+        async_send_wakes: AtomicU64::new(0),
+        async_recv_wakes: AtomicU64::new(0),
         wait_state: Mutex::new(QueueWaitState {
             recv_version: 0,
             send_version: 0,
@@ -443,16 +484,20 @@ pub fn bounded<T>(capacity: usize) -> (BoundedTx<T>, BoundedRx<T>) {
     )
 }
 
-/// Create an unbounded queue using a generous default capacity.
+/// Default capacity used by [`default_bounded`].
+pub const DEFAULT_QUEUE_CAPACITY: usize = 1024;
+
+/// Create a bounded queue using [`DEFAULT_QUEUE_CAPACITY`].
 ///
 /// # Example
 /// ```rust
-/// use styx_core::prelude::unbounded;
+/// use styx_core::prelude::{DEFAULT_QUEUE_CAPACITY, default_bounded};
 ///
-/// let (_tx, _rx) = unbounded::<u8>();
+/// let (tx, _rx) = default_bounded::<u8>();
+/// assert_eq!(tx.capacity(), DEFAULT_QUEUE_CAPACITY);
 /// ```
-pub fn unbounded<T>() -> (BoundedTx<T>, BoundedRx<T>) {
-    bounded(1024)
+pub fn default_bounded<T>() -> (BoundedTx<T>, BoundedRx<T>) {
+    bounded(DEFAULT_QUEUE_CAPACITY)
 }
 
 /// Newest-value queue: always returns the latest value without backpressure.
@@ -544,51 +589,7 @@ struct NewestInner<T> {
     closed: AtomicBool,
 }
 
+#[cfg(all(test, feature = "async"))]
+mod async_tests;
 #[cfg(test)]
-mod tests {
-    use super::{RecvWaitOutcome, SendWaitOutcome, bounded};
-    use std::thread;
-    use std::time::Duration;
-
-    #[test]
-    fn send_timeout_returns_value_when_queue_stays_full() {
-        let (tx, rx) = bounded(1);
-        assert!(matches!(tx.send(1), super::SendOutcome::Ok));
-
-        match tx.send_timeout(2, Duration::from_millis(5)) {
-            SendWaitOutcome::Timeout(value) => assert_eq!(value, 2),
-            other => panic!("expected timeout, got {other:?}"),
-        }
-
-        match rx.recv() {
-            super::RecvOutcome::Data(value) => assert_eq!(value, 1),
-            other => panic!("expected queued value, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn send_timeout_wakes_when_receiver_makes_capacity() {
-        let (tx, rx) = bounded(1);
-        assert!(matches!(tx.send(1), super::SendOutcome::Ok));
-
-        let rx_worker = rx.clone();
-        let join = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(10));
-            match rx_worker.recv_blocking() {
-                RecvWaitOutcome::Data(value) => assert_eq!(value, 1),
-                other => panic!("expected first queued value, got {other:?}"),
-            }
-        });
-
-        assert!(matches!(
-            tx.send_timeout(2, Duration::from_millis(50)),
-            SendWaitOutcome::Ok
-        ));
-
-        join.join().expect("receiver thread");
-        match rx.recv() {
-            super::RecvOutcome::Data(value) => assert_eq!(value, 2),
-            other => panic!("expected second queued value, got {other:?}"),
-        }
-    }
-}
+mod tests;

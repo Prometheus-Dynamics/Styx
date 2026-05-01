@@ -24,6 +24,7 @@ fn sample_to_u8(data: &[u8], offset: usize, bps: usize, bit_depth: u8) -> u8 {
     }
 }
 
+// Sampling needs raw layout fields in the inner path; grouping them would obscure call sites.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn sample_at(
     data: &[u8],

@@ -1,9 +1,9 @@
 use styx_core::prelude::*;
 
+use crate::decoder::raw::decode_strided_rows_to_rgb24;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
-use rayon::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
@@ -47,15 +47,11 @@ pub struct BgrToRgbDecoder {
 impl BgrToRgbDecoder {
     pub fn new(max_width: u32, max_height: u32) -> Self {
         let bytes = max_width as usize * max_height as usize * 3;
-        Self::with_input(
-            BufferPool::lazy(bytes, 4),
-            FourCc::new(*b"BGR3"),
-            "bgr-swap",
-        )
+        Self::with_input(BufferPool::lazy(bytes, 4), FourCc::BGR3, "bgr-swap")
     }
 
     pub fn with_pool(pool: BufferPool) -> Self {
-        Self::with_input(pool, FourCc::new(*b"BGR3"), "bgr-swap")
+        Self::with_input(pool, FourCc::BGR3, "bgr-swap")
     }
 
     pub fn with_input(pool: BufferPool, input: FourCc, impl_name: &'static str) -> Self {
@@ -63,7 +59,7 @@ impl BgrToRgbDecoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input,
-                output: FourCc::new(*b"RG24"),
+                output: FourCc::RG24,
                 name: "bgr2rgb",
                 impl_name,
             },
@@ -117,11 +113,14 @@ impl BgrToRgbDecoder {
         }
 
         let src = plane.data();
-        dst[..out_len]
-            .par_chunks_mut(row_bytes)
-            .enumerate()
-            .for_each(|(y, dst_line)| {
-                let src_line = &src[y * stride..][..width * 3];
+        decode_strided_rows_to_rgb24(
+            src,
+            &mut dst[..out_len],
+            height,
+            stride,
+            width * 3,
+            row_bytes,
+            |src_line, dst_line| {
                 #[cfg(target_arch = "aarch64")]
                 unsafe {
                     bgr_row_to_rgb24_neon(src_line, dst_line, width);
@@ -137,7 +136,8 @@ impl BgrToRgbDecoder {
                         dst_px[2] = src_px[0];
                     }
                 }
-            });
+            },
+        );
 
         Ok(FrameMeta::new(
             MediaFormat::new(
@@ -181,6 +181,7 @@ impl Codec for BgrToRgbDecoder {
 }
 
 #[cfg(test)]
+// This module still keeps compact inline tests next to decoder helpers.
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
@@ -188,7 +189,7 @@ mod tests {
     #[test]
     fn decode_into_matches_process() {
         let res = Resolution::new(2, 1).unwrap();
-        let format = MediaFormat::new(FourCc::new(*b"BGR3"), res, ColorSpace::Srgb);
+        let format = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
         let src = [1u8, 2, 3, 4, 5, 6]; // BGR BGR
         let make_frame = || {
             let mut buf = BufferPool::with_limits(1, 6, 1).lease();
@@ -214,7 +215,7 @@ mod tests {
         use crate::decoder::raw::SharedRawDecodeExt;
 
         let res = Resolution::new(2, 1).unwrap();
-        let format = MediaFormat::new(FourCc::new(*b"BGR3"), res, ColorSpace::Srgb);
+        let format = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
         let mut buf = BufferPool::with_limits(1, 6, 1).lease();
         buf.resize(6);
         buf.as_mut_slice().copy_from_slice(&[1, 2, 3, 4, 5, 6]);

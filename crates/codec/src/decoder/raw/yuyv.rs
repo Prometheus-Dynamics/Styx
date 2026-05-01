@@ -51,8 +51,8 @@ impl YuyvToRgbDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"YUYV"),
-                output: FourCc::new(*b"RG24"),
+                input: FourCc::YUYV,
+                output: FourCc::RG24,
                 name: "yuv2rgb",
                 impl_name: "yuyv-cpu",
             },
@@ -193,8 +193,8 @@ impl YuyvToLumaDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"YUYV"),
-                output: FourCc::new(*b"GREY"),
+                input: FourCc::YUYV,
+                output: FourCc::GREY,
                 name: "yuv2luma",
                 impl_name: "yuyv-luma",
             },
@@ -328,10 +328,7 @@ mod tests {
         buf.resize(bytes.len());
         buf.as_mut_slice().copy_from_slice(bytes);
         FrameLease::single_plane(
-            FrameMeta::new(
-                MediaFormat::new(FourCc::new(*b"YUYV"), res, ColorSpace::Srgb),
-                1,
-            ),
+            FrameMeta::new(MediaFormat::new(FourCc::YUYV, res, ColorSpace::Srgb), 1),
             buf,
             bytes.len(),
             stride,

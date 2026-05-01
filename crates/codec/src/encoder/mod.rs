@@ -1,5 +1,5 @@
 //! Encoder namespace with per-format modules.
 
 pub mod ffmpeg;
-#[cfg(feature = "codec-mozjpeg")]
+#[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
 pub mod mozjpeg;

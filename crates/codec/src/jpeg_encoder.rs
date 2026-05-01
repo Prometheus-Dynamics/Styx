@@ -21,7 +21,7 @@ impl MozjpegEncoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Encoder,
                 input,
-                output: FourCc::new(*b"MJPG"),
+                output: FourCc::MJPG,
                 name: "mjpeg",
                 impl_name: "mozjpeg",
             },
@@ -140,19 +140,19 @@ mod tests {
     #[test]
     fn mozjpeg_shared_output_exports_memfd_packet() {
         let res = Resolution::new(2, 2).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let mut buf = BufferPool::with_limits(1, 12, 1).lease();
         buf.resize(12);
         buf.as_mut_slice()
             .copy_from_slice(&[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]);
         let frame = FrameLease::single_plane(FrameMeta::new(fmt, 11), buf, 12, 6);
         let pool = SharedBufferPool::with_capacity(1, 4096).unwrap();
-        let encoded = MozjpegEncoder::new(FourCc::new(*b"RG24"), 85)
+        let encoded = MozjpegEncoder::new(FourCc::RG24, 85)
             .process_shared(&frame, &pool)
             .expect("shared encode")
             .expect("shared frame");
 
-        assert_eq!(encoded.meta().format.code, FourCc::new(*b"MJPG"));
+        assert_eq!(encoded.meta().format.code, FourCc::MJPG);
         assert_eq!(encoded.residency(), FrameResidency::CompressedPacket);
         let (_, export) = encoded.export_descriptor_and_backing().expect("export");
         let FrameBackingExport::Memfd { len, .. } = export else {

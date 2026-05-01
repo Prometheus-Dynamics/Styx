@@ -32,3 +32,6 @@ serde = { workspace = true, features = ["derive"], optional = true }
 utoipa = { workspace = true, optional = true }
 tracing.workspace = true
 libc.workspace = true
+
+[lints]
+workspace = true

@@ -35,7 +35,7 @@ impl TurbojpegEncoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Encoder,
                 input,
-                output: FourCc::new(*b"MJPG"),
+                output: FourCc::MJPG,
                 name: "mjpeg",
                 impl_name: "turbojpeg",
             },
@@ -295,7 +295,7 @@ impl TurbojpegDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"MJPG"),
+                input: FourCc::MJPG,
                 output,
                 name: "mjpeg",
                 impl_name: "turbojpeg",
@@ -427,18 +427,18 @@ mod tests {
     #[test]
     fn turbojpeg_encoder_encodes_gray_frames() {
         let res = Resolution::new(2, 2).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"GREY"), res, ColorSpace::Unknown);
+        let fmt = MediaFormat::new(FourCc::GREY, res, ColorSpace::Unknown);
         let mut buf = BufferPool::with_limits(1, 4, 1).lease();
         buf.resize(4);
         buf.as_mut_slice().copy_from_slice(&[0, 64, 128, 255]);
         let frame = FrameLease::single_plane(FrameMeta::new(fmt, 7), buf, 4, 2);
 
-        let encoded = TurbojpegEncoder::new(FourCc::new(*b"GREY"), 85)
+        let encoded = TurbojpegEncoder::new(FourCc::GREY, 85)
             .process(frame)
             .expect("encode frame");
         let plane = encoded.planes().into_iter().next().expect("encoded plane");
 
-        assert_eq!(encoded.meta().format.code, FourCc::new(*b"MJPG"));
+        assert_eq!(encoded.meta().format.code, FourCc::MJPG);
         assert_eq!(encoded.meta().timestamp, 7);
         assert!(!plane.data().is_empty());
     }

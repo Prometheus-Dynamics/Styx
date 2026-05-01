@@ -48,8 +48,8 @@ impl Nv12ToRgbDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"NV12"),
-                output: FourCc::new(*b"RG24"),
+                input: FourCc::NV12,
+                output: FourCc::RG24,
                 name: "yuv2rgb",
                 impl_name: "nv12-cpu",
             },
@@ -265,8 +265,8 @@ impl Nv12ToLumaDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"NV12"),
-                output: FourCc::new(*b"GREY"),
+                input: FourCc::NV12,
+                output: FourCc::GREY,
                 name: "yuv2luma",
                 impl_name: "nv12-luma",
             },
@@ -395,8 +395,8 @@ impl Nv12ToBgrDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"NV12"),
-                output: FourCc::new(*b"BG24"),
+                input: FourCc::NV12,
+                output: FourCc::BG24,
                 name: "yuv2bgr",
                 impl_name: "nv12-cpu",
             },

@@ -1,17 +1,23 @@
 use styx_core::prelude::FourCc;
 
+use crate::CodecImplementationId;
+
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct Preference {
-    pub impls: Vec<String>,
+    pub impls: Vec<CodecImplementationId>,
     pub prefer_hardware: bool,
 }
 
 impl Preference {
-    pub fn hardware_biased(impls: Vec<String>) -> Self {
+    pub fn hardware_biased<I, S>(impls: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<CodecImplementationId>,
+    {
         Self {
-            impls,
+            impls: impls.into_iter().map(Into::into).collect(),
             prefer_hardware: true,
         }
     }
@@ -23,8 +29,8 @@ impl Preference {
 pub struct CodecPolicy {
     pub(crate) fourcc: FourCc,
     pub(crate) prefer_hardware: bool,
-    pub(crate) ordered_impls: Vec<String>,
-    pub(crate) priorities: std::collections::HashMap<String, i32>,
+    pub(crate) ordered_impls: Vec<CodecImplementationId>,
+    pub(crate) priorities: std::collections::HashMap<CodecImplementationId, i32>,
 }
 
 impl CodecPolicy {
@@ -41,8 +47,8 @@ impl CodecPolicy {
 pub struct CodecPolicyBuilder {
     fourcc: FourCc,
     prefer_hardware: bool,
-    ordered_impls: Vec<String>,
-    priorities: std::collections::HashMap<String, i32>,
+    ordered_impls: Vec<CodecImplementationId>,
+    priorities: std::collections::HashMap<CodecImplementationId, i32>,
 }
 
 impl CodecPolicyBuilder {
@@ -54,15 +60,15 @@ impl CodecPolicyBuilder {
     pub fn ordered_impls<I, S>(mut self, impls: I) -> Self
     where
         I: IntoIterator<Item = S>,
-        S: Into<String>,
+        S: Into<CodecImplementationId>,
     {
-        self.ordered_impls = impls.into_iter().map(|s| s.into()).collect();
+        self.ordered_impls = impls.into_iter().map(Into::into).collect();
         self
     }
 
-    pub fn priority<S: Into<String>>(mut self, impl_name: S, priority: i32) -> Self {
-        self.priorities
-            .insert(impl_name.into().to_ascii_lowercase(), priority);
+    pub fn priority<S: Into<CodecImplementationId>>(mut self, impl_name: S, priority: i32) -> Self {
+        let impl_id = impl_name.into();
+        self.priorities.insert(impl_id, priority);
         self
     }
 

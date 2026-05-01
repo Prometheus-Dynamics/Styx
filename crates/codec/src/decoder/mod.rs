@@ -4,6 +4,7 @@
 pub mod ffmpeg;
 #[cfg(feature = "image")]
 mod image_compat;
+#[cfg(feature = "codec-jpeg-decoder")]
 pub mod mjpeg;
 pub mod raw;
 

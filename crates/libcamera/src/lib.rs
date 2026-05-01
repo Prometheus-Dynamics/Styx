@@ -1,32 +1,38 @@
 #![doc = include_str!("../README.md")]
+#![deny(clippy::print_stderr, clippy::print_stdout)]
 use styx_capture::prelude::*;
 
 #[cfg(feature = "probe")]
 use libcamera::{
     camera::Camera,
-    camera_manager::CameraManager,
-    camera_manager::HotplugEvent,
     color_space::{ColorSpace as LcColorSpace, Primaries as LcPrimaries, Range as LcRange},
     control,
     control_value::{ControlType, ControlValue as LcValue},
-    controls::ControlId,
+    controls::ControlId as LcControlId,
     properties::PropertyId,
     stream::StreamRole,
 };
 #[cfg(feature = "probe")]
 use smallvec::smallvec;
 #[cfg(feature = "probe")]
-use std::cell::UnsafeCell;
-#[cfg(feature = "probe")]
-use std::sync::mpsc;
-#[cfg(feature = "probe")]
-use std::sync::{Mutex, OnceLock};
-#[cfg(feature = "probe")]
-use std::time::Duration;
-#[cfg(feature = "probe")]
-use std::time::Instant;
-#[cfg(feature = "probe")]
 use styx_core::controls::{Access, ControlKind, ControlMetadata, ControlValue};
+
+#[cfg(feature = "probe")]
+mod manager;
+#[cfg(feature = "probe")]
+pub use manager::{
+    ActiveCameraUse, DEFAULT_LIBCAMERA_PROBE_CACHE_MS, LibcameraManagerConfig, begin_camera_use,
+    find_camera, manager_config, set_manager_config, subscribe_hotplug_events, try_stop_if_idle,
+};
+#[cfg(feature = "probe")]
+use manager::{read_probe_cache, with_manager_mut, write_probe_cache};
+
+#[cfg(feature = "probe")]
+pub const LIBCAMERA_FRAME_DURATION_LIMITS: styx_core::controls::ControlId =
+    styx_core::controls::ControlId(30);
+#[cfg(feature = "probe")]
+pub const LIBCAMERA_NOISE_REDUCTION_MODE: styx_core::controls::ControlId =
+    styx_core::controls::ControlId(10002);
 
 /// Libcamera device information with a descriptor built from advertised formats.
 #[derive(Clone)]
@@ -82,10 +88,11 @@ fn collect_devices() -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
         let cameras = manager.cameras();
         if debug_enabled() {
             let ids: Vec<String> = cameras.iter().map(|c| c.id().to_string()).collect();
-            eprintln!(
-                "libcamera probe: discovered {} camera(s): {:?}",
-                ids.len(),
-                ids
+            tracing::debug!(
+                backend = "libcamera",
+                camera_count = ids.len(),
+                camera_ids = ?ids,
+                "libcamera probe discovered cameras"
             );
         }
 
@@ -98,9 +105,11 @@ fn collect_devices() -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
                         camera.id()
                     ));
                     if debug_enabled() {
-                        eprintln!(
-                            "libcamera probe: failed to build descriptor for {}: {err}",
-                            camera.id()
+                        tracing::debug!(
+                            backend = "libcamera",
+                            camera_id = %camera.id(),
+                            error = %err,
+                            "libcamera probe failed to build descriptor"
                         );
                     }
                 }
@@ -112,7 +121,11 @@ fn collect_devices() -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
         Ok(result) => result,
         Err(err) => {
             if debug_enabled() {
-                eprintln!("libcamera manager init failed: {err}");
+                tracing::debug!(
+                    backend = "libcamera",
+                    error = %err,
+                    "libcamera manager init failed"
+                );
             }
             write_probe_cache(&[]);
             return (
@@ -125,147 +138,8 @@ fn collect_devices() -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
 }
 
 #[cfg(feature = "probe")]
-static MANAGER: OnceLock<SharedManager> = OnceLock::new();
-#[cfg(feature = "probe")]
-static INIT_GUARD: Mutex<()> = Mutex::new(());
-
-#[cfg(feature = "probe")]
-static PROBE_CACHE: OnceLock<Mutex<ProbeCache>> = OnceLock::new();
-
-#[cfg(feature = "probe")]
-#[derive(Default)]
-struct ProbeCache {
-    last_probe_at: Option<Instant>,
-    cached_devices: Vec<LibcameraDeviceInfo>,
-}
-
-#[cfg(feature = "probe")]
-fn probe_cache_ttl() -> Duration {
-    const DEFAULT_MS: u64 = 1_000;
-    let ms = std::env::var("STYX_LIBCAMERA_PROBE_CACHE_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_MS);
-    Duration::from_millis(ms)
-}
-
-#[cfg(feature = "probe")]
 fn debug_enabled() -> bool {
     std::env::var_os("STYX_LIBCAMERA_DEBUG").is_some()
-}
-
-#[cfg(feature = "probe")]
-fn read_probe_cache() -> Option<Vec<LibcameraDeviceInfo>> {
-    let cache = PROBE_CACHE.get_or_init(|| Mutex::new(ProbeCache::default()));
-    let ttl = probe_cache_ttl();
-    let guard = cache.lock().ok()?;
-    let last = guard.last_probe_at?;
-    if last.elapsed() <= ttl {
-        return Some(guard.cached_devices.clone());
-    }
-    None
-}
-
-#[cfg(feature = "probe")]
-fn write_probe_cache(devices: &[LibcameraDeviceInfo]) {
-    let cache = PROBE_CACHE.get_or_init(|| Mutex::new(ProbeCache::default()));
-    if let Ok(mut guard) = cache.lock() {
-        guard.last_probe_at = Some(Instant::now());
-        guard.cached_devices = devices.to_vec();
-    }
-}
-
-#[cfg(feature = "probe")]
-struct SharedManager {
-    manager: UnsafeCell<CameraManager>,
-    lock: Mutex<()>,
-}
-
-#[cfg(feature = "probe")]
-unsafe impl Send for SharedManager {}
-#[cfg(feature = "probe")]
-unsafe impl Sync for SharedManager {}
-
-#[cfg(feature = "probe")]
-fn ensure_started(shared: &SharedManager) -> Result<(), String> {
-    let _guard = shared.lock.lock().map_err(|e| e.to_string())?;
-    let mgr = unsafe { &mut *shared.manager.get() };
-    if !mgr.is_started() {
-        mgr.start().map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-#[cfg(feature = "probe")]
-pub fn manager() -> Result<&'static CameraManager, String> {
-    if let Some(mgr) = MANAGER.get() {
-        ensure_started(mgr)?;
-        return Ok(unsafe { &*mgr.manager.get() });
-    }
-
-    // Serialize creation to avoid multiple CameraManager instances.
-    let _guard = INIT_GUARD.lock().map_err(|e| e.to_string())?;
-    if let Some(mgr) = MANAGER.get() {
-        return Ok(unsafe { &*mgr.manager.get() });
-    }
-
-    let mgr = CameraManager::new().map_err(|e| e.to_string())?;
-    MANAGER
-        .set(SharedManager {
-            manager: UnsafeCell::new(mgr),
-            lock: Mutex::new(()),
-        })
-        .map_err(|_| "failed to set libcamera manager".to_string())?;
-    if let Some(shared) = MANAGER.get() {
-        ensure_started(shared)?;
-    }
-    MANAGER
-        .get()
-        .map(|m| unsafe { &*m.manager.get() })
-        .ok_or_else(|| "failed to init libcamera manager".to_string())
-}
-
-/// Run a closure with exclusive mutable access to the shared `CameraManager`.
-///
-/// This is required to call lifecycle methods like `stop()`/`try_stop()` while still allowing
-/// other code to hold a `'static` reference for enumeration/capture.
-#[cfg(feature = "probe")]
-pub fn with_manager_mut<R>(f: impl FnOnce(&mut CameraManager) -> R) -> Result<R, String> {
-    let shared = MANAGER
-        .get()
-        .or_else(|| {
-            let _ = manager();
-            MANAGER.get()
-        })
-        .ok_or_else(|| "failed to init libcamera manager".to_string())?;
-    let _guard = shared.lock.lock().map_err(|e| e.to_string())?;
-    let mgr = unsafe { &mut *shared.manager.get() };
-    if !mgr.is_started() {
-        mgr.start().map_err(|e| e.to_string())?;
-    }
-    Ok(f(mgr))
-}
-
-/// Subscribe to libcamera hotplug events through the shared camera manager.
-#[cfg(feature = "probe")]
-pub fn subscribe_hotplug_events() -> Result<mpsc::Receiver<HotplugEvent>, String> {
-    with_manager_mut(|manager| manager.subscribe_hotplug_events())
-}
-
-/// Best-effort attempt to stop libcamera when no camera handles are alive.
-///
-/// This releases large PiSP/IPA allocations (seen as `/memfd:pisp_*`) so idle memory stays low.
-#[cfg(feature = "probe")]
-pub fn try_stop_if_idle() -> Result<(), String> {
-    let Some(shared) = MANAGER.get() else {
-        return Ok(());
-    };
-    let _guard = shared.lock.lock().map_err(|e| e.to_string())?;
-    let mgr = unsafe { &mut *shared.manager.get() };
-    if !mgr.is_started() {
-        return Ok(());
-    }
-    mgr.try_stop().map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "probe")]
@@ -345,10 +219,10 @@ fn map_pixel_format_to_fourcc(pf: libcamera::pixel_format::PixelFormat) -> FourC
     match base.to_u32().to_le_bytes() {
         // Normalize libcamera's RGB/BGR FourCCs into Styx's "friendly" aliases.
         // This keeps the rest of the stack consistent (encoders/decoders default to `RG24`).
-        bytes if bytes == *b"RGB3" => return FourCc::new(*b"RG24"),
-        bytes if bytes == *b"BGR3" => return FourCc::new(*b"BG24"),
-        bytes if bytes == *b"RGB0" => return FourCc::new(*b"XR24"),
-        bytes if bytes == *b"BGR0" => return FourCc::new(*b"XB24"),
+        bytes if bytes == *b"RGB3" => return FourCc::RG24,
+        bytes if bytes == *b"BGR3" => return FourCc::BG24,
+        bytes if bytes == *b"RGB0" => return FourCc::XR24,
+        bytes if bytes == *b"BGR0" => return FourCc::XB24,
         _ => {}
     }
     let Some(info) = pf.info() else {
@@ -444,10 +318,10 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
 
         // Prefer dynamic lookup so we include draft/vendor controls (e.g. NoiseReductionMode)
         // that aren't covered by the generated `TryFrom` tables.
-        let name = ControlId::from_id(id)
+        let name = LcControlId::from_id(id)
             .map(|cid| cid.name().to_string())
             .or_else(|| {
-                ControlId::try_from(id)
+                LcControlId::try_from(id)
                     .ok()
                     .map(|cid| cid.name().to_string())
             })
@@ -474,7 +348,7 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
                 && allowed.iter().enumerate().all(|(idx, v)| *v == idx as i64);
 
             if contiguous {
-                let enumerators = ControlId::from_id(id)
+                let enumerators = LcControlId::from_id(id)
                     .map(|cid| cid.enumerators_map())
                     .unwrap_or_default();
                 menu = Some(
@@ -495,20 +369,25 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
         // so patch up well-known PiSP controls by numeric ID.
         let (name, menu, metadata) = match (id, name.as_str(), menu.as_ref()) {
             // libcamera::controls::draft::NoiseReductionMode
-            (10002, "ctrl_10002", Some(existing)) if existing.iter().all(|s| s.is_empty()) => (
-                "NoiseReductionMode".to_string(),
-                Some(vec![
-                    "NoiseReductionModeOff".into(),
-                    "NoiseReductionModeFast".into(),
-                    "NoiseReductionModeHighQuality".into(),
-                    "NoiseReductionModeMinimal".into(),
-                    "NoiseReductionModeZSL".into(),
-                ]),
-                ControlMetadata {
-                    requires_tdn_output: true,
-                },
-            ),
-            (10002, "ctrl_10002", None) => (
+            (id, "ctrl_10002", Some(existing))
+                if id == LIBCAMERA_NOISE_REDUCTION_MODE.0
+                    && existing.iter().all(|s| s.is_empty()) =>
+            {
+                (
+                    "NoiseReductionMode".to_string(),
+                    Some(vec![
+                        "NoiseReductionModeOff".into(),
+                        "NoiseReductionModeFast".into(),
+                        "NoiseReductionModeHighQuality".into(),
+                        "NoiseReductionModeMinimal".into(),
+                        "NoiseReductionModeZSL".into(),
+                    ]),
+                    ControlMetadata {
+                        requires_tdn_output: true,
+                    },
+                )
+            }
+            (id, "ctrl_10002", None) if id == LIBCAMERA_NOISE_REDUCTION_MODE.0 => (
                 "NoiseReductionMode".to_string(),
                 Some(vec![
                     "NoiseReductionModeOff".into(),
@@ -528,7 +407,7 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
         if matches!(kind, ControlKind::Unknown) {
             continue;
         }
-        let access = if id == 30 || multivalue {
+        let access = if id == LIBCAMERA_FRAME_DURATION_LIMITS.0 || multivalue {
             Access::ReadOnly
         } else {
             Access::ReadWrite
@@ -688,11 +567,12 @@ impl CaptureSource for LibcameraCapture {
 }
 
 pub mod prelude {
-    pub use crate::{LibcameraCapture, LibcameraDeviceInfo};
     #[cfg(feature = "probe")]
     pub use crate::{
-        probe_devices, probe_devices_uncached, probe_devices_uncached_with_errors,
-        probe_devices_with_errors, subscribe_hotplug_events,
+        DEFAULT_LIBCAMERA_PROBE_CACHE_MS, LibcameraManagerConfig, manager_config, probe_devices,
+        probe_devices_uncached, probe_devices_uncached_with_errors, probe_devices_with_errors,
+        set_manager_config, subscribe_hotplug_events,
     };
+    pub use crate::{LibcameraCapture, LibcameraDeviceInfo};
     pub use styx_capture::prelude::*;
 }

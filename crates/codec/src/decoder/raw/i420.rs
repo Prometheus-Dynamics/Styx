@@ -33,8 +33,8 @@ impl I420ToRgbDecoder {
         Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
-                input: FourCc::new(*b"I420"),
-                output: FourCc::new(*b"RG24"),
+                input: FourCc::I420,
+                output: FourCc::RG24,
                 name: "yuv2rgb",
                 impl_name: "i420-cpu",
             },

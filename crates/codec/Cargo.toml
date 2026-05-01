@@ -19,7 +19,7 @@ path = "src/lib.rs"
 styx-core.workspace = true
 styx-capture.workspace = true
 thiserror.workspace = true
-jpeg-decoder.workspace = true
+jpeg-decoder = { workspace = true, optional = true }
 zune-jpeg = { workspace = true, optional = true }
 zune-core = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
@@ -27,19 +27,24 @@ mozjpeg = { workspace = true, optional = true }
 turbojpeg = { workspace = true, optional = true }
 ffmpeg-next = { workspace = true, optional = true }
 smallvec.workspace = true
-yuvutils-rs.workspace = true
-rayon.workspace = true
-libc.workspace = true
+yuvutils-rs = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 utoipa = { workspace = true, optional = true }
 
 [features]
 default = []
 dynamic-image = ["dep:image", "image"]
-image = []
+image = ["dep:rayon", "dep:yuvutils-rs"]
+codec-jpeg-decoder = ["dep:jpeg-decoder"]
+raw-decoders = ["dep:rayon", "dep:yuvutils-rs"]
 codec-zune = ["zune-jpeg", "zune-core"]
 codec-mozjpeg = ["mozjpeg"]
 codec-turbojpeg = ["turbojpeg"]
-codec-ffmpeg = ["ffmpeg-next"]
+codec-ffmpeg = ["ffmpeg-next", "dep:libc"]
 serde = ["dep:serde", "styx-core/serde", "styx-capture/serde"]
 schema = ["serde", "dep:utoipa", "styx-core/schema", "styx-capture/schema"]
+
+[lints]
+workspace = true

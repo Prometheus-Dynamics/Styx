@@ -14,7 +14,7 @@ pub struct MjpegDecoder {
 }
 
 impl MjpegDecoder {
-    /// Create a decoder that outputs the given FourCc (e.g. `FourCc::new(*b"RG24")`).
+    /// Create a decoder that outputs the given FourCc (e.g. `FourCc::RG24`).
     pub fn new(output: FourCc) -> Self {
         Self::with_pool(output, BufferPool::lazy(1 << 20, 4))
     }
@@ -26,7 +26,7 @@ impl MjpegDecoder {
 
     /// Create a decoder with a caller-provided buffer pool.
     pub fn with_pool(output: FourCc, pool: BufferPool) -> Self {
-        Self::with_pool_for_input(FourCc::new(*b"MJPG"), output, pool)
+        Self::with_pool_for_input(FourCc::MJPG, output, pool)
     }
 
     /// Create a decoder for a specific input FourCc using a caller-provided buffer pool.

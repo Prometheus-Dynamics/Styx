@@ -88,7 +88,7 @@ pub(crate) fn probe_v4l2m2m_encoder(enc: &FfmpegVideoEncoder) -> Result<(), Code
             let meta = FrameMeta::new(MediaFormat::new(input, resolution, ColorSpace::Unknown), 0);
 
             let frame = match input {
-                FourCc { .. } if input == FourCc::new(*b"RG24") => {
+                FourCc { .. } if input == FourCc::RG24 => {
                     let bytes = (w as usize).saturating_mul(h as usize).saturating_mul(3);
                     let pool = BufferPool::with_capacity(1, bytes.max(1));
                     let mut buf = pool.lease();
@@ -97,7 +97,7 @@ pub(crate) fn probe_v4l2m2m_encoder(enc: &FfmpegVideoEncoder) -> Result<(), Code
                     let stride = (w as usize).saturating_mul(3).max(1);
                     FrameLease::single_plane(meta, buf, bytes, stride)
                 }
-                FourCc { .. } if input == FourCc::new(*b"NV12") => {
+                FourCc { .. } if input == FourCc::NV12 => {
                     let y_len = (w as usize).saturating_mul(h as usize);
                     let uv_len = (w as usize).saturating_mul(h as usize).saturating_div(2);
                     let pool = BufferPool::with_capacity(2, y_len.max(uv_len).max(1));

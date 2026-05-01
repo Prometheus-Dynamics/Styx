@@ -10,7 +10,7 @@ capture API.
 ## Install
 ```toml
 [dependencies]
-styx-libcamera = "1.0.0"
+styx-libcamera = "2.0.0"
 ```
 
 ## Features
@@ -19,11 +19,15 @@ styx-libcamera = "1.0.0"
 
 ## Usage
 Enable the `libcamera` feature on the `styx` crate to access probing helpers:
-```rust,ignore
-use styx::prelude::*;
+```rust
+#[cfg(feature = "probe")]
+{
+use styx_libcamera::probe_devices_with_errors;
 
-let devices = probe_all();
+let (devices, errors) = probe_devices_with_errors();
 for device in devices {
-    println!("{} backends: {}", device.identity.name, device.backends.len());
+    println!("{} modes: {}", device.id, device.descriptor.modes.len());
+}
+assert!(errors.iter().all(|err| !err.is_empty()));
 }
 ```

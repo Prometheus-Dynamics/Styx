@@ -21,6 +21,7 @@ use bayer_unpack::{min_stride, unpack_mipi_packed_to_u16_le};
 use bayer_unpack::{sample_at, unpack_raw10_row};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+// Bayer pattern names are conventional four-letter sensor layout identifiers.
 #[allow(clippy::upper_case_acronyms)]
 pub(super) enum BayerPattern {
     RGGB,
@@ -44,7 +45,7 @@ impl BayerToRgbDecoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input,
-                output: FourCc::new(*b"RG24"),
+                output: FourCc::RG24,
                 name: "bayer2rgb",
                 impl_name: "bayer-bilinear",
             },

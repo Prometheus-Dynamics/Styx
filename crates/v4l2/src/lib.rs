@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![deny(clippy::print_stderr, clippy::print_stdout)]
 use smallvec::smallvec;
 use std::num::NonZeroU32;
 use std::panic::catch_unwind;
@@ -97,7 +98,8 @@ fn build_info(path: &std::path::Path) -> Result<V4l2DeviceInfo, Box<dyn std::err
             Ok(sizes) => sizes,
             Err(_) => continue,
         };
-        // Pick discrete sizes; stepwise could be supported later.
+        // Advertise concrete modes only. Stepwise frame-size ranges are not
+        // expanded because doing so would invent modes the driver did not list.
         for size in framesizes {
             match size.size {
                 FrameSizeEnum::Discrete(fs) => {
@@ -261,15 +263,9 @@ fn map_color_space(cs: Option<V4lColorspace>) -> ColorSpace {
 }
 
 fn guess_color_space(fcc: FourCc) -> ColorSpace {
-    match &fcc.to_u32().to_le_bytes() {
-        b"MJPG" | b"JPEG" | b"RG24" | b"RGB3" | b"RGB6" | b"BG24" | b"RGBA" | b"BGRA" | b"XB24"
-        | b"XR24" => ColorSpace::Srgb,
-        b"NV12" | b"NV21" | b"NV16" | b"NV61" | b"NV24" | b"NV42" | b"YUYV" | b"YVYU" | b"UYVY"
-        | b"VYUY" | b"I420" | b"YU12" | b"YV12" | b"YU16" | b"YV16" | b"YU24" | b"YV24" => {
-            ColorSpace::Bt709
-        }
-        _ => ColorSpace::Unknown,
-    }
+    fcc.info()
+        .default_color_space
+        .unwrap_or(ColorSpace::Unknown)
 }
 
 pub mod prelude {

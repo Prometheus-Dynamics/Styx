@@ -10,7 +10,13 @@ pub(crate) fn init_ffmpeg() -> Result<(), CodecError> {
 
 /// Scaling context wrapper so we can mark it Send (FFmpeg types are raw pointers).
 pub(crate) struct SendSyncScalingContext(pub ffmpeg_next::software::scaling::context::Context);
+
+// SAFETY: the wrapper is stored inside codec state that is externally synchronized by the codec's
+// mutexes. Moving the context across threads does not permit concurrent access by itself.
 unsafe impl Send for SendSyncScalingContext {}
+
+// SAFETY: callers access the wrapped FFmpeg scaling context only through synchronized codec state;
+// this type is not exposed as a public shared mutable API.
 unsafe impl Sync for SendSyncScalingContext {}
 
 pub(crate) fn pixel_format_for_fourcc(fourcc: FourCc) -> Option<PixelFormat> {
@@ -37,13 +43,13 @@ pub(crate) fn bytes_per_pixel(fmt: PixelFormat) -> Option<usize> {
 
 pub(crate) fn fourcc_for_pixel_format(fmt: PixelFormat) -> Option<FourCc> {
     match fmt {
-        PixelFormat::NV12 => Some(FourCc::new(*b"NV12")),
-        PixelFormat::YUV420P | PixelFormat::YUVJ420P => Some(FourCc::new(*b"I420")),
-        PixelFormat::YUYV422 => Some(FourCc::new(*b"YUYV")),
-        PixelFormat::RGB24 => Some(FourCc::new(*b"RG24")),
-        PixelFormat::RGBA => Some(FourCc::new(*b"RGBA")),
-        PixelFormat::BGR24 => Some(FourCc::new(*b"BGR3")),
-        PixelFormat::BGRA => Some(FourCc::new(*b"BGRA")),
+        PixelFormat::NV12 => Some(FourCc::NV12),
+        PixelFormat::YUV420P | PixelFormat::YUVJ420P => Some(FourCc::I420),
+        PixelFormat::YUYV422 => Some(FourCc::YUYV),
+        PixelFormat::RGB24 => Some(FourCc::RG24),
+        PixelFormat::RGBA => Some(FourCc::RGBA),
+        PixelFormat::BGR24 => Some(FourCc::BGR3),
+        PixelFormat::BGRA => Some(FourCc::BGRA),
         _ => None,
     }
 }

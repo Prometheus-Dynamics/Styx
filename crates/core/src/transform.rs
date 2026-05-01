@@ -58,22 +58,30 @@ impl fmt::Display for TransformError {
 }
 
 fn packed_bytes_per_pixel(code: FourCc) -> Option<usize> {
-    if code == FourCc::new(*b"R8  ") || code == FourCc::new(*b"GREY") {
-        Some(1)
-    } else if code == FourCc::new(*b"RG24")
-        || code == FourCc::new(*b"RGB3")
-        || code == FourCc::new(*b"BGR3")
-        || code == FourCc::new(*b"BG24")
-    {
-        Some(3)
-    } else if code == FourCc::new(*b"RGBA") || code == FourCc::new(*b"BGRA") {
-        Some(4)
-    } else {
-        None
+    code.packed_bytes_per_pixel()
+}
+
+/// Runtime sizing for the process-wide packed-transform pool.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct TransformPoolConfig {
+    pub min: usize,
+    pub bytes: usize,
+    pub spare: usize,
+}
+
+impl Default for TransformPoolConfig {
+    fn default() -> Self {
+        Self {
+            min: 2,
+            bytes: 1,
+            spare: 4,
+        }
     }
 }
 
-static TRANSFORM_POOL: OnceLock<Mutex<(BufferPool, usize)>> = OnceLock::new();
+static TRANSFORM_POOL: OnceLock<Mutex<(BufferPool, TransformPoolConfig)>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub struct TransformResidencyCapabilities {
@@ -84,13 +92,52 @@ pub struct TransformResidencyCapabilities {
 }
 
 fn transform_pool(min_size: usize) -> BufferPool {
+    let default_config = TransformPoolConfig {
+        bytes: min_size,
+        ..TransformPoolConfig::default()
+    };
     let lock = TRANSFORM_POOL
-        .get_or_init(|| Mutex::new((BufferPool::with_limits(2, min_size, 4), min_size)));
+        .get_or_init(|| Mutex::new((BufferPool::with_limits(2, min_size, 4), default_config)));
     let mut guard = lock.lock().unwrap();
-    if guard.1 < min_size {
-        *guard = (BufferPool::with_limits(2, min_size, 4), min_size);
+    if guard.1.bytes < min_size {
+        guard.1.bytes = min_size;
+        guard.0 = BufferPool::with_limits(guard.1.min, guard.1.bytes, guard.1.spare);
     }
     guard.0.clone()
+}
+
+/// Configure the process-wide packed-transform pool used by `transform_packed_frame`.
+pub fn configure_transform_pool(config: TransformPoolConfig) {
+    let config = TransformPoolConfig {
+        min: config.min,
+        bytes: config.bytes.max(1),
+        spare: config.spare,
+    };
+    let lock = TRANSFORM_POOL.get_or_init(|| {
+        Mutex::new((
+            BufferPool::with_limits(config.min, config.bytes, config.spare),
+            config,
+        ))
+    });
+    if let Ok(mut guard) = lock.lock() {
+        *guard = (
+            BufferPool::with_limits(config.min, config.bytes, config.spare),
+            config,
+        );
+    }
+}
+
+pub fn transform_pool_config() -> TransformPoolConfig {
+    let lock = TRANSFORM_POOL.get_or_init(|| {
+        let config = TransformPoolConfig::default();
+        Mutex::new((
+            BufferPool::with_limits(config.min, config.bytes, config.spare),
+            config,
+        ))
+    });
+    lock.lock()
+        .map(|guard| guard.1)
+        .unwrap_or_else(|_| TransformPoolConfig::default())
 }
 
 pub fn transform_pool_stats() -> Option<BufferPoolStats> {
@@ -103,7 +150,12 @@ pub fn reset_transform_pool() {
     if let Some(lock) = TRANSFORM_POOL.get()
         && let Ok(mut guard) = lock.lock()
     {
-        *guard = (BufferPool::with_limits(0, 1, 0), 1);
+        let config = TransformPoolConfig {
+            min: 0,
+            bytes: 1,
+            spare: 0,
+        };
+        *guard = (BufferPool::with_limits(0, 1, 0), config);
     }
 }
 
@@ -211,7 +263,7 @@ mod tests {
 
     fn make_frame_rg24(width: u32, height: u32, pixels: &[u8]) -> FrameLease {
         let res = Resolution::new(width, height).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let layout = plane_layout_from_dims(res.width, res.height, 3);
         let pool = BufferPool::with_capacity(1, layout.len);
         let mut buf = pool.lease();
@@ -252,5 +304,58 @@ mod tests {
         .expect("transform");
         let out_plane = out.planes()[0].data().to_vec();
         assert_eq!(out_plane, vec![2, 0, 0, 1, 0, 0]);
+    }
+
+    #[test]
+    fn transform_pool_config_is_runtime_configurable() {
+        configure_transform_pool(TransformPoolConfig {
+            min: 3,
+            bytes: 128,
+            spare: 5,
+        });
+
+        assert_eq!(
+            transform_pool_config(),
+            TransformPoolConfig {
+                min: 3,
+                bytes: 128,
+                spare: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn repeated_hd_transforms_reuse_pool() {
+        reset_transform_pool();
+        configure_transform_pool(TransformPoolConfig {
+            min: 1,
+            bytes: 640 * 360 * 3,
+            spare: 2,
+        });
+        for (width, height) in [(1280, 720), (1920, 1080)] {
+            let pixels = vec![0x7f; width * height * 3];
+            let frame = make_frame_rg24(width as u32, height as u32, &pixels);
+
+            for transform in [
+                FrameTransform {
+                    rotation: Rotation90::Deg90,
+                    mirror: false,
+                },
+                FrameTransform {
+                    rotation: Rotation90::Deg180,
+                    mirror: true,
+                },
+                FrameTransform {
+                    rotation: Rotation90::Deg270,
+                    mirror: false,
+                },
+            ] {
+                let out = transform_packed_frame(&frame, transform).expect("transform");
+                assert_eq!(out.planes()[0].data().len(), width * height * 3);
+            }
+        }
+
+        let stats = transform_pool_stats().expect("pool stats");
+        assert!(stats.chunk_size >= 1920 * 1080 * 3);
     }
 }

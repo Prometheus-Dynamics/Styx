@@ -86,7 +86,7 @@ impl IntoFrameLease for DynamicImage {
                 let res = Resolution::new(width, height)?;
                 let stride = width as usize;
                 frame_from_raw(
-                    FourCc::new(*b"R8  "),
+                    FourCc::R8,
                     res,
                     ColorSpace::Unknown,
                     timestamp,
@@ -99,7 +99,7 @@ impl IntoFrameLease for DynamicImage {
                 let res = Resolution::new(width, height)?;
                 let stride = (width as usize) * 3;
                 frame_from_raw(
-                    FourCc::new(*b"RG24"),
+                    FourCc::RG24,
                     res,
                     ColorSpace::Srgb,
                     timestamp,
@@ -112,7 +112,7 @@ impl IntoFrameLease for DynamicImage {
                 let res = Resolution::new(width, height)?;
                 let stride = (width as usize) * 4;
                 frame_from_raw(
-                    FourCc::new(*b"RGBA"),
+                    FourCc::RGBA,
                     res,
                     ColorSpace::Srgb,
                     timestamp,
@@ -136,7 +136,7 @@ impl ToFrameLease for DynamicImage {
                 let res = Resolution::new(width, height)?;
                 let stride = width as usize;
                 frame_from_raw_copy(
-                    FourCc::new(*b"R8  "),
+                    FourCc::R8,
                     res,
                     ColorSpace::Unknown,
                     timestamp,
@@ -149,7 +149,7 @@ impl ToFrameLease for DynamicImage {
                 let res = Resolution::new(width, height)?;
                 let stride = (width as usize) * 3;
                 frame_from_raw_copy(
-                    FourCc::new(*b"RG24"),
+                    FourCc::RG24,
                     res,
                     ColorSpace::Srgb,
                     timestamp,
@@ -162,7 +162,7 @@ impl ToFrameLease for DynamicImage {
                 let res = Resolution::new(width, height)?;
                 let stride = (width as usize) * 4;
                 frame_from_raw_copy(
-                    FourCc::new(*b"RGBA"),
+                    FourCc::RGBA,
                     res,
                     ColorSpace::Srgb,
                     timestamp,
@@ -189,29 +189,85 @@ pub fn dynamic_image_to_frame_with_format(
     timestamp: u64,
 ) -> Option<FrameLease> {
     match fourcc {
-        code if code == FourCc::new(*b"R8  ") || code == FourCc::new(*b"GREY") => {
+        code if code == FourCc::R8 || code == FourCc::GREY => {
             DynamicImage::ImageLuma8(img.into_luma8()).into_frame(timestamp)
         }
-        code if code == FourCc::new(*b"RG24") => {
+        code if code == FourCc::RG24 => {
             DynamicImage::ImageRgb8(img.into_rgb8()).into_frame(timestamp)
         }
-        code if code == FourCc::new(*b"RGBA") => {
+        code if code == FourCc::RGBA => {
             DynamicImage::ImageRgba8(img.into_rgba8()).into_frame(timestamp)
         }
         _ => None,
     }
 }
 
-static DYNAMIC_IMAGE_POOL: OnceLock<Mutex<(BufferPool, usize)>> = OnceLock::new();
+/// Runtime sizing for the process-wide dynamic-image staging pool.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicImagePoolConfig {
+    pub min: usize,
+    pub bytes: usize,
+    pub spare: usize,
+}
+
+impl Default for DynamicImagePoolConfig {
+    fn default() -> Self {
+        Self {
+            min: 2,
+            bytes: 1,
+            spare: 4,
+        }
+    }
+}
+
+static DYNAMIC_IMAGE_POOL: OnceLock<Mutex<(BufferPool, DynamicImagePoolConfig)>> = OnceLock::new();
 
 fn static_pool(chunk: usize) -> BufferPool {
+    let default_config = DynamicImagePoolConfig {
+        bytes: chunk,
+        ..DynamicImagePoolConfig::default()
+    };
     let lock = DYNAMIC_IMAGE_POOL
-        .get_or_init(|| Mutex::new((BufferPool::with_limits(2, chunk, 4), chunk)));
+        .get_or_init(|| Mutex::new((BufferPool::with_limits(2, chunk, 4), default_config)));
     let mut guard = lock.lock().unwrap();
-    if guard.1 < chunk {
-        *guard = (BufferPool::with_limits(2, chunk, 4), chunk);
+    if guard.1.bytes < chunk {
+        guard.1.bytes = chunk;
+        guard.0 = BufferPool::with_limits(guard.1.min, guard.1.bytes, guard.1.spare);
     }
     guard.0.clone()
+}
+
+pub fn configure_dynamic_image_pool(config: DynamicImagePoolConfig) {
+    let config = DynamicImagePoolConfig {
+        min: config.min,
+        bytes: config.bytes.max(1),
+        spare: config.spare,
+    };
+    let lock = DYNAMIC_IMAGE_POOL.get_or_init(|| {
+        Mutex::new((
+            BufferPool::with_limits(config.min, config.bytes, config.spare),
+            config,
+        ))
+    });
+    if let Ok(mut guard) = lock.lock() {
+        *guard = (
+            BufferPool::with_limits(config.min, config.bytes, config.spare),
+            config,
+        );
+    }
+}
+
+pub fn dynamic_image_pool_config() -> DynamicImagePoolConfig {
+    let lock = DYNAMIC_IMAGE_POOL.get_or_init(|| {
+        let config = DynamicImagePoolConfig::default();
+        Mutex::new((
+            BufferPool::with_limits(config.min, config.bytes, config.spare),
+            config,
+        ))
+    });
+    lock.lock()
+        .map(|guard| guard.1)
+        .unwrap_or_else(|_| DynamicImagePoolConfig::default())
 }
 
 pub fn dynamic_image_pool_stats() -> Option<BufferPoolStats> {
@@ -224,7 +280,12 @@ pub fn reset_dynamic_image_pool() {
     if let Some(lock) = DYNAMIC_IMAGE_POOL.get()
         && let Ok(mut guard) = lock.lock()
     {
-        *guard = (BufferPool::with_limits(0, 1, 0), 1);
+        let config = DynamicImagePoolConfig {
+            min: 0,
+            bytes: 1,
+            spare: 0,
+        };
+        *guard = (BufferPool::with_limits(0, 1, 0), config);
     }
 }
 
@@ -236,17 +297,35 @@ mod tests {
     fn into_frame_preserves_closest_format() {
         let img = DynamicImage::ImageLuma8(image::GrayImage::from_raw(2, 1, vec![1, 2]).unwrap());
         let frame = img.into_frame(123).unwrap();
-        assert_eq!(frame.meta().format.code, FourCc::new(*b"R8  "));
+        assert_eq!(frame.meta().format.code, FourCc::R8);
         assert_eq!(frame.meta().timestamp, 123);
 
         let img = DynamicImage::ImageRgb8(image::RgbImage::from_raw(1, 1, vec![3, 4, 5]).unwrap());
         let frame = img.into_frame(7).unwrap();
-        assert_eq!(frame.meta().format.code, FourCc::new(*b"RG24"));
+        assert_eq!(frame.meta().format.code, FourCc::RG24);
         assert_eq!(frame.meta().timestamp, 7);
 
         let img =
             DynamicImage::ImageRgba8(image::RgbaImage::from_raw(1, 1, vec![6, 7, 8, 9]).unwrap());
         let frame = img.into_frame(0).unwrap();
-        assert_eq!(frame.meta().format.code, FourCc::new(*b"RGBA"));
+        assert_eq!(frame.meta().format.code, FourCc::RGBA);
+    }
+
+    #[test]
+    fn dynamic_image_pool_config_is_runtime_configurable() {
+        configure_dynamic_image_pool(DynamicImagePoolConfig {
+            min: 3,
+            bytes: 1024,
+            spare: 5,
+        });
+
+        assert_eq!(
+            dynamic_image_pool_config(),
+            DynamicImagePoolConfig {
+                min: 3,
+                bytes: 1024,
+                spare: 5,
+            }
+        );
     }
 }

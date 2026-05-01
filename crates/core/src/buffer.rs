@@ -16,7 +16,7 @@ pub use meta::{
 pub use pool::{BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats};
 
 #[cfg(target_os = "linux")]
-pub use pool::{SharedBufferLease, SharedBufferPool};
+pub use pool::{SharedBufferLease, SharedBufferPool, SharedBufferPoolStats};
 
 #[cfg(test)]
 mod tests {
@@ -47,7 +47,7 @@ mod tests {
     #[test]
     fn frame_meta_can_carry_v4l2_backend_details() {
         let res = Resolution::new(2, 2).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let meta = FrameMeta::new(fmt, 123).with_backend(BackendFrameMeta::V4l2(V4l2FrameMeta {
             sequence: 7,
             bytes_used: 42,
@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn frame_meta_can_carry_capture_instant() {
         let res = Resolution::new(2, 2).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let before = std::time::Instant::now();
         let meta = FrameMeta::new(fmt, 123).with_capture_instant(before);
 
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn owned_mjpeg_frames_default_to_compressed_packet_residency() {
         let res = Resolution::new(2, 2).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::MJPG, res, ColorSpace::Srgb);
         let pool = BufferPool::with_capacity(1, 16);
         let frame = FrameLease::single_plane(FrameMeta::new(fmt, 7), pool.lease(), 8, 8);
 
@@ -117,11 +117,40 @@ mod tests {
         }
     }
 
+    struct MultiPlaneTestBacking {
+        planes: Vec<Vec<u8>>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl ExternalBacking for MultiPlaneTestBacking {
+        fn plane_data(&self, index: usize) -> Option<&[u8]> {
+            self.planes.get(index).map(Vec::as_slice)
+        }
+
+        fn backing_bytes(&self) -> Option<usize> {
+            Some(self.planes.iter().map(Vec::len).sum())
+        }
+
+        fn backing_kind(&self) -> &'static str {
+            "test_external_multi"
+        }
+
+        fn residency(&self) -> FrameResidency {
+            FrameResidency::HostExternal
+        }
+    }
+
+    impl Drop for MultiPlaneTestBacking {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     #[test]
     fn external_frame_reports_backing_details_and_borrowed_plane() {
         let drops = Arc::new(AtomicUsize::new(0));
         let res = Resolution::new(2, 1).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let layout = PlaneLayout {
             offset: 0,
             len: 6,
@@ -157,7 +186,7 @@ mod tests {
     fn external_frame_into_parts_does_not_try_to_take_owned_buffers() {
         let drops = Arc::new(AtomicUsize::new(0));
         let res = Resolution::new(1, 1).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let layout = PlaneLayout {
             offset: 0,
             len: 3,
@@ -172,10 +201,47 @@ mod tests {
             }),
         );
 
-        let (meta, layouts, buffers) = frame.into_parts();
-        assert_eq!(meta.timestamp, 77);
-        assert_eq!(layouts.len(), 1);
-        assert!(buffers.is_empty());
+        let parts = frame.into_parts();
+        assert_eq!(parts.meta.timestamp, 77);
+        assert_eq!(parts.layouts.len(), 1);
+        assert!(parts.buffers.is_empty());
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn multi_plane_external_frame_borrows_each_backing_plane() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let res = Resolution::new(2, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::NV12, res, ColorSpace::Srgb);
+        let frame = FrameLease::from_external(
+            FrameMeta::new(fmt, 88),
+            smallvec::smallvec![
+                PlaneLayout {
+                    offset: 0,
+                    len: 4,
+                    stride: 2,
+                },
+                PlaneLayout {
+                    offset: 0,
+                    len: 2,
+                    stride: 2,
+                },
+            ],
+            Arc::new(MultiPlaneTestBacking {
+                planes: vec![vec![1, 2, 3, 4], vec![5, 6]],
+                drops: Arc::clone(&drops),
+            }),
+        );
+
+        assert!(frame.is_external());
+        assert_eq!(frame.external_backing_kind(), Some("test_external_multi"));
+        assert_eq!(frame.external_backing_bytes(), Some(6));
+        let planes = frame.planes();
+        assert_eq!(planes.len(), 2);
+        assert_eq!(planes[0].data(), &[1, 2, 3, 4]);
+        assert_eq!(planes[1].data(), &[5, 6]);
+        drop(planes);
+        drop(frame);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
@@ -183,7 +249,7 @@ mod tests {
     fn materialize_owned_copies_external_frame_into_mutable_host_buffers() {
         let drops = Arc::new(AtomicUsize::new(0));
         let res = Resolution::new(2, 1).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let layout = PlaneLayout {
             offset: 0,
             len: 6,
@@ -210,7 +276,7 @@ mod tests {
     #[test]
     fn frame_descriptor_round_trips_layout_metadata() {
         let res = Resolution::new(4, 2).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"NV12"), res, ColorSpace::Bt709);
+        let fmt = MediaFormat::new(FourCc::NV12, res, ColorSpace::Bt709);
         let pool = BufferPool::with_capacity(2, 16);
         let frame = FrameLease::multi_plane(
             FrameMeta::new(fmt, 1234),
@@ -232,7 +298,7 @@ mod tests {
         let descriptor = frame.descriptor();
         assert_eq!(descriptor.width, 4);
         assert_eq!(descriptor.height, 2);
-        assert_eq!(descriptor.fourcc, FourCc::new(*b"NV12"));
+        assert_eq!(descriptor.fourcc, FourCc::NV12);
         assert_eq!(descriptor.timestamp, 1234);
         assert_eq!(descriptor.color, ColorSpace::Bt709);
         assert_eq!(descriptor.layouts(), frame.layouts());
@@ -255,7 +321,7 @@ mod tests {
         assert_eq!(written, bytes.len() as isize);
 
         let res = Resolution::new(2, 1).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let layout = PlaneLayout {
             offset: 0,
             len: 6,
@@ -278,7 +344,7 @@ mod tests {
         use std::os::fd::AsRawFd;
 
         let res = Resolution::new(2, 2).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let layout = plane_layout_from_dims(res.width, res.height, 3);
         let pool = BufferPool::with_capacity(1, layout.len);
         let mut lease = pool.lease();
@@ -313,7 +379,7 @@ mod tests {
     #[test]
     fn shared_buffer_pool_frame_exports_without_fallback_copy() {
         let res = Resolution::new(2, 2).unwrap();
-        let fmt = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let fmt = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let layout = plane_layout_from_dims(res.width, res.height, 3);
         let pool = SharedBufferPool::with_capacity(1, layout.len).unwrap();
         let mut lease = pool.lease().unwrap();
@@ -345,5 +411,26 @@ mod tests {
             .map(|idx| 255u8.saturating_sub(idx as u8))
             .collect();
         assert_eq!(planes[0].data(), expected.as_slice());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resized_shared_buffer_lease_is_not_recycled_into_fixed_size_pool() {
+        let pool = SharedBufferPool::with_limits(1, 8, 1).unwrap();
+        assert_eq!(pool.stats().free, 1);
+
+        {
+            let mut lease = pool.lease().unwrap();
+            assert_eq!(pool.stats().free, 0);
+            lease.try_resize(16).unwrap();
+            assert_eq!(lease.capacity(), 16);
+        }
+        assert_eq!(pool.stats().free, 0);
+
+        {
+            let lease = pool.lease().unwrap();
+            assert_eq!(lease.capacity(), 8);
+        }
+        assert_eq!(pool.stats().free, 1);
     }
 }

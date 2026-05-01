@@ -1,9 +1,9 @@
 use styx_core::prelude::*;
 
+use crate::decoder::raw::decode_strided_rows_to_rgb24;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
-use rayon::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
@@ -47,15 +47,11 @@ pub struct BgraToRgbDecoder {
 impl BgraToRgbDecoder {
     pub fn new(max_width: u32, max_height: u32) -> Self {
         let bytes = max_width as usize * max_height as usize * 3;
-        Self::with_input(
-            BufferPool::lazy(bytes, 4),
-            FourCc::new(*b"BGRA"),
-            "bgra-strip",
-        )
+        Self::with_input(BufferPool::lazy(bytes, 4), FourCc::BGRA, "bgra-strip")
     }
 
     pub fn with_pool(pool: BufferPool) -> Self {
-        Self::with_input(pool, FourCc::new(*b"BGRA"), "bgra-strip")
+        Self::with_input(pool, FourCc::BGRA, "bgra-strip")
     }
 
     pub fn with_input(pool: BufferPool, input: FourCc, impl_name: &'static str) -> Self {
@@ -63,7 +59,7 @@ impl BgraToRgbDecoder {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input,
-                output: FourCc::new(*b"RG24"),
+                output: FourCc::RG24,
                 name: "bgra2rgb",
                 impl_name,
             },
@@ -117,11 +113,14 @@ impl BgraToRgbDecoder {
         }
 
         let src = plane.data();
-        dst[..out_len]
-            .par_chunks_mut(row_bytes)
-            .enumerate()
-            .for_each(|(y, dst_line)| {
-                let src_line = &src[y * stride..][..width * 4];
+        decode_strided_rows_to_rgb24(
+            src,
+            &mut dst[..out_len],
+            height,
+            stride,
+            width * 4,
+            row_bytes,
+            |src_line, dst_line| {
                 #[cfg(target_arch = "aarch64")]
                 unsafe {
                     bgra_row_to_rgb24_neon(src_line, dst_line, width);
@@ -137,7 +136,8 @@ impl BgraToRgbDecoder {
                         dst_px[2] = src_px[0];
                     }
                 }
-            });
+            },
+        );
 
         Ok(FrameMeta::new(
             MediaFormat::new(
