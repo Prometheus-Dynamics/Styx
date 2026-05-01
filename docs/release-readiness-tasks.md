@@ -126,11 +126,17 @@
 
 ## Verification
 
-- [ ] Run and record final release checks.
+- [x] Run and record final release checks.
   - `cargo fmt --check`
   - `cargo check --workspace --all-targets`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `cargo check -p styx --all-features`
   - `cargo test --workspace`
   - Feature-specific tests and examples required for the release target platforms.
-  - Latest focused checks: `cargo fmt --check`, `cargo check -p styx --no-default-features`, and `cargo check -p styx --all-features`.
+  - Passed locally with `CARGO_TARGET_DIR=/tmp/styx-release-readiness-target`:
+    - `cargo fmt --check`
+    - `cargo check --workspace --all-targets`
+    - `cargo clippy --workspace --all-targets -- -D warnings`
+    - `cargo check -p styx --all-features`
+    - `cargo test --workspace`
+    - `cargo check -p styx --no-default-features --features async,netcam,file-backend,graph-pipeline,codec-ffmpeg,v4l2,libcamera`
