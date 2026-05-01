@@ -102,6 +102,8 @@ pub struct BoundedTx<T> {
 impl<T> BoundedTx<T> {
     /// Attempt to send without blocking.
     pub fn send(&self, value: T) -> SendOutcome {
+        // Keep the closed check, push, and wait-state version update ordered so blocking
+        // and async receivers cannot miss a wake between checking the queue and parking.
         let state = self.inner.wait_state.lock();
         if self.inner.closed.load(Ordering::Acquire) {
             return SendOutcome::Closed;
@@ -206,6 +208,7 @@ impl<T> BoundedTx<T> {
     /// Async helper that yields on backpressure.
     pub async fn send_async(&self, mut value: T) -> SendOutcome {
         loop {
+            // Register interest before attempting the push so a capacity wake cannot be lost.
             let notified = self.inner.send_notify.notified();
             let state = self.inner.wait_state.lock();
             if self.inner.closed.load(Ordering::Acquire) {
@@ -345,6 +348,7 @@ impl<T> BoundedRx<T> {
     /// Async helper that waits until data or closure.
     pub async fn recv_async(&self) -> RecvOutcome<T> {
         loop {
+            // Register interest before polling so a data wake cannot be lost.
             let notified = self.inner.recv_notify.notified();
             match self.recv() {
                 RecvOutcome::Empty => {

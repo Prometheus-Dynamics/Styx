@@ -40,6 +40,24 @@ impl CaptureSource {
     }
 }
 
+impl AsRef<ProbedDevice> for CaptureSource {
+    fn as_ref(&self) -> &ProbedDevice {
+        self.device()
+    }
+}
+
+impl From<ProbedDevice> for CaptureSource {
+    fn from(device: ProbedDevice) -> Self {
+        Self::new(device)
+    }
+}
+
+impl From<CaptureSource> for ProbedDevice {
+    fn from(source: CaptureSource) -> Self {
+        source.into_device()
+    }
+}
+
 /// Errors starting a capture session.
 ///
 /// # Example

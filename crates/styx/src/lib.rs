@@ -45,6 +45,108 @@ pub mod extras {
     }
 }
 
+/// Task-focused import surfaces for callers that do not want the full facade prelude.
+pub mod imports {
+    /// Capture request, backend, format, and frame receive APIs.
+    pub mod capture {
+        #[cfg(feature = "netcam")]
+        pub use crate::capture_api::make_netcam_device;
+        pub use crate::capture_api::{
+            BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest,
+            CameraStartPolicy, CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle,
+            CaptureRequest, CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig,
+            LibcameraConfig, NetcamConfig, NetcamTunables, SelectedCamera, StyxConfig,
+            TdnOutputMode, TransformConfig, V4l2Config, VirtualCaptureConfig, VirtualSourceConfig,
+            make_virtual_device, make_virtual_rgb_device, open_best_camera, open_virtual_rgb,
+            start_capture,
+        };
+        pub use crate::{BackendHandle, BackendKind, ProbedBackend, ProbedDevice};
+        pub use styx_capture::prelude::{
+            CaptureDescriptor, CaptureSource as CaptureSourceTrait, Mode, ModeId,
+        };
+        pub use styx_core::prelude::{
+            ColorSpace, ControlId, ControlValue, FourCc, FrameLease, Interval, MediaFormat,
+            RecvOutcome, RecvWaitOutcome, Resolution,
+        };
+    }
+
+    /// Pipeline builder/runtime APIs.
+    pub mod pipeline {
+        pub use crate::metrics::{HealthReport, PipelineMemoryStats, PipelineMetrics};
+        pub use crate::session::{MediaPipeline, MediaPipelineBuilder, MediaPipelineFrameIter};
+        pub use styx_core::prelude::{FrameLease, FrameTransform, RecvOutcome, RecvWaitOutcome};
+    }
+
+    /// Runtime codec selection and codec trait APIs.
+    pub mod codec {
+        pub use crate::runtime_codec::{
+            CodecLatency, CodecSelector, CodecSelectorParseError, EncoderFamilySpec,
+            FrameDecodePlan, FrameDecodePlanExt, RuntimeCodecCapability, RuntimeCodecInventory,
+            decode_to_rg24_for_format, default_decoder_codec_selector_for_capture_format,
+            default_decoder_ids_by_capture_format, default_decoder_selector_for_capture_format,
+            default_decoder_selectors_by_capture_format, default_stream_codec_selector,
+            default_stream_encoder_selector, encoder_family_for_codec_selector,
+            encoder_family_for_descriptor, encoder_family_for_selector,
+            output_format_for_codec_selector, output_format_for_encoder_selector,
+            runtime_codec_inventory, shared_rg24_decode_bytes,
+        };
+        #[cfg(feature = "codec-jpeg-decoder")]
+        pub use styx_codec::prelude::MjpegDecoder;
+        pub use styx_codec::prelude::{
+            Codec, CodecDescriptor, CodecError, CodecImplementationId, CodecKind, CodecPolicy,
+            CodecPolicyBuilder, CodecRegistry, CodecRegistryConfig, CodecRegistryHandle,
+            CodecResidencyCapabilities, CodecStats, RegistryError,
+        };
+        pub use styx_core::prelude::{FourCc, FrameLease, MediaFormat, Resolution};
+    }
+
+    /// Graph pipeline APIs.
+    #[cfg(feature = "daedalus-plugin")]
+    pub mod graph {
+        pub use crate::graph::{
+            GraphPolicy, SinkNodeConfig, SinkPolicy, StyxCaptureSourceOptions,
+            StyxCodecNodeDescriptor, StyxCodecNodeOptions, StyxControlEvent, StyxControlResult,
+            StyxMediaPlugin, StyxSinkDescriptor, StyxSourceDescriptor, StyxSourceKind,
+            bounded_blocking, bounded_drop_oldest, latest_only, register_camera_sources_all,
+            register_camera_sources_limit, register_camera_sources_with_policy,
+            register_capture_request_source_with_policy, register_capture_source_node,
+            register_capture_source_node_with_options, register_control_types,
+            register_frame_sink_node, register_framelease_type, register_network_stream_sink_node,
+        };
+    }
+
+    /// Service event and lifecycle APIs.
+    pub mod service {
+        pub use crate::service::{
+            RecordingLifecycleEvent, ServiceEventCursor, ServiceEventPoll,
+            SharedStyxServiceRuntime, SinkKind, SinkLifecycleEvent, StyxServiceConfig,
+            StyxServiceEvent, StyxServiceRuntime, TimestampedServiceEvent,
+        };
+    }
+
+    /// Device watch APIs.
+    pub mod watch {
+        #[cfg(all(feature = "hotplug", feature = "libcamera"))]
+        pub use crate::watch::LibcameraHotplugWatcher;
+        #[cfg(all(feature = "hotplug", target_os = "linux"))]
+        pub use crate::watch::LinuxVideoFsWatcher;
+        pub use crate::watch::{
+            ChangedDevice, CompositeWatcher, DeviceWatchEvent, DeviceWatcher, InventoryDiff,
+            InventoryEvent, InventoryEventCursor, InventoryEventPoll, InventoryEventRetentionStats,
+            InventoryEventSubscription, WatchRefreshReport, WatchRuntime, WatchRuntimeConfig,
+        };
+    }
+
+    /// Recording APIs.
+    #[cfg(feature = "hooks")]
+    pub mod recording {
+        pub use crate::recording::{
+            FrameRecorder, RecordingError, RecordingFormat, RecordingFrameIndexEntry,
+            RecordingOptions, RecordingSessionMetadata,
+        };
+    }
+}
+
 /// Unified device descriptor for probed backends.
 ///
 /// # Example
@@ -523,7 +625,8 @@ pub mod prelude {
         CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
         CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig, LibcameraConfig,
         NetcamConfig, NetcamTunables, SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig,
-        V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera, start_capture,
+        V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera, open_virtual_rgb,
+        start_capture,
     };
     #[cfg(all(feature = "daedalus-plugin", feature = "hooks"))]
     pub use crate::graph::register_file_sequence_sink_node;

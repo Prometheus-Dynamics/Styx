@@ -39,6 +39,13 @@ Useful example entry points:
 
 ## Recommended API Paths
 
+Use `styx::prelude::*` when prototyping across capture, codec, graph, and service APIs. For
+production code that only needs one area, prefer the task-focused imports:
+`styx::imports::capture::*`, `styx::imports::pipeline::*`, `styx::imports::codec::*`,
+`styx::imports::service::*`, and `styx::imports::watch::*`. Feature-gated modules such as
+`styx::imports::graph::*` and `styx::imports::recording::*` are available with their matching
+features.
+
 For simple capture, start with `CameraRequest::new().start()` when physical backends are enabled, or
 `CaptureRequest::virtual_source(...)` for deterministic local/test capture. Receive frames
 with `recv`, `recv_blocking`, `recv_timeout`, `recv_forever`, or `recv_async`; stop handles explicitly
@@ -58,9 +65,11 @@ blocking task/thread, then use async receive/control APIs for coordination.
 - `hooks`: frame and image hook support inside the pipeline.
 - `async`: Tokio-backed async capture and pipeline helpers.
   Use `MediaPipeline::spawn_tokio_worker` or `spawn_blocking_worker` for CPU-heavy decode,
-  encode, graph, hook, or sink pipelines; `next_async` and `spawn_async_worker` keep receive
-  async but process frames synchronously on the calling task. Capture startup is also sync-first;
+  encode, graph, hook, or sink pipelines; `next_async` keeps receive async but processes frames
+  synchronously on the calling task. Capture startup is also sync-first;
   use an application blocking task/thread for slow camera startup in async services.
+  Use `CaptureHandle::stop_async` or `stop_async_in_place` when explicit teardown matters in
+  Tokio code.
 - `preview-window`: Minifb preview window support for examples.
 - `raw-decoders`: CPU raw/YUV/Bayer conversion stack; this enables Rayon and `yuvutils-rs`.
 - `codec-jpeg-decoder`: pure-Rust MJPEG/JPEG decode via `jpeg-decoder`.
