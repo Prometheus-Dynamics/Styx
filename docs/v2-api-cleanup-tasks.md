@@ -135,6 +135,8 @@ workflows.
     building blocks.
 
 - [ ] Move simulation capture out of core.
+  - Removed simulation convenience exports from the main prelude; examples now
+    import simulation APIs explicitly from `styx::capture_api`.
   - Treat simulation as example-only.
   - Move simulation backend code, assets, and workflow helpers into the
     `examples` crate.

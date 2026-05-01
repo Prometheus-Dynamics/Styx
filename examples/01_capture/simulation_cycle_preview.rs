@@ -3,6 +3,8 @@ use std::path::PathBuf;
 #[cfg(all(feature = "simulation-bevy", feature = "preview-window"))]
 use std::time::Duration;
 
+#[cfg(all(feature = "simulation-bevy", feature = "preview-window"))]
+use styx::capture_api::{SimulationDeviceConfig, make_simulation_device};
 #[cfg(feature = "preview-window")]
 use styx::extras::preview_window::PreviewWindow;
 #[cfg(all(feature = "simulation-bevy", feature = "preview-window"))]

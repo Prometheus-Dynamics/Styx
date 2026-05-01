@@ -524,11 +524,6 @@ pub mod prelude {
         NetcamConfig, NetcamTunables, SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig,
         V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera, start_capture,
     };
-    #[cfg(feature = "simulation-bevy")]
-    pub use crate::capture_api::{
-        SimulationDeviceConfig, SimulationLensConfig, SimulationOutputMode, SimulationPose,
-        SimulationSensorConfig, make_simulation_device,
-    };
     #[cfg(all(feature = "daedalus-plugin", feature = "hooks"))]
     pub use crate::graph::register_file_sequence_sink_node;
     #[cfg(feature = "daedalus-plugin")]
