@@ -59,6 +59,30 @@ fn shared_output_estimate_uses_codec_output_format_for_4k_frames() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn shared_encode_estimate_uses_bounded_compressed_packet_size() {
+    let resolution = Resolution::new(1280, 800).expect("resolution");
+    let input_format = MediaFormat::new(FourCc::NV12, resolution, ColorSpace::Srgb);
+    let pool = BufferPool::with_limits(1, 1280 * 800 * 3 / 2, 1);
+    let mut payload = pool.lease();
+    payload.resize(1280 * 800 * 3 / 2);
+    let frame =
+        FrameLease::single_plane(FrameMeta::new(input_format, 0), payload, 1280 * 800, 1280);
+    let descriptor = CodecDescriptor {
+        kind: CodecKind::Encoder,
+        input: FourCc::NV12,
+        output: FourCc::MJPG,
+        name: "mjpeg",
+        impl_name: "test",
+    };
+
+    assert_eq!(
+        estimate_shared_encode_output_bytes(&descriptor, &frame),
+        384_000
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn memory_stats_report_shared_codec_pool_capacity() {
     let device = make_virtual_rgb_device("shared-pool-memory-stats", 2, 2, 30);
     let request = CaptureRequest::new(&device).backend(BackendKind::Virtual);
@@ -125,7 +149,10 @@ fn memory_stats_report_shared_codec_pool_capacity() {
     assert_eq!(decode_pool.free, 2);
     assert_eq!(decode_pool.max_free, 4);
     assert_eq!(decode_pool.free_bytes, 49_766_400);
-    assert_eq!(encode_pool.chunk_size, 64 * 1024);
+    assert_eq!(
+        encode_pool.chunk_size,
+        crate::frame_sizing::MAX_COMPRESSED_PACKET_POOL_BYTES
+    );
     assert_eq!(encode_pool.max_free, 4);
 }
 

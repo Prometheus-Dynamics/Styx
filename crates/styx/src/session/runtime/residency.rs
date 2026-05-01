@@ -1,7 +1,7 @@
 use styx_codec::prelude::*;
 
 #[cfg(target_os = "linux")]
-use crate::frame_sizing::estimated_format_bytes;
+use crate::frame_sizing::{estimated_compressed_packet_pool_bytes, estimated_format_bytes};
 
 pub(super) fn default_copy_required_for_transition(
     _from: FrameResidency,
@@ -64,6 +64,30 @@ pub(super) fn estimate_shared_output_bytes(
         res.width.get() as usize,
         res.height.get() as usize,
     )
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn estimate_shared_encode_output_bytes(
+    descriptor: &CodecDescriptor,
+    frame: &FrameLease,
+) -> usize {
+    let res = frame.meta().format.resolution;
+    estimated_format_bytes(
+        descriptor.output,
+        res.width.get() as usize,
+        res.height.get() as usize,
+    )
+    .or_else(|| {
+        estimated_compressed_packet_pool_bytes(
+            descriptor.input,
+            descriptor.output,
+            res.width.get() as usize,
+            res.height.get() as usize,
+            frame.payload_bytes(),
+        )
+    })
+    .unwrap_or_else(|| frame.payload_bytes().max(64 * 1024))
+    .max(1)
 }
 
 #[cfg(target_os = "linux")]

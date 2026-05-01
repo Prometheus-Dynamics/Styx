@@ -16,6 +16,11 @@ pub use registry::{
 };
 pub use stats::CodecStats;
 
+#[allow(dead_code)]
+pub(crate) const DEFAULT_CODEC_POOL_CHUNK_BYTES: usize = 64 * 1024;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_CODEC_POOL_SPARE: usize = 4;
+
 /// Encoders/decoders share the same entry-point; the kind distinguishes behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

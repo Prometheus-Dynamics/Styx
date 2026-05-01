@@ -2,7 +2,10 @@ use styx_core::prelude::*;
 
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{
+    Codec, CodecDescriptor, CodecError, CodecKind, DEFAULT_CODEC_POOL_CHUNK_BYTES,
+    DEFAULT_CODEC_POOL_SPARE,
+};
 
 /// Generic decoder using the `image` crate to handle common formats (JPEG/PNG/etc).
 pub struct ImageAnyDecoder {
@@ -13,7 +16,10 @@ pub struct ImageAnyDecoder {
 impl ImageAnyDecoder {
     /// Output FourCc (e.g. RGBA).
     pub fn new(output: FourCc) -> Self {
-        Self::with_pool(output, BufferPool::lazy(1 << 20, 4))
+        Self::with_pool(
+            output,
+            BufferPool::lazy(DEFAULT_CODEC_POOL_CHUNK_BYTES, DEFAULT_CODEC_POOL_SPARE),
+        )
     }
 
     pub fn with_pool(output: FourCc, pool: BufferPool) -> Self {

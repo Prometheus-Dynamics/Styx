@@ -19,6 +19,8 @@ use super::enqueue_netcam_frame_async;
 #[cfg(feature = "netcam")]
 use super::sleep_until_netcam_stop;
 use super::{enqueue_netcam_frame, netcam_stopped};
+use crate::capture_api::tunables::PoolLimits;
+use crate::frame_sizing::estimated_compressed_packet_pool_bytes;
 use crate::metrics::CaptureRetryMetrics;
 
 mod parser;
@@ -74,7 +76,7 @@ where
     let max_jpeg_bytes = netcam_tunables.max_jpeg_bytes;
 
     let expected_pixels = expected_pixels(width, height);
-    let pool_limits = capture_tunables.pool_limits(4, expected_pixels.saturating_mul(3), 8);
+    let pool_limits = mjpeg_packet_pool_limits(capture_tunables, width, height, max_jpeg_bytes);
     #[cfg(target_os = "linux")]
     let pool = match SharedBufferPool::with_limits(
         pool_limits.min,
@@ -254,7 +256,7 @@ pub(super) fn mjpeg_loop(
     let max_jpeg_bytes = netcam_tunables.max_jpeg_bytes;
     let mut reader = BufReader::new(resp);
     let expected_pixels = expected_pixels(width, height);
-    let pool_limits = capture_tunables.pool_limits(4, expected_pixels.saturating_mul(3), 8);
+    let pool_limits = mjpeg_packet_pool_limits(capture_tunables, width, height, max_jpeg_bytes);
     #[cfg(target_os = "linux")]
     let pool = match SharedBufferPool::with_limits(
         pool_limits.min,
@@ -412,6 +414,43 @@ fn expected_pixels(width: u32, height: u32) -> usize {
     } else {
         1280usize * 720usize
     }
+}
+
+fn mjpeg_packet_pool_limits(
+    capture_tunables: crate::capture_api::CaptureTunables,
+    width: u32,
+    height: u32,
+    max_jpeg_bytes: usize,
+) -> PoolLimits {
+    let tunables = capture_tunables.sanitized();
+    PoolLimits {
+        min: tunables.pool_min.max(4),
+        bytes: mjpeg_packet_pool_bytes(width, height, max_jpeg_bytes),
+        spare: tunables.pool_spare.max(8),
+    }
+}
+
+fn mjpeg_packet_pool_bytes(width: u32, height: u32, max_jpeg_bytes: usize) -> usize {
+    let (estimate_width, estimate_height) = if width > 0 && height > 0 {
+        (width as usize, height as usize)
+    } else {
+        (1280usize, 720usize)
+    };
+    let raw_rgb_bytes = estimate_width
+        .checked_mul(estimate_height)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .unwrap_or(max_jpeg_bytes);
+    let fallback_payload_bytes = max_jpeg_bytes.min(raw_rgb_bytes).max(1);
+    estimated_compressed_packet_pool_bytes(
+        FourCc::RG24,
+        FourCc::MJPG,
+        estimate_width,
+        estimate_height,
+        fallback_payload_bytes,
+    )
+    .unwrap_or(fallback_payload_bytes)
+    .min(max_jpeg_bytes.max(1))
+    .max(1)
 }
 
 #[cfg(all(feature = "netcam", feature = "async"))]
@@ -627,6 +666,29 @@ mod tests {
         );
         assert!(oversized.is_none());
         assert_eq!(frame_idx, 1);
+    }
+
+    #[test]
+    fn mjpeg_packet_pool_uses_compressed_packet_sizing() {
+        assert_eq!(mjpeg_packet_pool_bytes(640, 480, 32 << 20), 230_400);
+        assert_eq!(
+            mjpeg_packet_pool_bytes(1280, 800, 32 << 20),
+            crate::frame_sizing::MAX_COMPRESSED_PACKET_POOL_BYTES
+        );
+        assert_eq!(mjpeg_packet_pool_bytes(1280, 800, 128 * 1024), 128 * 1024);
+    }
+
+    #[test]
+    fn mjpeg_packet_pool_limits_do_not_use_raw_rgb_or_generic_pool_bytes() {
+        let limits = mjpeg_packet_pool_limits(Default::default(), 1280, 800, 32 << 20);
+        assert_eq!(limits.min, 4);
+        assert_eq!(
+            limits.bytes,
+            crate::frame_sizing::MAX_COMPRESSED_PACKET_POOL_BYTES
+        );
+        assert_eq!(limits.spare, 8);
+        assert!(limits.bytes < 1280 * 800 * 3);
+        assert!(limits.bytes < crate::capture_api::DEFAULT_POOL_BYTES);
     }
 }
 

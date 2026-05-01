@@ -2,7 +2,10 @@ use styx_core::prelude::*;
 
 #[cfg(target_os = "linux")]
 use crate::shared_packet_frame;
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{
+    Codec, CodecDescriptor, CodecError, CodecKind, DEFAULT_CODEC_POOL_CHUNK_BYTES,
+    DEFAULT_CODEC_POOL_SPARE,
+};
 
 /// MJPEG encoder using mozjpeg.
 pub struct MozjpegEncoder {
@@ -13,7 +16,11 @@ pub struct MozjpegEncoder {
 
 impl MozjpegEncoder {
     pub fn new(input: FourCc, quality: i32) -> Self {
-        Self::with_pool(input, quality, BufferPool::lazy(1 << 20, 4))
+        Self::with_pool(
+            input,
+            quality,
+            BufferPool::lazy(DEFAULT_CODEC_POOL_CHUNK_BYTES, DEFAULT_CODEC_POOL_SPARE),
+        )
     }
 
     pub fn with_pool(input: FourCc, quality: i32, pool: BufferPool) -> Self {

@@ -7,7 +7,7 @@ use crate::core::prelude::FrameLease;
 #[cfg(target_os = "linux")]
 use crate::core::prelude::SharedBufferPool;
 #[cfg(target_os = "linux")]
-use crate::frame_sizing::estimated_format_bytes;
+use crate::frame_sizing::{estimated_compressed_packet_pool_bytes, estimated_format_bytes};
 use daedalus::NodeHandle;
 use daedalus::runtime::NodeError;
 use daedalus::runtime::plugins::PluginResult;
@@ -246,7 +246,14 @@ fn estimate_shared_output_bytes(
         res.height.get() as usize,
     ) {
         Some(bytes) => bytes,
-        None if stage == CodecStage::Encode => frame.payload_bytes().max(64 * 1024),
+        None if stage == CodecStage::Encode => estimated_compressed_packet_pool_bytes(
+            descriptor.input,
+            descriptor.output,
+            res.width.get() as usize,
+            res.height.get() as usize,
+            frame.payload_bytes(),
+        )
+        .unwrap_or_else(|| frame.payload_bytes().max(64 * 1024)),
         None => frame.payload_bytes().max(1),
     }
 }

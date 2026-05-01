@@ -120,6 +120,14 @@ Interpret the major fields this way:
 - Encoder heap cost is mostly normal process memory, not external backing. Compare process PSS and
   the anonymous/shared-library smaps categories before and after enabling an encoder to attribute
   codec context, conversion frames, thread buffers, and library residency.
+- Shared pools for compressed encoder output are intentionally sized from a bounded compressed
+  packet estimate, not the raw input frame size. Oversized packets can grow one lease without making
+  the retained pool keep raw-sized chunks.
+- Netcam MJPEG packet pools use the same compressed-packet sizing approach. They do not use raw RGB
+  frame size as the retained chunk size for compressed JPEG ingress.
+- Codec-owned lazy CPU pools use a small scratch chunk by default and grow leases to the decoded or
+  encoded payload size when needed. Raw decode outputs should still be evaluated from decoded format
+  and resolution, not compressed input size.
 - Unexplained PSS is a diagnostic delta. It is process PSS minus currently tracked Styx pools and
   graph copy/transport bytes, so it can include allocator overhead, thread stacks, library pages,
   libcamera internals, service state, watchers, API clients, and mappings that Styx cannot classify

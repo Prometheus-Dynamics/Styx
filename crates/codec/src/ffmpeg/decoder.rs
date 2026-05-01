@@ -18,7 +18,10 @@ use styx_core::prelude::*;
 
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, frame_to_dynamic_image};
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{
+    Codec, CodecDescriptor, CodecError, CodecKind, DEFAULT_CODEC_POOL_CHUNK_BYTES,
+    DEFAULT_CODEC_POOL_SPARE,
+};
 
 use super::util::{
     SendSyncScalingContext, bytes_per_pixel, fourcc_for_pixel_format, init_ffmpeg,
@@ -59,7 +62,8 @@ struct ScalingCache {
 
 impl FfmpegVideoDecoder {
     fn pool_from_limits(pool_limits: Option<(usize, usize, usize)>) -> BufferPool {
-        let (_min, max, spare) = pool_limits.unwrap_or((2, 1 << 20, 4));
+        let (_min, max, spare) =
+            pool_limits.unwrap_or((2, DEFAULT_CODEC_POOL_CHUNK_BYTES, DEFAULT_CODEC_POOL_SPARE));
         BufferPool::lazy(max, spare)
     }
 

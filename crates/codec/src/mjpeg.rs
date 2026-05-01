@@ -5,7 +5,10 @@ use styx_core::prelude::*;
 
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{
+    Codec, CodecDescriptor, CodecError, CodecKind, DEFAULT_CODEC_POOL_CHUNK_BYTES,
+    DEFAULT_CODEC_POOL_SPARE,
+};
 
 /// MJPEG decoder that produces RGB24 frames using a reusable buffer pool.
 pub struct MjpegDecoder {
@@ -16,12 +19,19 @@ pub struct MjpegDecoder {
 impl MjpegDecoder {
     /// Create a decoder that outputs the given FourCc (e.g. `FourCc::RG24`).
     pub fn new(output: FourCc) -> Self {
-        Self::with_pool(output, BufferPool::lazy(1 << 20, 4))
+        Self::with_pool(
+            output,
+            BufferPool::lazy(DEFAULT_CODEC_POOL_CHUNK_BYTES, DEFAULT_CODEC_POOL_SPARE),
+        )
     }
 
     /// Create a decoder for a specific input FourCc (e.g. `MJPG` or `JPEG`).
     pub fn new_for_input(input: FourCc, output: FourCc) -> Self {
-        Self::with_pool_for_input(input, output, BufferPool::lazy(1 << 20, 4))
+        Self::with_pool_for_input(
+            input,
+            output,
+            BufferPool::lazy(DEFAULT_CODEC_POOL_CHUNK_BYTES, DEFAULT_CODEC_POOL_SPARE),
+        )
     }
 
     /// Create a decoder with a caller-provided buffer pool.

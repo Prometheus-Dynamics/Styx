@@ -14,7 +14,10 @@ use styx_core::prelude::*;
 
 #[cfg(target_os = "linux")]
 use crate::shared_packet_frame;
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{
+    Codec, CodecDescriptor, CodecError, CodecKind, DEFAULT_CODEC_POOL_CHUNK_BYTES,
+    DEFAULT_CODEC_POOL_SPARE,
+};
 
 use super::util::{SendSyncScalingContext, init_ffmpeg, pixel_format_for_fourcc};
 
@@ -44,7 +47,11 @@ pub struct FfmpegVideoEncoder {
 
 impl FfmpegVideoEncoder {
     fn pool_from_options(opts: &FfmpegEncoderOptions) -> BufferPool {
-        let (_pool_min, pool_max, pool_spare) = opts.pool_limits.unwrap_or((2, 1 << 20, 4));
+        let (_pool_min, pool_max, pool_spare) = opts.pool_limits.unwrap_or((
+            2,
+            DEFAULT_CODEC_POOL_CHUNK_BYTES,
+            DEFAULT_CODEC_POOL_SPARE,
+        ));
         BufferPool::lazy(pool_max, pool_spare)
     }
 

@@ -663,9 +663,7 @@ impl MediaPipeline {
         descriptor: &CodecDescriptor,
         frame: &FrameLease,
     ) -> Result<&SharedBufferPool, FrameExportError> {
-        let bytes = estimate_shared_output_bytes(descriptor, frame)
-            .unwrap_or_else(|| frame.payload_bytes().max(64 * 1024))
-            .max(1);
+        let bytes = estimate_shared_encode_output_bytes(descriptor, frame);
         let recreate = self
             .shared_encode_pool
             .as_ref()
