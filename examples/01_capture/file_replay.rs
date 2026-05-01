@@ -29,7 +29,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
 
-    let device = make_file_device("file-replay", paths, fps, true);
+    let source = CaptureRequest::file_source(
+        FileSourceConfig::new(paths)
+            .name("file-replay")
+            .fps(fps)
+            .loop_forever(true),
+    );
+    let device = source.device();
     let backend = &device.backends[0];
     let mode = backend
         .descriptor
@@ -40,7 +46,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .clone();
     // Replay examples want stable pacing and enough queue depth to tolerate
     // a renderer or consumer occasionally stalling for a frame.
-    let request = CaptureRequest::new(&device)
+    let request = source
+        .capture_request()
         .mode(mode)
         .config(StyxConfig::new().capture_queue_depth(4));
 

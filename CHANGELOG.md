@@ -14,6 +14,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Added runtime capture configuration through `StyxConfig`, including queue depth, buffer pool
   sizing, capture enqueue timeouts, V4L2 worker timing, libcamera startup/control/idle timing,
   netcam HTTP/backoff timing, file image cache limits, and transform pool sizing.
+- Added focused public config/source types for the v2 API surface, including `CaptureConfig`,
+  `BackendConfig`, `V4l2Config`, `LibcameraConfig`, `NetcamConfig`, `FileBackendConfig`,
+  `TransformConfig`, `VirtualSourceConfig`, `VirtualCaptureConfig`, `NetcamSourceConfig`,
+  `FileSourceConfig`, `GraphPolicy`, and `SinkPolicy`.
 - Added typed capture startup policy support with resilient retries, transient libcamera retry
   handling, optional control dropping on rejected controls, and optional TDN fallback behavior.
 - Added async capture helpers for Tokio users, including async receive/control methods,
@@ -51,6 +55,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   snippets to match.
 - Reworked the public capture API around `CaptureRequest`, `CaptureHandle`, `CaptureSource`,
   typed modes/descriptors/controls, and request-local runtime configuration.
+- Changed virtual, netcam, and file replay examples to use request-based source builders:
+  `CaptureRequest::virtual_source`, `CaptureRequest::netcam_source`, and
+  `CaptureRequest::file_source`.
 - Split capture, codec, core buffer/format/queue, V4L2 probing, and libcamera probing concerns
   into dedicated crates while keeping `styx` as the high-level facade crate.
 - Reorganized examples into top-level workflow groups for quickstart, capture, graph, codecs,
@@ -77,6 +84,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   and recorder indexing events.
 - Changed libcamera manager lifecycle handling to use typed runtime configuration, probe cache
   TTL controls, active camera use guards, and optional idle-stop behavior.
+- Changed graph policy helpers from workflow names to behavior names: `latest_only`,
+  `bounded_blocking`, and `bounded_drop_oldest`.
+- Changed pipeline recording wiring from `record_output(recorder)` to the generic
+  `.sink("recording", recorder)` builder shape.
+- Changed codec family metadata and helpers to describe output/capability behavior instead of
+  preview/recording application roles.
 
 ### Removed
 
@@ -89,6 +102,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   configuration and centralized tunables.
 - Removed repeated string matching for codec implementation preferences where typed
   `CodecImplementationId` APIs can now be used.
+- Removed workflow-specific config presets from the core API: `StyxConfig::low_latency_preview`,
+  `StyxConfig::reliable_recording`, and `StyxConfig::netcam_preview`.
+- Removed workflow-specific preview/analysis/recorder graph sink helpers from public exports in
+  favor of generic frame sink registration.
+- Removed virtual/netcam/file demo constructors from the main prelude; use the request-based
+  source builders for application code or import lower-level constructors from `capture_api` when
+  needed.
 - Removed legacy compatibility assumptions around backend startup and feature availability:
   disabled optional backends now report typed `BackendMissing` errors instead of being hidden
   behind implicit fallback behavior.

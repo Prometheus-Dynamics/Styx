@@ -19,8 +19,12 @@ fn main() {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = make_temp_dir()?;
     let paths = write_sample_frames(&dir)?;
-    let device = make_file_device("file-replay-perf", paths.clone(), 30, false);
-    let handle = CaptureRequest::new(&device).start()?;
+    let source = CaptureRequest::file_source(
+        FileSourceConfig::new(paths.clone())
+            .name("file-replay-perf")
+            .fps(30),
+    );
+    let handle = source.capture_request().start()?;
 
     let expected_frames = paths.len();
     let mut samples = Vec::with_capacity(expected_frames);

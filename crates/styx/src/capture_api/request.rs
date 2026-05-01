@@ -2,6 +2,8 @@ use crate::{BackendKind, ProbedBackend, ProbedDevice};
 use std::time::Duration;
 use styx_capture::prelude::*;
 
+#[cfg(feature = "file-backend")]
+use super::FileSourceConfig;
 #[cfg(feature = "libcamera")]
 use super::LIBCAMERA_NOISE_REDUCTION_MODE;
 #[cfg(feature = "netcam")]
@@ -290,6 +292,11 @@ impl<'a> CaptureRequest<'a> {
 
     #[cfg(feature = "netcam")]
     pub fn netcam_source(config: NetcamSourceConfig) -> CaptureSource {
+        CaptureSource::new(config.into_device())
+    }
+
+    #[cfg(feature = "file-backend")]
+    pub fn file_source(config: FileSourceConfig) -> CaptureSource {
         CaptureSource::new(config.into_device())
     }
 

@@ -61,7 +61,7 @@ pub use tunables::{
 use crate::{BackendHandle, BackendKind, DeviceIdentity, ProbedBackend, ProbedDevice};
 #[cfg(feature = "file-backend")]
 use std::collections::{HashMap, HashSet};
-#[cfg(feature = "simulation-bevy")]
+#[cfg(any(feature = "file-backend", feature = "simulation-bevy"))]
 use std::path::PathBuf;
 use styx_capture::prelude::*;
 
@@ -133,6 +133,8 @@ impl VirtualSourceConfig {
     }
 }
 
+pub type VirtualCaptureConfig = VirtualSourceConfig;
+
 #[cfg(feature = "netcam")]
 #[derive(Clone, Debug)]
 pub struct NetcamSourceConfig {
@@ -173,6 +175,46 @@ impl NetcamSourceConfig {
 
     pub fn into_device(self) -> ProbedDevice {
         make_netcam_device(&self.name, &self.url, self.width, self.height, self.fps)
+    }
+}
+
+#[cfg(feature = "file-backend")]
+#[derive(Clone, Debug)]
+pub struct FileSourceConfig {
+    pub name: String,
+    pub paths: Vec<PathBuf>,
+    pub fps: u32,
+    pub loop_forever: bool,
+}
+
+#[cfg(feature = "file-backend")]
+impl FileSourceConfig {
+    pub fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self {
+            name: "file".into(),
+            paths: paths.into_iter().collect(),
+            fps: 30,
+            loop_forever: false,
+        }
+    }
+
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    pub fn fps(mut self, fps: u32) -> Self {
+        self.fps = fps;
+        self
+    }
+
+    pub fn loop_forever(mut self, loop_forever: bool) -> Self {
+        self.loop_forever = loop_forever;
+        self
+    }
+
+    pub fn into_device(self) -> ProbedDevice {
+        make_file_device(&self.name, self.paths, self.fps, self.loop_forever)
     }
 }
 

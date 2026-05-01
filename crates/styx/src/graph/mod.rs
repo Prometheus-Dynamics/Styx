@@ -32,7 +32,7 @@ pub use frame::{
     register_framelease_type,
 };
 pub use plugin::{StyxMediaPlugin, StyxSinkDescriptor, StyxSourceDescriptor, StyxSourceKind};
-pub use policy::{bounded_blocking, bounded_drop_oldest, latest_only};
+pub use policy::{GraphPolicy, SinkPolicy, bounded_blocking, bounded_drop_oldest, latest_only};
 #[cfg(feature = "hooks")]
 pub use sinks::register_file_sequence_sink_node;
 pub use sinks::{

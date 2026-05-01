@@ -47,9 +47,9 @@ workflows.
     `bounded_drop_oldest(capacity, max_lag_frames)`.
   - Update examples to assign workflow names locally:
     ```rust
-    let preview = GraphPolicy::latest_only();
-    let recording = GraphPolicy::bounded_blocking(64);
-    let analysis = GraphPolicy::bounded_drop_oldest(8, 3);
+    let preview: GraphPolicy = latest_only();
+    let recording = bounded_blocking(64);
+    let analysis = bounded_drop_oldest(8, 3);
     ```
 
 - [x] Replace workflow-specific sink helpers with generic sink registration.
@@ -114,11 +114,13 @@ workflows.
     ```
   - Keep any one-call RGB helpers local to examples or test support.
 
-- [ ] Move all capture sources toward the same request-based source builder
+- [x] Move all capture sources toward the same request-based source builder
   pattern.
-  - Added `CaptureSource`, `VirtualSourceConfig`, and `NetcamSourceConfig`.
+  - Added `CaptureSource`, `VirtualSourceConfig`, `VirtualCaptureConfig`,
+    `NetcamSourceConfig`, and `FileSourceConfig`.
   - Virtual and netcam examples now use `CaptureRequest::virtual_source(...)`
     and `CaptureRequest::netcam_source(...)`.
+  - File replay examples now use `CaptureRequest::file_source(...)`.
   - Prefer source constructors through `CaptureRequest`, for example:
     ```rust
     CaptureRequest::netcam_source(
@@ -150,7 +152,7 @@ workflows.
     ```
   - Keep `FrameRecorder` if recording remains a first-class library feature.
 
-- [ ] Add the final intended public config/API vocabulary.
+- [x] Add the final intended public config/API vocabulary.
   - `StyxConfig`
   - `CaptureConfig`
   - `BackendConfig`
@@ -158,18 +160,19 @@ workflows.
   - `LibcameraConfig`
   - `NetcamConfig`
   - `FileBackendConfig`
+  - `FileSourceConfig`
   - `TransformConfig`
   - `GraphPolicy`
   - `SinkPolicy`
   - `CodecSelector`
   - `VirtualCaptureConfig`
 
-- [ ] Update examples after the core API cleanup.
+- [x] Update examples after the core API cleanup.
   - Move workflow-specific helper functions into `examples`.
   - Keep examples short by composing the new primitives locally.
   - Avoid adding public library APIs solely to reduce example line count.
 
-- [ ] Update documentation after the core API cleanup.
+- [x] Update documentation after the core API cleanup.
   - Update README snippets.
   - Update crate docs.
   - Update changelog with the final removed/changed API list.

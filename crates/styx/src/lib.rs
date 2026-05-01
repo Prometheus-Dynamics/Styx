@@ -513,16 +513,16 @@ pub mod prelude {
         StyxCapabilityInventory, StyxPathPlan, StyxPathRequest, TransformCapability,
         explain_styx_path, styx_capability_inventory,
     };
+    #[cfg(feature = "file-backend")]
+    pub use crate::capture_api::FileSourceConfig;
     #[cfg(feature = "netcam")]
     pub use crate::capture_api::NetcamSourceConfig;
-    #[cfg(feature = "file-backend")]
-    pub use crate::capture_api::make_file_device;
     pub use crate::capture_api::{
         BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
         CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
         CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig, LibcameraConfig,
         NetcamConfig, NetcamTunables, SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig,
-        V4l2Config, VirtualSourceConfig, open_best_camera, start_capture,
+        V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera, start_capture,
     };
     #[cfg(feature = "simulation-bevy")]
     pub use crate::capture_api::{
@@ -533,17 +533,17 @@ pub mod prelude {
     pub use crate::graph::register_file_sequence_sink_node;
     #[cfg(feature = "daedalus-plugin")]
     pub use crate::graph::{
-        CONTROL_EVENT_TYPE_KEY, CONTROL_RESULT_TYPE_KEY, FRAMELEASE_TYPE_KEY, SinkNodeConfig,
-        StyxCaptureSourceOptions, StyxCodecNodeDescriptor, StyxCodecNodeOptions, StyxControlEvent,
-        StyxControlResult, StyxMediaPlugin, StyxSinkDescriptor, StyxSourceDescriptor,
-        StyxSourceKind, bounded_blocking, bounded_drop_oldest, concrete_codec_node_id,
-        control_event_payload, control_event_type_key, control_result_type_key,
-        framelease_daedalus_residency, framelease_payload, framelease_type_key, latest_only,
-        register_camera_sources_all, register_camera_sources_limit,
-        register_camera_sources_with_policy, register_capture_request_source_with_policy,
-        register_capture_source_node, register_capture_source_node_with_options,
-        register_control_types, register_frame_sink_node, register_framelease_type,
-        register_network_stream_sink_node,
+        CONTROL_EVENT_TYPE_KEY, CONTROL_RESULT_TYPE_KEY, FRAMELEASE_TYPE_KEY, GraphPolicy,
+        SinkNodeConfig, SinkPolicy, StyxCaptureSourceOptions, StyxCodecNodeDescriptor,
+        StyxCodecNodeOptions, StyxControlEvent, StyxControlResult, StyxMediaPlugin,
+        StyxSinkDescriptor, StyxSourceDescriptor, StyxSourceKind, bounded_blocking,
+        bounded_drop_oldest, concrete_codec_node_id, control_event_payload, control_event_type_key,
+        control_result_type_key, framelease_daedalus_residency, framelease_payload,
+        framelease_type_key, latest_only, register_camera_sources_all,
+        register_camera_sources_limit, register_camera_sources_with_policy,
+        register_capture_request_source_with_policy, register_capture_source_node,
+        register_capture_source_node_with_options, register_control_types,
+        register_frame_sink_node, register_framelease_type, register_network_stream_sink_node,
     };
     pub use crate::metrics::{
         CopyMetrics, CopyStats, FrameDropReason, FrameDropStats, GraphTelemetryStats, HealthReport,
