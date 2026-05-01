@@ -50,6 +50,8 @@ jobs:
   docs-and-lints:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CXXFLAGS: "-include map -include string"
     steps:
       - name: Checkout
         uses: actions/checkout@v5
