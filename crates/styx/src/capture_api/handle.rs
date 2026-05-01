@@ -444,6 +444,14 @@ impl CaptureHandle {
         }
     }
 
+    pub fn runtime_memory_report(&self) -> crate::memory::RuntimeMemoryReport {
+        crate::memory::runtime_memory_report_parts(
+            Some(self.memory_stats()),
+            Some(self.health_report()),
+            None,
+        )
+    }
+
     pub fn health_report(&self) -> crate::metrics::HealthReport {
         let queue = self.queue_stats();
         let capture = self.metrics.snapshot();

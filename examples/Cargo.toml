@@ -45,6 +45,10 @@ name = "quickstart_pipeline_health"
 path = "00_quickstart/pipeline_health.rs"
 
 [[bin]]
+name = "quickstart_runtime_memory_report"
+path = "00_quickstart/runtime_memory_report.rs"
+
+[[bin]]
 name = "watch_inventory"
 path = "01_capture/watch_inventory.rs"
 

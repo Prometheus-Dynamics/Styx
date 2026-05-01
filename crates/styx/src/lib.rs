@@ -26,6 +26,7 @@ mod device_identity;
 mod frame_sizing;
 #[cfg(feature = "daedalus-plugin")]
 pub mod graph;
+pub mod memory;
 mod metrics;
 #[cfg(feature = "hooks")]
 pub mod recording;
@@ -72,6 +73,7 @@ pub mod imports {
 
     /// Pipeline builder/runtime APIs.
     pub mod pipeline {
+        pub use crate::memory::RuntimeMemoryReport;
         pub use crate::metrics::{HealthReport, PipelineMemoryStats, PipelineMetrics};
         pub use crate::session::{
             MediaPipeline, MediaPipelineBuilder, MediaPipelineFrameIter, PipelineExecutionMode,
@@ -676,6 +678,11 @@ pub mod prelude {
         register_capture_request_source_with_policy, register_capture_source_node,
         register_capture_source_node_with_options, register_control_types,
         register_frame_sink_node, register_framelease_type, register_network_stream_sink_node,
+    };
+    pub use crate::memory::{
+        FdClass, FdClassStats, FdInventoryStats, FdTargetStats, KernelDmabufStats, MappingCategory,
+        MappingCategoryStats, MappingNameStats, ProcessMemoryStats, RuntimeMemoryReport,
+        runtime_memory_report, runtime_memory_report_with_styx,
     };
     pub use crate::metrics::{
         CopyMetrics, CopyStats, FrameDropReason, FrameDropStats, GraphTelemetryStats, HealthReport,

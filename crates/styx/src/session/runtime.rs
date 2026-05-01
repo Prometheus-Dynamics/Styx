@@ -345,6 +345,17 @@ impl MediaPipeline {
         }
     }
 
+    pub fn runtime_memory_report(&self) -> crate::memory::RuntimeMemoryReport {
+        crate::memory::runtime_memory_report_parts(
+            Some(self.memory_stats()),
+            Some(self.health_report()),
+            #[cfg(feature = "graph-pipeline")]
+            self.graph_telemetry_stats(),
+            #[cfg(not(feature = "graph-pipeline"))]
+            None,
+        )
+    }
+
     fn record_stage_error(
         &self,
         stage: PipelineStage,

@@ -126,7 +126,11 @@ pub(super) fn start_libcamera(
     let pending_controls = Arc::new(Mutex::new(PendingControlState::default()));
     let worker_error = Arc::new(Mutex::new(None));
     let outstanding_backings = Arc::new(AtomicUsize::new(0));
-    let lease_backing_tracker = Arc::new(ExternalBackingTracker::new("libcamera_dmabuf_lease"));
+    let outstanding_lease_tracker = Arc::new(ExternalBackingTracker::new(
+        "libcamera_dmabuf_outstanding_lease",
+    ));
+    let mapped_lease_tracker =
+        Arc::new(ExternalBackingTracker::new("libcamera_dmabuf_mapped_lease"));
     let request_pool_tracker =
         Arc::new(ExternalBackingTracker::new("libcamera_dmabuf_request_pool"));
     let tdn_request_pool_tracker = Arc::new(ExternalBackingTracker::new(
@@ -136,7 +140,8 @@ pub(super) fn start_libcamera(
 
     let pending_controls_for_thread = pending_controls.clone();
     let outstanding_backings_for_thread = outstanding_backings.clone();
-    let lease_backing_tracker_for_thread = lease_backing_tracker.clone();
+    let outstanding_lease_tracker_for_thread = outstanding_lease_tracker.clone();
+    let mapped_lease_tracker_for_thread = mapped_lease_tracker.clone();
     let request_pool_tracker_for_thread = request_pool_tracker.clone();
     let tdn_request_pool_tracker_for_thread = tdn_request_pool_tracker.clone();
     let worker_error_for_thread = worker_error.clone();
@@ -573,7 +578,8 @@ pub(super) fn start_libcamera(
                             frame_parts.plane_views,
                             shutting_down.clone(),
                             outstanding_backings_for_thread.clone(),
-                            lease_backing_tracker_for_thread.clone(),
+                            outstanding_lease_tracker_for_thread.clone(),
+                            mapped_lease_tracker_for_thread.clone(),
                         );
                         let meta = FrameMeta::new(wire_format, frame_parts.timestamp)
                             .with_capture_instant(std::time::Instant::now())
@@ -659,9 +665,10 @@ pub(super) fn start_libcamera(
         libcamera_stop_when_idle: libcamera_config.stop_when_idle,
         metrics: StageMetrics::default(),
         external_backings: vec![
-            lease_backing_tracker,
             request_pool_tracker,
             tdn_request_pool_tracker,
+            outstanding_lease_tracker,
+            mapped_lease_tracker,
         ],
         worker_error,
         control_error: Arc::new(Mutex::new(None)),

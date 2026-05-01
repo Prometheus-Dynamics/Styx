@@ -39,6 +39,22 @@ fn quickstart_pipeline_health_reports_metrics() {
 }
 
 #[test]
+fn quickstart_runtime_memory_report_prints_process_and_pipeline_reports() {
+    let stdout = assert_success(
+        Command::new(env!("CARGO_BIN_EXE_quickstart_runtime_memory_report"))
+            .output()
+            .expect("quickstart_runtime_memory_report should run"),
+        "quickstart_runtime_memory_report",
+    );
+
+    assert!(stdout.contains("process-only report before capture:"));
+    assert!(stdout.contains("pipeline-attached report after"));
+    assert!(stdout.contains("Process:"));
+    assert!(stdout.contains("Styx tracked:"));
+    assert!(stdout.contains("Unexplained PSS:"));
+}
+
+#[test]
 fn latest_frame_fanout_reports_branch_counts() {
     let stdout = assert_success(
         Command::new(env!("CARGO_BIN_EXE_latest_frame_fanout"))

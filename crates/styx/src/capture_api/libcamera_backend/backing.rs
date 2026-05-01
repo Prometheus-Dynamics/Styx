@@ -294,7 +294,8 @@ pub(super) struct LibcameraBacking {
     ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
     shutting_down: std::sync::Arc<AtomicBool>,
     outstanding_backings: Arc<AtomicUsize>,
-    tracker: Arc<ExternalBackingTracker>,
+    outstanding_tracker: Arc<ExternalBackingTracker>,
+    mapped_tracker: Arc<ExternalBackingTracker>,
     backing_bytes: usize,
 }
 
@@ -305,10 +306,12 @@ impl LibcameraBacking {
         planes: SmallVec<[BackingPlaneView; 3]>,
         shutting_down: std::sync::Arc<AtomicBool>,
         outstanding_backings: Arc<AtomicUsize>,
-        tracker: Arc<ExternalBackingTracker>,
+        outstanding_tracker: Arc<ExternalBackingTracker>,
+        mapped_tracker: Arc<ExternalBackingTracker>,
     ) -> std::sync::Arc<Self> {
         let backing_bytes = unique_backing_plane_bytes(&planes);
         outstanding_backings.fetch_add(1, Ordering::AcqRel);
+        outstanding_tracker.acquire_many(1, backing_bytes);
         std::sync::Arc::new(Self {
             req: Mutex::new(Some(req)),
             planes,
@@ -316,7 +319,8 @@ impl LibcameraBacking {
             ret_tx,
             shutting_down,
             outstanding_backings,
-            tracker,
+            outstanding_tracker,
+            mapped_tracker,
             backing_bytes,
         })
     }
@@ -326,7 +330,7 @@ impl LibcameraBacking {
             .get_or_init(|| {
                 let mapped = map_backing_planes(&self.planes);
                 if let Some(state) = mapped.as_ref() {
-                    self.tracker.acquire(state.mapped_bytes);
+                    self.mapped_tracker.acquire(state.mapped_bytes);
                 }
                 mapped
             })
@@ -391,9 +395,10 @@ impl ExternalBacking for LibcameraBacking {
 impl Drop for LibcameraBacking {
     fn drop(&mut self) {
         if let Some(mapped) = self.mapped.take().flatten() {
-            self.tracker.release(mapped.mapped_bytes);
+            self.mapped_tracker.release(mapped.mapped_bytes);
             drop(mapped);
         }
+        self.outstanding_tracker.release_many(1, self.backing_bytes);
         if self.shutting_down.load(Ordering::Acquire) {
             self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
             return;
