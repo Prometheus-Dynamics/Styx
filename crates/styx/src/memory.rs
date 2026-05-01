@@ -75,12 +75,32 @@ impl fmt::Display for RuntimeMemoryReport {
                     format_bytes(pool.in_use_bytes as u64)
                 )?;
             }
+            if let Some(pool) = &styx.decoder_pool {
+                writeln!(
+                    f,
+                    "  decoder pool: retained {} / in-use {} / chunk {}",
+                    format_bytes(pool.retained_bytes as u64),
+                    format_bytes(pool.in_use_bytes as u64),
+                    format_bytes(pool.chunk_size as u64)
+                )?;
+            }
+            if let Some(pool) = &styx.encoder_pool {
+                writeln!(
+                    f,
+                    "  encoder pool: retained {} / in-use {} / chunk {}",
+                    format_bytes(pool.retained_bytes as u64),
+                    format_bytes(pool.in_use_bytes as u64),
+                    format_bytes(pool.chunk_size as u64)
+                )?;
+            }
             #[cfg(target_os = "linux")]
             {
                 if let Some(pool) = &styx.shared_decode_pool {
                     writeln!(
                         f,
-                        "  shared decode pool: {} free / chunk {}",
+                        "  shared decode pool: retained {} / in-use {} / free {} / chunk {}",
+                        format_bytes(pool.retained_bytes as u64),
+                        format_bytes(pool.in_use_bytes as u64),
                         format_bytes(pool.free_bytes as u64),
                         format_bytes(pool.chunk_size as u64)
                     )?;
@@ -88,7 +108,9 @@ impl fmt::Display for RuntimeMemoryReport {
                 if let Some(pool) = &styx.shared_encode_pool {
                     writeln!(
                         f,
-                        "  shared encode pool: {} free / chunk {}",
+                        "  shared encode pool: retained {} / in-use {} / free {} / chunk {}",
+                        format_bytes(pool.retained_bytes as u64),
+                        format_bytes(pool.in_use_bytes as u64),
                         format_bytes(pool.free_bytes as u64),
                         format_bytes(pool.chunk_size as u64)
                     )?;
@@ -461,13 +483,19 @@ fn known_memory_bytes(
         if let Some(pool) = &styx.transform_pool {
             known = known.saturating_add(pool.retained_bytes as u64);
         }
+        if let Some(pool) = &styx.decoder_pool {
+            known = known.saturating_add(pool.retained_bytes as u64);
+        }
+        if let Some(pool) = &styx.encoder_pool {
+            known = known.saturating_add(pool.retained_bytes as u64);
+        }
         #[cfg(target_os = "linux")]
         {
             if let Some(pool) = &styx.shared_decode_pool {
-                known = known.saturating_add(pool.free_bytes as u64);
+                known = known.saturating_add(pool.retained_bytes as u64);
             }
             if let Some(pool) = &styx.shared_encode_pool {
-                known = known.saturating_add(pool.free_bytes as u64);
+                known = known.saturating_add(pool.retained_bytes as u64);
             }
         }
     }
@@ -1347,6 +1375,8 @@ size flags mode count exp_name ino
                 peak_bytes: 4096,
             }],
             transform_pool: None,
+            decoder_pool: None,
+            encoder_pool: None,
             #[cfg(target_os = "linux")]
             shared_decode_pool: None,
             #[cfg(target_os = "linux")]

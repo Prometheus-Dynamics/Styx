@@ -21,6 +21,7 @@ mod residency;
 mod tests;
 mod worker;
 
+use crate::frame_sizing::{SHARED_CODEC_POOL_MIN, SHARED_CODEC_POOL_SPARE};
 pub(super) use codec_lookup::lookup_codec;
 #[cfg(feature = "graph-pipeline")]
 pub(super) use graph::GraphMediaRuntime;
@@ -332,6 +333,8 @@ impl MediaPipeline {
             capture_queue: capture.capture_queue,
             external_backings: capture.external_backings,
             transform_pool: styx_core::transform::transform_pool_stats().or(capture.transform_pool),
+            decoder_pool: self.decoder.as_ref().and_then(|codec| codec.memory_stats()),
+            encoder_pool: self.encoder.as_ref().and_then(|codec| codec.memory_stats()),
             #[cfg(target_os = "linux")]
             shared_decode_pool: self
                 .shared_decode_pool
@@ -648,7 +651,14 @@ impl MediaPipeline {
             .map(|(_, capacity)| *capacity < bytes)
             .unwrap_or(true);
         if recreate {
-            self.shared_decode_pool = Some((SharedBufferPool::with_limits(2, bytes, 4)?, bytes));
+            self.shared_decode_pool = Some((
+                SharedBufferPool::with_limits(
+                    SHARED_CODEC_POOL_MIN,
+                    bytes,
+                    SHARED_CODEC_POOL_SPARE,
+                )?,
+                bytes,
+            ));
         }
         Ok(&self
             .shared_decode_pool
@@ -670,7 +680,14 @@ impl MediaPipeline {
             .map(|(_, capacity)| *capacity < bytes)
             .unwrap_or(true);
         if recreate {
-            self.shared_encode_pool = Some((SharedBufferPool::with_limits(2, bytes, 4)?, bytes));
+            self.shared_encode_pool = Some((
+                SharedBufferPool::with_limits(
+                    SHARED_CODEC_POOL_MIN,
+                    bytes,
+                    SHARED_CODEC_POOL_SPARE,
+                )?,
+                bytes,
+            ));
         }
         Ok(&self
             .shared_encode_pool

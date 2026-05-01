@@ -55,6 +55,8 @@ pub struct PipelineMemoryStats {
     pub capture_queue: Option<QueueMemoryStats>,
     pub external_backings: Vec<ExternalBackingStats>,
     pub transform_pool: Option<styx_core::buffer::BufferPoolStats>,
+    pub decoder_pool: Option<styx_core::buffer::BufferPoolStats>,
+    pub encoder_pool: Option<styx_core::buffer::BufferPoolStats>,
     #[cfg(target_os = "linux")]
     pub shared_decode_pool: Option<styx_core::buffer::SharedBufferPoolStats>,
     #[cfg(target_os = "linux")]

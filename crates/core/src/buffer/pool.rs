@@ -229,6 +229,15 @@ pub struct SharedBufferPoolStats {
     pub free: usize,
     pub free_bytes: usize,
     pub max_free: usize,
+    pub retained: usize,
+    pub retained_bytes: usize,
+    pub in_use: usize,
+    pub in_use_bytes: usize,
+    pub peak_in_use: usize,
+    pub peak_in_use_bytes: usize,
+    pub hits: u64,
+    pub misses: u64,
+    pub allocations: u64,
 }
 
 #[cfg(target_os = "linux")]
@@ -247,6 +256,7 @@ impl SharedBufferPool {
             free: Mutex::new(Vec::with_capacity(capacity)),
             chunk_size,
             max_free,
+            metrics: Arc::new(Metrics::default()),
         });
         for _ in 0..capacity {
             inner.recycle(create_sized_memfd(chunk_size)?);
@@ -255,23 +265,41 @@ impl SharedBufferPool {
     }
 
     pub fn lease(&self) -> Result<SharedBufferLease, FrameExportError> {
-        let fd = self
-            .inner
-            .free
-            .lock()
-            .pop()
-            .map(Ok)
-            .unwrap_or_else(|| create_sized_memfd(self.inner.chunk_size))?;
+        let fd = self.inner.free.lock().pop();
+        let fd = if let Some(fd) = fd {
+            self.inner.metrics.hit();
+            fd
+        } else {
+            self.inner.metrics.miss();
+            self.inner.metrics.alloc();
+            create_sized_memfd(self.inner.chunk_size)?
+        };
+        self.inner.metrics.lease_acquired();
         SharedBufferLease::new(self.inner.clone(), fd, self.inner.chunk_size)
     }
 
     pub fn stats(&self) -> SharedBufferPoolStats {
         let free = self.inner.free.lock().len();
+        let free_bytes = free.saturating_mul(self.inner.chunk_size);
+        let in_use = self.inner.metrics.leases_out() as usize;
+        let in_use_bytes = in_use.saturating_mul(self.inner.chunk_size);
+        let retained = free.saturating_add(in_use);
+        let retained_bytes = retained.saturating_mul(self.inner.chunk_size);
+        let peak_in_use = self.inner.metrics.peak_leases_out() as usize;
         SharedBufferPoolStats {
             chunk_size: self.inner.chunk_size,
             free,
-            free_bytes: free.saturating_mul(self.inner.chunk_size),
+            free_bytes,
             max_free: self.inner.max_free,
+            retained,
+            retained_bytes,
+            in_use,
+            in_use_bytes,
+            peak_in_use,
+            peak_in_use_bytes: peak_in_use.saturating_mul(self.inner.chunk_size),
+            hits: self.inner.metrics.hits(),
+            misses: self.inner.metrics.misses(),
+            allocations: self.inner.metrics.allocations(),
         }
     }
 }
@@ -281,6 +309,7 @@ struct SharedPoolInner {
     free: Mutex<Vec<OwnedFd>>,
     chunk_size: usize,
     max_free: usize,
+    metrics: Arc<Metrics>,
 }
 
 #[cfg(target_os = "linux")]
@@ -381,6 +410,7 @@ impl SharedBufferLease {
 #[cfg(target_os = "linux")]
 impl Drop for SharedBufferLease {
     fn drop(&mut self) {
+        let release = self.ptr.is_some() || self.fd.is_some();
         if let Some(ptr) = self.ptr.take() {
             unmap_ptr(ptr, self.capacity);
         }
@@ -388,6 +418,9 @@ impl Drop for SharedBufferLease {
             && self.capacity == self.pool.chunk_size
         {
             self.pool.recycle(fd);
+        }
+        if release {
+            self.pool.metrics.lease_released();
         }
     }
 }
@@ -449,6 +482,7 @@ impl Drop for SharedBufferBacking {
         {
             self.pool.recycle(fd);
         }
+        self.pool.metrics.lease_released();
     }
 }
 

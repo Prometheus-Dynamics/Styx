@@ -59,6 +59,10 @@ impl Codec for MjpegDecoder {
         &self.descriptor
     }
 
+    fn memory_stats(&self) -> Option<BufferPoolStats> {
+        Some(self.pool.stats())
+    }
+
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         if input.meta().format.code != self.descriptor.input {
             return Err(CodecError::FormatMismatch {

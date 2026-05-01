@@ -43,6 +43,10 @@ impl Codec for MozjpegEncoder {
         &self.descriptor
     }
 
+    fn memory_stats(&self) -> Option<BufferPoolStats> {
+        Some(self.pool.stats())
+    }
+
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         let meta = input.meta();
         if meta.format.code != self.descriptor.input {

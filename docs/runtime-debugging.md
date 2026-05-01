@@ -128,6 +128,9 @@ Interpret the major fields this way:
 - Codec-owned lazy CPU pools use a small scratch chunk by default and grow leases to the decoded or
   encoded payload size when needed. Raw decode outputs should still be evaluated from decoded format
   and resolution, not compressed input size.
+- Shared codec pools report retained bytes, active in-use bytes, free spare bytes, and chunk size.
+  Codec-owned CPU pools exposed by the pipeline report retained bytes, active in-use bytes, and
+  chunk size when the codec implementation exposes pool stats.
 - Unexplained PSS is a diagnostic delta. It is process PSS minus currently tracked Styx pools and
   graph copy/transport bytes, so it can include allocator overhead, thread stacks, library pages,
   libcamera internals, service state, watchers, API clients, and mappings that Styx cannot classify
@@ -137,6 +140,20 @@ Interpret the major fields this way:
   ownership proof.
 - DMA-BUF exporter totals come from debugfs and are kernel-wide. They explain pressure by exporter
   name, but they do not prove that every buffer belongs to the current Styx process.
+
+Recent buffer-sizing observations:
+
+- `1280x800 NV12 -> MJPEG` shared encoder output previously fell back to the raw input payload
+  size, about 1.46 MiB per retained chunk. It now estimates compressed packet pool chunks at
+  384 KiB for that case.
+- `1280x800` MJPEG netcam ingress previously used raw RGB packet-pool chunks, about 2.93 MiB per
+  retained chunk. It now uses the bounded compressed-packet pool cap of 512 KiB unless a smaller
+  explicit `max_jpeg_bytes` limit applies.
+- Codec-owned lazy CPU pools for FFmpeg/MJPEG/JPEG paths previously retained 1 MiB scratch chunks by
+  default. They now start at 64 KiB and grow leases to the actual decoded or encoded payload size.
+- A local `runtime_memory_probe idle` run with `libcamera,graph-pipeline,hooks,codec-ffmpeg`
+  features completed successfully and reported process PSS/RSS plus Styx pool fields. Target-device
+  capture numbers should still be collected with the same probe modes used for release validation.
 
 For low-memory deployments, start with these knobs:
 

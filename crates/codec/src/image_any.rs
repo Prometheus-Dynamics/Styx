@@ -41,6 +41,10 @@ impl Codec for ImageAnyDecoder {
         &self.descriptor
     }
 
+    fn memory_stats(&self) -> Option<BufferPoolStats> {
+        Some(self.pool.stats())
+    }
+
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         let plane = input
             .planes()

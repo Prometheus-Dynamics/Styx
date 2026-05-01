@@ -7,7 +7,10 @@ use crate::core::prelude::FrameLease;
 #[cfg(target_os = "linux")]
 use crate::core::prelude::SharedBufferPool;
 #[cfg(target_os = "linux")]
-use crate::frame_sizing::{estimated_compressed_packet_pool_bytes, estimated_format_bytes};
+use crate::frame_sizing::{
+    SHARED_CODEC_POOL_MIN, SHARED_CODEC_POOL_SPARE, estimated_compressed_packet_pool_bytes,
+    estimated_format_bytes,
+};
 use daedalus::NodeHandle;
 use daedalus::runtime::NodeError;
 use daedalus::runtime::plugins::PluginResult;
@@ -221,7 +224,7 @@ fn codec_shared_pool(
         .unwrap_or(true);
     if recreate {
         *guard = Some((
-            SharedBufferPool::with_limits(2, bytes, 4)
+            SharedBufferPool::with_limits(SHARED_CODEC_POOL_MIN, bytes, SHARED_CODEC_POOL_SPARE)
                 .map_err(|err| NodeError::Handler(err.to_string()))?,
             bytes,
         ));

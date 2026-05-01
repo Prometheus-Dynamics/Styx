@@ -234,6 +234,10 @@ pub trait Codec: Any + Send + Sync + 'static {
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError>;
 
+    fn memory_stats(&self) -> Option<BufferPoolStats> {
+        None
+    }
+
     #[cfg(target_os = "linux")]
     fn process_shared(
         &self,

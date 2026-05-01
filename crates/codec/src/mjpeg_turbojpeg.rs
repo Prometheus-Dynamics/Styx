@@ -189,6 +189,10 @@ impl Codec for TurbojpegEncoder {
         &self.descriptor
     }
 
+    fn memory_stats(&self) -> Option<BufferPoolStats> {
+        Some(self.pool.stats())
+    }
+
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         let meta = input.meta();
         if meta.format.code != self.descriptor.input {
@@ -318,6 +322,10 @@ impl TurbojpegDecoder {
 impl Codec for TurbojpegDecoder {
     fn descriptor(&self) -> &CodecDescriptor {
         &self.descriptor
+    }
+
+    fn memory_stats(&self) -> Option<BufferPoolStats> {
+        Some(self.pool.stats())
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {

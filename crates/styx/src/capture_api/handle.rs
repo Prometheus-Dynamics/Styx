@@ -437,6 +437,8 @@ impl CaptureHandle {
                 .map(|tracker| tracker.snapshot())
                 .collect(),
             transform_pool: styx_core::transform::transform_pool_stats(),
+            decoder_pool: None,
+            encoder_pool: None,
             #[cfg(target_os = "linux")]
             shared_decode_pool: None,
             #[cfg(target_os = "linux")]

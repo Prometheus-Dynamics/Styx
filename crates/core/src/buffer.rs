@@ -44,6 +44,32 @@ mod tests {
         assert_eq!(stats.retained_bytes, 16);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shared_pool_reports_active_and_retained_memory() {
+        let pool = SharedBufferPool::with_limits(1, 16, 2).expect("shared pool");
+        let stats = pool.stats();
+        assert_eq!(stats.free, 1);
+        assert_eq!(stats.in_use, 0);
+        assert_eq!(stats.retained, 1);
+        assert_eq!(stats.retained_bytes, 16);
+
+        let lease = pool.lease().expect("lease");
+        let stats = pool.stats();
+        assert_eq!(stats.free, 0);
+        assert_eq!(stats.in_use, 1);
+        assert_eq!(stats.retained, 1);
+        assert_eq!(stats.in_use_bytes, 16);
+        assert_eq!(stats.peak_in_use, 1);
+        assert_eq!(stats.hits, 1);
+        drop(lease);
+
+        let stats = pool.stats();
+        assert_eq!(stats.free, 1);
+        assert_eq!(stats.in_use, 0);
+        assert_eq!(stats.retained_bytes, 16);
+    }
+
     #[test]
     fn frame_meta_can_carry_v4l2_backend_details() {
         let res = Resolution::new(2, 2).unwrap();

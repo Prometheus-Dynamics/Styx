@@ -2,6 +2,8 @@ use styx_core::prelude::FourCc;
 
 pub(crate) const MIN_COMPRESSED_PACKET_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_COMPRESSED_PACKET_POOL_BYTES: usize = 512 * 1024;
+pub(crate) const SHARED_CODEC_POOL_MIN: usize = 2;
+pub(crate) const SHARED_CODEC_POOL_SPARE: usize = 4;
 
 pub(crate) fn estimated_format_bytes(code: FourCc, width: usize, height: usize) -> Option<usize> {
     code.estimated_frame_bytes(width, height)
