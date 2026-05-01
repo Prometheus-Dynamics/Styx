@@ -98,6 +98,18 @@ Public selector/ID policy for this release:
 - Actionable setup, connection, backend, and graph failures use `warn` or `error`.
 - Avoid new `warn`/`error` logs inside successful per-frame loops unless the condition is abnormal and operator-actionable.
 
+## Lint Suppression Policy
+
+Keep `allow` and `expect` usage narrow and auditable before release:
+
+- Prefer deleting dead code or moving it behind a feature gate over adding `allow(dead_code)`.
+- Allow unused prelude/facade imports only where the public export surface intentionally changes by feature combination.
+- Keep clippy suppressions local to the smallest item and include the design reason when it is not obvious from the code.
+- Do not add broad crate-level suppressions for release code.
+- `expect` is acceptable for static invariants, tests, examples, and benchmark setup. Public/runtime paths should return typed errors or use non-poisoning locks when poisoning is not meaningful.
+
+The current reviewed suppressions are feature-matrix or implementation-shape allowances. Revisit them when the related feature surface changes rather than carrying them as compatibility promises.
+
 ## Release Risk Notes
 
 Before tagging a release, re-run:
@@ -122,5 +134,6 @@ Accepted runtime behavior for the current async surface:
   every capture backend internally nonblocking.
 - `CaptureRequest::start_with_policy_async` only makes retry backoff sleeps yield the Tokio runtime; backend startup remains synchronous because the camera APIs are sync-first.
 - For async services where startup/probing latency matters, construct and start capture from an application-owned blocking task or worker thread, then move the returned `CaptureHandle` or `MediaPipeline` back into async code.
-- `MediaPipeline::next_async` and `MediaPipeline::spawn_async_worker` await capture receive asynchronously, but decode, encode, graph execution, hooks, and sinks still run synchronously on the calling task.
-- Prefer `MediaPipeline::spawn_blocking_worker`, the blocking `spawn_worker`, or an application-owned worker thread for CPU-heavy decode/encode pipelines so processing does not run on Tokio core worker tasks.
+- `MediaPipeline::next_async` awaits capture receive asynchronously, but decode, encode, graph execution, hooks, and sinks still run synchronously on the calling task.
+- Prefer `MediaPipeline::spawn_blocking_worker`, `spawn_tokio_worker`, the blocking `spawn_worker`, or an application-owned worker thread for CPU-heavy decode/encode pipelines so processing does not run on Tokio core worker tasks.
+- Use `CaptureHandle::stop_async` or `stop_async_in_place` before dropping handles in Tokio tasks when teardown latency matters.

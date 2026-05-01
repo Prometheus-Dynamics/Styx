@@ -105,8 +105,9 @@ impl MediaPipeline {
     #[cfg(feature = "async")]
     /// Await the next captured frame, then run pipeline processing on the current task.
     ///
-    /// Decode, encode, graph, and hook stages are still synchronous CPU work. Use
-    /// `spawn_blocking_worker` for CPU-heavy decode/encode pipelines in Tokio applications.
+    /// This method only makes frame receipt async. Decode, encode, graph, hook, and sink
+    /// stages are still synchronous CPU work. Use `spawn_tokio_worker` or
+    /// `spawn_blocking_worker` for normal Tokio pipelines.
     pub async fn next_async(&mut self) -> RecvOutcome<FrameLease> {
         match self.next_async_result().await {
             Ok(outcome) => outcome,
@@ -116,6 +117,10 @@ impl MediaPipeline {
 
     #[cfg(feature = "async")]
     /// Await the next captured frame and preserve pipeline stage errors.
+    ///
+    /// This method only makes frame receipt async. Frame processing still runs synchronously on
+    /// the current Tokio task, so callers should reserve it for lightweight raw-frame pipelines
+    /// or move the pipeline to `spawn_tokio_worker` / `spawn_blocking_worker`.
     pub async fn next_async_result(
         &mut self,
     ) -> Result<RecvOutcome<FrameLease>, PipelineStageError> {
@@ -143,6 +148,10 @@ impl MediaPipeline {
     /// This keeps frame receipt async, but each received frame is processed synchronously by
     /// `next_async` on a Tokio core worker. Prefer `spawn_tokio_worker` or
     /// `spawn_blocking_worker` for normal decode, encode, graph, hook, or sink pipelines.
+    #[deprecated(
+        since = "2.0.0",
+        note = "use spawn_tokio_worker or spawn_blocking_worker; this only makes receive async while processing remains synchronous"
+    )]
     pub fn spawn_async_worker(mut self) -> tokio::task::JoinHandle<()> {
         tokio::task::spawn(async move {
             let span = tracing::trace_span!(
