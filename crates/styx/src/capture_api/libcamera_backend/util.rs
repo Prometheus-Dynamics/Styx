@@ -4,33 +4,41 @@ use std::fs;
 use std::path::Path;
 
 use libcamera::control_value::ControlValue as LcValue;
-use styx_core::controls::{ControlId, ControlValue};
+use styx_core::controls::ControlValue;
 use styx_core::prelude::*;
 
 use crate::capture_api::{CaptureDescriptor, CaptureError, ControlApplyKind};
+use crate::capture_api::{LIBCAMERA_FRAME_DURATION_LIMITS, LibcameraProcessedStreamRole};
 
 #[cfg(feature = "v4l2")]
 const V4L2_CID_VBLANK: u32 = 0x009e0901;
-pub(super) const LIBCAMERA_FRAME_DURATION_LIMITS: ControlId = ControlId(30);
+const CONTROL_PERMISSION_DENIED_TOKENS: &[&str] = &["permission denied"];
+const CONTROL_INVALID_ARGUMENT_TOKENS: &[&str] = &["invalid argument"];
+const CONTROL_SET_REJECTED_TOKENS: &[&str] = &[
+    "set controls",
+    "unable to set controls",
+    "failed to set controls",
+];
+const LIBCAMERA_BUSY_TOKENS: &[&str] = &[
+    "device or resource busy",
+    "camera in running state",
+    "resource busy",
+];
+const LIBCAMERA_TDN_MISMATCH_TOKENS: &[&str] = &["tdn output not enabled", "tdn enabled"];
 
-pub(super) fn stop_when_idle_enabled() -> bool {
-    std::env::var("STYX_LIBCAMERA_STOP_WHEN_IDLE")
-        .ok()
-        .map(|value| {
-            let value = value.trim().to_ascii_lowercase();
-            !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
-        })
-        .unwrap_or(false)
+fn bool_env_override(name: &str) -> Option<bool> {
+    std::env::var(name).ok().map(|value| {
+        let value = value.trim().to_ascii_lowercase();
+        !matches!(value.as_str(), "" | "0" | "false" | "no" | "off")
+    })
 }
 
-pub(super) fn prefault_request_pools_enabled() -> bool {
-    std::env::var("STYX_LIBCAMERA_PREFAULT_REQUEST_POOLS")
-        .ok()
-        .map(|value| {
-            let value = value.trim().to_ascii_lowercase();
-            !matches!(value.as_str(), "0" | "false" | "no" | "off")
-        })
-        .unwrap_or(true)
+pub(super) fn stop_when_idle_enabled(configured: bool) -> bool {
+    bool_env_override("STYX_LIBCAMERA_STOP_WHEN_IDLE").unwrap_or(configured)
+}
+
+pub(super) fn prefault_request_pools_enabled(configured: bool) -> bool {
+    bool_env_override("STYX_LIBCAMERA_PREFAULT_REQUEST_POOLS").unwrap_or(configured)
 }
 
 pub(super) fn control_value_enabled(value: &ControlValue) -> bool {
@@ -43,20 +51,34 @@ pub(super) fn control_value_enabled(value: &ControlValue) -> bool {
     }
 }
 
-pub(super) fn processed_stream_role_override() -> Option<libcamera::stream::StreamRole> {
-    let value = std::env::var("STYX_LIBCAMERA_PROCESSED_STREAM_ROLE")
-        .ok()?
-        .trim()
-        .to_ascii_lowercase();
+fn processed_stream_role_from_config(
+    role: LibcameraProcessedStreamRole,
+) -> libcamera::stream::StreamRole {
+    match role {
+        LibcameraProcessedStreamRole::ViewFinder => libcamera::stream::StreamRole::ViewFinder,
+        LibcameraProcessedStreamRole::VideoRecording => {
+            libcamera::stream::StreamRole::VideoRecording
+        }
+        LibcameraProcessedStreamRole::StillCapture => libcamera::stream::StreamRole::StillCapture,
+    }
+}
+
+pub(super) fn processed_stream_role(
+    configured: LibcameraProcessedStreamRole,
+) -> libcamera::stream::StreamRole {
+    let Some(value) = std::env::var("STYX_LIBCAMERA_PROCESSED_STREAM_ROLE")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+    else {
+        return processed_stream_role_from_config(configured);
+    };
     match value.as_str() {
-        "viewfinder" | "view-finder" | "vf" => Some(libcamera::stream::StreamRole::ViewFinder),
+        "viewfinder" | "view-finder" | "vf" => libcamera::stream::StreamRole::ViewFinder,
         "video" | "recording" | "video-recording" | "video_recording" => {
-            Some(libcamera::stream::StreamRole::VideoRecording)
+            libcamera::stream::StreamRole::VideoRecording
         }
-        "still" | "still-capture" | "still_capture" => {
-            Some(libcamera::stream::StreamRole::StillCapture)
-        }
-        _ => None,
+        "still" | "still-capture" | "still_capture" => libcamera::stream::StreamRole::StillCapture,
+        _ => processed_stream_role_from_config(configured),
     }
 }
 
@@ -69,14 +91,11 @@ pub(super) fn supports_frame_duration_limits(descriptor: &CaptureDescriptor) -> 
 
 pub(super) fn classify_libcamera_control_apply_kind(message: &str) -> ControlApplyKind {
     let msg = message.to_ascii_lowercase();
-    if msg.contains("permission denied") {
+    if contains_any(&msg, CONTROL_PERMISSION_DENIED_TOKENS) {
         ControlApplyKind::PermissionDenied
-    } else if msg.contains("invalid argument") {
+    } else if contains_any(&msg, CONTROL_INVALID_ARGUMENT_TOKENS) {
         ControlApplyKind::InvalidArgument
-    } else if msg.contains("set controls")
-        || msg.contains("unable to set controls")
-        || msg.contains("failed to set controls")
-    {
+    } else if contains_any(&msg, CONTROL_SET_REJECTED_TOKENS) {
         ControlApplyKind::SetControlsRejected
     } else {
         ControlApplyKind::Other
@@ -92,16 +111,17 @@ pub(super) fn classify_libcamera_control_apply_message(message: impl Into<String
 pub(super) fn classify_libcamera_backend_message(message: impl Into<String>) -> CaptureError {
     let message = message.into();
     let msg = message.to_ascii_lowercase();
-    if msg.contains("device or resource busy")
-        || msg.contains("camera in running state")
-        || msg.contains("resource busy")
-    {
+    if contains_any(&msg, LIBCAMERA_BUSY_TOKENS) {
         CaptureError::LibcameraBusy(message)
-    } else if msg.contains("tdn output not enabled") || msg.contains("tdn enabled") {
+    } else if contains_any(&msg, LIBCAMERA_TDN_MISMATCH_TOKENS) {
         CaptureError::LibcameraTdnConfigurationMismatch(message)
     } else {
         CaptureError::Backend(message)
     }
+}
+
+fn contains_any(message: &str, tokens: &[&str]) -> bool {
+    tokens.iter().any(|token| message.contains(token))
 }
 
 pub(super) fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
@@ -142,7 +162,10 @@ pub(super) fn to_lc_value(value: &ControlValue) -> Result<LcValue, CaptureError>
     })
 }
 
-pub(super) fn stream_role_for_request(code: FourCc) -> libcamera::stream::StreamRole {
+pub(super) fn stream_role_for_request(
+    code: FourCc,
+    configured: LibcameraProcessedStreamRole,
+) -> libcamera::stream::StreamRole {
     match &code.to_u32().to_le_bytes() {
         b"H264" | b"H265" | b"HEVC" => libcamera::stream::StreamRole::VideoRecording,
         b"MJPG" | b"JPEG" => libcamera::stream::StreamRole::StillCapture,
@@ -150,7 +173,7 @@ pub(super) fn stream_role_for_request(code: FourCc) -> libcamera::stream::Stream
         | b"RGGB" | b"GRBG" | b"GBRG" | b"BGGR" | b"BA10" | b"BG10" | b"GB10" | b"RG10"
         | b"BA12" | b"BG12" | b"GB12" | b"RG12" | b"BYR2" | b"R16 " | b"GREY" | b"Y10P"
         | b"Y12P" | b"Y14P" | b"Y16 " => libcamera::stream::StreamRole::Raw,
-        _ => processed_stream_role_override().unwrap_or(libcamera::stream::StreamRole::ViewFinder),
+        _ => processed_stream_role(configured),
     }
 }
 
@@ -168,7 +191,7 @@ pub(super) fn pisp_disallowed_fourcc(code: FourCc) -> bool {
 pub(super) fn normalize_requested_fourcc_for_libcamera(code: FourCc) -> FourCc {
     match &code.to_u32().to_le_bytes() {
         b"RG24" => FourCc::new(*b"RGB3"),
-        b"BG24" => FourCc::new(*b"BGR3"),
+        b"BG24" => FourCc::BGR3,
         b"XR24" => FourCc::new(*b"RGB0"),
         b"XB24" => FourCc::new(*b"BGR0"),
         _ => code,
@@ -182,10 +205,10 @@ pub(super) fn map_pixel_format_to_fourcc(pf: libcamera::pixel_format::PixelForma
     const RGB0: [u8; 4] = *b"RGB0";
     const BGR0: [u8; 4] = *b"BGR0";
     match base.to_u32().to_le_bytes() {
-        RGB3 => return FourCc::new(*b"RG24"),
-        BGR3 => return FourCc::new(*b"BG24"),
-        RGB0 => return FourCc::new(*b"XR24"),
-        BGR0 => return FourCc::new(*b"XB24"),
+        RGB3 => return FourCc::RG24,
+        BGR3 => return FourCc::BG24,
+        RGB0 => return FourCc::XR24,
+        BGR0 => return FourCc::XB24,
         _ => {}
     }
     let Some(info) = pf.info() else {
@@ -218,10 +241,10 @@ pub(super) fn map_pixel_format_to_fourcc(pf: libcamera::pixel_format::PixelForma
 }
 
 pub(super) fn plane_height_for_format(code: FourCc, plane_idx: usize, height: usize) -> usize {
-    const NV12: FourCc = FourCc::new(*b"NV12");
-    const I420: FourCc = FourCc::new(*b"I420");
-    const YU12: FourCc = FourCc::new(*b"YU12");
-    const YV12: FourCc = FourCc::new(*b"YV12");
+    const NV12: FourCc = FourCc::NV12;
+    const I420: FourCc = FourCc::I420;
+    const YU12: FourCc = FourCc::YU12;
+    const YV12: FourCc = FourCc::YV12;
 
     if code == NV12 {
         return if plane_idx == 0 { height } else { height / 2 };

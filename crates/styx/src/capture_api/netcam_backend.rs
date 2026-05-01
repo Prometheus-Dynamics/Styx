@@ -1,9 +1,9 @@
-use std::io::{BufRead, BufReader};
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
-
-const NETCAM_MAX_JPEG_BYTES: usize = 32 << 20; // 32 MiB safety cap.
 
 #[cfg(feature = "netcam-video")]
 use ffmpeg_next::{
@@ -13,15 +13,12 @@ use ffmpeg_next::{
     software::scaling::{context::Context as ScalingContext, flag::Flags},
     util::format::pixel::Pixel as PixelFormat,
 };
-#[cfg(feature = "async")]
-use futures_core::Stream;
-#[cfg(feature = "async")]
+#[cfg(all(feature = "netcam", feature = "async"))]
 use futures_util::TryStreamExt;
+#[cfg(feature = "netcam")]
 use reqwest::blocking::Client as BlockingClient;
 use styx_core::prelude::*;
-#[cfg(feature = "async")]
-use tokio_util::bytes::Bytes;
-#[cfg(feature = "async")]
+#[cfg(all(feature = "netcam", feature = "async"))]
 use tokio_util::io::StreamReader;
 
 #[cfg(all(feature = "netcam-video", not(target_os = "linux")))]
@@ -30,20 +27,31 @@ use crate::capture_api::ffmpeg_util::blit_rgba_frame;
 use crate::capture_api::ffmpeg_util::blit_shared_rgba_frame;
 #[cfg(feature = "netcam-video")]
 use crate::capture_api::ffmpeg_util::open_preferred_video_decoder;
+use crate::capture_api::handle::record_worker_error;
 use crate::capture_api::{
-    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, WorkerHandle,
+    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle,
 };
 use crate::metrics::StageMetrics;
 use crate::prelude::{Interval, Mode};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
-struct MjpegLoopContext<'a> {
-    boundary: &'a str,
+mod mjpeg;
+#[cfg(all(feature = "netcam", feature = "async"))]
+use mjpeg::async_mjpeg_loop;
+use mjpeg::{MjpegLoopContext, mjpeg_loop, parse_boundary};
+#[cfg(test)]
+mod tests;
+
+#[cfg(all(feature = "netcam", feature = "async"))]
+struct AsyncNetcamWorker {
+    url: String,
     width: u32,
     height: u32,
     fps: u32,
-    start: &'a Instant,
-    frame_idx: &'a mut u64,
+    tunables: crate::capture_api::NetcamTunables,
+    capture_tunables: crate::capture_api::CaptureTunables,
+    stop: Arc<AtomicBool>,
+    worker_error: Arc<Mutex<Option<CaptureError>>>,
 }
 
 /// Basic MJPEG-over-HTTP backend. Expects `multipart/x-mixed-replace` with JPEG parts.
@@ -52,6 +60,7 @@ pub(super) fn start_netcam(
     mode: Mode,
     _interval: Option<Interval>,
     descriptor: CaptureDescriptor,
+    config: &StyxConfig,
 ) -> Result<CaptureHandle, CaptureError> {
     let (url, width, height, fps) = match &backend.handle {
         BackendHandle::Netcam {
@@ -63,63 +72,150 @@ pub(super) fn start_netcam(
         _ => return Err(CaptureError::Backend("netcam url missing".into())),
     };
 
-    let queue_depth = crate::capture_api::capture_queue_depth();
+    let capture_tunables = config.capture_tunables();
+    let queue_depth = capture_tunables.queue_depth;
     let (tx_raw, rx) = styx_core::queue::bounded(queue_depth);
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_watcher = Arc::clone(&stop);
+    let stop_watcher = std::thread::spawn(move || {
+        let _ = stop_rx.recv();
+        stop_for_watcher.store(true, Ordering::Release);
+    });
     let tx = Arc::new(tx_raw);
+    #[cfg(feature = "netcam")]
     let url_for_thread = url.clone();
+    #[cfg(feature = "netcam")]
     let tx_for_thread = tx.clone();
-    let tunables = crate::capture_api::netcam_tunables();
+    #[cfg(feature = "netcam")]
+    let stop_for_thread = Arc::clone(&stop);
+    let worker_error = Arc::new(Mutex::new(None));
+    #[cfg(feature = "netcam")]
+    let worker_error_for_thread = Arc::clone(&worker_error);
+    let tunables = config.netcam_tunables();
+    #[cfg(feature = "netcam")]
     let worker_fn = move || {
+        tracing::debug!(
+            backend = "netcam",
+            mode = "sync",
+            url = %url_for_thread,
+            width,
+            height,
+            fps,
+            request_timeout_secs = tunables.request_timeout_secs,
+            connect_timeout_ms = tunables.connect_timeout_ms,
+            read_timeout_ms = tunables.read_timeout_ms,
+            "starting netcam worker"
+        );
         let client = match BlockingClient::builder()
             .timeout(Duration::from_secs(tunables.request_timeout_secs))
+            .connect_timeout(Duration::from_millis(tunables.connect_timeout_ms))
             .build()
         {
             Ok(c) => c,
-            Err(_) => return,
+            Err(err) => {
+                let capture_err = CaptureError::Backend(format!("netcam client failed: {err}"));
+                record_worker_error(&worker_error_for_thread, &capture_err);
+                tracing::warn!(backend = "netcam", error = %err, "failed to create netcam client");
+                return;
+            }
         };
         let start = Instant::now();
         let mut frame_idx: u64 = 0;
         let mut backoff = Duration::from_millis(tunables.backoff_start_ms);
         let mut consecutive_failures: u32 = 0;
         loop {
-            // First try MJPEG.
-            if let Ok(resp) = client.get(&url_for_thread).send()
-                && let Some(boundary) = resp
-                    .headers()
-                    .get("content-type")
-                    .and_then(|h| h.to_str().ok())
-                    .and_then(parse_boundary)
-                && mjpeg_loop(
-                    resp,
-                    tx_for_thread.as_ref(),
-                    MjpegLoopContext {
-                        boundary: &boundary,
-                        width,
-                        height,
-                        fps,
-                        start: &start,
-                        frame_idx: &mut frame_idx,
-                    },
-                )
-            {
+            if netcam_stopped(&stop_for_thread) {
+                tracing::debug!(backend = "netcam", "netcam worker stopped");
                 return;
+            }
+            // First try MJPEG.
+            match client.get(&url_for_thread).send() {
+                Ok(resp) => {
+                    let boundary = resp
+                        .headers()
+                        .get("content-type")
+                        .and_then(|h| h.to_str().ok())
+                        .and_then(parse_boundary);
+                    if let Some(boundary) = boundary {
+                        tracing::debug!(
+                            backend = "netcam",
+                            stream = "mjpeg",
+                            width,
+                            height,
+                            fps,
+                            "connected"
+                        );
+                        if mjpeg_loop(
+                            resp,
+                            tx_for_thread.as_ref(),
+                            MjpegLoopContext {
+                                boundary: &boundary,
+                                width,
+                                height,
+                                fps,
+                                start: &start,
+                                frame_idx: &mut frame_idx,
+                                stop: &stop_for_thread,
+                                capture_tunables,
+                                netcam_tunables: tunables,
+                            },
+                        ) {
+                            return;
+                        }
+                    } else {
+                        tracing::debug!(
+                            backend = "netcam",
+                            "netcam response was not multipart mjpeg"
+                        );
+                    }
+                }
+                Err(err) => {
+                    let capture_err =
+                        CaptureError::Backend(format!("netcam request failed: {err}"));
+                    record_worker_error(&worker_error_for_thread, &capture_err);
+                    tracing::warn!(backend = "netcam", error = %err, "netcam request failed");
+                }
             }
             // Fallback to FFmpeg for H264/H265/other container streams.
             #[cfg(feature = "netcam-video")]
             {
-                if ffmpeg_loop(
+                match ffmpeg_loop(
                     &url_for_thread,
                     tx_for_thread.as_ref(),
                     &start,
                     &mut frame_idx,
-                )
-                .is_ok()
-                {
-                    consecutive_failures = 0;
-                    continue;
+                    Arc::clone(&stop_for_thread),
+                    capture_tunables,
+                    tunables,
+                ) {
+                    Ok(()) => {
+                        consecutive_failures = 0;
+                        continue;
+                    }
+                    Err(err) => {
+                        record_worker_error(&worker_error_for_thread, &err);
+                        tracing::warn!(
+                            backend = "netcam",
+                            stream = "ffmpeg",
+                            error = %err,
+                            "netcam ffmpeg fallback failed"
+                        );
+                    }
                 }
             }
-            std::thread::sleep(backoff);
+            tracing::debug!(
+                backend = "netcam",
+                backoff_ms = backoff.as_millis() as u64,
+                "netcam retry backoff"
+            );
+            if sleep_until_netcam_stop(
+                &stop_for_thread,
+                backoff,
+                Duration::from_millis(tunables.stop_poll_ms),
+            ) {
+                return;
+            }
             consecutive_failures = consecutive_failures.saturating_add(1);
             backoff = (backoff * 2).min(Duration::from_millis(tunables.backoff_max_ms));
             if consecutive_failures >= 5 {
@@ -130,15 +226,20 @@ pub(super) fn start_netcam(
         }
     };
     let worker = {
-        #[cfg(feature = "async")]
+        #[cfg(all(feature = "netcam", feature = "async"))]
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             WorkerHandle::Async(handle.spawn(async_netcam_worker(
-                url,
-                width,
-                height,
-                fps,
+                AsyncNetcamWorker {
+                    url,
+                    width,
+                    height,
+                    fps,
+                    tunables,
+                    capture_tunables,
+                    stop: Arc::clone(&stop),
+                    worker_error: Arc::clone(&worker_error),
+                },
                 tx.clone(),
-                tunables,
             )))
         } else {
             WorkerHandle::Thread(std::thread::spawn(worker_fn))
@@ -159,32 +260,60 @@ pub(super) fn start_netcam(
             denominator: NonZeroU32::new(fps.max(1)).unwrap(),
         }),
         rx,
-        stop_tx: None,
+        stop_tx: Some(stop_tx),
         worker: Some(worker),
+        aux_workers: vec![WorkerHandle::Thread(stop_watcher)],
         #[cfg(feature = "libcamera")]
         libcamera_idle_stop_allowed: false,
+        #[cfg(feature = "libcamera")]
+        libcamera_stop_when_idle: false,
         metrics: StageMetrics::default(),
         external_backings: Vec::new(),
+        worker_error,
+        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
     })
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "netcam", feature = "async"))]
 async fn async_netcam_worker(
-    url: String,
-    width: u32,
-    height: u32,
-    fps: u32,
+    worker: AsyncNetcamWorker,
     tx: Arc<styx_core::queue::BoundedTx<FrameLease>>,
-    tunables: crate::capture_api::NetcamTunables,
 ) {
-    use tokio::time::sleep;
-
+    let AsyncNetcamWorker {
+        url,
+        width,
+        height,
+        fps,
+        tunables,
+        capture_tunables,
+        stop,
+        worker_error,
+    } = worker;
+    tracing::debug!(
+        backend = "netcam",
+        mode = "async",
+        url = %url,
+        width,
+        height,
+        fps,
+        request_timeout_secs = tunables.request_timeout_secs,
+        connect_timeout_ms = tunables.connect_timeout_ms,
+        read_timeout_ms = tunables.read_timeout_ms,
+        "starting netcam worker"
+    );
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(tunables.request_timeout_secs))
+        .connect_timeout(Duration::from_millis(tunables.connect_timeout_ms))
+        .read_timeout(Duration::from_millis(tunables.read_timeout_ms))
         .build()
     {
         Ok(c) => c,
-        Err(_) => return,
+        Err(err) => {
+            let capture_err = CaptureError::Backend(format!("netcam client failed: {err}"));
+            record_worker_error(&worker_error, &capture_err);
+            tracing::warn!(backend = "netcam", error = %err, "failed to create netcam client");
+            return;
+        }
     };
 
     let start = Instant::now();
@@ -192,51 +321,121 @@ async fn async_netcam_worker(
     let mut backoff = Duration::from_millis(tunables.backoff_start_ms);
     let mut consecutive_failures: u32 = 0;
     loop {
-        if let Ok(resp) = client.get(&url).send().await
-            && let Some(boundary) = resp
-                .headers()
-                .get("content-type")
-                .and_then(|h| h.to_str().ok())
-                .and_then(parse_boundary)
-        {
-            let stream = resp.bytes_stream().map_err(std::io::Error::other);
-            let reader = StreamReader::new(stream);
-            let mut reader = tokio::io::BufReader::new(reader);
-            if async_mjpeg_loop(
-                &mut reader,
-                tx.as_ref(),
-                MjpegLoopContext {
-                    boundary: &boundary,
-                    width,
-                    height,
-                    fps,
-                    start: &start,
-                    frame_idx: &mut frame_idx,
-                },
-            )
-            .await
-            {
-                return;
-            } else {
-                continue;
+        if netcam_stopped(&stop) {
+            tracing::debug!(backend = "netcam", "netcam worker stopped");
+            return;
+        }
+        let response = tokio::select! {
+            response = client.get(&url).send() => response,
+            _ = async_wait_for_netcam_stop(
+                &stop,
+                Duration::from_millis(tunables.stop_poll_ms),
+            ) => return,
+        };
+        match response {
+            Ok(resp) => {
+                let boundary = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(parse_boundary);
+                if let Some(boundary) = boundary {
+                    tracing::debug!(
+                        backend = "netcam",
+                        stream = "mjpeg",
+                        width,
+                        height,
+                        fps,
+                        "connected"
+                    );
+                    let stream = resp.bytes_stream().map_err(std::io::Error::other);
+                    let reader = StreamReader::new(stream);
+                    let mut reader = tokio::io::BufReader::new(reader);
+                    if async_mjpeg_loop(
+                        &mut reader,
+                        tx.as_ref(),
+                        MjpegLoopContext {
+                            boundary: &boundary,
+                            width,
+                            height,
+                            fps,
+                            start: &start,
+                            frame_idx: &mut frame_idx,
+                            stop: &stop,
+                            capture_tunables,
+                            netcam_tunables: tunables,
+                        },
+                    )
+                    .await
+                    {
+                        return;
+                    } else {
+                        continue;
+                    }
+                } else {
+                    tracing::debug!(
+                        backend = "netcam",
+                        "netcam response was not multipart mjpeg"
+                    );
+                }
+            }
+            Err(err) => {
+                let capture_err = CaptureError::Backend(format!("netcam request failed: {err}"));
+                record_worker_error(&worker_error, &capture_err);
+                tracing::warn!(backend = "netcam", error = %err, "netcam request failed");
             }
         }
         #[cfg(feature = "netcam-video")]
         {
-            if let Ok(()) = tokio::task::spawn_blocking({
+            match tokio::task::spawn_blocking({
                 let url = url.clone();
                 let tx = tx.clone();
+                let stop = Arc::clone(&stop);
                 let mut frame_idx = frame_idx;
-                move || ffmpeg_loop(&url, &tx, &start, &mut frame_idx)
+                move || {
+                    ffmpeg_loop(
+                        &url,
+                        &tx,
+                        &start,
+                        &mut frame_idx,
+                        Arc::clone(&stop),
+                        capture_tunables,
+                        tunables,
+                    )
+                }
             })
             .await
             .unwrap_or(Err(CaptureError::Backend("ffmpeg join error".into())))
             {
-                consecutive_failures = 0;
-                continue;
+                Ok(()) => {
+                    consecutive_failures = 0;
+                    continue;
+                }
+                Err(err) => {
+                    record_worker_error(&worker_error, &err);
+                    tracing::warn!(
+                        backend = "netcam",
+                        stream = "ffmpeg",
+                        error = %err,
+                        "netcam ffmpeg fallback failed"
+                    );
+                }
             }
         }
-        sleep(backoff).await;
+        tracing::debug!(
+            backend = "netcam",
+            backoff_ms = backoff.as_millis() as u64,
+            "netcam retry backoff"
+        );
+        if async_sleep_until_netcam_stop(
+            &stop,
+            backoff,
+            Duration::from_millis(tunables.stop_poll_ms),
+        )
+        .await
+        {
+            return;
+        }
         consecutive_failures = consecutive_failures.saturating_add(1);
         backoff = (backoff * 2).min(Duration::from_millis(tunables.backoff_max_ms));
         if consecutive_failures >= 5 {
@@ -246,449 +445,116 @@ async fn async_netcam_worker(
     }
 }
 
-#[cfg(feature = "async")]
-async fn async_mjpeg_loop<S>(
-    reader: &mut tokio::io::BufReader<StreamReader<S, Bytes>>,
-    tx: &styx_core::queue::BoundedTx<FrameLease>,
-    ctx: MjpegLoopContext<'_>,
-) -> bool
-where
-    S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin,
-{
-    use tokio::io::AsyncBufReadExt;
-    let MjpegLoopContext {
-        boundary,
-        width,
-        height,
-        fps,
-        start,
-        frame_idx,
-    } = ctx;
-
-    let expected_pixels = if width > 0 && height > 0 {
-        width as usize * height as usize
-    } else {
-        // Unknown resolution: pick a reasonable default for pool sizing.
-        1280usize * 720usize
-    };
-    let (pool_min, pool_bytes, pool_spare) =
-        crate::capture_api::capture_pool_limits(4, expected_pixels.saturating_mul(3), 8);
-    #[cfg(target_os = "linux")]
-    let pool = match SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare) {
-        Ok(pool) => pool,
-        Err(_) => return false,
-    };
-    #[cfg(not(target_os = "linux"))]
-    let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
-    let mut line = Vec::with_capacity(1024);
-    let mut buf =
-        Vec::with_capacity((expected_pixels.saturating_mul(3)).min(NETCAM_MAX_JPEG_BYTES));
-    loop {
-        line.clear();
-        if reader
-            .read_until(b'\n', &mut line)
-            .await
-            .ok()
-            .filter(|&n| n > 0)
-            .is_none()
-        {
-            break;
-        }
-        if !line.starts_with(boundary.as_bytes()) {
-            continue;
-        }
-        let mut content_length: Option<usize> = None;
-        loop {
-            line.clear();
-            if reader
-                .read_until(b'\n', &mut line)
-                .await
-                .ok()
-                .filter(|&n| n > 0)
-                .is_none()
-            {
-                break;
-            }
-            if line.iter().all(|b| b.is_ascii_whitespace()) {
-                break;
-            }
-            if let Some(rest) = line
-                .strip_prefix(b"Content-Length:")
-                .or_else(|| line.strip_prefix(b"content-length:"))
-                && let Some(v) = std::str::from_utf8(rest)
-                    .ok()
-                    .and_then(|s| s.trim().parse::<usize>().ok())
-            {
-                content_length = Some(v.min(NETCAM_MAX_JPEG_BYTES));
-            }
-        }
-        buf.clear();
-        match content_length {
-            Some(len) => {
-                let target = len.min(NETCAM_MAX_JPEG_BYTES);
-                while buf.len() < target {
-                    let take = match reader.fill_buf().await {
-                        Ok(data) => {
-                            if data.is_empty() {
-                                None
-                            } else {
-                                let need = target - buf.len();
-                                let take = data.len().min(need);
-                                buf.extend_from_slice(&data[..take]);
-                                Some(take)
-                            }
-                        }
-                        Err(_) => None,
-                    };
-                    let Some(take) = take else { break };
-                    if take == 0 {
-                        break;
-                    }
-                    reader.consume(take);
-                }
-            }
-            None => loop {
-                let outcome = match reader.fill_buf().await {
-                    Ok(data) => {
-                        if data.is_empty() {
-                            None
-                        } else if let Some(idx) = find_subslice(data, boundary.as_bytes()) {
-                            buf.extend_from_slice(&data[..idx]);
-                            Some((idx, true))
-                        } else {
-                            let take = data
-                                .len()
-                                .min(NETCAM_MAX_JPEG_BYTES.saturating_sub(buf.len()));
-                            if take == 0 {
-                                None
-                            } else {
-                                buf.extend_from_slice(&data[..take]);
-                                Some((take, false))
-                            }
-                        }
-                    }
-                    Err(_) => None,
-                };
-                let Some((take, hit_boundary)) = outcome else {
-                    break;
-                };
-                reader.consume(take);
-                if hit_boundary {
-                    break;
-                }
-            },
-        }
-        if buf.is_empty() {
-            continue;
-        }
-        let res = Resolution::new(width, height)
-            .or_else(|| jpeg_dimensions(&buf).and_then(|(w, h)| Resolution::new(w, h)))
-            .or_else(|| Resolution::new(1, 1))
-            .unwrap();
-        let layout = PlaneLayout {
-            offset: 0,
-            len: buf.len(),
-            stride: buf.len(),
-        };
-        let timestamp = start
-            .elapsed()
-            .as_nanos()
-            .saturating_sub(0)
-            .min(u64::MAX as u128) as u64;
-        let meta = FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb),
-            timestamp,
-        )
-        .with_capture_instant(std::time::Instant::now())
-        .with_transition(ResidencyTransition {
-            from: FrameResidency::CompressedPacket,
-            to: FrameResidency::CompressedPacket,
-            reason: ResidencyTransitionReason::NetcamIngress,
-            copied: false,
-        });
-        #[cfg(target_os = "linux")]
-        let frame = {
-            let mut lease = match pool.lease() {
-                Ok(lease) => lease,
-                Err(_) => continue,
-            };
-            if lease.try_resize(buf.len()).is_err() {
-                continue;
-            }
-            lease.as_mut_slice().copy_from_slice(&buf);
-            match FrameLease::single_plane_shared(meta, lease, layout.len, layout.stride) {
-                Ok(frame) => frame,
-                Err(_) => continue,
-            }
-        };
-        #[cfg(not(target_os = "linux"))]
-        let frame = {
-            let mut lease = pool.lease();
-            lease.resize(buf.len());
-            lease.as_mut_slice().copy_from_slice(&buf);
-            FrameLease::single_plane(meta, lease, layout.len, layout.stride)
-        };
-        *frame_idx = frame_idx.saturating_add(1);
-        if let SendOutcome::Closed = tx.send(frame) {
-            return true;
-        }
-        if fps > 0 {
-            tokio::time::sleep(Duration::from_millis((1_000 / fps.max(1)) as u64)).await;
-        }
-    }
-    false
+pub(super) fn netcam_stopped(stop: &AtomicBool) -> bool {
+    stop.load(Ordering::Acquire)
 }
 
-fn parse_boundary(content_type: &str) -> Option<String> {
-    for part in content_type.split(';').map(|s| s.trim()) {
-        if let Some(b) = part.strip_prefix("boundary=") {
-            return Some(format!("--{}", b.trim_matches('"')));
-        }
-    }
-    None
-}
-
-fn jpeg_dimensions(buf: &[u8]) -> Option<(u32, u32)> {
-    // Minimal JPEG SOF parser: find Start Of Frame marker and read dimensions.
-    // Handles common SOF markers (baseline/progressive/etc).
-    let mut i = 0usize;
-    while i + 4 < buf.len() {
-        if buf[i] != 0xFF {
-            i += 1;
-            continue;
-        }
-        // Skip fill bytes.
-        let mut j = i + 1;
-        while j < buf.len() && buf[j] == 0xFF {
-            j += 1;
-        }
-        if j >= buf.len() {
-            break;
-        }
-        let marker = buf[j];
-        // SOF0..SOF15 (except DHT/DAC/etc) - include baseline/progressive lossless variants.
-        let is_sof = matches!(
-            marker,
-            0xC0 | 0xC1
-                | 0xC2
-                | 0xC3
-                | 0xC5
-                | 0xC6
-                | 0xC7
-                | 0xC9
-                | 0xCA
-                | 0xCB
-                | 0xCD
-                | 0xCE
-                | 0xCF
-        );
-        // Standalone markers without length.
-        let has_length = !matches!(marker, 0xD8 | 0xD9) && !(0xD0..=0xD7).contains(&marker);
-        if !has_length {
-            i = j + 1;
-            continue;
-        }
-        if j + 2 >= buf.len() {
-            break;
-        }
-        let seg_len = u16::from_be_bytes([buf[j + 1], buf[j + 2]]) as usize;
-        if seg_len < 2 {
-            break;
-        }
-        if is_sof {
-            // Segment layout: len(2) precision(1) height(2) width(2) ...
-            if j + 2 + 1 + 4 >= buf.len() {
-                break;
-            }
-            let h = u16::from_be_bytes([buf[j + 4], buf[j + 5]]) as u32;
-            let w = u16::from_be_bytes([buf[j + 6], buf[j + 7]]) as u32;
-            if w > 0 && h > 0 {
-                return Some((w, h));
-            }
-        }
-        // Skip to next segment.
-        i = j + 1 + seg_len;
-    }
-    None
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn mjpeg_loop(
-    resp: reqwest::blocking::Response,
-    tx: &styx_core::queue::BoundedTx<FrameLease>,
-    ctx: MjpegLoopContext<'_>,
+#[cfg(feature = "netcam")]
+pub(super) fn sleep_until_netcam_stop(
+    stop: &AtomicBool,
+    duration: Duration,
+    stop_poll: Duration,
 ) -> bool {
-    let MjpegLoopContext {
-        boundary,
-        width,
-        height,
-        fps,
-        start,
-        frame_idx,
-    } = ctx;
-    let mut reader = BufReader::new(resp);
-    let expected_pixels = if width > 0 && height > 0 {
-        width as usize * height as usize
-    } else {
-        1280usize * 720usize
-    };
-    let (pool_min, pool_bytes, pool_spare) =
-        crate::capture_api::capture_pool_limits(4, expected_pixels.saturating_mul(3), 8);
-    #[cfg(target_os = "linux")]
-    let pool = match SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare) {
-        Ok(pool) => pool,
-        Err(_) => return false,
-    };
-    #[cfg(not(target_os = "linux"))]
-    let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
-    let mut line = Vec::with_capacity(1024);
-    let mut buf =
-        Vec::with_capacity((expected_pixels.saturating_mul(3)).min(NETCAM_MAX_JPEG_BYTES));
+    let deadline = Instant::now() + duration;
     loop {
-        line.clear();
-        if reader
-            .read_until(b'\n', &mut line)
-            .ok()
-            .filter(|&n| n > 0)
-            .is_none()
-        {
-            break;
-        }
-        if !line.starts_with(boundary.as_bytes()) {
-            continue;
-        }
-        // Skip headers until empty line.
-        let mut content_length: Option<usize> = None;
-        loop {
-            line.clear();
-            if reader
-                .read_until(b'\n', &mut line)
-                .ok()
-                .filter(|&n| n > 0)
-                .is_none()
-            {
-                break;
-            }
-            if line.iter().all(|b| b.is_ascii_whitespace()) {
-                break;
-            }
-            // Track Content-Length to bound reads when provided.
-            if let Some(rest) = line
-                .strip_prefix(b"Content-Length:")
-                .or_else(|| line.strip_prefix(b"content-length:"))
-                && let Some(v) = std::str::from_utf8(rest)
-                    .ok()
-                    .and_then(|s| s.trim().parse::<usize>().ok())
-            {
-                content_length = Some(v.min(NETCAM_MAX_JPEG_BYTES));
-            }
-        }
-        // Read JPEG until next boundary.
-        buf.clear();
-        match content_length {
-            Some(len) => {
-                let target = len.min(NETCAM_MAX_JPEG_BYTES);
-                while buf.len() < target {
-                    let chunk = match reader.fill_buf() {
-                        Ok(data) => data,
-                        Err(_) => break,
-                    };
-                    let chunk_len = chunk.len();
-                    if chunk_len == 0 {
-                        break;
-                    }
-                    let need = target - buf.len();
-                    let take = chunk_len.min(need);
-                    buf.extend_from_slice(&chunk[..take]);
-                    reader.consume(take);
-                }
-            }
-            None => loop {
-                match reader.fill_buf() {
-                    Ok([]) => break,
-                    Ok(data) => {
-                        if let Some(idx) = find_subslice(data, boundary.as_bytes()) {
-                            buf.extend_from_slice(&data[..idx]);
-                            reader.consume(idx);
-                            break;
-                        } else {
-                            let take = data
-                                .len()
-                                .min(NETCAM_MAX_JPEG_BYTES.saturating_sub(buf.len()));
-                            if take == 0 {
-                                break;
-                            }
-                            buf.extend_from_slice(&data[..take]);
-                            reader.consume(take);
-                            continue;
-                        }
-                    }
-                    Err(_) => break,
-                };
-            },
-        }
-        if buf.is_empty() {
-            continue;
-        }
-        let res = Resolution::new(width, height)
-            .or_else(|| jpeg_dimensions(&buf).and_then(|(w, h)| Resolution::new(w, h)))
-            .or_else(|| Resolution::new(1, 1))
-            .unwrap();
-        let layout = PlaneLayout {
-            offset: 0,
-            len: buf.len(),
-            stride: buf.len(),
-        };
-        let timestamp = start
-            .elapsed()
-            .as_nanos()
-            .saturating_sub(0)
-            .min(u64::MAX as u128) as u64;
-        let meta = FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb),
-            timestamp,
-        )
-        .with_capture_instant(std::time::Instant::now())
-        .with_transition(ResidencyTransition {
-            from: FrameResidency::CompressedPacket,
-            to: FrameResidency::CompressedPacket,
-            reason: ResidencyTransitionReason::NetcamIngress,
-            copied: false,
-        });
-        #[cfg(target_os = "linux")]
-        let frame = {
-            let mut lease = match pool.lease() {
-                Ok(lease) => lease,
-                Err(_) => continue,
-            };
-            if lease.try_resize(buf.len()).is_err() {
-                continue;
-            }
-            lease.as_mut_slice().copy_from_slice(&buf);
-            match FrameLease::single_plane_shared(meta, lease, layout.len, layout.stride) {
-                Ok(frame) => frame,
-                Err(_) => continue,
-            }
-        };
-        #[cfg(not(target_os = "linux"))]
-        let frame = {
-            let mut lease = pool.lease();
-            lease.resize(buf.len());
-            lease.as_mut_slice().copy_from_slice(&buf);
-            FrameLease::single_plane(meta, lease, layout.len, layout.stride)
-        };
-        *frame_idx = frame_idx.saturating_add(1);
-        if let SendOutcome::Closed = tx.send(frame) {
+        if netcam_stopped(stop) {
             return true;
         }
-        if fps > 0 {
-            std::thread::sleep(Duration::from_millis((1_000 / fps.max(1)) as u64));
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        std::thread::sleep((deadline - now).min(stop_poll));
+    }
+}
+
+#[cfg(all(feature = "netcam", feature = "async"))]
+pub(super) async fn async_sleep_until_netcam_stop(
+    stop: &AtomicBool,
+    duration: Duration,
+    stop_poll: Duration,
+) -> bool {
+    let deadline = Instant::now() + duration;
+    loop {
+        if netcam_stopped(stop) {
+            return true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        tokio::time::sleep((deadline - now).min(stop_poll)).await;
+    }
+}
+
+#[cfg(all(feature = "netcam", feature = "async"))]
+async fn async_wait_for_netcam_stop(stop: &AtomicBool, stop_poll: Duration) {
+    loop {
+        if netcam_stopped(stop) {
+            return;
+        }
+        tokio::time::sleep(stop_poll).await;
+    }
+}
+
+pub(super) fn enqueue_netcam_frame(
+    tx: &styx_core::queue::BoundedTx<FrameLease>,
+    frame: FrameLease,
+    stream: &'static str,
+    timeout: Duration,
+) -> bool {
+    match tx.send_timeout(frame, timeout) {
+        SendWaitOutcome::Ok => false,
+        SendWaitOutcome::Closed(_frame) => {
+            tracing::debug!(backend = "netcam", stream, "netcam output queue closed");
+            true
+        }
+        SendWaitOutcome::Timeout(_frame) => {
+            tracing::debug!(
+                backend = "netcam",
+                stream,
+                drop_reason = "capture_queue_send_timeout",
+                timeout_ms = timeout.as_millis() as u64,
+                "dropping netcam frame because output queue is full"
+            );
+            false
         }
     }
-    false
+}
+
+#[cfg(all(feature = "netcam", feature = "async"))]
+pub(super) async fn enqueue_netcam_frame_async(
+    tx: &styx_core::queue::BoundedTx<FrameLease>,
+    frame: FrameLease,
+    stream: &'static str,
+    timeout: Duration,
+) -> bool {
+    match tokio::time::timeout(timeout, tx.send_async(frame)).await {
+        Ok(SendOutcome::Ok) => false,
+        Ok(SendOutcome::Closed) => {
+            tracing::debug!(backend = "netcam", stream, "netcam output queue closed");
+            true
+        }
+        Ok(SendOutcome::Full) => {
+            tracing::debug!(
+                backend = "netcam",
+                stream,
+                drop_reason = "capture_queue_send_full",
+                "dropping netcam frame because output queue is full"
+            );
+            false
+        }
+        Err(_) => {
+            tracing::debug!(
+                backend = "netcam",
+                stream,
+                drop_reason = "capture_queue_send_timeout",
+                timeout_ms = timeout.as_millis() as u64,
+                "dropping netcam frame because output queue is full"
+            );
+            false
+        }
+    }
 }
 
 #[cfg(feature = "netcam-video")]
@@ -697,6 +563,9 @@ fn ffmpeg_loop(
     tx: &styx_core::queue::BoundedTx<FrameLease>,
     start: &Instant,
     frame_idx: &mut u64,
+    stop: Arc<AtomicBool>,
+    capture_tunables: crate::capture_api::CaptureTunables,
+    netcam_tunables: crate::capture_api::NetcamTunables,
 ) -> Result<(), CaptureError> {
     ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
     #[cfg(target_os = "linux")]
@@ -704,10 +573,23 @@ fn ffmpeg_loop(
     #[cfg(not(target_os = "linux"))]
     let mut pool: Option<BufferPool> = None;
     loop {
-        let mut ictx = match format::input(url) {
-            Ok(ctx) => ctx,
-            Err(e) => return Err(CaptureError::Backend(e.to_string())),
-        };
+        if netcam_stopped(&stop) {
+            return Ok(());
+        }
+        let interrupt_stop = Arc::clone(&stop);
+        let mut ictx =
+            match format::input_with_interrupt(url, move || netcam_stopped(&interrupt_stop)) {
+                Ok(ctx) => ctx,
+                Err(e) => {
+                    tracing::warn!(
+                        backend = "netcam",
+                        stream = "ffmpeg",
+                        error = %e,
+                        "failed to open netcam video stream"
+                    );
+                    return Err(CaptureError::Backend(e.to_string()));
+                }
+            };
         let stream_idx = match ictx.streams().best(StreamType::Video).map(|s| s.index()) {
             Some(idx) => idx,
             None => return Err(CaptureError::Backend("no video stream".into())),
@@ -738,22 +620,29 @@ fn ffmpeg_loop(
         let res = Resolution::new(decoder.width() as u32, decoder.height() as u32)
             .ok_or_else(|| CaptureError::Backend("invalid video resolution".into()))?;
         let layout = plane_layout_from_dims(res.width, res.height, 4);
-        let (pool_min, pool_bytes, pool_spare) =
-            crate::capture_api::capture_pool_limits(4, layout.len, 8);
+        let pool_limits = capture_tunables.pool_limits(4, layout.len, 8);
         #[cfg(target_os = "linux")]
         let pool_ref = {
             if pool.is_none() {
                 pool = Some(
-                    SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare)
-                        .map_err(|e| CaptureError::Backend(e.to_string()))?,
+                    SharedBufferPool::with_limits(
+                        pool_limits.min,
+                        pool_limits.bytes,
+                        pool_limits.spare,
+                    )
+                    .map_err(|e| CaptureError::Backend(e.to_string()))?,
                 );
             }
             pool.as_ref().unwrap()
         };
         #[cfg(not(target_os = "linux"))]
-        let pool_ref =
-            pool.get_or_insert_with(|| BufferPool::with_limits(pool_min, pool_bytes, pool_spare));
+        let pool_ref = pool.get_or_insert_with(|| {
+            BufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare)
+        });
         for (stream, packet) in ictx.packets() {
+            if netcam_stopped(&stop) {
+                return Ok(());
+            }
             if stream.index() != stream_idx {
                 continue;
             }
@@ -773,13 +662,21 @@ fn ffmpeg_loop(
                 #[cfg(not(target_os = "linux"))]
                 let frame = blit_rgba_frame(&rgb, res, layout, pool_ref, ts);
                 *frame_idx = frame_idx.saturating_add(1);
-                if let SendOutcome::Closed = tx.send(frame) {
+                if enqueue_netcam_frame(
+                    tx,
+                    frame,
+                    "ffmpeg",
+                    Duration::from_millis(netcam_tunables.send_timeout_ms),
+                ) {
                     return Ok(());
                 }
             }
         }
         decoder.send_eof().ok();
         while decoder.receive_frame(&mut decoded).is_ok() {
+            if netcam_stopped(&stop) {
+                return Ok(());
+            }
             if scaler.run(&decoded, &mut rgb).is_err() {
                 continue;
             }
@@ -792,10 +689,20 @@ fn ffmpeg_loop(
             #[cfg(not(target_os = "linux"))]
             let frame = blit_rgba_frame(&rgb, res, layout, pool_ref, ts);
             *frame_idx = frame_idx.saturating_add(1);
-            if let SendOutcome::Closed = tx.send(frame) {
+            if enqueue_netcam_frame(
+                tx,
+                frame,
+                "ffmpeg",
+                Duration::from_millis(netcam_tunables.send_timeout_ms),
+            ) {
                 return Ok(());
             }
         }
+        tracing::debug!(
+            backend = "netcam",
+            stream = "ffmpeg",
+            "netcam video stream ended; reconnecting"
+        );
         // Loop and reconnect on exit.
     }
 }

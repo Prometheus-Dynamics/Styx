@@ -4,6 +4,7 @@ use libcamera::control::ControlList as LcControlList;
 use styx_core::controls::{ControlId, ControlValue};
 
 use crate::capture_api::CaptureError;
+use crate::capture_api::LIBCAMERA_FRAME_DURATION_LIMITS;
 
 use super::util::{classify_libcamera_control_apply_message, to_lc_value};
 
@@ -34,7 +35,7 @@ pub(super) fn queue_with_controls(
         }
         if let Some(duration) = frame_duration {
             let _ = list.set_raw(
-                30,
+                LIBCAMERA_FRAME_DURATION_LIMITS.0,
                 libcamera::control_value::ControlValue::from([duration, duration]),
             );
         }

@@ -174,7 +174,7 @@ pub(crate) fn merge_probe_result(
     let failed_backends = partial
         .errors
         .iter()
-        .filter_map(|error| error_backend_kind(error))
+        .map(|error| error.backend)
         .collect::<HashSet<_>>();
     let successful_scoped = scoped
         .iter()
@@ -215,7 +215,7 @@ pub(crate) fn merge_probe_result(
         .filter(|error| {
             !successful_scoped
                 .iter()
-                .any(|backend| error.starts_with(backend_error_prefix(*backend)))
+                .any(|backend| error.backend == *backend)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -231,7 +231,10 @@ fn merge_backend_into_devices(
 ) {
     let mut new_keys = identity.keys.iter().cloned().collect::<HashSet<_>>();
     let backend_id = backend_identity(&identity.display, &backend);
-    new_keys.extend(derive_keys(&backend_id, &backend.properties));
+    new_keys.extend(crate::device_identity::derive_keys(
+        &backend_id,
+        &backend.properties,
+    ));
     let new_keys_vec = new_keys.iter().cloned().collect::<Vec<_>>();
     if let Some(existing) = devices.iter_mut().find(|device| {
         device
@@ -273,72 +276,4 @@ fn backend_identity(device_display: &str, backend: &ProbedBackend) -> String {
         BackendHandle::Libcamera { id } => id.clone(),
         _ => device_display.to_string(),
     }
-}
-
-fn derive_keys(id: &str, props: &[(String, String)]) -> Vec<String> {
-    let mut keys = Vec::new();
-    if !id.starts_with("/dev/video") {
-        keys.push(id.to_string());
-    }
-    for (k, v) in props {
-        let v_trimmed = v.trim();
-        let v_lower = v_trimmed.to_ascii_lowercase();
-        if v_lower == "rp1-cfe" {
-            continue;
-        }
-        if k.eq_ignore_ascii_case("bus")
-            || k.eq_ignore_ascii_case("card")
-            || k.eq_ignore_ascii_case("driver")
-            || k.eq_ignore_ascii_case("model")
-        {
-            keys.push(v_trimmed.to_string());
-        }
-        if let Some(vidpid) = extract_vid_pid(v_trimmed) {
-            keys.push(vidpid);
-        }
-    }
-    if let Some(vidpid) = extract_vid_pid(id) {
-        keys.push(vidpid);
-    }
-    keys
-}
-
-fn extract_vid_pid(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    for i in 0..bytes.len().saturating_sub(8) {
-        let slice = &bytes[i..i + 9];
-        if slice[4] != b':' {
-            continue;
-        }
-        if slice[..4].iter().all(|b| b.is_ascii_hexdigit())
-            && slice[5..].iter().all(|b| b.is_ascii_hexdigit())
-        {
-            return Some(String::from_utf8_lossy(slice).to_string());
-        }
-    }
-    None
-}
-
-fn backend_error_prefix(backend: BackendKind) -> &'static str {
-    match backend {
-        BackendKind::V4l2 => "v4l2: ",
-        BackendKind::Libcamera => "libcamera: ",
-        BackendKind::Virtual => "virtual: ",
-        BackendKind::Netcam => "netcam: ",
-        BackendKind::File => "file: ",
-        BackendKind::Simulation => "simulation: ",
-    }
-}
-
-fn error_backend_kind(error: &str) -> Option<BackendKind> {
-    [
-        BackendKind::V4l2,
-        BackendKind::Libcamera,
-        BackendKind::Virtual,
-        BackendKind::Netcam,
-        BackendKind::File,
-        BackendKind::Simulation,
-    ]
-    .into_iter()
-    .find(|backend| error.starts_with(backend_error_prefix(*backend)))
 }

@@ -44,6 +44,7 @@ pub(crate) fn open_preferred_video_decoder(
 }
 
 /// Copy an FFmpeg RGBA frame into a pooled `FrameLease`.
+// Used by non-Linux or non-shared-memory video feature combinations.
 #[allow(dead_code)]
 pub(crate) fn blit_rgba_frame(
     rgb: &FfFrame,
@@ -65,7 +66,7 @@ pub(crate) fn blit_rgba_frame(
     }
     FrameLease::single_plane(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"RGBA"), res, ColorSpace::Srgb),
+            MediaFormat::new(FourCc::RGBA, res, ColorSpace::Srgb),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())
@@ -83,6 +84,7 @@ pub(crate) fn blit_rgba_frame(
 
 /// Copy an FFmpeg RGBA frame into exportable shared memory.
 #[cfg(target_os = "linux")]
+// Used by Linux video paths when the selected feature combination can export shared frames.
 #[allow(dead_code)]
 pub(crate) fn blit_shared_rgba_frame(
     rgb: &FfFrame,
@@ -104,7 +106,7 @@ pub(crate) fn blit_shared_rgba_frame(
     }
     FrameLease::single_plane_shared(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"RGBA"), res, ColorSpace::Srgb),
+            MediaFormat::new(FourCc::RGBA, res, ColorSpace::Srgb),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())
@@ -151,7 +153,7 @@ pub(crate) fn blit_rgb24_frame(
     }
     FrameLease::single_plane(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
+            MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())
@@ -168,6 +170,7 @@ pub(crate) fn blit_rgb24_frame(
 }
 
 #[cfg(target_os = "linux")]
+// Kept for RGB24 shared-memory paths selected by file/netcam video backends.
 #[allow(dead_code)]
 pub(crate) fn blit_shared_rgb24_frame(
     rgba: &FfFrame,
@@ -198,7 +201,7 @@ pub(crate) fn blit_shared_rgb24_frame(
     }
     FrameLease::single_plane_shared(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
+            MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())

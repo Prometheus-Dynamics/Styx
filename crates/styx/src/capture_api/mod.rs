@@ -3,14 +3,15 @@
 //! Most users will interact with `CaptureRequest` or `MediaPipelineBuilder`.
 //!
 //! # Example
-//! ```rust,ignore
+//! ```rust,no_run
 //! use styx::prelude::*;
 //!
-//! let device = probe_all().into_iter().next().expect("device");
+//! let device = make_virtual_rgb_device("virtual", 640, 360, 30);
 //! let handle = CaptureRequest::new(&device).start()?;
 //! let _ = handle.recv();
 //! # Ok::<(), styx::capture_api::CaptureError>(())
 //! ```
+mod control_plane;
 pub mod controls;
 #[cfg(any(
     feature = "netcam",
@@ -30,55 +31,50 @@ pub(super) mod simulation_backend;
 pub(super) mod v4l2_backend;
 pub(super) mod virtual_backend;
 
-pub use handle::{CaptureHandle, ControlPlane, WorkerHandle};
+pub use control_plane::ControlPlane;
+#[cfg(feature = "graph-pipeline")]
+pub(crate) use control_plane::{apply_control_to_plane, read_control_from_plane};
+pub use handle::{CaptureFrameIter, CaptureHandle, WorkerHandle};
 pub use request::{
     CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, CaptureError,
     CaptureRequest, CaptureStartPolicy, ControlApplyKind, SelectedCamera, TdnOutputMode,
     start_capture,
 };
 pub use tunables::{
-    CaptureTunables, DEFAULT_NETCAM_BACKOFF_MAX_MS, DEFAULT_NETCAM_BACKOFF_START_MS,
-    DEFAULT_NETCAM_TIMEOUT_SECS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN, DEFAULT_POOL_SPARE,
-    DEFAULT_QUEUE_DEPTH, NetcamTunables, StyxConfig, set_capture_tunables, set_netcam_tunables,
+    CaptureTunables, DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS,
+    DEFAULT_LIBCAMERA_CONTROL_RESPONSE_TIMEOUT_MS, DEFAULT_LIBCAMERA_IDLE_DRAIN_POLL_MS,
+    DEFAULT_LIBCAMERA_IDLE_DRAIN_TIMEOUT_MS, DEFAULT_LIBCAMERA_LOOKUP_POLL_MS,
+    DEFAULT_LIBCAMERA_LOOKUP_TIMEOUT_MS, DEFAULT_LIBCAMERA_PREFAULT_REQUEST_POOLS,
+    DEFAULT_LIBCAMERA_PROBE_CACHE_MS, DEFAULT_LIBCAMERA_REQUEST_POLL_MS,
+    DEFAULT_LIBCAMERA_REQUEUE_STALL_TIMEOUT_MS, DEFAULT_LIBCAMERA_STOP_WHEN_IDLE,
+    DEFAULT_NETCAM_BACKOFF_MAX_MS, DEFAULT_NETCAM_BACKOFF_START_MS, DEFAULT_NETCAM_SEND_TIMEOUT_MS,
+    DEFAULT_NETCAM_STOP_POLL_MS, DEFAULT_NETCAM_TIMEOUT_SECS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN,
+    DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH, DEFAULT_V4L2_ERROR_BACKOFF_MS,
+    DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, LibcameraProcessedStreamRole,
+    NetcamTunables, StyxConfig,
 };
-#[allow(unused_imports)]
-pub(crate) use tunables::{capture_pool_limits, capture_queue_depth, netcam_tunables};
 
+// Release policy: these backend handle types are consumed only by feature-gated constructors, so
+// some release feature combinations intentionally compile only a subset of the import list.
 #[allow(unused_imports)]
-#[cfg(any(
-    feature = "netcam",
-    feature = "file-backend",
-    feature = "simulation-bevy"
-))]
-use crate::{BackendHandle, DeviceIdentity};
-#[allow(unused_imports)]
-use crate::{BackendKind, ProbedBackend, ProbedDevice};
+use crate::{BackendHandle, BackendKind, DeviceIdentity, ProbedBackend, ProbedDevice};
 #[cfg(feature = "file-backend")]
 use std::collections::{HashMap, HashSet};
-#[cfg(any(
-    feature = "netcam",
-    feature = "file-backend",
-    feature = "simulation-bevy"
-))]
-use std::num::NonZeroU32;
 #[cfg(feature = "simulation-bevy")]
 use std::path::PathBuf;
 use styx_capture::prelude::*;
 
 mod handle;
+#[cfg(test)]
+mod handle_tests;
 mod request;
 mod tunables;
 
-#[cfg(any(
-    feature = "netcam",
-    feature = "file-backend",
-    feature = "simulation-bevy"
-))]
+#[cfg(feature = "libcamera")]
+pub(crate) use styx_libcamera::{LIBCAMERA_FRAME_DURATION_LIMITS, LIBCAMERA_NOISE_REDUCTION_MODE};
+
 fn interval_from_fps(fps: u32) -> Interval {
-    Interval {
-        numerator: NonZeroU32::new(1).unwrap(),
-        denominator: NonZeroU32::new(fps.max(1)).unwrap(),
-    }
+    Interval::from_fps(fps.max(1)).expect("fps is clamped to non-zero")
 }
 
 #[cfg(feature = "file-backend")]
@@ -217,10 +213,98 @@ impl Default for SimulationDeviceConfig {
     }
 }
 
+/// Create a synthetic virtual device for manual wiring.
+///
+/// This is useful for examples, tests, demos, and fallback pipelines that should
+/// exercise the same capture facade as real backends.
+///
+/// # Example
+/// ```rust,no_run
+/// use styx::prelude::*;
+///
+/// let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let handle = CaptureRequest::new(&device).start()?;
+/// # Ok::<(), styx::capture_api::CaptureError>(())
+/// ```
+pub fn make_virtual_device(name: &str, modes: impl IntoIterator<Item = Mode>) -> ProbedDevice {
+    let mut modes = modes.into_iter().collect::<Vec<_>>();
+    if modes.is_empty() {
+        modes.push(Mode::with_interval(
+            MediaFormat::srgb(FourCc::RG24, 1, 1).expect("fallback virtual format is non-zero"),
+            interval_from_fps(30),
+        ));
+    }
+    let descriptor = CaptureDescriptor::new(modes);
+    let backend = ProbedBackend {
+        kind: BackendKind::Virtual,
+        handle: BackendHandle::Virtual,
+        descriptor,
+        properties: vec![("kind".into(), "virtual".into())],
+    };
+    ProbedDevice {
+        identity: DeviceIdentity {
+            display: name.to_string(),
+            keys: vec!["virtual".into(), name.to_string()],
+        },
+        backends: vec![backend],
+    }
+}
+
+/// Create a virtual RGB device with one RG24/sRGB mode.
+///
+/// Width, height, and fps are clamped to at least 1.
+pub fn make_virtual_rgb_device(name: &str, width: u32, height: u32, fps: u32) -> ProbedDevice {
+    let mode = Mode::with_interval(
+        MediaFormat::srgb(FourCc::RG24, width.max(1), height.max(1))
+            .expect("virtual RGB dimensions are clamped to non-zero"),
+        interval_from_fps(fps),
+    );
+    make_virtual_device(name, [mode])
+}
+
+/// Open the first probed camera using its default backend and mode.
+///
+/// # Example
+/// ```rust,no_run
+/// use styx::prelude::*;
+///
+/// let handle = open_best_camera()?;
+/// # Ok::<(), styx::capture_api::CaptureError>(())
+/// ```
+pub fn open_best_camera() -> Result<CaptureHandle, CaptureError> {
+    let devices = crate::probe_all();
+    let device = devices
+        .first()
+        .ok_or(CaptureError::NoCameraMatchingRequest)?;
+    device.capture_request().start()
+}
+
+/// Open a virtual RGB capture source in one call.
+///
+/// This is useful for smoke tests, examples, and fallback pipelines.
+///
+/// # Example
+/// ```rust
+/// use styx::prelude::*;
+///
+/// let handle = open_virtual_rgb("virtual", 640, 360, 30)?;
+/// assert_eq!(handle.mode().format.code, FourCc::RG24);
+/// # Ok::<(), styx::capture_api::CaptureError>(())
+/// ```
+pub fn open_virtual_rgb(
+    name: &str,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> Result<CaptureHandle, CaptureError> {
+    let device = make_virtual_rgb_device(name, width, height, fps);
+    device.capture_request().start()
+}
+
 /// Create a synthetic netcam device (MJPEG over HTTP) for manual wiring.
 ///
 /// # Example
-/// ```rust,ignore
+/// ```rust,no_run
 /// use styx::prelude::*;
 ///
 /// let device = make_netcam_device("cam", "http://cam/mjpeg", 640, 480, 30);
@@ -237,20 +321,9 @@ pub fn make_netcam_device(
 ) -> ProbedDevice {
     let res = Resolution::new(width, height).unwrap_or_else(|| Resolution::new(1, 1).unwrap());
     let interval = interval_from_fps(fps.max(1));
-    let format = MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb);
-    let mode = Mode {
-        id: ModeId {
-            format,
-            interval: Some(interval),
-        },
-        format,
-        intervals: smallvec::smallvec![interval],
-        interval_stepwise: None,
-    };
-    let descriptor = CaptureDescriptor {
-        modes: vec![mode.clone()],
-        controls: Vec::new(),
-    };
+    let format = MediaFormat::new(FourCc::MJPG, res, ColorSpace::Srgb);
+    let mode = Mode::with_interval(format, interval);
+    let descriptor = CaptureDescriptor::new([mode]);
     let backend = ProbedBackend {
         kind: BackendKind::Netcam,
         handle: BackendHandle::Netcam {
@@ -274,7 +347,7 @@ pub fn make_netcam_device(
 /// Create a synthetic file device that replays image/video files as frames.
 ///
 /// # Example
-/// ```rust,ignore
+/// ```rust,no_run
 /// use styx::prelude::*;
 ///
 /// let device = make_file_device("replay", vec!["frame.png".into()], 30, true);
@@ -319,16 +392,8 @@ pub fn make_file_device(
     let modes = resolutions
         .iter()
         .map(|res| {
-            let format = MediaFormat::new(FourCc::new(*b"RG24"), *res, ColorSpace::Srgb);
-            Mode {
-                id: ModeId {
-                    format,
-                    interval: Some(interval),
-                },
-                format,
-                intervals: smallvec::smallvec![interval],
-                interval_stepwise: None,
-            }
+            let format = MediaFormat::new(FourCc::RG24, *res, ColorSpace::Srgb);
+            Mode::with_interval(format, interval)
         })
         .collect::<Vec<_>>();
 
@@ -424,10 +489,7 @@ pub fn make_file_device(
         }
     }
 
-    let descriptor = CaptureDescriptor {
-        modes: modes.clone(),
-        controls,
-    };
+    let descriptor = CaptureDescriptor::new(modes).with_controls(controls);
     let backend = ProbedBackend {
         kind: BackendKind::File,
         handle: BackendHandle::File {
@@ -452,8 +514,8 @@ pub fn make_file_device(
 
 /// Create a synthetic simulation device that loads a scene file into a Bevy world.
 ///
-/// The initial implementation wires scene ingest and camera/sensor controls into the
-/// capture API so downstream code can treat simulation like any other capture source.
+/// Scene ingest and camera/sensor controls are exposed through the same capture
+/// API as physical and file-backed sources.
 #[cfg(feature = "simulation-bevy")]
 pub fn make_simulation_device(
     name: &str,
@@ -464,20 +526,10 @@ pub fn make_simulation_device(
         .unwrap_or_else(|| Resolution::new(1, 1).unwrap());
     let interval = interval_from_fps(config.sensor.fps.max(1));
     let format = match config.output_mode {
-        SimulationOutputMode::Depth => {
-            MediaFormat::new(FourCc::new(*b"D32F"), res, ColorSpace::Unknown)
-        }
-        _ => MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
+        SimulationOutputMode::Depth => MediaFormat::new(FourCc::D32F, res, ColorSpace::Unknown),
+        _ => MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
     };
-    let mode = Mode {
-        id: ModeId {
-            format,
-            interval: Some(interval),
-        },
-        format,
-        intervals: smallvec::smallvec![interval],
-        interval_stepwise: None,
-    };
+    let mode = Mode::with_interval(format, interval);
 
     let controls = vec![
         ControlMeta {
@@ -660,10 +712,7 @@ pub fn make_simulation_device(
         },
     ];
 
-    let descriptor = CaptureDescriptor {
-        modes: vec![mode.clone()],
-        controls,
-    };
+    let descriptor = CaptureDescriptor::new([mode]).with_controls(controls);
     let backend = ProbedBackend {
         kind: BackendKind::Simulation,
         handle: BackendHandle::Simulation {

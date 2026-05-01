@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![deny(clippy::print_stderr, clippy::print_stdout)]
 
 #[cfg(any(feature = "v4l2", feature = "libcamera"))]
 use std::collections::HashSet;
@@ -19,23 +20,31 @@ pub mod preview;
 
 pub use thiserror;
 
+pub mod capabilities;
 pub mod capture_api;
+mod device_identity;
+mod frame_sizing;
+#[cfg(feature = "daedalus-plugin")]
+pub mod graph;
 mod metrics;
 #[cfg(feature = "hooks")]
 pub mod recording;
 pub mod runtime_codec;
+#[cfg(feature = "serde")]
+mod serde_impls;
+pub mod service;
 pub mod session;
 pub mod watch;
 
 /// Unified device descriptor for probed backends.
 ///
 /// # Example
-/// ```rust,ignore
+/// ```rust
 /// use styx::prelude::*;
 ///
-/// for dev in probe_all() {
-///     println!("{} backends: {}", dev.identity.display, dev.backends.len());
-/// }
+/// let dev = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// assert_eq!(dev.identity.display, "virtual");
+/// assert_eq!(dev.backends.len(), 1);
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -48,13 +57,13 @@ pub struct ProbedDevice {
 /// Backend-specific entry for a probed device.
 ///
 /// # Example
-/// ```rust,ignore
+/// ```rust
 /// use styx::prelude::*;
 ///
-/// let dev = probe_all().into_iter().next().expect("device");
-/// for backend in dev.backends {
-///     println!("{:?}: {} modes", backend.kind, backend.descriptor.modes.len());
-/// }
+/// let dev = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let backend = &dev.backends[0];
+/// assert_eq!(backend.kind, BackendKind::Virtual);
+/// assert_eq!(backend.descriptor.modes.len(), 1);
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -85,12 +94,12 @@ pub enum BackendKind {
 /// Backend-specific handle used for configuration/streaming.
 ///
 /// # Example
-/// ```rust,ignore
+/// ```rust
 /// use styx::prelude::*;
 ///
-/// let dev = probe_all().into_iter().next().expect("device");
+/// let dev = make_virtual_rgb_device("virtual", 640, 360, 30);
 /// let handle = &dev.backends[0].handle;
-/// println!("backend kind: {:?}", handle.kind());
+/// assert_eq!(handle.kind(), BackendKind::Virtual);
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -145,291 +154,41 @@ impl BackendHandle {
     }
 }
 
-#[cfg(feature = "serde")]
-impl serde::Serialize for BackendHandle {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        if serializer.is_human_readable() {
-            #[derive(serde::Serialize)]
-            #[serde(tag = "type", rename_all = "snake_case")]
-            enum HumanHandle<'a> {
-                _Marker(std::marker::PhantomData<&'a ()>),
-                #[cfg(feature = "v4l2")]
-                V4l2 {
-                    path: &'a str,
-                },
-                #[cfg(feature = "libcamera")]
-                Libcamera {
-                    id: &'a str,
-                },
-                Virtual,
-                #[cfg(feature = "netcam")]
-                Netcam {
-                    url: &'a str,
-                    width: u32,
-                    height: u32,
-                    fps: u32,
-                },
-                #[cfg(feature = "file-backend")]
-                File {
-                    paths: Vec<String>,
-                    fps: u32,
-                    loop_forever: bool,
-                },
-                #[cfg(feature = "simulation-bevy")]
-                Simulation {
-                    scene_path: String,
-                    config: crate::capture_api::SimulationDeviceConfig,
-                },
-            }
-
-            let human = match self {
-                #[cfg(feature = "v4l2")]
-                BackendHandle::V4l2 { path } => HumanHandle::V4l2 { path },
-                #[cfg(feature = "libcamera")]
-                BackendHandle::Libcamera { id } => HumanHandle::Libcamera { id },
-                BackendHandle::Virtual => HumanHandle::Virtual,
-                #[cfg(feature = "netcam")]
-                BackendHandle::Netcam {
-                    url,
-                    width,
-                    height,
-                    fps,
-                } => HumanHandle::Netcam {
-                    url,
-                    width: *width,
-                    height: *height,
-                    fps: *fps,
-                },
-                #[cfg(feature = "file-backend")]
-                BackendHandle::File {
-                    paths,
-                    fps,
-                    loop_forever,
-                } => HumanHandle::File {
-                    paths: paths
-                        .iter()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect(),
-                    fps: *fps,
-                    loop_forever: *loop_forever,
-                },
-                #[cfg(feature = "simulation-bevy")]
-                BackendHandle::Simulation { scene_path, config } => HumanHandle::Simulation {
-                    scene_path: scene_path.to_string_lossy().to_string(),
-                    config: config.clone(),
-                },
-            };
-            human.serialize(serializer)
-        } else {
-            #[derive(serde::Serialize)]
-            enum BinaryHandle<'a> {
-                _Marker(std::marker::PhantomData<&'a ()>),
-                #[cfg(feature = "v4l2")]
-                V4l2(&'a str),
-                #[cfg(feature = "libcamera")]
-                Libcamera(&'a str),
-                Virtual,
-                #[cfg(feature = "netcam")]
-                Netcam {
-                    url: &'a str,
-                    width: u32,
-                    height: u32,
-                    fps: u32,
-                },
-                #[cfg(feature = "file-backend")]
-                File {
-                    paths: Vec<String>,
-                    fps: u32,
-                    loop_forever: bool,
-                },
-                #[cfg(feature = "simulation-bevy")]
-                Simulation {
-                    scene_path: String,
-                    config: crate::capture_api::SimulationDeviceConfig,
-                },
-            }
-            let bin = match self {
-                #[cfg(feature = "v4l2")]
-                BackendHandle::V4l2 { path } => BinaryHandle::V4l2(path),
-                #[cfg(feature = "libcamera")]
-                BackendHandle::Libcamera { id } => BinaryHandle::Libcamera(id),
-                BackendHandle::Virtual => BinaryHandle::Virtual,
-                #[cfg(feature = "netcam")]
-                BackendHandle::Netcam {
-                    url,
-                    width,
-                    height,
-                    fps,
-                } => BinaryHandle::Netcam {
-                    url,
-                    width: *width,
-                    height: *height,
-                    fps: *fps,
-                },
-                #[cfg(feature = "file-backend")]
-                BackendHandle::File {
-                    paths,
-                    fps,
-                    loop_forever,
-                } => BinaryHandle::File {
-                    paths: paths
-                        .iter()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect(),
-                    fps: *fps,
-                    loop_forever: *loop_forever,
-                },
-                #[cfg(feature = "simulation-bevy")]
-                BackendHandle::Simulation { scene_path, config } => BinaryHandle::Simulation {
-                    scene_path: scene_path.to_string_lossy().to_string(),
-                    config: config.clone(),
-                },
-            };
-            bin.serialize(serializer)
-        }
+impl ProbedDevice {
+    /// Return the first advertised backend for this device.
+    pub fn default_backend(&self) -> Option<&ProbedBackend> {
+        self.backends.first()
     }
-}
 
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for BackendHandle {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        if deserializer.is_human_readable() {
-            #[derive(serde::Deserialize)]
-            #[serde(tag = "type", rename_all = "snake_case")]
-            enum HumanHandle {
-                #[cfg(feature = "v4l2")]
-                V4l2 {
-                    path: String,
-                },
-                #[cfg(feature = "libcamera")]
-                Libcamera {
-                    id: String,
-                },
-                Virtual,
-                #[cfg(feature = "netcam")]
-                Netcam {
-                    url: String,
-                    width: u32,
-                    height: u32,
-                    fps: u32,
-                },
-                #[cfg(feature = "file-backend")]
-                File {
-                    paths: Vec<String>,
-                    fps: u32,
-                    loop_forever: bool,
-                },
-                #[cfg(feature = "simulation-bevy")]
-                Simulation {
-                    scene_path: String,
-                    config: crate::capture_api::SimulationDeviceConfig,
-                },
-            }
-            let human = HumanHandle::deserialize(deserializer)?;
-            let handle = match human {
-                #[cfg(feature = "v4l2")]
-                HumanHandle::V4l2 { path } => BackendHandle::V4l2 { path },
-                #[cfg(feature = "libcamera")]
-                HumanHandle::Libcamera { id } => BackendHandle::Libcamera { id },
-                HumanHandle::Virtual => BackendHandle::Virtual,
-                #[cfg(feature = "netcam")]
-                HumanHandle::Netcam {
-                    url,
-                    width,
-                    height,
-                    fps,
-                } => BackendHandle::Netcam {
-                    url,
-                    width,
-                    height,
-                    fps,
-                },
-                #[cfg(feature = "file-backend")]
-                HumanHandle::File {
-                    paths,
-                    fps,
-                    loop_forever,
-                } => BackendHandle::File {
-                    paths: paths.into_iter().map(PathBuf::from).collect(),
-                    fps,
-                    loop_forever,
-                },
-                #[cfg(feature = "simulation-bevy")]
-                HumanHandle::Simulation { scene_path, config } => BackendHandle::Simulation {
-                    scene_path: PathBuf::from(scene_path),
-                    config,
-                },
-            };
-            Ok(handle)
+    /// Return a backend by kind.
+    pub fn backend(&self, kind: BackendKind) -> Option<&ProbedBackend> {
+        self.backends.iter().find(|backend| backend.kind == kind)
+    }
+
+    /// Return the descriptor for the first advertised backend.
+    pub fn default_descriptor(&self) -> Option<&styx_capture::CaptureDescriptor> {
+        self.default_backend().map(|backend| &backend.descriptor)
+    }
+
+    /// Return the first advertised mode from the first advertised backend.
+    pub fn default_mode(&self) -> Option<&styx_capture::Mode> {
+        self.default_descriptor()
+            .and_then(|descriptor| descriptor.modes.first())
+    }
+
+    /// Return the first advertised mode for a backend kind.
+    pub fn mode_for_backend(&self, kind: BackendKind) -> Option<&styx_capture::Mode> {
+        self.backend(kind)
+            .and_then(|backend| backend.descriptor.modes.first())
+    }
+
+    /// Build a capture request pinned to the default mode when one is advertised.
+    pub fn capture_request(&self) -> crate::capture_api::CaptureRequest<'_> {
+        let request = crate::capture_api::CaptureRequest::new(self);
+        if let Some(mode) = self.default_mode() {
+            request.mode(mode.id.clone())
         } else {
-            #[derive(serde::Deserialize)]
-            enum BinaryHandle {
-                #[cfg(feature = "v4l2")]
-                V4l2(String),
-                #[cfg(feature = "libcamera")]
-                Libcamera(String),
-                Virtual,
-                #[cfg(feature = "netcam")]
-                Netcam {
-                    url: String,
-                    width: u32,
-                    height: u32,
-                    fps: u32,
-                },
-                #[cfg(feature = "file-backend")]
-                File {
-                    paths: Vec<String>,
-                    fps: u32,
-                    loop_forever: bool,
-                },
-                #[cfg(feature = "simulation-bevy")]
-                Simulation {
-                    scene_path: String,
-                    config: crate::capture_api::SimulationDeviceConfig,
-                },
-            }
-            let bin = BinaryHandle::deserialize(deserializer)?;
-            let handle = match bin {
-                #[cfg(feature = "v4l2")]
-                BinaryHandle::V4l2(path) => BackendHandle::V4l2 { path },
-                #[cfg(feature = "libcamera")]
-                BinaryHandle::Libcamera(id) => BackendHandle::Libcamera { id },
-                BinaryHandle::Virtual => BackendHandle::Virtual,
-                #[cfg(feature = "netcam")]
-                BinaryHandle::Netcam {
-                    url,
-                    width,
-                    height,
-                    fps,
-                } => BackendHandle::Netcam {
-                    url,
-                    width,
-                    height,
-                    fps,
-                },
-                #[cfg(feature = "file-backend")]
-                BinaryHandle::File {
-                    paths,
-                    fps,
-                    loop_forever,
-                } => BackendHandle::File {
-                    paths: paths.into_iter().map(PathBuf::from).collect(),
-                    fps,
-                    loop_forever,
-                },
-                #[cfg(feature = "simulation-bevy")]
-                BinaryHandle::Simulation { scene_path, config } => BackendHandle::Simulation {
-                    scene_path: PathBuf::from(scene_path),
-                    config,
-                },
-            };
-            Ok(handle)
+            request
         }
     }
 }
@@ -448,37 +207,148 @@ pub struct DeviceIdentity {
     pub keys: Vec<String>,
 }
 
+/// Backend-specific probe failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BackendProbeError {
+    pub backend: BackendKind,
+    pub message: String,
+}
+
+impl BackendProbeError {
+    pub fn new(backend: BackendKind, message: impl Into<String>) -> Self {
+        Self {
+            backend,
+            message: message.into(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.message.is_empty()
+    }
+}
+
+impl std::fmt::Display for BackendProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.backend, self.message)
+    }
+}
+
+impl std::error::Error for BackendProbeError {}
+
+impl From<(BackendKind, String)> for BackendProbeError {
+    fn from((backend, message): (BackendKind, String)) -> Self {
+        Self::new(backend, message)
+    }
+}
+
+impl From<(BackendKind, &str)> for BackendProbeError {
+    fn from((backend, message): (BackendKind, &str)) -> Self {
+        Self::new(backend, message)
+    }
+}
+
+impl From<&str> for BackendProbeError {
+    fn from(value: &str) -> Self {
+        parse_backend_probe_error(value)
+            .unwrap_or_else(|| Self::new(BackendKind::Virtual, value.to_string()))
+    }
+}
+
+impl From<String> for BackendProbeError {
+    fn from(value: String) -> Self {
+        parse_backend_probe_error(&value).unwrap_or_else(|| Self::new(BackendKind::Virtual, value))
+    }
+}
+
+impl PartialEq<str> for BackendProbeError {
+    fn eq(&self, other: &str) -> bool {
+        other.strip_prefix(backend_error_prefix(self.backend)) == Some(self.message.as_str())
+    }
+}
+
+impl PartialEq<&str> for BackendProbeError {
+    fn eq(&self, other: &&str) -> bool {
+        self == *other
+    }
+}
+
+impl std::fmt::Display for BackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            BackendKind::V4l2 => "v4l2",
+            BackendKind::Libcamera => "libcamera",
+            BackendKind::Virtual => "virtual",
+            BackendKind::Netcam => "netcam",
+            BackendKind::File => "file",
+            BackendKind::Simulation => "simulation",
+        })
+    }
+}
+
+impl std::str::FromStr for BackendKind {
+    type Err = BackendKindParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "v4l2" | "video4linux" | "video4linux2" => Ok(BackendKind::V4l2),
+            "libcamera" => Ok(BackendKind::Libcamera),
+            "virtual" => Ok(BackendKind::Virtual),
+            "netcam" | "network" | "network-camera" => Ok(BackendKind::Netcam),
+            "file" | "file-backend" => Ok(BackendKind::File),
+            "simulation" | "simulation-bevy" => Ok(BackendKind::Simulation),
+            _ => Err(BackendKindParseError {
+                value: value.to_string(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendKindParseError {
+    value: String,
+}
+
+impl std::fmt::Display for BackendKindParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown backend kind: {}", self.value)
+    }
+}
+
+impl std::error::Error for BackendKindParseError {}
+
 /// Probe result that includes any backend errors encountered.
 ///
 /// # Example
-/// ```rust,ignore
-/// use styx::prelude::*;
+/// ```rust
+/// use styx::probe_all_with_errors;
 ///
 /// let res = probe_all_with_errors();
-/// for err in &res.errors {
-///     eprintln!("probe error: {err}");
-/// }
+/// assert!(res.errors.iter().all(|err| !err.is_empty()));
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProbeResult {
     pub devices: Vec<ProbedDevice>,
-    pub errors: Vec<String>,
+    pub errors: Vec<BackendProbeError>,
 }
 
 /// Probe all enabled backends and return a merged list.
 ///
 /// # Example
-/// ```rust,ignore
+/// ```rust
 /// use styx::prelude::*;
 ///
 /// let devices = probe_all();
-/// if devices.is_empty() {
-///     eprintln!("no devices found");
-/// }
+/// assert!(devices.iter().all(|device| !device.identity.display.is_empty()));
 /// ```
 pub fn probe_all() -> Vec<ProbedDevice> {
     probe_all_with_errors().devices
+}
+
+/// Probe all enabled backends using explicit runtime configuration.
+pub fn probe_all_with_config(config: &capture_api::StyxConfig) -> Vec<ProbedDevice> {
+    probe_all_with_errors_with_config(config).devices
 }
 
 /// Probe all enabled backends and include any probe errors.
@@ -488,41 +358,47 @@ pub fn probe_all_with_errors() -> ProbeResult {
     probe_all_with_errors_with_options(false)
 }
 
+/// Probe all enabled backends using explicit runtime configuration and include any probe errors.
+pub fn probe_all_with_errors_with_config(config: &capture_api::StyxConfig) -> ProbeResult {
+    probe_backends_with_errors_with_options(false, None, Some(config))
+}
+
 pub(crate) fn probe_all_with_errors_with_options(_force_refresh: bool) -> ProbeResult {
     probe_backends_with_errors_with_options(
         _force_refresh,
-        &[
+        Some(&[
             #[cfg(feature = "v4l2")]
             BackendKind::V4l2,
             #[cfg(feature = "libcamera")]
             BackendKind::Libcamera,
-        ],
+        ]),
+        None,
     )
 }
 
 pub(crate) fn probe_backends_with_errors_with_options(
     _force_refresh: bool,
-    _backends: &[BackendKind],
+    _backends: Option<&[BackendKind]>,
+    _config: Option<&capture_api::StyxConfig>,
 ) -> ProbeResult {
+    // Backend feature gates may leave the probe accumulators untouched in minimal builds.
     #[allow(unused_mut)]
     let mut devices: Vec<ProbedDevice> = Vec::new();
+    // Backend feature gates may leave the probe accumulators untouched in minimal builds.
     #[allow(unused_mut)]
-    let mut errors: Vec<String> = Vec::new();
+    let mut errors: Vec<BackendProbeError> = Vec::new();
 
     #[cfg(feature = "v4l2")]
-    if _backends.contains(&BackendKind::V4l2) {
+    if _backends.is_none_or(|backends| backends.contains(&BackendKind::V4l2)) {
         let (v4l2_devices, v4l2_errors) =
             match catch_unwind(AssertUnwindSafe(styx_v4l2::probe_devices)) {
                 Ok(res) => res,
-                Err(_) => (
-                    Vec::new(),
-                    vec![prefix_backend_error(BackendKind::V4l2, "probe panicked")],
-                ),
+                Err(_) => (Vec::new(), vec!["probe panicked".to_string()]),
             };
         errors.extend(
             v4l2_errors
                 .into_iter()
-                .map(|error| prefix_backend_error(BackendKind::V4l2, error)),
+                .map(|error| BackendProbeError::new(BackendKind::V4l2, error)),
         );
         for dev in v4l2_devices {
             let backend = ProbedBackend {
@@ -537,7 +413,13 @@ pub(crate) fn probe_backends_with_errors_with_options(
         }
     }
     #[cfg(feature = "libcamera")]
-    if _backends.contains(&BackendKind::Libcamera) {
+    if _backends.is_none_or(|backends| backends.contains(&BackendKind::Libcamera)) {
+        if let Some(config) = _config {
+            let tunables = config.capture_tunables();
+            styx_libcamera::set_manager_config(styx_libcamera::LibcameraManagerConfig {
+                probe_cache_ttl_ms: tunables.libcamera_probe_cache_ttl_ms,
+            });
+        }
         let (libcamera_devices, libcamera_errors) = if _force_refresh {
             styx_libcamera::probe_devices_uncached_with_errors()
         } else {
@@ -546,7 +428,7 @@ pub(crate) fn probe_backends_with_errors_with_options(
         errors.extend(
             libcamera_errors
                 .into_iter()
-                .map(|error| prefix_backend_error(BackendKind::Libcamera, error)),
+                .map(|error| BackendProbeError::new(BackendKind::Libcamera, error)),
         );
         for dev in libcamera_devices {
             let backend = ProbedBackend {
@@ -563,7 +445,9 @@ pub(crate) fn probe_backends_with_errors_with_options(
 
 #[cfg(any(feature = "v4l2", feature = "libcamera"))]
 fn merge_backend(devices: &mut Vec<ProbedDevice>, id: String, backend: ProbedBackend) {
-    let new_keys: HashSet<String> = derive_keys(&id, &backend.properties).into_iter().collect();
+    let new_keys: HashSet<String> = device_identity::derive_keys(&id, &backend.properties)
+        .into_iter()
+        .collect();
     let new_keys_vec: Vec<String> = new_keys.iter().cloned().collect();
     if let Some(existing) = devices
         .iter_mut()
@@ -579,7 +463,7 @@ fn merge_backend(devices: &mut Vec<ProbedDevice>, id: String, backend: ProbedBac
     } else {
         devices.push(ProbedDevice {
             identity: DeviceIdentity {
-                display: pick_id(&id, &backend.properties),
+                display: device_identity::pick_display_id(&id, &backend.properties),
                 keys: new_keys_vec,
             },
             backends: vec![backend],
@@ -587,91 +471,7 @@ fn merge_backend(devices: &mut Vec<ProbedDevice>, id: String, backend: ProbedBac
     }
 }
 
-#[cfg(any(feature = "v4l2", feature = "libcamera"))]
-fn derive_keys(id: &str, props: &[(String, String)]) -> Vec<String> {
-    let mut keys = Vec::new();
-    if !id.starts_with("/dev/video") {
-        keys.push(id.to_string());
-    }
-    for (k, v) in props {
-        let v_trimmed = v.trim();
-        let v_lower = v_trimmed.to_ascii_lowercase();
-        if v_lower == "rp1-cfe" {
-            continue;
-        }
-        // Only include salient properties for matching.
-        if k.eq_ignore_ascii_case("bus")
-            || k.eq_ignore_ascii_case("card")
-            || k.eq_ignore_ascii_case("driver")
-            || k.eq_ignore_ascii_case("model")
-        {
-            keys.push(v_trimmed.to_string());
-        }
-        if let Some(vidpid) = extract_vid_pid(v_trimmed) {
-            keys.push(vidpid);
-        }
-    }
-    if let Some(vidpid) = extract_vid_pid(id) {
-        keys.push(vidpid);
-    }
-    keys
-}
-
-#[cfg(any(feature = "v4l2", feature = "libcamera"))]
-fn pick_id(id: &str, props: &[(String, String)]) -> String {
-    if let Some(model) = props
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("model"))
-        .map(|(_, v)| v.trim())
-        && !model.is_empty()
-        && !model.eq_ignore_ascii_case("rp1-cfe")
-    {
-        return model.to_string();
-    }
-    if let Some(vidpid) = props.iter().find_map(|(_, v)| extract_vid_pid(v)) {
-        return vidpid;
-    }
-    if let Some(bus) = props
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("bus"))
-        .map(|(_, v)| v.clone())
-    {
-        return bus;
-    }
-    if let Some(card) = props
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("card"))
-        .map(|(_, v)| v.clone())
-    {
-        return card;
-    }
-    id.to_string()
-}
-
-#[cfg(any(feature = "v4l2", feature = "libcamera"))]
-fn extract_vid_pid(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    for i in 0..bytes.len().saturating_sub(8) {
-        let slice = &bytes[i..i + 9];
-        if slice[4] != b':' {
-            continue;
-        }
-        if slice[..4].iter().all(|b| b.is_ascii_hexdigit())
-            && slice[5..].iter().all(|b| b.is_ascii_hexdigit())
-        {
-            return Some(String::from_utf8_lossy(slice).to_string());
-        }
-    }
-    None
-}
-
-#[cfg(any(feature = "v4l2", feature = "libcamera"))]
-pub(crate) fn prefix_backend_error(backend: BackendKind, error: impl Into<String>) -> String {
-    format!("{}{}", backend_error_prefix(backend), error.into())
-}
-
-#[cfg(any(feature = "v4l2", feature = "libcamera"))]
-pub(crate) fn backend_error_prefix(backend: BackendKind) -> &'static str {
+fn backend_error_prefix(backend: BackendKind) -> &'static str {
     match backend {
         BackendKind::V4l2 => "v4l2: ",
         BackendKind::Libcamera => "libcamera: ",
@@ -682,37 +482,90 @@ pub(crate) fn backend_error_prefix(backend: BackendKind) -> &'static str {
     }
 }
 
+fn parse_backend_probe_error(value: &str) -> Option<BackendProbeError> {
+    [
+        BackendKind::V4l2,
+        BackendKind::Libcamera,
+        BackendKind::Virtual,
+        BackendKind::Netcam,
+        BackendKind::File,
+        BackendKind::Simulation,
+    ]
+    .into_iter()
+    .find_map(|backend| {
+        value
+            .strip_prefix(backend_error_prefix(backend))
+            .map(|message| BackendProbeError::new(backend, message))
+    })
+}
+
 pub mod prelude {
+    pub use crate::capabilities::{
+        CaptureBackendCapability, CodecCapability, CrossProcessExportMode, FrameBackingCapability,
+        StyxCapabilityInventory, StyxPathPlan, StyxPathRequest, TransformCapability,
+        explain_styx_path, styx_capability_inventory,
+    };
     #[cfg(feature = "file-backend")]
     pub use crate::capture_api::make_file_device;
     #[cfg(feature = "netcam")]
     pub use crate::capture_api::make_netcam_device;
     pub use crate::capture_api::{
         CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, CaptureError,
-        CaptureHandle, CaptureRequest, CaptureStartPolicy, CaptureTunables, SelectedCamera,
-        StyxConfig, TdnOutputMode, set_capture_tunables, start_capture,
+        CaptureFrameIter, CaptureHandle, CaptureRequest, CaptureStartPolicy, CaptureTunables,
+        SelectedCamera, StyxConfig, TdnOutputMode, make_virtual_device, make_virtual_rgb_device,
+        open_best_camera, open_virtual_rgb, start_capture,
     };
     #[cfg(feature = "simulation-bevy")]
     pub use crate::capture_api::{
         SimulationDeviceConfig, SimulationLensConfig, SimulationOutputMode, SimulationPose,
         SimulationSensorConfig, make_simulation_device,
     };
+    #[cfg(feature = "daedalus-plugin")]
+    pub use crate::graph::{
+        CONTROL_EVENT_TYPE_KEY, CONTROL_RESULT_TYPE_KEY, FRAMELEASE_TYPE_KEY,
+        StyxCaptureSourceOptions, StyxCodecNodeDescriptor, StyxCodecNodeOptions, StyxControlEvent,
+        StyxControlResult, StyxMediaPlugin, StyxSinkDescriptor, StyxSourceDescriptor,
+        StyxSourceKind, analysis_policy, concrete_codec_node_id, control_event_payload,
+        control_event_type_key, control_result_type_key, framelease_daedalus_residency,
+        framelease_payload, framelease_type_key, preview_policy, recording_policy,
+        register_analysis_sink_node, register_camera_sources_all, register_camera_sources_limit,
+        register_camera_sources_with_policy, register_capture_request_source_with_policy,
+        register_capture_source_node, register_capture_source_node_with_options,
+        register_control_types, register_framelease_type, register_network_stream_sink_node,
+        register_preview_sink_node,
+    };
+    #[cfg(all(feature = "daedalus-plugin", feature = "hooks"))]
+    pub use crate::graph::{register_file_sequence_sink_node, register_recorder_sink_node};
     pub use crate::metrics::{
-        CopyMetrics, CopyStats, HealthReport, PipelineMemoryStats, PipelineMetrics,
-        QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot, StageMetrics, StageSnapshot,
+        CopyMetrics, CopyStats, FrameDropReason, FrameDropStats, GraphTelemetryStats, HealthReport,
+        PipelineMemoryStats, PipelineMetrics, PipelineStage, PipelineStageError,
+        QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot, StageErrorMetrics, StageMetrics,
+        StageSnapshot,
     };
     #[cfg(feature = "preview-window")]
     pub use crate::preview::PreviewWindow;
-    pub use crate::probe_all;
     #[cfg(feature = "hooks")]
-    pub use crate::recording::{FrameRecorder, RecordingError, RecordingFormat, RecordingOptions};
-    pub use crate::runtime_codec::{
-        EncoderFamilySpec, RuntimeCodecCapability, RuntimeCodecInventory,
-        default_decoder_ids_by_capture_format, default_decoder_selector_for_capture_format,
-        default_stream_encoder_selector, encoder_family_for_descriptor,
-        encoder_family_for_selector, preview_format_for_encoder_selector, runtime_codec_inventory,
+    pub use crate::recording::{
+        FrameRecorder, RecordingError, RecordingFormat, RecordingFrameIndexEntry, RecordingOptions,
+        RecordingSessionMetadata,
     };
-    pub use crate::session::{MediaPipeline, MediaPipelineBuilder};
+    pub use crate::runtime_codec::{
+        CodecSelector, CodecSelectorParseError, EncoderFamilySpec, FrameDecodePlan,
+        FrameDecodePlanExt, RuntimeCodecCapability, RuntimeCodecInventory,
+        decode_to_rg24_for_format, default_decoder_codec_selector_for_capture_format,
+        default_decoder_ids_by_capture_format, default_decoder_selector_for_capture_format,
+        default_decoder_selectors_by_capture_format, default_stream_codec_selector,
+        default_stream_encoder_selector, encoder_family_for_codec_selector,
+        encoder_family_for_descriptor, encoder_family_for_selector,
+        preview_format_for_codec_selector, preview_format_for_encoder_selector,
+        runtime_codec_inventory, shared_rg24_decode_bytes,
+    };
+    pub use crate::service::{
+        RecordingLifecycleEvent, ServiceEventCursor, ServiceEventPoll, SharedStyxServiceRuntime,
+        SinkKind, SinkLifecycleEvent, StyxServiceConfig, StyxServiceEvent, StyxServiceRuntime,
+        TimestampedServiceEvent,
+    };
+    pub use crate::session::{MediaPipeline, MediaPipelineBuilder, MediaPipelineFrameIter};
     #[cfg(all(feature = "hotplug", feature = "libcamera"))]
     pub use crate::watch::LibcameraHotplugWatcher;
     #[cfg(all(feature = "hotplug", target_os = "linux"))]
@@ -723,8 +576,14 @@ pub mod prelude {
         InventoryEventSubscription, WatchRefreshReport, WatchRuntime, WatchRuntimeConfig,
     };
     pub use crate::{BackendHandle, BackendKind, ProbedBackend, ProbedDevice};
+    pub use crate::{BackendKindParseError, BackendProbeError};
+    pub use crate::{probe_all, probe_all_with_config, probe_all_with_errors_with_config};
+    #[cfg(feature = "daedalus-plugin")]
+    pub use daedalus::engine::MetricsLevel as GraphMetricsLevel;
     pub use styx_capture::prelude::*;
     pub use styx_codec::prelude::*;
+    // Release policy: keep the facade prelude stable even when downstream crates use only a
+    // subset of the re-exported core primitives in a given feature combination.
     #[allow(unused_imports)]
     pub use styx_core::prelude::*;
     pub use styx_core::prelude::{FrameTransform, Rotation90};
@@ -734,4 +593,32 @@ pub mod prelude {
     };
     #[cfg(feature = "v4l2")]
     pub use styx_v4l2::prelude::{V4l2DeviceInfo, probe_devices as probe_v4l2};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BackendKind, BackendProbeError};
+
+    #[test]
+    fn backend_kind_display_and_parse_round_trip() {
+        for backend in [
+            BackendKind::V4l2,
+            BackendKind::Libcamera,
+            BackendKind::Virtual,
+            BackendKind::Netcam,
+            BackendKind::File,
+            BackendKind::Simulation,
+        ] {
+            assert_eq!(backend.to_string().parse::<BackendKind>(), Ok(backend));
+        }
+    }
+
+    #[test]
+    fn backend_probe_error_parses_legacy_prefixed_message() {
+        let error = BackendProbeError::from("libcamera: camera manager failed");
+
+        assert_eq!(error.backend, BackendKind::Libcamera);
+        assert_eq!(error.message, "camera manager failed");
+        assert_eq!(error.to_string(), "libcamera: camera manager failed");
+    }
 }

@@ -9,6 +9,7 @@ use std::{
 
 const DEFAULT_WINDOW: usize = 120;
 const DEFAULT_TRANSITION_WINDOW: usize = 16;
+const DEFAULT_STAGE_ERROR_WINDOW: usize = 16;
 
 #[derive(Clone, Debug, Default)]
 pub struct StageSnapshot {
@@ -49,12 +50,6 @@ pub struct PipelineMemoryStats {
     pub capture_queue: Option<QueueMemoryStats>,
     pub external_backings: Vec<ExternalBackingStats>,
     pub transform_pool: Option<styx_core::buffer::BufferPoolStats>,
-    #[cfg(all(feature = "hooks", feature = "dynamic-image"))]
-    pub image_pool: Option<styx_core::buffer::BufferPoolStats>,
-    #[cfg(all(feature = "hooks", feature = "dynamic-image"))]
-    pub packed_pools: Vec<styx_codec::decoder::PackedFramePoolStats>,
-    #[cfg(all(feature = "hooks", feature = "dynamic-image"))]
-    pub staging_copy: Option<StagingCopyStats>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -64,17 +59,124 @@ pub struct HealthReport {
     pub capture_queue_capacity: u64,
     pub capture_backpressure_count: u64,
     pub drop_count: u64,
+    pub capture_async_send_waits: u64,
+    pub capture_async_recv_waits: u64,
+    pub capture_async_send_wakes: u64,
+    pub capture_async_recv_wakes: u64,
     pub capture_wait_p50_ms: Option<f64>,
     pub capture_wait_p95_ms: Option<f64>,
     pub latency_p50_ms: Option<f64>,
     pub latency_p95_ms: Option<f64>,
     pub source_latency_p50_ms: Option<f64>,
     pub source_latency_p95_ms: Option<f64>,
+    pub decode_p50_ms: Option<f64>,
+    pub decode_p95_ms: Option<f64>,
+    pub encode_p50_ms: Option<f64>,
+    pub encode_p95_ms: Option<f64>,
+    pub sink_p50_ms: Option<f64>,
+    pub sink_p95_ms: Option<f64>,
     pub copy_count: u64,
     pub bytes_moved: u64,
     pub external_inflight_buffers: u64,
     pub external_inflight_bytes: u64,
     pub recent_residency_transitions: Vec<styx_core::buffer::ResidencyTransition>,
+    pub recent_stage_errors: Vec<PipelineStageError>,
+    pub drop_reasons: Vec<FrameDropStats>,
+    pub graph: Option<GraphTelemetryStats>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineStage {
+    Capture,
+    Graph,
+    Decode,
+    Encode,
+    Transform,
+    Sink,
+}
+
+impl std::fmt::Display for PipelineStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Capture => "capture",
+            Self::Graph => "graph",
+            Self::Decode => "decode",
+            Self::Encode => "encode",
+            Self::Transform => "transform",
+            Self::Sink => "sink",
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipelineStageError {
+    pub stage: PipelineStage,
+    pub component: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for PipelineStageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} stage {} failed: {}",
+            self.stage, self.component, self.message
+        )
+    }
+}
+
+impl std::error::Error for PipelineStageError {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameDropReason {
+    CaptureQueueSendTimeout,
+    GraphDrop,
+    GraphLatestReplacement,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameDropStats {
+    pub reason: FrameDropReason,
+    pub count: u64,
+}
+
+pub(crate) fn push_drop_reason(
+    reasons: &mut Vec<FrameDropStats>,
+    reason: FrameDropReason,
+    count: u64,
+) {
+    if count > 0 {
+        reasons.push(FrameDropStats { reason, count });
+    }
+}
+
+pub(crate) fn total_frame_drops(reasons: &[FrameDropStats]) -> u64 {
+    reasons.iter().map(|stats| stats.count).sum()
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GraphTelemetryStats {
+    pub nodes_executed: u64,
+    pub graph_duration_ns: u64,
+    pub unattributed_runtime_duration_ns: u64,
+    pub node_total_duration_ns: u64,
+    pub node_handler_duration_ns: u64,
+    pub node_cpu_duration_ns: u64,
+    pub edge_wait_duration_ns: u64,
+    pub edge_transport_apply_duration_ns: u64,
+    pub edge_adapter_duration_ns: u64,
+    pub copied_bytes: u64,
+    pub transport_bytes: u64,
+    pub transport_count: u64,
+    pub payload_clones: u64,
+    pub unique_handoffs: u64,
+    pub shared_handoffs: u64,
+    pub pressure_events: u64,
+    pub backpressure_events: u64,
+    pub drops: u64,
+    pub latest_replacements: u64,
+    pub adapter_count: u64,
+    pub adapter_errors: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -85,6 +187,11 @@ pub struct ResidencySnapshot {
 #[derive(Clone, Default)]
 pub struct ResidencyMetrics {
     inner: Arc<Mutex<VecDeque<styx_core::buffer::ResidencyTransition>>>,
+}
+
+#[derive(Clone, Default)]
+pub struct StageErrorMetrics {
+    inner: Arc<Mutex<VecDeque<PipelineStageError>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,6 +208,10 @@ pub struct QueueTelemetryStats {
     pub send_timeouts: u64,
     pub recv_empty: u64,
     pub recv_timeouts: u64,
+    pub async_send_waits: u64,
+    pub async_recv_waits: u64,
+    pub async_send_wakes: u64,
+    pub async_recv_wakes: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -121,6 +232,8 @@ pub struct ExternalBackingTracker {
     peak_bytes: AtomicU64,
 }
 
+// Used by libcamera external backing metrics; retained in minimal builds so snapshots keep a stable
+// shape across feature combinations.
 #[cfg_attr(not(feature = "libcamera"), allow(dead_code))]
 impl ExternalBackingTracker {
     pub fn new(label: &'static str) -> Self {
@@ -187,25 +300,6 @@ impl ExternalBackingTracker {
             current_bytes: self.current_bytes.load(Ordering::Relaxed),
             peak_buffers: self.peak_buffers.load(Ordering::Relaxed),
             peak_bytes: self.peak_bytes.load(Ordering::Relaxed),
-        }
-    }
-}
-
-#[cfg(all(feature = "hooks", feature = "dynamic-image"))]
-#[derive(Clone, Debug, Default)]
-pub struct StagingCopyStats {
-    pub copies: u64,
-    pub bytes: u64,
-    pub peak_copy_bytes: u64,
-}
-
-#[cfg(all(feature = "hooks", feature = "dynamic-image"))]
-impl From<styx_codec::decoder::StagingCopyStats> for StagingCopyStats {
-    fn from(value: styx_codec::decoder::StagingCopyStats) -> Self {
-        Self {
-            copies: value.copies,
-            bytes: value.bytes,
-            peak_copy_bytes: value.peak_copy_bytes,
         }
     }
 }
@@ -420,6 +514,33 @@ impl ResidencyMetrics {
     }
 }
 
+impl StageErrorMetrics {
+    pub fn record(
+        &self,
+        stage: PipelineStage,
+        component: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        if let Ok(mut errors) = self.inner.lock() {
+            errors.push_back(PipelineStageError {
+                stage,
+                component: component.into(),
+                message: message.into(),
+            });
+            while errors.len() > DEFAULT_STAGE_ERROR_WINDOW {
+                errors.pop_front();
+            }
+        }
+    }
+
+    pub fn snapshot(&self) -> Vec<PipelineStageError> {
+        self.inner
+            .lock()
+            .map(|items| items.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
 /// Metrics for a full media pipeline.
 #[derive(Clone, Default)]
 pub struct PipelineMetrics {
@@ -429,6 +550,8 @@ pub struct PipelineMetrics {
     pub decode: StageMetrics,
     /// Encode stage timing stats.
     pub encode: StageMetrics,
+    /// Sink stage timing stats.
+    pub sink: StageMetrics,
     /// Total pipeline processing latency from pipeline ingress to final output.
     pub end_to_end: StageMetrics,
     /// Source-to-sink latency using capture-time instants attached by backends.
@@ -437,6 +560,8 @@ pub struct PipelineMetrics {
     pub copies: CopyMetrics,
     /// Residency transitions observed while the pipeline is processing frames.
     pub residency: ResidencyMetrics,
+    /// Recent stage failures observed while the pipeline is processing frames.
+    pub stage_errors: StageErrorMetrics,
     /// Codec registry stats.
     pub codec: styx_codec::CodecStats,
 }
@@ -450,13 +575,20 @@ impl From<styx_core::queue::QueueStats> for QueueTelemetryStats {
             send_timeouts: value.send_timeouts,
             recv_empty: value.recv_empty,
             recv_timeouts: value.recv_timeouts,
+            async_send_waits: value.async_send_waits,
+            async_recv_waits: value.async_recv_waits,
+            async_send_wakes: value.async_send_wakes,
+            async_recv_wakes: value.async_recv_wakes,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CopyMetrics, ResidencyMetrics, StageMetrics};
+    use super::{
+        CopyMetrics, FrameDropReason, FrameDropStats, PipelineStage, ResidencyMetrics,
+        StageErrorMetrics, StageMetrics, total_frame_drops,
+    };
     use std::time::Duration;
     use styx_core::prelude::{
         ColorSpace, FourCc, FrameLease, FrameMeta, FrameResidency, MediaFormat,
@@ -481,7 +613,7 @@ mod tests {
     fn copy_metrics_track_input_copy_and_zero_copy_output() {
         let metrics = CopyMetrics::default();
         let res = Resolution::new(2, 2).expect("resolution");
-        let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+        let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
         let frame = FrameLease::from_external(
             FrameMeta::new(format, 7),
             smallvec::smallvec![plane_layout_from_dims(res.width, res.height, 3)],
@@ -516,6 +648,38 @@ mod tests {
             snapshot.transitions[0].reason,
             ResidencyTransitionReason::ImageMaterialize
         );
+    }
+
+    #[test]
+    fn stage_error_metrics_keep_recent_errors() {
+        let metrics = StageErrorMetrics::default();
+        metrics.record(PipelineStage::Decode, "mjpeg:test", "decode failed");
+
+        let errors = metrics.snapshot();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].stage, PipelineStage::Decode);
+        assert_eq!(errors[0].component, "mjpeg:test");
+        assert_eq!(errors[0].message, "decode failed");
+    }
+
+    #[test]
+    fn total_frame_drops_sums_all_reported_reasons() {
+        let reasons = [
+            FrameDropStats {
+                reason: FrameDropReason::CaptureQueueSendTimeout,
+                count: 2,
+            },
+            FrameDropStats {
+                reason: FrameDropReason::GraphDrop,
+                count: 3,
+            },
+            FrameDropStats {
+                reason: FrameDropReason::GraphLatestReplacement,
+                count: 5,
+            },
+        ];
+
+        assert_eq!(total_frame_drops(&reasons), 10);
     }
 
     struct TestBacking(Vec<u8>);

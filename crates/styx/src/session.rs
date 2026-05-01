@@ -32,4 +32,4 @@ mod builder;
 mod runtime;
 
 pub use builder::MediaPipelineBuilder;
-pub use runtime::MediaPipeline;
+pub use runtime::{MediaPipeline, MediaPipelineFrameIter};

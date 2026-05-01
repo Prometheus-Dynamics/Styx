@@ -207,7 +207,7 @@ pub(super) fn build_frame_from_rgb(
     dst[..copy_len].copy_from_slice(&rgb[..copy_len]);
     FrameLease::single_plane(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
+            MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())
@@ -238,7 +238,7 @@ pub(super) fn build_frame_from_depth(
     dst[..copy_len].copy_from_slice(&depth[..copy_len]);
     FrameLease::single_plane(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"D32F"), resolution, ColorSpace::Unknown),
+            MediaFormat::new(FourCc::D32F, resolution, ColorSpace::Unknown),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())
@@ -270,7 +270,7 @@ pub(super) fn build_shared_frame_from_rgb(
     dst[..copy_len].copy_from_slice(&rgb[..copy_len]);
     FrameLease::single_plane_shared(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb),
+            MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())
@@ -301,7 +301,7 @@ pub(super) fn build_shared_frame_from_depth(
     dst[..copy_len].copy_from_slice(&depth[..copy_len]);
     FrameLease::single_plane_shared(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"D32F"), resolution, ColorSpace::Unknown),
+            MediaFormat::new(FourCc::D32F, resolution, ColorSpace::Unknown),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())

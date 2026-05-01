@@ -76,7 +76,7 @@ impl WatchRuntime {
         &self.snapshot.devices
     }
 
-    pub fn errors(&self) -> &[String] {
+    pub fn errors(&self) -> &[crate::BackendProbeError] {
         &self.snapshot.errors
     }
 

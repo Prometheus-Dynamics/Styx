@@ -14,25 +14,39 @@ use styx_core::prelude::{
 
 use crate::metrics::ExternalBackingTracker;
 
-use super::util::prefault_request_pools_enabled;
-
 pub(super) fn wait_for_backings_to_drain(
     outstanding_backings: &AtomicUsize,
     timeout: Duration,
+    poll: Duration,
 ) -> bool {
     let start = Instant::now();
+    let poll = poll.max(Duration::from_millis(1));
     loop {
-        if outstanding_backings.load(Ordering::Acquire) == 0 {
+        let outstanding = outstanding_backings.load(Ordering::Acquire);
+        if outstanding == 0 {
+            tracing::debug!(
+                backend = "libcamera",
+                idle_drain_ms = start.elapsed().as_millis() as u64,
+                "libcamera external backings drained"
+            );
             return true;
         }
         if start.elapsed() >= timeout {
+            tracing::debug!(
+                backend = "libcamera",
+                outstanding_backings = outstanding,
+                idle_drain_ms = start.elapsed().as_millis() as u64,
+                timeout_ms = timeout.as_millis() as u64,
+                "libcamera external backing drain timed out"
+            );
             return false;
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(poll);
     }
 }
 
 fn system_page_size() -> usize {
+    // SAFETY: `sysconf(_SC_PAGESIZE)` has no pointer arguments and is thread-safe.
     let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if ps > 0 { ps as usize } else { 4096 }
 }
@@ -79,6 +93,8 @@ struct LazyMappedBackingState {
 impl Drop for LazyMappedBackingState {
     fn drop(&mut self) {
         for (_fd, range) in self.mmaps.drain(..) {
+            // SAFETY: each range was returned by `mmap64` in `map_backing_planes` with the same
+            // pointer and length, and each successful mapping is stored exactly once.
             unsafe {
                 libc::munmap(range.ptr, range.len);
             }
@@ -142,10 +158,12 @@ fn map_backing_planes(planes: &[BackingPlaneView]) -> Option<LazyMappedBackingSt
             info
         } else {
             let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: `st` points to valid writable storage for `fstat` to initialize.
             let ret = unsafe { libc::fstat(plane.fd, st.as_mut_ptr()) };
             let total_len = if ret != 0 {
                 0
             } else {
+                // SAFETY: `assume_init` is reached only after `fstat` reports success.
                 let st = unsafe { st.assume_init() };
                 st.st_size as usize
             };
@@ -176,6 +194,8 @@ fn map_backing_planes(planes: &[BackingPlaneView]) -> Option<LazyMappedBackingSt
         if map_len == 0 {
             continue;
         }
+        // SAFETY: the fd comes from libcamera framebuffer metadata, the offset is page-aligned, and
+        // `map_len` spans validated plane ranges. A failed mapping is detected via `MAP_FAILED`.
         let addr = unsafe {
             libc::mmap64(
                 core::ptr::null_mut(),
@@ -216,12 +236,15 @@ fn prefault_backing_planes(planes: &[BackingPlaneView]) {
         let ptr = range.ptr.cast::<u8>();
         let mut offset = 0usize;
         while offset < range.len {
+            // SAFETY: `ptr..ptr+range.len` is a live read-only mmap held by `mapped`; offsets stay
+            // within that range and volatile reads are used only to prefault pages.
             unsafe {
                 touched ^= std::ptr::read_volatile(ptr.add(offset));
             }
             offset = offset.saturating_add(page_size);
         }
         if range.len > 0 {
+            // SAFETY: `range.len > 0`, so `range.len - 1` is the last valid byte in the mapping.
             unsafe {
                 touched ^= std::ptr::read_volatile(ptr.add(range.len - 1));
             }
@@ -237,12 +260,16 @@ pub(super) struct RequestPoolBackingLease {
 }
 
 impl RequestPoolBackingLease {
-    pub(super) fn new(tracker: Arc<ExternalBackingTracker>, framebuffers: &[FrameBuffer]) -> Self {
+    pub(super) fn new(
+        tracker: Arc<ExternalBackingTracker>,
+        framebuffers: &[FrameBuffer],
+        prefault_request_pools: bool,
+    ) -> Self {
         let buffers = framebuffers.len();
         let planes = framebuffers_backing_planes(framebuffers);
         let bytes = unique_backing_plane_bytes(&planes);
         tracker.acquire_many(buffers, bytes);
-        if prefault_request_pools_enabled() && !planes.is_empty() {
+        if prefault_request_pools && !planes.is_empty() {
             prefault_backing_planes(&planes);
         }
         Self {
@@ -306,7 +333,13 @@ impl LibcameraBacking {
     }
 }
 
+// SAFETY: the backing owns the libcamera request return path and lazily maps planes for immutable
+// reads. Moving the backing between threads does not duplicate ownership, and drop returns the
+// request after mappings are released.
 unsafe impl Send for LibcameraBacking {}
+
+// SAFETY: lazy mapping is synchronized by `OnceLock`, exposed plane data is immutable, and request
+// shutdown/outstanding counters are synchronized by their own atomics/channels.
 unsafe impl Sync for LibcameraBacking {}
 
 impl ExternalBacking for LibcameraBacking {
@@ -316,6 +349,8 @@ impl ExternalBacking for LibcameraBacking {
         let (_, range) = mapped.mmaps.iter().find(|(fd, _)| *fd == plane.fd)?;
         let offset = plane.offset.checked_sub(range.map_offset)?;
         let ptr: *const u8 = range.ptr.cast();
+        // SAFETY: `mapped_state` keeps the mmap alive for `self`, `offset` is within the mapped
+        // range selected for this fd, and `plane.len` was validated before mapping.
         Some(unsafe { std::slice::from_raw_parts(ptr.add(offset), plane.len) })
     }
 
@@ -334,11 +369,15 @@ impl ExternalBacking for LibcameraBacking {
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         let mut planes = Vec::with_capacity(self.planes.len());
         for plane in &self.planes {
+            // SAFETY: duplicating an owned libcamera plane fd does not take ownership of the
+            // original. A negative return is handled as an OS error.
             let fd = unsafe { libc::dup(plane.fd) };
             if fd < 0 {
                 return Err(FrameExportError::Fd(std::io::Error::last_os_error()));
             }
             planes.push(FrameFdPlane {
+                // SAFETY: `dup` returned a fresh non-negative fd, transferring ownership into
+                // `OwnedFd` exactly once.
                 fd: unsafe { OwnedFd::from_raw_fd(fd) },
                 offset: plane.offset,
                 len: plane.len,

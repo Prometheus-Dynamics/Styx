@@ -1,18 +1,19 @@
 mod file_controls;
 mod file_media;
 
-use std::collections::HashMap;
-use std::fs;
+use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use styx_core::prelude::*;
 
+use super::handle::enqueue_capture_frame;
 use crate::capture_api::{
-    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, WorkerHandle,
+    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle,
 };
 use crate::metrics::StageMetrics;
 use crate::prelude::{Interval, Mode};
@@ -32,6 +33,7 @@ pub(super) fn start_file(
         styx_core::controls::ControlValue,
     )>,
     descriptor: CaptureDescriptor,
+    config: &StyxConfig,
 ) -> Result<CaptureHandle, CaptureError> {
     let (paths, fps, loop_forever) = match &backend.handle {
         BackendHandle::File {
@@ -91,51 +93,51 @@ pub(super) fn start_file(
             Vec::new()
         }
     })));
-    let queue_depth = crate::capture_api::capture_queue_depth();
+    let capture_tunables = config.capture_tunables();
+    let queue_depth = capture_tunables.queue_depth;
     let (tx, rx) = styx_core::queue::bounded(queue_depth);
+    let (stop_tx, stop_rx) = mpsc::channel();
     let interval = interval.unwrap_or_else(|| Interval {
         numerator: NonZeroU32::new(1).unwrap(),
         denominator: NonZeroU32::new(fps.max(1)).unwrap(),
     });
     let frame_delay_ms = interval_to_delay_ms(interval);
+    let queue_send_timeout = Duration::from_millis(capture_tunables.queue_send_timeout_ms);
     let mode_clone = mode.clone();
 
-    let preloaded_bytes: HashMap<PathBuf, Vec<u8>> = paths
-        .iter()
-        .filter_map(|p| fs::read(p).ok().map(|bytes| (p.clone(), bytes)))
-        .collect();
     let mut rgb_cache: HashMap<PathBuf, Vec<u8>> = HashMap::new();
-    for (idx, path) in paths.iter().enumerate() {
-        if image_slot_by_path[idx].is_none() {
-            continue;
-        }
-        let bytes = preloaded_bytes.get(path).map(|b| b.as_slice());
-        if let Ok((rgb, src_res)) = decode_rgb(path, bytes)
-            && let Ok(rgb_mode) = rgb24_to_mode(&rgb, src_res, mode_clone.format.resolution)
-        {
-            rgb_cache.insert(path.clone(), rgb_mode);
-        }
-    }
+    let mut rgb_cache_order: VecDeque<PathBuf> = VecDeque::new();
+    let mut rgb_cache_bytes = 0usize;
+    let rgb_cache_limit = capture_tunables.file_image_cache_bytes;
 
     let worker_state = control_state.clone();
     let worker_fn = move || {
+        tracing::debug!(backend = "file", "capture worker started");
         let output_res = mode_clone.format.resolution;
-        let (pool_min, pool_bytes, pool_spare) = crate::capture_api::capture_pool_limits(
+        let pool_limits = capture_tunables.pool_limits(
             4,
             (output_res.width.get() * output_res.height.get() * 3) as usize,
             8,
         );
         #[cfg(target_os = "linux")]
-        let pool = match SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare) {
+        let pool = match SharedBufferPool::with_limits(
+            pool_limits.min,
+            pool_limits.bytes,
+            pool_limits.spare,
+        ) {
             Ok(pool) => pool,
             Err(_) => return,
         };
         #[cfg(not(target_os = "linux"))]
-        let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
+        let pool = BufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare);
         let mut timestamp_ns: u64 = 0;
 
         loop {
             for (path_idx, path) in paths.iter().enumerate() {
+                if file_stop_requested(&stop_rx, Duration::ZERO) {
+                    tracing::debug!(backend = "file", "capture worker stopped");
+                    return;
+                }
                 #[cfg(feature = "file-backend-video")]
                 if let Some(video_idx) = video_slot_by_path[path_idx] {
                     let (speed, start_frame, stop_frame) = match worker_state.lock() {
@@ -160,7 +162,9 @@ pub(super) fn start_file(
                             playback_speed: speed,
                             start_frame,
                             stop_frame,
+                            capture_tunables,
                         },
+                        &stop_rx,
                     ) {
                         match result {
                             VideoDecodeResult::Advanced(next_ts) => {
@@ -183,16 +187,26 @@ pub(super) fn start_file(
                         Err(_) => 1,
                     };
 
-                    if !rgb_cache.contains_key(path) {
-                        let bytes = preloaded_bytes.get(path).map(|b| b.as_slice());
-                        if let Ok((rgb, src_res)) = decode_rgb(path, bytes)
-                            && let Ok(rgb_mode) = rgb24_to_mode(&rgb, src_res, output_res)
-                        {
-                            rgb_cache.insert(path.clone(), rgb_mode);
+                    let mut uncached_rgb = None;
+                    if !rgb_cache.contains_key(path)
+                        && let Ok((rgb, src_res)) = decode_rgb(path, None)
+                        && let Ok(rgb_mode) = rgb24_to_mode(&rgb, src_res, output_res)
+                    {
+                        if rgb_cache_limit == 0 {
+                            uncached_rgb = Some(rgb_mode);
+                        } else {
+                            insert_rgb_cache(
+                                &mut rgb_cache,
+                                &mut rgb_cache_order,
+                                &mut rgb_cache_bytes,
+                                rgb_cache_limit,
+                                path.clone(),
+                                rgb_mode,
+                            );
                         }
                     }
 
-                    if let Some(rgb) = rgb_cache.get(path) {
+                    if let Some(rgb) = rgb_cache.get(path).or(uncached_rgb.as_ref()) {
                         for _ in 0..duration_frames {
                             #[cfg(target_os = "linux")]
                             let frame = match build_shared_frame_from_rgb(
@@ -206,38 +220,35 @@ pub(super) fn start_file(
                             };
                             #[cfg(not(target_os = "linux"))]
                             let frame = build_frame_from_rgb(rgb, &mode_clone, &pool, timestamp_ns);
-                            if let SendOutcome::Closed = tx.send(frame) {
+                            if enqueue_capture_frame(&tx, frame, "file", queue_send_timeout) {
                                 return;
                             }
                             timestamp_ns = timestamp_ns
                                 .saturating_add(frame_delay_ms.saturating_mul(1_000_000));
-                            thread::sleep(Duration::from_millis(frame_delay_ms));
+                            if file_stop_requested(&stop_rx, Duration::from_millis(frame_delay_ms))
+                            {
+                                tracing::debug!(backend = "file", "capture worker stopped");
+                                return;
+                            }
                         }
                         continue;
                     }
                 }
 
-                thread::sleep(Duration::from_millis(frame_delay_ms));
+                if file_stop_requested(&stop_rx, Duration::from_millis(frame_delay_ms)) {
+                    tracing::debug!(backend = "file", "capture worker stopped");
+                    return;
+                }
             }
 
             if !loop_forever {
                 break;
             }
         }
+        tracing::debug!(backend = "file", "capture worker stopped");
     };
 
-    let worker = {
-        #[cfg(feature = "async")]
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            WorkerHandle::Async(handle.spawn_blocking(worker_fn))
-        } else {
-            WorkerHandle::Thread(thread::spawn(worker_fn))
-        }
-        #[cfg(not(feature = "async"))]
-        {
-            WorkerHandle::Thread(thread::spawn(worker_fn))
-        }
-    };
+    let worker = WorkerHandle::Thread(thread::spawn(worker_fn));
 
     Ok(CaptureHandle {
         backend: BackendKind::File,
@@ -248,11 +259,86 @@ pub(super) fn start_file(
         mode,
         interval: Some(interval),
         rx,
-        stop_tx: None,
+        stop_tx: Some(stop_tx),
         worker: Some(worker),
+        aux_workers: Vec::new(),
         #[cfg(feature = "libcamera")]
         libcamera_idle_stop_allowed: false,
+        #[cfg(feature = "libcamera")]
+        libcamera_stop_when_idle: false,
         metrics: StageMetrics::default(),
         external_backings: Vec::new(),
+        worker_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
     })
+}
+
+fn file_stop_requested(stop_rx: &mpsc::Receiver<()>, wait: Duration) -> bool {
+    if wait.is_zero() {
+        stop_rx.try_recv().is_ok()
+    } else {
+        stop_rx.recv_timeout(wait).is_ok()
+    }
+}
+
+fn insert_rgb_cache(
+    cache: &mut HashMap<PathBuf, Vec<u8>>,
+    order: &mut VecDeque<PathBuf>,
+    bytes: &mut usize,
+    limit: usize,
+    path: PathBuf,
+    rgb: Vec<u8>,
+) {
+    let rgb_len = rgb.len();
+    if rgb_len > limit {
+        return;
+    }
+    if let Some(old) = cache.remove(&path) {
+        *bytes = bytes.saturating_sub(old.len());
+        order.retain(|queued| queued != &path);
+    }
+    while bytes.saturating_add(rgb_len) > limit {
+        let Some(old_path) = order.pop_front() else {
+            break;
+        };
+        if let Some(old) = cache.remove(&old_path) {
+            *bytes = bytes.saturating_sub(old.len());
+        }
+    }
+    *bytes = bytes.saturating_add(rgb_len);
+    order.push_back(path.clone());
+    cache.insert(path, rgb);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgb_cache_evicts_to_configured_limit() {
+        let mut cache = HashMap::new();
+        let mut order = VecDeque::new();
+        let mut bytes = 0usize;
+
+        insert_rgb_cache(
+            &mut cache,
+            &mut order,
+            &mut bytes,
+            6,
+            PathBuf::from("a.png"),
+            vec![1; 4],
+        );
+        insert_rgb_cache(
+            &mut cache,
+            &mut order,
+            &mut bytes,
+            6,
+            PathBuf::from("b.png"),
+            vec![2; 4],
+        );
+
+        assert!(!cache.contains_key(&PathBuf::from("a.png")));
+        assert!(cache.contains_key(&PathBuf::from("b.png")));
+        assert_eq!(bytes, 4);
+    }
 }

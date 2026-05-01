@@ -119,14 +119,14 @@ fn normalize_probe_result_sorts_backend_descriptor_content() {
                         Mode {
                             id: ModeId {
                                 format: MediaFormat::new(
-                                    FourCc::new(*b"RG24"),
+                                    FourCc::RG24,
                                     Resolution::new(1280, 720).expect("res"),
                                     ColorSpace::Srgb,
                                 ),
                                 interval: None,
                             },
                             format: MediaFormat::new(
-                                FourCc::new(*b"RG24"),
+                                FourCc::RG24,
                                 Resolution::new(1280, 720).expect("res"),
                                 ColorSpace::Srgb,
                             ),
@@ -136,14 +136,14 @@ fn normalize_probe_result_sorts_backend_descriptor_content() {
                         Mode {
                             id: ModeId {
                                 format: MediaFormat::new(
-                                    FourCc::new(*b"RG24"),
+                                    FourCc::RG24,
                                     Resolution::new(640, 480).expect("res"),
                                     ColorSpace::Srgb,
                                 ),
                                 interval: None,
                             },
                             format: MediaFormat::new(
-                                FourCc::new(*b"RG24"),
+                                FourCc::RG24,
                                 Resolution::new(640, 480).expect("res"),
                                 ColorSpace::Srgb,
                             ),

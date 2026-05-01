@@ -8,7 +8,7 @@ use styx_core::prelude::*;
 /// Simple RGBA/RGB preview window backed by minifb.
 ///
 /// # Example
-/// ```rust,ignore
+/// ```rust,no_run
 /// use styx::prelude::*;
 ///
 /// let mut window = PreviewWindow::new("preview", 640, 480)?;
@@ -86,15 +86,15 @@ impl PreviewWindow {
             return Err("frame missing plane".into());
         };
         let code = meta.format.code;
-        if code == FourCc::new(*b"RG24") {
+        if code == FourCc::RG24 {
             self.blit_rgb24(plane, false)?;
-        } else if code == FourCc::new(*b"BGR3") {
+        } else if code == FourCc::BGR3 {
             self.blit_rgb24(plane, true)?;
-        } else if code == FourCc::new(*b"RGBA") {
+        } else if code == FourCc::RGBA {
             self.blit_rgba(plane, false)?;
-        } else if code == FourCc::new(*b"BGRA") {
+        } else if code == FourCc::BGRA {
             self.blit_rgba(plane, true)?;
-        } else if code == FourCc::new(*b"D32F") {
+        } else if code == FourCc::D32F {
             self.blit_depth32f(plane)?;
         } else {
             return Err(format!("unsupported preview format {:?}", code));

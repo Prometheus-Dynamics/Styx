@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "file-backend-video")]
-use std::thread;
+use std::sync::mpsc;
 #[cfg(feature = "file-backend-video")]
 use std::time::Duration;
 
@@ -22,6 +22,8 @@ use crate::capture_api::ffmpeg_util::blit_rgb24_frame;
 use crate::capture_api::ffmpeg_util::blit_shared_rgb24_frame;
 #[cfg(feature = "file-backend-video")]
 use crate::capture_api::ffmpeg_util::open_preferred_video_decoder;
+#[cfg(feature = "file-backend-video")]
+use crate::capture_api::handle::enqueue_capture_frame;
 use crate::prelude::{Interval, Mode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,7 +234,7 @@ pub(crate) fn build_frame_from_rgb(
     dst[..copy_len].copy_from_slice(&rgb[..copy_len]);
     FrameLease::single_plane(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"RG24"), res, mode.format.color),
+            MediaFormat::new(FourCc::RG24, res, mode.format.color),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())
@@ -264,7 +266,7 @@ pub(crate) fn build_shared_frame_from_rgb(
     dst[..copy_len].copy_from_slice(&rgb[..copy_len]);
     FrameLease::single_plane_shared(
         FrameMeta::new(
-            MediaFormat::new(FourCc::new(*b"RG24"), res, mode.format.color),
+            MediaFormat::new(FourCc::RG24, res, mode.format.color),
             timestamp,
         )
         .with_capture_instant(std::time::Instant::now())
@@ -287,6 +289,7 @@ pub(crate) struct VideoDecodeOptions {
     pub playback_speed: f32,
     pub start_frame: u32,
     pub stop_frame: u32,
+    pub capture_tunables: crate::capture_api::CaptureTunables,
 }
 
 #[cfg(feature = "file-backend-video")]
@@ -295,13 +298,15 @@ pub(crate) fn decode_video(
     tx: &styx_core::queue::BoundedTx<FrameLease>,
     mode: &Mode,
     options: VideoDecodeOptions,
+    stop_rx: &mpsc::Receiver<()>,
 ) -> Result<VideoDecodeResult, CaptureError> {
     let VideoDecodeOptions {
-        mut timestamp_ns,
+        timestamp_ns,
         fallback_frame_interval_ms,
         playback_speed,
         start_frame,
         stop_frame,
+        capture_tunables,
     } = options;
     ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
     let mut ictx = format::input(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
@@ -343,13 +348,13 @@ pub(crate) fn decode_video(
     }
 
     let layout = plane_layout_from_dims(output_res.width, output_res.height, 3);
-    let (pool_min, pool_bytes, pool_spare) =
-        crate::capture_api::capture_pool_limits(4, layout.len, 8);
+    let pool_limits = capture_tunables.pool_limits(4, layout.len, 8);
+    let queue_send_timeout = Duration::from_millis(capture_tunables.queue_send_timeout_ms);
     #[cfg(target_os = "linux")]
-    let pool = SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare)
+    let pool = SharedBufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare)
         .map_err(|e| CaptureError::Backend(e.to_string()))?;
     #[cfg(not(target_os = "linux"))]
-    let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
+    let pool = BufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare);
 
     let rate = stream.avg_frame_rate();
     let src_delay_ms = if rate.numerator() > 0 && rate.denominator() > 0 {
@@ -364,8 +369,20 @@ pub(crate) fn decode_video(
     let delay_ms = ((src_delay_ms as f64) / speed).round() as u64;
     let delay_ms = delay_ms.max(1);
 
-    let mut frame_index: u32 = 0;
-    let mut emitted_frames: u32 = 0;
+    let mut push = VideoFramePushContext {
+        tx,
+        output_res,
+        layout,
+        pool: &pool,
+        timestamp_ns,
+        delay_ms,
+        frame_index: 0,
+        emitted_frames: 0,
+        start_frame,
+        stop_frame,
+        queue_send_timeout,
+        stop_rx,
+    };
 
     for (stream, packet) in ictx.packets() {
         if stream.index() != stream_idx {
@@ -375,24 +392,10 @@ pub(crate) fn decode_video(
             .send_packet(&packet)
             .map_err(|e| CaptureError::Backend(e.to_string()))?;
         while decoder.receive_frame(&mut decoded).is_ok() {
-            match push_video_frame(
-                &decoded,
-                &mut scaler,
-                &mut rgb,
-                tx,
-                output_res,
-                layout,
-                &pool,
-                &mut timestamp_ns,
-                delay_ms,
-                &mut frame_index,
-                &mut emitted_frames,
-                start_frame,
-                stop_frame,
-            )? {
+            match push_video_frame(&decoded, &mut scaler, &mut rgb, &mut push)? {
                 VideoFramePushResult::Continue => {}
                 VideoFramePushResult::StopFrame => {
-                    return Ok(VideoDecodeResult::Advanced(timestamp_ns));
+                    return Ok(VideoDecodeResult::Advanced(push.timestamp_ns));
                 }
                 VideoFramePushResult::QueueClosed => return Ok(VideoDecodeResult::QueueClosed),
             }
@@ -401,35 +404,25 @@ pub(crate) fn decode_video(
 
     decoder.send_eof().ok();
     while decoder.receive_frame(&mut decoded).is_ok() {
-        match push_video_frame(
-            &decoded,
-            &mut scaler,
-            &mut rgb,
-            tx,
-            output_res,
-            layout,
-            &pool,
-            &mut timestamp_ns,
-            delay_ms,
-            &mut frame_index,
-            &mut emitted_frames,
-            start_frame,
-            stop_frame,
-        )? {
+        match push_video_frame(&decoded, &mut scaler, &mut rgb, &mut push)? {
             VideoFramePushResult::Continue => {}
             VideoFramePushResult::StopFrame => {
-                return Ok(VideoDecodeResult::Advanced(timestamp_ns));
+                return Ok(VideoDecodeResult::Advanced(push.timestamp_ns));
             }
             VideoFramePushResult::QueueClosed => return Ok(VideoDecodeResult::QueueClosed),
         }
     }
 
-    if emitted_frames == 0 {
-        thread::sleep(Duration::from_millis(delay_ms));
-        timestamp_ns = timestamp_ns.saturating_add(delay_ms.saturating_mul(1_000_000));
+    if push.emitted_frames == 0 {
+        if video_stop_requested(stop_rx, Duration::from_millis(delay_ms)) {
+            return Ok(VideoDecodeResult::QueueClosed);
+        }
+        push.timestamp_ns = push
+            .timestamp_ns
+            .saturating_add(delay_ms.saturating_mul(1_000_000));
     }
 
-    Ok(VideoDecodeResult::Advanced(timestamp_ns))
+    Ok(VideoDecodeResult::Advanced(push.timestamp_ns))
 }
 
 #[cfg(feature = "file-backend-video")]
@@ -446,24 +439,32 @@ enum VideoFramePushResult {
 }
 
 #[cfg(feature = "file-backend-video")]
-#[allow(clippy::too_many_arguments)]
+struct VideoFramePushContext<'a> {
+    tx: &'a styx_core::queue::BoundedTx<FrameLease>,
+    output_res: Resolution,
+    layout: PlaneLayout,
+    #[cfg(target_os = "linux")]
+    pool: &'a SharedBufferPool,
+    #[cfg(not(target_os = "linux"))]
+    pool: &'a BufferPool,
+    timestamp_ns: u64,
+    delay_ms: u64,
+    frame_index: u32,
+    emitted_frames: u32,
+    start_frame: u32,
+    stop_frame: u32,
+    queue_send_timeout: Duration,
+    stop_rx: &'a mpsc::Receiver<()>,
+}
+
+#[cfg(feature = "file-backend-video")]
 fn push_video_frame(
     decoded: &FfFrame,
     scaler: &mut ScalingContext,
     rgb: &mut FfFrame,
-    tx: &styx_core::queue::BoundedTx<FrameLease>,
-    output_res: Resolution,
-    layout: PlaneLayout,
-    #[cfg(target_os = "linux")] pool: &SharedBufferPool,
-    #[cfg(not(target_os = "linux"))] pool: &BufferPool,
-    timestamp_ns: &mut u64,
-    delay_ms: u64,
-    frame_index: &mut u32,
-    emitted_frames: &mut u32,
-    start_frame: u32,
-    stop_frame: u32,
+    ctx: &mut VideoFramePushContext<'_>,
 ) -> Result<VideoFramePushResult, CaptureError> {
-    if stop_frame > 0 && *frame_index > stop_frame {
+    if ctx.stop_frame > 0 && ctx.frame_index > ctx.stop_frame {
         return Ok(VideoFramePushResult::StopFrame);
     }
 
@@ -471,24 +472,61 @@ fn push_video_frame(
         .run(decoded, rgb)
         .map_err(|e| CaptureError::Backend(e.to_string()))?;
 
-    if *frame_index >= start_frame {
+    if ctx.frame_index >= ctx.start_frame {
         #[cfg(target_os = "linux")]
-        let frame = blit_shared_rgb24_frame(rgb, output_res, layout, pool, *timestamp_ns)
-            .map_err(|e| CaptureError::Backend(e.to_string()))?;
+        let frame =
+            blit_shared_rgb24_frame(rgb, ctx.output_res, ctx.layout, ctx.pool, ctx.timestamp_ns)
+                .map_err(|e| CaptureError::Backend(e.to_string()))?;
         #[cfg(not(target_os = "linux"))]
-        let frame = blit_rgb24_frame(rgb, output_res, layout, pool, *timestamp_ns);
-        if let SendOutcome::Closed = tx.send(frame) {
+        let frame = blit_rgb24_frame(rgb, ctx.output_res, ctx.layout, ctx.pool, ctx.timestamp_ns);
+        if enqueue_capture_frame(ctx.tx, frame, "file", ctx.queue_send_timeout) {
             return Ok(VideoFramePushResult::QueueClosed);
         }
-        *emitted_frames = emitted_frames.saturating_add(1);
-        *timestamp_ns = timestamp_ns.saturating_add(delay_ms.saturating_mul(1_000_000));
-        thread::sleep(Duration::from_millis(delay_ms));
+        ctx.emitted_frames = ctx.emitted_frames.saturating_add(1);
+        ctx.timestamp_ns = ctx
+            .timestamp_ns
+            .saturating_add(ctx.delay_ms.saturating_mul(1_000_000));
+        if video_stop_requested(ctx.stop_rx, Duration::from_millis(ctx.delay_ms)) {
+            return Ok(VideoFramePushResult::QueueClosed);
+        }
     }
 
-    *frame_index = frame_index.saturating_add(1);
-    if stop_frame > 0 && *frame_index > stop_frame {
+    ctx.frame_index = ctx.frame_index.saturating_add(1);
+    if ctx.stop_frame > 0 && ctx.frame_index > ctx.stop_frame {
         Ok(VideoFramePushResult::StopFrame)
     } else {
         Ok(VideoFramePushResult::Continue)
+    }
+}
+
+#[cfg(feature = "file-backend-video")]
+fn video_stop_requested(stop_rx: &mpsc::Receiver<()>, wait: Duration) -> bool {
+    if wait.is_zero() {
+        stop_rx.try_recv().is_ok()
+    } else {
+        stop_rx.recv_timeout(wait).is_ok()
+    }
+}
+
+#[cfg(all(test, feature = "file-backend-video"))]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn video_stop_wait_is_interruptible() {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            let _ = tx.send(());
+        });
+
+        let started = Instant::now();
+        assert!(video_stop_requested(&rx, Duration::from_secs(5)));
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "video stop wait took {:?}",
+            started.elapsed()
+        );
     }
 }

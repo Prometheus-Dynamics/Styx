@@ -17,8 +17,9 @@ use v4l::v4l2;
 use v4l::{format::FourCC, prelude::*, video::Capture as _};
 
 use crate::capture_api::controls::apply_v4l2_controls;
+use crate::capture_api::handle::enqueue_capture_frame;
 use crate::capture_api::{
-    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, WorkerHandle,
+    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle,
 };
 use crate::metrics::{ExternalBackingTracker, StageMetrics};
 use crate::prelude::{Interval, Mode};
@@ -29,7 +30,12 @@ struct V4l2MappedBuffer {
     len: usize,
 }
 
+// SAFETY: each mapped buffer is owned by its `V4l2MmapManager`; moving the descriptor between
+// threads does not duplicate ownership, and unmapping is centralized in the manager drop path.
 unsafe impl Send for V4l2MappedBuffer {}
+
+// SAFETY: shared references expose immutable frame views only. Queue/dequeue state is protected by
+// the manager mutex, and the mapping lifetime is tied to the manager.
 unsafe impl Sync for V4l2MappedBuffer {}
 
 struct V4l2MmapManager {
@@ -318,6 +324,8 @@ impl ExternalBacking for V4l2MmapBacking {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
         match index {
             0 => {
+                // The manager is held by `Arc` inside this backing, so the mmap remains alive
+                // while any `FrameLease` borrowing this external backing exists.
                 let buffer_index = *self.index.lock().unwrap();
                 self.manager.mapped_plane(buffer_index?)
             }
@@ -355,6 +363,8 @@ impl Drop for V4l2MmapBacking {
     fn drop(&mut self) {
         self.tracker.release(self.bytes);
         if let Some(index) = self.index.lock().unwrap().take() {
+            // Recycle only when the final external backing reference drops. This prevents the
+            // worker from requeueing/unmapping a V4L2 buffer while a `FrameLease` still exposes it.
             let _ = self.recycle_tx.send(index);
         }
     }
@@ -367,10 +377,7 @@ fn drain_recycled_buffers(manager: &V4l2MmapManager, recycle_rx: &Receiver<usize
 }
 
 fn is_encoded_bitstream(code: FourCc) -> bool {
-    matches!(
-        &code.to_u32().to_le_bytes(),
-        b"H264" | b"H265" | b"HEVC" | b"MJPG" | b"JPEG"
-    )
+    code.is_compressed()
 }
 
 fn supports_v4l2_mmap_zero_copy(code: FourCc) -> bool {
@@ -407,6 +414,50 @@ fn build_v4l2_single_plane_layout(
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+struct V4l2SinglePlaneLayoutPlan {
+    layout: PlaneLayout,
+    zero_copy_safe: bool,
+}
+
+fn plan_v4l2_single_plane_layout(
+    code: FourCc,
+    width: usize,
+    height: usize,
+    negotiated_stride: usize,
+    negotiated_size: usize,
+    mapped_len: usize,
+    bytes_used: usize,
+) -> Option<V4l2SinglePlaneLayoutPlan> {
+    if bytes_used == 0 || bytes_used > mapped_len {
+        return None;
+    }
+
+    let encoded = is_encoded_bitstream(code);
+    if encoded {
+        let layout = build_v4l2_single_plane_layout(true, height, 0, bytes_used)?;
+        return Some(V4l2SinglePlaneLayoutPlan {
+            layout,
+            zero_copy_safe: layout.len <= mapped_len,
+        });
+    }
+
+    let min_stride = min_stride_for_fourcc(code, width).max(1);
+    let inferred_stride = if height > 0 { bytes_used / height } else { 0 };
+    let stride = negotiated_stride.max(inferred_stride).max(min_stride);
+    let required = height.checked_mul(stride)?;
+    if required == 0 || bytes_used < required {
+        return None;
+    }
+
+    let layout = build_v4l2_single_plane_layout(false, height, stride, bytes_used)?;
+    let advertised_capacity_ok = negotiated_size == 0 || layout.len <= negotiated_size;
+    Some(V4l2SinglePlaneLayoutPlan {
+        layout,
+        zero_copy_safe: advertised_capacity_ok && layout.len <= mapped_len,
+    })
+}
+
 fn min_stride_for_fourcc(code: FourCc, width: usize) -> usize {
     match &code.to_u32().to_le_bytes() {
         // MIPI packed RAW10/RAW12 bayer.
@@ -436,6 +487,7 @@ pub(super) fn start_v4l2(
     interval: Option<Interval>,
     controls: Vec<(ControlId, ControlValue)>,
     descriptor: CaptureDescriptor,
+    config: &StyxConfig,
 ) -> Result<CaptureHandle, CaptureError> {
     let path = match &backend.handle {
         BackendHandle::V4l2 { path } => path.clone(),
@@ -452,8 +504,20 @@ pub(super) fn start_v4l2(
     fmt.width = mode.format.resolution.width.get();
     fmt.height = mode.format.resolution.height.get();
     fmt.fourcc = fourcc;
-    dev.set_format(&fmt)
+    let fmt = dev
+        .set_format(&fmt)
         .map_err(|e| CaptureError::Backend(e.to_string()))?;
+    let negotiated_code = FourCc::new(fmt.fourcc.repr);
+    let negotiated_resolution = Resolution::new(fmt.width, fmt.height)
+        .ok_or_else(|| CaptureError::Backend("v4l2 negotiated zero-sized frame".into()))?;
+    let negotiated_format =
+        MediaFormat::new(negotiated_code, negotiated_resolution, mode.format.color);
+    let mode = Mode {
+        id: mode.id,
+        format: negotiated_format,
+        intervals: mode.intervals,
+        interval_stepwise: mode.interval_stepwise,
+    };
 
     if let Some(iv) = interval {
         let mut params = dev
@@ -470,32 +534,49 @@ pub(super) fn start_v4l2(
     }
 
     let width = fmt.width as usize;
+    let height = fmt.height as usize;
     let encoded = is_encoded_bitstream(mode.format.code);
     let min_stride = min_stride_for_fourcc(mode.format.code, width);
-    let stride_bytes = if encoded {
+    let negotiated_stride_bytes = if encoded {
         0
     } else if fmt.stride > 0 {
         (fmt.stride as usize).max(min_stride)
     } else {
         min_stride.max(1)
     };
+    let negotiated_size = fmt.size as usize;
     let frame_capacity = if encoded {
-        (256 * 1024).max(width.saturating_mul(fmt.height as usize))
+        negotiated_size
+            .max(256 * 1024)
+            .max(width.saturating_mul(height))
     } else {
-        (fmt.height as usize)
-            .saturating_mul(stride_bytes)
+        height
+            .saturating_mul(negotiated_stride_bytes)
+            .max(negotiated_size)
             .max(width.saturating_mul(fmt.height as usize).saturating_mul(3))
     };
-    let (pool_min, pool_bytes, pool_spare) =
-        crate::capture_api::capture_pool_limits(4, frame_capacity, 8);
+    tracing::debug!(
+        backend = "v4l2",
+        path = %path,
+        width = fmt.width,
+        height = fmt.height,
+        fourcc = ?mode.format.code,
+        stride_bytes = negotiated_stride_bytes,
+        buffer_size = negotiated_size,
+        frame_capacity,
+        encoded,
+        "v4l2 negotiated capture format"
+    );
+    let capture_tunables = config.capture_tunables();
+    let pool_limits = capture_tunables.pool_limits(4, frame_capacity, 8);
     let manager = V4l2MmapManager::new(
         dev.handle(),
         Type::VideoCapture,
         4,
-        Duration::from_millis(50),
+        Duration::from_millis(capture_tunables.v4l2_mmap_poll_ms),
     )
     .map_err(|e| CaptureError::Backend(e.to_string()))?;
-    let queue_depth = crate::capture_api::capture_queue_depth();
+    let queue_depth = capture_tunables.queue_depth;
     let (tx, rx) = bounded(queue_depth);
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     let (recycle_tx, recycle_rx) = std::sync::mpsc::channel::<usize>();
@@ -504,12 +585,13 @@ pub(super) fn start_v4l2(
     let manager_for_worker = Arc::clone(&manager);
     let tracker_for_worker = Arc::clone(&backing_tracker);
     let worker = thread::spawn(move || {
-        let zero_copy_enabled = supports_v4l2_mmap_zero_copy(mode_clone.format.code);
-        let shared_pool = SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare);
+        let send_timeout = Duration::from_millis(capture_tunables.v4l2_send_timeout_ms);
+        let error_backoff = Duration::from_millis(capture_tunables.v4l2_error_backoff_ms);
+        let zero_copy_requested = supports_v4l2_mmap_zero_copy(mode_clone.format.code);
+        let shared_pool =
+            SharedBufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare);
         let height = mode_clone.format.resolution.height.get() as usize;
         let width = mode_clone.format.resolution.width.get() as usize;
-        let min_stride = min_stride_for_fourcc(mode_clone.format.code, width);
-        let encoded = is_encoded_bitstream(mode_clone.format.code);
         loop {
             drain_recycled_buffers(&manager_for_worker, &recycle_rx);
             if stop_rx.try_recv().is_ok() {
@@ -521,6 +603,19 @@ pub(super) fn start_v4l2(
                 Ok((index, meta)) => {
                     let mapped_len = manager_for_worker.mapped_bytes(index).unwrap_or_default();
                     let bytes_used = (meta.bytesused as usize).min(mapped_len);
+                    let Some(layout_plan) = plan_v4l2_single_plane_layout(
+                        mode_clone.format.code,
+                        width,
+                        height,
+                        negotiated_stride_bytes,
+                        negotiated_size,
+                        mapped_len,
+                        bytes_used,
+                    ) else {
+                        let _ = manager_for_worker.recycle(index);
+                        continue;
+                    };
+                    let zero_copy_enabled = zero_copy_requested && layout_plan.zero_copy_safe;
                     let ts = std::time::Duration::from(meta.timestamp)
                         .as_nanos()
                         .min(u64::MAX as u128) as u64;
@@ -529,14 +624,14 @@ pub(super) fn start_v4l2(
                         .with_transition(ResidencyTransition {
                             from: if zero_copy_enabled {
                                 FrameResidency::HostExternal
-                            } else if encoded {
+                            } else if is_encoded_bitstream(mode_clone.format.code) {
                                 FrameResidency::CompressedPacket
                             } else {
                                 FrameResidency::HostOwned
                             },
                             to: if zero_copy_enabled {
                                 FrameResidency::HostExternal
-                            } else if encoded {
+                            } else if is_encoded_bitstream(mode_clone.format.code) {
                                 FrameResidency::CompressedPacket
                             } else {
                                 FrameResidency::HostExternal
@@ -551,31 +646,7 @@ pub(super) fn start_v4l2(
                             flags: u32::from(meta.flags),
                             zero_copy: zero_copy_enabled,
                         }));
-                    let effective_stride = if encoded {
-                        bytes_used.max(1)
-                    } else {
-                        let inferred_stride = if height > 0 {
-                            bytes_used / height
-                        } else {
-                            bytes_used
-                        };
-                        if stride_bytes >= min_stride {
-                            stride_bytes
-                        } else if inferred_stride >= min_stride {
-                            inferred_stride
-                        } else {
-                            min_stride.max(1)
-                        }
-                    };
-                    let Some(layout) = build_v4l2_single_plane_layout(
-                        encoded,
-                        height,
-                        effective_stride,
-                        bytes_used,
-                    ) else {
-                        let _ = manager_for_worker.recycle(index);
-                        continue;
-                    };
+                    let layout = layout_plan.layout;
                     let frame = if zero_copy_enabled {
                         let backing = V4l2MmapBacking::new(
                             Arc::clone(&manager_for_worker),
@@ -612,19 +683,15 @@ pub(super) fn start_v4l2(
                             Err(_) => continue,
                         }
                     };
-                    match tx.send_timeout(frame, Duration::from_millis(10)) {
-                        SendWaitOutcome::Closed(_frame) => {
-                            let _ = manager_for_worker.stop_stream();
-                            break;
-                        }
-                        SendWaitOutcome::Timeout(_frame) => {}
-                        SendWaitOutcome::Ok => {}
+                    if enqueue_capture_frame(&tx, frame, "v4l2", send_timeout) {
+                        let _ = manager_for_worker.stop_stream();
+                        break;
                     }
                 }
                 Err(err) => {
                     // Timeouts are expected due to the short poll timeout above.
                     if err.kind() != std::io::ErrorKind::TimedOut {
-                        thread::sleep(Duration::from_millis(5));
+                        thread::sleep(error_backoff);
                     }
                 }
             }
@@ -640,67 +707,17 @@ pub(super) fn start_v4l2(
         rx,
         stop_tx: Some(stop_tx),
         worker: Some(WorkerHandle::Thread(worker)),
+        aux_workers: Vec::new(),
         #[cfg(feature = "libcamera")]
         libcamera_idle_stop_allowed: false,
+        #[cfg(feature = "libcamera")]
+        libcamera_stop_when_idle: false,
         metrics: StageMetrics::default(),
         external_backings: vec![backing_tracker],
+        worker_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{build_v4l2_single_plane_layout, supports_v4l2_mmap_zero_copy};
-    use styx_core::prelude::FourCc;
-
-    #[test]
-    fn encoded_layout_uses_bytes_used() {
-        let layout = build_v4l2_single_plane_layout(true, 1080, 0, 4096).expect("layout");
-        assert_eq!(layout.len, 4096);
-        assert_eq!(layout.stride, 4096);
-    }
-
-    #[test]
-    fn raw_layout_uses_stride_times_height() {
-        let layout = build_v4l2_single_plane_layout(false, 2, 6, 12).expect("layout");
-        assert_eq!(layout.len, 12);
-        assert_eq!(layout.stride, 6);
-    }
-
-    #[test]
-    fn raw_layout_rejects_short_buffer() {
-        assert!(build_v4l2_single_plane_layout(false, 2, 6, 10).is_none());
-    }
-
-    #[test]
-    fn zero_copy_whitelist_accepts_initial_validated_formats() {
-        for code in [
-            FourCc::new(*b"MJPG"),
-            FourCc::new(*b"JPEG"),
-            FourCc::new(*b"YUYV"),
-            FourCc::new(*b"RG24"),
-            FourCc::new(*b"RGB3"),
-            FourCc::new(*b"BGR3"),
-            FourCc::new(*b"RGBA"),
-            FourCc::new(*b"BGRA"),
-        ] {
-            assert!(
-                supports_v4l2_mmap_zero_copy(code),
-                "expected {code} to be whitelisted"
-            );
-        }
-    }
-
-    #[test]
-    fn zero_copy_whitelist_rejects_deferred_formats() {
-        for code in [
-            FourCc::new(*b"NV12"),
-            FourCc::new(*b"H264"),
-            FourCc::new(*b"BA81"),
-        ] {
-            assert!(
-                !supports_v4l2_mmap_zero_copy(code),
-                "expected {code} to use fallback"
-            );
-        }
-    }
-}
+mod tests;

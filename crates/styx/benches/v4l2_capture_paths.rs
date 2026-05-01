@@ -36,7 +36,7 @@ fn bench_capture_path_construction(c: &mut Criterion) {
 
     for (name, width, height, bytes_per_pixel) in cases {
         let resolution = Resolution::new(width, height).expect("resolution");
-        let format = MediaFormat::new(FourCc::new(*b"YUYV"), resolution, ColorSpace::Unknown);
+        let format = MediaFormat::new(FourCc::YUYV, resolution, ColorSpace::Unknown);
         let layout = plane_layout_from_dims(resolution.width, resolution.height, bytes_per_pixel);
         let frame_bytes = layout.len;
         let source = vec![0x5a; frame_bytes];

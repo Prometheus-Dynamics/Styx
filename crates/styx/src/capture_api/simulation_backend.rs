@@ -3,6 +3,7 @@ mod runtime;
 mod state;
 mod visualization;
 
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -10,8 +11,9 @@ use std::time::Duration;
 use styx_core::controls::{ControlId, ControlValue};
 use styx_core::prelude::*;
 
+use super::handle::enqueue_capture_frame;
 use crate::capture_api::{
-    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, WorkerHandle,
+    CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle,
 };
 use crate::metrics::StageMetrics;
 use crate::prelude::{Interval, Mode};
@@ -39,6 +41,7 @@ pub(super) fn start_simulation(
     interval: Option<Interval>,
     controls: Vec<(ControlId, ControlValue)>,
     descriptor: CaptureDescriptor,
+    runtime_config: &StyxConfig,
 ) -> Result<CaptureHandle, CaptureError> {
     let (scene_path, config) = match &backend.handle {
         BackendHandle::Simulation { scene_path, config } => (scene_path.clone(), config.clone()),
@@ -57,17 +60,21 @@ pub(super) fn start_simulation(
     }
 
     let state = Arc::new(Mutex::new(parse_controls(&config, &controls)));
-    let queue_depth = crate::capture_api::capture_queue_depth();
+    let capture_tunables = runtime_config.capture_tunables();
+    let queue_depth = capture_tunables.queue_depth;
     let (tx, rx) = styx_core::queue::bounded(queue_depth);
+    let (stop_tx, stop_rx) = mpsc::channel();
     let interval = interval.unwrap_or_else(|| Interval {
         numerator: std::num::NonZeroU32::new(1).unwrap(),
         denominator: std::num::NonZeroU32::new(config.sensor.fps.max(1)).unwrap(),
     });
     let frame_delay_ms = interval_to_delay_ms(interval);
+    let queue_send_timeout = Duration::from_millis(capture_tunables.queue_send_timeout_ms);
     let mode_clone = mode.clone();
     let state_for_worker = state.clone();
 
     let worker_fn = move || {
+        tracing::debug!(backend = "simulation", "capture worker started");
         let output_res = mode_clone.format.resolution;
         let rgb_frame_len = (output_res.width.get() as usize)
             .saturating_mul(output_res.height.get() as usize)
@@ -75,15 +82,18 @@ pub(super) fn start_simulation(
         let depth_frame_len = (output_res.width.get() as usize)
             .saturating_mul(output_res.height.get() as usize)
             .saturating_mul(4);
-        let (pool_min, pool_bytes, pool_spare) =
-            crate::capture_api::capture_pool_limits(4, rgb_frame_len.max(depth_frame_len), 8);
+        let pool_limits = capture_tunables.pool_limits(4, rgb_frame_len.max(depth_frame_len), 8);
         #[cfg(target_os = "linux")]
-        let pool = match SharedBufferPool::with_limits(pool_min, pool_bytes, pool_spare) {
+        let pool = match SharedBufferPool::with_limits(
+            pool_limits.min,
+            pool_limits.bytes,
+            pool_limits.spare,
+        ) {
             Ok(pool) => pool,
             Err(_) => return,
         };
         #[cfg(not(target_os = "linux"))]
-        let pool = BufferPool::with_limits(pool_min, pool_bytes, pool_spare);
+        let pool = BufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare);
         let mut runtime = match BevySimulationRuntime::new(&scene_path, &config) {
             Ok(runtime) => runtime,
             Err(_) => return,
@@ -93,6 +103,9 @@ pub(super) fn start_simulation(
         let mut latest_depth = vec![0u8; depth_frame_len];
 
         loop {
+            if simulation_stop_requested(&stop_rx, Duration::ZERO) {
+                break;
+            }
             let snapshot = match state_for_worker.lock() {
                 Ok(guard) => guard.clone(),
                 Err(_) => break,
@@ -139,26 +152,18 @@ pub(super) fn start_simulation(
                     }
                 }
             };
-            if let SendOutcome::Closed = tx.send(frame) {
+            if enqueue_capture_frame(&tx, frame, "simulation", queue_send_timeout) {
                 return;
             }
             timestamp_ns = timestamp_ns.saturating_add(frame_delay_ms.saturating_mul(1_000_000));
-            thread::sleep(Duration::from_millis(frame_delay_ms));
+            if simulation_stop_requested(&stop_rx, Duration::from_millis(frame_delay_ms)) {
+                break;
+            }
         }
+        tracing::debug!(backend = "simulation", "capture worker stopped");
     };
 
-    let worker = {
-        #[cfg(feature = "async")]
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            WorkerHandle::Async(handle.spawn_blocking(worker_fn))
-        } else {
-            WorkerHandle::Thread(thread::spawn(worker_fn))
-        }
-        #[cfg(not(feature = "async"))]
-        {
-            WorkerHandle::Thread(thread::spawn(worker_fn))
-        }
-    };
+    let worker = WorkerHandle::Thread(thread::spawn(worker_fn));
 
     Ok(CaptureHandle {
         backend: BackendKind::Simulation,
@@ -167,11 +172,24 @@ pub(super) fn start_simulation(
         mode,
         interval: Some(interval),
         rx,
-        stop_tx: None,
+        stop_tx: Some(stop_tx),
         worker: Some(worker),
+        aux_workers: Vec::new(),
         #[cfg(feature = "libcamera")]
         libcamera_idle_stop_allowed: false,
+        #[cfg(feature = "libcamera")]
+        libcamera_stop_when_idle: false,
         metrics: StageMetrics::default(),
         external_backings: Vec::new(),
+        worker_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
     })
+}
+
+fn simulation_stop_requested(stop_rx: &mpsc::Receiver<()>, wait: Duration) -> bool {
+    if wait.is_zero() {
+        stop_rx.try_recv().is_ok()
+    } else {
+        stop_rx.recv_timeout(wait).is_ok()
+    }
 }

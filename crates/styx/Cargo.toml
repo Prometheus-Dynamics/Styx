@@ -21,6 +21,7 @@ styx-capture.workspace = true
 styx-codec.workspace = true
 styx-libcamera = { workspace = true, optional = true, features = ["probe"] }
 styx-v4l2 = { workspace = true, optional = true }
+daedalus = { workspace = true, optional = true }
 smallvec.workspace = true
 v4l = { workspace = true, optional = true }
 thiserror.workspace = true
@@ -45,6 +46,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+image.workspace = true
 
 [[bench]]
 name = "v4l2_capture_paths"
@@ -53,19 +55,34 @@ harness = false
 [[bench]]
 name = "pipeline_stage_perf"
 harness = false
+required-features = ["codec-jpeg-decoder"]
+
+[[bench]]
+name = "pipeline_worker_perf"
+harness = false
 
 [features]
-default = ["hooks"]
+default = []
+daedalus-plugin = ["dep:daedalus", "daedalus/engine", "daedalus/plugins"]
+graph-pipeline = ["daedalus-plugin"]
 hooks = ["dep:image"]
-dynamic-image = ["hooks", "styx-codec/dynamic-image"]
-libcamera = ["styx-libcamera", "dep:libcamera"]
+libcamera = ["styx-libcamera", "dep:libcamera", "raw-decoders"]
 libcamera-vendor-rpi = ["libcamera", "styx-libcamera/vendor_rpi", "dep:libcamera"]
 v4l2 = ["styx-v4l2", "v4l"]
-async = ["styx-core/async", "tokio", "tokio-util", "futures-core", "futures-util"]
+async = [
+    "styx-core/async",
+    "tokio",
+    "tokio-util",
+    "futures-core",
+    "futures-util",
+    "reqwest?/stream",
+]
 codec-ffmpeg = ["styx-codec/codec-ffmpeg"]
+codec-jpeg-decoder = ["styx-codec/codec-jpeg-decoder"]
 codec-mozjpeg = ["styx-codec/codec-mozjpeg"]
 codec-turbojpeg = ["styx-codec/codec-turbojpeg"]
-netcam = ["dep:reqwest"]
+raw-decoders = ["styx-codec/raw-decoders"]
+netcam = ["dep:reqwest", "reqwest/blocking", "reqwest/rustls"]
 netcam-video = ["dep:ffmpeg-next"]
 file-backend = ["dep:image", "dep:jpeg-decoder"]
 file-backend-video = ["dep:ffmpeg-next"]
@@ -83,3 +100,6 @@ schema = ["dep:utoipa", "serde", "styx-core/schema", "styx-capture/schema", "sty
 
 [package.metadata.docs.rs]
 features = ["async", "serde", "schema", "netcam", "file-backend"]
+
+[lints]
+workspace = true

@@ -22,7 +22,6 @@ impl WatchRuntime {
         self.handle_watch_events_and_refresh_with_mode(watcher.name(), WatchedRefreshMode::Full)
     }
 
-    #[allow(dead_code)]
     pub fn poll_watcher_and_refresh_incremental(
         &mut self,
         watcher: &mut dyn DeviceWatcher,
@@ -102,7 +101,8 @@ impl PreparedWatchRefresh {
     fn run(self) -> Result<CompletedWatchRefresh, WatchError> {
         let _ = self.watcher_name;
         let _ = self.mode;
-        let probe_result = probe_backends_with_errors_with_options(true, &self.scoped_backends);
+        let probe_result =
+            probe_backends_with_errors_with_options(true, Some(&self.scoped_backends), None);
         Ok(CompletedWatchRefresh {
             watch_events: self.watch_events,
             probe_result,
