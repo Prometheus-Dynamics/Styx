@@ -83,7 +83,9 @@ combines:
   memfd, PiSP memfd, libcamera/IPA mappings, DMA heap, device mappings, files, and unknown
   mappings.
 - `/proc/self/fd` counts by fd class, including sockets, pipes, anon inodes, memfd, PiSP memfd,
-  DMA-related fds, and media/video device fds.
+  DMA-related fds, and media/video device fds. On Linux, DMA-BUF fdinfo is also deduplicated by
+  inode when available so reports can show current-process DMA-BUF fd count, unique buffer count,
+  total bytes, and exporter totals without requiring debugfs.
 - Styx-tracked capture and pipeline pools, including libcamera request pools, TDN request pools,
   outstanding DMABUF frame leases, CPU-mapped DMABUF leases, transform pools, and shared codec
   pools.
@@ -104,6 +106,10 @@ Interpret the major fields this way:
   comparisons because shared pages are proportionally accounted.
 - Styx tracked backing bytes are buffers Styx knows it owns or is keeping alive through frame
   leases. These explain only Styx-visible pools, not every libcamera/PiSP internal allocation.
+- Process DMA-BUF fdinfo totals show DMA-BUF objects currently referenced by this process. This is
+  the right local check when Styx external backing bytes are low but libcamera/PiSP still has many
+  request or ISP buffers open. These totals are buffer sizes, not PSS; mapped residency is still
+  visible through smaps categories.
 - PiSP memfd mappings usually come from the live libcamera/PiSP pipeline. They can appear in PSS
   while capture is active even when the Styx heap is small.
 - `libcamera_or_ipa` mappings are best-effort process mappings for libcamera and IPA shared
@@ -111,6 +117,9 @@ Interpret the major fields this way:
   private allocator ownership model.
 - Copy and residency counters identify host copies introduced by decode, encode, transforms, graph
   transport, hooks, or sinks.
+- Encoder heap cost is mostly normal process memory, not external backing. Compare process PSS and
+  the anonymous/shared-library smaps categories before and after enabling an encoder to attribute
+  codec context, conversion frames, thread buffers, and library residency.
 - Unexplained PSS is a diagnostic delta. It is process PSS minus currently tracked Styx pools and
   graph copy/transport bytes, so it can include allocator overhead, thread stacks, library pages,
   libcamera internals, service state, watchers, API clients, and mappings that Styx cannot classify
@@ -131,3 +140,6 @@ For low-memory deployments, start with these knobs:
 - Avoid TDN output unless a requested control requires it.
 - Avoid unnecessary packed transforms, RGB conversions, host decode/encode fallbacks, and sink paths
   that force DMABUF frames into host memory.
+- For FFmpeg preview encoders, prefer explicit `FfmpegEncoderOptions` when the application can
+  accept constrained output, for example `thread_count: Some(1)` or a smaller `output_resolution`.
+  These are encoder choices, not Styx memory modes.

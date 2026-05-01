@@ -135,6 +135,24 @@ impl fmt::Display for RuntimeMemoryReport {
             for class in self.fds.classes.iter().take(8) {
                 writeln!(f, "  {}: {}", class.class, class.count)?;
             }
+            if self.fds.dmabuf.fd_count > 0 || self.fds.dmabuf.unique_buffers > 0 {
+                writeln!(
+                    f,
+                    "  process DMA-BUF fds: {} fds / {} unique / {}",
+                    self.fds.dmabuf.fd_count,
+                    self.fds.dmabuf.unique_buffers,
+                    format_bytes(self.fds.dmabuf.total_bytes)
+                )?;
+                for exporter in self.fds.dmabuf.exporters.iter().take(5) {
+                    writeln!(
+                        f,
+                        "    exporter {}: {} buffers / {}",
+                        exporter.exporter,
+                        exporter.buffers,
+                        format_bytes(exporter.bytes)
+                    )?;
+                }
+            }
         } else {
             writeln!(
                 f,
@@ -311,6 +329,7 @@ pub struct FdInventoryStats {
     pub total: u64,
     pub classes: Vec<FdClassStats>,
     pub top_targets: Vec<FdTargetStats>,
+    pub dmabuf: ProcessDmabufFdStats,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -323,6 +342,28 @@ pub struct FdClassStats {
 pub struct FdTargetStats {
     pub target: String,
     pub count: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcessDmabufFdStats {
+    pub fd_count: u64,
+    pub unique_buffers: u64,
+    pub total_bytes: u64,
+    pub exporters: Vec<ProcessDmabufExporterStats>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcessDmabufExporterStats {
+    pub exporter: String,
+    pub buffers: u64,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ProcessDmabufFdEntry {
+    key: String,
+    exporter: String,
+    bytes: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -524,6 +565,8 @@ fn collect_fd_inventory(warnings: &mut Vec<String>) -> FdInventoryStats {
 
     let mut class_counts: HashMap<FdClass, u64> = HashMap::new();
     let mut target_counts: HashMap<String, u64> = HashMap::new();
+    let mut dmabuf_by_key: HashMap<String, ProcessDmabufFdEntry> = HashMap::new();
+    let mut dmabuf_fd_count = 0u64;
     let mut total = 0u64;
 
     for entry in entries.flatten() {
@@ -533,6 +576,15 @@ fn collect_fd_inventory(warnings: &mut Vec<String>) -> FdInventoryStats {
         let target = target.to_string_lossy().to_string();
         let class = classify_fd_target(&target);
         *class_counts.entry(class).or_default() += 1;
+        if class == FdClass::DmaBufOrDmaHeap {
+            dmabuf_fd_count = dmabuf_fd_count.saturating_add(1);
+            let fd_name = entry.file_name().to_string_lossy().to_string();
+            if let Ok(contents) = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd_name}"))
+                && let Some(dmabuf) = parse_proc_fdinfo_dmabuf(&contents, &fd_name, &target)
+            {
+                dmabuf_by_key.entry(dmabuf.key.clone()).or_insert(dmabuf);
+            }
+        }
         *target_counts.entry(target).or_default() += 1;
         total += 1;
     }
@@ -559,6 +611,7 @@ fn collect_fd_inventory(warnings: &mut Vec<String>) -> FdInventoryStats {
         total,
         classes,
         top_targets,
+        dmabuf: process_dmabuf_stats(dmabuf_fd_count, dmabuf_by_key),
     }
 }
 
@@ -571,6 +624,79 @@ fn collect_fd_inventory(warnings: &mut Vec<String>) -> FdInventoryStats {
         unavailable_reason: Some(reason),
         ..FdInventoryStats::default()
     }
+}
+
+fn process_dmabuf_stats(
+    fd_count: u64,
+    buffers: HashMap<String, ProcessDmabufFdEntry>,
+) -> ProcessDmabufFdStats {
+    let mut by_exporter: HashMap<String, ProcessDmabufExporterStats> = HashMap::new();
+    let mut total_bytes = 0u64;
+    let unique_buffers = buffers.len() as u64;
+
+    for entry in buffers.into_values() {
+        total_bytes = total_bytes.saturating_add(entry.bytes);
+        let exporter = by_exporter
+            .entry(entry.exporter.clone())
+            .or_insert_with(|| ProcessDmabufExporterStats {
+                exporter: entry.exporter,
+                buffers: 0,
+                bytes: 0,
+            });
+        exporter.buffers = exporter.buffers.saturating_add(1);
+        exporter.bytes = exporter.bytes.saturating_add(entry.bytes);
+    }
+
+    let mut exporters = by_exporter.into_values().collect::<Vec<_>>();
+    exporters.sort_by(|a, b| {
+        b.bytes
+            .cmp(&a.bytes)
+            .then_with(|| b.buffers.cmp(&a.buffers))
+            .then_with(|| a.exporter.cmp(&b.exporter))
+    });
+
+    ProcessDmabufFdStats {
+        fd_count,
+        unique_buffers,
+        total_bytes,
+        exporters,
+    }
+}
+
+fn parse_proc_fdinfo_dmabuf(
+    contents: &str,
+    fd_name: &str,
+    target: &str,
+) -> Option<ProcessDmabufFdEntry> {
+    let mut size = None;
+    let mut exporter = None;
+    let mut ino = None;
+
+    for line in contents.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim() {
+            "size" => size = parse_dma_bufinfo_size(value),
+            "exp_name" => exporter = Some(value.to_string()),
+            "ino" => ino = Some(value.to_string()),
+            _ => {}
+        }
+    }
+
+    let bytes = size?;
+    let exporter = exporter.unwrap_or_else(|| "unknown".to_string());
+    let key = ino
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("ino:{value}"))
+        .unwrap_or_else(|| format!("fd:{fd_name}:{target}"));
+
+    Some(ProcessDmabufFdEntry {
+        key,
+        exporter,
+        bytes,
+    })
 }
 
 fn collect_kernel_dmabuf_stats() -> KernelDmabufStats {
@@ -743,7 +869,6 @@ fn parse_dma_bufinfo(contents: &str) -> DmaBufinfoStats {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn parse_dma_bufinfo_size(value: &str) -> Option<u64> {
     if value.eq_ignore_ascii_case("size") || value.eq_ignore_ascii_case("total") {
         return None;
@@ -1125,6 +1250,55 @@ Shared_Clean:          4 kB
             FdClass::DmaBufOrDmaHeap
         );
         assert_eq!(classify_fd_target("/tmp/file"), FdClass::RegularFile);
+    }
+
+    #[test]
+    fn parses_proc_fdinfo_dmabuf_and_deduplicates_by_inode() {
+        let first = parse_proc_fdinfo_dmabuf(
+            "\
+pos: 0
+flags: 02
+mnt_id: 16
+ino: 1234
+size: 4096
+exp_name: pisp
+",
+            "10",
+            "anon_inode:[dmabuf]",
+        )
+        .expect("first dmabuf fdinfo");
+        let second = parse_proc_fdinfo_dmabuf(
+            "\
+ino: 1234
+size: 4096
+exp_name: pisp
+",
+            "11",
+            "anon_inode:[dmabuf]",
+        )
+        .expect("second dmabuf fdinfo");
+        let third = parse_proc_fdinfo_dmabuf(
+            "\
+ino: 1235
+size: 0x2000
+exp_name: system
+",
+            "12",
+            "anon_inode:[dmabuf]",
+        )
+        .expect("third dmabuf fdinfo");
+
+        let mut buffers = HashMap::new();
+        buffers.entry(first.key.clone()).or_insert(first);
+        buffers.entry(second.key.clone()).or_insert(second);
+        buffers.entry(third.key.clone()).or_insert(third);
+
+        let stats = process_dmabuf_stats(3, buffers);
+        assert_eq!(stats.fd_count, 3);
+        assert_eq!(stats.unique_buffers, 2);
+        assert_eq!(stats.total_bytes, 4096 + 8192);
+        assert_eq!(stats.exporters[0].exporter, "system");
+        assert_eq!(stats.exporters[0].bytes, 8192);
     }
 
     #[test]

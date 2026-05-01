@@ -10,8 +10,8 @@ pub use crate::decoder::raw::{RawDecodeInto, SharedRawDecodeExt};
 pub use crate::decoder::{PackedFramePoolStats, packed_frame_pool_stats};
 #[cfg(feature = "codec-ffmpeg")]
 pub use crate::ffmpeg::{
-    FfmpegH264Decoder, FfmpegH264Encoder, FfmpegH265Decoder, FfmpegH265Encoder, FfmpegMjpegDecoder,
-    FfmpegMjpegEncoder,
+    FfmpegEncoderOptions, FfmpegH264Decoder, FfmpegH264Encoder, FfmpegH265Decoder,
+    FfmpegH265Encoder, FfmpegMjpegDecoder, FfmpegMjpegEncoder,
 };
 pub use crate::frame_image::FrameLeaseImageExt;
 #[cfg(feature = "dynamic-image")]

@@ -103,6 +103,11 @@ pub mod imports {
             CodecPolicyBuilder, CodecRegistry, CodecRegistryConfig, CodecRegistryHandle,
             CodecResidencyCapabilities, CodecStats, RegistryError,
         };
+        #[cfg(feature = "codec-ffmpeg")]
+        pub use styx_codec::prelude::{
+            FfmpegEncoderOptions, FfmpegH264Decoder, FfmpegH264Encoder, FfmpegH265Decoder,
+            FfmpegH265Encoder, FfmpegMjpegDecoder, FfmpegMjpegEncoder,
+        };
         pub use styx_core::prelude::{FourCc, FrameLease, MediaFormat, Resolution};
     }
 
@@ -681,8 +686,9 @@ pub mod prelude {
     };
     pub use crate::memory::{
         FdClass, FdClassStats, FdInventoryStats, FdTargetStats, KernelDmabufStats, MappingCategory,
-        MappingCategoryStats, MappingNameStats, ProcessMemoryStats, RuntimeMemoryReport,
-        runtime_memory_report, runtime_memory_report_with_styx,
+        MappingCategoryStats, MappingNameStats, ProcessDmabufExporterStats, ProcessDmabufFdStats,
+        ProcessMemoryStats, RuntimeMemoryReport, runtime_memory_report,
+        runtime_memory_report_with_styx,
     };
     pub use crate::metrics::{
         CopyMetrics, CopyStats, FrameDropReason, FrameDropStats, GraphTelemetryStats, HealthReport,
