@@ -102,7 +102,7 @@ pub enum RecordingError {
 /// ```rust,no_run
 /// use styx::prelude::*;
 ///
-/// let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 /// let recorder = FrameRecorder::new("./recordings", RecordingOptions::default())?;
 /// let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
 ///     .sink("recording", recorder)

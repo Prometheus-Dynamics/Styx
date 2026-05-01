@@ -80,5 +80,11 @@ fn consume_latest(name: &str, rx: NewestRx<Arc<FrameLease>>, sleep_ms: u64) -> u
 }
 
 fn virtual_device() -> ProbedDevice {
-    make_virtual_rgb_device("virtual-latest-fanout", 640, 360, 30)
+    CaptureRequest::virtual_source(
+        VirtualSourceConfig::new()
+            .name("virtual-latest-fanout")
+            .resolution(640, 360)
+            .fps(30),
+    )
+    .into_device()
 }

@@ -91,5 +91,11 @@ fn main() {
 
 #[cfg(feature = "codec-ffmpeg")]
 fn virtual_device() -> ProbedDevice {
-    make_virtual_rgb_device("virtual-ffmpeg-scale", 640, 360, 30)
+    CaptureRequest::virtual_source(
+        VirtualSourceConfig::new()
+            .name("virtual-ffmpeg-scale")
+            .resolution(640, 360)
+            .fps(30),
+    )
+    .into_device()
 }

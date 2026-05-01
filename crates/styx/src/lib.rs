@@ -50,7 +50,7 @@ pub mod extras {
 /// ```rust
 /// use styx::prelude::*;
 ///
-/// let dev = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let dev = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 /// assert_eq!(dev.identity.display, "virtual");
 /// assert_eq!(dev.backends.len(), 1);
 /// ```
@@ -68,7 +68,7 @@ pub struct ProbedDevice {
 /// ```rust
 /// use styx::prelude::*;
 ///
-/// let dev = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let dev = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 /// let backend = &dev.backends[0];
 /// assert_eq!(backend.kind, BackendKind::Virtual);
 /// assert_eq!(backend.descriptor.modes.len(), 1);
@@ -105,7 +105,7 @@ pub enum BackendKind {
 /// ```rust
 /// use styx::prelude::*;
 ///
-/// let dev = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let dev = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 /// let handle = &dev.backends[0].handle;
 /// assert_eq!(handle.kind(), BackendKind::Virtual);
 /// ```
@@ -513,17 +513,16 @@ pub mod prelude {
         StyxCapabilityInventory, StyxPathPlan, StyxPathRequest, TransformCapability,
         explain_styx_path, styx_capability_inventory,
     };
+    #[cfg(feature = "netcam")]
+    pub use crate::capture_api::NetcamSourceConfig;
     #[cfg(feature = "file-backend")]
     pub use crate::capture_api::make_file_device;
-    #[cfg(feature = "netcam")]
-    pub use crate::capture_api::make_netcam_device;
     pub use crate::capture_api::{
         BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
         CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
-        CaptureStartPolicy, CaptureTunables, FileBackendConfig, LibcameraConfig, NetcamConfig,
-        NetcamTunables, SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig, V4l2Config,
-        make_virtual_device, make_virtual_rgb_device, open_best_camera, open_virtual_rgb,
-        start_capture,
+        CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig, LibcameraConfig,
+        NetcamConfig, NetcamTunables, SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig,
+        V4l2Config, VirtualSourceConfig, open_best_camera, start_capture,
     };
     #[cfg(feature = "simulation-bevy")]
     pub use crate::capture_api::{
@@ -558,14 +557,14 @@ pub mod prelude {
         RecordingSessionMetadata,
     };
     pub use crate::runtime_codec::{
-        CodecSelector, CodecSelectorParseError, EncoderFamilySpec, FrameDecodePlan,
+        CodecLatency, CodecSelector, CodecSelectorParseError, EncoderFamilySpec, FrameDecodePlan,
         FrameDecodePlanExt, RuntimeCodecCapability, RuntimeCodecInventory,
         decode_to_rg24_for_format, default_decoder_codec_selector_for_capture_format,
         default_decoder_ids_by_capture_format, default_decoder_selector_for_capture_format,
         default_decoder_selectors_by_capture_format, default_stream_codec_selector,
         default_stream_encoder_selector, encoder_family_for_codec_selector,
         encoder_family_for_descriptor, encoder_family_for_selector,
-        preview_format_for_codec_selector, preview_format_for_encoder_selector,
+        output_format_for_codec_selector, output_format_for_encoder_selector,
         runtime_codec_inventory, shared_rg24_decode_bytes,
     };
     pub use crate::service::{

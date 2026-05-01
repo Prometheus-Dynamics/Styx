@@ -6,7 +6,7 @@
 //! ```rust,no_run
 //! use styx::prelude::*;
 //!
-//! let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+//! let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 //! let handle = CaptureRequest::new(&device).start()?;
 //! let _ = handle.recv();
 //! # Ok::<(), styx::capture_api::CaptureError>(())
@@ -37,8 +37,8 @@ pub(crate) use control_plane::{apply_control_to_plane, read_control_from_plane};
 pub use handle::{CaptureFrameIter, CaptureHandle, WorkerHandle};
 pub use request::{
     CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, CaptureError,
-    CaptureRequest, CaptureStartPolicy, ControlApplyKind, SelectedCamera, TdnOutputMode,
-    start_capture,
+    CaptureRequest, CaptureSource, CaptureStartPolicy, ControlApplyKind, SelectedCamera,
+    TdnOutputMode, start_capture,
 };
 pub use tunables::{
     BackendConfig, CaptureConfig, CaptureTunables, DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS,
@@ -64,6 +64,117 @@ use std::collections::{HashMap, HashSet};
 #[cfg(feature = "simulation-bevy")]
 use std::path::PathBuf;
 use styx_capture::prelude::*;
+
+#[derive(Clone, Debug)]
+pub struct VirtualSourceConfig {
+    pub name: String,
+    pub format: FourCc,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub color_space: ColorSpace,
+}
+
+impl Default for VirtualSourceConfig {
+    fn default() -> Self {
+        Self {
+            name: "virtual".into(),
+            format: FourCc::RG24,
+            width: 640,
+            height: 360,
+            fps: 30,
+            color_space: ColorSpace::Srgb,
+        }
+    }
+}
+
+impl VirtualSourceConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    pub fn format(mut self, format: FourCc) -> Self {
+        self.format = format;
+        self
+    }
+
+    pub fn resolution(mut self, width: u32, height: u32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    pub fn fps(mut self, fps: u32) -> Self {
+        self.fps = fps;
+        self
+    }
+
+    pub fn color_space(mut self, color_space: ColorSpace) -> Self {
+        self.color_space = color_space;
+        self
+    }
+
+    pub fn into_device(self) -> ProbedDevice {
+        let format = MediaFormat::new(
+            self.format,
+            Resolution::new(self.width.max(1), self.height.max(1))
+                .expect("virtual source dimensions are clamped to non-zero"),
+            self.color_space,
+        );
+        make_virtual_device(
+            &self.name,
+            [Mode::with_interval(format, interval_from_fps(self.fps))],
+        )
+    }
+}
+
+#[cfg(feature = "netcam")]
+#[derive(Clone, Debug)]
+pub struct NetcamSourceConfig {
+    pub name: String,
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+#[cfg(feature = "netcam")]
+impl NetcamSourceConfig {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            name: "netcam".into(),
+            url: url.into(),
+            width: 640,
+            height: 480,
+            fps: 30,
+        }
+    }
+
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    pub fn resolution(mut self, width: u32, height: u32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    pub fn fps(mut self, fps: u32) -> Self {
+        self.fps = fps;
+        self
+    }
+
+    pub fn into_device(self) -> ProbedDevice {
+        make_netcam_device(&self.name, &self.url, self.width, self.height, self.fps)
+    }
+}
 
 mod handle;
 #[cfg(test)]
@@ -223,7 +334,7 @@ impl Default for SimulationDeviceConfig {
 /// ```rust,no_run
 /// use styx::prelude::*;
 ///
-/// let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 /// let handle = CaptureRequest::new(&device).start()?;
 /// # Ok::<(), styx::capture_api::CaptureError>(())
 /// ```

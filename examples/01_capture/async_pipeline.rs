@@ -65,5 +65,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "async")]
 fn virtual_device() -> ProbedDevice {
-    make_virtual_rgb_device("virtual-async", 320, 180, 30)
+    CaptureRequest::virtual_source(
+        VirtualSourceConfig::new()
+            .name("virtual-async")
+            .resolution(320, 180)
+            .fps(30),
+    )
+    .into_device()
 }

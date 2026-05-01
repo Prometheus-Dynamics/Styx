@@ -16,7 +16,7 @@ styx = "2.0.0"
 - `probe_all`: merge v4l2/libcamera probe results when enabled.
 - `watch`: inventory watch/runtime layer with retained events, blocking subscriptions, hotplug watchers, and async wrappers when `async` is enabled.
 - `BackendHandle/BackendKind`, `ProbedDevice`, `ProbedBackend`: describe discovered devices and selected backends.
-- `capture_api`: helpers for synthetic backends (`make_netcam_device`, `make_file_device`) and tunables.
+- `capture_api`: request/source builders for virtual, netcam, file, and physical capture plus tunables.
 - `session`: `MediaPipeline` for capture→decode→hook→encode flows (sync-first; async helpers when `async` is enabled).
 - `graph` (feature `graph-pipeline`): Daedalus-backed `FrameLease` transport, source/sink nodes, media edge policies, and graph telemetry.
 - `service`: retained runtime event stream for inventory, health, sink, recording, and graph-control events.
@@ -29,7 +29,13 @@ Capture with a chosen backend/mode:
 ```rust,no_run
 use styx::prelude::*;
 
-let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+let device = CaptureRequest::virtual_source(
+    VirtualSourceConfig::new()
+        .name("virtual")
+        .resolution(640, 360)
+        .fps(30),
+)
+.into_device();
 
 let handle = CaptureRequest::new(&device)
     .backend_preferred(Some(BackendKind::Virtual)) // or V4l2/Libcamera when enabled
@@ -49,7 +55,7 @@ Capture → decode pipeline with hooks and optional preview:
 use std::sync::Arc;
 use styx::prelude::*;
 
-let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 let decoder = Arc::new(PassthroughDecoder::new(device.backends[0].descriptor.modes[0].format.code));
 let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
     .decoder(decoder)
@@ -76,7 +82,7 @@ Request-local tunables for queues/pools/netcam backoff:
 ```rust,no_run
 use styx::prelude::*;
 
-let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 let config = StyxConfig::new()
     .capture_queue_depth(8)
     .capture_pool(4, 1 << 20, 8)
@@ -94,7 +100,7 @@ Service event retention:
 ```rust,no_run
 use styx::prelude::*;
 
-let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
     .service_runtime_config(StyxServiceConfig {
         max_retained_events: 1024,
@@ -113,7 +119,7 @@ Record output frames for replay with the file backend:
 ```rust,ignore
 use styx::prelude::*;
 
-let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 let recorder = FrameRecorder::new("./recordings", RecordingOptions::default())?;
 let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
     .sink("recording", recorder)

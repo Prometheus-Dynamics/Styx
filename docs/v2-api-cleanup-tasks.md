@@ -79,7 +79,7 @@ workflows.
   - Keep feature-gated docs clear that this is a helper, not the core preview
     abstraction.
 
-- [ ] Move preview and recording terminology out of codec selection.
+- [x] Move preview and recording terminology out of codec selection.
   - Replace codec fields such as `preview_format` and `recording_codec` with
     capability-based fields:
     ```rust
@@ -101,7 +101,7 @@ workflows.
   - Let applications decide which selected codec is used for preview or
     recording.
 
-- [ ] Replace virtual capture demo helpers with `CaptureRequest` source builders.
+- [x] Replace virtual capture demo helpers with `CaptureRequest` source builders.
   - Remove or stop exporting `make_virtual_rgb_device`.
   - Remove or stop exporting `open_virtual_rgb`.
   - Keep the approved request-based shape:
@@ -116,12 +116,15 @@ workflows.
 
 - [ ] Move all capture sources toward the same request-based source builder
   pattern.
+  - Added `CaptureSource`, `VirtualSourceConfig`, and `NetcamSourceConfig`.
+  - Virtual and netcam examples now use `CaptureRequest::virtual_source(...)`
+    and `CaptureRequest::netcam_source(...)`.
   - Prefer source constructors through `CaptureRequest`, for example:
     ```rust
     CaptureRequest::netcam_source(
-        NetcamConfig::new(url)
-            .timeout(Duration::from_secs(10))
-            .retry_backoff(Duration::from_millis(500))
+        NetcamSourceConfig::new(url)
+            .resolution(width, height)
+            .fps(fps)
     )
     ```
   - Apply the same pattern to V4L2, libcamera, file replay, virtual, and any

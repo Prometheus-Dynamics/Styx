@@ -116,6 +116,12 @@ impl std::fmt::Display for CodecSelectorParseError {
 impl std::error::Error for CodecSelectorParseError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodecLatency {
+    Low,
+    Normal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderFamilySpec {
     pub family: EncoderFamily,
     pub id: &'static str,
@@ -124,8 +130,9 @@ pub struct EncoderFamilySpec {
     pub runtime_implementation_aliases: &'static [&'static str],
     pub runtime_name_aliases: &'static [&'static str],
     pub output_fourcc_aliases: &'static [&'static str],
-    pub preview_format: &'static str,
-    pub recording_codec: Option<&'static str>,
+    pub output_format: &'static str,
+    pub latency: CodecLatency,
+    pub streamable: bool,
 }
 
 impl EncoderFamilySpec {
@@ -152,8 +159,9 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["turbojpeg"],
         runtime_name_aliases: &[],
         output_fourcc_aliases: &["MJPG", "JPEG"],
-        preview_format: "mjpeg",
-        recording_codec: None,
+        output_format: "mjpeg",
+        latency: CodecLatency::Low,
+        streamable: true,
     },
     EncoderFamilySpec {
         family: EncoderFamily::Mozjpeg,
@@ -163,8 +171,9 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["mozjpeg"],
         runtime_name_aliases: &[],
         output_fourcc_aliases: &["MJPG", "JPEG"],
-        preview_format: "mjpeg",
-        recording_codec: None,
+        output_format: "mjpeg",
+        latency: CodecLatency::Normal,
+        streamable: true,
     },
     EncoderFamilySpec {
         family: EncoderFamily::FfmpegMjpeg,
@@ -174,8 +183,9 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["ffmpeg"],
         runtime_name_aliases: &["mjpeg"],
         output_fourcc_aliases: &["MJPG", "JPEG"],
-        preview_format: "mjpeg",
-        recording_codec: None,
+        output_format: "mjpeg",
+        latency: CodecLatency::Normal,
+        streamable: true,
     },
     EncoderFamilySpec {
         family: EncoderFamily::H264,
@@ -185,8 +195,9 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["ffmpeg", "h264_v4l2m2m"],
         runtime_name_aliases: &["h264", "avc"],
         output_fourcc_aliases: &["H264"],
-        preview_format: "h264",
-        recording_codec: Some("h264"),
+        output_format: "h264",
+        latency: CodecLatency::Normal,
+        streamable: true,
     },
     EncoderFamilySpec {
         family: EncoderFamily::H265,
@@ -196,8 +207,9 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["ffmpeg", "hevc_v4l2m2m", "h265_v4l2m2m"],
         runtime_name_aliases: &["h265", "hevc"],
         output_fourcc_aliases: &["H265", "HEVC"],
-        preview_format: "h265",
-        recording_codec: Some("h265"),
+        output_format: "h265",
+        latency: CodecLatency::Normal,
+        streamable: true,
     },
 ];
 
@@ -347,17 +359,17 @@ pub fn encoder_family_for_codec_selector(
     EncoderFamily::from_selector(selector).map(EncoderFamily::spec)
 }
 
-pub fn preview_format_for_encoder_selector(selector: Option<&str>) -> &'static str {
+pub fn output_format_for_encoder_selector(selector: Option<&str>) -> &'static str {
     selector
         .and_then(encoder_family_for_selector)
-        .map(|spec| spec.preview_format)
+        .map(|spec| spec.output_format)
         .unwrap_or("unknown")
 }
 
-pub fn preview_format_for_codec_selector(selector: Option<&CodecSelector>) -> &'static str {
+pub fn output_format_for_codec_selector(selector: Option<&CodecSelector>) -> &'static str {
     selector
         .and_then(encoder_family_for_codec_selector)
-        .map(|spec| spec.preview_format)
+        .map(|spec| spec.output_format)
         .unwrap_or("unknown")
 }
 
@@ -397,7 +409,7 @@ fn compute_default_stream_codec_selector() -> Option<CodecSelector> {
                     preferred_mjpeg = Some(spec.selector());
                     break;
                 }
-                if spec.preview_format == "mjpeg" && fallback_mjpeg.is_none() {
+                if spec.output_format == "mjpeg" && fallback_mjpeg.is_none() {
                     fallback_mjpeg = Some(spec.selector());
                 }
             } else if desc.name.eq_ignore_ascii_case("mjpeg") && fallback_mjpeg.is_none() {
@@ -562,17 +574,17 @@ mod tests {
     }
 
     #[test]
-    fn preview_format_matches_runtime_aliases() {
+    fn output_format_matches_runtime_aliases() {
         assert_eq!(
-            preview_format_for_encoder_selector(Some("turbojpeg")),
+            output_format_for_encoder_selector(Some("turbojpeg")),
             "mjpeg"
         );
         assert_eq!(
-            preview_format_for_encoder_selector(Some("h264_v4l2m2m")),
+            output_format_for_encoder_selector(Some("h264_v4l2m2m")),
             "h264"
         );
         assert_eq!(
-            preview_format_for_encoder_selector(Some("hevc_v4l2m2m")),
+            output_format_for_encoder_selector(Some("hevc_v4l2m2m")),
             "h265"
         );
     }
@@ -585,7 +597,7 @@ mod tests {
             encoder_family_for_codec_selector(&selector).map(|spec| spec.id),
             Some("h264")
         );
-        assert_eq!(preview_format_for_codec_selector(Some(&selector)), "h264");
+        assert_eq!(output_format_for_codec_selector(Some(&selector)), "h264");
         assert!("  ".parse::<CodecSelector>().is_err());
     }
 

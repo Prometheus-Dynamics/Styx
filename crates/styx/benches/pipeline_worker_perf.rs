@@ -6,7 +6,13 @@ use styx::prelude::*;
 fn bench_raw_pipeline_drain(c: &mut Criterion) {
     c.bench_function("pipeline_raw_virtual_try_next_3_frames", |b| {
         b.iter(|| {
-            let device = make_virtual_rgb_device("bench-virtual", 640, 360, 30);
+            let device = CaptureRequest::virtual_source(
+                VirtualSourceConfig::new()
+                    .name("bench-virtual")
+                    .resolution(640, 360)
+                    .fps(30),
+            )
+            .into_device();
             let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
                 .config(StyxConfig::new().capture_queue_depth(3))
                 .raw_frames()

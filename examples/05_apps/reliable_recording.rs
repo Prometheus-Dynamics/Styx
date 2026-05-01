@@ -68,5 +68,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "file-backend")]
 fn virtual_device() -> ProbedDevice {
-    make_virtual_rgb_device("virtual-reliable-recording", 640, 360, 30)
+    CaptureRequest::virtual_source(
+        VirtualSourceConfig::new()
+            .name("virtual-reliable-recording")
+            .resolution(640, 360)
+            .fps(30),
+    )
+    .into_device()
 }

@@ -20,7 +20,7 @@ use crate::session::runtime::MediaPipeline;
 /// use std::sync::Arc;
 /// use styx::prelude::*;
 ///
-/// let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 /// let decoder = Arc::new(PassthroughDecoder::new(
 ///     device.backends[0].descriptor.modes[0].format.code,
 /// ));

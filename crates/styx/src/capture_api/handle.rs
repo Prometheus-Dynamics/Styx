@@ -60,7 +60,7 @@ pub(super) fn record_worker_error(worker_error: &Mutex<Option<CaptureError>>, er
 /// ```rust,no_run
 /// use styx::prelude::*;
 ///
-/// let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 /// let handle = CaptureRequest::new(&device).start()?;
 /// match handle.recv() {
 ///     RecvOutcome::Data(frame) => println!("frame {:?}", frame.meta().format),
@@ -495,7 +495,7 @@ impl CaptureHandle {
     /// ```rust,no_run
     /// use styx::prelude::*;
     ///
-    /// let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+    /// let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
     /// let handle = CaptureRequest::new(&device).start()?;
     /// let _ = handle.set_control(ControlId(0), ControlValue::None);
     /// # Ok::<(), styx::capture_api::CaptureError>(())

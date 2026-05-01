@@ -40,7 +40,7 @@ Useful example entry points:
 ## Recommended API Paths
 
 For simple capture, start with `CameraRequest::new().start()` when physical backends are enabled, or
-`make_virtual_rgb_device` plus `CaptureRequest` for deterministic local/test capture. Receive frames
+`CaptureRequest::virtual_source(...)` for deterministic local/test capture. Receive frames
 with `recv`, `recv_blocking`, `recv_timeout`, `recv_forever`, or `recv_async`; stop handles explicitly
 with `stop` or `stop_async`.
 

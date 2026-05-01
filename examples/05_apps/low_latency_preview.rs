@@ -58,5 +58,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn virtual_device() -> ProbedDevice {
-    make_virtual_rgb_device("virtual-low-latency-preview", 640, 360, 30)
+    CaptureRequest::virtual_source(
+        VirtualSourceConfig::new()
+            .name("virtual-low-latency-preview")
+            .resolution(640, 360)
+            .fps(30),
+    )
+    .into_device()
 }

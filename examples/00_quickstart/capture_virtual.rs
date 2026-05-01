@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use styx::capture_api::make_virtual_device;
 #[cfg(feature = "preview-window")]
 use styx::extras::preview_window::PreviewWindow;
 use styx::prelude::*;

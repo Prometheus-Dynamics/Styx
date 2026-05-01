@@ -33,9 +33,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
 
-    let device = make_netcam_device("netcam", &url, width, height, fps);
+    let source = CaptureRequest::netcam_source(
+        NetcamSourceConfig::new(&url)
+            .name("netcam")
+            .resolution(width, height)
+            .fps(fps),
+    );
+    let device = source.device();
     let decoder = Arc::new(MjpegDecoder::new(FourCc::RG24));
-    let mut pipeline = MediaPipelineBuilder::new(device.capture_request())
+    let mut pipeline = MediaPipelineBuilder::new(source.capture_request())
         .config(
             StyxConfig::new()
                 .netcam_timeouts(10)

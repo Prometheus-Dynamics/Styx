@@ -4,6 +4,9 @@ use styx_capture::prelude::*;
 
 #[cfg(feature = "libcamera")]
 use super::LIBCAMERA_NOISE_REDUCTION_MODE;
+#[cfg(feature = "netcam")]
+use super::NetcamSourceConfig;
+use super::VirtualSourceConfig;
 use super::handle::start_backend;
 use super::tunables::StyxConfig;
 
@@ -11,6 +14,29 @@ mod camera;
 pub use camera::{
     CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, SelectedCamera,
 };
+
+#[derive(Clone, Debug)]
+pub struct CaptureSource {
+    device: ProbedDevice,
+}
+
+impl CaptureSource {
+    pub fn new(device: ProbedDevice) -> Self {
+        Self { device }
+    }
+
+    pub fn device(&self) -> &ProbedDevice {
+        &self.device
+    }
+
+    pub fn into_device(self) -> ProbedDevice {
+        self.device
+    }
+
+    pub fn capture_request(&self) -> CaptureRequest<'_> {
+        CaptureRequest::new(&self.device)
+    }
+}
 
 /// Errors starting a capture session.
 ///
@@ -235,7 +261,7 @@ mod error_tests {
 /// ```rust,no_run
 /// use styx::prelude::*;
 ///
-/// let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 /// let handle = CaptureRequest::new(&device)
 ///     .backend_preferred(Some(BackendKind::Virtual))
 ///     .start()?;
@@ -254,6 +280,19 @@ pub struct CaptureRequest<'a> {
 }
 
 impl<'a> CaptureRequest<'a> {
+    pub fn source(device: ProbedDevice) -> CaptureSource {
+        CaptureSource::new(device)
+    }
+
+    pub fn virtual_source(config: VirtualSourceConfig) -> CaptureSource {
+        CaptureSource::new(config.into_device())
+    }
+
+    #[cfg(feature = "netcam")]
+    pub fn netcam_source(config: NetcamSourceConfig) -> CaptureSource {
+        CaptureSource::new(config.into_device())
+    }
+
     /// Create a new request targeting a probed device.
     pub fn new(device: &'a ProbedDevice) -> Self {
         Self {
@@ -541,7 +580,7 @@ impl<'a> CaptureRequest<'a> {
 /// ```rust,no_run
 /// use styx::prelude::*;
 ///
-/// let device = make_virtual_rgb_device("virtual", 640, 360, 30);
+/// let device = CaptureRequest::virtual_source(VirtualSourceConfig::new().name("virtual").resolution(640, 360).fps(30)).into_device();
 /// let handle = start_capture(&device, None)?;
 /// let _ = handle.recv();
 /// # Ok::<(), styx::capture_api::CaptureError>(())
