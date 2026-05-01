@@ -5,13 +5,14 @@ mod frame;
 mod util;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use libcamera::framebuffer_allocator::FrameBuffer;
 use libcamera::request::ReuseFlag;
+use parking_lot::Mutex;
 use styx_core::controls::ControlValue;
 use styx_core::prelude::*;
 
@@ -45,9 +46,7 @@ pub(super) fn stop_manager_if_idle(configured: bool) {
 }
 
 fn record_worker_error(worker_error: &Mutex<Option<CaptureError>>, err: &CaptureError) {
-    if let Ok(mut error) = worker_error.lock() {
-        *error = Some(err.clone());
-    }
+    *worker_error.lock() = Some(err.clone());
 }
 
 pub(super) fn start_libcamera(
@@ -124,8 +123,7 @@ pub(super) fn start_libcamera(
     let (setup_tx, setup_rx) = mpsc::channel();
     let (stop_tx, stop_rx) = mpsc::channel();
     let (ctrl_tx, ctrl_rx) = mpsc::channel();
-    let pending_controls =
-        std::sync::Arc::new(std::sync::Mutex::new(PendingControlState::default()));
+    let pending_controls = Arc::new(Mutex::new(PendingControlState::default()));
     let worker_error = Arc::new(Mutex::new(None));
     let outstanding_backings = Arc::new(AtomicUsize::new(0));
     let lease_backing_tracker = Arc::new(ExternalBackingTracker::new("libcamera_dmabuf_lease"));
@@ -493,15 +491,11 @@ pub(super) fn start_libcamera(
                     match msg {
                         ControlMessage::Wake => {
                             if !controls_enabled {
-                                let _ = pending_controls_for_thread
-                                    .lock()
-                                    .map(|mut guard| guard.updates.clear());
+                                pending_controls_for_thread.lock().updates.clear();
                                 continue;
                             }
                             let updates = {
-                                let mut guard = pending_controls_for_thread
-                                    .lock()
-                                    .expect("libcamera pending lock poisoned");
+                                let mut guard = pending_controls_for_thread.lock();
                                 std::mem::take(&mut guard.updates)
                             };
                             for (id, val) in updates {
@@ -529,10 +523,7 @@ pub(super) fn start_libcamera(
                             }
                         }
                         ControlMessage::Get(id, resp_tx) => {
-                            let pending = pending_controls_for_thread
-                                .lock()
-                                .ok()
-                                .and_then(|guard| guard.get(&id));
+                            let pending = pending_controls_for_thread.lock().get(&id);
                             let resp = readback_state
                                 .get(&id)
                                 .cloned()
@@ -673,7 +664,7 @@ pub(super) fn start_libcamera(
             tdn_request_pool_tracker,
         ],
         worker_error,
-        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        control_error: Arc::new(Mutex::new(None)),
     })
 }
 
@@ -688,7 +679,7 @@ mod tests {
 
         record_worker_error(&worker_error, &err);
 
-        let stored = worker_error.lock().unwrap().clone();
+        let stored = worker_error.lock().clone();
         assert_eq!(
             stored.as_ref().map(ToString::to_string),
             Some(err.to_string())

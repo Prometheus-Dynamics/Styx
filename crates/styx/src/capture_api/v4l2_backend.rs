@@ -1,11 +1,12 @@
 use std::mem;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use smallvec::smallvec;
 use styx_core::prelude::*;
 use v4l::buffer::Metadata as V4l2Metadata;
@@ -127,7 +128,7 @@ impl V4l2MmapManager {
 
     fn dequeue(&self) -> std::io::Result<(usize, V4l2Metadata)> {
         let timeout_ms = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if !state.active {
                 for index in 0..self.buffers.len() {
                     if !state.queued[index] && !state.checked_out[index] {
@@ -159,7 +160,7 @@ impl V4l2MmapManager {
             )?;
         }
         let index = v4l2_buf.index as usize;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.queued[index] = false;
         state.checked_out[index] = true;
         Ok((
@@ -175,7 +176,7 @@ impl V4l2MmapManager {
     }
 
     fn recycle(&self, index: usize) -> std::io::Result<()> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         if index >= state.checked_out.len() {
             return Ok(());
         }
@@ -214,7 +215,7 @@ impl V4l2MmapManager {
     }
 
     fn stop_stream(&self) -> std::io::Result<()> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         self.stop_stream_locked(&mut state)
     }
 
@@ -277,9 +278,8 @@ impl V4l2MmapManager {
 
 impl Drop for V4l2MmapManager {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.state.lock() {
-            let _ = self.stop_stream_locked(&mut state);
-        }
+        let mut state = self.state.lock();
+        let _ = self.stop_stream_locked(&mut state);
         for buffer in &self.buffers {
             unsafe {
                 let _ = v4l2::munmap(buffer.ptr.as_ptr().cast(), buffer.len);
@@ -326,7 +326,7 @@ impl ExternalBacking for V4l2MmapBacking {
             0 => {
                 // The manager is held by `Arc` inside this backing, so the mmap remains alive
                 // while any `FrameLease` borrowing this external backing exists.
-                let buffer_index = *self.index.lock().unwrap();
+                let buffer_index = *self.index.lock();
                 self.manager.mapped_plane(buffer_index?)
             }
             _ => None,
@@ -342,7 +342,7 @@ impl ExternalBacking for V4l2MmapBacking {
     }
 
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
-        let Some(index) = *self.index.lock().unwrap() else {
+        let Some(index) = *self.index.lock() else {
             return Err(FrameExportError::InvalidDescriptor);
         };
         let fd = self
@@ -362,7 +362,7 @@ impl ExternalBacking for V4l2MmapBacking {
 impl Drop for V4l2MmapBacking {
     fn drop(&mut self) {
         self.tracker.release(self.bytes);
-        if let Some(index) = self.index.lock().unwrap().take() {
+        if let Some(index) = self.index.lock().take() {
             // Recycle only when the final external backing reference drops. This prevents the
             // worker from requeueing/unmapping a V4L2 buffer while a `FrameLease` still exposes it.
             let _ = self.recycle_tx.send(index);
@@ -715,8 +715,8 @@ pub(super) fn start_v4l2(
         libcamera_stop_when_idle: false,
         metrics: StageMetrics::default(),
         external_backings: vec![backing_tracker],
-        worker_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        worker_error: Arc::new(Mutex::new(None)),
+        control_error: Arc::new(Mutex::new(None)),
     })
 }
 

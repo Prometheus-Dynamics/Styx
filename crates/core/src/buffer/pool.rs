@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
 use std::{
@@ -9,6 +9,7 @@ use std::{
 #[cfg(target_os = "linux")]
 use super::frame::{ExternalBacking, FrameBackingExport, FrameExportError};
 use crate::metrics::Metrics;
+use parking_lot::Mutex;
 
 /// Handle to a pooled buffer.
 pub struct BufferLease {
@@ -137,7 +138,6 @@ impl BufferPool {
             .inner
             .free
             .lock()
-            .unwrap()
             .pop()
             .inspect(|_| self.metrics.hit())
             .unwrap_or_else(|| {
@@ -157,7 +157,7 @@ impl BufferPool {
     }
 
     pub fn stats(&self) -> BufferPoolStats {
-        let free = self.inner.free.lock().map(|list| list.len()).unwrap_or(0);
+        let free = self.inner.free.lock().len();
         let free_bytes = free.saturating_mul(self.inner.chunk_size);
         let in_use = self.metrics.leases_out() as usize;
         let in_use_bytes = in_use.saturating_mul(self.inner.chunk_size);
@@ -192,7 +192,7 @@ pub(super) struct PoolInner {
 impl PoolInner {
     pub(super) fn recycle(&self, mut buf: Vec<u8>) {
         buf.clear();
-        let mut free = self.free.lock().unwrap();
+        let mut free = self.free.lock();
         if free.len() < self.max_free {
             free.push(buf);
         }
@@ -259,7 +259,6 @@ impl SharedBufferPool {
             .inner
             .free
             .lock()
-            .unwrap()
             .pop()
             .map(Ok)
             .unwrap_or_else(|| create_sized_memfd(self.inner.chunk_size))?;
@@ -267,7 +266,7 @@ impl SharedBufferPool {
     }
 
     pub fn stats(&self) -> SharedBufferPoolStats {
-        let free = self.inner.free.lock().unwrap().len();
+        let free = self.inner.free.lock().len();
         SharedBufferPoolStats {
             chunk_size: self.inner.chunk_size,
             free,
@@ -287,7 +286,7 @@ struct SharedPoolInner {
 #[cfg(target_os = "linux")]
 impl SharedPoolInner {
     fn recycle(&self, fd: OwnedFd) {
-        let mut free = self.free.lock().unwrap();
+        let mut free = self.free.lock();
         if free.len() < self.max_free {
             free.push(fd);
         }

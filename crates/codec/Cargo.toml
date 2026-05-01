@@ -30,6 +30,7 @@ smallvec.workspace = true
 yuvutils-rs = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
+parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 utoipa = { workspace = true, optional = true }
 

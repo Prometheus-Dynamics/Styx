@@ -1,11 +1,12 @@
 use std::fmt;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use crate::buffer::{
     BufferPool, BufferPoolStats, FrameLease, FrameResidency, ResidencyTransition,
     ResidencyTransitionReason, plane_layout_from_dims,
 };
 use crate::format::{FourCc, MediaFormat, Resolution};
+use parking_lot::Mutex;
 
 /// Rotation in 90-degree steps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -98,7 +99,7 @@ fn transform_pool(min_size: usize) -> BufferPool {
     };
     let lock = TRANSFORM_POOL
         .get_or_init(|| Mutex::new((BufferPool::with_limits(2, min_size, 4), default_config)));
-    let mut guard = lock.lock().unwrap();
+    let mut guard = lock.lock();
     if guard.1.bytes < min_size {
         guard.1.bytes = min_size;
         guard.0 = BufferPool::with_limits(guard.1.min, guard.1.bytes, guard.1.spare);
@@ -119,12 +120,11 @@ pub fn configure_transform_pool(config: TransformPoolConfig) {
             config,
         ))
     });
-    if let Ok(mut guard) = lock.lock() {
-        *guard = (
-            BufferPool::with_limits(config.min, config.bytes, config.spare),
-            config,
-        );
-    }
+    let mut guard = lock.lock();
+    *guard = (
+        BufferPool::with_limits(config.min, config.bytes, config.spare),
+        config,
+    );
 }
 
 pub fn transform_pool_config() -> TransformPoolConfig {
@@ -135,21 +135,18 @@ pub fn transform_pool_config() -> TransformPoolConfig {
             config,
         ))
     });
-    lock.lock()
-        .map(|guard| guard.1)
-        .unwrap_or_else(|_| TransformPoolConfig::default())
+    lock.lock().1
 }
 
 pub fn transform_pool_stats() -> Option<BufferPoolStats> {
     let lock = TRANSFORM_POOL.get()?;
-    let guard = lock.lock().ok()?;
+    let guard = lock.lock();
     Some(guard.0.stats())
 }
 
 pub fn reset_transform_pool() {
-    if let Some(lock) = TRANSFORM_POOL.get()
-        && let Ok(mut guard) = lock.lock()
-    {
+    if let Some(lock) = TRANSFORM_POOL.get() {
+        let mut guard = lock.lock();
         let config = TransformPoolConfig {
             min: 0,
             bytes: 1,

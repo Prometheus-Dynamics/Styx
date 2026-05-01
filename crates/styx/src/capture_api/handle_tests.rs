@@ -7,7 +7,7 @@ use crate::metrics::StageMetrics;
 #[test]
 fn health_report_includes_capture_worker_error() {
     let (_tx, rx) = styx_core::queue::bounded(1);
-    let worker_error = std::sync::Arc::new(std::sync::Mutex::new(Some(CaptureError::Backend(
+    let worker_error = std::sync::Arc::new(parking_lot::Mutex::new(Some(CaptureError::Backend(
         "worker failed".to_string(),
     ))));
     let handle = CaptureHandle {
@@ -27,7 +27,7 @@ fn health_report_includes_capture_worker_error() {
         metrics: StageMetrics::default(),
         external_backings: Vec::new(),
         worker_error,
-        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        control_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
     };
 
     let report = handle.health_report();
@@ -43,7 +43,7 @@ fn health_report_includes_capture_worker_error() {
 #[test]
 fn health_report_includes_control_error() {
     let (_tx, rx) = styx_core::queue::bounded(1);
-    let control_error = std::sync::Arc::new(std::sync::Mutex::new(Some(
+    let control_error = std::sync::Arc::new(parking_lot::Mutex::new(Some(
         CaptureError::ControlUnsupported,
     )));
     let handle = CaptureHandle {
@@ -62,7 +62,7 @@ fn health_report_includes_control_error() {
         libcamera_stop_when_idle: false,
         metrics: StageMetrics::default(),
         external_backings: Vec::new(),
-        worker_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        worker_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         control_error,
     };
 
@@ -97,8 +97,8 @@ fn memory_stats_include_external_backing_telemetry() {
         libcamera_stop_when_idle: false,
         metrics: StageMetrics::default(),
         external_backings: vec![tracker],
-        worker_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        worker_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+        control_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
     };
 
     let memory = handle.memory_stats();
@@ -118,7 +118,7 @@ fn libcamera_get_control_times_out_when_worker_does_not_reply() {
     let (tx, _rx) = std::sync::mpsc::channel();
     let control = ControlPlane::Libcamera {
         tx,
-        pending: std::sync::Arc::new(std::sync::Mutex::new(Default::default())),
+        pending: std::sync::Arc::new(parking_lot::Mutex::new(Default::default())),
         response_timeout: Duration::from_millis(1),
     };
 

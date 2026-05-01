@@ -269,8 +269,8 @@ pub(super) fn start_file(
         libcamera_stop_when_idle: false,
         metrics: StageMetrics::default(),
         external_backings: Vec::new(),
-        worker_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        worker_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+        control_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
     })
 }
 

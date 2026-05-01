@@ -1,5 +1,6 @@
 use image::DynamicImage;
-use std::sync::{Mutex, OnceLock};
+use parking_lot::Mutex;
+use std::sync::OnceLock;
 use styx_core::prelude::*;
 
 use crate::decoder::ImageDecode;
@@ -229,7 +230,7 @@ fn static_pool(chunk: usize) -> BufferPool {
     };
     let lock = DYNAMIC_IMAGE_POOL
         .get_or_init(|| Mutex::new((BufferPool::with_limits(2, chunk, 4), default_config)));
-    let mut guard = lock.lock().unwrap();
+    let mut guard = lock.lock();
     if guard.1.bytes < chunk {
         guard.1.bytes = chunk;
         guard.0 = BufferPool::with_limits(guard.1.min, guard.1.bytes, guard.1.spare);
@@ -249,12 +250,11 @@ pub fn configure_dynamic_image_pool(config: DynamicImagePoolConfig) {
             config,
         ))
     });
-    if let Ok(mut guard) = lock.lock() {
-        *guard = (
-            BufferPool::with_limits(config.min, config.bytes, config.spare),
-            config,
-        );
-    }
+    let mut guard = lock.lock();
+    *guard = (
+        BufferPool::with_limits(config.min, config.bytes, config.spare),
+        config,
+    );
 }
 
 pub fn dynamic_image_pool_config() -> DynamicImagePoolConfig {
@@ -265,21 +265,18 @@ pub fn dynamic_image_pool_config() -> DynamicImagePoolConfig {
             config,
         ))
     });
-    lock.lock()
-        .map(|guard| guard.1)
-        .unwrap_or_else(|_| DynamicImagePoolConfig::default())
+    lock.lock().1
 }
 
 pub fn dynamic_image_pool_stats() -> Option<BufferPoolStats> {
     let lock = DYNAMIC_IMAGE_POOL.get()?;
-    let guard = lock.lock().ok()?;
+    let guard = lock.lock();
     Some(guard.0.stats())
 }
 
 pub fn reset_dynamic_image_pool() {
-    if let Some(lock) = DYNAMIC_IMAGE_POOL.get()
-        && let Ok(mut guard) = lock.lock()
-    {
+    if let Some(lock) = DYNAMIC_IMAGE_POOL.get() {
+        let mut guard = lock.lock();
         let config = DynamicImagePoolConfig {
             min: 0,
             bytes: 1,

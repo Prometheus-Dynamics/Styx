@@ -1,8 +1,6 @@
-use std::{
-    mem,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::{mem, sync::Arc, time::Instant};
+
+use parking_lot::Mutex;
 
 use crate::metrics::StageMetrics;
 use crate::{BackendKind, ProbedBackend};
@@ -49,9 +47,7 @@ pub(crate) fn enqueue_capture_frame(
 
 #[cfg(feature = "netcam")]
 pub(super) fn record_worker_error(worker_error: &Mutex<Option<CaptureError>>, err: &CaptureError) {
-    if let Ok(mut error) = worker_error.lock() {
-        *error = Some(err.clone());
-    }
+    *worker_error.lock() = Some(err.clone());
 }
 
 /// Unified capture handle; currently backed by a bounded queue and a worker thread.
@@ -247,6 +243,16 @@ impl CaptureHandle {
         self.teardown_async_in_place().await;
     }
 
+    /// Stop the capture worker without consuming the handle, using Tokio's blocking pool
+    /// for thread joins when needed.
+    ///
+    /// Prefer this over `stop_in_place` when the handle is owned by async code and
+    /// must remain usable for post-stop metrics or health inspection.
+    #[cfg(feature = "async")]
+    pub async fn stop_async_in_place(&mut self) {
+        self.teardown_async_in_place().await;
+    }
+
     fn teardown_in_place(&mut self) {
         let teardown_started = Instant::now();
         let backend = self.backend;
@@ -386,18 +392,12 @@ impl CaptureHandle {
 
     /// Last asynchronous backend worker error observed after capture startup.
     pub fn last_error(&self) -> Option<CaptureError> {
-        self.worker_error
-            .lock()
-            .ok()
-            .and_then(|error| error.clone())
+        self.worker_error.lock().clone()
     }
 
     /// Last control-plane error observed on this handle.
     pub fn last_control_error(&self) -> Option<CaptureError> {
-        self.control_error
-            .lock()
-            .ok()
-            .and_then(|error| error.clone())
+        self.control_error.lock().clone()
     }
 
     pub fn queue_stats(&self) -> crate::metrics::QueueTelemetryStats {
@@ -551,10 +551,8 @@ impl CaptureHandle {
     }
 
     fn record_control_result<T>(&self, result: &Result<T, CaptureError>) {
-        if let Err(err) = result
-            && let Ok(mut error) = self.control_error.lock()
-        {
-            *error = Some(err.clone());
+        if let Err(err) = result {
+            *self.control_error.lock() = Some(err.clone());
         }
     }
 }
@@ -562,6 +560,8 @@ impl CaptureHandle {
 impl Drop for CaptureHandle {
     fn drop(&mut self) {
         // If the consumer forgot to call stop, attempt a best-effort shutdown to avoid leaks.
+        // Async callers should prefer `stop_async` or `stop_async_in_place`; drop runs
+        // synchronous joins for thread-backed workers.
         if self.worker.is_some() || !self.aux_workers.is_empty() {
             self.teardown_in_place();
         }

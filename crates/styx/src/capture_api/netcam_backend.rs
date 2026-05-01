@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -15,6 +15,7 @@ use ffmpeg_next::{
 };
 #[cfg(all(feature = "netcam", feature = "async"))]
 use futures_util::TryStreamExt;
+use parking_lot::Mutex;
 #[cfg(feature = "netcam")]
 use reqwest::blocking::Client as BlockingClient;
 use styx_core::prelude::*;
@@ -270,7 +271,7 @@ pub(super) fn start_netcam(
         metrics: StageMetrics::default(),
         external_backings: Vec::new(),
         worker_error,
-        control_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        control_error: Arc::new(Mutex::new(None)),
     })
 }
 

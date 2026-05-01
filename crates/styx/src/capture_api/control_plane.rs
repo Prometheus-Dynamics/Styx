@@ -2,6 +2,8 @@ use std::time::Instant;
 
 #[cfg(feature = "libcamera")]
 use crate::capture_api::libcamera_backend::{ControlMessage, PendingControlState};
+#[cfg(feature = "libcamera")]
+use parking_lot::Mutex;
 
 use super::CaptureError;
 #[cfg(feature = "v4l2")]
@@ -23,7 +25,7 @@ pub enum ControlPlane {
     #[cfg(feature = "libcamera")]
     Libcamera {
         tx: std::sync::mpsc::Sender<ControlMessage>,
-        pending: std::sync::Arc<std::sync::Mutex<PendingControlState>>,
+        pending: std::sync::Arc<Mutex<PendingControlState>>,
         response_timeout: std::time::Duration,
     },
     #[cfg(feature = "file-backend")]
@@ -57,9 +59,7 @@ pub(crate) fn apply_control_to_plane(
         #[cfg(feature = "libcamera")]
         ControlPlane::Libcamera { tx, pending, .. } => {
             {
-                let mut guard = pending
-                    .lock()
-                    .map_err(|_| CaptureError::control_apply("libcamera pending lock poisoned"))?;
+                let mut guard = pending.lock();
                 if matches!(_value, ControlValue::None) {
                     guard.insert(id, None);
                 } else {

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use libcamera::framebuffer::AsFrameBuffer;
 use libcamera::framebuffer_allocator::FrameBuffer;
+use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::os::fd::{FromRawFd, OwnedFd};
 use styx_core::prelude::{
@@ -287,7 +288,7 @@ impl Drop for RequestPoolBackingLease {
 }
 
 pub(super) struct LibcameraBacking {
-    req: std::sync::Mutex<Option<libcamera::request::Request>>,
+    req: Mutex<Option<libcamera::request::Request>>,
     planes: SmallVec<[BackingPlaneView; 3]>,
     mapped: OnceLock<Option<LazyMappedBackingState>>,
     ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
@@ -309,7 +310,7 @@ impl LibcameraBacking {
         let backing_bytes = unique_backing_plane_bytes(&planes);
         outstanding_backings.fetch_add(1, Ordering::AcqRel);
         std::sync::Arc::new(Self {
-            req: std::sync::Mutex::new(Some(req)),
+            req: Mutex::new(Some(req)),
             planes,
             mapped: OnceLock::new(),
             ret_tx,
@@ -397,7 +398,7 @@ impl Drop for LibcameraBacking {
             self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
             return;
         }
-        if let Some(req) = self.req.lock().unwrap().take() {
+        if let Some(req) = self.req.lock().take() {
             let _ = self.ret_tx.send(req);
         }
         self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
