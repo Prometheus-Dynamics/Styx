@@ -63,6 +63,14 @@ pub struct MediaPipelineBuilder<'a> {
     owned_encode_fallback_enabled: bool,
     #[cfg(feature = "graph-pipeline")]
     graph_metrics_level: daedalus::engine::MetricsLevel,
+    #[cfg(feature = "graph-pipeline")]
+    graph_frame_policy: crate::graph::GraphPolicy,
+    #[cfg(feature = "graph-pipeline")]
+    graph_control_policy: crate::graph::GraphPolicy,
+    #[cfg(feature = "graph-pipeline")]
+    graph_host_input_policy: crate::graph::GraphPolicy,
+    #[cfg(feature = "graph-pipeline")]
+    graph_host_output_policy: crate::graph::GraphPolicy,
     service_runtime: Option<SharedStyxServiceRuntime>,
 }
 
@@ -115,6 +123,14 @@ impl<'a> MediaPipelineBuilder<'a> {
             owned_encode_fallback_enabled: false,
             #[cfg(feature = "graph-pipeline")]
             graph_metrics_level: daedalus::engine::MetricsLevel::Basic,
+            #[cfg(feature = "graph-pipeline")]
+            graph_frame_policy: crate::graph::GraphPolicy::default(),
+            #[cfg(feature = "graph-pipeline")]
+            graph_control_policy: crate::graph::GraphPolicy::default(),
+            #[cfg(feature = "graph-pipeline")]
+            graph_host_input_policy: daedalus::runtime::RuntimeEdgePolicy::bounded(1),
+            #[cfg(feature = "graph-pipeline")]
+            graph_host_output_policy: daedalus::runtime::RuntimeEdgePolicy::bounded(1),
             service_runtime: None,
         }
     }
@@ -257,6 +273,38 @@ impl<'a> MediaPipelineBuilder<'a> {
     #[cfg(feature = "graph-pipeline")]
     pub fn graph_metrics_level(mut self, level: daedalus::engine::MetricsLevel) -> Self {
         self.graph_metrics_level = level;
+        self
+    }
+
+    /// Set the Daedalus edge policy used between frame-processing nodes.
+    ///
+    /// This affects the graph-internal frame path only. Host input/output queues
+    /// are configured separately with `graph_host_input_policy` and
+    /// `graph_host_output_policy`.
+    #[cfg(feature = "graph-pipeline")]
+    pub fn graph_frame_policy(mut self, policy: crate::graph::GraphPolicy) -> Self {
+        self.graph_frame_policy = policy;
+        self
+    }
+
+    /// Set the Daedalus edge policy used for graph-routed control events.
+    #[cfg(feature = "graph-pipeline")]
+    pub fn graph_control_policy(mut self, policy: crate::graph::GraphPolicy) -> Self {
+        self.graph_control_policy = policy;
+        self
+    }
+
+    /// Set the Daedalus host input queue policy for graph-backed pipelines.
+    #[cfg(feature = "graph-pipeline")]
+    pub fn graph_host_input_policy(mut self, policy: crate::graph::GraphPolicy) -> Self {
+        self.graph_host_input_policy = policy;
+        self
+    }
+
+    /// Set the Daedalus host output queue policy for graph-backed pipelines.
+    #[cfg(feature = "graph-pipeline")]
+    pub fn graph_host_output_policy(mut self, policy: crate::graph::GraphPolicy) -> Self {
+        self.graph_host_output_policy = policy;
         self
     }
 
@@ -585,26 +633,36 @@ impl<'a> MediaPipelineBuilder<'a> {
                 }
             })
             .edges(|g| {
-                g.connect("control", &control_node.input("control"));
-                g.connect(&control_node.output("control_result"), "control_result");
+                g.connect_policy(
+                    "control",
+                    &control_node.input("control"),
+                    self.graph_control_policy.clone(),
+                );
+                g.connect_policy(
+                    &control_node.output("control_result"),
+                    "control_result",
+                    self.graph_control_policy.clone(),
+                );
                 for (idx, node) in nodes.iter().enumerate() {
                     let input = node.input("frame");
                     let output = node.output("frame");
                     if idx == 0 {
-                        g.connect("frame", &input);
+                        g.connect_policy("frame", &input, self.graph_frame_policy.clone());
                     } else {
                         let prev = nodes[idx - 1].output("frame");
-                        g.connect(&prev, &input);
+                        g.connect_policy(&prev, &input, self.graph_frame_policy.clone());
                     }
                     if idx + 1 == nodes.len() {
-                        g.connect(&output, "frame");
+                        g.connect_policy(&output, "frame", self.graph_frame_policy.clone());
                     }
                 }
             })
             .build();
         let engine = daedalus::engine::Engine::new(
             daedalus::engine::EngineConfig::from(daedalus::engine::GpuBackend::Cpu)
-                .with_metrics_level(self.graph_metrics_level),
+                .with_metrics_level(self.graph_metrics_level)
+                .with_default_host_input_policy(self.graph_host_input_policy)
+                .with_default_host_output_policy(self.graph_host_output_policy),
         )
         .map_err(|err| graph_start_error(err.to_string()))?;
         let runtime = engine

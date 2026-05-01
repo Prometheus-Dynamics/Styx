@@ -145,3 +145,30 @@ fn graph_backed_pipeline_routes_control_events_through_graph() {
     );
     assert!(pipeline.graph_telemetry().is_some());
 }
+
+#[test]
+fn graph_backed_pipeline_accepts_explicit_queue_policies() {
+    let device = virtual_device();
+    let request = CaptureRequest::new(&device)
+        .backend(BackendKind::Virtual)
+        .config(StyxConfig::new().capture_queue_depth(1));
+    let mut pipeline = MediaPipelineBuilder::new(request)
+        .decoder(Arc::new(PassthroughDecoder::new(FourCc::RG24)))
+        .without_encoder()
+        .shared_decode_output(false)
+        .graph_frame_policy(crate::graph::latest_only())
+        .graph_control_policy(crate::graph::bounded_blocking(1))
+        .graph_host_input_policy(crate::graph::bounded_drop_oldest(1, 1))
+        .graph_host_output_policy(crate::graph::bounded_blocking(1))
+        .start()
+        .expect("start graph-backed pipeline with explicit queue policies");
+
+    match pipeline.next_blocking(std::time::Duration::from_millis(250)) {
+        RecvOutcome::Data(frame) => {
+            assert_eq!(frame.meta().format.code, FourCc::RG24);
+        }
+        RecvOutcome::Empty => panic!("expected frame from graph-backed pipeline, got empty"),
+        RecvOutcome::Closed => panic!("expected frame from graph-backed pipeline, got closed"),
+    }
+    assert!(pipeline.graph_telemetry_stats().is_some());
+}

@@ -433,6 +433,7 @@ fn known_memory_bytes(
     if let Some(graph) = graph {
         known = known.saturating_add(graph.copied_bytes);
         known = known.saturating_add(graph.transport_bytes);
+        known = known.saturating_add(graph.current_queue_bytes);
     }
     known
 }
@@ -1180,12 +1181,13 @@ size flags mode count exp_name ino
         let graph = GraphTelemetryStats {
             copied_bytes: 1024,
             transport_bytes: 2048,
+            current_queue_bytes: 512,
             ..GraphTelemetryStats::default()
         };
 
         assert_eq!(
             known_memory_bytes(Some(&styx), Some(&graph)),
-            4096 + 1024 + 2048
+            4096 + 1024 + 2048 + 512
         );
     }
 

@@ -199,6 +199,13 @@ pub(super) fn summarize_graph_telemetry(
         stats.pressure_events = stats
             .pressure_events
             .saturating_add(edge.pressure_events.total);
+        stats.current_queue_bytes = stats
+            .current_queue_bytes
+            .saturating_add(edge.current_queue_bytes);
+        stats.peak_queue_bytes = stats.peak_queue_bytes.saturating_add(edge.peak_queue_bytes);
+        stats.bounded_queue_capacity = stats
+            .bounded_queue_capacity
+            .saturating_add(edge.capacity.unwrap_or(0));
         stats.drops = stats.drops.saturating_add(edge.drops);
         stats.latest_replacements = stats
             .latest_replacements
