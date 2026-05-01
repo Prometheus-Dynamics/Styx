@@ -10,7 +10,7 @@ use crate::recording::FrameRecorder;
 use super::{FrameHookFn, HookFn, HookStore};
 use crate::capture_api::CaptureHandle;
 use crate::metrics::{PipelineStage, PipelineStageError};
-use crate::service::SharedStyxServiceRuntime;
+use crate::service::{PipelineWorkerEvent, PipelineWorkerStopReason, SharedStyxServiceRuntime};
 
 mod codec_lookup;
 #[cfg(feature = "graph-pipeline")]
@@ -306,6 +306,8 @@ impl MediaPipeline {
             recent_stage_errors: stage_errors,
             drop_reasons,
             graph,
+            capture_shutdown: capture.capture_shutdown,
+            capture_retries: capture.capture_retries,
         };
         if let Some(service) = &self.service_runtime
             && let Ok(mut service) = service.lock()
@@ -318,8 +320,8 @@ impl MediaPipeline {
     /// Most recent decode, encode, graph, transform, or sink failure recorded by the pipeline.
     ///
     /// This is useful for callers using the infallible `try_next`, `next_blocking`,
-    /// `next_forever`, or `next_async` convenience methods, which map stage failures to
-    /// `RecvOutcome::Closed` for iterator-style control flow.
+    /// `next_forever`, or `next_async_receive` convenience methods, which map stage failures
+    /// to `RecvOutcome::Closed` for iterator-style control flow.
     pub fn last_stage_error(&self) -> Option<PipelineStageError> {
         self.health_report().recent_stage_errors.pop()
     }
@@ -330,6 +332,16 @@ impl MediaPipeline {
             capture_queue: capture.capture_queue,
             external_backings: capture.external_backings,
             transform_pool: styx_core::transform::transform_pool_stats().or(capture.transform_pool),
+            #[cfg(target_os = "linux")]
+            shared_decode_pool: self
+                .shared_decode_pool
+                .as_ref()
+                .map(|(pool, _)| pool.stats()),
+            #[cfg(target_os = "linux")]
+            shared_encode_pool: self
+                .shared_encode_pool
+                .as_ref()
+                .map(|(pool, _)| pool.stats()),
         }
     }
 
@@ -350,6 +362,14 @@ impl MediaPipeline {
             error.message.clone(),
         );
         error
+    }
+
+    fn emit_pipeline_worker_stopped(&self, reason: PipelineWorkerStopReason) {
+        if let Some(service) = &self.service_runtime
+            && let Ok(mut service) = service.lock()
+        {
+            service.record_pipeline_event(PipelineWorkerEvent::Stopped { reason });
+        }
     }
 
     fn process_frame_result(
@@ -375,12 +395,13 @@ impl MediaPipeline {
                     return Ok(cur);
                 }
                 Err(err) => {
-                    tracing::error!(stage = "graph_pipeline", error = %err, "graph-backed media pipeline failed");
-                    return Err(self.record_stage_error(
-                        PipelineStage::Graph,
-                        "graph_pipeline",
-                        err.to_string(),
-                    ));
+                    tracing::error!(
+                        stage = %err.stage,
+                        component = %err.component,
+                        error = %err.message,
+                        "graph-backed media pipeline failed"
+                    );
+                    return Err(self.record_stage_error(err.stage, err.component, err.message));
                 }
             }
         }

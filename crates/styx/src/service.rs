@@ -1,7 +1,7 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::metrics::HealthReport;
+use crate::metrics::{HealthReport, PipelineStageError};
 use crate::watch::{DeviceWatcher, InventoryEvent, WatchError, WatchRefreshReport, WatchRuntime};
 
 /// Shared service runtime handle used by graph and pipeline components that need to publish events.
@@ -14,6 +14,8 @@ pub enum StyxServiceEvent {
     Device(InventoryEvent),
     /// Pipeline or service health snapshot.
     Health(Box<HealthReport>),
+    /// Pipeline worker lifecycle change.
+    Pipeline(PipelineWorkerEvent),
     /// Sink lifecycle change.
     Sink(SinkLifecycleEvent),
     /// Recording lifecycle change.
@@ -21,6 +23,97 @@ pub enum StyxServiceEvent {
     /// Graph control response routed through the service event stream.
     #[cfg(feature = "daedalus-plugin")]
     Control(crate::graph::StyxControlResult),
+}
+
+impl StyxServiceEvent {
+    /// Stable category identifier for filtering service events without matching display strings.
+    pub fn kind(&self) -> StyxServiceEventKind {
+        match self {
+            Self::Device(_) => StyxServiceEventKind::Device,
+            Self::Health(_) => StyxServiceEventKind::Health,
+            Self::Pipeline(_) => StyxServiceEventKind::Pipeline,
+            Self::Sink(_) => StyxServiceEventKind::Sink,
+            Self::Recording(_) => StyxServiceEventKind::Recording,
+            #[cfg(feature = "daedalus-plugin")]
+            Self::Control(_) => StyxServiceEventKind::Control,
+        }
+    }
+}
+
+/// Stable service event category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StyxServiceEventKind {
+    Device,
+    Health,
+    Pipeline,
+    Sink,
+    Recording,
+    #[cfg(feature = "daedalus-plugin")]
+    Control,
+}
+
+impl StyxServiceEventKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Device => "device",
+            Self::Health => "health",
+            Self::Pipeline => "pipeline",
+            Self::Sink => "sink",
+            Self::Recording => "recording",
+            #[cfg(feature = "daedalus-plugin")]
+            Self::Control => "control",
+        }
+    }
+}
+
+impl std::fmt::Display for StyxServiceEventKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Lifecycle event for a worker driving a media pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipelineWorkerEvent {
+    /// Worker has stopped and will not process more frames.
+    Stopped { reason: PipelineWorkerStopReason },
+}
+
+impl PipelineWorkerEvent {
+    /// Stable worker event category.
+    pub fn kind(&self) -> PipelineWorkerEventKind {
+        match self {
+            Self::Stopped { .. } => PipelineWorkerEventKind::Stopped,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PipelineWorkerEventKind {
+    Stopped,
+}
+
+impl PipelineWorkerEventKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+impl std::fmt::Display for PipelineWorkerEventKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Terminal reason for a media pipeline worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipelineWorkerStopReason {
+    /// Capture closed normally, usually because the handle was stopped or the source ended.
+    CaptureClosed,
+    /// A pipeline stage returned an error and stopped the worker.
+    StageFailed(PipelineStageError),
 }
 
 /// Lifecycle event for a media sink attached to a Styx session.
@@ -36,6 +129,40 @@ pub enum SinkLifecycleEvent {
         kind: SinkKind,
         message: String,
     },
+}
+
+impl SinkLifecycleEvent {
+    /// Stable sink lifecycle category.
+    pub fn kind(&self) -> SinkLifecycleEventKind {
+        match self {
+            Self::Started { .. } => SinkLifecycleEventKind::Started,
+            Self::Stopped { .. } => SinkLifecycleEventKind::Stopped,
+            Self::Error { .. } => SinkLifecycleEventKind::Error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SinkLifecycleEventKind {
+    Started,
+    Stopped,
+    Error,
+}
+
+impl SinkLifecycleEventKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::Stopped => "stopped",
+            Self::Error => "error",
+        }
+    }
+}
+
+impl std::fmt::Display for SinkLifecycleEventKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Sink category used for service diagnostics.
@@ -111,6 +238,40 @@ pub enum RecordingLifecycleEvent {
     },
     /// Recording session has stopped.
     Stopped { session_id: String, frames: usize },
+}
+
+impl RecordingLifecycleEvent {
+    /// Stable recording lifecycle category.
+    pub fn kind(&self) -> RecordingLifecycleEventKind {
+        match self {
+            Self::Started { .. } => RecordingLifecycleEventKind::Started,
+            Self::FrameIndexed { .. } => RecordingLifecycleEventKind::FrameIndexed,
+            Self::Stopped { .. } => RecordingLifecycleEventKind::Stopped,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RecordingLifecycleEventKind {
+    Started,
+    FrameIndexed,
+    Stopped,
+}
+
+impl RecordingLifecycleEventKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::FrameIndexed => "frame-indexed",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+impl std::fmt::Display for RecordingLifecycleEventKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Cursor into the retained service event stream.
@@ -288,6 +449,11 @@ impl StyxServiceRuntime {
         self.push_event(StyxServiceEvent::Health(Box::new(report)));
     }
 
+    /// Record a pipeline worker lifecycle event.
+    pub fn record_pipeline_event(&mut self, event: PipelineWorkerEvent) {
+        self.push_event(StyxServiceEvent::Pipeline(event));
+    }
+
     /// Record a sink lifecycle event.
     pub fn record_sink_event(&mut self, event: SinkLifecycleEvent) {
         self.push_event(StyxServiceEvent::Sink(event));
@@ -435,5 +601,34 @@ mod tests {
             Ok(SinkKind::FileSequence)
         );
         assert!("unknown".parse::<SinkKind>().is_err());
+    }
+
+    #[test]
+    fn service_events_expose_typed_stable_kinds() {
+        let health = StyxServiceEvent::Health(Box::default());
+        assert_eq!(health.kind(), StyxServiceEventKind::Health);
+        assert_eq!(health.kind().to_string(), "health");
+
+        let sink = SinkLifecycleEvent::Error {
+            sink_id: "recording".into(),
+            kind: SinkKind::Recorder,
+            message: "disk full".into(),
+        };
+        assert_eq!(sink.kind(), SinkLifecycleEventKind::Error);
+        assert_eq!(sink.kind().as_str(), "error");
+
+        let recording = RecordingLifecycleEvent::FrameIndexed {
+            session_id: "session".into(),
+            sequence: 7,
+            path: "frame.jpg".into(),
+        };
+        assert_eq!(recording.kind(), RecordingLifecycleEventKind::FrameIndexed);
+        assert_eq!(recording.kind().to_string(), "frame-indexed");
+
+        let pipeline = PipelineWorkerEvent::Stopped {
+            reason: PipelineWorkerStopReason::CaptureClosed,
+        };
+        assert_eq!(pipeline.kind(), PipelineWorkerEventKind::Stopped);
+        assert_eq!(pipeline.kind().as_str(), "stopped");
     }
 }

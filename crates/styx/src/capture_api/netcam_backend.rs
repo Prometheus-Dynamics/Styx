@@ -32,7 +32,7 @@ use crate::capture_api::handle::record_worker_error;
 use crate::capture_api::{
     CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle,
 };
-use crate::metrics::StageMetrics;
+use crate::metrics::{CaptureRetryMetrics, StageMetrics};
 use crate::prelude::{Interval, Mode};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
@@ -53,6 +53,7 @@ struct AsyncNetcamWorker {
     capture_tunables: crate::capture_api::CaptureTunables,
     stop: Arc<AtomicBool>,
     worker_error: Arc<Mutex<Option<CaptureError>>>,
+    retry_metrics: CaptureRetryMetrics,
 }
 
 /// Basic MJPEG-over-HTTP backend. Expects `multipart/x-mixed-replace` with JPEG parts.
@@ -91,8 +92,11 @@ pub(super) fn start_netcam(
     #[cfg(feature = "netcam")]
     let stop_for_thread = Arc::clone(&stop);
     let worker_error = Arc::new(Mutex::new(None));
+    let retry_metrics = CaptureRetryMetrics::default();
     #[cfg(feature = "netcam")]
     let worker_error_for_thread = Arc::clone(&worker_error);
+    #[cfg(feature = "netcam")]
+    let retry_metrics_for_thread = retry_metrics.clone();
     let tunables = config.netcam_tunables();
     #[cfg(feature = "netcam")]
     let worker_fn = move || {
@@ -131,7 +135,11 @@ pub(super) fn start_netcam(
                 return;
             }
             // First try MJPEG.
-            match client.get(&url_for_thread).send() {
+            match client
+                .get(&url_for_thread)
+                .timeout(Duration::from_millis(tunables.read_timeout_ms))
+                .send()
+            {
                 Ok(resp) => {
                     let boundary = resp
                         .headers()
@@ -160,6 +168,7 @@ pub(super) fn start_netcam(
                                 stop: &stop_for_thread,
                                 capture_tunables,
                                 netcam_tunables: tunables,
+                                retry_metrics: retry_metrics_for_thread.clone(),
                             },
                         ) {
                             return;
@@ -185,17 +194,21 @@ pub(super) fn start_netcam(
                     &url_for_thread,
                     tx_for_thread.as_ref(),
                     &start,
-                    &mut frame_idx,
+                    frame_idx,
                     Arc::clone(&stop_for_thread),
                     capture_tunables,
                     tunables,
+                    retry_metrics_for_thread.clone(),
                 ) {
-                    Ok(()) => {
+                    Ok(updated_frame_idx) => {
+                        frame_idx = updated_frame_idx;
                         consecutive_failures = 0;
                         continue;
                     }
                     Err(err) => {
-                        record_worker_error(&worker_error_for_thread, &err);
+                        let capture_err =
+                            CaptureError::Backend(format!("netcam ffmpeg fallback failed: {err}"));
+                        record_worker_error(&worker_error_for_thread, &capture_err);
                         tracing::warn!(
                             backend = "netcam",
                             stream = "ffmpeg",
@@ -210,6 +223,8 @@ pub(super) fn start_netcam(
                 backoff_ms = backoff.as_millis() as u64,
                 "netcam retry backoff"
             );
+            retry_metrics_for_thread
+                .record_netcam_retry("netcam_backoff", "netcam stream retry scheduled");
             if sleep_until_netcam_stop(
                 &stop_for_thread,
                 backoff,
@@ -239,6 +254,7 @@ pub(super) fn start_netcam(
                     capture_tunables,
                     stop: Arc::clone(&stop),
                     worker_error: Arc::clone(&worker_error),
+                    retry_metrics: retry_metrics.clone(),
                 },
                 tx.clone(),
             )))
@@ -272,6 +288,8 @@ pub(super) fn start_netcam(
         external_backings: Vec::new(),
         worker_error,
         control_error: Arc::new(Mutex::new(None)),
+        shutdown_stats: Default::default(),
+        retry_metrics,
     })
 }
 
@@ -289,6 +307,7 @@ async fn async_netcam_worker(
         capture_tunables,
         stop,
         worker_error,
+        retry_metrics,
     } = worker;
     tracing::debug!(
         backend = "netcam",
@@ -365,13 +384,12 @@ async fn async_netcam_worker(
                             stop: &stop,
                             capture_tunables,
                             netcam_tunables: tunables,
+                            retry_metrics: retry_metrics.clone(),
                         },
                     )
                     .await
                     {
                         return;
-                    } else {
-                        continue;
                     }
                 } else {
                     tracing::debug!(
@@ -392,28 +410,33 @@ async fn async_netcam_worker(
                 let url = url.clone();
                 let tx = tx.clone();
                 let stop = Arc::clone(&stop);
-                let mut frame_idx = frame_idx;
+                let frame_idx_start = frame_idx;
+                let retry_metrics = retry_metrics.clone();
                 move || {
                     ffmpeg_loop(
                         &url,
                         &tx,
                         &start,
-                        &mut frame_idx,
+                        frame_idx_start,
                         Arc::clone(&stop),
                         capture_tunables,
                         tunables,
+                        retry_metrics.clone(),
                     )
                 }
             })
             .await
             .unwrap_or(Err(CaptureError::Backend("ffmpeg join error".into())))
             {
-                Ok(()) => {
+                Ok(updated_frame_idx) => {
+                    frame_idx = updated_frame_idx;
                     consecutive_failures = 0;
                     continue;
                 }
                 Err(err) => {
-                    record_worker_error(&worker_error, &err);
+                    let capture_err =
+                        CaptureError::Backend(format!("netcam ffmpeg fallback failed: {err}"));
+                    record_worker_error(&worker_error, &capture_err);
                     tracing::warn!(
                         backend = "netcam",
                         stream = "ffmpeg",
@@ -428,6 +451,7 @@ async fn async_netcam_worker(
             backoff_ms = backoff.as_millis() as u64,
             "netcam retry backoff"
         );
+        retry_metrics.record_netcam_retry("netcam_backoff", "netcam stream retry scheduled");
         if async_sleep_until_netcam_stop(
             &stop,
             backoff,
@@ -503,9 +527,13 @@ pub(super) fn enqueue_netcam_frame(
     frame: FrameLease,
     stream: &'static str,
     timeout: Duration,
+    retry_metrics: &CaptureRetryMetrics,
 ) -> bool {
     match tx.send_timeout(frame, timeout) {
-        SendWaitOutcome::Ok => false,
+        SendWaitOutcome::Ok => {
+            retry_metrics.record_successful_frame();
+            false
+        }
         SendWaitOutcome::Closed(_frame) => {
             tracing::debug!(backend = "netcam", stream, "netcam output queue closed");
             true
@@ -529,9 +557,13 @@ pub(super) async fn enqueue_netcam_frame_async(
     frame: FrameLease,
     stream: &'static str,
     timeout: Duration,
+    retry_metrics: &CaptureRetryMetrics,
 ) -> bool {
     match tokio::time::timeout(timeout, tx.send_async(frame)).await {
-        Ok(SendOutcome::Ok) => false,
+        Ok(SendOutcome::Ok) => {
+            retry_metrics.record_successful_frame();
+            false
+        }
         Ok(SendOutcome::Closed) => {
             tracing::debug!(backend = "netcam", stream, "netcam output queue closed");
             true
@@ -563,11 +595,12 @@ fn ffmpeg_loop(
     url: &str,
     tx: &styx_core::queue::BoundedTx<FrameLease>,
     start: &Instant,
-    frame_idx: &mut u64,
+    mut frame_idx: u64,
     stop: Arc<AtomicBool>,
     capture_tunables: crate::capture_api::CaptureTunables,
     netcam_tunables: crate::capture_api::NetcamTunables,
-) -> Result<(), CaptureError> {
+    retry_metrics: CaptureRetryMetrics,
+) -> Result<u64, CaptureError> {
     ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
     #[cfg(target_os = "linux")]
     let mut pool: Option<SharedBufferPool> = None;
@@ -575,7 +608,7 @@ fn ffmpeg_loop(
     let mut pool: Option<BufferPool> = None;
     loop {
         if netcam_stopped(&stop) {
-            return Ok(());
+            return Ok(frame_idx);
         }
         let interrupt_stop = Arc::clone(&stop);
         let mut ictx =
@@ -642,7 +675,7 @@ fn ffmpeg_loop(
         });
         for (stream, packet) in ictx.packets() {
             if netcam_stopped(&stop) {
-                return Ok(());
+                return Ok(frame_idx);
             }
             if stream.index() != stream_idx {
                 continue;
@@ -662,21 +695,22 @@ fn ffmpeg_loop(
                 };
                 #[cfg(not(target_os = "linux"))]
                 let frame = blit_rgba_frame(&rgb, res, layout, pool_ref, ts);
-                *frame_idx = frame_idx.saturating_add(1);
+                frame_idx = frame_idx.saturating_add(1);
                 if enqueue_netcam_frame(
                     tx,
                     frame,
                     "ffmpeg",
                     Duration::from_millis(netcam_tunables.send_timeout_ms),
+                    &retry_metrics,
                 ) {
-                    return Ok(());
+                    return Ok(frame_idx);
                 }
             }
         }
         decoder.send_eof().ok();
         while decoder.receive_frame(&mut decoded).is_ok() {
             if netcam_stopped(&stop) {
-                return Ok(());
+                return Ok(frame_idx);
             }
             if scaler.run(&decoded, &mut rgb).is_err() {
                 continue;
@@ -689,14 +723,15 @@ fn ffmpeg_loop(
             };
             #[cfg(not(target_os = "linux"))]
             let frame = blit_rgba_frame(&rgb, res, layout, pool_ref, ts);
-            *frame_idx = frame_idx.saturating_add(1);
+            frame_idx = frame_idx.saturating_add(1);
             if enqueue_netcam_frame(
                 tx,
                 frame,
                 "ffmpeg",
                 Duration::from_millis(netcam_tunables.send_timeout_ms),
+                &retry_metrics,
             ) {
-                return Ok(());
+                return Ok(frame_idx);
             }
         }
         tracing::debug!(

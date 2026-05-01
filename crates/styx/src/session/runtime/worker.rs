@@ -5,6 +5,7 @@ use styx_core::prelude::{FrameLease, RecvOutcome};
 
 use super::{MediaPipeline, MediaPipelineFrameIter};
 use crate::metrics::PipelineStageError;
+use crate::service::PipelineWorkerStopReason;
 
 impl MediaPipeline {
     pub fn try_next(&mut self) -> RecvOutcome<FrameLease> {
@@ -108,8 +109,8 @@ impl MediaPipeline {
     /// This method only makes frame receipt async. Decode, encode, graph, hook, and sink
     /// stages are still synchronous CPU work. Use `spawn_tokio_worker` or
     /// `spawn_blocking_worker` for normal Tokio pipelines.
-    pub async fn next_async(&mut self) -> RecvOutcome<FrameLease> {
-        match self.next_async_result().await {
+    pub async fn next_async_receive(&mut self) -> RecvOutcome<FrameLease> {
+        match self.next_async_receive_result().await {
             Ok(outcome) => outcome,
             Err(_) => RecvOutcome::Closed,
         }
@@ -121,7 +122,7 @@ impl MediaPipeline {
     /// This method only makes frame receipt async. Frame processing still runs synchronously on
     /// the current Tokio task, so callers should reserve it for lightweight raw-frame pipelines
     /// or move the pipeline to `spawn_tokio_worker` / `spawn_blocking_worker`.
-    pub async fn next_async_result(
+    pub async fn next_async_receive_result(
         &mut self,
     ) -> Result<RecvOutcome<FrameLease>, PipelineStageError> {
         let span = tracing::trace_span!(
@@ -143,43 +144,11 @@ impl MediaPipeline {
     }
 
     #[cfg(feature = "async")]
-    /// Spawn a lightweight async receive loop.
-    ///
-    /// This keeps frame receipt async, but each received frame is processed synchronously by
-    /// `next_async` on a Tokio core worker. Prefer `spawn_tokio_worker` or
-    /// `spawn_blocking_worker` for normal decode, encode, graph, hook, or sink pipelines.
-    #[deprecated(
-        since = "2.0.0",
-        note = "use spawn_tokio_worker or spawn_blocking_worker; this only makes receive async while processing remains synchronous"
-    )]
-    pub fn spawn_async_worker(mut self) -> tokio::task::JoinHandle<()> {
-        tokio::task::spawn(async move {
-            let span = tracing::trace_span!(
-                "pipeline_worker",
-                worker = "tokio_task",
-                receive = "async",
-                processing = "sync"
-            );
-            let _enter = span.enter();
-            loop {
-                match self.next_async().await {
-                    RecvOutcome::Data(_) => {}
-                    RecvOutcome::Empty => {}
-                    RecvOutcome::Closed => {
-                        self.capture.stop_in_place();
-                        break;
-                    }
-                }
-            }
-        })
-    }
-
-    #[cfg(feature = "async")]
     /// Spawn the pipeline on Tokio's blocking pool.
     ///
     /// This is the recommended Tokio worker for CPU-heavy decode, encode, graph, or hook
     /// stages because processing runs outside core async runtime workers.
-    pub fn spawn_blocking_worker(self) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_blocking_worker(self) -> tokio::task::JoinHandle<Result<(), PipelineStageError>> {
         tokio::task::spawn_blocking(move || self.run_blocking_worker())
     }
 
@@ -188,15 +157,15 @@ impl MediaPipeline {
     ///
     /// This is an ergonomic alias for `spawn_blocking_worker`; it keeps synchronous media
     /// processing off Tokio core runtime workers while still returning a Tokio join handle.
-    pub fn spawn_tokio_worker(self) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_tokio_worker(self) -> tokio::task::JoinHandle<Result<(), PipelineStageError>> {
         self.spawn_blocking_worker()
     }
 
-    pub fn spawn_worker(self) -> thread::JoinHandle<()> {
+    pub fn spawn_worker(self) -> thread::JoinHandle<Result<(), PipelineStageError>> {
         thread::spawn(move || self.run_blocking_worker())
     }
 
-    fn run_blocking_worker(mut self) {
+    fn run_blocking_worker(mut self) -> Result<(), PipelineStageError> {
         let span = tracing::trace_span!(
             "pipeline_worker",
             worker = "thread",
@@ -205,12 +174,26 @@ impl MediaPipeline {
         );
         let _enter = span.enter();
         loop {
-            match self.next_forever() {
-                RecvOutcome::Data(_) => {}
-                RecvOutcome::Empty => {}
-                RecvOutcome::Closed => {
+            match self.next_forever_result() {
+                Ok(RecvOutcome::Data(_)) => {}
+                Ok(RecvOutcome::Empty) => {}
+                Ok(RecvOutcome::Closed) => {
                     self.capture.stop_in_place();
-                    break;
+                    self.emit_pipeline_worker_stopped(PipelineWorkerStopReason::CaptureClosed);
+                    return Ok(());
+                }
+                Err(err) => {
+                    tracing::error!(
+                        stage = %err.stage,
+                        component = %err.component,
+                        error = %err.message,
+                        "pipeline worker stopped after stage failure"
+                    );
+                    self.capture.stop_in_place();
+                    self.emit_pipeline_worker_stopped(PipelineWorkerStopReason::StageFailed(
+                        err.clone(),
+                    ));
+                    return Err(err);
                 }
             }
         }

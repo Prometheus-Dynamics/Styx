@@ -118,7 +118,9 @@ fn register_codec_node(
                 Arc::clone(&shared_pool),
             )?;
             #[cfg(not(target_os = "linux"))]
-            let out = codec.process(frame).map_err(codec_node_error)?;
+            let out = codec
+                .process(frame)
+                .map_err(|err| codec_node_error(stage, codec.descriptor(), err))?;
             io.push_payload("frame", framelease_payload(out));
             Ok(())
         })
@@ -179,7 +181,9 @@ fn process_codec_frame(
     shared_pool: Arc<Mutex<Option<(SharedBufferPool, usize)>>>,
 ) -> Result<FrameLease, NodeError> {
     if !options.shared_output {
-        return codec.process(frame).map_err(codec_node_error);
+        return codec
+            .process(frame)
+            .map_err(|err| codec_node_error(stage, codec.descriptor(), err));
     }
     let pool =
         codec_shared_pool(stage, codec.descriptor(), &frame, &shared_pool).map_err(|err| {
@@ -195,8 +199,8 @@ fn process_codec_frame(
         Ok(None) => codec
             .process(frame)
             .and_then(|out| require_exportable_codec_output(stage, codec.as_ref(), out, options))
-            .map_err(codec_node_error),
-        Err(err) => Err(codec_node_error(err)),
+            .map_err(|err| codec_node_error(stage, codec.descriptor(), err)),
+        Err(err) => Err(codec_node_error(stage, codec.descriptor(), err)),
     }
 }
 
@@ -268,11 +272,15 @@ fn require_exportable_codec_output(
     }
 }
 
-fn codec_node_error(err: CodecError) -> NodeError {
+fn codec_node_error(stage: CodecStage, descriptor: &CodecDescriptor, err: CodecError) -> NodeError {
+    let message = format!(
+        "{} {}:{} failed: {err}",
+        stage.name(),
+        descriptor.name,
+        descriptor.impl_name
+    );
     match err {
-        CodecError::Backpressure => NodeError::BackpressureDrop(err.to_string()),
-        CodecError::FormatMismatch { .. } | CodecError::Codec(_) => {
-            NodeError::Handler(err.to_string())
-        }
+        CodecError::Backpressure => NodeError::BackpressureDrop(message),
+        CodecError::FormatMismatch { .. } | CodecError::Codec(_) => NodeError::Handler(message),
     }
 }

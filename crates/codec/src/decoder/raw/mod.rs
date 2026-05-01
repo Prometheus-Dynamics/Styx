@@ -2,13 +2,11 @@
 
 #[cfg(feature = "raw-decoders")]
 use rayon::prelude::*;
-#[cfg(feature = "raw-decoders")]
-use styx_core::prelude::ColorSpace;
-#[cfg(target_os = "linux")]
 use styx_core::prelude::*;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(feature = "raw-decoders", target_os = "linux"))]
 use crate::CodecError;
+use crate::{CodecDescriptor, CodecKind};
 
 #[cfg(feature = "raw-decoders")]
 mod bayer;
@@ -58,6 +56,39 @@ pub use yuv420p::Yuv420pToRgbDecoder;
 #[cfg(feature = "raw-decoders")]
 pub use yuyv::{YuyvToLumaDecoder, YuyvToRgbDecoder};
 
+pub(crate) fn raw_decoder_descriptor(
+    input: FourCc,
+    output: FourCc,
+    name: &'static str,
+    impl_name: &'static str,
+) -> CodecDescriptor {
+    CodecDescriptor {
+        kind: CodecKind::Decoder,
+        input,
+        output,
+        name,
+        impl_name,
+    }
+}
+
+#[cfg(feature = "raw-decoders")]
+pub(crate) fn process_owned_raw_decode(
+    input: FrameLease,
+    pool: &BufferPool,
+    output_bytes_per_pixel: usize,
+    decode: impl FnOnce(&FrameLease, &mut [u8]) -> Result<FrameMeta, CodecError>,
+) -> Result<FrameLease, CodecError> {
+    let layout = plane_layout_from_dims(
+        input.meta().format.resolution.width,
+        input.meta().format.resolution.height,
+        output_bytes_per_pixel,
+    );
+    let mut buf = pool.lease();
+    unsafe { buf.resize_uninit(layout.len) };
+    let meta = decode(&input, buf.as_mut_slice())?;
+    Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+}
+
 #[cfg(target_os = "linux")]
 pub trait RawDecodeInto {
     fn output_bytes_per_pixel(&self) -> usize;
@@ -90,6 +121,18 @@ pub trait SharedRawDecodeExt: RawDecodeInto {
 
 #[cfg(target_os = "linux")]
 impl<T: RawDecodeInto + ?Sized> SharedRawDecodeExt for T {}
+
+#[cfg(all(target_os = "linux", feature = "raw-decoders"))]
+pub(crate) fn process_shared_raw_decode<T>(
+    decoder: &T,
+    input: &FrameLease,
+    pool: &SharedBufferPool,
+) -> Result<Option<FrameLease>, CodecError>
+where
+    T: SharedRawDecodeExt + ?Sized,
+{
+    SharedRawDecodeExt::process_shared(decoder, input, pool).map(Some)
+}
 
 #[cfg(feature = "raw-decoders")]
 pub(crate) fn decode_strided_rows_to_rgb24(

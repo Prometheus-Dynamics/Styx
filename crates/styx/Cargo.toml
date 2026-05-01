@@ -35,7 +35,6 @@ minifb = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
-once_cell.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }

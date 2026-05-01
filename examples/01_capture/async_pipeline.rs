@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while frames < 25 {
         // This example uses a passthrough decoder, so processing on the current async task is cheap.
         // Use `spawn_tokio_worker` for CPU-heavy decode, encode, graph, hook, or sink pipelines.
-        match pipeline.next_async_result().await? {
+        match pipeline.next_async_receive_result().await? {
             RecvOutcome::Data(frame) => {
                 frames += 1;
                 let meta = frame.meta();

@@ -1,4 +1,8 @@
 use super::{RecvOutcome, RecvWaitOutcome, SendOutcome, SendWaitOutcome, bounded};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 
@@ -84,4 +88,85 @@ fn recv_timeout_does_not_miss_repeated_data_wakes() {
         ));
         join.join().expect("sender thread");
     }
+}
+
+#[test]
+fn mpmc_contention_drains_all_messages_before_close() {
+    const PRODUCERS: usize = 4;
+    const CONSUMERS: usize = 4;
+    const PER_PRODUCER: usize = 512;
+    const TOTAL: usize = PRODUCERS * PER_PRODUCER;
+
+    let (tx, rx) = bounded(32);
+    let received = Arc::new(AtomicUsize::new(0));
+    let mut consumers = Vec::new();
+    for _ in 0..CONSUMERS {
+        let rx = rx.clone();
+        let received = Arc::clone(&received);
+        consumers.push(thread::spawn(move || {
+            loop {
+                match rx.recv_timeout(Duration::from_millis(100)) {
+                    RecvWaitOutcome::Data(_) => {
+                        received.fetch_add(1, Ordering::Relaxed);
+                    }
+                    RecvWaitOutcome::Timeout => {}
+                    RecvWaitOutcome::Closed => break,
+                }
+            }
+        }));
+    }
+
+    let mut producers = Vec::new();
+    for producer in 0..PRODUCERS {
+        let tx = tx.clone();
+        producers.push(thread::spawn(move || {
+            for value in 0..PER_PRODUCER {
+                let item = producer * PER_PRODUCER + value;
+                assert!(matches!(tx.send_blocking(item), SendWaitOutcome::Ok));
+            }
+        }));
+    }
+
+    for producer in producers {
+        producer.join().expect("producer thread");
+    }
+    tx.close();
+    for consumer in consumers {
+        consumer.join().expect("consumer thread");
+    }
+
+    assert_eq!(received.load(Ordering::Relaxed), TOTAL);
+}
+
+#[test]
+fn close_wakes_blocked_sender_and_receiver() {
+    let (tx, rx) = bounded(1);
+    assert_eq!(tx.send(1), SendOutcome::Ok);
+
+    let sender = {
+        let tx = tx.clone();
+        thread::spawn(move || tx.send_blocking(2))
+    };
+    thread::sleep(Duration::from_millis(10));
+    rx.close();
+
+    assert!(matches!(
+        sender.join().expect("sender thread"),
+        SendWaitOutcome::Closed(2)
+    ));
+    assert!(matches!(rx.recv_blocking(), RecvWaitOutcome::Data(1)));
+    assert!(matches!(rx.recv_blocking(), RecvWaitOutcome::Closed));
+
+    let (_tx, rx) = bounded::<u8>(1);
+    let receiver = {
+        let rx = rx.clone();
+        thread::spawn(move || rx.recv_blocking())
+    };
+    thread::sleep(Duration::from_millis(10));
+    rx.close();
+
+    assert!(matches!(
+        receiver.join().expect("receiver thread"),
+        RecvWaitOutcome::Closed
+    ));
 }

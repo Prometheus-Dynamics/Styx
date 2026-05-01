@@ -31,5 +31,5 @@ impl<T> HookStore<T> {
 mod builder;
 mod runtime;
 
-pub use builder::MediaPipelineBuilder;
+pub use builder::{MediaPipelineBuilder, PipelineExecutionMode};
 pub use runtime::{MediaPipeline, MediaPipelineFrameIter};

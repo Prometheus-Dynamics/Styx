@@ -43,6 +43,7 @@ pub(super) fn start_virtual(
         .map(|interval| Duration::from_secs_f32(1.0 / interval.fps().max(1.0)))
         .unwrap_or_else(|| Duration::from_millis(10))
         .max(Duration::from_millis(1));
+    let idle_poll = Duration::from_millis(capture_tunables.idle_poll_ms);
     let worker = thread::spawn(move || {
         tracing::debug!(backend = "virtual", "capture worker started");
         loop {
@@ -56,10 +57,8 @@ pub(super) fn start_virtual(
                 if stop_rx.recv_timeout(frame_interval).is_ok() {
                     break;
                 }
-            } else {
-                if stop_rx.recv_timeout(Duration::from_millis(10)).is_ok() {
-                    break;
-                }
+            } else if stop_rx.recv_timeout(idle_poll).is_ok() {
+                break;
             }
         }
         tracing::debug!(backend = "virtual", "capture worker stopped");
@@ -82,5 +81,7 @@ pub(super) fn start_virtual(
         external_backings: Vec::new(),
         worker_error: Arc::new(parking_lot::Mutex::new(None)),
         control_error: Arc::new(parking_lot::Mutex::new(None)),
+        shutdown_stats: Default::default(),
+        retry_metrics: Default::default(),
     })
 }

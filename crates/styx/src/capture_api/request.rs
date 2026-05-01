@@ -11,52 +11,14 @@ use super::NetcamSourceConfig;
 use super::VirtualSourceConfig;
 use super::handle::start_backend;
 use super::tunables::StyxConfig;
+use crate::metrics::CaptureRetryMetrics;
 
 mod camera;
+mod source;
 pub use camera::{
     CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, SelectedCamera,
 };
-
-#[derive(Clone, Debug)]
-pub struct CaptureSource {
-    device: ProbedDevice,
-}
-
-impl CaptureSource {
-    pub fn new(device: ProbedDevice) -> Self {
-        Self { device }
-    }
-
-    pub fn device(&self) -> &ProbedDevice {
-        &self.device
-    }
-
-    pub fn into_device(self) -> ProbedDevice {
-        self.device
-    }
-
-    pub fn capture_request(&self) -> CaptureRequest<'_> {
-        CaptureRequest::new(&self.device)
-    }
-}
-
-impl AsRef<ProbedDevice> for CaptureSource {
-    fn as_ref(&self) -> &ProbedDevice {
-        self.device()
-    }
-}
-
-impl From<ProbedDevice> for CaptureSource {
-    fn from(device: ProbedDevice) -> Self {
-        Self::new(device)
-    }
-}
-
-impl From<CaptureSource> for ProbedDevice {
-    fn from(source: CaptureSource) -> Self {
-        source.into_device()
-    }
-}
+pub use source::CaptureSource;
 
 /// Errors starting a capture session.
 ///
@@ -412,6 +374,7 @@ impl<'a> CaptureRequest<'a> {
         policy: CaptureStartPolicy,
     ) -> Result<super::handle::CaptureHandle, CaptureError> {
         let attempts = policy.max_attempts.max(1);
+        let retry_metrics = CaptureRetryMetrics::default();
         for attempt in 0..attempts {
             let (backend, mode, descriptor) = self.resolve_backend_mode()?;
             let interval = self.interval.or_else(|| default_interval(&mode));
@@ -426,11 +389,17 @@ impl<'a> CaptureRequest<'a> {
                 self.tdn_output_mode,
                 &config,
             ) {
-                Ok(handle) => return Ok(handle),
+                Ok(handle) => {
+                    handle
+                        .retry_metrics
+                        .merge_snapshot(retry_metrics.snapshot());
+                    return Ok(handle);
+                }
                 Err(err) => {
                     if policy.retry_with_tdn_disabled
                         && self.try_disable_noise_reduction(backend.kind, &err)
                     {
+                        retry_metrics.record_start_retry("disable_tdn", err.to_string());
                         log_start_retry(backend.kind, attempt + 1, attempts, "disable_tdn", &err);
                         sleep_before_retry(policy.retry_backoff);
                         continue;
@@ -438,6 +407,7 @@ impl<'a> CaptureRequest<'a> {
                     if policy.retry_without_controls_on_control_errors
                         && self.try_drop_controls(backend.kind, &err)
                     {
+                        retry_metrics.record_start_retry("drop_controls", err.to_string());
                         log_start_retry(backend.kind, attempt + 1, attempts, "drop_controls", &err);
                         sleep_before_retry(policy.retry_backoff);
                         continue;
@@ -446,6 +416,7 @@ impl<'a> CaptureRequest<'a> {
                         && err.is_transient_start()
                         && attempt + 1 < attempts
                     {
+                        retry_metrics.record_start_retry("transient_retry", err.to_string());
                         log_start_retry(
                             backend.kind,
                             attempt + 1,
@@ -479,6 +450,7 @@ impl<'a> CaptureRequest<'a> {
         policy: CaptureStartPolicy,
     ) -> Result<super::handle::CaptureHandle, CaptureError> {
         let attempts = policy.max_attempts.max(1);
+        let retry_metrics = CaptureRetryMetrics::default();
         for attempt in 0..attempts {
             let (backend, mode, descriptor) = self.resolve_backend_mode()?;
             let backend_kind = backend.kind;
@@ -502,11 +474,17 @@ impl<'a> CaptureRequest<'a> {
             .await
             .map_err(|err| CaptureError::Backend(format!("capture startup task failed: {err}")))?;
             match started {
-                Ok(handle) => return Ok(handle),
+                Ok(handle) => {
+                    handle
+                        .retry_metrics
+                        .merge_snapshot(retry_metrics.snapshot());
+                    return Ok(handle);
+                }
                 Err(err) => {
                     if policy.retry_with_tdn_disabled
                         && self.try_disable_noise_reduction(backend_kind, &err)
                     {
+                        retry_metrics.record_start_retry("disable_tdn", err.to_string());
                         log_start_retry(backend_kind, attempt + 1, attempts, "disable_tdn", &err);
                         sleep_before_retry_async(policy.retry_backoff).await;
                         continue;
@@ -514,6 +492,7 @@ impl<'a> CaptureRequest<'a> {
                     if policy.retry_without_controls_on_control_errors
                         && self.try_drop_controls(backend_kind, &err)
                     {
+                        retry_metrics.record_start_retry("drop_controls", err.to_string());
                         log_start_retry(backend_kind, attempt + 1, attempts, "drop_controls", &err);
                         sleep_before_retry_async(policy.retry_backoff).await;
                         continue;
@@ -522,6 +501,7 @@ impl<'a> CaptureRequest<'a> {
                         && err.is_transient_start()
                         && attempt + 1 < attempts
                     {
+                        retry_metrics.record_start_retry("transient_retry", err.to_string());
                         log_start_retry(
                             backend_kind,
                             attempt + 1,
@@ -661,10 +641,7 @@ fn pick_mode(backend: &ProbedBackend, mode: Option<ModeId>) -> Result<&Mode, Cap
     }
     if let Some(id) = mode {
         let requested = &id.format;
-        let is_bayer = requested.code == FourCc::new(*b"RGGB")
-            || requested.code == FourCc::new(*b"BGGR")
-            || requested.code == FourCc::new(*b"GBRG")
-            || requested.code == FourCc::new(*b"GRBG");
+        let is_bayer = requested.code.is_bayer_raw();
 
         // Prefer an exact ModeId match, then exact MediaFormat matches.
         if let Some(found) = backend.descriptor.modes.iter().find(|m| m.id == id) {

@@ -2,6 +2,12 @@ use styx_core::prelude::*;
 
 use crate::service::SharedStyxServiceRuntime;
 
+pub(super) struct GraphProcessError {
+    pub(super) stage: crate::metrics::PipelineStage,
+    pub(super) component: String,
+    pub(super) message: String,
+}
+
 pub(crate) struct GraphMediaRuntime {
     graph: daedalus::engine::HostGraph<daedalus::runtime::handler_registry::HandlerRegistry>,
     last_telemetry: Option<daedalus::runtime::ExecutionTelemetry>,
@@ -27,7 +33,7 @@ impl GraphMediaRuntime {
         self.last_telemetry.as_ref()
     }
 
-    pub(super) fn process(&mut self, frame: FrameLease) -> Result<FrameLease, String> {
+    pub(super) fn process(&mut self, frame: FrameLease) -> Result<FrameLease, GraphProcessError> {
         if !self.frame_path_enabled {
             return Ok(frame);
         }
@@ -37,23 +43,27 @@ impl GraphMediaRuntime {
         {
             daedalus::transport::FeedOutcome::Accepted { .. }
             | daedalus::transport::FeedOutcome::Replaced { .. } => {}
-            other => return Err(format!("graph input rejected frame: {other:?}")),
+            other => {
+                return Err(graph_error(format!(
+                    "graph input rejected frame: {other:?}"
+                )));
+            }
         }
         let span = tracing::trace_span!("graph_tick_until_idle", path = "frame");
         let _enter = span.enter();
         let telemetry = self
             .graph
             .tick_until_idle()
-            .map_err(|err| err.to_string())?
-            .ok_or_else(|| "graph produced no telemetry".to_string())?;
+            .map_err(graph_engine_error)?
+            .ok_or_else(|| graph_error("graph produced no telemetry"))?;
         self.last_telemetry = Some(telemetry);
         let mut output = self
             .graph
             .drain_owned::<FrameLease>("frame")
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| graph_error(err.to_string()))?;
         output
             .pop()
-            .ok_or_else(|| "graph produced no output frame".to_string())
+            .ok_or_else(|| graph_error("graph produced no output frame"))
     }
 
     pub(super) fn submit_control_event(
@@ -89,6 +99,61 @@ impl GraphMediaRuntime {
             service.record_control_result(result.clone());
         }
         Ok(result)
+    }
+}
+
+fn graph_error(message: impl Into<String>) -> GraphProcessError {
+    GraphProcessError {
+        stage: crate::metrics::PipelineStage::Graph,
+        component: "graph_pipeline".to_string(),
+        message: message.into(),
+    }
+}
+
+fn graph_engine_error(err: daedalus::engine::EngineError) -> GraphProcessError {
+    match err {
+        daedalus::engine::EngineError::Runtime(err) => graph_execute_error(err),
+        err => graph_error(err.to_string()),
+    }
+}
+
+fn graph_execute_error(err: daedalus::runtime::ExecuteError) -> GraphProcessError {
+    match err {
+        daedalus::runtime::ExecuteError::HandlerFailed { node, error } => {
+            let message = error.to_string();
+            if node.starts_with("styx.codec.decoder.") {
+                return codec_graph_error(crate::metrics::PipelineStage::Decode, node, message);
+            }
+            if node.starts_with("styx.codec.encoder.") {
+                return codec_graph_error(crate::metrics::PipelineStage::Encode, node, message);
+            }
+            graph_error(format!("handler failed on node {node}: {message}"))
+        }
+        err => graph_error(err.to_string()),
+    }
+}
+
+fn codec_graph_error(
+    stage: crate::metrics::PipelineStage,
+    node: String,
+    message: String,
+) -> GraphProcessError {
+    let stage_name = match stage {
+        crate::metrics::PipelineStage::Decode => "decoder",
+        crate::metrics::PipelineStage::Encode => "encoder",
+        _ => "codec",
+    };
+    let prefix = format!("{stage_name} ");
+    let (component, message) = message
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.split_once(" failed: "))
+        .map(|(component, reason)| (component.to_string(), reason.to_string()))
+        .unwrap_or_else(|| (node, message));
+
+    GraphProcessError {
+        stage,
+        component,
+        message,
     }
 }
 

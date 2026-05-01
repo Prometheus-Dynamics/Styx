@@ -547,17 +547,35 @@ impl CodecRegistry {
     }
 
     pub fn list_enabled_codecs() -> Result<Vec<(FourCc, Vec<CodecDescriptor>)>, crate::CodecError> {
-        let registry = CodecRegistry::with_enabled_codecs()?;
+        Self::list_enabled_codecs_with_config(CodecRegistryConfig::default())
+    }
+
+    pub fn list_enabled_codecs_with_config(
+        config: CodecRegistryConfig,
+    ) -> Result<Vec<(FourCc, Vec<CodecDescriptor>)>, crate::CodecError> {
+        let registry = CodecRegistry::with_enabled_codecs_with_config(config)?;
         Ok(registry.handle.list_registered())
     }
 
     pub fn list_enabled_decoders() -> Result<Vec<(FourCc, Vec<CodecDescriptor>)>, crate::CodecError> {
-        let registry = CodecRegistry::with_enabled_codecs()?;
+        Self::list_enabled_decoders_with_config(CodecRegistryConfig::default())
+    }
+
+    pub fn list_enabled_decoders_with_config(
+        config: CodecRegistryConfig,
+    ) -> Result<Vec<(FourCc, Vec<CodecDescriptor>)>, crate::CodecError> {
+        let registry = CodecRegistry::with_enabled_codecs_with_config(config)?;
         Ok(registry.handle.list_registered_by_kind(crate::CodecKind::Decoder))
     }
 
     pub fn list_enabled_encoders() -> Result<Vec<(FourCc, Vec<CodecDescriptor>)>, crate::CodecError> {
-        let registry = CodecRegistry::with_enabled_codecs()?;
+        Self::list_enabled_encoders_with_config(CodecRegistryConfig::default())
+    }
+
+    pub fn list_enabled_encoders_with_config(
+        config: CodecRegistryConfig,
+    ) -> Result<Vec<(FourCc, Vec<CodecDescriptor>)>, crate::CodecError> {
+        let registry = CodecRegistry::with_enabled_codecs_with_config(config)?;
         Ok(registry.handle.list_registered_by_kind(crate::CodecKind::Encoder))
     }
 }

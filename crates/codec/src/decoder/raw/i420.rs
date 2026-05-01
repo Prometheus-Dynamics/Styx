@@ -3,7 +3,7 @@ use styx_core::prelude::*;
 use crate::decoder::raw::yuv_to_rgb;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{Codec, CodecDescriptor, CodecError};
 use rayon::prelude::*;
 use yuvutils_rs::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
 
@@ -31,13 +31,12 @@ impl I420ToRgbDecoder {
 
     pub fn with_pool(pool: BufferPool) -> Self {
         Self {
-            descriptor: CodecDescriptor {
-                kind: CodecKind::Decoder,
-                input: FourCc::I420,
-                output: FourCc::RG24,
-                name: "yuv2rgb",
-                impl_name: "i420-cpu",
-            },
+            descriptor: crate::decoder::raw::raw_decoder_descriptor(
+                FourCc::I420,
+                FourCc::RG24,
+                "yuv2rgb",
+                "i420-cpu",
+            ),
             pool,
         }
     }
@@ -172,15 +171,9 @@ impl Codec for I420ToRgbDecoder {
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
-        let layout = plane_layout_from_dims(
-            input.meta().format.resolution.width,
-            input.meta().format.resolution.height,
-            3,
-        );
-        let mut buf = self.pool.lease();
-        unsafe { buf.resize_uninit(layout.len) };
-        let meta = self.decode_into(&input, buf.as_mut_slice())?;
-        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+        crate::decoder::raw::process_owned_raw_decode(input, &self.pool, 3, |input, dst| {
+            self.decode_into(input, dst)
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -189,7 +182,7 @@ impl Codec for I420ToRgbDecoder {
         input: &FrameLease,
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
-        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+        crate::decoder::raw::process_shared_raw_decode(self, input, pool)
     }
 }
 

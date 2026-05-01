@@ -1,6 +1,6 @@
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, frame_to_dynamic_image};
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{Codec, CodecDescriptor, CodecError};
 use styx_core::prelude::*;
 
 /// Simple passthrough decoder that validates FourCc and returns the frame unchanged.
@@ -12,13 +12,12 @@ impl PassthroughDecoder {
     /// Create a passthrough decoder for the given FourCc.
     pub fn new(fourcc: FourCc) -> Self {
         Self {
-            descriptor: CodecDescriptor {
-                kind: CodecKind::Decoder,
-                input: fourcc,
-                output: fourcc,
-                name: "passthrough",
-                impl_name: "passthrough",
-            },
+            descriptor: crate::decoder::raw::raw_decoder_descriptor(
+                fourcc,
+                fourcc,
+                "passthrough",
+                "passthrough",
+            ),
         }
     }
 }

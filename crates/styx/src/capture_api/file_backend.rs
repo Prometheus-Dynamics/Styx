@@ -271,6 +271,8 @@ pub(super) fn start_file(
         external_backings: Vec::new(),
         worker_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         control_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+        shutdown_stats: Default::default(),
+        retry_metrics: Default::default(),
     })
 }
 

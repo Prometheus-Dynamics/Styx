@@ -9,7 +9,7 @@ pub(crate) fn lookup_codec(
     prefer_hardware: bool,
 ) -> Result<Arc<dyn Codec>, RegistryError> {
     if let Some(name) = impl_name {
-        registry.lookup_named(fourcc, name)
+        registry.lookup_named(fourcc, CodecImplementationId::new(name))
     } else if prefer_hardware {
         registry.lookup_preferred(fourcc, &[], true)
     } else {

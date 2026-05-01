@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
-use styx_codec::prelude::{CodecDescriptor, CodecKind, CodecRegistry};
+use styx_codec::prelude::{CodecDescriptor, CodecKind, CodecRegistry, CodecRegistryConfig};
 use styx_core::prelude::{FrameResidency, packed_transform_residency_capabilities};
 
+use crate::capture_api::StyxConfig;
 use crate::{BackendKind, ProbedDevice};
 
 /// Snapshot of the capture, codec, transform, and frame-backing surface that Styx can expose.
@@ -167,9 +168,25 @@ pub struct StyxPathPlan {
 
 /// Build a capability inventory from probed devices and the enabled codec registry.
 pub fn styx_capability_inventory(devices: &[ProbedDevice]) -> StyxCapabilityInventory {
+    styx_capability_inventory_with_codec_config(devices, CodecRegistryConfig::default())
+}
+
+/// Build a capability inventory using the codec limits from runtime config.
+pub fn styx_capability_inventory_with_config(
+    devices: &[ProbedDevice],
+    config: &StyxConfig,
+) -> StyxCapabilityInventory {
+    styx_capability_inventory_with_codec_config(devices, config.codec_registry_config())
+}
+
+/// Build a capability inventory from probed devices and an explicitly configured codec registry.
+pub fn styx_capability_inventory_with_codec_config(
+    devices: &[ProbedDevice],
+    codec_config: CodecRegistryConfig,
+) -> StyxCapabilityInventory {
     let mut capture_backends = capture_capabilities(devices);
     capture_backends.sort_by_key(|cap| cap.backend);
-    let mut codecs = codec_capabilities();
+    let mut codecs = codec_capabilities(codec_config);
     codecs.sort_by(|left, right| {
         codec_kind_rank(left.kind)
             .cmp(&codec_kind_rank(right.kind))
@@ -223,10 +240,18 @@ pub fn explain_styx_path(
         if input == output {
             steps.push("codec:passthrough".to_string());
         } else {
-            let codec = inventory.codecs.iter().find(|cap| {
+            let mut codecs = inventory.codecs.iter().filter(|cap| {
                 cap.input == input
                     && cap.output == output
                     && (!request.require_exportable || cap.exportable_output_possible)
+            });
+            let first_codec = codecs.next();
+            let codec = first_codec.and_then(|first| {
+                if first.hardware_accelerated {
+                    Some(first)
+                } else {
+                    codecs.find(|cap| cap.hardware_accelerated).or(Some(first))
+                }
             });
             match codec {
                 Some(cap) => {
@@ -285,8 +310,8 @@ fn capture_capabilities(devices: &[ProbedDevice]) -> Vec<CaptureBackendCapabilit
     out
 }
 
-fn codec_capabilities() -> Vec<CodecCapability> {
-    let Ok(codecs) = CodecRegistry::list_enabled_codecs() else {
+fn codec_capabilities(config: CodecRegistryConfig) -> Vec<CodecCapability> {
+    let Ok(codecs) = CodecRegistry::list_enabled_codecs_with_config(config) else {
         return Vec::new();
     };
     codecs
@@ -555,6 +580,15 @@ mod tests {
                 .iter()
                 .any(|cap| cap.id == "packed_cpu_transform" && cap.copy_required)
         );
+    }
+
+    #[test]
+    fn inventory_accepts_codec_limits_from_runtime_config() {
+        let config = StyxConfig::new().codec_max_dimensions(3840, 2160);
+        let inventory = styx_capability_inventory_with_config(&[device(FourCc::RG24)], &config);
+
+        assert_eq!(inventory.capture_backends.len(), 1);
+        assert_eq!(inventory.capture_backends[0].formats, vec!["RG24"]);
     }
 
     #[test]

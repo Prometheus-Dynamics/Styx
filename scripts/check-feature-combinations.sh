@@ -21,7 +21,11 @@ declare -a checks=(
     "netcam-video::cargo check -p styx --no-default-features --features netcam,netcam-video"
     "file-backend-video::cargo check -p styx --no-default-features --features file-backend,file-backend-video"
     "simulation-bevy::cargo check -p styx --no-default-features --features simulation-bevy"
+    "async-netcam::cargo check -p styx --no-default-features --features async,netcam"
     "async-netcam-file::cargo check -p styx --no-default-features --features async,netcam,file-backend"
+    "serde::cargo check -p styx --no-default-features --features serde"
+    "schema::cargo check -p styx --no-default-features --features schema"
+    "release-linux-media::cargo check -p styx --no-default-features --features async,netcam,file-backend,codec-jpeg-decoder,raw-decoders,graph-pipeline,v4l2,libcamera"
     "all-features::cargo check -p styx --all-features"
 )
 

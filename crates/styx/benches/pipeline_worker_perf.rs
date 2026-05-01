@@ -1,5 +1,10 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::thread;
 use std::time::Duration;
 use styx::prelude::*;
 
@@ -46,6 +51,75 @@ fn bench_capture_queue_backpressure(c: &mut Criterion) {
     });
 }
 
+fn bench_queue_contention(c: &mut Criterion) {
+    c.bench_function("core_queue_mpmc_contention_4x4_4096_msgs", |b| {
+        b.iter(|| {
+            const PRODUCERS: usize = 4;
+            const CONSUMERS: usize = 4;
+            const MESSAGES_PER_PRODUCER: usize = 1024;
+            const TOTAL: usize = PRODUCERS * MESSAGES_PER_PRODUCER;
+
+            let (tx, rx) = styx_core::queue::bounded::<usize>(64);
+            let remaining = Arc::new(AtomicUsize::new(TOTAL));
+            let mut consumers = Vec::with_capacity(CONSUMERS);
+            for _ in 0..CONSUMERS {
+                let rx = rx.clone();
+                let remaining = Arc::clone(&remaining);
+                consumers.push(thread::spawn(move || {
+                    let mut received = 0usize;
+                    loop {
+                        if remaining.load(Ordering::Acquire) == 0 {
+                            break;
+                        }
+                        match rx.recv_blocking() {
+                            styx_core::queue::RecvWaitOutcome::Data(value) => {
+                                black_box(value);
+                                received += 1;
+                                remaining.fetch_sub(1, Ordering::AcqRel);
+                            }
+                            styx_core::queue::RecvWaitOutcome::Closed => break,
+                            styx_core::queue::RecvWaitOutcome::Timeout => {}
+                        }
+                    }
+                    received
+                }));
+            }
+
+            let mut producers = Vec::with_capacity(PRODUCERS);
+            for producer in 0..PRODUCERS {
+                let tx = tx.clone();
+                producers.push(thread::spawn(move || {
+                    for value in 0..MESSAGES_PER_PRODUCER {
+                        let mut payload = producer * MESSAGES_PER_PRODUCER + value;
+                        loop {
+                            match tx.send_blocking(payload) {
+                                styx_core::queue::SendWaitOutcome::Ok => break,
+                                styx_core::queue::SendWaitOutcome::Closed(value) => {
+                                    payload = value;
+                                }
+                                styx_core::queue::SendWaitOutcome::Timeout(value) => {
+                                    payload = value;
+                                }
+                            }
+                        }
+                    }
+                }));
+            }
+
+            for producer in producers {
+                producer.join().expect("producer");
+            }
+            tx.close();
+            let received: usize = consumers
+                .into_iter()
+                .map(|consumer| consumer.join().expect("consumer"))
+                .sum();
+            black_box(received);
+            assert_eq!(received, TOTAL);
+        });
+    });
+}
+
 #[cfg(feature = "async")]
 fn bench_async_receive(c: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -70,6 +144,7 @@ fn bench_async_receive(c: &mut Criterion) {
 fn benches(c: &mut Criterion) {
     bench_raw_pipeline_drain(c);
     bench_capture_queue_backpressure(c);
+    bench_queue_contention(c);
     #[cfg(feature = "async")]
     bench_async_receive(c);
 }

@@ -40,6 +40,7 @@ pub struct MediaPipelineBuilder<'a> {
     capture: CaptureRequest<'a>,
     decoder: Option<Arc<dyn Codec>>,
     encoder: Option<Arc<dyn Codec>>,
+    execution_mode: PipelineExecutionMode,
     #[cfg(feature = "hooks")]
     hook: Option<HookStore<HookFn>>,
     #[cfg(feature = "hooks")]
@@ -65,6 +66,22 @@ pub struct MediaPipelineBuilder<'a> {
     service_runtime: Option<SharedStyxServiceRuntime>,
 }
 
+/// Execution backend selected for a `MediaPipeline`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PipelineExecutionMode {
+    /// Use the release default for the compiled feature set.
+    ///
+    /// With `graph-pipeline` enabled this currently selects the graph-backed runtime;
+    /// otherwise it selects the linear runtime.
+    #[default]
+    Auto,
+    /// Use direct capture→decode→hook→encode processing.
+    Linear,
+    /// Use the Daedalus graph-backed runtime.
+    #[cfg(feature = "graph-pipeline")]
+    Graph,
+}
+
 impl<'a> MediaPipelineBuilder<'a> {
     /// Start from a capture request.
     ///
@@ -75,6 +92,7 @@ impl<'a> MediaPipelineBuilder<'a> {
             capture,
             decoder: None,
             encoder: None,
+            execution_mode: PipelineExecutionMode::Auto,
             #[cfg(feature = "hooks")]
             hook: None,
             #[cfg(feature = "hooks")]
@@ -147,6 +165,25 @@ impl<'a> MediaPipelineBuilder<'a> {
     /// Use pipeline-local capture/runtime tunables instead of defaults.
     pub fn config(mut self, config: StyxConfig) -> Self {
         self.capture = self.capture.config(config);
+        self
+    }
+
+    /// Use the release-default execution runtime for the compiled feature set.
+    pub fn auto_execution(mut self) -> Self {
+        self.execution_mode = PipelineExecutionMode::Auto;
+        self
+    }
+
+    /// Use direct linear pipeline execution even when graph support is compiled in.
+    pub fn linear_execution(mut self) -> Self {
+        self.execution_mode = PipelineExecutionMode::Linear;
+        self
+    }
+
+    /// Use graph-backed pipeline execution.
+    #[cfg(feature = "graph-pipeline")]
+    pub fn graph_execution(mut self) -> Self {
+        self.execution_mode = PipelineExecutionMode::Graph;
         self
     }
 
@@ -306,7 +343,12 @@ impl<'a> MediaPipelineBuilder<'a> {
     ) -> Result<MediaPipeline, crate::capture_api::CaptureError> {
         #[cfg(feature = "graph-pipeline")]
         {
-            self.start_graph_backed_with_policy(policy)
+            match self.execution_mode {
+                PipelineExecutionMode::Auto | PipelineExecutionMode::Graph => {
+                    self.start_graph_backed_with_policy(policy)
+                }
+                PipelineExecutionMode::Linear => self.start_linear_with_policy(policy),
+            }
         }
 
         #[cfg(not(feature = "graph-pipeline"))]
@@ -315,7 +357,6 @@ impl<'a> MediaPipelineBuilder<'a> {
         }
     }
 
-    #[cfg(not(feature = "graph-pipeline"))]
     fn start_linear_with_policy(
         self,
         policy: crate::capture_api::CaptureStartPolicy,
@@ -342,6 +383,8 @@ impl<'a> MediaPipelineBuilder<'a> {
         }
         Ok(MediaPipeline {
             capture,
+            #[cfg(feature = "graph-pipeline")]
+            graph_runtime: None,
             decoder: self.decoder,
             encoder: self.encoder,
             #[cfg(feature = "hooks")]
@@ -614,122 +657,5 @@ where
 }
 
 #[cfg(all(test, feature = "graph-pipeline"))]
-mod tests {
-    use super::*;
-    use crate::{BackendHandle, BackendKind, DeviceIdentity, ProbedBackend, ProbedDevice};
-    use std::num::NonZeroU32;
-    use styx_capture::prelude::{
-        CaptureDescriptor, ColorSpace, FourCc, Interval, MediaFormat, Mode, ModeId, RecvOutcome,
-        Resolution,
-    };
-
-    fn virtual_device() -> ProbedDevice {
-        let interval = Interval {
-            numerator: NonZeroU32::new(1).unwrap(),
-            denominator: NonZeroU32::new(30).unwrap(),
-        };
-        let format = MediaFormat::new(
-            FourCc::RG24,
-            Resolution::new(2, 2).unwrap(),
-            ColorSpace::Srgb,
-        );
-        let mode = Mode {
-            id: ModeId {
-                format,
-                interval: Some(interval),
-            },
-            format,
-            intervals: smallvec::smallvec![interval],
-            interval_stepwise: None,
-        };
-        ProbedDevice {
-            identity: DeviceIdentity {
-                display: "virtual-test".into(),
-                keys: vec!["virtual-test".into()],
-            },
-            backends: vec![ProbedBackend {
-                kind: BackendKind::Virtual,
-                handle: BackendHandle::Virtual,
-                descriptor: CaptureDescriptor {
-                    modes: vec![mode],
-                    controls: vec![],
-                },
-                properties: vec![],
-            }],
-        }
-    }
-
-    #[test]
-    fn builder_start_runs_linear_facade_through_graph_pipeline() {
-        let device = virtual_device();
-        let request = CaptureRequest::new(&device).backend(BackendKind::Virtual);
-        let mut pipeline = MediaPipelineBuilder::new(request)
-            .decoder(Arc::new(PassthroughDecoder::new(FourCc::RG24)))
-            .shared_decode_output(false)
-            .without_encoder()
-            .start()
-            .expect("start graph-backed pipeline");
-
-        match pipeline.next_blocking(std::time::Duration::from_millis(250)) {
-            RecvOutcome::Data(frame) => {
-                assert_eq!(frame.meta().format.code, FourCc::RG24);
-            }
-            RecvOutcome::Empty => panic!("expected frame from graph-backed pipeline, got empty"),
-            RecvOutcome::Closed => panic!("expected frame from graph-backed pipeline, got closed"),
-        }
-        let control_result = pipeline
-            .submit_control_event(crate::graph::StyxControlEvent::Get {
-                id: styx_core::prelude::ControlId(1),
-            })
-            .expect("control event should route alongside frame nodes");
-        assert!(!control_result.is_ok());
-        assert!(pipeline.graph_telemetry().is_some());
-    }
-
-    #[test]
-    fn graph_backed_pipeline_routes_control_events_through_graph() {
-        let device = virtual_device();
-        let request = CaptureRequest::new(&device).backend(BackendKind::Virtual);
-        let service = Arc::new(std::sync::Mutex::new(
-            crate::service::StyxServiceRuntime::new(),
-        ));
-        let mut cursor = service.lock().expect("service lock").subscribe_from_start();
-        let mut pipeline = MediaPipelineBuilder::new(request)
-            .raw_frames()
-            .service_runtime(Arc::clone(&service))
-            .start()
-            .expect("start graph-backed raw pipeline");
-
-        let result = pipeline
-            .submit_control_event(crate::graph::StyxControlEvent::Set {
-                id: styx_core::prelude::ControlId(1),
-                value: styx_core::prelude::ControlValue::Bool(true),
-            })
-            .expect("control event routed through graph");
-
-        assert!(!result.is_ok());
-        assert!(
-            result
-                .error
-                .as_deref()
-                .is_some_and(|err| err.contains("control plane not available"))
-        );
-        let _ = pipeline.health_report();
-        let events = {
-            let service = service.lock().expect("service lock");
-            service.poll_events(&mut cursor).events().to_vec()
-        };
-        assert!(events.iter().any(|event| {
-            matches!(
-                event.event,
-                crate::service::StyxServiceEvent::Control(crate::graph::StyxControlResult { .. })
-            )
-        }));
-        assert!(
-            events.iter().any(|event| {
-                matches!(event.event, crate::service::StyxServiceEvent::Health(_))
-            })
-        );
-        assert!(pipeline.graph_telemetry().is_some());
-    }
-}
+#[path = "builder_tests.rs"]
+mod tests;

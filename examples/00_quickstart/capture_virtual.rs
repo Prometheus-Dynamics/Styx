@@ -11,7 +11,7 @@ fn main() -> Result<(), CaptureError> {
         .capture_queue_depth(8)
         .capture_pool(4, 1 << 18, 8);
 
-    let handle = device.capture_request().config(config).start()?;
+    let handle = device.open_with_config(config)?;
     println!(
         "virtual capture on {:?} at {:?} (interval {:?})",
         handle.backend(),

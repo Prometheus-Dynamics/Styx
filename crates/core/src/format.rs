@@ -9,7 +9,7 @@ use std::{fmt, num::NonZeroU32, str::FromStr};
 /// let fcc = FourCc::MJPG;
 /// assert_eq!(fcc.to_string(), "MJPG");
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "schema", schema(value_type = String, example = "MJPG"))]
 pub struct FourCc([u8; 4]);
@@ -73,6 +73,10 @@ impl FourCc {
     pub const H264: Self = Self::new(*b"H264");
     pub const H265: Self = Self::new(*b"H265");
     pub const HEVC: Self = Self::new(*b"HEVC");
+    pub const RGGB: Self = Self::new(*b"RGGB");
+    pub const BGGR: Self = Self::new(*b"BGGR");
+    pub const GBRG: Self = Self::new(*b"GBRG");
+    pub const GRBG: Self = Self::new(*b"GRBG");
 
     /// Construct from raw bytes.
     pub const fn new(bytes: [u8; 4]) -> Self {
@@ -97,6 +101,11 @@ impl FourCc {
     /// Whether this FourCC names a JPEG-encoded stream or packet.
     pub fn is_jpeg_encoded(self) -> bool {
         self.info().jpeg_encoded
+    }
+
+    /// Whether this FourCC names a raw Bayer mosaic format.
+    pub fn is_bayer_raw(self) -> bool {
+        matches!(self, Self::RGGB | Self::BGGR | Self::GBRG | Self::GRBG)
     }
 
     /// Bytes per pixel for common single-plane packed raw formats.
@@ -237,6 +246,15 @@ mod fourcc_tests {
         assert_eq!(FourCc::RG24.estimated_frame_bytes(640, 480), Some(921_600));
         assert_eq!(FourCc::NV12.estimated_frame_bytes(4, 2), Some(12));
         assert_eq!(FourCc::MJPG.estimated_frame_bytes(4, 2), None);
+    }
+
+    #[test]
+    fn classifies_raw_bayer_formats() {
+        assert!(FourCc::RGGB.is_bayer_raw());
+        assert!(FourCc::BGGR.is_bayer_raw());
+        assert!(FourCc::GBRG.is_bayer_raw());
+        assert!(FourCc::GRBG.is_bayer_raw());
+        assert!(!FourCc::RG24.is_bayer_raw());
     }
 }
 

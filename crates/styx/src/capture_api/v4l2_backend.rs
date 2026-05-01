@@ -717,6 +717,8 @@ pub(super) fn start_v4l2(
         external_backings: vec![backing_tracker],
         worker_error: Arc::new(Mutex::new(None)),
         control_error: Arc::new(Mutex::new(None)),
+        shutdown_stats: Default::default(),
+        retry_metrics: Default::default(),
     })
 }
 

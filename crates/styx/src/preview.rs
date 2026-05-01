@@ -9,7 +9,7 @@ use styx_core::prelude::*;
 ///
 /// # Example
 /// ```rust,no_run
-/// use styx::prelude::*;
+/// use styx::extras::preview_window::PreviewWindow;
 ///
 /// let mut window = PreviewWindow::new("preview", 640, 480)?;
 /// # Ok::<(), minifb::Error>(())

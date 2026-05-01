@@ -2,7 +2,9 @@ use std::{mem, sync::Arc, time::Instant};
 
 use parking_lot::Mutex;
 
-use crate::metrics::StageMetrics;
+use crate::metrics::{
+    CaptureRetryMetrics, CaptureShutdownStats, CaptureShutdownWorkerWaitOutcome, StageMetrics,
+};
 use crate::{BackendKind, ProbedBackend};
 
 use super::control_plane::{ControlPlane, apply_control_to_plane, read_control_from_plane};
@@ -84,6 +86,8 @@ pub struct CaptureHandle {
     pub(crate) external_backings: Vec<Arc<crate::metrics::ExternalBackingTracker>>,
     pub(crate) worker_error: Arc<Mutex<Option<CaptureError>>>,
     pub(crate) control_error: Arc<Mutex<Option<CaptureError>>>,
+    pub(crate) shutdown_stats: Arc<Mutex<CaptureShutdownStats>>,
+    pub(crate) retry_metrics: CaptureRetryMetrics,
 }
 
 /// Worker handle for capture backends.
@@ -257,16 +261,20 @@ impl CaptureHandle {
         let teardown_started = Instant::now();
         let backend = self.backend;
         self.signal_stop_and_close();
+        let join_started = Instant::now();
         if let Some(worker) = self.worker.take() {
             join_worker_sync(backend, worker, "capture worker");
         }
         for worker in self.aux_workers.drain(..) {
             join_worker_sync(backend, worker, "capture auxiliary worker");
         }
+        self.record_worker_join_ms(join_started.elapsed().as_millis() as u64);
         self.finish_teardown();
+        let teardown_ms = teardown_started.elapsed().as_millis() as u64;
+        self.record_teardown_ms(teardown_ms);
         tracing::debug!(
             backend = %backend,
-            teardown_ms = teardown_started.elapsed().as_millis() as u64,
+            teardown_ms,
             "capture teardown complete"
         );
     }
@@ -276,16 +284,20 @@ impl CaptureHandle {
         let teardown_started = Instant::now();
         let backend = self.backend;
         self.signal_stop_and_close();
+        let join_started = Instant::now();
         if let Some(worker) = self.worker.take() {
             join_worker_async(backend, worker, "capture worker").await;
         }
         for worker in self.aux_workers.drain(..) {
             join_worker_async(backend, worker, "capture auxiliary worker").await;
         }
+        self.record_worker_join_ms(join_started.elapsed().as_millis() as u64);
         self.finish_teardown();
+        let teardown_ms = teardown_started.elapsed().as_millis() as u64;
+        self.record_teardown_ms(teardown_ms);
         tracing::debug!(
             backend = %backend,
-            teardown_ms = teardown_started.elapsed().as_millis() as u64,
+            teardown_ms,
             "capture async teardown complete"
         );
     }
@@ -296,9 +308,11 @@ impl CaptureHandle {
             let _ = tx.send(());
         }
         self.rx.close();
+        let signal_close_ms = start.elapsed().as_millis() as u64;
+        self.shutdown_stats.lock().last_signal_close_ms = Some(signal_close_ms);
         tracing::debug!(
             backend = %self.backend,
-            signal_close_ms = start.elapsed().as_millis() as u64,
+            signal_close_ms,
             "capture stop signaled and queue closed"
         );
     }
@@ -309,10 +323,16 @@ impl CaptureHandle {
         while let RecvOutcome::Data(_frame) = self.rx.recv() {
             drained = drained.saturating_add(1);
         }
+        let drain_ms = start.elapsed().as_millis() as u64;
+        {
+            let mut stats = self.shutdown_stats.lock();
+            stats.last_drain_ms = Some(drain_ms);
+            stats.last_drained_frames = drained;
+        }
         tracing::debug!(
             backend = %self.backend,
             drained_frames = drained,
-            drain_ms = start.elapsed().as_millis() as u64,
+            drain_ms,
             "capture queue drained during teardown"
         );
         #[cfg(feature = "libcamera")]
@@ -417,6 +437,10 @@ impl CaptureHandle {
                 .map(|tracker| tracker.snapshot())
                 .collect(),
             transform_pool: styx_core::transform::transform_pool_stats(),
+            #[cfg(target_os = "linux")]
+            shared_decode_pool: None,
+            #[cfg(target_os = "linux")]
+            shared_encode_pool: None,
         }
     }
 
@@ -486,6 +510,8 @@ impl CaptureHandle {
             recent_stage_errors,
             drop_reasons,
             graph: None,
+            capture_shutdown: self.shutdown_stats.lock().clone(),
+            capture_retries: self.retry_metrics.snapshot(),
         }
     }
 
@@ -555,6 +581,16 @@ impl CaptureHandle {
             *self.control_error.lock() = Some(err.clone());
         }
     }
+
+    fn record_worker_join_ms(&self, worker_join_ms: u64) {
+        let mut stats = self.shutdown_stats.lock();
+        stats.last_worker_join_ms = Some(worker_join_ms);
+        stats.last_worker_wait_outcome = Some(CaptureShutdownWorkerWaitOutcome::Joined);
+    }
+
+    fn record_teardown_ms(&self, teardown_ms: u64) {
+        self.shutdown_stats.lock().last_teardown_ms = Some(teardown_ms);
+    }
 }
 
 impl Drop for CaptureHandle {
@@ -563,8 +599,47 @@ impl Drop for CaptureHandle {
         // Async callers should prefer `stop_async` or `stop_async_in_place`; drop runs
         // synchronous joins for thread-backed workers.
         if self.worker.is_some() || !self.aux_workers.is_empty() {
+            #[cfg(feature = "async")]
+            {
+                if tokio::runtime::Handle::try_current().is_ok() {
+                    self.teardown_from_async_drop();
+                    return;
+                }
+            }
             self.teardown_in_place();
         }
+    }
+}
+
+#[cfg(feature = "async")]
+impl CaptureHandle {
+    fn teardown_from_async_drop(&mut self) {
+        let teardown_started = Instant::now();
+        let backend = self.backend;
+        self.signal_stop_and_close();
+        let mut detached_workers = 0u64;
+        if let Some(worker) = self.worker.take() {
+            detach_worker_from_async_drop(backend, worker, "capture worker");
+            detached_workers = detached_workers.saturating_add(1);
+        }
+        for worker in self.aux_workers.drain(..) {
+            detach_worker_from_async_drop(backend, worker, "capture auxiliary worker");
+            detached_workers = detached_workers.saturating_add(1);
+        }
+        {
+            let mut stats = self.shutdown_stats.lock();
+            stats.async_drop_detached_workers = detached_workers;
+            stats.last_worker_wait_outcome =
+                Some(CaptureShutdownWorkerWaitOutcome::DetachedInAsyncDrop);
+        }
+        self.finish_teardown();
+        let teardown_ms = teardown_started.elapsed().as_millis() as u64;
+        self.record_teardown_ms(teardown_ms);
+        tracing::debug!(
+            backend = %backend,
+            teardown_ms,
+            "capture async-drop teardown signaled without blocking on worker joins"
+        );
     }
 }
 
@@ -588,6 +663,27 @@ fn join_worker_sync(backend: BackendKind, worker: WorkerHandle, label: &'static 
                 worker = label,
                 abort_ms = join_started.elapsed().as_millis() as u64,
                 "capture async worker aborted during sync teardown"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+fn detach_worker_from_async_drop(backend: BackendKind, worker: WorkerHandle, label: &'static str) {
+    match worker {
+        WorkerHandle::Thread(_h) => {
+            tracing::warn!(
+                backend = %backend,
+                worker = label,
+                "capture thread worker detached during async drop; call stop_async for deterministic shutdown"
+            );
+        }
+        WorkerHandle::Async(h) => {
+            h.abort();
+            tracing::debug!(
+                backend = %backend,
+                worker = label,
+                "capture async worker aborted during async drop"
             );
         }
     }

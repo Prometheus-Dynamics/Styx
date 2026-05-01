@@ -73,22 +73,26 @@ pub mod imports {
     /// Pipeline builder/runtime APIs.
     pub mod pipeline {
         pub use crate::metrics::{HealthReport, PipelineMemoryStats, PipelineMetrics};
-        pub use crate::session::{MediaPipeline, MediaPipelineBuilder, MediaPipelineFrameIter};
+        pub use crate::session::{
+            MediaPipeline, MediaPipelineBuilder, MediaPipelineFrameIter, PipelineExecutionMode,
+        };
         pub use styx_core::prelude::{FrameLease, FrameTransform, RecvOutcome, RecvWaitOutcome};
     }
 
     /// Runtime codec selection and codec trait APIs.
     pub mod codec {
         pub use crate::runtime_codec::{
-            CodecLatency, CodecSelector, CodecSelectorParseError, EncoderFamilySpec,
-            FrameDecodePlan, FrameDecodePlanExt, RuntimeCodecCapability, RuntimeCodecInventory,
-            decode_to_rg24_for_format, default_decoder_codec_selector_for_capture_format,
+            CodecLatency, CodecOutputFormat, CodecSelector, CodecSelectorParseError,
+            EncoderFamilySpec, FrameDecodePlan, FrameDecodePlanExt, RuntimeCodecCapability,
+            RuntimeCodecInventory, codec_output_format_for_codec_selector,
+            codec_output_format_for_encoder_selector, decode_to_rg24_for_format,
+            default_decoder_codec_selector_for_capture_format,
             default_decoder_ids_by_capture_format, default_decoder_selector_for_capture_format,
             default_decoder_selectors_by_capture_format, default_stream_codec_selector,
             default_stream_encoder_selector, encoder_family_for_codec_selector,
             encoder_family_for_descriptor, encoder_family_for_selector,
             output_format_for_codec_selector, output_format_for_encoder_selector,
-            runtime_codec_inventory, shared_rg24_decode_bytes,
+            runtime_codec_inventory, runtime_codec_inventory_with_config, shared_rg24_decode_bytes,
         };
         #[cfg(feature = "codec-jpeg-decoder")]
         pub use styx_codec::prelude::MjpegDecoder;
@@ -118,9 +122,10 @@ pub mod imports {
     /// Service event and lifecycle APIs.
     pub mod service {
         pub use crate::service::{
-            RecordingLifecycleEvent, ServiceEventCursor, ServiceEventPoll,
-            SharedStyxServiceRuntime, SinkKind, SinkLifecycleEvent, StyxServiceConfig,
-            StyxServiceEvent, StyxServiceRuntime, TimestampedServiceEvent,
+            PipelineWorkerEvent, PipelineWorkerStopReason, RecordingLifecycleEvent,
+            ServiceEventCursor, ServiceEventPoll, SharedStyxServiceRuntime, SinkKind,
+            SinkLifecycleEvent, StyxServiceConfig, StyxServiceEvent, StyxServiceRuntime,
+            TimestampedServiceEvent,
         };
     }
 
@@ -301,6 +306,34 @@ impl ProbedDevice {
         } else {
             request
         }
+    }
+
+    /// Open capture using the default backend/mode selection.
+    pub fn open(
+        &self,
+    ) -> Result<crate::capture_api::CaptureHandle, crate::capture_api::CaptureError> {
+        self.capture_request().start()
+    }
+
+    /// Open capture with request-local runtime configuration.
+    pub fn open_with_config(
+        &self,
+        config: crate::capture_api::StyxConfig,
+    ) -> Result<crate::capture_api::CaptureHandle, crate::capture_api::CaptureError> {
+        self.capture_request().config(config).start()
+    }
+
+    /// Open capture using a resilient or caller-supplied start policy.
+    pub fn open_with_policy(
+        &self,
+        policy: crate::capture_api::CaptureStartPolicy,
+    ) -> Result<crate::capture_api::CaptureHandle, crate::capture_api::CaptureError> {
+        self.capture_request().start_with_policy(policy)
+    }
+
+    /// Build a media pipeline from this device without manually constructing a request.
+    pub fn pipeline(&self) -> crate::session::MediaPipelineBuilder<'_> {
+        crate::session::MediaPipelineBuilder::new(self.capture_request())
     }
 }
 
@@ -656,8 +689,9 @@ pub mod prelude {
         RecordingSessionMetadata,
     };
     pub use crate::runtime_codec::{
-        CodecLatency, CodecSelector, CodecSelectorParseError, EncoderFamilySpec, FrameDecodePlan,
-        FrameDecodePlanExt, RuntimeCodecCapability, RuntimeCodecInventory,
+        CodecLatency, CodecOutputFormat, CodecSelector, CodecSelectorParseError, EncoderFamilySpec,
+        FrameDecodePlan, FrameDecodePlanExt, RuntimeCodecCapability, RuntimeCodecInventory,
+        codec_output_format_for_codec_selector, codec_output_format_for_encoder_selector,
         decode_to_rg24_for_format, default_decoder_codec_selector_for_capture_format,
         default_decoder_ids_by_capture_format, default_decoder_selector_for_capture_format,
         default_decoder_selectors_by_capture_format, default_stream_codec_selector,
@@ -667,11 +701,13 @@ pub mod prelude {
         runtime_codec_inventory, shared_rg24_decode_bytes,
     };
     pub use crate::service::{
-        RecordingLifecycleEvent, ServiceEventCursor, ServiceEventPoll, SharedStyxServiceRuntime,
-        SinkKind, SinkLifecycleEvent, StyxServiceConfig, StyxServiceEvent, StyxServiceRuntime,
-        TimestampedServiceEvent,
+        PipelineWorkerEvent, PipelineWorkerStopReason, RecordingLifecycleEvent, ServiceEventCursor,
+        ServiceEventPoll, SharedStyxServiceRuntime, SinkKind, SinkLifecycleEvent,
+        StyxServiceConfig, StyxServiceEvent, StyxServiceRuntime, TimestampedServiceEvent,
     };
-    pub use crate::session::{MediaPipeline, MediaPipelineBuilder, MediaPipelineFrameIter};
+    pub use crate::session::{
+        MediaPipeline, MediaPipelineBuilder, MediaPipelineFrameIter, PipelineExecutionMode,
+    };
     #[cfg(all(feature = "hotplug", feature = "libcamera"))]
     pub use crate::watch::LibcameraHotplugWatcher;
     #[cfg(all(feature = "hotplug", target_os = "linux"))]

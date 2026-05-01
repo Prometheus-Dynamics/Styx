@@ -3,7 +3,7 @@ use styx_core::prelude::*;
 use crate::decoder::raw::decode_strided_rows_to_rgb24;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{Codec, CodecDescriptor, CodecError};
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
@@ -56,13 +56,12 @@ impl BgraToRgbDecoder {
 
     pub fn with_input(pool: BufferPool, input: FourCc, impl_name: &'static str) -> Self {
         Self {
-            descriptor: CodecDescriptor {
-                kind: CodecKind::Decoder,
+            descriptor: crate::decoder::raw::raw_decoder_descriptor(
                 input,
-                output: FourCc::RG24,
-                name: "bgra2rgb",
+                FourCc::RG24,
+                "bgra2rgb",
                 impl_name,
-            },
+            ),
             pool,
         }
     }
@@ -156,16 +155,9 @@ impl Codec for BgraToRgbDecoder {
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
-        let layout = plane_layout_from_dims(
-            input.meta().format.resolution.width,
-            input.meta().format.resolution.height,
-            3,
-        );
-        let mut buf = self.pool.lease();
-        unsafe { buf.resize_uninit(layout.len) };
-        let meta = self.decode_into(&input, buf.as_mut_slice())?;
-
-        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+        crate::decoder::raw::process_owned_raw_decode(input, &self.pool, 3, |input, dst| {
+            self.decode_into(input, dst)
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -174,7 +166,7 @@ impl Codec for BgraToRgbDecoder {
         input: &FrameLease,
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
-        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+        crate::decoder::raw::process_shared_raw_decode(self, input, pool)
     }
 }
 

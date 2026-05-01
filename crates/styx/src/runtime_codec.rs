@@ -10,7 +10,8 @@ use styx_capture::prelude::{MediaFormat, Mode};
 #[cfg(feature = "codec-jpeg-decoder")]
 use styx_codec::prelude::MjpegDecoder;
 use styx_codec::prelude::{
-    Codec, CodecDescriptor, CodecError, CodecKind, CodecRegistry, PassthroughDecoder,
+    Codec, CodecDescriptor, CodecError, CodecImplementationId, CodecKind, CodecRegistry,
+    CodecRegistryConfig, PassthroughDecoder,
 };
 #[cfg(feature = "raw-decoders")]
 use styx_codec::prelude::{Nv12ToRgbDecoder, YuyvToRgbDecoder};
@@ -121,6 +122,31 @@ pub enum CodecLatency {
     Normal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CodecOutputFormat {
+    Mjpeg,
+    H264,
+    H265,
+    Unknown,
+}
+
+impl CodecOutputFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mjpeg => "mjpeg",
+            Self::H264 => "h264",
+            Self::H265 => "h265",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for CodecOutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderFamilySpec {
     pub family: EncoderFamily,
@@ -130,7 +156,7 @@ pub struct EncoderFamilySpec {
     pub runtime_implementation_aliases: &'static [&'static str],
     pub runtime_name_aliases: &'static [&'static str],
     pub output_fourcc_aliases: &'static [&'static str],
-    pub output_format: &'static str,
+    pub output_format: CodecOutputFormat,
     pub latency: CodecLatency,
     pub streamable: bool,
 }
@@ -148,6 +174,12 @@ impl EncoderFamilySpec {
             || self.runtime_implementation_aliases.contains(&selector)
             || self.runtime_name_aliases.contains(&selector)
     }
+
+    fn matches_runtime_implementation(&self, implementation: &CodecImplementationId) -> bool {
+        self.runtime_implementation_aliases
+            .iter()
+            .any(|alias| *implementation == CodecImplementationId::new(*alias))
+    }
 }
 
 pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
@@ -159,7 +191,7 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["turbojpeg"],
         runtime_name_aliases: &[],
         output_fourcc_aliases: &["MJPG", "JPEG"],
-        output_format: "mjpeg",
+        output_format: CodecOutputFormat::Mjpeg,
         latency: CodecLatency::Low,
         streamable: true,
     },
@@ -171,7 +203,7 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["mozjpeg"],
         runtime_name_aliases: &[],
         output_fourcc_aliases: &["MJPG", "JPEG"],
-        output_format: "mjpeg",
+        output_format: CodecOutputFormat::Mjpeg,
         latency: CodecLatency::Normal,
         streamable: true,
     },
@@ -183,7 +215,7 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["ffmpeg"],
         runtime_name_aliases: &["mjpeg"],
         output_fourcc_aliases: &["MJPG", "JPEG"],
-        output_format: "mjpeg",
+        output_format: CodecOutputFormat::Mjpeg,
         latency: CodecLatency::Normal,
         streamable: true,
     },
@@ -195,7 +227,7 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["ffmpeg", "h264_v4l2m2m"],
         runtime_name_aliases: &["h264", "avc"],
         output_fourcc_aliases: &["H264"],
-        output_format: "h264",
+        output_format: CodecOutputFormat::H264,
         latency: CodecLatency::Normal,
         streamable: true,
     },
@@ -207,14 +239,14 @@ pub const ENCODER_FAMILY_SPECS: &[EncoderFamilySpec] = &[
         runtime_implementation_aliases: &["ffmpeg", "hevc_v4l2m2m", "h265_v4l2m2m"],
         runtime_name_aliases: &["h265", "hevc"],
         output_fourcc_aliases: &["H265", "HEVC"],
-        output_format: "h265",
+        output_format: CodecOutputFormat::H265,
         latency: CodecLatency::Normal,
         streamable: true,
     },
 ];
 
 static DEFAULT_STREAM_CODEC_SELECTOR: OnceLock<Option<CodecSelector>> = OnceLock::new();
-static DEFAULT_DECODER_SELECTORS_BY_CAPTURE_FORMAT: OnceLock<BTreeMap<String, CodecSelector>> =
+static DEFAULT_DECODER_SELECTORS_BY_CAPTURE_FORMAT: OnceLock<BTreeMap<FourCc, CodecSelector>> =
     OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,15 +357,12 @@ pub fn encoder_family_for_descriptor(desc: &CodecDescriptor) -> Option<&'static 
         return None;
     }
 
+    let implementation = desc.implementation_id();
     ENCODER_FAMILY_SPECS.iter().find(|spec| {
-        let implementation_matches = spec
-            .runtime_implementation_aliases
-            .iter()
-            .any(|alias| desc.impl_name.eq_ignore_ascii_case(alias));
-        if !implementation_matches {
+        if !spec.matches_runtime_implementation(&implementation) {
             return false;
         }
-        if !desc.impl_name.eq_ignore_ascii_case("ffmpeg") {
+        if implementation != CodecImplementationId::FFMPEG {
             return true;
         }
 
@@ -360,17 +389,27 @@ pub fn encoder_family_for_codec_selector(
 }
 
 pub fn output_format_for_encoder_selector(selector: Option<&str>) -> &'static str {
+    codec_output_format_for_encoder_selector(selector).as_str()
+}
+
+pub fn codec_output_format_for_encoder_selector(selector: Option<&str>) -> CodecOutputFormat {
     selector
         .and_then(encoder_family_for_selector)
         .map(|spec| spec.output_format)
-        .unwrap_or("unknown")
+        .unwrap_or(CodecOutputFormat::Unknown)
 }
 
 pub fn output_format_for_codec_selector(selector: Option<&CodecSelector>) -> &'static str {
+    codec_output_format_for_codec_selector(selector).as_str()
+}
+
+pub fn codec_output_format_for_codec_selector(
+    selector: Option<&CodecSelector>,
+) -> CodecOutputFormat {
     selector
         .and_then(encoder_family_for_codec_selector)
         .map(|spec| spec.output_format)
-        .unwrap_or("unknown")
+        .unwrap_or(CodecOutputFormat::Unknown)
 }
 
 pub fn default_stream_encoder_selector() -> Option<String> {
@@ -400,7 +439,7 @@ fn compute_default_stream_codec_selector() -> Option<CodecSelector> {
             }
             let selector = encoder_family_for_descriptor(&desc)
                 .map(|spec| spec.selector())
-                .or_else(|| CodecSelector::new(desc.impl_name))?;
+                .or_else(|| CodecSelector::new(desc.implementation_id().as_str()))?;
             if fallback_any.is_none() {
                 fallback_any = Some(selector.clone());
             }
@@ -409,7 +448,7 @@ fn compute_default_stream_codec_selector() -> Option<CodecSelector> {
                     preferred_mjpeg = Some(spec.selector());
                     break;
                 }
-                if spec.output_format == "mjpeg" && fallback_mjpeg.is_none() {
+                if spec.output_format == CodecOutputFormat::Mjpeg && fallback_mjpeg.is_none() {
                     fallback_mjpeg = Some(spec.selector());
                 }
             } else if desc.name.eq_ignore_ascii_case("mjpeg") && fallback_mjpeg.is_none() {
@@ -430,9 +469,10 @@ fn default_decoder_selector_for_codec(descs: &[CodecDescriptor]) -> Option<Codec
     }
 
     if let Some(codec) = descs.iter().find(|desc| {
-        desc.name.eq_ignore_ascii_case("mjpeg") && desc.impl_name.eq_ignore_ascii_case("turbojpeg")
+        desc.name.eq_ignore_ascii_case("mjpeg")
+            && desc.implementation_id() == CodecImplementationId::TURBOJPEG
     }) {
-        return CodecSelector::new(codec.impl_name);
+        return CodecSelector::new(codec.implementation_id().as_str());
     }
 
     match descs[0].input.to_u32().to_le_bytes() {
@@ -446,30 +486,30 @@ fn default_decoder_selector_for_codec(descs: &[CodecDescriptor]) -> Option<Codec
 
     if let Some(codec) = descs
         .iter()
-        .find(|desc| desc.impl_name.eq_ignore_ascii_case("passthrough"))
+        .find(|desc| desc.implementation_id() == CodecImplementationId::PASSTHROUGH)
     {
-        return CodecSelector::new(codec.impl_name);
+        return CodecSelector::new(codec.implementation_id().as_str());
     }
 
     descs
         .first()
-        .and_then(|desc| CodecSelector::new(desc.impl_name))
+        .and_then(|desc| CodecSelector::new(desc.implementation_id().as_str()))
 }
 
 pub fn default_decoder_ids_by_capture_format() -> BTreeMap<String, String> {
     default_decoder_selectors_by_capture_format()
         .into_iter()
-        .map(|(key, selector)| (key, selector.to_string()))
+        .map(|(key, selector)| (key.to_string(), selector.to_string()))
         .collect()
 }
 
-pub fn default_decoder_selectors_by_capture_format() -> BTreeMap<String, CodecSelector> {
+pub fn default_decoder_selectors_by_capture_format() -> BTreeMap<FourCc, CodecSelector> {
     DEFAULT_DECODER_SELECTORS_BY_CAPTURE_FORMAT
         .get_or_init(compute_default_decoder_selectors_by_capture_format)
         .clone()
 }
 
-fn compute_default_decoder_selectors_by_capture_format() -> BTreeMap<String, CodecSelector> {
+fn compute_default_decoder_selectors_by_capture_format() -> BTreeMap<FourCc, CodecSelector> {
     let mut defaults = BTreeMap::new();
     let Ok(entries) = CodecRegistry::list_enabled_codecs() else {
         return defaults;
@@ -483,14 +523,8 @@ fn compute_default_decoder_selectors_by_capture_format() -> BTreeMap<String, Cod
         if decoder_descs.is_empty() {
             continue;
         }
-        let key = String::from_utf8_lossy(&input.to_u32().to_le_bytes())
-            .trim()
-            .to_ascii_uppercase();
-        if key.is_empty() {
-            continue;
-        }
         if let Some(selector) = default_decoder_selector_for_codec(&decoder_descs) {
-            defaults.insert(key, selector);
+            defaults.insert(input, selector);
         }
     }
 
@@ -503,30 +537,34 @@ pub fn default_decoder_selector_for_capture_format(fourcc: FourCc) -> Option<Str
 
 pub fn default_decoder_codec_selector_for_capture_format(fourcc: FourCc) -> Option<CodecSelector> {
     let defaults = default_decoder_selectors_by_capture_format();
-    let key = String::from_utf8_lossy(&fourcc.to_u32().to_le_bytes())
-        .trim()
-        .to_ascii_uppercase();
     defaults
-        .get(&key)
+        .get(&fourcc)
         .cloned()
-        .or_else(|| defaults.get("ANY").cloned())
+        .or_else(|| defaults.get(&FourCc::new(*b"ANY ")).cloned())
 }
 
 pub fn runtime_codec_inventory() -> Result<RuntimeCodecInventory, CodecError> {
-    let mut codecs: Vec<RuntimeCodecCapability> = CodecRegistry::list_enabled_codecs()?
-        .into_iter()
-        .flat_map(|(fourcc, descs)| {
-            descs.into_iter().map(move |desc| RuntimeCodecCapability {
-                kind: desc.kind,
-                fourcc: fourcc.to_string(),
-                name: desc.name.to_string(),
-                implementation: desc.impl_name.to_string(),
-                input: desc.input.to_string(),
-                output: desc.output.to_string(),
-                family_id: encoder_family_for_descriptor(&desc).map(|spec| spec.id),
+    runtime_codec_inventory_with_config(CodecRegistryConfig::default())
+}
+
+pub fn runtime_codec_inventory_with_config(
+    config: CodecRegistryConfig,
+) -> Result<RuntimeCodecInventory, CodecError> {
+    let mut codecs: Vec<RuntimeCodecCapability> =
+        CodecRegistry::list_enabled_codecs_with_config(config)?
+            .into_iter()
+            .flat_map(|(fourcc, descs)| {
+                descs.into_iter().map(move |desc| RuntimeCodecCapability {
+                    kind: desc.kind,
+                    fourcc: fourcc.to_string(),
+                    name: desc.name.to_string(),
+                    implementation: desc.impl_name.to_string(),
+                    input: desc.input.to_string(),
+                    output: desc.output.to_string(),
+                    family_id: encoder_family_for_descriptor(&desc).map(|spec| spec.id),
+                })
             })
-        })
-        .collect();
+            .collect();
 
     codecs.sort_by(|left, right| {
         let left_kind = match left.kind {
@@ -576,6 +614,10 @@ mod tests {
     #[test]
     fn output_format_matches_runtime_aliases() {
         assert_eq!(
+            codec_output_format_for_encoder_selector(Some("turbojpeg")),
+            CodecOutputFormat::Mjpeg
+        );
+        assert_eq!(
             output_format_for_encoder_selector(Some("turbojpeg")),
             "mjpeg"
         );
@@ -598,6 +640,10 @@ mod tests {
             Some("h264")
         );
         assert_eq!(output_format_for_codec_selector(Some(&selector)), "h264");
+        assert_eq!(
+            codec_output_format_for_codec_selector(Some(&selector)),
+            CodecOutputFormat::H264
+        );
         assert!("  ".parse::<CodecSelector>().is_err());
     }
 

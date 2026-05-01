@@ -45,6 +45,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   including NEON-accelerated paths where available and feature-gated raw decoder registration.
 - Added runtime-configurable transform and dynamic image staging pools, with pool telemetry for
   memory and allocation debugging.
+- Added pipeline memory telemetry for Linux shared decode and encode pools so high-resolution
+  zero-copy pool sizing and retained capacity are visible at runtime.
+- Added capture retry and shutdown telemetry for startup retries, netcam reconnects, async drop
+  detaches, worker joins, drains, and teardown latency.
+- Added typed service event kind accessors for service, pipeline worker, sink lifecycle, and
+  recording lifecycle events so consumers can filter event streams without matching strings.
 - Added hotplug/watch runtime support with sync and async subscription paths.
 - Added release validation assets and scripts, including feature-combination checks, perf smoke
   checks, file-size checks, Docker facade tests, and organized example binaries.
@@ -79,11 +85,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `(min, bytes, spare)` tuples through backend code.
 - Changed codec registry matching to normalize implementation IDs consistently and added typed
   APIs for callers that want to avoid stringly typed implementation preferences.
+- Changed runtime codec selector boundaries to compare normalized `CodecImplementationId` values
+  instead of raw implementation strings.
+- Changed raw decoder implementations to share descriptor construction, owned output allocation,
+  and Linux shared-output boilerplate.
 - Changed codec residency detection to use `FourCc` helpers and descriptor methods instead of
   repeated ad hoc compressed-format checks.
 - Changed observability to record more runtime data, including async queue waits/wakes,
   per-stage p50/p95 timing, drop causes, graph drops/latest replacements, sink lifecycle events,
   and recorder indexing events.
+- Changed netcam MJPEG parsing so sync and async workers share header, content-length, boundary,
+  and oversized-frame parser state while keeping their IO paths separate.
 - Changed libcamera manager lifecycle handling to use typed runtime configuration, probe cache
   TTL controls, active camera use guards, and optional idle-stop behavior.
 - Changed graph policy helpers from workflow names to behavior names: `latest_only`,
@@ -126,6 +138,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   during unrelated pipeline teardown.
 - Fixed release-readiness issues around pool sizing readability and typed codec preference
   ergonomics without breaking existing string-based APIs.
+- Fixed async drop behavior so dropping a capture handle from a Tokio runtime does not block on
+  worker joins.
+- Fixed blocking pipeline worker failures so terminal decode/encode/graph errors are returned and
+  emitted through service lifecycle events.
+- Fixed netcam reconnect behavior so ended or failing MJPEG streams back off instead of reconnecting
+  in a tight loop.
 
 ## [1.0.0] - 2026-04-19
 

@@ -7,6 +7,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "metrics/retry.rs"]
+mod retry;
+
+pub use retry::{CaptureRetryMetrics, CaptureRetryStats};
+
 const DEFAULT_WINDOW: usize = 120;
 const DEFAULT_TRANSITION_WINDOW: usize = 16;
 const DEFAULT_STAGE_ERROR_WINDOW: usize = 16;
@@ -50,6 +55,27 @@ pub struct PipelineMemoryStats {
     pub capture_queue: Option<QueueMemoryStats>,
     pub external_backings: Vec<ExternalBackingStats>,
     pub transform_pool: Option<styx_core::buffer::BufferPoolStats>,
+    #[cfg(target_os = "linux")]
+    pub shared_decode_pool: Option<styx_core::buffer::SharedBufferPoolStats>,
+    #[cfg(target_os = "linux")]
+    pub shared_encode_pool: Option<styx_core::buffer::SharedBufferPoolStats>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CaptureShutdownStats {
+    pub last_signal_close_ms: Option<u64>,
+    pub last_worker_join_ms: Option<u64>,
+    pub last_worker_wait_outcome: Option<CaptureShutdownWorkerWaitOutcome>,
+    pub last_teardown_ms: Option<u64>,
+    pub last_drain_ms: Option<u64>,
+    pub last_drained_frames: u64,
+    pub async_drop_detached_workers: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureShutdownWorkerWaitOutcome {
+    Joined,
+    DetachedInAsyncDrop,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -83,6 +109,8 @@ pub struct HealthReport {
     pub recent_stage_errors: Vec<PipelineStageError>,
     pub drop_reasons: Vec<FrameDropStats>,
     pub graph: Option<GraphTelemetryStats>,
+    pub capture_shutdown: CaptureShutdownStats,
+    pub capture_retries: CaptureRetryStats,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

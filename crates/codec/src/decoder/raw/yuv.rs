@@ -3,7 +3,7 @@ use styx_core::prelude::*;
 use crate::decoder::raw::yuv_to_rgb;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{Codec, CodecDescriptor, CodecError};
 use rayon::prelude::*;
 use yuvutils_rs::{
     YuvBiPlanarImage, YuvConversionMode, YuvPackedImage, YuvPlanarImage, YuvRange,
@@ -65,13 +65,12 @@ impl NvToRgbDecoder {
         pool: BufferPool,
     ) -> Self {
         Self {
-            descriptor: CodecDescriptor {
-                kind: CodecKind::Decoder,
+            descriptor: crate::decoder::raw::raw_decoder_descriptor(
                 input,
-                output: FourCc::RG24,
-                name: "yuv2rgb",
+                FourCc::RG24,
+                "yuv2rgb",
                 impl_name,
-            },
+            ),
             pool,
             uv_order: if uv_is_uv { UvOrder::Uv } else { UvOrder::Vu },
             subsample_h: subsample_h.max(1),
@@ -243,15 +242,9 @@ impl Codec for NvToRgbDecoder {
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
-        let layout = plane_layout_from_dims(
-            input.meta().format.resolution.width,
-            input.meta().format.resolution.height,
-            3,
-        );
-        let mut buf = self.pool.lease();
-        unsafe { buf.resize_uninit(layout.len) };
-        let meta = self.decode_into(&input, buf.as_mut_slice())?;
-        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+        crate::decoder::raw::process_owned_raw_decode(input, &self.pool, 3, |input, dst| {
+            self.decode_into(input, dst)
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -260,7 +253,7 @@ impl Codec for NvToRgbDecoder {
         input: &FrameLease,
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
-        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+        crate::decoder::raw::process_shared_raw_decode(self, input, pool)
     }
 }
 
@@ -310,13 +303,12 @@ impl PlanarYuvToRgbDecoder {
         pool: BufferPool,
     ) -> Self {
         Self {
-            descriptor: CodecDescriptor {
-                kind: CodecKind::Decoder,
+            descriptor: crate::decoder::raw::raw_decoder_descriptor(
                 input,
-                output: FourCc::RG24,
-                name: "yuv2rgb",
+                FourCc::RG24,
+                "yuv2rgb",
                 impl_name,
-            },
+            ),
             pool,
             u_first,
             subsample_h: subsample_h.max(1),
@@ -474,15 +466,9 @@ impl Codec for PlanarYuvToRgbDecoder {
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
-        let layout = plane_layout_from_dims(
-            input.meta().format.resolution.width,
-            input.meta().format.resolution.height,
-            3,
-        );
-        let mut buf = self.pool.lease();
-        unsafe { buf.resize_uninit(layout.len) };
-        let meta = self.decode_into(&input, buf.as_mut_slice())?;
-        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+        crate::decoder::raw::process_owned_raw_decode(input, &self.pool, 3, |input, dst| {
+            self.decode_into(input, dst)
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -491,7 +477,7 @@ impl Codec for PlanarYuvToRgbDecoder {
         input: &FrameLease,
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
-        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+        crate::decoder::raw::process_shared_raw_decode(self, input, pool)
     }
 }
 
@@ -528,13 +514,12 @@ impl Packed422ToRgbDecoder {
         pool: BufferPool,
     ) -> Self {
         Self {
-            descriptor: CodecDescriptor {
-                kind: CodecKind::Decoder,
+            descriptor: crate::decoder::raw::raw_decoder_descriptor(
                 input,
-                output: FourCc::RG24,
-                name: "yuv2rgb",
+                FourCc::RG24,
+                "yuv2rgb",
                 impl_name,
-            },
+            ),
             pool,
             byte_order,
         }
@@ -674,15 +659,9 @@ impl Codec for Packed422ToRgbDecoder {
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
-        let layout = plane_layout_from_dims(
-            input.meta().format.resolution.width,
-            input.meta().format.resolution.height,
-            3,
-        );
-        let mut buf = self.pool.lease();
-        unsafe { buf.resize_uninit(layout.len) };
-        let meta = self.decode_into(&input, buf.as_mut_slice())?;
-        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+        crate::decoder::raw::process_owned_raw_decode(input, &self.pool, 3, |input, dst| {
+            self.decode_into(input, dst)
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -691,7 +670,7 @@ impl Codec for Packed422ToRgbDecoder {
         input: &FrameLease,
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
-        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+        crate::decoder::raw::process_shared_raw_decode(self, input, pool)
     }
 }
 

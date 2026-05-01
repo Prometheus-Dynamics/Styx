@@ -104,3 +104,51 @@ fn async_waits_and_wakes_are_counted() {
         assert!(stats.async_recv_wakes >= 1);
     });
 }
+
+#[test]
+fn cancelled_async_recv_waiter_does_not_consume_future_send() {
+    let runtime = Builder::new_current_thread().build().expect("runtime");
+    runtime.block_on(async {
+        let (tx, rx) = bounded(1);
+        let waiter = tokio::spawn({
+            let rx = rx.clone();
+            async move { rx.recv_async().await }
+        });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        assert!(
+            waiter
+                .await
+                .expect_err("waiter should be cancelled")
+                .is_cancelled()
+        );
+
+        assert_eq!(tx.send_async(9).await, SendOutcome::Ok);
+        assert!(matches!(rx.recv_async().await, RecvOutcome::Data(9)));
+    });
+}
+
+#[test]
+fn cancelled_async_send_waiter_does_not_block_future_capacity() {
+    let runtime = Builder::new_current_thread().build().expect("runtime");
+    runtime.block_on(async {
+        let (tx, rx) = bounded(1);
+        assert_eq!(tx.send(1), SendOutcome::Ok);
+        let waiter = tokio::spawn({
+            let tx = tx.clone();
+            async move { tx.send_async(2).await }
+        });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        assert!(
+            waiter
+                .await
+                .expect_err("waiter should be cancelled")
+                .is_cancelled()
+        );
+
+        assert!(matches!(rx.recv_async().await, RecvOutcome::Data(1)));
+        assert_eq!(tx.send_async(3).await, SendOutcome::Ok);
+        assert!(matches!(rx.recv_async().await, RecvOutcome::Data(3)));
+    });
+}

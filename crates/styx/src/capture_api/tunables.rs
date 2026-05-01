@@ -1,3 +1,4 @@
+use styx_codec::prelude::{CodecRegistryConfig, DEFAULT_CODEC_MAX_HEIGHT, DEFAULT_CODEC_MAX_WIDTH};
 use styx_core::transform::TransformPoolConfig;
 
 /// Default capture queue depth (frames).
@@ -10,6 +11,8 @@ pub const DEFAULT_POOL_BYTES: usize = 1 << 20;
 pub const DEFAULT_POOL_SPARE: usize = 8;
 /// Default frame enqueue timeout for generic capture workers (milliseconds).
 pub const DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS: u64 = 10;
+/// Default idle stop poll for virtual/generic capture workers (milliseconds).
+pub const DEFAULT_CAPTURE_IDLE_POLL_MS: u64 = 10;
 /// Default V4L2 mmap dequeue poll timeout (milliseconds).
 pub const DEFAULT_V4L2_MMAP_POLL_MS: u64 = 50;
 /// Default V4L2 frame enqueue timeout (milliseconds).
@@ -50,6 +53,8 @@ pub const DEFAULT_NETCAM_BACKOFF_MAX_MS: u64 = 10_000;
 pub const DEFAULT_NETCAM_SEND_TIMEOUT_MS: u64 = 10;
 /// Default netcam stop polling interval (milliseconds).
 pub const DEFAULT_NETCAM_STOP_POLL_MS: u64 = 50;
+/// Default netcam maximum accepted MJPEG frame size (bytes).
+pub const DEFAULT_NETCAM_MAX_JPEG_BYTES: usize = 32 << 20;
 /// Default file-backend decoded image cache limit (bytes).
 pub const DEFAULT_FILE_IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -82,11 +87,18 @@ pub enum LibcameraProcessedStreamRole {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct CaptureConfig {
+    /// Number of frames buffered between a capture worker and consumers.
     pub queue_depth: usize,
+    /// Minimum number of reusable capture buffers to keep in backend pools.
     pub pool_min: usize,
+    /// Minimum byte size for each reusable capture buffer.
     pub pool_bytes: usize,
+    /// Extra reusable buffers beyond `pool_min` for bursty pipelines.
     pub pool_spare: usize,
+    /// Maximum time a generic capture worker waits when enqueueing a frame, in milliseconds.
     pub queue_send_timeout_ms: u64,
+    /// Stop polling interval used while a generic capture worker is idle, in milliseconds.
+    pub idle_poll_ms: u64,
 }
 
 pub type CaptureTunables = CaptureConfig;
@@ -106,6 +118,7 @@ impl Default for CaptureConfig {
             pool_bytes: DEFAULT_POOL_BYTES,
             pool_spare: DEFAULT_POOL_SPARE,
             queue_send_timeout_ms: DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS,
+            idle_poll_ms: DEFAULT_CAPTURE_IDLE_POLL_MS,
         }
     }
 }
@@ -118,6 +131,7 @@ impl CaptureConfig {
             pool_bytes: self.pool_bytes.max(1),
             pool_spare: self.pool_spare,
             queue_send_timeout_ms: self.queue_send_timeout_ms.max(1),
+            idle_poll_ms: self.idle_poll_ms.max(1),
         }
     }
 
@@ -140,8 +154,11 @@ impl CaptureConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct V4l2Config {
+    /// Maximum poll wait for V4L2 mmap dequeue readiness, in milliseconds.
     pub mmap_poll_ms: u64,
+    /// Maximum time the V4L2 worker waits when enqueueing a frame, in milliseconds.
     pub send_timeout_ms: u64,
+    /// Sleep after non-timeout V4L2 dequeue errors, in milliseconds.
     pub error_backoff_ms: u64,
 }
 
@@ -169,16 +186,27 @@ impl V4l2Config {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct LibcameraConfig {
+    /// Maximum time to wait for a camera by id/path during startup, in milliseconds.
     pub lookup_timeout_ms: u64,
+    /// Poll interval while waiting for a libcamera camera during startup, in milliseconds.
     pub lookup_poll_ms: u64,
+    /// Maximum time to tolerate repeated request requeue failures, in milliseconds.
     pub requeue_stall_timeout_ms: u64,
+    /// Poll interval while waiting for completed libcamera requests, in milliseconds.
     pub request_poll_ms: u64,
+    /// Maximum time to wait for backing memory to drain before idle stop, in milliseconds.
     pub idle_drain_timeout_ms: u64,
+    /// Poll interval while waiting for backing memory to drain before idle stop, in milliseconds.
     pub idle_drain_poll_ms: u64,
+    /// Maximum time control reads wait for a worker response, in milliseconds.
     pub control_response_timeout_ms: u64,
+    /// Libcamera probe cache time-to-live, in milliseconds.
     pub probe_cache_ttl_ms: u64,
+    /// Whether to stop the shared libcamera manager when the last session goes idle.
     pub stop_when_idle: bool,
+    /// Whether libcamera request-pool memory is prefaulted at startup.
     pub prefault_request_pools: bool,
+    /// Preferred libcamera stream role for processed, non-raw/non-encoded requests.
     pub processed_stream_role: LibcameraProcessedStreamRole,
 }
 
@@ -222,6 +250,7 @@ impl LibcameraConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct FileBackendConfig {
+    /// Maximum decoded still-image cache size, in bytes. Set to `0` to disable.
     pub image_cache_bytes: usize,
 }
 
@@ -242,13 +271,22 @@ impl Default for FileBackendConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct NetcamConfig {
+    /// Whole-request timeout for netcam HTTP requests, in seconds.
     pub request_timeout_secs: u64,
+    /// TCP/TLS connect timeout for netcam HTTP requests, in milliseconds.
     pub connect_timeout_ms: u64,
+    /// Read timeout between received chunks, in milliseconds.
     pub read_timeout_ms: u64,
+    /// Initial retry backoff after netcam failures, in milliseconds.
     pub backoff_start_ms: u64,
+    /// Maximum retry backoff after repeated netcam failures, in milliseconds.
     pub backoff_max_ms: u64,
+    /// Maximum time netcam workers wait when enqueueing a frame, in milliseconds.
     pub send_timeout_ms: u64,
+    /// Poll interval while netcam workers are waiting in interruptible sleeps, in milliseconds.
     pub stop_poll_ms: u64,
+    /// Maximum accepted MJPEG frame size, in bytes.
+    pub max_jpeg_bytes: usize,
 }
 
 pub type NetcamTunables = NetcamConfig;
@@ -263,6 +301,7 @@ impl Default for NetcamConfig {
             backoff_max_ms: DEFAULT_NETCAM_BACKOFF_MAX_MS,
             send_timeout_ms: DEFAULT_NETCAM_SEND_TIMEOUT_MS,
             stop_poll_ms: DEFAULT_NETCAM_STOP_POLL_MS,
+            max_jpeg_bytes: DEFAULT_NETCAM_MAX_JPEG_BYTES,
         }
     }
 }
@@ -279,6 +318,7 @@ impl NetcamConfig {
             backoff_max_ms: max,
             send_timeout_ms: self.send_timeout_ms.max(1),
             stop_poll_ms: self.stop_poll_ms.max(1),
+            max_jpeg_bytes: self.max_jpeg_bytes.max(1),
         }
     }
 }
@@ -294,6 +334,35 @@ pub struct BackendConfig {
 }
 
 pub type TransformConfig = TransformPoolConfig;
+
+/// Runtime codec registration limits.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct CodecConfig {
+    /// Maximum encoded/decoded frame width advertised by built-in codecs.
+    pub max_width: u32,
+    /// Maximum encoded/decoded frame height advertised by built-in codecs.
+    pub max_height: u32,
+}
+
+impl Default for CodecConfig {
+    fn default() -> Self {
+        Self {
+            max_width: DEFAULT_CODEC_MAX_WIDTH,
+            max_height: DEFAULT_CODEC_MAX_HEIGHT,
+        }
+    }
+}
+
+impl CodecConfig {
+    pub(crate) fn sanitized(self) -> Self {
+        Self {
+            max_width: self.max_width.max(1),
+            max_height: self.max_height.max(1),
+        }
+    }
+}
 
 /// Builder for request-local Styx tunables.
 ///
@@ -313,6 +382,7 @@ pub struct StyxConfig {
     pub capture: CaptureConfig,
     pub transforms: TransformConfig,
     pub backends: BackendConfig,
+    pub codecs: CodecConfig,
 }
 
 impl StyxConfig {
@@ -322,6 +392,7 @@ impl StyxConfig {
             capture: CaptureConfig::default(),
             transforms: TransformConfig::default(),
             backends: BackendConfig::default(),
+            codecs: CodecConfig::default(),
         }
     }
 
@@ -351,6 +422,12 @@ impl StyxConfig {
         self
     }
 
+    /// Override the idle stop polling interval for generic capture workers.
+    pub fn capture_idle_poll(mut self, poll_ms: u64) -> Self {
+        self.capture.idle_poll_ms = poll_ms;
+        self
+    }
+
     pub fn with_capture(mut self, capture: CaptureConfig) -> Self {
         self.capture = capture;
         self
@@ -363,6 +440,18 @@ impl StyxConfig {
 
     pub fn with_transforms(mut self, transforms: TransformConfig) -> Self {
         self.transforms = transforms;
+        self
+    }
+
+    pub fn with_codecs(mut self, codecs: CodecConfig) -> Self {
+        self.codecs = codecs;
+        self
+    }
+
+    /// Override the maximum frame dimensions used when registering built-in codecs.
+    pub fn codec_max_dimensions(mut self, max_width: u32, max_height: u32) -> Self {
+        self.codecs.max_width = max_width;
+        self.codecs.max_height = max_height;
         self
     }
 
@@ -476,6 +565,12 @@ impl StyxConfig {
         self
     }
 
+    /// Override the maximum accepted MJPEG frame size.
+    pub fn netcam_max_jpeg_bytes(mut self, bytes: usize) -> Self {
+        self.backends.netcam.max_jpeg_bytes = bytes;
+        self
+    }
+
     /// Return the sanitized capture tunables carried by this config.
     pub fn capture_tunables(&self) -> CaptureTunables {
         self.capture.sanitized()
@@ -496,6 +591,17 @@ impl StyxConfig {
     /// Return the sanitized netcam tunables carried by this config.
     pub fn netcam_tunables(&self) -> NetcamTunables {
         self.backends.netcam.sanitized()
+    }
+
+    /// Return the sanitized codec registry limits carried by this config.
+    pub fn codec_config(&self) -> CodecConfig {
+        self.codecs.sanitized()
+    }
+
+    /// Return codec registry configuration for registering built-in codec implementations.
+    pub fn codec_registry_config(&self) -> CodecRegistryConfig {
+        let codecs = self.codec_config();
+        CodecRegistryConfig::new(codecs.max_width, codecs.max_height)
     }
 
     /// Return the transform pool sizing carried by this config.
@@ -542,14 +648,27 @@ mod tests {
     }
 
     #[test]
+    fn capture_timing_tunables_round_trip_through_config() {
+        let tunables = StyxConfig::new()
+            .capture_queue_send_timeout(7)
+            .capture_idle_poll(11)
+            .capture_tunables();
+
+        assert_eq!(tunables.queue_send_timeout_ms, 7);
+        assert_eq!(tunables.idle_poll_ms, 11);
+    }
+
+    #[test]
     fn netcam_http_timeout_tunables_round_trip_through_config() {
         let tunables = StyxConfig::new()
             .netcam_http_timeouts(7, 250, 750)
+            .netcam_max_jpeg_bytes(4096)
             .netcam_tunables();
 
         assert_eq!(tunables.request_timeout_secs, 7);
         assert_eq!(tunables.connect_timeout_ms, 250);
         assert_eq!(tunables.read_timeout_ms, 750);
+        assert_eq!(tunables.max_jpeg_bytes, 4096);
     }
 
     #[test]
@@ -562,6 +681,19 @@ mod tests {
                 min: 3,
                 bytes: 4096,
                 spare: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn codec_registry_tunables_round_trip_through_config() {
+        let config = StyxConfig::new().codec_max_dimensions(3840, 2160);
+
+        assert_eq!(
+            config.codec_registry_config(),
+            CodecRegistryConfig {
+                max_width: 3840,
+                max_height: 2160,
             }
         );
     }

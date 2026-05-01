@@ -7,7 +7,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = virtual_device();
     let mode = device.default_mode().ok_or("virtual device missing mode")?;
     let decoder = Arc::new(PassthroughDecoder::new(mode.format.code));
-    let mut pipeline = MediaPipelineBuilder::new(device.capture_request())
+    let mut pipeline = device
+        .pipeline()
         .config(
             StyxConfig::new()
                 .capture_queue_depth(8)

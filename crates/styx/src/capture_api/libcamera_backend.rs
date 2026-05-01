@@ -665,6 +665,8 @@ pub(super) fn start_libcamera(
         ],
         worker_error,
         control_error: Arc::new(Mutex::new(None)),
+        shutdown_stats: Default::default(),
+        retry_metrics: Default::default(),
     })
 }
 

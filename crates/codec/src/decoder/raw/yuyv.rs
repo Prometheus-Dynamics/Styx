@@ -3,7 +3,7 @@ use styx_core::prelude::*;
 use crate::decoder::raw::yuv_to_rgb;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
-use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+use crate::{Codec, CodecDescriptor, CodecError};
 use yuvutils_rs::{YuvPackedImage, YuvRange, YuvStandardMatrix};
 
 #[inline]
@@ -49,13 +49,12 @@ impl YuyvToRgbDecoder {
 
     pub fn with_pool(pool: BufferPool) -> Self {
         Self {
-            descriptor: CodecDescriptor {
-                kind: CodecKind::Decoder,
-                input: FourCc::YUYV,
-                output: FourCc::RG24,
-                name: "yuv2rgb",
-                impl_name: "yuyv-cpu",
-            },
+            descriptor: crate::decoder::raw::raw_decoder_descriptor(
+                FourCc::YUYV,
+                FourCc::RG24,
+                "yuv2rgb",
+                "yuyv-cpu",
+            ),
             pool,
         }
     }
@@ -149,15 +148,9 @@ impl Codec for YuyvToRgbDecoder {
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
-        let layout = plane_layout_from_dims(
-            input.meta().format.resolution.width,
-            input.meta().format.resolution.height,
-            3,
-        );
-        let mut buf = self.pool.lease();
-        unsafe { buf.resize_uninit(layout.len) };
-        let meta = self.decode_into(&input, buf.as_mut_slice())?;
-        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+        crate::decoder::raw::process_owned_raw_decode(input, &self.pool, 3, |input, dst| {
+            self.decode_into(input, dst)
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -166,7 +159,7 @@ impl Codec for YuyvToRgbDecoder {
         input: &FrameLease,
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
-        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+        crate::decoder::raw::process_shared_raw_decode(self, input, pool)
     }
 }
 
@@ -191,13 +184,12 @@ impl YuyvToLumaDecoder {
 
     pub fn with_pool(pool: BufferPool) -> Self {
         Self {
-            descriptor: CodecDescriptor {
-                kind: CodecKind::Decoder,
-                input: FourCc::YUYV,
-                output: FourCc::GREY,
-                name: "yuv2luma",
-                impl_name: "yuyv-luma",
-            },
+            descriptor: crate::decoder::raw::raw_decoder_descriptor(
+                FourCc::YUYV,
+                FourCc::GREY,
+                "yuv2luma",
+                "yuyv-luma",
+            ),
             pool,
         }
     }
@@ -291,15 +283,9 @@ impl Codec for YuyvToLumaDecoder {
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
-        let layout = plane_layout_from_dims(
-            input.meta().format.resolution.width,
-            input.meta().format.resolution.height,
-            1,
-        );
-        let mut buf = self.pool.lease();
-        unsafe { buf.resize_uninit(layout.len) };
-        let meta = self.decode_into(&input, buf.as_mut_slice())?;
-        Ok(unsafe { FrameLease::single_plane_uninit(meta, buf, layout.len, layout.stride) })
+        crate::decoder::raw::process_owned_raw_decode(input, &self.pool, 1, |input, dst| {
+            self.decode_into(input, dst)
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -308,7 +294,7 @@ impl Codec for YuyvToLumaDecoder {
         input: &FrameLease,
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
-        crate::decoder::raw::SharedRawDecodeExt::process_shared(self, input, pool).map(Some)
+        crate::decoder::raw::process_shared_raw_decode(self, input, pool)
     }
 }
 

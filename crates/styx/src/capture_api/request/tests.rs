@@ -430,6 +430,35 @@ fn capture_request_config_overrides_queue_depth_per_request() {
     handle.stop();
 }
 
+#[test]
+fn capture_source_opens_with_config_without_manual_request_builder() {
+    let device = crate::capture_api::make_virtual_rgb_device("source-open-config", 2, 2, 30);
+    let source = CaptureSource::new(device);
+    let handle = source
+        .open_with_config(StyxConfig::new().capture_queue_depth(2))
+        .expect("open capture with local config");
+
+    assert_eq!(handle.queue_stats().capacity, 2);
+    handle.stop();
+}
+
+#[test]
+fn capture_source_builds_pipeline_without_manual_request_builder() {
+    let device = crate::capture_api::make_virtual_rgb_device("source-pipeline", 2, 2, 30);
+    let source = CaptureSource::new(device);
+    let mut pipeline = source
+        .pipeline()
+        .raw_frames()
+        .start()
+        .expect("start pipeline from source");
+
+    assert!(matches!(
+        pipeline.next_blocking(std::time::Duration::from_millis(250)),
+        RecvOutcome::Data(_)
+    ));
+    pipeline.stop();
+}
+
 #[cfg(feature = "async")]
 #[test]
 fn capture_request_async_policy_start_uses_request_config() {

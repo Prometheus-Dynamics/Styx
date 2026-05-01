@@ -19,8 +19,11 @@ use super::enqueue_netcam_frame_async;
 #[cfg(feature = "netcam")]
 use super::sleep_until_netcam_stop;
 use super::{enqueue_netcam_frame, netcam_stopped};
+use crate::metrics::CaptureRetryMetrics;
 
-const NETCAM_MAX_JPEG_BYTES: usize = 32 << 20; // 32 MiB safety cap.
+mod parser;
+
+use parser::{MjpegBodyProgress, MjpegFrameParser, MjpegHeader};
 
 pub(super) struct MjpegLoopContext<'a> {
     pub(super) boundary: &'a str,
@@ -32,6 +35,7 @@ pub(super) struct MjpegLoopContext<'a> {
     pub(super) stop: &'a AtomicBool,
     pub(super) capture_tunables: crate::capture_api::CaptureTunables,
     pub(super) netcam_tunables: crate::capture_api::NetcamTunables,
+    pub(super) retry_metrics: CaptureRetryMetrics,
 }
 
 struct MjpegFrameEmit<'a> {
@@ -41,6 +45,8 @@ struct MjpegFrameEmit<'a> {
     frame_idx: &'a mut u64,
     stream: &'static str,
     send_timeout: Duration,
+    max_jpeg_bytes: usize,
+    retry_metrics: CaptureRetryMetrics,
 }
 
 #[cfg(all(feature = "netcam", feature = "async"))]
@@ -63,7 +69,9 @@ where
         stop,
         capture_tunables,
         netcam_tunables,
+        retry_metrics,
     } = ctx;
+    let max_jpeg_bytes = netcam_tunables.max_jpeg_bytes;
 
     let expected_pixels = expected_pixels(width, height);
     let pool_limits = capture_tunables.pool_limits(4, expected_pixels.saturating_mul(3), 8);
@@ -78,33 +86,31 @@ where
     };
     #[cfg(not(target_os = "linux"))]
     let pool = BufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare);
-    let mut line = Vec::with_capacity(1024);
-    let mut buf =
-        Vec::with_capacity((expected_pixels.saturating_mul(3)).min(NETCAM_MAX_JPEG_BYTES));
-    let parser = MjpegMultipartParser::new(boundary);
+    let mut parser = MjpegFrameParser::new(boundary, max_jpeg_bytes, expected_pixels * 3);
     loop {
         if netcam_stopped(stop) {
             return true;
         }
-        line.clear();
-        if reader
-            .read_until(b'\n', &mut line)
-            .await
-            .ok()
-            .filter(|&n| n > 0)
-            .is_none()
-        {
-            tracing::debug!(backend = "netcam", stream = "mjpeg", "stream ended");
-            break;
+        if parser.needs_boundary_line() {
+            if reader
+                .read_until(b'\n', parser.line_buffer())
+                .await
+                .ok()
+                .filter(|&n| n > 0)
+                .is_none()
+            {
+                tracing::debug!(backend = "netcam", stream = "mjpeg", "stream ended");
+                break;
+            }
+            if !parser.accept_boundary_line() {
+                continue;
+            }
         }
-        if !parser.is_boundary_line(&line) {
-            continue;
-        }
+        parser.begin_part();
         let mut content_length: Option<usize> = None;
         loop {
-            line.clear();
             if reader
-                .read_until(b'\n', &mut line)
+                .read_until(b'\n', parser.line_buffer())
                 .await
                 .ok()
                 .filter(|&n| n > 0)
@@ -112,23 +118,43 @@ where
             {
                 break;
             }
-            if line.iter().all(|b| b.is_ascii_whitespace()) {
-                break;
-            }
-            if let Some(length) = parser.content_length(&line) {
-                content_length = Some(length);
+            match parser.header() {
+                MjpegHeader::End => break,
+                MjpegHeader::ContentLength(length) => content_length = Some(length.into_len()),
+                MjpegHeader::Other => {}
             }
         }
-        buf.clear();
+        parser.clear_frame();
         match content_length {
             Some(len) => {
-                let target = len.min(NETCAM_MAX_JPEG_BYTES);
-                while buf.len() < target {
+                if len > max_jpeg_bytes {
+                    tracing::warn!(
+                        backend = "netcam",
+                        stream = "mjpeg-async",
+                        content_length = len,
+                        max_bytes = max_jpeg_bytes,
+                        parser_event = "oversized_content_length",
+                        "dropping oversized mjpeg frame"
+                    );
+                    let drained = drain_async(reader, len).await;
+                    tracing::warn!(
+                        backend = "netcam",
+                        stream = "mjpeg-async",
+                        content_length = len,
+                        drained_bytes = drained,
+                        remaining_bytes = len.saturating_sub(drained),
+                        parser_event = "oversized_content_length_drained",
+                        "drained oversized mjpeg frame bytes"
+                    );
+                    continue;
+                }
+                let target = len;
+                while parser.frame_bytes().len() < target {
                     if netcam_stopped(stop) {
                         return true;
                     }
                     let take = match reader.fill_buf().await {
-                        Ok(data) => parser.append_content_length_chunk(data, target, &mut buf),
+                        Ok(data) => parser.append_content_length_chunk(data, target),
                         Err(_) => None,
                     };
                     let Some(take) = take else { break };
@@ -137,28 +163,38 @@ where
                     }
                     reader.consume(take);
                 }
+                if parser.frame_bytes().len() < target {
+                    tracing::warn!(
+                        backend = "netcam",
+                        stream = "mjpeg-async",
+                        expected_bytes = target,
+                        received_bytes = parser.frame_bytes().len(),
+                        parser_event = "content_length_frame_truncated",
+                        "mjpeg content-length frame ended before all bytes were read"
+                    );
+                }
             }
             None => loop {
                 if netcam_stopped(stop) {
                     return true;
                 }
-                let outcome = match reader.fill_buf().await {
-                    Ok(data) => parser.append_until_boundary_chunk(data, &mut buf),
-                    Err(_) => None,
-                };
-                let Some((take, hit_boundary)) = outcome else {
-                    break;
+                let (take, outcome) = match reader.fill_buf().await {
+                    Ok(data) => parser.append_boundary_chunk(data, "mjpeg-async"),
+                    Err(_) => (0, MjpegBodyProgress::End),
                 };
                 reader.consume(take);
-                if hit_boundary {
-                    break;
+                match outcome {
+                    MjpegBodyProgress::Continue => {}
+                    MjpegBodyProgress::DroppedOversized
+                    | MjpegBodyProgress::HitBoundary
+                    | MjpegBodyProgress::End => break,
                 }
             },
         }
         if emit_mjpeg_frame_async(
             tx,
             &pool,
-            &buf,
+            parser.frame_bytes(),
             MjpegFrameEmit {
                 width,
                 height,
@@ -166,6 +202,8 @@ where
                 frame_idx,
                 stream: "mjpeg-async",
                 send_timeout: Duration::from_millis(netcam_tunables.send_timeout_ms),
+                max_jpeg_bytes,
+                retry_metrics: retry_metrics.clone(),
             },
         )
         .await
@@ -195,67 +233,6 @@ pub(super) fn parse_boundary(content_type: &str) -> Option<String> {
     None
 }
 
-struct MjpegMultipartParser<'a> {
-    boundary: &'a [u8],
-}
-
-impl<'a> MjpegMultipartParser<'a> {
-    fn new(boundary: &'a str) -> Self {
-        Self {
-            boundary: boundary.as_bytes(),
-        }
-    }
-
-    fn is_boundary_line(&self, line: &[u8]) -> bool {
-        line.starts_with(self.boundary)
-    }
-
-    fn content_length(&self, line: &[u8]) -> Option<usize> {
-        let rest = line
-            .strip_prefix(b"Content-Length:")
-            .or_else(|| line.strip_prefix(b"content-length:"))?;
-        std::str::from_utf8(rest)
-            .ok()
-            .and_then(|s| s.trim().parse::<usize>().ok())
-            .map(|value| value.min(NETCAM_MAX_JPEG_BYTES))
-    }
-
-    fn append_content_length_chunk(
-        &self,
-        data: &[u8],
-        target: usize,
-        buf: &mut Vec<u8>,
-    ) -> Option<usize> {
-        if data.is_empty() || buf.len() >= target {
-            return None;
-        }
-        let need = target - buf.len();
-        let take = data.len().min(need);
-        buf.extend_from_slice(&data[..take]);
-        Some(take)
-    }
-
-    fn append_until_boundary_chunk(&self, data: &[u8], buf: &mut Vec<u8>) -> Option<(usize, bool)> {
-        if data.is_empty() {
-            return None;
-        }
-        if let Some(idx) = find_subslice(data, self.boundary) {
-            buf.extend_from_slice(&data[..idx]);
-            Some((idx, true))
-        } else {
-            let take = data
-                .len()
-                .min(NETCAM_MAX_JPEG_BYTES.saturating_sub(buf.len()));
-            if take == 0 {
-                None
-            } else {
-                buf.extend_from_slice(&data[..take]);
-                Some((take, false))
-            }
-        }
-    }
-}
-
 #[cfg(feature = "netcam")]
 pub(super) fn mjpeg_loop(
     resp: reqwest::blocking::Response,
@@ -272,7 +249,9 @@ pub(super) fn mjpeg_loop(
         stop,
         capture_tunables,
         netcam_tunables,
+        retry_metrics,
     } = ctx;
+    let max_jpeg_bytes = netcam_tunables.max_jpeg_bytes;
     let mut reader = BufReader::new(resp);
     let expected_pixels = expected_pixels(width, height);
     let pool_limits = capture_tunables.pool_limits(4, expected_pixels.saturating_mul(3), 8);
@@ -287,50 +266,68 @@ pub(super) fn mjpeg_loop(
     };
     #[cfg(not(target_os = "linux"))]
     let pool = BufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare);
-    let mut line = Vec::with_capacity(1024);
-    let mut buf =
-        Vec::with_capacity((expected_pixels.saturating_mul(3)).min(NETCAM_MAX_JPEG_BYTES));
-    let parser = MjpegMultipartParser::new(boundary);
+    let mut parser = MjpegFrameParser::new(boundary, max_jpeg_bytes, expected_pixels * 3);
     loop {
         if netcam_stopped(stop) {
             return true;
         }
-        line.clear();
-        if reader
-            .read_until(b'\n', &mut line)
-            .ok()
-            .filter(|&n| n > 0)
-            .is_none()
-        {
-            tracing::debug!(backend = "netcam", stream = "mjpeg", "stream ended");
-            break;
+        if parser.needs_boundary_line() {
+            if reader
+                .read_until(b'\n', parser.line_buffer())
+                .ok()
+                .filter(|&n| n > 0)
+                .is_none()
+            {
+                tracing::debug!(backend = "netcam", stream = "mjpeg", "stream ended");
+                break;
+            }
+            if !parser.accept_boundary_line() {
+                continue;
+            }
         }
-        if !parser.is_boundary_line(&line) {
-            continue;
-        }
+        parser.begin_part();
         let mut content_length: Option<usize> = None;
         loop {
-            line.clear();
             if reader
-                .read_until(b'\n', &mut line)
+                .read_until(b'\n', parser.line_buffer())
                 .ok()
                 .filter(|&n| n > 0)
                 .is_none()
             {
                 break;
             }
-            if line.iter().all(|b| b.is_ascii_whitespace()) {
-                break;
-            }
-            if let Some(length) = parser.content_length(&line) {
-                content_length = Some(length);
+            match parser.header() {
+                MjpegHeader::End => break,
+                MjpegHeader::ContentLength(length) => content_length = Some(length.into_len()),
+                MjpegHeader::Other => {}
             }
         }
-        buf.clear();
+        parser.clear_frame();
         match content_length {
             Some(len) => {
-                let target = len.min(NETCAM_MAX_JPEG_BYTES);
-                while buf.len() < target {
+                if len > max_jpeg_bytes {
+                    tracing::warn!(
+                        backend = "netcam",
+                        stream = "mjpeg-sync",
+                        content_length = len,
+                        max_bytes = max_jpeg_bytes,
+                        parser_event = "oversized_content_length",
+                        "dropping oversized mjpeg frame"
+                    );
+                    let drained = drain_sync(&mut reader, len);
+                    tracing::warn!(
+                        backend = "netcam",
+                        stream = "mjpeg-sync",
+                        content_length = len,
+                        drained_bytes = drained,
+                        remaining_bytes = len.saturating_sub(drained),
+                        parser_event = "oversized_content_length_drained",
+                        "drained oversized mjpeg frame bytes"
+                    );
+                    continue;
+                }
+                let target = len;
+                while parser.frame_bytes().len() < target {
                     if netcam_stopped(stop) {
                         return true;
                     }
@@ -342,37 +339,43 @@ pub(super) fn mjpeg_loop(
                     if chunk_len == 0 {
                         break;
                     }
-                    let Some(take) = parser.append_content_length_chunk(chunk, target, &mut buf)
-                    else {
+                    let Some(take) = parser.append_content_length_chunk(chunk, target) else {
                         break;
                     };
                     reader.consume(take);
+                }
+                if parser.frame_bytes().len() < target {
+                    tracing::warn!(
+                        backend = "netcam",
+                        stream = "mjpeg-sync",
+                        expected_bytes = target,
+                        received_bytes = parser.frame_bytes().len(),
+                        parser_event = "content_length_frame_truncated",
+                        "mjpeg content-length frame ended before all bytes were read"
+                    );
                 }
             }
             None => loop {
                 if netcam_stopped(stop) {
                     return true;
                 }
-                match reader.fill_buf() {
-                    Ok([]) => break,
-                    Ok(data) => match parser.append_until_boundary_chunk(data, &mut buf) {
-                        Some((take, hit_boundary)) => {
-                            reader.consume(take);
-                            if hit_boundary {
-                                break;
-                            }
-                            continue;
-                        }
-                        None => break,
-                    },
-                    Err(_) => break,
+                let (take, outcome) = match reader.fill_buf() {
+                    Ok(data) => parser.append_boundary_chunk(data, "mjpeg-sync"),
+                    Err(_) => (0, MjpegBodyProgress::End),
                 };
+                reader.consume(take);
+                match outcome {
+                    MjpegBodyProgress::Continue => {}
+                    MjpegBodyProgress::DroppedOversized
+                    | MjpegBodyProgress::HitBoundary
+                    | MjpegBodyProgress::End => break,
+                }
             },
         }
         if emit_mjpeg_frame(
             tx,
             &pool,
-            &buf,
+            parser.frame_bytes(),
             MjpegFrameEmit {
                 width,
                 height,
@@ -380,6 +383,8 @@ pub(super) fn mjpeg_loop(
                 frame_idx,
                 stream: "mjpeg-sync",
                 send_timeout: Duration::from_millis(netcam_tunables.send_timeout_ms),
+                max_jpeg_bytes,
+                retry_metrics: retry_metrics.clone(),
             },
         ) {
             return true;
@@ -409,6 +414,43 @@ fn expected_pixels(width: u32, height: u32) -> usize {
     }
 }
 
+#[cfg(all(feature = "netcam", feature = "async"))]
+async fn drain_async<S>(
+    reader: &mut tokio::io::BufReader<StreamReader<S, Bytes>>,
+    mut remaining: usize,
+) -> usize
+where
+    S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin,
+{
+    use tokio::io::AsyncBufReadExt;
+    let mut drained = 0usize;
+    while remaining > 0 {
+        let take = match reader.fill_buf().await {
+            Ok([]) | Err(_) => break,
+            Ok(data) => data.len().min(remaining),
+        };
+        reader.consume(take);
+        drained = drained.saturating_add(take);
+        remaining -= take;
+    }
+    drained
+}
+
+#[cfg(feature = "netcam")]
+fn drain_sync<R: BufRead>(reader: &mut R, mut remaining: usize) -> usize {
+    let mut drained = 0usize;
+    while remaining > 0 {
+        let take = match reader.fill_buf() {
+            Ok([]) | Err(_) => break,
+            Ok(data) => data.len().min(remaining),
+        };
+        reader.consume(take);
+        drained = drained.saturating_add(take);
+        remaining -= take;
+    }
+    drained
+}
+
 fn emit_mjpeg_frame<P>(
     tx: &styx_core::queue::BoundedTx<FrameLease>,
     pool: &P,
@@ -420,10 +462,11 @@ where
 {
     let stream = emit.stream;
     let send_timeout = emit.send_timeout;
+    let retry_metrics = emit.retry_metrics.clone();
     let Some(frame) = build_mjpeg_frame(pool, buf, emit) else {
         return false;
     };
-    enqueue_netcam_frame(tx, frame, stream, send_timeout)
+    enqueue_netcam_frame(tx, frame, stream, send_timeout, &retry_metrics)
 }
 
 #[cfg(all(feature = "netcam", feature = "async"))]
@@ -438,10 +481,11 @@ where
 {
     let stream = emit.stream;
     let send_timeout = emit.send_timeout;
+    let retry_metrics = emit.retry_metrics.clone();
     let Some(frame) = build_mjpeg_frame(pool, buf, emit) else {
         return false;
     };
-    enqueue_netcam_frame_async(tx, frame, stream, send_timeout).await
+    enqueue_netcam_frame_async(tx, frame, stream, send_timeout, &retry_metrics).await
 }
 
 fn build_mjpeg_frame<P>(pool: &P, buf: &[u8], emit: MjpegFrameEmit<'_>) -> Option<FrameLease>
@@ -455,15 +499,17 @@ where
         frame_idx,
         stream: _,
         send_timeout: _,
+        max_jpeg_bytes,
+        retry_metrics: _,
     } = emit;
     if buf.is_empty() {
         return None;
     }
-    if buf.len() >= NETCAM_MAX_JPEG_BYTES {
+    if buf.len() >= max_jpeg_bytes {
         tracing::warn!(
             backend = "netcam",
             stream = "mjpeg",
-            max_bytes = NETCAM_MAX_JPEG_BYTES,
+            max_bytes = max_jpeg_bytes,
             "dropping oversized mjpeg frame"
         );
         return None;
@@ -515,6 +561,72 @@ impl MjpegFramePool for SharedBufferPool {
         lease.try_resize(buf.len()).ok()?;
         lease.as_mut_slice().copy_from_slice(buf);
         FrameLease::single_plane_shared(meta, lease, layout.len, layout.stride).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestPool;
+
+    impl MjpegFramePool for TestPool {
+        fn frame_from_jpeg(
+            &self,
+            meta: FrameMeta,
+            layout: PlaneLayout,
+            buf: &[u8],
+        ) -> Option<FrameLease> {
+            let pool = BufferPool::with_limits(1, layout.len.max(1), 1);
+            let mut lease = pool.lease();
+            lease.resize(layout.len);
+            lease.as_mut_slice().copy_from_slice(buf);
+            Some(FrameLease::single_plane(
+                meta,
+                lease,
+                layout.len,
+                layout.stride,
+            ))
+        }
+    }
+
+    #[test]
+    fn build_mjpeg_frame_respects_configured_size_limit() {
+        let mut frame_idx = 0;
+        let start = Instant::now();
+        let under_limit = build_mjpeg_frame(
+            &TestPool,
+            &[0xff, 0xd8, 0xff],
+            MjpegFrameEmit {
+                width: 1,
+                height: 1,
+                start: &start,
+                frame_idx: &mut frame_idx,
+                stream: "test",
+                send_timeout: Duration::from_millis(1),
+                max_jpeg_bytes: 4,
+                retry_metrics: Default::default(),
+            },
+        );
+        assert!(under_limit.is_some());
+        assert_eq!(frame_idx, 1);
+
+        let oversized = build_mjpeg_frame(
+            &TestPool,
+            &[0xff, 0xd8, 0xff, 0x00],
+            MjpegFrameEmit {
+                width: 1,
+                height: 1,
+                start: &start,
+                frame_idx: &mut frame_idx,
+                stream: "test",
+                send_timeout: Duration::from_millis(1),
+                max_jpeg_bytes: 4,
+                retry_metrics: Default::default(),
+            },
+        );
+        assert!(oversized.is_none());
+        assert_eq!(frame_idx, 1);
     }
 }
 
@@ -593,43 +705,4 @@ fn jpeg_dimensions(buf: &[u8]) -> Option<(u32, u32)> {
         i = j + 1 + seg_len;
     }
     None
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn content_length_header_parser_is_shared_and_capped() {
-        let parser = MjpegMultipartParser::new("--frame");
-        assert_eq!(parser.content_length(b"Content-Length: 42\r\n"), Some(42));
-        assert_eq!(parser.content_length(b"content-length: 7\n"), Some(7));
-        assert_eq!(
-            parser.content_length(b"Content-Length: 999999999\r\n"),
-            Some(NETCAM_MAX_JPEG_BYTES)
-        );
-        assert_eq!(parser.content_length(b"Content-Type: image/jpeg\r\n"), None);
-    }
-
-    #[test]
-    fn boundary_chunk_parser_reports_take_and_hit_boundary() {
-        let parser = MjpegMultipartParser::new("--frame");
-        let mut buf = Vec::new();
-        assert_eq!(
-            parser.append_until_boundary_chunk(b"abc--frame", &mut buf),
-            Some((3, true))
-        );
-        assert_eq!(buf, b"abc");
-
-        let mut buf = Vec::new();
-        assert_eq!(
-            parser.append_until_boundary_chunk(b"abcdef", &mut buf),
-            Some((6, false))
-        );
-        assert_eq!(buf, b"abcdef");
-    }
 }

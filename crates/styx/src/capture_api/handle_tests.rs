@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use super::handle::*;
 use super::*;
+use crate::metrics::CaptureShutdownWorkerWaitOutcome;
 use crate::metrics::StageMetrics;
 
 #[test]
@@ -28,6 +29,8 @@ fn health_report_includes_capture_worker_error() {
         external_backings: Vec::new(),
         worker_error,
         control_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+        shutdown_stats: Default::default(),
+        retry_metrics: Default::default(),
     };
 
     let report = handle.health_report();
@@ -64,6 +67,8 @@ fn health_report_includes_control_error() {
         external_backings: Vec::new(),
         worker_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         control_error,
+        shutdown_stats: Default::default(),
+        retry_metrics: Default::default(),
     };
 
     let report = handle.health_report();
@@ -99,6 +104,8 @@ fn memory_stats_include_external_backing_telemetry() {
         external_backings: vec![tracker],
         worker_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         control_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+        shutdown_stats: Default::default(),
+        retry_metrics: Default::default(),
     };
 
     let memory = handle.memory_stats();
@@ -128,16 +135,25 @@ fn libcamera_get_control_times_out_when_worker_does_not_reply() {
 
 #[test]
 fn virtual_capture_stop_is_prompt_without_consumer() {
-    let handle = crate::capture_api::open_virtual_rgb("stop-test", 2, 2, 1).expect("virtual");
+    let mut handle = crate::capture_api::open_virtual_rgb("stop-test", 2, 2, 1).expect("virtual");
 
     let started = Instant::now();
-    handle.stop();
+    handle.stop_in_place();
 
     assert!(
         started.elapsed() < Duration::from_millis(250),
         "virtual stop took {:?}",
         started.elapsed()
     );
+    let shutdown = handle.health_report().capture_shutdown;
+    assert!(shutdown.last_signal_close_ms.is_some());
+    assert!(shutdown.last_worker_join_ms.is_some());
+    assert_eq!(
+        shutdown.last_worker_wait_outcome,
+        Some(CaptureShutdownWorkerWaitOutcome::Joined)
+    );
+    assert!(shutdown.last_teardown_ms.is_some());
+    assert!(shutdown.last_drain_ms.is_some());
 }
 
 #[cfg(feature = "async")]
