@@ -4,6 +4,106 @@ All notable changes to this workspace should be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [2.0.0] - 2026-05-01
+
+### Added
+
+- Added a release-oriented multi-crate workspace versioned as `2.0.0` across `styx`,
+  `styx-core-rs`, `styx-capture`, `styx-codec`, `styx-libcamera`, `styx-v4l2`, and
+  `styx-examples`.
+- Added runtime capture configuration through `StyxConfig`, including queue depth, buffer pool
+  sizing, capture enqueue timeouts, V4L2 worker timing, libcamera startup/control/idle timing,
+  netcam HTTP/backoff timing, file image cache limits, and transform pool sizing.
+- Added typed capture startup policy support with resilient retries, transient libcamera retry
+  handling, optional control dropping on rejected controls, and optional TDN fallback behavior.
+- Added async capture helpers for Tokio users, including async receive/control methods,
+  async startup retry sleeps, async netcam workers, and blocking-worker helpers for CPU-heavy
+  pipeline stages.
+- Added netcam MJPEG and optional FFmpeg-backed video ingestion with configurable request,
+  connect, read, retry, stop-poll, and queue-send behavior.
+- Added file replay support for image and optional video sources, including playback controls
+  and decoded image cache tuning.
+- Added simulation capture support behind `simulation-bevy`, including runtime state,
+  visualization/readback plumbing, and depth/RGB output handling.
+- Added graph-pipeline support through the Daedalus plugin integration, including frame nodes,
+  source/sink nodes, codec nodes, runtime nodes, control event routing, fanout policies, and
+  graph telemetry reporting.
+- Added richer observability with `tracing` spans/events, stage metrics, health reports, queue
+  telemetry, drop reasons, residency transitions, external backing tracking, memory statistics,
+  and recent stage/control error reporting.
+- Added Linux zero-copy oriented frame residency and backing support, including shared memfd
+  pools, export/import helpers, residency capability reporting, and shared decode/encode paths
+  where codecs support them.
+- Added typed codec policy and selector improvements, including `CodecImplementationId`,
+  typed preferred lookup/process APIs, codec implementation priority, hardware bias controls,
+  codec family selectors, and registry sizing configuration.
+- Added raw decoder coverage for common packed, planar, semi-planar, Bayer, and mono formats,
+  including NEON-accelerated paths where available and feature-gated raw decoder registration.
+- Added runtime-configurable transform and dynamic image staging pools, with pool telemetry for
+  memory and allocation debugging.
+- Added hotplug/watch runtime support with sync and async subscription paths.
+- Added release validation assets and scripts, including feature-combination checks, perf smoke
+  checks, file-size checks, Docker facade tests, and organized example binaries.
+
+### Changed
+
+- Bumped the public workspace release from `1.0.0` to `2.0.0` and updated crate README install
+  snippets to match.
+- Reworked the public capture API around `CaptureRequest`, `CaptureHandle`, `CaptureSource`,
+  typed modes/descriptors/controls, and request-local runtime configuration.
+- Split capture, codec, core buffer/format/queue, V4L2 probing, and libcamera probing concerns
+  into dedicated crates while keeping `styx` as the high-level facade crate.
+- Reorganized examples into top-level workflow groups for quickstart, capture, graph, codecs,
+  performance, and app-style examples.
+- Tightened feature gating so heavy stacks remain opt-in: FFmpeg, netcam, file backend,
+  libcamera, V4L2, preview windows, Bevy simulation, hotplug, graph pipeline, serde, and schema
+  support are all controlled through explicit features.
+- Changed pipeline processing to preserve stage error details through result-returning methods
+  while keeping infallible iterator-style convenience methods for simple callers.
+- Changed async netcam MJPEG enqueue behavior to use async queue waiting with a timeout instead
+  of blocking Tokio runtime workers on synchronous queue sends.
+- Changed bounded queue close/send synchronization so queue closure has a clearer ordering
+  against concurrent send attempts.
+- Changed pipeline teardown so stopping one pipeline no longer resets process-wide transform pool
+  configuration that may be used by another live pipeline.
+- Changed capture backend pool sizing to use a typed `PoolLimits` value instead of passing raw
+  `(min, bytes, spare)` tuples through backend code.
+- Changed codec registry matching to normalize implementation IDs consistently and added typed
+  APIs for callers that want to avoid stringly typed implementation preferences.
+- Changed codec residency detection to use `FourCc` helpers and descriptor methods instead of
+  repeated ad hoc compressed-format checks.
+- Changed observability to record more runtime data, including async queue waits/wakes,
+  per-stage p50/p95 timing, drop causes, graph drops/latest replacements, sink lifecycle events,
+  and recorder indexing events.
+- Changed libcamera manager lifecycle handling to use typed runtime configuration, probe cache
+  TTL controls, active camera use guards, and optional idle-stop behavior.
+
+### Removed
+
+- Removed the old crate-local `crates/styx/examples` layout in favor of the workspace-level
+  `examples` crate and grouped example directories.
+- Removed unconditional process-wide cleanup of transform and image staging pools from pipeline
+  teardown; callers can still explicitly reset configurable global pools when they intentionally
+  want to clear them.
+- Removed several ad hoc magic tuples and backend-local pool sizing conventions in favor of typed
+  configuration and centralized tunables.
+- Removed repeated string matching for codec implementation preferences where typed
+  `CodecImplementationId` APIs can now be used.
+- Removed legacy compatibility assumptions around backend startup and feature availability:
+  disabled optional backends now report typed `BackendMissing` errors instead of being hidden
+  behind implicit fallback behavior.
+
+### Fixed
+
+- Fixed async netcam backpressure so full output queues no longer block Tokio core runtime
+  workers during MJPEG frame enqueue.
+- Fixed a close/send race in the bounded queue by synchronizing close with the same wait-state
+  lock used by send paths.
+- Fixed cross-pipeline transform pool interference caused by resetting process-wide pool state
+  during unrelated pipeline teardown.
+- Fixed release-readiness issues around pool sizing readability and typed codec preference
+  ergonomics without breaking existing string-based APIs.
+
 ## [1.0.0] - 2026-04-19
 
 - Standardized the workspace layout, docs, CI, linting, and helper scripts.
