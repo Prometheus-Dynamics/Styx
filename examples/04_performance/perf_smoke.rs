@@ -8,7 +8,7 @@ const DECODE_ITERATIONS: usize = 40;
 const TRANSFORM_ITERATIONS: usize = 60;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let decoder = MjpegDecoder::new(FourCc::new(*b"RG24"));
+    let decoder = MjpegDecoder::new(FourCc::RG24);
     let jpeg = build_sample_jpeg(640, 360, 85);
     let decode_samples = measure_decode(&decoder, &jpeg, 640, 360, DECODE_ITERATIONS);
 
@@ -107,13 +107,13 @@ fn build_mjpeg_frame(encoded: &[u8], width: u32, height: u32) -> FrameLease {
     buf.resize(encoded.len());
     buf.as_mut_slice().copy_from_slice(encoded);
     let res = Resolution::new(width, height).expect("resolution");
-    let format = MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb);
+    let format = MediaFormat::new(FourCc::MJPG, res, ColorSpace::Srgb);
     FrameLease::single_plane(FrameMeta::new(format, 0), buf, encoded.len(), encoded.len())
 }
 
 fn build_rg24_frame(width: u32, height: u32) -> FrameLease {
     let res = Resolution::new(width, height).expect("resolution");
-    let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+    let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
     let layout = plane_layout_from_dims(res.width, res.height, 3);
     let pool = BufferPool::with_limits(2, layout.len, 2);
     let mut buf = pool.lease();

@@ -1,9 +1,1 @@
 # Existing oversized Rust files to reduce over time.
-crates/codec/src/lib.rs
-crates/styx/src/capture_api/libcamera_backend.rs
-crates/codec/src/decoder/raw/bayer.rs
-crates/styx/src/capture_api/simulation_backend.rs
-crates/codec/src/decoder/mod.rs
-crates/codec/src/ffmpeg/encoder.rs
-crates/styx/src/capture_api/file_backend.rs
-crates/codec/src/ffmpeg/decoder.rs

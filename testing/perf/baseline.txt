@@ -1,0 +1,6 @@
+# metric max_p95_ms
+decode_640x360 25.00
+rotate90_720p 10.00
+mirror_720p 10.00
+file_replay 75.00
+encode_mjpeg_720p 600.00

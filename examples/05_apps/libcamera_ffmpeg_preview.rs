@@ -112,7 +112,7 @@ fn pick_mjpeg_device() -> Option<(ProbedDevice, Mode)> {
             .descriptor
             .modes
             .iter()
-            .filter(|m| m.id.format.code == FourCc::new(*b"MJPG"))
+            .filter(|m| m.id.format.code == FourCc::MJPG)
             .max_by_key(|m| {
                 let res = m.id.format.resolution;
                 u64::from(res.width.get()) * u64::from(res.height.get())

@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(decoder_impl),
             true,
         )?
-        .encode_enabled(false)
+        .without_encoder()
         .start()?;
 
     println!("device: {}", device.identity.display);
@@ -141,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut export_errors = 0u32;
 
     while start.elapsed() < Duration::from_secs(seconds) {
-        match pipeline.next_blocking(Duration::from_millis(500)) {
+        match pipeline.next_blocking_result(Duration::from_millis(500))? {
             RecvOutcome::Data(frame) => {
                 frames = frames.saturating_add(1);
                 if frame.residency() == FrameResidency::Dmabuf {

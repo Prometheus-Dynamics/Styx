@@ -4,6 +4,11 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "codec-mozjpeg")]
 use styx::prelude::*;
 
+#[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
+type PerfEncoder = MozjpegEncoder;
+#[cfg(all(feature = "codec-mozjpeg", feature = "codec-turbojpeg"))]
+type PerfEncoder = TurbojpegEncoder;
+
 #[cfg(not(feature = "codec-mozjpeg"))]
 fn main() {
     eprintln!("Enable the `codec-mozjpeg` feature to run this example.");
@@ -11,7 +16,7 @@ fn main() {
 
 #[cfg(feature = "codec-mozjpeg")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let encoder = MozjpegEncoder::new(FourCc::new(*b"RG24"), 85);
+    let encoder = PerfEncoder::new(FourCc::RG24, 85);
     let mut samples = Vec::with_capacity(24);
 
     for _ in 0..24 {
@@ -34,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(feature = "codec-mozjpeg")]
 fn build_rg24_frame(width: u32, height: u32) -> FrameLease {
     let res = Resolution::new(width, height).expect("resolution");
-    let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
+    let format = MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb);
     let layout = plane_layout_from_dims(res.width, res.height, 3);
     let pool = BufferPool::with_limits(2, layout.len, 2);
     let mut buf = pool.lease();

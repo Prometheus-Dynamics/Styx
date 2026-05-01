@@ -17,7 +17,7 @@ fn main() {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = env::args()
         .nth(1)
-        .expect("usage: cargo run -p styx --features netcam --example netcam_capture <url> [width height fps]");
+        .expect("usage: cargo run -p styx-examples --features netcam,codec-jpeg-decoder --bin netcam_capture <url> [width height fps]");
     let width = env::args()
         .nth(2)
         .and_then(|v| v.parse().ok())
@@ -31,33 +31,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
 
-    // Network sources need retry/backoff knobs up front. The slightly deeper
-    // queue absorbs bursty arrival without immediately dropping to empty.
-    StyxConfig::new()
-        .netcam_timeouts(10)
-        .netcam_backoff(500, 5_000)
-        .capture_queue_depth(4)
-        .apply();
-
     let device = make_netcam_device("netcam", &url, width, height, fps);
-    let mode = device.backends[0]
-        .descriptor
-        .modes
-        .first()
-        .ok_or("netcam device missing modes")?
-        .id
-        .clone();
-    let decoder = Arc::new(MjpegDecoder::new(FourCc::new(*b"RG24")));
-    let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device).mode(mode))
+    let decoder = Arc::new(MjpegDecoder::new(FourCc::RG24));
+    let mut pipeline = MediaPipelineBuilder::new(device.capture_request())
+        .config(StyxConfig::netcam_preview())
         .decoder(decoder)
         .start()?;
 
     #[cfg(feature = "preview-window")]
-    let mut preview = PreviewWindow::for_descriptor("netcam", &device.backends[0].descriptor).ok();
+    let mut preview =
+        PreviewWindow::for_descriptor("netcam", device.default_descriptor().unwrap()).ok();
 
     let mut frames = 0;
     while frames < 120 {
-        match pipeline.next_blocking(Duration::from_millis(8)) {
+        match pipeline.next_blocking_result(Duration::from_millis(8))? {
             RecvOutcome::Data(frame) => {
                 frames += 1;
                 let meta = frame.meta();

@@ -38,18 +38,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handle = registry.handle();
 
     // Register a decoder for MJPEG and optionally install policy defaults.
-    registry.register(
-        FourCc::new(*b"MJPG"),
-        Arc::new(MjpegDecoder::new(FourCc::new(*b"RG24"))),
-    );
+    registry.register(FourCc::MJPG, Arc::new(MjpegDecoder::new(FourCc::RG24)));
     handle.set_policy(
-        CodecPolicy::builder(FourCc::new(*b"MJPG"))
+        CodecPolicy::builder(FourCc::MJPG)
             .prefer_hardware(false)
             .build(),
     );
 
     let encoded = build_sample_frame();
-    let decoded = handle.process(FourCc::new(*b"MJPG"), encoded)?;
+    let decoded = handle.process(FourCc::MJPG, encoded)?;
 
     println!(
         "decoded {}x{} -> {:?}",
@@ -58,16 +55,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         decoded.meta().format.code
     );
 
-    let image = decoded.materialize_owned();
     println!(
-        "image frame {}x{} fourcc={} residency={}",
-        image.meta().format.resolution.width,
-        image.meta().format.resolution.height,
-        image.meta().format.code,
-        image.residency()
+        "framelease {}x{} fourcc={} residency={} payload_bytes={}",
+        decoded.meta().format.resolution.width,
+        decoded.meta().format.resolution.height,
+        decoded.meta().format.code,
+        decoded.residency(),
+        decoded.payload_bytes()
     );
 
-    if let Some(gray) = image.to_luma8() {
+    if let Some(gray) = decoded.to_luma8() {
         println!(
             "converted to luma frame fourcc={} stride={}",
             gray.meta().format.code,
@@ -93,7 +90,7 @@ fn build_sample_frame() -> FrameLease {
     buf.as_mut_slice().copy_from_slice(&SAMPLE_JPEG);
 
     let res = Resolution::new(4, 2).unwrap();
-    let format = MediaFormat::new(FourCc::new(*b"MJPG"), res, ColorSpace::Srgb);
+    let format = MediaFormat::new(FourCc::MJPG, res, ColorSpace::Srgb);
     FrameLease::single_plane(
         FrameMeta::new(format, 0),
         buf,

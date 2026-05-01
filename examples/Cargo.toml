@@ -1,0 +1,143 @@
+[package]
+name = "styx-examples"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+async = ["styx/async", "dep:tokio"]
+codec-ffmpeg = ["styx/codec-ffmpeg"]
+codec-jpeg-decoder = ["styx/codec-jpeg-decoder"]
+codec-mozjpeg = ["styx/codec-mozjpeg"]
+codec-turbojpeg = ["styx/codec-turbojpeg"]
+file-backend = ["styx/file-backend"]
+graph-pipeline = ["styx/graph-pipeline", "dep:daedalus"]
+hotplug = ["styx/hotplug"]
+libcamera = ["styx/libcamera"]
+netcam = ["styx/netcam"]
+preview-window = ["styx/preview-window"]
+simulation-bevy = ["styx/simulation-bevy"]
+v4l2 = ["styx/v4l2"]
+camera-graph = ["graph-pipeline", "v4l2", "libcamera"]
+
+[dependencies]
+styx = { workspace = true, default-features = false, features = ["hooks"] }
+styx-codec.workspace = true
+daedalus = { workspace = true, features = ["engine", "plugins"], optional = true }
+image.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
+libc.workspace = true
+
+[[bin]]
+name = "quickstart_capture_virtual"
+path = "00_quickstart/capture_virtual.rs"
+
+[[bin]]
+name = "quickstart_probe_and_select"
+path = "00_quickstart/probe_and_select.rs"
+
+[[bin]]
+name = "quickstart_pipeline_health"
+path = "00_quickstart/pipeline_health.rs"
+
+[[bin]]
+name = "watch_inventory"
+path = "01_capture/watch_inventory.rs"
+
+[[bin]]
+name = "async_watch_inventory"
+path = "01_capture/async_watch_inventory.rs"
+required-features = ["async"]
+
+[[bin]]
+name = "async_pipeline"
+path = "01_capture/async_pipeline.rs"
+required-features = ["async"]
+
+[[bin]]
+name = "file_replay"
+path = "01_capture/file_replay.rs"
+required-features = ["file-backend"]
+
+[[bin]]
+name = "netcam_capture"
+path = "01_capture/netcam_capture.rs"
+required-features = ["netcam", "codec-jpeg-decoder"]
+
+[[bin]]
+name = "simulation_capture"
+path = "01_capture/simulation_capture.rs"
+required-features = ["simulation-bevy"]
+
+[[bin]]
+name = "simulation_cycle_preview"
+path = "01_capture/simulation_cycle_preview.rs"
+required-features = ["simulation-bevy", "preview-window"]
+
+[[bin]]
+name = "graph_fanout"
+path = "02_graph/graph_fanout.rs"
+required-features = ["graph-pipeline"]
+
+[[bin]]
+name = "latest_frame_fanout"
+path = "02_graph/latest_frame_fanout.rs"
+
+[[bin]]
+name = "camera_graph_metrics"
+path = "02_graph/camera_graph_metrics.rs"
+required-features = ["camera-graph"]
+
+[[bin]]
+name = "mjpeg_decode"
+path = "03_codecs/mjpeg_decode.rs"
+required-features = ["codec-jpeg-decoder"]
+
+[[bin]]
+name = "encode_perf"
+path = "03_codecs/encode_perf.rs"
+required-features = ["codec-mozjpeg"]
+
+[[bin]]
+name = "ffmpeg_scale"
+path = "03_codecs/ffmpeg_scale.rs"
+required-features = ["codec-ffmpeg"]
+
+[[bin]]
+name = "perf_smoke"
+path = "04_performance/perf_smoke.rs"
+required-features = ["codec-jpeg-decoder"]
+
+[[bin]]
+name = "file_replay_perf"
+path = "04_performance/file_replay_perf.rs"
+required-features = ["file-backend"]
+
+[[bin]]
+name = "v4l2_hardware_bench"
+path = "04_performance/v4l2_hardware_bench.rs"
+required-features = ["v4l2", "graph-pipeline"]
+
+[[bin]]
+name = "v4l2request_dmabuf_validate"
+path = "04_performance/v4l2request_dmabuf_validate.rs"
+required-features = ["v4l2", "codec-ffmpeg"]
+
+[[bin]]
+name = "low_latency_preview"
+path = "05_apps/low_latency_preview.rs"
+required-features = ["preview-window"]
+
+[[bin]]
+name = "reliable_recording"
+path = "05_apps/reliable_recording.rs"
+required-features = ["file-backend"]
+
+[[bin]]
+name = "libcamera_ffmpeg_preview"
+path = "05_apps/libcamera_ffmpeg_preview.rs"
+required-features = ["libcamera", "codec-ffmpeg", "preview-window"]

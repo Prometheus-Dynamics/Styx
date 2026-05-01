@@ -4,8 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "codec-ffmpeg")]
-use styx::DeviceIdentity;
-#[cfg(feature = "codec-ffmpeg")]
 use styx::prelude::*;
 #[cfg(feature = "codec-ffmpeg")]
 use styx_codec::ffmpeg::FfmpegEncoderOptions;
@@ -13,7 +11,7 @@ use styx_codec::ffmpeg::FfmpegEncoderOptions;
 #[cfg(feature = "codec-ffmpeg")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = virtual_device();
-    let src_mode = device.backends[0].descriptor.modes[0].clone();
+    let src_mode = device.default_mode().ok_or("virtual device missing mode")?;
 
     // Force encoder output to a different resolution than the input.
     let target_res = Resolution::new(320, 180).unwrap();
@@ -26,9 +24,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pool_limits: None,
     })?);
 
-    let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
+    let mut pipeline = MediaPipelineBuilder::new(device.capture_request())
         .encoder(encoder.clone())
-        .decode_enabled(false)
+        .without_decoder()
         .start()?;
 
     println!(
@@ -41,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut frames = 0;
     while frames < 16 {
-        match pipeline.next_blocking(Duration::from_millis(5)) {
+        match pipeline.next_blocking_result(Duration::from_millis(5))? {
             RecvOutcome::Data(frame) => {
                 frames += 1;
                 let meta = frame.meta();
@@ -64,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("reconfigured output to {}x{}", res.width, res.height);
         let mut more = 0;
         while more < 8 {
-            match pipeline.next_blocking(Duration::from_millis(5)) {
+            match pipeline.next_blocking_result(Duration::from_millis(5))? {
                 RecvOutcome::Data(frame) => {
                     more += 1;
                     let meta = frame.meta();
@@ -93,32 +91,5 @@ fn main() {
 
 #[cfg(feature = "codec-ffmpeg")]
 fn virtual_device() -> ProbedDevice {
-    let res = Resolution::new(640, 360).unwrap();
-    let format = MediaFormat::new(FourCc::new(*b"RG24"), res, ColorSpace::Srgb);
-    let mode = Mode {
-        id: ModeId {
-            format,
-            interval: None,
-        },
-        format,
-        intervals: Vec::new().into(),
-        interval_stepwise: None,
-    };
-    let descriptor = CaptureDescriptor {
-        modes: vec![mode.clone()],
-        controls: Vec::new(),
-    };
-    let backend = ProbedBackend {
-        kind: BackendKind::Virtual,
-        handle: BackendHandle::Virtual,
-        descriptor: descriptor.clone(),
-        properties: vec![("kind".into(), "virtual".into())],
-    };
-    ProbedDevice {
-        identity: DeviceIdentity {
-            display: "virtual-ffmpeg-scale".into(),
-            keys: vec!["virtual".into()],
-        },
-        backends: vec![backend],
-    }
+    make_virtual_rgb_device("virtual-ffmpeg-scale", 640, 360, 30)
 }
