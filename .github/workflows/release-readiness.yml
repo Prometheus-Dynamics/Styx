@@ -1,0 +1,51 @@
+name: Release Readiness
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - dev
+
+jobs:
+  rust:
+    name: Rust release checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libcamera-dev \
+            libjpeg-dev \
+            libswscale-dev \
+            libv4l-dev \
+            pkg-config
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+
+      - name: Clippy workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Check styx all features
+        run: cargo check -p styx --all-features
+
+      - name: Check selected release feature groups
+        run: |
+          cargo check -p styx --features async,netcam,file-backend,graph-pipeline,codec-ffmpeg,v4l2,libcamera
