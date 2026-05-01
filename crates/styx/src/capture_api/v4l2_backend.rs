@@ -568,12 +568,13 @@ pub(super) fn start_v4l2(
         "v4l2 negotiated capture format"
     );
     let capture_tunables = config.capture_tunables();
+    let v4l2_config = config.v4l2_config();
     let pool_limits = capture_tunables.pool_limits(4, frame_capacity, 8);
     let manager = V4l2MmapManager::new(
         dev.handle(),
         Type::VideoCapture,
         4,
-        Duration::from_millis(capture_tunables.v4l2_mmap_poll_ms),
+        Duration::from_millis(v4l2_config.mmap_poll_ms),
     )
     .map_err(|e| CaptureError::Backend(e.to_string()))?;
     let queue_depth = capture_tunables.queue_depth;
@@ -585,8 +586,8 @@ pub(super) fn start_v4l2(
     let manager_for_worker = Arc::clone(&manager);
     let tracker_for_worker = Arc::clone(&backing_tracker);
     let worker = thread::spawn(move || {
-        let send_timeout = Duration::from_millis(capture_tunables.v4l2_send_timeout_ms);
-        let error_backoff = Duration::from_millis(capture_tunables.v4l2_error_backoff_ms);
+        let send_timeout = Duration::from_millis(v4l2_config.send_timeout_ms);
+        let error_backoff = Duration::from_millis(v4l2_config.error_backoff_ms);
         let zero_copy_requested = supports_v4l2_mmap_zero_copy(mode_clone.format.code);
         let shared_pool =
             SharedBufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare);

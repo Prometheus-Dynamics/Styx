@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+#[cfg(feature = "preview-window")]
+use styx::extras::preview_window::PreviewWindow;
 use styx::prelude::*;
 
 fn main() -> Result<(), CaptureError> {

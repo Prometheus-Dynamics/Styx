@@ -46,6 +46,8 @@ pub struct MediaPipeline {
     pub(super) frame_transform: FrameTransform,
     #[cfg(feature = "hooks")]
     pub(super) output_recorder: Option<FrameRecorder>,
+    #[cfg(feature = "hooks")]
+    pub(super) output_recorder_sink_id: String,
     pub(super) metrics: crate::metrics::PipelineMetrics,
     pub(super) decode_enabled: bool,
     pub(super) encode_enabled: bool,
@@ -671,7 +673,7 @@ impl MediaPipeline {
             && let Ok(mut service) = service.lock()
         {
             service.record_sink_event(crate::service::SinkLifecycleEvent::Error {
-                sink_id: "styx.pipeline.record_output".into(),
+                sink_id: self.output_recorder_sink_id.clone(),
                 kind: crate::service::SinkKind::Recorder,
                 message,
             });
@@ -694,7 +696,7 @@ impl MediaPipeline {
                 });
             }
             service.record_sink_event(crate::service::SinkLifecycleEvent::Stopped {
-                sink_id: "styx.pipeline.record_output".into(),
+                sink_id: self.output_recorder_sink_id.clone(),
                 kind: crate::service::SinkKind::Recorder,
             });
         }

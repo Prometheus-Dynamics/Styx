@@ -72,9 +72,9 @@ fn framelease_round_trips_through_preview_tap_without_copy() {
 
 #[test]
 fn media_policy_presets_map_to_daedalus_policies() {
-    assert!(preview_policy().is_latest_only());
+    assert!(latest_only().is_latest_only());
 
-    let recording = recording_policy(8);
+    let recording = bounded_blocking(8);
     assert!(matches!(
         recording.pressure,
         daedalus::transport::PressurePolicy::Bounded {
@@ -87,7 +87,7 @@ fn media_policy_presets_map_to_daedalus_policies() {
         daedalus::transport::FreshnessPolicy::PreserveAll
     );
 
-    let analysis = analysis_policy(2, 4);
+    let analysis = bounded_drop_oldest(2, 4);
     assert!(matches!(
         analysis.pressure,
         daedalus::transport::PressurePolicy::Bounded {
@@ -330,7 +330,7 @@ fn v4l2_mmap_style_external_frame_passes_graph_without_copy() {
 #[test]
 fn overloaded_preview_policy_keeps_newest_frame() {
     let mut registry = daedalus::runtime::plugins::PluginRegistry::new();
-    let preview = register_preview_node(&mut registry, "styx.test.preview_policy", |_| {})
+    let preview = register_preview_node(&mut registry, "styx.test.latest_only", |_| {})
         .expect("install preview")
         .alias("preview");
     let graph = registry
@@ -358,7 +358,7 @@ fn overloaded_preview_policy_keeps_newest_frame() {
     let mut runtime = engine
         .compile_registry(&registry, graph)
         .expect("compile graph");
-    let policy = preview_policy();
+    let policy = latest_only();
     runtime
         .set_input_policy("frame", policy.pressure, policy.freshness)
         .expect("set preview input policy");
@@ -395,7 +395,7 @@ fn overloaded_preview_policy_keeps_newest_frame() {
 #[test]
 fn overloaded_recording_policy_backpressures_instead_of_dropping() {
     let mut registry = daedalus::runtime::plugins::PluginRegistry::new();
-    let recording = register_preview_node(&mut registry, "styx.test.recording_policy", |_| {})
+    let recording = register_preview_node(&mut registry, "styx.test.bounded_blocking", |_| {})
         .expect("install recording")
         .alias("recording");
     let graph = registry
@@ -423,7 +423,7 @@ fn overloaded_recording_policy_backpressures_instead_of_dropping() {
     let runtime = engine
         .compile_registry(&registry, graph)
         .expect("compile graph");
-    let policy = recording_policy(1);
+    let policy = bounded_blocking(1);
     runtime
         .set_input_policy("frame", policy.pressure, policy.freshness)
         .expect("set recording input policy");

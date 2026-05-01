@@ -319,16 +319,17 @@ For live logs, enable a `tracing` subscriber and filter on spans/events with fie
 `debug`; per-frame hot-path timings and stage spans are intentionally lower-volume unless tracing is
 configured for them.
 
-## Queue Policy Presets
+## Queue Policy Examples
 
 Queue depth is a latency/completeness policy, not a universal tuning knob:
 
-- `StyxConfig::low_latency_preview()` uses a shallow capture queue so preview consumers prefer the
-  freshest frame and expose downstream stalls quickly.
-- `StyxConfig::reliable_recording()` uses a deeper capture queue and larger pool so short sink or
-  encode stalls are less likely to drop frames.
-- `StyxConfig::netcam_preview()` keeps moderate capture buffering while extending netcam timeouts and
-  retry backoff for bursty MJPEG-over-HTTP sources.
+- Use `StyxConfig::new().capture_queue_depth(1).capture_pool(2, 1 << 18, 2)` when consumers
+  only need the freshest frame and downstream stalls should be visible quickly.
+- Use `StyxConfig::new().capture_queue_depth(8).capture_pool(4, 1 << 20, 8)` when short sink
+  or encode stalls should be absorbed before frames are dropped.
+- For bursty MJPEG-over-HTTP sources, combine moderate capture buffering with netcam-specific
+  timeouts and backoff:
+  `StyxConfig::new().capture_queue_depth(4).netcam_timeouts(10).netcam_backoff(500, 5_000)`.
 
-Start with the preset that matches the workflow, then use health-report queue pressure, drop reasons,
-and stage timings to justify changing `capture_queue_depth` or pool limits.
+Start with the behavior that matches the workflow, then use health-report queue pressure, drop
+reasons, and stage timings to justify changing `capture_queue_depth` or pool limits.

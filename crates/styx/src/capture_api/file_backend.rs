@@ -94,6 +94,7 @@ pub(super) fn start_file(
         }
     })));
     let capture_tunables = config.capture_tunables();
+    let file_config = config.file_backend_config();
     let queue_depth = capture_tunables.queue_depth;
     let (tx, rx) = styx_core::queue::bounded(queue_depth);
     let (stop_tx, stop_rx) = mpsc::channel();
@@ -108,7 +109,7 @@ pub(super) fn start_file(
     let mut rgb_cache: HashMap<PathBuf, Vec<u8>> = HashMap::new();
     let mut rgb_cache_order: VecDeque<PathBuf> = VecDeque::new();
     let mut rgb_cache_bytes = 0usize;
-    let rgb_cache_limit = capture_tunables.file_image_cache_bytes;
+    let rgb_cache_limit = file_config.image_cache_bytes;
 
     let worker_state = control_state.clone();
     let worker_fn = move || {

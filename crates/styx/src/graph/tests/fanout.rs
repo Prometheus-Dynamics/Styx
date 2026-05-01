@@ -41,9 +41,13 @@ fn fanout_graph_uses_branch_specific_media_policies() {
             g.add_handle(&source);
         })
         .edges(|g| {
-            g.connect_policy(&source.output("frame"), "preview", preview_policy());
-            g.connect_policy(&source.output("frame"), "recording", recording_policy(8));
-            g.connect_policy(&source.output("frame"), "analysis", analysis_policy(3, 99));
+            g.connect_policy(&source.output("frame"), "preview", latest_only());
+            g.connect_policy(&source.output("frame"), "recording", bounded_blocking(8));
+            g.connect_policy(
+                &source.output("frame"),
+                "analysis",
+                bounded_drop_oldest(3, 99),
+            );
         })
         .build();
 
@@ -55,11 +59,11 @@ fn fanout_graph_uses_branch_specific_media_policies() {
     let mut runtime = engine
         .compile_registry(&registry, graph)
         .expect("compile graph");
-    let preview_output = preview_policy();
+    let preview_output = latest_only();
     runtime
         .set_output_policy("preview", preview_output.pressure, preview_output.freshness)
         .expect("set preview output policy");
-    let recording_output = recording_policy(8);
+    let recording_output = bounded_blocking(8);
     runtime
         .set_output_policy(
             "recording",
@@ -67,7 +71,7 @@ fn fanout_graph_uses_branch_specific_media_policies() {
             recording_output.freshness,
         )
         .expect("set recording output policy");
-    let analysis_output = analysis_policy(3, 99);
+    let analysis_output = bounded_drop_oldest(3, 99);
     runtime
         .set_output_policy(
             "analysis",

@@ -5,6 +5,8 @@ use std::path::PathBuf;
 #[cfg(feature = "file-backend")]
 use std::time::Duration;
 
+#[cfg(feature = "preview-window")]
+use styx::extras::preview_window::PreviewWindow;
 #[cfg(feature = "file-backend")]
 use styx::prelude::*;
 

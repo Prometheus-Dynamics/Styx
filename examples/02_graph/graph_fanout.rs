@@ -4,8 +4,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     use daedalus::registry::capability::{NodeDecl, PortDecl};
     use styx::graph::{
-        FRAMELEASE_TYPE_KEY, analysis_policy, framelease_payload, framelease_type_key,
-        preview_policy, recording_policy,
+        FRAMELEASE_TYPE_KEY, bounded_blocking, bounded_drop_oldest, framelease_payload,
+        framelease_type_key, latest_only,
     };
     use styx::prelude::{
         BufferPool, ColorSpace, FourCc, FrameLease, FrameMeta, MediaFormat, Resolution,
@@ -58,9 +58,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             g.add_handle(&source);
         })
         .edges(|g| {
-            g.connect_policy(&source.output("frame"), "preview", preview_policy());
-            g.connect_policy(&source.output("frame"), "recording", recording_policy(8));
-            g.connect_policy(&source.output("frame"), "analysis", analysis_policy(3, 99));
+            g.connect_policy(&source.output("frame"), "preview", latest_only());
+            g.connect_policy(&source.output("frame"), "recording", bounded_blocking(8));
+            g.connect_policy(
+                &source.output("frame"),
+                "analysis",
+                bounded_drop_oldest(3, 99),
+            );
         })
         .build();
 
@@ -70,9 +74,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let mut runtime = engine.compile_registry(&registry, graph)?;
     for (port, policy) in [
-        ("preview", preview_policy()),
-        ("recording", recording_policy(8)),
-        ("analysis", analysis_policy(3, 99)),
+        ("preview", latest_only()),
+        ("recording", bounded_blocking(8)),
+        ("analysis", bounded_drop_oldest(3, 99)),
     ] {
         runtime.set_output_policy(port, policy.pressure, policy.freshness)?;
     }

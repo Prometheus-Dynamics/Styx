@@ -41,7 +41,7 @@ pub use request::{
     start_capture,
 };
 pub use tunables::{
-    CaptureTunables, DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS,
+    BackendConfig, CaptureConfig, CaptureTunables, DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS,
     DEFAULT_LIBCAMERA_CONTROL_RESPONSE_TIMEOUT_MS, DEFAULT_LIBCAMERA_IDLE_DRAIN_POLL_MS,
     DEFAULT_LIBCAMERA_IDLE_DRAIN_TIMEOUT_MS, DEFAULT_LIBCAMERA_LOOKUP_POLL_MS,
     DEFAULT_LIBCAMERA_LOOKUP_TIMEOUT_MS, DEFAULT_LIBCAMERA_PREFAULT_REQUEST_POOLS,
@@ -50,8 +50,9 @@ pub use tunables::{
     DEFAULT_NETCAM_BACKOFF_MAX_MS, DEFAULT_NETCAM_BACKOFF_START_MS, DEFAULT_NETCAM_SEND_TIMEOUT_MS,
     DEFAULT_NETCAM_STOP_POLL_MS, DEFAULT_NETCAM_TIMEOUT_SECS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN,
     DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH, DEFAULT_V4L2_ERROR_BACKOFF_MS,
-    DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, LibcameraProcessedStreamRole,
-    NetcamTunables, StyxConfig,
+    DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig, LibcameraConfig,
+    LibcameraProcessedStreamRole, NetcamConfig, NetcamTunables, StyxConfig, TransformConfig,
+    V4l2Config,
 };
 
 // Release policy: these backend handle types are consumed only by feature-gated constructors, so

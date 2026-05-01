@@ -81,28 +81,15 @@ pub enum LibcameraProcessedStreamRole {
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-pub struct CaptureTunables {
+pub struct CaptureConfig {
     pub queue_depth: usize,
     pub pool_min: usize,
     pub pool_bytes: usize,
     pub pool_spare: usize,
     pub queue_send_timeout_ms: u64,
-    pub v4l2_mmap_poll_ms: u64,
-    pub v4l2_send_timeout_ms: u64,
-    pub v4l2_error_backoff_ms: u64,
-    pub libcamera_lookup_timeout_ms: u64,
-    pub libcamera_lookup_poll_ms: u64,
-    pub libcamera_requeue_stall_timeout_ms: u64,
-    pub libcamera_request_poll_ms: u64,
-    pub libcamera_idle_drain_timeout_ms: u64,
-    pub libcamera_idle_drain_poll_ms: u64,
-    pub libcamera_control_response_timeout_ms: u64,
-    pub libcamera_probe_cache_ttl_ms: u64,
-    pub libcamera_stop_when_idle: bool,
-    pub libcamera_prefault_request_pools: bool,
-    pub libcamera_processed_stream_role: LibcameraProcessedStreamRole,
-    pub file_image_cache_bytes: usize,
 }
+
+pub type CaptureTunables = CaptureConfig;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PoolLimits {
@@ -111,7 +98,7 @@ pub(crate) struct PoolLimits {
     pub spare: usize,
 }
 
-impl Default for CaptureTunables {
+impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             queue_depth: DEFAULT_QUEUE_DEPTH,
@@ -119,26 +106,11 @@ impl Default for CaptureTunables {
             pool_bytes: DEFAULT_POOL_BYTES,
             pool_spare: DEFAULT_POOL_SPARE,
             queue_send_timeout_ms: DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS,
-            v4l2_mmap_poll_ms: DEFAULT_V4L2_MMAP_POLL_MS,
-            v4l2_send_timeout_ms: DEFAULT_V4L2_SEND_TIMEOUT_MS,
-            v4l2_error_backoff_ms: DEFAULT_V4L2_ERROR_BACKOFF_MS,
-            libcamera_lookup_timeout_ms: DEFAULT_LIBCAMERA_LOOKUP_TIMEOUT_MS,
-            libcamera_lookup_poll_ms: DEFAULT_LIBCAMERA_LOOKUP_POLL_MS,
-            libcamera_requeue_stall_timeout_ms: DEFAULT_LIBCAMERA_REQUEUE_STALL_TIMEOUT_MS,
-            libcamera_request_poll_ms: DEFAULT_LIBCAMERA_REQUEST_POLL_MS,
-            libcamera_idle_drain_timeout_ms: DEFAULT_LIBCAMERA_IDLE_DRAIN_TIMEOUT_MS,
-            libcamera_idle_drain_poll_ms: DEFAULT_LIBCAMERA_IDLE_DRAIN_POLL_MS,
-            libcamera_control_response_timeout_ms: DEFAULT_LIBCAMERA_CONTROL_RESPONSE_TIMEOUT_MS,
-            libcamera_probe_cache_ttl_ms: DEFAULT_LIBCAMERA_PROBE_CACHE_MS,
-            libcamera_stop_when_idle: DEFAULT_LIBCAMERA_STOP_WHEN_IDLE,
-            libcamera_prefault_request_pools: DEFAULT_LIBCAMERA_PREFAULT_REQUEST_POOLS,
-            libcamera_processed_stream_role: LibcameraProcessedStreamRole::default(),
-            file_image_cache_bytes: DEFAULT_FILE_IMAGE_CACHE_BYTES,
         }
     }
 }
 
-impl CaptureTunables {
+impl CaptureConfig {
     pub(crate) fn sanitized(self) -> Self {
         Self {
             queue_depth: self.queue_depth.max(1),
@@ -146,23 +118,6 @@ impl CaptureTunables {
             pool_bytes: self.pool_bytes.max(1),
             pool_spare: self.pool_spare,
             queue_send_timeout_ms: self.queue_send_timeout_ms.max(1),
-            v4l2_mmap_poll_ms: self.v4l2_mmap_poll_ms.max(1),
-            v4l2_send_timeout_ms: self.v4l2_send_timeout_ms.max(1),
-            v4l2_error_backoff_ms: self.v4l2_error_backoff_ms.max(1),
-            libcamera_lookup_timeout_ms: self.libcamera_lookup_timeout_ms.max(1),
-            libcamera_lookup_poll_ms: self.libcamera_lookup_poll_ms.max(1),
-            libcamera_requeue_stall_timeout_ms: self.libcamera_requeue_stall_timeout_ms.max(1),
-            libcamera_request_poll_ms: self.libcamera_request_poll_ms.max(1),
-            libcamera_idle_drain_timeout_ms: self.libcamera_idle_drain_timeout_ms.max(1),
-            libcamera_idle_drain_poll_ms: self.libcamera_idle_drain_poll_ms.max(1),
-            libcamera_control_response_timeout_ms: self
-                .libcamera_control_response_timeout_ms
-                .max(1),
-            libcamera_probe_cache_ttl_ms: self.libcamera_probe_cache_ttl_ms,
-            libcamera_stop_when_idle: self.libcamera_stop_when_idle,
-            libcamera_prefault_request_pools: self.libcamera_prefault_request_pools,
-            libcamera_processed_stream_role: self.libcamera_processed_stream_role,
-            file_image_cache_bytes: self.file_image_cache_bytes,
         }
     }
 
@@ -181,6 +136,103 @@ impl CaptureTunables {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct V4l2Config {
+    pub mmap_poll_ms: u64,
+    pub send_timeout_ms: u64,
+    pub error_backoff_ms: u64,
+}
+
+impl Default for V4l2Config {
+    fn default() -> Self {
+        Self {
+            mmap_poll_ms: DEFAULT_V4L2_MMAP_POLL_MS,
+            send_timeout_ms: DEFAULT_V4L2_SEND_TIMEOUT_MS,
+            error_backoff_ms: DEFAULT_V4L2_ERROR_BACKOFF_MS,
+        }
+    }
+}
+
+impl V4l2Config {
+    pub(crate) fn sanitized(self) -> Self {
+        Self {
+            mmap_poll_ms: self.mmap_poll_ms.max(1),
+            send_timeout_ms: self.send_timeout_ms.max(1),
+            error_backoff_ms: self.error_backoff_ms.max(1),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct LibcameraConfig {
+    pub lookup_timeout_ms: u64,
+    pub lookup_poll_ms: u64,
+    pub requeue_stall_timeout_ms: u64,
+    pub request_poll_ms: u64,
+    pub idle_drain_timeout_ms: u64,
+    pub idle_drain_poll_ms: u64,
+    pub control_response_timeout_ms: u64,
+    pub probe_cache_ttl_ms: u64,
+    pub stop_when_idle: bool,
+    pub prefault_request_pools: bool,
+    pub processed_stream_role: LibcameraProcessedStreamRole,
+}
+
+impl Default for LibcameraConfig {
+    fn default() -> Self {
+        Self {
+            lookup_timeout_ms: DEFAULT_LIBCAMERA_LOOKUP_TIMEOUT_MS,
+            lookup_poll_ms: DEFAULT_LIBCAMERA_LOOKUP_POLL_MS,
+            requeue_stall_timeout_ms: DEFAULT_LIBCAMERA_REQUEUE_STALL_TIMEOUT_MS,
+            request_poll_ms: DEFAULT_LIBCAMERA_REQUEST_POLL_MS,
+            idle_drain_timeout_ms: DEFAULT_LIBCAMERA_IDLE_DRAIN_TIMEOUT_MS,
+            idle_drain_poll_ms: DEFAULT_LIBCAMERA_IDLE_DRAIN_POLL_MS,
+            control_response_timeout_ms: DEFAULT_LIBCAMERA_CONTROL_RESPONSE_TIMEOUT_MS,
+            probe_cache_ttl_ms: DEFAULT_LIBCAMERA_PROBE_CACHE_MS,
+            stop_when_idle: DEFAULT_LIBCAMERA_STOP_WHEN_IDLE,
+            prefault_request_pools: DEFAULT_LIBCAMERA_PREFAULT_REQUEST_POOLS,
+            processed_stream_role: LibcameraProcessedStreamRole::default(),
+        }
+    }
+}
+
+impl LibcameraConfig {
+    pub(crate) fn sanitized(self) -> Self {
+        Self {
+            lookup_timeout_ms: self.lookup_timeout_ms.max(1),
+            lookup_poll_ms: self.lookup_poll_ms.max(1),
+            requeue_stall_timeout_ms: self.requeue_stall_timeout_ms.max(1),
+            request_poll_ms: self.request_poll_ms.max(1),
+            idle_drain_timeout_ms: self.idle_drain_timeout_ms.max(1),
+            idle_drain_poll_ms: self.idle_drain_poll_ms.max(1),
+            control_response_timeout_ms: self.control_response_timeout_ms.max(1),
+            probe_cache_ttl_ms: self.probe_cache_ttl_ms,
+            stop_when_idle: self.stop_when_idle,
+            prefault_request_pools: self.prefault_request_pools,
+            processed_stream_role: self.processed_stream_role,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct FileBackendConfig {
+    pub image_cache_bytes: usize,
+}
+
+impl Default for FileBackendConfig {
+    fn default() -> Self {
+        Self {
+            image_cache_bytes: DEFAULT_FILE_IMAGE_CACHE_BYTES,
+        }
+    }
+}
+
 /// Tunables for netcam polling/backoff behavior.
 ///
 /// Prefer `StyxConfig::netcam_*` builder methods for application configuration.
@@ -189,7 +241,7 @@ impl CaptureTunables {
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
-pub struct NetcamTunables {
+pub struct NetcamConfig {
     pub request_timeout_secs: u64,
     pub connect_timeout_ms: u64,
     pub read_timeout_ms: u64,
@@ -199,7 +251,9 @@ pub struct NetcamTunables {
     pub stop_poll_ms: u64,
 }
 
-impl Default for NetcamTunables {
+pub type NetcamTunables = NetcamConfig;
+
+impl Default for NetcamConfig {
     fn default() -> Self {
         Self {
             request_timeout_secs: DEFAULT_NETCAM_TIMEOUT_SECS,
@@ -213,7 +267,7 @@ impl Default for NetcamTunables {
     }
 }
 
-impl NetcamTunables {
+impl NetcamConfig {
     pub(crate) fn sanitized(self) -> Self {
         let start = self.backoff_start_ms.max(100);
         let max = self.backoff_max_ms.max(start);
@@ -228,6 +282,18 @@ impl NetcamTunables {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct BackendConfig {
+    pub v4l2: V4l2Config,
+    pub libcamera: LibcameraConfig,
+    pub netcam: NetcamConfig,
+    pub file: FileBackendConfig,
+}
+
+pub type TransformConfig = TransformPoolConfig;
 
 /// Builder for request-local Styx tunables.
 ///
@@ -244,41 +310,19 @@ impl NetcamTunables {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct StyxConfig {
-    capture: CaptureTunables,
-    netcam: NetcamTunables,
-    transform_pool: TransformPoolConfig,
+    pub capture: CaptureConfig,
+    pub transforms: TransformConfig,
+    pub backends: BackendConfig,
 }
 
 impl StyxConfig {
     /// Start building a new configuration with defaults.
     pub fn new() -> Self {
         Self {
-            capture: CaptureTunables::default(),
-            netcam: NetcamTunables::default(),
-            transform_pool: TransformPoolConfig::default(),
+            capture: CaptureConfig::default(),
+            transforms: TransformConfig::default(),
+            backends: BackendConfig::default(),
         }
-    }
-
-    /// Configuration biased toward fresh preview frames over completeness.
-    pub fn low_latency_preview() -> Self {
-        Self::new()
-            .capture_queue_depth(1)
-            .capture_pool(2, 1 << 18, 2)
-    }
-
-    /// Configuration biased toward preserving every frame during recording.
-    pub fn reliable_recording() -> Self {
-        Self::new()
-            .capture_queue_depth(8)
-            .capture_pool(4, 1 << 20, 8)
-    }
-
-    /// Configuration for bursty MJPEG-over-HTTP sources.
-    pub fn netcam_preview() -> Self {
-        Self::new()
-            .netcam_timeouts(10)
-            .netcam_backoff(500, 5_000)
-            .capture_queue_depth(4)
     }
 
     /// Override capture queue depth.
@@ -297,7 +341,7 @@ impl StyxConfig {
 
     /// Override the process-wide packed-transform pool sizing applied at capture startup.
     pub fn transform_pool(mut self, min: usize, bytes: usize, spare: usize) -> Self {
-        self.transform_pool = TransformPoolConfig { min, bytes, spare };
+        self.transforms = TransformConfig { min, bytes, spare };
         self
     }
 
@@ -307,11 +351,26 @@ impl StyxConfig {
         self
     }
 
+    pub fn with_capture(mut self, capture: CaptureConfig) -> Self {
+        self.capture = capture;
+        self
+    }
+
+    pub fn with_backends(mut self, backends: BackendConfig) -> Self {
+        self.backends = backends;
+        self
+    }
+
+    pub fn with_transforms(mut self, transforms: TransformConfig) -> Self {
+        self.transforms = transforms;
+        self
+    }
+
     /// Override the decoded image cache limit used by the file backend.
     ///
     /// Set to `0` to disable decoded image caching.
     pub fn file_image_cache_bytes(mut self, bytes: usize) -> Self {
-        self.capture.file_image_cache_bytes = bytes;
+        self.backends.file.image_cache_bytes = bytes;
         self
     }
 
@@ -322,9 +381,9 @@ impl StyxConfig {
         send_timeout_ms: u64,
         error_backoff_ms: u64,
     ) -> Self {
-        self.capture.v4l2_mmap_poll_ms = mmap_poll_ms;
-        self.capture.v4l2_send_timeout_ms = send_timeout_ms;
-        self.capture.v4l2_error_backoff_ms = error_backoff_ms;
+        self.backends.v4l2.mmap_poll_ms = mmap_poll_ms;
+        self.backends.v4l2.send_timeout_ms = send_timeout_ms;
+        self.backends.v4l2.error_backoff_ms = error_backoff_ms;
         self
     }
 
@@ -338,18 +397,18 @@ impl StyxConfig {
         idle_drain_timeout_ms: u64,
         idle_drain_poll_ms: u64,
     ) -> Self {
-        self.capture.libcamera_lookup_timeout_ms = lookup_timeout_ms;
-        self.capture.libcamera_lookup_poll_ms = lookup_poll_ms;
-        self.capture.libcamera_requeue_stall_timeout_ms = requeue_stall_timeout_ms;
-        self.capture.libcamera_request_poll_ms = request_poll_ms;
-        self.capture.libcamera_idle_drain_timeout_ms = idle_drain_timeout_ms;
-        self.capture.libcamera_idle_drain_poll_ms = idle_drain_poll_ms;
+        self.backends.libcamera.lookup_timeout_ms = lookup_timeout_ms;
+        self.backends.libcamera.lookup_poll_ms = lookup_poll_ms;
+        self.backends.libcamera.requeue_stall_timeout_ms = requeue_stall_timeout_ms;
+        self.backends.libcamera.request_poll_ms = request_poll_ms;
+        self.backends.libcamera.idle_drain_timeout_ms = idle_drain_timeout_ms;
+        self.backends.libcamera.idle_drain_poll_ms = idle_drain_poll_ms;
         self
     }
 
     /// Override how long libcamera control reads wait for a worker response.
     pub fn libcamera_control_response_timeout(mut self, timeout_ms: u64) -> Self {
-        self.capture.libcamera_control_response_timeout_ms = timeout_ms;
+        self.backends.libcamera.control_response_timeout_ms = timeout_ms;
         self
     }
 
@@ -357,31 +416,31 @@ impl StyxConfig {
     ///
     /// Set to `0` to effectively bypass the cache.
     pub fn libcamera_probe_cache_ttl(mut self, ttl_ms: u64) -> Self {
-        self.capture.libcamera_probe_cache_ttl_ms = ttl_ms;
+        self.backends.libcamera.probe_cache_ttl_ms = ttl_ms;
         self
     }
 
     /// Override whether libcamera tries to stop its manager when a session goes idle.
     pub fn libcamera_stop_when_idle(mut self, enabled: bool) -> Self {
-        self.capture.libcamera_stop_when_idle = enabled;
+        self.backends.libcamera.stop_when_idle = enabled;
         self
     }
 
     /// Override whether libcamera request-pool backing memory is prefaulted at startup.
     pub fn libcamera_prefault_request_pools(mut self, enabled: bool) -> Self {
-        self.capture.libcamera_prefault_request_pools = enabled;
+        self.backends.libcamera.prefault_request_pools = enabled;
         self
     }
 
     /// Override the processed stream role for libcamera display-like formats.
     pub fn libcamera_processed_stream_role(mut self, role: LibcameraProcessedStreamRole) -> Self {
-        self.capture.libcamera_processed_stream_role = role;
+        self.backends.libcamera.processed_stream_role = role;
         self
     }
 
     /// Override netcam request timeout.
     pub fn netcam_timeouts(mut self, request_secs: u64) -> Self {
-        self.netcam.request_timeout_secs = request_secs;
+        self.backends.netcam.request_timeout_secs = request_secs;
         self
     }
 
@@ -392,28 +451,28 @@ impl StyxConfig {
         connect_ms: u64,
         read_ms: u64,
     ) -> Self {
-        self.netcam.request_timeout_secs = request_secs;
-        self.netcam.connect_timeout_ms = connect_ms;
-        self.netcam.read_timeout_ms = read_ms;
+        self.backends.netcam.request_timeout_secs = request_secs;
+        self.backends.netcam.connect_timeout_ms = connect_ms;
+        self.backends.netcam.read_timeout_ms = read_ms;
         self
     }
 
     /// Override netcam backoff timings.
     pub fn netcam_backoff(mut self, start_ms: u64, max_ms: u64) -> Self {
-        self.netcam.backoff_start_ms = start_ms;
-        self.netcam.backoff_max_ms = max_ms;
+        self.backends.netcam.backoff_start_ms = start_ms;
+        self.backends.netcam.backoff_max_ms = max_ms;
         self
     }
 
     /// Override netcam frame enqueue timeout.
     pub fn netcam_send_timeout(mut self, timeout_ms: u64) -> Self {
-        self.netcam.send_timeout_ms = timeout_ms;
+        self.backends.netcam.send_timeout_ms = timeout_ms;
         self
     }
 
     /// Override how often netcam workers wake while waiting for stop.
     pub fn netcam_stop_poll(mut self, poll_ms: u64) -> Self {
-        self.netcam.stop_poll_ms = poll_ms;
+        self.backends.netcam.stop_poll_ms = poll_ms;
         self
     }
 
@@ -422,17 +481,29 @@ impl StyxConfig {
         self.capture.sanitized()
     }
 
+    pub fn v4l2_config(&self) -> V4l2Config {
+        self.backends.v4l2.sanitized()
+    }
+
+    pub fn libcamera_config(&self) -> LibcameraConfig {
+        self.backends.libcamera.sanitized()
+    }
+
+    pub fn file_backend_config(&self) -> FileBackendConfig {
+        self.backends.file
+    }
+
     /// Return the sanitized netcam tunables carried by this config.
     pub fn netcam_tunables(&self) -> NetcamTunables {
-        self.netcam.sanitized()
+        self.backends.netcam.sanitized()
     }
 
     /// Return the transform pool sizing carried by this config.
     pub fn transform_pool_config(&self) -> TransformPoolConfig {
         TransformPoolConfig {
-            min: self.transform_pool.min,
-            bytes: self.transform_pool.bytes.max(1),
-            spare: self.transform_pool.spare,
+            min: self.transforms.min,
+            bytes: self.transforms.bytes.max(1),
+            spare: self.transforms.spare,
         }
     }
 
@@ -459,15 +530,15 @@ mod tests {
             .libcamera_prefault_request_pools(false)
             .libcamera_processed_stream_role(LibcameraProcessedStreamRole::VideoRecording)
             .libcamera_probe_cache_ttl(250)
-            .capture_tunables();
+            .libcamera_config();
 
-        assert!(tunables.libcamera_stop_when_idle);
-        assert!(!tunables.libcamera_prefault_request_pools);
+        assert!(tunables.stop_when_idle);
+        assert!(!tunables.prefault_request_pools);
         assert_eq!(
-            tunables.libcamera_processed_stream_role,
+            tunables.processed_stream_role,
             LibcameraProcessedStreamRole::VideoRecording
         );
-        assert_eq!(tunables.libcamera_probe_cache_ttl_ms, 250);
+        assert_eq!(tunables.probe_cache_ttl_ms, 250);
     }
 
     #[test]

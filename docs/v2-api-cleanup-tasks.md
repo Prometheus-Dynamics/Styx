@@ -8,7 +8,7 @@ workflows.
 
 ## Tasks
 
-- [ ] Remove example workflow presets from `StyxConfig`.
+- [x] Remove example workflow presets from `StyxConfig`.
   - Remove `StyxConfig::low_latency_preview()`.
   - Remove `StyxConfig::reliable_recording()`.
   - Remove `StyxConfig::netcam_preview()`.
@@ -20,7 +20,7 @@ workflows.
     ```
   - Move any remaining workflow naming into local example helpers.
 
-- [ ] Split the monolithic `StyxConfig` into focused config structs.
+- [x] Split the monolithic `StyxConfig` into focused config structs.
   - Introduce the intended public config shape:
     ```rust
     pub struct StyxConfig {
@@ -40,7 +40,7 @@ workflows.
   - Keep existing builder ergonomics where possible through forwarding methods
     or obvious nested builder methods.
 
-- [ ] Rename graph policies around behavior instead of application workflows.
+- [x] Rename graph policies around behavior instead of application workflows.
   - Replace `preview_policy()` with `latest_only()`.
   - Replace `recording_policy(capacity)` with `bounded_blocking(capacity)`.
   - Replace `analysis_policy(capacity, max_lag_frames)` with
@@ -52,7 +52,7 @@ workflows.
     let analysis = GraphPolicy::bounded_drop_oldest(8, 3);
     ```
 
-- [ ] Replace workflow-specific sink helpers with generic sink registration.
+- [x] Replace workflow-specific sink helpers with generic sink registration.
   - Remove or stop exporting `register_preview_sink_node`.
   - Remove or stop exporting `register_analysis_sink_node`.
   - Remove or stop exporting `register_recorder_sink_node` if the generic sink
@@ -68,7 +68,7 @@ workflows.
   - Keep workflow helper functions inside examples if they materially reduce
     repeated example code.
 
-- [ ] Keep the preview window behind an explicit feature and out of the main
+- [x] Keep the preview window behind an explicit feature and out of the main
   prelude.
   - Use the approved option C shape:
     ```rust
@@ -136,7 +136,7 @@ workflows.
   - Remove simulation from the core prelude and core capture API.
   - Keep only minimal test fixtures in core if unit tests need synthetic frames.
 
-- [ ] Replace `MediaPipelineBuilder::record_output` with generic sink wiring.
+- [x] Replace `MediaPipelineBuilder::record_output` with generic sink wiring.
   - Remove the recording-specific builder shortcut from the generic pipeline
     builder.
   - Use the approved generic sink shape:

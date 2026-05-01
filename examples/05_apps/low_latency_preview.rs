@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+#[cfg(feature = "preview-window")]
+use styx::extras::preview_window::PreviewWindow;
 use styx::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -7,7 +9,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = device.default_mode().ok_or("virtual device missing mode")?;
     let request = device.capture_request();
     let mut pipeline = MediaPipelineBuilder::new(request)
-        .config(StyxConfig::low_latency_preview())
+        .config(
+            StyxConfig::new()
+                .capture_queue_depth(1)
+                .capture_pool(2, 1 << 18, 2),
+        )
         .raw_frames()
         .start()?;
 

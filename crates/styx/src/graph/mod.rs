@@ -32,13 +32,13 @@ pub use frame::{
     register_framelease_type,
 };
 pub use plugin::{StyxMediaPlugin, StyxSinkDescriptor, StyxSourceDescriptor, StyxSourceKind};
-pub use policy::{analysis_policy, preview_policy, recording_policy};
-pub use sinks::{
-    FrameSinkCell, NetworkStreamSinkOptions, NetworkStreamWriter, register_analysis_sink_node,
-    register_network_stream_sink_node, register_preview_sink_node,
-};
+pub use policy::{bounded_blocking, bounded_drop_oldest, latest_only};
 #[cfg(feature = "hooks")]
-pub use sinks::{register_file_sequence_sink_node, register_recorder_sink_node};
+pub use sinks::register_file_sequence_sink_node;
+pub use sinks::{
+    FrameSinkCell, NetworkStreamSinkOptions, NetworkStreamWriter, SinkNodeConfig,
+    register_frame_sink_node, register_network_stream_sink_node,
+};
 pub use sources::{
     register_camera_sources_all, register_camera_sources_limit,
     register_camera_sources_with_policy, register_capture_request_source_with_policy,

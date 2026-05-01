@@ -35,9 +35,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let request = device.capture_request();
     let mut pipeline = MediaPipelineBuilder::new(request)
-        .config(StyxConfig::reliable_recording())
+        .config(
+            StyxConfig::new()
+                .capture_queue_depth(8)
+                .capture_pool(4, 1 << 20, 8),
+        )
         .raw_frames()
-        .record_output(recorder)
+        .sink("recording", recorder)
         .start_with_policy(CaptureStartPolicy::resilient())?;
 
     for _ in pipeline

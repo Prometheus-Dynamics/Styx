@@ -9,6 +9,8 @@ fn main() {
     );
 }
 
+#[cfg(feature = "preview-window")]
+use styx::extras::preview_window::PreviewWindow;
 #[cfg(all(
     feature = "libcamera",
     feature = "codec-ffmpeg",

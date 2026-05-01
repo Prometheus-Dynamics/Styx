@@ -48,6 +48,8 @@ pub struct MediaPipelineBuilder<'a> {
     frame_transform: FrameTransform,
     #[cfg(feature = "hooks")]
     output_recorder: Option<FrameRecorder>,
+    #[cfg(feature = "hooks")]
+    output_recorder_sink_id: Option<String>,
     decode_enabled: bool,
     encode_enabled: bool,
     #[cfg(target_os = "linux")]
@@ -81,6 +83,8 @@ impl<'a> MediaPipelineBuilder<'a> {
             frame_transform: FrameTransform::default(),
             #[cfg(feature = "hooks")]
             output_recorder: None,
+            #[cfg(feature = "hooks")]
+            output_recorder_sink_id: None,
             decode_enabled: true,
             encode_enabled: true,
             #[cfg(target_os = "linux")]
@@ -114,11 +118,12 @@ impl<'a> MediaPipelineBuilder<'a> {
         self
     }
 
-    /// Record the final output frames to disk using the provided recorder.
+    /// Attach a recorder sink to the final output frames.
     ///
     /// Requires the `hooks` feature.
     #[cfg(feature = "hooks")]
-    pub fn record_output(mut self, recorder: FrameRecorder) -> Self {
+    pub fn sink(mut self, name: impl Into<String>, recorder: FrameRecorder) -> Self {
+        self.output_recorder_sink_id = Some(name.into());
         self.output_recorder = Some(recorder);
         self
     }
@@ -319,11 +324,15 @@ impl<'a> MediaPipelineBuilder<'a> {
         #[cfg(feature = "hooks")]
         let recorder_sink_started = self.output_recorder.is_some();
         #[cfg(feature = "hooks")]
+        let output_recorder_sink_id = self
+            .output_recorder_sink_id
+            .unwrap_or_else(|| "recording".to_string());
+        #[cfg(feature = "hooks")]
         if let (Some(service), Some(recorder)) = (&self.service_runtime, &self.output_recorder)
             && let Ok(mut service) = service.lock()
         {
             service.record_sink_event(crate::service::SinkLifecycleEvent::Started {
-                sink_id: "styx.pipeline.record_output".into(),
+                sink_id: output_recorder_sink_id.clone(),
                 kind: crate::service::SinkKind::Recorder,
             });
             service.record_recording_event(crate::service::RecordingLifecycleEvent::Started {
@@ -343,6 +352,8 @@ impl<'a> MediaPipelineBuilder<'a> {
             frame_transform: self.frame_transform,
             #[cfg(feature = "hooks")]
             output_recorder: self.output_recorder,
+            #[cfg(feature = "hooks")]
+            output_recorder_sink_id,
             metrics: crate::metrics::PipelineMetrics::default(),
             decode_enabled: self.decode_enabled,
             encode_enabled: self.encode_enabled,
@@ -396,6 +407,8 @@ impl<'a> MediaPipelineBuilder<'a> {
             frame_transform: FrameTransform::default(),
             #[cfg(feature = "hooks")]
             output_recorder: None,
+            #[cfg(feature = "hooks")]
+            output_recorder_sink_id: "recording".into(),
             metrics: crate::metrics::PipelineMetrics::default(),
             decode_enabled,
             encode_enabled,
@@ -498,10 +511,13 @@ impl<'a> MediaPipelineBuilder<'a> {
 
         #[cfg(feature = "hooks")]
         if let Some(recorder) = self.output_recorder {
+            let sink_id = self
+                .output_recorder_sink_id
+                .unwrap_or_else(|| "recording".to_string());
             nodes.push(
                 media
-                    .add_recorder_sink("styx.pipeline.record_output", recorder)
-                    .alias("record_output"),
+                    .add_recorder_sink(sink_id.clone(), recorder)
+                    .alias(sink_id),
             );
         }
 

@@ -5,6 +5,8 @@ use std::sync::Arc;
 #[cfg(feature = "netcam")]
 use std::time::Duration;
 
+#[cfg(feature = "preview-window")]
+use styx::extras::preview_window::PreviewWindow;
 #[cfg(feature = "netcam")]
 use styx::prelude::*;
 
@@ -34,7 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = make_netcam_device("netcam", &url, width, height, fps);
     let decoder = Arc::new(MjpegDecoder::new(FourCc::RG24));
     let mut pipeline = MediaPipelineBuilder::new(device.capture_request())
-        .config(StyxConfig::netcam_preview())
+        .config(
+            StyxConfig::new()
+                .netcam_timeouts(10)
+                .netcam_backoff(500, 5_000)
+                .capture_queue_depth(4),
+        )
         .decoder(decoder)
         .start()?;
 

@@ -16,6 +16,7 @@ pub use styx_libcamera as libcamera;
 #[cfg(feature = "v4l2")]
 pub use styx_v4l2 as v4l2;
 #[cfg(feature = "preview-window")]
+#[cfg(feature = "preview-window")]
 pub mod preview;
 
 pub use thiserror;
@@ -35,6 +36,13 @@ mod serde_impls;
 pub mod service;
 pub mod session;
 pub mod watch;
+
+#[cfg(feature = "preview-window")]
+pub mod extras {
+    pub mod preview_window {
+        pub use crate::preview::PreviewWindow;
+    }
+}
 
 /// Unified device descriptor for probed backends.
 ///
@@ -415,9 +423,9 @@ pub(crate) fn probe_backends_with_errors_with_options(
     #[cfg(feature = "libcamera")]
     if _backends.is_none_or(|backends| backends.contains(&BackendKind::Libcamera)) {
         if let Some(config) = _config {
-            let tunables = config.capture_tunables();
+            let tunables = config.libcamera_config();
             styx_libcamera::set_manager_config(styx_libcamera::LibcameraManagerConfig {
-                probe_cache_ttl_ms: tunables.libcamera_probe_cache_ttl_ms,
+                probe_cache_ttl_ms: tunables.probe_cache_ttl_ms,
             });
         }
         let (libcamera_devices, libcamera_errors) = if _force_refresh {
@@ -510,40 +518,40 @@ pub mod prelude {
     #[cfg(feature = "netcam")]
     pub use crate::capture_api::make_netcam_device;
     pub use crate::capture_api::{
-        CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, CaptureError,
-        CaptureFrameIter, CaptureHandle, CaptureRequest, CaptureStartPolicy, CaptureTunables,
-        SelectedCamera, StyxConfig, TdnOutputMode, make_virtual_device, make_virtual_rgb_device,
-        open_best_camera, open_virtual_rgb, start_capture,
+        BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
+        CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
+        CaptureStartPolicy, CaptureTunables, FileBackendConfig, LibcameraConfig, NetcamConfig,
+        NetcamTunables, SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig, V4l2Config,
+        make_virtual_device, make_virtual_rgb_device, open_best_camera, open_virtual_rgb,
+        start_capture,
     };
     #[cfg(feature = "simulation-bevy")]
     pub use crate::capture_api::{
         SimulationDeviceConfig, SimulationLensConfig, SimulationOutputMode, SimulationPose,
         SimulationSensorConfig, make_simulation_device,
     };
+    #[cfg(all(feature = "daedalus-plugin", feature = "hooks"))]
+    pub use crate::graph::register_file_sequence_sink_node;
     #[cfg(feature = "daedalus-plugin")]
     pub use crate::graph::{
-        CONTROL_EVENT_TYPE_KEY, CONTROL_RESULT_TYPE_KEY, FRAMELEASE_TYPE_KEY,
+        CONTROL_EVENT_TYPE_KEY, CONTROL_RESULT_TYPE_KEY, FRAMELEASE_TYPE_KEY, SinkNodeConfig,
         StyxCaptureSourceOptions, StyxCodecNodeDescriptor, StyxCodecNodeOptions, StyxControlEvent,
         StyxControlResult, StyxMediaPlugin, StyxSinkDescriptor, StyxSourceDescriptor,
-        StyxSourceKind, analysis_policy, concrete_codec_node_id, control_event_payload,
-        control_event_type_key, control_result_type_key, framelease_daedalus_residency,
-        framelease_payload, framelease_type_key, preview_policy, recording_policy,
-        register_analysis_sink_node, register_camera_sources_all, register_camera_sources_limit,
+        StyxSourceKind, bounded_blocking, bounded_drop_oldest, concrete_codec_node_id,
+        control_event_payload, control_event_type_key, control_result_type_key,
+        framelease_daedalus_residency, framelease_payload, framelease_type_key, latest_only,
+        register_camera_sources_all, register_camera_sources_limit,
         register_camera_sources_with_policy, register_capture_request_source_with_policy,
         register_capture_source_node, register_capture_source_node_with_options,
-        register_control_types, register_framelease_type, register_network_stream_sink_node,
-        register_preview_sink_node,
+        register_control_types, register_frame_sink_node, register_framelease_type,
+        register_network_stream_sink_node,
     };
-    #[cfg(all(feature = "daedalus-plugin", feature = "hooks"))]
-    pub use crate::graph::{register_file_sequence_sink_node, register_recorder_sink_node};
     pub use crate::metrics::{
         CopyMetrics, CopyStats, FrameDropReason, FrameDropStats, GraphTelemetryStats, HealthReport,
         PipelineMemoryStats, PipelineMetrics, PipelineStage, PipelineStageError,
         QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot, StageErrorMetrics, StageMetrics,
         StageSnapshot,
     };
-    #[cfg(feature = "preview-window")]
-    pub use crate::preview::PreviewWindow;
     #[cfg(feature = "hooks")]
     pub use crate::recording::{
         FrameRecorder, RecordingError, RecordingFormat, RecordingFrameIndexEntry, RecordingOptions,

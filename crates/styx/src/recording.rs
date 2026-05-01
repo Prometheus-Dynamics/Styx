@@ -105,7 +105,7 @@ pub enum RecordingError {
 /// let device = make_virtual_rgb_device("virtual", 640, 360, 30);
 /// let recorder = FrameRecorder::new("./recordings", RecordingOptions::default())?;
 /// let mut pipeline = MediaPipelineBuilder::new(CaptureRequest::new(&device))
-///     .record_output(recorder)
+///     .sink("recording", recorder)
 ///     .start()?;
 ///
 /// loop {

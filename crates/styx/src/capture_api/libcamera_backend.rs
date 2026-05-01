@@ -117,6 +117,7 @@ pub(super) fn start_libcamera(
         .map(|i| i.denominator.get() as f64 / i.numerator.get().max(1) as f64)
         .unwrap_or(0.0);
     let capture_tunables = config.capture_tunables();
+    let libcamera_config = config.libcamera_config();
     let queue_depth = capture_tunables.queue_depth;
     let _ = requested_fps;
     let (tx, rx) = bounded(queue_depth);
@@ -142,15 +143,14 @@ pub(super) fn start_libcamera(
     let tdn_request_pool_tracker_for_thread = tdn_request_pool_tracker.clone();
     let worker_error_for_thread = worker_error.clone();
     let worker = thread::spawn(move || {
-        let lookup_timeout = Duration::from_millis(capture_tunables.libcamera_lookup_timeout_ms);
-        let lookup_poll = Duration::from_millis(capture_tunables.libcamera_lookup_poll_ms);
+        let lookup_timeout = Duration::from_millis(libcamera_config.lookup_timeout_ms);
+        let lookup_poll = Duration::from_millis(libcamera_config.lookup_poll_ms);
         let requeue_stall_timeout =
-            Duration::from_millis(capture_tunables.libcamera_requeue_stall_timeout_ms);
-        let request_poll = Duration::from_millis(capture_tunables.libcamera_request_poll_ms);
+            Duration::from_millis(libcamera_config.requeue_stall_timeout_ms);
+        let request_poll = Duration::from_millis(libcamera_config.request_poll_ms);
         let queue_send_timeout = Duration::from_millis(capture_tunables.queue_send_timeout_ms);
-        let idle_drain_timeout =
-            Duration::from_millis(capture_tunables.libcamera_idle_drain_timeout_ms);
-        let idle_drain_poll = Duration::from_millis(capture_tunables.libcamera_idle_drain_poll_ms);
+        let idle_drain_timeout = Duration::from_millis(libcamera_config.idle_drain_timeout_ms);
+        let idle_drain_poll = Duration::from_millis(libcamera_config.idle_drain_poll_ms);
         let res: Result<Mode, CaptureError> = (|| {
             let camera_use =
                 styx_libcamera::begin_camera_use().map_err(classify_libcamera_backend_message)?;
@@ -177,7 +177,7 @@ pub(super) fn start_libcamera(
 
             let role = stream_role_for_request(
                 mode_for_thread.format.code,
-                capture_tunables.libcamera_processed_stream_role,
+                libcamera_config.processed_stream_role,
             );
             let enable_tdn_output = enable_tdn_output_for_thread;
             let mut roles = vec![role];
@@ -329,7 +329,7 @@ pub(super) fn start_libcamera(
                 stride_bytes = cfg_stride,
                 tdn_enabled = enable_tdn_output,
                 tdn_stride_bytes = tdn_stride,
-                stream_role = ?capture_tunables.libcamera_processed_stream_role,
+                stream_role = ?libcamera_config.processed_stream_role,
                 "libcamera negotiated capture format"
             );
             let mut alloc = libcamera::framebuffer_allocator::FrameBufferAllocator::new(&cam);
@@ -355,9 +355,8 @@ pub(super) fn start_libcamera(
                 tdn_buffer_count = tdn_buffers.as_ref().map_or(0, Vec::len),
                 "libcamera allocated capture buffers"
             );
-            let prefault_request_pools = util::prefault_request_pools_enabled(
-                capture_tunables.libcamera_prefault_request_pools,
-            );
+            let prefault_request_pools =
+                util::prefault_request_pools_enabled(libcamera_config.prefault_request_pools);
             let _primary_request_pool_lease = RequestPoolBackingLease::new(
                 request_pool_tracker_for_thread,
                 &primary_buffers,
@@ -625,7 +624,7 @@ pub(super) fn start_libcamera(
             }
         })();
 
-        if util::stop_when_idle_enabled(capture_tunables.libcamera_stop_when_idle)
+        if util::stop_when_idle_enabled(libcamera_config.stop_when_idle)
             && !enable_tdn_output_for_thread
             && wait_for_backings_to_drain(
                 &outstanding_backings_for_thread,
@@ -656,9 +655,7 @@ pub(super) fn start_libcamera(
         control: ControlPlane::Libcamera {
             tx: ctrl_tx,
             pending: pending_controls,
-            response_timeout: Duration::from_millis(
-                capture_tunables.libcamera_control_response_timeout_ms,
-            ),
+            response_timeout: Duration::from_millis(libcamera_config.control_response_timeout_ms),
         },
         descriptor,
         mode,
@@ -668,7 +665,7 @@ pub(super) fn start_libcamera(
         worker: Some(WorkerHandle::Thread(worker)),
         aux_workers: Vec::new(),
         libcamera_idle_stop_allowed: !enable_tdn_output_for_thread,
-        libcamera_stop_when_idle: capture_tunables.libcamera_stop_when_idle,
+        libcamera_stop_when_idle: libcamera_config.stop_when_idle,
         metrics: StageMetrics::default(),
         external_backings: vec![
             lease_backing_tracker,
