@@ -26,11 +26,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang \
             libavcodec-dev \
+            libavdevice-dev \
             libavfilter-dev \
             libavformat-dev \
             libavutil-dev \
             libcamera-dev \
             libjpeg-dev \
+            libpostproc-dev \
+            libswresample-dev \
             libswscale-dev \
             libv4l-dev \
             pkg-config

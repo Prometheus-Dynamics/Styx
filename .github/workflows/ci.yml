@@ -68,10 +68,13 @@ jobs:
           sudo apt-get install -y
           clang
           libavcodec-dev
+          libavdevice-dev
           libavfilter-dev
           libavformat-dev
           libavutil-dev
           libcamera-dev
+          libpostproc-dev
+          libswresample-dev
           libswscale-dev
           pkg-config
 
