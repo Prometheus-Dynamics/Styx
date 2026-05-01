@@ -22,19 +22,19 @@ pub type NetworkStreamWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkNodeConfig {
-    pub label: String,
+    pub label: &'static str,
     pub kind: SinkKind,
 }
 
 impl SinkNodeConfig {
-    pub fn new(label: impl Into<String>) -> Self {
+    pub const fn new(label: &'static str) -> Self {
         Self {
-            label: label.into(),
+            label,
             kind: SinkKind::Analysis,
         }
     }
 
-    pub fn kind(mut self, kind: SinkKind) -> Self {
+    pub const fn kind(mut self, kind: SinkKind) -> Self {
         self.kind = kind;
         self
     }
@@ -107,15 +107,6 @@ pub(crate) fn register_analysis_sink_node_with_service(
         sink,
         service,
     )
-}
-
-#[cfg(feature = "hooks")]
-pub(crate) fn register_recorder_sink_node(
-    registry: &mut daedalus::runtime::plugins::PluginRegistry,
-    node_id: impl Into<String>,
-    recorder: Arc<Mutex<FrameRecorder>>,
-) -> PluginResult<NodeHandle> {
-    register_recorder_sink_node_with_service(registry, node_id, recorder, None)
 }
 
 #[cfg(feature = "hooks")]
@@ -299,15 +290,14 @@ pub fn register_network_stream_sink_node_with_service(
 fn register_frame_tap_sink_node(
     registry: &mut daedalus::runtime::plugins::PluginRegistry,
     node_id: impl Into<String>,
-    label: impl Into<String>,
+    label: &'static str,
     kind: SinkKind,
     sink: FrameSinkCell,
     service: Option<SharedStyxServiceRuntime>,
 ) -> PluginResult<NodeHandle> {
     register_framelease_type();
     let node_id = node_id.into();
-    let label = label.into();
-    registry.register_node_decl(framelease_node_decl(&node_id, &label))?;
+    registry.register_node_decl(framelease_node_decl(&node_id, label))?;
     let emitter = SinkEventEmitter::new(service, node_id.clone(), kind);
     emitter.started();
     registry
