@@ -1,45 +1,61 @@
 #![doc = include_str!("../README.md")]
 #![deny(clippy::print_stderr, clippy::print_stdout)]
 
-#[cfg(any(feature = "v4l2", feature = "libcamera"))]
+#[cfg(all(feature = "facade", any(feature = "v4l2", feature = "libcamera")))]
 use std::collections::HashSet;
-#[cfg(feature = "v4l2")]
+#[cfg(all(feature = "facade", feature = "v4l2"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
-#[cfg(any(feature = "file-backend", feature = "simulation-bevy"))]
+#[cfg(all(
+    feature = "facade",
+    any(feature = "file-backend", feature = "simulation-bevy")
+))]
 use std::path::PathBuf;
 
+#[cfg(feature = "facade")]
 pub use styx_capture as capture;
+#[cfg(feature = "facade")]
 pub use styx_codec as codec;
 pub use styx_core as core;
-#[cfg(feature = "libcamera")]
+#[cfg(all(feature = "facade", feature = "libcamera"))]
 pub use styx_libcamera as libcamera;
-#[cfg(feature = "v4l2")]
+#[cfg(all(feature = "facade", feature = "v4l2"))]
 pub use styx_v4l2 as v4l2;
-#[cfg(feature = "preview-window")]
+#[cfg(all(feature = "facade", feature = "preview-window"))]
 pub mod preview;
 
+#[cfg(feature = "facade")]
 pub use thiserror;
 
+#[cfg(feature = "facade")]
 pub mod capabilities;
+#[cfg(feature = "facade")]
 pub mod capture_api;
+#[cfg(feature = "facade")]
 mod device_identity;
+#[cfg(feature = "facade")]
 mod frame_sizing;
-#[cfg(feature = "daedalus-plugin")]
+#[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
 pub mod graph;
+#[cfg(feature = "facade")]
 pub mod memory;
+#[cfg(feature = "facade")]
 mod metrics;
-#[cfg(feature = "hooks")]
+#[cfg(all(feature = "facade", feature = "hooks"))]
 pub mod recording;
+#[cfg(feature = "facade")]
 pub mod runtime_codec;
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "facade", feature = "serde"))]
 mod serde_impls;
+#[cfg(feature = "facade")]
 pub mod service;
+#[cfg(feature = "facade")]
 pub mod session;
-#[cfg(feature = "simulation-bevy")]
+#[cfg(all(feature = "facade", feature = "simulation-bevy"))]
 pub mod simulation;
+#[cfg(feature = "facade")]
 pub mod watch;
 
-#[cfg(feature = "preview-window")]
+#[cfg(all(feature = "facade", feature = "preview-window"))]
 pub mod extras {
     pub mod preview_window {
         pub use crate::preview::PreviewWindow;
@@ -48,7 +64,23 @@ pub mod extras {
 
 /// Task-focused import surfaces for callers that do not want the full facade prelude.
 pub mod imports {
+    /// Minimal `FrameLease` import surface for core-only consumers.
+    pub mod framelease {
+        pub use styx_core::prelude::{
+            BackendFrameMeta, BufferLease, BufferPool, ExternalBacking, FourCc, FrameAllocation,
+            FrameLease, FrameLeaseDescriptor, FrameMeta, FramePlaneDescriptor, FrameResidency,
+            MediaFormat, PlaneLayout, Resolution,
+        };
+
+        #[cfg(unix)]
+        pub use styx_core::prelude::{FrameBackingExport, FrameExportError, FrameFdPlane};
+
+        #[cfg(target_os = "linux")]
+        pub use styx_core::prelude::{SharedBufferLease, SharedBufferPool};
+    }
+
     /// Capture request, backend, format, and frame receive APIs.
+    #[cfg(feature = "facade")]
     pub mod capture {
         #[cfg(feature = "netcam")]
         pub use crate::capture_api::make_netcam_device;
@@ -72,6 +104,7 @@ pub mod imports {
     }
 
     /// Pipeline builder/runtime APIs.
+    #[cfg(feature = "facade")]
     pub mod pipeline {
         pub use crate::memory::RuntimeMemoryReport;
         pub use crate::metrics::{HealthReport, PipelineMemoryStats, PipelineMetrics};
@@ -82,6 +115,7 @@ pub mod imports {
     }
 
     /// Runtime codec selection and codec trait APIs.
+    #[cfg(feature = "facade")]
     pub mod codec {
         pub use crate::runtime_codec::{
             CodecLatency, CodecOutputFormat, CodecSelector, CodecSelectorParseError,
@@ -112,7 +146,7 @@ pub mod imports {
     }
 
     /// Graph pipeline APIs.
-    #[cfg(feature = "daedalus-plugin")]
+    #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
     pub mod graph {
         pub use crate::graph::{
             GraphPolicy, SinkNodeConfig, SinkPolicy, StyxCaptureSourceOptions,
@@ -127,6 +161,7 @@ pub mod imports {
     }
 
     /// Service event and lifecycle APIs.
+    #[cfg(feature = "facade")]
     pub mod service {
         pub use crate::service::{
             PipelineWorkerEvent, PipelineWorkerStopReason, RecordingLifecycleEvent,
@@ -137,6 +172,7 @@ pub mod imports {
     }
 
     /// Device watch APIs.
+    #[cfg(feature = "facade")]
     pub mod watch {
         #[cfg(all(feature = "hotplug", feature = "libcamera"))]
         pub use crate::watch::LibcameraHotplugWatcher;
@@ -150,7 +186,7 @@ pub mod imports {
     }
 
     /// Recording APIs.
-    #[cfg(feature = "hooks")]
+    #[cfg(all(feature = "facade", feature = "hooks"))]
     pub mod recording {
         pub use crate::recording::{
             FrameRecorder, RecordingError, RecordingFormat, RecordingFrameIndexEntry,
@@ -170,6 +206,7 @@ pub mod imports {
 /// assert_eq!(dev.backends.len(), 1);
 /// ```
 #[derive(Debug, Clone)]
+#[cfg(feature = "facade")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ProbedDevice {
@@ -189,6 +226,7 @@ pub struct ProbedDevice {
 /// assert_eq!(backend.descriptor.modes.len(), 1);
 /// ```
 #[derive(Debug, Clone)]
+#[cfg(feature = "facade")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ProbedBackend {
@@ -203,6 +241,7 @@ pub struct ProbedBackend {
 /// The `Virtual`/`Netcam`/`File` kinds map to synthetic backends created via
 /// helpers in `styx::capture_api`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg(feature = "facade")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum BackendKind {
@@ -225,6 +264,7 @@ pub enum BackendKind {
 /// assert_eq!(handle.kind(), BackendKind::Virtual);
 /// ```
 #[derive(Debug, Clone)]
+#[cfg(feature = "facade")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum BackendHandle {
     #[cfg(feature = "v4l2")]
@@ -258,6 +298,7 @@ pub enum BackendHandle {
     },
 }
 
+#[cfg(feature = "facade")]
 impl BackendHandle {
     /// Return the backend kind for this handle.
     pub fn kind(&self) -> BackendKind {
@@ -277,6 +318,7 @@ impl BackendHandle {
     }
 }
 
+#[cfg(feature = "facade")]
 impl ProbedDevice {
     /// Return the first advertised backend for this device.
     pub fn default_backend(&self) -> Option<&ProbedBackend> {
@@ -349,6 +391,7 @@ impl ProbedDevice {
 /// `display` is a human-friendly string, while `keys` contains fingerprints
 /// that help merge identical devices across backends.
 #[derive(Debug, Clone)]
+#[cfg(feature = "facade")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceIdentity {
@@ -360,12 +403,14 @@ pub struct DeviceIdentity {
 
 /// Backend-specific probe failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "facade")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BackendProbeError {
     pub backend: BackendKind,
     pub message: String,
 }
 
+#[cfg(feature = "facade")]
 impl BackendProbeError {
     pub fn new(backend: BackendKind, message: impl Into<String>) -> Self {
         Self {
@@ -379,26 +424,31 @@ impl BackendProbeError {
     }
 }
 
+#[cfg(feature = "facade")]
 impl std::fmt::Display for BackendProbeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.backend, self.message)
     }
 }
 
+#[cfg(feature = "facade")]
 impl std::error::Error for BackendProbeError {}
 
+#[cfg(feature = "facade")]
 impl From<(BackendKind, String)> for BackendProbeError {
     fn from((backend, message): (BackendKind, String)) -> Self {
         Self::new(backend, message)
     }
 }
 
+#[cfg(feature = "facade")]
 impl From<(BackendKind, &str)> for BackendProbeError {
     fn from((backend, message): (BackendKind, &str)) -> Self {
         Self::new(backend, message)
     }
 }
 
+#[cfg(feature = "facade")]
 impl From<&str> for BackendProbeError {
     fn from(value: &str) -> Self {
         parse_backend_probe_error(value)
@@ -406,24 +456,28 @@ impl From<&str> for BackendProbeError {
     }
 }
 
+#[cfg(feature = "facade")]
 impl From<String> for BackendProbeError {
     fn from(value: String) -> Self {
         parse_backend_probe_error(&value).unwrap_or_else(|| Self::new(BackendKind::Virtual, value))
     }
 }
 
+#[cfg(feature = "facade")]
 impl PartialEq<str> for BackendProbeError {
     fn eq(&self, other: &str) -> bool {
         other.strip_prefix(backend_error_prefix(self.backend)) == Some(self.message.as_str())
     }
 }
 
+#[cfg(feature = "facade")]
 impl PartialEq<&str> for BackendProbeError {
     fn eq(&self, other: &&str) -> bool {
         self == *other
     }
 }
 
+#[cfg(feature = "facade")]
 impl std::fmt::Display for BackendKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -437,6 +491,7 @@ impl std::fmt::Display for BackendKind {
     }
 }
 
+#[cfg(feature = "facade")]
 impl std::str::FromStr for BackendKind {
     type Err = BackendKindParseError;
 
@@ -456,16 +511,19 @@ impl std::str::FromStr for BackendKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "facade")]
 pub struct BackendKindParseError {
     value: String,
 }
 
+#[cfg(feature = "facade")]
 impl std::fmt::Display for BackendKindParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "unknown backend kind: {}", self.value)
     }
 }
 
+#[cfg(feature = "facade")]
 impl std::error::Error for BackendKindParseError {}
 
 /// Probe result that includes any backend errors encountered.
@@ -478,6 +536,7 @@ impl std::error::Error for BackendKindParseError {}
 /// assert!(res.errors.iter().all(|err| !err.is_empty()));
 /// ```
 #[derive(Debug, Clone)]
+#[cfg(feature = "facade")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProbeResult {
     pub devices: Vec<ProbedDevice>,
@@ -493,11 +552,13 @@ pub struct ProbeResult {
 /// let devices = probe_all();
 /// assert!(devices.iter().all(|device| !device.identity.display.is_empty()));
 /// ```
+#[cfg(feature = "facade")]
 pub fn probe_all() -> Vec<ProbedDevice> {
     probe_all_with_errors().devices
 }
 
 /// Probe all enabled backends using explicit runtime configuration.
+#[cfg(feature = "facade")]
 pub fn probe_all_with_config(config: &capture_api::StyxConfig) -> Vec<ProbedDevice> {
     probe_all_with_errors_with_config(config).devices
 }
@@ -505,15 +566,18 @@ pub fn probe_all_with_config(config: &capture_api::StyxConfig) -> Vec<ProbedDevi
 /// Probe all enabled backends and include any probe errors.
 ///
 /// Prefer this when you want observability into backend failures.
+#[cfg(feature = "facade")]
 pub fn probe_all_with_errors() -> ProbeResult {
     probe_all_with_errors_with_options(false)
 }
 
 /// Probe all enabled backends using explicit runtime configuration and include any probe errors.
+#[cfg(feature = "facade")]
 pub fn probe_all_with_errors_with_config(config: &capture_api::StyxConfig) -> ProbeResult {
     probe_backends_with_errors_with_options(false, None, Some(config))
 }
 
+#[cfg(feature = "facade")]
 pub(crate) fn probe_all_with_errors_with_options(_force_refresh: bool) -> ProbeResult {
     probe_backends_with_errors_with_options(
         _force_refresh,
@@ -527,6 +591,7 @@ pub(crate) fn probe_all_with_errors_with_options(_force_refresh: bool) -> ProbeR
     )
 }
 
+#[cfg(feature = "facade")]
 pub(crate) fn probe_backends_with_errors_with_options(
     _force_refresh: bool,
     _backends: Option<&[BackendKind]>,
@@ -594,7 +659,7 @@ pub(crate) fn probe_backends_with_errors_with_options(
     ProbeResult { devices, errors }
 }
 
-#[cfg(any(feature = "v4l2", feature = "libcamera"))]
+#[cfg(all(feature = "facade", any(feature = "v4l2", feature = "libcamera")))]
 fn merge_backend(devices: &mut Vec<ProbedDevice>, id: String, backend: ProbedBackend) {
     let new_keys: HashSet<String> = device_identity::derive_keys(&id, &backend.properties)
         .into_iter()
@@ -622,6 +687,7 @@ fn merge_backend(devices: &mut Vec<ProbedDevice>, id: String, backend: ProbedBac
     }
 }
 
+#[cfg(feature = "facade")]
 fn backend_error_prefix(backend: BackendKind) -> &'static str {
     match backend {
         BackendKind::V4l2 => "v4l2: ",
@@ -633,6 +699,7 @@ fn backend_error_prefix(backend: BackendKind) -> &'static str {
     }
 }
 
+#[cfg(feature = "facade")]
 fn parse_backend_probe_error(value: &str) -> Option<BackendProbeError> {
     [
         BackendKind::V4l2,
@@ -651,15 +718,18 @@ fn parse_backend_probe_error(value: &str) -> Option<BackendProbeError> {
 }
 
 pub mod prelude {
+    pub use crate::imports::framelease::*;
+    #[cfg(feature = "facade")]
     pub use crate::capabilities::{
         CaptureBackendCapability, CodecCapability, CrossProcessExportMode, FrameBackingCapability,
         StyxCapabilityInventory, StyxPathPlan, StyxPathRequest, TransformCapability,
         explain_styx_path, styx_capability_inventory,
     };
-    #[cfg(feature = "file-backend")]
+    #[cfg(all(feature = "facade", feature = "file-backend"))]
     pub use crate::capture_api::FileSourceConfig;
-    #[cfg(feature = "netcam")]
+    #[cfg(all(feature = "facade", feature = "netcam"))]
     pub use crate::capture_api::NetcamSourceConfig;
+    #[cfg(feature = "facade")]
     pub use crate::capture_api::{
         BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
         CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
@@ -668,9 +738,9 @@ pub mod prelude {
         V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera, open_virtual_rgb,
         start_capture,
     };
-    #[cfg(all(feature = "daedalus-plugin", feature = "hooks"))]
+    #[cfg(all(feature = "facade", feature = "daedalus-plugin", feature = "hooks"))]
     pub use crate::graph::register_file_sequence_sink_node;
-    #[cfg(feature = "daedalus-plugin")]
+    #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
     pub use crate::graph::{
         CONTROL_EVENT_TYPE_KEY, CONTROL_RESULT_TYPE_KEY, FRAMELEASE_TYPE_KEY, GraphPolicy,
         SinkNodeConfig, SinkPolicy, StyxCaptureSourceOptions, StyxCodecNodeDescriptor,
@@ -684,23 +754,26 @@ pub mod prelude {
         register_capture_source_node_with_options, register_control_types,
         register_frame_sink_node, register_framelease_type, register_network_stream_sink_node,
     };
+    #[cfg(feature = "facade")]
     pub use crate::memory::{
         FdClass, FdClassStats, FdInventoryStats, FdTargetStats, KernelDmabufStats, MappingCategory,
         MappingCategoryStats, MappingNameStats, ProcessDmabufExporterStats, ProcessDmabufFdStats,
         ProcessMemoryStats, RuntimeMemoryReport, runtime_memory_report,
         runtime_memory_report_with_styx,
     };
+    #[cfg(feature = "facade")]
     pub use crate::metrics::{
         CopyMetrics, CopyStats, FrameDropReason, FrameDropStats, GraphTelemetryStats, HealthReport,
         PipelineMemoryStats, PipelineMetrics, PipelineStage, PipelineStageError,
         QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot, StageErrorMetrics, StageMetrics,
         StageSnapshot,
     };
-    #[cfg(feature = "hooks")]
+    #[cfg(all(feature = "facade", feature = "hooks"))]
     pub use crate::recording::{
         FrameRecorder, RecordingError, RecordingFormat, RecordingFrameIndexEntry, RecordingOptions,
         RecordingSessionMetadata,
     };
+    #[cfg(feature = "facade")]
     pub use crate::runtime_codec::{
         CodecLatency, CodecOutputFormat, CodecSelector, CodecSelectorParseError, EncoderFamilySpec,
         FrameDecodePlan, FrameDecodePlanExt, RuntimeCodecCapability, RuntimeCodecInventory,
@@ -713,44 +786,52 @@ pub mod prelude {
         output_format_for_codec_selector, output_format_for_encoder_selector,
         runtime_codec_inventory, shared_rg24_decode_bytes,
     };
+    #[cfg(feature = "facade")]
     pub use crate::service::{
         PipelineWorkerEvent, PipelineWorkerStopReason, RecordingLifecycleEvent, ServiceEventCursor,
         ServiceEventPoll, SharedStyxServiceRuntime, SinkKind, SinkLifecycleEvent,
         StyxServiceConfig, StyxServiceEvent, StyxServiceRuntime, TimestampedServiceEvent,
     };
+    #[cfg(feature = "facade")]
     pub use crate::session::{
         MediaPipeline, MediaPipelineBuilder, MediaPipelineFrameIter, PipelineExecutionMode,
     };
-    #[cfg(all(feature = "hotplug", feature = "libcamera"))]
+    #[cfg(all(feature = "facade", feature = "hotplug", feature = "libcamera"))]
     pub use crate::watch::LibcameraHotplugWatcher;
-    #[cfg(all(feature = "hotplug", target_os = "linux"))]
+    #[cfg(all(feature = "facade", feature = "hotplug", target_os = "linux"))]
     pub use crate::watch::LinuxVideoFsWatcher;
+    #[cfg(feature = "facade")]
     pub use crate::watch::{
         ChangedDevice, CompositeWatcher, DeviceWatchEvent, DeviceWatcher, InventoryDiff,
         InventoryEvent, InventoryEventCursor, InventoryEventPoll, InventoryEventRetentionStats,
         InventoryEventSubscription, WatchRefreshReport, WatchRuntime, WatchRuntimeConfig,
     };
+    #[cfg(feature = "facade")]
     pub use crate::{BackendHandle, BackendKind, ProbedBackend, ProbedDevice};
+    #[cfg(feature = "facade")]
     pub use crate::{BackendKindParseError, BackendProbeError};
+    #[cfg(feature = "facade")]
     pub use crate::{probe_all, probe_all_with_config, probe_all_with_errors_with_config};
-    #[cfg(feature = "daedalus-plugin")]
+    #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
     pub use daedalus::engine::MetricsLevel as GraphMetricsLevel;
+    #[cfg(feature = "facade")]
     pub use styx_capture::prelude::*;
+    #[cfg(feature = "facade")]
     pub use styx_codec::prelude::*;
     // Release policy: keep the facade prelude stable even when downstream crates use only a
     // subset of the re-exported core primitives in a given feature combination.
     #[allow(unused_imports)]
     pub use styx_core::prelude::*;
     pub use styx_core::prelude::{FrameTransform, Rotation90};
-    #[cfg(feature = "libcamera")]
+    #[cfg(all(feature = "facade", feature = "libcamera"))]
     pub use styx_libcamera::prelude::{
         LibcameraCapture, LibcameraDeviceInfo, probe_devices as probe_libcamera,
     };
-    #[cfg(feature = "v4l2")]
+    #[cfg(all(feature = "facade", feature = "v4l2"))]
     pub use styx_v4l2::prelude::{V4l2DeviceInfo, probe_devices as probe_v4l2};
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "facade"))]
 mod tests {
     use super::{BackendKind, BackendProbeError};
 

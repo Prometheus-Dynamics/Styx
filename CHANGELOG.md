@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added a lightweight `styx` `framelease` feature for crates that only need
+  `FrameLease` and its `styx-core` requirements without enabling capture,
+  codec, backend, service, graph, or preview modules.
 - Added generic frame layout metadata in `styx-core-rs` for CV and media consumers, including
   storage kind, channel order, bit depth, chroma subsampling, packed pixel schema, plane schema,
   and `FourCc::layout_info()`.

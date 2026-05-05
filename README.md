@@ -41,10 +41,16 @@ Useful example entry points:
 
 Use `styx::prelude::*` when prototyping across capture, codec, graph, and service APIs. For
 production code that only needs one area, prefer the task-focused imports:
-`styx::imports::capture::*`, `styx::imports::pipeline::*`, `styx::imports::codec::*`,
-`styx::imports::service::*`, and `styx::imports::watch::*`. Feature-gated modules such as
+`styx::imports::framelease::*`, `styx::imports::capture::*`, `styx::imports::pipeline::*`,
+`styx::imports::codec::*`, `styx::imports::service::*`, and `styx::imports::watch::*`.
+Feature-gated modules such as
 `styx::imports::graph::*` and `styx::imports::recording::*` are available with their matching
 features.
+
+Crates that only need `FrameLease` can depend on Styx without capture or codec:
+```toml
+styx = { version = "2.0.0", default-features = false, features = ["framelease"] }
+```
 
 For simple capture, start with `CameraRequest::new().start()` when physical backends are enabled, or
 `CaptureRequest::virtual_source(...)` for deterministic local/test capture. Receive frames

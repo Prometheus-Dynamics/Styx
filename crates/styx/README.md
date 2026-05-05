@@ -11,6 +11,21 @@ The end-user entry point that re-exports the layered stack (`styx-core`, `styx-c
 styx = "2.0.0"
 ```
 
+For a `FrameLease`-only dependency path, disable default features and enable
+`framelease`:
+```toml
+[dependencies]
+styx = { version = "2.0.0", default-features = false, features = ["framelease"] }
+```
+
+```rust
+use styx::imports::framelease::FrameLease;
+// or: use styx::prelude::FrameLease;
+```
+
+That path depends on `styx-core` only; it does not enable capture, codec,
+backend, service, graph, or preview modules.
+
 ## What it provides
 - `styx::prelude`: re-exports core/capture/codec preludes plus capture API (`CaptureRequest`, `CaptureHandle`, `StyxConfig`, `start_capture`, etc.), pipeline types (`MediaPipelineBuilder`, `MediaPipeline`), metrics, and backend handles.
 - `probe_all`: merge v4l2/libcamera probe results when enabled.

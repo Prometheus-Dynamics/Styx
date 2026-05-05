@@ -17,14 +17,14 @@ path = "src/lib.rs"
 
 [dependencies]
 styx-core.workspace = true
-styx-capture.workspace = true
-styx-codec.workspace = true
+styx-capture = { workspace = true, optional = true }
+styx-codec = { workspace = true, optional = true }
 styx-libcamera = { workspace = true, optional = true, features = ["probe"] }
 styx-v4l2 = { workspace = true, optional = true }
 daedalus = { workspace = true, optional = true }
-smallvec.workspace = true
+smallvec = { workspace = true, optional = true }
 v4l = { workspace = true, optional = true }
-thiserror.workspace = true
+thiserror = { workspace = true, optional = true }
 libcamera = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"], optional = true }
 image = { workspace = true, optional = true }
@@ -35,14 +35,14 @@ minifb = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
-libc.workspace = true
-parking_lot.workspace = true
+libc = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 utoipa = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
 inotify = { workspace = true, optional = true }
-tracing.workspace = true
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -61,15 +61,30 @@ required-features = ["codec-jpeg-decoder"]
 name = "pipeline_worker_perf"
 harness = false
 
+[[bin]]
+name = "runtime_memory_probe"
+path = "src/bin/runtime_memory_probe.rs"
+required-features = ["facade"]
+
 [features]
-default = []
-daedalus-plugin = ["dep:daedalus", "daedalus/engine", "daedalus/plugins"]
+default = ["facade"]
+framelease = []
+facade = [
+    "dep:libc",
+    "dep:parking_lot",
+    "dep:smallvec",
+    "dep:styx-capture",
+    "dep:styx-codec",
+    "dep:thiserror",
+    "dep:tracing",
+]
+daedalus-plugin = ["facade", "dep:daedalus", "daedalus/engine", "daedalus/plugins"]
 graph-pipeline = ["daedalus-plugin"]
-hooks = []
-image = ["dep:image", "styx-codec/dynamic-image"]
-libcamera = ["styx-libcamera", "dep:libcamera", "raw-decoders"]
+hooks = ["facade"]
+image = ["facade", "dep:image", "styx-codec/dynamic-image"]
+libcamera = ["facade", "styx-libcamera", "dep:libcamera", "raw-decoders"]
 libcamera-vendor-rpi = ["libcamera", "styx-libcamera/vendor_rpi", "dep:libcamera"]
-v4l2 = ["styx-v4l2", "v4l"]
+v4l2 = ["facade", "styx-v4l2", "v4l"]
 async = [
     "styx-core/async",
     "tokio",
@@ -78,20 +93,21 @@ async = [
     "futures-util",
     "reqwest?/stream",
 ]
-codec-ffmpeg = ["styx-codec/codec-ffmpeg"]
-codec-jpeg-decoder = ["styx-codec/codec-jpeg-decoder"]
-codec-mozjpeg = ["styx-codec/codec-mozjpeg"]
-codec-turbojpeg = ["styx-codec/codec-turbojpeg"]
-raw-decoders = ["styx-codec/raw-decoders"]
-netcam = ["dep:reqwest", "reqwest/blocking", "reqwest/rustls"]
-netcam-video = ["dep:ffmpeg-next"]
-file-backend = ["dep:image", "dep:jpeg-decoder"]
-file-backend-video = ["dep:ffmpeg-next"]
-preview-window = ["dep:minifb"]
-simulation-bevy = ["dep:bevy", "dep:crossbeam-channel"]
-hotplug = ["dep:inotify"]
+codec-ffmpeg = ["facade", "styx-codec/codec-ffmpeg"]
+codec-jpeg-decoder = ["facade", "styx-codec/codec-jpeg-decoder"]
+codec-mozjpeg = ["facade", "styx-codec/codec-mozjpeg"]
+codec-turbojpeg = ["facade", "styx-codec/codec-turbojpeg"]
+raw-decoders = ["facade", "styx-codec/raw-decoders"]
+netcam = ["facade", "dep:reqwest", "reqwest/blocking", "reqwest/rustls"]
+netcam-video = ["facade", "dep:ffmpeg-next"]
+file-backend = ["facade", "dep:image", "dep:jpeg-decoder"]
+file-backend-video = ["facade", "dep:ffmpeg-next"]
+preview-window = ["facade", "dep:minifb"]
+simulation-bevy = ["facade", "dep:bevy", "dep:crossbeam-channel"]
+hotplug = ["facade", "dep:inotify"]
 examples = ["preview-window", "async"]
 serde = [
+    "facade",
     "dep:serde",
     "styx-core/serde",
     "styx-capture/serde",
