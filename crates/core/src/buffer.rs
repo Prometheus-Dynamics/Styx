@@ -3,8 +3,9 @@ mod meta;
 mod pool;
 
 pub use frame::{
-    ExternalBacking, FrameLease, FrameLeaseDescriptor, FramePlaneDescriptor, Plane, PlaneLayout,
-    PlaneMut, plane_layout_from_dims, plane_layout_with_stride,
+    ExternalBacking, FrameAllocation, FrameLease, FrameLeaseDescriptor, FramePlaneDescriptor,
+    FramePlaneShape, FrameValidationError, Plane, PlaneLayout, PlaneMut, VisibleRow, VisibleRowMut,
+    VisibleRows, VisibleRowsMut, plane_layout_from_dims, plane_layout_with_stride,
 };
 
 #[cfg(unix)]
@@ -109,6 +110,330 @@ mod tests {
 
         assert_eq!(frame.residency(), FrameResidency::CompressedPacket);
         assert_eq!(frame.mutability(), FrameMutability::Mutable);
+        assert!(frame.has_host_readable_bytes());
+        assert!(frame.has_host_writable_bytes());
+    }
+
+    #[test]
+    fn frame_reports_layout_info_and_visible_row_bytes() {
+        let res = Resolution::new(4, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let layout = plane_layout_from_dims(res.width, res.height, 3);
+        let pool = BufferPool::with_capacity(1, layout.len);
+        let frame = FrameLease::single_plane(
+            FrameMeta::new(fmt, 7),
+            pool.lease(),
+            layout.len,
+            layout.stride,
+        );
+
+        assert_eq!(frame.first_plane_visible_row_bytes(), Some(12));
+        assert!(frame.validate_plane_layouts().is_ok());
+    }
+
+    #[test]
+    fn frame_allocate_host_owned_uses_format_layout() {
+        let res = Resolution::new(4, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+
+        let frame = FrameLease::allocate_host_owned(fmt, 9).unwrap();
+
+        assert_eq!(frame.residency(), FrameResidency::HostOwned);
+        assert_eq!(frame.mutability(), FrameMutability::Mutable);
+        assert_eq!(frame.layouts().len(), 1);
+        assert_eq!(frame.first_plane_visible_row_bytes(), Some(12));
+        let rows = frame.visible_rows(0).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.row_bytes(), 12);
+        assert_eq!(rows.stride(), 12);
+    }
+
+    #[test]
+    fn frame_allocation_can_align_strides_and_plane_lengths() {
+        let res = Resolution::new(5, 3).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+
+        let frame = FrameLease::allocate(FrameAllocation {
+            format: fmt,
+            timestamp: 9,
+            mutability: FrameMutability::Mutable,
+            residency: FrameResidency::HostOwned,
+            stride_alignment: Some(16),
+            plane_alignment: Some(64),
+        })
+        .unwrap();
+
+        let shape = frame.plane_shape(0).unwrap();
+        assert_eq!(shape.row_bytes, 15);
+        assert_eq!(shape.stride, 16);
+        assert_eq!(shape.len, 64);
+        assert!(!frame.is_tightly_packed().unwrap());
+        assert_eq!(frame.visible_payload_bytes().unwrap(), 45);
+    }
+
+    #[test]
+    fn allocate_like_layout_with_timestamp_preserves_layout_only() {
+        let res = Resolution::new(3, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let pool = BufferPool::with_capacity(1, 24);
+        let frame = FrameLease::single_plane(FrameMeta::new(fmt, 7), pool.lease(), 24, 12);
+
+        let allocated = frame.allocate_like_layout_with_timestamp(99).unwrap();
+
+        assert_eq!(allocated.meta().timestamp, 99);
+        assert_eq!(allocated.meta().format, fmt);
+        assert_eq!(allocated.layouts(), frame.layouts());
+        assert_eq!(allocated.residency(), FrameResidency::HostOwned);
+        assert_eq!(allocated.mutability(), FrameMutability::Mutable);
+    }
+
+    #[test]
+    fn visible_rows_hide_stride_padding() {
+        let res = Resolution::new(3, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let pool = BufferPool::with_capacity(1, 24);
+        let frame = FrameLease::single_plane(FrameMeta::new(fmt, 7), pool.lease(), 24, 12);
+
+        let rows = frame.visible_rows(0).unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.row_bytes(), 9);
+        assert_eq!(rows.stride(), 12);
+        assert_eq!(rows.row(0).unwrap().data().len(), 9);
+        assert_eq!(rows.row(1).unwrap().data().len(), 9);
+    }
+
+    #[test]
+    fn planes_visible_returns_all_plane_row_views() {
+        let res = Resolution::new(5, 3).unwrap();
+        let fmt = MediaFormat::new(FourCc::NV12, res, ColorSpace::Bt709);
+        let frame = FrameLease::allocate_host_owned(fmt, 10).unwrap();
+
+        let planes = frame.planes_visible().unwrap();
+
+        assert_eq!(planes.len(), 2);
+        assert_eq!(planes[0].len(), 3);
+        assert_eq!(planes[0].row_bytes(), 5);
+        assert_eq!(planes[1].len(), 2);
+        assert_eq!(planes[1].row_bytes(), 5);
+    }
+
+    #[test]
+    fn plane_shape_reports_visible_dimensions_and_stride() {
+        let res = Resolution::new(5, 3).unwrap();
+        let fmt = MediaFormat::new(FourCc::I420, res, ColorSpace::Bt709);
+        let frame = FrameLease::allocate_host_owned(fmt, 11).unwrap();
+
+        let luma = frame.plane_shape(0).unwrap();
+        let chroma = frame.plane_shape(1).unwrap();
+
+        assert_eq!(luma.width, 5);
+        assert_eq!(luma.height, 3);
+        assert_eq!(luma.row_bytes, 5);
+        assert_eq!(luma.stride, 5);
+        assert_eq!(chroma.width, 3);
+        assert_eq!(chroma.height, 2);
+        assert_eq!(chroma.row_bytes, 3);
+        assert_eq!(chroma.stride, 3);
+    }
+
+    #[test]
+    fn contiguous_visible_plane_fast_path_rejects_padding() {
+        let res = Resolution::new(3, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let tight = FrameLease::allocate_host_owned(fmt, 1).unwrap();
+        let pool = BufferPool::with_capacity(1, 24);
+        let padded = FrameLease::single_plane(FrameMeta::new(fmt, 2), pool.lease(), 24, 12);
+
+        assert_eq!(
+            tight
+                .try_as_contiguous_visible_plane(0)
+                .unwrap()
+                .unwrap()
+                .len(),
+            18
+        );
+        assert!(padded.try_as_contiguous_visible_plane(0).unwrap().is_none());
+    }
+
+    #[test]
+    fn tightness_and_visible_payload_ignore_padding() {
+        let res = Resolution::new(3, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let tight = FrameLease::allocate_host_owned(fmt, 1).unwrap();
+        let pool = BufferPool::with_capacity(1, 24);
+        let padded = FrameLease::single_plane(FrameMeta::new(fmt, 2), pool.lease(), 24, 12);
+
+        assert!(tight.is_tightly_packed().unwrap());
+        assert!(!padded.is_tightly_packed().unwrap());
+        assert_eq!(tight.visible_payload_bytes().unwrap(), 18);
+        assert_eq!(padded.visible_payload_bytes().unwrap(), 18);
+        assert_eq!(padded.payload_bytes(), 24);
+    }
+
+    #[test]
+    fn visible_rows_mut_only_exposes_visible_bytes() {
+        let res = Resolution::new(3, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let pool = BufferPool::with_capacity(1, 24);
+        let mut frame = FrameLease::single_plane(FrameMeta::new(fmt, 7), pool.lease(), 24, 12);
+
+        frame
+            .visible_rows_mut(0)
+            .unwrap()
+            .for_each_row_mut(|row_index, mut row| {
+                row.data().fill((row_index + 1) as u8);
+            });
+
+        let planes = frame.planes();
+        assert_eq!(&planes[0].data()[0..9], &[1; 9]);
+        assert_eq!(&planes[0].data()[9..12], &[0; 3]);
+        assert_eq!(&planes[0].data()[12..21], &[2; 9]);
+        assert_eq!(&planes[0].data()[21..24], &[0; 3]);
+    }
+
+    #[test]
+    fn visible_plane_copy_helpers_preserve_padding() {
+        let res = Resolution::new(3, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let pool = BufferPool::with_capacity(1, 24);
+        let mut frame = FrameLease::single_plane(FrameMeta::new(fmt, 7), pool.lease(), 24, 12);
+        let src: Vec<u8> = (0..18).collect();
+
+        let written = frame.copy_slice_to_visible_plane(0, &src).unwrap();
+        let mut copied = vec![0; 18];
+        let read = frame.copy_visible_plane_to_slice(0, &mut copied).unwrap();
+
+        assert_eq!(written, 18);
+        assert_eq!(read, 18);
+        assert_eq!(copied, src);
+        let planes = frame.planes();
+        assert_eq!(&planes[0].data()[9..12], &[0; 3]);
+        assert_eq!(&planes[0].data()[21..24], &[0; 3]);
+    }
+
+    #[test]
+    fn contiguous_visible_plane_mut_exposes_tight_buffer() {
+        let res = Resolution::new(3, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let mut frame = FrameLease::allocate_host_owned(fmt, 1).unwrap();
+
+        let plane = frame
+            .try_as_contiguous_visible_plane_mut(0)
+            .unwrap()
+            .unwrap();
+        plane.fill(7);
+
+        assert_eq!(
+            frame.try_as_contiguous_visible_plane(0).unwrap().unwrap(),
+            &[7; 18]
+        );
+    }
+
+    #[test]
+    fn nv12_allocation_uses_two_plane_420_layout() {
+        let res = Resolution::new(5, 3).unwrap();
+        let fmt = MediaFormat::new(FourCc::NV12, res, ColorSpace::Bt709);
+
+        let frame = FrameLease::allocate_host_owned(fmt, 10).unwrap();
+
+        assert!(frame.validate_plane_layouts().is_ok());
+        let layouts = frame.layouts();
+        assert_eq!(layouts.len(), 2);
+        assert_eq!(layouts[0].stride, 5);
+        assert_eq!(layouts[0].len, 15);
+        assert_eq!(layouts[1].stride, 5);
+        assert_eq!(layouts[1].len, 10);
+        assert_eq!(frame.visible_rows(1).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn i420_allocation_uses_three_plane_420_layout() {
+        let res = Resolution::new(5, 3).unwrap();
+        let fmt = MediaFormat::new(FourCc::I420, res, ColorSpace::Bt709);
+
+        let frame = FrameLease::allocate_host_owned(fmt, 11).unwrap();
+
+        assert!(frame.validate_plane_layouts().is_ok());
+        let layouts = frame.layouts();
+        assert_eq!(layouts.len(), 3);
+        assert_eq!(layouts[0].stride, 5);
+        assert_eq!(layouts[0].len, 15);
+        assert_eq!(layouts[1].stride, 3);
+        assert_eq!(layouts[1].len, 6);
+        assert_eq!(layouts[2].stride, 3);
+        assert_eq!(layouts[2].len, 6);
+        assert_eq!(frame.visible_rows(2).unwrap().len(), 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shared_plane_address_space_rejects_overlapping_layouts() {
+        use std::ffi::CString;
+        use std::os::fd::{FromRawFd, OwnedFd};
+
+        let name = CString::new("styx-core-overlap-test").unwrap();
+        let raw_fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(raw_fd >= 0);
+        let fd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+        assert_eq!(unsafe { libc::ftruncate(raw_fd, 16) }, 0);
+
+        let res = Resolution::new(4, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::NV12, res, ColorSpace::Bt709);
+        let frame = FrameLease::from_memfd(
+            FrameMeta::new(fmt, 3),
+            smallvec::smallvec![
+                PlaneLayout {
+                    offset: 0,
+                    len: 8,
+                    stride: 4,
+                },
+                PlaneLayout {
+                    offset: 4,
+                    len: 4,
+                    stride: 4,
+                },
+            ],
+            fd,
+        );
+
+        let err = frame.validate_plane_layouts().unwrap_err();
+        assert!(matches!(
+            err,
+            FrameValidationError::PlaneRangeOverlap { left: 0, right: 1 }
+        ));
+    }
+
+    #[test]
+    fn frame_reports_capabilities_and_owned_aliasing() {
+        let res = Resolution::new(2, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let left = FrameLease::allocate_host_owned(fmt, 1).unwrap();
+        let right = FrameLease::allocate_host_owned(fmt, 2).unwrap();
+
+        assert!(left.can_read_planes());
+        assert!(left.can_write_planes());
+        assert!(!left.can_export());
+        assert!(left.can_materialize_without_copy());
+        assert!(left.may_alias(&left).unwrap());
+        assert!(!left.may_alias(&right).unwrap());
+    }
+
+    #[test]
+    fn frame_rejects_too_small_stride_for_visible_rows() {
+        let res = Resolution::new(4, 2).unwrap();
+        let fmt = MediaFormat::new(FourCc::BGR3, res, ColorSpace::Srgb);
+        let pool = BufferPool::with_capacity(1, 8);
+        let frame = FrameLease::single_plane(FrameMeta::new(fmt, 7), pool.lease(), 8, 4);
+
+        let err = frame.validate_plane_layouts().unwrap_err();
+        assert!(matches!(
+            err,
+            FrameValidationError::PlaneStrideTooSmall {
+                visible_row_bytes: 12,
+                ..
+            }
+        ));
     }
 
     struct TestBacking {

@@ -12,14 +12,17 @@ pub mod prelude {
     pub use crate::{
         buffer::{
             BackendFrameMeta, BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats,
-            ExternalBacking, FrameLease, FrameLeaseDescriptor, FrameMeta, FrameMutability,
-            FramePlaneDescriptor, FrameResidency, Plane, PlaneLayout, PlaneMut,
-            ResidencyTransition, ResidencyTransitionReason, V4l2FrameMeta, plane_layout_from_dims,
-            plane_layout_with_stride,
+            ExternalBacking, FrameAllocation, FrameLease, FrameLeaseDescriptor, FrameMeta,
+            FrameMutability, FramePlaneDescriptor, FramePlaneShape, FrameResidency,
+            FrameValidationError, Plane, PlaneLayout, PlaneMut, ResidencyTransition,
+            ResidencyTransitionReason, V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows,
+            VisibleRowsMut, plane_layout_from_dims, plane_layout_with_stride,
         },
         controls::{Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlValue},
         format::{
-            ColorSpace, FormatInfo, FourCc, Interval, IntervalStepwise, MediaFormat, Resolution,
+            BitDepth, Channel, ChromaSubsampling, ColorSpace, FormatInfo, FourCc, FrameLayoutInfo,
+            FrameStorageKind, Interval, IntervalStepwise, MediaFormat, PackedChannelOrder,
+            PackedPixelSchema, PlaneSchema, Resolution,
         },
         metrics::Metrics,
         queue::{

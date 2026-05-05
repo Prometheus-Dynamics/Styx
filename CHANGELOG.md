@@ -4,6 +4,27 @@ All notable changes to this workspace should be documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- Added generic frame layout metadata in `styx-core-rs` for CV and media consumers, including
+  storage kind, channel order, bit depth, chroma subsampling, packed pixel schema, plane schema,
+  and `FourCc::layout_info()`.
+- Added host frame validation and access helpers on `FrameLease`, including layout validation,
+  host-readable/writable checks, export/materialization capability checks, and frame alias
+  detection.
+- Added visible-row frame access APIs for stride-aware CV processing, including immutable and
+  mutable row views, all-plane visible views, contiguous visible-plane fast paths, visible payload
+  byte accounting, tight-packing detection, and explicit visible-plane copy helpers.
+- Added host-owned frame allocation helpers for known layouts, same-layout allocation with custom
+  timestamps, allocation with stride and plane-size alignment controls, and layout-preserving
+  output allocation.
+- Added plane shape metadata and multi-plane validation for packed, Bayer, NV12/NV21, and
+  I420/YU12/YV12 frame layouts, including overlap detection for shared-address-space backings.
+- Added export capability reporting on external frame backings so memfd/dmabuf-style backings can
+  advertise zero-copy export support without treating every external backing as exportable.
+
 ## [2.0.0] - 2026-05-01
 
 ### Added

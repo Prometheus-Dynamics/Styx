@@ -457,6 +457,10 @@ impl ExternalBacking for SharedBufferBacking {
         "memfd_pool"
     }
 
+    fn can_export(&self) -> bool {
+        true
+    }
+
     fn residency(&self) -> super::meta::FrameResidency {
         super::meta::FrameResidency::HostExternal
     }

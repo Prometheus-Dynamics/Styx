@@ -144,6 +144,10 @@ impl ExternalBacking for SharedFdBacking {
         }
     }
 
+    fn can_export(&self) -> bool {
+        true
+    }
+
     fn residency(&self) -> FrameResidency {
         match self.kind {
             SharedFdBackingKind::Memfd(_) => FrameResidency::HostExternal,

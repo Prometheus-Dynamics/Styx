@@ -24,6 +24,173 @@ pub struct FormatInfo {
     pub default_color_space: Option<ColorSpace>,
 }
 
+/// Generic storage shape for a frame format.
+///
+/// This describes memory/layout truth, not how a computer-vision algorithm should
+/// interpret the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameStorageKind {
+    Packed,
+    Planar,
+    SemiPlanar,
+    Compressed,
+    OpaqueGpu,
+    RawBayer,
+    Unknown,
+}
+
+/// Pixel channel identifiers for packed raw formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Channel {
+    Red,
+    Green,
+    Blue,
+    Alpha,
+    Luma,
+    ChromaBlue,
+    ChromaRed,
+    Depth,
+}
+
+/// Channel order for known packed pixel layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PackedChannelOrder {
+    Luma,
+    Rgb,
+    Bgr,
+    Rgba,
+    Bgra,
+    Xrgb,
+    Xbgr,
+    Yuyv,
+    Uyvy,
+    Yvyu,
+    Vyuy,
+    Depth,
+    RawBayer,
+}
+
+impl PackedChannelOrder {
+    pub fn channels(self) -> &'static [Channel] {
+        match self {
+            Self::Luma => &[Channel::Luma],
+            Self::Rgb => &[Channel::Red, Channel::Green, Channel::Blue],
+            Self::Bgr => &[Channel::Blue, Channel::Green, Channel::Red],
+            Self::Rgba => &[Channel::Red, Channel::Green, Channel::Blue, Channel::Alpha],
+            Self::Bgra => &[Channel::Blue, Channel::Green, Channel::Red, Channel::Alpha],
+            Self::Xrgb => &[Channel::Alpha, Channel::Red, Channel::Green, Channel::Blue],
+            Self::Xbgr => &[Channel::Alpha, Channel::Blue, Channel::Green, Channel::Red],
+            Self::Yuyv => &[
+                Channel::Luma,
+                Channel::ChromaBlue,
+                Channel::Luma,
+                Channel::ChromaRed,
+            ],
+            Self::Uyvy => &[
+                Channel::ChromaBlue,
+                Channel::Luma,
+                Channel::ChromaRed,
+                Channel::Luma,
+            ],
+            Self::Yvyu => &[
+                Channel::Luma,
+                Channel::ChromaRed,
+                Channel::Luma,
+                Channel::ChromaBlue,
+            ],
+            Self::Vyuy => &[
+                Channel::ChromaRed,
+                Channel::Luma,
+                Channel::ChromaBlue,
+                Channel::Luma,
+            ],
+            Self::Depth => &[Channel::Depth],
+            Self::RawBayer => &[Channel::Red, Channel::Green, Channel::Blue],
+        }
+    }
+}
+
+/// Bit depth information for known raw formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BitDepth {
+    U8,
+    U16,
+    F32,
+    U8x3,
+    U8x4,
+    U16x3,
+    Unknown,
+}
+
+/// Chroma subsampling for known YUV layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChromaSubsampling {
+    Cs420,
+    Cs422,
+    Cs444,
+}
+
+/// Packed pixel storage metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackedPixelSchema {
+    pub bytes_per_pixel: usize,
+    pub order: PackedChannelOrder,
+}
+
+/// Plane storage metadata for raw multi-plane formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaneSchema {
+    pub planes: usize,
+    pub subsampling: Option<ChromaSubsampling>,
+}
+
+/// Generic layout metadata for a frame format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameLayoutInfo {
+    pub fourcc: FourCc,
+    pub storage: FrameStorageKind,
+    pub packed: Option<PackedPixelSchema>,
+    pub planes: PlaneSchema,
+    pub bit_depth: BitDepth,
+    pub compressed: bool,
+}
+
+impl FrameLayoutInfo {
+    pub fn first_plane_visible_row_bytes(self, width: usize) -> Option<usize> {
+        match self.storage {
+            FrameStorageKind::Compressed
+            | FrameStorageKind::OpaqueGpu
+            | FrameStorageKind::Unknown => None,
+            FrameStorageKind::Packed | FrameStorageKind::RawBayer => {
+                self.packed?.bytes_per_pixel.checked_mul(width)
+            }
+            FrameStorageKind::SemiPlanar | FrameStorageKind::Planar => Some(width),
+        }
+    }
+
+    pub fn estimated_frame_bytes(self, width: usize, height: usize) -> Option<usize> {
+        let pixels = width.checked_mul(height)?;
+        match self.storage {
+            FrameStorageKind::Compressed
+            | FrameStorageKind::OpaqueGpu
+            | FrameStorageKind::Unknown => None,
+            FrameStorageKind::Packed | FrameStorageKind::RawBayer => {
+                self.packed?.bytes_per_pixel.checked_mul(pixels)
+            }
+            FrameStorageKind::SemiPlanar | FrameStorageKind::Planar => {
+                match self.planes.subsampling {
+                    Some(ChromaSubsampling::Cs420) => {
+                        pixels.checked_mul(3).map(|bytes| bytes.div_ceil(2))
+                    }
+                    Some(ChromaSubsampling::Cs422) => pixels.checked_mul(2),
+                    Some(ChromaSubsampling::Cs444) => pixels.checked_mul(3),
+                    None => Some(pixels),
+                }
+            }
+        }
+    }
+}
+
 impl FormatInfo {
     /// Estimate the byte size for a common single-frame representation.
     pub fn estimated_frame_bytes(self, width: usize, height: usize) -> Option<usize> {
@@ -113,9 +280,138 @@ impl FourCc {
         self.info().packed_bytes_per_pixel
     }
 
+    /// Generic storage/layout metadata for this format.
+    pub fn layout_info(self) -> FrameLayoutInfo {
+        let info = self.info();
+        let packed = match self {
+            Self::R8 | Self::GREY => Some(PackedPixelSchema {
+                bytes_per_pixel: 1,
+                order: PackedChannelOrder::Luma,
+            }),
+            Self::RG24 | Self::RGB3 => Some(PackedPixelSchema {
+                bytes_per_pixel: 3,
+                order: PackedChannelOrder::Rgb,
+            }),
+            Self::BGR3 | Self::BG24 => Some(PackedPixelSchema {
+                bytes_per_pixel: 3,
+                order: PackedChannelOrder::Bgr,
+            }),
+            Self::RGBA => Some(PackedPixelSchema {
+                bytes_per_pixel: 4,
+                order: PackedChannelOrder::Rgba,
+            }),
+            Self::BGRA => Some(PackedPixelSchema {
+                bytes_per_pixel: 4,
+                order: PackedChannelOrder::Bgra,
+            }),
+            Self::XR24 => Some(PackedPixelSchema {
+                bytes_per_pixel: 4,
+                order: PackedChannelOrder::Xrgb,
+            }),
+            Self::XB24 => Some(PackedPixelSchema {
+                bytes_per_pixel: 4,
+                order: PackedChannelOrder::Xbgr,
+            }),
+            Self::YUYV => Some(PackedPixelSchema {
+                bytes_per_pixel: 2,
+                order: PackedChannelOrder::Yuyv,
+            }),
+            Self::UYVY => Some(PackedPixelSchema {
+                bytes_per_pixel: 2,
+                order: PackedChannelOrder::Uyvy,
+            }),
+            Self::YVYU => Some(PackedPixelSchema {
+                bytes_per_pixel: 2,
+                order: PackedChannelOrder::Yvyu,
+            }),
+            Self::VYUY => Some(PackedPixelSchema {
+                bytes_per_pixel: 2,
+                order: PackedChannelOrder::Vyuy,
+            }),
+            Self::R16 => Some(PackedPixelSchema {
+                bytes_per_pixel: 2,
+                order: PackedChannelOrder::Luma,
+            }),
+            Self::D32F => Some(PackedPixelSchema {
+                bytes_per_pixel: 4,
+                order: PackedChannelOrder::Depth,
+            }),
+            Self::RG48 => Some(PackedPixelSchema {
+                bytes_per_pixel: 6,
+                order: PackedChannelOrder::Rgb,
+            }),
+            Self::BG48 => Some(PackedPixelSchema {
+                bytes_per_pixel: 6,
+                order: PackedChannelOrder::Bgr,
+            }),
+            Self::RGGB | Self::BGGR | Self::GBRG | Self::GRBG => Some(PackedPixelSchema {
+                bytes_per_pixel: 1,
+                order: PackedChannelOrder::RawBayer,
+            }),
+            _ => None,
+        };
+        let storage = if info.compressed {
+            FrameStorageKind::Compressed
+        } else if self.is_bayer_raw() {
+            FrameStorageKind::RawBayer
+        } else {
+            match self {
+                Self::NV12 | Self::NV21 => FrameStorageKind::SemiPlanar,
+                Self::I420 | Self::YU12 | Self::YV12 => FrameStorageKind::Planar,
+                _ if packed.is_some() => FrameStorageKind::Packed,
+                _ => FrameStorageKind::Unknown,
+            }
+        };
+        let planes = match self {
+            Self::NV12 | Self::NV21 => PlaneSchema {
+                planes: 2,
+                subsampling: Some(ChromaSubsampling::Cs420),
+            },
+            Self::I420 | Self::YU12 | Self::YV12 => PlaneSchema {
+                planes: 3,
+                subsampling: Some(ChromaSubsampling::Cs420),
+            },
+            _ => PlaneSchema {
+                planes: usize::from(!info.compressed),
+                subsampling: None,
+            },
+        };
+        let bit_depth = match self {
+            Self::R8
+            | Self::GREY
+            | Self::NV12
+            | Self::NV21
+            | Self::YUYV
+            | Self::UYVY
+            | Self::YVYU
+            | Self::VYUY
+            | Self::I420
+            | Self::YU12
+            | Self::YV12
+            | Self::RGGB
+            | Self::BGGR
+            | Self::GBRG
+            | Self::GRBG => BitDepth::U8,
+            Self::R16 => BitDepth::U16,
+            Self::D32F => BitDepth::F32,
+            Self::RG24 | Self::RGB3 | Self::BGR3 | Self::BG24 => BitDepth::U8x3,
+            Self::RGBA | Self::BGRA | Self::XR24 | Self::XB24 => BitDepth::U8x4,
+            Self::RG48 | Self::BG48 => BitDepth::U16x3,
+            _ => BitDepth::Unknown,
+        };
+        FrameLayoutInfo {
+            fourcc: self,
+            storage,
+            packed,
+            planes,
+            bit_depth,
+            compressed: info.compressed,
+        }
+    }
+
     /// Estimated byte size for common raw frame formats.
     pub fn estimated_frame_bytes(self, width: usize, height: usize) -> Option<usize> {
-        self.info().estimated_frame_bytes(width, height)
+        self.layout_info().estimated_frame_bytes(width, height)
     }
 
     /// Shared metadata for this FourCC.
@@ -230,7 +526,7 @@ impl FromStr for FourCc {
 
 #[cfg(test)]
 mod fourcc_tests {
-    use super::FourCc;
+    use super::{BitDepth, ChromaSubsampling, FourCc, FrameStorageKind, PackedChannelOrder};
 
     #[test]
     fn classifies_compressed_formats() {
@@ -246,6 +542,26 @@ mod fourcc_tests {
         assert_eq!(FourCc::RG24.estimated_frame_bytes(640, 480), Some(921_600));
         assert_eq!(FourCc::NV12.estimated_frame_bytes(4, 2), Some(12));
         assert_eq!(FourCc::MJPG.estimated_frame_bytes(4, 2), None);
+    }
+
+    #[test]
+    fn exposes_generic_packed_layout_info() {
+        let info = FourCc::BGR3.layout_info();
+        assert_eq!(info.storage, FrameStorageKind::Packed);
+        assert_eq!(info.packed.unwrap().bytes_per_pixel, 3);
+        assert_eq!(info.packed.unwrap().order, PackedChannelOrder::Bgr);
+        assert_eq!(info.bit_depth, BitDepth::U8x3);
+        assert_eq!(info.first_plane_visible_row_bytes(8), Some(24));
+    }
+
+    #[test]
+    fn exposes_generic_semiplanar_layout_info() {
+        let info = FourCc::NV12.layout_info();
+        assert_eq!(info.storage, FrameStorageKind::SemiPlanar);
+        assert_eq!(info.planes.planes, 2);
+        assert_eq!(info.planes.subsampling, Some(ChromaSubsampling::Cs420));
+        assert_eq!(info.first_plane_visible_row_bytes(8), Some(8));
+        assert_eq!(info.estimated_frame_bytes(8, 2), Some(24));
     }
 
     #[test]
