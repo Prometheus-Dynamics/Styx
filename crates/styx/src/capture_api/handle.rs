@@ -88,6 +88,7 @@ pub struct CaptureHandle {
     pub(crate) control_error: Arc<Mutex<Option<CaptureError>>>,
     pub(crate) shutdown_stats: Arc<Mutex<CaptureShutdownStats>>,
     pub(crate) retry_metrics: CaptureRetryMetrics,
+    pub(crate) sequence_gaps: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Worker handle for capture backends.
@@ -463,6 +464,12 @@ impl CaptureHandle {
             &mut drop_reasons,
             crate::metrics::FrameDropReason::CaptureQueueSendTimeout,
             queue.send_timeouts,
+        );
+        crate::metrics::push_drop_reason(
+            &mut drop_reasons,
+            crate::metrics::FrameDropReason::SensorSequenceGap,
+            self.sequence_gaps
+                .load(std::sync::atomic::Ordering::Relaxed),
         );
         let external_inflight_buffers = memory
             .external_backings

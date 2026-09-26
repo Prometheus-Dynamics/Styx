@@ -290,6 +290,7 @@ pub(super) fn start_netcam(
         control_error: Arc::new(Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics,
+        sequence_gaps: Default::default(),
     })
 }
 
@@ -688,7 +689,7 @@ fn ffmpeg_loop(
                 if scaler.run(&decoded, &mut rgb).is_err() {
                     continue;
                 }
-                let ts = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+                let (ts, ts_clock) = capture_tunables.timestamp_clock.stamp_now(start.elapsed());
                 #[cfg(target_os = "linux")]
                 let frame = match blit_shared_rgba_frame(&rgb, res, layout, pool_ref, ts) {
                     Ok(frame) => frame,
@@ -696,6 +697,8 @@ fn ffmpeg_loop(
                 };
                 #[cfg(not(target_os = "linux"))]
                 let frame = blit_rgba_frame(&rgb, res, layout, pool_ref, ts);
+                let mut frame = frame;
+                frame.meta_mut().clock = Some(ts_clock);
                 frame_idx = frame_idx.saturating_add(1);
                 if enqueue_netcam_frame(
                     tx,
@@ -716,7 +719,7 @@ fn ffmpeg_loop(
             if scaler.run(&decoded, &mut rgb).is_err() {
                 continue;
             }
-            let ts = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            let (ts, ts_clock) = capture_tunables.timestamp_clock.stamp_now(start.elapsed());
             #[cfg(target_os = "linux")]
             let frame = match blit_shared_rgba_frame(&rgb, res, layout, pool_ref, ts) {
                 Ok(frame) => frame,
@@ -724,6 +727,8 @@ fn ffmpeg_loop(
             };
             #[cfg(not(target_os = "linux"))]
             let frame = blit_rgba_frame(&rgb, res, layout, pool_ref, ts);
+            let mut frame = frame;
+            frame.meta_mut().clock = Some(ts_clock);
             frame_idx = frame_idx.saturating_add(1);
             if enqueue_netcam_frame(
                 tx,

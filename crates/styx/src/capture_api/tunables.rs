@@ -59,6 +59,8 @@ pub const DEFAULT_NETCAM_MAX_JPEG_BYTES: usize = 32 << 20;
 pub const DEFAULT_FILE_IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Preferred libcamera stream role for processed, non-raw/non-encoded requests.
+use styx_core::prelude::ClockSource;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
@@ -120,6 +122,9 @@ pub struct CaptureConfig {
     pub queue_send_timeout_ms: u64,
     /// Stop polling interval used while a generic capture worker is idle, in milliseconds.
     pub idle_poll_ms: u64,
+    /// Clock live sources stamp frames with. File and simulation sources always report media
+    /// time (`TimestampClock::StreamRelative`).
+    pub timestamp_clock: ClockSource,
 }
 
 pub type CaptureTunables = CaptureConfig;
@@ -140,6 +145,7 @@ impl Default for CaptureConfig {
             pool_spare: DEFAULT_POOL_SPARE,
             queue_send_timeout_ms: DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS,
             idle_poll_ms: DEFAULT_CAPTURE_IDLE_POLL_MS,
+            timestamp_clock: ClockSource::Native,
         }
     }
 }
@@ -153,6 +159,7 @@ impl CaptureConfig {
             pool_spare: self.pool_spare,
             queue_send_timeout_ms: self.queue_send_timeout_ms.max(1),
             idle_poll_ms: self.idle_poll_ms.max(1),
+            timestamp_clock: self.timestamp_clock,
         }
     }
 
@@ -431,6 +438,13 @@ impl StyxConfig {
     /// Override capture queue depth.
     pub fn capture_queue_depth(mut self, depth: usize) -> Self {
         self.capture.queue_depth = depth;
+        self
+    }
+
+    /// Clock for frame timestamps from live sources (`ClockSource::Native` keeps each
+    /// backend's own clock; `FrameMeta::clock` always says which clock a timestamp is in).
+    pub fn timestamp_clock(mut self, clock: ClockSource) -> Self {
+        self.capture.timestamp_clock = clock;
         self
     }
 

@@ -443,6 +443,32 @@ fn capture_source_opens_with_config_without_manual_request_builder() {
 }
 
 #[test]
+fn live_sources_stamp_frames_with_the_configured_clock() {
+    let device = crate::capture_api::make_virtual_rgb_device("clock-source", 2, 2, 30);
+    let native = CaptureSource::new(device.clone())
+        .open_with_config(StyxConfig::new())
+        .expect("open native");
+    let RecvOutcome::Data(frame) = native.recv_blocking(std::time::Duration::from_millis(250))
+    else {
+        panic!("no frame");
+    };
+    assert_eq!(frame.meta().clock, Some(TimestampClock::StreamRelative));
+    native.stop();
+
+    let realtime = CaptureSource::new(device)
+        .open_with_config(StyxConfig::new().timestamp_clock(ClockSource::Realtime))
+        .expect("open realtime");
+    let RecvOutcome::Data(frame) = realtime.recv_blocking(std::time::Duration::from_millis(250))
+    else {
+        panic!("no frame");
+    };
+    assert_eq!(frame.meta().clock, Some(TimestampClock::Realtime));
+    let now = TimestampClock::Realtime.now_ns().unwrap();
+    assert!(now.abs_diff(frame.meta().timestamp) < 5_000_000_000);
+    realtime.stop();
+}
+
+#[test]
 fn capture_source_builds_pipeline_without_manual_request_builder() {
     let device = crate::capture_api::make_virtual_rgb_device("source-pipeline", 2, 2, 30);
     let source = CaptureSource::new(device);

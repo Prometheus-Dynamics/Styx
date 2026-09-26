@@ -44,6 +44,7 @@ struct MjpegFrameEmit<'a> {
     width: u32,
     height: u32,
     start: &'a Instant,
+    clock: ClockSource,
     frame_idx: &'a mut u64,
     stream: &'static str,
     send_timeout: Duration,
@@ -201,6 +202,7 @@ where
                 width,
                 height,
                 start,
+                clock: capture_tunables.timestamp_clock,
                 frame_idx,
                 stream: "mjpeg-async",
                 send_timeout: Duration::from_millis(netcam_tunables.send_timeout_ms),
@@ -382,6 +384,7 @@ pub(super) fn mjpeg_loop(
                 width,
                 height,
                 start,
+                clock: capture_tunables.timestamp_clock,
                 frame_idx,
                 stream: "mjpeg-sync",
                 send_timeout: Duration::from_millis(netcam_tunables.send_timeout_ms),
@@ -535,6 +538,7 @@ where
         width,
         height,
         start,
+        clock,
         frame_idx,
         stream: _,
         send_timeout: _,
@@ -562,11 +566,12 @@ where
         len: buf.len(),
         stride: buf.len(),
     };
-    let timestamp = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+    let (timestamp, timestamp_clock) = clock.stamp_now(start.elapsed());
     let meta = FrameMeta::new(
         MediaFormat::new(FourCc::MJPG, res, ColorSpace::Srgb),
         timestamp,
     )
+    .with_clock(timestamp_clock)
     .with_capture_instant(std::time::Instant::now())
     .with_transition(ResidencyTransition {
         from: FrameResidency::CompressedPacket,
@@ -697,6 +702,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 start: &start,
+                clock: ClockSource::Native,
                 frame_idx: &mut frame_idx,
                 stream: "test",
                 send_timeout: Duration::from_millis(1),
@@ -714,6 +720,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 start: &start,
+                clock: ClockSource::Native,
                 frame_idx: &mut frame_idx,
                 stream: "test",
                 send_timeout: Duration::from_millis(1),

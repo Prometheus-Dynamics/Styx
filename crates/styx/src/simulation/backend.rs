@@ -184,6 +184,7 @@ pub(crate) fn start_simulation(
         control_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
+        sequence_gaps: Default::default(),
     })
 }
 

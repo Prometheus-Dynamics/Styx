@@ -211,6 +211,7 @@ pub(super) fn build_frame_from_rgb(
             MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,
@@ -242,6 +243,7 @@ pub(super) fn build_frame_from_depth(
             MediaFormat::new(FourCc::D32F, resolution, ColorSpace::Unknown),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,
@@ -274,6 +276,7 @@ pub(super) fn build_shared_frame_from_rgb(
             MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostExternal,
@@ -305,6 +308,7 @@ pub(super) fn build_shared_frame_from_depth(
             MediaFormat::new(FourCc::D32F, resolution, ColorSpace::Unknown),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostExternal,

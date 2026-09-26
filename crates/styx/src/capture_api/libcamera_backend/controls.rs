@@ -6,7 +6,7 @@ use styx_core::controls::{ControlId, ControlValue};
 use crate::capture_api::CaptureError;
 use crate::capture_api::LIBCAMERA_FRAME_DURATION_LIMITS;
 
-use super::util::{classify_libcamera_control_apply_message, to_lc_value};
+use super::util::{classify_libcamera_control_apply_message, from_lc_value, to_lc_value};
 
 pub(super) fn build_libcamera_controls(
     controls: &[(ControlId, ControlValue)],
@@ -74,4 +74,38 @@ pub enum ControlMessage {
         ControlId,
         std::sync::mpsc::Sender<Result<ControlValue, CaptureError>>,
     ),
+}
+
+/// Timing from a completed request's metadata.
+pub(super) struct RequestTiming {
+    /// `SensorTimestamp`: start of exposure, `CLOCK_BOOTTIME`. Buffer timestamps on Raspberry Pi
+    /// mark ISP completion instead.
+    pub sensor_timestamp: Option<u64>,
+    /// `FrameDuration` in nanoseconds.
+    pub frame_duration_ns: Option<u64>,
+}
+
+/// Record a completed request's metadata as control readback and pick out its timing.
+pub(super) fn read_request_metadata(
+    req: &libcamera::request::Request,
+    readback: &mut HashMap<ControlId, ControlValue>,
+) -> RequestTiming {
+    let mut timing = RequestTiming {
+        sensor_timestamp: None,
+        frame_duration_ns: None,
+    };
+    for (id, val) in req.metadata() {
+        if let libcamera::control_value::ControlValue::Int64(v) = &val {
+            let first = v.first().and_then(|v| u64::try_from(*v).ok());
+            if id == libcamera::controls::ControlId::SensorTimestamp as u32 {
+                timing.sensor_timestamp = first;
+            } else if id == libcamera::controls::ControlId::FrameDuration as u32 {
+                timing.frame_duration_ns = first.map(|us| us * 1_000);
+            }
+        }
+        if let Some(val) = from_lc_value(&val) {
+            readback.insert(ControlId(id), val);
+        }
+    }
+    timing
 }

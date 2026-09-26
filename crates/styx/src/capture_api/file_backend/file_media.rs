@@ -237,6 +237,7 @@ pub(crate) fn build_frame_from_rgb(
             MediaFormat::new(FourCc::RG24, res, mode.format.color),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,
@@ -269,6 +270,7 @@ pub(crate) fn build_shared_frame_from_rgb(
             MediaFormat::new(FourCc::RG24, res, mode.format.color),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostExternal,

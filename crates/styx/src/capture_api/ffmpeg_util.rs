@@ -69,6 +69,7 @@ pub(crate) fn blit_rgba_frame(
             MediaFormat::new(FourCc::RGBA, res, ColorSpace::Srgb),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,
@@ -109,6 +110,7 @@ pub(crate) fn blit_shared_rgba_frame(
             MediaFormat::new(FourCc::RGBA, res, ColorSpace::Srgb),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,
@@ -156,6 +158,7 @@ pub(crate) fn blit_rgb24_frame(
             MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,
@@ -204,6 +207,7 @@ pub(crate) fn blit_shared_rgb24_frame(
             MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
             timestamp,
         )
+        .with_clock(TimestampClock::StreamRelative)
         .with_capture_instant(std::time::Instant::now())
         .with_transition(ResidencyTransition {
             from: FrameResidency::HostOwned,

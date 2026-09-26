@@ -33,6 +33,7 @@ fn health_report_includes_capture_worker_error() {
         control_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
+        sequence_gaps: Default::default(),
     };
 
     let report = handle.health_report();
@@ -71,6 +72,7 @@ fn health_report_includes_control_error() {
         control_error,
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
+        sequence_gaps: Default::default(),
     };
 
     let report = handle.health_report();
@@ -108,6 +110,7 @@ fn memory_stats_include_external_backing_telemetry() {
         control_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
+        sequence_gaps: Default::default(),
     };
 
     let memory = handle.memory_stats();

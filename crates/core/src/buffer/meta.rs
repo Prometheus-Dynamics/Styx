@@ -137,26 +137,35 @@ pub struct FrameMeta {
     pub timing: FrameTiming,
     /// When this frame is a region-of-interest view: the region in full-frame coordinates.
     pub crop: Option<crate::requirements::FrameRect>,
+    /// Clock `timestamp` is expressed in, when the backend reports it.
+    pub clock: Option<TimestampClock>,
 }
 
-/// Clock a backend's frame timestamps are taken from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Clock a frame's `timestamp` is expressed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampClock {
-    /// `CLOCK_MONOTONIC` (V4L2 buffers flagged `V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC`).
+    /// `CLOCK_MONOTONIC`: steady, stops during suspend (V4L2 buffers, `std::time::Instant`).
     Monotonic,
-    /// `CLOCK_BOOTTIME` (libcamera sensor timestamps).
+    /// `CLOCK_BOOTTIME`: steady, keeps counting during suspend (libcamera, Android sensors).
     Boottime,
+    /// `CLOCK_REALTIME`: wall-clock nanoseconds since the Unix epoch; can jump.
+    Realtime,
+    /// Nanoseconds since the capture stream started (file, network and synthetic sources).
+    StreamRelative,
 }
 
 impl TimestampClock {
-    /// Time elapsed since `timestamp_ns` on this clock, or `None` if the clock is unavailable
-    /// or the timestamp lies in the future.
-    pub fn elapsed_since(self, timestamp_ns: u64) -> Option<std::time::Duration> {
+    /// Current time on this clock in nanoseconds; `None` for stream-relative time or when the
+    /// clock is unavailable on this platform.
+    pub fn now_ns(self) -> Option<u64> {
         #[cfg(target_os = "linux")]
         {
             let clock = match self {
                 Self::Monotonic => libc::CLOCK_MONOTONIC,
                 Self::Boottime => libc::CLOCK_BOOTTIME,
+                Self::Realtime => libc::CLOCK_REALTIME,
+                Self::StreamRelative => return None,
             };
             let mut now = libc::timespec {
                 tv_sec: 0,
@@ -166,18 +175,99 @@ impl TimestampClock {
             if unsafe { libc::clock_gettime(clock, &mut now) } != 0 {
                 return None;
             }
-            let now_ns = (now.tv_sec as u64)
+            (now.tv_sec as u64)
                 .checked_mul(1_000_000_000)?
-                .checked_add(now.tv_nsec as u64)?;
-            now_ns
-                .checked_sub(timestamp_ns)
-                .map(std::time::Duration::from_nanos)
+                .checked_add(now.tv_nsec as u64)
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = timestamp_ns;
-            None
+            match self {
+                Self::Realtime => std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_nanos() as u64),
+                _ => None,
+            }
         }
+    }
+
+    /// Time elapsed since `timestamp_ns` on this clock, or `None` if the clock is unavailable
+    /// or the timestamp lies in the future.
+    pub fn elapsed_since(self, timestamp_ns: u64) -> Option<std::time::Duration> {
+        self.now_ns()?
+            .checked_sub(timestamp_ns)
+            .map(std::time::Duration::from_nanos)
+    }
+}
+
+/// Which clock capture backends should stamp frames with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ClockSource {
+    /// Keep each backend's own clock (libcamera: boottime, V4L2: usually monotonic, files and
+    /// network streams: stream-relative). `FrameMeta::clock` says which one.
+    #[default]
+    Native,
+    Monotonic,
+    Boottime,
+    Realtime,
+}
+
+impl ClockSource {
+    pub fn clock(self) -> Option<TimestampClock> {
+        match self {
+            Self::Native => None,
+            Self::Monotonic => Some(TimestampClock::Monotonic),
+            Self::Boottime => Some(TimestampClock::Boottime),
+            Self::Realtime => Some(TimestampClock::Realtime),
+        }
+    }
+    /// Conversion from a backend's `native` clock to this source; `None` for `Native` or when
+    /// the clocks cannot be related (stream-relative time).
+    pub fn conversion_from(self, native: TimestampClock) -> Option<ClockConversion> {
+        ClockConversion::new(native, self.clock()?)
+    }
+
+    /// Timestamp for a frame arriving now on a source without its own clock: the configured
+    /// clock's current time, or `stream_elapsed` as stream-relative time for `Native`.
+    pub fn stamp_now(self, stream_elapsed: std::time::Duration) -> (u64, TimestampClock) {
+        self.clock()
+            .and_then(|clock| Some((clock.now_ns()?, clock)))
+            .unwrap_or((
+                stream_elapsed.as_nanos().min(u128::from(u64::MAX)) as u64,
+                TimestampClock::StreamRelative,
+            ))
+    }
+}
+
+/// A fixed offset between two system clocks, sampled once so related timestamps (e.g. a frame
+/// and its pyramid companion) convert identically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockConversion {
+    target: TimestampClock,
+    offset_ns: i128,
+}
+
+impl ClockConversion {
+    /// Conversion from `from` to `to`; `None` if either is stream-relative or unavailable.
+    pub fn new(from: TimestampClock, to: TimestampClock) -> Option<Self> {
+        let offset_ns = if from == to {
+            0
+        } else {
+            i128::from(to.now_ns()?) - i128::from(from.now_ns()?)
+        };
+        Some(Self {
+            target: to,
+            offset_ns,
+        })
+    }
+
+    pub fn target(&self) -> TimestampClock {
+        self.target
+    }
+
+    pub fn apply(&self, timestamp_ns: u64) -> u64 {
+        (i128::from(timestamp_ns) + self.offset_ns).clamp(0, i128::from(u64::MAX)) as u64
     }
 }
 
@@ -240,6 +330,7 @@ impl FrameMeta {
             last_transition: None,
             timing: FrameTiming::default(),
             crop: None,
+            clock: None,
         }
     }
 
@@ -287,6 +378,31 @@ impl FrameMeta {
     pub fn with_sensor_latency_from(mut self, clock: TimestampClock, sensor_ns: u64) -> Self {
         self.timing.sensor_to_capture = clock.elapsed_since(sensor_ns);
         self
+    }
+
+    pub fn with_clock(mut self, clock: TimestampClock) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    /// Record `native` as the timestamp's clock, converting the timestamp first when a
+    /// conversion is given.
+    pub fn in_clock(mut self, native: TimestampClock, conversion: Option<ClockConversion>) -> Self {
+        match conversion {
+            Some(conversion) => {
+                self.timestamp = conversion.apply(self.timestamp);
+                self.clock = Some(conversion.target());
+            }
+            None => self.clock = Some(native),
+        }
+        self
+    }
+
+    /// `timestamp` converted to `target`, when this frame's clock is known and both are system
+    /// clocks. The offset is sampled now, so repeated calls can differ by a few nanoseconds.
+    pub fn timestamp_in(&self, target: TimestampClock) -> Option<u64> {
+        let conversion = ClockConversion::new(self.clock?, target)?;
+        Some(conversion.apply(self.timestamp))
     }
 
     /// Latency summary as of now.
@@ -373,6 +489,28 @@ mod timing_tests {
         let latency = output.latency();
         assert_eq!(latency.processing, Duration::from_millis(2));
         assert!(latency.total.unwrap() >= Duration::from_millis(9));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn clock_conversion_round_trips_and_is_shared() {
+        let now = TimestampClock::Monotonic.now_ns().unwrap();
+        let meta = meta().with_clock(TimestampClock::Monotonic);
+        let meta = FrameMeta {
+            timestamp: now,
+            ..meta
+        };
+        let in_boot = meta.timestamp_in(TimestampClock::Boottime).unwrap();
+        let boot_now = TimestampClock::Boottime.now_ns().unwrap();
+        assert!(boot_now.abs_diff(in_boot) < 50_000_000);
+        let conversion =
+            ClockConversion::new(TimestampClock::Boottime, TimestampClock::Realtime).unwrap();
+        assert_eq!(conversion.apply(10) - conversion.apply(0), 10);
+        assert!(
+            ClockConversion::new(TimestampClock::StreamRelative, TimestampClock::Monotonic)
+                .is_none()
+        );
+        assert!(meta.timestamp_in(TimestampClock::Monotonic) == Some(now));
     }
 
     #[cfg(target_os = "linux")]

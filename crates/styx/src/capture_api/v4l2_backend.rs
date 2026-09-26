@@ -619,6 +619,9 @@ pub(super) fn start_v4l2(
         "v4l2 negotiated capture format"
     );
     let capture_tunables = config.capture_tunables();
+    let timestamp_clock = capture_tunables.timestamp_clock;
+    let sequence_gaps = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut sequence_tracker = crate::metrics::SequenceGapTracker::new(sequence_gaps.clone());
     let v4l2_config = config.v4l2_config();
     let pool_limits = capture_tunables.pool_limits(4, frame_capacity, 8);
     let manager = V4l2MmapManager::new(
@@ -673,28 +676,27 @@ pub(super) fn start_v4l2(
                         .min(u64::MAX as u128) as u64;
                     // V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC within V4L2_BUF_FLAG_TIMESTAMP_MASK.
                     let monotonic = u32::from(meta.flags) & 0xE000 == 0x2000;
+                    sequence_tracker.observe(meta.sequence);
+                    let encoded = is_encoded_bitstream(mode_clone.format.code);
                     let frame_meta = FrameMeta::new(mode_clone.format, ts)
                         .with_capture_instant(std::time::Instant::now());
-                    let frame_meta = if monotonic {
-                        frame_meta.with_sensor_latency(TimestampClock::Monotonic)
-                    } else {
-                        frame_meta
+                    let clock = TimestampClock::Monotonic;
+                    let frame_meta = match monotonic {
+                        true => frame_meta
+                            .with_sensor_latency(clock)
+                            .in_clock(clock, timestamp_clock.conversion_from(clock)),
+                        false => frame_meta,
                     };
                     let meta = frame_meta
                         .with_transition(ResidencyTransition {
-                            from: if zero_copy_enabled {
-                                FrameResidency::HostExternal
-                            } else if is_encoded_bitstream(mode_clone.format.code) {
-                                FrameResidency::CompressedPacket
-                            } else {
-                                FrameResidency::HostOwned
+                            from: match (zero_copy_enabled, encoded) {
+                                (true, _) => FrameResidency::HostExternal,
+                                (false, true) => FrameResidency::CompressedPacket,
+                                (false, false) => FrameResidency::HostOwned,
                             },
-                            to: if zero_copy_enabled {
-                                FrameResidency::HostExternal
-                            } else if is_encoded_bitstream(mode_clone.format.code) {
-                                FrameResidency::CompressedPacket
-                            } else {
-                                FrameResidency::HostExternal
+                            to: match encoded && !zero_copy_enabled {
+                                true => FrameResidency::CompressedPacket,
+                                false => FrameResidency::HostExternal,
                             },
                             reason: ResidencyTransitionReason::Capture,
                             copied: !zero_copy_enabled,
@@ -787,6 +789,7 @@ pub(super) fn start_v4l2(
         control_error: Arc::new(Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
+        sequence_gaps,
     })
 }
 

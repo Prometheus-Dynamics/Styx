@@ -30,16 +30,15 @@ use self::backing::{
     LibcameraBacking, RequestPoolBackingLease, ShutdownGuard, wait_for_backings_to_drain,
 };
 pub use self::controls::{ControlMessage, PendingControlState};
-use self::controls::{build_libcamera_controls, queue_with_controls};
+use self::controls::{build_libcamera_controls, queue_with_controls, read_request_metadata};
 use self::emulation::Emulation;
 use self::frame::completed_frame_parts;
 use self::heap::{CaptureBuffer, request_buffer};
 use self::streams::{SecondStream, attach_companion, configure_streams, framebuffer_refs};
 use self::util::{
     classify_libcamera_backend_message, classify_libcamera_control_apply_kind,
-    control_value_enabled, from_lc_value, map_pixel_format_to_fourcc,
-    normalize_requested_fourcc_for_libcamera, pisp_disallowed_fourcc, stream_role_for_request,
-    supports_frame_duration_limits,
+    control_value_enabled, map_pixel_format_to_fourcc, normalize_requested_fourcc_for_libcamera,
+    pisp_disallowed_fourcc, stream_role_for_request, supports_frame_duration_limits,
 };
 use super::handle::enqueue_capture_frame;
 
@@ -120,6 +119,9 @@ pub(super) fn start_libcamera(
         .map(|i| i.denominator.get() as f64 / i.numerator.get().max(1) as f64)
         .unwrap_or(0.0);
     let capture_tunables = config.capture_tunables();
+    let timestamp_clock = capture_tunables.timestamp_clock;
+    let sequence_gaps = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut sequence_tracker = crate::metrics::SequenceGapTracker::new(sequence_gaps.clone());
     let libcamera_config = config.libcamera_config();
     let queue_depth = capture_tunables.queue_depth;
     let _ = requested_fps;
@@ -581,21 +583,7 @@ pub(super) fn start_libcamera(
 
                 match req_rx.recv_timeout(request_poll) {
                     Ok(req) => {
-                        // Buffer timestamps on Raspberry Pi mark ISP completion; SensorTimestamp
-                        // (CLOCK_BOOTTIME, start of exposure) gives the real capture latency.
-                        let mut sensor_timestamp = None;
-                        for (id, val) in req.metadata() {
-                            if id == libcamera::controls::ControlId::SensorTimestamp as u32
-                                && let libcamera::control_value::ControlValue::Int64(ts) = &val
-                            {
-                                sensor_timestamp =
-                                    ts.first().and_then(|ts| u64::try_from(*ts).ok());
-                            }
-                            let Some(val) = from_lc_value(&val) else {
-                                continue;
-                            };
-                            readback_state.insert(ControlId(id), val);
-                        }
+                        let timing = read_request_metadata(&req, &mut readback_state);
 
                         let (framebuffer, active_stride): (&dyn AsFrameBuffer, usize) =
                             if let Some(tdn_stream) =
@@ -644,16 +632,23 @@ pub(super) fn start_libcamera(
                             outstanding_lease_tracker_for_thread.clone(),
                             mapped_lease_tracker_for_thread.clone(),
                         );
-                        let meta = FrameMeta::new(wire_format, frame_parts.timestamp)
+                        let timestamp = timing.sensor_timestamp.unwrap_or(frame_parts.timestamp);
+                        match timing.frame_duration_ns {
+                            Some(duration) => {
+                                sequence_tracker.observe_timestamp(timestamp, duration)
+                            }
+                            None => sequence_tracker.observe(frame_parts.sequence),
+                        }
+                        // One offset for the frame and its companion so their timestamps match.
+                        let conversion = timestamp_clock.conversion_from(TimestampClock::Boottime);
+                        let meta = FrameMeta::new(wire_format, timestamp)
                             .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
                                 sequence: frame_parts.sequence,
                                 buffer_memory,
                             }))
                             .with_capture_instant(std::time::Instant::now())
-                            .with_sensor_latency_from(
-                                TimestampClock::Boottime,
-                                sensor_timestamp.unwrap_or(frame_parts.timestamp),
-                            )
+                            .with_sensor_latency(TimestampClock::Boottime)
+                            .in_clock(TimestampClock::Boottime, conversion)
                             .with_transition(ResidencyTransition {
                                 from: FrameResidency::Dmabuf,
                                 to: FrameResidency::Dmabuf,
@@ -661,12 +656,12 @@ pub(super) fn start_libcamera(
                                 copied: false,
                             });
                         let companion_frame = companion_parts.map(|(level, format, parts)| {
-                            let meta = FrameMeta::new(format, parts.timestamp).with_backend(
-                                BackendFrameMeta::Libcamera(LibcameraFrameMeta {
+                            let meta = FrameMeta::new(format, timestamp)
+                                .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
                                     sequence: parts.sequence,
                                     buffer_memory,
-                                }),
-                            );
+                                }))
+                                .in_clock(TimestampClock::Boottime, conversion);
                             let sibling = backing.sibling(parts.plane_views);
                             (
                                 level,
@@ -773,6 +768,7 @@ pub(super) fn start_libcamera(
         control_error: Arc::new(Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
+        sequence_gaps,
     })
 }
 

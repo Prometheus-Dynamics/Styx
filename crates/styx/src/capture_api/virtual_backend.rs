@@ -44,13 +44,19 @@ pub(super) fn start_virtual(
         .unwrap_or_else(|| Duration::from_millis(10))
         .max(Duration::from_millis(1));
     let idle_poll = Duration::from_millis(capture_tunables.idle_poll_ms);
+    let timestamp_clock = capture_tunables.timestamp_clock;
     let worker = thread::spawn(move || {
         tracing::debug!(backend = "virtual", "capture worker started");
+        let start = std::time::Instant::now();
         loop {
             if stop_rx.try_recv().is_ok() {
                 break;
             }
-            if let Some(frame) = capture.next_frame() {
+            if let Some(mut frame) = capture.next_frame() {
+                let (timestamp, clock) = timestamp_clock.stamp_now(start.elapsed());
+                let meta = frame.meta_mut();
+                meta.timestamp = timestamp;
+                meta.clock = Some(clock);
                 if enqueue_capture_frame(&tx, frame, "virtual", frame_interval) {
                     break;
                 }
@@ -83,5 +89,6 @@ pub(super) fn start_virtual(
         control_error: Arc::new(parking_lot::Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
+        sequence_gaps: Default::default(),
     })
 }

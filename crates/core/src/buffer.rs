@@ -14,9 +14,9 @@ pub use frame::{
 #[cfg(unix)]
 pub use frame::{FrameBackingExport, FrameExportError, FrameFdPlane};
 pub use meta::{
-    BackendFrameMeta, FrameLatency, FrameMeta, FrameMutability, FrameResidency, FrameTiming,
-    LibcameraFrameMeta, ResidencyTransition, ResidencyTransitionReason, TimestampClock,
-    V4l2FrameMeta,
+    BackendFrameMeta, ClockConversion, ClockSource, FrameLatency, FrameMeta, FrameMutability,
+    FrameResidency, FrameTiming, LibcameraFrameMeta, ResidencyTransition,
+    ResidencyTransitionReason, TimestampClock, V4l2FrameMeta,
 };
 pub use pool::{BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats};
 

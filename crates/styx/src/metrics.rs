@@ -9,8 +9,13 @@ use std::{
 
 #[path = "metrics/retry.rs"]
 mod retry;
+#[cfg(any(feature = "libcamera", feature = "v4l2"))]
+#[path = "metrics/sequence_gaps.rs"]
+mod sequence_gaps;
 
 pub use retry::{CaptureRetryMetrics, CaptureRetryStats};
+#[cfg(any(feature = "libcamera", feature = "v4l2"))]
+pub(crate) use sequence_gaps::SequenceGapTracker;
 
 const DEFAULT_WINDOW: usize = 120;
 const DEFAULT_TRANSITION_WINDOW: usize = 16;
@@ -165,6 +170,9 @@ pub enum FrameDropReason {
     CaptureQueueSendTimeout,
     GraphDrop,
     GraphLatestReplacement,
+    /// Frames missing from the backend's sequence numbers: lost by the sensor, driver or ISP
+    /// before Styx received them (libcamera and V4L2).
+    SensorSequenceGap,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

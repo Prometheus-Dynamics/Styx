@@ -21,6 +21,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - libcamera buffer mappings are kept for the capture session (0.38 → 0.15 ms per Y-plane read on
   a CM5), and sensor latency uses libcamera's `SensorTimestamp`.
 - Added MJPEG luma criterion benchmarks and a perf-smoke metric on real Logitech C270 frames.
+- Added timestamp clocks: `FrameMeta::clock` records which clock `timestamp` is in
+  (`Monotonic`, `Boottime`, `Realtime` or `StreamRelative`), `FrameMeta::timestamp_in` converts
+  between system clocks, and `StyxConfig::timestamp_clock(ClockSource::...)` makes live sources
+  (libcamera, V4L2, netcam, virtual) stamp frames in one clock. File and simulation sources keep
+  media time. See `docs/timestamps.md`.
+- Added `FrameDropReason::SensorSequenceGap`: health reports now count frames the sensor produced
+  that never reached Styx (V4L2 sequence numbers; libcamera sensor timestamps and
+  `FrameDuration`, since its sequence numbers count completed requests).
 
 - Added cached dma-heap capture buffers for libcamera (`LibcameraBufferMemory`, default `Auto`:
   on for Raspberry Pi cameras, falling back to libcamera's allocator). libcamera's own PiSP
@@ -75,6 +83,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   I420/YU12/YV12 frame layouts, including overlap detection for shared-address-space backings.
 - Added export capability reporting on external frame backings so memfd/dmabuf-style backings can
   advertise zero-copy export support without treating every external backing as exportable.
+
+### Changed
+
+- libcamera frame timestamps are now the sensor's start-of-exposure time (`SensorTimestamp`)
+  instead of the buffer completion time, matching V4L2 (8.2 ms vs 0.05 ms old on arrival on a
+  CM5). Pyramid companions share it.
 
 ### Fixed
 
