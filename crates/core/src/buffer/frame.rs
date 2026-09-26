@@ -12,6 +12,7 @@ use crate::format::{ChromaSubsampling, FrameLayoutInfo, FrameStorageKind, MediaF
 
 mod companion;
 mod construct;
+mod crop;
 mod layout;
 mod luma;
 mod views;

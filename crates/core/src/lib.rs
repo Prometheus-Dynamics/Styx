@@ -6,6 +6,7 @@ pub mod controls;
 pub mod format;
 pub mod metrics;
 pub mod queue;
+pub mod requirements;
 pub mod transform;
 
 pub mod prelude {
@@ -32,6 +33,10 @@ pub mod prelude {
         queue::{
             BoundedRx, BoundedTx, DEFAULT_QUEUE_CAPACITY, QueueStats, RecvOutcome, RecvWaitOutcome,
             SendOutcome, SendWaitOutcome, bounded, default_bounded, newest,
+        },
+        requirements::{
+            FrameRect, FrameRequirements, HardwarePolicy, OutputFormat, PlanOverrides, Priority,
+            PyramidRequest, PyramidSource,
         },
         transform::{
             FrameTransform, Rotation90, TransformError, TransformPoolConfig,

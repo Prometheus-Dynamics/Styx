@@ -135,6 +135,8 @@ pub struct FrameMeta {
     pub last_transition: Option<ResidencyTransition>,
     /// Where this frame's time went: capture latency and per-stage processing durations.
     pub timing: FrameTiming,
+    /// When this frame is a region-of-interest view: the region in full-frame coordinates.
+    pub crop: Option<crate::requirements::FrameRect>,
 }
 
 /// Clock a backend's frame timestamps are taken from.
@@ -237,6 +239,7 @@ impl FrameMeta {
             mutability: FrameMutability::Mutable,
             last_transition: None,
             timing: FrameTiming::default(),
+            crop: None,
         }
     }
 
