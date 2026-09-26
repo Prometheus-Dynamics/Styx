@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use smallvec::smallvec;
+use smallvec::{SmallVec, smallvec};
 use styx_core::prelude::*;
 use v4l::buffer::Metadata as V4l2Metadata;
 use v4l::buffer::Type;
@@ -322,8 +322,10 @@ impl V4l2MmapBacking {
 
 impl ExternalBacking for V4l2MmapBacking {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
+        // Every plane of a single-planar buffer lives in the same mapping; plane layouts carry
+        // the per-plane offsets.
         match index {
-            0 => {
+            0..=2 => {
                 // The manager is held by `Arc` inside this backing, so the mmap remains alive
                 // while any `FrameLease` borrowing this external backing exists.
                 let buffer_index = *self.index.lock();
@@ -370,6 +372,28 @@ impl Drop for V4l2MmapBacking {
     }
 }
 
+/// Copy each plane of a single-planar YUV buffer into its own owned buffer.
+fn copy_planes(meta: FrameMeta, src: &[u8], planes: &[PlaneLayout]) -> FrameLease {
+    let largest = planes.iter().map(|plane| plane.len).max().unwrap_or(0);
+    let pool = BufferPool::with_limits(planes.len(), largest, planes.len());
+    let mut buffers = SmallVec::<[BufferLease; 3]>::new();
+    let mut layouts = SmallVec::<[PlaneLayout; 3]>::new();
+    for plane in planes {
+        let mut lease = pool.lease();
+        lease.resize(plane.len);
+        lease
+            .as_mut_slice()
+            .copy_from_slice(&src[plane.offset..plane.offset + plane.len]);
+        buffers.push(lease);
+        layouts.push(PlaneLayout {
+            offset: 0,
+            len: plane.len,
+            stride: plane.stride,
+        });
+    }
+    FrameLease::multi_plane(meta, buffers, layouts)
+}
+
 fn drain_recycled_buffers(manager: &V4l2MmapManager, recycle_rx: &Receiver<usize>) {
     while let Ok(index) = recycle_rx.try_recv() {
         let _ = manager.recycle(index);
@@ -381,10 +405,20 @@ fn is_encoded_bitstream(code: FourCc) -> bool {
 }
 
 fn supports_v4l2_mmap_zero_copy(code: FourCc) -> bool {
-    matches!(
-        &code.to_u32().to_le_bytes(),
-        b"MJPG" | b"JPEG" | b"YUYV" | b"RG24" | b"RGB3" | b"BGR3" | b"RGBA" | b"BGRA"
-    )
+    code.layout_info().planes.subsampling.is_some()
+        || matches!(
+            &code.to_u32().to_le_bytes(),
+            b"MJPG"
+                | b"JPEG"
+                | b"YUYV"
+                | b"RG24"
+                | b"RGB3"
+                | b"BGR3"
+                | b"RGBA"
+                | b"BGRA"
+                | b"GREY"
+                | b"R8  "
+        )
 }
 
 fn build_v4l2_single_plane_layout(
@@ -414,9 +448,12 @@ fn build_v4l2_single_plane_layout(
     })
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct V4l2SinglePlaneLayoutPlan {
+    /// First plane (or the whole payload for packed and encoded formats).
     layout: PlaneLayout,
+    /// Every plane inside the buffer; more than one for planar/semi-planar YUV.
+    planes: SmallVec<[PlaneLayout; 3]>,
     zero_copy_safe: bool,
 }
 
@@ -438,7 +475,20 @@ fn plan_v4l2_single_plane_layout(
         let layout = build_v4l2_single_plane_layout(true, height, 0, bytes_used)?;
         return Some(V4l2SinglePlaneLayoutPlan {
             layout,
+            planes: smallvec![layout],
             zero_copy_safe: layout.len <= mapped_len,
+        });
+    }
+
+    // Planar/semi-planar YUV: the Y stride is `bytesperline`, not `bytesused / height`.
+    if let Some(planes) =
+        yuv_layout::yuv_plane_layouts(code, width, height, negotiated_stride, bytes_used)
+    {
+        let end = planes.last().map_or(0, |plane| plane.offset + plane.len);
+        return Some(V4l2SinglePlaneLayoutPlan {
+            layout: planes[0],
+            zero_copy_safe: (negotiated_size == 0 || end <= negotiated_size) && end <= mapped_len,
+            planes,
         });
     }
 
@@ -454,6 +504,7 @@ fn plan_v4l2_single_plane_layout(
     let advertised_capacity_ok = negotiated_size == 0 || layout.len <= negotiated_size;
     Some(V4l2SinglePlaneLayoutPlan {
         layout,
+        planes: smallvec![layout],
         zero_copy_safe: advertised_capacity_ok && layout.len <= mapped_len,
     })
 }
@@ -464,8 +515,8 @@ fn min_stride_for_fourcc(code: FourCc, width: usize) -> usize {
         b"pBAA" | b"pGAA" | b"pgAA" | b"pRAA" => width.div_ceil(4) * 5,
         b"pBCC" | b"pGCC" | b"pgCC" | b"pRCC" => width.div_ceil(2) * 3,
 
-        // 8-bit bayer.
-        b"BA81" | b"RGGB" | b"GRBG" | b"GBRG" | b"BGGR" => width,
+        // 8-bit bayer and 8-bit mono.
+        b"BA81" | b"RGGB" | b"GRBG" | b"GBRG" | b"BGGR" | b"GREY" | b"R8  " => width,
 
         // 10/12/14/16-bit bayer (stored in 16-bit words) and mono16.
         b"BA10" | b"BA12" | b"BA14" | b"BG10" | b"BG12" | b"BG14" | b"BG16" | b"GB10" | b"GB12"
@@ -656,7 +707,16 @@ pub(super) fn start_v4l2(
                             Arc::clone(&tracker_for_worker),
                             bytes_used,
                         );
-                        FrameLease::from_external(meta, smallvec![layout], backing)
+                        FrameLease::from_external(meta, layout_plan.planes.clone(), backing)
+                    } else if layout_plan.planes.len() > 1 {
+                        let frame = manager_for_worker
+                            .mapped_plane(index)
+                            .map(|src| copy_planes(meta, src, &layout_plan.planes));
+                        let _ = manager_for_worker.recycle(index);
+                        match frame {
+                            Some(frame) => frame,
+                            None => continue,
+                        }
                     } else {
                         let Ok(pool) = &shared_pool else {
                             let _ = manager_for_worker.recycle(index);
@@ -724,3 +784,4 @@ pub(super) fn start_v4l2(
 
 #[cfg(test)]
 mod tests;
+mod yuv_layout;

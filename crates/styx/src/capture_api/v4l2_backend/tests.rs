@@ -43,7 +43,7 @@ fn zero_copy_whitelist_accepts_initial_validated_formats() {
 
 #[test]
 fn zero_copy_whitelist_rejects_deferred_formats() {
-    for code in [FourCc::NV12, FourCc::H264, FourCc::new(*b"BA81")] {
+    for code in [FourCc::H264, FourCc::new(*b"BA81")] {
         assert!(
             !supports_v4l2_mmap_zero_copy(code),
             "expected {code} to use fallback"
@@ -84,4 +84,34 @@ fn encoded_layout_plan_uses_bytes_used() {
     assert_eq!(plan.layout.len, 123_456);
     assert_eq!(plan.layout.stride, 123_456);
     assert!(plan.zero_copy_safe);
+}
+
+#[test]
+fn grey_layout_uses_one_byte_per_pixel_and_is_zero_copy() {
+    let plan = plan_v4l2_single_plane_layout(
+        FourCc::GREY,
+        1280,
+        800,
+        1280,
+        1_024_000,
+        1_024_000,
+        1_024_000,
+    )
+    .expect("GREY frames must not be dropped");
+    assert_eq!(plan.layout.stride, 1280);
+    assert_eq!(plan.layout.len, 1_024_000);
+    assert!(plan.zero_copy_safe);
+    assert!(supports_v4l2_mmap_zero_copy(FourCc::GREY));
+}
+
+#[test]
+fn nv12_plan_uses_bytesperline_and_two_planes() {
+    let plan =
+        plan_v4l2_single_plane_layout(FourCc::NV12, 640, 480, 640, 460_800, 462_848, 460_800)
+            .expect("nv12 plan");
+    assert_eq!(plan.planes.len(), 2);
+    assert_eq!(plan.layout.stride, 640);
+    assert_eq!(plan.planes[1].offset, 307_200);
+    assert!(plan.zero_copy_safe);
+    assert!(supports_v4l2_mmap_zero_copy(FourCc::NV12));
 }
