@@ -281,11 +281,10 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
             ControlType::Byte | ControlType::Uint16 | ControlType::Uint32 => ControlKind::Uint,
             ControlType::Int32 | ControlType::Int64 => ControlKind::Int,
             ControlType::Float => ControlKind::Float,
-            ControlType::None
-            | ControlType::String
-            | ControlType::Rectangle
-            | ControlType::Size
-            | ControlType::Point => ControlKind::Unknown,
+            ControlType::Rectangle => ControlKind::Rectangle,
+            ControlType::None | ControlType::String | ControlType::Size | ControlType::Point => {
+                ControlKind::Unknown
+            }
         }
     }
 
@@ -400,6 +399,10 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
                     requires_tdn_output: true,
                 },
             ),
+            // libcamera::controls::rpi::ScalerCrops: one crop rectangle per ISP output.
+            (20003, "ctrl_20003", _) if kind == ControlKind::Rectangle => {
+                ("ScalerCrops".to_string(), menu, ControlMetadata::default())
+            }
             _ => (name, menu, ControlMetadata::default()),
         };
 
@@ -407,7 +410,11 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
         if matches!(kind, ControlKind::Unknown) {
             continue;
         }
-        let access = if id == LIBCAMERA_FRAME_DURATION_LIMITS.0 || multivalue {
+        // Rectangle controls round-trip as `ControlValue::Rect`/`Rects`, so arrays of them
+        // (e.g. per-output `ScalerCrops`) stay writable.
+        let access = if id == LIBCAMERA_FRAME_DURATION_LIMITS.0
+            || (multivalue && kind != ControlKind::Rectangle)
+        {
             Access::ReadOnly
         } else {
             Access::ReadWrite
@@ -502,8 +509,16 @@ fn map_color_space(cs: Option<LcColorSpace>) -> ColorSpace {
 
 #[cfg(feature = "probe")]
 fn convert_value(val: &LcValue) -> ControlValue {
+    let rect = |r: &libcamera::geometry::Rectangle| styx_core::controls::ControlRect {
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+    };
     match val {
         LcValue::None => ControlValue::None,
+        LcValue::Rectangle(v) if v.len() == 1 => ControlValue::Rect(rect(&v[0])),
+        LcValue::Rectangle(v) if !v.is_empty() => ControlValue::Rects(v.iter().map(rect).collect()),
         LcValue::Bool(v) => v
             .first()
             .copied()

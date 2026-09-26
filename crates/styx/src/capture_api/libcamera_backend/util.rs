@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use libcamera::control_value::ControlValue as LcValue;
-use styx_core::controls::ControlValue;
+use styx_core::controls::{ControlRect, ControlValue};
 use styx_core::prelude::*;
 
 use crate::capture_api::{CaptureDescriptor, CaptureError, ControlApplyKind};
@@ -48,6 +48,8 @@ pub(super) fn control_value_enabled(value: &ControlValue) -> bool {
         ControlValue::Int(v) => *v != 0,
         ControlValue::Uint(v) => *v != 0,
         ControlValue::Float(v) => *v != 0.0,
+        ControlValue::Rect(_) => true,
+        ControlValue::Rects(rects) => !rects.is_empty(),
     }
 }
 
@@ -124,6 +126,15 @@ fn contains_any(message: &str, tokens: &[&str]) -> bool {
     tokens.iter().any(|token| message.contains(token))
 }
 
+fn rect(r: &libcamera::geometry::Rectangle) -> ControlRect {
+    ControlRect {
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+    }
+}
+
 pub(super) fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
     match value {
         LcValue::None => Some(ControlValue::None),
@@ -148,6 +159,10 @@ pub(super) fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
         }
         LcValue::Uint32(v) if v.len() == 1 => v.first().copied().map(ControlValue::Uint),
         LcValue::Float(v) if v.len() == 1 => v.first().copied().map(ControlValue::Float),
+        LcValue::Rectangle(v) if v.len() == 1 => v.first().map(|r| ControlValue::Rect(rect(r))),
+        LcValue::Rectangle(v) if !v.is_empty() => {
+            Some(ControlValue::Rects(v.iter().map(rect).collect()))
+        }
         _ => None,
     }
 }
@@ -159,7 +174,18 @@ pub(super) fn to_lc_value(value: &ControlValue) -> Result<LcValue, CaptureError>
         ControlValue::Int(v) => LcValue::from(*v),
         ControlValue::Uint(v) => LcValue::from(*v),
         ControlValue::Float(v) => LcValue::from(*v),
+        ControlValue::Rect(r) => LcValue::Rectangle(smallvec::smallvec![lc_rect(r)]),
+        ControlValue::Rects(rects) => LcValue::Rectangle(rects.iter().map(lc_rect).collect()),
     })
+}
+
+fn lc_rect(r: &ControlRect) -> libcamera::geometry::Rectangle {
+    libcamera::geometry::Rectangle {
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+    }
 }
 
 pub(super) fn stream_role_for_request(

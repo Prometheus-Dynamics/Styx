@@ -74,11 +74,30 @@ impl SharedFdBacking {
 
     fn mapped_ranges(&self) -> &Vec<Option<MappedFdRange>> {
         self.mapped.get_or_init(|| {
-            self.planes
+            let ranges = self
+                .planes
                 .iter()
                 .map(|plane| self.map_plane(*plane).ok().flatten())
-                .collect()
+                .collect();
+            self.sync_dmabufs(true);
+            ranges
         })
+    }
+
+    /// Bracket CPU reads of imported dma-bufs so cached mappings never serve stale lines.
+    fn sync_dmabufs(&self, begin: bool) {
+        #[cfg(target_os = "linux")]
+        if let SharedFdBackingKind::Dmabuf(fds) = &self.kind {
+            for fd in fds {
+                let _ = if begin {
+                    crate::buffer::dmabuf_begin_cpu_read(fd.as_raw_fd())
+                } else {
+                    crate::buffer::dmabuf_end_cpu_read(fd.as_raw_fd())
+                };
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = begin;
     }
 
     fn map_plane(&self, plane: SharedFdPlane) -> Result<Option<MappedFdRange>, FrameExportError> {
@@ -186,6 +205,7 @@ impl ExternalBacking for SharedFdBacking {
 impl Drop for SharedFdBacking {
     fn drop(&mut self) {
         if let Some(mapped) = self.mapped.take() {
+            self.sync_dmabufs(false);
             for range in mapped.into_iter().flatten() {
                 unsafe {
                     libc::munmap(range.ptr, range.map_len);

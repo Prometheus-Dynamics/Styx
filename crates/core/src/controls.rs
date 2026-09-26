@@ -88,6 +88,8 @@ pub struct ControlMeta {
 pub enum ControlKind {
     None,
     Bool,
+    /// A rectangle (or one rectangle per output), e.g. libcamera `ScalerCrop`/`ScalerCrops`.
+    Rectangle,
     Int,
     Uint,
     Float,
@@ -118,6 +120,21 @@ pub enum ControlValue {
     Uint(u32),
     /// Floating-point value.
     Float(f32),
+    /// Rectangle, e.g. a crop region in sensor pixel-array coordinates.
+    Rect(ControlRect),
+    /// One rectangle per output, e.g. libcamera's per-stream `ScalerCrops`.
+    Rects(Vec<ControlRect>),
+}
+
+/// Rectangle control value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct ControlRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[cfg(feature = "serde")]
@@ -135,6 +152,8 @@ impl serde::Serialize for ControlValue {
                 Int(i32),
                 Uint(u32),
                 Float(f32),
+                Rect(ControlRect),
+                Rects(Vec<ControlRect>),
             }
             let h = match self {
                 ControlValue::None => Human::None,
@@ -142,6 +161,8 @@ impl serde::Serialize for ControlValue {
                 ControlValue::Int(v) => Human::Int(*v),
                 ControlValue::Uint(v) => Human::Uint(*v),
                 ControlValue::Float(v) => Human::Float(*v),
+                ControlValue::Rect(v) => Human::Rect(*v),
+                ControlValue::Rects(v) => Human::Rects(v.clone()),
             };
             h.serialize(serializer)
         } else {
@@ -152,6 +173,8 @@ impl serde::Serialize for ControlValue {
                 Int(i32),
                 Uint(u32),
                 Float(f32),
+                Rect(ControlRect),
+                Rects(Vec<ControlRect>),
             }
             let b = match self {
                 ControlValue::None => Binary::None,
@@ -159,6 +182,8 @@ impl serde::Serialize for ControlValue {
                 ControlValue::Int(v) => Binary::Int(*v),
                 ControlValue::Uint(v) => Binary::Uint(*v),
                 ControlValue::Float(v) => Binary::Float(*v),
+                ControlValue::Rect(v) => Binary::Rect(*v),
+                ControlValue::Rects(v) => Binary::Rects(v.clone()),
             };
             b.serialize(serializer)
         }
@@ -180,6 +205,8 @@ impl<'de> serde::Deserialize<'de> for ControlValue {
                 Int(i32),
                 Uint(u32),
                 Float(f32),
+                Rect(ControlRect),
+                Rects(Vec<ControlRect>),
             }
             let h = Human::deserialize(deserializer)?;
             Ok(match h {
@@ -188,6 +215,8 @@ impl<'de> serde::Deserialize<'de> for ControlValue {
                 Human::Int(v) => ControlValue::Int(v),
                 Human::Uint(v) => ControlValue::Uint(v),
                 Human::Float(v) => ControlValue::Float(v),
+                Human::Rect(v) => ControlValue::Rect(v),
+                Human::Rects(v) => ControlValue::Rects(v),
             })
         } else {
             #[derive(serde::Deserialize)]
@@ -197,6 +226,8 @@ impl<'de> serde::Deserialize<'de> for ControlValue {
                 Int(i32),
                 Uint(u32),
                 Float(f32),
+                Rect(ControlRect),
+                Rects(Vec<ControlRect>),
             }
             let b = Binary::deserialize(deserializer)?;
             Ok(match b {
@@ -205,6 +236,8 @@ impl<'de> serde::Deserialize<'de> for ControlValue {
                 Binary::Int(v) => ControlValue::Int(v),
                 Binary::Uint(v) => ControlValue::Uint(v),
                 Binary::Float(v) => ControlValue::Float(v),
+                Binary::Rect(v) => ControlValue::Rect(v),
+                Binary::Rects(v) => ControlValue::Rects(v),
             })
         }
     }
@@ -240,6 +273,15 @@ impl ControlMeta {
             if let ControlValue::Int(idx) = candidate {
                 return (*idx >= 0) && ((*idx as usize) < menu.len());
             }
+        }
+
+        if self.kind == ControlKind::Rectangle {
+            let valid = |r: &ControlRect| r.width > 0 && r.height > 0;
+            return match candidate {
+                ControlValue::Rect(r) => valid(r),
+                ControlValue::Rects(rects) => !rects.is_empty() && rects.iter().all(valid),
+                _ => false,
+            };
         }
 
         match (candidate, &self.min, &self.max) {

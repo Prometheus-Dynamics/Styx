@@ -78,14 +78,40 @@ pub struct ResidencyTransition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendFrameMeta {
     V4l2(V4l2FrameMeta),
+    Libcamera(LibcameraFrameMeta),
 }
 
 impl BackendFrameMeta {
     pub fn as_v4l2(&self) -> Option<&V4l2FrameMeta> {
         match self {
             Self::V4l2(meta) => Some(meta),
+            Self::Libcamera(_) => None,
         }
     }
+
+    pub fn as_libcamera(&self) -> Option<&LibcameraFrameMeta> {
+        match self {
+            Self::Libcamera(meta) => Some(meta),
+            Self::V4l2(_) => None,
+        }
+    }
+
+    /// Driver frame sequence number, when the backend reports one.
+    pub fn sequence(&self) -> u32 {
+        match self {
+            Self::V4l2(meta) => meta.sequence,
+            Self::Libcamera(meta) => meta.sequence,
+        }
+    }
+}
+
+/// libcamera per-frame metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LibcameraFrameMeta {
+    /// Frame sequence number from the capture device; gaps indicate dropped frames.
+    pub sequence: u32,
+    /// Where the capture buffer memory came from, e.g. `dma-heap` or `libcamera-allocator`.
+    pub buffer_memory: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +159,17 @@ impl FrameMeta {
 
     pub fn v4l2(&self) -> Option<&V4l2FrameMeta> {
         self.backend.as_ref().and_then(BackendFrameMeta::as_v4l2)
+    }
+
+    pub fn libcamera(&self) -> Option<&LibcameraFrameMeta> {
+        self.backend
+            .as_ref()
+            .and_then(BackendFrameMeta::as_libcamera)
+    }
+
+    /// Driver frame sequence number, when the backend reports one.
+    pub fn sequence(&self) -> Option<u32> {
+        self.backend.as_ref().map(BackendFrameMeta::sequence)
     }
 
     pub fn with_capture_instant(mut self, capture_instant: Instant) -> Self {

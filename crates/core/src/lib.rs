@@ -12,13 +12,16 @@ pub mod prelude {
     pub use crate::{
         buffer::{
             BackendFrameMeta, BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats,
-            ExternalBacking, FrameAllocation, FrameLease, FrameLeaseDescriptor, FrameMeta,
-            FrameMutability, FramePlaneDescriptor, FramePlaneShape, FrameResidency,
-            FrameValidationError, Plane, PlaneLayout, PlaneMut, ResidencyTransition,
-            ResidencyTransitionReason, V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows,
-            VisibleRowsMut, plane_layout_from_dims, plane_layout_with_stride,
+            CompanionKind, ExternalBacking, FrameAllocation, FrameLease, FrameLeaseDescriptor,
+            FrameMeta, FrameMutability, FramePlaneDescriptor, FramePlaneShape, FrameResidency,
+            FrameValidationError, LibcameraFrameMeta, Plane, PlaneLayout, PlaneMut,
+            ResidencyTransition, ResidencyTransitionReason, V4l2FrameMeta, VisibleRow,
+            VisibleRowMut, VisibleRows, VisibleRowsMut, box_downscale_luma, plane_layout_from_dims,
+            plane_layout_with_stride,
         },
-        controls::{Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlValue},
+        controls::{
+            Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlRect, ControlValue,
+        },
         format::{
             BitDepth, Channel, ChromaSubsampling, ColorSpace, FormatInfo, FourCc, FrameLayoutInfo,
             FrameStorageKind, Interval, IntervalStepwise, MediaFormat, PackedChannelOrder,
@@ -41,5 +44,8 @@ pub mod prelude {
     pub use crate::buffer::{FrameBackingExport, FrameExportError, FrameFdPlane};
 
     #[cfg(target_os = "linux")]
-    pub use crate::buffer::{SharedBufferLease, SharedBufferPool, SharedBufferPoolStats};
+    pub use crate::buffer::{
+        SharedBufferLease, SharedBufferPool, SharedBufferPoolStats, dmabuf_begin_cpu_read,
+        dmabuf_end_cpu_read,
+    };
 }

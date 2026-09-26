@@ -32,6 +32,11 @@ pub(crate) fn to_v4l_value(value: &ControlValue) -> Result<v4l::control::Value, 
         ControlValue::Int(v) => Value::Integer(*v as i64),
         ControlValue::Uint(v) => Value::Integer(*v as i64),
         ControlValue::Float(v) => Value::Integer(v.round() as i64),
+        ControlValue::Rect(_) | ControlValue::Rects(_) => {
+            return Err(CaptureError::control_apply(
+                "rectangle controls are not supported by V4L2 controls",
+            ));
+        }
     };
     Ok(val)
 }

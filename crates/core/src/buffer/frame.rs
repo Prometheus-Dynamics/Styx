@@ -10,6 +10,10 @@ use super::pool::SharedBufferLease;
 use super::pool::{BufferLease, BufferPool};
 use crate::format::{ChromaSubsampling, FrameLayoutInfo, FrameStorageKind, MediaFormat};
 
+mod companion;
+mod luma;
+
+pub use companion::{CompanionKind, box_downscale_luma};
 #[cfg(unix)]
 mod shared_fd;
 #[cfg(unix)]
@@ -321,6 +325,7 @@ pub struct FrameLease {
     buffers: SmallVec<[BufferLease; 3]>,
     layouts: SmallVec<[PlaneLayout; 3]>,
     external: Option<Arc<dyn ExternalBacking>>,
+    companions: Option<Box<companion::Companions>>,
 }
 
 pub struct FrameLeaseParts {
@@ -377,6 +382,12 @@ pub enum FrameValidationError {
     PlaneRangeOverlap { left: usize, right: usize },
     #[error("alignment must be a non-zero power of two, got {0}")]
     InvalidAlignment(usize),
+    #[error("format {0} has no zero-copy luma plane")]
+    NoLumaPlane(crate::format::FourCc),
+    #[error("companion timestamp {companion} does not match frame timestamp {frame}")]
+    CompanionTimestampMismatch { frame: u64, companion: u64 },
+    #[error("companion frames cannot carry companions of their own")]
+    NestedCompanion,
 }
 
 impl FrameLease {
@@ -399,6 +410,7 @@ impl FrameLease {
             }],
             buffers: smallvec![buffer],
             external: None,
+            companions: None,
         }
     }
 
@@ -423,6 +435,7 @@ impl FrameLease {
             }],
             buffers: smallvec![buffer],
             external: None,
+            companions: None,
         }
     }
 
@@ -440,6 +453,7 @@ impl FrameLease {
             buffers,
             layouts,
             external: None,
+            companions: None,
         }
     }
 
@@ -457,6 +471,7 @@ impl FrameLease {
             buffers: SmallVec::new(),
             layouts,
             external: Some(backing),
+            companions: None,
         }
     }
 
@@ -1230,7 +1245,9 @@ impl FrameLease {
         let mut meta = self.meta.clone();
         meta.residency = Some(FrameResidency::HostOwned);
         meta.mutability = FrameMutability::Mutable;
-        FrameLease::multi_plane(meta, buffers, self.layouts.clone())
+        let mut owned = FrameLease::multi_plane(meta, buffers, self.layouts.clone());
+        owned.companions = self.materialize_companions();
+        owned
     }
 
     fn backing_span_len(&self) -> usize {
