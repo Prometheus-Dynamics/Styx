@@ -28,6 +28,7 @@ pub(crate) fn pixel_format_for_fourcc(fourcc: FourCc) -> Option<PixelFormat> {
         "RGBA" => Some(PixelFormat::RGBA),
         "BGR3" => Some(PixelFormat::BGR24),
         "BGRA" => Some(PixelFormat::BGRA),
+        "GREY" => Some(PixelFormat::GRAY8),
         _ => None,
     }
 }
@@ -37,6 +38,7 @@ pub(crate) fn bytes_per_pixel(fmt: PixelFormat) -> Option<usize> {
         PixelFormat::RGB24 | PixelFormat::BGR24 => Some(3),
         PixelFormat::RGBA | PixelFormat::BGRA => Some(4),
         PixelFormat::YUYV422 => Some(2),
+        PixelFormat::GRAY8 => Some(1),
         _ => None,
     }
 }
@@ -50,6 +52,7 @@ pub(crate) fn fourcc_for_pixel_format(fmt: PixelFormat) -> Option<FourCc> {
         PixelFormat::RGBA => Some(FourCc::RGBA),
         PixelFormat::BGR24 => Some(FourCc::BGR3),
         PixelFormat::BGRA => Some(FourCc::BGRA),
+        PixelFormat::GRAY8 => Some(FourCc::GREY),
         _ => None,
     }
 }
@@ -106,7 +109,7 @@ pub(crate) fn layouts_for_frame(
                 stride,
             });
         }
-        PixelFormat::RGB24 | PixelFormat::BGR24 => {
+        PixelFormat::GRAY8 | PixelFormat::RGB24 | PixelFormat::BGR24 => {
             let stride = frame.stride(0);
             layouts.push(PlaneLayout {
                 offset: 0,

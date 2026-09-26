@@ -29,9 +29,13 @@ use super::util::{
 };
 
 mod drm_prime;
+mod hw;
+mod luma;
 use drm_prime::{
     FfmpegDrmPrimeBacking, configure_drm_prime_decoder_context, drm_prime_descriptor_from_frame,
 };
+pub use hw::FfmpegHwDevice;
+pub use luma::FfmpegLumaDecoder;
 
 /// Generic FFmpeg video decoder to RGB24.
 pub struct FfmpegVideoDecoder {
@@ -43,6 +47,7 @@ pub struct FfmpegVideoDecoder {
     zero_copy: bool,
     tolerant: bool,
     strip_app: bool,
+    hw_device: Option<FfmpegHwDevice>,
 }
 
 struct DecoderState {
@@ -99,6 +104,7 @@ impl FfmpegVideoDecoder {
             zero_copy,
             tolerant,
             strip_app,
+            hw_device: None,
         })
     }
 
@@ -134,7 +140,26 @@ impl FfmpegVideoDecoder {
             zero_copy,
             tolerant,
             strip_app,
+            hw_device: None,
         })
+    }
+
+    /// Decode on a hardware device (VA-API, CUDA, QSV, DRM). Surfaces in device memory are
+    /// transferred to system memory before conversion; fails if this FFmpeg build or machine
+    /// cannot use `device` for this codec.
+    pub fn with_hw_device(mut self, device: FfmpegHwDevice) -> Result<Self, CodecError> {
+        if !device.is_available_for(self.codec) {
+            return Err(CodecError::Codec(format!(
+                "ffmpeg {device:?} decode unavailable for {}",
+                self.codec.name()
+            )));
+        }
+        self.hw_device = Some(device);
+        Ok(self)
+    }
+
+    pub fn hw_device(&self) -> Option<FfmpegHwDevice> {
+        self.hw_device
     }
 
     fn prepare_decoder_state(&self) -> Result<DecoderState, CodecError> {
@@ -145,7 +170,9 @@ impl FfmpegVideoDecoder {
                 count: threads,
             });
         }
-        if self.zero_copy {
+        if let Some(device) = self.hw_device {
+            unsafe { hw::configure_hw_device(&mut context, self.codec, device) }?;
+        } else if self.zero_copy {
             let _ = unsafe { configure_drm_prime_decoder_context(&mut context, self.codec) };
         }
         let decoder = context
@@ -338,6 +365,7 @@ impl FfmpegVideoDecoder {
         timestamp: u64,
         color: ColorSpace,
     ) -> Result<(), CodecError> {
+        let frame = hw::transfer_to_system(&frame)?.unwrap_or(frame);
         let width = frame.width();
         let height = frame.height();
         let ts = frame
@@ -426,6 +454,7 @@ impl FfmpegVideoDecoder {
         color: ColorSpace,
         pool: &SharedBufferPool,
     ) -> Result<(), CodecError> {
+        let frame = hw::transfer_to_system(&frame)?.unwrap_or(frame);
         let width = frame.width();
         let height = frame.height();
         let ts = frame
@@ -491,7 +520,10 @@ impl FfmpegVideoDecoder {
     ) -> Result<(), CodecError> {
         let descriptor = unsafe { drm_prime_descriptor_from_frame(&frame) }?;
         let actual_fourcc = descriptor.format;
-        if actual_fourcc != self.descriptor.output {
+        // GREY output takes a zero-copy view of the Y plane of NV12/NV16/YUV420 surfaces.
+        let luma_view = self.descriptor.output == FourCc::GREY
+            && actual_fourcc.layout_info().planes.subsampling.is_some();
+        if actual_fourcc != self.descriptor.output && !luma_view {
             return Err(CodecError::FormatMismatch {
                 expected: self.descriptor.output,
                 actual: actual_fourcc,
@@ -506,12 +538,8 @@ impl FfmpegVideoDecoder {
                 stride: plane.stride,
             })
             .collect();
-        let backing = Arc::new(FfmpegDrmPrimeBacking {
-            _frame: frame,
-            planes: descriptor.planes,
-            backing_bytes: descriptor.backing_bytes,
-        });
-        state.queued.push_back(FrameLease::from_external(
+        let backing = Arc::new(FfmpegDrmPrimeBacking::new(frame, descriptor));
+        let lease = FrameLease::from_external(
             FrameMeta::new(
                 MediaFormat::new(actual_fourcc, resolution, color),
                 timestamp,
@@ -519,7 +547,15 @@ impl FfmpegVideoDecoder {
             .with_residency(FrameResidency::Dmabuf),
             layouts,
             backing,
-        ));
+        );
+        let lease = if luma_view {
+            lease
+                .into_luma()
+                .map_err(|err| CodecError::Codec(err.to_string()))?
+        } else {
+            lease
+        };
+        state.queued.push_back(lease);
         Ok(())
     }
 

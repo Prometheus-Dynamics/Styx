@@ -52,17 +52,109 @@ pub(super) struct DrmPrimeDescriptor {
     pub(super) format: FourCc,
     pub(super) planes: Vec<DrmPrimePlane>,
     pub(super) backing_bytes: usize,
+    /// DRM format modifier; only linear (0) buffers can be read by the CPU.
+    pub(super) modifier: u64,
 }
 
 pub(super) struct FfmpegDrmPrimeBacking {
     pub(super) _frame: FfFrame,
     pub(super) planes: Vec<DrmPrimePlane>,
     pub(super) backing_bytes: usize,
+    pub(super) cpu_readable: bool,
+    pub(super) mapped: std::sync::OnceLock<Vec<MappedObject>>,
+}
+
+/// One mmap of a DRM object, covering every plane that lives in it.
+pub(super) struct MappedObject {
+    fd: i32,
+    ptr: *mut libc::c_void,
+    len: usize,
+}
+
+// SAFETY: mappings are read-only, created once through `OnceLock`, and unmapped in `Drop`.
+unsafe impl Send for FfmpegDrmPrimeBacking {}
+// SAFETY: see `Send`; plane data is only exposed as shared slices.
+unsafe impl Sync for FfmpegDrmPrimeBacking {}
+
+impl FfmpegDrmPrimeBacking {
+    pub(super) fn new(frame: FfFrame, descriptor: DrmPrimeDescriptor) -> Self {
+        Self {
+            _frame: frame,
+            planes: descriptor.planes,
+            backing_bytes: descriptor.backing_bytes,
+            // Tiled/compressed (AFBC, Intel Y-tile, NVIDIA block-linear) layouts are export-only.
+            cpu_readable: descriptor.modifier == 0,
+            mapped: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn mapped_objects(&self) -> &[MappedObject] {
+        self.mapped.get_or_init(|| {
+            let mut objects: Vec<MappedObject> = Vec::new();
+            for plane in &self.planes {
+                if objects.iter().any(|object| object.fd == plane.fd) {
+                    continue;
+                }
+                let len = self
+                    .planes
+                    .iter()
+                    .filter(|p| p.fd == plane.fd)
+                    .map(|p| p.offset + p.len)
+                    .max()
+                    .unwrap_or(0);
+                // SAFETY: read-only shared mapping of a dma-buf fd kept alive by `_frame`;
+                // failure is detected via MAP_FAILED.
+                let ptr = unsafe {
+                    libc::mmap(
+                        ptr::null_mut(),
+                        len,
+                        libc::PROT_READ,
+                        libc::MAP_SHARED,
+                        plane.fd,
+                        0,
+                    )
+                };
+                if ptr == libc::MAP_FAILED || len == 0 {
+                    continue;
+                }
+                let _ = styx_core::prelude::dmabuf_begin_cpu_read(plane.fd);
+                objects.push(MappedObject {
+                    fd: plane.fd,
+                    ptr,
+                    len,
+                });
+            }
+            objects
+        })
+    }
+}
+
+impl Drop for FfmpegDrmPrimeBacking {
+    fn drop(&mut self) {
+        if let Some(objects) = self.mapped.take() {
+            for object in objects {
+                let _ = styx_core::prelude::dmabuf_end_cpu_read(object.fd);
+                // SAFETY: `ptr`/`len` came from a successful mmap above and are unmapped once.
+                unsafe { libc::munmap(object.ptr, object.len) };
+            }
+        }
+    }
 }
 
 impl ExternalBacking for FfmpegDrmPrimeBacking {
-    fn plane_data(&self, _index: usize) -> Option<&[u8]> {
-        None
+    /// The whole DRM object holding plane `index`; plane layouts carry the offsets. `None` for
+    /// tiled or compressed buffers, which only support dma-buf export.
+    fn plane_data(&self, index: usize) -> Option<&[u8]> {
+        if !self.cpu_readable {
+            return None;
+        }
+        let fd = self.planes.get(index)?.fd;
+        let object = self
+            .mapped_objects()
+            .iter()
+            .find(|object| object.fd == fd)?;
+        // SAFETY: the mapping lives as long as `self` and spans `len` readable bytes.
+        Some(unsafe { std::slice::from_raw_parts(object.ptr.cast::<u8>(), object.len) })
     }
 
     fn backing_bytes(&self) -> Option<usize> {
@@ -99,6 +191,12 @@ pub(super) unsafe fn configure_drm_prime_decoder_context(
     codec: ffmpeg_next::Codec,
 ) -> Result<(), CodecError> {
     if !unsafe { codec_supports_drm_prime_device_ctx(codec) } {
+        // Decoders such as ffmpeg-rockchip's `*_rkmpp` produce DRM-PRIME internally without a
+        // device context; they only need `get_format` to pick it.
+        if unsafe { super::hw::internal_drm_prime(codec) } {
+            unsafe { (*context.as_mut_ptr()).get_format = Some(prefer_drm_prime_format) };
+            return Ok(());
+        }
         return Err(CodecError::Codec(
             "ffmpeg decoder does not advertise DRM PRIME hw output".into(),
         ));
@@ -247,10 +345,12 @@ fn drm_prime_descriptor_from_raw(
         .iter()
         .map(|object| object.size)
         .sum();
+    let modifier = desc.objects[layer.planes[0].object_index as usize].format_modifier;
     Ok(DrmPrimeDescriptor {
         format,
         planes,
         backing_bytes,
+        modifier,
     })
 }
 
