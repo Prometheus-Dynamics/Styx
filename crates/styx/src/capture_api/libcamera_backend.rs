@@ -639,6 +639,7 @@ pub(super) fn start_libcamera(
                                 buffer_memory,
                             }))
                             .with_capture_instant(std::time::Instant::now())
+                            .with_sensor_latency(TimestampClock::Boottime)
                             .with_transition(ResidencyTransition {
                                 from: FrameResidency::Dmabuf,
                                 to: FrameResidency::Dmabuf,

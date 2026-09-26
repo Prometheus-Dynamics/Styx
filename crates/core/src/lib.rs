@@ -12,12 +12,13 @@ pub mod prelude {
     pub use crate::{
         buffer::{
             BackendFrameMeta, BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats,
-            CompanionKind, ExternalBacking, FrameAllocation, FrameLease, FrameLeaseDescriptor,
-            FrameMeta, FrameMutability, FramePlaneDescriptor, FramePlaneShape, FrameResidency,
-            FrameValidationError, LibcameraFrameMeta, Plane, PlaneLayout, PlaneMut,
-            ResidencyTransition, ResidencyTransitionReason, V4l2FrameMeta, VisibleRow,
-            VisibleRowMut, VisibleRows, VisibleRowsMut, box_downscale_luma, box_downscale_luma_in,
-            plane_layout_from_dims, plane_layout_with_stride,
+            CompanionKind, ExternalBacking, FrameAllocation, FrameLatency, FrameLease,
+            FrameLeaseDescriptor, FrameMeta, FrameMutability, FramePlaneDescriptor,
+            FramePlaneShape, FrameResidency, FrameTiming, FrameValidationError, LibcameraFrameMeta,
+            Plane, PlaneLayout, PlaneMut, ResidencyTransition, ResidencyTransitionReason,
+            TimestampClock, V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
+            box_downscale_luma, box_downscale_luma_in, plane_layout_from_dims,
+            plane_layout_with_stride,
         },
         controls::{
             Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlRect, ControlValue,

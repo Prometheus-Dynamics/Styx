@@ -68,9 +68,9 @@ pub mod imports {
     pub mod framelease {
         pub use styx_core::prelude::{
             BackendFrameMeta, BufferLease, BufferPool, ExternalBacking, FourCc, FrameAllocation,
-            FrameLease, FrameLeaseDescriptor, FrameMeta, FramePlaneDescriptor, FrameResidency,
-            FrameValidationError, LibcameraFrameMeta, MediaFormat, PlaneLayout, Resolution,
-            V4l2FrameMeta, VisibleRow, VisibleRows,
+            FrameLatency, FrameLease, FrameLeaseDescriptor, FrameMeta, FramePlaneDescriptor,
+            FrameResidency, FrameTiming, FrameValidationError, LibcameraFrameMeta, MediaFormat,
+            PlaneLayout, Resolution, TimestampClock, V4l2FrameMeta, VisibleRow, VisibleRows,
         };
 
         #[cfg(unix)]

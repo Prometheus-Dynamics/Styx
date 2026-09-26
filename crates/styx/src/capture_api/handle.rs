@@ -506,6 +506,8 @@ impl CaptureHandle {
             latency_p95_ms: None,
             source_latency_p50_ms: None,
             source_latency_p95_ms: None,
+            sensor_latency_p50_ms: None,
+            sensor_latency_p95_ms: None,
             decode_p50_ms: None,
             decode_p95_ms: None,
             encode_p50_ms: None,

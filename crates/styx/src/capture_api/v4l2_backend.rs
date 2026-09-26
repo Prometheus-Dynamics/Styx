@@ -671,8 +671,16 @@ pub(super) fn start_v4l2(
                     let ts = std::time::Duration::from(meta.timestamp)
                         .as_nanos()
                         .min(u64::MAX as u128) as u64;
-                    let meta = FrameMeta::new(mode_clone.format, ts)
-                        .with_capture_instant(std::time::Instant::now())
+                    // V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC within V4L2_BUF_FLAG_TIMESTAMP_MASK.
+                    let monotonic = u32::from(meta.flags) & 0xE000 == 0x2000;
+                    let frame_meta = FrameMeta::new(mode_clone.format, ts)
+                        .with_capture_instant(std::time::Instant::now());
+                    let frame_meta = if monotonic {
+                        frame_meta.with_sensor_latency(TimestampClock::Monotonic)
+                    } else {
+                        frame_meta
+                    };
+                    let meta = frame_meta
                         .with_transition(ResidencyTransition {
                             from: if zero_copy_enabled {
                                 FrameResidency::HostExternal

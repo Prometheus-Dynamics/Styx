@@ -133,6 +133,97 @@ pub struct FrameMeta {
     pub residency: Option<FrameResidency>,
     pub mutability: FrameMutability,
     pub last_transition: Option<ResidencyTransition>,
+    /// Where this frame's time went: capture latency and per-stage processing durations.
+    pub timing: FrameTiming,
+}
+
+/// Clock a backend's frame timestamps are taken from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimestampClock {
+    /// `CLOCK_MONOTONIC` (V4L2 buffers flagged `V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC`).
+    Monotonic,
+    /// `CLOCK_BOOTTIME` (libcamera sensor timestamps).
+    Boottime,
+}
+
+impl TimestampClock {
+    /// Time elapsed since `timestamp_ns` on this clock, or `None` if the clock is unavailable
+    /// or the timestamp lies in the future.
+    pub fn elapsed_since(self, timestamp_ns: u64) -> Option<std::time::Duration> {
+        #[cfg(target_os = "linux")]
+        {
+            let clock = match self {
+                Self::Monotonic => libc::CLOCK_MONOTONIC,
+                Self::Boottime => libc::CLOCK_BOOTTIME,
+            };
+            let mut now = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: `now` is valid writable storage for clock_gettime.
+            if unsafe { libc::clock_gettime(clock, &mut now) } != 0 {
+                return None;
+            }
+            let now_ns = (now.tv_sec as u64)
+                .checked_mul(1_000_000_000)?
+                .checked_add(now.tv_nsec as u64)?;
+            now_ns
+                .checked_sub(timestamp_ns)
+                .map(std::time::Duration::from_nanos)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = timestamp_ns;
+            None
+        }
+    }
+}
+
+/// Per-frame latency breakdown. Backends fill `sensor_to_capture`; pipelines fill the stage
+/// durations. Stages a frame did not pass through stay `None`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameTiming {
+    /// Sensor timestamp (typically start of exposure or of readout) → frame handed to Styx.
+    pub sensor_to_capture: Option<std::time::Duration>,
+    pub decode: Option<std::time::Duration>,
+    pub transform: Option<std::time::Duration>,
+    pub hook: Option<std::time::Duration>,
+    pub encode: Option<std::time::Duration>,
+}
+
+impl FrameTiming {
+    /// Sum of the recorded processing stages.
+    pub fn processing(&self) -> std::time::Duration {
+        [self.decode, self.transform, self.hook, self.encode]
+            .into_iter()
+            .flatten()
+            .sum()
+    }
+
+    /// Keep `self`'s values and fill gaps from `earlier` (e.g. timing from before a decoder
+    /// replaced the frame's metadata).
+    pub fn merged_with(self, earlier: FrameTiming) -> FrameTiming {
+        FrameTiming {
+            sensor_to_capture: self.sensor_to_capture.or(earlier.sensor_to_capture),
+            decode: self.decode.or(earlier.decode),
+            transform: self.transform.or(earlier.transform),
+            hook: self.hook.or(earlier.hook),
+            encode: self.encode.or(earlier.encode),
+        }
+    }
+}
+
+/// Latency summary for a frame at the moment [`FrameMeta::latency`] is called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameLatency {
+    /// Sensor → capture backend delivery.
+    pub sensor_to_capture: Option<std::time::Duration>,
+    /// Time since the backend delivered the frame (queues, processing, consumer).
+    pub since_capture: Option<std::time::Duration>,
+    /// Recorded pipeline processing time (decode + transform + hook + encode).
+    pub processing: std::time::Duration,
+    /// Sensor → now, when both parts are known ("glass to app").
+    pub total: Option<std::time::Duration>,
 }
 
 impl FrameMeta {
@@ -145,6 +236,7 @@ impl FrameMeta {
             residency: None,
             mutability: FrameMutability::Mutable,
             last_transition: None,
+            timing: FrameTiming::default(),
         }
     }
 
@@ -181,6 +273,40 @@ impl FrameMeta {
         self.capture_instant
     }
 
+    /// Record how long ago the sensor captured this frame, using `clock` for `timestamp`.
+    pub fn with_sensor_latency(mut self, clock: TimestampClock) -> Self {
+        self.timing.sensor_to_capture = clock.elapsed_since(self.timestamp);
+        self
+    }
+
+    /// Latency summary as of now.
+    pub fn latency(&self) -> FrameLatency {
+        let since_capture = self.capture_instant.map(|at| at.elapsed());
+        FrameLatency {
+            sensor_to_capture: self.timing.sensor_to_capture,
+            since_capture,
+            processing: self.timing.processing(),
+            total: self
+                .timing
+                .sensor_to_capture
+                .zip(since_capture)
+                .map(|(a, b)| a + b),
+        }
+    }
+
+    /// Carry capture context (backend metadata, capture instant, timing) from the frame a
+    /// stage consumed into the metadata of the frame it produced, without overwriting values
+    /// the stage set itself.
+    pub fn inherit_capture_context(&mut self, input: &FrameMeta) {
+        if self.backend.is_none() {
+            self.backend = input.backend.clone();
+        }
+        if self.capture_instant.is_none() {
+            self.capture_instant = input.capture_instant;
+        }
+        self.timing = self.timing.merged_with(input.timing);
+    }
+
     pub fn with_residency(mut self, residency: FrameResidency) -> Self {
         self.residency = Some(residency);
         self
@@ -206,5 +332,50 @@ impl FrameMeta {
 
     pub fn last_transition(&self) -> Option<ResidencyTransition> {
         self.last_transition
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+    use crate::format::{ColorSpace, FourCc, MediaFormat, Resolution};
+    use std::time::Duration;
+
+    fn meta() -> FrameMeta {
+        let res = Resolution::new(2, 2).unwrap();
+        FrameMeta::new(MediaFormat::new(FourCc::GREY, res, ColorSpace::Unknown), 0)
+    }
+
+    #[test]
+    fn inherit_keeps_stage_values_and_fills_gaps() {
+        let mut input = meta().with_capture_instant(Instant::now());
+        input.timing.sensor_to_capture = Some(Duration::from_millis(9));
+        input.timing.decode = Some(Duration::from_millis(1));
+        let mut output = meta();
+        output.timing.decode = Some(Duration::from_millis(2));
+        output.inherit_capture_context(&input);
+        assert_eq!(
+            output.timing.sensor_to_capture,
+            Some(Duration::from_millis(9))
+        );
+        assert_eq!(output.timing.decode, Some(Duration::from_millis(2)));
+        assert!(output.capture_instant.is_some());
+        let latency = output.latency();
+        assert_eq!(latency.processing, Duration::from_millis(2));
+        assert!(latency.total.unwrap() >= Duration::from_millis(9));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn monotonic_elapsed_is_measured() {
+        let mut now = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
+        let ts = now.tv_sec as u64 * 1_000_000_000 + now.tv_nsec as u64;
+        let elapsed = TimestampClock::Monotonic.elapsed_since(ts).unwrap();
+        assert!(elapsed < Duration::from_secs(1));
+        assert!(TimestampClock::Monotonic.elapsed_since(u64::MAX).is_none());
     }
 }

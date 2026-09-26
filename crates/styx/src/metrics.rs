@@ -97,6 +97,9 @@ pub struct HealthReport {
     pub latency_p95_ms: Option<f64>,
     pub source_latency_p50_ms: Option<f64>,
     pub source_latency_p95_ms: Option<f64>,
+    /// Sensor timestamp → capture backend delivery (ISP/decode-in-driver/transport latency).
+    pub sensor_latency_p50_ms: Option<f64>,
+    pub sensor_latency_p95_ms: Option<f64>,
     pub decode_p50_ms: Option<f64>,
     pub decode_p95_ms: Option<f64>,
     pub encode_p50_ms: Option<f64>,
@@ -589,6 +592,8 @@ pub struct PipelineMetrics {
     pub end_to_end: StageMetrics,
     /// Source-to-sink latency using capture-time instants attached by backends.
     pub source_to_sink: StageMetrics,
+    /// Sensor timestamp → capture delivery, for frames whose backend reports it.
+    pub sensor_to_capture: StageMetrics,
     /// Copy/materialization counters observed while the pipeline is processing frames.
     pub copies: CopyMetrics,
     /// Residency transitions observed while the pipeline is processing frames.
