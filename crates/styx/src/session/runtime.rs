@@ -13,6 +13,7 @@ use crate::metrics::{PipelineStage, PipelineStageError};
 use crate::service::{PipelineWorkerEvent, PipelineWorkerStopReason, SharedStyxServiceRuntime};
 
 mod codec_lookup;
+mod companions;
 #[cfg(feature = "graph-pipeline")]
 mod graph;
 mod iter;
@@ -23,6 +24,7 @@ mod worker;
 
 use crate::frame_sizing::{SHARED_CODEC_POOL_MIN, SHARED_CODEC_POOL_SPARE};
 pub(super) use codec_lookup::lookup_codec;
+use companions::carry_companions;
 #[cfg(feature = "graph-pipeline")]
 pub(super) use graph::GraphMediaRuntime;
 #[cfg(feature = "graph-pipeline")]
@@ -431,6 +433,7 @@ impl MediaPipeline {
             }
             let span = tracing::trace_span!("decode_stage");
             let _enter = span.enter();
+            let carried = cur.take_companions();
             let t = Instant::now();
             #[cfg(target_os = "linux")]
             let decoded = if self.shared_decode_enabled {
@@ -459,7 +462,7 @@ impl MediaPipeline {
             match decoded {
                 Ok(f) => {
                     self.metrics.decode.record(t.elapsed());
-                    cur = f;
+                    cur = carry_companions(f, carried);
                     if !stage_accepts_residency(capabilities.possible_outputs, cur.residency()) {
                         tracing::trace!(stage = "decode", output_residency = %cur.residency(), "decoder produced unexpected output residency");
                     }
@@ -509,8 +512,13 @@ impl MediaPipeline {
                 let span = tracing::trace_span!("transform_stage", kind = "packed_frame_transform");
                 let _enter = span.enter();
                 let stage_bytes = cur.payload_bytes();
+                let companions = cur.take_companions();
                 match transform_packed_frame(&cur, self.frame_transform) {
-                    Ok(mut transformed) => {
+                    Ok(transformed) => {
+                        let mut transformed = carry_companions(
+                            transformed,
+                            companions::transform_companions(companions, self.frame_transform),
+                        );
                         self.metrics
                             .copies
                             .record_copy(stage_bytes.max(transformed.payload_bytes()));
@@ -526,6 +534,7 @@ impl MediaPipeline {
                     }
                     Err(err) => {
                         tracing::trace!(error = %err, "packed frame transform skipped");
+                        cur = carry_companions(cur, companions);
                     }
                 }
             }
