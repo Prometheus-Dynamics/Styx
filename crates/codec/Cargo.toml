@@ -34,6 +34,14 @@ parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 utoipa = { workspace = true, optional = true }
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "mjpeg_luma"
+harness = false
+required-features = ["codec-turbojpeg"]
+
 [features]
 default = []
 dynamic-image = ["dep:image", "image"]

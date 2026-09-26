@@ -4,3 +4,4 @@ rotate90_720p 10.00
 mirror_720p 10.00
 file_replay 75.00
 encode_mjpeg_720p 600.00
+decode_luma_pyramid_c270_720p 10.00

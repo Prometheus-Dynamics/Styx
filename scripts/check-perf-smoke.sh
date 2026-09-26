@@ -48,6 +48,10 @@ run_and_record \
     cargo run --release -p "$package" --no-default-features --features codec-jpeg-decoder --bin perf_smoke --quiet
 
 run_and_record \
+    "MJPEG luma perf smoke (C270 fixture)" \
+    cargo run --release -p "$package" --no-default-features --features codec-turbojpeg --bin luma_perf --quiet
+
+run_and_record \
     "file replay perf smoke" \
     cargo run --release -p "$package" --no-default-features --features file-backend --bin file_replay_perf --quiet
 

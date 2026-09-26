@@ -117,6 +117,11 @@ path = "04_performance/perf_smoke.rs"
 required-features = ["codec-jpeg-decoder"]
 
 [[bin]]
+name = "luma_perf"
+path = "04_performance/luma_perf.rs"
+required-features = ["codec-turbojpeg"]
+
+[[bin]]
 name = "file_replay_perf"
 path = "04_performance/file_replay_perf.rs"
 required-features = ["file-backend"]
