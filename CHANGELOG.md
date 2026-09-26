@@ -8,6 +8,20 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added frame planning: `FrameRequirements` (styx-core) describes what a consumer needs (format,
+  stride alignment, pyramid, ROI, resolution/fps bounds, priority, overrides) and
+  `styx::planner` picks the backend, mode and route, explains the plan, and runs it with a live
+  ROI handle. See `docs/frame-planning.md`.
+- Added zero-copy ROI views (`FrameLease::crop_view`, `FrameMeta::crop`), per-frame latency
+  breakdowns (`FrameMeta::latency`, `FrameTiming`), pooled pyramid buffers
+  (`with_box_pyramid_in`), `CodecRegistryHandle::lookup_for_output[_where]` and
+  `MediaPipelineBuilder::decoder_for_output`, and whole-frame byte transfer
+  (`FrameLease::from_visible_bytes`, `to_visible_vec`, `MediaFormat::with_default_color`).
+- Pyramid companions now survive pipeline decode and rotate/mirror stages.
+- libcamera buffer mappings are kept for the capture session (0.38 → 0.15 ms per Y-plane read on
+  a CM5), and sensor latency uses libcamera's `SensorTimestamp`.
+- Added MJPEG luma criterion benchmarks and a perf-smoke metric on real Logitech C270 frames.
+
 - Added cached dma-heap capture buffers for libcamera (`LibcameraBufferMemory`, default `Auto`:
   on for Raspberry Pi cameras, falling back to libcamera's allocator). libcamera's own PiSP
   buffers are mapped uncached; on a CM5 this makes CPU reads of a 1280x800 Y plane 1.7x faster
