@@ -69,6 +69,27 @@ pub enum LibcameraProcessedStreamRole {
     StillCapture,
 }
 
+/// Where libcamera capture buffers are allocated.
+///
+/// CPU consumers read libcamera frames in place. On Raspberry Pi the buffers libcamera allocates
+/// itself are mapped uncached, which makes scalar per-pixel reads roughly 15x slower than normal
+/// memory. Cached dma-heap buffers avoid that; Styx brackets CPU reads with `DMA_BUF_IOCTL_SYNC`
+/// so they stay coherent with the ISP.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+pub enum LibcameraBufferMemory {
+    /// Cached dma-heap buffers on Raspberry Pi cameras, libcamera's allocator elsewhere.
+    /// Falls back to libcamera's allocator if no dma-heap is usable.
+    #[default]
+    Auto,
+    /// Always use libcamera's `FrameBufferAllocator`.
+    LibcameraAllocator,
+    /// Import buffers from a cached dma-heap (`vidbuf_cached`, `linux,cma`, then `system`),
+    /// falling back to libcamera's allocator if none is usable.
+    DmaHeap,
+}
+
 /// Tunables for capture queues and buffer pools.
 ///
 /// Prefer `StyxConfig` builder methods for application configuration. If direct
@@ -208,6 +229,13 @@ pub struct LibcameraConfig {
     pub prefault_request_pools: bool,
     /// Preferred libcamera stream role for processed, non-raw/non-encoded requests.
     pub processed_stream_role: LibcameraProcessedStreamRole,
+    /// Where capture buffers are allocated.
+    pub buffer_memory: LibcameraBufferMemory,
+    /// Attach a hardware-scaled pyramid companion at `2^-pyramid_level` resolution (1 = ½,
+    /// 2 = ¼, 3 = ⅛) produced by the ISP's second output from the same request, so it shares
+    /// the primary frame's timestamp. `0` disables it. Processed YUV/GREY formats only; uses the
+    /// same second output as TDN, so the two cannot be combined.
+    pub pyramid_level: u8,
 }
 
 impl Default for LibcameraConfig {
@@ -224,6 +252,8 @@ impl Default for LibcameraConfig {
             stop_when_idle: DEFAULT_LIBCAMERA_STOP_WHEN_IDLE,
             prefault_request_pools: DEFAULT_LIBCAMERA_PREFAULT_REQUEST_POOLS,
             processed_stream_role: LibcameraProcessedStreamRole::default(),
+            buffer_memory: LibcameraBufferMemory::default(),
+            pyramid_level: 0,
         }
     }
 }
@@ -242,6 +272,8 @@ impl LibcameraConfig {
             stop_when_idle: self.stop_when_idle,
             prefault_request_pools: self.prefault_request_pools,
             processed_stream_role: self.processed_stream_role,
+            buffer_memory: self.buffer_memory,
+            pyramid_level: self.pyramid_level.min(3),
         }
     }
 }
@@ -524,6 +556,20 @@ impl StyxConfig {
     /// Override the processed stream role for libcamera display-like formats.
     pub fn libcamera_processed_stream_role(mut self, role: LibcameraProcessedStreamRole) -> Self {
         self.backends.libcamera.processed_stream_role = role;
+        self
+    }
+
+    /// Override where libcamera capture buffers are allocated.
+    pub fn libcamera_buffer_memory(mut self, memory: LibcameraBufferMemory) -> Self {
+        self.backends.libcamera.buffer_memory = memory;
+        self
+    }
+
+    /// Request an ISP-produced pyramid companion (1 = ½, 2 = ¼, 3 = ⅛; 0 = off).
+    ///
+    /// Read it with `FrameLease::pyramid_level(level)`.
+    pub fn libcamera_pyramid_level(mut self, level: u8) -> Self {
+        self.backends.libcamera.pyramid_level = level;
         self
     }
 

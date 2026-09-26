@@ -1,5 +1,4 @@
 use libcamera::framebuffer::AsFrameBuffer;
-use libcamera::framebuffer_allocator::FrameBuffer;
 use smallvec::SmallVec;
 use styx_core::prelude::*;
 
@@ -9,12 +8,13 @@ use crate::capture_api::CaptureError;
 
 pub(super) struct CompletedFrameParts {
     pub timestamp: u64,
+    pub sequence: u32,
     pub layouts: SmallVec<[PlaneLayout; 3]>,
     pub plane_views: SmallVec<[BackingPlaneView; 3]>,
 }
 
 pub(super) fn completed_frame_parts(
-    framebuffer: &FrameBuffer,
+    framebuffer: &dyn AsFrameBuffer,
     wire_format: MediaFormat,
     active_stride: usize,
 ) -> Result<CompletedFrameParts, CaptureError> {
@@ -22,6 +22,7 @@ pub(super) fn completed_frame_parts(
         .metadata()
         .ok_or_else(|| CaptureError::Backend("libcamera framebuffer metadata missing".into()))?;
     let timestamp = meta.timestamp();
+    let sequence = meta.sequence();
     let planes_meta = meta.planes();
     let framebuffer_planes = framebuffer.planes();
     let height = wire_format.resolution.height.get() as usize;
@@ -137,6 +138,7 @@ pub(super) fn completed_frame_parts(
 
     Ok(CompletedFrameParts {
         timestamp,
+        sequence,
         layouts,
         plane_views,
     })

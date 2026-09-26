@@ -2,6 +2,8 @@ mod backing;
 mod controls;
 mod emulation;
 mod frame;
+mod heap;
+mod streams;
 mod util;
 
 use std::collections::{HashMap, HashSet};
@@ -10,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use libcamera::framebuffer_allocator::FrameBuffer;
+use libcamera::framebuffer::AsFrameBuffer;
 use libcamera::request::ReuseFlag;
 use parking_lot::Mutex;
 use styx_core::controls::ControlValue;
@@ -31,6 +33,8 @@ pub use self::controls::{ControlMessage, PendingControlState};
 use self::controls::{build_libcamera_controls, queue_with_controls};
 use self::emulation::Emulation;
 use self::frame::completed_frame_parts;
+use self::heap::{CaptureBuffer, request_buffer};
+use self::streams::{SecondStream, attach_companion, configure_streams, framebuffer_refs};
 use self::util::{
     classify_libcamera_backend_message, classify_libcamera_control_apply_kind,
     control_value_enabled, from_lc_value, map_pixel_format_to_fourcc,
@@ -183,16 +187,6 @@ pub(super) fn start_libcamera(
                 libcamera_config.processed_stream_role,
             );
             let enable_tdn_output = enable_tdn_output_for_thread;
-            let mut roles = vec![role];
-            if enable_tdn_output {
-                roles.push(libcamera::stream::StreamRole::VideoRecording);
-            }
-            let mut cfgs = cam
-                .generate_configuration(&roles)
-                .ok_or(CaptureError::LibcameraGenerateConfigurationFailed)?;
-            if enable_tdn_output && cfgs.get(1).is_none() {
-                return Err(CaptureError::LibcameraTdnOutputUnavailable);
-            }
             let requested_code = mode_for_thread.format.code;
             if util::is_rpi_pisp_sensor_i2c(&id_for_thread)
                 && pisp_disallowed_fourcc(requested_code)
@@ -206,62 +200,83 @@ pub(super) fn start_libcamera(
             let is_rgb24_request =
                 matches!(&libcamera_code.to_u32().to_le_bytes(), b"RGB3" | b"BGR3");
             let emulate_rgb24 = is_rgb24_request && util::is_rpi_pisp_sensor_i2c(&id_for_thread);
+            let depth_u32 = u32::try_from(queue_depth).unwrap_or(4).clamp(1, 12);
+            let size = Size::new(
+                mode_for_thread.format.resolution.width.get(),
+                mode_for_thread.format.resolution.height.get(),
+            );
+            // Pyramid companions need a processed format whose Y plane is directly usable.
+            let pyramid_level = libcamera_config.pyramid_level.min(3);
+            let mut second = if enable_tdn_output {
+                SecondStream::Tdn
+            } else if pyramid_level > 0 && !emulate_rgb24 {
+                SecondStream::Pyramid(pyramid_level)
+            } else {
+                SecondStream::None
+            };
+            if pyramid_level > 0 && second != SecondStream::Pyramid(pyramid_level) {
+                tracing::warn!(
+                    backend = "libcamera",
+                    pyramid_level,
+                    tdn_enabled = enable_tdn_output,
+                    "libcamera pyramid companion disabled: second output unavailable for this request"
+                );
+            }
+            let build = |role, code: FourCc, second| {
+                configure_streams(&cam, role, second, code, size, depth_u32)
+            };
 
+            let desired_format = if emulate_rgb24 {
+                FourCc::NV12
+            } else {
+                libcamera_code
+            };
+            let (mut cfgs, mut status) = build(role, desired_format, second)?;
+            if matches!(status, CameraConfigurationStatus::Invalid)
+                && matches!(second, SecondStream::Pyramid(_))
             {
-                let depth_u32 = u32::try_from(queue_depth).unwrap_or(4).clamp(1, 12);
-                let mut cfg = cfgs
-                    .get_mut(0)
-                    .ok_or_else(|| CaptureError::Backend("missing stream config".into()))?;
-                let desired_format = if emulate_rgb24 {
-                    FourCc::NV12
+                tracing::warn!(
+                    backend = "libcamera",
+                    "libcamera pyramid companion rejected by the pipeline; continuing without it"
+                );
+                second = SecondStream::None;
+                (cfgs, status) = build(role, desired_format, second)?;
+            }
+            if matches!(status, CameraConfigurationStatus::Invalid) && emulate_rgb24 {
+                (cfgs, status) = build(role, FourCc::YUYV, second)?;
+            }
+            // GREY/R8 on a colour sensor: libcamera rewrites the request to raw Bayer. Capture
+            // processed YUV420 instead and expose its Y plane as a zero-copy GREY frame.
+            let wants_luma = matches!(requested_code, FourCc::GREY | FourCc::R8);
+            let mut luma_view = false;
+            if wants_luma
+                && (matches!(status, CameraConfigurationStatus::Invalid)
+                    || cfgs
+                        .get(0)
+                        .map(|cfg| map_pixel_format_to_fourcc(cfg.get_pixel_format()))
+                        != Some(requested_code))
+            {
+                let processed = util::processed_stream_role(libcamera_config.processed_stream_role);
+                let luma_second = if pyramid_level > 0 && !enable_tdn_output {
+                    SecondStream::Pyramid(pyramid_level)
                 } else {
-                    libcamera_code
+                    second
                 };
-                cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
-                    desired_format.to_u32(),
-                    0,
-                ));
-                cfg.set_size(Size::new(
-                    mode_for_thread.format.resolution.width.get(),
-                    mode_for_thread.format.resolution.height.get(),
-                ));
-                cfg.set_buffer_count(depth_u32);
-
-                if enable_tdn_output && let Some(mut tdn_cfg) = cfgs.get_mut(1) {
-                    tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
-                        desired_format.to_u32(),
-                        0,
-                    ));
-                    tdn_cfg.set_size(Size::new(
-                        mode_for_thread.format.resolution.width.get(),
-                        mode_for_thread.format.resolution.height.get(),
-                    ));
-                    tdn_cfg.set_buffer_count(depth_u32);
+                let (mut luma_cfgs, mut luma_status) = build(processed, FourCc::YU12, luma_second)?;
+                if matches!(luma_status, CameraConfigurationStatus::Invalid)
+                    && luma_second != second
+                {
+                    (luma_cfgs, luma_status) = build(processed, FourCc::YU12, second)?;
+                } else {
+                    second = luma_second;
+                }
+                if !matches!(luma_status, CameraConfigurationStatus::Invalid) {
+                    (cfgs, status) = (luma_cfgs, luma_status);
+                    luma_view = true;
                 }
             }
-            if matches!(cfgs.validate(), CameraConfigurationStatus::Invalid) {
-                if emulate_rgb24 {
-                    {
-                        let mut cfg = cfgs
-                            .get_mut(0)
-                            .ok_or_else(|| CaptureError::Backend("missing stream config".into()))?;
-                        cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
-                            FourCc::YUYV.to_u32(),
-                            0,
-                        ));
-                    }
-                    if enable_tdn_output && let Some(mut tdn_cfg) = cfgs.get_mut(1) {
-                        tdn_cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(
-                            FourCc::YUYV.to_u32(),
-                            0,
-                        ));
-                    }
-                    if matches!(cfgs.validate(), CameraConfigurationStatus::Invalid) {
-                        return Err(CaptureError::Backend("config invalid".into()));
-                    }
-                } else {
-                    return Err(CaptureError::Backend("config invalid".into()));
-                }
+            if matches!(status, CameraConfigurationStatus::Invalid) {
+                return Err(CaptureError::Backend("config invalid".into()));
             }
             cam.configure(&mut cfgs)
                 .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
@@ -286,7 +301,7 @@ pub(super) fn start_libcamera(
             let validated_code = map_pixel_format_to_fourcc(validated_pix);
             let wire_format =
                 MediaFormat::new(validated_code, validated_res, mode_for_thread.format.color);
-            let output_format = if emulate_rgb24 {
+            let output_format = if emulate_rgb24 || luma_view {
                 MediaFormat::new(requested_code, validated_res, mode_for_thread.format.color)
             } else {
                 wire_format
@@ -310,16 +325,29 @@ pub(super) fn start_libcamera(
             let stream = cfg
                 .stream()
                 .ok_or_else(|| CaptureError::Backend("missing stream".into()))?;
-            let tdn_stream = if enable_tdn_output {
+            let has_second = second != SecondStream::None;
+            let tdn_stream = if has_second {
                 cfgs.get(1).and_then(|cfg| cfg.stream())
             } else {
                 None
             };
             let cfg_stride = cfg.get_stride() as usize;
-            let tdn_stride = if enable_tdn_output {
+            let tdn_stride = if has_second {
                 cfgs.get(1).map(|cfg| cfg.get_stride() as usize)
             } else {
                 None
+            };
+            let companion = match second {
+                SecondStream::Pyramid(level) => cfgs.get(1).and_then(|cfg| {
+                    let size = cfg.get_size();
+                    let res = Resolution::new(size.width, size.height)?;
+                    let code = map_pixel_format_to_fourcc(cfg.get_pixel_format());
+                    Some((
+                        level,
+                        MediaFormat::new(code, res, mode_for_thread.format.color),
+                    ))
+                }),
+                _ => None,
             };
             tracing::debug!(
                 backend = "libcamera",
@@ -331,44 +359,53 @@ pub(super) fn start_libcamera(
                 height = validated_res.height.get(),
                 stride_bytes = cfg_stride,
                 tdn_enabled = enable_tdn_output,
+                luma_view,
+                pyramid_companion = ?companion,
                 tdn_stride_bytes = tdn_stride,
                 stream_role = ?libcamera_config.processed_stream_role,
                 "libcamera negotiated capture format"
             );
+            let heap_path = heap::select_heap(
+                libcamera_config.buffer_memory,
+                util::is_rpi_pisp_sensor_i2c(&id_for_thread),
+            );
             let mut alloc = libcamera::framebuffer_allocator::FrameBufferAllocator::new(&cam);
-            let bufs = alloc
-                .alloc(&stream)
+            let primary = heap::allocate_stream_buffers(&mut alloc, &stream, heap_path.as_deref())
                 .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
-            let tdn_bufs = if let Some(tdn_stream) = &tdn_stream {
+            let tdn = if let Some(tdn_stream) = &tdn_stream {
                 Some(
-                    alloc
-                        .alloc(tdn_stream)
+                    heap::allocate_stream_buffers(&mut alloc, tdn_stream, heap_path.as_deref())
                         .map_err(|e| classify_libcamera_backend_message(e.to_string()))?,
                 )
             } else {
                 None
             };
-            let primary_buffers: Vec<FrameBuffer> = bufs.into_iter().collect();
-            let tdn_buffers: Option<Vec<FrameBuffer>> =
-                tdn_bufs.map(|bufs| bufs.into_iter().collect());
+            let buffer_memory: &'static str = if primary.memory.starts_with("dma-heap") {
+                "dma-heap"
+            } else {
+                "libcamera-allocator"
+            };
             tracing::debug!(
                 backend = "libcamera",
                 camera_id = %id_for_thread,
-                buffer_count = primary_buffers.len(),
-                tdn_buffer_count = tdn_buffers.as_ref().map_or(0, Vec::len),
+                buffer_count = primary.buffers.len(),
+                buffer_memory = %primary.memory,
+                tdn_buffer_count = tdn.as_ref().map_or(0, |tdn| tdn.buffers.len()),
                 "libcamera allocated capture buffers"
             );
+            let primary_buffers: Vec<CaptureBuffer> = primary.buffers;
+            let tdn_buffers: Option<Vec<CaptureBuffer>> = tdn.map(|tdn| tdn.buffers);
             let prefault_request_pools =
                 util::prefault_request_pools_enabled(libcamera_config.prefault_request_pools);
             let _primary_request_pool_lease = RequestPoolBackingLease::new(
                 request_pool_tracker_for_thread,
-                &primary_buffers,
+                &framebuffer_refs(&primary_buffers),
                 prefault_request_pools,
             );
             let _tdn_request_pool_lease = tdn_buffers.as_ref().map(|buffers| {
                 RequestPoolBackingLease::new(
                     tdn_request_pool_tracker_for_thread,
-                    buffers,
+                    &framebuffer_refs(buffers),
                     prefault_request_pools,
                 )
             });
@@ -389,9 +426,10 @@ pub(super) fn start_libcamera(
                     let mut req = cam
                         .create_request(Some(i as u64))
                         .ok_or_else(|| CaptureError::Backend("request create failed".into()))?;
-                    req.add_buffer(&stream, buf)
+                    buf.add_to(&mut req, &stream)
                         .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
-                    req.add_buffer(tdn_stream, tdn_buf)
+                    tdn_buf
+                        .add_to(&mut req, tdn_stream)
                         .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
                     requests.push(req);
                 }
@@ -400,7 +438,7 @@ pub(super) fn start_libcamera(
                     let mut req = cam
                         .create_request(Some(i as u64))
                         .ok_or_else(|| CaptureError::Backend("request create failed".into()))?;
-                    req.add_buffer(&stream, buf)
+                    buf.add_to(&mut req, &stream)
                         .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
                     requests.push(req);
                 }
@@ -549,17 +587,19 @@ pub(super) fn start_libcamera(
                             readback_state.insert(ControlId(id), val);
                         }
 
-                        let (framebuffer, active_stride): (&FrameBuffer, usize) =
-                            if let Some(tdn_stream) = &tdn_stream {
-                                match req.buffer(tdn_stream) {
+                        let (framebuffer, active_stride): (&dyn AsFrameBuffer, usize) =
+                            if let Some(tdn_stream) =
+                                tdn_stream.as_ref().filter(|_| companion.is_none())
+                            {
+                                match request_buffer(&req, tdn_stream) {
                                     Some(fb) => (fb, tdn_stride.unwrap_or(cfg_stride)),
-                                    None => match req.buffer(&stream) {
+                                    None => match request_buffer(&req, &stream) {
                                         Some(fb) => (fb, cfg_stride),
                                         None => break,
                                     },
                                 }
                             } else {
-                                match req.buffer(&stream) {
+                                match request_buffer(&req, &stream) {
                                     Some(fb) => (fb, cfg_stride),
                                     None => break,
                                 }
@@ -572,6 +612,18 @@ pub(super) fn start_libcamera(
                                     break;
                                 }
                             };
+                        // The ISP's second output from the same request: same exposure/timestamp.
+                        let companion_parts = companion.and_then(|(level, format)| {
+                            let fb = request_buffer(&req, tdn_stream.as_ref()?)?;
+                            let stride = tdn_stride.unwrap_or(0);
+                            match completed_frame_parts(fb, format, stride) {
+                                Ok(parts) => Some((level, format, parts)),
+                                Err(err) => {
+                                    tracing::debug!(backend = "libcamera", error = %err, "pyramid companion unavailable");
+                                    None
+                                }
+                            }
+                        });
                         let backing = LibcameraBacking::new(
                             req,
                             ret_tx.clone(),
@@ -582,6 +634,10 @@ pub(super) fn start_libcamera(
                             mapped_lease_tracker_for_thread.clone(),
                         );
                         let meta = FrameMeta::new(wire_format, frame_parts.timestamp)
+                            .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
+                                sequence: frame_parts.sequence,
+                                buffer_memory,
+                            }))
                             .with_capture_instant(std::time::Instant::now())
                             .with_transition(ResidencyTransition {
                                 from: FrameResidency::Dmabuf,
@@ -589,8 +645,36 @@ pub(super) fn start_libcamera(
                                 reason: ResidencyTransitionReason::Capture,
                                 copied: false,
                             });
+                        let companion_frame = companion_parts.map(|(level, format, parts)| {
+                            let meta = FrameMeta::new(format, parts.timestamp).with_backend(
+                                BackendFrameMeta::Libcamera(LibcameraFrameMeta {
+                                    sequence: parts.sequence,
+                                    buffer_memory,
+                                }),
+                            );
+                            let sibling = backing.sibling(parts.plane_views);
+                            (
+                                level,
+                                FrameLease::from_external(meta, parts.layouts, sibling),
+                            )
+                        });
                         let frame = FrameLease::from_external(meta, frame_parts.layouts, backing);
-                        let frame = if let Some(emulation) = &emulation {
+                        let frame = match attach_companion(frame, companion_frame, luma_view) {
+                            Ok(frame) => frame,
+                            Err(err) => {
+                                failure = Some(err);
+                                break;
+                            }
+                        };
+                        let frame = if luma_view {
+                            match frame.into_luma() {
+                                Ok(frame) => frame,
+                                Err(err) => {
+                                    failure = Some(CaptureError::Backend(err.to_string()));
+                                    break;
+                                }
+                            }
+                        } else if let Some(emulation) = &emulation {
                             match emulation.process(frame) {
                                 Ok(out) => out,
                                 Err(err) => {

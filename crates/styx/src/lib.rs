@@ -69,7 +69,8 @@ pub mod imports {
         pub use styx_core::prelude::{
             BackendFrameMeta, BufferLease, BufferPool, ExternalBacking, FourCc, FrameAllocation,
             FrameLease, FrameLeaseDescriptor, FrameMeta, FramePlaneDescriptor, FrameResidency,
-            MediaFormat, PlaneLayout, Resolution,
+            FrameValidationError, LibcameraFrameMeta, MediaFormat, PlaneLayout, Resolution,
+            V4l2FrameMeta, VisibleRow, VisibleRows,
         };
 
         #[cfg(unix)]
@@ -88,10 +89,10 @@ pub mod imports {
             BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest,
             CameraStartPolicy, CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle,
             CaptureRequest, CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig,
-            LibcameraConfig, NetcamConfig, NetcamTunables, SelectedCamera, StyxConfig,
-            TdnOutputMode, TransformConfig, V4l2Config, VirtualCaptureConfig, VirtualSourceConfig,
-            make_virtual_device, make_virtual_rgb_device, open_best_camera, open_virtual_rgb,
-            start_capture,
+            LibcameraBufferMemory, LibcameraConfig, NetcamConfig, NetcamTunables, SelectedCamera,
+            StyxConfig, TdnOutputMode, TransformConfig, V4l2Config, VirtualCaptureConfig,
+            VirtualSourceConfig, make_virtual_device, make_virtual_rgb_device, open_best_camera,
+            open_virtual_rgb, start_capture,
         };
         pub use crate::{BackendHandle, BackendKind, ProbedBackend, ProbedDevice};
         pub use styx_capture::prelude::{
@@ -718,7 +719,6 @@ fn parse_backend_probe_error(value: &str) -> Option<BackendProbeError> {
 }
 
 pub mod prelude {
-    pub use crate::imports::framelease::*;
     #[cfg(feature = "facade")]
     pub use crate::capabilities::{
         CaptureBackendCapability, CodecCapability, CrossProcessExportMode, FrameBackingCapability,
@@ -733,10 +733,10 @@ pub mod prelude {
     pub use crate::capture_api::{
         BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
         CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
-        CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig, LibcameraConfig,
-        NetcamConfig, NetcamTunables, SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig,
-        V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera, open_virtual_rgb,
-        start_capture,
+        CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig,
+        LibcameraBufferMemory, LibcameraConfig, NetcamConfig, NetcamTunables, SelectedCamera,
+        StyxConfig, TdnOutputMode, TransformConfig, V4l2Config, VirtualCaptureConfig,
+        VirtualSourceConfig, open_best_camera, open_virtual_rgb, start_capture,
     };
     #[cfg(all(feature = "facade", feature = "daedalus-plugin", feature = "hooks"))]
     pub use crate::graph::register_file_sequence_sink_node;
@@ -754,6 +754,7 @@ pub mod prelude {
         register_capture_source_node_with_options, register_control_types,
         register_frame_sink_node, register_framelease_type, register_network_stream_sink_node,
     };
+    pub use crate::imports::framelease::*;
     #[cfg(feature = "facade")]
     pub use crate::memory::{
         FdClass, FdClassStats, FdInventoryStats, FdTargetStats, KernelDmabufStats, MappingCategory,

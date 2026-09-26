@@ -5,7 +5,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use libcamera::framebuffer::AsFrameBuffer;
-use libcamera::framebuffer_allocator::FrameBuffer;
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -91,8 +90,21 @@ struct LazyMappedBackingState {
     mapped_bytes: usize,
 }
 
+impl LazyMappedBackingState {
+    /// Invalidate stale CPU cache lines before the first read. Required for cached dma-heap
+    /// buffers written by the ISP; a cheap no-op for uncached allocator buffers.
+    fn begin_cpu_read(&self) {
+        for (fd, _) in &self.mmaps {
+            let _ = styx_core::prelude::dmabuf_begin_cpu_read(*fd);
+        }
+    }
+}
+
 impl Drop for LazyMappedBackingState {
     fn drop(&mut self) {
+        for (fd, _) in &self.mmaps {
+            let _ = styx_core::prelude::dmabuf_end_cpu_read(*fd);
+        }
         for (_fd, range) in self.mmaps.drain(..) {
             // SAFETY: each range was returned by `mmap64` in `map_backing_planes` with the same
             // pointer and length, and each successful mapping is stored exactly once.
@@ -120,7 +132,7 @@ fn unique_backing_plane_bytes(planes: &[BackingPlaneView]) -> usize {
         .sum()
 }
 
-fn framebuffer_backing_planes(buffer: &FrameBuffer) -> SmallVec<[BackingPlaneView; 3]> {
+fn framebuffer_backing_planes(buffer: &dyn AsFrameBuffer) -> SmallVec<[BackingPlaneView; 3]> {
     let planes = buffer.planes();
     let mut views = SmallVec::<[BackingPlaneView; 3]>::with_capacity(planes.len());
     for idx in 0..planes.len() {
@@ -136,10 +148,10 @@ fn framebuffer_backing_planes(buffer: &FrameBuffer) -> SmallVec<[BackingPlaneVie
     views
 }
 
-fn framebuffers_backing_planes(buffers: &[FrameBuffer]) -> SmallVec<[BackingPlaneView; 12]> {
+fn framebuffers_backing_planes(buffers: &[&dyn AsFrameBuffer]) -> SmallVec<[BackingPlaneView; 12]> {
     let mut views = SmallVec::<[BackingPlaneView; 12]>::new();
     for buffer in buffers {
-        views.extend(framebuffer_backing_planes(buffer));
+        views.extend(framebuffer_backing_planes(*buffer));
     }
     views
 }
@@ -263,7 +275,7 @@ pub(super) struct RequestPoolBackingLease {
 impl RequestPoolBackingLease {
     pub(super) fn new(
         tracker: Arc<ExternalBackingTracker>,
-        framebuffers: &[FrameBuffer],
+        framebuffers: &[&dyn AsFrameBuffer],
         prefault_request_pools: bool,
     ) -> Self {
         let buffers = framebuffers.len();
@@ -287,13 +299,29 @@ impl Drop for RequestPoolBackingLease {
     }
 }
 
-pub(super) struct LibcameraBacking {
+/// Returns a completed request to the capture worker once every frame backed by it is dropped.
+struct RequestReturn {
     req: Mutex<Option<libcamera::request::Request>>,
-    planes: SmallVec<[BackingPlaneView; 3]>,
-    mapped: OnceLock<Option<LazyMappedBackingState>>,
     ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
     shutting_down: std::sync::Arc<AtomicBool>,
     outstanding_backings: Arc<AtomicUsize>,
+}
+
+impl Drop for RequestReturn {
+    fn drop(&mut self) {
+        if !self.shutting_down.load(Ordering::Acquire)
+            && let Some(req) = self.req.lock().take()
+        {
+            let _ = self.ret_tx.send(req);
+        }
+        self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub(super) struct LibcameraBacking {
+    request: Arc<RequestReturn>,
+    planes: SmallVec<[BackingPlaneView; 3]>,
+    mapped: OnceLock<Option<LazyMappedBackingState>>,
     outstanding_tracker: Arc<ExternalBackingTracker>,
     mapped_tracker: Arc<ExternalBackingTracker>,
     backing_bytes: usize,
@@ -309,16 +337,39 @@ impl LibcameraBacking {
         outstanding_tracker: Arc<ExternalBackingTracker>,
         mapped_tracker: Arc<ExternalBackingTracker>,
     ) -> std::sync::Arc<Self> {
-        let backing_bytes = unique_backing_plane_bytes(&planes);
         outstanding_backings.fetch_add(1, Ordering::AcqRel);
-        outstanding_tracker.acquire_many(1, backing_bytes);
-        std::sync::Arc::new(Self {
+        let request = Arc::new(RequestReturn {
             req: Mutex::new(Some(req)),
-            planes,
-            mapped: OnceLock::new(),
             ret_tx,
             shutting_down,
             outstanding_backings,
+        });
+        Self::with_request(request, planes, outstanding_tracker, mapped_tracker)
+    }
+
+    /// A backing for another stream's buffer in the same request (e.g. a pyramid companion).
+    /// The request is requeued only after both backings are dropped.
+    pub(super) fn sibling(&self, planes: SmallVec<[BackingPlaneView; 3]>) -> std::sync::Arc<Self> {
+        Self::with_request(
+            self.request.clone(),
+            planes,
+            self.outstanding_tracker.clone(),
+            self.mapped_tracker.clone(),
+        )
+    }
+
+    fn with_request(
+        request: Arc<RequestReturn>,
+        planes: SmallVec<[BackingPlaneView; 3]>,
+        outstanding_tracker: Arc<ExternalBackingTracker>,
+        mapped_tracker: Arc<ExternalBackingTracker>,
+    ) -> std::sync::Arc<Self> {
+        let backing_bytes = unique_backing_plane_bytes(&planes);
+        outstanding_tracker.acquire_many(1, backing_bytes);
+        std::sync::Arc::new(Self {
+            request,
+            planes,
+            mapped: OnceLock::new(),
             outstanding_tracker,
             mapped_tracker,
             backing_bytes,
@@ -330,6 +381,7 @@ impl LibcameraBacking {
             .get_or_init(|| {
                 let mapped = map_backing_planes(&self.planes);
                 if let Some(state) = mapped.as_ref() {
+                    state.begin_cpu_read();
                     self.mapped_tracker.acquire(state.mapped_bytes);
                 }
                 mapped
@@ -394,19 +446,12 @@ impl ExternalBacking for LibcameraBacking {
 
 impl Drop for LibcameraBacking {
     fn drop(&mut self) {
+        // Unmap (ending the CPU read) before the request can be requeued by `RequestReturn`.
         if let Some(mapped) = self.mapped.take().flatten() {
             self.mapped_tracker.release(mapped.mapped_bytes);
             drop(mapped);
         }
         self.outstanding_tracker.release_many(1, self.backing_bytes);
-        if self.shutting_down.load(Ordering::Acquire) {
-            self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
-            return;
-        }
-        if let Some(req) = self.req.lock().take() {
-            let _ = self.ret_tx.send(req);
-        }
-        self.outstanding_backings.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

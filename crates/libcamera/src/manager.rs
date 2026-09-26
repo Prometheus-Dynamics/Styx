@@ -160,6 +160,7 @@ fn shared_manager() -> Result<&'static SharedManager, String> {
     }
 
     let mgr = CameraManager::new().map_err(|e| e.to_string())?;
+    register_exit_stop();
     MANAGER
         .set(SharedManager {
             manager: UnsafeCell::new(mgr),
@@ -181,6 +182,36 @@ fn shared_manager() -> Result<&'static SharedManager, String> {
 /// This is required for lifecycle/probe operations. It refuses mutable access while any
 /// `ActiveCameraUse` guard is alive because camera/request values returned from the manager may
 /// outlive the manager mutex guard.
+/// Stop the shared manager when the process exits normally.
+///
+/// The manager lives in a static that is never dropped, and libcamera only terminates its
+/// out-of-process IPA helpers (e.g. `raspberrypi_ipa_proxy`) when the manager stops. Without this
+/// every process that used libcamera leaves an orphaned helper behind after `main` returns.
+fn register_exit_stop() {
+    extern "C" fn stop_manager_at_exit() {
+        let Some(shared) = MANAGER.get() else {
+            return;
+        };
+        // A capture thread may still own a camera; stopping the manager under it is unsafe.
+        if ACTIVE_CAMERA_USES.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        // Never block process exit on a lock held by another thread.
+        let Ok(_guard) = shared.lock.try_lock() else {
+            return;
+        };
+        // SAFETY: the manager lock is held and no camera use is active.
+        let mgr = unsafe { &mut *shared.manager.get() };
+        if mgr.is_started() {
+            let _ = mgr.try_stop();
+        }
+    }
+    // SAFETY: registering a plain `extern "C"` function with no captured state.
+    unsafe {
+        libc::atexit(stop_manager_at_exit);
+    }
+}
+
 pub(crate) fn with_manager_mut<R>(f: impl FnOnce(&mut CameraManager) -> R) -> Result<R, String> {
     let shared = shared_manager()?;
     reject_active_camera_uses()?;

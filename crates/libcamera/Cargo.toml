@@ -21,12 +21,13 @@ styx-capture.workspace = true
 smallvec.workspace = true
 libcamera = { workspace = true, optional = true }
 libcamera-sys = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 tracing.workspace = true
 
 [features]
 default = []
 # Enable stable libcamera probing support.
-probe = ["libcamera", "libcamera-sys"]
+probe = ["libcamera", "libcamera-sys", "dep:libc"]
 # Keep the feature surface stable without forcing upstream vendor control generation, which is
 # currently broken in libcamera 0.7 on this toolchain/configuration.
 vendor_rpi = ["probe"]

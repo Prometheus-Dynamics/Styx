@@ -49,9 +49,9 @@ pub use tunables::{
     DEFAULT_NETCAM_BACKOFF_START_MS, DEFAULT_NETCAM_MAX_JPEG_BYTES, DEFAULT_NETCAM_SEND_TIMEOUT_MS,
     DEFAULT_NETCAM_STOP_POLL_MS, DEFAULT_NETCAM_TIMEOUT_SECS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN,
     DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH, DEFAULT_V4L2_ERROR_BACKOFF_MS,
-    DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig, LibcameraConfig,
-    LibcameraProcessedStreamRole, NetcamConfig, NetcamTunables, StyxConfig, TransformConfig,
-    V4l2Config,
+    DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig,
+    LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, NetcamConfig,
+    NetcamTunables, StyxConfig, TransformConfig, V4l2Config,
 };
 
 // Release policy: these backend handle types are consumed only by feature-gated constructors, so
