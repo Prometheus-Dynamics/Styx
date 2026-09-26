@@ -163,6 +163,7 @@ pub fn box_downscale_luma_in(
     let mut meta = FrameMeta::new(format, source.meta.timestamp);
     meta.backend = source.meta.backend.clone();
     meta.capture_instant = source.meta.capture_instant;
+    meta.crop = source.meta.crop.map(|crop| crop.scaled_down(1));
     Ok(FrameLease::multi_plane(
         meta,
         smallvec![buf],

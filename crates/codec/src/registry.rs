@@ -148,6 +148,26 @@ impl CodecRegistryHandle {
             .ok_or(RegistryError::NotFound(input))
     }
 
+    /// Like [`CodecRegistryHandle::lookup_for_output`], restricted to codecs whose descriptor
+    /// satisfies `accept` (e.g. a hardware policy or a forbid list).
+    pub fn lookup_for_output_where(
+        &self,
+        input: FourCc,
+        output: FourCc,
+        accept: impl Fn(&CodecDescriptor) -> bool,
+    ) -> Result<Arc<dyn Codec>, RegistryError> {
+        let guard = self.inner.read();
+        guard
+            .codecs
+            .get(&input)
+            .and_then(|list| {
+                list.iter()
+                    .find(|c| c.descriptor().output == output && accept(c.descriptor()))
+                    .cloned()
+            })
+            .ok_or(RegistryError::NotFound(input))
+    }
+
     pub fn lookup(&self, fourcc: FourCc) -> Result<Arc<dyn Codec>, RegistryError> {
         let guard = self.inner.read();
         guard

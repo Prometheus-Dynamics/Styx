@@ -40,6 +40,8 @@ pub mod graph;
 pub mod memory;
 #[cfg(feature = "facade")]
 mod metrics;
+#[cfg(feature = "facade")]
+pub mod planner;
 #[cfg(all(feature = "facade", feature = "hooks"))]
 pub mod recording;
 #[cfg(feature = "facade")]
