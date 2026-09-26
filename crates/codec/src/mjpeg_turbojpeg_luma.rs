@@ -95,6 +95,8 @@ impl Default for LumaDecodeOptions {
 pub struct TurbojpegLumaDecoder {
     descriptor: CodecDescriptor,
     pool: BufferPool,
+    /// Recycled buffers for box-filter pyramid levels.
+    pyramid_pool: BufferPool,
     options: LumaDecodeOptions,
 }
 
@@ -123,6 +125,7 @@ impl TurbojpegLumaDecoder {
                 impl_name: "turbojpeg-luma",
             },
             pool,
+            pyramid_pool: BufferPool::lazy(0, DEFAULT_CODEC_POOL_SPARE * 2),
             options,
         }
     }
@@ -250,7 +253,11 @@ impl TurbojpegLumaDecoder {
             return Ok(frame);
         }
         frame
-            .with_box_pyramid(self.options.pyramid_levels, self.options.stride_alignment)
+            .with_box_pyramid_in(
+                self.options.pyramid_levels,
+                self.options.stride_alignment,
+                &self.pyramid_pool,
+            )
             .map_err(|err| CodecError::Codec(err.to_string()))
     }
 }

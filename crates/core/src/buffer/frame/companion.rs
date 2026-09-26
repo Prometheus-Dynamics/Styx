@@ -85,6 +85,18 @@ impl FrameLease {
         levels: u8,
         stride_alignment: usize,
     ) -> Result<Self, FrameValidationError> {
+        let pool = BufferPool::lazy(0, levels as usize);
+        self.with_box_pyramid_in(levels, stride_alignment, &pool)
+    }
+
+    /// [`FrameLease::with_box_pyramid`] drawing level buffers from `pool`, so steady-state
+    /// capture recycles them instead of allocating per frame.
+    pub fn with_box_pyramid_in(
+        self,
+        levels: u8,
+        stride_alignment: usize,
+        pool: &BufferPool,
+    ) -> Result<Self, FrameValidationError> {
         let mut frame = self;
         for level in 1..=levels {
             if frame.pyramid_level(level).is_some() {
@@ -93,7 +105,7 @@ impl FrameLease {
             let source = frame
                 .pyramid_level(level - 1)
                 .ok_or(FrameValidationError::NoPlanes)?;
-            let next = box_downscale_luma(source, stride_alignment)?;
+            let next = box_downscale_luma_in(source, stride_alignment, pool)?;
             frame = frame.with_companion(CompanionKind::Pyramid { level }, next)?;
         }
         Ok(frame)
@@ -115,6 +127,15 @@ pub fn box_downscale_luma(
     source: &FrameLease,
     stride_alignment: usize,
 ) -> Result<FrameLease, FrameValidationError> {
+    box_downscale_luma_in(source, stride_alignment, &BufferPool::lazy(0, 1))
+}
+
+/// [`box_downscale_luma`] writing into a buffer leased from `pool`.
+pub fn box_downscale_luma_in(
+    source: &FrameLease,
+    stride_alignment: usize,
+    pool: &BufferPool,
+) -> Result<FrameLease, FrameValidationError> {
     if !stride_alignment.is_power_of_two() {
         return Err(FrameValidationError::InvalidAlignment(stride_alignment));
     }
@@ -126,7 +147,7 @@ pub fn box_downscale_luma(
     let stride = width.next_multiple_of(stride_alignment);
     let len = stride * height;
 
-    let mut buf = BufferPool::with_limits(1, len + stride_alignment, 1).lease();
+    let mut buf = pool.lease();
     buf.resize(len + stride_alignment - 1);
     let base = buf.as_slice().as_ptr() as usize;
     let offset = base.next_multiple_of(stride_alignment) - base;
@@ -232,6 +253,19 @@ mod tests {
             .with_companion(CompanionKind::Pyramid { level: 1 }, nested)
             .err();
         assert_eq!(err, Some(FrameValidationError::NestedCompanion));
+    }
+
+    #[test]
+    fn pooled_pyramid_recycles_level_buffers() {
+        let pool = BufferPool::lazy(0, 4);
+        for _ in 0..3 {
+            let frame = grey(64, 32, 64, 1, |x, y| (x + y) as u8)
+                .with_box_pyramid_in(2, 64, &pool)
+                .unwrap();
+            assert!(frame.pyramid_level(2).is_some());
+        }
+        // Two levels leased per frame; later frames reuse the returned buffers.
+        assert!(pool.metrics().hits() >= 2);
     }
 
     #[test]

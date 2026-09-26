@@ -13,7 +13,7 @@ use crate::format::{ChromaSubsampling, FrameLayoutInfo, FrameStorageKind, MediaF
 mod companion;
 mod luma;
 
-pub use companion::{CompanionKind, box_downscale_luma};
+pub use companion::{CompanionKind, box_downscale_luma, box_downscale_luma_in};
 #[cfg(unix)]
 mod shared_fd;
 #[cfg(unix)]

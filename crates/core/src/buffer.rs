@@ -8,7 +8,7 @@ pub use frame::{
     CompanionKind, ExternalBacking, FrameAllocation, FrameLease, FrameLeaseDescriptor,
     FramePlaneDescriptor, FramePlaneShape, FrameValidationError, Plane, PlaneLayout, PlaneMut,
     VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut, box_downscale_luma,
-    plane_layout_from_dims, plane_layout_with_stride,
+    box_downscale_luma_in, plane_layout_from_dims, plane_layout_with_stride,
 };
 
 #[cfg(unix)]
