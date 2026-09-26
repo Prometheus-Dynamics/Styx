@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -90,21 +91,50 @@ struct LazyMappedBackingState {
     mapped_bytes: usize,
 }
 
+// SAFETY: the mappings are read-only, created once, and unmapped only when the last reference
+// drops; sharing the pointers between threads exposes immutable bytes only.
+unsafe impl Send for LazyMappedBackingState {}
+// SAFETY: see `Send`.
+unsafe impl Sync for LazyMappedBackingState {}
+
 impl LazyMappedBackingState {
-    /// Invalidate stale CPU cache lines before the first read. Required for cached dma-heap
-    /// buffers written by the ISP; a cheap no-op for uncached allocator buffers.
+    /// Invalidate stale CPU cache lines before a frame's first read. Required for cached
+    /// dma-heap buffers written by the ISP; a cheap no-op for uncached allocator buffers.
     fn begin_cpu_read(&self) {
         for (fd, _) in &self.mmaps {
             let _ = styx_core::prelude::dmabuf_begin_cpu_read(*fd);
         }
     }
+
+    fn end_cpu_read(&self) {
+        for (fd, _) in &self.mmaps {
+            let _ = styx_core::prelude::dmabuf_end_cpu_read(*fd);
+        }
+    }
+}
+
+/// Mappings of the capture buffers, kept for the whole capture session. libcamera recycles a
+/// handful of buffers, so mapping each once avoids an mmap plus page faults on every frame
+/// (~0.3 ms per 1 MB plane on a CM5); frames still bracket their reads with dma-buf syncs.
+#[derive(Default)]
+pub(super) struct MappingCache {
+    maps: Mutex<HashMap<SmallVec<[BackingPlaneView; 3]>, Arc<LazyMappedBackingState>>>,
+}
+
+impl MappingCache {
+    fn map(&self, planes: &SmallVec<[BackingPlaneView; 3]>) -> Option<Arc<LazyMappedBackingState>> {
+        let mut maps = self.maps.lock();
+        if let Some(state) = maps.get(planes) {
+            return Some(state.clone());
+        }
+        let state = Arc::new(map_backing_planes(planes)?);
+        maps.insert(planes.clone(), state.clone());
+        Some(state)
+    }
 }
 
 impl Drop for LazyMappedBackingState {
     fn drop(&mut self) {
-        for (fd, _) in &self.mmaps {
-            let _ = styx_core::prelude::dmabuf_end_cpu_read(*fd);
-        }
         for (_fd, range) in self.mmaps.drain(..) {
             // SAFETY: each range was returned by `mmap64` in `map_backing_planes` with the same
             // pointer and length, and each successful mapping is stored exactly once.
@@ -321,17 +351,21 @@ impl Drop for RequestReturn {
 pub(super) struct LibcameraBacking {
     request: Arc<RequestReturn>,
     planes: SmallVec<[BackingPlaneView; 3]>,
-    mapped: OnceLock<Option<LazyMappedBackingState>>,
+    cache: Arc<MappingCache>,
+    mapped: OnceLock<Option<Arc<LazyMappedBackingState>>>,
     outstanding_tracker: Arc<ExternalBackingTracker>,
     mapped_tracker: Arc<ExternalBackingTracker>,
     backing_bytes: usize,
 }
 
 impl LibcameraBacking {
+    // Mirrors the capture worker's shared state; a builder would only add ceremony here.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         req: libcamera::request::Request,
         ret_tx: std::sync::mpsc::Sender<libcamera::request::Request>,
         planes: SmallVec<[BackingPlaneView; 3]>,
+        cache: Arc<MappingCache>,
         shutting_down: std::sync::Arc<AtomicBool>,
         outstanding_backings: Arc<AtomicUsize>,
         outstanding_tracker: Arc<ExternalBackingTracker>,
@@ -344,7 +378,7 @@ impl LibcameraBacking {
             shutting_down,
             outstanding_backings,
         });
-        Self::with_request(request, planes, outstanding_tracker, mapped_tracker)
+        Self::with_request(request, planes, cache, outstanding_tracker, mapped_tracker)
     }
 
     /// A backing for another stream's buffer in the same request (e.g. a pyramid companion).
@@ -353,6 +387,7 @@ impl LibcameraBacking {
         Self::with_request(
             self.request.clone(),
             planes,
+            self.cache.clone(),
             self.outstanding_tracker.clone(),
             self.mapped_tracker.clone(),
         )
@@ -361,6 +396,7 @@ impl LibcameraBacking {
     fn with_request(
         request: Arc<RequestReturn>,
         planes: SmallVec<[BackingPlaneView; 3]>,
+        cache: Arc<MappingCache>,
         outstanding_tracker: Arc<ExternalBackingTracker>,
         mapped_tracker: Arc<ExternalBackingTracker>,
     ) -> std::sync::Arc<Self> {
@@ -369,6 +405,7 @@ impl LibcameraBacking {
         std::sync::Arc::new(Self {
             request,
             planes,
+            cache,
             mapped: OnceLock::new(),
             outstanding_tracker,
             mapped_tracker,
@@ -379,14 +416,14 @@ impl LibcameraBacking {
     fn mapped_state(&self) -> Option<&LazyMappedBackingState> {
         self.mapped
             .get_or_init(|| {
-                let mapped = map_backing_planes(&self.planes);
+                let mapped = self.cache.map(&self.planes);
                 if let Some(state) = mapped.as_ref() {
                     state.begin_cpu_read();
                     self.mapped_tracker.acquire(state.mapped_bytes);
                 }
                 mapped
             })
-            .as_ref()
+            .as_deref()
     }
 }
 
@@ -446,10 +483,11 @@ impl ExternalBacking for LibcameraBacking {
 
 impl Drop for LibcameraBacking {
     fn drop(&mut self) {
-        // Unmap (ending the CPU read) before the request can be requeued by `RequestReturn`.
+        // End the CPU read before the request can be requeued by `RequestReturn`; the mapping
+        // itself stays cached for the next frame that uses this buffer.
         if let Some(mapped) = self.mapped.take().flatten() {
+            mapped.end_cpu_read();
             self.mapped_tracker.release(mapped.mapped_bytes);
-            drop(mapped);
         }
         self.outstanding_tracker.release_many(1, self.backing_bytes);
     }

@@ -473,6 +473,7 @@ pub(super) fn start_libcamera(
             for (id, val) in &requested_controls_for_thread {
                 control_state.insert(*id, val.clone());
             }
+            let mapping_cache = Arc::new(backing::MappingCache::default());
             let req_rx = cam.subscribe_request_completed();
             let (ret_tx, ret_rx) = mpsc::channel::<libcamera::request::Request>();
             if let Err(err) = cam.start(start_ctrls.as_deref()) {
@@ -637,6 +638,7 @@ pub(super) fn start_libcamera(
                             req,
                             ret_tx.clone(),
                             frame_parts.plane_views,
+                            mapping_cache.clone(),
                             shutting_down.clone(),
                             outstanding_backings_for_thread.clone(),
                             outstanding_lease_tracker_for_thread.clone(),
