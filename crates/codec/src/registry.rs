@@ -129,6 +129,25 @@ pub struct CodecRegistryHandle {
 }
 
 impl CodecRegistryHandle {
+    /// The preferred codec that turns `input` into `output`, e.g. MJPG → GREY. Uses the same
+    /// ordering as [`CodecRegistryHandle::lookup`] (priorities, then hardware when preferred).
+    pub fn lookup_for_output(
+        &self,
+        input: FourCc,
+        output: FourCc,
+    ) -> Result<Arc<dyn Codec>, RegistryError> {
+        let guard = self.inner.read();
+        guard
+            .codecs
+            .get(&input)
+            .and_then(|list| {
+                list.iter()
+                    .find(|c| c.descriptor().output == output)
+                    .cloned()
+            })
+            .ok_or(RegistryError::NotFound(input))
+    }
+
     pub fn lookup(&self, fourcc: FourCc) -> Result<Arc<dyn Codec>, RegistryError> {
         let guard = self.inner.read();
         guard

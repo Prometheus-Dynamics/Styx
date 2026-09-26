@@ -72,7 +72,8 @@ pub struct LumaDecodeOptions {
     /// decode plus box filters is far cheaper than a second, DCT-scaled decode.
     pub pyramid_levels: u8,
     /// Decode one frame on up to this many threads by splitting it at restart markers
-    /// (`0` = all available cores, `1` = single-threaded, the default). Only full-resolution,
+    /// (`0` = automatic, the default: up to 4 of the available cores; `1` = single-threaded).
+    /// Output is byte-identical either way. Only full-resolution,
     /// uncropped decodes of baseline JPEGs with restart markers are split; others decode on one
     /// thread. Many UVC cameras emit restart markers on every frame.
     pub threads: usize,
@@ -86,7 +87,7 @@ impl Default for LumaDecodeOptions {
             crop: None,
             fast_dct: false,
             pyramid_levels: 0,
-            threads: 1,
+            threads: 0,
         }
     }
 }
@@ -190,7 +191,7 @@ impl TurbojpegLumaDecoder {
 impl TurbojpegLumaDecoder {
     fn thread_count(&self) -> usize {
         match self.options.threads {
-            0 => std::thread::available_parallelism().map_or(1, usize::from),
+            0 => std::thread::available_parallelism().map_or(1, |n| usize::from(n).min(4)),
             n => n,
         }
     }
@@ -551,7 +552,12 @@ mod tests {
                 .map(|r| r.data().to_vec())
                 .collect()
         };
-        let single = TurbojpegLumaDecoder::new().process(frame()).unwrap();
+        let single = TurbojpegLumaDecoder::with_options(LumaDecodeOptions {
+            threads: 1,
+            ..Default::default()
+        })
+        .process(frame())
+        .unwrap();
         for threads in [2, 3, 4, 0] {
             let parallel = TurbojpegLumaDecoder::with_options(LumaDecodeOptions {
                 threads,
@@ -561,5 +567,15 @@ mod tests {
             .unwrap();
             assert_eq!(rows(&single), rows(&parallel), "threads={threads}");
         }
+    }
+
+    #[test]
+    fn registry_resolves_mjpeg_to_grey() {
+        let registry = crate::CodecRegistry::with_enabled_codecs().expect("registry");
+        let codec = registry
+            .handle()
+            .lookup_for_output(FourCc::MJPG, FourCc::GREY)
+            .expect("MJPG -> GREY decoder");
+        assert_eq!(codec.descriptor().output, FourCc::GREY);
     }
 }

@@ -169,6 +169,10 @@ pub fn is_hardware_implementation_name(value: &str) -> bool {
         "v4l2",
         "videotoolbox",
         "v4l2m2m",
+        "rkmpp",
+        "nvv4l2",
+        "nvmpi",
+        "ffmpeg-hw",
     ]
     .iter()
     .any(|token| value.contains(token))

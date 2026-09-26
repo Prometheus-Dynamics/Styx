@@ -321,6 +321,18 @@ impl<'a> MediaPipelineBuilder<'a> {
         Ok(self)
     }
 
+    /// Attach the registry's preferred decoder from `input` to `output`, e.g. MJPG → GREY picks a
+    /// hardware luma decoder when one is available and `turbojpeg-luma` otherwise.
+    pub fn decoder_for_output(
+        mut self,
+        registry: &CodecRegistryHandle,
+        input: FourCc,
+        output: FourCc,
+    ) -> Result<Self, RegistryError> {
+        self.decoder = Some(registry.lookup_for_output(input, output)?);
+        Ok(self)
+    }
+
     /// Attach an encoder by looking it up in the registry.
     pub fn encoder_from_registry(
         mut self,

@@ -333,6 +333,15 @@ impl CodecRegistry {
             Arc::new(crate::image_any::ImageAnyDecoder::new(FourCc::RGBA)),
         );
 
+        // Hardware Y8 decoders when this machine has one (Rockchip MPP, V4L2 M2M, VA-API, ...);
+        // `lookup_for_output(input, GREY)` then prefers them over turbojpeg-luma.
+        #[cfg(feature = "codec-ffmpeg")]
+        for input in [FourCc::MJPG, FourCc::H264, FourCc::H265] {
+            if let Some(decoder) = crate::ffmpeg::FfmpegLumaDecoder::best_available(input) {
+                self.register(input, Arc::new(decoder));
+            }
+        }
+
         #[cfg(feature = "codec-ffmpeg")]
         {
             use crate::ffmpeg::{
