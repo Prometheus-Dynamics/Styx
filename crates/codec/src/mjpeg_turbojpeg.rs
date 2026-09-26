@@ -2,14 +2,13 @@ use std::sync::Mutex;
 
 use styx_core::prelude::*;
 use turbojpeg::Image as TjImage;
-use turbojpeg::{
-    Compressor, Decompressor, OutputBuf, PixelFormat as TjPixelFormat, Subsamp as TjSubsamp,
-};
+use turbojpeg::{Compressor, OutputBuf, PixelFormat as TjPixelFormat, Subsamp as TjSubsamp};
 
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 #[cfg(target_os = "linux")]
 use crate::shared_packet_frame;
+use crate::turbojpeg_raw::TjDecompressor;
 use crate::{
     Codec, CodecDescriptor, CodecError, CodecKind, DEFAULT_CODEC_POOL_CHUNK_BYTES,
     DEFAULT_CODEC_POOL_SPARE,
@@ -341,11 +340,9 @@ impl Codec for TurbojpegDecoder {
             .next()
             .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
 
-        let mut tj = Decompressor::new().map_err(|e| CodecError::Codec(e.to_string()))?;
-        let header = tj
-            .read_header(plane.data())
-            .map_err(|e| CodecError::Codec(e.to_string()))?;
-        let resolution = Resolution::new(header.width as u32, header.height as u32)
+        let tj = TjDecompressor::new()?;
+        let header = tj.read_header(plane.data())?;
+        let resolution = Resolution::new(header.width, header.height)
             .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
         let format = MediaFormat::new(
             self.descriptor.output,
@@ -356,15 +353,12 @@ impl Codec for TurbojpegDecoder {
 
         let mut buf = self.pool.lease();
         buf.resize(layout.len);
-        let mut image = TjImage {
-            pixels: buf.as_mut_slice(),
-            width: header.width,
-            pitch: layout.stride,
-            height: header.height,
-            format: TjPixelFormat::RGB,
-        };
-        tj.decompress(plane.data(), image.as_deref_mut())
-            .map_err(|e| CodecError::Codec(e.to_string()))?;
+        tj.decompress(
+            plane.data(),
+            buf.as_mut_slice(),
+            layout.stride,
+            turbojpeg::raw::TJPF_TJPF_RGB,
+        )?;
 
         Ok(FrameLease::single_plane(
             FrameMeta::new(format, input.meta().timestamp),
@@ -392,11 +386,9 @@ impl Codec for TurbojpegDecoder {
             .next()
             .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
 
-        let mut tj = Decompressor::new().map_err(|e| CodecError::Codec(e.to_string()))?;
-        let header = tj
-            .read_header(plane.data())
-            .map_err(|e| CodecError::Codec(e.to_string()))?;
-        let resolution = Resolution::new(header.width as u32, header.height as u32)
+        let tj = TjDecompressor::new()?;
+        let header = tj.read_header(plane.data())?;
+        let resolution = Resolution::new(header.width, header.height)
             .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
         let format = MediaFormat::new(
             self.descriptor.output,
@@ -410,15 +402,12 @@ impl Codec for TurbojpegDecoder {
         lease
             .try_resize(layout.len)
             .map_err(|err| CodecError::Codec(err.to_string()))?;
-        let mut image = TjImage {
-            pixels: lease.as_mut_slice(),
-            width: header.width,
-            pitch: layout.stride,
-            height: header.height,
-            format: TjPixelFormat::RGB,
-        };
-        tj.decompress(plane.data(), image.as_deref_mut())
-            .map_err(|e| CodecError::Codec(e.to_string()))?;
+        tj.decompress(
+            plane.data(),
+            lease.as_mut_slice(),
+            layout.stride,
+            turbojpeg::raw::TJPF_TJPF_RGB,
+        )?;
 
         FrameLease::single_plane_shared(
             FrameMeta::new(format, input.meta().timestamp),

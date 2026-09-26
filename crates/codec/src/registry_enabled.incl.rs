@@ -535,6 +535,10 @@ impl CodecRegistry {
                     FourCc::RG24,
                 )),
             );
+            self.register(
+                FourCc::MJPG,
+                Arc::new(crate::mjpeg_turbojpeg_luma::TurbojpegLumaDecoder::new()),
+            );
         }
 
         #[cfg(feature = "codec-zune")]

@@ -1,6 +1,10 @@
 use styx_core::prelude::*;
 
-#[cfg(any(feature = "codec-jpeg-decoder", feature = "raw-decoders"))]
+#[cfg(any(
+    feature = "codec-jpeg-decoder",
+    feature = "codec-turbojpeg",
+    feature = "raw-decoders"
+))]
 use crate::Codec;
 #[cfg(feature = "raw-decoders")]
 use crate::decoder::raw::{
@@ -256,6 +260,12 @@ fn convert_to_luma8(frame: FrameLease) -> Option<FrameLease> {
     #[cfg(feature = "raw-decoders")]
     if code == FourCc::YUYV {
         return YuyvToLumaDecoder::new(width, height).process(frame).ok();
+    }
+    #[cfg(feature = "codec-turbojpeg")]
+    if code.is_jpeg_encoded() {
+        return crate::mjpeg_turbojpeg_luma::TurbojpegLumaDecoder::new()
+            .process(frame)
+            .ok();
     }
     #[cfg(feature = "codec-jpeg-decoder")]
     if code.is_jpeg_encoded() {

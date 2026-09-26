@@ -330,6 +330,13 @@ pub fn decode_to_rg24_for_format(format: MediaFormat) -> FrameDecodePlan {
 }
 
 fn decode_to_rg24_fallback_decoder(code: FourCc) -> Arc<dyn Codec> {
+    // libjpeg-turbo is 2-5x faster than `jpeg-decoder` (measured on x86 and Cortex-A76).
+    #[cfg(feature = "codec-turbojpeg")]
+    if code == FourCc::MJPG {
+        return Arc::new(styx_codec::mjpeg_turbojpeg::TurbojpegDecoder::new(
+            FourCc::RG24,
+        ));
+    }
     #[cfg(feature = "codec-jpeg-decoder")]
     if code.is_jpeg_encoded() {
         Arc::new(MjpegDecoder::new_for_input(code, FourCc::RG24))

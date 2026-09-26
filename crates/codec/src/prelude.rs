@@ -28,6 +28,10 @@ pub use crate::jpeg_encoder::MozjpegEncoder;
 pub use crate::mjpeg::MjpegDecoder;
 #[cfg(feature = "codec-turbojpeg")]
 pub use crate::mjpeg_turbojpeg::{TurbojpegDecoder, TurbojpegEncoder};
+#[cfg(feature = "codec-turbojpeg")]
+pub use crate::mjpeg_turbojpeg_luma::{
+    LumaCrop, LumaDecodeOptions, LumaDecodeScale, TurbojpegLumaDecoder,
+};
 #[cfg(feature = "codec-zune")]
 pub use crate::mjpeg_zune::ZuneMjpegDecoder;
 pub use crate::{

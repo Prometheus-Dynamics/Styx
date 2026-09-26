@@ -91,6 +91,7 @@ impl CodecImplementationId {
     pub const MOZJPEG: Self = Self(std::borrow::Cow::Borrowed("mozjpeg"));
     pub const PASSTHROUGH: Self = Self(std::borrow::Cow::Borrowed("passthrough"));
     pub const TURBOJPEG: Self = Self(std::borrow::Cow::Borrowed("turbojpeg"));
+    pub const TURBOJPEG_LUMA: Self = Self(std::borrow::Cow::Borrowed("turbojpeg-luma"));
     pub const ZUNE_JPEG: Self = Self(std::borrow::Cow::Borrowed("zune-jpeg"));
 
     pub fn new(value: impl AsRef<str>) -> Self {
@@ -301,13 +302,19 @@ pub mod image_any;
 pub mod image_utils;
 #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
 pub mod jpeg_encoder;
+#[cfg(feature = "codec-turbojpeg")]
+mod jpeg_slices;
 #[cfg(feature = "codec-jpeg-decoder")]
 pub mod mjpeg;
 #[cfg(feature = "codec-turbojpeg")]
 pub mod mjpeg_turbojpeg;
+#[cfg(feature = "codec-turbojpeg")]
+pub mod mjpeg_turbojpeg_luma;
 #[cfg(feature = "codec-zune")]
 pub mod mjpeg_zune;
 pub mod prelude;
+#[cfg(feature = "codec-turbojpeg")]
+mod turbojpeg_raw;
 
 #[cfg(test)]
 mod tests {
