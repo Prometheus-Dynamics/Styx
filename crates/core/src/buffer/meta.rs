@@ -274,8 +274,15 @@ impl FrameMeta {
     }
 
     /// Record how long ago the sensor captured this frame, using `clock` for `timestamp`.
-    pub fn with_sensor_latency(mut self, clock: TimestampClock) -> Self {
-        self.timing.sensor_to_capture = clock.elapsed_since(self.timestamp);
+    pub fn with_sensor_latency(self, clock: TimestampClock) -> Self {
+        let timestamp = self.timestamp;
+        self.with_sensor_latency_from(clock, timestamp)
+    }
+
+    /// Like [`FrameMeta::with_sensor_latency`] for backends whose sensor timestamp differs from
+    /// the frame's buffer timestamp (e.g. libcamera `SensorTimestamp` vs. ISP completion time).
+    pub fn with_sensor_latency_from(mut self, clock: TimestampClock, sensor_ns: u64) -> Self {
+        self.timing.sensor_to_capture = clock.elapsed_since(sensor_ns);
         self
     }
 

@@ -580,7 +580,16 @@ pub(super) fn start_libcamera(
 
                 match req_rx.recv_timeout(request_poll) {
                     Ok(req) => {
+                        // Buffer timestamps on Raspberry Pi mark ISP completion; SensorTimestamp
+                        // (CLOCK_BOOTTIME, start of exposure) gives the real capture latency.
+                        let mut sensor_timestamp = None;
                         for (id, val) in req.metadata() {
+                            if id == libcamera::controls::ControlId::SensorTimestamp as u32
+                                && let libcamera::control_value::ControlValue::Int64(ts) = &val
+                            {
+                                sensor_timestamp =
+                                    ts.first().and_then(|ts| u64::try_from(*ts).ok());
+                            }
                             let Some(val) = from_lc_value(&val) else {
                                 continue;
                             };
@@ -639,7 +648,10 @@ pub(super) fn start_libcamera(
                                 buffer_memory,
                             }))
                             .with_capture_instant(std::time::Instant::now())
-                            .with_sensor_latency(TimestampClock::Boottime)
+                            .with_sensor_latency_from(
+                                TimestampClock::Boottime,
+                                sensor_timestamp.unwrap_or(frame_parts.timestamp),
+                            )
                             .with_transition(ResidencyTransition {
                                 from: FrameResidency::Dmabuf,
                                 to: FrameResidency::Dmabuf,
