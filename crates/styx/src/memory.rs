@@ -906,12 +906,11 @@ fn parse_dma_bufinfo_size(value: &str) -> Option<u64> {
         .or_else(|| value.strip_prefix("0X"))
         .and_then(|hex| u64::from_str_radix(hex, 16).ok())
         .or_else(|| {
-            if value.len() > 1 && value.starts_with('0') {
-                u64::from_str_radix(value, 16).ok()
-            } else if value
-                .chars()
-                .any(|ch| ch.is_ascii_hexdigit() && ch.is_ascii_alphabetic())
-            {
+            let looks_hex = (value.len() > 1 && value.starts_with('0'))
+                || value
+                    .chars()
+                    .any(|ch| ch.is_ascii_hexdigit() && ch.is_ascii_alphabetic());
+            if looks_hex {
                 u64::from_str_radix(value, 16).ok()
             } else {
                 value.parse::<u64>().ok()

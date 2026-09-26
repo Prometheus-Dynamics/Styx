@@ -240,7 +240,7 @@ impl YuyvToLumaDecoder {
                     let dst_ptr = dst_line.as_mut_ptr();
                     let blocks = width / 16;
                     for i in 0..blocks {
-                        let src_block = src_ptr.add(i * 32) as *const u8;
+                        let src_block = src_ptr.add(i * 32);
                         let yuv = vld2q_u8(src_block);
                         vst1q_u8(dst_ptr.add(i * 16), yuv.0);
                     }

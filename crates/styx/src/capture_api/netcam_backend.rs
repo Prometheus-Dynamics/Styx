@@ -591,6 +591,7 @@ pub(super) async fn enqueue_netcam_frame_async(
 }
 
 #[cfg(feature = "netcam-video")]
+#[allow(clippy::too_many_arguments)]
 fn ffmpeg_loop(
     url: &str,
     tx: &styx_core::queue::BoundedTx<FrameLease>,

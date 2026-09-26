@@ -2,6 +2,8 @@ use std::time::{Duration, Instant};
 
 use super::handle::*;
 use super::*;
+#[cfg(feature = "libcamera")]
+use crate::capture_api::control_plane::read_control_from_plane;
 use crate::metrics::CaptureShutdownWorkerWaitOutcome;
 use crate::metrics::StageMetrics;
 

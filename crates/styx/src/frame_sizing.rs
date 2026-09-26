@@ -25,8 +25,10 @@ pub(crate) fn estimated_compressed_packet_pool_bytes(
     let estimate = raw_estimate
         .and_then(|bytes| bytes.checked_div(4))
         .unwrap_or(fallback_payload_bytes)
-        .max(MIN_COMPRESSED_PACKET_BYTES)
-        .min(MAX_COMPRESSED_PACKET_POOL_BYTES);
+        .clamp(
+            MIN_COMPRESSED_PACKET_BYTES,
+            MAX_COMPRESSED_PACKET_POOL_BYTES,
+        );
     Some(estimate)
 }
 

@@ -603,6 +603,63 @@ impl MjpegFramePool for SharedBufferPool {
     }
 }
 
+fn jpeg_dimensions(buf: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 0usize;
+    while i + 4 < buf.len() {
+        if buf[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < buf.len() && buf[j] == 0xFF {
+            j += 1;
+        }
+        if j >= buf.len() {
+            break;
+        }
+        let marker = buf[j];
+        let is_sof = matches!(
+            marker,
+            0xC0 | 0xC1
+                | 0xC2
+                | 0xC3
+                | 0xC5
+                | 0xC6
+                | 0xC7
+                | 0xC9
+                | 0xCA
+                | 0xCB
+                | 0xCD
+                | 0xCE
+                | 0xCF
+        );
+        let has_length = !matches!(marker, 0xD8 | 0xD9) && !(0xD0..=0xD7).contains(&marker);
+        if !has_length {
+            i = j + 1;
+            continue;
+        }
+        if j + 2 >= buf.len() {
+            break;
+        }
+        let seg_len = u16::from_be_bytes([buf[j + 1], buf[j + 2]]) as usize;
+        if seg_len < 2 {
+            break;
+        }
+        if is_sof {
+            if j + 2 + 1 + 4 >= buf.len() {
+                break;
+            }
+            let h = u16::from_be_bytes([buf[j + 4], buf[j + 5]]) as u32;
+            let w = u16::from_be_bytes([buf[j + 6], buf[j + 7]]) as u32;
+            if w > 0 && h > 0 {
+                return Some((w, h));
+            }
+        }
+        i = j + 1 + seg_len;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -710,61 +767,4 @@ impl MjpegFramePool for BufferPool {
             layout.stride,
         ))
     }
-}
-
-fn jpeg_dimensions(buf: &[u8]) -> Option<(u32, u32)> {
-    let mut i = 0usize;
-    while i + 4 < buf.len() {
-        if buf[i] != 0xFF {
-            i += 1;
-            continue;
-        }
-        let mut j = i + 1;
-        while j < buf.len() && buf[j] == 0xFF {
-            j += 1;
-        }
-        if j >= buf.len() {
-            break;
-        }
-        let marker = buf[j];
-        let is_sof = matches!(
-            marker,
-            0xC0 | 0xC1
-                | 0xC2
-                | 0xC3
-                | 0xC5
-                | 0xC6
-                | 0xC7
-                | 0xC9
-                | 0xCA
-                | 0xCB
-                | 0xCD
-                | 0xCE
-                | 0xCF
-        );
-        let has_length = !matches!(marker, 0xD8 | 0xD9) && !(0xD0..=0xD7).contains(&marker);
-        if !has_length {
-            i = j + 1;
-            continue;
-        }
-        if j + 2 >= buf.len() {
-            break;
-        }
-        let seg_len = u16::from_be_bytes([buf[j + 1], buf[j + 2]]) as usize;
-        if seg_len < 2 {
-            break;
-        }
-        if is_sof {
-            if j + 2 + 1 + 4 >= buf.len() {
-                break;
-            }
-            let h = u16::from_be_bytes([buf[j + 4], buf[j + 5]]) as u32;
-            let w = u16::from_be_bytes([buf[j + 6], buf[j + 7]]) as u32;
-            if w > 0 && h > 0 {
-                return Some((w, h));
-            }
-        }
-        i = j + 1 + seg_len;
-    }
-    None
 }

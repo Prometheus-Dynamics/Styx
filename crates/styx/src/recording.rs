@@ -476,7 +476,8 @@ fn extension_for_encoded_fourcc(code: FourCc) -> &'static str {
     }
 }
 
-#[cfg(test)]
+// Every test here exercises image encoding.
+#[cfg(all(test, feature = "image"))]
 mod tests {
     use super::*;
     use std::num::NonZeroU32;

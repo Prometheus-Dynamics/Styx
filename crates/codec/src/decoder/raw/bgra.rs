@@ -123,7 +123,6 @@ impl BgraToRgbDecoder {
                 #[cfg(target_arch = "aarch64")]
                 unsafe {
                     bgra_row_to_rgb24_neon(src_line, dst_line, width);
-                    return;
                 }
                 #[cfg(not(target_arch = "aarch64"))]
                 {

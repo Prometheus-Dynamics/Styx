@@ -425,11 +425,8 @@ pub(super) fn demosaic_bilinear_u16_le(
                     0xFFFF, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0x0000, 0xFFFF, 0x0000,
                 ];
                 let mask_start_even: uint16x8_t = vld1q_u16(MASK_START_EVEN.as_ptr());
-                let mask_x_is_even: uint16x8_t = if (1usize & 1) == 0 {
-                    mask_start_even
-                } else {
-                    vmvnq_u16(mask_start_even)
-                };
+                // The loop below starts at x = 1 (odd), so even columns sit in lanes 1, 3, 5, 7.
+                let mask_x_is_even: uint16x8_t = vmvnq_u16(mask_start_even);
 
                 let row_up = src_u16.as_ptr().add(ym1 * stride_px);
                 let row = src_u16.as_ptr().add(y * stride_px);
@@ -606,7 +603,6 @@ pub(super) fn demosaic_bilinear_u16_le(
                     out_row[off + 1] = to_u8(g16, shift);
                     out_row[off + 2] = to_u8(b16, shift);
                 }
-                return;
             }
 
             #[cfg(not(target_arch = "aarch64"))]
