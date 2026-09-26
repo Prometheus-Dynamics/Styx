@@ -243,4 +243,45 @@ impl FrameLease {
             rows: row_count,
         })
     }
+
+    /// Allocate a host-owned frame of `format` and fill it from `bytes`: tightly packed
+    /// visible rows, plane after plane in plane order. `bytes` must be exactly
+    /// [`FrameLease::visible_payload_bytes`] long.
+    pub fn from_visible_bytes(
+        format: MediaFormat,
+        timestamp: u64,
+        bytes: &[u8],
+    ) -> Result<Self, FrameValidationError> {
+        let mut frame = Self::allocate_host_owned(format, timestamp)?;
+        let expected = frame.visible_payload_bytes()?;
+        if bytes.len() != expected {
+            return Err(FrameValidationError::VisibleLenMismatch {
+                expected,
+                actual: bytes.len(),
+            });
+        }
+        let mut offset = 0;
+        for plane in 0..frame.layouts.len() {
+            offset += frame.copy_slice_to_visible_plane(plane, &bytes[offset..])?;
+        }
+        Ok(frame)
+    }
+
+    /// Copy every plane's visible rows into `dst` as tightly packed rows, plane after plane,
+    /// and return the number of bytes written.
+    pub fn copy_visible_to_slice(&self, dst: &mut [u8]) -> Result<usize, FrameValidationError> {
+        let mut offset = 0;
+        for plane in 0..self.layouts.len() {
+            offset += self.copy_visible_plane_to_slice(plane, &mut dst[offset..])?;
+        }
+        Ok(offset)
+    }
+
+    /// Every plane's visible rows as one tightly packed buffer; the inverse of
+    /// [`FrameLease::from_visible_bytes`].
+    pub fn to_visible_vec(&self) -> Result<Vec<u8>, FrameValidationError> {
+        let mut bytes = vec![0; self.visible_payload_bytes()?];
+        self.copy_visible_to_slice(&mut bytes)?;
+        Ok(bytes)
+    }
 }

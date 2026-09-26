@@ -198,6 +198,8 @@ pub enum FrameValidationError {
     },
     #[error("frame width or height is zero")]
     ZeroDimensions,
+    #[error("visible byte length mismatch: expected {expected}, actual {actual}")]
+    VisibleLenMismatch { expected: usize, actual: usize },
     #[error("frame format has unknown storage layout")]
     UnknownStorageLayout,
     #[error("frame allocation requires host-owned residency, got {0}")]

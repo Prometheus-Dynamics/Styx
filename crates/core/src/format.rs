@@ -705,6 +705,18 @@ impl MediaFormat {
         }
     }
 
+    /// Build a format using `code`'s default color space (sRGB for packed RGB and JPEG,
+    /// BT.709 for YUV, `Unknown` when the FourCc has no default, e.g. GREY or raw Bayer).
+    pub fn with_default_color(code: FourCc, resolution: Resolution) -> Self {
+        Self::new(
+            code,
+            resolution,
+            code.info()
+                .default_color_space
+                .unwrap_or(ColorSpace::Unknown),
+        )
+    }
+
     /// Build an sRGB format from dimensions.
     ///
     /// Returns `None` when either dimension is zero.

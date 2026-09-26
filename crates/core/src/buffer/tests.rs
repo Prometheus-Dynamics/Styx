@@ -755,3 +755,32 @@ fn resized_shared_buffer_lease_is_not_recycled_into_fixed_size_pool() {
     }
     assert_eq!(pool.stats().free, 1);
 }
+
+#[test]
+fn visible_bytes_round_trip_every_plane_in_order() {
+    let resolution = Resolution::new(8, 6).unwrap();
+    for (code, len) in [(FourCc::R8, 48), (FourCc::NV12, 48 + 24)] {
+        let format = MediaFormat::new(code, resolution, ColorSpace::Unknown);
+        let bytes: Vec<u8> = (0..len).map(|index| (index * 7 + 3) as u8).collect();
+        let frame = FrameLease::from_visible_bytes(format, 0, &bytes).unwrap();
+        assert_eq!(frame.visible_payload_bytes().unwrap(), len);
+        assert_eq!(frame.to_visible_vec().unwrap(), bytes);
+        assert!(matches!(
+            FrameLease::from_visible_bytes(format, 0, &bytes[1..]),
+            Err(FrameValidationError::VisibleLenMismatch { .. })
+        ));
+    }
+}
+
+#[test]
+fn default_color_follows_fourcc_policy() {
+    let res = Resolution::new(2, 2).unwrap();
+    assert_eq!(
+        MediaFormat::with_default_color(FourCc::RG24, res).color,
+        ColorSpace::Srgb
+    );
+    assert_eq!(
+        MediaFormat::with_default_color(FourCc::GREY, res).color,
+        ColorSpace::Unknown
+    );
+}
