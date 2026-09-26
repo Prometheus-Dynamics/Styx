@@ -51,7 +51,7 @@ Runtime timing and capacity defaults should be named near `StyxConfig`/`CaptureT
 
 - capture queue depth and pool sizing
 - V4L2 mmap poll timeout, send timeout, and worker error backoff
-- libcamera camera lookup timeout/poll, request requeue stall timeout, completed-request poll timeout, idle-drain timeout/poll, control-response timeout, probe cache TTL, idle-stop policy, request-pool prefault policy, and processed-stream role
+- libcamera camera lookup timeout/poll, request requeue stall timeout, completed-request poll timeout, idle-drain timeout/poll, control-response timeout, probe cache TTL, idle-stop policy, request-pool prefault policy, processed-stream role, buffer memory, and pyramid level
 - netcam request/connect/read timeouts, reconnect backoff, frame send timeout, and stop-poll interval
 
 Environment variables are deployment/debug overrides. Release-facing code should prefer typed
@@ -61,6 +61,8 @@ Environment variables are deployment/debug overrides. Release-facing code should
 - `STYX_LIBCAMERA_STOP_WHEN_IDLE`: overrides libcamera idle-stop behavior.
 - `STYX_LIBCAMERA_PREFAULT_REQUEST_POOLS`: overrides libcamera request-pool prefaulting.
 - `STYX_LIBCAMERA_PROCESSED_STREAM_ROLE`: overrides the processed stream role.
+- `STYX_LIBCAMERA_BUFFER_MEMORY`: `auto`, `libcamera` or `dma-heap`; overrides where libcamera
+  capture buffers are allocated.
 - `STYX_LIBCAMERA_DEBUG`: enables extra libcamera debug probing.
 - `STYX_FFMPEG_DECODER_THREADS`: overrides the default FFmpeg decoder thread count.
 

@@ -8,6 +8,40 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added cached dma-heap capture buffers for libcamera (`LibcameraBufferMemory`, default `Auto`:
+  on for Raspberry Pi cameras, falling back to libcamera's allocator). libcamera's own PiSP
+  buffers are mapped uncached; on a CM5 this makes CPU reads of a 1280x800 Y plane 1.7x faster
+  for row scans and 3.8x faster for strided access. Override with `STYX_LIBCAMERA_BUFFER_MEMORY`.
+- Added `DMA_BUF_IOCTL_SYNC` read bracketing for libcamera and imported dma-buf frames
+  (`dmabuf_begin_cpu_read`/`dmabuf_end_cpu_read`), required for coherent CPU reads of cached
+  buffers written by an ISP.
+- Added zero-copy luma access: `FrameLease::luma_rows`, `into_luma` and `has_luma_plane` expose
+  plane 0 of GREY/R8 and planar/semi-planar YUV frames (including mapped dma-buf frames) as Y8.
+- Added GREY/R8 capture on libcamera colour sensors: when the sensor cannot produce 8-bit mono,
+  Styx captures processed YUV420 and delivers its Y plane as a zero-copy GREY frame.
+- Added pyramid companion frames on `FrameLease` (`CompanionKind`, `with_companion`,
+  `pyramid_level`, `with_box_pyramid`, `box_downscale_luma`). libcamera can fill them from the
+  ISP's second output in the same request (`CaptureRequest::luma_pyramid`,
+  `StyxConfig::libcamera_pyramid_level`), so companions share the primary's timestamp.
+- Added `TurbojpegLumaDecoder` (MJPG → GREY) with 64-byte-aligned rows, optional DCT scaling,
+  cropping, fast IDCT and software pyramid levels. On a CM5 it decodes 1280x800 camera frames in
+  2.4 ms versus 13.2 ms for the previous `jpeg-decoder` RGB path.
+- Added `LibcameraFrameMeta` (sequence number and buffer memory) and `FrameMeta::sequence()`.
+- Added multi-core MJPEG decoding to `TurbojpegLumaDecoder` (`LumaDecodeOptions::threads`, off by
+  default): frames with restart markers are split into standalone slices decoded in parallel,
+  byte-identical to a single-threaded decode. Logitech C270 720p on a CM5: 1.59 → 0.88 ms.
+- Added FFmpeg hardware decode: `FfmpegHwDevice` (VA-API, CUDA/NVDEC, QSV, DRM),
+  `FfmpegVideoDecoder::with_hw_device`, and `FfmpegLumaDecoder` (MJPEG/H.264/H.265 → GREY) with
+  `best_available()` probing named SoC decoders (`*_rkmpp`, `*_v4l2m2m`, `*_nvv4l2dec`, ...) then
+  devices. DRM-PRIME frames are now CPU-readable (mapped with dma-buf sync; tiled/compressed
+  layouts stay export-only), and decoders that expose DRM-PRIME internally (ffmpeg-rockchip)
+  get zero-copy output.
+- Added rectangle controls (`ControlKind::Rectangle`, `ControlValue::Rect`/`Rects`,
+  `ControlRect`): libcamera `ScalerCrop` and per-output `ScalerCrops` can now be set and read
+  back.
+- V4L2 capture now delivers NV12/NV21/NV16/I420/YV12 as proper multi-plane frames (zero-copy when
+  the buffer layout allows).
+
 - Added a lightweight `styx` `framelease` feature for crates that only need
   `FrameLease` and its `styx-core` requirements without enabling capture,
   codec, backend, service, graph, or preview modules.
@@ -27,6 +61,23 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   I420/YU12/YV12 frame layouts, including overlap detection for shared-address-space backings.
 - Added export capability reporting on external frame backings so memfd/dmabuf-style backings can
   advertise zero-copy export support without treating every external backing as exportable.
+
+### Fixed
+
+- The libcamera manager is now stopped at process exit when no camera is in use, so processes
+  no longer leave orphaned `raspberrypi_ipa_proxy` helpers behind.
+- Worked around a libcamera-rs 0.7.0 plane fd leak in `OwnedFrameBuffer::new` in a way that stays
+  correct once the upstream fix is released.
+- Fixed pre-existing CI failures: `handle_tests` missing import under `libcamera`, clippy lints in
+  netcam, `frame_sizing`, `memory`, aarch64-only raw decoders and `recording` tests, example
+  formatting, and the file-size baseline.
+- Fixed turbojpeg MJPEG decoding rejecting frames with recoverable libjpeg warnings (e.g.
+  "extraneous bytes before marker"), which common UVC cameras such as the Logitech C270 emit;
+  `TurbojpegDecoder` and `TurbojpegLumaDecoder` now accept them as libjpeg does.
+- Fixed V4L2 GREY/R8 capture dropping every frame (stride was assumed to be 3 bytes per pixel);
+  GREY/R8 buffers are now also delivered zero-copy.
+- The runtime RG24 fallback decoder now prefers libturbojpeg over `jpeg-decoder` for MJPEG when
+  both are enabled, and GREY conversion of MJPEG uses the luma-only turbojpeg path.
 
 ## [2.0.0] - 2026-05-01
 
