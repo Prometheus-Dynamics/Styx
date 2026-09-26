@@ -1,5 +1,1 @@
 # Existing oversized Rust files to reduce over time.
-crates/core/src/buffer/frame.rs
-crates/core/src/format.rs
-crates/styx/src/lib.rs
-crates/styx/src/memory.rs
