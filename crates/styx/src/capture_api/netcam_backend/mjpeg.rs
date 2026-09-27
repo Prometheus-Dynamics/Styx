@@ -6,7 +6,7 @@ use styx_core::prelude::*;
 #[cfg(all(feature = "netcam", feature = "async"))]
 use futures_core::Stream;
 #[cfg(feature = "netcam")]
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 #[cfg(all(feature = "netcam", feature = "async"))]
 use tokio_util::bytes::Bytes;
 #[cfg(all(feature = "netcam", feature = "async"))]
@@ -26,6 +26,10 @@ use crate::metrics::CaptureRetryMetrics;
 mod parser;
 
 use parser::{MjpegBodyProgress, MjpegFrameParser, MjpegHeader};
+
+/// Longest boundary or header line read at once. Longer lines (only sent by a broken or hostile
+/// server) are read in pieces, so they cannot grow the line buffer without bound.
+const MAX_LINE_BYTES: u64 = 8 * 1024;
 
 pub(super) struct MjpegLoopContext<'a> {
     pub(super) boundary: &'a str,
@@ -61,7 +65,7 @@ pub(super) async fn async_mjpeg_loop<S>(
 where
     S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin,
 {
-    use tokio::io::AsyncBufReadExt;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
     let MjpegLoopContext {
         boundary,
         width,
@@ -95,7 +99,8 @@ where
             return true;
         }
         if parser.needs_boundary_line() {
-            if reader
+            if (&mut *reader)
+                .take(MAX_LINE_BYTES)
                 .read_until(b'\n', parser.line_buffer())
                 .await
                 .ok()
@@ -112,7 +117,8 @@ where
         parser.begin_part();
         let mut content_length: Option<usize> = None;
         loop {
-            if reader
+            if (&mut *reader)
+                .take(MAX_LINE_BYTES)
                 .read_until(b'\n', parser.line_buffer())
                 .await
                 .ok()
@@ -276,7 +282,8 @@ pub(super) fn mjpeg_loop(
             return true;
         }
         if parser.needs_boundary_line() {
-            if reader
+            if (&mut reader)
+                .take(MAX_LINE_BYTES)
                 .read_until(b'\n', parser.line_buffer())
                 .ok()
                 .filter(|&n| n > 0)
@@ -292,7 +299,8 @@ pub(super) fn mjpeg_loop(
         parser.begin_part();
         let mut content_length: Option<usize> = None;
         loop {
-            if reader
+            if (&mut reader)
+                .take(MAX_LINE_BYTES)
                 .read_until(b'\n', parser.line_buffer())
                 .ok()
                 .filter(|&n| n > 0)

@@ -60,6 +60,13 @@ impl Codec for ZuneMjpegDecoder {
             .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
 
         let mut decoder = JpegDecoder::new(ZCursor::new(plane.data()));
+        decoder
+            .decode_headers()
+            .map_err(|e| CodecError::Codec(e.to_string()))?;
+        let (width, height) = decoder
+            .dimensions()
+            .ok_or_else(|| CodecError::Codec("jpeg missing info".into()))?;
+        crate::check_decoded_size(input.meta().format.resolution, width as u32, height as u32)?;
         let pixels = decoder
             .decode()
             .map_err(|e| CodecError::Codec(e.to_string()))?;
@@ -108,6 +115,13 @@ impl Codec for ZuneMjpegDecoder {
             .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
 
         let mut decoder = JpegDecoder::new(ZCursor::new(plane.data()));
+        decoder
+            .decode_headers()
+            .map_err(|e| CodecError::Codec(e.to_string()))?;
+        let (width, height) = decoder
+            .dimensions()
+            .ok_or_else(|| CodecError::Codec("jpeg missing info".into()))?;
+        crate::check_decoded_size(input.meta().format.resolution, width as u32, height as u32)?;
         let pixels = decoder
             .decode()
             .map_err(|e| CodecError::Codec(e.to_string()))?;

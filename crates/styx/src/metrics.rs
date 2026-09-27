@@ -7,12 +7,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "metrics/export.rs"]
+mod export;
 #[path = "metrics/retry.rs"]
 mod retry;
 #[cfg(any(feature = "libcamera", feature = "v4l2"))]
 #[path = "metrics/sequence_gaps.rs"]
 mod sequence_gaps;
 
+pub use export::{MetricKind, MetricSample, render_prometheus};
 pub use retry::{CaptureRetryMetrics, CaptureRetryStats};
 #[cfg(any(feature = "libcamera", feature = "v4l2"))]
 pub(crate) use sequence_gaps::SequenceGapTracker;

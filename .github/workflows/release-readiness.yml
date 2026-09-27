@@ -56,3 +56,21 @@ jobs:
       - name: Check selected release feature groups
         run: |
           cargo check -p styx --features async,netcam,file-backend,graph-pipeline,codec-ffmpeg,v4l2,libcamera
+
+  semver:
+    name: Public API compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Compares each published crate's public API with its latest release on crates.io and
+      # fails on breaking changes the version number does not allow (e.g. a removed or changed
+      # public item without a major bump).
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: styx-core-rs, styx-capture, styx-codec, styx-v4l2, styx-libcamera

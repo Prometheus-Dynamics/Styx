@@ -277,6 +277,30 @@ pub trait Codec: Any + Send + Sync + 'static {
     }
 }
 
+/// Refuse a compressed frame whose header claims a picture far larger than the stream it came
+/// from (a corrupt or hostile header), before any buffer is sized from the header. Allows up to
+/// 4x the pixels of `declared`, the frame's own format.
+#[cfg(any(
+    feature = "codec-turbojpeg",
+    feature = "codec-jpeg-decoder",
+    feature = "codec-zune"
+))]
+pub(crate) fn check_decoded_size(
+    declared: Resolution,
+    width: u32,
+    height: u32,
+) -> Result<(), CodecError> {
+    let pixels = u64::from(width) * u64::from(height);
+    let limit = 4 * u64::from(declared.width.get()) * u64::from(declared.height.get());
+    if pixels == 0 || pixels > limit.max(4096) {
+        return Err(CodecError::Codec(format!(
+            "compressed frame claims {width}x{height}, far larger than its {}x{} stream",
+            declared.width, declared.height
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
     #[error("format mismatch: expected {expected}, got {actual}")]
@@ -319,6 +343,16 @@ pub mod mjpeg_zune;
 pub mod prelude;
 #[cfg(feature = "codec-turbojpeg")]
 mod turbojpeg_raw;
+
+#[cfg(all(
+    test,
+    any(
+        feature = "codec-turbojpeg",
+        feature = "codec-jpeg-decoder",
+        feature = "codec-zune"
+    )
+))]
+mod corruption_tests;
 
 #[cfg(test)]
 mod tests {

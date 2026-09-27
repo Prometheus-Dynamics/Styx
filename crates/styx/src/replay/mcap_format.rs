@@ -14,22 +14,21 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
-use std::io::{BufWriter, Read};
+use std::io::BufWriter;
 use std::path::Path;
 use std::time::Duration;
 
-use mcap::records::{MessageHeader, Metadata, Record};
-use mcap::sans_io::linear_reader::{LinearReadEvent, LinearReader};
+use mcap::records::{MessageHeader, Metadata};
 use styx_core::prelude::*;
 
 use super::cdr::{CdrReader, CdrWriter};
 use super::{RecordingHeader, ReplayError, frame_from_payload};
 use crate::DeviceIdentity;
 
-const IMAGE_TOPIC: &str = "/styx/image";
-const COMPRESSED_TOPIC: &str = "/styx/image/compressed";
-const META_TOPIC: &str = "/styx/frame_meta";
-const RECORDING_METADATA: &str = "styx.recording";
+pub(super) const IMAGE_TOPIC: &str = "/styx/image";
+pub(super) const COMPRESSED_TOPIC: &str = "/styx/image/compressed";
+pub(super) const META_TOPIC: &str = "/styx/frame_meta";
+pub(super) const RECORDING_METADATA: &str = "styx.recording";
 const FORMAT_VERSION: &str = "1";
 
 const TIME_DEF: &str =
@@ -80,7 +79,7 @@ fn compressed_def() -> String {
     format!("std_msgs/Header header\nstring format\nuint8[] data\n{TIME_DEF}")
 }
 
-fn pyramid_topic(level: u8) -> String {
+pub(super) fn pyramid_topic(level: u8) -> String {
     format!("/styx/pyramid/{level}")
 }
 
@@ -231,7 +230,9 @@ fn header_to_map(header: &RecordingHeader) -> BTreeMap<String, String> {
     ])
 }
 
-fn header_from_map(map: &BTreeMap<String, String>) -> Result<RecordingHeader, ReplayError> {
+pub(super) fn header_from_map(
+    map: &BTreeMap<String, String>,
+) -> Result<RecordingHeader, ReplayError> {
     let get = |key: &str| {
         map.get(key)
             .ok_or(ReplayError::Corrupt("recording metadata incomplete"))
@@ -312,7 +313,7 @@ fn duration_ns(d: Option<Duration>) -> i64 {
     d.map_or(-1, |d| d.as_nanos().min(i64::MAX as u128) as i64)
 }
 
-fn encode_meta(meta: &FrameMeta, topic: &str, levels: &[u8]) -> Vec<u8> {
+pub(super) fn encode_meta(meta: &FrameMeta, topic: &str, levels: &[u8]) -> Vec<u8> {
     let mut w = CdrWriter::with_capacity(256);
     w.string(topic);
     w.u32(meta.format.code.to_u32());
@@ -349,18 +350,18 @@ fn encode_meta(meta: &FrameMeta, topic: &str, levels: &[u8]) -> Vec<u8> {
 }
 
 /// One image message's metadata, decoded.
-struct PartMeta {
-    topic: String,
+pub(super) struct PartMeta {
+    pub(super) topic: String,
     format: MediaFormat,
     timestamp: u64,
     clock: Option<TimestampClock>,
     backend: Option<BackendFrameMeta>,
     crop: Option<FrameRect>,
     timing: FrameTiming,
-    levels: Vec<u8>,
+    pub(super) levels: Vec<u8>,
 }
 
-fn decode_meta(data: &[u8]) -> Result<PartMeta, ReplayError> {
+pub(super) fn decode_meta(data: &[u8]) -> Result<PartMeta, ReplayError> {
     let mut r = CdrReader::new(data)?;
     let topic = r.string()?;
     let code = FourCc::from(r.u32()?);
@@ -415,12 +416,22 @@ fn decode_meta(data: &[u8]) -> Result<PartMeta, ReplayError> {
             hook,
             encode,
         },
-        levels: r.bytes()?.to_vec(),
+        levels: {
+            let levels = r.bytes()?.to_vec();
+            let mut seen = [false; 256];
+            if levels
+                .iter()
+                .any(|&l| std::mem::replace(&mut seen[l as usize], true))
+            {
+                return Err(ReplayError::Corrupt("repeated pyramid level"));
+            }
+            levels
+        },
     })
 }
 
 /// The pixel or bitstream bytes of an image message.
-fn decode_payload(topic: &str, data: &[u8]) -> Result<Vec<u8>, ReplayError> {
+pub(super) fn decode_payload(topic: &str, data: &[u8]) -> Result<Vec<u8>, ReplayError> {
     let mut r = CdrReader::new(data)?;
     let (_sec, _nanosec, _frame_id) = (r.i32()?, r.u32()?, r.string()?);
     if topic == COMPRESSED_TOPIC {
@@ -432,7 +443,11 @@ fn decode_payload(topic: &str, data: &[u8]) -> Result<Vec<u8>, ReplayError> {
     Ok(r.bytes()?.to_vec())
 }
 
-fn build(part: PartMeta, payload: &[u8], offset: u64) -> Result<FrameLease, ReplayError> {
+pub(super) fn build(
+    part: PartMeta,
+    payload: &[u8],
+    offset: u64,
+) -> Result<FrameLease, ReplayError> {
     let compressed = part.format.code.layout_info().compressed;
     let mut frame = frame_from_payload(
         part.format,
@@ -448,166 +463,7 @@ fn build(part: PartMeta, payload: &[u8], offset: u64) -> Result<FrameLease, Repl
     Ok(frame)
 }
 
-#[derive(Default)]
-struct PendingFrame {
-    metas: HashMap<String, PartMeta>,
-    payloads: HashMap<String, Vec<u8>>,
-}
-
-impl PendingFrame {
-    fn main_topic(&self) -> Option<&str> {
-        [IMAGE_TOPIC, COMPRESSED_TOPIC]
-            .into_iter()
-            .find(|t| self.metas.contains_key(*t))
-    }
-
-    fn complete(&self) -> bool {
-        let Some(main) = self.main_topic() else {
-            return false;
-        };
-        self.payloads.contains_key(main)
-            && self.metas[main].levels.iter().all(|level| {
-                let topic = pyramid_topic(*level);
-                self.metas.contains_key(&topic) && self.payloads.contains_key(&topic)
-            })
-    }
-
-    fn assemble(mut self, offset: u64) -> Result<FrameLease, ReplayError> {
-        let main = self.main_topic().expect("complete frame").to_string();
-        let part = self.metas.remove(&main).expect("main metadata");
-        let levels = part.levels.clone();
-        let mut frame = build(part, &self.payloads[&main], offset)?;
-        for level in levels {
-            let topic = pyramid_topic(level);
-            let companion = build(
-                self.metas.remove(&topic).expect("companion metadata"),
-                &self.payloads[&topic],
-                offset,
-            )?;
-            frame = frame
-                .with_companion(CompanionKind::Pyramid { level }, companion)
-                .map_err(|e| ReplayError::Frame(e.to_string()))?;
-        }
-        Ok(frame)
-    }
-}
-
-/// Streams frames out of an MCAP recording without loading it into memory.
-pub(crate) struct McapFrames<R: Read> {
-    source: R,
-    reader: LinearReader,
-    topics: HashMap<u16, String>,
-    header: Option<RecordingHeader>,
-    pending: BTreeMap<u32, PendingFrame>,
-    pub(crate) offset: u64,
-    done: bool,
-}
-
-impl<R: Read> McapFrames<R> {
-    /// Read up to the recording metadata.
-    pub(crate) fn open(source: R) -> Result<(RecordingHeader, Self), ReplayError> {
-        let mut frames = Self {
-            source,
-            reader: LinearReader::new(),
-            topics: HashMap::new(),
-            header: None,
-            pending: BTreeMap::new(),
-            offset: 0,
-            done: false,
-        };
-        while frames.header.is_none() {
-            if !frames.step()? {
-                return Err(ReplayError::Corrupt(
-                    "MCAP file has no styx.recording metadata",
-                ));
-            }
-        }
-        let header = frames.header.clone().expect("header");
-        Ok((header, frames))
-    }
-
-    /// Process one record; `false` at the end of the file.
-    fn step(&mut self) -> Result<bool, ReplayError> {
-        loop {
-            let event = match self.reader.next_event() {
-                None => return Ok(false),
-                // Cut short (e.g. the process died while recording): end at the last complete
-                // frame.
-                Some(Err(mcap::McapError::UnexpectedEof)) => return Ok(false),
-                Some(Err(err)) => return Err(mcap_error(err)),
-                Some(Ok(event)) => event,
-            };
-            match event {
-                LinearReadEvent::ReadRequest(need) => {
-                    let read = self.source.read(self.reader.insert(need))?;
-                    self.reader.notify_read(read);
-                }
-                LinearReadEvent::Record { opcode, data } => {
-                    let record = mcap::parse_record(opcode, data).map_err(mcap_error)?;
-                    match record {
-                        Record::Metadata(m) if m.name == RECORDING_METADATA => {
-                            self.header = Some(header_from_map(&m.metadata)?);
-                        }
-                        Record::Channel(c) => {
-                            self.topics.insert(c.id, c.topic);
-                        }
-                        Record::Message { header, data } => {
-                            let topic = self
-                                .topics
-                                .get(&header.channel_id)
-                                .ok_or(ReplayError::Corrupt("message on unknown channel"))?
-                                .clone();
-                            let pending = self.pending.entry(header.sequence).or_default();
-                            if topic == META_TOPIC {
-                                let part = decode_meta(&data)?;
-                                pending.metas.insert(part.topic.clone(), part);
-                            } else {
-                                let payload = decode_payload(&topic, &data)?;
-                                pending.payloads.insert(topic, payload);
-                            }
-                        }
-                        _ => {}
-                    }
-                    return Ok(true);
-                }
-            }
-        }
-    }
-
-    fn take_complete(&mut self) -> Option<PendingFrame> {
-        let key = self
-            .pending
-            .iter()
-            .find(|(_, frame)| frame.complete())
-            .map(|(key, _)| *key)?;
-        self.pending.remove(&key)
-    }
-}
-
-impl<R: Read> Iterator for McapFrames<R> {
-    type Item = Result<FrameLease, ReplayError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(frame) = self.take_complete() {
-                return Some(frame.assemble(self.offset));
-            }
-            if self.done {
-                return None;
-            }
-            match self.step() {
-                Ok(true) => {}
-                Ok(false) => self.done = true,
-                Err(err) => {
-                    self.done = true;
-                    return Some(Err(err));
-                }
-            }
-        }
-    }
-}
-
-fn mcap_error(err: mcap::McapError) -> ReplayError {
+pub(super) fn mcap_error(err: mcap::McapError) -> ReplayError {
     match err {
         mcap::McapError::Io(io) => ReplayError::Io(io),
         other => ReplayError::Mcap(other.to_string()),

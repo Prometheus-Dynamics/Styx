@@ -1,0 +1,31 @@
+[package]
+name = "styx-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone: not a workspace member (cargo-fuzz needs nightly and sanitizer flags).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+styx = { path = "../crates/styx", default-features = false, features = ["replay-mcap", "replay-styxrec"] }
+styx-codec = { path = "../crates/codec", features = ["codec-turbojpeg", "codec-zune"] }
+styx-core = { package = "styx-core-rs", path = "../crates/core" }
+
+[[bin]]
+name = "replay_reader"
+path = "fuzz_targets/replay_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mjpeg_decode"
+path = "fuzz_targets/mjpeg_decode.rs"
+test = false
+doc = false
+bench = false

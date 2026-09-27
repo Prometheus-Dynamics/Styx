@@ -7,12 +7,12 @@ use super::*;
 use crate::capture_api::CaptureRequest;
 use crate::{BackendKind, DeviceIdentity};
 
-fn temp_path(name: &str) -> PathBuf {
+pub(super) fn temp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("styx-replay-{}-{name}", std::process::id()))
 }
 
 /// Every recording format compiled in.
-fn formats() -> Vec<StreamFormat> {
+pub(super) fn formats() -> Vec<StreamFormat> {
     vec![
         #[cfg(feature = "replay-mcap")]
         StreamFormat::Mcap,
@@ -21,7 +21,7 @@ fn formats() -> Vec<StreamFormat> {
     ]
 }
 
-fn header(format: MediaFormat) -> RecordingHeader {
+pub(super) fn header(format: MediaFormat) -> RecordingHeader {
     RecordingHeader {
         device: DeviceIdentity {
             display: "test camera".into(),
@@ -33,7 +33,7 @@ fn header(format: MediaFormat) -> RecordingHeader {
     }
 }
 
-fn grey(width: u32, height: u32) -> MediaFormat {
+pub(super) fn grey(width: u32, height: u32) -> MediaFormat {
     MediaFormat::new(
         FourCc::GREY,
         Resolution::new(width, height).unwrap(),
@@ -42,7 +42,7 @@ fn grey(width: u32, height: u32) -> MediaFormat {
 }
 
 /// A GREY frame whose pixels encode its index, with metadata set the way a live capture would.
-fn frame(index: u32, timestamp: u64) -> FrameLease {
+pub(super) fn frame(index: u32, timestamp: u64) -> FrameLease {
     let format = grey(64, 32);
     let bytes: Vec<u8> = (0..64 * 32).map(|i| (i as u32 + index) as u8).collect();
     let mut frame = FrameLease::from_visible_bytes(format, timestamp, &bytes).unwrap();

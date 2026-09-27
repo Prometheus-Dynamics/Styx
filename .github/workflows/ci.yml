@@ -41,6 +41,11 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace
 
+      - name: Run damaged-input tests (MJPEG decoders, netcam parser)
+        run: |
+          cargo test -p styx-codec --lib --features codec-turbojpeg,codec-jpeg-decoder,codec-zune corruption
+          cargo test -p styx --lib --features netcam parser
+
       - name: Build example surface
         run: cargo check -p styx-examples --no-default-features --features "async,file-backend,netcam"
 

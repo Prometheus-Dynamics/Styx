@@ -342,6 +342,7 @@ impl Codec for TurbojpegDecoder {
 
         let tj = TjDecompressor::new()?;
         let header = tj.read_header(plane.data())?;
+        crate::check_decoded_size(input.meta().format.resolution, header.width, header.height)?;
         let resolution = Resolution::new(header.width, header.height)
             .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
         let format = MediaFormat::new(
@@ -388,6 +389,7 @@ impl Codec for TurbojpegDecoder {
 
         let tj = TjDecompressor::new()?;
         let header = tj.read_header(plane.data())?;
+        crate::check_decoded_size(input.meta().format.resolution, header.width, header.height)?;
         let resolution = Resolution::new(header.width, header.height)
             .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
         let format = MediaFormat::new(

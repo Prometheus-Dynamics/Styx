@@ -289,6 +289,7 @@ impl Codec for TurbojpegLumaDecoder {
         let jpeg = mjpeg_payload(&input, &self.descriptor)?;
         let handle = TjDecompressor::new()?;
         let header = handle.read_header(jpeg)?;
+        crate::check_decoded_size(input.meta().format.resolution, header.width, header.height)?;
         let plan = self.plan(&header);
         let resolution = Resolution::new(plan.width, plan.height)
             .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
@@ -329,6 +330,7 @@ impl Codec for TurbojpegLumaDecoder {
         let jpeg = mjpeg_payload(input, &self.descriptor)?;
         let handle = TjDecompressor::new()?;
         let header = handle.read_header(jpeg)?;
+        crate::check_decoded_size(input.meta().format.resolution, header.width, header.height)?;
         let plan = self.plan(&header);
         let resolution = Resolution::new(plan.width, plan.height)
             .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;

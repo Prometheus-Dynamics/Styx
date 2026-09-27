@@ -110,7 +110,7 @@ pub(crate) fn read_frame(
         _ if tag[0] == TAG_FRAME => {}
         _ => return Err(ReplayError::Corrupt("unknown record tag")),
     }
-    match read_body(r, offset) {
+    match read_body(r, offset, true) {
         // Cut short mid-frame (e.g. the process died while recording): end at the last
         // complete frame.
         Err(ReplayError::Io(err)) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
@@ -162,7 +162,8 @@ fn write_body(w: &mut impl Write, frame: &FrameLease) -> Result<(), ReplayError>
     Ok(())
 }
 
-fn read_body(r: &mut impl Read, offset: u64) -> Result<FrameLease, ReplayError> {
+/// A frame body; companions only at the top level (the recorder never nests them).
+fn read_body(r: &mut impl Read, offset: u64, top_level: bool) -> Result<FrameLease, ReplayError> {
     let format = read_format(r)?;
     let timestamp = read_u64(r)?.saturating_add(offset);
     let clock = clock_from_tag(read_u8(r)?)?;
@@ -185,8 +186,11 @@ fn read_body(r: &mut impl Read, offset: u64) -> Result<FrameLease, ReplayError> 
     };
     let payload_kind = read_u8(r)?;
     let len = read_u32(r)? as usize;
-    let mut bytes = vec![0u8; len];
-    r.read_exact(&mut bytes)?;
+    // Grow with the data actually read, so a corrupt length cannot allocate gigabytes.
+    let mut bytes = Vec::with_capacity(len.min(1 << 20));
+    if r.by_ref().take(len as u64).read_to_end(&mut bytes)? < len {
+        return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
+    }
     let mut frame = match payload_kind {
         PAYLOAD_VISIBLE => frame_from_payload(format, timestamp, &bytes, false)?,
         PAYLOAD_BITSTREAM => frame_from_payload(format, timestamp, &bytes, true)?,
@@ -197,12 +201,16 @@ fn read_body(r: &mut impl Read, offset: u64) -> Result<FrameLease, ReplayError> 
     meta.backend = backend;
     meta.crop = crop;
     meta.timing = timing;
-    for _ in 0..read_u8(r)? {
+    let companions = read_u8(r)?;
+    if companions > 0 && !top_level {
+        return Err(ReplayError::Corrupt("nested companion frames"));
+    }
+    for _ in 0..companions {
         let kind = match (read_u8(r)?, read_u8(r)?) {
             (COMPANION_PYRAMID, level) => CompanionKind::Pyramid { level },
             _ => return Err(ReplayError::Corrupt("unknown companion kind")),
         };
-        let companion = read_body(r, offset)?;
+        let companion = read_body(r, offset, false)?;
         frame = frame
             .with_companion(kind, companion)
             .map_err(|e| ReplayError::Frame(e.to_string()))?;

@@ -71,6 +71,29 @@ Use `memory_stats().external_backings` or `health_report()` to confirm that exte
 return to zero after stopping a capture session. Nonzero counts after teardown usually mean a caller
 is still holding `FrameLease` values.
 
+## Exporting Metrics
+
+`HealthReport::metric_samples()` flattens a report into named counters and gauges
+(`styx_frame_drops_total{reason=...}`, `styx_stage_latency_ms{stage=...,quantile=...}`,
+`styx_reconnects_total`, queue depth, copies, in-flight driver buffers, ...) for any metrics
+system. `HealthReport::to_prometheus(labels)` and `render_prometheus` write the Prometheus text
+format; give each camera its own labels:
+
+```rust
+use styx::prelude::*;
+
+fn metrics(front: &MediaPipeline, rear: &MediaPipeline) -> String {
+    let (a, b) = (front.health_report(), rear.health_report());
+    render_prometheus([
+        (&[("camera", "front")][..], &a),
+        (&[("camera", "rear")][..], &b),
+    ])
+}
+```
+
+Values not known yet (latency before the first frame) are left out; drop counters are always
+present.
+
 ## Runtime Memory Report
 
 Use `styx::memory::runtime_memory_report()` for a process-level snapshot, or

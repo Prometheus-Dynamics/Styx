@@ -650,9 +650,9 @@ pub mod prelude {
     #[cfg(feature = "facade")]
     pub use crate::metrics::{
         CopyMetrics, CopyStats, FrameDropReason, FrameDropStats, GraphTelemetryStats, HealthReport,
-        PipelineMemoryStats, PipelineMetrics, PipelineStage, PipelineStageError,
-        QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot, StageErrorMetrics, StageMetrics,
-        StageSnapshot,
+        MetricKind, MetricSample, PipelineMemoryStats, PipelineMetrics, PipelineStage,
+        PipelineStageError, QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot,
+        StageErrorMetrics, StageMetrics, StageSnapshot, render_prometheus,
     };
     #[cfg(all(feature = "facade", feature = "hooks"))]
     pub use crate::recording::{
@@ -722,6 +722,9 @@ pub mod prelude {
     #[cfg(all(feature = "facade", feature = "v4l2"))]
     pub use styx_v4l2::prelude::{V4l2DeviceInfo, probe_devices as probe_v4l2};
 }
+
+#[cfg(test)]
+mod test_alloc;
 
 #[cfg(all(test, feature = "facade"))]
 mod tests {

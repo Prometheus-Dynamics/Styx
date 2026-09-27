@@ -32,6 +32,8 @@
 mod cdr;
 #[cfg(feature = "replay-mcap")]
 mod mcap_format;
+#[cfg(feature = "replay-mcap")]
+mod mcap_frames;
 #[cfg(feature = "replay-styxrec")]
 mod styxrec;
 
@@ -300,13 +302,36 @@ pub fn open_recording(
     }
     #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
     {
-        let mut reader = BufReader::with_capacity(1 << 20, File::open(path)?);
+        let file = File::open(path)?;
+        let len = file.metadata()?.len();
+        open_recording_reader(file, len)
+    }
+}
+
+/// Open a recording from any reader, e.g. one held in memory or streamed over the network.
+/// `len` is the recording's size in bytes, or an upper bound: records claiming to be larger
+/// are rejected as corrupt instead of being buffered.
+pub fn open_recording_reader(
+    reader: impl std::io::Read + Send + 'static,
+    len: u64,
+) -> Result<(RecordingHeader, RecordingFrames), ReplayError> {
+    #[cfg(not(any(feature = "replay-mcap", feature = "replay-styxrec")))]
+    {
+        let _ = (reader, len);
+        Err(ReplayError::NoFormat)
+    }
+    #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+    {
+        let mut reader: BufReader<Box<dyn Read + Send>> =
+            // Records are read one at a time and large reads bypass the buffer.
+            BufReader::with_capacity(64 << 10, Box::new(reader));
         let mut magic = [0u8; 8];
         let n = read_up_to(&mut reader, &mut magic)?;
         let start = std::io::Cursor::new(magic[..n].to_vec()).chain(reader);
         #[cfg(feature = "replay-mcap")]
         if magic[..n] == mcap::MAGIC[..] {
-            let (header, frames) = mcap_format::McapFrames::open(start)?;
+            let limit = usize::try_from(len).unwrap_or(usize::MAX);
+            let (header, frames) = mcap_frames::McapFrames::open(start, limit)?;
             return Ok((header, RecordingFrames(Frames::Mcap(Box::new(frames)))));
         }
         #[cfg(feature = "replay-styxrec")]
@@ -338,7 +363,7 @@ fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
 }
 
 #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
-type Source = std::io::Chain<std::io::Cursor<Vec<u8>>, BufReader<File>>;
+type Source = std::io::Chain<std::io::Cursor<Vec<u8>>, BufReader<Box<dyn Read + Send>>>;
 
 /// Frames of a recording in order.
 pub struct RecordingFrames(Frames);
@@ -349,7 +374,7 @@ enum Frames {
     #[allow(dead_code)]
     Disabled,
     #[cfg(feature = "replay-mcap")]
-    Mcap(Box<mcap_format::McapFrames<Source>>),
+    Mcap(Box<mcap_frames::McapFrames<Source>>),
     #[cfg(feature = "replay-styxrec")]
     Styxrec { reader: Source, offset: u64 },
 }
@@ -413,5 +438,7 @@ pub(crate) fn frame_from_payload(
     ))
 }
 
+#[cfg(test)]
+mod corruption_tests;
 #[cfg(test)]
 mod tests;

@@ -44,7 +44,10 @@ pub mod capture {
 #[cfg(feature = "facade")]
 pub mod pipeline {
     pub use crate::memory::RuntimeMemoryReport;
-    pub use crate::metrics::{HealthReport, PipelineMemoryStats, PipelineMetrics};
+    pub use crate::metrics::{
+        HealthReport, MetricKind, MetricSample, PipelineMemoryStats, PipelineMetrics,
+        render_prometheus,
+    };
     pub use crate::session::{
         MediaPipeline, MediaPipelineBuilder, MediaPipelineFrameIter, PipelineExecutionMode,
     };
@@ -127,7 +130,7 @@ pub mod replay {
     pub use crate::replay::StreamRecorder;
     pub use crate::replay::{
         RecordingFrames, RecordingHeader, ReplayError, ReplayPacing, ReplaySourceConfig,
-        StreamFormat, open_recording, read_header,
+        StreamFormat, open_recording, open_recording_reader, read_header,
     };
 }
 

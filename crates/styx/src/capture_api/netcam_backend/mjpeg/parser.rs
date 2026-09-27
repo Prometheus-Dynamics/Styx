@@ -362,4 +362,49 @@ mod tests {
         assert_eq!((take, outcome), (4, BoundaryRead::HitBoundary));
         assert_eq!(buf, b"jpeg-bytes");
     }
+
+    #[test]
+    fn boundary_body_reader_survives_arbitrary_streams() {
+        let boundary = "--frame";
+        let mut seed = 0x6e65_7463_616du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..500 {
+            let parser = MjpegMultipartParser::new(boundary, 1024);
+            let mut body = parser.body_reader();
+            let mut buf = Vec::new();
+            let mut fed = 0usize;
+            for _ in 0..(next() % 20) {
+                // Random bytes, sometimes with (partial) boundaries and line breaks mixed in.
+                let mut chunk: Vec<u8> = (0..next() % 64).map(|_| next() as u8).collect();
+                if next() % 3 == 0 {
+                    let at = (next() as usize) % (chunk.len() + 1);
+                    let cut = 1 + (next() as usize) % boundary.len();
+                    chunk.splice(at..at, boundary.as_bytes()[..cut].iter().copied());
+                }
+                if next() % 4 == 0 {
+                    chunk.extend_from_slice(b"\r\n");
+                }
+                let mut rest = &chunk[..];
+                while !rest.is_empty() {
+                    let (take, outcome) = body.append_chunk(rest, &mut buf);
+                    assert!(take <= rest.len());
+                    fed += take;
+                    rest = &rest[take..];
+                    if outcome == BoundaryRead::HitBoundary {
+                        buf.clear();
+                        body = parser.body_reader();
+                    } else if take == 0 {
+                        break;
+                    }
+                }
+                assert!(buf.len() <= fed, "emitted more than was fed");
+            }
+            let _ = body.append_chunk(&[], &mut buf);
+        }
+    }
 }

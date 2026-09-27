@@ -78,6 +78,17 @@ impl Codec for MjpegDecoder {
             .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
 
         let mut decoder = Decoder::new(Cursor::new(plane.data()));
+        decoder
+            .read_info()
+            .map_err(|e| CodecError::Codec(e.to_string()))?;
+        let header = decoder
+            .info()
+            .ok_or_else(|| CodecError::Codec("mjpeg missing info".into()))?;
+        crate::check_decoded_size(
+            input.meta().format.resolution,
+            u32::from(header.width),
+            u32::from(header.height),
+        )?;
         let pixels = decoder
             .decode()
             .map_err(|e| CodecError::Codec(e.to_string()))?;
@@ -134,6 +145,17 @@ impl Codec for MjpegDecoder {
             .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
 
         let mut decoder = Decoder::new(Cursor::new(plane.data()));
+        decoder
+            .read_info()
+            .map_err(|e| CodecError::Codec(e.to_string()))?;
+        let header = decoder
+            .info()
+            .ok_or_else(|| CodecError::Codec("mjpeg missing info".into()))?;
+        crate::check_decoded_size(
+            input.meta().format.resolution,
+            u32::from(header.width),
+            u32::from(header.height),
+        )?;
         let pixels = decoder
             .decode()
             .map_err(|e| CodecError::Codec(e.to_string()))?;

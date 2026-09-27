@@ -261,6 +261,18 @@ impl FrameLease {
         timestamp: u64,
         bytes: &[u8],
     ) -> Result<Self, FrameValidationError> {
+        // Check the size before allocating, so a wrong or corrupt `format` (e.g. from a damaged
+        // recording) cannot allocate far more than `bytes` holds.
+        let allocated: usize = super::layout::default_layouts_for_format(format, None, None)?
+            .iter()
+            .map(|layout| layout.offset.saturating_add(layout.len))
+            .fold(0, usize::saturating_add);
+        if allocated > bytes.len().saturating_mul(2).saturating_add(4096) {
+            return Err(FrameValidationError::VisibleLenMismatch {
+                expected: allocated,
+                actual: bytes.len(),
+            });
+        }
         let mut frame = Self::allocate_host_owned(format, timestamp)?;
         let expected = frame.visible_payload_bytes()?;
         if bytes.len() != expected {

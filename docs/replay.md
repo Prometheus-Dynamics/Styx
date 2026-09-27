@@ -58,6 +58,15 @@ The profile is `ros2`, and messages are CDR-encoded with `ros2msg` schemas:
 - Checked with Foxglove's reference Python reader and ROS 2 decoder (`mcap`,
   `mcap-ros2-support`): every message in the CM5 recordings decodes, including `FrameMeta`.
 
+### Damaged files
+
+Recordings cut short (the process died, the disk filled) replay up to the last complete frame.
+Damaged ones end with an error instead of a crash, and never make the reader allocate much more
+than the file holds, which matters on small devices. Each MCAP record is read and bounds-checked
+by Styx; the `mcap` crate only parses the few record types Styx uses. `open_recording_reader`
+reads a recording from any `Read` (memory, network) with a size bound. The parsers are covered by
+corruption tests in CI and by cargo-fuzz targets (`fuzz/`).
+
 ## What is kept
 
 | | |
