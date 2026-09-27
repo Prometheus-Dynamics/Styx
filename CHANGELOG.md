@@ -122,11 +122,25 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   Cargo features `neon` and `x86` (default on). See `docs/performance.md`.
 - Added a memory smoke to CI (`scripts/check-mem-smoke.sh`, `testing/perf/memory-baseline.txt`):
   heap and resident peaks per scenario, and a leak check.
+- Added shared captures: `plan_many` returns a `SharedFramePlan` that runs one capture for
+  several consumers, each with its own prepared frames from zero-copy shares
+  (`FrameLease::into_shareable`, `FrameLease::share`). See `docs/frame-planning.md`.
+- The planner scales with the Raspberry Pi ISP when an output size is requested
+  (`LibcameraConfig::output_size`, `StyxConfig::libcamera_output_size`, `StepKind::Scale`),
+  keeping the mode's field of view.
+- Added on-demand capture: `StyxConfig::stop_when_idle` and `FramePlan::stop_when_idle` stop
+  streaming while nobody pulls frames and restart on the next pull
+  (`CaptureRetryStats::{idle_stops, idle_resumes}`). See `docs/reconnect.md`.
 - Added corruption tests for recordings, MJPEG decoders and the netcam parser, cargo-fuzz targets
   (`fuzz/`), and a public API compatibility check (`cargo-semver-checks`) in release CI.
 
 ### Changed
 
+- `plan_many` now plans a shared capture; `PlanError::MultipleConsumersUnsupported` is replaced
+  by `PlanError::NoConsumers`. `PlannedFrames::pipeline()` returns an `Option` (none for a
+  shared consumer).
+- With an output size, the planner ranks modes by the size of the frames they deliver after
+  ISP or decoder scaling.
 - FFmpeg encoders are low latency by default: libx264/libx265 use `tune=zerolatency` and the
   `superfast` preset. On a CM5 at 720p the libx264 defaults held 40 frames of lookahead, used
   140 MB and 61 ms per frame; now the first packet comes with the first frame, in 20 MB and

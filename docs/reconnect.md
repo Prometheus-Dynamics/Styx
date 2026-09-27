@@ -47,6 +47,31 @@ let config = StyxConfig::new().capture_reconnect(ReconnectPolicy::disabled());
 Netcam sources have their own reconnect loop and report into the same fields. File, virtual and
 simulation sources don't disconnect and are not supervised.
 
+## Stopping idle cameras
+
+A supervised capture can also stop while nobody pulls frames, to free the camera's buffers and
+power:
+
+```rust
+let config = StyxConfig::new().stop_when_idle(Duration::from_secs(5));
+```
+
+- **Stop:** when no receive is in progress and the last one is older than the timeout, the
+  supervisor releases queued frames and stops the backend capture. The stall watchdog is
+  paused meanwhile.
+- **Restart:** the next `recv*` call restarts it on the caller's thread and then waits for a
+  frame as usual. If the restart fails, the normal reconnect loop takes over.
+- **Controls:** `set_control` while stopped is remembered and applied on restart; `get_control`
+  returns the remembered value.
+- **Reporting:** `CaptureRetryStats::{idle_stops, idle_resumes}`.
+
+On a CM5:
+
+| Camera | Released while idle | First frame after restart |
+|---|---|---|
+| C270, V4L2 | all buffers (2.3 MB PSS) | ~0.6 s |
+| OV9782, libcamera | 9 MB PSS and 2.5 of 4.4 MB CMA (libcamera keeps the rest) | ~1.4 s |
+
 ## Measured on a Raspberry Pi CM5
 
 A Logitech C270 was unbound from USB for 3 s (`/sys/bus/usb/drivers/usb/unbind`, then `bind`):

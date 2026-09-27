@@ -45,6 +45,11 @@ pub struct CaptureConfig {
     pub extra_buffers: usize,
     /// Recovery for libcamera and V4L2 cameras that disconnect or stop delivering frames.
     pub reconnect: ReconnectPolicy,
+    /// Stop streaming a libcamera or V4L2 camera nobody has pulled a frame from for this long,
+    /// freeing its buffers and letting the sensor idle; the next pull starts it again on the same
+    /// handle, with its controls (it takes as long as starting the camera). `0` (default)
+    /// keeps it streaming. Needs `reconnect` enabled, which runs the capture supervisor.
+    pub stop_when_idle_ms: u64,
     /// Clock live sources stamp frames with. File and simulation sources always report media
     /// time (`TimestampClock::StreamRelative`).
     pub timestamp_clock: ClockSource,
@@ -112,6 +117,7 @@ impl Default for CaptureConfig {
             queue_overflow: QueueOverflow::DropOldest,
             extra_buffers: DEFAULT_CAPTURE_EXTRA_BUFFERS,
             reconnect: ReconnectPolicy::default(),
+            stop_when_idle_ms: 0,
             timestamp_clock: ClockSource::Native,
         }
     }
@@ -129,6 +135,7 @@ impl CaptureConfig {
             queue_overflow: self.queue_overflow,
             extra_buffers: self.extra_buffers,
             reconnect: self.reconnect,
+            stop_when_idle_ms: self.stop_when_idle_ms,
             timestamp_clock: self.timestamp_clock,
         }
     }

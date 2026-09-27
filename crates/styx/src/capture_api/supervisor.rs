@@ -1,11 +1,13 @@
-//! Disconnect and stall recovery for libcamera and V4L2 captures.
+//! Disconnect and stall recovery, and stopping when idle, for libcamera and V4L2 captures.
 //!
 //! The consumer's handle owns a queue that outlives any one backend capture. A supervisor thread
 //! runs the backend capture (feeding that queue), watches for disconnects and stalls, and
-//! restarts it on the same camera, found again by identity keys.
+//! restarts it on the same camera, found again by identity keys. With
+//! `StyxConfig::stop_when_idle` it also stops the backend capture while nobody pulls frames; the
+//! next pull starts it again from the consumer's thread.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -29,6 +31,18 @@ pub struct SupervisedCapture {
     pub(crate) controls: Mutex<Vec<(ControlId, ControlValue)>>,
     /// Sequence gaps counted by backend captures that have since been replaced.
     pub(crate) past_sequence_gaps: AtomicU64,
+    recipe: Recipe,
+    tx: styx_core::queue::BoundedTx<FrameLease>,
+    /// The consumer's receiver, to drop frames left over when streaming stops.
+    rx: styx_core::queue::BoundedRx<FrameLease>,
+    retry_metrics: crate::metrics::CaptureRetryMetrics,
+    epoch: Instant,
+    /// Last pull (start or end of a receive), in milliseconds since `epoch`.
+    last_pull_ms: AtomicU64,
+    /// Receives in progress.
+    waiting: AtomicUsize,
+    /// Streaming stopped because nobody pulled; `inner` is `None` meanwhile.
+    idle: AtomicBool,
 }
 
 impl std::fmt::Debug for SupervisedCapture {
@@ -48,6 +62,87 @@ impl SupervisedCapture {
         }
     }
 
+    /// The last value set for control `id`, if any.
+    pub(crate) fn remembered_control(&self, id: ControlId) -> Option<ControlValue> {
+        self.controls
+            .lock()
+            .iter()
+            .find(|(existing, _)| *existing == id)
+            .map(|(_, value)| value.clone())
+    }
+
+    /// Whether streaming is stopped for lack of consumers.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.idle.load(Ordering::SeqCst)
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    /// Record a pull for the duration of a receive; starts streaming again if it was stopped
+    /// while idle.
+    pub(crate) fn demand(self: &Arc<Self>) -> DemandGuard {
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        self.last_pull_ms.store(self.now_ms(), Ordering::SeqCst);
+        if self.is_idle() {
+            self.resume();
+        }
+        DemandGuard(self.clone())
+    }
+
+    /// Start streaming again after an idle stop. A failed start leaves `inner` empty, which the
+    /// supervisor then handles as a lost camera (with backoff).
+    fn resume(&self) {
+        let mut inner = self.inner.lock();
+        if !self.is_idle() {
+            return;
+        }
+        let controls = self.controls.lock().clone();
+        match restart(&self.recipe, controls, backend_queue(&self.tx)) {
+            Ok(handle) => {
+                tracing::debug!(camera = %self.recipe.identity.display, "capture resumed on demand");
+                *inner = Some(handle);
+                self.retry_metrics.record_idle_resume();
+            }
+            Err(err) => {
+                tracing::warn!(camera = %self.recipe.identity.display, error = %err, "capture could not resume; reconnecting");
+            }
+        }
+        self.idle.store(false, Ordering::SeqCst);
+    }
+
+    /// Stop streaming if nobody is receiving and the last pull is at least `after` old. Runs on
+    /// the supervisor thread; the checks and the stop happen under the `inner` lock that
+    /// [`SupervisedCapture::resume`] takes, so a pull cannot slip in between or restart the
+    /// camera before it is released.
+    fn stop_if_idle(&self, after: Duration) -> bool {
+        let mut inner = self.inner.lock();
+        let idle_for = self
+            .now_ms()
+            .saturating_sub(self.last_pull_ms.load(Ordering::SeqCst));
+        if inner.is_none()
+            || self.waiting.load(Ordering::SeqCst) > 0
+            || idle_for < after.as_millis() as u64
+        {
+            return false;
+        }
+        self.idle.store(true, Ordering::SeqCst);
+        // Frames nobody will take: release them (and their device buffers) before stopping.
+        while let RecvOutcome::Data(_) = self.rx.recv() {}
+        if let Some(previous) = inner.take() {
+            let gaps = previous.sequence_gaps.load(Ordering::Relaxed);
+            self.past_sequence_gaps.fetch_add(gaps, Ordering::Relaxed);
+            // Still under the lock: a pull that arrives now waits for the camera to be released
+            // before starting it again.
+            previous.stop();
+        }
+        drop(inner);
+        self.retry_metrics.record_idle_stop();
+        tracing::debug!(camera = %self.recipe.identity.display, idle_ms = after.as_millis() as u64, "capture stopped while idle");
+        true
+    }
+
     /// Control plane of the running capture.
     pub(crate) fn current_control(&self) -> Result<ControlPlane, CaptureError> {
         self.inner
@@ -55,6 +150,17 @@ impl SupervisedCapture {
             .as_ref()
             .map(|inner| inner.control.clone())
             .ok_or_else(|| CaptureError::Disconnected("camera is reconnecting".into()))
+    }
+}
+
+/// Marks a receive in progress; see [`SupervisedCapture::demand`].
+pub(crate) struct DemandGuard(Arc<SupervisedCapture>);
+
+impl Drop for DemandGuard {
+    fn drop(&mut self) {
+        let shared = &self.0;
+        shared.last_pull_ms.store(shared.now_ms(), Ordering::SeqCst);
+        shared.waiting.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -106,14 +212,22 @@ pub(crate) fn supervise(
     let active_mode = first.mode.clone();
     let active_interval = first.interval;
     let retry_metrics = first.retry_metrics.clone();
+    let (tx, rx) = queue;
     let shared = Arc::new(SupervisedCapture {
         inner: Mutex::new(Some(first)),
         controls: Mutex::new(controls),
         past_sequence_gaps: AtomicU64::new(0),
+        recipe,
+        tx,
+        rx: rx.clone(),
+        retry_metrics: retry_metrics.clone(),
+        epoch: Instant::now(),
+        last_pull_ms: AtomicU64::new(0),
+        waiting: AtomicUsize::new(0),
+        idle: AtomicBool::new(false),
     });
     let worker_error = Arc::new(Mutex::new(None));
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    let (tx, rx) = queue;
     let worker = {
         let shared = shared.clone();
         let worker_error = worker_error.clone();
@@ -121,14 +235,7 @@ pub(crate) fn supervise(
         std::thread::Builder::new()
             .name("styx-capture-supervisor".into())
             .spawn(move || {
-                run(
-                    &recipe,
-                    &shared,
-                    &tx,
-                    &stop_rx,
-                    &worker_error,
-                    &retry_metrics,
-                );
+                run(&shared, &stop_rx, &worker_error, &retry_metrics);
             })
             .expect("spawn capture supervisor")
     };
@@ -157,14 +264,16 @@ pub(crate) fn supervise(
 }
 
 fn run(
-    recipe: &Recipe,
     shared: &SupervisedCapture,
-    tx: &styx_core::queue::BoundedTx<FrameLease>,
     stop_rx: &std::sync::mpsc::Receiver<()>,
     worker_error: &Mutex<Option<CaptureError>>,
     retry_metrics: &crate::metrics::CaptureRetryMetrics,
 ) {
-    let policy = recipe.config.capture_tunables().reconnect;
+    let (recipe, tx) = (&shared.recipe, &shared.tx);
+    let tunables = recipe.config.capture_tunables();
+    let policy = tunables.reconnect;
+    let idle_after =
+        (tunables.stop_when_idle_ms > 0).then(|| Duration::from_millis(tunables.stop_when_idle_ms));
     let stall_timeout = stall_timeout(&policy, recipe.interval);
     let initial_backoff = Duration::from_millis(policy.initial_backoff_ms.max(1));
     let max_backoff = Duration::from_millis(policy.max_backoff_ms).max(initial_backoff);
@@ -175,6 +284,12 @@ fn run(
     let mut restart_error: Option<String> = None;
     // Runs until stopped (or the handle, and with it the stop sender, is dropped).
     while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(POLL) {
+        // Stopped for lack of consumers: nothing to watch until a pull starts it again.
+        if shared.is_idle() || idle_after.is_some_and(|after| shared.stop_if_idle(after)) {
+            last_sent = tx.stats().sent;
+            last_progress = Instant::now();
+            continue;
+        }
         let sent = tx.stats().sent;
         if sent != last_sent {
             last_sent = sent;

@@ -208,10 +208,12 @@ pub(super) fn start_libcamera(
             let depth_u32 = u32::try_from(queue_depth + extra_buffers)
                 .unwrap_or(4)
                 .clamp(1, 16);
-            let size = Size::new(
+            // The ISP scales to a requested output size; otherwise the mode's size.
+            let (width, height) = libcamera_config.output_size.unwrap_or((
                 mode_for_thread.format.resolution.width.get(),
                 mode_for_thread.format.resolution.height.get(),
-            );
+            ));
+            let size = Size::new(width, height);
             // Pyramid companions need a processed format whose Y plane is directly usable.
             let pyramid_level = libcamera_config.pyramid_level.min(3);
             let mut second = if enable_tdn_output {

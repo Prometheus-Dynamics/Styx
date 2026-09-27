@@ -535,6 +535,45 @@ fn supervised_capture_resumes_on_the_same_handle_after_losing_its_backend() {
 }
 
 #[test]
+fn idle_capture_stops_streaming_and_resumes_on_the_next_pull() {
+    let device = crate::capture_api::make_virtual_rgb_device("idle", 2, 2, 100);
+    let handle = CaptureSource::new(device)
+        .open_with_config(StyxConfig::new().stop_when_idle(std::time::Duration::from_millis(150)))
+        .expect("open supervised");
+    let wait = std::time::Duration::from_millis(500);
+    assert!(matches!(handle.recv_blocking(wait), RecvOutcome::Data(_)));
+    let crate::capture_api::ControlPlane::Supervised(shared) = &handle.control else {
+        panic!("capture is not supervised");
+    };
+
+    // A consumer waiting for frames is not idle, however long it waits.
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_millis(400) {
+        assert!(matches!(handle.recv_blocking(wait), RecvOutcome::Data(_)));
+        assert!(!shared.is_idle());
+    }
+
+    // Nobody pulls: streaming stops and the backend capture is released.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert!(shared.is_idle());
+    assert!(shared.inner.lock().is_none());
+    assert_eq!(handle.health_report().capture_retries.idle_stops, 1);
+
+    // The next pull starts it again, without counting as a reconnect.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !matches!(handle.recv_blocking(wait), RecvOutcome::Data(_)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "frames did not resume"
+        );
+    }
+    let retries = handle.health_report().capture_retries;
+    assert_eq!((retries.idle_stops, retries.idle_resumes), (1, 1));
+    assert_eq!(retries.reconnect_attempts, 0);
+    handle.stop();
+}
+
+#[test]
 fn capture_source_builds_pipeline_without_manual_request_builder() {
     let device = crate::capture_api::make_virtual_rgb_device("source-pipeline", 2, 2, 30);
     let source = CaptureSource::new(device);

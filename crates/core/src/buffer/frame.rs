@@ -15,6 +15,7 @@ mod construct;
 mod crop;
 mod layout;
 mod luma;
+mod share;
 mod views;
 mod visible;
 

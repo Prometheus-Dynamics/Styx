@@ -129,11 +129,28 @@ fn forbidding_the_only_decoder_leaves_raw_paths() {
 }
 
 #[test]
-fn multiple_consumers_are_explicitly_unsupported() {
-    let reqs = [FrameRequirements::luma(), FrameRequirements::luma()];
+fn consumers_share_a_mode_that_serves_all_of_them() {
+    let camera = device(
+        BackendKind::Virtual,
+        BackendHandle::Virtual,
+        vec![
+            mode(FourCc::NV12, 640, 480, 30),
+            mode(FourCc::NV12, 1280, 720, 30),
+            mode(FourCc::NV12, 1920, 1080, 30),
+        ],
+    );
+    // A small detector and a 720p consumer: the smallest mode covering both.
+    let reqs = [
+        FrameRequirements::luma().output_resolution(320, 180),
+        FrameRequirements::luma().min_resolution(1280, 720),
+    ];
+    let plan = plan_many_with(&camera, &reqs, &registry()).unwrap();
+    assert_eq!(plan.mode.format.resolution.width.get(), 1280);
+    assert_eq!(plan.consumers.len(), 2);
+    assert!(plan.consumers.iter().all(|c| c.mode.id == plan.mode.id));
     assert!(matches!(
-        plan_many(&usb_camera(), &reqs),
-        Err(PlanError::MultipleConsumersUnsupported)
+        plan_many_with(&camera, &[], &registry()),
+        Err(PlanError::NoConsumers)
     ));
 }
 
@@ -229,4 +246,43 @@ fn output_resolution_larger_than_every_mode_takes_the_largest() {
         (1280, 720)
     };
     assert_eq!(plan.output_resolution(), largest);
+}
+
+#[cfg(feature = "libcamera")]
+#[test]
+fn raspberry_pi_isp_scales_to_the_output_resolution_keeping_the_field_of_view() {
+    let dev = device(
+        BackendKind::Libcamera,
+        BackendHandle::Libcamera {
+            id: "/base/axi/pcie@1000120000/rp1/i2c@88000/ov9782@60".into(),
+        },
+        // libcamera also lists smaller (ISP) sizes of other aspect ratios as modes.
+        vec![
+            mode(FourCc::NV12, 1280, 800, 30),
+            mode(FourCc::NV12, 320, 240, 30),
+        ],
+    );
+    let req = FrameRequirements::luma()
+        .output_resolution(320, 180)
+        .pyramid(1);
+    let plan = plan_frames_with(&dev, &req, &registry()).unwrap();
+    // 16:10 mode: 320 wide covers 180 high at 320x200, smaller than the 4:3 mode.
+    assert_eq!(plan.mode.format.resolution.width.get(), 1280);
+    assert_eq!(plan.output_resolution(), (320, 200));
+    assert_eq!(plan.isp_output, Some((320, 200)));
+    let scale = plan
+        .steps
+        .iter()
+        .find(|s| s.kind == StepKind::Scale)
+        .unwrap();
+    assert_eq!(scale.execution, StepExecution::Hardware);
+    // The ISP's pyramid level follows the scaled output.
+    assert!(plan.to_string().contains("160x100"), "{plan}");
+
+    let cpu_only = req.overrides(PlanOverrides {
+        hardware: HardwarePolicy::Disabled,
+        ..Default::default()
+    });
+    let plan = plan_frames_with(&dev, &cpu_only, &registry()).unwrap();
+    assert_eq!(plan.isp_output, None);
 }

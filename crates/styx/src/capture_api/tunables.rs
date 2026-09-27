@@ -168,6 +168,10 @@ pub struct LibcameraConfig {
     /// the primary frame's timestamp. `0` disables it. Processed YUV/GREY formats only; uses the
     /// same second output as TDN, so the two cannot be combined.
     pub pyramid_level: u8,
+    /// Deliver frames at this size instead of the mode's: the ISP scales the sensor image (no
+    /// CPU work, and buffers of the smaller size). libcamera may round it to what the pipeline
+    /// supports; the capture reports the size it got. `None` (default) uses the mode's size.
+    pub output_size: Option<(u32, u32)>,
 }
 
 impl Default for LibcameraConfig {
@@ -186,6 +190,7 @@ impl Default for LibcameraConfig {
             processed_stream_role: LibcameraProcessedStreamRole::default(),
             buffer_memory: LibcameraBufferMemory::default(),
             pyramid_level: 0,
+            output_size: None,
         }
     }
 }
@@ -206,6 +211,7 @@ impl LibcameraConfig {
             processed_stream_role: self.processed_stream_role,
             buffer_memory: self.buffer_memory,
             pyramid_level: self.pyramid_level.min(3),
+            output_size: self.output_size.filter(|&(w, h)| w > 0 && h > 0),
         }
     }
 }
@@ -372,6 +378,14 @@ impl StyxConfig {
         self
     }
 
+    /// Stop streaming a libcamera or V4L2 camera after `after` without a consumer, and start it
+    /// again on the next pull (see [`CaptureConfig::stop_when_idle_ms`]).
+    pub fn stop_when_idle(mut self, after: std::time::Duration) -> Self {
+        self.capture.stop_when_idle_ms =
+            u64::try_from(after.as_millis()).unwrap_or(u64::MAX).max(1);
+        self
+    }
+
     /// Overflow policy for the capture queue (see [`CaptureConfig::queue_overflow`]).
     pub fn capture_queue_overflow(mut self, overflow: QueueOverflow) -> Self {
         self.capture.queue_overflow = overflow;
@@ -535,6 +549,13 @@ impl StyxConfig {
     /// Read it with `FrameLease::pyramid_level(level)`.
     pub fn libcamera_pyramid_level(mut self, level: u8) -> Self {
         self.backends.libcamera.pyramid_level = level;
+        self
+    }
+
+    /// Have the libcamera ISP deliver frames at `width`x`height` instead of the mode's size (see
+    /// [`LibcameraConfig::output_size`]).
+    pub fn libcamera_output_size(mut self, width: u32, height: u32) -> Self {
+        self.backends.libcamera.output_size = Some((width, height));
         self
     }
 

@@ -253,9 +253,17 @@ impl<T> BoundedTx<T> {
 /// let (_tx, rx) = bounded::<u8>(1);
 /// assert!(matches!(rx.recv(), RecvOutcome::Empty | RecvOutcome::Closed));
 /// ```
-#[derive(Clone)]
 pub struct BoundedRx<T> {
     inner: Arc<QueueInner<T>>,
+}
+
+// Manual: another receiver of the same queue, whatever `T` is.
+impl<T> Clone for BoundedRx<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<T> BoundedRx<T> {

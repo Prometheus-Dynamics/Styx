@@ -84,6 +84,13 @@ size in the DCT domain: the smallest of those that still covers the request. Fra
 upscaled. `FramePlan::output_resolution()` gives the size frames arrive at, and the plan says
 when its route cannot scale.
 
+On a Raspberry Pi the ISP scales instead (libcamera's output size; a `scale` step in the plan).
+It keeps the mode's aspect ratio so the field of view is not cropped: 320x180 from a 16:10
+OV9782 arrives at 320x200. Modes are ranked by the size of the frames they deliver, so a wide
+mode scaled by the ISP beats a smaller 4:3 mode. On a CM5, OV9782 luma at 320x200 runs at
+30 fps with 1.5% CPU, delivered straight from the ISP. `HardwarePolicy::Disabled` turns ISP
+scaling off.
+
 On a Raspberry Pi CM5, Logitech C270 MJPEG at 1280x720 delivered at 320x180:
 
 | Output | Full size | 320x180 |
@@ -95,6 +102,46 @@ Decode time per frame (p50) and the process's memory while capturing (PSS). Scal
 frames with restart markers are split across cores like full-size ones. The full-size RGB plan
 decodes with FFmpeg, whose libraries add to its memory; asking for a smaller size selects a
 decoder that can scale.
+
+## Several consumers of one camera
+
+`plan_many(device, &[detector, recorder])` plans one capture for several consumers, for example
+Y8 for a detector and MJPEG for a recorder. It returns a `SharedFramePlan`: the mode and
+interval every consumer can use, plus a `FramePlan` per consumer. `start()` returns a
+`PlannedFrames` per consumer, each prepared its own way (decoder, pyramid, ROI, output size).
+
+```rust
+use styx::planner::plan_many;
+
+let plan = plan_many(&device, &[
+    FrameRequirements::luma().output_resolution(320, 180),
+    FrameRequirements::formats([FourCc::MJPG]),
+])?;
+println!("{plan}");
+let mut consumers = plan.start()?;
+let recorder = consumers.pop().unwrap();
+let detector = consumers.pop().unwrap();
+```
+
+- **Mode:** the smallest mode that covers every consumer's output size (the largest if any
+  consumer states none); then the lowest combined cost. If the consumers need different ISP
+  output sizes, the ISP is left at the mode's size and consumers scale on their own.
+- **Frames:** the capture is read by whichever consumer asks first, and every other consumer
+  gets a zero-copy share of the same frame. Each consumer gets the newest frame it has not had
+  yet, so a slow consumer skips frames instead of building a backlog (counted as
+  `CaptureQueueEviction` in its health report) and never holds the others up.
+- **Lifetime:** dropping a consumer releases its queued frames; the capture stops when the last
+  one goes.
+
+On a CM5, a C270 at 1280x960 MJPEG feeding a 320x180 luma detector and a raw MJPEG consumer uses
+1.7% CPU in total.
+
+## Stopping idle cameras
+
+`FramePlan::stop_when_idle(duration)` (or `SharedFramePlan::stop_when_idle`, or
+`StyxConfig::stop_when_idle` for a plain capture) stops streaming once nobody has asked for a
+frame for that long. The next request starts the camera again, with the same mode and controls.
+See [reconnect.md](reconnect.md#stopping-idle-cameras).
 
 ## Region of interest
 
@@ -111,10 +158,8 @@ are decoded at a smaller output size.
 
 ## Limits
 
-- One consumer per camera. `plan_many` returns `MultipleConsumersUnsupported` for more than one
-  set of requirements. Shared captures with per-consumer branches (e.g. Y8 for a detector plus
-  MJPEG for a recorder) are the planned extension; the requirement types are already
-  per-consumer.
+- Consumers of a shared capture with identical requirements each decode their own frames;
+  decoding is not shared.
 - Hardware decode paths other than the Raspberry Pi ISP (Rockchip MPP, VA-API, Jetson) are
   implemented but not yet validated on hardware.
 - Planned frames are for in-process consumers; the pipeline does not export them as memfd or

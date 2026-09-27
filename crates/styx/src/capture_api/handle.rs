@@ -146,11 +146,21 @@ impl Iterator for CaptureFrameIter<'_> {
 }
 
 impl CaptureHandle {
+    /// For a supervised capture, a guard marking a receive in progress (and starting a capture
+    /// stopped while idle).
+    fn demand(&self) -> Option<super::supervisor::DemandGuard> {
+        match &self.control {
+            ControlPlane::Supervised(shared) => Some(shared.demand()),
+            _ => None,
+        }
+    }
+
     /// Poll the capture queue without waiting.
     ///
     /// Returns `RecvOutcome::Empty` when the queue is temporarily empty.
     pub fn recv(&self) -> RecvOutcome<FrameLease> {
         let start = Instant::now();
+        let _demand = self.demand();
         match self.rx.recv() {
             RecvOutcome::Data(frame) => {
                 self.metrics.record(start.elapsed());
@@ -164,6 +174,7 @@ impl CaptureHandle {
     #[cfg(feature = "async")]
     pub async fn recv_async(&self) -> RecvOutcome<FrameLease> {
         let start = Instant::now();
+        let _demand = self.demand();
         match self.rx.recv_async().await {
             RecvOutcome::Data(frame) => {
                 self.metrics.record(start.elapsed());
@@ -187,6 +198,7 @@ impl CaptureHandle {
     /// Wait indefinitely until a frame arrives or the capture closes.
     pub fn recv_forever(&self) -> RecvOutcome<FrameLease> {
         let start = Instant::now();
+        let _demand = self.demand();
         match self.rx.recv_blocking() {
             styx_core::queue::RecvWaitOutcome::Data(frame) => {
                 self.metrics.record(start.elapsed());
@@ -206,6 +218,7 @@ impl CaptureHandle {
         timeout: std::time::Duration,
     ) -> styx_core::queue::RecvWaitOutcome<FrameLease> {
         let start = Instant::now();
+        let _demand = self.demand();
         let outcome = self.rx.recv_timeout(timeout);
         match outcome {
             styx_core::queue::RecvWaitOutcome::Data(frame) => {

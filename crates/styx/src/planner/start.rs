@@ -13,9 +13,11 @@ use styx_codec::prelude::{
 use styx_codec::{Codec, CodecDescriptor, CodecError, CodecKind};
 use styx_core::prelude::*;
 
+use super::shared::SharedCapture;
 use super::{FramePlan, Route};
 use crate::capture_api::{CaptureError, CaptureRequest, StyxConfig};
 use crate::session::{MediaPipeline, MediaPipelineBuilder};
+use styx_core::queue::BoundedRx;
 
 /// Live region-of-interest control for a running plan. Cloneable; changes apply to the next
 /// frame. Coordinates are full-frame pixels.
@@ -34,15 +36,70 @@ impl RoiHandle {
 
 /// Frames delivered according to a [`FramePlan`].
 pub struct PlannedFrames {
-    pipeline: MediaPipeline,
+    source: Source,
     roi: RoiHandle,
     plan: FramePlan,
 }
 
+enum Source {
+    /// The plan's own capture.
+    Pipeline(Box<MediaPipeline>),
+    /// One consumer of a capture shared through a [`super::SharedFramePlan`].
+    Branch(Box<Branch>),
+}
+
+struct Branch {
+    shared: Arc<SharedCapture>,
+    index: usize,
+    rx: BoundedRx<FrameLease>,
+    preparer: FramePreparer,
+}
+
+impl Drop for Branch {
+    fn drop(&mut self) {
+        // Frames shared with a consumer that is gone would hold camera buffers.
+        self.rx.close();
+    }
+}
+
 impl PlannedFrames {
-    /// Next frame, waiting up to `wait`.
+    pub(crate) fn branch(
+        plan: &FramePlan,
+        shared: Arc<SharedCapture>,
+        index: usize,
+        rx: BoundedRx<FrameLease>,
+    ) -> Self {
+        let roi = RoiHandle::default();
+        roi.set(plan.requirements.roi);
+        let preparer = FramePreparer::new(plan, roi.clone());
+        Self {
+            source: Source::Branch(Box::new(Branch {
+                shared,
+                index,
+                rx,
+                preparer,
+            })),
+            roi,
+            plan: plan.clone(),
+        }
+    }
+
+    /// Next frame, waiting up to `wait`. A frame that fails to prepare (e.g. a corrupt JPEG) is
+    /// skipped on a shared capture and ends a plan's own pipeline.
     pub fn next_frame(&mut self, wait: Duration) -> RecvOutcome<FrameLease> {
-        self.pipeline.next_blocking(wait)
+        match &mut self.source {
+            Source::Pipeline(pipeline) => pipeline.next_blocking(wait),
+            Source::Branch(branch) => match branch.shared.next(branch.index, &branch.rx, wait) {
+                RecvOutcome::Data(frame) => match branch.preparer.process(frame) {
+                    Ok(frame) => RecvOutcome::Data(frame),
+                    Err(err) => {
+                        tracing::warn!(consumer = branch.index, error = %err, "frame skipped");
+                        RecvOutcome::Empty
+                    }
+                },
+                other => other,
+            },
+        }
     }
 
     /// Change the region of interest while running (`None` = full frame).
@@ -54,13 +111,37 @@ impl PlannedFrames {
         &self.plan
     }
 
-    /// The underlying pipeline, for metrics and health reports.
-    pub fn pipeline(&mut self) -> &mut MediaPipeline {
-        &mut self.pipeline
+    /// The underlying pipeline of a plan's own capture (`None` on a shared capture).
+    pub fn pipeline(&mut self) -> Option<&mut MediaPipeline> {
+        match &mut self.source {
+            Source::Pipeline(pipeline) => Some(pipeline),
+            Source::Branch(_) => None,
+        }
+    }
+
+    /// Health of the capture; on a shared capture, with this consumer's own dropped frames
+    /// (those it was too slow to take) counted as queue evictions.
+    pub fn health_report(&self) -> crate::metrics::HealthReport {
+        match &self.source {
+            Source::Pipeline(pipeline) => pipeline.health_report(),
+            Source::Branch(branch) => {
+                let mut report = branch.shared.capture().health_report();
+                let evictions = branch.rx.stats().evictions;
+                crate::metrics::push_drop_reason(
+                    &mut report.drop_reasons,
+                    crate::metrics::FrameDropReason::CaptureQueueEviction,
+                    evictions,
+                );
+                report.drop_count = crate::metrics::total_frame_drops(&report.drop_reasons);
+                report
+            }
+        }
     }
 
     pub fn stop(self) {
-        self.pipeline.stop();
+        if let Source::Pipeline(pipeline) = self.source {
+            pipeline.stop();
+        }
     }
 }
 
@@ -68,7 +149,13 @@ impl Iterator for PlannedFrames {
     type Item = FrameLease;
 
     fn next(&mut self) -> Option<FrameLease> {
-        self.pipeline.next()
+        loop {
+            match self.next_frame(Duration::from_secs(1)) {
+                RecvOutcome::Data(frame) => return Some(frame),
+                RecvOutcome::Empty => {}
+                RecvOutcome::Closed => return None,
+            }
+        }
     }
 }
 
@@ -78,6 +165,12 @@ impl FramePlan {
         let mut config = StyxConfig::new().capture_queue_depth(self.queue_depth);
         if let Some(level) = self.isp_pyramid_level {
             config = config.libcamera_pyramid_level(level);
+        }
+        if let Some((width, height)) = self.isp_output {
+            config = config.libcamera_output_size(width, height);
+        }
+        if let Some(after) = self.stop_when_idle {
+            config = config.stop_when_idle(after);
         }
         let mut capture = CaptureRequest::new(&self.device)
             .backend(self.backend)
@@ -96,7 +189,7 @@ impl FramePlan {
         let builder = builder.shared_decode_output(false);
         let pipeline = builder.start()?;
         Ok(PlannedFrames {
-            pipeline,
+            source: Source::Pipeline(Box::new(pipeline)),
             roi,
             plan: self.clone(),
         })
@@ -110,8 +203,11 @@ struct FramePreparer {
     luma: bool,
     pyramid_levels: u8,
     alignment: Option<usize>,
-    /// Frames are decoded at 1/`decode_scale` size; ROI coordinates are divided by it.
+    /// Frames are decoded at 1/`decode_scale` size.
+    #[cfg(feature = "codec-turbojpeg")]
     decode_scale: u32,
+    /// Capture-mode size and delivered size: ROI coordinates are scaled from one to the other.
+    roi_scale: ((u32, u32), (u32, u32)),
     #[cfg(feature = "codec-turbojpeg")]
     decode_threads: usize,
     roi: RoiHandle,
@@ -159,7 +255,15 @@ impl FramePreparer {
             luma,
             pyramid_levels: plan.requirements.pyramid.map_or(0, |p| p.levels),
             alignment: plan.requirements.stride_alignment,
+            #[cfg(feature = "codec-turbojpeg")]
             decode_scale: u32::from(plan.decode_scale.max(1)),
+            roi_scale: (
+                (
+                    plan.mode.format.resolution.width.get(),
+                    plan.mode.format.resolution.height.get(),
+                ),
+                plan.output_resolution(),
+            ),
             #[cfg(feature = "codec-turbojpeg")]
             decode_threads: plan.decode_threads,
             roi,
@@ -177,10 +281,18 @@ impl FramePreparer {
     /// `roi` (full capture-frame pixels) in the coordinates of the decoded, possibly scaled,
     /// frame, clipped to it.
     fn scaled_roi(&self, roi: FrameRect, decoded: (u32, u32)) -> Option<FrameRect> {
-        let s = self.decode_scale;
-        let (x, y) = (roi.x / s, roi.y / s);
-        let right = (roi.x + roi.width).div_ceil(s);
-        let bottom = (roi.y + roi.height).div_ceil(s);
+        let ((from_w, from_h), (to_w, to_h)) = self.roi_scale;
+        let (fw, fh, tw, th) = (
+            u64::from(from_w),
+            u64::from(from_h),
+            u64::from(to_w),
+            u64::from(to_h),
+        );
+        // Outward: the scaled region covers every pixel of the requested one.
+        let x = (u64::from(roi.x) * tw / fw) as u32;
+        let y = (u64::from(roi.y) * th / fh) as u32;
+        let right = (u64::from(roi.x + roi.width) * tw).div_ceil(fw) as u32;
+        let bottom = (u64::from(roi.y + roi.height) * th).div_ceil(fh) as u32;
         FrameRect::new(x, y, right - x, bottom - y).clipped_to(decoded.0, decoded.1)
     }
 

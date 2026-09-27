@@ -13,6 +13,10 @@ pub struct CaptureRetryStats {
     pub last_retry_reason: Option<String>,
     pub last_retry_error: Option<String>,
     pub last_successful_frame_unix_ms: Option<u128>,
+    /// Times streaming stopped because nobody pulled frames (`StyxConfig::stop_when_idle`).
+    pub idle_stops: u64,
+    /// Times streaming started again on a pull after an idle stop.
+    pub idle_resumes: u64,
 }
 
 #[derive(Clone, Default)]
@@ -56,6 +60,22 @@ impl CaptureRetryMetrics {
         stats.last_retry_error = Some(error.into());
     }
 
+    pub(crate) fn record_idle_stop(&self) {
+        let mut stats = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        stats.idle_stops = stats.idle_stops.saturating_add(1);
+    }
+
+    pub(crate) fn record_idle_resume(&self) {
+        let mut stats = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        stats.idle_resumes = stats.idle_resumes.saturating_add(1);
+    }
+
     pub fn record_successful_frame(&self) {
         let downtime = self
             .disconnected_since
@@ -86,6 +106,8 @@ impl CaptureRetryMetrics {
             .reconnect_attempts
             .saturating_add(snapshot.reconnect_attempts);
         stats.reconnects = stats.reconnects.saturating_add(snapshot.reconnects);
+        stats.idle_stops = stats.idle_stops.saturating_add(snapshot.idle_stops);
+        stats.idle_resumes = stats.idle_resumes.saturating_add(snapshot.idle_resumes);
         if snapshot.last_reconnect_downtime_ms.is_some() {
             stats.last_reconnect_downtime_ms = snapshot.last_reconnect_downtime_ms;
         }

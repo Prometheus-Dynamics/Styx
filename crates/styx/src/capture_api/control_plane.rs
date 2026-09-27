@@ -56,6 +56,11 @@ pub(crate) fn apply_control_to_plane(
         "control request started"
     );
     let result = match control {
+        // Stopped while idle: the control is applied when streaming starts again.
+        ControlPlane::Supervised(shared) if shared.is_idle() => {
+            shared.remember_control(id, _value);
+            Ok(())
+        }
         ControlPlane::Supervised(shared) => {
             let result = shared
                 .current_control()
@@ -105,6 +110,9 @@ pub(crate) fn read_control_from_plane(
         "control request started"
     );
     let result = match control {
+        ControlPlane::Supervised(shared) if shared.is_idle() => shared
+            .remembered_control(id)
+            .ok_or_else(|| CaptureError::Disconnected("camera is stopped while idle".into())),
         ControlPlane::Supervised(shared) => shared
             .current_control()
             .and_then(|inner| read_control_from_plane(&inner, id)),

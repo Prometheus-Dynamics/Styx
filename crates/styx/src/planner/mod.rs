@@ -22,11 +22,13 @@
 //! enabled and they opened successfully at registry creation; [`PlanOverrides`] can force or
 //! forbid specific backends, decoders and hardware.
 //!
-//! Planning is single-consumer: [`plan_many`] rejects more than one set of requirements until
-//! shared captures with per-consumer branches are implemented.
+//! Several consumers of one camera (say, a small luma frame for a detector and full-size RGB for
+//! a recorder) share one capture: [`plan_many`] picks a mode that serves all of them and plans a
+//! branch per consumer.
 
 mod cost;
 mod routes;
+mod shared;
 mod start;
 
 use std::fmt;
@@ -37,6 +39,7 @@ use styx_core::prelude::*;
 
 pub use cost::StepCost;
 pub(crate) use routes::Route;
+pub use shared::{SharedFramePlan, plan_many, plan_many_with};
 pub use start::{PlannedFrames, RoiHandle};
 
 use crate::BackendKind;
@@ -59,8 +62,12 @@ pub enum StepKind {
     Capture,
     Decode,
     LumaView,
-    Pyramid { level: u8 },
+    Pyramid {
+        level: u8,
+    },
     Crop,
+    /// Downscaling in hardware (the ISP).
+    Scale,
 }
 
 #[derive(Debug, Clone)]
@@ -84,8 +91,8 @@ pub enum PlanError {
     NoDevices,
     #[error("no capture mode satisfies the requirements ({} candidates rejected)", rejected.len())]
     NoCandidates { rejected: Vec<PlanRejection> },
-    #[error("planning for more than one consumer per camera is not supported yet")]
-    MultipleConsumersUnsupported,
+    #[error("no consumers to plan for")]
+    NoConsumers,
     #[error("codec registry unavailable: {0}")]
     Registry(String),
 }
@@ -106,8 +113,10 @@ pub struct FramePlan {
     pub(crate) route: Route,
     pub(crate) isp_pyramid_level: Option<u8>,
     pub(crate) decode_scale: u8,
+    pub(crate) isp_output: Option<(u32, u32)>,
     pub(crate) decode_threads: usize,
     pub(crate) queue_depth: usize,
+    pub(crate) stop_when_idle: Option<std::time::Duration>,
 }
 
 impl fmt::Debug for FramePlan {
@@ -146,6 +155,7 @@ impl fmt::Display for FramePlan {
                 StepKind::LumaView => "luma view".to_string(),
                 StepKind::Pyramid { level } => format!("pyramid L{level}"),
                 StepKind::Crop => "roi".to_string(),
+                StepKind::Scale => "scale".to_string(),
             };
             let execution = match step.execution {
                 StepExecution::ZeroCopy => "zero-copy",
@@ -209,17 +219,6 @@ pub fn plan_best(
     plan_devices(devices, requirements, &default_registry()?)
 }
 
-/// Plan several consumers on one camera. Only a single consumer is supported today.
-pub fn plan_many(
-    device: &ProbedDevice,
-    requirements: &[FrameRequirements],
-) -> Result<Vec<FramePlan>, PlanError> {
-    match requirements {
-        [single] => Ok(vec![plan_frames(device, single)?]),
-        _ => Err(PlanError::MultipleConsumersUnsupported),
-    }
-}
-
 fn plan_devices(
     devices: &[ProbedDevice],
     req: &FrameRequirements,
@@ -242,7 +241,18 @@ fn plan_devices(
         return Err(PlanError::NoCandidates { rejected });
     };
     let interval = pick_interval(&chosen.mode, req);
-    Ok(FramePlan {
+    Ok(plan_from(device, chosen, req, interval, rejected))
+}
+
+/// The plan for `req` from its chosen candidate.
+pub(crate) fn plan_from(
+    device: &ProbedDevice,
+    chosen: routes::Candidate<'_>,
+    req: &FrameRequirements,
+    interval: Option<Interval>,
+    rejected: Vec<PlanRejection>,
+) -> FramePlan {
+    FramePlan {
         device: device.clone(),
         backend: chosen.backend.kind,
         mode: chosen.mode,
@@ -255,18 +265,20 @@ fn plan_devices(
         route: chosen.route,
         isp_pyramid_level: chosen.isp_pyramid_level,
         decode_scale: chosen.decode_scale,
+        isp_output: chosen.isp_output,
         decode_threads: cost::decode_threads(req.priority, req.overrides.decode_threads),
         queue_depth: cost::queue_depth(req.priority, req.overrides.queue_depth),
-    })
+        stop_when_idle: None,
+    }
 }
 
 /// Lexicographic rank; smaller is better.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-struct RankKey {
-    resolution: f64,
-    score: f32,
-    fps: f32,
-    backend: u8,
+pub(crate) struct RankKey {
+    pub(crate) resolution: f64,
+    pub(crate) score: f32,
+    pub(crate) fps: f32,
+    pub(crate) backend: u8,
 }
 
 fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequirements) -> RankKey {
@@ -275,11 +287,19 @@ fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequirements) -> RankK
     let covers_output = req
         .output_resolution
         .map(|(w, h)| res.width.get() >= w && res.height.get() >= h);
+    // Size of the frames the route delivers, after the ISP or the decoder scales them.
+    let scale = u32::from(candidate.decode_scale.max(1));
+    let (dw, dh) = candidate.isp_output.unwrap_or((
+        res.width.get().div_ceil(scale),
+        res.height.get().div_ceil(scale),
+    ));
     RankKey {
-        // With a minimum: the smallest mode that satisfies it. With an output size: the
-        // smallest mode covering it, else the largest. Otherwise: the largest.
+        // With a minimum: the smallest mode that satisfies it. With an output size: the route
+        // delivering the smallest frames that cover it (so an ISP scaling a wide mode beats a
+        // smaller mode of another aspect ratio), else the largest mode. Otherwise: the largest.
         resolution: match (req.min_resolution, covers_output) {
-            (Some(_), _) | (None, Some(true)) => area,
+            (Some(_), _) => area,
+            (None, Some(true)) => f64::from(dw) * f64::from(dh),
             // Ranked after every covering mode (areas are far below 1e15).
             (None, Some(false)) => 1e15 - area,
             (None, None) => -area,
@@ -323,14 +343,25 @@ impl FramePlan {
     }
 
     /// Size of the frames delivered (before any region of interest): the capture size, or
-    /// smaller when the decoder scales toward [`FrameRequirements::output_resolution`].
+    /// smaller when the ISP or the decoder scales toward
+    /// [`FrameRequirements::output_resolution`].
     pub fn output_resolution(&self) -> (u32, u32) {
+        if let Some(size) = self.isp_output {
+            return size;
+        }
         let res = self.mode.format.resolution;
         let scale = u32::from(self.decode_scale.max(1));
         (
             res.width.get().div_ceil(scale),
             res.height.get().div_ceil(scale),
         )
+    }
+
+    /// Stop the camera streaming after `after` without a pull, and start it again on the next
+    /// (libcamera and V4L2; see `StyxConfig::stop_when_idle`).
+    pub fn stop_when_idle(mut self, after: std::time::Duration) -> Self {
+        self.stop_when_idle = Some(after);
+        self
     }
 
     /// Decode threads per frame (0 = automatic), from the priority or an override.

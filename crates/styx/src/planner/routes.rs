@@ -36,6 +36,8 @@ pub(crate) struct Candidate<'a> {
     pub isp_pyramid_level: Option<u8>,
     /// The decoder scales to 1/`decode_scale` of the capture size (1 = full size).
     pub decode_scale: u8,
+    /// The ISP delivers frames at this size instead of the mode's (libcamera on Raspberry Pi).
+    pub isp_output: Option<(u32, u32)>,
     pub notes: Vec<String>,
 }
 
@@ -108,7 +110,7 @@ pub(crate) fn candidates<'a>(
     out
 }
 
-fn candidate<'a>(
+pub(crate) fn candidate<'a>(
     backend: &'a ProbedBackend,
     mode: &Mode,
     req: &FrameRequirements,
@@ -198,17 +200,27 @@ fn candidate<'a>(
         step.detail = format!("{}, at 1/{decode_scale} size ({w}x{h})", step.detail);
         let factor = cost::scaled_decode_factor(decode_scale);
         step.cost = StepCost::offloaded(step.cost.latency_ms * factor, step.cost.cpu_ms * factor);
-    } else if let Some((tw, th)) = req.output_resolution
+    }
+    let isp_output = isp_output(backend, &route, req, (width, height));
+    if let Some((w, h)) = isp_output {
+        steps.push(PlanStep {
+            kind: StepKind::Scale,
+            execution: StepExecution::Hardware,
+            detail: format!("{w}x{h} from the ISP (the mode's field of view)"),
+            cost: StepCost::ZERO,
+        });
+    } else if decode_scale == 1
+        && let Some((tw, th)) = req.output_resolution
         && (tw < width || th < height)
     {
         notes.push(format!(
-            "frames are {width}x{height}: this route cannot scale to {tw}x{th} while decoding"
+            "frames are {width}x{height}: this route cannot scale to {tw}x{th}"
         ));
     }
-    let (width, height) = (
+    let (width, height) = isp_output.unwrap_or((
         width.div_ceil(decode_scale.into()),
         height.div_ceil(decode_scale.into()),
-    );
+    ));
 
     let isp_pyramid_level = add_pyramid_steps(backend, &route, req, width, height, &mut steps)?;
     if req.roi.is_some() {
@@ -252,8 +264,35 @@ fn candidate<'a>(
         total,
         isp_pyramid_level,
         decode_scale,
+        isp_output,
         notes,
     })
+}
+
+/// Size the ISP should deliver for `req.output_resolution`: the smallest even size with the
+/// mode's aspect ratio (so its field of view) that covers it. Only for cameras behind a
+/// scaling ISP, on routes that pass frames through without decoding.
+fn isp_output(
+    backend: &ProbedBackend,
+    route: &Route,
+    req: &FrameRequirements,
+    mode: (u32, u32),
+) -> Option<(u32, u32)> {
+    let (tw, th) = req.output_resolution?;
+    if !has_isp_second_output(backend)
+        || !matches!(route, Route::Direct | Route::LumaView)
+        || matches!(req.overrides.hardware, HardwarePolicy::Disabled)
+        || (tw >= mode.0 && th >= mode.1)
+    {
+        return None;
+    }
+    let scale = (f64::from(tw) / f64::from(mode.0)).max(f64::from(th) / f64::from(mode.1));
+    let even = |v: f64| ((v.ceil() as u32).next_multiple_of(2)).max(2);
+    let (w, h) = (
+        even(f64::from(mode.0) * scale),
+        even(f64::from(mode.1) * scale),
+    );
+    (w < mode.0 || h < mode.1).then_some((w.min(mode.0), h.min(mode.1)))
 }
 
 /// 1/N size the decoder produces for `req.output_resolution`: turbojpeg scales MJPEG in the DCT
