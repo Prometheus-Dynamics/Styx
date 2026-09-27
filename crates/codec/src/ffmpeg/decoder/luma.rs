@@ -6,7 +6,7 @@
 //! system memory first. Use [`FfmpegLumaDecoder::best_available`] to pick whatever the machine
 //! supports and fall back to `TurbojpegLumaDecoder` when it returns `None`.
 
-use ffmpeg_next::codec::Id;
+use crate::ffmpeg::ff::codec::Id;
 use styx_core::prelude::*;
 
 use super::{FfmpegHwDevice, FfmpegVideoDecoder};
@@ -14,6 +14,19 @@ use crate::{Codec, CodecDescriptor, CodecError};
 
 /// Named SoC decoders, most specific first. Only those present in the linked FFmpeg build and
 /// able to open on this machine are used.
+/// Hardware device types present on this machine.
+fn hardware_devices() -> Vec<FfmpegHwDevice> {
+    use crate::ffmpeg::hw_presence::{cuda, qsv, vaapi};
+    [
+        (FfmpegHwDevice::Vaapi, vaapi()),
+        (FfmpegHwDevice::Cuda, cuda()),
+        (FfmpegHwDevice::Qsv, qsv()),
+    ]
+    .into_iter()
+    .filter_map(|(device, present)| present.then_some(device))
+    .collect()
+}
+
 fn named_candidates(input: FourCc) -> &'static [&'static str] {
     match &input.to_u32().to_le_bytes() {
         b"MJPG" | b"JPEG" => &[
@@ -108,17 +121,24 @@ impl FfmpegLumaDecoder {
     /// The first hardware path that opens on this machine: named SoC decoders, then VA-API,
     /// CUDA and QSV devices. `None` means software decoding is the best option.
     pub fn best_available(input: FourCc) -> Option<Self> {
+        // Only candidates whose hardware exists; checking that does not load FFmpeg.
         let named = named_candidates(input)
             .iter()
+            .filter(|name| crate::ffmpeg::hw_presence::decoder_hardware(name, input))
             .filter_map(|name| Self::by_name(input, name).ok());
-        let devices = [
-            FfmpegHwDevice::Vaapi,
-            FfmpegHwDevice::Cuda,
-            FfmpegHwDevice::Qsv,
-        ]
-        .into_iter()
-        .filter_map(|device| Self::new(input, Some(device)).ok());
+        let devices = hardware_devices()
+            .into_iter()
+            .filter_map(|device| Self::new(input, Some(device)).ok());
         named.chain(devices).find(|decoder| decoder.opens())
+    }
+
+    /// Whether this machine has any hardware [`FfmpegLumaDecoder::best_available`] could use for
+    /// `input`, checked without loading FFmpeg.
+    pub fn hardware_present(input: FourCc) -> bool {
+        named_candidates(input)
+            .iter()
+            .any(|name| crate::ffmpeg::hw_presence::decoder_hardware(name, input))
+            || !hardware_devices().is_empty()
     }
 
     /// Which decoder/device this instance uses, e.g. `mjpeg_rkmpp` or `mjpeg+Vaapi`.

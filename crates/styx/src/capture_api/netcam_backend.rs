@@ -5,19 +5,19 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+#[cfg(all(feature = "netcam", feature = "async"))]
+use futures_util::TryStreamExt;
+use parking_lot::Mutex;
+#[cfg(feature = "netcam")]
+use reqwest::blocking::Client as BlockingClient;
 #[cfg(feature = "netcam-video")]
-use ffmpeg_next::{
+use styx_codec::ffmpeg::ff::{
     format,
     frame::Video as FfFrame,
     media::Type as StreamType,
     software::scaling::{context::Context as ScalingContext, flag::Flags},
     util::format::pixel::Pixel as PixelFormat,
 };
-#[cfg(all(feature = "netcam", feature = "async"))]
-use futures_util::TryStreamExt;
-use parking_lot::Mutex;
-#[cfg(feature = "netcam")]
-use reqwest::blocking::Client as BlockingClient;
 use styx_core::prelude::*;
 #[cfg(all(feature = "netcam", feature = "async"))]
 use tokio_util::io::StreamReader;
@@ -603,7 +603,7 @@ fn ffmpeg_loop(
     netcam_tunables: crate::capture_api::NetcamTunables,
     retry_metrics: CaptureRetryMetrics,
 ) -> Result<u64, CaptureError> {
-    ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
+    styx_codec::ffmpeg::ff::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
     #[cfg(target_os = "linux")]
     let mut pool: Option<SharedBufferPool> = None;
     #[cfg(not(target_os = "linux"))]

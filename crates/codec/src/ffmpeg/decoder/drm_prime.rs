@@ -3,7 +3,7 @@ use std::{
     ptr,
 };
 
-use ffmpeg_next::{codec, error::Error as FfmpegError, frame::Video as FfFrame, sys as ffi};
+use crate::ffmpeg::ff::{codec, error::Error as FfmpegError, frame::Video as FfFrame, sys as ffi};
 use styx_core::prelude::*;
 
 use crate::CodecError;
@@ -188,7 +188,7 @@ impl ExternalBacking for FfmpegDrmPrimeBacking {
 
 pub(super) unsafe fn configure_drm_prime_decoder_context(
     context: &mut codec::Context,
-    codec: ffmpeg_next::Codec,
+    codec: crate::ffmpeg::ff::Codec,
 ) -> Result<(), CodecError> {
     if !unsafe { codec_supports_drm_prime_device_ctx(codec) } {
         // Decoders such as ffmpeg-rockchip's `*_rkmpp` produce DRM-PRIME internally without a
@@ -244,7 +244,7 @@ pub(super) unsafe fn drm_prime_descriptor_from_frame(
     drm_prime_descriptor_from_raw(desc, frame.height() as usize)
 }
 
-unsafe fn codec_supports_drm_prime_device_ctx(codec: ffmpeg_next::Codec) -> bool {
+unsafe fn codec_supports_drm_prime_device_ctx(codec: crate::ffmpeg::ff::Codec) -> bool {
     let mut idx = 0;
     loop {
         let config = unsafe { ffi::avcodec_get_hw_config(codec.as_ptr(), idx) };
@@ -252,9 +252,7 @@ unsafe fn codec_supports_drm_prime_device_ctx(codec: ffmpeg_next::Codec) -> bool
             return false;
         }
         let config = unsafe { &*config };
-        let has_device_ctx = (config.methods
-            & ffi::_bindgen_ty_4::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32)
-            != 0;
+        let has_device_ctx = (config.methods & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0;
         if has_device_ctx
             && config.device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_DRM
             && config.pix_fmt == ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME

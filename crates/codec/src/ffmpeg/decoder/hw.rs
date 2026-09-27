@@ -5,7 +5,7 @@
 
 use std::ptr;
 
-use ffmpeg_next::{codec, frame::Video as FfFrame, sys as ffi};
+use crate::ffmpeg::ff::{codec, frame::Video as FfFrame, sys as ffi};
 
 use crate::CodecError;
 
@@ -35,7 +35,7 @@ impl FfmpegHwDevice {
     }
 
     /// Whether this FFmpeg build can decode `codec` with this device and the device opens.
-    pub fn is_available_for(self, codec: ffmpeg_next::Codec) -> bool {
+    pub fn is_available_for(self, codec: crate::ffmpeg::ff::Codec) -> bool {
         // SAFETY: `codec` is a valid FFmpeg codec pointer.
         if unsafe { hw_pix_fmt(codec, self.av_type()) }.is_none() {
             return false;
@@ -53,7 +53,7 @@ impl FfmpegHwDevice {
 
 /// Pixel format that `codec` produces when decoding through `device_type`.
 pub(super) unsafe fn hw_pix_fmt(
-    codec: ffmpeg_next::Codec,
+    codec: crate::ffmpeg::ff::Codec,
     device_type: ffi::AVHWDeviceType,
 ) -> Option<ffi::AVPixelFormat> {
     let mut idx = 0;
@@ -65,9 +65,7 @@ pub(super) unsafe fn hw_pix_fmt(
         }
         // SAFETY: non-null config pointer owned by FFmpeg's static codec tables.
         let config = unsafe { &*config };
-        let device_ctx = (config.methods
-            & ffi::_bindgen_ty_4::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32)
-            != 0;
+        let device_ctx = (config.methods & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0;
         if device_ctx && config.device_type == device_type {
             return Some(config.pix_fmt);
         }
@@ -77,7 +75,7 @@ pub(super) unsafe fn hw_pix_fmt(
 
 /// Whether `codec` can emit DRM-PRIME frames without an external device context
 /// (e.g. ffmpeg-rockchip's `*_rkmpp` decoders).
-pub(super) unsafe fn internal_drm_prime(codec: ffmpeg_next::Codec) -> bool {
+pub(super) unsafe fn internal_drm_prime(codec: crate::ffmpeg::ff::Codec) -> bool {
     let mut idx = 0;
     loop {
         // SAFETY: as in `hw_pix_fmt`.
@@ -87,8 +85,7 @@ pub(super) unsafe fn internal_drm_prime(codec: ffmpeg_next::Codec) -> bool {
         }
         // SAFETY: non-null config pointer owned by FFmpeg.
         let config = unsafe { &*config };
-        let internal =
-            (config.methods & ffi::_bindgen_ty_4::AV_CODEC_HW_CONFIG_METHOD_INTERNAL as i32) != 0;
+        let internal = (config.methods & ffi::AV_CODEC_HW_CONFIG_METHOD_INTERNAL) != 0;
         if internal && config.pix_fmt == ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME {
             return true;
         }
@@ -105,7 +102,7 @@ fn create_device(device_type: ffi::AVHWDeviceType) -> Result<*mut ffi::AVBufferR
     if ret < 0 || device.is_null() {
         return Err(CodecError::Codec(format!(
             "ffmpeg hw device {device_type:?} unavailable: {}",
-            ffmpeg_next::Error::from(ret)
+            crate::ffmpeg::ff::Error::from(ret)
         )));
     }
     Ok(device)
@@ -114,7 +111,7 @@ fn create_device(device_type: ffi::AVHWDeviceType) -> Result<*mut ffi::AVBufferR
 /// Attach `device` to the decoder and make `get_format` pick its surface format.
 pub(super) unsafe fn configure_hw_device(
     context: &mut codec::Context,
-    codec: ffmpeg_next::Codec,
+    codec: crate::ffmpeg::ff::Codec,
     device: FfmpegHwDevice,
 ) -> Result<(), CodecError> {
     // SAFETY: `codec` is valid.
@@ -164,7 +161,9 @@ unsafe extern "C" fn prefer_opaque_format(
 pub(super) fn transfer_to_system(frame: &FfFrame) -> Result<Option<FfFrame>, CodecError> {
     // SAFETY: reading fields of a valid decoded frame.
     let hw_frames = unsafe { (*frame.as_ptr()).hw_frames_ctx };
-    if hw_frames.is_null() || frame.format() == ffmpeg_next::util::format::pixel::Pixel::DRM_PRIME {
+    if hw_frames.is_null()
+        || frame.format() == crate::ffmpeg::ff::util::format::pixel::Pixel::DRM_PRIME
+    {
         return Ok(None);
     }
     let mut sw = FfFrame::empty();
@@ -173,7 +172,7 @@ pub(super) fn transfer_to_system(frame: &FfFrame) -> Result<Option<FfFrame>, Cod
     if ret < 0 {
         return Err(CodecError::Codec(format!(
             "ffmpeg hw frame transfer failed: {}",
-            ffmpeg_next::Error::from(ret)
+            crate::ffmpeg::ff::Error::from(ret)
         )));
     }
     // SAFETY: copies pts and other properties between two valid frames.

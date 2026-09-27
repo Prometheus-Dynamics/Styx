@@ -334,11 +334,20 @@ impl CodecRegistry {
         );
 
         // Hardware Y8 decoders when this machine has one (Rockchip MPP, V4L2 M2M, VA-API, ...);
-        // `lookup_for_output(input, GREY)` then prefers them over turbojpeg-luma.
+        // `lookup_for_output(input, GREY)` then prefers them over turbojpeg-luma. Probing opens
+        // them through FFmpeg, so it only happens when the hardware exists and on the first
+        // lookup of that input format.
         #[cfg(feature = "codec-ffmpeg")]
         for input in [FourCc::MJPG, FourCc::H264, FourCc::H265] {
-            if let Some(decoder) = crate::ffmpeg::FfmpegLumaDecoder::best_available(input) {
-                self.register(input, Arc::new(decoder));
+            if crate::ffmpeg::FfmpegLumaDecoder::hardware_present(input) {
+                self.register_deferred(
+                    input,
+                    Box::new(move || {
+                        crate::ffmpeg::FfmpegLumaDecoder::best_available(input)
+                            .map(|decoder| vec![Arc::new(decoder) as Arc<dyn crate::Codec>])
+                            .unwrap_or_default()
+                    }),
+                );
             }
         }
 
@@ -348,6 +357,31 @@ impl CodecRegistry {
                 FfmpegEncoderOptions, FfmpegH264Decoder, FfmpegH264Encoder, FfmpegH265Decoder,
                 FfmpegH265Encoder, FfmpegMjpegDecoder, FfmpegMjpegEncoder,
             };
+            use crate::ffmpeg::hw_presence;
+
+            // Hardware codecs whose device exists, kept if this FFmpeg build has them. Checking
+            // the build loads FFmpeg, so it happens on the first lookup of `fourcc`.
+            macro_rules! deferred_hardware {
+                ($fourcc:expr, $present:expr, [$($make:expr),* $(,)?]) => {
+                    if $present {
+                        self.register_deferred(
+                            $fourcc,
+                            Box::new(|| {
+                                let mut found: Vec<Arc<dyn crate::Codec>> = Vec::new();
+                                $(
+                                    if let Ok(codec) = $make
+                                        && codec.0.is_available()
+                                    {
+                                        found.push(Arc::new(codec));
+                                    }
+                                )*
+                                found
+                            }),
+                        );
+                    }
+                };
+            }
+
             let default_decoder_threads = std::env::var("STYX_FFMPEG_DECODER_THREADS")
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
@@ -378,15 +412,19 @@ impl CodecRegistry {
                     None,
                 )?),
             );
-            if let Ok(dec) = FfmpegH264Decoder::new_v4l2request_nv12_zero_copy() {
-                self.register(FourCc::H264, Arc::new(dec));
-            }
-            if let Ok(dec) = FfmpegH264Decoder::new_v4l2request_rgb24() {
-                self.register(FourCc::H264, Arc::new(dec));
-            }
-            if let Ok(dec) = FfmpegH264Decoder::new_v4l2m2m_rgb24() {
-                self.register(FourCc::H264, Arc::new(dec));
-            }
+            deferred_hardware!(
+                FourCc::H264,
+                hw_presence::v4l2request_decoder(FourCc::H264),
+                [
+                    FfmpegH264Decoder::new_v4l2request_nv12_zero_copy(),
+                    FfmpegH264Decoder::new_v4l2request_rgb24(),
+                ]
+            );
+            deferred_hardware!(
+                FourCc::H264,
+                hw_presence::v4l2m2m_decoder(FourCc::H264),
+                [FfmpegH264Decoder::new_v4l2m2m_rgb24()]
+            );
             self.register(
                 FourCc::H265,
                 Arc::new(FfmpegH265Decoder::with_options_for_input(
@@ -405,30 +443,34 @@ impl CodecRegistry {
                     None,
                 )?),
             );
-            if let Ok(dec) = FfmpegH265Decoder::new_v4l2request_rgb24() {
-                self.register(FourCc::H265, Arc::new(dec));
-            }
-            if let Ok(dec) = FfmpegH265Decoder::new_v4l2request_nv12_zero_copy() {
-                self.register(FourCc::H265, Arc::new(dec));
-            }
-            if let Ok(dec) =
-                FfmpegH265Decoder::new_v4l2request_nv12_zero_copy_for_input(FourCc::HEVC)
-            {
-                self.register(FourCc::HEVC, Arc::new(dec));
-            }
-            if let Ok(dec) =
-                FfmpegH265Decoder::new_v4l2request_rgb24_for_input(FourCc::HEVC)
-            {
-                self.register(FourCc::HEVC, Arc::new(dec));
-            }
-            if let Ok(dec) = FfmpegH265Decoder::new_v4l2m2m_rgb24() {
-                self.register(FourCc::H265, Arc::new(dec));
-            }
-            if let Ok(dec) =
-                FfmpegH265Decoder::new_v4l2m2m_rgb24_for_input(FourCc::HEVC)
-            {
-                self.register(FourCc::HEVC, Arc::new(dec));
-            }
+            let stateless_hevc = hw_presence::v4l2request_decoder(FourCc::H265);
+            let stateful_hevc = hw_presence::v4l2m2m_decoder(FourCc::H265);
+            deferred_hardware!(
+                FourCc::H265,
+                stateless_hevc,
+                [
+                    FfmpegH265Decoder::new_v4l2request_rgb24(),
+                    FfmpegH265Decoder::new_v4l2request_nv12_zero_copy(),
+                ]
+            );
+            deferred_hardware!(
+                FourCc::HEVC,
+                stateless_hevc,
+                [
+                    FfmpegH265Decoder::new_v4l2request_nv12_zero_copy_for_input(FourCc::HEVC),
+                    FfmpegH265Decoder::new_v4l2request_rgb24_for_input(FourCc::HEVC),
+                ]
+            );
+            deferred_hardware!(
+                FourCc::H265,
+                stateful_hevc,
+                [FfmpegH265Decoder::new_v4l2m2m_rgb24()]
+            );
+            deferred_hardware!(
+                FourCc::HEVC,
+                stateful_hevc,
+                [FfmpegH265Decoder::new_v4l2m2m_rgb24_for_input(FourCc::HEVC)]
+            );
             self.register(
                 FourCc::RG24,
                 Arc::new(FfmpegMjpegEncoder::new_rgb24()?),
@@ -452,17 +494,9 @@ impl CodecRegistry {
                 FourCc::NV12,
                 Arc::new(FfmpegH264Encoder::new_nv12()?),
             );
-            if v4l2m2m_probe_enabled() {
-                match FfmpegH264Encoder::new_v4l2m2m_rgb24() {
-                    Ok(enc) => self.register(FourCc::RG24, Arc::new(enc)),
-                    Err(_) => disable_v4l2m2m_probe(),
-                }
-                if v4l2m2m_probe_enabled()
-                    && let Ok(enc) = FfmpegH264Encoder::new_v4l2m2m_nv12()
-                {
-                    self.register(FourCc::NV12, Arc::new(enc));
-                }
-            }
+            let h264_encoder = hw_presence::v4l2m2m_encoder(FourCc::H264);
+            deferred_hardware!(FourCc::RG24, h264_encoder, [FfmpegH264Encoder::new_v4l2m2m_rgb24()]);
+            deferred_hardware!(FourCc::NV12, h264_encoder, [FfmpegH264Encoder::new_v4l2m2m_nv12()]);
             self.register(
                 FourCc::YUYV,
                 Arc::new(FfmpegH264Encoder::with_options_for_input(
@@ -478,18 +512,9 @@ impl CodecRegistry {
                 FourCc::NV12,
                 Arc::new(FfmpegH265Encoder::new_nv12()?),
             );
-            if v4l2m2m_probe_enabled() {
-                if let Ok(enc) = FfmpegH265Encoder::new_v4l2m2m_rgb24() {
-                    self.register(FourCc::RG24, Arc::new(enc));
-                } else {
-                    disable_v4l2m2m_probe();
-                }
-                if v4l2m2m_probe_enabled()
-                    && let Ok(enc) = FfmpegH265Encoder::new_v4l2m2m_nv12()
-                {
-                    self.register(FourCc::NV12, Arc::new(enc));
-                }
-            }
+            let hevc_encoder = hw_presence::v4l2m2m_encoder(FourCc::H265);
+            deferred_hardware!(FourCc::RG24, hevc_encoder, [FfmpegH265Encoder::new_v4l2m2m_rgb24()]);
+            deferred_hardware!(FourCc::NV12, hevc_encoder, [FfmpegH265Encoder::new_v4l2m2m_nv12()]);
             self.register(
                 FourCc::YUYV,
                 Arc::new(FfmpegH265Encoder::with_options_for_input(

@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 #[cfg(feature = "file-backend-video")]
-use ffmpeg_next::{
+use styx_codec::ffmpeg::ff::{
     format,
     frame::Video as FfFrame,
     media::Type as StreamType,
@@ -108,7 +108,7 @@ fn is_video_ext(ext: &str) -> bool {
 
 #[cfg(feature = "file-backend-video")]
 fn probe_video_metadata(path: &Path) -> Result<(Resolution, Option<u32>), CaptureError> {
-    ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
+    styx_codec::ffmpeg::ff::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
     let ictx = format::input(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
     let stream = ictx
         .streams()
@@ -310,7 +310,7 @@ pub(crate) fn decode_video(
         stop_frame,
         capture_tunables,
     } = options;
-    ffmpeg_next::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
+    styx_codec::ffmpeg::ff::init().map_err(|e| CaptureError::Backend(e.to_string()))?;
     let mut ictx = format::input(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
     let stream_idx = ictx
         .streams()

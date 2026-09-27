@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use ffmpeg_next::{
+use crate::ffmpeg::ff::{
     codec::{self, Id},
     decoder,
     error::Error as FfmpegError,
@@ -24,8 +24,8 @@ use crate::{
 };
 
 use super::util::{
-    SendSyncScalingContext, bytes_per_pixel, fourcc_for_pixel_format, init_ffmpeg,
-    layouts_for_frame, pixel_format_for_fourcc,
+    SendSyncScalingContext, bytes_per_pixel, fourcc_for_pixel_format, layouts_for_frame,
+    pixel_format_for_fourcc,
 };
 
 mod drm_prime;
@@ -40,7 +40,8 @@ pub use luma::FfmpegLumaDecoder;
 /// Generic FFmpeg video decoder to RGB24.
 pub struct FfmpegVideoDecoder {
     descriptor: CodecDescriptor,
-    codec: ffmpeg_next::Codec,
+    /// Found (and FFmpeg loaded) on first use.
+    codec: codec::CodecRef,
     pool: BufferPool,
     thread_count: Option<usize>,
     state: Mutex<Option<DecoderState>>,
@@ -86,9 +87,7 @@ impl FfmpegVideoDecoder {
         tolerant: bool,
         strip_app: bool,
     ) -> Result<Self, CodecError> {
-        init_ffmpeg()?;
-        let codec = codec::decoder::find(id)
-            .ok_or_else(|| CodecError::Codec(format!("ffmpeg codec {id:?} not found")))?;
+        let codec = codec::CodecRef::decoder(id);
         Ok(Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
@@ -122,9 +121,7 @@ impl FfmpegVideoDecoder {
         tolerant: bool,
         strip_app: bool,
     ) -> Result<Self, CodecError> {
-        init_ffmpeg()?;
-        let codec = codec::decoder::find_by_name(decoder_name)
-            .ok_or_else(|| CodecError::Codec(format!("ffmpeg decoder {decoder_name} not found")))?;
+        let codec = codec::CodecRef::decoder_by_name(decoder_name);
         Ok(Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
@@ -148,10 +145,11 @@ impl FfmpegVideoDecoder {
     /// transferred to system memory before conversion; fails if this FFmpeg build or machine
     /// cannot use `device` for this codec.
     pub fn with_hw_device(mut self, device: FfmpegHwDevice) -> Result<Self, CodecError> {
-        if !device.is_available_for(self.codec) {
+        let codec = self.resolve_codec()?;
+        if !device.is_available_for(codec) {
             return Err(CodecError::Codec(format!(
                 "ffmpeg {device:?} decode unavailable for {}",
-                self.codec.name()
+                codec.name()
             )));
         }
         self.hw_device = Some(device);
@@ -162,8 +160,20 @@ impl FfmpegVideoDecoder {
         self.hw_device
     }
 
+    /// Whether FFmpeg (loaded now if needed) has this decoder.
+    pub fn is_available(&self) -> bool {
+        self.resolve_codec().is_ok()
+    }
+
+    fn resolve_codec(&self) -> Result<crate::ffmpeg::ff::Codec, CodecError> {
+        self.codec
+            .get()
+            .map_err(|e| CodecError::Codec(e.to_string()))
+    }
+
     fn prepare_decoder_state(&self) -> Result<DecoderState, CodecError> {
-        let mut context = codec::Context::new_with_codec(self.codec);
+        let codec = self.resolve_codec()?;
+        let mut context = codec::Context::new_with_codec(codec);
         if let Some(threads) = self.thread_count {
             context.set_threading(codec::threading::Config {
                 kind: codec::threading::Type::Frame,
@@ -171,9 +181,9 @@ impl FfmpegVideoDecoder {
             });
         }
         if let Some(device) = self.hw_device {
-            unsafe { hw::configure_hw_device(&mut context, self.codec, device) }?;
+            unsafe { hw::configure_hw_device(&mut context, codec, device) }?;
         } else if self.zero_copy {
-            let _ = unsafe { configure_drm_prime_decoder_context(&mut context, self.codec) };
+            let _ = unsafe { configure_drm_prime_decoder_context(&mut context, codec) };
         }
         let decoder = context
             .decoder()
@@ -581,7 +591,7 @@ impl FfmpegVideoDecoder {
             return Ok(&cached.scratch);
         }
 
-        let mut scaler = ffmpeg_next::software::scaling::context::Context::get(
+        let mut scaler = crate::ffmpeg::ff::software::scaling::context::Context::get(
             src.format(),
             src.width(),
             src.height(),

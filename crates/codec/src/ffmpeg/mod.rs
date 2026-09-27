@@ -1,5 +1,8 @@
 mod decoder;
 mod encoder;
+#[doc(hidden)]
+pub mod ff;
+pub(crate) mod hw_presence;
 pub(crate) mod util;
 
 pub use decoder::{

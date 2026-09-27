@@ -101,6 +101,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- FFmpeg is no longer linked. `styx-codec` calls it through libraries loaded with `dlopen` on
+  first use (by the major version it was built against), keeping `ffmpeg-sys-next` for types
+  only, so `codec-ffmpeg` builds that never decode or encode through FFmpeg do not map it (CM5:
+  2.2 MB of system memory per process). Registries register FFmpeg codecs without loading it;
+  hardware decoders are probed only when their device exists (V4L2 M2M/request formats,
+  Rockchip MPP, Jetson, NVIDIA, VA-API drivers, Intel GPUs) and on the first lookup of their
+  input format. `ffmpeg-next` is no longer a dependency; `netcam-video` and
+  `file-backend-video` enable `styx-codec/codec-ffmpeg-format`. A codec registry no longer
+  fails to build when FFmpeg is missing at runtime; FFmpeg codecs report it when used.
 - The libcamera manager now stops whenever nothing needs it (`stop_when_idle`, default on):
   after a probe and when the last capture or hotplug subscription ends. A running manager keeps
   an IPA process per camera it found; on a CM5 that is 7.6 MB PSS (12.4 MB RSS) per Raspberry

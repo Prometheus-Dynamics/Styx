@@ -62,8 +62,9 @@ queue depth (latency 1, i.e. newest frame only; throughput 4; power 3). `PlanOve
 - `PlanOverrides::decoder`: use exactly this decoder implementation (e.g. `"turbojpeg-luma"`).
 - `PlanOverrides::forbid`: never use these decoder implementations.
 - `PlanOverrides::hardware`:
-  - `Auto` (default) uses hardware decoders whose Cargo feature is enabled and which opened at
-    registry creation.
+  - `Auto` (default) uses hardware decoders whose Cargo feature is enabled, whose device exists
+    and which open. The device check needs no FFmpeg; opening happens on the first lookup of
+    that input format.
   - `Disabled` keeps everything on the CPU.
   - `Required` fails planning for CPU-only paths.
 - `PyramidSource`:

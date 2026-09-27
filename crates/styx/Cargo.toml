@@ -30,7 +30,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"], op
 image = { workspace = true, optional = true }
 jpeg-decoder = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
-ffmpeg-next = { workspace = true, optional = true }
 minifb = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
@@ -104,9 +103,9 @@ codec-mozjpeg = ["facade", "styx-codec/codec-mozjpeg"]
 codec-turbojpeg = ["facade", "styx-codec/codec-turbojpeg"]
 raw-decoders = ["facade", "styx-codec/raw-decoders"]
 netcam = ["facade", "dep:reqwest", "reqwest/blocking", "reqwest/rustls"]
-netcam-video = ["facade", "dep:ffmpeg-next"]
+netcam-video = ["facade", "styx-codec/codec-ffmpeg-format"]
 file-backend = ["facade", "dep:image", "dep:jpeg-decoder"]
-file-backend-video = ["facade", "dep:ffmpeg-next"]
+file-backend-video = ["facade", "styx-codec/codec-ffmpeg-format"]
 preview-window = ["facade", "dep:minifb"]
 simulation-bevy = ["facade", "dep:bevy", "dep:crossbeam-channel"]
 hotplug = ["facade", "dep:inotify"]

@@ -1,15 +1,11 @@
-use ffmpeg_next::{frame::Video as FfFrame, util::format::pixel::Pixel as PixelFormat};
+use crate::ffmpeg::ff::{frame::Video as FfFrame, util::format::pixel::Pixel as PixelFormat};
 use smallvec::{SmallVec, smallvec};
 use styx_core::prelude::*;
 
-use crate::CodecError;
-
-pub(crate) fn init_ffmpeg() -> Result<(), CodecError> {
-    ffmpeg_next::init().map_err(|e| CodecError::Codec(e.to_string()))
-}
-
 /// Scaling context wrapper so we can mark it Send (FFmpeg types are raw pointers).
-pub(crate) struct SendSyncScalingContext(pub ffmpeg_next::software::scaling::context::Context);
+pub(crate) struct SendSyncScalingContext(
+    pub crate::ffmpeg::ff::software::scaling::context::Context,
+);
 
 // SAFETY: the wrapper is stored inside codec state that is externally synchronized by the codec's
 // mutexes. Moving the context across threads does not permit concurrent access by itself.

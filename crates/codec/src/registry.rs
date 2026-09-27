@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-#[cfg(feature = "codec-ffmpeg")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::RwLock;
@@ -12,8 +11,14 @@ use crate::{
     RegistryError,
 };
 
+/// Registers codecs for one input format when that format is first looked up.
+pub type DeferredCodecs = Box<dyn FnOnce() -> Vec<Arc<dyn Codec>> + Send + Sync>;
+
 struct RegistryInner {
     codecs: std::collections::HashMap<FourCc, Vec<Arc<dyn Codec>>>,
+    /// Registrations that are costly to make up front (e.g. probing hardware through FFmpeg),
+    /// run on the first lookup of their input format.
+    deferred: std::collections::HashMap<FourCc, Vec<DeferredCodecs>>,
     preferences: std::collections::HashMap<FourCc, Preference>,
     impl_priority: std::collections::HashMap<(FourCc, CodecImplementationId), i32>,
     default_prefer_hardware: bool,
@@ -24,6 +29,7 @@ impl RegistryInner {
     fn new() -> Self {
         Self {
             codecs: std::collections::HashMap::new(),
+            deferred: std::collections::HashMap::new(),
             preferences: std::collections::HashMap::new(),
             impl_priority: std::collections::HashMap::new(),
             default_prefer_hardware: true,
@@ -109,26 +115,63 @@ fn impl_name_matches(codec: &dyn Codec, id: &CodecImplementationId) -> bool {
     codec.descriptor().implementation_id() == *id
 }
 
-#[cfg(feature = "codec-ffmpeg")]
-static V4L2M2M_PROBE_DISABLED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(feature = "codec-ffmpeg")]
-fn v4l2m2m_probe_enabled() -> bool {
-    !V4L2M2M_PROBE_DISABLED.load(Ordering::Relaxed)
-}
-
-#[cfg(feature = "codec-ffmpeg")]
-fn disable_v4l2m2m_probe() {
-    V4L2M2M_PROBE_DISABLED.store(true, Ordering::Relaxed);
-}
-
 #[derive(Clone)]
 pub struct CodecRegistryHandle {
     inner: Arc<RwLock<RegistryInner>>,
     stats: CodecStats,
+    /// Whether any deferred registrations are pending (checked without locking).
+    has_deferred: Arc<AtomicBool>,
 }
 
 impl CodecRegistryHandle {
+    /// Register codecs for `fourcc` the first time `fourcc` is looked up.
+    pub fn register_deferred(&self, fourcc: FourCc, codecs: DeferredCodecs) {
+        self.inner
+            .write()
+            .deferred
+            .entry(fourcc)
+            .or_default()
+            .push(codecs);
+        self.has_deferred.store(true, Ordering::Release);
+    }
+
+    fn insert(&self, fourcc: FourCc, codec: Arc<dyn Codec>) {
+        let mut guard = self.inner.write();
+        let priorities = guard.impl_priority.clone();
+        let prefer_hw = guard.default_prefer_hardware;
+        let list = guard.codecs.entry(fourcc).or_default();
+        list.push(codec);
+        sort_backends_for(&priorities, prefer_hw, fourcc, list);
+    }
+
+    /// Run pending deferred registrations for `fourcc` (all formats when `None`).
+    fn materialize(&self, fourcc: Option<FourCc>) {
+        if !self.has_deferred.load(Ordering::Acquire) {
+            return;
+        }
+        let pending: Vec<(FourCc, Vec<DeferredCodecs>)> = {
+            let mut guard = self.inner.write();
+            let pending = match fourcc {
+                Some(fourcc) => guard
+                    .deferred
+                    .remove(&fourcc)
+                    .map(|list| vec![(fourcc, list)])
+                    .unwrap_or_default(),
+                None => guard.deferred.drain().collect(),
+            };
+            self.has_deferred
+                .store(!guard.deferred.is_empty(), Ordering::Release);
+            pending
+        };
+        for (fourcc, providers) in pending {
+            for provider in providers {
+                for codec in provider() {
+                    self.insert(fourcc, codec);
+                }
+            }
+        }
+    }
+
     /// The preferred codec that turns `input` into `output`, e.g. MJPG → GREY. Uses the same
     /// ordering as [`CodecRegistryHandle::lookup`] (priorities, then hardware when preferred).
     pub fn lookup_for_output(
@@ -136,6 +179,7 @@ impl CodecRegistryHandle {
         input: FourCc,
         output: FourCc,
     ) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(input));
         let guard = self.inner.read();
         guard
             .codecs
@@ -156,6 +200,7 @@ impl CodecRegistryHandle {
         output: FourCc,
         accept: impl Fn(&CodecDescriptor) -> bool,
     ) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(input));
         let guard = self.inner.read();
         guard
             .codecs
@@ -169,6 +214,7 @@ impl CodecRegistryHandle {
     }
 
     pub fn lookup(&self, fourcc: FourCc) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(fourcc));
         let guard = self.inner.read();
         guard
             .codecs
@@ -181,6 +227,7 @@ impl CodecRegistryHandle {
         fourcc: FourCc,
         impl_name: impl Into<CodecImplementationId>,
     ) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(fourcc));
         let guard = self.inner.read();
         let impl_id = impl_name.into();
         guard
@@ -199,6 +246,7 @@ impl CodecRegistryHandle {
         kind: CodecKind,
         impl_name: impl Into<CodecImplementationId>,
     ) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(fourcc));
         let guard = self.inner.read();
         let impl_id = impl_name.into();
         guard
@@ -232,6 +280,7 @@ impl CodecRegistryHandle {
         preferred_impls: &[CodecImplementationId],
         prefer_hardware: bool,
     ) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(fourcc));
         let guard = self.inner.read();
         let list = guard
             .codecs
@@ -258,6 +307,7 @@ impl CodecRegistryHandle {
         kind: CodecKind,
         impl_name: impl Into<CodecImplementationId>,
     ) -> Result<(FourCc, Arc<dyn Codec>), RegistryError> {
+        self.materialize(None);
         let guard = self.inner.read();
         let impl_id = impl_name.into();
         for (fcc, list) in guard.codecs.iter() {
@@ -381,6 +431,7 @@ impl CodecRegistryHandle {
         guard.policies.insert(policy.fourcc, policy);
     }
     pub fn lookup_auto(&self, fourcc: FourCc) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(fourcc));
         let guard = self.inner.read();
         let candidates = guard
             .codecs
@@ -394,6 +445,7 @@ impl CodecRegistryHandle {
         fourcc: FourCc,
         kind: CodecKind,
     ) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(fourcc));
         let guard = self.inner.read();
         let list_all = guard
             .codecs
@@ -412,6 +464,7 @@ impl CodecRegistryHandle {
         kind: CodecKind,
         codec_name: &str,
     ) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(fourcc));
         let guard = self.inner.read();
         let list_all = guard
             .codecs
@@ -459,6 +512,7 @@ impl CodecRegistryHandle {
         self.stats.clone()
     }
     pub fn list_registered(&self) -> Vec<(FourCc, Vec<CodecDescriptor>)> {
+        self.materialize(None);
         let guard = self.inner.read();
         guard
             .codecs
@@ -524,6 +578,7 @@ impl CodecRegistryHandle {
         }
     }
     fn lookup_converter(&self, actual: FourCc, expected: FourCc) -> Option<Arc<dyn Codec>> {
+        self.materialize(Some(actual));
         let guard = self.inner.read();
         let list = guard.codecs.get(&actual)?;
         list.iter()
@@ -576,6 +631,7 @@ impl CodecRegistry {
         let handle = CodecRegistryHandle {
             inner: Arc::new(RwLock::new(inner)),
             stats: CodecStats::default(),
+            has_deferred: Arc::new(AtomicBool::new(false)),
         };
         Self { handle }
     }
@@ -583,12 +639,12 @@ impl CodecRegistry {
         self.handle.clone()
     }
     pub fn register(&self, fourcc: FourCc, codec: Arc<dyn Codec>) {
-        let mut guard = self.handle.inner.write();
-        let priorities = guard.impl_priority.clone();
-        let prefer_hw = guard.default_prefer_hardware;
-        let list = guard.codecs.entry(fourcc).or_default();
-        list.push(codec);
-        sort_backends_for(&priorities, prefer_hw, fourcc, list);
+        self.handle.insert(fourcc, codec);
+    }
+
+    /// Register codecs for `fourcc` the first time `fourcc` is looked up.
+    pub fn register_deferred(&self, fourcc: FourCc, codecs: DeferredCodecs) {
+        self.handle.register_deferred(fourcc, codecs);
     }
     pub fn with_enabled_codecs() -> Result<Self, crate::CodecError> {
         Self::with_enabled_codecs_with_config(CodecRegistryConfig::default())

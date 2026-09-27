@@ -25,7 +25,7 @@ zune-core = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 mozjpeg = { workspace = true, optional = true }
 turbojpeg = { workspace = true, optional = true }
-ffmpeg-next = { workspace = true, optional = true }
+ffmpeg-sys-next = { workspace = true, optional = true }
 smallvec.workspace = true
 yuvutils-rs = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
@@ -51,7 +51,9 @@ raw-decoders = ["dep:rayon", "dep:yuvutils-rs"]
 codec-zune = ["zune-jpeg", "zune-core"]
 codec-mozjpeg = ["mozjpeg"]
 codec-turbojpeg = ["turbojpeg"]
-codec-ffmpeg = ["ffmpeg-next", "dep:libc"]
+codec-ffmpeg = ["dep:ffmpeg-sys-next", "dep:libc"]
+# FFmpeg containers and network streams (libavformat), for netcam and file video.
+codec-ffmpeg-format = ["codec-ffmpeg"]
 serde = ["dep:serde", "styx-core/serde", "styx-capture/serde"]
 schema = ["serde", "dep:utoipa", "styx-core/schema", "styx-capture/schema"]
 

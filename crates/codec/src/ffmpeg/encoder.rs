@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
-use ffmpeg_next::util::error::EAGAIN;
-use ffmpeg_next::{
+use crate::ffmpeg::ff::util::error::EAGAIN;
+use crate::ffmpeg::ff::{
     codec::{self, Id},
     encoder,
     error::Error as FfmpegError,
@@ -19,7 +19,7 @@ use crate::{
     DEFAULT_CODEC_POOL_SPARE,
 };
 
-use super::util::{SendSyncScalingContext, init_ffmpeg, pixel_format_for_fourcc};
+use super::util::{SendSyncScalingContext, pixel_format_for_fourcc};
 
 /// Shared encoder state.
 struct EncoderState {
@@ -39,7 +39,8 @@ struct EncoderState {
 /// FFmpeg encoder for H.264/H.265/MJPEG.
 pub struct FfmpegVideoEncoder {
     descriptor: CodecDescriptor,
-    codec: ffmpeg_next::Codec,
+    /// Found (and FFmpeg loaded) on first use.
+    codec: codec::CodecRef,
     pool: BufferPool,
     state: Mutex<Option<EncoderState>>,
     opts: Mutex<FfmpegEncoderOptions>,
@@ -63,9 +64,7 @@ impl FfmpegVideoEncoder {
         output: FourCc,
         opts: FfmpegEncoderOptions,
     ) -> Result<Self, CodecError> {
-        init_ffmpeg()?;
-        let codec = codec::encoder::find(id)
-            .ok_or_else(|| CodecError::Codec(format!("ffmpeg encoder {id:?} not found")))?;
+        let codec = codec::CodecRef::encoder(id);
         Ok(Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Encoder,
@@ -89,9 +88,7 @@ impl FfmpegVideoEncoder {
         output: FourCc,
         opts: FfmpegEncoderOptions,
     ) -> Result<Self, CodecError> {
-        init_ffmpeg()?;
-        let codec = codec::encoder::find_by_name(codec_name)
-            .ok_or_else(|| CodecError::Codec(format!("ffmpeg encoder {codec_name} not found")))?;
+        let codec = codec::CodecRef::encoder_by_name(codec_name);
         Ok(Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Encoder,
@@ -105,6 +102,17 @@ impl FfmpegVideoEncoder {
             state: Mutex::new(None),
             opts: Mutex::new(opts),
         })
+    }
+
+    /// Whether FFmpeg (loaded now if needed) has this encoder.
+    pub fn is_available(&self) -> bool {
+        self.resolve_codec().is_ok()
+    }
+
+    fn resolve_codec(&self) -> Result<crate::ffmpeg::ff::Codec, CodecError> {
+        self.codec
+            .get()
+            .map_err(|e| CodecError::Codec(e.to_string()))
     }
 
     fn ensure_state(
@@ -142,7 +150,8 @@ impl FfmpegVideoEncoder {
             return Ok(());
         }
 
-        let ctx = codec::Context::new_with_codec(self.codec);
+        let codec = self.resolve_codec()?;
+        let ctx = codec::Context::new_with_codec(codec);
         let mut enc_ctx = ctx
             .encoder()
             .video()
@@ -155,7 +164,7 @@ impl FfmpegVideoEncoder {
         }
         enc_ctx.set_width(dst_width);
         enc_ctx.set_height(dst_height);
-        let dst_format = pick_encoder_pixel_format(self.descriptor.output, src_format, self.codec)
+        let dst_format = pick_encoder_pixel_format(self.descriptor.output, src_format, codec)
             .ok_or_else(|| {
                 CodecError::Codec("ffmpeg encoder has no supported pixel formats".into())
             })?;
@@ -180,7 +189,7 @@ impl FfmpegVideoEncoder {
             enc_ctx.set_gop(120);
         }
         let encoder = enc_ctx
-            .open_as(self.codec)
+            .open_as(codec)
             .map_err(|e| CodecError::Codec(format!("ffmpeg open encoder failed: {e}")))?;
 
         let needs_scaler =
@@ -507,7 +516,7 @@ pub use encoder_tuning::FfmpegEncoderOptions;
 fn pick_encoder_pixel_format(
     output: FourCc,
     input: PixelFormat,
-    codec: ffmpeg_next::Codec,
+    codec: crate::ffmpeg::ff::Codec,
 ) -> Option<PixelFormat> {
     let video = codec.video().ok()?;
     let supported: Vec<PixelFormat> = video
