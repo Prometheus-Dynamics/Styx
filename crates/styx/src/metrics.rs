@@ -168,6 +168,8 @@ impl std::error::Error for PipelineStageError {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameDropReason {
     CaptureQueueSendTimeout,
+    /// Queued frames replaced by newer ones (`QueueOverflow::DropOldest`).
+    CaptureQueueEviction,
     GraphDrop,
     GraphLatestReplacement,
     /// Frames missing from the backend's sequence numbers: lost by the sensor, driver or ISP
@@ -250,6 +252,7 @@ pub struct QueueTelemetryStats {
     pub capacity: u64,
     pub send_backpressure: u64,
     pub send_timeouts: u64,
+    pub evictions: u64,
     pub recv_empty: u64,
     pub recv_timeouts: u64,
     pub async_send_waits: u64,
@@ -619,6 +622,7 @@ impl From<styx_core::queue::QueueStats> for QueueTelemetryStats {
             capacity: value.capacity,
             send_backpressure: value.send_backpressure,
             send_timeouts: value.send_timeouts,
+            evictions: value.evictions,
             recv_empty: value.recv_empty,
             recv_timeouts: value.recv_timeouts,
             async_send_waits: value.async_send_waits,

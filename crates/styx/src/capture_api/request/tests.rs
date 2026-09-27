@@ -469,6 +469,32 @@ fn live_sources_stamp_frames_with_the_configured_clock() {
 }
 
 #[test]
+fn latest_frame_only_replaces_stale_frames_for_slow_consumers() {
+    let device = crate::capture_api::make_virtual_rgb_device("latest-only", 2, 2, 100);
+    let handle = CaptureSource::new(device)
+        .open_with_config(StyxConfig::new().latest_frame_only())
+        .expect("open latest-only");
+    assert_eq!(handle.queue_stats().capacity, 1);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let RecvOutcome::Data(frame) = handle.recv_blocking(std::time::Duration::from_millis(250))
+    else {
+        panic!("no frame");
+    };
+    // The queued frame was replaced while we slept, so it is at most a few frames old.
+    let age = frame
+        .meta()
+        .latency()
+        .since_capture
+        .expect("capture instant");
+    assert!(age < std::time::Duration::from_millis(100), "{age:?}");
+    let health = handle.health_report();
+    assert!(health.drop_reasons.iter().any(|d| {
+        d.reason == crate::metrics::FrameDropReason::CaptureQueueEviction && d.count > 0
+    }));
+    handle.stop();
+}
+
+#[test]
 fn capture_source_builds_pipeline_without_manual_request_builder() {
     let device = crate::capture_api::make_virtual_rgb_device("source-pipeline", 2, 2, 30);
     let source = CaptureSource::new(device);

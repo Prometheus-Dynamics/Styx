@@ -77,6 +77,8 @@ pub struct QueueStats {
     pub capacity: u64,
     pub send_backpressure: u64,
     pub send_timeouts: u64,
+    /// Queued values dropped to make room for newer ones ([`QueueOverflow::DropOldest`]).
+    pub evictions: u64,
     pub recv_empty: u64,
     pub recv_timeouts: u64,
     pub async_send_waits: u64,
@@ -108,13 +110,12 @@ impl<T> BoundedTx<T> {
         if self.inner.closed.load(Ordering::Acquire) {
             return SendOutcome::Closed;
         }
-        let outcome = self
-            .inner
-            .queue
-            .push(value)
-            .map(|_| SendOutcome::Ok)
-            .unwrap_or(SendOutcome::Full);
+        let (outcome, evicted) = match self.inner.push(value) {
+            Ok(evicted) => (SendOutcome::Ok, evicted),
+            Err(_) => (SendOutcome::Full, None),
+        };
         drop(state);
+        drop(evicted);
         if matches!(outcome, SendOutcome::Full) {
             self.inner.send_backpressure.fetch_add(1, Ordering::Relaxed);
         }
@@ -152,9 +153,10 @@ impl<T> BoundedTx<T> {
             if self.inner.closed.load(Ordering::Acquire) {
                 return SendWaitOutcome::Closed(value);
             }
-            match self.inner.queue.push(value) {
-                Ok(()) => {
+            match self.inner.push(value) {
+                Ok(evicted) => {
                     drop(state);
+                    drop(evicted);
                     self.inner.notify_recv_ready();
                     return SendWaitOutcome::Ok;
                 }
@@ -214,9 +216,10 @@ impl<T> BoundedTx<T> {
             if self.inner.closed.load(Ordering::Acquire) {
                 return SendOutcome::Closed;
             }
-            match self.inner.queue.push(value) {
-                Ok(()) => {
+            match self.inner.push(value) {
+                Ok(evicted) => {
                     drop(state);
+                    drop(evicted);
                     self.inner.notify_recv_ready();
                     return SendOutcome::Ok;
                 }
@@ -363,9 +366,11 @@ impl<T> BoundedRx<T> {
 
 struct QueueInner<T> {
     queue: ArrayQueue<T>,
+    overflow: QueueOverflow,
     closed: AtomicBool,
     send_backpressure: AtomicU64,
     send_timeouts: AtomicU64,
+    evictions: AtomicU64,
     recv_empty: AtomicU64,
     recv_timeouts: AtomicU64,
     async_send_waits: AtomicU64,
@@ -387,12 +392,28 @@ struct QueueWaitState {
 }
 
 impl<T> QueueInner<T> {
+    /// Push according to the overflow policy; returns the evicted value, if any, so callers
+    /// can drop it after releasing the wait-state lock.
+    fn push(&self, value: T) -> Result<Option<T>, T> {
+        match self.overflow {
+            QueueOverflow::Backpressure => self.queue.push(value).map(|()| None),
+            QueueOverflow::DropOldest => {
+                let evicted = self.queue.force_push(value);
+                if evicted.is_some() {
+                    self.evictions.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(evicted)
+            }
+        }
+    }
+
     fn stats(&self) -> QueueStats {
         QueueStats {
             depth: self.queue.len() as u64,
             capacity: self.queue.capacity() as u64,
             send_backpressure: self.send_backpressure.load(Ordering::Relaxed),
             send_timeouts: self.send_timeouts.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
             recv_empty: self.recv_empty.load(Ordering::Relaxed),
             recv_timeouts: self.recv_timeouts.load(Ordering::Relaxed),
             async_send_waits: self.async_send_waits.load(Ordering::Relaxed),
@@ -458,11 +479,41 @@ impl<T> QueueInner<T> {
 /// }
 /// ```
 pub fn bounded<T>(capacity: usize) -> (BoundedTx<T>, BoundedRx<T>) {
+    bounded_with(capacity, QueueOverflow::Backpressure)
+}
+
+/// What a bounded queue does when a value is sent while it is full.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum QueueOverflow {
+    /// Refuse the value: `send` returns `Full`, `send_wait` waits for room or times out.
+    #[default]
+    Backpressure,
+    /// Accept the value and drop the oldest queued one, so receivers always get the newest
+    /// values. Sends never block or time out.
+    DropOldest,
+}
+
+/// Create a bounded queue with an explicit overflow policy.
+///
+/// # Example
+/// ```rust
+/// use styx_core::prelude::{QueueOverflow, RecvOutcome, bounded_with};
+///
+/// let (tx, rx) = bounded_with::<u8>(1, QueueOverflow::DropOldest);
+/// let _ = tx.send(1);
+/// let _ = tx.send(2);
+/// assert!(matches!(rx.recv(), RecvOutcome::Data(2)));
+/// assert_eq!(tx.stats().evictions, 1);
+/// ```
+pub fn bounded_with<T>(capacity: usize, overflow: QueueOverflow) -> (BoundedTx<T>, BoundedRx<T>) {
     let inner = Arc::new(QueueInner {
         queue: ArrayQueue::new(capacity),
+        overflow,
         closed: AtomicBool::new(false),
         send_backpressure: AtomicU64::new(0),
         send_timeouts: AtomicU64::new(0),
+        evictions: AtomicU64::new(0),
         recv_empty: AtomicU64::new(0),
         recv_timeouts: AtomicU64::new(0),
         async_send_waits: AtomicU64::new(0),

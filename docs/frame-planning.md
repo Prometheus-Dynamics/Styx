@@ -53,7 +53,7 @@ Candidates are filtered by `min/max_resolution`, `min_fps` and the overrides, th
 
 Costs come from measurements on a Raspberry Pi CM5; absolute numbers differ by machine but the
 ranking holds. `Priority` also sets decode threads per frame (latency: automatic, up to four) and
-queue depth (latency 2, throughput 4, power 3). `PlanOverrides::decode_threads` and
+queue depth (latency 1, i.e. newest frame only; throughput 4; power 3). `PlanOverrides::decode_threads` and
 `queue_depth` override them.
 
 ## Overrides and hardware

@@ -37,7 +37,7 @@ pub(super) fn start_virtual(
         VirtualCapture::new(mode.clone(), pool, 3)
     };
     let queue_depth = capture_tunables.queue_depth;
-    let (tx, rx) = bounded(queue_depth);
+    let (tx, rx) = styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow);
     let (stop_tx, stop_rx) = mpsc::channel();
     let frame_interval = interval
         .map(|interval| Duration::from_secs_f32(1.0 / interval.fps().max(1.0)))

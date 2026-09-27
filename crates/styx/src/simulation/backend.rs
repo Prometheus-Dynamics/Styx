@@ -61,7 +61,7 @@ pub(crate) fn start_simulation(
     let state = Arc::new(Mutex::new(parse_controls(&config, &controls)));
     let capture_tunables = runtime_config.capture_tunables();
     let queue_depth = capture_tunables.queue_depth;
-    let (tx, rx) = styx_core::queue::bounded(queue_depth);
+    let (tx, rx) = styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow);
     let (stop_tx, stop_rx) = mpsc::channel();
     let interval = interval.unwrap_or_else(|| Interval {
         numerator: std::num::NonZeroU32::new(1).unwrap(),

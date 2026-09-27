@@ -430,6 +430,10 @@ impl FrameMeta {
         if self.capture_instant.is_none() {
             self.capture_instant = input.capture_instant;
         }
+        // Stages that keep the input timestamp (decoders, transforms) keep its clock too.
+        if self.clock.is_none() && self.timestamp == input.timestamp {
+            self.clock = input.clock;
+        }
         self.timing = self.timing.merged_with(input.timing);
     }
 
@@ -489,6 +493,23 @@ mod timing_tests {
         let latency = output.latency();
         assert_eq!(latency.processing, Duration::from_millis(2));
         assert!(latency.total.unwrap() >= Duration::from_millis(9));
+    }
+
+    #[test]
+    fn stages_keep_the_clock_only_with_the_same_timestamp() {
+        let input = meta().with_clock(TimestampClock::Boottime);
+        let mut decoded = FrameMeta {
+            timestamp: input.timestamp,
+            ..meta()
+        };
+        decoded.inherit_capture_context(&input);
+        assert_eq!(decoded.clock, Some(TimestampClock::Boottime));
+        let mut retimed = FrameMeta {
+            timestamp: input.timestamp + 1,
+            ..meta()
+        };
+        retimed.inherit_capture_context(&input);
+        assert_eq!(retimed.clock, None);
     }
 
     #[cfg(target_os = "linux")]

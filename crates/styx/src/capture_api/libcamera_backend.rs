@@ -120,12 +120,13 @@ pub(super) fn start_libcamera(
         .unwrap_or(0.0);
     let capture_tunables = config.capture_tunables();
     let timestamp_clock = capture_tunables.timestamp_clock;
+    let extra_buffers = capture_tunables.extra_buffers;
     let sequence_gaps = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut sequence_tracker = crate::metrics::SequenceGapTracker::new(sequence_gaps.clone());
     let libcamera_config = config.libcamera_config();
     let queue_depth = capture_tunables.queue_depth;
     let _ = requested_fps;
-    let (tx, rx) = bounded(queue_depth);
+    let (tx, rx) = styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow);
     let (setup_tx, setup_rx) = mpsc::channel();
     let (stop_tx, stop_rx) = mpsc::channel();
     let (ctrl_tx, ctrl_rx) = mpsc::channel();
@@ -202,7 +203,11 @@ pub(super) fn start_libcamera(
             let is_rgb24_request =
                 matches!(&libcamera_code.to_u32().to_le_bytes(), b"RGB3" | b"BGR3");
             let emulate_rgb24 = is_rgb24_request && util::is_rpi_pisp_sensor_i2c(&id_for_thread);
-            let depth_u32 = u32::try_from(queue_depth).unwrap_or(4).clamp(1, 12);
+            // Buffers for the queue plus headroom, so a full queue never leaves libcamera
+            // without requests (it would then hand out its oldest raw frames).
+            let depth_u32 = u32::try_from(queue_depth + extra_buffers)
+                .unwrap_or(4)
+                .clamp(1, 16);
             let size = Size::new(
                 mode_for_thread.format.resolution.width.get(),
                 mode_for_thread.format.resolution.height.get(),

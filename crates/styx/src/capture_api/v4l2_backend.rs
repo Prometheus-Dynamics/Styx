@@ -627,12 +627,14 @@ pub(super) fn start_v4l2(
     let manager = V4l2MmapManager::new(
         dev.handle(),
         Type::VideoCapture,
-        4,
+        u32::try_from(capture_tunables.queue_depth + capture_tunables.extra_buffers)
+            .unwrap_or(4)
+            .clamp(4, 16),
         Duration::from_millis(v4l2_config.mmap_poll_ms),
     )
     .map_err(|e| CaptureError::Backend(e.to_string()))?;
     let queue_depth = capture_tunables.queue_depth;
-    let (tx, rx) = bounded(queue_depth);
+    let (tx, rx) = styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow);
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     let (recycle_tx, recycle_rx) = std::sync::mpsc::channel::<usize>();
     let mode_clone = mode.clone();

@@ -29,6 +29,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Added `FrameDropReason::SensorSequenceGap`: health reports now count frames the sensor produced
   that never reached Styx (V4L2 sequence numbers; libcamera sensor timestamps and
   `FrameDuration`, since its sequence numbers count completed requests).
+- Added `QueueOverflow` and `bounded_with` (styx-core), `CaptureConfig::queue_overflow`,
+  `CaptureConfig::extra_buffers`, `StyxConfig::latest_frame_only()` and
+  `FrameDropReason::CaptureQueueEviction`. See `docs/latest-frames.md`.
 
 - Added cached dma-heap capture buffers for libcamera (`LibcameraBufferMemory`, default `Auto`:
   on for Raspberry Pi cameras, falling back to libcamera's allocator). libcamera's own PiSP
@@ -86,6 +89,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Capture queues now drop their oldest frame when full (`QueueOverflow::DropOldest`) instead of
+  blocking the worker and then dropping the new frame; `Backpressure` restores the old
+  behaviour.
+- libcamera and V4L2 allocate `queue_depth + extra_buffers` (default 3) device buffers. libcamera
+  used exactly `queue_depth`, so a full queue left it without requests and it delivered frames
+  hundreds of milliseconds old. On a CM5 with a consumer taking 100 ms per frame, frame age
+  drops from 674 ms to 141 ms by default and to 41 ms with `latest_frame_only()`.
+- The planner's `Priority::Latency` uses a one-frame queue (newest frame only).
+- Processing stages keep the input frame's `FrameMeta::clock` when they keep its timestamp
+  (decoded MJPEG frames previously lost it).
 - libcamera frame timestamps are now the sensor's start-of-exposure time (`SensorTimestamp`)
   instead of the buffer completion time, matching V4L2 (8.2 ms vs 0.05 ms old on arrival on a
   CM5). Pyramid companions share it.

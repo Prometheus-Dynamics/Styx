@@ -76,7 +76,7 @@ pub(super) fn start_netcam(
 
     let capture_tunables = config.capture_tunables();
     let queue_depth = capture_tunables.queue_depth;
-    let (tx_raw, rx) = styx_core::queue::bounded(queue_depth);
+    let (tx_raw, rx) = styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow);
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_watcher = Arc::clone(&stop);

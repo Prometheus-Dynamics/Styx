@@ -96,7 +96,7 @@ pub(super) fn start_file(
     let capture_tunables = config.capture_tunables();
     let file_config = config.file_backend_config();
     let queue_depth = capture_tunables.queue_depth;
-    let (tx, rx) = styx_core::queue::bounded(queue_depth);
+    let (tx, rx) = styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow);
     let (stop_tx, stop_rx) = mpsc::channel();
     let interval = interval.unwrap_or_else(|| Interval {
         numerator: NonZeroU32::new(1).unwrap(),

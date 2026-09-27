@@ -31,8 +31,9 @@ pub mod prelude {
         },
         metrics::Metrics,
         queue::{
-            BoundedRx, BoundedTx, DEFAULT_QUEUE_CAPACITY, QueueStats, RecvOutcome, RecvWaitOutcome,
-            SendOutcome, SendWaitOutcome, bounded, default_bounded, newest,
+            BoundedRx, BoundedTx, DEFAULT_QUEUE_CAPACITY, QueueOverflow, QueueStats, RecvOutcome,
+            RecvWaitOutcome, SendOutcome, SendWaitOutcome, bounded, bounded_with, default_bounded,
+            newest,
         },
         requirements::{
             FrameRect, FrameRequirements, HardwarePolicy, OutputFormat, PlanOverrides, Priority,

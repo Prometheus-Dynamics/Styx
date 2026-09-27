@@ -92,10 +92,11 @@ pub(crate) fn decode_threads(priority: Priority, overridden: Option<usize>) -> u
     })
 }
 
-/// Frames buffered between capture and consumer for `priority` unless overridden.
+/// Frames buffered between capture and consumer for `priority` unless overridden. The capture
+/// queue drops its oldest frame when full, so latency gets the newest frame only.
 pub(crate) fn queue_depth(priority: Priority, overridden: Option<usize>) -> usize {
     overridden.unwrap_or(match priority {
-        Priority::Latency => 2,
+        Priority::Latency => 1,
         Priority::Throughput => 4,
         Priority::Power => 3,
     })

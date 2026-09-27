@@ -459,18 +459,18 @@ impl CaptureHandle {
         let queue = self.queue_stats();
         let capture = self.metrics.snapshot();
         let memory = self.memory_stats();
+        use crate::metrics::FrameDropReason as Reason;
         let mut drop_reasons = Vec::new();
-        crate::metrics::push_drop_reason(
-            &mut drop_reasons,
-            crate::metrics::FrameDropReason::CaptureQueueSendTimeout,
-            queue.send_timeouts,
-        );
-        crate::metrics::push_drop_reason(
-            &mut drop_reasons,
-            crate::metrics::FrameDropReason::SensorSequenceGap,
-            self.sequence_gaps
-                .load(std::sync::atomic::Ordering::Relaxed),
-        );
+        let sequence_gaps = self
+            .sequence_gaps
+            .load(std::sync::atomic::Ordering::Relaxed);
+        for (reason, count) in [
+            (Reason::CaptureQueueSendTimeout, queue.send_timeouts),
+            (Reason::CaptureQueueEviction, queue.evictions),
+            (Reason::SensorSequenceGap, sequence_gaps),
+        ] {
+            crate::metrics::push_drop_reason(&mut drop_reasons, reason, count);
+        }
         let external_inflight_buffers = memory
             .external_backings
             .iter()

@@ -9,6 +9,9 @@ pub const DEFAULT_POOL_MIN: usize = 4;
 pub const DEFAULT_POOL_BYTES: usize = 1 << 20;
 /// Default extra spare buffers beyond the minimum.
 pub const DEFAULT_POOL_SPARE: usize = 8;
+/// Default capture buffers beyond the queue depth: one held by the consumer and two in flight
+/// with the driver, so a full queue never starves the camera.
+pub const DEFAULT_CAPTURE_EXTRA_BUFFERS: usize = 3;
 /// Default frame enqueue timeout for generic capture workers (milliseconds).
 pub const DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS: u64 = 10;
 /// Default idle stop poll for virtual/generic capture workers (milliseconds).
@@ -59,7 +62,7 @@ pub const DEFAULT_NETCAM_MAX_JPEG_BYTES: usize = 32 << 20;
 pub const DEFAULT_FILE_IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Preferred libcamera stream role for processed, non-raw/non-encoded requests.
-use styx_core::prelude::ClockSource;
+use styx_core::prelude::{ClockSource, QueueOverflow};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -122,6 +125,11 @@ pub struct CaptureConfig {
     pub queue_send_timeout_ms: u64,
     /// Stop polling interval used while a generic capture worker is idle, in milliseconds.
     pub idle_poll_ms: u64,
+    /// What happens when a frame arrives while the queue is full. `DropOldest` (default) keeps
+    /// the newest frames; `Backpressure` waits `queue_send_timeout_ms`, then drops the new frame.
+    pub queue_overflow: QueueOverflow,
+    /// Device buffers (libcamera, V4L2) allocated beyond `queue_depth`.
+    pub extra_buffers: usize,
     /// Clock live sources stamp frames with. File and simulation sources always report media
     /// time (`TimestampClock::StreamRelative`).
     pub timestamp_clock: ClockSource,
@@ -145,6 +153,8 @@ impl Default for CaptureConfig {
             pool_spare: DEFAULT_POOL_SPARE,
             queue_send_timeout_ms: DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS,
             idle_poll_ms: DEFAULT_CAPTURE_IDLE_POLL_MS,
+            queue_overflow: QueueOverflow::DropOldest,
+            extra_buffers: DEFAULT_CAPTURE_EXTRA_BUFFERS,
             timestamp_clock: ClockSource::Native,
         }
     }
@@ -159,6 +169,8 @@ impl CaptureConfig {
             pool_spare: self.pool_spare,
             queue_send_timeout_ms: self.queue_send_timeout_ms.max(1),
             idle_poll_ms: self.idle_poll_ms.max(1),
+            queue_overflow: self.queue_overflow,
+            extra_buffers: self.extra_buffers,
             timestamp_clock: self.timestamp_clock,
         }
     }
@@ -438,6 +450,26 @@ impl StyxConfig {
     /// Override capture queue depth.
     pub fn capture_queue_depth(mut self, depth: usize) -> Self {
         self.capture.queue_depth = depth;
+        self
+    }
+
+    /// Overflow policy for the capture queue (see [`CaptureConfig::queue_overflow`]).
+    pub fn capture_queue_overflow(mut self, overflow: QueueOverflow) -> Self {
+        self.capture.queue_overflow = overflow;
+        self
+    }
+
+    /// Device buffers allocated beyond the queue depth (see [`CaptureConfig::extra_buffers`]).
+    pub fn capture_extra_buffers(mut self, extra: usize) -> Self {
+        self.capture.extra_buffers = extra;
+        self
+    }
+
+    /// Deliver only the newest frame: a one-frame queue that replaces its frame when a newer
+    /// one arrives. Lowest latency for consumers slower than the camera.
+    pub fn latest_frame_only(mut self) -> Self {
+        self.capture.queue_depth = 1;
+        self.capture.queue_overflow = QueueOverflow::DropOldest;
         self
     }
 
