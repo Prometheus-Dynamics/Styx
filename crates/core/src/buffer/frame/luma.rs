@@ -16,9 +16,8 @@ impl FrameLease {
 
     /// Visible rows of the Y8 plane: plane 0 of GREY/R8 or planar/semi-planar YUV frames.
     ///
-    /// Unlike [`FrameLease::visible_rows`], this also works for dma-buf frames whose backing can
-    /// map its planes for CPU reads (libcamera, V4L2 exports); mapping performs any required
-    /// dma-buf cache synchronisation.
+    /// Like [`FrameLease::visible_rows`], this works for dma-buf frames whose backing can map
+    /// its planes for CPU reads (libcamera, V4L2 exports).
     pub fn luma_rows(&self) -> Result<VisibleRows<'_>, FrameValidationError> {
         if !self.has_luma_plane() {
             return Err(FrameValidationError::NoLumaPlane(self.meta.format.code));

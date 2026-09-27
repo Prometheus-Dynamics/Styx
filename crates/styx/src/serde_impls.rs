@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(feature = "file-backend", feature = "simulation-bevy"))]
 use std::path::PathBuf;
 
 use crate::BackendHandle;
@@ -42,6 +41,11 @@ impl Serialize for BackendHandle {
                     scene_path: String,
                     config: crate::simulation::SimulationDeviceConfig,
                 },
+                Replay {
+                    path: String,
+                    pacing: crate::replay::ReplayPacing,
+                    loop_forever: bool,
+                },
             }
 
             let human = match self {
@@ -80,6 +84,15 @@ impl Serialize for BackendHandle {
                     scene_path: scene_path.to_string_lossy().to_string(),
                     config: config.clone(),
                 },
+                BackendHandle::Replay {
+                    path,
+                    pacing,
+                    loop_forever,
+                } => HumanHandle::Replay {
+                    path: path.to_string_lossy().to_string(),
+                    pacing: *pacing,
+                    loop_forever: *loop_forever,
+                },
             };
             human.serialize(serializer)
         } else {
@@ -108,6 +121,11 @@ impl Serialize for BackendHandle {
                 Simulation {
                     scene_path: String,
                     config: crate::simulation::SimulationDeviceConfig,
+                },
+                Replay {
+                    path: String,
+                    pacing: crate::replay::ReplayPacing,
+                    loop_forever: bool,
                 },
             }
             let bin = match self {
@@ -145,6 +163,15 @@ impl Serialize for BackendHandle {
                 BackendHandle::Simulation { scene_path, config } => BinaryHandle::Simulation {
                     scene_path: scene_path.to_string_lossy().to_string(),
                     config: config.clone(),
+                },
+                BackendHandle::Replay {
+                    path,
+                    pacing,
+                    loop_forever,
+                } => BinaryHandle::Replay {
+                    path: path.to_string_lossy().to_string(),
+                    pacing: *pacing,
+                    loop_forever: *loop_forever,
                 },
             };
             bin.serialize(serializer)
@@ -188,6 +215,11 @@ impl<'de> Deserialize<'de> for BackendHandle {
                     scene_path: String,
                     config: crate::simulation::SimulationDeviceConfig,
                 },
+                Replay {
+                    path: String,
+                    pacing: crate::replay::ReplayPacing,
+                    loop_forever: bool,
+                },
             }
             let human = HumanHandle::deserialize(deserializer)?;
             let handle = match human {
@@ -223,6 +255,15 @@ impl<'de> Deserialize<'de> for BackendHandle {
                     scene_path: PathBuf::from(scene_path),
                     config,
                 },
+                HumanHandle::Replay {
+                    path,
+                    pacing,
+                    loop_forever,
+                } => BackendHandle::Replay {
+                    path: PathBuf::from(path),
+                    pacing,
+                    loop_forever,
+                },
             };
             Ok(handle)
         } else {
@@ -250,6 +291,11 @@ impl<'de> Deserialize<'de> for BackendHandle {
                 Simulation {
                     scene_path: String,
                     config: crate::simulation::SimulationDeviceConfig,
+                },
+                Replay {
+                    path: String,
+                    pacing: crate::replay::ReplayPacing,
+                    loop_forever: bool,
                 },
             }
             let bin = BinaryHandle::deserialize(deserializer)?;
@@ -285,6 +331,15 @@ impl<'de> Deserialize<'de> for BackendHandle {
                 BinaryHandle::Simulation { scene_path, config } => BackendHandle::Simulation {
                     scene_path: PathBuf::from(scene_path),
                     config,
+                },
+                BinaryHandle::Replay {
+                    path,
+                    pacing,
+                    loop_forever,
+                } => BackendHandle::Replay {
+                    path: PathBuf::from(path),
+                    pacing,
+                    loop_forever,
                 },
             };
             Ok(handle)

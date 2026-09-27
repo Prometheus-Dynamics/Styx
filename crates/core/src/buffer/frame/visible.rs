@@ -64,11 +64,20 @@ impl FrameLease {
         Ok(planes)
     }
 
+    /// Visible rows of one plane. Dma-buf frames are readable when their backing maps the
+    /// plane for CPU reads (libcamera, V4L2 exports); mapping performs any required dma-buf
+    /// cache synchronisation.
     pub fn visible_rows(
         &self,
         plane_index: usize,
     ) -> Result<VisibleRows<'_>, FrameValidationError> {
-        self.require_host_readable()?;
+        let mappable = self
+            .external
+            .as_ref()
+            .is_some_and(|backing| backing.plane_data(plane_index).is_some());
+        if !mappable {
+            self.require_host_readable()?;
+        }
         self.validate_plane_layouts()?;
         let row_bytes = visible_row_bytes_for_plane(
             self.layout_info(),

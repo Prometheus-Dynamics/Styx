@@ -310,7 +310,14 @@ pub(super) fn validate_plane_layout(
             visible_row_bytes,
         });
     }
-    let expected_len = layout.stride.saturating_mul(height);
+    // The last row needs only its visible bytes: crop views end right after them.
+    let expected_len = match height {
+        0 => 0,
+        _ => layout
+            .stride
+            .saturating_mul(height - 1)
+            .saturating_add(visible_row_bytes),
+    };
     if layout.len < expected_len {
         return Err(FrameValidationError::PlaneLenTooSmall {
             index,

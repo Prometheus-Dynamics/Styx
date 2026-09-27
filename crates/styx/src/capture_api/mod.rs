@@ -26,6 +26,7 @@ pub(super) mod file_backend;
 pub(super) mod libcamera_backend;
 #[cfg(feature = "netcam")]
 pub(super) mod netcam_backend;
+mod replay_backend;
 #[cfg(feature = "v4l2")]
 pub(super) mod v4l2_backend;
 pub(super) mod virtual_backend;

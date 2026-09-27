@@ -7,6 +7,7 @@ use super::handle::{CaptureHandle, CaptureQueue};
 use super::libcamera_backend;
 #[cfg(feature = "netcam")]
 use super::netcam_backend;
+use super::replay_backend;
 use super::request::{CaptureError, TdnOutputMode};
 use super::tunables::StyxConfig;
 #[cfg(feature = "v4l2")]
@@ -71,5 +72,8 @@ pub(crate) fn start_backend(
         ),
         #[cfg(not(feature = "simulation-bevy"))]
         BackendKind::Simulation => Err(CaptureError::BackendMissing(BackendKind::Simulation)),
+        BackendKind::Replay => {
+            replay_backend::start_replay(backend, mode, interval, descriptor, config, _queue)
+        }
     }
 }

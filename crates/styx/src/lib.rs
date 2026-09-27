@@ -5,10 +5,7 @@
 use std::collections::HashSet;
 #[cfg(all(feature = "facade", feature = "v4l2"))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
-#[cfg(all(
-    feature = "facade",
-    any(feature = "file-backend", feature = "simulation-bevy")
-))]
+#[cfg(feature = "facade")]
 use std::path::PathBuf;
 
 #[cfg(feature = "facade")]
@@ -44,6 +41,8 @@ mod metrics;
 pub mod planner;
 #[cfg(all(feature = "facade", feature = "hooks"))]
 pub mod recording;
+#[cfg(feature = "facade")]
+pub mod replay;
 #[cfg(feature = "facade")]
 pub mod runtime_codec;
 #[cfg(all(feature = "facade", feature = "serde"))]
@@ -122,6 +121,8 @@ pub enum BackendKind {
     Netcam,
     File,
     Simulation,
+    /// A `.styxrec` recording played back as a camera (see [`replay`]).
+    Replay,
 }
 
 /// Backend-specific handle used for configuration/streaming.
@@ -167,6 +168,13 @@ pub enum BackendHandle {
         scene_path: PathBuf,
         config: crate::simulation::SimulationDeviceConfig,
     },
+    Replay {
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
+        path: PathBuf,
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
+        pacing: crate::replay::ReplayPacing,
+        loop_forever: bool,
+    },
 }
 
 #[cfg(feature = "facade")]
@@ -185,6 +193,7 @@ impl BackendHandle {
             BackendHandle::File { .. } => BackendKind::File,
             #[cfg(feature = "simulation-bevy")]
             BackendHandle::Simulation { .. } => BackendKind::Simulation,
+            BackendHandle::Replay { .. } => BackendKind::Replay,
         }
     }
 }
@@ -358,6 +367,7 @@ impl std::fmt::Display for BackendKind {
             BackendKind::Netcam => "netcam",
             BackendKind::File => "file",
             BackendKind::Simulation => "simulation",
+            BackendKind::Replay => "replay",
         })
     }
 }
@@ -374,6 +384,7 @@ impl std::str::FromStr for BackendKind {
             "netcam" | "network" | "network-camera" => Ok(BackendKind::Netcam),
             "file" | "file-backend" => Ok(BackendKind::File),
             "simulation" | "simulation-bevy" => Ok(BackendKind::Simulation),
+            "replay" => Ok(BackendKind::Replay),
             _ => Err(BackendKindParseError {
                 value: value.to_string(),
             }),
@@ -567,6 +578,7 @@ fn backend_error_prefix(backend: BackendKind) -> &'static str {
         BackendKind::Netcam => "netcam: ",
         BackendKind::File => "file: ",
         BackendKind::Simulation => "simulation: ",
+        BackendKind::Replay => "replay: ",
     }
 }
 
@@ -579,6 +591,7 @@ fn parse_backend_probe_error(value: &str) -> Option<BackendProbeError> {
         BackendKind::Netcam,
         BackendKind::File,
         BackendKind::Simulation,
+        BackendKind::Replay,
     ]
     .into_iter()
     .find_map(|backend| {
@@ -644,6 +657,10 @@ pub mod prelude {
     pub use crate::recording::{
         FrameRecorder, RecordingError, RecordingFormat, RecordingFrameIndexEntry, RecordingOptions,
         RecordingSessionMetadata,
+    };
+    #[cfg(feature = "facade")]
+    pub use crate::replay::{
+        RecordingHeader, ReplayError, ReplayPacing, ReplaySourceConfig, StreamRecorder,
     };
     #[cfg(feature = "facade")]
     pub use crate::runtime_codec::{
@@ -716,6 +733,7 @@ mod tests {
             BackendKind::Netcam,
             BackendKind::File,
             BackendKind::Simulation,
+            BackendKind::Replay,
         ] {
             assert_eq!(backend.to_string().parse::<BackendKind>(), Ok(backend));
         }

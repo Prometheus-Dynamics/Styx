@@ -29,6 +29,7 @@ const DEFAULT_CAMERA_BACKEND_PRIORITY: &[BackendKind] = &[
     BackendKind::Netcam,
     BackendKind::File,
     BackendKind::Simulation,
+    BackendKind::Replay,
 ];
 
 pub trait CameraFormat {

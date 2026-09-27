@@ -120,6 +120,15 @@ pub mod watch {
     };
 }
 
+/// Lossless stream recording and replay.
+#[cfg(feature = "facade")]
+pub mod replay {
+    pub use crate::replay::{
+        RecordingFrames, RecordingHeader, ReplayError, ReplayPacing, ReplaySourceConfig,
+        StreamRecorder, open_recording, read_header,
+    };
+}
+
 /// Recording APIs.
 #[cfg(all(feature = "facade", feature = "hooks"))]
 pub mod recording {

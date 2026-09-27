@@ -45,6 +45,7 @@ pub(crate) fn backend_name(kind: BackendKind) -> &'static str {
         BackendKind::Netcam => "netcam",
         BackendKind::File => "file",
         BackendKind::Simulation => "simulation",
+        BackendKind::Replay => "replay",
     }
 }
 
@@ -237,6 +238,11 @@ fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanS
             StepExecution::ZeroCopy,
             cost::uvc_capture_latency_ms(fps),
             "camera exposure, encode and transfer",
+        ),
+        BackendKind::Replay => (
+            StepExecution::ZeroCopy,
+            0.0,
+            "recording; pyramid levels it contains are reused, not recomputed",
         ),
         _ => (StepExecution::ZeroCopy, 0.0, "synthetic source"),
     };

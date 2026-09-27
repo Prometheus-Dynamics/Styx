@@ -14,7 +14,6 @@ pub(super) type Companions = SmallVec<[(CompanionKind, FrameLease); 2]>;
 
 /// How a companion relates to its primary frame.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
 pub enum CompanionKind {
     /// Downscaled by `2^level` in each axis (level 1 = ½, 2 = ¼, 3 = ⅛).
     Pyramid { level: u8 },

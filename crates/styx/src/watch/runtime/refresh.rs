@@ -128,6 +128,7 @@ fn backend_signature(backend: &ProbedBackend) -> String {
         BackendKind::Netcam => "netcam",
         BackendKind::File => "file",
         BackendKind::Simulation => "simulation",
+        BackendKind::Replay => "replay",
     });
     out.push(':');
     out.push_str(&handle_signature(&backend.handle));
@@ -162,6 +163,11 @@ fn handle_signature(handle: &BackendHandle) -> String {
         BackendHandle::Simulation { scene_path, config } => {
             format!("{}:{config:?}", scene_path.display())
         }
+        BackendHandle::Replay {
+            path,
+            pacing,
+            loop_forever,
+        } => format!("{}:{pacing:?}:{loop_forever}", path.display()),
     }
 }
 

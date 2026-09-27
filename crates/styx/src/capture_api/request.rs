@@ -109,6 +109,13 @@ impl<'a> CaptureRequest<'a> {
         CaptureSource::new(config.into_device())
     }
 
+    /// Play a `.styxrec` recording back as a camera (see [`crate::replay`]).
+    pub fn replay_source(
+        config: crate::replay::ReplaySourceConfig,
+    ) -> Result<CaptureSource, crate::replay::ReplayError> {
+        Ok(CaptureSource::new(config.into_device()?))
+    }
+
     /// Create a new request targeting a probed device.
     pub fn new(device: &'a ProbedDevice) -> Self {
         Self {

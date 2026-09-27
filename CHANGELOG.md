@@ -37,6 +37,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   with the same mode, config and controls. Adds `CaptureError::Disconnected`,
   `CaptureRetryStats::{reconnects, last_reconnect_downtime_ms}`, `QueueStats::sent` and
   `ControlPlane::Supervised`. See `docs/reconnect.md`.
+- Added lossless recording and replay: `StreamRecorder` writes frames with their metadata
+  (pixels or bitstream, timestamp and clock, backend sequence numbers, crop, timing, pyramid
+  companions) to `.styxrec` files, and `CaptureRequest::replay_source` plays them back as a
+  camera (`BackendKind::Replay`, real-time or unpaced, optional looping). See `docs/replay.md`.
 
 - Added cached dma-heap capture buffers for libcamera (`LibcameraBufferMemory`, default `Auto`:
   on for Raspberry Pi cameras, falling back to libcamera's allocator). libcamera's own PiSP
@@ -94,6 +98,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `BackendKind` and `BackendHandle` have a `Replay` variant; exhaustive matches need a new arm.
+- `CompanionKind` is no longer `#[non_exhaustive]`.
+- `FrameLease::visible_rows` (and so `to_visible_vec`) reads dma-buf frames whose backing maps
+  their planes, as `luma_rows` already did.
 - `CaptureRetryStats::netcam_retry_count` and `CaptureRetryMetrics::record_netcam_retry` are
   now `reconnect_attempts` and `record_reconnect_attempt`, shared by netcam, libcamera and V4L2.
 - A V4L2 device that disappears (`ENODEV`) ends its capture with `CaptureError::Disconnected`
@@ -117,6 +125,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Whole-frame copies of ROI crop views failed plane-length validation: the last row of a view
+  ends after its visible bytes, not a full stride.
 - The runtime memory report read kernel dma-buf sizes (`/sys/kernel/debug/dma_buf/bufinfo`,
   zero-padded decimal) as hex, overstating them about 13x (270 MiB reported for 20.6 MiB).
 - The libcamera manager is now stopped at process exit when no camera is in use, so processes
