@@ -97,6 +97,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   hundreds of milliseconds old. On a CM5 with a consumer taking 100 ms per frame, frame age
   drops from 674 ms to 141 ms by default and to 41 ms with `latest_frame_only()`.
 - The planner's `Priority::Latency` uses a one-frame queue (newest frame only).
+- The default capture queue depth is 2 (was 4). With drop-oldest, deeper queues only add
+  latency and device buffers.
 - Processing stages keep the input frame's `FrameMeta::clock` when they keep its timestamp
   (decoded MJPEG frames previously lost it).
 - libcamera frame timestamps are now the sensor's start-of-exposure time (`SensorTimestamp`)

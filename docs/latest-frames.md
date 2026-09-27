@@ -30,8 +30,9 @@ let config = StyxConfig::new()
 - **`latest_frame_only()`:** a queue depth of 1 with `DropOldest`. The planner uses this for
   `Priority::Latency`.
 
-Buffers are the main memory cost. For a 1280x720 NV12 libcamera stream on a CM5, the default 7
-buffers use 9.2 MB of CMA against 5.3 MB for 4. libcamera's own internal buffers grow with the
+The default queue depth is 2, so capture uses 5 device buffers. Buffers are the main memory
+cost. For a 1280x720 NV12 libcamera stream on a CM5, 7 buffers (depth 4) use 9.2 MB of CMA
+against 5.3 MB for 4. libcamera's own internal buffers grow with the
 request count as well, from 15.3 to 19.3 MB. `latest_frame_only()` uses 4 buffers, the same
 as the old default. Set `capture_extra_buffers` lower on memory-constrained systems.
 
@@ -42,7 +43,7 @@ consumer spins for the given time on each frame.
 
 **OV9782, libcamera, 30 fps**
 
-| Consumer work | Before (depth 4, backpressure, no headroom) | New default (depth 4) | `latest_frame_only()` |
+| Consumer work | Before (depth 4, backpressure, no headroom) | Drop-oldest at depth 4 | `latest_frame_only()` |
 |---|---|---|---|
 | 0 ms | 8.0 / 8.5 ms | 8.1 / 8.3 ms | 8.0 / 8.2 ms |
 | 50 ms | 324 / 341 ms | 125 / 141 ms | **25 / 41 ms** |
@@ -50,7 +51,7 @@ consumer spins for the given time on each frame.
 
 **Logitech C270, V4L2 MJPEG, about 11 fps in office light**
 
-| Consumer work | Before | New default (depth 4) | `latest_frame_only()` |
+| Consumer work | Before | Drop-oldest at depth 4 | `latest_frame_only()` |
 |---|---|---|---|
 | 0 ms | 68 / 68 ms | 68 / 68 ms | 68 / 68 ms |
 | 100 ms | 236 / 272 ms | 276 / 308 ms | **100 / 108 ms** |

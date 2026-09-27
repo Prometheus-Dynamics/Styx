@@ -1,8 +1,9 @@
 use styx_codec::prelude::{CodecRegistryConfig, DEFAULT_CODEC_MAX_HEIGHT, DEFAULT_CODEC_MAX_WIDTH};
 use styx_core::transform::TransformPoolConfig;
 
-/// Default capture queue depth (frames).
-pub const DEFAULT_QUEUE_DEPTH: usize = 4;
+/// Default capture queue depth (frames). Full queues drop their oldest frame, so a deeper queue
+/// mainly adds latency and device buffers.
+pub const DEFAULT_QUEUE_DEPTH: usize = 2;
 /// Default buffer pool minimum count.
 pub const DEFAULT_POOL_MIN: usize = 4;
 /// Default buffer pool bytes per buffer.
