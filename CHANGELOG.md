@@ -99,8 +99,45 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Added export capability reporting on external frame backings so memfd/dmabuf-style backings can
   advertise zero-copy export support without treating every external backing as exportable.
 
+- Added `FrameRequirements::output_resolution`: the planner prefers the smallest mode covering
+  it, and MJPEG decoded with turbojpeg (luma or RGB, `TurbojpegDecoder::with_scale`,
+  `LumaDecodeScale::covering`) is decoded straight to ½, ¼ or ⅛ size, split across cores when
+  frames carry restart markers. `FramePlan::output_resolution` reports the delivered size. On a
+  CM5, C270 720p to 320x180: RGB 6.0 → 2.0 ms and 12.8 → 2.3 MB, luma 0.87 → 0.64 ms and
+  4.0 → 2.4 MB. See `docs/frame-planning.md`.
+- Added metric export: `HealthReport::metric_samples`, `HealthReport::to_prometheus` and
+  `render_prometheus` (`MetricSample`, `MetricKind`, `FrameDropReason::as_str`). See
+  `docs/runtime-debugging.md`.
+- Added `open_recording_reader` to read recordings from any `Read`.
+- Added `FrameLease::external_backing_handle` and `BufferPool::lease_sized`.
+- Added VA-API encoders (`FfmpegH264Encoder::new_vaapi_nv12`, `FfmpegH265Encoder::new_vaapi_nv12`,
+  registered when a VA-API driver is installed). NV12 dma-bufs (libcamera, V4L2) are imported as
+  GPU surfaces without a copy; other frames are uploaded from their own memory. See
+  `docs/encoding.md`.
+- Added `FfmpegEncoderOptions::{low_latency, codec_options}` and `LOW_LATENCY_PRESET`.
+- Added a memory smoke to CI (`scripts/check-mem-smoke.sh`, `testing/perf/memory-baseline.txt`):
+  heap and resident peaks per scenario, and a leak check.
+- Added corruption tests for recordings, MJPEG decoders and the netcam parser, cargo-fuzz targets
+  (`fuzz/`), and a public API compatibility check (`cargo-semver-checks`) in release CI.
+
 ### Changed
 
+- FFmpeg encoders are low latency by default: libx264/libx265 use `tune=zerolatency` and the
+  `superfast` preset. On a CM5 at 720p the libx264 defaults held 40 frames of lookahead, used
+  140 MB and 61 ms per frame; now the first packet comes with the first frame, in 20 MB and
+  14.5 ms.
+- FFmpeg encoders read input frames in place when no conversion is needed (camera buffers are
+  held until FFmpeg releases them) instead of copying each frame into an encoder frame, and
+  allocate that staging frame only when a copy is needed.
+- The MCAP reader reads records itself instead of through the `mcap` crate's reader, streams one
+  record at a time with a 64 KiB buffer (was 1 MiB), and recovers every frame before a cut in a
+  recording cut short mid-chunk.
+- MJPEG decoders size output buffers to the frame (`lease_sized`) instead of their pool's chunk:
+  a 320x180 luma decode no longer allocates 1 MB.
+- The planner builds its JPEG luma decoder with the planned alignment, threads and scale from
+  the first frame (they were only applied after an ROI change).
+- FFmpeg hardware devices (VA-API) try each render node when the default fails, for machines with
+  several GPUs.
 - FFmpeg is no longer linked. `styx-codec` calls it through libraries loaded with `dlopen` on
   first use (by the major version it was built against), keeping `ffmpeg-sys-next` for types
   only, so `codec-ffmpeg` builds that never decode or encode through FFmpeg do not map it (CM5:
@@ -148,6 +185,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Damaged input no longer crashes Styx or makes it allocate far beyond the data:
+  - `.styxrec` payload lengths allocated up to 4 GiB before reading (118 MB from an 8 KB file)
+    and companion frames could nest without bound;
+  - MCAP: a damaged chunk header made the reader buffer up to 4 GiB, record lengths inside a
+    chunk underflowed (a panic in debug builds), a string length could reserve 64 MiB, a repeated
+    pyramid level panicked, and incomplete frames were kept without bound;
+  - `FrameLease::from_visible_bytes` allocated the full frame for a recorded resolution before
+    checking the payload size;
+  - MJPEG decoders sized their output from the JPEG header: a bit error claiming 32767x32767
+    zero-filled gigabytes. Frames claiming more than 4x the stream's pixels are now refused;
+  - netcam multipart header lines were read without a length limit.
 - Probing libcamera failed while any libcamera camera was capturing ("manager mutation blocked
   by active camera use"), which also broke reconnects and planning next to a running camera.
   Probes now use shared access and return complete descriptors during capture.

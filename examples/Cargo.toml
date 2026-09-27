@@ -19,6 +19,7 @@ graph-pipeline = ["styx/graph-pipeline", "dep:daedalus"]
 hotplug = ["styx/hotplug"]
 libcamera = ["styx/libcamera"]
 netcam = ["styx/netcam"]
+replay-mcap = ["styx/replay-mcap"]
 preview-window = ["styx/preview-window"]
 simulation-bevy = ["styx/simulation-bevy"]
 v4l2 = ["styx/v4l2"]
@@ -120,6 +121,11 @@ required-features = ["codec-jpeg-decoder"]
 name = "luma_perf"
 path = "04_performance/luma_perf.rs"
 required-features = ["codec-turbojpeg"]
+
+[[bin]]
+name = "mem_smoke"
+path = "04_performance/mem_smoke.rs"
+required-features = ["codec-turbojpeg", "replay-mcap"]
 
 [[bin]]
 name = "file_replay_perf"

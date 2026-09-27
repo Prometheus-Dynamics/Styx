@@ -52,6 +52,9 @@ jobs:
       - name: Run perf smoke surface
         run: ./scripts/check-perf-smoke.sh
 
+      - name: Run memory smoke
+        run: ./scripts/check-mem-smoke.sh
+
   docs-and-lints:
     runs-on: ubuntu-latest
     timeout-minutes: 30

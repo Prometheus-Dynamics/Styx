@@ -38,6 +38,8 @@ The Docker suite uses [`testing/docker/styx-facade.Dockerfile`](../testing/docke
 - File-size linting fails for new non-baselined files above the release limit, supports `FILE_SIZE_EXCLUDE_DIRS=path1:path2`, and tracks current exceptions through `testing/ci/file-size-baseline.txt`
 - Performance microbenchmarks live outside the default test surface; run `cargo bench -p styx --bench v4l2_capture_paths` when working on V4L2 capture-path performance
 - CI now runs `./scripts/check-perf-smoke.sh`, which compares decode, transform, file replay, and mozjpeg encode p95 timings against `testing/perf/baseline.txt`
+- CI runs `./scripts/check-mem-smoke.sh`, which checks heap and resident memory of capture and decode scenarios against `testing/perf/memory-baseline.txt` and fails on leaks (see [performance.md](performance.md#memory-smoke-surface))
+- Damaged input: `crates/styx/src/replay/corruption_tests.rs` (truncated and corrupted MCAP/`.styxrec` recordings, with an allocation bound), `crates/codec/src/corruption_tests.rs` (damaged MJPEG through every decoder) and the netcam multipart parser tests run in CI; the cargo-fuzz targets in [`fuzz/`](../fuzz/README.md) cover the same parsers for longer runs
 
 ## Runtime Debugging
 

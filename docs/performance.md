@@ -311,6 +311,27 @@ encode, then compares p95 timings against
 `testing/perf/baseline.txt`. These checks deliberately avoid the graph feature
 so Daedalus runtime work cannot block the non-graph media performance surface.
 
+## Memory Smoke Surface
+
+`./scripts/check-mem-smoke.sh` runs `examples/04_performance/mem_smoke.rs` and compares each
+scenario with `testing/perf/memory-baseline.txt`. CI runs it next to the perf smoke. Every
+scenario runs in a fresh process and reports:
+
+- `peak_kb`: the most Rust heap it held at once (frame pools, queues, decoded frames). This is
+  exact, so its limit is tight.
+- `rss_peak_kb`: the rise of the peak resident size. It also covers memfd frame pools and memory
+  allocated inside C libraries such as libjpeg-turbo; it varies by machine, so its limit has
+  more headroom.
+- `retained_kb`: what was still held after everything stopped; more than 64 KB fails as a leak.
+
+| Scenario | What it measures |
+|---|---|
+| `mem_virtual_720p_1cam` / `_4cam` | capture buffers for one and four 720p cameras |
+| `mem_mjpeg_luma_720p` / `_to_320x180` | C270 MJPEG replayed through the planner to luma, full size and scaled |
+| `mem_mjpeg_rgb_720p` / `_to_320x180` | the same to RGB |
+
+Raise a limit in the baseline only together with the change that needs it.
+
 ## Runtime Troubleshooting Signals
 
 When a capture or pipeline session stalls, drops frames, or closes unexpectedly, inspect

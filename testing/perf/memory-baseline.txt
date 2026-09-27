@@ -1,0 +1,10 @@
+# Memory limits for scripts/check-mem-smoke.sh (examples/04_performance/mem_smoke.rs).
+# metric max_heap_peak_kb max_rss_peak_kb
+# Measured on x86-64 Linux (heap peak is exact; resident peak varies by machine, so its limit
+# has more headroom). Every scenario must also release everything it allocated.
+mem_virtual_720p_1cam 64 2048
+mem_virtual_720p_4cam 128 3072
+mem_mjpeg_luma_720p 1536 4096
+mem_mjpeg_luma_to_320x180 512 2048
+mem_mjpeg_rgb_720p 3584 6144
+mem_mjpeg_rgb_to_320x180 640 2560
