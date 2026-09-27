@@ -106,11 +106,20 @@ function_table!(AvUtil {
     av_frame_copy_props: fn(*mut raw::AVFrame, *const raw::AVFrame) -> c_int;
     av_frame_clone: fn(*const raw::AVFrame) -> *mut raw::AVFrame;
     av_buffer_ref: fn(*const raw::AVBufferRef) -> *mut raw::AVBufferRef;
+    av_buffer_create: fn(*mut u8, usize, Option<unsafe extern "C" fn(*mut c_void, *mut u8)>, *mut c_void, c_int) -> *mut raw::AVBufferRef;
     av_buffer_unref: fn(*mut *mut raw::AVBufferRef);
     av_hwdevice_ctx_create: fn(*mut *mut raw::AVBufferRef, raw::AVHWDeviceType, *const c_char, *mut raw::AVDictionary, c_int) -> c_int;
     av_hwframe_transfer_data: fn(*mut raw::AVFrame, *const raw::AVFrame, c_int) -> c_int;
+    av_hwframe_ctx_alloc: fn(*mut raw::AVBufferRef) -> *mut raw::AVBufferRef;
+    av_hwframe_ctx_init: fn(*mut raw::AVBufferRef) -> c_int;
+    av_hwframe_get_buffer: fn(*mut raw::AVBufferRef, *mut raw::AVFrame, c_int) -> c_int;
+    av_hwframe_map: fn(*mut raw::AVFrame, *const raw::AVFrame, c_int) -> c_int;
+    av_hwframe_ctx_create_derived: fn(*mut *mut raw::AVBufferRef, raw::AVPixelFormat, *mut raw::AVBufferRef, *mut raw::AVBufferRef, c_int) -> c_int;
+    av_hwdevice_ctx_create_derived: fn(*mut *mut raw::AVBufferRef, raw::AVHWDeviceType, *mut raw::AVBufferRef, c_int) -> c_int;
     av_pix_fmt_desc_get: fn(raw::AVPixelFormat) -> *const raw::AVPixFmtDescriptor;
     av_strerror: fn(c_int, *mut c_char, usize) -> c_int;
+    av_dict_set: fn(*mut *mut raw::AVDictionary, *const c_char, *const c_char, c_int) -> c_int;
+    av_dict_free: fn(*mut *mut raw::AVDictionary);
 });
 
 function_table!(AvCodec {

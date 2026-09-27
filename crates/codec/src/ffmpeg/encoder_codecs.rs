@@ -94,7 +94,7 @@ impl FfmpegH264Encoder {
             FourCc::H264,
             FfmpegEncoderOptions::default(),
         )?;
-        probe_v4l2m2m_encoder(&enc)?;
+        probe_encoder(&enc)?;
         Ok(Self(enc))
     }
 
@@ -107,7 +107,23 @@ impl FfmpegH264Encoder {
             FourCc::H264,
             FfmpegEncoderOptions::default(),
         )?;
-        probe_v4l2m2m_encoder(&enc)?;
+        probe_encoder(&enc)?;
+        Ok(Self(enc))
+    }
+
+    /// VA-API (Intel, AMD): NV12 dma-bufs such as camera buffers are encoded without a copy,
+    /// other frames are uploaded to the GPU from their own memory.
+    pub fn new_vaapi_nv12() -> Result<Self, CodecError> {
+        let enc = FfmpegVideoEncoder::new_by_name(
+            "h264_vaapi",
+            "h264",
+            "h264_vaapi",
+            FourCc::NV12,
+            FourCc::H264,
+            FfmpegEncoderOptions::default(),
+        )?;
+        // Opening needs a GPU with an encode entry point for this codec.
+        probe_encoder(&enc)?;
         Ok(Self(enc))
     }
 
@@ -178,7 +194,7 @@ impl FfmpegH265Encoder {
             FourCc::H265,
             FfmpegEncoderOptions::default(),
         )?;
-        probe_v4l2m2m_encoder(&enc)?;
+        probe_encoder(&enc)?;
         Ok(Self(enc))
     }
 
@@ -191,7 +207,23 @@ impl FfmpegH265Encoder {
             FourCc::H265,
             FfmpegEncoderOptions::default(),
         )?;
-        probe_v4l2m2m_encoder(&enc)?;
+        probe_encoder(&enc)?;
+        Ok(Self(enc))
+    }
+
+    /// VA-API (Intel, AMD): NV12 dma-bufs such as camera buffers are encoded without a copy,
+    /// other frames are uploaded to the GPU from their own memory.
+    pub fn new_vaapi_nv12() -> Result<Self, CodecError> {
+        let enc = FfmpegVideoEncoder::new_by_name(
+            "hevc_vaapi",
+            "h265",
+            "hevc_vaapi",
+            FourCc::NV12,
+            FourCc::H265,
+            FfmpegEncoderOptions::default(),
+        )?;
+        // Opening needs a GPU with an encode entry point for this codec.
+        probe_encoder(&enc)?;
         Ok(Self(enc))
     }
 

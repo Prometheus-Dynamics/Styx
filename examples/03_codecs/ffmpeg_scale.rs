@@ -20,8 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bitrate: 1_000_000,
         gop: Some(30),
         framerate: Some((30, 1)),
-        thread_count: None,
-        pool_limits: None,
+        ..Default::default()
     })?);
 
     let mut pipeline = MediaPipelineBuilder::new(device.capture_request())

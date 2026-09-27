@@ -1,3 +1,7 @@
+use std::any::Any;
+use std::ffi::c_void;
+use std::sync::Arc;
+
 use super::*;
 
 /// An owned video frame (`AVFrame`).
@@ -24,6 +28,58 @@ impl Video {
         // SAFETY: fresh frame.
         unsafe { frame.alloc(format, width, height) };
         frame
+    }
+
+    /// A frame over memory FFmpeg does not own: `planes` are read in place, and `owner` (which
+    /// keeps that memory valid) is released when FFmpeg drops its last reference to the frame,
+    /// which may be after an encoder has held it for a while.
+    ///
+    /// # Safety
+    /// Each plane's `(pointer, stride, len)` must describe `len` readable bytes that stay valid
+    /// and unchanged while `owner` is alive, and cover the rows the pixel format needs.
+    pub unsafe fn borrowing(
+        format: Pixel,
+        width: u32,
+        height: u32,
+        planes: &[(*const u8, usize, usize)],
+        owner: Arc<dyn Any + Send + Sync>,
+    ) -> Option<Self> {
+        /// `AV_BUFFER_FLAG_READONLY`: FFmpeg copies before writing.
+        const READONLY: c_int = 1;
+        unsafe extern "C" fn release(opaque: *mut c_void, _data: *mut u8) {
+            // SAFETY: `opaque` is the boxed owner created below, released exactly once.
+            drop(unsafe { Box::from_raw(opaque.cast::<Arc<dyn Any + Send + Sync>>()) });
+        }
+        let mut frame = Self::empty();
+        frame.set_format(format);
+        frame.set_width(width);
+        frame.set_height(height);
+        for (index, &(data, stride, len)) in planes.iter().enumerate().take(8) {
+            let opaque = Box::into_raw(Box::new(owner.clone())).cast::<c_void>();
+            // SAFETY: `data` is valid for `len` bytes while `owner` lives; FFmpeg calls
+            // `release` once when the buffer's last reference goes.
+            let buf = unsafe {
+                (loader::loaded().util.av_buffer_create)(
+                    data.cast_mut(),
+                    len,
+                    Some(release),
+                    opaque,
+                    READONLY,
+                )
+            };
+            if buf.is_null() {
+                // SAFETY: FFmpeg did not take `opaque`.
+                unsafe { release(opaque, std::ptr::null_mut()) };
+                return None;
+            }
+            // SAFETY: valid owned frame; the frame now owns `buf` and frees it on drop.
+            unsafe {
+                (*frame.ptr).buf[index] = buf;
+                (*frame.ptr).data[index] = data.cast_mut();
+                (*frame.ptr).linesize[index] = c_int::try_from(stride).ok()?;
+            }
+        }
+        Some(frame)
     }
 
     /// Allocate buffers for `format` at `width`x`height`.

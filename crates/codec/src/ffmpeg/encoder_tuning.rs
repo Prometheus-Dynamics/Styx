@@ -9,7 +9,22 @@ pub struct FfmpegEncoderOptions {
     pub thread_count: Option<usize>,
     pub pool_limits: Option<(usize, usize, usize)>,
     pub output_resolution: Option<Resolution>,
+    /// Emit a packet for every frame as it is encoded (default `true`). For libx264/libx265
+    /// this sets `tune=zerolatency` and preset [`LOW_LATENCY_PRESET`] unless
+    /// [`FfmpegEncoderOptions::codec_options`] names them. On a Raspberry Pi CM5 at 720p,
+    /// libx264's own defaults hold 40 frames of lookahead (the first packet comes 41 frames
+    /// late), take 140 MB and 61 ms per frame; low latency takes 20 MB and 14.5 ms. Other
+    /// encoders (v4l2m2m, openh264, MJPEG) already work frame by frame.
+    pub low_latency: bool,
+    /// Encoder-specific options passed to FFmpeg when the encoder opens, e.g.
+    /// `&[("preset", "ultrafast"), ("crf", "28")]` for libx264. Unknown keys are ignored.
+    pub codec_options: &'static [(&'static str, &'static str)],
 }
+
+/// Preset used for libx264/libx265 in low-latency mode: real time on one Cortex-A76 core for
+/// 720p30 with room for more cameras. `ultrafast` takes 9 ms and 13 MB per 720p frame on a CM5
+/// at some cost in compression; `veryfast` compresses better at 24 ms.
+pub const LOW_LATENCY_PRESET: &str = "superfast";
 
 impl Default for FfmpegEncoderOptions {
     fn default() -> Self {
@@ -20,7 +35,24 @@ impl Default for FfmpegEncoderOptions {
             thread_count: None,
             pool_limits: None,
             output_resolution: None,
+            low_latency: true,
+            codec_options: &[],
         }
+    }
+}
+
+impl FfmpegEncoderOptions {
+    /// The options FFmpeg opens encoder `codec` with.
+    pub(crate) fn open_options(&self, codec: &str) -> Vec<(&'static str, &'static str)> {
+        let mut options = self.codec_options.to_vec();
+        if self.low_latency && matches!(codec, "libx264" | "libx265") {
+            for (key, value) in [("tune", "zerolatency"), ("preset", LOW_LATENCY_PRESET)] {
+                if !options.iter().any(|(k, _)| *k == key) {
+                    options.push((key, value));
+                }
+            }
+        }
+        options
     }
 }
 
@@ -76,7 +108,7 @@ impl FfmpegVideoEncoder {
     }
 }
 
-pub(crate) fn probe_v4l2m2m_encoder(enc: &FfmpegVideoEncoder) -> Result<(), CodecError> {
+pub(crate) fn probe_encoder(enc: &FfmpegVideoEncoder) -> Result<(), CodecError> {
     let probes = [(640_u32, 480_u32), (1280_u32, 720_u32)];
     let mut last_err: Option<CodecError> = None;
 
@@ -129,7 +161,7 @@ pub(crate) fn probe_v4l2m2m_encoder(enc: &FfmpegVideoEncoder) -> Result<(), Code
                 }
                 other => {
                     return Err(CodecError::Codec(format!(
-                        "unsupported v4l2m2m probe input: {other:?}"
+                        "unsupported encoder probe input: {other:?}"
                     )));
                 }
             };
@@ -150,5 +182,37 @@ pub(crate) fn probe_v4l2m2m_encoder(enc: &FfmpegVideoEncoder) -> Result<(), Code
         }
     }
 
-    Err(last_err.unwrap_or_else(|| CodecError::Codec("v4l2m2m probe failed".into())))
+    Err(last_err.unwrap_or_else(|| CodecError::Codec("encoder probe failed".into())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn low_latency_tunes_x264_without_overriding_the_caller() {
+        let defaults = FfmpegEncoderOptions::default();
+        assert_eq!(
+            defaults.open_options("libx264"),
+            vec![("tune", "zerolatency"), ("preset", LOW_LATENCY_PRESET)]
+        );
+        assert!(defaults.open_options("h264_v4l2m2m").is_empty());
+        let custom = FfmpegEncoderOptions {
+            codec_options: &[("preset", "ultrafast"), ("crf", "28")],
+            ..Default::default()
+        };
+        assert_eq!(
+            custom.open_options("libx265"),
+            vec![
+                ("preset", "ultrafast"),
+                ("crf", "28"),
+                ("tune", "zerolatency")
+            ]
+        );
+        let off = FfmpegEncoderOptions {
+            low_latency: false,
+            ..Default::default()
+        };
+        assert!(off.open_options("libx264").is_empty());
+    }
 }

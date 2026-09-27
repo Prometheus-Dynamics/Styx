@@ -497,6 +497,7 @@ impl CodecRegistry {
             let h264_encoder = hw_presence::v4l2m2m_encoder(FourCc::H264);
             deferred_hardware!(FourCc::RG24, h264_encoder, [FfmpegH264Encoder::new_v4l2m2m_rgb24()]);
             deferred_hardware!(FourCc::NV12, h264_encoder, [FfmpegH264Encoder::new_v4l2m2m_nv12()]);
+            deferred_hardware!(FourCc::NV12, hw_presence::vaapi(), [FfmpegH264Encoder::new_vaapi_nv12()]);
             self.register(
                 FourCc::YUYV,
                 Arc::new(FfmpegH264Encoder::with_options_for_input(
@@ -515,6 +516,7 @@ impl CodecRegistry {
             let hevc_encoder = hw_presence::v4l2m2m_encoder(FourCc::H265);
             deferred_hardware!(FourCc::RG24, hevc_encoder, [FfmpegH265Encoder::new_v4l2m2m_rgb24()]);
             deferred_hardware!(FourCc::NV12, hevc_encoder, [FfmpegH265Encoder::new_v4l2m2m_nv12()]);
+            deferred_hardware!(FourCc::NV12, hw_presence::vaapi(), [FfmpegH265Encoder::new_vaapi_nv12()]);
             self.register(
                 FourCc::YUYV,
                 Arc::new(FfmpegH265Encoder::with_options_for_input(

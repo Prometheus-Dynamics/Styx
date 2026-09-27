@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::ffmpeg::ff::util::error::EAGAIN;
 use crate::ffmpeg::ff::{
@@ -30,8 +30,12 @@ struct EncoderState {
     src_height: u32,
     dst_width: u32,
     dst_height: u32,
-    src_frame: FfFrame,
+    /// Staging copy of the input, allocated on first use: frames the encoder can read in place
+    /// never need it.
+    src_frame: Option<FfFrame>,
     dst_frame: Option<FfFrame>,
+    /// Device surfaces for encoders that only take them (VA-API).
+    surfaces: Option<Surfaces>,
     next_pts: i64,
     queued: std::collections::VecDeque<Vec<u8>>,
 }
@@ -164,11 +168,28 @@ impl FfmpegVideoEncoder {
         }
         enc_ctx.set_width(dst_width);
         enc_ctx.set_height(dst_height);
-        let dst_format = pick_encoder_pixel_format(self.descriptor.output, src_format, codec)
-            .ok_or_else(|| {
-                CodecError::Codec("ffmpeg encoder has no supported pixel formats".into())
-            })?;
-        enc_ctx.set_format(dst_format);
+        // Surface encoders take NV12 pixels in device surfaces.
+        let surface_config = surface_config(codec);
+        let dst_format = match surface_config {
+            Some(_) => PixelFormat::NV12,
+            None => pick_encoder_pixel_format(self.descriptor.output, src_format, codec)
+                .ok_or_else(|| {
+                    CodecError::Codec("ffmpeg encoder has no supported pixel formats".into())
+                })?,
+        };
+        let surfaces = match surface_config {
+            Some((device_type, surface_format)) => {
+                let surfaces = Surfaces::new(device_type, surface_format, dst_width, dst_height)?;
+                enc_ctx.set_format(PixelFormat::from(surface_format));
+                // SAFETY: a valid frames context; the encoder takes its own reference.
+                unsafe { enc_ctx.set_hw_frames(surfaces.frames()) };
+                Some(surfaces)
+            }
+            None => {
+                enc_ctx.set_format(dst_format);
+                None
+            }
+        };
         if let Some((num, den)) = opts.framerate {
             enc_ctx.set_time_base((den as i32, num as i32));
             enc_ctx.set_frame_rate(Some((num as i32, den as i32)));
@@ -189,7 +210,7 @@ impl FfmpegVideoEncoder {
             enc_ctx.set_gop(120);
         }
         let encoder = enc_ctx
-            .open_as(codec)
+            .open_as_with(codec, &opts.open_options(codec.name()))
             .map_err(|e| CodecError::Codec(format!("ffmpeg open encoder failed: {e}")))?;
 
         let needs_scaler =
@@ -210,7 +231,6 @@ impl FfmpegVideoEncoder {
         } else {
             None
         };
-        let src_frame = alloc_video_frame(src_format, src_width, src_height)?;
         let dst_frame = if needs_scaler {
             Some(alloc_video_frame(dst_format, dst_width, dst_height)?)
         } else {
@@ -225,8 +245,9 @@ impl FfmpegVideoEncoder {
             src_height,
             dst_width,
             dst_height,
-            src_frame,
+            src_frame: None,
             dst_frame,
+            surfaces,
             next_pts: 0,
             queued: std::collections::VecDeque::new(),
         });
@@ -242,7 +263,9 @@ impl FfmpegVideoEncoder {
         Ok(())
     }
 
-    fn encode(&self, frame: &FrameLease) -> Result<FrameLease, CodecError> {
+    /// Encode `frame`. With an `owner` keeping its memory alive, the encoder reads the frame in
+    /// place when it takes this pixel format and size unchanged (see [`borrowed_input`]).
+    fn encode(&self, frame: &FrameLease, owner: Option<Owner>) -> Result<FrameLease, CodecError> {
         let meta = frame.meta();
         let src_width = meta.format.resolution.width.get();
         let src_height = meta.format.resolution.height.get();
@@ -256,7 +279,7 @@ impl FfmpegVideoEncoder {
         let state = guard
             .as_mut()
             .ok_or_else(|| CodecError::Codec("ffmpeg encoder state missing".into()))?;
-        self.push_frame(state, frame)?;
+        self.push_frame(state, frame, owner)?;
         let data = state.queued.pop_front().ok_or(CodecError::Backpressure)?;
         let mut meta = meta.clone();
         if let Some(res) = Resolution::new(dst_width, dst_height) {
@@ -272,6 +295,7 @@ impl FfmpegVideoEncoder {
         frame: &FrameLease,
         pool: &SharedBufferPool,
     ) -> Result<FrameLease, CodecError> {
+        let owner = frame.external_backing_handle().map(backing_owner);
         let meta = frame.meta();
         let src_width = meta.format.resolution.width.get();
         let src_height = meta.format.resolution.height.get();
@@ -285,7 +309,7 @@ impl FfmpegVideoEncoder {
         let state = guard
             .as_mut()
             .ok_or_else(|| CodecError::Codec("ffmpeg encoder state missing".into()))?;
-        self.push_frame(state, frame)?;
+        self.push_frame(state, frame, owner)?;
         let data = state.queued.pop_front().ok_or(CodecError::Backpressure)?;
         let mut meta = meta.clone();
         if let Some(res) = Resolution::new(dst_width, dst_height) {
@@ -295,73 +319,81 @@ impl FfmpegVideoEncoder {
         self.packet_to_shared_frame(&meta, &data, pool)
     }
 
-    fn push_frame(&self, state: &mut EncoderState, frame: &FrameLease) -> Result<(), CodecError> {
+    fn push_frame(
+        &self,
+        state: &mut EncoderState,
+        frame: &FrameLease,
+        owner: Option<Owner>,
+    ) -> Result<(), CodecError> {
         let pts = state.next_pts;
         state.next_pts = state.next_pts.saturating_add(1);
-        write_input_frame(&mut state.src_frame, state.src_format, frame)?;
-        state.src_frame.set_pts(Some(pts));
-        if state.scaler.is_some() {
-            {
-                let scaler = state
-                    .scaler
-                    .as_mut()
-                    .ok_or_else(|| CodecError::Codec("ffmpeg scaler missing".into()))?;
-                let dst_frame = state
-                    .dst_frame
-                    .as_mut()
-                    .ok_or_else(|| CodecError::Codec("ffmpeg dst frame missing".into()))?;
-                scaler
-                    .0
-                    .run(&state.src_frame, dst_frame)
-                    .map_err(|e| CodecError::Codec(format!("ffmpeg scale failed: {e}")))?;
-                dst_frame.set_pts(Some(pts));
+        // Without a format or size change the encoder reads the frame's own memory: a dma-buf
+        // imported as a device surface, a host frame uploaded from where it is, or a host frame
+        // read in place.
+        let direct = match (&owner, state.scaler.is_none()) {
+            (Some(owner), true) => match state.surfaces.as_mut() {
+                Some(surfaces) => surfaces.import(frame, owner).or_else(|| {
+                    borrowed_input(state.src_format, frame, owner.clone())
+                        .and_then(|sw| surfaces.upload(&sw).ok())
+                }),
+                None => borrowed_input(state.src_format, frame, owner.clone()),
+            },
+            _ => None,
+        };
+        let mut input = match direct {
+            Some(input) => input,
+            None => self.staged_input(state, frame)?,
+        };
+        input.set_pts(Some(pts));
+        match state.encoder.send_frame(&input) {
+            Ok(()) => {}
+            Err(err) if is_again(&err) => {
+                self.drain_packets(state)?;
+                state
+                    .encoder
+                    .send_frame(&input)
+                    .map_err(|e| CodecError::Codec(format!("ffmpeg send_frame failed: {e}")))?;
             }
-
-            let send_result = {
-                let dst = state
-                    .dst_frame
-                    .as_ref()
-                    .ok_or_else(|| CodecError::Codec("ffmpeg dst frame missing".into()))?;
-                state.encoder.send_frame(dst)
-            };
-            match send_result {
-                Ok(()) => {}
-                Err(err) if is_again(&err) => {
-                    self.drain_packets(state)?;
-                    let dst = state
-                        .dst_frame
-                        .as_ref()
-                        .ok_or_else(|| CodecError::Codec("ffmpeg dst frame missing".into()))?;
-                    state
-                        .encoder
-                        .send_frame(dst)
-                        .map_err(|e| CodecError::Codec(format!("ffmpeg send_frame failed: {e}")))?;
-                }
-                Err(err) => {
-                    return Err(CodecError::Codec(format!(
-                        "ffmpeg send_frame failed: {err}"
-                    )));
-                }
-            }
-        } else {
-            let send_result = state.encoder.send_frame(&state.src_frame);
-            match send_result {
-                Ok(()) => {}
-                Err(err) if is_again(&err) => {
-                    self.drain_packets(state)?;
-                    state
-                        .encoder
-                        .send_frame(&state.src_frame)
-                        .map_err(|e| CodecError::Codec(format!("ffmpeg send_frame failed: {e}")))?;
-                }
-                Err(err) => {
-                    return Err(CodecError::Codec(format!(
-                        "ffmpeg send_frame failed: {err}"
-                    )));
-                }
+            Err(err) => {
+                return Err(CodecError::Codec(format!(
+                    "ffmpeg send_frame failed: {err}"
+                )));
             }
         }
         self.drain_packets(state)
+    }
+
+    /// `frame` copied (and converted or scaled when needed) into the staging frames, and
+    /// uploaded to a device surface for surface encoders.
+    fn staged_input(
+        &self,
+        state: &mut EncoderState,
+        frame: &FrameLease,
+    ) -> Result<FfFrame, CodecError> {
+        if state.src_frame.is_none() {
+            state.src_frame = Some(alloc_video_frame(
+                state.src_format,
+                state.src_width,
+                state.src_height,
+            )?);
+        }
+        let src_frame = state.src_frame.as_mut().expect("allocated above");
+        write_input_frame(src_frame, state.src_format, frame)?;
+        let staged = match (state.scaler.as_mut(), state.dst_frame.as_mut()) {
+            (Some(scaler), Some(dst_frame)) => {
+                scaler
+                    .0
+                    .run(src_frame, dst_frame)
+                    .map_err(|e| CodecError::Codec(format!("ffmpeg scale failed: {e}")))?;
+                &*dst_frame
+            }
+            _ => &*src_frame,
+        };
+        match &state.surfaces {
+            Some(surfaces) => surfaces.upload(staged),
+            // A new reference to the staging buffers.
+            None => Ok(staged.clone()),
+        }
     }
 
     fn drain_packets(&self, state: &mut EncoderState) -> Result<(), CodecError> {
@@ -432,7 +464,8 @@ impl FfmpegVideoEncoder {
         let state = lock
             .as_mut()
             .ok_or_else(|| CodecError::Codec("ffmpeg encoder state missing".into()))?;
-        self.push_frame(state, frame)?;
+        let owner = frame.external_backing_handle().map(backing_owner);
+        self.push_frame(state, frame, owner)?;
         let mut out = Vec::new();
         while let Some(pkt) = state.queued.pop_front() {
             out.push(self.packet_to_frame(&meta, pkt));
@@ -487,7 +520,10 @@ impl Codec for FfmpegVideoEncoder {
                 actual: input.meta().format.code,
             });
         }
-        self.encode(&input)
+        // The encoder may keep the frame after this call returns (FFmpeg reference counts it),
+        // so it owns it from here on.
+        let input = Arc::new(input);
+        self.encode(&input, Some(input.clone()))
     }
 
     #[cfg(target_os = "linux")]
@@ -509,9 +545,15 @@ impl Codec for FfmpegVideoEncoder {
 #[path = "encoder_codecs.rs"]
 mod encoder_codecs;
 pub use encoder_codecs::{FfmpegH264Encoder, FfmpegH265Encoder, FfmpegMjpegEncoder};
+#[path = "encoder_hw.rs"]
+mod encoder_hw;
+use encoder_hw::{Surfaces, surface_config};
+#[path = "encoder_input.rs"]
+mod encoder_input;
+use encoder_input::{Owner, alloc_video_frame, backing_owner, borrowed_input, write_input_frame};
 #[path = "encoder_tuning.rs"]
 mod encoder_tuning;
-pub use encoder_tuning::FfmpegEncoderOptions;
+pub use encoder_tuning::{FfmpegEncoderOptions, LOW_LATENCY_PRESET};
 
 fn pick_encoder_pixel_format(
     output: FourCc,
@@ -564,183 +606,7 @@ fn pick_encoder_pixel_format(
     supported.first().copied()
 }
 
-fn alloc_video_frame(fmt: PixelFormat, width: u32, height: u32) -> Result<FfFrame, CodecError> {
-    let mut frame = FfFrame::empty();
-    frame.set_format(fmt);
-    frame.set_width(width);
-    frame.set_height(height);
-    unsafe {
-        frame.alloc(fmt, width, height);
-    }
-    Ok(frame)
-}
-
-fn write_input_frame(
-    dst: &mut FfFrame,
-    fmt: PixelFormat,
-    frame: &FrameLease,
-) -> Result<(), CodecError> {
-    let meta = frame.meta();
-    let width = meta.format.resolution.width.get();
-    let height = meta.format.resolution.height.get();
-    if dst.width() != width || dst.height() != height {
-        return Err(CodecError::Codec(
-            "ffmpeg input frame geometry mismatch".into(),
-        ));
-    }
-    let planes = frame.planes();
-
-    match fmt {
-        PixelFormat::RGB24 | PixelFormat::BGR24 => {
-            let plane = planes
-                .into_iter()
-                .next()
-                .ok_or_else(|| CodecError::Codec("RGB24 missing plane".into()))?;
-            let src_stride = plane.stride();
-            let src = plane.data();
-            let dst_stride = dst.stride(0);
-            let dst_data = dst.data_mut(0);
-            let row_bytes = width as usize * 3;
-            for y in 0..height as usize {
-                let src_off = y * src_stride;
-                let dst_off = y * dst_stride;
-                if src_off + row_bytes > src.len() || dst_off + row_bytes > dst_data.len() {
-                    return Err(CodecError::Codec("RGB24 plane too short".into()));
-                }
-                dst_data[dst_off..dst_off + row_bytes]
-                    .copy_from_slice(&src[src_off..src_off + row_bytes]);
-            }
-            Ok(())
-        }
-        PixelFormat::RGBA | PixelFormat::BGRA => {
-            let plane = planes
-                .into_iter()
-                .next()
-                .ok_or_else(|| CodecError::Codec("RGBA missing plane".into()))?;
-            let src_stride = plane.stride();
-            let src = plane.data();
-            let dst_stride = dst.stride(0);
-            let dst_data = dst.data_mut(0);
-            let row_bytes = width as usize * 4;
-            for y in 0..height as usize {
-                let src_off = y * src_stride;
-                let dst_off = y * dst_stride;
-                if src_off + row_bytes > src.len() || dst_off + row_bytes > dst_data.len() {
-                    return Err(CodecError::Codec("RGBA plane too short".into()));
-                }
-                dst_data[dst_off..dst_off + row_bytes]
-                    .copy_from_slice(&src[src_off..src_off + row_bytes]);
-            }
-            Ok(())
-        }
-        PixelFormat::NV12 => {
-            if planes.len() < 2 {
-                return Err(CodecError::Codec("NV12 requires 2 planes".into()));
-            }
-            let y = &planes[0];
-            let uv = &planes[1];
-            let (w, h) = (width as usize, height as usize);
-            if y.data().len() < y.stride().saturating_mul(h) {
-                return Err(CodecError::Codec("NV12 Y plane too short".into()));
-            }
-            if uv.data().len() < uv.stride().saturating_mul(h / 2) {
-                return Err(CodecError::Codec("NV12 UV plane too short".into()));
-            }
-
-            let dst_y_stride = dst.stride(0);
-            let dst_uv_stride = dst.stride(1);
-            {
-                let dst_y = dst.data_mut(0);
-                for row in 0..h {
-                    let src_row = &y.data()[row * y.stride()..row * y.stride() + w];
-                    let dst_row = &mut dst_y[row * dst_y_stride..row * dst_y_stride + w];
-                    dst_row.copy_from_slice(src_row);
-                }
-            }
-            {
-                let dst_uv = dst.data_mut(1);
-                for row in 0..(h / 2) {
-                    let src_row = &uv.data()[row * uv.stride()..row * uv.stride() + w];
-                    let dst_row = &mut dst_uv[row * dst_uv_stride..row * dst_uv_stride + w];
-                    dst_row.copy_from_slice(src_row);
-                }
-            }
-            Ok(())
-        }
-        PixelFormat::YUV420P | PixelFormat::YUVJ420P => {
-            if planes.len() < 3 {
-                return Err(CodecError::Codec("I420 requires 3 planes".into()));
-            }
-            let y = &planes[0];
-            let u = &planes[1];
-            let v = &planes[2];
-            let (w, h) = (width as usize, height as usize);
-            let cw = w / 2;
-            if y.data().len() < y.stride().saturating_mul(h) {
-                return Err(CodecError::Codec("I420 Y plane too short".into()));
-            }
-            if u.data().len() < u.stride().saturating_mul(h / 2)
-                || v.data().len() < v.stride().saturating_mul(h / 2)
-            {
-                return Err(CodecError::Codec("I420 UV plane too short".into()));
-            }
-
-            let dst_y_stride = dst.stride(0);
-            let dst_u_stride = dst.stride(1);
-            let dst_v_stride = dst.stride(2);
-            {
-                let dst_y = dst.data_mut(0);
-                for row in 0..h {
-                    let src_row = &y.data()[row * y.stride()..row * y.stride() + w];
-                    let dst_row = &mut dst_y[row * dst_y_stride..row * dst_y_stride + w];
-                    dst_row.copy_from_slice(src_row);
-                }
-            }
-            {
-                let dst_u = dst.data_mut(1);
-                for row in 0..(h / 2) {
-                    let src_u = &u.data()[row * u.stride()..row * u.stride() + cw];
-                    let dst_u_row = &mut dst_u[row * dst_u_stride..row * dst_u_stride + cw];
-                    dst_u_row.copy_from_slice(src_u);
-                }
-            }
-            {
-                let dst_v = dst.data_mut(2);
-                for row in 0..(h / 2) {
-                    let src_v = &v.data()[row * v.stride()..row * v.stride() + cw];
-                    let dst_v_row = &mut dst_v[row * dst_v_stride..row * dst_v_stride + cw];
-                    dst_v_row.copy_from_slice(src_v);
-                }
-            }
-            Ok(())
-        }
-        PixelFormat::YUYV422 => {
-            let plane = planes
-                .first()
-                .ok_or_else(|| CodecError::Codec("YUYV missing plane".into()))?;
-            let (w, h) = (width as usize, height as usize);
-            let bytes_per_row = w.saturating_mul(2);
-            if plane.data().len() < plane.stride().saturating_mul(h) {
-                return Err(CodecError::Codec("YUYV plane too short".into()));
-            }
-
-            let dst_stride = dst.stride(0);
-            let dst_data = dst.data_mut(0);
-            for row in 0..h {
-                let src_row =
-                    &plane.data()[row * plane.stride()..row * plane.stride() + bytes_per_row];
-                let dst_row = &mut dst_data[row * dst_stride..row * dst_stride + bytes_per_row];
-                dst_row.copy_from_slice(src_row);
-            }
-            Ok(())
-        }
-        _ => Err(CodecError::Codec(format!(
-            "unsupported ffmpeg input pixel format: {fmt:?}"
-        ))),
-    }
-}
-
 fn is_again(err: &FfmpegError) -> bool {
     matches!(err, FfmpegError::Other { errno } if *errno == EAGAIN)
 }
-pub(crate) use encoder_tuning::probe_v4l2m2m_encoder;
+pub(crate) use encoder_tuning::probe_encoder;

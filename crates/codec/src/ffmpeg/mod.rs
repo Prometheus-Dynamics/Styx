@@ -11,5 +11,5 @@ pub use decoder::{
 };
 pub use encoder::{
     FfmpegEncoderOptions, FfmpegH264Encoder, FfmpegH265Encoder, FfmpegMjpegEncoder,
-    FfmpegVideoEncoder,
+    FfmpegVideoEncoder, LOW_LATENCY_PRESET,
 };

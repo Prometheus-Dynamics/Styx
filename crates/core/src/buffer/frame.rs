@@ -234,6 +234,14 @@ impl FrameLease {
         self.external.is_some()
     }
 
+    /// A handle that keeps this frame's external memory (a driver or device buffer) mapped and
+    /// out of the driver's queue independently of the frame, for handing its pixels to an API
+    /// that releases them later (e.g. an encoder that holds its input). The slices from
+    /// [`FrameLease::planes`] stay valid while the handle lives. `None` for pooled host memory.
+    pub fn external_backing_handle(&self) -> Option<Arc<dyn ExternalBacking>> {
+        self.external.clone()
+    }
+
     pub fn can_read_planes(&self) -> bool {
         self.has_host_readable_bytes()
     }

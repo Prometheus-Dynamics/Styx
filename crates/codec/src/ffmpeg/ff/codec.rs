@@ -277,8 +277,30 @@ impl Context {
     }
 
     fn open(self, codec: *const raw::AVCodec) -> Result<Self, Error> {
-        // SAFETY: valid context; a null codec uses the one set on the context.
-        check(unsafe { (loader::loaded().codec.avcodec_open2)(self.ptr, codec, ptr::null_mut()) })?;
+        self.open_with(codec, &[])
+    }
+
+    /// Open with codec options (`AVDictionary` entries such as `preset`); unknown keys are
+    /// left unused by FFmpeg.
+    fn open_with(
+        self,
+        codec: *const raw::AVCodec,
+        options: &[(&str, &str)],
+    ) -> Result<Self, Error> {
+        let util = &loader::loaded().util;
+        let mut dict: *mut raw::AVDictionary = ptr::null_mut();
+        for (key, value) in options {
+            let (key, value) = (cstring(key)?, cstring(value)?);
+            // SAFETY: valid NUL-terminated strings; FFmpeg copies them into the dictionary.
+            check(unsafe { (util.av_dict_set)(&mut dict, key.as_ptr(), value.as_ptr(), 0) })?;
+        }
+        // SAFETY: valid context; a null codec uses the one set on the context. FFmpeg leaves
+        // the unused entries in `dict`, which is freed below.
+        let opened =
+            check(unsafe { (loader::loaded().codec.avcodec_open2)(self.ptr, codec, &mut dict) });
+        // SAFETY: the dictionary (possibly null) is ours to free.
+        unsafe { (util.av_dict_free)(&mut dict) };
+        opened?;
         Ok(self)
     }
 
@@ -431,6 +453,18 @@ pub mod encoder {
                     self.0.ptr
                 }
 
+                /// Encode from device surfaces of `frames` (an `AVHWFramesContext`); takes a new
+                /// reference to it.
+                ///
+                /// # Safety
+                /// `frames` must be a valid hardware frames context reference.
+                pub unsafe fn set_hw_frames(&mut self, frames: *mut raw::AVBufferRef) {
+                    // SAFETY: valid owned context; the context owns the new reference.
+                    unsafe {
+                        (*self.raw()).hw_frames_ctx = (loader::loaded().util.av_buffer_ref)(frames);
+                    }
+                }
+
                 pub fn set_width(&mut self, width: u32) {
                     // SAFETY: valid owned context.
                     unsafe { (*self.raw()).width = width as c_int };
@@ -486,6 +520,15 @@ pub mod encoder {
     impl Video {
         pub fn open_as(self, codec: Codec) -> Result<video::Encoder, Error> {
             Ok(video::Encoder(self.0.open(codec.ptr)?))
+        }
+
+        /// Open with codec options such as `("preset", "veryfast")`.
+        pub fn open_as_with(
+            self,
+            codec: Codec,
+            options: &[(&str, &str)],
+        ) -> Result<video::Encoder, Error> {
+            Ok(video::Encoder(self.0.open_with(codec.ptr, options)?))
         }
     }
 
