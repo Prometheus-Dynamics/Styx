@@ -8,7 +8,17 @@ use crate::capture_api::CaptureRequest;
 use crate::{BackendKind, DeviceIdentity};
 
 fn temp_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("styx-replay-{}-{name}.styxrec", std::process::id()))
+    std::env::temp_dir().join(format!("styx-replay-{}-{name}", std::process::id()))
+}
+
+/// Every recording format compiled in.
+fn formats() -> Vec<StreamFormat> {
+    vec![
+        #[cfg(feature = "replay-mcap")]
+        StreamFormat::Mcap,
+        #[cfg(feature = "replay-styxrec")]
+        StreamFormat::Styxrec,
+    ]
 }
 
 fn header(format: MediaFormat) -> RecordingHeader {
@@ -47,7 +57,11 @@ fn frame(index: u32, timestamp: u64) -> FrameLease {
 }
 
 fn record(path: &PathBuf, frames: impl IntoIterator<Item = FrameLease>) {
-    let mut recorder = StreamRecorder::with_header(path, &header(grey(64, 32))).unwrap();
+    record_as(path, StreamFormat::default(), frames);
+}
+
+fn record_as(path: &PathBuf, format: StreamFormat, frames: impl IntoIterator<Item = FrameLease>) {
+    let mut recorder = StreamRecorder::with_format(path, &header(grey(64, 32)), format).unwrap();
     for frame in frames {
         recorder.record(&frame).unwrap();
     }
@@ -56,7 +70,13 @@ fn record(path: &PathBuf, frames: impl IntoIterator<Item = FrameLease>) {
 
 #[test]
 fn frames_round_trip_with_metadata_crop_companions_and_bitstreams() {
-    let path = temp_path("round-trip");
+    for format in formats() {
+        round_trip(format);
+    }
+}
+
+fn round_trip(format: StreamFormat) {
+    let path = temp_path(&format!("round-trip-{format:?}"));
     let with_pyramid = frame(1, 1_000)
         .crop_view(FrameRect::new(8, 4, 32, 16))
         .unwrap()
@@ -77,8 +97,15 @@ fn frames_round_trip_with_metadata_crop_companions_and_bitstreams() {
         jpeg.len(),
         jpeg.len(),
     );
-    let originals = [frame(0, 0), with_pyramid, mjpeg];
-    let mut recorder = StreamRecorder::with_header(&path, &header(grey(64, 32))).unwrap();
+    let nv12_format = MediaFormat::new(
+        FourCc::NV12,
+        Resolution::new(64, 32).unwrap(),
+        ColorSpace::Bt709,
+    );
+    let nv12_bytes: Vec<u8> = (0..64 * 32 * 3 / 2).map(|i| (i * 7) as u8).collect();
+    let nv12 = FrameLease::from_visible_bytes(nv12_format, 3_000, &nv12_bytes).unwrap();
+    let originals = [frame(0, 0), with_pyramid, mjpeg, nv12];
+    let mut recorder = StreamRecorder::with_format(&path, &header(grey(64, 32)), format).unwrap();
     for f in &originals {
         recorder.record(f).unwrap();
     }
@@ -88,7 +115,8 @@ fn frames_round_trip_with_metadata_crop_companions_and_bitstreams() {
     assert_eq!(read_header.device.keys, vec!["test:1".to_string()]);
     assert_eq!(read_header.interval, Interval::from_fps(50));
     let replayed: Vec<FrameLease> = frames.map(Result::unwrap).collect();
-    assert_eq!(replayed.len(), 3);
+    assert_eq!(replayed.len(), 4);
+    assert_eq!(replayed[3].to_visible_vec().unwrap(), nv12_bytes);
     for (a, b) in originals.iter().zip(&replayed) {
         let (ma, mb) = (a.meta(), b.meta());
         assert_eq!(ma.format, mb.format);
@@ -115,21 +143,33 @@ fn frames_round_trip_with_metadata_crop_companions_and_bitstreams() {
 
 #[test]
 fn a_recording_cut_short_replays_its_complete_frames() {
-    let path = temp_path("truncated");
-    record(&path, (0..3).map(|i| frame(i, u64::from(i) * 1_000)));
-    let len = std::fs::metadata(&path).unwrap().len();
-    // Drop the end marker and half of the last frame.
-    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-    file.set_len(len - 1 - 1_000).unwrap();
-    let frames: Vec<_> = open_recording(&path).unwrap().1.collect();
-    assert_eq!(frames.len(), 2);
-    assert!(frames.iter().all(Result::is_ok));
-    let _ = std::fs::remove_file(path);
+    for format in formats() {
+        let path = temp_path(&format!("truncated-{format:?}"));
+        record_as(
+            &path,
+            format,
+            (0..3).map(|i| frame(i, u64::from(i) * 1_000)),
+        );
+        let len = std::fs::metadata(&path).unwrap().len();
+        // Cut the file inside the last frame (and drop any index after it).
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(len * 3 / 4).unwrap();
+        let frames: Vec<FrameLease> = open_recording(&path)
+            .unwrap()
+            .1
+            .map(|f| f.expect("frames before the cut read cleanly"))
+            .collect();
+        assert!(frames.len() < 3, "{format:?}: {} frames", frames.len());
+        for (i, f) in frames.iter().enumerate() {
+            assert_eq!(f.meta().timestamp, i as u64 * 1_000);
+        }
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[test]
 fn unpaced_replay_delivers_every_frame_then_closes() {
-    let path = temp_path("unpaced");
+    let path = temp_path("unpaced.mcap");
     record(
         &path,
         (0..10).map(|i| frame(i, 5_000_000 + u64::from(i) * 20_000_000)),

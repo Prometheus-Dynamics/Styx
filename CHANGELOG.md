@@ -39,8 +39,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `ControlPlane::Supervised`. See `docs/reconnect.md`.
 - Added lossless recording and replay: `StreamRecorder` writes frames with their metadata
   (pixels or bitstream, timestamp and clock, backend sequence numbers, crop, timing, pyramid
-  companions) to `.styxrec` files, and `CaptureRequest::replay_source` plays them back as a
-  camera (`BackendKind::Replay`, real-time or unpaced, optional looping). See `docs/replay.md`.
+  companions), and `CaptureRequest::replay_source` plays them back as a camera
+  (`BackendKind::Replay`, real-time or unpaced, optional looping). Recordings are MCAP files
+  with ROS 2 message types (feature `replay-mcap`, default) that open in Foxglove and ROS 2
+  tools. A compact Styx-only `.styxrec` format is available as an experimental opt-in
+  (feature `replay-styxrec`). See `docs/replay.md`.
 
 - Added cached dma-heap capture buffers for libcamera (`LibcameraBufferMemory`, default `Auto`:
   on for Raspberry Pi cameras, falling back to libcamera's allocator). libcamera's own PiSP

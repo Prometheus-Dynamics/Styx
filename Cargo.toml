@@ -20,6 +20,7 @@ homepage = "https://github.com/Prometheus-Dynamics/Styx"
 rust-version = "1.94"
 
 [workspace.dependencies]
+mcap = { version = "0.25", default-features = false }
 styx = { path = "crates/styx", version = "2.0.0", default-features = false }
 styx-core = { package = "styx-core-rs", path = "crates/core", version = "2.0.0" }
 styx-capture = { path = "crates/capture", version = "2.0.0" }

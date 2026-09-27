@@ -36,6 +36,7 @@ tokio-util = { workspace = true, optional = true }
 futures-core = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
+mcap = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 utoipa = { workspace = true, optional = true }
@@ -67,7 +68,11 @@ path = "src/bin/runtime_memory_probe.rs"
 required-features = ["facade"]
 
 [features]
-default = ["facade"]
+default = ["facade", "replay-mcap"]
+# Recordings as MCAP files with ROS 2 message types (the default recording format).
+replay-mcap = ["facade", "dep:mcap"]
+# Experimental compact Styx-only recording format (`.styxrec`).
+replay-styxrec = ["facade"]
 framelease = []
 facade = [
     "dep:libc",

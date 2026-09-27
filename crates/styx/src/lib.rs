@@ -658,9 +658,11 @@ pub mod prelude {
         FrameRecorder, RecordingError, RecordingFormat, RecordingFrameIndexEntry, RecordingOptions,
         RecordingSessionMetadata,
     };
+    #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+    pub use crate::replay::StreamRecorder;
     #[cfg(feature = "facade")]
     pub use crate::replay::{
-        RecordingHeader, ReplayError, ReplayPacing, ReplaySourceConfig, StreamRecorder,
+        RecordingHeader, ReplayError, ReplayPacing, ReplaySourceConfig, StreamFormat,
     };
     #[cfg(feature = "facade")]
     pub use crate::runtime_codec::{

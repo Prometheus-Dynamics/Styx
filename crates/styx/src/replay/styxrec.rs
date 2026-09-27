@@ -1,4 +1,5 @@
-//! The `.styxrec` file format, version 1. All integers are little-endian.
+//! The experimental `.styxrec` format (feature `replay-styxrec`), version 1: a compact
+//! Styx-only alternative to MCAP. All integers are little-endian.
 //!
 //! ```text
 //! file    = "STYXREC1" version:u16 header frame* end
@@ -21,26 +22,16 @@ use std::time::Duration;
 
 use styx_core::prelude::*;
 
-use super::ReplayError;
+use super::{RecordingHeader, ReplayError, frame_from_payload};
 use crate::DeviceIdentity;
 
-const MAGIC: &[u8; 8] = b"STYXREC1";
+pub(crate) const MAGIC: &[u8; 8] = b"STYXREC1";
 const VERSION: u16 = 1;
 const TAG_END: u8 = 0;
 const TAG_FRAME: u8 = 1;
 const COMPANION_PYRAMID: u8 = 1;
 const PAYLOAD_VISIBLE: u8 = 0;
 const PAYLOAD_BITSTREAM: u8 = 1;
-
-/// What a recording was captured from.
-#[derive(Debug, Clone)]
-pub struct RecordingHeader {
-    pub device: DeviceIdentity,
-    /// Backend the frames came from, e.g. `libcamera`.
-    pub backend: String,
-    pub format: MediaFormat,
-    pub interval: Option<Interval>,
-}
 
 pub(crate) fn write_header(w: &mut impl Write, header: &RecordingHeader) -> io::Result<()> {
     w.write_all(MAGIC)?;
@@ -197,9 +188,8 @@ fn read_body(r: &mut impl Read, offset: u64) -> Result<FrameLease, ReplayError> 
     let mut bytes = vec![0u8; len];
     r.read_exact(&mut bytes)?;
     let mut frame = match payload_kind {
-        PAYLOAD_VISIBLE => FrameLease::from_visible_bytes(format, timestamp, &bytes)
-            .map_err(|e| ReplayError::Frame(e.to_string()))?,
-        PAYLOAD_BITSTREAM => bitstream_frame(format, timestamp, bytes),
+        PAYLOAD_VISIBLE => frame_from_payload(format, timestamp, &bytes, false)?,
+        PAYLOAD_BITSTREAM => frame_from_payload(format, timestamp, &bytes, true)?,
         _ => return Err(ReplayError::Corrupt("unknown payload kind")),
     };
     let meta = frame.meta_mut();
@@ -218,14 +208,6 @@ fn read_body(r: &mut impl Read, offset: u64) -> Result<FrameLease, ReplayError> 
             .map_err(|e| ReplayError::Frame(e.to_string()))?;
     }
     Ok(frame)
-}
-
-fn bitstream_frame(format: MediaFormat, timestamp: u64, bytes: Vec<u8>) -> FrameLease {
-    let len = bytes.len();
-    let mut buffer = BufferPool::with_limits(1, len.max(1), 0).lease();
-    buffer.resize(len);
-    buffer.as_mut_slice().copy_from_slice(&bytes);
-    FrameLease::single_plane(FrameMeta::new(format, timestamp), buffer, len, len)
 }
 
 fn write_backend(w: &mut impl Write, backend: Option<&BackendFrameMeta>) -> io::Result<()> {

@@ -123,9 +123,11 @@ pub mod watch {
 /// Lossless stream recording and replay.
 #[cfg(feature = "facade")]
 pub mod replay {
+    #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+    pub use crate::replay::StreamRecorder;
     pub use crate::replay::{
         RecordingFrames, RecordingHeader, ReplayError, ReplayPacing, ReplaySourceConfig,
-        StreamRecorder, open_recording, read_header,
+        StreamFormat, open_recording, read_header,
     };
 }
 

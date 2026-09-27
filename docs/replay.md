@@ -1,7 +1,7 @@
 # Recording and Replay
 
-`StreamRecorder` writes frames to a `.styxrec` file without loss. The replay backend plays the
-file back as a camera. Pipelines, the planner and your own code then run on recorded data
+`StreamRecorder` writes frames to a recording without loss. The replay backend plays the file
+back as a camera. Pipelines, the planner and your own code then run on recorded data
 exactly as they would on the live camera. Use it to reproduce a bug, write regression tests
 against real footage, or tune a vision pipeline away from the hardware.
 
@@ -11,7 +11,7 @@ use styx::prelude::*;
 
 // Record whatever you receive: raw captures, pipeline output or planner frames.
 let handle = CaptureRequest::new(&device).start()?;
-let mut recorder = StreamRecorder::create("run.styxrec", &device, &handle)?;
+let mut recorder = StreamRecorder::create("run.mcap", &device, &handle)?;
 while let RecvOutcome::Data(frame) = handle.recv_blocking(Duration::from_millis(500)) {
     recorder.record(&frame)?;
 }
@@ -19,7 +19,7 @@ recorder.finish()?;
 
 // Replay it as a camera.
 let replay = CaptureRequest::replay_source(
-    ReplaySourceConfig::new("run.styxrec")
+    ReplaySourceConfig::new("run.mcap")
         .pacing(ReplayPacing::Unpaced)   // or Realtime (default)
         .loop_forever(false),
 )?;
@@ -28,6 +28,35 @@ let handle = replay.open()?;             // or: plan_frames(replay.device(), &re
 
 For frames whose format differs from the capture mode (pipeline or planner output), create
 the recorder with `StreamRecorder::with_header` and the output format.
+
+## Formats
+
+- **MCAP** (`.mcap`, feature `replay-mcap`, on by default): the open recording format used by
+  ROS 2 and Foxglove. Recordings open in the Foxglove app and in the `mcap` CLI, and can be read
+  from Python, C++ and other languages.
+- **`.styxrec`** (feature `replay-styxrec`, experimental and opt-in): a compact Styx-only
+  format. It records about 20% faster, but only Styx can read it. Choose it with
+  `StreamRecorder::with_format(path, &header, StreamFormat::Styxrec)`.
+
+Replay detects the format from the file, so `replay_source` and `open_recording` read either.
+
+### MCAP layout
+
+The profile is `ros2`, and messages are CDR-encoded with `ros2msg` schemas:
+
+| Topic | Type | Contents |
+|---|---|---|
+| `/styx/image` | `sensor_msgs/msg/Image` | Raw frames. `encoding` is the ROS name (`mono8`, `rgb8`, `yuv422_yuy2`, ...) or `styx:<FOURCC>` for formats without one, e.g. NV12. The data is the visible rows, tightly packed, plane after plane. |
+| `/styx/image/compressed` | `sensor_msgs/msg/CompressedImage` | Compressed frames (`jpeg`, `h264`, `h265`) as captured. |
+| `/styx/pyramid/<level>` | `sensor_msgs/msg/Image` | Pyramid levels. |
+| `/styx/frame_meta` | `styx/msg/FrameMeta` | One message per image message: exact format, clock, backend sequence, crop and timing. The definition is embedded in the file, so Foxglove shows the fields. |
+
+- Messages of one frame share its MCAP `sequence` (the frame index) and `log_time` (the frame
+  timestamp).
+- A metadata record, `styx.recording`, holds the device identity, backend, format and interval.
+- Compression is off.
+- Checked with Foxglove's reference Python reader and ROS 2 decoder (`mcap`,
+  `mcap-ros2-support`): every message in the CM5 recordings decodes, including `FrameMeta`.
 
 ## What is kept
 
@@ -54,20 +83,17 @@ the recorder with `StreamRecorder::with_header` and the output format.
 - **End of recording:** without looping, queued frames drain and the handle then reports
   `Closed`.
 - **Cut-short recordings:** a recording whose process died while recording plays up to its
-  last complete frame.
+  last complete frame. MCAP groups messages into chunks; without compression, frames written
+  before the cut still read back.
 
 ## Measured on a Raspberry Pi CM5
 
-| Recording | Cost to record | Size | Replay |
+| Recording | Cost to record (MCAP / styxrec) | Size | Replay (both formats) |
 |---|---|---|---|
-| OV9782 planner output, Y8 1280x720 + ½ and ¼ pyramid levels | 0.95 ms/frame | 1.2 MB/frame | 90/90 frames bit-identical (pixels, companions, timestamps, clock, sequence) |
-| C270 MJPEG 1280x720, raw capture | 0.025 ms/frame | 43 KB/frame | 30/30 identical; the planner decodes the replay through turbojpeg |
+| OV9782 planner output, Y8 1280x720 + ½ and ¼ pyramid levels | 1.12 / 0.91 ms per frame | 1.2 MB/frame | 90/90 frames bit-identical (pixels, companions, timestamps, clock, sequence) |
+| C270 MJPEG 1280x720, raw capture | 0.043 / 0.026 ms per frame | 40 KB/frame | 30/30 identical; the planner decodes the replay through turbojpeg |
 
 A real-time replay of a 3.54 s recording took 3.54 s. The planner produced output identical to
 the live run from the replayed Y8 recording.
 
-## File format
-
-Version 1. A header records the device identity, the source backend, the format and the
-interval, followed by one record per frame. The layout is documented in
-`crates/styx/src/replay/format.rs`.
+The `.styxrec` layout is documented in `crates/styx/src/replay/styxrec.rs`.
