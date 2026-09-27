@@ -123,6 +123,10 @@ path = "04_performance/luma_perf.rs"
 required-features = ["codec-turbojpeg"]
 
 [[bin]]
+name = "simd_perf"
+path = "04_performance/simd_perf.rs"
+
+[[bin]]
 name = "mem_smoke"
 path = "04_performance/mem_smoke.rs"
 required-features = ["codec-turbojpeg", "replay-mcap"]

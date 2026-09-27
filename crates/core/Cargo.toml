@@ -17,7 +17,10 @@ name = "styx_core"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["neon", "x86"]
+# SIMD backends (see `simd`): AArch64 NEON, and x86 SSE2/SSSE3/AVX2 chosen at run time.
+neon = []
+x86 = []
 async = ["tokio"]
 serde = ["dep:serde", "smallvec/serde"]
 schema = ["dep:utoipa", "serde"]

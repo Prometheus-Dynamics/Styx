@@ -213,26 +213,27 @@ pub fn transform_packed_frame(
         buf.resize_uninit(layout.len);
     }
     let dst = buf.as_mut_slice();
-    let src_ptr = src.as_ptr();
-    let dst_ptr = dst.as_mut_ptr();
-    let mirror = transform.mirror;
-    let w_out = out_width;
-    let h_out = out_height;
-    for y_out in 0..h_out {
-        for x_out in 0..w_out {
-            let x_rot = if mirror { w_out - 1 - x_out } else { x_out };
-            let (x_in, y_in) = match transform.rotation {
-                Rotation90::Deg0 => (x_rot, y_out),
-                Rotation90::Deg90 => (y_out, height - 1 - x_rot),
-                Rotation90::Deg180 => (width - 1 - x_rot, height - 1 - y_out),
-                Rotation90::Deg270 => (width - 1 - y_out, x_rot),
-            };
-            let src_off = y_in * src_stride + x_in * bpp;
-            let dst_off = y_out * out_stride + x_out * bpp;
-            unsafe {
-                std::ptr::copy_nonoverlapping(src_ptr.add(src_off), dst_ptr.add(dst_off), bpp);
-            }
-        }
+    let turns = match transform.rotation {
+        Rotation90::Deg0 => 0,
+        Rotation90::Deg90 => 1,
+        Rotation90::Deg180 => 2,
+        Rotation90::Deg270 => 3,
+    };
+    let orientation = crate::simd::Orientation::rotation(turns, transform.mirror);
+    if (1..=4).contains(&bpp) {
+        crate::simd::transform_packed(
+            src,
+            src_stride,
+            dst,
+            out_stride,
+            (width, height),
+            bpp,
+            orientation,
+        );
+    } else {
+        transform_pixels(
+            src, src_stride, width, height, bpp, transform, dst, out_stride,
+        );
     }
     let out_format = MediaFormat::new(format.code, out_res, format.color);
     let mut out_meta = meta.clone();
@@ -250,6 +251,42 @@ pub fn transform_packed_frame(
         layout.len,
         layout.stride,
     ))
+}
+
+/// Per-pixel reorientation for pixel sizes the SIMD kernels do not cover.
+#[allow(clippy::too_many_arguments)]
+fn transform_pixels(
+    src: &[u8],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+    bpp: usize,
+    transform: FrameTransform,
+    dst: &mut [u8],
+    out_stride: usize,
+) {
+    let (w_out, h_out) = match transform.rotation {
+        Rotation90::Deg90 | Rotation90::Deg270 => (height, width),
+        Rotation90::Deg0 | Rotation90::Deg180 => (width, height),
+    };
+    for y_out in 0..h_out {
+        for x_out in 0..w_out {
+            let x_rot = if transform.mirror {
+                w_out - 1 - x_out
+            } else {
+                x_out
+            };
+            let (x_in, y_in) = match transform.rotation {
+                Rotation90::Deg0 => (x_rot, y_out),
+                Rotation90::Deg90 => (y_out, height - 1 - x_rot),
+                Rotation90::Deg180 => (width - 1 - x_rot, height - 1 - y_out),
+                Rotation90::Deg270 => (width - 1 - y_out, x_rot),
+            };
+            let s = y_in * src_stride + x_in * bpp;
+            let d = y_out * out_stride + x_out * bpp;
+            dst[d..d + bpp].copy_from_slice(&src[s..s + bpp]);
+        }
+    }
 }
 
 #[cfg(test)]

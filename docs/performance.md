@@ -311,6 +311,45 @@ encode, then compares p95 timings against
 `testing/perf/baseline.txt`. These checks deliberately avoid the graph feature
 so Daedalus runtime work cannot block the non-graph media performance surface.
 
+## SIMD Kernels
+
+Per-pixel work Styx does itself runs through `styx_core::simd`:
+- rotation and mirroring (`MediaPipelineBuilder::rotate`/`mirror`, `FrameTransform`);
+- the 2x2 box pyramid;
+- YUYV to luma;
+- RGB/BGR/RGBA/BGRA to luma;
+- channel swaps (BGR↔RGB, BGRA↔RGBA, 4-to-3-byte packing, RGB to RGBA);
+- grey and 16-bit grey to RGB, and RGB48 to RGB24.
+
+The raw decoders, `frame_image` conversions and the simulation backend all use these kernels.
+
+The layout follows Eidos:
+- `scalar.rs` is the correctness oracle.
+- `x86/` holds SSE2, SSSE3 and AVX2 leaves, chosen at run time with `is_x86_feature_detected!`.
+- `neon/` holds the NEON leaves (part of the AArch64 baseline).
+- Each dispatcher tries the backend leaf, finishes the tail with the scalar kernel, and returns the `SimdBackend` it used.
+- Cargo features `x86` and `neon` on `styx-core-rs` (on by default) compile the backends in; without them everything runs scalar.
+- Rotations use 8x8 tile transposes (NEON `vtrn` for 1-4 byte pixels, SSE2 unpack networks for 1, 2 and 4, SSSE3 plane shuffles for 3) and vector row reversals.
+
+`crates/core/src/simd/tests.rs` checks every leaf against the oracle at widths around each vector size, with guard bytes after the row, and every orientation of every pixel size against the definition. Run the NEON half on an AArch64 machine; the x86 half runs in CI.
+
+`cargo run --release -p styx-examples --no-default-features --bin simd_perf` times each kernel against its scalar reference at 1280x720:
+
+| Kernel (1280x720) | Raspberry Pi CM5 (NEON) | Ryzen 9 5900X (best x86 leaf) |
+|---|---|---|
+| Rotate 90°, grey | 6.9 → 0.22 ms (31x) | 3.2 → 0.09 ms (37x, SSE2) |
+| Rotate 180° / mirror, grey | 6.4–7.2 → 0.06–0.08 ms (82–128x) | 3.0 → 0.02–0.03 ms (110–128x, SSSE3) |
+| Rotate 90°, YUYV / RGB / RGBA | 7.3–7.8 → 0.65 / 1.5 / 2.0 ms | 3.2–3.3 → 0.12 / 0.31 / 0.12 ms |
+| Rotate 180°, RGB / RGBA | 6.4 / 5.9 → 1.2 / 1.4 ms | 2.9 / 2.8 → 0.15 / 0.10 ms |
+| RGB → luma / BGRA → luma | 1.4 → 0.30 / 0.40 ms | 0.77 → 0.14 ms (SSSE3) |
+| Grey → RGB / grey16 → RGB | 0.90 → 0.34 / 0.91 → 0.45 ms | 0.33 → 0.04 / 0.31 → 0.05 ms |
+| RGB → RGBA | 1.1 → 0.68 ms | 0.32 → 0.12 ms (SSSE3) |
+| BGR ↔ RGB, BGRA → RGB, YUYV → luma, 2x2 box | same as scalar (LLVM already vectorizes these for NEON) | 6.5x, 6.6x, 1.2x, 7.9x |
+
+The larger CM5 rotations run at about its memory bandwidth (a 720p RGBA frame is 3.7 MB each
+way). Before these kernels, rotating a 720p frame took 17% of a CM5 core per camera at 30 fps;
+it now takes under 1% for grey and 3-6% for colour.
+
 ## Memory Smoke Surface
 
 `./scripts/check-mem-smoke.sh` runs `examples/04_performance/mem_smoke.rs` and compares each

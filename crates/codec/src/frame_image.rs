@@ -230,12 +230,7 @@ fn convert_to_rgba(frame: FrameLease) -> Option<FrameLease> {
     for y in 0..height {
         let src_row = &src[y * stride..][..width * 3];
         let dst_row = &mut out[y * width * 4..(y + 1) * width * 4];
-        for (dst_px, src_px) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(3)) {
-            dst_px[0] = src_px[0];
-            dst_px[1] = src_px[1];
-            dst_px[2] = src_px[2];
-            dst_px[3] = 255;
-        }
+        styx_core::simd::rgb24_to_rgba_row(src_row, dst_row, width);
     }
     make_single_plane_frame(&meta, FourCc::RGBA, ColorSpace::Srgb, width * 4, out)
 }
@@ -302,11 +297,7 @@ fn convert_packed_to_rgb(frame: FrameLease) -> Option<FrameLease> {
             for y in 0..height {
                 let src_row = &src[y * stride..][..width * 3];
                 let dst_row = &mut out[y * width * 3..(y + 1) * width * 3];
-                for (dst_px, src_px) in dst_row.chunks_exact_mut(3).zip(src_row.chunks_exact(3)) {
-                    dst_px[0] = src_px[2];
-                    dst_px[1] = src_px[1];
-                    dst_px[2] = src_px[0];
-                }
+                styx_core::simd::swap_rb24_row(src_row, dst_row, width);
             }
             make_single_plane_frame(&meta, FourCc::RG24, ColorSpace::Srgb, width * 3, out)
         }
@@ -317,9 +308,7 @@ fn convert_packed_to_rgb(frame: FrameLease) -> Option<FrameLease> {
             for y in 0..height {
                 let src_row = &src[y * stride..][..width * 4];
                 let dst_row = &mut out[y * width * 3..(y + 1) * width * 3];
-                for (dst_px, src_px) in dst_row.chunks_exact_mut(3).zip(src_row.chunks_exact(4)) {
-                    dst_px.copy_from_slice(&src_px[..3]);
-                }
+                styx_core::simd::x32_to_rgb24_row(src_row, dst_row, width, false);
             }
             make_single_plane_frame(&meta, FourCc::RG24, ColorSpace::Srgb, width * 3, out)
         }
@@ -330,11 +319,7 @@ fn convert_packed_to_rgb(frame: FrameLease) -> Option<FrameLease> {
             for y in 0..height {
                 let src_row = &src[y * stride..][..width * 4];
                 let dst_row = &mut out[y * width * 3..(y + 1) * width * 3];
-                for (dst_px, src_px) in dst_row.chunks_exact_mut(3).zip(src_row.chunks_exact(4)) {
-                    dst_px[0] = src_px[2];
-                    dst_px[1] = src_px[1];
-                    dst_px[2] = src_px[0];
-                }
+                styx_core::simd::x32_to_rgb24_row(src_row, dst_row, width, true);
             }
             make_single_plane_frame(&meta, FourCc::RG24, ColorSpace::Srgb, width * 3, out)
         }
@@ -354,12 +339,12 @@ fn convert_rgb_to_luma(frame: FrameLease) -> Option<FrameLease> {
     for y in 0..height {
         let src_row = &src[y * stride..][..width * 3];
         let dst_row = &mut out[y * width..(y + 1) * width];
-        for (dst, src_px) in dst_row.iter_mut().zip(src_row.chunks_exact(3)) {
-            let r = src_px[0] as u32;
-            let g = src_px[1] as u32;
-            let b = src_px[2] as u32;
-            *dst = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
-        }
+        styx_core::simd::rgb_to_luma_row(
+            src_row,
+            dst_row,
+            width,
+            styx_core::simd::ColorLayout::Rgb24,
+        );
     }
     make_single_plane_frame(&meta, FourCc::R8, ColorSpace::Unknown, width, out)
 }
@@ -379,12 +364,12 @@ fn convert_packed_to_luma(frame: FrameLease) -> Option<FrameLease> {
             for y in 0..height {
                 let src_row = &src[y * stride..][..width * 3];
                 let dst_row = &mut out[y * width..(y + 1) * width];
-                for (dst, src_px) in dst_row.iter_mut().zip(src_row.chunks_exact(3)) {
-                    let r = src_px[2] as u32;
-                    let g = src_px[1] as u32;
-                    let b = src_px[0] as u32;
-                    *dst = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
-                }
+                styx_core::simd::rgb_to_luma_row(
+                    src_row,
+                    dst_row,
+                    width,
+                    styx_core::simd::ColorLayout::Bgr24,
+                );
             }
             make_single_plane_frame(&meta, FourCc::R8, ColorSpace::Unknown, width, out)
         }
@@ -394,14 +379,12 @@ fn convert_packed_to_luma(frame: FrameLease) -> Option<FrameLease> {
             for y in 0..height {
                 let src_row = &src[y * stride..][..width * 4];
                 let dst_row = &mut out[y * width..(y + 1) * width];
-                for (dst, src_px) in dst_row.iter_mut().zip(src_row.chunks_exact(4)) {
-                    let (r, g, b) = if meta.format.code == FourCc::RGBA {
-                        (src_px[0] as u32, src_px[1] as u32, src_px[2] as u32)
-                    } else {
-                        (src_px[2] as u32, src_px[1] as u32, src_px[0] as u32)
-                    };
-                    *dst = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
-                }
+                let layout = if meta.format.code == FourCc::RGBA {
+                    styx_core::simd::ColorLayout::Rgba32
+                } else {
+                    styx_core::simd::ColorLayout::Bgra32
+                };
+                styx_core::simd::rgb_to_luma_row(src_row, dst_row, width, layout);
             }
             make_single_plane_frame(&meta, FourCc::R8, ColorSpace::Unknown, width, out)
         }

@@ -115,6 +115,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   GPU surfaces without a copy; other frames are uploaded from their own memory. See
   `docs/encoding.md`.
 - Added `FfmpegEncoderOptions::{low_latency, codec_options}` and `LOW_LATENCY_PRESET`.
+- Added `styx_core::simd`: SIMD kernels (NEON; SSE2, SSSE3 and AVX2 chosen at run time; scalar
+  oracle) for rotation/mirroring, the box pyramid, luma extraction and colour conversions, used
+  by `FrameTransform`, the raw decoders, `frame_image` and the simulation backend. On a CM5 a
+  720p grey rotation takes 0.22 ms instead of 6.9 ms, a mirror 0.06 ms instead of 7.2 ms.
+  Cargo features `neon` and `x86` (default on). See `docs/performance.md`.
 - Added a memory smoke to CI (`scripts/check-mem-smoke.sh`, `testing/perf/memory-baseline.txt`):
   heap and resident peaks per scenario, and a leak check.
 - Added corruption tests for recordings, MJPEG decoders and the netcam parser, cargo-fuzz targets

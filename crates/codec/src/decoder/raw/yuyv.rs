@@ -229,41 +229,10 @@ impl YuyvToLumaDecoder {
         let dst = &mut dst[..out_len];
         let src = &plane.data()[..required];
 
-        #[cfg(target_arch = "aarch64")]
-        {
-            use std::arch::aarch64::{vld2q_u8, vst1q_u8};
-            for y in 0..height {
-                let src_line = &src[y * stride..][..width * 2];
-                let dst_line = &mut dst[y * width..(y + 1) * width];
-                unsafe {
-                    let src_ptr = src_line.as_ptr();
-                    let dst_ptr = dst_line.as_mut_ptr();
-                    let blocks = width / 16;
-                    for i in 0..blocks {
-                        let src_block = src_ptr.add(i * 32);
-                        let yuv = vld2q_u8(src_block);
-                        vst1q_u8(dst_ptr.add(i * 16), yuv.0);
-                    }
-                    let start = blocks * 16;
-                    for x in start..width {
-                        *dst_ptr.add(x) = *src_ptr.add(x * 2);
-                    }
-                }
-            }
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            for y in 0..height {
-                let src_line = &src[y * stride..][..width * 2];
-                let dst_line = &mut dst[y * width..(y + 1) * width];
-                unsafe {
-                    let src_ptr = src_line.as_ptr();
-                    let dst_ptr = dst_line.as_mut_ptr();
-                    for x in 0..width {
-                        *dst_ptr.add(x) = *src_ptr.add(x * 2);
-                    }
-                }
-            }
+        for y in 0..height {
+            let src_line = &src[y * stride..][..width * 2];
+            let dst_line = &mut dst[y * width..(y + 1) * width];
+            styx_core::simd::yuyv_luma_row(src_line, dst_line, width);
         }
 
         Ok(FrameMeta::new(

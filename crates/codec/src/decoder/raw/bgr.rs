@@ -5,39 +5,6 @@ use crate::decoder::raw::decode_strided_rows_to_rgb24;
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
 
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn bgr_row_to_rgb24_neon(src: &[u8], dst: &mut [u8], width: usize) {
-    use std::arch::aarch64::{uint8x16x3_t, vld3q_u8, vst3q_u8};
-    debug_assert!(src.len() >= width * 3);
-    debug_assert!(dst.len() >= width * 3);
-
-    let src_ptr = src.as_ptr();
-    let dst_ptr = dst.as_mut_ptr();
-
-    let mut x = 0usize;
-    while x + 16 <= width {
-        unsafe {
-            let bgr = vld3q_u8(src_ptr.add(x * 3));
-            let rgb = uint8x16x3_t(bgr.2, bgr.1, bgr.0);
-            vst3q_u8(dst_ptr.add(x * 3), rgb);
-        }
-        x += 16;
-    }
-    for x in x..width {
-        unsafe {
-            let si = x * 3;
-            let di = x * 3;
-            let b = *src_ptr.add(si);
-            let g = *src_ptr.add(si + 1);
-            let r = *src_ptr.add(si + 2);
-            *dst_ptr.add(di) = r;
-            *dst_ptr.add(di + 1) = g;
-            *dst_ptr.add(di + 2) = b;
-        }
-    }
-}
-
 /// BGR24 → RGB24 decoder (channel swap).
 pub struct BgrToRgbDecoder {
     descriptor: CodecDescriptor,
@@ -120,20 +87,7 @@ impl BgrToRgbDecoder {
             width * 3,
             row_bytes,
             |src_line, dst_line| {
-                #[cfg(target_arch = "aarch64")]
-                unsafe {
-                    bgr_row_to_rgb24_neon(src_line, dst_line, width);
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    for (dst_px, src_px) in
-                        dst_line.chunks_exact_mut(3).zip(src_line.chunks_exact(3))
-                    {
-                        dst_px[0] = src_px[2];
-                        dst_px[1] = src_px[1];
-                        dst_px[2] = src_px[0];
-                    }
-                }
+                styx_core::simd::swap_rb24_row(src_line, dst_line, width);
             },
         );
 

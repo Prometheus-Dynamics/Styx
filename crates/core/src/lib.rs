@@ -7,6 +7,7 @@ pub mod format;
 pub mod metrics;
 pub mod queue;
 pub mod requirements;
+pub mod simd;
 pub mod transform;
 
 pub mod prelude {

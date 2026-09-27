@@ -155,7 +155,7 @@ pub fn box_downscale_luma_in(
         let (Some(top), Some(bottom)) = (rows.row(2 * y), rows.row(2 * y + 1)) else {
             break;
         };
-        box2_row(top.data(), bottom.data(), &mut out[..width]);
+        crate::simd::box2_row(top.data(), bottom.data(), &mut out[..width], width);
     }
 
     let format = MediaFormat::new(FourCc::GREY, resolution, source.meta.format.color);
@@ -172,18 +172,6 @@ pub fn box_downscale_luma_in(
             stride,
         }],
     ))
-}
-
-#[inline]
-fn box2_row(top: &[u8], bottom: &[u8], out: &mut [u8]) {
-    for ((o, t), b) in out
-        .iter_mut()
-        .zip(top.chunks_exact(2))
-        .zip(bottom.chunks_exact(2))
-    {
-        let sum = t[0] as u16 + t[1] as u16 + b[0] as u16 + b[1] as u16;
-        *o = ((sum + 2) >> 2) as u8;
-    }
 }
 
 #[cfg(test)]

@@ -5,72 +5,6 @@ use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
 use rayon::prelude::*;
 
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn mono8_row_to_rgb24_neon(src: &[u8], dst: &mut [u8], width: usize) {
-    use std::arch::aarch64::{uint8x16x3_t, vld1q_u8, vst3q_u8};
-    debug_assert!(src.len() >= width);
-    debug_assert!(dst.len() >= width * 3);
-
-    let src_ptr = src.as_ptr();
-    let dst_ptr = dst.as_mut_ptr();
-    let mut x = 0usize;
-    while x + 16 <= width {
-        unsafe {
-            let g = vld1q_u8(src_ptr.add(x));
-            let rgb = uint8x16x3_t(g, g, g);
-            vst3q_u8(dst_ptr.add(x * 3), rgb);
-        }
-        x += 16;
-    }
-    for x in x..width {
-        unsafe {
-            let gray = *src_ptr.add(x);
-            let o = x * 3;
-            *dst_ptr.add(o) = gray;
-            *dst_ptr.add(o + 1) = gray;
-            *dst_ptr.add(o + 2) = gray;
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn mono16_row_to_rgb24_neon(src: &[u8], dst: &mut [u8], width: usize) -> bool {
-    use std::arch::aarch64::{uint8x8x3_t, vld1q_u16, vshrn_n_u16, vst3_u8};
-    debug_assert!(src.len() >= width * 2);
-    debug_assert!(dst.len() >= width * 3);
-
-    // NEON loads u16 lanes; require row pointer to be 2-byte aligned.
-    if (src.as_ptr() as usize) & 0x1 != 0 {
-        return false;
-    }
-
-    let src_u16 = src.as_ptr() as *const u16;
-    let dst_ptr = dst.as_mut_ptr();
-    let mut x = 0usize;
-    while x + 8 <= width {
-        unsafe {
-            let v16 = vld1q_u16(src_u16.add(x));
-            let g8 = vshrn_n_u16(v16, 8);
-            vst3_u8(dst_ptr.add(x * 3), uint8x8x3_t(g8, g8, g8));
-        }
-        x += 8;
-    }
-    for x in x..width {
-        unsafe {
-            let si = x * 2;
-            let v = u16::from_le_bytes([*src.get_unchecked(si), *src.get_unchecked(si + 1)]);
-            let g = (v >> 8) as u8;
-            let di = x * 3;
-            *dst_ptr.add(di) = g;
-            *dst_ptr.add(di + 1) = g;
-            *dst_ptr.add(di + 2) = g;
-        }
-    }
-    true
-}
-
 /// Monochrome 8-bit → RGB24 (channel replicate).
 pub struct Mono8ToRgbDecoder {
     descriptor: CodecDescriptor,
@@ -136,18 +70,7 @@ impl Mono8ToRgbDecoder {
             .enumerate()
             .for_each(|(y, dst_line)| {
                 let src_line = &src[y * stride..][..width];
-                #[cfg(target_arch = "aarch64")]
-                unsafe {
-                    mono8_row_to_rgb24_neon(src_line, dst_line, width);
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    for (dst_px, &gray) in dst_line.chunks_exact_mut(3).zip(src_line.iter()) {
-                        dst_px[0] = gray;
-                        dst_px[1] = gray;
-                        dst_px[2] = gray;
-                    }
-                }
+                styx_core::simd::gray8_to_rgb24_row(src_line, dst_line, width);
             });
 
         Ok(FrameMeta::new(
@@ -346,19 +269,7 @@ impl Mono16ToRgbDecoder {
             .enumerate()
             .for_each(|(y, dst_line)| {
                 let src_line = &src[y * stride..][..width * 2];
-                #[cfg(target_arch = "aarch64")]
-                unsafe {
-                    if mono16_row_to_rgb24_neon(src_line, dst_line, width) {
-                        return;
-                    }
-                }
-                for (dst_px, chunk) in dst_line.chunks_exact_mut(3).zip(src_line.chunks_exact(2)) {
-                    let gray16 = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    let gray8 = (gray16 >> 8) as u8;
-                    dst_px[0] = gray8;
-                    dst_px[1] = gray8;
-                    dst_px[2] = gray8;
-                }
+                styx_core::simd::gray16le_to_rgb24_row(src_line, dst_line, width);
             });
 
         Ok(FrameMeta::new(

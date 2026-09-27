@@ -64,68 +64,6 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
         out
     }
 
-    #[cfg(target_arch = "aarch64")]
-    #[inline(always)]
-    unsafe fn bgr_row_to_rgb24_neon(src: &[u8], dst: &mut [u8], width: usize) {
-        use std::arch::aarch64::{uint8x16x3_t, vld3q_u8, vst3q_u8};
-        debug_assert!(src.len() >= width * 3);
-        debug_assert!(dst.len() >= width * 3);
-
-        let src_ptr = src.as_ptr();
-        let dst_ptr = dst.as_mut_ptr();
-        let mut x = 0usize;
-        while x + 16 <= width {
-            unsafe {
-                let bgr = vld3q_u8(src_ptr.add(x * 3));
-                let rgb = uint8x16x3_t(bgr.2, bgr.1, bgr.0);
-                vst3q_u8(dst_ptr.add(x * 3), rgb);
-            }
-            x += 16;
-        }
-        for x in x..width {
-            unsafe {
-                let si = x * 3;
-                let di = x * 3;
-                let b = *src_ptr.add(si);
-                let g = *src_ptr.add(si + 1);
-                let r = *src_ptr.add(si + 2);
-                *dst_ptr.add(di) = r;
-                *dst_ptr.add(di + 1) = g;
-                *dst_ptr.add(di + 2) = b;
-            }
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    #[inline(always)]
-    unsafe fn bgra_row_to_rgba_neon(src: &[u8], dst: &mut [u8], width: usize) {
-        use std::arch::aarch64::{uint8x16x4_t, vld4q_u8, vst4q_u8};
-        debug_assert!(src.len() >= width * 4);
-        debug_assert!(dst.len() >= width * 4);
-
-        let src_ptr = src.as_ptr();
-        let dst_ptr = dst.as_mut_ptr();
-        let mut x = 0usize;
-        while x + 16 <= width {
-            unsafe {
-                let bgra = vld4q_u8(src_ptr.add(x * 4));
-                let rgba = uint8x16x4_t(bgra.2, bgra.1, bgra.0, bgra.3);
-                vst4q_u8(dst_ptr.add(x * 4), rgba);
-            }
-            x += 16;
-        }
-        for x in x..width {
-            unsafe {
-                let si = x * 4;
-                let di = x * 4;
-                dst_ptr.add(di).write(*src_ptr.add(si + 2));
-                dst_ptr.add(di + 1).write(*src_ptr.add(si + 1));
-                dst_ptr.add(di + 2).write(*src_ptr.add(si));
-                dst_ptr.add(di + 3).write(*src_ptr.add(si + 3));
-            }
-        }
-    }
-
     #[inline(always)]
     fn convert_strided_bgr_to_rgb(
         width: usize,
@@ -143,20 +81,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             let dst_line =
                 unsafe { std::slice::from_raw_parts_mut(out_ptr.add(y * dst_stride), dst_stride) };
 
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                bgr_row_to_rgb24_neon(src_line, dst_line, width);
-                continue;
-            }
-
-            #[cfg(not(target_arch = "aarch64"))]
-            {
-                for (dst_px, src_px) in dst_line.chunks_exact_mut(3).zip(src_line.chunks_exact(3)) {
-                    dst_px[0] = src_px[2];
-                    dst_px[1] = src_px[1];
-                    dst_px[2] = src_px[0];
-                }
-            }
+            styx_core::simd::swap_rb24_row(src_line, dst_line, width);
         }
         out
     }
@@ -178,21 +103,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             let dst_line =
                 unsafe { std::slice::from_raw_parts_mut(out_ptr.add(y * dst_stride), dst_stride) };
 
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                bgra_row_to_rgba_neon(src_line, dst_line, width);
-                continue;
-            }
-
-            #[cfg(not(target_arch = "aarch64"))]
-            {
-                for (dst_px, src_px) in dst_line.chunks_exact_mut(4).zip(src_line.chunks_exact(4)) {
-                    dst_px[0] = src_px[2];
-                    dst_px[1] = src_px[1];
-                    dst_px[2] = src_px[0];
-                    dst_px[3] = src_px[3];
-                }
-            }
+            styx_core::simd::swap_rb32_row(src_line, dst_line, width);
         }
         out
     }
@@ -292,17 +203,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             out.par_chunks_mut(dst_stride).enumerate().for_each(|(y, dst_line)| {
                 let start = y * stride;
                 let src_line = &src[start..start + (width as usize * 4)];
-                for (dst_px, src_px) in dst_line.chunks_exact_mut(3).zip(src_line.chunks_exact(4)) {
-                    if xb24 {
-                        dst_px[0] = src_px[2];
-                        dst_px[1] = src_px[1];
-                        dst_px[2] = src_px[0];
-                    } else {
-                        dst_px[0] = src_px[0];
-                        dst_px[1] = src_px[1];
-                        dst_px[2] = src_px[2];
-                    }
-                }
+                styx_core::simd::x32_to_rgb24_row(src_line, dst_line, width as usize, xb24);
             });
             image::RgbImage::from_raw(width, height, out).map(DynamicImage::ImageRgb8)
         }

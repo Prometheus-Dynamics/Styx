@@ -328,9 +328,5 @@ pub(super) fn rgba_to_rgb(rgba: &[u8], width: u32, height: u32, out: &mut Vec<u8
     if out.len() != needed {
         out.resize(needed, 0);
     }
-    for (src, dst) in rgba.chunks_exact(4).zip(out.chunks_exact_mut(3)) {
-        dst[0] = src[0];
-        dst[1] = src[1];
-        dst[2] = src[2];
-    }
+    styx_core::simd::x32_to_rgb24_row(rgba, out, pixel_count.min(rgba.len() / 4), false);
 }

@@ -41,6 +41,9 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace
 
+      - name: Run SIMD kernels without backends (scalar only)
+        run: cargo test -p styx-core-rs --no-default-features --lib simd
+
       - name: Run damaged-input tests (MJPEG decoders, netcam parser)
         run: |
           cargo test -p styx-codec --lib --features codec-turbojpeg,codec-jpeg-decoder,codec-zune corruption
@@ -54,6 +57,28 @@ jobs:
 
       - name: Run memory smoke
         run: ./scripts/check-mem-smoke.sh
+
+  simd-aarch64:
+    # The NEON kernels only build on AArch64; check them against the scalar oracle natively.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy core and codec
+        run: cargo clippy -p styx-core-rs -p styx-codec --all-targets -- -D warnings
+
+      - name: Test SIMD kernels
+        run: cargo test -p styx-core-rs --lib simd
 
   docs-and-lints:
     runs-on: ubuntu-latest
