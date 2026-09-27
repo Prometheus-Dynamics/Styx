@@ -103,3 +103,57 @@ fn consumers_of_one_camera_get_their_own_frames_from_one_capture() {
     drop(rgb);
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn consumers_with_the_same_needs_share_one_decode() {
+    let path = c270_recording("shared-decode");
+    let source = CaptureRequest::replay_source(
+        ReplaySourceConfig::new(&path)
+            .pacing(ReplayPacing::Realtime)
+            .loop_forever(true),
+    )
+    .unwrap();
+    let detector = FrameRequirements::luma().output_resolution(320, 180);
+    // The same needs, but only the top-left quarter of the frame.
+    let region = detector.clone().roi(FrameRect::new(0, 0, 640, 360));
+    let plan = plan_many(
+        source.device(),
+        &[detector, FrameRequirements::formats([FourCc::RG24]), region],
+    )
+    .unwrap();
+    assert!(
+        plan.consumers[0]
+            .notes
+            .iter()
+            .any(|n| n.contains("prepared once for consumers 0, 2")),
+        "{plan}"
+    );
+    assert!(
+        !plan.consumers[1]
+            .notes
+            .iter()
+            .any(|n| n.contains("prepared once"))
+    );
+    let mut consumers = plan.start().unwrap();
+    let mut cropped = consumers.pop().unwrap();
+    let _rgb = consumers.pop().unwrap();
+    let mut whole = consumers.pop().unwrap();
+
+    let a = frame(&mut whole);
+    let b = frame(&mut cropped);
+    assert_eq!(a.meta().timestamp, b.meta().timestamp);
+    assert_eq!(a.meta().format.resolution.width.get(), 320);
+    // The region is a view of the same decoded pixels (a 1/4 decode of 1280x720).
+    assert_eq!(b.meta().format.resolution.width.get(), 160);
+    let (a_rows, b_rows) = (a.luma_rows().unwrap(), b.luma_rows().unwrap());
+    assert_eq!(
+        a_rows.row(0).unwrap().data().as_ptr(),
+        b_rows.row(0).unwrap().data().as_ptr()
+    );
+    assert_eq!(
+        b_rows.row(5).unwrap().data(),
+        &a_rows.row(5).unwrap().data()[..160]
+    );
+    drop((whole, cropped));
+    let _ = std::fs::remove_file(path);
+}

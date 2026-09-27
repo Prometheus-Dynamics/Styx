@@ -18,6 +18,13 @@ impl SequenceGapTracker {
         }
     }
 
+    /// Forget the last frame: the stream was stopped on purpose and restarts now.
+    #[cfg_attr(not(feature = "libcamera"), allow(dead_code))]
+    pub(crate) fn restart(&mut self) {
+        self.last_sequence = None;
+        self.last_timestamp = None;
+    }
+
     fn add(&self, missed: u64) {
         if missed > 0 {
             self.missed.fetch_add(missed, Ordering::Relaxed);

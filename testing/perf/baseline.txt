@@ -5,3 +5,5 @@ mirror_720p 10.00
 file_replay 75.00
 encode_mjpeg_720p 600.00
 decode_luma_pyramid_c270_720p 10.00
+shared_3x_luma_c270_720p 10.00
+served_luma_c270_320x180 5.00

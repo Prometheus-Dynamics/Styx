@@ -17,6 +17,9 @@ pub(super) type Companions = SmallVec<[(CompanionKind, FrameLease); 2]>;
 pub enum CompanionKind {
     /// Downscaled by `2^level` in each axis (level 1 = ½, 2 = ¼, 3 = ⅛).
     Pyramid { level: u8 },
+    /// The same capture at another size, from its own output (a Raspberry Pi ISP's second
+    /// output), for a consumer that wants that size.
+    Scaled,
 }
 
 impl FrameLease {

@@ -114,9 +114,11 @@ pub struct FramePlan {
     pub(crate) isp_pyramid_level: Option<u8>,
     pub(crate) decode_scale: u8,
     pub(crate) isp_output: Option<(u32, u32)>,
+    /// On a shared capture: frames come from the ISP's second output (at `isp_output`).
+    pub(crate) isp_second_output: bool,
     pub(crate) decode_threads: usize,
     pub(crate) queue_depth: usize,
-    pub(crate) stop_when_idle: Option<std::time::Duration>,
+    pub(crate) stop_when_idle: Option<(std::time::Duration, crate::capture_api::IdleStop)>,
 }
 
 impl fmt::Debug for FramePlan {
@@ -266,6 +268,7 @@ pub(crate) fn plan_from(
         isp_pyramid_level: chosen.isp_pyramid_level,
         decode_scale: chosen.decode_scale,
         isp_output: chosen.isp_output,
+        isp_second_output: false,
         decode_threads: cost::decode_threads(req.priority, req.overrides.decode_threads),
         queue_depth: cost::queue_depth(req.priority, req.overrides.queue_depth),
         stop_when_idle: None,
@@ -360,7 +363,14 @@ impl FramePlan {
     /// Stop the camera streaming after `after` without a pull, and start it again on the next
     /// (libcamera and V4L2; see `StyxConfig::stop_when_idle`).
     pub fn stop_when_idle(mut self, after: std::time::Duration) -> Self {
-        self.stop_when_idle = Some(after);
+        self.stop_when_idle = Some((after, crate::capture_api::IdleStop::Release));
+        self
+    }
+
+    /// Like [`FramePlan::stop_when_idle`], but keep the camera configured while idle so it
+    /// starts again quickly (libcamera; see `IdleStop::Pause`).
+    pub fn pause_when_idle(mut self, after: std::time::Duration) -> Self {
+        self.stop_when_idle = Some((after, crate::capture_api::IdleStop::Pause));
         self
     }
 

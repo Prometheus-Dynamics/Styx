@@ -30,6 +30,7 @@ const VERSION: u16 = 1;
 const TAG_END: u8 = 0;
 const TAG_FRAME: u8 = 1;
 const COMPANION_PYRAMID: u8 = 1;
+const COMPANION_SCALED: u8 = 2;
 const PAYLOAD_VISIBLE: u8 = 0;
 const PAYLOAD_BITSTREAM: u8 = 1;
 
@@ -155,8 +156,10 @@ fn write_body(w: &mut impl Write, frame: &FrameLease) -> Result<(), ReplayError>
     let companions: Vec<_> = frame.companions().collect();
     w.write_all(&[companions.len().min(u8::MAX as usize) as u8])?;
     for (kind, companion) in companions.into_iter().take(u8::MAX as usize) {
-        let CompanionKind::Pyramid { level } = kind;
-        w.write_all(&[COMPANION_PYRAMID, level])?;
+        match kind {
+            CompanionKind::Pyramid { level } => w.write_all(&[COMPANION_PYRAMID, level])?,
+            CompanionKind::Scaled => w.write_all(&[COMPANION_SCALED, 0])?,
+        }
         write_body(w, companion)?;
     }
     Ok(())
@@ -208,6 +211,7 @@ fn read_body(r: &mut impl Read, offset: u64, top_level: bool) -> Result<FrameLea
     for _ in 0..companions {
         let kind = match (read_u8(r)?, read_u8(r)?) {
             (COMPANION_PYRAMID, level) => CompanionKind::Pyramid { level },
+            (COMPANION_SCALED, _) => CompanionKind::Scaled,
             _ => return Err(ReplayError::Corrupt("unknown companion kind")),
         };
         let companion = read_body(r, offset, false)?;

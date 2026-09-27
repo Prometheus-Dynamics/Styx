@@ -50,12 +50,27 @@ pub struct CaptureConfig {
     /// handle, with its controls (it takes as long as starting the camera). `0` (default)
     /// keeps it streaming. Needs `reconnect` enabled, which runs the capture supervisor.
     pub stop_when_idle_ms: u64,
+    /// What stopping an idle camera does (see [`IdleStop`]).
+    pub idle_stop: IdleStop,
     /// Clock live sources stamp frames with. File and simulation sources always report media
     /// time (`TimestampClock::StreamRelative`).
     pub timestamp_clock: ClockSource,
 }
 
 pub type CaptureTunables = CaptureConfig;
+
+/// How [`CaptureConfig::stop_when_idle_ms`] stops an idle camera.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum IdleStop {
+    /// Stop the capture and release the camera and its buffers. Starting again takes as long
+    /// as starting the camera (~0.6 s for a USB webcam, ~1.4 s for a Raspberry Pi CSI camera).
+    #[default]
+    Release,
+    /// Stop streaming but keep the camera configured, with its buffers: starting again is much
+    /// faster, and the buffers stay allocated. libcamera only; other backends release.
+    Pause,
+}
 
 /// How a libcamera or V4L2 capture recovers when its camera disconnects or stalls.
 ///
@@ -118,6 +133,7 @@ impl Default for CaptureConfig {
             extra_buffers: DEFAULT_CAPTURE_EXTRA_BUFFERS,
             reconnect: ReconnectPolicy::default(),
             stop_when_idle_ms: 0,
+            idle_stop: IdleStop::Release,
             timestamp_clock: ClockSource::Native,
         }
     }
@@ -136,6 +152,7 @@ impl CaptureConfig {
             extra_buffers: self.extra_buffers,
             reconnect: self.reconnect,
             stop_when_idle_ms: self.stop_when_idle_ms,
+            idle_stop: self.idle_stop,
             timestamp_clock: self.timestamp_clock,
         }
     }

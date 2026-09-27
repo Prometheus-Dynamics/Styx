@@ -124,8 +124,15 @@ let detector = consumers.pop().unwrap();
 ```
 
 - **Mode:** the smallest mode that covers every consumer's output size (the largest if any
-  consumer states none); then the lowest combined cost. If the consumers need different ISP
-  output sizes, the ISP is left at the mode's size and consumers scale on their own.
+  consumer states none); then the lowest combined cost.
+- **Two ISP sizes (Raspberry Pi):** the ISP has two outputs. Consumers wanting two different
+  sizes get the larger from the main output and the smaller from the second, both scaled in
+  hardware from the same exposure. With a third size, or when an ISP pyramid uses the second
+  output, the ISP delivers the mode's size and those consumers scale on their own.
+- **Decoding once:** consumers with the same requirements apart from the region of interest
+  share their preparation: each frame is decoded (and its pyramid built) once, and each
+  consumer's region is a zero-copy crop of the shared result. The plan notes which consumers
+  share.
 - **Frames:** the capture is read by whichever consumer asks first, and every other consumer
   gets a zero-copy share of the same frame. Each consumer gets the newest frame it has not had
   yet, so a slow consumer skips frames instead of building a backlog (counted as
@@ -133,15 +140,29 @@ let detector = consumers.pop().unwrap();
 - **Lifetime:** dropping a consumer releases its queued frames; the capture stops when the last
   one goes.
 
-On a CM5, a C270 at 1280x960 MJPEG feeding a 320x180 luma detector and a raw MJPEG consumer uses
-1.7% CPU in total.
+On a CM5:
+
+| Consumers | Frames | CPU |
+|---|---|---|
+| C270 1280x960 MJPEG: 320x180 luma detector + raw MJPEG | 15 fps each (the camera's rate) | 1.7% |
+| OV9782: luma at 320x180 + full-size luma | 320x200 (second output) and 1280x800, 30 fps each, same exposure | 1.2% |
+
+Three identical 320x180 luma consumers of the C270 fixture take 1.0 ms per frame together
+(one decode), and use 377 KB of heap against 319 KB for one consumer.
 
 ## Stopping idle cameras
 
 `FramePlan::stop_when_idle(duration)` (or `SharedFramePlan::stop_when_idle`, or
 `StyxConfig::stop_when_idle` for a plain capture) stops streaming once nobody has asked for a
 frame for that long. The next request starts the camera again, with the same mode and controls.
-See [reconnect.md](reconnect.md#stopping-idle-cameras).
+`pause_when_idle` keeps a libcamera camera configured instead, so it starts again in ~0.1 s
+rather than ~1.4 s, at the cost of keeping its buffers. See
+[reconnect.md](reconnect.md#stopping-idle-cameras).
+
+## Other processes
+
+`styx::ipc::FrameServer` publishes planned frames to `FrameClient`s in other processes,
+passing camera buffers as file descriptors. See [frame-server.md](frame-server.md).
 
 ## Region of interest
 
@@ -158,9 +179,7 @@ are decoded at a smaller output size.
 
 ## Limits
 
-- Consumers of a shared capture with identical requirements each decode their own frames;
-  decoding is not shared.
 - Hardware decode paths other than the Raspberry Pi ISP (Rockchip MPP, VA-API, Jetson) are
   implemented but not yet validated on hardware.
-- Planned frames are for in-process consumers; the pipeline does not export them as memfd or
-  dma-buf for other processes.
+- A consumer sharing its preparation gets its region cropped from the full decoded frame; alone,
+  an MJPEG decode skips the rows below the region.

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use styx::DeviceIdentity;
-use styx::planner::plan_frames;
+use styx::planner::{plan_frames, plan_many};
 use styx::prelude::*;
 
 struct Counting;
@@ -202,13 +202,73 @@ fn planned_replay(
     Ok(())
 }
 
-const SCENARIOS: [&str; 6] = [
+/// Replay the fixture through one shared capture for `requirements` (one consumer each), until
+/// every consumer has `frames` frames.
+fn shared_replay(
+    recording: &std::path::Path,
+    requirements: &[FrameRequirements],
+    frames: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = CaptureRequest::replay_source(
+        ReplaySourceConfig::new(recording)
+            .pacing(ReplayPacing::Unpaced)
+            .loop_forever(true),
+    )?;
+    let mut consumers = plan_many(source.device(), requirements)?.start()?;
+    for _ in 0..frames {
+        for consumer in &mut consumers {
+            match consumer.next_frame(Duration::from_secs(2)) {
+                RecvOutcome::Data(frame) => {
+                    std::hint::black_box(frame.payload_bytes());
+                }
+                RecvOutcome::Empty => {}
+                RecvOutcome::Closed => return Err("replay closed".into()),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Planned frames published to a client in the same process through a frame server (copied
+/// into memfds, released by the client).
+fn served_replay(
+    recording: &std::path::Path,
+    requirements: FrameRequirements,
+    frames: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = CaptureRequest::replay_source(
+        ReplaySourceConfig::new(recording)
+            .pacing(ReplayPacing::Unpaced)
+            .loop_forever(true),
+    )?;
+    let path = std::env::temp_dir().join(format!("styx-mem-smoke-{}.sock", std::process::id()));
+    let server = styx::ipc::FrameServer::bind(&path)?;
+    let client = styx::ipc::FrameClient::connect(&path)?;
+    let mut planned = plan_frames(source.device(), &requirements)?.start()?;
+    let mut seen = 0;
+    while seen < frames {
+        if let RecvOutcome::Data(frame) = planned.next_frame(Duration::from_secs(2))
+            && server.publish(&frame)? > 0
+            && let RecvOutcome::Data(shared) = client.recv(Duration::from_secs(2))
+        {
+            std::hint::black_box(shared.planes()[0].data()[0]);
+            seen += 1;
+        }
+    }
+    planned.stop();
+    Ok(())
+}
+
+const SCENARIOS: [&str; 9] = [
     "mem_virtual_720p_1cam",
     "mem_virtual_720p_4cam",
     "mem_mjpeg_luma_720p",
     "mem_mjpeg_luma_to_320x180",
     "mem_mjpeg_rgb_720p",
     "mem_mjpeg_rgb_to_320x180",
+    "mem_shared_luma_and_rgb_to_320x180",
+    "mem_shared_3x_luma_to_320x180",
+    "mem_served_luma_to_320x180",
 ];
 
 fn run(scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -221,6 +281,27 @@ fn run(scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
         "mem_mjpeg_luma_to_320x180" => (1, luma.output_resolution(320, 180)),
         "mem_mjpeg_rgb_720p" => (1, rgb),
         "mem_mjpeg_rgb_to_320x180" => (1, rgb.output_resolution(320, 180)),
+        "mem_shared_luma_and_rgb_to_320x180" | "mem_shared_3x_luma_to_320x180" => {
+            let small = luma.output_resolution(320, 180);
+            let consumers = if scenario == "mem_shared_3x_luma_to_320x180" {
+                // Decoded once for all three.
+                vec![small.clone(), small.clone(), small]
+            } else {
+                vec![small, rgb.output_resolution(320, 180)]
+            };
+            let recording = c270_recording()?;
+            let result = measure(scenario, 1, || shared_replay(&recording, &consumers, 60));
+            let _ = std::fs::remove_file(recording);
+            return result;
+        }
+        "mem_served_luma_to_320x180" => {
+            let recording = c270_recording()?;
+            let result = measure(scenario, 1, || {
+                served_replay(&recording, luma.output_resolution(320, 180), 60)
+            });
+            let _ = std::fs::remove_file(recording);
+            return result;
+        }
         other => return Err(format!("unknown scenario {other}").into()),
     };
     let recording = c270_recording()?;

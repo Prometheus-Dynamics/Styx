@@ -18,6 +18,56 @@ pub(super) enum SecondStream {
     Tdn,
     /// Downscaled copy of the primary (`2^-level`) attached as a pyramid companion.
     Pyramid(u8),
+    /// The capture at another size, attached as a `CompanionKind::Scaled` companion.
+    Scaled(u32, u32),
+}
+
+impl SecondStream {
+    /// The companion kind this output is attached as.
+    pub(super) fn companion_kind(self) -> Option<CompanionKind> {
+        match self {
+            Self::Pyramid(level) => Some(CompanionKind::Pyramid { level }),
+            Self::Scaled(..) => Some(CompanionKind::Scaled),
+            Self::None | Self::Tdn => None,
+        }
+    }
+}
+
+/// Use of the second output: TDN when on, else pyramid companions, else a second size.
+pub(super) fn choose_second_stream(
+    tdn: bool,
+    pyramid_level: u8,
+    second_output_size: Option<(u32, u32)>,
+    emulate_rgb24: bool,
+) -> SecondStream {
+    let second = if tdn {
+        SecondStream::Tdn
+    } else if pyramid_level > 0 && !emulate_rgb24 {
+        SecondStream::Pyramid(pyramid_level)
+    } else if let Some((w, h)) = second_output_size
+        && !emulate_rgb24
+    {
+        SecondStream::Scaled(w, h)
+    } else {
+        SecondStream::None
+    };
+    if pyramid_level > 0 && second != SecondStream::Pyramid(pyramid_level) {
+        tracing::warn!(
+            backend = "libcamera",
+            pyramid_level,
+            tdn_enabled = tdn,
+            "libcamera pyramid companion disabled: second output unavailable for this request"
+        );
+    }
+    if second_output_size.is_some() && !matches!(second, SecondStream::Scaled(..)) {
+        tracing::warn!(
+            backend = "libcamera",
+            tdn_enabled = tdn,
+            pyramid_level,
+            "libcamera second output disabled: TDN or the pyramid uses it"
+        );
+    }
+    second
 }
 
 /// Generate and validate a stream configuration for `code` at `size`, plus the second output.
@@ -47,6 +97,10 @@ pub(super) fn configure_streams(
                 ((size.height >> level) & !1).max(2),
             ),
         ),
+        SecondStream::Scaled(width, height) => (
+            Some(StreamRole::ViewFinder),
+            libcamera::geometry::Size::new((width & !1).max(2), (height & !1).max(2)),
+        ),
     };
     let mut roles = vec![role];
     roles.extend(second_role);
@@ -75,20 +129,20 @@ pub(super) fn configure_streams(
     Ok((cfgs, status))
 }
 
-/// Attach the ISP's downscaled second output as a pyramid companion. A companion whose
-/// timestamp does not match the primary is dropped rather than failing capture.
+/// Attach the ISP's second output as a companion of `kind`. A companion whose timestamp does
+/// not match the primary is dropped rather than failing capture.
 pub(super) fn attach_companion(
     frame: FrameLease,
-    companion: Option<(u8, FrameLease)>,
+    companion: Option<(CompanionKind, FrameLease)>,
     luma_view: bool,
 ) -> Result<FrameLease, CaptureError> {
-    let Some((level, companion)) = companion else {
+    let Some((kind, companion)) = companion else {
         return Ok(frame);
     };
     if companion.meta().timestamp != frame.meta().timestamp {
         tracing::debug!(
             backend = "libcamera",
-            "pyramid companion timestamp mismatch; dropping companion"
+            "companion timestamp mismatch; dropping companion"
         );
         return Ok(frame);
     }
@@ -98,6 +152,6 @@ pub(super) fn attach_companion(
         Ok(companion)
     };
     companion
-        .and_then(|companion| frame.with_companion(CompanionKind::Pyramid { level }, companion))
+        .and_then(|companion| frame.with_companion(kind, companion))
         .map_err(|err| CaptureError::Backend(err.to_string()))
 }

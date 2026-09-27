@@ -101,7 +101,7 @@ pub enum LibcameraBufferMemory {
 mod capture;
 #[cfg(feature = "netcam")]
 pub(crate) use capture::PoolLimits;
-pub use capture::{CaptureConfig, CaptureTunables, ReconnectPolicy};
+pub use capture::{CaptureConfig, CaptureTunables, IdleStop, ReconnectPolicy};
 
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -172,6 +172,11 @@ pub struct LibcameraConfig {
     /// CPU work, and buffers of the smaller size). libcamera may round it to what the pipeline
     /// supports; the capture reports the size it got. `None` (default) uses the mode's size.
     pub output_size: Option<(u32, u32)>,
+    /// Also deliver the same capture at this size from the ISP's second output, attached to
+    /// each frame as a `CompanionKind::Scaled` companion (with the same timestamp). Uses the
+    /// output TDN and pyramid companions use, so it is ignored when either is on. `None`
+    /// (default) leaves the second output off.
+    pub second_output_size: Option<(u32, u32)>,
 }
 
 impl Default for LibcameraConfig {
@@ -191,6 +196,7 @@ impl Default for LibcameraConfig {
             buffer_memory: LibcameraBufferMemory::default(),
             pyramid_level: 0,
             output_size: None,
+            second_output_size: None,
         }
     }
 }
@@ -212,6 +218,7 @@ impl LibcameraConfig {
             buffer_memory: self.buffer_memory,
             pyramid_level: self.pyramid_level.min(3),
             output_size: self.output_size.filter(|&(w, h)| w > 0 && h > 0),
+            second_output_size: self.second_output_size.filter(|&(w, h)| w > 0 && h > 0),
         }
     }
 }
@@ -386,6 +393,14 @@ impl StyxConfig {
         self
     }
 
+    /// Like [`StyxConfig::stop_when_idle`], but keep the camera configured while idle so it
+    /// starts again quickly (libcamera; see [`IdleStop::Pause`]).
+    pub fn pause_when_idle(mut self, after: std::time::Duration) -> Self {
+        self = self.stop_when_idle(after);
+        self.capture.idle_stop = IdleStop::Pause;
+        self
+    }
+
     /// Overflow policy for the capture queue (see [`CaptureConfig::queue_overflow`]).
     pub fn capture_queue_overflow(mut self, overflow: QueueOverflow) -> Self {
         self.capture.queue_overflow = overflow;
@@ -556,6 +571,13 @@ impl StyxConfig {
     /// [`LibcameraConfig::output_size`]).
     pub fn libcamera_output_size(mut self, width: u32, height: u32) -> Self {
         self.backends.libcamera.output_size = Some((width, height));
+        self
+    }
+
+    /// Also deliver each frame at `width`x`height` from the libcamera ISP's second output, as a
+    /// `CompanionKind::Scaled` companion (see [`LibcameraConfig::second_output_size`]).
+    pub fn libcamera_second_output(mut self, width: u32, height: u32) -> Self {
+        self.backends.libcamera.second_output_size = Some((width, height));
         self
     }
 

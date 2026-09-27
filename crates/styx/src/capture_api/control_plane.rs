@@ -57,19 +57,22 @@ pub(crate) fn apply_control_to_plane(
     );
     let result = match control {
         // Stopped while idle: the control is applied when streaming starts again.
-        ControlPlane::Supervised(shared) if shared.is_idle() => {
-            shared.remember_control(id, _value);
-            Ok(())
-        }
-        ControlPlane::Supervised(shared) => {
-            let result = shared
-                .current_control()
-                .and_then(|inner| apply_control_to_plane(&inner, id, _value.clone()));
-            if result.is_ok() {
-                shared.remember_control(id, _value);
+        ControlPlane::Supervised(shared) => match shared.current_control() {
+            Ok(inner) => {
+                // Also while paused: the paused capture applies it when streaming again.
+                let result = apply_control_to_plane(&inner, id, _value.clone());
+                if result.is_ok() {
+                    shared.remember_control(id, _value);
+                }
+                result
             }
-            result
-        }
+            // Stopped while idle: applied when it starts again.
+            Err(_) if shared.is_idle() => {
+                shared.remember_control(id, _value);
+                Ok(())
+            }
+            Err(err) => Err(err),
+        },
         ControlPlane::None | ControlPlane::Virtual => Err(CaptureError::ControlUnsupported),
         #[cfg(feature = "v4l2")]
         ControlPlane::V4l2 { path } => apply_v4l2_controls(path, &[(id, _value)]),
@@ -110,12 +113,13 @@ pub(crate) fn read_control_from_plane(
         "control request started"
     );
     let result = match control {
-        ControlPlane::Supervised(shared) if shared.is_idle() => shared
-            .remembered_control(id)
-            .ok_or_else(|| CaptureError::Disconnected("camera is stopped while idle".into())),
-        ControlPlane::Supervised(shared) => shared
-            .current_control()
-            .and_then(|inner| read_control_from_plane(&inner, id)),
+        ControlPlane::Supervised(shared) => match shared.current_control() {
+            Ok(inner) => read_control_from_plane(&inner, id),
+            Err(_) if shared.is_idle() => shared
+                .remembered_control(id)
+                .ok_or_else(|| CaptureError::Disconnected("camera is stopped while idle".into())),
+            Err(err) => Err(err),
+        },
         #[cfg(feature = "v4l2")]
         ControlPlane::V4l2 { path } => read_v4l2_control(path, id),
         #[cfg(feature = "libcamera")]

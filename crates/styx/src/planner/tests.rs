@@ -286,3 +286,44 @@ fn raspberry_pi_isp_scales_to_the_output_resolution_keeping_the_field_of_view() 
     let plan = plan_frames_with(&dev, &cpu_only, &registry()).unwrap();
     assert_eq!(plan.isp_output, None);
 }
+
+#[cfg(feature = "libcamera")]
+#[test]
+fn shared_consumers_of_two_sizes_use_both_isp_outputs() {
+    let dev = device(
+        BackendKind::Libcamera,
+        BackendHandle::Libcamera {
+            id: "/base/axi/pcie@1000120000/rp1/i2c@88000/ov9782@60".into(),
+        },
+        vec![mode(FourCc::NV12, 1280, 800, 30)],
+    );
+    let detector = FrameRequirements::luma().output_resolution(320, 180);
+    let viewer = FrameRequirements::luma().output_resolution(640, 360);
+    let plan = plan_many_with(&dev, &[detector.clone(), viewer], &registry()).unwrap();
+    // The larger size on the main output, the smaller one on the second.
+    let (small, large) = (&plan.consumers[0], &plan.consumers[1]);
+    assert_eq!(small.output_resolution(), (320, 200));
+    assert!(small.isp_second_output);
+    assert!(small.to_string().contains("second output"), "{plan}");
+    assert_eq!(large.output_resolution(), (640, 400));
+    assert!(!large.isp_second_output);
+
+    // A third size does not fit: those consumers get the mode's size.
+    let third = FrameRequirements::luma().output_resolution(160, 90);
+    let plan = plan_many_with(
+        &dev,
+        &[
+            detector,
+            FrameRequirements::luma().output_resolution(640, 360),
+            third,
+        ],
+        &registry(),
+    )
+    .unwrap();
+    assert!(plan.consumers.iter().all(|c| !c.isp_second_output));
+    assert!(
+        plan.consumers
+            .iter()
+            .all(|c| c.output_resolution() == (1280, 800))
+    );
+}

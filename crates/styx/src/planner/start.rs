@@ -13,9 +13,9 @@ use styx_codec::prelude::{
 use styx_codec::{Codec, CodecDescriptor, CodecError, CodecKind};
 use styx_core::prelude::*;
 
-use super::shared::SharedCapture;
+use super::shared::{Fanout, SharedCapture};
 use super::{FramePlan, Route};
-use crate::capture_api::{CaptureError, CaptureRequest, StyxConfig};
+use crate::capture_api::{CaptureError, CaptureRequest, IdleStop, StyxConfig};
 use crate::session::{MediaPipeline, MediaPipelineBuilder};
 use styx_core::queue::BoundedRx;
 
@@ -49,10 +49,11 @@ enum Source {
 }
 
 struct Branch {
-    shared: Arc<SharedCapture>,
-    index: usize,
+    group: Arc<PreparedGroup>,
+    member: usize,
     rx: BoundedRx<FrameLease>,
-    preparer: FramePreparer,
+    /// On frames prepared for several consumers: this consumer's region, cropped from them.
+    roi: Option<RoiHandle>,
 }
 
 impl Drop for Branch {
@@ -62,22 +63,106 @@ impl Drop for Branch {
     }
 }
 
-impl PlannedFrames {
-    pub(crate) fn branch(
+/// Consumers of a shared capture whose frames are prepared the same way: each captured frame is
+/// prepared once, by whichever member asks first, and shared with the others.
+pub(crate) struct PreparedGroup {
+    shared: Arc<SharedCapture>,
+    /// This group's branch of the shared capture.
+    index: usize,
+    raw_rx: BoundedRx<FrameLease>,
+    preparer: FramePreparer,
+    fanout: Fanout,
+    /// Frames come from the ISP's second output, attached to the shared frame.
+    second_output: bool,
+}
+
+impl PreparedGroup {
+    /// `roi` is the preparer's region: the consumer's own for a group of one, none otherwise
+    /// (members then crop their own).
+    pub(crate) fn new(
         plan: &FramePlan,
         shared: Arc<SharedCapture>,
         index: usize,
+        raw_rx: BoundedRx<FrameLease>,
+        fanout: Fanout,
+        roi: RoiHandle,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            shared,
+            index,
+            raw_rx,
+            preparer: FramePreparer::new(plan, roi),
+            fanout,
+            second_output: plan.isp_second_output,
+        })
+    }
+
+    fn next(
+        &self,
+        member: usize,
+        rx: &BoundedRx<FrameLease>,
+        wait: Duration,
+    ) -> RecvOutcome<FrameLease> {
+        self.fanout.next(member, rx, wait, |wait| {
+            match self.shared.next(self.index, &self.raw_rx, wait) {
+                RecvOutcome::Data(frame) => match self
+                    .isp_output(frame)
+                    .and_then(|frame| self.preparer.process(frame))
+                {
+                    Ok(frame) => RecvOutcome::Data(frame),
+                    Err(err) => {
+                        tracing::warn!(group = self.index, error = %err, "frame skipped");
+                        RecvOutcome::Empty
+                    }
+                },
+                other => other,
+            }
+        })
+    }
+
+    /// This group's ISP output of a shared frame: the frame itself, or its second output.
+    fn isp_output(&self, mut frame: FrameLease) -> Result<FrameLease, CodecError> {
+        let companions = frame.take_companions();
+        if self.second_output {
+            return companions
+                .into_iter()
+                .find(|(kind, _)| *kind == CompanionKind::Scaled)
+                .map(|(_, frame)| frame)
+                .ok_or_else(|| CodecError::Codec("frame without the ISP's second output".into()));
+        }
+        // The other consumers' output is not for this group.
+        for (kind, companion) in companions {
+            if kind != CompanionKind::Scaled {
+                frame = frame
+                    .with_companion(kind, companion)
+                    .map_err(|e| CodecError::Codec(e.to_string()))?;
+            }
+        }
+        Ok(frame)
+    }
+}
+
+impl Drop for PreparedGroup {
+    fn drop(&mut self) {
+        self.raw_rx.close();
+    }
+}
+
+impl PlannedFrames {
+    pub(crate) fn branch(
+        plan: &FramePlan,
+        group: Arc<PreparedGroup>,
+        member: usize,
         rx: BoundedRx<FrameLease>,
+        roi: RoiHandle,
+        crops_own_roi: bool,
     ) -> Self {
-        let roi = RoiHandle::default();
-        roi.set(plan.requirements.roi);
-        let preparer = FramePreparer::new(plan, roi.clone());
         Self {
             source: Source::Branch(Box::new(Branch {
-                shared,
-                index,
+                group,
+                member,
                 rx,
-                preparer,
+                roi: crops_own_roi.then(|| roi.clone()),
             })),
             roi,
             plan: plan.clone(),
@@ -89,14 +174,19 @@ impl PlannedFrames {
     pub fn next_frame(&mut self, wait: Duration) -> RecvOutcome<FrameLease> {
         match &mut self.source {
             Source::Pipeline(pipeline) => pipeline.next_blocking(wait),
-            Source::Branch(branch) => match branch.shared.next(branch.index, &branch.rx, wait) {
-                RecvOutcome::Data(frame) => match branch.preparer.process(frame) {
-                    Ok(frame) => RecvOutcome::Data(frame),
-                    Err(err) => {
-                        tracing::warn!(consumer = branch.index, error = %err, "frame skipped");
-                        RecvOutcome::Empty
+            Source::Branch(branch) => match branch.group.next(branch.member, &branch.rx, wait) {
+                RecvOutcome::Data(frame) => {
+                    let Some(roi) = &branch.roi else {
+                        return RecvOutcome::Data(frame);
+                    };
+                    match branch.group.preparer.crop(frame, roi.get()) {
+                        Ok(frame) => RecvOutcome::Data(frame),
+                        Err(err) => {
+                            tracing::warn!(consumer = branch.member, error = %err, "frame skipped");
+                            RecvOutcome::Empty
+                        }
                     }
-                },
+                }
                 other => other,
             },
         }
@@ -125,8 +215,9 @@ impl PlannedFrames {
         match &self.source {
             Source::Pipeline(pipeline) => pipeline.health_report(),
             Source::Branch(branch) => {
-                let mut report = branch.shared.capture().health_report();
-                let evictions = branch.rx.stats().evictions;
+                let group = &branch.group;
+                let mut report = group.shared.capture().health_report();
+                let evictions = branch.rx.stats().evictions + group.raw_rx.stats().evictions;
                 crate::metrics::push_drop_reason(
                     &mut report.drop_reasons,
                     crate::metrics::FrameDropReason::CaptureQueueEviction,
@@ -169,9 +260,11 @@ impl FramePlan {
         if let Some((width, height)) = self.isp_output {
             config = config.libcamera_output_size(width, height);
         }
-        if let Some(after) = self.stop_when_idle {
-            config = config.stop_when_idle(after);
-        }
+        config = match self.stop_when_idle {
+            Some((after, IdleStop::Pause)) => config.pause_when_idle(after),
+            Some((after, _)) => config.stop_when_idle(after),
+            None => config,
+        };
         let mut capture = CaptureRequest::new(&self.device)
             .backend(self.backend)
             .mode(self.mode.id.clone())
@@ -281,19 +374,24 @@ impl FramePreparer {
     /// `roi` (full capture-frame pixels) in the coordinates of the decoded, possibly scaled,
     /// frame, clipped to it.
     fn scaled_roi(&self, roi: FrameRect, decoded: (u32, u32)) -> Option<FrameRect> {
-        let ((from_w, from_h), (to_w, to_h)) = self.roi_scale;
-        let (fw, fh, tw, th) = (
-            u64::from(from_w),
-            u64::from(from_h),
-            u64::from(to_w),
-            u64::from(to_h),
-        );
-        // Outward: the scaled region covers every pixel of the requested one.
-        let x = (u64::from(roi.x) * tw / fw) as u32;
-        let y = (u64::from(roi.y) * th / fh) as u32;
-        let right = (u64::from(roi.x + roi.width) * tw).div_ceil(fw) as u32;
-        let bottom = (u64::from(roi.y + roi.height) * th).div_ceil(fh) as u32;
-        FrameRect::new(x, y, right - x, bottom - y).clipped_to(decoded.0, decoded.1)
+        let (from, to) = self.roi_scale;
+        roi.scaled(from, to).clipped_to(decoded.0, decoded.1)
+    }
+
+    /// `frame` (prepared without a region) cropped to `roi`, for one of several consumers
+    /// sharing it. Only luma frames are cropped, as when preparing.
+    fn crop(&self, frame: FrameLease, roi: Option<FrameRect>) -> Result<FrameLease, CodecError> {
+        let Some(roi) = roi.filter(|_| self.luma) else {
+            return Ok(frame);
+        };
+        let res = frame.meta().format.resolution;
+        let Some(rect) = self.scaled_roi(roi, (res.width.get(), res.height.get())) else {
+            return Ok(frame);
+        };
+        let frame = frame
+            .crop_view(self.aligned_roi(rect))
+            .map_err(|e| CodecError::Codec(e.to_string()))?;
+        self.realign(frame)
     }
 
     /// Region aligned outward so cropped rows keep the requested base alignment.

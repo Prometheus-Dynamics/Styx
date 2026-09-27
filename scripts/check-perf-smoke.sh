@@ -52,6 +52,10 @@ run_and_record \
     cargo run --release -p "$package" --no-default-features --features codec-turbojpeg --bin luma_perf --quiet
 
 run_and_record \
+    "shared capture and frame server perf smoke (C270 fixture)" \
+    cargo run --release -p "$package" --no-default-features --features codec-turbojpeg,replay-mcap --bin shared_perf --quiet
+
+run_and_record \
     "file replay perf smoke" \
     cargo run --release -p "$package" --no-default-features --features file-backend --bin file_replay_perf --quiet
 

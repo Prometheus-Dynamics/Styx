@@ -33,6 +33,8 @@ mod device_identity;
 mod frame_sizing;
 #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
 pub mod graph;
+#[cfg(all(feature = "facade", target_os = "linux"))]
+pub mod ipc;
 #[cfg(feature = "facade")]
 pub mod memory;
 #[cfg(feature = "facade")]
@@ -617,7 +619,7 @@ pub mod prelude {
     pub use crate::capture_api::{
         BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
         CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
-        CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig,
+        CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig, IdleStop,
         LibcameraBufferMemory, LibcameraConfig, NetcamConfig, NetcamTunables, ReconnectPolicy,
         SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig, V4l2Config,
         VirtualCaptureConfig, VirtualSourceConfig, open_best_camera, open_virtual_rgb,

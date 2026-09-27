@@ -30,11 +30,15 @@ use self::backing::{
     LibcameraBacking, RequestPoolBackingLease, ShutdownGuard, wait_for_backings_to_drain,
 };
 pub use self::controls::{ControlMessage, PendingControlState};
-use self::controls::{build_libcamera_controls, queue_with_controls, read_request_metadata};
+use self::controls::{
+    apply_control_updates, build_libcamera_controls, queue_with_controls, read_request_metadata,
+};
 use self::emulation::Emulation;
 use self::frame::completed_frame_parts;
 use self::heap::{CaptureBuffer, request_buffer};
-use self::streams::{SecondStream, attach_companion, configure_streams, framebuffer_refs};
+use self::streams::{
+    SecondStream, attach_companion, choose_second_stream, configure_streams, framebuffer_refs,
+};
 use self::util::{
     classify_libcamera_backend_message, classify_libcamera_control_apply_kind,
     control_value_enabled, map_pixel_format_to_fourcc, normalize_requested_fourcc_for_libcamera,
@@ -216,21 +220,13 @@ pub(super) fn start_libcamera(
             let size = Size::new(width, height);
             // Pyramid companions need a processed format whose Y plane is directly usable.
             let pyramid_level = libcamera_config.pyramid_level.min(3);
-            let mut second = if enable_tdn_output {
-                SecondStream::Tdn
-            } else if pyramid_level > 0 && !emulate_rgb24 {
-                SecondStream::Pyramid(pyramid_level)
-            } else {
-                SecondStream::None
-            };
-            if pyramid_level > 0 && second != SecondStream::Pyramid(pyramid_level) {
-                tracing::warn!(
-                    backend = "libcamera",
-                    pyramid_level,
-                    tdn_enabled = enable_tdn_output,
-                    "libcamera pyramid companion disabled: second output unavailable for this request"
-                );
-            }
+            let mut second = choose_second_stream(
+                enable_tdn_output,
+                pyramid_level,
+                libcamera_config.second_output_size,
+                emulate_rgb24,
+            );
+            let requested_second = second;
             let build = |role, code: FourCc, second| {
                 configure_streams(&cam, role, second, code, size, depth_u32)
             };
@@ -242,11 +238,12 @@ pub(super) fn start_libcamera(
             };
             let (mut cfgs, mut status) = build(role, desired_format, second)?;
             if matches!(status, CameraConfigurationStatus::Invalid)
-                && matches!(second, SecondStream::Pyramid(_))
+                && matches!(second, SecondStream::Pyramid(_) | SecondStream::Scaled(..))
             {
                 tracing::warn!(
                     backend = "libcamera",
-                    "libcamera pyramid companion rejected by the pipeline; continuing without it"
+                    second = ?second,
+                    "libcamera second output rejected by the pipeline; continuing without it"
                 );
                 second = SecondStream::None;
                 (cfgs, status) = build(role, desired_format, second)?;
@@ -266,10 +263,12 @@ pub(super) fn start_libcamera(
                         != Some(requested_code))
             {
                 let processed = util::processed_stream_role(libcamera_config.processed_stream_role);
-                let luma_second = if pyramid_level > 0 && !enable_tdn_output {
-                    SecondStream::Pyramid(pyramid_level)
-                } else {
-                    second
+                // The second output the raw attempt may have dropped.
+                let luma_second = match requested_second {
+                    SecondStream::None if pyramid_level > 0 && !enable_tdn_output => {
+                        SecondStream::Pyramid(pyramid_level)
+                    }
+                    requested => requested,
                 };
                 let (mut luma_cfgs, mut luma_status) = build(processed, FourCc::YU12, luma_second)?;
                 if matches!(luma_status, CameraConfigurationStatus::Invalid)
@@ -346,18 +345,16 @@ pub(super) fn start_libcamera(
             } else {
                 None
             };
-            let companion = match second {
-                SecondStream::Pyramid(level) => cfgs.get(1).and_then(|cfg| {
-                    let size = cfg.get_size();
-                    let res = Resolution::new(size.width, size.height)?;
-                    let code = map_pixel_format_to_fourcc(cfg.get_pixel_format());
-                    Some((
-                        level,
-                        MediaFormat::new(code, res, mode_for_thread.format.color),
-                    ))
-                }),
-                _ => None,
-            };
+            let companion = second.companion_kind().and_then(|kind| {
+                let cfg = cfgs.get(1)?;
+                let size = cfg.get_size();
+                let res = Resolution::new(size.width, size.height)?;
+                let code = map_pixel_format_to_fourcc(cfg.get_pixel_format());
+                Some((
+                    kind,
+                    MediaFormat::new(code, res, mode_for_thread.format.color),
+                ))
+            });
             tracing::debug!(
                 backend = "libcamera",
                 camera_id = %id_for_thread,
@@ -509,12 +506,14 @@ pub(super) fn start_libcamera(
             let mut failure: Option<CaptureError> = None;
             let mut pending_requeue: Vec<libcamera::request::Request> = Vec::new();
             let mut requeue_fail_since: Option<Instant> = None;
+            // Stopped while idle: requests collect in `pending_requeue` until resumed.
+            let mut paused = false;
             loop {
                 while let Ok(mut ret_req) = ret_rx.try_recv() {
                     ret_req.reuse(ReuseFlag::REUSE_BUFFERS);
                     pending_requeue.push(ret_req);
                 }
-                if !pending_requeue.is_empty() {
+                if !paused && !pending_requeue.is_empty() {
                     let mut still_pending = Vec::with_capacity(pending_requeue.len());
                     for ret_req in pending_requeue.drain(..) {
                         match queue_with_controls(&cam, ret_req, &control_state, frame_duration) {
@@ -543,36 +542,41 @@ pub(super) fn start_libcamera(
                 while let Ok(msg) = ctrl_rx.try_recv() {
                     match msg {
                         ControlMessage::Wake => {
-                            if !controls_enabled {
-                                pending_controls_for_thread.lock().updates.clear();
-                                continue;
+                            let updates =
+                                std::mem::take(&mut pending_controls_for_thread.lock().updates);
+                            if controls_enabled {
+                                apply_control_updates(
+                                    updates,
+                                    &writable_controls_for_thread,
+                                    &mut control_state,
+                                    &mut frame_duration,
+                                );
                             }
-                            let updates = {
-                                let mut guard = pending_controls_for_thread.lock();
-                                std::mem::take(&mut guard.updates)
-                            };
-                            for (id, val) in updates {
-                                if !writable_controls_for_thread.contains(&id) {
-                                    continue;
+                        }
+                        ControlMessage::Pause(ack) => {
+                            if !paused {
+                                // Cancels the queued requests; they come back below and wait
+                                // in `pending_requeue`.
+                                if let Err(err) = cam.stop() {
+                                    failure =
+                                        Some(classify_libcamera_backend_message(err.to_string()));
+                                    break;
                                 }
-                                match val {
-                                    Some(val) => {
-                                        if id == LIBCAMERA_FRAME_DURATION_LIMITS {
-                                            if let ControlValue::Int(v) = val {
-                                                frame_duration = Some(v as i64);
-                                            }
-                                        } else {
-                                            control_state.insert(id, val);
-                                        }
-                                    }
-                                    None => {
-                                        if id == LIBCAMERA_FRAME_DURATION_LIMITS {
-                                            frame_duration = None;
-                                        } else {
-                                            control_state.remove(&id);
-                                        }
-                                    }
+                                paused = true;
+                                requeue_fail_since = None;
+                            }
+                            let _ = ack.send(());
+                        }
+                        ControlMessage::Resume => {
+                            if paused {
+                                if let Err(err) = cam.start(None) {
+                                    failure =
+                                        Some(classify_libcamera_backend_message(err.to_string()));
+                                    break;
                                 }
+                                paused = false;
+                                // The gap while paused is not frames lost.
+                                sequence_tracker.restart();
                             }
                         }
                         ControlMessage::Get(id, resp_tx) => {
@@ -588,7 +592,14 @@ pub(super) fn start_libcamera(
                     }
                 }
 
+                if failure.is_some() {
+                    break;
+                }
                 match req_rx.recv_timeout(request_poll) {
+                    Ok(mut req) if req.status() == libcamera::request::RequestStatus::Cancelled => {
+                        req.reuse(ReuseFlag::REUSE_BUFFERS);
+                        pending_requeue.push(req);
+                    }
                     Ok(req) => {
                         let timing = read_request_metadata(&req, &mut readback_state);
 
@@ -618,13 +629,13 @@ pub(super) fn start_libcamera(
                                 }
                             };
                         // The ISP's second output from the same request: same exposure/timestamp.
-                        let companion_parts = companion.and_then(|(level, format)| {
+                        let companion_parts = companion.and_then(|(kind, format)| {
                             let fb = request_buffer(&req, tdn_stream.as_ref()?)?;
                             let stride = tdn_stride.unwrap_or(0);
                             match completed_frame_parts(fb, format, stride) {
-                                Ok(parts) => Some((level, format, parts)),
+                                Ok(parts) => Some((kind, format, parts)),
                                 Err(err) => {
-                                    tracing::debug!(backend = "libcamera", error = %err, "pyramid companion unavailable");
+                                    tracing::debug!(backend = "libcamera", error = %err, "second output frame unavailable");
                                     None
                                 }
                             }
@@ -662,7 +673,7 @@ pub(super) fn start_libcamera(
                                 reason: ResidencyTransitionReason::Capture,
                                 copied: false,
                             });
-                        let companion_frame = companion_parts.map(|(level, format, parts)| {
+                        let companion_frame = companion_parts.map(|(kind, format, parts)| {
                             let meta = FrameMeta::new(format, timestamp)
                                 .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
                                     sequence: parts.sequence,
@@ -671,7 +682,7 @@ pub(super) fn start_libcamera(
                                 .in_clock(TimestampClock::Boottime, conversion);
                             let sibling = backing.sibling(parts.plane_views);
                             (
-                                level,
+                                kind,
                                 FrameLease::from_external(meta, parts.layouts, sibling),
                             )
                         });
@@ -780,20 +791,4 @@ pub(super) fn start_libcamera(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn record_worker_error_keeps_last_failure_without_camera_hardware() {
-        let worker_error = Mutex::new(None);
-        let err = CaptureError::Backend("request loop failed".into());
-
-        record_worker_error(&worker_error, &err);
-
-        let stored = worker_error.lock().clone();
-        assert_eq!(
-            stored.as_ref().map(ToString::to_string),
-            Some(err.to_string())
-        );
-    }
-}
+mod tests;

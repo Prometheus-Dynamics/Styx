@@ -131,11 +131,23 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Added on-demand capture: `StyxConfig::stop_when_idle` and `FramePlan::stop_when_idle` stop
   streaming while nobody pulls frames and restart on the next pull
   (`CaptureRetryStats::{idle_stops, idle_resumes}`). See `docs/reconnect.md`.
+- Shared captures use both Raspberry Pi ISP outputs: consumers wanting two sizes get one each,
+  scaled in hardware from the same exposure (`LibcameraConfig::second_output_size`,
+  `StyxConfig::libcamera_second_output`, `CompanionKind::Scaled`).
+- Consumers of a shared capture with the same requirements (apart from the region of interest)
+  decode each frame once and crop their own region.
+- Added `IdleStop::Pause` (`StyxConfig::pause_when_idle`, `FramePlan::pause_when_idle`): an idle
+  libcamera camera stays configured and starts again in ~0.1 s instead of ~1.4 s.
+- Added `styx::ipc` (Linux): `FrameServer` and `FrameClient` share frames with other processes,
+  passing dma-bufs and memfds as file descriptors. See `docs/frame-server.md`.
+- Added shared-capture and frame-server scenarios to the memory and perf smoke checks.
 - Added corruption tests for recordings, MJPEG decoders and the netcam parser, cargo-fuzz targets
   (`fuzz/`), and a public API compatibility check (`cargo-semver-checks`) in release CI.
 
 ### Changed
 
+- `CompanionKind` has a `Scaled` variant; `.styxrec` recordings keep it, MCAP recordings keep
+  pyramid levels only.
 - `plan_many` now plans a shared capture; `PlanError::MultipleConsumersUnsupported` is replaced
   by `PlanError::NoConsumers`. `PlannedFrames::pipeline()` returns an `Option` (none for a
   shared consumer).

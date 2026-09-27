@@ -8,3 +8,7 @@ mem_mjpeg_luma_720p 1536 4096
 mem_mjpeg_luma_to_320x180 512 2048
 mem_mjpeg_rgb_720p 3584 6144
 mem_mjpeg_rgb_to_320x180 640 2560
+mem_shared_luma_and_rgb_to_320x180 768 2560
+# Three identical consumers decode once: well below three single decodes.
+mem_shared_3x_luma_to_320x180 640 2560
+mem_served_luma_to_320x180 512 2560

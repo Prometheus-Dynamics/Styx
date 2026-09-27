@@ -74,6 +74,38 @@ pub enum ControlMessage {
         ControlId,
         std::sync::mpsc::Sender<Result<ControlValue, CaptureError>>,
     ),
+    /// Stop streaming but keep the camera configured, with its buffers; acknowledged once no
+    /// more frames will be delivered.
+    Pause(std::sync::mpsc::Sender<()>),
+    /// Stream again after [`ControlMessage::Pause`].
+    Resume,
+}
+
+/// Apply control updates set through the control plane: writable controls go into
+/// `control_state` (sent with every request), frame duration limits into `frame_duration`.
+pub(super) fn apply_control_updates(
+    updates: impl IntoIterator<Item = (ControlId, Option<ControlValue>)>,
+    writable: &std::collections::HashSet<ControlId>,
+    control_state: &mut std::collections::HashMap<ControlId, ControlValue>,
+    frame_duration: &mut Option<i64>,
+) {
+    for (id, val) in updates {
+        if !writable.contains(&id) {
+            continue;
+        }
+        let is_duration = id == crate::capture_api::LIBCAMERA_FRAME_DURATION_LIMITS;
+        match val {
+            Some(ControlValue::Int(v)) if is_duration => *frame_duration = Some(v as i64),
+            Some(_) if is_duration => {}
+            Some(val) => {
+                control_state.insert(id, val);
+            }
+            None if is_duration => *frame_duration = None,
+            None => {
+                control_state.remove(&id);
+            }
+        }
+    }
 }
 
 /// Timing from a completed request's metadata.

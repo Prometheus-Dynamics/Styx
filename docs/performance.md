@@ -306,8 +306,9 @@ CI uses the aggregate baseline checker:
 ./scripts/check-perf-smoke.sh
 ```
 
-That script runs the decode/transform smoke path, file replay, and mozjpeg
-encode, then compares p95 timings against
+That script runs the decode/transform smoke path, the C270 luma decode, shared captures and the
+frame server (`shared_perf`: three consumers sharing one decode, and a publish-and-receive
+round trip), file replay, and mozjpeg encode, then compares p95 timings against
 `testing/perf/baseline.txt`. These checks deliberately avoid the graph feature
 so Daedalus runtime work cannot block the non-graph media performance surface.
 
@@ -368,6 +369,9 @@ scenario runs in a fresh process and reports:
 | `mem_virtual_720p_1cam` / `_4cam` | capture buffers for one and four 720p cameras |
 | `mem_mjpeg_luma_720p` / `_to_320x180` | C270 MJPEG replayed through the planner to luma, full size and scaled |
 | `mem_mjpeg_rgb_720p` / `_to_320x180` | the same to RGB |
+| `mem_shared_luma_and_rgb_to_320x180` | one shared capture for a luma and an RGB consumer |
+| `mem_shared_3x_luma_to_320x180` | three identical consumers; its limit fails if they stop sharing the decode |
+| `mem_served_luma_to_320x180` | planned frames through a `FrameServer` to a client (memfd copies, released) |
 
 Raise a limit in the baseline only together with the change that needs it.
 

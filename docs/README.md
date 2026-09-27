@@ -7,6 +7,7 @@ This directory holds repository-level documentation for the Styx workspace.
 - [development.md](development.md): repository layout, validation commands, and contribution expectations
 - [api-ergonomics.md](api-ergonomics.md): import surfaces, common task recipes, and typed API boundaries
 - [frame-planning.md](frame-planning.md): describing the frames a consumer needs and letting Styx plan capture, decode, output size, pyramids and ROI
+- [frame-server.md](frame-server.md): sharing camera frames with other processes without copying
 - [encoding.md](encoding.md): FFmpeg encoders, low-latency defaults, and handing camera buffers to encoders without copies
 - [hw-frame-preparation.md](hw-frame-preparation.md): hardware frame-preparation investigation and on-device results
 - [performance.md](performance.md): benchmark surfaces and performance-validation notes

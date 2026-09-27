@@ -47,9 +47,18 @@ impl FrameLease {
 
         let companions = frame.take_companions();
         for (kind, companion) in companions {
-            let CompanionKind::Pyramid { level } = kind;
+            let region = match kind {
+                CompanionKind::Pyramid { level } => rect.scaled_down(level),
+                CompanionKind::Scaled => {
+                    let (from, to) = (format.resolution, companion.meta.format.resolution);
+                    rect.scaled(
+                        (from.width.get(), from.height.get()),
+                        (to.width.get(), to.height.get()),
+                    )
+                }
+            };
             // A companion too small to hold any of the region is dropped.
-            if let Ok(cropped) = companion.crop_view(rect.scaled_down(level)) {
+            if let Ok(cropped) = companion.crop_view(region) {
                 frame = frame.with_companion(kind, cropped)?;
             }
         }

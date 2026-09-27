@@ -64,13 +64,17 @@ let config = StyxConfig::new().stop_when_idle(Duration::from_secs(5));
 - **Controls:** `set_control` while stopped is remembered and applied on restart; `get_control`
   returns the remembered value.
 - **Reporting:** `CaptureRetryStats::{idle_stops, idle_resumes}`.
+- **Pausing instead:** `StyxConfig::pause_when_idle` (`IdleStop::Pause`) stops a libcamera
+  camera streaming but keeps it configured, with its buffers, so it starts again in a tenth of
+  the time. Other backends release as with `stop_when_idle`.
 
 On a CM5:
 
 | Camera | Released while idle | First frame after restart |
 |---|---|---|
 | C270, V4L2 | all buffers (2.3 MB PSS) | ~0.6 s |
-| OV9782, libcamera | 9 MB PSS and 2.5 of 4.4 MB CMA (libcamera keeps the rest) | ~1.4 s |
+| OV9782, libcamera | 9 MB PSS and 2.5 of 4.4 MB CMA (libcamera keeps the rest) | ~1.35 s |
+| OV9782, libcamera, paused | nothing (8.2 MB PSS kept) | ~0.1 s |
 
 ## Measured on a Raspberry Pi CM5
 

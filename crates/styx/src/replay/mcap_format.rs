@@ -142,12 +142,17 @@ impl McapRecorder {
         } else {
             IMAGE_TOPIC
         };
-        let levels: Vec<u8> = frame
+        // Pyramid levels have their own topics; other companions are not recorded.
+        let pyramid: Vec<(u8, &FrameLease)> = frame
             .companions()
-            .map(|(CompanionKind::Pyramid { level }, _)| level)
+            .filter_map(|(kind, companion)| match kind {
+                CompanionKind::Pyramid { level } => Some((level, companion)),
+                CompanionKind::Scaled => None,
+            })
             .collect();
+        let levels: Vec<u8> = pyramid.iter().map(|(level, _)| *level).collect();
         self.write_part(frame, topic, &levels)?;
-        for (CompanionKind::Pyramid { level }, companion) in frame.companions() {
+        for (level, companion) in pyramid {
             self.write_part(companion, &pyramid_topic(level), &[])?;
         }
         self.frame = self.frame.wrapping_add(1);

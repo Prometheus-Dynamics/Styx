@@ -50,6 +50,18 @@ impl FrameRect {
         let bottom = (self.y + self.height).div_ceil(1 << shift);
         Self::new(x, y, right - x, bottom - y)
     }
+
+    /// This region of a `from`-sized frame in a `to`-sized view of the same frame, rounded
+    /// outward so it covers every pixel of the original.
+    pub fn scaled(self, from: (u32, u32), to: (u32, u32)) -> Self {
+        let (fw, fh) = (u64::from(from.0.max(1)), u64::from(from.1.max(1)));
+        let (tw, th) = (u64::from(to.0), u64::from(to.1));
+        let x = (u64::from(self.x) * tw / fw) as u32;
+        let y = (u64::from(self.y) * th / fh) as u32;
+        let right = (u64::from(self.x + self.width) * tw).div_ceil(fw) as u32;
+        let bottom = (u64::from(self.y + self.height) * th).div_ceil(fh) as u32;
+        Self::new(x, y, right - x, bottom - y)
+    }
 }
 
 /// Pixel data the consumer wants.

@@ -26,6 +26,29 @@ pub(crate) enum Route {
     },
 }
 
+impl Route {
+    /// Routes that prepare frames the same way compare equal.
+    pub(crate) fn same_as(&self, other: &Route) -> bool {
+        match (self, other) {
+            (Route::Direct, Route::Direct) | (Route::LumaView, Route::LumaView) => true,
+            (
+                Route::Decode {
+                    decoder: a,
+                    hardware: ha,
+                },
+                Route::Decode {
+                    decoder: b,
+                    hardware: hb,
+                },
+            ) => {
+                let (a, b) = (a.descriptor(), b.descriptor());
+                ha == hb && a.impl_name == b.impl_name && a.output == b.output
+            }
+            _ => false,
+        }
+    }
+}
+
 pub(crate) struct Candidate<'a> {
     pub backend: &'a ProbedBackend,
     pub mode: Mode,

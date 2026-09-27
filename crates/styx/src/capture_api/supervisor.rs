@@ -16,7 +16,7 @@ use styx_capture::prelude::*;
 use super::control_plane::ControlPlane;
 use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle};
 use super::request::{CaptureError, CaptureRequest, TdnOutputMode};
-use super::tunables::{ReconnectPolicy, StyxConfig};
+use super::tunables::{IdleStop, ReconnectPolicy, StyxConfig};
 use crate::metrics::StageMetrics;
 use crate::{BackendKind, DeviceIdentity, ProbedDevice};
 
@@ -41,7 +41,7 @@ pub struct SupervisedCapture {
     last_pull_ms: AtomicU64,
     /// Receives in progress.
     waiting: AtomicUsize,
-    /// Streaming stopped because nobody pulled; `inner` is `None` meanwhile.
+    /// Streaming stopped because nobody pulled; `inner` is `None` meanwhile, or paused.
     idle: AtomicBool,
 }
 
@@ -98,6 +98,19 @@ impl SupervisedCapture {
         if !self.is_idle() {
             return;
         }
+        // Paused: the camera is still configured.
+        if let Some(paused) = inner.as_ref() {
+            if paused.resume_streaming() {
+                tracing::debug!(camera = %self.recipe.identity.display, "capture resumed on demand");
+                self.retry_metrics.record_idle_resume();
+                self.idle.store(false, Ordering::SeqCst);
+                return;
+            }
+            // The paused capture is gone: start a new one.
+            if let Some(previous) = inner.take() {
+                previous.stop();
+            }
+        }
         let controls = self.controls.lock().clone();
         match restart(&self.recipe, controls, backend_queue(&self.tx)) {
             Ok(handle) => {
@@ -116,7 +129,7 @@ impl SupervisedCapture {
     /// the supervisor thread; the checks and the stop happen under the `inner` lock that
     /// [`SupervisedCapture::resume`] takes, so a pull cannot slip in between or restart the
     /// camera before it is released.
-    fn stop_if_idle(&self, after: Duration) -> bool {
+    fn stop_if_idle(&self, after: Duration, how: IdleStop) -> bool {
         let mut inner = self.inner.lock();
         let idle_for = self
             .now_ms()
@@ -128,8 +141,16 @@ impl SupervisedCapture {
             return false;
         }
         self.idle.store(true, Ordering::SeqCst);
-        // Frames nobody will take: release them (and their device buffers) before stopping.
+        let paused = how == IdleStop::Pause && inner.as_ref().is_some_and(|c| c.pause_streaming());
+        // Frames nobody will take: release them (and their device buffers). After a pause, so
+        // the first frame after resuming is a new one.
         while let RecvOutcome::Data(_) = self.rx.recv() {}
+        if paused {
+            drop(inner);
+            self.retry_metrics.record_idle_stop();
+            tracing::debug!(camera = %self.recipe.identity.display, idle_ms = after.as_millis() as u64, "capture paused while idle");
+            return true;
+        }
         if let Some(previous) = inner.take() {
             let gaps = previous.sequence_gaps.load(Ordering::Relaxed);
             self.past_sequence_gaps.fetch_add(gaps, Ordering::Relaxed);
@@ -150,6 +171,40 @@ impl SupervisedCapture {
             .as_ref()
             .map(|inner| inner.control.clone())
             .ok_or_else(|| CaptureError::Disconnected("camera is reconnecting".into()))
+    }
+}
+
+impl CaptureHandle {
+    /// Stop streaming but keep the camera configured, with its buffers, for a fast
+    /// [`CaptureHandle::resume_streaming`]. `false` when the backend cannot (only libcamera can).
+    pub(crate) fn pause_streaming(&self) -> bool {
+        match &self.control {
+            #[cfg(feature = "libcamera")]
+            ControlPlane::Libcamera {
+                tx,
+                response_timeout,
+                ..
+            } => {
+                let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+                tx.send(super::libcamera_backend::ControlMessage::Pause(ack_tx))
+                    .is_ok()
+                    && ack_rx
+                        .recv_timeout((*response_timeout).max(std::time::Duration::from_secs(2)))
+                        .is_ok()
+            }
+            _ => false,
+        }
+    }
+
+    /// Stream again after [`CaptureHandle::pause_streaming`].
+    pub(crate) fn resume_streaming(&self) -> bool {
+        match &self.control {
+            #[cfg(feature = "libcamera")]
+            ControlPlane::Libcamera { tx, .. } => tx
+                .send(super::libcamera_backend::ControlMessage::Resume)
+                .is_ok(),
+            _ => false,
+        }
     }
 }
 
@@ -285,7 +340,9 @@ fn run(
     // Runs until stopped (or the handle, and with it the stop sender, is dropped).
     while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(POLL) {
         // Stopped for lack of consumers: nothing to watch until a pull starts it again.
-        if shared.is_idle() || idle_after.is_some_and(|after| shared.stop_if_idle(after)) {
+        if shared.is_idle()
+            || idle_after.is_some_and(|after| shared.stop_if_idle(after, tunables.idle_stop))
+        {
             last_sent = tx.stats().sent;
             last_progress = Instant::now();
             continue;
