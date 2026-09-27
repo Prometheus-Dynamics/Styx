@@ -168,18 +168,21 @@ fn parses_dma_bufinfo_exporter_totals() {
     let stats = parse_dma_bufinfo(
         "\
 Dma-buf Objects:
-size flags mode count exp_name ino
-00001000 00000000 00000000 00000002 system 42
+size    	flags   	mode    	count   	exp_name	ino     	name
+01536000	00000002	00080007	00000003	system	00134187	<none>
+00004096	00000002	00080007	00000001	system	00134167	<none>
 8192 00000000 00000000 00000001 pisp 43
 0x2000 00000000 00000000 00000001 pisp 44
 ",
     );
 
-    assert_eq!(stats.total_buffers, 3);
-    assert_eq!(stats.total_bytes, 4096 + 8192 + 8192);
-    assert_eq!(stats.exporters[0].exporter, "pisp");
+    // Sizes are decimal even with leading zeros (the kernel's `%08zu`).
+    assert_eq!(stats.total_buffers, 4);
+    assert_eq!(stats.total_bytes, 1_536_000 + 4096 + 8192 + 8192);
+    assert_eq!(stats.exporters[0].exporter, "system");
     assert_eq!(stats.exporters[0].buffers, 2);
-    assert_eq!(stats.exporters[0].bytes, 16_384);
+    assert_eq!(stats.exporters[1].exporter, "pisp");
+    assert_eq!(stats.exporters[1].bytes, 16_384);
 }
 
 #[test]

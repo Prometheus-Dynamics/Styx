@@ -105,6 +105,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- The runtime memory report read kernel dma-buf sizes (`/sys/kernel/debug/dma_buf/bufinfo`,
+  zero-padded decimal) as hex, overstating them about 13x (270 MiB reported for 20.6 MiB).
 - The libcamera manager is now stopped at process exit when no camera is in use, so processes
   no longer leave orphaned `raspberrypi_ipa_proxy` helpers behind.
 - Worked around a libcamera-rs 0.7.0 plane fd leak in `OwnedFrameBuffer::new` in a way that stays

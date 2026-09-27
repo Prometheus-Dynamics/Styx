@@ -30,7 +30,10 @@ let config = StyxConfig::new()
 - **`latest_frame_only()`:** a queue depth of 1 with `DropOldest`. The planner uses this for
   `Priority::Latency`.
 
-Each extra buffer costs one frame of memory (1.5 MB for 1280x800 NV12).
+Buffers are the main memory cost. For a 1280x720 NV12 libcamera stream on a CM5, the default 7
+buffers use 9.2 MB of CMA against 5.3 MB for 4. libcamera's own internal buffers grow with the
+request count as well, from 15.3 to 19.3 MB. `latest_frame_only()` uses 4 buffers, the same
+as the old default. Set `capture_extra_buffers` lower on memory-constrained systems.
 
 ## Before and after
 

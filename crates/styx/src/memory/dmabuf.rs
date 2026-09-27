@@ -177,21 +177,14 @@ pub(super) fn parse_dma_bufinfo_size(value: &str) -> Option<u64> {
     if value.eq_ignore_ascii_case("size") || value.eq_ignore_ascii_case("total") {
         return None;
     }
-    value
+    // The kernel prints sizes as zero-padded decimal (`%08zu`): "01536000" is 1.5 MB.
+    match value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
-        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-        .or_else(|| {
-            let looks_hex = (value.len() > 1 && value.starts_with('0'))
-                || value
-                    .chars()
-                    .any(|ch| ch.is_ascii_hexdigit() && ch.is_ascii_alphabetic());
-            if looks_hex {
-                u64::from_str_radix(value, 16).ok()
-            } else {
-                value.parse::<u64>().ok()
-            }
-        })
+    {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => value.parse::<u64>().ok(),
+    }
 }
 
 #[derive(Default)]
