@@ -13,7 +13,7 @@ let config = StyxConfig::new().latest_frame_only();
 let config = StyxConfig::new()
     .capture_queue_depth(2)
     .capture_queue_overflow(QueueOverflow::DropOldest) // the default
-    .capture_extra_buffers(3);                         // the default
+    .capture_extra_buffers(2);                         // the default
 ```
 
 - **`CaptureConfig::queue_overflow`**
@@ -23,18 +23,18 @@ let config = StyxConfig::new()
   - `Backpressure`: the worker waits up to `queue_send_timeout_ms` for room, then drops the
     arriving frame.
 - **`CaptureConfig::extra_buffers`:** device buffers (libcamera, V4L2) allocated beyond the
-  queue depth. The headroom covers one frame held by the consumer and two in flight with the
-  driver. Without it, a full queue leaves libcamera with no requests. It then fills the next
+  queue depth. The headroom covers one frame held by the consumer and one in flight with the
+  driver. On a CM5, 2 gives the same frame age as 3 with a consumer taking 100 ms per frame;
+  with 1, libcamera falls back to stale frames (474 ms). Without it, a full queue leaves libcamera with no requests. It then fills the next
   request from its backlog of old raw frames, which is what made frames hundreds of milliseconds
   old.
 - **`latest_frame_only()`:** a queue depth of 1 with `DropOldest`. The planner uses this for
   `Priority::Latency`.
 
-The default queue depth is 2, so capture uses 5 device buffers. Buffers are the main memory
-cost. For a 1280x720 NV12 libcamera stream on a CM5, 7 buffers (depth 4) use 9.2 MB of CMA
-against 5.3 MB for 4. libcamera's own internal buffers grow with the
-request count as well, from 15.3 to 19.3 MB. `latest_frame_only()` uses 4 buffers, the same
-as the old default. Set `capture_extra_buffers` lower on memory-constrained systems.
+The defaults (queue depth 2, 2 extra buffers) use 4 device buffers, and `latest_frame_only()`
+uses 3. Buffers are the main memory cost of a capture. Each 1280x720 NV12 libcamera buffer is
+1.4 MB, and libcamera's own internal buffers grow with the request count too (15.3 MB at 4
+requests, 19.3 MB at 7).
 
 ## Before and after
 

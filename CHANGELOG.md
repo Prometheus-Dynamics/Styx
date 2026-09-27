@@ -113,11 +113,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Capture queues now drop their oldest frame when full (`QueueOverflow::DropOldest`) instead of
   blocking the worker and then dropping the new frame; `Backpressure` restores the old
   behaviour.
-- libcamera and V4L2 allocate `queue_depth + extra_buffers` (default 3) device buffers. libcamera
+- libcamera and V4L2 allocate `queue_depth + extra_buffers` (default 2) device buffers. libcamera
   used exactly `queue_depth`, so a full queue left it without requests and it delivered frames
   hundreds of milliseconds old. On a CM5 with a consumer taking 100 ms per frame, frame age
-  drops from 674 ms to 141 ms by default and to 41 ms with `latest_frame_only()`.
+  drops from 674 ms to 74 ms with the defaults and to 41 ms with `latest_frame_only()`.
 - The planner's `Priority::Latency` uses a one-frame queue (newest frame only).
+- FFmpeg is linked without ffmpeg-next's default `device`, `filter` and `software-resampling`
+  features, so `codec-ffmpeg` builds no longer load libavdevice, libavfilter or libswresample.
 - The default capture queue depth is 2 (was 4). With drop-oldest, deeper queues only add
   latency and device buffers.
 - Processing stages keep the input frame's `FrameMeta::clock` when they keep its timestamp

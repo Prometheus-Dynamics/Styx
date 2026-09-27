@@ -33,7 +33,9 @@ smallvec = "1.15.1"
 thiserror = "2.0.18"
 tokio = "1.52.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-ffmpeg-next = { version = "8.1.0", features = ["codec", "format", "software-scaling"] }
+# Only what Styx uses: without the default device/filter/resampling features the binary does
+# not link avdevice, avfilter or swresample. (`format` is required for ffmpeg-next to build.)
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 v4l = "0.14"
 libcamera = { version = "0.7", default-features = false, features = ["libcamera_semver_versioning"] }
 tokio-util = { version = "0.7.18", features = ["io"] }

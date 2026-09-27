@@ -11,9 +11,10 @@ pub const DEFAULT_POOL_MIN: usize = 4;
 pub const DEFAULT_POOL_BYTES: usize = 1 << 20;
 /// Default extra spare buffers beyond the minimum.
 pub const DEFAULT_POOL_SPARE: usize = 8;
-/// Default capture buffers beyond the queue depth: one held by the consumer and two in flight
-/// with the driver, so a full queue never starves the camera.
-pub const DEFAULT_CAPTURE_EXTRA_BUFFERS: usize = 3;
+/// Default capture buffers beyond the queue depth: one held by the consumer and one in flight
+/// with the driver, so a full queue never starves the camera. (On a CM5, 2 gives the same
+/// frame age as 3 with a slow consumer; 1 lets libcamera fall back to stale frames.)
+pub const DEFAULT_CAPTURE_EXTRA_BUFFERS: usize = 2;
 /// Default frame enqueue timeout for generic capture workers (milliseconds).
 pub const DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS: u64 = 10;
 /// Default idle stop poll for virtual/generic capture workers (milliseconds).
