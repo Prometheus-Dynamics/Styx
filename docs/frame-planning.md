@@ -46,7 +46,8 @@ For every device, backend and mode it builds the cheapest route to the requested
 
 Candidates are filtered by `min/max_resolution`, `min_fps` and the overrides, then ranked:
 
-1. resolution: the smallest mode at or above `min_resolution` when it is set, otherwise the largest;
+1. resolution: the smallest mode at or above `min_resolution` when it is set, else the smallest
+   mode covering `output_resolution` when that is set, otherwise the largest;
 2. estimated cost for the requested `Priority`;
 3. frame rate;
 4. V4L2 over libcamera's UVC pipeline for the same USB camera.
@@ -74,10 +75,32 @@ queue depth (latency 1, i.e. newest frame only; throughput 4; power 3). `PlanOve
   - `Software` always uses box filters.
 - `strict()` is reserved for turning fallbacks into errors.
 
+## Output size
+
+`FrameRequirements::output_resolution(w, h)` is the size the consumer works at, for example
+320x180 for a detector that would downsize anyway. The planner then prefers the smallest mode
+that covers it, and MJPEG decoded with turbojpeg (luma or RGB) is decoded straight to ½, ¼ or ⅛
+size in the DCT domain: the smallest of those that still covers the request. Frames are never
+upscaled. `FramePlan::output_resolution()` gives the size frames arrive at, and the plan says
+when its route cannot scale.
+
+On a Raspberry Pi CM5, Logitech C270 MJPEG at 1280x720 delivered at 320x180:
+
+| Output | Full size | 320x180 |
+|---|---|---|
+| Luma | 0.87 ms, 3.95 MB | 0.64 ms, 2.42 MB |
+| RGB | 6.03 ms, 12.75 MB | 1.97 ms, 2.34 MB |
+
+Decode time per frame (p50) and the process's memory while capturing (PSS). Scaled decodes of
+frames with restart markers are split across cores like full-size ones. The full-size RGB plan
+decodes with FFmpeg, whose libraries add to its memory; asking for a smaller size selects a
+decoder that can scale.
+
 ## Region of interest
 
 `FrameRequirements::roi` sets an initial region; `PlannedFrames::roi()` returns a handle to
-change it per frame. Regions are full-frame pixel coordinates.
+change it per frame. Regions are full-frame pixel coordinates of the capture, also when frames
+are decoded at a smaller output size.
 
 - **ISP and raw paths:** frames become zero-copy crop views. The region's left edge is moved down
   to the stride alignment so rows stay aligned.

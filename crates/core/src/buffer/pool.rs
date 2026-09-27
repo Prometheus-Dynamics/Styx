@@ -152,6 +152,30 @@ impl BufferPool {
         }
     }
 
+    /// A buffer of exactly `len` bytes: a free one reused (grown if needed), else a new
+    /// allocation of `len` bytes rather than the pool's chunk size, so a pool serving frames
+    /// smaller than its chunk (e.g. scaled decodes) does not allocate and touch the whole chunk.
+    pub fn lease_sized(&self, len: usize) -> BufferLease {
+        let reused = self.inner.free.lock().pop();
+        let buf = match reused {
+            Some(mut buf) => {
+                self.metrics.hit();
+                buf.resize(len, 0);
+                buf
+            }
+            None => {
+                self.metrics.miss();
+                self.metrics.alloc();
+                vec![0; len]
+            }
+        };
+        self.metrics.lease_acquired();
+        BufferLease {
+            pool: self.inner.clone(),
+            buf: Some(buf),
+        }
+    }
+
     pub fn metrics(&self) -> BufferPoolMetrics {
         BufferPoolMetrics(self.metrics.clone())
     }

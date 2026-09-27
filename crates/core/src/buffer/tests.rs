@@ -784,3 +784,15 @@ fn default_color_follows_fourcc_policy() {
         ColorSpace::Unknown
     );
 }
+
+#[test]
+fn sized_leases_allocate_what_is_asked_not_the_chunk() {
+    let pool = BufferPool::lazy(1 << 20, 2);
+    let small = pool.lease_sized(4096);
+    assert_eq!(small.as_slice().len(), 4096);
+    drop(small);
+    // A returned buffer is reused and grown to the new size.
+    let bigger = pool.lease_sized(8192);
+    assert_eq!(bigger.as_slice().len(), 8192);
+    assert_eq!(pool.stats().hits, 1);
+}

@@ -74,6 +74,17 @@ pub(crate) const BOX_LEVEL_MS_PER_MP: f32 = 0.16;
 /// Copying a frame to realign its rows.
 pub(crate) const REALIGN_MS_PER_MP: f32 = 0.3;
 
+/// Share of a full JPEG decode left when decoding at 1/`denom` size: scaling skips IDCT work
+/// but not entropy decoding (CM5: ½ saves ~15%, ⅛ ~40%).
+pub(crate) fn scaled_decode_factor(denom: u8) -> f32 {
+    match denom {
+        0 | 1 => 1.0,
+        2 => 0.85,
+        4 => 0.7,
+        _ => 0.6,
+    }
+}
+
 /// Score a plan for `priority`; lower is better.
 pub(crate) fn score(total: StepCost, priority: Priority) -> f32 {
     match priority {

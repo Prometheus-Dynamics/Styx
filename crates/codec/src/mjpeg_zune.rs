@@ -83,8 +83,7 @@ impl Codec for ZuneMjpegDecoder {
         );
         let layout = plane_layout_from_dims(resolution.width, resolution.height, 3);
 
-        let mut buf = self.pool.lease();
-        buf.resize(layout.len);
+        let mut buf = self.pool.lease_sized(layout.len);
         let copy_len = pixels.len().min(layout.len);
         buf.as_mut_slice()[..copy_len].copy_from_slice(&pixels[..copy_len]);
 

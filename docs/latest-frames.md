@@ -38,6 +38,14 @@ frame age. `capture_extra_buffers(3)` restores the fourth buffer. Buffers are th
 1.4 MB, and libcamera's own internal buffers grow with the request count too (15.3 MB at 4
 requests, 19.3 MB at 7).
 
+## Dropped frames are never decoded
+
+Decoding (and every later pipeline stage) runs when the consumer takes a frame, after the
+capture queue. A frame the queue drops for a slow consumer is released as the compressed or
+raw capture buffer it arrived in, without being decoded. With several cameras on a small CPU,
+the decoder does only the work that is used. `crates/styx/tests/lazy_decode.rs` checks this: a
+200 fps camera and a consumer taking 25 ms per frame decode exactly the delivered frames.
+
 ## Before and after
 
 Measured on a Raspberry Pi CM5 at 1280x720. "Age" is sensor timestamp to `recv`, p50 / p95. The

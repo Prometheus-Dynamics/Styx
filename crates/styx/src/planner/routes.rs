@@ -34,6 +34,8 @@ pub(crate) struct Candidate<'a> {
     pub steps: Vec<PlanStep>,
     pub total: StepCost,
     pub isp_pyramid_level: Option<u8>,
+    /// The decoder scales to 1/`decode_scale` of the capture size (1 = full size).
+    pub decode_scale: u8,
     pub notes: Vec<String>,
 }
 
@@ -151,7 +153,10 @@ fn candidate<'a>(
         });
         Route::LumaView
     } else {
-        let (decoder, target) = pick_decoder(code, req, registry)?;
+        let scales_down = req
+            .output_resolution
+            .is_some_and(|(w, h)| w < width || h < height);
+        let (decoder, target) = pick_decoder(code, req, registry, scales_down)?;
         let descriptor = decoder.descriptor();
         let hardware = descriptor.is_hardware_accelerated();
         let threads = cost::decode_threads(req.priority, req.overrides.decode_threads);
@@ -181,6 +186,29 @@ fn candidate<'a>(
     {
         return Err("hardware required but this path runs on the CPU".into());
     }
+
+    let decode_scale = decode_scale(&route, req, (width, height));
+    if decode_scale > 1
+        && let Some(step) = steps.last_mut()
+    {
+        let (w, h) = (
+            width.div_ceil(decode_scale.into()),
+            height.div_ceil(decode_scale.into()),
+        );
+        step.detail = format!("{}, at 1/{decode_scale} size ({w}x{h})", step.detail);
+        let factor = cost::scaled_decode_factor(decode_scale);
+        step.cost = StepCost::offloaded(step.cost.latency_ms * factor, step.cost.cpu_ms * factor);
+    } else if let Some((tw, th)) = req.output_resolution
+        && (tw < width || th < height)
+    {
+        notes.push(format!(
+            "frames are {width}x{height}: this route cannot scale to {tw}x{th} while decoding"
+        ));
+    }
+    let (width, height) = (
+        width.div_ceil(decode_scale.into()),
+        height.div_ceil(decode_scale.into()),
+    );
 
     let isp_pyramid_level = add_pyramid_steps(backend, &route, req, width, height, &mut steps)?;
     if req.roi.is_some() {
@@ -223,8 +251,29 @@ fn candidate<'a>(
         steps,
         total,
         isp_pyramid_level,
+        decode_scale,
         notes,
     })
+}
+
+/// 1/N size the decoder produces for `req.output_resolution`: turbojpeg scales MJPEG in the DCT
+/// domain by 2, 4 or 8. 1 when nothing is to be gained or the decoder cannot scale.
+fn decode_scale(route: &Route, req: &FrameRequirements, source: (u32, u32)) -> u8 {
+    let (Some(target), Route::Decode { decoder, .. }) = (req.output_resolution, route) else {
+        return 1;
+    };
+    if !matches!(
+        decoder.descriptor().impl_name,
+        "turbojpeg" | "turbojpeg-luma"
+    ) {
+        return 1;
+    }
+    [8u8, 4, 2]
+        .into_iter()
+        .find(|&d| {
+            source.0.div_ceil(d.into()) >= target.0 && source.1.div_ceil(d.into()) >= target.1
+        })
+        .unwrap_or(1)
 }
 
 fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanStep {
@@ -254,10 +303,13 @@ fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanS
     }
 }
 
+/// The decoder from `code` to the first output the registry can produce. With `scales_down`,
+/// decoders that can scale while decoding are preferred.
 fn pick_decoder(
     code: FourCc,
     req: &FrameRequirements,
     registry: &CodecRegistryHandle,
+    scales_down: bool,
 ) -> Result<(Arc<dyn Codec>, FourCc), String> {
     let targets: Vec<FourCc> = match &req.output {
         OutputFormat::Luma => vec![FourCc::GREY],
@@ -285,7 +337,13 @@ fn pick_decoder(
             HardwarePolicy::Required => hardware,
         }
     };
+    let scaling =
+        |d: &CodecDescriptor| accept(d) && matches!(d.impl_name, "turbojpeg" | "turbojpeg-luma");
     for target in &targets {
+        if scales_down && let Ok(decoder) = registry.lookup_for_output_where(code, *target, scaling)
+        {
+            return Ok((decoder, *target));
+        }
         if let Ok(decoder) = registry.lookup_for_output_where(code, *target, accept) {
             return Ok((decoder, *target));
         }

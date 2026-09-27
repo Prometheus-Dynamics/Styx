@@ -181,3 +181,52 @@ fn raspberry_pi_isp_supplies_the_first_pyramid_level() {
         .pyramid_source(PyramidSource::HardwareOnly);
     assert!(plan_frames_with(&dev, &hardware_only, &registry()).is_err());
 }
+
+#[test]
+fn output_resolution_picks_the_smallest_covering_mode_and_scales_the_decode() {
+    let dev = device(
+        BackendKind::Virtual,
+        BackendHandle::Virtual,
+        vec![
+            mode(FourCc::MJPG, 1920, 1080, 30),
+            mode(FourCc::MJPG, 1280, 720, 30),
+            mode(FourCc::MJPG, 160, 90, 30),
+        ],
+    );
+    let req = FrameRequirements::luma().output_resolution(320, 180);
+    let plan = plan_frames_with(&dev, &req, &registry());
+    #[cfg(feature = "codec-turbojpeg")]
+    {
+        let plan = plan.unwrap();
+        // 160x90 is too small; 1280x720 is the smallest mode covering 320x180, decoded at ¼.
+        assert_eq!(plan.mode.format.resolution.width.get(), 1280);
+        assert_eq!(plan.output_resolution(), (320, 180));
+        let text = plan.to_string();
+        assert!(text.contains("at 1/4 size (320x180)"), "{text}");
+
+        let full = plan_frames_with(&dev, &FrameRequirements::luma(), &registry()).unwrap();
+        assert!(plan.total.cpu_ms < full.total.cpu_ms * 0.5);
+
+        // RGB through turbojpeg scales the same way.
+        let rgb = FrameRequirements::formats([FourCc::RG24]).output_resolution(640, 360);
+        let rgb = plan_frames_with(&dev, &rgb, &registry()).unwrap();
+        assert_eq!(rgb.output_resolution(), (640, 360));
+        // Even when a decoder that cannot scale (e.g. FFmpeg's) would otherwise be first.
+        assert_eq!(rgb.decoder().unwrap().descriptor().impl_name, "turbojpeg");
+    }
+    #[cfg(not(feature = "codec-turbojpeg"))]
+    assert!(plan.is_err());
+}
+
+#[test]
+fn output_resolution_larger_than_every_mode_takes_the_largest() {
+    let req = FrameRequirements::luma().output_resolution(4000, 3000);
+    let plan = plan_frames_with(&usb_camera(), &req, &registry()).unwrap();
+    // Without an MJPEG decoder the largest usable mode is NV12 720p.
+    let largest = if cfg!(feature = "codec-turbojpeg") {
+        (1920, 1080)
+    } else {
+        (1280, 720)
+    };
+    assert_eq!(plan.output_resolution(), largest);
+}

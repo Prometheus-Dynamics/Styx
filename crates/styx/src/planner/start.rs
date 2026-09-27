@@ -7,7 +7,9 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use smallvec::smallvec;
 #[cfg(feature = "codec-turbojpeg")]
-use styx_codec::prelude::{LumaCrop, LumaDecodeOptions, TurbojpegLumaDecoder};
+use styx_codec::prelude::{
+    LumaCrop, LumaDecodeOptions, LumaDecodeScale, TurbojpegDecoder, TurbojpegLumaDecoder,
+};
 use styx_codec::{Codec, CodecDescriptor, CodecError, CodecKind};
 use styx_core::prelude::*;
 
@@ -108,6 +110,8 @@ struct FramePreparer {
     luma: bool,
     pyramid_levels: u8,
     alignment: Option<usize>,
+    /// Frames are decoded at 1/`decode_scale` size; ROI coordinates are divided by it.
+    decode_scale: u32,
     #[cfg(feature = "codec-turbojpeg")]
     decode_threads: usize,
     roi: RoiHandle,
@@ -128,7 +132,22 @@ impl FramePreparer {
         #[cfg(feature = "codec-turbojpeg")]
         let uses_turbojpeg = matches!(&plan.route, Route::Decode { decoder, .. }
             if decoder.descriptor().impl_name == "turbojpeg-luma");
-        Self {
+        #[allow(unused_mut)]
+        let mut route = plan.route.clone();
+        // The registry's RGB decoder decodes in full; a scaled plan gets its own.
+        #[cfg(feature = "codec-turbojpeg")]
+        if let Route::Decode { decoder, .. } = &plan.route
+            && decoder.descriptor().impl_name == "turbojpeg"
+            && plan.decode_scale > 1
+        {
+            route = Route::Decode {
+                decoder: Arc::new(
+                    TurbojpegDecoder::new(output).with_scale(scale_of(plan.decode_scale)),
+                ),
+                hardware: false,
+            };
+        }
+        let preparer = Self {
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input: plan.mode.format.code,
@@ -136,17 +155,33 @@ impl FramePreparer {
                 name: "frame-plan",
                 impl_name: "styx-planner",
             },
-            route: plan.route.clone(),
+            route,
             luma,
             pyramid_levels: plan.requirements.pyramid.map_or(0, |p| p.levels),
             alignment: plan.requirements.stride_alignment,
+            decode_scale: u32::from(plan.decode_scale.max(1)),
             #[cfg(feature = "codec-turbojpeg")]
             decode_threads: plan.decode_threads,
             roi,
             pyramid_pool: BufferPool::lazy(0, 8),
             #[cfg(feature = "codec-turbojpeg")]
-            jpeg: Mutex::new(uses_turbojpeg.then(|| (None, TurbojpegLumaDecoder::new()))),
+            jpeg: Mutex::new(None),
+        };
+        #[cfg(feature = "codec-turbojpeg")]
+        if uses_turbojpeg {
+            *preparer.jpeg.lock() = Some((None, preparer.luma_decoder(None)));
         }
+        preparer
+    }
+
+    /// `roi` (full capture-frame pixels) in the coordinates of the decoded, possibly scaled,
+    /// frame, clipped to it.
+    fn scaled_roi(&self, roi: FrameRect, decoded: (u32, u32)) -> Option<FrameRect> {
+        let s = self.decode_scale;
+        let (x, y) = (roi.x / s, roi.y / s);
+        let right = (roi.x + roi.width).div_ceil(s);
+        let bottom = (roi.y + roi.height).div_ceil(s);
+        FrameRect::new(x, y, right - x, bottom - y).clipped_to(decoded.0, decoded.1)
     }
 
     /// Region aligned outward so cropped rows keep the requested base alignment.
@@ -161,6 +196,23 @@ impl FramePreparer {
         }
     }
 
+    /// The luma decoder for the plan, cropping to `roi` (decoded-frame pixels).
+    #[cfg(feature = "codec-turbojpeg")]
+    fn luma_decoder(&self, roi: Option<FrameRect>) -> TurbojpegLumaDecoder {
+        TurbojpegLumaDecoder::with_options(LumaDecodeOptions {
+            stride_alignment: self.alignment.unwrap_or(64),
+            crop: roi.map(|r| LumaCrop {
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+            }),
+            threads: self.decode_threads,
+            scale: scale_of(self.decode_scale as u8),
+            ..Default::default()
+        })
+    }
+
     #[cfg(feature = "codec-turbojpeg")]
     fn decode_jpeg(
         &self,
@@ -172,18 +224,7 @@ impl FramePreparer {
             .as_mut()
             .ok_or_else(|| CodecError::Codec("no JPEG decoder configured".into()))?;
         if entry.0 != roi {
-            let options = LumaDecodeOptions {
-                stride_alignment: self.alignment.unwrap_or(64),
-                crop: roi.map(|r| LumaCrop {
-                    x: r.x,
-                    y: r.y,
-                    width: r.width,
-                    height: r.height,
-                }),
-                threads: self.decode_threads,
-                ..Default::default()
-            };
-            *entry = (roi, TurbojpegLumaDecoder::with_options(options));
+            *entry = (roi, self.luma_decoder(roi));
         }
         let decoder = &entry.1;
         let crop = match roi {
@@ -267,8 +308,12 @@ impl Codec for FramePreparer {
         #[cfg(feature = "codec-turbojpeg")]
         if self.jpeg.lock().is_some() {
             let full = input.meta().format.resolution;
+            let decoded = (
+                full.width.get().div_ceil(self.decode_scale),
+                full.height.get().div_ceil(self.decode_scale),
+            );
             let roi = roi
-                .and_then(|r| r.clipped_to(full.width.get(), full.height.get()))
+                .and_then(|r| self.scaled_roi(r, decoded))
                 .map(|r| self.aligned_roi(r));
             // The JPEG decoder crops (skipping rows below the region) and aligns itself.
             return self.decode_jpeg(input, roi);
@@ -283,7 +328,10 @@ impl Codec for FramePreparer {
         if !self.luma {
             return Ok(frame);
         }
-        let frame = match roi {
+        let decoded = frame.meta().format.resolution;
+        let frame = match roi
+            .and_then(|r| self.scaled_roi(r, (decoded.width.get(), decoded.height.get())))
+        {
             Some(rect) => frame
                 .crop_view(self.aligned_roi(rect))
                 .map_err(|e| CodecError::Codec(e.to_string()))?,
@@ -291,5 +339,15 @@ impl Codec for FramePreparer {
         };
         let frame = self.realign(frame)?;
         self.attach_pyramid(frame)
+    }
+}
+
+#[cfg(feature = "codec-turbojpeg")]
+fn scale_of(denom: u8) -> LumaDecodeScale {
+    match denom {
+        0 | 1 => LumaDecodeScale::Full,
+        2 => LumaDecodeScale::Half,
+        4 => LumaDecodeScale::Quarter,
+        _ => LumaDecodeScale::Eighth,
     }
 }

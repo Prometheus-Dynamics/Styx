@@ -6,6 +6,7 @@ use turbojpeg::{Compressor, OutputBuf, PixelFormat as TjPixelFormat, Subsamp as 
 
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
+use crate::mjpeg_turbojpeg_luma::LumaDecodeScale;
 #[cfg(target_os = "linux")]
 use crate::shared_packet_frame;
 use crate::turbojpeg_raw::TjDecompressor;
@@ -294,6 +295,7 @@ impl Codec for TurbojpegEncoder {
 pub struct TurbojpegDecoder {
     descriptor: CodecDescriptor,
     pool: BufferPool,
+    scale: LumaDecodeScale,
 }
 
 impl TurbojpegDecoder {
@@ -314,7 +316,42 @@ impl TurbojpegDecoder {
                 impl_name: "turbojpeg",
             },
             pool,
+            scale: LumaDecodeScale::Full,
         }
+    }
+
+    /// Decode at ½, ¼ or ⅛ size in the DCT domain: less CPU, and a 4-64x smaller output.
+    pub fn with_scale(mut self, scale: LumaDecodeScale) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    /// Read the header and size the output: checked against the stream, then scaled.
+    fn prepare(
+        &self,
+        tj: &TjDecompressor,
+        input: &FrameLease,
+        jpeg: &[u8],
+    ) -> Result<(MediaFormat, PlaneLayout), CodecError> {
+        let header = tj.read_header(jpeg)?;
+        crate::check_decoded_size(input.meta().format.resolution, header.width, header.height)?;
+        if self.scale != LumaDecodeScale::Full {
+            tj.set_scaling(self.scale.denom())?;
+        }
+        let resolution = Resolution::new(
+            self.scale.scale(header.width),
+            self.scale.scale(header.height),
+        )
+        .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
+        let format = MediaFormat::new(
+            self.descriptor.output,
+            resolution,
+            input.meta().format.color,
+        );
+        Ok((
+            format,
+            plane_layout_from_dims(resolution.width, resolution.height, 3),
+        ))
     }
 }
 
@@ -341,19 +378,9 @@ impl Codec for TurbojpegDecoder {
             .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
 
         let tj = TjDecompressor::new()?;
-        let header = tj.read_header(plane.data())?;
-        crate::check_decoded_size(input.meta().format.resolution, header.width, header.height)?;
-        let resolution = Resolution::new(header.width, header.height)
-            .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
-        let format = MediaFormat::new(
-            self.descriptor.output,
-            resolution,
-            input.meta().format.color,
-        );
-        let layout = plane_layout_from_dims(resolution.width, resolution.height, 3);
+        let (format, layout) = self.prepare(&tj, &input, plane.data())?;
 
-        let mut buf = self.pool.lease();
-        buf.resize(layout.len);
+        let mut buf = self.pool.lease_sized(layout.len);
         tj.decompress(
             plane.data(),
             buf.as_mut_slice(),
@@ -388,16 +415,7 @@ impl Codec for TurbojpegDecoder {
             .ok_or_else(|| CodecError::Codec("mjpeg frame missing plane".into()))?;
 
         let tj = TjDecompressor::new()?;
-        let header = tj.read_header(plane.data())?;
-        crate::check_decoded_size(input.meta().format.resolution, header.width, header.height)?;
-        let resolution = Resolution::new(header.width, header.height)
-            .ok_or_else(|| CodecError::Codec("invalid jpeg resolution".into()))?;
-        let format = MediaFormat::new(
-            self.descriptor.output,
-            resolution,
-            input.meta().format.color,
-        );
-        let layout = plane_layout_from_dims(resolution.width, resolution.height, 3);
+        let (format, layout) = self.prepare(&tj, input, plane.data())?;
         let mut lease = pool
             .lease()
             .map_err(|err| CodecError::Codec(err.to_string()))?;

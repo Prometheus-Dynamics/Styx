@@ -16,7 +16,8 @@
 //! ```
 //!
 //! Candidates are ranked by (1) meeting the requirements, (2) resolution: closest above
-//! `min_resolution` when set, otherwise largest, (3) estimated cost for the requested
+//! `min_resolution` when set, else the smallest covering `output_resolution` when set,
+//! otherwise largest, (3) estimated cost for the requested
 //! [`Priority`], then frame rate. Hardware decoders are only considered when their feature is
 //! enabled and they opened successfully at registry creation; [`PlanOverrides`] can force or
 //! forbid specific backends, decoders and hardware.
@@ -104,6 +105,7 @@ pub struct FramePlan {
     pub rejected: Vec<PlanRejection>,
     pub(crate) route: Route,
     pub(crate) isp_pyramid_level: Option<u8>,
+    pub(crate) decode_scale: u8,
     pub(crate) decode_threads: usize,
     pub(crate) queue_depth: usize,
 }
@@ -252,6 +254,7 @@ fn plan_devices(
         rejected,
         route: chosen.route,
         isp_pyramid_level: chosen.isp_pyramid_level,
+        decode_scale: chosen.decode_scale,
         decode_threads: cost::decode_threads(req.priority, req.overrides.decode_threads),
         queue_depth: cost::queue_depth(req.priority, req.overrides.queue_depth),
     })
@@ -269,12 +272,17 @@ struct RankKey {
 fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequirements) -> RankKey {
     let res = candidate.mode.format.resolution;
     let area = f64::from(res.width.get()) * f64::from(res.height.get());
+    let covers_output = req
+        .output_resolution
+        .map(|(w, h)| res.width.get() >= w && res.height.get() >= h);
     RankKey {
-        // With a minimum: the smallest mode that satisfies it. Without: the largest.
-        resolution: if req.min_resolution.is_some() {
-            area
-        } else {
-            -area
+        // With a minimum: the smallest mode that satisfies it. With an output size: the
+        // smallest mode covering it, else the largest. Otherwise: the largest.
+        resolution: match (req.min_resolution, covers_output) {
+            (Some(_), _) | (None, Some(true)) => area,
+            // Ranked after every covering mode (areas are far below 1e15).
+            (None, Some(false)) => 1e15 - area,
+            (None, None) => -area,
         },
         score: cost::score(candidate.total, req.priority),
         fps: -candidate.fps.unwrap_or(0.0),
@@ -312,6 +320,17 @@ impl FramePlan {
         self.steps
             .iter()
             .any(|step| step.execution == StepExecution::Hardware)
+    }
+
+    /// Size of the frames delivered (before any region of interest): the capture size, or
+    /// smaller when the decoder scales toward [`FrameRequirements::output_resolution`].
+    pub fn output_resolution(&self) -> (u32, u32) {
+        let res = self.mode.format.resolution;
+        let scale = u32::from(self.decode_scale.max(1));
+        (
+            res.width.get().div_ceil(scale),
+            res.height.get().div_ceil(scale),
+        )
     }
 
     /// Decode threads per frame (0 = automatic), from the priority or an override.

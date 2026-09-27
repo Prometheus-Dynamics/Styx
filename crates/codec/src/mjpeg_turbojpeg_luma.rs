@@ -14,10 +14,12 @@ use turbojpeg::raw;
 use crate::turbojpeg_raw::{JpegHeader, TjDecompressor};
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind, DEFAULT_CODEC_POOL_SPARE};
 
-/// DCT-domain downscale applied while decoding.
+/// DCT-domain downscale applied while decoding (by [`TurbojpegLumaDecoder`] and
+/// [`TurbojpegDecoder`](crate::mjpeg_turbojpeg::TurbojpegDecoder)).
 ///
-/// Scaling skips IDCT work but not entropy decoding, so ½ saves ~15% and ⅛ ~40% on a CM5; a
-/// full decode plus a 2×2 box filter is usually the better way to get a pyramid level.
+/// Scaling skips IDCT work but not entropy decoding, so ½ saves ~15% and ⅛ ~40% of the decode
+/// on a CM5, and the output buffer shrinks by 4x, 16x or 64x. A full decode plus a 2×2 box
+/// filter is usually the better way to get a pyramid level.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LumaDecodeScale {
     #[default]
@@ -28,13 +30,23 @@ pub enum LumaDecodeScale {
 }
 
 impl LumaDecodeScale {
-    fn denom(self) -> c_int {
+    /// The divisor of this scale: 1, 2, 4 or 8.
+    pub fn denom(self) -> c_int {
         match self {
             Self::Full => 1,
             Self::Half => 2,
             Self::Quarter => 4,
             Self::Eighth => 8,
         }
+    }
+
+    /// The smallest scale whose output still covers `target` (width, height) when decoding a
+    /// `source`-sized image; [`LumaDecodeScale::Full`] when the target is not smaller.
+    pub fn covering(source: (u32, u32), target: (u32, u32)) -> Self {
+        [Self::Eighth, Self::Quarter, Self::Half]
+            .into_iter()
+            .find(|scale| scale.scale(source.0) >= target.0 && scale.scale(source.1) >= target.1)
+            .unwrap_or(Self::Full)
     }
 
     /// Output size of a `dimension`-pixel edge at this scale (rounded up, as libjpeg-turbo does).
@@ -73,9 +85,9 @@ pub struct LumaDecodeOptions {
     pub pyramid_levels: u8,
     /// Decode one frame on up to this many threads by splitting it at restart markers
     /// (`0` = automatic, the default: up to 4 of the available cores; `1` = single-threaded).
-    /// Output is byte-identical either way. Only full-resolution,
-    /// uncropped decodes of baseline JPEGs with restart markers are split; others decode on one
-    /// thread. Many UVC cameras emit restart markers on every frame.
+    /// Output is byte-identical either way. Only uncropped decodes (full size or scaled) of
+    /// baseline JPEGs with restart markers are split; others decode on one thread. Many UVC
+    /// cameras emit restart markers on every frame.
     pub threads: usize,
 }
 
@@ -205,7 +217,7 @@ impl TurbojpegLumaDecoder {
         dst: &mut [u8],
     ) -> Result<Option<()>, CodecError> {
         let threads = self.thread_count();
-        if threads < 2 || plan.crop.is_some() || self.options.scale != LumaDecodeScale::Full {
+        if threads < 2 || plan.crop.is_some() {
             return Ok(None);
         }
         let Some(slices) = crate::jpeg_slices::split_jpeg(jpeg, threads) else {
@@ -213,14 +225,26 @@ impl TurbojpegLumaDecoder {
         };
         let stride = plan.stride;
         let fast_dct = self.options.fast_dct;
-        let total = dst.len();
-        let mut rest = &mut dst[..];
+        // Slices start on MCU rows (multiples of 8 or 16), so each scales to whole rows.
+        let scale = self.options.scale;
+        let total = plan.height as usize * stride;
+        let mut rest = &mut dst[..total];
         let mut work = Vec::with_capacity(slices.len());
         for slice in &slices {
-            debug_assert_eq!(slice.first_row * stride, total - rest.len());
-            let (rows, tail) = std::mem::take(&mut rest).split_at_mut(slice.rows * stride);
+            debug_assert_eq!(
+                scale.scale(slice.first_row as u32) as usize * stride,
+                total - rest.len()
+            );
+            let rows = scale.scale(slice.rows as u32) as usize * stride;
+            if rows > rest.len() {
+                return Ok(None);
+            }
+            let (rows, tail) = std::mem::take(&mut rest).split_at_mut(rows);
             rest = tail;
             work.push((slice, rows));
+        }
+        if !rest.is_empty() {
+            return Ok(None);
         }
         let results: Vec<Result<(), CodecError>> = std::thread::scope(|scope| {
             let handles: Vec<_> = work
@@ -230,6 +254,9 @@ impl TurbojpegLumaDecoder {
                         let handle = TjDecompressor::new()?;
                         handle.set(raw::TJPARAM_TJPARAM_FASTDCT, fast_dct as c_int)?;
                         handle.read_header(&slice.jpeg)?;
+                        if scale != LumaDecodeScale::Full {
+                            handle.set_scaling(scale.denom())?;
+                        }
                         handle.decompress(&slice.jpeg, rows, stride, raw::TJPF_TJPF_GRAY)
                     })
                 })
@@ -296,8 +323,7 @@ impl Codec for TurbojpegLumaDecoder {
         let len = plan.stride * plan.height as usize;
         let align = self.options.stride_alignment;
 
-        let mut buf = self.pool.lease();
-        buf.resize(len + align - 1);
+        let mut buf = self.pool.lease_sized(len + align - 1);
         let base = buf.as_slice().as_ptr() as usize;
         let offset = base.next_multiple_of(align) - base;
         self.decode_into(
@@ -637,5 +663,88 @@ mod tests {
             .lookup_for_output(FourCc::MJPG, FourCc::GREY)
             .expect("MJPG -> GREY decoder");
         assert_eq!(codec.descriptor().output, FourCc::GREY);
+    }
+
+    #[test]
+    fn covering_scale_is_the_smallest_that_keeps_the_target() {
+        let hd = (1280, 720);
+        assert_eq!(
+            LumaDecodeScale::covering(hd, (1280, 720)),
+            LumaDecodeScale::Full
+        );
+        assert_eq!(
+            LumaDecodeScale::covering(hd, (641, 300)),
+            LumaDecodeScale::Full
+        );
+        assert_eq!(
+            LumaDecodeScale::covering(hd, (640, 360)),
+            LumaDecodeScale::Half
+        );
+        assert_eq!(
+            LumaDecodeScale::covering(hd, (320, 180)),
+            LumaDecodeScale::Quarter
+        );
+        assert_eq!(
+            LumaDecodeScale::covering(hd, (100, 90)),
+            LumaDecodeScale::Eighth
+        );
+        assert_eq!(
+            LumaDecodeScale::covering(hd, (1, 1)),
+            LumaDecodeScale::Eighth
+        );
+    }
+
+    #[test]
+    fn rgb_decodes_scale_in_the_dct_domain() {
+        use crate::mjpeg_turbojpeg::TurbojpegDecoder;
+        let frame = || c270_frames().swap_remove(0);
+        let full = TurbojpegDecoder::new(FourCc::RG24)
+            .process(frame())
+            .unwrap();
+        let quarter = TurbojpegDecoder::new(FourCc::RG24)
+            .with_scale(LumaDecodeScale::Quarter)
+            .process(frame())
+            .unwrap();
+        assert_eq!(
+            quarter.meta().format.resolution,
+            Resolution::new(320, 180).unwrap()
+        );
+        assert_eq!(quarter.planes()[0].data().len(), 320 * 180 * 3);
+        // Same picture: the mean of every channel agrees within a few levels.
+        let mean = |f: &FrameLease| {
+            let data = f.planes()[0].data();
+            let mut sums = [0u64; 3];
+            for px in data.chunks_exact(3) {
+                for c in 0..3 {
+                    sums[c] += u64::from(px[c]);
+                }
+            }
+            sums.map(|s| s as f64 / (data.len() / 3) as f64)
+        };
+        for (a, b) in mean(&full).iter().zip(mean(&quarter)) {
+            assert!((a - b).abs() < 3.0, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn scaled_decodes_split_across_threads_match_one_thread() {
+        for scale in [
+            LumaDecodeScale::Half,
+            LumaDecodeScale::Quarter,
+            LumaDecodeScale::Eighth,
+        ] {
+            let decode = |threads| {
+                let decoder = TurbojpegLumaDecoder::with_options(LumaDecodeOptions {
+                    scale,
+                    threads,
+                    ..Default::default()
+                });
+                c270_frames()
+                    .into_iter()
+                    .map(|frame| decoder.process(frame).unwrap().planes()[0].data().to_vec())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(decode(4), decode(1), "{scale:?}");
+        }
     }
 }

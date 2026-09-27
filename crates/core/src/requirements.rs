@@ -139,6 +139,8 @@ pub struct FrameRequirements {
     pub roi: Option<FrameRect>,
     pub min_resolution: Option<(u32, u32)>,
     pub max_resolution: Option<(u32, u32)>,
+    /// The frame size the consumer works at; see [`FrameRequirements::output_resolution`].
+    pub output_resolution: Option<(u32, u32)>,
     pub min_fps: Option<u32>,
     pub priority: Priority,
     /// Fail instead of falling back when a requirement cannot be met exactly.
@@ -165,6 +167,7 @@ impl FrameRequirements {
             roi: None,
             min_resolution: None,
             max_resolution: None,
+            output_resolution: None,
             min_fps: None,
             priority: Priority::default(),
             strict: false,
@@ -205,6 +208,17 @@ impl FrameRequirements {
 
     pub fn max_resolution(mut self, width: u32, height: u32) -> Self {
         self.max_resolution = Some((width, height));
+        self
+    }
+
+    /// The frame size the consumer works at, e.g. 320x180 for a detector that downsizes
+    /// anyway. The planner prefers the smallest capture mode that covers it, and MJPEG decoded
+    /// with turbojpeg is decoded straight to ½, ¼ or ⅛ size (the smallest that still covers
+    /// it), which costs less CPU and memory than decoding in full. Frames are never upscaled;
+    /// routes that cannot scale deliver the capture size (`FramePlan::output_resolution` in
+    /// `styx` tells which).
+    pub fn output_resolution(mut self, width: u32, height: u32) -> Self {
+        self.output_resolution = Some((width, height));
         self
     }
 
