@@ -327,3 +327,37 @@ fn shared_consumers_of_two_sizes_use_both_isp_outputs() {
             .all(|c| c.output_resolution() == (1280, 800))
     );
 }
+
+#[cfg(feature = "libcamera")]
+#[test]
+fn shared_plans_scale_with_the_isp_like_single_plans() {
+    let ov9782 = |modes| {
+        device(
+            BackendKind::Libcamera,
+            BackendHandle::Libcamera {
+                id: "/base/axi/pcie@1000120000/rp1/i2c@88000/ov9782@60".into(),
+            },
+            modes,
+        )
+    };
+    // Alone: the wide mode scaled by the ISP, not the smaller 4:3 mode.
+    let dev = ov9782(vec![
+        mode(FourCc::NV12, 1280, 800, 30),
+        mode(FourCc::NV12, 320, 240, 30),
+    ]);
+    let detector = FrameRequirements::luma().output_resolution(320, 180);
+    let plan = plan_many_with(&dev, std::slice::from_ref(&detector), &registry()).unwrap();
+    assert_eq!(plan.consumers[0].output_resolution(), (320, 200), "{plan}");
+
+    // Next to an RGB consumer on a YUYV capture, the luma decode gets the ISP's second output.
+    let dev = ov9782(vec![mode(FourCc::YUYV, 1280, 800, 30)]);
+    let plan = plan_many_with(
+        &dev,
+        &[detector, FrameRequirements::formats([FourCc::RG24])],
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(plan.consumers[0].output_resolution(), (320, 200), "{plan}");
+    assert!(plan.consumers[0].isp_second_output, "{plan}");
+    assert_eq!(plan.consumers[1].output_resolution(), (1280, 800));
+}

@@ -159,10 +159,18 @@ frame for that long. The next request starts the camera again, with the same mod
 rather than ~1.4 s, at the cost of keeping its buffers. See
 [reconnect.md](reconnect.md#stopping-idle-cameras).
 
+## Async
+
+With the `async` feature, `PlannedFrames::next_frame_async` awaits the next frame on Tokio,
+also on a shared capture. The frame is prepared (decoded, scaled) on the awaiting task, as
+`MediaPipeline::next_async_receive` does; heavy plans belong on a blocking task.
+
 ## Other processes
 
-`styx::ipc::FrameServer` publishes planned frames to `FrameClient`s in other processes,
-passing camera buffers as file descriptors. See [frame-server.md](frame-server.md).
+`styx::ipc::CameraService` serves a camera to other processes: each asks for the frames it
+needs, and the service plans one shared capture for all of them. `FramePlan::exportable` (and
+`SharedFramePlan::exportable`) decode into memfds so frames reach other processes without
+copying. See [frame-server.md](frame-server.md).
 
 ## Region of interest
 

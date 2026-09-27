@@ -157,6 +157,10 @@ path = "05_apps/low_latency_preview.rs"
 required-features = ["preview-window"]
 
 [[bin]]
+name = "camera_service"
+path = "05_apps/camera_service.rs"
+
+[[bin]]
 name = "reliable_recording"
 path = "05_apps/reliable_recording.rs"
 required-features = ["file-backend"]

@@ -13,11 +13,10 @@ use styx_codec::prelude::{
 use styx_codec::{Codec, CodecDescriptor, CodecError, CodecKind};
 use styx_core::prelude::*;
 
-use super::shared::{Fanout, SharedCapture};
+use super::session::Branch;
 use super::{FramePlan, Route};
 use crate::capture_api::{CaptureError, CaptureRequest, IdleStop, StyxConfig};
 use crate::session::{MediaPipeline, MediaPipelineBuilder};
-use styx_core::queue::BoundedRx;
 
 /// Live region-of-interest control for a running plan. Cloneable; changes apply to the next
 /// frame. Coordinates are full-frame pixels.
@@ -48,122 +47,10 @@ enum Source {
     Branch(Box<Branch>),
 }
 
-struct Branch {
-    group: Arc<PreparedGroup>,
-    member: usize,
-    rx: BoundedRx<FrameLease>,
-    /// On frames prepared for several consumers: this consumer's region, cropped from them.
-    roi: Option<RoiHandle>,
-}
-
-impl Drop for Branch {
-    fn drop(&mut self) {
-        // Frames shared with a consumer that is gone would hold camera buffers.
-        self.rx.close();
-    }
-}
-
-/// Consumers of a shared capture whose frames are prepared the same way: each captured frame is
-/// prepared once, by whichever member asks first, and shared with the others.
-pub(crate) struct PreparedGroup {
-    shared: Arc<SharedCapture>,
-    /// This group's branch of the shared capture.
-    index: usize,
-    raw_rx: BoundedRx<FrameLease>,
-    preparer: FramePreparer,
-    fanout: Fanout,
-    /// Frames come from the ISP's second output, attached to the shared frame.
-    second_output: bool,
-}
-
-impl PreparedGroup {
-    /// `roi` is the preparer's region: the consumer's own for a group of one, none otherwise
-    /// (members then crop their own).
-    pub(crate) fn new(
-        plan: &FramePlan,
-        shared: Arc<SharedCapture>,
-        index: usize,
-        raw_rx: BoundedRx<FrameLease>,
-        fanout: Fanout,
-        roi: RoiHandle,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            shared,
-            index,
-            raw_rx,
-            preparer: FramePreparer::new(plan, roi),
-            fanout,
-            second_output: plan.isp_second_output,
-        })
-    }
-
-    fn next(
-        &self,
-        member: usize,
-        rx: &BoundedRx<FrameLease>,
-        wait: Duration,
-    ) -> RecvOutcome<FrameLease> {
-        self.fanout.next(member, rx, wait, |wait| {
-            match self.shared.next(self.index, &self.raw_rx, wait) {
-                RecvOutcome::Data(frame) => match self
-                    .isp_output(frame)
-                    .and_then(|frame| self.preparer.process(frame))
-                {
-                    Ok(frame) => RecvOutcome::Data(frame),
-                    Err(err) => {
-                        tracing::warn!(group = self.index, error = %err, "frame skipped");
-                        RecvOutcome::Empty
-                    }
-                },
-                other => other,
-            }
-        })
-    }
-
-    /// This group's ISP output of a shared frame: the frame itself, or its second output.
-    fn isp_output(&self, mut frame: FrameLease) -> Result<FrameLease, CodecError> {
-        let companions = frame.take_companions();
-        if self.second_output {
-            return companions
-                .into_iter()
-                .find(|(kind, _)| *kind == CompanionKind::Scaled)
-                .map(|(_, frame)| frame)
-                .ok_or_else(|| CodecError::Codec("frame without the ISP's second output".into()));
-        }
-        // The other consumers' output is not for this group.
-        for (kind, companion) in companions {
-            if kind != CompanionKind::Scaled {
-                frame = frame
-                    .with_companion(kind, companion)
-                    .map_err(|e| CodecError::Codec(e.to_string()))?;
-            }
-        }
-        Ok(frame)
-    }
-}
-
-impl Drop for PreparedGroup {
-    fn drop(&mut self) {
-        self.raw_rx.close();
-    }
-}
-
 impl PlannedFrames {
-    pub(crate) fn branch(
-        plan: &FramePlan,
-        group: Arc<PreparedGroup>,
-        member: usize,
-        rx: BoundedRx<FrameLease>,
-        roi: RoiHandle,
-        crops_own_roi: bool,
-    ) -> Self {
+    pub(crate) fn branch(plan: &FramePlan, branch: Branch, roi: RoiHandle) -> Self {
         Self {
-            source: Source::Branch(Box::new(Branch {
-                group,
-                member,
-                rx,
-                roi: crops_own_roi.then(|| roi.clone()),
-            })),
+            source: Source::Branch(Box::new(branch)),
             roi,
             plan: plan.clone(),
         }
@@ -174,21 +61,18 @@ impl PlannedFrames {
     pub fn next_frame(&mut self, wait: Duration) -> RecvOutcome<FrameLease> {
         match &mut self.source {
             Source::Pipeline(pipeline) => pipeline.next_blocking(wait),
-            Source::Branch(branch) => match branch.group.next(branch.member, &branch.rx, wait) {
-                RecvOutcome::Data(frame) => {
-                    let Some(roi) = &branch.roi else {
-                        return RecvOutcome::Data(frame);
-                    };
-                    match branch.group.preparer.crop(frame, roi.get()) {
-                        Ok(frame) => RecvOutcome::Data(frame),
-                        Err(err) => {
-                            tracing::warn!(consumer = branch.member, error = %err, "frame skipped");
-                            RecvOutcome::Empty
-                        }
-                    }
-                }
-                other => other,
-            },
+            Source::Branch(branch) => branch.next(wait),
+        }
+    }
+
+    /// Await the next frame, or `Closed` when the capture ends. The frame is prepared (decoded,
+    /// scaled) on the calling task, as `MediaPipeline::next_async_receive` does; move heavy
+    /// plans to a blocking task.
+    #[cfg(feature = "async")]
+    pub async fn next_frame_async(&mut self) -> RecvOutcome<FrameLease> {
+        match &mut self.source {
+            Source::Pipeline(pipeline) => pipeline.next_async_receive().await,
+            Source::Branch(branch) => branch.next_async().await,
         }
     }
 
@@ -214,18 +98,7 @@ impl PlannedFrames {
     pub fn health_report(&self) -> crate::metrics::HealthReport {
         match &self.source {
             Source::Pipeline(pipeline) => pipeline.health_report(),
-            Source::Branch(branch) => {
-                let group = &branch.group;
-                let mut report = group.shared.capture().health_report();
-                let evictions = branch.rx.stats().evictions + group.raw_rx.stats().evictions;
-                crate::metrics::push_drop_reason(
-                    &mut report.drop_reasons,
-                    crate::metrics::FrameDropReason::CaptureQueueEviction,
-                    evictions,
-                );
-                report.drop_count = crate::metrics::total_frame_drops(&report.drop_reasons);
-                report
-            }
+            Source::Branch(branch) => branch.health_report(),
         }
     }
 
@@ -290,7 +163,7 @@ impl FramePlan {
 }
 
 /// One pipeline stage carrying out everything after capture.
-struct FramePreparer {
+pub(crate) struct FramePreparer {
     descriptor: CodecDescriptor,
     route: Route,
     luma: bool,
@@ -305,13 +178,19 @@ struct FramePreparer {
     decode_threads: usize,
     roi: RoiHandle,
     pyramid_pool: BufferPool,
+    /// For exportable plans: memfd buffers for the frames this stage makes, created on first use.
+    #[cfg(target_os = "linux")]
+    shared_pool: Option<std::sync::OnceLock<Option<SharedBufferPool>>>,
+    /// Bytes of one output frame, to size `shared_pool`'s buffers.
+    #[cfg(target_os = "linux")]
+    output_bytes: usize,
     /// Rebuilt when the ROI changes; `None` when the route does not use turbojpeg-luma.
     #[cfg(feature = "codec-turbojpeg")]
     jpeg: Mutex<Option<(Option<FrameRect>, TurbojpegLumaDecoder)>>,
 }
 
 impl FramePreparer {
-    fn new(plan: &FramePlan, roi: RoiHandle) -> Self {
+    pub(crate) fn new(plan: &FramePlan, roi: RoiHandle) -> Self {
         let luma = matches!(plan.requirements.output, OutputFormat::Luma);
         let output = match &plan.route {
             Route::Decode { decoder, .. } => decoder.descriptor().output,
@@ -361,6 +240,10 @@ impl FramePreparer {
             decode_threads: plan.decode_threads,
             roi,
             pyramid_pool: BufferPool::lazy(0, 8),
+            #[cfg(target_os = "linux")]
+            shared_pool: plan.exportable.then(std::sync::OnceLock::new),
+            #[cfg(target_os = "linux")]
+            output_bytes: output_bytes(plan, output),
             #[cfg(feature = "codec-turbojpeg")]
             jpeg: Mutex::new(None),
         };
@@ -369,6 +252,41 @@ impl FramePreparer {
             *preparer.jpeg.lock() = Some((None, preparer.luma_decoder(None)));
         }
         preparer
+    }
+
+    /// The memfd pool of an exportable plan (`None` otherwise, or if memfds are unavailable).
+    #[cfg(target_os = "linux")]
+    fn shared_pool(&self) -> Option<&SharedBufferPool> {
+        self.shared_pool
+            .as_ref()?
+            .get_or_init(|| {
+                // Buffers of exactly this size are recycled; a few cover the queues.
+                SharedBufferPool::with_limits(0, self.output_bytes, 8)
+                    .inspect_err(|err| tracing::warn!(error = %err, "no memfd frame pool; frames stay on the heap"))
+                    .ok()
+            })
+            .as_ref()
+    }
+
+    /// Decode with `decoder`, into the memfd pool when the plan is exportable.
+    fn decode(&self, decoder: &dyn Codec, input: FrameLease) -> Result<FrameLease, CodecError> {
+        let (clock, capture_instant) = (input.meta().clock, input.meta().capture_instant);
+        #[cfg(target_os = "linux")]
+        let shared = match self.shared_pool() {
+            Some(pool) => decoder.process_shared(&input, pool)?,
+            None => None,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let shared = None;
+        let mut frame = match shared {
+            Some(frame) => frame,
+            None => decoder.process(input)?,
+        };
+        // Decoders keep the timestamp; keep the clock it is in and when it was captured, too.
+        let meta = frame.meta_mut();
+        meta.clock = meta.clock.or(clock);
+        meta.capture_instant = meta.capture_instant.or(capture_instant);
+        Ok(frame)
     }
 
     /// `roi` (full capture-frame pixels) in the coordinates of the decoded, possibly scaled,
@@ -380,7 +298,11 @@ impl FramePreparer {
 
     /// `frame` (prepared without a region) cropped to `roi`, for one of several consumers
     /// sharing it. Only luma frames are cropped, as when preparing.
-    fn crop(&self, frame: FrameLease, roi: Option<FrameRect>) -> Result<FrameLease, CodecError> {
+    pub(crate) fn crop(
+        &self,
+        frame: FrameLease,
+        roi: Option<FrameRect>,
+    ) -> Result<FrameLease, CodecError> {
         let Some(roi) = roi.filter(|_| self.luma) else {
             return Ok(frame);
         };
@@ -441,7 +363,7 @@ impl FramePreparer {
             Some(_) => decoder.effective_crop(frame.planes()[0].data())?,
             None => None,
         };
-        let mut decoded = decoder.process(frame)?;
+        let mut decoded = self.decode(decoder, frame)?;
         drop(guard);
         if let Some(c) = crop {
             decoded.meta_mut().crop = Some(FrameRect::new(c.x, c.y, c.width, c.height));
@@ -479,6 +401,22 @@ impl FramePreparer {
         }
         let (width, height) = (rows.row_bytes(), rows.len());
         let stride = width.next_multiple_of(align);
+        #[cfg(target_os = "linux")]
+        if let Some(pool) = self.shared_pool() {
+            // memfd mappings are page-aligned, so rows at `stride` keep the alignment.
+            let mut lease = pool
+                .lease()
+                .and_then(|mut lease| lease.try_resize(stride * height).map(|()| lease))
+                .map_err(|e| CodecError::Codec(e.to_string()))?;
+            for (y, row) in rows.iter().enumerate() {
+                lease.as_mut_slice()[y * stride..y * stride + width].copy_from_slice(row.data());
+            }
+            let mut meta = frame.meta().clone();
+            meta.residency = None;
+            let out = FrameLease::single_plane_shared(meta, lease, stride * height, stride)
+                .map_err(|e| CodecError::Codec(e.to_string()))?;
+            return reattach_companions(out, frame);
+        }
         let mut buf = self.pyramid_pool.lease();
         buf.resize(stride * height + align - 1);
         let start = buf.as_slice().as_ptr() as usize;
@@ -489,7 +427,7 @@ impl FramePreparer {
         }
         let mut meta = frame.meta().clone();
         meta.residency = None;
-        let mut out = FrameLease::multi_plane(
+        let out = FrameLease::multi_plane(
             meta,
             smallvec![buf],
             smallvec![PlaneLayout {
@@ -498,14 +436,42 @@ impl FramePreparer {
                 stride,
             }],
         );
-        let mut source = frame;
-        for (kind, companion) in source.take_companions() {
-            out = out
-                .with_companion(kind, companion)
-                .map_err(|e| CodecError::Codec(e.to_string()))?;
-        }
-        Ok(out)
+        reattach_companions(out, frame)
     }
+}
+
+/// `out` with the companions of `source`, which it replaces.
+fn reattach_companions(
+    mut out: FrameLease,
+    mut source: FrameLease,
+) -> Result<FrameLease, CodecError> {
+    for (kind, companion) in source.take_companions() {
+        out = out
+            .with_companion(kind, companion)
+            .map_err(|e| CodecError::Codec(e.to_string()))?;
+    }
+    Ok(out)
+}
+
+/// Bytes of one frame the plan delivers (rows padded for alignment), at least a page.
+#[cfg(target_os = "linux")]
+fn output_bytes(plan: &FramePlan, output: FourCc) -> usize {
+    let (w, h) = plan.output_resolution();
+    let (w, h) = (w as usize, h as usize);
+    let row = match output {
+        FourCc::GREY | FourCc::R8 => w,
+        FourCc::YUYV => w * 2,
+        FourCc::RG24 | FourCc::BG24 => w * 3,
+        FourCc::NV12 | FourCc::YU12 => w.div_ceil(2) * 3,
+        _ => w * 4,
+    };
+    let align = plan.requirements.stride_alignment.unwrap_or(64).max(1);
+    let rows = if matches!(output, FourCc::NV12 | FourCc::YU12) {
+        h.div_ceil(2) * 2
+    } else {
+        h
+    };
+    (row.next_multiple_of(align) * rows).next_multiple_of(4096)
 }
 
 impl Codec for FramePreparer {
@@ -529,7 +495,7 @@ impl Codec for FramePreparer {
             return self.decode_jpeg(input, roi);
         }
         let frame = match &self.route {
-            Route::Decode { decoder, .. } => decoder.process(input)?,
+            Route::Decode { decoder, .. } => self.decode(decoder.as_ref(), input)?,
             Route::LumaView if self.luma => input
                 .into_luma()
                 .map_err(|e| CodecError::Codec(e.to_string()))?,

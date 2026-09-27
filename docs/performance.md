@@ -372,6 +372,7 @@ scenario runs in a fresh process and reports:
 | `mem_shared_luma_and_rgb_to_320x180` | one shared capture for a luma and an RGB consumer |
 | `mem_shared_3x_luma_to_320x180` | three identical consumers; its limit fails if they stop sharing the decode |
 | `mem_served_luma_to_320x180` | planned frames through a `FrameServer` to a client (memfd copies, released) |
+| `mem_camera_service_2_clients` | a `CameraService` with a luma and an RGB client (decoded into memfds) |
 
 Raise a limit in the baseline only together with the change that needs it.
 

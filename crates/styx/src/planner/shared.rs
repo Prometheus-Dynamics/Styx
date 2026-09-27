@@ -7,21 +7,18 @@
 //! (so `StyxConfig::stop_when_idle` can stop it).
 
 use std::fmt;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use parking_lot::Mutex;
 use styx_codec::CodecRegistryHandle;
 use styx_core::prelude::*;
-use styx_core::queue::{BoundedRx, BoundedTx, QueueOverflow, RecvWaitOutcome, bounded_with};
 
 use super::routes::{self, Candidate, backend_name, describe};
-use super::start::{PreparedGroup, RoiHandle};
+use super::session::{SharedSession, same_preparation};
 use super::{
     FramePlan, PlanError, PlanRejection, RankKey, StepKind, cost, default_registry, plan_from,
 };
 use crate::BackendKind;
-use crate::capture_api::{CaptureError, CaptureHandle, CaptureRequest, IdleStop, StyxConfig};
+use crate::capture_api::{CaptureError, CaptureRequest, IdleStop, StyxConfig};
 use crate::prelude::{Interval, Mode, ProbedBackend, ProbedDevice};
 
 /// One capture serving several consumers, each with its own [`FramePlan`].
@@ -219,7 +216,19 @@ fn shared_rank(candidates: &[Candidate<'_>], requirements: &[FrameRequirements])
             .flatten()
             .fold((0, 0), |(w, h), &(a, b)| (w.max(a), h.max(b)));
         if res.width.get() >= w && res.height.get() >= h {
-            area
+            // The frames the consumers get, after the ISP or decoders scale them: an ISP scaling
+            // a wide mode beats a smaller mode of another aspect ratio.
+            candidates
+                .iter()
+                .map(|c| {
+                    let scale = u32::from(c.decode_scale.max(1));
+                    let (w, h) = c.isp_output.unwrap_or((
+                        res.width.get().div_ceil(scale),
+                        res.height.get().div_ceil(scale),
+                    ));
+                    f64::from(w) * f64::from(h)
+                })
+                .sum()
         } else {
             1e15 - area
         }
@@ -276,6 +285,15 @@ impl SharedFramePlan {
         self
     }
 
+    /// Put frames consumers' plans decode or copy into memfd buffers, for other processes (see
+    /// [`FramePlan::exportable`]).
+    pub fn exportable(mut self) -> Self {
+        for consumer in &mut self.consumers {
+            consumer.exportable = true;
+        }
+        self
+    }
+
     /// Start the capture; returns one [`PlannedFrames`](super::PlannedFrames) per consumer,
     /// in order. The capture stops when the last of them is dropped or stopped.
     pub fn start(&self) -> Result<Vec<super::PlannedFrames>, CaptureError> {
@@ -293,6 +311,62 @@ impl SharedFramePlan {
         // frames and the one it is working on (frames that are views of the capture hold its
         // buffers), so no consumer starves the camera of buffers.
         let held = group_depths.iter().sum::<usize>() + depths.iter().sum::<usize>() + depths.len();
+        let session = SharedSession::new(self.capture_request(held).start()?);
+        let mut frames: Vec<Option<super::PlannedFrames>> =
+            (0..self.consumers.len()).map(|_| None).collect();
+        for members in &self.groups {
+            // Alone, a consumer's region is applied while preparing (a JPEG decoder skips the
+            // rows below it); shared, each member crops the frame it gets.
+            let share = members.len() > 1;
+            for &consumer in members {
+                frames[consumer] = Some(session.attach(&self.consumers[consumer], share));
+            }
+        }
+        Ok(frames.into_iter().flatten().collect())
+    }
+
+    /// Start the capture with buffers for `consumers` consumers that each hold up to `held`
+    /// frames beyond their queues (e.g. frames other processes hold); consumers join it with
+    /// [`SharedSession::attach`].
+    pub(crate) fn start_session(
+        &self,
+        consumers: usize,
+        held: usize,
+    ) -> Result<SharedSession, CaptureError> {
+        let depth = self
+            .consumers
+            .iter()
+            .map(|p| p.queue_depth.max(1))
+            .max()
+            .unwrap_or(1);
+        let per_consumer = depth + held;
+        let request = self.capture_request(consumers.max(1) * per_consumer);
+        Ok(SharedSession::new(request.start()?))
+    }
+
+    /// What the capture is started with: consumers whose plans have the same key can join a
+    /// running capture of this plan.
+    pub(crate) fn setup_key(&self) -> String {
+        let second = self
+            .consumers
+            .iter()
+            .find(|p| p.isp_second_output)
+            .and_then(|p| p.isp_output);
+        let main = self
+            .consumers
+            .iter()
+            .find(|p| !p.isp_second_output)
+            .and_then(|p| p.isp_output);
+        let pyramid = self.consumers.iter().find_map(|p| p.isp_pyramid_level);
+        format!(
+            "{:?} {:?} {:?} main={main:?} second={second:?} pyramid={pyramid:?} idle={:?}",
+            self.backend, self.mode.id, self.interval, self.stop_when_idle
+        )
+    }
+
+    /// The capture request: this plan's mode and interval, the ISP outputs its consumers use,
+    /// and `held` device buffers beyond the queue.
+    fn capture_request(&self, held: usize) -> CaptureRequest<'_> {
         let mut config = StyxConfig::new()
             .capture_queue_depth(1)
             .capture_extra_buffers(held);
@@ -323,209 +397,22 @@ impl SharedFramePlan {
         if let Some(interval) = self.interval {
             request = request.interval(interval);
         }
-        let capture = request.start()?;
-        // A latest-frame queue of captured frames per group, and of prepared frames per member.
-        let (raw_txs, raw_rxs): (Vec<_>, Vec<_>) = group_depths
-            .iter()
-            .map(|&depth| bounded_with(depth, QueueOverflow::DropOldest))
-            .unzip();
-        let shared = Arc::new(SharedCapture {
-            capture: Some(capture),
-            fanout: Fanout::new(raw_txs),
-        });
-        let mut frames: Vec<Option<super::PlannedFrames>> =
-            (0..self.consumers.len()).map(|_| None).collect();
-        for (group_index, (members, raw_rx)) in self.groups.iter().zip(raw_rxs).enumerate() {
-            let (txs, rxs): (Vec<_>, Vec<_>) = members
-                .iter()
-                .map(|&i| bounded_with(depths[i], QueueOverflow::DropOldest))
-                .unzip();
-            let rois: Vec<RoiHandle> = members
-                .iter()
-                .map(|&i| {
-                    let roi = RoiHandle::default();
-                    roi.set(self.consumers[i].requirements.roi);
-                    roi
-                })
-                .collect();
-            // Alone, a consumer's region is applied while preparing (a JPEG decoder skips the
-            // rows below it); shared, each member crops the frame it gets.
-            let alone = members.len() == 1;
-            let group = PreparedGroup::new(
-                &self.consumers[members[0]],
-                shared.clone(),
-                group_index,
-                raw_rx,
-                Fanout::new(txs),
-                if alone {
-                    rois[0].clone()
-                } else {
-                    RoiHandle::default()
-                },
-            );
-            for (member, ((&consumer, rx), roi)) in members.iter().zip(rxs).zip(rois).enumerate() {
-                frames[consumer] = Some(super::PlannedFrames::branch(
-                    &self.consumers[consumer],
-                    group.clone(),
-                    member,
-                    rx,
-                    roi,
-                    !alone,
-                ));
-            }
-        }
-        Ok(frames.into_iter().flatten().collect())
+        request
     }
 }
 
 /// Consumers whose frames are prepared the same way: same requirements apart from the region of
 /// interest (applied per consumer, as a crop of the shared frame), on the same route.
 fn prepare_groups(consumers: &[FramePlan]) -> Vec<Vec<usize>> {
-    let key = |plan: &FramePlan| {
-        let mut req = plan.requirements.clone();
-        req.roi = None;
-        req
-    };
-    let same = |a: &FramePlan, b: &FramePlan| {
-        key(a) == key(b)
-            && a.route.same_as(&b.route)
-            && a.decode_scale == b.decode_scale
-            && a.isp_output == b.isp_output
-            && a.isp_second_output == b.isp_second_output
-            && a.isp_pyramid_level == b.isp_pyramid_level
-    };
     let mut groups: Vec<Vec<usize>> = Vec::new();
     for (i, plan) in consumers.iter().enumerate() {
-        match groups.iter_mut().find(|g| same(&consumers[g[0]], plan)) {
+        match groups
+            .iter_mut()
+            .find(|g| same_preparation(&consumers[g[0]], plan))
+        {
             Some(group) => group.push(i),
             None => groups.push(vec![i]),
         }
     }
     groups
-}
-
-/// Pull-based fan-out of frames to several receivers: the first to ask reads the source and
-/// leaves a zero-copy share of each frame for the others.
-pub(crate) struct Fanout {
-    branches: Vec<BoundedTx<FrameLease>>,
-    /// Held by the branch reading the source; the others wait on their own queues.
-    puller: Mutex<()>,
-}
-
-impl Fanout {
-    pub(crate) fn new(branches: Vec<BoundedTx<FrameLease>>) -> Self {
-        Self {
-            branches,
-            puller: Mutex::new(()),
-        }
-    }
-
-    /// Next frame for branch `index` (receiving on `rx`), waiting up to `wait`. `source(wait)`
-    /// reads the next frame from the source, waiting up to `wait` (zero: without waiting).
-    pub(crate) fn next(
-        &self,
-        index: usize,
-        rx: &BoundedRx<FrameLease>,
-        wait: Duration,
-        mut source: impl FnMut(Duration) -> RecvOutcome<FrameLease>,
-    ) -> RecvOutcome<FrameLease> {
-        let deadline = Instant::now() + wait;
-        loop {
-            if let Some(_pulling) = self.puller.try_lock() {
-                // A frame the source already holds is newer than any share queued for us:
-                // hand it to every branch first so no branch serves a stale frame.
-                match source(Duration::ZERO) {
-                    RecvOutcome::Data(frame) => drop(self.fan_out(frame, None)),
-                    RecvOutcome::Closed => self.close(),
-                    RecvOutcome::Empty => {}
-                }
-            }
-            match rx.recv() {
-                RecvOutcome::Data(frame) => return RecvOutcome::Data(frame),
-                RecvOutcome::Closed => return RecvOutcome::Closed,
-                RecvOutcome::Empty => {}
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return RecvOutcome::Empty;
-            }
-            if let Some(_pulling) = self.puller.try_lock() {
-                match source(remaining.min(Duration::from_millis(50))) {
-                    RecvOutcome::Data(frame) => {
-                        return RecvOutcome::Data(self.fan_out(frame, Some(index)));
-                    }
-                    RecvOutcome::Empty => {}
-                    RecvOutcome::Closed => {
-                        self.close();
-                        return rx.recv();
-                    }
-                }
-            } else {
-                // Another branch is reading the source and will leave us a share.
-                match rx.recv_timeout(remaining.min(Duration::from_millis(5))) {
-                    RecvWaitOutcome::Data(frame) => return RecvOutcome::Data(frame),
-                    RecvWaitOutcome::Closed => return RecvOutcome::Closed,
-                    RecvWaitOutcome::Timeout => {}
-                }
-            }
-        }
-    }
-
-    /// Send shares of `frame` to every branch but `keep`, returning the frame itself.
-    fn fan_out(&self, frame: FrameLease, keep: Option<usize>) -> FrameLease {
-        if self.branches.len() == 1 && keep.is_some() {
-            return frame;
-        }
-        let frame = frame.into_shareable();
-        for (other, tx) in self.branches.iter().enumerate() {
-            if Some(other) != keep
-                && let Some(share) = frame.share()
-            {
-                tx.send(share);
-            }
-        }
-        frame
-    }
-
-    fn close(&self) {
-        self.branches.iter().for_each(BoundedTx::close);
-    }
-}
-
-/// The capture behind a [`SharedFramePlan`]; stopped when the last branch goes.
-pub(crate) struct SharedCapture {
-    capture: Option<CaptureHandle>,
-    /// One branch per group of consumers.
-    fanout: Fanout,
-}
-
-impl SharedCapture {
-    pub(crate) fn capture(&self) -> &CaptureHandle {
-        self.capture.as_ref().expect("capture runs until dropped")
-    }
-
-    /// Next captured frame for group `index` (receiving on `rx`), waiting up to `wait`.
-    pub(crate) fn next(
-        &self,
-        index: usize,
-        rx: &BoundedRx<FrameLease>,
-        wait: Duration,
-    ) -> RecvOutcome<FrameLease> {
-        let capture = self.capture();
-        self.fanout.next(index, rx, wait, |wait| {
-            if wait.is_zero() {
-                capture.recv()
-            } else {
-                capture.recv_blocking(wait)
-            }
-        })
-    }
-}
-
-impl Drop for SharedCapture {
-    fn drop(&mut self) {
-        if let Some(capture) = self.capture.take() {
-            capture.stop();
-        }
-    }
 }

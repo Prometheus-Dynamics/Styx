@@ -9,9 +9,9 @@ use std::path::Path;
 use std::time::Duration;
 
 /// Largest message: a frame header with its planes.
-pub(super) const MAX_MESSAGE: usize = 512;
-/// Most descriptors one message carries (one per plane).
-const MAX_FDS: usize = 4;
+pub(super) const MAX_MESSAGE: usize = 8192;
+/// Most descriptors one message carries (one per plane, for a frame and its companions).
+const MAX_FDS: usize = 16;
 
 pub(super) enum Received {
     Message(Vec<u8>, Vec<OwnedFd>),
@@ -166,6 +166,18 @@ pub(super) fn send(socket: &OwnedFd, bytes: &[u8], fds: &[RawFd]) -> io::Result<
         };
     }
     Ok(true)
+}
+
+/// Whether `socket` becomes readable (or a listener has a connection) within `wait`.
+pub(super) fn readable(socket: &OwnedFd, wait: Duration) -> bool {
+    let mut poll = libc::pollfd {
+        fd: socket.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: one valid `pollfd`.
+    unsafe { libc::poll(&mut poll, 1, timeout) > 0 }
 }
 
 /// Receive one message and its descriptors, waiting up to `wait` (zero: without waiting).

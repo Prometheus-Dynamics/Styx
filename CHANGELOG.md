@@ -141,11 +141,24 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Added `styx::ipc` (Linux): `FrameServer` and `FrameClient` share frames with other processes,
   passing dma-bufs and memfds as file descriptors. See `docs/frame-server.md`.
 - Added shared-capture and frame-server scenarios to the memory and perf smoke checks.
+- Added `styx::ipc::CameraService`: one camera for many processes. Clients ask for frames with
+  `FrameClient::request(path, &requirements)`; the service plans one shared capture for all of
+  them, attaches clients that fit the running capture without a restart, refuses the ones that
+  do not fit with the planner's reasons, and pauses the camera when nobody reads. Adds
+  `FrameClient::{request, plan, set_roi}` and `IpcError::Rejected`; companions now travel with
+  their frames. See `docs/frame-server.md` and `examples/05_apps/camera_service.rs`.
+- Added `FramePlan::exportable` and `SharedFramePlan::exportable`: decoded frames go into memfd
+  pools, so they reach other processes without copying.
+- Added `PlannedFrames::next_frame_async` and `FrameClient::recv_async` (feature `async`).
 - Added corruption tests for recordings, MJPEG decoders and the netcam parser, cargo-fuzz targets
   (`fuzz/`), and a public API compatibility check (`cargo-semver-checks`) in release CI.
 
 ### Changed
 
+- Shared plans rank modes by the frames consumers get (as single plans do), and the Raspberry Pi
+  ISP also scales for routes that decode uncompressed frames (e.g. YUYV to luma).
+- Decoded planned frames keep their timestamp clock and capture instant.
+- The `styx::ipc` wire format is version 2.
 - `CompanionKind` has a `Scaled` variant; `.styxrec` recordings keep it, MCAP recordings keep
   pyramid levels only.
 - `plan_many` now plans a shared capture; `PlanError::MultipleConsumersUnsupported` is replaced

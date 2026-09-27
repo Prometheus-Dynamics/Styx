@@ -224,7 +224,7 @@ pub(crate) fn candidate<'a>(
         let factor = cost::scaled_decode_factor(decode_scale);
         step.cost = StepCost::offloaded(step.cost.latency_ms * factor, step.cost.cpu_ms * factor);
     }
-    let isp_output = isp_output(backend, &route, req, (width, height));
+    let isp_output = isp_output(backend, &route, req, mode.format.code, (width, height));
     if let Some((w, h)) = isp_output {
         steps.push(PlanStep {
             kind: StepKind::Scale,
@@ -299,11 +299,17 @@ fn isp_output(
     backend: &ProbedBackend,
     route: &Route,
     req: &FrameRequirements,
+    code: FourCc,
     mode: (u32, u32),
 ) -> Option<(u32, u32)> {
     let (tw, th) = req.output_resolution?;
+    // Routes that pass frames through, or decode uncompressed ones (any size the ISP makes).
+    let scalable = match route {
+        Route::Direct | Route::LumaView => true,
+        Route::Decode { .. } => !code.is_compressed(),
+    };
     if !has_isp_second_output(backend)
-        || !matches!(route, Route::Direct | Route::LumaView)
+        || !scalable
         || matches!(req.overrides.hardware, HardwarePolicy::Disabled)
         || (tw >= mode.0 && th >= mode.1)
     {

@@ -22,6 +22,7 @@ Canonical examples for the intended facade:
 - `capture_virtual`: smallest blocking capture request example.
 - `runtime_memory_report`: process-level and pipeline-attached memory telemetry report.
 - `low_latency_preview`: latest-frame preview path with queue depth tuned for freshness.
+- `camera_service`: one camera for many processes; each client asks for the frames it needs (`serve`, `client luma 320x180`).
 - `reliable_recording`: record every frame to disk with queue and pool sizing biased toward completeness.
 - `latest_frame_fanout`: split one source into multiple latest-only consumers without adding backpressure.
 - `file_replay`: replay recorded files through the same capture facade.

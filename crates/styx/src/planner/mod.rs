@@ -28,6 +28,8 @@
 
 mod cost;
 mod routes;
+mod session;
+pub(crate) use session::SharedSession;
 mod shared;
 mod start;
 
@@ -116,6 +118,8 @@ pub struct FramePlan {
     pub(crate) isp_output: Option<(u32, u32)>,
     /// On a shared capture: frames come from the ISP's second output (at `isp_output`).
     pub(crate) isp_second_output: bool,
+    /// Frames the preparer makes go into memfd buffers other processes can map.
+    pub(crate) exportable: bool,
     pub(crate) decode_threads: usize,
     pub(crate) queue_depth: usize,
     pub(crate) stop_when_idle: Option<(std::time::Duration, crate::capture_api::IdleStop)>,
@@ -269,6 +273,7 @@ pub(crate) fn plan_from(
         decode_scale: chosen.decode_scale,
         isp_output: chosen.isp_output,
         isp_second_output: false,
+        exportable: false,
         decode_threads: cost::decode_threads(req.priority, req.overrides.decode_threads),
         queue_depth: cost::queue_depth(req.priority, req.overrides.queue_depth),
         stop_when_idle: None,
@@ -364,6 +369,13 @@ impl FramePlan {
     /// (libcamera and V4L2; see `StyxConfig::stop_when_idle`).
     pub fn stop_when_idle(mut self, after: std::time::Duration) -> Self {
         self.stop_when_idle = Some((after, crate::capture_api::IdleStop::Release));
+        self
+    }
+
+    /// Put frames the plan decodes or copies into memfd buffers, so `styx::ipc` can pass them to
+    /// other processes without copying (Linux). Camera buffers are shareable already.
+    pub fn exportable(mut self) -> Self {
+        self.exportable = true;
         self
     }
 

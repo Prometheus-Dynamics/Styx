@@ -259,7 +259,42 @@ fn served_replay(
     Ok(())
 }
 
-const SCENARIOS: [&str; 9] = [
+/// A camera service on the replayed fixture with a luma and an RGB client, `frames` frames each
+/// (decoded into memfds and passed to the clients without copying).
+fn served_camera(
+    recording: &std::path::Path,
+    frames: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let device = CaptureRequest::replay_source(
+        ReplaySourceConfig::new(recording)
+            .pacing(ReplayPacing::Unpaced)
+            .loop_forever(true),
+    )?
+    .into_device();
+    let path = std::env::temp_dir().join(format!("styx-mem-service-{}.sock", std::process::id()));
+    let service = styx::ipc::CameraService::new(device)
+        .keep_streaming()
+        .serve(&path)?;
+    let clients = [
+        FrameRequirements::luma().output_resolution(320, 180),
+        FrameRequirements::formats([FourCc::RG24]).output_resolution(320, 180),
+    ]
+    .iter()
+    .map(|req| styx::ipc::FrameClient::request(&path, req))
+    .collect::<Result<Vec<_>, _>>()?;
+    for _ in 0..frames {
+        for client in &clients {
+            if let RecvOutcome::Data(frame) = client.recv(Duration::from_secs(2)) {
+                std::hint::black_box(frame.planes()[0].data()[0]);
+            }
+        }
+    }
+    drop(clients);
+    service.stop();
+    Ok(())
+}
+
+const SCENARIOS: [&str; 10] = [
     "mem_virtual_720p_1cam",
     "mem_virtual_720p_4cam",
     "mem_mjpeg_luma_720p",
@@ -269,6 +304,7 @@ const SCENARIOS: [&str; 9] = [
     "mem_shared_luma_and_rgb_to_320x180",
     "mem_shared_3x_luma_to_320x180",
     "mem_served_luma_to_320x180",
+    "mem_camera_service_2_clients",
 ];
 
 fn run(scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -291,6 +327,12 @@ fn run(scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
             };
             let recording = c270_recording()?;
             let result = measure(scenario, 1, || shared_replay(&recording, &consumers, 60));
+            let _ = std::fs::remove_file(recording);
+            return result;
+        }
+        "mem_camera_service_2_clients" => {
+            let recording = c270_recording()?;
+            let result = measure(scenario, 1, || served_camera(&recording, 60));
             let _ = std::fs::remove_file(recording);
             return result;
         }
