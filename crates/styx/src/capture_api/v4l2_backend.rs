@@ -503,7 +503,7 @@ pub(super) fn start_v4l2(
         Type::VideoCapture,
         u32::try_from(capture_tunables.queue_depth + capture_tunables.extra_buffers)
             .unwrap_or(4)
-            .clamp(4, 16),
+            .clamp(3, 16),
         Duration::from_millis(v4l2_config.mmap_poll_ms),
     )
     .map_err(|e| CaptureError::Backend(e.to_string()))?;

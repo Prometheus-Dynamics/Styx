@@ -136,6 +136,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - The planner's `Priority::Latency` uses a one-frame queue (newest frame only).
 - FFmpeg is linked without ffmpeg-next's default `device`, `filter` and `software-resampling`
   features, so `codec-ffmpeg` builds no longer load libavdevice, libavfilter or libswresample.
+- V4L2 captures may use 3 buffers (was at least 4), so `latest_frame_only()` saves one buffer
+  (0.6–0.7 MB for a C270).
 - The default capture queue depth is 2 (was 4). With drop-oldest, deeper queues only add
   latency and device buffers.
 - Processing stages keep the input frame's `FrameMeta::clock` when they keep its timestamp

@@ -404,6 +404,64 @@ mod tests {
             .expect("encode")
     }
 
+    /// Real Logitech C270 720p frames with restart markers (splittable into slices).
+    fn c270_frames() -> Vec<FrameLease> {
+        let data = include_bytes!("../../../testing/fixtures/c270_720p_rst.mjpeg");
+        let starts: Vec<usize> = data
+            .windows(2)
+            .enumerate()
+            .filter(|(_, w)| w == &[0xFF, 0xD8])
+            .map(|(i, _)| i)
+            .collect();
+        let res = Resolution::new(1280, 720).unwrap();
+        starts
+            .iter()
+            .zip(starts.iter().skip(1).chain(std::iter::once(&data.len())))
+            .map(|(&start, &end)| {
+                let jpeg = &data[start..end];
+                let mut buf = BufferPool::with_limits(1, jpeg.len(), 1).lease();
+                buf.resize(jpeg.len());
+                buf.as_mut_slice().copy_from_slice(jpeg);
+                FrameLease::single_plane(
+                    FrameMeta::new(MediaFormat::new(FourCc::MJPG, res, ColorSpace::Srgb), 0),
+                    buf,
+                    jpeg.len(),
+                    jpeg.len(),
+                )
+            })
+            .collect()
+    }
+
+    fn decode_all(decoder: &TurbojpegLumaDecoder) -> Vec<Vec<u8>> {
+        c270_frames()
+            .into_iter()
+            .map(|f| decoder.process(f).unwrap().to_visible_vec().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn pooled_slice_decode_matches_single_threaded_decode_across_threads() {
+        let single = decode_all(&TurbojpegLumaDecoder::with_options(LumaDecodeOptions {
+            threads: 1,
+            ..Default::default()
+        }));
+        assert_eq!(single.len(), 8);
+        let parallel = TurbojpegLumaDecoder::with_options(LumaDecodeOptions {
+            threads: 4,
+            ..Default::default()
+        });
+        // Several decoders (cameras) sharing the slice workers at once.
+        std::thread::scope(|scope| {
+            for _ in 0..3 {
+                scope.spawn(|| {
+                    for _ in 0..5 {
+                        assert_eq!(decode_all(&parallel), single);
+                    }
+                });
+            }
+        });
+    }
+
     #[test]
     fn decodes_to_aligned_grey_with_timestamp() {
         let decoded = TurbojpegLumaDecoder::new()

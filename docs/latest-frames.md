@@ -32,7 +32,9 @@ let config = StyxConfig::new()
   `Priority::Latency`.
 
 The defaults (queue depth 2, 2 extra buffers) use 4 device buffers, and `latest_frame_only()`
-uses 3. Buffers are the main memory cost of a capture. Each 1280x720 NV12 libcamera buffer is
+uses 3. For V4L2 this saves 0.6–0.7 MB per USB camera compared with 4; a consumer slower than
+the camera gets slightly fewer frames (C270 MJPEG 720p: 7.0 instead of 7.5 fps) at the same
+frame age. `capture_extra_buffers(3)` restores the fourth buffer. Buffers are the main memory cost of a capture. Each 1280x720 NV12 libcamera buffer is
 1.4 MB, and libcamera's own internal buffers grow with the request count too (15.3 MB at 4
 requests, 19.3 MB at 7).
 
