@@ -3,7 +3,13 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CaptureRetryStats {
     pub start_retry_count: u64,
-    pub netcam_retry_count: u64,
+    /// Attempts to reconnect a live source after it disconnected or stalled.
+    pub reconnect_attempts: u64,
+    /// Times frames resumed after reconnect attempts.
+    pub reconnects: u64,
+    /// Time without frames before the last reconnect, in milliseconds (last frame before the
+    /// disconnect to the first frame after it).
+    pub last_reconnect_downtime_ms: Option<u64>,
     pub last_retry_reason: Option<String>,
     pub last_retry_error: Option<String>,
     pub last_successful_frame_unix_ms: Option<u128>,
@@ -12,6 +18,8 @@ pub struct CaptureRetryStats {
 #[derive(Clone, Default)]
 pub struct CaptureRetryMetrics {
     inner: Arc<Mutex<CaptureRetryStats>>,
+    /// Set by the first reconnect attempt, cleared by the next successful frame.
+    disconnected_since: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 impl CaptureRetryMetrics {
@@ -25,24 +33,45 @@ impl CaptureRetryMetrics {
         stats.last_retry_error = Some(error.into());
     }
 
-    #[cfg(feature = "netcam")]
-    pub fn record_netcam_retry(&self, reason: impl Into<String>, error: impl Into<String>) {
+    /// Start the downtime of the next reconnect at `since` (the last frame) unless one is
+    /// already running.
+    pub(crate) fn record_disconnected_since(&self, since: std::time::Instant) {
+        self.disconnected_since
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_or_insert(since);
+    }
+
+    pub fn record_reconnect_attempt(&self, reason: impl Into<String>, error: impl Into<String>) {
+        self.disconnected_since
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_or_insert_with(std::time::Instant::now);
         let mut stats = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        stats.netcam_retry_count = stats.netcam_retry_count.saturating_add(1);
+        stats.reconnect_attempts = stats.reconnect_attempts.saturating_add(1);
         stats.last_retry_reason = Some(reason.into());
         stats.last_retry_error = Some(error.into());
     }
 
-    #[cfg(feature = "netcam")]
     pub fn record_successful_frame(&self) {
+        let downtime = self
+            .disconnected_since
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .map(|since| since.elapsed());
         let mut stats = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         stats.last_successful_frame_unix_ms = Some(now_unix_ms());
+        if let Some(downtime) = downtime {
+            stats.reconnects = stats.reconnects.saturating_add(1);
+            stats.last_reconnect_downtime_ms = Some(downtime.as_millis() as u64);
+        }
     }
 
     pub fn merge_snapshot(&self, snapshot: CaptureRetryStats) {
@@ -53,9 +82,13 @@ impl CaptureRetryMetrics {
         stats.start_retry_count = stats
             .start_retry_count
             .saturating_add(snapshot.start_retry_count);
-        stats.netcam_retry_count = stats
-            .netcam_retry_count
-            .saturating_add(snapshot.netcam_retry_count);
+        stats.reconnect_attempts = stats
+            .reconnect_attempts
+            .saturating_add(snapshot.reconnect_attempts);
+        stats.reconnects = stats.reconnects.saturating_add(snapshot.reconnects);
+        if snapshot.last_reconnect_downtime_ms.is_some() {
+            stats.last_reconnect_downtime_ms = snapshot.last_reconnect_downtime_ms;
+        }
         if snapshot.last_retry_reason.is_some() {
             stats.last_retry_reason = snapshot.last_retry_reason;
         }
@@ -75,7 +108,6 @@ impl CaptureRetryMetrics {
     }
 }
 
-#[cfg(feature = "netcam")]
 fn now_unix_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

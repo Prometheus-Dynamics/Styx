@@ -224,7 +224,7 @@ pub(super) fn start_netcam(
                 "netcam retry backoff"
             );
             retry_metrics_for_thread
-                .record_netcam_retry("netcam_backoff", "netcam stream retry scheduled");
+                .record_reconnect_attempt("netcam_backoff", "netcam stream retry scheduled");
             if sleep_until_netcam_stop(
                 &stop_for_thread,
                 backoff,
@@ -452,7 +452,7 @@ async fn async_netcam_worker(
             backoff_ms = backoff.as_millis() as u64,
             "netcam retry backoff"
         );
-        retry_metrics.record_netcam_retry("netcam_backoff", "netcam stream retry scheduled");
+        retry_metrics.record_reconnect_attempt("netcam_backoff", "netcam stream retry scheduled");
         if async_sleep_until_netcam_stop(
             &stop,
             backoff,

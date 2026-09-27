@@ -40,7 +40,7 @@ use self::util::{
     control_value_enabled, map_pixel_format_to_fourcc, normalize_requested_fourcc_for_libcamera,
     pisp_disallowed_fourcc, stream_role_for_request, supports_frame_duration_limits,
 };
-use super::handle::enqueue_capture_frame;
+use super::handle::{CaptureQueue, enqueue_capture_frame, record_worker_error};
 
 pub(super) fn stop_manager_if_idle(configured: bool) {
     if util::stop_when_idle_enabled(configured) {
@@ -48,10 +48,7 @@ pub(super) fn stop_manager_if_idle(configured: bool) {
     }
 }
 
-fn record_worker_error(worker_error: &Mutex<Option<CaptureError>>, err: &CaptureError) {
-    *worker_error.lock() = Some(err.clone());
-}
-
+#[allow(clippy::too_many_arguments)]
 pub(super) fn start_libcamera(
     backend: &ProbedBackend,
     mode: Mode,
@@ -60,6 +57,7 @@ pub(super) fn start_libcamera(
     descriptor: CaptureDescriptor,
     tdn_output_mode: TdnOutputMode,
     config: &StyxConfig,
+    queue: Option<CaptureQueue>,
 ) -> Result<CaptureHandle, CaptureError> {
     use libcamera::camera::CameraConfigurationStatus;
     use libcamera::geometry::Size;
@@ -126,7 +124,9 @@ pub(super) fn start_libcamera(
     let libcamera_config = config.libcamera_config();
     let queue_depth = capture_tunables.queue_depth;
     let _ = requested_fps;
-    let (tx, rx) = styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow);
+    let (tx, rx) = queue.unwrap_or_else(|| {
+        styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow)
+    });
     let (setup_tx, setup_rx) = mpsc::channel();
     let (stop_tx, stop_rx) = mpsc::channel();
     let (ctrl_tx, ctrl_rx) = mpsc::channel();

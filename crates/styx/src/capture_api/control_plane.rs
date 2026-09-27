@@ -37,6 +37,9 @@ pub enum ControlPlane {
         state: simulation_backend::SimulationControlStateHandle,
     },
     Virtual,
+    /// A reconnecting capture: controls go to whichever backend capture is running and are
+    /// re-applied after a reconnect.
+    Supervised(std::sync::Arc<super::supervisor::SupervisedCapture>),
 }
 
 pub(crate) fn apply_control_to_plane(
@@ -53,6 +56,15 @@ pub(crate) fn apply_control_to_plane(
         "control request started"
     );
     let result = match control {
+        ControlPlane::Supervised(shared) => {
+            let result = shared
+                .current_control()
+                .and_then(|inner| apply_control_to_plane(&inner, id, _value.clone()));
+            if result.is_ok() {
+                shared.remember_control(id, _value);
+            }
+            result
+        }
         ControlPlane::None | ControlPlane::Virtual => Err(CaptureError::ControlUnsupported),
         #[cfg(feature = "v4l2")]
         ControlPlane::V4l2 { path } => apply_v4l2_controls(path, &[(id, _value)]),
@@ -93,6 +105,9 @@ pub(crate) fn read_control_from_plane(
         "control request started"
     );
     let result = match control {
+        ControlPlane::Supervised(shared) => shared
+            .current_control()
+            .and_then(|inner| read_control_from_plane(&inner, id)),
         #[cfg(feature = "v4l2")]
         ControlPlane::V4l2 { path } => read_v4l2_control(path, id),
         #[cfg(feature = "libcamera")]
@@ -133,6 +148,7 @@ pub(crate) fn read_control_from_plane(
 fn control_plane_backend(control: &ControlPlane) -> &'static str {
     match control {
         ControlPlane::None => "none",
+        ControlPlane::Supervised(_) => "supervised",
         ControlPlane::Virtual => "virtual",
         #[cfg(feature = "v4l2")]
         ControlPlane::V4l2 { .. } => "v4l2",

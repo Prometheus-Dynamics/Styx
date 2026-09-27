@@ -1,4 +1,4 @@
-use super::{
+use super::layout::{
     build_v4l2_single_plane_layout, plan_v4l2_single_plane_layout, supports_v4l2_mmap_zero_copy,
 };
 use styx_core::prelude::FourCc;

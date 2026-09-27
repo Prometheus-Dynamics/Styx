@@ -32,6 +32,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Added `QueueOverflow` and `bounded_with` (styx-core), `CaptureConfig::queue_overflow`,
   `CaptureConfig::extra_buffers`, `StyxConfig::latest_frame_only()` and
   `FrameDropReason::CaptureQueueEviction`. See `docs/latest-frames.md`.
+- Added camera disconnect recovery for libcamera and V4L2 captures (`ReconnectPolicy`, on by
+  default): the handle stays open, the camera is found again by identity keys and restarted
+  with the same mode, config and controls. Adds `CaptureError::Disconnected`,
+  `CaptureRetryStats::{reconnects, last_reconnect_downtime_ms}`, `QueueStats::sent` and
+  `ControlPlane::Supervised`. See `docs/reconnect.md`.
 
 - Added cached dma-heap capture buffers for libcamera (`LibcameraBufferMemory`, default `Auto`:
   on for Raspberry Pi cameras, falling back to libcamera's allocator). libcamera's own PiSP
@@ -89,6 +94,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `CaptureRetryStats::netcam_retry_count` and `CaptureRetryMetrics::record_netcam_retry` are
+  now `reconnect_attempts` and `record_reconnect_attempt`, shared by netcam, libcamera and V4L2.
+- A V4L2 device that disappears (`ENODEV`) ends its capture with `CaptureError::Disconnected`
+  instead of retrying the dequeue forever.
+- `BoundedTx` is `Clone` for any element type.
 - Capture queues now drop their oldest frame when full (`QueueOverflow::DropOldest`) instead of
   blocking the worker and then dropping the new frame; `Backpressure` restores the old
   behaviour.

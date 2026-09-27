@@ -13,6 +13,7 @@
 //! ```
 mod control_plane;
 pub mod controls;
+mod dispatch;
 #[cfg(any(
     feature = "netcam",
     feature = "file-backend",
@@ -38,6 +39,7 @@ pub use request::{
     CaptureRequest, CaptureSource, CaptureStartPolicy, ControlApplyKind, SelectedCamera,
     TdnOutputMode, start_capture,
 };
+pub use supervisor::SupervisedCapture;
 pub use tunables::{
     BackendConfig, CaptureConfig, CaptureTunables, CodecConfig, DEFAULT_CAPTURE_IDLE_POLL_MS,
     DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS, DEFAULT_LIBCAMERA_CONTROL_RESPONSE_TIMEOUT_MS,
@@ -51,7 +53,7 @@ pub use tunables::{
     DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH, DEFAULT_V4L2_ERROR_BACKOFF_MS,
     DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig,
     LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, NetcamConfig,
-    NetcamTunables, StyxConfig, TransformConfig, V4l2Config,
+    NetcamTunables, ReconnectPolicy, StyxConfig, TransformConfig, V4l2Config,
 };
 
 // Release policy: these backend handle types are consumed only by feature-gated constructors, so
@@ -221,6 +223,7 @@ pub(crate) mod handle;
 #[cfg(test)]
 mod handle_tests;
 mod request;
+mod supervisor;
 mod tunables;
 
 #[cfg(feature = "libcamera")]

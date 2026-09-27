@@ -495,6 +495,46 @@ fn latest_frame_only_replaces_stale_frames_for_slow_consumers() {
 }
 
 #[test]
+fn supervised_capture_resumes_on_the_same_handle_after_losing_its_backend() {
+    let device = crate::capture_api::make_virtual_rgb_device("reconnect", 2, 2, 100);
+    let handle = CaptureSource::new(device)
+        .open_with_config(StyxConfig::new().capture_reconnect(
+            crate::capture_api::ReconnectPolicy {
+                initial_backoff_ms: 10,
+                ..crate::capture_api::ReconnectPolicy::default()
+            },
+        ))
+        .expect("open supervised");
+    let wait = std::time::Duration::from_millis(500);
+    assert!(matches!(handle.recv_blocking(wait), RecvOutcome::Data(_)));
+
+    // Simulate the camera going away: the running backend capture ends.
+    let crate::capture_api::ControlPlane::Supervised(shared) = &handle.control else {
+        panic!("capture is not supervised");
+    };
+    shared.inner.lock().take().expect("backend capture").stop();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    while matches!(handle.recv(), RecvOutcome::Data(_)) {}
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let resumed = loop {
+        if matches!(handle.recv_blocking(wait), RecvOutcome::Data(_)) {
+            break true;
+        }
+        if std::time::Instant::now() > deadline {
+            break false;
+        }
+    };
+    assert!(resumed, "frames did not resume");
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let retries = handle.health_report().capture_retries;
+    assert_eq!(retries.reconnect_attempts, 1);
+    assert_eq!(retries.reconnects, 1);
+    assert!(retries.last_reconnect_downtime_ms.is_some());
+    handle.stop();
+}
+
+#[test]
 fn capture_source_builds_pipeline_without_manual_request_builder() {
     let device = crate::capture_api::make_virtual_rgb_device("source-pipeline", 2, 2, 30);
     let source = CaptureSource::new(device);

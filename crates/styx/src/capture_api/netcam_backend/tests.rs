@@ -140,12 +140,12 @@ fn disconnected_netcam_records_retry_health() {
     let started = Instant::now();
     let mut retries = 0;
     while retries == 0 && started.elapsed() < Duration::from_secs(1) {
-        retries = handle.health_report().capture_retries.netcam_retry_count;
+        retries = handle.health_report().capture_retries.reconnect_attempts;
         std::thread::sleep(Duration::from_millis(10));
     }
 
     let retry_stats = handle.health_report().capture_retries;
-    assert!(retry_stats.netcam_retry_count > 0);
+    assert!(retry_stats.reconnect_attempts > 0);
     assert_eq!(
         retry_stats.last_retry_reason.as_deref(),
         Some("netcam_backoff")

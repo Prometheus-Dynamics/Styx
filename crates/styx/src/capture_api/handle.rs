@@ -2,26 +2,18 @@ use std::{mem, sync::Arc, time::Instant};
 
 use parking_lot::Mutex;
 
+use crate::BackendKind;
 use crate::metrics::{
     CaptureRetryMetrics, CaptureShutdownStats, CaptureShutdownWorkerWaitOutcome, StageMetrics,
 };
-use crate::{BackendKind, ProbedBackend};
 
 use super::control_plane::{ControlPlane, apply_control_to_plane, read_control_from_plane};
-#[cfg(feature = "file-backend")]
-use super::file_backend;
-#[cfg(feature = "libcamera")]
-use super::libcamera_backend;
-#[cfg(feature = "netcam")]
-use super::netcam_backend;
-use super::request::{CaptureError, CaptureStartPolicy, TdnOutputMode};
-use super::tunables::StyxConfig;
-#[cfg(feature = "v4l2")]
-use super::v4l2_backend;
-use super::virtual_backend;
-#[cfg(feature = "simulation-bevy")]
-use crate::simulation::backend as simulation_backend;
+use super::request::{CaptureError, CaptureStartPolicy};
 use styx_capture::prelude::*;
+
+/// A capture queue handed to a backend instead of the one it would create, so a restarted
+/// backend keeps feeding the same consumer.
+pub(crate) type CaptureQueue = (BoundedTx<FrameLease>, BoundedRx<FrameLease>);
 
 pub(crate) fn enqueue_capture_frame(
     tx: &BoundedTx<FrameLease>,
@@ -47,7 +39,7 @@ pub(crate) fn enqueue_capture_frame(
     }
 }
 
-#[cfg(feature = "netcam")]
+#[cfg(any(feature = "netcam", feature = "v4l2", feature = "libcamera"))]
 pub(super) fn record_worker_error(worker_error: &Mutex<Option<CaptureError>>, err: &CaptureError) {
     *worker_error.lock() = Some(err.clone());
 }
@@ -237,6 +229,36 @@ impl CaptureHandle {
         self.teardown_in_place();
     }
 
+    /// For a reconnecting capture: `f` applied to the running backend capture.
+    fn supervised_inner<R: Default>(&self, f: impl FnOnce(&CaptureHandle) -> R) -> R {
+        match &self.control {
+            ControlPlane::Supervised(shared) => {
+                shared.inner.lock().as_ref().map(f).unwrap_or_default()
+            }
+            _ => R::default(),
+        }
+    }
+
+    /// Sequence gaps counted by the backend captures of a reconnecting capture.
+    fn supervised_sequence_gaps(&self) -> u64 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let past = match &self.control {
+            ControlPlane::Supervised(shared) => shared.past_sequence_gaps.load(Relaxed),
+            _ => 0,
+        };
+        past + self.supervised_inner(|inner| inner.sequence_gaps.load(Relaxed))
+    }
+
+    /// Whether the capture worker thread has exited.
+    pub(crate) fn worker_finished(&self) -> bool {
+        match &self.worker {
+            Some(WorkerHandle::Thread(handle)) => handle.is_finished(),
+            #[cfg(feature = "async")]
+            Some(WorkerHandle::Async(handle)) => handle.is_finished(),
+            None => true,
+        }
+    }
+
     /// Stop the capture worker without consuming the handle.
     pub fn stop_in_place(&mut self) {
         self.teardown_in_place();
@@ -338,7 +360,7 @@ impl CaptureHandle {
         );
         #[cfg(feature = "libcamera")]
         if self.libcamera_idle_stop_allowed {
-            libcamera_backend::stop_manager_if_idle(self.libcamera_stop_when_idle);
+            super::libcamera_backend::stop_manager_if_idle(self.libcamera_stop_when_idle);
         }
     }
 
@@ -436,6 +458,7 @@ impl CaptureHandle {
                 .external_backings
                 .iter()
                 .map(|tracker| tracker.snapshot())
+                .chain(self.supervised_inner(|inner| inner.memory_stats().external_backings))
                 .collect(),
             transform_pool: styx_core::transform::transform_pool_stats(),
             decoder_pool: None,
@@ -463,7 +486,8 @@ impl CaptureHandle {
         let mut drop_reasons = Vec::new();
         let sequence_gaps = self
             .sequence_gaps
-            .load(std::sync::atomic::Ordering::Relaxed);
+            .load(std::sync::atomic::Ordering::Relaxed)
+            + self.supervised_sequence_gaps();
         for (reason, count) in [
             (Reason::CaptureQueueSendTimeout, queue.send_timeouts),
             (Reason::CaptureQueueEviction, queue.evictions),
@@ -743,55 +767,5 @@ impl CaptureSource for CaptureHandle {
             RecvOutcome::Data(frame) => Some(frame),
             RecvOutcome::Closed | RecvOutcome::Empty => None,
         }
-    }
-}
-
-pub(crate) fn start_backend(
-    backend: &ProbedBackend,
-    mode: Mode,
-    interval: Option<Interval>,
-    descriptor: CaptureDescriptor,
-    _controls: Vec<(ControlId, ControlValue)>,
-    _tdn_output_mode: TdnOutputMode,
-    config: &StyxConfig,
-) -> Result<CaptureHandle, CaptureError> {
-    match backend.kind {
-        BackendKind::Virtual => virtual_backend::start_virtual(mode, interval, descriptor, config),
-        #[cfg(feature = "v4l2")]
-        BackendKind::V4l2 => {
-            v4l2_backend::start_v4l2(backend, mode, interval, _controls, descriptor, config)
-        }
-        #[cfg(not(feature = "v4l2"))]
-        BackendKind::V4l2 => Err(CaptureError::BackendMissing(BackendKind::V4l2)),
-        #[cfg(feature = "libcamera")]
-        BackendKind::Libcamera => libcamera_backend::start_libcamera(
-            backend,
-            mode,
-            interval,
-            _controls,
-            descriptor,
-            _tdn_output_mode,
-            config,
-        ),
-        #[cfg(not(feature = "libcamera"))]
-        BackendKind::Libcamera => Err(CaptureError::BackendMissing(BackendKind::Libcamera)),
-        #[cfg(feature = "netcam")]
-        BackendKind::Netcam => {
-            netcam_backend::start_netcam(backend, mode, interval, descriptor, config)
-        }
-        #[cfg(not(feature = "netcam"))]
-        BackendKind::Netcam => Err(CaptureError::BackendMissing(BackendKind::Netcam)),
-        #[cfg(feature = "file-backend")]
-        BackendKind::File => {
-            file_backend::start_file(backend, mode, interval, _controls, descriptor, config)
-        }
-        #[cfg(not(feature = "file-backend"))]
-        BackendKind::File => Err(CaptureError::BackendMissing(BackendKind::File)),
-        #[cfg(feature = "simulation-bevy")]
-        BackendKind::Simulation => simulation_backend::start_simulation(
-            backend, mode, interval, _controls, descriptor, config,
-        ),
-        #[cfg(not(feature = "simulation-bevy"))]
-        BackendKind::Simulation => Err(CaptureError::BackendMissing(BackendKind::Simulation)),
     }
 }

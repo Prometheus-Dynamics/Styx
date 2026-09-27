@@ -19,6 +19,7 @@ pub(super) fn start_virtual(
     interval: Option<Interval>,
     descriptor: CaptureDescriptor,
     config: &StyxConfig,
+    queue: Option<super::handle::CaptureQueue>,
 ) -> Result<CaptureHandle, CaptureError> {
     let capture_tunables = config.capture_tunables();
     let pool_limits = capture_tunables.pool_limits(4, 1 << 20, 8);
@@ -37,7 +38,9 @@ pub(super) fn start_virtual(
         VirtualCapture::new(mode.clone(), pool, 3)
     };
     let queue_depth = capture_tunables.queue_depth;
-    let (tx, rx) = styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow);
+    let (tx, rx) = queue.unwrap_or_else(|| {
+        styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow)
+    });
     let (stop_tx, stop_rx) = mpsc::channel();
     let frame_interval = interval
         .map(|interval| Duration::from_secs_f32(1.0 / interval.fps().max(1.0)))

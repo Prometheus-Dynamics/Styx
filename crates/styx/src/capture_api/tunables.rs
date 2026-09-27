@@ -1,4 +1,5 @@
 use styx_codec::prelude::{CodecRegistryConfig, DEFAULT_CODEC_MAX_HEIGHT, DEFAULT_CODEC_MAX_WIDTH};
+use styx_core::prelude::{ClockSource, QueueOverflow};
 use styx_core::transform::TransformPoolConfig;
 
 /// Default capture queue depth (frames). Full queues drop their oldest frame, so a deeper queue
@@ -63,7 +64,6 @@ pub const DEFAULT_NETCAM_MAX_JPEG_BYTES: usize = 32 << 20;
 pub const DEFAULT_FILE_IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Preferred libcamera stream role for processed, non-raw/non-encoded requests.
-use styx_core::prelude::{ClockSource, QueueOverflow};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -96,100 +96,11 @@ pub enum LibcameraBufferMemory {
     DmaHeap,
 }
 
-/// Tunables for capture queues and buffer pools.
-///
-/// Prefer `StyxConfig` builder methods for application configuration. If direct
-/// struct construction is needed, include `..CaptureTunables::default()` so new
-/// release tunables pick up their documented defaults.
-///
-/// # Example
-/// ```rust
-/// use styx::prelude::*;
-///
-/// let config = StyxConfig::new()
-///     .capture_queue_depth(8)
-///     .capture_pool(6, 2 << 20, 8);
-/// ```
-#[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct CaptureConfig {
-    /// Number of frames buffered between a capture worker and consumers.
-    pub queue_depth: usize,
-    /// Minimum number of reusable capture buffers to keep in backend pools.
-    pub pool_min: usize,
-    /// Minimum byte size for each reusable capture buffer.
-    pub pool_bytes: usize,
-    /// Extra reusable buffers beyond `pool_min` for bursty pipelines.
-    pub pool_spare: usize,
-    /// Maximum time a generic capture worker waits when enqueueing a frame, in milliseconds.
-    pub queue_send_timeout_ms: u64,
-    /// Stop polling interval used while a generic capture worker is idle, in milliseconds.
-    pub idle_poll_ms: u64,
-    /// What happens when a frame arrives while the queue is full. `DropOldest` (default) keeps
-    /// the newest frames; `Backpressure` waits `queue_send_timeout_ms`, then drops the new frame.
-    pub queue_overflow: QueueOverflow,
-    /// Device buffers (libcamera, V4L2) allocated beyond `queue_depth`.
-    pub extra_buffers: usize,
-    /// Clock live sources stamp frames with. File and simulation sources always report media
-    /// time (`TimestampClock::StreamRelative`).
-    pub timestamp_clock: ClockSource,
-}
-
-pub type CaptureTunables = CaptureConfig;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PoolLimits {
-    pub min: usize,
-    pub bytes: usize,
-    pub spare: usize,
-}
-
-impl Default for CaptureConfig {
-    fn default() -> Self {
-        Self {
-            queue_depth: DEFAULT_QUEUE_DEPTH,
-            pool_min: DEFAULT_POOL_MIN,
-            pool_bytes: DEFAULT_POOL_BYTES,
-            pool_spare: DEFAULT_POOL_SPARE,
-            queue_send_timeout_ms: DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS,
-            idle_poll_ms: DEFAULT_CAPTURE_IDLE_POLL_MS,
-            queue_overflow: QueueOverflow::DropOldest,
-            extra_buffers: DEFAULT_CAPTURE_EXTRA_BUFFERS,
-            timestamp_clock: ClockSource::Native,
-        }
-    }
-}
-
-impl CaptureConfig {
-    pub(crate) fn sanitized(self) -> Self {
-        Self {
-            queue_depth: self.queue_depth.max(1),
-            pool_min: self.pool_min.max(1),
-            pool_bytes: self.pool_bytes.max(1),
-            pool_spare: self.pool_spare,
-            queue_send_timeout_ms: self.queue_send_timeout_ms.max(1),
-            idle_poll_ms: self.idle_poll_ms.max(1),
-            queue_overflow: self.queue_overflow,
-            extra_buffers: self.extra_buffers,
-            timestamp_clock: self.timestamp_clock,
-        }
-    }
-
-    pub(crate) fn pool_limits(
-        self,
-        default_min: usize,
-        default_bytes: usize,
-        default_spare: usize,
-    ) -> PoolLimits {
-        let tunables = self.sanitized();
-        PoolLimits {
-            min: tunables.pool_min.max(default_min.max(1)),
-            bytes: tunables.pool_bytes.max(default_bytes.max(1)),
-            spare: tunables.pool_spare.max(default_spare),
-        }
-    }
-}
+#[path = "tunables/capture.rs"]
+mod capture;
+#[cfg(feature = "netcam")]
+pub(crate) use capture::PoolLimits;
+pub use capture::{CaptureConfig, CaptureTunables, ReconnectPolicy};
 
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -451,6 +362,12 @@ impl StyxConfig {
     /// Override capture queue depth.
     pub fn capture_queue_depth(mut self, depth: usize) -> Self {
         self.capture.queue_depth = depth;
+        self
+    }
+
+    /// Disconnect and stall recovery for libcamera and V4L2 cameras.
+    pub fn capture_reconnect(mut self, policy: ReconnectPolicy) -> Self {
+        self.capture.reconnect = policy;
         self
     }
 

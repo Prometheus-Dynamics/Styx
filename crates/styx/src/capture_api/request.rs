@@ -9,73 +9,18 @@ use super::LIBCAMERA_NOISE_REDUCTION_MODE;
 #[cfg(feature = "netcam")]
 use super::NetcamSourceConfig;
 use super::VirtualSourceConfig;
-use super::handle::start_backend;
+use super::dispatch::start_backend;
 use super::tunables::StyxConfig;
 use crate::metrics::CaptureRetryMetrics;
 
 mod camera;
+mod error;
 mod source;
 pub use camera::{
     CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, SelectedCamera,
 };
+pub use error::{CaptureError, ControlApplyKind};
 pub use source::CaptureSource;
-
-/// Errors starting a capture session.
-///
-/// # Example
-/// ```rust
-/// use styx::prelude::*;
-///
-/// let err = CaptureError::BackendMissing(BackendKind::V4l2);
-/// assert_eq!(err.code(), "backend_missing");
-/// ```
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum CaptureError {
-    #[error("device has no backends")]
-    NoBackend,
-    #[error("backend {0:?} not available on this device")]
-    BackendUnavailable(BackendKind),
-    #[error("backend {0:?} not implemented in this build")]
-    BackendMissing(BackendKind),
-    #[error("no modes advertised by backend")]
-    NoModes,
-    #[error("no camera matched request")]
-    NoCameraMatchingRequest,
-    #[error("mode {0:?} not advertised by backend")]
-    InvalidMode(ModeId),
-    #[error("capture config rejected: {0}")]
-    InvalidConfig(String),
-    #[error("control plane not available for backend")]
-    ControlUnsupported,
-    #[error("control apply failed: {message}")]
-    ControlApply {
-        kind: ControlApplyKind,
-        message: String,
-    },
-    #[error("libcamera camera not found: requested={requested}, seen={seen:?}")]
-    LibcameraCameraNotFound {
-        requested: String,
-        seen: Vec<String>,
-    },
-    #[error("libcamera backend busy: {0}")]
-    LibcameraBusy(String),
-    #[error("libcamera generate_configuration failed")]
-    LibcameraGenerateConfigurationFailed,
-    #[error("libcamera TDN output stream unavailable")]
-    LibcameraTdnOutputUnavailable,
-    #[error("libcamera TDN configuration mismatch: {0}")]
-    LibcameraTdnConfigurationMismatch(String),
-    #[error("backend error: {0}")]
-    Backend(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlApplyKind {
-    Other,
-    SetControlsRejected,
-    InvalidArgument,
-    PermissionDenied,
-}
 
 /// TDN output stream selection policy (libcamera PiSP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -118,122 +63,6 @@ impl CaptureStartPolicy {
             retry_without_controls_on_control_errors: true,
             retry_with_tdn_disabled: true,
         }
-    }
-}
-
-impl CaptureError {
-    pub fn control_apply(message: impl Into<String>) -> Self {
-        Self::ControlApply {
-            kind: ControlApplyKind::Other,
-            message: message.into(),
-        }
-    }
-
-    pub fn classified_control_apply(kind: ControlApplyKind, message: impl Into<String>) -> Self {
-        Self::ControlApply {
-            kind,
-            message: message.into(),
-        }
-    }
-
-    /// Stable string code for error classification.
-    pub fn code(&self) -> &'static str {
-        match self {
-            CaptureError::NoBackend => "no_backend",
-            CaptureError::BackendUnavailable(_) => "backend_unavailable",
-            CaptureError::BackendMissing(_) => "backend_missing",
-            CaptureError::NoModes => "no_modes",
-            CaptureError::NoCameraMatchingRequest => "no_camera_matching_request",
-            CaptureError::InvalidMode(_) => "invalid_mode",
-            CaptureError::InvalidConfig(_) => "invalid_config",
-            CaptureError::ControlUnsupported => "control_unsupported",
-            CaptureError::ControlApply { .. } => "control_apply_failed",
-            CaptureError::LibcameraCameraNotFound { .. } => "libcamera_camera_not_found",
-            CaptureError::LibcameraBusy(_) => "libcamera_busy",
-            CaptureError::LibcameraGenerateConfigurationFailed => {
-                "libcamera_generate_configuration_failed"
-            }
-            CaptureError::LibcameraTdnOutputUnavailable => "libcamera_tdn_output_unavailable",
-            CaptureError::LibcameraTdnConfigurationMismatch(_) => {
-                "libcamera_tdn_configuration_mismatch"
-            }
-            CaptureError::Backend(_) => "backend_error",
-        }
-    }
-
-    /// Whether the error may succeed when retried.
-    pub fn retryable(&self) -> bool {
-        matches!(
-            self,
-            CaptureError::BackendUnavailable(_)
-                | CaptureError::LibcameraCameraNotFound { .. }
-                | CaptureError::LibcameraBusy(_)
-                | CaptureError::LibcameraGenerateConfigurationFailed
-                | CaptureError::LibcameraTdnOutputUnavailable
-                | CaptureError::Backend(_)
-        )
-    }
-
-    /// Whether a start/reconfigure failure is worth retrying after a short backoff.
-    pub fn is_transient_start(&self) -> bool {
-        matches!(
-            self,
-            CaptureError::LibcameraCameraNotFound { .. }
-                | CaptureError::LibcameraBusy(_)
-                | CaptureError::LibcameraGenerateConfigurationFailed
-                | CaptureError::LibcameraTdnOutputUnavailable
-        )
-    }
-
-    /// Whether the caller should retry with libcamera TDN disabled.
-    pub fn requires_disabling_tdn(&self) -> bool {
-        matches!(
-            self,
-            CaptureError::LibcameraTdnOutputUnavailable
-                | CaptureError::LibcameraTdnConfigurationMismatch(_)
-        )
-    }
-
-    /// Whether the caller should retry without the requested controls.
-    pub fn requires_dropping_controls(&self) -> bool {
-        matches!(
-            self,
-            CaptureError::ControlApply {
-                kind: ControlApplyKind::SetControlsRejected
-                    | ControlApplyKind::InvalidArgument
-                    | ControlApplyKind::PermissionDenied,
-                ..
-            }
-        )
-    }
-}
-
-#[cfg(test)]
-mod error_tests {
-    use super::*;
-
-    #[test]
-    fn classified_control_apply_requests_control_drop() {
-        let err = CaptureError::classified_control_apply(
-            ControlApplyKind::InvalidArgument,
-            "invalid argument",
-        );
-        assert!(err.requires_dropping_controls());
-        assert!(!err.requires_disabling_tdn());
-    }
-
-    #[test]
-    fn libcamera_tdn_unavailable_requests_tdn_disable_and_retry() {
-        let err = CaptureError::LibcameraTdnOutputUnavailable;
-        assert!(err.requires_disabling_tdn());
-        assert!(err.is_transient_start());
-        assert!(err.retryable());
-    }
-
-    #[test]
-    fn generic_control_apply_is_not_treated_as_control_drop() {
-        let err = CaptureError::control_apply("channel closed");
-        assert!(!err.requires_dropping_controls());
     }
 }
 
@@ -371,6 +200,27 @@ impl<'a> CaptureRequest<'a> {
         Ok(minimize_capture_descriptor(&descriptor, &mode.id))
     }
 
+    /// Start the backend capture feeding `queue`, without retries or supervision (used by the
+    /// reconnect supervisor).
+    pub(crate) fn start_into(
+        self,
+        queue: super::handle::CaptureQueue,
+    ) -> Result<super::handle::CaptureHandle, CaptureError> {
+        let (backend, mode, descriptor) = self.resolve_backend_mode()?;
+        let interval = self.interval.or_else(|| default_interval(&mode));
+        let config = self.config.clone().unwrap_or_default();
+        start_backend(
+            backend,
+            mode,
+            interval,
+            descriptor,
+            self.controls.clone(),
+            self.tdn_output_mode,
+            &config,
+            Some(queue),
+        )
+    }
+
     /// Start capture after validating backend/mode/interval/controls.
     ///
     /// Returns a running `CaptureHandle` that can receive frames.
@@ -390,6 +240,8 @@ impl<'a> CaptureRequest<'a> {
             let interval = self.interval.or_else(|| default_interval(&mode));
             let config = self.config.clone().unwrap_or_default();
             config.apply_runtime_tunables();
+            let mode_id = mode.id.clone();
+            let queue = super::supervisor::queue_for(backend.kind, &config);
             match start_backend(
                 backend,
                 mode,
@@ -398,12 +250,27 @@ impl<'a> CaptureRequest<'a> {
                 self.controls.clone(),
                 self.tdn_output_mode,
                 &config,
+                queue
+                    .as_ref()
+                    .map(|q| super::supervisor::backend_queue(&q.0)),
             ) {
                 Ok(handle) => {
                     handle
                         .retry_metrics
                         .merge_snapshot(retry_metrics.snapshot());
-                    return Ok(handle);
+                    return Ok(match queue {
+                        Some(queue) => super::supervisor::supervise(
+                            handle,
+                            queue,
+                            self.device,
+                            mode_id,
+                            interval,
+                            self.controls.clone(),
+                            self.tdn_output_mode,
+                            config,
+                        ),
+                        None => handle,
+                    });
                 }
                 Err(err) => {
                     if policy.retry_with_tdn_disabled
@@ -470,6 +337,12 @@ impl<'a> CaptureRequest<'a> {
             config.apply_runtime_tunables();
             let controls = self.controls.clone();
             let tdn_output_mode = self.tdn_output_mode;
+            let mode_id = mode.id.clone();
+            let queue = super::supervisor::queue_for(backend_kind, &config);
+            let backend_queue = queue
+                .as_ref()
+                .map(|q| super::supervisor::backend_queue(&q.0));
+            let supervise_config = config.clone();
             let started = tokio::task::spawn_blocking(move || {
                 start_backend(
                     &backend,
@@ -479,6 +352,7 @@ impl<'a> CaptureRequest<'a> {
                     controls,
                     tdn_output_mode,
                     &config,
+                    backend_queue,
                 )
             })
             .await
@@ -488,7 +362,19 @@ impl<'a> CaptureRequest<'a> {
                     handle
                         .retry_metrics
                         .merge_snapshot(retry_metrics.snapshot());
-                    return Ok(handle);
+                    return Ok(match queue {
+                        Some(queue) => super::supervisor::supervise(
+                            handle,
+                            queue,
+                            self.device,
+                            mode_id,
+                            interval,
+                            self.controls.clone(),
+                            self.tdn_output_mode,
+                            supervise_config,
+                        ),
+                        None => handle,
+                    });
                 }
                 Err(err) => {
                     if policy.retry_with_tdn_disabled

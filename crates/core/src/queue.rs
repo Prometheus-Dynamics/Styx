@@ -77,6 +77,8 @@ pub struct QueueStats {
     pub capacity: u64,
     pub send_backpressure: u64,
     pub send_timeouts: u64,
+    /// Values accepted into the queue since it was created.
+    pub sent: u64,
     /// Queued values dropped to make room for newer ones ([`QueueOverflow::DropOldest`]).
     pub evictions: u64,
     pub recv_empty: u64,
@@ -96,9 +98,17 @@ pub struct QueueStats {
 /// let (tx, _rx) = bounded::<u8>(1);
 /// assert_eq!(tx.send(1), SendOutcome::Ok);
 /// ```
-#[derive(Clone)]
 pub struct BoundedTx<T> {
     inner: Arc<QueueInner<T>>,
+}
+
+// Manual impl: a derive would require `T: Clone`, but senders only share the queue.
+impl<T> Clone for BoundedTx<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<T> BoundedTx<T> {
@@ -371,6 +381,7 @@ struct QueueInner<T> {
     send_backpressure: AtomicU64,
     send_timeouts: AtomicU64,
     evictions: AtomicU64,
+    sent: AtomicU64,
     recv_empty: AtomicU64,
     recv_timeouts: AtomicU64,
     async_send_waits: AtomicU64,
@@ -395,7 +406,7 @@ impl<T> QueueInner<T> {
     /// Push according to the overflow policy; returns the evicted value, if any, so callers
     /// can drop it after releasing the wait-state lock.
     fn push(&self, value: T) -> Result<Option<T>, T> {
-        match self.overflow {
+        let pushed = match self.overflow {
             QueueOverflow::Backpressure => self.queue.push(value).map(|()| None),
             QueueOverflow::DropOldest => {
                 let evicted = self.queue.force_push(value);
@@ -404,7 +415,11 @@ impl<T> QueueInner<T> {
                 }
                 Ok(evicted)
             }
+        };
+        if pushed.is_ok() {
+            self.sent.fetch_add(1, Ordering::Relaxed);
         }
+        pushed
     }
 
     fn stats(&self) -> QueueStats {
@@ -414,6 +429,7 @@ impl<T> QueueInner<T> {
             send_backpressure: self.send_backpressure.load(Ordering::Relaxed),
             send_timeouts: self.send_timeouts.load(Ordering::Relaxed),
             evictions: self.evictions.load(Ordering::Relaxed),
+            sent: self.sent.load(Ordering::Relaxed),
             recv_empty: self.recv_empty.load(Ordering::Relaxed),
             recv_timeouts: self.recv_timeouts.load(Ordering::Relaxed),
             async_send_waits: self.async_send_waits.load(Ordering::Relaxed),
@@ -514,6 +530,7 @@ pub fn bounded_with<T>(capacity: usize, overflow: QueueOverflow) -> (BoundedTx<T
         send_backpressure: AtomicU64::new(0),
         send_timeouts: AtomicU64::new(0),
         evictions: AtomicU64::new(0),
+        sent: AtomicU64::new(0),
         recv_empty: AtomicU64::new(0),
         recv_timeouts: AtomicU64::new(0),
         async_send_waits: AtomicU64::new(0),
