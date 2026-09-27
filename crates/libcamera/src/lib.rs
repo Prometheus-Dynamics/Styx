@@ -21,11 +21,12 @@ use styx_core::controls::{Access, ControlKind, ControlMetadata, ControlValue};
 mod manager;
 #[cfg(feature = "probe")]
 pub use manager::{
-    ActiveCameraUse, DEFAULT_LIBCAMERA_PROBE_CACHE_MS, LibcameraManagerConfig, begin_camera_use,
-    find_camera, manager_config, set_manager_config, subscribe_hotplug_events, try_stop_if_idle,
+    ActiveCameraUse, DEFAULT_LIBCAMERA_PROBE_CACHE_MS, HotplugSubscription, LibcameraManagerConfig,
+    begin_camera_use, find_camera, manager_config, set_manager_config, subscribe_hotplug_events,
+    try_stop_if_idle,
 };
 #[cfg(feature = "probe")]
-use manager::{read_probe_cache, with_manager_mut, write_probe_cache};
+use manager::{read_probe_cache, with_manager, write_probe_cache};
 
 #[cfg(feature = "probe")]
 pub const LIBCAMERA_FRAME_DURATION_LIMITS: styx_core::controls::ControlId =
@@ -73,6 +74,9 @@ fn probe_devices_inner(force_refresh: bool) -> (Vec<LibcameraDeviceInfo>, Vec<St
 
     let (devices, errors) = collect_devices();
     write_probe_cache(&devices);
+    // Probing starts the manager, which starts an IPA for every camera it finds; release them
+    // unless a capture or hotplug subscription needs the manager.
+    manager::stop_after_probe();
     (devices, errors)
 }
 
@@ -82,7 +86,7 @@ fn collect_devices() -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
         let _ = cached;
     }
 
-    let (devices, errors) = match with_manager_mut(|manager| {
+    let (devices, errors) = match with_manager(|manager| {
         let mut devices = Vec::new();
         let mut errors = Vec::new();
         let cameras = manager.cameras();

@@ -101,6 +101,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- The libcamera manager now stops whenever nothing needs it (`stop_when_idle`, default on):
+  after a probe and when the last capture or hotplug subscription ends. A running manager keeps
+  an IPA process per camera it found; on a CM5 that is 7.6 MB PSS (12.4 MB RSS) per Raspberry
+  Pi camera, whether capturing or not. Starting a capture recreates it (first frame 101 ms).
+- `styx_libcamera::subscribe_hotplug_events` returns a `HotplugSubscription` with the receiver;
+  the manager stays running while it is alive. `LinuxVideoFsWatcher` reports libcamera device
+  changes without keeping the manager running.
 - `BackendKind` and `BackendHandle` have a `Replay` variant; exhaustive matches need a new arm.
 - `CompanionKind` is no longer `#[non_exhaustive]`.
 - `FrameLease::visible_rows` (and so `to_visible_vec`) reads dma-buf frames whose backing maps
@@ -130,6 +137,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Probing libcamera failed while any libcamera camera was capturing ("manager mutation blocked
+  by active camera use"), which also broke reconnects and planning next to a running camera.
+  Probes now use shared access and return complete descriptors during capture.
+- A restarted libcamera manager returned from `start()` before registering its cameras, so
+  probes after an idle stop found no cameras. Stopped managers are now dropped and recreated.
+- Exited libcamera IPA helper processes are reaped when the manager stops instead of staying as
+  zombies.
 - Whole-frame copies of ROI crop views failed plane-length validation: the last row of a view
   ends after its visible bytes, not a full stride.
 - The runtime memory report read kernel dma-buf sizes (`/sys/kernel/debug/dma_buf/bufinfo`,

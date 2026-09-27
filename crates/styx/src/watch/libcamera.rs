@@ -11,12 +11,19 @@ const WATCHER_NAME: &str = "libcamera.hotplug";
 #[derive(Debug)]
 pub struct LibcameraHotplugWatcher {
     receiver: Receiver<HotplugEvent>,
+    /// Keeps the libcamera manager (and its per-camera IPA processes) running while watching.
+    /// `LinuxVideoFsWatcher` also reports libcamera device changes without that cost.
+    _subscription: styx_libcamera::HotplugSubscription,
 }
 
 impl LibcameraHotplugWatcher {
     pub fn new() -> Result<Self, WatchError> {
-        let receiver = styx_libcamera::subscribe_hotplug_events().map_err(WatchError::Backend)?;
-        Ok(Self { receiver })
+        let (receiver, subscription) =
+            styx_libcamera::subscribe_hotplug_events().map_err(WatchError::Backend)?;
+        Ok(Self {
+            receiver,
+            _subscription: subscription,
+        })
     }
 }
 

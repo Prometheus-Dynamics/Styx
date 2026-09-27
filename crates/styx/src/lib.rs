@@ -516,6 +516,7 @@ pub(crate) fn probe_backends_with_errors_with_options(
             let tunables = config.libcamera_config();
             styx_libcamera::set_manager_config(styx_libcamera::LibcameraManagerConfig {
                 probe_cache_ttl_ms: tunables.probe_cache_ttl_ms,
+                stop_when_idle: tunables.stop_when_idle,
             });
         }
         let (libcamera_devices, libcamera_errors) = if _force_refresh {

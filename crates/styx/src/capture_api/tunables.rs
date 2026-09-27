@@ -42,7 +42,7 @@ pub const DEFAULT_LIBCAMERA_CONTROL_RESPONSE_TIMEOUT_MS: u64 = 500;
 /// Default libcamera probe cache time-to-live (milliseconds).
 pub const DEFAULT_LIBCAMERA_PROBE_CACHE_MS: u64 = 1_000;
 /// Default libcamera manager idle-stop behavior.
-pub const DEFAULT_LIBCAMERA_STOP_WHEN_IDLE: bool = false;
+pub const DEFAULT_LIBCAMERA_STOP_WHEN_IDLE: bool = true;
 /// Default libcamera request-pool prefault behavior.
 pub const DEFAULT_LIBCAMERA_PREFAULT_REQUEST_POOLS: bool = true;
 /// Default netcam request timeout (seconds).
