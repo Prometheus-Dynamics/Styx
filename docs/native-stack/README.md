@@ -94,10 +94,20 @@ limits at that fps.
   exists and skip cleanly where it does not (e.g. `/dev/video*`, `/dev/media*`).
 - `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test` pass; files
   stay under 800 lines (`scripts/check-file-sizes.sh`).
-- The device (`ssh root@helios`, a Raspberry Pi CM5): read-only probing only (listing devices,
-  reading sysfs, running our binaries that only query). Do not load or unload kernel modules,
-  change `/boot`, stop services, or reboot; that needs the user's approval each time. Work only
-  in `/tmp` on the device. Never enter passwords.
+- The device (`ssh root@helios`, a Raspberry Pi CM5). Never enter passwords. Work only in `/tmp`
+  on the device. Never touch `/boot`, the HeliOS image, the updater, or other HeliOS services.
+  - Read-only probing needs no lock.
+  - Anything that uses a camera or changes device state (stopping `helios-peripherals`,
+    binding/unbinding drivers, runtime overlays via configfs, loading our modules, streaming)
+    needs the device lock, taken atomically with
+    `ssh root@helios 'mkdir /tmp/styx-device-lock && echo "<agent> $(date)" > /tmp/styx-device-lock/owner'`
+    (retry every 60 s while it exists; never delete someone else's lock). Keep it only as long as
+    needed, and before releasing it (`rm -rf /tmp/styx-device-lock`) restore the device:
+    `helios-peripherals` active, `ov9282` bound to `10-0060`, no runtime overlay or Styx module
+    loaded (`kernel-modules/styx-sensor-bridge/spike/down.sh` does this). If restoring fails,
+    stop and report; do not reboot without the user.
+  - The bridge spike (`spike/up.sh`, `native-spike`, `spike/down.sh`) is approved for use under
+    the lock.
 - Licensing: Styx is MIT/Apache. The HeliOS `ov9782.c` driver is GPL-2.0-only: register values
   read from it for the spike go in a separate data file marked with their provenance, to be
   replaced from the datasheet (or cleared by the user) before merging to `dev`. The bridge
@@ -107,9 +117,10 @@ limits at that fps.
 
 ## Phases
 
-0. **Spike + foundations** (now): kernel interface layer, sensor description and timing, device
-   graph and async core, the bridge module. Gate: raw OV9782 frames from `rp1-cfe` with the
-   sensor driven from Rust, no sensor code in the kernel.
+0. **Spike + foundations** (done): kernel interface layer, sensor description and timing, device
+   graph and async core, the bridge module. Gate met: raw OV9782 frames from `rp1-cfe` with the
+   sensor driven from Rust, 30/60/120 fps within 0.11% landing on the predicted frames, no
+   sensor code in the kernel. Exposure unverified (dark scene).
 1. **Stand-alone**: Styx's V4L2 backend and probing on `styx-kernel` (the `v4l` crate removed);
    UVC cameras work with no libcamera.
 2. **Sensors and timing**: data-driven sensors through the bridge, frame-exact typed controls.
