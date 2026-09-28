@@ -18,6 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 styx-core.workspace = true
 styx-capture.workspace = true
+styx-softisp = { workspace = true, optional = true, features = ["rayon"] }
 thiserror.workspace = true
 jpeg-decoder = { workspace = true, optional = true }
 zune-jpeg = { workspace = true, optional = true }
@@ -47,7 +48,7 @@ default = []
 dynamic-image = ["dep:image", "image"]
 image = ["dep:rayon", "dep:yuvutils-rs"]
 codec-jpeg-decoder = ["dep:jpeg-decoder"]
-raw-decoders = ["dep:rayon", "dep:yuvutils-rs"]
+raw-decoders = ["dep:rayon", "dep:yuvutils-rs", "dep:styx-softisp"]
 codec-zune = ["zune-jpeg", "zune-core"]
 codec-mozjpeg = ["mozjpeg"]
 codec-turbojpeg = ["turbojpeg"]
