@@ -1,0 +1,21 @@
+[package]
+name = "styx-pisp"
+version.workspace = true
+edition.workspace = true
+description = "Raspberry Pi PiSP (Pi 5 ISP) from Rust: uAPI config and statistics layouts, front end and back end configuration builders, back end tiling, statistics decoding."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Drive the front end (`rp1-cfe`) and back end (`pispbe`) device nodes through styx-kernel.
+device = ["dep:styx-kernel"]
+
+[dependencies]
+bytemuck = { version = "1.25", features = ["derive", "min_const_generics"] }
+styx-kernel = { workspace = true, optional = true }
+
+[lints]
+workspace = true
