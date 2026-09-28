@@ -1,60 +1,107 @@
-use std::sync::Arc;
+//! Raw Bayer frames through the software ISP (`styx-softisp`) to RGB24, NV12 or luma.
+//!
+//! One decoder per output format and Bayer input format, so the planner finds the cheapest
+//! route (`GREY` straight from the mosaic, `NV12` without an RGB intermediate). Parameters
+//! (black level, white balance, colour matrix, tone curve, ...) default to a plain linear
+//! pipeline and can be changed at run time with [`SoftIspDecoder::set_params`]; when they ask
+//! for statistics, the last frame's are kept for AE / AWB ([`SoftIspDecoder::last_stats`]).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use parking_lot::{Mutex, RwLock};
+use smallvec::smallvec;
 use styx_core::prelude::*;
+use styx_softisp::{IspParams, IspStats, OutputBuffers, RawFormat, Scale, SoftIsp};
 
 use crate::{Codec, CodecDescriptor, CodecError};
 
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 
-#[path = "bayer_demosaic.rs"]
-mod bayer_demosaic;
-#[path = "bayer_info.rs"]
-mod bayer_info;
-#[path = "bayer_unpack.rs"]
-mod bayer_unpack;
+/// Frames at least this large are split into row bands over the rayon pool.
+const PARALLEL_MIN_PIXELS: usize = 640 * 480;
 
-use bayer_demosaic::{demosaic_bilinear_to_rg24, demosaic_bilinear_u16_le};
-pub use bayer_info::{BayerInfo, bayer_info};
-use bayer_unpack::{min_stride, unpack_mipi_packed_to_u16_le};
-#[cfg(test)]
-use bayer_unpack::{sample_at, unpack_raw10_row};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-// Bayer pattern names are conventional four-letter sensor layout identifiers.
-#[allow(clippy::upper_case_acronyms)]
-pub(super) enum BayerPattern {
-    RGGB,
-    BGGR,
-    GBRG,
-    GRBG,
+/// The output a [`SoftIspDecoder`] produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoftIspOutput {
+    Rgb24,
+    Nv12,
+    Luma,
 }
 
-pub struct BayerToRgbDecoder {
-    descriptor: CodecDescriptor,
-    pool: BufferPool,
-    packed_pool: BufferPool,
-    info: BayerInfo,
-}
-
-impl BayerToRgbDecoder {
-    pub fn new(input: FourCc, info: BayerInfo, max_width: u32, max_height: u32) -> Self {
-        let bytes = max_width as usize * max_height as usize * 3;
-        let packed_bytes = max_width as usize * max_height as usize * 2;
-        Self {
-            descriptor: crate::decoder::raw::raw_decoder_descriptor(
-                input,
-                FourCc::RG24,
-                "bayer2rgb",
-                "bayer-bilinear",
-            ),
-            pool: BufferPool::lazy(bytes, 4),
-            packed_pool: BufferPool::lazy(packed_bytes, 4),
-            info,
+impl SoftIspOutput {
+    fn fourcc(self) -> FourCc {
+        match self {
+            Self::Rgb24 => FourCc::RG24,
+            Self::Nv12 => FourCc::NV12,
+            Self::Luma => FourCc::GREY,
         }
     }
+}
 
-    pub fn decode_into(&self, input: &FrameLease, dst: &mut [u8]) -> Result<FrameMeta, CodecError> {
+/// Raw Bayer (any V4L2 Bayer format, packed or not) to RGB24, NV12 or luma on the CPU.
+pub struct SoftIspDecoder {
+    descriptor: CodecDescriptor,
+    output: SoftIspOutput,
+    params: RwLock<(u64, IspParams)>,
+    generation: AtomicU64,
+    /// Idle ISPs, each with its parameter generation.
+    isps: Mutex<Vec<(u64, SoftIsp)>>,
+    last_stats: Mutex<Option<IspStats>>,
+    pool: BufferPool,
+    uv_pool: BufferPool,
+}
+
+impl SoftIspDecoder {
+    /// `None` when `input` is not a Bayer format.
+    pub fn new(
+        input: FourCc,
+        output: SoftIspOutput,
+        max_width: u32,
+        max_height: u32,
+    ) -> Option<Self> {
+        styx_softisp::bayer_fourcc(input)?;
+        let px = max_width as usize * max_height as usize;
+        let (name, bytes) = match output {
+            SoftIspOutput::Rgb24 => ("bayer2rgb", px * 3),
+            SoftIspOutput::Nv12 => ("bayer2nv12", px),
+            SoftIspOutput::Luma => ("bayer2grey", px),
+        };
+        Some(Self {
+            descriptor: crate::decoder::raw::raw_decoder_descriptor(
+                input,
+                output.fourcc(),
+                name,
+                "softisp",
+            ),
+            output,
+            params: RwLock::new((0, IspParams::default())),
+            generation: AtomicU64::new(0),
+            isps: Mutex::new(Vec::new()),
+            last_stats: Mutex::new(None),
+            pool: BufferPool::lazy(bytes, 4),
+            uv_pool: BufferPool::lazy(px / 2, 4),
+        })
+    }
+
+    /// Use these parameters from the next frame on.
+    pub fn set_params(&self, params: IspParams) {
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        *self.params.write() = (generation, params);
+    }
+
+    pub fn params(&self) -> IspParams {
+        self.params.read().1.clone()
+    }
+
+    /// Statistics of the last frame, when the parameters ask for them.
+    pub fn last_stats(&self) -> Option<IspStats> {
+        self.last_stats.lock().clone()
+    }
+
+    /// Run the ISP on `input` into `out` (sized for the input resolution).
+    fn run(&self, input: &FrameLease, out: OutputBuffers<'_>) -> Result<FrameMeta, CodecError> {
         let meta = input.meta();
         if meta.format.code != self.descriptor.input {
             return Err(CodecError::FormatMismatch {
@@ -62,105 +109,149 @@ impl BayerToRgbDecoder {
                 actual: meta.format.code,
             });
         }
-        let plane = input
-            .planes()
-            .into_iter()
-            .next()
+        let res = meta.format.resolution;
+        let format = RawFormat::from_fourcc(meta.format.code, res.width.get(), res.height.get())
+            .ok_or_else(|| CodecError::Codec("not a Bayer format".into()))?;
+        let planes = input.planes();
+        let plane = planes
+            .first()
             .ok_or_else(|| CodecError::Codec("bayer frame missing plane".into()))?;
+        let stride = plane.stride().max(format.min_stride());
 
-        let width = meta.format.resolution.width.get() as usize;
-        let height = meta.format.resolution.height.get() as usize;
-        if width < 2 || height < 2 {
-            return Err(CodecError::Codec("bayer frame too small".into()));
+        let mut isp = self.isp(format)?;
+        let result = isp.1.process(plane.data(), stride, Scale::Full, out);
+        let yuv = isp.1.params().yuv;
+        self.isps.lock().push(isp);
+        let stats = result.map_err(|e| CodecError::Codec(e.to_string()))?;
+        if stats.is_some() {
+            *self.last_stats.lock() = stats;
         }
-
-        let stride = plane.stride().max(min_stride(
-            width,
-            self.info.bit_depth,
-            self.info.bytes_per_sample,
-        ));
-        let required = stride
-            .checked_mul(height)
-            .ok_or_else(|| CodecError::Codec("bayer stride overflow".into()))?;
-        if plane.data().len() < required {
-            return Err(CodecError::Codec("bayer plane buffer too short".into()));
-        }
-
-        let row_bytes = width
-            .checked_mul(3)
-            .ok_or_else(|| CodecError::Codec("bayer output overflow".into()))?;
-        let out_len = row_bytes
-            .checked_mul(height)
-            .ok_or_else(|| CodecError::Codec("bayer output overflow".into()))?;
-        if dst.len() < out_len {
-            return Err(CodecError::Codec("bayer dst buffer too short".into()));
-        }
-
-        let dst = &mut dst[..out_len];
-        let data = plane.data();
-        if self.info.bytes_per_sample == 0 {
-            let mut packed = self.packed_pool.lease();
-            let packed_len = width
-                .checked_mul(height)
-                .and_then(|px| px.checked_mul(2))
-                .ok_or_else(|| CodecError::Codec("bayer packed buffer overflow".into()))?;
-            unsafe { packed.resize_uninit(packed_len) };
-            let packed_u16 = unsafe {
-                std::slice::from_raw_parts_mut(
-                    packed.as_mut_slice().as_mut_ptr() as *mut u16,
-                    width * height,
-                )
-            };
-            unpack_mipi_packed_to_u16_le(
-                packed_u16,
-                data,
-                stride,
-                width,
-                height,
-                self.info.bit_depth,
-            );
-            demosaic_bilinear_u16_le(
-                dst,
-                packed.as_slice(),
-                width,
-                width,
-                height,
-                self.info.pattern,
-                self.info.bit_depth,
-            );
-        } else {
-            demosaic_bilinear_to_rg24(
-                dst,
-                data,
-                stride,
-                width,
-                height,
-                self.info.pattern,
-                self.info.bit_depth,
-                self.info.bytes_per_sample,
-            );
-        }
-
+        let color = match self.output {
+            SoftIspOutput::Rgb24 => ColorSpace::Srgb,
+            SoftIspOutput::Nv12 => match yuv {
+                styx_softisp::YuvMatrix::Bt709Limited => ColorSpace::Bt709,
+                styx_softisp::YuvMatrix::Bt601Full => ColorSpace::Srgb,
+            },
+            SoftIspOutput::Luma => meta.format.color,
+        };
         Ok(FrameMeta::new(
-            MediaFormat::new(
-                self.descriptor.output,
-                meta.format.resolution,
-                meta.format.color,
-            ),
+            MediaFormat::new(self.descriptor.output, res, color),
             meta.timestamp,
         ))
     }
+
+    /// An idle ISP for `format` with the current parameters.
+    fn isp(&self, format: RawFormat) -> Result<(u64, SoftIsp), CodecError> {
+        let (generation, params) = {
+            let p = self.params.read();
+            (p.0, p.1.clone())
+        };
+        let cached = {
+            let mut isps = self.isps.lock();
+            isps.iter()
+                .position(|(_, isp)| isp.format() == format)
+                .map(|i| isps.swap_remove(i))
+        };
+        let threads = if format.width as usize * format.height as usize >= PARALLEL_MIN_PIXELS {
+            0
+        } else {
+            1
+        };
+        let err = |e: styx_softisp::IspError| CodecError::Codec(e.to_string());
+        match cached {
+            Some((g, isp)) if g == generation => Ok((g, isp)),
+            Some((_, mut isp)) => {
+                isp.set_params(params).map_err(err)?;
+                Ok((generation, isp))
+            }
+            None => Ok((
+                generation,
+                SoftIsp::new(format, params)
+                    .map_err(err)?
+                    .with_threads(threads),
+            )),
+        }
+    }
+
+    /// The output into `dst`: RGB24 or GREY, or NV12 with the UV plane right after Y.
+    pub fn decode_into(&self, input: &FrameLease, dst: &mut [u8]) -> Result<FrameMeta, CodecError> {
+        let width = input.meta().format.resolution.width.get() as usize;
+        let out = match self.output {
+            SoftIspOutput::Rgb24 => OutputBuffers::Rgb24 {
+                data: dst,
+                stride: width * 3,
+            },
+            SoftIspOutput::Luma => OutputBuffers::Luma {
+                data: dst,
+                stride: width,
+            },
+            SoftIspOutput::Nv12 => {
+                let height = input.meta().format.resolution.height.get() as usize;
+                let (y, uv) = dst.split_at_mut((width * height).min(dst.len()));
+                OutputBuffers::Nv12 {
+                    y,
+                    y_stride: width,
+                    uv,
+                    uv_stride: width,
+                }
+            }
+        };
+        self.run(input, out)
+    }
+
+    fn nv12_layouts(res: Resolution) -> [PlaneLayout; 2] {
+        let (w, h) = (res.width.get() as usize, res.height.get() as usize);
+        [
+            PlaneLayout {
+                offset: 0,
+                len: w * h,
+                stride: w,
+            },
+            PlaneLayout {
+                offset: 0,
+                len: w * h.div_ceil(2),
+                stride: w,
+            },
+        ]
+    }
 }
 
-impl Codec for BayerToRgbDecoder {
+impl Codec for SoftIspDecoder {
     fn descriptor(&self) -> &CodecDescriptor {
         &self.descriptor
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
-        crate::decoder::raw::process_owned_raw_decode(input, &self.pool, 3, |input, dst| {
-            self.decode_into(input, dst)
-        })
+        match self.output {
+            SoftIspOutput::Rgb24 | SoftIspOutput::Luma => {
+                let bpp = if self.output == SoftIspOutput::Rgb24 {
+                    3
+                } else {
+                    1
+                };
+                crate::decoder::raw::process_owned_raw_decode(input, &self.pool, bpp, |i, d| {
+                    self.decode_into(i, d)
+                })
+            }
+            SoftIspOutput::Nv12 => {
+                let [yl, uvl] = Self::nv12_layouts(input.meta().format.resolution);
+                let (mut y, mut uv) = (self.pool.lease(), self.uv_pool.lease());
+                y.resize(yl.len);
+                uv.resize(uvl.len);
+                let out = OutputBuffers::Nv12 {
+                    y: y.as_mut_slice(),
+                    y_stride: yl.stride,
+                    uv: uv.as_mut_slice(),
+                    uv_stride: uvl.stride,
+                };
+                let meta = self.run(&input, out)?;
+                Ok(FrameLease::multi_plane(
+                    meta,
+                    smallvec![y, uv],
+                    smallvec![yl, uvl],
+                ))
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -169,145 +260,63 @@ impl Codec for BayerToRgbDecoder {
         input: &FrameLease,
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
-        crate::decoder::raw::process_shared_raw_decode(self, input, pool)
+        if self.output != SoftIspOutput::Nv12 {
+            return crate::decoder::raw::process_shared_raw_decode(self, input, pool);
+        }
+        let [yl, mut uvl] = Self::nv12_layouts(input.meta().format.resolution);
+        uvl.offset = yl.len;
+        let map = |e: FrameExportError| CodecError::Codec(e.to_string());
+        let mut lease = pool.lease().map_err(map)?;
+        lease.try_resize(yl.len + uvl.len).map_err(map)?;
+        let (y, uv) = lease.as_mut_slice().split_at_mut(yl.len);
+        let out = OutputBuffers::Nv12 {
+            y,
+            y_stride: yl.stride,
+            uv,
+            uv_stride: uvl.stride,
+        };
+        let meta = self.run(input, out)?;
+        FrameLease::multi_plane_shared(meta, lease, smallvec![yl, uvl])
+            .map(Some)
+            .map_err(map)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::decoder::raw::RawDecodeInto for SoftIspDecoder {
+    fn output_bytes_per_pixel(&self) -> usize {
+        match self.output {
+            SoftIspOutput::Rgb24 => 3,
+            SoftIspOutput::Luma | SoftIspOutput::Nv12 => 1,
+        }
+    }
+
+    fn decode_into(&self, input: &FrameLease, dst: &mut [u8]) -> Result<FrameMeta, CodecError> {
+        SoftIspDecoder::decode_into(self, input, dst)
     }
 }
 
 #[cfg(feature = "image")]
-impl ImageDecode for BayerToRgbDecoder {
+impl ImageDecode for SoftIspDecoder {
     fn decode_image(&self, frame: FrameLease) -> Result<image::DynamicImage, CodecError> {
         process_to_dynamic(self, frame)
     }
 }
 
-pub fn bayer_decoder_for(
-    fourcc: FourCc,
-    info: BayerInfo,
-    max_width: u32,
-    max_height: u32,
-) -> Arc<dyn Codec> {
-    Arc::new(BayerToRgbDecoder::new(fourcc, info, max_width, max_height))
+/// The software ISP decoders for Bayer format `fourcc` (RGB24, NV12, GREY), empty for other
+/// formats.
+pub fn bayer_decoders_for(fourcc: FourCc, max_width: u32, max_height: u32) -> Vec<Arc<dyn Codec>> {
+    [
+        SoftIspOutput::Rgb24,
+        SoftIspOutput::Nv12,
+        SoftIspOutput::Luma,
+    ]
+    .into_iter()
+    .filter_map(|out| SoftIspDecoder::new(fourcc, out, max_width, max_height))
+    .map(|d| Arc::new(d) as Arc<dyn Codec>)
+    .collect()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn pack_raw10_4px(p0: u16, p1: u16, p2: u16, p3: u16) -> [u8; 5] {
-        let b0 = (p0 & 0xff) as u8;
-        let b1 = (p1 & 0xff) as u8;
-        let b2 = (p2 & 0xff) as u8;
-        let b3 = (p3 & 0xff) as u8;
-        let b4 = ((p0 >> 8) as u8 & 0x03)
-            | (((p1 >> 8) as u8 & 0x03) << 2)
-            | (((p2 >> 8) as u8 & 0x03) << 4)
-            | (((p3 >> 8) as u8 & 0x03) << 6);
-        [b0, b1, b2, b3, b4]
-    }
-
-    #[test]
-    fn raw10_packed_sampling_matches_values() {
-        let row = pack_raw10_4px(0x000, 0x155, 0x2aa, 0x3ff);
-        let stride = row.len();
-        let data = row.as_slice();
-        let w = 4;
-        let h = 1;
-        assert_eq!(sample_at(data, stride, 0, 10, 0, 0, w, h), 0x00);
-        assert_eq!(sample_at(data, stride, 0, 10, 1, 0, w, h), 0x55);
-        assert_eq!(sample_at(data, stride, 0, 10, 2, 0, w, h), 0xaa);
-        assert_eq!(sample_at(data, stride, 0, 10, 3, 0, w, h), 0xff);
-    }
-
-    #[test]
-    fn raw10_unpack_matches_values() {
-        let row = pack_raw10_4px(0x000, 0x155, 0x2aa, 0x3ff);
-        let mut out = [0u16; 4];
-        unpack_raw10_row(&mut out, &row, 4);
-        assert_eq!(u16::from_le(out[0]), 0x000);
-        assert_eq!(u16::from_le(out[1]), 0x155);
-        assert_eq!(u16::from_le(out[2]), 0x2aa);
-        assert_eq!(u16::from_le(out[3]), 0x3ff);
-    }
-
-    #[test]
-    fn packed_raw10_decode_matches_unpacked() {
-        let w = 4usize;
-        let h = 4usize;
-        let res = Resolution::new(w as u32, h as u32).unwrap();
-
-        let mut raw = vec![0u16; w * h];
-        for y in 0..h {
-            for x in 0..w {
-                raw[y * w + x] = (((y * w + x) * 77) & 0x3ff) as u16;
-            }
-        }
-
-        let packed_stride = 5usize;
-        let mut packed = Vec::with_capacity(packed_stride * h);
-        for y in 0..h {
-            let row = &raw[y * w..(y + 1) * w];
-            packed.extend_from_slice(&pack_raw10_4px(row[0], row[1], row[2], row[3]));
-        }
-
-        let unpacked_stride = w * 2;
-        let mut unpacked = vec![0u8; unpacked_stride * h];
-        for y in 0..h {
-            for x in 0..w {
-                let v = raw[y * w + x].to_le_bytes();
-                let o = y * unpacked_stride + x * 2;
-                unpacked[o] = v[0];
-                unpacked[o + 1] = v[1];
-            }
-        }
-
-        let packed_fourcc = FourCc::new(*b"pRAA");
-        let unpacked_fourcc = FourCc::new(*b"RG10");
-        let packed_info = bayer_info(packed_fourcc).unwrap();
-        let unpacked_info = bayer_info(unpacked_fourcc).unwrap();
-        let packed_dec = BayerToRgbDecoder::new(
-            packed_fourcc,
-            packed_info,
-            res.width.get(),
-            res.height.get(),
-        );
-        let unpacked_dec = BayerToRgbDecoder::new(
-            unpacked_fourcc,
-            unpacked_info,
-            res.width.get(),
-            res.height.get(),
-        );
-
-        let pool = BufferPool::with_limits(2, packed.len().max(unpacked.len()), 4);
-
-        let mut packed_buf = pool.lease();
-        packed_buf.resize(packed.len());
-        packed_buf.as_mut_slice().copy_from_slice(&packed);
-        let packed_frame = FrameLease::single_plane(
-            FrameMeta::new(MediaFormat::new(packed_fourcc, res, ColorSpace::Unknown), 0),
-            packed_buf,
-            packed.len(),
-            packed_stride,
-        );
-
-        let mut unpacked_buf = pool.lease();
-        unpacked_buf.resize(unpacked.len());
-        unpacked_buf.as_mut_slice().copy_from_slice(&unpacked);
-        let unpacked_frame = FrameLease::single_plane(
-            FrameMeta::new(
-                MediaFormat::new(unpacked_fourcc, res, ColorSpace::Unknown),
-                0,
-            ),
-            unpacked_buf,
-            unpacked.len(),
-            unpacked_stride,
-        );
-
-        let a = packed_dec.process(packed_frame).unwrap();
-        let b = unpacked_dec.process(unpacked_frame).unwrap();
-        let a_plane = a.planes();
-        let b_plane = b.planes();
-        assert_eq!(a_plane.len(), 1);
-        assert_eq!(b_plane.len(), 1);
-        assert_eq!(a_plane[0].data(), b_plane[0].data());
-    }
-}
+#[path = "bayer_tests.rs"]
+mod tests;

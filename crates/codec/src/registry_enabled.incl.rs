@@ -171,20 +171,10 @@ impl CodecRegistry {
         {
             let max_width = max_width.max(1);
             let max_height = max_height.max(1);
-            let bayer_codes = [
-                *b"BA81", *b"BA10", *b"BA12", *b"BA14", *b"BG10", *b"BG12", *b"BG14", *b"BG16",
-                *b"GB10", *b"GB12", *b"GB14", *b"GB16", *b"RG10", *b"RG12", *b"RG14", *b"RG16",
-                *b"GR10", *b"GR12", *b"GR14", *b"GR16", *b"BYR2", *b"RGGB", *b"GRBG", *b"GBRG",
-                *b"BGGR", *b"pBAA", *b"pGAA", *b"pgAA", *b"pRAA", *b"pBCC", *b"pGCC", *b"pgCC",
-                *b"pRCC",
-            ];
-            for code in bayer_codes {
+            for code in styx_softisp::BAYER_FOURCCS {
                 let fcc = FourCc::new(code);
-                if let Some(info) = crate::decoder::raw::bayer_info(fcc) {
-                    self.register(
-                        fcc,
-                        crate::decoder::raw::bayer_decoder_for(fcc, info, max_width, max_height),
-                    );
+                for decoder in crate::decoder::raw::bayer_decoders_for(fcc, max_width, max_height) {
+                    self.register(fcc, decoder);
                 }
             }
 
