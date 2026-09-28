@@ -279,8 +279,10 @@ pub fn narrow_row(src: &[u16], dst: &mut [u8], width: usize) -> SimdBackend {
 
 /// A tone curve from 12-bit working values to 8 bits: 257 nodes 16 input codes apart,
 /// interpolated linearly, `out(x) = (n[x >> 4] (16 - f) + n[(x >> 4) + 1] f + 8) >> 4` with
-/// `f = x & 15` (inputs above 4095 clamp). The scalar kernel reads the expanded 4096-entry
-/// table; NEON interpolates the nodes with table lookups.
+/// `f = x & 15` (inputs above 4095 clamp), read from the expanded 4096-entry table.
+///
+/// There is no vector leaf: NEON `tbl` over 256-byte tables (eight 4-register lookups per 16
+/// pixels) measured slower on the Cortex-A76 than scalar loads from the 4 KiB table.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ToneLut {
     nodes: [u8; 257],
@@ -323,13 +325,10 @@ impl ToneLut {
     }
 }
 
-/// See [`scalar::lut_row`] and [`ToneLut`].
+/// See [`scalar::lut_row`] and [`ToneLut`] (scalar always).
 pub fn lut_row(src: &[u16], dst: &mut [u8], lut: &ToneLut, width: usize) -> SimdBackend {
-    let (src, dst) = (&src[..width], &mut dst[..width]);
-    let outcome = leaf!(lut_row(src, dst, lut, width));
-    finish(outcome, width, |d, n| {
-        scalar::lut_row(&src[d..], &mut dst[d..], lut.full(), n)
-    })
+    scalar::lut_row(src, dst, lut.full(), width);
+    SimdBackend::Scalar
 }
 
 /// See [`scalar::interleave_rgb_row`].

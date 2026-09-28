@@ -6,7 +6,7 @@ mod bayer;
 mod color;
 mod vec;
 
-use super::{RowKind, SimdBackend, ToneLut, X86FeatureSet, YuvCoeffs};
+use super::{RowKind, SimdBackend, X86FeatureSet, YuvCoeffs};
 use crate::format::CfaPattern;
 
 fn done(backend: SimdBackend, pixels: usize) -> Option<(SimdBackend, usize)> {
@@ -172,13 +172,18 @@ pub(super) fn ccm_row(
     m: &[i16; 9],
     width: usize,
 ) -> Option<(SimdBackend, usize)> {
-    pick!(
-        f,
-        width,
-        16,
-        color::ccm_avx2(planes, m, width),
-        color::ccm_sse2(planes, m, width)
-    )
+    // SAFETY: the feature each leaf needs was detected; the dispatcher sized the planes.
+    if f.avx2 && width >= 16 {
+        return done(SimdBackend::X86Avx2, unsafe {
+            color::ccm_avx2(planes, m, width)
+        });
+    }
+    if f.ssse3 {
+        return done(SimdBackend::X86Ssse3, unsafe {
+            color::ccm_ssse3(planes, m, width)
+        });
+    }
+    None
 }
 
 pub(super) fn narrow_row(
@@ -247,16 +252,4 @@ pub(super) fn rgb_to_uv_row(
         color::rgb_to_uv_avx2(top, bottom, u, v, width, c, interleaved),
         color::rgb_to_uv_sse2(top, bottom, u, v, width, c, interleaved)
     )
-}
-
-/// No x86 leaf: a 256-entry byte table needs 16 `pshufb` per lookup, no faster than the
-/// scalar 4096-entry table.
-pub(super) fn lut_row(
-    _f: X86FeatureSet,
-    _src: &[u16],
-    _dst: &mut [u8],
-    _lut: &ToneLut,
-    _width: usize,
-) -> Option<(SimdBackend, usize)> {
-    None
 }

@@ -154,16 +154,25 @@ pub fn quad_luma_row(top: &[u16], bottom: &[u16], dst: &mut [u16], width: usize)
     }
 }
 
-/// Colour correction in place: `out_k = clamp((m[3k] R + m[3k+1] G + m[3k+2] B + 512) >> 10)`,
-/// with a Q10 matrix and 12-bit inputs.
+/// One colour-matrix term: `round(x c / 4096)` as the rounding high-half multiply
+/// `(8x c + 2^14) >> 15` (x86 `pmulhrsw`, NEON `sqrdmulh`).
+#[inline(always)]
+pub fn ccm_term(x: u16, c: i16) -> i16 {
+    ((((x as i32) << 3) * c as i32 + (1 << 14)) >> 15) as i16
+}
+
+/// Colour correction in place with a Q12 matrix (coefficients within ±4, so no term
+/// overflows): `out_k = clamp(t(R, m[3k]) +sat t(G, m[3k+1]) +sat t(B, m[3k+2]), 0, 4095)` with
+/// [`ccm_term`] and 16-bit saturating adds, on 12-bit inputs.
 pub fn ccm_row(planes: [&mut [u16]; 3], m: &[i16; 9], width: usize) {
     let [r, g, b] = planes;
     for x in 0..width {
-        let px = [r[x] as i32, g[x] as i32, b[x] as i32];
+        let px = [r[x], g[x], b[x]];
         let out = |k: usize| {
-            let s =
-                m[3 * k] as i32 * px[0] + m[3 * k + 1] as i32 * px[1] + m[3 * k + 2] as i32 * px[2];
-            ((s + 512) >> 10).clamp(0, WORK_MAX as i32) as u16
+            let s = ccm_term(px[0], m[3 * k])
+                .saturating_add(ccm_term(px[1], m[3 * k + 1]))
+                .saturating_add(ccm_term(px[2], m[3 * k + 2]));
+            s.clamp(0, WORK_MAX as i16) as u16
         };
         let (a, c, e) = (out(0), out(1), out(2));
         r[x] = a;

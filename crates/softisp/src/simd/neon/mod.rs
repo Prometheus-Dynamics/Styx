@@ -7,7 +7,7 @@
 mod bayer;
 mod color;
 
-use super::{RowKind, SimdBackend, ToneLut, YuvCoeffs};
+use super::{RowKind, SimdBackend, YuvCoeffs};
 use crate::format::CfaPattern;
 
 fn done(pixels: usize) -> Option<(SimdBackend, usize)> {
@@ -130,13 +130,4 @@ pub(super) fn rgb_to_uv_row(
     interleaved: bool,
 ) -> Option<(SimdBackend, usize)> {
     done(unsafe { color::rgb_to_uv(top, bottom, u, v, width, c, interleaved) })
-}
-
-pub(super) fn lut_row(
-    src: &[u16],
-    dst: &mut [u8],
-    lut: &ToneLut,
-    width: usize,
-) -> Option<(SimdBackend, usize)> {
-    done(unsafe { color::lut(src, dst, lut.nodes(), width) })
 }

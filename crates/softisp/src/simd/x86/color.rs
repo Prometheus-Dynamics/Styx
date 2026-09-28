@@ -21,22 +21,29 @@ pub(super) unsafe fn ccm<V: Vx>(planes: [&mut [u16]; 3], m: &[i16; 9], width: us
     let mut x = 0;
     // SAFETY: loads and stores of `n` lanes at `x` with `x + n <= width`.
     unsafe {
-        let one = V::splat16(1);
         // No closures, `array::from_fn` or `map` in these bodies: they do not inherit the
         // wrapper's `#[target_feature]`, so intrinsics inside them can stay out-of-line calls.
-        let w_rg = [pair::<V>(m[0], m[1]), pair(m[3], m[4]), pair(m[6], m[7])];
-        let w_b = [pair::<V>(m[2], 512), pair(m[5], 512), pair(m[8], 512)];
-        let (lo_max, hi_max) = (V::zero(), V::splat16(4095));
+        let k = [
+            V::splat16(m[0]),
+            V::splat16(m[1]),
+            V::splat16(m[2]),
+            V::splat16(m[3]),
+            V::splat16(m[4]),
+            V::splat16(m[5]),
+            V::splat16(m[6]),
+            V::splat16(m[7]),
+            V::splat16(m[8]),
+        ];
+        let (lo, hi) = (V::zero(), V::splat16(4095));
         while x + n <= width {
-            let rv = V::load(r.as_ptr().add(x).cast());
-            let gv = V::load(g.as_ptr().add(x).cast());
-            let bv = V::load(b.as_ptr().add(x).cast());
-            let (rg_lo, rg_hi) = (V::unpacklo16(rv, gv), V::unpackhi16(rv, gv));
-            let (b_lo, b_hi) = (V::unpacklo16(bv, one), V::unpackhi16(bv, one));
-            let rows = [rg_lo, rg_hi, b_lo, b_hi];
-            let o0 = ccm_out(rows, w_rg[0], w_b[0], lo_max, hi_max);
-            let o1 = ccm_out(rows, w_rg[1], w_b[1], lo_max, hi_max);
-            let o2 = ccm_out(rows, w_rg[2], w_b[2], lo_max, hi_max);
+            let px = [
+                V::slli16::<3>(V::load(r.as_ptr().add(x).cast())),
+                V::slli16::<3>(V::load(g.as_ptr().add(x).cast())),
+                V::slli16::<3>(V::load(b.as_ptr().add(x).cast())),
+            ];
+            let o0 = ccm_out(px, [k[0], k[1], k[2]], lo, hi);
+            let o1 = ccm_out(px, [k[3], k[4], k[5]], lo, hi);
+            let o2 = ccm_out(px, [k[6], k[7], k[8]], lo, hi);
             V::store(r.as_mut_ptr().add(x).cast(), o0);
             V::store(g.as_mut_ptr().add(x).cast(), o1);
             V::store(b.as_mut_ptr().add(x).cast(), o2);
@@ -46,14 +53,15 @@ pub(super) unsafe fn ccm<V: Vx>(planes: [&mut [u16]; 3], m: &[i16; 9], width: us
     x
 }
 
-/// One output channel of the matrix from interleaved (R, G) and (B, 1) lanes.
+/// One output channel: rounding high-half products, saturating sums, clamped.
 #[inline(always)]
-unsafe fn ccm_out<V: Vx>([rg_lo, rg_hi, b_lo, b_hi]: [V; 4], w_rg: V, w_b: V, lo: V, hi: V) -> V {
+unsafe fn ccm_out<V: Vx>(px: [V; 3], k: [V; 3], lo: V, hi: V) -> V {
     unsafe {
-        let l = V::add32(V::madd16(rg_lo, w_rg), V::madd16(b_lo, w_b));
-        let h = V::add32(V::madd16(rg_hi, w_rg), V::madd16(b_hi, w_b));
-        let v = V::packs32(V::srai32::<10>(l), V::srai32::<10>(h));
-        V::min_i16(V::max_i16(v, lo), hi)
+        let s = V::adds_i16(
+            V::adds_i16(V::mulhrs(px[0], k[0]), V::mulhrs(px[1], k[1])),
+            V::mulhrs(px[2], k[2]),
+        );
+        V::min_i16(V::max_i16(s, lo), hi)
     }
 }
 
@@ -215,13 +223,36 @@ macro_rules! instantiate {
 }
 
 instantiate! {
-    ccm => ccm_sse2, ccm_avx2(planes: [&mut [u16]; 3], m: &[i16; 9], width: usize);
     narrow => narrow_sse2, narrow_avx2(src: &[u16], dst: &mut [u8], width: usize);
     rgb_to_y => rgb_to_y_sse2, rgb_to_y_avx2(
         planes: [&[u8]; 3], dst: &mut [u8], width: usize, c: &YuvCoeffs);
     rgb_to_uv => rgb_to_uv_sse2, rgb_to_uv_avx2(
         top: [&[u8]; 3], bottom: [&[u8]; 3], u: &mut [u8], v: &mut [u8], width: usize,
         c: &YuvCoeffs, interleaved: bool);
+}
+
+/// # Safety
+/// SSSE3 must be available; planes hold `width` samples.
+#[target_feature(enable = "ssse3")]
+pub(in crate::simd) unsafe fn ccm_ssse3(
+    planes: [&mut [u16]; 3],
+    m: &[i16; 9],
+    width: usize,
+) -> usize {
+    // SAFETY: forwarded from the caller.
+    unsafe { ccm::<__m128i>(planes, m, width) }
+}
+
+/// # Safety
+/// AVX2 must be available; planes hold `width` samples.
+#[target_feature(enable = "avx2")]
+pub(in crate::simd) unsafe fn ccm_avx2(
+    planes: [&mut [u16]; 3],
+    m: &[i16; 9],
+    width: usize,
+) -> usize {
+    // SAFETY: forwarded from the caller.
+    unsafe { ccm::<__m256i>(planes, m, width) }
 }
 
 /// Shuffle masks taking channel `ch` of 16 planar pixels into output block `block` (0..3) of

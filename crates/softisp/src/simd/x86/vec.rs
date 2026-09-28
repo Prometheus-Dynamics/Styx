@@ -33,6 +33,9 @@ pub(super) trait Vx: Copy {
     unsafe fn mulhi_u16(a: Self, b: Self) -> Self;
     unsafe fn mullo16(a: Self, b: Self) -> Self;
     unsafe fn madd16(a: Self, b: Self) -> Self;
+    /// `(a b + 2^14) >> 15` (SSSE3).
+    unsafe fn mulhrs(a: Self, b: Self) -> Self;
+    unsafe fn adds_i16(a: Self, b: Self) -> Self;
     unsafe fn add32(a: Self, b: Self) -> Self;
     unsafe fn srai32<const N: i32>(a: Self) -> Self;
     unsafe fn srli16<const N: i32>(a: Self) -> Self;
@@ -136,6 +139,14 @@ impl Vx for __m128i {
     #[inline(always)]
     unsafe fn madd16(a: Self, b: Self) -> Self {
         unsafe { _mm_madd_epi16(a, b) }
+    }
+    #[inline(always)]
+    unsafe fn mulhrs(a: Self, b: Self) -> Self {
+        unsafe { _mm_mulhrs_epi16(a, b) }
+    }
+    #[inline(always)]
+    unsafe fn adds_i16(a: Self, b: Self) -> Self {
+        unsafe { _mm_adds_epi16(a, b) }
     }
     #[inline(always)]
     unsafe fn add32(a: Self, b: Self) -> Self {
@@ -279,6 +290,14 @@ impl Vx for __m256i {
     #[inline(always)]
     unsafe fn madd16(a: Self, b: Self) -> Self {
         unsafe { _mm256_madd_epi16(a, b) }
+    }
+    #[inline(always)]
+    unsafe fn mulhrs(a: Self, b: Self) -> Self {
+        unsafe { _mm256_mulhrs_epi16(a, b) }
+    }
+    #[inline(always)]
+    unsafe fn adds_i16(a: Self, b: Self) -> Self {
+        unsafe { _mm256_adds_epi16(a, b) }
     }
     #[inline(always)]
     unsafe fn add32(a: Self, b: Self) -> Self {

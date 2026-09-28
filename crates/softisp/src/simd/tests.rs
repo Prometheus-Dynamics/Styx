@@ -374,8 +374,7 @@ fn narrow_and_lut_match() {
             let dst = out[0].as_mut_slice();
             match runner {
                 Runner::Oracle => scalar::lut_row(&src, dst, lut.full(), w),
-                Runner::Dispatch => drop(lut_row(&src, dst, &lut, w)),
-                _ => return leaf_call!(runner, lut_row(&src, &mut dst[..w], &lut, w)),
+                _ => drop(lut_row(&src, dst, &lut, w)),
             }
             w
         });

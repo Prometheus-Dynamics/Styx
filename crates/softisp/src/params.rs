@@ -127,7 +127,7 @@ pub enum Demosaic {
 }
 
 /// A 3x3 matrix; row `k` gives output channel `k` (R, G, B) from input R, G, B. Coefficients
-/// must lie within ±31.
+/// must lie within ±4 (applied in Q12).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColorMatrix {
     pub m: [[f32; 3]; 3],

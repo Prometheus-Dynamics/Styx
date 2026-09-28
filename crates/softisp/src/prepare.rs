@@ -33,7 +33,7 @@ pub(crate) struct Prepared {
     /// `black[row parity][column parity]`.
     pub black: [[u16; 2]; 2],
     pub gains: GainRows,
-    /// Q10 colour matrix.
+    /// Q12 colour matrix.
     pub ccm: Option<[i16; 9]>,
     pub lut: Option<ToneLut>,
     pub yuv: YuvCoeffs,
@@ -126,12 +126,10 @@ impl Prepared {
             .map(|c| {
                 let mut m = [0i16; 9];
                 for (k, v) in c.m.iter().flatten().enumerate() {
-                    if !v.is_finite() || v.abs() > 31.0 {
-                        return Err(IspError::InvalidParams(
-                            "CCM coefficient outside ±31".into(),
-                        ));
+                    if !v.is_finite() || v.abs() > 4.0 {
+                        return Err(IspError::InvalidParams("CCM coefficient outside ±4".into()));
                     }
-                    m[k] = (v * 1024.0).round() as i16;
+                    m[k] = (v * 4096.0).round() as i16;
                 }
                 Ok(m)
             })

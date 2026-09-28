@@ -76,7 +76,7 @@ fn stages(c: &mut Criterion) {
     let mut rgb = vec![0u8; W * 3];
     let lut = simd::ToneLut::from_curve(|x| x.sqrt());
     let kind = RowKind::of(CfaPattern::Bggr, 0);
-    let m = [1638i16, -410, -205, -307, 1536, -205, -102, -512, 1638];
+    let m = [6554i16, -1638, -819, -1229, 6144, -819, -410, -2048, 6554];
     let rows3 = [&row16[..], &row16[..], &row16[..]];
     let rows5 = [&row16[..], &row16[..], &row16[..], &row16[..], &row16[..]];
     let mut g = c.benchmark_group("stage_1280x800");
