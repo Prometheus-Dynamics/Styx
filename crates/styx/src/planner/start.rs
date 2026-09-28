@@ -38,6 +38,8 @@ pub struct PlannedFrames {
     source: Source,
     roi: RoiHandle,
     plan: FramePlan,
+    /// The preparation stage of a plan's own pipeline.
+    preparer: Option<Arc<FramePreparer>>,
 }
 
 enum Source {
@@ -53,6 +55,7 @@ impl PlannedFrames {
             source: Source::Branch(Box::new(branch)),
             roi,
             plan: plan.clone(),
+            preparer: None,
         }
     }
 
@@ -73,6 +76,20 @@ impl PlannedFrames {
         match &mut self.source {
             Source::Pipeline(pipeline) => pipeline.next_async_receive().await,
             Source::Branch(branch) => branch.next_async().await,
+        }
+    }
+
+    /// For plans that encode H.264/H.265: make the next packet a keyframe, e.g. when a viewer
+    /// starts or lost packets. Consumers of a shared capture ask for one on their own when they
+    /// join or fall behind.
+    pub fn request_keyframe(&self) {
+        match &self.source {
+            Source::Pipeline(_) => {
+                if let Some(preparer) = &self.preparer {
+                    preparer.request_keyframe();
+                }
+            }
+            Source::Branch(branch) => branch.request_keyframe(),
         }
     }
 
@@ -147,8 +164,8 @@ impl FramePlan {
         }
         let roi = RoiHandle::default();
         roi.set(self.requirements.roi);
-        let preparer = FramePreparer::new(self, roi.clone());
-        let builder = MediaPipelineBuilder::new(capture).decoder(Arc::new(preparer));
+        let preparer = Arc::new(FramePreparer::new(self, roi.clone()));
+        let builder = MediaPipelineBuilder::new(capture).decoder(preparer.clone());
         // Planned frames are for an in-process consumer: zero-copy views and pooled buffers,
         // not memfd/dma-buf exports for other processes.
         #[cfg(target_os = "linux")]
@@ -158,6 +175,7 @@ impl FramePlan {
             source: Source::Pipeline(Box::new(pipeline)),
             roi,
             plan: self.clone(),
+            preparer: Some(preparer),
         })
     }
 }
@@ -194,6 +212,7 @@ impl FramePreparer {
         let luma = matches!(plan.requirements.output, OutputFormat::Luma);
         let output = match &plan.route {
             Route::Decode { decoder, .. } => decoder.descriptor().output,
+            Route::Encode { encoder, .. } => encoder.descriptor().output,
             _ if luma => FourCc::GREY,
             _ => plan.mode.format.code,
         };
@@ -202,6 +221,22 @@ impl FramePreparer {
             if decoder.descriptor().impl_name == "turbojpeg-luma");
         #[allow(unused_mut)]
         let mut route = plan.route.clone();
+        // An encoder (and its decoder) of its own: the registry's instances hold one stream's
+        // state.
+        if let Route::Encode {
+            decoder,
+            encoder,
+            hardware,
+        } = &plan.route
+        {
+            route = Route::Encode {
+                decoder: decoder
+                    .as_ref()
+                    .map(|d| d.new_instance().unwrap_or_else(|| d.clone())),
+                encoder: encoder.new_instance().unwrap_or_else(|| encoder.clone()),
+                hardware: *hardware,
+            };
+        }
         // The registry's RGB decoder decodes in full; a scaled plan gets its own.
         #[cfg(feature = "codec-turbojpeg")]
         if let Route::Decode { decoder, .. } = &plan.route
@@ -266,6 +301,13 @@ impl FramePreparer {
                     .ok()
             })
             .as_ref()
+    }
+
+    /// Make the next encoded frame a keyframe (plans that encode).
+    pub(crate) fn request_keyframe(&self) {
+        if let Route::Encode { encoder, .. } = &self.route {
+            encoder.request_keyframe();
+        }
     }
 
     /// Decode with `decoder`, into the memfd pool when the plan is exportable.
@@ -458,6 +500,10 @@ fn reattach_companions(
 fn output_bytes(plan: &FramePlan, output: FourCc) -> usize {
     let (w, h) = plan.output_resolution();
     let (w, h) = (w as usize, h as usize);
+    if output.is_compressed() {
+        // Room for a keyframe at high quality; packets are much smaller.
+        return (w * h / 2).next_multiple_of(4096);
+    }
     let row = match output {
         FourCc::GREY | FourCc::R8 => w,
         FourCc::YUYV => w * 2,
@@ -496,6 +542,22 @@ impl Codec for FramePreparer {
         }
         let frame = match &self.route {
             Route::Decode { decoder, .. } => self.decode(decoder.as_ref(), input)?,
+            Route::Encode {
+                decoder, encoder, ..
+            } => {
+                let raw = match decoder {
+                    Some(decoder) => {
+                        let (clock, captured) = (input.meta().clock, input.meta().capture_instant);
+                        let mut raw = decoder.process(input)?;
+                        let meta = raw.meta_mut();
+                        meta.clock = meta.clock.or(clock);
+                        meta.capture_instant = meta.capture_instant.or(captured);
+                        raw
+                    }
+                    None => input,
+                };
+                return self.decode(encoder.as_ref(), raw);
+            }
             Route::LumaView if self.luma => input
                 .into_luma()
                 .map_err(|e| CodecError::Codec(e.to_string()))?,

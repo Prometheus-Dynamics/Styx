@@ -106,7 +106,9 @@ pub struct FrameLeaseDescriptor {
     pub fourcc: crate::format::FourCc,
     pub timestamp: u64,
     pub color: crate::format::ColorSpace,
-    pub planes: Vec<FramePlaneDescriptor>,
+    /// Inline for up to four planes: building a descriptor does not allocate.
+    #[cfg_attr(feature = "schema", schema(value_type = Vec<FramePlaneDescriptor>))]
+    pub planes: SmallVec<[FramePlaneDescriptor; 4]>,
 }
 
 impl FrameLeaseDescriptor {

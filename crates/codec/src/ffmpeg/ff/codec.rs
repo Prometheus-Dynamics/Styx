@@ -70,6 +70,19 @@ pub struct CodecRef {
     found: std::sync::OnceLock<Option<Codec>>,
 }
 
+impl Clone for CodecRef {
+    fn clone(&self) -> Self {
+        let found = std::sync::OnceLock::new();
+        if let Some(codec) = self.found.get() {
+            let _ = found.set(*codec);
+        }
+        Self {
+            source: self.source.clone(),
+            found,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum CodecSource {
     Decoder(Id),

@@ -56,6 +56,13 @@ impl Codec for FfmpegMjpegEncoder {
     ) -> Result<Option<FrameLease>, CodecError> {
         self.0.process_shared(input, pool)
     }
+    fn request_keyframe(&self) {
+        self.0.request_keyframe();
+    }
+
+    fn new_instance(&self) -> Option<Arc<dyn Codec>> {
+        Some(Arc::new(Self(self.0.fresh())))
+    }
 }
 
 pub struct FfmpegH264Encoder(pub FfmpegVideoEncoder);
@@ -156,6 +163,13 @@ impl Codec for FfmpegH264Encoder {
     ) -> Result<Option<FrameLease>, CodecError> {
         self.0.process_shared(input, pool)
     }
+    fn request_keyframe(&self) {
+        self.0.request_keyframe();
+    }
+
+    fn new_instance(&self) -> Option<Arc<dyn Codec>> {
+        Some(Arc::new(Self(self.0.fresh())))
+    }
 }
 
 pub struct FfmpegH265Encoder(pub FfmpegVideoEncoder);
@@ -255,5 +269,12 @@ impl Codec for FfmpegH265Encoder {
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
         self.0.process_shared(input, pool)
+    }
+    fn request_keyframe(&self) {
+        self.0.request_keyframe();
+    }
+
+    fn new_instance(&self) -> Option<Arc<dyn Codec>> {
+        Some(Arc::new(Self(self.0.fresh())))
     }
 }

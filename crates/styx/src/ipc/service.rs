@@ -1,77 +1,148 @@
-//! A camera for other processes: each client asks for the frames it needs, and the service plans
-//! one shared capture for all of them.
+//! Cameras for other processes: each client asks for the frames it needs from a camera, and the
+//! service plans one shared capture per camera for all of that camera's clients.
 
+mod camera;
+
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use styx_core::prelude::*;
 
+use self::camera::{Camera, FRAME_WAIT, FramesSlot, check_request};
 use super::connection::{self, Connection};
-use super::wire::{self, ClientMessage};
-use super::{DEFAULT_MAX_IN_FLIGHT, IpcError, socket};
+use super::socket::{self, PeerCredentials};
+use super::wire::{self, CameraInfo, ClientMessage};
+use super::{DEFAULT_MAX_IN_FLIGHT, IpcError};
 use crate::capture_api::IdleStop;
-use crate::planner::{PlanError, PlannedFrames, SharedFramePlan, plan_many};
 use crate::prelude::ProbedDevice;
 
 /// How long a new client has to send its request.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Clients a capture is sized for beyond those connected when it starts, so a few more can join
-/// without restarting it.
-const SPARE_CLIENTS: usize = 1;
+/// Clients served at once unless [`CameraService::max_clients`] says otherwise.
+pub const DEFAULT_MAX_CLIENTS: usize = 16;
 
-/// Serves one camera to [`FrameClient`](super::FrameClient)s in other processes.
+type Authorize = Arc<dyn Fn(&PeerCredentials) -> bool + Send + Sync>;
+
+/// Serves cameras to [`FrameClient`](super::FrameClient)s in other processes.
 ///
-/// Each client sends the [`FrameRequirements`] it needs ([`FrameClient::request`]). The service
-/// plans one shared capture for all connected clients ([`plan_many`]): hardware scaling, both
-/// ISP outputs, decoding once for clients with the same needs. A client joining a capture that
-/// already fits it is attached without disturbing the others; one that needs another mode or ISP
-/// setup restarts the capture once for everyone. Frames go out as descriptors (camera buffers
-/// and memfds), so nothing is copied. A client gets frames only as fast as it drops them, and
-/// the camera stops (by default: pauses) when no client reads.
+/// Each client names a camera (or takes the first) and sends the [`FrameRequirements`] it needs
+/// ([`FrameClient::request`](super::FrameClient::request)). For each camera the service plans one
+/// shared capture for all its clients ([`plan_many`](crate::planner::plan_many)): hardware
+/// scaling, both ISP outputs, decoding and encoding once for clients with the same needs. A
+/// client joining a capture that already fits it is attached without disturbing the others; one
+/// that needs another mode or ISP setup restarts that camera's capture once. Frames go out as
+/// descriptors (camera buffers and memfds), so nothing is copied. A client gets frames only as
+/// fast as it drops them, and a camera stops (by default: pauses) when no client reads.
 ///
-/// [`FrameClient::request`]: super::FrameClient::request
+/// Requests come from other processes, so the service checks them before planning, limits the
+/// clients it serves ([`CameraService::max_clients`]) and can check who connects
+/// ([`CameraService::authorize`]).
 #[derive(Clone)]
 pub struct CameraService {
-    device: ProbedDevice,
+    config: ServiceConfig,
+}
+
+#[derive(Clone)]
+pub(crate) struct ServiceConfig {
+    cameras: Cameras,
     idle: Option<(Duration, IdleStop)>,
     max_in_flight: usize,
+    max_clients: usize,
+    authorize: Option<Authorize>,
+    socket_mode: Option<u32>,
+}
+
+#[derive(Clone)]
+enum Cameras {
+    /// These cameras only.
+    Fixed(Vec<ProbedDevice>),
+    /// Every camera probing finds when a client asks, including cameras plugged in later.
+    Probe,
 }
 
 impl CameraService {
+    /// Serve one camera.
     pub fn new(device: ProbedDevice) -> Self {
+        Self::with_cameras(vec![device])
+    }
+
+    /// Serve these cameras; clients choose one by name ([`CameraInfo::name`] or part of it) or
+    /// identity key.
+    pub fn with_cameras(devices: Vec<ProbedDevice>) -> Self {
+        Self::from(Cameras::Fixed(devices))
+    }
+
+    /// Serve every camera attached now or later: cameras are probed when a client asks for one
+    /// or for the list, so hot-plugged cameras appear, and a camera that goes away while in use
+    /// is reconnected when it comes back.
+    pub fn all_cameras() -> Self {
+        Self::from(Cameras::Probe)
+    }
+
+    fn from(cameras: Cameras) -> Self {
         Self {
-            device,
-            idle: Some((Duration::from_secs(2), IdleStop::Pause)),
-            max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            config: ServiceConfig {
+                cameras,
+                idle: Some((Duration::from_secs(2), IdleStop::Pause)),
+                max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+                max_clients: DEFAULT_MAX_CLIENTS,
+                authorize: None,
+                socket_mode: None,
+            },
         }
     }
 
-    /// Pause the camera after `after` without a reading client (the default, after 2 s):
+    /// Pause a camera after `after` without a reading client (the default, after 2 s):
     /// libcamera cameras stay configured and start again in ~0.1 s; others release.
     pub fn pause_when_idle(mut self, after: Duration) -> Self {
-        self.idle = Some((after, IdleStop::Pause));
+        self.config.idle = Some((after, IdleStop::Pause));
         self
     }
 
-    /// Release the camera after `after` without a reading client, and when the last one leaves.
+    /// Release a camera after `after` without a reading client, and when its last client leaves.
     pub fn stop_when_idle(mut self, after: Duration) -> Self {
-        self.idle = Some((after, IdleStop::Release));
+        self.config.idle = Some((after, IdleStop::Release));
         self
     }
 
-    /// Keep the camera streaming while clients are connected, reading or not.
+    /// Keep cameras streaming while clients are connected, reading or not.
     pub fn keep_streaming(mut self) -> Self {
-        self.idle = None;
+        self.config.idle = None;
         self
     }
 
     /// Frames a client may hold at once (default [`DEFAULT_MAX_IN_FLIGHT`]).
     pub fn max_in_flight(mut self, frames: usize) -> Self {
-        self.max_in_flight = frames.max(1);
+        self.config.max_in_flight = frames.max(1);
+        self
+    }
+
+    /// Clients served at once, across all cameras (default [`DEFAULT_MAX_CLIENTS`]); more are
+    /// refused.
+    pub fn max_clients(mut self, clients: usize) -> Self {
+        self.config.max_clients = clients.max(1);
+        self
+    }
+
+    /// Serve only processes `allow` accepts, given the credentials the kernel reports for them
+    /// (e.g. `|peer| peer.uid == 0`). Others are disconnected before they send anything.
+    pub fn authorize(
+        mut self,
+        allow: impl Fn(&PeerCredentials) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.config.authorize = Some(Arc::new(allow));
+        self
+    }
+
+    /// Permissions of the socket file (e.g. `0o660` for the owner and its group), which decide
+    /// who may connect. By default the process umask applies.
+    pub fn socket_mode(mut self, mode: u32) -> Self {
+        self.config.socket_mode = Some(mode);
         self
     }
 
@@ -80,16 +151,17 @@ impl CameraService {
     pub fn serve(self, path: impl AsRef<Path>) -> Result<CameraServiceHandle, IpcError> {
         let path = path.as_ref().to_path_buf();
         let listener = socket::listen(&path)?;
+        if let Some(mode) = self.config.socket_mode {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+        }
         let service = Arc::new(Service {
-            config: self,
+            config: self.config,
             path,
             stopping: AtomicBool::new(false),
-            state: Mutex::new(State {
-                clients: Vec::new(),
-                running: None,
-                next_id: 0,
-            }),
+            cameras: Mutex::new(Vec::new()),
             counters: Counters::default(),
+            connections: AtomicUsize::new(0),
         });
         let accept = {
             let service = service.clone();
@@ -109,9 +181,12 @@ impl CameraService {
 pub struct CameraServiceStats {
     /// Clients connected now.
     pub clients: usize,
-    /// Requests the camera could not serve.
+    /// Requests refused: the camera cannot serve them, they were malformed or out of bounds, or
+    /// the service was full.
     pub rejected: u64,
-    /// Times the capture restarted because a new client needed another setup.
+    /// Connections refused by [`CameraService::authorize`].
+    pub unauthorized: u64,
+    /// Times a capture restarted because a new client needed another setup.
     pub restarts: u64,
     /// Frames sent, counted once per client.
     pub sent: u64,
@@ -131,8 +206,9 @@ impl CameraServiceHandle {
     pub fn stats(&self) -> CameraServiceStats {
         let counters = &self.service.counters;
         CameraServiceStats {
-            clients: self.service.state.lock().clients.len(),
+            clients: self.service.clients(),
             rejected: counters.rejected.load(Ordering::Relaxed),
+            unauthorized: counters.unauthorized.load(Ordering::Relaxed),
             restarts: counters.restarts.load(Ordering::Relaxed),
             sent: counters.sent.load(Ordering::Relaxed),
             copied: counters.copied.load(Ordering::Relaxed),
@@ -140,20 +216,28 @@ impl CameraServiceHandle {
         }
     }
 
-    /// The shared plan running now, as text.
+    /// The shared plans running now, one per camera in use, as text.
     pub fn plan(&self) -> Option<String> {
-        let state = self.service.state.lock();
-        state
-            .running
-            .as_ref()
-            .map(|running| running.plan.to_string())
+        let plans: Vec<String> = self
+            .service
+            .cameras
+            .lock()
+            .iter()
+            .filter_map(|c| c.plan())
+            .collect();
+        (!plans.is_empty()).then(|| plans.concat())
+    }
+
+    /// The cameras the service serves (probing for them if it serves all cameras).
+    pub fn cameras(&self) -> Vec<CameraInfo> {
+        self.service.list()
     }
 
     pub fn path(&self) -> &Path {
         &self.service.path
     }
 
-    /// Disconnect every client and stop the camera.
+    /// Disconnect every client and stop the cameras.
     pub fn stop(mut self) {
         self.shutdown();
     }
@@ -163,12 +247,9 @@ impl CameraServiceHandle {
         if let Some(accept) = self.accept.take() {
             let _ = accept.join();
         }
-        let mut state = self.service.state.lock();
-        for client in state.clients.drain(..) {
-            client.frames.lock().take();
+        for camera in self.service.cameras.lock().drain(..) {
+            camera.shut_down();
         }
-        state.running = None;
-        drop(state);
         let _ = std::fs::remove_file(&self.service.path);
     }
 }
@@ -180,8 +261,9 @@ impl Drop for CameraServiceHandle {
 }
 
 #[derive(Default)]
-struct Counters {
+pub(crate) struct Counters {
     rejected: AtomicU64,
+    unauthorized: AtomicU64,
     restarts: AtomicU64,
     sent: AtomicU64,
     copied: AtomicU64,
@@ -189,183 +271,111 @@ struct Counters {
 }
 
 struct Service {
-    config: CameraService,
+    config: ServiceConfig,
     path: PathBuf,
     stopping: AtomicBool,
-    state: Mutex<State>,
+    /// Cameras clients have asked for.
+    cameras: Mutex<Vec<Arc<Camera>>>,
     counters: Counters,
+    /// Open connections, including clients still sending their request.
+    connections: AtomicUsize,
 }
 
-type FramesSlot = Arc<Mutex<Option<PlannedFrames>>>;
-
-struct State {
-    clients: Vec<Client>,
-    running: Option<Running>,
-    next_id: u64,
-}
-
-struct Client {
-    id: u64,
-    requirements: FrameRequirements,
-    /// Its frames on the running capture; replaced when the capture restarts.
-    frames: FramesSlot,
-}
-
-struct Running {
-    session: crate::planner::SharedSession,
-    plan: SharedFramePlan,
-    /// What the capture was started with (see [`SharedFramePlan::setup_key`]).
-    setup: String,
-    /// Clients its buffers are sized for.
-    capacity: usize,
+/// Whether two probes found the same camera: probes list its identity keys in any order.
+fn same_camera(a: &ProbedDevice, b: &ProbedDevice) -> bool {
+    fn keys(d: &ProbedDevice) -> Vec<&str> {
+        let mut keys: Vec<&str> = d.identity.keys.iter().map(String::as_str).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        keys
+    }
+    a.identity.display == b.identity.display && keys(a) == keys(b)
 }
 
 impl Service {
-    /// Plan for the connected clients plus `requirements`; attach the new client to the running
-    /// capture if it fits, else restart the capture for everyone.
-    fn join(&self, requirements: FrameRequirements) -> Result<(u64, String, FramesSlot), String> {
-        let mut state = self.state.lock();
-        let mut all: Vec<FrameRequirements> = state
-            .clients
+    fn devices(&self) -> Vec<ProbedDevice> {
+        match &self.config.cameras {
+            Cameras::Fixed(devices) => devices.clone(),
+            Cameras::Probe => crate::probe_all(),
+        }
+    }
+
+    fn list(&self) -> Vec<CameraInfo> {
+        let devices = self.devices();
+        let cameras = self.cameras.lock();
+        devices
             .iter()
-            .map(|c| c.requirements.clone())
-            .collect();
-        all.push(requirements.clone());
-        let plan = self.plan(&all).map_err(|err| describe(&err))?;
-        let new = plan.consumers.last().expect("one plan per client");
-        let text = new.to_string();
-        let setup = plan.setup_key();
-        let fits = state
-            .running
-            .as_ref()
-            .is_some_and(|running| running.setup == setup && running.capacity >= all.len());
-        let frames = if fits {
-            let running = state.running.as_mut().expect("checked above");
-            let frames = running.session.attach(new, true);
-            running.plan = plan;
-            frames
-        } else {
-            let restarting = state.running.is_some();
-            match self.restart(&mut state, plan, all.len()) {
-                Ok(frames) => {
-                    if restarting {
-                        self.counters.restarts.fetch_add(1, Ordering::Relaxed);
-                    }
-                    frames
-                }
-                Err(err) => {
-                    // Keep serving the clients that were there.
-                    let existing = &all[..all.len() - 1];
-                    if !existing.is_empty()
-                        && let Ok(plan) = self.plan(existing)
-                    {
-                        let _ = self.restart(&mut state, plan, existing.len());
-                    }
-                    return Err(err);
-                }
-            }
-        };
-        let id = state.next_id;
-        state.next_id += 1;
-        let slot = Arc::new(Mutex::new(Some(frames)));
-        state.clients.push(Client {
-            id,
-            requirements,
-            frames: slot.clone(),
-        });
-        Ok((id, text, slot))
+            .map(|device| CameraInfo {
+                name: device.identity.display.clone(),
+                keys: device.identity.keys.clone(),
+                in_use: cameras
+                    .iter()
+                    .any(|c| same_camera(&c.device, device) && c.clients() > 0),
+            })
+            .collect()
     }
 
-    fn plan(&self, requirements: &[FrameRequirements]) -> Result<SharedFramePlan, PlanError> {
-        let mut plan = plan_many(&self.config.device, requirements)?.exportable();
-        plan = match self.config.idle {
-            Some((after, IdleStop::Pause)) => plan.pause_when_idle(after),
-            Some((after, _)) => plan.stop_when_idle(after),
-            None => plan,
-        };
-        Ok(plan)
-    }
-
-    /// Start `plan`'s capture in place of the running one: the connected clients get their
-    /// frames from it (in plan order), and the frames for the plan's last consumer are returned
-    /// when it has one more than there are clients.
-    fn restart(
-        &self,
-        state: &mut State,
-        plan: SharedFramePlan,
-        clients: usize,
-    ) -> Result<PlannedFrames, String> {
-        // The old capture must let the camera go before the new one opens it.
-        for client in &state.clients {
-            client.frames.lock().take();
-        }
-        state.running = None;
-        let capacity = clients + SPARE_CLIENTS;
-        let session = plan
-            .start_session(capacity, self.config.max_in_flight)
-            .map_err(|err| format!("the camera did not start: {err}"))?;
-        for (client, consumer) in state.clients.iter().zip(&plan.consumers) {
-            *client.frames.lock() = Some(session.attach(consumer, true));
-        }
-        let frames = session.attach(plan.consumers.last().expect("a consumer"), true);
-        state.running = Some(Running {
-            session,
-            setup: plan.setup_key(),
-            plan,
-            capacity,
-        });
-        Ok(frames)
-    }
-
-    fn leave(&self, id: u64) {
-        let mut state = self.state.lock();
-        if let Some(i) = state.clients.iter().position(|c| c.id == id) {
-            let client = state.clients.remove(i);
-            client.frames.lock().take();
-        }
-        // Paused cameras wait for the next client; otherwise the camera goes with the last one.
-        let pause = matches!(self.config.idle, Some((_, IdleStop::Pause)));
-        if state.clients.is_empty() && !pause {
-            state.running = None;
-        }
-    }
-
-    fn set_roi(&self, id: u64, roi: Option<FrameRect>, frames: &FramesSlot) {
-        if let Some(client) = self.state.lock().clients.iter_mut().find(|c| c.id == id) {
-            client.requirements.roi = roi;
-        }
-        if let Some(frames) = frames.lock().as_ref() {
-            frames.roi().set(roi);
-        }
-    }
-}
-
-fn describe(err: &PlanError) -> String {
-    match err {
-        PlanError::NoCandidates { rejected } => {
-            let reasons: Vec<String> = rejected
+    /// The camera `selector` names (its name, part of it, or an identity key), or the first.
+    fn camera(&self, selector: Option<&str>) -> Result<Arc<Camera>, String> {
+        let devices = self.devices();
+        let device = match selector {
+            None => devices.first(),
+            Some(name) => devices
                 .iter()
-                .take(6)
-                .map(|r| format!("{}: {}", r.candidate, r.reason))
-                .collect();
-            format!("{err}: {}", reasons.join("; "))
+                .find(|d| d.identity.display == name || d.identity.keys.iter().any(|k| k == name))
+                .or_else(|| devices.iter().find(|d| d.identity.display.contains(name))),
         }
-        _ => err.to_string(),
+        .ok_or_else(|| match selector {
+            Some(name) => format!("no camera named {name}"),
+            None => "no camera".into(),
+        })?;
+        let mut cameras = self.cameras.lock();
+        if let Some(camera) = cameras.iter().find(|c| same_camera(&c.device, device)) {
+            return Ok(camera.clone());
+        }
+        let camera = Arc::new(Camera::new(device.clone()));
+        cameras.push(camera.clone());
+        Ok(camera)
+    }
+
+    fn clients(&self) -> usize {
+        self.cameras.lock().iter().map(|c| c.clients()).sum()
     }
 }
 
-fn accept_loop(service: &Arc<Service>, listener: &std::os::fd::OwnedFd) {
+fn accept_loop(service: &Arc<Service>, listener: &OwnedFd) {
     let mut clients: Vec<JoinHandle<()>> = Vec::new();
+    // Connections beyond this are closed at once, so a flood of connections cannot exhaust
+    // threads while handshakes are pending.
+    let max_connections = service.config.max_clients + 8;
     while !service.stopping.load(Ordering::Acquire) {
         if !socket::readable(listener, Duration::from_millis(100)) {
             clients.retain(|c| !c.is_finished());
             continue;
         }
         while let Ok(Some(socket)) = socket::accept(listener) {
+            if let Some(allow) = &service.config.authorize {
+                let allowed = socket::peer_credentials(&socket).is_ok_and(|peer| allow(&peer));
+                if !allowed {
+                    service
+                        .counters
+                        .unauthorized
+                        .fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+            }
+            if service.connections.load(Ordering::Acquire) >= max_connections {
+                service.counters.rejected.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            service.connections.fetch_add(1, Ordering::AcqRel);
             let service = service.clone();
             let spawned = std::thread::Builder::new()
                 .name("styx-camera-client".into())
-                .spawn(move || serve_client(&service, Connection::new(socket)));
+                .spawn(move || {
+                    serve_client(&service, Connection::new(socket));
+                    service.connections.fetch_sub(1, Ordering::AcqRel);
+                });
             match spawned {
                 Ok(handle) => clients.push(handle),
                 Err(err) => tracing::warn!(error = %err, "camera client not served"),
@@ -378,10 +388,25 @@ fn accept_loop(service: &Arc<Service>, listener: &std::os::fd::OwnedFd) {
 }
 
 fn serve_client(service: &Service, mut conn: Connection) {
-    let Some(requirements) = handshake(&mut conn) else {
+    let Some((requirements, selector)) = handshake(service, &mut conn) else {
         return;
     };
-    let (id, plan, frames) = match service.join(requirements) {
+    let joined = check_request(&requirements)
+        .and_then(|()| {
+            if service.clients() >= service.config.max_clients {
+                return Err(format!(
+                    "the service already serves {} clients",
+                    service.config.max_clients
+                ));
+            }
+            service.camera(selector.as_deref())
+        })
+        .and_then(|camera| {
+            camera
+                .join(requirements, &service.config, &service.counters)
+                .map(|joined| (camera, joined))
+        });
+    let (camera, (id, plan, frames)) = match joined {
         Ok(joined) => joined,
         Err(reason) => {
             service.counters.rejected.fetch_add(1, Ordering::Relaxed);
@@ -390,18 +415,29 @@ fn serve_client(service: &Service, mut conn: Connection) {
         }
     };
     if conn.send(&wire::encode_accept(&plan)).is_ok() {
-        send_frames(service, &mut conn, id, &frames);
+        send_frames(service, &camera, &mut conn, id, &frames);
     }
-    service.leave(id);
+    camera.leave(id, &service.config);
 }
 
-fn handshake(conn: &mut Connection) -> Option<FrameRequirements> {
+/// The client's request; a camera list request is answered here (and ends the connection).
+fn handshake(
+    service: &Service,
+    conn: &mut Connection,
+) -> Option<(FrameRequirements, Option<String>)> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !service.stopping.load(Ordering::Acquire) {
         let messages = conn.poll(Duration::from_millis(100)).ok()?;
         for message in messages {
-            if let ClientMessage::Request(requirements) = message {
-                return Some(*requirements);
+            match message {
+                ClientMessage::Request(requirements, camera) => {
+                    return Some((*requirements, camera));
+                }
+                ClientMessage::List => {
+                    let _ = conn.send(&wire::encode_cameras(&service.list()));
+                    return None;
+                }
+                ClientMessage::Release(_) | ClientMessage::Roi(_) => {}
             }
         }
     }
@@ -410,9 +446,17 @@ fn handshake(conn: &mut Connection) -> Option<FrameRequirements> {
 
 /// Send frames while the client reads them: a client holding `max_in_flight` frames is not
 /// pulled for more, so a client that stops reading lets the camera idle.
-fn send_frames(service: &Service, conn: &mut Connection, id: u64, frames: &FramesSlot) {
+fn send_frames(
+    service: &Service,
+    camera: &Camera,
+    conn: &mut Connection,
+    id: u64,
+    frames: &FramesSlot,
+) {
     let max_in_flight = service.config.max_in_flight;
     let counters = &service.counters;
+    // An H.264/H.265 client that missed a packet cannot decode until the next keyframe.
+    let mut awaiting_keyframe = false;
     while !service.stopping.load(Ordering::Acquire) {
         let wait = if conn.in_flight() >= max_in_flight {
             Duration::from_millis(20)
@@ -423,7 +467,7 @@ fn send_frames(service: &Service, conn: &mut Connection, id: u64, frames: &Frame
             Ok(messages) => {
                 for message in messages {
                     if let ClientMessage::Roi(roi) = message {
-                        service.set_roi(id, roi, frames);
+                        camera.set_roi(id, roi, frames);
                     }
                 }
             }
@@ -435,7 +479,7 @@ fn send_frames(service: &Service, conn: &mut Connection, id: u64, frames: &Frame
         let outcome = frames
             .lock()
             .as_mut()
-            .map(|frames| frames.next_frame(Duration::from_millis(50)));
+            .map(|frames| frames.next_frame(FRAME_WAIT));
         let frame = match outcome {
             Some(RecvOutcome::Data(frame)) => frame,
             Some(_) => continue,
@@ -445,6 +489,10 @@ fn send_frames(service: &Service, conn: &mut Connection, id: u64, frames: &Frame
                 continue;
             }
         };
+        let delta = frame.meta().delta;
+        if awaiting_keyframe && delta {
+            continue;
+        }
         let exported = match connection::export(&frame) {
             Ok(exported) => exported,
             Err(err) => {
@@ -455,6 +503,7 @@ fn send_frames(service: &Service, conn: &mut Connection, id: u64, frames: &Frame
         drop(frame);
         match conn.send_frame(&exported) {
             Ok(true) => {
+                awaiting_keyframe = false;
                 counters.sent.fetch_add(1, Ordering::Relaxed);
                 if exported.copied {
                     counters.copied.fetch_add(1, Ordering::Relaxed);
@@ -462,6 +511,12 @@ fn send_frames(service: &Service, conn: &mut Connection, id: u64, frames: &Frame
             }
             Ok(false) => {
                 counters.skipped.fetch_add(1, Ordering::Relaxed);
+                if let Some(frames) = frames.lock().as_ref()
+                    && frames.plan().inter_coded()
+                {
+                    awaiting_keyframe = true;
+                    frames.request_keyframe();
+                }
             }
             Err(_) => return,
         }

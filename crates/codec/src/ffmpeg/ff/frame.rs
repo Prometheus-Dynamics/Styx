@@ -91,6 +91,12 @@ impl Video {
         unsafe { (loader::loaded().util.av_frame_get_buffer)(self.ptr, 32) };
     }
 
+    /// Ask the encoder to make this frame a keyframe.
+    pub fn force_key_frame(&mut self) {
+        // SAFETY: valid owned frame.
+        unsafe { (*self.ptr).pict_type = raw::AVPictureType::AV_PICTURE_TYPE_I };
+    }
+
     pub unsafe fn as_ptr(&self) -> *const raw::AVFrame {
         self.ptr
     }

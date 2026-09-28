@@ -39,6 +39,12 @@ impl Packet {
         }
     }
 
+    /// A keyframe (`AV_PKT_FLAG_KEY`): decodable without the packets before it.
+    pub fn is_key(&self) -> bool {
+        // SAFETY: valid owned packet.
+        unsafe { (*self.ptr).flags & raw::AV_PKT_FLAG_KEY as c_int != 0 }
+    }
+
     pub fn size(&self) -> usize {
         // SAFETY: valid owned packet.
         unsafe { (*self.ptr).size.max(0) as usize }

@@ -352,20 +352,56 @@ pub(crate) struct Branch {
     rx: BoundedRx<FrameLease>,
     /// In an open group: this consumer's region, cropped from the shared frames.
     roi: Option<RoiHandle>,
+    /// The group encodes H.264/H.265: after a gap, packets are useless until a keyframe.
+    inter_coded: bool,
+    awaiting_keyframe: bool,
+    /// Packets this consumer's queue dropped so far.
+    seen_evictions: u64,
 }
 
 impl Branch {
-    pub(crate) fn next(&self, wait: Duration) -> RecvOutcome<FrameLease> {
-        self.cropped(self.group.next(self.member, &self.rx, wait))
+    pub(crate) fn next(&mut self, wait: Duration) -> RecvOutcome<FrameLease> {
+        let outcome = self.group.next(self.member, &self.rx, wait);
+        self.decodable(self.cropped(outcome))
     }
 
     #[cfg(feature = "async")]
-    pub(crate) async fn next_async(&self) -> RecvOutcome<FrameLease> {
+    pub(crate) async fn next_async(&mut self) -> RecvOutcome<FrameLease> {
         loop {
-            match self.cropped(self.group.next_async(self.member, &self.rx).await) {
+            let outcome = self.group.next_async(self.member, &self.rx).await;
+            match self.decodable(self.cropped(outcome)) {
                 RecvOutcome::Empty => {}
                 other => return other,
             }
+        }
+    }
+
+    pub(crate) fn request_keyframe(&self) {
+        self.group.preparer.request_keyframe();
+    }
+
+    /// Skip inter-coded packets this consumer cannot decode: after joining a running stream, or
+    /// after its queue dropped packets, until the keyframe it asks the encoder for.
+    fn decodable(&mut self, outcome: RecvOutcome<FrameLease>) -> RecvOutcome<FrameLease> {
+        if !self.inter_coded {
+            return outcome;
+        }
+        let evictions = self.rx.stats().evictions;
+        if evictions != self.seen_evictions {
+            // Packets were lost, perhaps the keyframe asked for earlier: ask (again).
+            self.seen_evictions = evictions;
+            self.awaiting_keyframe = true;
+            self.request_keyframe();
+        }
+        match outcome {
+            RecvOutcome::Data(packet) if self.awaiting_keyframe && packet.meta().delta => {
+                RecvOutcome::Empty
+            }
+            RecvOutcome::Data(packet) => {
+                self.awaiting_keyframe = false;
+                RecvOutcome::Data(packet)
+            }
+            other => other,
         }
     }
 
@@ -454,6 +490,7 @@ impl SharedSession {
                     .find(|g| g.open && same_preparation(&g.plan, plan))
             })
             .flatten();
+        let joined_running = joined.is_some();
         let group = joined.unwrap_or_else(|| {
             let (raw_tx, raw_rx) = bounded_with(depth, QueueOverflow::DropOldest);
             let index = self.shared.fanout.add(raw_tx);
@@ -478,11 +515,19 @@ impl SharedSession {
         });
         let (tx, rx) = bounded_with(depth, QueueOverflow::DropOldest);
         let member = group.fanout.add(tx);
+        let inter_coded = plan.inter_coded();
+        if inter_coded && joined_running {
+            // It joins a running stream: its first packets need a keyframe.
+            group.preparer.request_keyframe();
+        }
         let branch = Branch {
             roi: group.open.then(|| roi.clone()),
             group,
             member,
             rx,
+            inter_coded,
+            awaiting_keyframe: inter_coded,
+            seen_evictions: 0,
         };
         super::PlannedFrames::branch(plan, branch, roi)
     }

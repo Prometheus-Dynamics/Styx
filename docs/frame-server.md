@@ -48,6 +48,46 @@ while let RecvOutcome::Data(frame) = frames.recv(Duration::from_secs(1)) {
 
 `examples/05_apps/camera_service.rs` runs a service and clients from the command line.
 
+### Several cameras
+
+`CameraService::all_cameras()` serves every camera, probing when a client asks, so cameras
+plugged in later appear; `CameraService::with_cameras(devices)` serves a fixed set.
+`FrameClient::cameras(path)` lists them (name, identity keys, whether in use), and
+`FrameClient::request_camera(path, "ov9782", &requirements)` names one by its name, part of it,
+or an identity key; `FrameClient::request` takes the first. Each camera has its own shared
+capture and clients. A camera that goes away while in use is reconnected by the capture
+supervisor when it comes back (see [reconnect.md](reconnect.md)).
+
+### Encoded streams
+
+Clients may ask for H.264, H.265 or MJPEG from a camera that does not produce them: the planner
+adds an encoder (hardware first: VA-API, V4L2 mem2mem; else libx264/libx265 at low latency),
+after a decoder for MJPEG cameras. Clients asking for the same stream share one encoder. Each
+starts at a keyframe carrying the stream headers: a client joining a running stream, or one that
+fell behind and lost packets, gets a keyframe made for it (`FrameMeta::delta` marks packets that
+need the ones before them). `PlannedFrames::request_keyframe` asks for one in-process.
+
+### Protecting the service
+
+Requests come from other processes. The service:
+
+- checks each request before planning it: sizes up to 16384, queue depth 1–8, at most 64 decode
+  threads, 4 pyramid levels, power-of-two alignment up to 4096, short override names;
+- serves at most `max_clients` clients (default 16) and closes connections beyond that, even
+  before they send a request, and drops clients that send nothing within 5 s;
+- can check who connects: `authorize(|peer| peer.uid == 1000)` gets the kernel's process, user
+  and group IDs for the connection; `socket_mode(0o660)` sets who may open the socket.
+
+Message decoding is fuzzed (`fuzz/`, target `ipc_messages`): 46 million inputs found nothing in
+5 minutes.
+
+### Reconnecting clients
+
+`FrameClient::request(...)?.reconnecting()` survives service restarts: when the connection
+drops, receives return `Empty` instead of `Closed` while the client reconnects (backing off from
+100 ms to 2 s) and asks for the same frames again, with its latest region of interest.
+`FrameClient::reconnects()` counts the reconnections.
+
 ## Frame server
 
 ```rust
@@ -92,7 +132,11 @@ Camera service, two client processes each:
 | OV9782 | luma 320x180 + RGB 640x360 | 320x180 (ISP second output, YUYV decoded) and 640x360 RGB, 30 fps each, memfd, 8–9 ms | 4% |
 | C270 | luma 320x180 + RGB 640x360 | decoded into memfds, the camera's rate (11–15 fps in dim light) | 2% |
 
-Clients used under 0.5% CPU, and nothing was copied. The second OV9782 client joined with one
+| OV9782 | two H.264 640x360 viewers (one joined later) | one libx264 encode shared, 30 fps each, ~5 Mbit/s, 11 ms after exposure; the late viewer started at a keyframe | 25% (with a C270 luma client) |
+| C270 | H.264 1280x720 | MJPEG decoded and encoded, at the camera's rate | 38% |
+
+Clients used under 0.5% CPU, and nothing was copied. A reconnecting client lost ~1.6 s of
+frames across a service restart. The second OV9782 client joined with one
 capture restart; the first client's frames continued across it. A C270 at 640x360 takes ~1.7 s
 from starting to stream to its first frame, which a client waking the camera waits for.
 

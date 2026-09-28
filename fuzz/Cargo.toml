@@ -29,3 +29,10 @@ path = "fuzz_targets/mjpeg_decode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ipc_messages"
+path = "fuzz_targets/ipc_messages.rs"
+test = false
+doc = false
+bench = false

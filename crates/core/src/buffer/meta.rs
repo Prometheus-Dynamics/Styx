@@ -139,6 +139,9 @@ pub struct FrameMeta {
     pub crop: Option<crate::requirements::FrameRect>,
     /// Clock `timestamp` is expressed in, when the backend reports it.
     pub clock: Option<TimestampClock>,
+    /// An inter-coded packet (H.264/H.265 P-frame): decoding it needs the packets before it, back
+    /// to the last keyframe. `false` for raw frames, JPEG and keyframes.
+    pub delta: bool,
 }
 
 /// Clock a frame's `timestamp` is expressed in.
@@ -331,6 +334,7 @@ impl FrameMeta {
             timing: FrameTiming::default(),
             crop: None,
             clock: None,
+            delta: false,
         }
     }
 

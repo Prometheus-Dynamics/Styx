@@ -168,6 +168,35 @@ pub(super) fn send(socket: &OwnedFd, bytes: &[u8], fds: &[RawFd]) -> io::Result<
     Ok(true)
 }
 
+/// The process at the other end of a connected Unix socket, as the kernel reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerCredentials {
+    pub pid: i32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+pub(super) fn peer_credentials(socket: &OwnedFd) -> io::Result<PeerCredentials> {
+    // SAFETY: `ucred` is plain data; all-zero is a valid value.
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` is writable for `len` bytes; the fd is an open socket.
+    check(unsafe {
+        libc::getsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &mut len,
+        )
+    })?;
+    Ok(PeerCredentials {
+        pid: cred.pid,
+        uid: cred.uid,
+        gid: cred.gid,
+    })
+}
+
 /// Whether `socket` becomes readable (or a listener has a connection) within `wait`.
 pub(super) fn readable(socket: &OwnedFd, wait: Duration) -> bool {
     let mut poll = libc::pollfd {
