@@ -19,6 +19,7 @@ use styx_sensor::{RegisterBus, SensorPins};
 
 use crate::buffers::{FrameHead, Lender, NativeFrame};
 use crate::control::{FrameControls, SensorControl, lock};
+use crate::embedded::EmbeddedCapture;
 use crate::error::{KernelContext, NativeError, Result};
 
 /// What the stream and the event thread need from the sensor side, without its bus types.
@@ -29,6 +30,8 @@ pub(crate) trait SensorSide: Send + Sync {
     fn frame_start(&self, seq: u64);
     /// The values that produced frame `seq`.
     fn applied(&self, seq: u64) -> Option<FrameControls>;
+    /// Embedded data of frame `seq` (the raw buffer).
+    fn report_embedded(&self, seq: u64, data: &[u8]);
 }
 
 impl<B, P> SensorSide for Mutex<SensorControl<B, P>>
@@ -48,6 +51,10 @@ where
     fn applied(&self, seq: u64) -> Option<FrameControls> {
         lock(self).applied(seq)
     }
+
+    fn report_embedded(&self, seq: u64, data: &[u8]) {
+        let _ = lock(self).report_embedded(seq, data);
+    }
 }
 
 /// Stream statistics.
@@ -66,6 +73,7 @@ pub(crate) struct StreamShared {
     pub(crate) fd: Arc<AsyncFd<Arc<VideoDevice>>>,
     pub(crate) lender: Arc<Lender>,
     pub(crate) sensor: Arc<dyn SensorSide>,
+    pub(crate) embedded: Option<Arc<EmbeddedCapture>>,
     pub(crate) buf_type: BufType,
     /// Frame starts come from `FRAME_SYNC` events; without them the dequeue drives the
     /// schedule.
@@ -122,6 +130,9 @@ impl StreamShared {
             height: self.height,
             stride: self.stride,
         };
+        if let Some(e) = &self.embedded {
+            e.drain();
+        }
         let controls = self.sensor.applied(seq);
         Ok(Some(NativeFrame::new(
             buf.index,

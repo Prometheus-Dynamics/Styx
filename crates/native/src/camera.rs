@@ -28,6 +28,7 @@ use styx_sensor::{ControlRequest, DriverState, SensorDriver, Step};
 use crate::buffers::{BufferMemory, BufferSet, Lender};
 use crate::control::{BlankingHook, ControlHandle, ExpectedStart, SensorControl, lock};
 use crate::discover::{CameraInfo, find_media};
+use crate::embedded::{EmbeddedCapture, embedded_link};
 use crate::error::{KernelContext, NativeError, Result};
 use crate::events::EventThread;
 use crate::formats;
@@ -64,6 +65,9 @@ pub struct CameraOptions {
     pub i2c_bus: Option<u32>,
     /// Use the receiver's frame-start events (else frame starts are inferred from dequeues).
     pub frame_sync: bool,
+    /// Capture the sensor's embedded data when the bridge and the description provide it, and
+    /// report the values it carries for each frame.
+    pub embedded_data: bool,
 }
 
 impl Default for CameraOptions {
@@ -75,6 +79,7 @@ impl Default for CameraOptions {
             power_settle: Duration::from_millis(5),
             i2c_bus: None,
             frame_sync: true,
+            embedded_data: true,
         }
     }
 }
@@ -196,6 +201,7 @@ pub struct NativeCamera {
     control: Arc<Mutex<SensorControl<Bus, Pins>>>,
     video: Option<Arc<VideoDevice>>,
     video_fd: Option<Arc<AsyncFd<Arc<VideoDevice>>>>,
+    embedded: Option<Arc<EmbeddedCapture>>,
     frame_sync: bool,
     configured: Option<Configured>,
     running: Option<Running>,
@@ -265,6 +271,7 @@ impl NativeCamera {
             control: Arc::new(Mutex::new(SensorControl::new(driver))),
             video: None,
             video_fd: None,
+            embedded: None,
             frame_sync: false,
             configured: None,
             running: None,
@@ -394,7 +401,13 @@ impl NativeCamera {
         let mut topo = media.topology().step("media topology")?;
         let (_, _, entity) = find_media(&self.info.location)?;
         let route = find_route(&topo, entity)?;
-        let plan = link_plan(&topo, &route);
+        self.embedded = None;
+        let mut plan = link_plan(&topo, &route);
+        let embedded = (self.options.embedded_data
+            && self.info.description.embedded_data.is_some())
+        .then(|| embedded_link(&topo, &route))
+        .flatten();
+        plan.extend(embedded);
         for c in &plan {
             let flags = if c.enable {
                 LinkFlags::ENABLED
@@ -406,6 +419,12 @@ impl NativeCamera {
                 .step("MEDIA_IOC_SETUP_LINK")?;
         }
         apply_plan(&mut topo, &plan);
+        if embedded.is_some()
+            && let Some(path) = route.embedded_node.and_then(|n| topo.devnode_path(n))
+        {
+            let sensor: Arc<dyn SensorSide> = self.control.clone();
+            self.embedded = Some(Arc::new(EmbeddedCapture::open(&path, 4, sensor)?));
+        }
         self.info.route = route.clone();
         self.info.rebuild_graph(topo);
         let path = route
@@ -521,6 +540,7 @@ impl NativeCamera {
             Arc::clone(&self.bridge),
             self.frame_sync.then(|| Arc::clone(&fd)),
             Arc::clone(&sensor),
+            self.embedded.clone(),
         )
         .step("start the event thread")?;
         let buffers = BufferSet::allocate(
@@ -539,6 +559,7 @@ impl NativeCamera {
             fd,
             lender: Arc::clone(&lender),
             sensor,
+            embedded: self.embedded.clone(),
             buf_type: CAPTURE,
             frame_sync: self.frame_sync,
             fourcc: cfg.fourcc,
@@ -553,7 +574,17 @@ impl NativeCamera {
             last_sequence: AtomicU64::new(0),
             disconnected: AtomicBool::new(false),
         });
+        if let Some(e) = &self.embedded
+            && let Err(err) = e.start()
+        {
+            lender.streaming.store(false, Ordering::Release);
+            events.join();
+            return Err(err);
+        }
         if let Err(e) = video.stream_on(CAPTURE) {
+            if let Some(emb) = &self.embedded {
+                emb.stop();
+            }
             lender.streaming.store(false, Ordering::Release);
             events.join();
             self.standby();
@@ -590,6 +621,9 @@ impl NativeCamera {
             .map_or(Ok(()), |v| v.stream_off(CAPTURE))
             .step("VIDIOC_STREAMOFF");
         running.events.join();
+        if let Some(e) = &self.embedded {
+            e.stop();
+        }
         self.standby();
         result
     }
@@ -602,6 +636,13 @@ impl NativeCamera {
                 r.events.stats.acks.load(Ordering::Relaxed),
             )
         })
+    }
+
+    /// Embedded data buffers reported to the control schedule (0 without embedded data).
+    pub fn embedded_reports(&self) -> Option<u64> {
+        self.embedded
+            .as_ref()
+            .map(|e| e.reported.load(Ordering::Relaxed))
     }
 
     /// Whether frame starts come from `FRAME_SYNC` events.

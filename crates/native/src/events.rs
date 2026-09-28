@@ -19,6 +19,7 @@ use styx_kernel::bus::SensorBridge;
 use styx_kernel::event::{EventKind, Events};
 use styx_kernel::v4l2::VideoDevice;
 
+use crate::embedded::EmbeddedCapture;
 use crate::stream::SensorSide;
 
 /// Counters the event thread keeps.
@@ -50,6 +51,7 @@ impl EventThread {
         bridge: Arc<SensorBridge>,
         video: Option<Arc<AsyncFd<Arc<VideoDevice>>>>,
         sensor: Arc<dyn SensorSide>,
+        embedded: Option<Arc<EmbeddedCapture>>,
     ) -> std::io::Result<Self> {
         let (reader, writer) = std::io::pipe()?;
         rt::set_nonblocking(std::os::fd::AsFd::as_fd(&reader))?;
@@ -61,7 +63,9 @@ impl EventThread {
         let handle = std::thread::Builder::new()
             .name("styx-native-events".into())
             .spawn(move || {
-                rt::block_on(run(bridge, bridge_fd, video, wake, sensor, keep, st));
+                rt::block_on(run(
+                    bridge, bridge_fd, video, wake, sensor, embedded, keep, st,
+                ));
             })?;
         Ok(Self {
             stop,
@@ -93,12 +97,14 @@ impl Drop for EventThread {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     bridge: Arc<SensorBridge>,
     bridge_fd: AsyncFd<Arc<SensorBridge>>,
     video: Option<Arc<AsyncFd<Arc<VideoDevice>>>>,
     wake: AsyncFd<PipeReader>,
     sensor: Arc<dyn SensorSide>,
+    embedded: Option<Arc<EmbeddedCapture>>,
     stop: Arc<AtomicBool>,
     stats: Arc<EventStats>,
 ) {
@@ -123,6 +129,10 @@ async fn run(
                     sensor.frame_start(u64::from(frame_sequence));
                 }
             }
+        }
+        // The previous frame's embedded line has arrived by the next frame start.
+        if let Some(e) = &embedded {
+            e.drain();
         }
         let which = {
             let mut b = bridge_fd.priority();

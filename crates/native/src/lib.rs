@@ -8,6 +8,7 @@ mod buffers;
 pub mod camera;
 pub mod control;
 pub mod discover;
+mod embedded;
 mod error;
 mod events;
 pub mod formats;
