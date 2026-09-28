@@ -12,6 +12,11 @@
 //! vertical bands (red, green, blue, grey) whose brightness ramps down the frame, then
 //! checks the band colours and that tile boundaries leave no seams.
 //!
+//! `--test-pattern-after N` switches the OV9782's colour bar test pattern on (register 0x5e00
+//! = 0x80, over `i2ctransfer -f` on bus 10 address 0x60, behind the kernel driver's back)
+//! after N frames and off again before stopping, so the statistics see a non-black input when
+//! no light reaches the sensor. The driver rewrites 0x5e00 = 0 when it next starts streaming.
+//!
 //! ```text
 //! ```
 
@@ -37,6 +42,7 @@ struct Args {
     be_runs: usize,
     be: bool,
     synthetic: bool,
+    pattern_after: Option<usize>,
 }
 
 fn args() -> Result<Args, String> {
@@ -46,6 +52,7 @@ fn args() -> Result<Args, String> {
         be_runs: 20,
         be: true,
         synthetic: false,
+        pattern_after: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -56,6 +63,13 @@ fn args() -> Result<Args, String> {
             "--out" => a.out = val()?,
             "--no-be" => a.be = false,
             "--synthetic" => a.synthetic = true,
+            "--test-pattern-after" => {
+                a.pattern_after = Some(
+                    val()?
+                        .parse()
+                        .map_err(|e| format!("--test-pattern-after: {e}"))?,
+                )
+            }
             _ => return Err(format!("unknown argument {x}")),
         }
     }
@@ -107,6 +121,19 @@ fn summarise(seq: u32, dt: Option<Duration>, s: &Statistics) -> String {
     )
 }
 
+/// Writes the OV9782 test pattern register (0x5e00) on bus 10, address 0x60.
+fn test_pattern(on: bool) -> String {
+    let value = if on { "0x80" } else { "0x00" };
+    match std::process::Command::new("i2ctransfer")
+        .args(["-f", "-y", "10", "w3@0x60", "0x5e", "0x00", value])
+        .status()
+    {
+        Ok(s) if s.success() => "ok".into(),
+        Ok(s) => format!("i2ctransfer failed: {s}"),
+        Err(e) => format!("i2ctransfer: {e}"),
+    }
+}
+
 fn front_end(a: &Args) -> Result<(Vec<u8>, ImageFormatConfig, Statistics), String> {
     let setup = FrontEndSetup {
         width: WIDTH,
@@ -134,6 +161,9 @@ fn front_end(a: &Args) -> Result<(Vec<u8>, ImageFormatConfig, Statistics), Strin
     let mut mismatched = 0;
     let mut result = Ok(());
     for i in 0..a.frames {
+        if a.pattern_after == Some(i) {
+            println!("[fe] test pattern on: {}", test_pattern(true));
+        }
         match dev.next_frame(&mut fe, TIMEOUT) {
             Ok(f) => {
                 if i == 0 {
@@ -156,6 +186,9 @@ fn front_end(a: &Args) -> Result<(Vec<u8>, ImageFormatConfig, Statistics), Strin
                 break;
             }
         }
+    }
+    if a.pattern_after.is_some() {
+        println!("[fe] test pattern off: {}", test_pattern(false));
     }
     let stop = dev.stop();
     result?;
