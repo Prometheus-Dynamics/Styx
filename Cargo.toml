@@ -9,6 +9,7 @@ members = [
     "crates/kernel",
     "crates/sensor",
     "crates/graph",
+    "tools/native-spike",
     "examples",
 ]
 resolver = "3"

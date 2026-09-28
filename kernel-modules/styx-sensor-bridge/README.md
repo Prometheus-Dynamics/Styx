@@ -11,6 +11,8 @@ driven from userspace by Styx. Written once; no sensor-specific code, no I²C ac
 | `styx_sensor_bridge.h` | Userspace ABI: event id, payload, private controls |
 | `PROTOCOL.md` | Device tree binding, controls, events, acknowledgement, start/stop order |
 | `dts/styx-sensor-bridge-cm5-overlay.dts` | CM5/Pi 5 camera-port overlay with the HeliOS OV9782 wiring |
+| `dts/styx-sensor-bridge-cm5-runtime-overlay.dts` | The same, applied at runtime (configfs) on top of a HeliOS tree booted with `ov9782-overlay` on cam0 |
+| `spike/` | The first on-device spike: `up.sh`/`down.sh`, offline overlay checks, [`spike/README.md`](spike/README.md) |
 | `Kbuild`, `Makefile`, `Kconfig` | Out-of-tree and in-tree build glue |
 | `build.sh` | Builds the `.ko` and `.dtbo` for the exact HeliOS kernel and checks vermagic/CRCs |
 | `tools/check_crcs.py` | Compares a `Module.symvers` with the CRCs recorded in modules from the device |
@@ -27,7 +29,7 @@ writing to it, into `../linux-build-styx/kbuild-<release>/` next to the reposito
 
 ```sh
 ./build.sh prepare               # once per kernel build (slow on a busy disk)
-./build.sh build                 # -> ../linux-build-styx/out/<release>/{styx_sensor_bridge.ko,styx-sensor-bridge-cm5.dtbo}
+./build.sh build                 # -> ../linux-build-styx/out/<release>/{styx_sensor_bridge.ko,*.dtbo}
 DEVICE=root@helios ./build.sh verify   # vermagic + CRC comparison, read-only on the device
 ```
 

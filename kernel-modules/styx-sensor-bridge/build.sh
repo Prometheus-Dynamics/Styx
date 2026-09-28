@@ -48,7 +48,7 @@ kbuild="$STYX_KBUILD_ROOT/kbuild-$KERNEL_RELEASE"
 objdir="$STYX_KBUILD_ROOT/obj/styx-sensor-bridge"
 outdir="$STYX_KBUILD_ROOT/out/$KERNEL_RELEASE"
 module="styx_sensor_bridge"
-overlay="styx-sensor-bridge-cm5"
+overlays=(styx-sensor-bridge-cm5 styx-sensor-bridge-cm5-runtime)
 
 log() { printf '[styx-bridge] %s\n' "$*" >&2; }
 die() { log "error: $*"; exit 1; }
@@ -105,8 +105,10 @@ build() {
         [[ -n "$c" && -x "$c" ]] && { dtc="$c"; break; }
     done
     if [[ -n "$dtc" ]]; then
-        log "compiling overlay with $dtc"
-        "$dtc" -@ -q -I dts -O dtb -o "$outdir/$overlay.dtbo" "$here/dts/$overlay-overlay.dts"
+        for overlay in "${overlays[@]}"; do
+            log "compiling $overlay overlay with $dtc"
+            "$dtc" -@ -q -I dts -O dtb -o "$outdir/$overlay.dtbo" "$here/dts/$overlay-overlay.dts"
+        done
     else
         log "warning: no dtc found; overlay not compiled"
     fi

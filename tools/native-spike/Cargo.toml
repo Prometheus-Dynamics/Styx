@@ -1,0 +1,19 @@
+[package]
+name = "native-spike"
+version.workspace = true
+edition.workspace = true
+description = "On-device spike: stream raw OV9782 frames through the Styx sensor bridge with the sensor driven from userspace."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+libc.workspace = true
+signal-hook = { version = "0.3.18", default-features = false }
+styx-kernel.workspace = true
+styx-sensor.workspace = true
+
+[lints]
+workspace = true
