@@ -1,0 +1,186 @@
+# OmniVision OV9782: 1 MP (1280x800) global shutter colour sensor, 2-lane MIPI CSI-2.
+#
+# PROVENANCE - READ BEFORE MERGING
+# The register addresses, register values and timing constants in this file were read from
+# the HeliOS kernel driver `gaia/assets/buildroot/linux/ov9782/drivers/media/i2c/ov9782.c`
+# (SPDX GPL-2.0-only, derived from the upstream ov9282 driver). No code was copied; only
+# register addresses/values and timing numbers. Styx is MIT OR Apache-2.0: these values must be
+# replaced from the OV9782 datasheet, or their use cleared by the project owner, before this
+# file is merged to `dev`.
+#
+# Values marked "not from the driver" come from elsewhere and are unverified.
+
+[sensor]
+name = "ov9782"
+vendor = "OmniVision"
+i2c_address = 0x60
+address_bits = 16
+# The driver also accepts 0x9281: some modules report an OV9281 id.
+chip_id = { address = 0x300a, bytes = 2, values = [0x9782, 0x9281] }
+clocks = { xvclk = 24_000_000 }
+tuning = "ov9782.json"
+
+[pixel_array]
+# 8 dummy rows/columns on each edge of the 1280x800 active array.
+size = [1296, 816]
+active = { left = 8, top = 8, width = 1280, height = 800 }
+color_filter = "BGGR"
+# Not from the driver: 64 at 10 bits is the usual OmniVision pedestal (libcamera uses 4096 at
+# 16 bits for the OV9281). Verify against dark frames.
+black_level = { value = 64, bits = 10 }
+
+[sequences]
+# The driver enables avdd/dovdd/dvdd, waits 400-600 us, sets reset (logical 1), enables the
+# 24 MHz clock, waits 400-600 us, then writes MIPI_CTRL00. Supplies, reset and clock are
+# optional here because boards (the Raspberry Pi CM5 overlay among them) often manage them in
+# firmware or the kernel; the HeliOS overlay has no reset line.
+power_up = [
+    { supply = "avdd", on = true, optional = true },
+    { supply = "dovdd", on = true, optional = true },
+    { supply = "dvdd", on = true, optional = true },
+    { delay_us = 600 },
+    { gpio = "reset", value = 1, optional = true },
+    { clock = "xvclk", on = true, optional = true },
+    { delay_us = 600 },
+    # MIPI_CTRL00: 0x00 for a continuous CSI-2 clock (the device today), 0x20 (gated clock)
+    # for `clock-noncontinuous`, which also needs the larger hblank minimums noted below.
+    [0x4800, 0x00],
+]
+power_down = [
+    { gpio = "reset", value = 0, optional = true },
+    { clock = "xvclk", on = false, optional = true },
+    { supply = "dvdd", on = false, optional = true },
+    { supply = "dovdd", on = false, optional = true },
+    { supply = "avdd", on = false, optional = true },
+]
+# Common registers. Must not include a software reset (0x0103): it would clear MIPI_CTRL00.
+init = [
+    [0x0302, 0x32], [0x030e, 0x02], [0x3001, 0x00], [0x3004, 0x00], [0x3005, 0x00],
+    [0x3006, 0x04], [0x3011, 0x0a], [0x3013, 0x18], [0x301c, 0xf0], [0x3022, 0x01],
+    [0x3030, 0x10], [0x3039, 0x32], [0x303a, 0x00], [0x3503, 0x08], [0x3505, 0x8c],
+    [0x3507, 0x03], [0x3508, 0x00], [0x3610, 0x80], [0x3611, 0xa0], [0x3620, 0x6e],
+    [0x3632, 0x56], [0x3633, 0x78], [0x3666, 0x00], [0x366f, 0x5a], [0x3680, 0x84],
+    [0x3712, 0x80], [0x372d, 0x22], [0x3731, 0x80], [0x3732, 0x30], [0x377d, 0x22],
+    [0x3788, 0x02], [0x3789, 0xa4], [0x378a, 0x00], [0x378b, 0x4a], [0x3799, 0x20],
+    [0x3881, 0x42], [0x38a8, 0x02], [0x38a9, 0x80], [0x38b1, 0x00], [0x38c4, 0x00],
+    [0x38c5, 0xc0], [0x38c6, 0x04], [0x38c7, 0x80], [0x3920, 0xff], [0x4010, 0x40],
+    [0x4043, 0x40], [0x4307, 0x30], [0x4317, 0x00], [0x4501, 0x00], [0x450a, 0x08],
+    [0x4601, 0x04], [0x470f, 0x00], [0x4f07, 0x00], [0x5000, 0x9f], [0x5001, 0x00],
+    [0x5e00, 0x00], [0x5d00, 0x07], [0x5d01, 0x00], [0x0101, 0x01], [0x1000, 0x03],
+    [0x5a08, 0x84],
+]
+stream_on = [[0x0100, 0x01]]
+stream_off = [[0x0100, 0x00]]
+
+# Pixel rates are what the driver reports: link frequency x 2 (DDR) x 2 lanes / bits per pixel.
+# PLL_CTRL_0D (0x030d) and ANA_CORE_2 (0x3662) select the bit depth.
+[formats.raw10]
+code = "SBGGR10_1X10"
+pixel_rate = 160_000_000
+link_frequency = 400_000_000
+registers = [[0x030d, 0x50], [0x3662, 0x05]]
+
+[formats.raw8]
+code = "SBGGR8_1X8"
+pixel_rate = 200_000_000
+link_frequency = 400_000_000
+registers = [[0x030d, 0x60], [0x3662, 0x07]]
+
+# hblank minimums are the driver's continuous-clock values (the device reports HBLANK min 176
+# at 1280x800). With a non-continuous clock the driver uses 250 (1280 wide) and 890 (640 wide).
+# hblank maximums are HTS max 0x7fff minus the width.
+[[modes]]
+name = "1280x800"
+size = [1280, 800]
+crop = { left = 8, top = 8, width = 1280, height = 800 }
+hblank = { min = 176, max = 31487, default = 176 }
+vblank = { min = 110, max = 51540, default = 1022 }
+registers = [
+    [0x3778, 0x00], [0x3800, 0x00], [0x3801, 0x00], [0x3802, 0x00], [0x3803, 0x00],
+    [0x3804, 0x05], [0x3805, 0x0f], [0x3806, 0x03], [0x3807, 0x2f], [0x3808, 0x05],
+    [0x3809, 0x00], [0x380a, 0x03], [0x380b, 0x20], [0x3810, 0x00], [0x3811, 0x08],
+    [0x3812, 0x00], [0x3813, 0x08], [0x3814, 0x11], [0x3815, 0x11], [0x3820, 0x40],
+    [0x3821, 0x00], [0x4003, 0x40], [0x4008, 0x04], [0x4009, 0x0b], [0x400c, 0x00],
+    [0x400d, 0x07], [0x4507, 0x00], [0x4509, 0x00],
+]
+
+[[modes]]
+# The top 720 lines of the array, not a centred crop.
+name = "1280x720"
+size = [1280, 720]
+crop = { left = 8, top = 8, width = 1280, height = 720 }
+hblank = { min = 176, max = 31487, default = 176 }
+vblank = { min = 41, max = 51540, default = 1022 }
+registers = [
+    [0x3778, 0x00], [0x3800, 0x00], [0x3801, 0x00], [0x3802, 0x00], [0x3803, 0x00],
+    [0x3804, 0x05], [0x3805, 0x0f], [0x3806, 0x02], [0x3807, 0xdf], [0x3808, 0x05],
+    [0x3809, 0x00], [0x380a, 0x02], [0x380b, 0xd0], [0x3810, 0x00], [0x3811, 0x08],
+    [0x3812, 0x00], [0x3813, 0x08], [0x3814, 0x11], [0x3815, 0x11], [0x3820, 0x3c],
+    [0x3821, 0x84], [0x4003, 0x40], [0x4008, 0x02], [0x4009, 0x05], [0x400c, 0x00],
+    [0x400d, 0x03], [0x4507, 0x00], [0x4509, 0x80],
+]
+
+[[modes]]
+# Full array subsampled 2x2. Whether this bins or skips is not clear from the driver
+# (0x3814/0x3815 set odd/even increments, 0x3820/0x3821 differ from full resolution).
+name = "640x400"
+size = [640, 400]
+crop = { left = 8, top = 8, width = 1280, height = 800 }
+binning = [2, 2]
+hblank = { min = 816, max = 32127, default = 816 }
+vblank = { min = 22, max = 51540, default = 1022 }
+registers = [
+    [0x3778, 0x10], [0x3800, 0x00], [0x3801, 0x00], [0x3802, 0x00], [0x3803, 0x00],
+    [0x3804, 0x05], [0x3805, 0x0f], [0x3806, 0x03], [0x3807, 0x2f], [0x3808, 0x02],
+    [0x3809, 0x80], [0x380a, 0x01], [0x380b, 0x90], [0x3810, 0x00], [0x3811, 0x04],
+    [0x3812, 0x00], [0x3813, 0x04], [0x3814, 0x31], [0x3815, 0x22], [0x3820, 0x60],
+    [0x3821, 0x01], [0x4008, 0x02], [0x4009, 0x05], [0x400c, 0x00], [0x400d, 0x03],
+    [0x4507, 0x03], [0x4509, 0x80],
+]
+
+[controls]
+# Frame length (VTS, "lines per frame").
+frame_length = { address = 0x380e, bytes = 2 }
+# HTS: the driver writes (width + hblank) / 2.
+line_length = { register = { address = 0x380c, bytes = 2 }, pixels_per_unit = 2 }
+
+[controls.exposure]
+# Written as lines << 4 into three bytes; the low 4 bits (fractional lines) are left at 0.
+register = { address = 0x3500, bytes = 3, shift = 4, bits = 16 }
+min = 1
+margin = 12
+default = 642
+
+[controls.analog_gain]
+# Code 0x10 is 1x, 1/16 steps (the driver's range is 0x10..=0xff).
+register = { address = 0x3509 }
+min_code = 0x10
+max_code = 0xff
+default_code = 0x10
+model = { linear = { step = 0.0625 } }
+
+# Not from the driver: libcamera's Raspberry Pi helper for the OV9281 uses 2 frames for
+# exposure, gain and vblank. Verify with embedded-data-free frame statistics.
+[controls.delays]
+exposure = 2
+analog_gain = 2
+digital_gain = 2
+frame_length = 2
+
+# The driver brackets exposure and gain writes with 0x3308 = 1 / 0x3308 = 0. (Most OmniVision
+# sensors use 0x3208 for group hold; confirm 0x3308 against the datasheet.)
+[controls.group_hold]
+start = [[0x3308, 0x01]]
+end = [[0x3308, 0x00]]
+
+# The driver sets bit 2 of TIMING_FORMAT_2 (hflip) and TIMING_FORMAT_1 (vflip), read-modify-
+# write, both on by default, and does not change the media bus code when flipping.
+[controls.hflip]
+address = 0x3821
+mask = 0x04
+default = true
+
+[controls.vflip]
+address = 0x3820
+mask = 0x04
+default = true
