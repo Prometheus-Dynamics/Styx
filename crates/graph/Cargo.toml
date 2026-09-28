@@ -1,0 +1,15 @@
+[package]
+name = "styx-graph"
+version.workspace = true
+edition.workspace = true
+description = "Device graph, providers and the async core of the Styx native stack."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true

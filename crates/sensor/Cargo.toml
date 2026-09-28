@@ -1,0 +1,15 @@
+[package]
+name = "styx-sensor"
+version.workspace = true
+edition.workspace = true
+description = "Camera sensors as data: descriptions, timing, exposure and gain models, register sequences."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true
