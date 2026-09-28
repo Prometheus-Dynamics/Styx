@@ -131,6 +131,7 @@ mod desc;
 mod error;
 mod gain;
 mod mbus;
+pub mod schedule;
 mod timing;
 
 pub use desc::{
@@ -141,4 +142,7 @@ pub use desc::{
 pub use error::{Issue, Issues, Result, SensorError};
 pub use gain::{GainCode, GainSplit, Rounding, split_gain};
 pub use mbus::{ColorFilter, MbusCode};
+pub use schedule::{
+    Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Mismatch,
+};
 pub use timing::{ExposureLimits, ExposureSpec, ExposureValue, FrameLength, Timing};
