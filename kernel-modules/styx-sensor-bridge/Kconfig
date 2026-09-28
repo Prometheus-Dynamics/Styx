@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0
+config VIDEO_STYX_SENSOR_BRIDGE
+	tristate "Styx sensor bridge (camera sensor driven from userspace)"
+	depends on OF && I2C && VIDEO_DEV
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  A generic V4L2 sensor subdevice for camera sensors that are driven
+	  from userspace over i2c-dev (Styx). It describes the CSI-2 link to
+	  the receiver and forwards stream start/stop to userspace.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called styx_sensor_bridge.
