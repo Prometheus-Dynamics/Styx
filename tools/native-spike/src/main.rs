@@ -18,6 +18,7 @@ mod analysis;
 mod args;
 mod checks;
 mod dry_run;
+mod embedded;
 mod experiments;
 mod frames;
 mod kernel_path;
@@ -173,6 +174,7 @@ fn run(args: &args::Args, desc: Arc<SensorDescription>) -> Result<()> {
         verify::write(&rig, &args.verify.writes)?;
     }
     rig.configure_bridge(link, args.ack_timeout)?;
+    rig.want_embedded = args.verify.embedded;
     rig.configure_graph()?;
     rig.start(args.buffers)?;
 
@@ -218,6 +220,9 @@ fn run_verification(rig: &mut rig::Rig, args: &args::Args) -> Result<()> {
     let v = &args.verify;
     experiments::set_rate(rig, v.fps)?;
     experiments::collect(rig, 8)?;
+    if v.embedded {
+        verify::embedded_report(rig)?;
+    }
     if v.regdump {
         verify::regdump(rig, &args.mode, &args.format)?;
     }

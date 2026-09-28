@@ -68,6 +68,12 @@ init = [
     [0x4601, 0x04], [0x470f, 0x00], [0x4f07, 0x00], [0x5000, 0x9f], [0x5001, 0x00],
     [0x5e00, 0x00], [0x5d00, 0x07], [0x5d01, 0x00], [0x0101, 0x01], [0x1000, 0x03],
     [0x5a08, 0x84],
+    # Not from the driver (OV9281/OV9282 datasheet, PSV_CTRL): bit 3 disables the automatic
+    # power-save mode the sensor enters when VTS exceeds PSV_AUTO_ON_THRESH (0x4f0c, default
+    # 0x1000 lines). Measured on the device: without it any frame length above 4096 lines
+    # (below ~24.4 fps at 1280x800) stopped the stream after one frame and left the sensor
+    # unable to start until the next power cycle; with it 25, 10 and 2.2 fps run exactly.
+    [0x4f00, 0x08],
 ]
 stream_on = [[0x0100, 0x01]]
 stream_off = [[0x0100, 0x00]]
@@ -172,6 +178,13 @@ frame_length = 2
 [controls.group_hold]
 start = [[0x3308, 0x01]]
 end = [[0x3308, 0x00]]
+
+# PRE_ISP test pattern bar (OV9281/OV9282 datasheet, 0x5e00 bit 7), not in the driver; the
+# OV2311 driver uses the low bits for bar types. Verified on the device with native-spike
+# --test-patterns (the bars appear, independent of the scene).
+[controls.test_pattern]
+register = { address = 0x5e00 }
+patterns = { off = 0x00, colour_bars = 0x80 }
 
 # The driver sets bit 2 of TIMING_FORMAT_2 (hflip) and TIMING_FORMAT_1 (vflip), read-modify-
 # write, both on by default, and does not change the media bus code when flipping.

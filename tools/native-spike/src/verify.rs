@@ -387,6 +387,67 @@ pub fn black_level(rig: &mut Rig) -> Result<()> {
     Ok(())
 }
 
+/// Embedded data: dumps a few buffers, searches them for the current exposure, gain and VTS
+/// bytes, decodes them with the description's layout (if any), then changes exposure, gain and
+/// frame length with raw writes after a frame start and prints per frame what the embedded
+/// data reports, which gives the frame each register value is applied to.
+pub fn embedded_report(rig: &mut Rig) -> Result<()> {
+    collect(rig, 4)?;
+    let seq = rig.current_frame().ok_or("no frame")?.saturating_sub(1);
+    let exp = read(rig, EXPOSURE, 3)?;
+    let gain = read(rig, GAIN, 1)?;
+    let vts = read(rig, VTS, 2)?;
+    let Some(emb) = &rig.embedded else {
+        return Err("no embedded node".into());
+    };
+    let Some(f) = emb.frame(seq).or(emb.frames.back()) else {
+        log!("embedded: no buffers received (the sensor sends no embedded data with these settings)");
+        return Ok(());
+    };
+    log!(
+        "embedded: frame {} {} bytes; exposure {exp:#08x} gain {gain:#04x} vts {vts:#06x}\n    {}",
+        f.sequence,
+        f.used,
+        crate::embedded::hex(&f.head)
+    );
+    for (name, bytes) in [
+        ("exposure", exp.to_be_bytes()[1..].to_vec()),
+        ("vts", vts.to_be_bytes()[2..].to_vec()),
+    ] {
+        let at: Vec<usize> = f
+            .head
+            .windows(bytes.len())
+            .enumerate()
+            .filter(|(_, w)| *w == bytes.as_slice())
+            .map(|(i, _)| i)
+            .collect();
+        log!("embedded: {name} bytes {bytes:02x?} found at offsets {at:?}");
+    }
+    let changes: [(&str, RawWrite, RawWrite); 3] = [
+        ("exposure", exposure_write(1000), (EXPOSURE, exp, 3)),
+        ("gain", (GAIN, 0x40, 1), (GAIN, gain, 1)),
+        ("vts", (VTS, vts + 100, 2), (VTS, vts, 2)),
+    ];
+    let desc = rig.driver().description().clone();
+    for (name, w, undo) in changes {
+        let (during, frames) = step(rig, &[w], 5)?;
+        for fr in &frames {
+            let e = rig.embedded.as_ref().and_then(|e| e.frame(fr.sequence));
+            let decoded = e.map(|e| desc.decode_embedded(&e.head));
+            log!(
+                "embedded {name}: wrote {:#x} in frame {during}; frame {} {}{}",
+                w.1,
+                fr.sequence,
+                e.map_or("no buffer".into(), |e| crate::embedded::hex(&e.head[..e.head.len().min(64)])),
+                decoded.map_or(String::new(), |d| format!("  decoded {d:?}"))
+            );
+        }
+        write(rig, &[undo])?;
+        collect(rig, 4)?;
+    }
+    Ok(())
+}
+
 /// Writes the scheduler's current exposure and gain back (after raw experiments).
 pub fn restore(rig: &mut Rig) -> Result<()> {
     let mut d = rig.driver();

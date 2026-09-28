@@ -27,6 +27,7 @@ usage: native-spike [options]
 
 verification (native path unless noted; raw register writes around the control scheduler):
   --write LIST            raw writes after the mode, before streaming: addr=value[:bytes],...
+  --embedded              capture rp1-cfe-embedded too (bridge with the -emb overlay) and decode
   --regdump               read back what the description wrote and diagnostic registers
   --describe              row bands, statistics and 2x2 phase means of one frame
   --test-patterns         the description's test patterns and a solid pattern of known values
@@ -87,6 +88,8 @@ pub struct Args {
 pub struct Verify {
     /// Raw writes after the mode.
     pub writes: Vec<crate::verify::RawWrite>,
+    /// Capture embedded data.
+    pub embedded: bool,
     /// Register read-back.
     pub regdump: bool,
     /// Describe one frame.
@@ -121,6 +124,7 @@ impl Verify {
     /// Whether any native verification step runs.
     pub fn any(&self) -> bool {
         self.regdump
+            || self.embedded
             || self.describe
             || self.test_patterns
             || self.black
@@ -236,6 +240,7 @@ where
             }
             "--write" => a.verify.writes = crate::verify::parse_writes(&value()?)?,
             "--regdump" => a.verify.regdump = true,
+            "--embedded" => a.verify.embedded = true,
             "--describe" => a.verify.describe = true,
             "--test-patterns" => a.verify.test_patterns = true,
             "--black" => a.verify.black = true,
