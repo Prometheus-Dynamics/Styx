@@ -122,7 +122,8 @@ pub enum Demosaic {
     #[default]
     Bilinear,
     /// Malvar-He-Cutler: bilinear corrected by the local gradient of the sampled colour (5x5).
-    /// Much less colour fringing on edges for about twice the cost.
+    /// Much less colour fringing and zipper on edges; about 1.8 ms more per 1280x800 frame on
+    /// a Cortex-A76.
     Mhc,
 }
 
