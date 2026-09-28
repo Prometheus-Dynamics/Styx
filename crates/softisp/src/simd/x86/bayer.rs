@@ -198,22 +198,46 @@ pub(super) unsafe fn demosaic_mhc<V: Vx>(
     x
 }
 
+/// `up + 2 cur + dn` at `i`.
+#[inline(always)]
+unsafe fn vsum<V: Vx>([up, cur, dn]: [&[u16]; 3], i: usize) -> V {
+    // SAFETY: the callers keep `i + lanes` within the rows.
+    unsafe {
+        V::add16(
+            V::add16(ld::<V>(up, i), ld::<V>(dn, i)),
+            V::slli16::<1>(ld::<V>(cur, i)),
+        )
+    }
+}
+
+/// Rounded quarter of the quad sums of `lanes` samples of `top` and `bottom` at `j`, in 32 bits.
+#[inline(always)]
+unsafe fn quad_sums<V: Vx>(top: &[u16], bottom: &[u16], j: usize) -> V {
+    // SAFETY: the callers keep `j + lanes` within both rows.
+    unsafe {
+        let ones = V::splat16(1);
+        let s = V::add32(
+            V::madd16(ld::<V>(top, j), ones),
+            V::madd16(ld::<V>(bottom, j), ones),
+        );
+        V::srai32::<2>(V::add32(s, V::splat32(2)))
+    }
+}
+
 #[inline(always)]
 pub(super) unsafe fn bayer_luma<V: Vx>(rows: [&[u16]; 3], dst: &mut [u16], width: usize) -> usize {
-    let [up, cur, dn] = rows;
     let n = lanes::<V>();
     let mut x = 0;
     // SAFETY: as `demosaic_bilinear`.
     unsafe {
-        let vs = |i: usize| {
-            V::add16(
-                V::add16(ld::<V>(up, i), ld::<V>(dn, i)),
-                V::slli16::<1>(ld::<V>(cur, i)),
-            )
-        };
         let eight = V::splat16(8);
         while x + n <= width {
-            let s = V::add16(V::add16(vs(x), vs(x + 2)), V::slli16::<1>(vs(x + 1)));
+            let (a, b, c) = (
+                vsum::<V>(rows, x),
+                vsum::<V>(rows, x + 1),
+                vsum::<V>(rows, x + 2),
+            );
+            let s = V::add16(V::add16(a, c), V::slli16::<1>(b));
             st(dst, x, V::srli16::<4>(V::add16(s, eight)));
             x += n;
         }
@@ -277,19 +301,12 @@ pub(super) unsafe fn quad_luma<V: Vx>(
     let mut i = 0;
     // SAFETY: as `quad_rgb`.
     unsafe {
-        let ones = V::splat16(1);
-        let two = V::splat32(2);
-        let sums = |j: usize| {
-            V::srai32::<2>(V::add32(
-                V::add32(
-                    V::madd16(ld::<V>(top, j), ones),
-                    V::madd16(ld::<V>(bottom, j), ones),
-                ),
-                two,
-            ))
-        };
         while i + n <= width {
-            let v = V::fix_pack(V::packs32(sums(2 * i), sums(2 * i + n)));
+            let (a, b) = (
+                quad_sums::<V>(top, bottom, 2 * i),
+                quad_sums::<V>(top, bottom, 2 * i + n),
+            );
+            let v = V::fix_pack(V::packs32(a, b));
             st(dst, i, v);
             i += n;
         }

@@ -22,8 +22,10 @@ pub(super) unsafe fn ccm<V: Vx>(planes: [&mut [u16]; 3], m: &[i16; 9], width: us
     // SAFETY: loads and stores of `n` lanes at `x` with `x + n <= width`.
     unsafe {
         let one = V::splat16(1);
-        let w_rg: [V; 3] = std::array::from_fn(|k| pair(m[3 * k], m[3 * k + 1]));
-        let w_b: [V; 3] = std::array::from_fn(|k| pair(m[3 * k + 2], 512));
+        // No closures, `array::from_fn` or `map` in these bodies: they do not inherit the
+        // wrapper's `#[target_feature]`, so intrinsics inside them can stay out-of-line calls.
+        let w_rg = [pair::<V>(m[0], m[1]), pair(m[3], m[4]), pair(m[6], m[7])];
+        let w_b = [pair::<V>(m[2], 512), pair(m[5], 512), pair(m[8], 512)];
         let (lo_max, hi_max) = (V::zero(), V::splat16(4095));
         while x + n <= width {
             let rv = V::load(r.as_ptr().add(x).cast());
@@ -31,19 +33,60 @@ pub(super) unsafe fn ccm<V: Vx>(planes: [&mut [u16]; 3], m: &[i16; 9], width: us
             let bv = V::load(b.as_ptr().add(x).cast());
             let (rg_lo, rg_hi) = (V::unpacklo16(rv, gv), V::unpackhi16(rv, gv));
             let (b_lo, b_hi) = (V::unpacklo16(bv, one), V::unpackhi16(bv, one));
-            let out: [V; 3] = std::array::from_fn(|k| {
-                let lo = V::add32(V::madd16(rg_lo, w_rg[k]), V::madd16(b_lo, w_b[k]));
-                let hi = V::add32(V::madd16(rg_hi, w_rg[k]), V::madd16(b_hi, w_b[k]));
-                let v = V::packs32(V::srai32::<10>(lo), V::srai32::<10>(hi));
-                V::min_i16(V::max_i16(v, lo_max), hi_max)
-            });
-            V::store(r.as_mut_ptr().add(x).cast(), out[0]);
-            V::store(g.as_mut_ptr().add(x).cast(), out[1]);
-            V::store(b.as_mut_ptr().add(x).cast(), out[2]);
+            let rows = [rg_lo, rg_hi, b_lo, b_hi];
+            let o0 = ccm_out(rows, w_rg[0], w_b[0], lo_max, hi_max);
+            let o1 = ccm_out(rows, w_rg[1], w_b[1], lo_max, hi_max);
+            let o2 = ccm_out(rows, w_rg[2], w_b[2], lo_max, hi_max);
+            V::store(r.as_mut_ptr().add(x).cast(), o0);
+            V::store(g.as_mut_ptr().add(x).cast(), o1);
+            V::store(b.as_mut_ptr().add(x).cast(), o2);
             x += n;
         }
     }
     x
+}
+
+/// One output channel of the matrix from interleaved (R, G) and (B, 1) lanes.
+#[inline(always)]
+unsafe fn ccm_out<V: Vx>([rg_lo, rg_hi, b_lo, b_hi]: [V; 4], w_rg: V, w_b: V, lo: V, hi: V) -> V {
+    unsafe {
+        let l = V::add32(V::madd16(rg_lo, w_rg), V::madd16(b_lo, w_b));
+        let h = V::add32(V::madd16(rg_hi, w_rg), V::madd16(b_hi, w_b));
+        let v = V::packs32(V::srai32::<10>(l), V::srai32::<10>(h));
+        V::min_i16(V::max_i16(v, lo), hi)
+    }
+}
+
+/// `sum(p[i] k[i]) + round` in 16-bit lanes, then `>> 8` (logical) plus `off`, or `>> 7`
+/// (arithmetic) plus `off` when `signed`.
+#[inline(always)]
+unsafe fn dot3<V: Vx>(p: [V; 3], k: &[V; 3], round: V, off: V, signed: bool) -> V {
+    unsafe {
+        let s = V::add16(
+            V::add16(V::mullo16(p[0], k[0]), V::mullo16(p[1], k[1])),
+            V::add16(V::mullo16(p[2], k[2]), round),
+        );
+        let s = if signed {
+            V::srai16::<7>(s)
+        } else {
+            V::srli16::<8>(s)
+        };
+        V::add16(s, off)
+    }
+}
+
+/// Rounded means of 2x2 blocks of bytes from two rows, as 16-bit lanes.
+#[inline(always)]
+unsafe fn mean4<V: Vx>(top: *const u8, bottom: *const u8, low: V, two: V) -> V {
+    // SAFETY: the callers guarantee a vector of bytes at both pointers.
+    unsafe {
+        let (t, b) = (V::load(top), V::load(bottom));
+        let s = V::add16(
+            V::add16(V::and(t, low), V::srli16::<8>(t)),
+            V::add16(V::add16(V::and(b, low), V::srli16::<8>(b)), two),
+        );
+        V::srli16::<2>(s)
+    }
 }
 
 #[inline(always)]
@@ -74,20 +117,31 @@ pub(super) unsafe fn rgb_to_y<V: Vx>(
     // SAFETY: `n` bytes of each plane read and written at `x`, `x + n <= width`.
     unsafe {
         let z = V::zero();
-        let k = c.y.map(|k| V::splat16(k as i16));
+        let k = [
+            V::splat16(c.y[0] as i16),
+            V::splat16(c.y[1] as i16),
+            V::splat16(c.y[2] as i16),
+        ];
         let round = V::splat16(128);
         let off = V::splat16(c.y_offset as i16);
         while x + n <= width {
-            let px = planes.map(|p| V::load(p.as_ptr().add(x)));
-            let luma = |p: [V; 3]| {
-                let s = V::add16(
-                    V::add16(V::mullo16(p[0], k[0]), V::mullo16(p[1], k[1])),
-                    V::add16(V::mullo16(p[2], k[2]), round),
-                );
-                V::add16(V::srli16::<8>(s), off)
-            };
-            let lo = luma(px.map(|p| V::unpacklo8(p, z)));
-            let hi = luma(px.map(|p| V::unpackhi8(p, z)));
+            let px = [
+                V::load(planes[0].as_ptr().add(x)),
+                V::load(planes[1].as_ptr().add(x)),
+                V::load(planes[2].as_ptr().add(x)),
+            ];
+            let lo = [
+                V::unpacklo8(px[0], z),
+                V::unpacklo8(px[1], z),
+                V::unpacklo8(px[2], z),
+            ];
+            let hi = [
+                V::unpackhi8(px[0], z),
+                V::unpackhi8(px[1], z),
+                V::unpackhi8(px[2], z),
+            ];
+            let lo = dot3(lo, &k, round, off, false);
+            let hi = dot3(hi, &k, round, off, false);
             V::store(dst.as_mut_ptr().add(x), V::packus16(lo, hi));
             x += n;
         }
@@ -114,28 +168,19 @@ pub(super) unsafe fn rgb_to_uv<V: Vx>(
     unsafe {
         let low = V::splat16(0xFF);
         let two = V::splat16(2);
-        let ku = c.u.map(|k| V::splat16(k));
-        let kv = c.v.map(|k| V::splat16(k));
+        let ku = [V::splat16(c.u[0]), V::splat16(c.u[1]), V::splat16(c.u[2])];
+        let kv = [V::splat16(c.v[0]), V::splat16(c.v[1]), V::splat16(c.v[2])];
         let (r64, c128) = (V::splat16(64), V::splat16(128));
         while i + n <= width {
-            let mean: [V; 3] = std::array::from_fn(|ch| {
-                let t = V::load(top[ch].as_ptr().add(2 * i));
-                let b = V::load(bottom[ch].as_ptr().add(2 * i));
-                let s = V::add16(
-                    V::add16(V::and(t, low), V::srli16::<8>(t)),
-                    V::add16(V::add16(V::and(b, low), V::srli16::<8>(b)), two),
-                );
-                V::srli16::<2>(s)
-            });
-            let chroma = |k: &[V; 3]| {
-                let s = V::add16(
-                    V::add16(V::mullo16(mean[0], k[0]), V::mullo16(mean[1], k[1])),
-                    V::add16(V::mullo16(mean[2], k[2]), r64),
-                );
-                let s = V::add16(V::srai16::<7>(s), c128);
-                V::packus16(s, s)
-            };
-            let (cu, cv) = (chroma(&ku), chroma(&kv));
+            let at = |p: &[u8]| p.as_ptr().add(2 * i);
+            let mean = [
+                mean4(at(top[0]), at(bottom[0]), low, two),
+                mean4(at(top[1]), at(bottom[1]), low, two),
+                mean4(at(top[2]), at(bottom[2]), low, two),
+            ];
+            let cu = dot3(mean, &ku, r64, c128, true);
+            let cv = dot3(mean, &kv, r64, c128, true);
+            let (cu, cv) = (V::packus16(cu, cu), V::packus16(cv, cv));
             if interleaved {
                 V::store(u.as_mut_ptr().add(2 * i), V::unpacklo8(cu, cv));
             } else {
@@ -226,7 +271,11 @@ pub(in crate::simd) unsafe fn interleave_rgb_ssse3(
     // SAFETY: 16 bytes of each plane at `x` and 48 output bytes at `3x`, `x + 16 <= width`.
     unsafe {
         while x + 16 <= width {
-            let px = planes.map(|p| _mm_loadu_si128(p.as_ptr().add(x).cast()));
+            let px = [
+                _mm_loadu_si128(planes[0].as_ptr().add(x).cast()),
+                _mm_loadu_si128(planes[1].as_ptr().add(x).cast()),
+                _mm_loadu_si128(planes[2].as_ptr().add(x).cast()),
+            ];
             for (block, masks) in INTERLEAVE.iter().enumerate() {
                 let v = _mm_or_si128(
                     _mm_or_si128(
@@ -262,15 +311,14 @@ const RAW12_LOW: [u8; 16] = [
 #[inline(always)]
 unsafe fn unpack8<V: Vx>(v: V, raw12: bool) -> V {
     unsafe {
-        let shuf = |m: &[u8; 16]| V::shuffle_bytes(v, m);
         if raw12 {
-            let high = V::slli16::<4>(shuf(&RAW12_HIGH));
-            let low = V::srli16::<4>(V::mullo16(shuf(&RAW12_LOW), pair(16, 1)));
+            let high = V::slli16::<4>(V::shuffle_bytes(v, &RAW12_HIGH));
+            let low = V::srli16::<4>(V::mullo16(V::shuffle_bytes(v, &RAW12_LOW), pair(16, 1)));
             V::or(high, V::and(low, V::splat16(0xF)))
         } else {
-            let high = V::slli16::<2>(shuf(&RAW10_HIGH));
+            let high = V::slli16::<2>(V::shuffle_bytes(v, &RAW10_HIGH));
             let low = V::mullo16(
-                shuf(&RAW10_LOW),
+                V::shuffle_bytes(v, &RAW10_LOW),
                 V::splat64(64 | 16 << 16 | 4 << 32 | 1 << 48),
             );
             V::or(high, V::and(V::srli16::<6>(low), V::splat16(3)))
