@@ -60,9 +60,9 @@ fn tuned(demosaic: Demosaic) -> IspParams {
 
 fn configure() -> Criterion {
     Criterion::default()
-        .sample_size(30)
-        .warm_up_time(Duration::from_millis(500))
-        .measurement_time(Duration::from_secs(2))
+        .sample_size(20)
+        .warm_up_time(Duration::from_millis(300))
+        .measurement_time(Duration::from_secs(1))
 }
 
 /// Each kernel over a frame's worth of rows (from rows in cache, as in the pipeline).

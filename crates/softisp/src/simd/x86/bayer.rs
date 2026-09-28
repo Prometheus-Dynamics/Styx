@@ -314,6 +314,71 @@ pub(super) unsafe fn quad_luma<V: Vx>(
     i
 }
 
+/// Sums of the 32-bit lanes of `v`.
+#[inline(always)]
+unsafe fn hsum32<V: Vx>(v: V) -> u32 {
+    let mut lanes = [0u32; 8];
+    // SAFETY: `lanes` holds 32 bytes, at least one vector.
+    unsafe { V::store(lanes.as_mut_ptr().cast(), v) };
+    lanes[..V::BYTES / 4]
+        .iter()
+        .fold(0u32, |a, &b| a.wrapping_add(b))
+}
+
+#[inline(always)]
+unsafe fn zone_sums<V: Vx>(rgb: [&[u16]; 3], width: usize, sat: u16) -> (usize, [u32; 5]) {
+    let n = lanes::<V>();
+    let mut i = 0;
+    // SAFETY: `n` lanes of each row at `i`, `i + n <= width`; samples are 12-bit, so signed
+    // 16-bit compares and pair sums are exact.
+    unsafe {
+        let ones = V::splat16(1);
+        let (sat, two) = (V::splat16(sat as i16), V::splat16(2));
+        let z = V::zero();
+        let (mut rs, mut gs, mut bs, mut cnt, mut ls) = (z, z, z, z, z);
+        while i + n <= width {
+            let (r, g, b) = (ld::<V>(rgb[0], i), ld::<V>(rgb[1], i), ld::<V>(rgb[2], i));
+            let max = V::max_i16(V::max_i16(r, g), b);
+            let keep = V::cmplt_i16(max, sat);
+            rs = V::add32(rs, V::madd16(V::and(r, keep), ones));
+            gs = V::add32(gs, V::madd16(V::and(g, keep), ones));
+            bs = V::add32(bs, V::madd16(V::and(b, keep), ones));
+            cnt = V::add32(cnt, V::madd16(V::and(keep, ones), ones));
+            let y = V::srli16::<2>(V::add16(V::add16(r, b), V::add16(V::slli16::<1>(g), two)));
+            ls = V::add32(ls, V::madd16(y, ones));
+            i += n;
+        }
+        (
+            i,
+            [hsum32(rs), hsum32(gs), hsum32(bs), hsum32(cnt), hsum32(ls)],
+        )
+    }
+}
+
+/// # Safety
+/// SSE2 must be available; rows hold `width` 12-bit samples.
+#[target_feature(enable = "sse2")]
+pub(in crate::simd) unsafe fn zone_sums_sse2(
+    rgb: [&[u16]; 3],
+    width: usize,
+    sat: u16,
+) -> (usize, [u32; 5]) {
+    // SAFETY: forwarded from the caller.
+    unsafe { zone_sums::<__m128i>(rgb, width, sat) }
+}
+
+/// # Safety
+/// AVX2 must be available; rows hold `width` 12-bit samples.
+#[target_feature(enable = "avx2")]
+pub(in crate::simd) unsafe fn zone_sums_avx2(
+    rgb: [&[u16]; 3],
+    width: usize,
+    sat: u16,
+) -> (usize, [u32; 5]) {
+    // SAFETY: forwarded from the caller.
+    unsafe { zone_sums::<__m256i>(rgb, width, sat) }
+}
+
 macro_rules! instantiate {
     ($($body:ident => $sse:ident, $avx:ident ($($arg:ident: $ty:ty),*);)*) => {$(
         /// # Safety

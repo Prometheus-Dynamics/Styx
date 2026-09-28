@@ -319,3 +319,44 @@ pub(in crate::simd) unsafe fn quad_luma(
     }
     i
 }
+
+/// # Safety
+/// As [`unpack`]; the rows hold `width` 12-bit samples. Returns the quads done and their sums.
+#[target_feature(enable = "neon")]
+pub(in crate::simd) unsafe fn zone_sums(
+    rgb: [&[u16]; 3],
+    width: usize,
+    sat: u16,
+) -> (usize, [u32; 5]) {
+    let mut i = 0;
+    // SAFETY: 8 lanes of each row at `i`, `i + 8 <= width`.
+    unsafe {
+        let z = vdupq_n_u32(0);
+        let (mut rs, mut gs, mut bs, mut n, mut ls) = (z, z, z, z, z);
+        let sat = vdupq_n_u16(sat);
+        while i + 8 <= width {
+            let (r, g, b) = (ld(rgb[0], i), ld(rgb[1], i), ld(rgb[2], i));
+            let keep = vcltq_u16(vmaxq_u16(vmaxq_u16(r, g), b), sat);
+            rs = vpadalq_u16(rs, vandq_u16(r, keep));
+            gs = vpadalq_u16(gs, vandq_u16(g, keep));
+            bs = vpadalq_u16(bs, vandq_u16(b, keep));
+            n = vpadalq_u16(n, vshrq_n_u16::<15>(keep));
+            let y = vshrq_n_u16::<2>(vaddq_u16(
+                vaddq_u16(r, b),
+                vaddq_u16(vshlq_n_u16::<1>(g), vdupq_n_u16(2)),
+            ));
+            ls = vpadalq_u16(ls, y);
+            i += 8;
+        }
+        (
+            i,
+            [
+                vaddvq_u32(rs),
+                vaddvq_u32(gs),
+                vaddvq_u32(bs),
+                vaddvq_u32(n),
+                vaddvq_u32(ls),
+            ],
+        )
+    }
+}

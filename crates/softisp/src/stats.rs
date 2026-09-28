@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::prepare::StatsSetup;
-use crate::simd::scalar::WORK_MAX;
+use crate::simd::{self, scalar::WORK_MAX};
 
 /// One zone. Sums are of quad values in the 12-bit working range (0..=4095) after black level,
 /// white balance / digital gain and lens shading; divide by [`IspStats::gains`] for values
@@ -123,24 +123,10 @@ impl StatsAccum {
     pub fn add_row(&mut self, setup: &StatsSetup, qy: usize, rgb: [&[u16]; 3]) {
         let zy = qy * setup.config.zones_y as usize / setup.quad_rows;
         let zx_count = setup.config.zones_x as usize;
-        let bins_shift_mul = setup.config.histogram_bins;
-        let sat = setup.saturation;
         for zx in 0..zx_count {
             let (c0, c1) = (setup.col_edges[zx], setup.col_edges[zx + 1]);
-            let (r, g, b) = (&rgb[0][c0..c1], &rgb[1][c0..c1], &rgb[2][c0..c1]);
-            let (mut rs, mut gs, mut bs, mut n, mut ls) = (0u32, 0u32, 0u32, 0u32, 0u32);
-            for i in 0..r.len() {
-                let (rv, gv, bv) = (r[i] as u32, g[i] as u32, b[i] as u32);
-                let keep = (rv.max(gv).max(bv) < sat as u32) as u32;
-                rs += rv * keep;
-                gs += gv * keep;
-                bs += bv * keep;
-                n += keep;
-                let y = (rv + 2 * gv + bv + 2) >> 2;
-                ls += y;
-                let copy = (i & 3) * self.bins;
-                self.histogram[copy + ((y * bins_shift_mul) >> 12) as usize] += 1;
-            }
+            let seg = [&rgb[0][c0..c1], &rgb[1][c0..c1], &rgb[2][c0..c1]];
+            let ([rs, gs, bs, n, ls], _) = simd::zone_sums(seg, c1 - c0, setup.saturation);
             let z = zy * zx_count + zx;
             let acc = &mut self.rgb[z];
             acc[0] += rs as u64;
@@ -150,7 +136,29 @@ impl StatsAccum {
             self.luma[z] += ls as u64;
             self.quads[z] += (c1 - c0) as u32;
         }
-        self.samples += rgb[0].len() as u32;
+        // Histogram: four quads at a time into the four copies.
+        let bins = self.bins;
+        let bin = |r: u16, g: u16, b: u16| {
+            let y = (r as u32 + 2 * g as u32 + b as u32 + 2) >> 2;
+            ((y * bins as u32) >> 12) as usize
+        };
+        let (h0, rest) = self.histogram.split_at_mut(bins);
+        let (h1, rest) = rest.split_at_mut(bins);
+        let (h2, h3) = rest.split_at_mut(bins);
+        let (r, g, b) = (rgb[0], rgb[1], rgb[2]);
+        let quads = r.len().min(g.len()).min(b.len());
+        let mut i = 0;
+        while i + 4 <= quads {
+            h0[bin(r[i], g[i], b[i])] += 1;
+            h1[bin(r[i + 1], g[i + 1], b[i + 1])] += 1;
+            h2[bin(r[i + 2], g[i + 2], b[i + 2])] += 1;
+            h3[bin(r[i + 3], g[i + 3], b[i + 3])] += 1;
+            i += 4;
+        }
+        for k in i..quads {
+            h0[bin(r[k], g[k], b[k])] += 1;
+        }
+        self.samples += quads as u32;
     }
 
     pub fn merge(&mut self, other: &Self) {

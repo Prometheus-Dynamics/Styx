@@ -259,3 +259,20 @@ pub fn rgb_to_uv_row(
         }
     }
 }
+
+/// Sums over quads (R, G, B rows of `width`): `[R, G, B, count]` of the quads whose channels
+/// are all below `sat`, and the sum of every quad's luma `(R + 2G + B + 2) >> 2`.
+pub fn zone_sums(rgb: [&[u16]; 3], width: usize, sat: u16) -> [u32; 5] {
+    let mut s = [0u32; 5];
+    let [r, g, b] = rgb.map(|p| &p[..width]);
+    for ((&r, &g), &b) in r.iter().zip(g).zip(b) {
+        let (r, g, b) = (r as u32, g as u32, b as u32);
+        let keep = (r.max(g).max(b) < sat as u32) as u32;
+        s[0] += r * keep;
+        s[1] += g * keep;
+        s[2] += b * keep;
+        s[3] += keep;
+        s[4] += (r + 2 * g + b + 2) >> 2;
+    }
+    s
+}

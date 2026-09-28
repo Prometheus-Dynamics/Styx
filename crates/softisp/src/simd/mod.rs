@@ -397,3 +397,24 @@ pub fn rgb_to_uv_row(
         )
     })
 }
+
+/// See [`scalar::zone_sums`]; inputs are 12-bit.
+pub fn zone_sums(rgb: [&[u16]; 3], width: usize, sat: u16) -> ([u32; 5], SimdBackend) {
+    let rgb = rgb.map(|p| &p[..width]);
+    #[allow(unused_mut, unused_assignments)]
+    let mut outcome: Option<(SimdBackend, usize, [u32; 5])> = None;
+    #[cfg(all(feature = "neon", target_arch = "aarch64"))]
+    {
+        outcome = neon::zone_sums(rgb, width, sat);
+    }
+    #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        outcome = x86::zone_sums(X86FeatureSet::detect(), rgb, width, sat);
+    }
+    let (backend, done, mut sums) = outcome.unwrap_or((SimdBackend::Scalar, 0, [0; 5]));
+    let tail = scalar::zone_sums(rgb.map(|p| &p[done..]), width - done, sat);
+    for (s, t) in sums.iter_mut().zip(tail) {
+        *s += t;
+    }
+    (sums, backend)
+}

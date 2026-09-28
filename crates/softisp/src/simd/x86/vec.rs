@@ -46,6 +46,7 @@ pub(super) trait Vx: Copy {
     unsafe fn andnot(a: Self, b: Self) -> Self;
     unsafe fn or(a: Self, b: Self) -> Self;
     unsafe fn min_i16(a: Self, b: Self) -> Self;
+    unsafe fn cmplt_i16(a: Self, b: Self) -> Self;
     unsafe fn max_i16(a: Self, b: Self) -> Self;
     unsafe fn unpacklo16(a: Self, b: Self) -> Self;
     unsafe fn unpackhi16(a: Self, b: Self) -> Self;
@@ -187,6 +188,10 @@ impl Vx for __m128i {
     #[inline(always)]
     unsafe fn min_i16(a: Self, b: Self) -> Self {
         unsafe { _mm_min_epi16(a, b) }
+    }
+    #[inline(always)]
+    unsafe fn cmplt_i16(a: Self, b: Self) -> Self {
+        unsafe { _mm_cmplt_epi16(a, b) }
     }
     #[inline(always)]
     unsafe fn max_i16(a: Self, b: Self) -> Self {
@@ -338,6 +343,10 @@ impl Vx for __m256i {
     #[inline(always)]
     unsafe fn min_i16(a: Self, b: Self) -> Self {
         unsafe { _mm256_min_epi16(a, b) }
+    }
+    #[inline(always)]
+    unsafe fn cmplt_i16(a: Self, b: Self) -> Self {
+        unsafe { _mm256_cmpgt_epi16(b, a) }
     }
     #[inline(always)]
     unsafe fn max_i16(a: Self, b: Self) -> Self {

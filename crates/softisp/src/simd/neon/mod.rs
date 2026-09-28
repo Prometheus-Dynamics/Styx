@@ -131,3 +131,12 @@ pub(super) fn rgb_to_uv_row(
 ) -> Option<(SimdBackend, usize)> {
     done(unsafe { color::rgb_to_uv(top, bottom, u, v, width, c, interleaved) })
 }
+
+pub(super) fn zone_sums(
+    rgb: [&[u16]; 3],
+    width: usize,
+    sat: u16,
+) -> Option<(SimdBackend, usize, [u32; 5])> {
+    let (done, sums) = unsafe { bayer::zone_sums(rgb, width, sat) };
+    (done > 0).then_some((SimdBackend::Neon, done, sums))
+}

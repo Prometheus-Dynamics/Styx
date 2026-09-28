@@ -253,3 +253,24 @@ pub(super) fn rgb_to_uv_row(
         color::rgb_to_uv_sse2(top, bottom, u, v, width, c, interleaved)
     )
 }
+
+pub(super) fn zone_sums(
+    f: X86FeatureSet,
+    rgb: [&[u16]; 3],
+    width: usize,
+    sat: u16,
+) -> Option<(SimdBackend, usize, [u32; 5])> {
+    // SAFETY: the feature each leaf needs was detected; the dispatcher sized the rows.
+    let (backend, (done, sums)) = if f.avx2 && width >= 16 {
+        (SimdBackend::X86Avx2, unsafe {
+            bayer::zone_sums_avx2(rgb, width, sat)
+        })
+    } else if f.sse2 {
+        (SimdBackend::X86Sse2, unsafe {
+            bayer::zone_sums_sse2(rgb, width, sat)
+        })
+    } else {
+        return None;
+    };
+    (done > 0).then_some((backend, done, sums))
+}

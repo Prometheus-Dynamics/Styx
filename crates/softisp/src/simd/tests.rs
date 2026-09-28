@@ -469,3 +469,38 @@ fn row_kinds_follow_the_pattern() {
         }
     }
 }
+
+#[test]
+fn zone_sums_match() {
+    for width in widths() {
+        let rows: Vec<Vec<u16>> = (0..3)
+            .map(|i| words(width, width as u64 * 3 + i, 4095))
+            .collect();
+        let rgb = [&rows[0][..], &rows[1][..], &rows[2][..]];
+        for sat in [0u16, 1, 2000, 3890, 4095, 4096] {
+            let want = scalar::zone_sums(rgb, width, sat);
+            assert_eq!(
+                zone_sums(rgb, width, sat).0,
+                want,
+                "width {width} sat {sat}"
+            );
+            for runner in runners() {
+                #[allow(unused_variables)]
+                let leaf: Option<(SimdBackend, usize, [u32; 5])> = match runner {
+                    #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+                    Runner::X86(f) => x86::zone_sums(f, rgb, width, sat),
+                    #[cfg(all(feature = "neon", target_arch = "aarch64"))]
+                    Runner::Neon => neon::zone_sums(rgb, width, sat),
+                    _ => None,
+                };
+                if let Some((_, done, sums)) = leaf {
+                    assert_eq!(
+                        sums,
+                        scalar::zone_sums(rgb, done, sat),
+                        "{runner:?} width {width}"
+                    );
+                }
+            }
+        }
+    }
+}
