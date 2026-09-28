@@ -84,7 +84,10 @@ impl AlscTuning {
                     "calibrations_{name}: table size does not match grid"
                 ));
             }
-            if cals.iter().any(|c| c.table.iter().any(|v| !(*v > 0.0))) {
+            if cals
+                .iter()
+                .any(|c| c.table.iter().any(|v| v.is_nan() || *v <= 0.0))
+            {
                 return err(format!("calibrations_{name}: gains must be positive"));
             }
         }

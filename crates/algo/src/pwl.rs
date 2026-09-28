@@ -62,7 +62,7 @@ impl Pwl {
 
     /// From `[x0, y0, x1, y1, ...]`.
     pub fn from_flat(v: &[f64]) -> Result<Self> {
-        if v.is_empty() || v.len() % 2 != 0 {
+        if v.is_empty() || !v.len().is_multiple_of(2) {
             return Err(AlgoError::tuning(format!(
                 "curve needs x, y pairs, got {} values",
                 v.len()

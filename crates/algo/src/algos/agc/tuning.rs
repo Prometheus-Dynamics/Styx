@@ -186,12 +186,16 @@ impl AgcTuning {
                     "exposure mode {name:?} needs at least two stages and as many gains as times"
                 ));
             }
-            if p.exposure_us.iter().chain(&p.gain).any(|v| !(*v > 0.0)) {
+            if p.exposure_us
+                .iter()
+                .chain(&p.gain)
+                .any(|v| v.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater))
+            {
                 return err(format!("exposure mode {name:?} has a non-positive value"));
             }
         }
         for (name, m) in &self.metering_modes {
-            if m.weights.is_empty() || m.weights.iter().any(|w| !(*w >= 0.0)) {
+            if m.weights.is_empty() || m.weights.iter().any(|w| w.is_nan() || *w < 0.0) {
                 return err(format!("metering mode {name:?} needs non-negative weights"));
             }
             if let Some((w, h)) = m.grid
@@ -212,7 +216,11 @@ impl AgcTuning {
         if !(self.speed > 0.0 && self.speed <= 1.0) {
             return err("speed must be in (0, 1]".into());
         }
-        if !(self.max_digital_gain >= 1.0) || !(self.default_exposure_us > 0.0) {
+        if self.max_digital_gain.is_nan()
+            || self.max_digital_gain < 1.0
+            || self.default_exposure_us.is_nan()
+            || self.default_exposure_us <= 0.0
+        {
             return err("max_digital_gain >= 1 and default_exposure_us > 0 required".into());
         }
         Ok(())

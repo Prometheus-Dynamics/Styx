@@ -163,7 +163,7 @@ impl AwbTuning {
         if !(self.transverse_pos > 0.0 && self.transverse_neg > 0.0) {
             return err("transverse_pos and transverse_neg must be positive");
         }
-        if !(self.coarse_step > 0.0) {
+        if self.coarse_step.is_nan() || self.coarse_step <= 0.0 {
             return err("coarse_step must be positive");
         }
         Ok(())
