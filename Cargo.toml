@@ -11,6 +11,7 @@ members = [
     "crates/graph",
     "crates/pisp",
     "tools/native-spike",
+    "tools/pisp-spike",
     "examples",
 ]
 resolver = "3"
