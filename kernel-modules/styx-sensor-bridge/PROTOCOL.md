@@ -22,6 +22,8 @@ A platform device node (not an I²C client, so address and bus stay free for i2c
 | `clocks` | no | sensor input clock, enabled with power |
 | `styx,supply-names` + `<name>-supply` | no | regulators, enabled in list order with power (up to 8) |
 | `rotation`, `orientation` | no | exposed as the standard read-only controls |
+| `styx,embedded-data` | no | `<width lines>`: adds a second source pad for the sensor's embedded data (see below) |
+| `styx,embedded-data-type` | no | CSI-2 data type of the embedded data (default `0x12`) |
 
 `dts/styx-sensor-bridge-cm5-overlay.dts` is the CM5 camera-port overlay with the HeliOS OV9782
 wiring.
@@ -43,6 +45,23 @@ Setting the active format while streaming fails with `EBUSY`. `get_selection` re
 
 Userspace must also set the matching format on the receiver's sink pad (the link validation
 compares them), as with any sensor.
+
+### Embedded data pad
+
+With `styx,embedded-data` the bridge has two source pads: pad 0 the image, pad 1 embedded data
+(`MEDIA_BUS_FMT_SENSOR_DATA`, default size from the property, settable up to 65536 x 16).
+`rp1-cfe` links each sensor source pad to the `csi2` sink pad of the same channel, so pad 1
+feeds channel 1 and the `rp1-cfe-embedded` node (enable `csi2:5 -> rp1-cfe-embedded`, set a
+`SENS` meta format and stream it alongside the image node). The default 16384 x 1 matches the
+`csi2` pad 1 default, so link validation passes without setting it.
+
+`get_frame_desc` reports, per pad, one CSI-2 entry on virtual channel 0: pad 0 with the data
+type of its bus code (RAW8/10/12/14/16 by bit depth), pad 1 with `styx,embedded-data-type`
+(the Raspberry Pi 6.12 `csi2` asks per sink pad and needs exactly one entry). Without the
+property the bridge has one pad, as before, and `get_frame_desc` gives the image entry.
+`kernel-modules/styx-sensor-bridge/dts/styx-sensor-bridge-cm5-runtime-emb-overlay.dts` is the
+CM5 runtime overlay with it (`OVERLAY_DTBO=.../styx-sensor-bridge-cm5-runtime-emb.dtbo sh up.sh`).
+The OV9782 sends one embedded line with `0x4307` bit 0 set (see `ov9782.toml`).
 
 ## Controls
 

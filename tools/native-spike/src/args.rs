@@ -168,7 +168,7 @@ impl Default for Args {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// Run with these options.
-    Run(Args),
+    Run(Box<Args>),
     /// Print usage.
     Help,
 }
@@ -271,7 +271,7 @@ where
     if !(10..=10_000).contains(&a.ack_timeout.as_millis()) {
         return Err("--ack-timeout-ms: 10..=10000".into());
     }
-    Ok(Command::Run(a))
+    Ok(Command::Run(Box::new(a)))
 }
 
 #[cfg(test)]
@@ -280,7 +280,7 @@ mod tests {
 
     fn run(args: &[&str]) -> Result<Args, String> {
         match parse(args.iter().copied())? {
-            Command::Run(a) => Ok(a),
+            Command::Run(a) => Ok(*a),
             Command::Help => Err("help".into()),
         }
     }
