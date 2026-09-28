@@ -89,10 +89,18 @@ fn requests_land_on_the_frame_they_name() {
         let Some(land) = frames.get(r.frame as usize).filter(|_| !repeat) else {
             continue;
         };
-        assert_eq!(land.meta.analogue_gain, r.analogue_gain, "frame {}", r.frame);
+        assert_eq!(
+            land.meta.analogue_gain, r.analogue_gain,
+            "frame {}",
+            r.frame
+        );
         let want = (r.exposure.as_secs_f64() / line).floor() * line;
         let got = land.meta.exposure.as_secs_f64();
-        assert!((got - want).abs() < line * 0.01, "frame {}: {got} vs {want}", r.frame);
+        assert!(
+            (got - want).abs() < line * 0.01,
+            "frame {}: {got} vs {want}",
+            r.frame
+        );
         checked += 1;
     }
     assert!(checked > 100);
@@ -121,7 +129,10 @@ fn flicker_avoidance_uses_whole_periods() {
     assert!(c_on.jitter < 0.005, "{c_on:?}");
     for f in &on[60..] {
         let ms = f.meta.exposure.as_secs_f64() * 1e3;
-        assert!(ms >= 10.0 - 0.03 && (ms / 10.0 - (ms / 10.0).round()).abs() < 0.003, "{ms}");
+        assert!(
+            ms >= 10.0 - 0.03 && (ms / 10.0 - (ms / 10.0).round()).abs() < 0.003,
+            "{ms}"
+        );
     }
 }
 

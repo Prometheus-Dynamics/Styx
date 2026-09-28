@@ -26,13 +26,33 @@ fn series(frames: &[SimFrame], f: impl Fn(&SimFrame) -> f64) -> Vec<f64> {
 
 fn check_step(tuning: &Tuning, lux: f64, from: f64, to: f64) {
     let frames = run(tuning, lux, from, to, 260);
-    let r = convergence(&series(&frames, |f| f.params.colour_gains[0]), STEP as usize, 0.03, 30);
-    let b = convergence(&series(&frames, |f| f.params.colour_gains[2]), STEP as usize, 0.03, 30);
+    let r = convergence(
+        &series(&frames, |f| f.params.colour_gains[0]),
+        STEP as usize,
+        0.03,
+        30,
+    );
+    let b = convergence(
+        &series(&frames, |f| f.params.colour_gains[2]),
+        STEP as usize,
+        0.03,
+        30,
+    );
     let ct = frames.last().unwrap().params.colour_temperature;
     let (tr, tb) = truth(to);
-    println!("{from} K -> {to} K at {lux} lux: ct {ct:.0}, red {r:?} (truth {tr:.3}), blue {b:?} (truth {tb:.3})");
-    assert!((r.final_value / tr - 1.0).abs() < 0.05, "red {} vs {tr}", r.final_value);
-    assert!((b.final_value / tb - 1.0).abs() < 0.05, "blue {} vs {tb}", b.final_value);
+    println!(
+        "{from} K -> {to} K at {lux} lux: ct {ct:.0}, red {r:?} (truth {tr:.3}), blue {b:?} (truth {tb:.3})"
+    );
+    assert!(
+        (r.final_value / tr - 1.0).abs() < 0.05,
+        "red {} vs {tr}",
+        r.final_value
+    );
+    assert!(
+        (b.final_value / tb - 1.0).abs() < 0.05,
+        "blue {} vs {tb}",
+        b.final_value
+    );
     assert!((ct / to - 1.0).abs() < 0.12, "ct {ct} vs {to}");
     for c in [r, b] {
         assert!(c.settle_frames.is_some_and(|f| f <= 120), "{c:?}");
@@ -57,7 +77,10 @@ fn start_up_is_immediate() {
     let frames = run(&common::tuning(), 400.0, 4500.0, 4500.0, 20);
     let (tr, tb) = truth(4500.0);
     let g = frames[12].params.colour_gains;
-    assert!((g[0] / tr - 1.0).abs() < 0.05 && (g[2] / tb - 1.0).abs() < 0.05, "{g:?}");
+    assert!(
+        (g[0] / tr - 1.0).abs() < 0.05 && (g[2] / tb - 1.0).abs() < 0.05,
+        "{g:?}"
+    );
 }
 
 #[test]
@@ -66,7 +89,10 @@ fn grey_world_without_a_ct_curve() {
     let frames = run(&t, 400.0, 3000.0, 6000.0, 260);
     let last = &frames.last().unwrap().params;
     let (tr, tb) = truth(6000.0);
-    println!("grey world at 6000 K: {:?} (truth {tr:.3}, {tb:.3})", last.colour_gains);
+    println!(
+        "grey world at 6000 K: {:?} (truth {tr:.3}, {tb:.3})",
+        last.colour_gains
+    );
     assert!((last.colour_gains[0] / tr - 1.0).abs() < 0.08);
     assert!((last.colour_gains[2] / tb - 1.0).abs() < 0.08);
 }

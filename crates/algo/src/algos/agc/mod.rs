@@ -402,7 +402,11 @@ impl Algorithm for Agc {
         let split = self.divide(no_dg, total, fixed, meta);
         // Track what the sensor will do: after de-saturating, continue from the reduced
         // exposure rather than from the digitally compensated total.
-        let dg = if desaturating { 1.0 } else { split.digital_gain };
+        let dg = if desaturating {
+            1.0
+        } else {
+            split.digital_gain
+        };
         self.filtered = split.exposure * split.analogue_gain * dg;
 
         let landing = self.config.delays.earliest_landing(meta.frame);
@@ -410,8 +414,7 @@ impl Algorithm for Agc {
             self.hold_until = Some(landing);
         }
         // Locked: exposure steady for several frames and this frame already on target.
-        let locked =
-            self.update_lock(meta, if desaturating { 0.0 } else { target }) && on_target;
+        let locked = self.update_lock(meta, if desaturating { 0.0 } else { target }) && on_target;
         let exposure = Duration::from_secs_f64(split.exposure);
         self.last = Some((exposure, split.analogue_gain));
         let (fd_lo, fd_hi) = self.frame_duration_limits(Some(meta));

@@ -44,10 +44,11 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | `crates/kernel` | `styx-kernel` | Safe Rust kernel interfaces, `libc` only | kernel agent (`v4l2`, `media`, `subdev`, `dma_heap`, `event`), bridge agent (`bus`) |
 | `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description | sensor agent |
 | `crates/graph` | `styx-graph` | Device graph, `Provider` trait, async reactor, mock provider | graph agent |
+| `crates/algo` | `styx-algo` | 3A algorithms (AE, AWB, lens shading, CCM, tone), tuning (TOML, Raspberry Pi JSON), simulator, replay; see [algorithms.md](algorithms.md) | algo agent |
 | `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
 
 Crates must not depend on each other except: `styx-sensor` may use `styx-kernel` types behind
-its `bus` trait implementation feature, and `styx-graph` depends on nothing new. Integration
+its `bus` trait implementation feature, and `styx-graph` and `styx-algo` depend on nothing new. Integration
 into `styx` happens after the pieces land.
 
 ## Key contracts

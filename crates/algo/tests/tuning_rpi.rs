@@ -50,7 +50,11 @@ fn fixture_converts() {
         "rpi.awb.enabled",
         "rpi.agc.channels[1]",
     ] {
-        assert!(import.ignored.iter().any(|i| i == key), "{key}: {:?}", import.ignored);
+        assert!(
+            import.ignored.iter().any(|i| i == key),
+            "{key}: {:?}",
+            import.ignored
+        );
     }
 }
 
@@ -72,9 +76,13 @@ fn rejects_other_versions_and_bad_values() {
 /// Convert, build the standard pipeline and run a few simulated frames.
 fn exercise(path: &Path) -> Vec<String> {
     let text = std::fs::read_to_string(path).unwrap();
-    let import = Tuning::from_rpi_json_str(&text)
-        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let (mut p, mut sim) = common::start(&import.tuning, &common::config(), Scene::constant(300.0, 4500.0));
+    let import =
+        Tuning::from_rpi_json_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let (mut p, mut sim) = common::start(
+        &import.tuning,
+        &common::config(),
+        Scene::constant(300.0, 4500.0),
+    );
     let frames = sim.run(&mut p, 12);
     let last = &frames.last().unwrap().params;
     assert!(last.sensor.is_some() && last.colour_gains.iter().all(|g| g.is_finite() && *g > 0.0));
@@ -84,7 +92,9 @@ fn exercise(path: &Path) -> Vec<String> {
 
 fn sibling(env: &str, name: &str) -> PathBuf {
     std::env::var_os(env).map(PathBuf::from).unwrap_or_else(|| {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").join(name)
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join(name)
     })
 }
 
