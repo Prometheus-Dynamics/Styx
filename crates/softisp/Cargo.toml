@@ -1,0 +1,35 @@
+[package]
+name = "styx-softisp"
+version.workspace = true
+edition.workspace = true
+description = "Software ISP for raw Bayer frames: unpacking, black level, white balance, lens shading, demosaic, colour, tone, RGB/YUV/luma output and 3A statistics."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["camera", "isp", "bayer", "demosaic", "simd"]
+categories = ["multimedia::images", "multimedia::video"]
+rust-version.workspace = true
+
+[dependencies]
+styx-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[features]
+default = ["neon", "x86"]
+# SIMD backends, as in `styx-core::simd`: AArch64 NEON, x86 SSE2/SSSE3/AVX2 chosen at run time.
+neon = ["styx-core/neon"]
+x86 = ["styx-core/x86"]
+# Row bands processed in parallel on the rayon pool (`SoftIsp::with_threads`).
+rayon = ["dep:rayon"]
+
+[[bench]]
+name = "softisp"
+harness = false
+
+[lints]
+workspace = true
