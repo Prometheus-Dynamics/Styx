@@ -127,19 +127,26 @@
 //! * [`SensorDescription::from_subdev`]: the fallback for sensors with kernel drivers, built
 //!   from a [`SubdevReport`].
 
+mod bus;
 mod desc;
+mod driver;
+mod embedded;
 mod error;
+mod fallback;
 mod gain;
 mod mbus;
 pub mod schedule;
 mod timing;
 
+pub use bus::{BusOp, MockBus, MockPins, NoPins, PinOp, RegisterBus, SensorPins};
 pub use desc::{
     Backend, BlackLevel, Blanking, ChipId, Controls, Delays, EmbeddedData, EmbeddedEntry, Exposure,
     Field, Flip, Format, Gain, GainModel, GroupHold, Identity, LineLength, Mode, PixelArray, Rect,
     RegWrite, SensorDescription, Sequences, Size, Step, TestPattern,
 };
+pub use driver::{ActiveMode, AppliedControls, ControlRequest, DriverState, SensorDriver};
 pub use error::{Issue, Issues, Result, SensorError};
+pub use fallback::{ControlRange, KernelControl, SubdevFormat, SubdevReport, kernel_controls};
 pub use gain::{GainCode, GainSplit, Rounding, split_gain};
 pub use mbus::{ColorFilter, MbusCode};
 pub use schedule::{
