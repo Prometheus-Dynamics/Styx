@@ -19,7 +19,7 @@ path = "src/lib.rs"
 styx-core.workspace = true
 styx-capture.workspace = true
 smallvec.workspace = true
-v4l.workspace = true
+styx-kernel.workspace = true
 
 [features]
 default = []

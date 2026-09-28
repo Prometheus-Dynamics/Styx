@@ -14,14 +14,18 @@ use std::time::Instant;
 
 use styx_sensor::SensorDescription;
 
+mod analysis;
 mod args;
 mod checks;
 mod dry_run;
+mod embedded;
 mod experiments;
 mod frames;
+mod kernel_path;
 mod pipeline;
 mod regbus;
 mod rig;
+mod verify;
 
 /// Errors are messages: this is a diagnostic tool.
 pub(crate) type Result<T> = std::result::Result<T, String>;
@@ -87,6 +91,15 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Some(file) = &args.verify.analyse {
+        return match kernel_path::analyse_file(file, 1600) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("native-spike: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.dry_run {
         let f = dry_run::run(&args, &desc);
         return if f.problems.is_empty() {
@@ -101,7 +114,16 @@ fn main() -> ExitCode {
         eprintln!("native-spike: signal handlers: {e}");
         return ExitCode::FAILURE;
     }
-    match run(&args, desc) {
+    let result = match &args.verify.kernel {
+        Some(settings) => kernel_path::run(
+            settings,
+            args.verify.kernel_vblank,
+            args.frames.min(30),
+            &args.out_dir,
+        ),
+        None => run(&args, desc),
+    };
+    match result {
         Ok(()) => {
             log!("done");
             ExitCode::SUCCESS
@@ -147,7 +169,12 @@ fn run(args: &args::Args, desc: Arc<SensorDescription>) -> Result<()> {
         &args.format,
     )?;
     rig.bring_up(&args.mode, &args.format)?;
+    if !args.verify.writes.is_empty() {
+        log!("raw writes before streaming: {:#x?}", args.verify.writes);
+        verify::write(&rig, &args.verify.writes)?;
+    }
     rig.configure_bridge(link, args.ack_timeout)?;
+    rig.want_embedded = args.verify.embedded;
     rig.configure_graph()?;
     rig.start(args.buffers)?;
 
@@ -171,6 +198,9 @@ fn run(args: &args::Args, desc: Arc<SensorDescription>) -> Result<()> {
             }
         }
     }
+    if args.verify.any() {
+        run_verification(&mut rig, args)?;
+    }
     experiments::save_frame(&mut rig, &args.out_dir)?;
     drop(rig);
     if failures.is_empty() {
@@ -184,4 +214,40 @@ fn run(args: &args::Args, desc: Arc<SensorDescription>) -> Result<()> {
             failures.len()
         ))
     }
+}
+
+fn run_verification(rig: &mut rig::Rig, args: &args::Args) -> Result<()> {
+    let v = &args.verify;
+    experiments::set_rate(rig, v.fps)?;
+    experiments::collect(rig, 8)?;
+    if v.embedded {
+        verify::embedded_report(rig)?;
+    }
+    if v.regdump {
+        verify::regdump(rig, &args.mode, &args.format)?;
+    }
+    if v.describe {
+        verify::describe_next(rig, "frame")?;
+    }
+    if v.test_patterns {
+        verify::test_patterns(rig)?;
+    }
+    if v.black {
+        verify::black_level(rig)?;
+    }
+    if !v.sweep_exposure.is_empty() {
+        verify::sweep(rig, "exposure", &v.sweep_exposure, v.base_gain, 5)?;
+    }
+    if !v.sweep_gain.is_empty() {
+        verify::sweep(rig, "gain", &v.sweep_gain, v.base_exposure, 5)?;
+    }
+    if v.delays {
+        verify::delays(rig, v.base_exposure, v.base_gain)?;
+    }
+    if v.group_hold {
+        verify::group_hold(rig, v.base_exposure, v.base_gain)?;
+    }
+    verify::restore(rig)?;
+    experiments::collect(rig, 4)?;
+    Ok(())
 }

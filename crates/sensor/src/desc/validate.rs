@@ -477,6 +477,26 @@ pub(super) fn validate(d: &SensorDescription) -> Result<(), Issues> {
                 format!("register 0x{:04x} listed twice", e.address),
             );
         }
+        let mut kinds = Vec::new();
+        for (i, e) in ed.controls.iter().enumerate() {
+            let at = format!("embedded_data.controls[{i}]");
+            c.check(
+                !kinds.contains(&e.control),
+                at.clone(),
+                "control listed twice",
+            );
+            kinds.push(e.control);
+            c.check(
+                (1..=4).contains(&e.bytes),
+                at.clone(),
+                "bytes must be 1..=4",
+            );
+            c.check(
+                u32::from(e.bytes) * 8 + u32::from(e.shift) <= 32,
+                at,
+                "does not fit 32 bits",
+            );
+        }
     }
 
     if c.issues.is_empty() {

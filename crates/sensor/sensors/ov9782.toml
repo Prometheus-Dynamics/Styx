@@ -25,8 +25,11 @@ tuning = "ov9782.json"
 size = [1296, 816]
 active = { left = 8, top = 8, width = 1280, height = 800 }
 color_filter = "BGGR"
-# Not from the driver: 64 at 10 bits is the usual OmniVision pedestal (libcamera uses 4096 at
-# 16 bits for the OV9281). Verify against dark frames.
+# BLC target 0x4002..0x4003 = 0x0040 (mode registers; datasheet: black target level). Measured
+# on the device in the dark (native-spike --black, --sweep-*): the active area settles at 64
+# (sd 0.2-0.5) at 1 line and at 450 ms, at 1x and 15.5x gain; the kernel driver path gives the
+# same 64. For the first frames after start and after gain changes, until the BLC settles,
+# it reads about 86.
 black_level = { value = 64, bits = 10 }
 
 [sequences]
@@ -68,6 +71,15 @@ init = [
     [0x4601, 0x04], [0x470f, 0x00], [0x4f07, 0x00], [0x5000, 0x9f], [0x5001, 0x00],
     [0x5e00, 0x00], [0x5d00, 0x07], [0x5d01, 0x00], [0x0101, 0x01], [0x1000, 0x03],
     [0x5a08, 0x84],
+    # Not from the driver (OV9281/OV9282 datasheet, PSV_CTRL): bit 3 disables the automatic
+    # power-save mode the sensor enters when VTS exceeds PSV_AUTO_ON_THRESH (0x4f0c, default
+    # 0x1000 lines). Measured on the device: without it any frame length above 4096 lines
+    # (below ~24.4 fps at 1280x800) stopped the stream after one frame and left the sensor
+    # unable to start until the next power cycle; with it 25, 10 and 2.2 fps run exactly.
+    [0x4f00, 0x08],
+    # EMBED_CTRL (datasheet): bit 0 enables the embedded data line (CSI-2 data type 0x12,
+    # layout in [embedded_data]). Receivers without a channel for it discard it.
+    [0x4307, 0x31],
 ]
 stream_on = [[0x0100, 0x01]]
 stream_off = [[0x0100, 0x00]]
@@ -159,19 +171,34 @@ max_code = 0xff
 default_code = 0x10
 model = { linear = { step = 0.0625 } }
 
-# Not from the driver: libcamera's Raspberry Pi helper for the OV9281 uses 2 frames for
-# exposure, gain and vblank. Verify with embedded-data-free frame statistics.
+# Measured on the device (native-spike --embedded --delays): a register written right after
+# the start of frame N shows up in the embedded data of frame N + 2 for exposure (0x3500) and
+# gain (0x3509), and N + 1 for VTS (0x380e), both as reported values and, for VTS, as the
+# duration of frame N + 1 (buffer timestamps are frame starts: frame k lasts ts[k+1] - ts[k]).
+# 6 of 6 steps each way agreed. The datasheet's 0x3503 bits 0/1/4/5 ("delay 1 frame",
+# all 0 here) are what make exposure and gain one frame later than VTS.
 [controls.delays]
 exposure = 2
 analog_gain = 2
 digital_gain = 2
-frame_length = 2
+frame_length = 1
 
-# The driver brackets exposure and gain writes with 0x3308 = 1 / 0x3308 = 0. (Most OmniVision
-# sensors use 0x3208 for group hold; confirm 0x3308 against the datasheet.)
+# GROUP_ACCESS 0x3208 (datasheet): 0x00 starts holding group 0, 0x10 ends it, 0xa0 launches it
+# at the next vertical blanking. Measured (native-spike --embedded --group-hold): exposure
+# written, then gain 1.5 frames later, inside the hold: both reported on the same frame
+# (launch frame + 2). Without a hold, and with the kernel driver's 0x3308 bracket (a register
+# the datasheet does not list), exposure landed one frame before gain.
 [controls.group_hold]
-start = [[0x3308, 0x01]]
-end = [[0x3308, 0x00]]
+start = [[0x3208, 0x00]]
+end = [[0x3208, 0x10]]
+launch = [[0x3208, 0xa0]]
+
+# PRE_ISP test pattern bar (OV9281/OV9282 datasheet, 0x5e00 bit 7), not in the driver; the
+# OV2311 driver uses the low bits for bar types. Verified on the device with native-spike
+# --test-patterns (the bars appear, independent of the scene).
+[controls.test_pattern]
+register = { address = 0x5e00 }
+patterns = { off = 0x00, colour_bars = 0x80 }
 
 # The driver sets bit 2 of TIMING_FORMAT_2 (hflip) and TIMING_FORMAT_1 (vflip), read-modify-
 # write, both on by default, and does not change the media bus code when flipping.
@@ -184,3 +211,18 @@ default = true
 address = 0x3820
 mask = 0x04
 default = true
+
+# Embedded data line (0x4307 bit 0 in init): one line, data type 0x12, sent as CSI-2 RAW10
+# words each carrying one byte. Not in the driver or the datasheet; found on the device
+# (native-spike --embedded, with the bridge's -emb overlay) by changing each control and
+# watching which words follow: words 6..7 are the exposure in lines (0x3501..0x3502 >> 4),
+# words 3, 4 and 5 all the gain code (0x3509), words 19..20 VTS, 21..22 HTS, 15..18 the
+# output size. The words report the values that frame was produced with (the delays below).
+[embedded_data]
+lines = 1
+packing = "raw10"
+controls = [
+    { control = "exposure", offset = 6, bytes = 2 },
+    { control = "analog_gain", offset = 5 },
+    { control = "frame_length", offset = 19, bytes = 2 },
+]

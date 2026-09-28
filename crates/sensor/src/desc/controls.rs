@@ -198,14 +198,68 @@ pub struct TestPattern {
 ///
 /// `entries` give the byte offset (into the unpacked embedded data) of each register byte;
 /// multi-byte registers list each address. Only the controls whose every register byte is
-/// listed can be read back.
+/// listed can be read back. Sensors that report a control's value in a layout of their own
+/// (not as its register bytes) list it under `controls` instead, which takes precedence.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddedData {
     /// Embedded data lines at the top of each frame.
     pub lines: u32,
+    /// How the received bytes are packed.
+    #[serde(default)]
+    pub packing: EmbeddedPacking,
     /// Register byte locations.
+    #[serde(default)]
     pub entries: Vec<EmbeddedEntry>,
+    /// Control values at fixed offsets, in control code units.
+    #[serde(default)]
+    pub controls: Vec<EmbeddedControl>,
+}
+
+/// Packing of the embedded data bytes as received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddedPacking {
+    /// One value per byte.
+    #[default]
+    None,
+    /// CSI-2 RAW10 packing (four 10-bit words in five bytes, low bits last); each unpacked
+    /// word carries one byte value (OmniVision embedded lines sent with 8-bit data type).
+    Raw10,
+}
+
+/// A control whose applied value the embedded data reports directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddedControl {
+    /// Which control.
+    pub control: EmbeddedControlKind,
+    /// Offset of the most significant byte in the unpacked data.
+    pub offset: u32,
+    /// Bytes, most significant first.
+    #[serde(default = "one_byte")]
+    pub bytes: u8,
+    /// The code is the value shifted left by this (e.g. fractional exposure bits).
+    #[serde(default)]
+    pub shift: u8,
+}
+
+fn one_byte() -> u8 {
+    1
+}
+
+/// Controls that embedded data can report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddedControlKind {
+    /// Exposure (code units: lines << fraction bits).
+    Exposure,
+    /// Analogue gain code.
+    AnalogGain,
+    /// Digital gain code.
+    DigitalGain,
+    /// Frame length in lines.
+    FrameLength,
 }
 
 /// One register byte in embedded data.

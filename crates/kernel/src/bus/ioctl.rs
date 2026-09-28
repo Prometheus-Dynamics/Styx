@@ -29,7 +29,8 @@ pub(crate) const fn ior<T>(ty: u8, nr: u8) -> u32 {
     ioc(READ, ty, nr, size_of::<T>())
 }
 
-/// `_IOW(type, nr, T)`.
+/// `_IOW(type, nr, T)` (only the encoding test uses it now).
+#[cfg(test)]
 pub(crate) const fn iow<T>(ty: u8, nr: u8) -> u32 {
     ioc(WRITE, ty, nr, size_of::<T>())
 }

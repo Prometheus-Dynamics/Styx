@@ -159,8 +159,8 @@ fn exposure_lands_after_its_delay_and_frames_report_it() {
     let written = c.frame_start(2).unwrap();
     assert!(written.get(Control::Exposure).is_some());
     let w = c.driver().bus().writes();
-    assert_eq!(w[n], RegWrite::byte(0x3308, 1));
-    assert_eq!(*w.last().unwrap(), RegWrite::byte(0x3308, 0));
+    assert_eq!(w[n], RegWrite::byte(0x3208, 0x00));
+    assert_eq!(*w.last().unwrap(), RegWrite::byte(0x3208, 0xa0));
     let lines = |f| c.applied(f).unwrap().exposure_lines;
     assert_eq!(lines(3), lines(0));
     assert!((lines(4) - 2.0 * lines(0)).abs() <= 1.0);

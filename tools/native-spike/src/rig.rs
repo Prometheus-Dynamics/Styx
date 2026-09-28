@@ -157,6 +157,10 @@ pub struct Rig {
     pub black: f64,
     /// Line step for mean levels.
     pub row_step: usize,
+    /// Capture embedded data too (set before `configure_graph`).
+    pub want_embedded: bool,
+    /// The embedded data node, when captured.
+    pub embedded: Option<crate::embedded::EmbeddedNode>,
     video: Option<VideoDevice>,
     maps: Vec<Mapping>,
     buffers: bool,
@@ -239,6 +243,8 @@ impl Rig {
             fourcc: FourCc::default(),
             black,
             row_step,
+            want_embedded: false,
+            embedded: None,
             video: None,
             maps: Vec::new(),
             buffers: false,
@@ -359,6 +365,10 @@ impl Rig {
                 .setup_link(c.source, c.sink, flags)
                 .ctx("setup link")?;
         }
+        if self.want_embedded {
+            let node = crate::embedded::enable_link(&media, &topo, path.receiver)?;
+            self.embedded = Some(crate::embedded::EmbeddedNode::open(&node, 4)?);
+        }
         let e = self.expected.ok_or("configure the bridge first")?;
         let csi = Subdev::open(
             path.receiver_path
@@ -478,6 +488,9 @@ impl Rig {
             got.count,
             self.maps[0].len()
         );
+        if let Some(emb) = &mut self.embedded {
+            emb.start()?;
+        }
         let t = Instant::now();
         video.stream_on(CAPTURE).ctx("STREAMON")?;
         self.streaming = true;
@@ -515,6 +528,9 @@ impl Rig {
                 self.frame_start(s);
             }
             let buf = self.video()?.dequeue(CAPTURE, Memory::Mmap).ctx("DQBUF")?;
+            if let Some(emb) = &mut self.embedded {
+                emb.poll()?;
+            }
             if let Some(buf) = buf {
                 if !self.frame_sync {
                     // Dequeued after its end: the next frame is starting.
@@ -584,6 +600,7 @@ impl Rig {
                 }
             }
         }
+        self.embedded = None;
         if let Some(ack) = self.ack.take() {
             ack.join();
         }

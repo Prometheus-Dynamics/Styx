@@ -217,8 +217,11 @@ fn controls(handle: &CaptureHandle) -> Result<(), CaptureError> {
         let RecvOutcome::Data(f) = handle.recv_blocking(Duration::from_secs(1)) else {
             break;
         };
-        if let Some(n) = f.meta().native() {
-            if applied_at.is_none() && n.exposure_ns.abs_diff(8_000_000) < 20_000 {
+        if let Some(n) = f.meta().native()
+            && applied_at.is_none()
+            && n.exposure_ns.abs_diff(8_000_000) < 20_000
+        {
+            {
                 applied_at = Some(n.sequence);
                 println!(
                     "  frame {} carries exposure {:.3} ms gain {:.3} frame {:.3} ms",

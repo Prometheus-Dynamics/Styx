@@ -1,6 +1,3 @@
-use std::mem;
-use std::os::fd::{FromRawFd, OwnedFd};
-use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
@@ -9,13 +6,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use smallvec::{SmallVec, smallvec};
 use styx_core::prelude::*;
-use v4l::buffer::Metadata as V4l2Metadata;
-use v4l::buffer::Type;
-use v4l::device::Handle;
-use v4l::memory::Memory;
-use v4l::v4l_sys::*;
-use v4l::v4l2;
-use v4l::{format::FourCC, prelude::*, video::Capture as _};
+use styx_kernel::v4l2::{BufType, Format, VideoDevice};
 
 use crate::capture_api::controls::apply_v4l2_controls;
 use crate::capture_api::handle::{CaptureQueue, enqueue_capture_frame, record_worker_error};
@@ -26,279 +17,12 @@ use crate::metrics::{ExternalBackingTracker, StageMetrics};
 use crate::prelude::{Interval, Mode};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
-struct V4l2MappedBuffer {
-    ptr: NonNull<u8>,
-    len: usize,
-}
-
-// SAFETY: each mapped buffer is owned by its `V4l2MmapManager`; moving the descriptor between
-// threads does not duplicate ownership, and unmapping is centralized in the manager drop path.
-unsafe impl Send for V4l2MappedBuffer {}
-
-// SAFETY: shared references expose immutable frame views only. Queue/dequeue state is protected by
-// the manager mutex, and the mapping lifetime is tied to the manager.
-unsafe impl Sync for V4l2MappedBuffer {}
-
-struct V4l2MmapManager {
-    handle: Arc<Handle>,
-    buf_type: Type,
-    buffers: Vec<V4l2MappedBuffer>,
-    state: Mutex<V4l2MmapState>,
-}
-
-struct V4l2MmapState {
-    active: bool,
-    queued: Vec<bool>,
-    checked_out: Vec<bool>,
-    timeout_ms: i32,
-}
-
 struct V4l2MmapBacking {
     manager: Arc<V4l2MmapManager>,
     recycle_tx: Sender<usize>,
     index: Mutex<Option<usize>>,
     tracker: Arc<ExternalBackingTracker>,
     bytes: usize,
-}
-
-impl V4l2MmapManager {
-    fn new(
-        handle: Arc<Handle>,
-        buf_type: Type,
-        count: u32,
-        timeout: Duration,
-    ) -> std::io::Result<Arc<Self>> {
-        let mut reqbufs = v4l2_requestbuffers {
-            count,
-            type_: buf_type as u32,
-            memory: Memory::Mmap as u32,
-            ..unsafe { mem::zeroed() }
-        };
-        unsafe {
-            v4l2::ioctl(
-                handle.fd(),
-                v4l2::vidioc::VIDIOC_REQBUFS,
-                &mut reqbufs as *mut _ as *mut std::os::raw::c_void,
-            )?;
-        }
-
-        let mut buffers = Vec::with_capacity(reqbufs.count as usize);
-        for index in 0..reqbufs.count {
-            let mut v4l2_buf = v4l2_buffer {
-                index,
-                type_: buf_type as u32,
-                memory: Memory::Mmap as u32,
-                ..unsafe { mem::zeroed() }
-            };
-            unsafe {
-                v4l2::ioctl(
-                    handle.fd(),
-                    v4l2::vidioc::VIDIOC_QUERYBUF,
-                    &mut v4l2_buf as *mut _ as *mut std::os::raw::c_void,
-                )?;
-                let ptr = v4l2::mmap(
-                    std::ptr::null_mut(),
-                    v4l2_buf.length as usize,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_SHARED,
-                    handle.fd(),
-                    v4l2_buf.m.offset as libc::off_t,
-                )?;
-                let ptr = NonNull::new(ptr.cast::<u8>())
-                    .ok_or_else(|| std::io::Error::other("v4l2 mmap returned null"))?;
-                buffers.push(V4l2MappedBuffer {
-                    ptr,
-                    len: v4l2_buf.length as usize,
-                });
-            }
-        }
-
-        Ok(Arc::new(Self {
-            handle,
-            buf_type,
-            buffers,
-            state: Mutex::new(V4l2MmapState {
-                active: false,
-                queued: vec![false; reqbufs.count as usize],
-                checked_out: vec![false; reqbufs.count as usize],
-                timeout_ms: timeout.as_millis().try_into().unwrap_or(i32::MAX),
-            }),
-        }))
-    }
-
-    fn dequeue(&self) -> std::io::Result<(usize, V4l2Metadata)> {
-        let timeout_ms = {
-            let mut state = self.state.lock();
-            if !state.active {
-                for index in 0..self.buffers.len() {
-                    if !state.queued[index] && !state.checked_out[index] {
-                        self.queue_locked(index, &mut state)?;
-                    }
-                }
-                self.stream_on_locked(&mut state)?;
-            }
-            state.timeout_ms
-        };
-
-        if self.handle.poll(libc::POLLIN, timeout_ms)? == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "VIDIOC_DQBUF",
-            ));
-        }
-
-        let mut v4l2_buf = v4l2_buffer {
-            type_: self.buf_type as u32,
-            memory: Memory::Mmap as u32,
-            ..unsafe { mem::zeroed() }
-        };
-        unsafe {
-            v4l2::ioctl(
-                self.handle.fd(),
-                v4l2::vidioc::VIDIOC_DQBUF,
-                &mut v4l2_buf as *mut _ as *mut std::os::raw::c_void,
-            )?;
-        }
-        let index = v4l2_buf.index as usize;
-        let mut state = self.state.lock();
-        state.queued[index] = false;
-        state.checked_out[index] = true;
-        Ok((
-            index,
-            V4l2Metadata {
-                bytesused: v4l2_buf.bytesused,
-                flags: v4l2_buf.flags.into(),
-                field: v4l2_buf.field,
-                timestamp: v4l2_buf.timestamp.into(),
-                sequence: v4l2_buf.sequence,
-            },
-        ))
-    }
-
-    fn recycle(&self, index: usize) -> std::io::Result<()> {
-        let mut state = self.state.lock();
-        if index >= state.checked_out.len() {
-            return Ok(());
-        }
-        state.checked_out[index] = false;
-        if state.active {
-            self.queue_locked(index, &mut state)?;
-        }
-        Ok(())
-    }
-
-    fn mapped_plane(&self, index: usize) -> Option<&[u8]> {
-        let buffer = self.buffers.get(index)?;
-        Some(unsafe { std::slice::from_raw_parts(buffer.ptr.as_ptr(), buffer.len) })
-    }
-
-    fn mapped_bytes(&self, index: usize) -> Option<usize> {
-        self.buffers.get(index).map(|buffer| buffer.len)
-    }
-
-    fn export_dmabuf(&self, index: usize) -> std::io::Result<OwnedFd> {
-        let mut expbuf = v4l2_exportbuffer {
-            type_: self.buf_type as u32,
-            index: index as u32,
-            plane: 0,
-            flags: libc::O_CLOEXEC as u32,
-            ..unsafe { mem::zeroed() }
-        };
-        unsafe {
-            v4l2::ioctl(
-                self.handle.fd(),
-                v4l2::vidioc::VIDIOC_EXPBUF,
-                &mut expbuf as *mut _ as *mut std::os::raw::c_void,
-            )?;
-            Ok(OwnedFd::from_raw_fd(expbuf.fd))
-        }
-    }
-
-    fn stop_stream(&self) -> std::io::Result<()> {
-        let mut state = self.state.lock();
-        self.stop_stream_locked(&mut state)
-    }
-
-    fn stream_on_locked(&self, state: &mut V4l2MmapState) -> std::io::Result<()> {
-        if state.active {
-            return Ok(());
-        }
-        let mut typ = self.buf_type as u32;
-        unsafe {
-            v4l2::ioctl(
-                self.handle.fd(),
-                v4l2::vidioc::VIDIOC_STREAMON,
-                &mut typ as *mut _ as *mut std::os::raw::c_void,
-            )?;
-        }
-        state.active = true;
-        Ok(())
-    }
-
-    fn stop_stream_locked(&self, state: &mut V4l2MmapState) -> std::io::Result<()> {
-        if !state.active {
-            return Ok(());
-        }
-        let mut typ = self.buf_type as u32;
-        unsafe {
-            v4l2::ioctl(
-                self.handle.fd(),
-                v4l2::vidioc::VIDIOC_STREAMOFF,
-                &mut typ as *mut _ as *mut std::os::raw::c_void,
-            )?;
-        }
-        state.active = false;
-        for queued in &mut state.queued {
-            *queued = false;
-        }
-        Ok(())
-    }
-
-    fn queue_locked(&self, index: usize, state: &mut V4l2MmapState) -> std::io::Result<()> {
-        if state.queued[index] {
-            return Ok(());
-        }
-        let mut v4l2_buf = v4l2_buffer {
-            index: index as u32,
-            type_: self.buf_type as u32,
-            memory: Memory::Mmap as u32,
-            ..unsafe { mem::zeroed() }
-        };
-        unsafe {
-            v4l2::ioctl(
-                self.handle.fd(),
-                v4l2::vidioc::VIDIOC_QBUF,
-                &mut v4l2_buf as *mut _ as *mut std::os::raw::c_void,
-            )?;
-        }
-        state.queued[index] = true;
-        Ok(())
-    }
-}
-
-impl Drop for V4l2MmapManager {
-    fn drop(&mut self) {
-        let mut state = self.state.lock();
-        let _ = self.stop_stream_locked(&mut state);
-        for buffer in &self.buffers {
-            unsafe {
-                let _ = v4l2::munmap(buffer.ptr.as_ptr().cast(), buffer.len);
-            }
-        }
-        let mut reqbufs = v4l2_requestbuffers {
-            count: 0,
-            type_: self.buf_type as u32,
-            memory: Memory::Mmap as u32,
-            ..unsafe { mem::zeroed() }
-        };
-        unsafe {
-            let _ = v4l2::ioctl(
-                self.handle.fd(),
-                v4l2::vidioc::VIDIOC_REQBUFS,
-                &mut reqbufs as *mut _ as *mut std::os::raw::c_void,
-            );
-        }
-    }
 }
 
 impl V4l2MmapBacking {
@@ -400,9 +124,6 @@ fn drain_recycled_buffers(manager: &V4l2MmapManager, recycle_rx: &Receiver<usize
     }
 }
 
-/// Linux `ENODEV`: the device node no longer has a device behind it.
-const ENODEV: i32 = 19;
-
 pub(super) fn start_v4l2(
     backend: &ProbedBackend,
     mode: Mode,
@@ -417,20 +138,11 @@ pub(super) fn start_v4l2(
         _ => return Err(CaptureError::Backend("v4l2 path missing".into())),
     };
 
-    let dev = Device::with_path(&path).map_err(|e| CaptureError::Backend(e.to_string()))?;
+    let backend_err = |e: styx_kernel::Error| CaptureError::Backend(e.to_string());
+    let dev = VideoDevice::open(&path).map_err(backend_err)?;
 
-    let repr = mode.format.code.to_u32().to_le_bytes();
-    let fourcc = FourCC::new(&repr);
-    let mut fmt = dev
-        .format()
-        .map_err(|e| CaptureError::Backend(e.to_string()))?;
-    fmt.width = mode.format.resolution.width.get();
-    fmt.height = mode.format.resolution.height.get();
-    fmt.fourcc = fourcc;
-    let fmt = dev
-        .set_format(&fmt)
-        .map_err(|e| CaptureError::Backend(e.to_string()))?;
-    let negotiated_code = FourCc::new(fmt.fourcc.repr);
+    let fmt = negotiate_format(&dev, &mode).map_err(backend_err)?;
+    let negotiated_code = FourCc::from(fmt.fourcc.to_u32());
     let negotiated_resolution = Resolution::new(fmt.width, fmt.height)
         .ok_or_else(|| CaptureError::Backend("v4l2 negotiated zero-sized frame".into()))?;
     let negotiated_format =
@@ -443,13 +155,9 @@ pub(super) fn start_v4l2(
     };
 
     if let Some(iv) = interval {
-        let mut params = dev
-            .params()
-            .map_err(|e| CaptureError::Backend(e.to_string()))?;
-        params.interval.numerator = iv.numerator.get();
-        params.interval.denominator = iv.denominator.get();
-        dev.set_params(&params)
-            .map_err(|e| CaptureError::Backend(e.to_string()))?;
+        let interval = styx_kernel::Fraction::new(iv.numerator.get(), iv.denominator.get());
+        dev.set_frame_interval(BufType::VideoCapture, interval)
+            .map_err(backend_err)?;
     }
 
     if !controls.is_empty() {
@@ -462,12 +170,12 @@ pub(super) fn start_v4l2(
     let min_stride = min_stride_for_fourcc(mode.format.code, width);
     let negotiated_stride_bytes = if encoded {
         0
-    } else if fmt.stride > 0 {
-        (fmt.stride as usize).max(min_stride)
+    } else if fmt.bytes_per_line > 0 {
+        (fmt.bytes_per_line as usize).max(min_stride)
     } else {
         min_stride.max(1)
     };
-    let negotiated_size = fmt.size as usize;
+    let negotiated_size = fmt.size_image as usize;
     let frame_capacity = if encoded {
         negotiated_size
             .max(256 * 1024)
@@ -499,14 +207,15 @@ pub(super) fn start_v4l2(
     let v4l2_config = config.v4l2_config();
     let pool_limits = capture_tunables.pool_limits(4, frame_capacity, 8);
     let manager = V4l2MmapManager::new(
-        dev.handle(),
-        Type::VideoCapture,
+        dev,
+        BufType::VideoCapture,
         u32::try_from(capture_tunables.queue_depth + capture_tunables.extra_buffers)
             .unwrap_or(4)
             .clamp(3, 16),
         Duration::from_millis(v4l2_config.mmap_poll_ms),
     )
-    .map_err(|e| CaptureError::Backend(e.to_string()))?;
+    .map(Arc::new)
+    .map_err(backend_err)?;
     let queue_depth = capture_tunables.queue_depth;
     let (tx, rx) = queue.unwrap_or_else(|| {
         styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow)
@@ -533,9 +242,9 @@ pub(super) fn start_v4l2(
                 break;
             }
             match manager_for_worker.dequeue() {
-                Ok((index, meta)) => {
+                Ok(Some((index, meta))) => {
                     let mapped_len = manager_for_worker.mapped_bytes(index).unwrap_or_default();
-                    let bytes_used = (meta.bytesused as usize).min(mapped_len);
+                    let bytes_used = meta.bytes_used().min(mapped_len);
                     let Some(layout_plan) = plan_v4l2_single_plane_layout(
                         mode_clone.format.code,
                         width,
@@ -549,11 +258,9 @@ pub(super) fn start_v4l2(
                         continue;
                     };
                     let zero_copy_enabled = zero_copy_requested && layout_plan.zero_copy_safe;
-                    let ts = std::time::Duration::from(meta.timestamp)
-                        .as_nanos()
-                        .min(u64::MAX as u128) as u64;
+                    let ts = meta.timestamp.as_nanos().min(u64::MAX as u128) as u64;
                     // V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC within V4L2_BUF_FLAG_TIMESTAMP_MASK.
-                    let monotonic = u32::from(meta.flags) & 0xE000 == 0x2000;
+                    let monotonic = meta.flags.bits() & 0xE000 == 0x2000;
                     sequence_tracker.observe(meta.sequence);
                     let encoded = is_encoded_bitstream(mode_clone.format.code);
                     let frame_meta = FrameMeta::new(mode_clone.format, ts)
@@ -581,9 +288,9 @@ pub(super) fn start_v4l2(
                         })
                         .with_backend(BackendFrameMeta::V4l2(V4l2FrameMeta {
                             sequence: meta.sequence,
-                            bytes_used: meta.bytesused,
+                            bytes_used: meta.bytes_used() as u32,
                             field: meta.field,
-                            flags: u32::from(meta.flags),
+                            flags: meta.flags.bits(),
                             zero_copy: zero_copy_enabled,
                         }));
                     let layout = layout_plan.layout;
@@ -637,19 +344,16 @@ pub(super) fn start_v4l2(
                         break;
                     }
                 }
-                Err(err) if err.raw_os_error() == Some(ENODEV) => {
+                // Timeouts are expected due to the short poll timeout.
+                Ok(None) => {}
+                Err(err) if err.is_no_device() => {
                     // The device is gone; retrying the dequeue cannot succeed.
-                    let err = CaptureError::Disconnected(err.to_string());
+                    let err = CaptureError::Disconnected(to_io(err).to_string());
                     tracing::warn!(backend = "v4l2", error = %err, "v4l2 device disconnected");
                     record_worker_error(&worker_error_for_thread, &err);
                     break;
                 }
-                Err(err) => {
-                    // Timeouts are expected due to the short poll timeout above.
-                    if err.kind() != std::io::ErrorKind::TimedOut {
-                        thread::sleep(error_backoff);
-                    }
-                }
+                Err(_) => thread::sleep(error_backoff),
             }
         }
     });
@@ -678,10 +382,37 @@ pub(super) fn start_v4l2(
     })
 }
 
+/// Sets the capture format to `mode`'s size and pixel format, keeping the node's other
+/// format fields; returns the format the driver chose.
+fn negotiate_format(dev: &VideoDevice, mode: &Mode) -> styx_kernel::Result<PixFormat> {
+    const PIX_FMT_FLAG_PREMUL_ALPHA: u32 = 1;
+    let Format::Single(mut pix) = dev.format(BufType::VideoCapture)? else {
+        return Err(styx_kernel::Error::Invalid(
+            "v4l2 capture node has no single-planar format".into(),
+        ));
+    };
+    pix.width = mode.format.resolution.width.get();
+    pix.height = mode.format.resolution.height.get();
+    pix.fourcc = styx_kernel::FourCc(mode.format.code.to_u32());
+    pix.ycbcr_enc = 0;
+    pix.flags &= PIX_FMT_FLAG_PREMUL_ALPHA;
+    dev.set_format(BufType::VideoCapture, &Format::Single(pix))?;
+    match dev.format(BufType::VideoCapture)? {
+        Format::Single(pix) => Ok(pix),
+        _ => Err(styx_kernel::Error::Invalid(
+            "v4l2 capture node has no single-planar format".into(),
+        )),
+    }
+}
+
 mod layout;
+mod mmap;
 #[cfg(test)]
 mod tests;
 mod yuv_layout;
+
+use mmap::{V4l2MmapManager, to_io};
+use styx_kernel::v4l2::PixFormat;
 
 use layout::{
     is_encoded_bitstream, min_stride_for_fourcc, plan_v4l2_single_plane_layout,

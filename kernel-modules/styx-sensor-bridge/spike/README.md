@@ -109,6 +109,16 @@ idempotent: finished steps are skipped (with the overlay applied it leaves `rp1-
 Exit status 1 if a measured rate is more than 2% off, or an exposure change did not land on
 the predicted frame.
 
+## Verification (`native-spike` options)
+
+`native-spike --help` lists them. Measured with them on the device (details in `ov9782.toml`):
+the black frames were lost register writes (combined I²C transfers; `0x380a` read back 0, so
+the sensor sent 32 lines and the rest of every buffer stayed 0); frame lengths above 4096 lines
+stalled the sensor until `0x4f00 = 0x08`; delays are 2 frames for exposure and gain and 1 for
+frame length; `0x3208` group hold is atomic (`0x3308` is not a group hold); the black level is
+64 at 10 bits. `--kernel max:max,642:16` streams through the kernel driver (`ov9282` bound,
+before `up.sh`) for comparison. `--embedded` needs the `-emb` overlay.
+
 ## Rollback
 
 `sh down.sh` (best effort, every step runs even if one fails):

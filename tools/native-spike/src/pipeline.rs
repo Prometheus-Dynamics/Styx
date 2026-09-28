@@ -56,12 +56,15 @@ pub fn find_raw_path(topo: &Topology) -> Result<RawPath, String> {
         .entity_by_name(RAW_NODE)
         .ok_or_else(|| format!("no '{RAW_NODE}' entity"))?;
     let into_receiver = topo.links_to(receiver.id);
+    // The image link: the lowest receiver sink pad (a sensor with an embedded data pad also
+    // feeds sink pad 1).
     let from_sensor = into_receiver
         .iter()
-        .find(|l| {
+        .filter(|l| {
             topo.entity(l.source.entity)
                 .is_some_and(|e| e.name != RECEIVER && topo.links_to(e.id).is_empty())
         })
+        .min_by_key(|l| l.sink.index)
         .ok_or_else(|| format!("nothing feeds '{RECEIVER}'"))?;
     let to_node = topo
         .links_to(node.id)

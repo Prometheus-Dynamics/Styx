@@ -2,11 +2,12 @@
 #![deny(clippy::print_stderr, clippy::print_stdout)]
 use smallvec::smallvec;
 use std::num::NonZeroU32;
-use std::panic::catch_unwind;
 use styx_capture::prelude::*;
 use styx_core::controls::{Access, ControlKind, ControlMetadata, ControlValue};
-use v4l::format::Colorspace as V4lColorspace;
-use v4l::{capability::Flags, framesize::FrameSizeEnum, prelude::*, video::Capture};
+use styx_kernel::v4l2::{
+    BufType, CapabilityFlags, ControlFlags, ControlInfo, ControlType, Controls, Format,
+    FrameIntervals, FrameSizes, MenuValue, VideoDevice,
+};
 
 fn read_node_name(path: &std::path::Path) -> Option<String> {
     let node = path.file_name()?.to_string_lossy();
@@ -31,29 +32,31 @@ pub struct V4l2DeviceInfo {
 pub fn probe_devices() -> (Vec<V4l2DeviceInfo>, Vec<String>) {
     let mut devices = Vec::new();
     let mut errors = Vec::new();
-    for dev in v4l::context::enum_devices() {
-        match build_info(dev.path()) {
+    for path in styx_kernel::v4l2::list_video_nodes() {
+        match build_info(&path) {
             Ok(info) => devices.push(info),
-            Err(e) => errors.push(format!("{}: {e}", dev.path().display())),
+            Err(e) => errors.push(format!("{}: {e}", path.display())),
         };
     }
     (devices, errors)
 }
 
 fn build_info(path: &std::path::Path) -> Result<V4l2DeviceInfo, Box<dyn std::error::Error>> {
-    let dev = Device::with_path(path)?;
-    let caps = dev.query_caps()?;
+    let dev = VideoDevice::open(path)?;
+    let caps = dev.capabilities().clone();
     let node_name = read_node_name(path);
 
-    if !(caps.capabilities.contains(Flags::VIDEO_CAPTURE)
-        || caps.capabilities.contains(Flags::VIDEO_CAPTURE_MPLANE))
+    if !(caps.device_caps.contains(CapabilityFlags::VIDEO_CAPTURE)
+        || caps
+            .device_caps
+            .contains(CapabilityFlags::VIDEO_CAPTURE_MPLANE))
     {
         // Skip non-capture nodes (e.g., decoders/encoders) to avoid probing controls they expose.
         return Err("not a capture device".into());
     }
     let card = caps.card;
     let driver = caps.driver;
-    let bus_info = caps.bus;
+    let bus_info = caps.bus_info;
     let driver_lc = driver.to_ascii_lowercase();
     let card_lc = card.to_ascii_lowercase();
 
@@ -80,89 +83,20 @@ fn build_info(path: &std::path::Path) -> Result<V4l2DeviceInfo, Box<dyn std::err
 
     // Be tolerant of quirky drivers: if formats or frame sizes fail, keep probing
     // whatever we can instead of dropping the device entirely.
-    let mut modes = Vec::new();
-    let default_color = dev
-        .format()
-        .ok()
-        .map(|fmt| map_color_space(Some(fmt.colorspace)))
-        .unwrap_or(ColorSpace::Unknown);
-    let formats = dev.enum_formats().unwrap_or_default();
-    for fmt in formats {
-        let fourcc = FourCc::from(u32::from_le_bytes(fmt.fourcc.repr));
-        let color = if default_color != ColorSpace::Unknown {
-            default_color
-        } else {
-            guess_color_space(fourcc)
-        };
-        let framesizes = match dev.enum_framesizes(fmt.fourcc) {
-            Ok(sizes) => sizes,
-            Err(_) => continue,
-        };
-        // Advertise concrete modes only. Stepwise frame-size ranges are not
-        // expanded because doing so would invent modes the driver did not list.
-        for size in framesizes {
-            match size.size {
-                FrameSizeEnum::Discrete(fs) => {
-                    if let Some(res) = Resolution::new(fs.width, fs.height) {
-                        let mut intervals = smallvec![];
-                        let ivals = dev
-                            .enum_frameintervals(fmt.fourcc, fs.width, fs.height)
-                            .unwrap_or_default();
-                        for iv in ivals {
-                            if let v4l::frameinterval::FrameIntervalEnum::Discrete(discrete) =
-                                iv.interval
-                                && let (Some(n), Some(d)) = (
-                                    NonZeroU32::new(discrete.numerator),
-                                    NonZeroU32::new(discrete.denominator),
-                                )
-                            {
-                                intervals.push(Interval {
-                                    numerator: n,
-                                    denominator: d,
-                                });
-                            }
-                        }
-                        let format = MediaFormat::new(fourcc, res, color);
-                        modes.push(Mode {
-                            id: ModeId {
-                                format,
-                                interval: None,
-                            },
-                            format,
-                            intervals,
-                            interval_stepwise: None,
-                        });
-                    }
-                }
-                FrameSizeEnum::Stepwise(step) => {
-                    if let Some(res) = Resolution::new(step.min_width, step.min_height) {
-                        let format = MediaFormat::new(fourcc, res, color);
-                        modes.push(Mode {
-                            id: ModeId {
-                                format,
-                                interval: None,
-                            },
-                            format,
-                            intervals: smallvec![],
-                            interval_stepwise: None,
-                        });
-                    }
-                }
-            }
-        }
-    }
+    let default_color = match dev.format(BufType::VideoCapture) {
+        Ok(Format::Single(pix)) => map_color_space(pix.colorspace),
+        _ => ColorSpace::Unknown,
+    };
+    let modes = probe_modes(&dev, default_color);
 
-    // Some kernels expose controls with newer/unknown types; the upstream v4l crate
-    // currently panics when converting those descriptions. Catch the panic and simply
-    // drop the controls list so that device discovery can still succeed.
-    let controls = match catch_unwind(|| dev.query_controls()) {
-        Ok(Ok(ctrls)) => ctrls
+    // If controls cannot be queried (ENOTTY), ignore them rather than skipping the device.
+    // Controls of types Styx does not model are left out one by one.
+    let controls = match dev.query_controls() {
+        Ok(ctrls) => ctrls
             .into_iter()
-            .filter_map(|ctrl| map_control(ctrl).ok())
+            .filter_map(|ctrl| map_control(&dev, ctrl))
             .collect::<Vec<_>>(),
-        // If controls cannot be queried (ENOTTY) or the v4l crate hit an unsupported
-        // control type, ignore controls rather than skipping the device entirely.
-        Ok(Err(_)) | Err(_) => Vec::new(),
+        Err(_) => Vec::new(),
     };
 
     let descriptor = CaptureDescriptor { modes, controls };
@@ -183,65 +117,127 @@ fn build_info(path: &std::path::Path) -> Result<V4l2DeviceInfo, Box<dyn std::err
     })
 }
 
-fn map_control(ctrl: v4l::control::Description) -> Result<ControlMeta, Box<dyn std::error::Error>> {
-    let id = ControlId(ctrl.id);
-    let name = ctrl.name;
-    use v4l::control::Type::*;
-    let (min, max, default) = match ctrl.typ {
-        Integer => (
+/// One mode per advertised format and discrete size, with its discrete frame intervals.
+fn probe_modes(dev: &VideoDevice, default_color: ColorSpace) -> Vec<Mode> {
+    let mut modes = Vec::new();
+    let formats = dev.formats(BufType::VideoCapture).unwrap_or_default();
+    for fmt in formats {
+        let fourcc = FourCc::from(fmt.fourcc.to_u32());
+        let color = if default_color != ColorSpace::Unknown {
+            default_color
+        } else {
+            guess_color_space(fourcc)
+        };
+        let Ok(framesizes) = dev.frame_sizes(fmt.fourcc) else {
+            continue;
+        };
+        let mode = |res: Resolution, intervals| {
+            let format = MediaFormat::new(fourcc, res, color);
+            Mode {
+                id: ModeId {
+                    format,
+                    interval: None,
+                },
+                format,
+                intervals,
+                interval_stepwise: None,
+            }
+        };
+        // Advertise concrete modes only. Stepwise frame-size ranges are not
+        // expanded because doing so would invent modes the driver did not list.
+        match framesizes {
+            FrameSizes::Discrete(sizes) => {
+                for fs in sizes {
+                    let Some(res) = Resolution::new(fs.width, fs.height) else {
+                        continue;
+                    };
+                    let mut intervals = smallvec![];
+                    if let Ok(FrameIntervals::Discrete(ivals)) =
+                        dev.frame_intervals(fmt.fourcc, fs.width, fs.height)
+                    {
+                        for iv in ivals {
+                            if let (Some(n), Some(d)) = (
+                                NonZeroU32::new(iv.numerator),
+                                NonZeroU32::new(iv.denominator),
+                            ) {
+                                intervals.push(Interval {
+                                    numerator: n,
+                                    denominator: d,
+                                });
+                            }
+                        }
+                    }
+                    modes.push(mode(res, intervals));
+                }
+            }
+            FrameSizes::Stepwise(step) | FrameSizes::Continuous(step) => {
+                if let Some(res) = Resolution::new(step.min_width, step.min_height) {
+                    modes.push(mode(res, smallvec![]));
+                }
+            }
+        }
+    }
+    modes
+}
+
+/// Describes a control for Styx; `None` for types Styx does not model (64-bit, bitmask,
+/// button, string, class markers, compound).
+fn map_control(dev: &VideoDevice, ctrl: ControlInfo) -> Option<ControlMeta> {
+    let (min, max, default, kind) = match ctrl.control_type {
+        ControlType::Integer => (
             ControlValue::Int(ctrl.minimum as i32),
             ControlValue::Int(ctrl.maximum as i32),
             ControlValue::Int(ctrl.default as i32),
+            ControlKind::Int,
         ),
-        Boolean => (
+        ControlType::Boolean => (
             ControlValue::Bool(ctrl.minimum != 0),
             ControlValue::Bool(ctrl.maximum != 0),
             ControlValue::Bool(ctrl.default != 0),
+            ControlKind::Bool,
         ),
-        Menu | IntegerMenu => (
+        ControlType::Menu | ControlType::IntegerMenu => (
             ControlValue::Uint(ctrl.minimum as u32),
             ControlValue::Uint(ctrl.maximum as u32),
             ControlValue::Uint(ctrl.default as u32),
+            if ctrl.control_type == ControlType::Menu {
+                ControlKind::Menu
+            } else {
+                ControlKind::IntMenu
+            },
         ),
-        Bitmask | Integer64 | CtrlClass | Button | String => {
-            return Err("unsupported control type".into());
-        }
-        _ => {
-            return Err("unsupported control type".into());
-        }
+        _ => return None,
     };
 
-    let access = if ctrl.flags.contains(v4l::control::Flags::READ_ONLY) {
+    let access = if ctrl.flags.contains(ControlFlags::READ_ONLY) {
         Access::ReadOnly
     } else {
         Access::ReadWrite
     };
 
-    let menu = ctrl.items.map(|items| {
-        items
+    // Menu items the driver skips (VIDIOC_QUERYMENU fails) are left out.
+    let menu = ctrl.is_menu().then(|| {
+        dev.query_menu(&ctrl)
+            .unwrap_or_default()
             .into_iter()
-            .map(|(_, item)| item.to_string())
+            .map(|item| match item.value {
+                MenuValue::Name(name) => name,
+                MenuValue::Integer(value) => value.to_string(),
+            })
             .collect()
     });
 
-    let step = match ctrl.typ {
-        Integer | Integer64 | Bitmask | IntegerMenu => Some(ControlValue::Uint(ctrl.step as u32)),
+    let step = match ctrl.control_type {
+        ControlType::Integer | ControlType::IntegerMenu => {
+            Some(ControlValue::Uint(ctrl.step as u32))
+        }
         _ => None,
     };
 
-    Ok(ControlMeta {
-        id,
-        name,
-        kind: match ctrl.typ {
-            Integer => ControlKind::Int,
-            Boolean => ControlKind::Bool,
-            Menu => ControlKind::Menu,
-            IntegerMenu => ControlKind::IntMenu,
-            Bitmask => ControlKind::Uint,
-            Integer64 => ControlKind::Int,
-            CtrlClass | Button | String => ControlKind::Unknown,
-            _ => ControlKind::Unknown,
-        },
+    Some(ControlMeta {
+        id: ControlId(ctrl.id),
+        name: ctrl.name,
+        kind,
         access,
         min,
         max,
@@ -252,12 +248,16 @@ fn map_control(ctrl: v4l::control::Description) -> Result<ControlMeta, Box<dyn s
     })
 }
 
-fn map_color_space(cs: Option<V4lColorspace>) -> ColorSpace {
-    match cs {
-        Some(V4lColorspace::SRGB) => ColorSpace::Srgb,
-        Some(V4lColorspace::Rec709) => ColorSpace::Bt709,
-        Some(V4lColorspace::Rec2020) => ColorSpace::Bt2020,
-        Some(V4lColorspace::SMPTE170M) => ColorSpace::Bt709,
+/// Maps `enum v4l2_colorspace`.
+fn map_color_space(colorspace: u32) -> ColorSpace {
+    const SMPTE170M: u32 = 1;
+    const REC709: u32 = 3;
+    const SRGB: u32 = 8;
+    const BT2020: u32 = 10;
+    match colorspace {
+        SRGB => ColorSpace::Srgb,
+        REC709 | SMPTE170M => ColorSpace::Bt709,
+        BT2020 => ColorSpace::Bt2020,
         _ => ColorSpace::Unknown,
     }
 }
@@ -266,6 +266,21 @@ fn guess_color_space(fcc: FourCc) -> ColorSpace {
     fcc.info()
         .default_color_space
         .unwrap_or(ColorSpace::Unknown)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colorspaces_map_like_the_kernel_enum() {
+        assert_eq!(map_color_space(8), ColorSpace::Srgb);
+        assert_eq!(map_color_space(3), ColorSpace::Bt709);
+        assert_eq!(map_color_space(1), ColorSpace::Bt709);
+        assert_eq!(map_color_space(10), ColorSpace::Bt2020);
+        assert_eq!(map_color_space(0), ColorSpace::Unknown);
+        assert_eq!(map_color_space(7), ColorSpace::Unknown);
+    }
 }
 
 pub mod prelude {
