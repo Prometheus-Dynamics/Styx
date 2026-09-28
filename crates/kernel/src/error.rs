@@ -69,6 +69,11 @@ impl Error {
         self.errno() == Some(libc::EAGAIN)
     }
 
+    /// True when the device went away (`ENODEV`), e.g. a USB camera was unplugged.
+    pub fn is_no_device(&self) -> bool {
+        self.errno() == Some(libc::ENODEV)
+    }
+
     pub(crate) fn ioctl(name: &'static str, errno: i32) -> Self {
         Error::Ioctl { name, errno }
     }
@@ -134,6 +139,7 @@ mod tests {
         assert!(!err.is_invalid_argument());
         assert!(Error::ioctl("X", libc::EINVAL).is_invalid_argument());
         assert!(Error::ioctl("X", libc::ENOTTY).is_not_supported());
+        assert!(Error::ioctl("VIDIOC_DQBUF", libc::ENODEV).is_no_device());
         let io: io::Error = Error::ioctl("X", libc::EAGAIN).into();
         assert_eq!(io.kind(), io::ErrorKind::WouldBlock);
     }
