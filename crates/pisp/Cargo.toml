@@ -14,7 +14,7 @@ default = []
 device = ["dep:styx-kernel"]
 
 [dependencies]
-bytemuck = { version = "1.25", features = ["derive", "min_const_generics"] }
+bytemuck = { version = "1.25", features = ["derive", "min_const_generics", "extern_crate_alloc"] }
 styx-kernel = { workspace = true, optional = true }
 
 [lints]

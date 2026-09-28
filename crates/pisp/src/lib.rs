@@ -47,6 +47,7 @@
 //!
 //! Each ported file names its libpisp source.
 
+pub mod be;
 pub mod fe;
 pub mod format;
 pub mod stats;
