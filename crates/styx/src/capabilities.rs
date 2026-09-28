@@ -395,7 +395,7 @@ fn backend_zero_copy_residencies(kind: BackendKind) -> Vec<FrameResidency> {
             FrameResidency::HostExternal,
             FrameResidency::CompressedPacket,
         ],
-        BackendKind::Libcamera => vec![FrameResidency::Dmabuf],
+        BackendKind::Libcamera | BackendKind::Native => vec![FrameResidency::Dmabuf],
         BackendKind::Virtual => vec![FrameResidency::HostExternal],
         BackendKind::Netcam => vec![FrameResidency::CompressedPacket],
         BackendKind::File => vec![
@@ -418,6 +418,7 @@ fn backend_zero_copy_cross_process(kind: BackendKind) -> bool {
         kind,
         BackendKind::V4l2
             | BackendKind::Libcamera
+            | BackendKind::Native
             | BackendKind::Virtual
             | BackendKind::Netcam
             | BackendKind::File
@@ -433,7 +434,7 @@ fn backend_export_modes(kind: BackendKind) -> Vec<CrossProcessExportMode> {
             CrossProcessExportMode::Memfd,
             CrossProcessExportMode::CopyToMemfd,
         ],
-        BackendKind::Libcamera => vec![CrossProcessExportMode::Dmabuf],
+        BackendKind::Libcamera | BackendKind::Native => vec![CrossProcessExportMode::Dmabuf],
         BackendKind::Virtual => vec![CrossProcessExportMode::Memfd],
         BackendKind::Netcam | BackendKind::File | BackendKind::Simulation | BackendKind::Replay => {
             vec![
@@ -455,6 +456,9 @@ fn backend_notes(kind: BackendKind) -> Vec<String> {
         BackendKind::Libcamera => {
             vec!["native dma-buf planes are exported by duplicating plane fds".into()]
         }
+        BackendKind::Native => vec![
+            "raw frames stay in the capture dma-bufs; they export by duplicating the buffer fd".into(),
+        ],
         BackendKind::Virtual => vec!["virtual frames use memfd-backed shared buffers".into()],
         BackendKind::Netcam => vec![
             "compressed packets avoid pixel copies until decode".into(),

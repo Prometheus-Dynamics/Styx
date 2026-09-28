@@ -125,6 +125,8 @@ pub enum BackendKind {
     Simulation,
     /// A `.styxrec` recording played back as a camera (see [`replay`]).
     Replay,
+    /// A sensor Styx drives itself through the Styx sensor bridge (`styx-native`).
+    Native,
 }
 
 /// Backend-specific handle used for configuration/streaming.
@@ -177,6 +179,11 @@ pub enum BackendHandle {
         pacing: crate::replay::ReplayPacing,
         loop_forever: bool,
     },
+    #[cfg(feature = "native")]
+    Native {
+        /// The camera's key in the native provider (`bridge:/dev/v4l-subdevN`).
+        key: String,
+    },
 }
 
 #[cfg(feature = "facade")]
@@ -196,6 +203,8 @@ impl BackendHandle {
             #[cfg(feature = "simulation-bevy")]
             BackendHandle::Simulation { .. } => BackendKind::Simulation,
             BackendHandle::Replay { .. } => BackendKind::Replay,
+            #[cfg(feature = "native")]
+            BackendHandle::Native { .. } => BackendKind::Native,
         }
     }
 }
@@ -370,6 +379,7 @@ impl std::fmt::Display for BackendKind {
             BackendKind::File => "file",
             BackendKind::Simulation => "simulation",
             BackendKind::Replay => "replay",
+            BackendKind::Native => "native",
         })
     }
 }
@@ -387,6 +397,7 @@ impl std::str::FromStr for BackendKind {
             "file" | "file-backend" => Ok(BackendKind::File),
             "simulation" | "simulation-bevy" => Ok(BackendKind::Simulation),
             "replay" => Ok(BackendKind::Replay),
+            "native" | "styx-native" => Ok(BackendKind::Native),
             _ => Err(BackendKindParseError {
                 value: value.to_string(),
             }),
@@ -466,6 +477,8 @@ pub(crate) fn probe_all_with_errors_with_options(_force_refresh: bool) -> ProbeR
     probe_backends_with_errors_with_options(
         _force_refresh,
         Some(&[
+            #[cfg(feature = "native")]
+            BackendKind::Native,
             #[cfg(feature = "v4l2")]
             BackendKind::V4l2,
             #[cfg(feature = "libcamera")]
@@ -488,6 +501,16 @@ pub(crate) fn probe_backends_with_errors_with_options(
     #[allow(unused_mut)]
     let mut errors: Vec<BackendProbeError> = Vec::new();
 
+    #[cfg(feature = "native")]
+    if _backends.is_none_or(|backends| backends.contains(&BackendKind::Native)) {
+        let (native_devices, native_errors) = capture_api::probe_native();
+        errors.extend(
+            native_errors
+                .into_iter()
+                .map(|error| BackendProbeError::new(BackendKind::Native, error)),
+        );
+        devices.extend(native_devices);
+    }
     #[cfg(feature = "v4l2")]
     if _backends.is_none_or(|backends| backends.contains(&BackendKind::V4l2)) {
         let (v4l2_devices, v4l2_errors) =
@@ -582,6 +605,7 @@ fn backend_error_prefix(backend: BackendKind) -> &'static str {
         BackendKind::File => "file: ",
         BackendKind::Simulation => "simulation: ",
         BackendKind::Replay => "replay: ",
+        BackendKind::Native => "native: ",
     }
 }
 
@@ -595,6 +619,7 @@ fn parse_backend_probe_error(value: &str) -> Option<BackendProbeError> {
         BackendKind::File,
         BackendKind::Simulation,
         BackendKind::Replay,
+        BackendKind::Native,
     ]
     .into_iter()
     .find_map(|backend| {
@@ -742,6 +767,7 @@ mod tests {
             BackendKind::File,
             BackendKind::Simulation,
             BackendKind::Replay,
+            BackendKind::Native,
         ] {
             assert_eq!(backend.to_string().parse::<BackendKind>(), Ok(backend));
         }

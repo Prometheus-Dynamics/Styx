@@ -5,6 +5,8 @@ use super::file_backend;
 use super::handle::{CaptureHandle, CaptureQueue};
 #[cfg(feature = "libcamera")]
 use super::libcamera_backend;
+#[cfg(feature = "native")]
+use super::native_backend;
 #[cfg(feature = "netcam")]
 use super::netcam_backend;
 use super::replay_backend;
@@ -72,6 +74,12 @@ pub(crate) fn start_backend(
         ),
         #[cfg(not(feature = "simulation-bevy"))]
         BackendKind::Simulation => Err(CaptureError::BackendMissing(BackendKind::Simulation)),
+        #[cfg(feature = "native")]
+        BackendKind::Native => native_backend::start_native(
+            backend, mode, interval, _controls, descriptor, config, _queue,
+        ),
+        #[cfg(not(feature = "native"))]
+        BackendKind::Native => Err(CaptureError::BackendMissing(BackendKind::Native)),
         BackendKind::Replay => {
             replay_backend::start_replay(backend, mode, interval, descriptor, config, _queue)
         }

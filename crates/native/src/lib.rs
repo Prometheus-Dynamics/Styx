@@ -30,3 +30,6 @@ pub use library::SensorLibrary;
 pub use modes::SensorMode;
 pub use provider::{NativeDevice, NativeProvider, PROVIDER_NAME};
 pub use stream::{FrameStream, StreamStats};
+pub use styx_graph::Fraction;
+pub use styx_kernel::FourCc as KernelFourCc;
+pub use styx_sensor;

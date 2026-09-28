@@ -37,6 +37,11 @@ pub enum ControlPlane {
         state: simulation_backend::SimulationControlStateHandle,
     },
     Virtual,
+    /// A native camera: frame-accurate typed controls.
+    #[cfg(feature = "native")]
+    Native {
+        controls: styx_native::CameraControls,
+    },
     /// A reconnecting capture: controls go to whichever backend capture is running and are
     /// re-applied after a reconnect.
     Supervised(std::sync::Arc<super::supervisor::SupervisedCapture>),
@@ -88,6 +93,10 @@ pub(crate) fn apply_control_to_plane(
             }
             tx.send(ControlMessage::Wake)
                 .map_err(|_| CaptureError::control_apply("libcamera channel closed"))
+        }
+        #[cfg(feature = "native")]
+        ControlPlane::Native { controls } => {
+            super::native_backend::apply_control(controls, id, &_value)
         }
         #[cfg(feature = "file-backend")]
         ControlPlane::File { state } => file_backend::apply_file_control(state, id, _value),
@@ -145,6 +154,8 @@ pub(crate) fn read_control_from_plane(
                     }
                 })?
         }
+        #[cfg(feature = "native")]
+        ControlPlane::Native { controls } => super::native_backend::read_control(controls, id),
         #[cfg(feature = "file-backend")]
         ControlPlane::File { state } => file_backend::read_file_control(state, id),
         #[cfg(feature = "simulation-bevy")]
@@ -162,6 +173,8 @@ fn control_plane_backend(control: &ControlPlane) -> &'static str {
         ControlPlane::None => "none",
         ControlPlane::Supervised(_) => "supervised",
         ControlPlane::Virtual => "virtual",
+        #[cfg(feature = "native")]
+        ControlPlane::Native { .. } => "native",
         #[cfg(feature = "v4l2")]
         ControlPlane::V4l2 { .. } => "v4l2",
         #[cfg(feature = "libcamera")]

@@ -46,6 +46,10 @@ impl Serialize for BackendHandle {
                     pacing: crate::replay::ReplayPacing,
                     loop_forever: bool,
                 },
+                #[cfg(feature = "native")]
+                Native {
+                    key: String,
+                },
             }
 
             let human = match self {
@@ -93,6 +97,8 @@ impl Serialize for BackendHandle {
                     pacing: *pacing,
                     loop_forever: *loop_forever,
                 },
+                #[cfg(feature = "native")]
+                BackendHandle::Native { key } => HumanHandle::Native { key: key.clone() },
             };
             human.serialize(serializer)
         } else {
@@ -126,6 +132,10 @@ impl Serialize for BackendHandle {
                     path: String,
                     pacing: crate::replay::ReplayPacing,
                     loop_forever: bool,
+                },
+                #[cfg(feature = "native")]
+                Native {
+                    key: String,
                 },
             }
             let bin = match self {
@@ -173,6 +183,8 @@ impl Serialize for BackendHandle {
                     pacing: *pacing,
                     loop_forever: *loop_forever,
                 },
+                #[cfg(feature = "native")]
+                BackendHandle::Native { key } => BinaryHandle::Native { key: key.clone() },
             };
             bin.serialize(serializer)
         }
@@ -220,6 +232,10 @@ impl<'de> Deserialize<'de> for BackendHandle {
                     pacing: crate::replay::ReplayPacing,
                     loop_forever: bool,
                 },
+                #[cfg(feature = "native")]
+                Native {
+                    key: String,
+                },
             }
             let human = HumanHandle::deserialize(deserializer)?;
             let handle = match human {
@@ -264,6 +280,8 @@ impl<'de> Deserialize<'de> for BackendHandle {
                     pacing,
                     loop_forever,
                 },
+                #[cfg(feature = "native")]
+                HumanHandle::Native { key } => BackendHandle::Native { key },
             };
             Ok(handle)
         } else {
@@ -296,6 +314,10 @@ impl<'de> Deserialize<'de> for BackendHandle {
                     path: String,
                     pacing: crate::replay::ReplayPacing,
                     loop_forever: bool,
+                },
+                #[cfg(feature = "native")]
+                Native {
+                    key: String,
                 },
             }
             let bin = BinaryHandle::deserialize(deserializer)?;
@@ -341,6 +363,8 @@ impl<'de> Deserialize<'de> for BackendHandle {
                     pacing,
                     loop_forever,
                 },
+                #[cfg(feature = "native")]
+                BinaryHandle::Native { key } => BackendHandle::Native { key },
             };
             Ok(handle)
         }
