@@ -109,7 +109,8 @@
 //!   `digital_gain` (`register`, `min_code`, `max_code`, `default_code`, `model`), `delays`,
 //!   `group_hold` (`start`, `end`, `launch`), `hflip`/`vflip` (`address`, `mask`, `default`,
 //!   `changes_bayer_order`), `test_pattern` (`register`, `patterns`).
-//! * `[embedded_data]`: `lines`, `entries = [{ address, offset }]`.
+//! * `[embedded_data]`: `lines`, `packing` (`none` or `raw10`), `entries = [{ address, offset }]`,
+//!   `controls = [{ control, offset, bytes, shift }]`.
 //!
 //! Register fields are `{ address, bytes = 1, shift = 0, bits = rest, read_modify_write =
 //! false }`.
@@ -140,11 +141,13 @@ mod timing;
 
 pub use bus::{BusOp, MockBus, MockPins, NoPins, PinOp, RegisterBus, SensorPins};
 pub use desc::{
-    Backend, BlackLevel, Blanking, ChipId, Controls, Delays, EmbeddedData, EmbeddedEntry, Exposure,
-    Field, Flip, Format, Gain, GainModel, GroupHold, Identity, LineLength, Mode, PixelArray, Rect,
-    RegWrite, SensorDescription, Sequences, Size, Step, TestPattern,
+    Backend, BlackLevel, Blanking, ChipId, Controls, Delays, EmbeddedControl, EmbeddedControlKind,
+    EmbeddedData, EmbeddedEntry, EmbeddedPacking, Exposure, Field, Flip, Format, Gain, GainModel,
+    GroupHold, Identity, LineLength, Mode, PixelArray, Rect, RegWrite, SensorDescription,
+    Sequences, Size, Step, TestPattern,
 };
 pub use driver::{ActiveMode, AppliedControls, ControlRequest, DriverState, SensorDriver};
+pub use embedded::unpack_raw10_bytes as embedded_unpack_raw10;
 pub use error::{Issue, Issues, Result, SensorError};
 pub use fallback::{ControlRange, KernelControl, SubdevFormat, SubdevReport, kernel_controls};
 pub use gain::{GainCode, GainSplit, Rounding, split_gain};

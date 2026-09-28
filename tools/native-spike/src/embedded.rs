@@ -41,16 +41,20 @@ pub struct EmbeddedNode {
 
 /// Enables `csi2` source pad `source` → the embedded node, if the bridge feeds `csi2` sink pad
 /// `source - 4` (only with the embedded data pad). Returns the node's device path.
-pub fn enable_link(media: &MediaDevice, topo: &Topology, receiver: u32) -> Result<std::path::PathBuf> {
+pub fn enable_link(
+    media: &MediaDevice,
+    topo: &Topology,
+    receiver: u32,
+) -> Result<std::path::PathBuf> {
     let node = topo
         .entity_by_name(NODE)
         .ok_or_else(|| format!("no {NODE} entity"))?;
-    let fed = topo
-        .links_to(receiver)
-        .iter()
-        .any(|l| l.sink.index == 1);
+    let fed = topo.links_to(receiver).iter().any(|l| l.sink.index == 1);
     if !fed {
-        return Err("nothing feeds csi2 pad 1: the bridge has no embedded data pad (use the -emb overlay)".into());
+        return Err(
+            "nothing feeds csi2 pad 1: the bridge has no embedded data pad (use the -emb overlay)"
+                .into(),
+        );
     }
     media
         .setup_link(
@@ -91,7 +95,11 @@ impl EmbeddedNode {
             maps.push(video.map_buffer(META, i).ctx("mmap")?.remove(0));
             video.queue(&QueueBuffer::mmap(META, i)).ctx("QBUF")?;
         }
-        log!("embedded: {} {set:?}, {} buffers", path.display(), got.count);
+        log!(
+            "embedded: {} {set:?}, {} buffers",
+            path.display(),
+            got.count
+        );
         Ok(Self {
             video,
             maps,
@@ -109,7 +117,11 @@ impl EmbeddedNode {
 
     /// Dequeues every ready buffer.
     pub fn poll(&mut self) -> Result<()> {
-        while let Some(buf) = self.video.dequeue(META, Memory::Mmap).ctx("embedded DQBUF")? {
+        while let Some(buf) = self
+            .video
+            .dequeue(META, Memory::Mmap)
+            .ctx("embedded DQBUF")?
+        {
             let map = &self.maps[buf.index as usize];
             let used = buf.bytes_used().min(map.len());
             let head = map.as_slice()[..used.min(KEEP)].to_vec();
@@ -136,7 +148,9 @@ impl EmbeddedNode {
 
 impl Drop for EmbeddedNode {
     fn drop(&mut self) {
-        if self.streaming && let Err(e) = self.video.stream_off(META) {
+        if self.streaming
+            && let Err(e) = self.video.stream_off(META)
+        {
             log!("embedded STREAMOFF: {e}");
         }
         self.maps.clear();
@@ -150,7 +164,12 @@ impl Drop for EmbeddedNode {
 pub fn hex(bytes: &[u8]) -> String {
     bytes
         .chunks(32)
-        .map(|c| c.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "))
+        .map(|c| {
+            c.iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .collect::<Vec<_>>()
         .join("\n    ")
 }

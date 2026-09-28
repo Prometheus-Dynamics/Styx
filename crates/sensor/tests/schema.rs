@@ -294,3 +294,42 @@ fn missing_files_are_reported() {
         "{e}"
     );
 }
+
+#[test]
+fn embedded_controls_in_raw10_packing() {
+    use styx_sensor::embedded_unpack_raw10;
+    let src = BASE.replace(
+        "[embedded_data]\nlines = 2\n",
+        "[embedded_data]\nlines = 2\npacking = \"raw10\"\ncontrols = [\n    { control = \"exposure\", offset = 6, bytes = 2, shift = 4 },\n    { control = \"frame_length\", offset = 19, bytes = 2 },\n]\n",
+    );
+    let d = parse(&src).unwrap();
+    // Words (one byte value each): 6..7 = 0x0282 (642 lines), 19..20 = 0x0e4f.
+    let mut words = [0u8; 24];
+    words[6] = 0x02;
+    words[7] = 0x82;
+    words[19] = 0x0e;
+    words[20] = 0x4f;
+    let packed: Vec<u8> = words
+        .chunks(4)
+        .flat_map(|w| {
+            let low = w
+                .iter()
+                .enumerate()
+                .fold(0u8, |a, (i, v)| a | ((v & 3) << (2 * i)));
+            w.iter().map(|v| v >> 2).chain([low]).collect::<Vec<u8>>()
+        })
+        .collect();
+    assert_eq!(embedded_unpack_raw10(&packed), words);
+    let codes = d.decode_embedded(&packed);
+    assert_eq!(codes.get(Control::Exposure), Some(642 << 4));
+    assert_eq!(codes.get(Control::FrameLength), Some(0x0e4f));
+    let bad = BASE.replace(
+        "[embedded_data]\nlines = 2\n",
+        "[embedded_data]\nlines = 2\ncontrols = [{ control = \"exposure\", offset = 0, bytes = 5 }]\n",
+    );
+    assert!(
+        err(&bad).contains("embedded_data.controls[0]"),
+        "{}",
+        err(&bad)
+    );
+}

@@ -132,7 +132,8 @@ pub fn fps_check(rig: &mut Rig, targets: &[f64]) -> Result<Vec<(f64, f64, f64)>>
         let frames = collect(rig, n)?;
         let s = RunStats::of(&frames);
         report(&format!("rate {fps}"), &s);
-        // The first frame whose period matches the new rate (within 5%).
+        // The first frame whose duration matches the new rate (within 5%). Buffer timestamps
+        // are frame starts on rp1-cfe, so frame k lasts from ts[k] to ts[k + 1].
         let period = 1.0 / predicted;
         let first_new = around
             .windows(2)
@@ -142,9 +143,9 @@ pub fn fps_check(rig: &mut Rig, targets: &[f64]) -> Result<Vec<(f64, f64, f64)>>
                     / f64::from(w[1].sequence.wrapping_sub(w[0].sequence).max(1));
                 (dt - period).abs() / period < 0.05
             })
-            .map(|w| w[1].sequence);
+            .map(|w| w[0].sequence);
         log!(
-            "rate {fps}: measured {:.3} fps vs predicted {predicted:.3} ({:+.2}%), first frame at the new period: {} (predicted {lands})",
+            "rate {fps}: measured {:.3} fps vs predicted {predicted:.3} ({:+.2}%), first frame of the new duration: {} (predicted {lands})",
             s.fps,
             (s.fps - predicted) / predicted * 100.0,
             first_new.map_or("?".into(), |f| f.to_string())
@@ -222,8 +223,27 @@ pub fn exposure_check(rig: &mut Rig, fps: f64) -> Result<Vec<(u32, Option<u32>)>
                 }
             );
         }
-        let observed =
+        let by_level =
             frames::level_change_frame(&frames, frame.saturating_sub(LEAD), before, expected);
+        // With embedded data, the frame whose reported exposure is the new code is exact
+        // whatever the scene.
+        let by_embedded = rig.embedded.as_ref().and_then(|emb| {
+            let want = rig.driver().applied(u64::from(predicted))?.codes.values;
+            let desc = rig.driver().description().clone();
+            frames.iter().map(|f| f.sequence).find(|&s| {
+                s >= frame.saturating_sub(LEAD)
+                    && emb.frame(s).is_some_and(|e| {
+                        desc.decode_embedded(&e.head).get(Control::Exposure)
+                            == want.get(Control::Exposure)
+                    })
+            })
+        });
+        if rig.embedded.is_some() {
+            log!(
+                "exposure: embedded data reports the new exposure from frame {by_embedded:?} (level: {by_level:?})"
+            );
+        }
+        let observed = by_embedded.or(by_level);
         log!(
             "exposure {:.3} -> {:.3} ms (requested for frame {frame}): level {before:.1} -> expected {expected:.1}; predicted landing {predicted}, observed {}{}",
             exposure.as_secs_f64() * 1e3,

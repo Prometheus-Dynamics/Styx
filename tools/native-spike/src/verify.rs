@@ -267,6 +267,7 @@ pub fn delays(rig: &mut Rig, base_lines: u32, base_gain: u32) -> Result<()> {
             for (w, from, to) in [(up, lo, 2.0 * lo), (down, 2.0 * lo, lo)] {
                 let (during, frames) = step(rig, &[w], 6)?;
                 let moved = first_moved(&frames, during, from, to);
+                log_embedded(rig, &format!("delay {name}"), during, &frames);
                 log!(
                     "delay {name}: wrote {:#x} in frame {during}; levels {:?}; first moved {moved:?}",
                     w.1,
@@ -288,6 +289,7 @@ pub fn delays(rig: &mut Rig, base_lines: u32, base_gain: u32) -> Result<()> {
             let (during, frames) = step(rig, &[(VTS, fl, 2)], 6)?;
             let period = t.frame_duration(fl).as_secs_f64();
             let first = first_long(&frames, during, period);
+            log_embedded(rig, "delay frame length", during, &frames);
             seen.push(first.map(|m| m - during));
         }
     }
@@ -321,6 +323,7 @@ pub fn group_hold(rig: &mut Rig, base_lines: u32, base_gain: u32) -> Result<()> 
             write(rig, &[(GAIN, gain, 1)])?;
             write(rig, end)?;
             let frames = collect(rig, 8)?;
+            log_embedded(rig, &format!("group hold {name}"), during, &frames);
             let worst = frames
                 .iter()
                 .map(|f| (f.mean - before) / before.max(1.0))
@@ -401,7 +404,9 @@ pub fn embedded_report(rig: &mut Rig) -> Result<()> {
         return Err("no embedded node".into());
     };
     let Some(f) = emb.frame(seq).or(emb.frames.back()) else {
-        log!("embedded: no buffers received (the sensor sends no embedded data with these settings)");
+        log!(
+            "embedded: no buffers received (the sensor sends no embedded data with these settings)"
+        );
         return Ok(());
     };
     log!(
@@ -438,7 +443,9 @@ pub fn embedded_report(rig: &mut Rig) -> Result<()> {
                 "embedded {name}: wrote {:#x} in frame {during}; frame {} {}{}",
                 w.1,
                 fr.sequence,
-                e.map_or("no buffer".into(), |e| crate::embedded::hex(&e.head[..e.head.len().min(64)])),
+                e.map_or("no buffer".into(), |e| crate::embedded::hex(
+                    &e.head[..e.head.len().min(64)]
+                )),
                 decoded.map_or(String::new(), |d| format!("  decoded {d:?}"))
             );
         }
@@ -446,6 +453,32 @@ pub fn embedded_report(rig: &mut Rig) -> Result<()> {
         collect(rig, 4)?;
     }
     Ok(())
+}
+
+/// Logs, per frame, the exposure, gain and frame length the embedded data reports.
+fn log_embedded(rig: &Rig, label: &str, during: u32, frames: &[FrameSample]) {
+    let Some(emb) = &rig.embedded else { return };
+    let desc = rig.driver().description().clone();
+    let per: Vec<String> = frames
+        .iter()
+        .map(|f| match emb.frame(f.sequence) {
+            Some(e) => {
+                let c = desc.decode_embedded(&e.head);
+                format!(
+                    "{}: exp {:?} gain {:?} vts {:?}",
+                    f.sequence,
+                    c.get(Control::Exposure),
+                    c.get(Control::AnalogGain).map(|g| format!("{g:#x}")),
+                    c.get(Control::FrameLength)
+                )
+            }
+            None => format!("{}: -", f.sequence),
+        })
+        .collect();
+    log!(
+        "{label} (writes in frame {during}), embedded data: {}",
+        per.join("; ")
+    );
 }
 
 /// Writes the scheduler's current exposure and gain back (after raw experiments).
