@@ -89,7 +89,10 @@ pub(crate) struct StatsAccum {
     count: Vec<u32>,
     luma: Vec<u64>,
     quads: Vec<u32>,
+    /// Four interleaved histograms (quad `i` counts in copy `i % 4`), so runs of one bin do not
+    /// serialise on a single counter; summed at the end.
     pub histogram: Vec<u32>,
+    bins: usize,
     samples: u32,
 }
 
@@ -101,7 +104,8 @@ impl StatsAccum {
             count: vec![0; zones],
             luma: vec![0; zones],
             quads: vec![0; zones],
-            histogram: vec![0; setup.config.histogram_bins as usize],
+            histogram: vec![0; 4 * setup.config.histogram_bins as usize],
+            bins: setup.config.histogram_bins as usize,
             samples: 0,
         }
     }
@@ -134,7 +138,8 @@ impl StatsAccum {
                 n += keep;
                 let y = (rv + 2 * gv + bv + 2) >> 2;
                 ls += y;
-                self.histogram[((y * bins_shift_mul) >> 12) as usize] += 1;
+                let copy = (i & 3) * self.bins;
+                self.histogram[copy + ((y * bins_shift_mul) >> 12) as usize] += 1;
             }
             let z = zy * zx_count + zx;
             let acc = &mut self.rgb[z];
@@ -183,7 +188,9 @@ impl StatsAccum {
             zones_x: setup.config.zones_x,
             zones_y: setup.config.zones_y,
             zones,
-            histogram: self.histogram.clone(),
+            histogram: (0..self.bins)
+                .map(|b| (0..4).map(|c| self.histogram[c * self.bins + b]).sum())
+                .collect(),
             samples: self.samples,
             gains,
         }

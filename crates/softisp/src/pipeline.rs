@@ -82,7 +82,7 @@ impl Worker {
         self.tags = [None; SLOTS];
         match (&p.stats, &mut self.stats) {
             (Some(setup), Some(acc))
-                if acc.histogram.len() == setup.config.histogram_bins as usize =>
+                if acc.histogram.len() == 4 * setup.config.histogram_bins as usize =>
             {
                 acc.reset()
             }

@@ -366,11 +366,28 @@ fn narrow_and_lut_match() {
         }
         w
     });
-    let lut: [u8; 4096] = std::array::from_fn(|i| (i * 7 % 256) as u8);
-    let src = [0u16, 4095, 5000, 17];
-    let mut dst = [0u8; 4];
-    lut_row(&src, &mut dst, &lut, 4);
-    assert_eq!(dst, [lut[0], lut[4095], lut[4095], lut[17]]);
+    for seed in 0..3u64 {
+        let nodes: [u8; 257] = std::array::from_fn(|i| bytes(257, seed)[i]);
+        let lut = ToneLut::from_nodes(nodes);
+        check("lut", 1, 1, 0xA7u8, |runner, w, out| {
+            let src = words(w, w as u64 + seed, if w % 3 == 0 { u16::MAX } else { 4095 });
+            let dst = out[0].as_mut_slice();
+            match runner {
+                Runner::Oracle => scalar::lut_row(&src, dst, lut.full(), w),
+                Runner::Dispatch => drop(lut_row(&src, dst, &lut, w)),
+                _ => return leaf_call!(runner, lut_row(&src, &mut dst[..w], &lut, w)),
+            }
+            w
+        });
+    }
+    // The expanded table interpolates the nodes.
+    let lut = ToneLut::from_nodes(std::array::from_fn(|i| (i as u32 * 255 / 256) as u8));
+    assert_eq!(lut.full()[0], 0);
+    assert_eq!(lut.full()[16 * 100], lut.nodes()[100]);
+    assert_eq!(
+        lut.full()[16 * 100 + 8],
+        ((lut.nodes()[100] as u32 + lut.nodes()[101] as u32 + 1) / 2) as u8
+    );
 }
 
 #[test]

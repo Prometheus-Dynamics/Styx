@@ -2,8 +2,8 @@
 
 use crate::format::{CfaPattern, Channel, RawFormat};
 use crate::params::{Demosaic, IspParams, LensShading, YuvMatrix};
-use crate::simd::YuvCoeffs;
 use crate::simd::scalar::WORK_MAX;
+use crate::simd::{ToneLut, YuvCoeffs};
 use crate::{IspError, StatsConfig};
 
 /// Q12 gain limit (16x).
@@ -35,7 +35,7 @@ pub(crate) struct Prepared {
     pub gains: GainRows,
     /// Q10 colour matrix.
     pub ccm: Option<[i16; 9]>,
-    pub lut: Option<Box<[u8; 4096]>>,
+    pub lut: Option<ToneLut>,
     pub yuv: YuvCoeffs,
     pub stats: Option<StatsSetup>,
     /// White balance times digital gain, reported with the statistics.
@@ -136,14 +136,10 @@ impl Prepared {
                 Ok(m)
             })
             .transpose()?;
-        let lut = params.tone.as_ref().map(|curve| {
-            let mut lut = Box::new([0u8; 4096]);
-            for (i, v) in lut.iter_mut().enumerate() {
-                let y = curve.eval(i as f32 / WORK_MAX as f32);
-                *v = (y * 255.0).round().clamp(0.0, 255.0) as u8;
-            }
-            lut
-        });
+        let lut = params
+            .tone
+            .as_ref()
+            .map(|curve| ToneLut::from_curve(|x| curve.eval(x)));
         let yuv = match params.yuv {
             YuvMatrix::Bt601Full => YuvCoeffs::BT601_FULL,
             YuvMatrix::Bt709Limited => YuvCoeffs::BT709_LIMITED,

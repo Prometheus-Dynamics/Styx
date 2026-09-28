@@ -19,16 +19,11 @@ pub(in crate::simd) unsafe fn ccm(planes: [&mut [u16]; 3], m: &[i16; 9], width: 
                 vreinterpretq_s16_u16(vld1q_u16(g.as_ptr().add(x))),
                 vreinterpretq_s16_u16(vld1q_u16(b.as_ptr().add(x))),
             ];
-            let out: [uint16x8_t; 3] = std::array::from_fn(|k| {
-                let lo = vmull_n_s16(vget_low_s16(px[0]), m[3 * k]);
-                let lo = vmlal_n_s16(lo, vget_low_s16(px[1]), m[3 * k + 1]);
-                let lo = vmlal_n_s16(lo, vget_low_s16(px[2]), m[3 * k + 2]);
-                let hi = vmull_high_n_s16(px[0], m[3 * k]);
-                let hi = vmlal_high_n_s16(hi, px[1], m[3 * k + 1]);
-                let hi = vmlal_high_n_s16(hi, px[2], m[3 * k + 2]);
-                let v = vcombine_u16(vqrshrun_n_s32::<10>(lo), vqrshrun_n_s32::<10>(hi));
-                vminq_u16(v, max)
-            });
+            let out = [
+                ccm_out(px, &m[0..3], max),
+                ccm_out(px, &m[3..6], max),
+                ccm_out(px, &m[6..9], max),
+            ];
             vst1q_u16(r.as_mut_ptr().add(x), out[0]);
             vst1q_u16(g.as_mut_ptr().add(x), out[1]);
             vst1q_u16(b.as_mut_ptr().add(x), out[2]);
@@ -36,6 +31,23 @@ pub(in crate::simd) unsafe fn ccm(planes: [&mut [u16]; 3], m: &[i16; 9], width: 
         }
     }
     x
+}
+
+/// One output channel: `clamp((k0 R + k1 G + k2 B + 512) >> 10, 0, max)`.
+#[inline(always)]
+unsafe fn ccm_out(px: [int16x8_t; 3], k: &[i16], max: uint16x8_t) -> uint16x8_t {
+    unsafe {
+        let lo = vmull_n_s16(vget_low_s16(px[0]), k[0]);
+        let lo = vmlal_n_s16(lo, vget_low_s16(px[1]), k[1]);
+        let lo = vmlal_n_s16(lo, vget_low_s16(px[2]), k[2]);
+        let hi = vmull_high_n_s16(px[0], k[0]);
+        let hi = vmlal_high_n_s16(hi, px[1], k[1]);
+        let hi = vmlal_high_n_s16(hi, px[2], k[2]);
+        vminq_u16(
+            vcombine_u16(vqrshrun_n_s32::<10>(lo), vqrshrun_n_s32::<10>(hi)),
+            max,
+        )
+    }
 }
 
 /// # Safety
@@ -150,4 +162,75 @@ pub(in crate::simd) unsafe fn rgb_to_uv(
         }
     }
     i
+}
+
+/// 256 bytes as four 64-byte `tbl` tables.
+#[inline(always)]
+unsafe fn tables(t: &[u8]) -> [uint8x16x4_t; 4] {
+    // SAFETY: the callers pass 256 bytes.
+    unsafe {
+        let p = t.as_ptr();
+        [
+            vld1q_u8_x4(p),
+            vld1q_u8_x4(p.add(64)),
+            vld1q_u8_x4(p.add(128)),
+            vld1q_u8_x4(p.add(192)),
+        ]
+    }
+}
+
+/// `t[i]` for 16 indexes into a 256-byte table (out-of-range `tbl` indexes give 0).
+#[inline(always)]
+unsafe fn lookup256(t: &[uint8x16x4_t; 4], i: uint8x16_t) -> uint8x16_t {
+    unsafe {
+        let k = vdupq_n_u8(64);
+        let i1 = vsubq_u8(i, k);
+        let i2 = vsubq_u8(i1, k);
+        let i3 = vsubq_u8(i2, k);
+        vorrq_u8(
+            vorrq_u8(vqtbl4q_u8(t[0], i), vqtbl4q_u8(t[1], i1)),
+            vorrq_u8(vqtbl4q_u8(t[2], i2), vqtbl4q_u8(t[3], i3)),
+        )
+    }
+}
+
+/// # Safety
+/// As [`ccm`]; `src` holds `width` samples, `dst` `width` bytes.
+#[target_feature(enable = "neon")]
+pub(in crate::simd) unsafe fn lut(
+    src: &[u16],
+    dst: &mut [u8],
+    nodes: &[u8; 257],
+    width: usize,
+) -> usize {
+    let mut x = 0;
+    // SAFETY: 16 samples read and 16 bytes written at `x`, `x + 16 <= width`; the tables read
+    // nodes 0..256 and 1..257.
+    unsafe {
+        let (lo, hi) = (tables(&nodes[..256]), tables(&nodes[1..]));
+        let (max, fifteen, sixteen) = (vdupq_n_u16(4095), vdupq_n_u16(15), vdupq_n_u8(16));
+        while x + 16 <= width {
+            let a = vminq_u16(vld1q_u16(src.as_ptr().add(x)), max);
+            let b = vminq_u16(vld1q_u16(src.as_ptr().add(x + 8)), max);
+            let i = vcombine_u8(vshrn_n_u16::<4>(a), vshrn_n_u16::<4>(b));
+            let f = vcombine_u8(
+                vmovn_u16(vandq_u16(a, fifteen)),
+                vmovn_u16(vandq_u16(b, fifteen)),
+            );
+            let (n0, n1) = (lookup256(&lo, i), lookup256(&hi, i));
+            let g = vsubq_u8(sixteen, f);
+            let l = vmlal_u8(
+                vmull_u8(vget_low_u8(n0), vget_low_u8(g)),
+                vget_low_u8(n1),
+                vget_low_u8(f),
+            );
+            let h = vmlal_high_u8(vmull_high_u8(n0, g), n1, f);
+            vst1q_u8(
+                dst.as_mut_ptr().add(x),
+                vcombine_u8(vrshrn_n_u16::<4>(l), vrshrn_n_u16::<4>(h)),
+            );
+            x += 16;
+        }
+    }
+    x
 }

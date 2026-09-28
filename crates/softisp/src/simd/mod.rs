@@ -277,10 +277,59 @@ pub fn narrow_row(src: &[u16], dst: &mut [u8], width: usize) -> SimdBackend {
     })
 }
 
-/// See [`scalar::lut_row`] (table lookups have no vector form worth having; scalar always).
-pub fn lut_row(src: &[u16], dst: &mut [u8], lut: &[u8; 4096], width: usize) -> SimdBackend {
-    scalar::lut_row(src, dst, lut, width);
-    SimdBackend::Scalar
+/// A tone curve from 12-bit working values to 8 bits: 257 nodes 16 input codes apart,
+/// interpolated linearly, `out(x) = (n[x >> 4] (16 - f) + n[(x >> 4) + 1] f + 8) >> 4` with
+/// `f = x & 15` (inputs above 4095 clamp). The scalar kernel reads the expanded 4096-entry
+/// table; NEON interpolates the nodes with table lookups.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ToneLut {
+    nodes: [u8; 257],
+    full: Box<[u8; 4096]>,
+}
+
+impl std::fmt::Debug for ToneLut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToneLut")
+            .field("nodes", &&self.nodes[..])
+            .finish()
+    }
+}
+
+impl ToneLut {
+    pub fn from_nodes(nodes: [u8; 257]) -> Self {
+        let mut full = Box::new([0u8; 4096]);
+        for (x, v) in full.iter_mut().enumerate() {
+            let (i, f) = (x >> 4, (x & 15) as u32);
+            *v = ((nodes[i] as u32 * (16 - f) + nodes[i + 1] as u32 * f + 8) >> 4) as u8;
+        }
+        Self { nodes, full }
+    }
+
+    /// Nodes sampled from `curve` (0..1 to 0..1) at inputs `16 k / 4095`.
+    pub fn from_curve(curve: impl Fn(f32) -> f32) -> Self {
+        let nodes = std::array::from_fn(|k| {
+            let x = (k as f32 * 16.0 / scalar::WORK_MAX as f32).min(1.0);
+            (curve(x) * 255.0).round().clamp(0.0, 255.0) as u8
+        });
+        Self::from_nodes(nodes)
+    }
+
+    pub fn nodes(&self) -> &[u8; 257] {
+        &self.nodes
+    }
+
+    pub fn full(&self) -> &[u8; 4096] {
+        &self.full
+    }
+}
+
+/// See [`scalar::lut_row`] and [`ToneLut`].
+pub fn lut_row(src: &[u16], dst: &mut [u8], lut: &ToneLut, width: usize) -> SimdBackend {
+    let (src, dst) = (&src[..width], &mut dst[..width]);
+    let outcome = leaf!(lut_row(src, dst, lut, width));
+    finish(outcome, width, |d, n| {
+        scalar::lut_row(&src[d..], &mut dst[d..], lut.full(), n)
+    })
 }
 
 /// See [`scalar::interleave_rgb_row`].
