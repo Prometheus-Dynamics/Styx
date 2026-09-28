@@ -24,6 +24,24 @@ usage: native-spike [options]
   --ack-timeout-ms MS     bridge acknowledgement timeout (default: 1000)
   --power-settle-ms MS    wait after switching the bridge's power on (default: 5)
   --row-step N            mean level from every N-th line (default: 4)
+
+verification (native path unless noted; raw register writes around the control scheduler):
+  --write LIST            raw writes after the mode, before streaming: addr=value[:bytes],...
+  --regdump               read back what the description wrote and diagnostic registers
+  --describe              row bands, statistics and 2x2 phase means of one frame
+  --test-patterns         the description's test patterns and a solid pattern of known values
+  --black                 black level at 1 line and 1x gain
+  --delays                measure exposure, gain and frame length delays (raw writes)
+  --group-hold            does a grouped exposure+gain change land on one frame (none/0x3308/0x3208)
+  --sweep-exposure LIST   exposure sweep, lines (gain --base-gain), fitted
+  --sweep-gain LIST       gain sweep, codes (exposure --base-exposure), fitted
+  --base-exposure N       base exposure for the above, lines (default: 642)
+  --base-gain C           base gain code for the above (default: 0x10)
+  --verify-fps F          frame rate during the verification steps (default: 30)
+  --kernel LIST           kernel driver path instead (ov9282 bound, no bridge): stream with each
+                          exposure:gain setting (numbers or max), report levels, save frames
+  --kernel-vblank N       vblank for --kernel (default: 1022)
+  --analyse FILE          analyse a saved 1280x800 raw10 frame (stride 1600) and exit
   -h, --help              this text
 ";
 
@@ -60,6 +78,57 @@ pub struct Args {
     pub power_settle: Duration,
     /// Line step for mean levels.
     pub row_step: usize,
+    /// Verification steps.
+    pub verify: Verify,
+}
+
+/// Verification options.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Verify {
+    /// Raw writes after the mode.
+    pub writes: Vec<crate::verify::RawWrite>,
+    /// Register read-back.
+    pub regdump: bool,
+    /// Describe one frame.
+    pub describe: bool,
+    /// Test patterns.
+    pub test_patterns: bool,
+    /// Black level.
+    pub black: bool,
+    /// Delay measurement.
+    pub delays: bool,
+    /// Group hold test.
+    pub group_hold: bool,
+    /// Exposure sweep values (lines).
+    pub sweep_exposure: Vec<u32>,
+    /// Gain sweep values (codes).
+    pub sweep_gain: Vec<u32>,
+    /// Base exposure (lines).
+    pub base_exposure: u32,
+    /// Base gain code.
+    pub base_gain: u32,
+    /// Frame rate during verification.
+    pub fps: f64,
+    /// Kernel path settings.
+    pub kernel: Option<Vec<crate::kernel_path::KernelSetting>>,
+    /// Kernel path vblank.
+    pub kernel_vblank: i64,
+    /// Frame file to analyse.
+    pub analyse: Option<PathBuf>,
+}
+
+impl Verify {
+    /// Whether any native verification step runs.
+    pub fn any(&self) -> bool {
+        self.regdump
+            || self.describe
+            || self.test_patterns
+            || self.black
+            || self.delays
+            || self.group_hold
+            || !self.sweep_exposure.is_empty()
+            || !self.sweep_gain.is_empty()
+    }
 }
 
 impl Default for Args {
@@ -80,6 +149,13 @@ impl Default for Args {
             ack_timeout: Duration::from_millis(1000),
             power_settle: Duration::from_millis(5),
             row_step: 4,
+            verify: Verify {
+                base_exposure: 642,
+                base_gain: 0x10,
+                fps: 30.0,
+                kernel_vblank: 1022,
+                ..Default::default()
+            },
         }
     }
 }
@@ -96,6 +172,20 @@ pub enum Command {
 fn number<T: std::str::FromStr>(flag: &str, v: &str) -> Result<T, String> {
     v.parse()
         .map_err(|_| format!("{flag}: '{v}' is not a valid number"))
+}
+
+fn number_list(flag: &str, v: &str) -> Result<Vec<u32>, String> {
+    v.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| hex_u32(flag, s.trim()))
+        .collect()
+}
+
+fn hex_u32(flag: &str, v: &str) -> Result<u32, String> {
+    match v.strip_prefix("0x") {
+        Some(h) => u32::from_str_radix(h, 16).map_err(|_| format!("{flag}: '{v}' is not a number")),
+        None => number(flag, v),
+    }
 }
 
 fn positive_f64(flag: &str, v: &str) -> Result<f64, String> {
@@ -144,6 +234,23 @@ where
                     .map(|s| positive_f64(&flag, s.trim()))
                     .collect::<Result<_, _>>()?;
             }
+            "--write" => a.verify.writes = crate::verify::parse_writes(&value()?)?,
+            "--regdump" => a.verify.regdump = true,
+            "--describe" => a.verify.describe = true,
+            "--test-patterns" => a.verify.test_patterns = true,
+            "--black" => a.verify.black = true,
+            "--delays" => a.verify.delays = true,
+            "--group-hold" => a.verify.group_hold = true,
+            "--sweep-exposure" => a.verify.sweep_exposure = number_list(&flag, &value()?)?,
+            "--sweep-gain" => a.verify.sweep_gain = number_list(&flag, &value()?)?,
+            "--base-exposure" => a.verify.base_exposure = hex_u32(&flag, &value()?)?,
+            "--base-gain" => a.verify.base_gain = hex_u32(&flag, &value()?)?,
+            "--verify-fps" => a.verify.fps = positive_f64(&flag, &value()?)?,
+            "--kernel" => {
+                a.verify.kernel = Some(crate::kernel_path::parse_settings(&value()?)?);
+            }
+            "--kernel-vblank" => a.verify.kernel_vblank = number(&flag, &value()?)?,
+            "--analyse" => a.verify.analyse = Some(value()?.into()),
             other => return Err(format!("unknown argument '{other}' (see --help)")),
         }
     }
@@ -223,5 +330,28 @@ mod tests {
         ] {
             assert!(run(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn verification_options() {
+        let a = run(&[
+            "--sweep-exposure",
+            "100,0x200",
+            "--base-gain",
+            "0x20",
+            "--delays",
+            "--write",
+            "0x4307=0x31",
+            "--kernel",
+            "max:max",
+        ])
+        .unwrap();
+        let v = &a.verify;
+        assert_eq!(v.sweep_exposure, [100, 512]);
+        assert_eq!((v.base_gain, v.base_exposure), (0x20, 642));
+        assert!(v.delays && v.any() && v.kernel.is_some());
+        assert_eq!(v.writes, [(0x4307, 0x31, 1)]);
+        assert!(!Args::default().verify.any());
+        assert!(run(&["--sweep-gain", "1,x"]).is_err());
     }
 }

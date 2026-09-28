@@ -27,6 +27,7 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-fwnode.h>
+#include <media/mipi-csi2.h>
 #include <media/v4l2-subdev.h>
 
 #include "styx_sensor_bridge.h"
@@ -35,6 +36,12 @@
 #define STYX_MAX_SUPPLIES	8
 #define STYX_DEFAULT_TIMEOUT_MS	1000
 #define STYX_EVENT_QUEUE_DEPTH	4
+
+/* Pads: the image, and embedded data when the device tree asks for it. */
+#define STYX_PAD_IMAGE		0
+#define STYX_PAD_EMBEDDED	1
+#define STYX_EMBEDDED_MAX_WIDTH	65536
+#define STYX_EMBEDDED_MAX_LINES	16
 
 /* Accepted when the device tree gives no styx,mbus-codes. */
 static const u32 styx_default_codes[] = {
@@ -55,7 +62,8 @@ static const u32 styx_default_codes[] = {
 struct styx_bridge {
 	struct device *dev;
 	struct v4l2_subdev sd;
-	struct media_pad pad;
+	struct media_pad pads[2];
+	unsigned int num_pads;
 
 	struct v4l2_ctrl_handler hdl;
 	struct v4l2_ctrl *link_freq;
@@ -75,6 +83,9 @@ struct styx_bridge {
 	const char *sensor_name;
 	int i2c_bus;
 	u32 i2c_address;
+	/* Embedded data pad (styx,embedded-data): default size and data type. */
+	u32 emb_width, emb_lines;
+	u8 emb_dt;
 
 	struct clk *clk;
 	struct regulator_bulk_data supplies[STYX_MAX_SUPPLIES];
@@ -121,6 +132,23 @@ static unsigned int styx_code_bpp(u32 code)
 		return 16;
 	default:
 		return 10;
+	}
+}
+
+/* CSI-2 data type of a raw or mono bus code (by bit depth). */
+static u8 styx_code_dt(u32 code)
+{
+	switch (styx_code_bpp(code)) {
+	case 8:
+		return MIPI_CSI2_DT_RAW8;
+	case 12:
+		return MIPI_CSI2_DT_RAW12;
+	case 14:
+		return MIPI_CSI2_DT_RAW14;
+	case 16:
+		return MIPI_CSI2_DT_RAW16;
+	default:
+		return MIPI_CSI2_DT_RAW10;
 	}
 }
 
@@ -239,7 +267,7 @@ static void styx_bridge_fill_event(struct styx_bridge *b, u32 action, u32 seq,
 		p->flags |= STYX_BRIDGE_FLAG_CONTINUOUS_CLOCK;
 
 	state = v4l2_subdev_lock_and_get_active_state(&b->sd);
-	fmt = v4l2_subdev_state_get_format(state, 0);
+	fmt = v4l2_subdev_state_get_format(state, STYX_PAD_IMAGE);
 	p->code = fmt->code;
 	p->width = fmt->width;
 	p->height = fmt->height;
@@ -552,6 +580,16 @@ static void styx_bridge_fill_fmt(struct styx_bridge *b,
 	fmt->xfer_func = V4L2_XFER_FUNC_NONE;
 }
 
+static void styx_bridge_fill_emb_fmt(struct v4l2_mbus_framefmt *fmt,
+				     u32 width, u32 lines)
+{
+	memset(fmt, 0, sizeof(*fmt));
+	fmt->code = MEDIA_BUS_FMT_SENSOR_DATA;
+	fmt->width = clamp(width, 1U, (u32)STYX_EMBEDDED_MAX_WIDTH);
+	fmt->height = clamp(lines, 1U, (u32)STYX_EMBEDDED_MAX_LINES);
+	fmt->field = V4L2_FIELD_NONE;
+}
+
 static int styx_bridge_init_state(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_state *state)
 {
@@ -559,6 +597,10 @@ static int styx_bridge_init_state(struct v4l2_subdev *sd,
 
 	styx_bridge_fill_fmt(b, v4l2_subdev_state_get_format(state, 0),
 			     b->codes[0], b->max_width, b->max_height);
+	if (b->num_pads > STYX_PAD_EMBEDDED)
+		styx_bridge_fill_emb_fmt(
+			v4l2_subdev_state_get_format(state, STYX_PAD_EMBEDDED),
+			b->emb_width, b->emb_lines);
 	return 0;
 }
 
@@ -568,6 +610,12 @@ static int styx_bridge_enum_mbus_code(struct v4l2_subdev *sd,
 {
 	struct styx_bridge *b = to_bridge(sd);
 
+	if (code->pad == STYX_PAD_EMBEDDED && b->num_pads > STYX_PAD_EMBEDDED) {
+		if (code->index)
+			return -EINVAL;
+		code->code = MEDIA_BUS_FMT_SENSOR_DATA;
+		return 0;
+	}
 	if (code->pad || code->index >= b->num_codes)
 		return -EINVAL;
 	code->code = b->codes[code->index];
@@ -580,6 +628,15 @@ static int styx_bridge_enum_frame_size(struct v4l2_subdev *sd,
 {
 	struct styx_bridge *b = to_bridge(sd);
 
+	if (fse->pad == STYX_PAD_EMBEDDED && b->num_pads > STYX_PAD_EMBEDDED) {
+		if (fse->index || fse->code != MEDIA_BUS_FMT_SENSOR_DATA)
+			return -EINVAL;
+		fse->min_width = 1;
+		fse->max_width = STYX_EMBEDDED_MAX_WIDTH;
+		fse->min_height = 1;
+		fse->max_height = STYX_EMBEDDED_MAX_LINES;
+		return 0;
+	}
 	if (fse->pad || fse->index || !styx_code_supported(b, fse->code))
 		return -EINVAL;
 	fse->min_width = b->min_width;
@@ -596,13 +653,19 @@ static int styx_bridge_set_fmt(struct v4l2_subdev *sd,
 	struct styx_bridge *b = to_bridge(sd);
 	struct v4l2_mbus_framefmt *fmt;
 
-	if (format->pad)
+	if (format->pad >= b->num_pads)
 		return -EINVAL;
 	if (format->which == V4L2_SUBDEV_FORMAT_ACTIVE &&
 	    atomic_read(&b->state) != STYX_BRIDGE_STATE_IDLE)
 		return -EBUSY;
 
-	fmt = v4l2_subdev_state_get_format(state, 0);
+	fmt = v4l2_subdev_state_get_format(state, format->pad);
+	if (format->pad == STYX_PAD_EMBEDDED) {
+		styx_bridge_fill_emb_fmt(fmt, format->format.width,
+					 format->format.height);
+		format->format = *fmt;
+		return 0;
+	}
 	styx_bridge_fill_fmt(b, fmt, format->format.code, format->format.width,
 			     format->format.height);
 	format->format = *fmt;
@@ -647,6 +710,43 @@ static int styx_bridge_get_mbus_config(struct v4l2_subdev *sd,
 	return 0;
 }
 
+/*
+ * One CSI-2 stream per source pad (virtual channel 0): the image with the data
+ * type of its bus code, embedded data with the device tree's data type. The
+ * Raspberry Pi 6.12 rp1-cfe asks this per sensor pad and needs exactly one
+ * entry; it links the second source pad to its embedded data channel.
+ */
+static int styx_bridge_get_frame_desc(struct v4l2_subdev *sd, unsigned int pad,
+				      struct v4l2_mbus_frame_desc *fd)
+{
+	struct styx_bridge *b = to_bridge(sd);
+	struct v4l2_mbus_frame_desc_entry *e = &fd->entry[0];
+	struct v4l2_subdev_state *state;
+	struct v4l2_mbus_framefmt *fmt;
+
+	if (pad >= b->num_pads)
+		return -EINVAL;
+
+	memset(fd, 0, sizeof(*fd));
+	fd->type = V4L2_MBUS_FRAME_DESC_TYPE_CSI2;
+	fd->num_entries = 1;
+
+	state = v4l2_subdev_lock_and_get_active_state(sd);
+	fmt = v4l2_subdev_state_get_format(state, pad);
+	e->stream = 0;
+	e->pixelcode = fmt->code;
+	e->bus.csi2.vc = 0;
+	if (pad == STYX_PAD_EMBEDDED) {
+		e->flags = V4L2_MBUS_FRAME_DESC_FL_LEN_MAX;
+		e->length = fmt->width * fmt->height;
+		e->bus.csi2.dt = b->emb_dt;
+	} else {
+		e->bus.csi2.dt = styx_code_dt(fmt->code);
+	}
+	v4l2_subdev_unlock_state(state);
+	return 0;
+}
+
 static const struct v4l2_subdev_core_ops styx_core_ops = {
 	.subscribe_event = styx_bridge_subscribe_event,
 	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
@@ -663,6 +763,7 @@ static const struct v4l2_subdev_pad_ops styx_pad_ops = {
 	.set_fmt = styx_bridge_set_fmt,
 	.get_selection = styx_bridge_get_selection,
 	.get_mbus_config = styx_bridge_get_mbus_config,
+	.get_frame_desc = styx_bridge_get_frame_desc,
 };
 
 static const struct v4l2_subdev_ops styx_subdev_ops = {
@@ -808,6 +909,22 @@ static int styx_bridge_parse_formats(struct styx_bridge *b)
 	if (!b->max_width || !b->max_height || b->min_width > b->max_width ||
 	    b->min_height > b->max_height)
 		return dev_err_probe(dev, -EINVAL, "bad styx,min/max-size\n");
+
+	b->num_pads = 1;
+	if (!device_property_read_u32_array(dev, "styx,embedded-data", size, 2)) {
+		u32 dt = MIPI_CSI2_DT_EMBEDDED_8B;
+
+		if (!size[0] || size[0] > STYX_EMBEDDED_MAX_WIDTH || !size[1] ||
+		    size[1] > STYX_EMBEDDED_MAX_LINES)
+			return dev_err_probe(dev, -EINVAL, "bad styx,embedded-data\n");
+		device_property_read_u32(dev, "styx,embedded-data-type", &dt);
+		if (dt > 0x3f)
+			return dev_err_probe(dev, -EINVAL, "bad styx,embedded-data-type\n");
+		b->emb_width = size[0];
+		b->emb_lines = size[1];
+		b->emb_dt = dt;
+		b->num_pads = 2;
+	}
 	return 0;
 }
 
@@ -893,8 +1010,9 @@ static int styx_bridge_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "controls\n");
 
-	b->pad.flags = MEDIA_PAD_FL_SOURCE;
-	ret = media_entity_pads_init(&b->sd.entity, 1, &b->pad);
+	b->pads[STYX_PAD_IMAGE].flags = MEDIA_PAD_FL_SOURCE;
+	b->pads[STYX_PAD_EMBEDDED].flags = MEDIA_PAD_FL_SOURCE;
+	ret = media_entity_pads_init(&b->sd.entity, b->num_pads, b->pads);
 	if (ret)
 		goto err_ctrls;
 
@@ -906,9 +1024,10 @@ static int styx_bridge_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_state;
 
-	dev_info(dev, "bridge for %s: %u lanes, %u link frequencies, i2c %d-%04x\n",
+	dev_info(dev, "bridge for %s: %u lanes, %u link frequencies, i2c %d-%04x%s\n",
 		 b->sensor_name, b->data_lanes, b->num_link_freqs, b->i2c_bus,
-		 b->i2c_address);
+		 b->i2c_address,
+		 b->num_pads > 1 ? ", embedded data pad" : "");
 	return 0;
 
 err_state:

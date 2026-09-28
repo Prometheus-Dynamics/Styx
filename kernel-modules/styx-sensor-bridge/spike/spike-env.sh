@@ -14,7 +14,9 @@ MODULE_KO="$SPIKE_DIR/styx_sensor_bridge.ko"
 BRIDGE_DRIVER="styx-sensor-bridge"
 BRIDGE_DEV="styx-sensor-bridge-cam0"
 
-OVERLAY_DTBO="$SPIKE_DIR/styx-sensor-bridge-cm5-runtime.dtbo"
+# OVERLAY_DTBO=.../styx-sensor-bridge-cm5-runtime-emb.dtbo selects the variant with an
+# embedded data pad.
+OVERLAY_DTBO="${OVERLAY_DTBO:-$SPIKE_DIR/styx-sensor-bridge-cm5-runtime.dtbo}"
 OVERLAYS="/sys/kernel/config/device-tree/overlays"
 OVERLAY_DIR="$OVERLAYS/styx-sensor-bridge"
 

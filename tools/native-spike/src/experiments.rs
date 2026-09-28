@@ -86,7 +86,7 @@ pub fn baseline(rig: &mut Rig, n: usize) -> Result<RunStats> {
 
 /// Sets a frame rate through the timing model and the control scheduler; returns the frame it
 /// is predicted to land on and the predicted rate.
-fn set_rate(rig: &mut Rig, fps: f64) -> Result<(u32, f64)> {
+pub fn set_rate(rig: &mut Rig, fps: f64) -> Result<(u32, f64)> {
     let plan = rate_plans(&rig.timing, &[fps])[0];
     let frame = target_frame(rig)?;
     let landing = {

@@ -48,7 +48,7 @@ kbuild="$STYX_KBUILD_ROOT/kbuild-$KERNEL_RELEASE"
 objdir="$STYX_KBUILD_ROOT/obj/styx-sensor-bridge"
 outdir="$STYX_KBUILD_ROOT/out/$KERNEL_RELEASE"
 module="styx_sensor_bridge"
-overlays=(styx-sensor-bridge-cm5 styx-sensor-bridge-cm5-runtime)
+overlays=(styx-sensor-bridge-cm5 styx-sensor-bridge-cm5-runtime styx-sensor-bridge-cm5-runtime-emb)
 
 log() { printf '[styx-bridge] %s\n' "$*" >&2; }
 die() { log "error: $*"; exit 1; }
