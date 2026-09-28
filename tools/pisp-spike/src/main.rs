@@ -5,7 +5,14 @@
 //! nothing else using `rp1-cfe` (stop `helios-peripherals`), under the device lock.
 //!
 //! ```text
-//! pisp-spike [--frames N] [--out DIR] [--be-runs N] [--no-be]
+//! pisp-spike [--frames N] [--out DIR] [--be-runs N] [--no-be] [--synthetic]
+//! ```
+//!
+//! `--synthetic` skips the front end and runs the back end on a generated BGGR frame with four
+//! vertical bands (red, green, blue, grey) whose brightness ramps down the frame, then
+//! checks the band colours and that tile boundaries leave no seams.
+//!
+//! ```text
 //! ```
 
 use std::process::ExitCode;
@@ -29,6 +36,7 @@ struct Args {
     out: String,
     be_runs: usize,
     be: bool,
+    synthetic: bool,
 }
 
 fn args() -> Result<Args, String> {
@@ -37,6 +45,7 @@ fn args() -> Result<Args, String> {
         out: "/tmp/styx-pisp".into(),
         be_runs: 20,
         be: true,
+        synthetic: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -46,6 +55,7 @@ fn args() -> Result<Args, String> {
             "--be-runs" => a.be_runs = val()?.parse().map_err(|e| format!("--be-runs: {e}"))?,
             "--out" => a.out = val()?,
             "--no-be" => a.be = false,
+            "--synthetic" => a.synthetic = true,
             _ => return Err(format!("unknown argument {x}")),
         }
     }
@@ -167,15 +177,9 @@ fn back_end(
     a: &Args,
     raw: &[u8],
     input: ImageFormatConfig,
-    stats: &Statistics,
+    (gr, gb): (f64, f64),
     out: BeOutput,
-) -> Result<(), String> {
-    let t = stats.awb_total().mean().unwrap_or((1.0, 1.0, 1.0));
-    let (gr, gb) = if t.0 > 0.0 && t.2 > 0.0 {
-        ((t.1 / t.0).clamp(0.5, 8.0), (t.1 / t.2).clamp(0.5, 8.0))
-    } else {
-        (1.0, 1.0)
-    };
+) -> Result<Vec<u8>, String> {
     let mut dev = BackEndDevice::open(0, input, BayerOrder::Bggr, out)
         .map_err(|e| format!("back end open: {e}"))?;
     let of = dev.output_format();
@@ -198,7 +202,7 @@ fn back_end(
     let cfg = be.prepare().map_err(|e| e.to_string())?;
     let prep = t0.elapsed();
     println!(
-        "[be] {out:?}: grey-world gains R {gr:.2} B {gb:.2}; config prepared in {:.1} us, {} tiles; output stride {}",
+        "[be] {out:?}: gains R {gr:.2} B {gb:.2}; config prepared in {:.1} us, {} tiles; output stride {}",
         prep.as_secs_f64() * 1e6,
         cfg.num_tiles,
         of.stride
@@ -274,16 +278,112 @@ fn back_end(
     let path = format!("{}/{name}", a.out);
     std::fs::write(&path, data).map_err(|e| format!("{path}: {e}"))?;
     println!("[be] saved {path}");
-    Ok(())
+    Ok(output)
+}
+
+/// Grey-world gains from the statistics.
+fn grey_world(stats: &Statistics) -> (f64, f64) {
+    match stats.awb_total().mean() {
+        Some((r, g, b)) if r > 0.0 && b > 0.0 => ((g / r).clamp(0.5, 8.0), (g / b).clamp(0.5, 8.0)),
+        _ => (1.0, 1.0),
+    }
+}
+
+/// A BGGR frame: bands (R, G, B, grey) of 320 columns, brightness ramping down the rows.
+fn synthetic_raw(stride: usize) -> Vec<u8> {
+    let mut raw = vec![0u8; stride * HEIGHT as usize];
+    for y in 0..HEIGHT as usize {
+        let level = f64::from(BLACK) + 40000.0 * (1.0 - y as f64 / f64::from(HEIGHT));
+        for x in 0..WIDTH as usize {
+            let band = x / 320;
+            // BGGR: (even, even) B, (odd, odd) R, others G.
+            let ch = match (y & 1, x & 1) {
+                (0, 0) => 2,
+                (1, 1) => 0,
+                _ => 1,
+            };
+            let lit = band == 3 || band == ch;
+            let v = if lit { level as u16 } else { BLACK };
+            raw[y * stride + 2 * x..][..2].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    raw
+}
+
+/// Checks the RGB24 output of the synthetic frame: band colours and no seams at the tile
+/// boundaries (columns 576 and 1152).
+fn check_synthetic(rgb: &[u8], stride: usize) -> Result<(), String> {
+    let at = |x: usize, y: usize| {
+        let o = y * stride + 3 * x;
+        [rgb[o], rgb[o + 1], rgb[o + 2]]
+    };
+    let y = 200;
+    let mut ok = true;
+    for (band, name, want) in [
+        (0, "red", 0),
+        (1, "green", 1),
+        (2, "blue", 2),
+        (3, "grey", 3),
+    ] {
+        let p = at(band * 320 + 160, y);
+        let good = if want == 3 {
+            p.iter().max().unwrap() - p.iter().min().unwrap() < 12 && p[0] > 100
+        } else {
+            (0..3).all(|c| c == want || p[c] + 60 < p[want])
+        };
+        ok &= good;
+        println!(
+            "[be] synthetic {name:5} band at x {}: RGB {p:?} {}",
+            band * 320 + 160,
+            if good { "ok" } else { "WRONG" }
+        );
+    }
+    for x in [576usize, 1152] {
+        let row: Vec<[u8; 3]> = (x - 3..x + 3).map(|x| at(x, y)).collect();
+        let jump = row
+            .windows(2)
+            .map(|w| {
+                (0..3)
+                    .map(|c| (i32::from(w[0][c]) - i32::from(w[1][c])).abs())
+                    .max()
+                    .unwrap()
+            })
+            .max()
+            .unwrap();
+        let good = jump <= 2;
+        ok &= good;
+        println!(
+            "[be] synthetic tile boundary x {x}: max step {jump} across 6 columns {}",
+            if good { "ok" } else { "SEAM" }
+        );
+    }
+    if ok {
+        Ok(())
+    } else {
+        Err("synthetic frame check failed".into())
+    }
 }
 
 fn run() -> Result<(), String> {
     let a = args()?;
     std::fs::create_dir_all(&a.out).map_err(|e| format!("{}: {e}", a.out))?;
+    if a.synthetic {
+        let mut img = ImageFormatConfig {
+            width: WIDTH as u16,
+            height: HEIGHT as u16,
+            format: styx_pisp::format::formats::BAYER16,
+            ..Default::default()
+        };
+        styx_pisp::format::compute_stride_align(&mut img, 64);
+        let raw = synthetic_raw(img.stride as usize);
+        back_end(&a, &raw, img, (1.0, 1.0), BeOutput::Nv12)?;
+        let rgb = back_end(&a, &raw, img, (1.0, 1.0), BeOutput::Rgb24)?;
+        return check_synthetic(&rgb, 3 * WIDTH as usize);
+    }
     let (raw, img, stats) = front_end(&a)?;
     if a.be {
-        back_end(&a, &raw, img, &stats, BeOutput::Nv12)?;
-        back_end(&a, &raw, img, &stats, BeOutput::Rgb24)?;
+        back_end(&a, &raw, img, grey_world(&stats), BeOutput::Nv12)?;
+        back_end(&a, &raw, img, grey_world(&stats), BeOutput::Rgb24)?;
     }
     Ok(())
 }
