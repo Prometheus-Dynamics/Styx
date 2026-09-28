@@ -258,7 +258,8 @@ pub struct StatsAccumulator {
 
 impl StatsAccumulator {
     /// A `width × height` zone grid and a histogram of `bins` bins. Pixels with any channel at or
-    /// above `saturation` are left out of the zone sums (they still count in the histogram).
+    /// above `saturation` are left out of the colour zones (they still count in the luma zones
+    /// and the histogram, so exposure sees them).
     pub fn new(width: u32, height: u32, bins: usize, saturation: f64) -> Self {
         Self {
             colour: ZoneGrid::new(width, height),
@@ -275,6 +276,9 @@ impl StatsAccumulator {
         let n = self.bins.len();
         let bin = ((y.clamp(0.0, 1.0) * n as f64) as usize).min(n - 1);
         self.bins[bin] += 1;
+        let l = &mut self.luma.zones[i];
+        l.y += y;
+        l.counted += 1;
         if r >= self.saturation || g >= self.saturation || b >= self.saturation {
             return;
         }
@@ -283,9 +287,6 @@ impl StatsAccumulator {
         z.g += g;
         z.b += b;
         z.counted += 1;
-        let l = &mut self.luma.zones[i];
-        l.y += y;
-        l.counted += 1;
     }
 
     /// The statistics (taken before white balance and lens shading).
@@ -325,8 +326,9 @@ mod tests {
         let s = a.finish();
         assert_eq!(s.colour.zones[0].counted, 1);
         assert_eq!(s.colour.zones[1].counted, 0);
+        assert_eq!(s.luma.as_ref().unwrap().zones[1].counted, 1);
         assert_eq!(s.histogram.total(), 2);
-        assert!((s.mean_luma() - 0.5).abs() < 1e-12);
+        assert!((s.mean_luma() - 0.75).abs() < 1e-12);
     }
 
     #[test]

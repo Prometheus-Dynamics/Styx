@@ -385,7 +385,8 @@ impl Simulation {
             self.frame_start();
             let (meta, stats, lux, ct) = self.expose();
             let params = pipeline.process(&stats, &meta).clone();
-            if let Some(req) = params.sensor {
+            let repeat = out.last().is_some_and(|l: &SimFrame| l.params.sensor == params.sensor);
+            if let Some(req) = params.sensor.filter(|_| !repeat) {
                 self.incoming.push((
                     req.frame,
                     [

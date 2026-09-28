@@ -98,7 +98,12 @@ pub(crate) fn weighted_y(
         pixels += n;
     }
     if pixels == 0.0 {
-        return 0.0;
+        // Nothing usable (e.g. every zone saturated): read the histogram, else assume saturation.
+        return if stats.histogram.total() > 0 {
+            histogram_y(&stats.histogram, gain)
+        } else {
+            1.0
+        };
     }
     if stats.before_wb {
         (r, g, b) = (r * wb[0], g * wb[1], b * wb[2]);

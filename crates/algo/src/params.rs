@@ -28,6 +28,9 @@ pub fn mat_mul(a: &Matrix3, b: &Matrix3) -> Matrix3 {
 }
 
 /// Exposure, gain and frame duration for the sensor, and the frame they apply from.
+///
+/// AE writes one every frame; a request equal to the previous frame's (same `frame` and
+/// values) means nothing new, e.g. while AE waits for a change to land.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SensorRequest {
     /// First frame the values should apply to. Hand this to the control scheduler
