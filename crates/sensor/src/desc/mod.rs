@@ -11,8 +11,8 @@ use std::path::Path;
 use serde::Deserialize;
 
 pub use controls::{
-    Controls, Delays, EmbeddedData, EmbeddedEntry, Exposure, Flip, Gain, GainModel, GroupHold,
-    LineLength, TestPattern,
+    Controls, Delays, EmbeddedControl, EmbeddedControlKind, EmbeddedData, EmbeddedEntry,
+    EmbeddedPacking, Exposure, Flip, Gain, GainModel, GroupHold, LineLength, TestPattern,
 };
 pub use step::{RegWrite, Step};
 pub use types::{Blanking, Field, Rect, Size};

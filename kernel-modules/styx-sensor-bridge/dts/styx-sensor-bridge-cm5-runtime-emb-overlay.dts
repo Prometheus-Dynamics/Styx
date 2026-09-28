@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Styx sensor bridge on the HeliOS CM5 camera port, applied at runtime, with an
+// embedded data pad: identical to styx-sensor-bridge-cm5-runtime-overlay.dts
+// except for styx,embedded-data below. The bridge then has a second source
+// pad (MEDIA_BUS_FMT_SENSOR_DATA, CSI-2 data type 0x12), which rp1-cfe links
+// to csi2 sink pad 1 and its rp1-cfe-embedded node. Used with
+// OVERLAY_DTBO=styx-sensor-bridge-cm5-runtime-emb.dtbo sh up.sh.
+//
+// Unlike styx-sensor-bridge-cm5-overlay.dts (a boot overlay used in place of
+// ov9782-overlay), this one goes on top of the live device tree of a HeliOS
+// image that booted with `dtoverlay=ov9782,cam0,clk-continuous`, through
+// configfs (/sys/kernel/config/device-tree/overlays/). Removing it restores
+// the original tree. It is fixed to that wiring: no parameters, because the
+// kernel's configfs interface does not process __overrides__.
+//
+// What it changes:
+//   1. i2c_csi_dsi0 (i2c@88000, /dev/i2c-10) ov9782@60: status = "disabled".
+//      The i2c core unregisters the 10-0060 client, which frees address 0x60
+//      for i2c-dev (I2C_SLAVE fails with EBUSY while any client exists there).
+//   2. Adds /styx-sensor-bridge-cam0 (platform device, styx_sensor_bridge.ko)
+//      with the ov9782 node's supplies, clock, lanes and link frequency.
+//   3. csi0 (rp1-cfe, csi@110000) port/endpoint: remote-endpoint -> bridge.
+//      rp1-cfe must be unbound while this is applied and rebound after.
+//
+// The bridge endpoint has no remote-endpoint back to csi0. Nothing reads it
+// (rp1-cfe follows its own endpoint to the bridge node; the bridge only parses
+// lanes and link frequencies), and with it fw_devlink would make the new bridge
+// device a consumer of the (then unbound) csi0 device and defer its probe until
+// rp1-cfe binds. Without it no phandle from the live tree is hard-coded here.
+//
+// Build: dtc -@ -I dts -O dtb -o styx-sensor-bridge-cm5-runtime.dtbo <this file>
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2712";
+
+	/* 1. Take the sensor's I2C client away from the ov9282 driver. */
+	fragment@0 {
+		target = <&i2c_csi_dsi0>;
+		__overlay__ {
+			ov9782@60 {
+				status = "disabled";
+			};
+		};
+	};
+
+	/* 2. The bridge, standing in for the sensor driver. */
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			bridge: styx-sensor-bridge-cam0 {
+				compatible = "styx,sensor-bridge";
+				status = "okay";
+
+				styx,sensor-name = "ov9782";
+				styx,i2c-bus = <&i2c_csi_dsi0>;
+				styx,i2c-address = <0x60>;
+
+				/* MEDIA_BUS_FMT_SBGGR10_1X10, MEDIA_BUS_FMT_SBGGR8_1X8 */
+				styx,mbus-codes = <0x3007 0x3001>;
+				styx,max-size = <1280 800>;
+				styx,min-size = <16 16>;
+				/* Embedded data pad: 16384 bytes x 1 line by default
+				 * (the size rp1-cfe's csi2 defaults its pad 1 to). */
+				styx,embedded-data = <16384 1>;
+
+				/* Enabled together through STYX_CID_POWER. */
+				clocks = <&cam0_clk>;
+				styx,supply-names = "avdd", "dovdd", "dvdd";
+				avdd-supply = <&cam0_reg>;
+				dovdd-supply = <&cam_dummy_reg>;
+				dvdd-supply = <&cam_dummy_reg>;
+
+				rotation = <0>;
+				orientation = <2>;
+
+				port {
+					bridge_ep: endpoint {
+						/* No remote-endpoint: see above. */
+						clock-lanes = <0>;
+						data-lanes = <1 2>;
+						/* Continuous clock, as booted (clk-continuous). */
+						link-frequencies = /bits/ 64 <400000000>;
+					};
+				};
+			};
+		};
+	};
+
+	/* 3. Point the receiver at the bridge. No labels here: a merged node
+	 * that carries a phandle would make the kernel reject the overlay. */
+	fragment@2 {
+		target = <&csi0>;
+		__overlay__ {
+			port {
+				endpoint {
+					remote-endpoint = <&bridge_ep>;
+				};
+			};
+		};
+	};
+};
