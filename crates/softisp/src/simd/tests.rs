@@ -386,7 +386,7 @@ fn narrow_and_lut_match() {
     assert_eq!(lut.full()[16 * 100], lut.nodes()[100]);
     assert_eq!(
         lut.full()[16 * 100 + 8],
-        ((lut.nodes()[100] as u32 + lut.nodes()[101] as u32 + 1) / 2) as u8
+        (lut.nodes()[100] as u32 + lut.nodes()[101] as u32).div_ceil(2) as u8
     );
 }
 
