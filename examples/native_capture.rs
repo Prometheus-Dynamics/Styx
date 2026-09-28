@@ -164,7 +164,7 @@ fn main() -> Result<(), CaptureError> {
             f.export_backing().is_ok(),
             f.meta().native(),
         );
-        drop(keep);
+        drop(f);
         if kind == BackendKind::Native && fps == 60 {
             controls(&handle)?;
         }
