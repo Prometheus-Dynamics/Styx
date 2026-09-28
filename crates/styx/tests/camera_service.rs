@@ -121,12 +121,12 @@ fn clients_ask_for_frames_and_share_one_capture() {
     assert_eq!(width, 160);
 
     // Frames the camera cannot give are refused with the planner's reasons.
-    match FrameClient::request(&socket, &FrameRequirements::formats([FourCc::H264])) {
+    match FrameClient::request(
+        &socket,
+        &FrameRequirements::formats([FourCc::new(*b"XVID")]),
+    ) {
         Err(IpcError::Rejected(reason)) => assert!(reason.contains("no capture mode"), "{reason}"),
-        other => panic!(
-            "expected a rejection, got {:?}",
-            other.map(|c| c.plan().map(str::to_owned))
-        ),
+        other => panic!("expected a rejection, got {:?}", other.map(|c| c.plan())),
     }
     assert_eq!(service.stats().rejected, 1);
 
@@ -234,4 +234,121 @@ async fn frames_can_be_awaited() {
         assert_eq!(full.meta().format.code, FourCc::RG24);
     }
     let _ = std::fs::remove_file(recording);
+}
+
+fn virtual_camera(name: &str) -> ProbedDevice {
+    VirtualSourceConfig::new()
+        .name(name)
+        .format(FourCc::RG24)
+        .resolution(320, 180)
+        .fps(60)
+        .into_device()
+}
+
+fn socket_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("styx-{name}-{}.sock", std::process::id()))
+}
+
+#[test]
+fn one_service_serves_several_cameras() {
+    let socket = socket_path("cameras");
+    let service = CameraService::with_cameras(vec![
+        virtual_camera("virtual-front"),
+        virtual_camera("virtual-back"),
+    ])
+    .keep_streaming()
+    .serve(&socket)
+    .unwrap();
+    let cameras = FrameClient::cameras(&socket).unwrap();
+    let names: Vec<&str> = cameras.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["virtual-front", "virtual-back"]);
+    assert!(cameras.iter().all(|c| !c.in_use));
+
+    let rgb = FrameRequirements::formats([FourCc::RG24]);
+    let back = FrameClient::request_camera(&socket, "back", &rgb).unwrap();
+    assert!(back.plan().unwrap().contains("virtual-back"));
+    let front = FrameClient::request(&socket, &rgb).unwrap();
+    assert!(front.plan().unwrap().contains("virtual-front"));
+    frame(&back);
+    frame(&front);
+    assert!(
+        FrameClient::cameras(&socket)
+            .unwrap()
+            .iter()
+            .all(|c| c.in_use)
+    );
+
+    match FrameClient::request_camera(&socket, "side", &rgb) {
+        Err(IpcError::Rejected(reason)) => assert!(reason.contains("no camera named side")),
+        other => panic!("expected a rejection, got {:?}", other.map(|c| c.plan())),
+    }
+    assert_eq!(service.stats().clients, 2);
+}
+
+#[test]
+fn the_service_refuses_what_it_should_not_serve() {
+    let socket = socket_path("limits");
+    let service = CameraService::new(virtual_camera("virtual-limits"))
+        .max_clients(1)
+        .serve(&socket)
+        .unwrap();
+    let rgb = FrameRequirements::formats([FourCc::RG24]);
+    let mut greedy = rgb.clone();
+    greedy.overrides.queue_depth = Some(100_000);
+    match FrameClient::request(&socket, &greedy) {
+        Err(IpcError::Rejected(reason)) => assert!(reason.contains("queue depth"), "{reason}"),
+        other => panic!("expected a rejection, got {:?}", other.map(|c| c.plan())),
+    }
+    let _first = FrameClient::request(&socket, &rgb).unwrap();
+    match FrameClient::request(&socket, &rgb) {
+        Err(IpcError::Rejected(reason)) => assert!(reason.contains("already serves 1"), "{reason}"),
+        other => panic!("expected a rejection, got {:?}", other.map(|c| c.plan())),
+    }
+    assert_eq!(service.stats().rejected, 2);
+    drop(service);
+
+    // Only processes the service trusts get an answer.
+    let socket = socket_path("trust");
+    let service = CameraService::new(virtual_camera("virtual-trust"))
+        .authorize(|peer| peer.uid == u32::MAX)
+        .serve(&socket)
+        .unwrap();
+    assert!(FrameClient::request(&socket, &rgb).is_err());
+    assert_eq!(service.stats().unauthorized, 1);
+    let socket = socket_path("trusted");
+    let _trusting = CameraService::new(virtual_camera("virtual-trusted"))
+        .authorize(|peer| peer.pid == std::process::id() as i32)
+        .serve(&socket)
+        .unwrap();
+    assert!(FrameClient::request(&socket, &rgb).is_ok());
+}
+
+#[test]
+fn a_reconnecting_client_survives_a_service_restart() {
+    let socket = socket_path("restart");
+    let camera = virtual_camera("virtual-restart");
+    let service = CameraService::new(camera.clone())
+        .keep_streaming()
+        .serve(&socket)
+        .unwrap();
+    let client = FrameClient::request(&socket, &FrameRequirements::formats([FourCc::RG24]))
+        .unwrap()
+        .reconnecting();
+    frame(&client);
+    service.stop();
+    // Gone: receives come back empty instead of closed.
+    let mut closed = false;
+    for _ in 0..5 {
+        closed |= matches!(client.recv(Duration::from_millis(50)), RecvOutcome::Closed);
+    }
+    assert!(!closed);
+    assert!(!client.is_connected());
+
+    let _service = CameraService::new(camera)
+        .keep_streaming()
+        .serve(&socket)
+        .unwrap();
+    frame(&client);
+    assert!(client.is_connected());
+    assert_eq!(client.reconnects(), 1);
 }

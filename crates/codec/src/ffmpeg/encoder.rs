@@ -37,7 +37,8 @@ struct EncoderState {
     /// Device surfaces for encoders that only take them (VA-API).
     surfaces: Option<Surfaces>,
     next_pts: i64,
-    queued: std::collections::VecDeque<Vec<u8>>,
+    /// Encoded packets and whether each is a keyframe.
+    queued: std::collections::VecDeque<(Vec<u8>, bool)>,
 }
 
 /// FFmpeg encoder for H.264/H.265/MJPEG.
@@ -48,6 +49,8 @@ pub struct FfmpegVideoEncoder {
     pool: BufferPool,
     state: Mutex<Option<EncoderState>>,
     opts: Mutex<FfmpegEncoderOptions>,
+    /// The next frame is to be a keyframe.
+    force_key: std::sync::atomic::AtomicBool,
 }
 
 impl FfmpegVideoEncoder {
@@ -81,6 +84,7 @@ impl FfmpegVideoEncoder {
             pool: Self::pool_from_options(&opts),
             state: Mutex::new(None),
             opts: Mutex::new(opts),
+            force_key: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -105,7 +109,29 @@ impl FfmpegVideoEncoder {
             pool: Self::pool_from_options(&opts),
             state: Mutex::new(None),
             opts: Mutex::new(opts),
+            force_key: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// A new encoder configured like this one, with no stream state.
+    pub fn fresh(&self) -> Self {
+        let opts = self.opts.lock().map(|o| *o).unwrap_or_default();
+        Self {
+            descriptor: self.descriptor.clone(),
+            codec: self.codec.clone(),
+            pool: Self::pool_from_options(&opts),
+            state: Mutex::new(None),
+            opts: Mutex::new(opts),
+            force_key: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Whether the stream has inter-coded packets (only its keyframes stand alone).
+    fn inter_coded(&self) -> bool {
+        matches!(
+            self.descriptor.output,
+            FourCc::H264 | FourCc::H265 | FourCc::HEVC
+        )
     }
 
     /// Whether FFmpeg (loaded now if needed) has this encoder.
@@ -280,13 +306,13 @@ impl FfmpegVideoEncoder {
             .as_mut()
             .ok_or_else(|| CodecError::Codec("ffmpeg encoder state missing".into()))?;
         self.push_frame(state, frame, owner)?;
-        let data = state.queued.pop_front().ok_or(CodecError::Backpressure)?;
+        let packet = state.queued.pop_front().ok_or(CodecError::Backpressure)?;
         let mut meta = meta.clone();
         if let Some(res) = Resolution::new(dst_width, dst_height) {
             meta.format = MediaFormat::new(meta.format.code, res, meta.format.color);
         }
         drop(guard);
-        Ok(self.packet_to_frame(&meta, data))
+        Ok(self.packet_to_frame(&meta, packet))
     }
 
     #[cfg(target_os = "linux")]
@@ -310,13 +336,15 @@ impl FfmpegVideoEncoder {
             .as_mut()
             .ok_or_else(|| CodecError::Codec("ffmpeg encoder state missing".into()))?;
         self.push_frame(state, frame, owner)?;
-        let data = state.queued.pop_front().ok_or(CodecError::Backpressure)?;
+        let (data, key) = state.queued.pop_front().ok_or(CodecError::Backpressure)?;
         let mut meta = meta.clone();
         if let Some(res) = Resolution::new(dst_width, dst_height) {
             meta.format = MediaFormat::new(meta.format.code, res, meta.format.color);
         }
         drop(guard);
-        self.packet_to_shared_frame(&meta, &data, pool)
+        let mut frame = self.packet_to_shared_frame(&meta, &data, pool)?;
+        frame.meta_mut().delta = self.inter_coded() && !key;
+        Ok(frame)
     }
 
     fn push_frame(
@@ -345,6 +373,12 @@ impl FfmpegVideoEncoder {
             None => self.staged_input(state, frame)?,
         };
         input.set_pts(Some(pts));
+        if self
+            .force_key
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            input.force_key_frame();
+        }
         match state.encoder.send_frame(&input) {
             Ok(()) => {}
             Err(err) if is_again(&err) => {
@@ -404,7 +438,7 @@ impl FfmpegVideoEncoder {
                     let data = packet
                         .data()
                         .ok_or_else(|| CodecError::Codec("ffmpeg packet missing data".into()))?;
-                    state.queued.push_back(data.to_vec());
+                    state.queued.push_back((data.to_vec(), packet.is_key()));
                 }
                 Err(err) if is_again(&err) => break,
                 Err(FfmpegError::Eof) => break,
@@ -418,11 +452,11 @@ impl FfmpegVideoEncoder {
         Ok(())
     }
 
-    fn packet_to_frame(&self, meta: &FrameMeta, data: Vec<u8>) -> FrameLease {
+    fn packet_to_frame(&self, meta: &FrameMeta, (data, key): (Vec<u8>, bool)) -> FrameLease {
         let mut buf = self.pool.lease();
         let len = data.len();
         buf.replace_owned(data);
-        FrameLease::single_plane(
+        let mut frame = FrameLease::single_plane(
             FrameMeta::new(
                 MediaFormat::new(
                     self.descriptor.output,
@@ -434,7 +468,9 @@ impl FfmpegVideoEncoder {
             buf,
             len,
             len,
-        )
+        );
+        frame.meta_mut().delta = self.inter_coded() && !key;
+        frame
     }
 
     #[cfg(target_os = "linux")]
@@ -539,6 +575,15 @@ impl Codec for FfmpegVideoEncoder {
             });
         }
         self.encode_shared(input, pool).map(Some)
+    }
+
+    fn request_keyframe(&self) {
+        self.force_key
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn new_instance(&self) -> Option<Arc<dyn Codec>> {
+        Some(Arc::new(self.fresh()))
     }
 }
 

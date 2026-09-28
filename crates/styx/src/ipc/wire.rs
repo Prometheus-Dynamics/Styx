@@ -2,14 +2,16 @@
 //!
 //! Server to client:
 //! - Frame: id, then the frame: format (fourcc, width, height, colour), timestamp and clock,
-//!   crop, plane layouts and backing (a memfd's length, or each dma-buf plane's offset and
+//!   whether it is an inter-coded packet, crop, plane layouts and backing (a memfd's length, or each dma-buf plane's offset and
 //!   length), then its companions, each a frame of its own. Descriptors are attached in the same
 //!   order: one per memfd, one per dma-buf plane.
 //! - Accept / Reject (camera service): the consumer's plan, or why none fits.
+//! - Cameras (camera service): the cameras it serves, in answer to List.
 //!
 //! Client to server:
 //! - Release: the id of a frame the client dropped.
-//! - Request (camera service): the consumer's `FrameRequirements`.
+//! - Request (camera service): the consumer's `FrameRequirements`, and optionally which camera.
+//! - List (camera service): which cameras it serves.
 //! - Roi: a new region of interest, or none.
 
 use styx_core::prelude::*;
@@ -17,13 +19,20 @@ use styx_core::prelude::*;
 use super::IpcError;
 
 const MAGIC: u32 = u32::from_le_bytes(*b"STYX");
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 const KIND_FRAME: u16 = 1;
 const KIND_RELEASE: u16 = 2;
 const KIND_REQUEST: u16 = 3;
 const KIND_ACCEPT: u16 = 4;
 const KIND_REJECT: u16 = 5;
 const KIND_ROI: u16 = 6;
+const KIND_LIST: u16 = 7;
+const KIND_CAMERAS: u16 = 8;
+/// Most cameras a camera list carries.
+const MAX_CAMERAS: usize = 64;
+/// Most identity keys per camera, formats per request and names in a forbid list.
+const MAX_KEYS: u8 = 8;
+const MAX_NAMES: u8 = 16;
 const MAX_PLANES: usize = 4;
 const MAX_COMPANIONS: usize = 3;
 /// Longest text in Accept and Reject messages.
@@ -57,8 +66,10 @@ pub(super) struct WireFrame {
 /// A message from a client.
 pub(super) enum ClientMessage {
     Release(u64),
-    Request(Box<FrameRequirements>),
+    /// Frames meeting these requirements, from the named camera (or the service's first).
+    Request(Box<FrameRequirements>, Option<String>),
     Roi(Option<FrameRect>),
+    List,
 }
 
 /// A message from a server.
@@ -66,6 +77,18 @@ pub(super) enum ServerMessage {
     Frame(u64, Box<WireFrame>),
     Accept(String),
     Reject(String),
+    Cameras(Vec<CameraInfo>),
+}
+
+/// A camera a [`CameraService`](super::CameraService) serves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CameraInfo {
+    /// Its display name (e.g. `ov9782` or `046d:0825`); requests may name it by any part.
+    pub name: String,
+    /// Identity keys (USB vendor/product, bus path, sensor path); requests may name one.
+    pub keys: Vec<String>,
+    /// Clients are receiving frames from it.
+    pub in_use: bool,
 }
 
 struct Writer(Vec<u8>);
@@ -152,6 +175,9 @@ impl Reader<'_> {
     }
     fn text(&mut self) -> Result<String, IpcError> {
         let len = usize::from(self.u16()?);
+        if len > MAX_TEXT {
+            return Err(IpcError::Malformed("text too long"));
+        }
         if self.0.len() < len {
             return Err(IpcError::Malformed("message too short"));
         }
@@ -240,6 +266,7 @@ fn write_frame(w: &mut Writer, frame: &WireFrame) {
     w.u8(color_tag(format.color));
     w.u64(frame.meta.timestamp);
     w.u8(clock_tag(frame.meta.clock));
+    w.bool(frame.meta.delta);
     w.opt(frame.meta.crop, Writer::rect);
     w.u8(frame.layouts.len() as u8);
     for layout in &frame.layouts {
@@ -284,6 +311,7 @@ fn read_frame(r: &mut Reader<'_>, top_level: bool) -> Result<WireFrame, IpcError
     let color = color_from(r.u8()?);
     let mut meta = FrameMeta::new(MediaFormat::new(code, resolution, color), r.u64()?);
     meta.clock = clock_from(r.u8()?);
+    meta.delta = r.bool()?;
     meta.crop = r.opt(Reader::rect)?;
     let planes = usize::from(r.u8()?);
     if planes == 0 || planes > MAX_PLANES {
@@ -366,14 +394,57 @@ pub(super) fn encode_roi(roi: Option<FrameRect>) -> Vec<u8> {
     w.0
 }
 
-pub(super) fn encode_request(req: &FrameRequirements) -> Vec<u8> {
+pub(super) fn encode_list() -> Vec<u8> {
+    Writer::new(KIND_LIST).0
+}
+
+pub(super) fn encode_cameras(cameras: &[CameraInfo]) -> Vec<u8> {
+    let mut w = Writer::new(KIND_CAMERAS);
+    w.u8(cameras.len().min(MAX_CAMERAS) as u8);
+    for camera in cameras.iter().take(MAX_CAMERAS) {
+        w.text(&camera.name);
+        w.u8(camera.keys.len().min(usize::from(MAX_KEYS)) as u8);
+        for key in camera.keys.iter().take(usize::from(MAX_KEYS)) {
+            w.text(key);
+        }
+        w.bool(camera.in_use);
+    }
+    w.0
+}
+
+fn read_cameras(r: &mut Reader<'_>) -> Result<Vec<CameraInfo>, IpcError> {
+    let count = usize::from(r.u8()?);
+    if count > MAX_CAMERAS {
+        return Err(IpcError::Malformed("too many cameras"));
+    }
+    (0..count)
+        .map(|_| {
+            let name = r.text()?;
+            let count = r.u8()?;
+            if count > MAX_KEYS {
+                return Err(IpcError::Malformed("too many identity keys"));
+            }
+            let keys = (0..count)
+                .map(|_| r.text())
+                .collect::<Result<_, IpcError>>()?;
+            Ok(CameraInfo {
+                name,
+                keys,
+                in_use: r.bool()?,
+            })
+        })
+        .collect()
+}
+
+pub(super) fn encode_request(req: &FrameRequirements, camera: Option<&str>) -> Vec<u8> {
     let mut w = Writer::new(KIND_REQUEST);
+    w.opt(camera, Writer::text);
     match &req.output {
         OutputFormat::Luma => w.u8(0),
         OutputFormat::Formats(formats) => {
             w.u8(1);
-            w.u8(formats.len().min(16) as u8);
-            for code in formats.iter().take(16) {
+            w.u8(formats.len().min(usize::from(MAX_NAMES)) as u8);
+            for code in formats.iter().take(usize::from(MAX_NAMES)) {
                 w.u32(code.to_u32());
             }
         }
@@ -401,8 +472,8 @@ pub(super) fn encode_request(req: &FrameRequirements) -> Vec<u8> {
     let o = &req.overrides;
     w.opt(o.backend.as_deref(), Writer::text);
     w.opt(o.decoder.as_deref(), Writer::text);
-    w.u8(o.forbid.len().min(16) as u8);
-    for name in o.forbid.iter().take(16) {
+    w.u8(o.forbid.len().min(usize::from(MAX_NAMES)) as u8);
+    for name in o.forbid.iter().take(usize::from(MAX_NAMES)) {
         w.text(name);
     }
     w.u8(match o.hardware {
@@ -420,6 +491,9 @@ fn read_request(r: &mut Reader<'_>) -> Result<FrameRequirements, IpcError> {
         0 => FrameRequirements::luma(),
         1 => {
             let count = r.u8()?;
+            if count > MAX_NAMES {
+                return Err(IpcError::Malformed("too many formats"));
+            }
             let formats = (0..count)
                 .map(|_| Ok(FourCc::new(r.u32()?.to_le_bytes())))
                 .collect::<Result<Vec<_>, IpcError>>()?;
@@ -452,7 +526,11 @@ fn read_request(r: &mut Reader<'_>) -> Result<FrameRequirements, IpcError> {
     let o = &mut req.overrides;
     o.backend = r.opt(Reader::text)?;
     o.decoder = r.opt(Reader::text)?;
-    o.forbid = (0..r.u8()?)
+    let forbidden = r.u8()?;
+    if forbidden > MAX_NAMES {
+        return Err(IpcError::Malformed("too many forbidden codecs"));
+    }
+    o.forbid = (0..forbidden)
         .map(|_| r.text())
         .collect::<Result<_, IpcError>>()?;
     o.hardware = match r.u8()? {
@@ -469,7 +547,14 @@ pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
     let (mut r, kind) = Reader::start(bytes)?;
     match kind {
         KIND_RELEASE => Ok(ClientMessage::Release(r.u64()?)),
-        KIND_REQUEST => Ok(ClientMessage::Request(Box::new(read_request(&mut r)?))),
+        KIND_REQUEST => {
+            let camera = r.opt(Reader::text)?;
+            Ok(ClientMessage::Request(
+                Box::new(read_request(&mut r)?),
+                camera,
+            ))
+        }
+        KIND_LIST => Ok(ClientMessage::List),
         KIND_ROI => Ok(ClientMessage::Roi(r.opt(Reader::rect)?)),
         _ => Err(IpcError::Malformed("unexpected message from a client")),
     }
@@ -487,6 +572,7 @@ pub(super) fn decode_server(bytes: &[u8]) -> Result<ServerMessage, IpcError> {
         }
         KIND_ACCEPT => Ok(ServerMessage::Accept(r.text()?)),
         KIND_REJECT => Ok(ServerMessage::Reject(r.text()?)),
+        KIND_CAMERAS => Ok(ServerMessage::Cameras(read_cameras(&mut r)?)),
         _ => Err(IpcError::Malformed("unexpected message from a server")),
     }
 }
@@ -507,9 +593,21 @@ mod tests {
         req.overrides.backend = Some("libcamera".into());
         req.overrides.forbid = vec!["ffmpeg".into()];
         req.overrides.queue_depth = Some(3);
-        let ClientMessage::Request(back) = decode_client(&encode_request(&req)).unwrap() else {
+        let ClientMessage::Request(back, camera) =
+            decode_client(&encode_request(&req, Some("ov9782"))).unwrap()
+        else {
             panic!("not a request");
         };
         assert_eq!(*back, req);
+        assert_eq!(camera.as_deref(), Some("ov9782"));
+        let cameras = vec![CameraInfo {
+            name: "ov9782".into(),
+            keys: vec!["i2c:ov9782".into()],
+            in_use: true,
+        }];
+        let ServerMessage::Cameras(back) = decode_server(&encode_cameras(&cameras)).unwrap() else {
+            panic!("not a camera list");
+        };
+        assert_eq!(back, cameras);
     }
 }

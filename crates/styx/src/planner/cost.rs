@@ -73,6 +73,13 @@ pub(crate) const RGB_LUMA_MS_PER_MP: f32 = 1.2;
 pub(crate) const BOX_LEVEL_MS_PER_MP: f32 = 0.16;
 /// Copying a frame to realign its rows.
 pub(crate) const REALIGN_MS_PER_MP: f32 = 0.3;
+/// libx264 low latency (`superfast`, `zerolatency`) on a Cortex-A76: 14.5 ms per 720p frame.
+pub(crate) const SW_H26X_ENCODE_MS_PER_MP: f32 = 16.0;
+/// JPEG encoding of YUV/RGB frames on a Cortex-A76.
+pub(crate) const SW_JPEG_ENCODE_MS_PER_MP: f32 = 6.0;
+/// Hardware encoders (V4L2 mem2mem, VA-API): CPU time to hand frames over and collect packets.
+pub(crate) const HW_ENCODE_CPU_MS_PER_MP: f32 = 0.5;
+pub(crate) const HW_ENCODE_LATENCY_MS_PER_MP: f32 = 4.0;
 
 /// Share of a full JPEG decode left when decoding at 1/`denom` size: scaling skips IDCT work
 /// but not entropy decoding (CM5: ½ saves ~15%, ⅛ ~40%).

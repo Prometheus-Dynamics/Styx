@@ -1,7 +1,8 @@
 //! Frames for other processes on the same machine.
 //!
-//! - [`CameraService`] serves a camera: each [`FrameClient`] asks for the frames it needs
-//!   ([`FrameClient::request`]), and the service plans one shared capture for all of them.
+//! - [`CameraService`] serves cameras: each [`FrameClient`] asks a camera for the frames it needs
+//!   ([`FrameClient::request`]), and the service plans one shared capture per camera for all of
+//!   them, encoding too when clients ask for H.264, H.265 or MJPEG.
 //! - [`FrameServer`] publishes frames your own code produces to any clients that connect
 //!   ([`FrameClient::connect`]).
 //!
@@ -25,7 +26,14 @@ use styx_core::prelude::*;
 
 pub use self::client::FrameClient;
 use self::connection::Connection;
-pub use self::service::{CameraService, CameraServiceHandle, CameraServiceStats};
+pub use self::service::{
+    CameraService, CameraServiceHandle, CameraServiceStats, DEFAULT_MAX_CLIENTS,
+};
+pub use self::socket::PeerCredentials;
+pub use self::wire::CameraInfo;
+
+/// Decides whether a connecting process may be served.
+type Authorize = dyn Fn(&PeerCredentials) -> bool + Send + Sync;
 
 /// Frames a client may hold before it gets no more (see [`FrameServer::max_in_flight`]).
 pub const DEFAULT_MAX_IN_FLIGHT: usize = 2;
@@ -68,6 +76,7 @@ pub struct FrameServer {
     listener: std::os::fd::OwnedFd,
     path: PathBuf,
     max_in_flight: usize,
+    authorize: Option<Box<Authorize>>,
     state: Mutex<ServerState>,
 }
 
@@ -80,6 +89,7 @@ impl FrameServer {
             listener,
             path,
             max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            authorize: None,
             state: Mutex::new(ServerState {
                 clients: Vec::new(),
                 stats: FrameServerStats::default(),
@@ -91,6 +101,15 @@ impl FrameServer {
     /// frames until it drops one. Each held frame may hold a camera buffer.
     pub fn max_in_flight(mut self, frames: usize) -> Self {
         self.max_in_flight = frames.max(1);
+        self
+    }
+
+    /// Serve only processes `allow` accepts, given the credentials the kernel reports for them.
+    pub fn authorize(
+        mut self,
+        allow: impl Fn(&PeerCredentials) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.authorize = Some(Box::new(allow));
         self
     }
 
@@ -112,7 +131,12 @@ impl FrameServer {
         let mut state = self.state.lock();
         state.stats.published += 1;
         while let Some(socket) = socket::accept(&self.listener)? {
-            state.clients.push(Connection::new(socket));
+            let allowed = self.authorize.as_ref().is_none_or(|allow| {
+                socket::peer_credentials(&socket).is_ok_and(|peer| allow(&peer))
+            });
+            if allowed {
+                state.clients.push(Connection::new(socket));
+            }
         }
         // Releases, and clients that went away.
         state
@@ -152,6 +176,23 @@ impl Drop for FrameServer {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// Decode `bytes` as every message a service or client reads, as they arrive from other
+/// processes; requests must survive being encoded again. For fuzzing.
+#[doc(hidden)]
+pub fn fuzz_messages(bytes: &[u8]) {
+    if let Ok(wire::ClientMessage::Request(requirements, camera)) = wire::decode_client(bytes) {
+        let again = wire::encode_request(&requirements, camera.as_deref());
+        match wire::decode_client(&again) {
+            Ok(wire::ClientMessage::Request(back, back_camera)) => {
+                assert_eq!(back, requirements);
+                assert_eq!(back_camera, camera);
+            }
+            _ => panic!("a decoded request did not decode again"),
+        }
+    }
+    let _ = wire::decode_server(bytes);
 }
 
 #[cfg(test)]

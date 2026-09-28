@@ -70,6 +70,8 @@ pub enum StepKind {
     Crop,
     /// Downscaling in hardware (the ISP).
     Scale,
+    /// Compressing frames (H.264, H.265, MJPEG).
+    Encode,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +164,7 @@ impl fmt::Display for FramePlan {
                 StepKind::Pyramid { level } => format!("pyramid L{level}"),
                 StepKind::Crop => "roi".to_string(),
                 StepKind::Scale => "scale".to_string(),
+                StepKind::Encode => "encode".to_string(),
             };
             let execution = match step.execution {
                 StepExecution::ZeroCopy => "zero-copy",
@@ -400,8 +403,28 @@ impl FramePlan {
     pub fn decoder(&self) -> Option<Arc<dyn styx_codec::Codec>> {
         match &self.route {
             Route::Decode { decoder, .. } => Some(decoder.clone()),
+            Route::Encode { decoder, .. } => decoder.clone(),
             _ => None,
         }
+    }
+
+    /// The encoder chosen for this plan, when the consumer wants compressed frames the camera
+    /// does not produce.
+    pub fn encoder(&self) -> Option<Arc<dyn styx_codec::Codec>> {
+        match &self.route {
+            Route::Encode { encoder, .. } => Some(encoder.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether frames are inter-coded packets (H.264/H.265): only keyframes stand alone.
+    pub fn inter_coded(&self) -> bool {
+        let output = match &self.route {
+            Route::Encode { encoder, .. } => encoder.descriptor().output,
+            Route::Direct => self.mode.format.code,
+            _ => return false,
+        };
+        matches!(output, FourCc::H264 | FourCc::H265 | FourCc::HEVC)
     }
 }
 

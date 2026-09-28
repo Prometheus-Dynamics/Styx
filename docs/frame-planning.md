@@ -159,6 +159,17 @@ frame for that long. The next request starts the camera again, with the same mod
 rather than ~1.4 s, at the cost of keeping its buffers. See
 [reconnect.md](reconnect.md#stopping-idle-cameras).
 
+## Encoded output
+
+A consumer may ask for compressed frames the camera does not produce
+(`FrameRequirements::formats([FourCc::H264])`, also H.265 and MJPEG). The planner adds an encode
+step, preferring hardware encoders (VA-API, V4L2 mem2mem) to libx264/libx265, and a decode step
+first for MJPEG cameras. On a CM5, OV9782 NV12 at 640x360 encodes in ~3.7 ms per frame with
+libx264 at low latency. Each plan (or group of shared consumers asking for the same stream) gets
+an encoder of its own; `FrameMeta::delta` marks inter-coded packets, and
+`PlannedFrames::request_keyframe` asks for an IDR frame with the stream headers. Pyramids are
+refused for encoded output.
+
 ## Async
 
 With the `async` feature, `PlannedFrames::next_frame_async` awaits the next frame on Tokio,

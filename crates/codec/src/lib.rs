@@ -2,6 +2,7 @@
 #![deny(clippy::print_stderr, clippy::print_stdout)]
 
 use std::any::Any;
+use std::sync::Arc;
 
 use styx_core::prelude::*;
 
@@ -240,6 +241,17 @@ pub trait Codec: Any + Send + Sync + 'static {
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError>;
 
     fn memory_stats(&self) -> Option<BufferPoolStats> {
+        None
+    }
+
+    /// For encoders of inter-coded streams: make the next packet a keyframe (with the stream
+    /// headers), e.g. for a consumer that joins or lost packets. Others ignore it.
+    fn request_keyframe(&self) {}
+
+    /// A new codec configured like this one, without its state (an encoder's stream, a
+    /// decoder's reference frames), for one more independent stream. `None` for stateless
+    /// codecs, which can be shared.
+    fn new_instance(&self) -> Option<Arc<dyn Codec>> {
         None
     }
 

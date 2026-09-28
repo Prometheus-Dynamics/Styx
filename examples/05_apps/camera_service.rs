@@ -1,10 +1,12 @@
-//! One camera, many processes. Run the service once, then any number of clients, each asking for
-//! the frames it needs; the service plans one shared capture for all of them and passes frames as
-//! file descriptors (camera buffers, memfds), without copying.
+//! Cameras for many processes. Run the service once, then any number of clients, each asking a
+//! camera for the frames it needs; the service plans one shared capture per camera and passes
+//! frames as file descriptors (camera buffers, memfds), without copying.
 //!
 //! ```text
-//! camera_service serve [camera name substring]          # socket: $STYX_SOCKET or /tmp/styx-camera.sock
-//! camera_service client luma [WxH] [seconds]            # also: rgb, nv12, mjpg
+//! camera_service serve [camera]                    # every camera, or the one named; socket:
+//!                                                  #   $STYX_SOCKET or /tmp/styx-camera.sock
+//! camera_service cameras                           # what the service serves
+//! camera_service client [--camera NAME] luma [WxH] [seconds]   # also: rgb, nv12, mjpg, h264
 //! ```
 
 use std::time::{Duration, Instant};
@@ -20,56 +22,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("serve") => serve(args.get(1).map(String::as_str)),
+        Some("cameras") => {
+            for camera in FrameClient::cameras(socket_path())? {
+                let state = if camera.in_use { "in use" } else { "idle" };
+                println!("{} ({state}) {}", camera.name, camera.keys.join(" "));
+            }
+            Ok(())
+        }
         Some("client") => client(&args[1..]),
         _ => Err(
-            "usage: camera_service serve [camera] | client <luma|rgb|nv12|mjpg> [WxH] [seconds]"
+            "usage: camera_service serve [camera] | cameras | client [--camera NAME] \
+                  <luma|rgb|nv12|mjpg|h264> [WxH] [seconds]"
                 .into(),
         ),
     }
 }
 
 fn serve(name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    let device = probe_all()
-        .into_iter()
-        .find(|d| name.is_none_or(|n| d.identity.display.contains(n)))
-        .ok_or("no camera found")?;
-    println!("serving {} on {}", device.identity.display, socket_path());
-    let service = CameraService::new(device).serve(socket_path())?;
+    let service = match name {
+        Some(name) => CameraService::new(
+            probe_all()
+                .into_iter()
+                .find(|d| d.identity.display.contains(name))
+                .ok_or("no such camera")?,
+        ),
+        None => CameraService::all_cameras(),
+    };
+    let handle = service.serve(socket_path())?;
+    println!("serving on {}", socket_path());
+    for camera in handle.cameras() {
+        println!("  {}", camera.name);
+    }
     let mut shown = None;
     loop {
         std::thread::sleep(Duration::from_secs(2));
-        let plan = service.plan();
+        let plan = handle.plan();
         if plan != shown {
             println!("{}", plan.as_deref().unwrap_or("(no capture)\n"));
             shown = plan;
         }
-        println!("{:?}", service.stats());
+        println!("{:?}", handle.stats());
     }
 }
 
-fn client(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+fn client(mut args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut camera = None;
+    if args.first().is_some_and(|a| a == "--camera") {
+        camera = args.get(1).cloned();
+        args = args.get(2..).unwrap_or_default();
+    }
     let mut req = match args.first().map(String::as_str) {
         Some("rgb") => FrameRequirements::formats([FourCc::RG24]),
         Some("nv12") => FrameRequirements::formats([FourCc::NV12]),
         Some("mjpg") => FrameRequirements::formats([FourCc::MJPG]),
+        Some("h264") => FrameRequirements::formats([FourCc::H264]),
         _ => FrameRequirements::luma(),
     };
     if let Some((w, h)) = args.get(1).and_then(|s| s.split_once('x')) {
         req = req.output_resolution(w.parse()?, h.parse()?);
     }
     let seconds: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
-    let client = FrameClient::request(socket_path(), &req)?;
+    let client = match &camera {
+        Some(camera) => FrameClient::request_camera(socket_path(), camera, &req)?,
+        None => FrameClient::request(socket_path(), &req)?,
+    }
+    .reconnecting();
     print!("{}", client.plan().unwrap_or_default());
 
     let started = Instant::now();
     let cpu_start = cpu_ms();
-    let (mut frames, mut size, mut transport) = (0u32, (0, 0), "");
+    let (mut frames, mut keyframes, mut bytes, mut size, mut transport) =
+        (0u32, 0u32, 0usize, (0, 0), "");
     let mut ages = Vec::new();
     while started.elapsed() < Duration::from_secs(seconds) {
         let RecvOutcome::Data(frame) = client.recv(Duration::from_millis(500)) else {
             continue;
         };
         frames += 1;
+        keyframes += u32::from(!frame.meta().delta);
+        bytes += frame.planes().iter().map(|p| p.data().len()).sum::<usize>();
         let res = frame.meta().format.resolution;
         size = (res.width.get(), res.height.get());
         transport = match frame.meta().residency {
@@ -83,10 +114,12 @@ fn client(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     ages.sort_by(f64::total_cmp);
     let secs = started.elapsed().as_secs_f64();
     println!(
-        "{frames} frames {}x{} via {transport}: {:.1} fps, age p50 {:.1} ms, CPU {:.1}%",
+        "{frames} frames {}x{} via {transport}: {:.1} fps, {keyframes} keyframes, {:.0} kbit/s, \
+         age p50 {:.1} ms, CPU {:.1}%",
         size.0,
         size.1,
         f64::from(frames) / secs,
+        bytes as f64 * 8.0 / secs / 1000.0,
         ages.get(ages.len() / 2).copied().unwrap_or(0.0),
         (cpu_ms() - cpu_start) / secs / 10.0
     );

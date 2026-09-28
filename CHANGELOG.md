@@ -150,11 +150,27 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Added `FramePlan::exportable` and `SharedFramePlan::exportable`: decoded frames go into memfd
   pools, so they reach other processes without copying.
 - Added `PlannedFrames::next_frame_async` and `FrameClient::recv_async` (feature `async`).
+- The planner encodes: consumers asking for H.264, H.265 or MJPEG from a camera that does not
+  produce them get an encode step (hardware first), after a decode step for MJPEG cameras.
+  Consumers asking for the same stream share one encoder; each starts at a keyframe, including
+  after joining late or losing packets. Adds `StepKind::Encode`, `FramePlan::{encoder,
+  inter_coded}`, `PlannedFrames::request_keyframe`, `FrameMeta::delta`, and
+  `Codec::{request_keyframe, new_instance}`; low-latency libx264/libx265 emit IDR keyframes with
+  the stream headers on request.
+- `CameraService` serves several cameras (`with_cameras`, `all_cameras` with hot-plugged
+  cameras; `FrameClient::{cameras, request_camera}`), checks requests before planning them,
+  limits clients (`max_clients`), and can check who connects (`authorize` with
+  `PeerCredentials`, `socket_mode`; `FrameServer::authorize` too).
+- `FrameClient::reconnecting` keeps a client receiving across camera service restarts.
+- Added the `ipc_messages` fuzz target.
 - Added corruption tests for recordings, MJPEG decoders and the netcam parser, cargo-fuzz targets
   (`fuzz/`), and a public API compatibility check (`cargo-semver-checks`) in release CI.
 
 ### Changed
 
+- `FrameLease::descriptor` no longer allocates: `FrameLeaseDescriptor::planes` is a
+  `SmallVec<[FramePlaneDescriptor; 4]>` (it was a `Vec`, one allocation per call).
+- `FrameClient::plan` returns `Option<String>`; the `styx::ipc` wire format is version 3.
 - Shared plans rank modes by the frames consumers get (as single plans do), and the Raspberry Pi
   ISP also scales for routes that decode uncompressed frames (e.g. YUYV to luma).
 - Decoded planned frames keep their timestamp clock and capture instant.

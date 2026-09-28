@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use styx_codec::{Codec, CodecDescriptor, CodecRegistryHandle};
+use styx_codec::{Codec, CodecDescriptor, CodecKind, CodecRegistryHandle};
 use styx_core::prelude::*;
 
 use super::cost::{self, StepCost, megapixels};
@@ -24,6 +24,12 @@ pub(crate) enum Route {
         decoder: Arc<dyn Codec>,
         hardware: bool,
     },
+    /// An encoder compresses frames (after a decoder, for compressed capture formats).
+    Encode {
+        decoder: Option<Arc<dyn Codec>>,
+        encoder: Arc<dyn Codec>,
+        hardware: bool,
+    },
 }
 
 impl Route {
@@ -40,13 +46,35 @@ impl Route {
                     decoder: b,
                     hardware: hb,
                 },
+            ) => ha == hb && same_codec(a, b),
+            (
+                Route::Encode {
+                    decoder: da,
+                    encoder: ea,
+                    hardware: ha,
+                },
+                Route::Encode {
+                    decoder: db,
+                    encoder: eb,
+                    hardware: hb,
+                },
             ) => {
-                let (a, b) = (a.descriptor(), b.descriptor());
-                ha == hb && a.impl_name == b.impl_name && a.output == b.output
+                ha == hb
+                    && same_codec(ea, eb)
+                    && match (da, db) {
+                        (Some(a), Some(b)) => same_codec(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    }
             }
             _ => false,
         }
     }
+}
+
+fn same_codec(a: &Arc<dyn Codec>, b: &Arc<dyn Codec>) -> bool {
+    let (a, b) = (a.descriptor(), b.descriptor());
+    a.impl_name == b.impl_name && a.input == b.input && a.output == b.output
 }
 
 pub(crate) struct Candidate<'a> {
@@ -162,9 +190,9 @@ pub(crate) fn candidate<'a>(
     }
 
     let mp = megapixels(width, height);
-    let isp = backend.kind == BackendKind::Libcamera;
+
     let mut steps = vec![capture_step(backend, mode, fps)];
-    let mut notes = Vec::new();
+    let notes = Vec::new();
 
     let wants_luma = matches!(req.output, OutputFormat::Luma);
     let route = if req.accepts(code) {
@@ -181,7 +209,21 @@ pub(crate) fn candidate<'a>(
         let scales_down = req
             .output_resolution
             .is_some_and(|(w, h)| w < width || h < height);
-        let (decoder, target) = pick_decoder(code, req, registry, scales_down)?;
+        let picked = pick_decoder(code, req, registry, scales_down);
+        let (decoder, target) = match picked {
+            Ok(picked) => picked,
+            Err(reason) => {
+                return finish(
+                    backend,
+                    mode,
+                    req,
+                    fps,
+                    encode_route(code, req, registry, mp, &mut steps)?.ok_or(reason)?,
+                    steps,
+                    notes,
+                );
+            }
+        };
         let descriptor = decoder.descriptor();
         let hardware = descriptor.is_hardware_accelerated();
         let threads = cost::decode_threads(req.priority, req.overrides.decode_threads);
@@ -205,9 +247,32 @@ pub(crate) fn candidate<'a>(
         });
         Route::Decode { decoder, hardware }
     };
+    finish(backend, mode, req, fps, route, steps, notes)
+}
+
+/// The rest of a candidate once its route is chosen: hardware policy, scaling, pyramid, ROI and
+/// alignment steps, and the total cost.
+fn finish<'a>(
+    backend: &'a ProbedBackend,
+    mode: &Mode,
+    req: &FrameRequirements,
+    fps: Option<f32>,
+    route: Route,
+    mut steps: Vec<PlanStep>,
+    mut notes: Vec<String>,
+) -> Result<Candidate<'a>, String> {
+    let (width, height) = (
+        mode.format.resolution.width.get(),
+        mode.format.resolution.height.get(),
+    );
+    let mp = megapixels(width, height);
+    let isp = backend.kind == BackendKind::Libcamera;
     if matches!(req.overrides.hardware, HardwarePolicy::Required)
         && !isp
-        && !matches!(route, Route::Decode { hardware: true, .. })
+        && !matches!(
+            route,
+            Route::Decode { hardware: true, .. } | Route::Encode { hardware: true, .. }
+        )
     {
         return Err("hardware required but this path runs on the CPU".into());
     }
@@ -246,7 +311,11 @@ pub(crate) fn candidate<'a>(
     ));
 
     let isp_pyramid_level = add_pyramid_steps(backend, &route, req, width, height, &mut steps)?;
-    if req.roi.is_some() {
+    let encoded = matches!(route, Route::Encode { .. });
+    if encoded && req.pyramid.is_some_and(|p| p.levels > 0) {
+        return Err("pyramid levels need uncompressed frames".into());
+    }
+    if req.roi.is_some() && !encoded {
         steps.push(PlanStep {
             kind: StepKind::Crop,
             execution: StepExecution::ZeroCopy,
@@ -261,7 +330,7 @@ pub(crate) fn candidate<'a>(
             cost: StepCost::ZERO,
         });
     }
-    if let Some(align) = req.stride_alignment {
+    if let Some(align) = req.stride_alignment.filter(|_| !encoded) {
         match &route {
             Route::Decode { decoder, .. } if decoder.descriptor().impl_name == "turbojpeg-luma" => {
             }
@@ -307,6 +376,8 @@ fn isp_output(
     let scalable = match route {
         Route::Direct | Route::LumaView => true,
         Route::Decode { .. } => !code.is_compressed(),
+        // The encoder takes any size the ISP makes.
+        Route::Encode { decoder, .. } => decoder.is_none() && !code.is_compressed(),
     };
     if !has_isp_second_output(backend)
         || !scalable
@@ -383,28 +454,7 @@ fn pick_decoder(
         OutputFormat::Luma => vec![FourCc::GREY],
         OutputFormat::Formats(formats) => formats.clone(),
     };
-    let accept = |d: &CodecDescriptor| {
-        let name = d.impl_name;
-        let hardware = d.is_hardware_accelerated();
-        if req
-            .overrides
-            .forbid
-            .iter()
-            .any(|f| f.eq_ignore_ascii_case(name))
-        {
-            return false;
-        }
-        if let Some(only) = &req.overrides.decoder
-            && !only.eq_ignore_ascii_case(name)
-        {
-            return false;
-        }
-        match req.overrides.hardware {
-            HardwarePolicy::Auto => true,
-            HardwarePolicy::Disabled => !hardware,
-            HardwarePolicy::Required => hardware,
-        }
-    };
+    let accept = |d: &CodecDescriptor| codec_allowed(d, req) && d.kind == CodecKind::Decoder;
     let scaling =
         |d: &CodecDescriptor| accept(d) && matches!(d.impl_name, "turbojpeg" | "turbojpeg-luma");
     for target in &targets {
@@ -424,6 +474,137 @@ fn pick_decoder(
             .collect::<Vec<_>>()
             .join("/")
     ))
+}
+
+/// Whether the overrides allow codec `d` (forbid list, hardware policy and, for decoders, a
+/// named decoder).
+fn codec_allowed(d: &CodecDescriptor, req: &FrameRequirements) -> bool {
+    let name = d.impl_name;
+    if req
+        .overrides
+        .forbid
+        .iter()
+        .any(|f| f.eq_ignore_ascii_case(name))
+    {
+        return false;
+    }
+    if d.kind == CodecKind::Decoder
+        && let Some(only) = &req.overrides.decoder
+        && !only.eq_ignore_ascii_case(name)
+    {
+        return false;
+    }
+    let hardware = d.is_hardware_accelerated();
+    match req.overrides.hardware {
+        HardwarePolicy::Auto => true,
+        HardwarePolicy::Disabled => !hardware,
+        HardwarePolicy::Required => hardware,
+    }
+}
+
+/// For a consumer that wants compressed frames the camera does not produce: an encoder from the
+/// capture format, or a decoder to a format an encoder takes and that encoder. Hardware encoders
+/// first. `None` when the consumer takes no compressed format.
+fn encode_route(
+    code: FourCc,
+    req: &FrameRequirements,
+    registry: &CodecRegistryHandle,
+    mp: f32,
+    steps: &mut Vec<PlanStep>,
+) -> Result<Option<Route>, String> {
+    let OutputFormat::Formats(formats) = &req.output else {
+        return Ok(None);
+    };
+    let targets: Vec<FourCc> = formats
+        .iter()
+        .copied()
+        .filter(|f| f.is_compressed())
+        .collect();
+    if targets.is_empty() {
+        return Ok(None);
+    }
+    let decoder_ok = |d: &CodecDescriptor| d.kind == CodecKind::Decoder && codec_allowed(d, req);
+    for &target in &targets {
+        for hardware in [true, false] {
+            let encoder_ok = |d: &CodecDescriptor| {
+                d.kind == CodecKind::Encoder
+                    && d.is_hardware_accelerated() == hardware
+                    && codec_allowed(d, req)
+            };
+            let found = registry
+                .lookup_for_output_where(code, target, encoder_ok)
+                .ok()
+                .map(|encoder| (None, encoder))
+                .or_else(|| {
+                    [FourCc::NV12, FourCc::YUYV, FourCc::RG24]
+                        .into_iter()
+                        .find_map(|mid| {
+                            let encoder = registry
+                                .lookup_for_output_where(mid, target, encoder_ok)
+                                .ok()?;
+                            let decoder = registry
+                                .lookup_for_output_where(code, mid, decoder_ok)
+                                .ok()?;
+                            Some((Some(decoder), encoder))
+                        })
+                });
+            let Some((decoder, encoder)) = found else {
+                continue;
+            };
+            if let Some(decoder) = &decoder {
+                let d = decoder.descriptor();
+                steps.push(PlanStep {
+                    kind: StepKind::Decode,
+                    execution: if d.is_hardware_accelerated() {
+                        StepExecution::Hardware
+                    } else {
+                        StepExecution::Cpu
+                    },
+                    detail: format!("{code} -> {} via {}", d.output, d.impl_name),
+                    cost: decode_cost(code, d, mp, 1),
+                });
+            }
+            let e = encoder.descriptor();
+            steps.push(PlanStep {
+                kind: StepKind::Encode,
+                execution: if hardware {
+                    StepExecution::Hardware
+                } else {
+                    StepExecution::Cpu
+                },
+                detail: format!("{} -> {target} via {} ({})", e.input, e.impl_name, e.name),
+                cost: encode_cost(e, mp),
+            });
+            return Ok(Some(Route::Encode {
+                decoder,
+                encoder,
+                hardware,
+            }));
+        }
+    }
+    Err(format!(
+        "no enabled encoder to {} from {code} allowed by the overrides",
+        targets
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("/")
+    ))
+}
+
+fn encode_cost(descriptor: &CodecDescriptor, mp: f32) -> StepCost {
+    if descriptor.is_hardware_accelerated() {
+        return StepCost::offloaded(
+            cost::HW_ENCODE_LATENCY_MS_PER_MP * mp,
+            cost::HW_ENCODE_CPU_MS_PER_MP * mp,
+        );
+    }
+    let per_mp = if descriptor.output.is_jpeg_encoded() {
+        cost::SW_JPEG_ENCODE_MS_PER_MP
+    } else {
+        cost::SW_H26X_ENCODE_MS_PER_MP
+    };
+    StepCost::cpu(per_mp * mp)
 }
 
 fn decode_cost(code: FourCc, descriptor: &CodecDescriptor, mp: f32, threads: usize) -> StepCost {

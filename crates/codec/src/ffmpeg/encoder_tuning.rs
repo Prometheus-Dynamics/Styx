@@ -46,7 +46,19 @@ impl FfmpegEncoderOptions {
     pub(crate) fn open_options(&self, codec: &str) -> Vec<(&'static str, &'static str)> {
         let mut options = self.codec_options.to_vec();
         if self.low_latency && matches!(codec, "libx264" | "libx265") {
-            for (key, value) in [("tune", "zerolatency"), ("preset", LOW_LATENCY_PRESET)] {
+            // Live streams: a requested keyframe is an IDR carrying the stream headers, so a
+            // viewer can start at any keyframe.
+            let params = if codec == "libx264" {
+                ("x264-params", "repeat-headers=1")
+            } else {
+                ("x265-params", "repeat-headers=1")
+            };
+            for (key, value) in [
+                ("tune", "zerolatency"),
+                ("preset", LOW_LATENCY_PRESET),
+                ("forced-idr", "1"),
+                params,
+            ] {
                 if !options.iter().any(|(k, _)| *k == key) {
                     options.push((key, value));
                 }
