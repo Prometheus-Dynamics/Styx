@@ -44,6 +44,16 @@ pub struct GraphMap {
 }
 
 impl GraphMap {
+    /// A placeholder before the graph is built.
+    pub(crate) fn empty() -> Self {
+        GraphMap {
+            graph: DeviceGraph::new(),
+            nodes: Vec::new(),
+            sensor: 0,
+            raw_node: 0,
+        }
+    }
+
     /// The node of a media entity.
     pub fn node_of(&self, entity: u32) -> Option<NodeId> {
         self.nodes
