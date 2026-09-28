@@ -108,15 +108,21 @@ impl<T: I2cIo> RegisterBus for I2cRegisterBus<T> {
         self.io.write_messages(&[&buf])
     }
 
-    /// Packs up to [`i2c::MAX_MESSAGES`] register writes into each combined transfer.
+    /// One transfer (start, address, register, data, stop) per register write, as the kernel
+    /// drivers do.
+    ///
+    /// Not combined transfers: on the CM5 (RP1 DesignWare I²C, `/dev/i2c-10`) with the OV9782,
+    /// packing consecutive writes into one `I2C_RDWR` call with repeated starts lost or
+    /// misplaced some of them (measured: `0x380a` read back 0x00 instead of 0x03, so the sensor
+    /// sent 32 lines instead of 800, and `0x4509`/`0x450a` read back 0x09/0x00, as if a message
+    /// had been appended to the previous one and auto-incremented). Probably the controller
+    /// does not always issue the repeated start between two write messages, and the SCCB
+    /// target then takes the next message's register address as data. Reads (write then read)
+    /// are unaffected: the direction change always restarts.
     fn write_sequence(&mut self, writes: &[RegWrite]) -> io::Result<()> {
-        for chunk in writes.chunks(i2c::MAX_MESSAGES) {
-            let encoded = chunk
-                .iter()
-                .map(|w| encode_write(w.address, w.bytes, w.value, self.addr_width))
-                .collect::<io::Result<Vec<_>>>()?;
-            let messages: Vec<&[u8]> = encoded.iter().map(Vec::as_slice).collect();
-            self.io.write_messages(&messages)?;
+        for w in writes {
+            let buf = encode_write(w.address, w.bytes, w.value, self.addr_width)?;
+            self.io.write_messages(&[&buf])?;
         }
         Ok(())
     }
@@ -325,17 +331,16 @@ mod tests {
     }
 
     #[test]
-    fn sequences_are_batched_into_combined_transfers() {
+    fn sequences_are_one_transfer_per_write() {
         let mut bus = ov9782_bus();
         let writes: Vec<RegWrite> = (0..50)
             .map(|i| RegWrite::byte(0x3000 + i, i as u8))
             .collect();
         bus.write_sequence(&writes).unwrap();
         let t = &bus.io().transfers;
-        assert_eq!(t.len(), 2);
-        assert_eq!(t[0].len(), i2c::MAX_MESSAGES);
-        assert_eq!(t[1].len(), 50 - i2c::MAX_MESSAGES);
-        assert_eq!(t[0][1], [0x30, 0x01, 0x01]);
+        assert_eq!(t.len(), 50);
+        assert!(t.iter().all(|m| m.len() == 1));
+        assert_eq!(t[1][0], [0x30, 0x01, 0x01]);
     }
 
     /// The driver run over this bus writes exactly what it writes over the mock bus.

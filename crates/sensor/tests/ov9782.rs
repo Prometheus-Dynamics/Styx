@@ -213,7 +213,8 @@ fn bring_up_writes_what_the_kernel_driver_writes() {
     let mut drv = powered();
     drv.bus_mut().clear_log();
     drv.init().unwrap();
-    assert_eq!(drv.bus().writes().len(), 61);
+    // The driver's 61 common registers, then PSV auto mode off and the embedded data line.
+    assert_eq!(drv.bus().writes().len(), 63);
     drv.bus_mut().clear_log();
     let mode = drv.set_mode("1280x800", "raw10").unwrap();
     assert_eq!(mode.code, MbusCode::SBGGR10_1X10);
@@ -296,23 +297,23 @@ fn scheduled_controls_are_written_in_group_hold_on_time() {
     for f in 0..8 {
         assert!(drv.frame_start(f).unwrap().controls.is_empty());
     }
+    // Measured delays: exposure and gain 2 frames, frame length 1.
     let batch = drv.frame_start(8).unwrap();
     assert_eq!(
         batch.controls,
         ControlSet::new()
-            .with(Control::FrameLength, 3663)
             .with(Control::Exposure, 1099)
             .with(Control::AnalogGain, 0x20)
     );
+    let hold = |w: Vec<RegWrite>| {
+        let mut all = vec![RegWrite::byte(0x3208, 0x00)];
+        all.extend(w);
+        all.extend([RegWrite::byte(0x3208, 0x10), RegWrite::byte(0x3208, 0xa0)]);
+        all
+    };
     assert_eq!(
         drv.bus().writes(),
-        vec![
-            RegWrite::byte(0x3308, 0x01),
-            RegWrite {
-                address: 0x380e,
-                value: 3663,
-                bytes: 2
-            },
+        hold(vec![
             RegWrite {
                 address: 0x3500,
                 value: 1099 << 4,
@@ -323,8 +324,21 @@ fn scheduled_controls_are_written_in_group_hold_on_time() {
                 value: 0x20,
                 bytes: 1
             },
-            RegWrite::byte(0x3308, 0x00),
-        ]
+        ])
+    );
+    drv.bus_mut().clear_log();
+    let batch = drv.frame_start(9).unwrap();
+    assert_eq!(
+        batch.controls,
+        ControlSet::new().with(Control::FrameLength, 3663)
+    );
+    assert_eq!(
+        drv.bus().writes(),
+        hold(vec![RegWrite {
+            address: 0x380e,
+            value: 3663,
+            bytes: 2
+        }])
     );
     let before = drv.applied(9).unwrap();
     assert_eq!(before.exposure_lines, 642.0);
@@ -398,6 +412,8 @@ fn state_is_enforced() {
     assert!(matches!(drv.start_streaming(), Err(SensorError::State(_))));
     assert!(matches!(
         drv.set_test_pattern("bars"),
-        Err(SensorError::NoRegister(_))
+        Err(SensorError::UnknownTestPattern(_))
     ));
+    drv.set_test_pattern("colour_bars").unwrap();
+    assert_eq!(drv.bus().value(0x5e00, 1), 0x80);
 }

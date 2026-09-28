@@ -21,6 +21,7 @@ use crate::ioctl::{self, cstr_field};
 use crate::{Ready, Result};
 
 mod buffer;
+mod capture;
 pub mod cid;
 mod control;
 mod format;
@@ -30,6 +31,7 @@ pub use buffer::{
     BufferCapabilities, BufferFlags, BufferInfo, DequeuedBuffer, Memory, PlaneInfo, QueueBuffer,
     QueuePlane, RequestedBuffers,
 };
+pub use capture::DmaBufAccess;
 pub use control::{
     ControlFlags, ControlInfo, ControlType, ControlValue, ControlWhich, Controls, MenuItem,
     MenuValue,

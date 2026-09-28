@@ -46,7 +46,6 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 # FFmpeg types only: Styx calls FFmpeg through libraries it loads at runtime
 # (styx-codec `ffmpeg::ff`), so binaries do not link FFmpeg.
 ffmpeg-sys-next = { version = "8.1.0", default-features = false, features = ["avcodec", "avformat", "swscale"] }
-v4l = "0.14"
 libcamera = { version = "0.7", default-features = false, features = ["libcamera_semver_versioning"] }
 tokio-util = { version = "0.7.18", features = ["io"] }
 futures-core = "0.3.32"
