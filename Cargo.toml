@@ -10,6 +10,7 @@ members = [
     "crates/sensor",
     "crates/graph",
     "crates/pisp",
+    "crates/algo",
     "tools/native-spike",
     "tools/pisp-spike",
     "examples",
@@ -37,6 +38,7 @@ styx-kernel = { path = "crates/kernel", version = "2.0.0" }
 styx-sensor = { path = "crates/sensor", version = "2.0.0" }
 styx-graph = { path = "crates/graph", version = "2.0.0" }
 styx-pisp = { path = "crates/pisp", version = "2.0.0" }
+styx-algo = { path = "crates/algo", version = "2.0.0" }
 daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "main", version = "2.0.0", default-features = false }
 crossbeam-queue = "0.3.12"
 smallvec = "1.15.1"

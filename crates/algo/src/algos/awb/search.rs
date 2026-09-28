@@ -1,0 +1,203 @@
+//! The AWB estimators: grey world and the Bayesian colour-temperature search.
+//!
+//! Ported from Raspberry Pi's `awb.cpp` and `awb_bayes.cpp` (BSD-2-Clause, Copyright (C)
+//! 2019-2025 Raspberry Pi Ltd). Zone values here are ratios (R/G, B/G) of normalised means, so
+//! the `+ 1` guards against 16-bit integer zero divisions in the original are replaced by an
+//! explicit check on G.
+
+use crate::pwl::Pwl;
+
+use super::tuning::{AwbMode, AwbPrior, AwbTuning, CtCurve};
+
+/// A usable zone: mean (r, g, b).
+pub(crate) type Zone = (f64, f64, f64);
+
+/// An estimate: temperature (K), red gain, blue gain.
+pub(crate) type Estimate = (f64, f64, f64);
+
+/// Grey world: average the middle half of the zones sorted by R/G (and B/G).
+pub(crate) fn grey_world(zones: &[Zone], default_ct: f64) -> Estimate {
+    let mut by_r = zones.to_vec();
+    let mut by_b = zones.to_vec();
+    by_r.sort_by(|a, b| (a.0 * b.1).total_cmp(&(b.0 * a.1)));
+    by_b.sort_by(|a, b| (a.2 * b.1).total_cmp(&(b.2 * a.1)));
+    let discard = zones.len() / 4;
+    let keep = zones.len() - 2 * discard;
+    let (mut rr, mut rg, mut bb, mut bg) = (0.0, 0.0, 0.0, 0.0);
+    for (zr, zb) in by_r.iter().zip(&by_b).skip(discard).take(keep) {
+        rr += zr.0;
+        rg += zr.1;
+        bb += zb.2;
+        bg += zb.1;
+    }
+    let gain = |g: f64, c: f64| if c > 0.0 { g / c } else { 1.0 };
+    (default_ct, gain(rg, rr), gain(bg, bb))
+}
+
+/// The prior for a lux level, interpolated between the tuned levels.
+pub(crate) fn interpolate_prior(priors: &[AwbPrior], lux: f64) -> Pwl {
+    let (first, last) = (&priors[0], &priors[priors.len() - 1]);
+    if lux <= first.lux {
+        return first.prior.clone();
+    }
+    if lux >= last.lux {
+        return last.prior.clone();
+    }
+    let i = priors.windows(2).position(|w| w[1].lux >= lux).unwrap_or(0);
+    let (p0, p1) = (&priors[i], &priors[i + 1]);
+    let f = (lux - p0.lux) / (p1.lux - p0.lux);
+    Pwl::combine(&p0.prior, &p1.prior, |_, y0, y1| y0 + (y1 - y0) * f)
+}
+
+/// The Bayesian search over zones already reduced to (R/G, B/G).
+pub(crate) struct Search<'a> {
+    pub tuning: &'a AwbTuning,
+    pub curve: &'a CtCurve,
+    pub zones: &'a [(f64, f64)],
+    pub prior: Pwl,
+}
+
+impl Search<'_> {
+    /// Sum of capped squared colour errors (non-greyness) for gains.
+    fn delta2_sum(&self, gain_r: f64, gain_b: f64) -> f64 {
+        let t = self.tuning;
+        self.zones
+            .iter()
+            .map(|&(r, b)| {
+                let dr = gain_r * r - 1.0 - t.whitepoint_r;
+                let db = gain_b * b - 1.0 - t.whitepoint_b;
+                (dr * dr + db * db).min(t.delta_limit)
+            })
+            .sum()
+    }
+
+    fn cost(&self, t: f64, r: f64, b: f64) -> f64 {
+        self.delta2_sum(1.0 / r, 1.0 / b) - self.prior.eval_clamped(t)
+    }
+
+    /// Step along the curve from `mode.lo` to `mode.hi` and refine the best point.
+    pub fn coarse(&self, mode: AwbMode) -> f64 {
+        let mut points = Vec::new();
+        let mut best = 0;
+        let mut t = mode.lo;
+        loop {
+            let c = self.cost(t, self.curve.r.eval(t), self.curve.b.eval(t));
+            points.push((t, c));
+            if c < points[best].1 {
+                best = points.len() - 1;
+            }
+            if t >= mode.hi {
+                break;
+            }
+            t = (t + t / 10.0 * self.tuning.coarse_step).min(mode.hi);
+        }
+        let mut t = points[best].0;
+        if points.len() > 2 {
+            let bp = best.clamp(1, points.len() - 2);
+            t = interpolate_quadratic(points[bp - 1], points[bp], points[bp + 1]);
+        }
+        t
+    }
+
+    /// Search around `t`, along and across the curve. Returns (t, r, b).
+    pub fn fine(&self, t: f64) -> (f64, f64, f64) {
+        let tu = self.tuning;
+        let (cr, cb) = (&self.curve.r, &self.curve.b);
+        let (r0, b0) = (cr.eval(t), cb.eval(t));
+        let step = t / 10.0 * tu.coarse_step * 0.1;
+        let mut nsteps: i32 = 5;
+        let r_diff = cr.eval(t + f64::from(nsteps) * step) - cr.eval(t - f64::from(nsteps) * step);
+        let b_diff = cb.eval(t + f64::from(nsteps) * step) - cb.eval(t - f64::from(nsteps) * step);
+        let len2 = b_diff * b_diff + r_diff * r_diff;
+        if len2 < 1e-6 {
+            return (t, r0, b0);
+        }
+        // Unit vector orthogonal to the b-versus-r curve.
+        let len = len2.sqrt();
+        let (tr, tb) = (b_diff / len, -r_diff / len);
+        let range = tu.transverse_neg + tu.transverse_pos;
+        let num = ((range * 100.0 + 0.5).floor() as i32 + 1).clamp(3, 12);
+        nsteps += num;
+        let mut best: Option<(f64, f64, f64, f64)> = None;
+        for i in -nsteps..=nsteps {
+            let tt = t + f64::from(i) * step;
+            let prior = self.prior.eval_clamped(tt);
+            let (rc, bc) = (cr.eval(tt), cb.eval(tt));
+            let mut pts = Vec::with_capacity(num as usize);
+            let mut bp = 0;
+            for j in 0..num {
+                let off = -tu.transverse_neg + range * f64::from(j) / f64::from(num - 1);
+                let (rt, bt) = (rc + tr * off, bc + tb * off);
+                let c = self.delta2_sum(1.0 / rt, 1.0 / bt) - prior;
+                pts.push((off, c));
+                if c < pts[bp].1 {
+                    bp = j as usize;
+                }
+            }
+            let bp = bp.clamp(1, num as usize - 2);
+            let off = interpolate_quadratic(pts[bp - 1], pts[bp], pts[bp + 1]);
+            let (rt, bt) = (rc + tr * off, bc + tb * off);
+            let c = self.delta2_sum(1.0 / rt, 1.0 / bt) - prior;
+            if best.is_none_or(|b| c < b.0) {
+                best = Some((c, tt, rt, bt));
+            }
+        }
+        best.map_or((t, r0, b0), |(_, t, r, b)| (t, r, b))
+    }
+}
+
+/// The x of the extremum of the parabola through three points, kept within `[a.x, c.x]`.
+pub(crate) fn interpolate_quadratic(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+    const EPS: f64 = 1e-3;
+    let (ca, ba) = ((c.0 - a.0, c.1 - a.1), (b.0 - a.0, b.1 - a.1));
+    let den = 2.0 * (ba.1 * ca.0 - ca.1 * ba.0);
+    if den.abs() > EPS {
+        let num = ba.1 * ca.0 * ca.0 - ca.1 * ba.0 * ba.0;
+        return (num / den + a.0).clamp(a.0, c.0);
+    }
+    if a.1 < c.1 - EPS {
+        a.0
+    } else if c.1 < a.1 - EPS {
+        c.0
+    } else {
+        b.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quadratic_finds_the_vertex() {
+        let f = |x: f64| (x - 2.5) * (x - 2.5);
+        let x = interpolate_quadratic((1.0, f(1.0)), (2.0, f(2.0)), (4.0, f(4.0)));
+        assert!((x - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn grey_world_discards_outliers() {
+        let mut zones = vec![(0.5, 1.0, 0.25); 8];
+        zones.push((5.0, 1.0, 0.25));
+        zones.push((0.01, 1.0, 5.0));
+        let (_, r, b) = grey_world(&zones, 4500.0);
+        assert!((r - 2.0).abs() < 1e-9, "{r}");
+        assert!((b - 4.0).abs() < 1e-9, "{b}");
+    }
+
+    #[test]
+    fn prior_interpolates_by_lux() {
+        let priors = vec![
+            AwbPrior {
+                lux: 0.0,
+                prior: Pwl::from_flat(&[2000.0, 1.0, 8000.0, 1.0]).unwrap(),
+            },
+            AwbPrior {
+                lux: 100.0,
+                prior: Pwl::from_flat(&[2000.0, 3.0, 8000.0, 3.0]).unwrap(),
+            },
+        ];
+        assert_eq!(interpolate_prior(&priors, 50.0).eval(4000.0), 2.0);
+        assert_eq!(interpolate_prior(&priors, 500.0).eval(4000.0), 3.0);
+    }
+}
