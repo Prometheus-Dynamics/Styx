@@ -12,15 +12,19 @@
 //!
 //! [`subscribes`]: SensorBridge::subscribe
 
-use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::bridge_sys::*;
-use super::ioctl::ioctl;
+use crate::Error;
+use crate::event::{EventKind, EventType, Events, SubscribeFlags};
+use crate::subdev::{MbusCode, MbusFormat, Subdev, Which};
+use crate::v4l2::{ControlValue, ControlWhich, Controls, MenuValue, cid};
+
+/// The bridge's stream request event.
+const STREAM_EVENT: EventType = EventType::Private(EVENT_STREAM - V4L2_EVENT_PRIVATE_START);
 
 /// Driver name the bridge module registers.
 pub const DRIVER_NAME: &str = "styx-sensor-bridge";
@@ -269,32 +273,37 @@ pub fn find_bridges() -> io::Result<Vec<BridgeLocation>> {
 /// An open bridge subdevice.
 #[derive(Debug)]
 pub struct SensorBridge {
-    file: File,
-    path: PathBuf,
+    subdev: Subdev,
     link_frequencies: Vec<i64>,
+}
+
+/// Converts a kernel-layer error to the `io::Error` of its errno (so callers can match
+/// `raw_os_error`, e.g. `ESTALE` from a late acknowledgement).
+fn io_error(err: Error) -> io::Error {
+    match err.errno() {
+        Some(errno) => io::Error::from_raw_os_error(errno),
+        None => io::Error::other(err),
+    }
 }
 
 impl SensorBridge {
     /// Opens a bridge subdev node (non-blocking; events are waited for with `poll`).
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
-            .open(&path)?;
+        let subdev = Subdev::open(path).map_err(|e| match e {
+            Error::Open { source, .. } => source,
+            other => io_error(other),
+        })?;
         let mut bridge = Self {
-            file,
-            path,
+            subdev,
             link_frequencies: Vec::new(),
         };
-        bridge.link_frequencies = bridge.query_int_menu(V4L2_CID_LINK_FREQ)?;
+        bridge.link_frequencies = bridge.query_int_menu(cid::LINK_FREQ)?;
         Ok(bridge)
     }
 
     /// Node path.
     pub fn path(&self) -> &Path {
-        &self.path
+        self.subdev.path()
     }
 
     /// The link frequencies from the device tree, in Hz, indexed as [`Timing::link_freq_index`].
@@ -302,91 +311,77 @@ impl SensorBridge {
         &self.link_frequencies
     }
 
+    /// The items of an integer menu, by index; every index must be present.
     fn query_int_menu(&self, id: u32) -> io::Result<Vec<i64>> {
-        let mut q = V4l2Queryctrl {
-            id,
-            ..Default::default()
-        };
-        // SAFETY: VIDIOC_QUERYCTRL reads and fills one `v4l2_queryctrl`.
-        unsafe { ioctl(self.file.as_fd(), VIDIOC_QUERYCTRL, &mut q) }?;
-        let mut items = Vec::new();
-        for index in q.minimum.max(0)..=q.maximum.max(0) {
-            let mut m = V4l2Querymenu {
-                id,
-                index: index as u32,
-                ..Default::default()
-            };
-            // SAFETY: VIDIOC_QUERYMENU reads and fills one `v4l2_querymenu`.
-            unsafe { ioctl(self.file.as_fd(), VIDIOC_QUERYMENU, &mut m) }?;
-            let v = m.value;
-            let mut b = [0u8; 8];
-            b.copy_from_slice(&v[..8]);
-            items.push(i64::from_ne_bytes(b));
+        let info = self.subdev.query_control(id).map_err(io_error)?;
+        let items = self.subdev.query_menu(&info).map_err(io_error)?;
+        let first = info.minimum.max(0);
+        let expected = (info.maximum - first + 1).max(0) as usize;
+        let complete = items.len() == expected
+            && items
+                .iter()
+                .enumerate()
+                .all(|(i, item)| i64::from(item.index) == first + i as i64);
+        if !complete {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
         }
-        Ok(items)
+        items
+            .into_iter()
+            .map(|item| match item.value {
+                MenuValue::Integer(v) => Ok(v),
+                MenuValue::Name(_) => Err(io::Error::from_raw_os_error(libc::EINVAL)),
+            })
+            .collect()
     }
 
     /// Sets the active source pad format. The bridge clamps to its limits and replaces a code it
     /// does not accept; the result is what it chose. Fails with `EBUSY` while streaming.
     pub fn set_format(&self, format: PadFormat) -> io::Result<PadFormat> {
-        let mut f = V4l2SubdevFormat {
-            which: V4L2_SUBDEV_FORMAT_ACTIVE,
+        let f = MbusFormat {
+            width: format.width,
+            height: format.height,
+            code: MbusCode(format.code),
+            field: 1, // V4L2_FIELD_NONE
             ..Default::default()
         };
-        f.format.code = format.code;
-        f.format.width = format.width;
-        f.format.height = format.height;
-        f.format.field = 1; // V4L2_FIELD_NONE
-        // SAFETY: VIDIOC_SUBDEV_S_FMT reads and fills one `v4l2_subdev_format`.
-        unsafe { ioctl(self.file.as_fd(), VIDIOC_SUBDEV_S_FMT, &mut f) }?;
+        let f = self
+            .subdev
+            .set_format(0, Which::Active, &f)
+            .map_err(io_error)?;
         Ok(PadFormat {
-            code: f.format.code,
-            width: f.format.width,
-            height: f.format.height,
+            code: f.code.0,
+            width: f.width,
+            height: f.height,
         })
     }
 
     /// The active source pad format.
     pub fn format(&self) -> io::Result<PadFormat> {
-        let mut f = V4l2SubdevFormat {
-            which: V4L2_SUBDEV_FORMAT_ACTIVE,
-            ..Default::default()
-        };
-        // SAFETY: VIDIOC_SUBDEV_G_FMT reads and fills one `v4l2_subdev_format`.
-        unsafe { ioctl(self.file.as_fd(), VIDIOC_SUBDEV_G_FMT, &mut f) }?;
+        let f = self.subdev.format(0, Which::Active).map_err(io_error)?;
         Ok(PadFormat {
-            code: f.format.code,
-            width: f.format.width,
-            height: f.format.height,
+            code: f.code.0,
+            width: f.width,
+            height: f.height,
         })
     }
 
-    fn ext_ctrls(&self, request: u32, controls: &mut [V4l2ExtControl]) -> io::Result<()> {
-        let mut c = V4l2ExtControls {
-            which: V4L2_CTRL_WHICH_CUR_VAL,
-            count: controls.len() as u32,
-            error_idx: 0,
-            request_fd: 0,
-            reserved: [0],
-            controls: controls.as_mut_ptr(),
-        };
-        // SAFETY: `c` describes `controls`, which stays alive and exclusively borrowed for the
-        // call; the request is G/S_EXT_CTRLS, which reads and fills that array.
-        unsafe { ioctl(self.file.as_fd(), request, &mut c) }?;
-        Ok(())
+    fn set_controls(&self, values: &[(u32, ControlValue)]) -> io::Result<()> {
+        self.subdev
+            .set_controls(ControlWhich::Current, values)
+            .map_err(io_error)
     }
 
     fn set_i32(&self, id: u32, value: i32) -> io::Result<()> {
-        self.ext_ctrls(
-            VIDIOC_S_EXT_CTRLS,
-            &mut [V4l2ExtControl::new_i32(id, value)],
-        )
+        self.set_controls(&[(id, ControlValue::Integer(value))])
     }
 
     fn get_i32(&self, id: u32) -> io::Result<i32> {
-        let mut c = [V4l2ExtControl::new_i32(id, 0)];
-        self.ext_ctrls(VIDIOC_G_EXT_CTRLS, &mut c)?;
-        Ok(c[0].value_i32())
+        match self.subdev.control(id).map_err(io_error)? {
+            ControlValue::Integer(v) => Ok(v),
+            other => Err(io::Error::other(format!(
+                "control {id:#x}: unexpected value {other:?}"
+            ))),
+        }
     }
 
     /// Sets link frequency, pixel rate and blanking in one atomic control write. Link frequency
@@ -398,26 +393,23 @@ impl SensorBridge {
                 "link frequency index out of range",
             ));
         }
-        self.ext_ctrls(
-            VIDIOC_S_EXT_CTRLS,
-            &mut [
-                V4l2ExtControl::new_i32(V4L2_CID_LINK_FREQ, timing.link_freq_index as i32),
-                V4l2ExtControl::new_i64(V4L2_CID_PIXEL_RATE, timing.pixel_rate),
-                V4l2ExtControl::new_i32(V4L2_CID_HBLANK, timing.hblank),
-                V4l2ExtControl::new_i32(V4L2_CID_VBLANK, timing.vblank),
-            ],
-        )
+        self.set_controls(&[
+            (
+                cid::LINK_FREQ,
+                ControlValue::Integer(timing.link_freq_index as i32),
+            ),
+            (cid::PIXEL_RATE, ControlValue::Integer64(timing.pixel_rate)),
+            (cid::HBLANK, ControlValue::Integer(timing.hblank)),
+            (cid::VBLANK, ControlValue::Integer(timing.vblank)),
+        ])
     }
 
     /// Sets horizontal and vertical blanking only.
     pub fn set_blanking(&self, hblank: i32, vblank: i32) -> io::Result<()> {
-        self.ext_ctrls(
-            VIDIOC_S_EXT_CTRLS,
-            &mut [
-                V4l2ExtControl::new_i32(V4L2_CID_HBLANK, hblank),
-                V4l2ExtControl::new_i32(V4L2_CID_VBLANK, vblank),
-            ],
-        )
+        self.set_controls(&[
+            (cid::HBLANK, ControlValue::Integer(hblank)),
+            (cid::VBLANK, ControlValue::Integer(vblank)),
+        ])
     }
 
     /// Enables or disables the supplies and clock the device tree gives the bridge. Powering off
@@ -452,41 +444,26 @@ impl SensorBridge {
     /// Subscribes this handle to stream requests. The bridge refuses to start the stream while no
     /// handle is subscribed.
     pub fn subscribe(&self) -> io::Result<()> {
-        let mut sub = V4l2EventSubscription {
-            type_: EVENT_STREAM,
-            ..Default::default()
-        };
-        // SAFETY: VIDIOC_SUBSCRIBE_EVENT reads one `v4l2_event_subscription`.
-        unsafe { ioctl(self.file.as_fd(), VIDIOC_SUBSCRIBE_EVENT, &mut sub) }?;
-        Ok(())
+        self.subdev
+            .subscribe(STREAM_EVENT, 0, SubscribeFlags::empty())
+            .map_err(io_error)
     }
 
     /// Unsubscribes (also happens when the handle is closed).
     pub fn unsubscribe(&self) -> io::Result<()> {
-        let mut sub = V4l2EventSubscription {
-            type_: EVENT_STREAM,
-            ..Default::default()
-        };
-        // SAFETY: VIDIOC_UNSUBSCRIBE_EVENT reads one `v4l2_event_subscription`.
-        unsafe { ioctl(self.file.as_fd(), VIDIOC_UNSUBSCRIBE_EVENT, &mut sub) }?;
-        Ok(())
+        self.subdev.unsubscribe(STREAM_EVENT, 0).map_err(io_error)
     }
 
     /// Dequeues a pending stream request without blocking; `None` if there is none.
     pub fn try_next_request(&self) -> io::Result<Option<StreamRequest>> {
-        loop {
-            // SAFETY: all-zero bytes are a valid `v4l2_event`.
-            let mut ev: V4l2Event = unsafe { std::mem::zeroed() };
-            // SAFETY: VIDIOC_DQEVENT fills one `v4l2_event`, which `ev` is.
-            match unsafe { ioctl(self.file.as_fd(), VIDIOC_DQEVENT, &mut ev) } {
-                Ok(_) if ev.type_ == EVENT_STREAM => {
-                    return StreamRequest::decode(&ev.u.data).map(Some);
-                }
-                Ok(_) => continue,
-                Err(e) if e.raw_os_error() == Some(libc::ENOENT) => return Ok(None),
-                Err(e) => return Err(e),
+        while let Some(ev) = self.subdev.dequeue_event().map_err(io_error)? {
+            if let EventKind::Private { offset, data } = ev.kind
+                && EventType::Private(offset) == STREAM_EVENT
+            {
+                return StreamRequest::decode(&data).map(Some);
             }
         }
+        Ok(None)
     }
 
     /// Waits up to `timeout` (forever if `None`) for a stream request.
@@ -494,23 +471,9 @@ impl SensorBridge {
         if let Some(req) = self.try_next_request()? {
             return Ok(Some(req));
         }
-        let mut pfd = libc::pollfd {
-            fd: self.file.as_raw_fd(),
-            events: libc::POLLPRI,
-            revents: 0,
-        };
-        let ms = timeout.map_or(-1, |t| t.as_millis().min(i32::MAX as u128) as i32);
-        // SAFETY: `pfd` is one live pollfd for the duration of the call.
-        let ret = unsafe { libc::poll(&mut pfd, 1, ms) };
-        if ret < 0 {
-            let err = io::Error::last_os_error();
-            return if err.kind() == io::ErrorKind::Interrupted {
-                Ok(None)
-            } else {
-                Err(err)
-            };
-        }
-        if ret == 0 {
+        let ready =
+            crate::ioctl::poll_fd(self.subdev.as_fd(), libc::POLLPRI, timeout).map_err(io_error)?;
+        if !ready.priority {
             return Ok(None);
         }
         self.try_next_request()
@@ -521,10 +484,7 @@ impl SensorBridge {
     /// if the bridge already gave up waiting (timeout) or never asked.
     pub fn acknowledge(&self, request: &StreamRequest, result: Result<(), i32>) -> io::Result<()> {
         let value = ack_control_value(request.sequence, result);
-        self.ext_ctrls(
-            VIDIOC_S_EXT_CTRLS,
-            &mut [V4l2ExtControl::new_i64(CID_STREAM_ACK, value)],
-        )
+        self.set_controls(&[(CID_STREAM_ACK, ControlValue::Integer64(value))])
     }
 
     /// Serves stream requests until `keep_going` returns false: calls `handler` for each request
@@ -550,7 +510,7 @@ impl SensorBridge {
 
 impl AsFd for SensorBridge {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.file.as_fd()
+        self.subdev.as_fd()
     }
 }
 
