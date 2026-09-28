@@ -127,7 +127,18 @@ fn main() -> Result<(), CaptureError> {
         return Ok(());
     };
     let backend = device.backend(kind).expect("found");
-    let mode = backend.descriptor.modes[0].clone();
+    // 1280x800 raw Bayer when the camera has it (pBAA natively, BA10 through libcamera).
+    let modes = &backend.descriptor.modes;
+    let full = |m: &&Mode| {
+        m.format.resolution.width.get() == 1280 && m.format.resolution.height.get() == 800
+    };
+    let mode = modes
+        .iter()
+        .filter(full)
+        .find(|m| matches!(&m.format.code.to_u32().to_le_bytes(), b"pBAA" | b"BA10"))
+        .or_else(|| modes.iter().find(full))
+        .unwrap_or(&modes[0])
+        .clone();
     println!(
         "\nusing {} via {kind}, mode {} {}x{}",
         device.identity.display,

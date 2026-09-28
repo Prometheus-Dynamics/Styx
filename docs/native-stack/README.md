@@ -44,6 +44,7 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | `crates/kernel` | `styx-kernel` | Safe Rust kernel interfaces, `libc` only | kernel agent (`v4l2`, `media`, `subdev`, `dma_heap`, `event`), bridge agent (`bus`) |
 | `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description | sensor agent |
 | `crates/graph` | `styx-graph` | Device graph, `Provider` trait, async reactor, mock provider | graph agent |
+| `crates/native` | `styx-native` | The runtime for bridged sensors: description search path, discovery, `NativeCamera` (power, mode, receiver path, buffers, async frames, embedded data), frame-accurate typed controls, the `native` `Provider`; `styx` backend `BackendKind::Native` (feature `native`) | provider agent |
 | `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
 
 Crates must not depend on each other except: `styx-sensor` may use `styx-kernel` types behind
