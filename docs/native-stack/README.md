@@ -87,8 +87,9 @@ limits at that fps.
 
 ## Rules for work on this branch
 
-- Rust crates: no C dependencies, `libc` allowed. Unsafe only in `styx-kernel`, each block with a
-  `// SAFETY:` comment (workspace lint `unsafe_op_in_unsafe_fn` is deny).
+- Rust crates: no C dependencies, `libc` allowed. Unsafe only in `styx-kernel` and in the
+  reactor's syscalls (`styx-graph`, `rt/sys.rs`), each block with a `// SAFETY:` comment
+  (workspace lint `unsafe_op_in_unsafe_fn` is deny).
 - Tests: logic is unit-tested on the host; kernel wrappers get tests that run where the device
   exists and skip cleanly where it does not (e.g. `/dev/video*`, `/dev/media*`).
 - `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test` pass; files
