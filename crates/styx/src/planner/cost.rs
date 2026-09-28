@@ -54,6 +54,12 @@ pub(crate) fn uvc_capture_latency_ms(fps: Option<f32>) -> f32 {
     fps.filter(|fps| *fps > 0.0)
         .map_or(33.0, |fps| (0.8 * 1000.0 / fps).max(8.0))
 }
+/// A sensor Styx drives itself: the frame lands in memory one readout (about one frame
+/// period) after exposure, with no encode or transfer on top.
+pub(crate) fn native_capture_latency_ms(fps: Option<f32>) -> f32 {
+    fps.filter(|fps| *fps > 0.0)
+        .map_or(16.7, |fps| 1000.0 / fps + 0.5)
+}
 /// turbojpeg luma decode, single thread (C270 720p: 1.59 ms).
 pub(crate) const MJPEG_LUMA_MS_PER_MP: f32 = 1.75;
 /// With restart markers, split across four A76 cores (C270 720p: 0.88 ms).

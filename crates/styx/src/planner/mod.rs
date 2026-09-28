@@ -333,7 +333,14 @@ fn pick_interval(mode: &Mode, req: &FrameRequirements) -> Option<Interval> {
         .iter()
         .copied()
         .max_by(|a, b| a.fps().total_cmp(&b.fps()));
+    // A mode that can run at any rate in a range (a sensor Styx drives) runs at exactly the
+    // rate asked for when saving power.
+    let exact = req
+        .min_fps
+        .and_then(Interval::from_fps)
+        .filter(|i| mode.interval_stepwise.is_some_and(|s| s.contains(*i)));
     match req.priority {
+        Priority::Power if exact.is_some() => exact,
         Priority::Power => mode
             .intervals
             .iter()

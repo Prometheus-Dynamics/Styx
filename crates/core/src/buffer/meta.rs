@@ -79,20 +79,29 @@ pub struct ResidencyTransition {
 pub enum BackendFrameMeta {
     V4l2(V4l2FrameMeta),
     Libcamera(LibcameraFrameMeta),
+    /// A sensor driven by Styx itself (the native stack).
+    Native(NativeFrameMeta),
 }
 
 impl BackendFrameMeta {
     pub fn as_v4l2(&self) -> Option<&V4l2FrameMeta> {
         match self {
             Self::V4l2(meta) => Some(meta),
-            Self::Libcamera(_) => None,
+            _ => None,
         }
     }
 
     pub fn as_libcamera(&self) -> Option<&LibcameraFrameMeta> {
         match self {
             Self::Libcamera(meta) => Some(meta),
-            Self::V4l2(_) => None,
+            _ => None,
+        }
+    }
+
+    pub fn as_native(&self) -> Option<&NativeFrameMeta> {
+        match self {
+            Self::Native(meta) => Some(meta),
+            _ => None,
         }
     }
 
@@ -101,9 +110,70 @@ impl BackendFrameMeta {
         match self {
             Self::V4l2(meta) => meta.sequence,
             Self::Libcamera(meta) => meta.sequence,
+            Self::Native(meta) => meta.sequence,
         }
     }
 }
+
+/// Per-frame metadata of a sensor Styx drives itself: the buffer, and the exposure, gain and
+/// frame timing that produced the frame (predicted from the control schedule, or read back from
+/// the frame's embedded data when `verified`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NativeFrameMeta {
+    /// Frame sequence number from the receiver (0 at stream start).
+    pub sequence: u32,
+    /// Payload bytes.
+    pub bytes_used: u32,
+    /// The receiver flagged the frame as corrupted.
+    pub error: bool,
+    /// Exposure time in nanoseconds.
+    pub exposure_ns: u64,
+    /// Analogue gain.
+    pub analog_gain: f32,
+    /// Digital gain (1 without one).
+    pub digital_gain: f32,
+    /// Frame duration in nanoseconds.
+    pub frame_duration_ns: u64,
+    /// Frame length in lines.
+    pub frame_length: u32,
+    /// The values were read back from the frame rather than predicted.
+    pub verified: bool,
+}
+
+impl NativeFrameMeta {
+    /// Total gain.
+    pub fn gain(&self) -> f32 {
+        self.analog_gain * self.digital_gain
+    }
+}
+
+impl PartialEq for NativeFrameMeta {
+    fn eq(&self, o: &Self) -> bool {
+        (
+            self.sequence,
+            self.bytes_used,
+            self.error,
+            self.exposure_ns,
+            self.analog_gain.to_bits(),
+            self.digital_gain.to_bits(),
+            self.frame_duration_ns,
+            self.frame_length,
+            self.verified,
+        ) == (
+            o.sequence,
+            o.bytes_used,
+            o.error,
+            o.exposure_ns,
+            o.analog_gain.to_bits(),
+            o.digital_gain.to_bits(),
+            o.frame_duration_ns,
+            o.frame_length,
+            o.verified,
+        )
+    }
+}
+
+impl Eq for NativeFrameMeta {}
 
 /// libcamera per-frame metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,6 +425,10 @@ impl FrameMeta {
         self.backend
             .as_ref()
             .and_then(BackendFrameMeta::as_libcamera)
+    }
+
+    pub fn native(&self) -> Option<&NativeFrameMeta> {
+        self.backend.as_ref().and_then(BackendFrameMeta::as_native)
     }
 
     /// Driver frame sequence number, when the backend reports one.

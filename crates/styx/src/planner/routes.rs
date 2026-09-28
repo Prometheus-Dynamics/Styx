@@ -101,6 +101,7 @@ pub(crate) fn backend_name(kind: BackendKind) -> &'static str {
         BackendKind::File => "file",
         BackendKind::Simulation => "simulation",
         BackendKind::Replay => "replay",
+        BackendKind::Native => "native",
     }
 }
 
@@ -426,6 +427,11 @@ fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanS
             StepExecution::ZeroCopy,
             cost::uvc_capture_latency_ms(fps),
             "camera exposure, encode and transfer",
+        ),
+        BackendKind::Native => (
+            StepExecution::ZeroCopy,
+            cost::native_capture_latency_ms(fps),
+            "sensor driven by Styx, raw frames in dma-bufs",
         ),
         BackendKind::Replay => (
             StepExecution::ZeroCopy,

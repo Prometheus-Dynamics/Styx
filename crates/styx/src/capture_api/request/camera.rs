@@ -23,6 +23,7 @@ const DEFAULT_CAMERA_FORMATS: &[FourCc] = &[
 ];
 
 const DEFAULT_CAMERA_BACKEND_PRIORITY: &[BackendKind] = &[
+    BackendKind::Native,
     BackendKind::V4l2,
     BackendKind::Libcamera,
     BackendKind::Virtual,

@@ -23,6 +23,7 @@ replay-mcap = ["styx/replay-mcap"]
 preview-window = ["styx/preview-window"]
 simulation-bevy = ["styx/simulation-bevy"]
 v4l2 = ["styx/v4l2"]
+native = ["styx/native"]
 camera-graph = ["graph-pipeline", "v4l2", "libcamera"]
 
 [dependencies]
@@ -32,6 +33,11 @@ daedalus = { workspace = true, features = ["engine", "plugins"], optional = true
 image.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
 libc.workspace = true
+
+[[bin]]
+name = "native_capture"
+path = "native_capture.rs"
+required-features = ["native"]
 
 [[bin]]
 name = "quickstart_capture_virtual"

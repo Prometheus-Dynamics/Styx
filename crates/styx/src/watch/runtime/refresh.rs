@@ -129,6 +129,7 @@ fn backend_signature(backend: &ProbedBackend) -> String {
         BackendKind::File => "file",
         BackendKind::Simulation => "simulation",
         BackendKind::Replay => "replay",
+        BackendKind::Native => "native",
     });
     out.push(':');
     out.push_str(&handle_signature(&backend.handle));
@@ -168,6 +169,8 @@ fn handle_signature(handle: &BackendHandle) -> String {
             pacing,
             loop_forever,
         } => format!("{}:{pacing:?}:{loop_forever}", path.display()),
+        #[cfg(feature = "native")]
+        BackendHandle::Native { key } => key.clone(),
     }
 }
 
