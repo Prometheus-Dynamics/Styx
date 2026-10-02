@@ -26,6 +26,8 @@ pub(super) mod file_backend;
 pub(super) mod libcamera_backend;
 #[cfg(feature = "native")]
 pub(super) mod native_backend;
+#[cfg(feature = "native")]
+pub(super) mod native_isp;
 #[cfg(feature = "netcam")]
 pub(super) mod netcam_backend;
 mod replay_backend;

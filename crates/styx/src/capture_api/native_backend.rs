@@ -152,7 +152,8 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
     ]
 }
 
-/// The probed device of a bridged camera.
+/// The probed device of a bridged camera: its raw modes, and `NV12` / `RG24` modes processed
+/// by the PiSP or the software ISP with the 3A loop (property `isp`).
 pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
     let mut modes = Vec::new();
     for m in &info.modes {
@@ -160,6 +161,10 @@ pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
             modes.extend(capture_mode(m, f.0));
         }
     }
+    let processed = super::native_isp::processed_modes(&modes);
+    modes.extend(processed);
+    let mut properties = info.properties();
+    properties.push(("isp".into(), super::native_isp::isp_name(info).into()));
     let descriptor = CaptureDescriptor::new(modes).with_controls(control_metas(info));
     ProbedDevice {
         identity: DeviceIdentity {
@@ -172,7 +177,7 @@ pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
                 key: info.key.clone(),
             },
             descriptor,
-            properties: info.properties(),
+            properties,
         }],
     }
 }
@@ -323,6 +328,12 @@ pub(super) fn start_native(
     let provider = styx_native::NativeProvider::new(SensorLibrary::system())
         .with_options(CameraOptions::default());
     let mut camera = provider.open_camera(key).map_err(native_err)?;
+    if super::native_isp::is_processed(mode.format.code) {
+        // Exposure and gain belong to the 3A loop; initial controls are not applied.
+        return super::native_isp::start_processed(
+            camera, mode, interval, descriptor, config, queue,
+        );
+    }
     let settings = StreamSettings {
         width: mode.format.resolution.width.get(),
         height: mode.format.resolution.height.get(),

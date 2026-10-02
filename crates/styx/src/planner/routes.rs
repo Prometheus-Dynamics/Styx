@@ -191,6 +191,17 @@ pub(crate) fn candidate<'a>(
     }
 
     let mp = megapixels(width, height);
+    // A native camera with an ISP processes raw frames itself, with the 3A loop: a raw mode
+    // through a decoder would give frames nobody exposes or white-balances.
+    if backend.kind == BackendKind::Native
+        && raw_bayer(code)
+        && !req.accepts(code)
+        && native_isp(backend).is_some()
+    {
+        return Err(format!(
+            "raw {code} would need a decoder without 3A; the camera's processed modes run AE/AWB"
+        ));
+    }
 
     let mut steps = vec![capture_step(backend, mode, fps)];
     let notes = Vec::new();
@@ -267,7 +278,8 @@ fn finish<'a>(
         mode.format.resolution.height.get(),
     );
     let mp = megapixels(width, height);
-    let isp = backend.kind == BackendKind::Libcamera;
+    let isp = backend.kind == BackendKind::Libcamera
+        || (!raw_bayer(mode.format.code) && native_isp(backend) == Some("pisp"));
     if matches!(req.overrides.hardware, HardwarePolicy::Required)
         && !isp
         && !matches!(
@@ -416,7 +428,82 @@ fn decode_scale(route: &Route, req: &FrameRequirements, source: (u32, u32)) -> u
         .unwrap_or(1)
 }
 
+/// Raw Bayer formats, 8-bit and the V4L2 packed / 16-bit ones sensors deliver.
+pub(crate) fn raw_bayer(code: FourCc) -> bool {
+    code.is_bayer_raw()
+        || matches!(
+            &code.to_u32().to_le_bytes(),
+            b"pBAA"
+                | b"pGAA"
+                | b"pgAA"
+                | b"pRAA"
+                | b"pBCC"
+                | b"pGCC"
+                | b"pgCC"
+                | b"pRCC"
+                | b"BG10"
+                | b"GB10"
+                | b"BA10"
+                | b"RG10"
+                | b"BG12"
+                | b"GB12"
+                | b"BA12"
+                | b"RG12"
+                | b"BG16"
+                | b"GB16"
+                | b"GR16"
+                | b"RG16"
+                | b"BYR2"
+                | b"BA81"
+        )
+}
+
+/// The ISP a native camera's processed modes run on (its `isp` property).
+pub(crate) fn native_isp(backend: &ProbedBackend) -> Option<&str> {
+    (backend.kind == BackendKind::Native)
+        .then(|| {
+            backend
+                .properties
+                .iter()
+                .find(|(k, _)| k == "isp")
+                .map(|(_, v)| v.as_str())
+        })
+        .flatten()
+}
+
 fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanStep {
+    let processed = backend.kind == BackendKind::Native && !raw_bayer(mode.format.code);
+    if processed {
+        let mp = megapixels(
+            mode.format.resolution.width.get(),
+            mode.format.resolution.height.get(),
+        );
+        let sensor = cost::native_capture_latency_ms(fps);
+        let (execution, cost, how) = match native_isp(backend) {
+            Some("pisp") => (
+                StepExecution::Hardware,
+                StepCost::offloaded(
+                    sensor + cost::PISP_PROCESS_LATENCY_MS,
+                    cost::PISP_PROCESS_CPU_MS,
+                ),
+                "PiSP front end statistics and back end, raw frames as dma-bufs, 3A in Styx",
+            ),
+            _ => {
+                let cpu = cost::SOFTISP_MS_PER_MP * mp + cost::ALGORITHMS_MS;
+                (
+                    StepExecution::Cpu,
+                    StepCost::offloaded(sensor + cpu, cpu),
+                    "software ISP and 3A in Styx",
+                )
+            }
+        };
+        return PlanStep {
+            kind: StepKind::Capture,
+            execution,
+            detail: format!("{} ({how})", describe(backend, mode)),
+            cost,
+        };
+    }
     let (execution, latency, how) = match backend.kind {
         BackendKind::Libcamera if has_isp_second_output(backend) => (
             StepExecution::Hardware,
@@ -629,6 +716,7 @@ fn decode_cost(code: FourCc, descriptor: &CodecDescriptor, mp: f32, threads: usi
         (_, true) if descriptor.impl_name.contains("ffmpeg") => cost::FFMPEG_SW_MJPEG_MS_PER_MP,
         (_, true) => cost::MJPEG_LUMA_MS_PER_MP * 2.0,
         _ if code.is_compressed() => cost::SW_VIDEO_DECODE_MS_PER_MP,
+        _ if raw_bayer(code) => cost::SOFTISP_MS_PER_MP,
         _ if matches!(
             code,
             FourCc::YUYV | FourCc::UYVY | FourCc::YVYU | FourCc::VYUY

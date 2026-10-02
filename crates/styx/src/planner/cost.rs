@@ -60,6 +60,18 @@ pub(crate) fn native_capture_latency_ms(fps: Option<f32>) -> f32 {
     fps.filter(|fps| *fps > 0.0)
         .map_or(16.7, |fps| 1000.0 / fps + 0.5)
 }
+/// Native camera through the PiSP (CM5, OV9782 1280x800, `native-pipeline pisp`): the front
+/// end's raw frame and statistics are dequeued about 9 ms after the frame starts, then the
+/// 3A loop and the back end job take 1.7 ms (0.8 ms of it the back end); the host spends
+/// about 1 ms per frame (statistics, algorithms, config and tiles, ioctls).
+pub(crate) const PISP_PROCESS_LATENCY_MS: f32 = 1.7;
+pub(crate) const PISP_PROCESS_CPU_MS: f32 = 1.0;
+/// Software ISP (styx-softisp, one A76 core): unpack, black level, white balance, demosaic,
+/// CCM, tone curve, NV12/RGB out plus statistics: 6.7 ms per 1280x800 frame in the bench,
+/// 10-14 ms measured end to end on the camera (reading the uncached capture buffer included).
+pub(crate) const SOFTISP_MS_PER_MP: f32 = 10.0;
+/// The 3A algorithms per frame (AE, AWB, CCM, contrast; Raspberry Pi tuning).
+pub(crate) const ALGORITHMS_MS: f32 = 0.3;
 /// turbojpeg luma decode, single thread (C270 720p: 1.59 ms).
 pub(crate) const MJPEG_LUMA_MS_PER_MP: f32 = 1.75;
 /// With restart markers, split across four A76 cores (C270 720p: 0.88 ms).

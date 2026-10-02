@@ -5,6 +5,7 @@
 use styx_algo::{Params, Statistics, Tuning};
 use styx_softisp::{
     Demosaic, IspParams, OutputBuffers, RawFormat, RawPacking, Scale, SoftIsp, StatsConfig,
+    YuvMatrix,
 };
 
 use crate::controller::{Controller, SensorValues, Start, Step};
@@ -45,11 +46,13 @@ impl std::fmt::Debug for SoftLoop {
     }
 }
 
-/// Software ISP parameters the loop does not change: bilinear demosaic, BT.709 limited range
-/// YUV, statistics on a 16x12 zone grid with a 256-bin histogram (every second quad row).
+/// Software ISP parameters the loop does not change: bilinear demosaic, full-range BT.601 YUV
+/// (as the PiSP back end's "jpeg" encoding), statistics on a 16x12 zone grid with a 256-bin
+/// histogram (every second quad row).
 pub fn base_params() -> IspParams {
     IspParams {
         demosaic: Demosaic::Bilinear,
+        yuv: YuvMatrix::Bt601Full,
         stats: Some(StatsConfig {
             zones_x: 16,
             zones_y: 12,
