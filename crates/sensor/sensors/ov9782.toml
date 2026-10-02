@@ -1,12 +1,8 @@
 # OmniVision OV9782: 1 MP (1280x800) global shutter colour sensor, 2-lane MIPI CSI-2.
 #
-# PROVENANCE - READ BEFORE MERGING
-# The register addresses, register values and timing constants in this file were read from
-# the HeliOS kernel driver `gaia/assets/buildroot/linux/ov9782/drivers/media/i2c/ov9782.c`
-# (SPDX GPL-2.0-only, derived from the upstream ov9282 driver). No code was copied; only
-# register addresses/values and timing numbers. Styx is MIT OR Apache-2.0: these values must be
-# replaced from the OV9782 datasheet, or their use cleared by the project owner, before this
-# file is merged to `dev`.
+# Provenance: register addresses, values and timing constants were read from the HeliOS kernel
+# driver `gaia/assets/buildroot/linux/ov9782/drivers/media/i2c/ov9782.c`, written by the
+# project owner, who cleared their use in Styx (2026-10-01). No code was copied.
 #
 # Values marked "not from the driver" come from elsewhere and are unverified.
 
