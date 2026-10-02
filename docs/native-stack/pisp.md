@@ -189,12 +189,13 @@ to the end of the register window, so harmless).
 ## Open problems / next steps
 
 - Algorithms (phase 4): AE/AWB from these statistics, CCM/LSC/gamma from a tuning file.
-- Per-frame config: the FE is fed the same config every frame; changing gains or statistics
-  windows per frame needs a frame-accurate queue (the driver consumes one config per job).
+- Per-frame config: done in `styx-pipeline` (see [pipeline.md](pipeline.md)): the FE config
+  queue is fed from a `FrontEnd` the 3A loop updates (black levels, RGB→Y weights), two
+  configs ahead; the BE gets a fresh config per job.
 - Compressed raw (`PISP_COMP1`) halves the memory traffic between FE and BE; not wired yet.
-- TDN/stitch/LSC/CAC in the BE builder; `output1` with the downscaler is tested only
-  offline.
-- Buffers are MMAP and copied between FE and BE by the spike; the real pipeline should pass
-  the FE's buffer to `pispbe-input` as a dma-buf (zero copy).
-- The bridge path: the same FE code works with `styx-sensor-bridge` (it only sees the
-  sensor as a subdev), not run yet.
+- TDN/stitch/LSC/CAC in the BE builder; `output1` runs on the device (640x400 RGB through
+  the resampler), the downscaler (below half size) only offline.
+- Zero copy between FE and BE: done (`FrontEndDevice::next_held` + `image_dmabufs`,
+  `BackEndStream` imports them on `pispbe-input`).
+- The bridge path: runs (`styx-pipeline`'s `PispPipeline`, `native-pipeline pisp`), with
+  embedded data and frame starts from `fe_image0`.
