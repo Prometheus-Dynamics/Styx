@@ -284,7 +284,8 @@ pub fn narrow_row(src: &[u16], dst: &mut [u8], width: usize) -> SimdBackend {
 /// NEON clamps eight samples in a vector, moves them to two general registers and looks the
 /// eight bytes up from the 4 KiB table with shifts and masks, storing them as one word (1.5x
 /// the scalar loop on the Cortex-A76). Interpolating the nodes with `tbl` (eight 4-register
-/// lookups per 16 pixels) measured slower than scalar loads; x86 stays scalar.
+/// lookups per 16 pixels) measured slower than scalar loads; x86 stays scalar (AVX2 gathers
+/// measured 2x slower than scalar loads on Zen 3).
 #[derive(Clone, PartialEq, Eq)]
 pub struct ToneLut {
     nodes: [u8; 257],

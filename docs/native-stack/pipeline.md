@@ -75,6 +75,52 @@ sensor values; `replay::VirtualSensor` re-exposes a recorded frame for whatever 
 a host: `native-pipeline replay --recording <base>`, or `STYX_RAW_RECORDING=<base> cargo test
 -p styx-pipeline --test replay_loop`.
 
+### Software path performance
+
+`SoftLoop::new` / `SoftPipeline::open` take a thread count (`--threads N` in the tool; 0 is one
+per CPU). The ISP splits each frame into two row bands per thread, claimed by whichever thread
+is free, on helper threads it starts once and keeps asleep between frames (no per-frame spawn,
+no rayon). Input rows are copied 16 KiB at a time into a cached buffer before unpacking, since
+the receiver's MMAP buffers are mapped uncached (`SoftIsp::set_copy_input`).
+
+CM5, OV9782 1280x800 RAW10 into RGB24 with the HeliOS tuning (lens shading 32x32, CCM, gamma,
+statistics 16x12 zones every second quad row), 300 frames, the scene above, 2026-10-02. Before
+is the native-stack branch as of `582d885`; CPU is the whole tool process (capture, 3A, the
+tool's per-frame output mean) per frame.
+
+| | before, 1 thread | after, 1 thread | after, 4 threads |
+|---|---|---|---|
+| 30 fps, MMAP buffers: CPU per frame | 15.6 ms (47%) | 7.7 ms (23%) | 8.1 ms (24%) |
+| 30 fps, MMAP: dequeue -> output | 14.1 ms | 6.2 ms | 2.1 ms |
+| 30 fps, MMAP: sensor timestamp -> output | 22.4 ms | 14.4 ms | 10.3 ms |
+| 30 fps, CMA buffers: CPU / dequeue -> output / latency | 10.6 / 9.1 / 17.4 ms | 7.1 / 5.6 / 13.8 ms | 8.1 / 2.1 / 10.4 ms |
+| 120 fps, MMAP: frame rate | 64.9 fps (falls behind) | 120.0 fps | 120.0 fps |
+| 120 fps, MMAP: CPU / dequeue -> output / latency | 15.7 / 14.1 / 57 ms | 7.7 / 6.1 / 14.5 ms (91% of a core) | 8.1 / 2.1 / 10.5 ms |
+| peak RSS (MMAP / CMA) | 12.8 / 7.8 MiB | 12.9 / 7.9 MiB | 13.0 / 8.2 MiB |
+
+About 8.2 ms of the latency is the sensor read-out (timestamp at frame start, dequeue at its
+end). Four threads cost 0.4 ms more CPU per frame than one (wake-ups, band edges) and cut
+the processing time by 3x; with the copy, MMAP and CMA buffers now cost the same.
+
+The ISP alone on a recorded frame (`styx-softisp`, same settings, one thread unless noted):
+
+| | before | after |
+|---|---:|---:|
+| RGB24, frame in write-combined memory (as MMAP) | 10.7 ms | 5.6 ms |
+| RGB24, frame in cached memory | 5.9 ms | 5.0 ms |
+| RGB24, write-combined, 2 / 3 / 4 threads | (no threads without rayon) | 2.8 / 1.9 / 1.5 ms |
+| tone curve kernel, 3 channels of a frame | 2.31 ms | 1.54 ms |
+| statistics (their share of the frame) | 0.57 ms | 0.39 ms |
+| lens shading tables (`set_params`, on every frame whose gains change) | 3.19 ms | 0.47 ms |
+| replay of 60 recorded frames with the 3A loop, per frame (1 / 4 threads) | 9.15 ms | 5.63 / 2.24 ms |
+
+Quality: unchanged bit for bit. `styx-softisp`'s `tests/golden.rs` hashes every output (RGB24,
+NV12, I420, luma, both demosaics, both scales, lens shading, statistics) at 1 and 3 threads
+against the hashes of the code before this work (identical on x86 and the A76); the replay
+of the 60 recorded frames gives the same final image (md5) and the same AE/AWB trajectory as
+before at 1 and 4 threads (max error 0 per channel, PSNR infinite). Per-stage numbers, x86 and
+what was tried and dropped are in `crates/softisp/PERFORMANCE.md`.
+
 ## Planner
 
 The native backend lists `NV12` and `RG24` modes at each sensor size (all rates of the raw
@@ -153,4 +199,7 @@ thread had gone (fixed here: stop it first). No stop timeouts since, on either p
 * Styx capture of processed native modes uses output 0 only (the tool uses both outputs); the
   planner's second-output / pyramid logic is libcamera-only.
 * Brightness changes were forced exposure steps, not changes of the light.
-* The software ISP runs single-threaded here (`rayon` off).
+* The tool's software runs use one thread unless `--threads` says otherwise; the `styx`
+  native backend's software mode (`capture_api/native_isp.rs`) opens it with one thread, and
+  the planner still prices the software ISP at 10 ms/MP (now about 5 ms/MP on one A76 core,
+  1.5 ms/MP on four).
