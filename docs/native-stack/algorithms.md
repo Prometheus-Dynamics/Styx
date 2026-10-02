@@ -80,9 +80,33 @@ record the warm start in their header.
 | `Agc` | `agc_channel.cpp` (channel 0) | Metering (tuned or built-in centre-weighted / spot / average weights, resampled to the zone grid), histogram constraints, EV, exposure profiles, flicker periods, digital gain, damping, start-up, fast de-saturation, lock. Styx changes: output landing frame; frame duration chosen here; model-based steps (changes above `full_step`, 8% by default, go straight to the target at any time; after one lands, the rest is corrected at once; damping only for small changes); every frame's statistics used (frames in flight ask for the same total); de-saturates only while half the image is saturated and without damping; locked = no change beyond 5% in flight and on target (5%) for two frames, no hunting within that tolerance once locked; unsettled frames left out; warm starts |
 | `Awb` | `awb.cpp`, `awb_bayes.cpp` | Bayesian search along the CT curve with lux-interpolated priors, coarse then fine (across the curve), or grey world; runs synchronously every `frame_period` frames (every frame during start-up), filtered by `speed`; modes; manual gains or temperature. Styx changes: start-up counts only usably exposed frames (mean luma 0.02..0.7; at most 4 × `startup_frames` frames); unsettled frames left out; warm starts; soft search and hysteresis (below) |
 | `Denoise` | `noise.cpp`, `denoise.cpp`, `geq.cpp`, `dpc.cpp`, `sharpen.cpp` | Noise profile × √analogue gain; SDN/CDN/TDN strengths (`normal` configuration), SDN and CDN starting at their no-TDN values and backing off by `backoff` per run while temporal denoise runs (`CameraConfig::temporal_denoise`, set by the ISP); GEQ by gain (and lux); DPC strength; sharpening factors. Output in `Params::denoise` / `Params::sharpen` (Raspberry Pi units: 16-bit pixel scale) for ISPs with those blocks (the PiSP back end) |
-| `Alsc` | `alsc.cpp` | Calibrated Cr/Cb tables interpolated by temperature, resampled to crop and flips, normalised, luminance table at `luminance_strength` (tuned or generated from `corner_strength`). The adaptive refinement is not ported |
+| `Alsc` | `alsc.cpp` | Calibrated Cr/Cb tables interpolated by temperature, resampled to crop and flips, normalised, luminance table at `luminance_strength` (generated from `corner_strength` if given, else tuned). Adaptive refinement (below). Styx changes: the refinement runs in `process` and its result is used from the next frame on (libcamera: a thread, picked up a frame or more later); the filter and periods count frames, so running the algorithms at a lower rate keeps the per-frame speed |
+| `Agc` → ISP | `pisp.cpp` (`setHistogramWeights`) | AGC also writes `Params::histogram_weights`, the metering mode's weights on the tuning's grid (15×15), for ISPs that weight their luma histogram by zone: the PiSP front end, programmed as the Raspberry Pi IPA does |
 | `Ccm` | `ccm.cpp` | Interpolated by temperature, saturation control and saturation-by-lux |
 | `Contrast` | `contrast.cpp` | Gamma curve, adaptive histogram stretch, manual brightness/contrast |
+
+### ALSC: adaptive refinement
+
+The calibrated tables correct the lens; what is left (a calibration made with another lens
+unit, or under another light) shows as colour drifting across uniform surfaces. Every
+`frame_period` frames (every frame for `startup_frames`), with the calibration for the
+current temperature folded into the 32×32 zones' R/G and B/G, ALSC solves for red and blue
+gains `λ` that make neighbouring zones of similar colour (weight `exp(-((C_i - C_j)/σ)²/2)`)
+come out equal: Gauss-Seidel sweeps (forwards and backwards) with over-relaxation `omega`,
+each gain within `1 ± lambda_bound`, until no gain moves by `threshold` or after `n_iter`
+sweeps. The final red table is `λ_r × calibration_r` normalised to a minimum of 1, times the
+luminance table (blue the same, green the luminance table alone); the tables in use move
+towards each new result by `speed` per frame (at once during start-up). Gains persist across
+runs (and across restarts in the same mode), so the estimate builds up.
+
+Checked against the original: its iteration functions compiled on the host with stand-ins for
+its array types give the same gains to 1e-12 on three 32×32 cases
+(`tests/data/alsc_gs_reference.json`). Two of the original's helpers do nothing (`reaverage`
+and the final `normalise`: their `std::for_each` lambdas return the value instead of assigning
+it); the port leaves them out, so it matches what libcamera actually runs. Statistics on
+another grid than the tables' (the software ISP's 16×12 zones with a 32×32 tuning) leave the
+tables at the calibration. Cost: a run from scratch (both channels, 20 sweeps) takes 0.24 ms on
+a desktop x86 core; see "Quality vs libcamera" in [pipeline.md](pipeline.md) for the CM5.
 
 ### AWB: continuity and hysteresis
 
@@ -139,7 +163,8 @@ key order (the first mode listed is the default), as libcamera's YAML-based read
 | `y_target`, `speed`, `startup_frames`, `convergence_frames`, `fast_reduce_threshold`, `base_ev`, `default_exposure_time`, `default_analogue_gain`, `stable_region`, `desaturate`, `max_digital_gain` | same names (`default_exposure_us`); `full_step` is Styx's own (default 0.08) |
 | `rpi.awb.ct_curve` (flat triples) | `awb.ct_curve = [[ct, r, b], …]` |
 | `priors[] { lux, prior }`, `modes` (first = default), `bayes`, `min_G` (16-bit), `min_pixels`, `min_regions`, `coarse_step`, `whitepoint_r/b`, `bias_proportion`, `bias_ct`, `delta_limit`, `transverse_pos/neg`, `sensitivity_r/b`, `speed`, `frame_period`, `startup_frames` | same names; `min_g` ÷ 65536; `softness`, `hysteresis`, `hysteresis_mired` are Styx's own (0.2, 2, 25) |
-| `rpi.alsc.calibrations_Cr/Cb`, `luminance_lut`, `corner_strength`, `asymmetry`, `luminance_strength`, `default_ct` | `alsc.calibrations_cr/cb`, …; `grid` from the table size (1024 → 32×32, 192 → 16×12). `omega`, `n_iter`, `sigma*` (adaptive part) ignored |
+| `rpi.alsc.calibrations_Cr/Cb`, `luminance_lut`, `corner_strength`, `asymmetry`, `luminance_strength`, `default_ct` | `alsc.calibrations_cr/cb`, …; `grid` from the table size (1024 → 32×32, 192 → 16×12) |
+| `rpi.alsc.frame_period`, `startup_frames`, `speed`, `sigma`, `sigma_Cr`, `sigma_Cb`, `min_count`, `min_G` (16-bit), `omega`, `n_iter`, `threshold`, `lambda_bound` | same names in snake case (`sigma` sets both), `min_g` ÷ 65536; `n_iter` absent = width + height, 0 = calibration only |
 | `rpi.ccm.ccms[] { ct, ccm }`, `saturation` | `ccm.ccms`, `ccm.saturation` |
 | `rpi.contrast.gamma_curve` (16-bit x, y), `lo_*`, `hi_*`, `ce_enable` | `contrast.gamma_curve` ÷ 65535, `lo_max`/`hi_max` ÷ 65536 |
 | `rpi.noise` | `denoise.noise.reference_constant/slope` |

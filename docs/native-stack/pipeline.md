@@ -224,6 +224,22 @@ The latency, 8.3 ms, is 7.4 ms of sensor readout (the timestamp is the frame sta
 end's buffers complete at its end), 0.84 ms back end job (hardware; the algorithms run inside
 it) and about 0.05 ms on the host.
 
+### Denoise settings
+
+Through the Styx API (`StyxConfig`, also read from a serialised config): 
+`NativeIspConfig::temporal_denoise` (`StyxConfig::native_temporal_denoise(bool)`, default
+`true`) runs the back end's temporal denoise when the tuning has `rpi.denoise.tdn` (flat-area
+noise as libcamera's, about 1.5 ms more back end time per 1280x800 frame: latency, not CPU);
+`false` gives spatial and colour denoise at their no-TDN strengths and the shorter latency.
+`NativeIspConfig::spatial_denoise_percent` (`native_spatial_denoise(percent)`, default 100)
+scales the SDN noise model and the CDN threshold (0 turns both off). Both are per Styx
+instance (camera service): every capture of a native PiSP camera opened through it uses
+them. They are not per capture: a shared capture serves several consumers from one back end
+pass, so per-consumer denoise would need a merge rule, and the planner's `PlanOverrides`
+(and the IPC wire format) do not carry ISP settings. In `styx-pipeline`:
+`PispOptions::temporal_denoise` / `spatial_denoise`, `Controller::set_spatial_denoise`,
+`IspSettings::with_spatial_denoise`; `native-pipeline pisp --no-tdn` / `--spatial-denoise K`.
+
 ## Software path
 
 `SoftPipeline` captures packed RAW10 from `rp1-cfe-csi2_ch0` (or any raw node), the software
