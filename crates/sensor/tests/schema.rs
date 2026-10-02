@@ -323,6 +323,15 @@ fn embedded_controls_in_raw10_packing() {
     let codes = d.decode_embedded(&packed);
     assert_eq!(codes.get(Control::Exposure), Some(642 << 4));
     assert_eq!(codes.get(Control::FrameLength), Some(0x0e4f));
+    // A whole line (kilobytes) decodes the same: only the bytes the layout reads are used.
+    let mut line = packed.clone();
+    line.resize(16384, 0xa5);
+    let long = d.decode_embedded(&line);
+    assert_eq!(long.get(Control::Exposure), codes.get(Control::Exposure));
+    assert_eq!(
+        long.get(Control::FrameLength),
+        codes.get(Control::FrameLength)
+    );
     let bad = BASE.replace(
         "[embedded_data]\nlines = 2\n",
         "[embedded_data]\nlines = 2\ncontrols = [{ control = \"exposure\", offset = 0, bytes = 5 }]\n",

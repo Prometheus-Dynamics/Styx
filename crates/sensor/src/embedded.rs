@@ -28,13 +28,32 @@ impl SensorDescription {
         }
     }
 
+    /// The start of `data` (as received) that holds every byte the layout reads: decoding
+    /// touches only that (embedded buffers are often uncached, and a line is kilobytes long).
+    fn embedded_prefix<'a>(&self, data: &'a [u8]) -> &'a [u8] {
+        let Some(layout) = &self.embedded_data else {
+            return &data[..0];
+        };
+        let entries = layout.entries.iter().map(|e| e.offset as usize + 1);
+        let controls = layout
+            .controls
+            .iter()
+            .map(|c| c.offset as usize + usize::from(c.bytes));
+        let needed = entries.chain(controls).max().unwrap_or(0);
+        let packed = match layout.packing {
+            EmbeddedPacking::Raw10 => needed.div_ceil(4) * 5,
+            _ => needed,
+        };
+        &data[..packed.min(data.len())]
+    }
+
     /// Register bytes found in embedded data (as received), by address. Empty without a
     /// layout.
     pub fn embedded_registers(&self, data: &[u8]) -> BTreeMap<u16, u8> {
         let Some(layout) = &self.embedded_data else {
             return BTreeMap::new();
         };
-        let unpacked = self.embedded_unpacked(data);
+        let unpacked = self.embedded_unpacked(self.embedded_prefix(data));
         let data = unpacked.as_slice();
         layout
             .entries
@@ -58,7 +77,7 @@ impl SensorDescription {
         if layout.controls.is_empty() {
             return set;
         }
-        let unpacked = self.embedded_unpacked(data);
+        let unpacked = self.embedded_unpacked(self.embedded_prefix(data));
         for c in &layout.controls {
             let start = c.offset as usize;
             let Some(bytes) = unpacked.get(start..start + usize::from(c.bytes)) else {

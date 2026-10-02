@@ -88,8 +88,12 @@ pub(crate) struct Candidate<'a> {
     pub isp_pyramid_level: Option<u8>,
     /// The decoder scales to 1/`decode_scale` of the capture size (1 = full size).
     pub decode_scale: u8,
-    /// The ISP delivers frames at this size instead of the mode's (libcamera on Raspberry Pi).
+    /// The ISP delivers frames at this size instead of the mode's (libcamera on Raspberry Pi,
+    /// native cameras with the PiSP).
     pub isp_output: Option<(u32, u32)>,
+    /// The ISP delivers this processed format instead of the capture mode's (a native camera's
+    /// PiSP on a shared capture; `mode` is then this consumer's view of the capture).
+    pub isp_format: Option<FourCc>,
     pub notes: Vec<String>,
 }
 
@@ -113,6 +117,48 @@ pub(crate) fn has_isp_second_output(backend: &ProbedBackend) -> bool {
         BackendHandle::Libcamera { id } => id.starts_with("/base/") && id.contains("/i2c@"),
         _ => false,
     }
+}
+
+/// A native camera's processed mode on the PiSP: the back end scales and makes either
+/// processed format on each of its two outputs.
+pub(crate) fn native_isp_outputs(backend: &ProbedBackend, mode: &Mode) -> bool {
+    backend.kind == BackendKind::Native
+        && native_isp(backend) == Some("pisp")
+        && !raw_bayer(mode.format.code)
+}
+
+/// Processed formats a native camera's ISP makes.
+const NATIVE_ISP_FORMATS: [FourCc; 2] = [FourCc::NV12, FourCc::RG24];
+
+/// On a shared capture of a native PiSP mode: `req` taking another processed format straight
+/// from the ISP (an output in that format) instead of converting the mode's frames on the CPU.
+/// `None` when the mode's format suits `req` or no processed format does.
+pub(crate) fn isp_format_candidate<'a>(
+    backend: &'a ProbedBackend,
+    mode: &Mode,
+    req: &FrameRequirements,
+    registry: &CodecRegistryHandle,
+) -> Option<Candidate<'a>> {
+    if !native_isp_outputs(backend, mode)
+        || req.accepts(mode.format.code)
+        || matches!(req.output, OutputFormat::Luma)
+    {
+        return None;
+    }
+    let code = NATIVE_ISP_FORMATS
+        .into_iter()
+        .find(|&c| c != mode.format.code && req.accepts(c))?;
+    let mut alt = mode.clone();
+    alt.format.code = code;
+    alt.id.format.code = code;
+    let mut c = candidate(backend, &alt, req, registry).ok()?;
+    if !matches!(c.route, Route::Direct) {
+        return None;
+    }
+    c.isp_format = Some(code);
+    c.notes
+        .push(format!("{code} from the ISP's output, no conversion"));
+    Some(c)
 }
 
 fn mode_fps(mode: &Mode) -> Option<f32> {
@@ -371,6 +417,7 @@ fn finish<'a>(
         isp_pyramid_level,
         decode_scale,
         isp_output,
+        isp_format: None,
         notes,
     })
 }
@@ -393,7 +440,11 @@ fn isp_output(
         // The encoder takes any size the ISP makes.
         Route::Encode { decoder, .. } => decoder.is_none() && !code.is_compressed(),
     };
-    if !has_isp_second_output(backend)
+    let scaling_isp = has_isp_second_output(backend)
+        || (backend.kind == BackendKind::Native
+            && native_isp(backend) == Some("pisp")
+            && !raw_bayer(code));
+    if !scaling_isp
         || !scalable
         || matches!(req.overrides.hardware, HardwarePolicy::Disabled)
         || (tw >= mode.0 && th >= mode.1)

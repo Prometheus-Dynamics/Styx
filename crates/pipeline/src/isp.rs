@@ -219,7 +219,7 @@ pub fn gamma_points(curve: Option<&Pwl>) -> Vec<(u32, u32)> {
 }
 
 /// Lens shading tables as the back end's packed 33x33 vertex grid.
-fn be_lens_shading(ls: &LensShading) -> Option<BeLscConfig> {
+pub(crate) fn be_lens_shading(ls: &LensShading) -> Option<BeLscConfig> {
     let (w, h) = (ls.width as usize, ls.height as usize);
     if w == 0 || h == 0 || [&ls.r, &ls.g, &ls.b].iter().any(|t| t.len() != w * h) {
         return None;

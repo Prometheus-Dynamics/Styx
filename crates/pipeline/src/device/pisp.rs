@@ -1,17 +1,23 @@
 //! The PiSP path on a native camera.
 //!
 //! ```text
-//! sensor ─► csi2 ─► pisp-fe ─► fe_stats  (every frame) ─► stats::from_pisp ─► Controller
-//!                      │                                                      │   │
-//!                      └─► fe_image0 (16-bit raw, held) ═dma-buf═► pispbe ◄───┘   └─► SensorRequest
+//! sensor ─► csi2 ─► pisp-fe ─► fe_stats  (every frame) ─► stats::from_pisp_raw ─► Controller
+//!                      │                                                           │   │
+//!                      └─► fe_image0 (16-bit raw, held) ═dma-buf═► pispbe ◄────────┘   └─► SensorRequest
 //!                                                                   ├─► output0 (e.g. NV12 1280x800)
 //!                                                                   └─► output1 (e.g. RGB 640x400)
 //! ```
 //!
-//! The statistics of frame F reach the algorithms before F goes through the back end, so the
-//! back end processes F with the white balance, CCM, gamma and digital gain computed from F
-//! itself. The front end's RGB-to-Y weights and black levels follow on the next config it
-//! takes (configs are queued a couple of frames ahead).
+//! The frame path is kept short: when frame F's statistics and raw frame arrive, F goes
+//! through the back end at once with the newest settings the algorithms have made (those from
+//! F − 1's statistics), its digital gain recomputed for the exposure F actually got, and the
+//! back end config patched only where the settings changed ([`BeConfigBuilder`]). While the
+//! back end works (0.85 ms for 1280x800), F's statistics go through the algorithms and their
+//! sensor request is issued, as early as before; their run time (up to 0.7 ms on the frames
+//! AWB and lens shading run) is hidden behind the back end job. The order of inputs and
+//! outputs is fixed, so the loop stays deterministic. The front end's RGB-to-Y weights and
+//! black levels follow on the next config it takes (configs are queued a couple of frames
+//! ahead).
 
 use std::time::{Duration, Instant};
 
@@ -20,18 +26,19 @@ use styx_kernel::subdev::MbusCode;
 use styx_native::{
     CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
 };
-use styx_pisp::be::BackEnd;
 use styx_pisp::device::{
-    BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup,
+    BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup, OutputMemory,
+    profile,
 };
 use styx_pisp::fe::FrontEnd;
-use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, fe_enable};
+use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
 use styx_softisp::CfaPattern;
 
 use super::{apply_request, sensor_values};
 use crate::controller::{Controller, SensorValues, Step};
 use crate::error::{PipelineError, Result};
-use crate::isp::{be_template, level16};
+use crate::isp::{IspSettings, be_template, level16};
+use crate::pisp_be::{BeConfigBuilder, BeUpdateCounts};
 use crate::sensor::{ISSUE_LATENCY, SensorInfo};
 use crate::stats;
 
@@ -48,6 +55,14 @@ pub struct PispOptions {
     pub be_group: usize,
     /// Front end configs queued ahead of the frames.
     pub configs_ahead: usize,
+    /// While AE is locked and AWB has converged, run the algorithms at about this rate
+    /// instead of on every frame (statistics are then not read on the other frames); any
+    /// frame that finds them unsettled goes back to every frame. `None`: every frame.
+    pub settled_rate_hz: Option<f64>,
+    /// Where the back end's output buffers come from: a cached dma-heap (the default: CPU
+    /// reads at memory speed, bracketed by [`PispPipeline::sync_output`]) or the driver's
+    /// (mapped uncached).
+    pub output_memory: OutputMemory,
 }
 
 impl PispOptions {
@@ -70,6 +85,8 @@ impl PispOptions {
             be_buffers: 4,
             be_group: 0,
             configs_ahead: 2,
+            settled_rate_hz: Some(15.0),
+            output_memory: OutputMemory::CachedHeap,
         }
     }
 }
@@ -77,9 +94,11 @@ impl PispOptions {
 /// Where one frame's time went.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PispTimes {
-    /// Running the algorithms.
+    /// Converting the statistics for the algorithms.
+    pub stats: Duration,
+    /// Running the algorithms on this frame's statistics (while the back end works).
     pub algorithms: Duration,
-    /// Building the back end config and its tiles.
+    /// Updating the back end config (and its tiles, when they change).
     pub be_prepare: Duration,
     /// The back end job (config queued to output dequeued).
     pub be_job: Duration,
@@ -126,16 +145,15 @@ pub struct PispFrame {
     pub dequeued: Instant,
     /// What produced the frame.
     pub sensor: SensorValues,
-    /// Its statistics.
-    pub stats: Statistics,
-    /// The loop's output (the settings the back end used are `step.isp`).
-    pub step: Step,
     /// The back end job: hand it to [`PispPipeline::output`] and [`PispPipeline::release`].
     pub job: BeJob,
     /// The statistics buffer's sequence differed from the raw frame's.
     pub sequence_mismatch: bool,
-    /// Frame the new sensor request lands on, if this frame made one.
+    /// Frame the sensor request made from this frame's statistics lands on, if one was made.
     pub request_lands: Option<u64>,
+    /// The frame whose statistics the back end settings came from (`None` before the
+    /// algorithms have seen a frame).
+    pub settings_from: Option<u64>,
     /// Time spent.
     pub times: PispTimes,
 }
@@ -154,7 +172,7 @@ struct Isp {
     fe: FrontEnd,
     fe_dev: FrontEndDevice,
     be_dev: BackEndStream,
-    be: BackEnd,
+    be: BeConfigBuilder,
 }
 
 impl Isp {
@@ -185,7 +203,7 @@ impl Isp {
         fe.set_output_format(0, input);
         fe.enable(fe_enable::OUTPUT0, true);
         let input_len = input.stride as u32 * u32::from(input.height);
-        let be_dev = BackEndStream::open(
+        let be_dev = BackEndStream::open_with(
             options.be_group,
             input,
             order,
@@ -193,6 +211,7 @@ impl Isp {
             input_len,
             options.outputs,
             options.be_buffers,
+            options.output_memory,
         )?;
         let be = be_template(
             input,
@@ -201,9 +220,7 @@ impl Isp {
             [be_dev.output_format(0), be_dev.output_format(1)],
         )?;
         // The template must prepare (sizes, strides, tiles) before streaming starts.
-        be.clone()
-            .prepare()
-            .map_err(|e| PipelineError::Config(format!("back end: {}", e.0)))?;
+        let be = BeConfigBuilder::new(be)?;
         Ok((
             Self {
                 fe,
@@ -227,11 +244,23 @@ pub struct PispPipeline {
     fe: FrontEnd,
     fe_dev: Option<FrontEndDevice>,
     be_dev: Option<BackEndStream>,
-    be: BackEnd,
+    be: BeConfigBuilder,
     sensor: Option<SensorStream>,
     options: PispOptions,
     startup: PispStartup,
     warm_override: Option<Option<WarmStart>>,
+    /// The last frame's statistics, as copied from the front end and as converted.
+    raw_stats: Box<RawStatistics>,
+    stats: Statistics,
+    /// The algorithms' newest output (its `isp` processes the next frame).
+    step: Step,
+    /// `step` came from a frame's statistics (not the start-up values).
+    stepped: bool,
+    /// The last frame dequeued and the last one the algorithms ran on.
+    last_seq: Option<u64>,
+    last_run: Option<u64>,
+    /// While settled, the algorithms run every this many frames.
+    settled_every: u64,
 }
 
 /// Time from the end of a frame's readout until its statistics have been through the
@@ -288,6 +317,7 @@ impl PispPipeline {
                 .with_fps(fps, fps)?;
         let controller = Controller::new(tuning, info.camera.clone())?;
         let controls = camera.controls();
+        let black_level = info.black_level;
         startup.isp_and_algorithms = t.elapsed();
         startup.open = t_open.elapsed();
         Ok(Self {
@@ -304,6 +334,18 @@ impl PispPipeline {
             options,
             startup,
             warm_override: None,
+            raw_stats: bytemuck::allocation::zeroed_box(),
+            stats: Statistics::default(),
+            step: Step {
+                frame: 0,
+                sensor: None,
+                isp: IspSettings::neutral(black_level),
+                params: Default::default(),
+            },
+            stepped: false,
+            last_seq: None,
+            last_run: None,
+            settled_every: 1,
         })
     }
 
@@ -332,9 +374,30 @@ impl PispPipeline {
         &self.controls
     }
 
+    /// The statistics of the frame [`Self::next`] returned last, as the algorithms see them.
+    pub fn statistics(&self) -> &Statistics {
+        &self.stats
+    }
+
+    /// The algorithms' newest output, from the statistics of the frame [`Self::next`] returned
+    /// last (`step.frame`); its `isp` settings process the next frame.
+    pub fn step(&self) -> &Step {
+        &self.step
+    }
+
+    /// How often the back end config was rebuilt, patched or reused.
+    pub fn be_updates(&self) -> BeUpdateCounts {
+        self.be.counts()
+    }
+
     /// Back end output `i`'s format.
     pub fn output_format(&self, i: usize) -> Option<ImageFormatConfig> {
         self.be_dev.as_ref()?.output_format(i)
+    }
+
+    /// Where the back end's config buffer comes from (`mmap` or a dma-heap).
+    pub fn back_end_config_source(&self) -> Option<String> {
+        self.be_dev.as_ref().map(BackEndStream::config_source)
     }
 
     /// Whether frame starts come from `FRAME_SYNC` events and embedded data is read back.
@@ -402,8 +465,22 @@ impl PispPipeline {
                 apply_request(&self.controls, &r)?;
             }
             start.isp.apply_fe(&mut self.fe);
+            self.step = Step {
+                frame: 0,
+                sensor: start.sensor,
+                isp: start.isp,
+                params: Default::default(),
+            };
+            self.stepped = false;
             Ok(())
         });
+        let fps = self.configured.interval.fps();
+        self.settled_every = self
+            .options
+            .settled_rate_hz
+            .filter(|r| *r > 0.0)
+            .map_or(1, |r| (fps / r).round().max(1.0) as u64);
+        (self.last_seq, self.last_run) = (None, None);
         if let Err(e) = values {
             self.camera.quiesce_external();
             let _ = self.camera.stop();
@@ -433,8 +510,9 @@ impl PispPipeline {
         Ok(())
     }
 
-    /// The next frame: statistics to the algorithms, the sensor request to the control
-    /// schedule, the raw frame through the back end with this frame's settings.
+    /// The next frame: through the back end with the newest settings (see the [module
+    /// documentation](self)), its statistics through the algorithms meanwhile, their sensor
+    /// request to the control schedule.
     pub fn next(&mut self, timeout: Duration) -> Result<PispFrame> {
         let (Some(fe_dev), Some(be_dev), Some(sensor)) = (
             self.fe_dev.as_mut(),
@@ -443,46 +521,86 @@ impl PispPipeline {
         ) else {
             return Err(PipelineError::Device("not started".into()));
         };
-        let held = fe_dev.next_held(&mut self.fe, timeout)?;
+        // Settled: the algorithms (and the statistics they read) only every few frames.
+        let p = &self.step.params;
+        let settled =
+            self.stepped && p.ae.locked && p.awb.converged && self.controller.controls().ae_enable;
+        let run = !settled
+            || match (self.last_seq, self.last_run) {
+                (Some(s), Some(r)) => s + 1 >= r + self.settled_every,
+                _ => true,
+            };
+        let held =
+            fe_dev.next_held_raw(&mut self.fe, timeout, run.then_some(&mut *self.raw_stats))?;
         let dequeued = Instant::now();
         let image = held
             .image
             .ok_or_else(|| PipelineError::Device("no raw frame".into()))?;
         let seq = u64::from(image.sequence);
-        sensor.frame_done(seq);
+        profile::time("sensor", "frame_done", || sensor.frame_done(seq));
         let result = (|| {
-            let controls = sensor
-                .applied(seq)
+            let controls = profile::time("sensor", "applied", || sensor.applied(seq))
                 .ok_or_else(|| PipelineError::Device(format!("no control values for {seq}")))?;
             let values = sensor_values(seq, &controls);
-            let stats = stats::from_pisp(&held.stats);
+            let t1 = Instant::now();
+            // The newest settings, with the digital gain for what this frame got.
+            let settings_from = self.stepped.then_some(self.step.frame);
+            if self.stepped {
+                let g = self.step.params.colour_gains[1].max(1e-6);
+                self.step.isp.digital_gain =
+                    self.controller.digital_gain_for(&self.step.params, &values) * g;
+            }
+            profile::time("loop", "be_update", || self.be.update(&self.step.isp))?;
+            let be_prepare = t1.elapsed();
+            let job = be_dev.process_queued(image.index, self.be.config())?;
+            self.last_seq = Some(seq);
+            // While the back end works: this frame's statistics through the algorithms.
+            let ts = Instant::now();
+            if run {
+                stats::from_pisp_raw(&self.raw_stats, &mut self.stats);
+                self.last_run = Some(seq);
+            }
+            let stats_time = ts.elapsed();
             let t0 = Instant::now();
-            let step = self.controller.process(&stats, &values)?;
-            let request_lands = match &step.sensor {
-                Some(r) => Some(apply_request(&self.controls, r)?),
-                None => None,
+            let ran = if !run {
+                Ok(None)
+            } else {
+                profile::time("loop", "algorithms", || {
+                    self.controller.process(&self.stats, &values)
+                })
+                .and_then(|step| {
+                    let lands = match &step.sensor {
+                        Some(r) => Some(profile::time("sensor", "request", || {
+                            apply_request(&self.controls, r)
+                        })?),
+                        None => None,
+                    };
+                    step.isp.apply_fe(&mut self.fe);
+                    self.step = step;
+                    self.stepped = true;
+                    Ok(lands)
+                })
             };
             let algorithms = t0.elapsed();
-            step.isp.apply_fe(&mut self.fe);
-            let t1 = Instant::now();
-            let mut be = self.be.clone();
-            step.isp.apply_be(&mut be);
-            let cfg = be
-                .prepare()
-                .map_err(|e| PipelineError::Config(format!("back end: {}", e.0)))?;
-            let be_prepare = t1.elapsed();
-            let job = be_dev.process(image.index, &cfg, timeout)?;
+            let job = be_dev.wait_job(job, timeout)?;
+            let request_lands = match ran {
+                Ok(lands) => lands,
+                Err(e) => {
+                    be_dev.release(&job);
+                    return Err(e);
+                }
+            };
             Ok(PispFrame {
                 sequence: seq,
                 timestamp: image.timestamp,
                 dequeued,
                 sensor: values,
-                stats,
-                step,
                 job,
                 sequence_mismatch: held.sequence != image.sequence,
                 request_lands,
+                settings_from,
                 times: PispTimes {
+                    stats: stats_time,
                     algorithms,
                     be_prepare,
                     be_job: job.elapsed,
@@ -491,6 +609,9 @@ impl PispPipeline {
             })
         })();
         fe_dev.release_image(image.index)?;
+        if profile::enabled() {
+            profile::record("loop", "dequeued_to_return", dequeued.elapsed());
+        }
         result
     }
 
@@ -499,9 +620,27 @@ impl PispPipeline {
         self.be_dev.as_ref()?.output_data(i, job.outputs[i]?)
     }
 
+    /// Brackets CPU reads of output `i` of a frame's job: call with `start` before reading
+    /// [`Self::output`] and without after (see [`BackEndStream::sync_output`]).
+    pub fn sync_output(&self, i: usize, job: &BeJob, start: bool) -> Result<()> {
+        let (Some(b), Some(index)) = (self.be_dev.as_ref(), job.outputs.get(i).copied().flatten())
+        else {
+            return Ok(());
+        };
+        Ok(b.sync_output(i, index, start)?)
+    }
+
     /// Output `i`'s dma-buf for a frame's job.
     pub fn output_dmabuf(&self, i: usize, job: &BeJob) -> Option<std::os::fd::BorrowedFd<'_>> {
         self.be_dev.as_ref()?.output_dmabuf(i, job.outputs[i]?)
+    }
+
+    /// Gives output `i`'s buffer `index` back (one output of a job, e.g. when its two outputs
+    /// go to different consumers).
+    pub fn release_output(&mut self, i: usize, index: u32) {
+        if let Some(b) = self.be_dev.as_mut() {
+            b.release_output(i, index);
+        }
     }
 
     /// Gives a frame's output buffers back.

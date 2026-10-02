@@ -101,8 +101,12 @@ pub fn plan_many_with(
                 .iter()
                 .enumerate()
                 .map(|(i, req)| {
-                    routes::candidate(backend, mode, req, registry)
-                        .map_err(|reason| format!("consumer {i}: {reason}"))
+                    // A native PiSP makes the other processed format on an output of its own.
+                    match routes::isp_format_candidate(backend, mode, req, registry) {
+                        Some(c) => Ok(c),
+                        None => routes::candidate(backend, mode, req, registry),
+                    }
+                    .map_err(|reason| format!("consumer {i}: {reason}"))
                 })
                 .collect();
             match candidates {
@@ -123,52 +127,88 @@ pub fn plan_many_with(
         return Err(PlanError::NoCandidates { rejected });
     };
     // The ISP has two outputs: the main one at the larger size consumers want and the second
-    // at the smaller one. Consumers that fit neither (a third size, or with the second output
-    // taken by an ISP pyramid) get the mode's size and scale on their own.
+    // at the smaller one (a native PiSP also in either processed format). Consumers that fit
+    // neither (a third size or format, or with the second output taken by an ISP pyramid) get
+    // the mode's size and format and scale or convert on their own.
     let res = mode.format.resolution;
     let mode_size = (res.width.get(), res.height.get());
-    let delivered = |c: &Candidate<'_>| c.isp_output.unwrap_or(mode_size);
-    let mut sizes: Vec<(u32, u32)> = candidates.iter().map(delivered).collect();
-    sizes.sort_by_key(|&(w, h)| std::cmp::Reverse(u64::from(w) * u64::from(h)));
-    sizes.dedup();
-    let two_outputs = sizes.len() == 2
-        && routes::has_isp_second_output(backend)
+    let code = mode.format.code;
+    let delivered = |c: &Candidate<'_>| {
+        (
+            c.isp_output.unwrap_or(mode_size),
+            c.isp_format.unwrap_or(code),
+        )
+    };
+    let outputs_of = |candidates: &[Candidate<'_>]| {
+        let mut outs: Vec<((u32, u32), FourCc)> = candidates.iter().map(delivered).collect();
+        outs.sort_by_key(|&((w, h), c)| {
+            (std::cmp::Reverse(u64::from(w) * u64::from(h)), c != code)
+        });
+        outs.dedup();
+        outs
+    };
+    let isp_two = (routes::has_isp_second_output(backend)
+        || routes::native_isp_outputs(backend, mode))
         && candidates.iter().all(|c| c.isp_pyramid_level.is_none());
-    let second_output = two_outputs.then(|| sizes[1]);
-    if sizes.len() > 1 && !two_outputs {
+    let fits = |outs: &[((u32, u32), FourCc)]| outs.len() == 1 || (outs.len() == 2 && isp_two);
+    let rejection = |reason: String| PlanError::NoCandidates {
+        rejected: vec![PlanRejection {
+            candidate: describe(backend, mode),
+            reason,
+        }],
+    };
+    // First the sizes go (consumers scale on their own), then the formats (they convert).
+    let mut full_size = vec![false; candidates.len()];
+    if !fits(&outputs_of(&candidates)) {
         for (i, req) in requirements.iter().enumerate() {
             if candidates[i].isp_output.is_some() {
                 let mut full = req.clone();
                 full.output_resolution = None;
                 let mut candidate =
-                    routes::candidate(backend, mode, &full, registry).map_err(|reason| {
-                        PlanError::NoCandidates {
-                            rejected: vec![PlanRejection {
-                                candidate: describe(backend, mode),
-                                reason,
-                            }],
+                    match routes::isp_format_candidate(backend, mode, &full, registry) {
+                        Some(c) => c,
+                        None => {
+                            routes::candidate(backend, mode, &full, registry).map_err(rejection)?
                         }
-                    })?;
+                    };
                 candidate.notes.push(
                     "other consumers of this capture need different sizes, so the ISP delivers \
                      the mode's size"
                         .into(),
                 );
                 candidates[i] = candidate;
+                full_size[i] = true;
             }
         }
     }
+    if !fits(&outputs_of(&candidates)) {
+        for (i, req) in requirements.iter().enumerate() {
+            if candidates[i].isp_format.is_some() {
+                let mut req = req.clone();
+                if full_size[i] {
+                    req.output_resolution = None;
+                }
+                candidates[i] =
+                    routes::candidate(backend, mode, &req, registry).map_err(rejection)?;
+            }
+        }
+    }
+    let outs = outputs_of(&candidates);
+    let two_outputs = outs.len() == 2 && isp_two;
+    let second_output = two_outputs.then(|| outs[1]);
     let interval = shared_interval(mode, requirements);
     let consumers: Vec<FramePlan> = candidates
         .into_iter()
         .zip(requirements)
         .map(|(candidate, req)| {
-            let second = second_output.is_some_and(|size| delivered(&candidate) == size);
+            let second = second_output.is_some_and(|out| delivered(&candidate) == out);
             let mut plan = plan_from(device, candidate, req, interval, Vec::new());
             if second {
                 plan.isp_second_output = true;
                 if let Some(step) = plan.steps.iter_mut().find(|s| s.kind == StepKind::Scale) {
                     step.detail = format!("{}, on its second output", step.detail);
+                } else {
+                    plan.notes.push("from the ISP's second output".into());
                 }
             }
             plan
@@ -247,6 +287,7 @@ fn shared_rank(candidates: &[Candidate<'_>], requirements: &[FrameRequirements])
             BackendKind::V4l2 => 0,
             _ => 1,
         },
+        isp_formats: candidates.iter().filter(|c| c.isp_format.is_some()).count() as u8,
     }
 }
 
@@ -262,6 +303,14 @@ fn shared_interval(mode: &Mode, requirements: &[FrameRequirements]) -> Option<In
         return fastest;
     }
     let min_fps = requirements.iter().filter_map(|r| r.min_fps).max();
+    // A mode that runs at any rate in a range runs at exactly the rate asked for, as for a
+    // single plan.
+    if let Some(exact) = min_fps
+        .and_then(Interval::from_fps)
+        .filter(|i| mode.interval_stepwise.is_some_and(|s| s.contains(*i)))
+    {
+        return Some(exact);
+    }
     mode.intervals
         .iter()
         .copied()
@@ -347,16 +396,17 @@ impl SharedFramePlan {
     /// What the capture is started with: consumers whose plans have the same key can join a
     /// running capture of this plan.
     pub(crate) fn setup_key(&self) -> String {
+        let output = |p: &FramePlan| (p.isp_output, p.isp_format);
         let second = self
             .consumers
             .iter()
             .find(|p| p.isp_second_output)
-            .and_then(|p| p.isp_output);
+            .map(output);
         let main = self
             .consumers
             .iter()
             .find(|p| !p.isp_second_output)
-            .and_then(|p| p.isp_output);
+            .map(output);
         let pyramid = self.consumers.iter().find_map(|p| p.isp_pyramid_level);
         format!(
             "{:?} {:?} {:?} main={main:?} second={second:?} pyramid={pyramid:?} idle={:?}",
@@ -375,15 +425,23 @@ impl SharedFramePlan {
         }
         let main = self.consumers.iter().find(|p| !p.isp_second_output);
         if let Some((width, height)) = main.and_then(|p| p.isp_output) {
-            config = config.libcamera_output_size(width, height);
+            config = config
+                .libcamera_output_size(width, height)
+                .native_output_size(width, height);
         }
-        if let Some((width, height)) = self
-            .consumers
-            .iter()
-            .find(|p| p.isp_second_output)
-            .and_then(|p| p.isp_output)
-        {
-            config = config.libcamera_second_output(width, height);
+        if let Some(format) = main.and_then(|p| p.isp_format) {
+            config = config.native_output_format(format);
+        }
+        if let Some(second) = self.consumers.iter().find(|p| p.isp_second_output) {
+            let res = self.mode.format.resolution;
+            let (width, height) = second
+                .isp_output
+                .unwrap_or((res.width.get(), res.height.get()));
+            if second.isp_output.is_some() {
+                config = config.libcamera_second_output(width, height);
+            }
+            let format = second.isp_format.unwrap_or(self.mode.format.code);
+            config = config.native_second_output(width, height, format);
         }
         config = match self.stop_when_idle {
             Some((after, IdleStop::Pause)) => config.pause_when_idle(after),

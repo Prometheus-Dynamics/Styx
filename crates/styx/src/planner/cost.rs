@@ -60,16 +60,34 @@ pub(crate) fn native_capture_latency_ms(fps: Option<f32>) -> f32 {
     fps.filter(|fps| *fps > 0.0)
         .map_or(16.7, |fps| 1000.0 / fps + 0.5)
 }
-/// Native camera through the PiSP (CM5, OV9782 1280x800, `native-pipeline pisp`): the front
-/// end's raw frame and statistics are dequeued about 9 ms after the frame starts, then the
-/// 3A loop and the back end job take 1.7 ms (0.8 ms of it the back end); the host spends
-/// about 1 ms per frame (statistics, algorithms, config and tiles, ioctls).
-pub(crate) const PISP_PROCESS_LATENCY_MS: f32 = 1.7;
-pub(crate) const PISP_PROCESS_CPU_MS: f32 = 1.0;
-/// Software ISP (styx-softisp, one A76 core): unpack, black level, white balance, demosaic,
-/// CCM, tone curve, NV12/RGB out plus statistics: 6.7 ms per 1280x800 frame in the bench,
-/// 10-14 ms measured end to end on the camera (reading the uncached capture buffer included).
-pub(crate) const SOFTISP_MS_PER_MP: f32 = 10.0;
+/// Native camera through the PiSP (CM5, OV9782 1280x800, NV12 through the Styx API): the
+/// front end's raw frame and statistics are dequeued at the end of the readout, then the back
+/// end job takes 0.85 ms (the 3A loop runs meanwhile); the host spends 0.25 ms per frame in all
+/// (0.12 ms of it the driver writing the back end config to the hardware).
+pub(crate) const PISP_PROCESS_LATENCY_MS: f32 = 0.9;
+pub(crate) const PISP_PROCESS_CPU_MS: f32 = 0.3;
+/// Software ISP (styx-softisp, CPU time on A76 cores): unpack, black level, white balance,
+/// lens shading, demosaic, CCM, tone curve, NV12/RGB out plus statistics, from the receiver's
+/// uncached buffer: 5.6 ms per 1280x800 frame on one core (CM5, native/perf-soft).
+pub(crate) const SOFTISP_MS_PER_MP: f32 = 5.5;
+/// CPU the software ISP's helper threads add per frame (wake-ups, band edges; 4 threads).
+pub(crate) const SOFTISP_THREADS_CPU_MS: f32 = 0.4;
+
+/// Threads the native backend's software ISP uses by default: one per core, at most 4.
+pub(crate) fn default_softisp_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+}
+
+/// Software ISP time per megapixel on `threads` threads (row bands spread over the cores:
+/// 2.8 / 1.9 / 1.5 ms for 1280x800 on 2 / 3 / 4 A76 cores).
+pub(crate) fn softisp_latency_ms_per_mp(threads: usize) -> f32 {
+    let n = threads.max(1) as f32;
+    if n <= 1.0 {
+        SOFTISP_MS_PER_MP
+    } else {
+        SOFTISP_MS_PER_MP / n * 1.05
+    }
+}
 /// The 3A algorithms per frame (AE, AWB, CCM, contrast; Raspberry Pi tuning).
 pub(crate) const ALGORITHMS_MS: f32 = 0.3;
 /// turbojpeg luma decode, single thread (C270 720p: 1.59 ms).

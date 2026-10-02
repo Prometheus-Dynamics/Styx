@@ -7,8 +7,8 @@
 //! from the back end's output buffers (mapped once, exported as dma-bufs, returned to the back
 //! end when the lease drops); software ISP frames are written into recycled heap buffers.
 
-use std::collections::HashMap;
-use std::os::fd::OwnedFd;
+mod pisp_worker;
+
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -16,18 +16,13 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use smallvec::{SmallVec, smallvec};
 use styx_capture::prelude::*;
-use styx_core::prelude::{
-    BackendFrameMeta, ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane,
-    FrameResidency, NativeFrameMeta, TimestampClock,
-};
-use styx_kernel::Mapping;
-use styx_kernel::dma_heap::{self, Access, DmaBuf};
+use styx_core::prelude::{BackendFrameMeta, ExternalBacking, NativeFrameMeta, TimestampClock};
 use styx_native::{CameraInfo, NativeCamera, StreamSettings};
 use styx_pipeline::SensorValues;
 use styx_pipeline::device::{
     IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning, isp_kind,
 };
-use styx_pisp::device::{BeFormat, BeJob, BeOutputSetup};
+use styx_pisp::device::OutputMemory;
 use styx_softisp::{OutputBuffers, Scale};
 
 use super::control_plane::ControlPlane;
@@ -77,68 +72,6 @@ pub(crate) fn processed_modes(raw: &[Mode]) -> Vec<Mode> {
 
 fn err(e: impl std::fmt::Display) -> CaptureError {
     CaptureError::Backend(format!("native ISP: {e}"))
-}
-
-/// A back end output buffer, mapped once and shared by the leases of the frames it holds.
-#[derive(Clone)]
-struct BeBuffer {
-    map: Arc<Mapping>,
-    fd: Arc<OwnedFd>,
-}
-
-struct BeBacking {
-    buffer: BeBuffer,
-    len: usize,
-    job: BeJob,
-    returns: mpsc::Sender<BeJob>,
-}
-
-impl ExternalBacking for BeBacking {
-    fn plane_data(&self, _index: usize) -> Option<&[u8]> {
-        let d = self.buffer.map.as_slice();
-        Some(&d[..self.len.min(d.len())])
-    }
-
-    fn backing_bytes(&self) -> Option<usize> {
-        Some(self.buffer.map.len())
-    }
-
-    fn backing_kind(&self) -> &'static str {
-        "pispbe_dmabuf"
-    }
-
-    fn can_export(&self) -> bool {
-        true
-    }
-
-    fn residency(&self) -> FrameResidency {
-        FrameResidency::Dmabuf
-    }
-
-    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
-        use std::os::fd::AsFd;
-        let fd = self
-            .buffer
-            .fd
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(FrameExportError::Fd)?;
-        Ok(Some(FrameBackingExport::DmabufPlanes {
-            planes: vec![FrameFdPlane {
-                fd,
-                offset: 0,
-                len: self.len,
-            }],
-        }))
-    }
-}
-
-impl Drop for BeBacking {
-    fn drop(&mut self) {
-        use std::os::fd::AsFd;
-        let _ = dma_heap::sync(self.buffer.fd.as_fd(), Access::Read, false);
-        let _ = self.returns.send(self.job);
-    }
 }
 
 /// A heap buffer of the software path, recycled through `returns` when its lease drops.
@@ -193,8 +126,8 @@ fn layouts(code: FourCc, h: usize, stride: usize) -> SmallVec<[PlaneLayout; 3]> 
     }
 }
 
-fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues) -> FrameMeta {
-    let native = NativeFrameMeta {
+fn native_meta(sequence: u64, s: &SensorValues) -> NativeFrameMeta {
+    NativeFrameMeta {
         sequence: sequence as u32,
         bytes_used: 0,
         error: false,
@@ -204,9 +137,12 @@ fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues)
         frame_duration_ns: s.frame_duration.as_nanos() as u64,
         frame_length: 0,
         verified: s.verified,
-    };
+    }
+}
+
+fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues) -> FrameMeta {
     let mut meta = FrameMeta::new(mode.format, timestamp.as_nanos() as u64)
-        .with_backend(BackendFrameMeta::Native(native))
+        .with_backend(BackendFrameMeta::Native(native_meta(sequence, s)))
         .with_capture_instant(std::time::Instant::now());
     meta.clock = Some(TimestampClock::Monotonic);
     meta
@@ -255,114 +191,35 @@ pub(super) fn start_processed(
                 code: None,
                 interval: fraction,
             };
-            let format = if code == FourCc::NV12 {
-                BeFormat::Nv12
-            } else {
-                BeFormat::Rgb24
-            };
+            let specs = pisp_worker::output_specs(&mode, &config.backends.native)?;
+            let setup = |i: usize| specs[i].map(|s| s.setup()).transpose();
             let options = PispOptions {
-                outputs: [
-                    Some(BeOutputSetup {
-                        format,
-                        width: w,
-                        height: h,
-                    }),
-                    None,
-                ],
+                outputs: [setup(0)?, setup(1)?],
+                output_memory: if config.backends.native.driver_buffers {
+                    OutputMemory::Driver
+                } else {
+                    OutputMemory::CachedHeap
+                },
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;
             p.start().map_err(err)?;
             let controls = p.controls().clone();
-            let of = p.output_format(0).ok_or_else(|| err("no output 0"))?;
-            let stride = of.stride as usize;
-            let len = layouts(code, h as usize, stride)
-                .iter()
-                .map(|l| l.offset + l.len)
-                .max()
-                .unwrap_or(0);
-            let worker = thread::Builder::new()
-                .name("styx-native-pisp".into())
-                .spawn(move || {
-                    let (ret_tx, ret_rx) = mpsc::channel::<BeJob>();
-                    let mut cache: HashMap<u32, BeBuffer> = HashMap::new();
-                    loop {
-                        if stop_rx.try_recv().is_ok() {
-                            break;
-                        }
-                        while let Ok(job) = ret_rx.try_recv() {
-                            p.release(&job);
-                        }
-                        let f = match p.next(timeout) {
-                            Ok(f) => f,
-                            Err(e) => {
-                                *werr.lock() = Some(err(e));
-                                break;
-                            }
-                        };
-                        let Some(index) = f.job.outputs[0] else {
-                            p.release(&f.job);
-                            continue;
-                        };
-                        let buffer = match cache.get(&index) {
-                            Some(b) => b.clone(),
-                            None => {
-                                let Some(fd) = p
-                                    .output_dmabuf(0, &f.job)
-                                    .and_then(|fd| fd.try_clone_to_owned().ok())
-                                else {
-                                    p.release(&f.job);
-                                    continue;
-                                };
-                                let size = p.output(0, &f.job).map_or(len, <[u8]>::len);
-                                let map = match DmaBuf::from_fd(fd.try_clone().expect("dup"), size)
-                                    .map()
-                                {
-                                    Ok(m) => m,
-                                    Err(e) => {
-                                        *werr.lock() = Some(err(e));
-                                        break;
-                                    }
-                                };
-                                let b = BeBuffer {
-                                    map: Arc::new(map),
-                                    fd: Arc::new(fd),
-                                };
-                                cache.insert(index, b.clone());
-                                b
-                            }
-                        };
-                        {
-                            use std::os::fd::AsFd;
-                            let _ = dma_heap::sync(buffer.fd.as_fd(), Access::Read, true);
-                        }
-                        ae_worker.store(
-                            ae_of(f.step.params.ae.locked),
-                            std::sync::atomic::Ordering::Release,
-                        );
-                        let meta = frame_meta(&worker_mode, f.sequence, f.timestamp, &f.sensor);
-                        let lease = FrameLease::from_external(
-                            meta,
-                            layouts(code, h as usize, stride),
-                            Arc::new(BeBacking {
-                                buffer,
-                                len,
-                                job: f.job,
-                                returns: ret_tx.clone(),
-                            }),
-                        );
-                        if enqueue_capture_frame(&tx, lease, "native-pisp", send_timeout) {
-                            break;
-                        }
-                    }
-                    // Leases still out return their buffers to a closed channel; the back end
-                    // frees its buffers once they are dropped.
-                    if let Err(e) = p.close() {
-                        tracing::warn!(backend = "native", error = %e, "closing the PiSP path");
-                    }
-                    tx.close();
-                })
-                .map_err(|e| err(format!("worker: {e}")))?;
+            let stride = |i: usize| p.output_format(i).map_or(0, |f| f.stride as usize);
+            let strides = [stride(0), stride(1)];
+            let worker = pisp_worker::spawn(
+                p,
+                pisp_worker::Worker {
+                    specs,
+                    strides,
+                    tx,
+                    stop: stop_rx,
+                    error: werr,
+                    send_timeout,
+                    timeout,
+                    ae_state: ae_worker,
+                },
+            )?;
             (controls, worker)
         }
         IspKind::Software => {
@@ -373,7 +230,13 @@ pub(super) fn start_processed(
                 code: None,
                 interval: fraction,
             };
-            let mut p = SoftPipeline::open(camera, &settings, &tuning, 1).map_err(err)?;
+            let threads = config
+                .backends
+                .native
+                .soft_threads
+                .unwrap_or_else(crate::planner::cost::default_softisp_threads);
+            tracing::info!(backend = "native", threads, "software ISP threads");
+            let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = if code == FourCc::NV12 {
@@ -574,6 +437,6 @@ mod tests {
         let plan = crate::planner::plan_frames(&soft, &FrameRequirements::formats([FourCc::NV12]))
             .unwrap();
         assert!(plan.to_string().contains("software ISP"), "{plan}");
-        assert!(plan.total.cpu_ms > 8.0, "{plan}");
+        assert!(plan.total.cpu_ms > 5.0, "{plan}");
     }
 }

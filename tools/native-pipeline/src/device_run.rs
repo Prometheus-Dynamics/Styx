@@ -3,7 +3,9 @@
 use std::time::{Duration, Instant};
 
 use styx_native::{BufferMemory, CameraOptions, NativeCamera, SensorLibrary, StreamSettings};
-use styx_pipeline::device::{PispOptions, PispPipeline, SoftPipeline, process_usage};
+use styx_pipeline::device::{
+    PispOptions, PispPipeline, PispTimes, SoftPipeline, process_usage, thread_usage,
+};
 use styx_pipeline::measure::{grey_ratios, nv12_to_rgb, plane_mean, write_pgm, write_ppm};
 use styx_pipeline::rawrec::{Header, RawWriter, VERSION};
 
@@ -104,6 +106,7 @@ pub fn soft(a: &Args) -> Result<(), String> {
     let mut output = crate::output::Output::new(a.output.0, a.output.1, w, h);
     let mut frames = Vec::new();
     let (cpu0, _) = process_usage();
+    let threads0 = thread_usage();
     p.start().map_err(|e| e.to_string())?;
     let t_start = Instant::now();
     let mut first = None;
@@ -152,7 +155,7 @@ pub fn soft(a: &Args) -> Result<(), String> {
     }
     let wall = t_start.elapsed();
     let (cpu1, rss) = process_usage();
-    let threads = styx_pipeline::device::thread_usage();
+    let threads = thread_usage();
     p.soft_loop()
         .controller()
         .stop_recording()
@@ -174,15 +177,10 @@ pub fn soft(a: &Args) -> Result<(), String> {
         peak_rss: rss,
         extra: {
             let mut v = crate::output::summary_lines(&saved, ratios);
-            let n = frames.len().max(1) as f64;
-            let per = |d: Duration| d.as_secs_f64() * 1e3 / n;
-            v.push(format!(
-                "threads (CPU per frame, user + system, ms; whole process run incl. start): {}",
-                threads
-                    .iter()
-                    .map(|(name, u, s)| format!("{name} {:.2}+{:.2}", per(*u), per(*s)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            v.extend(thread_lines(
+                &threads0,
+                &threads,
+                frames.len().max(1) as f64,
             ));
             v.insert(
                 v.len() - 1,
@@ -235,7 +233,13 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let tuning = tuning(a)?;
     let (cam, opened) = open_camera(a)?;
     let opened_to_open = opened.elapsed();
-    let options = PispOptions::nv12_and_half_rgb(1280, 800);
+    let mut options = PispOptions::nv12_and_half_rgb(1280, 800);
+    if a.driver_buffers {
+        options.output_memory = styx_pisp::device::OutputMemory::Driver;
+    }
+    if a.every_frame {
+        options.settled_rate_hz = None;
+    }
     let mut p =
         PispPipeline::open(cam, &settings(a), &tuning, options).map_err(|e| e.to_string())?;
     if let Some(w) = crate::restart::requested_warm(a) {
@@ -262,11 +266,14 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     let (cpu0, _) = process_usage();
+    styx_pisp::device::profile::enable(a.profile);
     p.start().map_err(|e| e.to_string())?;
     println!(
-        "pisp: frame sync / embedded data: {:?}",
-        p.sensor_feedback()
+        "pisp: frame sync / embedded data: {:?}; back end config buffer: {}",
+        p.sensor_feedback(),
+        p.back_end_config_source().unwrap_or_default()
     );
+    let threads0 = thread_usage();
     let t_start = Instant::now();
     let (w0, h0, s0) = (o0.width as usize, o0.height as usize, o0.stride as usize);
     let (w1, h1, s1) = (o1.width as usize, o1.height as usize, o1.stride as usize);
@@ -276,8 +283,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let mut mismatches = 0;
     let mut last_nv12 = Vec::new();
     let mut last_rgb = Vec::new();
-    let mut prepare = Vec::new();
-    let mut be_job = Vec::new();
+    let mut times: Vec<(PispTimes, Duration)> = Vec::new();
     let mut result = Ok(());
     for i in 0..a.frames as u64 {
         if crate::interrupted() {
@@ -300,22 +306,31 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain))).is_none() {
             base = Some((f.sensor.exposure, f.sensor.analogue_gain));
         }
-        let mut log = FrameLog::new(&f.sensor, &f.step, f.timestamp);
+        let mut log = FrameLog::new(&f.sensor, p.step(), f.timestamp);
         log.latency = done.saturating_sub(f.timestamp);
         log.processing = f.times.total;
         log.request_lands = f.request_lands;
-        prepare.push(f.times.be_prepare);
-        be_job.push(f.times.be_job);
-        if let Some(nv12) = p.output(0, &f.job) {
-            log.out_y = plane_mean(nv12, w0, h0, s0);
-            if i + 1 == a.frames as u64 {
-                last_nv12 = nv12.to_vec();
+        let tr = Instant::now();
+        let last = i + 1 == a.frames as u64;
+        if !a.no_read || last {
+            p.sync_output(0, &f.job, true).map_err(|e| e.to_string())?;
+            if let Some(nv12) = p.output(0, &f.job) {
+                if !a.no_read {
+                    log.out_y = plane_mean(nv12, w0, h0, s0);
+                }
+                if last {
+                    last_nv12 = nv12.to_vec();
+                }
             }
+            p.sync_output(0, &f.job, false).map_err(|e| e.to_string())?;
         }
-        if i + 1 == a.frames as u64
-            && let Some(rgb) = p.output(1, &f.job)
-        {
-            last_rgb = rgb.to_vec();
+        times.push((f.times, tr.elapsed()));
+        if last {
+            p.sync_output(1, &f.job, true).map_err(|e| e.to_string())?;
+            if let Some(rgb) = p.output(1, &f.job) {
+                last_rgb = rgb.to_vec();
+            }
+            p.sync_output(1, &f.job, false).map_err(|e| e.to_string())?;
         }
         p.release(&f.job);
         if !a.quiet {
@@ -325,6 +340,8 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     }
     let wall = t_start.elapsed();
     let (cpu1, rss) = process_usage();
+    let threads = thread_usage();
+    let updates = p.be_updates();
     let p_startup = *p.startup();
     p.controller().stop_recording().map_err(|e| e.to_string())?;
     let mut in_place = None;
@@ -339,8 +356,26 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     };
     result?;
     stopped?;
-    let mut extra = vec![format!("statistics/raw sequence mismatches: {mismatches}")];
+    let mut extra = vec![
+        format!("statistics/raw sequence mismatches: {mismatches}"),
+        format!(
+            "back end config: rebuilt {}, patched {}, unchanged {} times",
+            updates.rebuilt, updates.patched, updates.unchanged
+        ),
+    ];
     extra.push(startup_line(p_startup, opened_to_open, first));
+    let n = frames.len().max(1) as f64;
+    for e in styx_pisp::device::profile::report() {
+        extra.push(format!(
+            "profile {}.{}: {:.1} us/frame ({:.2} calls/frame, {:.1} us each)",
+            e.what,
+            e.op,
+            e.total.as_secs_f64() * 1e6 / n,
+            e.count as f64 / n,
+            e.total.as_secs_f64() * 1e6 / e.count.max(1) as f64
+        ));
+    }
+    extra.extend(thread_lines(&threads0, &threads, n));
     let med = |mut v: Vec<Duration>| {
         v.sort();
         v.get(v.len() / 2)
@@ -349,10 +384,29 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             .as_secs_f64()
             * 1e3
     };
+    let col = |f: fn(&(PispTimes, Duration)) -> Duration| times.iter().map(f).collect::<Vec<_>>();
+    let tail = |mut v: Vec<Duration>| {
+        v.sort();
+        let at = |q: f64| {
+            v.get(((v.len().max(1) - 1) as f64 * q).round() as usize)
+                .copied()
+        };
+        let ms = |d: Option<Duration>| d.unwrap_or_default().as_secs_f64() * 1e3;
+        format!("p95 {:.3} ms, max {:.3} ms", ms(at(0.95)), ms(at(1.0)))
+    };
     extra.push(format!(
-        "back end: config + tiles {:.3} ms, job {:.3} ms (medians)",
-        med(prepare),
-        med(be_job)
+        "algorithms {}; dequeue to outputs {}",
+        tail(col(|t| t.0.algorithms)),
+        tail(col(|t| t.0.total))
+    ));
+    extra.push(format!(
+        "medians: statistics {:.3} ms, algorithms {:.3} ms, back end config + tiles {:.3} ms, back end job {:.3} ms, dequeue to outputs {:.3} ms, output read {:.3} ms",
+        med(col(|t| t.0.stats)),
+        med(col(|t| t.0.algorithms)),
+        med(col(|t| t.0.be_prepare)),
+        med(col(|t| t.0.be_job)),
+        med(col(|t| t.0.total)),
+        med(col(|t| t.1)),
     ));
     if !last_nv12.is_empty() {
         let pgm = a.out.join("pisp-nv12-luma.pgm");
@@ -392,4 +446,29 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     };
     print!("{}", summary.render(a));
     Ok(())
+}
+
+/// Per-thread CPU between two snapshots, per frame.
+pub(crate) fn thread_lines(
+    before: &[styx_pipeline::device::ThreadUsage],
+    after: &[styx_pipeline::device::ThreadUsage],
+    n: f64,
+) -> Vec<String> {
+    after
+        .iter()
+        .map(|t| {
+            let b = before.iter().find(|b| b.tid == t.tid);
+            let cpu = t.cpu.saturating_sub(b.map_or(Duration::ZERO, |b| b.cpu));
+            let sys = t.system.saturating_sub(b.map_or(Duration::ZERO, |b| b.system));
+            format!(
+                "thread {} ({}): {:.3} ms CPU/frame ({:.3} in the kernel), {:.2} waits/frame, {:.2} preemptions/frame",
+                t.tid,
+                t.name,
+                cpu.as_secs_f64() * 1e3 / n,
+                sys.as_secs_f64() * 1e3 / n,
+                (t.voluntary - b.map_or(0, |b| b.voluntary)) as f64 / n,
+                (t.involuntary - b.map_or(0, |b| b.involuntary)) as f64 / n
+            )
+        })
+        .collect()
 }

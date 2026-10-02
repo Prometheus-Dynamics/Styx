@@ -3,7 +3,7 @@
 
 use styx_algo::{ColourZone, Histogram, LumaZone, Statistics, ZoneGrid};
 use styx_pisp::stats::Statistics as PispStatistics;
-use styx_pisp::uapi::{AWB_STATS_SIZE, CDAF_STATS_SIZE};
+use styx_pisp::uapi::{AWB_STATS_SIZE, CDAF_STATS_SIZE, RawStatistics};
 use styx_softisp::IspStats;
 
 /// Full scale of the PiSP statistics: sums are of 16-bit samples after the statistics black
@@ -50,6 +50,36 @@ pub fn from_pisp(s: &PispStatistics) -> Statistics {
         before_wb: true,
         before_lsc: true,
     }
+}
+
+/// [`from_pisp`] straight from the raw buffer layout into `out`, reusing its buffers (no
+/// allocation once `out` has held PiSP statistics).
+pub fn from_pisp_raw(raw: &RawStatistics, out: &mut Statistics) {
+    let side = AWB_STATS_SIZE as u32;
+    out.colour.width = side;
+    out.colour.height = side;
+    out.colour.zones.clear();
+    out.colour
+        .zones
+        .extend(raw.awb.zones.iter().map(|z| ColourZone {
+            r: f64::from(z.r_sum) / PISP_SCALE,
+            g: f64::from(z.g_sum) / PISP_SCALE,
+            b: f64::from(z.b_sum) / PISP_SCALE,
+            counted: z.counted,
+        }));
+    out.luma = None;
+    let mut bins: Vec<u64> = std::mem::take(&mut out.histogram).into();
+    bins.clear();
+    bins.extend(raw.agc.histogram.iter().map(|&c| u64::from(c)));
+    out.histogram = Histogram::from(bins);
+    let focus_side = CDAF_STATS_SIZE as u32;
+    let focus = out.focus.get_or_insert_with(Default::default);
+    focus.width = focus_side;
+    focus.height = focus_side;
+    focus.zones.clear();
+    focus.zones.extend(raw.cdaf.foms.iter().map(|&f| f as f64));
+    out.before_wb = true;
+    out.before_lsc = true;
 }
 
 /// Software ISP statistics. Its sums include the white balance and digital gains it applied
@@ -156,8 +186,30 @@ mod tests {
         assert_eq!(s.colour.zones[0].mean(), (0.25, 0.5, 1.0 / 12.0));
         assert_eq!(s.histogram.len(), 1024);
         assert!((histogram_mean(&s.histogram) - 512.5 / 1024.0).abs() < 1e-12);
-        assert_eq!(s.focus.unwrap().zones[5], 9.0);
+        assert_eq!(s.focus.as_ref().unwrap().zones[5], 9.0);
         assert!(s.before_wb && s.luma.is_none());
+        // The in-place conversion gives the same, into reused buffers.
+        let mut out = from_softisp_like_garbage();
+        from_pisp_raw(&raw, &mut out);
+        assert_eq!(out, s);
+        from_pisp_raw(&raw, &mut out);
+        assert_eq!(out, s);
+    }
+
+    /// Statistics holding something else (as a reused buffer would).
+    fn from_softisp_like_garbage() -> Statistics {
+        Statistics {
+            colour: ZoneGrid {
+                width: 2,
+                height: 1,
+                zones: vec![ColourZone::default(); 2],
+            },
+            luma: Some(ZoneGrid::default()),
+            histogram: Histogram::from(vec![1, 2, 3]),
+            focus: None,
+            before_wb: false,
+            before_lsc: false,
+        }
     }
 
     fn bytemuck_zeroed() -> RawStatistics {

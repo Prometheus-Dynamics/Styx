@@ -105,13 +105,15 @@ fn frames(p: &mut PispPipeline) -> Result<Vec<Row>, String> {
     let mut rows = Vec::new();
     for _ in 0..FRAMES {
         let f = p.next(TIMEOUT).map_err(|e| e.to_string())?;
+        p.sync_output(0, &f.job, true).map_err(|e| e.to_string())?;
         let y = p.output(0, &f.job).map_or(0.0, |d| plane_mean(d, w, h, s));
+        p.sync_output(0, &f.job, false).map_err(|e| e.to_string())?;
         rows.push((
             f.dequeued,
             f.timestamp,
             f.sensor.total_exposure(),
             y,
-            f.step.params.ae.locked,
+            p.step().params.ae.locked,
             f.sensor.exposure,
             f.sensor.analogue_gain,
             warm,

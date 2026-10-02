@@ -12,7 +12,9 @@ use styx_kernel::v4l2::{
 };
 
 use super::be::BE_CFG_FOURCC;
-use super::{DeviceError, Queue, Result, bayer16_fourcc, find_media};
+use super::be_output::{OutputMemory, OutputQueue};
+use super::config_buf::ConfigBuffer;
+use super::{DeviceError, Result, bayer16_fourcc, find_media};
 use crate::format::formats;
 use crate::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig};
 
@@ -67,10 +69,17 @@ pub struct BeJob {
     pub elapsed: Duration,
 }
 
+/// A queued job (see [`BackEndStream::process_queued`]).
+#[derive(Debug)]
+#[must_use = "a queued job holds output buffers until waited for"]
+pub struct QueuedJob {
+    outputs: [Option<u32>; 2],
+    start: Instant,
+}
+
 struct Output {
-    queue: Queue,
+    queue: OutputQueue,
     format: ImageFormatConfig,
-    dmabufs: Vec<OwnedFd>,
     free: Vec<u32>,
 }
 
@@ -81,7 +90,7 @@ pub struct BackEndStream {
     inputs: Vec<OwnedFd>,
     input_len: u32,
     outputs: [Option<Output>; 2],
-    config: Queue,
+    config: ConfigBuffer,
 }
 
 fn mplane(w: u32, h: u32, fourcc: FourCc, bpl: u32) -> Format {
@@ -110,6 +119,30 @@ impl BackEndStream {
         input_len: u32,
         outputs: [Option<BeOutputSetup>; 2],
         buffers: u32,
+    ) -> Result<Self> {
+        Self::open_with(
+            group,
+            input,
+            bayer,
+            inputs,
+            input_len,
+            outputs,
+            buffers,
+            OutputMemory::Driver,
+        )
+    }
+
+    /// [`Self::open`] with the output buffers from `memory`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with(
+        group: usize,
+        input: ImageFormatConfig,
+        bayer: BayerOrder,
+        inputs: Vec<OwnedFd>,
+        input_len: u32,
+        outputs: [Option<BeOutputSetup>; 2],
+        buffers: u32,
+        memory: OutputMemory,
     ) -> Result<Self> {
         if outputs[0].is_none() || inputs.is_empty() {
             return Err(DeviceError::Setup("need output 0 and input buffers".into()));
@@ -196,15 +229,12 @@ impl BackEndStream {
             } else {
                 "pispbe-output1"
             };
-            let queue = Queue::new(dev, BufType::VideoCaptureMplane, buffers.max(2), name)?;
-            let dmabufs = (0..queue.len() as u32)
-                .map(|b| Ok(queue.dev.export_buffer(queue.buf_type, b, 0)?))
-                .collect::<Result<Vec<_>>>()?;
+            let size = g.planes[0].size_image as usize;
+            let queue = OutputQueue::new(dev, memory, buffers.max(2), size, name)?;
             let free = (0..queue.len() as u32).rev().collect();
             outs[i] = Some(Output {
                 queue,
                 format,
-                dmabufs,
                 free,
             });
         }
@@ -216,7 +246,12 @@ impl BackEndStream {
                 ..Default::default()
             }),
         )?;
-        let config = Queue::new(cfg_dev, BufType::MetaOutput, 1, "pispbe-config")?;
+        let config = ConfigBuffer::new(
+            cfg_dev,
+            BufType::MetaOutput,
+            size_of::<BeTilesConfig>(),
+            "pispbe-config",
+        )?;
         let s = Self {
             _media: media,
             input: in_dev,
@@ -233,6 +268,12 @@ impl BackEndStream {
         Ok(s)
     }
 
+    /// Where the config buffer comes from (`mmap`, or a dma-heap: see
+    /// [`super::CONFIG_HEAP_ENV`]).
+    pub fn config_source(&self) -> String {
+        self.config.source()
+    }
+
     /// Output `i`'s format as the node set it (put it in the config's output format).
     pub fn output_format(&self, i: usize) -> Option<ImageFormatConfig> {
         self.outputs.get(i)?.as_ref().map(|o| o.format)
@@ -242,45 +283,70 @@ impl BackEndStream {
     /// buffers stay with the caller until [`Self::release`]; fails when an output has no free
     /// buffer.
     pub fn process(&mut self, input: u32, cfg: &BeTilesConfig, timeout: Duration) -> Result<BeJob> {
+        let job = self.process_queued(input, cfg)?;
+        self.wait_job(job, timeout)
+    }
+
+    /// Queues one job on input buffer `input` with `cfg` and returns at once; finish it with
+    /// [`Self::wait_job`] (the caller can work meanwhile: the job takes about 0.8 ms for
+    /// 1280x800).
+    pub fn process_queued(&mut self, input: u32, cfg: &BeTilesConfig) -> Result<QueuedJob> {
         let bytes = cfg.as_bytes();
-        self.config.maps[0][0].as_mut_slice()[..bytes.len()].copy_from_slice(bytes);
-        let fd = self
-            .inputs
-            .get(input as usize)
-            .ok_or_else(|| DeviceError::Setup(format!("no input buffer {input}")))?;
+        super::profile::time("pispbe-config", "copy", || self.config.write(bytes));
         let mut picked = [None, None];
         for (i, o) in self.outputs.iter_mut().enumerate() {
             if let Some(o) = o {
-                let b = o.free.pop().ok_or_else(|| {
-                    DeviceError::Setup(format!("output {i}: every buffer is held"))
-                })?;
+                let Some(b) = o.free.pop() else {
+                    self.give_back(picked);
+                    return Err(DeviceError::Setup(format!(
+                        "output {i}: every buffer is held"
+                    )));
+                };
                 picked[i] = Some(b);
             }
         }
-        let result = self.run(input, fd.as_fd(), picked, cfg, timeout);
+        let queued = self.queue_job(input, picked, bytes.len() as u32);
+        match queued {
+            Ok(start) => Ok(QueuedJob {
+                outputs: picked,
+                start,
+            }),
+            Err(e) => {
+                self.give_back(picked);
+                Err(e)
+            }
+        }
+    }
+
+    /// Waits up to `timeout` for a job from [`Self::process_queued`] to finish.
+    pub fn wait_job(&mut self, job: QueuedJob, timeout: Duration) -> Result<BeJob> {
+        let result = self.wait(&job, timeout);
         if result.is_err() {
             // Whatever completed is unusable; hand the buffers back.
-            for (o, b) in self.outputs.iter_mut().zip(picked) {
-                if let (Some(o), Some(b)) = (o, b) {
-                    o.free.push(b);
-                }
-            }
+            self.give_back(job.outputs);
         }
         result
     }
 
-    fn run(
-        &self,
-        input: u32,
-        fd: BorrowedFd<'_>,
-        picked: [Option<u32>; 2],
-        cfg: &BeTilesConfig,
-        timeout: Duration,
-    ) -> Result<BeJob> {
-        let bytes = cfg.as_bytes();
+    fn give_back(&mut self, picked: [Option<u32>; 2]) {
+        for (o, b) in self.outputs.iter_mut().zip(picked) {
+            if let (Some(o), Some(b)) = (o, b)
+                && !o.free.contains(&b)
+            {
+                o.free.push(b);
+            }
+        }
+    }
+
+    fn queue_job(&self, input: u32, picked: [Option<u32>; 2], cfg_len: u32) -> Result<Instant> {
+        let fd = self
+            .inputs
+            .get(input as usize)
+            .ok_or_else(|| DeviceError::Setup(format!("no input buffer {input}")))?
+            .as_fd();
         for (o, b) in self.outputs.iter().zip(picked) {
             if let (Some(o), Some(b)) = (o, b) {
-                o.queue.queue(b, &[])?;
+                o.queue.queue(b)?;
             }
         }
         let mut q = QueueBuffer::dmabuf(BufType::VideoOutputMplane, input, &[fd]);
@@ -290,22 +356,29 @@ impl BackEndStream {
             bytes_used: self.input_len,
             data_offset: 0,
         }];
-        self.input.queue(&q)?;
+        super::profile::time("pispbe-input", "qbuf", || self.input.queue(&q))?;
         let start = Instant::now();
-        self.config.queue(0, &[bytes.len() as u32])?;
+        // The job starts when the config is queued (the driver writes it to the hardware).
+        self.config.queue(cfg_len)?;
+        Ok(start)
+    }
+
+    fn wait(&self, job: &QueuedJob, timeout: Duration) -> Result<BeJob> {
         let mut elapsed = None;
         let mut error = false;
         for o in self.outputs.iter().flatten() {
             let done = o.queue.dequeue(timeout)?;
             error |= done.flags.contains(BufferFlags::ERROR);
-            elapsed.get_or_insert(start.elapsed());
+            elapsed.get_or_insert(job.start.elapsed());
         }
+        // The input and config buffers completed with the outputs.
         let deadline = Instant::now() + timeout;
         loop {
-            if self
-                .input
-                .dequeue(BufType::VideoOutputMplane, Memory::DmaBuf)?
-                .is_some()
+            if super::profile::time("pispbe-input", "dqbuf", || {
+                self.input
+                    .dequeue(BufType::VideoOutputMplane, Memory::DmaBuf)
+            })?
+            .is_some()
             {
                 break;
             }
@@ -313,14 +386,14 @@ impl BackEndStream {
             if left.is_zero() {
                 return Err(DeviceError::Timeout("pispbe-input"));
             }
-            self.input.wait(Some(left))?;
+            super::profile::time("pispbe-input", "poll", || self.input.wait(Some(left)))?;
         }
         self.config.dequeue(timeout)?;
         if error {
             return Err(DeviceError::Setup("pispbe returned an error buffer".into()));
         }
         Ok(BeJob {
-            outputs: picked,
+            outputs: job.outputs,
             elapsed: elapsed.unwrap_or_default(),
         })
     }
@@ -328,13 +401,35 @@ impl BackEndStream {
     /// The bytes of output `i`'s buffer `index`.
     pub fn output_data(&self, i: usize, index: u32) -> Option<&[u8]> {
         let o = self.outputs.get(i)?.as_ref()?;
-        Some(o.queue.maps.get(index as usize)?.first()?.as_slice())
+        o.queue.data(index)
+    }
+
+    /// Brackets CPU reads of output `i`'s buffer `index` (`DMA_BUF_IOCTL_SYNC`): `start`
+    /// before reading (invalidates a cached buffer), then again with `start` false. Needed
+    /// for [`OutputMemory::CachedHeap`] buffers, a no-op for the driver's.
+    pub fn sync_output(&self, i: usize, index: u32, start: bool) -> Result<()> {
+        let fd = self
+            .output_dmabuf(i, index)
+            .ok_or_else(|| DeviceError::Setup(format!("no output {i} buffer {index}")))?;
+        styx_kernel::dma_heap::sync(fd, styx_kernel::dma_heap::Access::Read, start)?;
+        Ok(())
     }
 
     /// The dma-buf of output `i`'s buffer `index`.
     pub fn output_dmabuf(&self, i: usize, index: u32) -> Option<BorrowedFd<'_>> {
         let o = self.outputs.get(i)?.as_ref()?;
-        o.dmabufs.get(index as usize).map(|f| f.as_fd())
+        o.queue.dmabuf(index)
+    }
+
+    /// Hands output `i`'s buffer `index` back for reuse (outputs of one job can be held for
+    /// different times).
+    pub fn release_output(&mut self, i: usize, index: u32) {
+        if let Some(Some(o)) = self.outputs.get_mut(i)
+            && !o.free.contains(&index)
+            && (index as usize) < o.queue.len()
+        {
+            o.free.push(index);
+        }
     }
 
     /// Hands a job's output buffers back for reuse.
@@ -357,7 +452,6 @@ impl BackEndStream {
             .free_buffers(BufType::VideoOutputMplane, Memory::DmaBuf);
         let mut first = a.err();
         for o in self.outputs.into_iter().flatten() {
-            drop(o.dmabufs);
             if let Err(e) = o.queue.close() {
                 first.get_or_insert(e);
             }

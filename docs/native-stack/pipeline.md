@@ -55,10 +55,14 @@ tools/native-pipeline   pisp | soft | replay, with the measurements below
   algorithms' total exposure divided by what the sensor delivered for that frame (clamped to
   1..max), so the picture follows the target while a new exposure is in flight, as the
   Raspberry Pi IPA does.
-* **Timing.** PiSP: frame F's statistics arrive with its raw frame, so the back end processes
-  F with the settings computed from F. The FE's RGB→Y weights and black levels follow on the
-  config it takes next (configs are queued two ahead). Software ISP: statistics come out of
-  processing F, so the settings from F process F + 1.
+* **Timing.** PiSP: frame F's statistics arrive with its raw frame; F goes through the back
+  end at once with the settings computed from F − 1 (its digital gain recomputed for what F
+  got) while F's statistics go through the algorithms, so the settings from F process F + 1
+  and the algorithms' time is hidden behind the back end job (see "PiSP path"). Sensor
+  requests go out as early as before. While AE is locked and AWB converged the algorithms
+  run at 15 Hz (`PispOptions::settled_rate_hz`). The FE's RGB→Y weights and black levels
+  follow on the config it takes next (configs are queued two ahead). Software ISP: statistics
+  come out of processing F, so the settings from F process F + 1.
 * **Determinism.** `Controller::record_to` writes a `styx-algo` replay; replaying it gives the
   same outputs bit for bit (tested), and the virtual sensor replays raw recordings.
 
@@ -114,12 +118,87 @@ the target, two frames in a row):
 `FrontEndDevice::open` (with `keep_embedded`) routes `csi2 → pisp-fe`, `NativeCamera::
 configure_external` sets the sensor and bridge up without touching links or nodes,
 `start_external` starts the embedded data node and the event threads (frame starts from
-`rp1-cfe-fe_image0`'s `FRAME_SYNC` events), then the front end streams. Each frame:
-`next_held` dequeues the statistics and the raw buffer (not copied), the loop runs, a fresh
-back end config is prepared (template + settings, 12-24 µs with tiling) and the back end job
-runs on the raw buffer imported as a dma-buf (`BackEndStream`), writing output 0 (e.g. NV12
-1280x800) and output 1 (e.g. RGB 640x400, resampler) into buffers the caller holds until it
-releases them. The raw buffer goes back to the front end after the job.
+`rp1-cfe-fe_image0`'s `FRAME_SYNC` events), then the front end streams. Each frame
+(`PispPipeline::next`):
+
+1. `next_held_raw` dequeues the statistics and the raw buffer (not copied); the statistics are
+   copied out of their uncached buffer in one go (14 µs), and only on frames the algorithms run.
+2. The back end config is patched with the newest settings (`BeConfigBuilder`: tiles and
+   everything geometric are prepared once, again only when lens shading switches on or off;
+   per frame only the blocks whose register values changed, lens shading tables resampled and
+   gamma converted only when they change: 4-7 µs) and the job is queued on the raw buffer,
+   imported as a dma-buf (`BackEndStream::process_queued`).
+3. While the back end works (0.84 ms), the statistics are converted in place
+   (`stats::from_pisp_raw`) and run through the algorithms; their sensor request goes to the
+   control schedule. Settled (AE locked, AWB converged), the algorithms run at 15 Hz.
+4. `wait_job` returns output 0 (e.g. NV12 1280x800) and output 1 (e.g. RGB 640x400) in buffers
+   the caller holds until it releases them (each output on its own: `release_output`); the raw
+   buffer goes back to the front end.
+
+The back end's outputs are cached dma-heap buffers (`linux,cma`) imported with
+`V4L2_MEMORY_DMABUF` (`OutputMemory::CachedHeap`, the default): vb2 does no cache maintenance
+on imported buffers, so a CPU reader brackets its reads with `DMA_BUF_IOCTL_SYNC`
+(`PispPipeline::sync_output`; the Styx lease does it when its pixels are first read) and reads
+at memory speed; the driver's own buffers (`OutputMemory::Driver`) are mapped uncached. The
+config buffer comes from a cached heap too (the driver copies it with the CPU at `QBUF`).
+
+### PiSP path performance
+
+CM5, OV9782 1280x800, the scene above, HeliOS tuning, 300 frames, 2026-10-02. "Before" is
+`582d885` on the same device (the tool; through the Styx API the old code no longer runs on
+today's bridge, its last measurement is quoted). CPU is per frame for the whole process
+(scheduler run time of every thread); latency is the frame's capture timestamp (frame start)
+to the frame being in the consumer's hands.
+
+| | before | after |
+|---|---|---|
+| `native-pipeline pisp`, 30 fps, reading the NV12 output (the tool's mean) | 3.1 ms CPU (9.2% of a core) | 0.47 ms (1.4%) |
+| same, not reading the output | 1.2 ms (3.5%) | 0.26 ms (0.8%) |
+| same at 120 fps, not reading | — | 0.22 ms (2.6%) |
+| latency, median / p95 (30 fps) | 9.21 / 9.85 ms | 8.35 / 8.39 ms |
+| dequeue → outputs ready, median / p95 | 1.71 / 2.35 ms | 0.86 / 0.89 ms |
+| reading the 1280x800 Y plane on the CPU | 1.87 ms | 0.22 ms (cached buffers, sync included) |
+| Styx API, NV12 1280x800, one consumer, 30 fps | — | 0.26 ms (0.8%), latency 8.28 / 8.32 ms |
+| same at 120 fps | 1.25 ms (15% at 120.6 fps, `native_processed`) | 0.19 ms (2.3%), latency 8.36 / 8.38 ms |
+| same, the consumer reading every pixel (30 fps) | — | 0.55 ms (1.6%) |
+| Styx API, NV12 1280x800 + RG24 640x400 (two consumers, one PiSP pass), 30 fps | no plan (no NV12 → RG24 converter) | 0.32 ms (1.0%), both 8.36 / 8.40 ms |
+| same at 120 fps | — | 0.23 ms (2.7%), both 8.43 / 8.46 ms |
+| same, both consumers reading every pixel (30 fps) | — | 0.81 ms (2.4%) |
+| camera service + two client processes (NV12, RG24 640x400), 30 fps: service | — | 0.24 ms (0.7%), nothing copied |
+| clients receiving (dma-bufs) / reading every pixel | — | 0 / 0.37 ms (NV12), 0.20 ms (RGB); latency 8.38-8.40 ms |
+| peak RSS (Styx API process) | 27.4 MiB (tool) | 17.8 MiB |
+| software ISP mode through the Styx API (`STYX_NATIVE_ISP=software`), 30 fps | 15.8 ms CPU, 22.4 ms latency (1 thread) | 6.9 ms, 9.5 ms (4 threads) |
+
+`native_isp_bench single|shared FPS FRAMES [--read]`, `native_isp_bench serve|client` and
+`native-pipeline pisp [--no-read] [--profile] [--every-frame] [--driver-buffers]` measure
+these; `--profile` (`styx_pisp::device::profile`) times every device call per frame and the
+tool prints each thread's CPU and wake-ups.
+
+Where the 3.1 ms and 9.2 ms went before: 1.87 ms the tool reading the uncached NV12 output;
+0.79 ms (on the frame path, so latency too) decoding the embedded data line: all 16 KiB of
+its uncached buffer were unpacked twice per frame although the layout reads 25 bytes (fixed in
+`styx-sensor`); 0.13 ms the back end config `QBUF`; 0.11 ms the algorithms (0.65 ms on the
+frames AWB and lens shading run, before the back end job); 0.05 ms rebuilding the back end
+config and tiles; 0.02 ms decoding statistics; the rest ioctls and wake-ups. The latency was
+7.4 ms sensor readout + 1.8 ms after the dequeue.
+
+Where the 0.26 ms per frame go now (Styx API, NV12, 30 fps; `--profile`, per-thread CPU):
+
+| | per frame |
+|---|---|
+| back end config `QBUF`: the `pispbe` driver writes the whole `pisp_be_config` to the hardware registers (MMIO) for every job | 0.12 ms |
+| algorithms: 0.13 ms per run, at 15 Hz while settled (0.11 ms per frame when run on every frame) | 0.07 ms |
+| ~20 V4L2 ioctls (1 µs each) and two waits of the pipeline thread | 0.025 ms |
+| event thread: frame-start events, embedded data (two wake-ups) | 0.013 ms |
+| the consumer: queue hand-off, lease, its wake-up | 0.009 ms |
+| statistics copy (every other frame) and conversion | 0.007 ms |
+| back end config patch | 0.007 ms |
+| embedded data decode | 0.005 ms |
+| control schedule, frame metadata | ~0.005 ms |
+
+The latency, 8.3 ms, is 7.4 ms of sensor readout (the timestamp is the frame start, the front
+end's buffers complete at its end), 0.84 ms back end job (hardware; the algorithms run inside
+it) and about 0.05 ms on the host.
 
 ## Software path
 
@@ -180,9 +259,18 @@ what was tried and dropped are in `crates/softisp/PERFORMANCE.md`.
 ## Planner
 
 The native backend lists `NV12` and `RG24` modes at each sensor size (all rates of the raw
-mode) with property `isp`. Costs (`planner/cost.rs`, from the measurements below): PiSP adds
-1.7 ms latency and 1 ms CPU to the native capture; the software ISP 10 ms/MP + 0.3 ms 3A (CPU
-and latency). Raw native modes are not routed through a Bayer decoder when an ISP route exists
+mode) with property `isp`. Costs (`planner/cost.rs`, from the measurements here): PiSP adds
+0.9 ms latency and 0.3 ms CPU to the native capture; the software ISP 5.5 ms/MP of CPU
+(+0.4 ms with helper threads) + 0.3 ms 3A, and 5.5 ms/MP divided over its threads of latency
+(it runs on min(4, cores) threads, `StyxConfig::native_soft_threads`). A native PiSP scales
+like libcamera's ISP (`output_resolution` → `NativeIspConfig::output_size`), and a shared
+capture uses both back end outputs: consumers are served by size and format (the PiSP makes
+either processed format on either output; the second output is attached to each frame as a
+`CompanionKind::Scaled` companion), so NV12 1280x800 + RG24 640x400 come from one pass with
+no conversion; a third size or format falls back to the mode's size first, then to a CPU
+conversion. Shared plans of a sensor Styx drives run at exactly the rate asked when saving
+power, as single plans do. Every output is handed out as a dma-buf, in process and to other
+processes through the camera service (planes exported with their offsets). Raw native modes are not routed through a Bayer decoder when an ISP route exists
 (that route has no 3A); Bayer decoders are priced at the software ISP's cost. `plan_frames`
 for NV12, RG24 or luma (NV12's Y plane) on the native OV9782 picks the PiSP mode on the CM5
 and the software ISP mode elsewhere. Tuning: `STYX_TUNING`, else the description's `tuning`
@@ -244,10 +332,10 @@ from the remembered state.)
 | AE start: exposure / output within 5%, locked | 5 / 3 / 6 frames (see above) | 17 / 13 / 17, 3.6% (before) |
 | darker step (¼): exposure / output, locked | 2 / 0, 3 | 13 / 8, 14; 4.7% (before) |
 | brighter step (3×): exposure / output, locked | 2 / 2, 3 | 19 / 18, 21; 4.9% (before) |
-| sensor timestamp (frame start) → output ready | 9.21 ms median, 9.85 p95 | 22.4 ms median, 22.8 p95 (17.4 with CMA buffers) |
-| dequeue → output ready | 1.71 ms (back end job 0.84, config + tiles 0.045) | 14.2 ms (9.1 with CMA buffers) |
-| CPU per frame (whole process) | 3.1 ms (9.2% of a core) | 15.8 ms (47%); 10.7 ms (32%) with CMA buffers |
-| peak RSS | 27.4 MiB | 12.7 MiB (7.9 with CMA buffers) |
+| sensor timestamp (frame start) → output ready | 8.35 ms median, 8.39 p95 (9.21 / 9.85 before, see "PiSP path performance") | 22.4 ms median, 22.8 p95 (17.4 with CMA buffers; before perf-soft) |
+| dequeue → output ready | 0.86 ms (back end job 0.84; 1.71 before) | 14.2 ms (9.1 with CMA buffers) |
+| CPU per frame (whole process) | 0.26 ms (0.8% of a core); 0.47 ms reading the output (3.1 ms before) | 15.8 ms (47%); 10.7 ms (32%) with CMA buffers |
+| peak RSS | 17.8 MiB (Styx API; 27.4 before) | 12.7 MiB (7.9 with CMA buffers) |
 | AWB (Bayesian, HeliOS tuning) | 2533 K, output R/G 1.19 B/G 0.91 | 2557 K, R/G 1.24 B/G 0.90 |
 
 Run of 2026-10-01 with lens shading on both paths (the PiSP's LSC block since then), after the
@@ -258,7 +346,8 @@ which the CPU reads uncached: reading the raw frame is a third of the software p
 
 * Sensor values were read back from embedded data on every frame; statistics and raw frames
   always had the same sequence; no frame was dropped.
-* At 60 and 120 fps the PiSP path keeps up (2.9 and 3.0 ms CPU per frame); the software ISP
+* At 60 and 120 fps the PiSP path keeps up (2.9 and 3.0 ms CPU per frame then, 0.22 ms at
+  120 fps now); the software ISP
   path needs 15 ms per frame on one core (the CPU figures include the tool's own per-frame
   mean of the output and, for the software path, writing the raw recording).
 * The light is warm: the Bayesian AWB (CT curve from the tuning) keeps some of it, grey world
@@ -292,10 +381,14 @@ thread had gone (fixed here: stop it first). No stop timeouts since, on either p
 * PiSP lens shading: the ALSC tables resampled to the back end's 33x33 grid, packed as the
   Raspberry Pi IPA does; runs on the device, not compared against libcamera's output. TDN/sharpening strength/denoise follow libpisp defaults, not the tuning.
 * The front end statistics set-up is fixed (uniform AGC weights; AGC meters the AWB zones).
-* Styx capture of processed native modes uses output 0 only (the tool uses both outputs); the
-  planner's second-output / pyramid logic is libcamera-only.
+* PiSP CPU left (see "PiSP path performance"): half of it is the `pispbe` driver writing the
+  whole back end config to the hardware by MMIO on every job (0.12 ms; the driver could write
+  only changed blocks, as it already does for the front end). The event thread wakes twice
+  per frame and the pipeline thread twice (front end, back end); one wait per frame would
+  need the event thread's work on the pipeline thread (`styx-native`). Pyramid companions
+  from the PiSP's second output are libcamera-only so far.
+* Algorithms at 15 Hz while settled: a scene change is seen up to one 15 Hz period later
+  (`settled_rate_hz: None` runs them on every frame).
 * Brightness changes were forced exposure steps, not changes of the light.
-* The tool's software runs use one thread unless `--threads` says otherwise; the `styx`
-  native backend's software mode (`capture_api/native_isp.rs`) opens it with one thread, and
-  the planner still prices the software ISP at 10 ms/MP (now about 5 ms/MP on one A76 core,
-  1.5 ms/MP on four).
+* The tool's software runs use one thread unless `--threads` says otherwise (the `styx`
+  native backend's software mode uses min(4, cores), and the planner prices it as measured).

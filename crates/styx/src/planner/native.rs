@@ -77,10 +77,17 @@ pub(crate) fn processed_capture_step(
             "PiSP front end statistics and back end, raw frames as dma-bufs, 3A in Styx",
         ),
         _ => {
-            let cpu = cost::SOFTISP_MS_PER_MP * mp + cost::ALGORITHMS_MS;
+            let threads = cost::default_softisp_threads();
+            let extra = if threads > 1 {
+                cost::SOFTISP_THREADS_CPU_MS
+            } else {
+                0.0
+            };
+            let cpu = cost::SOFTISP_MS_PER_MP * mp + cost::ALGORITHMS_MS + extra;
+            let latency = cost::softisp_latency_ms_per_mp(threads) * mp + cost::ALGORITHMS_MS;
             (
                 StepExecution::Cpu,
-                StepCost::offloaded(sensor + cpu, cpu),
+                StepCost::offloaded(sensor + latency, cpu),
                 "software ISP and 3A in Styx",
             )
         }

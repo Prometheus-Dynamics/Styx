@@ -81,9 +81,15 @@ impl IspKind {
     }
 }
 
+/// Environment variable forcing the software ISP (`software`) on cameras with a PiSP.
+pub const ISP_ENV: &str = "STYX_NATIVE_ISP";
+
 /// The ISP a camera's frames can go through: the PiSP when its front end is in the camera's
-/// media graph and a back end exists, else the software ISP.
+/// media graph and a back end exists, else (or with [`ISP_ENV`]`=software`) the software ISP.
 pub fn isp_kind(info: &styx_native::CameraInfo) -> IspKind {
+    if std::env::var(ISP_ENV).is_ok_and(|v| v == "software") {
+        return IspKind::Software;
+    }
     let fe = info.topology.entity_by_name("pisp-fe").is_some();
     if fe && !styx_pisp::device::find_media("pispbe").is_empty() {
         IspKind::Pisp
@@ -152,25 +158,63 @@ pub fn process_usage() -> (std::time::Duration, u64) {
     (cpu, hwm * 1024)
 }
 
-/// CPU time of each thread of this process: `(name, user, system)` (clock ticks of 10 ms).
-pub fn thread_usage() -> Vec<(String, std::time::Duration, std::time::Duration)> {
+/// One thread of this process: name, CPU time (user + system) and context switches
+/// (voluntary: it waited; involuntary: it was preempted), for measurements.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ThreadUsage {
+    /// Thread id.
+    pub tid: u32,
+    /// Thread name (`comm`).
+    pub name: String,
+    /// CPU time (from the scheduler's run time, nanosecond resolution).
+    pub cpu: std::time::Duration,
+    /// Of that, in the kernel (10 ms ticks).
+    pub system: std::time::Duration,
+    /// Voluntary context switches (waits, i.e. wakeups).
+    pub voluntary: u64,
+    /// Involuntary context switches.
+    pub involuntary: u64,
+}
+
+/// CPU time and context switches of every thread of this process (from `/proc/self/task`).
+pub fn thread_usage() -> Vec<ThreadUsage> {
     let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
         return Vec::new();
     };
-    let mut out: Vec<_> = dir
+    let mut out: Vec<ThreadUsage> = dir
+        .flatten()
         .filter_map(|e| {
-            let s = std::fs::read_to_string(e.ok()?.path().join("stat")).ok()?;
-            let (head, rest) = s.rsplit_once(')')?;
+            let tid = e.file_name().to_str()?.parse().ok()?;
+            let stat = std::fs::read_to_string(e.path().join("stat")).ok()?;
+            let (head, rest) = stat.rsplit_once(')')?;
             let name = head.split_once('(')?.1.to_string();
             let f: Vec<&str> = rest.split_whitespace().collect();
-            let tick = |i: usize| -> Option<std::time::Duration> {
-                Some(std::time::Duration::from_millis(
-                    f.get(i)?.parse::<u64>().ok()? * 10,
-                ))
+            let utime = f.get(11)?.parse::<u64>().ok()?;
+            let stime = f.get(12)?.parse::<u64>().ok()?;
+            let run_ns = std::fs::read_to_string(e.path().join("schedstat"))
+                .ok()
+                .and_then(|s| s.split_whitespace().next()?.parse::<u64>().ok());
+            let status = std::fs::read_to_string(e.path().join("status")).unwrap_or_default();
+            let field = |k: &str| {
+                status
+                    .lines()
+                    .find_map(|l| l.strip_prefix(k))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0)
             };
-            Some((name, tick(11)?, tick(12)?))
+            Some(ThreadUsage {
+                tid,
+                name,
+                cpu: run_ns.map_or(
+                    std::time::Duration::from_millis((utime + stime) * 10),
+                    std::time::Duration::from_nanos,
+                ),
+                system: std::time::Duration::from_millis(stime * 10),
+                voluntary: field("voluntary_ctxt_switches:"),
+                involuntary: field("nonvoluntary_ctxt_switches:"),
+            })
         })
         .collect();
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.sort_by_key(|t| t.tid);
     out
 }
