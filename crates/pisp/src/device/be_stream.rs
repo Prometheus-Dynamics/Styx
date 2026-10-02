@@ -12,6 +12,7 @@ use styx_kernel::v4l2::{
 };
 
 use super::be::BE_CFG_FOURCC;
+use super::config_buf::ConfigBuffer;
 use super::{DeviceError, Queue, Result, bayer16_fourcc, find_media};
 use crate::format::formats;
 use crate::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig};
@@ -67,6 +68,14 @@ pub struct BeJob {
     pub elapsed: Duration,
 }
 
+/// A queued job (see [`BackEndStream::process_queued`]).
+#[derive(Debug)]
+#[must_use = "a queued job holds output buffers until waited for"]
+pub struct QueuedJob {
+    outputs: [Option<u32>; 2],
+    start: Instant,
+}
+
 struct Output {
     queue: Queue,
     format: ImageFormatConfig,
@@ -81,7 +90,7 @@ pub struct BackEndStream {
     inputs: Vec<OwnedFd>,
     input_len: u32,
     outputs: [Option<Output>; 2],
-    config: Queue,
+    config: ConfigBuffer,
 }
 
 fn mplane(w: u32, h: u32, fourcc: FourCc, bpl: u32) -> Format {
@@ -216,7 +225,12 @@ impl BackEndStream {
                 ..Default::default()
             }),
         )?;
-        let config = Queue::new(cfg_dev, BufType::MetaOutput, 1, "pispbe-config")?;
+        let config = ConfigBuffer::new(
+            cfg_dev,
+            BufType::MetaOutput,
+            size_of::<BeTilesConfig>(),
+            "pispbe-config",
+        )?;
         let s = Self {
             _media: media,
             input: in_dev,
@@ -233,6 +247,12 @@ impl BackEndStream {
         Ok(s)
     }
 
+    /// Where the config buffer comes from (`mmap`, or a dma-heap: see
+    /// [`super::CONFIG_HEAP_ENV`]).
+    pub fn config_source(&self) -> String {
+        self.config.source()
+    }
+
     /// Output `i`'s format as the node set it (put it in the config's output format).
     pub fn output_format(&self, i: usize) -> Option<ImageFormatConfig> {
         self.outputs.get(i)?.as_ref().map(|o| o.format)
@@ -242,44 +262,67 @@ impl BackEndStream {
     /// buffers stay with the caller until [`Self::release`]; fails when an output has no free
     /// buffer.
     pub fn process(&mut self, input: u32, cfg: &BeTilesConfig, timeout: Duration) -> Result<BeJob> {
+        let job = self.process_queued(input, cfg)?;
+        self.wait_job(job, timeout)
+    }
+
+    /// Queues one job on input buffer `input` with `cfg` and returns at once; finish it with
+    /// [`Self::wait_job`] (the caller can work meanwhile: the job takes about 0.8 ms for
+    /// 1280x800).
+    pub fn process_queued(&mut self, input: u32, cfg: &BeTilesConfig) -> Result<QueuedJob> {
         let bytes = cfg.as_bytes();
-        super::profile::time("pispbe-config", "copy", || {
-            self.config.maps[0][0].as_mut_slice()[..bytes.len()].copy_from_slice(bytes)
-        });
-        let fd = self
-            .inputs
-            .get(input as usize)
-            .ok_or_else(|| DeviceError::Setup(format!("no input buffer {input}")))?;
+        super::profile::time("pispbe-config", "copy", || self.config.write(bytes));
         let mut picked = [None, None];
         for (i, o) in self.outputs.iter_mut().enumerate() {
             if let Some(o) = o {
-                let b = o.free.pop().ok_or_else(|| {
-                    DeviceError::Setup(format!("output {i}: every buffer is held"))
-                })?;
+                let Some(b) = o.free.pop() else {
+                    self.give_back(picked);
+                    return Err(DeviceError::Setup(format!(
+                        "output {i}: every buffer is held"
+                    )));
+                };
                 picked[i] = Some(b);
             }
         }
-        let result = self.run(input, fd.as_fd(), picked, cfg, timeout);
+        let queued = self.queue_job(input, picked, bytes.len() as u32);
+        match queued {
+            Ok(start) => Ok(QueuedJob {
+                outputs: picked,
+                start,
+            }),
+            Err(e) => {
+                self.give_back(picked);
+                Err(e)
+            }
+        }
+    }
+
+    /// Waits up to `timeout` for a job from [`Self::process_queued`] to finish.
+    pub fn wait_job(&mut self, job: QueuedJob, timeout: Duration) -> Result<BeJob> {
+        let result = self.wait(&job, timeout);
         if result.is_err() {
             // Whatever completed is unusable; hand the buffers back.
-            for (o, b) in self.outputs.iter_mut().zip(picked) {
-                if let (Some(o), Some(b)) = (o, b) {
-                    o.free.push(b);
-                }
-            }
+            self.give_back(job.outputs);
         }
         result
     }
 
-    fn run(
-        &self,
-        input: u32,
-        fd: BorrowedFd<'_>,
-        picked: [Option<u32>; 2],
-        cfg: &BeTilesConfig,
-        timeout: Duration,
-    ) -> Result<BeJob> {
-        let bytes = cfg.as_bytes();
+    fn give_back(&mut self, picked: [Option<u32>; 2]) {
+        for (o, b) in self.outputs.iter_mut().zip(picked) {
+            if let (Some(o), Some(b)) = (o, b)
+                && !o.free.contains(&b)
+            {
+                o.free.push(b);
+            }
+        }
+    }
+
+    fn queue_job(&self, input: u32, picked: [Option<u32>; 2], cfg_len: u32) -> Result<Instant> {
+        let fd = self
+            .inputs
+            .get(input as usize)
+            .ok_or_else(|| DeviceError::Setup(format!("no input buffer {input}")))?
+            .as_fd();
         for (o, b) in self.outputs.iter().zip(picked) {
             if let (Some(o), Some(b)) = (o, b) {
                 o.queue.queue(b, &[])?;
@@ -294,14 +337,20 @@ impl BackEndStream {
         }];
         super::profile::time("pispbe-input", "qbuf", || self.input.queue(&q))?;
         let start = Instant::now();
-        self.config.queue(0, &[bytes.len() as u32])?;
+        // The job starts when the config is queued (the driver writes it to the hardware).
+        self.config.queue(cfg_len)?;
+        Ok(start)
+    }
+
+    fn wait(&self, job: &QueuedJob, timeout: Duration) -> Result<BeJob> {
         let mut elapsed = None;
         let mut error = false;
         for o in self.outputs.iter().flatten() {
             let done = o.queue.dequeue(timeout)?;
             error |= done.flags.contains(BufferFlags::ERROR);
-            elapsed.get_or_insert(start.elapsed());
+            elapsed.get_or_insert(job.start.elapsed());
         }
+        // The input and config buffers completed with the outputs.
         let deadline = Instant::now() + timeout;
         loop {
             if super::profile::time("pispbe-input", "dqbuf", || {
@@ -323,7 +372,7 @@ impl BackEndStream {
             return Err(DeviceError::Setup("pispbe returned an error buffer".into()));
         }
         Ok(BeJob {
-            outputs: picked,
+            outputs: job.outputs,
             elapsed: elapsed.unwrap_or_default(),
         })
     }

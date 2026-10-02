@@ -11,7 +11,7 @@ use styx_kernel::v4l2::{BufType, Format, MetaFormat, PixFormat, VideoDevice};
 use super::{DeviceError, Queue, Result, bayer16_fourcc, find_media};
 use crate::fe::FrontEnd;
 use crate::stats::Statistics;
-use crate::uapi::{BayerOrder, FeConfig, ImageFormatConfig, image_format};
+use crate::uapi::{BayerOrder, FeConfig, ImageFormatConfig, RawStatistics, image_format};
 
 /// `MEDIA_BUS_FMT_SBGGR16_1X16` and friends.
 fn mbus16(order: BayerOrder) -> MbusCode {
@@ -86,6 +86,18 @@ pub struct FeHeld {
     pub timestamp: Duration,
     /// Decoded statistics.
     pub stats: Statistics,
+    /// The raw frame, if the raw output is enabled.
+    pub image: Option<HeldImage>,
+}
+
+/// One frame's raw frame, held, from [`FrontEndDevice::next_held_raw`] (its statistics are
+/// in the caller's buffer).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeHeldRaw {
+    /// Statistics buffer sequence.
+    pub sequence: u32,
+    /// Statistics timestamp.
+    pub timestamp: Duration,
     /// The raw frame, if the raw output is enabled.
     pub image: Option<HeldImage>,
 }
@@ -360,11 +372,36 @@ impl FrontEndDevice {
     /// frame, which stays dequeued (and is not copied) until [`Self::release_image`]. Keeps the
     /// config queue fed from `fe` (so changes to `fe` reach the frames a few configs later).
     pub fn next_held(&mut self, fe: &mut FrontEnd, timeout: Duration) -> Result<FeHeld> {
-        let b = self.stats.dequeue(timeout)?;
-        let stats = super::profile::time("fe_stats", "parse", || {
-            Statistics::parse(self.stats.maps[b.index as usize][0].as_slice())
+        let mut raw: Box<RawStatistics> = bytemuck::allocation::zeroed_box();
+        let f = self.next_held_raw(fe, timeout, &mut raw)?;
+        Ok(FeHeld {
+            sequence: f.sequence,
+            timestamp: f.timestamp,
+            stats: Statistics::from_raw(&raw),
+            image: f.image,
         })
-        .map_err(|e| DeviceError::Setup(e.to_string()))?;
+    }
+
+    /// [`Self::next_held`] with the statistics buffer copied into `stats` as it is (one copy
+    /// out of the uncached buffer, no decoding, no allocation).
+    pub fn next_held_raw(
+        &mut self,
+        fe: &mut FrontEnd,
+        timeout: Duration,
+        stats: &mut RawStatistics,
+    ) -> Result<FeHeldRaw> {
+        let b = self.stats.dequeue(timeout)?;
+        let n = size_of::<RawStatistics>();
+        let src = self.stats.maps[b.index as usize][0].as_slice();
+        if src.len() < n {
+            return Err(DeviceError::Setup(format!(
+                "statistics buffer is {} bytes, expected {n}",
+                src.len()
+            )));
+        }
+        super::profile::time("fe_stats", "copy", || {
+            bytemuck::bytes_of_mut(stats).copy_from_slice(&src[..n]);
+        });
         self.stats.queue(b.index, &[])?;
         let image = match &self.image {
             Some(q) => {
@@ -387,10 +424,9 @@ impl FrontEndDevice {
             self.free_configs.push(c.index);
         }
         self.feed_configs(fe)?;
-        Ok(FeHeld {
+        Ok(FeHeldRaw {
             sequence: b.sequence,
             timestamp: b.timestamp,
-            stats,
             image,
         })
     }

@@ -225,9 +225,11 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     styx_pisp::device::profile::enable(a.profile);
     p.start().map_err(|e| e.to_string())?;
     println!(
-        "pisp: frame sync / embedded data: {:?}",
-        p.sensor_feedback()
+        "pisp: frame sync / embedded data: {:?}; back end config buffer: {}",
+        p.sensor_feedback(),
+        p.back_end_config_source().unwrap_or_default()
     );
+    let threads0 = thread_usage();
     let t_start = Instant::now();
     let (w0, h0, s0) = (o0.width as usize, o0.height as usize, o0.stride as usize);
     let (w1, h1, s1) = (o1.width as usize, o1.height as usize, o1.stride as usize);
@@ -260,7 +262,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain))).is_none() {
             base = Some((f.sensor.exposure, f.sensor.analogue_gain));
         }
-        let mut log = FrameLog::new(&f.sensor, &f.step, f.timestamp);
+        let mut log = FrameLog::new(&f.sensor, p.step(), f.timestamp);
         log.latency = done.saturating_sub(f.timestamp);
         log.processing = f.times.total;
         log.request_lands = f.request_lands;
@@ -288,11 +290,18 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let wall = t_start.elapsed();
     let (cpu1, rss) = process_usage();
     let threads = thread_usage();
+    let updates = p.be_updates();
     p.controller().stop_recording().map_err(|e| e.to_string())?;
     let stopped = p.close().map_err(|e| e.to_string());
     result?;
     stopped?;
-    let mut extra = vec![format!("statistics/raw sequence mismatches: {mismatches}")];
+    let mut extra = vec![
+        format!("statistics/raw sequence mismatches: {mismatches}"),
+        format!(
+            "back end config: rebuilt {}, patched {}, unchanged {} times",
+            updates.rebuilt, updates.patched, updates.unchanged
+        ),
+    ];
     let n = frames.len().max(1) as f64;
     for e in styx_pisp::device::profile::report() {
         extra.push(format!(
@@ -305,6 +314,18 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         ));
     }
     for t in &threads {
+        let before = threads0.iter().find(|b| b.tid == t.tid);
+        let t = styx_pipeline::device::ThreadUsage {
+            cpu: t
+                .cpu
+                .saturating_sub(before.map_or(Duration::ZERO, |b| b.cpu)),
+            system: t
+                .system
+                .saturating_sub(before.map_or(Duration::ZERO, |b| b.system)),
+            voluntary: t.voluntary - before.map_or(0, |b| b.voluntary),
+            involuntary: t.involuntary - before.map_or(0, |b| b.involuntary),
+            ..t.clone()
+        };
         extra.push(format!(
             "thread {} ({}): {:.3} ms CPU/frame ({:.3} in the kernel), {:.2} waits/frame, {:.2} preemptions/frame",
             t.tid,
@@ -324,6 +345,20 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             * 1e3
     };
     let col = |f: fn(&(PispTimes, Duration)) -> Duration| times.iter().map(f).collect::<Vec<_>>();
+    let tail = |mut v: Vec<Duration>| {
+        v.sort();
+        let at = |q: f64| {
+            v.get(((v.len().max(1) - 1) as f64 * q).round() as usize)
+                .copied()
+        };
+        let ms = |d: Option<Duration>| d.unwrap_or_default().as_secs_f64() * 1e3;
+        format!("p95 {:.3} ms, max {:.3} ms", ms(at(0.95)), ms(at(1.0)))
+    };
+    extra.push(format!(
+        "algorithms {}; dequeue to outputs {}",
+        tail(col(|t| t.0.algorithms)),
+        tail(col(|t| t.0.total))
+    ));
     extra.push(format!(
         "medians: statistics {:.3} ms, algorithms {:.3} ms, back end config + tiles {:.3} ms, back end job {:.3} ms, dequeue to outputs {:.3} ms, output read {:.3} ms",
         med(col(|t| t.0.stats)),

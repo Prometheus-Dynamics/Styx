@@ -1,35 +1,42 @@
 //! The PiSP path on a native camera.
 //!
 //! ```text
-//! sensor ─► csi2 ─► pisp-fe ─► fe_stats  (every frame) ─► stats::from_pisp ─► Controller
-//!                      │                                                      │   │
-//!                      └─► fe_image0 (16-bit raw, held) ═dma-buf═► pispbe ◄───┘   └─► SensorRequest
+//! sensor ─► csi2 ─► pisp-fe ─► fe_stats  (every frame) ─► stats::from_pisp_raw ─► Controller
+//!                      │                                                           │   │
+//!                      └─► fe_image0 (16-bit raw, held) ═dma-buf═► pispbe ◄────────┘   └─► SensorRequest
 //!                                                                   ├─► output0 (e.g. NV12 1280x800)
 //!                                                                   └─► output1 (e.g. RGB 640x400)
 //! ```
 //!
-//! The statistics of frame F reach the algorithms before F goes through the back end, so the
-//! back end processes F with the white balance, CCM, gamma and digital gain computed from F
-//! itself. The front end's RGB-to-Y weights and black levels follow on the next config it
-//! takes (configs are queued a couple of frames ahead).
+//! The frame path is kept short: when frame F's statistics and raw frame arrive, F goes
+//! through the back end at once with the newest settings the algorithms have made (those from
+//! F − 1's statistics), its digital gain recomputed for the exposure F actually got, and the
+//! back end config patched only where the settings changed ([`BeConfigBuilder`]). F's
+//! statistics go through the algorithms at the start of the next [`PispPipeline::next`],
+//! while the pipeline would otherwise only wait for F + 1, so their run time (up to 0.7 ms on
+//! the frames AWB and lens shading run) never delays a frame. Sensor requests still name the
+//! frame they land on and are issued in the same frame period. The order of inputs and
+//! outputs is fixed, so the loop stays deterministic. The front end's RGB-to-Y weights and
+//! black levels follow on the next config it takes (configs are queued a couple of frames
+//! ahead).
 
 use std::time::{Duration, Instant};
 
 use styx_algo::{Statistics, Tuning};
 use styx_kernel::subdev::MbusCode;
 use styx_native::{CameraControls, Configured, NativeCamera, SensorStream, StreamSettings};
-use styx_pisp::be::BackEnd;
 use styx_pisp::device::{
     BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup, profile,
 };
 use styx_pisp::fe::FrontEnd;
-use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, fe_enable};
+use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
 use styx_softisp::CfaPattern;
 
 use super::{apply_request, sensor_values};
 use crate::controller::{Controller, SensorValues, Step};
 use crate::error::{PipelineError, Result};
-use crate::isp::{be_template, level16};
+use crate::isp::{IspSettings, be_template, level16};
+use crate::pisp_be::{BeConfigBuilder, BeUpdateCounts};
 use crate::sensor::SensorInfo;
 use crate::stats;
 
@@ -77,9 +84,10 @@ impl PispOptions {
 pub struct PispTimes {
     /// Converting the statistics for the algorithms.
     pub stats: Duration,
-    /// Running the algorithms.
+    /// Running the algorithms on the previous frame's statistics (before this frame arrived,
+    /// off the frame path).
     pub algorithms: Duration,
-    /// Building the back end config and its tiles.
+    /// Updating the back end config (and its tiles, when they change).
     pub be_prepare: Duration,
     /// The back end job (config queued to output dequeued).
     pub be_job: Duration,
@@ -98,16 +106,16 @@ pub struct PispFrame {
     pub dequeued: Instant,
     /// What produced the frame.
     pub sensor: SensorValues,
-    /// Its statistics.
-    pub stats: Statistics,
-    /// The loop's output (the settings the back end used are `step.isp`).
-    pub step: Step,
     /// The back end job: hand it to [`PispPipeline::output`] and [`PispPipeline::release`].
     pub job: BeJob,
     /// The statistics buffer's sequence differed from the raw frame's.
     pub sequence_mismatch: bool,
-    /// Frame the new sensor request lands on, if this frame made one.
+    /// Frame the sensor request made in this call lands on (from the previous frame's
+    /// statistics), if one was made.
     pub request_lands: Option<u64>,
+    /// The frame whose statistics the back end settings came from (`None` before the
+    /// algorithms have seen a frame). The settings are [`PispPipeline::step`]'s `isp`.
+    pub settings_from: Option<u64>,
     /// Time spent.
     pub times: PispTimes,
 }
@@ -131,9 +139,18 @@ pub struct PispPipeline {
     fe: FrontEnd,
     fe_dev: Option<FrontEndDevice>,
     be_dev: Option<BackEndStream>,
-    be: BackEnd,
+    be: BeConfigBuilder,
     sensor: Option<SensorStream>,
     options: PispOptions,
+    /// The last frame's statistics, as copied from the front end and as converted.
+    raw_stats: Box<RawStatistics>,
+    stats: Statistics,
+    /// What produced the frame whose statistics are in `stats` and await the algorithms.
+    pending: Option<SensorValues>,
+    /// The newest output of the algorithms (its `isp` processes the frames), with the frame
+    /// it came from (`None`: the start-up settings).
+    step: Step,
+    stepped: bool,
 }
 
 impl std::fmt::Debug for PispPipeline {
@@ -194,11 +211,10 @@ impl PispPipeline {
             [be_dev.output_format(0), be_dev.output_format(1)],
         )?;
         // The template must prepare (sizes, strides, tiles) before streaming starts.
-        be.clone()
-            .prepare()
-            .map_err(|e| PipelineError::Config(format!("back end: {}", e.0)))?;
+        let be = BeConfigBuilder::new(be)?;
         let controller = Controller::new(tuning, info.camera.clone())?;
         let controls = camera.controls();
+        let info_black = info.black_level;
         Ok(Self {
             camera,
             controls,
@@ -211,6 +227,16 @@ impl PispPipeline {
             be,
             sensor: None,
             options,
+            raw_stats: bytemuck::allocation::zeroed_box(),
+            stats: Statistics::default(),
+            pending: None,
+            step: Step {
+                frame: 0,
+                sensor: None,
+                isp: IspSettings::neutral(info_black),
+                params: Default::default(),
+            },
+            stepped: false,
         })
     }
 
@@ -234,9 +260,31 @@ impl PispPipeline {
         &self.controls
     }
 
+    /// The statistics of the frame [`Self::next`] returned last, as the algorithms see them.
+    pub fn statistics(&self) -> &Statistics {
+        &self.stats
+    }
+
+    /// The algorithms' newest output: its `isp` settings (with the digital gain for the frame
+    /// [`Self::next`] returned last) processed that frame; `step.frame` is the frame whose
+    /// statistics produced it ([`PispFrame::settings_from`]).
+    pub fn step(&self) -> &Step {
+        &self.step
+    }
+
+    /// How often the back end config was rebuilt, patched or reused.
+    pub fn be_updates(&self) -> BeUpdateCounts {
+        self.be.counts()
+    }
+
     /// Back end output `i`'s format.
     pub fn output_format(&self, i: usize) -> Option<ImageFormatConfig> {
         self.be_dev.as_ref()?.output_format(i)
+    }
+
+    /// Where the back end's config buffer comes from (`mmap` or a dma-heap).
+    pub fn back_end_config_source(&self) -> Option<String> {
+        self.be_dev.as_ref().map(BackEndStream::config_source)
     }
 
     /// Whether frame starts come from `FRAME_SYNC` events and embedded data is read back.
@@ -253,6 +301,14 @@ impl PispPipeline {
             apply_request(&self.controls, &r)?;
         }
         start.isp.apply_fe(&mut self.fe);
+        self.step = Step {
+            frame: 0,
+            sensor: start.sensor,
+            isp: start.isp,
+            params: Default::default(),
+        };
+        self.stepped = false;
+        self.pending = None;
         let fe_dev = self
             .fe_dev
             .as_mut()
@@ -277,9 +333,33 @@ impl PispPipeline {
         Ok(())
     }
 
-    /// The next frame: statistics to the algorithms, the sensor request to the control
-    /// schedule, the raw frame through the back end with this frame's settings.
+    /// Runs the algorithms on the statistics waiting for them (the previous frame's) and
+    /// hands their sensor request to the control schedule.
+    fn run_algorithms(&mut self) -> Result<(Option<u64>, Duration)> {
+        let Some(values) = self.pending.take() else {
+            return Ok((None, Duration::ZERO));
+        };
+        let t = Instant::now();
+        let step = profile::time("loop", "algorithms", || {
+            self.controller.process(&self.stats, &values)
+        })?;
+        let lands = match &step.sensor {
+            Some(r) => Some(profile::time("sensor", "request", || {
+                apply_request(&self.controls, r)
+            })?),
+            None => None,
+        };
+        step.isp.apply_fe(&mut self.fe);
+        self.step = step;
+        self.stepped = true;
+        Ok((lands, t.elapsed()))
+    }
+
+    /// The next frame: the previous frame's statistics through the algorithms (their sensor
+    /// request to the control schedule), then this frame through the back end with the
+    /// newest settings (see the [module documentation](self)).
     pub fn next(&mut self, timeout: Duration) -> Result<PispFrame> {
+        let (request_lands, algorithms) = self.run_algorithms()?;
         let (Some(fe_dev), Some(be_dev), Some(sensor)) = (
             self.fe_dev.as_mut(),
             self.be_dev.as_mut(),
@@ -287,7 +367,7 @@ impl PispPipeline {
         ) else {
             return Err(PipelineError::Device("not started".into()));
         };
-        let held = fe_dev.next_held(&mut self.fe, timeout)?;
+        let held = fe_dev.next_held_raw(&mut self.fe, timeout, &mut self.raw_stats)?;
         let dequeued = Instant::now();
         let image = held
             .image
@@ -298,38 +378,31 @@ impl PispPipeline {
             let controls = profile::time("sensor", "applied", || sensor.applied(seq))
                 .ok_or_else(|| PipelineError::Device(format!("no control values for {seq}")))?;
             let values = sensor_values(seq, &controls);
-            let ts = Instant::now();
-            let stats = stats::from_pisp(&held.stats);
-            let stats_time = ts.elapsed();
-            let t0 = Instant::now();
-            let step = profile::time("loop", "algorithms", || {
-                self.controller.process(&stats, &values)
-            })?;
-            let request_lands = match &step.sensor {
-                Some(r) => Some(profile::time("sensor", "request", || {
-                    apply_request(&self.controls, r)
-                })?),
-                None => None,
-            };
-            let algorithms = t0.elapsed();
-            profile::time("loop", "apply_fe", || step.isp.apply_fe(&mut self.fe));
             let t1 = Instant::now();
-            let mut be = profile::time("loop", "be_clone", || self.be.clone());
-            profile::time("loop", "apply_be", || step.isp.apply_be(&mut be));
-            let cfg = profile::time("loop", "be_prepare", || be.prepare())
-                .map_err(|e| PipelineError::Config(format!("back end: {}", e.0)))?;
+            // The newest settings, with the digital gain for what this frame got.
+            if self.stepped {
+                let g = self.step.params.colour_gains[1].max(1e-6);
+                self.step.isp.digital_gain =
+                    self.controller.digital_gain_for(&self.step.params, &values) * g;
+            }
+            profile::time("loop", "be_update", || self.be.update(&self.step.isp))?;
             let be_prepare = t1.elapsed();
-            let job = be_dev.process(image.index, &cfg, timeout)?;
+            let job = be_dev.process_queued(image.index, self.be.config())?;
+            // While the back end works: the statistics for the algorithms' next run.
+            let ts = Instant::now();
+            stats::from_pisp_raw(&self.raw_stats, &mut self.stats);
+            self.pending = Some(values);
+            let stats_time = ts.elapsed();
+            let job = be_dev.wait_job(job, timeout)?;
             Ok(PispFrame {
                 sequence: seq,
                 timestamp: image.timestamp,
                 dequeued,
                 sensor: values,
-                stats,
-                step,
                 job,
                 sequence_mismatch: held.sequence != image.sequence,
                 request_lands,
+                settings_from: self.stepped.then_some(self.step.frame),
                 times: PispTimes {
                     stats: stats_time,
                     algorithms,

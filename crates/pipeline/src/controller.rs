@@ -188,14 +188,18 @@ impl Controller {
     /// new exposure is still on its way, as the Raspberry Pi IPA does), between 1 and the
     /// tuning's maximum.
     pub fn isp_for(&self, params: &Params, from_frame: u64, sensor: &SensorValues) -> IspSettings {
+        IspSettings::from_params(params, from_frame, self.digital_gain_for(params, sensor))
+    }
+
+    /// The digital gain [`Self::isp_for`] gives (before the white balance's green gain is
+    /// folded in), without building the settings.
+    pub fn digital_gain_for(&self, params: &Params, sensor: &SensorValues) -> f64 {
         let delivered = sensor.total_exposure();
-        let dg = if !self.controls.ae_enable || params.ae.total_exposure <= 0.0 || delivered <= 0.0
-        {
+        if !self.controls.ae_enable || params.ae.total_exposure <= 0.0 || delivered <= 0.0 {
             params.digital_gain.max(1.0)
         } else {
             (params.ae.total_exposure / delivered).clamp(1.0, self.max_digital_gain)
-        };
-        IspSettings::from_params(params, from_frame, dg)
+        }
     }
 }
 

@@ -40,6 +40,7 @@ pub mod device;
 mod error;
 pub mod isp;
 pub mod measure;
+pub mod pisp_be;
 pub mod rawrec;
 pub mod replay;
 pub mod sensor;

@@ -10,6 +10,7 @@
 
 mod be;
 mod be_stream;
+mod config_buf;
 mod fe;
 pub mod profile;
 mod queue;
@@ -18,8 +19,9 @@ use std::fmt;
 use std::path::PathBuf;
 
 pub use be::{BackEndDevice, BeOutput};
-pub use be_stream::{BackEndStream, BeFormat, BeJob, BeOutputSetup};
-pub use fe::{FeFrame, FeHeld, FrontEndDevice, FrontEndSetup, HeldImage};
+pub use be_stream::{BackEndStream, BeFormat, BeJob, BeOutputSetup, QueuedJob};
+pub use config_buf::CONFIG_HEAP_ENV;
+pub use fe::{FeFrame, FeHeld, FeHeldRaw, FrontEndDevice, FrontEndSetup, HeldImage};
 pub use queue::Queue;
 
 /// A device error.
