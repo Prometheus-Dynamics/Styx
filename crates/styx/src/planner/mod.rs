@@ -26,7 +26,7 @@
 //! a recorder) share one capture: [`plan_many`] picks a mode that serves all of them and plans a
 //! branch per consumer.
 
-mod cost;
+pub(crate) mod cost;
 mod native;
 mod routes;
 mod session;

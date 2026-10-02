@@ -25,9 +25,19 @@ pub struct NativeIspConfig {
     /// 1280x800 frame in 1.9 ms on the CM5). `false` (default): cached dma-heap buffers, read
     /// at memory speed (cache maintenance only when a frame's pixels are read).
     pub driver_buffers: bool,
+    /// Threads of the software ISP (cameras without a PiSP). `None` (default): one per core,
+    /// at most 4.
+    pub soft_threads: Option<usize>,
 }
 
 impl StyxConfig {
+    /// Run a native camera's software ISP on `threads` threads (see
+    /// [`NativeIspConfig::soft_threads`]).
+    pub fn native_soft_threads(mut self, threads: usize) -> Self {
+        self.backends.native.soft_threads = Some(threads.max(1));
+        self
+    }
+
     /// Have a native camera's ISP write into its driver's buffers (see
     /// [`NativeIspConfig::driver_buffers`]).
     pub fn native_driver_buffers(mut self, driver: bool) -> Self {

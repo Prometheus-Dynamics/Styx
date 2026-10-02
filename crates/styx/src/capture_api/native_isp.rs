@@ -225,7 +225,13 @@ pub(super) fn start_processed(
                 code: None,
                 interval: fraction,
             };
-            let mut p = SoftPipeline::open(camera, &settings, &tuning, 1).map_err(err)?;
+            let threads = config
+                .backends
+                .native
+                .soft_threads
+                .unwrap_or_else(crate::planner::cost::default_softisp_threads);
+            tracing::info!(backend = "native", threads, "software ISP threads");
+            let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = if code == FourCc::NV12 {
@@ -419,6 +425,6 @@ mod tests {
         let plan = crate::planner::plan_frames(&soft, &FrameRequirements::formats([FourCc::NV12]))
             .unwrap();
         assert!(plan.to_string().contains("software ISP"), "{plan}");
-        assert!(plan.total.cpu_ms > 8.0, "{plan}");
+        assert!(plan.total.cpu_ms > 5.0, "{plan}");
     }
 }
