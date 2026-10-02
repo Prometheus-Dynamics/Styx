@@ -136,7 +136,17 @@ downscaler/resampler input sizes and initial phases, the output window and byte 
   tiling library (input, context, split, crop, downscale, resample, output stages).
   TDN, stitch, LSC and CAC are refused for now.
 - `device` (feature): `FrontEndDevice` (links, formats, queues, per-frame config feeding,
-  statistics and raw frames) and `BackEndDevice` (one node group, m2m jobs, timing).
+  statistics and raw frames; `next_held_raw` copies the statistics buffer out as it is, or
+  not at all), `BackEndDevice` (one node group, m2m jobs, timing) and `BackEndStream` (a node
+  group for a stream: dma-buf input, two outputs in cached dma-heap buffers or the driver's
+  (`OutputMemory`), jobs queued and waited for separately (`process_queued` / `wait_job`),
+  the config buffer from a cached heap since the driver copies it with the CPU), and
+  `profile`, optional timing of every device call.
+- Per-frame configs in `styx-pipeline` (`pisp_be::BeConfigBuilder`): the back end config and
+  tiles are prepared once and patched where the algorithms' settings changed; see
+  [pipeline.md](pipeline.md#pisp-path) for the frame path and its costs. The driver writes
+  the whole `pisp_be_config` to the hardware on every job (0.12 ms of CPU on the CM5); unlike
+  the front end it has no dirty flags.
 
 ### Licences
 
