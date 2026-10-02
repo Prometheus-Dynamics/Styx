@@ -68,9 +68,20 @@ bridge_subdev() {
     return 1
 }
 
+# The cam0 nodes: every video/subdev node of rp1-cfe or a sensor on it, wherever numbered.
+camera_nodes() {
+    echo /dev/media0
+    for d in /sys/class/video4linux/*; do
+        [ -e "$d/device/driver" ] || continue
+        case "$(basename "$(readlink "$d/device/driver")")" in
+        "$CFE_DRIVER" | "$BRIDGE_DRIVER" | "$SENSOR_DRIVER") echo "/dev/$(basename "$d")" ;;
+        esac
+    done
+}
+
 # Processes holding camera device nodes open (BusyBox fuser prints PIDs).
 camera_users() {
-    for n in /dev/media0 /dev/video[0-7] /dev/v4l-subdev[0-2]; do
+    for n in $(camera_nodes); do
         [ -e "$n" ] && fuser "$n" 2>/dev/null
     done | tr -s ' \n' '\n\n' | grep . | sort -u | tr '\n' ' ' | sed 's/ $//'
 }

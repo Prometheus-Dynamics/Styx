@@ -33,6 +33,25 @@ else
     ok "not running"
 fi
 
+# Unbinding rp1-cfe while a process holds its nodes oopses the kernel when that process later
+# closes them (csi2_stop_channel on freed state), so every holder is stopped first (SIGINT, then
+# SIGTERM, then SIGKILL) and nothing is torn down while one remains.
+say "step 1b (stop other camera users)"
+if ! no_camera_users; then
+    for sig in INT TERM KILL; do
+        users="$(camera_users)"
+        [ -n "$users" ] || break
+        kill -"$sig" $users 2>/dev/null
+        wait_for 30 no_camera_users && break
+    done
+fi
+if no_camera_users; then
+    ok "no process holds the camera nodes"
+else
+    printf '[spike] FAILED: camera nodes still open by PID(s): %s; nothing torn down\n' "$(camera_users)"
+    exit 1
+fi
+
 say "step 2 (unbind $CFE_DRIVER)"
 if bound platform "$CFE_DRIVER" "$CFE_DEV" && overlay_applied; then
     echo "$CFE_DEV" >"/sys/bus/platform/drivers/$CFE_DRIVER/unbind" || bad "unbind $CFE_DRIVER"
