@@ -36,45 +36,56 @@ pub struct V4l2DeviceInfo {
 }
 
 /// Probe devices and return (devices, errors) for observability.
+///
+/// Nodes that are not cameras (decoders, ISP nodes, a receiver's embedded data, statistics
+/// and configuration nodes, UVC metadata nodes, virtual cameras) and nodes that disappeared
+/// while probing are skipped quietly (logged at debug level); `errors` holds real failures
+/// only (a node that could not be opened or queried).
 pub fn probe_devices() -> (Vec<V4l2DeviceInfo>, Vec<String>) {
     let mut devices = Vec::new();
     let mut errors = Vec::new();
     for path in styx_kernel::v4l2::list_video_nodes() {
         match build_info(&path) {
-            Ok(info) => devices.push(info),
+            Ok(Probed::Camera(info)) => devices.push(info),
+            Ok(Probed::Skipped(why)) => {
+                tracing::debug!(node = %path.display(), "v4l2 probe: skipped, {why}");
+            }
             Err(e) => errors.push(format!("{}: {e}", path.display())),
         };
     }
     (devices, errors)
 }
 
-fn build_info(path: &std::path::Path) -> Result<V4l2DeviceInfo, Box<dyn std::error::Error>> {
-    let dev = VideoDevice::open(path)?;
-    let caps = dev.capabilities().clone();
-    let node_name = read_node_name(path);
+/// What a video node turned out to be.
+enum Probed {
+    Camera(V4l2DeviceInfo),
+    /// Not a camera, or gone: why.
+    Skipped(String),
+}
 
-    if !(caps.device_caps.contains(CapabilityFlags::VIDEO_CAPTURE)
-        || caps
-            .device_caps
-            .contains(CapabilityFlags::VIDEO_CAPTURE_MPLANE))
+/// Why a node that opened is not a camera Styx offers, if it is not.
+fn skip_reason(
+    device_caps: CapabilityFlags,
+    driver: &str,
+    card: &str,
+    node_name: Option<&str>,
+    allow_virtual: bool,
+) -> Option<&'static str> {
+    if !(device_caps.contains(CapabilityFlags::VIDEO_CAPTURE)
+        || device_caps.contains(CapabilityFlags::VIDEO_CAPTURE_MPLANE))
     {
-        // Skip non-capture nodes (e.g., decoders/encoders) to avoid probing controls they expose.
-        return Err("not a capture device".into());
+        // Decoders/encoders, output and metadata nodes: not probed for controls either.
+        return Some("not a capture node");
     }
-    let card = caps.card;
-    let driver = caps.driver;
-    let bus_info = caps.bus_info;
     let driver_lc = driver.to_ascii_lowercase();
     let card_lc = card.to_ascii_lowercase();
-
-    // Skip pipeline-internal nodes we don't want to expose as cameras.
-    let name_lc = node_name
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if ((card_lc.contains("virtual") || driver_lc.contains("virtual")) && !allow_virtual())
-        || driver_lc.contains("pispbe")
-        || card_lc.contains("pispbe")
+    let name_lc = node_name.unwrap_or_default().to_ascii_lowercase();
+    if (card_lc.contains("virtual") || driver_lc.contains("virtual")) && !allow_virtual {
+        return Some("virtual camera (set STYX_V4L2_ALLOW_VIRTUAL=1 to keep it)");
+    }
+    // Pipeline-internal nodes: a receiver or ISP node needs the camera's pipeline (native or
+    // libcamera) to produce anything.
+    if driver_lc.contains("pispbe")
         || card_lc.contains("pisp")
         || driver_lc.contains("rp1-cfe")
         || card_lc.contains("rp1-cfe")
@@ -84,8 +95,39 @@ fn build_info(path: &std::path::Path) -> Result<V4l2DeviceInfo, Box<dyn std::err
         || name_lc.contains("fe_")
         || name_lc.contains("stats")
     {
-        return Err("filtered non-camera node".into());
+        return Some("camera pipeline node");
     }
+    None
+}
+
+fn build_info(path: &std::path::Path) -> Result<Probed, Box<dyn std::error::Error>> {
+    let dev = match VideoDevice::open(path) {
+        Ok(dev) => dev,
+        // Unplugged between listing and opening.
+        Err(e) if matches!(e.errno(), Some(libc::ENOENT | libc::ENODEV | libc::ENXIO)) => {
+            return Ok(Probed::Skipped(format!("gone ({e})")));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let caps = dev.capabilities().clone();
+    let node_name = read_node_name(path);
+    if let Some(why) = skip_reason(
+        caps.device_caps,
+        &caps.driver,
+        &caps.card,
+        node_name.as_deref(),
+        allow_virtual(),
+    ) {
+        return Ok(Probed::Skipped(format!(
+            "{why}: {} ({}, {})",
+            node_name.as_deref().unwrap_or(&caps.card),
+            caps.driver,
+            caps.bus_info
+        )));
+    }
+    let card = caps.card;
+    let driver = caps.driver;
+    let bus_info = caps.bus_info;
 
     // Be tolerant of quirky drivers: if formats or frame sizes fail, keep probing
     // whatever we can instead of dropping the device entirely.
@@ -106,7 +148,7 @@ fn build_info(path: &std::path::Path) -> Result<V4l2DeviceInfo, Box<dyn std::err
     };
 
     let descriptor = CaptureDescriptor { modes, controls };
-    Ok(V4l2DeviceInfo {
+    Ok(Probed::Camera(V4l2DeviceInfo {
         path: path.display().to_string(),
         name: node_name.clone(),
         card: card.clone(),
@@ -120,7 +162,7 @@ fn build_info(path: &std::path::Path) -> Result<V4l2DeviceInfo, Box<dyn std::err
             ("bus".into(), bus_info),
         ],
         descriptor,
-    })
+    }))
 }
 
 /// One mode per advertised format and discrete size, with its discrete frame intervals.
@@ -286,6 +328,75 @@ mod tests {
         assert_eq!(map_color_space(10), ColorSpace::Bt2020);
         assert_eq!(map_color_space(0), ColorSpace::Unknown);
         assert_eq!(map_color_space(7), ColorSpace::Unknown);
+    }
+
+    #[test]
+    fn non_camera_nodes_are_skipped_not_reported() {
+        let cap = CapabilityFlags::VIDEO_CAPTURE | CapabilityFlags::STREAMING;
+        let skip =
+            |caps, driver, card, name: &str| skip_reason(caps, driver, card, Some(name), false);
+        // The CM5's nodes (Raspberry Pi 6.12): receiver, front end, back end, HEVC decoder.
+        for (caps, driver, card, name) in [
+            (cap, "rp1-cfe", "rp1-cfe", "rp1-cfe-csi2_ch0"),
+            (cap, "rp1-cfe", "rp1-cfe", "rp1-cfe-embedded"),
+            (
+                CapabilityFlags::META_CAPTURE,
+                "rp1-cfe",
+                "rp1-cfe",
+                "rp1-cfe-fe_stats",
+            ),
+            (
+                CapabilityFlags::META_OUTPUT,
+                "rp1-cfe",
+                "rp1-cfe",
+                "rp1-cfe-fe_config",
+            ),
+            (
+                CapabilityFlags::VIDEO_OUTPUT,
+                "pispbe",
+                "PiSP Back End",
+                "pispbe-input",
+            ),
+            (cap, "pispbe", "PiSP Back End", "pispbe-output0"),
+            (
+                CapabilityFlags::VIDEO_M2M_MPLANE,
+                "rpi-hevc-dec",
+                "rpi-hevc-dec",
+                "rpi-hevc-dec",
+            ),
+            // A UVC camera's metadata node.
+            (
+                CapabilityFlags::META_CAPTURE,
+                "uvcvideo",
+                "UVC Camera (046d:0825)",
+                "UVC Camera (046d:0825)",
+            ),
+            (
+                cap,
+                "v4l2 loopback",
+                "OBS Virtual Camera",
+                "OBS Virtual Camera",
+            ),
+        ] {
+            assert!(
+                skip(caps, driver, card, name).is_some(),
+                "{name} is not a camera"
+            );
+        }
+        assert_eq!(
+            skip(
+                cap,
+                "uvcvideo",
+                "UVC Camera (046d:0825)",
+                "UVC Camera (046d:0825)"
+            ),
+            None
+        );
+        assert_eq!(
+            skip_reason(cap, "v4l2 loopback", "OBS Virtual Camera", None, true),
+            None,
+            "kept when asked for"
+        );
     }
 }
 

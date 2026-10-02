@@ -20,6 +20,8 @@ styx-core.workspace = true
 styx-capture.workspace = true
 smallvec.workspace = true
 styx-kernel.workspace = true
+libc.workspace = true
+tracing.workspace = true
 
 [features]
 default = []

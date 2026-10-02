@@ -1,8 +1,13 @@
 # styx-v4l2
 
-V4L2 probing backend for Styx. This crate scans `/dev/video*` nodes, filters
+V4L2 probing backend for Styx. This crate scans `/dev/video*` nodes, skips
 non-camera endpoints, and emits `CaptureDescriptor` entries with available
 formats, intervals, and controls.
+
+Nodes that are not cameras (decoders, ISP and receiver nodes, statistics, configuration and
+embedded data nodes, UVC metadata nodes) and nodes unplugged while probing are skipped quietly:
+they are logged at `debug` level (`tracing`), not returned as errors. The errors are real
+failures only, such as a node that cannot be opened.
 
 ## Documentation
 - <https://docs.rs/styx-v4l2>
