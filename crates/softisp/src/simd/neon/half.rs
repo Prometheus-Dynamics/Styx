@@ -8,6 +8,7 @@
 use std::arch::aarch64::*;
 
 use crate::format::CfaPattern;
+use crate::simd::YuvCoeffs;
 use crate::simd::half::{
     ColourCoeffs, ColourOut, H_16, H_HALF, H_MAX, H_QUARTER, HalfTone, LscRow, quad_positions,
 };
@@ -91,7 +92,31 @@ impl Tables {
     }
 }
 
-/// Store sixteen RGB pixels at `x`.
+/// Luma of sixteen pixels, as `color::rgb_to_y`.
+#[inline(always)]
+unsafe fn luma16(rgb: [uint8x16_t; 3], c: &YuvCoeffs) -> uint8x16_t {
+    unsafe {
+        let k = c.y.map(|k| vdup_n_u8(k as u8));
+        let off = vdup_n_u8(c.y_offset as u8);
+        let luma = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| {
+            let s = vmlal_u8(vmlal_u8(vmull_u8(r, k[0]), g, k[1]), b, k[2]);
+            vqadd_u8(vrshrn_n_u16::<8>(s), off)
+        };
+        let lo = luma(
+            vget_low_u8(rgb[0]),
+            vget_low_u8(rgb[1]),
+            vget_low_u8(rgb[2]),
+        );
+        let hi = luma(
+            vget_high_u8(rgb[0]),
+            vget_high_u8(rgb[1]),
+            vget_high_u8(rgb[2]),
+        );
+        vcombine_u8(lo, hi)
+    }
+}
+
+/// Store sixteen RGB pixels at `x` (with the 4:2:0 outputs: luma, and the chroma of 8 pairs).
 #[inline(always)]
 unsafe fn put16(out: &mut ColourOut, x: usize, rgb: [uint8x16_t; 3]) {
     // SAFETY: the callers keep `x + 16` within the output row.
@@ -106,24 +131,30 @@ unsafe fn put16(out: &mut ColourOut, x: usize, rgb: [uint8x16_t; 3]) {
                 for (plane, v) in p.iter_mut().zip(rgb) {
                     vst1q_u8(plane.as_mut_ptr().add(x), v);
                 }
-                // As `color::rgb_to_y`.
-                let k = c.y.map(|k| vdup_n_u8(k as u8));
-                let off = vdup_n_u8(c.y_offset as u8);
-                let luma = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| {
-                    let s = vmlal_u8(vmlal_u8(vmull_u8(r, k[0]), g, k[1]), b, k[2]);
-                    vqadd_u8(vrshrn_n_u16::<8>(s), off)
+                vst1q_u8(y.as_mut_ptr().add(x), luma16(rgb, c));
+            }
+            ColourOut::LumaChroma(_, y, ch, c) => {
+                vst1q_u8(y.as_mut_ptr().add(x), luma16(rgb, c));
+                // As `color::rgb_to_uv`: 2x2 means, then the Q7 rows.
+                let mean: [int16x8_t; 3] = std::array::from_fn(|k| {
+                    let s = vpaddlq_u8(vld1q_u8(ch.top[k].as_ptr().add(x)));
+                    vreinterpretq_s16_u16(vrshrq_n_u16::<2>(vpadalq_u8(s, rgb[k])))
+                });
+                let c128 = vdupq_n_s16(128);
+                let chroma = |k: &[i16; 3]| {
+                    let m = &mean;
+                    let s =
+                        vmlaq_n_s16(vmlaq_n_s16(vmulq_n_s16(m[0], k[0]), m[1], k[1]), m[2], k[2]);
+                    vqmovun_s16(vaddq_s16(vrshrq_n_s16::<7>(s), c128))
                 };
-                let lo = luma(
-                    vget_low_u8(rgb[0]),
-                    vget_low_u8(rgb[1]),
-                    vget_low_u8(rgb[2]),
-                );
-                let hi = luma(
-                    vget_high_u8(rgb[0]),
-                    vget_high_u8(rgb[1]),
-                    vget_high_u8(rgb[2]),
-                );
-                vst1q_u8(y.as_mut_ptr().add(x), vcombine_u8(lo, hi));
+                let (cu, cv) = (chroma(&c.u), chroma(&c.v));
+                match &mut ch.v {
+                    None => vst2_u8(ch.u.as_mut_ptr().add(x), uint8x8x2_t(cu, cv)),
+                    Some(v) => {
+                        vst1_u8(ch.u.as_mut_ptr().add(x / 2), cu);
+                        vst1_u8(v.as_mut_ptr().add(x / 2), cv);
+                    }
+                }
             }
             ColourOut::Packed(d) => vst3q_u8(
                 d.as_mut_ptr().add(3 * x),

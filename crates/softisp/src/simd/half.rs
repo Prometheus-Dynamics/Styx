@@ -155,12 +155,29 @@ impl ColourCoeffs {
     }
 }
 
-/// Where a colour kernel writes: three 8-bit planes, packed RGB24, or the planes and luma (as
-/// [`super::rgb_to_y_row`] makes it from them).
+/// Where a colour kernel writes: three 8-bit planes, packed RGB24, the planes and luma (as
+/// [`super::rgb_to_y_row`] makes it from them), or, for the second row of a 4:2:0 pair, its
+/// luma and the pair's chroma (as [`super::rgb_to_uv_row`] makes it from the first row's
+/// planes and this row's).
 pub enum ColourOut<'a> {
     Planes([&'a mut [u8]; 3]),
     Packed(&'a mut [u8]),
     PlanesLuma([&'a mut [u8]; 3], &'a mut [u8], &'a super::YuvCoeffs),
+    /// Scratch planes (written only where the scalar oracle runs), luma, chroma.
+    LumaChroma(
+        [&'a mut [u8]; 3],
+        &'a mut [u8],
+        Chroma<'a>,
+        &'a super::YuvCoeffs,
+    ),
+}
+
+/// The chroma of a 4:2:0 row pair: the first row's planes, and Cb/Cr interleaved in `u` (NV12,
+/// `v` empty) or apart (I420).
+pub struct Chroma<'a> {
+    pub top: [&'a [u8]; 3],
+    pub u: &'a mut [u8],
+    pub v: Option<&'a mut [u8]>,
 }
 
 impl ColourOut<'_> {
@@ -173,12 +190,33 @@ impl ColourOut<'_> {
                 }
             }
             Self::Packed(d) => d[3 * x..3 * x + 3].copy_from_slice(&rgb),
-            Self::PlanesLuma(p, y, c) => {
+            Self::PlanesLuma(p, y, c) | Self::LumaChroma(p, y, _, c) => {
                 for (plane, v) in p.iter_mut().zip(rgb) {
                     plane[x] = v;
                 }
                 let planes = [&rgb[0..1], &rgb[1..2], &rgb[2..3]];
                 super::scalar::rgb_to_y_row(planes, &mut y[x..], 1, c);
+            }
+        }
+    }
+
+    /// After the scalar oracle wrote pixels `from..width` (`from` even): their chroma.
+    fn finish(&mut self, from: usize, width: usize) {
+        let Self::LumaChroma(p, _, ch, c) = self else {
+            return;
+        };
+        if from >= width {
+            return;
+        }
+        let (i, n) = (from / 2, (width - from) / 2);
+        let top = ch.top.map(|t| &t[from..]);
+        let bottom = [&p[0][from..], &p[1][from..], &p[2][from..]];
+        match &mut ch.v {
+            None => {
+                super::scalar::rgb_to_uv_row(top, bottom, &mut ch.u[2 * i..], &mut [], n, c, true)
+            }
+            Some(v) => {
+                super::scalar::rgb_to_uv_row(top, bottom, &mut ch.u[i..], &mut v[i..], n, c, false)
             }
         }
     }
@@ -327,6 +365,7 @@ pub fn colour_row(
         });
         out.put(x, rgb);
     }
+    out.finish(done, width);
 }
 
 /// `f32` to fp16 bits, rounded to nearest (as [`f16::from_f32`]), for tables.
@@ -390,6 +429,7 @@ pub fn quad_colour_row(
         });
         out.put(i, rgb);
     }
+    out.finish(done, width);
 }
 
 /// Full-size luma from the mosaic (the 3x3 binomial filter, `(R + 2G + B) / 4` at every

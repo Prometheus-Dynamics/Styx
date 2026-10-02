@@ -169,6 +169,36 @@ fn colour_matches_the_oracle() {
                         let p = [&planes[0][..], &planes[1][..], &planes[2][..]];
                         crate::simd::scalar::rgb_to_y_row(p, &mut want, w, &c);
                         assert_eq!(y[..w], want[..]);
+                        // The second row of a pair: its luma and the pair's chroma, from the
+                        // first row's planes (here: the packed row's, de-interleaved).
+                        let top: Vec<Vec<u8>> = (0..3)
+                            .map(|k| packed.iter().skip(k).step_by(3).copied().collect())
+                            .collect();
+                        let (mut y2, mut uv) = (vec![0u8; w + 1], vec![0u8; w + 1]);
+                        let mut scratch = vec![vec![0u8; w + 1]; 3];
+                        let [r, g, b] = &mut scratch[..] else {
+                            unreachable!()
+                        };
+                        let chroma = Chroma {
+                            top: [&top[0], &top[1], &top[2]],
+                            u: &mut uv,
+                            v: None,
+                        };
+                        let out = ColourOut::LumaChroma([r, g, b], &mut y2, chroma, &c);
+                        colour_row(rows, out, w, &cc, tone);
+                        assert_eq!(y2[..w], want[..]);
+                        let mut want_uv = vec![0u8; w];
+                        let t = [&top[0][..], &top[1][..], &top[2][..]];
+                        crate::simd::scalar::rgb_to_uv_row(
+                            t,
+                            p,
+                            &mut want_uv,
+                            &mut [],
+                            w / 2,
+                            &c,
+                            true,
+                        );
+                        assert_eq!(uv[..w], want_uv[..]);
                         for x in 0..w {
                             assert_eq!(
                                 [planes[0][x], planes[1][x], planes[2][x]],
@@ -176,7 +206,7 @@ fn colour_matches_the_oracle() {
                                 "tone {n} x {x}"
                             );
                         }
-                        (planes, packed, y)
+                        (planes, packed, y, uv)
                     });
                 }
             }

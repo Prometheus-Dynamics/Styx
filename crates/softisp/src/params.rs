@@ -206,14 +206,16 @@ impl ToneCurve {
                 if x <= first[0] {
                     return first[1];
                 }
-                for w in points.windows(2) {
-                    let ([x0, y0], [x1, y1]) = (w[0], w[1]);
-                    if x <= x1 {
-                        let t = if x1 > x0 { (x - x0) / (x1 - x0) } else { 1.0 };
-                        return y0 + t * (y1 - y0);
-                    }
-                }
-                points[points.len() - 1][1]
+                // The first segment whose end is at or after `x` (a binary search: the curve
+                // is sampled a few thousand times whenever it changes, which adaptive contrast
+                // makes it do on most frames).
+                let k = points[1..].partition_point(|p| p[0] < x);
+                let Some(&[x1, y1]) = points.get(k + 1) else {
+                    return points[points.len() - 1][1];
+                };
+                let [x0, y0] = points[k];
+                let t = if x1 > x0 { (x - x0) / (x1 - x0) } else { 1.0 };
+                y0 + t * (y1 - y0)
             }
         }
     }

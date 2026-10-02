@@ -5,7 +5,7 @@ use crate::format::RawPacking;
 use crate::output::{OutputBuffers, Scale};
 use crate::params::Demosaic;
 use crate::prepare::{Arith, IntPrep, Prepared};
-use crate::simd::half::{self, ColourOut};
+use crate::simd::half::{self, Chroma, ColourOut};
 use crate::simd::{self, RowKind};
 use crate::stats::StatsAccum;
 
@@ -83,6 +83,14 @@ fn reflect(i: isize, n: usize) -> usize {
         i
     };
     r.clamp(0, n - 1) as usize
+}
+
+/// Where [`Worker::colour_row`] puts a row besides `rgb8[k]`.
+enum Dest<'a> {
+    Packed(&'a mut [u8]),
+    Luma(&'a mut [u8]),
+    /// Luma, Cb/Cr (interleaved, or Cb with Cr apart).
+    LumaChroma(&'a mut [u8], &'a mut [u8], Option<&'a mut [u8]>),
 }
 
 /// Scratch rows of one band's processing.
@@ -165,9 +173,8 @@ impl Worker {
         std::array::from_fn(|i| self.front(p, src, y as isize - r + i as isize))
     }
 
-    /// Output row `oy` as planar 8-bit RGB in `rgb8[k]` (and its luma into `y`), or packed
-    /// into `packed`.
-    #[allow(clippy::too_many_arguments)]
+    /// Output row `oy`: planar 8-bit RGB in `rgb8[k]` and its luma, or packed instead, or (fp16 only, the second row of a 4:2:0 pair, `k` 1) luma and the
+    /// pair's chroma with `rgb8[0]` holding the first row.
     fn colour_row(
         &mut self,
         p: &Prepared,
@@ -175,8 +182,7 @@ impl Worker {
         scale: Scale,
         oy: usize,
         k: usize,
-        packed: Option<&mut [u8]>,
-        y: Option<&mut [u8]>,
+        dest: Dest,
     ) {
         let w = p.width;
         let n = match scale {
@@ -192,11 +198,21 @@ impl Worker {
                     0,
                 ],
             };
-            let [r, g, b] = &mut self.rgb8[k];
-            let out = match (packed, y) {
-                (Some(d), _) => ColourOut::Packed(d),
-                (None, Some(y)) => ColourOut::PlanesLuma([r, g, b], y, &p.yuv),
-                (None, None) => ColourOut::Planes([r, g, b]),
+            let [first, second] = &mut self.rgb8;
+            let out = match dest {
+                Dest::LumaChroma(y, u, v) => {
+                    let top = [&first[0][..], &first[1][..], &first[2][..]];
+                    let [r, g, b] = second;
+                    ColourOut::LumaChroma([r, g, b], y, Chroma { top, u, v }, &p.yuv)
+                }
+                dest => {
+                    let [r, g, b] = if k == 0 { first } else { second };
+                    match dest {
+                        Dest::Packed(d) => ColourOut::Packed(d),
+                        Dest::Luma(y) => ColourOut::PlanesLuma([r, g, b], y, &p.yuv),
+                        Dest::LumaChroma(..) => unreachable!(),
+                    }
+                }
             };
             match scale {
                 Scale::Full => {
@@ -254,10 +270,10 @@ impl Worker {
             tone(ip, src16, dst8, n);
         }
         let planes = self.rgb8[k].each_ref().map(|v| &v[..]);
-        if let Some(d) = packed {
-            simd::interleave_rgb_row(planes, d, n);
-        } else if let Some(y) = y {
-            simd::rgb_to_y_row(planes, y, n, &p.yuv);
+        match dest {
+            Dest::Packed(d) => drop(simd::interleave_rgb_row(planes, d, n)),
+            Dest::Luma(y) => drop(simd::rgb_to_y_row(planes, y, n, &p.yuv)),
+            Dest::LumaChroma(..) => unreachable!("the integer path makes chroma from planes"),
         }
     }
 
@@ -369,7 +385,7 @@ impl Worker {
             OutputBuffers::Rgb24 { data, stride } => {
                 for i in 0..rows {
                     let row = &mut data[i * stride..][..3 * ow];
-                    self.colour_row(p, src, scale, o0 + i, 0, Some(row), None);
+                    self.colour_row(p, src, scale, o0 + i, 0, Dest::Packed(row));
                     self.stats_after(p, src, scale, o0 + i);
                 }
             }
@@ -424,24 +440,39 @@ impl Worker {
     ) {
         for i in (0..rows).step_by(2) {
             let (y0, y1) = y[i * y_stride..].split_at_mut(y_stride);
-            self.colour_row(p, src, scale, o0 + i, 0, None, Some(&mut y0[..ow]));
-            self.colour_row(p, src, scale, o0 + i + 1, 1, None, Some(&mut y1[..ow]));
-            let top = self.rgb8[0].each_ref().map(|v| &v[..]);
-            let bottom = self.rgb8[1].each_ref().map(|v| &v[..]);
+            let (y0, y1) = (&mut y0[..ow], &mut y1[..ow]);
             let u_row = &mut u[i / 2 * u_stride..];
-            match &mut v {
-                None => drop(simd::rgb_to_uv_row(
-                    top,
-                    bottom,
-                    u_row,
-                    &mut [],
-                    ow / 2,
-                    &p.yuv,
-                    true,
-                )),
-                Some((v, v_stride)) => {
-                    let v_row = &mut v[i / 2 * *v_stride..];
-                    simd::rgb_to_uv_row(top, bottom, u_row, v_row, ow / 2, &p.yuv, false);
+            if matches!(p.arith, Arith::Half(_)) {
+                // fp16: the second row's kernel makes the pair's chroma.
+                self.colour_row(p, src, scale, o0 + i, 0, Dest::Luma(y0));
+                let (u_row, v_row) = match &mut v {
+                    None => (&mut u_row[..ow], None),
+                    Some((v, v_stride)) => (
+                        &mut u_row[..ow / 2],
+                        Some(&mut v[i / 2 * *v_stride..][..ow / 2]),
+                    ),
+                };
+                let dest = Dest::LumaChroma(y1, u_row, v_row);
+                self.colour_row(p, src, scale, o0 + i + 1, 1, dest);
+            } else {
+                self.colour_row(p, src, scale, o0 + i, 0, Dest::Luma(y0));
+                self.colour_row(p, src, scale, o0 + i + 1, 1, Dest::Luma(y1));
+                let top = self.rgb8[0].each_ref().map(|v| &v[..]);
+                let bottom = self.rgb8[1].each_ref().map(|v| &v[..]);
+                match &mut v {
+                    None => drop(simd::rgb_to_uv_row(
+                        top,
+                        bottom,
+                        u_row,
+                        &mut [],
+                        ow / 2,
+                        &p.yuv,
+                        true,
+                    )),
+                    Some((v, v_stride)) => {
+                        let v_row = &mut v[i / 2 * *v_stride..];
+                        simd::rgb_to_uv_row(top, bottom, u_row, v_row, ow / 2, &p.yuv, false);
+                    }
                 }
             }
             self.stats_after(p, src, scale, o0 + i);
