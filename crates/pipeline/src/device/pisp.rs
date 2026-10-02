@@ -269,12 +269,10 @@ impl PispPipeline {
                 (c, t.elapsed())
             });
             let isp = Isp::open(&sensor_info, mode.code, &options);
-            let (configured, took) = sensor.join().unwrap_or_else(|_| {
-                (
-                    Err(styx_native::NativeError::State("sensor set-up panicked")),
-                    Duration::ZERO,
-                )
-            });
+            let (configured, took) = sensor.join().unwrap_or((
+                Err(styx_native::NativeError::State("sensor set-up panicked")),
+                Duration::ZERO,
+            ));
             startup.configure = took;
             (configured, isp)
         });
