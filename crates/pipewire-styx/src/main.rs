@@ -146,11 +146,11 @@ fn run(published: Vec<Published>) -> Result<(), String> {
     let quit = mainloop.clone();
     let _sigint = mainloop
         .loop_()
-        .add_signal_local(pw::loop_::Signal::SIGINT, move || quit.quit());
+        .add_signal_local(pw::loop_::Signal::INT, move || quit.quit());
     let quit = mainloop.clone();
     let _sigterm = mainloop
         .loop_()
-        .add_signal_local(pw::loop_::Signal::SIGTERM, move || quit.quit());
+        .add_signal_local(pw::loop_::Signal::TERM, move || quit.quit());
     mainloop.run();
     drop(nodes);
     Ok(())

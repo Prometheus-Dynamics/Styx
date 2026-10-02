@@ -55,6 +55,13 @@ fn export_part(
             out.copied = true;
             frame.export_or_copy_memfd()?.1
         }
+        // The backing cannot hand out a descriptor (e.g. v4l2loopback has no VIDIOC_EXPBUF):
+        // send a copy rather than nothing.
+        Err(FrameExportError::Fd(err)) if frame.can_read_planes() => {
+            tracing::debug!(error = %err, "frame not exportable, copying it");
+            out.copied = true;
+            frame.materialize_owned().export_or_copy_memfd()?.1
+        }
         Err(err) => return Err(err.into()),
     };
     let backing = match backing {

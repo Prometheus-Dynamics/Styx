@@ -15,7 +15,7 @@ use crate::formats::{Offer, copy_packed, packed_size};
 use crate::params::{as_pods, buffers_pod, enum_format_pods, styx_format};
 
 enum Msg {
-    Frame(FrameLease),
+    Frame(Box<FrameLease>),
     Failed(String),
 }
 
@@ -50,7 +50,7 @@ impl Shared {
             self.source.clone(),
             request,
             move |frame| {
-                let _ = frames.send(Msg::Frame(frame));
+                let _ = frames.send(Msg::Frame(Box::new(frame)));
             },
             move |err| {
                 let _ = failures.send(Msg::Failed(err));
@@ -61,6 +61,7 @@ impl Shared {
     fn stop(&mut self) {
         if self.capture.take().is_some() {
             eprintln!("{}: stopped after {} frames", self.name, self.frames);
+            self.frames = 0;
         }
         self.latest = None;
     }
@@ -191,7 +192,13 @@ pub fn publish<'l>(
     let on_msg = shared.clone();
     let receiver = receiver.attach(loop_, move |msg| match msg {
         Msg::Frame(frame) => {
-            on_msg.borrow_mut().latest = Some(frame);
+            let mut shared = on_msg.borrow_mut();
+            if shared.capture.is_none() {
+                // Sent before the capture stopped: holding it would keep the camera open.
+                return;
+            }
+            shared.latest = Some(*frame);
+            drop(shared);
             if let Some(stream) = weak.upgrade() {
                 let _ = stream.trigger_process();
             }

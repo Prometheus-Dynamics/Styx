@@ -8,7 +8,7 @@ never needs GStreamer or PipeWire installed.
 | Crate | What | Needs (Fedora / Nobara) |
 |---|---|---|
 | `crates/gst-styx` | GStreamer plugin `libgststyx.so`: `styxsrc` and `styxdeviceprovider` | `gstreamer1-devel gstreamer1-plugins-base-devel` |
-| `crates/pipewire-styx` | `styx-pipewire`: publishes cameras as PipeWire video sources | `pipewire-devel`, plus libclang for bindgen (`clang-libs`) |
+| `crates/pipewire-styx` | `styx-pipewire`: publishes cameras as PipeWire video sources | `pipewire-devel` (1.6.8 tested), plus libclang for bindgen (`clang-libs`) |
 
 Both build into the repository's `target/` (each crate has `.cargo/config.toml` for this):
 
@@ -125,10 +125,34 @@ copied once into PipeWire's buffer (packed rows), which is what PipeWire's memfd
 With `--service`, the camera service owns the camera and plans for all its clients;
 the node offers common sizes and drops frames of another size than negotiated.
 
-Status: written against `pipewire` 0.10 / `libspa` 0.10, **not built or run yet** on the
-development host (no `pipewire-devel`). Its format and capture logic builds and tests without
-PipeWire: `cargo test --no-default-features`. Zero-copy (`SPA_DATA_DmaBuf` buffers from camera
-dma-bufs) is a possible next step.
+Tested on the development host (PipeWire 1.6.8, v4l2loopback YUYV 640x480 at 30 fps):
+
+- `pw-cli ls Node` shows `styx.platform_v4l2loopback_000` with `media.class = Video/Source`,
+  `media.role = Camera`, `node.description = "platform:v4l2loopback-000 (Styx)"`.
+- `pipewiresrc target-object=styx.platform_v4l2loopback_000 ! video/x-raw,format=YUY2 ! ...`
+  receives 30 fps; YUY2, RGB (planner-converted) and GRAY8 frames checked as images.
+- On demand: before a consumer the camera is closed and the process has 2 threads; while
+  streaming `/dev/video0` is open (5 threads); 2 s after the consumer leaves it is closed again
+  and the daemon uses no CPU (0 ticks in 10 s).
+- `--service`: frames from a `CameraService` reach `pipewiresrc` at 30 fps.
+
+CPU for 600 frames YUY2 640x480 (20 s), release builds, two runs each; consumer is
+`pipewiresrc ! video/x-raw,format=YUY2 ! fakesink`:
+
+| Producer | Producer CPU | Consumer CPU | Idle (no consumer) |
+|---|---|---|---|
+| `styx-pipewire` | 0.3%, 0.3% | 0.2%, 0.2% | 0 (camera closed) |
+| `styxsrc ! pipewiresink mode=provide` | 0.6%, 0.6% | 0.1%, 0.2% | camera streaming |
+
+Frames are copied once into PipeWire's buffers (packed rows; ~0.6 MB per frame here). Passing
+camera dma-bufs instead (`SPA_DATA_DmaBuf`) is not done: PipeWire buffers are a fixed pool
+negotiated up front and consumers cache their mappings per buffer, while Styx frames come from
+the camera's own buffers in whatever order; it would need the camera's buffers to be the
+PipeWire pool. With `--service`, the camera service plans for all its clients; the node offers
+common sizes and drops frames of another size than negotiated.
+
+Note: `pipewiresrc ! fakesink` without caps or a converter fails with "target not found" for any
+video node (also nodes made by `pipewiresink`); give it caps or a `videoconvert`.
 
 ### `styxsrc ! pipewiresink` (works today)
 
@@ -157,3 +181,5 @@ stream.
   buffers can be exported; an export failure costs one renegotiation.
 - The Raspberry Pi CM5 (HeliOS image) has neither GStreamer nor PipeWire, so neither bridge has
   run on the OV9782 yet.
+- A camera service sends a copy (memfd) of frames whose camera buffers cannot be exported as
+  dma-bufs (v4l2loopback); before, such frames were not sent at all.
