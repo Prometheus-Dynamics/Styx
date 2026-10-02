@@ -323,6 +323,14 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         log.request_lands = f.request_lands;
         let tr = Instant::now();
         let last = i + 1 == a.frames as u64;
+        if i == 0 || last {
+            // The back end config as programmed, to compare with libcamera's
+            // (`LIBCAMERA_RPI_PISP_CONFIG_DUMP`, its first frame).
+            let name = if i == 0 { "first" } else { "last" };
+            let path = a.out.join(format!("pisp-be-config-{name}.bin"));
+            std::fs::write(&path, bytemuck::bytes_of(p.back_end_config()))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
         if !a.no_read || last {
             p.sync_output(0, &f.job, true).map_err(|e| e.to_string())?;
             if let Some(nv12) = p.output(0, &f.job) {

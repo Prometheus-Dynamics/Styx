@@ -1,6 +1,6 @@
 //! Metering: zone weights and the weighted mean luma after a trial gain.
 
-use crate::stats::{Histogram, Statistics, rec601};
+use crate::stats::{Histogram, Statistics, ZoneGrid, rec601};
 
 use super::tuning::MeteringMode;
 
@@ -22,6 +22,29 @@ pub(crate) fn weights_for(name: &str, tuned: Option<&MeteringMode>, w: u32, h: u
         }
     }
     builtin(name, w, h)
+}
+
+/// The weights of a metering mode on their own grid (the tuning's, else 15×15 built-in
+/// weights), for an ISP that weights its histogram by zone.
+pub(crate) fn histogram_grid(name: &str, tuned: Option<&MeteringMode>) -> ZoneGrid<f64> {
+    if let Some(m) = tuned {
+        let s = (m.weights.len() as f64).sqrt().round() as u32;
+        let grid = m
+            .grid
+            .or_else(|| ((s * s) as usize == m.weights.len()).then_some((s, s)));
+        if let Some((width, height)) = grid {
+            return ZoneGrid {
+                width,
+                height,
+                zones: m.weights.clone(),
+            };
+        }
+    }
+    ZoneGrid {
+        width: 15,
+        height: 15,
+        zones: builtin(name, 15, 15),
+    }
 }
 
 /// Nearest-neighbour resampling of a weight grid by zone centres.

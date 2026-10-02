@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::pwl::Pwl;
+use crate::stats::ZoneGrid;
 
 /// A 3×3 row-major colour matrix.
 pub type Matrix3 = [f64; 9];
@@ -207,6 +208,11 @@ pub struct Params {
     /// Sharpening (`None`: the ISP's default).
     #[serde(default)]
     pub sharpen: Option<SharpenParams>,
+    /// Zone weights of the metering mode in use, on the tuning's grid (15×15 for Raspberry Pi
+    /// tunings), for ISPs that weight their luma histogram by zone (the PiSP front end, as the
+    /// Raspberry Pi IPA programs it). Written by AGC; `None`: unweighted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub histogram_weights: Option<ZoneGrid<f64>>,
 }
 
 impl Default for Params {
@@ -225,6 +231,7 @@ impl Default for Params {
             lens_shading: None,
             denoise: DenoiseParams::default(),
             sharpen: None,
+            histogram_weights: None,
         }
     }
 }

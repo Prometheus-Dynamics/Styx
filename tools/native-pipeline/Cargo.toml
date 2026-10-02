@@ -12,9 +12,10 @@ publish = false
 [features]
 default = []
 # The device runs (native cameras, PiSP); without it only `replay` is available.
-device = ["styx-pipeline/device", "dep:styx-native", "dep:styx-pisp"]
+device = ["styx-pipeline/device", "dep:styx-native", "dep:styx-pisp", "dep:bytemuck"]
 
 [dependencies]
+bytemuck = { version = "1.25", optional = true }
 signal-hook = { version = "0.3.18", default-features = false }
 styx-algo.workspace = true
 styx-core.workspace = true

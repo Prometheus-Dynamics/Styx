@@ -42,10 +42,10 @@ use crate::error::Result;
 use crate::frame::{Controls, FrameMetadata};
 use crate::params::{AeStatus, Params, SensorRequest};
 use crate::pipeline::Algorithm;
-use crate::stats::Statistics;
+use crate::stats::{Statistics, ZoneGrid};
 use crate::warm::WarmStart;
 
-use tuning::{AgcTuning, Bound, ExposureProfile};
+use tuning::{AgcTuning, Bound, ExposureProfile, MeteringMode};
 
 /// Luma targets are capped here: histograms cannot be read near saturation.
 const EV_GAIN_Y_TARGET_LIMIT: f64 = 0.9;
@@ -60,6 +60,8 @@ pub struct Agc {
     tuning: AgcTuning,
     config: CameraConfig,
     weights: Option<(String, u32, u32, bool, Vec<f64>)>,
+    /// The metering mode's weights for the ISP's histogram, by mode name.
+    histogram: Option<(String, ZoneGrid<f64>)>,
     frame_count: u32,
     /// Damped total exposure (seconds × gain), with digital gain.
     filtered: f64,
@@ -96,6 +98,7 @@ impl Agc {
             tuning,
             config: CameraConfig::default(),
             weights: None,
+            histogram: None,
             frame_count: 0,
             filtered: 0.0,
             frozen: None,
@@ -166,6 +169,33 @@ impl Agc {
             .or(frozen.map(|f| f.1))
             .map(|g| self.limit_gain(g));
         (exposure, gain)
+    }
+
+    /// The metering mode in use (`average` is `matrix` unless tuned) and its tuned weights.
+    fn metering_mode(&self, meta: Option<&FrameMetadata>) -> (String, Option<&MeteringMode>) {
+        let name = meta
+            .and_then(|m| m.controls.metering_mode.clone())
+            .unwrap_or_else(|| self.tuning.default_metering_mode.clone());
+        let key = if name == "average" && !self.tuning.metering_modes.contains_key("average") {
+            "matrix"
+        } else {
+            name.as_str()
+        };
+        let tuned = self.tuning.metering_modes.get(key);
+        (name, tuned)
+    }
+
+    /// The histogram weights for the metering mode in use (see [`Params::histogram_weights`]).
+    fn histogram_weights(&mut self, meta: &FrameMetadata) -> ZoneGrid<f64> {
+        let (name, tuned) = self.metering_mode(Some(meta));
+        if let Some((n, g)) = &self.histogram
+            && *n == name
+        {
+            return g.clone();
+        }
+        let g = metering::histogram_grid(&name, tuned);
+        self.histogram = Some((name, g.clone()));
+        g
     }
 
     fn metering_weights(&mut self, stats: &Statistics, meta: &FrameMetadata) -> (bool, Vec<f64>) {
@@ -337,6 +367,7 @@ impl Algorithm for Agc {
     fn prepare(&mut self, config: &CameraConfig) -> Result<()> {
         self.config = config.clone();
         self.weights = None;
+        self.histogram = None;
         self.frame_count = 0;
         self.frozen = None;
         self.last = None;
@@ -374,12 +405,15 @@ impl Algorithm for Agc {
             (self.filtered / (exposure * gain)).clamp(1.0, self.tuning.max_digital_gain);
         params.ae.total_exposure = self.filtered;
         params.ae.target_exposure = self.filtered;
+        let (name, tuned) = self.metering_mode(None);
+        params.histogram_weights = Some(metering::histogram_grid(&name, tuned));
     }
 
     fn process(&mut self, stats: &Statistics, meta: &FrameMetadata, params: &mut Params) {
         self.frame_count = self.frame_count.saturating_add(1);
         let fixed = self.fixed(meta);
         let fixed_both = fixed.0.is_some() && fixed.1.is_some();
+        params.histogram_weights = Some(self.histogram_weights(meta));
         let (gain, target_y, measured_y) = self.compute_gain(stats, meta, params);
         let on_target = (gain - 1.0).abs() < ON_TARGET;
 

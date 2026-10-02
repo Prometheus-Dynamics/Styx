@@ -7,6 +7,8 @@
 //! native-pipeline replay --recording BASE [options]   software ISP over a raw recording
 //! native-pipeline quality --recording BASE [options]  fp16 against integer software ISP
 //! native-pipeline latch  [options]   when within a frame a control write still lands on time
+//! native-pipeline be-replay --raw FILE --configs A.bin,B.bin   one 16-bit raw frame through the
+//!                                    back end with each config (device feature)
 //! native-pipeline regcheck [options] bring-up only, read back every register written
 //!                                    (--frames: power cycles; --power-settle MS)
 //!
@@ -43,6 +45,8 @@
 //!   --quiet              no per-frame lines
 //! ```
 
+#[cfg(feature = "device")]
+mod be_replay;
 #[cfg(feature = "device")]
 mod device_run;
 #[cfg(feature = "device")]
@@ -94,6 +98,8 @@ pub struct Args {
     pub no_tdn: bool,
     pub output: (output::Kind, styx_softisp::Scale),
     pub arithmetic: styx_softisp::Arithmetic,
+    pub raw: Option<PathBuf>,
+    pub configs: Vec<PathBuf>,
 }
 
 fn parse() -> Result<Args, String> {
@@ -129,6 +135,8 @@ fn parse() -> Result<Args, String> {
         no_tdn: false,
         output: (output::Kind::Rgb, styx_softisp::Scale::Full),
         arithmetic: styx_softisp::Arithmetic::Auto,
+        raw: None,
+        configs: Vec::new(),
     };
     while let Some(x) = it.next() {
         let mut val = || it.next().ok_or(format!("{x} needs a value"));
@@ -142,6 +150,8 @@ fn parse() -> Result<Args, String> {
             "--record" => a.record = Some(val()?.into()),
             "--algo-record" => a.algo_record = Some(val()?.into()),
             "--recording" => a.recording = Some(val()?.into()),
+            "--raw" => a.raw = Some(val()?.into()),
+            "--configs" => a.configs = val()?.split(',').map(PathBuf::from).collect(),
             "--threads" => a.threads = num(val()?)? as usize,
             "--quiet" => a.quiet = true,
             "--output" => a.output = output::parse(&val()?)?,
@@ -277,6 +287,8 @@ fn main() -> ExitCode {
             "soft" => device_run::soft(&a),
             #[cfg(feature = "device")]
             "latch" => latch::run(&a),
+            #[cfg(feature = "device")]
+            "be-replay" => be_replay::run(&a),
             #[cfg(feature = "device")]
             "regcheck" => regcheck::run(&a),
             c => Err(format!(

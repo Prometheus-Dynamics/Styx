@@ -452,6 +452,11 @@ impl PispPipeline {
         self.be.counts()
     }
 
+    /// The back end config (with its tiles) the last job [`Self::next`] returned ran with.
+    pub fn back_end_config(&self) -> &styx_pisp::uapi::BeTilesConfig {
+        self.be.config()
+    }
+
     /// Back end output `i`'s format.
     pub fn output_format(&self, i: usize) -> Option<ImageFormatConfig> {
         self.be_dev.as_ref()?.output_format(i)
