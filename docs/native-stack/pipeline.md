@@ -348,6 +348,13 @@ and the software ISP mode elsewhere. Tuning: `STYX_TUNING`, else the description
 file in `/etc/styx/tuning`, `/usr/{local/,}share/styx/tuning`, libcamera's
 `/usr/{local/,}share/libcamera/ipa/rpi/pisp` (read at run time), else the defaults.
 
+The same pipeline runs unchanged on sensors with an upstream kernel driver (controls through
+V4L2, values predicted from the delays when the driver sends no embedded data): the OV9782
+under `ov9282` against the bridge, same scene and session, is in
+[adding-a-camera.md](adding-a-camera.md#the-ov9782-on-the-cm5-kernel-driver-against-the-bridge)
+(30/60/120 fps exact, every exposure, gain and frame length change on its predicted frame,
+AE at 30 and 60 fps as on the bridge, CPU the same, first frame 8 ms later).
+
 ## Results on the CM5 (OV9782 1280x800 at 30 fps, bridge with embedded data)
 
 Scene: a ceiling lit by a warm ceiling lamp, a blue LED and posters. Tuning: the HeliOS
