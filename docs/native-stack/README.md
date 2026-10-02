@@ -102,7 +102,8 @@ limits at that fps.
 - `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test` pass; files
   stay under 800 lines (`scripts/check-file-sizes.sh`).
 - The device (`ssh root@helios`, a Raspberry Pi CM5). Never enter passwords. Work only in `/tmp`
-  on the device. Never touch `/boot`, the HeliOS image, the updater, or other HeliOS services.
+  on the device. It is a disposable dev box: leave `/boot`, the A/B images and the updater alone;
+  anything else may be changed as needed (say so in your report).
   - Read-only probing needs no lock.
   - Anything that uses a camera or changes device state (stopping `helios-peripherals`,
     binding/unbinding drivers, runtime overlays via configfs, loading our modules, streaming)
