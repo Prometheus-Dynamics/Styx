@@ -74,6 +74,8 @@ struct State {
     last_frame: Option<Instant>,
     /// Exporting dma-bufs failed once; wrap memory from then on (`export-dmabuf` only).
     export_failed: bool,
+    /// dma-buf caps were negotiated but the camera's buffers cannot be exported.
+    dmabuf_unavailable: bool,
 }
 
 #[derive(Default)]
@@ -108,6 +110,45 @@ impl StyxSrc {
         }
     }
 
+    /// Choose the camera and work out its caps (in-process mode). Done when going to READY so
+    /// caps queries see the camera's formats, as with v4l2src.
+    fn open_camera(&self, state: &mut State) -> Result<(), gst::ErrorMessage> {
+        let settings = self.settings();
+        if settings.service.is_some() {
+            return Ok(()); // the service has the camera; caps come from the template
+        }
+        let device = source::find_camera(settings.camera.as_deref())
+            .map_err(|err| gst::error_msg!(gst::ResourceError::NotFound, ("{err}")))?;
+        gst::info!(CAT, imp = self, "camera {}", device.identity.display);
+        let caps = caps::device_caps(&device);
+        if caps.is_empty() {
+            return Err(gst::error_msg!(
+                gst::ResourceError::Settings,
+                (
+                    "camera {} has no formats GStreamer can use",
+                    device.identity.display
+                )
+            ));
+        }
+        gst::debug!(CAT, imp = self, "camera caps {caps}");
+        state.caps = Some(caps);
+        state.device = Some(device);
+        Ok(())
+    }
+
+    fn renegotiate_without_dmabuf(&self) -> Result<(), gst::FlowError> {
+        if !self.obj().negotiate() {
+            gst::element_imp_error!(
+                self,
+                gst::CoreError::Negotiation,
+                ("downstream wants dma-bufs but this camera's buffers cannot be exported"),
+                ["Negotiate system memory caps (e.g. put videoconvert after styxsrc)"]
+            );
+            return Err(gst::FlowError::NotNegotiated);
+        }
+        Ok(())
+    }
+
     fn stop_stream(state: &mut State) {
         if let Some(stream) = state.stream.take() {
             stream.stop();
@@ -115,7 +156,10 @@ impl StyxSrc {
         state.negotiated = None;
     }
 
-    /// The buffer's running time: now minus the time since the frame was captured.
+    /// The buffer's running time: now minus the time since the frame was captured (from the
+    /// frame's timestamp clock, else when the backend received it). Without that, frames
+    /// queued while downstream blocks would be stamped late and a syncing sink would fall
+    /// behind the camera.
     fn timestamp(&self, meta: &FrameMeta) -> Option<gst::ClockTime> {
         let obj = self.obj();
         let clock = obj.clock()?;
@@ -123,7 +167,9 @@ impl StyxSrc {
         let age = meta
             .clock
             .and_then(|c| c.elapsed_since(meta.timestamp))
+            .or_else(|| meta.capture_instant.map(|t| t.elapsed()))
             .unwrap_or_default();
+        gst::log!(CAT, imp = self, "running time {now}, frame age {age:?}");
         Some(now.saturating_sub(gst::ClockTime::from_nseconds(age.as_nanos() as u64)))
     }
 
@@ -156,14 +202,23 @@ impl StyxSrc {
         let attempt = frame_buffer(frame, kind);
         let (mut buffer, backing) = match attempt {
             Ok(done) => done,
-            Err(err @ BufferError::NotExportable(_)) => {
-                gst::element_imp_error!(
-                    self,
-                    gst::StreamError::Format,
-                    ("dma-buf caps were negotiated but {err}"),
-                    ["Negotiate system memory caps (e.g. put videoconvert after styxsrc)"]
-                );
-                return Err(gst::FlowError::NotNegotiated);
+            Err(BufferError::NotExportable(why)) => {
+                // Offered dma-bufs but the camera cannot export them: stop offering them and
+                // renegotiate (the caller drops this frame).
+                gst::info!(CAT, imp = self, "camera buffers are not dma-bufs: {why}");
+                if let Some(caps) = state.caps.as_ref() {
+                    let mut plain = gst::Caps::new_empty();
+                    let plain_mut = plain.get_mut().expect("new caps are writable");
+                    for (s, features) in caps.iter_with_features() {
+                        if !features.contains(gst_allocators::CAPS_FEATURE_MEMORY_DMABUF) {
+                            plain_mut
+                                .append_structure_full(s.to_owned(), Some(features.to_owned()));
+                        }
+                    }
+                    state.caps = Some(plain);
+                }
+                state.dmabuf_unavailable = true;
+                return Err(gst::FlowError::CustomError);
             }
             Err(err) => {
                 gst::warning!(CAT, imp = self, "dropping frame: {err}");
@@ -332,6 +387,26 @@ impl ElementImpl for StyxSrc {
         Some(&*METADATA)
     }
 
+    fn change_state(
+        &self,
+        transition: gst::StateChange,
+    ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
+        match transition {
+            gst::StateChange::NullToReady => {
+                let mut state = self.state();
+                *state = State::default();
+                if let Err(err) = self.open_camera(&mut state) {
+                    drop(state);
+                    self.post_error_message(err);
+                    return Err(gst::StateChangeError);
+                }
+            }
+            gst::StateChange::ReadyToNull => *self.state() = State::default(),
+            _ => {}
+        }
+        self.parent_change_state(transition)
+    }
+
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             vec![
@@ -350,35 +425,28 @@ impl ElementImpl for StyxSrc {
 
 impl BaseSrcImpl for StyxSrc {
     fn start(&self) -> Result<(), gst::ErrorMessage> {
-        let settings = self.settings();
         let mut state = self.state();
-        *state = State::default();
-        if settings.service.is_some() {
-            return Ok(()); // the service has the camera; caps come from the template
+        let (device, caps) = (state.device.take(), state.caps.take());
+        *state = State {
+            device,
+            caps,
+            ..State::default()
+        };
+        if state.device.is_none() {
+            self.open_camera(&mut state)?;
         }
-        let device = source::find_camera(settings.camera.as_deref())
-            .map_err(|err| gst::error_msg!(gst::ResourceError::NotFound, ("{err}")))?;
-        gst::info!(CAT, imp = self, "camera {}", device.identity.display);
-        let caps = caps::device_caps(&device);
-        if caps.is_empty() {
-            return Err(gst::error_msg!(
-                gst::ResourceError::Settings,
-                (
-                    "camera {} has no formats GStreamer can use",
-                    device.identity.display
-                )
-            ));
-        }
-        gst::debug!(CAT, imp = self, "camera caps {caps}");
-        state.caps = Some(caps);
-        state.device = Some(device);
         Ok(())
     }
 
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
         let mut state = self.state();
         Self::stop_stream(&mut state);
-        *state = State::default();
+        let (device, caps) = (state.device.take(), state.caps.take());
+        *state = State {
+            device,
+            caps,
+            ..State::default()
+        };
         Ok(())
     }
 
@@ -483,7 +551,18 @@ impl PushSrcImpl for StyxSrc {
             let Some(stream) = state.stream.as_mut() else {
                 return Err(gst::FlowError::NotNegotiated);
             };
-            match stream.next(POLL) {
+            let outcome = match stream.next(POLL) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    gst::element_imp_error!(
+                        self,
+                        gst::StreamError::Failed,
+                        ("the camera's frames could not be prepared: {err}")
+                    );
+                    return Err(gst::FlowError::Error);
+                }
+            };
+            match outcome {
                 RecvOutcome::Data(frame) => {
                     state.last_frame = Some(Instant::now());
                     let Some(negotiated) = state.negotiated.clone() else {
@@ -516,8 +595,14 @@ impl PushSrcImpl for StyxSrc {
                         }
                         state = self.state();
                     }
-                    let buffer = self.make_buffer(&mut state, frame, negotiated.dmabuf)?;
-                    return Ok(CreateSuccess::NewBuffer(buffer));
+                    match self.make_buffer(&mut state, frame, negotiated.dmabuf) {
+                        Ok(buffer) => return Ok(CreateSuccess::NewBuffer(buffer)),
+                        Err(gst::FlowError::CustomError) => {
+                            drop(state);
+                            self.renegotiate_without_dmabuf()?;
+                        }
+                        Err(err) => return Err(err),
+                    }
                 }
                 RecvOutcome::Empty => {
                     let waited = state.last_frame.map(|t| t.elapsed()).unwrap_or_default();

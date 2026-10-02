@@ -11,7 +11,7 @@ use crate::caps::Negotiated;
 
 /// The camera named `selector` (`None` = the first one): its display name, part of it, or one
 /// of its identity keys, or a backend property such as a V4L2 node (`/dev/video0`). `virtual` (or
-/// `virtual:WIDTHxHEIGHT`) is Styx's synthetic test camera.
+/// `virtual:WIDTHxHEIGHT[:FOURCC]`) is Styx's synthetic test camera.
 pub fn find_camera(selector: Option<&str>) -> Result<ProbedDevice, String> {
     if let Some(spec) = selector.and_then(|s| s.strip_prefix("virtual")) {
         return virtual_camera(spec);
@@ -53,12 +53,20 @@ pub fn pick(devices: Vec<ProbedDevice>, selector: &str) -> Option<ProbedDevice> 
 
 fn virtual_camera(spec: &str) -> Result<ProbedDevice, String> {
     let mut config = VirtualSourceConfig::new().name("virtual").fps(30);
-    if let Some(size) = spec.strip_prefix(':') {
+    if let Some(rest) = spec.strip_prefix(':') {
+        let (size, format) = rest.split_once(':').unwrap_or((rest, ""));
         let (w, h) = size
             .split_once('x')
             .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
             .ok_or_else(|| format!("bad virtual camera size \"{size}\" (want WIDTHxHEIGHT)"))?;
         config = config.resolution(w, h);
+        if !format.is_empty() {
+            let bytes: [u8; 4] = format
+                .as_bytes()
+                .try_into()
+                .map_err(|_| format!("bad virtual camera format \"{format}\" (want a fourcc)"))?;
+            config = config.format(FourCc::new(bytes));
+        }
     } else if !spec.is_empty() {
         return Err(format!("unknown camera \"virtual{spec}\""));
     }
@@ -124,11 +132,16 @@ impl Stream {
         Ok((Self::Local(Box::new(frames)), description))
     }
 
-    /// The next frame, waiting up to `wait`.
-    pub fn next(&mut self, wait: Duration) -> RecvOutcome<FrameLease> {
+    /// The next frame, waiting up to `wait`; `Err` when the capture failed (and why).
+    pub fn next(&mut self, wait: Duration) -> Result<RecvOutcome<FrameLease>, String> {
         match self {
-            Self::Local(frames) => frames.next_frame(wait),
-            Self::Service(client) => client.recv(wait),
+            Self::Local(frames) => match frames.pipeline() {
+                Some(pipeline) => pipeline
+                    .next_blocking_result(wait)
+                    .map_err(|err| err.to_string()),
+                None => Ok(frames.next_frame(wait)),
+            },
+            Self::Service(client) => Ok(client.recv(wait)),
         }
     }
 

@@ -37,6 +37,7 @@ gst-video = { package = "gstreamer-video", version = "0.25", features = ["v1_24"
 gst-allocators = { package = "gstreamer-allocators", version = "0.25", features = ["v1_24"] }
 
 [dev-dependencies]
+libc = "0.2"
 gst-app = { package = "gstreamer-app", version = "0.25", features = ["v1_24"] }
 
 [lints.rust]

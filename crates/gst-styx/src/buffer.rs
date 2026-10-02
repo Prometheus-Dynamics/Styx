@@ -247,4 +247,60 @@ mod tests {
         let (_, backing) = frame_buffer(virtual_frame(), MemoryKind::PreferDmaBuf).unwrap();
         assert!(matches!(backing, Backing::Fallback(_)));
     }
+
+    /// A two-plane NV12 frame in two "dma-bufs" (memfds: GStreamer's dma-buf allocator only
+    /// maps them), as libcamera delivers frames.
+    fn fd_frame() -> FrameLease {
+        use std::io::Write;
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let (w, h) = (64usize, 48usize);
+        let mut planes = Vec::new();
+        for (fill, len) in [(1u8, w * h), (2u8, w * h / 2)] {
+            // SAFETY: memfd_create with a valid C string; the result is checked.
+            let raw = unsafe { libc::memfd_create(c"styx-test".as_ptr(), 0) };
+            assert!(raw >= 0);
+            // SAFETY: `raw` is a new descriptor this test owns.
+            let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+            std::fs::File::from(fd.try_clone().unwrap())
+                .write_all(&vec![fill; len])
+                .unwrap();
+            planes.push(FrameFdPlane { fd, offset: 0, len });
+        }
+        let format = MediaFormat::new(
+            FourCc::NV12,
+            Resolution::new(w as u32, h as u32).unwrap(),
+            ColorSpace::Bt709,
+        );
+        let layouts = [(w * h, w), (w * h / 2, w)]
+            .into_iter()
+            .map(|(len, stride)| PlaneLayout {
+                offset: 0,
+                len,
+                stride,
+            })
+            .collect();
+        FrameLease::from_dmabuf(FrameMeta::new(format, 0), layouts, planes).unwrap()
+    }
+
+    #[test]
+    fn dmabuf_frames_become_dmabuf_memory() {
+        gst::init().unwrap();
+        let (buffer, backing) = frame_buffer(fd_frame(), MemoryKind::DmaBuf).unwrap();
+        assert_eq!(backing, Backing::DmaBuf);
+        assert_eq!(buffer.n_memory(), 2);
+        for memory in buffer.iter_memories() {
+            assert!(
+                memory
+                    .downcast_memory_ref::<gst_allocators::DmaBufMemory>()
+                    .is_some()
+            );
+        }
+        let meta = buffer.meta::<gst_video::VideoMeta>().unwrap();
+        assert_eq!(meta.offset(), &[0, 64 * 48]);
+        assert_eq!(meta.stride(), &[64, 64]);
+        let map = buffer.map_readable().unwrap();
+        assert_eq!(map[0], 1);
+        assert_eq!(map[64 * 48], 2);
+        assert_eq!(map.len(), 64 * 48 * 3 / 2);
+    }
 }

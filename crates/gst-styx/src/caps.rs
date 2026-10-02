@@ -427,14 +427,27 @@ mod tests {
         let device = CaptureRequest::virtual_source(
             VirtualSourceConfig::new()
                 .name("virtual")
+                .format(FourCc::YUYV)
                 .resolution(320, 240)
                 .fps(30),
         )
         .into_device();
         let caps = device_caps(&device);
-        assert!(!caps.is_empty());
         let first = caps.structure(0).unwrap();
-        assert_eq!(first.get::<&str>("format").unwrap(), "RGB");
+        assert_eq!(first.get::<&str>("format").unwrap(), "YUY2");
+        let formats: Vec<_> = caps
+            .iter()
+            .filter_map(|s| s.get::<&str>("format").ok())
+            .collect();
+        assert!(
+            formats.contains(&"RGB") && formats.contains(&"GRAY8"),
+            "{formats:?}"
+        );
+        // Virtual frames are heap memory: no dma-buf variants.
+        assert!(
+            caps.iter_with_features()
+                .all(|(_, f)| !f.contains(gst_allocators::CAPS_FEATURE_MEMORY_DMABUF))
+        );
         assert_eq!(first.get::<i32>("width").unwrap(), 320);
         assert!(template_caps().can_intersect(&caps));
     }
