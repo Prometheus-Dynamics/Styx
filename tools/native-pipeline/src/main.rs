@@ -19,6 +19,7 @@
 //!   --record BASE        (soft) record the raw frames and their sensor values
 //!   --algo-record PATH   record the algorithms' inputs and outputs (styx-algo replay)
 //!   --threads N          (soft, replay) software ISP row bands (default 1)
+//!   --output KIND        (soft, replay) rgb (default), nv12 or luma, each optionally -half
 //!   --heap NAME          (soft) capture into buffers from this dma-heap (e.g. linux,cma:
 //!                        cached, synced per frame) instead of the driver's MMAP buffers
 //!   --start-exposure US:GAIN  (pisp) start AE from this exposure and gain instead of the
@@ -35,6 +36,7 @@
 mod device_run;
 #[cfg(feature = "device")]
 mod latch;
+mod output;
 #[cfg(feature = "device")]
 mod regcheck;
 mod replay_run;
@@ -71,6 +73,7 @@ pub struct Args {
     pub then: Vec<f64>,
     pub power_settle: Option<Duration>,
     pub keep_open: bool,
+    pub output: (output::Kind, styx_softisp::Scale),
 }
 
 fn parse() -> Result<Args, String> {
@@ -97,6 +100,7 @@ fn parse() -> Result<Args, String> {
         then: Vec::new(),
         power_settle: None,
         keep_open: false,
+        output: (output::Kind::Rgb, styx_softisp::Scale::Full),
     };
     while let Some(x) = it.next() {
         let mut val = || it.next().ok_or(format!("{x} needs a value"));
@@ -112,6 +116,7 @@ fn parse() -> Result<Args, String> {
             "--recording" => a.recording = Some(val()?.into()),
             "--threads" => a.threads = num(val()?)? as usize,
             "--quiet" => a.quiet = true,
+            "--output" => a.output = output::parse(&val()?)?,
             "--heap" => a.heap = Some(val()?),
             "--cold" => a.cold = true,
             "--keep-open" => a.keep_open = true,

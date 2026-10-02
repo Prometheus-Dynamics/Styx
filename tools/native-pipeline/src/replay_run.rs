@@ -3,11 +3,9 @@
 
 use std::time::{Duration, Instant};
 
-use styx_pipeline::measure::{grey_ratios, write_ppm};
 use styx_pipeline::rawrec::RawRecording;
 use styx_pipeline::replay::VirtualSensor;
 use styx_pipeline::{SensorInfo, SoftLoop};
-use styx_softisp::{OutputBuffers, Scale};
 
 use crate::report::{FrameLog, Summary, write_csv};
 use crate::{Args, controls_for, tuning};
@@ -51,7 +49,7 @@ pub fn run(a: &Args) -> Result<(), String> {
         sensor.request(&r);
     }
     let (w, ht) = (format.width as usize, format.height as usize);
-    let mut rgb = vec![0u8; w * ht * 3];
+    let mut output = crate::output::Output::new(a.output.0, a.output.1, w, ht);
     let mut frames = Vec::new();
     let mut base_values = None;
     let t0 = Instant::now();
@@ -69,16 +67,7 @@ pub fn run(a: &Args) -> Result<(), String> {
         let raw = raw.to_vec();
         let t = Instant::now();
         let out = soft
-            .process(
-                &raw,
-                stride,
-                &values,
-                Scale::Full,
-                OutputBuffers::Rgb24 {
-                    data: &mut rgb,
-                    stride: w * 3,
-                },
-            )
+            .process(&raw, stride, &values, output.scale, output.buffers())
             .map_err(|e| e.to_string())?;
         let processing = t.elapsed();
         if let Some(r) = &out.step.sensor {
@@ -90,7 +79,8 @@ pub fn run(a: &Args) -> Result<(), String> {
         let mut log = FrameLog::new(&values, &out.step, frame_period * i as u32);
         log.processing = processing;
         log.request_lands = out.step.sensor.map(|r| r.frame);
-        log.out_y = luma_of_rgb(&rgb, w, ht);
+        log.out_y = output.level();
+        log.timing = Some(out.timing);
         if !a.quiet {
             println!("{}", log.line());
         }
@@ -100,10 +90,10 @@ pub fn run(a: &Args) -> Result<(), String> {
         .stop_recording()
         .map_err(|e| e.to_string())?;
     let wall = t0.elapsed();
-    let ppm = a.out.join("replay-soft-rgb.ppm");
-    write_ppm(&ppm, &rgb, w, ht, w * 3).map_err(|e| e.to_string())?;
+    let (saved, ratios) = output
+        .save(&a.out, "replay-soft")
+        .map_err(|e| e.to_string())?;
     write_csv(&a.out.join("replay-frames.csv"), &frames).map_err(|e| e.to_string())?;
-    let (rg, bg) = grey_ratios(&rgb, w, ht, w * 3, 16, 240);
     let summary = Summary {
         name: "replay (software ISP, virtual sensor)",
         frames: &frames,
@@ -111,17 +101,8 @@ pub fn run(a: &Args) -> Result<(), String> {
         cpu: frames.iter().map(|f| f.processing).sum(),
         wall,
         peak_rss: 0,
-        extra: vec![
-            format!("output grey-world ratios R/G {rg:.3} B/G {bg:.3} (1.000 is neutral)"),
-            format!("saved {}", ppm.display()),
-        ],
+        extra: crate::output::summary_lines(&saved, ratios),
     };
     print!("{}", summary.render(a));
     Ok(())
-}
-
-/// Mean BT.601 luma of an RGB24 image, 0..255.
-pub fn luma_of_rgb(rgb: &[u8], w: usize, h: usize) -> f64 {
-    let m = styx_pipeline::measure::rgb_means(rgb, w, h, w * 3);
-    0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]
 }

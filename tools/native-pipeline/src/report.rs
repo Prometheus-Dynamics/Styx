@@ -31,6 +31,8 @@ pub struct FrameLog {
     /// Processing time on the host for this frame.
     pub processing: Duration,
     pub request_lands: Option<u64>,
+    /// Where the processing time went (software ISP loop only).
+    pub timing: Option<styx_pipeline::SoftTiming>,
 }
 
 impl FrameLog {
@@ -165,6 +167,27 @@ impl Summary<'_> {
             self.wall.as_secs_f64(),
             self.peak_rss as f64 / (1024.0 * 1024.0)
         );
+        let timed: Vec<_> = f.iter().filter_map(|x| x.timing).collect();
+        if !timed.is_empty() {
+            let med = |g: &dyn Fn(&styx_pipeline::SoftTiming) -> Duration| {
+                percentile(timed.iter().map(|t| ms(g(t))).collect(), 0.5)
+            };
+            let mean = |g: &dyn Fn(&styx_pipeline::SoftTiming) -> Duration| {
+                timed.iter().map(|t| ms(g(t))).sum::<f64>() / timed.len() as f64
+            };
+            let _ = writeln!(
+                out,
+                "loop per frame, median / mean ms: settings {:.3} / {:.3}, ISP {:.3} / {:.3}, statistics conversion {:.3} / {:.3}, algorithms {:.3} / {:.3}",
+                med(&|t| t.settings),
+                mean(&|t| t.settings),
+                med(&|t| t.isp),
+                mean(&|t| t.isp),
+                med(&|t| t.stats),
+                mean(&|t| t.stats),
+                med(&|t| t.algorithms),
+                mean(&|t| t.algorithms),
+            );
+        }
         let verified = f.iter().filter(|x| x.verified).count();
         let _ = writeln!(
             out,

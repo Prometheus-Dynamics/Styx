@@ -2,6 +2,8 @@
 //! statistics in the same pass, the controller turns them into a sensor request and ISP
 //! settings, and those settings process the next frame.
 
+use std::time::Instant;
+
 use styx_algo::{Params, Statistics, Tuning};
 use styx_softisp::{
     Demosaic, IspParams, OutputBuffers, RawFormat, RawPacking, Scale, SoftIsp, StatsConfig,
@@ -23,6 +25,21 @@ pub struct SoftOutput {
     pub applied: IspSettings,
     /// The frame's statistics.
     pub stats: Statistics,
+    /// Where the frame's processing time went.
+    pub timing: SoftTiming,
+}
+
+/// Time spent on one frame by each part of [`SoftLoop::process`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SoftTiming {
+    /// Preparing the ISP for new settings (lens shading tables, tone curve).
+    pub settings: std::time::Duration,
+    /// The software ISP: the picture and its statistics.
+    pub isp: std::time::Duration,
+    /// Converting the statistics for the algorithms.
+    pub stats: std::time::Duration,
+    /// The algorithms (AE, AWB, lens shading, colour, tone).
+    pub algorithms: std::time::Duration,
 }
 
 /// The software ISP loop. See the [module documentation](self).
@@ -138,24 +155,35 @@ impl SoftLoop {
         scale: Scale,
         out: OutputBuffers<'_>,
     ) -> Result<SoftOutput> {
+        let t0 = Instant::now();
         let settings = self.settings_for(sensor);
         if self.applied.as_ref() != Some(&settings) {
             self.isp
                 .set_params(settings.softisp(self.info.bits, &self.base))?;
             self.applied = Some(settings.clone());
         }
+        let t1 = Instant::now();
         let raw_stats = self.isp.process(raw, stride, scale, out)?;
+        let t2 = Instant::now();
         let stats = raw_stats
             .map(|s| {
                 stats::from_softisp(&s, self.info.black_level, settings.lens_shading.is_some())
             })
             .unwrap_or_default();
+        let t3 = Instant::now();
         let step = self.controller.process(&stats, sensor)?;
         self.latest = Some((step.params.clone(), step.frame));
+        let t4 = Instant::now();
         Ok(SoftOutput {
             step,
             applied: settings,
             stats,
+            timing: SoftTiming {
+                settings: t1 - t0,
+                isp: t2 - t1,
+                stats: t3 - t2,
+                algorithms: t4 - t3,
+            },
         })
     }
 
