@@ -144,6 +144,11 @@ limits at that fps.
   front end is unused). The bridge therefore does not fail `STREAMON` by default and reports
   the failed start in `STYX_CID_STREAM_STATE` = 4; userspace stops the receiver
   (`PROTOCOL.md`, module parameter `report_start_errors`).
+- The sensor is stopped (`s_stream(0)`, the bridge's stop request) when the *last* streaming
+  node stops: with embedded data that is the embedded node, so the bridge must still be served
+  until it has stopped too.
+- After a process is killed mid-stream, the next owner's first stream gets no frames although
+  the start succeeds; the stream after that works. The supervisor's stall restart recovers it.
 - Unbinding `rp1-cfe` after it bound to the bridge leaks a reference to the bridge's device
   tree node (no `v4l2_async_nf_cleanup`): removing the overlay logs "OF: ERROR: memory leak".
 

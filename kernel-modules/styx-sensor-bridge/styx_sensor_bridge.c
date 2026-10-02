@@ -21,6 +21,7 @@
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
+#include <linux/sched.h>
 #include <linux/spinlock.h>
 
 #include <media/v4l2-async.h>
@@ -31,6 +32,9 @@
 #include <media/v4l2-subdev.h>
 
 #include "styx_sensor_bridge.h"
+
+/* How long a stop waits for an acknowledgement when the stopping process exits. */
+#define STYX_EXITING_WAIT_MS 50
 
 /*
  * rp1-cfe (Raspberry Pi 6.12) oopses when the sensor's s_stream(1) fails while
@@ -298,7 +302,7 @@ static int styx_bridge_request(struct styx_bridge *b, u32 action,
 	struct video_device *vdev = b->sd.devnode;
 	unsigned long flags;
 	struct v4l2_event ev;
-	u32 timeout_ms, seq;
+	u32 timeout_ms, wait_ms, seq;
 	long left;
 	int ret;
 
@@ -310,6 +314,16 @@ static int styx_bridge_request(struct styx_bridge *b, u32 action,
 	}
 
 	timeout_ms = v4l2_ctrl_g_ctrl(b->timeout);
+	wait_ms = timeout_ms;
+	/*
+	 * A process killed while streaming stops the receiver from its exit path
+	 * (releasing its mapped buffers), before its descriptors close: its own
+	 * sensor driver, which would acknowledge, is already gone. Do not hold
+	 * the receiver for the whole timeout; another process serving the bridge
+	 * still has a short window to answer.
+	 */
+	if (current->flags & PF_EXITING)
+		wait_ms = min_t(u32, timeout_ms, STYX_EXITING_WAIT_MS);
 
 	spin_lock_irqsave(&b->ack_lock, flags);
 	seq = ++b->seq;
@@ -326,7 +340,7 @@ static int styx_bridge_request(struct styx_bridge *b, u32 action,
 	v4l2_event_queue(vdev, &ev);
 
 	left = wait_for_completion_killable_timeout(&b->ack_done,
-						    msecs_to_jiffies(timeout_ms));
+						    msecs_to_jiffies(wait_ms));
 
 	spin_lock_irqsave(&b->ack_lock, flags);
 	if (b->waiting) {
@@ -417,8 +431,19 @@ static int styx_bridge_s_stream(struct v4l2_subdev *sd, int enable)
 	mutex_lock(&b->stream_lock);
 	ret = enable ? styx_bridge_start(b) : styx_bridge_stop(b);
 	mutex_unlock(&b->stream_lock);
-	if (!enable)
-		styx_bridge_orphan_power_off(b);
+	if (enable)
+		return ret;
+	if (ret && (current->flags & PF_EXITING) && v4l2_ctrl_g_ctrl(b->power)) {
+		/*
+		 * The sensor driver died with the sensor streaming: power it off
+		 * before the receiver closes its side, or the receiver does not
+		 * see the next start (measured on rp1-cfe).
+		 */
+		dev_info(b->dev, "sensor driver exited while streaming: power off\n");
+		if (v4l2_ctrl_s_ctrl(b->power, 0))
+			dev_warn(b->dev, "power off failed\n");
+	}
+	styx_bridge_orphan_power_off(b);
 	return ret;
 }
 

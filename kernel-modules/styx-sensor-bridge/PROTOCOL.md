@@ -176,6 +176,13 @@ After a failed start userspace should put the sensor back in standby (a late ack
 have started it). With `report_start_errors=1` the receiver has already closed its side; by
 default userspace stops it.
 
+A stop requested by an exiting process (killed while streaming: the receiver stops from its
+exit path before its descriptors close) waits only 50 ms, then the bridge switches the sensor
+off before the receiver closes its side.
+
+The bridge registers its subdevice as its own module's, so the module cannot be unloaded while
+a receiver is bound to it or its node is open (`rmmod`: "in use").
+
 When the last subscriber goes away (the userspace driver exited or died) and the stream is
 idle, or a stream ends with no subscriber left, the bridge switches its supplies and clock off.
 
