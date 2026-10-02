@@ -17,8 +17,12 @@
 //! * De-saturation happens only while at least half the image is saturated, without damping,
 //!   and continues from the reduced sensor exposure (the original re-derives it from the
 //!   digitally compensated total, which overshoots with multi-frame delays).
-//! * Locked: the frame was produced with the exposure AE last asked for (nothing in flight)
-//!   and meters within 5% of the target, for [`LOCK_FRAMES`] frames in a row.
+//! * Locked: no change larger than the lock tolerance (5%) is in flight and the frame meters
+//!   within 5% of the target, for [`LOCK_FRAMES`] frames in a row. Once locked, and on the
+//!   frames right after unsettled ones ([`CameraConfig::unsettled_frames`], left out
+//!   altogether), AE leaves a frame within that tolerance alone (no hunting).
+//! * After an undamped change lands, what is left (the model's error: clipped zones, a black
+//!   level offset) is corrected at once too.
 //! * A warm start ([`crate::WarmStart`], e.g. the last session's values) replaces the tuning's
 //!   start-up exposure, re-split for the new mode's limits.
 //!
@@ -66,6 +70,8 @@ pub struct Agc {
     /// The last request.
     last_request: Option<SensorRequest>,
     /// Frame on which the latest change of the request lands.
+    lands_at: u64,
+    /// Frame on which the latest change larger than the lock tolerance lands.
     settles_at: u64,
     /// The latest change was undamped; its first frame may correct what is left.
     full_step_pending: bool,
@@ -95,6 +101,7 @@ impl Agc {
             frozen: None,
             last: None,
             last_request: None,
+            lands_at: 0,
             settles_at: 0,
             full_step_pending: false,
             lock_count: 0,
@@ -334,6 +341,7 @@ impl Algorithm for Agc {
         self.frozen = None;
         self.last = None;
         self.last_request = None;
+        self.lands_at = 0;
         self.settles_at = 0;
         self.full_step_pending = false;
         self.lock_count = 0;
@@ -420,9 +428,8 @@ impl Algorithm for Agc {
                 meta.exposure.as_secs_f64() * meta.analogue_gain / (t.as_secs_f64() * g).max(1e-12);
             (r - 1.0).abs() < 0.02
         });
-        let correcting =
-            self.full_step_pending && meta.frame >= self.settles_at && produced_by_last;
-        if meta.frame >= self.settles_at {
+        let correcting = self.full_step_pending && meta.frame >= self.lands_at && produced_by_last;
+        if meta.frame >= self.lands_at {
             self.full_step_pending = false;
         }
         let (mut speed, mut stable) = (self.tuning.speed, self.tuning.stable_region);
@@ -436,7 +443,7 @@ impl Algorithm for Agc {
         }
         // While a change is in flight, frames produced before it repeat what asked for it:
         // only a clearly different answer (the scene changed) replaces it.
-        if meta.frame < self.settles_at {
+        if meta.frame < self.lands_at {
             stable = stable.max(self.tuning.full_step);
         }
         // Frames whose levels have not settled say nothing about the scene; for as many frames
@@ -485,9 +492,19 @@ impl Algorithm for Agc {
             {
                 r
             }
-            _ => {
+            last => {
                 let frame = self.config.delays.earliest_landing(meta.frame);
-                self.settles_at = frame;
+                self.lands_at = frame;
+                // A change within the lock tolerance leaves a frame on target either way.
+                let total = |e: Duration, g: f64| e.as_secs_f64() * g;
+                let significant = last.is_none_or(|r| {
+                    let before = total(r.exposure, r.analogue_gain);
+                    let now = total(exposure, split.analogue_gain);
+                    (now / before.max(1e-12) - 1.0).abs() > ON_TARGET
+                });
+                if significant {
+                    self.settles_at = frame;
+                }
                 self.full_step_pending = speed >= 1.0 && !fixed_both;
                 SensorRequest {
                     frame,
