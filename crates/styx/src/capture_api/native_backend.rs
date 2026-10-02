@@ -431,14 +431,14 @@ mod tests {
         }
         assert!(!sw.contains(Interval::from_fps(121).unwrap()));
         assert!(!sw.contains(Interval::from_fps(2).unwrap()));
-        assert!((mode.intervals[0].fps() - 60.313).abs() < 0.01);
-        assert!((mode.intervals[1].fps() - 120.758).abs() < 0.01);
+        assert!((mode.intervals[0].fps() - 60.280).abs() < 0.01);
+        assert!((mode.intervals[1].fps() - 120.626).abs() < 0.01);
         assert_eq!(
             (
                 mode.intervals[1].numerator.get(),
                 mode.intervals[1].denominator.get()
             ),
-            (8281, 1_000_000)
+            (82901, 10_000_000)
         );
     }
 
@@ -473,6 +473,6 @@ mod tests {
         // Latency first: the fastest rate the mode has.
         let plan =
             crate::planner::plan_frames(&device, &FrameRequirements::formats([pbaa])).unwrap();
-        assert!((plan.interval.unwrap().fps() - 120.758).abs() < 0.01);
+        assert!((plan.interval.unwrap().fps() - 120.626).abs() < 0.01);
     }
 }

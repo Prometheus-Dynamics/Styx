@@ -155,8 +155,8 @@ mod tests {
         );
         assert_eq!(c.delays.earliest_landing(10), 14);
         assert_eq!(c.analogue_gain_limits, (1.0, 15.9375));
-        // 120.76 fps at the shortest frame.
-        assert!((c.frame_duration_limits.0.as_secs_f64() * 1e3 - 8.281).abs() < 0.01);
+        // 120.63 fps at the shortest frame (911 lines of 9.1 us).
+        assert!((c.frame_duration_limits.0.as_secs_f64() * 1e3 - 8.290).abs() < 0.001);
         c.validate().unwrap();
         let at30 = s.with_fps(30.0, 30.0).unwrap();
         let (lo, hi) = at30.camera.frame_duration_limits;

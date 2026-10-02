@@ -201,7 +201,7 @@ fn the_handle_converts_rates_and_reports_ranges() {
     let hook: BlankingHook = Arc::new(move |_, v| seen.store(v, Ordering::Relaxed));
     let h = ControlHandle::new(Arc::new(Mutex::new(c)), Some(hook));
     h.set_frame_rate(30.0).unwrap();
-    assert_eq!(vblank.load(Ordering::Relaxed), 3663 - 800);
+    assert_eq!(vblank.load(Ordering::Relaxed), 3662 - 800);
     assert!(h.set_frame_rate(0.0).is_err());
     let (lo, hi) = h.fps_range().unwrap();
     assert!(lo < 2.2 && hi > 120.0);

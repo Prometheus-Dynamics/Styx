@@ -298,6 +298,7 @@ impl SensorDescription {
                 digital_gain: ctl(KernelControl::DigitalGain).map(|d| linear_gain(d, d.default)),
                 delays: Delays::default(),
                 group_hold: None,
+                frame_length_extra_lines: 0,
                 hflip: None,
                 vflip: None,
                 test_pattern: None,

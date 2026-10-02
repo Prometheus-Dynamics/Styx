@@ -153,6 +153,10 @@ registers = [
 [controls]
 # Frame length (VTS, "lines per frame").
 frame_length = { address = 0x380e, bytes = 2 }
+# A frame lasts one line more than VTS: measured with the bridge (native-pipeline, frame start
+# timestamps over 240 frames) at VTS 916 / 1832 / 3663: 119.836 / 59.951 / 29.992 fps, i.e.
+# 917 / 1833 / 3664 lines of 9.1 us (the model without it was 0.109 / 0.055 / 0.027% fast).
+frame_length_extra_lines = 1
 # HTS: the driver writes (width + hblank) / 2.
 line_length = { register = { address = 0x380c, bytes = 2 }, pixels_per_unit = 2 }
 
@@ -201,16 +205,23 @@ register = { address = 0x5e00 }
 patterns = { off = 0x00, colour_bars = 0x80 }
 
 # The driver sets bit 2 of TIMING_FORMAT_2 (hflip) and TIMING_FORMAT_1 (vflip), read-modify-
-# write, both on by default, and does not change the media bus code when flipping.
+# write, both on by default, and does not change the media bus code when flipping. libcamera
+# turns both off (the device tree says rotation 0), and that is the order the code names:
+# BGGR. Measured on the device (native-pipeline, lit warm scene, 2x2 cell means above black
+# 0.133 / 0.111 / 0.107 / 0.038 with both flips on): with the flips on the order is RGGB and
+# the picture is turned by 180 degrees against libcamera's. So both are off by default here,
+# and turning them on changes the order.
 [controls.hflip]
 address = 0x3821
 mask = 0x04
-default = true
+default = false
+changes_bayer_order = true
 
 [controls.vflip]
 address = 0x3820
 mask = 0x04
-default = true
+default = false
+changes_bayer_order = true
 
 # Embedded data line (0x4307 bit 0 in init): one line, data type 0x12, sent as CSI-2 RAW10
 # words each carrying one byte. Not in the driver or the datasheet; found on the device

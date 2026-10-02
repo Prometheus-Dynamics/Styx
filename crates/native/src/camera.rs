@@ -723,7 +723,7 @@ mod tests {
                 .contains("outside")
         );
         assert!(select_mode(&modes, &StreamSettings::new(1920, 1080), &offered).is_err());
-        let exact = StreamSettings::new(1280, 800).interval(Fraction::new(8281, 1_000_000));
+        let exact = StreamSettings::new(1280, 800).interval(Fraction::new(82901, 10_000_000));
         assert!(select_mode(&modes, &exact, &offered).is_ok());
         assert_eq!(CameraOptions::default().buffers, 4);
     }
