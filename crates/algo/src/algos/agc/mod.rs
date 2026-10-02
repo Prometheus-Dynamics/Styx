@@ -7,17 +7,30 @@
 //!   the sensor's control delays, instead of relying on a separate delayed-controls helper.
 //! * The frame duration is chosen here (exposure + margin, within the limits).
 //! * EV is in stops; zone weights come from the tuning or built-in shapes (see `metering`).
-//! * Undamped changes (start-up, fixed values, de-saturation) are held until the frame they
-//!   land on, so frames still in flight do not re-trigger them.
+//! * Model-based steps: the target is a total exposure computed from what actually produced
+//!   each frame, and the control delays say when a change lands, so a change larger than
+//!   `full_step` goes straight to the target (undamped) at any time, not only at start-up.
+//!   Damping (`speed`) is left for small changes, where it keeps noise out of the exposure.
+//! * Every frame's statistics are used: a frame produced before a change lands meters the
+//!   scene against its own exposure and so asks for the same total again (nothing new is
+//!   sent); a different answer (the scene changed) replaces the change in flight.
 //! * De-saturation happens only while at least half the image is saturated, without damping,
 //!   and continues from the reduced sensor exposure (the original re-derives it from the
 //!   digitally compensated total, which overshoots with multi-frame delays).
-//! * Locked also requires the current frame to be within 5% of the target.
+//! * Locked: no change larger than the lock tolerance (5%) is in flight and the frame meters
+//!   within 5% of the target, for [`LOCK_FRAMES`] frames in a row. Once locked, and on the
+//!   frames right after unsettled ones ([`CameraConfig::unsettled_frames`], left out
+//!   altogether), AE leaves a frame within that tolerance alone (no hunting).
+//! * After an undamped change lands, what is left (the model's error: clipped zones, a black
+//!   level offset) is corrected at once too.
+//! * A warm start ([`crate::WarmStart`], e.g. the last session's values) replaces the tuning's
+//!   start-up exposure, re-split for the new mode's limits.
 //!
 //! Per frame: meter the scene (weighted zone luma, iterated because saturated zones do not
 //! scale), apply the histogram constraints, compute the target total exposure relative to what
-//! actually produced this frame, damp it, split it into exposure time / analogue gain / digital
-//! gain along the exposure profile, and snap the exposure time to the flicker period.
+//! actually produced this frame, damp small changes, split it into exposure time / analogue
+//! gain / digital gain along the exposure profile, and snap the exposure time to the flicker
+//! period.
 
 mod metering;
 pub mod tuning;
@@ -26,17 +39,20 @@ use std::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::error::Result;
-use crate::frame::FrameMetadata;
+use crate::frame::{Controls, FrameMetadata};
 use crate::params::{AeStatus, Params, SensorRequest};
 use crate::pipeline::Algorithm;
 use crate::stats::Statistics;
+use crate::warm::WarmStart;
 
 use tuning::{AgcTuning, Bound, ExposureProfile};
 
 /// Luma targets are capped here: histograms cannot be read near saturation.
 const EV_GAIN_Y_TARGET_LIMIT: f64 = 0.9;
-/// Frames of consistent exposure needed to report a lock.
-const MAX_LOCK_COUNT: u32 = 5;
+/// Frames in a row that must be settled (nothing in flight, on target) to report a lock.
+pub const LOCK_FRAMES: u32 = 2;
+/// A frame is on target when the gain it still needs is within this of 1.
+const ON_TARGET: f64 = 0.05;
 
 /// The AGC algorithm. See the [module documentation](self).
 #[derive(Debug, Clone)]
@@ -45,15 +61,23 @@ pub struct Agc {
     config: CameraConfig,
     weights: Option<(String, u32, u32, bool, Vec<f64>)>,
     frame_count: u32,
-    /// Damped total exposure (seconds × gain), with and without digital gain.
+    /// Damped total exposure (seconds × gain), with digital gain.
     filtered: f64,
     /// Values AE was frozen at when switched off.
     frozen: Option<(Duration, f64)>,
+    /// The last request's exposure and analogue gain.
     last: Option<(Duration, f64)>,
-    last_target: f64,
+    /// The last request.
+    last_request: Option<SensorRequest>,
+    /// Frame on which the latest change of the request lands.
+    lands_at: u64,
+    /// Frame on which the latest change larger than the lock tolerance lands.
+    settles_at: u64,
+    /// The latest change was undamped; its first frame may correct what is left.
+    full_step_pending: bool,
     lock_count: u32,
-    /// An undamped change lands on this frame; hold until then.
-    hold_until: Option<u64>,
+    /// Start-up exposure and gain from a warm start.
+    warm: Option<(f64, f64)>,
 }
 
 /// Exposure split into its parts.
@@ -76,9 +100,12 @@ impl Agc {
             filtered: 0.0,
             frozen: None,
             last: None,
-            last_target: 0.0,
+            last_request: None,
+            lands_at: 0,
+            settles_at: 0,
+            full_step_pending: false,
             lock_count: 0,
-            hold_until: None,
+            warm: None,
         })
     }
 
@@ -113,8 +140,8 @@ impl Agc {
         g.clamp(lo, hi * self.tuning.max_digital_gain)
     }
 
-    fn profile(&self, meta: &FrameMetadata) -> &ExposureProfile {
-        meta.controls
+    fn profile(&self, controls: &Controls) -> &ExposureProfile {
+        controls
             .exposure_mode
             .as_ref()
             .and_then(|n| self.tuning.exposure_modes.get(n))
@@ -221,10 +248,12 @@ impl Agc {
         total_no_dg: f64,
         total: f64,
         fixed: (Option<f64>, Option<f64>),
-        meta: &FrameMetadata,
+        meta: Option<&FrameMetadata>,
     ) -> Split {
-        let profile = self.profile(meta);
-        let stage_t = |i: usize| self.limit_exposure(profile.exposure_us[i] * 1e-6, Some(meta));
+        let defaults = Controls::default();
+        let controls = meta.map_or(&defaults, |m| &m.controls);
+        let profile = self.profile(controls);
+        let stage_t = |i: usize| self.limit_exposure(profile.exposure_us[i] * 1e-6, meta);
         let mut t = fixed.0.unwrap_or_else(|| stage_t(0));
         let mut g = fixed.1.unwrap_or_else(|| self.limit_gain(profile.gain[0]));
         if t * g < total_no_dg {
@@ -248,7 +277,7 @@ impl Agc {
         }
         if fixed.0.is_none()
             && fixed.1.is_none()
-            && let Some(period) = meta.controls.flicker.period()
+            && let Some(period) = controls.flicker.period()
         {
             let period = period.as_secs_f64();
             let n = (t / period).floor();
@@ -268,27 +297,35 @@ impl Agc {
         }
     }
 
-    fn update_lock(&mut self, meta: &FrameMetadata, target: f64) -> bool {
-        const ERR: f64 = 0.10;
-        const RESET: f64 = 1.5;
-        let (t, g) = (meta.exposure.as_secs_f64(), meta.analogue_gain);
-        let (lt, lg) = self
-            .last
-            .map(|(t, g)| (t.as_secs_f64(), g))
-            .unwrap_or((t, g));
-        let (et, eg, ex) = (lt * ERR + 200e-6, lg * ERR, self.last_target * ERR);
-        let within = |m: f64| {
-            (t - lt).abs() < m * et
-                && (g - lg).abs() < m * eg
-                && (target - self.last_target).abs() < m * ex
-        };
-        if within(1.0) {
-            self.lock_count = (self.lock_count + 1).min(MAX_LOCK_COUNT);
-        } else if !within(RESET) {
-            self.lock_count = 0;
+    /// The start-up exposure and analogue gain: the warm start's, else the tuning's.
+    fn start_values(&self) -> (f64, f64) {
+        if let Some(w) = self.warm {
+            return w;
         }
-        self.last_target = target;
-        self.lock_count == MAX_LOCK_COUNT
+        let exposure = self.limit_exposure(self.tuning.default_exposure_us * 1e-6, None);
+        let gain = self
+            .limit_gain(self.tuning.default_analogue_gain)
+            .min(self.config.analogue_gain_limits.1);
+        (exposure, gain)
+    }
+
+    /// The start-up request (frame 0): what later requests are compared with.
+    fn set_start_request(&mut self) {
+        let (exposure, gain) = self.start_values();
+        let request = SensorRequest {
+            frame: 0,
+            exposure: Duration::from_secs_f64(exposure),
+            analogue_gain: gain,
+            frame_duration: self.frame_duration_for(exposure, None),
+        };
+        self.last = Some((request.exposure, gain));
+        self.last_request = Some(request);
+    }
+
+    fn frame_duration_for(&self, exposure: f64, meta: Option<&FrameMetadata>) -> Duration {
+        let (fd_lo, fd_hi) = self.frame_duration_limits(meta);
+        let fd = (exposure + self.config.exposure_margin.as_secs_f64()).clamp(fd_lo, fd_hi);
+        Duration::from_secs_f64(fd)
     }
 }
 
@@ -303,64 +340,67 @@ impl Algorithm for Agc {
         self.frame_count = 0;
         self.frozen = None;
         self.last = None;
-        self.last_target = 0.0;
+        self.last_request = None;
+        self.lands_at = 0;
+        self.settles_at = 0;
+        self.full_step_pending = false;
         self.lock_count = 0;
-        self.hold_until = None;
-        let t = self.limit_exposure(self.tuning.default_exposure_us * 1e-6, None);
-        self.filtered = t * self.limit_gain(self.tuning.default_analogue_gain);
+        self.warm = None;
+        let (t, g) = self.start_values();
+        self.filtered = t * g;
+        self.set_start_request();
         Ok(())
     }
 
+    fn warm_start(&mut self, warm: &WarmStart) {
+        // The same scene through this mode: scale by the modes' sensitivities, then split along
+        // the profile within this mode's limits, as the first frame's processing will (a
+        // same-mode restart gets the split it ended with).
+        let sensitivity = warm.sensitivity / self.config.sensitivity;
+        let total = warm.total_exposure * sensitivity;
+        if !(total.is_finite() && total > 0.0) {
+            return;
+        }
+        let s = self.divide(total, total, (None, None), None);
+        self.warm = Some((s.exposure, s.analogue_gain));
+        self.filtered = total;
+        self.set_start_request();
+    }
+
     fn initial(&self, params: &mut Params) {
-        let exposure = self.limit_exposure(self.tuning.default_exposure_us * 1e-6, None);
-        let gain = self
-            .limit_gain(self.tuning.default_analogue_gain)
-            .min(self.config.analogue_gain_limits.1);
-        let (fd_lo, fd_hi) = self.frame_duration_limits(None);
-        let fd = (exposure + self.config.exposure_margin.as_secs_f64()).clamp(fd_lo, fd_hi);
-        params.sensor = Some(SensorRequest {
-            frame: 0,
-            exposure: Duration::from_secs_f64(exposure),
-            analogue_gain: gain,
-            frame_duration: Duration::from_secs_f64(fd),
-        });
-        params.digital_gain = 1.0;
+        let (exposure, gain) = self.start_values();
+        params.sensor = self.last_request;
+        params.digital_gain =
+            (self.filtered / (exposure * gain)).clamp(1.0, self.tuning.max_digital_gain);
+        params.ae.total_exposure = self.filtered;
+        params.ae.target_exposure = self.filtered;
     }
 
     fn process(&mut self, stats: &Statistics, meta: &FrameMetadata, params: &mut Params) {
         self.frame_count = self.frame_count.saturating_add(1);
         let fixed = self.fixed(meta);
+        let fixed_both = fixed.0.is_some() && fixed.1.is_some();
         let (gain, target_y, measured_y) = self.compute_gain(stats, meta, params);
-        let on_target = (gain - 1.0).abs() < 0.05;
+        let on_target = (gain - 1.0).abs() < ON_TARGET;
 
-        // An undamped change is still on its way: this frame says nothing new about it, so
-        // hold the request until the frame it lands on (the frame-exact delays tell which).
-        if self.hold_until.is_some_and(|f| meta.frame < f) {
-            let target = self.last_target;
-            params.ae.measured_y = measured_y;
-            params.ae.locked = self.update_lock(meta, target) && on_target;
-            return;
-        }
-        self.hold_until = None;
-
+        // Target total exposure, from what produced this frame: a frame exposed before a
+        // change landed gives the same target as the frame that asked for it.
         let current =
             meta.exposure.as_secs_f64() * meta.analogue_gain * meta.digital_gain.max(1e-9);
-        // Target total exposure.
-        let target = match fixed {
-            (Some(t), Some(g)) => t * g,
-            _ => {
-                let profile = self.profile(meta);
-                let max_t = fixed.0.unwrap_or_else(|| {
-                    self.limit_exposure(
-                        profile.exposure_us[profile.exposure_us.len() - 1] * 1e-6,
-                        Some(meta),
-                    )
-                });
-                let max_g = fixed
-                    .1
-                    .unwrap_or_else(|| self.limit_gain(profile.gain[profile.gain.len() - 1]));
-                (current * gain).min(max_t * max_g)
-            }
+        let target = if fixed_both {
+            fixed.0.unwrap_or(0.0) * fixed.1.unwrap_or(0.0)
+        } else {
+            let profile = self.profile(&meta.controls);
+            let max_t = fixed.0.unwrap_or_else(|| {
+                self.limit_exposure(
+                    profile.exposure_us[profile.exposure_us.len() - 1] * 1e-6,
+                    Some(meta),
+                )
+            });
+            let max_g = fixed
+                .1
+                .unwrap_or_else(|| self.limit_gain(profile.gain[profile.gain.len() - 1]));
+            (current * gain).min(max_t * max_g)
         };
 
         // Fast de-saturation: a saturated image under-states how far exposure must fall, so cut
@@ -375,20 +415,53 @@ impl Algorithm for Agc {
             && target_y > self.tuning.fast_reduce_threshold
             && gain < target_y.sqrt();
 
-        // Damping. Styx addition: none while de-saturating (see above).
+        // Damping only for small changes: a large one goes straight to the target (the delays
+        // say when it lands, and frames before that ask for the same target again).
+        let before = self.filtered;
+        let large = self.tuning.full_step > 0.0
+            && before > 0.0
+            && (target / before - 1.0).abs() > self.tuning.full_step;
+        // The first frame produced by an undamped change: what is left is the model's error
+        // (clipped zones, black level), not noise, so it is corrected at once as well.
+        let produced_by_last = self.last.is_some_and(|(t, g)| {
+            let r =
+                meta.exposure.as_secs_f64() * meta.analogue_gain / (t.as_secs_f64() * g).max(1e-12);
+            (r - 1.0).abs() < 0.02
+        });
+        let correcting = self.full_step_pending && meta.frame >= self.lands_at && produced_by_last;
+        if meta.frame >= self.lands_at {
+            self.full_step_pending = false;
+        }
         let (mut speed, mut stable) = (self.tuning.speed, self.tuning.stable_region);
-        if (fixed.0.is_some() && fixed.1.is_some())
+        if fixed_both
             || self.frame_count <= self.tuning.startup_frames
             || desaturating
+            || large
+            || correcting
         {
             speed = 1.0;
-            stable = 0.0;
         }
-        let before = self.filtered;
+        // While a change is in flight, frames produced before it repeat what asked for it:
+        // only a clearly different answer (the scene changed) replaces it.
+        if meta.frame < self.lands_at {
+            stable = stable.max(self.tuning.full_step);
+        }
+        // Frames whose levels have not settled say nothing about the scene; for as many frames
+        // after them, and while locked, AE leaves a frame that is on target alone (no hunting
+        // within the lock tolerance).
+        let unsettled = meta.frame < u64::from(self.config.unsettled_frames);
+        if unsettled {
+            stable = f64::INFINITY;
+        } else if self.lock_count >= LOCK_FRAMES
+            || meta.frame < 2 * u64::from(self.config.unsettled_frames)
+        {
+            stable = stable.max(ON_TARGET);
+        }
+        let stable = if fixed_both { 0.0 } else { stable };
         if before == 0.0 {
             self.filtered = target;
         } else if !(before * (1.0 - stable) < target && before * (1.0 + stable) > target) {
-            if before < 1.2 * target && before > 0.8 * target {
+            if speed < 1.0 && before < 1.2 * target && before > 0.8 * target {
                 speed = speed.sqrt();
             }
             self.filtered = speed * target + (1.0 - speed) * before;
@@ -399,7 +472,7 @@ impl Algorithm for Agc {
         } else {
             total
         };
-        let split = self.divide(no_dg, total, fixed, meta);
+        let split = self.divide(no_dg, total, fixed, Some(meta));
         // Track what the sensor will do: after de-saturating, continue from the reduced
         // exposure rather than from the digitally compensated total.
         let dg = if desaturating {
@@ -409,25 +482,51 @@ impl Algorithm for Agc {
         };
         self.filtered = split.exposure * split.analogue_gain * dg;
 
-        let landing = self.config.delays.earliest_landing(meta.frame);
-        if speed >= 1.0 && (self.filtered - before).abs() > 1e-3 * before.max(1e-12) {
-            self.hold_until = Some(landing);
-        }
-        // Locked: exposure steady for several frames and this frame already on target.
-        let locked = self.update_lock(meta, if desaturating { 0.0 } else { target }) && on_target;
         let exposure = Duration::from_secs_f64(split.exposure);
+        let frame_duration = self.frame_duration_for(split.exposure, Some(meta));
+        // Unchanged values repeat the last request as it was (nothing new to send).
+        let request = match self.last_request {
+            Some(r)
+                if (r.exposure, r.analogue_gain, r.frame_duration)
+                    == (exposure, split.analogue_gain, frame_duration) =>
+            {
+                r
+            }
+            last => {
+                let frame = self.config.delays.earliest_landing(meta.frame);
+                self.lands_at = frame;
+                // A change within the lock tolerance leaves a frame on target either way.
+                let total = |e: Duration, g: f64| e.as_secs_f64() * g;
+                let significant = last.is_none_or(|r| {
+                    let before = total(r.exposure, r.analogue_gain);
+                    let now = total(exposure, split.analogue_gain);
+                    (now / before.max(1e-12) - 1.0).abs() > ON_TARGET
+                });
+                if significant {
+                    self.settles_at = frame;
+                }
+                self.full_step_pending = speed >= 1.0 && !fixed_both;
+                SensorRequest {
+                    frame,
+                    exposure,
+                    analogue_gain: split.analogue_gain,
+                    frame_duration,
+                }
+            }
+        };
+        // Locked: produced with what AE asked for, on target, for LOCK_FRAMES frames in a row.
+        let settled = meta.frame >= self.settles_at && on_target && !desaturating && !unsettled;
+        self.lock_count = if settled {
+            (self.lock_count + 1).min(LOCK_FRAMES)
+        } else {
+            0
+        };
         self.last = Some((exposure, split.analogue_gain));
-        let (fd_lo, fd_hi) = self.frame_duration_limits(Some(meta));
-        let fd = (split.exposure + self.config.exposure_margin.as_secs_f64()).clamp(fd_lo, fd_hi);
-        params.sensor = Some(SensorRequest {
-            frame: landing,
-            exposure,
-            analogue_gain: split.analogue_gain,
-            frame_duration: Duration::from_secs_f64(fd),
-        });
+        self.last_request = Some(request);
+        params.sensor = Some(request);
         params.digital_gain = split.digital_gain;
         params.ae = AeStatus {
-            locked,
+            locked: self.lock_count >= LOCK_FRAMES,
             target_exposure: target,
             total_exposure: total,
             target_y,

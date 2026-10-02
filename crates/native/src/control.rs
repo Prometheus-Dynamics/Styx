@@ -5,7 +5,7 @@
 //! [`MockBus`](styx_sensor::MockBus) in tests exactly as over I²C on the device.
 
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use styx_kernel::bus::{StreamAction, StreamRequest};
 use styx_sensor::{
@@ -121,6 +121,19 @@ pub fn standby_problems(desc: &SensorDescription, mode: &str, format: &str) -> V
     problems
 }
 
+/// Where the last [`SensorControl::bring_up`] spent its time (zero for steps it skipped).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BringUpTimes {
+    /// The power-up sequence (supplies, clock, reset, settle delays, its register writes).
+    pub power_up: Duration,
+    /// Reading and checking the chip id.
+    pub chip_id: Duration,
+    /// The common init registers.
+    pub init: Duration,
+    /// Format and mode registers, line and frame length, initial controls, flips.
+    pub mode: Duration,
+}
+
 /// The sensor driver plus the per-stream bookkeeping around it.
 #[derive(Debug)]
 pub struct SensorControl<B, P> {
@@ -129,7 +142,17 @@ pub struct SensorControl<B, P> {
     expected: Option<ExpectedStart>,
     frame_starts: u64,
     starts_served: u64,
+    bring_up_times: BringUpTimes,
+    /// When the last frame started (`CLOCK_MONOTONIC`), if known.
+    last_start_at: Option<Duration>,
+    /// Immediate writes: how long before the current frame ends a write must be done.
+    write_margin: Option<Duration>,
 }
+
+/// How long before a frame ends [`SensorControl::request_at_now`] must have written by
+/// default: the bus transfers (a group hold of three controls is about seven at 100 kHz) and
+/// slack.
+pub const DEFAULT_WRITE_MARGIN: Duration = Duration::from_millis(4);
 
 impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
     /// Wraps a driver.
@@ -140,7 +163,32 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
             expected: None,
             frame_starts: 0,
             starts_served: 0,
+            bring_up_times: BringUpTimes::default(),
+            last_start_at: None,
+            write_margin: Some(DEFAULT_WRITE_MARGIN),
         }
+    }
+
+    /// Lets [`Self::request_at_now`] write in the current frame when at least `margin` of it
+    /// is left (`None`: never; every request then waits for the next frame start).
+    pub fn set_write_margin(&mut self, margin: Option<Duration>) {
+        self.write_margin = margin;
+    }
+
+    /// How much of the current frame is left at `now` (`CLOCK_MONOTONIC`): `None` when not
+    /// streaming or when the frame's start time is not known.
+    pub fn frame_time_left(&self, now: Duration) -> Option<Duration> {
+        if self.driver.state() != DriverState::Streaming {
+            return None;
+        }
+        let (seq, at) = (self.last_start?, self.last_start_at?);
+        let end = at + self.applied(seq)?.frame_duration;
+        Some(end.saturating_sub(now))
+    }
+
+    /// Where the last [`Self::bring_up`] spent its time.
+    pub fn bring_up_times(&self) -> BringUpTimes {
+        self.bring_up_times
     }
 
     /// The driver.
@@ -159,7 +207,9 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
     }
 
     /// Powers the sensor, checks its chip id, writes init and the mode. The sensor stays in
-    /// software standby. Powers up only if off; an active mode is replaced.
+    /// software standby. Powers up only if off; an active mode is replaced, except that a
+    /// powered sensor already in this mode at its default line length (a camera kept warm
+    /// between sessions) is left as it is: its registers have not changed in standby.
     pub fn bring_up(&mut self, mode: &str, format: &str) -> Result<()> {
         let problems = standby_problems(self.driver.description(), mode, format);
         if !problems.is_empty() {
@@ -168,22 +218,39 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
                 problems.join("; ")
             )));
         }
+        let mut times = BringUpTimes::default();
+        let t = Instant::now();
         match self.driver.state() {
             DriverState::Streaming => return Err(NativeError::State("sensor is streaming")),
             DriverState::Off => {
                 self.driver.power_up()?;
-                if let Err(e) = self
-                    .driver
-                    .verify_chip_id()
-                    .and_then(|_| self.driver.init())
-                {
+                times.power_up = t.elapsed();
+                let t = Instant::now();
+                let checked = self.driver.verify_chip_id();
+                times.chip_id = t.elapsed();
+                let t = Instant::now();
+                if let Err(e) = checked.and_then(|_| self.driver.init()) {
                     let _ = self.driver.power_down();
                     return Err(e.into());
                 }
+                times.init = t.elapsed();
             }
             DriverState::Powered => {}
         }
-        self.driver.set_mode(mode, format)?;
+        let t = Instant::now();
+        let desc = self.driver.description();
+        let same = self.driver.mode().is_some_and(|m| {
+            m.mode == mode
+                && m.format == format
+                && desc
+                    .mode(mode)
+                    .is_ok_and(|d| m.timing.hblank == d.hblank.default)
+        });
+        if !same {
+            self.driver.set_mode(mode, format)?;
+        }
+        times.mode = t.elapsed();
+        self.bring_up_times = times;
         self.last_start = None;
         Ok(())
     }
@@ -240,10 +307,17 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
     /// Frame `seq` started: writes what is due. Repeated or older sequences are ignored.
     /// Returns the controls written.
     pub fn frame_start(&mut self, seq: u64) -> Result<ControlSet> {
+        self.frame_start_at(seq, None)
+    }
+
+    /// [`Self::frame_start`], with when the frame started (`CLOCK_MONOTONIC`, e.g. the
+    /// `FRAME_SYNC` event's timestamp), which lets [`Self::request_at_now`] write within it.
+    pub fn frame_start_at(&mut self, seq: u64, at: Option<Duration>) -> Result<ControlSet> {
         if self.last_start.is_some_and(|l| seq <= l) {
             return Ok(ControlSet::new());
         }
         self.last_start = Some(seq);
+        self.last_start_at = at;
         self.frame_starts += 1;
         if self.driver.state() != DriverState::Streaming {
             return Ok(ControlSet::new());
@@ -278,6 +352,37 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
 
     /// Asks for typed values from frame `frame` on.
     pub fn request_at(&mut self, frame: u64, req: &ControlRequest) -> Result<Vec<Landing>> {
+        Self::check(req)?;
+        Ok(self.driver.request(frame, req)?)
+    }
+
+    /// [`Self::request_at`], writing at once what is due in the current frame when enough of
+    /// it is left at `now` (`CLOCK_MONOTONIC`; see [`Self::set_write_margin`]) instead of at
+    /// the next frame start, so values land a frame earlier. Before streaming the values for
+    /// frame 0 are written at once (not with the stream-on sequence).
+    pub fn request_at_now(
+        &mut self,
+        frame: u64,
+        req: &ControlRequest,
+        now: Duration,
+    ) -> Result<Vec<Landing>> {
+        Self::check(req)?;
+        let in_time = match self.driver.state() {
+            DriverState::Powered => true,
+            DriverState::Streaming => self
+                .write_margin
+                .zip(self.frame_time_left(now))
+                .is_some_and(|(margin, left)| left > margin),
+            DriverState::Off => false,
+        };
+        if in_time {
+            Ok(self.driver.request_now(frame, req)?)
+        } else {
+            Ok(self.driver.request(frame, req)?)
+        }
+    }
+
+    fn check(req: &ControlRequest) -> Result<()> {
         if let Some(d) = req.frame_duration
             && d.is_zero()
         {
@@ -288,7 +393,7 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
         {
             return Err(NativeError::InvalidConfig(format!("gain {g}")));
         }
-        Ok(self.driver.request(frame, req)?)
+        Ok(())
     }
 
     /// The values that produced frame `seq` (predicted, or read back where reported).
@@ -432,6 +537,34 @@ impl<B: RegisterBus, P: SensorPins> ControlHandle<B, P> {
             hook(t.hblank, fl.vblank);
         }
         Ok(landings)
+    }
+
+    /// [`Self::request_at`], but values due in the current frame are written at once when
+    /// enough of the frame is left (see [`SensorControl::request_at_now`]): a request made right
+    /// after a frame's statistics arrive can land `delay` frames after that frame.
+    pub fn request_at_now(&self, frame: u64, req: &ControlRequest) -> Result<Vec<Landing>> {
+        let (landings, timing) = {
+            let mut c = lock(&self.inner);
+            let first = c.next_frame();
+            let now = styx_kernel::monotonic_now();
+            let l = c.request_at_now(frame.max(first), req, now)?;
+            (l, c.timing())
+        };
+        if let (Some(hook), Some(t), Some(d)) = (&self.blanking, timing, req.frame_duration) {
+            let fl = t.frame_length_for_duration(d);
+            hook(t.hblank, fl.vblank);
+        }
+        Ok(landings)
+    }
+
+    /// See [`SensorControl::set_write_margin`].
+    pub fn set_write_margin(&self, margin: Option<Duration>) {
+        lock(&self.inner).set_write_margin(margin);
+    }
+
+    /// See [`SensorControl::frame_time_left`] (now).
+    pub fn frame_time_left(&self) -> Option<Duration> {
+        lock(&self.inner).frame_time_left(styx_kernel::monotonic_now())
     }
 
     /// Sets the exposure time.

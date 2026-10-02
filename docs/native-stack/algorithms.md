@@ -50,9 +50,26 @@ FrameMetadata (exposure, gain, frame duration, lux?, Controls) ─┤
 
 `SensorRequest::frame` is `F + issue_latency + max(delays)` for statistics of frame `F`: the
 first frame on which exposure, gain and frame length can all land together. Hand it to
-`ControlScheduler::request(frame, ..)`, which writes each control `delay` frames earlier.
-A request equal to the previous frame's means nothing new. AE holds undamped changes until the
-frame they land on, so frames still in flight do not re-trigger them.
+`ControlScheduler::request(frame, ..)` (or `request_now`, which writes what is due in the
+current frame at once), which writes each control `delay` frames earlier. `issue_latency` is 0
+when requests are written in the frame the statistics came from (the PiSP path at 30 and 60
+fps), 2 when they wait for the start of `F + 2`. A request equal to the previous frame's means
+nothing new (it keeps its frame). AE's targets are total exposures computed from what produced
+each frame, so a frame still in flight asks for the same total again and does not re-trigger a
+change; only a clearly different one (more than `full_step`) replaces it.
+
+`CameraConfig::unsettled_frames` (from the sensor description's black level `settle_frames`):
+frames at the start of a stream whose levels are not reliable yet; AE and AWB leave them out.
+
+### Warm starts
+
+`WarmStart` is what AE and AWB settled on: AE's total exposure with the mode's sensitivity, the
+exposure and gain that delivered it, AWB's gains and temperature, lux, and whether they were
+locked/converged. `Pipeline::warm_state` takes it from the latest parameters,
+`Pipeline::prepare_warm(config, Some(&warm))` starts from it (`Algorithm::warm_start`, default:
+ignore): AGC re-splits the total along the exposure profile within the new mode's limits (so a
+30 → 120 fps switch keeps the brightness with more gain), AWB starts at the gains. Replays
+record the warm start in their header.
 
 ## Algorithms
 
@@ -60,8 +77,8 @@ frame they land on, so frames still in flight do not re-trigger them.
 |---|---|---|
 | `BlackLevel` | `black_level.cpp` | Tuning levels, else the sensor description's |
 | `Lux` | `lux.cpp` | From exposure, gain and mean luma against a reference; metadata lux wins |
-| `Agc` | `agc_channel.cpp` (channel 0) | Metering (tuned or built-in centre-weighted / spot / average weights, resampled to the zone grid), histogram constraints, EV, exposure profiles, flicker periods, digital gain, damping, start-up, fast de-saturation, lock. Styx changes: output landing frame; frame duration chosen here; holds undamped changes until they land; de-saturates only while half the image is saturated and without damping; lock requires being on target |
-| `Awb` | `awb.cpp`, `awb_bayes.cpp` | Bayesian search along the CT curve with lux-interpolated priors, coarse then fine (across the curve), or grey world; runs synchronously every `frame_period` frames (every frame during start-up), filtered by `speed`; modes; manual gains or temperature |
+| `Agc` | `agc_channel.cpp` (channel 0) | Metering (tuned or built-in centre-weighted / spot / average weights, resampled to the zone grid), histogram constraints, EV, exposure profiles, flicker periods, digital gain, damping, start-up, fast de-saturation, lock. Styx changes: output landing frame; frame duration chosen here; model-based steps (changes above `full_step`, 8% by default, go straight to the target at any time; after one lands, the rest is corrected at once; damping only for small changes); every frame's statistics used (frames in flight ask for the same total); de-saturates only while half the image is saturated and without damping; locked = no change beyond 5% in flight and on target (5%) for two frames, no hunting within that tolerance once locked; unsettled frames left out; warm starts |
+| `Awb` | `awb.cpp`, `awb_bayes.cpp` | Bayesian search along the CT curve with lux-interpolated priors, coarse then fine (across the curve), or grey world; runs synchronously every `frame_period` frames (every frame during start-up), filtered by `speed`; modes; manual gains or temperature. Styx changes: start-up counts only usably exposed frames (mean luma 0.02..0.7; at most 4 × `startup_frames` frames); unsettled frames left out; warm starts |
 | `Alsc` | `alsc.cpp` | Calibrated Cr/Cb tables interpolated by temperature, resampled to crop and flips, normalised, luminance table at `luminance_strength` (tuned or generated from `corner_strength`). The adaptive refinement is not ported |
 | `Ccm` | `ccm.cpp` | Interpolated by temperature, saturation control and saturation-by-lux |
 | `Contrast` | `contrast.cpp` | Gamma curve, adaptive histogram stretch, manual brightness/contrast |
@@ -87,7 +104,7 @@ key order (the first mode listed is the default), as libcamera's YAML-based read
 | `metering_modes.<m>.weights` (first = default) | `agc.metering_modes.<m>.weights`, `default_metering_mode`; grids inferred (15×15 on PiSP); the old 15-region VC4 layout falls back to built-in weights |
 | `exposure_modes.<m>.shutter` / `gain` | `agc.exposure_modes.<m>.exposure_us` / `gain` |
 | `constraint_modes.<m>[] { bound, q_lo, q_hi, y_target }` | same, `bound = "lower"/"upper"` |
-| `y_target`, `speed`, `startup_frames`, `convergence_frames`, `fast_reduce_threshold`, `base_ev`, `default_exposure_time`, `default_analogue_gain`, `stable_region`, `desaturate`, `max_digital_gain` | same names (`default_exposure_us`) |
+| `y_target`, `speed`, `startup_frames`, `convergence_frames`, `fast_reduce_threshold`, `base_ev`, `default_exposure_time`, `default_analogue_gain`, `stable_region`, `desaturate`, `max_digital_gain` | same names (`default_exposure_us`); `full_step` is Styx's own (default 0.08) |
 | `rpi.awb.ct_curve` (flat triples) | `awb.ct_curve = [[ct, r, b], …]` |
 | `priors[] { lux, prior }`, `modes` (first = default), `bayes`, `min_G` (16-bit), `min_pixels`, `min_regions`, `coarse_step`, `whitepoint_r/b`, `bias_proportion`, `bias_ct`, `delta_limit`, `transverse_pos/neg`, `sensitivity_r/b`, `speed`, `frame_period`, `startup_frames` | same names; `min_g` ÷ 65536 |
 | `rpi.alsc.calibrations_Cr/Cb`, `luminance_lut`, `corner_strength`, `asymmetry`, `luminance_strength`, `default_ct` | `alsc.calibrations_cr/cb`, …; `grid` from the table size (1024 → 32×32, 192 → 16×12). `omega`, `n_iter`, `sigma*` (adaptive part) ignored |
@@ -120,15 +137,23 @@ All 67 pisp and vc4 tuning files in libcamera and both HeliOS OV9782 files conve
 reflectances), a sensor (CT response, responsivity, shot and read noise, texture, line-quantised
 exposure) and the control scheduler's timing (per-control delays, requests from frame `F`
 written from `F + 2`, late landings counted). `sim::convergence` measures settle frames,
-overshoot and jitter. Results with the default 30–10 fps mode, delays 2/1/2 (`tests/sim_*.rs`,
-run with `--nocapture`):
+overshoot and jitter. `SensorModel::black_error` adds a black level offset (luma not
+proportional to exposure). Results with the default 30–10 fps mode, delays 2/1/2, issue
+latency 2 (`tests/sim_ae.rs`), and with the OV9782's timing as the PiSP path drives it at 30
+fps (delays 2/2/1, written in the same frame: `tests/sim_start.rs`), run with `--nocapture`:
 
-| Case | Result |
-|---|---|
-| AE start-up at 20 lux | within 5% after 8 frames |
-| AE 20 → 5000 lux (saturated) | within 5% after 26 frames, overshoot 0.3%, jitter 0.14% |
-| AE 5000 → 20 lux | within 5% after 16 frames, overshoot 0.3% |
-| AE 200 → 300 lux | within 3% after 11 frames (damped) |
+| Case | Result (issue latency 2) | Result (same-frame writes) |
+|---|---|---|
+| AE start-up at 20 lux (from 1 ms) | within 5% after 8 frames (was 8) | after 4, locked at 5 |
+| AE start-up at 400 lux | | after 2, locked at 3 |
+| AE 20 → 5000 lux (saturated) | within 5% after 20 frames (was 26), overshoot 0.2%, jitter 0.12% | after 10, locked after 11 |
+| AE 5000 → 20 lux | within 5% after 8 frames (was 16), overshoot 0.3% | |
+| AE 200 → 300 lux | within 3% after 4 frames (was 11, damped) | |
+| AE 200 → 214 lux | within 3% after 4 frames (damped) | |
+| AE 800 → 200 / 200 → 800 lux | | after 2 / 6, locked after 3 / 7 |
+| AE 200 → 50 lux with a black level error of 0.01 | | after 4, locked after 5 |
+| warm restart, same scene | | within 5% from frame 0, locked at 1, nothing re-requested |
+| 30 → 120 fps warm start | | 30 ms × 2.1 → 8.1 ms × 7.8, luma within 0.3%, locked at 1 |
 | 100 Hz flicker, 20 ms exposure | frame-to-frame jitter 2.1% without avoidance, 0.13% with 50 Hz avoidance |
 | AWB 3000 K → 6000 K / 6000 K → 3000 K | 6004 K / 3007 K, gains within 0.1% of truth, settled (3%) in 54–64 frames at the default `speed` 0.05 |
 | Late landings | none |

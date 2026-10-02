@@ -11,6 +11,12 @@ name = "ov9782"
 vendor = "OmniVision"
 i2c_address = 0x60
 address_bits = 16
+# Runs of consecutive registers go out as one auto-incrementing transfer (one I2C message, no
+# repeated starts; those lost writes on the CM5, see styx-native's regbus). Verified on the CM5
+# (native-pipeline regcheck): after power-up, init and the 1280x800 mode every register reads
+# back the same with bursts as with one transfer per register (0x0101 and 0x1000 read 0 either
+# way), streams normally, and the bring-up takes 37.8 instead of 48.9 ms on the 100 kHz bus.
+burst_writes = true
 # The driver also accepts 0x9281: some modules report an OV9281 id.
 chip_id = { address = 0x300a, bytes = 2, values = [0x9782, 0x9281] }
 clocks = { xvclk = 24_000_000 }
@@ -25,8 +31,12 @@ color_filter = "BGGR"
 # on the device in the dark (native-spike --black, --sweep-*): the active area settles at 64
 # (sd 0.2-0.5) at 1 line and at 450 ms, at 1x and 15.5x gain; the kernel driver path gives the
 # same 64. For the first frames after start and after gain changes, until the BLC settles,
-# it reads about 86.
-black_level = { value = 64, bits = 10 }
+# it reads about 86. Measured with styx-pipeline's PiSP path (native-pipeline pisp, starts at a
+# settled exposure): the first frame after a start is brighter by about 0.013-0.019 of full
+# scale (13-19 codes at 10 bits) at gain 1.5, and at 120 fps, where the exposure fills the
+# frame, nearly black (its exposure would have begun before the stream); from frame 1 on the
+# levels follow exposure and gain.
+black_level = { value = 64, bits = 10, settle_frames = 1 }
 
 [sequences]
 # The driver enables avdd/dovdd/dvdd, waits 400-600 us, sets reset (logical 1), enables the

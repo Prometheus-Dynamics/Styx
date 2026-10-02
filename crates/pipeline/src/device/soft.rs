@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use styx_algo::Tuning;
+use styx_algo::{Tuning, WarmStart};
 use styx_native::{
     CameraControls, CameraInfo, Configured, FrameStream, NativeCamera, NativeFrame, StreamSettings,
 };
@@ -34,7 +34,12 @@ pub struct SoftPipeline {
     stream: Option<FrameStream>,
     soft: SoftLoop,
     configured: Configured,
+    warm_override: Option<Option<WarmStart>>,
 }
+
+/// Time from the end of a frame's readout until the software ISP's statistics have been
+/// through the algorithms (one core at 1280x800), with slack.
+const SOFT_PROCESSING: Duration = Duration::from_millis(16);
 
 impl std::fmt::Debug for SoftPipeline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -81,6 +86,7 @@ impl SoftPipeline {
             stream: None,
             soft,
             configured,
+            warm_override: None,
         })
     }
 
@@ -104,9 +110,30 @@ impl SoftPipeline {
         &self.controls
     }
 
-    /// Resets the algorithms, requests their start-up exposure for frame 0 and starts
-    /// streaming.
+    /// Starts the next [`Self::start`] (only) from these settled values (`None`: from the
+    /// tuning's start-up values) instead of what the camera's last session settled on
+    /// ([`crate::warm::recall`], the default).
+    pub fn set_warm_start(&mut self, warm: Option<WarmStart>) {
+        self.warm_override = Some(warm);
+    }
+
+    /// Resets the algorithms (from the camera's last settled state, see [`crate::warm`]),
+    /// requests their start-up exposure for frame 0 (written before streaming) and starts
+    /// streaming. Requests are written as soon as they are made while enough of the frame is
+    /// left.
     pub fn start(&mut self) -> Result<()> {
+        let latency = self
+            .soft
+            .info()
+            .issue_latency(SOFT_PROCESSING, styx_native::control::DEFAULT_WRITE_MARGIN)
+            .max(1);
+        let warm = match self.warm_override.take() {
+            Some(w) => w,
+            None => crate::warm::recall(&self.camera.info().key),
+        };
+        let c = self.soft.controller();
+        c.set_issue_latency(latency);
+        c.set_warm_start(warm);
         let start = self.soft.start()?;
         if let Some(r) = start.sensor {
             apply_request(&self.controls, &r)?;
@@ -156,15 +183,26 @@ impl SoftPipeline {
         }))
     }
 
-    /// Stops streaming.
+    /// Stops streaming; what the algorithms settled on is remembered for the camera's next
+    /// start ([`crate::warm`]).
     pub fn stop(&mut self) -> Result<()> {
+        self.remember();
         self.stream = None;
         self.camera.stop()?;
         Ok(())
     }
 
+    fn remember(&mut self) {
+        if self.stream.is_some()
+            && let Some(w) = self.soft.controller().warm_state()
+        {
+            crate::warm::remember(&self.camera.info().key, w);
+        }
+    }
+
     /// Stops and powers the camera down.
     pub fn close(mut self) -> Result<()> {
+        self.remember();
         self.stream = None;
         self.camera.close()?;
         Ok(())

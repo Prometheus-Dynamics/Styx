@@ -5,6 +5,9 @@
 //! native-pipeline pisp   [options]   PiSP: FE statistics, BE NV12 + half-size RGB (device feature)
 //! native-pipeline soft   [options]   software ISP on raw frames from csi2_ch0 (device feature)
 //! native-pipeline replay --recording BASE [options]   software ISP over a raw recording
+//! native-pipeline latch  [options]   when within a frame a control write still lands on time
+//! native-pipeline regcheck [options] bring-up only, read back every register written
+//!                                    (--frames: power cycles; --power-settle MS)
 //!
 //!   --frames N           frames (default 150)
 //!   --fps F              frame rate, held fixed (default 30)
@@ -22,13 +25,26 @@
 //!   --profile            (pisp) time the device calls (queue, dequeue, wait, copies)
 //!   --driver-buffers     (pisp) back end outputs in the driver's (uncached) buffers instead of
 //!                        cached dma-heap buffers
+//!   --start-exposure US:GAIN  (pisp) start AE from this exposure and gain instead of the
+//!                        camera's last settled state (a dark or bright start)
+//!   --cold               (pisp) start from the tuning's start-up values, not the last state
+//!   --then FPS[,FPS..]   (pisp) after the run, close and reopen the camera at each rate in turn
+//!                        (45 frames each), starting from the state the last session settled on
+//!   --keep-open          (pisp) with --then: keep the camera open and powered between the
+//!                        sessions (stop, reconfigure for another rate, start)
 //!   --quiet              no per-frame lines
 //! ```
 
 #[cfg(feature = "device")]
 mod device_run;
+#[cfg(feature = "device")]
+mod latch;
+#[cfg(feature = "device")]
+mod regcheck;
 mod replay_run;
 mod report;
+#[cfg(feature = "device")]
+mod restart;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -57,6 +73,11 @@ pub struct Args {
     pub no_read: bool,
     pub profile: bool,
     pub driver_buffers: bool,
+    pub start_exposure: Option<(f64, f64)>,
+    pub cold: bool,
+    pub then: Vec<f64>,
+    pub power_settle: Option<Duration>,
+    pub keep_open: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -81,6 +102,11 @@ fn parse() -> Result<Args, String> {
         no_read: false,
         profile: false,
         driver_buffers: false,
+        start_exposure: None,
+        cold: false,
+        then: Vec::new(),
+        power_settle: None,
+        keep_open: false,
     };
     while let Some(x) = it.next() {
         let mut val = || it.next().ok_or(format!("{x} needs a value"));
@@ -100,6 +126,21 @@ fn parse() -> Result<Args, String> {
             "--profile" => a.profile = true,
             "--driver-buffers" => a.driver_buffers = true,
             "--heap" => a.heap = Some(val()?),
+            "--cold" => a.cold = true,
+            "--keep-open" => a.keep_open = true,
+            "--power-settle" => {
+                a.power_settle = Some(Duration::from_secs_f64(num(val()?)? * 1e-3));
+            }
+            "--start-exposure" => {
+                let v = val()?;
+                let (e, g) = v.split_once(':').ok_or("--start-exposure takes US:GAIN")?;
+                a.start_exposure = Some((num(e.into())?, num(g.into())?));
+            }
+            "--then" => {
+                for f in val()?.split(',') {
+                    a.then.push(num(f.into())?);
+                }
+            }
             "--perturb" => {
                 let v = val()?;
                 let (f, k) = v.split_once(':').ok_or("--perturb takes FRAME:FACTOR")?;
@@ -175,6 +216,10 @@ fn main() -> ExitCode {
             "pisp" => device_run::pisp(&a),
             #[cfg(feature = "device")]
             "soft" => device_run::soft(&a),
+            #[cfg(feature = "device")]
+            "latch" => latch::run(&a),
+            #[cfg(feature = "device")]
+            "regcheck" => regcheck::run(&a),
             c => Err(format!(
                 "unknown command {c} (pisp and soft need the device feature)"
             )),

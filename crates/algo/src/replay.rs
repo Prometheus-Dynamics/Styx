@@ -1,7 +1,7 @@
 //! Record and replay statistics sequences.
 //!
 //! Format: JSON Lines. The first line is a header
-//! `{"styx_algo_replay": 1, "config": <CameraConfig>}`; every further line is one frame
+//! `{"styx_algo_replay": 1, "config": <CameraConfig>, "warm": <WarmStart>?}`; every further line is one frame
 //! `{"stats": <Statistics>, "meta": <FrameMetadata>, "params": <Params>}` where `params` (what
 //! the pipeline produced when recording) is optional. Floats round-trip exactly, so replaying a
 //! recording through the same algorithms and tuning reproduces `params` bit for bit.
@@ -16,6 +16,7 @@ use crate::frame::FrameMetadata;
 use crate::params::Params;
 use crate::pipeline::Pipeline;
 use crate::stats::Statistics;
+use crate::warm::WarmStart;
 
 /// Format version written in the header.
 pub const VERSION: u32 = 1;
@@ -24,6 +25,8 @@ pub const VERSION: u32 = 1;
 struct Header {
     styx_algo_replay: u32,
     config: CameraConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    warm: Option<WarmStart>,
 }
 
 /// One recorded frame.
@@ -46,10 +49,21 @@ pub struct Recorder<W: Write> {
 
 impl<W: Write> Recorder<W> {
     /// Start a recording for a camera configuration.
-    pub fn new(mut out: W, config: &CameraConfig) -> Result<Self> {
+    pub fn new(out: W, config: &CameraConfig) -> Result<Self> {
+        Self::with_warm_start(out, config, None)
+    }
+
+    /// Start a recording for a camera configuration whose algorithms were prepared with a
+    /// warm start ([`Pipeline::prepare_warm`]).
+    pub fn with_warm_start(
+        mut out: W,
+        config: &CameraConfig,
+        warm: Option<&WarmStart>,
+    ) -> Result<Self> {
         let header = Header {
             styx_algo_replay: VERSION,
             config: config.clone(),
+            warm: warm.copied(),
         };
         writeln!(out, "{}", to_json(&header)?)?;
         Ok(Self { out })
@@ -89,6 +103,8 @@ fn to_json<T: Serialize>(v: &T) -> Result<String> {
 pub struct Recording {
     /// The camera configuration.
     pub config: CameraConfig,
+    /// The warm start the algorithms were prepared with, if any.
+    pub warm: Option<WarmStart>,
     /// The frames.
     pub records: Vec<Record>,
 }
@@ -119,6 +135,7 @@ impl Recording {
         }
         Ok(Self {
             config: header.config,
+            warm: header.warm,
             records,
         })
     }
@@ -133,9 +150,10 @@ pub struct ReplayReport {
     pub mismatches: Vec<usize>,
 }
 
-/// Prepare the pipeline with the recording's configuration and run every frame through it.
+/// Prepare the pipeline with the recording's configuration (and warm start) and run every
+/// frame through it.
 pub fn replay(pipeline: &mut Pipeline, recording: &Recording) -> Result<ReplayReport> {
-    pipeline.prepare(&recording.config)?;
+    pipeline.prepare_warm(&recording.config, recording.warm.as_ref())?;
     let mut outputs = Vec::with_capacity(recording.records.len());
     let mut mismatches = Vec::new();
     for (i, r) in recording.records.iter().enumerate() {

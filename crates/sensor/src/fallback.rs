@@ -270,6 +270,7 @@ impl SensorDescription {
                 backend: Backend::Kernel,
                 i2c_address: None,
                 address_bits: 16,
+                burst_writes: false,
                 chip_id: None,
                 clocks: BTreeMap::new(),
                 tuning: None,

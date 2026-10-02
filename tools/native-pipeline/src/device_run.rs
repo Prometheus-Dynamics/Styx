@@ -16,7 +16,7 @@ use crate::{Args, controls_for, monotonic, tuning};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 
-fn open_camera(a: &Args) -> Result<(NativeCamera, Instant), String> {
+pub(crate) fn open_camera(a: &Args) -> Result<(NativeCamera, Instant), String> {
     let mut lib = SensorLibrary::system();
     if let Some(d) = &a.description {
         lib = lib.with_path_first(d.clone());
@@ -39,7 +39,7 @@ fn open_camera(a: &Args) -> Result<(NativeCamera, Instant), String> {
     Ok((cam, opened))
 }
 
-fn settings(a: &Args) -> StreamSettings {
+pub(crate) fn settings(a: &Args) -> StreamSettings {
     StreamSettings::new(1280, 800).fps(a.fps.round() as u32)
 }
 
@@ -195,15 +195,52 @@ pub fn soft(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1e3
+}
+
+/// Where the time from open to the first frame went.
+pub(crate) fn startup_line(
+    s: styx_pipeline::device::PispStartup,
+    camera_open: Duration,
+    first: Option<Instant>,
+) -> String {
+    let b = s.bring_up;
+    let to_first = match (s.started_at, first) {
+        (Some(a), Some(f)) => ms(f.saturating_duration_since(a)),
+        _ => f64::NAN,
+    };
+    format!(
+        "startup (ms): camera open {:.1}; configure {:.1} (power {:.1}, chip id {:.1}, init {:.1}, mode {:.1}); fe open {:.1}; be open {:.1}; isp+algorithms {:.1}; start values {:.1}; start external {:.1}; STREAMON {:.1}; start returned -> first frame {:.1}",
+        ms(camera_open),
+        ms(s.configure),
+        ms(b.power_up),
+        ms(b.chip_id),
+        ms(b.init),
+        ms(b.mode),
+        ms(s.fe_open),
+        ms(s.be_open),
+        ms(s.isp_and_algorithms),
+        ms(s.start_values),
+        ms(s.start_external),
+        ms(s.stream_on),
+        to_first
+    )
+}
+
 pub fn pisp(a: &Args) -> Result<(), String> {
     let tuning = tuning(a)?;
     let (cam, opened) = open_camera(a)?;
+    let opened_to_open = opened.elapsed();
     let mut options = PispOptions::nv12_and_half_rgb(1280, 800);
     if a.driver_buffers {
         options.output_memory = styx_pisp::device::OutputMemory::Driver;
     }
     let mut p =
         PispPipeline::open(cam, &settings(a), &tuning, options).map_err(|e| e.to_string())?;
+    if let Some(w) = crate::restart::requested_warm(a) {
+        p.set_warm_start(w);
+    }
     let (o0, o1) = (
         p.output_format(0).ok_or("no output 0")?,
         p.output_format(1).ok_or("no output 1")?,
@@ -301,8 +338,18 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let (cpu1, rss) = process_usage();
     let threads = thread_usage();
     let updates = p.be_updates();
+    let p_startup = *p.startup();
     p.controller().stop_recording().map_err(|e| e.to_string())?;
-    let stopped = p.close().map_err(|e| e.to_string());
+    let mut in_place = None;
+    let stopped = if a.keep_open && !a.then.is_empty() && result.is_ok() {
+        let s = p.stop().map_err(|e| e.to_string());
+        if s.is_ok() {
+            in_place = Some(crate::restart::in_place(a, p));
+        }
+        s
+    } else {
+        p.close().map_err(|e| e.to_string())
+    };
     result?;
     stopped?;
     let mut extra = vec![
@@ -312,6 +359,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             updates.rebuilt, updates.patched, updates.unchanged
         ),
     ];
+    extra.push(startup_line(p_startup, opened_to_open, first));
     let n = frames.len().max(1) as f64;
     for e in styx_pisp::device::profile::report() {
         extra.push(format!(
@@ -401,6 +449,10 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         ));
     }
     write_csv(&a.out.join("pisp-frames.csv"), &frames).map_err(|e| e.to_string())?;
+    match in_place {
+        Some(r) => extra.extend(r?),
+        None => extra.extend(crate::restart::sessions(a, &tuning)?),
+    }
     let summary = Summary {
         name: "pisp (PiSP front and back end on the native camera)",
         frames: &frames,
