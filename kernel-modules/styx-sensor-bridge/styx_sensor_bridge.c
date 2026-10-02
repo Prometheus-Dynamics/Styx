@@ -1065,7 +1065,16 @@ static int styx_bridge_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_entity;
 
-	ret = v4l2_async_register_subdev_sensor(&b->sd);
+	/*
+	 * Not v4l2_async_register_subdev_sensor(): it registers the subdev on
+	 * behalf of v4l2-fwnode, which then becomes sd->owner, so neither the
+	 * receiver's binding nor an open subdev node pinned this module and
+	 * rmmod while streaming freed the s_stream the receiver calls next
+	 * (an oops, measured). Registered as ours, the module is pinned while
+	 * a receiver is bound and while the node is open. (The sensor variant
+	 * only adds lens and flash links, which the bridge has none of.)
+	 */
+	ret = v4l2_async_register_subdev(&b->sd);
 	if (ret)
 		goto err_state;
 

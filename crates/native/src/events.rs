@@ -37,6 +37,21 @@ use crate::embedded::EmbeddedCapture;
 use crate::health::{Fault, Health};
 use crate::stream::SensorSide;
 
+/// `STYX_NATIVE_DEBUG=1`: trace the event thread on stderr.
+fn debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("STYX_NATIVE_DEBUG").is_some_and(|v| v != "0"))
+}
+
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        if debug() {
+            eprintln!("[styx-native events {:?}] {}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default(), format!($($arg)*));
+        }
+    };
+}
+
 /// How long the capture node is left out of the wait after it reported an error without
 /// anything to read (it does while not streaming).
 const VIDEO_ERROR_BACKOFF: Duration = Duration::from_millis(5);
@@ -218,7 +233,12 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
             s.health.serve_failed(why);
             errno
         });
-        match s.bridge.acknowledge(&req, result) {
+        let acked = s.bridge.acknowledge(&req, result);
+        trace!(
+            "request {:?} seq {} served {result:?} ack {acked:?}",
+            req.action, req.sequence
+        );
+        match acked {
             Ok(()) => {
                 s.health.acks.fetch_add(1, Ordering::Relaxed);
             }
@@ -262,6 +282,7 @@ fn serve_frame_starts(s: &EventSources) -> Result<(), Fault> {
 fn check_gate(gate: &Gate) -> bool {
     let mut st = lock(&gate.state);
     if st.quiet && st.quiesced != st.requested {
+        trace!("quiesced ({})", st.requested);
         st.quiesced = st.requested;
         gate.changed.notify_all();
     }
@@ -275,6 +296,7 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
     let mut backoff_until: Option<Instant> = None;
     let mut video_gone = false;
     let fail = |f: Fault| {
+        trace!("fault: {f:?}");
         s.health.fail(f);
         notify.wake();
     };
@@ -321,7 +343,9 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
                 fds.push((video.event_fd(), events));
             }
         }
-        let ready = match poll(&fds, backoff.map(|t| t - now)) {
+        let ready = poll(&fds, backoff.map(|t| t - now));
+        trace!("quiet {quiet} polled {} fds: {ready:?}", fds.len());
+        let ready = match ready {
             Ok(r) => r,
             Err(e) => {
                 fail(Fault::from_io("waiting for events", &e.into()));
