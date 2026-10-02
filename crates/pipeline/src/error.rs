@@ -24,6 +24,10 @@ pub enum PipelineError {
     /// The camera or the ISP device failed.
     #[error("device: {0}")]
     Device(String),
+    /// Every buffer of a back end output is held by consumers: the frame was dropped (its raw
+    /// buffer went back to the camera). The next frame is processed once one is released.
+    #[error("frame dropped: every buffer of output {0} is held")]
+    OutputsHeld(usize),
 }
 
 /// Result alias.

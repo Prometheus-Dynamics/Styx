@@ -10,10 +10,16 @@
 //! copying; other frames are copied once into a memfd. Pyramid levels and other companions travel
 //! with their frame. The sender keeps a frame's buffers until the client has dropped it (and its
 //! companions), and sends a client no more frames while it holds `max_in_flight`, so a slow
-//! client never holds up the camera or the other clients.
+//! client never holds up the camera or the other clients: a camera buffer a client holds is not
+//! written again until the client drops the frame. Holds are bounded (`max_hold`, default
+//! [`DEFAULT_MAX_HOLD`]): a client that keeps a frame longer is disconnected and its frames are
+//! taken back, so a stuck client cannot keep camera buffers for ever. Meanwhile the camera never
+//! waits for buffers: when consumers hold all of them, frames are dropped until one comes back.
 
 mod client;
 mod connection;
+#[cfg(feature = "frame-socket")]
+pub mod frame_socket;
 mod mapcache;
 mod service;
 mod socket;
@@ -27,6 +33,10 @@ use styx_core::prelude::*;
 
 pub use self::client::FrameClient;
 use self::connection::Connection;
+#[cfg(feature = "frame-socket")]
+pub use self::frame_socket::{
+    FRAME_SOCKET_TRANSPORT, FrameSocket, FrameSocketOptions, FrameSocketStats, fetch_frame,
+};
 pub use self::service::{
     CameraService, CameraServiceHandle, CameraServiceStats, DEFAULT_MAX_CLIENTS,
 };
@@ -38,6 +48,10 @@ type Authorize = dyn Fn(&PeerCredentials) -> bool + Send + Sync;
 
 /// Frames a client may hold before it gets no more (see [`FrameServer::max_in_flight`]).
 pub const DEFAULT_MAX_IN_FLIGHT: usize = 2;
+
+/// How long a client may hold a frame before it is disconnected and the frame taken back (see
+/// [`FrameServer::max_hold`]).
+pub const DEFAULT_MAX_HOLD: Duration = Duration::from_secs(2);
 
 #[derive(Debug, thiserror::Error)]
 pub enum IpcError {
@@ -65,6 +79,8 @@ pub struct FrameServerStats {
     pub skipped: u64,
     /// Clients connected now.
     pub clients: usize,
+    /// Clients disconnected for holding a frame longer than `max_hold`.
+    pub revoked: u64,
 }
 
 struct ServerState {
@@ -77,6 +93,7 @@ pub struct FrameServer {
     listener: std::os::fd::OwnedFd,
     path: PathBuf,
     max_in_flight: usize,
+    max_hold: Option<Duration>,
     authorize: Option<Box<Authorize>>,
     state: Mutex<ServerState>,
 }
@@ -90,6 +107,7 @@ impl FrameServer {
             listener,
             path,
             max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+            max_hold: Some(DEFAULT_MAX_HOLD),
             authorize: None,
             state: Mutex::new(ServerState {
                 clients: Vec::new(),
@@ -102,6 +120,14 @@ impl FrameServer {
     /// frames until it drops one. Each held frame may hold a camera buffer.
     pub fn max_in_flight(mut self, frames: usize) -> Self {
         self.max_in_flight = frames.max(1);
+        self
+    }
+
+    /// How long a client may hold a frame (default [`DEFAULT_MAX_HOLD`]; `None`: as long as it
+    /// likes). A client holding one longer is disconnected and its frames are taken back: their
+    /// buffers may be written again, so a consumer that needs a frame for longer copies it.
+    pub fn max_hold(mut self, max: Option<Duration>) -> Self {
+        self.max_hold = max;
         self
     }
 
@@ -139,10 +165,26 @@ impl FrameServer {
                 state.clients.push(Connection::new(socket));
             }
         }
-        // Releases, and clients that went away.
+        // Releases, clients that went away, and clients holding a frame too long.
+        let max_hold = self.max_hold;
+        let before = state.clients.len();
         state
             .clients
             .retain_mut(|client| client.poll(Duration::ZERO).is_ok());
+        let mut revoked = 0;
+        state.clients.retain(|client| {
+            let keep = !client.overheld(max_hold);
+            revoked += u64::from(!keep);
+            keep
+        });
+        if revoked > 0 {
+            tracing::warn!(
+                revoked,
+                connected = before,
+                "frame server: disconnected clients holding a frame longer than {max_hold:?}"
+            );
+        }
+        state.stats.revoked += revoked;
         let ready: Vec<usize> = (0..state.clients.len())
             .filter(|&i| state.clients[i].in_flight() < self.max_in_flight)
             .collect();

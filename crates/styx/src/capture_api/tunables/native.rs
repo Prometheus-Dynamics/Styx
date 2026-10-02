@@ -43,6 +43,12 @@ pub struct NativeIspConfig {
     /// Strength of the PiSP's spatial and colour denoise in percent of the tuning's: their
     /// noise thresholds are scaled by this (100, the default: as tuned; 0: off).
     pub spatial_denoise_percent: u16,
+    /// Buffers of each PiSP back end output (default 4, at least 2). Frames consumers hold
+    /// (a frame server's latest frame, frames other processes have not released) keep theirs;
+    /// when every one is held, frames are dropped until one comes back. More buffers let slow
+    /// consumers hold frames without costing frames, at one output frame's memory each
+    /// (1.5 MB for NV12 1280x800).
+    pub output_buffers: u32,
 }
 
 impl Default for NativeIspConfig {
@@ -56,6 +62,7 @@ impl Default for NativeIspConfig {
             soft_threads: None,
             temporal_denoise: true,
             spatial_denoise_percent: 100,
+            output_buffers: 4,
         }
     }
 }
@@ -72,6 +79,13 @@ impl StyxConfig {
     /// [`NativeIspConfig::temporal_denoise`]).
     pub fn native_temporal_denoise(mut self, on: bool) -> Self {
         self.backends.native.temporal_denoise = on;
+        self
+    }
+
+    /// Give each PiSP back end output `buffers` buffers (see
+    /// [`NativeIspConfig::output_buffers`]).
+    pub fn native_output_buffers(mut self, buffers: u32) -> Self {
+        self.backends.native.output_buffers = buffers.max(2);
         self
     }
 

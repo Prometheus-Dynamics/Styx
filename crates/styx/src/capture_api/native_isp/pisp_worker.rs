@@ -25,6 +25,7 @@ use styx_core::prelude::{
 use styx_core::queue::BoundedTx;
 use styx_kernel::Mapping;
 use styx_kernel::dma_heap::{self, Access, DmaBuf};
+use styx_pipeline::PipelineError;
 use styx_pipeline::device::{PispFrame, PispPipeline};
 use styx_pisp::device::{BeFormat, BeOutputSetup};
 
@@ -274,6 +275,7 @@ pub(super) fn spawn(
             let mut buffers = Buffers {
                 cache: HashMap::new(),
             };
+            let mut held_drops = 0u64;
             loop {
                 if w.stop.try_recv().is_ok() {
                     break;
@@ -283,6 +285,22 @@ pub(super) fn spawn(
                 }
                 let f = match p.next(w.timeout) {
                     Ok(f) => f,
+                    // Consumers hold every output buffer: this frame is dropped (never wait
+                    // for them: the camera keeps running), the next one after a buffer comes
+                    // back is processed.
+                    Err(PipelineError::OutputsHeld(output)) => {
+                        held_drops += 1;
+                        if held_drops == 1 {
+                            tracing::info!(
+                                backend = "native",
+                                output,
+                                "consumers hold every back end buffer: dropping frames until one is released"
+                            );
+                        } else {
+                            tracing::debug!(backend = "native", output, held_drops, "frame dropped: buffers held");
+                        }
+                        continue;
+                    }
                     Err(e) => {
                         *w.error.lock() = Some(err(e));
                         break;

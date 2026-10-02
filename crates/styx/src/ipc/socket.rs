@@ -1,5 +1,6 @@
 //! Unix `SOCK_SEQPACKET` sockets carrying file descriptors (`SCM_RIGHTS`). Message boundaries
-//! are kept, so each frame is one message with its descriptors attached.
+//! are kept, so each frame is one message with its descriptors attached. The frame socket
+//! ([`super::frame_socket`]) uses `SOCK_STREAM` sockets, as the transport it speaks does.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -29,11 +30,9 @@ fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
     }
 }
 
-fn seqpacket() -> io::Result<OwnedFd> {
+fn unix_socket(kind: libc::c_int) -> io::Result<OwnedFd> {
     // SAFETY: plain socket creation; a non-negative result is a new descriptor we own.
-    let fd = check(unsafe {
-        libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0)
-    })?;
+    let fd = check(unsafe { libc::socket(libc::AF_UNIX, kind | libc::SOCK_CLOEXEC, 0) })?;
     // SAFETY: `fd` was just created and is owned by nobody else.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
@@ -58,10 +57,20 @@ fn address(path: &Path) -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
 
 /// A non-blocking listening socket at `path`; a stale socket file there is replaced.
 pub(super) fn listen(path: &Path) -> io::Result<OwnedFd> {
+    listen_kind(path, libc::SOCK_SEQPACKET)
+}
+
+/// [`listen`] for a `SOCK_STREAM` socket.
+#[cfg(feature = "frame-socket")]
+pub(super) fn listen_stream(path: &Path) -> io::Result<OwnedFd> {
+    listen_kind(path, libc::SOCK_STREAM)
+}
+
+fn listen_kind(path: &Path, kind: libc::c_int) -> io::Result<OwnedFd> {
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket()) {
         std::fs::remove_file(path)?;
     }
-    let socket = seqpacket()?;
+    let socket = unix_socket(kind)?;
     let (addr, len) = address(path)?;
     // SAFETY: `addr` is a valid `sockaddr_un` of `len` bytes; the fd is open.
     check(unsafe {
@@ -101,7 +110,17 @@ pub(super) fn accept(listener: &OwnedFd) -> io::Result<Option<OwnedFd>> {
 }
 
 pub(super) fn connect(path: &Path) -> io::Result<OwnedFd> {
-    let socket = seqpacket()?;
+    connect_kind(path, libc::SOCK_SEQPACKET)
+}
+
+/// [`connect`] for a `SOCK_STREAM` socket.
+#[cfg(feature = "frame-socket")]
+pub(super) fn connect_stream(path: &Path) -> io::Result<OwnedFd> {
+    connect_kind(path, libc::SOCK_STREAM)
+}
+
+fn connect_kind(path: &Path, kind: libc::c_int) -> io::Result<OwnedFd> {
+    let socket = unix_socket(kind)?;
     let (addr, len) = address(path)?;
     // SAFETY: `addr` is a valid `sockaddr_un` of `len` bytes; the fd is open.
     check(unsafe {
@@ -165,7 +184,37 @@ pub(super) fn send(socket: &OwnedFd, bytes: &[u8], fds: &[RawFd]) -> io::Result<
             _ => Err(err),
         };
     }
+    // Only a stream socket short of room writes part of a message.
+    if sent as usize != bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "message only partly sent",
+        ));
+    }
     Ok(true)
+}
+
+/// Which of `fds` are readable (or closed by the other end), waiting up to `wait` for any.
+#[cfg(feature = "frame-socket")]
+pub(super) fn poll_readable(fds: &[RawFd], wait: Duration) -> io::Result<Vec<bool>> {
+    let mut polls: Vec<libc::pollfd> = fds
+        .iter()
+        .map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    let timeout = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: `polls` holds `polls.len()` valid `pollfd`s for the duration of the call.
+    let ready = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, timeout) };
+    if ready < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+    Ok(polls.iter().map(|p| p.revents != 0).collect())
 }
 
 /// The process at the other end of a connected Unix socket, as the kernel reports it.

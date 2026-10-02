@@ -38,6 +38,9 @@ pub enum DeviceError {
     Config(String),
     /// Nothing arrived in time.
     Timeout(&'static str),
+    /// Every buffer of this output is held by the caller (frames consumers still hold): the
+    /// job was not queued. Releasing one lets the next job run.
+    OutputsHeld(usize),
 }
 
 impl fmt::Display for DeviceError {
@@ -47,6 +50,7 @@ impl fmt::Display for DeviceError {
             Self::Setup(s) => write!(f, "setup: {s}"),
             Self::Config(s) => write!(f, "config: {s}"),
             Self::Timeout(what) => write!(f, "timed out waiting for {what}"),
+            Self::OutputsHeld(i) => write!(f, "output {i}: every buffer is held"),
         }
     }
 }

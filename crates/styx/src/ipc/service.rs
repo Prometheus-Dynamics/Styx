@@ -17,7 +17,7 @@ use self::camera::{Camera, FRAME_WAIT, FramesSlot, check_request};
 use super::connection::{self, Connection};
 use super::socket::{self, PeerCredentials};
 use super::wire::{self, CameraInfo, ClientMessage};
-use super::{DEFAULT_MAX_IN_FLIGHT, IpcError};
+use super::{DEFAULT_MAX_HOLD, DEFAULT_MAX_IN_FLIGHT, IpcError};
 use crate::capture_api::IdleStop;
 use crate::prelude::ProbedDevice;
 
@@ -52,6 +52,7 @@ pub(crate) struct ServiceConfig {
     cameras: Cameras,
     idle: Option<(Duration, IdleStop)>,
     max_in_flight: usize,
+    max_hold: Option<Duration>,
     max_clients: usize,
     authorize: Option<Authorize>,
     socket_mode: Option<u32>,
@@ -90,6 +91,7 @@ impl CameraService {
                 cameras,
                 idle: Some((Duration::from_secs(2), IdleStop::Pause)),
                 max_in_flight: DEFAULT_MAX_IN_FLIGHT,
+                max_hold: Some(DEFAULT_MAX_HOLD),
                 max_clients: DEFAULT_MAX_CLIENTS,
                 authorize: None,
                 socket_mode: None,
@@ -119,6 +121,14 @@ impl CameraService {
     /// Frames a client may hold at once (default [`DEFAULT_MAX_IN_FLIGHT`]).
     pub fn max_in_flight(mut self, frames: usize) -> Self {
         self.config.max_in_flight = frames.max(1);
+        self
+    }
+
+    /// How long a client may hold a frame (default [`DEFAULT_MAX_HOLD`]; `None`: no limit). A
+    /// client holding one longer is disconnected and its frames are taken back, so the camera
+    /// gets its buffers again; a consumer that needs a frame for longer copies it.
+    pub fn max_hold(mut self, max: Option<Duration>) -> Self {
+        self.config.max_hold = max;
         self
     }
 
@@ -194,6 +204,8 @@ pub struct CameraServiceStats {
     pub copied: u64,
     /// Frames a client's socket had no room for.
     pub skipped: u64,
+    /// Clients disconnected for holding a frame longer than [`CameraService::max_hold`].
+    pub revoked: u64,
 }
 
 /// A running [`CameraService`]; stops it when dropped.
@@ -213,6 +225,7 @@ impl CameraServiceHandle {
             sent: counters.sent.load(Ordering::Relaxed),
             copied: counters.copied.load(Ordering::Relaxed),
             skipped: counters.skipped.load(Ordering::Relaxed),
+            revoked: counters.revoked.load(Ordering::Relaxed),
         }
     }
 
@@ -268,6 +281,7 @@ pub(crate) struct Counters {
     sent: AtomicU64,
     copied: AtomicU64,
     skipped: AtomicU64,
+    revoked: AtomicU64,
 }
 
 struct Service {
@@ -472,6 +486,14 @@ fn send_frames(
                 }
             }
             Err(()) => return,
+        }
+        if conn.overheld(service.config.max_hold) {
+            counters.revoked.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                max_hold = ?service.config.max_hold,
+                "camera service: disconnecting a client that held a frame too long"
+            );
+            return;
         }
         if conn.in_flight() >= max_in_flight {
             continue;

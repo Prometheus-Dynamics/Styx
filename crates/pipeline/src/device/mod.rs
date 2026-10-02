@@ -30,7 +30,10 @@ impl From<NativeError> for PipelineError {
 
 impl From<styx_pisp::device::DeviceError> for PipelineError {
     fn from(e: styx_pisp::device::DeviceError) -> Self {
-        PipelineError::Device(format!("pisp: {e}"))
+        match e {
+            styx_pisp::device::DeviceError::OutputsHeld(i) => PipelineError::OutputsHeld(i),
+            e => PipelineError::Device(format!("pisp: {e}")),
+        }
     }
 }
 

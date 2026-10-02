@@ -258,6 +258,7 @@ pub(super) fn start_processed(
                 },
                 temporal_denoise: config.backends.native.temporal_denoise,
                 spatial_denoise: f64::from(config.backends.native.spatial_denoise_percent) / 100.0,
+                be_buffers: config.backends.native.output_buffers.max(2),
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;

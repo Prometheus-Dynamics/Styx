@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use styx_core::prelude::*;
 
@@ -101,8 +101,8 @@ fn export_part(
 /// One client's connection.
 pub(super) struct Connection {
     socket: OwnedFd,
-    /// Frames sent and not yet released, with the buffers they keep alive.
-    held: HashMap<u64, Vec<Arc<dyn ExternalBacking>>>,
+    /// Frames sent and not yet released: when, and the buffers they keep alive.
+    held: HashMap<u64, (Instant, Vec<Arc<dyn ExternalBacking>>)>,
     next_id: u64,
 }
 
@@ -128,8 +128,13 @@ impl Connection {
             return Ok(false);
         }
         self.next_id += 1;
-        self.held.insert(id, frame.keep.clone());
+        self.held.insert(id, (Instant::now(), frame.keep.clone()));
         Ok(true)
+    }
+
+    /// Whether the client has held a frame for longer than `max` (`None`: no limit).
+    pub(super) fn overheld(&self, max: Option<Duration>) -> bool {
+        max.is_some_and(|max| self.held.values().any(|(since, _)| since.elapsed() > max))
     }
 
     pub(super) fn send(&self, message: &[u8]) -> io::Result<bool> {

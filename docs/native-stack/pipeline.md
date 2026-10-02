@@ -136,6 +136,17 @@ thread, see "Wake-ups" below), then the front end streams. Each frame
    the caller holds until it releases them (each output on its own: `release_output`); the raw
    buffer goes back to the front end.
 
+Output buffers are reused in release order, and a buffer a consumer holds (a Styx lease, a
+frame server's latest frame, a frame another process has not released) is never written. When
+consumers hold every buffer of an output, `next` drops the frame (`PipelineError::OutputsHeld`:
+no job queued, the raw buffer goes back) and the Styx capture moves on to the next frame: the
+camera never waits for consumers. Each output has 4 buffers (`PispOptions::be_buffers`; through
+Styx `StyxConfig::native_output_buffers`). On the CM5 with the frame socket
+(`styx::ipc::FrameSocket`, NV12 1280x800 at 30 fps, 20 s each): two consumers holding a frame
+for 500 ms each cost frames with 4 buffers (17.3 fps delivered) and none with 8 (30.03 fps, no
+sequence gap); three holding 1 s each with 4 buffers left 3.6 fps; no held frame changed in
+any run.
+
 The back end's outputs are cached dma-heap buffers (`linux,cma`) imported with
 `V4L2_MEMORY_DMABUF` (`OutputMemory::CachedHeap`, the default): vb2 does no cache maintenance
 on imported buffers, so a CPU reader brackets its reads with `DMA_BUF_IOCTL_SYNC`

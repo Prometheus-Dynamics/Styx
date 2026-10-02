@@ -363,9 +363,7 @@ impl BackEndStream {
             if let Some(o) = o {
                 let Some(b) = o.free.pop_front() else {
                     self.give_back(picked);
-                    return Err(DeviceError::Setup(format!(
-                        "output {i}: every buffer is held"
-                    )));
+                    return Err(DeviceError::OutputsHeld(i));
                 };
                 picked[i] = Some(b);
             }
