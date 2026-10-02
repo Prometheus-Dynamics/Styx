@@ -106,7 +106,8 @@ limits at that fps.
     binding/unbinding drivers, runtime overlays via configfs, loading our modules, streaming)
     needs the device lock, taken atomically with
     `ssh root@helios 'mkdir /tmp/styx-device-lock && echo "<agent> $(date)" > /tmp/styx-device-lock/owner'`
-    (retry every 60 s while it exists; never delete someone else's lock). Keep it only as long as
+    (retry every 60 s while it exists; never delete someone else's lock). Chain every device step
+    after the lock with `&&` or `set -e` so nothing runs if taking the lock fails. Keep it only as long as
     needed, and before releasing it (`rm -rf /tmp/styx-device-lock`) restore the device:
     `helios-peripherals` active, `ov9282` bound to `10-0060`, no runtime overlay or Styx module
     loaded (`kernel-modules/styx-sensor-bridge/spike/down.sh` does this). If restoring fails,
