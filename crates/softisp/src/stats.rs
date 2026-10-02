@@ -94,6 +94,8 @@ pub(crate) struct StatsAccum {
     pub histogram: Vec<u32>,
     bins: usize,
     samples: u32,
+    /// The bins of the row being added.
+    bin_row: Vec<u16>,
 }
 
 impl StatsAccum {
@@ -107,6 +109,7 @@ impl StatsAccum {
             histogram: vec![0; 4 * setup.config.histogram_bins as usize],
             bins: setup.config.histogram_bins as usize,
             samples: 0,
+            bin_row: Vec::new(),
         }
     }
 
@@ -136,27 +139,24 @@ impl StatsAccum {
             self.luma[z] += ls as u64;
             self.quads[z] += (c1 - c0) as u32;
         }
-        // Histogram: four quads at a time into the four copies.
+        // Histogram: bins computed in vectors, then counted four quads at a time into the
+        // four copies.
+        let quads = rgb[0].len().min(rgb[1].len()).min(rgb[2].len());
+        self.bin_row.resize(quads, 0);
+        simd::luma_bins_row(rgb, &mut self.bin_row, self.bins as u16, quads);
         let bins = self.bins;
-        let bin = |r: u16, g: u16, b: u16| {
-            let y = (r as u32 + 2 * g as u32 + b as u32 + 2) >> 2;
-            ((y * bins as u32) >> 12) as usize
-        };
         let (h0, rest) = self.histogram.split_at_mut(bins);
         let (h1, rest) = rest.split_at_mut(bins);
         let (h2, h3) = rest.split_at_mut(bins);
-        let (r, g, b) = (rgb[0], rgb[1], rgb[2]);
-        let quads = r.len().min(g.len()).min(b.len());
-        let mut i = 0;
-        while i + 4 <= quads {
-            h0[bin(r[i], g[i], b[i])] += 1;
-            h1[bin(r[i + 1], g[i + 1], b[i + 1])] += 1;
-            h2[bin(r[i + 2], g[i + 2], b[i + 2])] += 1;
-            h3[bin(r[i + 3], g[i + 3], b[i + 3])] += 1;
-            i += 4;
+        let mut four = self.bin_row.chunks_exact(4);
+        for q in &mut four {
+            h0[q[0] as usize] += 1;
+            h1[q[1] as usize] += 1;
+            h2[q[2] as usize] += 1;
+            h3[q[3] as usize] += 1;
         }
-        for k in i..quads {
-            h0[bin(r[k], g[k], b[k])] += 1;
+        for &b in four.remainder() {
+            h0[b as usize] += 1;
         }
         self.samples += quads as u32;
     }

@@ -23,8 +23,8 @@
 //! luma and a luma histogram.
 //!
 //! The frame is processed row by row with a ring of a few front-end rows, so the working set
-//! stays in L1/L2. With the `rayon` feature, [`SoftIsp::with_threads`] processes row bands in
-//! parallel.
+//! stays in L1/L2. [`SoftIsp::with_threads`] processes row bands in parallel on a persistent
+//! pool of helper threads.
 //!
 //! # Kernels
 //!
@@ -39,6 +39,7 @@ mod isp;
 mod output;
 pub mod params;
 mod pipeline;
+mod pool;
 mod prepare;
 pub mod simd;
 mod stats;

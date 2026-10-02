@@ -276,3 +276,13 @@ pub fn zone_sums(rgb: [&[u16]; 3], width: usize, sat: u16) -> [u32; 5] {
     }
     s
 }
+
+/// Histogram bins of quad luma: `((R + 2G + B + 2) >> 2) * bins >> 12` for 12-bit R, G, B
+/// rows of `width` quads (`bins` at most 4096).
+pub fn luma_bins_row(rgb: [&[u16]; 3], dst: &mut [u16], bins: u16, width: usize) {
+    let [r, g, b] = rgb.map(|p| &p[..width]);
+    for (i, d) in dst[..width].iter_mut().enumerate() {
+        let y = (r[i] as u32 + 2 * g[i] as u32 + b[i] as u32 + 2) >> 2;
+        *d = ((y * bins as u32) >> 12) as u16;
+    }
+}
