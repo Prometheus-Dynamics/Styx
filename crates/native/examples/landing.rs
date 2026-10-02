@@ -255,9 +255,15 @@ fn report(rows: &[Row], steps: &[(&str, u64, u64, bool)]) {
                 }
             })
             .map(|r| r.seq);
+        // A step that keeps the level (exposure ×2, gain ÷2) shows a frame ×2 or ÷2 off its
+        // prediction when the two land apart; light flicker moves it by a few percent.
+        let split = rows
+            .iter()
+            .filter(|r| r.seq + 1 >= *lands && r.seq <= lands + 1)
+            .any(|r| ((r.level / r.product) / median - 1.0).abs() > 0.25);
         let ok = match changed {
             Some(s) => s == *lands,
-            None => (l.level / b.level - 1.0).abs() < 0.05 && !what.starts_with("rate"),
+            None => !split && (l.level / b.level - 1.0).abs() < 0.25 && !what.starts_with("rate"),
         };
         hits += usize::from(ok);
         println!(
