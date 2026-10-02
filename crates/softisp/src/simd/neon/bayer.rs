@@ -130,6 +130,35 @@ unsafe fn store_rgb(
     }
 }
 
+/// Bilinear demosaic of the 8 pixels at `x`: `(green, X, Y)` (see [`RowKind`]).
+///
+/// # Safety
+/// Rows hold `x + 10` samples.
+#[inline(always)]
+unsafe fn bilinear8(
+    rows: [&[u16]; 3],
+    x: usize,
+    mask: uint16x8_t,
+) -> (uint16x8_t, uint16x8_t, uint16x8_t) {
+    let [up, cur, dn] = rows;
+    // SAFETY: the caller keeps `x + 10` within the rows.
+    unsafe {
+        let (l, c, r) = (ld(cur, x), ld(cur, x + 1), ld(cur, x + 2));
+        let (u, d) = (ld(up, x + 1), ld(dn, x + 1));
+        let h = vaddq_u16(l, r);
+        let v = vaddq_u16(u, d);
+        let diag = vaddq_u16(
+            vaddq_u16(ld(up, x), ld(up, x + 2)),
+            vaddq_u16(ld(dn, x), ld(dn, x + 2)),
+        );
+        let g_cross = vrshrq_n_u16::<2>(vaddq_u16(h, v));
+        let g = vbslq_u16(mask, c, g_cross);
+        let xv = vbslq_u16(mask, vrhaddq_u16(l, r), c);
+        let yv = vbslq_u16(mask, vrhaddq_u16(u, d), vrshrq_n_u16::<2>(diag));
+        (g, xv, yv)
+    }
+}
+
 /// # Safety
 /// As [`unpack`]; input rows hold `width + 2` samples, outputs `width`.
 #[target_feature(enable = "neon")]
@@ -139,24 +168,12 @@ pub(in crate::simd) unsafe fn demosaic_bilinear(
     width: usize,
     kind: RowKind,
 ) -> usize {
-    let [up, cur, dn] = rows;
     let mut x = 0;
     // SAFETY: loads at `x + 2` of 8 lanes stay inside the `width + 2` rows while `x + 8 <= width`.
     unsafe {
         let mask = green_mask(kind);
         while x + 8 <= width {
-            let (l, c, r) = (ld(cur, x), ld(cur, x + 1), ld(cur, x + 2));
-            let (u, d) = (ld(up, x + 1), ld(dn, x + 1));
-            let h = vaddq_u16(l, r);
-            let v = vaddq_u16(u, d);
-            let diag = vaddq_u16(
-                vaddq_u16(ld(up, x), ld(up, x + 2)),
-                vaddq_u16(ld(dn, x), ld(dn, x + 2)),
-            );
-            let g_cross = vrshrq_n_u16::<2>(vaddq_u16(h, v));
-            let g = vbslq_u16(mask, c, g_cross);
-            let xv = vbslq_u16(mask, vrhaddq_u16(l, r), c);
-            let yv = vbslq_u16(mask, vrhaddq_u16(u, d), vrshrq_n_u16::<2>(diag));
+            let (g, xv, yv) = bilinear8(rows, x, mask);
             store_rgb(&mut out, x, kind, g, xv, yv);
             x += 8;
         }
@@ -187,6 +204,51 @@ unsafe fn mix(a: [uint16x8_t; 2], wa: [i16; 2], b: [uint16x8_t; 2], wb: [i16; 2]
     }
 }
 
+/// Malvar-He-Cutler demosaic of the 8 pixels at `x`: `(green, X, Y)`.
+///
+/// # Safety
+/// Rows hold `x + 12` samples.
+#[inline(always)]
+unsafe fn mhc8(
+    rows: [&[u16]; 5],
+    x: usize,
+    mask: uint16x8_t,
+) -> (uint16x8_t, uint16x8_t, uint16x8_t) {
+    let [u2, u1, c0, d1, d2] = rows;
+    // SAFETY: the caller keeps `x + 12` within the rows.
+    unsafe {
+        let zero = vdupq_n_u16(0);
+        let c = ld(c0, x + 2);
+        let far_h = vaddq_u16(ld(c0, x), ld(c0, x + 4));
+        let far_v = vaddq_u16(ld(u2, x + 2), ld(d2, x + 2));
+        let near_h = vaddq_u16(ld(c0, x + 1), ld(c0, x + 3));
+        let near_v = vaddq_u16(ld(u1, x + 2), ld(d1, x + 2));
+        let diag = vaddq_u16(
+            vaddq_u16(ld(u1, x + 1), ld(u1, x + 3)),
+            vaddq_u16(ld(d1, x + 1), ld(d1, x + 3)),
+        );
+        let xs = mix(
+            [c, near_h],
+            [10, 8],
+            [vaddq_u16(far_h, diag), far_v],
+            [-2, 1],
+        );
+        let ys = mix(
+            [c, near_v],
+            [10, 8],
+            [vaddq_u16(far_v, diag), far_h],
+            [-2, 1],
+        );
+        let far = vaddq_u16(far_h, far_v);
+        let gs = mix([c, vaddq_u16(near_h, near_v)], [8, 4], [far, zero], [-2, 0]);
+        let y2 = mix([c, diag], [12, 4], [far, zero], [-3, 0]);
+        let g = vbslq_u16(mask, c, gs);
+        let xv = vbslq_u16(mask, xs, c);
+        let yv = vbslq_u16(mask, ys, y2);
+        (g, xv, yv)
+    }
+}
+
 /// # Safety
 /// As [`unpack`]; input rows hold `width + 4` samples, outputs `width`.
 #[target_feature(enable = "neon")]
@@ -196,40 +258,12 @@ pub(in crate::simd) unsafe fn demosaic_mhc(
     width: usize,
     kind: RowKind,
 ) -> usize {
-    let [u2, u1, c0, d1, d2] = rows;
     let mut x = 0;
     // SAFETY: loads at `x + 4` of 8 lanes stay inside the `width + 4` rows while `x + 8 <= width`.
     unsafe {
         let mask = green_mask(kind);
-        let zero = vdupq_n_u16(0);
         while x + 8 <= width {
-            let c = ld(c0, x + 2);
-            let far_h = vaddq_u16(ld(c0, x), ld(c0, x + 4));
-            let far_v = vaddq_u16(ld(u2, x + 2), ld(d2, x + 2));
-            let near_h = vaddq_u16(ld(c0, x + 1), ld(c0, x + 3));
-            let near_v = vaddq_u16(ld(u1, x + 2), ld(d1, x + 2));
-            let diag = vaddq_u16(
-                vaddq_u16(ld(u1, x + 1), ld(u1, x + 3)),
-                vaddq_u16(ld(d1, x + 1), ld(d1, x + 3)),
-            );
-            let xs = mix(
-                [c, near_h],
-                [10, 8],
-                [vaddq_u16(far_h, diag), far_v],
-                [-2, 1],
-            );
-            let ys = mix(
-                [c, near_v],
-                [10, 8],
-                [vaddq_u16(far_v, diag), far_h],
-                [-2, 1],
-            );
-            let far = vaddq_u16(far_h, far_v);
-            let gs = mix([c, vaddq_u16(near_h, near_v)], [8, 4], [far, zero], [-2, 0]);
-            let y2 = mix([c, diag], [12, 4], [far, zero], [-3, 0]);
-            let g = vbslq_u16(mask, c, gs);
-            let xv = vbslq_u16(mask, xs, c);
-            let yv = vbslq_u16(mask, ys, y2);
+            let (g, xv, yv) = mhc8(rows, x, mask);
             store_rgb(&mut out, x, kind, g, xv, yv);
             x += 8;
         }
