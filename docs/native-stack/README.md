@@ -112,6 +112,12 @@ limits at that fps.
     stop and report; do not reboot without the user.
   - The bridge spike (`spike/up.sh`, `native-spike`, `spike/down.sh`) is approved for use under
     the lock.
+  - Never use I2C force access (`I2C_SLAVE_FORCE`, `i2ctransfer -f`) while a kernel driver owns
+    the address.
+  - The device has rebooted unexpectedly several times (cause unknown; there is a hardware
+    watchdog). While you hold the lock, stream its kernel log to a file on the host
+    (`ssh root@helios dmesg -w > <worktree>/target/helios-dmesg-<time>.log &`) so a reboot leaves
+    evidence; if it reboots or hangs, stop device work and report what you were doing.
 - Licensing: Styx is MIT/Apache. The HeliOS `ov9782.c` driver is GPL-2.0-only: register values
   read from it for the spike go in a separate data file marked with their provenance, to be
   replaced from the datasheet (or cleared by the user) before merging to `dev`. The bridge
