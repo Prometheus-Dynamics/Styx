@@ -194,7 +194,6 @@ fn row_step_and_all_outputs_and_scales_gather_the_same_stats() {
     assert_eq!(s.unwrap().samples, all[0].as_ref().unwrap().samples / 2);
 }
 
-#[cfg(feature = "rayon")]
 #[test]
 fn parallel_bands_match_one_thread() {
     let (w, h) = (256usize, 150usize);
@@ -214,7 +213,7 @@ fn parallel_bands_match_one_thread() {
             ..Default::default()
         };
         let mut one = SoftIsp::new(format, params.clone()).unwrap();
-        for threads in [2, 3, 7] {
+        for threads in [0, 2, 3, 4, 7] {
             let mut many = SoftIsp::new(format, params.clone())
                 .unwrap()
                 .with_threads(threads);

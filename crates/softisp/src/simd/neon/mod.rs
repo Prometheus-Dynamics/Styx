@@ -101,6 +101,15 @@ pub(super) fn narrow_row(
     done(unsafe { color::narrow(src, dst, width) })
 }
 
+pub(super) fn lut_row(
+    src: &[u16],
+    dst: &mut [u8],
+    lut: &[u8; 4096],
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    done(unsafe { color::lut(src, dst, lut, width) })
+}
+
 pub(super) fn interleave_rgb_row(
     planes: [&[u8]; 3],
     dst: &mut [u8],
@@ -139,4 +148,13 @@ pub(super) fn zone_sums(
 ) -> Option<(SimdBackend, usize, [u32; 5])> {
     let (done, sums) = unsafe { bayer::zone_sums(rgb, width, sat) };
     (done > 0).then_some((SimdBackend::Neon, done, sums))
+}
+
+pub(super) fn luma_bins_row(
+    rgb: [&[u16]; 3],
+    dst: &mut [u16],
+    bins: u16,
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    done(unsafe { bayer::luma_bins(rgb, dst, bins, width) })
 }

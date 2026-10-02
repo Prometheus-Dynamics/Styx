@@ -156,3 +156,40 @@ pub(in crate::simd) unsafe fn rgb_to_uv(
     }
     i
 }
+
+/// Eight table bytes for the clamped samples of `v` (four per 64-bit half), as one word.
+#[inline(always)]
+pub(in crate::simd) unsafe fn lut8(lut: &[u8; 4096], v: uint16x8_t) -> u64 {
+    unsafe {
+        let v = vminq_u16(v, vdupq_n_u16(4095));
+        let (a, b) = (
+            vgetq_lane_u64::<0>(vreinterpretq_u64_u16(v)),
+            vgetq_lane_u64::<1>(vreinterpretq_u64_u16(v)),
+        );
+        let at = |w: u64, k: u32| u64::from(lut[(w >> (16 * k)) as usize & 0xFFF]) << (8 * k);
+        let lo = at(a, 0) | at(a, 1) | at(a, 2) | at(a, 3);
+        let hi = at(b, 0) | at(b, 1) | at(b, 2) | at(b, 3);
+        lo | hi << 32
+    }
+}
+
+/// # Safety
+/// As [`ccm`]; `src` holds `width` samples, `dst` `width` bytes.
+#[target_feature(enable = "neon")]
+pub(in crate::simd) unsafe fn lut(
+    src: &[u16],
+    dst: &mut [u8],
+    lut: &[u8; 4096],
+    width: usize,
+) -> usize {
+    let mut x = 0;
+    // SAFETY: 8 samples read and 8 bytes written at `x`, `x + 8 <= width`.
+    unsafe {
+        while x + 8 <= width {
+            let w = lut8(lut, vld1q_u16(src.as_ptr().add(x)));
+            std::ptr::write_unaligned(dst.as_mut_ptr().add(x).cast::<u64>(), w.to_le());
+            x += 8;
+        }
+    }
+    x
+}

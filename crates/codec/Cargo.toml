@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 styx-core.workspace = true
 styx-capture.workspace = true
-styx-softisp = { workspace = true, optional = true, features = ["rayon"] }
+styx-softisp = { workspace = true, optional = true }
 thiserror.workspace = true
 jpeg-decoder = { workspace = true, optional = true }
 zune-jpeg = { workspace = true, optional = true }

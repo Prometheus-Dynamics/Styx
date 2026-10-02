@@ -14,7 +14,6 @@ rust-version.workspace = true
 styx-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
-rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -24,8 +23,9 @@ default = ["neon", "x86"]
 # SIMD backends, as in `styx-core::simd`: AArch64 NEON, x86 SSE2/SSSE3/AVX2 chosen at run time.
 neon = ["styx-core/neon"]
 x86 = ["styx-core/x86"]
-# Row bands processed in parallel on the rayon pool (`SoftIsp::with_threads`).
-rayon = ["dep:rayon"]
+# No effect: kept for compatibility. Row bands run in parallel on the ISP's own persistent
+# helper threads (`SoftIsp::with_threads`) without it.
+rayon = []
 
 [[bench]]
 name = "softisp"

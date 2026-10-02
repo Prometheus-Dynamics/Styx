@@ -314,6 +314,30 @@ pub(super) unsafe fn quad_luma<V: Vx>(
     i
 }
 
+/// Histogram bins of quad luma, `(y << 4) * bins >> 16` (`y << 4` fits 16 bits for 12-bit
+/// samples).
+#[inline(always)]
+pub(super) unsafe fn luma_bins<V: Vx>(
+    rgb: [&[u16]; 3],
+    dst: &mut [u16],
+    bins: u16,
+    width: usize,
+) -> usize {
+    let n = lanes::<V>();
+    let mut i = 0;
+    // SAFETY: `n` lanes of each row at `i`, `i + n <= width`.
+    unsafe {
+        let (two, k) = (V::splat16(2), V::splat16(bins as i16));
+        while i + n <= width {
+            let (r, g, b) = (ld::<V>(rgb[0], i), ld::<V>(rgb[1], i), ld::<V>(rgb[2], i));
+            let y = V::srli16::<2>(V::add16(V::add16(r, b), V::add16(V::slli16::<1>(g), two)));
+            st(dst, i, V::mulhi_u16(V::slli16::<4>(y), k));
+            i += n;
+        }
+    }
+    i
+}
+
 /// Sums of the 32-bit lanes of `v`.
 #[inline(always)]
 unsafe fn hsum32<V: Vx>(v: V) -> u32 {
@@ -411,4 +435,6 @@ instantiate! {
         top: &[u16], bottom: &[u16], out: [&mut [u16]; 3], width: usize, pattern: CfaPattern);
     quad_luma => quad_luma_sse2, quad_luma_avx2(
         top: &[u16], bottom: &[u16], dst: &mut [u16], width: usize);
+    luma_bins => luma_bins_sse2, luma_bins_avx2(
+        rgb: [&[u16]; 3], dst: &mut [u16], bins: u16, width: usize);
 }
