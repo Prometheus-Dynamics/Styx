@@ -229,10 +229,12 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
             Ok(None) => return Ok(()),
             Err(e) => return Err(Fault::from_io("bridge stream request", &e)),
         };
+        trace!("request {:?} seq {} dequeued", req.action, req.sequence);
         let result = s.sensor.serve(&req).map_err(|(errno, why)| {
             s.health.serve_failed(why);
             errno
         });
+        trace!("served {result:?}");
         let acked = s.bridge.acknowledge(&req, result);
         trace!(
             "request {:?} seq {} served {result:?} ack {acked:?}",
@@ -302,6 +304,7 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
     };
     while !stop.load(Ordering::Acquire) {
         let quiet = check_gate(gate);
+        trace!("loop quiet {quiet}");
         if let Err(f) = serve_requests(s) {
             fail(f);
             return;

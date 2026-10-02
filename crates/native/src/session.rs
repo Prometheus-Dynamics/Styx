@@ -226,10 +226,12 @@ impl Session {
         // Nothing may poll the node while STREAMOFF holds its lock and waits for the bridge.
         running.events.quiesce();
         let result = running.shared.video.stream_off().step("VIDIOC_STREAMOFF");
-        running.events.join();
+        // rp1-cfe stops the sensor (the bridge's stop request) when the last node stops: with
+        // embedded data that is the embedded node, so the event thread must still serve it.
         if let Some(e) = &self.embedded {
             e.stop();
         }
+        running.events.join();
         let released = buffers.release();
         self.sensor.standby();
         match result {
