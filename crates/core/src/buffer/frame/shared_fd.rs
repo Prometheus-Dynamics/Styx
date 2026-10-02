@@ -6,7 +6,17 @@ use super::{ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane,
 pub(super) struct SharedFdBacking {
     kind: SharedFdBackingKind,
     planes: Vec<SharedFdPlane>,
-    mapped: std::sync::OnceLock<Vec<Option<MappedFdRange>>>,
+    mapped: std::sync::OnceLock<Mapped>,
+}
+
+/// The mappings made on first CPU access: one per underlying buffer (planes whose descriptors
+/// refer to the same buffer, e.g. the Y and CbCr planes of one NV12 dma-buf, share one mapping
+/// and one CPU-access sync), and which mapping each plane is in.
+struct Mapped {
+    ranges: Vec<MappedFdRange>,
+    /// The descriptor each range was mapped from (for the end-of-access sync).
+    range_fds: Vec<usize>,
+    plane_range: Vec<Option<usize>>,
 }
 
 enum SharedFdBackingKind {
@@ -20,6 +30,10 @@ struct SharedFdPlane {
     offset: usize,
     len: usize,
 }
+
+/// Planes on one buffer: its identity, the descriptor to map it from and the byte span the
+/// planes cover.
+type Group = (Option<(u64, u64)>, usize, usize, usize);
 
 struct MappedFdRange {
     ptr: *mut core::ffi::c_void,
@@ -72,23 +86,96 @@ impl SharedFdBacking {
         }
     }
 
-    fn mapped_ranges(&self) -> &Vec<Option<MappedFdRange>> {
+    /// Identity of the buffer behind descriptor `index` (device and inode: descriptors
+    /// duplicated from one dma-buf or memfd agree), `None` if it cannot be read.
+    fn identity(&self, index: usize) -> Option<(u64, u64)> {
+        let fd = self.fd(index)?;
+        let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: `fstat` writes a `stat` into the buffer for a valid descriptor; it is read
+        // only when the call succeeded.
+        let r = unsafe { libc::fstat(fd.as_raw_fd(), st.as_mut_ptr()) };
+        if r != 0 {
+            return None;
+        }
+        // SAFETY: `fstat` succeeded, so `st` is initialised.
+        let st = unsafe { st.assume_init() };
+        // The field types differ between platforms.
+        #[allow(clippy::unnecessary_cast)]
+        Some((st.st_dev as u64, st.st_ino as u64))
+    }
+
+    fn mapped(&self) -> &Mapped {
         self.mapped.get_or_init(|| {
-            let ranges = self
-                .planes
-                .iter()
-                .map(|plane| self.map_plane(*plane).ok().flatten())
-                .collect();
-            self.sync_dmabufs(true);
-            ranges
+            // Group the planes by the buffer behind their descriptors: the span each group
+            // covers is mapped (and synced) once.
+            let mut groups: Vec<Group> = Vec::new();
+            let mut plane_group = Vec::with_capacity(self.planes.len());
+            let mut ids: Vec<(usize, Option<(u64, u64)>)> = Vec::new();
+            for plane in &self.planes {
+                if plane.len == 0 || self.fd(plane.fd_index).is_none() {
+                    plane_group.push(None);
+                    continue;
+                }
+                let id = match ids.iter().find(|(i, _)| *i == plane.fd_index) {
+                    Some((_, id)) => *id,
+                    None => {
+                        let id = self.identity(plane.fd_index);
+                        ids.push((plane.fd_index, id));
+                        id
+                    }
+                };
+                let end = plane.offset.saturating_add(plane.len);
+                let same = |g: &Group| {
+                    if id.is_some() {
+                        g.0 == id
+                    } else {
+                        g.1 == plane.fd_index
+                    }
+                };
+                match groups.iter().position(same) {
+                    Some(g) => {
+                        groups[g].2 = groups[g].2.min(plane.offset);
+                        groups[g].3 = groups[g].3.max(end);
+                        plane_group.push(Some(g));
+                    }
+                    None => {
+                        groups.push((id, plane.fd_index, plane.offset, end));
+                        plane_group.push(Some(groups.len() - 1));
+                    }
+                }
+            }
+            let mut ranges = Vec::with_capacity(groups.len());
+            let mut range_fds = Vec::with_capacity(groups.len());
+            let mut group_range = Vec::with_capacity(groups.len());
+            for &(_, fd_index, lo, hi) in &groups {
+                match self.map_span(fd_index, lo, hi - lo) {
+                    Ok(Some(range)) => {
+                        group_range.push(Some(ranges.len()));
+                        ranges.push(range);
+                        range_fds.push(fd_index);
+                    }
+                    _ => group_range.push(None),
+                }
+            }
+            let mapped = Mapped {
+                ranges,
+                range_fds,
+                plane_range: plane_group
+                    .into_iter()
+                    .map(|g| g.and_then(|g| group_range[g]))
+                    .collect(),
+            };
+            self.sync_dmabufs(&mapped.range_fds, true);
+            mapped
         })
     }
 
-    /// Bracket CPU reads of imported dma-bufs so cached mappings never serve stale lines.
-    fn sync_dmabufs(&self, begin: bool) {
+    /// Bracket CPU reads of imported dma-bufs so cached mappings never serve stale lines (once
+    /// per mapped buffer).
+    fn sync_dmabufs(&self, fds: &[usize], begin: bool) {
         #[cfg(target_os = "linux")]
-        if let SharedFdBackingKind::Dmabuf(fds) = &self.kind {
-            for fd in fds {
+        if let SharedFdBackingKind::Dmabuf(all) = &self.kind {
+            for fd in fds.iter().filter_map(|&i| all.get(i)) {
                 let _ = if begin {
                     crate::buffer::dmabuf_begin_cpu_read(fd.as_raw_fd())
                 } else {
@@ -97,26 +184,37 @@ impl SharedFdBacking {
             }
         }
         #[cfg(not(target_os = "linux"))]
-        let _ = begin;
+        let _ = (fds, begin);
     }
 
-    fn map_plane(&self, plane: SharedFdPlane) -> Result<Option<MappedFdRange>, FrameExportError> {
-        if plane.len == 0 {
+    /// Maps `len` bytes at `offset` of descriptor `fd_index` read-only, populated (the pages
+    /// are about to be read: one call instead of a fault per page).
+    fn map_span(
+        &self,
+        fd_index: usize,
+        offset: usize,
+        len: usize,
+    ) -> Result<Option<MappedFdRange>, FrameExportError> {
+        if len == 0 {
             return Ok(None);
         }
-        let Some(fd) = self.fd(plane.fd_index) else {
+        let Some(fd) = self.fd(fd_index) else {
             return Ok(None);
         };
         let page_size = system_page_size();
-        let map_offset = plane.offset - (plane.offset % page_size);
-        let delta = plane.offset - map_offset;
-        let map_len = delta.saturating_add(plane.len);
+        let map_offset = offset - (offset % page_size);
+        let delta = offset - map_offset;
+        let map_len = delta.saturating_add(len);
+        #[cfg(target_os = "linux")]
+        let flags = libc::MAP_SHARED | libc::MAP_POPULATE;
+        #[cfg(not(target_os = "linux"))]
+        let flags = libc::MAP_SHARED;
         let addr = unsafe {
             libc::mmap(
                 core::ptr::null_mut(),
                 map_len,
                 libc::PROT_READ,
-                libc::MAP_SHARED,
+                flags,
                 fd.as_raw_fd(),
                 map_offset as _,
             )
@@ -144,7 +242,8 @@ unsafe impl Sync for SharedFdBacking {}
 impl ExternalBacking for SharedFdBacking {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
         let plane = self.planes.get(index)?;
-        let range = self.mapped_ranges().get(index)?.as_ref()?;
+        let mapped = self.mapped();
+        let range = mapped.ranges.get((*mapped.plane_range.get(index)?)?)?;
         let offset = plane.offset.checked_sub(range.map_offset)?;
         Some(unsafe { std::slice::from_raw_parts(range.ptr.cast::<u8>().add(offset), plane.len) })
     }
@@ -205,8 +304,8 @@ impl ExternalBacking for SharedFdBacking {
 impl Drop for SharedFdBacking {
     fn drop(&mut self) {
         if let Some(mapped) = self.mapped.take() {
-            self.sync_dmabufs(false);
-            for range in mapped.into_iter().flatten() {
+            self.sync_dmabufs(&mapped.range_fds, false);
+            for range in mapped.ranges {
                 unsafe {
                     libc::munmap(range.ptr, range.map_len);
                 }
