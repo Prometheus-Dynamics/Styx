@@ -4,13 +4,14 @@
 //! values a frame carries are read back from the sensor instead of predicted.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use styx_kernel::media::{EntityFunction, Topology};
 use styx_kernel::v4l2::{BufType, Format, Memory, MetaFormat, QueueBuffer, VideoDevice};
 use styx_kernel::{FourCc, Mapping};
 
+use crate::control::lock;
 use crate::error::{KernelContext, Result};
 use crate::stream::SensorSide;
 use crate::topology::{LinkChange, RawRoute};
@@ -47,16 +48,21 @@ pub(crate) fn embedded_link(topo: &Topology, route: &RawRoute) -> Option<LinkCha
 }
 
 /// The embedded data node, streaming alongside the image node.
+///
+/// Its buffers exist only while it streams: [`EmbeddedCapture::stop`] frees them, so a
+/// handle kept alive by a stale frame stream does not keep the queue busy for the next open
+/// (`S_FMT` fails with `EBUSY` on a queue with buffers).
 pub(crate) struct EmbeddedCapture {
     video: VideoDevice,
-    maps: Vec<Mapping>,
+    buffers: u32,
+    maps: Mutex<Vec<Mapping>>,
     streaming: AtomicBool,
     sensor: Arc<dyn SensorSide>,
     pub(crate) reported: AtomicU64,
 }
 
 impl EmbeddedCapture {
-    /// Opens the node, sets the sensor-data format and queues `buffers` buffers.
+    /// Opens the node and sets the sensor-data format; buffers come with [`Self::start`].
     pub(crate) fn open(path: &Path, buffers: u32, sensor: Arc<dyn SensorSide>) -> Result<Self> {
         let video = VideoDevice::open(path).step("open embedded node")?;
         video
@@ -69,32 +75,41 @@ impl EmbeddedCapture {
                 }),
             )
             .step("embedded format")?;
-        let got = video
-            .request_buffers(META, Memory::Mmap, buffers.max(2))
-            .step("embedded REQBUFS")?;
-        let mut maps = Vec::new();
-        for i in 0..got.count {
-            let mut planes = video.map_buffer(META, i).step("map embedded buffer")?;
-            if !planes.is_empty() {
-                maps.push(planes.remove(0));
-            }
-            video
-                .queue(&QueueBuffer::mmap(META, i))
-                .step("embedded QBUF")?;
-        }
         Ok(Self {
             video,
-            maps,
+            buffers: buffers.max(2),
+            maps: Mutex::new(Vec::new()),
             streaming: AtomicBool::new(false),
             sensor,
             reported: AtomicU64::new(0),
         })
     }
 
-    /// Starts streaming (before the image node: the receiver starts once every node with an
-    /// enabled link streams).
+    /// Allocates and queues the buffers and starts streaming (before the image node: the
+    /// receiver starts once every node with an enabled link streams).
     pub(crate) fn start(&self) -> Result<()> {
-        self.video.stream_on(META).step("embedded STREAMON")?;
+        let mut maps = lock(&self.maps);
+        let r = (|| {
+            let got = self
+                .video
+                .request_buffers(META, Memory::Mmap, self.buffers)
+                .step("embedded REQBUFS")?;
+            for i in 0..got.count {
+                let mut planes = self.video.map_buffer(META, i).step("map embedded buffer")?;
+                if !planes.is_empty() {
+                    maps.push(planes.remove(0));
+                }
+                self.video
+                    .queue(&QueueBuffer::mmap(META, i))
+                    .step("embedded QBUF")?;
+            }
+            self.video.stream_on(META).step("embedded STREAMON")
+        })();
+        if r.is_err() {
+            maps.clear();
+            let _ = self.video.free_buffers(META, Memory::Mmap);
+            return r;
+        }
         self.streaming.store(true, Ordering::Release);
         Ok(())
     }
@@ -104,8 +119,9 @@ impl EmbeddedCapture {
         if !self.streaming.load(Ordering::Acquire) {
             return;
         }
+        let maps = lock(&self.maps);
         while let Ok(Some(buf)) = self.video.dequeue(META, Memory::Mmap) {
-            if let Some(map) = self.maps.get(buf.index as usize) {
+            if let Some(map) = maps.get(buf.index as usize) {
                 let used = buf.bytes_used().min(map.len());
                 if used > 0 {
                     self.sensor
@@ -117,25 +133,20 @@ impl EmbeddedCapture {
         }
     }
 
-    /// Stops streaming.
+    /// Stops streaming and frees the buffers.
     pub(crate) fn stop(&self) {
+        let mut maps = lock(&self.maps);
         if self.streaming.swap(false, Ordering::AcqRel) {
             let _ = self.video.stream_off(META);
-            // STREAMOFF returned every buffer to userspace; queue them again for a restart.
-            for i in 0..self.maps.len() as u32 {
-                let _ = self.video.queue(&QueueBuffer::mmap(META, i));
-            }
         }
+        maps.clear();
+        let _ = self.video.free_buffers(META, Memory::Mmap);
     }
 }
 
 impl Drop for EmbeddedCapture {
     fn drop(&mut self) {
-        if self.streaming.load(Ordering::Acquire) {
-            let _ = self.video.stream_off(META);
-        }
-        self.maps.clear();
-        let _ = self.video.free_buffers(META, Memory::Mmap);
+        self.stop();
     }
 }
 
