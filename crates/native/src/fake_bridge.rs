@@ -47,6 +47,8 @@ struct BridgeInner {
     /// Failed starts go to the receiver (`report_start_errors=1`); by default they are only
     /// reported in the state.
     report_errors: bool,
+    /// Stands for a kernel sensor driver: `s_stream` starts and stops at once, nothing asks.
+    kernel: bool,
 }
 
 /// The sensor bridge.
@@ -73,6 +75,7 @@ impl FakeBridge {
                 stale_acks: 0,
                 timeouts: 0,
                 report_errors: false,
+                kernel: false,
             }),
             acked: Condvar::new(),
             signal: Signal::new(),
@@ -105,6 +108,12 @@ impl FakeBridge {
         lock(&self.inner).report_errors = on;
     }
 
+    /// Behave as a kernel sensor driver: the receiver's `s_stream` starts and stops the
+    /// sensor at once, without requests.
+    pub(crate) fn set_kernel_driver(&self) {
+        lock(&self.inner).kernel = true;
+    }
+
     /// Requests get lost from now on (`true`), or are delivered again.
     pub(crate) fn set_deaf(&self, deaf: bool) {
         lock(&self.inner).deaf = deaf;
@@ -133,6 +142,14 @@ impl FakeBridge {
         }
         if !on && b.state == BridgeState::StartFailed {
             b.state = BridgeState::Idle;
+            return Ok(());
+        }
+        if b.kernel {
+            b.state = if on {
+                BridgeState::Streaming
+            } else {
+                BridgeState::Idle
+            };
             return Ok(());
         }
         let (action, transient) = if on {

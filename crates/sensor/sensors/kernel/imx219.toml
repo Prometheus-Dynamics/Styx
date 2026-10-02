@@ -1,0 +1,23 @@
+# Sony IMX219 (8 MP, Raspberry Pi Camera Module v2) under the upstream `imx219` driver.
+# From public sources (libcamera's cam_helper_imx219.cpp, imx219.json); not checked on
+# hardware with Styx. The embedded data layout applies only to kernels whose driver exposes
+# the metadata pad.
+name = "imx219"
+vendor = "Sony"
+verified = false
+source = "libcamera cam_helper_imx219 (gain 256 / (256 - code); delays 2/1/2), imx219.json"
+tuning = "imx219.json"
+analog_gain = { reciprocal = { numerator = 256, base = 256 } }
+digital_gain = { linear = { step = 0.00390625 } }
+delays = { exposure = 2, analog_gain = 1, frame_length = 2 }
+black_level = { value = 64, bits = 10 }
+
+[embedded_data]
+lines = 2
+format = "ccs"
+packing = "raw10"
+registers = [
+    { control = "analog_gain", address = 0x0157 },
+    { control = "exposure", address = 0x015a, bytes = 2 },
+    { control = "frame_length", address = 0x0160, bytes = 2 },
+]

@@ -31,6 +31,11 @@ pub(crate) trait BridgeDevice: AsFd + Send + Sync {
     fn request_wait(&self) -> Wait {
         Wait::PRIORITY
     }
+    /// The sensor has a kernel driver, which the receiver's `STREAMON` starts: nothing asks to
+    /// start it, the session starts the control schedule itself just before `STREAMON`.
+    fn kernel_driven(&self) -> bool {
+        false
+    }
 }
 
 impl BridgeDevice for SensorBridge {

@@ -28,6 +28,9 @@ use crate::health::{Fault, Health};
 pub(crate) trait SensorSide: Send + Sync {
     /// Serves a bridge request (the acknowledgement result: an errno and why).
     fn serve(&self, req: &StreamRequest) -> std::result::Result<(), (i32, String)>;
+    /// A kernel driver's sensor is about to be started by the receiver: writes frame 0's
+    /// values and starts the control schedule.
+    fn start_streaming(&self) -> std::result::Result<(), String>;
     /// A frame started (at `at` on `CLOCK_MONOTONIC`, when known): writes what is due.
     fn frame_start(&self, seq: u64, at: Option<Duration>) -> std::result::Result<(), String>;
     /// The values that produced frame `seq`.
@@ -49,6 +52,10 @@ where
 {
     fn serve(&self, req: &StreamRequest) -> std::result::Result<(), (i32, String)> {
         lock(self).serve_detailed(req)
+    }
+
+    fn start_streaming(&self) -> std::result::Result<(), String> {
+        lock(self).start_streaming().map_err(|e| e.to_string())
     }
 
     fn frame_start(&self, seq: u64, at: Option<Duration>) -> std::result::Result<(), String> {

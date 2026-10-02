@@ -107,6 +107,24 @@ impl MbusCode {
     pub fn color_filter(self) -> Option<ColorFilter> {
         CODES.iter().find(|c| c.1 == self.0).and_then(|c| c.2)
     }
+
+    /// The code of the same bit depth with colour filter order `cf` (`None` for codes this
+    /// crate does not know, or no such code).
+    pub fn with_color_filter(self, cf: ColorFilter) -> Option<Self> {
+        let bits = self.bit_depth()?;
+        CODES
+            .iter()
+            .find(|c| c.3 == bits && c.2 == Some(cf))
+            .map(|c| MbusCode(c.1))
+    }
+
+    /// The code the sensor sends after flipping (`hflip` swaps columns, `vflip` rows). Codes
+    /// this crate does not know, and mono codes, stay as they are. Flipping twice undoes it.
+    pub fn flipped(self, hflip: bool, vflip: bool) -> Self {
+        self.color_filter()
+            .and_then(|cf| self.with_color_filter(cf.flipped(hflip, vflip)))
+            .unwrap_or(self)
+    }
 }
 
 impl fmt::Display for MbusCode {
@@ -163,5 +181,11 @@ mod tests {
         assert_eq!(Bggr.flipped(false, true), Grbg);
         assert_eq!(Bggr.flipped(true, true), Rggb);
         assert_eq!(Mono.flipped(true, true), Mono);
+        let c = MbusCode(0x300f); // SRGGB10
+        assert_eq!(c.flipped(true, true), MbusCode(0x3007));
+        assert_eq!(c.flipped(true, false).flipped(true, false), c);
+        assert_eq!(MbusCode(0x3001).flipped(false, true), MbusCode(0x3002));
+        assert_eq!(MbusCode(0x200a).flipped(true, true), MbusCode(0x200a));
+        assert_eq!(MbusCode(0x1234).flipped(true, true), MbusCode(0x1234));
     }
 }

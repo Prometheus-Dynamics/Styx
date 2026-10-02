@@ -32,14 +32,16 @@ use crate::error::{KernelContext, NativeError, Result};
 use crate::formats;
 use crate::modes::{SensorMode, interval_duration};
 use crate::regbus::{BridgePins, I2cRegisterBus};
+use crate::sensor_bus::{CameraPins, SensorBus};
 use crate::session::{BufferSource, Session, SessionOptions, StreamFormat};
 use crate::stream::{FrameStream, SensorSide};
 use crate::topology::{apply_plan, find_route, link_plan};
 
-/// The register bus of a bridged sensor.
-pub type Bus = I2cRegisterBus<I2cDevice>;
-/// The pins of a bridged sensor (the bridge's power control).
-pub type Pins = BridgePins<Arc<SensorBridge>>;
+/// The register bus of a camera: I²C for a bridged sensor, V4L2 controls for a kernel
+/// driver's.
+pub type Bus = SensorBus;
+/// The pins of a camera: the bridge's power control, or none.
+pub type Pins = CameraPins;
 /// Typed, frame-accurate controls of an open camera.
 pub type CameraControls = ControlHandle<Bus, Pins>;
 
@@ -193,12 +195,38 @@ pub fn select_mode<'a>(
     Ok(mode)
 }
 
+/// Asks for the frame duration of `settings` from frame 0 on (the mode's default without
+/// one); returns the frame length that gives.
+pub(crate) fn start_frame_length(
+    c: &mut SensorControl<Bus, Pins>,
+    settings: &StreamSettings,
+) -> Result<u32> {
+    let t = c.timing().ok_or(NativeError::State("no mode"))?;
+    Ok(match settings.interval {
+        Some(i) => {
+            let d = interval_duration(i);
+            c.request_at(
+                0,
+                &ControlRequest {
+                    frame_duration: Some(d),
+                    ..Default::default()
+                },
+            )?;
+            t.frame_length_for_duration(d).lines
+        }
+        None => t.frame_length_default(),
+    })
+}
+
 /// An open camera. Exclusive: a second open of the same bridge fails with
 /// [`NativeError::Busy`].
 pub struct NativeCamera {
     pub(crate) info: CameraInfo,
     pub(crate) options: CameraOptions,
-    pub(crate) bridge: Arc<SensorBridge>,
+    /// The bridge (a sensor Styx drives itself).
+    pub(crate) bridge: Option<Arc<SensorBridge>>,
+    /// The sensor's subdevice (a sensor with a kernel driver).
+    pub(crate) kernel: Option<Arc<Subdev>>,
     pub(crate) control: Arc<Mutex<SensorControl<Bus, Pins>>>,
     pub(crate) video: Option<Arc<VideoDevice>>,
     pub(crate) configured: Option<Configured>,
@@ -208,8 +236,34 @@ pub struct NativeCamera {
 }
 
 impl NativeCamera {
-    /// Opens the bridge and the sensor's I²C address and builds the driver. Nothing is
-    /// powered until [`Self::configure`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn assemble(
+        info: CameraInfo,
+        options: CameraOptions,
+        bridge: Option<Arc<SensorBridge>>,
+        kernel: Option<Arc<Subdev>>,
+        control: Arc<Mutex<SensorControl<Bus, Pins>>>,
+        session: Session,
+        opened: Instant,
+        lock: File,
+    ) -> Self {
+        Self {
+            info,
+            options,
+            bridge,
+            kernel,
+            control,
+            video: None,
+            configured: None,
+            session,
+            opened,
+            _lock: lock,
+        }
+    }
+
+    /// Opens the bridge and the sensor's I²C address, or the sensor's subdevice when a kernel
+    /// driver owns it ([`CameraInfo::kernel`]), and builds the driver. Nothing is powered
+    /// until [`Self::configure`].
     pub fn open(info: CameraInfo, options: CameraOptions) -> Result<Self> {
         let opened = Instant::now();
         let loc = &info.location;
@@ -219,6 +273,9 @@ impl NativeCamera {
                 "{} is in use by another camera",
                 loc.subdev.display()
             )));
+        }
+        if info.kernel.is_some() {
+            return Self::open_kernel(info, options, opened, lock);
         }
         let bridge = Arc::new(SensorBridge::open(&loc.subdev).step("open bridge")?);
         // A previous owner that died leaves the stream idle (its video node closed) but may
@@ -268,16 +325,16 @@ impl NativeCamera {
             .keys()
             .map(|c| (c.as_str(), rate))
             .collect();
-        let pins = BridgePins::new(
+        let pins = CameraPins::Bridge(BridgePins::new(
             Arc::clone(&bridge),
             &supplies,
             &clocks,
             options.power_settle,
-        );
+        ));
         // Subscribed for the whole time the camera is open: the bridge refuses to start
         // without a subscriber.
         bridge.subscribe().step("subscribe to bridge events")?;
-        let driver = SensorDriver::new(desc, regbus, pins);
+        let driver = SensorDriver::new(desc, SensorBus::I2c(regbus), pins);
         let control = Arc::new(Mutex::new(SensorControl::new(driver)));
         let sensor: Arc<dyn SensorSide> = control.clone();
         let session = Session::new(
@@ -289,17 +346,16 @@ impl NativeCamera {
                 max_error_frames: options.max_error_frames,
             },
         );
-        Ok(Self {
+        Ok(Self::assemble(
             info,
             options,
-            bridge,
+            Some(bridge),
+            None,
             control,
-            video: None,
-            configured: None,
             session,
             opened,
-            _lock: lock,
-        })
+            lock,
+        ))
     }
 
     /// What discovery found (the graph follows the link changes made here).
@@ -329,11 +385,17 @@ impl NativeCamera {
 
     /// Typed, frame-accurate controls (valid while the camera is open).
     pub fn controls(&self) -> CameraControls {
-        let bridge = Arc::clone(&self.bridge);
-        let hook: BlankingHook = Arc::new(move |h, v| {
-            let _ = bridge.set_blanking(h as i32, v as i32);
+        let hook = self.bridge.clone().map(|bridge| -> BlankingHook {
+            Arc::new(move |h, v| {
+                let _ = bridge.set_blanking(h as i32, v as i32);
+            })
         });
-        ControlHandle::new(Arc::clone(&self.control), Some(hook))
+        ControlHandle::new(Arc::clone(&self.control), hook)
+    }
+
+    /// Whether a kernel driver owns the sensor (else Styx drives it through the bridge).
+    pub fn is_kernel_driven(&self) -> bool {
+        self.kernel.is_some()
     }
 
     /// Powers and configures the sensor, the bridge and the receiver path for `settings`.
@@ -365,6 +427,10 @@ impl NativeCamera {
                 "stop streaming before configuring".into(),
             ));
         }
+        if self.kernel.is_some() {
+            return self.configure_kernel_sensor(settings);
+        }
+        let bridge = self.bridge.clone().ok_or(NativeError::State("no bridge"))?;
         let mode = select_mode(&self.info.modes, settings, &self.info.raw_formats)?.clone();
         let format = self
             .info
@@ -376,24 +442,10 @@ impl NativeCamera {
         let frame_length = {
             let mut c = lock(&self.control);
             c.bring_up(&mode.mode, &mode.format)?;
-            let t = c.timing().ok_or(NativeError::State("no mode"))?;
-            match settings.interval {
-                Some(i) => {
-                    let d = interval_duration(i);
-                    c.request_at(
-                        0,
-                        &ControlRequest {
-                            frame_duration: Some(d),
-                            ..Default::default()
-                        },
-                    )?;
-                    t.frame_length_for_duration(d).lines
-                }
-                None => t.frame_length_default(),
-            }
+            start_frame_length(&mut c, settings)?
         };
         let t = mode.timing;
-        let freqs = self.bridge.link_frequencies().to_vec();
+        let freqs = bridge.link_frequencies().to_vec();
         let index = match format.link_frequency {
             Some(f) => freqs.iter().position(|&x| x == f as i64).ok_or_else(|| {
                 NativeError::InvalidConfig(format!(
@@ -407,13 +459,13 @@ impl NativeCamera {
             width: mode.width,
             height: mode.height,
         };
-        let got = self.bridge.set_format(pad).step("bridge format")?;
+        let got = bridge.set_format(pad).step("bridge format")?;
         if got != pad {
             return Err(NativeError::InvalidConfig(format!(
                 "bridge chose {got:?} for {pad:?}"
             )));
         }
-        self.bridge
+        bridge
             .set_timing(BridgeTiming {
                 link_freq_index: index as u32,
                 pixel_rate: t.pixel_rate as i64,
@@ -421,7 +473,7 @@ impl NativeCamera {
                 vblank: (frame_length - t.height) as i32,
             })
             .step("bridge timing")?;
-        self.bridge
+        bridge
             .set_ack_timeout(self.options.ack_timeout)
             .step("bridge ack timeout")?;
         lock(&self.control).expect_start(ExpectedStart {

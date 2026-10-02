@@ -167,6 +167,21 @@ impl MediaDevice {
         Ok(())
     }
 
+    /// The process holding a record lock on the device node (`fcntl(F_GETLK)` for a write
+    /// lock over the whole file), as libcamera takes one (`lockf`) while one of the device's
+    /// cameras is acquired. Takes no lock itself; this process's own locks are not reported.
+    pub fn lock_holder(&self) -> Result<Option<i32>> {
+        // SAFETY: `flock` is plain data; all zeros is a valid value.
+        let mut fl: libc::flock = unsafe { std::mem::zeroed() };
+        fl.l_type = libc::F_WRLCK as libc::c_short;
+        fl.l_whence = libc::SEEK_SET as libc::c_short;
+        // SAFETY: F_GETLK takes a pointer to a `flock` that lives for the call.
+        if unsafe { libc::fcntl(self.as_raw_fd(), libc::F_GETLK, &mut fl) } < 0 {
+            return Err(Error::sys("fcntl(F_GETLK)"));
+        }
+        Ok((i32::from(fl.l_type) != libc::F_UNLCK).then_some(fl.l_pid))
+    }
+
     /// Allocates a request (`MEDIA_IOC_REQUEST_ALLOC`) for the request API.
     pub fn alloc_request(&self) -> Result<Request> {
         let mut fd: libc::c_int = -1;

@@ -5,8 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bus::{RegisterBus, SensorPins};
-use crate::desc::{Field, Flip, RegWrite, SensorDescription, Step};
+use crate::desc::{Backend, Field, Flip, RegWrite, SensorDescription, Step};
 use crate::error::{Result, SensorError};
+use crate::fallback::{KernelControl, kernel_controls};
 use crate::gain::split_gain;
 use crate::mbus::{ColorFilter, MbusCode};
 use crate::schedule::{
@@ -103,6 +104,26 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
     /// The description.
     pub fn description(&self) -> &SensorDescription {
         &self.desc
+    }
+
+    /// Whether a kernel driver owns the sensor ([`Backend::Kernel`]): controls are V4L2
+    /// controls ([`RegisterBus::set_controls`]) and there are no registers.
+    pub fn is_kernel(&self) -> bool {
+        self.desc.sensor.backend == Backend::Kernel
+    }
+
+    /// Replaces the description, e.g. with one rebuilt from a kernel driver's control ranges
+    /// after a format change. Not while streaming; the mode must be set again (the control
+    /// schedule ends). Flips stay as they are.
+    pub fn set_description(&mut self, desc: Arc<SensorDescription>) -> Result<()> {
+        self.require(
+            self.state != DriverState::Streaming,
+            "set_description: streaming",
+        )?;
+        self.desc = desc;
+        self.mode = None;
+        self.scheduler = None;
+        Ok(())
     }
 
     /// The register bus.
@@ -324,8 +345,10 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
         let timing = Timing::for_mode(m, f, &desc.controls.exposure)
             .with_extra_lines(desc.controls.frame_length_extra_lines);
         let ctl = &desc.controls;
-        ctl.frame_length
-            .ok_or(SensorError::NoRegister("frame length"))?;
+        if !self.is_kernel() {
+            ctl.frame_length
+                .ok_or(SensorError::NoRegister("frame length"))?;
+        }
         self.run(&f.registers)?;
         self.run(&m.registers)?;
         if let Some(ll) = ctl.line_length {
@@ -347,7 +370,7 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
         if let Some(dg) = &ctl.digital_gain {
             initial.set(Control::DigitalGain, dg.default_code);
         }
-        self.write_controls(&initial, false)?;
+        self.write_controls_for(&initial, false, timing.height)?;
         let (h, v) = self.flips;
         self.write_flips(h, v)?;
         self.scheduler = Some(
@@ -389,8 +412,18 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
 
     /// Write control codes (frame length first), inside group hold when asked and available.
     fn write_controls(&mut self, set: &ControlSet, hold: bool) -> Result<()> {
+        let height = self.mode.as_ref().map_or(0, |m| m.timing.height);
+        self.write_controls_for(set, hold, height)
+    }
+
+    /// [`Self::write_controls`] for a mode of `height` lines (kernel-driven sensors set the
+    /// frame length as `VBLANK = frame length - height`).
+    fn write_controls_for(&mut self, set: &ControlSet, hold: bool, height: u32) -> Result<()> {
         if set.is_empty() {
             return Ok(());
+        }
+        if self.is_kernel() {
+            return self.write_kernel_controls(set, height);
         }
         let desc = Arc::clone(&self.desc);
         let ctl = &desc.controls;
@@ -440,6 +473,37 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
         Ok(())
     }
 
+    /// Kernel-driven sensors: the codes as V4L2 controls. `VBLANK` goes first in a call of its
+    /// own: the driver widens the exposure range when the frame length grows, and an exposure
+    /// set in the same call would be clamped to the old range first (libcamera writes it with
+    /// priority for the same reason).
+    fn write_kernel_controls(&mut self, set: &ControlSet, height: u32) -> Result<()> {
+        let fb = self.desc.controls.exposure.fraction_bits;
+        let (vblank, rest): (Vec<_>, Vec<_>) = kernel_controls(set, height, fb)
+            .into_iter()
+            .partition(|(c, _)| *c == KernelControl::Vblank);
+        for batch in [vblank, rest] {
+            self.set_kernel(&batch)?;
+        }
+        Ok(())
+    }
+
+    fn set_kernel(&mut self, batch: &[(KernelControl, i64)]) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        self.bus
+            .set_controls(batch)
+            .map_err(|source| SensorError::Controls {
+                controls: batch
+                    .iter()
+                    .map(|(c, v)| format!("{c:?}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                source,
+            })
+    }
+
     fn write_flip(&mut self, flip: Option<Flip>, on: bool) -> Result<()> {
         let Some(f) = flip else { return Ok(()) };
         let current = self.read(f.address, 1)?;
@@ -455,6 +519,18 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
     }
 
     fn write_flips(&mut self, h: bool, v: bool) -> Result<()> {
+        if self.is_kernel() {
+            let ctl = &self.desc.controls;
+            let set: Vec<(KernelControl, i64)> = [
+                (ctl.hflip.is_some(), KernelControl::HFlip, h),
+                (ctl.vflip.is_some(), KernelControl::VFlip, v),
+            ]
+            .into_iter()
+            .filter(|(has, ..)| *has)
+            .map(|(_, c, on)| (c, i64::from(on)))
+            .collect();
+            return self.set_kernel(&set);
+        }
         self.write_flip(self.desc.controls.hflip, h)?;
         self.write_flip(self.desc.controls.vflip, v)
     }
@@ -489,6 +565,9 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
             .patterns
             .get(name)
             .ok_or_else(|| SensorError::UnknownTestPattern(name.into()))?;
+        if self.is_kernel() {
+            return self.set_kernel(&[(KernelControl::TestPattern, i64::from(value))]);
+        }
         self.write_field(&tp.register, value)
     }
 

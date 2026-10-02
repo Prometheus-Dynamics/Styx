@@ -1,0 +1,22 @@
+# OmniVision OV9782 (1 MP global shutter, colour) under the upstream `ov9282` kernel driver,
+# which also drives the mono OV9281/OV9282 and reports Bayer codes for this one.
+#
+# Gain model, black level and the extra line per frame are the sensor's (see ../ov9782.toml,
+# measured with the Styx bridge). Checked on the CM5 through the kernel driver (Raspberry Pi
+# 6.12, `landing` at 30, 60 and 120 fps, docs/native-stack/adding-a-camera.md): exposure and
+# gain land 2 frames after the frame they are set in, VBLANK 1, and every frame lasts
+# VTS + 1 lines. The driver's flips are on by default and do not flag MODIFY_LAYOUT: its
+# BGGR codes hold with the flips off (Styx sets them off).
+name = "ov9782"
+drivers = ["ov9782", "ov9282"]
+vendor = "OmniVision"
+colour = true
+verified = true
+source = "measured on the CM5 (ov9282 driver, Raspberry Pi kernel 6.12)"
+tuning = "ov9782.json"
+# ANALOGUE_GAIN is register 0x3509: code 0x10 is 1x, 1/16 steps.
+analog_gain = { linear = { step = 0.0625 } }
+delays = { exposure = 2, analog_gain = 2, frame_length = 1 }
+black_level = { value = 64, bits = 10, settle_frames = 1 }
+# A frame lasts VTS + 1 lines (VTS = height + VBLANK).
+frame_length_extra_lines = 1

@@ -125,8 +125,10 @@
 //!   requested frame, and which values produced each frame.
 //! * [`SensorDriver`]: power, chip id, init, modes, streaming and scheduled controls over a
 //!   [`RegisterBus`]; [`MockBus`] and [`MockPins`] record operations for tests.
-//! * [`SensorDescription::from_subdev`]: the fallback for sensors with kernel drivers, built
-//!   from a [`SubdevReport`].
+//! * [`SensorDescription::from_subdev_with`]: descriptions of sensors with kernel drivers,
+//!   built from a [`SubdevReport`] and, when there is one, a [`KernelSensorData`] file (gain
+//!   model, delays, black level, embedded data layout; `sensors/kernel/*.toml` ship built in).
+//!   [`SensorDriver`] then drives them through V4L2 controls ([`RegisterBus::set_controls`]).
 
 mod bus;
 mod desc;
@@ -135,6 +137,7 @@ mod embedded;
 mod error;
 mod fallback;
 mod gain;
+mod kernel_data;
 mod mbus;
 pub mod schedule;
 mod timing;
@@ -142,15 +145,16 @@ mod timing;
 pub use bus::{BusOp, MockBus, MockPins, NoPins, PinOp, RegisterBus, SensorPins};
 pub use desc::{
     Backend, BlackLevel, Blanking, ChipId, Controls, Delays, EmbeddedControl, EmbeddedControlKind,
-    EmbeddedData, EmbeddedEntry, EmbeddedPacking, Exposure, Field, Flip, Format, Gain, GainModel,
-    GroupHold, Identity, LineLength, Mode, PixelArray, Rect, RegWrite, SensorDescription,
-    Sequences, Size, Step, TestPattern,
+    EmbeddedData, EmbeddedEntry, EmbeddedFormat, EmbeddedPacking, EmbeddedRegister, Exposure,
+    Field, Flip, Format, Gain, GainModel, GroupHold, Identity, LineLength, Mode, PixelArray, Rect,
+    RegWrite, SensorDescription, Sequences, Size, Step, TestPattern,
 };
 pub use driver::{ActiveMode, AppliedControls, ControlRequest, DriverState, SensorDriver};
 pub use embedded::unpack_raw10_bytes as embedded_unpack_raw10;
 pub use error::{Issue, Issues, Result, SensorError};
 pub use fallback::{ControlRange, KernelControl, SubdevFormat, SubdevReport, kernel_controls};
 pub use gain::{GainCode, GainSplit, Rounding, split_gain};
+pub use kernel_data::{BUILTIN_KERNEL_DATA, KernelSensorData};
 pub use mbus::{ColorFilter, MbusCode};
 pub use schedule::{
     Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Mismatch,

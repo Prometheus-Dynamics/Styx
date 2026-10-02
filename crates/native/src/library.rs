@@ -18,9 +18,13 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use styx_sensor::SensorDescription;
+use styx_sensor::{KernelSensorData, SensorDescription};
 
 use crate::error::{NativeError, Result};
+
+/// File name ending of the data files for sensors with kernel drivers
+/// ([`SensorLibrary::find_kernel_data`]).
+pub const KERNEL_DATA_SUFFIX: &str = ".kernel.toml";
 
 /// The environment variable holding extra search path entries.
 pub const SENSOR_PATH_ENV: &str = "STYX_SENSOR_PATH";
@@ -143,6 +147,48 @@ impl SensorLibrary {
         ))
     }
 
+    /// The data file for a sensor a kernel driver owns, named by its media entity (e.g.
+    /// `ov9782 10-0060`) and reporting colour (`true`) or mono codes: the first
+    /// `*.kernel.toml` in the search path that applies (directories are read in name order;
+    /// files that do not parse are skipped), else the ones built into `styx-sensor`. Returns
+    /// the data and where it came from (a path, or `builtin:<name>`).
+    pub fn find_kernel_data(
+        &self,
+        entity: &str,
+        colour: bool,
+    ) -> Option<(KernelSensorData, String)> {
+        let is_data = |p: &Path| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(KERNEL_DATA_SUFFIX))
+        };
+        for entry in &self.paths {
+            let mut files: Vec<PathBuf> = if entry.is_dir() {
+                std::fs::read_dir(entry)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| is_data(p) && p.is_file())
+                    .collect()
+            } else if is_data(entry) && entry.is_file() {
+                vec![entry.clone()]
+            } else {
+                Vec::new()
+            };
+            files.sort();
+            for f in files {
+                if let Ok(d) = KernelSensorData::from_file(&f)
+                    && d.matches(entity, colour)
+                {
+                    return Some((d, f.display().to_string()));
+                }
+            }
+        }
+        KernelSensorData::find(&KernelSensorData::builtin(), entity, colour)
+            .map(|d| (d.clone(), format!("builtin:{}", d.name)))
+    }
+
     fn describe_search(&self) -> String {
         let mut parts: Vec<String> = self.paths.iter().map(|p| p.display().to_string()).collect();
         parts.extend(self.embedded.iter().map(|(n, _)| format!("embedded:{n}")));
@@ -225,6 +271,29 @@ mod tests {
                 .to_string()
                 .contains("nothing")
         );
+    }
+
+    #[test]
+    fn kernel_data_comes_from_the_search_path_then_the_builtin_files() {
+        let lib = SensorLibrary::new();
+        let (d, source) = lib.find_kernel_data("imx219 10-0010", true).unwrap();
+        assert_eq!(
+            (d.name.as_str(), source.as_str()),
+            ("imx219", "builtin:imx219")
+        );
+        assert!(lib.find_kernel_data("imx999 10-0010", true).is_none());
+        let dir = scratch("kernel");
+        std::fs::write(
+            dir.join("mine.kernel.toml"),
+            "name = \"imx219\"\ntuning = \"mine.json\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("broken.kernel.toml"), "name = 3").unwrap();
+        let lib = SensorLibrary::new().with_path(&dir);
+        let (d, source) = lib.find_kernel_data("imx219 10-0010", true).unwrap();
+        assert_eq!(d.tuning.as_deref(), Some("mine.json"));
+        assert!(source.ends_with("mine.kernel.toml"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

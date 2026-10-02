@@ -172,6 +172,12 @@ impl Session {
         let Some(ext) = &self.external else {
             return Err(NativeError::State("not started"));
         };
+        // A kernel driver's sensor started with the other device's STREAMON, with the values
+        // set until then (the caller's start values, written at once while not streaming):
+        // the control schedule runs from here.
+        if self.bridge.kernel_driven() {
+            self.sensor.start_streaming().map_err(kernel_start_error)?;
+        }
         if let Ok(StreamState::StartFailed) = self.bridge.stream_state() {
             let why = ext
                 .health
@@ -264,6 +270,13 @@ impl Session {
         {
             undo(events, None);
             return Err(err);
+        }
+        // A kernel driver's sensor starts with the receiver: frame 0's values go first.
+        if self.bridge.kernel_driven()
+            && let Err(why) = self.sensor.start_streaming()
+        {
+            undo(events, self.embedded.as_ref());
+            return Err(kernel_start_error(why));
         }
         if let Err(e) = video.stream_on() {
             undo(events, self.embedded.as_ref());
@@ -376,6 +389,14 @@ fn started_error(e: NativeError, health: &Health) -> NativeError {
         Some(f @ Fault::Disconnected(_)) => f.to_error(),
         _ => e,
     }
+}
+
+/// Setting a kernel-driven sensor's start values failed.
+fn kernel_start_error(why: String) -> NativeError {
+    NativeError::kernel(
+        format!("setting the sensor's start values: {why}"),
+        std::io::Error::from_raw_os_error(libc::EIO),
+    )
 }
 
 /// Why `STREAMON` failed, as clearly as the parts know it.

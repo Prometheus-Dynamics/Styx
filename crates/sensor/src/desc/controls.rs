@@ -218,6 +218,45 @@ pub struct EmbeddedData {
     /// Control values at fixed offsets, in control code units.
     #[serde(default)]
     pub controls: Vec<EmbeddedControl>,
+    /// How registers are laid out in the line.
+    #[serde(default)]
+    pub format: EmbeddedFormat,
+    /// Control values made of registers, by address (big endian, consecutive addresses):
+    /// found through `entries` with the `offsets` format, by their tags with `ccs`. Used for
+    /// sensors whose controls have no register fields here (kernel-driven sensors).
+    #[serde(default)]
+    pub registers: Vec<EmbeddedRegister>,
+}
+
+/// The layout of register values in an embedded data line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddedFormat {
+    /// Register bytes at fixed offsets (`entries`).
+    #[default]
+    Offsets,
+    /// The MIPI CCS / SMIA tagged register dump most Sony sensors send: a `0x0a` start, then
+    /// tag and value byte pairs (`0xaa` address high, `0xa5` address low, `0x5a` a value at
+    /// the current address, which then increments, `0x55` skip one address, `0x07` line end).
+    /// `packing = "raw10"` / `"raw12"` means every fifth / third byte is padding (the line is
+    /// packed like the image's RAW10 / RAW12 pixels).
+    Ccs,
+}
+
+/// A control value read from registers in the embedded data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddedRegister {
+    /// Which control.
+    pub control: EmbeddedControlKind,
+    /// First (most significant) register address.
+    pub address: u16,
+    /// Registers (bytes), most significant first.
+    #[serde(default = "one_byte")]
+    pub bytes: u8,
+    /// The code is the value shifted left by this (e.g. fractional exposure bits).
+    #[serde(default)]
+    pub shift: u8,
 }
 
 /// Packing of the embedded data bytes as received.
@@ -229,7 +268,10 @@ pub enum EmbeddedPacking {
     None,
     /// CSI-2 RAW10 packing (four 10-bit words in five bytes, low bits last); each unpacked
     /// word carries one byte value (OmniVision embedded lines sent with 8-bit data type).
+    /// With the `ccs` format: every fifth byte is padding.
     Raw10,
+    /// With the `ccs` format: every third byte is padding (RAW12 packing).
+    Raw12,
 }
 
 /// A control whose applied value the embedded data reports directly.

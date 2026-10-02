@@ -8,6 +8,7 @@ use std::io;
 use std::time::Duration;
 
 use crate::desc::RegWrite;
+use crate::fallback::KernelControl;
 
 /// Register access to one sensor. Addresses are 8 or 16 bits as the description says; values
 /// wider than one byte are consecutive registers, most significant byte first.
@@ -25,6 +26,19 @@ pub trait RegisterBus {
         }
         Ok(())
     }
+
+    /// Sets V4L2 controls of a sensor a kernel driver owns ([`Backend::Kernel`]), in order and
+    /// in one call (`VIDIOC_S_EXT_CTRLS`). Register buses do not have them
+    /// ([`io::ErrorKind::Unsupported`]).
+    ///
+    /// [`Backend::Kernel`]: crate::Backend::Kernel
+    fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> io::Result<()> {
+        let _ = controls;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a register bus has no V4L2 controls",
+        ))
+    }
 }
 
 impl<B: RegisterBus + ?Sized> RegisterBus for &mut B {
@@ -36,6 +50,9 @@ impl<B: RegisterBus + ?Sized> RegisterBus for &mut B {
     }
     fn write_sequence(&mut self, writes: &[RegWrite]) -> io::Result<()> {
         (**self).write_sequence(writes)
+    }
+    fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> io::Result<()> {
+        (**self).set_controls(controls)
     }
 }
 
@@ -124,6 +141,8 @@ pub struct MockBus {
     pub log: Vec<BusOp>,
     /// Writes to these addresses fail with an I/O error.
     pub fail_writes: BTreeSet<u16>,
+    /// Every [`RegisterBus::set_controls`] call (kernel-driven sensors), in order.
+    pub control_log: Vec<Vec<(KernelControl, i64)>>,
 }
 
 impl MockBus {
@@ -176,6 +195,17 @@ impl MockBus {
     /// Forget recorded operations (register contents stay).
     pub fn clear_log(&mut self) {
         self.log.clear();
+        self.control_log.clear();
+    }
+
+    /// The last value set for a V4L2 control.
+    pub fn control(&self, control: KernelControl) -> Option<i64> {
+        self.control_log
+            .iter()
+            .flatten()
+            .rev()
+            .find(|(c, _)| *c == control)
+            .map(|(_, v)| *v)
     }
 }
 
@@ -200,6 +230,11 @@ impl RegisterBus for MockBus {
             value,
             bytes,
         }));
+        Ok(())
+    }
+
+    fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> io::Result<()> {
+        self.control_log.push(controls.to_vec());
         Ok(())
     }
 }

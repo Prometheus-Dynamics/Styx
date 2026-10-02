@@ -497,6 +497,20 @@ pub(super) fn validate(d: &SensorDescription) -> Result<(), Issues> {
                 "does not fit 32 bits",
             );
         }
+        for (i, e) in ed.registers.iter().enumerate() {
+            let at = format!("embedded_data.registers[{i}]");
+            c.check(
+                !kinds.contains(&e.control),
+                at.clone(),
+                "control listed twice",
+            );
+            kinds.push(e.control);
+            c.check(
+                (1..=4).contains(&e.bytes) && u32::from(e.bytes) * 8 + u32::from(e.shift) <= 32,
+                at,
+                "bytes must be 1..=4 and fit 32 bits with the shift",
+            );
+        }
     }
 
     if c.issues.is_empty() {

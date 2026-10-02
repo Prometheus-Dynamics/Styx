@@ -1,6 +1,7 @@
-//! Bridged cameras as a `styx-graph` [`Provider`]: discovery with the media topology as the
-//! device graph, exclusive open, configuration by graph path, frame streams, and hotplug by
-//! watching bridges appear and disappear.
+//! Native cameras (bridged sensors and sensors with a kernel driver) as a `styx-graph`
+//! [`Provider`]: discovery with the media topology as the device graph, exclusive open,
+//! configuration by graph path, frame streams, and hotplug by watching bridges and sensor
+//! entities appear and disappear.
 
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
@@ -19,7 +20,7 @@ use styx_kernel::FourCc;
 
 use crate::buffers::NativeFrame;
 use crate::camera::{CameraOptions, NativeCamera, StreamSettings};
-use crate::discover::{CameraInfo, bridge_keys, discover, discover_bridge};
+use crate::discover::{CameraInfo, camera_keys, discover, discover_key};
 use crate::error::NativeError;
 use crate::library::SensorLibrary;
 use crate::stream::FrameStream;
@@ -27,7 +28,7 @@ use crate::stream::FrameStream;
 /// The provider name.
 pub const PROVIDER_NAME: &str = "native";
 
-/// Cameras behind Styx sensor bridges.
+/// Cameras behind Styx sensor bridges, and sensors with a kernel driver.
 #[derive(Clone, Debug)]
 pub struct NativeProvider {
     library: Arc<SensorLibrary>,
@@ -81,11 +82,7 @@ impl NativeProvider {
 }
 
 fn find(library: &SensorLibrary, key: &str) -> Result<CameraInfo, NativeError> {
-    let (_, loc) = bridge_keys()
-        .into_iter()
-        .find(|(k, _)| k == key)
-        .ok_or_else(|| NativeError::Topology(format!("no bridge {key}")))?;
-    discover_bridge(&loc, library)
+    discover_key(key, library)
 }
 
 /// The `styx-graph` view of a camera.
@@ -114,7 +111,7 @@ impl Provider for NativeProvider {
     fn hotplug(&self) -> HotplugStream {
         Box::pin(Hotplug {
             library: Arc::clone(&self.library),
-            known: bridge_keys().into_iter().map(|(k, _)| (k, ())).collect(),
+            known: camera_keys().into_iter().map(|k| (k, ())).collect(),
             queue: VecDeque::new(),
             sleep: styx_graph::rt::sleep(self.hotplug_interval),
             interval: self.hotplug_interval,
@@ -220,7 +217,8 @@ impl Stream for ProviderFrames {
     }
 }
 
-/// Polls sysfs for bridges on a timer: cheap (a directory listing) and needs no thread.
+/// Polls for cameras on a timer (bridges in sysfs, sensor entities in the media graphs):
+/// cheap (a directory listing, a topology read per media device) and needs no thread.
 struct Hotplug {
     library: Arc<SensorLibrary>,
     known: BTreeMap<String, ()>,
@@ -231,24 +229,24 @@ struct Hotplug {
 
 impl Hotplug {
     fn rescan(&mut self) {
-        let now = bridge_keys();
+        let now = camera_keys();
         let gone: Vec<String> = self
             .known
             .keys()
-            .filter(|k| !now.iter().any(|(n, _)| n == *k))
+            .filter(|k| !now.contains(k))
             .cloned()
             .collect();
         for k in gone {
             self.known.remove(&k);
             self.queue.push_back(HotplugEvent::Removed(DeviceKey(k)));
         }
-        for (k, loc) in now {
+        for k in now {
             if self.known.contains_key(&k) {
                 continue;
             }
-            // A bridge whose graph is not complete yet (receiver still binding) is retried on
+            // A camera whose graph is not complete yet (receiver still binding) is retried on
             // the next scan.
-            if let Ok(info) = discover_bridge(&loc, &self.library) {
+            if let Ok(info) = discover_key(&k, &self.library) {
                 self.known.insert(k, ());
                 self.queue
                     .push_back(HotplugEvent::Added(device_info(&info)));

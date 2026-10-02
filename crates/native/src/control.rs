@@ -218,7 +218,12 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
     /// powered sensor already in this mode at its default line length (a camera kept warm
     /// between sessions) is left as it is: its registers have not changed in standby.
     pub fn bring_up(&mut self, mode: &str, format: &str) -> Result<()> {
-        let problems = standby_problems(self.driver.description(), mode, format);
+        let problems = if self.driver.is_kernel() {
+            // The kernel driver starts and stops the sensor itself.
+            Vec::new()
+        } else {
+            standby_problems(self.driver.description(), mode, format)
+        };
         if !problems.is_empty() {
             return Err(NativeError::InvalidConfig(format!(
                 "the description would leave standby before the start event: {}",
@@ -317,6 +322,16 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
                     .map_err(|e| (libc::EIO, format!("stopping the sensor: {e}")))
             }
         }
+    }
+
+    /// Starts the sensor's control schedule without a bridge request: for a sensor a kernel
+    /// driver owns, just before the receiver's `STREAMON` starts it (frame 0's values are
+    /// set first; the driver applies them as it starts streaming).
+    pub fn start_streaming(&mut self) -> Result<()> {
+        self.last_start = None;
+        self.driver.start_streaming()?;
+        self.starts_served += 1;
+        Ok(())
     }
 
     /// Start requests served successfully.
