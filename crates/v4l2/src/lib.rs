@@ -17,6 +17,13 @@ fn read_node_name(path: &std::path::Path) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// Whether virtual capture nodes (v4l2loopback, "OBS Virtual Camera", ...) are kept: set
+/// `STYX_V4L2_ALLOW_VIRTUAL=1`. They are skipped by default because they are usually fed by
+/// another application rather than being cameras; they are useful for testing.
+fn allow_virtual() -> bool {
+    std::env::var_os("STYX_V4L2_ALLOW_VIRTUAL").is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 /// V4L2 device information with a descriptor built from advertised formats.
 pub struct V4l2DeviceInfo {
     pub path: String,
@@ -65,8 +72,7 @@ fn build_info(path: &std::path::Path) -> Result<V4l2DeviceInfo, Box<dyn std::err
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if card_lc.contains("virtual")
-        || driver_lc.contains("virtual")
+    if ((card_lc.contains("virtual") || driver_lc.contains("virtual")) && !allow_virtual())
         || driver_lc.contains("pispbe")
         || card_lc.contains("pispbe")
         || card_lc.contains("pisp")

@@ -1,0 +1,40 @@
+[package]
+name = "pipewire-styx"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.94"
+authors = ["Mathias Petersen"]
+license = "MIT OR Apache-2.0"
+description = "Publishes Styx cameras as PipeWire video sources (for browsers and OBS through the camera portal)."
+repository = "https://github.com/Prometheus-Dynamics/Styx"
+publish = false
+
+# Its own workspace: building it needs the PipeWire development files (libpipewire-0.3,
+# libspa-0.2) and clang for bindgen. Build with `cd crates/pipewire-styx && cargo build`.
+[workspace]
+
+[[bin]]
+name = "styx-pipewire"
+path = "src/main.rs"
+
+[features]
+default = ["pipewire", "v4l2"]
+# The PipeWire node (needs libpipewire-0.3 and libspa-0.2 development files). Without it, the
+# format and capture logic still builds and tests: `cargo test --no-default-features`.
+pipewire = ["dep:pipewire"]
+v4l2 = ["styx/v4l2"]
+native = ["styx/native"]
+libcamera = ["styx/libcamera"]
+turbojpeg = ["styx/codec-turbojpeg"]
+
+[dependencies]
+styx = { path = "../styx", default-features = false, features = ["facade", "raw-decoders", "codec-jpeg-decoder"] }
+pipewire = { version = "0.10", optional = true }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_lifetimes = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"

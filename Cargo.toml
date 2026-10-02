@@ -20,6 +20,8 @@ members = [
     "tools/compare",
     "examples",
 ]
+# Optional bridges that link GStreamer/PipeWire; their own workspaces (docs/ecosystem.md).
+exclude = ["crates/gst-styx", "crates/pipewire-styx"]
 resolver = "3"
 
 [workspace.package]

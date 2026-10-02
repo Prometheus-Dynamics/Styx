@@ -1,0 +1,49 @@
+[package]
+name = "gst-styx"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.94"
+authors = ["Mathias Petersen"]
+license = "MIT OR Apache-2.0"
+description = "GStreamer plugin: styxsrc, a live source for Styx cameras, and a device provider."
+repository = "https://github.com/Prometheus-Dynamics/Styx"
+publish = false
+
+# Its own workspace: building it needs the GStreamer development files, which the Styx
+# workspace does not require. Build with `cd crates/gst-styx && cargo build`.
+[workspace]
+
+[lib]
+name = "gststyx"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[features]
+default = ["v4l2"]
+# Camera backends (see the `styx` crate's features).
+v4l2 = ["styx/v4l2"]
+native = ["styx/native"]
+libcamera = ["styx/libcamera"]
+# Faster JPEG decoding (links libturbojpeg) for MJPEG cameras delivering raw video.
+turbojpeg = ["styx/codec-turbojpeg"]
+# Hardware/FFmpeg decoders and encoders (FFmpeg loaded at run time).
+ffmpeg = ["styx/codec-ffmpeg"]
+
+[dependencies]
+styx = { path = "../styx", default-features = false, features = ["facade", "raw-decoders", "codec-jpeg-decoder"] }
+gst = { package = "gstreamer", version = "0.25", features = ["v1_24"] }
+gst-base = { package = "gstreamer-base", version = "0.25", features = ["v1_24"] }
+gst-video = { package = "gstreamer-video", version = "0.25", features = ["v1_24"] }
+gst-allocators = { package = "gstreamer-allocators", version = "0.25", features = ["v1_24"] }
+
+[dev-dependencies]
+libc = "0.2"
+gst-app = { package = "gstreamer-app", version = "0.25", features = ["v1_24"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_lifetimes = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"

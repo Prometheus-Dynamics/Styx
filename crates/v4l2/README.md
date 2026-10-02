@@ -24,3 +24,7 @@ for device in devices {
 }
 assert!(errors.iter().all(|err| !err.is_empty()));
 ```
+
+Virtual nodes (v4l2loopback, "OBS Virtual Camera") are skipped unless
+`STYX_V4L2_ALLOW_VIRTUAL=1` is set, which is handy for testing with a loopback device fed by
+another program.
