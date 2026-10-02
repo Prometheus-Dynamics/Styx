@@ -220,3 +220,54 @@ fn the_handle_converts_rates_and_reports_ranges() {
     let _ = format!("{h:?}");
     let _clone = h.clone();
 }
+
+#[test]
+fn requests_now_are_written_within_the_frame_when_time_is_left() {
+    let mut c = control();
+    c.bring_up("1280x800", "raw10").unwrap();
+    // Before streaming: written at once, applying from frame 0.
+    let n = c.driver().bus().writes().len();
+    let short = ControlRequest {
+        exposure: Some(Duration::from_millis(2)),
+        ..Default::default()
+    };
+    let landed = c.request_at_now(0, &short, Duration::ZERO).unwrap();
+    assert_eq!(landed[0].frame, 0);
+    assert!(c.driver().bus().writes().len() > n);
+    c.serve(&request(StreamAction::Start, 1)).unwrap();
+    // Frame 5 started at t = 1 s; a frame lasts about 33 ms at the default frame length.
+    let t0 = Duration::from_secs(1);
+    c.frame_start_at(5, Some(t0)).unwrap();
+    let fd = c.applied(5).unwrap().frame_duration;
+    let long = ControlRequest {
+        exposure: Some(Duration::from_millis(4)),
+        ..Default::default()
+    };
+    // 10 ms into the frame: written now (inside group hold), lands on 5 + 2.
+    let n = c.driver().bus().writes().len();
+    let landed = c
+        .request_at_now(7, &long, t0 + Duration::from_millis(10))
+        .unwrap();
+    assert_eq!(landed[0].frame, 7);
+    let w = c.driver().bus().writes();
+    assert_eq!(w[n], RegWrite::byte(0x3208, 0x00));
+    assert_eq!(*w.last().unwrap(), RegWrite::byte(0x3208, 0xa0));
+    assert_eq!(
+        c.applied(7).unwrap().exposure,
+        c.applied(100).unwrap().exposure
+    );
+    // Too close to the frame's end: left for the next frame start, landing a frame later.
+    let n = c.driver().bus().writes().len();
+    let landed = c
+        .request_at_now(7, &short, t0 + fd - Duration::from_millis(1))
+        .unwrap();
+    assert_eq!(landed[0].frame, 8);
+    assert_eq!(c.driver().bus().writes().len(), n);
+    // Without a frame start time (frames inferred from dequeues) nothing is written early.
+    c.frame_start(6).unwrap();
+    assert_eq!(c.frame_time_left(t0), None);
+    c.set_write_margin(None);
+    c.frame_start_at(7, Some(t0 + fd * 2)).unwrap();
+    let landed = c.request_at_now(9, &long, t0 + fd * 2).unwrap();
+    assert_eq!(landed[0].frame, 10);
+}

@@ -28,8 +28,8 @@ use crate::health::{Fault, Health};
 pub(crate) trait SensorSide: Send + Sync {
     /// Serves a bridge request (the acknowledgement result: an errno and why).
     fn serve(&self, req: &StreamRequest) -> std::result::Result<(), (i32, String)>;
-    /// A frame started: writes what is due.
-    fn frame_start(&self, seq: u64) -> std::result::Result<(), String>;
+    /// A frame started (at `at` on `CLOCK_MONOTONIC`, when known): writes what is due.
+    fn frame_start(&self, seq: u64, at: Option<Duration>) -> std::result::Result<(), String>;
     /// The values that produced frame `seq`.
     fn applied(&self, seq: u64) -> Option<FrameControls>;
     /// Embedded data of frame `seq` (the raw buffer).
@@ -49,9 +49,9 @@ where
         lock(self).serve_detailed(req)
     }
 
-    fn frame_start(&self, seq: u64) -> std::result::Result<(), String> {
+    fn frame_start(&self, seq: u64, at: Option<Duration>) -> std::result::Result<(), String> {
         lock(self)
-            .frame_start(seq)
+            .frame_start_at(seq, at)
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
@@ -196,7 +196,8 @@ impl StreamShared {
         let seq = u64::from(buf.sequence);
         if self.drive_from_dequeue() {
             // Dequeued after its end: the next frame is starting.
-            self.health.control_write(self.sensor.frame_start(seq + 1));
+            self.health
+                .control_write(self.sensor.frame_start(seq + 1, None));
         }
         let last = self.last_sequence.swap(seq + 1, Ordering::AcqRel);
         if last != 0 && seq + 1 > last + 1 {

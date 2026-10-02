@@ -307,6 +307,11 @@ impl NativeCamera {
         self.configured.as_ref()
     }
 
+    /// Where the last configuration's sensor bring-up spent its time.
+    pub fn bring_up_times(&self) -> crate::control::BringUpTimes {
+        lock(&self.control).bring_up_times()
+    }
+
     /// When the camera was opened.
     pub fn opened(&self) -> Instant {
         self.opened

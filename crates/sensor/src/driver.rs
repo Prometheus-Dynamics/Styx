@@ -572,6 +572,22 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
         self.request_codes(frame, &set)
     }
 
+    /// [`Self::request`], but writes due in the current frame (the last one started) go out
+    /// now instead of at the next frame start (see [`ControlScheduler::request_now`]): the
+    /// caller must know the current frame has not ended yet. Before streaming, values for frame
+    /// 0 are written at once rather than with the stream-on sequence.
+    pub fn request_now(&mut self, frame: u64, req: &ControlRequest) -> Result<Vec<Landing>> {
+        let set = self.codes_for(frame, req)?;
+        let (landings, batch) = self
+            .scheduler
+            .as_mut()
+            .ok_or(SensorError::State("request: no mode"))?
+            .request_now(frame, &set);
+        let hold = self.state == DriverState::Streaming;
+        self.write_controls(&batch.controls, hold)?;
+        Ok(landings)
+    }
+
     /// Ask for raw codes from frame `frame`.
     pub fn request_codes(&mut self, frame: u64, set: &ControlSet) -> Result<Vec<Landing>> {
         let sched = self

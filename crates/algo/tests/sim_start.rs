@@ -130,3 +130,31 @@ fn a_mode_switch_keeps_the_exposure() {
     assert!((y0 / before - 1.0).abs() < 0.05, "{y0} {before}");
     assert!(lock.is_some_and(|l| l <= 2), "{lock:?}");
 }
+
+#[test]
+fn a_black_level_error_costs_one_correction() {
+    // Luma = k × exposure + 0.01: a proportional step misses, the first frame it produces
+    // shows by how much, and that is corrected at once (not damped).
+    let mut scene = Scene::constant(200.0, 5000.0);
+    scene.lux = Scene::step(60, 200.0, 50.0);
+    let config = device(30.0);
+    let mut p = Pipeline::from_tuning(&common::tuning()).unwrap();
+    let init = p.prepare(&config).unwrap().clone();
+    let model = styx_algo::sim::SensorModel {
+        black_error: 0.01,
+        ..Default::default()
+    };
+    let mut sim = styx_algo::sim::Simulation::new(model, scene, &config);
+    let s = init.sensor.unwrap();
+    sim.start_with(
+        s.exposure.as_secs_f64(),
+        s.analogue_gain,
+        s.frame_duration.as_secs_f64(),
+    );
+    let frames = sim.run(&mut p, 120);
+    let c = convergence(&common::luma(&frames), 60, 0.03, 20);
+    let lock = first_lock(&frames, 60);
+    println!("200 -> 50 lux with a black level error: {c:?}, locked after {lock:?}");
+    assert!(c.settle_frames.is_some_and(|f| f <= 4), "{c:?}");
+    assert!(lock.is_some_and(|l| l <= 6), "{lock:?}");
+}

@@ -163,6 +163,9 @@ pub struct SensorModel {
     pub read_noise: f64,
     /// Relative texture within a zone (uniform ±half this).
     pub texture: f64,
+    /// Black level error: added to every value (a sensor whose black level calibration has
+    /// not settled), so luma is not proportional to exposure.
+    pub black_error: f64,
     /// Line time: exposures are whole lines.
     pub line_time: Duration,
     /// Noise seed.
@@ -188,6 +191,7 @@ impl Default for SensorModel {
             shot_noise: 2e-4,
             read_noise: 1e-3,
             texture: 0.2,
+            black_error: 0.0,
             line_time: Duration::from_micros(20),
             seed: 1,
         }
@@ -375,7 +379,7 @@ impl Simulation {
                     let tex = 1.0 + s.texture * (self.rng.uniform() - 0.5);
                     let mut px = [refl[0] * ir, refl[1] * ig, refl[2] * ib];
                     for v in &mut px {
-                        let clean = *v * tex * k;
+                        let clean = *v * tex * k + s.black_error;
                         let sd = (s.shot_noise * clean + s.read_noise * s.read_noise).sqrt();
                         *v = (clean + sd * self.rng.normal()).clamp(0.0, 1.0);
                     }

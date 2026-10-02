@@ -262,8 +262,10 @@ fn serve_frame_starts(s: &EventSources) -> Result<(), Fault> {
             Ok(Some(ev)) => {
                 if let EventKind::FrameSync { frame_sequence } = ev.kind {
                     s.health.frame_syncs.fetch_add(1, Ordering::Relaxed);
-                    s.health
-                        .control_write(s.sensor.frame_start(u64::from(frame_sequence)));
+                    s.health.control_write(
+                        s.sensor
+                            .frame_start(u64::from(frame_sequence), Some(ev.timestamp)),
+                    );
                 }
             }
             Ok(None) => return Ok(()),

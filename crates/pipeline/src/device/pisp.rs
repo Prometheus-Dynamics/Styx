@@ -15,7 +15,7 @@
 
 use std::time::{Duration, Instant};
 
-use styx_algo::{Statistics, Tuning};
+use styx_algo::{Statistics, Tuning, WarmStart};
 use styx_kernel::subdev::MbusCode;
 use styx_native::{CameraControls, Configured, NativeCamera, SensorStream, StreamSettings};
 use styx_pisp::be::BackEnd;
@@ -30,7 +30,7 @@ use super::{apply_request, sensor_values};
 use crate::controller::{Controller, SensorValues, Step};
 use crate::error::{PipelineError, Result};
 use crate::isp::{be_template, level16};
-use crate::sensor::SensorInfo;
+use crate::sensor::{ISSUE_LATENCY, SensorInfo};
 use crate::stats;
 
 /// How the PiSP path is set up.
@@ -85,6 +85,34 @@ pub struct PispTimes {
     pub total: Duration,
 }
 
+/// Where opening and starting the PiSP path spent its time.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PispStartup {
+    /// Sensor and bridge set-up ([`NativeCamera::configure_external`]): power, chip id, init and
+    /// mode registers, bridge format and timing.
+    pub configure: Duration,
+    /// The sensor bring-up within `configure`.
+    pub bring_up: styx_native::BringUpTimes,
+    /// Front end: links, formats, buffers.
+    pub fe_open: Duration,
+    /// Back end: formats, buffers, the front end's buffers imported.
+    pub be_open: Duration,
+    /// Back end template and the algorithms.
+    pub isp_and_algorithms: Duration,
+    /// Everything [`PispPipeline::open`] took.
+    pub open: Duration,
+    /// Algorithms' start-up values and the sensor request for frame 0.
+    pub start_values: Duration,
+    /// Embedded data capture and the event thread.
+    pub start_external: Duration,
+    /// The front end's `STREAMON`: the receiver starts, the bridge asks and the sensor starts.
+    pub stream_on: Duration,
+    /// Everything [`PispPipeline::start`] took.
+    pub start: Duration,
+    /// When `start` returned (for measuring the first frame from there).
+    pub started_at: Option<Instant>,
+}
+
 /// One frame through the PiSP.
 #[derive(Debug)]
 pub struct PispFrame {
@@ -132,7 +160,13 @@ pub struct PispPipeline {
     be: BackEnd,
     sensor: Option<SensorStream>,
     options: PispOptions,
+    startup: PispStartup,
+    warm_override: Option<Option<WarmStart>>,
 }
+
+/// Time from the end of a frame's readout until its statistics have been through the
+/// algorithms and the request is ready (front end statistics, dequeue, algorithms), with slack.
+const PISP_PROCESSING: Duration = Duration::from_millis(2);
 
 impl std::fmt::Debug for PispPipeline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -152,7 +186,12 @@ impl PispPipeline {
         tuning: &Tuning,
         options: PispOptions,
     ) -> Result<Self> {
+        let t_open = Instant::now();
+        let mut startup = PispStartup::default();
         let configured = camera.configure_external(settings)?;
+        startup.configure = t_open.elapsed();
+        startup.bring_up = camera.bring_up_times();
+        let t = Instant::now();
         let fps = configured.interval.fps();
         let info = SensorInfo::from_description(
             &camera.info().description,
@@ -170,6 +209,8 @@ impl PispPipeline {
             buffers: options.fe_buffers,
             keep_embedded: true,
         })?;
+        startup.fe_open = t.elapsed();
+        let t = Instant::now();
         let input = fe_dev.image_format();
         let mut fe = FrontEnd::new(info.width as u16, info.height as u16, order);
         fe.default_stats(level16(info.black_level), 1.0, 1.0);
@@ -185,6 +226,8 @@ impl PispPipeline {
             options.outputs,
             options.be_buffers,
         )?;
+        startup.be_open = t.elapsed();
+        let t = Instant::now();
         let be = be_template(
             input,
             order,
@@ -197,6 +240,8 @@ impl PispPipeline {
             .map_err(|e| PipelineError::Config(format!("back end: {}", e.0)))?;
         let controller = Controller::new(tuning, info.camera.clone())?;
         let controls = camera.controls();
+        startup.isp_and_algorithms = t.elapsed();
+        startup.open = t_open.elapsed();
         Ok(Self {
             camera,
             controls,
@@ -209,7 +254,14 @@ impl PispPipeline {
             be,
             sensor: None,
             options,
+            startup,
+            warm_override: None,
         })
+    }
+
+    /// Where opening and the last start spent their time.
+    pub fn startup(&self) -> &PispStartup {
+        &self.startup
     }
 
     /// The configuration in effect.
@@ -244,13 +296,20 @@ impl PispPipeline {
         })
     }
 
-    /// Resets the algorithms, requests their start-up values for frame 0 and starts streaming.
+    /// Starts the next [`Self::start`] from these settled values (`None`: from the tuning's
+    /// start-up values) instead of what the camera's last session settled on
+    /// ([`crate::warm::recall`], the default).
+    pub fn set_warm_start(&mut self, warm: Option<WarmStart>) {
+        self.warm_override = Some(warm);
+    }
+
+    /// Resets the algorithms (from the camera's last settled state, see [`crate::warm`]),
+    /// requests their start-up values for frame 0 (written before streaming) and starts
+    /// streaming. Sensor requests are written as soon as they are made: in the frame the
+    /// statistics came from while enough of it is left (frame starts from `FRAME_SYNC`), so a
+    /// change lands a control delay after the frame that asked for it.
     pub fn start(&mut self) -> Result<()> {
-        let start = self.controller.start()?;
-        if let Some(r) = start.sensor {
-            apply_request(&self.controls, &r)?;
-        }
-        start.isp.apply_fe(&mut self.fe);
+        let t_start = Instant::now();
         let fe_dev = self
             .fe_dev
             .as_mut()
@@ -259,7 +318,40 @@ impl PispPipeline {
             .image_node_path()
             .map(|p| p.to_path_buf())
             .ok_or_else(|| PipelineError::Device("no fe_image0 node".into()))?;
-        self.sensor = Some(self.camera.start_external(&sync)?);
+        let sensor = self.camera.start_external(&sync)?;
+        self.startup.start_external = t_start.elapsed();
+        let t = Instant::now();
+        let latency = if sensor.uses_frame_sync() {
+            self.info
+                .issue_latency(PISP_PROCESSING, styx_native::control::DEFAULT_WRITE_MARGIN)
+        } else {
+            ISSUE_LATENCY
+        };
+        self.sensor = Some(sensor);
+        self.controller.set_issue_latency(latency);
+        let warm = match self.warm_override {
+            Some(w) => w,
+            None => crate::warm::recall(&self.camera.info().key),
+        };
+        self.controller.set_warm_start(warm);
+        let values = self.controller.start().and_then(|start| {
+            if let Some(r) = start.sensor {
+                apply_request(&self.controls, &r)?;
+            }
+            start.isp.apply_fe(&mut self.fe);
+            Ok(())
+        });
+        if let Err(e) = values {
+            self.camera.quiesce_external();
+            let _ = self.camera.stop();
+            self.sensor = None;
+            return Err(e);
+        }
+        self.startup.start_values = t.elapsed();
+        let t = Instant::now();
+        let Some(fe_dev) = self.fe_dev.as_mut() else {
+            return Err(PipelineError::Device("stopped".into()));
+        };
         // The event thread is quiesced while the front end's STREAMON waits for the sensor.
         let started = fe_dev
             .start(&mut self.fe, self.options.configs_ahead)
@@ -272,6 +364,9 @@ impl PispPipeline {
             self.sensor = None;
             return Err(e);
         }
+        self.startup.stream_on = t.elapsed();
+        self.startup.start = t_start.elapsed();
+        self.startup.started_at = Some(Instant::now());
         Ok(())
     }
 
@@ -354,7 +449,14 @@ impl PispPipeline {
     }
 
     /// Stops streaming and frees the ISP buffers; the camera stays configured and powered.
+    /// What the algorithms settled on is remembered for the camera's next start
+    /// ([`crate::warm`]).
     pub fn stop(&mut self) -> Result<()> {
+        if self.sensor.is_some()
+            && let Some(w) = self.controller.warm_state()
+        {
+            crate::warm::remember(&self.camera.info().key, w);
+        }
         // The front end's STREAMOFF holds its nodes' locks while the bridge waits for the stop
         // acknowledgement: the event thread must not be polling them.
         self.camera.quiesce_external();

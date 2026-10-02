@@ -51,7 +51,7 @@ impl SensorStream {
     /// (frame `seq + 1` is starting).
     pub fn frame_done(&self, seq: u64) {
         if !self.frame_sync {
-            let _ = self.sensor.frame_start(seq + 1);
+            let _ = self.sensor.frame_start(seq + 1, None);
         }
         if let Some(e) = &self.embedded {
             e.drain();

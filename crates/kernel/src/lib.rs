@@ -14,6 +14,7 @@
 #![cfg(target_os = "linux")]
 
 pub mod bus;
+mod clock;
 pub mod dma_heap;
 mod error;
 pub mod event;
@@ -26,6 +27,7 @@ pub mod media;
 pub mod subdev;
 pub mod v4l2;
 
+pub use clock::monotonic_now;
 pub use error::{Error, Result};
 pub use fourcc::FourCc;
 pub use geometry::{Fraction, Rect};

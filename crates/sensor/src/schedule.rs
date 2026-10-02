@@ -269,6 +269,33 @@ impl ControlScheduler {
         batch
     }
 
+    /// Like [`Self::request`], but writes due in the current frame (the last one started) are
+    /// taken at once instead of at the next frame start: the returned batch must be written
+    /// before the current frame ends (before the sensor latches its registers for the next
+    /// one). Values then land `delay` frames after the current frame, so a request for
+    /// `current + delay` is on time. Before streaming this is [`Self::issue_now`] after the
+    /// request.
+    pub fn request_now(&mut self, frame: u64, controls: &ControlSet) -> (Vec<Landing>, IssueBatch) {
+        for (c, v) in controls.iter() {
+            self.pending[c.index()].insert(frame, v);
+        }
+        let batch = self.take(self.started);
+        let landings = controls
+            .iter()
+            .map(|(c, v)| Landing {
+                control: c,
+                value: v,
+                requested: frame,
+                frame: match (batch.lands(c), self.started) {
+                    (Some(l), _) => l,
+                    (None, Some(s)) => frame.max(s + 1 + u64::from(self.delay(c))),
+                    (None, None) => self.landing(c, frame),
+                },
+            })
+            .collect();
+        (landings, batch)
+    }
+
     /// Issue what is due without waiting for the next frame start: before streaming, values
     /// requested for frames earlier than their delay (they then apply from frame 0); while
     /// streaming, values due in the current frame (the caller must write them before the frame

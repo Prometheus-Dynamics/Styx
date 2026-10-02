@@ -67,6 +67,8 @@ pub struct Agc {
     last_request: Option<SensorRequest>,
     /// Frame on which the latest change of the request lands.
     settles_at: u64,
+    /// The latest change was undamped; its first frame may correct what is left.
+    full_step_pending: bool,
     lock_count: u32,
     /// Start-up exposure and gain from a warm start.
     warm: Option<(f64, f64)>,
@@ -94,6 +96,7 @@ impl Agc {
             last: None,
             last_request: None,
             settles_at: 0,
+            full_step_pending: false,
             lock_count: 0,
             warm: None,
         })
@@ -332,6 +335,7 @@ impl Algorithm for Agc {
         self.last = None;
         self.last_request = None;
         self.settles_at = 0;
+        self.full_step_pending = false;
         self.lock_count = 0;
         self.warm = None;
         let (t, g) = self.start_values();
@@ -419,9 +423,31 @@ impl Algorithm for Agc {
         let large = self.tuning.full_step > 0.0
             && before > 0.0
             && (target / before - 1.0).abs() > self.tuning.full_step;
-        let (mut speed, stable) = (self.tuning.speed, self.tuning.stable_region);
-        if fixed_both || self.frame_count <= self.tuning.startup_frames || desaturating || large {
+        // The first frame produced by an undamped change: what is left is the model's error
+        // (clipped zones, black level), not noise, so it is corrected at once as well.
+        let produced_by_last = self.last.is_some_and(|(t, g)| {
+            let r =
+                meta.exposure.as_secs_f64() * meta.analogue_gain / (t.as_secs_f64() * g).max(1e-12);
+            (r - 1.0).abs() < 0.02
+        });
+        let correcting =
+            self.full_step_pending && meta.frame >= self.settles_at && produced_by_last;
+        if meta.frame >= self.settles_at {
+            self.full_step_pending = false;
+        }
+        let (mut speed, mut stable) = (self.tuning.speed, self.tuning.stable_region);
+        if fixed_both
+            || self.frame_count <= self.tuning.startup_frames
+            || desaturating
+            || large
+            || correcting
+        {
             speed = 1.0;
+        }
+        // While a change is in flight, frames produced before it repeat what asked for it:
+        // only a clearly different answer (the scene changed) replaces it.
+        if meta.frame < self.settles_at {
+            stable = stable.max(self.tuning.full_step);
         }
         let stable = if fixed_both { 0.0 } else { stable };
         if before == 0.0 {
@@ -461,6 +487,7 @@ impl Algorithm for Agc {
             _ => {
                 let frame = self.config.delays.earliest_landing(meta.frame);
                 self.settles_at = frame;
+                self.full_step_pending = speed >= 1.0 && !fixed_both;
                 SensorRequest {
                     frame,
                     exposure,

@@ -62,7 +62,7 @@ pub use buffers::{BufferMemory, NativeFrame};
 pub use camera::{
     CameraControls, CameraOptions, Configured, NativeCamera, StreamSettings, select_mode,
 };
-pub use control::{ControlHandle, FrameControls, SensorControl};
+pub use control::{BringUpTimes, ControlHandle, FrameControls, SensorControl};
 pub use discover::{CameraInfo, discover, discover_bridge};
 pub use error::{NativeError, Result};
 pub use external::SensorStream;
