@@ -207,7 +207,9 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
     }
 
     /// Powers the sensor, checks its chip id, writes init and the mode. The sensor stays in
-    /// software standby. Powers up only if off; an active mode is replaced.
+    /// software standby. Powers up only if off; an active mode is replaced, except that a
+    /// powered sensor already in this mode at its default line length (a camera kept warm
+    /// between sessions) is left as it is: its registers have not changed in standby.
     pub fn bring_up(&mut self, mode: &str, format: &str) -> Result<()> {
         let problems = standby_problems(self.driver.description(), mode, format);
         if !problems.is_empty() {
@@ -236,7 +238,17 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
             DriverState::Powered => {}
         }
         let t = Instant::now();
-        self.driver.set_mode(mode, format)?;
+        let desc = self.driver.description();
+        let same = self.driver.mode().is_some_and(|m| {
+            m.mode == mode
+                && m.format == format
+                && desc
+                    .mode(mode)
+                    .is_ok_and(|d| m.timing.hblank == d.hblank.default)
+        });
+        if !same {
+            self.driver.set_mode(mode, format)?;
+        }
         times.mode = t.elapsed();
         self.bring_up_times = times;
         self.last_start = None;

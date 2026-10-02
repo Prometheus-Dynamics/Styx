@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 
 use styx_algo::{Statistics, Tuning, WarmStart};
 use styx_kernel::subdev::MbusCode;
-use styx_native::{CameraControls, Configured, NativeCamera, SensorStream, StreamSettings};
+use styx_native::{
+    CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
+};
 use styx_pisp::be::BackEnd;
 use styx_pisp::device::{
     BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup,
@@ -147,6 +149,74 @@ fn bayer(c: CfaPattern) -> BayerOrder {
     }
 }
 
+/// The front and back end, opened for a sensor mode.
+struct Isp {
+    fe: FrontEnd,
+    fe_dev: FrontEndDevice,
+    be_dev: BackEndStream,
+    be: BackEnd,
+}
+
+impl Isp {
+    /// Front end (links, formats, buffers), back end (formats, buffers, the front end's raw
+    /// buffers imported) and the back end template, for `info`'s size and colour order on
+    /// media bus code `code`. Returns how long each end took.
+    fn open(
+        info: &SensorInfo,
+        code: u32,
+        options: &PispOptions,
+    ) -> Result<(Self, Duration, Duration)> {
+        let t = Instant::now();
+        let order = bayer(info.cfa);
+        let fe_dev = FrontEndDevice::open(&FrontEndSetup {
+            width: info.width,
+            height: info.height,
+            sensor_code: MbusCode(code),
+            bayer: order,
+            image_output: true,
+            buffers: options.fe_buffers,
+            keep_embedded: true,
+        })?;
+        let fe_open = t.elapsed();
+        let t = Instant::now();
+        let input = fe_dev.image_format();
+        let mut fe = FrontEnd::new(info.width as u16, info.height as u16, order);
+        fe.default_stats(level16(info.black_level), 1.0, 1.0);
+        fe.set_output_format(0, input);
+        fe.enable(fe_enable::OUTPUT0, true);
+        let input_len = input.stride as u32 * u32::from(input.height);
+        let be_dev = BackEndStream::open(
+            options.be_group,
+            input,
+            order,
+            fe_dev.image_dmabufs()?,
+            input_len,
+            options.outputs,
+            options.be_buffers,
+        )?;
+        let be = be_template(
+            input,
+            order,
+            info.black_level,
+            [be_dev.output_format(0), be_dev.output_format(1)],
+        )?;
+        // The template must prepare (sizes, strides, tiles) before streaming starts.
+        be.clone()
+            .prepare()
+            .map_err(|e| PipelineError::Config(format!("back end: {}", e.0)))?;
+        Ok((
+            Self {
+                fe,
+                fe_dev,
+                be_dev,
+                be,
+            },
+            fe_open,
+            t.elapsed(),
+        ))
+    }
+}
+
 /// A native camera through the PiSP. See the [module documentation](self).
 pub struct PispPipeline {
     camera: NativeCamera,
@@ -179,7 +249,8 @@ impl std::fmt::Debug for PispPipeline {
 
 impl PispPipeline {
     /// Sets the camera, the front end and the back end up for `settings` (sensor size and
-    /// rate) with the algorithms of `tuning`.
+    /// rate) with the algorithms of `tuning`. The sensor's bring-up (power, I²C init and mode)
+    /// runs on another thread while the front and back end open.
     pub fn open(
         mut camera: NativeCamera,
         settings: &StreamSettings,
@@ -188,56 +259,35 @@ impl PispPipeline {
     ) -> Result<Self> {
         let t_open = Instant::now();
         let mut startup = PispStartup::default();
-        let configured = camera.configure_external(settings)?;
-        startup.configure = t_open.elapsed();
+        let mode = select_mode(&camera.info().modes, settings, &camera.info().raw_formats)?.clone();
+        let desc = std::sync::Arc::clone(&camera.info().description);
+        let sensor_info = SensorInfo::from_description(&desc, &mode.mode, &mode.format)?;
+        let (configured, isp) = std::thread::scope(|scope| {
+            let sensor = scope.spawn(|| {
+                let t = Instant::now();
+                let c = camera.configure_external(settings);
+                (c, t.elapsed())
+            });
+            let isp = Isp::open(&sensor_info, mode.code, &options);
+            let (configured, took) = sensor.join().unwrap_or_else(|_| {
+                (
+                    Err(styx_native::NativeError::State("sensor set-up panicked")),
+                    Duration::ZERO,
+                )
+            });
+            startup.configure = took;
+            (configured, isp)
+        });
+        let configured = configured?;
+        let (isp, fe_open, be_open) = isp?;
         startup.bring_up = camera.bring_up_times();
+        startup.fe_open = fe_open;
+        startup.be_open = be_open;
         let t = Instant::now();
         let fps = configured.interval.fps();
-        let info = SensorInfo::from_description(
-            &camera.info().description,
-            &configured.mode.mode,
-            &configured.mode.format,
-        )?
-        .with_fps(fps, fps)?;
-        let order = bayer(info.cfa);
-        let fe_dev = FrontEndDevice::open(&FrontEndSetup {
-            width: info.width,
-            height: info.height,
-            sensor_code: MbusCode(configured.mode.code),
-            bayer: order,
-            image_output: true,
-            buffers: options.fe_buffers,
-            keep_embedded: true,
-        })?;
-        startup.fe_open = t.elapsed();
-        let t = Instant::now();
-        let input = fe_dev.image_format();
-        let mut fe = FrontEnd::new(info.width as u16, info.height as u16, order);
-        fe.default_stats(level16(info.black_level), 1.0, 1.0);
-        fe.set_output_format(0, input);
-        fe.enable(fe_enable::OUTPUT0, true);
-        let input_len = input.stride as u32 * u32::from(input.height);
-        let be_dev = BackEndStream::open(
-            options.be_group,
-            input,
-            order,
-            fe_dev.image_dmabufs()?,
-            input_len,
-            options.outputs,
-            options.be_buffers,
-        )?;
-        startup.be_open = t.elapsed();
-        let t = Instant::now();
-        let be = be_template(
-            input,
-            order,
-            info.black_level,
-            [be_dev.output_format(0), be_dev.output_format(1)],
-        )?;
-        // The template must prepare (sizes, strides, tiles) before streaming starts.
-        be.clone()
-            .prepare()
-            .map_err(|e| PipelineError::Config(format!("back end: {}", e.0)))?;
+        let info =
+            SensorInfo::from_description(&desc, &configured.mode.mode, &configured.mode.format)?
+                .with_fps(fps, fps)?;
         let controller = Controller::new(tuning, info.camera.clone())?;
         let controls = camera.controls();
         startup.isp_and_algorithms = t.elapsed();
@@ -248,10 +298,10 @@ impl PispPipeline {
             configured,
             info,
             controller,
-            fe,
-            fe_dev: Some(fe_dev),
-            be_dev: Some(be_dev),
-            be,
+            fe: isp.fe,
+            fe_dev: Some(isp.fe_dev),
+            be_dev: Some(isp.be_dev),
+            be: isp.be,
             sensor: None,
             options,
             startup,
@@ -296,8 +346,8 @@ impl PispPipeline {
         })
     }
 
-    /// Starts the next [`Self::start`] from these settled values (`None`: from the tuning's
-    /// start-up values) instead of what the camera's last session settled on
+    /// Starts the next [`Self::start`] (only) from these settled values (`None`: from the
+    /// tuning's start-up values) instead of what the camera's last session settled on
     /// ([`crate::warm::recall`], the default).
     pub fn set_warm_start(&mut self, warm: Option<WarmStart>) {
         self.warm_override = Some(warm);
@@ -310,6 +360,21 @@ impl PispPipeline {
     /// change lands a control delay after the frame that asked for it.
     pub fn start(&mut self) -> Result<()> {
         let t_start = Instant::now();
+        if self.sensor.is_some() {
+            return Err(PipelineError::Device("already started".into()));
+        }
+        // After a stop the camera is still configured and powered; only the ISP reopens.
+        if self.fe_dev.is_none() || self.be_dev.is_none() {
+            self.fe_dev = None;
+            self.be_dev = None;
+            let (isp, fe_open, be_open) =
+                Isp::open(&self.info, self.configured.mode.code, &self.options)?;
+            (self.fe, self.be) = (isp.fe, isp.be);
+            self.fe_dev = Some(isp.fe_dev);
+            self.be_dev = Some(isp.be_dev);
+            (self.startup.fe_open, self.startup.be_open) = (fe_open, be_open);
+        }
+        let t_ext = Instant::now();
         let fe_dev = self
             .fe_dev
             .as_mut()
@@ -319,7 +384,7 @@ impl PispPipeline {
             .map(|p| p.to_path_buf())
             .ok_or_else(|| PipelineError::Device("no fe_image0 node".into()))?;
         let sensor = self.camera.start_external(&sync)?;
-        self.startup.start_external = t_start.elapsed();
+        self.startup.start_external = t_ext.elapsed();
         let t = Instant::now();
         let latency = if sensor.uses_frame_sync() {
             self.info
@@ -329,7 +394,7 @@ impl PispPipeline {
         };
         self.sensor = Some(sensor);
         self.controller.set_issue_latency(latency);
-        let warm = match self.warm_override {
+        let warm = match self.warm_override.take() {
             Some(w) => w,
             None => crate::warm::recall(&self.camera.info().key),
         };
@@ -448,7 +513,38 @@ impl PispPipeline {
         }
     }
 
-    /// Stops streaming and frees the ISP buffers; the camera stays configured and powered.
+    /// Sets the stopped camera up for other settings (e.g. another frame rate) without powering
+    /// it down: a sensor already in the mode only gets the new frame length. The next
+    /// [`Self::start`] reopens the ISP and starts from what the last session settled on.
+    pub fn reconfigure(&mut self, settings: &StreamSettings) -> Result<()> {
+        if self.sensor.is_some() {
+            return Err(PipelineError::Device("stop before reconfiguring".into()));
+        }
+        let t = Instant::now();
+        let configured = self.camera.configure_external(settings)?;
+        let fps = configured.interval.fps();
+        let info = SensorInfo::from_description(
+            &self.camera.info().description,
+            &configured.mode.mode,
+            &configured.mode.format,
+        )?
+        .with_fps(fps, fps)?;
+        self.controller.set_config(info.camera.clone())?;
+        if (info.width, info.height, configured.mode.code)
+            != (self.info.width, self.info.height, self.configured.mode.code)
+        {
+            self.fe_dev = None;
+            self.be_dev = None;
+        }
+        self.info = info;
+        self.configured = configured;
+        self.startup.configure = t.elapsed();
+        self.startup.bring_up = self.camera.bring_up_times();
+        Ok(())
+    }
+
+    /// Stops streaming and frees the ISP buffers; the camera stays configured and powered
+    /// ([`Self::start`] again, or [`Self::reconfigure`] first, restarts without a bring-up).
     /// What the algorithms settled on is remembered for the camera's next start
     /// ([`crate::warm`]).
     pub fn stop(&mut self) -> Result<()> {

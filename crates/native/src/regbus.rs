@@ -34,7 +34,12 @@ impl I2cIo for I2cDevice {
 pub struct I2cRegisterBus<T> {
     io: T,
     addr_width: AddrWidth,
+    /// Longest burst of consecutive registers in one transfer (1: one write per transfer).
+    burst: usize,
 }
+
+/// Longest burst [`I2cRegisterBus::with_bursts`] sends in one transfer, in data bytes.
+pub const MAX_BURST: usize = 32;
 
 impl<T: I2cIo> I2cRegisterBus<T> {
     /// A bus with `address_bits` (8 or 16) register addresses.
@@ -49,7 +54,19 @@ impl<T: I2cIo> I2cRegisterBus<T> {
                 ));
             }
         };
-        Ok(Self { io, addr_width })
+        Ok(Self {
+            io,
+            addr_width,
+            burst: 1,
+        })
+    }
+
+    /// Writes runs of consecutive registers in a sequence as one auto-incrementing transfer
+    /// (address, then up to [`MAX_BURST`] data bytes), for sensors that take them (the
+    /// description's `burst_writes`). One message per transfer either way.
+    pub fn with_bursts(mut self, on: bool) -> Self {
+        self.burst = if on { MAX_BURST } else { 1 };
+        self
     }
 
     /// The transport.
@@ -119,9 +136,28 @@ impl<T: I2cIo> RegisterBus for I2cRegisterBus<T> {
     /// does not always issue the repeated start between two write messages, and the SCCB
     /// target then takes the next message's register address as data. Reads (write then read)
     /// are unaffected: the direction change always restarts.
+    ///
+    /// With [`Self::with_bursts`], writes to consecutive addresses that follow each other in
+    /// the sequence share one transfer (a single message, so no repeated start is involved):
+    /// the target auto-increments the register address after each byte.
     fn write_sequence(&mut self, writes: &[RegWrite]) -> io::Result<()> {
-        for w in writes {
-            let buf = encode_write(w.address, w.bytes, w.value, self.addr_width)?;
+        let mut i = 0;
+        while i < writes.len() {
+            let w = writes[i];
+            let mut buf = encode_write(w.address, w.bytes, w.value, self.addr_width)?;
+            let header = buf.len() - usize::from(w.bytes);
+            let mut next = w.address.checked_add(u16::from(w.bytes));
+            i += 1;
+            while let Some(n) = writes.get(i) {
+                if next != Some(n.address) || buf.len() - header + usize::from(n.bytes) > self.burst
+                {
+                    break;
+                }
+                let one = encode_write(n.address, n.bytes, n.value, self.addr_width)?;
+                buf.extend_from_slice(&one[header..]);
+                next = n.address.checked_add(u16::from(n.bytes));
+                i += 1;
+            }
             self.io.write_messages(&[&buf])?;
         }
         Ok(())
@@ -341,6 +377,37 @@ mod tests {
         assert_eq!(t.len(), 50);
         assert!(t.iter().all(|m| m.len() == 1));
         assert_eq!(t[1][0], [0x30, 0x01, 0x01]);
+    }
+
+    #[test]
+    fn bursts_join_consecutive_registers_in_order() {
+        let mut bus = ov9782_bus().with_bursts(true);
+        let w = |a, v| RegWrite::byte(a, v);
+        let writes = [
+            w(0x3800, 1),
+            w(0x3801, 2),
+            RegWrite {
+                address: 0x3802,
+                value: 0x0304,
+                bytes: 2,
+            },
+            w(0x3805, 5), // a gap: new transfer
+            w(0x3806, 6),
+            w(0x3805, 7), // going back: new transfer, written after
+        ];
+        bus.write_sequence(&writes).unwrap();
+        let t = &bus.io().transfers;
+        assert_eq!(t.len(), 3);
+        assert!(t.iter().all(|m| m.len() == 1));
+        assert_eq!(t[0][0], [0x38, 0x00, 1, 2, 3, 4]);
+        assert_eq!(t[1][0], [0x38, 0x05, 5, 6]);
+        assert_eq!(bus.io().regs[&0x3805], 7);
+        // Long runs are cut at MAX_BURST bytes.
+        let mut bus = ov9782_bus().with_bursts(true);
+        let run: Vec<RegWrite> = (0..70).map(|i| w(0x5000 + i, i as u8)).collect();
+        bus.write_sequence(&run).unwrap();
+        let lens: Vec<usize> = bus.io().transfers.iter().map(|m| m[0].len() - 2).collect();
+        assert_eq!(lens, [32, 32, 6]);
     }
 
     /// The driver run over this bus writes exactly what it writes over the mock bus.

@@ -271,3 +271,16 @@ fn requests_now_are_written_within_the_frame_when_time_is_left() {
     let landed = c.request_at_now(9, &long, t0 + fd * 2).unwrap();
     assert_eq!(landed[0].frame, 10);
 }
+
+#[test]
+fn a_powered_sensor_in_the_same_mode_is_not_set_up_again() {
+    let mut c = control();
+    c.bring_up("1280x800", "raw10").unwrap();
+    let n = c.driver().bus().writes().len();
+    c.bring_up("1280x800", "raw10").unwrap();
+    assert_eq!(c.driver().bus().writes().len(), n, "nothing rewritten");
+    assert_eq!(c.bring_up_times().power_up, Duration::ZERO);
+    // Another mode is written.
+    c.bring_up("1280x720", "raw10").unwrap();
+    assert!(c.driver().bus().writes().len() > n);
+}

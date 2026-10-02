@@ -41,6 +41,8 @@ pub enum ControlPlane {
     #[cfg(feature = "native")]
     Native {
         controls: styx_native::CameraControls,
+        /// The 3A loop's AE state of a processed mode (see `native_backend::controls::AE_STATE`).
+        ae_state: Option<std::sync::Arc<std::sync::atomic::AtomicI32>>,
     },
     /// A reconnecting capture: controls go to whichever backend capture is running and are
     /// re-applied after a reconnect.
@@ -95,7 +97,7 @@ pub(crate) fn apply_control_to_plane(
                 .map_err(|_| CaptureError::control_apply("libcamera channel closed"))
         }
         #[cfg(feature = "native")]
-        ControlPlane::Native { controls } => {
+        ControlPlane::Native { controls, .. } => {
             super::native_backend::apply_control(controls, id, &_value)
         }
         #[cfg(feature = "file-backend")]
@@ -155,7 +157,15 @@ pub(crate) fn read_control_from_plane(
                 })?
         }
         #[cfg(feature = "native")]
-        ControlPlane::Native { controls } => super::native_backend::read_control(controls, id),
+        ControlPlane::Native { controls, ae_state } => {
+            if id == super::native_backend::controls::AE_STATE {
+                return ae_state
+                    .as_ref()
+                    .map(|s| ControlValue::Int(s.load(std::sync::atomic::Ordering::Acquire)))
+                    .ok_or(CaptureError::ControlUnsupported);
+            }
+            super::native_backend::read_control(controls, id)
+        }
         #[cfg(feature = "file-backend")]
         ControlPlane::File { state } => file_backend::read_file_control(state, id),
         #[cfg(feature = "simulation-bevy")]

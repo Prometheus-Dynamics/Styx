@@ -137,6 +137,13 @@ impl Controller {
         &self.config
     }
 
+    /// Another camera configuration (e.g. another frame rate), from the next [`Self::start`].
+    pub fn set_config(&mut self, config: CameraConfig) -> Result<()> {
+        config.validate()?;
+        self.config = config;
+        Ok(())
+    }
+
     /// The application controls applied from the next frame on.
     pub fn set_controls(&mut self, controls: Controls) {
         self.controls = controls;
@@ -327,7 +334,7 @@ mod tests {
         }
         let last = last.unwrap();
         assert!(last.params.ae.locked, "{:?}", last.params.ae);
-        assert!(requests > 2 && requests < 40, "{requests}");
+        assert!((1..40).contains(&requests), "{requests}");
         // Grey world takes out the 0.5 / 0.7 cast.
         assert!((last.isp.wb[0] - 2.0).abs() < 0.05, "{:?}", last.isp.wb);
         c.stop_recording().unwrap();

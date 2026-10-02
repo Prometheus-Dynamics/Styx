@@ -87,6 +87,7 @@ impl SensorInfo {
             },
             sensitivity: 1.0,
             black_level: black,
+            unsettled_frames: desc.pixel_array.black_level.map_or(0, |b| b.settle_frames),
             ..Default::default()
         };
         let lines = m.size.height + desc.embedded_data.as_ref().map_or(0, |e| e.lines);

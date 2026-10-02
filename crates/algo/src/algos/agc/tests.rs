@@ -198,3 +198,41 @@ fn frame_duration_follows_exposure_within_limits() {
     assert!(r.frame_duration <= Duration::from_millis(30));
     assert!(r.exposure <= Duration::from_micros(29_501));
 }
+
+#[test]
+fn unsettled_first_frames_are_left_out() {
+    let mut agc = Agc::new(no_constraints()).unwrap();
+    agc.prepare(&CameraConfig {
+        unsettled_frames: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    agc.warm_start(&WarmStart {
+        total_exposure: 0.010,
+        exposure: Duration::from_millis(10),
+        analogue_gain: 1.0,
+        ..Default::default()
+    });
+    let mut p = Params::default();
+    agc.initial(&mut p);
+    let start = p.sensor;
+    // Frame 0 reads 15% bright (black level settling): no new request, no lock.
+    agc.process(&grey(0.16 * 1.15), &meta(0, 10.0, 1.0), &mut p);
+    assert_eq!(p.sensor, start);
+    assert!(!p.ae.locked);
+    agc.process(&grey(0.16), &meta(1, 10.0, 1.0), &mut p);
+    assert!(!p.ae.locked);
+    agc.process(&grey(0.16), &meta(2, 10.0, 1.0), &mut p);
+    assert!(p.ae.locked);
+    assert_eq!(p.sensor, start);
+    // Even a frame 0 three times too bright is left out (it may be a cut-short exposure).
+    agc.prepare(&CameraConfig {
+        unsettled_frames: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    agc.initial(&mut p);
+    let start = p.sensor;
+    agc.process(&grey(0.48), &meta(0, 1.0, 1.0), &mut p);
+    assert_eq!(p.sensor, start);
+}

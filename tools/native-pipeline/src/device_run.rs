@@ -198,7 +198,7 @@ fn ms(d: Duration) -> f64 {
 }
 
 /// Where the time from open to the first frame went.
-fn startup_line(
+pub(crate) fn startup_line(
     s: styx_pipeline::device::PispStartup,
     camera_open: Duration,
     first: Option<Instant>,
@@ -322,7 +322,16 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let (cpu1, rss) = process_usage();
     let p_startup = *p.startup();
     p.controller().stop_recording().map_err(|e| e.to_string())?;
-    let stopped = p.close().map_err(|e| e.to_string());
+    let mut in_place = None;
+    let stopped = if a.keep_open && !a.then.is_empty() && result.is_ok() {
+        let s = p.stop().map_err(|e| e.to_string());
+        if s.is_ok() {
+            in_place = Some(crate::restart::in_place(a, p));
+        }
+        s
+    } else {
+        p.close().map_err(|e| e.to_string())
+    };
     result?;
     stopped?;
     let mut extra = vec![format!("statistics/raw sequence mismatches: {mismatches}")];
@@ -363,7 +372,10 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         ));
     }
     write_csv(&a.out.join("pisp-frames.csv"), &frames).map_err(|e| e.to_string())?;
-    extra.extend(crate::restart::sessions(a, &tuning)?);
+    match in_place {
+        Some(r) => extra.extend(r?),
+        None => extra.extend(crate::restart::sessions(a, &tuning)?),
+    }
     let summary = Summary {
         name: "pisp (PiSP front and back end on the native camera)",
         frames: &frames,

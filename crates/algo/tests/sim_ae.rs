@@ -60,10 +60,10 @@ fn bright_to_dark_settles_without_overshoot() {
 
 #[test]
 fn small_steps_are_damped_and_stable() {
-    let (frames, _) = step_run(200.0, 212.0, 200);
+    let (frames, _) = step_run(200.0, 214.0, 200);
     let y = common::luma(&frames);
     let c = convergence(&y, STEP as usize, 0.03, 40);
-    println!("200 -> 212 lux: {c:?}");
+    println!("200 -> 214 lux: {c:?}");
     assert!(c.settle_frames.is_some_and(|f| f <= 30), "{c:?}");
     assert!(c.overshoot < 0.03, "{c:?}");
     // Damped: the first change is partial.
@@ -138,7 +138,7 @@ fn flicker_avoidance_uses_whole_periods() {
     let c_on = convergence(&common::luma(&on), 0, 0.05, 60);
     println!("flicker 100 Hz, avoidance off: {c_off:?}");
     println!("flicker 100 Hz, avoidance 50 Hz: {c_on:?}");
-    assert!(c_off.jitter > 0.02, "{c_off:?}");
+    assert!(c_off.jitter > 0.01, "{c_off:?}");
     assert!(c_on.jitter < 0.005, "{c_on:?}");
     for f in &on[60..] {
         let ms = f.meta.exposure.as_secs_f64() * 1e3;

@@ -110,8 +110,8 @@ impl SoftPipeline {
         &self.controls
     }
 
-    /// Starts the next [`Self::start`] from these settled values (`None`: from the tuning's
-    /// start-up values) instead of what the camera's last session settled on
+    /// Starts the next [`Self::start`] (only) from these settled values (`None`: from the
+    /// tuning's start-up values) instead of what the camera's last session settled on
     /// ([`crate::warm::recall`], the default).
     pub fn set_warm_start(&mut self, warm: Option<WarmStart>) {
         self.warm_override = Some(warm);
@@ -127,7 +127,7 @@ impl SoftPipeline {
             .info()
             .issue_latency(SOFT_PROCESSING, styx_native::control::DEFAULT_WRITE_MARGIN)
             .max(1);
-        let warm = match self.warm_override {
+        let warm = match self.warm_override.take() {
             Some(w) => w,
             None => crate::warm::recall(&self.camera.info().key),
         };

@@ -45,6 +45,7 @@ pub struct Awb {
     bayes: bool,
     frame_count: u32,
     frames_seen: u32,
+    unsettled_frames: u32,
     frame_phase: u32,
     estimate: Estimate,
     filtered: Estimate,
@@ -62,6 +63,7 @@ impl Awb {
             bayes,
             frame_count: 0,
             frames_seen: 0,
+            unsettled_frames: 0,
             frame_phase: 0,
             estimate: (DEFAULT_CT, 1.0, 1.0),
             filtered: (DEFAULT_CT, 1.0, 1.0),
@@ -192,7 +194,8 @@ impl Algorithm for Awb {
         "awb"
     }
 
-    fn prepare(&mut self, _config: &CameraConfig) -> Result<()> {
+    fn prepare(&mut self, config: &CameraConfig) -> Result<()> {
+        self.unsettled_frames = config.unsettled_frames;
         self.reset();
         Ok(())
     }
@@ -226,6 +229,9 @@ impl Algorithm for Awb {
         } else if !meta.controls.awb_enable {
             auto = false;
             self.estimate = self.filtered;
+        } else if meta.frame < u64::from(self.unsettled_frames) {
+            // Levels not settled yet (see `CameraConfig::unsettled_frames`): keep the gains.
+            auto = true;
         } else {
             auto = true;
             let y = stats.mean_luma();

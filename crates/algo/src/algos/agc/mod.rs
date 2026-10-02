@@ -346,25 +346,15 @@ impl Algorithm for Agc {
 
     fn warm_start(&mut self, warm: &WarmStart) {
         // The same scene through this mode: scale by the modes' sensitivities, then split along
-        // the profile within this mode's limits. A same-mode restart keeps the exact split.
+        // the profile within this mode's limits, as the first frame's processing will (a
+        // same-mode restart gets the split it ended with).
         let sensitivity = warm.sensitivity / self.config.sensitivity;
         let total = warm.total_exposure * sensitivity;
         if !(total.is_finite() && total > 0.0) {
             return;
         }
-        let (t, g) = (warm.exposure.as_secs_f64(), warm.analogue_gain);
-        let (glo, ghi) = self.config.analogue_gain_limits;
-        let fits = (sensitivity - 1.0).abs() < 1e-9
-            && self.limit_exposure(t, None) == t
-            && (glo..=ghi).contains(&g)
-            && (t * g - total).abs() <= 1e-6 * total;
-        let (t, g) = if fits {
-            (t, g)
-        } else {
-            let s = self.divide(total, total, (None, None), None);
-            (s.exposure, s.analogue_gain)
-        };
-        self.warm = Some((t, g));
+        let s = self.divide(total, total, (None, None), None);
+        self.warm = Some((s.exposure, s.analogue_gain));
         self.filtered = total;
         self.set_start_request();
     }
@@ -449,6 +439,17 @@ impl Algorithm for Agc {
         if meta.frame < self.settles_at {
             stable = stable.max(self.tuning.full_step);
         }
+        // Frames whose levels have not settled say nothing about the scene; for as many frames
+        // after them, and while locked, AE leaves a frame that is on target alone (no hunting
+        // within the lock tolerance).
+        let unsettled = meta.frame < u64::from(self.config.unsettled_frames);
+        if unsettled {
+            stable = f64::INFINITY;
+        } else if self.lock_count >= LOCK_FRAMES
+            || meta.frame < 2 * u64::from(self.config.unsettled_frames)
+        {
+            stable = stable.max(ON_TARGET);
+        }
         let stable = if fixed_both { 0.0 } else { stable };
         if before == 0.0 {
             self.filtered = target;
@@ -497,7 +498,7 @@ impl Algorithm for Agc {
             }
         };
         // Locked: produced with what AE asked for, on target, for LOCK_FRAMES frames in a row.
-        let settled = meta.frame >= self.settles_at && on_target && !desaturating;
+        let settled = meta.frame >= self.settles_at && on_target && !desaturating && !unsettled;
         self.lock_count = if settled {
             (self.lock_count + 1).min(LOCK_FRAMES)
         } else {

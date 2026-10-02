@@ -78,7 +78,10 @@ impl Default for CameraOptions {
             buffers: 4,
             memory: BufferMemory::Mmap,
             ack_timeout: Duration::from_millis(1000),
-            power_settle: Duration::from_millis(5),
+            // Measured on the CM5 (native-pipeline regcheck, 20 power cycles each): 0, 0.5, 1
+            // and 2 ms all brought the OV9782 up with every register reading back (its own
+            // sequence then waits 2 x 600 us); 1 ms keeps a margin.
+            power_settle: Duration::from_millis(1),
             i2c_bus: None,
             frame_sync: true,
             embedded_data: true,
@@ -247,7 +250,9 @@ impl NativeCamera {
             AddrWidth::Bits16
         };
         let dev = I2cDevice::open(bus, addr, width).step(&format!("claim I2C {bus}-{addr:04x}"))?;
-        let regbus = I2cRegisterBus::new(dev, desc.sensor.address_bits).step("register bus")?;
+        let regbus = I2cRegisterBus::new(dev, desc.sensor.address_bits)
+            .step("register bus")?
+            .with_bursts(desc.sensor.burst_writes);
         let supplies: Vec<&str> = [&desc.sequences.power_up, &desc.sequences.power_down]
             .into_iter()
             .flatten()

@@ -39,6 +39,9 @@ pub mod controls {
     pub const FRAME_DURATION_US: ControlId = ControlId(0xF400_0003);
     /// Frame rate in frames per second (`Float`); sets the closest frame length.
     pub const FRAME_RATE: ControlId = ControlId(0xF400_0004);
+    /// AE state of a processed mode's 3A loop after the latest frame, as libcamera's
+    /// `AeState` (`Int`, read only): 1 searching, 2 converged (AE locked).
+    pub const AE_STATE: ControlId = ControlId(0xF400_0010);
 }
 
 fn native_err(e: NativeError) -> CaptureError {
@@ -394,7 +397,10 @@ pub(super) fn start_native(
         .map_err(|e| CaptureError::Backend(format!("native worker: {e}")))?;
     Ok(CaptureHandle {
         backend: BackendKind::Native,
-        control: ControlPlane::Native { controls },
+        control: ControlPlane::Native {
+            controls,
+            ae_state: None,
+        },
         descriptor,
         mode,
         interval,

@@ -73,6 +73,10 @@ pub struct Identity {
     /// Register address width in bits: 8 or 16.
     #[serde(default = "sixteen")]
     pub address_bits: u8,
+    /// Consecutive register writes may go out as one auto-incrementing burst (one bus
+    /// transfer: address, then the bytes). Off by default: one transfer per write.
+    #[serde(default)]
+    pub burst_writes: bool,
     /// Chip identification register.
     #[serde(default)]
     pub chip_id: Option<ChipId>,
@@ -128,6 +132,10 @@ pub struct BlackLevel {
     pub value: u32,
     /// Bit depth `value` is expressed at.
     pub bits: u8,
+    /// Frames at the start of a stream that read a higher black level while the sensor's
+    /// black level calibration settles (their levels mislead exposure control).
+    #[serde(default)]
+    pub settle_frames: u32,
 }
 
 impl BlackLevel {
