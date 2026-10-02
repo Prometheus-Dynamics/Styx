@@ -40,6 +40,11 @@
 				styx,mbus-codes = <0x3007 0x3001>;
 				styx,max-size = <1280 800>;
 				styx,min-size = <16 16>;
+				/* Embedded data pad: 16384 bytes x 1 line (the size rp1-cfe's
+				 * csi2 defaults its pad 1 to), as the runtime -emb overlay the
+				 * HeliOS trial ran with: frames report the exposure and gain
+				 * read back from the sensor. */
+				styx,embedded-data = <16384 1>;
 
 				/* Enabled together through STYX_CID_POWER. */
 				clocks = <&cam1_clk>;
