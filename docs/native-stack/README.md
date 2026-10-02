@@ -49,6 +49,7 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | `crates/native` | `styx-native` | The runtime for bridged sensors: description search path, discovery, `NativeCamera` (power, mode, receiver path, buffers, async frames, embedded data), frame-accurate typed controls, the `native` `Provider`; `styx` backend `BackendKind::Native` (feature `native`) | provider agent |
 | `crates/softisp` | `styx-softisp` | Software ISP: unpack, black level, gains, lens shading, demosaic, CCM, tone, RGB/YUV/luma, 3A statistics; SIMD row kernels. Backs `styx-codec`'s Bayer decoders | softisp agent |
 | `crates/pipeline` | `styx-pipeline` | The native processing pipeline: statistics conversion, the deterministic 3A loop runner (`Controller`), ISP settings for the PiSP and the software ISP, the PiSP and software paths on a native camera (feature `device`), raw recordings and a virtual sensor for host replays; see [pipeline.md](pipeline.md) | pipeline agent |
+| `tools/compare` | `styx-compare` | Same capture through the libcamera and native backends: start latency (first frame, AE converged, exposure settled), rate and jitter, drops, CPU (with the IPA proxy), RSS/PSS and dma-bufs, frame statistics; JSON and markdown. `device-run.sh` runs the set on the CM5 | compare agent |
 | `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
 
 Crates must not depend on each other except: `styx-sensor` may use `styx-kernel` types behind
@@ -107,7 +108,8 @@ limits at that fps.
     binding/unbinding drivers, runtime overlays via configfs, loading our modules, streaming)
     needs the device lock, taken atomically with
     `ssh root@helios 'mkdir /tmp/styx-device-lock && echo "<agent> $(date)" > /tmp/styx-device-lock/owner'`
-    (retry every 60 s while it exists; never delete someone else's lock). Keep it only as long as
+    (retry every 60 s while it exists; never delete someone else's lock). Chain every device step
+    after the lock with `&&` or `set -e` so nothing runs if taking the lock fails. Keep it only as long as
     needed, and before releasing it (`rm -rf /tmp/styx-device-lock`) restore the device:
     `helios-peripherals` active, `ov9282` bound to `10-0060`, no runtime overlay or Styx module
     loaded (`kernel-modules/styx-sensor-bridge/spike/down.sh` does this). If restoring fails,
@@ -126,6 +128,20 @@ limits at that fps.
   module is GPL-2.0 (kernel module) and lives apart from the Rust crates.
 - Commits: concise messages ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
   Never push.
+
+## rp1-cfe pitfalls (Raspberry Pi 6.12), measured on the device
+
+- `VIDIOC_STREAMON`/`STREAMOFF` hold the video node's lock while the bridge waits for the
+  acknowledgement, and `poll` on the node (`vb2_fop_poll`) and every ioctl on it take the same
+  lock. Whatever serves the bridge must not touch the node meanwhile (not even through a shared
+  epoll reactor that re-polls it): `styx-native`'s event thread polls with its own `poll(2)` and
+  is quiesced around both calls. Before that, every stop timed out after 1 s.
+- A failing sensor `s_stream(1)` oopses the kernel (`csi2_stop_channel` on channel -1 when the
+  front end is unused). The bridge therefore does not fail `STREAMON` by default and reports
+  the failed start in `STYX_CID_STREAM_STATE` = 4; userspace stops the receiver
+  (`PROTOCOL.md`, module parameter `report_start_errors`).
+- Unbinding `rp1-cfe` after it bound to the bridge leaks a reference to the bridge's device
+  tree node (no `v4l2_async_nf_cleanup`): removing the overlay logs "OF: ERROR: memory leak".
 
 ## Phases
 

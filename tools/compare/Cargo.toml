@@ -1,0 +1,24 @@
+[package]
+name = "styx-compare"
+version.workspace = true
+edition.workspace = true
+description = "Runs the same capture through Styx's libcamera and native backends and compares start latency, frame timing, CPU, memory and image statistics."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+styx = { workspace = true, default-features = false, features = ["facade"] }
+styx-softisp.workspace = true
+
+[features]
+default = []
+libcamera = ["styx/libcamera"]
+native = ["styx/native"]
+
+[lints]
+workspace = true

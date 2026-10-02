@@ -29,5 +29,5 @@ pub mod v4l2;
 pub use error::{Error, Result};
 pub use fourcc::FourCc;
 pub use geometry::{Fraction, Rect};
-pub use ioctl::Ready;
+pub use ioctl::{Ready, Wait, poll};
 pub use mapping::Mapping;

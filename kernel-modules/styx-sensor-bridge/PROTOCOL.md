@@ -72,7 +72,7 @@ The OV9782 sends one embedded line with `0x4307` bit 0 set (see `ov9782.toml`).
 | `V4L2_CID_HBLANK` | int | rw | Horizontal blanking, pixels (0..INT_MAX) |
 | `V4L2_CID_VBLANK` | int | rw | Vertical blanking, lines (0..INT_MAX); may change while streaming |
 | `STYX_CID_STREAM_ACK` = `0x00982800` | int64 | write (execute on write) | Acknowledges a stream event, see below |
-| `STYX_CID_STREAM_STATE` = `0x00982801` | int | read-only, volatile | 0 idle, 1 starting, 2 streaming, 3 stopping |
+| `STYX_CID_STREAM_STATE` = `0x00982801` | int | read-only, volatile | 0 idle, 1 starting, 2 streaming, 3 stopping, 4 start failed (see below) |
 | `STYX_CID_ACK_TIMEOUT_MS` = `0x00982802` | int | rw | 10..10000, default 1000: how long start/stop wait |
 | `STYX_CID_POWER` = `0x00982803` | bool | rw | 1 enables the supplies (list order) then the clock; 0 disables them. Off fails with `EBUSY` unless idle |
 | `STYX_CID_STREAM_SEQUENCE` = `0x00982804` | int | read-only, volatile | Sequence of the last stream event |
@@ -153,19 +153,31 @@ Stop:
 
 ## Errors and timeouts
 
+A failed start is not returned to the receiver by default: `rp1-cfe` (Raspberry Pi 6.12) oopses
+in its `s_stream(1)` error path when its front end is unused (it stops CSI-2 channel -1). The
+bridge then returns 0, logs the error and sets `STYX_CID_STREAM_STATE` to 4 (start failed):
+`STREAMON` succeeds, no frames come, and userspace must check the state after `STREAMON` and
+stop the receiver (`STREAMOFF`), which takes the bridge back to idle without a stop request.
+With the module parameter `report_start_errors=1` the errors below go to the receiver
+instead (`STREAMON` fails with them, state back to idle).
+
 | Case | Result |
 |---|---|
-| No subscriber at start | `s_stream(1)` → `-ENOTCONN` immediately |
+| No subscriber at start | start fails with `-ENOTCONN` immediately |
 | Last subscriber closes while the bridge waits | wait ends with `-ENOTCONN` |
-| No ack within `timeout_ms` | start → `-ETIMEDOUT` (state back to idle); stop → idle, logged |
-| Ack with status N | start → `-N`; stop → idle, logged |
-| STREAMON caller killed while waiting | `-ERESTARTSYS`/killed; state back to idle |
+| No ack within `timeout_ms` | start fails with `-ETIMEDOUT`; stop → idle, logged |
+| Ack with status N | start fails with `-N`; stop → idle, logged |
+| STREAMON caller killed while waiting | start fails (`-ERESTARTSYS`/killed) |
 | Late or duplicate ack | control write fails with `ESTALE` |
 | Module unbound while waiting | wait ends with `-ENODEV` |
 | Format change while streaming | `EBUSY`; `LINK_FREQ`/`PIXEL_RATE` writes `EBUSY` |
 
-After a failed start userspace should put the sensor back in standby: the receiver has already
-closed its side.
+After a failed start userspace should put the sensor back in standby (a late acknowledgement may
+have started it). With `report_start_errors=1` the receiver has already closed its side; by
+default userspace stops it.
+
+When the last subscriber goes away (the userspace driver exited or died) and the stream is
+idle, or a stream ends with no subscriber left, the bridge switches its supplies and clock off.
 
 ## Frame timing
 

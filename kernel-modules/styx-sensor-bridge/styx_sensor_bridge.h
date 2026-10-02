@@ -70,6 +70,13 @@ enum styx_bridge_stream_state {
 	STYX_BRIDGE_STATE_STARTING = 1,
 	STYX_BRIDGE_STATE_STREAMING = 2,
 	STYX_BRIDGE_STATE_STOPPING = 3,
+	/*
+	 * A start failed (no or a failing acknowledgement) and the receiver was
+	 * told it succeeded (report_start_errors=0): the receiver streams, the
+	 * sensor does not. Userspace stops the receiver; that ends it (no stop
+	 * request).
+	 */
+	STYX_BRIDGE_STATE_START_FAILED = 4,
 };
 
 #define STYX_BRIDGE_ACK(seq, status) \

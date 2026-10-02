@@ -255,12 +255,22 @@ impl PispPipeline {
             .fe_dev
             .as_mut()
             .ok_or_else(|| PipelineError::Device("stopped".into()))?;
-        let sync = fe_dev.image_node_path().map(|p| p.to_path_buf());
-        self.sensor = Some(self.camera.start_external(sync.as_deref())?);
-        if let Err(e) = fe_dev.start(&mut self.fe, self.options.configs_ahead) {
+        let sync = fe_dev
+            .image_node_path()
+            .map(|p| p.to_path_buf())
+            .ok_or_else(|| PipelineError::Device("no fe_image0 node".into()))?;
+        self.sensor = Some(self.camera.start_external(&sync)?);
+        // The event thread is quiesced while the front end's STREAMON waits for the sensor.
+        let started = fe_dev
+            .start(&mut self.fe, self.options.configs_ahead)
+            .map_err(PipelineError::from)
+            .and_then(|()| self.camera.resume_external().map_err(PipelineError::from));
+        if let Err(e) = started {
+            self.camera.quiesce_external();
+            let _ = self.fe_dev.take().map(FrontEndDevice::stop);
             let _ = self.camera.stop();
             self.sensor = None;
-            return Err(e.into());
+            return Err(e);
         }
         Ok(())
     }
@@ -345,6 +355,9 @@ impl PispPipeline {
 
     /// Stops streaming and frees the ISP buffers; the camera stays configured and powered.
     pub fn stop(&mut self) -> Result<()> {
+        // The front end's STREAMOFF holds its nodes' locks while the bridge waits for the stop
+        // acknowledgement: the event thread must not be polling them.
+        self.camera.quiesce_external();
         let fe = self.fe_dev.take().map(FrontEndDevice::stop);
         let be = self.be_dev.take().map(BackEndStream::stop);
         self.sensor = None;

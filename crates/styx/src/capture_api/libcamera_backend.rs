@@ -450,7 +450,8 @@ pub(super) fn start_libcamera(
                 }
             }
 
-            let ctrl_list = build_libcamera_controls(&requested_controls_for_thread)?;
+            let ctrl_list =
+                build_libcamera_controls(&requested_controls_for_thread, requests.first())?;
             let mut ctrl_list = ctrl_list;
             let mut frame_duration: Option<i64> = None;
             if let Some(interval) = interval_for_thread

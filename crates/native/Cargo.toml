@@ -16,5 +16,8 @@ styx-kernel.workspace = true
 styx-sensor.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+
 [lints]
 workspace = true

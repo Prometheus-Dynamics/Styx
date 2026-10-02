@@ -4,17 +4,24 @@
 //! or allocated from a dma-heap and imported (`DMABUF`). Either way every frame has a CPU
 //! mapping and a dma-buf descriptor, so it can be read in place or handed to another process or
 //! device without a copy. A frame returns its buffer to the queue when dropped.
+//!
+//! Frames may outlive their stream. Stopping a stream releases the queue's buffers at once
+//! (`REQBUFS 0`, which leaves buffers that are still mapped or exported to the memory that
+//! backs them: "orphaned"), so the next stream, on this descriptor or another one, allocates
+//! fresh buffers. A held frame keeps its mapping and dma-buf (and with them the memory) until
+//! it is dropped; it is never queued again.
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use styx_kernel::dma_heap::{self, Access, DmaHeap};
-use styx_kernel::v4l2::{BufType, Memory, QueueBuffer, VideoDevice};
+use styx_kernel::dma_heap::{self, Access, DmaBuf, DmaHeap};
+use styx_kernel::v4l2::{Memory, QueueBuffer};
 use styx_kernel::{FourCc, Mapping};
 
-use crate::control::FrameControls;
+use crate::control::{FrameControls, lock};
+use crate::device::CaptureDevice;
 use crate::error::{KernelContext, NativeError, Result};
 
 /// Where capture buffers come from.
@@ -32,59 +39,83 @@ struct Buffer {
     dmabuf: Option<OwnedFd>,
 }
 
-/// The buffers of one stream. Freed (`REQBUFS 0`) when the last frame lending one is dropped.
+/// Buffers allocated outside the driver, imported as `DMABUF`.
+pub(crate) enum Allocator {
+    /// From a dma-heap.
+    Heap(DmaHeap),
+    /// memfds (tests).
+    #[cfg(test)]
+    Memfd,
+}
+
+impl Allocator {
+    fn allocate(&self, len: usize) -> Result<DmaBuf> {
+        match self {
+            Allocator::Heap(h) => h.allocate(len).step("allocate from dma-heap"),
+            #[cfg(test)]
+            Allocator::Memfd => DmaBuf::memfd("styx-native-test", len).step("memfd"),
+        }
+    }
+}
+
+/// The buffers of one stream.
 pub(crate) struct BufferSet {
     buffers: Vec<Buffer>,
-    video: Arc<VideoDevice>,
-    buf_type: BufType,
+    video: Arc<dyn CaptureDevice>,
     memory: Memory,
     len: usize,
     /// Frames currently lent out.
     outstanding: AtomicUsize,
+    /// Whether frames go back to the queue when dropped. Cleared (under the lock, so no frame
+    /// queues a buffer after) when the stream stops.
+    live: Mutex<bool>,
+    /// The queue no longer holds these buffers (`REQBUFS 0` done).
+    released: AtomicBool,
 }
 
 impl BufferSet {
-    /// Allocates and maps `count` buffers of `len` bytes (at least) on `video`.
-    pub(crate) fn allocate(
-        video: Arc<VideoDevice>,
-        buf_type: BufType,
-        memory: &BufferMemory,
+    /// Allocates and maps `count` buffers of `len` bytes (at least) on `video`: driver
+    /// buffers without an allocator, imported ones with it.
+    pub(crate) fn allocate_with(
+        video: Arc<dyn CaptureDevice>,
+        allocator: Option<Allocator>,
         count: u32,
         len: usize,
     ) -> Result<Self> {
-        let kmem = match memory {
-            BufferMemory::Mmap => Memory::Mmap,
-            BufferMemory::DmaHeap(_) => Memory::DmaBuf,
+        let kmem = if allocator.is_some() {
+            Memory::DmaBuf
+        } else {
+            Memory::Mmap
         };
         let got = video
-            .request_buffers(buf_type, kmem, count.max(2))
+            .request_buffers(kmem, count.max(2))
             .step("VIDIOC_REQBUFS")?;
+        // From here on dropping `set` frees the queue's buffers again.
         let mut set = BufferSet {
-            buffers: Vec::with_capacity(got.count as usize),
+            buffers: Vec::with_capacity(got as usize),
             video,
-            buf_type,
             memory: kmem,
             len,
             outstanding: AtomicUsize::new(0),
+            live: Mutex::new(true),
+            released: AtomicBool::new(false),
         };
-        match memory {
-            BufferMemory::Mmap => {
-                for i in 0..got.count {
-                    let mut planes = set.video.map_buffer(buf_type, i).step("mmap buffer")?;
-                    if planes.is_empty() {
-                        return Err(NativeError::State("buffer without planes"));
-                    }
-                    let map = planes.remove(0);
+        if got == 0 {
+            return Err(NativeError::State("the driver allocated no buffers"));
+        }
+        match &allocator {
+            None => {
+                for i in 0..got {
+                    let map = set.video.map_buffer(i).step("mmap buffer")?;
                     // Export for sharing; drivers without EXPBUF still capture into the mapping.
-                    let dmabuf = set.video.export_buffer(buf_type, i, 0).ok();
+                    let dmabuf = set.video.export_buffer(i).ok();
                     set.len = map.len();
                     set.buffers.push(Buffer { map, dmabuf });
                 }
             }
-            BufferMemory::DmaHeap(name) => {
-                let heap = DmaHeap::open(name).step(&format!("open dma-heap {name}"))?;
-                for _ in 0..got.count {
-                    let buf = heap.allocate(len).step("allocate from dma-heap")?;
+            Some(alloc) => {
+                for _ in 0..got {
+                    let buf = alloc.allocate(len)?;
                     let map = buf.map().step("map dma-buf")?;
                     set.buffers.push(Buffer {
                         map,
@@ -119,16 +150,17 @@ impl BufferSet {
             .buffers
             .get(index as usize)
             .ok_or(NativeError::State("no such buffer"))?;
+        let buf_type = self.video.buf_type();
         let req = match self.memory {
             Memory::DmaBuf => {
                 let fd = b.dmabuf.as_ref().ok_or(NativeError::State("no dma-buf"))?;
-                let mut q = QueueBuffer::dmabuf(self.buf_type, index, &[fd.as_fd()]);
+                let mut q = QueueBuffer::dmabuf(buf_type, index, &[fd.as_fd()]);
                 if let Some(p) = q.planes.first_mut() {
                     p.length = self.len as u32;
                 }
                 q
             }
-            _ => QueueBuffer::mmap(self.buf_type, index),
+            _ => QueueBuffer::mmap(buf_type, index),
         };
         self.video.queue(&req).step("VIDIOC_QBUF")
     }
@@ -136,6 +168,30 @@ impl BufferSet {
     /// Queues every buffer.
     pub(crate) fn queue_all(&self) -> Result<()> {
         (0..self.buffers.len() as u32).try_for_each(|i| self.queue(i))
+    }
+
+    /// Whether frames still go back to the queue.
+    pub(crate) fn is_live(&self) -> bool {
+        *lock(&self.live)
+    }
+
+    /// Stops lending buffers back to the queue: frames dropped from now on keep their buffer
+    /// out of it. Waits for a frame that is queueing its buffer right now.
+    pub(crate) fn retire(&self) {
+        *lock(&self.live) = false;
+    }
+
+    /// Frees the queue's buffers (`REQBUFS 0`) after [`Self::retire`] and `STREAMOFF`. Held
+    /// frames keep their mappings and dma-bufs; the next stream allocates new buffers.
+    pub(crate) fn release(&self) -> Result<()> {
+        self.retire();
+        if self.released.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        self.video
+            .request_buffers(self.memory, 0)
+            .map(|_| ())
+            .step("VIDIOC_REQBUFS 0")
     }
 
     fn data(&self, index: u32) -> &[u8] {
@@ -148,20 +204,34 @@ impl BufferSet {
             .as_ref()
             .map(|f| f.as_fd())
     }
+
+    /// Returns a lent buffer: queues it again while the stream runs.
+    fn give_back(&self, index: u32) {
+        {
+            let live = lock(&self.live);
+            if *live {
+                // Fails only when the device went away; the stream reports that.
+                let _ = self.queue(index);
+            }
+        }
+        self.outstanding.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Drop for BufferSet {
     fn drop(&mut self) {
-        // Unmap and close the exports first, then free the queue's buffers.
+        // Unmap and close the exports first, then free the queue's buffers unless that was
+        // done when the stream stopped (it may hold a newer stream's buffers by now).
         self.buffers.clear();
-        let _ = self.video.free_buffers(self.buf_type, self.memory);
+        if !self.released.load(Ordering::Acquire) {
+            let _ = self.video.request_buffers(self.memory, 0);
+        }
     }
 }
 
-/// What lets a frame give its buffer back: the buffers, and whether the stream still runs.
+/// What lets a frame give its buffer back.
 pub(crate) struct Lender {
     pub(crate) buffers: Arc<BufferSet>,
-    pub(crate) streaming: Arc<AtomicBool>,
 }
 
 /// A captured frame. Dropping it returns its buffer to the capture queue.
@@ -271,12 +341,7 @@ impl Drop for NativeFrame {
         {
             let _ = dma_heap::sync(fd, Access::Read, false);
         }
-        let set = &self.lender.buffers;
-        if self.lender.streaming.load(Ordering::Acquire) {
-            // Fails only when the stream stopped meanwhile; the buffer is then unqueued anyway.
-            let _ = set.queue(self.index);
-        }
-        set.outstanding.fetch_sub(1, Ordering::AcqRel);
+        self.lender.buffers.give_back(self.index);
     }
 }
 

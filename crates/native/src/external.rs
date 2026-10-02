@@ -5,9 +5,12 @@
 //! ```text
 //! configure_external   power, mode, bridge format and timing (no links, no video node)
 //! (the other device)   links, receiver pads, its nodes and buffers
-//! start_external       embedded data (link, node, STREAMON), event thread (acks, frame starts)
+//! start_external       embedded data (link, node, STREAMON), event thread (quiesced)
 //! (the other device)   STREAMON: the receiver starts, the bridge asks, the sensor starts
+//! resume_external      fails if the sensor did not start; frame starts flow
 //! (per frame)          SensorStream::applied(seq): what produced the frame
+//! quiesce_external     before the other device's STREAMOFF (the receiver holds the node's
+//!                      lock while the bridge waits for the stop acknowledgement)
 //! (the other device)   STREAMOFF: the bridge asks to stop
 //! stop / close         as for the raw route
 //! ```
@@ -15,17 +18,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use styx_graph::rt::AsyncFd;
 use styx_kernel::event::{EventType, Events, SubscribeFlags};
 use styx_kernel::media::{LinkFlags, MediaDevice};
 use styx_kernel::v4l2::VideoDevice;
 
-use crate::camera::{Configured, NativeCamera, Running, StreamSettings};
+use crate::camera::{Configured, NativeCamera, StreamSettings};
 use crate::control::FrameControls;
 use crate::discover::find_media;
 use crate::embedded::{EmbeddedCapture, embedded_link};
-use crate::error::{KernelContext, NativeError, Result};
-use crate::events::EventThread;
+use crate::error::{KernelContext, Result};
 use crate::stream::SensorSide;
 use crate::topology::find_route;
 
@@ -50,7 +51,7 @@ impl SensorStream {
     /// (frame `seq + 1` is starting).
     pub fn frame_done(&self, seq: u64) {
         if !self.frame_sync {
-            self.sensor.frame_start(seq + 1);
+            let _ = self.sensor.frame_start(seq + 1);
         }
         if let Some(e) = &self.embedded {
             e.drain();
@@ -80,13 +81,10 @@ impl SensorStream {
 impl NativeCamera {
     /// Powers and configures the sensor and the bridge for `settings`, leaving the receiver's
     /// links, pads and capture nodes to another device (see the [module docs](self)). The
-    /// configuration's pixel format is `settings.fourcc` (or the zero fourcc) with no stride.
+    /// configuration's pixel format is `settings.fourcc` (or the zero fourcc), with no stride.
     pub fn configure_external(&mut self, settings: &StreamSettings) -> Result<Configured> {
         let (mode, frame_length) = self.configure_sensor(settings)?;
-        self.video = None;
-        self.video_fd = None;
-        self.embedded = None;
-        self.frame_sync = false;
+        self.session.set_embedded(None);
         let configured = Configured {
             interval: crate::modes::frame_interval(&mode.timing, frame_length),
             mode,
@@ -99,18 +97,17 @@ impl NativeCamera {
         Ok(configured)
     }
 
-    /// Starts serving the sensor side: captures the embedded data (enabling its link) when
-    /// the bridge and description provide it, takes frame starts from `frame_sync` (a capture
-    /// node of the other device that sends `FRAME_SYNC` events, e.g. `rp1-cfe-fe_image0`) and
-    /// answers the bridge. Call before the other device starts streaming.
-    pub fn start_external(&mut self, frame_sync: Option<&Path>) -> Result<SensorStream> {
-        if self.running.is_some() {
-            return Err(NativeError::Busy("already streaming".into()));
-        }
+    /// Starts serving the sensor side for another device: captures the embedded data
+    /// (enabling its link) when the bridge and description provide it, takes frame starts from
+    /// `frame_sync` (the other device's capture node that sends `FRAME_SYNC` events, e.g.
+    /// `rp1-cfe-fe_image0`, opened here separately) and answers the bridge. Call before the
+    /// other device starts streaming, and [`Self::resume_external`] after.
+    pub fn start_external(&mut self, frame_sync: &Path) -> Result<SensorStream> {
         if self.configured.is_none() {
-            return Err(NativeError::State("configure before starting"));
+            return Err(crate::NativeError::State("configure before starting"));
         }
         let sensor: Arc<dyn SensorSide> = self.control.clone();
+        self.session.set_embedded(None);
         if self.options.embedded_data && self.info.description.embedded_data.is_some() {
             let media = MediaDevice::open(&self.info.media).step("open media device")?;
             let topo = media.topology().step("media topology")?;
@@ -122,49 +119,37 @@ impl NativeCamera {
                 media
                     .setup_link(link.source, link.sink, LinkFlags::ENABLED)
                     .step("enable the embedded data link")?;
-                self.embedded = Some(Arc::new(EmbeddedCapture::open(
-                    &path,
-                    4,
-                    Arc::clone(&sensor),
-                )?));
+                self.session
+                    .set_embedded(Some(Arc::new(EmbeddedCapture::open(
+                        &path,
+                        4,
+                        Arc::clone(&sensor),
+                    )?)));
             }
         }
-        let sync = match frame_sync.filter(|_| self.options.frame_sync) {
-            Some(path) => {
-                let dev = Arc::new(VideoDevice::open(path).step("open the frame-start node")?);
-                match dev.subscribe(EventType::FrameSync, 0, SubscribeFlags::empty()) {
-                    Ok(()) => Some(Arc::new(
-                        AsyncFd::new(dev).step("register the frame-start node")?,
-                    )),
-                    Err(_) => None,
-                }
-            }
-            None => None,
-        };
-        let frame_sync = sync.is_some();
-        let events = EventThread::spawn(
-            Arc::clone(&self.bridge),
-            sync,
-            Arc::clone(&sensor),
-            self.embedded.clone(),
-        )
-        .step("start the event thread")?;
-        if let Some(e) = &self.embedded
-            && let Err(err) = e.start()
-        {
-            events.join();
-            self.embedded = None;
-            return Err(err);
-        }
-        self.frame_sync = frame_sync;
-        self.running = Some(Running {
-            shared: None,
-            events,
-        });
+        let video = Arc::new(VideoDevice::open(frame_sync).step("open the frame-start node")?);
+        let sync = self.options.frame_sync
+            && video
+                .subscribe(EventType::FrameSync, 0, SubscribeFlags::empty())
+                .is_ok();
+        self.session.start_external(video, sync)?;
         Ok(SensorStream {
             sensor,
-            embedded: self.embedded.clone(),
-            frame_sync,
+            embedded: self.session.embedded().cloned(),
+            frame_sync: sync,
         })
+    }
+
+    /// The other device started streaming: fails if the sensor did not start, else frame
+    /// starts flow.
+    pub fn resume_external(&self) -> Result<()> {
+        self.session.resume_external()
+    }
+
+    /// The other device is about to stop streaming: the event thread leaves its node alone
+    /// (the receiver holds the node's lock in `STREAMOFF` while the bridge waits for the
+    /// stop acknowledgement). Then stop the other device, then [`Self::stop`].
+    pub fn quiesce_external(&self) {
+        self.session.quiesce_external();
     }
 }

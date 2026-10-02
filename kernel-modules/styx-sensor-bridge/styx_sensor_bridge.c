@@ -32,6 +32,18 @@
 
 #include "styx_sensor_bridge.h"
 
+/*
+ * rp1-cfe (Raspberry Pi 6.12) oopses when the sensor's s_stream(1) fails while
+ * its front end is unused: its error path stops CSI-2 channel -1
+ * (cfe_stop_channel(node, true) with fe_csi2_channel = -1). By default a failed
+ * start is therefore not reported to the receiver; see
+ * STYX_BRIDGE_STATE_START_FAILED.
+ */
+static bool report_start_errors;
+module_param(report_start_errors, bool, 0644);
+MODULE_PARM_DESC(report_start_errors,
+		 "Return failed starts to the receiver (default: no, report them in STYX_CID_STREAM_STATE)");
+
 #define STYX_MAX_CODES		32
 #define STYX_MAX_SUPPLIES	8
 #define STYX_DEFAULT_TIMEOUT_MS	1000
@@ -71,6 +83,7 @@ struct styx_bridge {
 	struct v4l2_ctrl *hblank;
 	struct v4l2_ctrl *vblank;
 	struct v4l2_ctrl *timeout;
+	struct v4l2_ctrl *power;
 
 	/* From the device tree. */
 	u32 codes[STYX_MAX_CODES];
@@ -341,6 +354,12 @@ static int styx_bridge_start(struct styx_bridge *b)
 
 	ret = styx_bridge_request(b, STYX_BRIDGE_ACTION_START,
 				  STYX_BRIDGE_STATE_STARTING);
+	if (ret && !READ_ONCE(report_start_errors)) {
+		dev_warn(b->dev, "start failed (%d): reported to userspace only\n",
+			 ret);
+		atomic_set(&b->state, STYX_BRIDGE_STATE_START_FAILED);
+		return 0;
+	}
 	if (ret) {
 		atomic_set(&b->state, STYX_BRIDGE_STATE_IDLE);
 		return ret;
@@ -356,6 +375,10 @@ static int styx_bridge_stop(struct styx_bridge *b)
 {
 	int ret;
 
+	/* The sensor never started: nothing to ask userspace. */
+	if (atomic_cmpxchg(&b->state, STYX_BRIDGE_STATE_START_FAILED,
+			   STYX_BRIDGE_STATE_IDLE) == STYX_BRIDGE_STATE_START_FAILED)
+		return 0;
 	if (atomic_read(&b->state) != STYX_BRIDGE_STATE_STREAMING)
 		return 0;
 
@@ -368,6 +391,24 @@ static int styx_bridge_stop(struct styx_bridge *b)
 	return ret;
 }
 
+/*
+ * Switches the supplies and clock off when no userspace driver is left (its
+ * process died) and the stream is idle, so a crash does not leave the sensor
+ * powered. Runs when the last listener goes and when a stream ends without
+ * one; whichever comes last does it.
+ */
+static void styx_bridge_orphan_power_off(struct styx_bridge *b)
+{
+	if (atomic_read(&b->listeners) ||
+	    atomic_read(&b->state) != STYX_BRIDGE_STATE_IDLE)
+		return;
+	if (!v4l2_ctrl_g_ctrl(b->power))
+		return;
+	dev_info(b->dev, "no userspace sensor driver left: power off\n");
+	if (v4l2_ctrl_s_ctrl(b->power, 0))
+		dev_warn(b->dev, "power off failed\n");
+}
+
 static int styx_bridge_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct styx_bridge *b = to_bridge(sd);
@@ -376,6 +417,8 @@ static int styx_bridge_s_stream(struct v4l2_subdev *sd, int enable)
 	mutex_lock(&b->stream_lock);
 	ret = enable ? styx_bridge_start(b) : styx_bridge_stop(b);
 	mutex_unlock(&b->stream_lock);
+	if (!enable)
+		styx_bridge_orphan_power_off(b);
 	return ret;
 }
 
@@ -396,8 +439,10 @@ static void styx_listener_del(struct v4l2_subscribed_event *sev)
 {
 	struct styx_bridge *b = to_bridge(vdev_to_v4l2_subdev(sev->fh->vdev));
 
-	if (atomic_dec_and_test(&b->listeners))
+	if (atomic_dec_and_test(&b->listeners)) {
 		styx_bridge_abort(b, -ENOTCONN);
+		styx_bridge_orphan_power_off(b);
+	}
 }
 
 static const struct v4l2_subscribed_event_ops styx_listener_ops = {
@@ -481,7 +526,7 @@ static const struct v4l2_ctrl_config styx_ctrl_state = {
 	.id = STYX_CID_STREAM_STATE,
 	.name = "Styx Stream State",
 	.type = V4L2_CTRL_TYPE_INTEGER,
-	.min = STYX_BRIDGE_STATE_IDLE, .max = STYX_BRIDGE_STATE_STOPPING,
+	.min = STYX_BRIDGE_STATE_IDLE, .max = STYX_BRIDGE_STATE_START_FAILED,
 	.step = 1, .def = STYX_BRIDGE_STATE_IDLE,
 	.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
 };
@@ -543,7 +588,7 @@ static int styx_bridge_init_controls(struct styx_bridge *b)
 	v4l2_ctrl_new_custom(hdl, &styx_ctrl_ack, NULL);
 	v4l2_ctrl_new_custom(hdl, &styx_ctrl_state, NULL);
 	b->timeout = v4l2_ctrl_new_custom(hdl, &styx_ctrl_timeout, NULL);
-	v4l2_ctrl_new_custom(hdl, &styx_ctrl_power, NULL);
+	b->power = v4l2_ctrl_new_custom(hdl, &styx_ctrl_power, NULL);
 	v4l2_ctrl_new_custom(hdl, &styx_ctrl_sequence, NULL);
 
 	v4l2_ctrl_new_fwnode_properties(hdl, &styx_ctrl_ops, &props);

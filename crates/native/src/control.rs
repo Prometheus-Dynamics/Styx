@@ -196,15 +196,27 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
     /// Serves one bridge request: starts or stops the sensor. The result is the
     /// acknowledgement (an errno on failure).
     pub fn serve(&mut self, req: &StreamRequest) -> std::result::Result<(), i32> {
+        self.serve_detailed(req).map_err(|(errno, _)| errno)
+    }
+
+    /// [`Self::serve`], with why it failed.
+    pub fn serve_detailed(
+        &mut self,
+        req: &StreamRequest,
+    ) -> std::result::Result<(), (i32, String)> {
         match req.action {
             StreamAction::Start => {
                 if let Some(exp) = self.expected
-                    && exp.check(req).is_err()
+                    && let Err(why) = exp.check(req)
                 {
-                    return Err(libc::EINVAL);
+                    return Err((libc::EINVAL, why));
                 }
                 self.last_start = None;
-                self.driver.start_streaming().map_err(|_| libc::EIO)?;
+                if let Err(e) = self.driver.start_streaming() {
+                    // Whatever part of stream-on went through is undone (best effort).
+                    let _ = self.write_stream_off();
+                    return Err((libc::EIO, format!("starting the sensor: {e}")));
+                }
                 self.starts_served += 1;
                 Ok(())
             }
@@ -213,7 +225,9 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
                 if self.driver.state() != DriverState::Streaming {
                     return Ok(());
                 }
-                self.driver.stop_streaming().map_err(|_| libc::EIO)
+                self.driver
+                    .stop_streaming()
+                    .map_err(|e| (libc::EIO, format!("stopping the sensor: {e}")))
             }
         }
     }
@@ -297,31 +311,53 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
         Ok(self.driver.report(seq, &codes)?)
     }
 
-    /// Puts the sensor back in standby and powers it down (whatever state it is in).
+    /// Writes the stream-off registers whatever the driver's state (a start that failed half
+    /// way, a sensor left streaming).
+    fn write_stream_off(&mut self) -> std::io::Result<()> {
+        let off: Vec<RegWrite> = self
+            .driver
+            .description()
+            .sequences
+            .stream_off
+            .iter()
+            .filter_map(Step::as_write)
+            .copied()
+            .collect();
+        self.driver.bus_mut().write_sequence(&off)
+    }
+
+    /// Puts the sensor back in standby and powers it down (whatever state it is in). Best
+    /// effort: when the sensor does not answer (the stream-off writes fail), it is powered down
+    /// anyway and the first error is returned.
     pub fn shut_down(&mut self) -> Result<()> {
-        if self.driver.state() == DriverState::Streaming {
-            self.driver.stop_streaming()?;
+        self.last_start = None;
+        let mut result: Result<()> = Ok(());
+        if self.driver.state() == DriverState::Streaming
+            && let Err(e) = self.driver.stop_streaming()
+        {
+            result = Err(e.into());
         }
-        if self.driver.state() == DriverState::Powered {
-            let off: Vec<RegWrite> = self
-                .driver
-                .description()
-                .sequences
-                .stream_off
-                .iter()
-                .filter_map(Step::as_write)
-                .copied()
-                .collect();
-            self.driver
-                .bus_mut()
-                .write_sequence(&off)
-                .map_err(|e| NativeError::kernel("writing stream_off", e))?;
+        if result.is_ok()
+            && self.driver.state() == DriverState::Powered
+            && let Err(e) = self.write_stream_off()
+        {
+            result = Err(NativeError::kernel("writing stream_off", e));
         }
         if self.driver.state() != DriverState::Off {
-            self.driver.power_down()?;
+            let down = if result.is_ok() {
+                self.driver.power_down()
+            } else {
+                self.driver.force_power_down()
+            };
+            if let Err(e) = down {
+                // Still off as far as the pins go: `force_power_down` tried every step.
+                let _ = self.driver.force_power_down();
+                if result.is_ok() {
+                    result = Err(e.into());
+                }
+            }
         }
-        self.last_start = None;
-        Ok(())
+        result
     }
 }
 
