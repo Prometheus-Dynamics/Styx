@@ -1,0 +1,17 @@
+# Styx's generic tuning: used for a sensor that has no tuning of its own anywhere on the
+# tuning search path, built in or installed (styx-pipeline `tuning`). styx-algo's TOML format.
+#
+# Grey-world white balance, centre-weighted exposure, an identity colour matrix and the default
+# tone curve (styx-algo's defaults), plus the ISP's noise reduction with the Raspberry Pi IPA's
+# assumptions for an unknown sensor (noise slope 3), defective pixel correction and the ISP's
+# default sharpening. Temporal denoise stays off: it needs a measured noise profile.
+description = "styx generic (untuned sensor)"
+
+[denoise]
+dpc = 1
+
+[denoise.sdn]
+
+[denoise.cdn]
+
+[denoise.sharpen]

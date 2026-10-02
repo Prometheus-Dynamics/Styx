@@ -107,7 +107,13 @@ impl MediaPipeline {
         impl_name: Option<&str>,
         prefer_hardware: bool,
     ) -> Result<(), RegistryError> {
-        self.decoder = Some(lookup_codec(registry, fourcc, impl_name, prefer_hardware)?);
+        self.decoder = Some(lookup_codec(
+            registry,
+            CodecKind::Decoder,
+            fourcc,
+            impl_name,
+            prefer_hardware,
+        )?);
         Ok(())
     }
 
@@ -124,7 +130,13 @@ impl MediaPipeline {
         impl_name: Option<&str>,
         prefer_hardware: bool,
     ) -> Result<(), RegistryError> {
-        self.encoder = Some(lookup_codec(registry, fourcc, impl_name, prefer_hardware)?);
+        self.encoder = Some(lookup_codec(
+            registry,
+            CodecKind::Encoder,
+            fourcc,
+            impl_name,
+            prefer_hardware,
+        )?);
         Ok(())
     }
 

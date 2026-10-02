@@ -28,6 +28,8 @@
 //! * [`rawrec`]: raw recordings (frames plus what produced them) and [`replay`]: a virtual
 //!   sensor that replays a recording at whatever exposure and gain the loop asks for, with
 //!   the sensor's control delays, so the closed loop runs on a host.
+//! * [`tuning`]: the tuning search path (`STYX_TUNING_PATH`, Styx's directories, the built-in
+//!   tunings, libcamera's directories, a generic tuning).
 //! * [`warm`]: each camera's settled AE/AWB state, kept between sessions so restarts and mode
 //!   switches start where the last session ended.
 //! * `device` (feature `device`): the loop on a native camera, with the PiSP
@@ -48,6 +50,7 @@ pub mod replay;
 pub mod sensor;
 pub mod soft;
 pub mod stats;
+pub mod tuning;
 pub mod warm;
 
 pub use controller::{Controller, SensorValues, Step};

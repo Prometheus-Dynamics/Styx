@@ -160,3 +160,12 @@ pub use schedule::{
     Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Mismatch,
 };
 pub use timing::{ExposureLimits, ExposureSpec, ExposureValue, FrameLength, Timing};
+
+/// Sensor descriptions that ship with this crate (`sensors/*.toml`): `(sensor name, TOML)`.
+/// Programs embed them as the last entry of their search path, so a file of the same name
+/// installed on the system (or on `STYX_SENSOR_PATH`) overrides them.
+///
+/// * `ov9782`: register values from the HeliOS `ov9782.c` driver, cleared for use in Styx by
+///   its author (see the file's header).
+pub const BUILTIN_DESCRIPTIONS: &[(&str, &str)] =
+    &[("ov9782", include_str!("../sensors/ov9782.toml"))];

@@ -62,7 +62,7 @@ impl RegistryInner {
                 }
             }
             if pref.prefer_hardware
-                && let Some(codec) = candidates
+                && let Some(codec) = preferred_kind(&candidates)
                     .iter()
                     .find(|codec| codec.descriptor().is_hardware_accelerated())
             {
@@ -84,10 +84,30 @@ impl RegistryInner {
                 } else {
                     1
                 };
-                (prio, hw_bias, id)
+                (kind_rank(codec.as_ref()), prio, hw_bias, id)
             })
             .ok_or(RegistryError::NotFound(fourcc))
     }
+}
+
+/// Decoders (and converters) before encoders: a format can have both (YUYV has a YUYV → RGB
+/// decoder and YUYV → MJPEG/H.264 encoders), and a lookup that names no kind turns a frame of
+/// that format into something usable, it does not compress it.
+fn kind_rank(codec: &dyn Codec) -> u8 {
+    match codec.descriptor().kind {
+        CodecKind::Decoder => 0,
+        CodecKind::Encoder => 1,
+    }
+}
+
+/// The candidates of the kind a lookup without one picks ([`kind_rank`]).
+fn preferred_kind(candidates: &[Arc<dyn Codec>]) -> Vec<Arc<dyn Codec>> {
+    let best = candidates.iter().map(|c| kind_rank(c.as_ref())).min();
+    candidates
+        .iter()
+        .filter(|c| Some(kind_rank(c.as_ref())) == best)
+        .cloned()
+        .collect()
 }
 
 fn sort_backends_for(
@@ -107,7 +127,7 @@ fn sort_backends_for(
         } else {
             1
         };
-        (prio, hw_bias, id)
+        (kind_rank(c.as_ref()), prio, hw_bias, id)
     });
 }
 
@@ -213,6 +233,10 @@ impl CodecRegistryHandle {
             .ok_or(RegistryError::NotFound(input))
     }
 
+    /// The first codec for input `fourcc` in the registry's order: a decoder (or converter)
+    /// when `fourcc` has one, else an encoder. Ask by kind
+    /// ([`CodecRegistryHandle::lookup_preferred_kind`]) or by output
+    /// ([`CodecRegistryHandle::lookup_for_output`]) when that matters.
     pub fn lookup(&self, fourcc: FourCc) -> Result<Arc<dyn Codec>, RegistryError> {
         self.materialize(Some(fourcc));
         let guard = self.inner.read();
@@ -294,13 +318,39 @@ impl CodecRegistryHandle {
             }
         }
         if prefer_hardware
-            && let Some(c) = list
+            && let Some(c) = preferred_kind(list)
                 .iter()
                 .find(|c| c.descriptor().is_hardware_accelerated())
         {
             return Ok(c.clone());
         }
         list.first().cloned().ok_or(RegistryError::NotFound(fourcc))
+    }
+
+    /// The preferred codec of `kind` for `fourcc`: a hardware one first when `prefer_hardware`,
+    /// else the first in the registry's order.
+    pub fn lookup_preferred_kind(
+        &self,
+        fourcc: FourCc,
+        kind: CodecKind,
+        prefer_hardware: bool,
+    ) -> Result<Arc<dyn Codec>, RegistryError> {
+        self.materialize(Some(fourcc));
+        let guard = self.inner.read();
+        let of_kind: Vec<&Arc<dyn Codec>> = guard
+            .codecs
+            .get(&fourcc)
+            .into_iter()
+            .flatten()
+            .filter(|c| c.descriptor().kind == kind)
+            .collect();
+        let hardware = of_kind
+            .iter()
+            .find(|c| prefer_hardware && c.descriptor().is_hardware_accelerated());
+        hardware
+            .or(of_kind.first())
+            .map(|c| Arc::clone(c))
+            .ok_or(RegistryError::NotFound(fourcc))
     }
     pub fn lookup_by_impl(
         &self,
@@ -320,6 +370,8 @@ impl CodecRegistryHandle {
         }
         Err(RegistryError::NotFound(FourCc::new(*b"    ")))
     }
+    /// Runs `frame` through [`CodecRegistryHandle::lookup`]'s codec: decodes or converts it
+    /// when `fourcc` has a decoder.
     pub fn process(&self, fourcc: FourCc, frame: FrameLease) -> Result<FrameLease, RegistryError> {
         let start = Instant::now();
         let codec = self.lookup(fourcc)?;
@@ -676,122 +728,5 @@ impl CodecRegistry {
 include!("registry_enabled.incl.rs");
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct TestCodec {
-        descriptor: CodecDescriptor,
-    }
-
-    impl TestCodec {
-        fn decoder(impl_name: &'static str) -> Arc<Self> {
-            Arc::new(Self {
-                descriptor: CodecDescriptor {
-                    kind: CodecKind::Decoder,
-                    input: FourCc::MJPG,
-                    output: FourCc::RG24,
-                    name: "mjpeg",
-                    impl_name,
-                },
-            })
-        }
-    }
-
-    impl Codec for TestCodec {
-        fn descriptor(&self) -> &CodecDescriptor {
-            &self.descriptor
-        }
-
-        fn process(&self, input: FrameLease) -> Result<FrameLease, crate::CodecError> {
-            Ok(input)
-        }
-    }
-
-    #[test]
-    fn policy_ordered_impls_normalize_to_typed_ids() {
-        let policy = CodecPolicy::builder(FourCc::MJPG)
-            .ordered_impls([" SOFT-CPU "])
-            .build();
-
-        assert_eq!(
-            policy.ordered_impls[0],
-            CodecImplementationId::new("soft-cpu")
-        );
-    }
-
-    #[test]
-    fn auto_lookup_uses_policy_priority_before_hardware_bias() {
-        let registry = CodecRegistry::new();
-        registry.register(FourCc::MJPG, TestCodec::decoder("h264-v4l2m2m"));
-        registry.register(FourCc::MJPG, TestCodec::decoder("soft-cpu"));
-        let handle = registry.handle();
-
-        assert_eq!(
-            handle
-                .lookup_auto(FourCc::MJPG)
-                .unwrap()
-                .descriptor()
-                .impl_name,
-            "h264-v4l2m2m"
-        );
-
-        handle.set_policy(
-            CodecPolicy::builder(FourCc::MJPG)
-                .prefer_hardware(false)
-                .priority(" SOFT-CPU ", 0)
-                .build(),
-        );
-
-        assert_eq!(
-            handle
-                .lookup_auto(FourCc::MJPG)
-                .unwrap()
-                .descriptor()
-                .impl_name,
-            "soft-cpu"
-        );
-    }
-
-    #[test]
-    fn preference_accepts_ergonomic_strings_but_stores_typed_ids() {
-        let preference = Preference::hardware_biased([" SOFT-CPU ", "h264-v4l2m2m"]);
-
-        assert_eq!(
-            preference.impls,
-            vec![
-                CodecImplementationId::new("soft-cpu"),
-                CodecImplementationId::new("h264-v4l2m2m"),
-            ]
-        );
-        assert!(preference.prefer_hardware);
-    }
-
-    #[test]
-    fn preferred_lookup_accepts_typed_impl_ids() {
-        let registry = CodecRegistry::new();
-        registry.register(FourCc::MJPG, TestCodec::decoder("h264-v4l2m2m"));
-        registry.register(FourCc::MJPG, TestCodec::decoder("soft-cpu"));
-        let handle = registry.handle();
-
-        let codec = handle
-            .lookup_preferred_ids(
-                FourCc::MJPG,
-                &[CodecImplementationId::new(" SOFT-CPU ")],
-                true,
-            )
-            .unwrap();
-
-        assert_eq!(codec.descriptor().impl_name, "soft-cpu");
-    }
-
-    #[test]
-    fn codec_registry_config_sanitizes_dimensions() {
-        assert_eq!(
-            CodecRegistryConfig::new(0, 720),
-            CodecRegistryConfig {
-                max_width: 1,
-                max_height: 720,
-            }
-        );
-    }
-}
+#[path = "registry_tests.rs"]
+mod tests;

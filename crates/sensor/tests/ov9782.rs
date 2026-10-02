@@ -422,3 +422,12 @@ fn state_is_enforced() {
     drv.set_test_pattern("colour_bars").unwrap();
     assert_eq!(drv.bus().value(0x5e00, 1), 0x80);
 }
+
+#[test]
+fn every_builtin_description_parses_under_its_name() {
+    assert!(!styx_sensor::BUILTIN_DESCRIPTIONS.is_empty());
+    for (name, toml) in styx_sensor::BUILTIN_DESCRIPTIONS {
+        let d = SensorDescription::from_toml_str(toml, name).expect("builtin parses");
+        assert_eq!(d.sensor.name, *name);
+    }
+}

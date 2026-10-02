@@ -360,9 +360,12 @@ power, as single plans do. Every output is handed out as a dma-buf, in process a
 processes through the camera service (planes exported with their offsets). Raw native modes are not routed through a Bayer decoder when an ISP route exists
 (that route has no 3A); Bayer decoders are priced at the software ISP's cost. `plan_frames`
 for NV12, RG24 or luma (NV12's Y plane) on the native OV9782 picks the PiSP mode on the CM5
-and the software ISP mode elsewhere. Tuning: `STYX_TUNING`, else the description's `tuning`
-file in `/etc/styx/tuning`, `/usr/{local/,}share/styx/tuning`, libcamera's
-`/usr/{local/,}share/libcamera/ipa/rpi/pisp` (read at run time), else the defaults.
+and the software ISP mode elsewhere. Tuning (`styx_pipeline::tuning`): `STYX_TUNING` (one file), else the
+description's `tuning` file in `$STYX_TUNING_PATH`, `~/.config/styx/tuning`, `/etc/styx/tuning`,
+`/usr/{local/,}share/styx/tuning`, then the tunings built into `styx-pipeline` (`tuning/`: the
+HeliOS `ov9782.json`), then libcamera's `/usr/{local/,}share/libcamera/ipa/rpi/pisp` (read at
+run time), else Styx's built-in generic tuning (`tuning/generic.toml`: grey world,
+centre-weighted AE, default tone curve, spatial and colour denoise, no TDN).
 
 The same pipeline runs unchanged on sensors with an upstream kernel driver (controls through
 V4L2, values predicted from the delays when the driver sends no embedded data): the OV9782

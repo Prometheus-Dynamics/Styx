@@ -112,7 +112,9 @@ What happens when it runs (`crates/native/src/kernel.rs`):
 Write a description (`crates/sensor` docs, `ov9782.toml` as the example): identity and
 chip id, pixel array, power sequence, init and mode registers, formats, exposure, gain and
 frame length registers with their models, delays, group hold, flips, embedded data layout.
-Put it on the search path as `<name>.toml`, and bind the generic bridge to the sensor's I²C
+Put it on the search path as `<name>.toml` (descriptions that ship with Styx are listed in
+`styx_sensor::BUILTIN_DESCRIPTIONS`, today the OV9782's, and come after the search path, so an
+installed file overrides them), and bind the generic bridge to the sensor's I²C
 address in the device tree (`kernel-modules/styx-sensor-bridge`, overlay template there). The
 bridge makes the receiver see a sensor subdevice; Styx powers the sensor, writes its
 registers and starts and stops it when the receiver asks (`PROTOCOL.md`).

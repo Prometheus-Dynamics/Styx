@@ -119,42 +119,7 @@ pub fn soft_capture_memory() -> styx_native::BufferMemory {
     }
 }
 
-/// Directories searched for a sensor's tuning file (the description's `tuning` name): Styx's
-/// own, then libcamera's Raspberry Pi ones (read at run time, never copied).
-pub const TUNING_DIRS: &[&str] = &[
-    "/etc/styx/tuning",
-    "/usr/local/share/styx/tuning",
-    "/usr/share/styx/tuning",
-    "/usr/local/share/libcamera/ipa/rpi/pisp",
-    "/usr/share/libcamera/ipa/rpi/pisp",
-];
-
-/// Environment variable naming a tuning file to use instead of searching.
-pub const TUNING_ENV: &str = "STYX_TUNING";
-
-/// The tuning for a sensor: [`TUNING_ENV`] if set, else the description's `tuning` file in
-/// [`TUNING_DIRS`], else the defaults (grey world, built-in metering). Returns where it came
-/// from too.
-pub fn find_tuning(desc: &styx_sensor::SensorDescription) -> (styx_algo::Tuning, String) {
-    let load = |p: &std::path::Path| styx_algo::Tuning::load(p).ok();
-    if let Some(p) = std::env::var_os(TUNING_ENV) {
-        let p = std::path::PathBuf::from(p);
-        if let Some(t) = load(&p) {
-            return (t, p.display().to_string());
-        }
-    }
-    if let Some(name) = &desc.sensor.tuning {
-        for dir in TUNING_DIRS {
-            let p = std::path::Path::new(dir).join(name);
-            if p.is_file()
-                && let Some(t) = load(&p)
-            {
-                return (t, p.display().to_string());
-            }
-        }
-    }
-    (styx_algo::Tuning::default(), "defaults".into())
-}
+pub use crate::tuning::{TUNING_ENV, find_tuning};
 
 /// CPU time of this process (user + system) and its peak resident set, for measurements.
 pub fn process_usage() -> (std::time::Duration, u64) {

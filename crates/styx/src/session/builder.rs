@@ -316,7 +316,13 @@ impl<'a> MediaPipelineBuilder<'a> {
         impl_name: Option<&str>,
         prefer_hardware: bool,
     ) -> Result<Self, RegistryError> {
-        let decoder = super::runtime::lookup_codec(registry, fourcc, impl_name, prefer_hardware)?;
+        let decoder = super::runtime::lookup_codec(
+            registry,
+            CodecKind::Decoder,
+            fourcc,
+            impl_name,
+            prefer_hardware,
+        )?;
         self.decoder = Some(decoder);
         Ok(self)
     }
@@ -341,7 +347,13 @@ impl<'a> MediaPipelineBuilder<'a> {
         impl_name: Option<&str>,
         prefer_hardware: bool,
     ) -> Result<Self, RegistryError> {
-        let encoder = super::runtime::lookup_codec(registry, fourcc, impl_name, prefer_hardware)?;
+        let encoder = super::runtime::lookup_codec(
+            registry,
+            CodecKind::Encoder,
+            fourcc,
+            impl_name,
+            prefer_hardware,
+        )?;
         self.encoder = Some(encoder);
         Ok(self)
     }

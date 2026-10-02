@@ -9,10 +9,9 @@
 //! then `$XDG_CONFIG_HOME/styx/sensors` (or `~/.config/styx/sensors`), `/etc/styx/sensors`,
 //! `/usr/local/share/styx/sensors` and `/usr/share/styx/sensors`.
 //!
-//! No description ships embedded yet: the only one written so far (OV9782) carries register
-//! values derived from a GPL driver and is test data until it is rewritten from the datasheet,
-//! so it is loaded from a file. Programs can embed their own with
-//! [`SensorLibrary::with_embedded`].
+//! The descriptions built into `styx-sensor` ([`styx_sensor::BUILTIN_DESCRIPTIONS`], today the
+//! OV9782) are embedded and come last, so a file of the same name on the search path overrides
+//! them. Programs can embed their own with [`SensorLibrary::with_embedded`].
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -29,9 +28,9 @@ pub const KERNEL_DATA_SUFFIX: &str = ".kernel.toml";
 /// The environment variable holding extra search path entries.
 pub const SENSOR_PATH_ENV: &str = "STYX_SENSOR_PATH";
 
-/// Descriptions compiled into this crate: `(sensor name, TOML)`. Empty on purpose (see the
-/// module documentation).
-pub const EMBEDDED: &[(&str, &str)] = &[];
+/// Descriptions compiled into this crate: `(sensor name, TOML)`, the ones that ship with
+/// `styx-sensor`.
+pub const EMBEDDED: &[(&str, &str)] = styx_sensor::BUILTIN_DESCRIPTIONS;
 
 /// A search path for sensor descriptions plus embedded ones.
 #[derive(Clone, Debug, Default)]
@@ -297,9 +296,19 @@ mod tests {
     }
 
     #[test]
-    fn the_system_library_embeds_nothing_and_honours_the_environment() {
+    fn the_system_library_embeds_the_builtin_descriptions() {
         let lib = SensorLibrary::system();
         assert_eq!(lib.embedded_names().count(), EMBEDDED.len());
+        assert!(lib.embedded_names().any(|n| n == "ov9782"));
+        let (d, source) = SensorLibrary::new()
+            .with_path("/nonexistent/styx")
+            .with_embedded("ov9782", EMBEDDED[0].1)
+            .find_with_source("ov9782")
+            .unwrap();
+        assert_eq!(
+            (d.sensor.name.as_str(), source.as_str()),
+            ("ov9782", "embedded:ov9782")
+        );
         assert!(
             lib.paths()
                 .iter()

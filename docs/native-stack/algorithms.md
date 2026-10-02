@@ -13,7 +13,7 @@ dependency on other Styx crates; the session runtime converts between it and `st
 | libcamera `src/ipa/libipa/pwl.cpp` | BSD-2-Clause, Raspberry Pi Ltd / Ideas on Board | Semantics of `Pwl` (written anew) |
 | Raspberry Pi tuning files `src/ipa/rpi/{pisp,vc4}/data/*.json` | BSD-2-Clause (libcamera `REUSE.toml`) | Format read by the loader; imx219 CT curve, priors and CCMs used as simulator and test data (marked in the files) |
 | libcamera core and most of `libipa` | LGPL-2.1-or-later | Not used |
-| HeliOS tuning (`gaia/assets/libcamera/ipa/rpi/*/ov9782.json`) | HeliOS repository is GPL-2.0; the file says it is derived from Raspberry Pi's imx219 tuning | Only read by a test at run time, never copied |
+| HeliOS OV9782 PiSP tuning (`ipa/rpi/pisp/ov9782.json`, HeliOS before 6f9832f, now in the Atlas Raze device package) | The project owner's own tuning, cleared by them for use in Styx (2026-10-02); built on Raspberry Pi's tuning format and data (BSD-2-Clause) | Embedded unchanged in `styx-pipeline` (`tuning/ov9782.json`, md5 f06d0ac9…) as the OV9782's built-in tuning |
 
 ## Framework
 
