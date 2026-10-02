@@ -79,9 +79,15 @@ impl IspKind {
     }
 }
 
+/// Environment variable forcing the software ISP (`software`) on cameras with a PiSP.
+pub const ISP_ENV: &str = "STYX_NATIVE_ISP";
+
 /// The ISP a camera's frames can go through: the PiSP when its front end is in the camera's
-/// media graph and a back end exists, else the software ISP.
+/// media graph and a back end exists, else (or with [`ISP_ENV`]`=software`) the software ISP.
 pub fn isp_kind(info: &styx_native::CameraInfo) -> IspKind {
+    if std::env::var(ISP_ENV).is_ok_and(|v| v == "software") {
+        return IspKind::Software;
+    }
     let fe = info.topology.entity_by_name("pisp-fe").is_some();
     if fe && !styx_pisp::device::find_media("pispbe").is_empty() {
         IspKind::Pisp
