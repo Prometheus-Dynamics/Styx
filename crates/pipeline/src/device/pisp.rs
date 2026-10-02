@@ -429,6 +429,14 @@ impl PispPipeline {
         self.be_dev.as_ref()?.output_dmabuf(i, job.outputs[i]?)
     }
 
+    /// Gives output `i`'s buffer `index` back (one output of a job, e.g. when its two outputs
+    /// go to different consumers).
+    pub fn release_output(&mut self, i: usize, index: u32) {
+        if let Some(b) = self.be_dev.as_mut() {
+            b.release_output(i, index);
+        }
+    }
+
     /// Gives a frame's output buffers back.
     pub fn release(&mut self, job: &BeJob) {
         if let Some(b) = self.be_dev.as_mut() {

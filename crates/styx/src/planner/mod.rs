@@ -119,6 +119,9 @@ pub struct FramePlan {
     pub(crate) isp_pyramid_level: Option<u8>,
     pub(crate) decode_scale: u8,
     pub(crate) isp_output: Option<(u32, u32)>,
+    /// On a shared capture: the ISP output this consumer takes is in this format, not the
+    /// capture mode's (native PiSP).
+    pub(crate) isp_format: Option<FourCc>,
     /// On a shared capture: frames come from the ISP's second output (at `isp_output`).
     pub(crate) isp_second_output: bool,
     /// Frames the preparer makes go into memfd buffers other processes can map.
@@ -276,6 +279,7 @@ pub(crate) fn plan_from(
         isp_pyramid_level: chosen.isp_pyramid_level,
         decode_scale: chosen.decode_scale,
         isp_output: chosen.isp_output,
+        isp_format: chosen.isp_format,
         isp_second_output: false,
         exportable: false,
         decode_threads: cost::decode_threads(req.priority, req.overrides.decode_threads),
@@ -291,6 +295,9 @@ pub(crate) struct RankKey {
     pub(crate) score: f32,
     pub(crate) fps: f32,
     pub(crate) backend: u8,
+    /// Consumers served by an ISP output in another format than the mode's (all else equal,
+    /// the mode that is the format wins).
+    pub(crate) isp_formats: u8,
 }
 
 fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequirements) -> RankKey {
@@ -324,6 +331,7 @@ fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequirements) -> RankK
             BackendKind::V4l2 => 0,
             _ => 1,
         },
+        isp_formats: u8::from(candidate.isp_format.is_some()),
     }
 }
 

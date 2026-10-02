@@ -389,6 +389,17 @@ impl BackEndStream {
         o.dmabufs.get(index as usize).map(|f| f.as_fd())
     }
 
+    /// Hands output `i`'s buffer `index` back for reuse (outputs of one job can be held for
+    /// different times).
+    pub fn release_output(&mut self, i: usize, index: u32) {
+        if let Some(Some(o)) = self.outputs.get_mut(i)
+            && !o.free.contains(&index)
+            && (index as usize) < o.queue.len()
+        {
+            o.free.push(index);
+        }
+    }
+
     /// Hands a job's output buffers back for reuse.
     pub fn release(&mut self, job: &BeJob) {
         for (o, b) in self.outputs.iter_mut().zip(job.outputs) {

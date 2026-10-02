@@ -645,8 +645,8 @@ pub mod prelude {
         BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
         CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
         CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig, IdleStop,
-        LibcameraBufferMemory, LibcameraConfig, NetcamConfig, NetcamTunables, ReconnectPolicy,
-        SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig, V4l2Config,
+        LibcameraBufferMemory, LibcameraConfig, NativeIspConfig, NetcamConfig, NetcamTunables,
+        ReconnectPolicy, SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig, V4l2Config,
         VirtualCaptureConfig, VirtualSourceConfig, open_best_camera, open_virtual_rgb,
         start_capture,
     };

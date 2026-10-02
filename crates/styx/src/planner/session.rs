@@ -454,6 +454,7 @@ pub(crate) fn same_preparation(a: &FramePlan, b: &FramePlan) -> bool {
         && a.route.same_as(&b.route)
         && a.decode_scale == b.decode_scale
         && a.isp_output == b.isp_output
+        && a.isp_format == b.isp_format
         && a.isp_second_output == b.isp_second_output
         && a.isp_pyramid_level == b.isp_pyramid_level
         && a.exportable == b.exportable

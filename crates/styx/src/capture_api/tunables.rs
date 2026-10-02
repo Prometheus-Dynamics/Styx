@@ -99,9 +99,11 @@ pub enum LibcameraBufferMemory {
 
 #[path = "tunables/capture.rs"]
 mod capture;
+mod native;
 #[cfg(feature = "netcam")]
 pub(crate) use capture::PoolLimits;
 pub use capture::{CaptureConfig, CaptureTunables, IdleStop, ReconnectPolicy};
+pub use native::NativeIspConfig;
 
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -308,6 +310,8 @@ pub struct BackendConfig {
     pub libcamera: LibcameraConfig,
     pub netcam: NetcamConfig,
     pub file: FileBackendConfig,
+    /// Native cameras' ISP outputs.
+    pub native: NativeIspConfig,
 }
 
 pub type TransformConfig = TransformPoolConfig;

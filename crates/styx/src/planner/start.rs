@@ -148,7 +148,9 @@ impl FramePlan {
             config = config.libcamera_pyramid_level(level);
         }
         if let Some((width, height)) = self.isp_output {
-            config = config.libcamera_output_size(width, height);
+            config = config
+                .libcamera_output_size(width, height)
+                .native_output_size(width, height);
         }
         config = match self.stop_when_idle {
             Some((after, IdleStop::Pause)) => config.pause_when_idle(after),

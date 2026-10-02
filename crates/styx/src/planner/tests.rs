@@ -361,3 +361,63 @@ fn shared_plans_scale_with_the_isp_like_single_plans() {
     assert!(plan.consumers[0].isp_second_output, "{plan}");
     assert_eq!(plan.consumers[1].output_resolution(), (1280, 800));
 }
+
+#[cfg(feature = "native")]
+#[test]
+fn native_pisp_serves_two_sizes_and_formats_from_one_pass() {
+    let mut dev = device(
+        BackendKind::Native,
+        BackendHandle::Native {
+            key: "bridge:/dev/v4l-subdev2".into(),
+        },
+        vec![
+            mode(FourCc::new(*b"pBAA"), 1280, 800, 30),
+            mode(FourCc::NV12, 1280, 800, 30),
+            mode(FourCc::RG24, 1280, 800, 30),
+        ],
+    );
+    dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
+    let viewer = FrameRequirements::formats([FourCc::NV12]);
+    let detector = FrameRequirements::formats([FourCc::RG24]).output_resolution(640, 400);
+    let plan = plan_many_with(&dev, &[viewer.clone(), detector.clone()], &registry()).unwrap();
+    assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
+    let (main, second) = (&plan.consumers[0], &plan.consumers[1]);
+    assert!(
+        !main.isp_second_output && main.isp_format.is_none(),
+        "{plan}"
+    );
+    assert_eq!(main.output_resolution(), (1280, 800));
+    // RGB at 640x400 from the second output: no conversion, no CPU scaling.
+    assert!(second.isp_second_output, "{plan}");
+    assert_eq!(second.isp_format, Some(FourCc::RG24));
+    assert_eq!(second.output_resolution(), (640, 400));
+    assert!(second.total.cpu_ms < 2.0, "{plan}");
+    let key = plan.setup_key();
+    assert!(
+        key.contains("second=Some((Some((640, 400)), Some("),
+        "{key}"
+    );
+
+    // The same size in both formats: two outputs as well.
+    let rgb = FrameRequirements::formats([FourCc::RG24]);
+    let plan = plan_many_with(&dev, &[viewer.clone(), rgb.clone()], &registry()).unwrap();
+    assert!(plan.consumers[1].isp_second_output, "{plan}");
+    assert_eq!(plan.consumers[1].isp_format, Some(FourCc::RG24));
+
+    // A third output does not fit: the sizes go first (all at the mode's size), the RGB
+    // consumer keeps its format on the second output.
+    let small_nv12 = FrameRequirements::formats([FourCc::NV12]).output_resolution(320, 200);
+    let plan = plan_many_with(&dev, &[viewer, detector, small_nv12], &registry()).unwrap();
+    assert!(
+        plan.consumers
+            .iter()
+            .all(|c| c.output_resolution() == (1280, 800)),
+        "{plan}"
+    );
+    assert!(plan.consumers[1].isp_second_output && plan.consumers[1].isp_format.is_some());
+    assert!(!plan.consumers[2].isp_second_output, "{plan}");
+    // Alone, an RGB consumer takes the RGB mode itself.
+    let plan = plan_many_with(&dev, &[rgb], &registry()).unwrap();
+    assert_eq!(plan.mode.format.code, FourCc::RG24, "{plan}");
+    assert!(plan.consumers[0].isp_format.is_none());
+}
