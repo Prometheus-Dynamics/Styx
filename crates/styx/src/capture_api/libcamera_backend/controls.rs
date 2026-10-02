@@ -8,10 +8,21 @@ use crate::capture_api::LIBCAMERA_FRAME_DURATION_LIMITS;
 
 use super::util::{classify_libcamera_control_apply_message, from_lc_value, to_lc_value};
 
+/// Build the control list passed to `Camera::start`.
+///
+/// The list takes its id map from a request's controls (libcamera's global `controls::controls`).
+/// A list made with `ControlList::new()` has no id map, and libcamera serializes such a list as
+/// V4L2 controls: when the IPA runs isolated in `raspberrypi_ipa_proxy`, its
+/// `IPADataSerializer<ControlList>::deserialize` then hits `LOG(Fatal)` ("A list of V4L2 controls
+/// requires a ControlInfoMap") and the proxy aborts.
 pub(super) fn build_libcamera_controls(
     controls: &[(ControlId, ControlValue)],
+    template: Option<&libcamera::request::Request>,
 ) -> Result<libcamera::utils::UniquePtr<LcControlList>, CaptureError> {
-    let mut list = LcControlList::new();
+    let mut list = template
+        .and_then(|req| req.controls().id_map())
+        .and_then(LcControlList::from_id_map)
+        .ok_or_else(|| CaptureError::Backend("libcamera control id map unavailable".into()))?;
     for (id, value) in controls {
         let v = to_lc_value(value)?;
         list.set_raw(id.0, v)
