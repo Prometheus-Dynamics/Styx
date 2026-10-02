@@ -29,6 +29,9 @@
 //!   --start-exposure US:GAIN  (pisp) start AE from this exposure and gain instead of the
 //!                        camera's last settled state (a dark or bright start)
 //!   --cold               (pisp) start from the tuning's start-up values, not the last state
+//!   --fixed US:GAIN      AE off: this exposure and analogue gain on every frame
+//!   --ct K               AWB off: the gains of this colour temperature (the tuning's CT curve)
+//!   --no-tdn             (pisp) no temporal denoise even if the tuning has it
 //!   --then FPS[,FPS..]   (pisp) after the run, close and reopen the camera at each rate in turn
 //!                        (45 frames each), starting from the state the last session settled on
 //!   --keep-open          (pisp) with --then: keep the camera open and powered between the
@@ -80,6 +83,9 @@ pub struct Args {
     pub then: Vec<f64>,
     pub power_settle: Option<Duration>,
     pub keep_open: bool,
+    pub fixed: Option<(f64, f64)>,
+    pub ct: Option<f64>,
+    pub no_tdn: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -110,6 +116,9 @@ fn parse() -> Result<Args, String> {
         then: Vec::new(),
         power_settle: None,
         keep_open: false,
+        fixed: None,
+        ct: None,
+        no_tdn: false,
     };
     while let Some(x) = it.next() {
         let mut val = || it.next().ok_or(format!("{x} needs a value"));
@@ -132,6 +141,13 @@ fn parse() -> Result<Args, String> {
             "--heap" => a.heap = Some(val()?),
             "--cold" => a.cold = true,
             "--keep-open" => a.keep_open = true,
+            "--no-tdn" => a.no_tdn = true,
+            "--ct" => a.ct = Some(num(val()?)?),
+            "--fixed" => {
+                let v = val()?;
+                let (e, g) = v.split_once(':').ok_or("--fixed takes US:GAIN")?;
+                a.fixed = Some((num(e.into())?, num(g.into())?));
+            }
             "--power-settle" => {
                 a.power_settle = Some(Duration::from_secs_f64(num(val()?)? * 1e-3));
             }
@@ -171,23 +187,34 @@ pub fn tuning(a: &Args) -> Result<Tuning, String> {
 pub const PERTURB_FRAMES: u64 = 10;
 
 /// The controls for frame `f`: AE off with the exposure forced to `k` times `base` while a
-/// perturbation holds, the defaults otherwise.
+/// perturbation holds, else `--fixed` exposure and `--ct` temperature if given, the defaults
+/// otherwise.
 pub fn controls_for(
     a: &Args,
     f: u64,
     base: Option<(Duration, f64)>,
 ) -> Option<styx_algo::Controls> {
-    let (_, k) = a
+    let mut c = styx_algo::Controls::default();
+    if let Some(t) = a.ct {
+        c.awb_enable = false;
+        c.colour_temperature = Some(t);
+    }
+    if let Some((us, gain)) = a.fixed {
+        c.ae_enable = false;
+        c.exposure = Some(Duration::from_secs_f64(us * 1e-6));
+        c.analogue_gain = Some(gain);
+    }
+    let perturb = a
         .perturb
         .iter()
-        .find(|(at, _)| f >= *at && f < at + PERTURB_FRAMES)?;
-    let (exposure, gain) = base?;
-    Some(styx_algo::Controls {
-        ae_enable: false,
-        exposure: Some(exposure.mul_f64(*k)),
-        analogue_gain: Some(gain),
-        ..Default::default()
-    })
+        .find(|(at, _)| f >= *at && f < at + PERTURB_FRAMES);
+    if let (Some((_, k)), Some((exposure, gain))) = (perturb, base) {
+        c.ae_enable = false;
+        c.exposure = Some(exposure.mul_f64(*k));
+        c.analogue_gain = Some(gain);
+        return Some(c);
+    }
+    (a.fixed.is_some() || a.ct.is_some()).then_some(c)
 }
 
 /// `CLOCK_MONOTONIC` now (the clock buffer timestamps use).

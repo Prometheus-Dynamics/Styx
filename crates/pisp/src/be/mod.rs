@@ -113,6 +113,8 @@ impl BackEnd {
             output_black_level: 0,
             pad: [0; 2],
         };
+        self.cfg.sdn.black_level = level;
+        self.cfg.tdn.black_level = level;
     }
 
     /// White balance (and digital) gains.
@@ -139,6 +141,93 @@ impl BackEnd {
         self.cfg.lsc = lsc;
         self.lsc_extra = extra;
         self.cfg.global.bayer_enables |= bayer_enable::LSC;
+    }
+
+    /// Defective pixel correction: 0 off, 1 normal, 2 strong (as the Raspberry Pi IPA).
+    pub fn set_dpc(&mut self, strength: u8) {
+        let (cfg, on) = match strength {
+            0 => (BeDpcConfig::default(), false),
+            1 => (
+                BeDpcConfig {
+                    coeff_level: 1,
+                    coeff_range: 8,
+                    ..Default::default()
+                },
+                true,
+            ),
+            _ => (BeDpcConfig::default(), true),
+        };
+        self.cfg.dpc = cfg;
+        self.enable_bayer(bayer_enable::DPC, on);
+    }
+
+    /// Green equalisation (`None`: off).
+    pub fn set_geq(&mut self, geq: Option<BeGeqConfig>) {
+        self.cfg.geq = geq.unwrap_or_default();
+        self.enable_bayer(bayer_enable::GEQ, geq.is_some());
+    }
+
+    /// Spatial denoise (`None`: off); its black level follows [`Self::set_black_level`].
+    pub fn set_sdn(&mut self, sdn: Option<BeSdnConfig>) {
+        self.cfg.sdn = sdn.unwrap_or_default();
+        self.cfg.sdn.black_level = self.cfg.blc.black_level_r;
+        self.enable_bayer(bayer_enable::SDN, sdn.is_some());
+    }
+
+    /// Colour denoise (`None`: off).
+    pub fn set_cdn(&mut self, cdn: Option<BeCdnConfig>) {
+        self.cfg.cdn = cdn.unwrap_or_default();
+        self.enable_bayer(bayer_enable::CDN, cdn.is_some());
+    }
+
+    /// The format of the temporal denoise buffers (the input's: 16-bit Bayer, same size and
+    /// stride), needed before [`Self::set_tdn`].
+    pub fn set_tdn_format(&mut self, f: ImageFormatConfig) {
+        self.cfg.tdn_input_format = f;
+        self.cfg.tdn_output_format = f;
+    }
+
+    /// Temporal denoise (`None`: off). `input`: read the long-term average written by the
+    /// previous job (false after a reset, when there is none). Its black level follows
+    /// [`Self::set_black_level`].
+    pub fn set_tdn(&mut self, tdn: Option<BeTdnConfig>, input: bool) {
+        self.cfg.tdn = tdn.unwrap_or_default();
+        self.cfg.tdn.black_level = self.cfg.blc.black_level_r;
+        let on = tdn.is_some();
+        self.enable_bayer(bayer_enable::TDN | bayer_enable::TDN_OUTPUT, on);
+        self.enable_bayer(bayer_enable::TDN_INPUT, on && input);
+    }
+
+    /// The default sharpening scaled as the Raspberry Pi IPA scales it: thresholds by
+    /// `threshold` / 4 (the tuning's PiSP scale), strengths by `strength`, limits by `limit`.
+    pub fn set_sharpen_scaled(&mut self, threshold: f64, strength: f64, limit: f64) {
+        let (mut s, shfc) = defaults::sharpen();
+        let k = threshold * 0.25;
+        let field = |v: u16, x: f64, bits: u32| {
+            (f64::from(v) * x)
+                .round()
+                .clamp(0.0, f64::from((1u32 << bits) - 1)) as u16
+        };
+        for t in &mut s.thresholds {
+            t[0] = field(t[0], k, 16);
+            t[1] = field(t[1], k, 12);
+        }
+        s.positive_strength = field(s.positive_strength, strength, 12);
+        s.negative_strength = field(s.negative_strength, strength, 12);
+        s.positive_pre_limit = field(s.positive_pre_limit, limit, 16);
+        s.positive_limit = field(s.positive_limit, limit, 16);
+        s.negative_pre_limit = field(s.negative_pre_limit, limit, 16);
+        s.negative_limit = field(s.negative_limit, limit, 16);
+        self.cfg.sharpen = s;
+        self.cfg.sh_fc_combine = shfc;
+    }
+
+    fn enable_bayer(&mut self, bits: u32, on: bool) {
+        if on {
+            self.cfg.global.bayer_enables |= bits;
+        } else {
+            self.cfg.global.bayer_enables &= !bits;
+        }
     }
 
     /// Gamma from a curve of `(x, y)` points on 16-bit scales.

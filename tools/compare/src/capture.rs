@@ -45,6 +45,8 @@ pub struct RunConfig {
     pub cfa: Option<CfaPattern>,
     /// Where to write the saved frame's bytes (planes back to back).
     pub save: Option<std::path::PathBuf>,
+    /// Controls set right after each start (e.g. a fixed exposure for image comparisons).
+    pub controls: Vec<(ControlId, ControlValue)>,
 }
 
 /// One open: how long to the first frame and to a stable exposure.
@@ -150,6 +152,9 @@ fn open(
         .mode(mode.id.clone())
         .interval(interval)
         .start()?;
+    for (id, v) in &cfg.controls {
+        handle.set_control(*id, v.clone())?;
+    }
     let mut sample = StartSample {
         start_call_ms: ms(t0),
         ..StartSample::default()
@@ -264,6 +269,27 @@ pub fn run(cfg: &RunConfig) -> Result<RunResult, CaptureError> {
             meta.format.code, meta.format.resolution.width, meta.format.resolution.height
         );
         result.residency = meta.residency.map_or("unknown".into(), |r| r.to_string());
+        let strides: Vec<usize> = f.planes().iter().map(|p| p.stride()).collect();
+        if cfg.backend == BackendKind::Libcamera {
+            // Colour temperature, lux and digital gain the IPA reported for the frame.
+            let read = |id| {
+                handle
+                    .get_control(ControlId(id))
+                    .ok()
+                    .as_ref()
+                    .and_then(as_f64)
+            };
+            result.notes.push(format!(
+                "last frame metadata: colour temperature {:?}, lux {:?}, digital gain {:?}",
+                read(21),
+                read(16),
+                read(28)
+            ));
+        }
+        result.notes.push(format!(
+            "last frame: colour space {:?}, plane strides {strides:?}",
+            meta.format.color
+        ));
         let planes = f.planes();
         let refs: Vec<(&[u8], usize)> = planes.iter().map(|p| (p.data(), p.stride())).collect();
         if refs.iter().all(|(d, _)| d.is_empty()) {
