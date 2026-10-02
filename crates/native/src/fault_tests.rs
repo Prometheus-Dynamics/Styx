@@ -194,7 +194,7 @@ pub(crate) fn frame(rig: &Rig, stream: &mut FrameStream) -> NativeFrame {
     stream.next_blocking(WAIT).unwrap().expect("a frame")
 }
 
-fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
+pub(crate) fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
     let end = std::time::Instant::now() + WAIT;
     while !f() {
         assert!(

@@ -16,7 +16,7 @@ use crate::control::{ControlHandle, SensorControl, lock};
 use crate::device::{BridgeDevice, CaptureDevice};
 use crate::fake::{FakeQueue, pattern_of};
 use crate::fake_bridge::FakeBridge;
-use crate::fault_tests::{BUFFER_LEN, FORMAT, WAIT, template};
+use crate::fault_tests::{BUFFER_LEN, FORMAT, WAIT, template, wait_until};
 use crate::sensor_bus::KernelBridge;
 use crate::session::{BufferSource, Session, SessionOptions};
 use crate::stream::SensorSide;
@@ -110,6 +110,13 @@ fn a_kernel_driven_sensor_streams_with_scheduled_controls() {
         queue.tick().unwrap();
         let f = stream.next_blocking(WAIT).unwrap().unwrap();
         assert_eq!(f.sequence, i);
+        // The fake raises frame i's start event and completes its buffer in the same tick
+        // (on a sensor the buffer completes a frame period after the start), and the event
+        // thread serves the event while the frame is already on its way here: wait for it
+        // before looking at what the start wrote.
+        wait_until("frame i's start", || {
+            lock(&control).current_frame() >= Some(u64::from(i))
+        });
         let set = lock(&control)
             .driver()
             .bus()
