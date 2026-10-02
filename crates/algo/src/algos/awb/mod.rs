@@ -6,6 +6,12 @@
 //! frame during start-up), which keeps the algorithm deterministic. Between estimates the
 //! gains move towards the estimate by `speed` per frame.
 //!
+//! Styx changes: start-up (an estimate every frame, applied at once) counts only frames whose
+//! exposure is usable (mean luma between [`USABLE_Y`]'s bounds), so a camera that starts in
+//! the dark or saturated still gets `startup_frames` good estimates before the slow filter
+//! takes over (and leaves start-up after four times as many frames whatever they were). A warm
+//! start ([`crate::WarmStart`]) starts from the last session's gains.
+//!
 //! Estimators: the Bayesian search when the tuning has a CT curve, priors and modes (steps along
 //! the CT curve minimising the zones' colour error minus the prior log likelihood for the
 //! current lux, then searches across the curve); grey world otherwise.
@@ -19,12 +25,17 @@ use crate::frame::FrameMetadata;
 use crate::params::{AwbStatus, Params};
 use crate::pipeline::Algorithm;
 use crate::stats::Statistics;
+use crate::warm::WarmStart;
 
 use search::{Estimate, Search, Zone};
 use tuning::{AwbTuning, CtCurve};
 
 /// Colour temperature reported by grey world, which cannot estimate one.
 const DEFAULT_CT: f64 = 4500.0;
+
+/// Mean luma range of a frame whose colours count as a start-up estimate: neither lost in the
+/// noise floor nor mostly clipped.
+pub const USABLE_Y: (f64, f64) = (0.02, 0.7);
 
 /// The AWB algorithm. See the [module documentation](self).
 #[derive(Debug, Clone)]
@@ -33,6 +44,7 @@ pub struct Awb {
     curve: Option<CtCurve>,
     bayes: bool,
     frame_count: u32,
+    frames_seen: u32,
     frame_phase: u32,
     estimate: Estimate,
     filtered: Estimate,
@@ -49,6 +61,7 @@ impl Awb {
             curve,
             bayes,
             frame_count: 0,
+            frames_seen: 0,
             frame_phase: 0,
             estimate: (DEFAULT_CT, 1.0, 1.0),
             filtered: (DEFAULT_CT, 1.0, 1.0),
@@ -64,6 +77,7 @@ impl Awb {
 
     fn reset(&mut self) {
         self.frame_count = 0;
+        self.frames_seen = 0;
         self.frame_phase = 0;
         self.estimate = match (&self.curve, self.bayes) {
             (Some(c), true) => self.gains_for_ct(c, 4000.0),
@@ -183,6 +197,16 @@ impl Algorithm for Awb {
         Ok(())
     }
 
+    fn warm_start(&mut self, warm: &WarmStart) {
+        if !warm.is_valid() {
+            return;
+        }
+        let g = warm.colour_gains;
+        let e = (warm.colour_temperature, g[0] / g[1], g[2] / g[1]);
+        self.estimate = e;
+        self.filtered = e;
+    }
+
     fn initial(&self, params: &mut Params) {
         params.colour_gains = [self.filtered.1, 1.0, self.filtered.2];
         params.colour_temperature = self.filtered.0;
@@ -204,10 +228,15 @@ impl Algorithm for Awb {
             self.estimate = self.filtered;
         } else {
             auto = true;
-            if self.frame_count < self.tuning.startup_frames {
+            let y = stats.mean_luma();
+            self.frames_seen = self.frames_seen.saturating_add(1);
+            if self.frame_count < self.tuning.startup_frames
+                && (USABLE_Y.0..=USABLE_Y.1).contains(&y)
+            {
                 self.frame_count += 1;
             }
-            let startup = self.frame_count < self.tuning.startup_frames;
+            let startup = self.frame_count < self.tuning.startup_frames
+                && self.frames_seen < self.tuning.startup_frames.saturating_mul(4);
             self.frame_phase = self.frame_phase.saturating_add(1);
             if startup || self.frame_phase >= self.tuning.frame_period {
                 if let Some(e) = self.estimate(stats, meta, params) {

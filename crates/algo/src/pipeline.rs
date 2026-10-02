@@ -7,6 +7,7 @@ use crate::frame::FrameMetadata;
 use crate::params::Params;
 use crate::stats::Statistics;
 use crate::tuning::Tuning;
+use crate::warm::WarmStart;
 
 /// A control algorithm.
 ///
@@ -20,6 +21,10 @@ pub trait Algorithm: Send {
     /// Configure for a camera mode and reset all per-stream state.
     fn prepare(&mut self, config: &CameraConfig) -> Result<()>;
 
+    /// Start from settled values of an earlier session (called after `prepare`, before
+    /// `initial`). The default ignores them.
+    fn warm_start(&mut self, _warm: &WarmStart) {}
+
     /// Write start-up values (before the first frame), e.g. the initial exposure.
     fn initial(&self, _params: &mut Params) {}
 
@@ -29,10 +34,20 @@ pub trait Algorithm: Send {
 }
 
 /// An ordered set of algorithms sharing one [`Params`].
-#[derive(Default)]
 pub struct Pipeline {
     algorithms: Vec<Box<dyn Algorithm>>,
     params: Params,
+    sensitivity: f64,
+}
+
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self {
+            algorithms: Vec::new(),
+            params: Params::default(),
+            sensitivity: 1.0,
+        }
+    }
 }
 
 impl std::fmt::Debug for Pipeline {
@@ -87,10 +102,27 @@ impl Pipeline {
     /// Prepare every algorithm for a camera mode, reset the parameters and fill in start-up
     /// values. Returns the parameters to apply before streaming.
     pub fn prepare(&mut self, config: &CameraConfig) -> Result<&Params> {
+        self.prepare_warm(config, None)
+    }
+
+    /// [`Self::prepare`], starting from an earlier session's settled values when given (see
+    /// [`WarmStart`]; invalid values are ignored).
+    pub fn prepare_warm(
+        &mut self,
+        config: &CameraConfig,
+        warm: Option<&WarmStart>,
+    ) -> Result<&Params> {
         config.validate()?;
         self.params = Params::default();
+        self.sensitivity = config.sensitivity;
         for a in &mut self.algorithms {
             a.prepare(config)?;
+        }
+        if let Some(w) = warm.filter(|w| w.is_valid()) {
+            self.params.lux = w.lux;
+            for a in &mut self.algorithms {
+                a.warm_start(w);
+            }
         }
         for a in &self.algorithms {
             a.initial(&mut self.params);
@@ -109,5 +141,11 @@ impl Pipeline {
     /// The latest parameters.
     pub fn params(&self) -> &Params {
         &self.params
+    }
+
+    /// What the algorithms have settled on, to start a later session from (`None` before AE
+    /// produced a request).
+    pub fn warm_state(&self) -> Option<WarmStart> {
+        WarmStart::from_params(&self.params, self.sensitivity)
     }
 }

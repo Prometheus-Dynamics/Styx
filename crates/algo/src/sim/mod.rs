@@ -11,8 +11,10 @@
 //!   Exposure is quantised to whole lines and limited by the frame duration.
 //! * Control timing like `styx-sensor`'s `ControlScheduler`: each control is written at the
 //!   frame start `delay` frames before the frame it is for, and requests made while processing
-//!   frame `F` can first be written at the start of frame `F + 2`. Requests that arrive too late
-//!   land late and are counted ([`Simulation::late_landings`]).
+//!   frame `F` can first be written during frame `F + issue_latency` (the configuration's
+//!   [`crate::ControlDelays::issue_latency`]: 2 waits for the start of `F + 2`, 0 writes during
+//!   `F` itself, right after its statistics). Requests that arrive too late land late and are
+//!   counted ([`Simulation::late_landings`]).
 //!
 //! Everything is deterministic: noise comes from a seeded generator without libm calls.
 
@@ -241,7 +243,8 @@ pub struct Simulation {
     rng: Rng,
     frame: u64,
     time: f64,
-    incoming: Vec<(u64, [f64; 3])>,
+    /// Requests: (first frame they can be written in, frame they are for, values).
+    incoming: Vec<(u64, u64, [f64; 3])>,
     pending: [BTreeMap<u64, f64>; 3],
     landed: [BTreeMap<u64, f64>; 3],
     late: u64,
@@ -291,9 +294,28 @@ impl Simulation {
         u64::from([d.exposure, d.analogue_gain, d.frame_duration][c])
     }
 
-    /// Frame start: issue what is due, as the control scheduler would, then accept the
-    /// requests made while processing the previous frame.
+    /// Frame start: accept the requests that may be written from this frame on, then issue
+    /// what is due, as the control scheduler would.
     fn frame_start(&mut self) {
+        self.accept();
+        self.issue();
+    }
+
+    fn accept(&mut self) {
+        let f = self.frame;
+        let (now, later): (Vec<_>, Vec<_>) =
+            self.incoming.drain(..).partition(|(from, _, _)| *from <= f);
+        self.incoming = later;
+        for (_, target, v) in now {
+            for (c, value) in v.iter().enumerate() {
+                self.pending[c].insert(target, *value);
+            }
+        }
+    }
+
+    /// Writes what is due during the current frame: a value written during frame `f` lands on
+    /// `f + delay`.
+    fn issue(&mut self) {
         let f = self.frame;
         for c in 0..3 {
             let lands = f + self.delay(c);
@@ -307,11 +329,6 @@ impl Simulation {
                     self.pending[c].remove(&k);
                 }
                 self.landed[c].insert(lands, v);
-            }
-        }
-        for (target, v) in self.incoming.drain(..) {
-            for (c, value) in v.iter().enumerate() {
-                self.pending[c].insert(target, *value);
             }
         }
     }
@@ -389,7 +406,9 @@ impl Simulation {
                 .last()
                 .is_some_and(|l: &SimFrame| l.params.sensor == params.sensor);
             if let Some(req) = params.sensor.filter(|_| !repeat) {
+                let latency = u64::from(self.config.delays.issue_latency);
                 self.incoming.push((
+                    self.frame + latency,
                     req.frame,
                     [
                         req.exposure.as_secs_f64(),
@@ -397,6 +416,11 @@ impl Simulation {
                         req.frame_duration.as_secs_f64(),
                     ],
                 ));
+                if latency == 0 {
+                    // Written right away, during this frame.
+                    self.accept();
+                    self.issue();
+                }
             }
             out.push(SimFrame {
                 raw_y: stats.mean_luma(),
@@ -452,7 +476,7 @@ mod tests {
         let mut sim = Simulation::new(SensorModel::default(), scene, &config);
         // While processing frame 0: ask for frame 0 + 2 + 2 = 4.
         sim.frame_start();
-        sim.incoming.push((4, [0.004, 2.0, 0.02]));
+        sim.incoming.push((2, 4, [0.004, 2.0, 0.02]));
         for f in 1..7 {
             sim.frame = f;
             sim.frame_start();

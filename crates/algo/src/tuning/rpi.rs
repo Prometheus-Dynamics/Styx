@@ -303,6 +303,8 @@ fn agc(s: &Section, ig: &mut Vec<String>) -> Result<AgcTuning> {
         default_constraint_mode,
         y_target: s.pwl(y, "y_target")?,
         speed: s.num_or("speed", d.speed)?,
+        // Not a Raspberry Pi key: Styx's model-based steps (see `AgcTuning::full_step`).
+        full_step: d.full_step,
         startup_frames: s.num_or("startup_frames", d.startup_frames.into())? as u32,
         convergence_frames: s.num_or("convergence_frames", d.convergence_frames.into())? as u32,
         fast_reduce_threshold: s.num_or("fast_reduce_threshold", d.fast_reduce_threshold)?,

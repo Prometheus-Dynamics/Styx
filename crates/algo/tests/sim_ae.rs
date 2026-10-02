@@ -34,7 +34,7 @@ fn dark_to_bright_settles_without_overshoot() {
     let (frames, late) = step_run(20.0, 5000.0, 200);
     let y = common::luma(&frames);
     let before = convergence(&y[..STEP as usize], 0, 0.05, 20);
-    let c = convergence(&y, STEP as usize, 0.05, 40);
+    let c = convergence(&y, STEP as usize, 0.05, 20);
     println!("20 -> 5000 lux: {c:?}");
     assert!(c.settle_frames.is_some_and(|f| f <= 35), "{c:?}");
     // Coming down from saturation: no dip below the final level.
@@ -60,16 +60,28 @@ fn bright_to_dark_settles_without_overshoot() {
 
 #[test]
 fn small_steps_are_damped_and_stable() {
-    let (frames, _) = step_run(200.0, 300.0, 200);
+    let (frames, _) = step_run(200.0, 212.0, 200);
     let y = common::luma(&frames);
     let c = convergence(&y, STEP as usize, 0.03, 40);
-    println!("200 -> 300 lux: {c:?}");
+    println!("200 -> 212 lux: {c:?}");
     assert!(c.settle_frames.is_some_and(|f| f <= 30), "{c:?}");
     assert!(c.overshoot < 0.03, "{c:?}");
     // Damped: the first change is partial.
     let total = |f: &SimFrame| f.meta.exposure.as_secs_f64() * f.meta.analogue_gain;
     let first = total(&frames[STEP as usize + 4]) / total(&frames[STEP as usize]);
-    assert!(first > 0.8 && first < 0.97, "{first}");
+    assert!(first > 0.93 && first < 0.985, "{first}");
+}
+
+#[test]
+fn large_steps_go_straight_to_the_target() {
+    let (frames, late) = step_run(200.0, 300.0, 200);
+    let y = common::luma(&frames);
+    let c = convergence(&y, STEP as usize, 0.03, 40);
+    println!("200 -> 300 lux: {c:?}");
+    // One step: the request from the first brighter frame lands 4 frames later.
+    assert!(c.settle_frames.is_some_and(|f| f <= 5), "{c:?}");
+    assert!(c.overshoot < 0.03, "{c:?}");
+    assert_eq!(late, 0);
 }
 
 /// Every request lands whole (exposure and gain together) on the frame it names.
@@ -103,7 +115,8 @@ fn requests_land_on_the_frame_they_name() {
         );
         checked += 1;
     }
-    assert!(checked > 100);
+    // Only changes are new requests (repeats keep their frame).
+    assert!(checked > 4, "{checked}");
 }
 
 fn flicker_run(flicker: Flicker) -> Vec<SimFrame> {

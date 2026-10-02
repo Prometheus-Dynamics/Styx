@@ -38,6 +38,7 @@ pub mod replay;
 pub mod sim;
 pub mod stats;
 pub mod tuning;
+mod warm;
 
 pub use config::{CameraConfig, ControlDelays, Crop};
 pub use error::{AlgoError, Result};
@@ -50,3 +51,4 @@ pub use pipeline::{Algorithm, Pipeline};
 pub use pwl::Pwl;
 pub use stats::{ColourZone, Histogram, LumaZone, Statistics, StatsAccumulator, ZoneGrid};
 pub use tuning::Tuning;
+pub use warm::WarmStart;
