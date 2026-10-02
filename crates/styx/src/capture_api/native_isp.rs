@@ -22,6 +22,7 @@ use styx_pipeline::SensorValues;
 use styx_pipeline::device::{
     IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning, isp_kind,
 };
+use styx_pisp::device::OutputMemory;
 use styx_softisp::{OutputBuffers, Scale};
 
 use super::control_plane::ControlPlane;
@@ -190,6 +191,11 @@ pub(super) fn start_processed(
             let setup = |i: usize| specs[i].map(|s| s.setup()).transpose();
             let options = PispOptions {
                 outputs: [setup(0)?, setup(1)?],
+                output_memory: if config.backends.native.driver_buffers {
+                    OutputMemory::Driver
+                } else {
+                    OutputMemory::CachedHeap
+                },
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;

@@ -410,6 +410,7 @@ mod tests {
             output_size: Some((640, 400)),
             output_format: Some(FourCc::RG24),
             second_output: Some(((320, 200), FourCc::NV12)),
+            driver_buffers: false,
         };
         let specs = output_specs(&mode, &cfg).unwrap();
         assert_eq!(

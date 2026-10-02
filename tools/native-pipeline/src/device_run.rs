@@ -198,7 +198,10 @@ pub fn soft(a: &Args) -> Result<(), String> {
 pub fn pisp(a: &Args) -> Result<(), String> {
     let tuning = tuning(a)?;
     let (cam, opened) = open_camera(a)?;
-    let options = PispOptions::nv12_and_half_rgb(1280, 800);
+    let mut options = PispOptions::nv12_and_half_rgb(1280, 800);
+    if a.driver_buffers {
+        options.output_memory = styx_pisp::device::OutputMemory::Driver;
+    }
     let mut p =
         PispPipeline::open(cam, &settings(a), &tuning, options).map_err(|e| e.to_string())?;
     let (o0, o1) = (
@@ -267,19 +270,26 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         log.processing = f.times.total;
         log.request_lands = f.request_lands;
         let tr = Instant::now();
-        if let Some(nv12) = p.output(0, &f.job) {
-            if !a.no_read {
-                log.out_y = plane_mean(nv12, w0, h0, s0);
+        let last = i + 1 == a.frames as u64;
+        if !a.no_read || last {
+            p.sync_output(0, &f.job, true).map_err(|e| e.to_string())?;
+            if let Some(nv12) = p.output(0, &f.job) {
+                if !a.no_read {
+                    log.out_y = plane_mean(nv12, w0, h0, s0);
+                }
+                if last {
+                    last_nv12 = nv12.to_vec();
+                }
             }
-            if i + 1 == a.frames as u64 {
-                last_nv12 = nv12.to_vec();
-            }
+            p.sync_output(0, &f.job, false).map_err(|e| e.to_string())?;
         }
         times.push((f.times, tr.elapsed()));
-        if i + 1 == a.frames as u64
-            && let Some(rgb) = p.output(1, &f.job)
-        {
-            last_rgb = rgb.to_vec();
+        if last {
+            p.sync_output(1, &f.job, true).map_err(|e| e.to_string())?;
+            if let Some(rgb) = p.output(1, &f.job) {
+                last_rgb = rgb.to_vec();
+            }
+            p.sync_output(1, &f.job, false).map_err(|e| e.to_string())?;
         }
         p.release(&f.job);
         if !a.quiet {

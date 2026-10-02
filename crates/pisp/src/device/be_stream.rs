@@ -12,8 +12,9 @@ use styx_kernel::v4l2::{
 };
 
 use super::be::BE_CFG_FOURCC;
+use super::be_output::{OutputMemory, OutputQueue};
 use super::config_buf::ConfigBuffer;
-use super::{DeviceError, Queue, Result, bayer16_fourcc, find_media};
+use super::{DeviceError, Result, bayer16_fourcc, find_media};
 use crate::format::formats;
 use crate::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig};
 
@@ -77,9 +78,8 @@ pub struct QueuedJob {
 }
 
 struct Output {
-    queue: Queue,
+    queue: OutputQueue,
     format: ImageFormatConfig,
-    dmabufs: Vec<OwnedFd>,
     free: Vec<u32>,
 }
 
@@ -119,6 +119,30 @@ impl BackEndStream {
         input_len: u32,
         outputs: [Option<BeOutputSetup>; 2],
         buffers: u32,
+    ) -> Result<Self> {
+        Self::open_with(
+            group,
+            input,
+            bayer,
+            inputs,
+            input_len,
+            outputs,
+            buffers,
+            OutputMemory::Driver,
+        )
+    }
+
+    /// [`Self::open`] with the output buffers from `memory`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with(
+        group: usize,
+        input: ImageFormatConfig,
+        bayer: BayerOrder,
+        inputs: Vec<OwnedFd>,
+        input_len: u32,
+        outputs: [Option<BeOutputSetup>; 2],
+        buffers: u32,
+        memory: OutputMemory,
     ) -> Result<Self> {
         if outputs[0].is_none() || inputs.is_empty() {
             return Err(DeviceError::Setup("need output 0 and input buffers".into()));
@@ -205,15 +229,12 @@ impl BackEndStream {
             } else {
                 "pispbe-output1"
             };
-            let queue = Queue::new(dev, BufType::VideoCaptureMplane, buffers.max(2), name)?;
-            let dmabufs = (0..queue.len() as u32)
-                .map(|b| Ok(queue.dev.export_buffer(queue.buf_type, b, 0)?))
-                .collect::<Result<Vec<_>>>()?;
+            let size = g.planes[0].size_image as usize;
+            let queue = OutputQueue::new(dev, memory, buffers.max(2), size, name)?;
             let free = (0..queue.len() as u32).rev().collect();
             outs[i] = Some(Output {
                 queue,
                 format,
-                dmabufs,
                 free,
             });
         }
@@ -325,7 +346,7 @@ impl BackEndStream {
             .as_fd();
         for (o, b) in self.outputs.iter().zip(picked) {
             if let (Some(o), Some(b)) = (o, b) {
-                o.queue.queue(b, &[])?;
+                o.queue.queue(b)?;
             }
         }
         let mut q = QueueBuffer::dmabuf(BufType::VideoOutputMplane, input, &[fd]);
@@ -380,13 +401,24 @@ impl BackEndStream {
     /// The bytes of output `i`'s buffer `index`.
     pub fn output_data(&self, i: usize, index: u32) -> Option<&[u8]> {
         let o = self.outputs.get(i)?.as_ref()?;
-        Some(o.queue.maps.get(index as usize)?.first()?.as_slice())
+        o.queue.data(index)
+    }
+
+    /// Brackets CPU reads of output `i`'s buffer `index` (`DMA_BUF_IOCTL_SYNC`): `start`
+    /// before reading (invalidates a cached buffer), then again with `start` false. Needed
+    /// for [`OutputMemory::CachedHeap`] buffers, a no-op for the driver's.
+    pub fn sync_output(&self, i: usize, index: u32, start: bool) -> Result<()> {
+        let fd = self
+            .output_dmabuf(i, index)
+            .ok_or_else(|| DeviceError::Setup(format!("no output {i} buffer {index}")))?;
+        styx_kernel::dma_heap::sync(fd, styx_kernel::dma_heap::Access::Read, start)?;
+        Ok(())
     }
 
     /// The dma-buf of output `i`'s buffer `index`.
     pub fn output_dmabuf(&self, i: usize, index: u32) -> Option<BorrowedFd<'_>> {
         let o = self.outputs.get(i)?.as_ref()?;
-        o.dmabufs.get(index as usize).map(|f| f.as_fd())
+        o.queue.dmabuf(index)
     }
 
     /// Hands output `i`'s buffer `index` back for reuse (outputs of one job can be held for
@@ -420,7 +452,6 @@ impl BackEndStream {
             .free_buffers(BufType::VideoOutputMplane, Memory::DmaBuf);
         let mut first = a.err();
         for o in self.outputs.into_iter().flatten() {
-            drop(o.dmabufs);
             if let Err(e) = o.queue.close() {
                 first.get_or_insert(e);
             }

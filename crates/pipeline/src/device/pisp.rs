@@ -26,7 +26,8 @@ use styx_algo::{Statistics, Tuning};
 use styx_kernel::subdev::MbusCode;
 use styx_native::{CameraControls, Configured, NativeCamera, SensorStream, StreamSettings};
 use styx_pisp::device::{
-    BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup, profile,
+    BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup, OutputMemory,
+    profile,
 };
 use styx_pisp::fe::FrontEnd;
 use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
@@ -53,6 +54,10 @@ pub struct PispOptions {
     pub be_group: usize,
     /// Front end configs queued ahead of the frames.
     pub configs_ahead: usize,
+    /// Where the back end's output buffers come from: a cached dma-heap (the default: CPU
+    /// reads at memory speed, bracketed by [`PispPipeline::sync_output`]) or the driver's
+    /// (mapped uncached).
+    pub output_memory: OutputMemory,
 }
 
 impl PispOptions {
@@ -75,6 +80,7 @@ impl PispOptions {
             be_buffers: 4,
             be_group: 0,
             configs_ahead: 2,
+            output_memory: OutputMemory::CachedHeap,
         }
     }
 }
@@ -195,7 +201,7 @@ impl PispPipeline {
         fe.set_output_format(0, input);
         fe.enable(fe_enable::OUTPUT0, true);
         let input_len = input.stride as u32 * u32::from(input.height);
-        let be_dev = BackEndStream::open(
+        let be_dev = BackEndStream::open_with(
             options.be_group,
             input,
             order,
@@ -203,6 +209,7 @@ impl PispPipeline {
             input_len,
             options.outputs,
             options.be_buffers,
+            options.output_memory,
         )?;
         let be = be_template(
             input,
@@ -422,6 +429,16 @@ impl PispPipeline {
     /// Output `i`'s bytes for a frame's job.
     pub fn output(&self, i: usize, job: &BeJob) -> Option<&[u8]> {
         self.be_dev.as_ref()?.output_data(i, job.outputs[i]?)
+    }
+
+    /// Brackets CPU reads of output `i` of a frame's job: call with `start` before reading
+    /// [`Self::output`] and without after (see [`BackEndStream::sync_output`]).
+    pub fn sync_output(&self, i: usize, job: &BeJob, start: bool) -> Result<()> {
+        let (Some(b), Some(index)) = (self.be_dev.as_ref(), job.outputs.get(i).copied().flatten())
+        else {
+            return Ok(());
+        };
+        Ok(b.sync_output(i, index, start)?)
     }
 
     /// Output `i`'s dma-buf for a frame's job.

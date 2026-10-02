@@ -20,6 +20,8 @@
 //!                        cached, synced per frame) instead of the driver's MMAP buffers
 //!   --no-read            (pisp) do not read the output on the CPU (no per-frame output mean)
 //!   --profile            (pisp) time the device calls (queue, dequeue, wait, copies)
+//!   --driver-buffers     (pisp) back end outputs in the driver's (uncached) buffers instead of
+//!                        cached dma-heap buffers
 //!   --quiet              no per-frame lines
 //! ```
 
@@ -54,6 +56,7 @@ pub struct Args {
     pub quiet: bool,
     pub no_read: bool,
     pub profile: bool,
+    pub driver_buffers: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -77,6 +80,7 @@ fn parse() -> Result<Args, String> {
         quiet: false,
         no_read: false,
         profile: false,
+        driver_buffers: false,
     };
     while let Some(x) = it.next() {
         let mut val = || it.next().ok_or(format!("{x} needs a value"));
@@ -94,6 +98,7 @@ fn parse() -> Result<Args, String> {
             "--quiet" => a.quiet = true,
             "--no-read" => a.no_read = true,
             "--profile" => a.profile = true,
+            "--driver-buffers" => a.driver_buffers = true,
             "--heap" => a.heap = Some(val()?),
             "--perturb" => {
                 let v = val()?;

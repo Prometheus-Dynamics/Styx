@@ -21,9 +21,20 @@ pub struct NativeIspConfig {
     /// Also deliver each frame at this size and format from the second output, as a
     /// `CompanionKind::Scaled` companion. `None` (default) leaves it off.
     pub second_output: Option<((u32, u32), FourCc)>,
+    /// Use the ISP driver's own buffers, which the CPU reads uncached (the Y plane of a
+    /// 1280x800 frame in 1.9 ms on the CM5). `false` (default): cached dma-heap buffers, read
+    /// at memory speed (cache maintenance only when a frame's pixels are read).
+    pub driver_buffers: bool,
 }
 
 impl StyxConfig {
+    /// Have a native camera's ISP write into its driver's buffers (see
+    /// [`NativeIspConfig::driver_buffers`]).
+    pub fn native_driver_buffers(mut self, driver: bool) -> Self {
+        self.backends.native.driver_buffers = driver;
+        self
+    }
+
     /// Have a native camera's ISP deliver frames at `width`x`height` (see
     /// [`NativeIspConfig::output_size`]).
     pub fn native_output_size(mut self, width: u32, height: u32) -> Self {
