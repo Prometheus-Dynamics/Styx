@@ -29,6 +29,24 @@ unsafe fn pair(even: u16, odd: u16) -> float16x8_t {
     unsafe { vreinterpretq_f16_u32(vdupq_n_u32(u32::from(even) | u32::from(odd) << 16)) }
 }
 
+/// Runs `block` at `0, n, 2n, ...` and, when `width` is not a multiple of `n` (but at least
+/// `n`), once more at `width - n`, overlapping the previous block: the kernels' pixels depend
+/// only on their inputs, so the overlap is written twice with the same values, and no pixel
+/// is left to the (slow, emulated) scalar oracle. Returns the pixels done.
+#[inline(always)]
+fn blocks(width: usize, n: usize, mut block: impl FnMut(usize)) -> usize {
+    let mut x = 0;
+    while x + n <= width {
+        block(x);
+        x += n;
+    }
+    if x < width && width >= n {
+        block(width - n);
+        x = width;
+    }
+    x
+}
+
 /// The tone curve's tables, held in registers.
 struct Tables {
     base: uint8x16x3_t,
@@ -139,8 +157,8 @@ const RAW10_LOW: [u8; 16] = [
 const RAW10_SHIFT: [i16; 8] = [0, -2, -4, -6, 0, -2, -4, -6];
 
 /// # Safety
-/// See the module; `src` holds the packed row (`width / 4 * 5` bytes at least), `dst` and the
-/// lens shading rows `width` samples.
+/// See the module; `src` holds the packed row, `dst` and the lens shading rows `width`
+/// samples.
 #[target_feature(enable = "neon,fp16")]
 pub(in crate::simd) unsafe fn front_raw10(
     src: &[u8],
@@ -151,15 +169,27 @@ pub(in crate::simd) unsafe fn front_raw10(
     width: usize,
 ) -> usize {
     let (mut x, mut off) = (0, 0);
-    // SAFETY: 16 bytes read at `off` (checked) and 8 samples written at `x`, `x + 8 <= width`.
+    // SAFETY: 16 bytes read at `off` when there are (else from a copy) and 8 samples written at
+    // `x`, `x + 8 <= width`.
     unsafe {
         let (hi_t, lo_t) = (vld1q_u8(RAW10_HIGH.as_ptr()), vld1q_u8(RAW10_LOW.as_ptr()));
         let sh = vld1q_s16(RAW10_SHIFT.as_ptr());
         let (three, magic) = (vdupq_n_u16(3), vdupq_n_u16(0x6400));
         let (bl, gn) = (pair(black[0], black[1]), pair(gain[0], gain[1]));
         let (zero, max) = (splat(0), splat(H_MAX));
-        let base = |off: usize| {
-            let v = vld1q_u8(src.as_ptr().add(off));
+        // The 16 bytes at `off`, from a copy once fewer are left (the last group of a row).
+        let mut tail = [0u8; 16];
+        let mut bytes = |off: usize| {
+            if off + 16 <= src.len() {
+                vld1q_u8(src.as_ptr().add(off))
+            } else {
+                let n = src.len() - off;
+                tail[..n].copy_from_slice(&src[off..]);
+                vld1q_u8(tail.as_ptr())
+            }
+        };
+        let mut base = |off: usize| {
+            let v = bytes(off);
             let high = vshlq_n_u16::<2>(vreinterpretq_u16_u8(vqtbl1q_u8(v, hi_t)));
             let low = vandq_u16(
                 vshlq_u16(vreinterpretq_u16_u8(vqtbl1q_u8(v, lo_t)), sh),
@@ -172,9 +202,11 @@ pub(in crate::simd) unsafe fn front_raw10(
             )
         };
         let out = dst.as_mut_ptr();
+        // Every group of 8 needs its 10 bytes.
+        let groups = (width / 8).min(src.len() / 10);
         match lsc {
             None => {
-                while x + 8 <= width && off + 16 <= src.len() {
+                while x < groups * 8 {
                     let y = vminq_f16(base(off), max);
                     vst1q_u16(out.add(x), vreinterpretq_u16_f16(y));
                     x += 8;
@@ -183,7 +215,7 @@ pub(in crate::simd) unsafe fn front_raw10(
             }
             Some(l) => {
                 let t = splat(l.t);
-                while x + 8 <= width && off + 16 <= src.len() {
+                while x < groups * 8 {
                     let g = vfmaq_f16(ld(l.a, x), ld(l.d, x), t);
                     let y = vminq_f16(vmulq_f16(base(off), g), max);
                     vst1q_u16(out.add(x), vreinterpretq_u16_f16(y));
@@ -239,7 +271,7 @@ pub(in crate::simd) unsafe fn colour(
     cc: &ColourCoeffs,
     tone: &HalfTone,
 ) -> usize {
-    let mut x = 0;
+    let x;
     // SAFETY: loads reach `x + 18 <= width + 2` and stores `x + 16 <= width`.
     unsafe {
         let mask = vreinterpretq_u16_f16(if cc.green_even {
@@ -249,13 +281,13 @@ pub(in crate::simd) unsafe fn colour(
         });
         let c = cc.c.map(|row| row.map(|v| pair(v[0], v[1])));
         let t = Tables::new(tone);
-        while x + 16 <= width {
+        // Even block starts (`width` is even): the column parities hold.
+        x = blocks(width, 16, |x| {
             let a = colour8(rows, x, mask, &c);
             let b = colour8(rows, x + 8, mask, &c);
             let rgb = std::array::from_fn(|k| t.apply(a[k], b[k]));
             put16(out, x, rgb);
-            x += 16;
-        }
+        });
     }
     x
 }
@@ -285,7 +317,7 @@ pub(in crate::simd) unsafe fn quad_colour(
     pattern: CfaPattern,
     tone: &HalfTone,
 ) -> usize {
-    let mut i = 0;
+    let i;
     let pos = quad_positions(pattern);
     // SAFETY: 32 samples of each input at `2i` and 16 outputs at `i`, `i + 16 <= width`.
     unsafe {
@@ -302,7 +334,7 @@ pub(in crate::simd) unsafe fn quad_colour(
                 vmaxq_f16(acc, sixteen)
             })
         };
-        while i + 16 <= width {
+        i = blocks(width, 16, |i| {
             let a = colour(quad8(
                 vld2q_u16(top.as_ptr().add(2 * i)),
                 vld2q_u16(bottom.as_ptr().add(2 * i)),
@@ -314,8 +346,7 @@ pub(in crate::simd) unsafe fn quad_colour(
                 pos,
             ));
             put16(out, i, std::array::from_fn(|k| t.apply(a[k], b[k])));
-            i += 16;
-        }
+        });
     }
     i
 }
@@ -330,7 +361,7 @@ pub(in crate::simd) unsafe fn luma(
     tone: &HalfTone,
 ) -> usize {
     let [up, cur, dn] = rows;
-    let mut x = 0;
+    let x;
     // SAFETY: loads reach `x + 18 <= width + 2`, stores `x + 16 <= width`.
     unsafe {
         let (half, quarter, sixteen) = (splat(H_HALF), splat(H_QUARTER), splat(H_16));
@@ -350,10 +381,10 @@ pub(in crate::simd) unsafe fn luma(
             vaddq_f16(s, sixteen)
         };
         let tables = Tables::new(tone);
-        while x + 16 <= width {
-            vst1q_u8(dst.as_mut_ptr().add(x), tables.apply(s(x), s(x + 8)));
-            x += 16;
-        }
+        let out = dst.as_mut_ptr();
+        x = blocks(width, 16, |x| {
+            vst1q_u8(out.add(x), tables.apply(s(x), s(x + 8)));
+        });
     }
     x
 }
@@ -368,7 +399,7 @@ pub(in crate::simd) unsafe fn quad_luma(
     width: usize,
     tone: &HalfTone,
 ) -> usize {
-    let mut i = 0;
+    let i;
     // SAFETY: 32 samples of each input at `2i`, 16 outputs at `i`, `i + 16 <= width`.
     unsafe {
         let (quarter, sixteen) = (splat(H_QUARTER), splat(H_16));
@@ -380,10 +411,10 @@ pub(in crate::simd) unsafe fn quad_luma(
             vfmaq_f16(sixteen, sum, quarter)
         };
         let tables = Tables::new(tone);
-        while i + 16 <= width {
-            vst1q_u8(dst.as_mut_ptr().add(i), tables.apply(s(i), s(i + 8)));
-            i += 16;
-        }
+        let out = dst.as_mut_ptr();
+        i = blocks(width, 16, |i| {
+            vst1q_u8(out.add(i), tables.apply(s(i), s(i + 8)));
+        });
     }
     i
 }
@@ -394,28 +425,28 @@ pub(in crate::simd) unsafe fn quad_luma(
 pub(in crate::simd) unsafe fn quad_stats(
     top: &[u16],
     bottom: &[u16],
-    mut out: [&mut [u16]; 3],
+    out: [&mut [u16]; 3],
     width: usize,
     pattern: CfaPattern,
     scale: u16,
 ) -> usize {
-    let mut i = 0;
+    let i;
     let pos = quad_positions(pattern);
     // SAFETY: 16 samples of each input at `2i`, 8 outputs at `i`, `i + 8 <= width`.
     unsafe {
         let (scale, max) = (splat(scale), vdupq_n_u16(4095));
-        while i + 8 <= width {
+        let outs = out.map(|o| o.as_mut_ptr());
+        i = blocks(width, 8, |i| {
             let q = quad8(
                 vld2q_u16(top.as_ptr().add(2 * i)),
                 vld2q_u16(bottom.as_ptr().add(2 * i)),
                 pos,
             );
-            for (o, v) in out.iter_mut().zip(q) {
+            for (o, v) in outs.iter().zip(q) {
                 let v = vminq_u16(vcvtnq_u16_f16(vmulq_f16(v, scale)), max);
-                vst1q_u16(o.as_mut_ptr().add(i), v);
+                vst1q_u16(o.add(i), v);
             }
-            i += 8;
-        }
+        });
     }
     i
 }

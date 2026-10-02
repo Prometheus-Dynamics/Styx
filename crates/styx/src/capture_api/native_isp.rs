@@ -188,7 +188,7 @@ fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues)
 /// Starts processed capture on an opened camera.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn start_processed(
-    (camera, cached): (NativeCamera, bool),
+    (camera, _cached): (NativeCamera, bool),
     mode: Mode,
     interval: Option<Interval>,
     descriptor: CaptureDescriptor,
@@ -274,8 +274,6 @@ pub(super) fn start_processed(
                 .unwrap_or_else(crate::planner::cost::default_softisp_threads);
             tracing::info!(backend = "native", threads, "software ISP threads");
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
-            // Rows of cached buffers need no staging copy.
-            p.soft_loop().set_copy_input(!cached);
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = if code == FourCc::NV12 {

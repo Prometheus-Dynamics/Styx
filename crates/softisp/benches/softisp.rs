@@ -212,6 +212,14 @@ fn half_stages(c: &mut Criterion) {
             })
         })
     });
+    let packed = frame();
+    g.bench_function("front_raw10", |bn| {
+        bn.iter(|| {
+            (0..H).for_each(|y| {
+                half::front_raw10_row(&packed[y * STRIDE..], &mut front, black, gain, None, W);
+            })
+        })
+    });
     g.bench_function("front_lsc", |bn| {
         let lsc = half::LscRow {
             a: &gains,
