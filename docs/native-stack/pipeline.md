@@ -127,10 +127,13 @@ within 5% of its final value; output level = mean of the output luma.
 Found on the way: with the kernel driver's default flips (both on) the OV9782's order is RGGB
 and the picture is turned against libcamera's, which runs them off; the description now
 defaults to flips off (BGGR, upright). A frame lasts VTS + 1 lines (measured at 30/60/120 fps):
-`controls.frame_length_extra_lines = 1`. Every stop request (and, under load, start requests)
-timed out with frame-start events or embedded data on: the bridge was served through the
-reactor, which blocks in `vb2_fop_poll` while `STREAMON`/`STREAMOFF` hold the receiver's
-queue locks; the bridge now has its own blocking thread (not yet re-run on the device).
+`controls.frame_length_extra_lines = 1`. Every stop request timed out (1 s, "stop request
+failed: -110") in the runs above: the bridge was served through the reactor, which blocks in
+`vb2_fop_poll` while `STREAMON`/`STREAMOFF` hold the receiver's node lock. native/harden's event
+thread (own `poll`, quiesced around `STREAMON`/`STREAMOFF`) fixes that; the external route
+quiesces it around the front end's `STREAMON`/`STREAMOFF` too (`start_external` spawns it
+quiesced, `resume_external` after the front end started, `quiesce_external` before it stops).
+Not yet re-run on the device.
 
 ## Gaps
 
