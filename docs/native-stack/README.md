@@ -110,10 +110,14 @@ limits at that fps.
     `ssh root@helios 'mkdir /tmp/styx-device-lock && echo "<agent> $(date)" > /tmp/styx-device-lock/owner'`
     (retry every 60 s while it exists; never delete someone else's lock). Chain every device step
     after the lock with `&&` or `set -e` so nothing runs if taking the lock fails. Keep it only as long as
-    needed, and before releasing it (`rm -rf /tmp/styx-device-lock`) restore the device:
-    `helios-peripherals` active, `ov9282` bound to `10-0060`, no runtime overlay or Styx module
-    loaded (`kernel-modules/styx-sensor-bridge/spike/down.sh` does this). If restoring fails,
-    stop and report; do not reboot without the user.
+    needed, and before releasing it (`rm -rf /tmp/styx-device-lock`) restore the device to its
+    baseline: the bridge up from the installed copy (`styx-bridge.service` active,
+    `kernel-modules/styx-sensor-bridge/install/`), `helios-peripherals` stopped. To restore:
+    `sh /usr/local/lib/styx-bridge/down.sh; systemctl restart styx-bridge`. For libcamera
+    runs, `systemctl stop styx-bridge` gives the camera back to `ov9282`, libcamera and
+    `helios-peripherals`; `systemctl start styx-bridge` afterwards. To test a newer module, run
+    your own `down.sh` then `up.sh`, or rerun `install/install.sh`. If restoring fails, reboot
+    (`systemctl reboot`; the device is a dev box) and report it.
   - The bridge spike (`spike/up.sh`, `native-spike`, `spike/down.sh`) is approved for use under
     the lock.
   - Never use I2C force access (`I2C_SLAVE_FORCE`, `i2ctransfer -f`) while a kernel driver owns

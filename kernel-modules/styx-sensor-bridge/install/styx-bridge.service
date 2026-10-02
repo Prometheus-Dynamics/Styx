@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+# Puts the OV9782 on cam0 behind the Styx sensor bridge at boot (runtime overlay, nothing in
+# /boot). Stop it to hand the camera back to ov9282, libcamera and helios-peripherals.
+[Unit]
+Description=Styx sensor bridge on cam0
+After=local-fs.target systemd-modules-load.service sys-kernel-config.mount
+Conflicts=helios-peripherals.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=OVERLAY_DTBO=/usr/local/lib/styx-bridge/styx-sensor-bridge-cm5-runtime-emb.dtbo
+ExecStart=/bin/sh /usr/local/lib/styx-bridge/up.sh
+ExecStop=/bin/sh /usr/local/lib/styx-bridge/down.sh
+
+[Install]
+WantedBy=multi-user.target
