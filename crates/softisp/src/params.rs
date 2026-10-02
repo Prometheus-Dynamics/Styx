@@ -45,8 +45,7 @@ impl Default for IspParams {
 }
 
 /// How the per-pixel stages compute. The two give pictures within a code or two of each
-/// other (see `PERFORMANCE.md` for measured differences); [`SoftIsp::arithmetic`]
-/// (crate::SoftIsp::arithmetic) tells which one runs.
+/// other (see `PERFORMANCE.md` for measured differences); [`SoftIsp::arithmetic`](crate::SoftIsp::arithmetic) tells which one runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Arithmetic {

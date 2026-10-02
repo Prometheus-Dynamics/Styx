@@ -214,55 +214,96 @@ a host: `native-pipeline replay --recording <base>`, or `STYX_RAW_RECORDING=<bas
 
 `SoftLoop::new` / `SoftPipeline::open` take a thread count (`--threads N` in the tool; 0 is one
 per CPU). The ISP splits each frame into two row bands per thread, claimed by whichever thread
-is free, on helper threads it starts once and keeps asleep between frames (no per-frame spawn,
-no rayon). Input rows are copied 16 KiB at a time into a cached buffer before unpacking, since
-the receiver's MMAP buffers are mapped uncached (`SoftIsp::set_copy_input`).
+is free, on helper threads it starts once and keeps asleep between frames. What makes the path
+cheap (details and kernel timings in `crates/softisp/PERFORMANCE.md`):
 
-CM5, OV9782 1280x800 RAW10 into RGB24 with the HeliOS tuning (lens shading 32x32, CCM, gamma,
-statistics 16x12 zones every second quad row), 300 frames, the scene above, 2026-10-02. Before
-is the native-stack branch as of `582d885`; CPU is the whole tool process (capture, 3A, the
-tool's per-frame output mean) per frame.
+* **fp16 arithmetic** (`styx_softisp::Arithmetic::Half`, chosen automatically on CPUs with FP16
+  arithmetic: the A76): front end fused with the RAW10 unpacking, demosaic and colour matrix
+  in one pass, the tone curve as 48 segments looked up by the fp16 exponent with `tbl`, 4:2:0
+  output from registers. The integer path stays the reference (x86, Cortex-A72/A53).
+* **Cached capture buffers**: the raw frames go into `linux,cma` dma-heap buffers when the heap
+  exists (`device::soft_capture_memory`; styx's processed native modes and `native-pipeline
+  soft` do this unless `driver_buffers` / `--driver-buffers`), 0.6 ms less ISP time per frame
+  than the receiver's uncached MMAP buffers. Rows are still staged 16 KiB at a time.
+* **Statistics on every fourth quad row** (65 536 quads, 340 per zone: 0.23 ms instead of
+  0.92 ms on every row), and **statistics and algorithms at 15 Hz once settled** (AE locked
+  and AWB converged, as the PiSP path; `SoftLoop::set_settled_rate(None)` /
+  `--every-frame` keeps every frame).
+* **Lens shading tables** kept while the grid moves less than 0.25% (`LSC_TOLERANCE`; adaptive
+  lens shading moves it on most frames, a rebuild costs 0.3 ms), and gain changes no longer
+  rebuild them (fp16: 12 us of `set_params`).
+* Embedded data decoded from only the bytes the layout reads (`styx-sensor`, the PiSP round):
+  the event thread went from 1.3-1.5 ms per frame to 0.03 ms on this path too.
 
-| | before, 1 thread | after, 1 thread | after, 4 threads |
-|---|---|---|---|
-| 30 fps, MMAP buffers: CPU per frame | 15.6 ms (47%) | 7.7 ms (23%) | 8.1 ms (24%) |
-| 30 fps, MMAP: dequeue -> output | 14.1 ms | 6.2 ms | 2.1 ms |
-| 30 fps, MMAP: sensor timestamp -> output | 22.4 ms | 14.4 ms | 10.3 ms |
-| 30 fps, CMA buffers: CPU / dequeue -> output / latency | 10.6 / 9.1 / 17.4 ms | 7.1 / 5.6 / 13.8 ms | 8.1 / 2.1 / 10.4 ms |
-| 120 fps, MMAP: frame rate | 64.9 fps (falls behind) | 120.0 fps | 120.0 fps |
-| 120 fps, MMAP: CPU / dequeue -> output / latency | 15.7 / 14.1 / 57 ms | 7.7 / 6.1 / 14.5 ms (91% of a core) | 8.1 / 2.1 / 10.5 ms |
-| peak RSS (MMAP / CMA) | 12.8 / 7.8 MiB | 12.9 / 7.9 MiB | 13.0 / 8.2 MiB |
+CM5, OV9782 1280x800 RAW10 with the HeliOS tuning (lens shading, CCM, adaptive contrast,
+statistics), `native-pipeline soft --quiet`, 150 frames at 30 fps / 600 at 120 fps, 2026-10-02
+(device time 2026-08-17). CPU is the whole process per frame (capture, ISP, 3A, the tool's
+per-frame output level on every eighth row and column); latency is the sensor's frame-start
+timestamp to the output being ready (about 8.2 ms of it the readout). Before: the
+native-stack branch at `0d8638a` (MMAP buffers, integer ISP, event thread 1.4 ms).
 
-About 8.2 ms of the latency is the sensor read-out (timestamp at frame start, dequeue at its
-end). Four threads cost 0.4 ms more CPU per frame than one (wake-ups, band edges) and cut
-the processing time by 3x; with the copy, MMAP and CMA buffers now cost the same.
+| 30 fps | before, 1 thread | now, 1 thread | before, 4 threads | now, 4 threads |
+|---|---|---|---|---|
+| NV12 1280x800: CPU per frame (% of a core) | 7.3 ms (21.8%) | 3.4 ms (10.2%) | 7.5 ms (22.6%) | 4.0 ms (12.0%) |
+| RGB24 1280x800 | 7.2 ms (21.6%) | 3.1 ms (9.4%) | 7.7 ms (23.2%) | 4.5 ms (13.7%) |
+| RGB24 640x400 (binned) | 4.2 ms (12.6%) | 1.7 ms (5.0%) | 4.3 ms (13.0%) | 2.1 ms (6.4%) |
+| luma 1280x800 | 4.5 ms (13.6%) | 2.1 ms (6.4%) | 4.7 ms (14.2%) | 2.7 ms (8.2%) |
+| NV12: dequeue -> output / latency | 6.2 / 14.5 ms | 3.2 / 10.8 ms | 1.9 / 10.3 ms | 1.1 / 8.7 ms |
+| RGB24: dequeue -> output / latency | 6.0 / 14.3 ms | 2.9 / 10.4 ms | 1.9 / 10.3 ms | 1.2 / 8.8 ms |
+| peak RSS, NV12 / RGB24 | 11.6 / 12.9 MiB | 6.8 / 8.4 MiB | 11.7 / 13.2 MiB | 7.2 / 8.6 MiB |
 
-The ISP alone on a recorded frame (`styx-softisp`, same settings, one thread unless noted):
+| 120 fps | before, 1 thread | now, 1 thread | before, 4 threads | now, 4 threads |
+|---|---|---|---|---|
+| NV12 1280x800: CPU per frame (% of a core) | 7.1 ms (84.9%) | 3.3 ms (39.5%) | 7.3 ms (87.7%) | 4.0 ms (47.5%) |
+| RGB24 1280x800 | 7.1 ms (84.7%) | 3.0 ms (36.3%) | 7.6 ms (90.5%) | 4.4 ms (52.9%) |
+| RGB24 640x400 (binned) | 4.1 ms (48.7%) | 1.6 ms (19.2%) | 4.2 ms (50.3%) | 2.1 ms (25.4%) |
+| luma 1280x800 | 4.5 ms (53.3%) | 2.1 ms (24.8%) | 4.6 ms (54.7%) | 2.6 ms (31.0%) |
+| NV12: dequeue -> output / latency | 6.2 / 14.5 ms | 3.2 / 10.8 ms | 1.9 / 10.3 ms | 1.1 / 8.7 ms |
 
-| | before | after |
-|---|---:|---:|
-| RGB24, frame in write-combined memory (as MMAP) | 10.7 ms | 5.6 ms |
-| RGB24, frame in cached memory | 5.9 ms | 5.0 ms |
-| RGB24, write-combined, 2 / 3 / 4 threads | (no threads without rayon) | 2.8 / 1.9 / 1.5 ms |
-| tone curve kernel, 3 channels of a frame | 2.31 ms | 1.54 ms |
-| statistics (their share of the frame) | 0.57 ms | 0.39 ms |
-| lens shading tables (`set_params`, on every frame whose gains change) | 3.19 ms | 0.31 ms |
-| replay of 60 recorded frames with the 3A loop, per frame (1 / 4 threads) | 9.15 ms | 5.63 / 2.24 ms |
+All runs held their rate (30.000 / 119.967 fps) with no sequence gaps; AWB settled at the same
+temperature before and now (2533 K in one session, 2435 K in a later one: the light changed).
+Of the 3.9 ms saved per NV12 frame, 1.3 ms is the embedded-data fix of the PiSP round; the
+rest is this round's (fp16 ISP, cached capture buffers 0.6 ms, statistics and settings). Four threads cut the processing time to a third but cost 0.6
+(NV12) to 1.4 ms (RGB24) more CPU: the cores share the memory bandwidth for the input and the
+output (helper threads 0.9-1.0 ms each against a quarter of 2.7 ms).
 
-Quality: unchanged bit for bit. `styx-softisp`'s `tests/golden.rs` hashes every output (RGB24,
-NV12, I420, luma, both demosaics, both scales, lens shading, statistics) at 1 and 3 threads
-against the hashes of the code before this work (identical on x86 and the A76); the replay
-of the 60 recorded frames gives the same final image (md5) and the same AE/AWB trajectory as
-before at 1 and 4 threads (max error 0 per channel, PSNR infinite). Per-stage numbers, x86 and
-what was tried and dropped are in `crates/softisp/PERFORMANCE.md`.
+Where the 3.1 ms of an RGB24 frame go now (30 fps, one thread):
+
+| | ms |
+|---|---:|
+| ISP: RAW10 unpack, black level, gains, lens shading (fp16) | 0.5 |
+| ISP: demosaic, colour matrix, tone curve, RGB24 | 1.6 |
+| ISP: statistics (0.23 ms on the frames that take them: every second once settled) | 0.12 |
+| ISP: staging the raw rows out of the CMA buffer, row loop, band edges | 0.5 |
+| settings: gains (every frame), tone curve refit (when adaptive contrast moved it) | 0.07 |
+| algorithms (every second frame once settled) and statistics conversion | 0.07 |
+| dequeue / requeue, dma-buf cache maintenance, the tool's per-frame bookkeeping | 0.3 |
+| event thread (frame starts, embedded data, control writes) | 0.03 |
+
+NV12 costs 0.3 ms more than RGB24 (luma and chroma), luma alone 1 ms less, the binned half
+size 1.4 ms less. A frame at 120 fps costs the same as at 30 fps; once settled the statistics
+and algorithms run on every eighth frame there.
+
+Quality against the integer arithmetic (the previous output): PSNR 53.9-55.3 dB per channel
+on 55 recorded frames with the loop's settings, at most 2 codes apart (one sample in a
+million more than 1); 54.7-61 dB on a synthetic chart (`crates/softisp/tests/quality.rs`).
+Both arithmetics' outputs are pinned bit for bit (`tests/golden.rs`). `native-pipeline quality
+--recording BASE` repeats the comparison on any recording. On the replay of the 60 recorded
+frames the AE trajectory is unchanged but AWB ends at 4463 K instead of 2533 K with fp16: the
+Bayesian AWB is bistable on this scene (warm lamp, blue LED). The integer path flips the same
+way when its statistics are scaled by 1.0007 (fp16's differ by up to 0.05% per zone); live,
+both settle at the same temperature. That is a sensitivity of the AWB search, not of the ISP.
 
 ## Planner
 
 The native backend lists `NV12` and `RG24` modes at each sensor size (all rates of the raw
 mode) with property `isp`. Costs (`planner/cost.rs`, from the measurements here): PiSP adds
-0.9 ms latency and 0.3 ms CPU to the native capture; the software ISP 5.5 ms/MP of CPU
-(+0.4 ms with helper threads) + 0.3 ms 3A, and 5.5 ms/MP divided over its threads of latency
-(it runs on min(4, cores) threads, `StyxConfig::native_soft_threads`). A native PiSP scales
+0.9 ms latency and 0.3 ms CPU to the native capture; the software ISP 2.9 ms/MP of CPU
+(+0.9 ms with helper threads) + 0.3 ms 3A, and 2.9 ms/MP divided over its threads (x1.3) of
+latency (it runs on min(4, cores) threads, `StyxConfig::native_soft_threads`). Without a PiSP
+the native backend also lists binned `NV12` / `RG24` modes at half each sensor size (each 2x2
+quad a pixel, no demosaic, the sensor at full size), priced at 1.2 ms per raw megapixel: a
+consumer asking for 640x400 gets one at about 40% of the full-size CPU. A native PiSP scales
 like libcamera's ISP (`output_resolution` → `NativeIspConfig::output_size`), and a shared
 capture uses both back end outputs: consumers are served by size and format (the PiSP makes
 either processed format on either output; the second output is attached to each frame as a
@@ -392,3 +433,8 @@ thread had gone (fixed here: stop it first). No stop timeouts since, on either p
 * Brightness changes were forced exposure steps, not changes of the light.
 * The tool's software runs use one thread unless `--threads` says otherwise (the `styx`
   native backend's software mode uses min(4, cores), and the planner prices it as measured).
+  On the CM5 one thread is the cheapest in CPU (four cost 0.6-1.4 ms more per frame); the
+  default favours latency.
+* The software ISP's dma-heap capture buffers still need their rows staged into a cached
+  buffer: read directly they measured 1 ms slower per frame (16-byte loads at a 10-byte stride
+  straight from DRAM).

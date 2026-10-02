@@ -1,6 +1,6 @@
 //! Row kernels of [`Arithmetic::Half`](crate::Arithmetic::Half): working values are fp16
 //! (bits in `u16`), 0..=4080 (full scale; the integer path's 12-bit samples reach 4095) with
-//! a float's relative precision. Each kernel has a scalar oracle built on [`f16`] (exact software
+//! a float's relative precision. Each kernel has a scalar oracle built on [`f16`](mod@super::f16) (exact software
 //! fp16) and an AArch64 leaf for CPUs with FP16 arithmetic (ARMv8.2: Cortex-A55/A76 and
 //! later), which must match it bit for bit; without FP16 hardware the oracle runs (slowly).
 //!
