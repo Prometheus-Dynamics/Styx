@@ -236,6 +236,10 @@ pub(super) fn start_processed(
         styx_core::queue::bounded_with(capture.queue_depth.max(1), capture.queue_overflow)
     });
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    // The 3A loop's AE state after each frame (`controls::AE_STATE`): 1 searching, 2 locked.
+    let ae_state = Arc::new(std::sync::atomic::AtomicI32::new(1));
+    let ae_worker = Arc::clone(&ae_state);
+    let ae_of = |locked: bool| if locked { 2 } else { 1 };
     let worker_error = Arc::new(Mutex::new(None));
     let werr = Arc::clone(&worker_error);
     let send_timeout = Duration::from_millis(capture.queue_send_timeout_ms);
@@ -332,6 +336,10 @@ pub(super) fn start_processed(
                             use std::os::fd::AsFd;
                             let _ = dma_heap::sync(buffer.fd.as_fd(), Access::Read, true);
                         }
+                        ae_worker.store(
+                            ae_of(f.step.params.ae.locked),
+                            std::sync::atomic::Ordering::Release,
+                        );
                         let meta = frame_meta(&worker_mode, f.sequence, f.timestamp, &f.sensor);
                         let lease = FrameLease::from_external(
                             meta,
@@ -409,6 +417,10 @@ pub(super) fn start_processed(
                                 break;
                             }
                         };
+                        ae_worker.store(
+                            ae_of(f.output.step.params.ae.locked),
+                            std::sync::atomic::Ordering::Release,
+                        );
                         let meta =
                             frame_meta(&worker_mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
                         drop(f);
@@ -435,7 +447,10 @@ pub(super) fn start_processed(
     };
     Ok(CaptureHandle {
         backend: BackendKind::Native,
-        control: ControlPlane::Native { controls },
+        control: ControlPlane::Native {
+            controls,
+            ae_state: Some(ae_state),
+        },
         descriptor,
         mode,
         interval,

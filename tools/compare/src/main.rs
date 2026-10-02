@@ -15,8 +15,9 @@
 //! RSS/PSS and dma-bufs, and statistics of the last frame (saved with `--save`).
 //!
 //! Convergence: libcamera reports `AeState` per request; on the native path pass
-//! `--ae-state-control <id>` once its 3A loop exposes one. "Settled" needs only per-frame
-//! exposure and gain, which both paths report.
+//! `--ae-state-control 0xF4000010` (`styx`'s native `controls::AE_STATE`, published by the
+//! processed NV12/RG24 modes). "Settled" needs only per-frame exposure and gain, which both
+//! paths report.
 //!
 //! `tools/compare/device-run.sh` runs the set on the CM5.
 

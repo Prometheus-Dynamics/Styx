@@ -14,7 +14,7 @@ use styx_algo::SensorRequest;
 use styx_native::{CameraControls, FrameControls, NativeError};
 use styx_sensor::ControlRequest;
 
-pub use pisp::{PispFrame, PispOptions, PispPipeline, PispTimes};
+pub use pisp::{PispFrame, PispOptions, PispPipeline, PispStartup, PispTimes};
 pub use soft::{SoftFrame, SoftPipeline};
 
 use crate::controller::SensorValues;
@@ -45,10 +45,12 @@ pub fn sensor_values(sequence: u64, c: &FrameControls) -> SensorValues {
 }
 
 /// Hands a sensor request to the camera's control schedule: exposure, analogue gain and frame
-/// duration together from `r.frame` (the scheduler writes each `delay` frames earlier).
-/// Returns the frame the last of them lands on.
+/// duration together from `r.frame` (the scheduler writes each `delay` frames earlier; what is
+/// due in the current frame is written at once while enough of the frame is left, and before
+/// streaming the values for frame 0 are written at once). Returns the frame the last of them
+/// lands on.
 pub fn apply_request(controls: &CameraControls, r: &SensorRequest) -> crate::Result<u64> {
-    let landings = controls.request_at(
+    let landings = controls.request_at_now(
         r.frame,
         &ControlRequest {
             exposure: Some(r.exposure),

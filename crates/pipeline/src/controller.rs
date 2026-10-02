@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use styx_algo::replay::Recorder;
 use styx_algo::{
     CameraConfig, Controls, FrameMetadata, Params, Pipeline, SensorRequest, Statistics, Tuning,
+    WarmStart,
 };
 
 use crate::error::Result;
@@ -74,6 +75,9 @@ pub struct Controller {
     max_digital_gain: f64,
     last_request: Option<SensorRequest>,
     recorder: Option<Recorder<Box<dyn Write + Send>>>,
+    /// A recording asked for before the start: its header names the warm start.
+    record_pending: Option<Box<dyn Write + Send>>,
+    warm: Option<WarmStart>,
     started: bool,
 }
 
@@ -99,13 +103,45 @@ impl Controller {
             max_digital_gain: tuning.agc.as_ref().map_or(4.0, |a| a.max_digital_gain),
             last_request: None,
             recorder: None,
+            record_pending: None,
+            warm: None,
             started: false,
         })
+    }
+
+    /// Starts the next [`Self::start`] from an earlier session's settled values (`None`: from
+    /// the tuning's start-up values).
+    pub fn set_warm_start(&mut self, warm: Option<WarmStart>) {
+        self.warm = warm;
+    }
+
+    /// The warm start the next (or current) session uses.
+    pub fn warm_start(&self) -> Option<&WarmStart> {
+        self.warm.as_ref()
+    }
+
+    /// What the algorithms have settled on, to start a later session from.
+    pub fn warm_state(&self) -> Option<WarmStart> {
+        self.started.then(|| self.pipeline.warm_state()).flatten()
+    }
+
+    /// Frames from a frame's statistics to the frame in which requests made from them are
+    /// written (see [`styx_algo::ControlDelays::issue_latency`]); applies from the next
+    /// [`Self::start`].
+    pub fn set_issue_latency(&mut self, frames: u32) {
+        self.config.delays.issue_latency = frames;
     }
 
     /// The camera configuration.
     pub fn config(&self) -> &CameraConfig {
         &self.config
+    }
+
+    /// Another camera configuration (e.g. another frame rate), from the next [`Self::start`].
+    pub fn set_config(&mut self, config: CameraConfig) -> Result<()> {
+        config.validate()?;
+        self.config = config;
+        Ok(())
     }
 
     /// The application controls applied from the next frame on.
@@ -118,10 +154,20 @@ impl Controller {
         &self.controls
     }
 
-    /// Records every frame (statistics, metadata, output) as a `styx-algo` replay.
+    /// Records every frame (statistics, metadata, output) as a `styx-algo` replay. Before the
+    /// start the header is written at [`Self::start`] (with the configuration and warm start
+    /// the algorithms are prepared with).
     pub fn record_to(&mut self, out: impl Write + Send + 'static) -> Result<()> {
         let out: Box<dyn Write + Send> = Box::new(out);
-        self.recorder = Some(Recorder::new(out, &self.config)?);
+        if self.started {
+            self.recorder = Some(Recorder::with_warm_start(
+                out,
+                &self.config,
+                self.warm.as_ref(),
+            )?);
+        } else {
+            self.record_pending = Some(out);
+        }
         Ok(())
     }
 
@@ -130,12 +176,23 @@ impl Controller {
         if let Some(r) = self.recorder.take() {
             r.into_inner().flush()?;
         }
+        if let Some(mut w) = self.record_pending.take() {
+            w.flush()?;
+        }
         Ok(())
     }
 
-    /// Resets the algorithms and returns the start-up values.
+    /// Resets the algorithms (from the warm start, if one is set) and returns the start-up
+    /// values.
     pub fn start(&mut self) -> Result<Start> {
-        let p = self.pipeline.prepare(&self.config)?.clone();
+        let warm = self.warm.filter(WarmStart::is_valid);
+        let p = self
+            .pipeline
+            .prepare_warm(&self.config, warm.as_ref())?
+            .clone();
+        if let Some(out) = self.record_pending.take() {
+            self.recorder = Some(Recorder::with_warm_start(out, &self.config, warm.as_ref())?);
+        }
         self.last_request = p.sensor;
         self.started = true;
         Ok(Start {
@@ -277,7 +334,7 @@ mod tests {
         }
         let last = last.unwrap();
         assert!(last.params.ae.locked, "{:?}", last.params.ae);
-        assert!(requests > 2 && requests < 40, "{requests}");
+        assert!((1..40).contains(&requests), "{requests}");
         // Grey world takes out the 0.5 / 0.7 cast.
         assert!((last.isp.wb[0] - 2.0).abs() < 0.05, "{:?}", last.isp.wb);
         c.stop_recording().unwrap();

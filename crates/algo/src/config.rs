@@ -97,6 +97,10 @@ pub struct CameraConfig {
     pub sensitivity: f64,
     /// Black level from the sensor description, normalised, used when the tuning has none.
     pub black_level: Option<f64>,
+    /// Frames at the start of a stream whose levels are not reliable yet (the sensor's black
+    /// level calibration settling, an exposure cut short by the stream's start): AE and AWB
+    /// leave them out.
+    pub unsettled_frames: u32,
     /// Output crop within the pixel array.
     pub crop: Crop,
     /// Horizontal flip.
@@ -115,6 +119,7 @@ impl Default for CameraConfig {
             delays: ControlDelays::default(),
             sensitivity: 1.0,
             black_level: None,
+            unsettled_frames: 0,
             crop: Crop::default(),
             hflip: false,
             vflip: false,

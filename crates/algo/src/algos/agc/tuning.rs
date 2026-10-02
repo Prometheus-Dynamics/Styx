@@ -74,8 +74,13 @@ pub struct AgcTuning {
     pub default_constraint_mode: String,
     /// Target mean luma by lux.
     pub y_target: Pwl,
-    /// Damping: fraction of the way to the target moved per frame.
+    /// Damping: fraction of the way to the target moved per frame, for changes up to
+    /// `full_step`.
     pub speed: f64,
+    /// Relative change of total exposure above which AE moves straight to the target
+    /// (undamped) at any time: the control delays tell when it lands, so a large step needs no
+    /// damping. 0 damps every change after start-up (as Raspberry Pi's AGC does).
+    pub full_step: f64,
     /// Frames at start-up that move straight to the target.
     pub startup_frames: u32,
     /// Frames an application should expect convergence to take (informational).
@@ -145,6 +150,7 @@ impl Default for AgcTuning {
             default_constraint_mode: "normal".into(),
             y_target: pwl(&[0.0, 0.16, 1000.0, 0.165, 10000.0, 0.17]),
             speed: 0.2,
+            full_step: 0.08,
             startup_frames: 10,
             convergence_frames: 6,
             fast_reduce_threshold: 0.4,
@@ -215,6 +221,9 @@ impl AgcTuning {
         }
         if !(self.speed > 0.0 && self.speed <= 1.0) {
             return err("speed must be in (0, 1]".into());
+        }
+        if !(self.full_step >= 0.0 && self.full_step.is_finite()) {
+            return err("full_step must be finite and not negative".into());
         }
         if self.max_digital_gain.is_nan()
             || self.max_digital_gain < 1.0

@@ -344,3 +344,46 @@ fn max_delay_and_accessors() {
     c.clear(Exposure);
     assert!(c.is_empty());
 }
+
+#[test]
+fn request_now_writes_what_is_due_in_the_current_frame() {
+    // Exposure 2, gain 1, frame length 2 frames.
+    let mut s = scheduler();
+    s.frame_start(5);
+    // Wanted from 7: exposure and frame length go out now (during 5), gain at 6's start.
+    let set = ControlSet::new()
+        .with(Exposure, 500)
+        .with(AnalogGain, 32)
+        .with(FrameLength, 1900);
+    let (landings, batch) = s.request_now(7, &set);
+    assert!(
+        landings.iter().all(|l| l.frame == 7 && !l.late()),
+        "{landings:?}"
+    );
+    assert_eq!(batch.frame, Some(5));
+    assert_eq!(
+        batch.controls,
+        ControlSet::new()
+            .with(Exposure, 500)
+            .with(FrameLength, 1900)
+    );
+    assert_eq!(
+        s.frame_start(6).controls,
+        ControlSet::new().with(AnalogGain, 32)
+    );
+    assert_eq!(s.applied(7).values, set);
+    assert_eq!(s.applied(6).values, initial());
+    // Too late for 6: lands on 7 (written now, in 5).
+    let mut s = scheduler();
+    s.frame_start(5);
+    let (landings, _) = s.request_now(6, &ControlSet::new().with(Exposure, 400));
+    assert_eq!(landings[0].frame, 7);
+    // Before streaming: values for frame 0 are written at once.
+    let mut s = scheduler();
+    let (landings, batch) = s.request_now(0, &ControlSet::new().with(Exposure, 300));
+    assert_eq!(
+        (landings[0].frame, batch.controls.get(Exposure)),
+        (0, Some(300))
+    );
+    assert!(s.frame_start(0).controls.is_empty());
+}

@@ -25,11 +25,15 @@ pub struct SensorInfo {
     pub black_level: f64,
     /// What the algorithms are prepared with.
     pub camera: CameraConfig,
+    /// Time to read a frame out (image and embedded data lines), from its start.
+    #[serde(default)]
+    pub readout: Duration,
 }
 
 /// Frames from the statistics of frame `F` to the frame start where a request can be written:
 /// statistics of `F` are complete at its end and processed during `F + 1`, so writes go out at
-/// the start of `F + 2` at the earliest.
+/// the start of `F + 2` at the earliest. The latency without timing knowledge; see
+/// [`SensorInfo::issue_latency`] for requests written as soon as they are made.
 pub const ISSUE_LATENCY: u32 = 2;
 
 fn cfa(c: ColorFilter) -> Result<CfaPattern> {
@@ -83,8 +87,10 @@ impl SensorInfo {
             },
             sensitivity: 1.0,
             black_level: black,
+            unsettled_frames: desc.pixel_array.black_level.map_or(0, |b| b.settle_frames),
             ..Default::default()
         };
+        let lines = m.size.height + desc.embedded_data.as_ref().map_or(0, |e| e.lines);
         Ok(Self {
             width: m.size.width,
             height: m.size.height,
@@ -92,7 +98,21 @@ impl SensorInfo {
             bits,
             black_level: black.unwrap_or(0.0),
             camera,
+            readout: t.lines_to_duration(f64::from(lines)),
         })
+    }
+
+    /// Frames from a frame's statistics to the frame in which requests made from them are
+    /// written, when requests are written as soon as they are made (`request_at_now`): the
+    /// statistics of `F` are ready `readout + processing` after `F` starts, and a write must be
+    /// done `write_margin` before the frame it is made in ends (the sensor latches its
+    /// registers at the next frame start). 0 at 30 fps on the OV9782 (written during `F`,
+    /// exposure lands on `F + 2`), 1 at 120 fps; at most [`ISSUE_LATENCY`]. Uses the shortest
+    /// frame duration of the mode.
+    pub fn issue_latency(&self, processing: Duration, write_margin: Duration) -> u32 {
+        let fd = self.camera.frame_duration_limits.0.as_secs_f64();
+        let ready = (self.readout + processing + write_margin).as_secs_f64();
+        ((ready / fd.max(1e-9)).floor() as u32).min(ISSUE_LATENCY)
     }
 
     /// The same mode with the frame rate held within `min_fps..=max_fps` (the algorithms then
@@ -158,11 +178,27 @@ mod tests {
         // 120.63 fps at the shortest frame (911 lines of 9.1 us).
         assert!((c.frame_duration_limits.0.as_secs_f64() * 1e3 - 8.290).abs() < 0.001);
         c.validate().unwrap();
-        let at30 = s.with_fps(30.0, 30.0).unwrap();
+        let at30 = s.clone().with_fps(30.0, 30.0).unwrap();
         let (lo, hi) = at30.camera.frame_duration_limits;
         assert_eq!(lo, hi);
         assert!((hi.as_secs_f64() - 1.0 / 30.0).abs() < 1e-9);
         assert!(at30.camera.exposure_limits.1 < hi);
         assert!(at30.clone().with_fps(0.0, 1.0).is_err());
+        // 801 lines of 9.1 us; written in the same frame at 30 and 60 fps, the next at 120.
+        assert!((s.readout.as_secs_f64() * 1e3 - 7.29).abs() < 0.01);
+        let (p, m) = (Duration::from_millis(2), Duration::from_millis(4));
+        assert_eq!(at30.issue_latency(p, m), 0);
+        assert_eq!(
+            s.clone().with_fps(60.0, 60.0).unwrap().issue_latency(p, m),
+            0
+        );
+        assert_eq!(
+            s.clone()
+                .with_fps(120.0, 120.0)
+                .unwrap()
+                .issue_latency(p, m),
+            1
+        );
+        assert_eq!(s.issue_latency(Duration::from_millis(20), m), 2);
     }
 }
