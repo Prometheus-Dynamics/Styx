@@ -322,24 +322,36 @@ client 17.9%.
 
 ### Still open
 
-* The `v4l2` probe reports every non-camera node as a probe error (30 `WARN` lines per
-  inventory refresh).
+* ~~The `v4l2` probe reports every non-camera node as a probe error~~ Fixed (Styx
+  `native/finish`): non-camera nodes are skipped at debug level; on the CM5 the probe returns
+  the two cameras and no error (26 nodes skipped).
 * A consumer holding a frame's dma-bufs longer than about four frame periods (the back end's
-  free buffers) can still see them rewritten: the frame socket hands out fds, not leases.
-  helios-engine reads the frame within its tick; a slower consumer should copy, or use
-  Styx's camera service, which keeps leases across processes.
+  free buffers) can still see them rewritten: HeliOS's frame socket hands out fds, not leases.
+  Styx now has the server for it (`styx::ipc::FrameSocket`, feature `frame-socket`, in
+  `native`): the same wire format (length, JSON, descriptors; `styx-frame-lease-v1`), and the
+  connection is the lease: the frame's buffer is kept until the consumer closes it (bounded:
+  2 s by default, then the server closes it). `styx::ipc::fetch_frame` is the matching client.
+  To adopt: helios-peripherals publishes to a `FrameSocket` instead of its own accept loop
+  (`run_frame_lease_server`, `LatestFrameLease`); helios-engine keeps the `UnixStream` with the
+  imported frame (or calls `fetch_frame`). An engine that closes at once keeps today's
+  behaviour. The PiSP capture drops frames instead of failing when consumers hold every
+  buffer (`StyxConfig::native_output_buffers` adds buffers), and Styx's own camera service and
+  frame server bound holds the same way (`max_hold`). Measured on the CM5: two consumers
+  holding 500 ms each saw no change in 80 holds; see `pipeline.md`.
 * helios-engine at a 10 ms execution interval took 27-30 of the 30 frames/s (a tick also
   publishes its session to Orion); the default 250 ms takes 4. An engine that waits for the
   next frame instead of polling would take all of them.
 * `HELIOS_PERIPHERALS_WORKER_THREADS=1`: the frame server, the capture tasks and the preview
   hand-off share one tokio worker (the preview encode does not, it has its own thread).
-* Not run: a boot with the bridge overlay in `config.txt` (the device binds it at runtime), a
-  real CSI unplug, camera controls from HeliOS (none are set; AE/AWB run on the tuning).
+* Not run: a real CSI unplug, camera controls from HeliOS (none are set; AE/AWB run on the
+  tuning). The boot with the bridge overlay in `config.txt` now runs: it is the dev box's
+  baseline (README, `kernel-modules/styx-sensor-bridge/README.md`).
 ## Shipping HeliOS without libcamera: checklist
 
 What the image needs, against v2026.2.0 (Atlas Raze device package 1.0.6, HeliOS `dev`
-c9b39bb). Everything here was run on the CM5 except the boot-time overlay (the device binds
-the bridge at runtime, `styx-bridge.service`).
+c9b39bb). Everything here was run on the CM5, the boot-time overlay too (the dev box boots it
+since Styx `native/finish`: bridge bound at boot, `ov9282` not loaded, the native camera
+streams with embedded data).
 
 **HeliOS (branch `styx-native-trial`, 5c0a658, to bring to `dev`)**
 
@@ -381,7 +393,9 @@ the bridge at runtime, `styx-bridge.service`).
       `camera_auto_detect=0`. Ship `styx-cam0-i2c-fast.dtbo` (dts in Styx).
 - [ ] The module must load at boot: with the overlay in `config.txt` it binds by its
       compatible (`styx,sensor-bridge`) once `styx_sensor_bridge.ko` is in
-      `/lib/modules/$(uname -r)` with `depmod` run (Buildroot does both).
+      `/lib/modules/$(uname -r)` with `depmod` run (Buildroot does both). Checked on the dev
+      box with the module in `updates/`: udev loads it at 5.6 s, `rp1-cfe` registers its nodes
+      at 6.0 s.
 - [ ] `styx-bridge.service`, `up.sh`, `down.sh`, the runtime overlays and
       `/usr/local/lib/styx-bridge`: dev-box only (runtime overlay over an `ov9782` boot);
       not needed with the boot-time overlay.
