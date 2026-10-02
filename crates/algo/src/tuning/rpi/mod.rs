@@ -1,7 +1,7 @@
 //! Conversion of Raspberry Pi tuning files (version 2) into [`Tuning`].
 //!
 //! Only the algorithms implemented here are converted: `rpi.black_level`, `rpi.lux`,
-//! `rpi.agc` (channel 0), `rpi.awb`, `rpi.alsc` (calibration tables and luminance only),
+//! `rpi.agc` (channel 0), `rpi.awb`, `rpi.alsc`,
 //! `rpi.ccm`, `rpi.contrast`, and `rpi.noise`, `rpi.denoise`, `rpi.sdn`, `rpi.geq`, `rpi.dpc`,
 //! `rpi.sharpen` (into [`DenoiseTuning`]). Everything else is listed in
 //! [`RpiImport::ignored`].
@@ -24,7 +24,7 @@ pub struct RpiImport {
     pub tuning: Tuning,
     /// The `target` field (`pisp` or `bcm2835`).
     pub target: Option<String>,
-    /// Algorithms and keys that were not converted, e.g. `rpi.sharpen` or `rpi.alsc.omega`.
+    /// Algorithms and keys that were not converted, e.g. `rpi.hdr` or `rpi.cac`.
     pub ignored: Vec<String>,
 }
 
@@ -436,6 +436,18 @@ fn alsc(s: &Section, ig: &mut Vec<String>) -> Result<AlscTuning> {
             "asymmetry",
             "luminance_strength",
             "default_ct",
+            "frame_period",
+            "startup_frames",
+            "speed",
+            "sigma",
+            "sigma_Cr",
+            "sigma_Cb",
+            "min_count",
+            "min_G",
+            "omega",
+            "n_iter",
+            "threshold",
+            "lambda_bound",
         ],
         ig,
     );
@@ -483,6 +495,17 @@ fn alsc(s: &Section, ig: &mut Vec<String>) -> Result<AlscTuning> {
         asymmetry: s.num_or("asymmetry", 1.0)?,
         luminance_strength: s.num_or("luminance_strength", 1.0)?,
         default_ct: s.num_or("default_ct", d.default_ct)?,
+        frame_period: s.num_or("frame_period", f64::from(d.frame_period))? as u32,
+        startup_frames: s.num_or("startup_frames", f64::from(d.startup_frames))? as u32,
+        speed: s.num_or("speed", d.speed)?,
+        sigma_cr: s.num_or("sigma_Cr", s.num_or("sigma", d.sigma_cr)?)?,
+        sigma_cb: s.num_or("sigma_Cb", s.num_or("sigma", d.sigma_cb)?)?,
+        min_count: s.num_or("min_count", d.min_count)?,
+        min_g: s.num("min_G")?.map_or(d.min_g, |g| g / 65536.0),
+        omega: s.num_or("omega", d.omega)?,
+        n_iter: s.num("n_iter")?.map(|n| n as u32),
+        threshold: s.num_or("threshold", d.threshold)?,
+        lambda_bound: s.num_or("lambda_bound", d.lambda_bound)?,
     })
 }
 

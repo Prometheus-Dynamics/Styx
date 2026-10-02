@@ -47,12 +47,10 @@ fn fixture_converts() {
     assert_eq!(d.sharpen.unwrap().strength, 1.0);
     assert!(d.sdn.is_none() && d.tdn.is_none());
 
-    for key in [
-        "rpi.alsc.omega",
-        "rpi.alsc.n_iter",
-        "rpi.awb.enabled",
-        "rpi.agc.channels[1]",
-    ] {
+    let a = t.alsc.as_ref().unwrap();
+    assert_eq!(a.omega, 1.3);
+    assert_eq!(a.n_iter, Some(100));
+    for key in ["rpi.awb.enabled", "rpi.agc.channels[1]"] {
         assert!(
             import.ignored.iter().any(|i| i == key),
             "{key}: {:?}",

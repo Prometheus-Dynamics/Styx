@@ -7,6 +7,8 @@
 //! native-pipeline replay --recording BASE [options]   software ISP over a raw recording
 //! native-pipeline quality --recording BASE [options]  fp16 against integer software ISP
 //! native-pipeline latch  [options]   when within a frame a control write still lands on time
+//! native-pipeline be-replay --raw FILE --configs A.bin,B.bin   one 16-bit raw frame through the
+//!                                    back end with each config (device feature)
 //! native-pipeline regcheck [options] bring-up only, read back every register written
 //!                                    (--frames: power cycles; --power-settle MS)
 //!
@@ -36,6 +38,7 @@
 //!   --fixed US:GAIN      AE off: this exposure and analogue gain on every frame
 //!   --ct K               AWB off: the gains of this colour temperature (the tuning's CT curve)
 //!   --no-tdn             (pisp) no temporal denoise even if the tuning has it
+//!   --spatial-denoise K  (pisp) spatial and colour denoise thresholds times K (default 1)
 //!   --then FPS[,FPS..]   (pisp) after the run, close and reopen the camera at each rate in turn
 //!                        (45 frames each), starting from the state the last session settled on
 //!   --keep-open          (pisp) with --then: keep the camera open and powered between the
@@ -43,6 +46,8 @@
 //!   --quiet              no per-frame lines
 //! ```
 
+#[cfg(feature = "device")]
+mod be_replay;
 #[cfg(feature = "device")]
 mod device_run;
 #[cfg(feature = "device")]
@@ -92,8 +97,11 @@ pub struct Args {
     pub fixed: Option<(f64, f64)>,
     pub ct: Option<f64>,
     pub no_tdn: bool,
+    pub spatial_denoise: f64,
     pub output: (output::Kind, styx_softisp::Scale),
     pub arithmetic: styx_softisp::Arithmetic,
+    pub raw: Option<PathBuf>,
+    pub configs: Vec<PathBuf>,
 }
 
 fn parse() -> Result<Args, String> {
@@ -127,8 +135,11 @@ fn parse() -> Result<Args, String> {
         fixed: None,
         ct: None,
         no_tdn: false,
+        spatial_denoise: 1.0,
         output: (output::Kind::Rgb, styx_softisp::Scale::Full),
         arithmetic: styx_softisp::Arithmetic::Auto,
+        raw: None,
+        configs: Vec::new(),
     };
     while let Some(x) = it.next() {
         let mut val = || it.next().ok_or(format!("{x} needs a value"));
@@ -142,6 +153,8 @@ fn parse() -> Result<Args, String> {
             "--record" => a.record = Some(val()?.into()),
             "--algo-record" => a.algo_record = Some(val()?.into()),
             "--recording" => a.recording = Some(val()?.into()),
+            "--raw" => a.raw = Some(val()?.into()),
+            "--configs" => a.configs = val()?.split(',').map(PathBuf::from).collect(),
             "--threads" => a.threads = num(val()?)? as usize,
             "--quiet" => a.quiet = true,
             "--output" => a.output = output::parse(&val()?)?,
@@ -161,6 +174,7 @@ fn parse() -> Result<Args, String> {
             "--cold" => a.cold = true,
             "--keep-open" => a.keep_open = true,
             "--no-tdn" => a.no_tdn = true,
+            "--spatial-denoise" => a.spatial_denoise = num(val()?)?,
             "--ct" => a.ct = Some(num(val()?)?),
             "--fixed" => {
                 let v = val()?;
@@ -277,6 +291,8 @@ fn main() -> ExitCode {
             "soft" => device_run::soft(&a),
             #[cfg(feature = "device")]
             "latch" => latch::run(&a),
+            #[cfg(feature = "device")]
+            "be-replay" => be_replay::run(&a),
             #[cfg(feature = "device")]
             "regcheck" => regcheck::run(&a),
             c => Err(format!(

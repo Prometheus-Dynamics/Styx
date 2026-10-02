@@ -1,12 +1,15 @@
 //! The ISP part of the algorithms' output, and how it maps onto each ISP.
 
 use serde::{Deserialize, Serialize};
-use styx_algo::{DenoiseParams, IDENTITY, LensShading, Matrix3, Params, Pwl, SharpenParams};
+use styx_algo::{
+    DenoiseParams, IDENTITY, LensShading, Matrix3, Params, Pwl, SharpenParams, ZoneGrid,
+};
 use styx_pisp::be::BackEnd;
-use styx_pisp::fe::{FrontEnd, gain_4_10};
+use styx_pisp::fe::FrontEnd;
 use styx_pisp::uapi::{
     BayerOrder, BeCdnConfig, BeGeqConfig, BeLscConfig, BeLscExtra, BeOutputFormatConfig,
-    BeSdnConfig, BeTdnConfig, BlaConfig, FeRgbyConfig, ImageFormatConfig, image_format, rgb_enable,
+    BeSdnConfig, BeTdnConfig, BlaConfig, FeAgcStatsConfig, FeRgbyConfig, ImageFormatConfig,
+    image_format, rgb_enable,
 };
 use styx_softisp as soft;
 
@@ -35,6 +38,9 @@ pub struct IspSettings {
     /// Sharpening factors (`None`: the ISP's default).
     #[serde(default)]
     pub sharpen: Option<SharpenParams>,
+    /// Zone weights of the luma histogram (the metering mode's; `None`: uniform).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub histogram_weights: Option<ZoneGrid<f64>>,
 }
 
 impl IspSettings {
@@ -50,6 +56,7 @@ impl IspSettings {
             lens_shading: None,
             denoise: DenoiseParams::default(),
             sharpen: None,
+            histogram_weights: None,
         }
     }
 
@@ -68,7 +75,30 @@ impl IspSettings {
             lens_shading: p.lens_shading.clone(),
             denoise: p.denoise,
             sharpen: p.sharpen,
+            histogram_weights: p.histogram_weights.clone(),
         }
+    }
+
+    /// These settings with the spatial (SDN) and colour (CDN) denoise thresholds scaled by
+    /// `scale` (both off at 0).
+    pub fn with_spatial_denoise(mut self, scale: f64) -> Self {
+        if scale == 1.0 {
+            return self;
+        }
+        let d = &mut self.denoise;
+        if scale <= 0.0 {
+            (d.sdn, d.cdn) = (None, None);
+        }
+        if let Some(s) = &mut d.sdn {
+            s.noise_constant *= scale;
+            s.noise_slope *= scale;
+            s.noise_constant2 *= scale;
+            s.noise_slope2 *= scale;
+        }
+        if let Some(c) = &mut d.cdn {
+            c.threshold *= scale;
+        }
+        self
     }
 
     /// White balance times digital gain, per channel, as the back end applies them: with an
@@ -180,9 +210,10 @@ impl IspSettings {
     }
 
     /// The front end blocks that follow the algorithms: black levels (image path BLA, keeping
-    /// the black level in the raw output for the back end; statistics path BLC) and the
-    /// RGB-to-Y weights of the AGC statistics (BT.601 times the white balance gains, as the
-    /// Raspberry Pi IPA does).
+    /// the black level in the raw output for the back end; statistics path BLC), the RGB-to-Y
+    /// weights of the AGC statistics (the back end's YCbCr luma row times the white balance
+    /// gains with the extra gain of [`Self::channel_gains`], digital gain left out) and the
+    /// zone weights of the luma histogram, all as the Raspberry Pi IPA programs them.
     pub fn apply_fe(&self, fe: &mut FrontEnd) {
         let level = level16(self.black_level);
         let bl = BlaConfig {
@@ -200,16 +231,71 @@ impl IspSettings {
                 ..bl
             });
         }
+        let extra = 1.0 / self.wb.iter().copied().fold(1.0, f64::min).max(0.1);
+        let y = |coeff: f64, gain: f64| (coeff * gain * extra).round().clamp(0.0, 16383.0) as u16;
+        let [r, g, b] = FE_Y_COEFFS;
         let rgby = FeRgbyConfig {
-            gain_r: gain_4_10(self.wb[0] * 0.299),
-            gain_g: gain_4_10(self.wb[1] * 0.587),
-            gain_b: gain_4_10(self.wb[2] * 0.114),
+            gain_r: y(r, self.wb[0]),
+            gain_g: y(g, self.wb[1]),
+            gain_b: y(b, self.wb[2]),
             ..fe.config().rgby
         };
         if fe.config().rgby != rgby {
             fe.set_rgby(rgby);
         }
+        let c = fe.config();
+        let (w, h) = if c.stats_crop.width > 0 {
+            (c.stats_crop.width, c.stats_crop.height)
+        } else {
+            (c.input.format.width, c.input.format.height)
+        };
+        let agc = histogram_weights(self.histogram_weights.as_ref(), w, h, &c.agc_stats);
+        if c.agc_stats != agc {
+            fe.set_agc_stats(agc);
+        }
     }
+}
+
+/// The luma row of the back end's YCbCr matrix (libpisp's "jpeg", full-range BT.601) on the
+/// front end's 4.10 scale, as the Raspberry Pi IPA uses it for the statistics' RGB-to-Y.
+const FE_Y_COEFFS: [f64; 3] = [306.0, 601.0, 117.0];
+
+/// The front end AGC statistics with a weight grid (Raspberry Pi IPA `setHistogramWeights`):
+/// a `w × h` grid of 4-bit weights (at most 16 × 16, cells aligned to 2 × 2 Bayer quads and
+/// centred), the rest of the 16 × 16 hardware grid zero; `None` keeps `current`'s weights and
+/// geometry (uniform by default).
+fn histogram_weights(
+    weights: Option<&ZoneGrid<f64>>,
+    width: u16,
+    height: u16,
+    current: &FeAgcStatsConfig,
+) -> FeAgcStatsConfig {
+    let mut agc = *current;
+    let Some(g) = weights.filter(|g| g.is_valid() && !g.is_empty()) else {
+        return agc;
+    };
+    let n = styx_pisp::uapi::AGC_STATS_SIZE as u32;
+    let (gw, gh) = (g.width.min(n), g.height.min(n));
+    let cell_w = (u32::from(width) / gw) & !1;
+    let cell_h = (u32::from(height) / gh) & !1;
+    agc.offset_x = (((u32::from(width) - gw * cell_w) / 2) & !1) as u16;
+    agc.offset_y = (((u32::from(height) - gh * cell_h) / 2) & !1) as u16;
+    agc.size_x = cell_w as u16;
+    agc.size_y = cell_h as u16;
+    agc.weights = [0; styx_pisp::uapi::AGC_STATS_NUM_ZONES / 2];
+    for row in 0..gh {
+        for col in 0..gw {
+            // Larger grids are sampled at the cell centres.
+            let sx = ((f64::from(col) + 0.5) * f64::from(g.width) / f64::from(gw)) as u32;
+            let sy = ((f64::from(row) + 0.5) * f64::from(g.height) / f64::from(gh)) as u32;
+            let v = g.zones[(sy * g.width + sx) as usize]
+                .round()
+                .clamp(0.0, 15.0) as u8;
+            let byte = &mut agc.weights[(row * n / 2 + col / 2) as usize];
+            *byte |= if col % 2 == 0 { v } else { v << 4 };
+        }
+    }
+    agc
 }
 
 /// The back end config every frame starts from: the fixed Bayer pipeline (black level, white
@@ -462,9 +548,37 @@ mod tests {
         s.apply_fe(&mut fe);
         assert_eq!(fe.config().bla.output_black_level, 4096);
         assert_eq!(fe.config().blc.output_black_level, 0);
-        assert_eq!(fe.config().rgby.gain_r, gain_4_10(1.6 * 0.299));
+        // R gain 2 / 1.25 (green normalised) times BT.601's 306 / 1024.
+        assert_eq!(fe.config().rgby.gain_r, 490);
+        assert_eq!(fe.config().rgby.gain_g, 601);
         let srgb = gamma_points(None);
         assert_eq!((srgb[0], srgb[64]), ((0, 0), (65535, 65535)));
         assert!(srgb[16].1 > srgb[16].0);
+    }
+
+    #[test]
+    fn histogram_weights_as_the_raspberry_pi_ipa_maps_them() {
+        // 15x15 weights on 1280x800: 84x52 cells, offset (10, 10), the 16th row and column
+        // zero, two weights per byte (low nibble first).
+        let zones: Vec<f64> = (0..225).map(|i| f64::from(i % 15 % 4)).collect();
+        let s = IspSettings {
+            histogram_weights: Some(ZoneGrid {
+                width: 15,
+                height: 15,
+                zones,
+            }),
+            ..IspSettings::neutral(0.0625)
+        };
+        let mut fe = FrontEnd::new(1280, 800, BayerOrder::Bggr);
+        s.apply_fe(&mut fe);
+        let a = fe.config().agc_stats;
+        assert_eq!(
+            (a.offset_x, a.offset_y, a.size_x, a.size_y),
+            (10, 10, 84, 52)
+        );
+        assert_eq!(a.weights[0], 0x10);
+        assert_eq!(a.weights[1], 0x32);
+        assert_eq!(a.weights[7], 0x02, "column 14, then the zero 16th column");
+        assert!(a.weights[15 * 8..].iter().all(|&b| b == 0));
     }
 }

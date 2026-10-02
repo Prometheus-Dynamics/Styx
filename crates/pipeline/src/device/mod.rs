@@ -8,13 +8,15 @@
 //! schedule, on the frame each request names.
 
 mod pisp;
+mod pisp_options;
 mod soft;
 
 use styx_algo::SensorRequest;
 use styx_native::{CameraControls, FrameControls, NativeError};
 use styx_sensor::ControlRequest;
 
-pub use pisp::{PispFrame, PispOptions, PispPipeline, PispStartup, PispTimes};
+pub use pisp::{PispFrame, PispPipeline, PispStartup, PispTimes};
+pub use pisp_options::PispOptions;
 pub use soft::{SoftFrame, SoftPipeline};
 
 use crate::controller::SensorValues;

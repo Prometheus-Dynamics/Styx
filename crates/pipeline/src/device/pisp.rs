@@ -26,14 +26,12 @@ use styx_kernel::subdev::MbusCode;
 use styx_native::{
     CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
 };
-use styx_pisp::device::{
-    BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup, OutputMemory,
-    profile,
-};
+use styx_pisp::device::{BackEndStream, BeJob, FrontEndDevice, FrontEndSetup, profile};
 use styx_pisp::fe::FrontEnd;
 use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
 use styx_softisp::CfaPattern;
 
+use super::pisp_options::PispOptions;
 use super::{apply_request, sensor_values};
 use crate::controller::{Controller, SensorValues, Step};
 use crate::error::{PipelineError, Result};
@@ -41,59 +39,6 @@ use crate::isp::{IspSettings, be_template, level16};
 use crate::pisp_be::{BeConfigBuilder, BeUpdateCounts};
 use crate::sensor::{ISSUE_LATENCY, SensorInfo};
 use crate::stats;
-
-/// How the PiSP path is set up.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PispOptions {
-    /// Back end outputs: format and size (output 1 has the downscaler).
-    pub outputs: [Option<BeOutputSetup>; 2],
-    /// Front end buffers per queue (raw frames, statistics, configs).
-    pub fe_buffers: u32,
-    /// Back end buffers per output.
-    pub be_buffers: u32,
-    /// Back end node group (0 or 1).
-    pub be_group: usize,
-    /// Front end configs queued ahead of the frames.
-    pub configs_ahead: usize,
-    /// While AE is locked and AWB has converged, run the algorithms at about this rate
-    /// instead of on every frame (statistics are then not read on the other frames); any
-    /// frame that finds them unsettled goes back to every frame. `None`: every frame.
-    pub settled_rate_hz: Option<f64>,
-    /// Where the back end's output buffers come from: a cached dma-heap (the default: CPU
-    /// reads at memory speed, bracketed by [`PispPipeline::sync_output`]) or the driver's
-    /// (mapped uncached).
-    pub output_memory: OutputMemory,
-    /// Run the back end's temporal denoise when the tuning has it (two extra buffers of the
-    /// raw frame's size, read and written by every job).
-    pub temporal_denoise: bool,
-}
-
-impl PispOptions {
-    /// NV12 at the sensor size on output 0 and RGB24 at half size on output 1.
-    pub fn nv12_and_half_rgb(width: u32, height: u32) -> Self {
-        Self {
-            outputs: [
-                Some(BeOutputSetup {
-                    format: BeFormat::Nv12,
-                    width,
-                    height,
-                }),
-                Some(BeOutputSetup {
-                    format: BeFormat::Rgb24,
-                    width: width / 2,
-                    height: height / 2,
-                }),
-            ],
-            fe_buffers: 6,
-            be_buffers: 4,
-            be_group: 0,
-            configs_ahead: 2,
-            settled_rate_hz: Some(15.0),
-            output_memory: OutputMemory::CachedHeap,
-            temporal_denoise: true,
-        }
-    }
-}
 
 /// Where one frame's time went.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -373,7 +318,8 @@ impl PispPipeline {
             SensorInfo::from_description(&desc, &configured.mode.mode, &configured.mode.format)?
                 .with_fps(fps, fps)?;
         info.camera.temporal_denoise = isp.be_dev.tdn_enabled();
-        let controller = Controller::new(tuning, info.camera.clone())?;
+        let mut controller = Controller::new(tuning, info.camera.clone())?;
+        controller.set_spatial_denoise(options.spatial_denoise);
         let controls = camera.controls();
         let black_level = info.black_level;
         startup.isp_and_algorithms = t.elapsed();
@@ -453,6 +399,11 @@ impl PispPipeline {
     /// How often the back end config was rebuilt, patched or reused.
     pub fn be_updates(&self) -> BeUpdateCounts {
         self.be.counts()
+    }
+
+    /// The back end config (and tiles) of the last job [`Self::next`] returned.
+    pub fn back_end_config(&self) -> &styx_pisp::uapi::BeTilesConfig {
+        self.be.config()
     }
 
     /// Back end output `i`'s format.

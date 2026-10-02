@@ -9,7 +9,7 @@ use super::StyxConfig;
 /// one (with the downscaler) attached to every frame as a `CompanionKind::Scaled` companion
 /// with the same timestamp. Both are dma-bufs, handed out without a copy. The software ISP
 /// uses only [`Self::driver_buffers`] and [`Self::soft_threads`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct NativeIspConfig {
@@ -34,6 +34,30 @@ pub struct NativeIspConfig {
     /// Threads of the software ISP (cameras without a PiSP). `None` (default): one per core,
     /// at most 4.
     pub soft_threads: Option<usize>,
+    /// Temporal denoise in the PiSP's back end when the tuning has it (`true`, the default):
+    /// a running average of the frame, two extra raw-sized buffers read and written by every
+    /// job; it brings flat-area noise down to libcamera's (4x lower than spatial denoise
+    /// alone on the OV9782) at about 1.5 ms more back end time per 1280x800 frame (latency,
+    /// not CPU). `false`: spatial and colour denoise only, at their no-TDN strengths.
+    pub temporal_denoise: bool,
+    /// Strength of the PiSP's spatial and colour denoise in percent of the tuning's: their
+    /// noise thresholds are scaled by this (100, the default: as tuned; 0: off).
+    pub spatial_denoise_percent: u16,
+}
+
+impl Default for NativeIspConfig {
+    fn default() -> Self {
+        Self {
+            output_size: None,
+            output_format: None,
+            second_output: None,
+            pyramid_level: 0,
+            driver_buffers: false,
+            soft_threads: None,
+            temporal_denoise: true,
+            spatial_denoise_percent: 100,
+        }
+    }
 }
 
 impl StyxConfig {
@@ -41,6 +65,20 @@ impl StyxConfig {
     /// [`NativeIspConfig::soft_threads`]).
     pub fn native_soft_threads(mut self, threads: usize) -> Self {
         self.backends.native.soft_threads = Some(threads.max(1));
+        self
+    }
+
+    /// Turn a native camera's temporal denoise on or off (see
+    /// [`NativeIspConfig::temporal_denoise`]).
+    pub fn native_temporal_denoise(mut self, on: bool) -> Self {
+        self.backends.native.temporal_denoise = on;
+        self
+    }
+
+    /// Scale a native camera's spatial and colour denoise to `percent` of the tuning's (see
+    /// [`NativeIspConfig::spatial_denoise_percent`]).
+    pub fn native_spatial_denoise(mut self, percent: u16) -> Self {
+        self.backends.native.spatial_denoise_percent = percent;
         self
     }
 
@@ -77,5 +115,22 @@ impl StyxConfig {
     pub fn native_second_output(mut self, width: u32, height: u32, format: FourCc) -> Self {
         self.backends.native.second_output = Some(((width, height), format));
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn denoise_defaults_on_and_builders_set_it() {
+        let d = NativeIspConfig::default();
+        assert!(d.temporal_denoise);
+        assert_eq!(d.spatial_denoise_percent, 100);
+        let c = StyxConfig::default()
+            .native_temporal_denoise(false)
+            .native_spatial_denoise(50);
+        assert!(!c.backends.native.temporal_denoise);
+        assert_eq!(c.backends.native.spatial_denoise_percent, 50);
     }
 }
