@@ -91,7 +91,11 @@ impl Seen {
         let mut l = self.latencies.clone();
         l.sort_by(f64::total_cmp);
         let at = |q: f64| l.get(((l.len().max(1) - 1) as f64 * q) as usize).copied();
-        let frames = self.last_seq.wrapping_sub(self.first_seq.unwrap_or(0));
+        // Frames from another process carry no sequence: count them.
+        let frames = match self.last_seq.wrapping_sub(self.first_seq.unwrap_or(0)) {
+            0 => self.latencies.len().saturating_sub(1) as u32,
+            n => n,
+        };
         let fps = f64::from(frames) / ((self.last_ts.saturating_sub(self.first_ts)) as f64 / 1e9);
         println!(
             "  {}: {} frames, {} at {fps:.3} fps ({} sequence steps), {}; latency median {:.2} ms, p95 {:.2} ms, max {:.2} ms",
