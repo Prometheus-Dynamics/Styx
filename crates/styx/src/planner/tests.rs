@@ -433,3 +433,42 @@ fn native_pisp_serves_two_sizes_and_formats_from_one_pass() {
     let plan = plan_many_with(&dev, &[slow], &registry()).unwrap();
     assert_eq!(plan.interval, Interval::from_fps(30), "{plan}");
 }
+
+#[cfg(feature = "native")]
+#[test]
+fn native_pisp_supplies_the_first_pyramid_level() {
+    let mut dev = device(
+        BackendKind::Native,
+        BackendHandle::Native {
+            key: "bridge:/dev/v4l-subdev2".into(),
+        },
+        vec![
+            mode(FourCc::new(*b"pBAA"), 1280, 800, 30),
+            mode(FourCc::NV12, 1280, 800, 30),
+            mode(FourCc::RG24, 1280, 800, 30),
+        ],
+    );
+    dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
+    let plan = plan_frames_with(&dev, &FrameRequirements::luma().pyramid(2), &registry()).unwrap();
+    assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
+    assert_eq!(plan.isp_pyramid_level, Some(1), "{plan}");
+    let pyramid: Vec<StepExecution> = plan
+        .steps
+        .iter()
+        .filter(|s| matches!(s.kind, StepKind::Pyramid { .. }))
+        .map(|s| s.execution)
+        .collect();
+    assert_eq!(pyramid, vec![StepExecution::Hardware, StepExecution::Cpu]);
+    let hardware = FrameRequirements::formats([FourCc::NV12])
+        .pyramid(1)
+        .pyramid_source(PyramidSource::HardwareOnly);
+    let plan = plan_frames_with(&dev, &hardware, &registry()).unwrap();
+    assert_eq!(plan.isp_pyramid_level, Some(1), "{plan}");
+    // Shared with a plain consumer: the capture is started with the pyramid level.
+    let viewer = FrameRequirements::formats([FourCc::NV12]);
+    let shared = plan_many_with(&dev, &[hardware.clone(), viewer], &registry()).unwrap();
+    assert!(shared.setup_key().contains("pyramid=Some(1)"), "{shared}");
+    // No PiSP (the software ISP): box filters only.
+    dev.backends[0].properties = vec![("isp".into(), "software".into())];
+    assert!(plan_frames_with(&dev, &hardware, &registry()).is_err());
+}

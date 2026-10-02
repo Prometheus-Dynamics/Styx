@@ -370,7 +370,8 @@ fn finish<'a>(
         height.div_ceil(decode_scale.into()),
     ));
 
-    let isp_pyramid_level = add_pyramid_steps(backend, &route, req, width, height, &mut steps)?;
+    let isp_pyramid_level =
+        add_pyramid_steps(backend, mode, &route, req, width, height, &mut steps)?;
     let encoded = matches!(route, Route::Encode { .. });
     if encoded && req.pyramid.is_some_and(|p| p.levels > 0) {
         return Err("pyramid levels need uncompressed frames".into());
@@ -712,6 +713,7 @@ fn decode_cost(code: FourCc, descriptor: &CodecDescriptor, mp: f32, threads: usi
 /// Pyramid steps; returns the level the ISP produces, if any.
 fn add_pyramid_steps(
     backend: &ProbedBackend,
+    mode: &Mode,
     route: &Route,
     req: &FrameRequirements,
     width: u32,
@@ -721,7 +723,10 @@ fn add_pyramid_steps(
     let Some(pyramid) = req.pyramid.filter(|p| p.levels > 0) else {
         return Ok(None);
     };
-    let isp_possible = has_isp_second_output(backend)
+    // A native PiSP mode's second output in the mode's format: NV12, whose Y plane the
+    // further levels are box-filtered from.
+    let native = native_isp_outputs(backend, mode) && mode.format.code == FourCc::NV12;
+    let isp_possible = (has_isp_second_output(backend) || native)
         && matches!(route, Route::Direct | Route::LumaView)
         && !matches!(req.overrides.hardware, HardwarePolicy::Disabled);
     let isp_level = match pyramid.source {

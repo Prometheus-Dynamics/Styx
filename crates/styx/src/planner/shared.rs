@@ -421,7 +421,9 @@ impl SharedFramePlan {
             .capture_queue_depth(1)
             .capture_extra_buffers(held);
         if let Some(level) = self.consumers.iter().find_map(|p| p.isp_pyramid_level) {
-            config = config.libcamera_pyramid_level(level);
+            config = config
+                .libcamera_pyramid_level(level)
+                .native_pyramid_level(level);
         }
         let main = self.consumers.iter().find(|p| !p.isp_second_output);
         if let Some((width, height)) = main.and_then(|p| p.isp_output) {

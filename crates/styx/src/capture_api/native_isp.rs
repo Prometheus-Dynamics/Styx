@@ -191,7 +191,7 @@ pub(super) fn start_processed(
                 code: None,
                 interval: fraction,
             };
-            let specs = pisp_worker::output_specs(&mode, &config.backends.native)?;
+            let (specs, second_kind) = pisp_worker::output_specs(&mode, &config.backends.native)?;
             let setup = |i: usize| specs[i].map(|s| s.setup()).transpose();
             let options = PispOptions {
                 outputs: [setup(0)?, setup(1)?],
@@ -211,6 +211,7 @@ pub(super) fn start_processed(
                 p,
                 pisp_worker::Worker {
                     specs,
+                    second_kind,
                     strides,
                     tx,
                     stop: stop_rx,

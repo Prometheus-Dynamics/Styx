@@ -5,6 +5,7 @@
 //! ```sh
 //! native_isp_bench single FPS FRAMES [--read]          # NV12 1280x800
 //! native_isp_bench shared FPS FRAMES [--read]          # NV12 1280x800 + RG24 640x400
+//! native_isp_bench pyramid FPS FRAMES [--read] [--software]  # luma + 2 pyramid levels
 //! native_isp_bench serve SOCKET SECONDS                # camera service for other processes
 //! native_isp_bench client SOCKET nv12|rgb FRAMES [--read]
 //! ```
@@ -267,6 +268,66 @@ fn run(args: &[String]) -> Result<(), String> {
             thread_report(&th0, frames + 10);
             a.stop();
         }
+        "pyramid" => {
+            // Level 1 from the PiSP's second output, level 2 box-filtered from it (or both
+            // box-filtered on the CPU with --software).
+            let (fps, frames) = (num(2, 30) as u32, num(3, 300) as usize);
+            let source = if args.iter().any(|a| a == "--software") {
+                PyramidSource::Software
+            } else {
+                PyramidSource::PreferHardware
+            };
+            let levels = 2u8;
+            // Luma (NV12's Y plane): the planner attaches pyramid levels to luma frames.
+            let r = FrameRequirements::luma()
+                .min_fps(fps)
+                .max_resolution(1280, 800)
+                .priority(Priority::Power)
+                .pyramid(levels)
+                .pyramid_source(source);
+            let dev = native_device()?;
+            let plan = styx::planner::plan_many(&dev, &[r]).map_err(|e| e.to_string())?;
+            print!("{plan}");
+            let mut out = plan.start().map_err(|e| e.to_string())?;
+            let mut p = out.remove(0);
+            let (t0, cpu0, th0) = (Instant::now(), proc_cpu(), threads());
+            let mut level_seen = vec![String::new(); levels as usize];
+            let mut missing = 0usize;
+            let seen = consume("luma+pyramid", frames, read, || match p.next_frame(wait) {
+                RecvOutcome::Data(f) => {
+                    for (i, s) in level_seen.iter_mut().enumerate() {
+                        match f.pyramid_level(i as u8 + 1) {
+                            Some(l) => {
+                                let fmt = l.meta().format;
+                                *s = format!(
+                                    "{} {}x{} ({})",
+                                    fmt.code,
+                                    fmt.resolution.width,
+                                    fmt.resolution.height,
+                                    l.external_backing_kind().unwrap_or("owned")
+                                );
+                                if read {
+                                    let sum: u64 =
+                                        l.planes()[0].data().iter().map(|&v| u64::from(v)).sum();
+                                    std::hint::black_box(sum);
+                                }
+                            }
+                            None => missing += 1,
+                        }
+                    }
+                    Some(f)
+                }
+                _ => None,
+            });
+            seen.report();
+            for (i, s) in level_seen.iter().enumerate() {
+                println!("  pyramid level {}: {s}", i + 1);
+            }
+            println!("  frames missing a level: {missing}");
+            summary(t0, cpu0, frames + 10);
+            thread_report(&th0, frames + 10);
+            p.stop();
+        }
         "serve" => {
             let (path, secs) = (arg(2), num(3, 30));
             let dev = native_device()?;
@@ -302,7 +363,7 @@ fn run(args: &[String]) -> Result<(), String> {
             seen.report();
             summary(t0, cpu0, frames);
         }
-        _ => return Err("usage: native_isp_bench single|shared|serve|client ...".into()),
+        _ => return Err("usage: native_isp_bench single|shared|pyramid|serve|client ...".into()),
     }
     Ok(())
 }

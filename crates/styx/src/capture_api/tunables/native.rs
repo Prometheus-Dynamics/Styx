@@ -21,6 +21,10 @@ pub struct NativeIspConfig {
     /// Also deliver each frame at this size and format from the second output, as a
     /// `CompanionKind::Scaled` companion. `None` (default) leaves it off.
     pub second_output: Option<((u32, u32), FourCc)>,
+    /// Attach the second output as a pyramid companion at `2^-pyramid_level` of the main
+    /// output's size, in its format (1 = ½, 2 = ¼, 3 = ⅛; 0, the default, off), read with
+    /// `FrameLease::pyramid_level`. Takes the second output: `second_output` is then ignored.
+    pub pyramid_level: u8,
     /// Use the ISP driver's own buffers, which the CPU reads uncached (the Y plane of a
     /// 1280x800 frame in 1.9 ms on the CM5). `false` (default): cached dma-heap buffers, read
     /// at memory speed (cache maintenance only when a frame's pixels are read).
@@ -56,6 +60,13 @@ impl StyxConfig {
     /// [`NativeIspConfig::output_format`]).
     pub fn native_output_format(mut self, format: FourCc) -> Self {
         self.backends.native.output_format = Some(format);
+        self
+    }
+
+    /// Attach a pyramid companion from a native camera's second ISP output (see
+    /// [`NativeIspConfig::pyramid_level`]).
+    pub fn native_pyramid_level(mut self, level: u8) -> Self {
+        self.backends.native.pyramid_level = level.min(3);
         self
     }
 

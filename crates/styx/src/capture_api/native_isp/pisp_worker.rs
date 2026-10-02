@@ -1,5 +1,6 @@
 //! The PiSP capture worker: frames leased straight from the back end's output buffers, the
-//! second output attached to each frame as a `CompanionKind::Scaled` companion.
+//! second output attached to each frame as a `CompanionKind::Scaled` companion, or as a
+//! `CompanionKind::Pyramid` one (the main output scaled by `2^-level`).
 //!
 //! Each output buffer is mapped and exported once (cached per buffer index) and shared by the
 //! leases that hold it; a lease returns its buffer to the back end when it drops, so the two
@@ -59,11 +60,12 @@ impl OutputSpec {
 }
 
 /// The outputs a processed `mode` capture delivers with `cfg`: the main one (the mode's
-/// format and size unless `cfg` says otherwise) and the optional second one.
+/// format and size unless `cfg` says otherwise) and the optional second one, with the kind of
+/// companion it is attached as (a pyramid level of the main output, else another size).
 pub(super) fn output_specs(
     mode: &Mode,
     cfg: &NativeIspConfig,
-) -> Result<[Option<OutputSpec>; 2], CaptureError> {
+) -> Result<([Option<OutputSpec>; 2], CompanionKind), CaptureError> {
     let res = mode.format.resolution;
     let (width, height) = cfg
         .output_size
@@ -74,6 +76,27 @@ pub(super) fn output_specs(
         height,
     };
     main.be_format()?;
+    let level = cfg.pyramid_level.min(3);
+    if level > 0 {
+        if cfg.second_output.is_some() {
+            tracing::warn!(
+                backend = "native",
+                level,
+                "second output disabled: the pyramid companion uses it"
+            );
+        }
+        // Even sizes, as the chroma planes need.
+        let half = |v: u32| ((v >> level) & !1).max(2);
+        let pyramid = OutputSpec {
+            code: main.code,
+            width: half(width),
+            height: half(height),
+        };
+        return Ok((
+            [Some(main), Some(pyramid)],
+            CompanionKind::Pyramid { level },
+        ));
+    }
     let second = cfg.second_output.map(|((width, height), code)| OutputSpec {
         code,
         width,
@@ -82,7 +105,7 @@ pub(super) fn output_specs(
     if let Some(s) = second {
         s.be_format()?;
     }
-    Ok([Some(main), second])
+    Ok(([Some(main), second], CompanionKind::Scaled))
 }
 
 /// A back end output buffer, mapped once and shared by the leases of the frames it holds.
@@ -192,6 +215,8 @@ impl Buffers {
 /// What the worker needs besides the pipeline.
 pub(super) struct Worker {
     pub(super) specs: [Option<OutputSpec>; 2],
+    /// What the second output is attached as.
+    pub(super) second_kind: CompanionKind,
     pub(super) strides: [usize; 2],
     pub(super) tx: BoundedTx<FrameLease>,
     pub(super) stop: mpsc::Receiver<()>,
@@ -291,7 +316,7 @@ pub(super) fn spawn(
                     continue;
                 };
                 let frame = match second {
-                    Some(s) => match main.with_companion(CompanionKind::Scaled, s) {
+                    Some(s) => match main.with_companion(w.second_kind, s) {
                         Ok(f) => f,
                         Err(e) => {
                             *w.error.lock() = Some(err(e));
@@ -408,17 +433,17 @@ mod tests {
             intervals: Default::default(),
             interval_stepwise: None,
         };
-        let specs = output_specs(&mode, &NativeIspConfig::default()).unwrap();
+        let (specs, kind) = output_specs(&mode, &NativeIspConfig::default()).unwrap();
         assert_eq!(specs[0].unwrap().code, FourCc::NV12);
         assert!(specs[1].is_none());
+        assert_eq!(kind, CompanionKind::Scaled);
         let cfg = NativeIspConfig {
             output_size: Some((640, 400)),
             output_format: Some(FourCc::RG24),
             second_output: Some(((320, 200), FourCc::NV12)),
-            driver_buffers: false,
-            soft_threads: None,
+            ..Default::default()
         };
-        let specs = output_specs(&mode, &cfg).unwrap();
+        let (specs, _) = output_specs(&mode, &cfg).unwrap();
         assert_eq!(
             (specs[0].unwrap().width, specs[0].unwrap().code),
             (640, FourCc::RG24)
@@ -429,5 +454,26 @@ mod tests {
             ..Default::default()
         };
         assert!(output_specs(&mode, &bad).is_err());
+        // A pyramid level takes the second output: the main output halved, in its format.
+        let pyramid = NativeIspConfig {
+            pyramid_level: 1,
+            second_output: Some(((320, 200), FourCc::RG24)),
+            ..Default::default()
+        };
+        let (specs, kind) = output_specs(&mode, &pyramid).unwrap();
+        assert_eq!(kind, CompanionKind::Pyramid { level: 1 });
+        let s = specs[1].unwrap();
+        assert_eq!((s.width, s.height, s.code), (640, 400, FourCc::NV12));
+        let quarter = NativeIspConfig {
+            output_size: Some((1280, 720)),
+            pyramid_level: 2,
+            ..Default::default()
+        };
+        let (specs, kind) = output_specs(&mode, &quarter).unwrap();
+        assert_eq!(kind, CompanionKind::Pyramid { level: 2 });
+        assert_eq!(
+            (specs[1].unwrap().width, specs[1].unwrap().height),
+            (320, 180)
+        );
     }
 }

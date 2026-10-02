@@ -288,7 +288,13 @@ capture uses both back end outputs: consumers are served by size and format (the
 either processed format on either output; the second output is attached to each frame as a
 `CompanionKind::Scaled` companion), so NV12 1280x800 + RG24 640x400 come from one pass with
 no conversion; a third size or format falls back to the mode's size first, then to a CPU
-conversion. Shared plans of a sensor Styx drives run at exactly the rate asked when saving
+conversion. Pyramid companions come from the second output as with libcamera: the first level
+of an NV12 mode (`PyramidSource::PreferHardware` / `HardwareOnly`) is the back end's output 1
+at half the main size (`NativeIspConfig::pyramid_level`, set by the plan), attached as
+`CompanionKind::Pyramid { level: 1 }` (a GREY view for luma consumers); further levels are box
+filtered from it. Measured (`native_isp_bench pyramid 30 300`, luma 1280x800 + 2 levels):
+0.42 ms process CPU per frame with the hardware level, 0.55 ms with both levels on the CPU
+(the consumer thread 0.07 ms vs 0.22 ms), latency 8.50 vs 8.56 ms. Shared plans of a sensor Styx drives run at exactly the rate asked when saving
 power, as single plans do. Every output is handed out as a dma-buf, in process and to other
 processes through the camera service (planes exported with their offsets). Raw native modes are not routed through a Bayer decoder when an ISP route exists
 (that route has no 3A); Bayer decoders are priced at the software ISP's cost. `plan_frames`
