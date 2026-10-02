@@ -85,15 +85,15 @@ impl Output {
         }
     }
 
-    /// Mean output luma (0..255) over every fourth row and column: cheap enough per frame
-    /// not to weigh on the CPU figures (a full pass over an RGB24 frame costs about 1 ms on
-    /// the CM5).
+    /// Mean output luma (0..255) over every eighth row and column: cheap enough per frame
+    /// (about 0.03 ms) not to weigh on the CPU figures (a full pass over an RGB24 frame costs
+    /// about 1 ms on the CM5).
     pub fn level(&self) -> f64 {
         let (w, h) = (self.width, self.height);
         let mut sum = 0.0f64;
         let mut n = 0usize;
-        for y in (0..h).step_by(4) {
-            for x in (0..w).step_by(4) {
+        for y in (0..h).step_by(8) {
+            for x in (0..w).step_by(8) {
                 sum += match self.kind {
                     Kind::Rgb => {
                         let p = &self.data[(y * w + x) * 3..][..3];
