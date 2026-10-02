@@ -17,7 +17,7 @@ styx-softisp SoftIsp (raw → NV12/RGB/luma + statistics in one pass)           
      │                                                                                 │
 styx-pipeline stats::from_pisp / from_softisp ─► Controller (styx-algo Pipeline) ◄──────┘
      │          SensorRequest ─► CameraControls::request_at(landing frame)
-     │          IspSettings  ─► BE (BLC, WBG × digital gain, CCM, gamma), FE (BLA/BLC, RGB→Y)
+     │          IspSettings  ─► BE (BLC, LSC, WBG × digital gain, CCM, gamma), FE (BLA/BLC, RGB→Y)
      │                       ─► software ISP (black level, WB, digital gain, LSC, CCM, tone)
      ├─ device::PispPipeline, device::SoftPipeline   (feature `device`)
      ├─ rawrec (raw recordings), replay::VirtualSensor (host closed loop)
@@ -137,8 +137,9 @@ Not yet re-run on the device.
 
 ## Gaps
 
-* PiSP lens shading: the back end builder has no LSC block, so ALSC tables only reach the
-  software ISP. TDN/sharpening strength/denoise follow libpisp defaults, not the tuning.
+* PiSP lens shading is applied since the device runs above (the ALSC tables resampled to the
+  back end's 33x33 grid, packed as the Raspberry Pi IPA does; tested on the host, not yet on
+  the device). TDN/sharpening strength/denoise follow libpisp defaults, not the tuning.
 * The front end statistics set-up is fixed (uniform AGC weights; AGC meters the AWB zones).
 * Styx capture of processed native modes (`native_isp.rs`) is planned and unit-tested on the
   host, not yet run on the device; it uses output 0 only (the tool uses both outputs).

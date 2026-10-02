@@ -13,6 +13,7 @@
 //! (it takes microseconds).
 
 pub mod defaults;
+pub mod lsc;
 mod prepare;
 pub mod tiling;
 
@@ -38,6 +39,7 @@ pub struct BackEnd {
     downscale_extra: [BeDownscaleExtra; BE_NUM_OUTPUTS],
     resample_extra: [BeResampleExtra; BE_NUM_OUTPUTS],
     smart_resize: [(u16, u16); BE_NUM_OUTPUTS],
+    lsc_extra: BeLscExtra,
     max_tile_width: u16,
     max_stripe_height: u16,
 }
@@ -70,6 +72,7 @@ impl BackEnd {
             downscale_extra: Default::default(),
             resample_extra: Default::default(),
             smart_resize: Default::default(),
+            lsc_extra: BeLscExtra::default(),
             max_tile_width: MAX_TILE_WIDTH,
             max_stripe_height: MAX_STRIPE_HEIGHT,
         }
@@ -128,6 +131,14 @@ impl BackEnd {
             coeffs: m.map(coeff_s4_10),
             ..Default::default()
         };
+    }
+
+    /// Lens shading: the gain table (see [`lsc::pack_lut`]) and where the image starts in it;
+    /// enables the block. Grid steps left at zero spread the table over the input image.
+    pub fn set_lsc(&mut self, lsc: BeLscConfig, extra: BeLscExtra) {
+        self.cfg.lsc = lsc;
+        self.lsc_extra = extra;
+        self.cfg.global.bayer_enables |= bayer_enable::LSC;
     }
 
     /// Gamma from a curve of `(x, y)` points on 16-bit scales.

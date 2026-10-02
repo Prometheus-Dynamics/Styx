@@ -193,7 +193,7 @@ to the end of the register window, so harmless).
   queue is fed from a `FrontEnd` the 3A loop updates (black levels, RGB→Y weights), two
   configs ahead; the BE gets a fresh config per job.
 - Compressed raw (`PISP_COMP1`) halves the memory traffic between FE and BE; not wired yet.
-- TDN/stitch/LSC/CAC in the BE builder; `output1` runs on the device (640x400 RGB through
+- TDN/stitch/CAC in the BE builder (LSC: `BackEnd::set_lsc`, `be::lsc`); `output1` runs on the device (640x400 RGB through
   the resampler), the downscaler (below half size) only offline.
 - Zero copy between FE and BE: done (`FrontEndDevice::next_held` + `image_dmabufs`,
   `BackEndStream` imports them on `pispbe-input`).

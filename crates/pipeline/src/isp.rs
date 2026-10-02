@@ -5,8 +5,8 @@ use styx_algo::{IDENTITY, LensShading, Matrix3, Params, Pwl};
 use styx_pisp::be::BackEnd;
 use styx_pisp::fe::{FrontEnd, gain_4_10};
 use styx_pisp::uapi::{
-    BayerOrder, BeOutputFormatConfig, BlaConfig, FeRgbyConfig, ImageFormatConfig, image_format,
-    rgb_enable,
+    BayerOrder, BeLscConfig, BeLscExtra, BeOutputFormatConfig, BlaConfig, FeRgbyConfig,
+    ImageFormatConfig, image_format, rgb_enable,
 };
 use styx_softisp as soft;
 
@@ -100,11 +100,16 @@ impl IspSettings {
         }
     }
 
-    /// The back end blocks these settings drive: black level (BLC), white balance and digital
-    /// gain (WBG), CCM and gamma. Lens shading is not applied on the PiSP yet (the back end
-    /// builder has no LSC block).
+    /// The back end blocks these settings drive: black level (BLC), lens shading (LSC, the
+    /// tables resampled to the back end's 33x33 vertices over the input), white balance and
+    /// digital gain (WBG), CCM and gamma.
     pub fn apply_be(&self, be: &mut BackEnd) {
         be.set_black_level(level16(self.black_level));
+        if let Some(ls) = &self.lens_shading
+            && let Some(cfg) = be_lens_shading(ls)
+        {
+            be.set_lsc(cfg, BeLscExtra::default());
+        }
         let g = self.channel_gains();
         be.set_wb_gains(g[0], g[1], g[2]);
         be.set_ccm(self.ccm);
@@ -211,6 +216,16 @@ pub fn gamma_points(curve: Option<&Pwl>) -> Vec<(u32, u32)> {
                 .collect()
         }
     }
+}
+
+/// Lens shading tables as the back end's packed 33x33 vertex grid.
+fn be_lens_shading(ls: &LensShading) -> Option<BeLscConfig> {
+    let (w, h) = (ls.width as usize, ls.height as usize);
+    if w == 0 || h == 0 || [&ls.r, &ls.g, &ls.b].iter().any(|t| t.len() != w * h) {
+        return None;
+    }
+    let table = [&ls.r, &ls.g, &ls.b].map(|t| styx_pisp::be::lsc::resample_table(t, w, h));
+    Some(styx_pisp::be::lsc::pack_lut(&table))
 }
 
 fn soft_lens_shading(ls: &LensShading) -> Option<soft::LensShading> {
@@ -323,8 +338,17 @@ mod tests {
             ],
         )
         .unwrap();
-        IspSettings::from_params(&params(), 0, 1.0).apply_be(&mut be);
+        let mut p = params();
+        p.lens_shading = Some(LensShading {
+            width: 16,
+            height: 12,
+            r: vec![1.5; 192],
+            g: vec![1.25; 192],
+            b: vec![1.0; 192],
+        });
+        IspSettings::from_params(&p, 0, 1.0).apply_be(&mut be);
         let g = be.config().global;
+        assert!(g.bayer_enables & styx_pisp::uapi::bayer_enable::LSC != 0);
         for bit in [
             rgb_enable::output(0),
             rgb_enable::output(1),
@@ -336,6 +360,14 @@ mod tests {
         assert_eq!(g.rgb_enables & rgb_enable::csc(1), 0);
         let cfg = be.prepare().unwrap();
         assert!(cfg.num_tiles >= 3, "{}", cfg.num_tiles);
+        // The grid spans the input; each tile starts at its offset into it.
+        let step = be.config().lsc.grid_step_x;
+        assert_eq!(u32::from(step), (32 << 18) / 1280);
+        let t1 = &cfg.tiles[1];
+        assert_eq!(
+            t1.lsc_grid_offset_x,
+            u32::from(t1.input_offset_x) * u32::from(step)
+        );
         assert!(be.config().global.rgb_enables & rgb_enable::resample(1) != 0);
         assert!(be_template(input, BayerOrder::Bggr, 0.0, [None, None]).is_err());
     }

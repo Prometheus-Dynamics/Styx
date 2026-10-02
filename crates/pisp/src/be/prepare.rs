@@ -199,12 +199,14 @@ impl BackEnd {
         for (bit, name) in [
             (bayer_enable::TDN, "TDN"),
             (bayer_enable::STITCH, "stitch"),
-            (bayer_enable::LSC, "LSC"),
             (bayer_enable::CAC, "CAC"),
         ] {
             if g.bayer_enables & bit != 0 {
                 return fail(format!("{name} is not supported by this builder yet"));
             }
+        }
+        if g.bayer_enables & bayer_enable::LSC != 0 {
+            self.finalise_lsc()?;
         }
         let mut any_output = false;
         for i in 0..BE_NUM_OUTPUTS {
@@ -364,6 +366,31 @@ impl BackEnd {
         t
     }
 
+    /// libpisp `finalise_lsc`: grid steps from the input size when not given, and the grid
+    /// must cover the image.
+    fn finalise_lsc(&mut self) -> Result<()> {
+        const P: u32 = BE_LSC_STEP_PRECISION;
+        let full = (BE_LSC_GRID_SIZE as u32) << P;
+        let (w, h) = (
+            u32::from(self.cfg.input_format.width),
+            u32::from(self.cfg.input_format.height),
+        );
+        let lsc = &mut self.cfg.lsc;
+        if lsc.grid_step_x == 0 {
+            lsc.grid_step_x = (full / w.max(1)) as u16;
+        }
+        if lsc.grid_step_y == 0 {
+            lsc.grid_step_y = (full / h.max(1)) as u16;
+        }
+        let e = self.lsc_extra;
+        if u32::from(lsc.grid_step_x) * (w + u32::from(e.offset_x) - 1) >= full
+            || u32::from(lsc.grid_step_y) * (h + u32::from(e.offset_y) - 1) >= full
+        {
+            return fail("lens shading grid does not cover the image");
+        }
+        Ok(())
+    }
+
     /// Finalises the configuration and computes the tiles: the buffer for the config node.
     pub fn prepare(&mut self) -> Result<Box<BeTilesConfig>> {
         for i in 0..BE_NUM_OUTPUTS {
@@ -506,6 +533,11 @@ impl BackEnd {
         }
         // Address offsets (libpisp `finaliseTiling`).
         let (x, y) = (u32::from(t.input_offset_x), u32::from(t.input_offset_y));
+        if c.global.bayer_enables & bayer_enable::LSC != 0 {
+            let e = self.lsc_extra;
+            t.lsc_grid_offset_x = (x + u32::from(e.offset_x)) * u32::from(c.lsc.grid_step_x);
+            t.lsc_grid_offset_y = (y + u32::from(e.offset_y)) * u32::from(c.lsc.grid_step_y);
+        }
         (t.input_addr_offset, t.input_addr_offset2) = addr_offset(&c.input_format, x, y);
         t.tdn_input_addr_offset = addr_offset(&c.tdn_input_format, x, y).0;
         t.tdn_output_addr_offset = addr_offset(&c.tdn_output_format, x, y).0;
