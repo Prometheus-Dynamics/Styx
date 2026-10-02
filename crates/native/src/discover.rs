@@ -19,7 +19,8 @@ use crate::topology::{RawRoute, entity_for_devnode, find_route};
 /// A camera behind a sensor bridge, as discovery found it.
 #[derive(Clone, Debug)]
 pub struct CameraInfo {
-    /// Stable key: `bridge:<subdev path>`.
+    /// Key: `bridge:<subdev path>`, valid until the bridge is rebound (the subdev number can
+    /// change then; [`CameraInfo::display_name`] does not).
     pub key: String,
     /// The bridge and what its device tree node says.
     pub location: BridgeLocation,
@@ -52,13 +53,12 @@ impl CameraInfo {
         keys
     }
 
-    /// Human-readable name, e.g. `ov9782 (styx bridge /dev/v4l-subdev2)`.
+    /// Human-readable name, e.g. `ov9782 (styx bridge i2c 10-0060)`. It names the sensor's I²C
+    /// location when the bridge gives one, which stays the same when the bridge is rebound; the
+    /// subdev node does not (`/dev/v4l-subdev2` came back as `v4l-subdev3` after the bridge
+    /// went down and up under HeliOS), and applications key cameras by this name.
     pub fn display_name(&self) -> String {
-        format!(
-            "{} (styx bridge {})",
-            self.location.sensor_name,
-            self.location.subdev.display()
-        )
+        display_name(&self.location)
     }
 
     /// Properties for listings.
@@ -197,4 +197,47 @@ pub fn bridge_keys() -> Vec<(String, BridgeLocation)> {
         .into_iter()
         .map(|l| (key_for(&l), l))
         .collect()
+}
+
+fn display_name(location: &BridgeLocation) -> String {
+    match (location.i2c_bus, location.i2c_address) {
+        (Some(bus), Some(addr)) => {
+            format!(
+                "{} (styx bridge i2c {bus}-{addr:04x})",
+                location.sensor_name
+            )
+        }
+        _ => format!(
+            "{} (styx bridge {})",
+            location.sensor_name,
+            location.subdev.display()
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn location(subdev: &str, i2c: Option<(u32, u16)>) -> BridgeLocation {
+        BridgeLocation {
+            subdev: PathBuf::from(subdev),
+            sensor_name: "ov9782".into(),
+            i2c_bus: i2c.map(|(b, _)| b),
+            i2c_address: i2c.map(|(_, a)| a),
+            clock_frequency: 0,
+        }
+    }
+
+    #[test]
+    fn display_name_survives_a_new_subdev_number() {
+        let before = display_name(&location("/dev/v4l-subdev2", Some((10, 0x60))));
+        let after = display_name(&location("/dev/v4l-subdev3", Some((10, 0x60))));
+        assert_eq!(before, "ov9782 (styx bridge i2c 10-0060)");
+        assert_eq!(before, after);
+        assert_eq!(
+            display_name(&location("/dev/v4l-subdev2", None)),
+            "ov9782 (styx bridge /dev/v4l-subdev2)"
+        );
+    }
 }
