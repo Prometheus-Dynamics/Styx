@@ -111,23 +111,35 @@ limits at that fps.
 - `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test` pass; files
   stay under 800 lines (`scripts/check-file-sizes.sh`).
 - The device (`ssh root@helios`, a Raspberry Pi CM5). Never enter passwords. Work only in `/tmp`
-  on the device. It is a disposable dev box: leave `/boot`, the A/B images and the updater alone;
-  anything else may be changed as needed (say so in your report).
+  on the device. It is a disposable dev box: leave `/boot` (except the cam0 overlay line, which
+  `camera-mode.sh` switches), the A/B images and the updater alone; anything else may be changed
+  as needed (say so in your report).
+  - The baseline: the device boots the shipping configuration, the bridge overlay in
+    `config.txt` (`dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous` in place of HeliOS's
+    `ov9782-overlay`; `overlays/styx-sensor-bridge-cm5.dtbo`) with `styx_sensor_bridge.ko` in
+    `/lib/modules/$(uname -r)/updates/` (on the root overlay's upper layer, `depmod`ed: udev
+    loads it at boot). The bridge is bound at boot, `ov9282` is not, `helios-peripherals` and
+    `styx-bridge.service` are disabled. Installed by
+    `kernel-modules/styx-sensor-bridge/install/install.sh` (rerun it after rebuilding the
+    module, then reboot).
   - Read-only probing needs no lock.
   - Anything that uses a camera or changes device state (stopping `helios-peripherals`,
-    binding/unbinding drivers, runtime overlays via configfs, loading our modules, streaming)
-    needs the device lock, taken atomically with
+    binding/unbinding drivers, runtime overlays via configfs, loading our modules, streaming,
+    switching the camera mode, rebooting) needs the device lock, taken atomically with
     `ssh root@helios 'mkdir /tmp/styx-device-lock && echo "<agent> $(date)" > /tmp/styx-device-lock/owner'`
     (retry every 60 s while it exists; never delete someone else's lock). Chain every device step
-    after the lock with `&&` or `set -e` so nothing runs if taking the lock fails. Keep it only as long as
+    after the lock with `&&` or `set -e` so nothing runs if taking the lock fails. A reboot wipes
+    `/tmp`, the lock with it: take it again when the device is back. Keep it only as long as
     needed, and before releasing it (`rm -rf /tmp/styx-device-lock`) restore the device to its
-    baseline: the bridge up from the installed copy (`styx-bridge.service` active,
-    `kernel-modules/styx-sensor-bridge/install/`), `helios-peripherals` stopped. To restore:
-    `sh /usr/local/lib/styx-bridge/down.sh; systemctl restart styx-bridge`. For libcamera
-    runs, `systemctl stop styx-bridge` gives the camera back to `ov9282`, libcamera and
-    `helios-peripherals`; `systemctl start styx-bridge` afterwards. To test a newer module, run
-    your own `down.sh` then `up.sh`, or rerun `install/install.sh`. If restoring fails, reboot
-    (`systemctl reboot`; the device is a dev box) and report it.
+    baseline (`sh /usr/local/lib/styx-bridge/camera-mode.sh status` says `configured: native`,
+    `running: native (bridge bound at boot)`; if not, `camera-mode.sh native` reboots into it).
+  - For libcamera runs (`ov9282`, libcamera, the installed `helios-peripherals`):
+    `sh /usr/local/lib/styx-bridge/camera-mode.sh libcamera` swaps the overlay line and reboots;
+    `camera-mode.sh native` goes back (reboots). In libcamera mode the older runtime path still
+    works (`systemctl start styx-bridge`: `spike/up.sh` with the runtime overlay over the
+    `ov9782` boot overlay; `systemctl stop styx-bridge` hands the camera back); it does not
+    apply in native mode. If the device does not come back after a mode switch, `config.txt`
+    is on `/dev/mmcblk0p1` (vfat), the original as `config.txt.pre-styx-bridge-boot`.
   - The bridge spike (`spike/up.sh`, `native-spike`, `spike/down.sh`) is approved for use under
     the lock.
   - Never use I2C force access (`I2C_SLAVE_FORCE`, `i2ctransfer -f`) while a kernel driver owns

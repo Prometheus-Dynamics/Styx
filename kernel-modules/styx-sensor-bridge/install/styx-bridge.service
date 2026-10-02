@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
-# Puts the OV9782 on cam0 behind the Styx sensor bridge at boot (runtime overlay, nothing in
-# /boot). Stop it to hand the camera back to ov9282, libcamera and helios-peripherals.
+# Puts the OV9782 on cam0 behind the Styx sensor bridge at runtime (runtime overlay, nothing in
+# /boot) on a device booted with the HeliOS ov9782 overlay (camera-mode.sh libcamera). Not
+# enabled at boot: the dev box boots the bridge overlay (camera-mode.sh native). Stop it to hand
+# the camera back to ov9282, libcamera and helios-peripherals.
 [Unit]
 Description=Styx sensor bridge on cam0
 After=local-fs.target systemd-modules-load.service sys-kernel-config.mount
