@@ -27,23 +27,34 @@ fn flat_colours_round_trip_for_every_pattern_packing_and_demosaic() {
                 let m = mosaic(W, H, pattern, |_, _| raw);
                 let (bytes, stride) = pack(&m, W, H, packing);
                 let format = RawFormat::new(W as u32, H as u32, pattern, packing);
-                for demosaic in [Demosaic::Bilinear, Demosaic::Mhc] {
+                let want = c8.map(|c| c as u8);
+                for (arithmetic, tol) in ARITHMETICS {
+                    for demosaic in [Demosaic::Bilinear, Demosaic::Mhc] {
+                        let params = IspParams {
+                            demosaic,
+                            arithmetic,
+                            ..Default::default()
+                        };
+                        let (out, _) = rgb(format, &params, &bytes, stride, Scale::Full);
+                        for px in out.chunks_exact(3) {
+                            assert!(
+                                near(px, &want, tol),
+                                "{pattern:?} {packing:?} {demosaic:?} {arithmetic:?} {c8:?}: \
+                                 {px:?}"
+                            );
+                        }
+                    }
                     let params = IspParams {
-                        demosaic,
+                        arithmetic,
                         ..Default::default()
                     };
-                    let (out, _) = rgb(format, &params, &bytes, stride, Scale::Full);
-                    let want = c8.map(|c| c as u8);
-                    for px in out.chunks_exact(3) {
-                        assert_eq!(px, want, "{pattern:?} {packing:?} {demosaic:?} {c8:?}");
-                    }
+                    let (half, _) = rgb(format, &params, &bytes, stride, Scale::Half);
+                    assert_eq!(half.len(), W * H * 3 / 4);
+                    assert!(
+                        half.chunks_exact(3).all(|px| near(px, &want, tol)),
+                        "half {pattern:?} {packing:?} {arithmetic:?}"
+                    );
                 }
-                let (half, _) = rgb(format, &IspParams::default(), &bytes, stride, Scale::Half);
-                assert_eq!(half.len(), W * H * 3 / 4);
-                assert!(
-                    half.chunks_exact(3).all(|px| px == c8.map(|c| c as u8)),
-                    "half {pattern:?} {packing:?}"
-                );
             }
         }
     }
@@ -80,16 +91,24 @@ fn ccm_and_tone_curve_apply() {
     let (bytes, stride) = pack(&m, W, H, RawPacking::Csi2Raw10);
     let format = RawFormat::new(W as u32, H as u32, CfaPattern::Rggb, RawPacking::Csi2Raw10);
     // Swap red and blue, then gamma 2.
-    let params = IspParams {
-        ccm: Some(ColorMatrix {
-            m: [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
-        }),
-        tone: Some(ToneCurve::Gamma { gamma: 2.0 }),
-        ..Default::default()
-    };
-    let (out, _) = rgb(format, &params, &bytes, stride, Scale::Full);
-    let expect = |lin: f32| ((lin / 4095.0).sqrt() * 255.0).round() as u8;
-    assert_eq!(out[..3], [expect(512.0), expect(1024.0), expect(2048.0)]);
+    for (arithmetic, tol) in ARITHMETICS {
+        let params = IspParams {
+            ccm: Some(ColorMatrix {
+                m: [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            }),
+            tone: Some(ToneCurve::Gamma { gamma: 2.0 }),
+            arithmetic,
+            ..Default::default()
+        };
+        let (out, _) = rgb(format, &params, &bytes, stride, Scale::Full);
+        let expect = |lin: f32| ((lin / 4095.0).sqrt() * 255.0).round() as u8;
+        let want = [expect(512.0), expect(1024.0), expect(2048.0)];
+        assert!(
+            near(&out[..3], &want, tol),
+            "{arithmetic:?}: {:?}",
+            &out[..3]
+        );
+    }
 }
 
 #[test]
@@ -100,12 +119,16 @@ fn yuv_outputs_match_the_colour() {
     });
     let (bytes, stride) = pack(&m, W, H, RawPacking::Csi2Raw10);
     let format = RawFormat::new(W as u32, H as u32, CfaPattern::Grbg, RawPacking::Csi2Raw10);
-    for (matrix, coeffs) in [
+    for ((matrix, coeffs), (arithmetic, tol)) in [
         (YuvMatrix::Bt709Limited, YuvCoeffs::BT709_LIMITED),
         (YuvMatrix::Bt601Full, YuvCoeffs::BT601_FULL),
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|m| ARITHMETICS.map(|a| (m, a)))
+    {
         let params = IspParams {
             yuv: matrix,
+            arithmetic,
             ..Default::default()
         };
         let mut want_y = [0u8];
@@ -131,10 +154,12 @@ fn yuv_outputs_match_the_colour() {
             },
         )
         .unwrap();
-        assert!(y.iter().all(|&v| v == want_y[0]));
+        let close = |v: u8, w: u8| (i32::from(v) - i32::from(w)).abs() <= tol;
+        assert!(y.iter().all(|&v| close(v, want_y[0])), "{arithmetic:?}");
         assert!(
-            uv.chunks_exact(2).all(|p| p == [want_u, want_v]),
-            "{matrix:?}"
+            uv.chunks_exact(2)
+                .all(|p| close(p[0], want_u) && close(p[1], want_v)),
+            "{matrix:?} {arithmetic:?}"
         );
 
         let (mut y, mut u, mut v) = (vec![0u8; W * H], vec![0u8; W * H / 4], vec![0u8; W * H / 4]);
@@ -147,8 +172,8 @@ fn yuv_outputs_match_the_colour() {
             v_stride: W / 2,
         };
         process(format, &params, &bytes, stride, Scale::Full, out).unwrap();
-        assert!(y.iter().all(|&p| p == want_y[0]));
-        assert!(u.iter().all(|&p| p == want_u) && v.iter().all(|&p| p == want_v));
+        assert!(y.iter().all(|&p| close(p, want_y[0])));
+        assert!(u.iter().all(|&p| close(p, want_u)) && v.iter().all(|&p| close(p, want_v)));
     }
     // Grey is neutral; white is 235 in limited range.
     let m = mosaic(W, H, CfaPattern::Grbg, |_, _| [1023; 3]);

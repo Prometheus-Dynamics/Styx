@@ -23,6 +23,8 @@ pub struct IspParams {
     pub yuv: YuvMatrix,
     /// 3A statistics gathered in the same pass.
     pub stats: Option<StatsConfig>,
+    /// The arithmetic of the per-pixel stages.
+    pub arithmetic: Arithmetic,
 }
 
 impl Default for IspParams {
@@ -37,8 +39,28 @@ impl Default for IspParams {
             tone: None,
             yuv: YuvMatrix::Bt709Limited,
             stats: None,
+            arithmetic: Arithmetic::Auto,
         }
     }
+}
+
+/// How the per-pixel stages compute. The two give pictures within a code or two of each
+/// other (see `PERFORMANCE.md` for measured differences); [`SoftIsp::arithmetic`](crate::SoftIsp::arithmetic) tells which one runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arithmetic {
+    /// [`Self::Half`] where it is fast and applies (with a colour matrix or a tone curve, on
+    /// CPUs with FP16 arithmetic), else [`Self::Int`].
+    #[default]
+    Auto,
+    /// 12-bit fixed point: the reference, on every CPU (SIMD on x86 and AArch64).
+    Int,
+    /// fp16 in the front end, the bilinear demosaic, the colour matrix and the tone curve
+    /// (whose 257-node table becomes 48 segments looked up by the fp16 exponent); 2-3 times
+    /// faster on CPUs with FP16 arithmetic (ARMv8.2 and later: Cortex-A55, A76, ...), emulated
+    /// (slowly) elsewhere. Applies to inputs of 10 bits or fewer, the bilinear demosaic and
+    /// tone curves that never fall; other set-ups use [`Self::Int`].
+    Half,
 }
 
 /// Black level per CFA cell: red, green on red rows, green on blue rows, blue.
@@ -184,14 +206,16 @@ impl ToneCurve {
                 if x <= first[0] {
                     return first[1];
                 }
-                for w in points.windows(2) {
-                    let ([x0, y0], [x1, y1]) = (w[0], w[1]);
-                    if x <= x1 {
-                        let t = if x1 > x0 { (x - x0) / (x1 - x0) } else { 1.0 };
-                        return y0 + t * (y1 - y0);
-                    }
-                }
-                points[points.len() - 1][1]
+                // The first segment whose end is at or after `x` (a binary search: the curve
+                // is sampled a few thousand times whenever it changes, which adaptive contrast
+                // makes it do on most frames).
+                let k = points[1..].partition_point(|p| p[0] < x);
+                let Some(&[x1, y1]) = points.get(k + 1) else {
+                    return points[points.len() - 1][1];
+                };
+                let [x0, y0] = points[k];
+                let t = if x1 > x0 { (x - x0) / (x1 - x0) } else { 1.0 };
+                y0 + t * (y1 - y0)
             }
         }
     }

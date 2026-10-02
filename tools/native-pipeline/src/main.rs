@@ -5,6 +5,7 @@
 //! native-pipeline pisp   [options]   PiSP: FE statistics, BE NV12 + half-size RGB (device feature)
 //! native-pipeline soft   [options]   software ISP on raw frames from csi2_ch0 (device feature)
 //! native-pipeline replay --recording BASE [options]   software ISP over a raw recording
+//! native-pipeline quality --recording BASE [options]  fp16 against integer software ISP
 //! native-pipeline latch  [options]   when within a frame a control write still lands on time
 //! native-pipeline regcheck [options] bring-up only, read back every register written
 //!                                    (--frames: power cycles; --power-settle MS)
@@ -19,13 +20,16 @@
 //!   --record BASE        (soft) record the raw frames and their sensor values
 //!   --algo-record PATH   record the algorithms' inputs and outputs (styx-algo replay)
 //!   --threads N          (soft, replay) software ISP row bands (default 1)
-//!   --heap NAME          (soft) capture into buffers from this dma-heap (e.g. linux,cma:
-//!                        cached, synced per frame) instead of the driver's MMAP buffers
+//!   --output KIND        (soft, replay) rgb (default), nv12 or luma, each optionally -half
+//!   --arithmetic A       (soft, replay) software ISP arithmetic: auto (default), int or half
+//!   --heap NAME          (soft) capture into buffers from this dma-heap (default: linux,cma
+//!                        when it exists: cached, synced per frame)
 //!   --no-read            (pisp) do not read the output on the CPU (no per-frame output mean)
 //!   --profile            (pisp) time the device calls (queue, dequeue, wait, copies)
-//!   --driver-buffers     (pisp) back end outputs in the driver's (uncached) buffers instead of
-//!                        cached dma-heap buffers
-//!   --every-frame        (pisp) run the algorithms on every frame, also when settled
+//!   --driver-buffers     (pisp) back end outputs, (soft) raw capture in the driver's
+//!                        (uncached) buffers instead of cached dma-heap buffers
+//!   --every-frame        run the algorithms (and, soft, the statistics) on every frame, also
+//!                        when settled
 //!   --start-exposure US:GAIN  (pisp) start AE from this exposure and gain instead of the
 //!                        camera's last settled state (a dark or bright start)
 //!   --cold               (pisp) start from the tuning's start-up values, not the last state
@@ -43,6 +47,8 @@
 mod device_run;
 #[cfg(feature = "device")]
 mod latch;
+mod output;
+mod quality;
 #[cfg(feature = "device")]
 mod regcheck;
 mod replay_run;
@@ -86,6 +92,8 @@ pub struct Args {
     pub fixed: Option<(f64, f64)>,
     pub ct: Option<f64>,
     pub no_tdn: bool,
+    pub output: (output::Kind, styx_softisp::Scale),
+    pub arithmetic: styx_softisp::Arithmetic,
 }
 
 fn parse() -> Result<Args, String> {
@@ -119,6 +127,8 @@ fn parse() -> Result<Args, String> {
         fixed: None,
         ct: None,
         no_tdn: false,
+        output: (output::Kind::Rgb, styx_softisp::Scale::Full),
+        arithmetic: styx_softisp::Arithmetic::Auto,
     };
     while let Some(x) = it.next() {
         let mut val = || it.next().ok_or(format!("{x} needs a value"));
@@ -134,6 +144,15 @@ fn parse() -> Result<Args, String> {
             "--recording" => a.recording = Some(val()?.into()),
             "--threads" => a.threads = num(val()?)? as usize,
             "--quiet" => a.quiet = true,
+            "--output" => a.output = output::parse(&val()?)?,
+            "--arithmetic" => {
+                a.arithmetic = match val()?.as_str() {
+                    "auto" => styx_softisp::Arithmetic::Auto,
+                    "int" => styx_softisp::Arithmetic::Int,
+                    "half" => styx_softisp::Arithmetic::Half,
+                    v => return Err(format!("--arithmetic {v}: auto, int or half")),
+                }
+            }
             "--no-read" => a.no_read = true,
             "--profile" => a.profile = true,
             "--driver-buffers" => a.driver_buffers = true,
@@ -173,6 +192,14 @@ fn parse() -> Result<Args, String> {
         }
     }
     Ok(a)
+}
+
+/// The software ISP's fixed parameters with `--arithmetic`.
+pub fn soft_base(a: &Args) -> styx_softisp::IspParams {
+    styx_softisp::IspParams {
+        arithmetic: a.arithmetic,
+        ..styx_pipeline::soft::base_params()
+    }
 }
 
 /// The tuning to run with.
@@ -243,6 +270,7 @@ fn main() -> ExitCode {
         std::fs::create_dir_all(&a.out).map_err(|e| format!("{}: {e}", a.out.display()))?;
         match a.command.as_str() {
             "replay" => replay_run::run(&a),
+            "quality" => quality::run(&a),
             #[cfg(feature = "device")]
             "pisp" => device_run::pisp(&a),
             #[cfg(feature = "device")]

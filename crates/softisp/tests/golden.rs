@@ -1,7 +1,10 @@
 //! Output pinned bit for bit: a textured frame through every output, scale, demosaic and
-//! thread count, hashed and compared with the hashes the ISP produced before its kernels were
-//! fused and threaded (styx-softisp 2.0.0 as of the native-stack branch). Any change of the
+//! thread count, in each arithmetic, hashed. [`Arithmetic::Int`]'s hashes are those the ISP
+//! produced before its kernels were fused and threaded (styx-softisp 2.0.0 as of the
+//! native-stack branch); [`Arithmetic::Half`]'s were taken when it was added (identical on
+//! x86, where the scalar oracle runs, and on the Cortex-A76's FP16 leaves). Any change of the
 //! output fails here; a deliberate quality trade-off must be opt-in and leave these alone.
+//! How far the two arithmetics are apart is `tests/quality.rs`'s business.
 //!
 //! `STYX_GOLDEN_PRINT=1 cargo test -p styx-softisp --test golden -- --nocapture` prints the
 //! hashes instead of checking them.
@@ -37,7 +40,7 @@ fn frame(pattern: CfaPattern) -> (Vec<u8>, usize) {
     pack(&m, W, H, RawPacking::Csi2Raw10)
 }
 
-fn params(demosaic: Demosaic, shaded: bool, stats: bool) -> IspParams {
+fn params(demosaic: Demosaic, shaded: bool, stats: bool, arithmetic: Arithmetic) -> IspParams {
     IspParams {
         black_level: Some(BlackLevel::uniform(64)),
         white_balance: Some(WhiteBalance {
@@ -68,6 +71,7 @@ fn params(demosaic: Demosaic, shaded: bool, stats: bool) -> IspParams {
             saturation: 0.95,
             row_step: 1,
         }),
+        arithmetic,
     }
 }
 
@@ -167,8 +171,10 @@ fn serde_json_like(s: &IspStats) -> String {
     t
 }
 
-/// (pattern, demosaic, lens shading, statistics, scale) and the hash the reference produced.
-const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64); 8] = [
+/// (pattern, demosaic, lens shading, statistics, scale), the hash the reference produced
+/// ([`Arithmetic::Int`]) and the [`Arithmetic::Half`] hash (the same for the MHC demosaic,
+/// which runs in integers).
+const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64, u64); 8] = [
     (
         CfaPattern::Bggr,
         Demosaic::Bilinear,
@@ -176,6 +182,7 @@ const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64); 8] = [
         true,
         Scale::Full,
         0x764250AD6A8258D4,
+        0x54FC7475A7D02590,
     ),
     (
         CfaPattern::Bggr,
@@ -184,6 +191,7 @@ const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64); 8] = [
         false,
         Scale::Full,
         0xDB26345C7AC16947,
+        0xA771835765DEDAAE,
     ),
     (
         CfaPattern::Rggb,
@@ -191,6 +199,7 @@ const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64); 8] = [
         true,
         true,
         Scale::Full,
+        0x2A2C6119E5621964,
         0x2A2C6119E5621964,
     ),
     (
@@ -200,6 +209,7 @@ const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64); 8] = [
         false,
         Scale::Full,
         0x8945224EC1C232A1,
+        0x8945224EC1C232A1,
     ),
     (
         CfaPattern::Grbg,
@@ -208,6 +218,7 @@ const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64); 8] = [
         true,
         Scale::Full,
         0xC5DE7D5E63E1BDFD,
+        0xD5206272E4486D48,
     ),
     (
         CfaPattern::Bggr,
@@ -216,6 +227,7 @@ const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64); 8] = [
         true,
         Scale::Half,
         0x13ECF8138E5EFED3,
+        0xB1868ADF36E07852,
     ),
     (
         CfaPattern::Rggb,
@@ -224,6 +236,7 @@ const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64); 8] = [
         false,
         Scale::Half,
         0xCA7D345553F804CF,
+        0x24104C01B8824C53,
     ),
     (
         CfaPattern::Grbg,
@@ -232,26 +245,34 @@ const CASES: [(CfaPattern, Demosaic, bool, bool, Scale, u64); 8] = [
         true,
         Scale::Half,
         0xA25DE1A9A4904479,
+        0xA25DE1A9A4904479,
     ),
 ];
 
 #[test]
 fn output_is_pinned_bit_for_bit() {
     let print = std::env::var_os("STYX_GOLDEN_PRINT").is_some();
-    for (pattern, demosaic, shaded, stats, scale, want) in CASES {
+    for (pattern, demosaic, shaded, stats, scale, int, half) in CASES {
         let (raw, stride) = frame(pattern);
         let format = RawFormat::new(W as u32, H as u32, pattern, RawPacking::Csi2Raw10);
-        for (threads, copy) in [(1, true), (3, true), (1, false)] {
-            let mut isp = SoftIsp::new(format, params(demosaic, shaded, stats))
-                .unwrap()
-                .with_threads(threads)
-                .with_copy_input(copy);
-            let got = run(&mut isp, &raw, stride, scale);
-            let case = format!("{pattern:?} {demosaic:?} shaded {shaded} stats {stats} {scale:?}");
-            if print {
-                println!("{case} threads {threads} copy {copy}: {got:#018x}");
-            } else {
-                assert_eq!(got, want, "{case}, {threads} threads, copy {copy}");
+        for (arithmetic, want) in [(Arithmetic::Int, int), (Arithmetic::Half, half)] {
+            for (threads, copy) in [(1, true), (3, true), (1, false)] {
+                let p = params(demosaic, shaded, stats, arithmetic);
+                let mut isp = SoftIsp::new(format, p)
+                    .unwrap()
+                    .with_threads(threads)
+                    .with_copy_input(copy);
+                let got = run(&mut isp, &raw, stride, scale);
+                let case = format!(
+                    "{pattern:?} {demosaic:?} shaded {shaded} stats {stats} {scale:?} \
+                     {arithmetic:?} ({:?})",
+                    isp.arithmetic()
+                );
+                if print {
+                    println!("{case} threads {threads} copy {copy}: {got:#018x}");
+                } else {
+                    assert_eq!(got, want, "{case}, {threads} threads, copy {copy}");
+                }
             }
         }
     }

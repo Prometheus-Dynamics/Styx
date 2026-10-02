@@ -98,6 +98,25 @@ pub fn isp_kind(info: &styx_native::CameraInfo) -> IspKind {
     }
 }
 
+/// The dma-heap the software path captures into when it exists (`/dev/dma_heap/linux,cma`).
+pub const SOFT_CAPTURE_HEAP: &str = "linux,cma";
+
+/// Where the software ISP path should capture raw frames: cached buffers from
+/// [`SOFT_CAPTURE_HEAP`] when the system has that heap, else the driver's MMAP buffers. The
+/// CPU reads `rp1-cfe`'s MMAP buffers uncached: on the CM5 a 1280x800 RAW10 frame then costs
+/// the software ISP 0.6 ms more per frame than from cached memory (the cache maintenance per
+/// frame is included in that comparison).
+pub fn soft_capture_memory() -> styx_native::BufferMemory {
+    if std::path::Path::new("/dev/dma_heap")
+        .join(SOFT_CAPTURE_HEAP)
+        .exists()
+    {
+        styx_native::BufferMemory::DmaHeap(SOFT_CAPTURE_HEAP.into())
+    } else {
+        styx_native::BufferMemory::Mmap
+    }
+}
+
 /// Directories searched for a sensor's tuning file (the description's `tuning` name): Styx's
 /// own, then libcamera's Raspberry Pi ones (read at run time, never copied).
 pub const TUNING_DIRS: &[&str] = &[

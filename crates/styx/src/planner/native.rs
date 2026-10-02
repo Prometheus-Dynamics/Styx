@@ -52,6 +52,24 @@ pub(crate) fn native_isp(backend: &ProbedBackend) -> Option<&str> {
         .flatten()
 }
 
+/// Whether processed `mode` is a binned one: no raw mode of its size, one of twice it.
+fn binned(backend: &ProbedBackend, mode: &Mode) -> bool {
+    let (w, h) = (
+        mode.format.resolution.width.get(),
+        mode.format.resolution.height.get(),
+    );
+    let raw = |w: u32, h: u32| {
+        backend.descriptor.modes.iter().any(|m| {
+            raw_bayer(m.format.code)
+                && (
+                    m.format.resolution.width.get(),
+                    m.format.resolution.height.get(),
+                ) == (w, h)
+        })
+    };
+    !raw(w, h) && raw(2 * w, 2 * h)
+}
+
 /// The capture step of a processed (`NV12` / `RG24`) native mode: the sensor plus the PiSP or
 /// the software ISP and the 3A loop. `None` for raw modes and other backends.
 pub(crate) fn processed_capture_step(
@@ -83,8 +101,15 @@ pub(crate) fn processed_capture_step(
             } else {
                 0.0
             };
-            let cpu = cost::SOFTISP_MS_PER_MP * mp + cost::ALGORITHMS_MS + extra;
-            let latency = cost::softisp_latency_ms_per_mp(threads) * mp + cost::ALGORITHMS_MS;
+            // A binned mode reads a raw frame of four times its size, with no demosaic.
+            let isp = if binned(backend, mode) {
+                cost::SOFTISP_BINNED_MS_PER_RAW_MP * 4.0 * mp
+            } else {
+                cost::SOFTISP_MS_PER_MP * mp
+            };
+            let factor = cost::softisp_latency_ms_per_mp(threads) / cost::SOFTISP_MS_PER_MP;
+            let cpu = isp + cost::ALGORITHMS_MS + extra;
+            let latency = isp * factor + cost::ALGORITHMS_MS;
             (
                 StepExecution::Cpu,
                 StepCost::offloaded(sensor + latency, cpu),

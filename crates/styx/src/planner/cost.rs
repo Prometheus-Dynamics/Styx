@@ -67,11 +67,16 @@ pub(crate) fn native_capture_latency_ms(fps: Option<f32>) -> f32 {
 pub(crate) const PISP_PROCESS_LATENCY_MS: f32 = 0.9;
 pub(crate) const PISP_PROCESS_CPU_MS: f32 = 0.3;
 /// Software ISP (styx-softisp, CPU time on A76 cores): unpack, black level, white balance,
-/// lens shading, demosaic, CCM, tone curve, NV12/RGB out plus statistics, from the receiver's
-/// uncached buffer: 5.6 ms per 1280x800 frame on one core (CM5, native/perf-soft).
-pub(crate) const SOFTISP_MS_PER_MP: f32 = 5.5;
-/// CPU the software ISP's helper threads add per frame (wake-ups, band edges; 4 threads).
-pub(crate) const SOFTISP_THREADS_CPU_MS: f32 = 0.4;
+/// lens shading, demosaic, CCM, tone curve, NV12/RGB out plus statistics, fp16 arithmetic,
+/// from cached capture buffers: 2.75 (RGB24) - 3.05 (NV12) ms per 1280x800 frame on one core
+/// (CM5, native/perf-soft2).
+pub(crate) const SOFTISP_MS_PER_MP: f32 = 2.9;
+/// Binned (half-size) processed modes: each 2x2 quad becomes a pixel, priced per megapixel
+/// of the raw frame read (1.25 ms for a 1280x800 frame).
+pub(crate) const SOFTISP_BINNED_MS_PER_RAW_MP: f32 = 1.2;
+/// CPU the software ISP's helper threads add per frame (wake-ups, band edges, the cores
+/// sharing memory bandwidth; 4 threads at 1280x800: 0.5 ms with NV12, 1.3 ms with RGB24).
+pub(crate) const SOFTISP_THREADS_CPU_MS: f32 = 0.9;
 
 /// Threads the native backend's software ISP uses by default: one per core, at most 4.
 pub(crate) fn default_softisp_threads() -> usize {
@@ -79,13 +84,13 @@ pub(crate) fn default_softisp_threads() -> usize {
 }
 
 /// Software ISP time per megapixel on `threads` threads (row bands spread over the cores:
-/// 2.8 / 1.9 / 1.5 ms for 1280x800 on 2 / 3 / 4 A76 cores).
+/// 1.9 / 1.0 ms for 1280x800 NV12 with statistics on 2 / 4 A76 cores).
 pub(crate) fn softisp_latency_ms_per_mp(threads: usize) -> f32 {
     let n = threads.max(1) as f32;
     if n <= 1.0 {
         SOFTISP_MS_PER_MP
     } else {
-        SOFTISP_MS_PER_MP / n * 1.05
+        SOFTISP_MS_PER_MP / n * 1.3
     }
 }
 /// The 3A algorithms per frame (AE, AWB, CCM, contrast; Raspberry Pi tuning).

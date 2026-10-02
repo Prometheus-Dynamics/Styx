@@ -8,9 +8,7 @@ use styx_pipeline::device::{
 };
 use styx_pipeline::measure::{grey_ratios, nv12_to_rgb, plane_mean, write_pgm, write_ppm};
 use styx_pipeline::rawrec::{Header, RawWriter, VERSION};
-use styx_softisp::{OutputBuffers, Scale};
 
-use crate::replay_run::luma_of_rgb;
 use crate::report::{FrameLog, Summary, write_csv};
 use crate::{Args, controls_for, monotonic, tuning};
 
@@ -34,7 +32,10 @@ pub(crate) fn open_camera(a: &Args) -> Result<(NativeCamera, Instant), String> {
     let mut options = CameraOptions::default();
     if let Some(heap) = &a.heap {
         options.memory = BufferMemory::DmaHeap(heap.clone());
+    } else if a.command == "soft" && !a.driver_buffers {
+        options.memory = styx_pipeline::device::soft_capture_memory();
     }
+    println!("raw capture buffers: {:?}", options.memory);
     let cam = NativeCamera::open(info, options).map_err(|e| e.to_string())?;
     Ok((cam, opened))
 }
@@ -70,6 +71,13 @@ pub fn soft(a: &Args) -> Result<(), String> {
     let (cam, opened) = open_camera(a)?;
     let mut p =
         SoftPipeline::open(cam, &settings(a), &tuning, a.threads).map_err(|e| e.to_string())?;
+    p.soft_loop().set_base_params(crate::soft_base(a));
+    if std::env::var_os("STYX_SOFT_NO_COPY").is_some() {
+        p.soft_loop().set_copy_input(false);
+    }
+    if a.every_frame {
+        p.soft_loop().set_settled_rate(None);
+    }
     let cfg = p.configured().clone();
     println!(
         "soft: {} {}x{} stride {} at {:.3} fps",
@@ -104,9 +112,10 @@ pub fn soft(a: &Args) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     let (w, h) = (cfg.mode.width as usize, cfg.mode.height as usize);
-    let mut rgb = vec![0u8; w * h * 3];
+    let mut output = crate::output::Output::new(a.output.0, a.output.1, w, h);
     let mut frames = Vec::new();
     let (cpu0, _) = process_usage();
+    let threads0 = thread_usage();
     p.start().map_err(|e| e.to_string())?;
     let t_start = Instant::now();
     let mut first = None;
@@ -121,14 +130,7 @@ pub fn soft(a: &Args) -> Result<(), String> {
             Some(c) => p.soft_loop().controller().set_controls(c),
             None => p.soft_loop().controller().set_controls(Default::default()),
         }
-        let got = p.next(
-            TIMEOUT,
-            Scale::Full,
-            OutputBuffers::Rgb24 {
-                data: &mut rgb,
-                stride: w * 3,
-            },
-        );
+        let got = p.next(TIMEOUT, output.scale, output.buffers());
         let f = match got {
             Ok(Some(f)) => f,
             Ok(None) => break,
@@ -146,7 +148,8 @@ pub fn soft(a: &Args) -> Result<(), String> {
         log.latency = done.saturating_sub(f.raw.timestamp);
         log.processing = f.raw.dequeued.elapsed();
         log.request_lands = f.request_lands;
-        log.out_y = luma_of_rgb(&rgb, w, h);
+        log.out_y = output.level();
+        log.timing = Some(f.output.timing);
         if let Some(wr) = &mut writer {
             wr.write(f.raw.data(), &f.sensor, f.raw.timestamp.as_nanos() as u64)
                 .map_err(|e| e.to_string())?;
@@ -161,6 +164,7 @@ pub fn soft(a: &Args) -> Result<(), String> {
     }
     let wall = t_start.elapsed();
     let (cpu1, rss) = process_usage();
+    let threads = thread_usage();
     p.soft_loop()
         .controller()
         .stop_recording()
@@ -171,10 +175,8 @@ pub fn soft(a: &Args) -> Result<(), String> {
     }
     result?;
     stopped?;
-    let ppm = a.out.join("soft-rgb.ppm");
-    write_ppm(&ppm, &rgb, w, h, w * 3).map_err(|e| e.to_string())?;
+    let (saved, ratios) = output.save(&a.out, "soft").map_err(|e| e.to_string())?;
     write_csv(&a.out.join("soft-frames.csv"), &frames).map_err(|e| e.to_string())?;
-    let (rg, bg) = grey_ratios(&rgb, w, h, w * 3, 16, 240);
     let summary = Summary {
         name: "soft (software ISP on the native camera)",
         frames: &frames,
@@ -182,14 +184,22 @@ pub fn soft(a: &Args) -> Result<(), String> {
         cpu: cpu1.saturating_sub(cpu0),
         wall,
         peak_rss: rss,
-        extra: vec![
-            format!("output grey-world ratios R/G {rg:.3} B/G {bg:.3} (1.000 is neutral)"),
-            format!(
-                "raw 2x2 cell means (TL, TR, BL, BR) {:.4} {:.4} {:.4} {:.4}",
-                last_phase[0], last_phase[1], last_phase[2], last_phase[3]
-            ),
-            format!("saved {}", ppm.display()),
-        ],
+        extra: {
+            let mut v = crate::output::summary_lines(&saved, ratios);
+            v.extend(thread_lines(
+                &threads0,
+                &threads,
+                frames.len().max(1) as f64,
+            ));
+            v.insert(
+                v.len() - 1,
+                format!(
+                    "raw 2x2 cell means (TL, TR, BL, BR) {:.4} {:.4} {:.4} {:.4}",
+                    last_phase[0], last_phase[1], last_phase[2], last_phase[3]
+                ),
+            );
+            v
+        },
     };
     print!("{}", summary.render(a));
     Ok(())
@@ -376,29 +386,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             e.total.as_secs_f64() * 1e6 / e.count.max(1) as f64
         ));
     }
-    for t in &threads {
-        let before = threads0.iter().find(|b| b.tid == t.tid);
-        let t = styx_pipeline::device::ThreadUsage {
-            cpu: t
-                .cpu
-                .saturating_sub(before.map_or(Duration::ZERO, |b| b.cpu)),
-            system: t
-                .system
-                .saturating_sub(before.map_or(Duration::ZERO, |b| b.system)),
-            voluntary: t.voluntary - before.map_or(0, |b| b.voluntary),
-            involuntary: t.involuntary - before.map_or(0, |b| b.involuntary),
-            ..t.clone()
-        };
-        extra.push(format!(
-            "thread {} ({}): {:.3} ms CPU/frame ({:.3} in the kernel), {:.2} waits/frame, {:.2} preemptions/frame",
-            t.tid,
-            t.name,
-            t.cpu.as_secs_f64() * 1e3 / n,
-            t.system.as_secs_f64() * 1e3 / n,
-            t.voluntary as f64 / n,
-            t.involuntary as f64 / n
-        ));
-    }
+    extra.extend(thread_lines(&threads0, &threads, n));
     let med = |mut v: Vec<Duration>| {
         v.sort();
         v.get(v.len() / 2)
@@ -475,4 +463,29 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     };
     print!("{}", summary.render(a));
     Ok(())
+}
+
+/// Per-thread CPU between two snapshots, per frame.
+pub(crate) fn thread_lines(
+    before: &[styx_pipeline::device::ThreadUsage],
+    after: &[styx_pipeline::device::ThreadUsage],
+    n: f64,
+) -> Vec<String> {
+    after
+        .iter()
+        .map(|t| {
+            let b = before.iter().find(|b| b.tid == t.tid);
+            let cpu = t.cpu.saturating_sub(b.map_or(Duration::ZERO, |b| b.cpu));
+            let sys = t.system.saturating_sub(b.map_or(Duration::ZERO, |b| b.system));
+            format!(
+                "thread {} ({}): {:.3} ms CPU/frame ({:.3} in the kernel), {:.2} waits/frame, {:.2} preemptions/frame",
+                t.tid,
+                t.name,
+                cpu.as_secs_f64() * 1e3 / n,
+                sys.as_secs_f64() * 1e3 / n,
+                (t.voluntary - b.map_or(0, |b| b.voluntary)) as f64 / n,
+                (t.involuntary - b.map_or(0, |b| b.involuntary)) as f64 / n
+            )
+        })
+        .collect()
 }

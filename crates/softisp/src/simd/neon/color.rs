@@ -133,18 +133,14 @@ pub(in crate::simd) unsafe fn rgb_to_uv(
     let mut i = 0;
     // SAFETY: 16 bytes of each input row at `2i`; 16 or 8 bytes written, `i + 8 <= width`.
     unsafe {
-        let c128 = vdupq_n_s16(128);
-        let chroma = |k: &[i16; 3], m: [int16x8_t; 3]| {
-            let s = vmlaq_n_s16(vmlaq_n_s16(vmulq_n_s16(m[0], k[0]), m[1], k[1]), m[2], k[2]);
-            vqmovun_s16(vaddq_s16(vrshrq_n_s16::<7>(s), c128))
-        };
+        let (ku, kv) = (ChromaTerms::new(&c.u), ChromaTerms::new(&c.v));
         while i + 8 <= width {
             let mean: [int16x8_t; 3] = std::array::from_fn(|ch| {
                 let s = vpaddlq_u8(vld1q_u8(top[ch].as_ptr().add(2 * i)));
                 let s = vpadalq_u8(s, vld1q_u8(bottom[ch].as_ptr().add(2 * i)));
                 vreinterpretq_s16_u16(vrshrq_n_u16::<2>(s))
             });
-            let (cu, cv) = (chroma(&c.u, mean), chroma(&c.v, mean));
+            let (cu, cv) = (ku.apply(mean), kv.apply(mean));
             if interleaved {
                 vst2_u8(u.as_mut_ptr().add(2 * i), uint8x8x2_t(cu, cv));
             } else {
@@ -155,6 +151,28 @@ pub(in crate::simd) unsafe fn rgb_to_uv(
         }
     }
     i
+}
+
+/// A row of Q7 chroma coefficients: `128 + ((k0 m0 + k1 m1 + k2 m2 + 64) >> 7)` of 2x2 means,
+/// saturated to 0..255 (as [`super::super::scalar::chroma`]). (Splitting the row by sign into
+/// 8-bit widening multiplies measured slower on the Cortex-A76 than these 16-bit ones.)
+#[derive(Clone, Copy)]
+pub(in crate::simd) struct ChromaTerms([i16; 3]);
+
+impl ChromaTerms {
+    pub(in crate::simd) fn new(k: &[i16; 3]) -> Self {
+        Self(*k)
+    }
+
+    /// Eight chroma samples of the 2x2 means `m`.
+    #[inline(always)]
+    pub(in crate::simd) unsafe fn apply(&self, m: [int16x8_t; 3]) -> uint8x8_t {
+        unsafe {
+            let k = &self.0;
+            let s = vmlaq_n_s16(vmlaq_n_s16(vmulq_n_s16(m[0], k[0]), m[1], k[1]), m[2], k[2]);
+            vqmovun_s16(vaddq_s16(vrshrq_n_s16::<7>(s), vdupq_n_s16(128)))
+        }
+    }
 }
 
 /// Eight table bytes for the clamped samples of `v` (four per 64-bit half), as one word.

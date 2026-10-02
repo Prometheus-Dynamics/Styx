@@ -79,11 +79,19 @@ fn packed_and_unpacked_decode_to_the_colour() {
         let out = rgb.process(frame(code, bytes, stride)).unwrap();
         assert_eq!(out.meta().format.code, FourCc::RG24);
         assert_eq!(out.meta().timestamp, 7);
-        assert!(out.planes()[0].data().chunks_exact(3).all(|p| p == want));
+        // Within a code: CPUs with FP16 arithmetic run the software ISP in fp16
+        // (`styx_softisp::Arithmetic`), which rounds where the integer path truncates.
+        let near = |a: u8, b: u8| a.abs_diff(b) <= 1;
+        assert!(
+            out.planes()[0]
+                .data()
+                .chunks_exact(3)
+                .all(|p| p.iter().zip(want).all(|(&a, b)| near(a, b)))
+        );
 
         let grey = SoftIspDecoder::new(FourCc::new(code), SoftIspOutput::Luma, 64, 64).unwrap();
         let out = grey.process(frame(code, bytes, stride)).unwrap();
-        assert!(out.planes()[0].data().iter().all(|&v| v == 120));
+        assert!(out.planes()[0].data().iter().all(|&v| near(v, 120)));
 
         let nv12 = SoftIspDecoder::new(FourCc::new(code), SoftIspOutput::Nv12, 64, 64).unwrap();
         let out = nv12.process(frame(code, bytes, stride)).unwrap();
@@ -117,7 +125,13 @@ fn parameters_apply_and_stats_are_kept() {
         ..Default::default()
     });
     let out = dec.process(frame(*b"pBAA", &packed, W / 4 * 5)).unwrap();
-    assert_eq!(out.planes()[0].data()[..3], [200, 100, 100]);
+    let px = &out.planes()[0].data()[..3];
+    assert!(
+        px.iter()
+            .zip([200u8, 100, 100])
+            .all(|(a, b)| a.abs_diff(b) <= 1),
+        "{px:?}"
+    );
     let stats = dec.last_stats().unwrap();
     assert_eq!(stats.gains, [2.0, 1.0, 1.0]);
     assert_eq!(stats.samples, (W * H / 4) as u32);

@@ -12,6 +12,7 @@ const H: usize = 48;
 fn stats_params(config: StatsConfig) -> IspParams {
     IspParams {
         stats: Some(config),
+        arithmetic: Arithmetic::Int,
         ..Default::default()
     }
 }
@@ -37,8 +38,30 @@ fn zone_sums_counts_luma_and_histogram() {
         histogram_bins: 64,
         ..Default::default()
     };
-    let (_, stats) = rgb(format, &stats_params(config), &bytes, stride, Scale::Full);
-    let stats = stats.unwrap();
+    // The integer arithmetic exactly; fp16 within its rounding (it stretches the range above
+    // black to 4095 where the integer path reaches 4092, and rounds where that truncates).
+    let half = IspParams {
+        arithmetic: Arithmetic::Half,
+        ..stats_params(config)
+    };
+    let (_, int) = rgb(format, &stats_params(config), &bytes, stride, Scale::Full);
+    let (int, half) = (
+        int.unwrap(),
+        rgb(format, &half, &bytes, stride, Scale::Full).1.unwrap(),
+    );
+    assert_eq!(half.histogram, int.histogram);
+    assert_eq!((half.samples, half.gains), (int.samples, int.gains));
+    for (h, i) in half.zones.iter().zip(&int.zones) {
+        assert_eq!(h.count, i.count);
+        for (a, b) in [(h.r_sum, i.r_sum), (h.g_sum, i.g_sum), (h.b_sum, i.b_sum)] {
+            assert!(
+                a.abs_diff(b) as f64 <= 0.002 * b as f64 + 50.0,
+                "{a} vs {b}"
+            );
+        }
+        assert!((h.luma - i.luma).abs() < 2e-3, "{} vs {}", h.luma, i.luma);
+    }
+    let stats = int;
     assert_eq!(
         (stats.zones_x, stats.zones_y, stats.zones.len()),
         (4, 4, 16)

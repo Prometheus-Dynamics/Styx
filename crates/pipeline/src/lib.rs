@@ -54,5 +54,5 @@ pub use controller::{Controller, SensorValues, Step};
 pub use error::{PipelineError, Result};
 pub use isp::IspSettings;
 pub use sensor::SensorInfo;
-pub use soft::{SoftLoop, SoftOutput};
+pub use soft::{SoftLoop, SoftOutput, SoftTiming};
 pub use styx_algo;

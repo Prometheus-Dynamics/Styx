@@ -100,6 +100,8 @@ struct Run {
     means: Vec<[f64; 3]>,
     wb: [f64; 3],
     locked: Option<usize>,
+    /// Frames the algorithms ran on (settled, they skip some).
+    runs: usize,
 }
 
 fn run(rec: &RawRecording, frames: u64, record: Option<Shared>) -> Run {
@@ -120,6 +122,7 @@ fn run(rec: &RawRecording, frames: u64, record: Option<Shared>) -> Run {
         means: Vec::new(),
         wb: [1.0; 3],
         locked: None,
+        runs: 0,
     };
     for i in 0..frames {
         let stride = sensor.stride();
@@ -145,6 +148,7 @@ fn run(rec: &RawRecording, frames: u64, record: Option<Shared>) -> Run {
         out.totals.push(values.total_exposure());
         out.means.push(rgb_means(&rgb, w, h, w * 3));
         out.wb = o.step.isp.wb;
+        out.runs += usize::from(!o.stats.colour.zones.is_empty());
         if o.step.params.ae.locked && out.locked.is_none() {
             out.locked = Some(i as usize);
         }
@@ -180,7 +184,8 @@ fn the_loop_converges_on_a_virtual_sensor_and_replays() {
     // The algorithms' recording replays exactly.
     let bytes = log.0.lock().unwrap().clone();
     let recording = Recording::read(bytes.as_slice()).unwrap();
-    assert_eq!(recording.records.len(), 60);
+    assert_eq!(recording.records.len(), r.runs);
+    assert!(r.runs < 60 && r.runs >= 30, "{} runs", r.runs);
     let mut p = Pipeline::from_tuning(&Tuning::default()).unwrap();
     assert!(replay(&mut p, &recording).unwrap().mismatches.is_empty());
     // Same inputs, same outputs.

@@ -6,6 +6,8 @@
 //!
 //! Every dispatcher returns the [`SimdBackend`] that did the vector part of the work.
 
+pub mod f16;
+pub mod half;
 pub mod scalar;
 
 pub use styx_core::simd::{SimdBackend, X86FeatureSet, strongest_backend};

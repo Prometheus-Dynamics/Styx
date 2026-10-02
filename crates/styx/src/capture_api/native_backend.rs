@@ -164,7 +164,8 @@ pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
             modes.extend(capture_mode(m, f.0));
         }
     }
-    let processed = super::native_isp::processed_modes(&modes);
+    let binned = super::native_isp::isp_name(info) == "software";
+    let processed = super::native_isp::processed_modes(&modes, binned);
     modes.extend(processed);
     let mut properties = info.properties();
     properties.push(("isp".into(), super::native_isp::isp_name(info).into()));
@@ -330,13 +331,14 @@ pub(super) fn start_native(
     };
     let provider = styx_native::NativeProvider::new(SensorLibrary::system())
         .with_options(CameraOptions::default());
-    let mut camera = provider.open_camera(key).map_err(native_err)?;
     if super::native_isp::is_processed(mode.format.code) {
+        let camera = super::native_isp::open_for_isp(&provider, key, config)?;
         // Exposure and gain belong to the 3A loop; initial controls are not applied.
         return super::native_isp::start_processed(
             camera, mode, interval, descriptor, config, queue,
         );
     }
+    let mut camera = provider.open_camera(key).map_err(native_err)?;
     let settings = StreamSettings {
         width: mode.format.resolution.width.get(),
         height: mode.format.resolution.height.get(),
