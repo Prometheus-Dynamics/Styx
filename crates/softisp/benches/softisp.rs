@@ -284,6 +284,23 @@ fn settings(c: &mut Criterion) {
                 isp.set_params(p).unwrap();
             })
         });
+        c.bench_function(&format!("set_params/{name}_new_tone_curve"), |bn| {
+            bn.iter(|| {
+                k += 1;
+                let mut p = base.clone();
+                // A Raspberry Pi-like contrast curve of 32 points, moving a little each time.
+                let e = k as f32 * 1e-5;
+                p.tone = Some(ToneCurve::Points {
+                    points: (0..32)
+                        .map(|i| {
+                            let x = i as f32 / 31.0;
+                            [x, (x.powf(0.45) + e).min(1.0)]
+                        })
+                        .collect(),
+                });
+                isp.set_params(p).unwrap();
+            })
+        });
         c.bench_function(&format!("set_params/{name}_new_gains"), |bn| {
             bn.iter(|| {
                 k += 1;
