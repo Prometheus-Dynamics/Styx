@@ -132,12 +132,20 @@ impl Worker {
         }
         let w = p.width;
         let row = &mut self.slots[slot];
-        src.unpack(&mut self.stage, ry, p.height, w, &mut row[PAD..PAD + w]);
+        if let (Arith::Half(h), RawPacking::Csi2Raw10) = (&p.arith, src.packing) {
+            let bytes = src.row(&mut self.stage, ry, p.height, src.packing.row_bytes(w));
+            let lsc = h.lsc.as_ref().map(|l| l.row(ry));
+            let (black, gain) = (h.black[ry & 1], h.gain[ry & 1]);
+            half::front_raw10_row(bytes, &mut row[PAD..PAD + w], black, gain, lsc, w);
+        } else {
+            src.unpack(&mut self.stage, ry, p.height, w, &mut row[PAD..PAD + w]);
+        }
         match &p.arith {
             Arith::Int(ip) => {
                 let gains = ip.gains.row(ry, &mut self.gains);
                 simd::front_row(&mut row[PAD..], ip.black[ry & 1], gains, ip.shift, w);
             }
+            Arith::Half(_) if src.packing == RawPacking::Csi2Raw10 => {}
             Arith::Half(h) => {
                 let lsc = h.lsc.as_ref().map(|l| l.row(ry));
                 half::front_row(&mut row[PAD..], h.black[ry & 1], h.gain[ry & 1], lsc, w);

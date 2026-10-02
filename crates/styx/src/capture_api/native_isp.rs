@@ -73,12 +73,13 @@ pub(crate) fn processed_modes(raw: &[Mode]) -> Vec<Mode> {
 /// Opens camera `key` for processed capture: with the software ISP, raw frames go into cached
 /// dma-heap buffers when the system has the heap ([`soft_capture_memory`]; the CPU reads the
 /// receiver's own MMAP buffers uncached), unless the configuration asks for the driver's
-/// buffers. Falls back to the driver's buffers if the heap cannot be used.
+/// buffers. Falls back to the driver's buffers if the heap cannot be used. Returns the camera
+/// and whether its raw buffers are cached.
 pub(crate) fn open_for_isp(
     provider: &styx_native::NativeProvider,
     key: &str,
     config: &StyxConfig,
-) -> Result<NativeCamera, CaptureError> {
+) -> Result<(NativeCamera, bool), CaptureError> {
     let (cameras, _) = provider.discover_cameras();
     let memory = match cameras.into_iter().find(|c| c.key == key) {
         Some(info)
@@ -95,14 +96,14 @@ pub(crate) fn open_for_isp(
                 ..Default::default()
             };
             match NativeCamera::open(info, options) {
-                Ok(c) => Ok(c),
+                Ok(c) => Ok((c, true)),
                 Err(e) => {
                     tracing::warn!(backend = "native", error = %e, "cached capture buffers unavailable");
-                    provider.open_camera(key).map_err(err)
+                    provider.open_camera(key).map(|c| (c, false)).map_err(err)
                 }
             }
         }
-        _ => provider.open_camera(key).map_err(err),
+        _ => provider.open_camera(key).map(|c| (c, false)).map_err(err),
     }
 }
 
@@ -187,7 +188,7 @@ fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues)
 /// Starts processed capture on an opened camera.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn start_processed(
-    camera: NativeCamera,
+    (camera, cached): (NativeCamera, bool),
     mode: Mode,
     interval: Option<Interval>,
     descriptor: CaptureDescriptor,
@@ -273,6 +274,8 @@ pub(super) fn start_processed(
                 .unwrap_or_else(crate::planner::cost::default_softisp_threads);
             tracing::info!(backend = "native", threads, "software ISP threads");
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
+            // Rows of cached buffers need no staging copy.
+            p.soft_loop().set_copy_input(!cached);
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = if code == FourCc::NV12 {

@@ -330,17 +330,14 @@ pub(super) fn start_native(
     };
     let provider = styx_native::NativeProvider::new(SensorLibrary::system())
         .with_options(CameraOptions::default());
-    let processed = super::native_isp::is_processed(mode.format.code);
-    let mut camera = match processed {
-        true => super::native_isp::open_for_isp(&provider, key, config)?,
-        false => provider.open_camera(key).map_err(native_err)?,
-    };
-    if processed {
+    if super::native_isp::is_processed(mode.format.code) {
+        let camera = super::native_isp::open_for_isp(&provider, key, config)?;
         // Exposure and gain belong to the 3A loop; initial controls are not applied.
         return super::native_isp::start_processed(
             camera, mode, interval, descriptor, config, queue,
         );
     }
+    let mut camera = provider.open_camera(key).map_err(native_err)?;
     let settings = StreamSettings {
         width: mode.format.resolution.width.get(),
         height: mode.format.resolution.height.get(),

@@ -130,6 +130,72 @@ pub(in crate::simd) unsafe fn front(
     x
 }
 
+const RAW10_HIGH: [u8; 16] = [
+    0, 0xFF, 1, 0xFF, 2, 0xFF, 3, 0xFF, 5, 0xFF, 6, 0xFF, 7, 0xFF, 8, 0xFF,
+];
+const RAW10_LOW: [u8; 16] = [
+    4, 0xFF, 4, 0xFF, 4, 0xFF, 4, 0xFF, 9, 0xFF, 9, 0xFF, 9, 0xFF, 9, 0xFF,
+];
+const RAW10_SHIFT: [i16; 8] = [0, -2, -4, -6, 0, -2, -4, -6];
+
+/// # Safety
+/// See the module; `src` holds the packed row (`width / 4 * 5` bytes at least), `dst` and the
+/// lens shading rows `width` samples.
+#[target_feature(enable = "neon,fp16")]
+pub(in crate::simd) unsafe fn front_raw10(
+    src: &[u8],
+    dst: &mut [u16],
+    black: [u16; 2],
+    gain: [u16; 2],
+    lsc: Option<LscRow>,
+    width: usize,
+) -> usize {
+    let (mut x, mut off) = (0, 0);
+    // SAFETY: 16 bytes read at `off` (checked) and 8 samples written at `x`, `x + 8 <= width`.
+    unsafe {
+        let (hi_t, lo_t) = (vld1q_u8(RAW10_HIGH.as_ptr()), vld1q_u8(RAW10_LOW.as_ptr()));
+        let sh = vld1q_s16(RAW10_SHIFT.as_ptr());
+        let (three, magic) = (vdupq_n_u16(3), vdupq_n_u16(0x6400));
+        let (bl, gn) = (pair(black[0], black[1]), pair(gain[0], gain[1]));
+        let (zero, max) = (splat(0), splat(H_MAX));
+        let base = |off: usize| {
+            let v = vld1q_u8(src.as_ptr().add(off));
+            let high = vshlq_n_u16::<2>(vreinterpretq_u16_u8(vqtbl1q_u8(v, hi_t)));
+            let low = vandq_u16(
+                vshlq_u16(vreinterpretq_u16_u8(vqtbl1q_u8(v, lo_t)), sh),
+                three,
+            );
+            let bits = vorrq_u16(vorrq_u16(high, low), magic);
+            vmulq_f16(
+                vmaxq_f16(vsubq_f16(vreinterpretq_f16_u16(bits), bl), zero),
+                gn,
+            )
+        };
+        let out = dst.as_mut_ptr();
+        match lsc {
+            None => {
+                while x + 8 <= width && off + 16 <= src.len() {
+                    let y = vminq_f16(base(off), max);
+                    vst1q_u16(out.add(x), vreinterpretq_u16_f16(y));
+                    x += 8;
+                    off += 10;
+                }
+            }
+            Some(l) => {
+                let t = splat(l.t);
+                while x + 8 <= width && off + 16 <= src.len() {
+                    let g = vfmaq_f16(ld(l.a, x), ld(l.d, x), t);
+                    let y = vminq_f16(vmulq_f16(base(off), g), max);
+                    vst1q_u16(out.add(x), vreinterpretq_u16_f16(y));
+                    x += 8;
+                    off += 10;
+                }
+            }
+        }
+    }
+    x
+}
+
 /// The three outputs before the tone curve for the 8 pixels at `x`.
 #[inline(always)]
 unsafe fn colour8(

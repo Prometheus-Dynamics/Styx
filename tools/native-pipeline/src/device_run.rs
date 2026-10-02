@@ -72,6 +72,14 @@ pub fn soft(a: &Args) -> Result<(), String> {
     let mut p =
         SoftPipeline::open(cam, &settings(a), &tuning, a.threads).map_err(|e| e.to_string())?;
     p.soft_loop().set_base_params(crate::soft_base(a));
+    // Rows of cached (dma-heap) buffers need no staging copy.
+    let cached = a.heap.is_some()
+        || (!a.driver_buffers
+            && matches!(
+                styx_pipeline::device::soft_capture_memory(),
+                styx_native::BufferMemory::DmaHeap(_)
+            ));
+    p.soft_loop().set_copy_input(!cached);
     if a.every_frame {
         p.soft_loop().set_settled_rate(None);
     }

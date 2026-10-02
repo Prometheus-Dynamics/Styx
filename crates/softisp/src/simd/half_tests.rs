@@ -94,6 +94,45 @@ fn front_matches_the_oracle() {
 }
 
 #[test]
+fn packed_front_matches_unpack_then_front() {
+    let mut rng = Rng(9);
+    for w in [4, 8, 12, 16, 36, 64, 100] {
+        let bytes: Vec<u8> = (0..crate::simd::raw10_bytes(w) + 7)
+            .map(|_| rng.next() as u8)
+            .collect();
+        let a = rng.working(w);
+        let d: Vec<u16> = rng
+            .working(w)
+            .iter()
+            .map(|&v| f16::mul(v, 0x0400))
+            .collect();
+        let black = [f16::from_f64(1088.0), f16::from_f64(1090.0)];
+        let gain = [f16::from_f64(5.1), f16::from_f64(3.3)];
+        for lsc in [
+            None,
+            Some(LscRow {
+                a: &a,
+                d: &d,
+                t: 0x3555,
+            }),
+        ] {
+            let mut want = vec![0u16; w];
+            crate::simd::scalar::unpack_raw10_row(&bytes, &mut want, w);
+            SCALAR_ONLY.with(|s| s.set(true));
+            front_row(&mut want, black, gain, lsc, w);
+            SCALAR_ONLY.with(|s| s.set(false));
+            both(|| {
+                let mut got = vec![GUARD; w + 1];
+                front_raw10_row(&bytes, &mut got, black, gain, lsc, w);
+                assert_eq!(got[w], GUARD);
+                assert_eq!(got[..w], want[..], "width {w}");
+                got
+            });
+        }
+    }
+}
+
+#[test]
 fn colour_matches_the_oracle() {
     let mut rng = Rng(11);
     let m = [[1.6, -0.4, -0.2], [-0.3, 1.5, -0.2], [-0.1, -0.5, 1.6]];

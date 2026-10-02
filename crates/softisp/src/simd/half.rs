@@ -248,6 +248,42 @@ pub fn front_row(
     }
 }
 
+/// [`front_row`] straight from a CSI-2 packed RAW10 row (`src` holds
+/// [`super::raw10_bytes`]`(width)` bytes): unpacking fused with the front end.
+pub fn front_raw10_row(
+    src: &[u8],
+    dst: &mut [u16],
+    black: [u16; 2],
+    gain: [u16; 2],
+    lsc: Option<LscRow>,
+    width: usize,
+) {
+    let (src, dst) = (&src[..super::raw10_bytes(width)], &mut dst[..width]);
+    let lsc = lsc.map(|l| LscRow {
+        a: &l.a[..width],
+        d: &l.d[..width],
+        t: l.t,
+    });
+    let done = half_leaf!(front_raw10(src, dst, black, gain, lsc, width));
+    debug_assert_eq!(done % 4, 0);
+    super::scalar::unpack_raw10_row(&src[done / 4 * 5..], &mut dst[done..], width - done);
+    let lsc = lsc.map(|l| LscRow {
+        a: &l.a[done..],
+        d: &l.d[done..],
+        t: l.t,
+    });
+    // `done` is a multiple of 4: column parities are unchanged.
+    for (x, v) in dst[done..].iter_mut().enumerate() {
+        let p = x & 1;
+        let d = f16::max(f16::sub(f16::biased(*v), black[p]), 0);
+        let mut y = f16::mul(d, gain[p]);
+        if let Some(l) = &lsc {
+            y = f16::mul(y, f16::fma(l.a[x], l.d[x], l.t));
+        }
+        *v = f16::min(y, H_MAX);
+    }
+}
+
 /// Bilinear demosaic, colour matrix and tone curve of one row (rows above, at and below from
 /// column -1, as the integer kernels).
 pub fn colour_row(
@@ -287,13 +323,11 @@ pub fn colour_row(
 /// `f32` to fp16 bits, rounded to nearest (as [`f16::from_f32`]), for tables.
 pub fn from_f32_row(src: &[f32], dst: &mut [u16]) {
     let n = src.len().min(dst.len());
-    #[allow(unused_mut)]
-    let mut done = 0;
+    // SAFETY: NEON is part of AArch64; both slices hold `n` elements.
     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
-    {
-        // SAFETY: NEON is part of AArch64; both slices hold `n` elements.
-        done = unsafe { neon::half::from_f32(&src[..n], &mut dst[..n]) };
-    }
+    let done = unsafe { neon::half::from_f32(&src[..n], &mut dst[..n]) };
+    #[cfg(not(all(feature = "neon", target_arch = "aarch64")))]
+    let done = 0;
     for (d, &v) in dst[done..n].iter_mut().zip(&src[done..n]) {
         *d = f16::from_f32(v);
     }

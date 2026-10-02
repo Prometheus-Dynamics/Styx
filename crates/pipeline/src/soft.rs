@@ -147,6 +147,13 @@ impl SoftLoop {
         self.applied = None;
     }
 
+    /// Whether raw rows are copied into a cached buffer before unpacking (default: yes, for
+    /// buffers the CPU maps uncached; frames in cached memory need no copy). See
+    /// [`SoftIsp::set_copy_input`].
+    pub fn set_copy_input(&mut self, copy: bool) {
+        self.isp.set_copy_input(copy);
+    }
+
     /// The controller (controls, recording).
     pub fn controller(&mut self) -> &mut Controller {
         &mut self.controller
