@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use styx_algo::{IDENTITY, LensShading, Matrix3, Params, Pwl};
 use styx_pisp::be::BackEnd;
 use styx_pisp::fe::{FrontEnd, gain_4_10};
-use styx_pisp::uapi::{BlaConfig, FeRgbyConfig};
+use styx_pisp::uapi::{
+    BayerOrder, BeOutputFormatConfig, BlaConfig, FeRgbyConfig, ImageFormatConfig, image_format,
+    rgb_enable,
+};
 use styx_softisp as soft;
 
 /// What the ISP applies to a frame: everything is normalised (full scale 1.0) and hardware
@@ -141,6 +144,49 @@ impl IspSettings {
     }
 }
 
+/// The back end config every frame starts from: the fixed Bayer pipeline (black level, white
+/// balance, demosaic, CCM, sharpening, false colour, gamma) and both outputs at their sizes,
+/// with the full-range BT.601 conversion on YUV outputs.
+pub fn be_template(
+    input: ImageFormatConfig,
+    order: BayerOrder,
+    black_level: f64,
+    outputs: [Option<ImageFormatConfig>; 2],
+) -> crate::Result<BackEnd> {
+    let out0 = outputs[0].ok_or_else(|| crate::PipelineError::Config("no output 0".into()))?;
+    let mut be = BackEnd::simple_bayer(
+        input,
+        order,
+        level16(black_level),
+        (1.0, 1.0, 1.0),
+        None,
+        out0.format,
+    );
+    let yuv = |f: u32| f & (image_format::SAMPLING_MASK | image_format::PLANARITY_MASK) != 0;
+    let jpeg = styx_pisp::be::defaults::encoding("jpeg").expect("jpeg encoding");
+    for (i, o) in outputs.iter().enumerate() {
+        let Some(o) = o else { continue };
+        be.set_output_format(
+            i,
+            BeOutputFormatConfig {
+                image: *o,
+                ..Default::default()
+            },
+        );
+        if (o.width, o.height) != (input.width, input.height) {
+            be.set_smart_resize(i, o.width, o.height);
+        }
+        let mut rgb = be.config().global.rgb_enables | rgb_enable::output(i);
+        if yuv(o.format) {
+            be.set_csc(i, jpeg.ycbcr);
+            rgb |= rgb_enable::csc(i);
+        }
+        let g = be.config().global;
+        be.set_global(g.bayer_enables, rgb, order);
+    }
+    Ok(be)
+}
+
 /// A normalised level on the 16-bit scale the PiSP works in.
 pub fn level16(v: f64) -> u16 {
     (v * 65536.0).round().clamp(0.0, 65535.0) as u16
@@ -245,6 +291,53 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn back_end_template_with_two_outputs_prepares() {
+        use styx_pisp::format::{compute_stride_align, formats};
+        let mut input = ImageFormatConfig {
+            width: 1280,
+            height: 800,
+            format: formats::BAYER16,
+            ..Default::default()
+        };
+        compute_stride_align(&mut input, 64);
+        let out = |w: u16, h: u16, format: u32| {
+            let mut f = ImageFormatConfig {
+                width: w,
+                height: h,
+                format,
+                ..Default::default()
+            };
+            compute_stride_align(&mut f, 64);
+            f
+        };
+        let mut be = be_template(
+            input,
+            BayerOrder::Bggr,
+            64.0 / 1024.0,
+            [
+                Some(out(1280, 800, formats::NV12)),
+                Some(out(640, 400, formats::RGB888)),
+            ],
+        )
+        .unwrap();
+        IspSettings::from_params(&params(), 0, 1.0).apply_be(&mut be);
+        let g = be.config().global;
+        for bit in [
+            rgb_enable::output(0),
+            rgb_enable::output(1),
+            rgb_enable::csc(0),
+        ] {
+            assert!(g.rgb_enables & bit != 0, "{bit:#x}");
+        }
+        // RGB output 1 needs no colour space conversion; it is resampled to half size.
+        assert_eq!(g.rgb_enables & rgb_enable::csc(1), 0);
+        let cfg = be.prepare().unwrap();
+        assert!(cfg.num_tiles >= 3, "{}", cfg.num_tiles);
+        assert!(be.config().global.rgb_enables & rgb_enable::resample(1) != 0);
+        assert!(be_template(input, BayerOrder::Bggr, 0.0, [None, None]).is_err());
     }
 
     #[test]

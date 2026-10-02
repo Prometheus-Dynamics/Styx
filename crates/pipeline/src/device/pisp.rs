@@ -23,15 +23,13 @@ use styx_pisp::device::{
     BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup,
 };
 use styx_pisp::fe::FrontEnd;
-use styx_pisp::uapi::{
-    BayerOrder, BeOutputFormatConfig, ImageFormatConfig, fe_enable, image_format, rgb_enable,
-};
+use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, fe_enable};
 use styx_softisp::CfaPattern;
 
 use super::{apply_request, sensor_values};
 use crate::controller::{Controller, SensorValues, Step};
 use crate::error::{PipelineError, Result};
-use crate::isp::level16;
+use crate::isp::{be_template, level16};
 use crate::sensor::SensorInfo;
 use crate::stats;
 
@@ -119,49 +117,6 @@ fn bayer(c: CfaPattern) -> BayerOrder {
         CfaPattern::Grbg => BayerOrder::Grbg,
         CfaPattern::Gbrg => BayerOrder::Gbrg,
     }
-}
-
-/// The back end config every frame starts from: the fixed Bayer pipeline (black level, white
-/// balance, demosaic, CCM, sharpening, false colour, gamma) and both outputs at their sizes,
-/// with the full-range BT.601 conversion on YUV outputs.
-pub fn be_template(
-    input: ImageFormatConfig,
-    order: BayerOrder,
-    black_level: f64,
-    outputs: [Option<ImageFormatConfig>; 2],
-) -> Result<BackEnd> {
-    let out0 = outputs[0].ok_or_else(|| PipelineError::Config("no output 0".into()))?;
-    let mut be = BackEnd::simple_bayer(
-        input,
-        order,
-        level16(black_level),
-        (1.0, 1.0, 1.0),
-        None,
-        out0.format,
-    );
-    let yuv = |f: u32| f & (image_format::SAMPLING_MASK | image_format::PLANARITY_MASK) != 0;
-    let jpeg = styx_pisp::be::defaults::encoding("jpeg").expect("jpeg encoding");
-    for (i, o) in outputs.iter().enumerate() {
-        let Some(o) = o else { continue };
-        be.set_output_format(
-            i,
-            BeOutputFormatConfig {
-                image: *o,
-                ..Default::default()
-            },
-        );
-        if (o.width, o.height) != (input.width, input.height) {
-            be.set_smart_resize(i, o.width, o.height);
-        }
-        let mut rgb = be.config().global.rgb_enables | rgb_enable::output(i);
-        if yuv(o.format) {
-            be.set_csc(i, jpeg.ycbcr);
-            rgb |= rgb_enable::csc(i);
-        }
-        let g = be.config().global;
-        be.set_global(g.bayer_enables, rgb, order);
-    }
-    Ok(be)
 }
 
 /// A native camera through the PiSP. See the [module documentation](self).
