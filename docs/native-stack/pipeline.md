@@ -98,16 +98,22 @@ within 5% of its final value; output level = mean of the output luma.
 | | PiSP | software ISP |
 |---|---|---|
 | frame rate (160 frames) | 30.000 fps, no gaps | 30.000 fps, no gaps |
-| open → first frame | 75.6 ms | 70.3 ms |
-| open → first AE-locked frame | 475.6 ms (frame 12) | 670.3 ms (frame 18) |
-| AE start: exposure / output within 5%, locked | 12 / 6 / 12 frames, overshoot 0% | 17 / 12 / 18, 4.5% |
-| darker step (¼): exposure / output, locked | 12 / 7 frames, 14; overshoot 4.5% | 12 / 8, 14; 4.6% |
-| brighter step (3×): exposure / output, locked | 15 / 14 frames, 17; 3.7% | 20 / 20, 22; 4.4% |
-| sensor timestamp (frame start) → output ready | 9.79 ms median, 10.55 p95 | 23.4 ms median, 25.4 p95 |
-| dequeue → output ready | 2.26 ms (back end job 0.84, config + tiles 0.024) | 15.0 ms |
-| CPU per frame (whole process) | 3.7 ms (11% of a core) | 18.7 ms (56%) |
-| peak RSS | 27.5 MiB | 12.8 MiB |
-| AWB (Bayesian, HeliOS tuning) | 2533 K, output R/G 1.10 B/G 0.87 | 3127 K, R/G 1.31 B/G 0.87 |
+| open → first frame | 74.6 ms (3 of 3 runs) | 69.9 ms |
+| open → first AE-locked frame | 474.6 ms, frame 12 (3 of 3 runs) | 670 / 503 / 670 ms, frame 18 / 13 / 18 |
+| AE start: exposure / output within 5%, locked | 8 / 8 / 12 frames, overshoot 4.9% | 17 / 13 / 17, 3.6% |
+| darker step (¼): exposure / output, locked | 13 / 7 frames, 15; overshoot 3.4% | 13 / 8, 14; 4.7% |
+| brighter step (3×): exposure / output, locked | 14 / 13 frames, 16; 4.2% | 19 / 18, 21; 4.9% |
+| sensor timestamp (frame start) → output ready | 9.21 ms median, 9.85 p95 | 22.4 ms median, 22.8 p95 (17.4 with CMA buffers) |
+| dequeue → output ready | 1.71 ms (back end job 0.84, config + tiles 0.045) | 14.2 ms (9.1 with CMA buffers) |
+| CPU per frame (whole process) | 3.1 ms (9.2% of a core) | 15.8 ms (47%); 10.7 ms (32%) with CMA buffers |
+| peak RSS | 27.4 MiB | 12.7 MiB (7.9 with CMA buffers) |
+| AWB (Bayesian, HeliOS tuning) | 2533 K, output R/G 1.19 B/G 0.91 | 2557 K, R/G 1.24 B/G 0.90 |
+
+Run of 2026-10-01 with lens shading on both paths (the PiSP's LSC block since then), after the
+fixes below; an earlier run without PiSP lens shading gave the same rates and convergence
+(PiSP AE start 12 frames, CPU 3.7 ms) and is in the git history of this file. "CMA buffers":
+`--heap linux,cma`, capture into cached dma-heap buffers instead of the driver's MMAP ones,
+which the CPU reads uncached: reading the raw frame is a third of the software path's time.
 
 * Sensor values were read back from embedded data on every frame; statistics and raw frames
   always had the same sequence; no frame was dropped.
@@ -116,6 +122,11 @@ within 5% of its final value; output level = mean of the output luma.
   mean of the output and, for the software path, writing the raw recording).
 * The light is warm: the Bayesian AWB (CT curve from the tuning) keeps some of it, grey world
   (default tuning, host replay of the recorded frames) ends at R/G 0.997, B/G 1.006.
+* Through the Styx API (`examples/native_processed.rs`): `plan_best` for NV12, luma and RG24
+  on the native OV9782 picks the native NV12 / RG24 modes with the PiSP (the raw modes are
+  rejected: "raw pBAA would need a decoder without 3A"); capture runs at 120.625 fps (the plan
+  takes the fastest rate for latency), start → first frame 78-80 ms, exposure settled in 12
+  frames, 14.7-15.9% of a core, saved frames `native-processed-{nv12,luma,rgb}`.
 * libcamera on the same device and scene (the compare harness, `tools/compare` on
   `native/compare`, Styx's libcamera backend, NV12, median of 3): open → first frame 103 ms,
   open → AE converged 635 ms (raw BYR2: 568 ms). Native: 76 ms and 476 ms (PiSP).
@@ -128,20 +139,18 @@ Found on the way: with the kernel driver's default flips (both on) the OV9782's 
 and the picture is turned against libcamera's, which runs them off; the description now
 defaults to flips off (BGGR, upright). A frame lasts VTS + 1 lines (measured at 30/60/120 fps):
 `controls.frame_length_extra_lines = 1`. Every stop request timed out (1 s, "stop request
-failed: -110") in the runs above: the bridge was served through the reactor, which blocks in
-`vb2_fop_poll` while `STREAMON`/`STREAMOFF` hold the receiver's node lock. native/harden's event
-thread (own `poll`, quiesced around `STREAMON`/`STREAMOFF`) fixes that; the external route
-quiesces it around the front end's `STREAMON`/`STREAMOFF` too (`start_external` spawns it
-quiesced, `resume_external` after the front end started, `quiesce_external` before it stops).
-Not yet re-run on the device.
+failed: -110"), first because the bridge was served through the reactor that blocks in
+`vb2_fop_poll` while `STREAMOFF` holds the node lock (fixed on native/harden: own `poll`,
+quiesced around `STREAMON`/`STREAMOFF`), then because rp1-cfe stops the receiver when the
+*last* node stops, which with embedded data is the embedded node, stopped after the event
+thread had gone (fixed here: stop it first). No stop timeouts since, on either path.
 
 ## Gaps
 
-* PiSP lens shading is applied since the device runs above (the ALSC tables resampled to the
-  back end's 33x33 grid, packed as the Raspberry Pi IPA does; tested on the host, not yet on
-  the device). TDN/sharpening strength/denoise follow libpisp defaults, not the tuning.
+* PiSP lens shading: the ALSC tables resampled to the back end's 33x33 grid, packed as the
+  Raspberry Pi IPA does; runs on the device, not compared against libcamera's output. TDN/sharpening strength/denoise follow libpisp defaults, not the tuning.
 * The front end statistics set-up is fixed (uniform AGC weights; AGC meters the AWB zones).
-* Styx capture of processed native modes (`native_isp.rs`) is planned and unit-tested on the
-  host, not yet run on the device; it uses output 0 only (the tool uses both outputs).
+* Styx capture of processed native modes uses output 0 only (the tool uses both outputs); the
+  planner's second-output / pyramid logic is libcamera-only.
 * Brightness changes were forced exposure steps, not changes of the light.
 * The software ISP runs single-threaded here (`rayon` off).
