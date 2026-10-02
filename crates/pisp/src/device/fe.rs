@@ -1,5 +1,6 @@
 //! The front end in the `rp1-cfe` media graph.
 
+use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use styx_kernel::FourCc;
@@ -43,6 +44,9 @@ pub struct FrontEndSetup {
     pub image_output: bool,
     /// Buffers per queue.
     pub buffers: u32,
+    /// Leave the receiver's embedded data link (`csi2` → `rp1-cfe-embedded`) as it is
+    /// (whoever reads the sensor's embedded data enables it and streams that node).
+    pub keep_embedded: bool,
 }
 
 /// One frame's worth of front end results.
@@ -58,6 +62,34 @@ pub struct FeFrame {
     pub raw: Option<(u32, Vec<u8>)>,
 }
 
+/// A raw frame left dequeued by [`FrontEndDevice::next_held`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeldImage {
+    /// Buffer index (also the index of its dma-buf in [`FrontEndDevice::image_dmabufs`]).
+    pub index: u32,
+    /// Frame sequence.
+    pub sequence: u32,
+    /// Capture timestamp (`CLOCK_MONOTONIC`).
+    pub timestamp: Duration,
+    /// Payload bytes.
+    pub bytes_used: usize,
+    /// The receiver flagged the frame.
+    pub error: bool,
+}
+
+/// One frame's statistics and its raw frame, held.
+#[derive(Debug)]
+pub struct FeHeld {
+    /// Statistics buffer sequence.
+    pub sequence: u32,
+    /// Statistics timestamp.
+    pub timestamp: Duration,
+    /// Decoded statistics.
+    pub stats: Statistics,
+    /// The raw frame, if the raw output is enabled.
+    pub image: Option<HeldImage>,
+}
+
 /// The front end path, set up and holding its buffers.
 pub struct FrontEndDevice {
     _media: MediaDevice,
@@ -65,6 +97,7 @@ pub struct FrontEndDevice {
     config: Queue,
     image: Option<Queue>,
     image_format: ImageFormatConfig,
+    image_path: Option<std::path::PathBuf>,
     free_configs: Vec<u32>,
 }
 
@@ -120,8 +153,10 @@ impl FrontEndDevice {
         if setup.image_output {
             wanted.push((pad(fe, 2), pad(image_node, 0)));
         }
+        let embedded = t.entity_by_name("rp1-cfe-embedded").map(|e| e.id);
         for l in t.data_links() {
-            let want = wanted.contains(&(l.source, l.sink));
+            let want = wanted.contains(&(l.source, l.sink))
+                || (setup.keep_embedded && Some(l.sink.entity) == embedded);
             if l.flags.contains(LinkFlags::ENABLED)
                 && !want
                 && !l.flags.contains(LinkFlags::IMMUTABLE)
@@ -181,6 +216,7 @@ impl FrontEndDevice {
             format: image_format::BPS_16,
             ..Default::default()
         };
+        let image_path = t.devnode_path(image_node);
         let image = if setup.image_output {
             let dev = node(&t, "rp1-cfe-fe_image0")?;
             let f = dev.set_format(
@@ -214,6 +250,7 @@ impl FrontEndDevice {
             config: Queue::new(cfg_dev, BufType::MetaOutput, setup.buffers, "fe_config")?,
             image,
             image_format,
+            image_path,
             free_configs: Vec::new(),
             _media: media,
         })
@@ -293,6 +330,74 @@ impl FrontEndDevice {
             stats,
             raw,
         })
+    }
+
+    /// The raw output node (`rp1-cfe-fe_image0`); it sends the frame-start events.
+    pub fn image_node_path(&self) -> Option<&std::path::Path> {
+        self.image_path.as_deref()
+    }
+
+    /// Exports every raw output buffer as a dma-buf (in buffer index order), e.g. to import
+    /// them into the back end's input queue.
+    pub fn image_dmabufs(&self) -> Result<Vec<OwnedFd>> {
+        let q = self
+            .image
+            .as_ref()
+            .ok_or_else(|| DeviceError::Setup("no raw output".into()))?;
+        (0..q.len() as u32)
+            .map(|i| Ok(q.dev.export_buffer(q.buf_type, i, 0)?))
+            .collect()
+    }
+
+    /// Bytes of raw output buffer `index`.
+    pub fn image_data(&self, index: u32) -> Option<&[u8]> {
+        let q = self.image.as_ref()?;
+        Some(q.maps.get(index as usize)?.first()?.as_slice())
+    }
+
+    /// Waits for the next statistics buffer and, with the raw output enabled, the next raw
+    /// frame, which stays dequeued (and is not copied) until [`Self::release_image`]. Keeps the
+    /// config queue fed from `fe` (so changes to `fe` reach the frames a few configs later).
+    pub fn next_held(&mut self, fe: &mut FrontEnd, timeout: Duration) -> Result<FeHeld> {
+        let b = self.stats.dequeue(timeout)?;
+        let stats = Statistics::parse(self.stats.maps[b.index as usize][0].as_slice())
+            .map_err(|e| DeviceError::Setup(e.to_string()))?;
+        self.stats.queue(b.index, &[])?;
+        let image = match &self.image {
+            Some(q) => {
+                let r = q.dequeue(timeout)?;
+                Some(HeldImage {
+                    index: r.index,
+                    sequence: r.sequence,
+                    timestamp: r.timestamp,
+                    bytes_used: r.bytes_used(),
+                    error: r.flags.contains(styx_kernel::v4l2::BufferFlags::ERROR),
+                })
+            }
+            None => None,
+        };
+        while let Some(c) = self
+            .config
+            .dev
+            .dequeue(self.config.buf_type, styx_kernel::v4l2::Memory::Mmap)?
+        {
+            self.free_configs.push(c.index);
+        }
+        self.feed_configs(fe)?;
+        Ok(FeHeld {
+            sequence: b.sequence,
+            timestamp: b.timestamp,
+            stats,
+            image,
+        })
+    }
+
+    /// Gives a raw frame from [`Self::next_held`] back to the front end.
+    pub fn release_image(&self, index: u32) -> Result<()> {
+        match &self.image {
+            Some(q) => q.queue(index, &[]),
+            None => Ok(()),
+        }
     }
 
     /// Stops streaming and frees the buffers.

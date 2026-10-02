@@ -142,6 +142,7 @@ fn front_end(a: &Args) -> Result<(Vec<u8>, ImageFormatConfig, Statistics), Strin
         bayer: BayerOrder::Bggr,
         image_output: true,
         buffers: 4,
+        keep_embedded: false,
     };
     let mut dev = FrontEndDevice::open(&setup).map_err(|e| format!("front end open: {e}"))?;
     let img = dev.image_format();

@@ -11,6 +11,7 @@ pub mod discover;
 mod embedded;
 mod error;
 mod events;
+pub mod external;
 pub mod formats;
 pub mod graph;
 pub mod library;
@@ -27,6 +28,7 @@ pub use camera::{
 pub use control::{ControlHandle, FrameControls, SensorControl};
 pub use discover::{CameraInfo, discover, discover_bridge};
 pub use error::{NativeError, Result};
+pub use external::SensorStream;
 pub use library::SensorLibrary;
 pub use modes::SensorMode;
 pub use provider::{NativeDevice, NativeProvider, PROVIDER_NAME};

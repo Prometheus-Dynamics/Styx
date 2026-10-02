@@ -35,6 +35,8 @@
 //! See `docs/native-stack/pipeline.md`.
 
 pub mod controller;
+#[cfg(feature = "device")]
+pub mod device;
 mod error;
 pub mod isp;
 pub mod measure;
