@@ -4,10 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::desc::{
-    Backend, Blanking, Controls, Delays, Exposure, Format, Gain, GainModel, Identity, Mode,
-    PixelArray, Rect, SensorDescription, Sequences, Size,
+    Backend, Blanking, Controls, Exposure, Field, Flip, Format, Gain, GainModel, Identity, Mode,
+    PixelArray, Rect, SensorDescription, Sequences, Size, TestPattern,
 };
 use crate::error::{Issue, Issues, Result, SensorError};
+use crate::kernel_data::KernelSensorData;
 use crate::mbus::MbusCode;
 use crate::schedule::{Control, ControlSet};
 
@@ -28,6 +29,12 @@ pub enum KernelControl {
     PixelRate,
     /// `V4L2_CID_LINK_FREQ` (menu index).
     LinkFreq,
+    /// `V4L2_CID_HFLIP`.
+    HFlip,
+    /// `V4L2_CID_VFLIP`.
+    VFlip,
+    /// `V4L2_CID_TEST_PATTERN` (menu index).
+    TestPattern,
 }
 
 impl KernelControl {
@@ -41,6 +48,9 @@ impl KernelControl {
             KernelControl::Hblank => 0x009e_0902,
             KernelControl::PixelRate => 0x009f_0902,
             KernelControl::LinkFreq => 0x009f_0901,
+            KernelControl::HFlip => 0x0098_0914,
+            KernelControl::VFlip => 0x0098_0915,
+            KernelControl::TestPattern => 0x009f_0903,
         }
     }
 
@@ -55,6 +65,9 @@ impl KernelControl {
             Hblank,
             PixelRate,
             LinkFreq,
+            HFlip,
+            VFlip,
+            TestPattern,
         ]
         .into_iter()
         .find(|c| c.cid() == cid)
@@ -103,8 +116,13 @@ pub struct SubdevReport {
     /// Link frequency menu (Hz).
     pub link_frequencies: Vec<i64>,
     /// Analogue gain code for 1× (default: the minimum code). Kernel drivers do not report the
-    /// gain model; a linear model with this unity code is assumed.
+    /// gain model; without a data file a linear model with this unity code is assumed.
     pub analogue_gain_unity: Option<i64>,
+    /// `HFLIP` / `VFLIP` change the Bayer order of the codes (`V4L2_CTRL_FLAG_MODIFY_LAYOUT`).
+    /// The codes above are those of the flips' current values (in `controls`).
+    pub flips_modify_layout: bool,
+    /// `TEST_PATTERN` menu items: index and name.
+    pub test_patterns: Vec<(u32, String)>,
 }
 
 fn issue(path: &str, message: &str) -> SensorError {
@@ -149,14 +167,41 @@ fn linear_gain(r: &ControlRange, unity: i64) -> Gain {
     }
 }
 
+/// A test pattern menu item's name as a description names it: lower case, words joined by
+/// `_`; the first item (the driver's "Disabled") is `off`.
+fn pattern_name(index: u32, first: u32, name: &str) -> String {
+    if index == first {
+        return "off".into();
+    }
+    let words: Vec<String> = name
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    words.join("_")
+}
+
 impl SensorDescription {
-    /// A description for a sensor with a kernel driver, from what its subdevice reports.
+    /// A description for a sensor with a kernel driver, from what its subdevice reports, with
+    /// generic defaults for what it does not (see [`Self::from_subdev_with`]).
+    pub fn from_subdev(report: &SubdevReport) -> Result<Self> {
+        Self::from_subdev_with(report, None)
+    }
+
+    /// A description for a sensor with a kernel driver, from what its subdevice reports and
+    /// what `data` adds.
     ///
     /// Requires `PIXEL_RATE`, `EXPOSURE` and `ANALOGUE_GAIN`. Blanking ranges are those
     /// reported at `current_size` and are used for every size (the kernel adjusts them per
-    /// mode; re-read them after changing the format). Gain is assumed linear with
-    /// `analogue_gain_unity` as 1×; delays are libcamera's defaults for unknown sensors.
-    pub fn from_subdev(report: &SubdevReport) -> Result<Self> {
+    /// mode; re-read them after changing the format). Codes and the colour filter are given
+    /// with the flips off (the report's are turned back when the flips change the layout).
+    /// Without data, gain is assumed linear with `analogue_gain_unity` as 1× and delays are
+    /// libcamera's defaults for unknown sensors; register fields are absent (the controls are
+    /// the driver's V4L2 controls; flips and the test pattern carry placeholder registers).
+    pub fn from_subdev_with(
+        report: &SubdevReport,
+        data: Option<&KernelSensorData>,
+    ) -> Result<Self> {
         let ctl = |c| report.controls.get(&c);
         let pixel_rate = ctl(KernelControl::PixelRate)
             .ok_or_else(|| issue("controls", "PIXEL_RATE is required"))?;
@@ -164,8 +209,22 @@ impl SensorDescription {
             .ok_or_else(|| issue("controls", "EXPOSURE is required"))?;
         let again = ctl(KernelControl::AnalogueGain)
             .ok_or_else(|| issue("controls", "ANALOGUE_GAIN is required"))?;
-        let first = report
+        // The codes with the flips off.
+        let on = |c| ctl(c).is_some_and(|r| r.value.unwrap_or(r.default) != 0);
+        let (hf, vf) = if report.flips_modify_layout {
+            (on(KernelControl::HFlip), on(KernelControl::VFlip))
+        } else {
+            (false, false)
+        };
+        let unflipped: Vec<SubdevFormat> = report
             .formats
+            .iter()
+            .map(|f| SubdevFormat {
+                code: f.code.flipped(hf, vf),
+                sizes: f.sizes.clone(),
+            })
+            .collect();
+        let first = unflipped
             .first()
             .ok_or_else(|| issue("formats", "no media bus codes"))?;
         let color_filter = first
@@ -173,8 +232,7 @@ impl SensorDescription {
             .color_filter()
             .ok_or_else(|| issue("formats", &format!("unknown media bus code {}", first.code)))?;
 
-        let largest = report
-            .formats
+        let largest = unflipped
             .iter()
             .flat_map(|f| &f.sizes)
             .max_by_key(|s| u64::from(s.width) * u64::from(s.height));
@@ -208,7 +266,7 @@ impl SensorDescription {
 
         let mut formats = BTreeMap::new();
         let mut names = BTreeMap::new();
-        for f in &report.formats {
+        for f in &unflipped {
             let bits = f.code.bit_depth().unwrap_or(0);
             let short = format!("raw{bits}");
             let name = if formats.contains_key(&short) {
@@ -229,16 +287,14 @@ impl SensorDescription {
             );
         }
 
-        let sizes: BTreeSet<(u32, u32)> = report
-            .formats
+        let sizes: BTreeSet<(u32, u32)> = unflipped
             .iter()
             .flat_map(|f| &f.sizes)
             .map(|s| (s.width, s.height))
             .collect();
         let mut modes = Vec::new();
         for (w, h) in sizes.into_iter().rev() {
-            let supported: Vec<String> = report
-                .formats
+            let supported: Vec<String> = unflipped
                 .iter()
                 .filter(|f| f.sizes.contains(&Size::new(w, h)))
                 .map(|f| names[&f.code].clone())
@@ -258,28 +314,66 @@ impl SensorDescription {
         }
 
         let unity = report.analogue_gain_unity.unwrap_or(again.min.max(1));
-        let desc = SensorDescription {
-            sensor: Identity {
-                name: report
+        let with_model = |r: &ControlRange, unity: i64, model: Option<&GainModel>| {
+            let mut g = linear_gain(r, unity);
+            if let Some(m) = model {
+                g.model = m.clone();
+            }
+            g
+        };
+        let flip = |c| {
+            ctl(c).map(|_| Flip {
+                address: 0,
+                mask: 1,
+                default: false,
+                changes_bayer_order: report.flips_modify_layout,
+            })
+        };
+        let test_pattern = ctl(KernelControl::TestPattern)
+            .filter(|_| !report.test_patterns.is_empty())
+            .map(|r| {
+                let first = report.test_patterns[0].0.max(to_u32(r.min));
+                TestPattern {
+                    register: Field::whole(0, 4),
+                    patterns: report
+                        .test_patterns
+                        .iter()
+                        .map(|(i, n)| (pattern_name(*i, first, n), *i))
+                        .collect(),
+                }
+            })
+            .filter(|t| t.patterns.contains_key("off"));
+        let name = data.map_or_else(
+            || {
+                report
                     .name
                     .split_whitespace()
                     .next()
                     .unwrap_or("unknown")
-                    .to_owned(),
-                vendor: None,
+                    .to_owned()
+            },
+            |d| d.name.clone(),
+        );
+        let margin = data
+            .and_then(|d| d.exposure_margin)
+            .unwrap_or(to_u32(frame_length - exposure_max));
+        let desc = SensorDescription {
+            sensor: Identity {
+                name,
+                vendor: data.and_then(|d| d.vendor.clone()),
                 backend: Backend::Kernel,
                 i2c_address: None,
                 address_bits: 16,
                 burst_writes: false,
                 chip_id: None,
                 clocks: BTreeMap::new(),
-                tuning: None,
+                tuning: data.and_then(|d| d.tuning.clone()),
             },
             pixel_array: PixelArray {
                 size,
                 active,
                 color_filter,
-                black_level: None,
+                black_level: data.and_then(|d| d.black_level),
             },
             sequences: Sequences::default(),
             formats,
@@ -291,20 +385,21 @@ impl SensorDescription {
                     register: None,
                     fraction_bits: 0,
                     min: to_u32(exposure.min.max(1)),
-                    margin: to_u32(frame_length - exposure_max),
+                    margin,
                     step: to_u32(i64::try_from(exposure.step).unwrap_or(1).max(1)),
                     default: to_u32(exposure.default.max(exposure.min).max(1)),
                 },
-                analog_gain: linear_gain(again, unity),
-                digital_gain: ctl(KernelControl::DigitalGain).map(|d| linear_gain(d, d.default)),
-                delays: Delays::default(),
+                analog_gain: with_model(again, unity, data.and_then(|d| d.analog_gain.as_ref())),
+                digital_gain: ctl(KernelControl::DigitalGain)
+                    .map(|d| with_model(d, d.default, data.and_then(|x| x.digital_gain.as_ref()))),
+                delays: data.and_then(|d| d.delays).unwrap_or_default(),
                 group_hold: None,
-                frame_length_extra_lines: 0,
-                hflip: None,
-                vflip: None,
-                test_pattern: None,
+                frame_length_extra_lines: data.map_or(0, |d| d.frame_length_extra_lines),
+                hflip: flip(KernelControl::HFlip),
+                vflip: flip(KernelControl::VFlip),
+                test_pattern,
             },
-            embedded_data: None,
+            embedded_data: data.and_then(|d| d.embedded_data.clone()),
         };
         desc.validate().map_err(|issues| SensorError::Invalid {
             source_name: "subdev report".into(),
@@ -386,7 +481,7 @@ mod tests {
                 (KernelControl::LinkFreq, range(0, 0, 0, None)),
             ]),
             link_frequencies: vec![400_000_000],
-            analogue_gain_unity: None,
+            ..Default::default()
         }
     }
 
@@ -409,6 +504,93 @@ mod tests {
         let g = &d.controls.analog_gain;
         assert_eq!(g.gain_for_code(16), 1.0);
         assert_eq!(g.gain_for_code(255), 255.0 / 16.0);
+    }
+
+    #[test]
+    fn data_files_and_flips_complete_the_description() {
+        let mut r = helios_ov9782();
+        // The driver's default flips (both on) turn BGGR into RGGB and change the layout.
+        r.formats[0].code = MbusCode(0x300f);
+        r.formats[1].code = MbusCode(0x3014);
+        r.flips_modify_layout = true;
+        r.controls
+            .insert(KernelControl::HFlip, range(0, 1, 1, Some(1)));
+        r.controls
+            .insert(KernelControl::VFlip, range(0, 1, 1, Some(1)));
+        r.controls
+            .insert(KernelControl::TestPattern, range(0, 2, 0, Some(0)));
+        r.test_patterns = vec![(0, "Disabled".into()), (2, "Color Bars".into())];
+        let data = KernelSensorData::find(&KernelSensorData::builtin(), &r.name, true)
+            .unwrap()
+            .clone();
+        let d = SensorDescription::from_subdev_with(&r, Some(&data)).unwrap();
+        assert_eq!(d.pixel_array.color_filter, crate::ColorFilter::Bggr);
+        assert_eq!(d.formats["raw10"].code, MbusCode(0x3007));
+        assert_eq!(d.formats["raw8"].code, MbusCode(0x3001));
+        assert!(d.controls.hflip.unwrap().changes_bayer_order);
+        let tp = d.controls.test_pattern.as_ref().unwrap();
+        assert_eq!(tp.patterns["off"], 0);
+        assert_eq!(tp.patterns["color_bars"], 2);
+        assert_eq!(d.controls.delays, data.delays.unwrap());
+        assert_eq!(d.controls.frame_length_extra_lines, 1);
+        assert_eq!(d.sensor.tuning.as_deref(), Some("ov9782.json"));
+        assert_eq!(d.pixel_array.black_level.unwrap().value, 64);
+        assert_eq!(d.controls.analog_gain.gain_for_code(32), 2.0);
+    }
+
+    #[test]
+    fn kernel_driven_sensors_run_over_v4l2_controls() {
+        use std::sync::Arc;
+
+        use crate::{ControlRequest, MockBus, NoPins, SensorDriver};
+
+        let mut r = helios_ov9782();
+        r.controls
+            .insert(KernelControl::HFlip, range(0, 1, 1, Some(1)));
+        let d = Arc::new(SensorDescription::from_subdev(&r).unwrap());
+        let mut drv = SensorDriver::new(d, MockBus::new(), NoPins);
+        drv.power_up().unwrap();
+        assert_eq!(drv.verify_chip_id().unwrap(), 0);
+        drv.init().unwrap();
+        drv.set_mode("1280x800", "raw10").unwrap();
+        let bus = drv.bus();
+        // The mode's defaults: VBLANK first, alone, then exposure and gain; flips off.
+        assert_eq!(bus.control_log[0], vec![(KernelControl::Vblank, 2850)]);
+        assert_eq!(
+            bus.control_log[1],
+            vec![
+                (KernelControl::Exposure, 642),
+                (KernelControl::AnalogueGain, 16)
+            ]
+        );
+        assert_eq!(bus.control(KernelControl::HFlip), Some(0));
+        assert!(bus.writes().is_empty(), "no registers");
+        // A request for frame 0 is written at the start, before the stream.
+        drv.request(
+            0,
+            &ControlRequest {
+                exposure: Some(std::time::Duration::from_millis(5)),
+                gain: Some(2.0),
+                frame_duration: Some(std::time::Duration::from_secs_f64(1.0 / 30.0)),
+            },
+        )
+        .unwrap();
+        drv.start_streaming().unwrap();
+        let bus = drv.bus();
+        let fl = (160e6_f64 / 30.0 / 1456.0).round() as i64;
+        assert_eq!(bus.control(KernelControl::Vblank), Some(fl - 800));
+        assert_eq!(bus.control(KernelControl::AnalogueGain), Some(32));
+        let lines = (0.005_f64 * 160e6 / 1456.0).round() as i64;
+        assert_eq!(bus.control(KernelControl::Exposure), Some(lines));
+        let a = drv.applied(0).unwrap();
+        assert!((a.analog_gain - 2.0).abs() < 1e-9 && a.frame_length as i64 == fl);
+        drv.set_test_pattern("off").unwrap_err();
+        drv.stop_streaming().unwrap();
+        assert!(
+            drv.set_description(Arc::new(SensorDescription::from_subdev(&r).unwrap()))
+                .is_ok()
+        );
+        assert!(drv.mode().is_none());
     }
 
     #[test]

@@ -103,6 +103,14 @@ pub enum SensorError {
     /// The description has no register for this control (e.g. a kernel-backed description).
     #[error("the description has no register for {0}")]
     NoRegister(&'static str),
+    /// Setting V4L2 controls of a sensor a kernel driver owns failed.
+    #[error("setting {controls}: {source}")]
+    Controls {
+        /// The controls and values, e.g. `EXPOSURE=642 ANALOGUE_GAIN=16`.
+        controls: String,
+        /// The error.
+        source: io::Error,
+    },
     /// No test pattern with that name.
     #[error("unknown test pattern '{0}'")]
     UnknownTestPattern(String),

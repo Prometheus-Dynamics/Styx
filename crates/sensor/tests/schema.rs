@@ -214,13 +214,15 @@ fn registers_backend_needs_registers() {
         .replace("register = { address = 0x3509 }\n", "");
     let d = parse(&kernel).unwrap();
     assert_eq!(d.sensor.backend, Backend::Kernel);
-    // A kernel-driven description cannot run on a register bus.
+    // A kernel-driven description runs over the bus's V4L2 controls, not its registers.
     let mut drv = SensorDriver::new(Arc::new(d), MockBus::new(), MockPins::with_roles(&["xclk"]));
     drv.power_up().unwrap();
-    assert!(matches!(
-        drv.set_mode("full", "y10"),
-        Err(SensorError::NoRegister("frame length"))
-    ));
+    drv.set_mode("full", "y10").unwrap();
+    assert!(drv.bus().writes().is_empty());
+    assert_eq!(
+        drv.bus().control(styx_sensor::KernelControl::Vblank),
+        Some(200)
+    );
 }
 
 #[test]

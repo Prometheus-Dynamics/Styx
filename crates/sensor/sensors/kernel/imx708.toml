@@ -1,0 +1,21 @@
+# Sony IMX708 (12 MP, Raspberry Pi Camera Module 3) under the Raspberry Pi `imx708` driver.
+# From public sources (libcamera's cam_helper_imx708.cpp, imx708.json); not checked on
+# hardware with Styx. HDR modes and phase detection data are not modelled.
+name = "imx708"
+vendor = "Sony"
+verified = false
+source = "libcamera cam_helper_imx708 (gain 1024 / (1024 - code); delays 2/2/3), imx708.json"
+tuning = "imx708.json"
+analog_gain = { reciprocal = { numerator = 1024, base = 1024 } }
+delays = { exposure = 2, analog_gain = 2, frame_length = 3 }
+black_level = { value = 64, bits = 10 }
+
+[embedded_data]
+lines = 2
+format = "ccs"
+packing = "raw10"
+registers = [
+    { control = "exposure", address = 0x0202, bytes = 2 },
+    { control = "analog_gain", address = 0x0204, bytes = 2 },
+    { control = "frame_length", address = 0x0340, bytes = 2 },
+]

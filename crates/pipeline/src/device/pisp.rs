@@ -366,6 +366,9 @@ impl PispPipeline {
         startup.be_open = be_open;
         let t = Instant::now();
         let fps = configured.interval.fps();
+        // The description after configuring: a kernel driver's sensor reports the exact
+        // ranges of the mode only once it is set.
+        let desc = std::sync::Arc::clone(&camera.info().description);
         let mut info =
             SensorInfo::from_description(&desc, &configured.mode.mode, &configured.mode.format)?
                 .with_fps(fps, fps)?;

@@ -1,8 +1,10 @@
 //! Reading applied control values back from a frame's embedded data.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::desc::{EmbeddedControlKind, EmbeddedPacking, Field, SensorDescription};
+use crate::desc::{
+    EmbeddedControlKind, EmbeddedData, EmbeddedFormat, EmbeddedPacking, Field, SensorDescription,
+};
 use crate::schedule::{Control, ControlSet};
 
 /// Unpacks CSI-2 RAW10 data: each group of five bytes gives four 10-bit words (high 8 bits,
@@ -47,12 +49,38 @@ impl SensorDescription {
         &data[..packed.min(data.len())]
     }
 
+    /// Register addresses the layout reads (the bytes of `entries`, `registers` and the
+    /// control register fields).
+    fn embedded_addresses(&self, layout: &EmbeddedData) -> BTreeSet<u16> {
+        let ctl = &self.controls;
+        let fields = [
+            ctl.frame_length,
+            ctl.exposure.register,
+            ctl.analog_gain.register,
+            ctl.digital_gain.as_ref().and_then(|g| g.register),
+        ];
+        let spans = fields
+            .into_iter()
+            .flatten()
+            .map(|f| (f.address, f.bytes))
+            .chain(layout.registers.iter().map(|r| (r.address, r.bytes)));
+        layout
+            .entries
+            .iter()
+            .map(|e| e.address)
+            .chain(spans.flat_map(|(a, n)| (0..u16::from(n)).map(move |i| a.wrapping_add(i))))
+            .collect()
+    }
+
     /// Register bytes found in embedded data (as received), by address. Empty without a
     /// layout.
     pub fn embedded_registers(&self, data: &[u8]) -> BTreeMap<u16, u8> {
         let Some(layout) = &self.embedded_data else {
             return BTreeMap::new();
         };
+        if layout.format == EmbeddedFormat::Ccs {
+            return ccs_registers(data, layout.packing, &self.embedded_addresses(layout));
+        }
         let unpacked = self.embedded_unpacked(self.embedded_prefix(data));
         let data = unpacked.as_slice();
         layout
@@ -74,7 +102,7 @@ impl SensorDescription {
         let Some(layout) = &self.embedded_data else {
             return set;
         };
-        if layout.controls.is_empty() {
+        if layout.controls.is_empty() || layout.format == EmbeddedFormat::Ccs {
             return set;
         }
         let unpacked = self.embedded_unpacked(self.embedded_prefix(data));
@@ -84,13 +112,7 @@ impl SensorDescription {
                 continue;
             };
             let v = bytes.iter().fold(0u32, |a, b| (a << 8) | u32::from(*b)) << c.shift;
-            let control = match c.control {
-                EmbeddedControlKind::Exposure => Control::Exposure,
-                EmbeddedControlKind::AnalogGain => Control::AnalogGain,
-                EmbeddedControlKind::DigitalGain => Control::DigitalGain,
-                EmbeddedControlKind::FrameLength => Control::FrameLength,
-            };
-            set.set(control, v);
+            set.set(kind_control(c.control), v);
         }
         set
     }
@@ -104,6 +126,11 @@ impl SensorDescription {
         };
         let ctl = &self.controls;
         let mut set = ControlSet::new();
+        for r in self.embedded_data.iter().flat_map(|l| &l.registers) {
+            if let Some(v) = read(&Field::whole(r.address, r.bytes)) {
+                set.set(kind_control(r.control), v << r.shift);
+            }
+        }
         if let Some(v) = ctl
             .frame_length
             .as_ref()
@@ -138,5 +165,119 @@ impl SensorDescription {
             set.set(Control::DigitalGain, v);
         }
         set
+    }
+}
+
+fn kind_control(kind: EmbeddedControlKind) -> Control {
+    match kind {
+        EmbeddedControlKind::Exposure => Control::Exposure,
+        EmbeddedControlKind::AnalogGain => Control::AnalogGain,
+        EmbeddedControlKind::DigitalGain => Control::DigitalGain,
+        EmbeddedControlKind::FrameLength => Control::FrameLength,
+    }
+}
+
+/// CCS tags (MIPI CCS, "embedded data line" format; SMIA before it).
+const CCS_LINE_START: u8 = 0x0a;
+const CCS_ADDRESS_HIGH: u8 = 0xaa;
+const CCS_ADDRESS_LOW: u8 = 0xa5;
+const CCS_VALUE: u8 = 0x5a;
+const CCS_SKIP: u8 = 0x55;
+const CCS_LINE_END: u8 = 0x07;
+
+/// The `wanted` registers of a CCS tagged embedded line (see [`EmbeddedFormat::Ccs`]). Stops
+/// once all are found, at the line end, or at an unknown tag; a line not starting with the
+/// start code gives nothing.
+pub fn ccs_registers(
+    data: &[u8],
+    packing: EmbeddedPacking,
+    wanted: &BTreeSet<u16>,
+) -> BTreeMap<u16, u8> {
+    let pad = match packing {
+        EmbeddedPacking::None => usize::MAX,
+        EmbeddedPacking::Raw10 => 5,
+        EmbeddedPacking::Raw12 => 3,
+    };
+    let mut bytes = data
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| pad == usize::MAX || i % pad != pad - 1)
+        .map(|(_, b)| *b);
+    let mut out = BTreeMap::new();
+    if bytes.next() != Some(CCS_LINE_START) || wanted.is_empty() {
+        return out;
+    }
+    let mut address: u16 = 0;
+    while let (Some(tag), Some(value)) = (bytes.next(), bytes.next()) {
+        match tag {
+            CCS_ADDRESS_HIGH => address = (address & 0x00ff) | (u16::from(value) << 8),
+            CCS_ADDRESS_LOW => address = (address & 0xff00) | u16::from(value),
+            CCS_VALUE => {
+                if wanted.contains(&address) {
+                    out.insert(address, value);
+                    if out.len() == wanted.len() {
+                        break;
+                    }
+                }
+                address = address.wrapping_add(1);
+            }
+            CCS_SKIP => address = address.wrapping_add(1),
+            CCS_LINE_END => break,
+            // An unknown tag: not a CCS line after all.
+            _ => break,
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A CCS line: registers `0x0200..` from `values`, with `0x0202` skipped, padded as RAW10
+    /// when asked.
+    fn ccs_line(values: &[u8], raw10: bool) -> Vec<u8> {
+        let mut pairs = vec![
+            CCS_LINE_START,
+            CCS_ADDRESS_HIGH,
+            0x02,
+            CCS_ADDRESS_LOW,
+            0x00,
+        ];
+        for (i, v) in values.iter().enumerate() {
+            pairs.extend([if i == 2 { CCS_SKIP } else { CCS_VALUE }, *v]);
+        }
+        pairs.extend([CCS_LINE_END, CCS_LINE_END]);
+        if !raw10 {
+            return pairs;
+        }
+        pairs
+            .chunks(4)
+            .flat_map(|c| c.iter().copied().chain(std::iter::once(CCS_SKIP)))
+            .collect()
+    }
+
+    #[test]
+    fn ccs_lines_give_registers_by_address() {
+        let wanted: BTreeSet<u16> = [0x0201, 0x0202, 0x0203, 0x0204].into();
+        for raw10 in [false, true] {
+            let line = ccs_line(&[1, 2, 3, 4, 5], raw10);
+            let packing = if raw10 {
+                EmbeddedPacking::Raw10
+            } else {
+                EmbeddedPacking::None
+            };
+            let r = ccs_registers(&line, packing, &wanted);
+            // 0x0202 was skipped.
+            assert_eq!(
+                r,
+                BTreeMap::from([(0x0201, 2), (0x0203, 4), (0x0204, 5)]),
+                "raw10 {raw10}"
+            );
+        }
+        assert!(ccs_registers(&[0, 1, 2], EmbeddedPacking::None, &wanted).is_empty());
+        let mut line = ccs_line(&[1, 2, 3, 4, 5], false);
+        line[5] = 0x99; // an unknown tag ends the parse
+        assert!(ccs_registers(&line, EmbeddedPacking::None, &wanted).is_empty());
     }
 }

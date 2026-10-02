@@ -1,5 +1,6 @@
-//! Finding bridged cameras: bridges in sysfs, the media graph each belongs to, the matching
-//! sensor description, and what the raw node can write.
+//! Finding cameras: bridges in sysfs, the media graph each belongs to, the matching sensor
+//! description, and what the raw node can write; and sensors with a kernel driver
+//! ([`crate::kernel`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,16 +13,20 @@ use styx_sensor::SensorDescription;
 
 use crate::error::{KernelContext, NativeError, Result};
 use crate::graph::{GraphMap, GraphSpec, build_graph};
+use crate::kernel::KernelSensor;
 use crate::library::SensorLibrary;
 use crate::modes::{SensorMode, sensor_modes};
 use crate::topology::{RawRoute, entity_for_devnode, find_route};
 
-/// A camera behind a sensor bridge, as discovery found it.
+/// A camera, as discovery found it: a sensor Styx drives through a bridge, or one a kernel
+/// driver owns ([`Self::kernel`]).
 #[derive(Clone, Debug)]
 pub struct CameraInfo {
-    /// Stable key: `bridge:<subdev path>`.
+    /// Stable key: `bridge:<subdev path>`, or `sensor:<subdev path>` for a kernel driver's
+    /// sensor.
     pub key: String,
-    /// The bridge and what its device tree node says.
+    /// The bridge and what its device tree node says; for a kernel driver's sensor its
+    /// subdevice, the name its description gives and the I²C address in its entity name.
     pub location: BridgeLocation,
     /// The sensor description.
     pub description: Arc<SensorDescription>,
@@ -39,6 +44,9 @@ pub struct CameraInfo {
     pub raw_formats: Vec<(u32, Vec<FourCc>)>,
     /// The device graph.
     pub graph: GraphMap,
+    /// For a sensor a kernel driver owns: what it reported and the data that completed its
+    /// description (`None` for a bridged sensor).
+    pub kernel: Option<KernelSensor>,
 }
 
 impl CameraInfo {
@@ -49,13 +57,23 @@ impl CameraInfo {
             keys.push(format!("i2c:{bus}-{addr:04x}"));
         }
         keys.push(format!("native:{}", self.location.sensor_name));
+        // libcamera names the camera by its device tree node: the same camera merges.
+        if let Some(node) = self.kernel.as_ref().and_then(|k| k.firmware_node.clone()) {
+            keys.push(node);
+        }
         keys
     }
 
-    /// Human-readable name, e.g. `ov9782 (styx bridge /dev/v4l-subdev2)`.
+    /// Human-readable name, e.g. `ov9782 (styx bridge /dev/v4l-subdev2)` or
+    /// `ov9782 (kernel driver /dev/v4l-subdev2)`.
     pub fn display_name(&self) -> String {
+        let how = if self.kernel.is_some() {
+            "kernel driver"
+        } else {
+            "styx bridge"
+        };
         format!(
-            "{} (styx bridge {})",
+            "{} ({how} {})",
             self.location.sensor_name,
             self.location.subdev.display()
         )
@@ -63,10 +81,21 @@ impl CameraInfo {
 
     /// Properties for listings.
     pub fn properties(&self) -> Vec<(String, String)> {
+        let node = if self.kernel.is_some() {
+            "subdev"
+        } else {
+            "bridge"
+        };
         let mut p = vec![
+            (node.to_owned(), self.location.subdev.display().to_string()),
             (
-                "bridge".to_owned(),
-                self.location.subdev.display().to_string(),
+                "backend".to_owned(),
+                if self.kernel.is_some() {
+                    "kernel"
+                } else {
+                    "bridge"
+                }
+                .to_owned(),
             ),
             ("sensor".to_owned(), self.location.sensor_name.clone()),
             ("description".to_owned(), self.description_source.clone()),
@@ -91,13 +120,18 @@ impl CameraInfo {
 }
 
 fn graph_for(info: &CameraInfo) -> GraphMap {
+    let node = if info.kernel.is_some() {
+        "subdev"
+    } else {
+        "bridge"
+    };
     build_graph(&GraphSpec {
         topology: &info.topology,
         route: &info.route,
         modes: &info.modes,
         raw_formats: &info.raw_formats,
         sensor_properties: vec![
-            ("bridge".into(), info.location.subdev.display().to_string()),
+            (node.into(), info.location.subdev.display().to_string()),
             ("description".into(), info.description_source.clone()),
         ],
     })
@@ -167,14 +201,25 @@ pub fn discover_bridge(location: &BridgeLocation, library: &SensorLibrary) -> Re
         route,
         raw_formats,
         graph: GraphMap::empty(),
+        kernel: None,
     };
     info.graph = graph_for(&info);
     Ok(info)
 }
 
-/// Every bridged camera on this system, and the problems met on the way (a bridge without a
-/// description, a graph of an unexpected shape).
+/// Every camera on this system: bridged cameras first, then sensors with a kernel driver and
+/// no bridge (see [`crate::kernel`]), and the problems met on the way (a bridge without a
+/// description, a graph of an unexpected shape, a driver without the controls needed).
 pub fn discover(library: &SensorLibrary) -> (Vec<CameraInfo>, Vec<NativeError>) {
+    let (mut found, mut errors) = discover_bridges(library);
+    let (kernel, kernel_errors) = crate::kernel::discover_kernel(library);
+    found.extend(kernel);
+    errors.extend(kernel_errors);
+    (found, errors)
+}
+
+/// Every bridged camera on this system, and the problems met on the way.
+pub fn discover_bridges(library: &SensorLibrary) -> (Vec<CameraInfo>, Vec<NativeError>) {
     let bridges = match find_bridges().step("find sensor bridges") {
         Ok(b) => b,
         Err(e) => return (Vec::new(), vec![e]),
@@ -188,6 +233,25 @@ pub fn discover(library: &SensorLibrary) -> (Vec<CameraInfo>, Vec<NativeError>) 
         }
     }
     (found, errors)
+}
+
+/// The camera with this key (a bridge's or a kernel driver's sensor).
+pub fn discover_key(key: &str, library: &SensorLibrary) -> Result<CameraInfo> {
+    if key.starts_with("sensor:") {
+        return crate::kernel::discover_key(key, library);
+    }
+    let (_, loc) = bridge_keys()
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .ok_or_else(|| NativeError::Topology(format!("no bridge {key}")))?;
+    discover_bridge(&loc, library)
+}
+
+/// The keys of every camera bound now (bridges, then kernel drivers' sensors).
+pub fn camera_keys() -> Vec<String> {
+    let mut keys: Vec<String> = bridge_keys().into_iter().map(|(k, _)| k).collect();
+    keys.extend(crate::kernel::kernel_keys());
+    keys
 }
 
 /// The bridges bound now, by key.
