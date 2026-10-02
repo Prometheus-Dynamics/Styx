@@ -22,8 +22,8 @@ pub fn pack_lut(rgb: &LscTable) -> BeLscConfig {
         grid_step_y: 0,
         lut_packed: [[0; BE_LSC_LUT_SIZE]; BE_LSC_LUT_SIZE],
     };
-    for y in 0..BE_LSC_LUT_SIZE {
-        for x in 0..BE_LSC_LUT_SIZE {
+    for (y, row) in cfg.lut_packed.iter_mut().enumerate() {
+        for (x, packed) in row.iter_mut().enumerate() {
             let v = [rgb[0][y][x], rgb[1][y][x], rgb[2][y][x]];
             let lo = v.iter().copied().fold(f64::INFINITY, f64::min);
             let hi = v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -37,7 +37,7 @@ pub fn pack_lut(rgb: &LscTable) -> BeLscConfig {
                 (3, 128.0, 0.5)
             };
             let [r, g, b] = v.map(|c| field(offset + scale * c, 10));
-            cfg.lut_packed[y][x] = (range << 30) | (b << 20) | (g << 10) | r;
+            *packed = (range << 30) | (b << 20) | (g << 10) | r;
         }
     }
     cfg
