@@ -2,6 +2,7 @@
 //! end's raw buffers, no copy), up to two outputs with their own sizes and formats, a fresh
 //! config per job, and output buffers held by the caller until released.
 
+use std::collections::VecDeque;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
 
@@ -81,7 +82,10 @@ pub struct QueuedJob {
 struct Output {
     queue: OutputQueue,
     format: ImageFormatConfig,
-    free: Vec<u32>,
+    /// Buffers free for the next job, least recently released first: a buffer handed back
+    /// (and possibly exported as dma-bufs that consumers still read, e.g. a frame server's
+    /// latest frame) is written again only after every other free buffer.
+    free: VecDeque<u32>,
 }
 
 /// The back end set up for a stream. See the [module documentation](self).
@@ -235,7 +239,7 @@ impl BackEndStream {
             };
             let size = g.planes[0].size_image as usize;
             let queue = OutputQueue::new(dev, memory, buffers.max(2), size, name)?;
-            let free = (0..queue.len() as u32).rev().collect();
+            let free = (0..queue.len() as u32).collect();
             outs[i] = Some(Output {
                 queue,
                 format,
@@ -357,7 +361,7 @@ impl BackEndStream {
         let mut picked = [None, None];
         for (i, o) in self.outputs.iter_mut().enumerate() {
             if let Some(o) = o {
-                let Some(b) = o.free.pop() else {
+                let Some(b) = o.free.pop_front() else {
                     self.give_back(picked);
                     return Err(DeviceError::Setup(format!(
                         "output {i}: every buffer is held"
@@ -412,7 +416,7 @@ impl BackEndStream {
             if let (Some(o), Some(b)) = (o, b)
                 && !o.free.contains(&b)
             {
-                o.free.push(b);
+                o.free.push_front(b);
             }
         }
     }
@@ -507,7 +511,7 @@ impl BackEndStream {
             && !o.free.contains(&index)
             && (index as usize) < o.queue.len()
         {
-            o.free.push(index);
+            o.free.push_back(index);
         }
     }
 
@@ -517,7 +521,7 @@ impl BackEndStream {
             if let (Some(o), Some(b)) = (o, b)
                 && !o.free.contains(&b)
             {
-                o.free.push(b);
+                o.free.push_back(b);
             }
         }
     }
