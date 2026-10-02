@@ -39,6 +39,9 @@ pub fn run(a: &Args) -> Result<(), String> {
     let mut soft =
         SoftLoop::new(info, format.packing, &tuning(a)?, a.threads).map_err(|e| e.to_string())?;
     soft.set_base_params(crate::soft_base(a));
+    if a.every_frame {
+        soft.set_settled_rate(None);
+    }
     if let Some(p) = &a.algo_record {
         let f = std::fs::File::create(p).map_err(|e| format!("{}: {e}", p.display()))?;
         soft.controller()

@@ -28,7 +28,8 @@
 //!   --profile            (pisp) time the device calls (queue, dequeue, wait, copies)
 //!   --driver-buffers     (pisp) back end outputs, (soft) raw capture in the driver's
 //!                        (uncached) buffers instead of cached dma-heap buffers
-//!   --every-frame        (pisp) run the algorithms on every frame, also when settled
+//!   --every-frame        run the algorithms (and, soft, the statistics) on every frame, also
+//!                        when settled
 //!   --start-exposure US:GAIN  (pisp) start AE from this exposure and gain instead of the
 //!                        camera's last settled state (a dark or bright start)
 //!   --cold               (pisp) start from the tuning's start-up values, not the last state

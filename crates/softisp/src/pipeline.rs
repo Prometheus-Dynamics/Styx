@@ -102,7 +102,7 @@ pub(crate) struct Worker {
 
 impl Worker {
     /// Size the scratch for `p` and reset the statistics, at the start of a frame.
-    pub fn begin_frame(&mut self, p: &Prepared) {
+    pub fn begin_frame(&mut self, p: &Prepared, stats: bool) {
         let w = p.width;
         if self.width != w {
             self.width = w;
@@ -112,7 +112,7 @@ impl Worker {
             self.luma16 = vec![0; w];
             self.quad = std::array::from_fn(|_| vec![0; w / 2]);
         }
-        match (&p.stats, &mut self.stats) {
+        match (p.stats.as_ref().filter(|_| stats), &mut self.stats) {
             (Some(setup), Some(acc))
                 if acc.histogram.len() == 4 * setup.config.histogram_bins as usize =>
             {

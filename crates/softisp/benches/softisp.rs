@@ -375,6 +375,26 @@ fn pipelines(c: &mut Criterion) {
         Scale::Full,
         "rgb",
     );
+    for step in [2, 4] {
+        let mut p = shaded(stats(bilinear()));
+        if let Some(s) = &mut p.stats {
+            s.row_step = step;
+        }
+        run(
+            c,
+            &format!("e2e/rgb24_tuned_lsc_stats_step{step}"),
+            isp(p),
+            Scale::Full,
+            "rgb",
+        );
+    }
+    run(
+        c,
+        "e2e/rgb24_tuned_lsc",
+        isp(shaded(bilinear())),
+        Scale::Full,
+        "rgb",
+    );
     run(
         c,
         "e2e/nv12_tuned_lsc_stats_no_copy",
