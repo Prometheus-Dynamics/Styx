@@ -432,28 +432,6 @@ fn failure(
         .then(|| format!("no frames for {} ms", last_progress.elapsed().as_millis()))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_captures_are_supervised_like_libcamera_and_v4l2_ones() {
-        let config = StyxConfig::default();
-        for backend in [
-            BackendKind::Libcamera,
-            BackendKind::V4l2,
-            BackendKind::Native,
-        ] {
-            assert!(
-                queue_for(backend, &config).is_some()
-                    == config.capture_tunables().reconnect.enabled,
-                "{backend}"
-            );
-        }
-        assert!(queue_for(BackendKind::File, &config).is_none());
-    }
-}
-
 fn stall_timeout(policy: &ReconnectPolicy, interval: Option<Interval>) -> Option<Duration> {
     if policy.stall_timeout_ms == 0 {
         return None;
@@ -510,4 +488,26 @@ fn restart(
 /// stopping the backend capture never closes the consumer's queue.
 pub(crate) fn backend_queue(tx: &styx_core::queue::BoundedTx<FrameLease>) -> CaptureQueue {
     (tx.clone(), styx_core::queue::bounded(1).1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_captures_are_supervised_like_libcamera_and_v4l2_ones() {
+        let config = StyxConfig::default();
+        for backend in [
+            BackendKind::Libcamera,
+            BackendKind::V4l2,
+            BackendKind::Native,
+        ] {
+            assert!(
+                queue_for(backend, &config).is_some()
+                    == config.capture_tunables().reconnect.enabled,
+                "{backend}"
+            );
+        }
+        assert!(queue_for(BackendKind::File, &config).is_none());
+    }
 }
