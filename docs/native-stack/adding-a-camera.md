@@ -152,13 +152,13 @@ Styx sets at open).
 | `landing`, 60 / 120 fps | 24 of 24 and 24 of 24; level within 5% on 140 / 125 of 144 (the others 5-9% off: the black level settling after gain changes at 60, 100 Hz light on 3.3 ms exposures at 120; a missed frame is 50-100% off); periods 143 of 143 | |
 | control delays (exposure, gain, frame length) | 2, 2, 1 (as the bridge) | 2, 2, 1 |
 | values a frame reports | predicted (delay model) | read back (embedded data) |
-| open → first frame, cold, 30 fps | 37.5-37.8 ms | 29.5-30.1 ms |
+| open → first frame, cold, 30 fps | 37.5-39.8 ms | 29.5-30.1 ms |
 | where | configure 0.3 ms (no I²C from Styx), `STREAMON` 20.6-21.2 ms (the driver powers the sensor and writes its mode tables in `s_stream`, at 100 kHz), `STREAMON` → first frame 14.1 ms | configure 12.1 ms (bring-up over I²C), `STREAMON` 6.5 ms, → first frame 9.3 ms |
-| AE from cold, 30 fps: exposure / output within 5%, locked; open → locked | 5 / 4 / 6 frames, 237.6-243.6 ms (4 runs) | 5 / 4 / 6, 229.6-230.1 ms (3 runs) |
+| AE from cold, 30 fps: exposure / output within 5%, locked; open → locked | 5 / 4 / 6 frames, 237.6-243.6 ms (5 runs) | 5 / 4 / 6, 229.6-230.1 ms (3 runs) |
 | darker step (¼) / brighter step (3×), 30 fps | 2 / 1 / 3 and 0 / 0 / 0 | the same |
 | AE from cold, 60 fps: locked | frame 6 (142 ms) | frame 6 (130 ms) |
 | AE from cold, 120 fps: locked | frame 8, 11, 14, 15, 16, 18 (6 runs, 110-188 ms) | frame 8 (3 of 3, 96 ms) |
-| warm restart in place / reopen at 120 fps: first frame, locked | 44.4 ms, frame 7 / 44.4 ms, frame 2 (61 ms) | (pipeline.md: 24 ms, frame 2 / 51 ms, frame 2) |
+| warm restart in place / reopen at 120 fps: first frame, locked | 44.4 ms, frame 7 / 44.4-46.4 ms, frame 2-6 (61-96 ms) | (pipeline.md: 24 ms, frame 2 / 51 ms, frame 2) |
 | CPU per frame, tool, not reading the output: 30 / 120 fps | 0.260 / 0.220 ms | 0.270 / 0.242 ms |
 | Styx API (`native_isp_bench single`), NV12 1280x800: process CPU, latency median, 30 / 120 fps | 0.23 ms, 9.52 ms / 0.20 ms, 9.53 ms | 0.29 ms, 9.51 ms / 0.18 ms, 9.51 ms |
 | frame start → outputs (tool), 30 fps | 9.91 ms median | 9.91-9.92 ms |
