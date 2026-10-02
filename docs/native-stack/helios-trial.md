@@ -10,6 +10,10 @@ Branches: Styx `native/helios-trial` (from `native-stack` 8936fee), HeliOS `styx
 (`styx-bridge.service`, embedded data), a Logitech C270 (UVC) on USB, image v2026.2.0.
 Measured 2026-10-02 (device clock 2026-08-17).
 
+A second round the same day ([below](#second-round-ready-to-ship)) fixed what this one found,
+ran HeliOS's real consumer (helios-engine) for 90 minutes, and ends with the
+[checklist](#shipping-helios-without-libcamera-checklist) for an image without libcamera.
+
 ## What HeliOS uses from Styx
 
 `helios-peripherals` (`backend/src/helios/peripherals`):
@@ -70,6 +74,9 @@ HeliOS buildroot sysroot (libcamera, turbojpeg; FFmpeg is loaded at run time).
 | after the bridge went down and up the camera came back as a new HeliOS resource | the native display name contained the subdev node (`/dev/v4l-subdev2`, `v4l-subdev3` after the rebind); HeliOS keys resources by it | Styx a901610: named by the I²C location, `ov9782 (styx bridge i2c 10-0060)` |
 
 Found, not fixed (pre-existing or outside the trial):
+
+Status after the second round: the first three are fixed (Styx, HeliOS and `down.sh`), the
+probe warnings remain, the libcamera probe lines go with libcamera.
 
 * **UVC preview fails** on every frame (`format mismatch: expected RG24, got MJPG`), with the
   installed service too: HeliOS converts YUYV for the preview with `CodecRegistry::process(
@@ -188,22 +195,206 @@ Native build (libcamera compiled in), preview on, sampled every minute:
   camera came back as a new resource (fixed, a901610) and the stale node's close oopsed the
   kernel (above; the device was rebooted).
 
-## What remains before HeliOS ships without libcamera
 
-1. **Image content**: the bridge module, overlay and `styx-bridge.service` instead of the
-   `ov9282` overlay; `ov9782.toml` in `/usr/share/styx/sensors`; the tuning in
-   `/usr/share/styx/tuning` (today it is read from libcamera's directory, which goes away with
-   libcamera: without it the native pipeline runs on default tuning).
-2. **HeliOS**: build `helios-peripherals` without the `libcamera` feature (this branch adds
-   it), stop captures on SIGTERM, ask for the frame rate it wants, fix the UVC preview codec
-   lookup and the socket path length (fixed here), and publish the frame before encoding the
-   preview (10.6 ms of latency today).
-3. **Kernel/bridge**: unbinding `rp1-cfe` under a streaming process oopses; `down.sh` must not
-   do it, and an updater or a bridge restart must stop HeliOS first.
-4. **Native stack and process**: the OV9782 description's licensing status (test data until
-   rewritten from the datasheet, so not embedded); a HeliOS build whose Orion matches the
-   image (dev's 59f91ed does not talk to v2026.2.0's orion-node; the trial pinned f180849).
-5. **Not covered by this trial**: helios-engine actually consuming the stream (it was idle;
-   the client reproduces its transport and import), camera controls (HeliOS sets none today;
-   AE/AWB ran on their defaults), runs longer than 15 minutes, a real CSI unplug, and the
-   OV9782 at the rate HeliOS will want once it asks for one.
+## Second round: ready to ship
+
+Branches: Styx `native/helios-ready` (from `native-stack` 0a3a3fc: the trial's fixes and a
+`down.sh` that stops every camera user before unbinding `rp1-cfe`), HeliOS `styx-native-trial`
+(5c0a658, 1b61323). `helios-peripherals` built without its `libcamera` feature throughout
+("native only": links neither libcamera nor libstdc++, 4.7 MB), run from `/tmp/helios-ready`
+with the service's environment; no `STYX_SENSOR_PATH`, nothing in `/usr/share/styx`.
+
+### What changed
+
+Styx:
+
+| change | why |
+|---|---|
+| The OV9782 description is built in (`styx_sensor::BUILTIN_DESCRIPTIONS`), after the search path (`STYX_SENSOR_PATH`, `/etc/styx/sensors`, `/usr/{local/,}share/styx/sensors`) | its register values are cleared by their author; the first round needed `STYX_SENSOR_PATH` |
+| Tuning search path (`styx_pipeline::tuning`): `STYX_TUNING`, `STYX_TUNING_PATH`, `~/.config/styx/tuning`, `/etc/styx/tuning`, `/usr/{local/,}share/styx/tuning`, then built-in tunings (the HeliOS `ov9782.json`, unchanged), then libcamera's `rpi/pisp` directories, then a built-in generic tuning | the tuning came from libcamera's directory, which goes with libcamera. On the device: `tuning=builtin:ov9782.json` |
+| Codec lookups that name no kind (`lookup`, `process`, `lookup_auto`, `lookup_preferred`) prefer a decoder to an encoder; `lookup_preferred_kind`; the session's `decoder_from_registry`/`encoder_from_registry` ask for their kind | YUYV has both (FFmpeg's YUYV → MJPEG/H.264 encoders, the YUYV → RGB decoder) and "ffmpeg" sorts before "yuyv-cpu": `process(YUYV)` returned the MJPEG encoder. A Styx bug, also behind `decoder_from_registry(YUYV)` |
+| `TurbojpegEncoder` takes NV12 (4:2:0) and YUYV (4:2:2) and encodes their YUV samples (`tj3CompressFromYUVPlanes8`), no colour conversion | cheaper previews (below) |
+| PiSP back end output buffers are reused in release order (FIFO), not last released first | HeliOS exports the latest frame's dma-bufs and drops the lease; the buffer it had just released was the next job's output, so a consumer polling the latest frame saw 1-11% of frames change under it (the next frame's pixels with the old timestamp, 43 ms old) |
+| Boot-time CM5 bridge overlay gets the embedded data pad (`styx,embedded-data`), as the runtime `-emb` overlay | an image binding the bridge at boot gets the same frames as the trial (not booted here) |
+
+HeliOS:
+
+| change | why |
+|---|---|
+| SIGTERM stops like SIGINT, and stopping now calls `CaptureHandle::stop_async` on every capture and waits (5 s, then abort) | dropping a `CaptureHandle` inside async code only signals its workers and does not wait: the first round's shutdown (abort the tasks, return), tried here for SIGTERM, exited with the sensor still streaming (`stop request N failed: -110`) twice of two. Now: exit 40-60 ms after SIGTERM, no bridge timeout. Captures of removed resources stop the same way |
+| `HELIOS_CAPTURE_FPS` (default 30, `0` = the mode's default): the interval asked of each mode, exact when the mode lists it or its stepwise range holds it, else the closest | HeliOS asked for no rate (60.28 fps native, 30-50 fps libcamera). HeliOS's config has no other capture rate (`backend/.env`'s `PREFERRED_CAPTURE_FPS` is unused); OV9782 runs at 30.00 fps, the C270 at 1280x960 at its only rates (7.5 fps) |
+| Preview on its own thread: the frame is published first (frame socket, metadata file: 0.05 ms per frame), then handed over; the newest frame wins; encoded only while a client is connected to the `.mjpeg.sock` (`HELIOS_CAPTURE_PREVIEW_ENCODE=always`, `0`) | consumers waited for the 10.6 ms encode; HeliOS encoded every frame whether or not anyone watched |
+| turbojpeg is the default preview encoder (`HELIOS_CAPTURE_PREVIEW_ENCODER=ffmpeg` for FFmpeg) | measured below |
+| Preview conversions use `lookup_for_output(input, encoder input)`; Styx feature `raw-decoders` enabled explicitly | the UVC fix on the HeliOS side; Styx's `libcamera` feature used to pull `raw-decoders` in, so without libcamera YUYV had no converter at all |
+| The frame server holds the captured frame until the next one replaces it (dma-buf exports) | with the Styx FIFO fix above, the buffer a consumer is handed is not written while it is the latest one |
+| helios-engine reads the transport the way peripherals writes it (`#[serde(tag = "kind")]`) | on `dev` the engine's `FrameLeaseTransportBacking` is untagged and peripherals' is tagged: every import failed (`unknown variant kind`). The image's engine (v2026.2.0) reads the tagged form; `dev` regressed |
+
+### Preview encoders
+
+1280x800 NV12 from the OV9782 at 30 fps, one preview client, process CPU over 15 s (capture,
+frame server and metadata included), per-frame times from HeliOS's own counters:
+
+| | encode per frame | JPEG size | `helios-peripherals` CPU |
+|---|---|---|---|
+| FFmpeg MJPEG (`FfmpegMjpegEncoder`, NV12 direct) | 10.51 ms | 20.5 KB | 34.4% |
+| turbojpeg, quality 85 (default), YUV planes | 4.45 ms | 54.6 KB | 15.8% |
+| turbojpeg, quality 70 / 50 | 4.18 / 4.08 ms | 38.1 / 31.2 KB | 15.4 / 14.7% |
+| no preview client (on demand: nothing encoded) | — | — | 1.9% |
+
+C270 YUYV 1280x960 (7.5 fps): turbojpeg 9.6 ms (4:2:2, 122 KB); FFmpeg 2.2 ms YUYV → RGB
+(`yuyv-cpu`) + 15.2 ms (26 KB). Both now produce valid JPEGs (the first round's every frame
+failed).
+
+### 90 minutes with helios-engine consuming
+
+helios-engine on the device is the image's (v2026.2.0) and executes only workloads Orion
+assigns it; nothing was assigned. For the run: an Orion workload
+(`helios.engine.execution.v1`, inline graph: the camera binding through the host bridge),
+the node record it needs (`orion_node_record`, a trial helper: `orionctl` cannot add one), and
+a trial build of `helios-engine` from the same HeliOS branch (with the transport fix) from
+`/tmp` with the service's environment and a 10 ms execution interval (the default 250 ms takes
+4 frames/s), the installed service and its socket stopped. The engine imports the latest frame
+over the frame socket (dma-bufs) every tick and runs the graph when it is new; its
+`tick_count` counts the frames it took.
+
+Build 5c0a658 (before the buffer-reuse fixes), OV9782 NV12 1280x800 at 30 fps (PiSP, built-in
+tuning), C270 YUYV 1280x960 7.5 fps, preview on demand; a preview client connected from
+minute 60 to 75; an engine-style consumer (`frame_lease_client`) sampling 10 s every 10
+minutes. Per-minute samples:
+
+| | minutes 0-59 | 60-74 (preview client) | 75-89 |
+|---|---|---|---|
+| frames published (metadata sequence) | 29.3-31.0 /s, mean 29.99 | mean 30.07 | mean 29.89 |
+| frames taken by helios-engine | 27.2-29.4 /s, mean 28.0 | 29.4 | 29.7 |
+| `helios-peripherals` CPU (% of a core) | 3.6-4.0 (mean 3.7) | 13.7-18.6 (17.9) | 3.7-3.9 |
+| helios-engine CPU | 9.4-11.1 | 10.8-11.6 | 10.9-11.6 |
+| `helios-peripherals` RSS / PSS | 29.7 → 30.0 / 27.9 → 28.2 MB | 31.0-31.1 / 29.3 MB | 31.1 / 29.3 MB (flat) |
+| threads / fds / dma-buf fds | 12 / 58 / 18 | 12 / 58-63 / 18-22 | 12 / 58 / 18 |
+| helios-engine RSS / fds | 4.9 MB / 13-14 | same | same |
+| CMA free | 38 524 kB throughout | | |
+
+* Preview client: 26 999 frames in 900 s (30.00 fps), all valid JPEGs, 53.8 KB mean.
+* Consumer samples: no errors; frame start → frame in the consumer's hands p50 11.6-12.0 ms.
+  p95 13.0-16.4 ms in four samples and 41-42.5 ms in five: frames "seen twice" (more than 300
+  distinct frames per 10 s: the pixels changed with the old timestamp), the buffer reuse fixed
+  afterwards (below).
+* No stream closed, no session restart, no reconnect, no kernel message during the run;
+  MemAvailable fell by the size of the run's own log in `/tmp` (tmpfs).
+* RSS grew 0.3 MB in the first hour, 1.1 MB when the preview started (encoder buffers), then
+  stayed flat.
+
+After the buffer-reuse fixes (Styx 8db9b8e, HeliOS 1b61323), same setup, three 10 s consumer
+samples: exactly 301 distinct frames per 10 s (30.00 fps), age p50 11.6-11.8 ms, p95
+12.9-13.0 ms, max 20-27 ms (before, in the same minutes: 304-310 frames, max 43 ms).
+Then 30 more minutes on the final build (Styx 8db9b8e, HeliOS 1b61323), preview client from
+minute 20 to 25: 30.04 frames/s published, helios-engine took 28.5-30.0 /s (mean 29.3);
+`helios-peripherals` 3.6-3.8% CPU (17.0-18.2% with the preview client: 9 000 frames in 300 s,
+all valid), RSS 30.0-31.1 MB (flat after the preview started), 60 fds, 20 dma-buf fds (the
+held frame's two planes); helios-engine 9.3-10.9% CPU, 5.0 MB; consumer samples at minutes
+10, 20, 30: 301 frames per 10 s each, p50 11.6 ms, p95 12.8-12.9 ms, max 20-24 ms; no stream
+closed, no restart, no kernel message.
+
+### Restart, unplug, bridge cycle (engine consuming)
+
+* **SIGTERM restart**: `helios-peripherals` exits 50 ms after SIGTERM; no bridge timeout in
+  the kernel log (the first round: 1 s and `stop request failed: -110` every time). Restarted,
+  it publishes its first OV9782 frame 0.36 s after the start; the engine resumes on its own
+  (29.4 frames/s).
+* **C270 unplug/replug** (`authorized` 0, 5 s, 1): the C270's stream stops while it is away,
+  frames again 1.66 s after it comes back; the OV9782 stream is not interrupted.
+* **`systemctl stop styx-bridge` while streaming**: 1.14 s; `down.sh` stops
+  `helios-peripherals` first (SIGINT), then unbinds: no oops, no hang (the first round: two
+  oopses and a reboot). Only the known `OF: ERROR: memory leak` line of the overlay removal.
+  `down.sh` then starts the installed service (libcamera, `ov9282`), which gets the camera as
+  a different resource (`camera-c1f888b1`).
+* **`systemctl start styx-bridge`**: 0.47 s, the installed service stopped (`Conflicts=`);
+  `helios-peripherals` started again publishes the first frame 0.37 s later, the camera is
+  the same resource as before (`capture_device_node-local_camera-0e2f84bc`), and the
+  engine's workload (bound to it) resumes without a change (28.7 frames/s).
+
+### Against the installed libcamera service
+
+The installed service (Styx 8d09daa, libcamera, preview encoded on every frame with FFmpeg,
+no rate asked) with the bridge down, 60 s: 48.1% CPU, RSS 63.0 MB, PSS 56.3 MB, 10 threads,
+87 fds, 45 dma-buf fds. Native only, as now deployed (30 fps, preview on demand) with the
+engine consuming: 3.7% CPU, RSS 30 MB, PSS 28 MB, 58 fds, 18 dma-buf fds; with a preview
+client 17.9%.
+
+### Still open
+
+* The `v4l2` probe reports every non-camera node as a probe error (30 `WARN` lines per
+  inventory refresh).
+* A consumer holding a frame's dma-bufs longer than about four frame periods (the back end's
+  free buffers) can still see them rewritten: the frame socket hands out fds, not leases.
+  helios-engine reads the frame within its tick; a slower consumer should copy, or use
+  Styx's camera service, which keeps leases across processes.
+* helios-engine at a 10 ms execution interval took 27-30 of the 30 frames/s (a tick also
+  publishes its session to Orion); the default 250 ms takes 4. An engine that waits for the
+  next frame instead of polling would take all of them.
+* `HELIOS_PERIPHERALS_WORKER_THREADS=1`: the frame server, the capture tasks and the preview
+  hand-off share one tokio worker (the preview encode does not, it has its own thread).
+* Not run: a boot with the bridge overlay in `config.txt` (the device binds it at runtime), a
+  real CSI unplug, camera controls from HeliOS (none are set; AE/AWB run on the tuning).
+## Shipping HeliOS without libcamera: checklist
+
+What the image needs, against v2026.2.0 (Atlas Raze device package 1.0.6, HeliOS `dev`
+c9b39bb). Everything here was run on the CM5 except the boot-time overlay (the device binds
+the bridge at runtime, `styx-bridge.service`).
+
+**HeliOS (branch `styx-native-trial`, 5c0a658, to bring to `dev`)**
+
+- [ ] Styx dependency on `native-stack` with this branch merged (OV9782 description and tuning
+      built in, codec lookup fix, turbojpeg NV12/YUYV).
+- [ ] `helios-peripherals` built without its `libcamera` feature (`--no-default-features`, or
+      drop `libcamera` from its `default`): links neither libcamera nor libstdc++.
+- [ ] Styx feature `raw-decoders` on `helios-peripherals` (in the branch): Styx's `libcamera`
+      feature used to bring it in; without it YUYV/BGR/RGBA previews have no converter.
+- [ ] The rest of the branch: SIGTERM/stop with `stop_async`, `HELIOS_CAPTURE_FPS` (default
+      30), preview thread (on demand, turbojpeg), the latest frame held while served, socket
+      paths that fit `sun_path`, the engine's transport tag fix, BackendKind names via
+      Display/FromStr. (The trial bins `frame_lease_client`, `preview_client`,
+      `orion_node_record` need not ship.)
+- [ ] Orion: `dev` pins 59f91ed, the image runs f180849; build against what the image ships.
+
+**Device package (Atlas Raze `devices/raze/gaia`)**
+
+- [ ] `camera.toml`: drop the `BR2_PACKAGE_LIBCAMERA`, `BR2_PACKAGE_LIBCAMERA_PIPELINE_RPI_PISP`
+      overrides and the two `stage.files` (`/usr/share/libcamera/ipa/rpi/pisp/ov9782.json`,
+      `/usr/share/libcamera/tuning/ov9782.overrides.json`); the tuning is built into Styx.
+- [ ] `buildroot-external/packages/libcamera`, `.../libpisp`: drop (libpisp is used only by
+      libcamera; Styx's PiSP code is its own). On v2026.2.0 that removes `libcamera.so`,
+      `libcamera-base.so` (2.4 MB), `/usr/lib/libcamera` (IPA modules, 1.7 MB),
+      `/usr/libexec/libcamera` (IPA proxies, 0.35 MB), `/usr/share/libcamera` (3.2 MB) and
+      `libpisp.so` (0.5 MB). On the device only libcamera (and through it
+      `helios-peripherals`) links `libyaml`, `liblttng-ust`, `libdw` (elfutils) and `libgnutls`:
+      drop them too unless another package selects them. `libstdc++` stays (FFmpeg, abseil).
+- [ ] `kernel.toml`: add `BR2_LINUX_KERNEL_EXT_STYX_SENSOR_BRIDGE=y` with Styx's
+      `kernel-modules/styx-sensor-bridge/buildroot/{linux-ext-styx-sensor-bridge.mk,Config.ext.in}`
+      and the module directory copied to `linux/styx-sensor-bridge` in the external tree
+      (builds `styx_sensor_bridge.ko` with the image's kernel and `styx-sensor-bridge-cm5.dtbo`).
+      `BR2_LINUX_KERNEL_EXT_OV9782` (the `ov9282` OV9782 variant) is no longer needed for the
+      bridge; keep it only as a fallback (Styx drives the OV9782 under `ov9282` too, without
+      embedded data).
+- [ ] `raze-device.txt`: replace `dtoverlay=ov9782,cam0,clk-continuous` with
+      `dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous`, and add
+      `dtoverlay=styx-cam0-i2c-fast` (cam0 I²C at 400 kHz, as on the device now). Keep
+      `camera_auto_detect=0`. Ship `styx-cam0-i2c-fast.dtbo` (dts in Styx).
+- [ ] The module must load at boot: with the overlay in `config.txt` it binds by its
+      compatible (`styx,sensor-bridge`) once `styx_sensor_bridge.ko` is in
+      `/lib/modules/$(uname -r)` with `depmod` run (Buildroot does both).
+- [ ] `styx-bridge.service`, `up.sh`, `down.sh`, the runtime overlays and
+      `/usr/local/lib/styx-bridge`: dev-box only (runtime overlay over an `ov9782` boot);
+      not needed with the boot-time overlay.
+
+**Files**
+
+- Nothing is required in `/usr/share/styx`: the OV9782 description and tuning are built in.
+  Optional overrides: `/usr/share/styx/sensors/ov9782.toml`, `/usr/share/styx/tuning/ov9782.json`
+  (or `STYX_SENSOR_PATH`, `STYX_TUNING_PATH`).
+
+**Services**
+
+- [ ] `helios-peripherals.service`: unchanged otherwise (SIGTERM now stops the captures);
+      optional `HELIOS_CAPTURE_FPS=` in `/etc/default/helios-peripherals.env`.
+- [ ] `helios-engine.service`: `STYX_LIBCAMERA_STOP_WHEN_IDLE=1` is libcamera-only (harmless).
+- [ ] Order: nothing may unbind `rp1-cfe` while `helios-peripherals` streams (kernel oops).

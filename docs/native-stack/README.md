@@ -137,7 +137,8 @@ limits at that fps.
     (`ssh root@helios dmesg -w > <worktree>/target/helios-dmesg-<time>.log &`) so a reboot leaves
     evidence; if it reboots or hangs, stop device work and report what you were doing.
 - Licensing: Styx is MIT/Apache. Register values in `ov9782.toml` come from the HeliOS
-  `ov9782.c` driver; the project owner wrote it and cleared their use. The bridge module is
+  `ov9782.c` driver; the project owner wrote it and cleared their use. Both it and the HeliOS
+  OV9782 tuning (`crates/pipeline/tuning/ov9782.json`, the owner's) are built into Styx. The bridge module is
   GPL-2.0 (kernel module) and lives apart from the Rust crates.
 - Commits: concise messages ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
   Never push.
