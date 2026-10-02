@@ -1,0 +1,31 @@
+[package]
+name = "styx-pipeline"
+version.workspace = true
+edition.workspace = true
+description = "The native processing pipeline: a deterministic 3A loop (styx-algo) closed over a sensor's frame-exact controls and an ISP (PiSP or the software ISP)."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Run on the device: native cameras (styx-native) and the PiSP nodes (styx-pisp/device).
+device = ["dep:styx-native", "dep:styx-kernel", "styx-pisp/device"]
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0.145"
+styx-algo.workspace = true
+styx-pisp.workspace = true
+styx-sensor.workspace = true
+styx-softisp.workspace = true
+thiserror.workspace = true
+styx-native = { workspace = true, optional = true }
+styx-kernel = { workspace = true, optional = true }
+
+[dev-dependencies]
+bytemuck = "1.25"
+
+[lints]
+workspace = true
