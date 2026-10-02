@@ -42,9 +42,12 @@ fn fixture_converts() {
     assert!((gamma.eval(0.5) - 50000.0 / 65535.0).abs() < 1e-3);
     assert_eq!(t.ccm.as_ref().unwrap().ccms.len(), 2);
 
+    let d = t.denoise.as_ref().unwrap();
+    assert_eq!(d.noise.reference_slope, 3.0);
+    assert_eq!(d.sharpen.unwrap().strength, 1.0);
+    assert!(d.sdn.is_none() && d.tdn.is_none());
+
     for key in [
-        "rpi.noise",
-        "rpi.sharpen",
         "rpi.alsc.omega",
         "rpi.alsc.n_iter",
         "rpi.awb.enabled",

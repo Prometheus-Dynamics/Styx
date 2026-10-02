@@ -13,6 +13,7 @@ use styx_kernel::v4l2::{
 
 use super::be::BE_CFG_FOURCC;
 use super::be_output::{OutputMemory, OutputQueue};
+use super::be_tdn::TdnBuffers;
 use super::config_buf::ConfigBuffer;
 use super::{DeviceError, Result, bayer16_fourcc, find_media};
 use crate::format::formats;
@@ -91,9 +92,12 @@ pub struct BackEndStream {
     input_len: u32,
     outputs: [Option<Output>; 2],
     config: ConfigBuffer,
+    /// Input width, height, fourcc and stride (the TDN buffers' format).
+    input_layout: (u32, u32, FourCc, u32),
+    tdn: Option<TdnBuffers>,
 }
 
-fn mplane(w: u32, h: u32, fourcc: FourCc, bpl: u32) -> Format {
+pub(super) fn mplane(w: u32, h: u32, fourcc: FourCc, bpl: u32) -> Format {
     Format::Multi(styx_kernel::v4l2::PixFormatMplane {
         width: w,
         height: h,
@@ -259,6 +263,13 @@ impl BackEndStream {
             input_len,
             outputs: outs,
             config,
+            input_layout: (
+                u32::from(input.width),
+                u32::from(input.height),
+                bayer16_fourcc(bayer),
+                input.stride as u32,
+            ),
+            tdn: None,
         };
         s.input.stream_on(BufType::VideoOutputMplane)?;
         for o in s.outputs.iter().flatten() {
@@ -266,6 +277,56 @@ impl BackEndStream {
         }
         s.config.stream_on()?;
         Ok(s)
+    }
+
+    /// Sets up temporal denoise: two buffers of the input's format on `pispbe-tdn_input` and
+    /// `pispbe-tdn_output`, swapped every job. Jobs whose config enables `TDN_OUTPUT` (and
+    /// `TDN_INPUT`) use them; the config's TDN formats must be [`Self::tdn_format`].
+    pub fn enable_tdn(&mut self) -> Result<()> {
+        if self.tdn.is_some() {
+            return Ok(());
+        }
+        let t = self._media.topology()?;
+        let node = |name: &str| -> Result<styx_kernel::v4l2::VideoDevice> {
+            let id = t
+                .entity_by_name(name)
+                .ok_or_else(|| DeviceError::Setup(format!("no '{name}' entity")))?
+                .id;
+            let p = t
+                .devnode_path(id)
+                .ok_or_else(|| DeviceError::Setup(format!("no device node for '{name}'")))?;
+            Ok(styx_kernel::v4l2::VideoDevice::open(p)?)
+        };
+        self.tdn = Some(TdnBuffers::new(
+            node("pispbe-tdn_input")?,
+            node("pispbe-tdn_output")?,
+            self.input_layout,
+        )?);
+        Ok(())
+    }
+
+    /// Temporal denoise is set up ([`Self::enable_tdn`]).
+    pub fn tdn_enabled(&self) -> bool {
+        self.tdn.is_some()
+    }
+
+    /// The format of the TDN buffers (the input's).
+    pub fn tdn_format(&self) -> ImageFormatConfig {
+        let (w, h, _, stride) = self.input_layout;
+        ImageFormatConfig {
+            width: w as u16,
+            height: h as u16,
+            format: formats::BAYER16,
+            stride: stride as i32,
+            stride2: 0,
+        }
+    }
+
+    /// Forgets the temporal average: the next job must have `TDN_INPUT` off.
+    pub fn reset_tdn(&mut self) {
+        if let Some(t) = &mut self.tdn {
+            t.reset();
+        }
     }
 
     /// Where the config buffer comes from (`mmap`, or a dma-heap: see
@@ -305,6 +366,13 @@ impl BackEndStream {
                 picked[i] = Some(b);
             }
         }
+        if let Some(t) = &mut self.tdn
+            && let Err(e) = t.queue(cfg.config.global.bayer_enables)
+        {
+            t.abandon();
+            self.give_back(picked);
+            return Err(e);
+        }
         let queued = self.queue_job(input, picked, bytes.len() as u32);
         match queued {
             Ok(start) => Ok(QueuedJob {
@@ -320,7 +388,18 @@ impl BackEndStream {
 
     /// Waits up to `timeout` for a job from [`Self::process_queued`] to finish.
     pub fn wait_job(&mut self, job: QueuedJob, timeout: Duration) -> Result<BeJob> {
-        let result = self.wait(&job, timeout);
+        let mut result = self.wait(&job, timeout);
+        if let Some(t) = &mut self.tdn {
+            match &result {
+                Ok(_) => {
+                    if let Err(e) = t.complete(timeout) {
+                        t.abandon();
+                        result = Err(e);
+                    }
+                }
+                Err(_) => t.abandon(),
+            }
+        }
         if result.is_err() {
             // Whatever completed is unusable; hand the buffers back.
             self.give_back(job.outputs);
@@ -445,6 +524,7 @@ impl BackEndStream {
 
     /// Stops streaming and frees the buffers.
     pub fn stop(self) -> Result<()> {
+        let t = self.tdn.map(TdnBuffers::close);
         let a = self.config.close();
         let b = self.input.stream_off(BufType::VideoOutputMplane);
         let c = self
@@ -458,6 +538,9 @@ impl BackEndStream {
         }
         b?;
         c?;
+        if let Some(Err(e)) = t {
+            first.get_or_insert(e);
+        }
         first.map_or(Ok(()), Err)
     }
 }

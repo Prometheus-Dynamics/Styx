@@ -40,7 +40,7 @@ const USAGE: &str = "usage:
   styx-compare run --backend <libcamera|native|...> [--format FOURCC] [--size 1280x800]
       [--fps 30] [--frames 300] [--warmup 15] [--repeat 3] [--converge-timeout-ms 4000]
       [--settle-window 6] [--ae-state-control ID|none] [--cfa rggb|bggr|grbg|gbrg]
-      [--label NAME] [--out result.json] [--save frame.bin]
+      [--label NAME] [--out result.json] [--save frame.bin] [--set ID=b:1|i:N|u:N|f:X]...
   styx-compare report [--json combined.json] [--md table.md] result.json...";
 
 fn parse_u32(s: &str) -> Result<u32, String> {
@@ -67,6 +67,7 @@ fn parse_run(args: &[String]) -> Result<(RunConfig, Option<PathBuf>), String> {
         settle_window: 6,
         cfa: None,
         save: None,
+        controls: Vec::new(),
     };
     let mut ae: Option<Option<ControlId>> = None;
     let mut out = None;
@@ -117,6 +118,24 @@ fn parse_run(args: &[String]) -> Result<(RunConfig, Option<PathBuf>), String> {
             "--label" => cfg.label = value()?,
             "--out" => out = Some(PathBuf::from(value()?)),
             "--save" => cfg.save = Some(PathBuf::from(value()?)),
+            "--set" => {
+                let v = value()?;
+                let (id, val) = v
+                    .split_once('=')
+                    .ok_or(format!("--set {v}: ID=TYPE:VALUE"))?;
+                let (ty, x) = val
+                    .split_once(':')
+                    .ok_or(format!("--set {v}: TYPE:VALUE"))?;
+                let bad = |e: String| format!("--set {v}: {e}");
+                let value = match ty {
+                    "b" => ControlValue::Bool(x == "1" || x == "true"),
+                    "i" => ControlValue::Int(x.parse().map_err(|e| bad(format!("{e}")))?),
+                    "u" => ControlValue::Uint(x.parse().map_err(|e| bad(format!("{e}")))?),
+                    "f" => ControlValue::Float(x.parse().map_err(|e| bad(format!("{e}")))?),
+                    _ => return Err(bad("type is b, i, u or f".into())),
+                };
+                cfg.controls.push((ControlId(parse_u32(id)?), value));
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }

@@ -107,6 +107,9 @@ pub struct CameraConfig {
     pub hflip: bool,
     /// Vertical flip.
     pub vflip: bool,
+    /// The ISP runs temporal denoise (keeps a long-term average of frames), so spatial and
+    /// colour denoise can back off to their with-TDN strengths.
+    pub temporal_denoise: bool,
 }
 
 impl Default for CameraConfig {
@@ -123,6 +126,7 @@ impl Default for CameraConfig {
             crop: Crop::default(),
             hflip: false,
             vflip: false,
+            temporal_denoise: false,
         }
     }
 }

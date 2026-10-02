@@ -239,8 +239,10 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     if a.every_frame {
         options.settled_rate_hz = None;
     }
+    options.temporal_denoise = !a.no_tdn;
     let mut p =
         PispPipeline::open(cam, &settings(a), &tuning, options).map_err(|e| e.to_string())?;
+    println!("pisp: temporal denoise {:?}", p.temporal_denoise());
     if let Some(w) = crate::restart::requested_warm(a) {
         p.set_warm_start(w);
     }
@@ -435,6 +437,12 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         let rgb = nv12_to_rgb(&last_nv12[..s0 * h0], &last_nv12[s0 * h0..], w0, h0, s0);
         let ppm = a.out.join("pisp-nv12-rgb.ppm");
         write_ppm(&ppm, &rgb, w0, h0, w0 * 3).map_err(|e| e.to_string())?;
+        // The frame itself, rows packed (Y then interleaved CbCr), for comparisons.
+        let mut packed = Vec::with_capacity(w0 * h0 * 3 / 2);
+        for row in last_nv12.chunks(s0).take(h0 + h0 / 2) {
+            packed.extend_from_slice(&row[..w0]);
+        }
+        std::fs::write(a.out.join("pisp-last.nv12"), &packed).map_err(|e| e.to_string())?;
         let (rg, bg) = grey_ratios(&rgb, w0, h0, w0 * 3, 16, 240);
         extra.push(format!(
             "output0 NV12 grey-world ratios R/G {rg:.3} B/G {bg:.3}; saved {} and {}",

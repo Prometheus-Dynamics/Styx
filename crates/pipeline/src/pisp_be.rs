@@ -10,7 +10,7 @@
 
 use styx_algo::{LensShading, Pwl};
 use styx_pisp::be::BackEnd;
-use styx_pisp::uapi::{BeLscExtra, BeTilesConfig};
+use styx_pisp::uapi::{BeLscExtra, BeTilesConfig, ImageFormatConfig, bayer_enable};
 
 use crate::error::{PipelineError, Result};
 use crate::isp::{IspSettings, be_lens_shading, gamma_points, level16};
@@ -49,7 +49,16 @@ pub struct BeConfigBuilder {
     gamma: Option<Pwl>,
     lens_shading: Option<LensShading>,
     counts: BeUpdateCounts,
+    /// Temporal denoise buffers exist (see [`Self::enable_tdn`]).
+    tdn: bool,
+    /// Exposure × analogue gain of the last frame with temporal denoise on (`None`: the next
+    /// one starts a new average).
+    tdn_last: Option<f64>,
 }
+
+/// Above this exposure ratio between frames the temporal average starts over (as the
+/// Raspberry Pi IPA; the ratio register holds up to 4).
+const TDN_MAX_RATIO: f64 = 4.0;
 
 fn config_error(e: styx_pisp::be::PrepareError) -> PipelineError {
     PipelineError::Config(format!("back end: {}", e.0))
@@ -70,11 +79,56 @@ impl BeConfigBuilder {
             gamma: None,
             lens_shading: None,
             counts: BeUpdateCounts::default(),
+            tdn: false,
+            tdn_last: None,
         })
     }
 
-    /// The config for a frame processed with `isp`.
+    /// Temporal denoise buffers of `format` (the input's, see
+    /// `styx_pisp::device::BackEndStream::enable_tdn`) are there: frames whose settings ask
+    /// for temporal denoise get it from [`Self::update_frame`] on.
+    pub fn enable_tdn(&mut self, format: ImageFormatConfig) {
+        self.template.set_tdn_format(format);
+        self.work.set_tdn_format(format);
+        self.tdn = true;
+        self.tdn_last = None;
+        self.fresh = true;
+    }
+
+    /// The temporal average starts over with the next frame.
+    pub fn reset_tdn(&mut self) {
+        self.tdn_last = None;
+    }
+
+    /// [`Self::update`] for a frame exposed for `exposure` (time × analogue gain, in any
+    /// unit), which temporal denoise needs to scale its average.
+    pub fn update_frame(&mut self, isp: &IspSettings, exposure: f64) -> Result<BeUpdate> {
+        self.update_inner(isp, Some(exposure))
+    }
+
+    /// The config for a frame processed with `isp` (no temporal denoise).
     pub fn update(&mut self, isp: &IspSettings) -> Result<BeUpdate> {
+        self.update_inner(isp, None)
+    }
+
+    /// The temporal denoise config for this frame, and whether it reads the average.
+    fn tdn_for(&mut self, isp: &IspSettings, exposure: Option<f64>) -> Option<(f64, bool)> {
+        let exposure = exposure.filter(|e| *e > 0.0 && self.tdn && isp.denoise.tdn.is_some());
+        let Some(e) = exposure else {
+            self.tdn_last = None;
+            return None;
+        };
+        let ratio = self.tdn_last.map(|l| e / l);
+        self.tdn_last = Some(e);
+        match ratio {
+            Some(r) if r < TDN_MAX_RATIO => Some((r, true)),
+            _ => Some((1.0, false)),
+        }
+    }
+
+    fn update_inner(&mut self, isp: &IspSettings, exposure: Option<f64>) -> Result<BeUpdate> {
+        let tdn = self.tdn_for(isp, exposure);
+        let tdn_cfg = tdn.and_then(|(ratio, read)| isp.be_tdn(ratio, !read).map(|c| (c, read)));
         let ls_changed = self.fresh || self.lens_shading != isp.lens_shading;
         let lsc = if ls_changed {
             isp.lens_shading.as_ref().and_then(be_lens_shading)
@@ -86,9 +140,17 @@ impl BeConfigBuilder {
         } else {
             self.lsc_on
         };
-        if self.fresh || lsc_on != self.lsc_on {
+        // Blocks switched on or off (other than reading the temporal average) re-prepare.
+        let mask = !bayer_enable::TDN_INPUT;
+        let mut probe = self.work.clone();
+        isp.apply_be_detail(&mut probe);
+        probe.set_tdn(tdn_cfg.map(|t| t.0), tdn_cfg.is_some_and(|t| t.1));
+        let enables = |g: styx_pisp::uapi::BeGlobalConfig| (g.bayer_enables & mask, g.rgb_enables);
+        let blocks_changed = enables(probe.config().global) != enables(self.work.config().global);
+        if self.fresh || lsc_on != self.lsc_on || blocks_changed {
             let mut be = self.template.clone();
             isp.apply_be(&mut be);
+            be.set_tdn(tdn_cfg.map(|t| t.0), tdn_cfg.is_some_and(|t| t.1));
             self.cfg = be.prepare().map_err(config_error)?;
             self.work = be;
             self.fresh = false;
@@ -100,6 +162,8 @@ impl BeConfigBuilder {
         }
         let w = &mut self.work;
         w.set_black_level(level16(isp.black_level));
+        isp.apply_be_detail(w);
+        w.set_tdn(tdn_cfg.map(|t| t.0), tdn_cfg.is_some_and(|t| t.1));
         let g = isp.channel_gains();
         w.set_wb_gains(g[0], g[1], g[2]);
         w.set_ccm(isp.ccm);
@@ -131,6 +195,15 @@ impl BeConfigBuilder {
             c.gamma = n.gamma;
             changed = true;
         }
+        macro_rules! patch {
+            ($($f:ident),*) => {$(
+                if c.$f != n.$f {
+                    c.$f = n.$f;
+                    changed = true;
+                }
+            )*};
+        }
+        patch!(dpc, geq, sdn, cdn, tdn, sharpen, sh_fc_combine, global);
         // The grid steps were finalised by the last prepare; only the table changes.
         if lsc_on && c.lsc.lut_packed != n.lsc.lut_packed {
             c.lsc.lut_packed = n.lsc.lut_packed;
@@ -158,7 +231,9 @@ impl BeConfigBuilder {
 
 #[cfg(test)]
 mod tests {
-    use styx_algo::Params;
+    use styx_algo::{
+        CdnParams, DenoiseParams, GeqParams, Params, SdnParams, SharpenParams, TdnParams,
+    };
     use styx_pisp::format::{compute_stride_align, formats};
     use styx_pisp::uapi::{BayerOrder, ImageFormatConfig};
 
@@ -213,6 +288,17 @@ mod tests {
             s.ccm[1] = -0.1 * k;
             s.black_level = if i < 6 { 0.0625 } else { 0.06 };
             s.gamma = (i >= 4).then(|| gamma.clone());
+            // Denoise and sharpening come on, change, and (frame 10) go off again.
+            s.denoise = if (3..10).contains(&i) {
+                detail(k)
+            } else {
+                DenoiseParams::default()
+            };
+            s.sharpen = (i >= 6).then_some(SharpenParams {
+                threshold: 0.5 + 0.1 * k,
+                strength: 1.25,
+                limit: 0.6,
+            });
             // Lens shading off, on, a new table, the same table, off again, on again.
             s.lens_shading = match i {
                 0..=1 => None,
@@ -232,13 +318,94 @@ mod tests {
             );
         }
         assert_eq!(seen[0], BeUpdate::Rebuilt);
+        assert_eq!(seen[3], BeUpdate::Rebuilt, "denoise on");
+        assert_eq!(seen[4], BeUpdate::Patched, "denoise strengths");
         assert_eq!(seen[2], BeUpdate::Rebuilt, "lens shading on");
         assert_eq!(seen[8], BeUpdate::Rebuilt, "lens shading off");
         assert!(seen.contains(&BeUpdate::Patched));
         // Same settings again: nothing to do.
         assert_eq!(b.update(&s).unwrap(), BeUpdate::Unchanged);
         let c = b.counts();
-        assert_eq!(c.rebuilt, 4);
+        assert_eq!(c.rebuilt, 6);
         assert_eq!(c.rebuilt + c.patched + c.unchanged, 13);
+    }
+
+    fn detail(k: f64) -> DenoiseParams {
+        DenoiseParams {
+            noise_constant: 0.0,
+            noise_slope: 5.0,
+            sdn: Some(SdnParams {
+                noise_constant: 0.0,
+                noise_slope: 5.0 * (3.2 - 0.1 * k),
+                noise_constant2: 0.0,
+                noise_slope2: 16.0,
+                strength: 0.82,
+            }),
+            cdn: Some(CdnParams {
+                threshold: 1000.0 - 10.0 * k,
+                strength: 0.22,
+            }),
+            tdn: Some(TdnParams {
+                noise_constant: 0.0,
+                noise_slope: 5.0,
+                threshold: 0.08,
+            }),
+            geq: Some(GeqParams {
+                offset: 239.0 * (1.0 + 0.1 * k),
+                slope: 0.00766,
+            }),
+            dpc: 1,
+        }
+    }
+
+    /// Temporal denoise: a new average at the start and after a jump of the exposure, the
+    /// previous one read otherwise, scaled by the exposure ratio.
+    #[test]
+    fn temporal_denoise_follows_the_exposure() {
+        let t = template();
+        let mut b = BeConfigBuilder::new(t.clone()).unwrap();
+        let mut s = IspSettings::from_params(&Params::default(), 0, 1.0);
+        s.denoise = detail(0.0);
+        // No buffers: no TDN whatever the settings.
+        b.update_frame(&s, 1.0).unwrap();
+        assert_eq!(
+            b.config().config.global.bayer_enables & bayer_enable::TDN,
+            0
+        );
+        let mut fmt = t.config().input_format;
+        fmt.stride = 2560;
+        b.enable_tdn(fmt);
+        let mut seen = Vec::new();
+        for e in [1.0, 1.0, 2.0, 9.0, 9.0, 4.5] {
+            b.update_frame(&s, e).unwrap();
+            let c = &b.config().config;
+            let en = c.global.bayer_enables;
+            assert!(en & bayer_enable::TDN != 0 && en & bayer_enable::TDN_OUTPUT != 0);
+            seen.push((en & bayer_enable::TDN_INPUT != 0, c.tdn.reset, c.tdn.ratio));
+        }
+        let one = 1 << 14;
+        assert_eq!(
+            seen,
+            [
+                (false, 1, one),
+                (true, 0, one),
+                (true, 0, 2 * one),
+                (false, 1, one),
+                (true, 0, one),
+                (true, 0, one / 2),
+            ]
+        );
+        assert_eq!(b.config().config.tdn.threshold, 5243);
+        assert_eq!(b.config().config.tdn_output_format.stride, 2560);
+        // Settings without TDN switch it off; the next frame with it starts over.
+        s.denoise.tdn = None;
+        b.update_frame(&s, 4.5).unwrap();
+        assert_eq!(
+            b.config().config.global.bayer_enables & bayer_enable::TDN,
+            0
+        );
+        s.denoise = detail(0.0);
+        b.update_frame(&s, 4.5).unwrap();
+        assert_eq!(b.config().config.tdn.reset, 1);
     }
 }

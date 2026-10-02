@@ -20,6 +20,9 @@ pub use crate::algos::awb::tuning::{AwbMode, AwbPrior, AwbTuning};
 pub use crate::algos::black_level::BlackLevelTuning;
 pub use crate::algos::ccm::{CcmTuning, CtCcm};
 pub use crate::algos::contrast::ContrastTuning;
+pub use crate::algos::denoise::{
+    CdnTuning, DenoiseTuning, GeqTuning, NoiseTuning, SdnTuning, SharpenTuning, TdnTuning,
+};
 pub use crate::algos::lux::LuxTuning;
 use crate::error::{AlgoError, Result};
 pub use rpi::RpiImport;
@@ -53,6 +56,10 @@ pub struct Tuning {
     /// Tone curve.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contrast: Option<ContrastTuning>,
+    /// Noise profile, denoise, green equalisation, defective pixels and sharpening (ISP
+    /// blocks only some ISPs have).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denoise: Option<DenoiseTuning>,
 }
 
 impl Tuning {
@@ -109,6 +116,9 @@ impl Tuning {
         }
         if let Some(c) = &self.contrast {
             c.validate()?;
+        }
+        if let Some(d) = &self.denoise {
+            d.validate()?;
         }
         Ok(())
     }

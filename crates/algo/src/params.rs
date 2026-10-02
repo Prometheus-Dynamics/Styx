@@ -101,6 +101,81 @@ pub struct LensShading {
     pub b: Vec<f64>,
 }
 
+/// Spatial denoise for the ISP (16-bit pixel scale, see [`crate::algos::denoise`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct SdnParams {
+    /// Noise constant.
+    pub noise_constant: f64,
+    /// Noise slope.
+    pub noise_slope: f64,
+    /// Second stage noise constant.
+    pub noise_constant2: f64,
+    /// Second stage noise slope.
+    pub noise_slope2: f64,
+    /// Strength (1 − the proportion of the original let through).
+    pub strength: f64,
+}
+
+/// Colour denoise for the ISP.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct CdnParams {
+    /// Threshold (16-bit scale).
+    pub threshold: f64,
+    /// IIR strength.
+    pub strength: f64,
+}
+
+/// Temporal denoise for the ISP.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct TdnParams {
+    /// Noise constant.
+    pub noise_constant: f64,
+    /// Noise slope.
+    pub noise_slope: f64,
+    /// Threshold (a fraction).
+    pub threshold: f64,
+}
+
+/// Green equalisation for the ISP.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct GeqParams {
+    /// Offset (16-bit scale).
+    pub offset: f64,
+    /// Slope.
+    pub slope: f64,
+}
+
+/// Noise-dependent ISP settings; `None` blocks are off.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DenoiseParams {
+    /// Noise profile of this frame: constant (16-bit scale).
+    pub noise_constant: f64,
+    /// Noise profile slope.
+    pub noise_slope: f64,
+    /// Spatial denoise.
+    pub sdn: Option<SdnParams>,
+    /// Colour denoise.
+    pub cdn: Option<CdnParams>,
+    /// Temporal denoise.
+    pub tdn: Option<TdnParams>,
+    /// Green equalisation.
+    pub geq: Option<GeqParams>,
+    /// Defective pixel correction: 0 off, 1 normal, 2 strong.
+    pub dpc: u8,
+}
+
+/// Sharpening as factors on the ISP's default sharpening.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SharpenParams {
+    /// Threshold factor.
+    pub threshold: f64,
+    /// Strength factor.
+    pub strength: f64,
+    /// Limit factor.
+    pub limit: f64,
+}
+
 /// Everything the algorithms produce for a frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Params {
@@ -126,6 +201,12 @@ pub struct Params {
     pub black_level: BlackLevels,
     /// Lens-shading tables.
     pub lens_shading: Option<LensShading>,
+    /// Denoise, green equalisation and defective pixel correction.
+    #[serde(default)]
+    pub denoise: DenoiseParams,
+    /// Sharpening (`None`: the ISP's default).
+    #[serde(default)]
+    pub sharpen: Option<SharpenParams>,
 }
 
 impl Default for Params {
@@ -142,6 +223,8 @@ impl Default for Params {
             gamma: None,
             black_level: BlackLevels::default(),
             lens_shading: None,
+            denoise: DenoiseParams::default(),
+            sharpen: None,
         }
     }
 }

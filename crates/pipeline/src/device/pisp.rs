@@ -63,6 +63,9 @@ pub struct PispOptions {
     /// reads at memory speed, bracketed by [`PispPipeline::sync_output`]) or the driver's
     /// (mapped uncached).
     pub output_memory: OutputMemory,
+    /// Run the back end's temporal denoise when the tuning has it (two extra buffers of the
+    /// raw frame's size, read and written by every job).
+    pub temporal_denoise: bool,
 }
 
 impl PispOptions {
@@ -87,6 +90,7 @@ impl PispOptions {
             configs_ahead: 2,
             settled_rate_hz: Some(15.0),
             output_memory: OutputMemory::CachedHeap,
+            temporal_denoise: true,
         }
     }
 }
@@ -173,6 +177,8 @@ struct Isp {
     fe_dev: FrontEndDevice,
     be_dev: BackEndStream,
     be: BeConfigBuilder,
+    /// Why temporal denoise could not be set up, if it was wanted.
+    tdn_error: Option<String>,
 }
 
 impl Isp {
@@ -183,6 +189,7 @@ impl Isp {
         info: &SensorInfo,
         code: u32,
         options: &PispOptions,
+        want_tdn: bool,
     ) -> Result<(Self, Duration, Duration)> {
         let t = Instant::now();
         let order = bayer(info.cfa);
@@ -203,7 +210,7 @@ impl Isp {
         fe.set_output_format(0, input);
         fe.enable(fe_enable::OUTPUT0, true);
         let input_len = input.stride as u32 * u32::from(input.height);
-        let be_dev = BackEndStream::open_with(
+        let mut be_dev = BackEndStream::open_with(
             options.be_group,
             input,
             order,
@@ -220,13 +227,21 @@ impl Isp {
             [be_dev.output_format(0), be_dev.output_format(1)],
         )?;
         // The template must prepare (sizes, strides, tiles) before streaming starts.
-        let be = BeConfigBuilder::new(be)?;
+        let mut be = BeConfigBuilder::new(be)?;
+        let mut tdn_error = None;
+        if want_tdn && options.temporal_denoise {
+            match be_dev.enable_tdn() {
+                Ok(()) => be.enable_tdn(be_dev.tdn_format()),
+                Err(e) => tdn_error = Some(e.to_string()),
+            }
+        }
         Ok((
             Self {
                 fe,
                 fe_dev,
                 be_dev,
                 be,
+                tdn_error,
             },
             fe_open,
             t.elapsed(),
@@ -256,6 +271,10 @@ pub struct PispPipeline {
     step: Step,
     /// `step` came from a frame's statistics (not the start-up values).
     stepped: bool,
+    /// The tuning has temporal denoise (the back end then sets up its buffers).
+    want_tdn: bool,
+    /// Why the back end's temporal denoise could not be set up.
+    tdn_error: Option<String>,
     /// The last frame dequeued and the last one the algorithms ran on.
     last_seq: Option<u64>,
     last_run: Option<u64>,
@@ -321,6 +340,7 @@ impl PispPipeline {
         options: PispOptions,
     ) -> Result<Self> {
         let t_open = Instant::now();
+        let want_tdn = tuning.denoise.as_ref().is_some_and(|d| d.tdn.is_some());
         let mut startup = PispStartup::default();
         let mode = select_mode(&camera.info().modes, settings, &camera.info().raw_formats)?.clone();
         let desc = std::sync::Arc::clone(&camera.info().description);
@@ -331,7 +351,7 @@ impl PispPipeline {
                 let c = camera.configure_external(settings);
                 (c, t.elapsed())
             });
-            let isp = Isp::open(&sensor_info, mode.code, &options);
+            let isp = Isp::open(&sensor_info, mode.code, &options, want_tdn);
             let (configured, took) = sensor.join().unwrap_or((
                 Err(styx_native::NativeError::State("sensor set-up panicked")),
                 Duration::ZERO,
@@ -346,9 +366,10 @@ impl PispPipeline {
         startup.be_open = be_open;
         let t = Instant::now();
         let fps = configured.interval.fps();
-        let info =
+        let mut info =
             SensorInfo::from_description(&desc, &configured.mode.mode, &configured.mode.format)?
                 .with_fps(fps, fps)?;
+        info.camera.temporal_denoise = isp.be_dev.tdn_enabled();
         let controller = Controller::new(tuning, info.camera.clone())?;
         let controls = camera.controls();
         let black_level = info.black_level;
@@ -377,10 +398,17 @@ impl PispPipeline {
                 params: Default::default(),
             },
             stepped: false,
+            want_tdn,
+            tdn_error: isp.tdn_error,
             last_seq: None,
             last_run: None,
             settled_every: 1,
         })
+    }
+
+    /// Whether the back end runs temporal denoise, and why not if the tuning asked for it.
+    pub fn temporal_denoise(&self) -> (bool, Option<&str>) {
+        (self.info.camera.temporal_denoise, self.tdn_error.as_deref())
     }
 
     /// Where opening and the last start spent their time.
@@ -462,8 +490,17 @@ impl PispPipeline {
         if self.fe_dev.is_none() || self.be_dev.is_none() {
             self.fe_dev = None;
             self.be_dev = None;
-            let (isp, fe_open, be_open) =
-                Isp::open(&self.info, self.configured.mode.code, &self.options)?;
+            let (isp, fe_open, be_open) = Isp::open(
+                &self.info,
+                self.configured.mode.code,
+                &self.options,
+                self.want_tdn,
+            )?;
+            self.tdn_error = isp.tdn_error;
+            if isp.be_dev.tdn_enabled() != self.info.camera.temporal_denoise {
+                self.info.camera.temporal_denoise = isp.be_dev.tdn_enabled();
+                self.controller.set_config(self.info.camera.clone())?;
+            }
             (self.fe, self.be) = (isp.fe, isp.be);
             self.fe_dev = Some(isp.fe_dev);
             self.be_dev = Some(isp.be_dev);
@@ -587,7 +624,10 @@ impl PispPipeline {
                 self.step.isp.digital_gain =
                     self.controller.digital_gain_for(&self.step.params, &values) * g;
             }
-            profile::time("loop", "be_update", || self.be.update(&self.step.isp))?;
+            let exposure = values.exposure.as_secs_f64() * values.analogue_gain;
+            profile::time("loop", "be_update", || {
+                self.be.update_frame(&self.step.isp, exposure)
+            })?;
             let be_prepare = t1.elapsed();
             let job = be_dev.process_queued(image.index, self.be.config())?;
             self.last_seq = Some(seq);
@@ -706,6 +746,8 @@ impl PispPipeline {
             &configured.mode.format,
         )?
         .with_fps(fps, fps)?;
+        let mut info = info;
+        info.camera.temporal_denoise = self.info.camera.temporal_denoise;
         self.controller.set_config(info.camera.clone())?;
         if (info.width, info.height, configured.mode.code)
             != (self.info.width, self.info.height, self.configured.mode.code)

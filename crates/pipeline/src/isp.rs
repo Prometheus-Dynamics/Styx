@@ -1,12 +1,12 @@
 //! The ISP part of the algorithms' output, and how it maps onto each ISP.
 
 use serde::{Deserialize, Serialize};
-use styx_algo::{IDENTITY, LensShading, Matrix3, Params, Pwl};
+use styx_algo::{DenoiseParams, IDENTITY, LensShading, Matrix3, Params, Pwl, SharpenParams};
 use styx_pisp::be::BackEnd;
 use styx_pisp::fe::{FrontEnd, gain_4_10};
 use styx_pisp::uapi::{
-    BayerOrder, BeLscConfig, BeLscExtra, BeOutputFormatConfig, BlaConfig, FeRgbyConfig,
-    ImageFormatConfig, image_format, rgb_enable,
+    BayerOrder, BeCdnConfig, BeGeqConfig, BeLscConfig, BeLscExtra, BeOutputFormatConfig,
+    BeSdnConfig, BeTdnConfig, BlaConfig, FeRgbyConfig, ImageFormatConfig, image_format, rgb_enable,
 };
 use styx_softisp as soft;
 
@@ -29,6 +29,12 @@ pub struct IspSettings {
     pub gamma: Option<Pwl>,
     /// Lens shading gains, if the tuning calibrates them.
     pub lens_shading: Option<LensShading>,
+    /// Denoise, green equalisation, defective pixel correction (ISPs with those blocks).
+    #[serde(default)]
+    pub denoise: DenoiseParams,
+    /// Sharpening factors (`None`: the ISP's default).
+    #[serde(default)]
+    pub sharpen: Option<SharpenParams>,
 }
 
 impl IspSettings {
@@ -42,6 +48,8 @@ impl IspSettings {
             ccm: IDENTITY,
             gamma: None,
             lens_shading: None,
+            denoise: DenoiseParams::default(),
+            sharpen: None,
         }
     }
 
@@ -58,12 +66,18 @@ impl IspSettings {
             ccm: p.ccm,
             gamma: p.gamma.clone(),
             lens_shading: p.lens_shading.clone(),
+            denoise: p.denoise,
+            sharpen: p.sharpen,
         }
     }
 
-    /// White balance times digital gain, per channel.
+    /// White balance times digital gain, per channel, as the back end applies them: with an
+    /// extra gain of 1 / the smallest white balance gain when that is below 1, so no channel
+    /// gets less than unity and saturated pixels stay white instead of turning cyan or magenta
+    /// (as the Raspberry Pi IPA does; e.g. warm light, red gain 0.98).
     pub fn channel_gains(&self) -> [f64; 3] {
-        self.wb.map(|w| w * self.digital_gain)
+        let min = self.wb.iter().copied().fold(1.0, f64::min).max(0.1);
+        self.wb.map(|w| w * self.digital_gain / min)
     }
 
     /// Software ISP parameters for `bits`-bit samples, keeping `base`'s demosaic, YUV
@@ -102,9 +116,12 @@ impl IspSettings {
 
     /// The back end blocks these settings drive: black level (BLC), lens shading (LSC, the
     /// tables resampled to the back end's 33x33 vertices over the input), white balance and
-    /// digital gain (WBG), CCM and gamma.
+    /// digital gain (WBG), CCM, gamma, defective pixels (DPC), green equalisation (GEQ),
+    /// spatial and colour denoise (SDN, CDN) and sharpening. Temporal denoise needs the
+    /// frame's exposure and buffers: see [`Self::be_tdn`] and [`crate::BeConfigBuilder`].
     pub fn apply_be(&self, be: &mut BackEnd) {
         be.set_black_level(level16(self.black_level));
+        self.apply_be_detail(be);
         if let Some(ls) = &self.lens_shading
             && let Some(cfg) = be_lens_shading(ls)
         {
@@ -114,6 +131,52 @@ impl IspSettings {
         be.set_wb_gains(g[0], g[1], g[2]);
         be.set_ccm(self.ccm);
         be.set_gamma_curve(&gamma_points(self.gamma.as_ref()));
+    }
+
+    /// DPC, GEQ, SDN, CDN and sharpening, as the Raspberry Pi IPA programs them.
+    pub fn apply_be_detail(&self, be: &mut BackEnd) {
+        let d = &self.denoise;
+        be.set_dpc(d.dpc);
+        be.set_geq(d.geq.map(|g| BeGeqConfig {
+            offset: field(g.offset, 16, 0),
+            slope_sharper: field(g.slope, 10, 10),
+            min: 0,
+            max: 0xffff,
+        }));
+        be.set_sdn(d.sdn.map(|s| BeSdnConfig {
+            leakage: field(1.0 - s.strength, 8, 8) as u8,
+            noise_constant: field(s.noise_constant, 16, 0),
+            noise_slope: field(s.noise_slope, 16, 8),
+            noise_constant2: field(s.noise_constant2, 16, 0),
+            noise_slope2: field(s.noise_slope2, 16, 8),
+            ..Default::default()
+        }));
+        be.set_cdn(d.cdn.map(|c| BeCdnConfig {
+            thresh: field(c.threshold, 16, 0),
+            iir_strength: field(c.strength, 8, 8) as u8,
+            g_adjust: 0,
+        }));
+        match &self.sharpen {
+            Some(s) => be.set_sharpen_scaled(s.threshold, s.strength, s.limit),
+            None => {
+                let c = be.config_mut();
+                (c.sharpen, c.sh_fc_combine) = styx_pisp::be::defaults::sharpen();
+            }
+        }
+    }
+
+    /// The back end's temporal denoise config for a frame: `ratio` is its exposure (time ×
+    /// analogue gain) over the previous frame's; `None` if these settings have none.
+    pub fn be_tdn(&self, ratio: f64, reset: bool) -> Option<BeTdnConfig> {
+        let t = self.denoise.tdn?;
+        Some(BeTdnConfig {
+            ratio: field(ratio, 16, 14),
+            noise_constant: field(t.noise_constant, 16, 0),
+            noise_slope: field(t.noise_slope, 16, 8),
+            threshold: field(t.threshold, 16, 16),
+            reset: u8::from(reset),
+            ..Default::default()
+        })
     }
 
     /// The front end blocks that follow the algorithms: black levels (image path BLA, keeping
@@ -190,6 +253,13 @@ pub fn be_template(
         be.set_global(g.bayer_enables, rgb, order);
     }
     Ok(be)
+}
+
+/// `v` as an unsigned fixed-point register field of `bits` bits with `frac` fractional bits,
+/// rounded and clamped (libcamera's `clampField`).
+fn field(v: f64, bits: u32, frac: u32) -> u16 {
+    let max = f64::from((1u32 << bits) - 1);
+    (v * f64::from(1u32 << frac)).round().clamp(0.0, max) as u16
 }
 
 /// A normalised level on the 16-bit scale the PiSP works in.
@@ -271,6 +341,10 @@ mod tests {
         assert_eq!(s.wb, [1.6, 1.0, 1.2]);
         assert_eq!(s.digital_gain, 2.5);
         assert_eq!(s.channel_gains(), [4.0, 2.5, 3.0]);
+        // A gain below 1 (warm light, red) lifts every channel so none is below unity.
+        let mut warm = s.clone();
+        (warm.wb, warm.digital_gain) = ([0.8, 1.0, 2.0], 1.0);
+        assert_eq!(warm.channel_gains(), [1.0, 1.25, 2.5]);
         assert_eq!(s.black_level, 0.0625);
     }
 

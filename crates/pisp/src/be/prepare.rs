@@ -196,11 +196,27 @@ impl BackEnd {
         } else if (input.stride & 15 != 0) || (input.stride2 & 15 != 0) {
             return fail("input strides must be 16-byte aligned");
         }
-        for (bit, name) in [
-            (bayer_enable::TDN, "TDN"),
-            (bayer_enable::STITCH, "stitch"),
-            (bayer_enable::CAC, "CAC"),
-        ] {
+        let tdn = bayer_enable::TDN | bayer_enable::TDN_INPUT | bayer_enable::TDN_OUTPUT;
+        if g.bayer_enables & tdn != 0 {
+            if g.bayer_enables & (bayer_enable::TDN_DECOMPRESS | bayer_enable::TDN_COMPRESS) != 0 {
+                return fail("compressed TDN buffers are not supported by this builder yet");
+            }
+            for (f, name) in [
+                (self.cfg.tdn_input_format, "TDN input"),
+                (self.cfg.tdn_output_format, "TDN output"),
+            ] {
+                if (f.width, f.height) != (input.width, input.height)
+                    || f.stride & 15 != 0
+                    || f.stride == 0
+                    || f::is_compressed(f.format)
+                {
+                    return fail(format!(
+                        "{name} format must be the input's size, uncompressed"
+                    ));
+                }
+            }
+        }
+        for (bit, name) in [(bayer_enable::STITCH, "stitch"), (bayer_enable::CAC, "CAC")] {
             if g.bayer_enables & bit != 0 {
                 return fail(format!("{name} is not supported by this builder yet"));
             }

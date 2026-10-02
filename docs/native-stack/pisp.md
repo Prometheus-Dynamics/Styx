@@ -134,13 +134,19 @@ downscaler/resampler input sizes and initial phases, the output window and byte 
   gamma, CSC for YUV outputs), smart resize (downscaler on output 1 above 2x, resampler with
   a filter chosen by the factor), finalisation checks, and `be::tiling`, a port of libpisp's
   tiling library (input, context, split, crop, downscale, resample, output stages).
-  TDN, stitch, LSC and CAC are refused for now.
+  DPC, GEQ, SDN, CDN and TDN setters (`set_dpc`, `set_geq`, `set_sdn`, `set_cdn`,
+  `set_tdn_format` + `set_tdn`) and `set_sharpen_scaled` (libpisp's sharpening scaled as the
+  Raspberry Pi IPA scales it from `rpi.sharpen`); uncompressed TDN buffers of the input's
+  format are accepted, stitch and CAC are refused for now.
 - `device` (feature): `FrontEndDevice` (links, formats, queues, per-frame config feeding,
   statistics and raw frames; `next_held_raw` copies the statistics buffer out as it is, or
   not at all), `BackEndDevice` (one node group, m2m jobs, timing) and `BackEndStream` (a node
   group for a stream: dma-buf input, two outputs in cached dma-heap buffers or the driver's
   (`OutputMemory`), jobs queued and waited for separately (`process_queued` / `wait_job`),
-  the config buffer from a cached heap since the driver copies it with the CPU), and
+  the config buffer from a cached heap since the driver copies it with the CPU;
+  `enable_tdn` sets up `pispbe-tdn_input`/`tdn_output` with two dma-heap buffers of the
+  input's format that swap every job, queued whenever the job's config enables
+  `TDN_OUTPUT`/`TDN_INPUT`), and
   `profile`, optional timing of every device call.
 - Per-frame configs in `styx-pipeline` (`pisp_be::BeConfigBuilder`): the back end config and
   tiles are prepared once and patched where the algorithms' settings changed; see
@@ -203,7 +209,9 @@ to the end of the register window, so harmless).
   queue is fed from a `FrontEnd` the 3A loop updates (black levels, RGB→Y weights), two
   configs ahead; the BE gets a fresh config per job.
 - Compressed raw (`PISP_COMP1`) halves the memory traffic between FE and BE; not wired yet.
-- TDN/stitch/CAC in the BE builder (LSC: `BackEnd::set_lsc`, `be::lsc`); `output1` runs on the device (640x400 RGB through
+- Stitch/CAC in the BE builder (LSC: `BackEnd::set_lsc`, `be::lsc`; TDN, SDN, CDN, GEQ, DPC
+  and sharpening from the tuning: see [pipeline.md](pipeline.md#quality-vs-libcamera));
+  compressed TDN buffers (libcamera compresses them when the raw input is compressed); `output1` runs on the device (640x400 RGB through
   the resampler), the downscaler (below half size) only offline.
 - Zero copy between FE and BE: done (`FrontEndDevice::next_held` + `image_dmabufs`,
   `BackEndStream` imports them on `pispbe-input`).

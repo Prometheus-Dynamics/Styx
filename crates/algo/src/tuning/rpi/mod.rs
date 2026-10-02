@@ -2,7 +2,9 @@
 //!
 //! Only the algorithms implemented here are converted: `rpi.black_level`, `rpi.lux`,
 //! `rpi.agc` (channel 0), `rpi.awb`, `rpi.alsc` (calibration tables and luminance only),
-//! `rpi.ccm` and `rpi.contrast`. Everything else is listed in [`RpiImport::ignored`].
+//! `rpi.ccm`, `rpi.contrast`, and `rpi.noise`, `rpi.denoise`, `rpi.sdn`, `rpi.geq`, `rpi.dpc`,
+//! `rpi.sharpen` (into [`DenoiseTuning`]). Everything else is listed in
+//! [`RpiImport::ignored`].
 //! 16-bit levels are normalised to 1.0 and times stay in microseconds.
 
 use std::collections::BTreeMap;
@@ -12,6 +14,8 @@ use crate::pwl::Pwl;
 
 use super::json::Value;
 use super::*;
+
+mod detail;
 
 /// The result of converting a Raspberry Pi tuning file.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,7 +138,14 @@ pub(super) fn convert(doc: &Value) -> Result<RpiImport> {
             "rpi.alsc" => t.alsc = Some(alsc(&s, &mut ignored)?),
             "rpi.ccm" => t.ccm = Some(ccm(&s, &mut ignored)?),
             "rpi.contrast" => t.contrast = Some(contrast(&s, &mut ignored)?),
-            _ => ignored.push(name.clone()),
+            _ => {
+                let mut d = t.denoise.clone().unwrap_or_default();
+                if detail::merge(&s, &mut d, &mut ignored)? {
+                    t.denoise = Some(d);
+                } else {
+                    ignored.push(name.clone());
+                }
+            }
         }
     }
     Ok(RpiImport {
@@ -402,6 +413,7 @@ fn awb(s: &Section, ig: &mut Vec<String>) -> Result<AwbTuning> {
         transverse_neg: s.num_or("transverse_neg", d.transverse_neg)?,
         sensitivity_r: s.num_or("sensitivity_r", 1.0)?,
         sensitivity_b: s.num_or("sensitivity_b", 1.0)?,
+        ..d
     })
 }
 
