@@ -14,6 +14,7 @@
 
 mod client;
 mod connection;
+mod mapcache;
 mod service;
 mod socket;
 mod wire;

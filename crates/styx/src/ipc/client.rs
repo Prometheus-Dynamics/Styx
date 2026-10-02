@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use smallvec::SmallVec;
 use styx_core::prelude::*;
 
+use super::mapcache::{CachedDmabuf, MapCache};
 use super::wire::{self, CameraInfo, ServerMessage, WireBacking, WireFrame};
 use super::{IpcError, socket};
 
@@ -23,6 +24,8 @@ const RETRY_MAX: Duration = Duration::from_secs(2);
 /// [`FrameServer`](super::FrameServer) in another process.
 pub struct FrameClient {
     link: Mutex<Link>,
+    /// Mappings of the buffers received, kept across frames.
+    maps: Arc<MapCache>,
     /// What to ask a camera service for again after reconnecting (with the latest ROI).
     request: Option<Mutex<Request>>,
     reconnect: bool,
@@ -168,6 +171,7 @@ impl FrameClient {
                 #[cfg(feature = "async")]
                 async_fd: None,
             }),
+            maps: Arc::new(MapCache::default()),
             request: request.map(Mutex::new),
             reconnect: false,
             reconnects: AtomicU64::new(0),
@@ -356,7 +360,7 @@ impl FrameClient {
                     socket: socket.clone(),
                     id,
                 });
-                import(*frame, &mut fds.into_iter(), &release).map(Some)
+                import(*frame, &mut fds.into_iter(), &release, &self.maps).map(Some)
             }
             _ => Ok(None),
         });
@@ -375,6 +379,7 @@ fn import(
     frame: WireFrame,
     fds: &mut impl Iterator<Item = OwnedFd>,
     release: &Arc<Release>,
+    maps: &Arc<MapCache>,
 ) -> Result<FrameLease, IpcError> {
     let count = frame.backing.fd_count();
     let mut own: Vec<OwnedFd> = fds.by_ref().take(count).collect();
@@ -387,12 +392,27 @@ fn import(
             FrameLease::from_memfd(frame.meta, layouts.clone(), own.remove(0))
         }
         WireBacking::Dmabuf(planes) => {
-            let planes = own
+            let planes: Vec<FrameFdPlane> = own
                 .into_iter()
                 .zip(planes)
                 .map(|(fd, (offset, len))| FrameFdPlane { fd, offset, len })
                 .collect();
-            FrameLease::from_dmabuf(frame.meta, layouts.clone(), planes)?
+            if planes.len() != layouts.len() {
+                return Err(FrameExportError::PlaneCountMismatch {
+                    expected: layouts.len(),
+                    actual: planes.len(),
+                }
+                .into());
+            }
+            // Planes on one buffer (the usual case) read through the cached mappings.
+            match CachedDmabuf::new(maps, planes) {
+                Ok(cached) => {
+                    let mut meta = frame.meta;
+                    meta.residency = Some(FrameResidency::Dmabuf);
+                    FrameLease::from_external(meta, layouts.clone(), Arc::new(cached))
+                }
+                Err(planes) => FrameLease::from_dmabuf(frame.meta, layouts.clone(), planes)?,
+            }
         }
     };
     let inner = imported
@@ -410,7 +430,7 @@ fn import(
     );
     for (kind, companion) in frame.companions {
         out = out
-            .with_companion(kind, import(companion, fds, release)?)
+            .with_companion(kind, import(companion, fds, release, maps)?)
             .map_err(|_| IpcError::Malformed("companion does not match its frame"))?;
     }
     Ok(out)
