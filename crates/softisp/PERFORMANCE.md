@@ -28,7 +28,7 @@ every second quad row, sRGB, a recorded frame), removing one stage at a time on 
 statistics 0.39 ms (0.57 ms before the vector histogram bins, `luma_bins_row`), lens shading
 0.33 ms, colour matrix 1.06 ms, tone curve 1.33 ms; without all of them (and without black
 level and white balance) 1.84 ms remain of 4.97 ms. Building the lens shading tables
-(`set_params`, on every frame whose white balance or digital gain changed) takes 0.47 ms
+(`set_params`, on every frame whose white balance or digital gain changed) takes 0.31 ms
 (3.19 ms before).
 
 ## End to end (`SoftIsp::process`)

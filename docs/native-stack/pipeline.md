@@ -111,7 +111,7 @@ The ISP alone on a recorded frame (`styx-softisp`, same settings, one thread unl
 | RGB24, write-combined, 2 / 3 / 4 threads | (no threads without rayon) | 2.8 / 1.9 / 1.5 ms |
 | tone curve kernel, 3 channels of a frame | 2.31 ms | 1.54 ms |
 | statistics (their share of the frame) | 0.57 ms | 0.39 ms |
-| lens shading tables (`set_params`, on every frame whose gains change) | 3.19 ms | 0.47 ms |
+| lens shading tables (`set_params`, on every frame whose gains change) | 3.19 ms | 0.31 ms |
 | replay of 60 recorded frames with the 3A loop, per frame (1 / 4 threads) | 9.15 ms | 5.63 / 2.24 ms |
 
 Quality: unchanged bit for bit. `styx-softisp`'s `tests/golden.rs` hashes every output (RGB24,

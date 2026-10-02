@@ -184,29 +184,52 @@ fn shaded_gains(
     let (w, h) = (format.width as usize, format.height as usize);
     let grids = [&ls.r, &ls.g, &ls.b];
     let x_map = grid_map(w, gw);
-    // Per column: the grid nodes either side and the weight of the second.
-    let cols: Vec<(usize, usize, f32)> = x_map
-        .iter()
-        .map(|&(i, f)| {
-            let i = i as usize;
-            (i.min(gw - 1), (i + 1).min(gw - 1), f as f32 / 65536.0)
-        })
-        .collect();
+    // Columns of each parity: their weights of the second grid node, and runs of them between
+    // the same two grid nodes (so the inner loops below are plain vector arithmetic).
+    let lanes = [0, 1].map(|p| {
+        let cols: Vec<(usize, usize, f32)> = x_map
+            .iter()
+            .skip(p)
+            .step_by(2)
+            .map(|&(i, f)| {
+                let i = i as usize;
+                (i.min(gw - 1), (i + 1).min(gw - 1), f as f32 / 65536.0)
+            })
+            .collect();
+        let mut runs: Vec<(usize, usize, usize, usize)> = Vec::new();
+        for (k, &(i, j, _)) in cols.iter().enumerate() {
+            match runs.last_mut() {
+                Some(r) if (r.2, r.3) == (i, j) => r.1 = k + 1,
+                _ => runs.push((k, k + 1, i, j)),
+            }
+        }
+        (cols.iter().map(|c| c.2).collect::<Vec<f32>>(), runs)
+    });
     let rows = [0, 1].map(|parity| {
         // Everything but the shading depends on the column's parity only.
         let gain = [0, 1].map(|x| cell_gain(x, parity));
         let grid = [0, 1].map(|x| grids[channel_index(format.pattern.channel_at(x, parity))]);
+        let mut half = [vec![0u16; w.div_ceil(2)], vec![0u16; w / 2]];
         (0..gh)
             .map(|gy| {
-                let nodes = [0, 1].map(|x| &grid[x][gy * gw..][..gw]);
-                cols.iter()
-                    .enumerate()
-                    .map(|(x, &(i, j, t))| {
-                        let node = nodes[x & 1];
-                        let shade = node[i] * (1.0 - t) + node[j] * t;
-                        q12(gain[x & 1] * shade)
-                    })
-                    .collect()
+                for (p, out) in half.iter_mut().enumerate() {
+                    let node = &grid[p][gy * gw..][..gw];
+                    let (ts, runs) = &lanes[p];
+                    for &(k0, k1, i, j) in runs {
+                        let (a, b, g) = (node[i], node[j], gain[p]);
+                        for (d, &t) in out[k0..k1].iter_mut().zip(&ts[k0..k1]) {
+                            *d = q12(g * (a * (1.0 - t) + b * t));
+                        }
+                    }
+                }
+                let mut row = vec![0u16; w];
+                for (k, pair) in row.chunks_mut(2).enumerate() {
+                    pair[0] = half[0][k];
+                    if let Some(odd) = pair.get_mut(1) {
+                        *odd = half[1][k];
+                    }
+                }
+                row
             })
             .collect()
     });
