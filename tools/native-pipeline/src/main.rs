@@ -25,6 +25,7 @@
 //!   --profile            (pisp) time the device calls (queue, dequeue, wait, copies)
 //!   --driver-buffers     (pisp) back end outputs in the driver's (uncached) buffers instead of
 //!                        cached dma-heap buffers
+//!   --every-frame        (pisp) run the algorithms on every frame, also when settled
 //!   --start-exposure US:GAIN  (pisp) start AE from this exposure and gain instead of the
 //!                        camera's last settled state (a dark or bright start)
 //!   --cold               (pisp) start from the tuning's start-up values, not the last state
@@ -73,6 +74,7 @@ pub struct Args {
     pub no_read: bool,
     pub profile: bool,
     pub driver_buffers: bool,
+    pub every_frame: bool,
     pub start_exposure: Option<(f64, f64)>,
     pub cold: bool,
     pub then: Vec<f64>,
@@ -102,6 +104,7 @@ fn parse() -> Result<Args, String> {
         no_read: false,
         profile: false,
         driver_buffers: false,
+        every_frame: false,
         start_exposure: None,
         cold: false,
         then: Vec::new(),
@@ -125,6 +128,7 @@ fn parse() -> Result<Args, String> {
             "--no-read" => a.no_read = true,
             "--profile" => a.profile = true,
             "--driver-buffers" => a.driver_buffers = true,
+            "--every-frame" => a.every_frame = true,
             "--heap" => a.heap = Some(val()?),
             "--cold" => a.cold = true,
             "--keep-open" => a.keep_open = true,

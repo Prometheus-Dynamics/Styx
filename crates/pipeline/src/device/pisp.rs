@@ -55,6 +55,10 @@ pub struct PispOptions {
     pub be_group: usize,
     /// Front end configs queued ahead of the frames.
     pub configs_ahead: usize,
+    /// While AE is locked and AWB has converged, run the algorithms at about this rate
+    /// instead of on every frame (statistics are then not read on the other frames); any
+    /// frame that finds them unsettled goes back to every frame. `None`: every frame.
+    pub settled_rate_hz: Option<f64>,
     /// Where the back end's output buffers come from: a cached dma-heap (the default: CPU
     /// reads at memory speed, bracketed by [`PispPipeline::sync_output`]) or the driver's
     /// (mapped uncached).
@@ -81,6 +85,7 @@ impl PispOptions {
             be_buffers: 4,
             be_group: 0,
             configs_ahead: 2,
+            settled_rate_hz: Some(15.0),
             output_memory: OutputMemory::CachedHeap,
         }
     }
@@ -251,6 +256,11 @@ pub struct PispPipeline {
     step: Step,
     /// `step` came from a frame's statistics (not the start-up values).
     stepped: bool,
+    /// The last frame dequeued and the last one the algorithms ran on.
+    last_seq: Option<u64>,
+    last_run: Option<u64>,
+    /// While settled, the algorithms run every this many frames.
+    settled_every: u64,
 }
 
 /// Time from the end of a frame's readout until its statistics have been through the
@@ -333,6 +343,9 @@ impl PispPipeline {
                 params: Default::default(),
             },
             stepped: false,
+            last_seq: None,
+            last_run: None,
+            settled_every: 1,
         })
     }
 
@@ -461,6 +474,13 @@ impl PispPipeline {
             self.stepped = false;
             Ok(())
         });
+        let fps = self.configured.interval.fps();
+        self.settled_every = self
+            .options
+            .settled_rate_hz
+            .filter(|r| *r > 0.0)
+            .map_or(1, |r| (fps / r).round().max(1.0) as u64);
+        (self.last_seq, self.last_run) = (None, None);
         if let Err(e) = values {
             self.camera.quiesce_external();
             let _ = self.camera.stop();
@@ -501,7 +521,17 @@ impl PispPipeline {
         ) else {
             return Err(PipelineError::Device("not started".into()));
         };
-        let held = fe_dev.next_held_raw(&mut self.fe, timeout, &mut self.raw_stats)?;
+        // Settled: the algorithms (and the statistics they read) only every few frames.
+        let p = &self.step.params;
+        let settled =
+            self.stepped && p.ae.locked && p.awb.converged && self.controller.controls().ae_enable;
+        let run = !settled
+            || match (self.last_seq, self.last_run) {
+                (Some(s), Some(r)) => s + 1 >= r + self.settled_every,
+                _ => true,
+            };
+        let held =
+            fe_dev.next_held_raw(&mut self.fe, timeout, run.then_some(&mut *self.raw_stats))?;
         let dequeued = Instant::now();
         let image = held
             .image
@@ -523,26 +553,34 @@ impl PispPipeline {
             profile::time("loop", "be_update", || self.be.update(&self.step.isp))?;
             let be_prepare = t1.elapsed();
             let job = be_dev.process_queued(image.index, self.be.config())?;
+            self.last_seq = Some(seq);
             // While the back end works: this frame's statistics through the algorithms.
             let ts = Instant::now();
-            stats::from_pisp_raw(&self.raw_stats, &mut self.stats);
+            if run {
+                stats::from_pisp_raw(&self.raw_stats, &mut self.stats);
+                self.last_run = Some(seq);
+            }
             let stats_time = ts.elapsed();
             let t0 = Instant::now();
-            let ran = profile::time("loop", "algorithms", || {
-                self.controller.process(&self.stats, &values)
-            })
-            .and_then(|step| {
-                let lands = match &step.sensor {
-                    Some(r) => Some(profile::time("sensor", "request", || {
-                        apply_request(&self.controls, r)
-                    })?),
-                    None => None,
-                };
-                step.isp.apply_fe(&mut self.fe);
-                self.step = step;
-                self.stepped = true;
-                Ok(lands)
-            });
+            let ran = if !run {
+                Ok(None)
+            } else {
+                profile::time("loop", "algorithms", || {
+                    self.controller.process(&self.stats, &values)
+                })
+                .and_then(|step| {
+                    let lands = match &step.sensor {
+                        Some(r) => Some(profile::time("sensor", "request", || {
+                            apply_request(&self.controls, r)
+                        })?),
+                        None => None,
+                    };
+                    step.isp.apply_fe(&mut self.fe);
+                    self.step = step;
+                    self.stepped = true;
+                    Ok(lands)
+                })
+            };
             let algorithms = t0.elapsed();
             let job = be_dev.wait_job(job, timeout)?;
             let request_lands = match ran {

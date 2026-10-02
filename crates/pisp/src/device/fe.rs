@@ -373,7 +373,7 @@ impl FrontEndDevice {
     /// config queue fed from `fe` (so changes to `fe` reach the frames a few configs later).
     pub fn next_held(&mut self, fe: &mut FrontEnd, timeout: Duration) -> Result<FeHeld> {
         let mut raw: Box<RawStatistics> = bytemuck::allocation::zeroed_box();
-        let f = self.next_held_raw(fe, timeout, &mut raw)?;
+        let f = self.next_held_raw(fe, timeout, Some(&mut raw))?;
         Ok(FeHeld {
             sequence: f.sequence,
             timestamp: f.timestamp,
@@ -383,12 +383,12 @@ impl FrontEndDevice {
     }
 
     /// [`Self::next_held`] with the statistics buffer copied into `stats` as it is (one copy
-    /// out of the uncached buffer, no decoding, no allocation).
+    /// out of the uncached buffer, no decoding, no allocation), or not read at all (`None`).
     pub fn next_held_raw(
         &mut self,
         fe: &mut FrontEnd,
         timeout: Duration,
-        stats: &mut RawStatistics,
+        stats: Option<&mut RawStatistics>,
     ) -> Result<FeHeldRaw> {
         let b = self.stats.dequeue(timeout)?;
         let n = size_of::<RawStatistics>();
@@ -399,9 +399,11 @@ impl FrontEndDevice {
                 src.len()
             )));
         }
-        super::profile::time("fe_stats", "copy", || {
-            bytemuck::bytes_of_mut(stats).copy_from_slice(&src[..n]);
-        });
+        if let Some(stats) = stats {
+            super::profile::time("fe_stats", "copy", || {
+                bytemuck::bytes_of_mut(stats).copy_from_slice(&src[..n]);
+            });
+        }
         self.stats.queue(b.index, &[])?;
         let image = match &self.image {
             Some(q) => {

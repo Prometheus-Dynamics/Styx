@@ -236,6 +236,9 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     if a.driver_buffers {
         options.output_memory = styx_pisp::device::OutputMemory::Driver;
     }
+    if a.every_frame {
+        options.settled_rate_hz = None;
+    }
     let mut p =
         PispPipeline::open(cam, &settings(a), &tuning, options).map_err(|e| e.to_string())?;
     if let Some(w) = crate::restart::requested_warm(a) {

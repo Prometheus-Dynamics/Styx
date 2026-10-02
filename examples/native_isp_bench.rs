@@ -130,6 +130,57 @@ fn consume(
     seen
 }
 
+/// Per thread: name, CPU (scheduler run time) and voluntary context switches.
+fn threads() -> Vec<(u32, String, Duration, u64)> {
+    let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
+        return Vec::new();
+    };
+    let mut out: Vec<_> = dir
+        .flatten()
+        .filter_map(|e| {
+            let tid = e.file_name().to_str()?.parse().ok()?;
+            let name = std::fs::read_to_string(e.path().join("comm")).ok()?;
+            let ns: u64 = std::fs::read_to_string(e.path().join("schedstat"))
+                .ok()?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()?;
+            let status = std::fs::read_to_string(e.path().join("status")).unwrap_or_default();
+            let waits = status
+                .lines()
+                .find_map(|l| l.strip_prefix("voluntary_ctxt_switches:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            Some((
+                tid,
+                name.trim().to_string(),
+                Duration::from_nanos(ns),
+                waits,
+            ))
+        })
+        .collect();
+    out.sort_by_key(|t| t.0);
+    out
+}
+
+fn thread_report(before: &[(u32, String, Duration, u64)], frames: usize) {
+    let n = frames.max(1) as f64;
+    for (tid, name, cpu, waits) in threads() {
+        let b = before.iter().find(|b| b.0 == tid);
+        let cpu = cpu.saturating_sub(b.map_or(Duration::ZERO, |b| b.2));
+        let waits = waits - b.map_or(0, |b| b.3);
+        if cpu.is_zero() && waits == 0 {
+            continue;
+        }
+        println!(
+            "  thread {name}: {:.3} ms CPU per frame, {:.2} wake-ups per frame",
+            cpu.as_secs_f64() * 1e3 / n,
+            waits as f64 / n
+        );
+    }
+}
+
 fn summary(t0: Instant, cpu0: Duration, frames: usize) {
     let wall = t0.elapsed().as_secs_f64();
     let cpu = proc_cpu().saturating_sub(cpu0).as_secs_f64();
@@ -172,13 +223,14 @@ fn run(args: &[String]) -> Result<(), String> {
             print!("{plan}");
             let mut out = plan.start().map_err(|e| e.to_string())?;
             let mut p = out.remove(0);
-            let (t0, cpu0) = (Instant::now(), proc_cpu());
+            let (t0, cpu0, th0) = (Instant::now(), proc_cpu(), threads());
             let seen = consume("nv12", frames, read, || match p.next_frame(wait) {
                 RecvOutcome::Data(f) => Some(f),
                 _ => None,
             });
             seen.report();
-            summary(t0, cpu0, frames);
+            summary(t0, cpu0, frames + 10);
+            thread_report(&th0, frames + 10);
             p.stop();
         }
         "shared" => {
@@ -191,7 +243,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let mut out = plan.start().map_err(|e| e.to_string())?;
             let mut b = out.pop().ok_or("no consumer")?;
             let mut a = out.pop().ok_or("no consumer")?;
-            let (t0, cpu0) = (Instant::now(), proc_cpu());
+            let (t0, cpu0, th0) = (Instant::now(), proc_cpu(), threads());
             let other = std::thread::spawn(move || {
                 let s = consume("rgb half", frames, read, || match b.next_frame(wait) {
                     RecvOutcome::Data(f) => Some(f),
@@ -207,7 +259,8 @@ fn run(args: &[String]) -> Result<(), String> {
             let other = other.join().map_err(|_| "consumer panicked")?;
             seen.report();
             other.report();
-            summary(t0, cpu0, frames);
+            summary(t0, cpu0, frames + 10);
+            thread_report(&th0, frames + 10);
             a.stop();
         }
         "serve" => {
