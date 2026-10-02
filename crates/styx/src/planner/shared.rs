@@ -303,6 +303,14 @@ fn shared_interval(mode: &Mode, requirements: &[FrameRequirements]) -> Option<In
         return fastest;
     }
     let min_fps = requirements.iter().filter_map(|r| r.min_fps).max();
+    // A mode that runs at any rate in a range runs at exactly the rate asked for, as for a
+    // single plan.
+    if let Some(exact) = min_fps
+        .and_then(Interval::from_fps)
+        .filter(|i| mode.interval_stepwise.is_some_and(|s| s.contains(*i)))
+    {
+        return Some(exact);
+    }
     mode.intervals
         .iter()
         .copied()

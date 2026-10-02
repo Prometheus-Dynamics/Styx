@@ -417,7 +417,19 @@ fn native_pisp_serves_two_sizes_and_formats_from_one_pass() {
     assert!(plan.consumers[1].isp_second_output && plan.consumers[1].isp_format.is_some());
     assert!(!plan.consumers[2].isp_second_output, "{plan}");
     // Alone, an RGB consumer takes the RGB mode itself.
-    let plan = plan_many_with(&dev, &[rgb], &registry()).unwrap();
+    let plan = plan_many_with(&dev, std::slice::from_ref(&rgb), &registry()).unwrap();
     assert_eq!(plan.mode.format.code, FourCc::RG24, "{plan}");
     assert!(plan.consumers[0].isp_format.is_none());
+
+    // A sensor Styx drives runs at any rate in its range: saving power, exactly the rate asked.
+    for m in &mut dev.backends[0].descriptor.modes {
+        m.interval_stepwise = Some(IntervalStepwise {
+            min: Interval::from_fps(120).unwrap(),
+            max: Interval::from_fps(5).unwrap(),
+            step: Interval::new(1000, 1).unwrap(),
+        });
+    }
+    let slow = rgb.min_fps(30).priority(Priority::Power);
+    let plan = plan_many_with(&dev, &[slow], &registry()).unwrap();
+    assert_eq!(plan.interval, Interval::from_fps(30), "{plan}");
 }
