@@ -1,0 +1,186 @@
+//! The FP16 leaves against the scalar oracle (bit for bit; on CPUs without FP16 both sides
+//! are the oracle), and the oracle's arithmetic on known values.
+
+use super::*;
+use crate::simd::RowKind;
+
+/// Deterministic random values.
+struct Rng(u32);
+
+impl Rng {
+    fn next(&mut self) -> u32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        self.0
+    }
+
+    /// Working values as the front end makes them: fp16 in 0..=4095, a fifth of rows
+    /// only 0 and 4095.
+    fn working(&mut self, n: usize) -> Vec<u16> {
+        let extreme = self.next() % 5 == 0;
+        (0..n)
+            .map(|_| {
+                let v = self.next();
+                if extreme {
+                    if v & 1 == 0 { 0 } else { H_MAX }
+                } else {
+                    f16::from_f64(f64::from(v % 4096) + f64::from(v >> 28) / 16.0).min(H_MAX)
+                }
+            })
+            .collect()
+    }
+}
+
+/// Run `f` with the leaves (when the CPU has FP16) and with the oracle alone.
+fn both<T: PartialEq + std::fmt::Debug>(mut f: impl FnMut() -> T) {
+    let fast = f();
+    SCALAR_ONLY.with(|s| s.set(true));
+    let slow = f();
+    SCALAR_ONLY.with(|s| s.set(false));
+    assert_eq!(fast, slow);
+}
+
+const WIDTHS: [usize; 7] = [2, 8, 16, 18, 46, 64, 98];
+
+fn tones() -> Vec<HalfTone> {
+    vec![
+        HalfTone::from_curve(|x| crate::ToneCurve::Srgb.eval(x)).unwrap(),
+        HalfTone::from_curve(|x| x).unwrap(),
+        HalfTone::from_curve(|x| (x * 3.0).min(1.0)).unwrap(),
+    ]
+}
+
+#[test]
+fn front_matches_the_oracle() {
+    let mut rng = Rng(7);
+    for w in WIDTHS {
+        for seed in 0..6 {
+            let raw: Vec<u16> = (0..w).map(|_| (rng.next() % 1024) as u16).collect();
+            let a = rng
+                .working(w)
+                .iter()
+                .map(|&v| f16::mul(v, 0x1000))
+                .collect::<Vec<_>>();
+            let d = rng
+                .working(w)
+                .iter()
+                .map(|&v| f16::mul(v, 0x0400))
+                .collect::<Vec<_>>();
+            let black = [f16::from_f64(1024.0 + 64.0), f16::from_f64(1024.0 + 60.0)];
+            let gain = [f16::from_f64(7.2), f16::from_f64(4.1)];
+            let t = f16::from_f64(f64::from(seed) / 6.0);
+            both(|| {
+                let mut out = vec![0u16; w + 1];
+                let lsc = (seed % 2 == 1).then_some(LscRow { a: &a, d: &d, t });
+                front_row(&raw, &mut out, black, gain, lsc, w);
+                out
+            });
+        }
+    }
+    // 1023 above a black level of 64, gain 4095 / 959: full scale (4094 in fp16).
+    let mut out = [0u16; 2];
+    let g = f16::from_f64(4095.0 / 959.0);
+    front_row(
+        &[1023, 10],
+        &mut out,
+        [f16::from_f64(1088.0); 2],
+        [g; 2],
+        None,
+        2,
+    );
+    assert_eq!(f16::to_f64(out[0]), 4094.0);
+    assert_eq!(out[1], 0);
+}
+
+#[test]
+fn colour_matches_the_oracle() {
+    let mut rng = Rng(11);
+    let m = [[1.6, -0.4, -0.2], [-0.3, 1.5, -0.2], [-0.1, -0.5, 1.6]];
+    for w in WIDTHS {
+        for (n, tone) in tones().iter().enumerate() {
+            for pattern in [CfaPattern::Bggr, CfaPattern::Grbg] {
+                for y in 0..2 {
+                    let cc = ColourCoeffs::new(&m, RowKind::of(pattern, y));
+                    let rows: Vec<Vec<u16>> = (0..3).map(|_| rng.working(w + 2)).collect();
+                    let rows = [&rows[0][..], &rows[1][..], &rows[2][..]];
+                    both(|| {
+                        let mut planes = vec![vec![0u8; w + 1]; 3];
+                        let [r, g, b] = &mut planes[..] else {
+                            unreachable!()
+                        };
+                        colour_row(rows, ColourOut::Planes([r, g, b]), w, &cc, tone);
+                        let mut packed = vec![0u8; 3 * w + 1];
+                        colour_row(rows, ColourOut::Packed(&mut packed), w, &cc, tone);
+                        for x in 0..w {
+                            assert_eq!(
+                                [planes[0][x], planes[1][x], planes[2][x]],
+                                packed[3 * x..3 * x + 3],
+                                "tone {n} x {x}"
+                            );
+                        }
+                        (planes, packed)
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn quads_and_luma_match_the_oracle() {
+    let mut rng = Rng(5);
+    let m: [u16; 9] = [1.6, -0.4, -0.2, -0.3, 1.5, -0.2, -0.1, -0.5, 1.6].map(f16::from_f64);
+    let tone = &tones()[0];
+    for w in WIDTHS {
+        for pattern in [
+            CfaPattern::Rggb,
+            CfaPattern::Bggr,
+            CfaPattern::Grbg,
+            CfaPattern::Gbrg,
+        ] {
+            let (top, bottom) = (rng.working(2 * w), rng.working(2 * w));
+            both(|| {
+                let mut planes = vec![vec![0u8; w + 1]; 3];
+                let [r, g, b] = &mut planes[..] else {
+                    unreachable!()
+                };
+                quad_colour_row(
+                    &top,
+                    &bottom,
+                    ColourOut::Planes([r, g, b]),
+                    w,
+                    &m,
+                    pattern,
+                    tone,
+                );
+                let mut stats = vec![vec![0u16; w + 1]; 3];
+                let [r, g, b] = &mut stats[..] else {
+                    unreachable!()
+                };
+                quad_stats_row(&top, &bottom, [r, g, b], w, pattern);
+                let mut luma = vec![0u8; w + 1];
+                quad_luma_row(&top, &bottom, &mut luma, w, tone);
+                (planes, stats, luma)
+            });
+        }
+        let rows: Vec<Vec<u16>> = (0..3).map(|_| rng.working(w + 2)).collect();
+        both(|| {
+            let mut luma = vec![0u8; w + 1];
+            luma_row([&rows[0], &rows[1], &rows[2]], &mut luma, w, tone);
+            luma
+        });
+    }
+}
+
+#[test]
+fn tone_follows_the_curve() {
+    let srgb = |x: f32| crate::ToneCurve::Srgb.eval(x);
+    let tone = HalfTone::from_curve(srgb).unwrap();
+    for v in 0..4096 {
+        let want = srgb(v as f32 / 4095.0) * 255.0;
+        let got = f32::from(tone.apply(f16::from_f64(f64::from(v) + 16.0)));
+        assert!((got - want).abs() <= 1.0, "{v}: {got} vs {want}");
+    }
+    assert!(HalfTone::from_curve(|x| 1.0 - x).is_none());
+}
