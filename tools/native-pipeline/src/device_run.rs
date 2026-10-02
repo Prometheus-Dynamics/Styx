@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use styx_native::{CameraOptions, NativeCamera, SensorLibrary, StreamSettings};
+use styx_native::{BufferMemory, CameraOptions, NativeCamera, SensorLibrary, StreamSettings};
 use styx_pipeline::device::{PispOptions, PispPipeline, SoftPipeline, process_usage};
 use styx_pipeline::measure::{grey_ratios, nv12_to_rgb, plane_mean, write_pgm, write_ppm};
 use styx_pipeline::rawrec::{Header, RawWriter, VERSION};
@@ -29,7 +29,11 @@ fn open_camera(a: &Args) -> Result<(NativeCamera, Instant), String> {
         .ok_or("no bridged camera found")?;
     println!("camera: {} [{}]", info.display_name(), info.key);
     let opened = Instant::now();
-    let cam = NativeCamera::open(info, CameraOptions::default()).map_err(|e| e.to_string())?;
+    let mut options = CameraOptions::default();
+    if let Some(heap) = &a.heap {
+        options.memory = BufferMemory::DmaHeap(heap.clone());
+    }
+    let cam = NativeCamera::open(info, options).map_err(|e| e.to_string())?;
     Ok((cam, opened))
 }
 

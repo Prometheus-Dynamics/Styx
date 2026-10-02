@@ -16,6 +16,8 @@
 //!   --record BASE        (soft) record the raw frames and their sensor values
 //!   --algo-record PATH   record the algorithms' inputs and outputs (styx-algo replay)
 //!   --threads N          (soft, replay) software ISP row bands (default 1)
+//!   --heap NAME          (soft) capture into buffers from this dma-heap (e.g. linux,cma:
+//!                        cached, synced per frame) instead of the driver's MMAP buffers
 //!   --quiet              no per-frame lines
 //! ```
 
@@ -46,6 +48,7 @@ pub struct Args {
     pub algo_record: Option<PathBuf>,
     pub recording: Option<PathBuf>,
     pub threads: usize,
+    pub heap: Option<String>,
     pub quiet: bool,
 }
 
@@ -66,6 +69,7 @@ fn parse() -> Result<Args, String> {
         algo_record: None,
         recording: None,
         threads: 1,
+        heap: None,
         quiet: false,
     };
     while let Some(x) = it.next() {
@@ -82,6 +86,7 @@ fn parse() -> Result<Args, String> {
             "--recording" => a.recording = Some(val()?.into()),
             "--threads" => a.threads = num(val()?)? as usize,
             "--quiet" => a.quiet = true,
+            "--heap" => a.heap = Some(val()?),
             "--perturb" => {
                 let v = val()?;
                 let (f, k) = v.split_once(':').ok_or("--perturb takes FRAME:FACTOR")?;
