@@ -27,6 +27,7 @@
 //! branch per consumer.
 
 mod cost;
+mod native;
 mod routes;
 mod session;
 pub(crate) use session::SharedSession;

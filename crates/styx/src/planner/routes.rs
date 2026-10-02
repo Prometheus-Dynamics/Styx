@@ -6,6 +6,7 @@ use styx_codec::{Codec, CodecDescriptor, CodecKind, CodecRegistryHandle};
 use styx_core::prelude::*;
 
 use super::cost::{self, StepCost, megapixels};
+use super::native::{self, native_isp, raw_bayer};
 use super::{PlanRejection, PlanStep, StepExecution, StepKind};
 #[cfg(feature = "libcamera")]
 use crate::BackendHandle;
@@ -428,81 +429,9 @@ fn decode_scale(route: &Route, req: &FrameRequirements, source: (u32, u32)) -> u
         .unwrap_or(1)
 }
 
-/// Raw Bayer formats, 8-bit and the V4L2 packed / 16-bit ones sensors deliver.
-pub(crate) fn raw_bayer(code: FourCc) -> bool {
-    code.is_bayer_raw()
-        || matches!(
-            &code.to_u32().to_le_bytes(),
-            b"pBAA"
-                | b"pGAA"
-                | b"pgAA"
-                | b"pRAA"
-                | b"pBCC"
-                | b"pGCC"
-                | b"pgCC"
-                | b"pRCC"
-                | b"BG10"
-                | b"GB10"
-                | b"BA10"
-                | b"RG10"
-                | b"BG12"
-                | b"GB12"
-                | b"BA12"
-                | b"RG12"
-                | b"BG16"
-                | b"GB16"
-                | b"GR16"
-                | b"RG16"
-                | b"BYR2"
-                | b"BA81"
-        )
-}
-
-/// The ISP a native camera's processed modes run on (its `isp` property).
-pub(crate) fn native_isp(backend: &ProbedBackend) -> Option<&str> {
-    (backend.kind == BackendKind::Native)
-        .then(|| {
-            backend
-                .properties
-                .iter()
-                .find(|(k, _)| k == "isp")
-                .map(|(_, v)| v.as_str())
-        })
-        .flatten()
-}
-
 fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanStep {
-    let processed = backend.kind == BackendKind::Native && !raw_bayer(mode.format.code);
-    if processed {
-        let mp = megapixels(
-            mode.format.resolution.width.get(),
-            mode.format.resolution.height.get(),
-        );
-        let sensor = cost::native_capture_latency_ms(fps);
-        let (execution, cost, how) = match native_isp(backend) {
-            Some("pisp") => (
-                StepExecution::Hardware,
-                StepCost::offloaded(
-                    sensor + cost::PISP_PROCESS_LATENCY_MS,
-                    cost::PISP_PROCESS_CPU_MS,
-                ),
-                "PiSP front end statistics and back end, raw frames as dma-bufs, 3A in Styx",
-            ),
-            _ => {
-                let cpu = cost::SOFTISP_MS_PER_MP * mp + cost::ALGORITHMS_MS;
-                (
-                    StepExecution::Cpu,
-                    StepCost::offloaded(sensor + cpu, cpu),
-                    "software ISP and 3A in Styx",
-                )
-            }
-        };
-        return PlanStep {
-            kind: StepKind::Capture,
-            execution,
-            detail: format!("{} ({how})", describe(backend, mode)),
-            cost,
-        };
+    if let Some(step) = native::processed_capture_step(backend, mode, fps) {
+        return step;
     }
     let (execution, latency, how) = match backend.kind {
         BackendKind::Libcamera if has_isp_second_output(backend) => (
