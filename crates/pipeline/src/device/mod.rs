@@ -151,3 +151,26 @@ pub fn process_usage() -> (std::time::Duration, u64) {
         .unwrap_or(0);
     (cpu, hwm * 1024)
 }
+
+/// CPU time of each thread of this process: `(name, user, system)` (clock ticks of 10 ms).
+pub fn thread_usage() -> Vec<(String, std::time::Duration, std::time::Duration)> {
+    let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
+        return Vec::new();
+    };
+    let mut out: Vec<_> = dir
+        .filter_map(|e| {
+            let s = std::fs::read_to_string(e.ok()?.path().join("stat")).ok()?;
+            let (head, rest) = s.rsplit_once(')')?;
+            let name = head.split_once('(')?.1.to_string();
+            let f: Vec<&str> = rest.split_whitespace().collect();
+            let tick = |i: usize| -> Option<std::time::Duration> {
+                Some(std::time::Duration::from_millis(
+                    f.get(i)?.parse::<u64>().ok()? * 10,
+                ))
+            };
+            Some((name, tick(11)?, tick(12)?))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}

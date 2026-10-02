@@ -152,6 +152,7 @@ pub fn soft(a: &Args) -> Result<(), String> {
     }
     let wall = t_start.elapsed();
     let (cpu1, rss) = process_usage();
+    let threads = styx_pipeline::device::thread_usage();
     p.soft_loop()
         .controller()
         .stop_recording()
@@ -173,6 +174,16 @@ pub fn soft(a: &Args) -> Result<(), String> {
         peak_rss: rss,
         extra: {
             let mut v = crate::output::summary_lines(&saved, ratios);
+            let n = frames.len().max(1) as f64;
+            let per = |d: Duration| d.as_secs_f64() * 1e3 / n;
+            v.push(format!(
+                "threads (CPU per frame, user + system, ms; whole process run incl. start): {}",
+                threads
+                    .iter()
+                    .map(|(name, u, s)| format!("{name} {:.2}+{:.2}", per(*u), per(*s)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
             v.insert(
                 v.len() - 1,
                 format!(
