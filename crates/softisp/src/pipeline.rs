@@ -20,9 +20,35 @@ pub(crate) struct Source<'a> {
     pub packing: RawPacking,
 }
 
+/// Bytes of input copied per block into the staging buffer.
+const STAGE_BYTES: usize = 16 * 1024;
+
+/// A cached copy of a few consecutive input rows. Frames often sit in uncached (write-combined)
+/// DMA memory, where the unpack kernels' small overlapping loads are several times slower
+/// than one large copy.
+#[derive(Default)]
+pub(crate) struct Stage {
+    buf: Vec<u8>,
+    first: usize,
+    rows: usize,
+}
+
 impl Source<'_> {
-    fn unpack(&self, y: usize, width: usize, dst: &mut [u16]) {
-        let row = &self.data[y * self.stride..][..self.packing.row_bytes(width)];
+    /// Input row `y`, from the staging copy (refilled from `y` on a miss).
+    fn row<'s>(&self, stage: &'s mut Stage, y: usize, height: usize, bytes: usize) -> &'s [u8] {
+        if !(stage.first..stage.first + stage.rows).contains(&y) {
+            let rows = (STAGE_BYTES / self.stride).clamp(1, height - y);
+            let len = self.stride * (rows - 1) + bytes;
+            stage.buf.resize(len.max(stage.buf.len()), 0);
+            stage.buf[..len].copy_from_slice(&self.data[y * self.stride..][..len]);
+            stage.first = y;
+            stage.rows = rows;
+        }
+        &stage.buf[(y - stage.first) * self.stride..][..bytes]
+    }
+
+    fn unpack(&self, stage: &mut Stage, y: usize, height: usize, width: usize, dst: &mut [u16]) {
+        let row = self.row(stage, y, height, self.packing.row_bytes(width));
         match self.packing {
             RawPacking::Csi2Raw10 => drop(simd::unpack_raw10_row(row, dst, width)),
             RawPacking::Csi2Raw12 => drop(simd::unpack_raw12_row(row, dst, width)),
@@ -64,6 +90,7 @@ pub(crate) struct Worker {
     rgb8: [[Vec<u8>; 3]; 2],
     luma16: Vec<u16>,
     quad: [Vec<u16>; 3],
+    stage: Stage,
     pub stats: Option<StatsAccum>,
 }
 
@@ -80,6 +107,7 @@ impl Worker {
             self.quad = std::array::from_fn(|_| vec![0; w / 2]);
         }
         self.tags = [None; SLOTS];
+        self.stage.rows = 0;
         match (&p.stats, &mut self.stats) {
             (Some(setup), Some(acc))
                 if acc.histogram.len() == 4 * setup.config.histogram_bins as usize =>
@@ -100,7 +128,7 @@ impl Worker {
         }
         let w = p.width;
         let row = &mut self.slots[slot];
-        src.unpack(ry, w, &mut row[PAD..PAD + w]);
+        src.unpack(&mut self.stage, ry, p.height, w, &mut row[PAD..PAD + w]);
         let gains = p.gains.row(ry, &mut self.gains);
         simd::front_row(&mut row[PAD..], p.black[ry & 1], gains, p.shift, w);
         for k in 1..=PAD {

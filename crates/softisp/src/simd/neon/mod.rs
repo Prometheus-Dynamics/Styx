@@ -101,6 +101,15 @@ pub(super) fn narrow_row(
     done(unsafe { color::narrow(src, dst, width) })
 }
 
+pub(super) fn lut_row(
+    src: &[u16],
+    dst: &mut [u8],
+    lut: &[u8; 4096],
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    done(unsafe { color::lut(src, dst, lut, width) })
+}
+
 pub(super) fn interleave_rgb_row(
     planes: [&[u8]; 3],
     dst: &mut [u8],

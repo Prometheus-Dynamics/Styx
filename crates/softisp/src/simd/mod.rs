@@ -281,8 +281,10 @@ pub fn narrow_row(src: &[u16], dst: &mut [u8], width: usize) -> SimdBackend {
 /// interpolated linearly, `out(x) = (n[x >> 4] (16 - f) + n[(x >> 4) + 1] f + 8) >> 4` with
 /// `f = x & 15` (inputs above 4095 clamp), read from the expanded 4096-entry table.
 ///
-/// There is no vector leaf: NEON `tbl` over 256-byte tables (eight 4-register lookups per 16
-/// pixels) measured slower on the Cortex-A76 than scalar loads from the 4 KiB table.
+/// NEON clamps eight samples in a vector, moves them to two general registers and looks the
+/// eight bytes up from the 4 KiB table with shifts and masks, storing them as one word (1.5x
+/// the scalar loop on the Cortex-A76). Interpolating the nodes with `tbl` (eight 4-register
+/// lookups per 16 pixels) measured slower than scalar loads; x86 stays scalar.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ToneLut {
     nodes: [u8; 257],
@@ -325,10 +327,18 @@ impl ToneLut {
     }
 }
 
-/// See [`scalar::lut_row`] and [`ToneLut`] (scalar always).
+/// See [`scalar::lut_row`] and [`ToneLut`].
 pub fn lut_row(src: &[u16], dst: &mut [u8], lut: &ToneLut, width: usize) -> SimdBackend {
-    scalar::lut_row(src, dst, lut.full(), width);
-    SimdBackend::Scalar
+    let (src, dst) = (&src[..width], &mut dst[..width]);
+    #[allow(unused_mut, unused_assignments)]
+    let mut outcome: Option<(SimdBackend, usize)> = None;
+    #[cfg(all(feature = "neon", target_arch = "aarch64"))]
+    {
+        outcome = neon::lut_row(src, dst, lut.full(), width);
+    }
+    finish(outcome, width, |d, n| {
+        scalar::lut_row(&src[d..], &mut dst[d..], lut.full(), n)
+    })
 }
 
 /// See [`scalar::interleave_rgb_row`].
