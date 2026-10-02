@@ -156,3 +156,14 @@ variants (which must fail) and on the live copy.
   them; a dark scene makes it inconclusive (it says so).
 - If `rp1-cfe` is not unbound before the overlay is applied, it keeps its notifier for the
   old sensor node; `up.sh` always unbinds first.
+- Removing the overlay after `rp1-cfe` was bound to the bridge logs `OF: ERROR: memory leak,
+  expected refcount 1 instead of 2 ... /styx-sensor-bridge-cam0`. The reference is
+  `rp1-cfe`'s: its probe adds the sensor node to its async notifier
+  (`v4l2_async_nf_add_fwnode`, which takes a reference) and `cfe_remove` unregisters the
+  notifier without `v4l2_async_nf_cleanup`, so the reference is never dropped. Measured on the
+  device: overlay applied and removed with no module, with the module bound, and with the
+  overlay removed under a bound bridge: no message; only after `rp1-cfe` has bound to the
+  bridge. One node (a few hundred bytes) leaks per `up.sh`/`down.sh` cycle; nothing uses it
+  afterwards. The fix belongs in `rp1-cfe` (`v4l2_async_nf_cleanup` after
+  `v4l2_async_nf_unregister` in `cfe_remove`, as mainline has).
+

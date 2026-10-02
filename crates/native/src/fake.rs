@@ -367,7 +367,9 @@ pub(crate) struct FakeVideo {
     queue: Arc<FakeQueue>,
     file: u64,
     frames_fd: OwnedFd,
-    events_fd: OwnedFd,
+    /// `None`: events are reported on `frames_fd`, as V4L2 nodes do (as priority data, which
+    /// a pipe never signals: they are only seen when the thread wakes for something else).
+    events_fd: Option<OwnedFd>,
 }
 
 impl FakeQueue {
@@ -401,21 +403,21 @@ impl FakeQueue {
 
     /// Opens a handle.
     pub(crate) fn open(self: &Arc<Self>) -> Arc<FakeVideo> {
+        self.open_with(false)
+    }
+
+    /// Opens a handle that reports events on its frame descriptor, like a V4L2 node.
+    pub(crate) fn open_shared(self: &Arc<Self>) -> Arc<FakeVideo> {
+        self.open_with(true)
+    }
+
+    fn open_with(self: &Arc<Self>, shared: bool) -> Arc<FakeVideo> {
+        let dup = |fd: BorrowedFd<'_>| fd.try_clone_to_owned().expect("dup");
         Arc::new(FakeVideo {
             queue: Arc::clone(self),
             file: self.next_file.fetch_add(1, Ordering::Relaxed),
-            frames_fd: self
-                .frames
-                .reader
-                .as_fd()
-                .try_clone_to_owned()
-                .expect("dup"),
-            events_fd: self
-                .events
-                .reader
-                .as_fd()
-                .try_clone_to_owned()
-                .expect("dup"),
+            frames_fd: dup(self.frames.reader.as_fd()),
+            events_fd: (!shared).then(|| dup(self.events.reader.as_fd())),
         })
     }
 
@@ -766,10 +768,14 @@ impl CaptureDevice for FakeVideo {
     }
 
     fn event_fd(&self) -> BorrowedFd<'_> {
-        self.events_fd.as_fd()
+        self.events_fd.as_ref().unwrap_or(&self.frames_fd).as_fd()
     }
 
     fn event_interest(&self) -> Interest {
-        Interest::READABLE
+        if self.events_fd.is_some() {
+            Interest::READABLE
+        } else {
+            Interest::PRIORITY
+        }
     }
 }

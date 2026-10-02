@@ -502,6 +502,32 @@ fn the_capture_node_going_away_mid_stream_disconnects() {
     assert!(!rig.bridge.powered());
 }
 
+/// On V4L2 nodes frame-start events come on the capture descriptor, which the frame stream
+/// registered with the reactor already (a second registration fails with `EEXIST`).
+#[test]
+fn events_on_the_capture_descriptor_share_its_registration() {
+    let mut rig = Rig::new();
+    let mut session = Session::new(
+        rig.bridge.clone(),
+        rig.control.clone(),
+        options(BufferSource::Memory(Default::default()), 0),
+    );
+    session.attach_video(rig.queue.open_shared(), true).unwrap();
+    // The rig's own session holds no buffers: use the shared one.
+    rig.session.shutdown().unwrap();
+    lock(&rig.control).bring_up("1280x800", "raw10").unwrap();
+    for _ in 0..2 {
+        let mut stream = session.start(FORMAT).unwrap();
+        for i in 0..5 {
+            rig.queue.tick();
+            assert_eq!(stream.next_blocking(WAIT).unwrap().unwrap().sequence, i);
+        }
+        session.stop().unwrap();
+    }
+    session.shutdown().unwrap();
+    assert!(!rig.bridge.powered());
+}
+
 #[test]
 fn starting_without_a_bridge_is_a_disconnect() {
     let mut rig = Rig::new();

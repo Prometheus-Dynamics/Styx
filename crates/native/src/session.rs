@@ -134,7 +134,7 @@ impl Session {
         let health = Arc::new(Health::default());
         let events = EventThread::spawn(EventSources {
             bridge: Arc::clone(&self.bridge),
-            video: self.frame_sync.then(|| Arc::clone(&video)),
+            video: self.frame_sync.then(|| Arc::clone(&fd)),
             sensor: Arc::clone(&self.sensor),
             embedded: self.embedded.clone(),
             health: Arc::clone(&health),

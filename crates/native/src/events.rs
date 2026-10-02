@@ -13,6 +13,7 @@
 
 use std::future::poll_fn;
 use std::io::{PipeReader, PipeWriter, Read, Write};
+use std::os::fd::{AsFd, AsRawFd};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,8 +50,9 @@ enum Which {
 /// What the thread serves.
 pub(crate) struct EventSources {
     pub(crate) bridge: Arc<dyn BridgeDevice>,
-    /// The capture node, when frame-start events are subscribed.
-    pub(crate) video: Option<Arc<dyn CaptureDevice>>,
+    /// The capture node's reactor registration (shared with the frame stream), when
+    /// frame-start events are subscribed.
+    pub(crate) video: Option<Arc<AsyncFd<Arc<dyn CaptureDevice>>>>,
     pub(crate) sensor: Arc<dyn SensorSide>,
     pub(crate) embedded: Option<Arc<EmbeddedCapture>>,
     pub(crate) health: Arc<Health>,
@@ -60,11 +62,18 @@ impl EventThread {
     /// Starts serving.
     pub(crate) fn spawn(sources: EventSources) -> std::io::Result<Self> {
         let (reader, writer) = std::io::pipe()?;
-        rt::set_nonblocking(std::os::fd::AsFd::as_fd(&reader))?;
+        rt::set_nonblocking(reader.as_fd())?;
         let wake = AsyncFd::new(reader)?;
         let bridge_fd = AsyncFd::new(Arc::clone(&sources.bridge))?;
+        // A descriptor is registered once with the reactor: events on the capture node's own
+        // descriptor (V4L2) wait on the frame stream's registration.
         let video_fd = match &sources.video {
-            Some(v) => Some(AsyncFd::new(EventSource(Arc::clone(v)))?),
+            Some(v) if v.get_ref().event_fd().as_raw_fd() == v.get_ref().as_fd().as_raw_fd() => {
+                Some(VideoEvents::Shared(Arc::clone(v)))
+            }
+            Some(v) => Some(VideoEvents::Own(AsyncFd::new(EventSource(Arc::clone(
+                v.get_ref(),
+            )))?)),
             None => None,
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -103,6 +112,21 @@ impl Drop for EventThread {
     }
 }
 
+/// Where frame-start events are waited for.
+enum VideoEvents {
+    Shared(Arc<AsyncFd<Arc<dyn CaptureDevice>>>),
+    Own(AsyncFd<EventSource>),
+}
+
+impl VideoEvents {
+    fn ready(&self, interest: rt::Interest) -> rt::Readiness<'_> {
+        match self {
+            VideoEvents::Shared(fd) => fd.ready(interest),
+            VideoEvents::Own(fd) => fd.ready(interest),
+        }
+    }
+}
+
 /// Serves every pending bridge request. `Err` ends the thread.
 fn serve_requests(s: &EventSources) -> Result<(), Fault> {
     loop {
@@ -136,7 +160,7 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
 fn serve_frame_starts(s: &EventSources) -> Result<(), Fault> {
     let Some(v) = &s.video else { return Ok(()) };
     loop {
-        match v.dequeue_event() {
+        match v.get_ref().dequeue_event() {
             Ok(Some(ev)) => {
                 if let EventKind::FrameSync { frame_sequence } = ev.kind {
                     s.health.frame_syncs.fetch_add(1, Ordering::Relaxed);
@@ -159,12 +183,12 @@ fn serve_frame_starts(s: &EventSources) -> Result<(), Fault> {
 async fn run(
     s: EventSources,
     bridge_fd: AsyncFd<Arc<dyn BridgeDevice>>,
-    video_fd: Option<AsyncFd<EventSource>>,
+    video_fd: Option<VideoEvents>,
     wake: AsyncFd<PipeReader>,
     stop: Arc<AtomicBool>,
 ) {
     let bridge_interest = s.bridge.request_interest();
-    let video_interest = s.video.as_ref().map(|v| v.event_interest());
+    let video_interest = s.video.as_ref().map(|v| v.get_ref().event_interest());
     let mut video_backoff = false;
     let mut video_gone = false;
     while !stop.load(Ordering::Acquire) {
