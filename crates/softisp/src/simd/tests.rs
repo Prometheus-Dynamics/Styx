@@ -504,3 +504,22 @@ fn zone_sums_match() {
         }
     }
 }
+
+#[test]
+fn luma_bins_match() {
+    for bins in [1u16, 7, 64, 256, 1000, 4096] {
+        check("luma bins", 1, 1, GUARD, |runner, w, out| {
+            let rows: Vec<Vec<u16>> = (0..3)
+                .map(|i| words(w, w as u64 * 3 + i + bins as u64, 4095))
+                .collect();
+            let rgb = [&rows[0][..], &rows[1][..], &rows[2][..]];
+            let dst = out[0].as_mut_slice();
+            match runner {
+                Runner::Oracle => scalar::luma_bins_row(rgb, dst, bins, w),
+                Runner::Dispatch => drop(luma_bins_row(rgb, dst, bins, w)),
+                _ => return leaf_call!(runner, luma_bins_row(rgb, &mut dst[..w], bins, w)),
+            }
+            w
+        });
+    }
+}

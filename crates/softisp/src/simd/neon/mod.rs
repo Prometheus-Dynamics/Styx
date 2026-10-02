@@ -149,3 +149,12 @@ pub(super) fn zone_sums(
     let (done, sums) = unsafe { bayer::zone_sums(rgb, width, sat) };
     (done > 0).then_some((SimdBackend::Neon, done, sums))
 }
+
+pub(super) fn luma_bins_row(
+    rgb: [&[u16]; 3],
+    dst: &mut [u16],
+    bins: u16,
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    done(unsafe { bayer::luma_bins(rgb, dst, bins, width) })
+}

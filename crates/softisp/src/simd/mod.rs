@@ -408,6 +408,17 @@ pub fn rgb_to_uv_row(
     })
 }
 
+/// See [`scalar::luma_bins_row`]; inputs are 12-bit.
+pub fn luma_bins_row(rgb: [&[u16]; 3], dst: &mut [u16], bins: u16, width: usize) -> SimdBackend {
+    assert!(bins <= 4096, "at most 4096 bins");
+    let rgb = rgb.map(|p| &p[..width]);
+    let dst = &mut dst[..width];
+    let outcome = leaf!(luma_bins_row(rgb, dst, bins, width));
+    finish(outcome, width, |d, n| {
+        scalar::luma_bins_row(rgb.map(|p| &p[d..]), &mut dst[d..], bins, n)
+    })
+}
+
 /// See [`scalar::zone_sums`]; inputs are 12-bit.
 pub fn zone_sums(rgb: [&[u16]; 3], width: usize, sat: u16) -> ([u32; 5], SimdBackend) {
     let rgb = rgb.map(|p| &p[..width]);

@@ -150,6 +150,22 @@ pub(super) fn quad_rgb_row(
     )
 }
 
+pub(super) fn luma_bins_row(
+    f: X86FeatureSet,
+    rgb: [&[u16]; 3],
+    dst: &mut [u16],
+    bins: u16,
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    pick!(
+        f,
+        width,
+        16,
+        bayer::luma_bins_avx2(rgb, dst, bins, width),
+        bayer::luma_bins_sse2(rgb, dst, bins, width)
+    )
+}
+
 pub(super) fn quad_luma_row(
     f: X86FeatureSet,
     top: &[u16],

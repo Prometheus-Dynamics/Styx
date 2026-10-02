@@ -394,3 +394,31 @@ pub(in crate::simd) unsafe fn zone_sums(
         )
     }
 }
+
+/// # Safety
+/// As [`unpack`]; the rows hold `width` 12-bit samples, `dst` `width`.
+#[target_feature(enable = "neon")]
+pub(in crate::simd) unsafe fn luma_bins(
+    rgb: [&[u16]; 3],
+    dst: &mut [u16],
+    bins: u16,
+    width: usize,
+) -> usize {
+    let mut i = 0;
+    // SAFETY: 8 lanes of each row at `i`, `i + 8 <= width`.
+    unsafe {
+        let two = vdupq_n_u16(2);
+        while i + 8 <= width {
+            let (r, g, b) = (ld(rgb[0], i), ld(rgb[1], i), ld(rgb[2], i));
+            let y = vshrq_n_u16::<2>(vaddq_u16(
+                vaddq_u16(r, b),
+                vaddq_u16(vshlq_n_u16::<1>(g), two),
+            ));
+            let lo = vshrn_n_u32::<12>(vmull_n_u16(vget_low_u16(y), bins));
+            let hi = vshrn_n_u32::<12>(vmull_high_n_u16(y, bins));
+            st(dst, i, vcombine_u16(lo, hi));
+            i += 8;
+        }
+    }
+    i
+}
