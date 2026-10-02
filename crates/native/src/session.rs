@@ -293,10 +293,12 @@ impl Session {
     pub(crate) fn stop(&mut self) -> Result<()> {
         if let Some(ext) = self.external.take() {
             ext.events.quiesce();
-            ext.events.join();
+            // The embedded node may be the last one streaming: its STREAMOFF stops the
+            // receiver, and the bridge's stop request needs the event thread.
             if let Some(e) = &self.embedded {
                 e.stop();
             }
+            ext.events.join();
             self.sensor.standby();
             return Ok(());
         }
@@ -310,10 +312,13 @@ impl Session {
         // Nothing may poll the node while STREAMOFF holds its lock and waits for the bridge.
         running.events.quiesce();
         let result = running.shared.video.stream_off().step("VIDIOC_STREAMOFF");
-        running.events.join();
+        // rp1-cfe stops the receiver (and asks the bridge to stop the sensor) when the last
+        // node stops streaming, which can be the embedded data node: stop it while the event
+        // thread still serves the bridge (every stop timed out after 1 s otherwise).
         if let Some(e) = &self.embedded {
             e.stop();
         }
+        running.events.join();
         let released = buffers.release();
         self.sensor.standby();
         match result {
