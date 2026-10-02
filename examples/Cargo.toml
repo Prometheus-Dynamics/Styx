@@ -40,6 +40,11 @@ path = "native_capture.rs"
 required-features = ["native"]
 
 [[bin]]
+name = "native_processed"
+path = "native_processed.rs"
+required-features = ["native"]
+
+[[bin]]
 name = "quickstart_capture_virtual"
 path = "00_quickstart/capture_virtual.rs"
 

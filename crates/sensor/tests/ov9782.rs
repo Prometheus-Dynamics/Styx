@@ -26,9 +26,11 @@ const MODES: [(u32, u32, u32, u32, u32, u32); 3] = [
     (640, 400, 816, 1022, 22, 51540),
 ];
 
+/// The frame rate at a vertical blanking: the driver's formula, with the one line the sensor
+/// adds to VTS (measured on the device; the driver's own formula leaves it out).
 fn driver_fps(bits: f64, w: u32, h: u32, hblank: u32, vblank: u32) -> f64 {
     let pixel_rate = LINK_FREQ * 2.0 * LANES / bits;
-    pixel_rate / (f64::from(w + hblank) * f64::from(h + vblank))
+    pixel_rate / (f64::from(w + hblank) * f64::from(h + vblank + 1))
 }
 
 fn close(a: f64, b: f64) -> bool {
@@ -57,10 +59,11 @@ fn identity_and_formats() {
         d.modes.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
         ["1280x800", "1280x720", "640x400"]
     );
+    assert_eq!(d.color_filter(false, false), ColorFilter::Bggr);
     assert_eq!(
         d.color_filter(true, true),
-        ColorFilter::Bggr,
-        "flips do not change the code"
+        ColorFilter::Rggb,
+        "both flips (the kernel driver's default) turn the order to RGGB"
     );
 }
 
@@ -100,12 +103,12 @@ fn computed_fps_ranges() {
     };
     // (mode, format, min fps, default fps, max fps)
     let expected = [
-        ("1280x800", "raw10", 2.0995, 60.3129, 120.758),
-        ("1280x720", "raw10", 2.1028, 63.0827, 144.402),
-        ("640x400", "raw10", 2.1157, 77.2786, 260.403),
-        ("1280x800", "raw8", 2.6244, 75.3911, 150.948),
-        ("1280x720", "raw8", 2.6284, 78.8534, 180.503),
-        ("640x400", "raw8", 2.6446, 96.5982, 325.504),
+        ("1280x800", "raw10", 2.0995, 60.2798, 120.626),
+        ("1280x720", "raw10", 2.1027, 63.0465, 144.213),
+        ("640x400", "raw10", 2.1157, 77.2243, 259.787),
+        ("1280x800", "raw8", 2.6244, 75.3498, 150.782),
+        ("1280x720", "raw8", 2.6284, 78.8082, 180.266),
+        ("640x400", "raw8", 2.6446, 96.5303, 324.734),
     ];
     for (m, f, lo, def, hi) in expected {
         let got = r(m, f);
@@ -120,16 +123,17 @@ fn computed_fps_ranges() {
 fn target_frame_rates_round_to_whole_lines() {
     let d = desc();
     let t = d.timing("1280x800", "raw10").unwrap();
+    // 30 fps is 3663 lines of 9.1 us; the sensor adds one to VTS.
     let f = t.frame_length_for_fps(30.0);
-    assert_eq!(f.lines, 3663);
-    assert_eq!(f.vblank, 2863);
+    assert_eq!(f.lines, 3662);
+    assert_eq!(f.vblank, 2862);
     assert!((f.fps - 30.0).abs() < 1e-3);
     let f = t.frame_length_for_fps(120.0);
-    assert_eq!(f.lines, 916);
+    assert_eq!(f.lines, 915);
     // Low light: let the frame rate drop from 60 to 10 fps.
     let (short, long) = t.frame_length_range(10.0, 60.0);
     assert!(short.fps <= 60.0 && long.fps >= 10.0);
-    assert_eq!((short.lines, long.lines), (1832, 10989));
+    assert_eq!((short.lines, long.lines), (1831, 10988));
 }
 
 #[test]
@@ -247,8 +251,9 @@ fn bring_up_writes_what_the_kernel_driver_writes() {
                 value: 0x10,
                 bytes: 1
             },
-            RegWrite::byte(0x3821, 0x04),
-            RegWrite::byte(0x3820, 0x44),
+            // Flips off (as libcamera runs the sensor; the kernel driver's default is on).
+            RegWrite::byte(0x3821, 0x00),
+            RegWrite::byte(0x3820, 0x40),
         ]
     );
     // Flips are read-modify-write.
@@ -330,13 +335,13 @@ fn scheduled_controls_are_written_in_group_hold_on_time() {
     let batch = drv.frame_start(9).unwrap();
     assert_eq!(
         batch.controls,
-        ControlSet::new().with(Control::FrameLength, 3663)
+        ControlSet::new().with(Control::FrameLength, 3662)
     );
     assert_eq!(
         drv.bus().writes(),
         hold(vec![RegWrite {
             address: 0x380e,
-            value: 3663,
+            value: 3662,
             bytes: 2
         }])
     );
@@ -346,7 +351,7 @@ fn scheduled_controls_are_written_in_group_hold_on_time() {
     assert_eq!(a.exposure_lines, 1099.0);
     assert_eq!(a.exposure, Duration::from_nanos(1099 * 9100));
     assert_eq!(a.analog_gain, 2.0);
-    assert_eq!(a.frame_length, 3663);
+    assert_eq!(a.frame_length, 3662);
     assert!((1.0 / a.frame_duration.as_secs_f64() - 30.0).abs() < 1e-3);
 }
 

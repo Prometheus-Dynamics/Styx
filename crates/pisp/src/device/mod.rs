@@ -5,8 +5,11 @@
 //!   `rp1-cfe-fe_stats` and raw frames from `rp1-cfe-fe_image0`.
 //! - [`BackEndDevice`]: one `pispbe` node group, memory to memory: `pispbe-input` →
 //!   `pispbe-output0`, driven by `pispbe-config`.
+//! - [`BackEndStream`]: a node group for a stream: dma-buf input (the front end's raw
+//!   buffers), two outputs, a config per job, output buffers held until released.
 
 mod be;
+mod be_stream;
 mod fe;
 mod queue;
 
@@ -14,7 +17,8 @@ use std::fmt;
 use std::path::PathBuf;
 
 pub use be::{BackEndDevice, BeOutput};
-pub use fe::{FeFrame, FrontEndDevice, FrontEndSetup};
+pub use be_stream::{BackEndStream, BeFormat, BeJob, BeOutputSetup};
+pub use fe::{FeFrame, FeHeld, FrontEndDevice, FrontEndSetup, HeldImage};
 pub use queue::Queue;
 
 /// A device error.

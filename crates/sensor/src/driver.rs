@@ -321,7 +321,8 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
         let desc = Arc::clone(&self.desc);
         let m = desc.mode(mode)?;
         let f = desc.format_for(m, format)?;
-        let timing = Timing::for_mode(m, f, &desc.controls.exposure);
+        let timing = Timing::for_mode(m, f, &desc.controls.exposure)
+            .with_extra_lines(desc.controls.frame_length_extra_lines);
         let ctl = &desc.controls;
         ctl.frame_length
             .ok_or(SensorError::NoRegister("frame length"))?;

@@ -417,6 +417,23 @@ impl<B: RegisterBus, P: SensorPins> ControlHandle<B, P> {
         Ok(landings)
     }
 
+    /// Asks for values from frame `frame` on (e.g. the landing frame an algorithm computed from
+    /// the control delays); returns where each value lands (later than `frame` when the request
+    /// came too late for it).
+    pub fn request_at(&self, frame: u64, req: &ControlRequest) -> Result<Vec<Landing>> {
+        let (landings, timing) = {
+            let mut c = lock(&self.inner);
+            let first = c.next_frame();
+            let l = c.request_at(frame.max(first), req)?;
+            (l, c.timing())
+        };
+        if let (Some(hook), Some(t), Some(d)) = (&self.blanking, timing, req.frame_duration) {
+            let fl = t.frame_length_for_duration(d);
+            hook(t.hblank, fl.vblank);
+        }
+        Ok(landings)
+    }
+
     /// Sets the exposure time.
     pub fn set_exposure(&self, exposure: Duration) -> Result<Vec<Landing>> {
         self.request(&ControlRequest {

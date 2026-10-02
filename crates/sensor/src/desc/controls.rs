@@ -18,6 +18,10 @@ pub struct Controls {
     /// Line length (HTS) register.
     #[serde(default)]
     pub line_length: Option<LineLength>,
+    /// Lines the sensor reads out beyond the frame length register: a frame of frame length
+    /// `n` lasts `n + frame_length_extra_lines` lines.
+    #[serde(default)]
+    pub frame_length_extra_lines: u32,
     /// Exposure (coarse integration time).
     pub exposure: Exposure,
     /// Analogue gain.

@@ -293,7 +293,8 @@ impl SensorDescription {
     pub fn timing(&self, mode: &str, format: &str) -> Result<Timing> {
         let m = self.mode(mode)?;
         let f = self.format_for(m, format)?;
-        Ok(Timing::for_mode(m, f, &self.controls.exposure))
+        Ok(Timing::for_mode(m, f, &self.controls.exposure)
+            .with_extra_lines(self.controls.frame_length_extra_lines))
     }
 
     /// Output colour filter order for the given flips.

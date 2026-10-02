@@ -57,6 +57,12 @@ struct Running {
     events: EventThread,
 }
 
+/// The sensor side running for another device's capture (see `external.rs`).
+struct External {
+    events: EventThread,
+    health: Arc<Health>,
+}
+
 pub(crate) struct Session {
     bridge: Arc<dyn BridgeDevice>,
     sensor: Arc<dyn SensorSide>,
@@ -65,6 +71,7 @@ pub(crate) struct Session {
     frame_sync: bool,
     options: SessionOptions,
     running: Option<Running>,
+    external: Option<External>,
 }
 
 impl Session {
@@ -81,6 +88,7 @@ impl Session {
             frame_sync: false,
             options,
             running: None,
+            external: None,
         }
     }
 
@@ -109,12 +117,79 @@ impl Session {
     }
 
     pub(crate) fn is_streaming(&self) -> bool {
-        self.running.is_some()
+        self.running.is_some() || self.external.is_some()
     }
 
     /// Health of the running stream.
     pub(crate) fn health(&self) -> Option<&Arc<Health>> {
-        self.running.as_ref().map(|r| &r.shared.health)
+        self.running
+            .as_ref()
+            .map(|r| &r.shared.health)
+            .or(self.external.as_ref().map(|e| &e.health))
+    }
+
+    /// Serves the sensor side while another device owns the capture nodes: the event thread
+    /// (spawned quiesced; `video` is the other device's node that sends frame-start events,
+    /// opened separately) and the embedded data node. The other device starts streaming next,
+    /// then [`Self::resume_external`].
+    pub(crate) fn start_external(
+        &mut self,
+        video: Arc<dyn CaptureDevice>,
+        frame_sync: bool,
+    ) -> Result<Arc<Health>> {
+        if self.is_streaming() {
+            return Err(NativeError::Busy("already streaming".into()));
+        }
+        let health = Arc::new(Health::default());
+        let events = EventThread::spawn(EventSources {
+            bridge: Arc::clone(&self.bridge),
+            video,
+            frame_sync,
+            sensor: Arc::clone(&self.sensor),
+            embedded: self.embedded.clone(),
+            health: Arc::clone(&health),
+        })
+        .step("start the event thread")?;
+        if let Some(e) = &self.embedded
+            && let Err(err) = e.start()
+        {
+            events.join();
+            return Err(err);
+        }
+        self.frame_sync = frame_sync;
+        self.external = Some(External {
+            events,
+            health: Arc::clone(&health),
+        });
+        Ok(health)
+    }
+
+    /// The other device started streaming: fails if the sensor did not start (the bridge does
+    /// not fail the receiver's `STREAMON` for that), else lets the event thread use the node.
+    pub(crate) fn resume_external(&self) -> Result<()> {
+        let Some(ext) = &self.external else {
+            return Err(NativeError::State("not started"));
+        };
+        if let Ok(StreamState::StartFailed) = self.bridge.stream_state() {
+            let why = ext
+                .health
+                .serve_error()
+                .unwrap_or_else(|| "the bridge timed out waiting for the start".into());
+            return Err(NativeError::kernel(
+                format!("the sensor did not start ({why})"),
+                std::io::Error::from_raw_os_error(libc::EIO),
+            ));
+        }
+        ext.events.resume();
+        Ok(())
+    }
+
+    /// The other device is about to stop (or start) streaming: the event thread leaves the
+    /// node alone.
+    pub(crate) fn quiesce_external(&self) {
+        if let Some(ext) = &self.external {
+            ext.events.quiesce();
+        }
     }
 
     /// Starts streaming: returns once the sensor streams (the bridge's start request was
@@ -216,6 +291,17 @@ impl Session {
     /// Stops streaming. Frame streams end; frames still held keep their memory until dropped
     /// but never go back to the queue, whose buffers are released here.
     pub(crate) fn stop(&mut self) -> Result<()> {
+        if let Some(ext) = self.external.take() {
+            ext.events.quiesce();
+            // The embedded node may be the last one streaming: its STREAMOFF stops the
+            // receiver, and the bridge's stop request needs the event thread.
+            if let Some(e) = &self.embedded {
+                e.stop();
+            }
+            ext.events.join();
+            self.sensor.standby();
+            return Ok(());
+        }
         let Some(running) = self.running.take() else {
             return Ok(());
         };
@@ -226,10 +312,13 @@ impl Session {
         // Nothing may poll the node while STREAMOFF holds its lock and waits for the bridge.
         running.events.quiesce();
         let result = running.shared.video.stream_off().step("VIDIOC_STREAMOFF");
-        running.events.join();
+        // rp1-cfe stops the receiver (and asks the bridge to stop the sensor) when the last
+        // node stops streaming, which can be the embedded data node: stop it while the event
+        // thread still serves the bridge (every stop timed out after 1 s otherwise).
         if let Some(e) = &self.embedded {
             e.stop();
         }
+        running.events.join();
         let released = buffers.release();
         self.sensor.standby();
         match result {

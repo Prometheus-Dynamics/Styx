@@ -58,10 +58,11 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
-/// The exact duration of `frame_length` lines as a fraction of a second, reduced; falls back to
-/// nanoseconds when the numbers do not fit 32 bits.
+/// The exact duration of a frame of `frame_length` lines (plus the lines the sensor adds) as a
+/// fraction of a second, reduced; falls back to nanoseconds when the numbers do not fit 32 bits.
 pub fn frame_interval(timing: &Timing, frame_length: u32) -> Fraction {
-    let num = u64::from(timing.line_length()) * u64::from(frame_length);
+    let num =
+        u64::from(timing.line_length()) * (u64::from(frame_length) + u64::from(timing.extra_lines));
     let den = timing.pixel_rate.max(1);
     let g = gcd(num, den).max(1);
     let (num, den) = (num / g, den / g);
@@ -93,7 +94,8 @@ pub fn sensor_modes(desc: &SensorDescription) -> Vec<SensorMode> {
     let mut out = Vec::new();
     for m in &desc.modes {
         for (fname, f) in desc.formats_of(m) {
-            let timing = Timing::for_mode(m, f, &desc.controls.exposure);
+            let timing = Timing::for_mode(m, f, &desc.controls.exposure)
+                .with_extra_lines(desc.controls.frame_length_extra_lines);
             out.push(SensorMode {
                 mode: m.name.clone(),
                 format: fname.to_owned(),
@@ -140,13 +142,17 @@ mod tests {
             (m.mode.as_str(), m.format.as_str(), m.bits),
             ("1280x800", "raw10", 10)
         );
-        // 1456 x 910 / 160e6 and 1456 x 52340 / 160e6, reduced.
-        assert_eq!(m.min_interval, Fraction::new(1456 * 910, 160_000_000));
-        assert_eq!((m.min_interval.num, m.min_interval.den), (8281, 1_000_000));
-        assert_eq!(m.max_interval, Fraction::new(1456 * 52340, 160_000_000));
-        assert!((m.max_fps() - 120.758).abs() < 0.001, "{}", m.max_fps());
+        // 1456 x (910 + 1) / 160e6 and 1456 x (52340 + 1) / 160e6 (the sensor reads one line
+        // more than VTS), reduced.
+        assert_eq!(m.min_interval, Fraction::new(1456 * 911, 160_000_000));
+        assert_eq!(
+            (m.min_interval.num, m.min_interval.den),
+            (82901, 10_000_000)
+        );
+        assert_eq!(m.max_interval, Fraction::new(1456 * 52341, 160_000_000));
+        assert!((m.max_fps() - 120.626).abs() < 0.001, "{}", m.max_fps());
         assert!((m.min_fps() - 2.0995).abs() < 0.001, "{}", m.min_fps());
-        assert!((m.default_interval.fps() - 60.313).abs() < 0.001);
+        assert!((m.default_interval.fps() - 60.280).abs() < 0.001);
         assert!(m.allows(Fraction::from_fps(30)));
         assert!(m.allows(Fraction::from_fps(120)));
         assert!(!m.allows(Fraction::from_fps(121)));
@@ -164,7 +170,7 @@ mod tests {
         let mut t = desc.timing("1280x800", "raw10").unwrap();
         t.pixel_rate = 9_999_999_937; // prime-ish, > u32::MAX
         let f = frame_interval(&t, 1000);
-        let expect = 1456.0 * 1000.0 / 9_999_999_937.0;
+        let expect = 1456.0 * 1001.0 / 9_999_999_937.0;
         assert!((1.0 / f.fps() - expect).abs() < 2e-9);
     }
 }

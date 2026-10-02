@@ -24,6 +24,9 @@ pub struct Timing {
     pub hblank: u32,
     /// Exposure limits and quantisation.
     pub exposure: ExposureSpec,
+    /// Lines the sensor reads out beyond the frame length it is given: a frame of frame
+    /// length `n` lasts `n + extra_lines` lines.
+    pub extra_lines: u32,
 }
 
 /// Exposure limits and quantisation from the description.
@@ -102,7 +105,20 @@ impl Timing {
             vblank_range: mode.vblank,
             hblank: mode.hblank.default,
             exposure: exposure.into(),
+            extra_lines: 0,
         }
+    }
+
+    /// The same timing for a sensor whose frames last `extra` lines longer than the frame
+    /// length it is given.
+    pub fn with_extra_lines(mut self, extra: u32) -> Self {
+        self.extra_lines = extra;
+        self
+    }
+
+    /// Lines a frame of frame length `frame_length` lasts.
+    fn period_lines(&self, frame_length: u32) -> f64 {
+        f64::from(frame_length) + f64::from(self.extra_lines)
     }
 
     /// The same timing with another horizontal blanking (clamped to the mode's range).
@@ -142,12 +158,12 @@ impl Timing {
 
     /// Frame rate at a frame length.
     pub fn fps(&self, frame_length: u32) -> f64 {
-        self.pixel_rate as f64 / (f64::from(self.line_length()) * f64::from(frame_length))
+        self.pixel_rate as f64 / (f64::from(self.line_length()) * self.period_lines(frame_length))
     }
 
     /// Frame duration at a frame length.
     pub fn frame_duration(&self, frame_length: u32) -> Duration {
-        Duration::from_secs_f64(self.line_secs() * f64::from(frame_length))
+        Duration::from_secs_f64(self.line_secs() * self.period_lines(frame_length))
     }
 
     /// Lowest and highest achievable frame rate at the current horizontal blanking.
@@ -182,12 +198,15 @@ impl Timing {
 
     /// The frame length closest to a target frame rate, and the rate actually obtained.
     pub fn frame_length_for_fps(&self, fps: f64) -> FrameLength {
-        self.frame_length(self.pixel_rate as f64 / (f64::from(self.line_length()) * fps))
+        self.frame_length(
+            self.pixel_rate as f64 / (f64::from(self.line_length()) * fps)
+                - f64::from(self.extra_lines),
+        )
     }
 
     /// The frame length closest to a target frame duration.
     pub fn frame_length_for_duration(&self, duration: Duration) -> FrameLength {
-        self.frame_length(duration.as_secs_f64() / self.line_secs())
+        self.frame_length(duration.as_secs_f64() / self.line_secs() - f64::from(self.extra_lines))
     }
 
     /// Frame length limits for a frame rate range, e.g. 15–30 fps for low light: the shortest
@@ -213,8 +232,9 @@ impl Timing {
             let chosen = lines.clamp(lo, hi);
             self.describe(chosen, chosen != lines)
         };
-        let shortest = pick(per_fps / max_fps, true);
-        let longest = pick(per_fps / min_fps, false);
+        let extra = f64::from(self.extra_lines);
+        let shortest = pick(per_fps / max_fps - extra, true);
+        let longest = pick(per_fps / min_fps - extra, false);
         if longest.lines < shortest.lines {
             // The range is narrower than one line of frame length: use the nearest single value.
             let one = self.frame_length_for_fps((min_fps + max_fps) / 2.0);
@@ -298,6 +318,7 @@ mod tests {
                 default: 1022,
             },
             hblank: 176,
+            extra_lines: 0,
             exposure: ExposureSpec {
                 min: 1,
                 margin: 12,

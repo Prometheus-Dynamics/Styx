@@ -6,6 +6,7 @@ use styx_codec::{Codec, CodecDescriptor, CodecKind, CodecRegistryHandle};
 use styx_core::prelude::*;
 
 use super::cost::{self, StepCost, megapixels};
+use super::native::{self, native_isp, raw_bayer};
 use super::{PlanRejection, PlanStep, StepExecution, StepKind};
 #[cfg(feature = "libcamera")]
 use crate::BackendHandle;
@@ -191,6 +192,17 @@ pub(crate) fn candidate<'a>(
     }
 
     let mp = megapixels(width, height);
+    // A native camera with an ISP processes raw frames itself, with the 3A loop: a raw mode
+    // through a decoder would give frames nobody exposes or white-balances.
+    if backend.kind == BackendKind::Native
+        && raw_bayer(code)
+        && !req.accepts(code)
+        && native_isp(backend).is_some()
+    {
+        return Err(format!(
+            "raw {code} would need a decoder without 3A; the camera's processed modes run AE/AWB"
+        ));
+    }
 
     let mut steps = vec![capture_step(backend, mode, fps)];
     let notes = Vec::new();
@@ -267,7 +279,8 @@ fn finish<'a>(
         mode.format.resolution.height.get(),
     );
     let mp = megapixels(width, height);
-    let isp = backend.kind == BackendKind::Libcamera;
+    let isp = backend.kind == BackendKind::Libcamera
+        || (!raw_bayer(mode.format.code) && native_isp(backend) == Some("pisp"));
     if matches!(req.overrides.hardware, HardwarePolicy::Required)
         && !isp
         && !matches!(
@@ -417,6 +430,9 @@ fn decode_scale(route: &Route, req: &FrameRequirements, source: (u32, u32)) -> u
 }
 
 fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanStep {
+    if let Some(step) = native::processed_capture_step(backend, mode, fps) {
+        return step;
+    }
     let (execution, latency, how) = match backend.kind {
         BackendKind::Libcamera if has_isp_second_output(backend) => (
             StepExecution::Hardware,
@@ -629,6 +645,7 @@ fn decode_cost(code: FourCc, descriptor: &CodecDescriptor, mp: f32, threads: usi
         (_, true) if descriptor.impl_name.contains("ffmpeg") => cost::FFMPEG_SW_MJPEG_MS_PER_MP,
         (_, true) => cost::MJPEG_LUMA_MS_PER_MP * 2.0,
         _ if code.is_compressed() => cost::SW_VIDEO_DECODE_MS_PER_MP,
+        _ if raw_bayer(code) => cost::SOFTISP_MS_PER_MP,
         _ if matches!(
             code,
             FourCc::YUYV | FourCc::UYVY | FourCc::YVYU | FourCc::VYUY

@@ -193,13 +193,13 @@ pub fn select_mode<'a>(
 /// An open camera. Exclusive: a second open of the same bridge fails with
 /// [`NativeError::Busy`].
 pub struct NativeCamera {
-    info: CameraInfo,
-    options: CameraOptions,
-    bridge: Arc<SensorBridge>,
-    control: Arc<Mutex<SensorControl<Bus, Pins>>>,
-    video: Option<Arc<VideoDevice>>,
-    configured: Option<Configured>,
-    session: Session,
+    pub(crate) info: CameraInfo,
+    pub(crate) options: CameraOptions,
+    pub(crate) bridge: Arc<SensorBridge>,
+    pub(crate) control: Arc<Mutex<SensorControl<Bus, Pins>>>,
+    pub(crate) video: Option<Arc<VideoDevice>>,
+    pub(crate) configured: Option<Configured>,
+    pub(crate) session: Session,
     opened: Instant,
     _lock: File,
 }
@@ -329,6 +329,27 @@ impl NativeCamera {
     /// Powers and configures the sensor, the bridge and the receiver path for `settings`.
     /// Fails with [`NativeError::Busy`] while streaming.
     pub fn configure(&mut self, settings: &StreamSettings) -> Result<Configured> {
+        let (mode, frame_length) = self.configure_sensor(settings)?;
+        self.configure_receiver(&mode)?;
+        let (fourcc, stride, size_image) = self.configure_video(&mode, settings.fourcc)?;
+        let configured = Configured {
+            interval: crate::modes::frame_interval(&mode.timing, frame_length),
+            mode,
+            fourcc,
+            stride,
+            size_image,
+            frame_length,
+        };
+        self.configured = Some(configured.clone());
+        Ok(configured)
+    }
+
+    /// The sensor and bridge part of [`Self::configure`]: power, mode, the initial frame
+    /// duration, bridge format and timing. Returns the mode and its frame length.
+    pub(crate) fn configure_sensor(
+        &mut self,
+        settings: &StreamSettings,
+    ) -> Result<(SensorMode, u32)> {
         if self.session.is_streaming() {
             return Err(NativeError::Busy(
                 "stop streaming before configuring".into(),
@@ -399,18 +420,7 @@ impl NativeCamera {
             height: mode.height,
             link_freq: freqs.get(index).copied().unwrap_or(0),
         });
-        self.configure_receiver(&mode)?;
-        let (fourcc, stride, size_image) = self.configure_video(&mode, settings.fourcc)?;
-        let configured = Configured {
-            interval: crate::modes::frame_interval(&t, frame_length),
-            mode,
-            fourcc,
-            stride,
-            size_image,
-            frame_length,
-        };
-        self.configured = Some(configured.clone());
-        Ok(configured)
+        Ok((mode, frame_length))
     }
 
     fn configure_receiver(&mut self, mode: &SensorMode) -> Result<()> {
@@ -629,7 +639,7 @@ mod tests {
                 .contains("outside")
         );
         assert!(select_mode(&modes, &StreamSettings::new(1920, 1080), &offered).is_err());
-        let exact = StreamSettings::new(1280, 800).interval(Fraction::new(8281, 1_000_000));
+        let exact = StreamSettings::new(1280, 800).interval(Fraction::new(82901, 10_000_000));
         assert!(select_mode(&modes, &exact, &offered).is_ok());
         assert_eq!(CameraOptions::default().buffers, 4);
     }
