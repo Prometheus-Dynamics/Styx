@@ -50,10 +50,7 @@ fn fixture_converts() {
     let a = t.alsc.as_ref().unwrap();
     assert_eq!(a.omega, 1.3);
     assert_eq!(a.n_iter, Some(100));
-    for key in [
-        "rpi.awb.enabled",
-        "rpi.agc.channels[1]",
-    ] {
+    for key in ["rpi.awb.enabled", "rpi.agc.channels[1]"] {
         assert!(
             import.ignored.iter().any(|i| i == key),
             "{key}: {:?}",

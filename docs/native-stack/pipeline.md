@@ -513,28 +513,101 @@ What was ours and is fixed:
   applied it as is, so saturated highlights turned cyan; the channel gains now get libcamera's
   extra 1 / min(gain) (`IspSettings::channel_gains`), also +1-2% of brightness here.
 
-Left (within the measurement, or not ours):
+Left after the first round, and what the second round found (below): the luma shading (edge
+zones 1-6% brighter), the colour residual (±3-4% per zone, libcamera's adaptive ALSC not
+ported) and the tone (1-2% darker highlights).
 
-* Luma shading: the edge zones come out 1-6% (one zone 11%) brighter than libcamera's,
-  relative to the centre. Calibration interpolation, resampling, luminance strength (0.8),
-  packing and grid steps are the same as libcamera's (checked against its source); the
-  colour residual (±3-4% per zone) is what libcamera's adaptive ALSC (not ported: Gauss-Seidel
-  refinement of the R and B tables from the statistics) would correct. Not resolved here.
-* Tone: 1-2% darker in the highlights with the same gamma curve and the same contrast
-  enhancement (`contrast.cpp`'s stretch, ported as is); the stretch follows the front end's
-  histogram, which both configure the same way except for the AGC weights (uniform here).
-* Cost: temporal denoise reads and writes a 16-bit average of the frame every job: the back
-  end job goes from 0.84-0.88 ms to 2.3 ms at 1280x800, so the latency from the frame start
-  to the outputs from 8.35 to 9.9 ms (30 and 120 fps); CPU unchanged (0.6-0.7 ms per frame).
-  `PispOptions::temporal_denoise = false` (`native-pipeline --no-tdn`) keeps the old latency
-  with 4x libcamera's noise (SDN and CDN at their no-TDN strengths).
+### Second round: the back end config byte for byte
+
+libcamera dumps the back end config it programs when `LIBCAMERA_RPI_PISP_CONFIG_DUMP=<file>`
+is set (libpisp's `GetJsonConfig`, the first frame after each configure; `--repeat 2` gives
+the first frame of a second session, started from the first one's AWB and ALSC state);
+`native-pipeline pisp` now writes ours (`pisp-be-config-first.bin`, `-last.bin`, the raw
+`pisp_be_tiles_config`). Compared field by field with `tools/compare/be_config_diff.py`
+(offsets from libpisp's own field table, `be_fields.json`; `native-pipeline be-replay --raw
+FRAME --configs A.bin,B.bin` runs one raw frame through the back end with given configs, for
+trying a block of libcamera's in ours on identical input):
+
+* **Lens shading**: grid steps (6553, 10485), tile grid offsets and the LUT packing equal.
+  libpisp's dump holds only the first row of the 33x33 table (its field table declares
+  `lut_packed` as 33 entries): on that row, which has both top corners, our green gains equal
+  libcamera's to one LSB (0.1-0.2%) at every vertex, red and blue within 1.5% (the start-up
+  colour temperature: ours the tuning's `default_ct`, libcamera's AWB's first estimate).
+  The calibration, resampling, luminance strength and packing were therefore right; the
+  table is not what made the edges brighter.
+* **Gamma**: equal byte for byte (the tuning's curve on the first frame, before the
+  histogram stretch).
+* **Output colour space**: the same full-range BT.601 matrix, offsets and 0..255 clipping
+  (libcamera `sYCC` on the stream; libcamera programs it on output 1 and keeps output 0 off,
+  ours on output 0); the internal YCbCr round trip identical too.
+* **Differences that matter**: the front end's **luma histogram** (what the contrast stretch
+  and the AGC constraints read) was uniform here, while libcamera weights it with the
+  metering mode's 15x15 weights (centre-weighted by default: zero in the corners), and builds
+  the front end's RGB-to-Y from the YCbCr luma row times the white balance gains with the
+  1/min extra gain. In a scene with a lamp in a corner the uniform histogram's 95% point sat
+  higher, so the stretch lifted the highlights less: the 1-2% darker highlights, and through
+  the tone curve's slope a few percent on the zones away from the centre. Both now as
+  libcamera (`Params::histogram_weights` from AGC, `IspSettings::apply_fe`).
+* Not differences: SDN/CDN/TDN/GEQ values follow gain and the frame (the dump is libcamera's
+  frame 0 at gain 1 with TDN reset); libcamera feeds the back end compressed raw (`PC1B`,
+  8-bit with `DECOMPRESS`) where we feed 16-bit, and enables `DEBIN` (no effect at 1x1).
+
+Raw frames at the same exposure (libcamera `BYR2` vs `native-pipeline soft --record`) match
+within 0.1-0.5 codes at 2x gain; at 8x gain, in one dim run, ours were 2.3-2.4 codes lower
+(of 10-bit) uniformly, which looks like a black level difference between the kernel driver's
+and our register set at high gain; not settled (needs a covered lens).
+
+Results (`tools/compare/zone_spread.py` over `quality.py`'s zones; CM5, the room lit this time; two scenes by exposure: dim 6 ms x 2, mean luma 0.20,
+and bright 33 ms x 3.5, luma 0.78; AWB auto in both stacks; two sessions of each, the zones
+where libcamera's two sessions differ by more than 3% (a blinking LED) left out; spread is
+half the 5-95% range of the per-zone ratio to libcamera's first session, normalised to its
+median, with the largest deviation in brackets):
+
+| dim scene (36 of 40 zones) | libcamera, 2nd session | native now (two sessions) | previous round (`d79951f`) | now, no TDN |
+|---|---|---|---|---|
+| luma shading spread | ±0.8% (1.6%) | ±1.7% (4.9%), ±1.9% (4.5%) | ±2.0% (7.6%), ±2.2% (3.6%) | ±0.9% (5.2%) |
+| R/G per zone: median, spread | 1.002, ±0.7% | 1.023 / 1.031, ±1.5-1.8% (3.1%) | 1.035 / 1.033, ±1.7-1.8% (2.9%) | 1.032, ±1.5% |
+| B/G per zone | 0.999, ±0.5% | 0.990 / 0.980, ±1.0-1.1% (1.9%) | 0.981 / 0.976, ±0.9-1.3% (3.1%) | 0.986, ±0.9% |
+| AWB | 2488-2491 K | 2543 K | 2542-2543 K | 2543 K |
+| mean luma | 0.198 / 0.198 | 0.199 / 0.199 | 0.195 / 0.202 | 0.198 |
+| tone: where libcamera's output is 0.104 / 0.212 / 0.342 / 0.464 | 0.105 / 0.212 / 0.341 / 0.461 | 0.105 / 0.216 / 0.345 / 0.464 | 0.103 / 0.210 / 0.337 / 0.456 | 0.105 / 0.212 / 0.342 / 0.465 |
+| flat-area noise (0..255) | 0.12 / 0.28 | 0.22 / 0.23 | 0.18 / 0.25 | 0.65 |
+
+| bright scene (40 zones) | libcamera, 2nd session | native now | previous round | now, no TDN |
+|---|---|---|---|---|
+| luma shading spread | ±0.5% (0.9%) | ±0.5-0.6% (1.0%) | ±0.5% (0.7%) | ±0.6% (0.8%) |
+| R/G per zone: median, spread | 0.999, ±0.5% | 1.008 / 1.009, ±0.7% (1.7%) | 1.014 / 1.015, ±0.8-0.9% (1.7%) | 1.009, ±0.6% |
+| B/G per zone | 1.002, ±0.5% | 0.994, ±0.9-1.2% (1.9%) | 0.993, ±1.0-1.1% (1.8%) | 0.994, ±1.1% |
+| AWB | 2596-2602 K | 2643 K | 2639 K | 2643 K |
+| tone: where libcamera's output is 0.464 / 0.668 / 0.843 / 0.982 | 0.458 / 0.661 / 0.837 / 0.981 | 0.459 / 0.663 / 0.839 / 0.980 | 0.461 / 0.664 / 0.842 / 0.980 | 0.459 / 0.661 / 0.839 / 0.979 |
+| flat-area noise | 0.22 / 0.24 | 0.23 | 0.24 | 0.63 |
+
+So in both scenes luma shading and tone are within about twice libcamera's own session-to-
+session difference, and the earlier edge and highlight differences do not reproduce (the
+scene was lit differently: the first round's dim room had the lamp in a corner, where the
+uniform histogram mattered most). The colour medians follow AWB (ours 40-50 K warmer this
+time, i.e. R/G +1-3%); with adaptive ALSC the per-zone colour spread is ±0.7-1.8%, against
+±0.5-0.7% between libcamera's sessions (it was ±3-4% in the first round's scene, and
+±0.8-1.8% with the previous binary here). Images (libcamera, native now, no TDN, previous
+round; dim scene; full frame at half size, then 256x256 crops at 2x): `target/quality-full.png`,
+`quality-centre.png`, `quality-corner.png`, `quality-flat.png`, `quality-edges.png`; the bright
+scene in `target/quality-bright/`. Cost on the device: the same process CPU and algorithm
+times as the previous binary within a session (0.61-0.72 ms per frame, algorithms p95
+0.70-1.10 ms depending on the session, alike for both binaries).
+
+Cost of temporal denoise (unchanged): the back end job goes from 0.84-0.88 ms to 2.3 ms at
+1280x800, so the latency from the frame start to the outputs from 8.35 to 9.9 ms (30 and 120
+fps); CPU unchanged. It is a Styx setting now (see "Denoise settings").
 
 ## Gaps
 
-* PiSP lens shading: the ALSC tables resampled to the back end's 33x33 grid, packed as the
-  Raspberry Pi IPA does; compared against libcamera's output in "Quality vs libcamera" (edges
-  1-6% brighter, the adaptive part of ALSC not ported).
-* The front end statistics set-up is fixed (uniform AGC weights; AGC meters the AWB zones).
+* PiSP lens shading: the ALSC tables (with the adaptive refinement) resampled to the back
+  end's 33x33 grid, packed as the Raspberry Pi IPA does; checked against libcamera's
+  programmed table (first row, the only one its dump holds) in "Quality vs libcamera".
+* Raw input: libcamera feeds the back end compressed raw (`PC1B`), we feed 16-bit (twice the
+  memory traffic between front and back end).
+* The front end statistics set-up is fixed except for the histogram's zone weights (the
+  metering mode's, as libcamera); AGC meters the AWB zones.
 * PiSP CPU left (see "PiSP path performance"): half of it is the `pispbe` driver writing the
   whole back end config to the hardware by MMIO on every job (0.12 ms; the driver could write
   only changed blocks, as it already does for the front end). The pipeline thread waits

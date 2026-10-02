@@ -238,6 +238,9 @@ fn resample(t: &[f64], (w, h): (u32, u32), crop: Crop, hflip: bool, vflip: bool)
     out
 }
 
+/// Relative distance below which the filtered tables take the target.
+const SNAP: f64 = 1e-3;
+
 /// The ALSC algorithm.
 #[derive(Debug, Clone)]
 pub struct Alsc {
@@ -441,9 +444,21 @@ impl Algorithm for Alsc {
         } else {
             (1.0 - t.speed).powi(frames as i32)
         };
+        // Within SNAP of the target the tables take it as is, so they stop changing (an ISP
+        // re-packs its tables only when they change).
+        let close = self
+            .current
+            .iter()
+            .flatten()
+            .zip(self.target.iter().flatten())
+            .all(|(c, x)| (c - x).abs() <= SNAP * x.abs());
         for (cur, target) in self.current.iter_mut().zip(&self.target) {
             for (c, x) in cur.iter_mut().zip(target) {
-                *c = (1.0 - keep) * x + keep * *c;
+                *c = if close {
+                    *x
+                } else {
+                    (1.0 - keep) * x + keep * *c
+                };
             }
         }
         params.lens_shading = Some(self.shading(&self.current));
