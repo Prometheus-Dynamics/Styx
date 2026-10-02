@@ -164,7 +164,8 @@ pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
             modes.extend(capture_mode(m, f.0));
         }
     }
-    let processed = super::native_isp::processed_modes(&modes);
+    let binned = super::native_isp::isp_name(info) == "software";
+    let processed = super::native_isp::processed_modes(&modes, binned);
     modes.extend(processed);
     let mut properties = info.properties();
     properties.push(("isp".into(), super::native_isp::isp_name(info).into()));

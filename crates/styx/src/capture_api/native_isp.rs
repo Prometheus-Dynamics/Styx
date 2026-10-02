@@ -46,28 +46,47 @@ pub(crate) fn isp_name(info: &CameraInfo) -> &'static str {
     isp_kind(info).name()
 }
 
-/// `NV12` and `RG24` modes at each size the sensor's raw modes have, with their intervals.
-pub(crate) fn processed_modes(raw: &[Mode]) -> Vec<Mode> {
+/// `NV12` and `RG24` modes at each size the sensor's raw modes have, with their intervals;
+/// with `binned` (the software ISP) also at half each size, made by turning each 2x2 quad of
+/// the mosaic into a pixel (no demosaic: about 40% of the full-size ISP time, and the
+/// planner picks these for consumers that want small frames).
+pub(crate) fn processed_modes(raw: &[Mode], binned: bool) -> Vec<Mode> {
     let mut out: Vec<Mode> = Vec::new();
+    let full: Vec<Resolution> = raw.iter().map(|m| m.format.resolution).collect();
     for m in raw {
         let res = m.format.resolution;
-        if out.iter().any(|o| o.format.resolution == res) {
-            continue;
-        }
-        for code in PROCESSED {
-            let format = MediaFormat::new(code, res, ColorSpace::Srgb);
-            out.push(Mode {
-                id: ModeId {
+        let half = Resolution::new(res.width.get() / 2, res.height.get() / 2)
+            .filter(|h| binned && h.width.get() % 2 == 0 && h.height.get() % 2 == 0);
+        for res in std::iter::once(res).chain(half.filter(|h| !full.contains(h))) {
+            if out.iter().any(|o| o.format.resolution == res) {
+                continue;
+            }
+            for code in PROCESSED {
+                let format = MediaFormat::new(code, res, ColorSpace::Srgb);
+                out.push(Mode {
+                    id: ModeId {
+                        format,
+                        interval: None,
+                    },
                     format,
-                    interval: None,
-                },
-                format,
-                intervals: m.intervals.clone(),
-                interval_stepwise: m.interval_stepwise,
-            });
+                    intervals: m.intervals.clone(),
+                    interval_stepwise: m.interval_stepwise,
+                });
+            }
         }
     }
     out
+}
+
+/// The sensor size a processed mode of `res` captures at and the software ISP's scale: the
+/// same size when the sensor has a mode of it, else twice it (a binned mode).
+pub(crate) fn soft_capture_size(info: &CameraInfo, (w, h): (u32, u32)) -> ((u32, u32), Scale) {
+    let has = |w: u32, h: u32| info.modes.iter().any(|m| (m.width, m.height) == (w, h));
+    if !has(w, h) && has(2 * w, 2 * h) {
+        ((2 * w, 2 * h), Scale::Half)
+    } else {
+        ((w, h), Scale::Full)
+    }
 }
 
 /// Opens camera `key` for processed capture: with the software ISP, raw frames go into cached
@@ -260,9 +279,10 @@ pub(super) fn start_processed(
             (controls, worker)
         }
         IspKind::Software => {
+            let ((cw, ch), scale) = soft_capture_size(camera.info(), (w, h));
             let settings = StreamSettings {
-                width: w,
-                height: h,
+                width: cw,
+                height: ch,
                 fourcc: None,
                 code: None,
                 interval: fraction,
@@ -309,7 +329,7 @@ pub(super) fn start_processed(
                                 stride,
                             }
                         };
-                        let f = match p.next(timeout, Scale::Full, out) {
+                        let f = match p.next(timeout, scale, out) {
                             Ok(Some(f)) => f,
                             Ok(None) => break,
                             Err(e) => {
@@ -391,9 +411,20 @@ mod tests {
                 interval_stepwise: None,
             }
         };
-        let modes = processed_modes(&[raw(b"pBAA"), raw(b"BA81")]);
+        let modes = processed_modes(&[raw(b"pBAA"), raw(b"BA81")], false);
         let codes: Vec<String> = modes.iter().map(|m| m.format.code.to_string()).collect();
         assert_eq!(codes, ["NV12", "RG24"]);
+        let binned = processed_modes(&[raw(b"pBAA")], true);
+        let sizes: Vec<(u32, u32)> = binned
+            .iter()
+            .map(|m| {
+                (
+                    m.format.resolution.width.get(),
+                    m.format.resolution.height.get(),
+                )
+            })
+            .collect();
+        assert_eq!(sizes, [(1280, 800), (1280, 800), (640, 400), (640, 400)]);
         assert!(modes.iter().all(|m| m.intervals.len() == 1));
         assert!(is_processed(FourCc::NV12) && !is_processed(FourCc::new(*b"pBAA")));
         let l = layouts(FourCc::NV12, 800, 1280);
@@ -414,7 +445,7 @@ mod tests {
             interval_stepwise: None,
         };
         let mut modes = vec![raw.clone()];
-        modes.extend(processed_modes(&[raw]));
+        modes.extend(processed_modes(&[raw], isp == "software"));
         crate::ProbedDevice {
             identity: DeviceIdentity {
                 display: "ov9782".into(),
@@ -474,6 +505,15 @@ mod tests {
         let plan = crate::planner::plan_frames(&soft, &FrameRequirements::formats([FourCc::NV12]))
             .unwrap();
         assert!(plan.to_string().contains("software ISP"), "{plan}");
-        assert!(plan.total.cpu_ms > 5.0, "{plan}");
+        assert!(plan.total.cpu_ms > 2.5, "{plan}");
+        assert_eq!(plan.mode.format.resolution.width.get(), 1280, "{plan}");
+        // A consumer of small frames gets the binned mode: no demosaic, less than half the CPU.
+        let small = FrameRequirements::formats([FourCc::NV12]).output_resolution(640, 400);
+        let half = crate::planner::plan_frames(&soft, &small).unwrap();
+        assert_eq!(half.mode.format.resolution.width.get(), 640, "{half}");
+        assert!(
+            half.total.cpu_ms < plan.total.cpu_ms * 0.6,
+            "{half} vs {plan}"
+        );
     }
 }
