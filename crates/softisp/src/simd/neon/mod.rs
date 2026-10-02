@@ -5,7 +5,7 @@
 //! sized the slices for `width` pixels as each leaf documents.
 
 mod bayer;
-mod color;
+pub(super) mod color;
 pub(super) mod half;
 
 use super::{RowKind, SimdBackend, YuvCoeffs};

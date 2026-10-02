@@ -7,6 +7,7 @@
 
 use std::arch::aarch64::*;
 
+use super::color::ChromaTerms;
 use crate::format::CfaPattern;
 use crate::simd::YuvCoeffs;
 use crate::simd::half::{
@@ -116,52 +117,85 @@ unsafe fn luma16(rgb: [uint8x16_t; 3], c: &YuvCoeffs) -> uint8x16_t {
     }
 }
 
-/// Store sixteen RGB pixels at `x` (with the 4:2:0 outputs: luma, and the chroma of 8 pairs).
+/// Sixteen pixels' chroma pairs, as `color::rgb_to_uv`: 2x2 means of `top` (the first row's
+/// planes at `x`) and this row's `rgb`, then the Q7 rows.
 #[inline(always)]
-unsafe fn put16(out: &mut ColourOut, x: usize, rgb: [uint8x16_t; 3]) {
-    // SAFETY: the callers keep `x + 16` within the output row.
+unsafe fn chroma8(
+    top: [*const u8; 3],
+    x: usize,
+    rgb: [uint8x16_t; 3],
+    terms: &(ChromaTerms, ChromaTerms),
+) -> (uint8x8_t, uint8x8_t) {
+    // SAFETY: the callers keep `x + 16` within the first row.
     unsafe {
-        match out {
+        let mean: [int16x8_t; 3] = std::array::from_fn(|k| {
+            let s = vpaddlq_u8(vld1q_u8(top[k].add(x)));
+            vreinterpretq_s16_u16(vrshrq_n_u16::<2>(vpadalq_u8(s, rgb[k])))
+        });
+        (terms.0.apply(mean), terms.1.apply(mean))
+    }
+}
+
+/// Runs `$rgb` (sixteen pixels at `$x`, by [`blocks!`]) and stores them into `$out`, with a
+/// loop of its own per kind of output (one loop matching the kind per block spilled the
+/// colour kernel's registers). Evaluates to the pixels done.
+macro_rules! emit {
+    ($out:expr, $width:expr, |$x:ident| $rgb:expr) => {{
+        match $out {
             ColourOut::Planes(p) => {
-                for (plane, v) in p.iter_mut().zip(rgb) {
-                    vst1q_u8(plane.as_mut_ptr().add(x), v);
-                }
+                let p = p.each_mut().map(|p| p.as_mut_ptr());
+                blocks!($width, 16, |$x| {
+                    let rgb: [uint8x16_t; 3] = $rgb;
+                    for (plane, v) in p.iter().zip(rgb) {
+                        vst1q_u8(plane.add($x), v);
+                    }
+                })
+            }
+            ColourOut::Packed(d) => {
+                let d = d.as_mut_ptr();
+                blocks!($width, 16, |$x| {
+                    let rgb: [uint8x16_t; 3] = $rgb;
+                    vst3q_u8(d.add(3 * $x), uint8x16x3_t(rgb[0], rgb[1], rgb[2]));
+                })
             }
             ColourOut::PlanesLuma(p, y, c) => {
-                for (plane, v) in p.iter_mut().zip(rgb) {
-                    vst1q_u8(plane.as_mut_ptr().add(x), v);
-                }
-                vst1q_u8(y.as_mut_ptr().add(x), luma16(rgb, c));
+                let (p, y) = (p.each_mut().map(|p| p.as_mut_ptr()), y.as_mut_ptr());
+                blocks!($width, 16, |$x| {
+                    let rgb: [uint8x16_t; 3] = $rgb;
+                    for (plane, v) in p.iter().zip(rgb) {
+                        vst1q_u8(plane.add($x), v);
+                    }
+                    vst1q_u8(y.add($x), luma16(rgb, c));
+                })
             }
             ColourOut::LumaChroma(_, y, ch, c) => {
-                vst1q_u8(y.as_mut_ptr().add(x), luma16(rgb, c));
-                // As `color::rgb_to_uv`: 2x2 means, then the Q7 rows.
-                let mean: [int16x8_t; 3] = std::array::from_fn(|k| {
-                    let s = vpaddlq_u8(vld1q_u8(ch.top[k].as_ptr().add(x)));
-                    vreinterpretq_s16_u16(vrshrq_n_u16::<2>(vpadalq_u8(s, rgb[k])))
-                });
-                let c128 = vdupq_n_s16(128);
-                let chroma = |k: &[i16; 3]| {
-                    let m = &mean;
-                    let s =
-                        vmlaq_n_s16(vmlaq_n_s16(vmulq_n_s16(m[0], k[0]), m[1], k[1]), m[2], k[2]);
-                    vqmovun_s16(vaddq_s16(vrshrq_n_s16::<7>(s), c128))
-                };
-                let (cu, cv) = (chroma(&c.u), chroma(&c.v));
+                let terms = (ChromaTerms::new(&c.u), ChromaTerms::new(&c.v));
+                let (y, top, u) = (
+                    y.as_mut_ptr(),
+                    ch.top.map(|t| t.as_ptr()),
+                    ch.u.as_mut_ptr(),
+                );
                 match &mut ch.v {
-                    None => vst2_u8(ch.u.as_mut_ptr().add(x), uint8x8x2_t(cu, cv)),
+                    None => blocks!($width, 16, |$x| {
+                        let rgb: [uint8x16_t; 3] = $rgb;
+                        vst1q_u8(y.add($x), luma16(rgb, c));
+                        let (cu, cv) = chroma8(top, $x, rgb, &terms);
+                        vst2_u8(u.add($x), uint8x8x2_t(cu, cv));
+                    }),
                     Some(v) => {
-                        vst1_u8(ch.u.as_mut_ptr().add(x / 2), cu);
-                        vst1_u8(v.as_mut_ptr().add(x / 2), cv);
+                        let v = v.as_mut_ptr();
+                        blocks!($width, 16, |$x| {
+                            let rgb: [uint8x16_t; 3] = $rgb;
+                            vst1q_u8(y.add($x), luma16(rgb, c));
+                            let (cu, cv) = chroma8(top, $x, rgb, &terms);
+                            vst1_u8(u.add($x / 2), cu);
+                            vst1_u8(v.add($x / 2), cv);
+                        })
                     }
                 }
             }
-            ColourOut::Packed(d) => vst3q_u8(
-                d.as_mut_ptr().add(3 * x),
-                uint8x16x3_t(rgb[0], rgb[1], rgb[2]),
-            ),
         }
-    }
+    }};
 }
 
 /// # Safety
@@ -340,11 +374,10 @@ pub(in crate::simd) unsafe fn colour(
         let c = cc.c.map(|row| row.map(|v| pair(v[0], v[1])));
         let t = Tables::new(tone);
         // Even block starts (`width` is even): the column parities hold.
-        x = blocks!(width, 16, |x| {
+        x = emit!(out, width, |x| {
             let a = colour8(rows, x, mask, &c);
             let b = colour8(rows, x + 8, mask, &c);
-            let rgb = std::array::from_fn(|k| t.apply(a[k], b[k]));
-            put16(out, x, rgb);
+            std::array::from_fn(|k| t.apply(a[k], b[k]))
         });
     }
     x
@@ -392,7 +425,7 @@ pub(in crate::simd) unsafe fn quad_colour(
                 vmaxq_f16(acc, sixteen)
             })
         };
-        i = blocks!(width, 16, |i| {
+        i = emit!(out, width, |i| {
             let a = colour(quad8(
                 vld2q_u16(top.as_ptr().add(2 * i)),
                 vld2q_u16(bottom.as_ptr().add(2 * i)),
@@ -403,7 +436,7 @@ pub(in crate::simd) unsafe fn quad_colour(
                 vld2q_u16(bottom.as_ptr().add(2 * i + 16)),
                 pos,
             ));
-            put16(out, i, std::array::from_fn(|k| t.apply(a[k], b[k])));
+            std::array::from_fn(|k| t.apply(a[k], b[k]))
         });
     }
     i
