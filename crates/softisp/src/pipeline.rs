@@ -165,7 +165,9 @@ impl Worker {
         std::array::from_fn(|i| self.front(p, src, y as isize - r + i as isize))
     }
 
-    /// Output row `oy` as planar 8-bit RGB in `rgb8[k]`, or packed into `packed`.
+    /// Output row `oy` as planar 8-bit RGB in `rgb8[k]` (and its luma into `y`), or packed
+    /// into `packed`.
+    #[allow(clippy::too_many_arguments)]
     fn colour_row(
         &mut self,
         p: &Prepared,
@@ -174,6 +176,7 @@ impl Worker {
         oy: usize,
         k: usize,
         packed: Option<&mut [u8]>,
+        y: Option<&mut [u8]>,
     ) {
         let w = p.width;
         let n = match scale {
@@ -190,9 +193,10 @@ impl Worker {
                 ],
             };
             let [r, g, b] = &mut self.rgb8[k];
-            let out = match packed {
-                Some(d) => ColourOut::Packed(d),
-                None => ColourOut::Planes([r, g, b]),
+            let out = match (packed, y) {
+                (Some(d), _) => ColourOut::Packed(d),
+                (None, Some(y)) => ColourOut::PlanesLuma([r, g, b], y, &p.yuv),
+                (None, None) => ColourOut::Planes([r, g, b]),
             };
             match scale {
                 Scale::Full => {
@@ -249,9 +253,11 @@ impl Worker {
         for (src16, dst8) in self.rgb16.iter().zip(self.rgb8[k].iter_mut()) {
             tone(ip, src16, dst8, n);
         }
+        let planes = self.rgb8[k].each_ref().map(|v| &v[..]);
         if let Some(d) = packed {
-            let planes = self.rgb8[k].each_ref().map(|v| &v[..]);
             simd::interleave_rgb_row(planes, d, n);
+        } else if let Some(y) = y {
+            simd::rgb_to_y_row(planes, y, n, &p.yuv);
         }
     }
 
@@ -363,7 +369,7 @@ impl Worker {
             OutputBuffers::Rgb24 { data, stride } => {
                 for i in 0..rows {
                     let row = &mut data[i * stride..][..3 * ow];
-                    self.colour_row(p, src, scale, o0 + i, 0, Some(row));
+                    self.colour_row(p, src, scale, o0 + i, 0, Some(row), None);
                     self.stats_after(p, src, scale, o0 + i);
                 }
             }
@@ -417,12 +423,9 @@ impl Worker {
         mut v: Option<(&mut [u8], usize)>,
     ) {
         for i in (0..rows).step_by(2) {
-            self.colour_row(p, src, scale, o0 + i, 0, None);
-            self.colour_row(p, src, scale, o0 + i + 1, 1, None);
-            for k in 0..2 {
-                let planes = self.rgb8[k].each_ref().map(|v| &v[..]);
-                simd::rgb_to_y_row(planes, &mut y[(i + k) * y_stride..], ow, &p.yuv);
-            }
+            let (y0, y1) = y[i * y_stride..].split_at_mut(y_stride);
+            self.colour_row(p, src, scale, o0 + i, 0, None, Some(&mut y0[..ow]));
+            self.colour_row(p, src, scale, o0 + i + 1, 1, None, Some(&mut y1[..ow]));
             let top = self.rgb8[0].each_ref().map(|v| &v[..]);
             let bottom = self.rgb8[1].each_ref().map(|v| &v[..]);
             let u_row = &mut u[i / 2 * u_stride..];

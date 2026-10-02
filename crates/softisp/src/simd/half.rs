@@ -155,10 +155,12 @@ impl ColourCoeffs {
     }
 }
 
-/// Where a colour kernel writes: three 8-bit planes, or packed RGB24.
+/// Where a colour kernel writes: three 8-bit planes, packed RGB24, or the planes and luma (as
+/// [`super::rgb_to_y_row`] makes it from them).
 pub enum ColourOut<'a> {
     Planes([&'a mut [u8]; 3]),
     Packed(&'a mut [u8]),
+    PlanesLuma([&'a mut [u8]; 3], &'a mut [u8], &'a super::YuvCoeffs),
 }
 
 impl ColourOut<'_> {
@@ -171,6 +173,13 @@ impl ColourOut<'_> {
                 }
             }
             Self::Packed(d) => d[3 * x..3 * x + 3].copy_from_slice(&rgb),
+            Self::PlanesLuma(p, y, c) => {
+                for (plane, v) in p.iter_mut().zip(rgb) {
+                    plane[x] = v;
+                }
+                let planes = [&rgb[0..1], &rgb[1..2], &rgb[2..3]];
+                super::scalar::rgb_to_y_row(planes, &mut y[x..], 1, c);
+            }
         }
     }
 }

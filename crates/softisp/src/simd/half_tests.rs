@@ -151,6 +151,24 @@ fn colour_matches_the_oracle() {
                         colour_row(rows, ColourOut::Planes([r, g, b]), w, &cc, tone);
                         let mut packed = vec![0u8; 3 * w + 1];
                         colour_row(rows, ColourOut::Packed(&mut packed), w, &cc, tone);
+                        let mut again = vec![vec![0u8; w + 1]; 3];
+                        let mut y = vec![0u8; w + 1];
+                        let [r, g, b] = &mut again[..] else {
+                            unreachable!()
+                        };
+                        let c = crate::simd::YuvCoeffs::BT601_FULL;
+                        colour_row(
+                            rows,
+                            ColourOut::PlanesLuma([r, g, b], &mut y, &c),
+                            w,
+                            &cc,
+                            tone,
+                        );
+                        assert_eq!(again, planes);
+                        let mut want = vec![0u8; w];
+                        let p = [&planes[0][..], &planes[1][..], &planes[2][..]];
+                        crate::simd::scalar::rgb_to_y_row(p, &mut want, w, &c);
+                        assert_eq!(y[..w], want[..]);
                         for x in 0..w {
                             assert_eq!(
                                 [planes[0][x], planes[1][x], planes[2][x]],
@@ -158,7 +176,7 @@ fn colour_matches_the_oracle() {
                                 "tone {n} x {x}"
                             );
                         }
-                        (planes, packed)
+                        (planes, packed, y)
                     });
                 }
             }

@@ -102,6 +102,29 @@ unsafe fn put16(out: &mut ColourOut, x: usize, rgb: [uint8x16_t; 3]) {
                     vst1q_u8(plane.as_mut_ptr().add(x), v);
                 }
             }
+            ColourOut::PlanesLuma(p, y, c) => {
+                for (plane, v) in p.iter_mut().zip(rgb) {
+                    vst1q_u8(plane.as_mut_ptr().add(x), v);
+                }
+                // As `color::rgb_to_y`.
+                let k = c.y.map(|k| vdup_n_u8(k as u8));
+                let off = vdup_n_u8(c.y_offset as u8);
+                let luma = |r: uint8x8_t, g: uint8x8_t, b: uint8x8_t| {
+                    let s = vmlal_u8(vmlal_u8(vmull_u8(r, k[0]), g, k[1]), b, k[2]);
+                    vqadd_u8(vrshrn_n_u16::<8>(s), off)
+                };
+                let lo = luma(
+                    vget_low_u8(rgb[0]),
+                    vget_low_u8(rgb[1]),
+                    vget_low_u8(rgb[2]),
+                );
+                let hi = luma(
+                    vget_high_u8(rgb[0]),
+                    vget_high_u8(rgb[1]),
+                    vget_high_u8(rgb[2]),
+                );
+                vst1q_u8(y.as_mut_ptr().add(x), vcombine_u8(lo, hi));
+            }
             ColourOut::Packed(d) => vst3q_u8(
                 d.as_mut_ptr().add(3 * x),
                 uint8x16x3_t(rgb[0], rgb[1], rgb[2]),
