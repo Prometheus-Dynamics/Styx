@@ -20,7 +20,7 @@ use styx_kernel::subdev::MbusCode;
 use styx_native::{CameraControls, Configured, NativeCamera, SensorStream, StreamSettings};
 use styx_pisp::be::BackEnd;
 use styx_pisp::device::{
-    BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup,
+    BackEndStream, BeFormat, BeJob, BeOutputSetup, FrontEndDevice, FrontEndSetup, profile,
 };
 use styx_pisp::fe::FrontEnd;
 use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, fe_enable};
@@ -75,6 +75,8 @@ impl PispOptions {
 /// Where one frame's time went.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PispTimes {
+    /// Converting the statistics for the algorithms.
+    pub stats: Duration,
     /// Running the algorithms.
     pub algorithms: Duration,
     /// Building the back end config and its tiles.
@@ -291,26 +293,30 @@ impl PispPipeline {
             .image
             .ok_or_else(|| PipelineError::Device("no raw frame".into()))?;
         let seq = u64::from(image.sequence);
-        sensor.frame_done(seq);
+        profile::time("sensor", "frame_done", || sensor.frame_done(seq));
         let result = (|| {
-            let controls = sensor
-                .applied(seq)
+            let controls = profile::time("sensor", "applied", || sensor.applied(seq))
                 .ok_or_else(|| PipelineError::Device(format!("no control values for {seq}")))?;
             let values = sensor_values(seq, &controls);
+            let ts = Instant::now();
             let stats = stats::from_pisp(&held.stats);
+            let stats_time = ts.elapsed();
             let t0 = Instant::now();
-            let step = self.controller.process(&stats, &values)?;
+            let step = profile::time("loop", "algorithms", || {
+                self.controller.process(&stats, &values)
+            })?;
             let request_lands = match &step.sensor {
-                Some(r) => Some(apply_request(&self.controls, r)?),
+                Some(r) => Some(profile::time("sensor", "request", || {
+                    apply_request(&self.controls, r)
+                })?),
                 None => None,
             };
             let algorithms = t0.elapsed();
-            step.isp.apply_fe(&mut self.fe);
+            profile::time("loop", "apply_fe", || step.isp.apply_fe(&mut self.fe));
             let t1 = Instant::now();
-            let mut be = self.be.clone();
-            step.isp.apply_be(&mut be);
-            let cfg = be
-                .prepare()
+            let mut be = profile::time("loop", "be_clone", || self.be.clone());
+            profile::time("loop", "apply_be", || step.isp.apply_be(&mut be));
+            let cfg = profile::time("loop", "be_prepare", || be.prepare())
                 .map_err(|e| PipelineError::Config(format!("back end: {}", e.0)))?;
             let be_prepare = t1.elapsed();
             let job = be_dev.process(image.index, &cfg, timeout)?;
@@ -325,6 +331,7 @@ impl PispPipeline {
                 sequence_mismatch: held.sequence != image.sequence,
                 request_lands,
                 times: PispTimes {
+                    stats: stats_time,
                     algorithms,
                     be_prepare,
                     be_job: job.elapsed,
@@ -333,6 +340,9 @@ impl PispPipeline {
             })
         })();
         fe_dev.release_image(image.index)?;
+        if profile::enabled() {
+            profile::record("loop", "dequeued_to_return", dequeued.elapsed());
+        }
         result
     }
 

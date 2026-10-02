@@ -63,7 +63,7 @@ impl Queue {
                 })
                 .collect();
         }
-        self.dev.queue(&q)?;
+        super::profile::time(self.name, "qbuf", || self.dev.queue(&q))?;
         Ok(())
     }
 
@@ -71,14 +71,16 @@ impl Queue {
     pub fn dequeue(&self, timeout: Duration) -> Result<DequeuedBuffer> {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(b) = self.dev.dequeue(self.buf_type, Memory::Mmap)? {
+            if let Some(b) = super::profile::time(self.name, "dqbuf", || {
+                self.dev.dequeue(self.buf_type, Memory::Mmap)
+            })? {
                 return Ok(b);
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(DeviceError::Timeout(self.name));
             }
-            self.dev.wait(Some(left))?;
+            super::profile::time(self.name, "poll", || self.dev.wait(Some(left)))?;
         }
     }
 

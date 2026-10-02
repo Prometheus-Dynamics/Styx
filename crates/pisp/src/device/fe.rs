@@ -270,7 +270,8 @@ impl FrontEndDevice {
 
     fn feed_configs(&mut self, fe: &mut FrontEnd) -> Result<()> {
         while let Some(i) = self.free_configs.pop() {
-            let cfg = fe.prepare().map_err(DeviceError::Config)?;
+            let cfg = super::profile::time("fe_config", "prepare", || fe.prepare())
+                .map_err(DeviceError::Config)?;
             self.queue_config(i, &cfg)?;
         }
         Ok(())
@@ -360,8 +361,10 @@ impl FrontEndDevice {
     /// config queue fed from `fe` (so changes to `fe` reach the frames a few configs later).
     pub fn next_held(&mut self, fe: &mut FrontEnd, timeout: Duration) -> Result<FeHeld> {
         let b = self.stats.dequeue(timeout)?;
-        let stats = Statistics::parse(self.stats.maps[b.index as usize][0].as_slice())
-            .map_err(|e| DeviceError::Setup(e.to_string()))?;
+        let stats = super::profile::time("fe_stats", "parse", || {
+            Statistics::parse(self.stats.maps[b.index as usize][0].as_slice())
+        })
+        .map_err(|e| DeviceError::Setup(e.to_string()))?;
         self.stats.queue(b.index, &[])?;
         let image = match &self.image {
             Some(q) => {
@@ -376,11 +379,11 @@ impl FrontEndDevice {
             }
             None => None,
         };
-        while let Some(c) = self
-            .config
-            .dev
-            .dequeue(self.config.buf_type, styx_kernel::v4l2::Memory::Mmap)?
-        {
+        while let Some(c) = super::profile::time("fe_config", "dqbuf", || {
+            self.config
+                .dev
+                .dequeue(self.config.buf_type, styx_kernel::v4l2::Memory::Mmap)
+        })? {
             self.free_configs.push(c.index);
         }
         self.feed_configs(fe)?;

@@ -149,3 +149,64 @@ pub fn process_usage() -> (std::time::Duration, u64) {
         .unwrap_or(0);
     (cpu, hwm * 1024)
 }
+
+/// One thread of this process: name, CPU time (user + system) and context switches
+/// (voluntary: it waited; involuntary: it was preempted), for measurements.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ThreadUsage {
+    /// Thread id.
+    pub tid: u32,
+    /// Thread name (`comm`).
+    pub name: String,
+    /// CPU time (from the scheduler's run time, nanosecond resolution).
+    pub cpu: std::time::Duration,
+    /// Of that, in the kernel (10 ms ticks).
+    pub system: std::time::Duration,
+    /// Voluntary context switches (waits, i.e. wakeups).
+    pub voluntary: u64,
+    /// Involuntary context switches.
+    pub involuntary: u64,
+}
+
+/// CPU time and context switches of every thread of this process (from `/proc/self/task`).
+pub fn thread_usage() -> Vec<ThreadUsage> {
+    let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
+        return Vec::new();
+    };
+    let mut out: Vec<ThreadUsage> = dir
+        .flatten()
+        .filter_map(|e| {
+            let tid = e.file_name().to_str()?.parse().ok()?;
+            let stat = std::fs::read_to_string(e.path().join("stat")).ok()?;
+            let (head, rest) = stat.rsplit_once(')')?;
+            let name = head.split_once('(')?.1.to_string();
+            let f: Vec<&str> = rest.split_whitespace().collect();
+            let utime = f.get(11)?.parse::<u64>().ok()?;
+            let stime = f.get(12)?.parse::<u64>().ok()?;
+            let run_ns = std::fs::read_to_string(e.path().join("schedstat"))
+                .ok()
+                .and_then(|s| s.split_whitespace().next()?.parse::<u64>().ok());
+            let status = std::fs::read_to_string(e.path().join("status")).unwrap_or_default();
+            let field = |k: &str| {
+                status
+                    .lines()
+                    .find_map(|l| l.strip_prefix(k))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0)
+            };
+            Some(ThreadUsage {
+                tid,
+                name,
+                cpu: run_ns.map_or(
+                    std::time::Duration::from_millis((utime + stime) * 10),
+                    std::time::Duration::from_nanos,
+                ),
+                system: std::time::Duration::from_millis(stime * 10),
+                voluntary: field("voluntary_ctxt_switches:"),
+                involuntary: field("nonvoluntary_ctxt_switches:"),
+            })
+        })
+        .collect();
+    out.sort_by_key(|t| t.tid);
+    out
+}

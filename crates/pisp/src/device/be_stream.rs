@@ -243,7 +243,9 @@ impl BackEndStream {
     /// buffer.
     pub fn process(&mut self, input: u32, cfg: &BeTilesConfig, timeout: Duration) -> Result<BeJob> {
         let bytes = cfg.as_bytes();
-        self.config.maps[0][0].as_mut_slice()[..bytes.len()].copy_from_slice(bytes);
+        super::profile::time("pispbe-config", "copy", || {
+            self.config.maps[0][0].as_mut_slice()[..bytes.len()].copy_from_slice(bytes)
+        });
         let fd = self
             .inputs
             .get(input as usize)
@@ -290,7 +292,7 @@ impl BackEndStream {
             bytes_used: self.input_len,
             data_offset: 0,
         }];
-        self.input.queue(&q)?;
+        super::profile::time("pispbe-input", "qbuf", || self.input.queue(&q))?;
         let start = Instant::now();
         self.config.queue(0, &[bytes.len() as u32])?;
         let mut elapsed = None;
@@ -302,10 +304,11 @@ impl BackEndStream {
         }
         let deadline = Instant::now() + timeout;
         loop {
-            if self
-                .input
-                .dequeue(BufType::VideoOutputMplane, Memory::DmaBuf)?
-                .is_some()
+            if super::profile::time("pispbe-input", "dqbuf", || {
+                self.input
+                    .dequeue(BufType::VideoOutputMplane, Memory::DmaBuf)
+            })?
+            .is_some()
             {
                 break;
             }
@@ -313,7 +316,7 @@ impl BackEndStream {
             if left.is_zero() {
                 return Err(DeviceError::Timeout("pispbe-input"));
             }
-            self.input.wait(Some(left))?;
+            super::profile::time("pispbe-input", "poll", || self.input.wait(Some(left)))?;
         }
         self.config.dequeue(timeout)?;
         if error {

@@ -3,7 +3,9 @@
 use std::time::{Duration, Instant};
 
 use styx_native::{BufferMemory, CameraOptions, NativeCamera, SensorLibrary, StreamSettings};
-use styx_pipeline::device::{PispOptions, PispPipeline, SoftPipeline, process_usage};
+use styx_pipeline::device::{
+    PispOptions, PispPipeline, PispTimes, SoftPipeline, process_usage, thread_usage,
+};
 use styx_pipeline::measure::{grey_ratios, nv12_to_rgb, plane_mean, write_pgm, write_ppm};
 use styx_pipeline::rawrec::{Header, RawWriter, VERSION};
 use styx_softisp::{OutputBuffers, Scale};
@@ -220,6 +222,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     let (cpu0, _) = process_usage();
+    styx_pisp::device::profile::enable(a.profile);
     p.start().map_err(|e| e.to_string())?;
     println!(
         "pisp: frame sync / embedded data: {:?}",
@@ -234,8 +237,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let mut mismatches = 0;
     let mut last_nv12 = Vec::new();
     let mut last_rgb = Vec::new();
-    let mut prepare = Vec::new();
-    let mut be_job = Vec::new();
+    let mut times: Vec<(PispTimes, Duration)> = Vec::new();
     let mut result = Ok(());
     for i in 0..a.frames as u64 {
         if crate::interrupted() {
@@ -262,14 +264,16 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         log.latency = done.saturating_sub(f.timestamp);
         log.processing = f.times.total;
         log.request_lands = f.request_lands;
-        prepare.push(f.times.be_prepare);
-        be_job.push(f.times.be_job);
+        let tr = Instant::now();
         if let Some(nv12) = p.output(0, &f.job) {
-            log.out_y = plane_mean(nv12, w0, h0, s0);
+            if !a.no_read {
+                log.out_y = plane_mean(nv12, w0, h0, s0);
+            }
             if i + 1 == a.frames as u64 {
                 last_nv12 = nv12.to_vec();
             }
         }
+        times.push((f.times, tr.elapsed()));
         if i + 1 == a.frames as u64
             && let Some(rgb) = p.output(1, &f.job)
         {
@@ -283,11 +287,34 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     }
     let wall = t_start.elapsed();
     let (cpu1, rss) = process_usage();
+    let threads = thread_usage();
     p.controller().stop_recording().map_err(|e| e.to_string())?;
     let stopped = p.close().map_err(|e| e.to_string());
     result?;
     stopped?;
     let mut extra = vec![format!("statistics/raw sequence mismatches: {mismatches}")];
+    let n = frames.len().max(1) as f64;
+    for e in styx_pisp::device::profile::report() {
+        extra.push(format!(
+            "profile {}.{}: {:.1} us/frame ({:.2} calls/frame, {:.1} us each)",
+            e.what,
+            e.op,
+            e.total.as_secs_f64() * 1e6 / n,
+            e.count as f64 / n,
+            e.total.as_secs_f64() * 1e6 / e.count.max(1) as f64
+        ));
+    }
+    for t in &threads {
+        extra.push(format!(
+            "thread {} ({}): {:.3} ms CPU/frame ({:.3} in the kernel), {:.2} waits/frame, {:.2} preemptions/frame",
+            t.tid,
+            t.name,
+            t.cpu.as_secs_f64() * 1e3 / n,
+            t.system.as_secs_f64() * 1e3 / n,
+            t.voluntary as f64 / n,
+            t.involuntary as f64 / n
+        ));
+    }
     let med = |mut v: Vec<Duration>| {
         v.sort();
         v.get(v.len() / 2)
@@ -296,10 +323,15 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             .as_secs_f64()
             * 1e3
     };
+    let col = |f: fn(&(PispTimes, Duration)) -> Duration| times.iter().map(f).collect::<Vec<_>>();
     extra.push(format!(
-        "back end: config + tiles {:.3} ms, job {:.3} ms (medians)",
-        med(prepare),
-        med(be_job)
+        "medians: statistics {:.3} ms, algorithms {:.3} ms, back end config + tiles {:.3} ms, back end job {:.3} ms, dequeue to outputs {:.3} ms, output read {:.3} ms",
+        med(col(|t| t.0.stats)),
+        med(col(|t| t.0.algorithms)),
+        med(col(|t| t.0.be_prepare)),
+        med(col(|t| t.0.be_job)),
+        med(col(|t| t.0.total)),
+        med(col(|t| t.1)),
     ));
     if !last_nv12.is_empty() {
         let pgm = a.out.join("pisp-nv12-luma.pgm");

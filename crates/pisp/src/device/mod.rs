@@ -11,6 +11,7 @@
 mod be;
 mod be_stream;
 mod fe;
+pub mod profile;
 mod queue;
 
 use std::fmt;
