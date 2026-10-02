@@ -41,13 +41,15 @@ impl DeviceProviderImpl for StyxDeviceProvider {
     }
 }
 
-/// The camera key a device's element is created with: the first identity key (exact match).
+/// What a device's element selects its camera by (exactly): a backend's node path when it has
+/// one, else the camera's display name (for USB cameras, its bus path).
 fn selector(device: &ProbedDevice) -> String {
     device
-        .identity
-        .keys
-        .first()
-        .cloned()
+        .backends
+        .iter()
+        .flat_map(|b| b.properties.iter())
+        .find(|(k, _)| k == "path")
+        .map(|(_, v)| v.clone())
         .unwrap_or_else(|| device.identity.display.clone())
 }
 
