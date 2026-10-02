@@ -163,6 +163,34 @@ impl DmaBuf {
         Self { fd, len }
     }
 
+    /// A `memfd` of `len` bytes standing in for a dma-buf: shareable and mappable like one, but
+    /// plain memory (CPU-access syncs on it fail with `ENOTTY`). For tests and software
+    /// producers.
+    pub fn memfd(name: &str, len: usize) -> Result<Self> {
+        if len == 0 {
+            return Err(Error::Invalid("cannot allocate an empty memfd".into()));
+        }
+        let name = std::ffi::CString::new(name)
+            .map_err(|_| Error::Invalid("memfd name contains a NUL byte".into()))?;
+        // SAFETY: `name` is a valid NUL-terminated string for the call.
+        let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+        if raw < 0 {
+            return Err(Error::sys("memfd_create"));
+        }
+        // SAFETY: memfd_create returned a new descriptor that we now own.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        std::fs::File::from(fd.try_clone().map_err(|e| Error::Sys {
+            call: "dup",
+            source: e,
+        })?)
+        .set_len(len as u64)
+        .map_err(|e| Error::Sys {
+            call: "ftruncate",
+            source: e,
+        })?;
+        Ok(Self { fd, len })
+    }
+
     /// Size in bytes.
     pub fn len(&self) -> usize {
         self.len
@@ -209,6 +237,18 @@ impl AsRawFd for DmaBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_memfd_maps_like_a_dma_buf_and_outlives_its_descriptor() {
+        let buf = DmaBuf::memfd("styx-test", 8192).unwrap();
+        assert_eq!(buf.len(), 8192);
+        let mut a = buf.map().unwrap();
+        a.as_mut_slice()[100] = 7;
+        let b = DmaBuf::from_fd(buf.into_fd(), 8192).map().unwrap();
+        // The descriptor is closed; both mappings still share the memory.
+        assert_eq!(b.as_slice()[100], 7);
+        assert!(DmaBuf::memfd("empty", 0).is_err());
+    }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[test]

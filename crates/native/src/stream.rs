@@ -5,7 +5,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -14,24 +14,30 @@ use futures_core::Stream;
 use styx_graph::rt::{self, AsyncFd};
 use styx_kernel::FourCc;
 use styx_kernel::bus::StreamRequest;
-use styx_kernel::v4l2::{BufType, BufferFlags, VideoDevice};
-use styx_sensor::{RegisterBus, SensorPins};
+use styx_kernel::v4l2::BufferFlags;
+use styx_sensor::{DriverState, RegisterBus, SensorPins};
 
 use crate::buffers::{FrameHead, Lender, NativeFrame};
 use crate::control::{FrameControls, SensorControl, lock};
+use crate::device::{CaptureDevice, FAULT_POLL};
 use crate::embedded::EmbeddedCapture;
 use crate::error::{KernelContext, NativeError, Result};
+use crate::health::{Fault, Health};
 
 /// What the stream and the event thread need from the sensor side, without its bus types.
 pub(crate) trait SensorSide: Send + Sync {
-    /// Serves a bridge request (the acknowledgement result).
-    fn serve(&self, req: &StreamRequest) -> std::result::Result<(), i32>;
-    /// A frame started.
-    fn frame_start(&self, seq: u64);
+    /// Serves a bridge request (the acknowledgement result: an errno and why).
+    fn serve(&self, req: &StreamRequest) -> std::result::Result<(), (i32, String)>;
+    /// A frame started: writes what is due.
+    fn frame_start(&self, seq: u64) -> std::result::Result<(), String>;
     /// The values that produced frame `seq`.
     fn applied(&self, seq: u64) -> Option<FrameControls>;
     /// Embedded data of frame `seq` (the raw buffer).
     fn report_embedded(&self, seq: u64, data: &[u8]);
+    /// Puts the sensor back in standby if it streams.
+    fn standby(&self);
+    /// Standby and power down, whatever the state.
+    fn shut_down(&self) -> Result<()>;
 }
 
 impl<B, P> SensorSide for Mutex<SensorControl<B, P>>
@@ -39,13 +45,15 @@ where
     B: RegisterBus + Send,
     P: SensorPins + Send,
 {
-    fn serve(&self, req: &StreamRequest) -> std::result::Result<(), i32> {
-        lock(self).serve(req)
+    fn serve(&self, req: &StreamRequest) -> std::result::Result<(), (i32, String)> {
+        lock(self).serve_detailed(req)
     }
 
-    fn frame_start(&self, seq: u64) {
-        // A failed write shows up as a mismatch in the frame's values; nothing to return to.
-        let _ = lock(self).frame_start(seq);
+    fn frame_start(&self, seq: u64) -> std::result::Result<(), String> {
+        lock(self)
+            .frame_start(seq)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     fn applied(&self, seq: u64) -> Option<FrameControls> {
@@ -54,6 +62,17 @@ where
 
     fn report_embedded(&self, seq: u64, data: &[u8]) {
         let _ = lock(self).report_embedded(seq, data);
+    }
+
+    fn standby(&self) {
+        let mut c = lock(self);
+        if c.driver().state() == DriverState::Streaming {
+            let _ = c.driver_mut().stop_streaming();
+        }
+    }
+
+    fn shut_down(&self) -> Result<()> {
+        lock(self).shut_down()
     }
 }
 
@@ -68,16 +87,22 @@ pub struct StreamStats {
     pub errors: u64,
 }
 
+/// Frames dequeued without a frame-start event after which frame starts are taken from the
+/// dequeues instead (the receiver stopped sending them, or never did).
+const SYNC_MISSING_FRAMES: u32 = 3;
+
 /// State shared by a stream, its frames and the camera.
 pub(crate) struct StreamShared {
-    pub(crate) fd: Arc<AsyncFd<Arc<VideoDevice>>>,
+    pub(crate) fd: Arc<AsyncFd<Arc<dyn CaptureDevice>>>,
     pub(crate) lender: Arc<Lender>,
     pub(crate) sensor: Arc<dyn SensorSide>,
     pub(crate) embedded: Option<Arc<EmbeddedCapture>>,
-    pub(crate) buf_type: BufType,
+    pub(crate) health: Arc<Health>,
     /// Frame starts come from `FRAME_SYNC` events; without them the dequeue drives the
     /// schedule.
     pub(crate) frame_sync: bool,
+    /// Consecutive corrupted frames that end the stream (0: never).
+    pub(crate) max_error_frames: u32,
     pub(crate) fourcc: FourCc,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -89,26 +114,85 @@ pub(crate) struct StreamShared {
     pub(crate) errors: AtomicU64,
     pub(crate) last_sequence: AtomicU64,
     pub(crate) disconnected: AtomicBool,
+    /// Frame-start events seen at the last dequeue, and dequeues since the count moved.
+    pub(crate) syncs_seen: AtomicU64,
+    pub(crate) frames_without_sync: AtomicU32,
+    /// Frame starts are taken from dequeues because the events stopped.
+    pub(crate) sync_fallback: AtomicBool,
+    pub(crate) consecutive_errors: AtomicU32,
 }
 
 impl StreamShared {
+    pub(crate) fn new(
+        fd: Arc<AsyncFd<Arc<dyn CaptureDevice>>>,
+        lender: Arc<Lender>,
+        sensor: Arc<dyn SensorSide>,
+        health: Arc<Health>,
+        format: (FourCc, u32, u32, u32),
+    ) -> Self {
+        let (fourcc, width, height, stride) = format;
+        Self {
+            fd,
+            lender,
+            sensor,
+            embedded: None,
+            health,
+            frame_sync: false,
+            max_error_frames: 0,
+            fourcc,
+            width,
+            height,
+            stride,
+            started: Instant::now(),
+            first_frame: OnceLock::new(),
+            frames: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            last_sequence: AtomicU64::new(0),
+            disconnected: AtomicBool::new(false),
+            syncs_seen: AtomicU64::new(0),
+            frames_without_sync: AtomicU32::new(0),
+            sync_fallback: AtomicBool::new(false),
+            consecutive_errors: AtomicU32::new(0),
+        }
+    }
+
     fn streaming(&self) -> bool {
-        self.lender.streaming.load(Ordering::Acquire)
+        self.lender.buffers.is_live()
+    }
+
+    /// Whether this dequeue has to drive the control schedule: without frame-start events, or
+    /// once they went missing for a few frames (until they come back).
+    fn drive_from_dequeue(&self) -> bool {
+        if !self.frame_sync {
+            return true;
+        }
+        let syncs = self.health.frame_syncs.load(Ordering::Relaxed);
+        if self.syncs_seen.swap(syncs, Ordering::Relaxed) != syncs {
+            self.frames_without_sync.store(0, Ordering::Relaxed);
+            self.sync_fallback.store(false, Ordering::Relaxed);
+            return false;
+        }
+        let n = self.frames_without_sync.fetch_add(1, Ordering::Relaxed) + 1;
+        if n >= SYNC_MISSING_FRAMES {
+            self.sync_fallback.store(true, Ordering::Relaxed);
+        }
+        self.sync_fallback.load(Ordering::Relaxed)
     }
 
     /// Dequeues a finished buffer if there is one.
     fn try_dequeue(self: &Arc<Self>) -> Result<Option<NativeFrame>> {
         let video = self.fd.get_ref();
         let Some(buf) = video
-            .dequeue(self.buf_type, self.lender.buffers.memory())
+            .dequeue(self.lender.buffers.memory())
             .step("VIDIOC_DQBUF")?
         else {
             return Ok(None);
         };
         let seq = u64::from(buf.sequence);
-        if !self.frame_sync {
+        if self.drive_from_dequeue() {
             // Dequeued after its end: the next frame is starting.
-            self.sensor.frame_start(seq + 1);
+            self.health.control_write(self.sensor.frame_start(seq + 1));
         }
         let last = self.last_sequence.swap(seq + 1, Ordering::AcqRel);
         if last != 0 && seq + 1 > last + 1 {
@@ -117,6 +201,15 @@ impl StreamShared {
         let error = buf.flags.contains(BufferFlags::ERROR);
         if error {
             self.errors.fetch_add(1, Ordering::Relaxed);
+            let n = self.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
+            if self.max_error_frames > 0 && n >= self.max_error_frames {
+                self.health.fail(Fault::Kernel {
+                    what: format!("the receiver flagged {n} frames in a row as corrupted"),
+                    errno: Some(libc::EIO),
+                });
+            }
+        } else {
+            self.consecutive_errors.store(0, Ordering::Relaxed);
         }
         self.frames.fetch_add(1, Ordering::Relaxed);
         let _ = self.first_frame.set(Instant::now());
@@ -142,34 +235,43 @@ impl StreamShared {
         )))
     }
 
+    fn fault(&self) -> Option<NativeError> {
+        let f = self.health.fault()?;
+        if matches!(f, Fault::Disconnected(_)) {
+            self.disconnected.store(true, Ordering::Release);
+        }
+        Some(f.to_error())
+    }
+
     /// The next frame; `None` once the stream stopped.
     async fn next_frame(self: Arc<Self>) -> Option<Result<NativeFrame>> {
         loop {
+            if let Some(e) = self.fault() {
+                return Some(Err(e));
+            }
             if !self.streaming() {
                 return None;
             }
             match self.try_dequeue() {
                 Ok(Some(f)) => return Some(Ok(f)),
                 Ok(None) => {}
-                Err(e) if !self.streaming() => {
-                    drop(e);
-                    return None;
-                }
+                Err(_) if !self.streaming() => return None,
                 Err(e) if e.is_disconnect() => {
                     self.disconnected.store(true, Ordering::Release);
                     return Some(Err(NativeError::Disconnected));
                 }
                 Err(e) => return Some(Err(e)),
             }
-            match self.fd.readable().await {
-                Ok(ready) if ready.is_hangup() => {
+            // Bounded, so faults found by the event thread end the wait.
+            match rt::timeout(FAULT_POLL, self.fd.readable()).await {
+                Ok(Ok(ready)) if ready.is_hangup() => {
                     self.disconnected.store(true, Ordering::Release);
                     return Some(Err(NativeError::Disconnected));
                 }
                 // An error with the stream stopped ends it; while streaming the next dequeue
                 // reports what happened.
-                Ok(_) => {}
-                Err(e) => return Some(Err(NativeError::kernel("wait for a frame", e))),
+                Ok(Ok(_)) | Err(_) => {}
+                Ok(Err(e)) => return Some(Err(NativeError::kernel("wait for a frame", e))),
             }
         }
     }
@@ -177,8 +279,18 @@ impl StreamShared {
 
 type NextFrame = Pin<Box<dyn Future<Output = Option<Result<NativeFrame>>> + Send>>;
 
-/// Frames of a started camera. Ends when the camera stops; yields
-/// [`NativeError::Disconnected`] and ends if the device goes away.
+/// Frames of a started camera, as an async [`Stream`] or with [`FrameStream::next_blocking`].
+///
+/// Ends (`None`) when the camera stops. A fault ends it after one error item:
+/// [`NativeError::Disconnected`] when the bridge or the capture node goes away, a kernel error
+/// when the receiver fails, the sensor stops answering, or too many frames in a row arrive
+/// corrupted. The camera then still has to be stopped (or dropped), which puts the sensor in
+/// standby and powers it down.
+///
+/// Works on any executor (tokio, smol, a hand-written loop) or none: waiting registers the
+/// capture node with `styx-graph`'s reactor thread. Dropping a pending `next()` future, or the
+/// stream itself, at any point loses no frame and leaks nothing: a frame is only taken from
+/// the queue inside a poll that returns it.
 pub struct FrameStream {
     shared: Arc<StreamShared>,
     pending: Option<NextFrame>,
@@ -238,6 +350,17 @@ impl FrameStream {
     pub fn buffer_count(&self) -> usize {
         self.shared.lender.buffers.count()
     }
+
+    /// Whether frame starts are currently inferred from dequeued frames because the
+    /// receiver's frame-start events stopped (or never came).
+    pub fn frame_sync_fallback(&self) -> bool {
+        !self.shared.frame_sync || self.shared.sync_fallback.load(Ordering::Relaxed)
+    }
+
+    /// Whether the stream ended because the device went away.
+    pub fn is_disconnected(&self) -> bool {
+        self.shared.disconnected.load(Ordering::Acquire)
+    }
 }
 
 impl std::fmt::Debug for FrameStream {
@@ -264,9 +387,8 @@ impl Stream for FrameStream {
             Poll::Pending => Poll::Pending,
             Poll::Ready(item) => {
                 this.pending = None;
-                match &item {
-                    None | Some(Err(NativeError::Disconnected)) => this.ended = true,
-                    _ => {}
+                if !matches!(item, Some(Ok(_))) {
+                    this.ended = true;
                 }
                 Poll::Ready(item)
             }

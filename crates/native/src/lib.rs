@@ -4,19 +4,28 @@
 //! See `docs/native-stack/README.md` and `kernel-modules/styx-sensor-bridge/PROTOCOL.md`.
 #![deny(unsafe_code)]
 
+#[cfg(test)]
+mod async_tests;
 mod buffers;
 pub mod camera;
 pub mod control;
+mod device;
 pub mod discover;
 mod embedded;
 mod error;
 mod events;
+#[cfg(test)]
+mod fake;
+#[cfg(test)]
+mod fault_tests;
 pub mod formats;
 pub mod graph;
+mod health;
 pub mod library;
 pub mod modes;
 pub mod provider;
 pub mod regbus;
+mod session;
 mod stream;
 pub mod topology;
 
