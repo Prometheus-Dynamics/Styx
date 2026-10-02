@@ -241,16 +241,17 @@ fn output_is_pinned_bit_for_bit() {
     for (pattern, demosaic, shaded, stats, scale, want) in CASES {
         let (raw, stride) = frame(pattern);
         let format = RawFormat::new(W as u32, H as u32, pattern, RawPacking::Csi2Raw10);
-        for threads in [1, 3] {
+        for (threads, copy) in [(1, true), (3, true), (1, false)] {
             let mut isp = SoftIsp::new(format, params(demosaic, shaded, stats))
                 .unwrap()
-                .with_threads(threads);
+                .with_threads(threads)
+                .with_copy_input(copy);
             let got = run(&mut isp, &raw, stride, scale);
             let case = format!("{pattern:?} {demosaic:?} shaded {shaded} stats {stats} {scale:?}");
             if print {
-                println!("{case} threads {threads}: {got:#018x}");
+                println!("{case} threads {threads} copy {copy}: {got:#018x}");
             } else {
-                assert_eq!(got, want, "{case}, {threads} threads");
+                assert_eq!(got, want, "{case}, {threads} threads, copy {copy}");
             }
         }
     }

@@ -42,6 +42,7 @@ pub struct SoftIsp {
     workers: Vec<Mutex<Worker>>,
     threads: usize,
     pool: Option<Pool>,
+    copy_input: bool,
 }
 
 impl std::fmt::Debug for SoftIsp {
@@ -64,6 +65,7 @@ impl SoftIsp {
             workers: vec![Mutex::default()],
             threads: 1,
             pool: None,
+            copy_input: true,
         })
     }
 
@@ -85,6 +87,21 @@ impl SoftIsp {
     /// The thread count set with [`Self::with_threads`].
     pub fn threads(&self) -> usize {
         self.threads
+    }
+
+    /// Whether input rows are copied, 16 KiB at a time, into a cached buffer before they are
+    /// unpacked (default: yes). Frames in DMA buffers the CPU maps uncached (write-combined),
+    /// such as V4L2 MMAP buffers of many receivers, read several times faster that way: on the
+    /// CM5 a 1280x800 RAW10 frame took 10.0 instead of 5.1 ms without it. From cached memory
+    /// the copy costs under 0.1 ms per frame there; input known to be cached can skip it.
+    pub fn set_copy_input(&mut self, copy: bool) {
+        self.copy_input = copy;
+    }
+
+    /// See [`Self::set_copy_input`].
+    pub fn with_copy_input(mut self, copy: bool) -> Self {
+        self.copy_input = copy;
+        self
     }
 
     /// Replace the parameters (for example new white balance gains from the last statistics).
@@ -137,6 +154,7 @@ impl SoftIsp {
             data: input,
             stride,
             packing: self.format.packing,
+            copy: self.copy_input,
         };
         let p = &self.prepared;
         let threads = self.thread_count();

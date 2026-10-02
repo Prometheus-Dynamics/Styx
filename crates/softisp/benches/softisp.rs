@@ -252,6 +252,20 @@ fn pipelines(c: &mut Criterion) {
     );
     run(
         c,
+        "e2e/nv12_tuned_lsc_stats_no_copy",
+        isp(shaded(stats(bilinear()))).with_copy_input(false),
+        Scale::Full,
+        "nv12",
+    );
+    run(
+        c,
+        "e2e/rgb24_plain_no_copy",
+        isp(IspParams::default()).with_copy_input(false),
+        Scale::Full,
+        "rgb",
+    );
+    run(
+        c,
         "e2e/rgb24_tuned_mhc",
         isp(tuned(Demosaic::Mhc)),
         Scale::Full,
@@ -295,6 +309,20 @@ fn pipelines(c: &mut Criterion) {
     );
     {
         let threaded = |p| isp(p).with_threads(4);
+        run(
+            c,
+            "e2e/nv12_tuned_lsc_stats_2threads",
+            isp(shaded(stats(bilinear()))).with_threads(2),
+            Scale::Full,
+            "nv12",
+        );
+        run(
+            c,
+            "e2e/nv12_tuned_lsc_stats_4threads",
+            threaded(shaded(stats(bilinear()))),
+            Scale::Full,
+            "nv12",
+        );
         run(
             c,
             "e2e/nv12_tuned_stats_4threads",

@@ -18,6 +18,8 @@ pub(crate) struct Source<'a> {
     pub data: &'a [u8],
     pub stride: usize,
     pub packing: RawPacking,
+    /// Copy rows into the staging buffer before unpacking.
+    pub copy: bool,
 }
 
 /// Bytes of input copied per block into the staging buffer.
@@ -35,7 +37,10 @@ pub(crate) struct Stage {
 
 impl Source<'_> {
     /// Input row `y`, from the staging copy (refilled from `y` on a miss).
-    fn row<'s>(&self, stage: &'s mut Stage, y: usize, height: usize, bytes: usize) -> &'s [u8] {
+    fn row<'s>(&'s self, stage: &'s mut Stage, y: usize, height: usize, bytes: usize) -> &'s [u8] {
+        if !self.copy {
+            return &self.data[y * self.stride..][..bytes];
+        }
         if !(stage.first..stage.first + stage.rows).contains(&y) {
             let rows = (STAGE_BYTES / self.stride).clamp(1, height - y);
             let len = self.stride * (rows - 1) + bytes;
