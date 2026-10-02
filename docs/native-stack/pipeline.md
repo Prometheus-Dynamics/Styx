@@ -169,6 +169,10 @@ to the frame being in the consumer's hands.
 | peak RSS (Styx API process) | 27.4 MiB (tool) | 17.8 MiB |
 | software ISP mode through the Styx API (`STYX_NATIVE_ISP=software`), 30 fps | 15.8 ms CPU, 22.4 ms latency (1 thread) | 6.9 ms, 9.5 ms (4 threads) |
 
+These were measured without temporal denoise; with it (the default when the tuning has
+`rpi.denoise.tdn`, see "Quality vs libcamera") the back end job takes 2.3 ms and the latency
+9.9 ms, the CPU is unchanged.
+
 `native_isp_bench single|shared FPS FRAMES [--read]`, `native_isp_bench serve|client` and
 `native-pipeline pisp [--no-read] [--profile] [--every-frame] [--driver-buffers]` measure
 these; `--profile` (`styx_pisp::device::profile`) times every device call per frame and the
@@ -376,10 +380,77 @@ quiesced around `STREAMON`/`STREAMOFF`), then because rp1-cfe stops the receiver
 *last* node stops, which with embedded data is the embedded node, stopped after the event
 thread had gone (fixed here: stop it first). No stop timeouts since, on either path.
 
+## Quality vs libcamera
+
+CM5, OV9782 1280x800 at 30 fps, 2026-10-02 (device clock: Aug 17), the HeliOS tuning
+(`/usr/share/libcamera/ipa/rpi/pisp/ov9782.json`, the same as libcamera's
+`src/ipa/rpi/pisp/data/ov9782.json`). Scene: a dim room lit by a warm lamp and a blue LED
+(AE ends at 33 ms × 10). Both paths at a fixed 33 ms × 8, NV12 output 0 saved packed:
+libcamera through Styx's libcamera backend (`styx-compare run --backend libcamera --format
+NV12 --set 8=i:1 --set 7=i:33000 --set 10=i:1 --set 9=f:8 --save ...`, AWB auto: through
+Styx `AwbEnable`/`ColourTemperature` did not take, the metadata kept reporting AWB's 2660 K),
+native with `native-pipeline pisp --fixed 33000:8` (AWB auto). Compared with
+`tools/compare/quality.py` (8x5 zones, the reference is libcamera; noise is the standard
+deviation of luma minus its 5x5 mean in the flattest 10% of 16x16 blocks, 0..255; sharpness
+the mean gradient of the 5% strongest-gradient pixels and the 10-90% rise of strong edges).
+
+| | libcamera | native now | native, no TDN | native before (`4b003cb` blocks) |
+|---|---|---|---|---|
+| AWB (auto) | 2660-2679 K | 2693 K (2702 K) | (2860 K fixed) | (2860 K fixed) |
+| grey world R/G, B/G of the output | 1.139, 1.599 | 1.160, 1.599 | 1.206, 1.564 | 1.178, 1.508 |
+| per-zone R/G vs libcamera: mean (min..max) | 1 | 1.020 (0.994..1.043) | 1.066 | 1.033 (0.994..1.052) |
+| per-zone B/G vs libcamera | 1 | 1.002 (0.988..1.024) | 0.977 | 0.928 (0.848..0.988) |
+| mean luma | 0.236 | 0.232 | 0.228 | 0.242 |
+| luma, corners vs centre relative to libcamera | 1 | 1.05, 1.06, 1.03, 1.01 | 1.07, 1.06, 1.02, 1.02 | 0.99, 1.04, 1.01, 1.03 |
+| per-zone luma vs libcamera (min..max) | 1 | 0.98..1.11 | 0.99..1.08 | 0.98..1.07 |
+| tone: output luma where libcamera's is 0.15 / 0.34 / 0.53 / 0.72 / 0.91 | | 0.146 / 0.332 / 0.526 / 0.717 / 0.894 | 0.143 / 0.325 / 0.517 / 0.711 / 0.886 | 0.154 / 0.356 / 0.544 / 0.728 / 0.922 |
+| flat-area noise (0..255) | 0.40 | **0.39** | 1.57 | **8.78** |
+| sharpness: top-5% gradient / HF energy share | 10.5 / 0.0011 | 10.6 / 0.0011 | 11.3 / 0.0015 | 25.5 / 0.0181 |
+| edge 10-90% rise | 6.0 px | 6.2 px | 6.2 px | 5.9 px |
+
+(The "no TDN" and "before" columns ran AWB at a fixed 2860 K, so their colour columns are not
+comparable; the before column is the current binary with the tuning's `rpi.noise`,
+`rpi.denoise`, `rpi.sdn`, `rpi.geq`, `rpi.dpc` and `rpi.sharpen` removed, i.e. what the back
+end did until now.) Images (libcamera, native now, no TDN, before; full frame at half size,
+then 256x256 crops at 2x): `target/quality-full.png`, `quality-centre.png`,
+`quality-corner.png`, `quality-flat.png` (the noise), `quality-edges.png`.
+
+What was ours and is fixed:
+
+* **Denoise and sharpening.** The back end ran libpisp's default sharpening at full strength
+  on undenoised data and no denoise at all: 22x libcamera's noise in flat areas and 2.4x its
+  edge gradients (sharpened noise). Now `styx-algo`'s `Denoise` (ported from `noise.cpp`,
+  `denoise.cpp`, `geq.cpp`, `dpc.cpp`, `sharpen.cpp`) drives DPC, GEQ, SDN, CDN, TDN and the
+  sharpening scale from the tuning with gain-dependent strength (noise profile × √gain; SDN
+  and CDN start at their no-TDN strengths and back off while TDN builds up), and the back end
+  runs temporal denoise with its long-term buffers: noise and sharpness now match libcamera.
+* **AWB** (see [algorithms.md](algorithms.md)): continuous and hysteretic; in this scene 2693 K
+  against libcamera's 2660-2679 K, R/G of the output within 2%, B/G equal.
+* **Gains below 1.** With warm light the red gain is below 1 (0.98 here) and the back end
+  applied it as is, so saturated highlights turned cyan; the channel gains now get libcamera's
+  extra 1 / min(gain) (`IspSettings::channel_gains`), also +1-2% of brightness here.
+
+Left (within the measurement, or not ours):
+
+* Luma shading: the edge zones come out 1-6% (one zone 11%) brighter than libcamera's,
+  relative to the centre. Calibration interpolation, resampling, luminance strength (0.8),
+  packing and grid steps are the same as libcamera's (checked against its source); the
+  colour residual (±3-4% per zone) is what libcamera's adaptive ALSC (not ported: Gauss-Seidel
+  refinement of the R and B tables from the statistics) would correct. Not resolved here.
+* Tone: 1-2% darker in the highlights with the same gamma curve and the same contrast
+  enhancement (`contrast.cpp`'s stretch, ported as is); the stretch follows the front end's
+  histogram, which both configure the same way except for the AGC weights (uniform here).
+* Cost: temporal denoise reads and writes a 16-bit average of the frame every job: the back
+  end job goes from 0.84-0.88 ms to 2.3 ms at 1280x800, so the latency from the frame start
+  to the outputs from 8.35 to 9.9 ms (30 and 120 fps); CPU unchanged (0.6-0.7 ms per frame).
+  `PispOptions::temporal_denoise = false` (`native-pipeline --no-tdn`) keeps the old latency
+  with 4x libcamera's noise (SDN and CDN at their no-TDN strengths).
+
 ## Gaps
 
 * PiSP lens shading: the ALSC tables resampled to the back end's 33x33 grid, packed as the
-  Raspberry Pi IPA does; runs on the device, not compared against libcamera's output. TDN/sharpening strength/denoise follow libpisp defaults, not the tuning.
+  Raspberry Pi IPA does; compared against libcamera's output in "Quality vs libcamera" (edges
+  1-6% brighter, the adaptive part of ALSC not ported).
 * The front end statistics set-up is fixed (uniform AGC weights; AGC meters the AWB zones).
 * PiSP CPU left (see "PiSP path performance"): half of it is the `pispbe` driver writing the
   whole back end config to the hardware by MMIO on every job (0.12 ms; the driver could write

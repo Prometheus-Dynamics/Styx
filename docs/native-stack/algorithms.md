@@ -20,7 +20,7 @@ dependency on other Styx crates; the session runtime converts between it and `st
 ```text
 Statistics ─┐
 FrameMetadata (exposure, gain, frame duration, lux?, Controls) ─┤
-            └─► Pipeline: black_level → lux → awb → agc → alsc → ccm → contrast ─► Params
+            └─► Pipeline: black_level → lux → awb → agc → alsc → ccm → contrast → denoise ─► Params
 ```
 
 * `Statistics` (`stats.rs`): colour zones (sums of R, G, B normalised to full scale 1.0, black
@@ -78,10 +78,42 @@ record the warm start in their header.
 | `BlackLevel` | `black_level.cpp` | Tuning levels, else the sensor description's |
 | `Lux` | `lux.cpp` | From exposure, gain and mean luma against a reference; metadata lux wins |
 | `Agc` | `agc_channel.cpp` (channel 0) | Metering (tuned or built-in centre-weighted / spot / average weights, resampled to the zone grid), histogram constraints, EV, exposure profiles, flicker periods, digital gain, damping, start-up, fast de-saturation, lock. Styx changes: output landing frame; frame duration chosen here; model-based steps (changes above `full_step`, 8% by default, go straight to the target at any time; after one lands, the rest is corrected at once; damping only for small changes); every frame's statistics used (frames in flight ask for the same total); de-saturates only while half the image is saturated and without damping; locked = no change beyond 5% in flight and on target (5%) for two frames, no hunting within that tolerance once locked; unsettled frames left out; warm starts |
-| `Awb` | `awb.cpp`, `awb_bayes.cpp` | Bayesian search along the CT curve with lux-interpolated priors, coarse then fine (across the curve), or grey world; runs synchronously every `frame_period` frames (every frame during start-up), filtered by `speed`; modes; manual gains or temperature. Styx changes: start-up counts only usably exposed frames (mean luma 0.02..0.7; at most 4 × `startup_frames` frames); unsettled frames left out; warm starts |
+| `Awb` | `awb.cpp`, `awb_bayes.cpp` | Bayesian search along the CT curve with lux-interpolated priors, coarse then fine (across the curve), or grey world; runs synchronously every `frame_period` frames (every frame during start-up), filtered by `speed`; modes; manual gains or temperature. Styx changes: start-up counts only usably exposed frames (mean luma 0.02..0.7; at most 4 × `startup_frames` frames); unsettled frames left out; warm starts; soft search and hysteresis (below) |
+| `Denoise` | `noise.cpp`, `denoise.cpp`, `geq.cpp`, `dpc.cpp`, `sharpen.cpp` | Noise profile × √analogue gain; SDN/CDN/TDN strengths (`normal` configuration), SDN and CDN starting at their no-TDN values and backing off by `backoff` per run while temporal denoise runs (`CameraConfig::temporal_denoise`, set by the ISP); GEQ by gain (and lux); DPC strength; sharpening factors. Output in `Params::denoise` / `Params::sharpen` (Raspberry Pi units: 16-bit pixel scale) for ISPs with those blocks (the PiSP back end) |
 | `Alsc` | `alsc.cpp` | Calibrated Cr/Cb tables interpolated by temperature, resampled to crop and flips, normalised, luminance table at `luminance_strength` (tuned or generated from `corner_strength`). The adaptive refinement is not ported |
 | `Ccm` | `ccm.cpp` | Interpolated by temperature, saturation control and saturation-by-lux |
 | `Contrast` | `contrast.cpp` | Gamma curve, adaptive histogram stretch, manual brightness/contrast |
+
+### AWB: continuity and hysteresis
+
+Under a lamp below the CT curve's range (the OV9782's room: about 2250 K, the curve starts at
+2860 K, the `auto` mode at 2500 K) every zone is capped (`delta_limit`) both at the low end of
+the search and at the 6500 K peak of the lux prior, and the two costs differ by a fraction of
+one log-likelihood unit; the frame-to-frame noise of that difference is about ±1.5 on the
+software ISP's 16x12 zones. Raspberry Pi's search takes the best point, so the estimate
+jumped between ~2500 K and ~6500 K (a 0.07% scaling of the statistics, which moves the lux
+estimate and so the prior, was reported to flip it from 2533 K to 4463 K; a fresh estimate
+of the recorded frame 80 swept over scalings jumps from 2533 K to 6493 K at one point; in a replay of the recorded
+frames every 10-frame estimate could flip). libcamera has the same search, damped only by
+`speed`. Styx's search now:
+
+* weights the coarse points by `exp(-(cost - best) / softness)` (default 0.2) and takes their
+  mean in mired, and weights the fine search's steps along the curve the same way, so the
+  estimate is a continuous function of the statistics; with one clear minimum this is the
+  minimum (softness 0 is the original search);
+* adds a hysteresis well around the best coarse point of the last estimate made on a usable
+  frame (`hysteresis` 2 log-likelihood units deep, `hysteresis_mired` 25 wide): another
+  temperature has to fit better by about 2 before the estimate moves there. The first usable
+  estimate is free and start-up still applies estimates at once, so the initial convergence
+  is unchanged (simulation: 3000 ↔ 6000 K settle in 54-64 frames as before, ending at 2999 /
+  5994 K); a real change of the light (tens of units) moves at once.
+
+On the recorded replay every scaling between 0.9 and 1.1 now stays at 2440 ± 10 K after
+start-up (was: 2533 K with 10-frame excursions to 6493 K). `tests/awb_continuity.rs` sweeps
+the statistics' scale on a synthetic tie and on the recorded tie (`tests/data/awb-tie.jsonl`,
+with the libcamera tree's OV9782 tuning when present) and requires steps under 6 mired per
+0.1% (under 1 mired per 0.01% around the old flip), and checks that frames alternating
+either side of the tie keep the side chosen.
 
 ## Tuning
 
@@ -106,11 +138,14 @@ key order (the first mode listed is the default), as libcamera's YAML-based read
 | `constraint_modes.<m>[] { bound, q_lo, q_hi, y_target }` | same, `bound = "lower"/"upper"` |
 | `y_target`, `speed`, `startup_frames`, `convergence_frames`, `fast_reduce_threshold`, `base_ev`, `default_exposure_time`, `default_analogue_gain`, `stable_region`, `desaturate`, `max_digital_gain` | same names (`default_exposure_us`); `full_step` is Styx's own (default 0.08) |
 | `rpi.awb.ct_curve` (flat triples) | `awb.ct_curve = [[ct, r, b], …]` |
-| `priors[] { lux, prior }`, `modes` (first = default), `bayes`, `min_G` (16-bit), `min_pixels`, `min_regions`, `coarse_step`, `whitepoint_r/b`, `bias_proportion`, `bias_ct`, `delta_limit`, `transverse_pos/neg`, `sensitivity_r/b`, `speed`, `frame_period`, `startup_frames` | same names; `min_g` ÷ 65536 |
+| `priors[] { lux, prior }`, `modes` (first = default), `bayes`, `min_G` (16-bit), `min_pixels`, `min_regions`, `coarse_step`, `whitepoint_r/b`, `bias_proportion`, `bias_ct`, `delta_limit`, `transverse_pos/neg`, `sensitivity_r/b`, `speed`, `frame_period`, `startup_frames` | same names; `min_g` ÷ 65536; `softness`, `hysteresis`, `hysteresis_mired` are Styx's own (0.2, 2, 25) |
 | `rpi.alsc.calibrations_Cr/Cb`, `luminance_lut`, `corner_strength`, `asymmetry`, `luminance_strength`, `default_ct` | `alsc.calibrations_cr/cb`, …; `grid` from the table size (1024 → 32×32, 192 → 16×12). `omega`, `n_iter`, `sigma*` (adaptive part) ignored |
 | `rpi.ccm.ccms[] { ct, ccm }`, `saturation` | `ccm.ccms`, `ccm.saturation` |
 | `rpi.contrast.gamma_curve` (16-bit x, y), `lo_*`, `hi_*`, `ce_enable` | `contrast.gamma_curve` ÷ 65535, `lo_max`/`hi_max` ÷ 65536 |
-| `rpi.noise`, `rpi.denoise`, `rpi.sharpen`, `rpi.dpc`, `rpi.geq`, `rpi.hdr`, `rpi.af`, `rpi.cac`, `rpi.sdn`, `rpi.sync`, `rpi.nn.awb`, … | ignored (not implemented yet) |
+| `rpi.noise` | `denoise.noise.reference_constant/slope` |
+| `rpi.denoise` (its `normal` mode, or the flat form) `.sdn/.cdn/.tdn`, `rpi.sdn` (VC4) | `denoise.sdn/cdn/tdn` (same keys; CDN `deviation` is the no-TDN one; without `tdn` SDN/CDN keep their no-TDN values) |
+| `rpi.geq`, `rpi.dpc.strength`, `rpi.sharpen` | `denoise.geq`, `denoise.dpc`, `denoise.sharpen` |
+| `rpi.hdr`, `rpi.af`, `rpi.cac`, `rpi.sync`, `rpi.nn.awb`, … | ignored (not implemented yet) |
 
 All 67 pisp and vc4 tuning files in libcamera and both HeliOS OV9782 files convert and run.
 
@@ -155,7 +190,7 @@ fps (delays 2/2/1, written in the same frame: `tests/sim_start.rs`), run with `-
 | warm restart, same scene | | within 5% from frame 0, locked at 1, nothing re-requested |
 | 30 → 120 fps warm start | | 30 ms × 2.1 → 8.1 ms × 7.8, luma within 0.3%, locked at 1 |
 | 100 Hz flicker, 20 ms exposure | frame-to-frame jitter 2.1% without avoidance, 0.13% with 50 Hz avoidance |
-| AWB 3000 K → 6000 K / 6000 K → 3000 K | 6004 K / 3007 K, gains within 0.1% of truth, settled (3%) in 54–64 frames at the default `speed` 0.05 |
+| AWB 3000 K → 6000 K / 6000 K → 3000 K | 5994 K / 2999 K (6004 / 3007 before the soft search), gains within 0.1% of truth, settled (3%) in 54–64 frames at the default `speed` 0.05 |
 | Late landings | none |
 
 `replay`: JSON Lines, a header `{"styx_algo_replay": 1, "config": …}` then one
