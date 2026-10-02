@@ -51,6 +51,8 @@ pub mod formats;
 pub mod graph;
 mod health;
 pub mod kernel;
+#[cfg(test)]
+mod kernel_tests;
 pub mod library;
 pub mod modes;
 pub mod provider;

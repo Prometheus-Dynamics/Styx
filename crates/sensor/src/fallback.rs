@@ -594,6 +594,28 @@ mod tests {
     }
 
     #[test]
+    fn ccs_embedded_data_reads_back_kernel_controls() {
+        let mut data = KernelSensorData::builtin()
+            .into_iter()
+            .find(|d| d.name == "imx219")
+            .unwrap();
+        data.embedded_data.as_mut().unwrap().packing = crate::EmbeddedPacking::None;
+        let d = SensorDescription::from_subdev_with(&helios_ov9782(), Some(&data)).unwrap();
+        // 0x0157 = 0x80 (gain), 0x015a..b = 0x0400 (exposure), 0x0160..1 = 0x0d78 (VTS).
+        let line = [
+            0x0a, 0xaa, 0x01, 0xa5, 0x57, 0x5a, 0x80, 0x55, 0, 0x55, 0, 0x5a, 0x04, 0x5a, 0x00,
+            0xa5, 0x60, 0x5a, 0x0d, 0x5a, 0x78, 0x07, 0x07,
+        ];
+        assert_eq!(
+            d.decode_embedded(&line),
+            crate::ControlSet::new()
+                .with(Control::AnalogGain, 0x80)
+                .with(Control::Exposure, 0x400)
+                .with(Control::FrameLength, 0x0d78)
+        );
+    }
+
+    #[test]
     fn missing_controls_are_reported() {
         let mut r = helios_ov9782();
         r.controls.remove(&KernelControl::PixelRate);
