@@ -3,7 +3,6 @@
 //! The video node is registered with `styx-graph`'s reactor: waiting for a frame is waiting for
 //! the node to be readable, on any executor (or none, with [`FrameStream::next_blocking`]).
 
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -11,7 +10,7 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures_core::Stream;
-use styx_graph::rt::{self, AsyncFd};
+use styx_graph::rt;
 use styx_kernel::FourCc;
 use styx_kernel::bus::StreamRequest;
 use styx_kernel::v4l2::BufferFlags;
@@ -19,9 +18,10 @@ use styx_sensor::{DriverState, RegisterBus, SensorPins};
 
 use crate::buffers::{FrameHead, Lender, NativeFrame};
 use crate::control::{FrameControls, SensorControl, lock};
-use crate::device::{CaptureDevice, FAULT_POLL};
+use crate::device::CaptureDevice;
 use crate::embedded::EmbeddedCapture;
 use crate::error::{KernelContext, NativeError, Result};
+use crate::events::FrameNotify;
 use crate::health::{Fault, Health};
 
 /// What the stream and the event thread need from the sensor side, without its bus types.
@@ -93,7 +93,9 @@ const SYNC_MISSING_FRAMES: u32 = 3;
 
 /// State shared by a stream, its frames and the camera.
 pub(crate) struct StreamShared {
-    pub(crate) fd: Arc<AsyncFd<Arc<dyn CaptureDevice>>>,
+    pub(crate) video: Arc<dyn CaptureDevice>,
+    /// Wakes a waiting stream (through the event thread, which polls the node).
+    pub(crate) notify: Arc<FrameNotify>,
     pub(crate) lender: Arc<Lender>,
     pub(crate) sensor: Arc<dyn SensorSide>,
     pub(crate) embedded: Option<Arc<EmbeddedCapture>>,
@@ -124,7 +126,8 @@ pub(crate) struct StreamShared {
 
 impl StreamShared {
     pub(crate) fn new(
-        fd: Arc<AsyncFd<Arc<dyn CaptureDevice>>>,
+        video: Arc<dyn CaptureDevice>,
+        notify: Arc<FrameNotify>,
         lender: Arc<Lender>,
         sensor: Arc<dyn SensorSide>,
         health: Arc<Health>,
@@ -132,7 +135,8 @@ impl StreamShared {
     ) -> Self {
         let (fourcc, width, height, stride) = format;
         Self {
-            fd,
+            video,
+            notify,
             lender,
             sensor,
             embedded: None,
@@ -181,8 +185,8 @@ impl StreamShared {
     }
 
     /// Dequeues a finished buffer if there is one.
-    fn try_dequeue(self: &Arc<Self>) -> Result<Option<NativeFrame>> {
-        let video = self.fd.get_ref();
+    fn try_dequeue(&self) -> Result<Option<NativeFrame>> {
+        let video = &self.video;
         let Some(buf) = video
             .dequeue(self.lender.buffers.memory())
             .step("VIDIOC_DQBUF")?
@@ -243,41 +247,29 @@ impl StreamShared {
         Some(f.to_error())
     }
 
-    /// The next frame; `None` once the stream stopped.
-    async fn next_frame(self: Arc<Self>) -> Option<Result<NativeFrame>> {
-        loop {
-            if let Some(e) = self.fault() {
-                return Some(Err(e));
+    /// The next frame, `None` once the stream stopped, or `Pending` with `cx`'s waker
+    /// registered. A frame is only taken from the queue when it is returned.
+    fn poll_frame(&self, cx: &mut Context<'_>) -> Poll<Option<Result<NativeFrame>>> {
+        if let Some(e) = self.fault() {
+            return Poll::Ready(Some(Err(e)));
+        }
+        if !self.streaming() {
+            return Poll::Ready(None);
+        }
+        // Register before looking, so a frame that arrives in between wakes us.
+        self.notify.register(cx.waker());
+        match self.try_dequeue() {
+            Ok(Some(f)) => Poll::Ready(Some(Ok(f))),
+            Ok(None) => Poll::Pending,
+            Err(_) if !self.streaming() => Poll::Ready(None),
+            Err(e) if e.is_disconnect() => {
+                self.disconnected.store(true, Ordering::Release);
+                Poll::Ready(Some(Err(NativeError::Disconnected)))
             }
-            if !self.streaming() {
-                return None;
-            }
-            match self.try_dequeue() {
-                Ok(Some(f)) => return Some(Ok(f)),
-                Ok(None) => {}
-                Err(_) if !self.streaming() => return None,
-                Err(e) if e.is_disconnect() => {
-                    self.disconnected.store(true, Ordering::Release);
-                    return Some(Err(NativeError::Disconnected));
-                }
-                Err(e) => return Some(Err(e)),
-            }
-            // Bounded, so faults found by the event thread end the wait.
-            match rt::timeout(FAULT_POLL, self.fd.readable()).await {
-                Ok(Ok(ready)) if ready.is_hangup() => {
-                    self.disconnected.store(true, Ordering::Release);
-                    return Some(Err(NativeError::Disconnected));
-                }
-                // An error with the stream stopped ends it; while streaming the next dequeue
-                // reports what happened.
-                Ok(Ok(_)) | Err(_) => {}
-                Ok(Err(e)) => return Some(Err(NativeError::kernel("wait for a frame", e))),
-            }
+            Err(e) => Poll::Ready(Some(Err(e))),
         }
     }
 }
-
-type NextFrame = Pin<Box<dyn Future<Output = Option<Result<NativeFrame>>> + Send>>;
 
 /// Frames of a started camera, as an async [`Stream`] or with [`FrameStream::next_blocking`].
 ///
@@ -287,13 +279,12 @@ type NextFrame = Pin<Box<dyn Future<Output = Option<Result<NativeFrame>>> + Send
 /// corrupted. The camera then still has to be stopped (or dropped), which puts the sensor in
 /// standby and powers it down.
 ///
-/// Works on any executor (tokio, smol, a hand-written loop) or none: waiting registers the
-/// capture node with `styx-graph`'s reactor thread. Dropping a pending `next()` future, or the
-/// stream itself, at any point loses no frame and leaks nothing: a frame is only taken from
-/// the queue inside a poll that returns it.
+/// Works on any executor (tokio, smol, a hand-written loop) or none: a waiting stream is woken
+/// through its [`std::task::Waker`] by the camera's event thread, which polls the capture node.
+/// Dropping a pending `next()` future, or the stream itself, at any point loses no frame and
+/// leaks nothing: a frame is only taken from the queue inside a poll that returns it.
 pub struct FrameStream {
     shared: Arc<StreamShared>,
-    pending: Option<NextFrame>,
     ended: bool,
 }
 
@@ -301,7 +292,6 @@ impl FrameStream {
     pub(crate) fn new(shared: Arc<StreamShared>) -> Self {
         Self {
             shared,
-            pending: None,
             ended: false,
         }
     }
@@ -379,19 +369,10 @@ impl Stream for FrameStream {
         if self.ended {
             return Poll::Ready(None);
         }
-        let this = &mut *self;
-        let fut = this
-            .pending
-            .get_or_insert_with(|| Box::pin(Arc::clone(&this.shared).next_frame()));
-        match fut.as_mut().poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(item) => {
-                this.pending = None;
-                if !matches!(item, Some(Ok(_))) {
-                    this.ended = true;
-                }
-                Poll::Ready(item)
-            }
+        let item = std::task::ready!(self.shared.poll_frame(cx));
+        if !matches!(item, Some(Ok(_))) {
+            self.ended = true;
         }
+        Poll::Ready(item)
     }
 }

@@ -1,9 +1,8 @@
 //! Fakes of the sensor bridge and a vb2 capture queue that follow the kernel's rules closely
 //! enough to test the runtime's error paths on the host, with knobs that inject faults.
 //!
-//! - [`FakeBridge`]: stream requests queued on start/stop with a bounded wait for the
-//!   acknowledgement (`ETIMEDOUT`, `ESTALE` for late acks), power refused while not idle, and
-//!   unplugging (`ENODEV`, hang-up).
+//! - [`FakeBridge`] (`fake_bridge.rs`): stream requests with a bounded wait for the
+//!   acknowledgement, power refused while not idle, and unplugging.
 //! - [`FakeQueue`] and its [`FakeVideo`] handles (file descriptions): `REQBUFS` owned by the
 //!   handle that allocated (`EBUSY` for others, and while streaming), orphaning on `REQBUFS 0`
 //!   (memfd-backed buffers stay mapped), `QBUF` only of dequeued buffers, `STREAMON` calling
@@ -17,35 +16,34 @@ use std::collections::VecDeque;
 use std::io::{self, PipeReader, PipeWriter, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
-use styx_graph::rt::{self, Interest};
-use styx_kernel::Mapping;
-use styx_kernel::bus::{StreamAction, StreamRequest};
+use styx_graph::rt;
 use styx_kernel::dma_heap::DmaBuf;
 use styx_kernel::event::{Event, EventKind};
 use styx_kernel::v4l2::{BufferFlags, DequeuedBuffer, Memory, QueueBuffer};
+use styx_kernel::{Mapping, Wait};
 
-use crate::device::{BridgeDevice, CaptureDevice};
-use crate::regbus::PowerSwitch;
+use crate::device::CaptureDevice;
+pub(crate) use crate::fake_bridge::{BridgeState, FakeBridge};
 
-fn errno(e: i32) -> io::Error {
+pub(crate) fn errno(e: i32) -> io::Error {
     io::Error::from_raw_os_error(e)
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A pipe used as a readiness flag with a count: one byte per pending item.
-struct Signal {
-    reader: PipeReader,
+pub(crate) struct Signal {
+    pub(crate) reader: PipeReader,
     writer: Mutex<Option<PipeWriter>>,
 }
 
 impl Signal {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (reader, writer) = std::io::pipe().expect("pipe");
         rt::set_nonblocking(reader.as_fd()).expect("nonblocking");
         Self {
@@ -54,248 +52,23 @@ impl Signal {
         }
     }
 
-    fn raise(&self) {
+    pub(crate) fn raise(&self) {
         if let Some(w) = lock(&self.writer).as_mut() {
             let _ = w.write_all(&[1]);
         }
     }
 
-    fn lower(&self) {
+    pub(crate) fn lower(&self) {
         let _ = (&self.reader).read(&mut [0u8; 1]);
     }
 
-    fn clear(&self) {
+    pub(crate) fn clear(&self) {
         while (&self.reader).read(&mut [0u8; 64]).is_ok_and(|n| n > 0) {}
     }
 
     /// Closes the write end: the read end reports a hang-up.
-    fn hang_up(&self) {
+    pub(crate) fn hang_up(&self) {
         lock(&self.writer).take();
-    }
-}
-
-/// Bridge stream states.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BridgeState {
-    Idle,
-    Starting,
-    Streaming,
-    Stopping,
-}
-
-#[derive(Debug)]
-struct BridgeInner {
-    state: BridgeState,
-    power: bool,
-    seq: u32,
-    /// The sequence the bridge waits for, and the ack status once given.
-    waiting: Option<u32>,
-    status: Option<i32>,
-    pending: VecDeque<StreamRequest>,
-    timeout: Duration,
-    gone: bool,
-    /// Requests are not queued (lost): starts time out.
-    deaf: bool,
-    /// What a request carries besides action, sequence and timeout.
-    template: StreamRequest,
-    /// Acks that came too late (`ESTALE`).
-    stale_acks: u64,
-}
-
-/// The sensor bridge.
-pub(crate) struct FakeBridge {
-    inner: Mutex<BridgeInner>,
-    acked: Condvar,
-    signal: Signal,
-}
-
-impl FakeBridge {
-    pub(crate) fn new(template: StreamRequest) -> Arc<Self> {
-        Arc::new(Self {
-            inner: Mutex::new(BridgeInner {
-                state: BridgeState::Idle,
-                power: false,
-                seq: 0,
-                waiting: None,
-                status: None,
-                pending: VecDeque::new(),
-                timeout: Duration::from_millis(500),
-                gone: false,
-                deaf: false,
-                template,
-                stale_acks: 0,
-            }),
-            acked: Condvar::new(),
-            signal: Signal::new(),
-        })
-    }
-
-    pub(crate) fn state(&self) -> BridgeState {
-        lock(&self.inner).state
-    }
-
-    pub(crate) fn powered(&self) -> bool {
-        lock(&self.inner).power
-    }
-
-    pub(crate) fn stale_acks(&self) -> u64 {
-        lock(&self.inner).stale_acks
-    }
-
-    pub(crate) fn set_timeout(&self, t: Duration) {
-        lock(&self.inner).timeout = t;
-    }
-
-    /// Requests get lost from now on (`true`), or are delivered again.
-    pub(crate) fn set_deaf(&self, deaf: bool) {
-        lock(&self.inner).deaf = deaf;
-    }
-
-    /// The module is unloaded / the overlay removed: every call fails with `ENODEV`, waits
-    /// end with it, the node hangs up.
-    pub(crate) fn unplug(&self) {
-        let mut b = lock(&self.inner);
-        b.gone = true;
-        b.power = false;
-        b.state = BridgeState::Idle;
-        if b.waiting.take().is_some() {
-            b.status = Some(-libc::ENODEV);
-        }
-        drop(b);
-        self.acked.notify_all();
-        self.signal.hang_up();
-    }
-
-    /// The receiver's `s_stream`: queues a request and waits for its acknowledgement.
-    pub(crate) fn s_stream(&self, on: bool) -> io::Result<()> {
-        let mut b = lock(&self.inner);
-        if b.gone {
-            return Err(errno(libc::ENODEV));
-        }
-        let (action, transient) = if on {
-            if b.state != BridgeState::Idle {
-                return Err(errno(libc::EBUSY));
-            }
-            (StreamAction::Start, BridgeState::Starting)
-        } else {
-            if b.state != BridgeState::Streaming {
-                return Ok(());
-            }
-            (StreamAction::Stop, BridgeState::Stopping)
-        };
-        b.seq += 1;
-        let seq = b.seq;
-        b.waiting = Some(seq);
-        b.status = None;
-        b.state = transient;
-        let req = StreamRequest {
-            action,
-            sequence: seq,
-            timeout: b.timeout,
-            ..b.template
-        };
-        if !b.deaf {
-            b.pending.push_back(req);
-            self.signal.raise();
-        }
-        let deadline = Instant::now() + b.timeout;
-        while b.status.is_none() && !b.gone {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
-            b = self
-                .acked
-                .wait_timeout(b, left)
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
-        }
-        b.waiting = None;
-        let status = b.status.take().unwrap_or(-libc::ETIMEDOUT);
-        if b.gone {
-            return Err(errno(libc::ENODEV));
-        }
-        b.state = match (on, status) {
-            (true, 0) => BridgeState::Streaming,
-            _ => BridgeState::Idle,
-        };
-        if on && status != 0 {
-            return Err(errno(-status));
-        }
-        Ok(())
-    }
-}
-
-impl AsFd for FakeBridge {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.signal.reader.as_fd()
-    }
-}
-
-impl BridgeDevice for FakeBridge {
-    fn try_next_request(&self) -> io::Result<Option<StreamRequest>> {
-        let mut b = lock(&self.inner);
-        if b.gone {
-            return Err(errno(libc::ENODEV));
-        }
-        let r = b.pending.pop_front();
-        if r.is_some() {
-            self.signal.lower();
-        }
-        Ok(r)
-    }
-
-    fn acknowledge(&self, req: &StreamRequest, result: Result<(), i32>) -> io::Result<()> {
-        let mut b = lock(&self.inner);
-        if b.gone {
-            return Err(errno(libc::ENODEV));
-        }
-        if b.waiting != Some(req.sequence) || b.status.is_some() {
-            b.stale_acks += 1;
-            return Err(errno(libc::ESTALE));
-        }
-        b.status = Some(result.map_or_else(|e| -e, |()| 0));
-        drop(b);
-        self.acked.notify_all();
-        Ok(())
-    }
-
-    fn power(&self) -> io::Result<bool> {
-        let b = lock(&self.inner);
-        if b.gone {
-            return Err(errno(libc::ENODEV));
-        }
-        Ok(b.power)
-    }
-
-    fn set_power(&self, on: bool) -> io::Result<()> {
-        let mut b = lock(&self.inner);
-        if b.gone {
-            return Err(errno(libc::ENODEV));
-        }
-        if !on && b.state != BridgeState::Idle {
-            return Err(errno(libc::EBUSY));
-        }
-        b.power = on;
-        Ok(())
-    }
-
-    fn is_idle(&self) -> io::Result<bool> {
-        let b = lock(&self.inner);
-        if b.gone {
-            return Err(errno(libc::ENODEV));
-        }
-        Ok(b.state == BridgeState::Idle)
-    }
-
-    fn request_interest(&self) -> Interest {
-        Interest::READABLE
-    }
-}
-
-impl PowerSwitch for FakeBridge {
-    fn set_power(&self, on: bool) -> io::Result<()> {
-        BridgeDevice::set_power(self, on)
     }
 }
 
@@ -353,6 +126,9 @@ pub(crate) struct QueueCounters {
 
 /// A capture queue shared by the handles opened on it.
 pub(crate) struct FakeQueue {
+    /// The node's lock, as `rp1-cfe`'s: every ioctl takes it, and `STREAMON`/`STREAMOFF`
+    /// hold it while the bridge waits for its acknowledgement.
+    node: Mutex<()>,
     inner: Mutex<QueueInner>,
     bridge: Arc<FakeBridge>,
     frames: Signal,
@@ -375,6 +151,7 @@ pub(crate) struct FakeVideo {
 impl FakeQueue {
     pub(crate) fn new(bridge: Arc<FakeBridge>, buffer_len: usize) -> Arc<Self> {
         Arc::new(Self {
+            node: Mutex::new(()),
             inner: Mutex::new(QueueInner {
                 buffers: Vec::new(),
                 memory: Memory::Mmap,
@@ -591,6 +368,7 @@ impl AsFd for FakeVideo {
 
 impl CaptureDevice for FakeVideo {
     fn request_buffers(&self, memory: Memory, count: u32) -> io::Result<u32> {
+        let _node = lock(&self.queue.node);
         let mut q = lock(&self.queue.inner);
         self.check(&q)?;
         if q.streaming || q.owner.is_some_and(|o| o != self.file) {
@@ -630,6 +408,7 @@ impl CaptureDevice for FakeVideo {
     }
 
     fn map_buffer(&self, index: u32) -> io::Result<Mapping> {
+        let _node = lock(&self.queue.node);
         let q = lock(&self.queue.inner);
         self.check(&q)?;
         let b = q
@@ -641,6 +420,7 @@ impl CaptureDevice for FakeVideo {
     }
 
     fn export_buffer(&self, index: u32) -> io::Result<OwnedFd> {
+        let _node = lock(&self.queue.node);
         let q = lock(&self.queue.inner);
         self.check(&q)?;
         let b = q
@@ -654,6 +434,7 @@ impl CaptureDevice for FakeVideo {
     }
 
     fn queue(&self, req: &QueueBuffer<'_>) -> io::Result<()> {
+        let _node = lock(&self.queue.node);
         let mut q = lock(&self.queue.inner);
         self.check(&q)?;
         let memory = q.memory;
@@ -680,6 +461,7 @@ impl CaptureDevice for FakeVideo {
     }
 
     fn dequeue(&self, _memory: Memory) -> io::Result<Option<DequeuedBuffer>> {
+        let _node = lock(&self.queue.node);
         let mut q = lock(&self.queue.inner);
         self.check(&q)?;
         if q.fatal {
@@ -706,6 +488,7 @@ impl CaptureDevice for FakeVideo {
     }
 
     fn stream_on(&self) -> io::Result<()> {
+        let _node = lock(&self.queue.node);
         {
             let mut q = lock(&self.queue.inner);
             self.check(&q)?;
@@ -731,6 +514,7 @@ impl CaptureDevice for FakeVideo {
     }
 
     fn stream_off(&self) -> io::Result<()> {
+        let _node = lock(&self.queue.node);
         {
             let q = lock(&self.queue.inner);
             self.check(&q)?;
@@ -750,6 +534,7 @@ impl CaptureDevice for FakeVideo {
     }
 
     fn dequeue_event(&self) -> io::Result<Option<Event>> {
+        let _node = lock(&self.queue.node);
         let mut q = lock(&self.queue.inner);
         self.check(&q)?;
         let Some(seq) = q.events.pop_front() else {
@@ -771,11 +556,11 @@ impl CaptureDevice for FakeVideo {
         self.events_fd.as_ref().unwrap_or(&self.frames_fd).as_fd()
     }
 
-    fn event_interest(&self) -> Interest {
+    fn event_wait(&self) -> Wait {
         if self.events_fd.is_some() {
-            Interest::READABLE
+            Wait::READABLE
         } else {
-            Interest::PRIORITY
+            Wait::PRIORITY
         }
     }
 }

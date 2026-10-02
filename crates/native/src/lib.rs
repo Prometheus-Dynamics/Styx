@@ -17,6 +17,8 @@ mod events;
 #[cfg(test)]
 mod fake;
 #[cfg(test)]
+mod fake_bridge;
+#[cfg(test)]
 mod fault_tests;
 pub mod formats;
 pub mod graph;

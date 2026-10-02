@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use styx_graph::rt::AsyncFd;
 use styx_kernel::FourCc;
 use styx_kernel::dma_heap::DmaHeap;
 
@@ -60,7 +59,7 @@ struct Running {
 pub(crate) struct Session {
     bridge: Arc<dyn BridgeDevice>,
     sensor: Arc<dyn SensorSide>,
-    video: Option<Arc<AsyncFd<Arc<dyn CaptureDevice>>>>,
+    video: Option<Arc<dyn CaptureDevice>>,
     embedded: Option<Arc<EmbeddedCapture>>,
     frame_sync: bool,
     options: SessionOptions,
@@ -91,8 +90,7 @@ impl Session {
         video: Arc<dyn CaptureDevice>,
         frame_sync: bool,
     ) -> Result<()> {
-        let fd = AsyncFd::new(video).step("register video node")?;
-        self.video = Some(Arc::new(fd));
+        self.video = Some(video);
         self.frame_sync = frame_sync;
         Ok(())
     }
@@ -125,16 +123,17 @@ impl Session {
         if self.running.is_some() {
             return Err(NativeError::Busy("already streaming".into()));
         }
-        let fd = Arc::clone(
+        let video = Arc::clone(
             self.video
                 .as_ref()
                 .ok_or(NativeError::State("configure before starting"))?,
         );
-        let video = Arc::clone(fd.get_ref());
         let health = Arc::new(Health::default());
+        // Spawned quiesced: it leaves the capture node alone until STREAMON returned.
         let events = EventThread::spawn(EventSources {
             bridge: Arc::clone(&self.bridge),
-            video: self.frame_sync.then(|| Arc::clone(&fd)),
+            video: Arc::clone(&video),
+            frame_sync: self.frame_sync,
             sensor: Arc::clone(&self.sensor),
             embedded: self.embedded.clone(),
             health: Arc::clone(&health),
@@ -161,7 +160,8 @@ impl Session {
             buffers: Arc::new(buffers),
         });
         let mut shared = StreamShared::new(
-            fd,
+            Arc::clone(&video),
+            events.notify(),
             Arc::clone(&lender),
             Arc::clone(&self.sensor),
             Arc::clone(&health),
@@ -190,6 +190,7 @@ impl Session {
             undo(events, self.embedded.as_ref());
             return Err(stream_on_error(e, &health));
         }
+        events.resume();
         self.running = Some(Running {
             shared: Arc::clone(&shared),
             events,
@@ -205,8 +206,11 @@ impl Session {
         };
         let buffers = &running.shared.lender.buffers;
         buffers.retire();
-        let video = running.shared.fd.get_ref();
-        let result = video.stream_off().step("VIDIOC_STREAMOFF");
+        // The stream ends: wake it if it waits.
+        running.shared.notify.wake();
+        // Nothing may poll the node while STREAMOFF holds its lock and waits for the bridge.
+        running.events.quiesce();
+        let result = running.shared.video.stream_off().step("VIDIOC_STREAMOFF");
         running.events.join();
         if let Some(e) = &self.embedded {
             e.stop();

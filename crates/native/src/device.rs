@@ -5,13 +5,11 @@
 
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::time::Duration;
 
-use styx_graph::rt::Interest;
-use styx_kernel::Mapping;
 use styx_kernel::bus::{SensorBridge, StreamRequest, StreamState};
 use styx_kernel::event::{Event, Events};
 use styx_kernel::v4l2::{BufType, DequeuedBuffer, Memory, QueueBuffer, VideoDevice};
+use styx_kernel::{Mapping, Wait};
 
 /// The sensor bridge as a running stream uses it.
 pub(crate) trait BridgeDevice: AsFd + Send + Sync {
@@ -26,8 +24,8 @@ pub(crate) trait BridgeDevice: AsFd + Send + Sync {
     /// Whether the bridge's stream is idle (no start or stop waiting, not streaming).
     fn is_idle(&self) -> io::Result<bool>;
     /// What readiness of the descriptor means "a request is pending".
-    fn request_interest(&self) -> Interest {
-        Interest::PRIORITY
+    fn request_wait(&self) -> Wait {
+        Wait::PRIORITY
     }
 }
 
@@ -80,8 +78,8 @@ pub(crate) trait CaptureDevice: AsFd + Send + Sync {
         self.as_fd()
     }
     /// What readiness of [`Self::event_fd`] means "an event is pending".
-    fn event_interest(&self) -> Interest {
-        Interest::PRIORITY
+    fn event_wait(&self) -> Wait {
+        Wait::PRIORITY
     }
 }
 
@@ -124,16 +122,3 @@ impl CaptureDevice for VideoDevice {
         Ok(Events::dequeue_event(self)?)
     }
 }
-
-/// A capture device's event descriptor as something to register with the reactor.
-pub(crate) struct EventSource(pub(crate) std::sync::Arc<dyn CaptureDevice>);
-
-impl AsFd for EventSource {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.event_fd()
-    }
-}
-
-/// How long to wait between checks for faults reported by another thread while waiting for a
-/// frame.
-pub(crate) const FAULT_POLL: Duration = Duration::from_millis(100);

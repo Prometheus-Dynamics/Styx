@@ -244,6 +244,92 @@ pub(crate) fn poll_fd(
     }
 }
 
+/// What to wait for on one descriptor with [`poll`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Wait {
+    /// `POLLIN`.
+    pub readable: bool,
+    /// `POLLPRI` (V4L2 events).
+    pub priority: bool,
+}
+
+impl Wait {
+    /// Nothing (errors and hang-ups are still reported).
+    pub const NONE: Wait = Wait {
+        readable: false,
+        priority: false,
+    };
+    /// `POLLIN`.
+    pub const READABLE: Wait = Wait {
+        readable: true,
+        priority: false,
+    };
+    /// `POLLPRI`.
+    pub const PRIORITY: Wait = Wait {
+        readable: false,
+        priority: true,
+    };
+
+    /// Both waits.
+    pub fn union(self, other: Wait) -> Wait {
+        Wait {
+            readable: self.readable || other.readable,
+            priority: self.priority || other.priority,
+        }
+    }
+
+    fn events(self) -> i16 {
+        let mut e = 0;
+        if self.readable {
+            e |= libc::POLLIN;
+        }
+        if self.priority {
+            e |= libc::POLLPRI;
+        }
+        e
+    }
+}
+
+/// Waits (`poll(2)`) until one of `fds` is ready or the timeout passes (`None` waits
+/// forever). Returns what each descriptor reported, in order (all empty on a timeout).
+/// Errors and hang-ups are always reported.
+pub fn poll(
+    fds: &[(BorrowedFd<'_>, Wait)],
+    timeout: Option<std::time::Duration>,
+) -> Result<Vec<Ready>> {
+    let timeout_ms = match timeout {
+        None => -1,
+        // Round up: a 0.5 ms wait must not become a busy loop.
+        Some(t) => t.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32,
+    };
+    let mut pfds: Vec<libc::pollfd> = fds
+        .iter()
+        .map(|(fd, wait)| libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: wait.events(),
+            revents: 0,
+        })
+        .collect();
+    loop {
+        // SAFETY: `pfds` is a valid array of `pfds.len()` pollfds for the duration of the call,
+        // and the descriptors are borrowed for it.
+        let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms) };
+        if ret >= 0 {
+            return Ok(pfds
+                .iter()
+                .map(|p| Ready::from_revents(p.revents))
+                .collect());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EINTR) {
+            return Err(Error::Sys {
+                call: "poll",
+                source: err,
+            });
+        }
+    }
+}
+
 /// Lists `/dev/<prefix>N` nodes (e.g. `video0`, `media3`), sorted by `N`.
 pub(crate) fn list_dev_nodes(prefix: &str) -> Vec<std::path::PathBuf> {
     let mut found: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir("/dev")
@@ -264,6 +350,36 @@ pub(crate) fn list_dev_nodes(prefix: &str) -> Vec<std::path::PathBuf> {
 pub(crate) fn cstr_field(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+#[cfg(test)]
+mod poll_tests {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+
+    use super::*;
+
+    #[test]
+    fn polls_several_descriptors() {
+        let (a, mut aw) = std::io::pipe().unwrap();
+        let (b, bw) = std::io::pipe().unwrap();
+        let t = Some(std::time::Duration::from_millis(1));
+        let r = poll(
+            &[(a.as_fd(), Wait::READABLE), (b.as_fd(), Wait::READABLE)],
+            t,
+        )
+        .unwrap();
+        assert!(r.iter().all(Ready::is_empty));
+        aw.write_all(b"x").unwrap();
+        drop(bw);
+        let r = poll(&[(a.as_fd(), Wait::READABLE), (b.as_fd(), Wait::NONE)], t).unwrap();
+        assert!(r[0].readable && !r[0].hangup);
+        assert!(r[1].hangup, "{:?}", r[1]);
+        assert_eq!(
+            Wait::READABLE.union(Wait::PRIORITY).events(),
+            libc::POLLIN | libc::POLLPRI
+        );
+    }
 }
 
 #[cfg(test)]

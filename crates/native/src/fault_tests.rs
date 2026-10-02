@@ -568,6 +568,33 @@ fn dropping_things_mid_stream_leaves_a_clean_state() {
     assert_eq!(queue.counters().bad_qbufs, 0);
 }
 
+/// The receiver holds the node's lock through `STREAMON`/`STREAMOFF` while the bridge waits for
+/// the acknowledgement; frame-start events keep arriving meanwhile. Touching the node then
+/// (a `DQEVENT`) would block the acknowledgement until the bridge times out.
+#[test]
+fn start_and_stop_are_acknowledged_while_events_arrive() {
+    let mut rig = Rig::new();
+    let producer = rig.queue.run(Duration::from_micros(300));
+    for _ in 0..20 {
+        let mut stream = rig.start().unwrap();
+        for _ in 0..3 {
+            stream.next_blocking(WAIT).unwrap().unwrap();
+        }
+        let t = std::time::Instant::now();
+        rig.session.stop().unwrap();
+        assert!(
+            t.elapsed() < Duration::from_millis(250),
+            "stop took {:?}",
+            t.elapsed()
+        );
+    }
+    drop(producer);
+    assert_eq!(rig.bridge.timeouts(), 0);
+    assert_eq!(rig.bridge.stale_acks(), 0);
+    rig.session.shutdown().unwrap();
+    rig.assert_shut_down();
+}
+
 #[test]
 fn many_restarts_keep_no_resources() {
     let mut rig = Rig::new();
