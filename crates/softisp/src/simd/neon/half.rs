@@ -29,22 +29,26 @@ unsafe fn pair(even: u16, odd: u16) -> float16x8_t {
     unsafe { vreinterpretq_f16_u32(vdupq_n_u32(u32::from(even) | u32::from(odd) << 16)) }
 }
 
-/// Runs `block` at `0, n, 2n, ...` and, when `width` is not a multiple of `n` (but at least
-/// `n`), once more at `width - n`, overlapping the previous block: the kernels' pixels depend
-/// only on their inputs, so the overlap is written twice with the same values, and no pixel
-/// is left to the (slow, emulated) scalar oracle. Returns the pixels done.
-#[inline(always)]
-fn blocks(width: usize, n: usize, mut block: impl FnMut(usize)) -> usize {
-    let mut x = 0;
-    while x + n <= width {
-        block(x);
-        x += n;
-    }
-    if x < width && width >= n {
-        block(width - n);
-        x = width;
-    }
-    x
+/// Runs `$body` with `$x` at `0, n, 2n, ...` and, when `width` is not a multiple of `n` (but at
+/// least `n`), once more at `width - n`, overlapping the previous block: the kernels' pixels
+/// depend only on their inputs, so the overlap is written twice with the same values, and no
+/// pixel is left to the (slow, emulated) scalar oracle. Evaluates to the pixels done. (A
+/// macro: a closure here made the colour kernel 35% slower, its tables spilled.)
+macro_rules! blocks {
+    ($width:expr, $n:expr, |$x:ident| $body:block) => {{
+        let (width, n) = ($width, $n);
+        let mut $x = 0;
+        while $x + n <= width {
+            $body
+            $x += n;
+        }
+        if $x < width && width >= n {
+            $x = width - n;
+            $body
+            $x = width;
+        }
+        $x
+    }};
 }
 
 /// The tone curve's tables, held in registers.
@@ -282,7 +286,7 @@ pub(in crate::simd) unsafe fn colour(
         let c = cc.c.map(|row| row.map(|v| pair(v[0], v[1])));
         let t = Tables::new(tone);
         // Even block starts (`width` is even): the column parities hold.
-        x = blocks(width, 16, |x| {
+        x = blocks!(width, 16, |x| {
             let a = colour8(rows, x, mask, &c);
             let b = colour8(rows, x + 8, mask, &c);
             let rgb = std::array::from_fn(|k| t.apply(a[k], b[k]));
@@ -334,7 +338,7 @@ pub(in crate::simd) unsafe fn quad_colour(
                 vmaxq_f16(acc, sixteen)
             })
         };
-        i = blocks(width, 16, |i| {
+        i = blocks!(width, 16, |i| {
             let a = colour(quad8(
                 vld2q_u16(top.as_ptr().add(2 * i)),
                 vld2q_u16(bottom.as_ptr().add(2 * i)),
@@ -382,7 +386,7 @@ pub(in crate::simd) unsafe fn luma(
         };
         let tables = Tables::new(tone);
         let out = dst.as_mut_ptr();
-        x = blocks(width, 16, |x| {
+        x = blocks!(width, 16, |x| {
             vst1q_u8(out.add(x), tables.apply(s(x), s(x + 8)));
         });
     }
@@ -412,7 +416,7 @@ pub(in crate::simd) unsafe fn quad_luma(
         };
         let tables = Tables::new(tone);
         let out = dst.as_mut_ptr();
-        i = blocks(width, 16, |i| {
+        i = blocks!(width, 16, |i| {
             vst1q_u8(out.add(i), tables.apply(s(i), s(i + 8)));
         });
     }
@@ -436,7 +440,7 @@ pub(in crate::simd) unsafe fn quad_stats(
     unsafe {
         let (scale, max) = (splat(scale), vdupq_n_u16(4095));
         let outs = out.map(|o| o.as_mut_ptr());
-        i = blocks(width, 8, |i| {
+        i = blocks!(width, 8, |i| {
             let q = quad8(
                 vld2q_u16(top.as_ptr().add(2 * i)),
                 vld2q_u16(bottom.as_ptr().add(2 * i)),
