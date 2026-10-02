@@ -184,19 +184,27 @@ fn shaded_gains(
     let (w, h) = (format.width as usize, format.height as usize);
     let grids = [&ls.r, &ls.g, &ls.b];
     let x_map = grid_map(w, gw);
+    // Per column: the grid nodes either side and the weight of the second.
+    let cols: Vec<(usize, usize, f32)> = x_map
+        .iter()
+        .map(|&(i, f)| {
+            let i = i as usize;
+            (i.min(gw - 1), (i + 1).min(gw - 1), f as f32 / 65536.0)
+        })
+        .collect();
     let rows = [0, 1].map(|parity| {
+        // Everything but the shading depends on the column's parity only.
+        let gain = [0, 1].map(|x| cell_gain(x, parity));
+        let grid = [0, 1].map(|x| grids[channel_index(format.pattern.channel_at(x, parity))]);
         (0..gh)
             .map(|gy| {
-                (0..w)
-                    .map(|x| {
-                        let ch = channel_index(format.pattern.channel_at(x, parity));
-                        let grid = grids[ch];
-                        let (i, f) = x_map[x];
-                        let i = i as usize;
-                        let node = |i: usize| grid[gy * gw + i.min(gw - 1)];
-                        let t = f as f32 / 65536.0;
-                        let shade = node(i) * (1.0 - t) + node(i + 1) * t;
-                        q12(cell_gain(x, parity) * shade)
+                let nodes = [0, 1].map(|x| &grid[x][gy * gw..][..gw]);
+                cols.iter()
+                    .enumerate()
+                    .map(|(x, &(i, j, t))| {
+                        let node = nodes[x & 1];
+                        let shade = node[i] * (1.0 - t) + node[j] * t;
+                        q12(gain[x & 1] * shade)
                     })
                     .collect()
             })
