@@ -4,8 +4,11 @@ use crate::format::RawFormat;
 use crate::output::{Kind, OutputBuffers, Scale};
 use crate::params::IspParams;
 use crate::pipeline::{Source, Worker};
+use crate::pool::Pool;
 use crate::prepare::Prepared;
 use crate::stats::IspStats;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Why a frame could not be processed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -36,8 +39,9 @@ pub struct SoftIsp {
     format: RawFormat,
     params: IspParams,
     prepared: Prepared,
-    workers: Vec<Worker>,
+    workers: Vec<Mutex<Worker>>,
     threads: usize,
+    pool: Option<Pool>,
 }
 
 impl std::fmt::Debug for SoftIsp {
@@ -57,20 +61,30 @@ impl SoftIsp {
             format,
             params,
             prepared,
-            workers: vec![Worker::default()],
+            workers: vec![Mutex::default()],
             threads: 1,
+            pool: None,
         })
     }
 
-    /// Process row bands on `threads` threads of the rayon pool (0: one per pool thread).
-    /// Without the `rayon` feature, frames are always processed on the calling thread.
+    /// Process each frame in row bands on `threads` threads: the calling thread and
+    /// `threads - 1` helper threads this ISP starts on first use and keeps, asleep between
+    /// frames (0: one thread per CPU). Bands are claimed dynamically, two per thread.
     pub fn with_threads(mut self, threads: usize) -> Self {
         self.set_threads(threads);
         self
     }
 
     pub fn set_threads(&mut self, threads: usize) {
-        self.threads = if cfg!(feature = "rayon") { threads } else { 1 };
+        if threads != self.threads {
+            self.pool = None;
+        }
+        self.threads = threads;
+    }
+
+    /// The thread count set with [`Self::with_threads`].
+    pub fn threads(&self) -> usize {
+        self.threads
     }
 
     /// Replace the parameters (for example new white balance gains from the last statistics).
@@ -125,59 +139,79 @@ impl SoftIsp {
             packing: self.format.packing,
         };
         let p = &self.prepared;
-        let bands = self.band_rows(oh);
+        let threads = self.thread_count();
+        let bands = band_rows(oh, threads);
         let outs = out.into_bands(bands, oh);
-        if self.workers.len() < outs.len() {
-            self.workers.resize_with(outs.len(), Worker::default);
+        let used = threads.min(outs.len());
+        if self.workers.len() < used {
+            self.workers.resize_with(used, Default::default);
         }
-        let jobs: Vec<(usize, OutputBuffers<'_>)> = outs
-            .into_iter()
-            .enumerate()
-            .map(|(i, o)| (i * bands, o))
-            .collect();
-        run_jobs(&mut self.workers, jobs, |worker, (o0, out)| {
-            worker.run_band(p, &src, scale, o0, bands.min(oh - o0), out)
-        });
-        let used = oh.div_ceil(bands);
+        let workers = &mut self.workers[..used];
+        for w in workers.iter_mut() {
+            w.get_mut()
+                .unwrap_or_else(|e| e.into_inner())
+                .begin_frame(p);
+        }
+        if used <= 1 {
+            let w = workers[0].get_mut().unwrap_or_else(|e| e.into_inner());
+            for (k, o) in outs.into_iter().enumerate() {
+                let o0 = k * bands;
+                w.run_band(p, &src, scale, o0, bands.min(oh - o0), o);
+            }
+        } else {
+            let pool = match &mut self.pool {
+                Some(pool) if pool.helpers() + 1 >= used => pool,
+                slot => slot.insert(Pool::new(threads - 1)),
+            };
+            // Bands are claimed in order by whichever thread is free.
+            let jobs: Vec<Mutex<Option<OutputBuffers<'_>>>> =
+                outs.into_iter().map(|o| Mutex::new(Some(o))).collect();
+            let next = AtomicUsize::new(0);
+            let workers = &*workers;
+            pool.run(used, &|t| {
+                let mut w = workers[t].lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    let k = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(job) = jobs.get(k) else { break };
+                    let out = job
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take()
+                        .expect("each band is claimed once");
+                    let o0 = k * bands;
+                    w.run_band(p, &src, scale, o0, bands.min(oh - o0), out);
+                }
+            });
+        }
         Ok(p.stats.as_ref().map(|setup| {
-            let mut acc = self.workers[0].stats.clone().expect("stats prepared");
-            for w in &self.workers[1..used] {
+            let mut ws = self.workers[..used]
+                .iter_mut()
+                .map(|w| w.get_mut().unwrap_or_else(|e| e.into_inner()));
+            let first = ws.next().expect("one worker at least");
+            let mut acc = first.stats.clone().expect("stats prepared");
+            for w in ws {
                 acc.merge(w.stats.as_ref().expect("stats prepared"));
             }
             acc.finish(setup, p.channel_gains)
         }))
     }
 
-    /// Output rows per band: all of them on one thread, else an even share.
-    fn band_rows(&self, oh: usize) -> usize {
-        #[cfg(feature = "rayon")]
-        let threads = if self.threads == 0 {
-            rayon::current_num_threads()
-        } else {
-            self.threads
-        };
-        #[cfg(not(feature = "rayon"))]
-        let threads = 1;
-        if threads <= 1 {
-            return oh;
+    /// Threads processing a frame.
+    fn thread_count(&self) -> usize {
+        match self.threads {
+            0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+            n => n,
         }
-        oh.div_ceil(threads).next_multiple_of(2).max(2)
     }
 }
 
-#[cfg(feature = "rayon")]
-fn run_jobs<J: Send>(workers: &mut [Worker], jobs: Vec<J>, f: impl Fn(&mut Worker, J) + Sync) {
-    use rayon::prelude::*;
-    if jobs.len() == 1 {
-        jobs.into_iter().for_each(|j| f(&mut workers[0], j));
-        return;
+/// Output rows per band: all of them on one thread, else two bands per thread (claimed by
+/// whichever thread is free, so a thread the system delays holds up less of the frame).
+fn band_rows(oh: usize, threads: usize) -> usize {
+    if threads <= 1 {
+        return oh;
     }
-    workers.par_iter_mut().zip(jobs).for_each(|(w, j)| f(w, j));
-}
-
-#[cfg(not(feature = "rayon"))]
-fn run_jobs<J>(workers: &mut [Worker], jobs: Vec<J>, f: impl Fn(&mut Worker, J)) {
-    workers.iter_mut().zip(jobs).for_each(|(w, j)| f(w, j));
+    oh.div_ceil(2 * threads).next_multiple_of(2).max(2)
 }
 
 fn output_size(format: &RawFormat, scale: Scale) -> (u32, u32) {

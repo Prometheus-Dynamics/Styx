@@ -95,8 +95,8 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
-    /// Size the scratch for `p` and forget cached rows.
-    fn prepare(&mut self, p: &Prepared) {
+    /// Size the scratch for `p` and reset the statistics, at the start of a frame.
+    pub fn begin_frame(&mut self, p: &Prepared) {
         let w = p.width;
         if self.width != w {
             self.width = w;
@@ -106,8 +106,6 @@ impl Worker {
             self.luma16 = vec![0; w];
             self.quad = std::array::from_fn(|_| vec![0; w / 2]);
         }
-        self.tags = [None; SLOTS];
-        self.stage.rows = 0;
         match (&p.stats, &mut self.stats) {
             (Some(setup), Some(acc))
                 if acc.histogram.len() == 4 * setup.config.histogram_bins as usize =>
@@ -263,7 +261,8 @@ impl Worker {
         rows: usize,
         out: OutputBuffers,
     ) {
-        self.prepare(p);
+        self.tags = [None; SLOTS];
+        self.stage.rows = 0;
         let ow = match scale {
             Scale::Full => p.width,
             Scale::Half => p.width / 2,

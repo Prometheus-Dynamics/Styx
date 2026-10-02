@@ -19,7 +19,7 @@ use crate::{Codec, CodecDescriptor, CodecError};
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 
-/// Frames at least this large are split into row bands over the rayon pool.
+/// Frames at least this large are split into row bands on the ISP's helper threads (one per CPU).
 const PARALLEL_MIN_PIXELS: usize = 640 * 480;
 
 /// The output a [`SoftIspDecoder`] produces.
