@@ -21,8 +21,12 @@ pub(crate) trait BridgeDevice: AsFd + Send + Sync {
     fn power(&self) -> io::Result<bool>;
     /// Switches the bridge's supplies and clock (refused with `EBUSY` unless idle).
     fn set_power(&self, on: bool) -> io::Result<()>;
+    /// The bridge's stream state.
+    fn stream_state(&self) -> io::Result<StreamState>;
     /// Whether the bridge's stream is idle (no start or stop waiting, not streaming).
-    fn is_idle(&self) -> io::Result<bool>;
+    fn is_idle(&self) -> io::Result<bool> {
+        Ok(self.stream_state()? == StreamState::Idle)
+    }
     /// What readiness of the descriptor means "a request is pending".
     fn request_wait(&self) -> Wait {
         Wait::PRIORITY
@@ -46,8 +50,8 @@ impl BridgeDevice for SensorBridge {
         SensorBridge::set_power(self, on)
     }
 
-    fn is_idle(&self) -> io::Result<bool> {
-        Ok(SensorBridge::stream_state(self)? == StreamState::Idle)
+    fn stream_state(&self) -> io::Result<StreamState> {
+        SensorBridge::stream_state(self)
     }
 }
 

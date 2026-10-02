@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use styx_kernel::FourCc;
+use styx_kernel::bus::StreamState;
 use styx_kernel::dma_heap::DmaHeap;
 
 use crate::buffers::{Allocator, BufferMemory, BufferSet, Lender};
@@ -189,6 +190,20 @@ impl Session {
         if let Err(e) = video.stream_on() {
             undo(events, self.embedded.as_ref());
             return Err(stream_on_error(e, &health));
+        }
+        // By default the bridge does not fail STREAMON for a failed start (rp1-cfe's error
+        // path oopses); it reports it in its state, and the receiver must be stopped.
+        if let Ok(StreamState::StartFailed) = self.bridge.stream_state() {
+            let errno = if health.serve_error().is_some() {
+                libc::EIO
+            } else {
+                libc::ETIMEDOUT
+            };
+            undo(events, self.embedded.as_ref());
+            return Err(stream_on_error(
+                std::io::Error::from_raw_os_error(errno),
+                &health,
+            ));
         }
         events.resume();
         self.running = Some(Running {

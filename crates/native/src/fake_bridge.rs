@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use styx_kernel::Wait;
-use styx_kernel::bus::{StreamAction, StreamRequest};
+use styx_kernel::bus::{StreamAction, StreamRequest, StreamState};
 
 use crate::device::BridgeDevice;
 use crate::fake::{Signal, errno, lock};
@@ -22,6 +22,7 @@ pub(crate) enum BridgeState {
     Starting,
     Streaming,
     Stopping,
+    StartFailed,
 }
 
 #[derive(Debug)]
@@ -43,6 +44,9 @@ struct BridgeInner {
     stale_acks: u64,
     /// Requests that timed out.
     timeouts: u64,
+    /// Failed starts go to the receiver (`report_start_errors=1`); by default they are only
+    /// reported in the state.
+    report_errors: bool,
 }
 
 /// The sensor bridge.
@@ -68,6 +72,7 @@ impl FakeBridge {
                 template,
                 stale_acks: 0,
                 timeouts: 0,
+                report_errors: false,
             }),
             acked: Condvar::new(),
             signal: Signal::new(),
@@ -95,6 +100,11 @@ impl FakeBridge {
         lock(&self.inner).timeout = t;
     }
 
+    /// Return failed starts to the receiver (the module's `report_start_errors=1`).
+    pub(crate) fn set_report_errors(&self, on: bool) {
+        lock(&self.inner).report_errors = on;
+    }
+
     /// Requests get lost from now on (`true`), or are delivered again.
     pub(crate) fn set_deaf(&self, deaf: bool) {
         lock(&self.inner).deaf = deaf;
@@ -120,6 +130,10 @@ impl FakeBridge {
         let mut b = lock(&self.inner);
         if b.gone {
             return Err(errno(libc::ENODEV));
+        }
+        if !on && b.state == BridgeState::StartFailed {
+            b.state = BridgeState::Idle;
+            return Ok(());
         }
         let (action, transient) = if on {
             if b.state != BridgeState::Idle {
@@ -169,9 +183,10 @@ impl FakeBridge {
         }
         b.state = match (on, status) {
             (true, 0) => BridgeState::Streaming,
+            (true, _) if !b.report_errors => BridgeState::StartFailed,
             _ => BridgeState::Idle,
         };
-        if on && status != 0 {
+        if on && status != 0 && b.report_errors {
             return Err(errno(-status));
         }
         Ok(())
@@ -232,12 +247,18 @@ impl BridgeDevice for FakeBridge {
         Ok(())
     }
 
-    fn is_idle(&self) -> io::Result<bool> {
+    fn stream_state(&self) -> io::Result<StreamState> {
         let b = lock(&self.inner);
         if b.gone {
             return Err(errno(libc::ENODEV));
         }
-        Ok(b.state == BridgeState::Idle)
+        Ok(match b.state {
+            BridgeState::Idle => StreamState::Idle,
+            BridgeState::Starting => StreamState::Starting,
+            BridgeState::Streaming => StreamState::Streaming,
+            BridgeState::Stopping => StreamState::Stopping,
+            BridgeState::StartFailed => StreamState::StartFailed,
+        })
     }
 
     fn request_wait(&self) -> Wait {

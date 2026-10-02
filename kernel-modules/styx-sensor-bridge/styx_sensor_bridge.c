@@ -32,6 +32,18 @@
 
 #include "styx_sensor_bridge.h"
 
+/*
+ * rp1-cfe (Raspberry Pi 6.12) oopses when the sensor's s_stream(1) fails while
+ * its front end is unused: its error path stops CSI-2 channel -1
+ * (cfe_stop_channel(node, true) with fe_csi2_channel = -1). By default a failed
+ * start is therefore not reported to the receiver; see
+ * STYX_BRIDGE_STATE_START_FAILED.
+ */
+static bool report_start_errors;
+module_param(report_start_errors, bool, 0644);
+MODULE_PARM_DESC(report_start_errors,
+		 "Return failed starts to the receiver (default: no, report them in STYX_CID_STREAM_STATE)");
+
 #define STYX_MAX_CODES		32
 #define STYX_MAX_SUPPLIES	8
 #define STYX_DEFAULT_TIMEOUT_MS	1000
@@ -342,6 +354,12 @@ static int styx_bridge_start(struct styx_bridge *b)
 
 	ret = styx_bridge_request(b, STYX_BRIDGE_ACTION_START,
 				  STYX_BRIDGE_STATE_STARTING);
+	if (ret && !READ_ONCE(report_start_errors)) {
+		dev_warn(b->dev, "start failed (%d): reported to userspace only\n",
+			 ret);
+		atomic_set(&b->state, STYX_BRIDGE_STATE_START_FAILED);
+		return 0;
+	}
 	if (ret) {
 		atomic_set(&b->state, STYX_BRIDGE_STATE_IDLE);
 		return ret;
@@ -357,6 +375,10 @@ static int styx_bridge_stop(struct styx_bridge *b)
 {
 	int ret;
 
+	/* The sensor never started: nothing to ask userspace. */
+	if (atomic_cmpxchg(&b->state, STYX_BRIDGE_STATE_START_FAILED,
+			   STYX_BRIDGE_STATE_IDLE) == STYX_BRIDGE_STATE_START_FAILED)
+		return 0;
 	if (atomic_read(&b->state) != STYX_BRIDGE_STATE_STREAMING)
 		return 0;
 
@@ -504,7 +526,7 @@ static const struct v4l2_ctrl_config styx_ctrl_state = {
 	.id = STYX_CID_STREAM_STATE,
 	.name = "Styx Stream State",
 	.type = V4L2_CTRL_TYPE_INTEGER,
-	.min = STYX_BRIDGE_STATE_IDLE, .max = STYX_BRIDGE_STATE_STOPPING,
+	.min = STYX_BRIDGE_STATE_IDLE, .max = STYX_BRIDGE_STATE_START_FAILED,
 	.step = 1, .def = STYX_BRIDGE_STATE_IDLE,
 	.flags = V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_VOLATILE,
 };

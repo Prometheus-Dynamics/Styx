@@ -358,6 +358,32 @@ fn a_sensor_that_does_not_answer_fails_the_start_clearly() {
     assert!(!rig.bridge.powered());
 }
 
+/// With `report_start_errors=1` the bridge fails `STREAMON` itself; the same clean state.
+#[test]
+fn failed_starts_reported_to_the_receiver_leave_a_clean_state() {
+    let mut rig = Rig::new();
+    rig.bridge.set_report_errors(true);
+    rig.bridge.set_timeout(Duration::from_millis(50));
+    rig.bridge.set_deaf(true);
+    let err = rig.start().unwrap_err();
+    assert_eq!(err.errno(), Some(libc::ETIMEDOUT), "{err}");
+    rig.assert_stopped();
+    rig.bridge.set_deaf(false);
+    rig.bus.dead.store(true, Ordering::Release);
+    let err = rig.start().unwrap_err();
+    assert!(
+        err.to_string().contains("the sensor did not start"),
+        "{err}"
+    );
+    assert_eq!(err.errno(), Some(libc::EIO));
+    rig.bus.dead.store(false, Ordering::Release);
+    rig.assert_stopped();
+    let mut stream = rig.start().unwrap();
+    frame(&rig, &mut stream);
+    rig.session.shutdown().unwrap();
+    rig.assert_shut_down();
+}
+
 #[test]
 fn a_sensor_that_stops_answering_mid_stream_ends_the_stream() {
     let mut rig = Rig::new();
