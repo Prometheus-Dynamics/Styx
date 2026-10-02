@@ -6,11 +6,12 @@
 //! session as a bridged sensor.
 //!
 //! ```text
-//! open        the subdevice (exclusive between Styx processes: an advisory lock), flips to
-//!             the description's defaults
+//! open        the subdevice (exclusive between Styx processes: an advisory lock; busy while
+//!             libcamera has the media device locked), flips to the description's defaults
 //! configure   sensor format; the driver's ranges for that mode re-read and the description
 //!             rebuilt from them; mode defaults and the start values as controls
-//! start       start values set, then the receiver's STREAMON starts the sensor (s_stream);
+//! start       start values set (at once: not streaming yet), then the receiver's STREAMON
+//!             starts the sensor (s_stream), then the control schedule runs;
 //!             frame starts (FRAME_SYNC) drive the schedule: each control is set `delay`
 //!             frames before the frame it is for, VBLANK in a call of its own first
 //! stop        STREAMOFF stops the sensor; the driver powers it down (runtime PM)
@@ -344,6 +345,15 @@ impl NativeCamera {
         opened: Instant,
         lock: File,
     ) -> Result<Self> {
+        // libcamera locks the media device while it has one of its cameras acquired.
+        if let Ok(media) = MediaDevice::open_read_only(&info.media)
+            && let Ok(Some(pid)) = media.lock_holder()
+        {
+            return Err(NativeError::Busy(format!(
+                "{} is locked by process {pid} (libcamera has a camera of it)",
+                info.media.display()
+            )));
+        }
         let subdev = Arc::new(Subdev::open(&info.location.subdev).step("open the sensor subdev")?);
         // Flips to the description's defaults before anything sets a format: drivers that do
         // not flag the flips as changing the layout report codes that hold with them off.
@@ -400,7 +410,13 @@ impl NativeCamera {
             .kernel
             .clone()
             .ok_or(NativeError::State("not a kernel driver's sensor"))?;
-        let chosen = select_mode(&self.info.modes, settings, &self.info.raw_formats)?.clone();
+        // The rate is checked against the mode's own ranges, known once it is set (until then
+        // every mode has the ranges of the mode that was set at discovery).
+        let any_rate = StreamSettings {
+            interval: None,
+            ..*settings
+        };
+        let chosen = select_mode(&self.info.modes, &any_rate, &self.info.raw_formats)?.clone();
         let pad = self.info.route.sensor_pad;
         let mut f = sd.format(pad, Which::Active).step("sensor format")?;
         f.width = chosen.width;
@@ -424,6 +440,18 @@ impl NativeCamera {
             .find(|m| m.mode == chosen.mode && m.format == chosen.format)
             .cloned()
             .ok_or(NativeError::State("the mode vanished from the driver"))?;
+        if let Some(i) = settings.interval
+            && !mode.allows(i)
+        {
+            return Err(NativeError::InvalidConfig(format!(
+                "{:.3} fps is outside {} {}'s {:.3}..{:.3} fps",
+                i.fps(),
+                mode.mode,
+                mode.format,
+                mode.min_fps(),
+                mode.max_fps()
+            )));
+        }
         self.info.description = Arc::clone(&desc);
         self.info.modes = modes;
         if let Some(k) = self.info.kernel.as_mut() {
@@ -435,7 +463,11 @@ impl NativeCamera {
             let mut c = lock(&self.control);
             c.driver_mut().set_description(desc)?;
             c.bring_up(&mode.mode, &mode.format)?;
-            crate::camera::start_frame_length(&mut c, settings)?
+            let fl = crate::camera::start_frame_length(&mut c, settings)?;
+            // Set now: the driver applies what is set when the receiver starts it, and with
+            // another device's capture the schedule starts only after that.
+            c.driver_mut().issue_now()?;
+            fl
         };
         Ok((mode, frame_length))
     }

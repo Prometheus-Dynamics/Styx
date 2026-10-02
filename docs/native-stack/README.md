@@ -42,11 +42,11 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | Path | Crate | What | Owner |
 |---|---|---|---|
 | `crates/kernel` | `styx-kernel` | Safe Rust kernel interfaces, `libc` only | kernel agent (`v4l2`, `media`, `subdev`, `dma_heap`, `event`), bridge agent (`bus`) |
-| `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description | sensor agent |
+| `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description; descriptions of kernel-driven sensors from their subdevice plus a small data file (`sensors/kernel/*.toml`), driven through V4L2 controls | sensor agent |
 | `crates/graph` | `styx-graph` | Device graph, `Provider` trait, async reactor, mock provider | graph agent |
 | `crates/pisp` | `styx-pisp` | PiSP uAPI layouts, front/back end config builders, BE tiling, statistics, device layer (feature `device`); see `pisp.md` | pisp agent |
 | `crates/algo` | `styx-algo` | 3A algorithms (AE, AWB, lens shading, CCM, tone), tuning (TOML, Raspberry Pi JSON), simulator, replay; see [algorithms.md](algorithms.md) | algo agent |
-| `crates/native` | `styx-native` | The runtime for bridged sensors: description search path, discovery, `NativeCamera` (power, mode, receiver path, buffers, async frames, embedded data), frame-accurate typed controls, the `native` `Provider`; `styx` backend `BackendKind::Native` (feature `native`) | provider agent |
+| `crates/native` | `styx-native` | The runtime for bridged sensors and sensors with an upstream kernel driver (`kernel.rs`, see [adding-a-camera.md](adding-a-camera.md)): description search path, discovery, `NativeCamera` (power, mode, receiver path, buffers, async frames, embedded data), frame-accurate typed controls, the `native` `Provider`; `styx` backend `BackendKind::Native` (feature `native`) | provider agent |
 | `crates/softisp` | `styx-softisp` | Software ISP: unpack, black level, gains, lens shading, demosaic, CCM, tone, RGB/YUV/luma, 3A statistics; SIMD row kernels. Backs `styx-codec`'s Bayer decoders | softisp agent |
 | `crates/pipeline` | `styx-pipeline` | The native processing pipeline: statistics conversion, the deterministic 3A loop runner (`Controller`), ISP settings for the PiSP and the software ISP, the PiSP and software paths on a native camera (feature `device`), raw recordings and a virtual sensor for host replays; see [pipeline.md](pipeline.md) | pipeline agent |
 | `tools/compare` | `styx-compare` | Same capture through the libcamera and native backends: start latency (first frame, AE converged, exposure settled), rate and jitter, drops, CPU (with the IPA proxy), RSS/PSS and dma-bufs, frame statistics; JSON and markdown. `device-run.sh` runs the set on the CM5 | compare agent |
@@ -76,6 +76,15 @@ It has no sensor knowledge:
 The exact event ids, the acknowledgement mechanism and timeouts are defined in
 `kernel-modules/styx-sensor-bridge/PROTOCOL.md` by the bridge agent; `styx-kernel::bus`
 implements the userspace side.
+
+### Sensors with a kernel driver
+
+A sensor that already has a kernel driver (Raspberry Pi cameras, the OV9782 under `ov9282`)
+runs without the bridge: found as a `MEDIA_ENT_F_CAM_SENSOR` entity, described from its
+subdevice (modes, `PIXEL_RATE`/`HBLANK`/`VBLANK`, control ranges) plus an optional data file
+(gain model, delays, black level, embedded data layout, tuning), and driven through its V4L2
+controls on the same control schedule, scheduled by frame starts. Where a bridge exists for
+the same sensor, the bridge is used. See [adding-a-camera.md](adding-a-camera.md).
 
 ### Sensor description (data)
 

@@ -158,15 +158,6 @@ impl Session {
             events.join();
             return Err(err);
         }
-        if self.bridge.kernel_driven()
-            && let Err(why) = self.sensor.start_streaming()
-        {
-            if let Some(e) = &self.embedded {
-                e.stop();
-            }
-            events.join();
-            return Err(kernel_start_error(why));
-        }
         self.frame_sync = frame_sync;
         self.external = Some(External {
             events,
@@ -181,6 +172,12 @@ impl Session {
         let Some(ext) = &self.external else {
             return Err(NativeError::State("not started"));
         };
+        // A kernel driver's sensor started with the other device's STREAMON, with the values
+        // set until then (the caller's start values, written at once while not streaming):
+        // the control schedule runs from here.
+        if self.bridge.kernel_driven() {
+            self.sensor.start_streaming().map_err(kernel_start_error)?;
+        }
         if let Ok(StreamState::StartFailed) = self.bridge.stream_state() {
             let why = ext
                 .health

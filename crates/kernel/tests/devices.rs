@@ -86,6 +86,8 @@ fn media_devices_report_a_consistent_graph() {
         };
         let info = dev.device_info().expect("device info");
         assert!(!info.driver.is_empty());
+        // Whoever holds it (libcamera), asking takes no lock.
+        dev.lock_holder().expect("F_GETLK");
         let topo = dev.topology().expect("topology");
         for link in &topo.links {
             match link.flags.link_type() {
