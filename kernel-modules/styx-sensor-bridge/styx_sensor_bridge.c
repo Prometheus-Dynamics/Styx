@@ -71,6 +71,7 @@ struct styx_bridge {
 	struct v4l2_ctrl *hblank;
 	struct v4l2_ctrl *vblank;
 	struct v4l2_ctrl *timeout;
+	struct v4l2_ctrl *power;
 
 	/* From the device tree. */
 	u32 codes[STYX_MAX_CODES];
@@ -368,6 +369,24 @@ static int styx_bridge_stop(struct styx_bridge *b)
 	return ret;
 }
 
+/*
+ * Switches the supplies and clock off when no userspace driver is left (its
+ * process died) and the stream is idle, so a crash does not leave the sensor
+ * powered. Runs when the last listener goes and when a stream ends without
+ * one; whichever comes last does it.
+ */
+static void styx_bridge_orphan_power_off(struct styx_bridge *b)
+{
+	if (atomic_read(&b->listeners) ||
+	    atomic_read(&b->state) != STYX_BRIDGE_STATE_IDLE)
+		return;
+	if (!v4l2_ctrl_g_ctrl(b->power))
+		return;
+	dev_info(b->dev, "no userspace sensor driver left: power off\n");
+	if (v4l2_ctrl_s_ctrl(b->power, 0))
+		dev_warn(b->dev, "power off failed\n");
+}
+
 static int styx_bridge_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct styx_bridge *b = to_bridge(sd);
@@ -376,6 +395,8 @@ static int styx_bridge_s_stream(struct v4l2_subdev *sd, int enable)
 	mutex_lock(&b->stream_lock);
 	ret = enable ? styx_bridge_start(b) : styx_bridge_stop(b);
 	mutex_unlock(&b->stream_lock);
+	if (!enable)
+		styx_bridge_orphan_power_off(b);
 	return ret;
 }
 
@@ -396,8 +417,10 @@ static void styx_listener_del(struct v4l2_subscribed_event *sev)
 {
 	struct styx_bridge *b = to_bridge(vdev_to_v4l2_subdev(sev->fh->vdev));
 
-	if (atomic_dec_and_test(&b->listeners))
+	if (atomic_dec_and_test(&b->listeners)) {
 		styx_bridge_abort(b, -ENOTCONN);
+		styx_bridge_orphan_power_off(b);
+	}
 }
 
 static const struct v4l2_subscribed_event_ops styx_listener_ops = {
@@ -543,7 +566,7 @@ static int styx_bridge_init_controls(struct styx_bridge *b)
 	v4l2_ctrl_new_custom(hdl, &styx_ctrl_ack, NULL);
 	v4l2_ctrl_new_custom(hdl, &styx_ctrl_state, NULL);
 	b->timeout = v4l2_ctrl_new_custom(hdl, &styx_ctrl_timeout, NULL);
-	v4l2_ctrl_new_custom(hdl, &styx_ctrl_power, NULL);
+	b->power = v4l2_ctrl_new_custom(hdl, &styx_ctrl_power, NULL);
 	v4l2_ctrl_new_custom(hdl, &styx_ctrl_sequence, NULL);
 
 	v4l2_ctrl_new_fwnode_properties(hdl, &styx_ctrl_ops, &props);
