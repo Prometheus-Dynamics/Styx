@@ -56,8 +56,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Enable the `hotplug` feature to run this example.");
         return Ok(());
     }
-    if !(cfg!(feature = "v4l2") || cfg!(feature = "libcamera")) {
-        println!("Enable the `v4l2` or `libcamera` feature to run this example.");
+    if !(cfg!(feature = "v4l2") || cfg!(feature = "native") || cfg!(feature = "libcamera")) {
+        println!("Enable the `v4l2`, `native` or `libcamera` feature to run this example.");
         return Ok(());
     }
 

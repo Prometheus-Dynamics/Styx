@@ -172,4 +172,9 @@ limits at that fps.
 3. **Pi ISP natively**: front end statistics, back end processing.
 4. **Algorithms**: AE/AWB/lens shading/colour in Rust, compared with libcamera.
 5. **Extensibility and ecosystem**: software ISP, userspace UVC, PipeWire/GStreamer bridges;
-   libcamera optional.
+   libcamera optional. Checked: no workspace crate's default build, nor `styx` with `native` and
+   `v4l2`, has libcamera in its dependency graph (`scripts/check-feature-combinations.sh`
+   fails if one does; CI builds and tests the native stack in a job without libcamera
+   installed); the workspace and `styx --features native` build with libcamera hidden from
+   pkg-config; on the CM5 a `native,v4l2` build probes the bridged OV9782 and a UVC camera,
+   plans and streams, linking no libcamera. The `v4l` crate is gone.

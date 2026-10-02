@@ -24,7 +24,8 @@ preview-window = ["styx/preview-window"]
 simulation-bevy = ["styx/simulation-bevy"]
 v4l2 = ["styx/v4l2"]
 native = ["styx/native"]
-camera-graph = ["graph-pipeline", "v4l2", "libcamera"]
+# Any camera backend works (enable `native` or `libcamera` too for those cameras).
+camera-graph = ["graph-pipeline", "v4l2"]
 
 [dependencies]
 styx = { workspace = true, default-features = false, features = ["hooks"] }

@@ -11,6 +11,8 @@ declare -a checks=(
     "netcam::cargo check -p styx --no-default-features --features netcam"
     "file-backend::cargo check -p styx --no-default-features --features file-backend"
     "v4l2::cargo check -p styx --no-default-features --features v4l2"
+    "native::cargo check -p styx --no-default-features --features native"
+    "native-v4l2::cargo check -p styx --no-default-features --features native,v4l2,hotplug,async"
     "libcamera::cargo check -p styx --no-default-features --features libcamera"
     "raw-decoders::cargo check -p styx --no-default-features --features raw-decoders"
     "codec-jpeg-decoder::cargo check -p styx --no-default-features --features codec-jpeg-decoder"
@@ -28,6 +30,17 @@ declare -a checks=(
     "release-linux-media::cargo check -p styx --no-default-features --features async,netcam,file-backend,codec-jpeg-decoder,raw-decoders,graph-pipeline,v4l2,libcamera"
     "all-features::cargo check -p styx --all-features"
 )
+
+# libcamera stays optional: nothing but the `libcamera` feature may pull it in.
+echo "==> Checking that the default and native builds pull no libcamera"
+for packages in "--workspace" "-p styx --features native,v4l2"; do
+    # shellcheck disable=SC2086
+    tree="$(cargo tree $packages -e normal,build --prefix none)"
+    if grep -E '^libcamera(-sys)? ' <<<"$tree"; then
+        echo "libcamera is in the dependency graph ($packages)" >&2
+        exit 1
+    fi
+done
 
 for check in "${checks[@]}"; do
     name="${check%%::*}"

@@ -52,6 +52,13 @@ jobs:
       - name: Build example surface
         run: cargo check -p styx-examples --no-default-features --features "async,file-backend,netcam"
 
+      # This job installs no libcamera: the native stack and V4L2 build, probe and plan without it.
+      - name: Native stack without libcamera
+        run: |
+          cargo check -p styx --no-default-features --features native,v4l2 --all-targets
+          cargo check -p styx-examples --no-default-features --features native,v4l2 --all-targets
+          cargo test -p styx --features native,v4l2 --lib planner
+
       - name: Run perf smoke surface
         run: ./scripts/check-perf-smoke.sh
 

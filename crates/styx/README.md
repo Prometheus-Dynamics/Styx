@@ -28,7 +28,7 @@ backend, service, graph, or preview modules.
 
 ## What it provides
 - `styx::prelude`: re-exports core/capture/codec preludes plus capture API (`CaptureRequest`, `CaptureHandle`, `StyxConfig`, `start_capture`, etc.), pipeline types (`MediaPipelineBuilder`, `MediaPipeline`), metrics, and backend handles.
-- `probe_all`: merge v4l2/libcamera probe results when enabled.
+- `probe_all`: merge the probe results of the enabled backends (V4L2, native, libcamera, ...).
 - `watch`: inventory watch/runtime layer with retained events, blocking subscriptions, hotplug watchers, and async wrappers when `async` is enabled.
 - `BackendHandle/BackendKind`, `ProbedDevice`, `ProbedBackend`: describe discovered devices and selected backends.
 - `capture_api`: request/source builders for virtual, netcam, file, and physical capture plus tunables.
@@ -53,7 +53,7 @@ let device = CaptureRequest::virtual_source(
 .into_device();
 
 let handle = CaptureRequest::new(&device)
-    .backend_preferred(Some(BackendKind::Virtual)) // or V4l2/Libcamera when enabled
+    .backend_preferred(Some(BackendKind::Virtual)) // or V4l2/Native/Libcamera when enabled
     .start()?;
 
 match handle.recv() {
