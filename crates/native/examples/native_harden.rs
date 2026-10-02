@@ -289,6 +289,8 @@ struct Window {
     latency_sum: f64,
     latency_max: f64,
     period_err_sum: f64,
+    /// Measured and requested rate of the current period, and the error in ppm.
+    rate: Option<(f64, f64, f64)>,
     period_err_max: f64,
     periods: u64,
     first: Option<(u32, Duration)>,
@@ -313,6 +315,9 @@ fn soak(minutes: u64, report_secs: u64) -> Result<(), NativeError> {
     let mut total = Window::default();
     let mut w = Window::default();
     let mut prev: Option<(u32, Duration, Duration)> = None;
+    // First frame (sequence, timestamp) at the current frame duration, for the measured rate.
+    let mut rate_from: Option<(u32, Duration, Duration)> = None;
+    let mut rate_err_max = 0f64;
     let base = resources();
     println!(
         "{} soak {minutes} min: start rss {} kB, fds {}, dmabuf fds {}, maps {}, system dmabufs {:?}",
@@ -343,6 +348,16 @@ fn soak(minutes: u64, report_secs: u64) -> Result<(), NativeError> {
             win.last = Some((f.sequence, f.timestamp));
         }
         let duration = f.controls.map(|c| c.frame_duration).unwrap_or_default();
+        match rate_from {
+            Some((s0, t0f, d0)) if d0 == duration && f.sequence > s0 + 30 => {
+                let fps = f64::from(f.sequence - s0) / (f.timestamp - t0f).as_secs_f64();
+                let err = (fps * duration.as_secs_f64() - 1.0) * 1e6;
+                rate_err_max = rate_err_max.max(err.abs());
+                w.rate = Some((fps, 1.0 / duration.as_secs_f64(), err));
+            }
+            Some((_, _, d0)) if d0 == duration => {}
+            _ => rate_from = Some((f.sequence, f.timestamp, duration)),
+        }
         if let Some((pseq, pts, pdur)) = prev {
             let gap = f.sequence.saturating_sub(pseq + 1);
             w.gaps += u64::from(gap);
@@ -392,10 +407,12 @@ fn soak(minutes: u64, report_secs: u64) -> Result<(), NativeError> {
             drop(keep);
             restarts += 1;
             prev = None;
+            rate_from = None;
             next_restart = now_i + Duration::from_secs(120);
         }
     }
     report(t0, &total, &cam, &stream, restarts, reopens, changes);
+    println!("max rate error over all periods: {rate_err_max:.0} ppm");
     drop(stream);
     cam.close()?;
     let fin = resources();
@@ -425,17 +442,9 @@ fn report(
     changes: usize,
 ) {
     let (rss, fds, dmabufs, maps) = resources();
-    let fps = match (w.first, w.last) {
-        (Some(a), Some(b)) if b.1 > a.1 => f64::from(b.0 - a.0) / (b.1 - a.1).as_secs_f64(),
-        _ => 0.0,
-    };
-    let requested = cam
-        .controls()
-        .current()
-        .map(|c| 1.0 / c.frame_duration.as_secs_f64())
-        .unwrap_or(0.0);
+    let (fps, requested, rate_err) = w.rate.unwrap_or_default();
     println!(
-        "{} t={:.0}s frames {} gaps {} errors {} fps {:.3} (requested {:.3}) latency mean {:.2} max {:.2} ms period err mean {:.1} max {:.1} ppm ({} pairs) | rss {} kB fds {} dmabuf fds {} maps {} sys dmabufs {:?} | restarts {} reopens {} changes {} | stream {:?} fallback {}",
+        "{} t={:.0}s frames {} gaps {} errors {} rate {:.3} fps (frames report {:.3}, {:+.0} ppm) latency mean {:.2} max {:.2} ms period err mean {:.1} max {:.1} ppm ({} pairs) | rss {} kB fds {} dmabuf fds {} maps {} sys dmabufs {:?} | restarts {} reopens {} changes {} | stream {:?} syncs/acks {:?} fallback {}",
         stamp(),
         t0.elapsed().as_secs_f64(),
         w.frames,
@@ -443,6 +452,7 @@ fn report(
         w.errors,
         fps,
         requested,
+        rate_err,
         w.latency_sum / w.frames.max(1) as f64,
         w.latency_max,
         w.period_err_sum / w.periods.max(1) as f64,
@@ -457,6 +467,7 @@ fn report(
         reopens,
         changes,
         stream.stats(),
+        cam.event_counts(),
         stream.frame_sync_fallback(),
     );
 }
