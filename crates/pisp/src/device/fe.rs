@@ -345,6 +345,14 @@ impl FrontEndDevice {
         })
     }
 
+    /// The statistics node's descriptor (readable when a frame's statistics are ready), for
+    /// a caller that waits on it together with other descriptors before
+    /// [`Self::next_held_raw`].
+    pub fn stats_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.stats.dev.as_fd()
+    }
+
     /// The raw output node (`rp1-cfe-fe_image0`); it sends the frame-start events.
     pub fn image_node_path(&self) -> Option<&std::path::Path> {
         self.image_path.as_deref()

@@ -32,6 +32,8 @@ pub(crate) trait SensorSide: Send + Sync {
     fn frame_start(&self, seq: u64, at: Option<Duration>) -> std::result::Result<(), String>;
     /// The values that produced frame `seq`.
     fn applied(&self, seq: u64) -> Option<FrameControls>;
+    /// Requested values wait for a coming frame start.
+    fn writes_pending(&self) -> bool;
     /// Embedded data of frame `seq` (the raw buffer).
     fn report_embedded(&self, seq: u64, data: &[u8]);
     /// Puts the sensor back in standby if it streams.
@@ -58,6 +60,10 @@ where
 
     fn applied(&self, seq: u64) -> Option<FrameControls> {
         lock(self).applied(seq)
+    }
+
+    fn writes_pending(&self) -> bool {
+        lock(self).writes_pending()
     }
 
     fn report_embedded(&self, seq: u64, data: &[u8]) {

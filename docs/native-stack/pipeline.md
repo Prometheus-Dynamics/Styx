@@ -117,8 +117,9 @@ the target, two frames in a row):
 
 `FrontEndDevice::open` (with `keep_embedded`) routes `csi2 → pisp-fe`, `NativeCamera::
 configure_external` sets the sensor and bridge up without touching links or nodes,
-`start_external` starts the embedded data node and the event threads (frame starts from
-`rp1-cfe-fe_image0`'s `FRAME_SYNC` events), then the front end streams. Each frame
+`start_external_driven` starts the embedded data node and the event thread (bridge requests
+only; frame starts from `rp1-cfe-fe_image0`'s `FRAME_SYNC` events are read on the pipeline
+thread, see "Wake-ups" below), then the front end streams. Each frame
 (`PispPipeline::next`):
 
 1. `next_held_raw` dequeues the statistics and the raw buffer (not copied); the statistics are
@@ -189,12 +190,31 @@ Where the 0.26 ms per frame go now (Styx API, NV12, 30 fps; `--profile`, per-thr
 | back end config `QBUF`: the `pispbe` driver writes the whole `pisp_be_config` to the hardware registers (MMIO) for every job | 0.12 ms |
 | algorithms: 0.13 ms per run, at 15 Hz while settled (0.11 ms per frame when run on every frame) | 0.07 ms |
 | ~20 V4L2 ioctls (1 µs each) and two waits of the pipeline thread | 0.025 ms |
-| event thread: frame-start events, embedded data (two wake-ups) | 0.013 ms |
+| frame starts and embedded data, read on the pipeline thread when it wakes (was the event thread, two wake-ups: 0.013 ms) | ~0.005 ms |
 | the consumer: queue hand-off, lease, its wake-up | 0.009 ms |
 | statistics copy (every other frame) and conversion | 0.007 ms |
 | back end config patch | 0.007 ms |
 | embedded data decode | 0.005 ms |
 | control schedule, frame metadata | ~0.005 ms |
+
+Wake-ups. The PiSP path starts the sensor side "driven"
+(`NativeCamera::start_external_driven`): the event thread serves only the bridge's start and
+stop requests and sleeps while streaming, and the pipeline thread feeds the frame-start events
+and embedded data to the control schedule itself when it wakes for a frame
+(`SensorStream::service`, at the statistics dequeue and again before the algorithms' request,
+so the request knows how much of the current frame is left). It waits for a frame start only
+while a write waits for one (`SensorStream::frame_start_fd`: a request whose controls land a
+frame apart, e.g. frame length after exposure); exposure and gain requests from the statistics
+of frame F are still written during F with ≥ 4 ms left. Measured (CM5, 300 frames, HeliOS
+tuning, 2026-10-02, `native-pipeline pisp --no-read` / `native_isp_bench single`):
+
+| | before | after |
+|---|---|---|
+| waits per frame, 30 fps: pipeline thread + event thread | 2.05 + 2.05 | 2.09 + 0 |
+| same, 120 fps | 2.04 + 2.04 | 2.14 + 0 (the extra 0.1: frame-start waits while AE converges) |
+| CPU per frame, tool, 30 / 120 fps (pipeline + event thread) | 0.262 / 0.213 ms | 0.257 / 0.209 ms |
+| Styx API, 30 / 120 fps: process CPU, latency median | 0.26 ms, 8.28 ms / 0.19 ms, 8.36 ms | 0.26 ms, 8.28 ms / 0.19 ms, 8.36 ms |
+| AE (cold, ¼ and 3× steps), 30 fps: locked after | 6 / 3 / 3 frames | 6 / 3 / 3 frames |
 
 The latency, 8.3 ms, is 7.4 ms of sensor readout (the timestamp is the frame start, the front
 end's buffers complete at its end), 0.84 ms back end job (hardware; the algorithms run inside
@@ -383,10 +403,9 @@ thread had gone (fixed here: stop it first). No stop timeouts since, on either p
 * The front end statistics set-up is fixed (uniform AGC weights; AGC meters the AWB zones).
 * PiSP CPU left (see "PiSP path performance"): half of it is the `pispbe` driver writing the
   whole back end config to the hardware by MMIO on every job (0.12 ms; the driver could write
-  only changed blocks, as it already does for the front end). The event thread wakes twice
-  per frame and the pipeline thread twice (front end, back end); one wait per frame would
-  need the event thread's work on the pipeline thread (`styx-native`). Pyramid companions
-  from the PiSP's second output are libcamera-only so far.
+  only changed blocks, as it already does for the front end). The pipeline thread waits
+  twice per frame, for the front end's statistics and 0.84 ms later for the back end job; the
+  two cannot share a wait without delaying the frame.
 * Algorithms at 15 Hz while settled: a scene change is seen up to one 15 Hz period later
   (`settled_rate_hz: None` runs them on every frame).
 * Brightness changes were forced exposure steps, not changes of the light.

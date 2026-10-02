@@ -131,6 +131,10 @@ pub(crate) struct EventSources {
     pub(crate) video: Arc<dyn CaptureDevice>,
     /// Frame-start events are subscribed on the capture node.
     pub(crate) frame_sync: bool,
+    /// The caller waits on the capture node itself (frames, frame starts, embedded data; see
+    /// `SensorStream::service`): the thread serves the bridge only and never touches the node,
+    /// so it does not wake per frame.
+    pub(crate) caller_drives: bool,
     pub(crate) sensor: Arc<dyn SensorSide>,
     pub(crate) embedded: Option<Arc<EmbeddedCapture>>,
     pub(crate) health: Arc<Health>,
@@ -259,14 +263,23 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
 
 /// Drives the control schedule from every pending frame-start event. `Err`: the node is gone.
 fn serve_frame_starts(s: &EventSources) -> Result<(), Fault> {
+    drain_frame_starts(s.video.as_ref(), s.sensor.as_ref(), &s.health)
+}
+
+/// Feeds every frame-start event pending on `video` to the control schedule. `Err`: the node
+/// is gone.
+pub(crate) fn drain_frame_starts(
+    video: &dyn CaptureDevice,
+    sensor: &dyn SensorSide,
+    health: &Health,
+) -> Result<(), Fault> {
     loop {
-        match s.video.dequeue_event() {
+        match video.dequeue_event() {
             Ok(Some(ev)) => {
                 if let EventKind::FrameSync { frame_sequence } = ev.kind {
-                    s.health.frame_syncs.fetch_add(1, Ordering::Relaxed);
-                    s.health.control_write(
-                        s.sensor
-                            .frame_start(u64::from(frame_sequence), Some(ev.timestamp)),
+                    health.frame_syncs.fetch_add(1, Ordering::Relaxed);
+                    health.control_write(
+                        sensor.frame_start(u64::from(frame_sequence), Some(ev.timestamp)),
                     );
                 }
             }
@@ -311,7 +324,7 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
             fail(f);
             return;
         }
-        let touch_video = !quiet && !video_gone;
+        let touch_video = !quiet && !video_gone && !s.caller_drives;
         if touch_video
             && s.frame_sync
             && let Err(f) = serve_frame_starts(s)

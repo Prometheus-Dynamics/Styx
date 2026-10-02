@@ -175,6 +175,13 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
         self.write_margin = margin;
     }
 
+    /// Whether requested values wait for a coming frame start to be written (while
+    /// streaming).
+    pub fn writes_pending(&self) -> bool {
+        self.driver.state() == DriverState::Streaming
+            && self.driver.scheduler().is_some_and(|s| s.has_pending())
+    }
+
     /// How much of the current frame is left at `now` (`CLOCK_MONOTONIC`): `None` when not
     /// streaming or when the frame's start time is not known.
     pub fn frame_time_left(&self, now: Duration) -> Option<Duration> {

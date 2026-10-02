@@ -231,6 +231,12 @@ impl ControlScheduler {
         self.started
     }
 
+    /// Whether requested values wait for a later frame start to be written (a caller that
+    /// drives frame starts itself must then wait for them).
+    pub fn has_pending(&self) -> bool {
+        self.pending.iter().any(|p| !p.is_empty())
+    }
+
     /// Predicted landing frame for a value requested for `target`, if not issued early.
     fn landing(&self, control: Control, target: u64) -> u64 {
         let d = u64::from(self.delay(control));

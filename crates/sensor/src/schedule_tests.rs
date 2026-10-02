@@ -387,3 +387,17 @@ fn request_now_writes_what_is_due_in_the_current_frame() {
     );
     assert!(s.frame_start(0).controls.is_empty());
 }
+
+#[test]
+fn pending_until_the_frame_start_that_issues_it() {
+    let mut s = scheduler();
+    s.frame_start(10);
+    assert!(!s.has_pending());
+    // Exposure (delay 2) for frame 12 is due now; gain (delay 1) only at frame 11's start.
+    let req = ControlSet::new().with(Exposure, 700).with(AnalogGain, 20);
+    let (_, batch) = s.request_now(12, &req);
+    assert_eq!(batch.controls.get(Exposure), Some(700));
+    assert!(s.has_pending());
+    s.frame_start(11);
+    assert!(!s.has_pending());
+}

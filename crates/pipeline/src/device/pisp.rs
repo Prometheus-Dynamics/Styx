@@ -263,6 +263,40 @@ pub struct PispPipeline {
     settled_every: u64,
 }
 
+/// Serves the sensor side until the front end's statistics are ready: frame starts are only
+/// waited for while sensor writes wait for one (a request whose values land a frame apart,
+/// e.g. frame length after exposure); otherwise the statistics are the only wake of the frame
+/// (`next_held_raw` waits for them) and the frame start is read when they arrive.
+fn wait_for_statistics(
+    fe_dev: &FrontEndDevice,
+    sensor: &SensorStream,
+    timeout: Duration,
+) -> Result<()> {
+    use styx_kernel::Wait;
+    let deadline = Instant::now() + timeout;
+    loop {
+        sensor.service();
+        let Some(sync) = sensor.frame_start_fd() else {
+            return Ok(());
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        let ready = profile::time("loop", "wait", || {
+            styx_kernel::poll(
+                &[(fe_dev.stats_fd(), Wait::READABLE), (sync, Wait::PRIORITY)],
+                Some(left),
+            )
+        })
+        .map_err(|e| PipelineError::Device(format!("waiting for the front end: {e}")))?;
+        // Statistics ready, or either node failing (the dequeue below reports it).
+        if ready[0].readable || ready.iter().any(|r| r.error || r.hangup) {
+            return Ok(());
+        }
+    }
+}
+
 /// Time from the end of a frame's readout until its statistics have been through the
 /// algorithms and the request is ready (front end statistics, dequeue, algorithms), with slack.
 const PISP_PROCESSING: Duration = Duration::from_millis(2);
@@ -444,7 +478,9 @@ impl PispPipeline {
             .image_node_path()
             .map(|p| p.to_path_buf())
             .ok_or_else(|| PipelineError::Device("no fe_image0 node".into()))?;
-        let sensor = self.camera.start_external(&sync)?;
+        // This thread serves frame starts and embedded data itself while it waits for frames
+        // (the event thread only answers the bridge): one wake per frame for the front end.
+        let sensor = self.camera.start_external_driven(&sync)?;
         self.startup.start_external = t_ext.elapsed();
         let t = Instant::now();
         let latency = if sensor.uses_frame_sync() {
@@ -530,6 +566,7 @@ impl PispPipeline {
                 (Some(s), Some(r)) => s + 1 >= r + self.settled_every,
                 _ => true,
             };
+        wait_for_statistics(fe_dev, sensor, timeout)?;
         let held =
             fe_dev.next_held_raw(&mut self.fe, timeout, run.then_some(&mut *self.raw_stats))?;
         let dequeued = Instant::now();
@@ -554,6 +591,9 @@ impl PispPipeline {
             let be_prepare = t1.elapsed();
             let job = be_dev.process_queued(image.index, self.be.config())?;
             self.last_seq = Some(seq);
+            // A frame start that came meanwhile (at high rates the next frame starts about when
+            // this one's statistics arrive): the request below knows how much of it is left.
+            sensor.service();
             // While the back end works: this frame's statistics through the algorithms.
             let ts = Instant::now();
             if run {

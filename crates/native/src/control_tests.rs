@@ -249,6 +249,7 @@ fn requests_now_are_written_within_the_frame_when_time_is_left() {
         .request_at_now(7, &long, t0 + Duration::from_millis(10))
         .unwrap();
     assert_eq!(landed[0].frame, 7);
+    assert!(!c.writes_pending(), "everything due was written");
     let w = c.driver().bus().writes();
     assert_eq!(w[n], RegWrite::byte(0x3208, 0x00));
     assert_eq!(*w.last().unwrap(), RegWrite::byte(0x3208, 0xa0));
@@ -263,6 +264,8 @@ fn requests_now_are_written_within_the_frame_when_time_is_left() {
         .unwrap();
     assert_eq!(landed[0].frame, 8);
     assert_eq!(c.driver().bus().writes().len(), n);
+    // It waits for the next frame start (a caller driving frame starts must wait for one).
+    assert!(c.writes_pending());
     // Without a frame start time (frames inferred from dequeues) nothing is written early.
     c.frame_start(6).unwrap();
     assert_eq!(c.frame_time_left(t0), None);

@@ -136,6 +136,7 @@ impl Session {
         &mut self,
         video: Arc<dyn CaptureDevice>,
         frame_sync: bool,
+        caller_drives: bool,
     ) -> Result<Arc<Health>> {
         if self.is_streaming() {
             return Err(NativeError::Busy("already streaming".into()));
@@ -145,6 +146,7 @@ impl Session {
             bridge: Arc::clone(&self.bridge),
             video,
             frame_sync,
+            caller_drives,
             sensor: Arc::clone(&self.sensor),
             embedded: self.embedded.clone(),
             health: Arc::clone(&health),
@@ -210,6 +212,7 @@ impl Session {
             bridge: Arc::clone(&self.bridge),
             video: Arc::clone(&video),
             frame_sync: self.frame_sync,
+            caller_drives: false,
             sensor: Arc::clone(&self.sensor),
             embedded: self.embedded.clone(),
             health: Arc::clone(&health),

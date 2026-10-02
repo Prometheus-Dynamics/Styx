@@ -14,7 +14,15 @@
 //! (the other device)   STREAMOFF: the bridge asks to stop
 //! stop / close         as for the raw route
 //! ```
+//!
+//! With [`NativeCamera::start_external_driven`] the caller's thread does the per-frame work of
+//! the event thread (which then serves only the bridge and does not wake per frame): it calls
+//! [`SensorStream::service`] whenever it wakes, and adds [`SensorStream::frame_start_fd`] to
+//! what it waits on while that is `Some` (writes wait for a frame start). A pipeline thread
+//! that waits on its own nodes anyway then wakes once per frame for the frame instead of the
+//! event thread waking for the frame start too.
 
+use std::os::fd::BorrowedFd;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -24,9 +32,12 @@ use styx_kernel::v4l2::VideoDevice;
 
 use crate::camera::{Configured, NativeCamera, StreamSettings};
 use crate::control::FrameControls;
+use crate::device::CaptureDevice;
 use crate::discover::find_media;
 use crate::embedded::{EmbeddedCapture, embedded_link};
 use crate::error::{KernelContext, Result};
+use crate::events::drain_frame_starts;
+use crate::health::Health;
 use crate::stream::SensorSide;
 use crate::topology::find_route;
 
@@ -35,6 +46,8 @@ pub struct SensorStream {
     sensor: Arc<dyn SensorSide>,
     embedded: Option<Arc<EmbeddedCapture>>,
     frame_sync: bool,
+    /// The frame-start node and the stream's health, when the caller drives frame starts.
+    driven: Option<(Arc<VideoDevice>, Arc<Health>)>,
 }
 
 impl std::fmt::Debug for SensorStream {
@@ -42,6 +55,7 @@ impl std::fmt::Debug for SensorStream {
         f.debug_struct("SensorStream")
             .field("embedded", &self.embedded.is_some())
             .field("frame_sync", &self.frame_sync)
+            .field("driven", &self.driven.is_some())
             .finish()
     }
 }
@@ -50,6 +64,7 @@ impl SensorStream {
     /// Frame `seq` was delivered. Without frame-start events this drives the control schedule
     /// (frame `seq + 1` is starting).
     pub fn frame_done(&self, seq: u64) {
+        self.service_frame_starts();
         if !self.frame_sync {
             let _ = self.sensor.frame_start(seq + 1, None);
         }
@@ -65,6 +80,44 @@ impl SensorStream {
             e.drain();
         }
         self.sensor.applied(seq)
+    }
+
+    /// Driven streams ([`NativeCamera::start_external_driven`]): feeds the pending frame-start
+    /// events to the control schedule (writing what is due) and reads the embedded data that
+    /// arrived. Cheap when nothing is pending (one `DQEVENT` and one `DQBUF` that find
+    /// nothing); call it whenever the thread wakes, and before making a sensor request (so
+    /// the schedule knows how much of the current frame is left). No-op otherwise.
+    pub fn service(&self) {
+        if self.driven.is_none() {
+            return;
+        }
+        self.service_frame_starts();
+        if let Some(e) = &self.embedded {
+            e.drain();
+        }
+    }
+
+    fn service_frame_starts(&self) {
+        if let Some((video, health)) = &self.driven
+            && self.frame_sync
+            && let Err(f) = drain_frame_starts(video.as_ref(), self.sensor.as_ref(), health)
+        {
+            health.fail(f);
+        }
+    }
+
+    /// Driven streams: the descriptor to wait on for priority readiness (`POLLPRI`, a
+    /// frame-start event) while requested values wait for a frame start to be written; then
+    /// call [`Self::service`]. `None` when nothing waits for one (then frame starts are only
+    /// read when the thread wakes anyway) or when the stream is not driven.
+    pub fn frame_start_fd(&self) -> Option<BorrowedFd<'_>> {
+        let (video, _) = self.driven.as_ref()?;
+        (self.frame_sync && self.sensor.writes_pending()).then(|| video.event_fd())
+    }
+
+    /// Whether the caller drives frame starts ([`NativeCamera::start_external_driven`]).
+    pub fn is_driven(&self) -> bool {
+        self.driven.is_some()
     }
 
     /// Whether frame starts come from the receiver's `FRAME_SYNC` events.
@@ -103,6 +156,18 @@ impl NativeCamera {
     /// `rp1-cfe-fe_image0`, opened here separately) and answers the bridge. Call before the
     /// other device starts streaming, and [`Self::resume_external`] after.
     pub fn start_external(&mut self, frame_sync: &Path) -> Result<SensorStream> {
+        self.start_external_with(frame_sync, false)
+    }
+
+    /// [`Self::start_external`], with the caller doing the event thread's per-frame work (see
+    /// the [module docs](self)): the event thread only serves the bridge's start and stop
+    /// requests, and the caller calls [`SensorStream::service`] when it wakes and waits on
+    /// [`SensorStream::frame_start_fd`] when that is `Some`.
+    pub fn start_external_driven(&mut self, frame_sync: &Path) -> Result<SensorStream> {
+        self.start_external_with(frame_sync, true)
+    }
+
+    fn start_external_with(&mut self, frame_sync: &Path, driven: bool) -> Result<SensorStream> {
         if self.configured.is_none() {
             return Err(crate::NativeError::State("configure before starting"));
         }
@@ -132,11 +197,16 @@ impl NativeCamera {
             && video
                 .subscribe(EventType::FrameSync, 0, SubscribeFlags::empty())
                 .is_ok();
-        self.session.start_external(video, sync)?;
+        let health = self.session.start_external(
+            Arc::clone(&video) as Arc<dyn CaptureDevice>,
+            sync,
+            driven,
+        )?;
         Ok(SensorStream {
             sensor,
             embedded: self.session.embedded().cloned(),
             frame_sync: sync,
+            driven: driven.then_some((video, health)),
         })
     }
 
