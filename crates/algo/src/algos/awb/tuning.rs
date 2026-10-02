@@ -77,6 +77,17 @@ pub struct AwbTuning {
     pub sensitivity_r: f64,
     /// Blue sensitivity relative to the tuned one.
     pub sensitivity_b: f64,
+    /// Styx: the search weights its points by `exp(-(cost - best) / softness)` (cost in the
+    /// search's log likelihood units) instead of taking the best: when two separate
+    /// temperatures fit almost equally well the estimate moves between them continuously
+    /// instead of jumping. 0 takes the best (Raspberry Pi's behaviour).
+    pub softness: f64,
+    /// Styx: log likelihood cost of leaving the temperature currently applied (hysteresis).
+    /// A different temperature has to fit better by about this much before the estimate moves
+    /// to it; a clear change of the light (a deep new minimum) moves at once. 0 disables it.
+    pub hysteresis: f64,
+    /// Styx: width of the hysteresis well in mired (1e6 / K).
+    pub hysteresis_mired: f64,
 }
 
 impl Default for AwbTuning {
@@ -104,6 +115,9 @@ impl Default for AwbTuning {
             transverse_neg: 0.01,
             sensitivity_r: 1.0,
             sensitivity_b: 1.0,
+            softness: 0.2,
+            hysteresis: 2.0,
+            hysteresis_mired: 25.0,
         }
     }
 }
@@ -162,6 +176,9 @@ impl AwbTuning {
         }
         if !(self.transverse_pos > 0.0 && self.transverse_neg > 0.0) {
             return err("transverse_pos and transverse_neg must be positive");
+        }
+        if !(self.softness >= 0.0 && self.hysteresis >= 0.0 && self.hysteresis_mired > 0.0) {
+            return err("softness and hysteresis must be >= 0, hysteresis_mired > 0");
         }
         if self.coarse_step.is_nan() || self.coarse_step <= 0.0 {
             return err("coarse_step must be positive");

@@ -55,6 +55,9 @@ pub(crate) struct Search<'a> {
     pub curve: &'a CtCurve,
     pub zones: &'a [(f64, f64)],
     pub prior: Pwl,
+    /// The temperature of the last estimate's best minimum (mired), which the hysteresis
+    /// prefers.
+    pub anchor: Option<f64>,
 }
 
 impl Search<'_> {
@@ -71,46 +74,76 @@ impl Search<'_> {
             .sum()
     }
 
-    fn cost(&self, t: f64, r: f64, b: f64) -> f64 {
-        self.delta2_sum(1.0 / r, 1.0 / b) - self.prior.eval_clamped(t)
+    /// The prior log likelihood at `t` minus the hysteresis cost of leaving the anchor.
+    fn log_prior(&self, t: f64) -> f64 {
+        let tu = self.tuning;
+        let well = match self.anchor {
+            Some(a) if tu.hysteresis > 0.0 => {
+                let d = (1e6 / t - a) / tu.hysteresis_mired;
+                tu.hysteresis * (1.0 - (-0.5 * d * d).exp())
+            }
+            _ => 0.0,
+        };
+        self.prior.eval_clamped(t) - well
     }
 
-    /// Step along the curve from `mode.lo` to `mode.hi` and refine the best point.
-    pub fn coarse(&self, mode: AwbMode) -> f64 {
+    fn cost(&self, t: f64, r: f64, b: f64) -> f64 {
+        self.delta2_sum(1.0 / r, 1.0 / b) - self.log_prior(t)
+    }
+
+    /// The whole search: coarse along the curve from `mode.lo` to `mode.hi`, then fine (along
+    /// and across the curve) around the coarse result. Returns (t, r, b) and the temperature
+    /// of the best coarse point (where the hysteresis holds on).
+    ///
+    /// With [`AwbTuning::softness`] above 0 the coarse result is the mean (in mired) of the
+    /// coarse points weighted by `exp(-(cost - best) / softness)` rather than the best point:
+    /// when two separate temperatures fit almost equally well the result moves between them
+    /// continuously instead of jumping. A clear minimum still dominates. The fine search
+    /// weights its steps along the curve the same way. Softness 0 is Raspberry Pi's search:
+    /// a parabola through the best coarse point and its neighbours, and the best fine step
+    /// (refined here by a parabola too).
+    pub fn run(&self, mode: AwbMode) -> ((f64, f64, f64), f64) {
         let mut points = Vec::new();
-        let mut best = 0;
         let mut t = mode.lo;
         loop {
-            let c = self.cost(t, self.curve.r.eval(t), self.curve.b.eval(t));
-            points.push((t, c));
-            if c < points[best].1 {
-                best = points.len() - 1;
-            }
+            points.push((t, self.cost(t, self.curve.r.eval(t), self.curve.b.eval(t))));
             if t >= mode.hi {
                 break;
             }
             t = (t + t / 10.0 * self.tuning.coarse_step).min(mode.hi);
         }
-        let mut t = points[best].0;
-        if points.len() > 2 {
+        let best = (0..points.len())
+            .min_by(|&a, &b| points[a].1.total_cmp(&points[b].1))
+            .expect("at least one point");
+        let tau = self.tuning.softness;
+        let t = if tau > 0.0 {
+            let m = points[best].1;
+            let (sw, sm) = points.iter().fold((0.0, 0.0), |(sw, sm), &(t, c)| {
+                let w = (-(c - m) / tau).exp();
+                (sw + w, sm + w * 1e6 / t)
+            });
+            1e6 / (sm / sw)
+        } else if points.len() > 2 {
             let bp = best.clamp(1, points.len() - 2);
-            t = interpolate_quadratic(points[bp - 1], points[bp], points[bp + 1]);
-        }
-        t
+            interpolate_quadratic(points[bp - 1], points[bp], points[bp + 1])
+        } else {
+            points[best].0
+        };
+        (self.fine(t), points[best].0)
     }
 
-    /// Search around `t`, along and across the curve. Returns (t, r, b).
-    pub fn fine(&self, t: f64) -> (f64, f64, f64) {
+    /// Search around `t`, along and across the curve; returns (t, r, b), r and b being the
+    /// grey's R/G and B/G.
+    fn fine(&self, t: f64) -> (f64, f64, f64) {
         let tu = self.tuning;
         let (cr, cb) = (&self.curve.r, &self.curve.b);
-        let (r0, b0) = (cr.eval(t), cb.eval(t));
         let step = t / 10.0 * tu.coarse_step * 0.1;
         let mut nsteps: i32 = 5;
         let r_diff = cr.eval(t + f64::from(nsteps) * step) - cr.eval(t - f64::from(nsteps) * step);
         let b_diff = cb.eval(t + f64::from(nsteps) * step) - cb.eval(t - f64::from(nsteps) * step);
         let len2 = b_diff * b_diff + r_diff * r_diff;
         if len2 < 1e-6 {
-            return (t, r0, b0);
+            return (t, cr.eval(t), cb.eval(t));
         }
         // Unit vector orthogonal to the b-versus-r curve.
         let len = len2.sqrt();
@@ -118,10 +151,11 @@ impl Search<'_> {
         let range = tu.transverse_neg + tu.transverse_pos;
         let num = ((range * 100.0 + 0.5).floor() as i32 + 1).clamp(3, 12);
         nsteps += num;
-        let mut best: Option<(f64, f64, f64, f64)> = None;
+        // Per step along the curve: the best offset across it and its cost.
+        let mut along: Vec<(f64, f64)> = Vec::with_capacity(2 * nsteps as usize + 1);
         for i in -nsteps..=nsteps {
             let tt = t + f64::from(i) * step;
-            let prior = self.prior.eval_clamped(tt);
+            let prior = self.log_prior(tt);
             let (rc, bc) = (cr.eval(tt), cb.eval(tt));
             let mut pts = Vec::with_capacity(num as usize);
             let mut bp = 0;
@@ -137,12 +171,36 @@ impl Search<'_> {
             let bp = bp.clamp(1, num as usize - 2);
             let off = interpolate_quadratic(pts[bp - 1], pts[bp], pts[bp + 1]);
             let (rt, bt) = (rc + tr * off, bc + tb * off);
-            let c = self.delta2_sum(1.0 / rt, 1.0 / bt) - prior;
-            if best.is_none_or(|b| c < b.0) {
-                best = Some((c, tt, rt, bt));
-            }
+            along.push((off, self.delta2_sum(1.0 / rt, 1.0 / bt) - prior));
         }
-        best.map_or((t, r0, b0), |(_, t, r, b)| (t, r, b))
+        let tau = tu.softness;
+        let (pos, off) = if tau > 0.0 {
+            // Weighted as the coarse search is: continuous in the statistics.
+            let m = along.iter().map(|a| a.1).fold(f64::INFINITY, f64::min);
+            let (mut sw, mut sp, mut so) = (0.0, 0.0, 0.0);
+            for (i, &(off, c)) in along.iter().enumerate() {
+                let w = (-(c - m) / tau).exp();
+                (sw, sp, so) = (sw + w, sp + w * i as f64, so + w * off);
+            }
+            (sp / sw, so / sw)
+        } else {
+            let k = (0..along.len())
+                .min_by(|&a, &b| along[a].1.total_cmp(&along[b].1))
+                .expect("steps along the curve");
+            let kc = k.clamp(1, along.len() - 2);
+            let x = |i: usize| i as f64;
+            let pos = interpolate_quadratic(
+                (x(kc - 1), along[kc - 1].1),
+                (x(kc), along[kc].1),
+                (x(kc + 1), along[kc + 1].1),
+            );
+            let (i0, f) = (pos.floor().min(x(along.len() - 2)), pos - pos.floor());
+            let i0 = i0 as usize;
+            (pos, along[i0].0 + (along[i0 + 1].0 - along[i0].0) * f)
+        };
+        let tt = t + (pos - f64::from(nsteps)) * step;
+        let (rt, bt) = (cr.eval(tt) + tr * off, cb.eval(tt) + tb * off);
+        (tt, rt, bt)
     }
 }
 

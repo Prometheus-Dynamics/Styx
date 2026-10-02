@@ -44,8 +44,8 @@ pub use config::{CameraConfig, ControlDelays, Crop};
 pub use error::{AlgoError, Result};
 pub use frame::{Controls, Flicker, FrameMetadata, metering};
 pub use params::{
-    AeStatus, AwbStatus, BlackLevels, IDENTITY, LensShading, Matrix3, Params, SensorRequest,
-    mat_mul,
+    AeStatus, AwbStatus, BlackLevels, CdnParams, DenoiseParams, GeqParams, IDENTITY, LensShading,
+    Matrix3, Params, SdnParams, SensorRequest, SharpenParams, TdnParams, mat_mul,
 };
 pub use pipeline::{Algorithm, Pipeline};
 pub use pwl::Pwl;

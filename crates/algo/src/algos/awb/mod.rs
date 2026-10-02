@@ -47,6 +47,9 @@ pub struct Awb {
     frames_seen: u32,
     unsettled_frames: u32,
     frame_phase: u32,
+    /// The temperature of the best minimum of the last estimate made on a usable frame (or
+    /// the warm start's): the search's hysteresis holds on to it.
+    anchor: Option<f64>,
     estimate: Estimate,
     filtered: Estimate,
 }
@@ -65,6 +68,7 @@ impl Awb {
             frames_seen: 0,
             unsettled_frames: 0,
             frame_phase: 0,
+            anchor: None,
             estimate: (DEFAULT_CT, 1.0, 1.0),
             filtered: (DEFAULT_CT, 1.0, 1.0),
         };
@@ -81,6 +85,7 @@ impl Awb {
         self.frame_count = 0;
         self.frames_seen = 0;
         self.frame_phase = 0;
+        self.anchor = None;
         self.estimate = match (&self.curve, self.bayes) {
             (Some(c), true) => self.gains_for_ct(c, 4000.0),
             _ => (DEFAULT_CT, 1.0, 1.0),
@@ -132,7 +137,7 @@ impl Awb {
         stats: &Statistics,
         meta: &FrameMetadata,
         params: &Params,
-    ) -> Option<Estimate> {
+    ) -> Option<(Estimate, f64)> {
         let zones = self.zones(stats, params);
         if zones.len() <= self.tuning.min_regions as usize {
             return None;
@@ -140,7 +145,7 @@ impl Awb {
         let t = &self.tuning;
         let curve = match (&self.curve, self.bayes) {
             (Some(c), true) => c,
-            _ => return Some(search::grey_world(&zones, DEFAULT_CT)),
+            _ => return Some((search::grey_world(&zones, DEFAULT_CT), DEFAULT_CT)),
         };
         let ratios: Vec<(f64, f64)> = zones
             .iter()
@@ -161,10 +166,10 @@ impl Awb {
             curve,
             zones: &ratios,
             prior,
+            anchor: self.anchor.map(|t| 1e6 / t),
         };
-        let ct = s.coarse(*mode);
-        let (ct, r, b) = s.fine(ct);
-        Some((ct, t.sensitivity_r / r, t.sensitivity_b / b))
+        let ((ct, r, b), best) = s.run(*mode);
+        Some(((ct, t.sensitivity_r / r, t.sensitivity_b / b), best))
     }
 
     /// Manual gains or temperature, if the controls ask for them.
@@ -208,6 +213,7 @@ impl Algorithm for Awb {
         let e = (warm.colour_temperature, g[0] / g[1], g[2] / g[1]);
         self.estimate = e;
         self.filtered = e;
+        self.anchor = Some(e.0);
     }
 
     fn initial(&self, params: &mut Params) {
@@ -226,6 +232,7 @@ impl Algorithm for Awb {
         if let Some(m) = self.manual(meta) {
             // Manual values apply at once.
             (self.estimate, self.filtered, auto) = (m, m, false);
+            self.anchor = None;
         } else if !meta.controls.awb_enable {
             auto = false;
             self.estimate = self.filtered;
@@ -235,18 +242,22 @@ impl Algorithm for Awb {
         } else {
             auto = true;
             let y = stats.mean_luma();
+            let usable = (USABLE_Y.0..=USABLE_Y.1).contains(&y);
             self.frames_seen = self.frames_seen.saturating_add(1);
-            if self.frame_count < self.tuning.startup_frames
-                && (USABLE_Y.0..=USABLE_Y.1).contains(&y)
-            {
+            if self.frame_count < self.tuning.startup_frames && usable {
                 self.frame_count += 1;
             }
             let startup = self.frame_count < self.tuning.startup_frames
                 && self.frames_seen < self.tuning.startup_frames.saturating_mul(4);
             self.frame_phase = self.frame_phase.saturating_add(1);
             if startup || self.frame_phase >= self.tuning.frame_period {
-                if let Some(e) = self.estimate(stats, meta, params) {
+                if let Some((e, best)) = self.estimate(stats, meta, params) {
                     self.estimate = e;
+                    // Hysteresis only from usable frames, so a dark or saturated start cannot
+                    // hold on to a wrong first guess.
+                    if usable {
+                        self.anchor = Some(best);
+                    }
                 }
                 self.frame_phase = 0;
             }
