@@ -8,7 +8,7 @@ use super::StyxConfig;
 /// back end makes two outputs from one pass over each raw frame: the main one and a second
 /// one (with the downscaler) attached to every frame as a `CompanionKind::Scaled` companion
 /// with the same timestamp. Both are dma-bufs, handed out without a copy. The software ISP
-/// ignores these settings.
+/// uses only [`Self::driver_buffers`] and [`Self::soft_threads`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -23,7 +23,9 @@ pub struct NativeIspConfig {
     pub second_output: Option<((u32, u32), FourCc)>,
     /// Use the ISP driver's own buffers, which the CPU reads uncached (the Y plane of a
     /// 1280x800 frame in 1.9 ms on the CM5). `false` (default): cached dma-heap buffers, read
-    /// at memory speed (cache maintenance only when a frame's pixels are read).
+    /// at memory speed (cache maintenance only when a frame's pixels are read). With the
+    /// software ISP this is the raw capture's buffers (the receiver's MMAP buffers cost the
+    /// software ISP 0.6 ms more per 1280x800 frame on the CM5).
     pub driver_buffers: bool,
     /// Threads of the software ISP (cameras without a PiSP). `None` (default): one per core,
     /// at most 4.

@@ -22,12 +22,12 @@
 //!   --threads N          (soft, replay) software ISP row bands (default 1)
 //!   --output KIND        (soft, replay) rgb (default), nv12 or luma, each optionally -half
 //!   --arithmetic A       (soft, replay) software ISP arithmetic: auto (default), int or half
-//!   --heap NAME          (soft) capture into buffers from this dma-heap (e.g. linux,cma:
-//!                        cached, synced per frame) instead of the driver's MMAP buffers
+//!   --heap NAME          (soft) capture into buffers from this dma-heap (default: linux,cma
+//!                        when it exists: cached, synced per frame)
 //!   --no-read            (pisp) do not read the output on the CPU (no per-frame output mean)
 //!   --profile            (pisp) time the device calls (queue, dequeue, wait, copies)
-//!   --driver-buffers     (pisp) back end outputs in the driver's (uncached) buffers instead of
-//!                        cached dma-heap buffers
+//!   --driver-buffers     (pisp) back end outputs, (soft) raw capture in the driver's
+//!                        (uncached) buffers instead of cached dma-heap buffers
 //!   --every-frame        (pisp) run the algorithms on every frame, also when settled
 //!   --start-exposure US:GAIN  (pisp) start AE from this exposure and gain instead of the
 //!                        camera's last settled state (a dark or bright start)

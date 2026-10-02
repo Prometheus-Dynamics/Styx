@@ -20,7 +20,7 @@ use styx_core::prelude::{BackendFrameMeta, ExternalBacking, NativeFrameMeta, Tim
 use styx_native::{CameraInfo, NativeCamera, StreamSettings};
 use styx_pipeline::SensorValues;
 use styx_pipeline::device::{
-    IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning, isp_kind,
+    IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning, isp_kind, soft_capture_memory,
 };
 use styx_pisp::device::OutputMemory;
 use styx_softisp::{OutputBuffers, Scale};
@@ -68,6 +68,42 @@ pub(crate) fn processed_modes(raw: &[Mode]) -> Vec<Mode> {
         }
     }
     out
+}
+
+/// Opens camera `key` for processed capture: with the software ISP, raw frames go into cached
+/// dma-heap buffers when the system has the heap ([`soft_capture_memory`]; the CPU reads the
+/// receiver's own MMAP buffers uncached), unless the configuration asks for the driver's
+/// buffers. Falls back to the driver's buffers if the heap cannot be used.
+pub(crate) fn open_for_isp(
+    provider: &styx_native::NativeProvider,
+    key: &str,
+    config: &StyxConfig,
+) -> Result<NativeCamera, CaptureError> {
+    let (cameras, _) = provider.discover_cameras();
+    let memory = match cameras.into_iter().find(|c| c.key == key) {
+        Some(info)
+            if isp_kind(&info) == IspKind::Software && !config.backends.native.driver_buffers =>
+        {
+            Some((info, soft_capture_memory()))
+        }
+        _ => None,
+    };
+    match memory {
+        Some((info, memory @ styx_native::BufferMemory::DmaHeap(_))) => {
+            let options = styx_native::CameraOptions {
+                memory,
+                ..Default::default()
+            };
+            match NativeCamera::open(info, options) {
+                Ok(c) => Ok(c),
+                Err(e) => {
+                    tracing::warn!(backend = "native", error = %e, "cached capture buffers unavailable");
+                    provider.open_camera(key).map_err(err)
+                }
+            }
+        }
+        _ => provider.open_camera(key).map_err(err),
+    }
 }
 
 fn err(e: impl std::fmt::Display) -> CaptureError {

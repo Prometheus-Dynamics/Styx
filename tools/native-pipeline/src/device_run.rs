@@ -32,7 +32,10 @@ pub(crate) fn open_camera(a: &Args) -> Result<(NativeCamera, Instant), String> {
     let mut options = CameraOptions::default();
     if let Some(heap) = &a.heap {
         options.memory = BufferMemory::DmaHeap(heap.clone());
+    } else if a.command == "soft" && !a.driver_buffers {
+        options.memory = styx_pipeline::device::soft_capture_memory();
     }
+    println!("raw capture buffers: {:?}", options.memory);
     let cam = NativeCamera::open(info, options).map_err(|e| e.to_string())?;
     Ok((cam, opened))
 }
