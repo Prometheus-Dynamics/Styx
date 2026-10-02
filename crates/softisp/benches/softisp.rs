@@ -247,7 +247,7 @@ fn half_stages(c: &mut Criterion) {
         bn.iter(|| {
             (0..H / 4).for_each(|_| {
                 let [r, gg, b] = &mut q16;
-                half::quad_stats_row(&row, &row, [r, gg, b], W / 2, CfaPattern::Bggr);
+                half::quad_stats_row(&row, &row, [r, gg, b], W / 2, CfaPattern::Bggr, 0x3C03);
             })
         })
     });
