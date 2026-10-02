@@ -250,6 +250,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         options.settled_rate_hz = None;
     }
     options.temporal_denoise = !a.no_tdn;
+    options.spatial_denoise = a.spatial_denoise;
     let mut p =
         PispPipeline::open(cam, &settings(a), &tuning, options).map_err(|e| e.to_string())?;
     println!("pisp: temporal denoise {:?}", p.temporal_denoise());

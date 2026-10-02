@@ -38,6 +38,7 @@
 //!   --fixed US:GAIN      AE off: this exposure and analogue gain on every frame
 //!   --ct K               AWB off: the gains of this colour temperature (the tuning's CT curve)
 //!   --no-tdn             (pisp) no temporal denoise even if the tuning has it
+//!   --spatial-denoise K  (pisp) spatial and colour denoise thresholds times K (default 1)
 //!   --then FPS[,FPS..]   (pisp) after the run, close and reopen the camera at each rate in turn
 //!                        (45 frames each), starting from the state the last session settled on
 //!   --keep-open          (pisp) with --then: keep the camera open and powered between the
@@ -96,6 +97,7 @@ pub struct Args {
     pub fixed: Option<(f64, f64)>,
     pub ct: Option<f64>,
     pub no_tdn: bool,
+    pub spatial_denoise: f64,
     pub output: (output::Kind, styx_softisp::Scale),
     pub arithmetic: styx_softisp::Arithmetic,
     pub raw: Option<PathBuf>,
@@ -133,6 +135,7 @@ fn parse() -> Result<Args, String> {
         fixed: None,
         ct: None,
         no_tdn: false,
+        spatial_denoise: 1.0,
         output: (output::Kind::Rgb, styx_softisp::Scale::Full),
         arithmetic: styx_softisp::Arithmetic::Auto,
         raw: None,
@@ -171,6 +174,7 @@ fn parse() -> Result<Args, String> {
             "--cold" => a.cold = true,
             "--keep-open" => a.keep_open = true,
             "--no-tdn" => a.no_tdn = true,
+            "--spatial-denoise" => a.spatial_denoise = num(val()?)?,
             "--ct" => a.ct = Some(num(val()?)?),
             "--fixed" => {
                 let v = val()?;

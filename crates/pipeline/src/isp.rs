@@ -79,6 +79,28 @@ impl IspSettings {
         }
     }
 
+    /// These settings with the spatial (SDN) and colour (CDN) denoise thresholds scaled by
+    /// `scale` (both off at 0).
+    pub fn with_spatial_denoise(mut self, scale: f64) -> Self {
+        if scale == 1.0 {
+            return self;
+        }
+        let d = &mut self.denoise;
+        if scale <= 0.0 {
+            (d.sdn, d.cdn) = (None, None);
+        }
+        if let Some(s) = &mut d.sdn {
+            s.noise_constant *= scale;
+            s.noise_slope *= scale;
+            s.noise_constant2 *= scale;
+            s.noise_slope2 *= scale;
+        }
+        if let Some(c) = &mut d.cdn {
+            c.threshold *= scale;
+        }
+        self
+    }
+
     /// White balance times digital gain, per channel, as the back end applies them: with an
     /// extra gain of 1 / the smallest white balance gain when that is below 1, so no channel
     /// gets less than unity and saturated pixels stay white instead of turning cyan or magenta

@@ -79,6 +79,8 @@ pub struct Controller {
     record_pending: Option<Box<dyn Write + Send>>,
     warm: Option<WarmStart>,
     started: bool,
+    /// Scale of the spatial and colour denoise thresholds (see [`Self::set_spatial_denoise`]).
+    spatial_denoise: f64,
 }
 
 impl std::fmt::Debug for Controller {
@@ -106,7 +108,15 @@ impl Controller {
             record_pending: None,
             warm: None,
             started: false,
+            spatial_denoise: 1.0,
         })
+    }
+
+    /// Scales the spatial (SDN) and colour (CDN) denoise the tuning asks for: their noise
+    /// thresholds times `scale` (1, the default, as tuned; 0 turns both off). Applies to the
+    /// ISP settings from the next frame on.
+    pub fn set_spatial_denoise(&mut self, scale: f64) {
+        self.spatial_denoise = scale.max(0.0);
     }
 
     /// Starts the next [`Self::start`] from an earlier session's settled values (`None`: from
@@ -197,7 +207,7 @@ impl Controller {
         self.started = true;
         Ok(Start {
             sensor: p.sensor,
-            isp: IspSettings::from_params(&p, 0, 1.0),
+            isp: IspSettings::from_params(&p, 0, 1.0).with_spatial_denoise(self.spatial_denoise),
         })
     }
 
@@ -246,6 +256,7 @@ impl Controller {
     /// tuning's maximum.
     pub fn isp_for(&self, params: &Params, from_frame: u64, sensor: &SensorValues) -> IspSettings {
         IspSettings::from_params(params, from_frame, self.digital_gain_for(params, sensor))
+            .with_spatial_denoise(self.spatial_denoise)
     }
 
     /// The digital gain [`Self::isp_for`] gives (before the white balance's green gain is
