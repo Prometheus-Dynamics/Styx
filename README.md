@@ -9,6 +9,7 @@ Styx is a Rust workspace for sync-first, zero-copy media pipelines. The facade c
 - `crates/capture`: capture descriptors, validation, `CaptureSource`, and virtual capture helpers.
 - `crates/codec`: codec traits, registry, MJPEG/raw decoding, and optional FFmpeg/JPEG integrations.
 - `crates/libcamera`, `crates/v4l2`: optional system backends for probing and capture.
+- `crates/gst-styx`, `crates/pipewire-styx`: optional GStreamer plugin (`styxsrc`) and PipeWire camera node; separate workspaces that need the GStreamer/PipeWire development files, not built by the root workspace (see [docs/ecosystem.md](docs/ecosystem.md)).
 - `examples`: top-level example package grouped by quickstart, capture, graph, codec, performance, and app workflows.
 - `testing`: Docker, perf, and CI baselines used by local and hosted validation.
 
@@ -126,6 +127,7 @@ Optional Docker-backed facade validation:
 ## Documentation Index
 
 - [docs/README.md](docs/README.md): repository documentation index
+- [docs/ecosystem.md](docs/ecosystem.md): GStreamer and PipeWire bridges
 - [docs/development.md](docs/development.md): repo layout, commands, and validation conventions
 - [docs/testing.md](docs/testing.md): test surfaces, example expectations, and CI notes
 - [CHANGELOG.md](CHANGELOG.md): release history and notable workspace changes
