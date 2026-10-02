@@ -50,7 +50,8 @@ impl Default for IspParams {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Arithmetic {
-    /// [`Self::Half`] where it is fast and applies, else [`Self::Int`].
+    /// [`Self::Half`] where it is fast and applies (with a colour matrix or a tone curve, on
+    /// CPUs with FP16 arithmetic), else [`Self::Int`].
     #[default]
     Auto,
     /// 12-bit fixed point: the reference, on every CPU (SIMD on x86 and AArch64).
