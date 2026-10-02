@@ -15,17 +15,20 @@ impl Rng {
         self.0
     }
 
-    /// Working values as the front end makes them: fp16 in 0..=4095, a fifth of rows
-    /// only 0 and 4095.
+    /// Working values as the front end makes them: fp16 in 0..=4080, a fifth of rows
+    /// only 0 and 4080.
     fn working(&mut self, n: usize) -> Vec<u16> {
-        let extreme = self.next() % 5 == 0;
+        let extreme = self.next().is_multiple_of(5);
         (0..n)
             .map(|_| {
                 let v = self.next();
                 if extreme {
                     if v & 1 == 0 { 0 } else { H_MAX }
                 } else {
-                    f16::from_f64(f64::from(v % 4096) + f64::from(v >> 28) / 16.0).min(H_MAX)
+                    f16::min(
+                        f16::from_f64(f64::from(v % 4096) + f64::from(v >> 28) / 16.0),
+                        H_MAX,
+                    )
                 }
             })
             .collect()
@@ -40,6 +43,8 @@ fn both<T: PartialEq + std::fmt::Debug>(mut f: impl FnMut() -> T) {
     SCALAR_ONLY.with(|s| s.set(false));
     assert_eq!(fast, slow);
 }
+
+const GUARD: u16 = 0xA5A7;
 
 const WIDTHS: [usize; 7] = [2, 8, 16, 18, 46, 64, 98];
 
@@ -71,25 +76,20 @@ fn front_matches_the_oracle() {
             let gain = [f16::from_f64(7.2), f16::from_f64(4.1)];
             let t = f16::from_f64(f64::from(seed) / 6.0);
             both(|| {
-                let mut out = vec![0u16; w + 1];
+                let mut out = raw.clone();
+                out.push(GUARD);
                 let lsc = (seed % 2 == 1).then_some(LscRow { a: &a, d: &d, t });
-                front_row(&raw, &mut out, black, gain, lsc, w);
+                front_row(&mut out, black, gain, lsc, w);
+                assert_eq!(out[w], GUARD);
                 out
             });
         }
     }
-    // 1023 above a black level of 64, gain 4095 / 959: full scale (4094 in fp16).
-    let mut out = [0u16; 2];
-    let g = f16::from_f64(4095.0 / 959.0);
-    front_row(
-        &[1023, 10],
-        &mut out,
-        [f16::from_f64(1088.0); 2],
-        [g; 2],
-        None,
-        2,
-    );
-    assert_eq!(f16::to_f64(out[0]), 4094.0);
+    // 1023 above a black level of 64, gain 4080 / 959: full scale.
+    let mut out = [1023, 10];
+    let g = f16::from_f64(4080.0 / 959.0);
+    front_row(&mut out, [f16::from_f64(1088.0); 2], [g; 2], None, 2);
+    assert_eq!(f16::to_f64(out[0]), 4080.0);
     assert_eq!(out[1], 0);
 }
 
@@ -158,7 +158,7 @@ fn quads_and_luma_match_the_oracle() {
                 let [r, g, b] = &mut stats[..] else {
                     unreachable!()
                 };
-                quad_stats_row(&top, &bottom, [r, g, b], w, pattern);
+                quad_stats_row(&top, &bottom, [r, g, b], w, pattern, H_TO_12BIT);
                 let mut luma = vec![0u8; w + 1];
                 quad_luma_row(&top, &bottom, &mut luma, w, tone);
                 (planes, stats, luma)
@@ -177,10 +177,14 @@ fn quads_and_luma_match_the_oracle() {
 fn tone_follows_the_curve() {
     let srgb = |x: f32| crate::ToneCurve::Srgb.eval(x);
     let tone = HalfTone::from_curve(srgb).unwrap();
-    for v in 0..4096 {
-        let want = srgb(v as f32 / 4095.0) * 255.0;
+    for v in 0..4081 {
+        let want = srgb(v as f32 / 4080.0) * 255.0;
         let got = f32::from(tone.apply(f16::from_f64(f64::from(v) + 16.0)));
         assert!((got - want).abs() <= 1.0, "{v}: {got} vs {want}");
     }
     assert!(HalfTone::from_curve(|x| 1.0 - x).is_none());
+    // White is the curve's end.
+    assert_eq!(tone.apply(f16::add(H_MAX, H_16)), 255);
+    assert_eq!(f16::from_f64(4095.0 / 4080.0), H_TO_12BIT);
+    assert_eq!(f16::from_f64(FULL), H_MAX);
 }

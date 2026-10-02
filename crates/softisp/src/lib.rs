@@ -41,6 +41,7 @@ pub mod params;
 mod pipeline;
 mod pool;
 mod prepare;
+mod prepare_half;
 pub mod simd;
 mod stats;
 
@@ -48,7 +49,7 @@ pub use format::{BAYER_FOURCCS, CfaPattern, Channel, RawFormat, RawPacking, baye
 pub use isp::{IspError, SoftIsp, process};
 pub use output::{OutputBuffers, Scale};
 pub use params::{
-    BlackLevel, ColorMatrix, Demosaic, IspParams, LensShading, StatsConfig, ToneCurve,
+    Arithmetic, BlackLevel, ColorMatrix, Demosaic, IspParams, LensShading, StatsConfig, ToneCurve,
     WhiteBalance, YuvMatrix,
 };
 pub use stats::{IspStats, ZoneStats};

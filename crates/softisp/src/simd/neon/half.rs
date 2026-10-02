@@ -19,12 +19,6 @@ unsafe fn ld(p: &[u16], i: usize) -> float16x8_t {
 }
 
 #[inline(always)]
-unsafe fn st(p: &mut [u16], i: usize, v: float16x8_t) {
-    // SAFETY: the callers keep `i + 8` within `p`.
-    unsafe { vst1q_u16(p.as_mut_ptr().add(i), vreinterpretq_u16_f16(v)) }
-}
-
-#[inline(always)]
 unsafe fn splat(bits: u16) -> float16x8_t {
     unsafe { vreinterpretq_f16_u16(vdupq_n_u16(bits)) }
 }
@@ -95,11 +89,10 @@ unsafe fn put16(out: &mut ColourOut, x: usize, rgb: [uint8x16_t; 3]) {
 }
 
 /// # Safety
-/// See the module; `raw`, `dst` and the lens shading rows hold `width` samples.
+/// See the module; `row` and the lens shading rows hold `width` samples.
 #[target_feature(enable = "neon,fp16")]
 pub(in crate::simd) unsafe fn front(
-    raw: &[u16],
-    dst: &mut [u16],
+    row: &mut [u16],
     black: [u16; 2],
     gain: [u16; 2],
     lsc: Option<LscRow>,
@@ -111,14 +104,15 @@ pub(in crate::simd) unsafe fn front(
         let magic = vdupq_n_u16(0x6400);
         let (bl, gn) = (pair(black[0], black[1]), pair(gain[0], gain[1]));
         let (zero, max) = (splat(0), splat(H_MAX));
+        let ptr = row.as_mut_ptr();
         let base = |x: usize| {
-            let v = vreinterpretq_f16_u16(vorrq_u16(vld1q_u16(raw.as_ptr().add(x)), magic));
+            let v = vreinterpretq_f16_u16(vorrq_u16(vld1q_u16(ptr.add(x)), magic));
             vmulq_f16(vmaxq_f16(vsubq_f16(v, bl), zero), gn)
         };
         match lsc {
             None => {
                 while x + 8 <= width {
-                    st(dst, x, vminq_f16(base(x), max));
+                    vst1q_u16(ptr.add(x), vreinterpretq_u16_f16(vminq_f16(base(x), max)));
                     x += 8;
                 }
             }
@@ -126,7 +120,8 @@ pub(in crate::simd) unsafe fn front(
                 let t = splat(l.t);
                 while x + 8 <= width {
                     let g = vfmaq_f16(ld(l.a, x), ld(l.d, x), t);
-                    st(dst, x, vminq_f16(vmulq_f16(base(x), g), max));
+                    let y = vminq_f16(vmulq_f16(base(x), g), max);
+                    vst1q_u16(ptr.add(x), vreinterpretq_u16_f16(y));
                     x += 8;
                 }
             }
@@ -336,11 +331,13 @@ pub(in crate::simd) unsafe fn quad_stats(
     mut out: [&mut [u16]; 3],
     width: usize,
     pattern: CfaPattern,
+    scale: u16,
 ) -> usize {
     let mut i = 0;
     let pos = quad_positions(pattern);
     // SAFETY: 16 samples of each input at `2i`, 8 outputs at `i`, `i + 8 <= width`.
     unsafe {
+        let (scale, max) = (splat(scale), vdupq_n_u16(4095));
         while i + 8 <= width {
             let q = quad8(
                 vld2q_u16(top.as_ptr().add(2 * i)),
@@ -348,8 +345,27 @@ pub(in crate::simd) unsafe fn quad_stats(
                 pos,
             );
             for (o, v) in out.iter_mut().zip(q) {
-                vst1q_u16(o.as_mut_ptr().add(i), vcvtnq_u16_f16(v));
+                let v = vminq_u16(vcvtnq_u16_f16(vmulq_f16(v, scale)), max);
+                vst1q_u16(o.as_mut_ptr().add(i), v);
             }
+            i += 8;
+        }
+    }
+    i
+}
+
+/// # Safety
+/// NEON (always on AArch64; the conversion is base ARMv8, not FP16 arithmetic); `src` and
+/// `dst` hold the same number of elements.
+#[target_feature(enable = "neon")]
+pub(in crate::simd) unsafe fn from_f32(src: &[f32], dst: &mut [u16]) -> usize {
+    let mut i = 0;
+    // SAFETY: 8 elements of each at `i`, `i + 8 <= len`.
+    unsafe {
+        while i + 8 <= src.len() {
+            let lo = vcvt_f16_f32(vld1q_f32(src.as_ptr().add(i)));
+            let v = vcvt_high_f16_f32(lo, vld1q_f32(src.as_ptr().add(i + 4)));
+            vst1q_u16(dst.as_mut_ptr().add(i), vreinterpretq_u16_f16(v));
             i += 8;
         }
     }

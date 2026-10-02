@@ -66,6 +66,7 @@ pub fn soft(a: &Args) -> Result<(), String> {
     let (cam, opened) = open_camera(a)?;
     let mut p =
         SoftPipeline::open(cam, &settings(a), &tuning, a.threads).map_err(|e| e.to_string())?;
+    p.soft_loop().set_base_params(crate::soft_base(a));
     let cfg = p.configured().clone();
     println!(
         "soft: {} {}x{} stride {} at {:.3} fps",

@@ -4,7 +4,8 @@
 use crate::format::RawPacking;
 use crate::output::{OutputBuffers, Scale};
 use crate::params::Demosaic;
-use crate::prepare::Prepared;
+use crate::prepare::{Arith, IntPrep, Prepared};
+use crate::simd::half::{self, ColourOut};
 use crate::simd::{self, RowKind};
 use crate::stats::StatsAccum;
 
@@ -132,8 +133,16 @@ impl Worker {
         let w = p.width;
         let row = &mut self.slots[slot];
         src.unpack(&mut self.stage, ry, p.height, w, &mut row[PAD..PAD + w]);
-        let gains = p.gains.row(ry, &mut self.gains);
-        simd::front_row(&mut row[PAD..], p.black[ry & 1], gains, p.shift, w);
+        match &p.arith {
+            Arith::Int(ip) => {
+                let gains = ip.gains.row(ry, &mut self.gains);
+                simd::front_row(&mut row[PAD..], ip.black[ry & 1], gains, ip.shift, w);
+            }
+            Arith::Half(h) => {
+                let lsc = h.lsc.as_ref().map(|l| l.row(ry));
+                half::front_row(&mut row[PAD..], h.black[ry & 1], h.gain[ry & 1], lsc, w);
+            }
+        }
         for k in 1..=PAD {
             row[PAD - k] = row[PAD + k];
             row[PAD + w - 1 + k] = row[PAD + w - 1 - k];
@@ -148,10 +157,51 @@ impl Worker {
         std::array::from_fn(|i| self.front(p, src, y as isize - r + i as isize))
     }
 
-    /// Output row `oy` as planar 8-bit RGB in `rgb8[k]`.
-    fn colour_row(&mut self, p: &Prepared, src: &Source, scale: Scale, oy: usize, k: usize) {
+    /// Output row `oy` as planar 8-bit RGB in `rgb8[k]`, or packed into `packed`.
+    fn colour_row(
+        &mut self,
+        p: &Prepared,
+        src: &Source,
+        scale: Scale,
+        oy: usize,
+        k: usize,
+        packed: Option<&mut [u8]>,
+    ) {
         let w = p.width;
         let n = match scale {
+            Scale::Full => w,
+            Scale::Half => w / 2,
+        };
+        if let Arith::Half(h) = &p.arith {
+            let slots = match scale {
+                Scale::Full => self.window::<3>(p, src, oy),
+                Scale::Half => [
+                    self.front(p, src, 2 * oy as isize),
+                    self.front(p, src, 2 * oy as isize + 1),
+                    0,
+                ],
+            };
+            let [r, g, b] = &mut self.rgb8[k];
+            let out = match packed {
+                Some(d) => ColourOut::Packed(d),
+                None => ColourOut::Planes([r, g, b]),
+            };
+            match scale {
+                Scale::Full => {
+                    let rows = slots.map(|s| &self.slots[s][PAD - 1..]);
+                    half::colour_row(rows, out, w, &h.colour[oy & 1], &h.tone);
+                }
+                Scale::Half => {
+                    let (t, b) = (&self.slots[slots[0]][PAD..], &self.slots[slots[1]][PAD..]);
+                    half::quad_colour_row(t, b, out, n, &h.quad, p.pattern, &h.tone);
+                }
+            }
+            return;
+        }
+        let Arith::Int(ip) = &p.arith else {
+            unreachable!()
+        };
+        match scale {
             Scale::Full => {
                 let kind = RowKind::of(p.pattern, oy);
                 match p.demosaic {
@@ -168,7 +218,6 @@ impl Worker {
                         simd::demosaic_mhc_row(rows, [r, g, b], w, kind);
                     }
                 }
-                w
             }
             Scale::Half => {
                 let (t, b) = (
@@ -180,24 +229,48 @@ impl Worker {
                     &self.slots[t][PAD..],
                     &self.slots[b][PAD..],
                     [rr, gg, bb],
-                    w / 2,
+                    n,
                     p.pattern,
                 );
-                w / 2
             }
-        };
+        }
         let [r, g, b] = &mut self.rgb16;
-        if let Some(m) = &p.ccm {
+        if let Some(m) = &ip.ccm {
             simd::ccm_row([r, g, b], m, n);
         }
         for (src16, dst8) in self.rgb16.iter().zip(self.rgb8[k].iter_mut()) {
-            tone(p, src16, dst8, n);
+            tone(ip, src16, dst8, n);
+        }
+        if let Some(d) = packed {
+            let planes = self.rgb8[k].each_ref().map(|v| &v[..]);
+            simd::interleave_rgb_row(planes, d, n);
         }
     }
 
     /// Output row `oy` as 8-bit luma into `dst`.
     fn luma_row(&mut self, p: &Prepared, src: &Source, scale: Scale, oy: usize, dst: &mut [u8]) {
         let w = p.width;
+        let ip = match &p.arith {
+            Arith::Int(ip) => ip,
+            Arith::Half(h) => {
+                match scale {
+                    Scale::Full => {
+                        let s = self.window::<3>(p, src, oy);
+                        let rows = s.map(|s| &self.slots[s][PAD - 1..]);
+                        half::luma_row(rows, dst, w, &h.tone);
+                    }
+                    Scale::Half => {
+                        let (t, b) = (
+                            self.front(p, src, 2 * oy as isize),
+                            self.front(p, src, 2 * oy as isize + 1),
+                        );
+                        let (t, b) = (&self.slots[t][PAD..], &self.slots[b][PAD..]);
+                        half::quad_luma_row(t, b, dst, w / 2, &h.tone);
+                    }
+                }
+                return;
+            }
+        };
         let n = match scale {
             Scale::Full => {
                 let s = self.window::<3>(p, src, oy);
@@ -219,7 +292,7 @@ impl Worker {
                 w / 2
             }
         };
-        tone(p, &self.luma16, dst, n);
+        tone(ip, &self.luma16, dst, n);
     }
 
     /// Statistics of the quad row starting at mosaic row `y` (even), when sampled.
@@ -236,13 +309,13 @@ impl Worker {
             self.front(p, src, y as isize + 1),
         );
         let [r, g, bl] = &mut self.quad;
-        simd::quad_rgb_row(
-            &self.slots[t][PAD..],
-            &self.slots[b][PAD..],
-            [r, g, bl],
-            p.width / 2,
-            p.pattern,
-        );
+        let (t, b) = (&self.slots[t][PAD..], &self.slots[b][PAD..]);
+        match &p.arith {
+            Arith::Int(_) => drop(simd::quad_rgb_row(t, b, [r, g, bl], p.width / 2, p.pattern)),
+            Arith::Half(h) => {
+                half::quad_stats_row(t, b, [r, g, bl], p.width / 2, p.pattern, h.stats_scale)
+            }
+        }
         let acc = self.stats.as_mut().expect("checked above");
         acc.add_row(setup, qy, [&self.quad[0], &self.quad[1], &self.quad[2]]);
     }
@@ -281,9 +354,8 @@ impl Worker {
             }
             OutputBuffers::Rgb24 { data, stride } => {
                 for i in 0..rows {
-                    self.colour_row(p, src, scale, o0 + i, 0);
-                    let planes = self.rgb8[0].each_ref().map(|v| &v[..]);
-                    simd::interleave_rgb_row(planes, &mut data[i * stride..], ow);
+                    let row = &mut data[i * stride..][..3 * ow];
+                    self.colour_row(p, src, scale, o0 + i, 0, Some(row));
                     self.stats_after(p, src, scale, o0 + i);
                 }
             }
@@ -337,8 +409,8 @@ impl Worker {
         mut v: Option<(&mut [u8], usize)>,
     ) {
         for i in (0..rows).step_by(2) {
-            self.colour_row(p, src, scale, o0 + i, 0);
-            self.colour_row(p, src, scale, o0 + i + 1, 1);
+            self.colour_row(p, src, scale, o0 + i, 0, None);
+            self.colour_row(p, src, scale, o0 + i + 1, 1, None);
             for k in 0..2 {
                 let planes = self.rgb8[k].each_ref().map(|v| &v[..]);
                 simd::rgb_to_y_row(planes, &mut y[(i + k) * y_stride..], ow, &p.yuv);
@@ -367,7 +439,7 @@ impl Worker {
     }
 }
 
-fn tone(p: &Prepared, src: &[u16], dst: &mut [u8], n: usize) {
+fn tone(p: &IntPrep, src: &[u16], dst: &mut [u8], n: usize) {
     match &p.lut {
         Some(lut) => drop(simd::lut_row(src, dst, lut, n)),
         None => drop(simd::narrow_row(src, dst, n)),

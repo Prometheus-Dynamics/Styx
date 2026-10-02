@@ -63,6 +63,11 @@ impl std::fmt::Debug for SoftLoop {
     }
 }
 
+/// Lens shading grids within this (relative) of the one the software ISP's tables were built
+/// from keep those tables: adaptive lens shading moves its grid a little on most frames, and a
+/// rebuild costs 0.3 ms at 1280x800 on a Cortex-A76 (0.25%: under a code at full scale).
+pub const LSC_TOLERANCE: f32 = 0.0025;
+
 /// Software ISP parameters the loop does not change: bilinear demosaic, full-range BT.601 YUV
 /// (as the PiSP back end's "jpeg" encoding), statistics on a 16x12 zone grid with a 256-bin
 /// histogram (every second quad row).
@@ -94,7 +99,8 @@ impl SoftLoop {
         let controller = Controller::new(tuning, info.camera.clone())?;
         let start = IspSettings::neutral(info.black_level);
         let base = base_params();
-        let isp = SoftIsp::new(format, start.softisp(info.bits, &base))?.with_threads(threads);
+        let mut isp = SoftIsp::new(format, start.softisp(info.bits, &base))?.with_threads(threads);
+        isp.set_lens_shading_tolerance(LSC_TOLERANCE);
         Ok(Self {
             info,
             controller,

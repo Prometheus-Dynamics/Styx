@@ -105,3 +105,17 @@ pub fn rgb(
     .unwrap();
     (out, stats)
 }
+
+/// Both arithmetics, with how far (in 8-bit codes) [`Arithmetic::Half`] may land from the
+/// exact values these tests expect of [`Arithmetic::Int`] (its tone table is 48 segments and
+/// its linear output rounds where the integer path truncates).
+pub const ARITHMETICS: [(Arithmetic, i32); 2] = [(Arithmetic::Int, 0), (Arithmetic::Half, 1)];
+
+/// Whether `got` is within `tol` of `want`, element by element.
+pub fn near(got: &[u8], want: &[u8], tol: i32) -> bool {
+    got.len() == want.len()
+        && got
+            .iter()
+            .zip(want)
+            .all(|(&a, &b)| (i32::from(a) - i32::from(b)).abs() <= tol)
+}

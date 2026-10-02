@@ -1,6 +1,6 @@
 //! Row kernels of [`Arithmetic::Half`](crate::Arithmetic::Half): working values are fp16
-//! (bits in `u16`), 0..=4095 like the integer path's 12-bit samples but with a float's
-//! relative precision. Each kernel has a scalar oracle built on [`f16`] (exact software
+//! (bits in `u16`), 0..=4080 (full scale; the integer path's 12-bit samples reach 4095) with
+//! a float's relative precision. Each kernel has a scalar oracle built on [`f16`] (exact software
 //! fp16) and an AArch64 leaf for CPUs with FP16 arithmetic (ARMv8.2: Cortex-A55/A76 and
 //! later), which must match it bit for bit; without FP16 hardware the oracle runs (slowly).
 //!
@@ -20,8 +20,13 @@ use crate::format::CfaPattern;
 pub const H_HALF: u16 = 0x3800;
 pub const H_QUARTER: u16 = 0x3400;
 pub const H_16: u16 = 0x4C00;
-/// The largest working value: 4094, the largest fp16 below 4096 (fp16 steps by 2 there).
-pub const H_MAX: u16 = 0x6BFF;
+/// Full scale of the working values: 4080, so that full scale plus the tone curve's offset of
+/// 16 is 4096, a segment boundary (and white comes out as exactly the curve's end).
+pub const H_MAX: u16 = 0x6BF8;
+/// Full scale as a number.
+pub const FULL: f64 = 4080.0;
+/// fp16 of 4095 / 4080: working values to the 12-bit scale.
+pub const H_TO_12BIT: u16 = 0x3C04;
 
 /// Whether the FP16 leaves run on this CPU.
 #[inline]
@@ -37,16 +42,15 @@ pub fn hardware() -> bool {
 }
 
 /// A tone curve from fp16 working values to 8 bits. The input is `v + 16` (`v` the linear
-/// value, 0..=4095, so the input is at least 16); its fp16 bits' high byte (exponent and two
+/// value, 0..=4080, so the input is at least 16); its fp16 bits' high byte (exponent and two
 /// mantissa bits) picks one of 48 segments, four per octave from 16 up, and the low byte is
-/// the position within it: `out = (base 256 + 128 + slope low) >> 8`. Segments are as fine
-/// as the curve needs where gamma curves are steep: 1 code wide just above black, 1024 at the
-/// top. Against the integer path's 257-node table: at most 1 code apart on the sRGB curve,
-/// 2 on the HeliOS (Raspberry Pi contrast) curve, 0.4-0.5 rms.
+/// the position within it: `out = (base 256 + 128 + slope low) >> 8`. Segments are fine where
+/// gamma curves are steep: 1 code wide just above black, 512 at the top (full scale plus 16
+/// is 4096, the end of the last). Within a code of the sRGB curve.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HalfTone {
     pub base: [u8; Self::SEGMENTS],
-    /// `base[i + 1] - base[i]`.
+    /// Rise over the segment (`base + slope` at most 255).
     pub slope: [u8; Self::SEGMENTS],
 }
 
@@ -56,22 +60,48 @@ impl HalfTone {
     pub const FIRST: u8 = (H_16 >> 8) as u8;
 
     /// Segments of `curve` (0..1 to 0..1); `None` when it falls anywhere (the segments need
-    /// a non-negative slope).
+    /// a non-negative slope). Each segment's base and slope are the integers (within one of
+    /// its chord's) that keep 17 positions along it closest to the curve. About 850 curve
+    /// evaluations: cheap enough for a curve that changes every frame (adaptive contrast).
     pub fn from_curve(curve: impl Fn(f32) -> f32) -> Option<Self> {
-        let at = |i: usize| {
-            let v = f16::to_f64(((i + Self::FIRST as usize) << 8) as u16) - 16.0;
-            let x = (v / 4095.0).clamp(0.0, 1.0) as f32;
-            (curve(x).clamp(0.0, 1.0) * 255.0).round() as i32
+        const AT: [usize; 17] = [
+            0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 255,
+        ];
+        let at = |i: usize, f: usize| {
+            let v = f16::to_f64(((i + Self::FIRST as usize) << 8 | f) as u16) - 16.0;
+            let x = (v / FULL).clamp(0.0, 1.0) as f32;
+            f64::from(curve(x).clamp(0.0, 1.0)) * 255.0
         };
         let mut base = [0u8; Self::SEGMENTS];
         let mut slope = [0u8; Self::SEGMENTS];
+        let mut next = AT.map(|f| at(0, f));
         for i in 0..Self::SEGMENTS {
-            let (a, b) = (at(i), at(i + 1));
-            if b < a {
+            let ys = std::mem::replace(&mut next, AT.map(|f| at(i + 1, f)));
+            if ys.windows(2).any(|w| w[1] < w[0]) || next[0] < ys[16] {
                 return None;
             }
-            base[i] = a as u8;
-            slope[i] = (b - a) as u8;
+            let (b0, s0) = (ys[0].round() as i32, (next[0] - ys[0]).round() as i32);
+            let mut best = (f64::MAX, b0, s0);
+            for b in b0 - 1..=b0 + 1 {
+                for sl in s0 - 1..=s0 + 1 {
+                    if b < 0 || sl < 0 || b + sl > 255 {
+                        continue;
+                    }
+                    let err = AT
+                        .iter()
+                        .zip(&ys)
+                        .map(|(&f, &y)| {
+                            let out = (b * 256 + 128 + sl * f as i32) >> 8;
+                            (f64::from(out) - y).abs()
+                        })
+                        .fold(0.0, f64::max);
+                    if err < best.0 {
+                        best = (err, b, sl);
+                    }
+                }
+            }
+            base[i] = best.1 as u8;
+            slope[i] = best.2 as u8;
         }
         Some(Self { base, slope })
     }
@@ -188,34 +218,33 @@ macro_rules! half_leaf {
     }};
 }
 
-/// Front end of one row of 10-bit (or narrower) samples: `min(max(1024 + v - black, 0) gain
-/// [lsc], 4094)` with `black[column parity]` the fp16 of `1024 + black level` and `gain` the
-/// fp16 channel gain (white balance, digital gain, range); with lens shading, times
-/// `a + d t`.
+/// Front end of one row of 10-bit (or narrower) samples, in place: `min(max(1024 + v - black,
+/// 0) gain [lsc], 4080)` with `black[column parity]` the fp16 of `1024 + black level` and
+/// `gain` the fp16 channel gain (white balance, digital gain, range); with lens shading, times
+/// `a + d t`. Samples above 1023 are not allowed.
 pub fn front_row(
-    raw: &[u16],
-    dst: &mut [u16],
+    row: &mut [u16],
     black: [u16; 2],
     gain: [u16; 2],
     lsc: Option<LscRow>,
     width: usize,
 ) {
-    let (raw, dst) = (&raw[..width], &mut dst[..width]);
+    let row = &mut row[..width];
     let lsc = lsc.map(|l| LscRow {
         a: &l.a[..width],
         d: &l.d[..width],
         t: l.t,
     });
-    let done = half_leaf!(front(raw, dst, black, gain, lsc, width));
+    let done = half_leaf!(front(row, black, gain, lsc, width));
     debug_assert_eq!(done % 2, 0);
-    for x in done..width {
+    for (x, v) in row.iter_mut().enumerate().skip(done) {
         let p = x & 1;
-        let d = f16::max(f16::sub(f16::biased(raw[x]), black[p]), 0);
+        let d = f16::max(f16::sub(f16::biased(*v), black[p]), 0);
         let mut y = f16::mul(d, gain[p]);
         if let Some(l) = &lsc {
             y = f16::mul(y, f16::fma(l.a[x], l.d[x], l.t));
         }
-        dst[x] = f16::min(y, H_MAX);
+        *v = f16::min(y, H_MAX);
     }
 }
 
@@ -252,6 +281,21 @@ pub fn colour_row(
             tone.apply(f16::max(acc, H_16))
         });
         out.put(x, rgb);
+    }
+}
+
+/// `f32` to fp16 bits, rounded to nearest (as [`f16::from_f32`]), for tables.
+pub fn from_f32_row(src: &[f32], dst: &mut [u16]) {
+    let n = src.len().min(dst.len());
+    #[allow(unused_mut)]
+    let mut done = 0;
+    #[cfg(all(feature = "neon", target_arch = "aarch64"))]
+    {
+        // SAFETY: NEON is part of AArch64; both slices hold `n` elements.
+        done = unsafe { neon::half::from_f32(&src[..n], &mut dst[..n]) };
+    }
+    for (d, &v) in dst[done..n].iter_mut().zip(&src[done..n]) {
+        *d = f16::from_f32(v);
     }
 }
 
@@ -336,13 +380,15 @@ pub fn quad_luma_row(top: &[u16], bottom: &[u16], dst: &mut [u8], width: usize, 
     }
 }
 
-/// Each quad's R, mean G and B as 12-bit integers (rounded), for the statistics.
+/// Each quad's R, mean G and B on a 12-bit scale (times `scale`, rounded, at most 4095), for
+/// the statistics.
 pub fn quad_stats_row(
     top: &[u16],
     bottom: &[u16],
     out: [&mut [u16]; 3],
     width: usize,
     pattern: CfaPattern,
+    scale: u16,
 ) {
     let (top, bottom) = (&top[..2 * width], &bottom[..2 * width]);
     let [r, g, b] = out;
@@ -352,14 +398,15 @@ pub fn quad_stats_row(
         bottom,
         [&mut *r, &mut *g, &mut *b],
         width,
-        pattern
+        pattern,
+        scale
     ));
     let pos = quad_positions(pattern);
     for i in done..width {
-        let q = quad(top, bottom, i, pos);
-        r[i] = f16::to_u16_round(q[0]);
-        g[i] = f16::to_u16_round(q[1]);
-        b[i] = f16::to_u16_round(q[2]);
+        let q = quad(top, bottom, i, pos).map(|v| f16::to_u16_round(f16::mul(v, scale)).min(4095));
+        r[i] = q[0];
+        g[i] = q[1];
+        b[i] = q[2];
     }
 }
 

@@ -51,9 +51,40 @@ pub fn to_f64(h: u16) -> f64 {
     if h & 0x8000 != 0 { -v } else { v }
 }
 
-/// The fp16 nearest to `v`.
+/// The fp16 nearest to `v` (as [`from_f64`], with bit operations: fast enough for tables).
 pub fn from_f32(v: f32) -> u16 {
-    from_f64(f64::from(v))
+    let x = v.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let exp = ((x >> 23) & 0xFF) as i32;
+    let man = x & 0x7F_FFFF;
+    if exp == 0xFF {
+        return sign | INF | if man != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 31 {
+        return sign | INF;
+    }
+    if e <= 0 {
+        // Subnormal (or zero): the 24-bit significand shifted to multiples of 2^-24.
+        if e < -10 {
+            return sign;
+        }
+        let m = man | 0x80_0000;
+        let shift = (14 - e) as u32;
+        let rest = m & ((1 << shift) - 1);
+        let half = 1 << (shift - 1);
+        let mut q = m >> shift;
+        if rest > half || (rest == half && q & 1 == 1) {
+            q += 1;
+        }
+        return sign | q as u16;
+    }
+    let mut r = (e as u32) << 10 | man >> 13;
+    let rest = man & 0x1FFF;
+    if rest > 0x1000 || (rest == 0x1000 && r & 1 == 1) {
+        r += 1;
+    }
+    sign | r as u16
 }
 
 #[inline]

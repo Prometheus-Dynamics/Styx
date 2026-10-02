@@ -187,6 +187,106 @@ fn stages(c: &mut Criterion) {
     black_box((&a, &rgb));
 }
 
+/// The fp16 kernels ([`Arithmetic::Half`]; the scalar oracle without FP16 hardware).
+fn half_stages(c: &mut Criterion) {
+    use simd::half::{self, ColourCoeffs, ColourOut, HalfTone};
+    let f = |v: usize| simd::f16::from_f64((v * 37 % 4080) as f64);
+    let row: Vec<u16> = (0..W + 4).map(f).collect();
+    let rows3 = [&row[..], &row[..], &row[..]];
+    let raw: Vec<u16> = (0..W).map(|i| (i * 7 % 1024) as u16).collect();
+    let mut front = raw.clone();
+    let gains: Vec<u16> = (0..W).map(|_| simd::f16::from_f64(1.3)).collect();
+    let tone = HalfTone::from_curve(|x| ToneCurve::Srgb.eval(x)).unwrap();
+    let m = [[1.6, -0.4, -0.2], [-0.3, 1.5, -0.2], [-0.1, -0.5, 1.6]];
+    let cc = ColourCoeffs::new(&m, RowKind::of(CfaPattern::Bggr, 0));
+    let (mut p8, mut q8, mut s8) = (vec![0u8; W], vec![0u8; W], vec![0u8; W]);
+    let mut rgb = vec![0u8; W * 3];
+    let mut q16: [Vec<u16>; 3] = std::array::from_fn(|_| vec![0u16; W / 2]);
+    let mut g = c.benchmark_group("half_1280x800");
+    let (black, gain) = ([0x6440; 2], [0x4000; 2]);
+    g.bench_function("front", |bn| {
+        bn.iter(|| {
+            (0..H).for_each(|_| {
+                front.copy_from_slice(&raw);
+                half::front_row(&mut front, black, gain, None, W);
+            })
+        })
+    });
+    g.bench_function("front_lsc", |bn| {
+        let lsc = half::LscRow {
+            a: &gains,
+            d: &gains,
+            t: 0x3400,
+        };
+        bn.iter(|| {
+            (0..H).for_each(|_| {
+                front.copy_from_slice(&raw);
+                half::front_row(&mut front, black, gain, Some(lsc), W);
+            })
+        })
+    });
+    g.bench_function("colour_planes", |bn| {
+        bn.iter(|| {
+            (0..H).for_each(|_| {
+                let out = ColourOut::Planes([&mut p8, &mut q8, &mut s8]);
+                half::colour_row(rows3, out, W, &cc, &tone);
+            })
+        })
+    });
+    g.bench_function("colour_rgb24", |bn| {
+        bn.iter(|| {
+            (0..H).for_each(|_| {
+                half::colour_row(rows3, ColourOut::Packed(&mut rgb), W, &cc, &tone);
+            })
+        })
+    });
+    g.bench_function("luma", |bn| {
+        bn.iter(|| (0..H).for_each(|_| half::luma_row(rows3, &mut p8, W, &tone)))
+    });
+    g.bench_function("quad_stats_every_2nd_pair", |bn| {
+        bn.iter(|| {
+            (0..H / 4).for_each(|_| {
+                let [r, gg, b] = &mut q16;
+                half::quad_stats_row(&row, &row, [r, gg, b], W / 2, CfaPattern::Bggr);
+            })
+        })
+    });
+    g.finish();
+    black_box((&p8, &rgb, &front));
+}
+
+/// `set_params` with a new lens shading grid each time (32x32, as the pipeline's), and with
+/// only the gains changing.
+fn settings(c: &mut Criterion) {
+    let format = RawFormat::new(W as u32, H as u32, CfaPattern::Bggr, RawPacking::Csi2Raw10);
+    for (name, arithmetic) in [("half", Arithmetic::Half), ("int", Arithmetic::Int)] {
+        let base = IspParams {
+            lens_shading: Some(LensShading::radial(32, 32, 0.6)),
+            stats: Some(StatsConfig::default()),
+            arithmetic,
+            ..tuned(Demosaic::Bilinear)
+        };
+        let mut isp = SoftIsp::new(format, base.clone()).unwrap();
+        let mut k = 0u32;
+        c.bench_function(&format!("set_params/{name}_new_lsc_grid"), |bn| {
+            bn.iter(|| {
+                k += 1;
+                let mut p = base.clone();
+                p.lens_shading = Some(LensShading::radial(32, 32, 0.6 + k as f32 * 1e-4));
+                isp.set_params(p).unwrap();
+            })
+        });
+        c.bench_function(&format!("set_params/{name}_new_gains"), |bn| {
+            bn.iter(|| {
+                k += 1;
+                let mut p = base.clone();
+                p.digital_gain = 1.0 + k as f32 * 1e-4;
+                isp.set_params(p).unwrap();
+            })
+        });
+    }
+}
+
 fn run(c: &mut Criterion, name: &str, mut isp: SoftIsp, scale: Scale, kind: &str) {
     let raw = frame();
     let (ow, oh) = isp.output_size(scale);
@@ -218,6 +318,10 @@ fn run(c: &mut Criterion, name: &str, mut isp: SoftIsp, scale: Scale, kind: &str
 fn pipelines(c: &mut Criterion) {
     let format = RawFormat::new(W as u32, H as u32, CfaPattern::Bggr, RawPacking::Csi2Raw10);
     let isp = |p: IspParams| SoftIsp::new(format, p).unwrap();
+    let int = |mut p: IspParams| {
+        p.arithmetic = Arithmetic::Int;
+        p
+    };
     let stats = |mut p: IspParams| {
         p.stats = Some(StatsConfig::default());
         p
@@ -235,6 +339,13 @@ fn pipelines(c: &mut Criterion) {
         "rgb",
     );
     run(c, "e2e/rgb24_tuned", isp(bilinear()), Scale::Full, "rgb");
+    run(
+        c,
+        "e2e/rgb24_tuned_int",
+        isp(int(bilinear())),
+        Scale::Full,
+        "rgb",
+    );
     run(c, "e2e/nv12_tuned", isp(bilinear()), Scale::Full, "nv12");
     run(
         c,
@@ -249,6 +360,20 @@ fn pipelines(c: &mut Criterion) {
         isp(shaded(stats(bilinear()))),
         Scale::Full,
         "nv12",
+    );
+    run(
+        c,
+        "e2e/nv12_tuned_lsc_stats_int",
+        isp(int(shaded(stats(bilinear())))),
+        Scale::Full,
+        "nv12",
+    );
+    run(
+        c,
+        "e2e/rgb24_tuned_lsc_stats",
+        isp(shaded(stats(bilinear()))),
+        Scale::Full,
+        "rgb",
     );
     run(
         c,
@@ -343,6 +468,6 @@ fn pipelines(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = configure();
-    targets = stages, pipelines
+    targets = stages, half_stages, settings, pipelines
 }
 criterion_main!(benches);

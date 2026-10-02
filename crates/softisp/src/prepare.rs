@@ -1,7 +1,8 @@
 //! Parameters compiled into the fixed-point tables the row loop uses.
 
 use crate::format::{CfaPattern, Channel, RawFormat};
-use crate::params::{Demosaic, IspParams, LensShading, YuvMatrix};
+use crate::params::{Arithmetic, Demosaic, IspParams, LensShading, YuvMatrix};
+use crate::prepare_half::HalfPrep;
 use crate::simd::scalar::WORK_MAX;
 use crate::simd::{ToneLut, YuvCoeffs};
 use crate::{IspError, StatsConfig};
@@ -28,6 +29,24 @@ pub(crate) struct Prepared {
     pub height: usize,
     pub pattern: CfaPattern,
     pub demosaic: Demosaic,
+    /// The per-pixel stages' tables.
+    pub arith: Arith,
+    pub yuv: YuvCoeffs,
+    pub stats: Option<StatsSetup>,
+    /// White balance times digital gain, reported with the statistics.
+    pub channel_gains: [f32; 3],
+}
+
+/// Tables of the arithmetic in use.
+#[derive(Debug)]
+pub(crate) enum Arith {
+    Int(IntPrep),
+    Half(HalfPrep),
+}
+
+/// [`Arithmetic::Int`]'s tables.
+#[derive(Debug)]
+pub(crate) struct IntPrep {
     /// Left shift putting input samples' top bit at bit 15.
     pub shift: u32,
     /// `black[row parity][column parity]`.
@@ -36,10 +55,6 @@ pub(crate) struct Prepared {
     /// Q12 colour matrix.
     pub ccm: Option<[i16; 9]>,
     pub lut: Option<ToneLut>,
-    pub yuv: YuvCoeffs,
-    pub stats: Option<StatsSetup>,
-    /// White balance times digital gain, reported with the statistics.
-    pub channel_gains: [f32; 3],
 }
 
 /// Statistics geometry.
@@ -52,7 +67,7 @@ pub(crate) struct StatsSetup {
     pub saturation: u16,
 }
 
-fn channel_index(c: Channel) -> usize {
+pub(crate) fn channel_index(c: Channel) -> usize {
     match c {
         Channel::Red => 0,
         Channel::Green => 1,
@@ -65,7 +80,7 @@ fn q12(g: f32) -> u16 {
 }
 
 /// Sample positions of `n` output points spread over `nodes` grid nodes: index and Q16 weight.
-fn grid_map(n: usize, nodes: usize) -> Vec<(u16, u32)> {
+pub(crate) fn grid_map(n: usize, nodes: usize) -> Vec<(u16, u32)> {
     (0..n)
         .map(|i| {
             if nodes < 2 || n < 2 {
@@ -80,7 +95,14 @@ fn grid_map(n: usize, nodes: usize) -> Vec<(u16, u32)> {
 }
 
 impl Prepared {
-    pub fn new(format: &RawFormat, params: &IspParams) -> Result<Self, IspError> {
+    /// Tables for `params`; lens shading tables of `previous` are kept when its grid differs
+    /// from the new one by at most `lsc_tolerance` (relative) in every node.
+    pub fn new(
+        format: &RawFormat,
+        params: &IspParams,
+        previous: Option<&Prepared>,
+        lsc_tolerance: f32,
+    ) -> Result<Self, IspError> {
         let (w, h) = (format.width as usize, format.height as usize);
         if w < 4 || h < 4 || w % 2 != 0 || h % 2 != 0 {
             return Err(IspError::Unsupported(format!(
@@ -111,33 +133,32 @@ impl Prepared {
         }
         let channel_gains = wb.map(|g| g * digital);
         let pattern = format.pattern;
-        // Gain of CFA cell (x & 1, y & 1), with the black level's range loss made up.
-        let cell_gain = |x: usize, y: usize| {
-            let bl = black_cells[pattern.cell_at(x, y)] as f32;
-            channel_gains[channel_index(pattern.channel_at(x, y))] * full / (full - bl)
+        if let Some(ls) = &params.lens_shading {
+            check_lens_shading(ls)?;
+        }
+        if let Some(c) = &params.ccm
+            && c.m
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite() || v.abs() > 4.0)
+        {
+            return Err(IspError::InvalidParams("CCM coefficient outside ±4".into()));
+        }
+        let previous_half = previous.and_then(|p| match &p.arith {
+            Arith::Half(h) => Some(h),
+            Arith::Int(_) => None,
+        });
+        let arith = match HalfPrep::eligible(format, params, previous_half) {
+            Some(tone) => Arith::Half(HalfPrep::new(
+                format,
+                params,
+                tone,
+                channel_gains,
+                previous_half,
+                lsc_tolerance,
+            )),
+            None => Arith::Int(IntPrep::new(format, params, channel_gains)?),
         };
-        let black = [0, 1].map(|y| [0, 1].map(|x| black_cells[pattern.cell_at(x, y)]));
-        let gains = match &params.lens_shading {
-            None => GainRows::Flat([0, 1].map(|y| (0..w).map(|x| q12(cell_gain(x, y))).collect())),
-            Some(ls) => shaded_gains(ls, format, &cell_gain)?,
-        };
-        let ccm = params
-            .ccm
-            .map(|c| {
-                let mut m = [0i16; 9];
-                for (k, v) in c.m.iter().flatten().enumerate() {
-                    if !v.is_finite() || v.abs() > 4.0 {
-                        return Err(IspError::InvalidParams("CCM coefficient outside ±4".into()));
-                    }
-                    m[k] = (v * 4096.0).round() as i16;
-                }
-                Ok(m)
-            })
-            .transpose()?;
-        let lut = params
-            .tone
-            .as_ref()
-            .map(|curve| ToneLut::from_curve(|x| curve.eval(x)));
         let yuv = match params.yuv {
             YuvMatrix::Bt601Full => YuvCoeffs::BT601_FULL,
             YuvMatrix::Bt709Limited => YuvCoeffs::BT709_LIMITED,
@@ -148,23 +169,66 @@ impl Prepared {
             height: h,
             pattern,
             demosaic: params.demosaic,
-            shift: 16 - bits as u32,
-            black,
-            gains,
-            ccm,
-            lut,
+            arith,
             yuv,
             stats,
             channel_gains,
         })
     }
+
+    /// The arithmetic in use.
+    pub fn arithmetic(&self) -> Arithmetic {
+        match self.arith {
+            Arith::Int(_) => Arithmetic::Int,
+            Arith::Half(_) => Arithmetic::Half,
+        }
+    }
 }
 
-fn shaded_gains(
-    ls: &LensShading,
-    format: &RawFormat,
-    cell_gain: &dyn Fn(usize, usize) -> f32,
-) -> Result<GainRows, IspError> {
+impl IntPrep {
+    fn new(
+        format: &RawFormat,
+        params: &IspParams,
+        channel_gains: [f32; 3],
+    ) -> Result<Self, IspError> {
+        let w = format.width as usize;
+        let bits = format.packing.bit_depth();
+        let full = ((1u32 << bits) - 1) as f32;
+        let black_cells = params.black_level.map_or([0; 4], |b| b.cells());
+        let pattern = format.pattern;
+        // Gain of CFA cell (x & 1, y & 1), with the black level's range loss made up.
+        let cell_gain = |x: usize, y: usize| {
+            let bl = black_cells[pattern.cell_at(x, y)] as f32;
+            channel_gains[channel_index(pattern.channel_at(x, y))] * full / (full - bl)
+        };
+        let black = [0, 1].map(|y| [0, 1].map(|x| black_cells[pattern.cell_at(x, y)]));
+        let gains = match &params.lens_shading {
+            None => GainRows::Flat([0, 1].map(|y| (0..w).map(|x| q12(cell_gain(x, y))).collect())),
+            Some(ls) => shaded_gains(ls, format, &cell_gain)?,
+        };
+        let ccm = params.ccm.map(|c| {
+            let mut m = [0i16; 9];
+            for (k, v) in c.m.iter().flatten().enumerate() {
+                m[k] = (v * 4096.0).round() as i16;
+            }
+            m
+        });
+        let lut = params
+            .tone
+            .as_ref()
+            .map(|curve| ToneLut::from_curve(|x| curve.eval(x)));
+        Ok(Self {
+            shift: 16 - bits as u32,
+            black,
+            gains,
+            ccm,
+            lut,
+        })
+    }
+}
+
+/// Lens shading grids must be complete and hold finite, non-negative gains.
+fn check_lens_shading(ls: &LensShading) -> Result<(), IspError> {
     let (gw, gh) = (ls.width as usize, ls.height as usize);
     let nodes = gw * gh;
     if gw == 0 || gh == 0 || [&ls.r, &ls.g, &ls.b].iter().any(|g| g.len() != nodes) {
@@ -181,6 +245,15 @@ fn shaded_gains(
             "lens shading gains must be finite and non-negative".into(),
         ));
     }
+    Ok(())
+}
+
+fn shaded_gains(
+    ls: &LensShading,
+    format: &RawFormat,
+    cell_gain: &dyn Fn(usize, usize) -> f32,
+) -> Result<GainRows, IspError> {
+    let (gw, gh) = (ls.width as usize, ls.height as usize);
     let (w, h) = (format.width as usize, format.height as usize);
     let grids = [&ls.r, &ls.g, &ls.b];
     let x_map = grid_map(w, gw);

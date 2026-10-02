@@ -2,7 +2,7 @@
 
 use crate::format::RawFormat;
 use crate::output::{Kind, OutputBuffers, Scale};
-use crate::params::IspParams;
+use crate::params::{Arithmetic, IspParams};
 use crate::pipeline::{Source, Worker};
 use crate::pool::Pool;
 use crate::prepare::Prepared;
@@ -43,6 +43,7 @@ pub struct SoftIsp {
     threads: usize,
     pool: Option<Pool>,
     copy_input: bool,
+    lsc_tolerance: f32,
 }
 
 impl std::fmt::Debug for SoftIsp {
@@ -57,7 +58,7 @@ impl std::fmt::Debug for SoftIsp {
 
 impl SoftIsp {
     pub fn new(format: RawFormat, params: IspParams) -> Result<Self, IspError> {
-        let prepared = Prepared::new(&format, &params)?;
+        let prepared = Prepared::new(&format, &params, None, 0.0)?;
         Ok(Self {
             format,
             params,
@@ -66,6 +67,7 @@ impl SoftIsp {
             threads: 1,
             pool: None,
             copy_input: true,
+            lsc_tolerance: 0.0,
         })
     }
 
@@ -106,9 +108,29 @@ impl SoftIsp {
 
     /// Replace the parameters (for example new white balance gains from the last statistics).
     pub fn set_params(&mut self, params: IspParams) -> Result<(), IspError> {
-        self.prepared = Prepared::new(&self.format, &params)?;
+        self.prepared = Prepared::new(
+            &self.format,
+            &params,
+            Some(&self.prepared),
+            self.lsc_tolerance,
+        )?;
         self.params = params;
         Ok(())
+    }
+
+    /// Keep the lens shading tables built for an earlier grid while every node of the new
+    /// grid is within `tolerance` (relative, e.g. `0.002`) of it (default 0: rebuild on any
+    /// change). Rebuilding costs about a third of a millisecond at 1280x800 on a Cortex-A76,
+    /// and adaptive lens shading changes its grid a little on most frames. Only the fp16
+    /// arithmetic keeps tables across white balance and gain changes; the integer
+    /// arithmetic rebuilds them whenever any gain changes.
+    pub fn set_lens_shading_tolerance(&mut self, tolerance: f32) {
+        self.lsc_tolerance = tolerance.max(0.0);
+    }
+
+    /// The arithmetic the current parameters run with ([`Arithmetic::Auto`] resolved).
+    pub fn arithmetic(&self) -> Arithmetic {
+        self.prepared.arithmetic()
     }
 
     pub fn params(&self) -> &IspParams {
