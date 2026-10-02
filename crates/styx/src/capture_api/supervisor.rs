@@ -1,4 +1,5 @@
-//! Disconnect and stall recovery, and stopping when idle, for libcamera and V4L2 captures.
+//! Disconnect and stall recovery, and stopping when idle, for libcamera, V4L2 and native
+//! captures.
 //!
 //! The consumer's handle owns a queue that outlives any one backend capture. A supervisor thread
 //! runs the backend capture (feeding that queue), watches for disconnects and stalls, and
@@ -235,8 +236,10 @@ struct Recipe {
 pub(crate) fn queue_for(backend: BackendKind, config: &StyxConfig) -> Option<CaptureQueue> {
     let capture = config.capture_tunables();
     // Virtual sources never disconnect; tests supervise them to exercise recovery.
-    let supported = matches!(backend, BackendKind::Libcamera | BackendKind::V4l2)
-        || (cfg!(test) && backend == BackendKind::Virtual);
+    let supported = matches!(
+        backend,
+        BackendKind::Libcamera | BackendKind::V4l2 | BackendKind::Native
+    ) || (cfg!(test) && backend == BackendKind::Virtual);
     (supported && capture.reconnect.enabled)
         .then(|| styx_core::queue::bounded_with(capture.queue_depth.max(1), capture.queue_overflow))
 }
@@ -485,4 +488,26 @@ fn restart(
 /// stopping the backend capture never closes the consumer's queue.
 pub(crate) fn backend_queue(tx: &styx_core::queue::BoundedTx<FrameLease>) -> CaptureQueue {
     (tx.clone(), styx_core::queue::bounded(1).1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_captures_are_supervised_like_libcamera_and_v4l2_ones() {
+        let config = StyxConfig::default();
+        for backend in [
+            BackendKind::Libcamera,
+            BackendKind::V4l2,
+            BackendKind::Native,
+        ] {
+            assert!(
+                queue_for(backend, &config).is_some()
+                    == config.capture_tunables().reconnect.enabled,
+                "{backend}"
+            );
+        }
+        assert!(queue_for(BackendKind::File, &config).is_none());
+    }
 }

@@ -259,6 +259,28 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
         Ok(())
     }
 
+    /// Power down without talking to the sensor: runs only the pin steps (supplies, clocks,
+    /// GPIOs) of the power-down sequence, skipping its register writes, whatever the state.
+    /// For a sensor that stopped answering on its bus (a stream-off write would fail first).
+    /// Every pin step is attempted; the first failure is returned.
+    pub fn force_power_down(&mut self) -> Result<()> {
+        let desc = Arc::clone(&self.desc);
+        let mut first = Ok(());
+        for step in desc.sequences.power_down.iter() {
+            if matches!(step, Step::Write(_)) {
+                continue;
+            }
+            let r = self.run(std::slice::from_ref(step));
+            if first.is_ok() {
+                first = r;
+            }
+        }
+        self.state = DriverState::Off;
+        self.mode = None;
+        self.scheduler = None;
+        first
+    }
+
     /// Read the chip id and check it. Returns the value read.
     pub fn verify_chip_id(&mut self) -> Result<u32> {
         self.require(

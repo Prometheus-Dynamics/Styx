@@ -127,6 +127,20 @@ limits at that fps.
 - Commits: concise messages ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
   Never push.
 
+## rp1-cfe pitfalls (Raspberry Pi 6.12), measured on the device
+
+- `VIDIOC_STREAMON`/`STREAMOFF` hold the video node's lock while the bridge waits for the
+  acknowledgement, and `poll` on the node (`vb2_fop_poll`) and every ioctl on it take the same
+  lock. Whatever serves the bridge must not touch the node meanwhile (not even through a shared
+  epoll reactor that re-polls it): `styx-native`'s event thread polls with its own `poll(2)` and
+  is quiesced around both calls. Before that, every stop timed out after 1 s.
+- A failing sensor `s_stream(1)` oopses the kernel (`csi2_stop_channel` on channel -1 when the
+  front end is unused). The bridge therefore does not fail `STREAMON` by default and reports
+  the failed start in `STYX_CID_STREAM_STATE` = 4; userspace stops the receiver
+  (`PROTOCOL.md`, module parameter `report_start_errors`).
+- Unbinding `rp1-cfe` after it bound to the bridge leaks a reference to the bridge's device
+  tree node (no `v4l2_async_nf_cleanup`): removing the overlay logs "OF: ERROR: memory leak".
+
 ## Phases
 
 0. **Spike + foundations** (done): kernel interface layer, sensor description and timing, device

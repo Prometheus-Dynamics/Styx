@@ -43,7 +43,7 @@ pub mod controls {
 
 fn native_err(e: NativeError) -> CaptureError {
     match e {
-        NativeError::Disconnected => CaptureError::Disconnected("native camera".into()),
+        e if e.is_disconnect() => CaptureError::Disconnected(format!("native camera: {e}")),
         NativeError::InvalidConfig(m) => CaptureError::InvalidConfig(m),
         NativeError::Busy(m) => CaptureError::Backend(format!("native: busy: {m}")),
         e => CaptureError::Backend(format!("native: {e}")),

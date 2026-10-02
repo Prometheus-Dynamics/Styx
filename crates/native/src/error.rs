@@ -42,6 +42,16 @@ pub enum NativeError {
     Timeout,
 }
 
+/// The errno of an I/O error: its own, or that of a `styx_kernel::Error` it wraps (the
+/// conversion from a kernel error keeps only the error kind on the outside).
+pub(crate) fn io_errno(e: &io::Error) -> Option<i32> {
+    e.raw_os_error().or_else(|| {
+        e.get_ref()
+            .and_then(|inner| inner.downcast_ref::<styx_kernel::Error>())
+            .and_then(styx_kernel::Error::errno)
+    })
+}
+
 /// Result of the native runtime.
 pub type Result<T> = std::result::Result<T, NativeError>;
 
@@ -54,10 +64,10 @@ impl NativeError {
         }
     }
 
-    /// The errno behind a kernel error, if any.
+    /// The errno behind a kernel error, if any (also through a wrapped `styx_kernel::Error`).
     pub fn errno(&self) -> Option<i32> {
         match self {
-            NativeError::Kernel { source, .. } => source.raw_os_error(),
+            NativeError::Kernel { source, .. } => io_errno(source),
             _ => None,
         }
     }

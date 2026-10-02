@@ -49,6 +49,9 @@ pub enum StreamState {
     Streaming,
     /// A stop request is waiting for acknowledgement.
     Stopping,
+    /// A start failed but the receiver was told it succeeded (the bridge's default, see
+    /// `PROTOCOL.md`): stop the receiver to get back to idle.
+    StartFailed,
 }
 
 impl StreamState {
@@ -58,6 +61,7 @@ impl StreamState {
             1 => Self::Starting,
             2 => Self::Streaming,
             3 => Self::Stopping,
+            4 => Self::StartFailed,
             _ => return Err(io::Error::other(format!("unknown bridge stream state {v}"))),
         })
     }
