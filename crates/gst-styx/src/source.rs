@@ -76,7 +76,7 @@ fn virtual_camera(spec: &str) -> Result<ProbedDevice, String> {
 /// A running stream of frames.
 pub enum Stream {
     Local(Box<PlannedFrames>),
-    Service(FrameClient),
+    Service(Box<FrameClient>),
 }
 
 /// What to start a stream with.
@@ -104,7 +104,7 @@ impl Stream {
             .map_err(|e| format!("camera service {path}: {e}"))?
             .reconnecting();
             let plan = client.plan().unwrap_or_default();
-            return Ok((Self::Service(client), plan));
+            return Ok((Self::Service(Box::new(client)), plan));
         }
         let device = device.ok_or("no camera")?;
         let req = with_options(caps.requirements(true), options);

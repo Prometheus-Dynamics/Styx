@@ -29,6 +29,9 @@ pub struct Offer {
     pub rates: Vec<(u32, u32)>,
 }
 
+/// Whether the camera produces a format itself, and its rates.
+type Found = (bool, Vec<(u32, u32)>);
+
 /// Everything `device` can deliver in PipeWire formats: the camera's own formats first, then
 /// what the planner can convert to, largest sizes first.
 pub fn offers(device: &ProbedDevice) -> Vec<Offer> {
@@ -36,7 +39,7 @@ pub fn offers(device: &ProbedDevice) -> Vec<Offer> {
         return Vec::new();
     };
     let registry = registry.handle();
-    let mut found: BTreeMap<(FourCc, u32, u32), (bool, Vec<(u32, u32)>)> = BTreeMap::new();
+    let mut found: BTreeMap<(FourCc, u32, u32), Found> = BTreeMap::new();
     for backend in &device.backends {
         for mode in &backend.descriptor.modes {
             let res = mode.format.resolution;
