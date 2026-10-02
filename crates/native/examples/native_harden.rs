@@ -8,6 +8,8 @@
 //! native_harden restart <cycles>      # stop/start and close/reopen with frames held
 //! native_harden soak <minutes>        # continuous capture with rate/exposure changes,
 //!                                     # restarts and reopens; resource and timing report
+//! native_harden killed [cycles]       # SIGKILL a streaming child, then the next owner's
+//!                                     # first stream must deliver frames (0, 0.2, 2.5 s gaps)
 //! ```
 //!
 //! Set `STYX_SENSOR_PATH` to the directory or file with the sensor description.
@@ -31,9 +33,10 @@ fn main() {
         Some("hold") => hold(num(1, 10), num(2, 60) as u32),
         Some("restart") => restart(num(1, 20) as usize),
         Some("soak") => soak(num(1, 30), num(2, 60)),
+        Some("killed") => killed(num(1, 1) as usize),
         _ => {
             eprintln!(
-                "usage: native_harden probe|hotplug <s>|hold <s> [fps]|restart <n>|soak <min>"
+                "usage: native_harden probe|hotplug <s>|hold <s> [fps]|restart <n>|soak <min>|killed [n]"
             );
             std::process::exit(2);
         }
@@ -149,7 +152,12 @@ fn hold(secs: u64, fps: u32) -> Result<(), NativeError> {
     let mut last_report = Instant::now();
     while Instant::now() < end {
         match stream.next_blocking(WAIT) {
-            Ok(Some(_)) => n += 1,
+            Ok(Some(_)) => {
+                if n == 0 {
+                    println!("{} first frame", stamp());
+                }
+                n += 1;
+            }
             Ok(None) => {
                 println!("{} stream ended", stamp());
                 break;
@@ -470,4 +478,69 @@ fn report(
         cam.event_counts(),
         stream.frame_sync_fallback(),
     );
+}
+
+/// The first stream after a streaming owner was killed (SIGKILL) must deliver frames. A child
+/// `hold` streams at each rate until its first frame and a little longer, is killed, and after
+/// each gap this process opens the camera and times its first frame.
+fn killed(cycles: usize) -> Result<(), NativeError> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let info = first_camera()?;
+    let exe = std::env::current_exe().map_err(|e| NativeError::kernel("current_exe", e))?;
+    let mut failures = 0;
+    for cycle in 0..cycles {
+        for (fps, gap_ms) in [(30, 200), (30, 2500), (15, 0), (120, 0), (60, 200)] {
+            let mut child = Command::new(&exe)
+                .args(["hold", "30", &fps.to_string()])
+                .stdout(Stdio::piped())
+                .spawn()
+                .map_err(|e| NativeError::kernel("spawning the owner", e))?;
+            // Kept open until the kill: a closed pipe would end the child by itself.
+            let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
+            let streaming = lines
+                .by_ref()
+                .map_while(Result::ok)
+                .any(|l| l.contains("first frame"));
+            if streaming {
+                // Mid-frame, at some point after the first.
+                std::thread::sleep(Duration::from_millis(300 + 37 * cycle as u64));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            drop(lines);
+            if !streaming {
+                println!("cycle {cycle} {fps} fps: the owner never streamed");
+                failures += 1;
+                continue;
+            }
+            std::thread::sleep(Duration::from_millis(gap_ms));
+            let t = Instant::now();
+            let mut cam = NativeCamera::open(info.clone(), Default::default())?;
+            cam.configure(&StreamSettings::new(1280, 800).fps(30))?;
+            let mut stream = cam.start()?;
+            let first = stream.next_blocking(WAIT);
+            let ok = matches!(first, Ok(Some(_)));
+            println!(
+                "cycle {cycle}: killed at {fps} fps, gap {gap_ms} ms: first frame {} ({})",
+                if ok { "ok" } else { "MISSING" },
+                match first {
+                    Ok(Some(_)) => format!("{:.1} ms after open", t.elapsed().as_secs_f64() * 1e3),
+                    Ok(None) => "stream ended".into(),
+                    Err(e) => e.to_string(),
+                }
+            );
+            failures += usize::from(!ok);
+            drop(stream);
+            cam.close()?;
+        }
+    }
+    if failures > 0 {
+        return Err(NativeError::State(
+            "a first stream after a kill got no frames",
+        ));
+    }
+    println!("killed: all first streams delivered frames");
+    Ok(())
 }

@@ -284,3 +284,21 @@ fn a_powered_sensor_in_the_same_mode_is_not_set_up_again() {
     c.bring_up("1280x720", "raw10").unwrap();
     assert!(c.driver().bus().writes().len() > n);
 }
+
+#[test]
+fn bring_up_stops_a_sensor_left_streaming_before_init() {
+    // A previous owner killed mid-stream leaves the sensor streaming when its digital rails
+    // stay on: bring-up writes stream_off before the init registers.
+    let mut c = control();
+    c.bring_up("1280x800", "raw10").unwrap();
+    let writes = c.driver().bus().writes();
+    let off = writes
+        .iter()
+        .position(|w| *w == RegWrite::byte(0x0100, 0))
+        .expect("stream_off written");
+    let init = writes
+        .iter()
+        .position(|w| *w == RegWrite::byte(0x0302, 0x32))
+        .expect("init written");
+    assert!(off < init, "stream_off at {off}, init at {init}");
+}

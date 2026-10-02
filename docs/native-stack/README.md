@@ -147,8 +147,16 @@ limits at that fps.
 - The sensor is stopped (`s_stream(0)`, the bridge's stop request) when the *last* streaming
   node stops: with embedded data that is the embedded node, so the bridge must still be served
   until it has stopped too.
-- After a process is killed mid-stream, the next owner's first stream gets no frames although
-  the start succeeds; the stream after that works. The supervisor's stall restart recovers it.
+- The bridge's "power off" does not reset the OV9782 on the CM5: only `cam0_reg` (avdd) is
+  switched, the digital rails are always on, and the sensor keeps its registers (it answers on
+  I²C with the bridge powered off). A process killed mid-stream therefore left the sensor
+  *streaming* (0x0100 = 1, lanes in HS with the continuous clock) although the bridge cut
+  "power" 50 ms after; the next owner's receiver never saw an LP-11 → HS start of frame, so
+  its first stream got no frame-start events and no frames (the start was acknowledged), and
+  only its stop put the sensor in standby for the stream after. Bring-up now writes the
+  description's `stream_off` right after the chip id, before init. `native_harden killed`
+  checks it (kills a streaming owner at 15-120 fps, opens after 0, 0.2 and 2.5 s: first frame
+  35 ms after open every time; all five missed before).
 - Unbinding `rp1-cfe` after it bound to the bridge leaks a reference to the bridge's device
   tree node (no `v4l2_async_nf_cleanup`): removing the overlay logs "OF: ERROR: memory leak".
 

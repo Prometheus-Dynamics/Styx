@@ -228,8 +228,21 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
                 let t = Instant::now();
                 let checked = self.driver.verify_chip_id();
                 times.chip_id = t.elapsed();
+                if let Err(e) = checked {
+                    let _ = self.driver.power_down();
+                    return Err(e.into());
+                }
+                // "Off" is only what this process did: a sensor whose supplies the bridge
+                // cannot cut (digital rails always on) keeps its registers, and one whose
+                // previous owner was killed mid-stream is still streaming, its lanes in HS.
+                // The receiver then never sees the LP-11 → HS start of a frame, and the first
+                // stream gets no frames. Stop it before anything else.
+                if let Err(e) = self.write_stream_off() {
+                    let _ = self.driver.power_down();
+                    return Err(NativeError::kernel("writing stream_off", e));
+                }
                 let t = Instant::now();
-                if let Err(e) = checked.and_then(|_| self.driver.init()) {
+                if let Err(e) = self.driver.init() {
                     let _ = self.driver.power_down();
                     return Err(e.into());
                 }
