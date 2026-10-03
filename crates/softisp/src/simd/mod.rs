@@ -8,6 +8,7 @@
 
 pub mod f16;
 pub mod half;
+pub mod poly;
 pub mod scalar;
 
 pub use styx_core::simd::{SimdBackend, X86FeatureSet, strongest_backend};
@@ -286,12 +287,16 @@ pub fn narrow_row(src: &[u16], dst: &mut [u8], width: usize) -> SimdBackend {
 /// NEON clamps eight samples in a vector, moves them to two general registers and looks the
 /// eight bytes up from the 4 KiB table with shifts and masks, storing them as one word (1.5x
 /// the scalar loop on the Cortex-A76). Interpolating the nodes with `tbl` (eight 4-register
-/// lookups per 16 pixels) measured slower than scalar loads; x86 stays scalar (AVX2 gathers
-/// measured 2x slower than scalar loads on Zen 3).
+/// lookups per 16 pixels) measured slower than scalar loads. AVX2 looks both nodes up with
+/// `vpshufb` cascades and interpolates them, bit for bit the table (2x the scalar loop on Zen 3;
+/// gathers measured 2x slower than scalar loads).
 #[derive(Clone, PartialEq, Eq)]
 pub struct ToneLut {
     nodes: [u8; 257],
     full: Box<[u8; 4096]>,
+    /// `n[i]` and `n[i + 1]` for `i` in `0..256` as `vpshufb` cascades.
+    #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+    cascades: Box<[x86::tone::Cascade; 2]>,
 }
 
 impl std::fmt::Debug for ToneLut {
@@ -309,7 +314,15 @@ impl ToneLut {
             let (i, f) = (x >> 4, (x & 15) as u32);
             *v = ((nodes[i] as u32 * (16 - f) + nodes[i + 1] as u32 * f + 8) >> 4) as u8;
         }
-        Self { nodes, full }
+        Self {
+            nodes,
+            full,
+            #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+            cascades: Box::new([
+                x86::tone::cascade(|i| nodes[i]),
+                x86::tone::cascade(|i| nodes[i + 1]),
+            ]),
+        }
     }
 
     /// Nodes sampled from `curve` (0..1 to 0..1) at inputs `16 k / 4095`.
@@ -333,15 +346,34 @@ impl ToneLut {
 /// See [`scalar::lut_row`] and [`ToneLut`].
 pub fn lut_row(src: &[u16], dst: &mut [u8], lut: &ToneLut, width: usize) -> SimdBackend {
     let (src, dst) = (&src[..width], &mut dst[..width]);
-    #[allow(unused_mut, unused_assignments)]
-    let mut outcome: Option<(SimdBackend, usize)> = None;
-    #[cfg(all(feature = "neon", target_arch = "aarch64"))]
-    {
-        outcome = neon::lut_row(src, dst, lut.full(), width);
-    }
+    let outcome = leaf!(lut_row(src, dst, lut, width));
     finish(outcome, width, |d, n| {
         scalar::lut_row(&src[d..], &mut dst[d..], lut.full(), n)
     })
+}
+
+/// See [`poly::PolyTone`] (AVX2 on x86, NEON on AArch64).
+pub fn poly_row(src: &[u16], dst: &mut [u8], poly: &poly::PolyTone, width: usize) -> SimdBackend {
+    let (src, dst) = (&src[..width], &mut dst[..width]);
+    let outcome = leaf!(poly_row(src, dst, poly, width));
+    finish(outcome, width, |d, n| {
+        poly::poly_row(&src[d..], &mut dst[d..], poly, n)
+    })
+}
+
+/// Whether [`poly_row`] beats [`lut_row`] on this CPU, so that [`crate::Arithmetic::Auto`]
+/// picks [`crate::Arithmetic::IntPolyTone`]: x86 with AVX2 (2.3x the table on Zen 3). The
+/// NEON leaf is slower than the NEON table lookups on the Cortex-A76 (its 16-bit multiplies
+/// run at half rate on one pipe).
+pub fn poly_preferred() -> bool {
+    #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        X86FeatureSet::detect().avx2
+    }
+    #[cfg(not(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64"))))]
+    {
+        false
+    }
 }
 
 /// See [`scalar::interleave_rgb_row`].

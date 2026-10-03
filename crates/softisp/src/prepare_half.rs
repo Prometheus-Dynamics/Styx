@@ -53,7 +53,7 @@ impl HalfPrep {
         previous: Option<&HalfPrep>,
     ) -> Option<HalfTone> {
         let wanted = match params.arithmetic {
-            Arithmetic::Int => false,
+            Arithmetic::Int | Arithmetic::IntPolyTone => false,
             Arithmetic::Half => true,
             // Without a colour matrix or a tone curve the integer path does less (no matrix,
             // a plain narrowing): 1.7 instead of 2.3 ms per 1280x800 RGB24 frame on the A76.

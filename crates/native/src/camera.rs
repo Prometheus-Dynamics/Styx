@@ -363,6 +363,11 @@ impl NativeCamera {
         &self.info
     }
 
+    /// How the camera was opened (buffer count and memory, ...).
+    pub fn options(&self) -> &CameraOptions {
+        &self.options
+    }
+
     /// The configuration in effect.
     pub fn configured(&self) -> Option<&Configured> {
         self.configured.as_ref()

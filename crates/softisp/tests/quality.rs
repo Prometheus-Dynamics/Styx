@@ -188,3 +188,55 @@ fn half_is_within_two_codes_of_int() {
         }
     }
 }
+
+/// [`Arithmetic::IntPolyTone`] against [`Arithmetic::Int`]: the same but for the tone curve,
+/// whose quadratics land within one code of the table, so every output sample (RGB24, NV12,
+/// luma) is within one code, and most are equal.
+#[test]
+fn poly_tone_is_within_one_code_of_int() {
+    let print = std::env::var_os("STYX_QUALITY_PRINT").is_some();
+    for pattern in [CfaPattern::Bggr, CfaPattern::Grbg] {
+        let (raw, stride) = chart(pattern);
+        let format = RawFormat::new(W as u32, H as u32, pattern, RawPacking::Csi2Raw10);
+        let curves = [
+            (ToneCurve::Srgb, "sRGB"),
+            (contrast_curve(), "contrast"),
+            (ToneCurve::Gamma { gamma: 2.2 }, "gamma 2.2"),
+        ];
+        for (curve, name) in curves {
+            for scale in [Scale::Full, Scale::Half] {
+                let run = |arithmetic| {
+                    let mut isp =
+                        SoftIsp::new(format, params(curve.clone(), true, arithmetic)).unwrap();
+                    let (rgb, nv12) = outputs(&mut isp, &raw, stride, scale);
+                    let (w, h) = isp.output_size(scale);
+                    let mut luma = vec![0u8; (w * h) as usize];
+                    let out = OutputBuffers::Luma {
+                        data: &mut luma,
+                        stride: w as usize,
+                    };
+                    isp.process(&raw, stride, scale, out).unwrap();
+                    (isp.arithmetic(), [rgb, nv12, luma])
+                };
+                let (a, int) = run(Arithmetic::Int);
+                let (b, poly) = run(Arithmetic::IntPolyTone);
+                assert_eq!((a, b), (Arithmetic::Int, Arithmetic::IntPolyTone), "{name}");
+                for (kind, (i, p)) in ["RGB24", "NV12", "luma"].iter().zip(int.iter().zip(&poly)) {
+                    let (psnr, max, _) = compare(i, p, 0, 1);
+                    let equal = i.iter().zip(p).filter(|(x, y)| x == y).count();
+                    let equal = equal as f64 / i.len() as f64;
+                    if print {
+                        println!(
+                            "{pattern:?} {name} {scale:?} {kind}: {psnr:.1} dB, max {max}, {:.1}% equal",
+                            100.0 * equal
+                        );
+                    }
+                    assert!(
+                        max <= 1 && equal > 0.75,
+                        "{pattern:?} {name} {scale:?} {kind}"
+                    );
+                }
+            }
+        }
+    }
+}

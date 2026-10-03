@@ -23,7 +23,8 @@
 //!   --algo-record PATH   record the algorithms' inputs and outputs (styx-algo replay)
 //!   --threads N          (soft, replay) software ISP row bands (default 1)
 //!   --output KIND        (soft, replay) rgb (default), nv12 or luma, each optionally -half
-//!   --arithmetic A       (soft, replay) software ISP arithmetic: auto (default), int or half
+//!   --arithmetic A       (soft, replay) software ISP arithmetic: auto (default), int, int-poly
+//!                        (int with the tone curve as quadratics) or half
 //!   --heap NAME          (soft) capture into buffers from this dma-heap (default: linux,cma
 //!                        when it exists: cached, synced per frame)
 //!   --no-read            (pisp) do not read the output on the CPU (no per-frame output mean)
@@ -163,7 +164,8 @@ fn parse() -> Result<Args, String> {
                     "auto" => styx_softisp::Arithmetic::Auto,
                     "int" => styx_softisp::Arithmetic::Int,
                     "half" => styx_softisp::Arithmetic::Half,
-                    v => return Err(format!("--arithmetic {v}: auto, int or half")),
+                    "int-poly" => styx_softisp::Arithmetic::IntPolyTone,
+                    v => return Err(format!("--arithmetic {v}: auto, int, int-poly or half")),
                 }
             }
             "--no-read" => a.no_read = true,
