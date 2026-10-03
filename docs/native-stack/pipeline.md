@@ -271,11 +271,14 @@ cheap (details and kernel timings in `crates/softisp/PERFORMANCE.md`):
 * **fp16 arithmetic** (`styx_softisp::Arithmetic::Half`, chosen automatically on CPUs with FP16
   arithmetic: the A76): front end fused with the RAW10 unpacking, demosaic and colour matrix
   in one pass, the tone curve as 48 segments looked up by the fp16 exponent with `tbl`, 4:2:0
-  output from registers. The integer path stays the reference (x86, Cortex-A72/A53).
+  output from registers. The integer path stays the reference (Cortex-A72/A53; on x86 with
+  the tone curve as fixed-point quadratics, within a code of the table).
 * **Cached capture buffers**: the raw frames go into `linux,cma` dma-heap buffers when the heap
   exists (`device::soft_capture_memory`; styx's processed native modes and `native-pipeline
   soft` do this unless `driver_buffers` / `--driver-buffers`), 0.6 ms less ISP time per frame
-  than the receiver's uncached MMAP buffers. Rows are still staged 16 KiB at a time.
+  than the receiver's uncached MMAP buffers, read in place (no staging copy: 0.15 ms less),
+  with one cache-maintenance call per frame (the start of the read access; ending it only
+  cleaned lines a reader cannot have dirtied, 22 us).
 * **Statistics on every fourth quad row** (65 536 quads, 340 per zone: 0.23 ms instead of
   0.92 ms on every row), and **statistics and algorithms at 15 Hz once settled** (AE locked
   and AWB converged, as the PiSP path; `SoftLoop::set_settled_rate(None)` /
@@ -318,18 +321,32 @@ rest is this round's (fp16 ISP, cached capture buffers 0.6 ms, statistics and se
 (NV12) to 1.4 ms (RGB24) more CPU: the cores share the memory bandwidth for the input and the
 output (helper threads 0.9-1.0 ms each against a quarter of 2.7 ms).
 
-Where the 3.1 ms of an RGB24 frame go now (30 fps, one thread):
+Where the 2.9 ms of an RGB24 frame go now (30 fps, one thread; before this round 3.1 ms, of
+which 0.15 ms was the staging copy and 0.02 ms the end-of-access cache maintenance):
 
 | | ms |
 |---|---:|
 | ISP: RAW10 unpack, black level, gains, lens shading (fp16) | 0.5 |
 | ISP: demosaic, colour matrix, tone curve, RGB24 | 1.6 |
 | ISP: statistics (0.23 ms on the frames that take them: every second once settled) | 0.12 |
-| ISP: staging the raw rows out of the CMA buffer, row loop, band edges | 0.5 |
+| ISP: the rest (input from DRAM after the invalidate, 3 MB of output, row loop) | 0.35 |
 | settings: gains (every frame), tone curve refit (when adaptive contrast moved it) | 0.07 |
 | algorithms (every second frame once settled) and statistics conversion | 0.07 |
-| dequeue / requeue, dma-buf cache maintenance, the tool's per-frame bookkeeping | 0.3 |
+| tool: per-frame output level (every eighth row and column) | 0.08 |
+| dequeue / requeue, one dma-buf sync, wake-ups | 0.05 |
 | event thread (frame starts, embedded data, control writes) | 0.03 |
+
+| 30 fps, one thread (2026-10-02, device time 2026-08-17) | before | now |
+|---|---|---|
+| RGB24 1280x800: main thread CPU per frame (ISP) | 3.08 ms (2.74) | 2.91 ms (2.58) |
+| NV12 1280x800 | 3.36 ms (3.07) | 3.20 ms (2.94) |
+| RGB24, 4 threads: main thread / ISP time | 1.46 / 1.05 ms | 1.35 / 1.02 ms |
+| RGB24, integer path (`--arithmetic int`, `cortex-a72` build) | 5.48 ms (settings 0.34) | 5.33 ms (settings 0.25) |
+| NV12, integer path, `cortex-a72` build | 5.54 ms | 5.39 ms |
+
+Latency (sensor timestamp to output) went from 10.44 to 10.31 ms (RGB24). The integer path
+is what a Cortex-A72 (Raspberry Pi 4) runs; its figures here are A76 timings (see
+`crates/softisp/PERFORMANCE.md`).
 
 NV12 costs 0.3 ms more than RGB24 (luma and chroma), luma alone 1 ms less, the binned half
 size 1.4 ms less. A frame at 120 fps costs the same as at 30 fps; once settled the statistics

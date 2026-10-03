@@ -45,8 +45,9 @@ costs more than the multiplies it saves. Hence [`Arithmetic::Half`](crate::Arith
 * **Statistics** come from the fp16 front rows (quads converted with `fcvtnu`, scaled to the
   integer path's 12-bit range so that both report the same sums).
 
-The integer path is unchanged (bit for bit) and remains the reference, the x86 path and the
-path of CPUs without FP16 arithmetic (Cortex-A72, A53: Raspberry Pi 4, 3).
+The integer path is unchanged (bit for bit) and remains the reference and the path of CPUs
+without FP16 arithmetic (Cortex-A72, A53: Raspberry Pi 4, 3); on x86 `Auto` runs it with the
+tone curve as fixed-point quadratics (see "x86: the tone curve").
 
 ## Stages
 
@@ -68,7 +69,7 @@ path of CPUs without FP16 arithmetic (Cortex-A72, A53: Raspberry Pi 4, 3).
 16x12; "stats" 16x12 zones with a 256-bin histogram on every quad row (the pipeline takes every
 fourth: `row_step` 4, 0.23 instead of 0.92 ms). Input in cached memory, staged as below.
 
-| Output | CM5 before | CM5 now | x86 (integer, unchanged) |
+| Output | CM5 before | CM5 now | x86 (integer, before the x86 round below) |
 |---|---:|---:|---:|
 | RGB24, plain (integer in both: no matrix, no curve) | 1.74 ms | 1.74 ms | 0.54 ms |
 | RGB24, tuned | 4.10 ms | 2.29 ms | 1.51 ms |
@@ -116,9 +117,82 @@ Receivers' V4L2 MMAP buffers are often mapped uncached (write-combined) into the
 `rp1-cfe`'s are on the CM5. The unpack kernels read with small overlapping loads, each a bus
 transaction there: the pipeline's frame took 10.7 ms instead of 5.9 ms. Input rows are copied
 16 KiB at a time into a cached buffer first (`SoftIsp::set_copy_input`, on by default). The
-software path now captures into cached CMA dma-heap buffers by default (0.6 ms less per frame
-than from the MMAP buffers); the staging copy stays on for them too: reading them directly
-with the kernels' loads measured 1 ms slower per frame.
+software path captures into cached CMA dma-heap buffers by default (0.6 ms less per frame
+than from the MMAP buffers) and reads those in place: `SoftPipeline` turns the staging copy
+off for dma-heap buffers, 0.15 ms less CPU per 1280x800 frame live (ISP 2.74 -> 2.58 ms). An
+earlier measurement had the direct reads 1 ms slower; on the current kernel and with the
+fp16 front end they are faster (`STYX_SOFT_COPY=1` in `native-pipeline soft` compares).
+
+## x86: the tone curve
+
+The integer path's tone curve is a 4096-entry table (257 nodes interpolated), and on x86 a
+table lookup per sample is all scalar loads: two thirds of a tuned 1280x800 frame on Zen 3.
+Two kernels now (Ryzen 9 5900X, AVX2, no AVX-512; medians of the benches on a busy host):
+
+* **Exact, AVX2** (`Arithmetic::Int`): both nodes of every sample (`n[i]`, `n[i + 1]`, 256
+  entries each) looked up with `vpshufb` cascades of sixteen 16-entry tables (the index
+  lowered by 16 per step; steps below the index's block XOR in differences that telescope,
+  steps above it have the top bit set and give 0; the upper half on `i ^ 0x80`, a blend), the
+  interpolation one `vpmaddubsw`. Bit for bit the table. Bound by the shuffle and logic ops (16
+  shuffles per 32 bytes per node array): 1.05 -> 0.81 ms for three channels of a frame.
+  Unrolled, LLVM copied the 32 tables to the stack and spilled the 16 indices (1.4x slower):
+  the level loop's trip count is opaque to it (`black_box`), and two 32-pixel blocks share
+  each table load.
+* **Quadratics, fixed point** (`Arithmetic::IntPolyTone`, picked by `Auto` on x86 with AVX2):
+  the table as one quadratic per half octave of `x + 32` (14 segments), 16-bit fixed point:
+  the octave from two 16-entry byte tables (`v >> 4`, `v >> 8`), the position `t` within it by
+  a multiply with a looked-up power of two, the coefficients with one `vpshufb` per half and
+  a blend, Horner with `vpmulhrsw` and saturating adds. Fitted by least squares (reweighted
+  towards the minimax fit where a segment misses by more than a code) and used only if all
+  4096 inputs land within one code of the table: the sRGB, gamma 1.8-2.2 and Raspberry Pi
+  contrast curves do, and all 150 adaptive contrast curves of the recorded OV9782 session
+  (whole octaves missed by 2 codes on 149 of them); gamma 3 does not and keeps the table.
+  1.05 -> 0.58 ms for three channels; the fit costs 26 us when the curve changes. Against
+  `Int`: at most 1 code everywhere, 81-93% of the samples equal (`tests/quality.rs`,
+  RGB24/NV12/luma). Its scalar oracle, AVX2 and NEON leaves agree bit for bit.
+
+| x86 (Zen 3) | before | now |
+|---|---:|---:|
+| tone curve, three channels of 1280x800 (scalar / AVX2 exact / quadratics) | 0.99 ms | 1.05 / 0.81 / 0.58 ms |
+| RGB24, tuned (`Auto`: quadratics) | 1.59 ms | 1.11 ms |
+| RGB24, tuned, `Int` (exact AVX2 table) | 1.63 ms | 1.35 ms |
+| NV12, tuned | 1.56 ms | 1.13 ms |
+| NV12, tuned + lsc + stats (`Auto` / `Int`) | 2.26 / 2.28 ms | 1.69 / 1.97 ms |
+| luma, tuned | 0.64 ms | 0.46 ms |
+| half size RGB24, tuned | 0.50 ms | 0.38 ms |
+
+Tried: an fp32 version of the quadratics (8 octaves, coefficients by `vpermps` from the float's
+exponent, FMA): 0.61 ms, bound by the lane-crossing `vpermps` (and `vpmovzxwd`) sharing the
+shuffle unit; the 16-bit form looks its coefficients up in-lane. Seven whole-octave segments
+ran at 0.43 ms but missed the adaptive contrast curves by 2 codes. AVX-512 VBMI (`vpermi2b`,
+a 128-entry byte lookup per instruction) would make the exact table two lookups and a blend
+per node array; the host has no AVX-512, so it is not written.
+
+## Cortex-A72 class (no FP16 arithmetic): the integer path
+
+Without FP16 (Raspberry Pi 4) the integer path runs. Measured on the CM5 (A76) with the
+integer path forced, built generic and with `-C target-cpu=cortex-a72` (A76 timings with
+A72-scheduled code: no A72 was at hand, and the A72's narrower core will be slower):
+
+| CM5, `Arithmetic::Int` | generic before | generic now | `cortex-a72` before | `cortex-a72` now |
+|---|---:|---:|---:|---:|
+| RGB24 tuned (bench) | 4.16 ms | 4.19 ms | 4.23 ms | 4.27 ms |
+| NV12 tuned + lsc + stats (bench) | 5.45 ms | 5.42 ms | 5.51 ms | 5.51 ms |
+| `set_params`, new gains (rebuilds the shading tables) | 0.31 ms | 0.21 ms | 0.31 ms | 0.21 ms |
+| live RGB24, CPU per frame (ISP / settings) | | | 5.48 ms (4.87 / 0.34) | 5.33 ms (4.83 / 0.25) |
+| live NV12, CPU per frame (ISP / settings) | | | 5.54 ms (5.00 / 0.34) | 5.39 ms (4.96 / 0.25) |
+
+The kernels' code is the same either way (A72 scheduling gains nothing on the A76). The
+stages: front end 0.25, demosaic 0.58, colour matrix 1.08 (16-bit multiplies at half rate on
+one pipe), tone table 1.51 ms (NEON clamps and moves the indices to general registers, 1.5x
+the scalar loop). What changed for this path: the integer gain tables (lens shading x white
+balance x digital gain, rebuilt whenever a gain changes, so on most frames) no longer round
+with `f32::round` per entry but by truncation and a compare (the same result; x86 without
+SSE4.1 called `roundf`), and fill each row's nodes run by run for one vector loop over the
+row: 0.31 -> 0.21 ms; the staging copy is gone as on the A76. The quadratic tone curve's
+NEON leaf (`tbl` from two registers, `sqrdmulh`) is slower than the table there (2.74 against
+1.53 ms for three channels on the A76: its 16-bit multiplies run on one pipe at half rate),
+so `Auto` keeps the table on AArch64.
 
 ## Threads
 
@@ -146,7 +220,8 @@ This round (fp16):
   loop per kind keep them in registers.
 * Chroma as 8-bit widening multiplies split by coefficient sign: slower than the 16-bit
   multiplies as compiled (+0.3 ms per NV12 frame).
-* Reading the CMA capture buffers directly instead of staging them: 1 ms slower.
+* Reading the CMA capture buffers directly instead of staging them measured 1 ms slower
+  then; on the current kernel it is 0.15 ms faster and is the default (see above).
 * Luma computed in the colour kernel saves little against a separate pass over L1 rows (kept:
   it also lets the second row of a pair skip its planes).
 
@@ -164,3 +239,13 @@ First round (integer path):
 * Statistics: zone sums in vectors, histogram bins in vectors (`luma_bins_row`), counting in
   four interleaved copies of the histogram. `StatsConfig::row_step` 2 halves their cost, 4
   quarters it.
+
+## The live frame outside the image maths (CM5, RGB24, one thread)
+
+Measured with `native-pipeline soft` and ftrace's function profiler on the process: the two
+`DMA_BUF_IOCTL_SYNC` calls per frame cost 20 us (start: invalidate the 1.3 MB buffer, needed)
+and 22 us (end: a clean of lines the CPU only read; dropped, see `NativeFrame`); `DQBUF` and
+`QBUF` 2-3 us; the rest of the dequeue, wake-up and requeue about 25 us; the tool's own
+per-frame output level 80 us. The staging copy was the large part (0.15 ms, now gone).
+What is left in the ISP beyond its kernels (about 0.3 ms of 2.58) is memory traffic: the
+1.3 MB input arrives from DRAM after the invalidate and the 3 MB of RGB24 output go back.
