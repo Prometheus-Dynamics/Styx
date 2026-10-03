@@ -24,7 +24,7 @@ use styx::ipc::FrameClient;
 // A detector process.
 let frames = FrameClient::request(
     "/run/styx/front.sock",
-    &FrameRequirements::luma().output_resolution(320, 180),
+    &Frames::gray().size(320, 180),
 )?;
 print!("{}", frames.plan().unwrap_or_default()); // what the service planned for it
 while let RecvOutcome::Data(frame) = frames.recv(Duration::from_secs(1)) {
@@ -65,7 +65,7 @@ adds an encoder (hardware first: VA-API, V4L2 mem2mem; else libx264/libx265 at l
 after a decoder for MJPEG cameras. Clients asking for the same stream share one encoder. Each
 starts at a keyframe carrying the stream headers: a client joining a running stream, or one that
 fell behind and lost packets, gets a keyframe made for it (`FrameMeta::delta` marks packets that
-need the ones before them). `PlannedFrames::request_keyframe` asks for one in-process.
+need the ones before them). `Frames::request_keyframe` asks for one in-process.
 
 ### Protecting the service
 
@@ -94,7 +94,7 @@ drops, receives return `Empty` instead of `Closed` while the client reconnects (
 use styx::ipc::FrameServer;
 
 let server = FrameServer::bind("/run/styx/front.sock")?;
-let mut frames = plan_frames(&device, &FrameRequirements::luma())?.start()?;
+let mut frames = Frames::gray().open(&device)?;
 for frame in &mut frames {
     server.publish(&frame)?; // never blocks on a client
 }

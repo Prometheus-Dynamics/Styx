@@ -12,7 +12,7 @@
 //!
 //! Client to server:
 //! - Release: the id of a frame the client dropped.
-//! - Request (camera service): the consumer's `FrameRequirements`, and optionally which camera.
+//! - Request (camera service): the consumer's `FrameRequest`, and optionally which camera.
 //! - List (camera service): which cameras it serves.
 //! - Roi: a new region of interest, or none.
 //! - Metrics (camera service): the service's metrics, as JSON (0) or Prometheus text (1).
@@ -20,9 +20,10 @@
 use styx_core::prelude::*;
 
 use super::IpcError;
+use crate::planner::{Delivery, FrameRate, FrameRequest, Hardware};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"STYX");
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 const KIND_FRAME: u16 = 1;
 const KIND_RELEASE: u16 = 2;
 const KIND_REQUEST: u16 = 3;
@@ -71,8 +72,8 @@ pub(super) struct WireFrame {
 /// A message from a client.
 pub(super) enum ClientMessage {
     Release(u64),
-    /// Frames meeting these requirements, from the named camera (or the service's first).
-    Request(Box<FrameRequirements>, Option<String>),
+    /// These frames, from the named camera (or the service's first).
+    Request(Box<FrameRequest>, Option<String>),
     Roi(Option<FrameRect>),
     List,
     /// The service's metrics, in this format.
@@ -452,10 +453,10 @@ fn read_cameras(r: &mut Reader<'_>) -> Result<Vec<CameraInfo>, IpcError> {
         .collect()
 }
 
-pub(super) fn encode_request(req: &FrameRequirements, camera: Option<&str>) -> Vec<u8> {
+pub(super) fn encode_request(req: &FrameRequest, camera: Option<&str>) -> Vec<u8> {
     let mut w = Writer::new(KIND_REQUEST);
     w.opt(camera, Writer::text);
-    match &req.output {
+    match &req.format {
         OutputFormat::Luma => w.u8(0),
         OutputFormat::Formats(formats) => {
             w.u8(1);
@@ -464,8 +465,34 @@ pub(super) fn encode_request(req: &FrameRequirements, camera: Option<&str>) -> V
                 w.u32(code.to_u32());
             }
         }
+        OutputFormat::Any => w.u8(2),
     }
-    w.opt(req.stride_alignment, Writer::usize);
+    w.opt(req.size, Writer::size);
+    w.opt(req.min_size, Writer::size);
+    w.opt(req.max_size, Writer::size);
+    match req.fps {
+        FrameRate::CameraDefault => w.u8(0),
+        FrameRate::Exactly(fps) => {
+            w.u8(1);
+            w.u32(fps);
+        }
+        FrameRate::AtLeast(fps) => {
+            w.u8(2);
+            w.u32(fps);
+        }
+        FrameRate::Between(min, max) => {
+            w.u8(3);
+            w.u32(min);
+            w.u32(max);
+        }
+    }
+    match req.delivery {
+        Delivery::Latest => w.u8(0),
+        Delivery::EveryFrame(n) => {
+            w.u8(1);
+            w.usize(n);
+        }
+    }
     w.opt(req.pyramid, |w, p| {
         w.u8(p.levels);
         w.u8(match p.source {
@@ -475,36 +502,25 @@ pub(super) fn encode_request(req: &FrameRequirements, camera: Option<&str>) -> V
         });
     });
     w.opt(req.roi, Writer::rect);
-    w.opt(req.min_resolution, Writer::size);
-    w.opt(req.max_resolution, Writer::size);
-    w.opt(req.output_resolution, Writer::size);
-    w.opt(req.min_fps, Writer::u32);
-    w.u8(match req.priority {
-        Priority::Latency => 0,
-        Priority::Throughput => 1,
-        Priority::Power => 2,
+    w.opt(req.row_alignment, Writer::usize);
+    w.opt(req.backend.map(|b| b.to_string()).as_deref(), Writer::text);
+    w.u8(match req.hardware {
+        Hardware::Auto => 0,
+        Hardware::Required => 1,
+        Hardware::Off => 2,
     });
-    w.bool(req.strict);
-    let o = &req.overrides;
-    w.opt(o.backend.as_deref(), Writer::text);
-    w.opt(o.decoder.as_deref(), Writer::text);
-    w.u8(o.forbid.len().min(usize::from(MAX_NAMES)) as u8);
-    for name in o.forbid.iter().take(usize::from(MAX_NAMES)) {
+    w.opt(req.decoder.as_deref(), Writer::text);
+    w.u8(req.forbid.len().min(usize::from(MAX_NAMES)) as u8);
+    for name in req.forbid.iter().take(usize::from(MAX_NAMES)) {
         w.text(name);
     }
-    w.u8(match o.hardware {
-        HardwarePolicy::Auto => 0,
-        HardwarePolicy::Disabled => 1,
-        HardwarePolicy::Required => 2,
-    });
-    w.opt(o.decode_threads, Writer::usize);
-    w.opt(o.queue_depth, Writer::usize);
+    w.opt(req.decode_threads, Writer::usize);
     w.0
 }
 
-fn read_request(r: &mut Reader<'_>) -> Result<FrameRequirements, IpcError> {
+fn read_request(r: &mut Reader<'_>) -> Result<FrameRequest, IpcError> {
     let mut req = match r.u8()? {
-        0 => FrameRequirements::luma(),
+        0 => FrameRequest::new(OutputFormat::Luma),
         1 => {
             let count = r.u8()?;
             if count > MAX_NAMES {
@@ -513,11 +529,26 @@ fn read_request(r: &mut Reader<'_>) -> Result<FrameRequirements, IpcError> {
             let formats = (0..count)
                 .map(|_| Ok(FourCc::new(r.u32()?.to_le_bytes())))
                 .collect::<Result<Vec<_>, IpcError>>()?;
-            FrameRequirements::formats(formats)
+            FrameRequest::formats(formats)
         }
+        2 => FrameRequest::new(OutputFormat::Any),
         _ => return Err(IpcError::Malformed("unknown output")),
     };
-    req.stride_alignment = r.opt(Reader::usize)?;
+    req.size = r.opt(Reader::size)?;
+    req.min_size = r.opt(Reader::size)?;
+    req.max_size = r.opt(Reader::size)?;
+    req.fps = match r.u8()? {
+        0 => FrameRate::CameraDefault,
+        1 => FrameRate::Exactly(r.u32()?),
+        2 => FrameRate::AtLeast(r.u32()?),
+        3 => FrameRate::Between(r.u32()?, r.u32()?),
+        _ => return Err(IpcError::Malformed("unknown frame rate")),
+    };
+    req.delivery = match r.u8()? {
+        0 => Delivery::Latest,
+        1 => Delivery::EveryFrame(r.usize()?),
+        _ => return Err(IpcError::Malformed("unknown delivery")),
+    };
     req.pyramid = r.opt(|r| {
         Ok(PyramidRequest {
             levels: r.u8()?,
@@ -529,33 +560,26 @@ fn read_request(r: &mut Reader<'_>) -> Result<FrameRequirements, IpcError> {
         })
     })?;
     req.roi = r.opt(Reader::rect)?;
-    req.min_resolution = r.opt(Reader::size)?;
-    req.max_resolution = r.opt(Reader::size)?;
-    req.output_resolution = r.opt(Reader::size)?;
-    req.min_fps = r.opt(Reader::u32)?;
-    req.priority = match r.u8()? {
-        1 => Priority::Throughput,
-        2 => Priority::Power,
-        _ => Priority::Latency,
+    req.row_alignment = r.opt(Reader::usize)?;
+    req.backend = r
+        .opt(Reader::text)?
+        .map(|name| name.parse())
+        .transpose()
+        .map_err(|_| IpcError::Malformed("unknown backend"))?;
+    req.hardware = match r.u8()? {
+        1 => Hardware::Required,
+        2 => Hardware::Off,
+        _ => Hardware::Auto,
     };
-    req.strict = r.bool()?;
-    let o = &mut req.overrides;
-    o.backend = r.opt(Reader::text)?;
-    o.decoder = r.opt(Reader::text)?;
+    req.decoder = r.opt(Reader::text)?;
     let forbidden = r.u8()?;
     if forbidden > MAX_NAMES {
         return Err(IpcError::Malformed("too many forbidden codecs"));
     }
-    o.forbid = (0..forbidden)
+    req.forbid = (0..forbidden)
         .map(|_| r.text())
         .collect::<Result<_, IpcError>>()?;
-    o.hardware = match r.u8()? {
-        1 => HardwarePolicy::Disabled,
-        2 => HardwarePolicy::Required,
-        _ => HardwarePolicy::Auto,
-    };
-    o.decode_threads = r.opt(Reader::usize)?;
-    o.queue_depth = r.opt(Reader::usize)?;
+    req.decode_threads = r.opt(Reader::usize)?;
     Ok(req)
 }
 
@@ -628,17 +652,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requirements_survive_the_wire() {
-        let mut req = FrameRequirements::formats([FourCc::NV12, FourCc::MJPG])
-            .output_resolution(320, 180)
+    fn requests_survive_the_wire() {
+        use crate::BackendKind;
+        use crate::planner::Frames;
+
+        let req = Frames::formats([FourCc::NV12, FourCc::MJPG])
+            .size(320, 180)
+            .size_at_most(1920, 1080)
+            .fps_between(15, 60)
+            .every_frame(3)
             .pyramid(2)
             .roi(FrameRect::new(1, 2, 3, 4))
-            .stride_alignment(64);
-        req.min_fps = Some(15);
-        req.priority = Priority::Power;
-        req.overrides.backend = Some("libcamera".into());
-        req.overrides.forbid = vec!["ffmpeg".into()];
-        req.overrides.queue_depth = Some(3);
+            .row_alignment(64)
+            .backend(BackendKind::Libcamera)
+            .hardware(Hardware::Off)
+            .forbid("ffmpeg")
+            .decode_threads(2);
         let ClientMessage::Request(back, camera) =
             decode_client(&encode_request(&req, Some("ov9782"))).unwrap()
         else {
@@ -646,6 +675,18 @@ mod tests {
         };
         assert_eq!(*back, req);
         assert_eq!(camera.as_deref(), Some("ov9782"));
+        for req in [
+            Frames::gray().fps(30),
+            Frames::any().fps_at_least(15),
+            Frames::rgb(),
+        ] {
+            let ClientMessage::Request(back, None) =
+                decode_client(&encode_request(&req, None)).unwrap()
+            else {
+                panic!("not a request");
+            };
+            assert_eq!(*back, req);
+        }
         let cameras = vec![CameraInfo {
             name: "ov9782".into(),
             keys: vec!["i2c:ov9782".into()],

@@ -77,11 +77,7 @@ fn clients_ask_for_frames_and_share_one_capture() {
         .serve(&socket)
         .unwrap();
 
-    let detector = FrameClient::request(
-        &socket,
-        &FrameRequirements::luma().output_resolution(320, 180),
-    )
-    .unwrap();
+    let detector = FrameClient::request(&socket, &Frames::gray().size(320, 180)).unwrap();
     assert!(
         detector.plan().unwrap().contains("turbojpeg-luma"),
         "{:?}",
@@ -92,11 +88,8 @@ fn clients_ask_for_frames_and_share_one_capture() {
     assert_eq!(small.meta().format.resolution.width.get(), 320);
 
     // A second client fits the running capture: it joins without a restart.
-    let rgb = FrameClient::request(
-        &socket,
-        &FrameRequirements::formats([FourCc::RG24]).output_resolution(640, 360),
-    )
-    .unwrap();
+    let rgb =
+        FrameClient::request(&socket, &Frames::formats([FourCc::RG24]).size(640, 360)).unwrap();
     let colour = frame(&rgb);
     assert_eq!(colour.meta().format.code, FourCc::RG24);
     assert_eq!(colour.meta().format.resolution.width.get(), 640);
@@ -121,10 +114,7 @@ fn clients_ask_for_frames_and_share_one_capture() {
     assert_eq!(width, 160);
 
     // Frames the camera cannot give are refused with the planner's reasons.
-    match FrameClient::request(
-        &socket,
-        &FrameRequirements::formats([FourCc::new(*b"XVID")]),
-    ) {
+    match FrameClient::request(&socket, &Frames::formats([FourCc::new(*b"XVID")])) {
         Err(IpcError::Rejected(reason)) => assert!(reason.contains("no capture mode"), "{reason}"),
         other => panic!("expected a rejection, got {:?}", other.map(|c| c.plan())),
     }
@@ -161,9 +151,9 @@ fn clients_come_and_go_concurrently() {
             let socket = socket.clone();
             std::thread::spawn(move || {
                 let req = if i % 2 == 0 {
-                    FrameRequirements::luma().output_resolution(320, 180)
+                    Frames::gray().size(320, 180)
                 } else {
-                    FrameRequirements::formats([FourCc::RG24]).output_resolution(320, 180)
+                    Frames::formats([FourCc::RG24]).size(320, 180)
                 };
                 for _ in 0..5 {
                     let client = FrameClient::request(&socket, &req).unwrap();
@@ -199,11 +189,7 @@ async fn frames_can_be_awaited() {
         .keep_streaming()
         .serve(&socket)
         .unwrap();
-    let client = FrameClient::request(
-        &socket,
-        &FrameRequirements::luma().output_resolution(320, 180),
-    )
-    .unwrap();
+    let client = FrameClient::request(&socket, &Frames::gray().size(320, 180)).unwrap();
     for _ in 0..3 {
         let RecvOutcome::Data(frame) = client.recv_async().await else {
             panic!("no frame");
@@ -215,8 +201,8 @@ async fn frames_can_be_awaited() {
     let plan = styx::planner::plan_many(
         &camera(&recording),
         &[
-            FrameRequirements::luma().output_resolution(320, 180),
-            FrameRequirements::formats([FourCc::RG24]),
+            Frames::gray().size(320, 180),
+            Frames::formats([FourCc::RG24]),
         ],
     )
     .unwrap();
@@ -264,7 +250,7 @@ fn one_service_serves_several_cameras() {
     assert_eq!(names, ["virtual-front", "virtual-back"]);
     assert!(cameras.iter().all(|c| !c.in_use));
 
-    let rgb = FrameRequirements::formats([FourCc::RG24]);
+    let rgb = Frames::formats([FourCc::RG24]);
     let back = FrameClient::request_camera(&socket, "back", &rgb).unwrap();
     assert!(back.plan().unwrap().contains("virtual-back"));
     let front = FrameClient::request(&socket, &rgb).unwrap();
@@ -292,11 +278,10 @@ fn the_service_refuses_what_it_should_not_serve() {
         .max_clients(1)
         .serve(&socket)
         .unwrap();
-    let rgb = FrameRequirements::formats([FourCc::RG24]);
-    let mut greedy = rgb.clone();
-    greedy.overrides.queue_depth = Some(100_000);
+    let rgb = Frames::formats([FourCc::RG24]);
+    let greedy = rgb.clone().every_frame(100_000);
     match FrameClient::request(&socket, &greedy) {
-        Err(IpcError::Rejected(reason)) => assert!(reason.contains("queue depth"), "{reason}"),
+        Err(IpcError::Rejected(reason)) => assert!(reason.contains("queued frames"), "{reason}"),
         other => panic!("expected a rejection, got {:?}", other.map(|c| c.plan())),
     }
     let _first = FrameClient::request(&socket, &rgb).unwrap();
@@ -331,7 +316,7 @@ fn a_reconnecting_client_survives_a_service_restart() {
         .keep_streaming()
         .serve(&socket)
         .unwrap();
-    let client = FrameClient::request(&socket, &FrameRequirements::formats([FourCc::RG24]))
+    let client = FrameClient::request(&socket, &Frames::formats([FourCc::RG24]))
         .unwrap()
         .reconnecting();
     frame(&client);

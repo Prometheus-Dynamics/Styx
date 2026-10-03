@@ -384,6 +384,11 @@ impl Branch {
         self.group.preparer.request_keyframe();
     }
 
+    /// The shared capture.
+    pub(crate) fn capture(&self) -> &CaptureHandle {
+        self.group.shared.capture()
+    }
+
     /// Skip inter-coded packets this consumer cannot decode: after joining a running stream, or
     /// after its queue dropped packets, until the keyframe it asks the encoder for.
     fn decodable(&mut self, outcome: RecvOutcome<FrameLease>) -> RecvOutcome<FrameLease> {
@@ -446,12 +451,14 @@ impl Drop for Branch {
     }
 }
 
-/// Whether two consumers' frames are prepared the same way: the same requirements apart from the
-/// region of interest (applied per consumer, as a crop of the shared frame), on the same route.
+/// Whether two consumers' frames are prepared the same way: the same request apart from the
+/// region of interest (applied per consumer, as a crop of the shared frame) and the frame rate
+/// (the capture has one), on the same route.
 pub(crate) fn same_preparation(a: &FramePlan, b: &FramePlan) -> bool {
     let key = |plan: &FramePlan| {
-        let mut req = plan.requirements.clone();
+        let mut req = plan.request.clone();
         req.roi = None;
+        req.fps = Default::default();
         req
     };
     key(a) == key(b)
@@ -481,9 +488,9 @@ impl SharedSession {
     /// A consumer for `plan` (which must fit the running capture). With `share`, it joins an
     /// open group preparing frames the same way, or starts one; otherwise it gets its own group,
     /// which applies its region while preparing (e.g. a JPEG decode skips the rows below it).
-    pub(crate) fn attach(&self, plan: &FramePlan, share: bool) -> super::PlannedFrames {
+    pub(crate) fn attach(&self, plan: &FramePlan, share: bool) -> super::Frames {
         let roi = RoiHandle::default();
-        roi.set(plan.requirements.roi);
+        roi.set(plan.request.roi);
         let depth = plan.queue_depth.max(1);
         let mut groups = self.groups.lock();
         groups.retain(|g| g.strong_count() > 0);
@@ -540,6 +547,6 @@ impl SharedSession {
             awaiting_keyframe: inter_coded,
             seen_evictions: 0,
         };
-        super::PlannedFrames::branch(plan, branch, roi)
+        super::Frames::branch(plan, branch, roi)
     }
 }

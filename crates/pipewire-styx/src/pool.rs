@@ -224,12 +224,11 @@ mod tests {
                 .fps(100),
         )
         .into_device();
-        let mut frames =
-            styx::planner::plan_frames(&device, &FrameRequirements::formats([FourCc::YUYV]))
-                .unwrap()
-                .capture_into(buffers.clone())
-                .start()
-                .unwrap();
+        let mut frames = styx::planner::plan_frames(&device, &Frames::formats([FourCc::YUYV]))
+            .unwrap()
+            .capture_into(buffers.clone())
+            .start()
+            .unwrap();
         let frame = loop {
             if let RecvOutcome::Data(frame) = frames.next_frame(std::time::Duration::from_secs(2)) {
                 break frame;

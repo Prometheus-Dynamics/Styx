@@ -3,8 +3,6 @@
 //! Absolute numbers differ by machine, but ratios between paths hold well enough to rank plans.
 //! Per-megapixel constants are scaled by the frame's pixel count.
 
-use styx_core::prelude::Priority;
-
 /// Estimated cost of one plan step, in milliseconds per frame.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct StepCost {
@@ -144,32 +142,16 @@ pub(crate) fn scaled_decode_factor(denom: u8) -> f32 {
     }
 }
 
-/// Score a plan for `priority`; lower is better.
-pub(crate) fn score(total: StepCost, priority: Priority) -> f32 {
-    match priority {
-        Priority::Latency => total.latency_ms + 0.25 * total.cpu_ms,
-        Priority::Throughput => total.cpu_ms + 0.05 * total.latency_ms,
-        Priority::Power => total.cpu_ms,
-    }
-}
+/// Weight of a millisecond of latency against a millisecond of host CPU in [`score`].
+pub(crate) const LATENCY_WEIGHT: f32 = 0.5;
 
-/// Decode threads per frame for `priority` unless overridden.
-pub(crate) fn decode_threads(priority: Priority, overridden: Option<usize>) -> usize {
-    overridden.unwrap_or(match priority {
-        // 0 = automatic (up to four cores when the JPEG has restart markers).
-        Priority::Latency => 0,
-        Priority::Throughput | Priority::Power => 1,
-    })
-}
-
-/// Frames buffered between capture and consumer for `priority` unless overridden. The capture
-/// queue drops its oldest frame when full, so latency gets the newest frame only.
-pub(crate) fn queue_depth(priority: Priority, overridden: Option<usize>) -> usize {
-    overridden.unwrap_or(match priority {
-        Priority::Latency => 1,
-        Priority::Throughput => 4,
-        Priority::Power => 3,
-    })
+/// A route's cost per frame, lower is better: host CPU time plus half the time it adds between
+/// sensor and consumer. A hardware block (ISP, hardware decoder) that takes a few milliseconds
+/// but almost no CPU beats doing the same work on the CPU; between two CPU routes the faster
+/// wins; the capture's own latency counts, so of two modes of one camera the one delivering
+/// sooner wins when CPU is equal.
+pub(crate) fn score(total: StepCost) -> f32 {
+    total.cpu_ms + LATENCY_WEIGHT * total.latency_ms
 }
 
 #[cfg(test)]
@@ -177,12 +159,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn priorities_rank_offload_differently() {
+    fn hardware_blocks_beat_the_cpu_doing_the_same_work() {
+        // A hardware decode adding 3 ms but taking 0.3 ms of CPU, against 2 ms on the CPU.
         let software = StepCost::cpu(2.0);
         let hardware = StepCost::offloaded(3.0, 0.3);
-        assert!(score(software, Priority::Latency) < score(hardware, Priority::Latency));
-        assert!(score(hardware, Priority::Throughput) < score(software, Priority::Throughput));
-        assert!(score(hardware, Priority::Power) < score(software, Priority::Power));
+        assert!(score(hardware) < score(software));
+        // Between CPU routes, the faster.
+        assert!(score(StepCost::cpu(1.0)) < score(StepCost::cpu(1.5)));
     }
 
     #[test]

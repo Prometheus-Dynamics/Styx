@@ -404,7 +404,7 @@ pub(crate) mod tests {
         )
         .into_device();
         let buffers = buffers(3, 8, 2);
-        let plan = plan_frames(&device, &FrameRequirements::formats([FourCc::YUYV]))
+        let plan = plan_frames(&device, &crate::planner::Frames::formats([FourCc::YUYV]))
             .unwrap()
             .capture_into(buffers.clone());
         let mut frames = plan.start().unwrap();

@@ -72,14 +72,14 @@ fn client(mut args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         args = args.get(2..).unwrap_or_default();
     }
     let mut req = match args.first().map(String::as_str) {
-        Some("rgb") => FrameRequirements::formats([FourCc::RG24]),
-        Some("nv12") => FrameRequirements::formats([FourCc::NV12]),
-        Some("mjpg") => FrameRequirements::formats([FourCc::MJPG]),
-        Some("h264") => FrameRequirements::formats([FourCc::H264]),
-        _ => FrameRequirements::luma(),
+        Some("rgb") => Frames::rgb(),
+        Some("nv12") => Frames::nv12(),
+        Some("mjpg") => Frames::formats([FourCc::MJPG]),
+        Some("h264") => Frames::formats([FourCc::H264]),
+        _ => Frames::gray(),
     };
     if let Some((w, h)) = args.get(1).and_then(|s| s.split_once('x')) {
-        req = req.output_resolution(w.parse()?, h.parse()?);
+        req = req.size(w.parse()?, h.parse()?);
     }
     let seconds: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
     let client = match &camera {

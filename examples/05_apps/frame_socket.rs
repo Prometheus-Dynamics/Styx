@@ -27,12 +27,10 @@ fn checksum(frame: &FrameLease) -> u64 {
 }
 
 fn serve(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
-    let wants = FrameRequirements::formats([FourCc::NV12])
-        .min_fps(30)
-        .priority(Priority::Power);
+    let wants = Frames::nv12().fps(30);
     // `exportable`: frames the plan converts go straight into shareable memory (memfds), so
     // publishing them copies nothing; camera buffers (dma-bufs) are shared as they are.
-    let plan = styx::planner::plan_best(&styx::probe_all(), &wants)?.exportable();
+    let plan = wants.plan_best(&styx::probe_all())?.exportable();
     print!("{plan}");
     let mut frames = plan.start()?;
     let socket = FrameSocket::bind(path)?;
