@@ -16,7 +16,7 @@ use styx_algo::{
 };
 
 use crate::error::Result;
-use crate::isp::IspSettings;
+use crate::isp::{IspSettings, lens_shading_with_bands};
 
 /// What produced a frame, as the sensor side reports it (`styx-native`'s `FrameControls`:
 /// predicted by the control schedule, or read back from the frame's embedded data).
@@ -221,15 +221,7 @@ impl Controller {
         if !self.started {
             self.start()?;
         }
-        let meta = FrameMetadata {
-            frame: sensor.frame,
-            exposure: sensor.exposure,
-            analogue_gain: sensor.analogue_gain,
-            digital_gain: sensor.digital_gain,
-            frame_duration: sensor.frame_duration,
-            lux: None,
-            controls: self.controls.clone(),
-        };
+        let meta = self.meta(sensor);
         let params = self.pipeline.process(stats, &meta).clone();
         if let Some(r) = &mut self.recorder {
             r.record(stats, &meta, Some(&params))?;
@@ -255,23 +247,63 @@ impl Controller {
     }
 
     /// ISP settings from `params` (computed from frame `from_frame`) for processing the frame
-    /// `sensor` describes. The digital gain is what the algorithms ask for in total divided
-    /// by what the sensor delivered for that frame (so the image follows the target while a
-    /// new exposure is still on its way, as the Raspberry Pi IPA does), between 1 and the
-    /// tuning's maximum.
+    /// `sensor` describes, with that frame's digital gain ([`Self::retarget`]).
     pub fn isp_for(&self, params: &Params, from_frame: u64, sensor: &SensorValues) -> IspSettings {
-        IspSettings::from_params(params, from_frame, self.digital_gain_for(params, sensor))
-            .with_spatial_denoise(self.spatial_denoise)
+        let mut isp = IspSettings::from_params(params, from_frame, 1.0)
+            .with_spatial_denoise(self.spatial_denoise);
+        self.retarget(&mut isp, params, sensor);
+        isp
+    }
+
+    /// Sets what in `isp` (made from `params`) belongs to the frame `sensor` describes, which
+    /// may be a later frame than the one `params` came from: the digital gain is what the
+    /// algorithms ask for in total divided by what the sensor delivered for that frame (so the
+    /// image follows the target while a new exposure is still on its way, as the Raspberry
+    /// Pi IPA does), between 1 and the tuning's maximum, divided by the brightness deflicker
+    /// predicts for that frame (`Params::frame_gain`); on a rolling shutter deflicker's band
+    /// gains go into the lens shading grid.
+    pub fn retarget(&self, isp: &mut IspSettings, params: &Params, sensor: &SensorValues) {
+        let g = params.frame_gain(&self.meta(sensor), self.max_digital_gain);
+        isp.digital_gain = g.digital_gain * params.colour_gains[1].max(1e-6);
+        isp.flicker = g.flicker;
+        let bands = params.deflicker.as_ref().and_then(|d| {
+            let rows = params
+                .lens_shading
+                .as_ref()
+                .map_or(16, |l| l.height as usize);
+            d.band_gains(
+                sensor.frame,
+                sensor.frame_duration.as_secs_f64(),
+                sensor.exposure.as_secs_f64(),
+                rows,
+            )
+        });
+        if let Some(b) = &bands {
+            isp.lens_shading = Some(lens_shading_with_bands(params.lens_shading.as_ref(), b));
+        } else if isp.flicker_bands.is_some() {
+            isp.lens_shading.clone_from(&params.lens_shading);
+        }
+        isp.flicker_bands = bands;
     }
 
     /// The digital gain [`Self::isp_for`] gives (before the white balance's green gain is
     /// folded in), without building the settings.
     pub fn digital_gain_for(&self, params: &Params, sensor: &SensorValues) -> f64 {
-        let delivered = sensor.total_exposure();
-        if !self.controls.ae_enable || params.ae.total_exposure <= 0.0 || delivered <= 0.0 {
-            params.digital_gain.max(1.0)
-        } else {
-            (params.ae.total_exposure / delivered).clamp(1.0, self.max_digital_gain)
+        params
+            .frame_gain(&self.meta(sensor), self.max_digital_gain)
+            .digital_gain
+    }
+
+    /// The algorithms' view of what produced a frame, with the controls in effect.
+    fn meta(&self, sensor: &SensorValues) -> FrameMetadata {
+        FrameMetadata {
+            frame: sensor.frame,
+            exposure: sensor.exposure,
+            analogue_gain: sensor.analogue_gain,
+            digital_gain: sensor.digital_gain,
+            frame_duration: sensor.frame_duration,
+            lux: None,
+            controls: self.controls.clone(),
         }
     }
 }
@@ -364,5 +396,121 @@ mod tests {
         let mut p = Pipeline::from_tuning(&Tuning::default()).unwrap();
         let report = replay(&mut p, &recording).unwrap();
         assert!(report.mismatches.is_empty());
+    }
+
+    /// The room's lamp (50 Hz mains 0.07 Hz off: ±25% at 50 Hz, ±10% at 100 Hz) over an
+    /// exposure of `t` seconds ending at `end`.
+    fn lamp(end: f64, t: f64) -> f64 {
+        let part = |hz: f64, depth: f64| {
+            let w = 2.0 * std::f64::consts::PI * hz;
+            depth * ((w * end).sin() - (w * (end - t)).sin()) / (w * t)
+        };
+        1.0 + part(50.07, 0.25) + part(100.14, 0.1)
+    }
+
+    #[test]
+    fn deflicker_gains_are_for_the_frame_being_processed() {
+        // 120 fps, the PiSP path's order: frame F goes through the ISP with the settings made
+        // from F - 1, retargeted to F; then F's statistics go through the algorithms.
+        let fd = Duration::from_nanos(8_333_333);
+        let config = CameraConfig {
+            exposure_limits: (Duration::from_micros(20), Duration::from_micros(8100)),
+            exposure_margin: Duration::from_micros(200),
+            frame_duration_limits: (fd, fd),
+            delays: styx_algo::ControlDelays {
+                exposure: 2,
+                analogue_gain: 2,
+                frame_duration: 1,
+                issue_latency: 1,
+            },
+            ..Default::default()
+        };
+        let mut c = Controller::new(&Tuning::default(), config).unwrap();
+        c.set_flicker(styx_algo::Flicker::Auto);
+        let start = c.start().unwrap();
+        let first = start.sensor.unwrap();
+        let mut pending = vec![first];
+        let mut sensor = SensorValues {
+            frame: 0,
+            exposure: first.exposure,
+            analogue_gain: first.analogue_gain,
+            digital_gain: 1.0,
+            frame_duration: fd,
+            verified: true,
+        };
+        let mut isp = start.isp;
+        let mut params: Option<Params> = None;
+        let (mut out, mut stale, mut raw) = (Vec::new(), Vec::new(), Vec::new());
+        for f in 0..1200u64 {
+            pending.sort_by_key(|r| r.frame);
+            while let Some(r) = pending.first().copied().filter(|r| r.frame <= f) {
+                sensor.exposure = r.exposure;
+                sensor.analogue_gain = r.analogue_gain;
+                pending.remove(0);
+            }
+            let previous = sensor;
+            sensor.frame = f;
+            let end = (f + 1) as f64 * fd.as_secs_f64();
+            let k = lamp(end, sensor.exposure.as_secs_f64());
+            let level = 0.004 * k;
+            if let Some(p) = &params {
+                c.retarget(&mut isp, p, &sensor);
+                let wrong = c.digital_gain_for(
+                    p,
+                    &SensorValues {
+                        exposure: sensor.exposure,
+                        ..previous
+                    },
+                );
+                if f >= 600 {
+                    let y = level * sensor.total_exposure() / 0.01;
+                    out.push(y * isp.digital_gain);
+                    stale.push(y * wrong * p.colour_gains[1]);
+                    raw.push(y);
+                    assert!(
+                        (isp.flicker / k - 1.0).abs() < 0.01,
+                        "{f}: {} vs {k}",
+                        isp.flicker
+                    );
+                }
+            }
+            let step = c.process(&stats(level, &sensor), &sensor).unwrap();
+            if let Some(r) = step.sensor {
+                pending.push(r);
+            }
+            isp = step.isp;
+            params = Some(step.params);
+        }
+        let sd = |v: &[f64]| {
+            let m = v.iter().sum::<f64>() / v.len() as f64;
+            (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64).sqrt() / m
+        };
+        let (out, stale, raw) = (sd(&out), sd(&stale), sd(&raw));
+        println!(
+            "120 fps lamp: raw {raw:.4}, output {out:.4}, gain for the frame before {stale:.4}"
+        );
+        // The gain for the frame before (one frame of lag) would leave most of it in.
+        assert!(
+            raw > 0.08 && out < 0.005 && stale > raw / 2.0,
+            "{raw} {out} {stale}"
+        );
+        assert!(params.unwrap().needs_every_frame());
+    }
+
+    #[test]
+    fn band_gains_fold_into_lens_shading() {
+        let ls = crate::isp::lens_shading_with_bands(None, &[1.1, 1.0, 0.9]);
+        assert_eq!((ls.width, ls.height), (2, 3));
+        assert_eq!(ls.g, vec![1.1, 1.1, 1.0, 1.0, 0.9, 0.9]);
+        let grid = styx_algo::LensShading {
+            width: 1,
+            height: 6,
+            r: vec![2.0; 6],
+            g: vec![1.0; 6],
+            b: vec![1.0; 6],
+        };
+        let ls = crate::isp::lens_shading_with_bands(Some(&grid), &[1.2, 0.8]);
+        assert!((ls.r[0] - 2.4).abs() < 1e-12 && (ls.r[5] - 1.6).abs() < 1e-12);
+        assert!(ls.g[0] > ls.g[2] && ls.g[2] > ls.g[3] && ls.g[3] > ls.g[5]);
     }
 }

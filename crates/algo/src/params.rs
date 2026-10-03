@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::algos::agc::deflicker::FlickerCorrection;
+use crate::frame::FrameMetadata;
 use crate::pwl::Pwl;
 use crate::stats::ZoneGrid;
 
@@ -230,6 +232,67 @@ pub struct Params {
     /// Raspberry Pi IPA programs it). Written by AGC; `None`: unweighted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub histogram_weights: Option<ZoneGrid<f64>>,
+    /// Deflicker: the flicker to take out of coming frames (written by AGC; see
+    /// [`Self::frame_gain`]). `Some` while the light is seen flickering, even before the
+    /// correction fades in: the algorithms should then run on every frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deflicker: Option<FlickerCorrection>,
+}
+
+/// The ISP's gain for one frame (see [`Params::frame_gain`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameGain {
+    /// Digital gain on top of the colour gains.
+    pub digital_gain: f64,
+    /// How much brighter than the mean light the flicker made the frame, as corrected (1
+    /// without deflicker).
+    pub flicker: f64,
+}
+
+impl Params {
+    /// The digital gain for processing the frame `meta` describes (exposure, gains, number
+    /// and duration of *that* frame; these parameters may come from an earlier one): AE's total
+    /// exposure over what the sensor delivered, so the image follows the target while a new
+    /// exposure is on its way (as the Raspberry Pi IPA does), between 1 and
+    /// `max_digital_gain`; divided by the brightness deflicker predicts for the frame (down to
+    /// [`FlickerCorrection::floor`]: below 1 only where no highlight clips). With AE off,
+    /// AE's digital gain.
+    pub fn frame_gain(&self, meta: &FrameMetadata, max_digital_gain: f64) -> FrameGain {
+        let delivered =
+            meta.exposure.as_secs_f64() * meta.analogue_gain * meta.digital_gain.max(1e-9);
+        if !meta.controls.ae_enable || self.ae.total_exposure <= 0.0 || delivered <= 0.0 {
+            return FrameGain {
+                digital_gain: self.digital_gain.max(1.0),
+                flicker: 1.0,
+            };
+        }
+        let base = (self.ae.total_exposure / delivered).clamp(1.0, max_digital_gain);
+        match self.deflicker.as_ref().filter(|d| d.active()) {
+            Some(d) => {
+                let k = d.brightness(
+                    meta.frame,
+                    meta.frame_duration.as_secs_f64(),
+                    meta.exposure.as_secs_f64(),
+                );
+                let floor = d.floor(meta.exposure.as_secs_f64());
+                FrameGain {
+                    digital_gain: (base / k)
+                        .clamp(floor, max_digital_gain * d.headroom.max(1.0))
+                        .max(floor),
+                    flicker: k,
+                }
+            }
+            None => FrameGain {
+                digital_gain: base,
+                flicker: 1.0,
+            },
+        }
+    }
+
+    /// Whether the algorithms should see every frame (deflicker follows the light's phase).
+    pub fn needs_every_frame(&self) -> bool {
+        self.deflicker.is_some()
+    }
 }
 
 impl Default for Params {
@@ -249,6 +312,7 @@ impl Default for Params {
             denoise: DenoiseParams::default(),
             sharpen: None,
             histogram_weights: None,
+            deflicker: None,
         }
     }
 }

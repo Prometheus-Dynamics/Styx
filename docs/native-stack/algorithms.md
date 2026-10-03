@@ -77,7 +77,7 @@ record the warm start in their header.
 |---|---|---|
 | `BlackLevel` | `black_level.cpp` | Tuning levels, else the sensor description's |
 | `Lux` | `lux.cpp` | From exposure, gain and mean luma against a reference; metadata lux wins |
-| `Agc` | `agc_channel.cpp` (channel 0) | Metering (tuned or built-in centre-weighted / spot / average weights, resampled to the zone grid), histogram constraints, EV, exposure profiles, flicker periods, digital gain, damping, start-up, fast de-saturation, lock. Styx changes: output landing frame; frame duration chosen here; model-based steps (changes above `full_step`, 8% by default, go straight to the target at any time; after one lands, the rest is corrected at once; damping only for small changes); every frame's statistics used (frames in flight ask for the same total); de-saturates only while half the image is saturated and without damping; locked = no change beyond 5% in flight and on target (5%) for two frames, no hunting within that tolerance once locked, and locked at its limits when the scene is beyond them (`AeStatus::at_limit`); unsettled frames left out; warm starts; flicker fitted from the frames and metered against, detected automatically (below) |
+| `Agc` | `agc_channel.cpp` (channel 0) | Metering (tuned or built-in centre-weighted / spot / average weights, resampled to the zone grid), histogram constraints, EV, exposure profiles, flicker periods, digital gain, damping, start-up, fast de-saturation, lock. Styx changes: output landing frame; frame duration chosen here; model-based steps (changes above `full_step`, 8% by default, go straight to the target at any time; after one lands, the rest is corrected at once; damping only for small changes); every frame's statistics used (frames in flight ask for the same total); de-saturates only while half the image is saturated and without damping; locked = no change beyond 5% in flight and on target (5%) for two frames, no hunting within that tolerance once locked, and locked at its limits when the scene is beyond them (`AeStatus::at_limit`); unsettled frames left out; warm starts; flicker fitted from the frames and metered against, detected automatically, and taken out of the frames with per-frame ISP gain (below); on target compares what the frame asks for with AE's own total (the sensor's share may be smaller: digital gain, deflicker headroom) |
 | `Awb` | `awb.cpp`, `awb_bayes.cpp` | Bayesian search along the CT curve with lux-interpolated priors, coarse then fine (across the curve), or grey world; runs synchronously every `frame_period` frames (every frame during start-up), filtered by `speed`; modes; manual gains or temperature. Styx changes: start-up counts only usably exposed frames (mean luma 0.02..0.7; at most 4 × `startup_frames` frames); unsettled frames left out; warm starts; soft search and hysteresis (below) |
 | `Denoise` | `noise.cpp`, `denoise.cpp`, `geq.cpp`, `dpc.cpp`, `sharpen.cpp` | Noise profile × √analogue gain; SDN/CDN/TDN strengths (`normal` configuration), SDN and CDN starting at their no-TDN values and backing off by `backoff` per run while temporal denoise runs (`CameraConfig::temporal_denoise`, set by the ISP); GEQ by gain (and lux); DPC strength; sharpening factors. Output in `Params::denoise` / `Params::sharpen` (Raspberry Pi units: 16-bit pixel scale) for ISPs with those blocks (the PiSP back end) |
 | `Alsc` | `alsc.cpp` | Calibrated Cr/Cb tables interpolated by temperature, resampled to crop and flips, normalised, luminance table at `luminance_strength` (generated from `corner_strength` if given, else tuned). Adaptive refinement (below). Styx changes: the refinement runs in `process` and its result is used from the next frame on (libcamera: a thread, picked up a frame or more later); the filter and periods count frames, so running the algorithms at a lower rate keeps the per-frame speed |
@@ -153,7 +153,13 @@ room's lamp: exposure × gain spread 10%, never locked). Styx's AGC (`agc/flicke
   exposure (`sinc(kωT/2)` of it, at the exposure's centre);
 * fits the model by least squares (QR by Gram-Schmidt) to the last second of frames (at most
   64): each frame's mean luma over its exposure × gain, so AE's own changes drop out, at times
-  from the frame numbers and durations (frames the algorithms skip are fine). Harmonics the
+  from the frame numbers and durations (frames the algorithms skip are fine). Phases are
+  relative to the newest frame, and a strongly significant fit (F ≥ 30) tracks the mains
+  frequency: the residual at ±0.05 Hz, a parabola through the three, 30% of the step to its
+  minimum per frame (within ±0.4 Hz of nominal; the trials keep the fit's harmonics, so two
+  that alias onto each other, 50 and 100 Hz at 30 fps, are not told apart by drift and noise).
+  The room's 50 Hz measured 50.07 Hz in the frames' clock: untracked, a prediction half a
+  window ahead is 13° off at 50 Hz, 38° at 150 Hz. Harmonics the
   frames cannot see (aliased to a constant phase, e.g. 120 Hz at 120 fps; whole periods of
   exposure) or cannot tell apart from one already in (50 and 100 Hz both at ±10 Hz at 30 fps;
   the second harmonic goes in first) are left out; a frame far from the model (25%) is a scene
@@ -173,6 +179,66 @@ room's lamp: exposure × gain spread 10%, never locked). Styx's AGC (`agc/flicke
   other frequency is detected. Styx's native processed modes default to it
   (`NativeIspConfig::flicker`, control `AE_FLICKER_MODE`, detected period
   `AE_FLICKER_DETECTED`); `Controls::default()` keeps it off.
+
+### Deflicker
+
+Exposures shorter than a period keep the flicker in the frames: AE meters against the mean
+light, but the frames still beat (the room's lamp: 8-12% output spread at 120 fps). The same
+model predicts each frame's brightness from its exposure window, so the ISP can divide it out
+(`agc/deflicker.rs`, `Params::deflicker`: a `FlickerCorrection`, and `Params::frame_gain`):
+
+* **The right frame.** The correction carries the model, its reference time and the clock of
+  the frame AGC last ran on; the ISP settings for frame F (made from F − 1 on the PiSP path,
+  from further back at the settled rate) ask it for F's brightness with F's own number,
+  duration and exposure (`Controller::retarget`). A one-frame lag would double the flicker
+  instead (unit test: 13% → 25%).
+* **One gain per frame, or per band.** A global shutter (OV9782) exposes all rows together.
+  For a rolling shutter (`CameraConfig::readout` > 0) `FlickerCorrection::band_gains` gives
+  each band of rows its own gain (the fit saw the frame mean, so the harmonics are first
+  divided by the readout's `sinc`); the pipeline folds them into the lens shading grid, which
+  both the PiSP and the software ISP apply; their mean effect is 1 so the statistics still see
+  the frame's flicker. Unverified on a sensor (none here is rolling shutter).
+* **Confidence.** Only a fit with F ≥ 30, 16 frames or more sampled on most frames (a fit from
+  the settled rate's every eighth frame can alias the harmonics onto each other) and a
+  modulation of 1% or more turns it on; it fades in and out over 0.25 s. The coefficients are
+  low-pass filtered (30% per frame) after rotating the previous ones to the new reference
+  time. While the light is seen flickering `Params::needs_every_frame` keeps the algorithms
+  off their settled rate (the fit needs every frame); in steady light nothing changes.
+* **Headroom, highlights and noise.** A frame brighter than the mean needs a gain below 1.
+  Where the frames' highlights (the luma histogram's 99.9% quantile, ×1.25 for colour
+  channels, on the output's scale under the mean light) stay clear of clipping even in the
+  brightest frame, gains below 1 are harmless and the sensor keeps its exposure. Where they
+  would not, AE leaves as much of its total exposure to the ISP's digital gain as the
+  highlights need (up to the brightest frame: `FlickerCorrection::headroom`), and no frame
+  gets less than `headroom / peak`: what clips in the raw frame stays white. The need follows
+  the largest of the last second or so (decaying 10%/s), the headroom moves only when the
+  need is 3% above or 10% below it, and AE's lock does not count a headroom change as a
+  change of exposure. Gains stay within 1/1.6..1.6.
+* **Hand-off.** Exposures of whole periods see none of the flicker (`sinc = 0`): their
+  predicted brightness is 1, so switching between short and quantised exposures needs
+  nothing; without a confident fit the correction fades out and the headroom returns to 1.
+* **Controls.** `Controls::deflicker`: `Deflicker::Off`, `On` (fits 50 and 60 Hz as
+  `Flicker::Auto` does when avoidance is off, without quantising exposures) or `Auto` (the
+  default: on when flicker avoidance is). Off while AE is (manual exposure and gain).
+
+Simulated (`tests/sim_deflicker.rs`, the device's timing, the room's lamp on mains 0.07 Hz off
+nominal, output = raw mean × the gain from the frame before's parameters as on the PiSP path,
+steady state over seconds 3-10):
+
+| | deflicker off | deflicker auto |
+|---|---|---|
+| 120 fps (8.1 ms): output SD | 13.3% | 0.12% (gains 0.83..1.19, no headroom, no AE change) |
+| 90 fps (10 ms) | 11.3% | 0.12% |
+| 60 fps (8.3 ms) | 13.2% | 0.12% |
+| 120 fps, a clipped lamp in view | 9.9% (AE never locks: chases the beat, also before deflicker) | 0.12%, headroom 1.26, gains ≥ 1.06 |
+| 90 fps, 60.1 Hz lamp, noisy sensor (steady-light noise 1.08%) | raw 7.7% | 0.41% |
+| 30 fps, 1.8 ms exposures (50 and 100 Hz alias 0.09 Hz apart) | 14.2% | 1.8% |
+| 30 fps, whole 20 ms periods | 0.11% | 0.11% (nothing to correct) |
+| steady light | | identical output, nothing enabled |
+
+The residual 0.12% is the simulated frames' own noise. At 30 fps with short exposures (bright
+scenes) 50 and 100 Hz alias onto frequencies 0.09 Hz apart, which a second of frames cannot
+separate; the fit takes them as one and a few percent remain.
 
 Simulated (`tests/sim_flicker.rs`, the device's timing): under 100 Hz light whose beat puts
 ±7% (±12%) on 8.1 ms frames at 120 fps, AE without avoidance moves exposure × gain by 5.4%

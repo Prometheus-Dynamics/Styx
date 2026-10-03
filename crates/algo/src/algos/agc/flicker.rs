@@ -34,14 +34,23 @@
 //! Samples are kept for [`WINDOW`] seconds (at most [`MAX_SAMPLES`]); a frame far from the
 //! fitted (or, before a fit, the mean) brightness is a change of the scene and restarts the
 //! window. Frame times come from frame numbers and durations, so frames the algorithms skip
-//! (the PiSP path's settled rate) are fine; the mains frequency may drift by a few tenths of a
-//! hertz within a window.
+//! (the PiSP path's settled rate) are fine.
+//!
+//! The mains frequency is off its nominal value by up to a few tenths of a hertz (and the
+//! sensor's clock by some parts per million): measured in the frames' clock on the CM5, the
+//! room's 50 Hz was 50.07 Hz. Over a window that is a phase drift of 0.07 × 0.5 s × 360° =
+//! 13° at 50 Hz (38° at 150 Hz), which a fit at the nominal frequency averages away and a
+//! prediction a few frames ahead (what [`super::deflicker`] needs) gets wrong by several
+//! percent. So a strongly significant fit also tracks the frequency: the residual at ±
+//! [`TRACK_STEP`] around it, a parabola through the three, and a damped step towards its
+//! minimum ([`FlickerFit::hz`]). Phases are fitted relative to the newest frame
+//! ([`FlickerModel::reference`]) so frequency changes do not swing them.
 
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 
 use super::{DETECT_F, DETECT_SAMPLES, DETECT_TIME, DETECT_VISIBLE};
-use crate::frame::{Flicker, FrameMetadata};
+use crate::frame::{Deflicker, Flicker, FrameMetadata};
 use crate::stats::Statistics;
 
 /// Mains frequencies.
@@ -76,6 +85,16 @@ const SCENE_CHANGE: f64 = 0.25;
 /// Before there is a model, a frame this far from the mean of the frames so far (which deep
 /// flicker on short exposures can move by more than [`SCENE_CHANGE`]).
 const SCENE_CHANGE_UNFITTED: f64 = 0.6;
+/// Frequency tracking: the fit is tried this far (Hz) either side of the current frequency.
+const TRACK_STEP: f64 = 0.05;
+/// Frequency tracking: the part of the step to the residual's minimum taken per frame.
+const TRACK_GAIN: f64 = 0.3;
+/// Frequency tracking: the most the fundamental may be off its nominal value (Hz).
+const MAX_OFFSET: f64 = 0.4;
+/// Frequency tracking: fits at least this strong (F statistic, modulation, frames).
+const TRACK_F: f64 = 30.0;
+const TRACK_VISIBLE: f64 = 0.008;
+const TRACK_SAMPLES: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 struct Sample {
@@ -92,9 +111,15 @@ struct Sample {
 /// A fitted flicker model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlickerModel {
+    /// Fundamental frequency fitted (the mains frequency as tracked), Hz.
+    pub hz: f64,
+    /// Time (seconds, the fit's clock) the phases are relative to: the newest frame's exposure
+    /// centre.
+    pub reference: f64,
     /// Mean brightness per unit exposure.
     pub level: f64,
-    /// The harmonics in the fit: `(k, a_k, b_k)`, the light's modulation relative to its mean.
+    /// The harmonics in the fit: `(k, a_k, b_k)`, the light's modulation relative to its mean
+    /// (`a_k cos kω(t − reference) + b_k sin kω(t − reference)`).
     pub terms: Vec<(usize, f64, f64)>,
     /// F statistic of the flicker terms against a constant.
     pub f_stat: f64,
@@ -102,6 +127,10 @@ pub struct FlickerModel {
     pub visible: f64,
     /// Frames fitted.
     pub samples: usize,
+    /// Seconds from the first frame fitted to the last.
+    pub span: f64,
+    /// Residual sum of squares of the fit (brightness relative to the mean).
+    pub rss: f64,
     /// The modulation is significant (see the [module documentation](self)).
     pub significant: bool,
 }
@@ -114,6 +143,25 @@ impl FlickerModel {
             .find(|t| t.0 == k)
             .map_or(0.0, |t| t.1.hypot(t.2))
     }
+
+    /// How much brighter (relative) than the mean light a frame whose exposure `exposure` is
+    /// centred on `centre` (the fit's clock) is.
+    pub fn modulation(&self, centre: f64, exposure: f64) -> f64 {
+        modulation(self.hz, &self.terms, centre - self.reference, exposure)
+    }
+}
+
+/// `Σ_k sinc(kωT/2) (a_k cos kωt + b_k sin kωt)` for an exposure `exposure` centred on `t`.
+pub(super) fn modulation(hz: f64, terms: &[(usize, f64, f64)], t: f64, exposure: f64) -> f64 {
+    let w = 2.0 * PI * hz;
+    terms
+        .iter()
+        .map(|&(k, a, b)| {
+            let kw = k as f64 * w;
+            let (sn, cn) = (kw * t).rem_euclid(2.0 * PI).sin_cos();
+            sinc(kw * exposure / 2.0) * (a * cn + b * sn)
+        })
+        .sum()
 }
 
 /// Least-squares fit of mains flicker at one mains frequency. See the
@@ -121,13 +169,15 @@ impl FlickerModel {
 #[derive(Debug, Clone)]
 pub struct FlickerFit {
     mains: f64,
+    /// Tracked offset of the fundamental from `mains`, Hz.
+    offset: f64,
     harmonics: usize,
     samples: VecDeque<Sample>,
     model: Option<FlickerModel>,
 }
 
 /// `sin(x) / x`.
-fn sinc(x: f64) -> f64 {
+pub(super) fn sinc(x: f64) -> f64 {
     if x.abs() < 1e-9 { 1.0 } else { x.sin() / x }
 }
 
@@ -140,18 +190,24 @@ impl FlickerFit {
     pub fn new(mains: f64, harmonics: usize) -> Self {
         Self {
             mains,
+            offset: 0.0,
             harmonics: harmonics.max(1),
             samples: VecDeque::new(),
             model: None,
         }
     }
 
-    /// The fundamental frequency.
+    /// The fundamental frequency (nominal).
     pub fn mains(&self) -> f64 {
         self.mains
     }
 
-    /// Forget all frames.
+    /// The fundamental frequency as tracked (see the [module documentation](self)).
+    pub fn hz(&self) -> f64 {
+        self.mains + self.offset
+    }
+
+    /// Forget all frames (the tracked frequency is kept: the mains did not change).
     pub fn reset(&mut self) {
         self.samples.clear();
         self.model = None;
@@ -182,14 +238,15 @@ impl FlickerFit {
         }
     }
 
-    /// The columns of a frame: `sinc · cos` and `sinc · sin` per harmonic.
-    fn columns(&self, centre: f64, exposure: f64) -> Vec<f64> {
-        let w = 2.0 * PI * self.mains;
+    /// The columns of a frame whose exposure is centred `t` seconds after the reference:
+    /// `sinc · cos` and `sinc · sin` per harmonic of `hz`.
+    fn columns(&self, hz: f64, t: f64, exposure: f64) -> Vec<f64> {
+        let w = 2.0 * PI * hz;
         let mut out = Vec::with_capacity(2 * self.harmonics);
         for k in 1..=self.harmonics {
             let kw = k as f64 * w;
             let s = sinc(kw * exposure / 2.0);
-            let (sn, cn) = (kw * centre).rem_euclid(2.0 * PI).sin_cos();
+            let (sn, cn) = (kw * t).rem_euclid(2.0 * PI).sin_cos();
             out.push(s * cn);
             out.push(s * sn);
         }
@@ -205,7 +262,7 @@ impl FlickerFit {
 
     /// Exposures end at a fixed point of the frame (its end here; any fixed offset goes into
     /// the fitted phases).
-    fn centre(time: f64, frame_duration: f64, exposure: f64) -> f64 {
+    pub(super) fn centre(time: f64, frame_duration: f64, exposure: f64) -> f64 {
         time + frame_duration - exposure / 2.0
     }
 
@@ -215,8 +272,7 @@ impl FlickerFit {
         let Some(m) = self.significant() else {
             return 1.0;
         };
-        let cols = self.columns(Self::centre(time, frame_duration, exposure), exposure);
-        (1.0 + Self::predict(m, &cols)).max(0.05)
+        (1.0 + m.modulation(Self::centre(time, frame_duration, exposure), exposure)).max(0.05)
     }
 
     /// Adds a frame (`level`: its brightness per unit exposure) and refits.
@@ -228,7 +284,7 @@ impl FlickerFit {
         // A frame far from what the model (or the frames so far) expects: the scene changed.
         let expected = match &self.model {
             Some(m) => Some((
-                m.level * (1.0 + Self::predict(m, &self.columns(centre, exposure))),
+                m.level * (1.0 + m.modulation(centre, exposure)),
                 SCENE_CHANGE,
             )),
             None if !self.samples.is_empty() => Some((
@@ -251,22 +307,61 @@ impl FlickerFit {
         {
             self.samples.pop_front();
         }
-        self.model = self.fit();
+        self.model = self.fit(self.hz(), None);
+        if let Some(m) = &self.model
+            && m.significant
+            && m.f_stat >= TRACK_F
+            && m.visible >= TRACK_VISIBLE
+            && m.samples >= TRACK_SAMPLES
+        {
+            let ks: Vec<usize> = m.terms.iter().map(|t| t.0).collect();
+            self.track(m.rss, &ks);
+        }
     }
 
-    fn fit(&self) -> Option<FlickerModel> {
+    /// One step of frequency tracking from the fit at the current frequency (residual `rss`,
+    /// harmonics `ks`). The trials fit the same harmonics: where two alias onto each other
+    /// (50 and 100 Hz at 30 fps) a trial frequency would otherwise let the frames tell them
+    /// apart by their drift alone and fit noise.
+    fn track(&mut self, rss: f64, ks: &[usize]) {
+        let hz = self.hz();
+        let (Some(lo), Some(hi)) = (
+            self.fit(hz - TRACK_STEP, Some(ks)),
+            self.fit(hz + TRACK_STEP, Some(ks)),
+        ) else {
+            return;
+        };
+        let (rl, rh) = (lo.rss, hi.rss);
+        let curvature = rl - 2.0 * rss + rh;
+        let step = if curvature > 0.0 {
+            TRACK_STEP * (rl - rh) / (2.0 * curvature)
+        } else if rl < rh {
+            -TRACK_STEP
+        } else {
+            TRACK_STEP
+        };
+        let step = step.clamp(-TRACK_STEP, TRACK_STEP);
+        self.offset = (self.offset + TRACK_GAIN * step).clamp(-MAX_OFFSET, MAX_OFFSET);
+    }
+
+    /// The fit at fundamental `hz`, of the harmonics `only` (all of them: `None`) that the
+    /// frames can tell apart.
+    fn fit(&self, hz: f64, only: Option<&[usize]>) -> Option<FlickerModel> {
         let n = self.samples.len();
         if n < MIN_SAMPLES {
             return None;
         }
         let nf = n as f64;
+        let reference = self.samples.back().map_or(0.0, |s| s.centre);
+        let span = self.samples.back().map_or(0.0, |s| s.time)
+            - self.samples.front().map_or(0.0, |s| s.time);
         let mean = self.samples.iter().map(|s| s.level).sum::<f64>() / nf;
         let y: Vec<f64> = self.samples.iter().map(|s| s.level / mean).collect();
         // Candidate columns (constant first), sample-major.
         let rows: Vec<Vec<f64>> = self
             .samples
             .iter()
-            .map(|s| self.columns(s.centre, s.exposure))
+            .map(|s| self.columns(hz, s.centre - reference, s.exposure))
             .collect();
         let column = |j: usize| -> Vec<f64> {
             if j == 0 {
@@ -287,10 +382,12 @@ impl FlickerFit {
             ks.swap(0, 1);
         }
         let order = ks.iter().flat_map(|k| [2 * k - 1, 2 * k]);
-        let w = 2.0 * PI * self.mains;
+        let w = 2.0 * PI * hz;
         let sampled = |k: usize| {
             let (c, s) = self.samples.iter().fold((0.0, 0.0), |(c, s), x| {
-                let (sn, cn) = (k as f64 * w * x.centre).rem_euclid(2.0 * PI).sin_cos();
+                let (sn, cn) = (k as f64 * w * (x.centre - reference))
+                    .rem_euclid(2.0 * PI)
+                    .sin_cos();
                 (c + cn, s + sn)
             });
             c.hypot(s) / nf <= MAX_PHASE_RESULTANT
@@ -301,7 +398,10 @@ impl FlickerFit {
             if j > 0 && n < used.len() + 1 + MIN_DOF {
                 break;
             }
-            if j > 0 && !sampled[(j - 1) / 2 + 1] {
+            if j > 0
+                && (!sampled[(j - 1) / 2 + 1]
+                    || only.is_some_and(|ks| !ks.contains(&((j - 1) / 2 + 1))))
+            {
                 continue;
             }
             let mut v = column(j);
@@ -360,11 +460,15 @@ impl FlickerFit {
             }
         }
         let mut model = FlickerModel {
+            hz,
+            reference,
             level: x[0] * mean,
             terms,
             f_stat,
             visible: 0.0,
             samples: n,
+            span,
+            rss: rss1,
             significant: false,
         };
         let ms = rows
@@ -382,6 +486,17 @@ impl FlickerFit {
 
 /// AGC's flicker state: the fits it feeds, detection and the periods it quantises to.
 impl super::Agc {
+    /// The flicker avoidance the fits and the detection work as: [`Flicker::Auto`] when
+    /// avoidance is off but deflicker is on (exposures are then not quantised: see
+    /// [`super::Agc::divide`]).
+    pub(super) fn fitting(flicker: Flicker, deflicker: Deflicker) -> Flicker {
+        if flicker == Flicker::Off && deflicker == Deflicker::On {
+            Flicker::Auto
+        } else {
+            flicker
+        }
+    }
+
     /// The mains frequencies to fit for these controls.
     pub(super) fn flicker_mains(flicker: Flicker) -> Vec<f64> {
         match flicker {
@@ -409,14 +524,15 @@ impl super::Agc {
 
     /// Feeds the flicker fits with this frame, works out the flicker periods to avoid and
     /// returns the mains frequency in use and how much brighter than the mean light the frame
-    /// is.
+    /// is. The fit of the mains in use is `self.in_use` afterwards; `self.clock` has the
+    /// frame's time.
     pub(super) fn flicker(
         &mut self,
         stats: &Statistics,
         meta: &FrameMetadata,
         usable: bool,
     ) -> (Option<f64>, f64) {
-        let flicker = meta.controls.flicker;
+        let flicker = Self::fitting(meta.controls.flicker, meta.controls.deflicker);
         let wanted = Self::flicker_mains(flicker);
         if self.fits.len() != wanted.len()
             || self.fits.iter().zip(&wanted).any(|(f, w)| f.mains() != *w)
@@ -466,7 +582,8 @@ impl super::Agc {
             Flicker::Auto => self.detected,
             _ => self.fits.first().map(FlickerFit::mains),
         };
-        let fit = mains.and_then(|hz| self.fits.iter().find(|f| f.mains() == hz));
+        self.in_use = mains.and_then(|hz| self.fits.iter().position(|f| f.mains() == hz));
+        let fit = self.in_use.map(|i| &self.fits[i]);
         // Whole mains periods when the lamp flickers at the mains frequency too (shorter
         // exposures are left alone: whole half periods would not cancel that flicker and
         // longer exposures see less of it; measured at 60 fps under such a lamp, 10 ms
@@ -479,7 +596,11 @@ impl super::Agc {
         } else if self.mains_period_seen != full {
             self.mains_period_seen = None;
         }
-        self.periods = self.mains_period_seen.or(period).into_iter().collect();
+        self.periods = if meta.controls.flicker == Flicker::Off {
+            Vec::new()
+        } else {
+            self.mains_period_seen.or(period).into_iter().collect()
+        };
         // Until a mains frequency is detected, AE meters against the most significant fit
         // (its own prediction of these frames); exposures are quantised only once detected.
         let provisional = || {

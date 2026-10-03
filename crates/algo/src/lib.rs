@@ -40,12 +40,13 @@ pub mod stats;
 pub mod tuning;
 mod warm;
 
+pub use algos::agc::deflicker::FlickerCorrection;
 pub use config::{CameraConfig, ControlDelays, Crop};
 pub use error::{AlgoError, Result};
-pub use frame::{Controls, Flicker, FrameMetadata, metering};
+pub use frame::{Controls, Deflicker, Flicker, FrameMetadata, metering};
 pub use params::{
-    AeStatus, AwbStatus, BlackLevels, CdnParams, DenoiseParams, GeqParams, IDENTITY, LensShading,
-    Matrix3, Params, SdnParams, SensorRequest, SharpenParams, TdnParams, mat_mul,
+    AeStatus, AwbStatus, BlackLevels, CdnParams, DenoiseParams, FrameGain, GeqParams, IDENTITY,
+    LensShading, Matrix3, Params, SdnParams, SensorRequest, SharpenParams, TdnParams, mat_mul,
 };
 pub use pipeline::{Algorithm, Pipeline};
 pub use pwl::Pwl;

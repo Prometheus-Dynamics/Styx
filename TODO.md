@@ -40,6 +40,12 @@ box (OV9782 1280x800) unless stated.
       mean light, so 120 fps no longer chases it (exposure × gain spread 10% → 1%, cold start
       never locked → frame ~21 under the room's ±20% 50 Hz lamp); long exposures whole mains
       periods (30 fps: frame spread 2.4% → 0.2%); detects the mains frequency itself.
+- [x] Deflicker (`Deflicker::Auto`, on with flicker avoidance; `AE_DEFLICKER_MODE`): each
+      frame's ISP digital gain divided by the brightness the flicker model predicts for that
+      frame (mains frequency tracked, confidence-gated, faded, headroom only where highlights
+      would clip): output frame-to-frame spread under the room's lamp 15-18% → 3.4-4.7% at
+      120 fps, 16-19% → 4.3-4.9% at 90, 3.2-3.6% → 1.5-1.6% at 60 (simulated 13% → 0.12%);
+      PiSP CPU 0.30 → 0.48 ms/frame at 120 fps (algorithms on every frame while it flickers).
 - [x] AE locks at its limits in scenes beyond its reach (`AE_STATE` converged, as libcamera).
 - [x] Software ISP (`styx-softisp`): fp16 NEON path, cached capture read in place, 15 Hz stats
       when settled — 8.8–9.7 % of a core at 30 fps on one A76 core (was 47 %), bit-exact integer
@@ -112,8 +118,11 @@ box (OV9782 1280x800) unless stated.
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).
 - [x] 120 fps AE sometimes chases 100 Hz flicker (kernel-driver path); add anti-flicker.
-- [ ] Flicker stays in the frames at exposures shorter than a period (AE no longer chases it):
-      per-frame ISP digital gain from the flicker model could take it out.
+- [x] Flicker stays in the frames at exposures shorter than a period: deflicker (above).
+- [ ] Deflicker: rolling-shutter band gains unverified on a sensor (needs `readout` from the
+      sensor description); 30 fps with short exposures leaves ~2% (50/100 Hz alias together).
+- [ ] With deflicker off, a clipped lamp in view under flicker makes AE chase the beat at
+      120 fps (simulated, also before deflicker; with deflicker on it locks).
 - [x] `AE_STATE` never reported converged when AE's target was out of reach; AE now reports
       converged once pinned at its limits (`AeStatus::at_limit`), as libcamera does.
 - [x] OV9782 raw8 (`BA81`) through the bridge: frames reported 342.9 ms × 0.5 at 30 fps and were

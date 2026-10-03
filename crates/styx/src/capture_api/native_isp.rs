@@ -274,7 +274,10 @@ pub(super) fn start_processed(
     });
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     // The 3A loop's controls (initial ones applied before the start) and its state.
-    let loop_controls = Arc::new(LoopControls::with_flicker(config.backends.native.flicker));
+    let loop_controls = Arc::new(LoopControls::with_flicker(
+        config.backends.native.flicker,
+        config.backends.native.deflicker,
+    ));
     for (id, value) in initial {
         loop_controls
             .apply(*id, value)

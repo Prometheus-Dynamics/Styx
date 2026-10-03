@@ -23,9 +23,17 @@ pub struct IspSettings {
     pub black_level: f64,
     /// White balance gains, green 1.
     pub wb: [f64; 3],
-    /// Digital gain on top of the white balance (exposure the sensor could not provide, and
-    /// the difference while a new exposure is still on its way).
+    /// Digital gain on top of the white balance (exposure the sensor could not provide, the
+    /// difference while a new exposure is still on its way, and deflicker's correction).
     pub digital_gain: f64,
+    /// How much brighter than the mean light the flicker made the frame, as deflicker
+    /// corrects it (1: no correction). Temporal denoise scales its average by it.
+    #[serde(default = "one")]
+    pub flicker: f64,
+    /// Rolling shutter: deflicker's gains per band of rows (top to bottom), folded into
+    /// `lens_shading` (see [`crate::Controller::retarget`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flicker_bands: Option<Vec<f64>>,
     /// Colour correction matrix (row-major, camera RGB to output RGB after white balance).
     pub ccm: Matrix3,
     /// Tone curve on `[0, 1]`; `None` is the sRGB curve.
@@ -43,6 +51,10 @@ pub struct IspSettings {
     pub histogram_weights: Option<ZoneGrid<f64>>,
 }
 
+fn one() -> f64 {
+    1.0
+}
+
 impl IspSettings {
     /// Neutral settings: black level only, unity gains, identity matrix, sRGB tone.
     pub fn neutral(black_level: f64) -> Self {
@@ -51,6 +63,8 @@ impl IspSettings {
             black_level,
             wb: [1.0; 3],
             digital_gain: 1.0,
+            flicker: 1.0,
+            flicker_bands: None,
             ccm: IDENTITY,
             gamma: None,
             lens_shading: None,
@@ -70,6 +84,8 @@ impl IspSettings {
             black_level: bl.r.min(bl.g).min(bl.b),
             wb: [p.colour_gains[0] / g, 1.0, p.colour_gains[2] / g],
             digital_gain: digital_gain * g,
+            flicker: 1.0,
+            flicker_bands: None,
             ccm: p.ccm,
             gamma: p.gamma.clone(),
             lens_shading: p.lens_shading.clone(),
@@ -372,6 +388,39 @@ pub fn gamma_points(curve: Option<&Pwl>) -> Vec<(u32, u32)> {
                 .collect()
         }
     }
+}
+
+/// `ls` (a flat grid of `bands` rows when `None`) with each grid row times the band gain of
+/// its place in the frame (`bands`: top to bottom, evenly spread).
+pub fn lens_shading_with_bands(ls: Option<&LensShading>, bands: &[f64]) -> LensShading {
+    let mut out = ls.cloned().unwrap_or_else(|| {
+        let n = 2 * bands.len().max(2);
+        LensShading {
+            width: 2,
+            height: bands.len().max(2) as u32,
+            r: vec![1.0; n],
+            g: vec![1.0; n],
+            b: vec![1.0; n],
+        }
+    });
+    let (w, h) = (out.width as usize, out.height as usize);
+    if bands.is_empty() || w == 0 || h == 0 {
+        return out;
+    }
+    for y in 0..h {
+        // The band gain at the grid row's centre, linearly between band centres.
+        let pos = ((y as f64 + 0.5) / h as f64 * bands.len() as f64 - 0.5)
+            .clamp(0.0, (bands.len() - 1) as f64);
+        let i = (pos as usize).min(bands.len() - 1);
+        let next = bands[(i + 1).min(bands.len() - 1)];
+        let g = bands[i] + (next - bands[i]) * (pos - i as f64);
+        for t in [&mut out.r, &mut out.g, &mut out.b] {
+            for v in t.iter_mut().skip(y * w).take(w) {
+                *v *= g;
+            }
+        }
+    }
+    out
 }
 
 /// Lens shading tables as the back end's packed 33x33 vertex grid.

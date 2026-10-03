@@ -35,6 +35,8 @@ pub struct FrameLog {
     pub flicker_mod: f64,
     /// The flicker period AE detected, microseconds (0: none).
     pub flicker_us: u64,
+    /// The flicker brightness deflicker took out of this frame (1: none).
+    pub deflicker: f64,
     /// Where the processing time went (software ISP loop only).
     pub timing: Option<styx_pipeline::SoftTiming>,
 }
@@ -56,6 +58,7 @@ impl FrameLog {
             isp_dg: step.isp.digital_gain,
             flicker_mod: p.ae.flicker_modulation,
             flicker_us: p.ae.flicker_detected.map_or(0, |d| d.as_micros() as u64),
+            deflicker: step.isp.flicker,
             ..Default::default()
         }
     }
@@ -132,6 +135,14 @@ fn rel_sd(v: &[f64]) -> f64 {
     (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len().max(1) as f64).sqrt() / m.max(1e-12)
 }
 
+/// Mean relative change from one frame to the next.
+fn rel_step(v: &[f64]) -> f64 {
+    let m = v.iter().sum::<f64>() / v.len().max(1) as f64;
+    v.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>()
+        / v.len().saturating_sub(1).max(1) as f64
+        / m.max(1e-12)
+}
+
 /// Frame-to-frame stability over the second half of the run (or after the last forced step):
 /// how much AE moved and how much the frames' brightness varied.
 fn stability(frames: &[FrameLog], from: usize, out: &mut String) {
@@ -148,15 +159,21 @@ fn stability(frames: &[FrameLog], from: usize, out: &mut String) {
     let out_y: Vec<f64> = seg.iter().map(|f| f.out_y).collect();
     let locked = seg.iter().filter(|f| f.locked).count();
     let detected = frames.iter().position(|f| f.flicker_us > 0);
+    let corrected = seg.iter().filter(|f| f.deflicker != 1.0).count();
     let _ = writeln!(
         out,
-        "steady state, frames {}..{}: exposure x gain SD {:.2}% ({} changes > 0.5%), metered Y SD {:.2}%, output Y SD {:.2}%, AE locked on {:.1}% of frames; flicker detected {}",
+        "steady state, frames {}..{}: exposure x gain SD {:.2}% ({} changes > 0.5%), metered Y SD {:.2}% (frame to frame {:.2}%), output Y SD {:.2}% (frame to frame {:.2}%), deflicker on {:.1}% of frames (ISP gain {:.3}..{:.3}), AE locked on {:.1}% of frames; flicker detected {}",
         seg[0].seq,
         seg[seg.len() - 1].seq,
         100.0 * rel_sd(&total),
         changes,
         100.0 * rel_sd(&y),
+        100.0 * rel_step(&y),
         100.0 * rel_sd(&out_y),
+        100.0 * rel_step(&out_y),
+        100.0 * corrected as f64 / seg.len() as f64,
+        seg.iter().map(|f| f.isp_dg).fold(f64::MAX, f64::min),
+        seg.iter().map(|f| f.isp_dg).fold(0.0, f64::max),
         100.0 * locked as f64 / seg.len() as f64,
         detected.map_or("never".into(), |i| format!(
             "{} us at seq {}",
@@ -297,12 +314,12 @@ pub fn write_csv(path: &Path, frames: &[FrameLog]) -> std::io::Result<()> {
     let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
     writeln!(
         w,
-        "seq,timestamp_ns,exposure_us,gain,verified,measured_y,target_y,locked,wb_r,wb_b,ct,isp_dg,out_y,latency_ms,processing_ms,request_lands,flicker_mod,flicker_us"
+        "seq,timestamp_ns,exposure_us,gain,verified,measured_y,target_y,locked,wb_r,wb_b,ct,isp_dg,out_y,latency_ms,processing_ms,request_lands,flicker_mod,flicker_us,deflicker"
     )?;
     for f in frames {
         writeln!(
             w,
-            "{},{},{:.1},{:.4},{},{:.5},{:.5},{},{:.4},{:.4},{:.0},{:.4},{:.2},{:.3},{:.3},{},{:.4},{}",
+            "{},{},{:.1},{:.4},{},{:.5},{:.5},{},{:.4},{:.4},{:.0},{:.4},{:.2},{:.3},{:.3},{},{:.4},{},{:.4}",
             f.seq,
             f.timestamp.as_nanos(),
             f.exposure_us,
@@ -320,7 +337,8 @@ pub fn write_csv(path: &Path, frames: &[FrameLog]) -> std::io::Result<()> {
             ms(f.processing),
             f.request_lands.map_or(String::new(), |v| v.to_string()),
             f.flicker_mod,
-            f.flicker_us
+            f.flicker_us,
+            f.deflicker
         )?;
     }
     w.flush()

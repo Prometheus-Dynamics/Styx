@@ -152,6 +152,7 @@ pub fn soft(a: &Args) -> Result<(), String> {
             base = Some((f.sensor.exposure, f.sensor.analogue_gain));
         }
         let mut log = FrameLog::new(&f.sensor, &f.output.step, f.raw.timestamp);
+        (log.isp_dg, log.deflicker) = (f.output.applied.digital_gain, f.output.applied.flicker);
         log.latency = done.saturating_sub(f.raw.timestamp);
         log.processing = f.raw.dequeued.elapsed();
         log.request_lands = f.request_lands;
@@ -328,6 +329,8 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             base = Some((f.sensor.exposure, f.sensor.analogue_gain));
         }
         let mut log = FrameLog::new(&f.sensor, p.step(), f.timestamp);
+        // What the back end gave this frame (the step's settings are for the next one).
+        (log.isp_dg, log.deflicker) = (f.digital_gain, f.flicker);
         log.latency = done.saturating_sub(f.timestamp);
         log.processing = f.times.total;
         log.request_lands = f.request_lands;
