@@ -170,7 +170,19 @@ fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
                 a.lux.map_or("-".into(), |v| format!("{v:.0}")),
                 a.flicker_hz
                     .map_or(String::new(), |v| format!(" ~{v:.0}Hz"))
-            )
+            ) + &a.af_state.as_ref().map_or(String::new(), |state| {
+                format!(
+                    " af {state} {}D{} scans {}",
+                    a.lens_position_dioptres
+                        .map_or("-".into(), |d| format!("{d:.2}")),
+                    if a.lens_settled == Some(false) {
+                        " moving"
+                    } else {
+                        ""
+                    },
+                    a.af_scans.unwrap_or(0)
+                )
+            })
         });
         let isp = c.isp.as_ref().map_or("-".into(), |i| {
             format!("{} {}/{}", i.kind, ms(i.isp.p50_ms), ms(i.isp.p95_ms))

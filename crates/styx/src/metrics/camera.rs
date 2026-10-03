@@ -157,7 +157,16 @@ pub struct AaaState {
     pub awb_converged: Option<bool>,
     /// Light flicker AE detected, in Hz (100 for 50 Hz mains).
     pub flicker_hz: Option<f64>,
+    /// `idle`, `scanning`, `focused` or `failed` (cameras with a focus lens).
     pub af_state: Option<String>,
+    /// `manual`, `auto` or `continuous`.
+    pub af_mode: Option<String>,
+    /// The lens position AF commanded for the latest frame, in dioptres (0: infinity).
+    pub lens_position_dioptres: Option<f64>,
+    /// The lens had settled at its commanded position for the latest frame's whole exposure.
+    pub lens_settled: Option<bool>,
+    /// AF scans started since the capture started.
+    pub af_scans: Option<u64>,
 }
 
 /// Restarts and errors.

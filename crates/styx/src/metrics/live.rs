@@ -68,6 +68,8 @@ pub(crate) struct AaaSample {
     pub lux: f64,
     /// Flicker period AE detected (`None`: none).
     pub flicker_period: Option<Duration>,
+    /// Autofocus, for cameras with a focus lens.
+    pub af: Option<super::af::AfSample>,
 }
 
 /// Latest sensor and 3A values, as bits of `f32`s and plain integers.
@@ -229,6 +231,7 @@ pub(crate) struct Live {
     pub(crate) processing: Ring,
     aaa: Aaa,
     aaa_reported: AtomicBool,
+    af: super::af::AfLive,
     pub(crate) buffers: Arc<BufferStats>,
     /// Worker threads (Linux thread ids) and their CPU time when last read.
     threads: Mutex<Vec<(i32, u64)>>,
@@ -266,6 +269,7 @@ impl Default for CaptureMetrics {
             processing: Ring::default(),
             aaa: Aaa::default(),
             aaa_reported: AtomicBool::new(false),
+            af: Default::default(),
             buffers: Arc::default(),
             threads: Mutex::new(Vec::new()),
             current: Mutex::new(None),
@@ -487,6 +491,9 @@ impl CaptureMetrics {
         a.lux.store(f32_bits(s.lux), Relaxed);
         let us = s.flicker_period.map_or(0, |p| p.as_micros() as u32);
         a.flicker_us.store(us, Relaxed);
+        if let Some(af) = &s.af {
+            self.0.af.record(af);
+        }
         if !self.0.aaa_reported.load(Relaxed) {
             self.0.aaa_reported.store(true, Relaxed);
         }
@@ -500,7 +507,7 @@ impl CaptureMetrics {
             return None;
         }
         let flicker = a.flicker_us.load(Relaxed);
-        Some(super::camera::AaaState {
+        let mut state = super::camera::AaaState {
             ae_state: match a.ae.load(Relaxed) {
                 2 => Some("converged".into()),
                 1 => Some("searching".into()),
@@ -515,8 +522,10 @@ impl CaptureMetrics {
             lux: loop_ran.then(|| from_bits(a.lux.load(Relaxed))),
             awb_converged: loop_ran.then(|| a.awb_converged.load(Relaxed)),
             flicker_hz: (flicker > 0).then(|| 1e6 / f64::from(flicker)),
-            af_state: None,
-        })
+            ..Default::default()
+        };
+        self.0.af.read(&mut state);
+        Some(state)
     }
 
     /// `backing` as one of this capture's buffers: counted as held until its frame (and every
@@ -690,6 +699,7 @@ pub fn frame_path_cost(iterations: u32) -> Duration {
         colour_temperature: 4000.0,
         lux: 300.0,
         flicker_period: None,
+        af: None,
     };
     let start = Instant::now();
     for i in 0..iterations {

@@ -71,7 +71,11 @@ Windows (`Window`) hold the last `WINDOW` = 128 samples (about 4 s at 30 fps, 1 
 | `aaa.exposure_us`, `analogue_gain`, `digital_gain` | the sensor's exposure and gains for the latest frame | `NativeFrameMeta` (native captures, raw and processed) |
 | `aaa.colour_temperature_k`, `lux`, `awb_converged` | AWB's colour temperature, the scene illuminance estimate, AWB settled | the loop's `Params` |
 | `aaa.flicker_hz` | light flicker AE detected (100 for 50 Hz mains) | `AeStatus::flicker_detected` |
-| `aaa.af_state` | autofocus state | not reported yet (no AF in the loop) |
+| `aaa.af_state` | `idle`, `scanning`, `focused` or `failed` | the loop's `AfStatus::state` for the latest frame; only for cameras with a focus lens (`AfStatus::active`), all AF fields `None` otherwise |
+| `aaa.af_mode` | `manual`, `auto` or `continuous` | `AfStatus::mode` |
+| `aaa.lens_position_dioptres` | the lens position AF commanded, in dioptres (0: infinity) | `AfStatus::lens_position` |
+| `aaa.lens_settled` | the lens had settled at its commanded position for the latest frame's whole exposure (`false`: moving) | the lens control's prediction for that frame (`FrameControls::lens`, from the moves written and the lens's move time model; VCMs have no read-back), looked up for the frame's sequence |
+| `aaa.af_scans` | AF scans started since the capture started (continuous scans after scene changes, and each trigger in auto mode) | counted when the state enters `scanning` |
 | `restarts.*` | start retries, reconnect attempts, reconnects, idle stops; the last worker error (or retry error) | `CaptureRetryStats` and the worker error of the capture |
 | `buffers.queue_depth`, `queue_capacity` | frames waiting for the consumer, and room | the consumer queue |
 | `buffers.held`, `held_bytes`, `peak_held` | capture buffers held by frames (queued or with consumers, in this or other processes) | native and PiSP/software ISP buffers are counted from lease creation to the last share's drop; V4L2 and libcamera from their backing trackers |
@@ -127,6 +131,8 @@ delivered, received), `styx_camera_fps{kind}` (configured, measured, average),
 `styx_camera_cpu_seconds_total`, `styx_camera_cpu_per_frame_us`, `styx_camera_ae_converged`,
 `styx_camera_exposure_us`, `styx_camera_analogue_gain`, `styx_camera_digital_gain`,
 `styx_camera_colour_temperature_kelvin`, `styx_camera_lux`, `styx_camera_flicker_hz`,
+`styx_camera_af_state{state,mode}` (1), `styx_camera_lens_position_dioptres`,
+`styx_camera_lens_settled`, `styx_camera_af_scans_total`,
 `styx_camera_reconnects_total`, `styx_camera_reconnect_attempts_total`,
 `styx_camera_queue_depth`, `styx_camera_queue_capacity`, `styx_camera_buffers_held`,
 `styx_camera_buffers_held_bytes`, `styx_camera_buffer_hold_ms{quantile}`.

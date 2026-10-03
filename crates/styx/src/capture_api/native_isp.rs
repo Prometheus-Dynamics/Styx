@@ -191,14 +191,41 @@ fn layouts(code: FourCc, h: usize, stride: usize) -> SmallVec<[PlaneLayout; 3]> 
     }
 }
 
-/// What the 3A loop made of a frame, for the capture's metrics.
-fn aaa_sample(params: &styx_pipeline::styx_algo::Params) -> AaaSample {
+/// What the 3A loop made of frame `seq`, for the capture's metrics; with a focus lens, whether
+/// it had settled during the frame (from `controls`).
+fn aaa_sample(
+    params: &styx_pipeline::styx_algo::Params,
+    controls: &styx_native::CameraControls,
+    seq: u64,
+) -> AaaSample {
+    use crate::metrics::{AfModeKind, AfSample, AfStateKind};
+    use styx_pipeline::styx_algo::{AfMode, AfState};
+    let af = &params.af;
     AaaSample {
         ae_locked: params.ae.locked,
         awb_converged: params.awb.converged,
         colour_temperature: params.colour_temperature,
         lux: params.lux,
         flicker_period: params.ae.flicker_detected,
+        // Only cameras with a lens: the lookup takes the control schedule's lock.
+        af: af.active.then(|| AfSample {
+            state: match af.state {
+                AfState::Idle => AfStateKind::Idle,
+                AfState::Scanning => AfStateKind::Scanning,
+                AfState::Focused => AfStateKind::Focused,
+                AfState::Failed => AfStateKind::Failed,
+            },
+            mode: match af.mode {
+                AfMode::Manual => AfModeKind::Manual,
+                AfMode::Auto => AfModeKind::Auto,
+                AfMode::Continuous => AfModeKind::Continuous,
+            },
+            lens_dioptres: af.lens_position,
+            lens_settled: controls
+                .applied(seq)
+                .and_then(|c| c.lens)
+                .map(|l| l.settled),
+        }),
     }
 }
 
@@ -452,6 +479,7 @@ pub(super) fn start_processed(
                 .map(|l| l.offset + l.len)
                 .max()
                 .unwrap_or(0);
+            let lens_controls = p.controls().clone();
             let worker = thread::Builder::new()
                 .name("styx-native-softisp".into())
                 .spawn(move || {
@@ -498,7 +526,11 @@ pub(super) fn start_processed(
                         let (sensor, lands) = (f.sensor, f.request_lands);
                         let t = &f.output.timing;
                         live_worker.isp_time(t.isp, t.settings + t.isp + t.stats + t.algorithms);
-                        live_worker.aaa(&aaa_sample(&f.output.step.params));
+                        live_worker.aaa(&aaa_sample(
+                            &f.output.step.params,
+                            &lens_controls,
+                            f.sensor.frame,
+                        ));
                         let meta =
                             frame_meta(&worker_mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
                         drop(f);

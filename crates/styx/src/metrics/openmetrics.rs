@@ -167,6 +167,32 @@ impl Text {
             ] {
                 self.gauge(name, help, &l, v);
             }
+            if let Some(state) = &a.af_state {
+                self.gauge(
+                    "styx_camera_af_state",
+                    "AF state (1 for the state and mode reported).",
+                    &format!(
+                        "{l},state=\"{state}\",mode=\"{}\"",
+                        a.af_mode.as_deref().unwrap_or("")
+                    ),
+                    Some(1.0),
+                );
+            }
+            self.gauge(
+                "styx_camera_lens_position_dioptres",
+                "Lens position AF commanded.",
+                &l,
+                a.lens_position_dioptres,
+            );
+            self.gauge(
+                "styx_camera_lens_settled",
+                "The lens had settled for the latest frame (1) or was moving (0).",
+                &l,
+                a.lens_settled.map(|s| f64::from(u8::from(s))),
+            );
+            if let Some(scans) = a.af_scans {
+                self.counter("styx_camera_af_scans_total", "AF scans started.", &l, scans);
+            }
         }
         let s = &c.stills;
         if s.requests > 0 {

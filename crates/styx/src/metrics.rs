@@ -11,6 +11,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "metrics/af.rs"]
+mod af;
 #[path = "metrics/camera.rs"]
 mod camera;
 #[path = "metrics/export.rs"]
@@ -27,6 +29,8 @@ mod retry;
 #[path = "metrics/sequence_gaps.rs"]
 mod sequence_gaps;
 
+#[cfg(feature = "native")]
+pub(crate) use af::{AfModeKind, AfSample, AfStateKind};
 pub(crate) use camera::Attached;
 pub use camera::{
     AaaState, Buffers, CameraMetrics, ConsumerMetrics, Cpu, Drops, FrameCounts, FrameRate,

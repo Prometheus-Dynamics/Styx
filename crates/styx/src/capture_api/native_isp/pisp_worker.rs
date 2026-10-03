@@ -342,7 +342,8 @@ pub(super) fn spawn(
                 w.still
                     .after_frame(&mut p, &f.sensor, (f.request_lands, request), ae, raw);
                 w.live.isp_time(f.times.be_job, f.times.total);
-                w.live.aaa(&aaa_sample(&p.step().params));
+                w.live
+                    .aaa(&aaa_sample(&p.step().params, p.controls(), f.sequence));
                 let mut leases: [Option<FrameLease>; 2] = [None, None];
                 let mut failed = None;
                 for (i, spec) in w.specs.iter().enumerate() {
