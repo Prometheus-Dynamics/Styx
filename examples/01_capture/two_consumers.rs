@@ -12,10 +12,10 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use styx::planner::{PlannedFrames, plan_many};
+use styx::planner::plan_many;
 use styx::prelude::*;
 
-fn consume(name: &'static str, mut frames: PlannedFrames, run: Duration, work: Duration) {
+fn consume(name: &'static str, mut frames: Frames, run: Duration, work: Duration) {
     let started = Instant::now();
     let (mut n, mut size, mut code, mut transport) = (0u32, (0, 0), String::new(), "");
     while started.elapsed() < run {
@@ -35,13 +35,12 @@ fn consume(name: &'static str, mut frames: PlannedFrames, run: Duration, work: D
         };
         thread::sleep(work); // the consumer's own processing
     }
-    let health = frames.health_report();
     println!(
         "{name}: {n} frames {code} {}x{} ({transport}), {:.1} fps, {} dropped",
         size.0,
         size.1,
         f64::from(n) / run.as_secs_f64(),
-        health.drop_count,
+        frames.dropped(),
     );
 }
 
@@ -57,21 +56,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find(|d| d.backend(BackendKind::Native).is_some())
         .or(devices.first())
         .ok_or("no camera")?;
-    // Each consumer gets the latest frame only (queue depth 1). Frames waiting in a queue hold
-    // camera buffers: on the PiSP each output has 4 (`StyxConfig::native_output_buffers`), and a
-    // slow consumer with a deeper queue would hold them all and slow the camera for everyone.
-    let latest_only = PlanOverrides {
-        queue_depth: Some(1),
-        ..Default::default()
-    };
-    let recorder = FrameRequirements::formats([FourCc::NV12])
-        .priority(Priority::Power)
-        .overrides(latest_only.clone());
-    let detector = FrameRequirements::formats([FourCc::RG24])
-        .output_resolution(640, 400)
-        .priority(Priority::Power)
-        .overrides(latest_only);
-    let plan = plan_many(device, &[recorder.min_fps(30), detector.min_fps(30)])?;
+    // Each consumer gets the latest frame only (the default delivery). Frames waiting in a queue
+    // hold camera buffers: on the PiSP each output has 4 (`StyxConfig::native_output_buffers`),
+    // and a slow consumer with a deeper queue (`every_frame(n)`) would hold them all and slow
+    // the camera for everyone.
+    let recorder = Frames::nv12().fps(30);
+    let detector = Frames::rgb().size(640, 400);
+    let plan = plan_many(device, &[recorder, detector])?;
     print!("{plan}");
 
     let mut consumers = plan.start()?.into_iter();

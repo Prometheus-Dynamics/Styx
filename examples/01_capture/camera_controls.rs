@@ -4,9 +4,9 @@
 //! * auto exposure until AE converges (`AE_STATE`), then manual exposure and gain, exposure
 //!   compensation, AE back on;
 //! * white balance: AWB's estimate, a fixed colour temperature, manual red/blue gains;
-//! * denoise: a capture setting (`StyxConfig::native_temporal_denoise`, `native_spatial_denoise`);
-//! * frame rate: a processed capture keeps its rate, so it is restarted at another
-//!   (`CaptureHandle::reconfigure`).
+//! * denoise: a capture setting (`StyxConfig::native_temporal_denoise`, `native_spatial_denoise`),
+//!   given to the plan before it starts (`FramePlan::config`);
+//! * frame rate: a processed capture keeps its rate, so it is opened again at another.
 //!
 //! Native raw frames: exposure and frame rate written by the control schedule, and the frame
 //! each change landed on, read from every frame's metadata (`NativeFrameMeta`: the exposure,
@@ -14,6 +14,9 @@
 //! it has some).
 //!
 //! V4L2 cameras: their controls by name (UVC: brightness, exposure, ...), set and read back.
+//!
+//! Every capture here is opened the same way (`Frames::nv12().fps(30).open(&camera)`), and
+//! controls go through the frames it returns (`Frames::set_control`, `get_control`).
 //!
 //! ```sh
 //! cargo run -p styx-examples --features native,v4l2 --bin camera_controls
@@ -24,8 +27,10 @@ use std::time::{Duration, Instant};
 use styx::capture_api::native_controls as ctl;
 use styx::prelude::*;
 
-fn next(handle: &CaptureHandle) -> Option<FrameLease> {
-    match handle.recv_blocking(Duration::from_secs(2)) {
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn next(frames: &mut Frames) -> Option<FrameLease> {
+    match frames.next_frame(Duration::from_secs(2)) {
         RecvOutcome::Data(frame) => Some(frame),
         _ => None,
     }
@@ -56,10 +61,10 @@ fn describe(frame: &FrameLease) -> String {
 
 /// Waits for the first frame whose exposure (and gain, when given) matches; prints how many
 /// frames after the request it was.
-fn wait_for(handle: &CaptureHandle, exposure_us: u32, gain: Option<f32>) {
-    let asked_after = next(handle).and_then(|f| f.meta().sequence());
+fn wait_for(frames: &mut Frames, exposure_us: u32, gain: Option<f32>) {
+    let asked_after = next(frames).and_then(|f| f.meta().sequence());
     for _ in 0..30 {
-        let Some(frame) = next(handle) else { return };
+        let Some(frame) = next(frames) else { return };
         let Some(m) = frame.meta().native() else {
             return;
         };
@@ -77,92 +82,88 @@ fn wait_for(handle: &CaptureHandle, exposure_us: u32, gain: Option<f32>) {
     println!("  did not land within 30 frames");
 }
 
-fn ae_state(handle: &CaptureHandle) -> &'static str {
-    match handle.get_control(ctl::AE_STATE) {
+fn ae_state(frames: &Frames) -> &'static str {
+    match frames.get_control(ctl::AE_STATE) {
         Ok(ControlValue::Int(2)) => "converged",
         Ok(_) => "searching",
         Err(_) => "-",
     }
 }
 
-fn find_mode(backend: &ProbedBackend, code: FourCc) -> Option<ModeId> {
-    backend
-        .descriptor
-        .modes
-        .iter()
-        .find(|m| m.format.code == code)
-        .map(|m| m.id.clone())
+fn has_mode(device: &ProbedDevice, code: FourCc) -> bool {
+    device
+        .backend(BackendKind::Native)
+        .is_some_and(|b| b.descriptor.modes.iter().any(|m| m.format.code == code))
 }
 
-fn processed(device: &ProbedDevice) -> Result<(), CaptureError> {
-    let backend = device.backend(BackendKind::Native).expect("native");
-    let Some(mode) = find_mode(backend, FourCc::NV12) else {
+fn processed(device: &ProbedDevice) -> Result<()> {
+    if !has_mode(device, FourCc::NV12) {
         return Ok(());
-    };
+    }
     println!("\n== processed NV12, 3A in Rust ==");
     // Denoise is a capture setting of the ISP (temporal denoise on: libcamera's quality, about
-    // 1.5 ms more ISP time per frame).
+    // 1.5 ms more ISP time per frame), given to the plan before it starts.
     let config = StyxConfig::new()
         .native_temporal_denoise(true)
         .native_spatial_denoise(100);
-    let request = |fps: u32| {
-        CaptureRequest::new(device)
+    let open = |fps: u32| -> Result<Frames> {
+        let plan = Frames::nv12()
+            .fps(fps)
             .backend(BackendKind::Native)
-            .mode(mode.clone())
-            .interval(Interval::from_fps(fps).expect("fps"))
-            .config(config.clone())
+            .plan(device)?;
+        Ok(plan.config(config.clone()).start()?)
     };
     let opened = Instant::now();
-    let mut handle = request(30).start()?;
-    let mut frames = 0;
-    while let Some(frame) = next(&handle) {
-        frames += 1;
-        if matches!(handle.get_control(ctl::AE_STATE), Ok(ControlValue::Int(2))) || frames == 90 {
+    let mut frames = open(30)?;
+    let mut n = 0;
+    while let Some(frame) = next(&mut frames) {
+        n += 1;
+        if matches!(frames.get_control(ctl::AE_STATE), Ok(ControlValue::Int(2))) || n == 90 {
             // AE that cannot reach its target (a dark scene: exposure and gain at their limits)
             // keeps searching.
             println!(
-                "AE {} at frame {frames}, {:.0} ms after open: {}",
-                ae_state(&handle),
+                "AE {} at frame {n}, {:.0} ms after open: {}",
+                ae_state(&frames),
                 opened.elapsed().as_secs_f64() * 1e3,
                 describe(&frame)
             );
             break;
         }
     }
-    println!("AWB: {:?} K", handle.get_control(ctl::COLOUR_TEMPERATURE)?);
+    println!("AWB: {:?} K", frames.get_control(ctl::COLOUR_TEMPERATURE)?);
 
     println!("manual: exposure 10 ms, gain 2.0");
-    handle.set_control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(10_000))?;
-    handle.set_control(ctl::GAIN, ControlValue::Float(2.0))?;
-    wait_for(&handle, 10_000, Some(2.0));
+    frames.set_control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(10_000))?;
+    frames.set_control(ctl::GAIN, ControlValue::Float(2.0))?;
+    wait_for(&mut frames, 10_000, Some(2.0));
 
     println!("exposure fixed at 5 ms, gain automatic (0), +1 stop of exposure compensation");
-    handle.set_control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(5_000))?;
-    handle.set_control(ctl::GAIN, ControlValue::Float(0.0))?;
-    handle.set_control(ctl::EXPOSURE_VALUE, ControlValue::Float(1.0))?;
-    wait_for(&handle, 5_000, None);
+    frames.set_control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(5_000))?;
+    frames.set_control(ctl::GAIN, ControlValue::Float(0.0))?;
+    frames.set_control(ctl::EXPOSURE_VALUE, ControlValue::Float(1.0))?;
+    wait_for(&mut frames, 5_000, None);
     for _ in 0..20 {
-        next(&handle);
+        next(&mut frames);
     }
-    let frame = next(&handle).ok_or(CaptureError::Disconnected("no frame".into()))?;
-    println!("  AE {}: {}", ae_state(&handle), describe(&frame));
+    let frame = next(&mut frames).ok_or("no frame")?;
+    println!("  AE {}: {}", ae_state(&frames), describe(&frame));
 
     println!("white balance: AWB off, 5000 K; then red 1.8 / blue 1.4");
-    handle.set_control(ctl::AWB_ENABLE, ControlValue::Bool(false))?;
-    handle.set_control(ctl::COLOUR_TEMPERATURE, ControlValue::Uint(5000))?;
+    frames.set_control(ctl::AWB_ENABLE, ControlValue::Bool(false))?;
+    frames.set_control(ctl::COLOUR_TEMPERATURE, ControlValue::Uint(5000))?;
     for _ in 0..5 {
-        next(&handle);
+        next(&mut frames);
     }
     println!(
         "  colour temperature now {:?}",
-        handle.get_control(ctl::COLOUR_TEMPERATURE)?
+        frames.get_control(ctl::COLOUR_TEMPERATURE)?
     );
-    handle.set_control(ctl::RED_GAIN, ControlValue::Float(1.8))?;
-    handle.set_control(ctl::BLUE_GAIN, ControlValue::Float(1.4))?;
+    frames.set_control(ctl::RED_GAIN, ControlValue::Float(1.8))?;
+    frames.set_control(ctl::BLUE_GAIN, ControlValue::Float(1.4))?;
     println!(
         "  gains red {:?} blue {:?}",
-        handle.get_control(ctl::RED_GAIN)?,
-        handle.get_control(ctl::BLUE_GAIN)?
+        frames.get_control(ctl::RED_GAIN)?,
+        frames.get_control(ctl::BLUE_GAIN)?
     );
 
     println!("everything automatic again");
@@ -171,60 +172,58 @@ fn processed(device: &ProbedDevice) -> Result<(), CaptureError> {
         (ctl::EXPOSURE_VALUE, ControlValue::Float(0.0)),
         (ctl::AWB_ENABLE, ControlValue::Bool(true)),
     ] {
-        handle.set_control(id, v)?;
+        frames.set_control(id, v)?;
     }
 
-    match handle.set_control(ctl::FRAME_RATE, ControlValue::Float(60.0)) {
+    match frames.set_control(ctl::FRAME_RATE, ControlValue::Float(60.0)) {
         Ok(()) => println!("frame rate set"),
         Err(e) => println!("frame rate control: {e}"),
     }
     let t = Instant::now();
-    handle.reconfigure_in_place(request(60))?;
-    let first = next(&handle);
+    frames.stop();
+    let mut frames = open(60)?;
+    let first = next(&mut frames);
     println!(
-        "restarted at 60 fps: first frame {:.0} ms after the restart began",
+        "opened again at 60 fps: first frame {:.0} ms after the restart began",
         t.elapsed().as_secs_f64() * 1e3
     );
     if let Some(frame) = first {
         println!("  {}", describe(&frame));
     }
-    handle.stop();
+    frames.stop();
     Ok(())
 }
 
-fn raw(device: &ProbedDevice) -> Result<(), CaptureError> {
-    let backend = device.backend(BackendKind::Native).expect("native");
-    let Some(mode) = backend
-        .descriptor
-        .modes
-        .iter()
-        .find(|m| !matches!(m.format.code, FourCc::NV12 | FourCc::RG24))
-        .map(|m| m.id.clone())
-    else {
+fn raw(device: &ProbedDevice) -> Result<()> {
+    let Some(code) = device.backend(BackendKind::Native).and_then(|b| {
+        b.descriptor
+            .modes
+            .iter()
+            .map(|m| m.format.code)
+            .find(|c| !matches!(*c, FourCc::NV12 | FourCc::RG24))
+    }) else {
         return Ok(());
     };
-    println!(
-        "\n== raw {}, controls straight to the sensor ==",
-        mode.format.code
-    );
-    let handle = CaptureRequest::new(device)
+    println!("\n== raw {code}, controls straight to the sensor ==");
+    let mut frames = Frames::formats([code])
+        .fps(30)
         .backend(BackendKind::Native)
-        .mode(mode)
-        .interval(Interval::from_fps(30).expect("fps"))
-        .control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(2_000))
-        .start()?;
+        .open(device)?;
+    frames.set_control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(2_000))?;
     for _ in 0..5 {
-        next(&handle);
+        next(&mut frames);
     }
     println!("exposure 6 ms, gain 3.0");
-    handle.set_control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(6_000))?;
-    handle.set_control(ctl::GAIN, ControlValue::Float(3.0))?;
-    wait_for(&handle, 6_000, Some(3.0));
+    frames.set_control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(6_000))?;
+    frames.set_control(ctl::GAIN, ControlValue::Float(3.0))?;
+    wait_for(&mut frames, 6_000, Some(3.0));
     println!("frame rate 60 fps");
-    handle.set_control(ctl::FRAME_RATE, ControlValue::Float(60.0))?;
+    frames.set_control(ctl::FRAME_RATE, ControlValue::Float(60.0))?;
     let mut last: Option<FrameLease> = None;
     for _ in 0..8 {
-        let Some(frame) = next(&handle) else { break };
+        let Some(frame) = next(&mut frames) else {
+            break;
+        };
         if let Some(prev) = &last {
             let dt = frame.meta().timestamp.saturating_sub(prev.meta().timestamp);
             println!(
@@ -235,21 +234,20 @@ fn raw(device: &ProbedDevice) -> Result<(), CaptureError> {
         }
         last = Some(frame);
     }
-    handle.stop();
+    frames.stop();
     Ok(())
 }
 
-fn v4l2(device: &ProbedDevice) -> Result<(), CaptureError> {
+fn v4l2(device: &ProbedDevice) -> Result<()> {
     let Some(backend) = device.backend(BackendKind::V4l2) else {
         return Ok(());
     };
     println!("\n== V4L2: {} ==", device.identity.display);
-    let handle = CaptureRequest::new(device)
-        .backend(BackendKind::V4l2)
-        .start()?;
-    next(&handle);
+    // The camera's own frames, whatever they are: only the controls matter here.
+    let mut frames = device.frames().backend(BackendKind::V4l2).open()?;
+    next(&mut frames);
     for c in &backend.descriptor.controls {
-        println!("  {:<36} now {:?}", c.name, handle.get_control(c.id).ok());
+        println!("  {:<36} now {:?}", c.name, frames.get_control(c.id).ok());
     }
     // Controls by name, as the driver calls them.
     if let Some(c) = backend
@@ -258,20 +256,20 @@ fn v4l2(device: &ProbedDevice) -> Result<(), CaptureError> {
         .iter()
         .find(|c| c.name.to_lowercase().contains("brightness"))
     {
-        let before = handle.get_control(c.id)?;
-        handle.set_control(c.id, c.max.clone())?;
+        let before = frames.get_control(c.id)?;
+        frames.set_control(c.id, c.max.clone())?;
         println!(
             "  {}: {before:?} -> {:?}",
             c.name,
-            handle.get_control(c.id)?
+            frames.get_control(c.id)?
         );
-        handle.set_control(c.id, before)?;
+        frames.set_control(c.id, before)?;
     }
-    handle.stop();
+    frames.stop();
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let devices = styx::probe_all();
     let mut ran = false;
     for device in &devices {

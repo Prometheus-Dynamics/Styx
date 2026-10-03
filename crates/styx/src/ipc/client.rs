@@ -13,6 +13,7 @@ use styx_core::prelude::*;
 use super::mapcache::{CachedDmabuf, MapCache};
 use super::wire::{self, CameraInfo, ServerMessage, WireBacking, WireFrame};
 use super::{IpcError, socket};
+use crate::planner::FrameRequest;
 
 /// How long a request waits for the service's answer.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -36,7 +37,7 @@ pub struct FrameClient {
 struct Request {
     path: PathBuf,
     camera: Option<String>,
-    requirements: FrameRequirements,
+    frames: FrameRequest,
 }
 
 struct Link {
@@ -79,7 +80,7 @@ fn open(request: &Request) -> Result<(OwnedFd, String), IpcError> {
     let socket = socket::connect(&request.path)?;
     socket::send(
         &socket,
-        &wire::encode_request(&request.requirements, request.camera.as_deref()),
+        &wire::encode_request(&request.frames, request.camera.as_deref()),
         &[],
     )?;
     match answer(&socket)? {
@@ -116,35 +117,36 @@ impl FrameClient {
         Ok(Self::new(socket::connect(path.as_ref())?, None, None))
     }
 
-    /// Ask the [`CameraService`](super::CameraService) at `path` for frames that meet
-    /// `requirements`, from its first camera. Fails with [`IpcError::Rejected`] (and the
-    /// planner's reasons) when the camera cannot serve them next to its other clients.
-    pub fn request(
+    /// Ask the [`CameraService`](super::CameraService) at `path` for the frames `request` asks
+    /// for (`&Frames::gray().size(320, 200)`), from its first camera. Fails with
+    /// [`IpcError::Rejected`] (and the planner's reasons) when the camera cannot serve them next
+    /// to its other clients.
+    pub fn request<R: Clone + Into<FrameRequest>>(
         path: impl AsRef<Path>,
-        requirements: &FrameRequirements,
+        request: &R,
     ) -> Result<Self, IpcError> {
-        Self::request_from(path, None, requirements)
+        Self::request_from(path, None, request.clone().into())
     }
 
     /// [`FrameClient::request`] from the camera `camera` names: its name, part of it, or one
     /// of its identity keys (see [`FrameClient::cameras`]).
-    pub fn request_camera(
+    pub fn request_camera<R: Clone + Into<FrameRequest>>(
         path: impl AsRef<Path>,
         camera: &str,
-        requirements: &FrameRequirements,
+        request: &R,
     ) -> Result<Self, IpcError> {
-        Self::request_from(path, Some(camera), requirements)
+        Self::request_from(path, Some(camera), request.clone().into())
     }
 
     fn request_from(
         path: impl AsRef<Path>,
         camera: Option<&str>,
-        requirements: &FrameRequirements,
+        frames: FrameRequest,
     ) -> Result<Self, IpcError> {
         let request = Request {
             path: path.as_ref().to_path_buf(),
             camera: camera.map(str::to_owned),
-            requirements: requirements.clone(),
+            frames,
         };
         let (socket, plan) = open(&request)?;
         Ok(Self::new(socket, Some(plan), Some(request)))
@@ -205,7 +207,7 @@ impl FrameClient {
     /// Change the region of interest (full-frame pixels) of a camera service's frames.
     pub fn set_roi(&self, roi: Option<FrameRect>) -> Result<(), IpcError> {
         if let Some(request) = &self.request {
-            request.lock().requirements.roi = roi;
+            request.lock().frames.roi = roi;
         }
         if let Some(socket) = self.link.lock().socket.clone() {
             socket::send(&socket, &wire::encode_roi(roi), &[])?;

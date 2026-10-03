@@ -618,25 +618,25 @@ mod tests {
             }],
         };
         for fps in [30, 60, 120] {
-            let req = FrameRequirements::formats([pbaa])
-                .min_fps(fps)
-                .priority(Priority::Power);
+            let req = crate::planner::FrameRequest::formats([pbaa]).fps(fps);
             let plan = crate::planner::plan_frames(&device, &req).unwrap();
             assert_eq!(plan.backend, BackendKind::Native);
             assert_eq!(plan.interval, Interval::from_fps(fps));
             assert!(plan.to_string().contains("native pBAA 1280x800"), "{plan}");
         }
-        // Latency first, a rate asked for: the fastest rate the mode has.
-        let req = FrameRequirements::formats([pbaa]).min_fps(30);
+        // At least a rate: the fastest rate the mode has.
+        let req = crate::planner::FrameRequest::formats([pbaa]).fps_at_least(30);
         let plan = crate::planner::plan_frames(&device, &req).unwrap();
         assert!((plan.interval.unwrap().fps() - 120.626).abs() < 0.01);
-        // No rate asked for, whatever the priority: 30 fps, not the fastest.
-        for priority in [Priority::Latency, Priority::Power] {
-            let req = FrameRequirements::formats([pbaa]).priority(priority);
+        // No rate asked for, whatever the delivery: 30 fps, not the fastest.
+        for req in [
+            crate::planner::FrameRequest::formats([pbaa]),
+            crate::planner::FrameRequest::formats([pbaa]).every_frame(3),
+        ] {
             let plan = crate::planner::plan_frames(&device, &req).unwrap();
-            assert_eq!(plan.interval, Interval::from_fps(30), "{priority:?}");
-            let shared = crate::planner::plan_many(&device, &[req]).unwrap();
-            assert_eq!(shared.interval, Interval::from_fps(30), "{priority:?}");
+            assert_eq!(plan.interval, Interval::from_fps(30), "{req:?}");
+            let shared = crate::planner::plan_many(&device, std::slice::from_ref(&req)).unwrap();
+            assert_eq!(shared.interval, Interval::from_fps(30), "{req:?}");
         }
     }
 }

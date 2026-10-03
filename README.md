@@ -13,19 +13,26 @@ styx = { version = "2.0.0", default-features = false, features = ["native", "v4l
 use styx::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let wants = FrameRequirements::formats([FourCc::NV12])
-        .output_resolution(1280, 800)
-        .min_fps(30)
-        .priority(Priority::Power); // exactly 30 fps where the camera can
-    let plan = styx::planner::plan_best(&styx::probe_all(), &wants)?;
-    println!("{plan}"); // camera, mode, every step and its cost, rejected options
-    for frame in plan.start()?.take(90) {
+    let frames = Frames::nv12()     // or rgb(), gray(), formats([..]), any()
+        .size(1280, 800)            // the nearest the camera does that covers it; never upscaled
+        .fps(30)                    // exactly 30 fps (an error naming the rates if it cannot)
+        .open_best(&styx::probe_all())?;
+    println!("{}", frames.plan()); // camera, mode, every step and its cost, rejected options
+    for frame in frames.take(90) {
         let meta = frame.meta(); // timestamp, sequence, exposure and gain that made it
         println!("{} {} {:?}", meta.timestamp, meta.format.code, meta.native());
     }
     Ok(())
 }
 ```
+
+One choice per meaning: the format, the size, the frame rate (`fps(x)` exactly,
+`fps_at_least(x)` the camera's fastest, `fps_between(a, b)`, none for the camera's default of
+30), and how frames are delivered (`latest()`, the default: the newest frame only; or
+`every_frame(n)`: up to `n` queued, drops counted). `camera.frames().nv12()...open()` does the
+same for one probed camera. The planner takes the cheapest route that meets the request
+(CPU time and latency together, hardware blocks first) and says why in its plan
+([docs/frame-planning.md](docs/frame-planning.md)).
 
 The same code takes a USB camera (V4L2, YUYV converted), a CSI sensor Styx drives itself (the
 Raspberry Pi PiSP or a software ISP, 3A in Rust) or, with the `libcamera` feature, a libcamera

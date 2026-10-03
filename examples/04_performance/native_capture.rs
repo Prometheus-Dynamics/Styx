@@ -184,10 +184,10 @@ fn main() -> Result<(), CaptureError> {
 
     // The planner: raw frames at exactly 30, 60 and 120 fps.
     for fps in [30u32, 60, 120] {
-        let req = FrameRequirements::formats([mode.format.code])
-            .min_fps(fps)
-            .priority(Priority::Power);
-        match styx::planner::plan_best(&probe.devices, &req) {
+        match Frames::formats([mode.format.code])
+            .fps(fps)
+            .plan_best(&probe.devices)
+        {
             Ok(plan) => {
                 print!("\n{plan}");
                 let t0 = Instant::now();
