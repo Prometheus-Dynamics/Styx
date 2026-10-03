@@ -115,3 +115,35 @@ fn nv12_plan_uses_bytesperline_and_two_planes() {
     assert!(plan.zero_copy_safe);
     assert!(supports_v4l2_mmap_zero_copy(FourCc::NV12));
 }
+
+#[test]
+fn imports_only_buffers_laid_out_as_the_driver_writes() {
+    use crate::capture_api::import::tests::buffers;
+    use crate::prelude::Mode;
+    let fits = |b: &crate::capture_api::CaptureBuffers, code: FourCc, w, h, stride, size| {
+        let format = styx_core::prelude::MediaFormat::new(
+            code,
+            styx_core::prelude::Resolution::new(w, h).unwrap(),
+            styx_core::prelude::ColorSpace::Srgb,
+        );
+        let mode = Mode {
+            id: styx_capture::prelude::ModeId {
+                format,
+                interval: None,
+            },
+            format,
+            intervals: Default::default(),
+            interval_stepwise: None,
+        };
+        super::import_fits(b, &mode, stride, size)
+    };
+    let b = buffers(2, 8, 2);
+    assert!(fits(&b, FourCc::YUYV, 8, 2, 16, 32));
+    assert!(!fits(&b, FourCc::YUYV, 8, 2, 32, 64), "padded rows");
+    assert!(
+        !fits(&b, FourCc::YUYV, 8, 2, 16, 4096),
+        "driver needs a larger buffer"
+    );
+    assert!(!fits(&b, FourCc::YUYV, 4, 2, 8, 16), "another size");
+    assert!(!fits(&b, FourCc::UYVY, 8, 2, 16, 32), "another format");
+}

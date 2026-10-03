@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use styx::capture_api::CaptureBuffers;
 use styx::ipc::FrameClient;
 use styx::planner::plan_frames;
 use styx::prelude::*;
@@ -57,10 +58,13 @@ pub struct Capture {
 
 impl Capture {
     /// Start capturing `request` from `source`, calling `deliver` with every frame on the
-    /// capture thread and `failed` once if the capture cannot start or ends.
+    /// capture thread and `failed` once if the capture cannot start or ends. A camera in this
+    /// process captures into `buffers` where it can (frames passed through unchanged, a backend
+    /// that imports buffers).
     pub fn start(
         source: Source,
         request: Request,
+        buffers: Option<CaptureBuffers>,
         mut deliver: impl FnMut(FrameLease) + Send + 'static,
         failed: impl FnOnce(String) + Send + 'static,
     ) -> Self {
@@ -69,7 +73,7 @@ impl Capture {
         let thread = std::thread::Builder::new()
             .name("styx-pw-capture".into())
             .spawn(move || {
-                let result = run(&source, &request, &stopping, &mut deliver);
+                let result = run(&source, &request, buffers, &stopping, &mut deliver);
                 if let Err(err) = result
                     && !stopping.load(Ordering::Relaxed)
                 {
@@ -95,6 +99,7 @@ const POLL: Duration = Duration::from_millis(100);
 fn run(
     source: &Source,
     request: &Request,
+    buffers: Option<CaptureBuffers>,
     stop: &AtomicBool,
     deliver: &mut dyn FnMut(FrameLease),
 ) -> Result<(), String> {
@@ -108,6 +113,9 @@ fn run(
                     == u64::from(i.numerator.get()) * u64::from(num)
             }) {
                 plan.interval = Some(interval);
+            }
+            if let Some(buffers) = buffers {
+                plan = plan.capture_into(buffers);
             }
             let mut frames = plan.start().map_err(|e| e.to_string())?;
             while !stop.load(Ordering::Relaxed) {
@@ -160,6 +168,7 @@ mod tests {
                 height: 48,
                 rate: (30, 1),
             },
+            None,
             move |frame| {
                 let _ = tx.send(frame.meta().format.code);
             },

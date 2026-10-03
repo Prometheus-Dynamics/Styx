@@ -364,6 +364,10 @@ pub struct StyxConfig {
     pub transforms: TransformConfig,
     pub backends: BackendConfig,
     pub codecs: CodecConfig,
+    /// Buffers to capture into (see [`StyxConfig::capture_into`]).
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub capture_buffers: Option<super::import::CaptureBuffers>,
 }
 
 impl StyxConfig {
@@ -374,6 +378,8 @@ impl StyxConfig {
             transforms: TransformConfig::default(),
             backends: BackendConfig::default(),
             codecs: CodecConfig::default(),
+            #[cfg(target_os = "linux")]
+            capture_buffers: None,
         }
     }
 

@@ -108,7 +108,14 @@ box (OV9782 1280x800) unless stated.
       dequeue/sync/bookkeeping are left (staging copy and end-of-access sync gone). Integer path
       (Pi 4 class): colour matrix 1.1 ms and tone table 1.5 ms per frame on the A76; not yet
       measured on a real Cortex-A72. AVX-512 VBMI exact tone table (untested: no AVX-512 host).
-- [ ] PipeWire node copies each frame once (zero-copy needs the camera buffers as the PipeWire pool).
+- [x] PipeWire node copies each frame once: the node now allocates the PipeWire pool (memfds, and
+      dma-bufs of them via `udmabuf` for DMA_DRM consumers) and the camera captures into it
+      (`CaptureBuffers`: V4L2 DMABUF import, virtual camera) when frames pass through unchanged;
+      a frame is held until the consumer returns its buffer. Copy otherwise (docs/ecosystem.md).
+- [ ] PipeWire zero copy, remaining: run V4L2 DMABUF import against a driver that takes it (a UVC
+      webcam; v4l2loopback is MMAP only); native PiSP outputs and libcamera capturing into caller
+      buffers; converted routes decoding into the pool; `--service` frames (the service's own
+      buffers); a CMA dma-heap pool for CSI receivers that need contiguous buffers.
 
 ### Platforms
 - [ ] A second bridged sensor and a non-Pi board (software ISP or its own ISP).
