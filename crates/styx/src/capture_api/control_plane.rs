@@ -44,6 +44,11 @@ pub enum ControlPlane {
         /// A processed mode's 3A loop: its controls and state (AE state, colour temperature).
         processed: Option<std::sync::Arc<super::native_isp::LoopControls>>,
     },
+    /// A UVC camera driven from userspace: V4L2 control ids, as `uvcvideo`.
+    #[cfg(feature = "uvc")]
+    Uvc {
+        device: styx_uvc::UvcDevice,
+    },
     /// A reconnecting capture: controls go to whichever backend capture is running and are
     /// re-applied after a reconnect.
     Supervised(std::sync::Arc<super::supervisor::SupervisedCapture>),
@@ -104,6 +109,8 @@ pub(crate) fn apply_control_to_plane(
             Some(result) => result,
             None => super::native_backend::apply_control(controls, id, &_value),
         },
+        #[cfg(feature = "uvc")]
+        ControlPlane::Uvc { device } => super::uvc_backend::apply_control(device, id, &_value),
         #[cfg(feature = "file-backend")]
         ControlPlane::File { state } => file_backend::apply_file_control(state, id, _value),
         #[cfg(feature = "simulation-bevy")]
@@ -168,6 +175,8 @@ pub(crate) fn read_control_from_plane(
             Some(value) => Ok(value),
             None => super::native_backend::read_control(controls, id),
         },
+        #[cfg(feature = "uvc")]
+        ControlPlane::Uvc { device } => super::uvc_backend::read_control(device, id),
         #[cfg(feature = "file-backend")]
         ControlPlane::File { state } => file_backend::read_file_control(state, id),
         #[cfg(feature = "simulation-bevy")]
@@ -189,6 +198,8 @@ fn control_plane_backend(control: &ControlPlane) -> &'static str {
         ControlPlane::Native { .. } => "native",
         #[cfg(feature = "v4l2")]
         ControlPlane::V4l2 { .. } => "v4l2",
+        #[cfg(feature = "uvc")]
+        ControlPlane::Uvc { .. } => "uvc",
         #[cfg(feature = "libcamera")]
         ControlPlane::Libcamera { .. } => "libcamera",
         #[cfg(feature = "file-backend")]

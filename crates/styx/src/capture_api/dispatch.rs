@@ -12,6 +12,8 @@ use super::netcam_backend;
 use super::replay_backend;
 use super::request::{CaptureError, TdnOutputMode};
 use super::tunables::StyxConfig;
+#[cfg(feature = "uvc")]
+use super::uvc_backend;
 #[cfg(feature = "v4l2")]
 use super::v4l2_backend;
 use super::virtual_backend;
@@ -80,6 +82,12 @@ pub(crate) fn start_backend(
         ),
         #[cfg(not(feature = "native"))]
         BackendKind::Native => Err(CaptureError::BackendMissing(BackendKind::Native)),
+        #[cfg(feature = "uvc")]
+        BackendKind::Uvc => uvc_backend::start_uvc(
+            backend, mode, interval, _controls, descriptor, config, _queue,
+        ),
+        #[cfg(not(feature = "uvc"))]
+        BackendKind::Uvc => Err(CaptureError::BackendMissing(BackendKind::Uvc)),
         BackendKind::Replay => {
             replay_backend::start_replay(backend, mode, interval, descriptor, config, _queue)
         }

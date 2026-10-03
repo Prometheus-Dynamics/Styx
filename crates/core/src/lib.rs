@@ -18,7 +18,7 @@ pub mod prelude {
             FrameLatency, FrameLease, FrameLeaseDescriptor, FrameMeta, FrameMutability,
             FramePlaneDescriptor, FramePlaneShape, FrameResidency, FrameTiming,
             FrameValidationError, LibcameraFrameMeta, NativeFrameMeta, Plane, PlaneLayout,
-            PlaneMut, ResidencyTransition, ResidencyTransitionReason, TimestampClock,
+            PlaneMut, ResidencyTransition, ResidencyTransitionReason, TimestampClock, UvcFrameMeta,
             V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
             box_downscale_luma, box_downscale_luma_in, plane_layout_from_dims,
             plane_layout_with_stride,

@@ -132,7 +132,12 @@ box (OV9782 1280x800) unless stated.
       gains, as the integer path does) could move the channel gains to the GPU at the cost
       of bit-exactness; outputs as exported dma-bufs through the Styx capture (today copied
       into heap frames).
-- [ ] Userspace UVC (optional).
+- [x] Userspace UVC (optional): `styx-uvc` over usbfs, `BackendKind::Uvc` (feature `uvc`;
+      `uvcvideo` stays the default where it has the camera). C270 on the CM5: YUYV and MJPEG
+      at 30 fps, controls, replug, hotplug; PTS timestamps with no jitter (uvcvideo: 1.9 ms
+      sd); ~0.5-1% of a core more CPU. See [docs/uvc.md](docs/uvc.md).
+- [ ] Userspace UVC: a bulk / UVC 1.5 / SuperSpeed camera on hardware; status interrupt
+      endpoint (control change events, button); still images; extension-unit controls.
 
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).

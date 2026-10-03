@@ -1,0 +1,22 @@
+[package]
+name = "styx-uvc"
+version.workspace = true
+edition.workspace = true
+description = "USB Video Class cameras from userspace over Linux usbfs: descriptors, negotiation, isochronous and bulk streaming, frame assembly, PTS/SCR timestamps, controls, hotplug. No uvcvideo, no libusb."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libc.workspace = true
+styx-graph.workspace = true
+styx-kernel.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+
+[lints]
+workspace = true

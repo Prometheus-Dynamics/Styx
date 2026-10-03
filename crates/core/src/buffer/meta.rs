@@ -81,6 +81,8 @@ pub enum BackendFrameMeta {
     Libcamera(LibcameraFrameMeta),
     /// A sensor driven by Styx itself (the native stack).
     Native(NativeFrameMeta),
+    /// A UVC camera driven from userspace over usbfs (`styx-uvc`).
+    Uvc(UvcFrameMeta),
 }
 
 impl BackendFrameMeta {
@@ -105,12 +107,60 @@ impl BackendFrameMeta {
         }
     }
 
+    pub fn as_uvc(&self) -> Option<&UvcFrameMeta> {
+        match self {
+            Self::Uvc(meta) => Some(meta),
+            _ => None,
+        }
+    }
+
     /// Driver frame sequence number, when the backend reports one.
     pub fn sequence(&self) -> u32 {
         match self {
             Self::V4l2(meta) => meta.sequence,
             Self::Libcamera(meta) => meta.sequence,
             Self::Native(meta) => meta.sequence,
+            Self::Uvc(meta) => meta.sequence,
+        }
+    }
+}
+
+/// Per-frame metadata of a UVC camera driven from userspace: the payload headers' device
+/// clock values and when the frame crossed the bus.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UvcFrameMeta {
+    /// Frames assembled since the stream started (gaps: damaged frames dropped).
+    pub sequence: u32,
+    pub bytes_used: u32,
+    /// Lost or failed packets, the ERR bit, a short or overflowing frame.
+    pub error: bool,
+    /// The frame ended on a FID toggle rather than EOF.
+    pub no_eof: bool,
+    /// The frame timestamp is the capture time from PTS (through SCR), not the arrival time.
+    pub timestamp_from_pts: bool,
+    /// Presentation time stamp: the device clock when the sensor captured the frame.
+    pub pts: Option<u32>,
+    /// The last source clock reference: device clock and the 11-bit USB frame number.
+    pub scr_stc: Option<u32>,
+    pub scr_sof: Option<u16>,
+    /// The device clock's frequency (`dwClockFrequency`), Hz.
+    pub clock_hz: u32,
+    /// Arrival of the frame's first and last payloads (bus time, `CLOCK_MONOTONIC` ns).
+    pub first_payload_ns: u64,
+    pub last_payload_ns: u64,
+}
+
+impl UvcFrameMeta {
+    /// The V4L2 buffer metadata `uvcvideo` would report for the frame (what recordings keep).
+    pub fn as_v4l2(&self) -> V4l2FrameMeta {
+        // V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC, plus V4L2_BUF_FLAG_ERROR for a damaged frame.
+        let flags = 0x2000 | if self.error { 0x40 } else { 0 };
+        V4l2FrameMeta {
+            sequence: self.sequence,
+            bytes_used: self.bytes_used,
+            field: 1,
+            flags,
+            zero_copy: true,
         }
     }
 }
@@ -429,6 +479,10 @@ impl FrameMeta {
 
     pub fn native(&self) -> Option<&NativeFrameMeta> {
         self.backend.as_ref().and_then(BackendFrameMeta::as_native)
+    }
+
+    pub fn uvc(&self) -> Option<&UvcFrameMeta> {
+        self.backend.as_ref().and_then(BackendFrameMeta::as_uvc)
     }
 
     /// Driver frame sequence number, when the backend reports one.

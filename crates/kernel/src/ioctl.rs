@@ -208,6 +208,12 @@ impl Ready {
     }
 }
 
+/// `d` rounded up to whole milliseconds, so a sub-millisecond wait in [`poll_fd`] (which
+/// truncates) sleeps instead of spinning.
+pub(crate) fn ceil_ms(d: std::time::Duration) -> std::time::Duration {
+    std::time::Duration::from_millis(d.as_micros().div_ceil(1000).min(u64::MAX as u128) as u64)
+}
+
 /// Waits until `fd` has any of `events` (`POLLIN`, `POLLPRI`, ...) ready, or the timeout
 /// passes (an empty [`Ready`]). `None` waits forever.
 pub(crate) fn poll_fd(

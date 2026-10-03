@@ -33,6 +33,8 @@ pub(super) mod native_isp;
 #[cfg(feature = "netcam")]
 pub(super) mod netcam_backend;
 mod replay_backend;
+#[cfg(feature = "uvc")]
+pub(super) mod uvc_backend;
 #[cfg(feature = "v4l2")]
 pub(super) mod v4l2_backend;
 pub(super) mod virtual_backend;
@@ -67,8 +69,10 @@ pub use tunables::{
     DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig, IdleStop,
     LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, NativeDeflicker,
     NativeFlicker, NativeIspConfig, NetcamConfig, NetcamTunables, ReconnectPolicy, StyxConfig,
-    TransformConfig, V4l2Config,
+    TransformConfig, UvcConfig, V4l2Config,
 };
+#[cfg(feature = "uvc")]
+pub(crate) use uvc_backend::probe_into as probe_uvc_into;
 
 // Release policy: these backend handle types are consumed only by feature-gated constructors, so
 // some release feature combinations intentionally compile only a subset of the import list.

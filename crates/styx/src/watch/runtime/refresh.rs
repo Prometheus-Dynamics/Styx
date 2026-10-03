@@ -130,6 +130,7 @@ fn backend_signature(backend: &ProbedBackend) -> String {
         BackendKind::Simulation => "simulation",
         BackendKind::Replay => "replay",
         BackendKind::Native => "native",
+        BackendKind::Uvc => "uvc",
     });
     out.push(':');
     out.push_str(&handle_signature(&backend.handle));
@@ -171,6 +172,8 @@ fn handle_signature(handle: &BackendHandle) -> String {
         } => format!("{}:{pacing:?}:{loop_forever}", path.display()),
         #[cfg(feature = "native")]
         BackendHandle::Native { key } => key.clone(),
+        #[cfg(feature = "uvc")]
+        BackendHandle::Uvc { key } => key.clone(),
     }
 }
 
