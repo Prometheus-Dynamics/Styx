@@ -347,6 +347,7 @@ impl PispPipeline {
             step: Step {
                 frame: 0,
                 sensor: None,
+                lens: None,
                 isp: IspSettings::neutral(black_level),
                 params: Default::default(),
             },
@@ -499,6 +500,7 @@ impl PispPipeline {
             self.step = Step {
                 frame: 0,
                 sensor: start.sensor,
+                lens: start.lens,
                 isp: start.isp,
                 params: Default::default(),
             };

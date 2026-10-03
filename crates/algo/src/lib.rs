@@ -40,8 +40,11 @@ pub mod stats;
 pub mod tuning;
 mod warm;
 
+pub use algos::af::{
+    AfMode, AfRange, AfSpeed, AfState, AfStatus, AfWindow, LensRequest, LensState,
+};
 pub use algos::agc::deflicker::FlickerCorrection;
-pub use config::{CameraConfig, ControlDelays, Crop};
+pub use config::{CameraConfig, ControlDelays, Crop, LensConfig};
 pub use error::{AlgoError, Result};
 pub use frame::{Controls, Deflicker, Flicker, FrameMetadata, metering};
 pub use params::{
@@ -50,6 +53,8 @@ pub use params::{
 };
 pub use pipeline::{Algorithm, Pipeline};
 pub use pwl::Pwl;
-pub use stats::{ColourZone, Histogram, LumaZone, Statistics, StatsAccumulator, ZoneGrid};
+pub use stats::{
+    ColourZone, Histogram, LumaZone, PdafZone, Statistics, StatsAccumulator, ZoneGrid,
+};
 pub use tuning::Tuning;
 pub use warm::WarmStart;

@@ -294,6 +294,7 @@ impl SoftLoop {
             (Some((params, _)), false) => Step {
                 frame: sensor.frame,
                 sensor: None,
+                lens: None,
                 isp: settings.clone(),
                 params: params.clone(),
             },

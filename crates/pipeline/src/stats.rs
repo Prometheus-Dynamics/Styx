@@ -47,6 +47,7 @@ pub fn from_pisp(s: &PispStatistics) -> Statistics {
             height: focus_side,
             zones: s.focus.iter().map(|&f| f as f64).collect(),
         }),
+        pdaf: None,
         before_wb: true,
         before_lsc: true,
     }
@@ -124,6 +125,7 @@ pub fn from_softisp(s: &IspStats, black_level: f64, with_lens_shading: bool) -> 
         }),
         histogram: Histogram::from(rescale_histogram(&s.histogram, range / g[1])),
         focus: None,
+        pdaf: None,
         before_wb: true,
         before_lsc: !with_lens_shading,
     }
@@ -207,6 +209,7 @@ mod tests {
             luma: Some(ZoneGrid::default()),
             histogram: Histogram::from(vec![1, 2, 3]),
             focus: None,
+            pdaf: None,
             before_wb: false,
             before_lsc: false,
         }

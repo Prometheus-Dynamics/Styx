@@ -1,6 +1,6 @@
 //! The [`Algorithm`] trait and the [`Pipeline`] that runs an ordered set of them.
 
-use crate::algos::{Agc, Alsc, Awb, BlackLevel, Ccm, Contrast, Denoise, Lux};
+use crate::algos::{Af, Agc, Alsc, Awb, BlackLevel, Ccm, Contrast, Denoise, Lux};
 use crate::config::CameraConfig;
 use crate::error::Result;
 use crate::frame::FrameMetadata;
@@ -65,7 +65,7 @@ impl Pipeline {
     }
 
     /// The standard pipeline for a tuning, in this order: black level, lux (if tuned), AWB,
-    /// AGC, ALSC (if tuned), CCM, contrast, denoise (if tuned). Sections missing from the tuning use defaults, so an
+    /// AGC, ALSC (if tuned), CCM, contrast, denoise (if tuned), AF (does nothing without a lens). Sections missing from the tuning use defaults, so an
     /// empty tuning gives a working grey-world, centre-weighted pipeline.
     pub fn from_tuning(tuning: &Tuning) -> Result<Self> {
         tuning.validate()?;
@@ -84,6 +84,8 @@ impl Pipeline {
         if let Some(d) = &tuning.denoise {
             p.push(Denoise::new(d.clone())?);
         }
+        // Inert without a lens (`CameraConfig::lens`); the generic defaults without a section.
+        p.push(Af::new(tuning.af.clone().unwrap_or_default())?);
         Ok(p)
     }
 

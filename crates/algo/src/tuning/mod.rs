@@ -14,6 +14,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::algos::af::tuning::{AfRangeTuning, AfRanges, AfSpeedTuning, AfSpeeds, AfTuning};
 pub use crate::algos::agc::tuning::{AgcTuning, Bound, Constraint, ExposureProfile, MeteringMode};
 pub use crate::algos::alsc::{AlscCalibration, AlscTuning};
 pub use crate::algos::awb::tuning::{AwbMode, AwbPrior, AwbTuning};
@@ -60,6 +61,9 @@ pub struct Tuning {
     /// blocks only some ISPs have).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub denoise: Option<DenoiseTuning>,
+    /// Autofocus (cameras with a focus lens; the generic defaults without a section).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub af: Option<AfTuning>,
 }
 
 impl Tuning {
@@ -119,6 +123,9 @@ impl Tuning {
         }
         if let Some(d) = &self.denoise {
             d.validate()?;
+        }
+        if let Some(a) = &self.af {
+            a.validate()?;
         }
         Ok(())
     }

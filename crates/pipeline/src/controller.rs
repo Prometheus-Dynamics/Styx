@@ -11,8 +11,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use styx_algo::replay::Recorder;
 use styx_algo::{
-    CameraConfig, Controls, FrameMetadata, Params, Pipeline, SensorRequest, Statistics, Tuning,
-    WarmStart,
+    CameraConfig, Controls, FrameMetadata, LensRequest, LensState, Params, Pipeline, SensorRequest,
+    Statistics, Tuning, WarmStart,
 };
 
 use crate::error::Result;
@@ -51,6 +51,9 @@ pub struct Step {
     /// A new sensor request (`None` when its values repeat the previous one's): apply it from
     /// `request.frame`.
     pub sensor: Option<SensorRequest>,
+    /// A new lens position (`None` when it repeats the previous one), for cameras with a focus
+    /// lens: apply it for `request.frame`.
+    pub lens: Option<LensRequest>,
     /// ISP settings computed from this frame.
     pub isp: IspSettings,
     /// Everything the algorithms produced.
@@ -63,6 +66,8 @@ pub struct Step {
 pub struct Start {
     /// Exposure, gain and frame duration to set before streaming.
     pub sensor: Option<SensorRequest>,
+    /// The lens position to set before streaming (cameras with a focus lens).
+    pub lens: Option<LensRequest>,
     /// ISP settings for the first frames.
     pub isp: IspSettings,
 }
@@ -74,6 +79,7 @@ pub struct Controller {
     controls: Controls,
     max_digital_gain: f64,
     last_request: Option<SensorRequest>,
+    last_lens: Option<i32>,
     recorder: Option<Recorder<Box<dyn Write + Send>>>,
     /// A recording asked for before the start: its header names the warm start.
     record_pending: Option<Box<dyn Write + Send>>,
@@ -104,6 +110,7 @@ impl Controller {
             controls: Controls::default(),
             max_digital_gain: tuning.agc.as_ref().map_or(4.0, |a| a.max_digital_gain),
             last_request: None,
+            last_lens: None,
             recorder: None,
             record_pending: None,
             warm: None,
@@ -209,19 +216,33 @@ impl Controller {
             self.recorder = Some(Recorder::with_warm_start(out, &self.config, warm.as_ref())?);
         }
         self.last_request = p.sensor;
+        self.last_lens = p.lens.map(|l| l.position);
         self.started = true;
         Ok(Start {
             sensor: p.sensor,
+            lens: p.lens,
             isp: IspSettings::from_params(&p, 0, 1.0).with_spatial_denoise(self.spatial_denoise),
         })
     }
 
     /// Runs the algorithms on frame `sensor.frame`'s statistics.
     pub fn process(&mut self, stats: &Statistics, sensor: &SensorValues) -> Result<Step> {
+        self.process_with_lens(stats, sensor, None)
+    }
+
+    /// [`Self::process`] for a camera with a focus lens: `lens` is where the lens control
+    /// reports the lens was during the frame.
+    pub fn process_with_lens(
+        &mut self,
+        stats: &Statistics,
+        sensor: &SensorValues,
+        lens: Option<LensState>,
+    ) -> Result<Step> {
         if !self.started {
             self.start()?;
         }
-        let meta = self.meta(sensor);
+        let mut meta = self.meta(sensor);
+        meta.lens = lens;
         let params = self.pipeline.process(stats, &meta).clone();
         if let Some(r) = &mut self.recorder {
             r.record(stats, &meta, Some(&params))?;
@@ -238,9 +259,14 @@ impl Controller {
         if sensor_request.is_some() {
             self.last_request = params.sensor;
         }
+        let lens = params.lens.filter(|l| self.last_lens != Some(l.position));
+        if let Some(l) = lens {
+            self.last_lens = Some(l.position);
+        }
         Ok(Step {
             frame: sensor.frame,
             sensor: sensor_request,
+            lens,
             isp: self.isp_for(&params, sensor.frame, sensor),
             params,
         })
@@ -303,6 +329,7 @@ impl Controller {
             digital_gain: sensor.digital_gain,
             frame_duration: sensor.frame_duration,
             lux: None,
+            lens: None,
             controls: self.controls.clone(),
         }
     }

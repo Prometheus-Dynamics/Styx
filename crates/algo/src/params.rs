@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::algos::af::{AfStatus, LensRequest};
 use crate::algos::agc::deflicker::FlickerCorrection;
 use crate::frame::FrameMetadata;
 use crate::pwl::Pwl;
@@ -237,6 +238,13 @@ pub struct Params {
     /// correction fades in: the algorithms should then run on every frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deflicker: Option<FlickerCorrection>,
+    /// AF state (written by AF; inactive without a lens).
+    #[serde(default)]
+    pub af: AfStatus,
+    /// The lens position to move to and the frame it is for (written by AF when the camera
+    /// has a lens, [`crate::CameraConfig::lens`]); repeated unchanged while nothing moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lens: Option<LensRequest>,
 }
 
 /// The ISP's gain for one frame (see [`Params::frame_gain`]).
@@ -289,9 +297,10 @@ impl Params {
         }
     }
 
-    /// Whether the algorithms should see every frame (deflicker follows the light's phase).
+    /// Whether the algorithms should see every frame (deflicker follows the light's phase; an
+    /// AF scan measures each lens position).
     pub fn needs_every_frame(&self) -> bool {
-        self.deflicker.is_some()
+        self.deflicker.is_some() || self.af.state == crate::AfState::Scanning
     }
 }
 
@@ -313,6 +322,8 @@ impl Default for Params {
             sharpen: None,
             histogram_weights: None,
             deflicker: None,
+            af: AfStatus::default(),
+            lens: None,
         }
     }
 }
