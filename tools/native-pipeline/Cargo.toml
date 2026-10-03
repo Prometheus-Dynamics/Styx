@@ -1,0 +1,28 @@
+[package]
+name = "native-pipeline"
+version.workspace = true
+edition.workspace = true
+description = "The native processing pipeline on a device (PiSP or software ISP with the 3A loop) and on a host (replaying a raw recording): convergence, frame rate, latency, CPU, images."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+# The device runs (native cameras, PiSP); without it only `replay` is available.
+device = ["styx-pipeline/device", "dep:styx-native", "dep:styx-pisp", "dep:bytemuck"]
+
+[dependencies]
+bytemuck = { version = "1.25", optional = true }
+signal-hook = { version = "0.3.18", default-features = false }
+styx-algo.workspace = true
+styx-core.workspace = true
+styx-pipeline.workspace = true
+styx-softisp.workspace = true
+styx-native = { workspace = true, optional = true }
+styx-pisp = { workspace = true, optional = true }
+
+[lints]
+workspace = true

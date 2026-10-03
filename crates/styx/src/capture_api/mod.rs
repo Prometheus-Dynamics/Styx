@@ -24,6 +24,10 @@ pub(super) mod ffmpeg_util;
 pub(super) mod file_backend;
 #[cfg(feature = "libcamera")]
 pub(super) mod libcamera_backend;
+#[cfg(feature = "native")]
+pub(super) mod native_backend;
+#[cfg(feature = "native")]
+pub(super) mod native_isp;
 #[cfg(feature = "netcam")]
 pub(super) mod netcam_backend;
 mod replay_backend;
@@ -35,6 +39,10 @@ pub use control_plane::ControlPlane;
 #[cfg(feature = "graph-pipeline")]
 pub(crate) use control_plane::{apply_control_to_plane, read_control_from_plane};
 pub use handle::{CaptureFrameIter, CaptureHandle, WorkerHandle};
+#[cfg(feature = "native")]
+pub use native_backend::controls as native_controls;
+#[cfg(feature = "native")]
+pub(crate) use native_backend::probe as probe_native;
 pub use request::{
     CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, CaptureError,
     CaptureRequest, CaptureSource, CaptureStartPolicy, ControlApplyKind, SelectedCamera,
@@ -53,8 +61,8 @@ pub use tunables::{
     DEFAULT_NETCAM_STOP_POLL_MS, DEFAULT_NETCAM_TIMEOUT_SECS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN,
     DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH, DEFAULT_V4L2_ERROR_BACKOFF_MS,
     DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig, IdleStop,
-    LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, NetcamConfig,
-    NetcamTunables, ReconnectPolicy, StyxConfig, TransformConfig, V4l2Config,
+    LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, NativeIspConfig,
+    NetcamConfig, NetcamTunables, ReconnectPolicy, StyxConfig, TransformConfig, V4l2Config,
 };
 
 // Release policy: these backend handle types are consumed only by feature-gated constructors, so

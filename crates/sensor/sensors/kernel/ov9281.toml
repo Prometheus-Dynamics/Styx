@@ -1,0 +1,13 @@
+# OmniVision OV9281 / OV9282 (1 MP global shutter, mono) under the upstream `ov9282` driver.
+# From public sources (libcamera's cam_helper_ov9281.cpp and ov9281_mono.json); not checked on
+# hardware with Styx. Mono: raw capture only (the ISP paths need a colour filter).
+name = "ov9281"
+drivers = ["ov9281", "ov9282"]
+vendor = "OmniVision"
+colour = false
+verified = false
+source = "libcamera cam_helper_ov9281 (gain code / 16; delays 2/2/2), ov9281_mono.json"
+tuning = "ov9281_mono.json"
+analog_gain = { linear = { step = 0.0625 } }
+delays = { exposure = 2, analog_gain = 2, frame_length = 2 }
+black_level = { value = 64, bits = 10 }

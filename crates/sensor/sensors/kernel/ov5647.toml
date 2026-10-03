@@ -1,0 +1,11 @@
+# OmniVision OV5647 (5 MP, Raspberry Pi Camera Module v1) under the upstream `ov5647` driver.
+# From public sources (libcamera's cam_helper_ov5647.cpp, ov5647.json); not checked on
+# hardware with Styx.
+name = "ov5647"
+vendor = "OmniVision"
+verified = false
+source = "libcamera cam_helper_ov5647 (gain code / 16; delays 2/2/2), ov5647.json"
+tuning = "ov5647.json"
+analog_gain = { linear = { step = 0.0625 } }
+delays = { exposure = 2, analog_gain = 2, frame_length = 2 }
+black_level = { value = 16, bits = 10 }

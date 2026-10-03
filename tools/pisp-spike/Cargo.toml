@@ -1,0 +1,17 @@
+[package]
+name = "pisp-spike"
+version.workspace = true
+edition.workspace = true
+description = "On-device spike: PiSP front end statistics and back end processing driven from Rust (styx-pisp), no libcamera."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+styx-kernel.workspace = true
+styx-pisp = { workspace = true, features = ["device"] }
+
+[lints]
+workspace = true

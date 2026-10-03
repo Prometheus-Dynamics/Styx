@@ -8,7 +8,15 @@ Styx is a Rust workspace for sync-first, zero-copy media pipelines. The facade c
 - `crates/core`: pooled buffers, formats, queues, controls, and low-level media primitives.
 - `crates/capture`: capture descriptors, validation, `CaptureSource`, and virtual capture helpers.
 - `crates/codec`: codec traits, registry, MJPEG/raw decoding, and optional FFmpeg/JPEG integrations.
-- `crates/libcamera`, `crates/v4l2`: optional system backends for probing and capture.
+- `crates/v4l2`, `crates/kernel`: the V4L2 backend (UVC and other V4L2 cameras) on Styx's own
+  kernel interfaces (`libc` only).
+- `crates/native`, `crates/sensor`, `crates/pipeline`, `crates/pisp`, `crates/softisp`,
+  `crates/algo`, `crates/graph`: the native stack: sensors driven from Rust through the Styx
+  sensor bridge, the Raspberry Pi PiSP or a software ISP, 3A in Rust
+  (`docs/native-stack/README.md`). No libcamera.
+- `crates/libcamera`: optional compat backend for cameras the native stack does not cover; never
+  needed by the other crates.
+- `crates/gst-styx`, `crates/pipewire-styx`: optional GStreamer plugin (`styxsrc`) and PipeWire camera node; separate workspaces that need the GStreamer/PipeWire development files, not built by the root workspace (see [docs/ecosystem.md](docs/ecosystem.md)).
 - `examples`: top-level example package grouped by quickstart, capture, graph, codec, performance, and app workflows.
 - `testing`: Docker, perf, and CI baselines used by local and hosted validation.
 
@@ -83,8 +91,12 @@ blocking task/thread, then use async receive/control APIs for coordination.
 - `codec-ffmpeg`, `codec-mozjpeg`, `codec-turbojpeg`, `codec-zune`: alternate codec integrations; FFmpeg and native JPEG backends add their respective system/library dependency surface.
 - `netcam-video`: FFmpeg-backed network video stream fallback; use only when multipart MJPEG is not enough.
 - `simulation-bevy`: Bevy/wgpu-based synthetic capture; useful for simulation, but intentionally kept out of default builds.
-- `libcamera`: libcamera probing/capture support; Linux camera deployments should enable it explicitly.
-- `v4l2`, `libcamera`: Linux physical capture backends; these pull the corresponding backend crates and system integration requirements. `libcamera` enables `raw-decoders` for format emulation.
+- `v4l2`: V4L2 cameras (UVC and other kernel-driven cameras), on `libc` only.
+- `native`: sensors Styx drives itself through the Styx sensor bridge, processed by the PiSP or
+  the software ISP (`docs/native-stack/README.md`); no C dependencies.
+- `libcamera`: optional compat backend through libcamera (needs its headers and library at
+  build time); `v4l2` and `native` probe and plan without it. It enables `raw-decoders` for
+  format emulation.
 - `netcam`: Reqwest-backed network camera capture; combine with `async` for async workers.
 - `netcam-video`: FFmpeg-backed fallback for container/video netcam streams.
 - `file-backend`, `file-backend-video`: disk-backed replay sources; video replay enables FFmpeg.
@@ -126,6 +138,7 @@ Optional Docker-backed facade validation:
 ## Documentation Index
 
 - [docs/README.md](docs/README.md): repository documentation index
+- [docs/ecosystem.md](docs/ecosystem.md): GStreamer and PipeWire bridges
 - [docs/development.md](docs/development.md): repo layout, commands, and validation conventions
 - [docs/testing.md](docs/testing.md): test surfaces, example expectations, and CI notes
 - [CHANGELOG.md](CHANGELOG.md): release history and notable workspace changes

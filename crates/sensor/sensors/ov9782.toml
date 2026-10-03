@@ -1,0 +1,245 @@
+# OmniVision OV9782: 1 MP (1280x800) global shutter colour sensor, 2-lane MIPI CSI-2.
+#
+# Provenance: register addresses, values and timing constants were read from the HeliOS kernel
+# driver `gaia/assets/buildroot/linux/ov9782/drivers/media/i2c/ov9782.c`, written by the
+# project owner, who cleared their use in Styx (2026-10-01). No code was copied.
+#
+# Values marked "not from the driver" come from elsewhere and are unverified.
+
+[sensor]
+name = "ov9782"
+vendor = "OmniVision"
+i2c_address = 0x60
+address_bits = 16
+# Runs of consecutive registers go out as one auto-incrementing transfer (one I2C message, no
+# repeated starts; those lost writes on the CM5, see styx-native's regbus). Verified on the CM5
+# (native-pipeline regcheck): after power-up, init and the 1280x800 mode every register reads
+# back the same with bursts as with one transfer per register (0x0101 and 0x1000 read 0 either
+# way), streams normally, and the bring-up takes 37.8 instead of 48.9 ms on the 100 kHz bus.
+burst_writes = true
+# The driver also accepts 0x9281: some modules report an OV9281 id.
+chip_id = { address = 0x300a, bytes = 2, values = [0x9782, 0x9281] }
+clocks = { xvclk = 24_000_000 }
+tuning = "ov9782.json"
+
+[pixel_array]
+# 8 dummy rows/columns on each edge of the 1280x800 active array.
+size = [1296, 816]
+active = { left = 8, top = 8, width = 1280, height = 800 }
+color_filter = "BGGR"
+# BLC target 0x4002..0x4003 = 0x0040 (mode registers; datasheet: black target level). Measured
+# on the device in the dark (native-spike --black, --sweep-*): the active area settles at 64
+# (sd 0.2-0.5) at 1 line and at 450 ms, at 1x and 15.5x gain; the kernel driver path gives the
+# same 64. For the first frames after start and after gain changes, until the BLC settles,
+# it reads about 86. Measured with styx-pipeline's PiSP path (native-pipeline pisp, starts at a
+# settled exposure): the first frame after a start is brighter by about 0.013-0.019 of full
+# scale (13-19 codes at 10 bits) at gain 1.5, and at 120 fps, where the exposure fills the
+# frame, nearly black (its exposure would have begun before the stream); from frame 1 on the
+# levels follow exposure and gain.
+black_level = { value = 64, bits = 10, settle_frames = 1 }
+
+[sequences]
+# The driver enables avdd/dovdd/dvdd, waits 400-600 us, sets reset (logical 1), enables the
+# 24 MHz clock, waits 400-600 us, then writes MIPI_CTRL00. Supplies, reset and clock are
+# optional here because boards (the Raspberry Pi CM5 overlay among them) often manage them in
+# firmware or the kernel; the HeliOS overlay has no reset line.
+power_up = [
+    { supply = "avdd", on = true, optional = true },
+    { supply = "dovdd", on = true, optional = true },
+    { supply = "dvdd", on = true, optional = true },
+    { delay_us = 600 },
+    { gpio = "reset", value = 1, optional = true },
+    { clock = "xvclk", on = true, optional = true },
+    { delay_us = 600 },
+    # MIPI_CTRL00: 0x00 for a continuous CSI-2 clock (the device today), 0x20 (gated clock)
+    # for `clock-noncontinuous`, which also needs the larger hblank minimums noted below.
+    [0x4800, 0x00],
+]
+power_down = [
+    { gpio = "reset", value = 0, optional = true },
+    { clock = "xvclk", on = false, optional = true },
+    { supply = "dvdd", on = false, optional = true },
+    { supply = "dovdd", on = false, optional = true },
+    { supply = "avdd", on = false, optional = true },
+]
+# Common registers. Must not include a software reset (0x0103): it would clear MIPI_CTRL00.
+init = [
+    [0x0302, 0x32], [0x030e, 0x02], [0x3001, 0x00], [0x3004, 0x00], [0x3005, 0x00],
+    [0x3006, 0x04], [0x3011, 0x0a], [0x3013, 0x18], [0x301c, 0xf0], [0x3022, 0x01],
+    [0x3030, 0x10], [0x3039, 0x32], [0x303a, 0x00], [0x3503, 0x08], [0x3505, 0x8c],
+    [0x3507, 0x03], [0x3508, 0x00], [0x3610, 0x80], [0x3611, 0xa0], [0x3620, 0x6e],
+    [0x3632, 0x56], [0x3633, 0x78], [0x3666, 0x00], [0x366f, 0x5a], [0x3680, 0x84],
+    [0x3712, 0x80], [0x372d, 0x22], [0x3731, 0x80], [0x3732, 0x30], [0x377d, 0x22],
+    [0x3788, 0x02], [0x3789, 0xa4], [0x378a, 0x00], [0x378b, 0x4a], [0x3799, 0x20],
+    [0x3881, 0x42], [0x38a8, 0x02], [0x38a9, 0x80], [0x38b1, 0x00], [0x38c4, 0x00],
+    [0x38c5, 0xc0], [0x38c6, 0x04], [0x38c7, 0x80], [0x3920, 0xff], [0x4010, 0x40],
+    [0x4043, 0x40], [0x4307, 0x30], [0x4317, 0x00], [0x4501, 0x00], [0x450a, 0x08],
+    [0x4601, 0x04], [0x470f, 0x00], [0x4f07, 0x00], [0x5000, 0x9f], [0x5001, 0x00],
+    [0x5e00, 0x00], [0x5d00, 0x07], [0x5d01, 0x00], [0x0101, 0x01], [0x1000, 0x03],
+    [0x5a08, 0x84],
+    # Not from the driver (OV9281/OV9282 datasheet, PSV_CTRL): bit 3 disables the automatic
+    # power-save mode the sensor enters when VTS exceeds PSV_AUTO_ON_THRESH (0x4f0c, default
+    # 0x1000 lines). Measured on the device: without it any frame length above 4096 lines
+    # (below ~24.4 fps at 1280x800) stopped the stream after one frame and left the sensor
+    # unable to start until the next power cycle; with it 25, 10 and 2.2 fps run exactly.
+    [0x4f00, 0x08],
+    # EMBED_CTRL (datasheet): bit 0 enables the embedded data line (CSI-2 data type 0x12,
+    # layout in [embedded_data]). Receivers without a channel for it discard it.
+    [0x4307, 0x31],
+]
+stream_on = [[0x0100, 0x01]]
+stream_off = [[0x0100, 0x00]]
+
+# Pixel rates are what the driver reports: link frequency x 2 (DDR) x 2 lanes / bits per pixel.
+# PLL_CTRL_0D (0x030d) and ANA_CORE_2 (0x3662) select the bit depth.
+[formats.raw10]
+code = "SBGGR10_1X10"
+pixel_rate = 160_000_000
+link_frequency = 400_000_000
+registers = [[0x030d, 0x50], [0x3662, 0x05]]
+
+[formats.raw8]
+code = "SBGGR8_1X8"
+pixel_rate = 200_000_000
+link_frequency = 400_000_000
+registers = [[0x030d, 0x60], [0x3662, 0x07]]
+
+# hblank minimums are the driver's continuous-clock values (the device reports HBLANK min 176
+# at 1280x800). With a non-continuous clock the driver uses 250 (1280 wide) and 890 (640 wide).
+# hblank maximums are HTS max 0x7fff minus the width.
+[[modes]]
+name = "1280x800"
+size = [1280, 800]
+crop = { left = 8, top = 8, width = 1280, height = 800 }
+hblank = { min = 176, max = 31487, default = 176 }
+vblank = { min = 110, max = 51540, default = 1022 }
+registers = [
+    [0x3778, 0x00], [0x3800, 0x00], [0x3801, 0x00], [0x3802, 0x00], [0x3803, 0x00],
+    [0x3804, 0x05], [0x3805, 0x0f], [0x3806, 0x03], [0x3807, 0x2f], [0x3808, 0x05],
+    [0x3809, 0x00], [0x380a, 0x03], [0x380b, 0x20], [0x3810, 0x00], [0x3811, 0x08],
+    [0x3812, 0x00], [0x3813, 0x08], [0x3814, 0x11], [0x3815, 0x11], [0x3820, 0x40],
+    [0x3821, 0x00], [0x4003, 0x40], [0x4008, 0x04], [0x4009, 0x0b], [0x400c, 0x00],
+    [0x400d, 0x07], [0x4507, 0x00], [0x4509, 0x00],
+]
+
+[[modes]]
+# The top 720 lines of the array, not a centred crop.
+name = "1280x720"
+size = [1280, 720]
+crop = { left = 8, top = 8, width = 1280, height = 720 }
+hblank = { min = 176, max = 31487, default = 176 }
+vblank = { min = 41, max = 51540, default = 1022 }
+registers = [
+    [0x3778, 0x00], [0x3800, 0x00], [0x3801, 0x00], [0x3802, 0x00], [0x3803, 0x00],
+    [0x3804, 0x05], [0x3805, 0x0f], [0x3806, 0x02], [0x3807, 0xdf], [0x3808, 0x05],
+    [0x3809, 0x00], [0x380a, 0x02], [0x380b, 0xd0], [0x3810, 0x00], [0x3811, 0x08],
+    [0x3812, 0x00], [0x3813, 0x08], [0x3814, 0x11], [0x3815, 0x11], [0x3820, 0x3c],
+    [0x3821, 0x84], [0x4003, 0x40], [0x4008, 0x02], [0x4009, 0x05], [0x400c, 0x00],
+    [0x400d, 0x03], [0x4507, 0x00], [0x4509, 0x80],
+]
+
+[[modes]]
+# Full array subsampled 2x2. Whether this bins or skips is not clear from the driver
+# (0x3814/0x3815 set odd/even increments, 0x3820/0x3821 differ from full resolution).
+name = "640x400"
+size = [640, 400]
+crop = { left = 8, top = 8, width = 1280, height = 800 }
+binning = [2, 2]
+hblank = { min = 816, max = 32127, default = 816 }
+vblank = { min = 22, max = 51540, default = 1022 }
+registers = [
+    [0x3778, 0x10], [0x3800, 0x00], [0x3801, 0x00], [0x3802, 0x00], [0x3803, 0x00],
+    [0x3804, 0x05], [0x3805, 0x0f], [0x3806, 0x03], [0x3807, 0x2f], [0x3808, 0x02],
+    [0x3809, 0x80], [0x380a, 0x01], [0x380b, 0x90], [0x3810, 0x00], [0x3811, 0x04],
+    [0x3812, 0x00], [0x3813, 0x04], [0x3814, 0x31], [0x3815, 0x22], [0x3820, 0x60],
+    [0x3821, 0x01], [0x4008, 0x02], [0x4009, 0x05], [0x400c, 0x00], [0x400d, 0x03],
+    [0x4507, 0x03], [0x4509, 0x80],
+]
+
+[controls]
+# Frame length (VTS, "lines per frame").
+frame_length = { address = 0x380e, bytes = 2 }
+# A frame lasts one line more than VTS: measured with the bridge (native-pipeline, frame start
+# timestamps over 240 frames) at VTS 916 / 1832 / 3663: 119.836 / 59.951 / 29.992 fps, i.e.
+# 917 / 1833 / 3664 lines of 9.1 us (the model without it was 0.109 / 0.055 / 0.027% fast).
+frame_length_extra_lines = 1
+# HTS: the driver writes (width + hblank) / 2.
+line_length = { register = { address = 0x380c, bytes = 2 }, pixels_per_unit = 2 }
+
+[controls.exposure]
+# Written as lines << 4 into three bytes; the low 4 bits (fractional lines) are left at 0.
+register = { address = 0x3500, bytes = 3, shift = 4, bits = 16 }
+min = 1
+margin = 12
+default = 642
+
+[controls.analog_gain]
+# Code 0x10 is 1x, 1/16 steps (the driver's range is 0x10..=0xff).
+register = { address = 0x3509 }
+min_code = 0x10
+max_code = 0xff
+default_code = 0x10
+model = { linear = { step = 0.0625 } }
+
+# Measured on the device (native-spike --embedded --delays): a register written right after
+# the start of frame N shows up in the embedded data of frame N + 2 for exposure (0x3500) and
+# gain (0x3509), and N + 1 for VTS (0x380e), both as reported values and, for VTS, as the
+# duration of frame N + 1 (buffer timestamps are frame starts: frame k lasts ts[k+1] - ts[k]).
+# 6 of 6 steps each way agreed. The datasheet's 0x3503 bits 0/1/4/5 ("delay 1 frame",
+# all 0 here) are what make exposure and gain one frame later than VTS.
+[controls.delays]
+exposure = 2
+analog_gain = 2
+digital_gain = 2
+frame_length = 1
+
+# GROUP_ACCESS 0x3208 (datasheet): 0x00 starts holding group 0, 0x10 ends it, 0xa0 launches it
+# at the next vertical blanking. Measured (native-spike --embedded --group-hold): exposure
+# written, then gain 1.5 frames later, inside the hold: both reported on the same frame
+# (launch frame + 2). Without a hold, and with the kernel driver's 0x3308 bracket (a register
+# the datasheet does not list), exposure landed one frame before gain.
+[controls.group_hold]
+start = [[0x3208, 0x00]]
+end = [[0x3208, 0x10]]
+launch = [[0x3208, 0xa0]]
+
+# PRE_ISP test pattern bar (OV9281/OV9282 datasheet, 0x5e00 bit 7), not in the driver; the
+# OV2311 driver uses the low bits for bar types. Verified on the device with native-spike
+# --test-patterns (the bars appear, independent of the scene).
+[controls.test_pattern]
+register = { address = 0x5e00 }
+patterns = { off = 0x00, colour_bars = 0x80 }
+
+# The driver sets bit 2 of TIMING_FORMAT_2 (hflip) and TIMING_FORMAT_1 (vflip), read-modify-
+# write, both on by default, and does not change the media bus code when flipping. libcamera
+# turns both off (the device tree says rotation 0), and that is the order the code names:
+# BGGR. Measured on the device (native-pipeline, lit warm scene, 2x2 cell means above black
+# 0.133 / 0.111 / 0.107 / 0.038 with both flips on): with the flips on the order is RGGB and
+# the picture is turned by 180 degrees against libcamera's. So both are off by default here,
+# and turning them on changes the order.
+[controls.hflip]
+address = 0x3821
+mask = 0x04
+default = false
+changes_bayer_order = true
+
+[controls.vflip]
+address = 0x3820
+mask = 0x04
+default = false
+changes_bayer_order = true
+
+# Embedded data line (0x4307 bit 0 in init): one line, data type 0x12, sent as CSI-2 RAW10
+# words each carrying one byte. Not in the driver or the datasheet; found on the device
+# (native-spike --embedded, with the bridge's -emb overlay) by changing each control and
+# watching which words follow: words 6..7 are the exposure in lines (0x3501..0x3502 >> 4),
+# words 3, 4 and 5 all the gain code (0x3509), words 19..20 VTS, 21..22 HTS, 15..18 the
+# output size. The words report the values that frame was produced with (the delays below).
+[embedded_data]
+lines = 1
+packing = "raw10"
+controls = [
+    { control = "exposure", offset = 6, bytes = 2 },
+    { control = "analog_gain", offset = 5 },
+    { control = "frame_length", offset = 19, bytes = 2 },
+]

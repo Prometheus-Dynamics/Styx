@@ -1,0 +1,23 @@
+[package]
+name = "styx-native"
+version.workspace = true
+edition.workspace = true
+description = "The Styx native camera runtime: sensors driven from userspace through the Styx sensor bridge, as a styx-graph provider."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+futures-core.workspace = true
+libc.workspace = true
+styx-graph.workspace = true
+styx-kernel.workspace = true
+styx-sensor.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

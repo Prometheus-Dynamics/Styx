@@ -186,12 +186,16 @@ impl<'a> CaptureRequest<'a> {
     }
 
     /// Attach a hardware-scaled GREY/YUV pyramid companion at `2^-level` resolution when the
-    /// backend can produce one (libcamera ISPs with a second output). See
-    /// [`StyxConfig::libcamera_pyramid_level`]. Call after [`CaptureRequest::config`], which
-    /// replaces the whole configuration.
+    /// backend can produce one (libcamera ISPs with a second output, a native camera's PiSP).
+    /// See [`StyxConfig::libcamera_pyramid_level`] and [`StyxConfig::native_pyramid_level`].
+    /// Call after [`CaptureRequest::config`], which replaces the whole configuration.
     pub fn luma_pyramid(mut self, level: u8) -> Self {
         let config = self.config.take().unwrap_or_default();
-        self.config = Some(config.libcamera_pyramid_level(level));
+        self.config = Some(
+            config
+                .libcamera_pyramid_level(level)
+                .native_pyramid_level(level),
+        );
         self
     }
 

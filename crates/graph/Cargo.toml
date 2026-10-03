@@ -1,0 +1,20 @@
+[package]
+name = "styx-graph"
+version.workspace = true
+edition.workspace = true
+description = "Device graph, providers and the async core of the Styx native stack."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+futures-core = "0.3.32"
+libc = "0.2"
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tokio = { version = "1.52.1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

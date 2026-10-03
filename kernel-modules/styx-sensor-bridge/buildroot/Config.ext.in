@@ -1,0 +1,6 @@
+config BR2_LINUX_KERNEL_EXT_STYX_SENSOR_BRIDGE
+	bool "Styx sensor bridge"
+	help
+	  Build styx_sensor_bridge.ko, the generic V4L2 sensor subdevice
+	  for camera sensors driven from userspace by Styx, and the CM5
+	  camera overlay that binds it (styx-sensor-bridge-cm5.dtbo).

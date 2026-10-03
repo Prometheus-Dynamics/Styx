@@ -6,6 +6,7 @@ use styx_codec::{Codec, CodecDescriptor, CodecKind, CodecRegistryHandle};
 use styx_core::prelude::*;
 
 use super::cost::{self, StepCost, megapixels};
+use super::native::{self, native_isp, raw_bayer};
 use super::{PlanRejection, PlanStep, StepExecution, StepKind};
 #[cfg(feature = "libcamera")]
 use crate::BackendHandle;
@@ -87,8 +88,12 @@ pub(crate) struct Candidate<'a> {
     pub isp_pyramid_level: Option<u8>,
     /// The decoder scales to 1/`decode_scale` of the capture size (1 = full size).
     pub decode_scale: u8,
-    /// The ISP delivers frames at this size instead of the mode's (libcamera on Raspberry Pi).
+    /// The ISP delivers frames at this size instead of the mode's (libcamera on Raspberry Pi,
+    /// native cameras with the PiSP).
     pub isp_output: Option<(u32, u32)>,
+    /// The ISP delivers this processed format instead of the capture mode's (a native camera's
+    /// PiSP on a shared capture; `mode` is then this consumer's view of the capture).
+    pub isp_format: Option<FourCc>,
     pub notes: Vec<String>,
 }
 
@@ -101,6 +106,7 @@ pub(crate) fn backend_name(kind: BackendKind) -> &'static str {
         BackendKind::File => "file",
         BackendKind::Simulation => "simulation",
         BackendKind::Replay => "replay",
+        BackendKind::Native => "native",
     }
 }
 
@@ -111,6 +117,48 @@ pub(crate) fn has_isp_second_output(backend: &ProbedBackend) -> bool {
         BackendHandle::Libcamera { id } => id.starts_with("/base/") && id.contains("/i2c@"),
         _ => false,
     }
+}
+
+/// A native camera's processed mode on the PiSP: the back end scales and makes either
+/// processed format on each of its two outputs.
+pub(crate) fn native_isp_outputs(backend: &ProbedBackend, mode: &Mode) -> bool {
+    backend.kind == BackendKind::Native
+        && native_isp(backend) == Some("pisp")
+        && !raw_bayer(mode.format.code)
+}
+
+/// Processed formats a native camera's ISP makes.
+const NATIVE_ISP_FORMATS: [FourCc; 2] = [FourCc::NV12, FourCc::RG24];
+
+/// On a shared capture of a native PiSP mode: `req` taking another processed format straight
+/// from the ISP (an output in that format) instead of converting the mode's frames on the CPU.
+/// `None` when the mode's format suits `req` or no processed format does.
+pub(crate) fn isp_format_candidate<'a>(
+    backend: &'a ProbedBackend,
+    mode: &Mode,
+    req: &FrameRequirements,
+    registry: &CodecRegistryHandle,
+) -> Option<Candidate<'a>> {
+    if !native_isp_outputs(backend, mode)
+        || req.accepts(mode.format.code)
+        || matches!(req.output, OutputFormat::Luma)
+    {
+        return None;
+    }
+    let code = NATIVE_ISP_FORMATS
+        .into_iter()
+        .find(|&c| c != mode.format.code && req.accepts(c))?;
+    let mut alt = mode.clone();
+    alt.format.code = code;
+    alt.id.format.code = code;
+    let mut c = candidate(backend, &alt, req, registry).ok()?;
+    if !matches!(c.route, Route::Direct) {
+        return None;
+    }
+    c.isp_format = Some(code);
+    c.notes
+        .push(format!("{code} from the ISP's output, no conversion"));
+    Some(c)
 }
 
 fn mode_fps(mode: &Mode) -> Option<f32> {
@@ -190,6 +238,17 @@ pub(crate) fn candidate<'a>(
     }
 
     let mp = megapixels(width, height);
+    // A native camera with an ISP processes raw frames itself, with the 3A loop: a raw mode
+    // through a decoder would give frames nobody exposes or white-balances.
+    if backend.kind == BackendKind::Native
+        && raw_bayer(code)
+        && !req.accepts(code)
+        && native_isp(backend).is_some()
+    {
+        return Err(format!(
+            "raw {code} would need a decoder without 3A; the camera's processed modes run AE/AWB"
+        ));
+    }
 
     let mut steps = vec![capture_step(backend, mode, fps)];
     let notes = Vec::new();
@@ -266,7 +325,8 @@ fn finish<'a>(
         mode.format.resolution.height.get(),
     );
     let mp = megapixels(width, height);
-    let isp = backend.kind == BackendKind::Libcamera;
+    let isp = backend.kind == BackendKind::Libcamera
+        || (!raw_bayer(mode.format.code) && native_isp(backend) == Some("pisp"));
     if matches!(req.overrides.hardware, HardwarePolicy::Required)
         && !isp
         && !matches!(
@@ -310,7 +370,8 @@ fn finish<'a>(
         height.div_ceil(decode_scale.into()),
     ));
 
-    let isp_pyramid_level = add_pyramid_steps(backend, &route, req, width, height, &mut steps)?;
+    let isp_pyramid_level =
+        add_pyramid_steps(backend, mode, &route, req, width, height, &mut steps)?;
     let encoded = matches!(route, Route::Encode { .. });
     if encoded && req.pyramid.is_some_and(|p| p.levels > 0) {
         return Err("pyramid levels need uncompressed frames".into());
@@ -357,6 +418,7 @@ fn finish<'a>(
         isp_pyramid_level,
         decode_scale,
         isp_output,
+        isp_format: None,
         notes,
     })
 }
@@ -379,7 +441,11 @@ fn isp_output(
         // The encoder takes any size the ISP makes.
         Route::Encode { decoder, .. } => decoder.is_none() && !code.is_compressed(),
     };
-    if !has_isp_second_output(backend)
+    let scaling_isp = has_isp_second_output(backend)
+        || (backend.kind == BackendKind::Native
+            && native_isp(backend) == Some("pisp")
+            && !raw_bayer(code));
+    if !scaling_isp
         || !scalable
         || matches!(req.overrides.hardware, HardwarePolicy::Disabled)
         || (tw >= mode.0 && th >= mode.1)
@@ -416,6 +482,9 @@ fn decode_scale(route: &Route, req: &FrameRequirements, source: (u32, u32)) -> u
 }
 
 fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanStep {
+    if let Some(step) = native::processed_capture_step(backend, mode, fps) {
+        return step;
+    }
     let (execution, latency, how) = match backend.kind {
         BackendKind::Libcamera if has_isp_second_output(backend) => (
             StepExecution::Hardware,
@@ -426,6 +495,11 @@ fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanS
             StepExecution::ZeroCopy,
             cost::uvc_capture_latency_ms(fps),
             "camera exposure, encode and transfer",
+        ),
+        BackendKind::Native => (
+            StepExecution::ZeroCopy,
+            cost::native_capture_latency_ms(fps),
+            "sensor driven by Styx, raw frames in dma-bufs",
         ),
         BackendKind::Replay => (
             StepExecution::ZeroCopy,
@@ -623,6 +697,7 @@ fn decode_cost(code: FourCc, descriptor: &CodecDescriptor, mp: f32, threads: usi
         (_, true) if descriptor.impl_name.contains("ffmpeg") => cost::FFMPEG_SW_MJPEG_MS_PER_MP,
         (_, true) => cost::MJPEG_LUMA_MS_PER_MP * 2.0,
         _ if code.is_compressed() => cost::SW_VIDEO_DECODE_MS_PER_MP,
+        _ if raw_bayer(code) => cost::SOFTISP_MS_PER_MP,
         _ if matches!(
             code,
             FourCc::YUYV | FourCc::UYVY | FourCc::YVYU | FourCc::VYUY
@@ -638,6 +713,7 @@ fn decode_cost(code: FourCc, descriptor: &CodecDescriptor, mp: f32, threads: usi
 /// Pyramid steps; returns the level the ISP produces, if any.
 fn add_pyramid_steps(
     backend: &ProbedBackend,
+    mode: &Mode,
     route: &Route,
     req: &FrameRequirements,
     width: u32,
@@ -647,7 +723,10 @@ fn add_pyramid_steps(
     let Some(pyramid) = req.pyramid.filter(|p| p.levels > 0) else {
         return Ok(None);
     };
-    let isp_possible = has_isp_second_output(backend)
+    // A native PiSP mode's second output in the mode's format: NV12, whose Y plane the
+    // further levels are box-filtered from.
+    let native = native_isp_outputs(backend, mode) && mode.format.code == FourCc::NV12;
+    let isp_possible = (has_isp_second_output(backend) || native)
         && matches!(route, Route::Direct | Route::LumaView)
         && !matches!(req.overrides.hardware, HardwarePolicy::Disabled);
     let isp_level = match pyramid.source {

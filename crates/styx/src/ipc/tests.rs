@@ -98,3 +98,23 @@ fn a_client_that_leaves_is_forgotten() {
     assert_eq!(server.stats().clients, 1);
     drop((recv(&staying), recv(&staying)));
 }
+
+#[test]
+fn a_client_holding_a_frame_too_long_is_disconnected() {
+    let path = socket_path("max-hold");
+    let server = FrameServer::bind(&path)
+        .unwrap()
+        .max_hold(Some(Duration::from_millis(50)));
+    let client = FrameClient::connect(&path).unwrap();
+    server.publish(&memfd_frame()).unwrap();
+    let held = recv(&client);
+    std::thread::sleep(Duration::from_millis(100));
+    // Its frame is taken back and it gets nothing more.
+    assert_eq!(server.publish(&memfd_frame()).unwrap(), 0);
+    assert_eq!((server.stats().revoked, server.stats().clients), (1, 0));
+    assert!(matches!(
+        client.recv(Duration::from_secs(1)),
+        RecvOutcome::Closed
+    ));
+    drop(held);
+}

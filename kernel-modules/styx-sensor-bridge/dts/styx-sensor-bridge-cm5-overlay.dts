@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Styx sensor bridge on a Raspberry Pi 5 / CM5 camera port.
+//
+// Wired like the HeliOS OV9782 camera overlay (ov9782-overlay.dts): 2 data
+// lanes, 400 MHz link, 24 MHz fixed clock, avdd from the port's cam regulator.
+// Instead of an I2C client node for the sensor it adds a platform node bound
+// by styx_sensor_bridge.ko, so address 0x60 stays free for i2c-dev and the
+// sensor is driven from userspace. Use it in place of ov9782-overlay:
+//
+//   dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous
+//
+// Build: dtc -@ -I dts -O dtb -o styx-sensor-bridge-cm5.dtbo <this file>
+/dts-v1/;
+/plugin/;
+
+/{
+	compatible = "brcm,bcm2712";
+
+	/* The camera I2C bus stays enabled, with no client on it. */
+	i2c_frag: fragment@0 {
+		target = <&i2c_csi_dsi>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			bridge: styx-sensor-bridge-cam {
+				compatible = "styx,sensor-bridge";
+				status = "okay";
+
+				styx,sensor-name = "ov9782";
+				/* Where userspace finds the sensor (not used by the module). */
+				styx,i2c-bus = <&i2c_csi_dsi>;
+				styx,i2c-address = <0x60>;
+
+				/* MEDIA_BUS_FMT_SBGGR10_1X10, MEDIA_BUS_FMT_SBGGR8_1X8 */
+				styx,mbus-codes = <0x3007 0x3001>;
+				styx,max-size = <1280 800>;
+				styx,min-size = <16 16>;
+				/* Embedded data pad: 16384 bytes x 1 line (the size rp1-cfe's
+				 * csi2 defaults its pad 1 to), as the runtime -emb overlay the
+				 * HeliOS trial ran with: frames report the exposure and gain
+				 * read back from the sensor. */
+				styx,embedded-data = <16384 1>;
+
+				/* Enabled together through STYX_CID_POWER. */
+				clocks = <&cam1_clk>;
+				styx,supply-names = "avdd", "dovdd", "dvdd";
+				avdd-supply = <&cam1_reg>;
+				dovdd-supply = <&cam_dummy_reg>;
+				dvdd-supply = <&cam_dummy_reg>;
+
+				rotation = <0>;
+				orientation = <2>;
+
+				port {
+					bridge_ep: endpoint {
+						clock-lanes = <0>;
+						data-lanes = <1 2>;
+						link-frequencies = /bits/ 64 <400000000>;
+					};
+				};
+			};
+		};
+	};
+
+	csi_frag: fragment@2 {
+		target = <&csi1>;
+		__overlay__ {
+			status = "okay";
+
+			port {
+				csi_ep: endpoint {
+					remote-endpoint = <&bridge_ep>;
+					data-lanes = <1 2>;
+				};
+			};
+		};
+	};
+
+	fragment@3 {
+		target = <&i2c0if>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@4 {
+		target = <&i2c0mux>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	clk_frag: fragment@5 {
+		target = <&cam1_clk>;
+		__overlay__ {
+			status = "okay";
+			clock-frequency = <24000000>;
+		};
+	};
+
+	reg_frag: fragment@6 {
+		target = <&cam1_reg>;
+		__dormant__ {
+			startup-delay-us = <20000>;
+			off-on-delay-us = <30000>;
+		};
+	};
+
+	fragment@7 {
+		target = <&csi_ep>;
+		__overlay__ {
+			clock-noncontinuous;
+		};
+	};
+
+	fragment@8 {
+		target = <&bridge_ep>;
+		__overlay__ {
+			clock-noncontinuous;
+		};
+	};
+
+	__overrides__ {
+		rotation = <&bridge>,"rotation:0";
+		orientation = <&bridge>,"orientation:0";
+		cam0 = <&i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
+		       <&csi_frag>, "target:0=",<&csi0>,
+		       <&clk_frag>, "target:0=",<&cam0_clk>,
+		       <&bridge>, "clocks:0=",<&cam0_clk>,
+		       <&bridge>, "avdd-supply:0=",<&cam0_reg>,
+		       <&bridge>, "styx,i2c-bus:0=",<&i2c_csi_dsi0>,
+		       <&reg_frag>, "target:0=",<&cam0_reg>;
+		cam1 = <&i2c_frag>, "target:0=",<&i2c_csi_dsi1>,
+		       <&csi_frag>, "target:0=",<&csi1>,
+		       <&clk_frag>, "target:0=",<&cam1_clk>,
+		       <&bridge>, "clocks:0=",<&cam1_clk>,
+		       <&bridge>, "avdd-supply:0=",<&cam1_reg>,
+		       <&bridge>, "styx,i2c-bus:0=",<&i2c_csi_dsi1>,
+		       <&reg_frag>, "target:0=",<&cam1_reg>;
+		clk-continuous = <0>, "-7-8";
+		i2c-address = <&bridge>,"styx,i2c-address:0";
+	};
+};
+
+&bridge_ep {
+	remote-endpoint = <&csi_ep>;
+};

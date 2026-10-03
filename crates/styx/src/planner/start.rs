@@ -145,10 +145,14 @@ impl FramePlan {
     pub fn start(&self) -> Result<PlannedFrames, CaptureError> {
         let mut config = StyxConfig::new().capture_queue_depth(self.queue_depth);
         if let Some(level) = self.isp_pyramid_level {
-            config = config.libcamera_pyramid_level(level);
+            config = config
+                .libcamera_pyramid_level(level)
+                .native_pyramid_level(level);
         }
         if let Some((width, height)) = self.isp_output {
-            config = config.libcamera_output_size(width, height);
+            config = config
+                .libcamera_output_size(width, height)
+                .native_output_size(width, height);
         }
         config = match self.stop_when_idle {
             Some((after, IdleStop::Pause)) => config.pause_when_idle(after),
@@ -558,9 +562,7 @@ impl Codec for FramePreparer {
                 };
                 return self.decode(encoder.as_ref(), raw);
             }
-            Route::LumaView if self.luma => input
-                .into_luma()
-                .map_err(|e| CodecError::Codec(e.to_string()))?,
+            Route::LumaView if self.luma => luma_view(input)?,
             _ => input,
         };
         if !self.luma {
@@ -578,6 +580,24 @@ impl Codec for FramePreparer {
         let frame = self.realign(frame)?;
         self.attach_pyramid(frame)
     }
+}
+
+/// The Y plane of `frame` as a GREY view, its ISP pyramid levels as well (the ISP makes them
+/// in the frame's format).
+fn luma_view(mut frame: FrameLease) -> Result<FrameLease, CodecError> {
+    let err = |e: &dyn std::fmt::Display| CodecError::Codec(e.to_string());
+    let companions = frame.take_companions();
+    let mut frame = frame.into_luma().map_err(|e| err(&e))?;
+    for (kind, companion) in companions {
+        let companion = match kind {
+            CompanionKind::Pyramid { .. } if companion.has_luma_plane() => {
+                companion.into_luma().map_err(|e| err(&e))?
+            }
+            _ => companion,
+        };
+        frame = frame.with_companion(kind, companion).map_err(|e| err(&e))?;
+    }
+    Ok(frame)
 }
 
 #[cfg(feature = "codec-turbojpeg")]

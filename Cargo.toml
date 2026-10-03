@@ -6,8 +6,22 @@ members = [
     "crates/libcamera",
     "crates/styx",
     "crates/v4l2",
+    "crates/kernel",
+    "crates/sensor",
+    "crates/graph",
+    "crates/pisp",
+    "crates/algo",
+    "crates/native",
+    "crates/softisp",
+    "crates/pipeline",
+    "tools/native-spike",
+    "tools/pisp-spike",
+    "tools/native-pipeline",
+    "tools/compare",
     "examples",
 ]
+# Optional bridges that link GStreamer/PipeWire; their own workspaces (docs/ecosystem.md).
+exclude = ["crates/gst-styx", "crates/pipewire-styx"]
 resolver = "3"
 
 [workspace.package]
@@ -27,6 +41,14 @@ styx-capture = { path = "crates/capture", version = "2.0.0" }
 styx-codec = { path = "crates/codec", version = "2.0.0" }
 styx-libcamera = { path = "crates/libcamera", version = "2.0.0" }
 styx-v4l2 = { path = "crates/v4l2", version = "2.0.0" }
+styx-kernel = { path = "crates/kernel", version = "2.0.0" }
+styx-sensor = { path = "crates/sensor", version = "2.0.0" }
+styx-graph = { path = "crates/graph", version = "2.0.0" }
+styx-pisp = { path = "crates/pisp", version = "2.0.0" }
+styx-algo = { path = "crates/algo", version = "2.0.0" }
+styx-native = { path = "crates/native", version = "2.0.0" }
+styx-softisp = { path = "crates/softisp", version = "2.0.0" }
+styx-pipeline = { path = "crates/pipeline", version = "2.0.0" }
 daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "main", version = "2.0.0", default-features = false }
 crossbeam-queue = "0.3.12"
 smallvec = "1.15.1"
@@ -36,12 +58,12 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 # FFmpeg types only: Styx calls FFmpeg through libraries it loads at runtime
 # (styx-codec `ffmpeg::ff`), so binaries do not link FFmpeg.
 ffmpeg-sys-next = { version = "8.1.0", default-features = false, features = ["avcodec", "avformat", "swscale"] }
-v4l = "0.14"
 libcamera = { version = "0.7", default-features = false, features = ["libcamera_semver_versioning"] }
 tokio-util = { version = "0.7.18", features = ["io"] }
 futures-core = "0.3.32"
 futures-util = { version = "0.3.32", features = ["io"] }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
 utoipa = { version = "5.4.0", default-features = false, features = ["macros"] }
 parking_lot = "0.12.5"
 jpeg-decoder = "0.3.2"

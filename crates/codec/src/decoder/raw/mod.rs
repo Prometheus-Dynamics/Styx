@@ -33,7 +33,7 @@ mod yuv420p;
 mod yuyv;
 
 #[cfg(feature = "raw-decoders")]
-pub use bayer::{BayerToRgbDecoder, bayer_decoder_for, bayer_info};
+pub use bayer::{SoftIspDecoder, SoftIspOutput, bayer_decoders_for};
 #[cfg(feature = "raw-decoders")]
 pub use bgr::BgrToRgbDecoder;
 #[cfg(feature = "raw-decoders")]
@@ -173,9 +173,6 @@ macro_rules! impl_raw_decode_into {
     };
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(feature = "raw-decoders")]
-impl_raw_decode_into!(BayerToRgbDecoder, 3);
 #[cfg(target_os = "linux")]
 #[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(BgrToRgbDecoder, 3);

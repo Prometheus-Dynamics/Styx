@@ -1,0 +1,40 @@
+# Tuning for the simulation tests, in styx-algo's TOML format.
+#
+# The AWB CT curve and priors are Raspberry Pi's imx219 values (libcamera
+# src/ipa/rpi/pisp/data/imx219.json, BSD-2-Clause, Copyright 2019-2020 Raspberry Pi Ltd),
+# matching the simulator's default sensor. Everything else uses styx-algo's defaults.
+description = "simulation test tuning (imx219 AWB data)"
+
+[awb]
+ct_curve = [
+    [2860.0, 0.9514, 0.4156],
+    [2960.0, 0.9289, 0.4372],
+    [3603.0, 0.8305, 0.5251],
+    [4650.0, 0.6756, 0.6433],
+    [5858.0, 0.6193, 0.6807],
+    [7580.0, 0.5019, 0.7495],
+]
+priors = [
+    { lux = 0, prior = [2000, 1.0, 3000, 0.0, 13000, 0.0] },
+    { lux = 800, prior = [2000, 0.0, 6000, 2.0, 13000, 2.0] },
+    { lux = 1500, prior = [2000, 0.0, 4000, 1.0, 6000, 6.0, 6500, 7.0, 7000, 1.0, 13000, 1.0] },
+]
+transverse_pos = 0.03392
+transverse_neg = 0.034
+
+[awb.modes]
+auto = { lo = 2500, hi = 8000 }
+incandescent = { lo = 2500, hi = 3000 }
+daylight = { lo = 5500, hi = 6500 }
+
+[lux]
+reference_exposure_us = 10000
+reference_gain = 1.0
+reference_lux = 400
+reference_y = 0.26
+
+[ccm]
+ccms = [
+    { ct = 2860, ccm = [2.12089, -0.52461, -0.59629, -0.85342, 2.80445, -0.95103, -0.26897, -1.14788, 2.41685] },
+    { ct = 7580, ccm = [2.21175, -0.53242, -0.67933, -0.57875, 3.07922, -1.50047, -0.27709, -0.73338, 2.01048] },
+]

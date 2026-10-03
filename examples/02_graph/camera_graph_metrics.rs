@@ -73,7 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let graph_metrics_level = graph_metrics_level_from_env();
 
     let selected = CameraRequest::new()
-        .backend_priority([BackendKind::V4l2, BackendKind::Libcamera])
+        .backend_priority([
+            BackendKind::V4l2,
+            BackendKind::Native,
+            BackendKind::Libcamera,
+        ])
         .try_format_priority(["YUYV", "NV12", "MJPG", "JPEG", "RG24", "RGB3", "BGR3"])?
         .max_resolution(1920, 1080)
         .fastest_interval()

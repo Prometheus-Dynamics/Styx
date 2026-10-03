@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0
+// Runs the cam0 sensor I2C bus (RP1 i2c6, "i2c_csi_dsi0", /dev/i2c-10 on HeliOS) at 400 kHz
+// instead of 100 kHz: sensor bring-up is register writes, so it gets about 4x shorter.
+// Boot-time overlay: config.txt `dtoverlay=styx-cam0-i2c-fast`.
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2712";
+
+	fragment@0 {
+		target = <&i2c_csi_dsi0>;
+		__overlay__ {
+			clock-frequency = <400000>;
+		};
+	};
+};

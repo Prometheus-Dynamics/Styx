@@ -54,6 +54,47 @@ pub(crate) fn uvc_capture_latency_ms(fps: Option<f32>) -> f32 {
     fps.filter(|fps| *fps > 0.0)
         .map_or(33.0, |fps| (0.8 * 1000.0 / fps).max(8.0))
 }
+/// A sensor Styx drives itself: the frame lands in memory one readout (about one frame
+/// period) after exposure, with no encode or transfer on top.
+pub(crate) fn native_capture_latency_ms(fps: Option<f32>) -> f32 {
+    fps.filter(|fps| *fps > 0.0)
+        .map_or(16.7, |fps| 1000.0 / fps + 0.5)
+}
+/// Native camera through the PiSP (CM5, OV9782 1280x800, NV12 through the Styx API): the
+/// front end's raw frame and statistics are dequeued at the end of the readout, then the back
+/// end job takes 0.85 ms (the 3A loop runs meanwhile); the host spends 0.25 ms per frame in all
+/// (0.12 ms of it the driver writing the back end config to the hardware).
+pub(crate) const PISP_PROCESS_LATENCY_MS: f32 = 0.9;
+pub(crate) const PISP_PROCESS_CPU_MS: f32 = 0.3;
+/// Software ISP (styx-softisp, CPU time on A76 cores): unpack, black level, white balance,
+/// lens shading, demosaic, CCM, tone curve, NV12/RGB out plus statistics, fp16 arithmetic,
+/// from cached capture buffers: 2.75 (RGB24) - 3.05 (NV12) ms per 1280x800 frame on one core
+/// (CM5, native/perf-soft2).
+pub(crate) const SOFTISP_MS_PER_MP: f32 = 2.9;
+/// Binned (half-size) processed modes: each 2x2 quad becomes a pixel, priced per megapixel
+/// of the raw frame read (1.25 ms for a 1280x800 frame).
+pub(crate) const SOFTISP_BINNED_MS_PER_RAW_MP: f32 = 1.2;
+/// CPU the software ISP's helper threads add per frame (wake-ups, band edges, the cores
+/// sharing memory bandwidth; 4 threads at 1280x800: 0.5 ms with NV12, 1.3 ms with RGB24).
+pub(crate) const SOFTISP_THREADS_CPU_MS: f32 = 0.9;
+
+/// Threads the native backend's software ISP uses by default: one per core, at most 4.
+pub(crate) fn default_softisp_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+}
+
+/// Software ISP time per megapixel on `threads` threads (row bands spread over the cores:
+/// 1.9 / 1.0 ms for 1280x800 NV12 with statistics on 2 / 4 A76 cores).
+pub(crate) fn softisp_latency_ms_per_mp(threads: usize) -> f32 {
+    let n = threads.max(1) as f32;
+    if n <= 1.0 {
+        SOFTISP_MS_PER_MP
+    } else {
+        SOFTISP_MS_PER_MP / n * 1.3
+    }
+}
+/// The 3A algorithms per frame (AE, AWB, CCM, contrast; Raspberry Pi tuning).
+pub(crate) const ALGORITHMS_MS: f32 = 0.3;
 /// turbojpeg luma decode, single thread (C270 720p: 1.59 ms).
 pub(crate) const MJPEG_LUMA_MS_PER_MP: f32 = 1.75;
 /// With restart markers, split across four A76 cores (C270 720p: 0.88 ms).

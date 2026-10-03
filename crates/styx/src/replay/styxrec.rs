@@ -237,6 +237,15 @@ fn write_backend(w: &mut impl Write, backend: Option<&BackendFrameMeta>) -> io::
             w.write_all(&m.sequence.to_le_bytes())?;
             write_str(w, m.buffer_memory)
         }
+        // Recorded as a V4L2 buffer (the control values are not recorded yet).
+        Some(BackendFrameMeta::Native(m)) => {
+            w.write_all(&[1])?;
+            let flags = if m.error { 0x40 } else { 0 };
+            for v in [m.sequence, m.bytes_used, 1, flags] {
+                w.write_all(&v.to_le_bytes())?;
+            }
+            w.write_all(&[1])
+        }
     }
 }
 

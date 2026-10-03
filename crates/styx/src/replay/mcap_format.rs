@@ -332,6 +332,19 @@ pub(super) fn encode_meta(meta: &FrameMeta, topic: &str, levels: &[u8]) -> Vec<u
         None => (0, 0, None, ""),
         Some(BackendFrameMeta::V4l2(m)) => (1, m.sequence, Some(m), ""),
         Some(BackendFrameMeta::Libcamera(m)) => (2, m.sequence, None, m.buffer_memory),
+        // Recorded as a V4L2 buffer (the control values are not recorded yet).
+        Some(BackendFrameMeta::Native(m)) => (
+            1,
+            m.sequence,
+            Some(V4l2FrameMeta {
+                sequence: m.sequence,
+                bytes_used: m.bytes_used,
+                field: 1,
+                flags: if m.error { 0x40 } else { 0 },
+                zero_copy: true,
+            }),
+            "",
+        ),
     };
     w.u8(backend);
     w.u32(sequence);
