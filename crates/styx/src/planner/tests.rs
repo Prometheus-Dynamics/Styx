@@ -63,7 +63,7 @@ fn luma_view_beats_decoding_at_the_same_resolution() {
             mode(FourCc::MJPG, 1280, 720, 30),
         ],
     );
-    let plan = plan_frames_with(&dev, &FrameRequirements::luma().pyramid(2), &registry()).unwrap();
+    let plan = plan_frames_with(&dev, &Frames::gray().pyramid(2), &registry()).unwrap();
     assert_eq!(plan.mode.format.code, FourCc::NV12);
     assert!(matches!(plan.route, Route::LumaView));
     let kinds: Vec<StepKind> = plan.steps.iter().map(|s| s.kind).collect();
@@ -85,9 +85,7 @@ fn luma_view_beats_decoding_at_the_same_resolution() {
 
 #[test]
 fn minimum_resolution_picks_the_smallest_satisfying_mode() {
-    let req = FrameRequirements::luma()
-        .min_resolution(1200, 700)
-        .min_fps(25);
+    let req = Frames::gray().size_at_least(1200, 700).fps_at_least(25);
     let plan = plan_frames_with(&usb_camera(), &req, &registry());
     #[cfg(feature = "codec-turbojpeg")]
     {
@@ -98,7 +96,7 @@ fn minimum_resolution_picks_the_smallest_satisfying_mode() {
         assert!(
             plan.rejected
                 .iter()
-                .any(|r| r.reason.contains("below 25 fps"))
+                .any(|r| r.reason.contains("cannot run at 25 fps or faster"))
         );
     }
     #[cfg(not(feature = "codec-turbojpeg"))]
@@ -107,10 +105,7 @@ fn minimum_resolution_picks_the_smallest_satisfying_mode() {
 
 #[test]
 fn hardware_required_rejects_cpu_paths() {
-    let req = FrameRequirements::luma().overrides(PlanOverrides {
-        hardware: HardwarePolicy::Required,
-        ..Default::default()
-    });
+    let req = Frames::gray().hardware(Hardware::Required);
     let err = plan_frames_with(&usb_camera(), &req, &registry()).unwrap_err();
     let PlanError::NoCandidates { rejected } = err else {
         panic!("expected NoCandidates, got {err:?}");
@@ -120,10 +115,7 @@ fn hardware_required_rejects_cpu_paths() {
 
 #[test]
 fn forbidding_the_only_decoder_leaves_raw_paths() {
-    let req = FrameRequirements::luma().overrides(PlanOverrides {
-        forbid: vec!["turbojpeg-luma".into()],
-        ..Default::default()
-    });
+    let req = Frames::gray().forbid("turbojpeg-luma");
     let plan = plan_frames_with(&usb_camera(), &req, &registry()).unwrap();
     assert_ne!(plan.mode.format.code, FourCc::MJPG);
 }
@@ -141,36 +133,35 @@ fn consumers_share_a_mode_that_serves_all_of_them() {
     );
     // A small detector and a 720p consumer: the smallest mode covering both.
     let reqs = [
-        FrameRequirements::luma().output_resolution(320, 180),
-        FrameRequirements::luma().min_resolution(1280, 720),
+        Frames::gray().size(320, 180),
+        Frames::gray().size_at_least(1280, 720),
     ];
     let plan = plan_many_with(&camera, &reqs, &registry()).unwrap();
     assert_eq!(plan.mode.format.resolution.width.get(), 1280);
     assert_eq!(plan.consumers.len(), 2);
     assert!(plan.consumers.iter().all(|c| c.mode.id == plan.mode.id));
     assert!(matches!(
-        plan_many_with(&camera, &[], &registry()),
+        plan_many_with::<FrameRequest>(&camera, &[], &registry()),
         Err(PlanError::NoConsumers)
     ));
 }
 
 #[test]
-fn priority_sets_decode_threads_and_queue_depth() {
+fn delivery_sets_queue_depth_and_decode_threads() {
     let dev = device(
         BackendKind::Virtual,
         BackendHandle::Virtual,
         vec![mode(FourCc::NV12, 640, 480, 30)],
     );
-    let latency = plan_frames_with(&dev, &FrameRequirements::luma(), &registry()).unwrap();
-    let throughput = plan_frames_with(
-        &dev,
-        &FrameRequirements::luma().priority(Priority::Throughput),
-        &registry(),
-    )
-    .unwrap();
-    assert!(latency.queue_depth < throughput.queue_depth);
-    assert_eq!(latency.decode_threads, 0);
-    assert_eq!(throughput.decode_threads, 1);
+    let latest = plan_frames_with(&dev, &Frames::gray(), &registry()).unwrap();
+    assert_eq!(latest.queue_depth, 1);
+    assert_eq!(latest.decode_threads, 0);
+    let every = plan_frames_with(&dev, &Frames::gray().every_frame(8), &registry()).unwrap();
+    assert_eq!(every.queue_depth, 8);
+    assert_eq!(every.decode_threads, 1);
+    let threads = Frames::gray().every_frame(8).decode_threads(0);
+    let plan = plan_frames_with(&dev, &threads, &registry()).unwrap();
+    assert_eq!((plan.queue_depth, plan.decode_threads), (8, 0));
 }
 
 #[cfg(feature = "libcamera")]
@@ -183,7 +174,7 @@ fn raspberry_pi_isp_supplies_the_first_pyramid_level() {
         },
         vec![mode(FourCc::NV12, 1280, 800, 30)],
     );
-    let plan = plan_frames_with(&dev, &FrameRequirements::luma().pyramid(2), &registry()).unwrap();
+    let plan = plan_frames_with(&dev, &Frames::gray().pyramid(2), &registry()).unwrap();
     assert_eq!(plan.isp_pyramid_level, Some(1));
     let pyramid: Vec<StepExecution> = plan
         .steps
@@ -193,7 +184,7 @@ fn raspberry_pi_isp_supplies_the_first_pyramid_level() {
         .collect();
     assert_eq!(pyramid, vec![StepExecution::Hardware, StepExecution::Cpu]);
 
-    let hardware_only = FrameRequirements::luma()
+    let hardware_only = Frames::gray()
         .pyramid(2)
         .pyramid_source(PyramidSource::HardwareOnly);
     assert!(plan_frames_with(&dev, &hardware_only, &registry()).is_err());
@@ -210,7 +201,7 @@ fn output_resolution_picks_the_smallest_covering_mode_and_scales_the_decode() {
             mode(FourCc::MJPG, 160, 90, 30),
         ],
     );
-    let req = FrameRequirements::luma().output_resolution(320, 180);
+    let req = Frames::gray().size(320, 180);
     let plan = plan_frames_with(&dev, &req, &registry());
     #[cfg(feature = "codec-turbojpeg")]
     {
@@ -221,11 +212,11 @@ fn output_resolution_picks_the_smallest_covering_mode_and_scales_the_decode() {
         let text = plan.to_string();
         assert!(text.contains("at 1/4 size (320x180)"), "{text}");
 
-        let full = plan_frames_with(&dev, &FrameRequirements::luma(), &registry()).unwrap();
+        let full = plan_frames_with(&dev, &Frames::gray(), &registry()).unwrap();
         assert!(plan.total.cpu_ms < full.total.cpu_ms * 0.5);
 
         // RGB through turbojpeg scales the same way.
-        let rgb = FrameRequirements::formats([FourCc::RG24]).output_resolution(640, 360);
+        let rgb = Frames::formats([FourCc::RG24]).size(640, 360);
         let rgb = plan_frames_with(&dev, &rgb, &registry()).unwrap();
         assert_eq!(rgb.output_resolution(), (640, 360));
         // Even when a decoder that cannot scale (e.g. FFmpeg's) would otherwise be first.
@@ -237,7 +228,7 @@ fn output_resolution_picks_the_smallest_covering_mode_and_scales_the_decode() {
 
 #[test]
 fn output_resolution_larger_than_every_mode_takes_the_largest() {
-    let req = FrameRequirements::luma().output_resolution(4000, 3000);
+    let req = Frames::gray().size(4000, 3000);
     let plan = plan_frames_with(&usb_camera(), &req, &registry()).unwrap();
     // Without an MJPEG decoder the largest usable mode is NV12 720p.
     let largest = if cfg!(feature = "codec-turbojpeg") {
@@ -262,9 +253,7 @@ fn raspberry_pi_isp_scales_to_the_output_resolution_keeping_the_field_of_view() 
             mode(FourCc::NV12, 320, 240, 30),
         ],
     );
-    let req = FrameRequirements::luma()
-        .output_resolution(320, 180)
-        .pyramid(1);
+    let req = Frames::gray().size(320, 180).pyramid(1);
     let plan = plan_frames_with(&dev, &req, &registry()).unwrap();
     // 16:10 mode: 320 wide covers 180 high at 320x200, smaller than the 4:3 mode.
     assert_eq!(plan.mode.format.resolution.width.get(), 1280);
@@ -279,10 +268,7 @@ fn raspberry_pi_isp_scales_to_the_output_resolution_keeping_the_field_of_view() 
     // The ISP's pyramid level follows the scaled output.
     assert!(plan.to_string().contains("160x100"), "{plan}");
 
-    let cpu_only = req.overrides(PlanOverrides {
-        hardware: HardwarePolicy::Disabled,
-        ..Default::default()
-    });
+    let cpu_only = req.hardware(Hardware::Off);
     let plan = plan_frames_with(&dev, &cpu_only, &registry()).unwrap();
     assert_eq!(plan.isp_output, None);
 }
@@ -297,8 +283,8 @@ fn shared_consumers_of_two_sizes_use_both_isp_outputs() {
         },
         vec![mode(FourCc::NV12, 1280, 800, 30)],
     );
-    let detector = FrameRequirements::luma().output_resolution(320, 180);
-    let viewer = FrameRequirements::luma().output_resolution(640, 360);
+    let detector = Frames::gray().size(320, 180);
+    let viewer = Frames::gray().size(640, 360);
     let plan = plan_many_with(&dev, &[detector.clone(), viewer], &registry()).unwrap();
     // The larger size on the main output, the smaller one on the second.
     let (small, large) = (&plan.consumers[0], &plan.consumers[1]);
@@ -309,14 +295,10 @@ fn shared_consumers_of_two_sizes_use_both_isp_outputs() {
     assert!(!large.isp_second_output);
 
     // A third size does not fit: those consumers get the mode's size.
-    let third = FrameRequirements::luma().output_resolution(160, 90);
+    let third = Frames::gray().size(160, 90);
     let plan = plan_many_with(
         &dev,
-        &[
-            detector,
-            FrameRequirements::luma().output_resolution(640, 360),
-            third,
-        ],
+        &[detector, Frames::gray().size(640, 360), third],
         &registry(),
     )
     .unwrap();
@@ -345,7 +327,7 @@ fn shared_plans_scale_with_the_isp_like_single_plans() {
         mode(FourCc::NV12, 1280, 800, 30),
         mode(FourCc::NV12, 320, 240, 30),
     ]);
-    let detector = FrameRequirements::luma().output_resolution(320, 180);
+    let detector = Frames::gray().size(320, 180);
     let plan = plan_many_with(&dev, std::slice::from_ref(&detector), &registry()).unwrap();
     assert_eq!(plan.consumers[0].output_resolution(), (320, 200), "{plan}");
 
@@ -353,7 +335,7 @@ fn shared_plans_scale_with_the_isp_like_single_plans() {
     let dev = ov9782(vec![mode(FourCc::YUYV, 1280, 800, 30)]);
     let plan = plan_many_with(
         &dev,
-        &[detector, FrameRequirements::formats([FourCc::RG24])],
+        &[detector, Frames::formats([FourCc::RG24])],
         &registry(),
     )
     .unwrap();
@@ -377,8 +359,8 @@ fn native_pisp_serves_two_sizes_and_formats_from_one_pass() {
         ],
     );
     dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
-    let viewer = FrameRequirements::formats([FourCc::NV12]);
-    let detector = FrameRequirements::formats([FourCc::RG24]).output_resolution(640, 400);
+    let viewer = Frames::formats([FourCc::NV12]);
+    let detector = Frames::formats([FourCc::RG24]).size(640, 400);
     let plan = plan_many_with(&dev, &[viewer.clone(), detector.clone()], &registry()).unwrap();
     assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
     let (main, second) = (&plan.consumers[0], &plan.consumers[1]);
@@ -399,14 +381,14 @@ fn native_pisp_serves_two_sizes_and_formats_from_one_pass() {
     );
 
     // The same size in both formats: two outputs as well.
-    let rgb = FrameRequirements::formats([FourCc::RG24]);
+    let rgb = Frames::formats([FourCc::RG24]);
     let plan = plan_many_with(&dev, &[viewer.clone(), rgb.clone()], &registry()).unwrap();
     assert!(plan.consumers[1].isp_second_output, "{plan}");
     assert_eq!(plan.consumers[1].isp_format, Some(FourCc::RG24));
 
     // A third output does not fit: the sizes go first (all at the mode's size), the RGB
     // consumer keeps its format on the second output.
-    let small_nv12 = FrameRequirements::formats([FourCc::NV12]).output_resolution(320, 200);
+    let small_nv12 = Frames::formats([FourCc::NV12]).size(320, 200);
     let plan = plan_many_with(&dev, &[viewer, detector, small_nv12], &registry()).unwrap();
     assert!(
         plan.consumers
@@ -421,7 +403,7 @@ fn native_pisp_serves_two_sizes_and_formats_from_one_pass() {
     assert_eq!(plan.mode.format.code, FourCc::RG24, "{plan}");
     assert!(plan.consumers[0].isp_format.is_none());
 
-    // A sensor Styx drives runs at any rate in its range: saving power, exactly the rate asked.
+    // A sensor Styx drives runs at any rate in its range: exactly the rate asked.
     for m in &mut dev.backends[0].descriptor.modes {
         m.interval_stepwise = Some(IntervalStepwise {
             min: Interval::from_fps(120).unwrap(),
@@ -429,7 +411,7 @@ fn native_pisp_serves_two_sizes_and_formats_from_one_pass() {
             step: Interval::new(1000, 1).unwrap(),
         });
     }
-    let slow = rgb.min_fps(30).priority(Priority::Power);
+    let slow = rgb.fps(30);
     let plan = plan_many_with(&dev, &[slow], &registry()).unwrap();
     assert_eq!(plan.interval, Interval::from_fps(30), "{plan}");
 }
@@ -449,7 +431,7 @@ fn native_pisp_supplies_the_first_pyramid_level() {
         ],
     );
     dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
-    let plan = plan_frames_with(&dev, &FrameRequirements::luma().pyramid(2), &registry()).unwrap();
+    let plan = plan_frames_with(&dev, &Frames::gray().pyramid(2), &registry()).unwrap();
     assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
     assert_eq!(plan.isp_pyramid_level, Some(1), "{plan}");
     let pyramid: Vec<StepExecution> = plan
@@ -459,13 +441,13 @@ fn native_pisp_supplies_the_first_pyramid_level() {
         .map(|s| s.execution)
         .collect();
     assert_eq!(pyramid, vec![StepExecution::Hardware, StepExecution::Cpu]);
-    let hardware = FrameRequirements::formats([FourCc::NV12])
+    let hardware = Frames::formats([FourCc::NV12])
         .pyramid(1)
         .pyramid_source(PyramidSource::HardwareOnly);
     let plan = plan_frames_with(&dev, &hardware, &registry()).unwrap();
     assert_eq!(plan.isp_pyramid_level, Some(1), "{plan}");
     // Shared with a plain consumer: the capture is started with the pyramid level.
-    let viewer = FrameRequirements::formats([FourCc::NV12]);
+    let viewer = Frames::formats([FourCc::NV12]);
     let shared = plan_many_with(&dev, &[hardware.clone(), viewer], &registry()).unwrap();
     assert!(shared.setup_key().contains("pyramid=Some(1)"), "{shared}");
     // No PiSP (the software ISP): box filters only.

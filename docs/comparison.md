@@ -68,13 +68,12 @@ Styx: say what you need; the planner picks camera, mode and route (here the PiSP
 Rust; for a USB camera YUYV and a converter), and prints why.
 
 ```rust
-let wants = FrameRequirements::formats([FourCc::NV12])
-    .output_resolution(1280, 800)
-    .min_fps(30)
-    .priority(Priority::Power);          // exactly 30 fps where the sensor allows it
-let plan = styx::planner::plan_best(&styx::probe_all(), &wants)?;
-println!("{plan}");                      // steps, where they run, cost, rejected options
-for frame in plan.start()?.take(90) {
+let frames = Frames::nv12()
+    .size(1280, 800)
+    .fps(30)                             // exactly 30 fps, or an error naming the rates there are
+    .open_best(&styx::probe_all())?;
+println!("{}", frames.plan());           // steps, where they run, cost, rejected options
+for frame in frames.take(90) {
     let meta = frame.meta();             // timestamp, sequence, what produced the frame
     let y = &frame.planes()[0];          // NV12 Y plane, a dma-buf mapped on first read
 }
@@ -217,30 +216,30 @@ firmware runs AE/AWB and Styx exposes its controls as they are (`camera_controls
 
 | | how | effect |
 |---|---|---|
-| Styx, any mode | `CaptureRequest::interval(Interval::from_fps(30)?)`, or `min_fps(30)` + `Priority::Power` in the planner | exact: 30.000 fps measured (`fps = pixel rate / (line length × frame length)`, frame length chosen per rate) |
+| Styx, any mode | `Frames::nv12().fps(30)`, or `CaptureRequest::interval(Interval::from_fps(30)?)` | exact: 30.000 fps measured (`fps = pixel rate / (line length × frame length)`, frame length chosen per rate) |
 | Styx, raw capture | `set_control(FRAME_RATE, Float(60.0))` while streaming | lands on a predicted frame (`camera_controls`: 33.33 ms then 16.67 ms intervals) |
-| Styx, processed capture | `reconfigure` at another rate (the loop holds the rate it started with; AE chooses exposures within it) | 72 ms from the restart to the first frame at 60 fps |
+| Styx, processed capture | open again at another rate (or `CaptureHandle::reconfigure`) (the loop holds the rate it started with; AE chooses exposures within it) | 72 ms from the restart to the first frame at 60 fps |
 | libcamera | `FrameDurationLimits` min = max at `start()` or in a request; min < max lets AE stretch frames in low light | the HeliOS service, asking for no rate, ran at 50 then 30 fps as the light changed ([helios-trial.md](native-stack/helios-trial.md)) |
 | raw V4L2 | `VIDIOC_S_PARM` for UVC; `V4L2_CID_VBLANK` on a sensor subdevice (compute it yourself) | |
 
 ### Two streams of one camera
 
-Styx (`two_consumers`): two requirements, one capture; on the PiSP both come from one back end
+Styx (`two_consumers`): two requests, one capture; on the PiSP both come from one back end
 pass (output 0 NV12 1280x800, output 1 RGB 640x400), on other cameras the planner converts or
 scales per consumer. Each consumer has its own queue and pace.
 
 ```rust
 let plan = styx::planner::plan_many(&device, &[
-    FrameRequirements::formats([FourCc::NV12]).min_fps(30).priority(Priority::Power),
-    FrameRequirements::formats([FourCc::RG24]).output_resolution(640, 400).min_fps(30).priority(Priority::Power),
+    Frames::nv12().fps(30),
+    Frames::rgb().size(640, 400),
 ])?;
-let mut consumers = plan.start()?;       // Vec<PlannedFrames>, one per requirement
+let mut consumers = plan.start()?;       // Vec<Frames>, one per request
 ```
 
 Measured (`two_consumers`, CM5): the recorder took all 30 fps while a detector spending 50 ms
 per frame took 20 fps, both as dma-bufs from the two back end outputs. Both ask for the latest
-frame only (`PlanOverrides { queue_depth: Some(1), .. }`): frames queued for a slow consumer
-hold ISP buffers, and with the PiSP's 4 per output a deeper queue let the slow consumer pace
+frame only (`latest()`, the default delivery): frames queued for a slow consumer
+hold ISP buffers, and with the PiSP's 4 per output a deeper queue (`every_frame(3)`) let the slow consumer pace
 the camera for both (recorder and detector at 20 fps).
 
 libcamera: one configuration with two roles; every request carries a buffer per stream you
@@ -269,7 +268,7 @@ socket with a lease per consumer (`frame_socket`, HeliOS's `styx-frame-lease-v1`
 // camera process
 let service = CameraService::new(device).serve("/run/styx/front.sock")?;
 // any other process
-let client = FrameClient::request("/run/styx/front.sock", &FrameRequirements::luma().output_resolution(320, 200))?;
+let client = FrameClient::request("/run/styx/front.sock", &Frames::gray().size(320, 200))?;
 while let RecvOutcome::Data(frame) = client.recv(Duration::from_secs(1)) { /* dma-buf frame */ }
 ```
 
@@ -287,7 +286,7 @@ GStreamer: `tee` within one pipeline; across processes `pipewiresink` / `pipewir
 
 ### Async
 
-Styx: frames are awaited (`CaptureHandle::recv_async`, `PlannedFrames::next_frame_async`), the
+Styx: frames are awaited (`CaptureHandle::recv_async`, `Frames::next_frame_async`), the
 futures need no particular runtime (`async_capture` runs the same function under Tokio and on a
 10-line `std` executor), controls have `_async` variants, hotplug is an inventory watch.
 libcamera: callbacks on libcamera's internal thread (`requestCompleted`, `bufferCompleted`,
@@ -298,7 +297,7 @@ the application's job (libcamera-rs: a closure that you typically forward into a
 
 | | Styx | libcamera |
 |---|---|---|
-| API model | Ask for frames (`FrameRequirements`); the planner chooses camera, mode, ISP or converter and prints its reasoning; or pick mode and interval yourself | Configure streams by role, allocate buffers, queue requests, handle completions |
+| API model | Ask for frames (`Frames::nv12().size(..).fps(..)`); the planner chooses camera, mode, ISP or converter and prints its reasoning; or pick mode and interval yourself | Configure streams by role, allocate buffers, queue requests, handle completions |
 | Concurrency | Async-first, runtime-agnostic futures; blocking wrappers | Signals/callbacks on libcamera's thread |
 | Controls | Typed (exposure a duration, gain a ratio); a frame-accurate schedule per sensor; every frame reports what produced it, read back from embedded data where the sensor has it | Per request; applied by the pipeline handler; metadata per request |
 | 3A | In-process Rust (`styx-algo`, ported from the Raspberry Pi IPA, same tuning files); deterministic and replayable bit for bit | IPA module per platform, in-process if signed, else in a sandboxed proxy process |

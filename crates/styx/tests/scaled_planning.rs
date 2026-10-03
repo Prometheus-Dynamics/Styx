@@ -44,7 +44,7 @@ fn c270_recording(name: &str) -> PathBuf {
     path
 }
 
-fn first_frame(requirements: &FrameRequirements, name: &str) -> (FrameLease, (u32, u32)) {
+fn first_frame(requirements: &FrameRequest, name: &str) -> (FrameLease, (u32, u32)) {
     let path = c270_recording(name);
     let source =
         CaptureRequest::replay_source(ReplaySourceConfig::new(&path).pacing(ReplayPacing::Unpaced))
@@ -66,12 +66,7 @@ fn first_frame(requirements: &FrameRequirements, name: &str) -> (FrameLease, (u3
 
 #[test]
 fn luma_is_decoded_at_the_requested_size() {
-    let (frame, planned) = first_frame(
-        &FrameRequirements::luma()
-            .output_resolution(320, 180)
-            .pyramid(1),
-        "scaled-luma",
-    );
+    let (frame, planned) = first_frame(&Frames::gray().size(320, 180).pyramid(1), "scaled-luma");
     assert_eq!(planned, (320, 180));
     let res = frame.meta().format.resolution;
     assert_eq!((res.width.get(), res.height.get()), (320, 180));
@@ -86,8 +81,8 @@ fn luma_is_decoded_at_the_requested_size() {
 fn roi_is_given_in_capture_pixels_and_mapped_to_the_scaled_frame() {
     // The right half of the 1280x720 capture is the right half of the 640x360 output.
     let (frame, _) = first_frame(
-        &FrameRequirements::luma()
-            .output_resolution(640, 360)
+        &Frames::gray()
+            .size(640, 360)
             .roi(FrameRect::new(640, 0, 640, 720)),
         "scaled-roi",
     );
@@ -99,7 +94,7 @@ fn roi_is_given_in_capture_pixels_and_mapped_to_the_scaled_frame() {
 #[test]
 fn rgb_is_decoded_at_the_requested_size() {
     let (frame, planned) = first_frame(
-        &FrameRequirements::formats([FourCc::RG24]).output_resolution(640, 360),
+        &Frames::formats([FourCc::RG24]).size(640, 360),
         "scaled-rgb",
     );
     assert_eq!(planned, (640, 360));

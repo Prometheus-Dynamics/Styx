@@ -52,11 +52,19 @@ impl Default for Settings {
 }
 
 impl Settings {
-    fn priority(&self) -> Priority {
-        match self.priority.as_str() {
-            "throughput" => Priority::Throughput,
-            "power" => Priority::Power,
-            _ => Priority::Latency,
+    /// `queue-depth` 1 is the newest frame only, N every frame up to N; 0 takes it from the
+    /// (deprecated) `priority`: latency the newest frame, throughput 4 frames, power 3.
+    fn delivery(&self) -> Delivery {
+        let depth = match (self.queue_depth, self.priority.as_str()) {
+            (0, "throughput") => 4,
+            (0, "power") => 3,
+            (0, _) => 1,
+            (n, _) => n as usize,
+        };
+        if depth > 1 {
+            Delivery::EveryFrame(depth)
+        } else {
+            Delivery::Latest
         }
     }
 }
@@ -289,13 +297,19 @@ impl ObjectImpl for StyxSrc {
                     .build(),
                 glib::ParamSpecString::builder("priority")
                     .nick("Priority")
-                    .blurb("What the planner optimises for: latency, throughput or power")
+                    .blurb(
+                        "Deprecated, use queue-depth: frames queued when queue-depth is 0 \
+                         (latency: the newest only, throughput: 4, power: 3)",
+                    )
                     .default_value(Some("latency"))
                     .mutable_ready()
                     .build(),
                 glib::ParamSpecUInt::builder("queue-depth")
                     .nick("Queue depth")
-                    .blurb("Frames buffered between camera and element (0 = from priority)")
+                    .blurb(
+                        "Frames queued for the element: 1 = the newest frame only, N = every \
+                         frame up to N (0 = from priority)",
+                    )
                     .maximum(8)
                     .mutable_ready()
                     .build(),
@@ -488,8 +502,7 @@ impl BaseSrcImpl for StyxSrc {
         let options = StreamOptions {
             service: settings.service.as_deref(),
             camera: settings.camera.as_deref(),
-            priority: settings.priority(),
-            queue_depth: (settings.queue_depth > 0).then_some(settings.queue_depth as usize),
+            delivery: settings.delivery(),
         };
         let (stream, plan) =
             Stream::start(state.device.as_ref(), &negotiated, &options).map_err(|err| {
@@ -519,7 +532,7 @@ impl BaseSrcImpl for StyxSrc {
             else {
                 return false;
             };
-            let depth = u64::from(self.settings().queue_depth.max(1));
+            let depth = self.settings().delivery().queue_depth() as u64;
             q.set(true, duration, Some(duration * (depth + 1)));
             return true;
         }

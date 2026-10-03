@@ -23,9 +23,9 @@ backends: `v4l2` (USB and other V4L2 cameras, with the CPU converters for YUYV),
 | Example | Shows | Run |
 |---|---|---|
 | [`list_cameras`](00_quickstart/list_cameras.rs) | Every camera through every backend: modes, formats, frame rates (the exact range for sensors Styx drives), controls | `... --bin list_cameras` |
-| [`capture_frames`](00_quickstart/capture_frames.rs) | NV12 / RGB / luma at a size and frame rate; the planner picks camera and route and prints its plan | `... --bin capture_frames -- nv12 1280x800 30 90 [out.pgm]` |
+| [`capture_frames`](00_quickstart/capture_frames.rs) | NV12 / RGB / grey at a size and exactly a frame rate (`Frames::nv12().size(w, h).fps(n).open_best(..)`); the planner picks camera and route and prints its plan, or names the rates there are | `... --bin capture_frames -- nv12 1280x800 30 90 [out.pgm]` |
 | [`async_capture`](01_capture/async_capture.rs) | Awaiting frames under Tokio, and the same future on a ten-line `std` executor | `cargo run -p styx-examples --features async,native,v4l2 --bin async_capture [-- --no-runtime]` |
-| [`camera_controls`](01_capture/camera_controls.rs) | AE and AWB on and off, manual exposure and gain, EV, colour temperature and gains, denoise, frame rate; the frame each change lands on, from per-frame metadata; V4L2 controls by name | `... --bin camera_controls` |
+| [`camera_controls`](01_capture/camera_controls.rs) | Controls through the opened frames (`Frames::set_control`): AE and AWB on and off, manual exposure and gain, EV, colour temperature and gains, denoise, frame rate; the frame each change lands on, from per-frame metadata; V4L2 controls by name | `... --bin camera_controls` |
 | [`two_consumers`](01_capture/two_consumers.rs) | One capture, two consumers at different sizes and formats (both PiSP outputs from one pass); a slow consumer drops only its own frames | `... --bin two_consumers -- [seconds]` |
 | [`raw_processing`](01_capture/raw_processing.rs) | Raw Bayer frames through your own processing (the software ISP and a white balance loop written in the example), recorded to MCAP and replayed anywhere | `cargo run -p styx-examples --features native,replay-mcap --bin raw_processing -- record /tmp/raw.mcap 60` / `-- replay /tmp/raw.mcap` |
 | [`hotplug`](01_capture/hotplug.rs) | Cameras appearing and disappearing; a capture per camera | `cargo run -p styx-examples --features hotplug,native,v4l2 --bin hotplug -- [seconds]` |
@@ -50,7 +50,9 @@ sensor bridge (PiSP, embedded data) and a Logitech C270 on USB, in a dim room; a
 desktop with a v4l2loopback camera fed by GStreamer (`gst-launch-1.0 videotestsrc ! v4l2sink`,
 `STYX_V4L2_ALLOW_VIRTUAL=1`). All of them ran on the CM5; on the desktop all but
 `camera_service` (`camera_controls` there has only its V4L2 part, `hotplug` saw no unplug,
-`raw_processing` replayed the CM5's recording). Output, trimmed:
+`raw_processing` replayed the CM5's recording). `list_cameras`, `capture_frames` and
+`camera_controls` ran again on 2026-10-03 with the `Frames` API (`list_cameras`,
+which does not plan, lists the same plus the 1280x720 modes); the others' plans printed before plans showed their cost line. Output, trimmed:
 
 <details><summary>CM5: <code>list_cameras</code></summary>
 
@@ -102,42 +104,60 @@ ov9782 (kernel driver i2c 10-0060)
 
 <details><summary>CM5: <code>capture_frames</code></summary>
 
-`nv12 1280x800 30 90` and `rgb 640x400 60 120` (cold start: AE begins at 1 ms):
+2026-10-03, with the `Frames` API: `nv12 1280x800 30 90`, `rgb 640x400 60 120` and
+`gray 1280x800 45 45` (cold start: AE begins at 1 ms):
 
 ```text
 frame plan for ov9782 (styx bridge i2c 10-0060) via native NV12 1280x800 @ 30 fps: ~9.7 ms latency, ~0.30 ms CPU per frame
   1. capture    hardware    9.69 ms  native NV12 1280x800 (PiSP front end statistics and back end, raw frames as dma-bufs, 3A in Styx)
+  cost 5.15 = CPU + latency x 0.5: the cheapest route to frames of this size
   rejected (38 total, first 8):
     - native pBAA 1280x800: raw pBAA would need a decoder without 3A; the camera's processed modes run AE/AWB
     ...
 delivers 1280x800
-frame 0: NV12 1280x800, 2 plane(s), t=21263.713 s, exposure 1.00 ms x gain 1.00
-frame 89: NV12 1280x800, 2 plane(s), t=21266.680 s, exposure 33.22 ms x gain 10.00
-90 frames, open -> first frame 33.8 ms, 30.000 fps by sensor timestamps
+frame 0: NV12 1280x800, 2 plane(s), t=52040.761 s, exposure 1.00 ms x gain 1.00
+frame 89: NV12 1280x800, 2 plane(s), t=52043.727 s, exposure 20.69 ms x gain 1.50
+90 frames, open -> first frame 34.4 ms, 30.000 fps by sensor timestamps
 
 frame plan for ov9782 (styx bridge i2c 10-0060) via native RG24 640x400 @ 60 fps: ~5.2 ms latency, ~0.30 ms CPU per frame
-120 frames, open -> first frame 29.3 ms, 59.983 fps by sensor timestamps
+    - v4l2 YUYV 640x480: cannot run at 60 fps: runs at 30, 25, 20, 15, 10, 5 fps
+120 frames, open -> first frame 29.8 ms, 59.983 fps by sensor timestamps
+
+frame plan for ov9782 (styx bridge i2c 10-0060) via native NV12 1280x800 @ 45 fps: ~9.7 ms latency, ~0.30 ms CPU per frame
+  2. luma view  zero-copy   0.00 ms  Y plane of NV12
+45 frames, open -> first frame 33.9 ms, 45.000 fps by sensor timestamps
 ```
 
-The same request with `STYX_NATIVE_ISP=software` (the software ISP instead of the PiSP), the
-USB camera (`STYX_CAMERA=uvc ... nv12 640x480 30 60`), and in libcamera mode the OV9782 under
-its kernel driver (`STYX_CAMERA=sensor:`):
+("open -> first frame" now includes planning: `open_best` plans and starts.) The USB camera
+(`STYX_CAMERA=046d ... nv12 640x480 30 60`), then a rate it does not list (`... 50 10`):
+
+```text
+frame plan for 046d:0825 via v4l2 YUYV 640x480 @ 30 fps: ~26.8 ms latency, ~0.11 ms CPU per frame
+  1. capture    zero-copy  26.67 ms  v4l2 YUYV 640x480 (camera exposure, encode and transfer)
+  2. decode     cpu         0.11 ms  YUYV -> NV12 via yuyv-nv12
+  cost 13.49 = CPU + latency x 0.5: the cheapest route to frames of this size
+    - v4l2 YUYV 752x416: cannot run at 30 fps: runs at 25, 20, 15, 10, 5 fps
+60 frames, open -> first frame 502.4 ms, 24.958 fps by sensor timestamps
+
+Error: Plan(FrameRate("no mode delivering these frames runs at exactly 50 fps; they run at 30, 25, 20, 15, 10, 5 fps (v4l2 YUYV 640x480 and 8 more); 25, 20, 15, 10, 5 fps (v4l2 YUYV 752x416); 20, 15, 10, 5 fps (v4l2 YUYV 800x448 and 2 more); ..."))
+```
+
+(The C270's own auto exposure stretched its frames in the dim room: 25 fps. Asking a sensor Styx
+drives for a rate beyond its range names the range: `any rate 2.1..120.6 fps (native NV12
+1280x800)`.)
+
+Before the `Frames` API (2026-10-02), the same requests with `STYX_NATIVE_ISP=software` (the
+software ISP instead of the PiSP) and in libcamera mode the OV9782 under its kernel driver
+(`STYX_CAMERA=sensor:`):
 
 ```text
 frame plan for ov9782 (styx bridge i2c 10-0060) via native NV12 1280x800 @ 30 fps: ~10.1 ms latency, ~4.17 ms CPU per frame
   1. capture    cpu        10.06 ms  native NV12 1280x800 (software ISP and 3A in Styx)
 90 frames, open -> first frame 34.7 ms, 30.000 fps by sensor timestamps
 
-frame plan for 046d:0825 via v4l2 YUYV 640x480 @ 30 fps: ~26.8 ms latency, ~0.11 ms CPU per frame
-  1. capture    zero-copy  26.67 ms  v4l2 YUYV 640x480 (camera exposure, encode and transfer)
-  2. decode     cpu         0.11 ms  YUYV -> NV12 via yuyv-nv12
-60 frames, open -> first frame 623.4 ms, 13.397 fps by sensor timestamps
-
 frame plan for ov9782 (kernel driver i2c 10-0060) via native NV12 1280x800 @ 30 fps: ~9.7 ms latency, ~0.30 ms CPU per frame
 90 frames, open -> first frame 41.2 ms, 30.000 fps by sensor timestamps
 ```
-
-(The C270's own auto exposure stretched its frames in the dim room: 13.4 fps.)
 
 </details>
 
@@ -154,7 +174,41 @@ no runtime: std block_on
 90 frames
 ```
 
-`camera_controls` (in the dim room AE ends at its limits, 33 ms x 10, and keeps searching):
+`camera_controls` with the `Frames` API (2026-10-03; brighter than the day before, so AE
+converges):
+
+```text
+== processed NV12, 3A in Rust ==
+AE converged at frame 7, 235 ms after open: frame    6 t=52049.6492 s: exposure 22.523 ms, gain 1.50 (analogue 1.50 x digital 1.00), frame 33.33 ms (read back)
+AWB: Uint(6161) K
+manual: exposure 10 ms, gain 2.0
+  landed 3 frame(s) after the request: frame   10 t=52049.7825 s: exposure 10.001 ms, gain 2.00 (analogue 2.00 x digital 1.00), frame 33.33 ms (read back)
+exposure fixed at 5 ms, gain automatic (0), +1 stop of exposure compensation
+  landed 3 frame(s) after the request: frame   14 t=52049.9158 s: exposure  4.996 ms, gain 10.00 (analogue 10.00 x digital 1.00), frame 33.33 ms (read back)
+  AE converged: frame   35 t=52050.6158 s: exposure  4.996 ms, gain 10.00 (analogue 10.00 x digital 1.00), frame 33.33 ms (read back)
+white balance: AWB off, 5000 K; then red 1.8 / blue 1.4
+  colour temperature now Uint(5000)
+  gains red Float(1.8) blue Float(1.4)
+everything automatic again
+frame rate control: control apply failed: a processed native capture keeps the frame rate it started with (AE chooses exposures within it); start it again at another rate (CaptureHandle::reconfigure)
+opened again at 60 fps: first frame 72 ms after the restart began
+  frame    0 t=52050.8553 s: exposure 16.553 ms, gain 3.00 (analogue 3.00 x digital 1.00), frame 16.67 ms (read back)
+
+== raw pBAA, controls straight to the sensor ==
+exposure 6 ms, gain 3.0
+  landed 2 frame(s) after the request: frame    7 t=52051.1493 s: exposure  5.997 ms, gain 3.00 (analogue 3.00 x digital 1.00), frame 33.33 ms (read back)
+frame rate 60 fps
+  frame    9 t=52051.2159 s: exposure  5.997 ms, gain 3.00 (...), frame 16.67 ms (read back) (interval 33.33 ms)
+  frame   10 t=52051.2326 s: exposure  5.997 ms, gain 3.00 (...), frame 16.67 ms (read back) (interval 16.67 ms)
+
+== V4L2: 046d:0825 ==
+  Auto Exposure                        now Some(Int(3))
+  Exposure Time, Absolute              now Some(Int(336))
+  Brightness: Int(128) -> Int(255)
+```
+
+The day before, through `CaptureHandle` (in the dim room AE ends at its limits, 33 ms x 10, and
+keeps searching):
 
 ```text
 == processed NV12, 3A in Rust ==

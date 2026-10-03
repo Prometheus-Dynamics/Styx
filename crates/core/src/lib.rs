@@ -37,10 +37,7 @@ pub mod prelude {
             RecvWaitOutcome, SendOutcome, SendWaitOutcome, bounded, bounded_with, default_bounded,
             newest,
         },
-        requirements::{
-            FrameRect, FrameRequirements, HardwarePolicy, OutputFormat, PlanOverrides, Priority,
-            PyramidRequest, PyramidSource,
-        },
+        requirements::{FrameRect, OutputFormat, PyramidRequest, PyramidSource},
         transform::{
             FrameTransform, Rotation90, TransformError, TransformPoolConfig,
             TransformResidencyCapabilities, configure_transform_pool,
@@ -48,6 +45,10 @@ pub mod prelude {
             transform_pool_stats,
         },
     };
+
+    // The previous frame request, kept for one release (see `requirements`).
+    #[allow(deprecated)]
+    pub use crate::requirements::{FrameRequirements, HardwarePolicy, PlanOverrides, Priority};
 
     #[cfg(unix)]
     pub use crate::buffer::{FrameBackingExport, FrameExportError, FrameFdPlane};

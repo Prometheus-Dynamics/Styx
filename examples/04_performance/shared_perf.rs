@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run(recording: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let detector = FrameRequirements::luma().output_resolution(320, 180);
+    let detector = Frames::gray().size(320, 180);
 
     let mut consumers = plan_many(
         &replay(recording)?,
@@ -72,9 +72,7 @@ fn run(recording: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn next(
-    frames: &mut styx::planner::PlannedFrames,
-) -> Result<FrameLease, Box<dyn std::error::Error>> {
+fn next(frames: &mut Frames) -> Result<FrameLease, Box<dyn std::error::Error>> {
     for _ in 0..20 {
         match frames.next_frame(Duration::from_millis(500)) {
             RecvOutcome::Data(frame) => return Ok(frame),
