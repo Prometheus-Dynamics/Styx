@@ -493,7 +493,7 @@ impl NativeCamera {
         self.session.set_embedded(None);
         let mut plan = link_plan(&topo, &route);
         let embedded = (self.options.embedded_data
-            && self.info.description.embedded_data.is_some())
+            && self.info.description.embedded_data_in(&mode.format))
         .then(|| embedded_link(&topo, &route))
         .flatten();
         plan.extend(embedded);

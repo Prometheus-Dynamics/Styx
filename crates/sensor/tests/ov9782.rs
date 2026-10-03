@@ -28,8 +28,12 @@ const MODES: [(u32, u32, u32, u32, u32, u32); 3] = [
 
 /// The frame rate at a vertical blanking: the driver's formula, with the one line the sensor
 /// adds to VTS (measured on the device; the driver's own formula leaves it out).
+/// The frame rate the sensor runs at: the driver's timing, at the pixel rate the system clock
+/// gives (raw10: the driver's link frequency x 2 x lanes / 10 = 160 MHz; raw8: the PLL
+/// multiplier 96 instead of 80, 192 MHz, measured, not the driver's 200 MHz).
 fn driver_fps(bits: f64, w: u32, h: u32, hblank: u32, vblank: u32) -> f64 {
-    let pixel_rate = LINK_FREQ * 2.0 * LANES / bits;
+    let raw10 = LINK_FREQ * 2.0 * LANES / 10.0;
+    let pixel_rate = if bits == 8.0 { raw10 * 1.2 } else { raw10 };
     pixel_rate / (f64::from(w + hblank) * f64::from(h + vblank + 1))
 }
 
@@ -46,15 +50,15 @@ fn identity_and_formats() {
     assert_eq!(d.formats["raw10"].code, MbusCode::SBGGR10_1X10);
     assert_eq!(d.formats["raw8"].code, MbusCode::SBGGR8_1X8);
     assert_eq!(d.formats["raw10"].bits(), 10);
-    // Pixel rate = link frequency x 2 x lanes / bpp, as the driver reports it.
+    // raw10: link frequency x 2 x lanes / bpp, as the driver reports it. raw8: the system
+    // clock's 192 MHz (the driver's 200 MHz ran 4% slow), its embedded line unreadable.
     assert_eq!(
         d.formats["raw10"].pixel_rate as f64,
         LINK_FREQ * 2.0 * LANES / 10.0
     );
-    assert_eq!(
-        d.formats["raw8"].pixel_rate as f64,
-        LINK_FREQ * 2.0 * LANES / 8.0
-    );
+    assert_eq!(d.formats["raw8"].pixel_rate, 192_000_000);
+    assert!(d.embedded_data_in("raw10"));
+    assert!(!d.embedded_data_in("raw8"));
     assert_eq!(
         d.modes.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
         ["1280x800", "1280x720", "640x400"]
@@ -106,9 +110,9 @@ fn computed_fps_ranges() {
         ("1280x800", "raw10", 2.0995, 60.2798, 120.626),
         ("1280x720", "raw10", 2.1027, 63.0465, 144.213),
         ("640x400", "raw10", 2.1157, 77.2243, 259.787),
-        ("1280x800", "raw8", 2.6244, 75.3498, 150.782),
-        ("1280x720", "raw8", 2.6284, 78.8082, 180.266),
-        ("640x400", "raw8", 2.6446, 96.5303, 324.734),
+        ("1280x800", "raw8", 2.5194, 72.3358, 144.751),
+        ("1280x720", "raw8", 2.5233, 75.6559, 173.055),
+        ("640x400", "raw8", 2.5388, 92.6691, 311.745),
     ];
     for (m, f, lo, def, hi) in expected {
         let got = r(m, f);

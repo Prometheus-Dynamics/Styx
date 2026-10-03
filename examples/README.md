@@ -59,7 +59,7 @@ ov9782 (styx bridge i2c 10-0060)
   keys: bridge:/dev/v4l-subdev2, i2c:10-0060, native:ov9782
   backend native: bridge=/dev/v4l-subdev2 backend=bridge sensor=ov9782 description=embedded:ov9782 ... isp=pisp
     pBAA 1280x800  60.280, 120.626 fps (any rate 2.100..120.626 fps)
-    BA81 1280x800  75.350, 150.782 fps (any rate 2.624..150.782 fps)
+    BA81 1280x800  72.336, 144.751 fps (any rate 2.519..144.751 fps)
     pBAA  640x400  77.224, 259.788 fps (any rate 2.116..259.788 fps)
     NV12 1280x800  60.280, 120.626 fps (any rate 2.100..120.626 fps)
     RG24 1280x800  60.280, 120.626 fps (any rate 2.100..120.626 fps)
@@ -67,7 +67,7 @@ ov9782 (styx bridge i2c 10-0060)
     ...
     control exposure_time_us             9..476184 (default 5842)
     control gain                         1..15.9375 (default 1)
-    control frame_rate                   2.0995035..324.73438 (default 60.27982)
+    control frame_rate                   2.0995035..311.7446 (default 60.27982)
     control ae_enable                    false..true (default true)
     control awb_enable                   false..true (default true)
     control colour_temperature           1000..20000 (default 0)

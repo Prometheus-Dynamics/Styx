@@ -119,6 +119,13 @@ address in the device tree (`kernel-modules/styx-sensor-bridge`, overlay templat
 bridge makes the receiver see a sensor subdevice; Styx powers the sensor, writes its
 registers and starts and stops it when the receiver asks (`PROTOCOL.md`).
 
+Check every format's timing and embedded line on the board, not only the one you started
+with. A format's `pixel_rate` is the rate the sensor's system clock gives, which is not always
+what a kernel driver reports (the OV9782's raw8 runs at 192 MHz, its driver says 200 MHz: 4%
+slow frames). An embedded layout written for one bit depth may not hold in another (the
+OV9782's raw8 line carries each value's top 8 bits only): `embedded_data = false` under that
+`[formats.<name>]` leaves the line uncaptured there, and frames report predicted values.
+
 ## Checking a camera
 
 * `bridge_capture` (`crates/native/examples`): lists every camera with its modes and exact
