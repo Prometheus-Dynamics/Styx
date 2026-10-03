@@ -207,11 +207,12 @@ fn native_device() -> Result<ProbedDevice, String> {
         .ok_or_else(|| "no native camera".into())
 }
 
-fn req(code: FourCc, fps: u32) -> FrameRequirements {
-    FrameRequirements::formats([code])
-        .min_fps(fps)
-        .max_resolution(1280, 800)
-        .priority(Priority::Power)
+/// Exactly `fps`, at most 1280x800, up to three frames queued.
+fn req(code: FourCc, fps: u32) -> FrameRequest {
+    Frames::formats([code])
+        .fps(fps)
+        .size_at_most(1280, 800)
+        .every_frame(3)
 }
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -241,7 +242,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "shared" => {
             let (fps, frames) = (num(2, 30) as u32, num(3, 300) as usize);
             let dev = native_device()?;
-            let small = req(FourCc::RG24, fps).output_resolution(640, 400);
+            let small = req(FourCc::RG24, fps).size(640, 400);
             let plan = styx::planner::plan_many(&dev, &[req(FourCc::NV12, fps), small])
                 .map_err(|e| e.to_string())?;
             print!("{plan}");
@@ -279,10 +280,10 @@ fn run(args: &[String]) -> Result<(), String> {
             };
             let levels = 2u8;
             // Luma (NV12's Y plane): the planner attaches pyramid levels to luma frames.
-            let r = FrameRequirements::luma()
-                .min_fps(fps)
-                .max_resolution(1280, 800)
-                .priority(Priority::Power)
+            let r = Frames::gray()
+                .fps(fps)
+                .size_at_most(1280, 800)
+                .every_frame(3)
                 .pyramid(levels)
                 .pyramid_source(source);
             let dev = native_device()?;
@@ -351,7 +352,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "client" => {
             let (path, which, frames) = (arg(2), arg(3), num(4, 300) as usize);
             let r = match which.as_str() {
-                "rgb" => req(FourCc::RG24, 30).output_resolution(640, 400),
+                "rgb" => req(FourCc::RG24, 30).size(640, 400),
                 _ => req(FourCc::NV12, 30),
             };
             let client = FrameClient::request(&path, &r).map_err(|e| e.to_string())?;

@@ -80,13 +80,14 @@ fn main() -> Result<(), CaptureError> {
         }
     }
     let wants = [
-        ("nv12", FrameRequirements::formats([FourCc::NV12])),
-        ("luma", FrameRequirements::luma()),
-        ("rgb", FrameRequirements::formats([FourCc::RG24])),
+        ("nv12", Frames::nv12()),
+        ("luma", Frames::gray()),
+        ("rgb", Frames::rgb()),
     ];
     for (name, req) in wants {
-        let req = req.min_fps(30).max_resolution(1280, 800);
-        let plan = match styx::planner::plan_best(&probe.devices, &req) {
+        // The mode's fastest rate, at most 1280x800.
+        let req = req.fps_at_least(30).size_at_most(1280, 800);
+        let plan = match req.plan_best(&probe.devices) {
             Ok(p) => p,
             Err(e) => {
                 println!("\n{name}: {e}");

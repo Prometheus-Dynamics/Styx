@@ -177,7 +177,7 @@ fn c270_recording() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
 /// Replay the fixture through a plan for `requirements`, `frames` frames.
 fn planned_replay(
     recording: &std::path::Path,
-    requirements: FrameRequirements,
+    requirements: FrameRequest,
     frames: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let source = CaptureRequest::replay_source(
@@ -206,7 +206,7 @@ fn planned_replay(
 /// every consumer has `frames` frames.
 fn shared_replay(
     recording: &std::path::Path,
-    requirements: &[FrameRequirements],
+    requirements: &[FrameRequest],
     frames: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let source = CaptureRequest::replay_source(
@@ -233,7 +233,7 @@ fn shared_replay(
 /// into memfds, released by the client).
 fn served_replay(
     recording: &std::path::Path,
-    requirements: FrameRequirements,
+    requirements: FrameRequest,
     frames: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let source = CaptureRequest::replay_source(
@@ -276,8 +276,8 @@ fn served_camera(
         .keep_streaming()
         .serve(&path)?;
     let clients = [
-        FrameRequirements::luma().output_resolution(320, 180),
-        FrameRequirements::formats([FourCc::RG24]).output_resolution(320, 180),
+        Frames::gray().size(320, 180),
+        Frames::formats([FourCc::RG24]).size(320, 180),
     ]
     .iter()
     .map(|req| styx::ipc::FrameClient::request(&path, req))
@@ -308,22 +308,22 @@ const SCENARIOS: [&str; 10] = [
 ];
 
 fn run(scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let luma = FrameRequirements::luma();
-    let rgb = FrameRequirements::formats([FourCc::RG24]);
+    let luma = Frames::gray();
+    let rgb = Frames::formats([FourCc::RG24]);
     let (cameras, requirements) = match scenario {
         "mem_virtual_720p_1cam" => return measure(scenario, 1, || virtual_cameras(1, 60)),
         "mem_virtual_720p_4cam" => return measure(scenario, 4, || virtual_cameras(4, 60)),
         "mem_mjpeg_luma_720p" => (1, luma),
-        "mem_mjpeg_luma_to_320x180" => (1, luma.output_resolution(320, 180)),
+        "mem_mjpeg_luma_to_320x180" => (1, luma.size(320, 180)),
         "mem_mjpeg_rgb_720p" => (1, rgb),
-        "mem_mjpeg_rgb_to_320x180" => (1, rgb.output_resolution(320, 180)),
+        "mem_mjpeg_rgb_to_320x180" => (1, rgb.size(320, 180)),
         "mem_shared_luma_and_rgb_to_320x180" | "mem_shared_3x_luma_to_320x180" => {
-            let small = luma.output_resolution(320, 180);
+            let small = luma.size(320, 180);
             let consumers = if scenario == "mem_shared_3x_luma_to_320x180" {
                 // Decoded once for all three.
                 vec![small.clone(), small.clone(), small]
             } else {
-                vec![small, rgb.output_resolution(320, 180)]
+                vec![small, rgb.size(320, 180)]
             };
             let recording = c270_recording()?;
             let result = measure(scenario, 1, || shared_replay(&recording, &consumers, 60));
@@ -339,7 +339,7 @@ fn run(scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
         "mem_served_luma_to_320x180" => {
             let recording = c270_recording()?;
             let result = measure(scenario, 1, || {
-                served_replay(&recording, luma.output_resolution(320, 180), 60)
+                served_replay(&recording, luma.size(320, 180), 60)
             });
             let _ = std::fs::remove_file(recording);
             return result;

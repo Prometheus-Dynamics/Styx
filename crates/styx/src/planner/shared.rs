@@ -12,10 +12,12 @@ use std::time::Duration;
 use styx_codec::CodecRegistryHandle;
 use styx_core::prelude::*;
 
+use super::request::{FrameRate, FrameRequest};
 use super::routes::{self, Candidate, backend_name, describe};
 use super::session::{SharedSession, same_preparation};
 use super::{
-    FramePlan, PlanError, PlanRejection, RankKey, StepKind, cost, default_registry, plan_from,
+    FramePlan, PlanError, PlanRejection, RankKey, StepKind, cost, default_registry, no_candidates,
+    plan_from, rate,
 };
 use crate::BackendKind;
 use crate::capture_api::{CaptureError, CaptureRequest, IdleStop, StyxConfig};
@@ -28,7 +30,7 @@ pub struct SharedFramePlan {
     pub backend: BackendKind,
     pub mode: Mode,
     pub interval: Option<Interval>,
-    /// One plan per consumer, in the order the requirements were given, all on this capture.
+    /// One plan per consumer, in the order the requests were given, all on this capture.
     pub consumers: Vec<FramePlan>,
     pub rejected: Vec<PlanRejection>,
     stop_when_idle: Option<(Duration, IdleStop)>,
@@ -66,38 +68,56 @@ impl fmt::Display for SharedFramePlan {
     }
 }
 
-/// Plan `requirements` (one per consumer) on one capture of `device`, using the default codec
-/// registry.
-pub fn plan_many(
+/// Plan `requests` (one per consumer) on one capture of `device`, using the default codec
+/// registry. Each consumer gets its own format, size, delivery and route; they share the mode
+/// and the frame rate (the one every request accepts). Takes [`FrameRequest`]s (or the
+/// deprecated `FrameRequirements`).
+pub fn plan_many<R: Clone + Into<FrameRequest>>(
     device: &ProbedDevice,
-    requirements: &[FrameRequirements],
+    requests: &[R],
 ) -> Result<SharedFramePlan, PlanError> {
-    plan_many_with(device, requirements, &default_registry()?)
+    plan_many_with(device, requests, &default_registry()?)
 }
 
 /// [`plan_many`] with `registry` to find decoders.
-pub fn plan_many_with(
+pub fn plan_many_with<R: Clone + Into<FrameRequest>>(
     device: &ProbedDevice,
-    requirements: &[FrameRequirements],
+    requests: &[R],
     registry: &CodecRegistryHandle,
 ) -> Result<SharedFramePlan, PlanError> {
-    if requirements.is_empty() {
+    let requests: Vec<FrameRequest> = requests.iter().cloned().map(Into::into).collect();
+    plan_shared(device, &requests, registry)
+}
+
+fn plan_shared(
+    device: &ProbedDevice,
+    requests: &[FrameRequest],
+    registry: &CodecRegistryHandle,
+) -> Result<SharedFramePlan, PlanError> {
+    if requests.is_empty() {
         return Err(PlanError::NoConsumers);
     }
+    let rates: Vec<FrameRate> = requests.iter().map(|r| r.fps).collect();
+    let fps = rate::combine(&rates).map_err(PlanError::FrameRate)?;
     let mut rejected = Vec::new();
     let mut best: Option<(RankKey, &ProbedBackend, &Mode, Vec<Candidate<'_>>)> = None;
     for backend in &device.backends {
         // Every consumer's backend override must allow it.
-        if requirements.iter().any(|req| {
-            req.overrides
-                .backend
-                .as_ref()
-                .is_some_and(|b| !b.eq_ignore_ascii_case(backend_name(backend.kind)))
-        }) {
+        if requests
+            .iter()
+            .any(|req| req.backend.is_some_and(|b| b != backend.kind))
+        {
             continue;
         }
         for mode in &backend.descriptor.modes {
-            let candidates: Result<Vec<_>, String> = requirements
+            if let Err(reason) = rate::check(mode, fps) {
+                rejected.push(PlanRejection {
+                    candidate: describe(backend, mode),
+                    reason,
+                });
+                continue;
+            }
+            let candidates: Result<Vec<_>, String> = requests
                 .iter()
                 .enumerate()
                 .map(|(i, req)| {
@@ -111,7 +131,7 @@ pub fn plan_many_with(
                 .collect();
             match candidates {
                 Ok(candidates) => {
-                    let key = shared_rank(&candidates, requirements);
+                    let key = shared_rank(&candidates, requests);
                     if best.as_ref().is_none_or(|(best_key, ..)| key < *best_key) {
                         best = Some((key, backend, mode, candidates));
                     }
@@ -124,7 +144,7 @@ pub fn plan_many_with(
         }
     }
     let Some((_, backend, mode, mut candidates)) = best else {
-        return Err(PlanError::NoCandidates { rejected });
+        return Err(no_candidates(fps, rejected));
     };
     // The ISP has two outputs: the main one at the larger size consumers want and the second
     // at the smaller one (a native PiSP also in either processed format). Consumers that fit
@@ -160,10 +180,10 @@ pub fn plan_many_with(
     // First the sizes go (consumers scale on their own), then the formats (they convert).
     let mut full_size = vec![false; candidates.len()];
     if !fits(&outputs_of(&candidates)) {
-        for (i, req) in requirements.iter().enumerate() {
+        for (i, req) in requests.iter().enumerate() {
             if candidates[i].isp_output.is_some() {
                 let mut full = req.clone();
-                full.output_resolution = None;
+                full.size = None;
                 let mut candidate =
                     match routes::isp_format_candidate(backend, mode, &full, registry) {
                         Some(c) => c,
@@ -182,11 +202,11 @@ pub fn plan_many_with(
         }
     }
     if !fits(&outputs_of(&candidates)) {
-        for (i, req) in requirements.iter().enumerate() {
+        for (i, req) in requests.iter().enumerate() {
             if candidates[i].isp_format.is_some() {
                 let mut req = req.clone();
                 if full_size[i] {
-                    req.output_resolution = None;
+                    req.size = None;
                 }
                 candidates[i] =
                     routes::candidate(backend, mode, &req, registry).map_err(rejection)?;
@@ -196,10 +216,10 @@ pub fn plan_many_with(
     let outs = outputs_of(&candidates);
     let two_outputs = outs.len() == 2 && isp_two;
     let second_output = two_outputs.then(|| outs[1]);
-    let interval = shared_interval(mode, requirements);
+    let interval = rate::pick(mode, fps);
     let consumers: Vec<FramePlan> = candidates
         .into_iter()
-        .zip(requirements)
+        .zip(requests)
         .map(|(candidate, req)| {
             let second = second_output.is_some_and(|out| delivered(&candidate) == out);
             let mut plan = plan_from(device, candidate, req, interval, Vec::new());
@@ -242,13 +262,13 @@ pub fn plan_many_with(
 
 /// Rank a mode for all consumers: the smallest mode covering every stated size when all state
 /// one (else the largest), then the total cost, frame rate and backend.
-fn shared_rank(candidates: &[Candidate<'_>], requirements: &[FrameRequirements]) -> RankKey {
+fn shared_rank(candidates: &[Candidate<'_>], requests: &[FrameRequest]) -> RankKey {
     let first = &candidates[0];
     let res = first.mode.format.resolution;
     let area = f64::from(res.width.get()) * f64::from(res.height.get());
-    let sizes: Vec<Option<(u32, u32)>> = requirements
+    let sizes: Vec<Option<(u32, u32)>> = requests
         .iter()
-        .map(|req| req.min_resolution.or(req.output_resolution))
+        .map(|req| req.min_size.or(req.size))
         .collect();
     let resolution = if sizes.iter().all(Option::is_some) {
         let (w, h) = sizes
@@ -277,11 +297,7 @@ fn shared_rank(candidates: &[Candidate<'_>], requirements: &[FrameRequirements])
     };
     RankKey {
         resolution,
-        score: candidates
-            .iter()
-            .zip(requirements)
-            .map(|(c, req)| cost::score(c.total, req.priority))
-            .sum(),
+        score: candidates.iter().map(|c| cost::score(c.total)).sum(),
         fps: -first.fps.unwrap_or(0.0),
         backend: match first.backend.kind {
             BackendKind::V4l2 => 0,
@@ -289,40 +305,6 @@ fn shared_rank(candidates: &[Candidate<'_>], requirements: &[FrameRequirements])
         },
         isp_formats: candidates.iter().filter(|c| c.isp_format.is_some()).count() as u8,
     }
-}
-
-/// The fastest interval, or the slowest meeting every `min_fps` when all consumers prefer
-/// power; [`DEFAULT_FPS`](super::DEFAULT_FPS) on a mode with a rate range when no consumer
-/// asks for a rate.
-fn shared_interval(mode: &Mode, requirements: &[FrameRequirements]) -> Option<Interval> {
-    if requirements.iter().all(|r| r.min_fps.is_none())
-        && let Some(default) = super::default_interval(mode)
-    {
-        return Some(default);
-    }
-    let fastest = mode
-        .intervals
-        .iter()
-        .copied()
-        .max_by(|a, b| a.fps().total_cmp(&b.fps()));
-    if !requirements.iter().all(|r| r.priority == Priority::Power) {
-        return fastest;
-    }
-    let min_fps = requirements.iter().filter_map(|r| r.min_fps).max();
-    // A mode that runs at any rate in a range runs at exactly the rate asked for, as for a
-    // single plan.
-    if let Some(exact) = min_fps
-        .and_then(Interval::from_fps)
-        .filter(|i| mode.interval_stepwise.is_some_and(|s| s.contains(*i)))
-    {
-        return Some(exact);
-    }
-    mode.intervals
-        .iter()
-        .copied()
-        .filter(|i| min_fps.is_none_or(|min| i.fps() + 0.5 >= min as f32))
-        .min_by(|a, b| a.fps().total_cmp(&b.fps()))
-        .or(fastest)
 }
 
 impl SharedFramePlan {
@@ -340,6 +322,14 @@ impl SharedFramePlan {
         self
     }
 
+    /// Capture settings to start from, for every consumer (see [`FramePlan::config`]).
+    pub fn config(mut self, config: StyxConfig) -> Self {
+        for consumer in &mut self.consumers {
+            consumer.config = Some(config.clone());
+        }
+        self
+    }
+
     /// Put frames consumers' plans decode or copy into memfd buffers, for other processes (see
     /// [`FramePlan::exportable`]).
     pub fn exportable(mut self) -> Self {
@@ -349,9 +339,9 @@ impl SharedFramePlan {
         self
     }
 
-    /// Start the capture; returns one [`PlannedFrames`](super::PlannedFrames) per consumer,
+    /// Start the capture; returns one [`Frames`](super::Frames) per consumer,
     /// in order. The capture stops when the last of them is dropped or stopped.
-    pub fn start(&self) -> Result<Vec<super::PlannedFrames>, CaptureError> {
+    pub fn start(&self) -> Result<Vec<super::Frames>, CaptureError> {
         let depths: Vec<usize> = self
             .consumers
             .iter()
@@ -367,7 +357,7 @@ impl SharedFramePlan {
         // buffers), so no consumer starves the camera of buffers.
         let held = group_depths.iter().sum::<usize>() + depths.iter().sum::<usize>() + depths.len();
         let session = SharedSession::new(self.capture_request(held).start()?);
-        let mut frames: Vec<Option<super::PlannedFrames>> =
+        let mut frames: Vec<Option<super::Frames>> =
             (0..self.consumers.len()).map(|_| None).collect();
         for members in &self.groups {
             // Alone, a consumer's region is applied while preparing (a JPEG decoder skips the
@@ -423,7 +413,10 @@ impl SharedFramePlan {
     /// The capture request: this plan's mode and interval, the ISP outputs its consumers use,
     /// and `held` device buffers beyond the queue.
     fn capture_request(&self, held: usize) -> CaptureRequest<'_> {
-        let mut config = StyxConfig::new()
+        // Consumers' own capture settings: the first that has some.
+        let base = self.consumers.iter().find_map(|p| p.config.clone());
+        let mut config = base
+            .unwrap_or_default()
             .capture_queue_depth(1)
             .capture_extra_buffers(held);
         if let Some(level) = self.consumers.iter().find_map(|p| p.isp_pyramid_level) {
@@ -467,7 +460,7 @@ impl SharedFramePlan {
     }
 }
 
-/// Consumers whose frames are prepared the same way: same requirements apart from the region of
+/// Consumers whose frames are prepared the same way: same requests apart from the region of
 /// interest (applied per consumer, as a crop of the shared frame), on the same route.
 fn prepare_groups(consumers: &[FramePlan]) -> Vec<Vec<usize>> {
     let mut groups: Vec<Vec<usize>> = Vec::new();

@@ -1,5 +1,4 @@
 use super::*;
-use styx_core::prelude::PlanOverrides;
 use styx_kernel::usbfs::Speed;
 use styx_uvc::sysfs::InterfaceBinding;
 
@@ -96,18 +95,16 @@ fn uvcvideo_stays_the_default() {
     assert!(d.identity.keys.contains(&"usb:3-1".to_string()));
 
     let yuyv = FourCc::new(*b"YUYV");
-    let plan = crate::planner::plan_frames(d, &FrameRequirements::formats([yuyv])).unwrap();
+    let plan = crate::planner::plan_frames(d, &crate::planner::Frames::formats([yuyv])).unwrap();
     assert_eq!(plan.backend, BackendKind::V4l2);
-    let asked = FrameRequirements::formats([yuyv]).overrides(PlanOverrides {
-        backend: Some("uvc".into()),
-        ..PlanOverrides::default()
-    });
+    let asked = crate::planner::Frames::formats([yuyv]).backend(BackendKind::Uvc);
     let plan = crate::planner::plan_frames(d, &asked).unwrap();
     assert_eq!(plan.backend, BackendKind::Uvc);
 
     let mut alone = Vec::new();
     merge(&mut alone, &info, backend);
     assert_eq!(alone[0].identity.display, "UVC Camera (046d:0825)");
-    let plan = crate::planner::plan_frames(&alone[0], &FrameRequirements::formats([yuyv])).unwrap();
+    let plan =
+        crate::planner::plan_frames(&alone[0], &crate::planner::Frames::formats([yuyv])).unwrap();
     assert_eq!(plan.backend, BackendKind::Uvc);
 }

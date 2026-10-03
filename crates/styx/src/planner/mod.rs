@@ -1,33 +1,33 @@
-//! Frame planning: turn a consumer's [`FrameRequirements`] into a concrete capture, decode and
-//! preparation plan for a device.
+//! Frame planning: turn a consumer's [`FrameRequest`] into a concrete capture, decode and
+//! preparation plan for a camera, and run it.
 //!
 //! ```no_run
 //! use styx::prelude::*;
-//! use styx::planner::plan_best;
 //!
-//! let requirements = FrameRequirements::luma()
-//!     .stride_alignment(64)
-//!     .pyramid(2)
-//!     .min_resolution(1280, 720);
-//! let plan = plan_best(&probe_all(), &requirements)?;
+//! let request = Frames::nv12().size(1280, 800).fps(30);
+//! let plan = request.plan_best(&probe_all())?;
 //! println!("{plan}"); // every step, where it runs, its estimated cost, and rejected options
-//! let mut frames = plan.start()?;
+//! let mut frames = plan.start()?; // or request.open_best(&probe_all())? in one go
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! Candidates are ranked by (1) meeting the requirements, (2) resolution: closest above
-//! `min_resolution` when set, else the smallest covering `output_resolution` when set,
-//! otherwise largest, (3) estimated cost for the requested
-//! [`Priority`], then frame rate. Hardware decoders are only considered when their feature is
-//! enabled and they opened successfully at registry creation; [`PlanOverrides`] can force or
-//! forbid specific backends, decoders and hardware.
+//! For every camera, backend and mode the planner builds the route to the format asked for
+//! (zero-copy where it can, the ISP or a hardware decoder where there is one, else the CPU),
+//! drops those that cannot meet the request (size bounds, frame rate, route choices), and ranks
+//! the rest by (1) size: the smallest mode at or above [`FrameRequest::size_at_least`] when
+//! set, else the route delivering the smallest frames that cover [`FrameRequest::size`], else
+//! the largest mode; (2) cost: CPU time plus half the latency per frame (see [`StepCost`]),
+//! which favours hardware blocks; (3) the fastest mode. Hardware decoders are only considered
+//! when their feature is enabled and they opened at registry creation.
 //!
-//! Several consumers of one camera (say, a small luma frame for a detector and full-size RGB for
-//! a recorder) share one capture: [`plan_many`] picks a mode that serves all of them and plans a
-//! branch per consumer.
+//! Several consumers of one camera (say, a small grey frame for a detector and full-size RGB
+//! for a recorder) share one capture: [`plan_many`] picks a mode and a rate that serve all of
+//! them and plans a branch per consumer.
 
 pub(crate) mod cost;
 mod native;
+mod rate;
+mod request;
 mod routes;
 mod session;
 pub(crate) use session::SharedSession;
@@ -41,11 +41,17 @@ use styx_codec::{CodecRegistry, CodecRegistryHandle};
 use styx_core::prelude::*;
 
 pub use cost::StepCost;
+#[cfg(any(feature = "native", feature = "uvc"))]
+pub(crate) use rate::default_interval;
+pub use request::{CameraFrames, Delivery, FrameRate, FrameRequest, Hardware, OpenError};
 pub(crate) use routes::Route;
 pub use shared::{SharedFramePlan, plan_many, plan_many_with};
-pub use start::{PlannedFrames, RoiHandle};
+#[allow(deprecated)]
+pub use start::PlannedFrames;
+pub use start::{Frames, RoiHandle};
 
 use crate::BackendKind;
+use crate::capture_api::StyxConfig;
 use crate::prelude::{Interval, Mode, ProbedDevice};
 
 /// Where a plan step runs.
@@ -94,22 +100,26 @@ pub struct PlanRejection {
 pub enum PlanError {
     #[error("no devices to plan for")]
     NoDevices,
-    #[error("no capture mode satisfies the requirements ({} candidates rejected)", rejected.len())]
+    #[error("no capture mode delivers the frames asked for ({} candidates rejected)", rejected.len())]
     NoCandidates { rejected: Vec<PlanRejection> },
+    /// No mode that could deliver the frames runs at the rate asked for; the message names the
+    /// rates there are.
+    #[error("{0}")]
+    FrameRate(String),
     #[error("no consumers to plan for")]
     NoConsumers,
     #[error("codec registry unavailable: {0}")]
     Registry(String),
 }
 
-/// A concrete way to deliver frames that meet a [`FrameRequirements`].
+/// A concrete way to deliver the frames a [`FrameRequest`] asks for.
 #[derive(Clone)]
 pub struct FramePlan {
     pub device: ProbedDevice,
     pub backend: BackendKind,
     pub mode: Mode,
     pub interval: Option<Interval>,
-    pub requirements: FrameRequirements,
+    pub request: FrameRequest,
     pub steps: Vec<PlanStep>,
     /// Estimated cost per frame across all steps.
     pub total: StepCost,
@@ -129,6 +139,8 @@ pub struct FramePlan {
     pub(crate) decode_threads: usize,
     pub(crate) queue_depth: usize,
     pub(crate) stop_when_idle: Option<(std::time::Duration, crate::capture_api::IdleStop)>,
+    /// Capture settings to start from ([`FramePlan::config`]).
+    pub(crate) config: Option<StyxConfig>,
     /// Buffers to capture into when frames pass through unchanged.
     #[cfg(target_os = "linux")]
     pub(crate) capture_buffers: Option<crate::capture_api::CaptureBuffers>,
@@ -186,6 +198,12 @@ impl fmt::Display for FramePlan {
                 step.detail
             )?;
         }
+        writeln!(
+            f,
+            "  cost {:.2} = CPU + latency x {}: the cheapest route to frames of this size",
+            cost::score(self.total),
+            cost::LATENCY_WEIGHT
+        )?;
         for note in &self.notes {
             writeln!(f, "  note: {note}")?;
         }
@@ -210,34 +228,40 @@ fn default_registry() -> Result<CodecRegistryHandle, PlanError> {
         .map_err(|err| PlanError::Registry(err.to_string()))
 }
 
-/// Plan for one device using the default codec registry.
-pub fn plan_frames(
+/// Plan for one device using the default codec registry. Takes a [`FrameRequest`] (or the
+/// deprecated `FrameRequirements`); [`FrameRequest::plan`] is the same.
+pub fn plan_frames<R: Clone + Into<FrameRequest>>(
     device: &ProbedDevice,
-    requirements: &FrameRequirements,
+    request: &R,
 ) -> Result<FramePlan, PlanError> {
-    plan_frames_with(device, requirements, &default_registry()?)
+    plan_frames_with(device, request, &default_registry()?)
 }
 
 /// Plan for one device using `registry` to find decoders.
-pub fn plan_frames_with(
+pub fn plan_frames_with<R: Clone + Into<FrameRequest>>(
     device: &ProbedDevice,
-    requirements: &FrameRequirements,
+    request: &R,
     registry: &CodecRegistryHandle,
 ) -> Result<FramePlan, PlanError> {
-    plan_devices(std::slice::from_ref(device), requirements, registry)
+    plan_devices(
+        std::slice::from_ref(device),
+        &request.clone().into(),
+        registry,
+    )
 }
 
-/// Plan across `devices`, choosing the best camera as well as its mode and route.
-pub fn plan_best(
+/// Plan across `devices`, choosing the best camera as well as its mode and route
+/// ([`FrameRequest::plan_best`]).
+pub fn plan_best<R: Clone + Into<FrameRequest>>(
     devices: &[ProbedDevice],
-    requirements: &FrameRequirements,
+    request: &R,
 ) -> Result<FramePlan, PlanError> {
-    plan_devices(devices, requirements, &default_registry()?)
+    plan_devices(devices, &request.clone().into(), &default_registry()?)
 }
 
 fn plan_devices(
     devices: &[ProbedDevice],
-    req: &FrameRequirements,
+    req: &FrameRequest,
     registry: &CodecRegistryHandle,
 ) -> Result<FramePlan, PlanError> {
     if devices.is_empty() {
@@ -254,17 +278,58 @@ fn plan_devices(
         }
     }
     let Some((_, device, chosen)) = best else {
-        return Err(PlanError::NoCandidates { rejected });
+        return Err(no_candidates(req.fps, rejected));
     };
-    let interval = pick_interval(&chosen.mode, req);
+    let interval = rate::pick(&chosen.mode, req.fps);
     Ok(plan_from(device, chosen, req, interval, rejected))
+}
+
+/// The error when nothing meets the request: about the rate when that is all that stopped some
+/// mode, naming the rates there are.
+pub(crate) fn no_candidates(fps: FrameRate, rejected: Vec<PlanRejection>) -> PlanError {
+    // Modes by the rates they run at: "30, 25, 15 fps (v4l2 YUYV 640x480 and 3 more)".
+    let mut rates: Vec<(&str, Vec<&str>)> = Vec::new();
+    for r in rejected
+        .iter()
+        .filter(|r| r.reason.starts_with(rate::REJECTED))
+    {
+        let runs = r
+            .reason
+            .split_once(": runs at ")
+            .map_or("", |(_, runs)| runs);
+        match rates.iter_mut().find(|(rates, _)| *rates == runs) {
+            Some((_, modes)) => modes.push(&r.candidate),
+            None => rates.push((runs, vec![&r.candidate])),
+        }
+    }
+    if rates.is_empty() {
+        return PlanError::NoCandidates { rejected };
+    }
+    let asked = match fps {
+        FrameRate::Exactly(fps) => format!("exactly {fps} fps"),
+        FrameRate::AtLeast(fps) => format!("at least {fps} fps"),
+        FrameRate::Between(min, max) => format!("{min} to {max} fps"),
+        FrameRate::CameraDefault => "its default rate".into(),
+    };
+    let list: Vec<String> = rates
+        .iter()
+        .take(6)
+        .map(|(runs, modes)| match modes.len() {
+            1 => format!("{runs} ({})", modes[0]),
+            n => format!("{runs} ({} and {} more)", modes[0], n - 1),
+        })
+        .collect();
+    PlanError::FrameRate(format!(
+        "no mode delivering these frames runs at {asked}; they run at {}",
+        list.join("; ")
+    ))
 }
 
 /// The plan for `req` from its chosen candidate.
 pub(crate) fn plan_from(
     device: &ProbedDevice,
     chosen: routes::Candidate<'_>,
-    req: &FrameRequirements,
+    req: &FrameRequest,
     interval: Option<Interval>,
     rejected: Vec<PlanRejection>,
 ) -> FramePlan {
@@ -273,7 +338,7 @@ pub(crate) fn plan_from(
         backend: chosen.backend.kind,
         mode: chosen.mode,
         interval,
-        requirements: req.clone(),
+        request: req.clone(),
         steps: chosen.steps,
         total: chosen.total,
         notes: chosen.notes,
@@ -285,9 +350,10 @@ pub(crate) fn plan_from(
         isp_format: chosen.isp_format,
         isp_second_output: false,
         exportable: false,
-        decode_threads: cost::decode_threads(req.priority, req.overrides.decode_threads),
-        queue_depth: cost::queue_depth(req.priority, req.overrides.queue_depth),
+        decode_threads: req.threads(),
+        queue_depth: req.delivery.queue_depth(),
         stop_when_idle: None,
+        config: None,
         #[cfg(target_os = "linux")]
         capture_buffers: None,
     }
@@ -305,11 +371,11 @@ pub(crate) struct RankKey {
     pub(crate) isp_formats: u8,
 }
 
-fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequirements) -> RankKey {
+fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequest) -> RankKey {
     let res = candidate.mode.format.resolution;
     let area = f64::from(res.width.get()) * f64::from(res.height.get());
     let covers_output = req
-        .output_resolution
+        .size
         .map(|(w, h)| res.width.get() >= w && res.height.get() >= h);
     // Size of the frames the route delivers, after the ISP or the decoder scales them.
     let scale = u32::from(candidate.decode_scale.max(1));
@@ -321,14 +387,14 @@ fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequirements) -> RankK
         // With a minimum: the smallest mode that satisfies it. With an output size: the route
         // delivering the smallest frames that cover it (so an ISP scaling a wide mode beats a
         // smaller mode of another aspect ratio), else the largest mode. Otherwise: the largest.
-        resolution: match (req.min_resolution, covers_output) {
+        resolution: match (req.min_size, covers_output) {
             (Some(_), _) => area,
             (None, Some(true)) => f64::from(dw) * f64::from(dh),
             // Ranked after every covering mode (areas are far below 1e15).
             (None, Some(false)) => 1e15 - area,
             (None, None) => -area,
         },
-        score: cost::score(candidate.total, req.priority),
+        score: cost::score(candidate.total),
         fps: -candidate.fps.unwrap_or(0.0),
         // Prefer V4L2 over libcamera's UVC pipeline for the same USB camera; ISP paths already
         // win on cost.
@@ -340,57 +406,11 @@ fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequirements) -> RankK
     }
 }
 
-/// The frame rate a plan runs at when no consumer asks for one, on a mode that can run at any
-/// rate in a range (a sensor Styx drives): 30 fps, or the nearest rate the mode allows. The
-/// fastest such a mode allows is rarely wanted (640x400 on the OV9782: 260 fps, its exposure
-/// limited to 3.8 ms). Modes with a list of rates (UVC cameras) keep the list's fastest.
+/// The frame rate a camera that runs at any rate in a range (a sensor Styx drives) runs at when
+/// no rate is asked for: 30 fps, or the nearest rate the mode allows. The fastest such a mode
+/// allows is rarely wanted (640x400 on the OV9782: 260 fps, its exposure limited to 3.8 ms).
+/// Cameras with a list of rates (USB cameras) run at the listed rate closest to it.
 pub const DEFAULT_FPS: u32 = 30;
-
-/// [`DEFAULT_FPS`] within `mode`'s rate range; `None` for modes without one.
-pub(crate) fn default_interval(mode: &Mode) -> Option<Interval> {
-    let range = mode.interval_stepwise?;
-    let want = Interval::from_fps(DEFAULT_FPS)?;
-    Some(if want.fps() > range.min.fps() {
-        range.min
-    } else if want.fps() < range.max.fps() {
-        range.max
-    } else {
-        want
-    })
-}
-
-/// No `min_fps`: [`DEFAULT_FPS`] on a mode with a rate range. Otherwise, and on modes with a
-/// list of rates, the fastest (or with `Priority::Power` the slowest meeting `min_fps`,
-/// exactly `min_fps` where the mode has a range).
-fn pick_interval(mode: &Mode, req: &FrameRequirements) -> Option<Interval> {
-    if req.min_fps.is_none()
-        && let Some(default) = default_interval(mode)
-    {
-        return Some(default);
-    }
-    let fastest = mode
-        .intervals
-        .iter()
-        .copied()
-        .max_by(|a, b| a.fps().total_cmp(&b.fps()));
-    // A mode that can run at any rate in a range (a sensor Styx drives) runs at exactly the
-    // rate asked for when saving power.
-    let exact = req
-        .min_fps
-        .and_then(Interval::from_fps)
-        .filter(|i| mode.interval_stepwise.is_some_and(|s| s.contains(*i)));
-    match req.priority {
-        Priority::Power if exact.is_some() => exact,
-        Priority::Power => mode
-            .intervals
-            .iter()
-            .copied()
-            .filter(|i| req.min_fps.is_none_or(|min| i.fps() + 0.5 >= min as f32))
-            .min_by(|a, b| a.fps().total_cmp(&b.fps()))
-            .or(fastest),
-        _ => fastest,
-    }
-}
 
 impl FramePlan {
     /// Whether any step runs on a hardware block.
@@ -401,8 +421,7 @@ impl FramePlan {
     }
 
     /// Size of the frames delivered (before any region of interest): the capture size, or
-    /// smaller when the ISP or the decoder scales toward
-    /// [`FrameRequirements::output_resolution`].
+    /// smaller when the ISP or the decoder scales toward [`FrameRequest::size`].
     pub fn output_resolution(&self) -> (u32, u32) {
         if let Some(size) = self.isp_output {
             return size;
@@ -413,6 +432,14 @@ impl FramePlan {
             res.width.get().div_ceil(scale),
             res.height.get().div_ceil(scale),
         )
+    }
+
+    /// Capture settings to start from, e.g. the ISP's denoise
+    /// (`StyxConfig::native_temporal_denoise`). The plan sets what it decided on top (queue
+    /// depth, ISP outputs, idle stop).
+    pub fn config(mut self, config: StyxConfig) -> Self {
+        self.config = Some(config);
+        self
     }
 
     /// Stop the camera streaming after `after` without a pull, and start it again on the next
@@ -445,12 +472,13 @@ impl FramePlan {
         self
     }
 
-    /// Decode threads per frame (0 = automatic), from the priority or an override.
+    /// Decode threads per frame (0 = automatic), from the delivery or
+    /// [`FrameRequest::decode_threads`].
     pub fn decode_threads(&self) -> usize {
         self.decode_threads
     }
 
-    /// Frames buffered between capture and consumer, from the priority or an override.
+    /// Frames buffered between capture and consumer, from [`FrameRequest::delivery`].
     pub fn queue_depth(&self) -> usize {
         self.queue_depth
     }
@@ -484,5 +512,7 @@ impl FramePlan {
     }
 }
 
+#[cfg(test)]
+mod request_tests;
 #[cfg(test)]
 mod tests;

@@ -1,5 +1,5 @@
 //! Caps <-> Styx formats: which GStreamer caps a Styx camera can produce (asking the Styx
-//! planner for every mode and output format) and the [`FrameRequirements`] for negotiated caps.
+//! planner for every mode and output format) and the [`FrameRequest`] for negotiated caps.
 
 use std::collections::BTreeMap;
 
@@ -32,21 +32,21 @@ impl Negotiated {
         gst::ClockTime::SECOND.mul_div_floor(den as u64, num as u64)
     }
 
-    /// Requirements that pin this size and format; the planner picks mode and route.
-    pub fn requirements(&self, exact_size: bool) -> FrameRequirements {
-        let mut req =
-            FrameRequirements::formats([self.fourcc]).output_resolution(self.width, self.height);
+    /// The request that pins this size and format; the planner picks mode and route.
+    pub fn request(&self, exact_size: bool) -> FrameRequest {
+        let mut req = Frames::formats([self.fourcc]).size(self.width, self.height);
         if exact_size {
             req = req
-                .min_resolution(self.width, self.height)
-                .max_resolution(self.width, self.height);
+                .size_at_least(self.width, self.height)
+                .size_at_most(self.width, self.height);
         }
         if let Some((num, den)) = self.fps
             && num > 0
             && den > 0
         {
-            // Round down so 30000/1001 asks for 29 fps and the 29.97 interval qualifies.
-            req = req.min_fps((num / den).max(1) as u32);
+            // Round down so 30000/1001 asks for 29 fps and the 29.97 interval qualifies; the
+            // stream then runs at the negotiated interval itself.
+            req = req.fps_at_least((num / den).max(1) as u32);
         }
         req
     }
@@ -209,9 +209,9 @@ pub fn device_caps(device: &ProbedDevice) -> gst::Caps {
                 let key = (code, w, h);
                 let native = code == mode.format.code;
                 if !native && !outputs.contains_key(&key) {
-                    let req = FrameRequirements::formats([code])
-                        .min_resolution(w, h)
-                        .max_resolution(w, h);
+                    let req = Frames::formats([code])
+                        .size_at_least(w, h)
+                        .size_at_most(w, h);
                     match plan_frames_with(device, &req, &registry) {
                         Ok(plan) if plan.output_resolution() == (w, h) => {}
                         _ => continue,
@@ -390,9 +390,9 @@ mod tests {
             Some(gst::ClockTime::from_nseconds(33_333_333))
         );
         assert!(!n.dmabuf);
-        let req = n.requirements(true);
-        assert_eq!(req.min_resolution, Some((640, 480)));
-        assert_eq!(req.min_fps, Some(30));
+        let req = n.request(true);
+        assert_eq!(req.min_size, Some((640, 480)));
+        assert_eq!(req.fps, FrameRate::AtLeast(30));
 
         let caps = gst::Caps::builder("image/jpeg")
             .field("width", 1280)
@@ -401,7 +401,7 @@ mod tests {
             .build();
         let n = negotiated(&caps).unwrap();
         assert_eq!(n.fourcc, FourCc::MJPG);
-        assert_eq!(n.requirements(false).min_fps, Some(29));
+        assert_eq!(n.request(false).fps, FrameRate::AtLeast(29));
     }
 
     #[test]
