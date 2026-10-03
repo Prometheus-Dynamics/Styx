@@ -74,6 +74,10 @@ pub struct AeStatus {
     /// estimated and metered it (0 without a flicker fit).
     #[serde(default)]
     pub flicker_modulation: f64,
+    /// The scene wants more (or less) exposure than AE can give and AE is at its limit (it
+    /// then locks there: `locked` means settled, not on target).
+    #[serde(default)]
+    pub at_limit: bool,
 }
 
 /// AWB state.

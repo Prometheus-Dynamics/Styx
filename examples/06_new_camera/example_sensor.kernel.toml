@@ -1,0 +1,29 @@
+# The data file for a sensor that has a kernel driver: Styx reads the modes, timing and
+# control ranges from the driver's subdevice and drives it through V4L2 controls; this file
+# adds what the driver does not say (as libcamera's CamHelper classes do). Every field but
+# `name` is optional: without a file the camera still works with linear gain, libcamera's
+# default delays and the tuning's black level.
+#
+# Install it as <name>.kernel.toml on the search path (STYX_SENSOR_PATH, /etc/styx/sensors,
+# /usr/share/styx/sensors) and check the delays on the camera with `landing`. Shipped and
+# verified example: crates/sensor/sensors/kernel/ov9782.toml.
+
+name = "example"
+drivers = ["example"]                 # entity names (first word); default: name
+verified = false
+tuning = "example.json"
+# Gain code (the driver's ANALOGUE_GAIN) to gain.
+analog_gain = { reciprocal = { numerator = 256, base = 256 } }
+delays = { exposure = 2, analog_gain = 1, frame_length = 2 }   # frames
+black_level = { value = 64, bits = 10 }
+
+# Only if the driver has a metadata pad: where the sensor's embedded data line holds the
+# values a frame was made with (then frames report read-back values, not predictions).
+[embedded_data]
+lines = 2
+format = "ccs"                        # CCS/SMIA tagged register dump
+registers = [
+    { control = "analog_gain", address = 0x0157 },
+    { control = "exposure", address = 0x015a, bytes = 2 },
+    { control = "frame_length", address = 0x0160, bytes = 2 },
+]

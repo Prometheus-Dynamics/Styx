@@ -7,9 +7,11 @@
 //! from the back end's output buffers (mapped once, exported as dma-bufs, returned to the back
 //! end when the lease drops); software ISP frames are written into recycled heap buffers.
 
+mod loop_controls;
 mod pisp_worker;
 
-use std::sync::atomic::{AtomicI32, Ordering};
+pub(crate) use loop_controls::LoopControls;
+
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -19,18 +21,17 @@ use smallvec::{SmallVec, smallvec};
 use styx_capture::prelude::*;
 use styx_core::prelude::{BackendFrameMeta, ExternalBacking, NativeFrameMeta, TimestampClock};
 use styx_native::{CameraInfo, NativeCamera, StreamSettings};
+use styx_pipeline::SensorValues;
 use styx_pipeline::device::{
     IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning, isp_kind, soft_capture_memory,
 };
-use styx_pipeline::styx_algo::Flicker;
-use styx_pipeline::{Controller, SensorValues};
 use styx_pisp::device::OutputMemory;
 use styx_softisp::{OutputBuffers, Scale};
 
 use super::control_plane::ControlPlane;
 use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle, enqueue_capture_frame};
 use super::request::CaptureError;
-use super::tunables::{NativeFlicker, StyxConfig};
+use super::tunables::StyxConfig;
 use crate::BackendKind;
 use crate::metrics::StageMetrics;
 
@@ -206,34 +207,30 @@ fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues)
     meta
 }
 
-/// A processed capture's flicker avoidance, shared with the control plane: the mode asked for
-/// (`AE_FLICKER_MODE`) and the period AE detected in microseconds (`AE_FLICKER_DETECTED`).
-pub(super) type FlickerState = Arc<[AtomicI32; 2]>;
-
-fn algo_flicker(f: NativeFlicker) -> Flicker {
-    match f {
-        NativeFlicker::Off => Flicker::Off,
-        NativeFlicker::Mains50 => Flicker::Mains50,
-        NativeFlicker::Mains60 => Flicker::Mains60,
-        NativeFlicker::Auto => Flicker::Auto,
-    }
+/// Back end buffers per PiSP output: [`NativeIspConfig::output_buffers`] covers the back
+/// end's own and a capture with the default queue and extra buffers (2 + 2) plus slow holders
+/// outside it (a frame server's leases); a deeper queue or more extra buffers (the planner's
+/// shared captures reserve every consumer's queue and the frame it works on) come on top, so
+/// consumers holding what the planner allows them never leave the camera without a buffer.
+///
+/// [`NativeIspConfig::output_buffers`]: super::NativeIspConfig::output_buffers
+pub(super) fn pisp_output_buffers(config: &StyxConfig) -> u32 {
+    let capture = config.capture_tunables();
+    let planned = capture.queue_depth + capture.extra_buffers;
+    let baseline =
+        super::tunables::DEFAULT_QUEUE_DEPTH + super::tunables::DEFAULT_CAPTURE_EXTRA_BUFFERS;
+    let extra = u32::try_from(planned.saturating_sub(baseline)).unwrap_or(u32::MAX);
+    config
+        .backends
+        .native
+        .output_buffers
+        .max(2)
+        .saturating_add(extra)
+        .min(MAX_OUTPUT_BUFFERS)
 }
 
-/// Hands the flicker mode asked for to the 3A loop and publishes what it detected.
-pub(super) fn sync_flicker(
-    state: &[AtomicI32; 2],
-    controller: &mut Controller,
-    detected: Option<Duration>,
-) {
-    let mode = NativeFlicker::from_control_value(i64::from(state[0].load(Ordering::Acquire)))
-        .unwrap_or_default();
-    let want = algo_flicker(mode);
-    if controller.controls().flicker != want {
-        controller.set_flicker(want);
-    }
-    let us = detected.map_or(0, |p| p.as_micros().min(i32::MAX as u128) as i32);
-    state[1].store(us, Ordering::Release);
-}
+/// Most buffers per back end output (V4L2 allows 64; each is a frame of the output's size).
+const MAX_OUTPUT_BUFFERS: u32 = 32;
 
 /// Starts processed capture on an opened camera.
 #[allow(clippy::too_many_arguments)]
@@ -241,6 +238,7 @@ pub(super) fn start_processed(
     (camera, _cached): (NativeCamera, bool),
     mode: Mode,
     interval: Option<Interval>,
+    initial: &[(ControlId, ControlValue)],
     descriptor: CaptureDescriptor,
     config: &StyxConfig,
     queue: Option<CaptureQueue>,
@@ -259,15 +257,14 @@ pub(super) fn start_processed(
         styx_core::queue::bounded_with(capture.queue_depth.max(1), capture.queue_overflow)
     });
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
-    // The 3A loop's AE state after each frame (`controls::AE_STATE`): 1 searching, 2 locked.
-    let ae_state = Arc::new(std::sync::atomic::AtomicI32::new(1));
-    let ae_worker = Arc::clone(&ae_state);
-    let ae_of = |locked: bool| if locked { 2 } else { 1 };
-    let flicker: FlickerState = Arc::new([
-        AtomicI32::new(config.backends.native.flicker.control_value()),
-        AtomicI32::new(0),
-    ]);
-    let flicker_worker = Arc::clone(&flicker);
+    // The 3A loop's controls (initial ones applied before the start) and its state.
+    let loop_controls = Arc::new(LoopControls::with_flicker(config.backends.native.flicker));
+    for (id, value) in initial {
+        loop_controls
+            .apply(*id, value)
+            .unwrap_or(Err(CaptureError::ControlUnsupported))?;
+    }
+    let loop_worker = Arc::clone(&loop_controls);
     let worker_error = Arc::new(Mutex::new(None));
     let werr = Arc::clone(&worker_error);
     let send_timeout = Duration::from_millis(capture.queue_send_timeout_ms);
@@ -294,11 +291,13 @@ pub(super) fn start_processed(
                 },
                 temporal_denoise: config.backends.native.temporal_denoise,
                 spatial_denoise: f64::from(config.backends.native.spatial_denoise_percent) / 100.0,
-                be_buffers: config.backends.native.output_buffers.max(2),
+                be_buffers: pisp_output_buffers(config),
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;
-            sync_flicker(&flicker, p.controller(), None);
+            if let Some(c) = loop_controls.take() {
+                p.controller().set_controls(c);
+            }
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = |i: usize| p.output_format(i).map_or(0, |f| f.stride as usize);
@@ -314,8 +313,7 @@ pub(super) fn start_processed(
                     error: werr,
                     send_timeout,
                     timeout,
-                    ae_state: ae_worker,
-                    flicker: flicker_worker,
+                    loop_controls: loop_worker,
                 },
             )?;
             (controls, worker)
@@ -336,7 +334,9 @@ pub(super) fn start_processed(
                 .unwrap_or_else(crate::planner::cost::default_softisp_threads);
             tracing::info!(backend = "native", threads, "software ISP threads");
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
-            sync_flicker(&flicker, p.soft_loop().controller(), None);
+            if let Some(c) = loop_controls.take() {
+                p.soft_loop().controller().set_controls(c);
+            }
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = if code == FourCc::NV12 {
@@ -356,6 +356,9 @@ pub(super) fn start_processed(
                     loop {
                         if stop_rx.try_recv().is_ok() {
                             break;
+                        }
+                        if let Some(c) = loop_worker.take() {
+                            p.soft_loop().controller().set_controls(c);
                         }
                         let mut buf = ret_rx.try_recv().unwrap_or_else(|_| vec![0u8; len]);
                         let out = if code == FourCc::NV12 {
@@ -380,12 +383,10 @@ pub(super) fn start_processed(
                                 break;
                             }
                         };
-                        ae_worker.store(ae_of(f.output.step.params.ae.locked), Ordering::Release);
-                        let detected = f.output.step.params.ae.flicker_detected;
+                        loop_worker.report(&f.output.step.params);
                         let meta =
                             frame_meta(&worker_mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
                         drop(f);
-                        sync_flicker(&flicker_worker, p.soft_loop().controller(), detected);
                         let lease = FrameLease::from_external(
                             meta,
                             layouts(code, h as usize, stride),
@@ -411,8 +412,7 @@ pub(super) fn start_processed(
         backend: BackendKind::Native,
         control: ControlPlane::Native {
             controls,
-            ae_state: Some(ae_state),
-            flicker: Some(flicker),
+            processed: Some(loop_controls),
         },
         descriptor,
         mode,
@@ -438,6 +438,23 @@ pub(super) fn start_processed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_buffers_cover_what_the_planner_reserves() {
+        assert_eq!(pisp_output_buffers(&StyxConfig::default()), 6);
+        assert_eq!(
+            pisp_output_buffers(&StyxConfig::default().native_output_buffers(8)),
+            8
+        );
+        // A shared capture of two consumers with queues of 3 (the planner: queue 1, extra
+        // 3 + 3 + 3 + 3 + 2 = 14): 11 on top of the 6.
+        let shared = StyxConfig::new()
+            .capture_queue_depth(1)
+            .capture_extra_buffers(14);
+        assert_eq!(pisp_output_buffers(&shared), 17);
+        let huge = StyxConfig::new().capture_extra_buffers(200);
+        assert_eq!(pisp_output_buffers(&huge), MAX_OUTPUT_BUFFERS);
+    }
 
     #[test]
     fn processed_modes_follow_the_raw_sizes() {

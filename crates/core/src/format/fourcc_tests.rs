@@ -43,4 +43,18 @@ fn classifies_raw_bayer_formats() {
     assert!(FourCc::GBRG.is_bayer_raw());
     assert!(FourCc::GRBG.is_bayer_raw());
     assert!(!FourCc::RG24.is_bayer_raw());
+    // V4L2's 8-bit BGGR, the 16-bit containers and CSI-2 packed RAW10 / RAW12: row bytes.
+    for (code, row) in [
+        (*b"BA81", 1280),
+        (*b"BG10", 2560),
+        (*b"BYR2", 2560),
+        (*b"pBAA", 1600),
+        (*b"pRCC", 1920),
+    ] {
+        let code = FourCc::new(code);
+        assert!(code.is_bayer_raw());
+        let info = code.layout_info();
+        assert_eq!(info.first_plane_visible_row_bytes(1280), Some(row));
+        assert_eq!(info.estimated_frame_bytes(1280, 800), Some(row * 800));
+    }
 }

@@ -586,6 +586,8 @@ impl Algorithm for Agc {
         // change landed gives the same target as the frame that asked for it.
         let current =
             meta.exposure.as_secs_f64() * meta.analogue_gain * meta.digital_gain.max(1e-9);
+        // The total exposures AE can reach, and whether the scene wants one beyond them.
+        let mut reach = (0.0, f64::INFINITY);
         let target = if fixed_both {
             fixed.0.unwrap_or(0.0) * fixed.1.unwrap_or(0.0)
         } else {
@@ -599,8 +601,13 @@ impl Algorithm for Agc {
             let max_g = fixed
                 .1
                 .unwrap_or_else(|| self.limit_gain(profile.gain[profile.gain.len() - 1]));
-            (current * gain).min(max_t * max_g)
+            let min_t = fixed.0.unwrap_or(self.exposure_limits(Some(meta)).0);
+            let min_g = fixed.1.unwrap_or(self.config.analogue_gain_limits.0);
+            reach = (min_t * min_g, max_t * max_g);
+            (current * gain).min(reach.1)
         };
+        let want = current * gain;
+        let beyond = want > reach.1 * (1.0 + ON_TARGET) || want < reach.0 * (1.0 - ON_TARGET);
 
         // Fast de-saturation: a saturated image under-states how far exposure must fall, so cut
         // the sensor exposure by `fast_reduce_threshold` at once (undamped), keeping image
@@ -712,8 +719,16 @@ impl Algorithm for Agc {
                 }
             }
         };
-        // Locked: produced with what AE asked for, on target, for LOCK_FRAMES frames in a row.
-        let settled = meta.frame >= self.settles_at && on_target && !desaturating && !unsettled;
+        // At its limits: the scene wants more (or less) than AE can give and AE asks for the
+        // limit; such a frame counts as on target (libcamera reports it converged too).
+        let at_limit = beyond
+            && [reach.0, reach.1]
+                .iter()
+                .any(|l| (self.filtered / l - 1.0).abs() < ON_TARGET);
+        // Locked: produced with what AE asked for, on target (or at its limits), for
+        // LOCK_FRAMES frames in a row.
+        let settled =
+            meta.frame >= self.settles_at && (on_target || at_limit) && !desaturating && !unsettled;
         self.lock_count = if settled {
             (self.lock_count + 1).min(LOCK_FRAMES)
         } else {
@@ -733,6 +748,7 @@ impl Algorithm for Agc {
             flicker_period: self.periods.first().map(|&p| Duration::from_secs_f64(p)),
             flicker_detected: self.detected.map(|hz| Duration::from_secs_f64(0.5 / hz)),
             flicker_modulation: flicker_k - 1.0,
+            at_limit,
         };
     }
 }

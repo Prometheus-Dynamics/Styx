@@ -89,7 +89,8 @@ pub struct NativeIspConfig {
     /// (a frame server's latest frame, frames other processes have not released) keep theirs;
     /// when every one is held, frames are dropped until one comes back. More buffers let slow
     /// consumers hold frames without costing frames, at one output frame's memory each
-    /// (1.5 MB for NV12 1280x800).
+    /// (1.5 MB for NV12 1280x800). A capture queue or extra buffers beyond the defaults (the
+    /// planner reserves every consumer's queue of a shared capture this way) add theirs.
     pub output_buffers: u32,
     /// Flicker avoidance of the 3A loop (default [`NativeFlicker::Auto`]).
     pub flicker: NativeFlicker,

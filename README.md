@@ -2,6 +2,38 @@
 
 Styx is a Rust workspace for sync-first, zero-copy media pipelines. The facade crate keeps capture, decode, transform, encode, graph, watch, service, and recording workflows behind one API while the support crates remain independently usable.
 
+## Quick Start
+
+```toml
+[dependencies]
+styx = { version = "2.0.0", default-features = false, features = ["native", "v4l2"] }
+```
+
+```rust
+use styx::prelude::*;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let wants = FrameRequirements::formats([FourCc::NV12])
+        .output_resolution(1280, 800)
+        .min_fps(30)
+        .priority(Priority::Power); // exactly 30 fps where the camera can
+    let plan = styx::planner::plan_best(&styx::probe_all(), &wants)?;
+    println!("{plan}"); // camera, mode, every step and its cost, rejected options
+    for frame in plan.start()?.take(90) {
+        let meta = frame.meta(); // timestamp, sequence, exposure and gain that made it
+        println!("{} {} {:?}", meta.timestamp, meta.format.code, meta.native());
+    }
+    Ok(())
+}
+```
+
+The same code takes a USB camera (V4L2, YUYV converted), a CSI sensor Styx drives itself (the
+Raspberry Pi PiSP or a software ISP, 3A in Rust) or, with the `libcamera` feature, a libcamera
+camera. More: [examples/](examples/README.md) (listing cameras, async capture, controls and
+per-frame metadata, two consumers of one camera, other processes, raw frames and recordings,
+hotplug, adding a camera), and [docs/comparison.md](docs/comparison.md), the same tasks in
+libcamera, V4L2 and GStreamer, with measurements.
+
 ## Workspace Layout
 
 - `crates/styx`: facade crate for capture requests, pipeline sessions, graph integration, service events, watch runtime, and backend probing.
@@ -137,6 +169,9 @@ Optional Docker-backed facade validation:
 
 ## Documentation Index
 
+- [docs/comparison.md](docs/comparison.md): Styx compared with libcamera, raw V4L2 and GStreamer: code side by side, architecture, measurements
+- [examples/README.md](examples/README.md): runnable examples, with output from the CM5
+- [docs/native-stack/README.md](docs/native-stack/README.md): the native camera stack (sensors, PiSP, 3A, sensor bridge)
 - [docs/README.md](docs/README.md): repository documentation index
 - [docs/ecosystem.md](docs/ecosystem.md): GStreamer and PipeWire bridges
 - [docs/development.md](docs/development.md): repo layout, commands, and validation conventions

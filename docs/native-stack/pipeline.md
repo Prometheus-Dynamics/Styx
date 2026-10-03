@@ -235,6 +235,19 @@ The latency, 8.3 ms, is 7.4 ms of sensor readout (the timestamp is the frame sta
 end's buffers complete at its end), 0.84 ms back end job (hardware; the algorithms run inside
 it) and about 0.05 ms on the host.
 
+### Controls through the Styx API
+
+A processed capture's 3A loop takes the application's controls
+(`styx::capture_api::native_controls`, applied to `Controller::set_controls` before the next
+frame): `EXPOSURE_TIME_US` / `GAIN` fix that value for AE (both fixed is manual exposure; 0
+hands it back), `AE_ENABLE` (off holds the current values), `EXPOSURE_VALUE` (stops),
+`AWB_ENABLE`, `COLOUR_TEMPERATURE` (used while AWB is off; read: AWB's estimate for the latest
+frame), `RED_GAIN` / `BLUE_GAIN`; `AE_STATE` reads 1 (searching) or 2 (converged). Controls
+given with the `CaptureRequest` apply from frame 0. The frame rate is the capture's: `FRAME_RATE`
+and `FRAME_DURATION_US` are refused (restart at another rate); on raw captures they, and
+exposure and gain, go to the sensor's control schedule. `examples/01_capture/camera_controls.rs`
+shows each, with the frame it landed on.
+
 ### Denoise settings
 
 Through the Styx API (`StyxConfig`, also read from a serialised config): 
@@ -460,7 +473,7 @@ which the CPU reads uncached: reading the raw frame is a third of the software p
   mean of the output and, for the software path, writing the raw recording).
 * The light is warm: the Bayesian AWB (CT curve from the tuning) keeps some of it, grey world
   (default tuning, host replay of the recorded frames) ends at R/G 0.997, B/G 1.006.
-* Through the Styx API (`examples/native_processed.rs`): `plan_best` for NV12, luma and RG24
+* Through the Styx API (`examples/04_performance/native_processed.rs`): `plan_best` for NV12, luma and RG24
   on the native OV9782 picks the native NV12 / RG24 modes with the PiSP (the raw modes are
   rejected: "raw pBAA would need a decoder without 3A"); capture runs at 120.625 fps (the plan
   takes the fastest rate for latency), start → first frame 78-80 ms, exposure settled in 12

@@ -22,8 +22,14 @@ netcam = ["styx/netcam"]
 replay-mcap = ["styx/replay-mcap"]
 preview-window = ["styx/preview-window"]
 simulation-bevy = ["styx/simulation-bevy"]
-v4l2 = ["styx/v4l2"]
-native = ["styx/native"]
+# USB cameras deliver YUYV or MJPEG: the CPU converters come with them, so the planner can turn
+# YUYV into NV12 / RGB / luma.
+v4l2 = ["styx/v4l2", "raw-decoders"]
+raw-decoders = ["styx/raw-decoders"]
+# The native stack; also brings `frame-socket` and the sensor / software ISP crates the
+# `sensor_check` and `raw_processing` examples use directly.
+native = ["styx/native", "frame-socket", "dep:styx-sensor", "dep:styx-softisp"]
+frame-socket = ["styx/frame-socket"]
 # Any camera backend works (enable `native` or `libcamera` too for those cameras).
 camera-graph = ["graph-pipeline", "v4l2"]
 
@@ -34,20 +40,64 @@ daedalus = { workspace = true, features = ["engine", "plugins"], optional = true
 image.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
 libc.workspace = true
+styx-sensor = { workspace = true, optional = true }
+styx-softisp = { workspace = true, optional = true }
 
 [[bin]]
 name = "native_capture"
-path = "native_capture.rs"
+path = "04_performance/native_capture.rs"
 required-features = ["native"]
 
 [[bin]]
 name = "native_processed"
-path = "native_processed.rs"
+path = "04_performance/native_processed.rs"
 required-features = ["native"]
 
 [[bin]]
 name = "native_isp_bench"
-path = "native_isp_bench.rs"
+path = "04_performance/native_isp_bench.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "list_cameras"
+path = "00_quickstart/list_cameras.rs"
+
+[[bin]]
+name = "capture_frames"
+path = "00_quickstart/capture_frames.rs"
+
+[[bin]]
+name = "async_capture"
+path = "01_capture/async_capture.rs"
+required-features = ["async"]
+
+[[bin]]
+name = "camera_controls"
+path = "01_capture/camera_controls.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "two_consumers"
+path = "01_capture/two_consumers.rs"
+
+[[bin]]
+name = "raw_processing"
+path = "01_capture/raw_processing.rs"
+required-features = ["native", "replay-mcap"]
+
+[[bin]]
+name = "hotplug"
+path = "01_capture/hotplug.rs"
+required-features = ["hotplug"]
+
+[[bin]]
+name = "frame_socket"
+path = "05_apps/frame_socket.rs"
+required-features = ["frame-socket"]
+
+[[bin]]
+name = "sensor_check"
+path = "06_new_camera/sensor_check.rs"
 required-features = ["native"]
 
 [[bin]]

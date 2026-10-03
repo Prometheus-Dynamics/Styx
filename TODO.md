@@ -43,6 +43,13 @@ box (OV9782 1280x800) unless stated.
 - [x] GStreamer `styxsrc` + device provider (`crates/gst-styx`).
 - [x] PipeWire camera node daemon (`crates/pipewire-styx`).
 - [x] Frame socket with leases (`styx::ipc::FrameSocket`, HeliOS wire format).
+- [x] Examples for every task (listing, planned capture, async, controls and metadata, shared
+      captures, other processes, raw frames and recordings, hotplug, adding a camera), run on the
+      CM5; [docs/comparison.md](docs/comparison.md) against libcamera, V4L2 and GStreamer, with a
+      fresh side-by-side run (open → first frame 34 vs 101 ms, CPU 1.1 vs 2.7 %, PSS 25.6 vs
+      30 MiB).
+- [x] Processed captures take AE/AWB controls (AE on/off, fixed exposure or gain, EV, AWB
+      on/off, colour temperature, red/blue gains) and report AWB's colour temperature.
 
 ### HeliOS
 - [x] `helios-peripherals` runs on the native stack (HeliOS branch `styx-native-trial`):
@@ -84,3 +91,16 @@ box (OV9782 1280x800) unless stated.
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).
 - [ ] 120 fps AE sometimes chases 100 Hz flicker (kernel-driver path); add anti-flicker.
+- [ ] `AE_STATE` never reports converged when AE's target is out of reach (exposure and gain at
+      their limits in a dark room); libcamera reports converged at the same final exposure
+      (500 ms after open, docs/comparison.md).
+- [ ] OV9782 raw8 (`BA81`) through the bridge: frames report 342.9 ms × 0.5 at 30 fps and are far
+      darker than RAW10 at the same exposure and gain (embedded data decoded as RAW10? the raw8
+      registers?). RAW10 and the processed modes are fine.
+- [ ] Shared captures on the PiSP: frames queued for consumers hold back end buffers (4 per
+      output) and the native path ignores the planner's `capture_extra_buffers`, so a slow
+      consumer with a deep queue (`Priority::Power`: 3) paced the camera for both consumers
+      (20 fps); the examples ask for queue depth 1.
+- [ ] MCAP recordings drop a native frame's exposure and gains (`NativeFrameMeta`).
+- [ ] A plan that asks no frame rate gets the mode's fastest (camera service clients: 260 fps
+      at 640x400); consider a default rate for services.

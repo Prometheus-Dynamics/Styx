@@ -28,26 +28,48 @@ use crate::metrics::StageMetrics;
 use crate::{BackendHandle, BackendKind, DeviceIdentity, ProbedBackend, ProbedDevice};
 
 /// Control ids of native cameras (the control plane's `ControlId`s).
+///
+/// On raw modes exposure, gain and frame duration go to the sensor and land on the frame the
+/// control schedule predicts (every frame reports what produced it, `NativeFrameMeta`). On
+/// processed (`NV12`/`RG24`) modes the 3A loop owns the sensor: exposure time and gain fix that
+/// value for AE (0 hands it back), and the AE/AWB controls below apply; the frame rate is the
+/// one the capture started with.
 pub mod controls {
     use styx_capture::prelude::ControlId;
 
-    /// Exposure time in microseconds (`Uint`).
+    /// Exposure time in microseconds (`Uint`). Processed modes: fixed for AE, 0 = automatic.
     pub const EXPOSURE_TIME_US: ControlId = ControlId(0xF400_0001);
-    /// Total gain, analogue first then digital, as a ratio (`Float`).
+    /// Total gain, analogue first then digital, as a ratio (`Float`). Processed modes: fixed
+    /// for AE, 0 = automatic.
     pub const GAIN: ControlId = ControlId(0xF400_0002);
-    /// Frame duration in microseconds (`Uint`); sets the frame length exactly.
+    /// Frame duration in microseconds (`Uint`); sets the frame length exactly. Raw modes.
     pub const FRAME_DURATION_US: ControlId = ControlId(0xF400_0003);
-    /// Frame rate in frames per second (`Float`); sets the closest frame length.
+    /// Frame rate in frames per second (`Float`); sets the closest frame length. Raw modes.
     pub const FRAME_RATE: ControlId = ControlId(0xF400_0004);
+    /// Processed modes: automatic exposure on or off (`Bool`; off holds the current exposure
+    /// and gain).
+    pub const AE_ENABLE: ControlId = ControlId(0xF400_0005);
+    /// Processed modes: exposure compensation in stops (`Float`).
+    pub const EXPOSURE_VALUE: ControlId = ControlId(0xF400_0006);
+    /// Processed modes: automatic white balance on or off (`Bool`).
+    pub const AWB_ENABLE: ControlId = ControlId(0xF400_0007);
+    /// Processed modes: white balance colour temperature in kelvin (`Uint`), used while AWB
+    /// is off; read: AWB's estimate for the latest frame.
+    pub const COLOUR_TEMPERATURE: ControlId = ControlId(0xF400_0008);
+    /// Processed modes: manual red gain (`Float`, relative to green), used while AWB is off.
+    pub const RED_GAIN: ControlId = ControlId(0xF400_0009);
+    /// Processed modes: manual blue gain (`Float`, relative to green), used while AWB is off.
+    pub const BLUE_GAIN: ControlId = ControlId(0xF400_000A);
     /// AE state of a processed mode's 3A loop after the latest frame, as libcamera's
     /// `AeState` (`Int`, read only): 1 searching, 2 converged (AE locked).
     pub const AE_STATE: ControlId = ControlId(0xF400_0010);
-    /// Flicker avoidance of a processed mode's AE (`Int`): 0 off, 1 50 Hz mains, 2 60 Hz
-    /// mains, 3 automatic (`NativeFlicker::control_value`; the default from
+    /// Processed modes: flicker avoidance of AE (`Int`): 0 off, 1 50 Hz mains, 2 60 Hz mains,
+    /// 3 automatic (`NativeFlicker::control_value`; the default from
     /// `NativeIspConfig::flicker`).
     pub const AE_FLICKER_MODE: ControlId = ControlId(0xF400_0011);
-    /// The light flicker period a processed mode's automatic flicker avoidance detected, in
-    /// microseconds (`Int`, read only; 0 none yet), as libcamera's `AeFlickerDetected`.
+    /// Processed modes: the light flicker period automatic flicker avoidance detected, in
+    /// microseconds (`Int`, read only; 0 none yet; 10000 for 50 Hz mains), as libcamera's
+    /// `AeFlickerDetected`.
     pub const AE_FLICKER_DETECTED: ControlId = ControlId(0xF400_0012);
 }
 
@@ -159,6 +181,94 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
             ControlValue::Float(first.map_or(30.0, |m| m.default_interval.fps() as f32)),
             ControlValue::Float(0.001),
         ),
+        // The processed modes' 3A loop.
+        meta(
+            controls::AE_ENABLE,
+            "ae_enable",
+            ControlKind::Bool,
+            ControlValue::Bool(false),
+            ControlValue::Bool(true),
+            ControlValue::Bool(true),
+            ControlValue::Bool(true),
+        ),
+        meta(
+            controls::EXPOSURE_VALUE,
+            "exposure_value",
+            ControlKind::Float,
+            ControlValue::Float(-8.0),
+            ControlValue::Float(8.0),
+            ControlValue::Float(0.0),
+            ControlValue::Float(0.1),
+        ),
+        meta(
+            controls::AWB_ENABLE,
+            "awb_enable",
+            ControlKind::Bool,
+            ControlValue::Bool(false),
+            ControlValue::Bool(true),
+            ControlValue::Bool(true),
+            ControlValue::Bool(true),
+        ),
+        meta(
+            controls::COLOUR_TEMPERATURE,
+            "colour_temperature",
+            ControlKind::Uint,
+            ControlValue::Uint(1000),
+            ControlValue::Uint(20_000),
+            ControlValue::Uint(0),
+            ControlValue::Uint(1),
+        ),
+        meta(
+            controls::RED_GAIN,
+            "red_gain",
+            ControlKind::Float,
+            ControlValue::Float(0.0),
+            ControlValue::Float(8.0),
+            ControlValue::Float(0.0),
+            ControlValue::Float(0.01),
+        ),
+        meta(
+            controls::BLUE_GAIN,
+            "blue_gain",
+            ControlKind::Float,
+            ControlValue::Float(0.0),
+            ControlValue::Float(8.0),
+            ControlValue::Float(0.0),
+            ControlValue::Float(0.01),
+        ),
+        meta(
+            controls::AE_FLICKER_MODE,
+            "ae_flicker_mode",
+            ControlKind::Int,
+            ControlValue::Int(0),
+            ControlValue::Int(3),
+            ControlValue::Int(3),
+            ControlValue::Int(1),
+        ),
+        ControlMeta {
+            access: Access::ReadOnly,
+            ..meta(
+                controls::AE_FLICKER_DETECTED,
+                "ae_flicker_detected",
+                ControlKind::Int,
+                ControlValue::Int(0),
+                ControlValue::Int(1_000_000),
+                ControlValue::Int(0),
+                ControlValue::Int(1),
+            )
+        },
+        ControlMeta {
+            access: Access::ReadOnly,
+            ..meta(
+                controls::AE_STATE,
+                "ae_state",
+                ControlKind::Int,
+                ControlValue::Int(0),
+                ControlValue::Int(2),
+                ControlValue::Int(1),
+                ControlValue::Int(1),
+            )
+        },
     ]
 }
 
@@ -340,9 +450,9 @@ pub(super) fn start_native(
         .with_options(CameraOptions::default());
     if super::native_isp::is_processed(mode.format.code) {
         let camera = super::native_isp::open_for_isp(&provider, key, config)?;
-        // Exposure and gain belong to the 3A loop; initial controls are not applied.
+        // The 3A loop owns exposure and gain; initial controls go to the loop.
         return super::native_isp::start_processed(
-            camera, mode, interval, descriptor, config, queue,
+            camera, mode, interval, &initial, descriptor, config, queue,
         );
     }
     let mut camera = provider.open_camera(key).map_err(native_err)?;
@@ -408,8 +518,7 @@ pub(super) fn start_native(
         backend: BackendKind::Native,
         control: ControlPlane::Native {
             controls,
-            ae_state: None,
-            flicker: None,
+            processed: None,
         },
         descriptor,
         mode,
