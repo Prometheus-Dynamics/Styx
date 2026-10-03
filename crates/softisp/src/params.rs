@@ -44,13 +44,14 @@ impl Default for IspParams {
     }
 }
 
-/// How the per-pixel stages compute. The two give pictures within a code or two of each
+/// How the per-pixel stages compute. They give pictures within a code or two of each
 /// other (see `PERFORMANCE.md` for measured differences); [`SoftIsp::arithmetic`](crate::SoftIsp::arithmetic) tells which one runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Arithmetic {
     /// [`Self::Half`] where it is fast and applies (with a colour matrix or a tone curve, on
-    /// CPUs with FP16 arithmetic), else [`Self::Int`].
+    /// CPUs with FP16 arithmetic), else [`Self::IntPolyTone`] where it is fast and applies (a
+    /// tone curve, x86 with AVX2), else [`Self::Int`].
     #[default]
     Auto,
     /// 12-bit fixed point: the reference, on every CPU (SIMD on x86 and AArch64).
@@ -61,6 +62,13 @@ pub enum Arithmetic {
     /// (slowly) elsewhere. Applies to inputs of 10 bits or fewer, the bilinear demosaic and
     /// tone curves that never fall; other set-ups use [`Self::Int`].
     Half,
+    /// [`Self::Int`] with the tone curve as a quadratic per octave (16-bit fixed point, the
+    /// same result on every CPU) instead of the table, used only when it lands within one code
+    /// of the table for every input (sRGB, gamma 1.8-2.2 and Raspberry Pi contrast curves do;
+    /// steeper ones keep the table, and [`SoftIsp::arithmetic`](crate::SoftIsp::arithmetic)
+    /// then says [`Self::Int`]). 2.3x faster than the table on x86 with AVX2 (Zen 3), slower
+    /// than NEON's table lookups on the Cortex-A76.
+    IntPolyTone,
 }
 
 /// Black level per CFA cell: red, green on red rows, green on blue rows, blue.

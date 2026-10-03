@@ -35,8 +35,10 @@ box (OV9782 1280x800) unless stated.
 - [x] AE locked at frame 6 (229 ms from open; libcamera 664–675 ms); warm restarts lock by frame 2.
 - [x] PiSP path CPU 0.26 ms/frame through Styx (0.8 % of a core; libcamera 2.9 %).
 - [x] Image quality matches libcamera within libcamera's own session-to-session spread.
-- [x] Software ISP (`styx-softisp`): fp16 NEON path, cached capture, 15 Hz stats when settled —
-      9.4–10.2 % of a core at 30 fps on one A76 core (was 47 %), bit-exact integer path elsewhere.
+- [x] Software ISP (`styx-softisp`): fp16 NEON path, cached capture read in place, 15 Hz stats
+      when settled — 8.8–9.7 % of a core at 30 fps on one A76 core (was 47 %), bit-exact integer
+      path elsewhere; x86 tone curve as fixed-point quadratics (`Arithmetic::IntPolyTone`, within
+      a code; RGB24 frame 1.59 → 1.11 ms on Zen 3) and an exact AVX2 table.
 - [x] Built-in OV9782 description and tuning; Styx tuning search path (`STYX_TUNING_PATH`, …).
 
 ### Ecosystem (phase 5)
@@ -80,7 +82,10 @@ box (OV9782 1280x800) unless stated.
 
 ### Performance
 - [ ] PiSP: 0.12 ms/frame is the `pispbe` driver rewriting its whole config per job (kernel side).
-- [ ] Software ISP: remaining ~1 ms outside the ISP (row copies, dequeue); x86 tone curve.
+- [ ] Software ISP: outside the image maths only ~0.3 ms of memory traffic and ~0.15 ms of
+      dequeue/sync/bookkeeping are left (staging copy and end-of-access sync gone). Integer path
+      (Pi 4 class): colour matrix 1.1 ms and tone table 1.5 ms per frame on the A76; not yet
+      measured on a real Cortex-A72. AVX-512 VBMI exact tone table (untested: no AVX-512 host).
 - [ ] PipeWire node copies each frame once (zero-copy needs the camera buffers as the PipeWire pool).
 
 ### Platforms

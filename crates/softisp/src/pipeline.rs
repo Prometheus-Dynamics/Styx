@@ -482,8 +482,9 @@ impl Worker {
 }
 
 fn tone(p: &IntPrep, src: &[u16], dst: &mut [u8], n: usize) {
-    match &p.lut {
-        Some(lut) => drop(simd::lut_row(src, dst, lut, n)),
-        None => drop(simd::narrow_row(src, dst, n)),
+    match (&p.poly, &p.lut) {
+        (Some(poly), _) => drop(simd::poly_row(src, dst, poly, n)),
+        (None, Some(lut)) => drop(simd::lut_row(src, dst, lut, n)),
+        (None, None) => drop(simd::narrow_row(src, dst, n)),
     }
 }

@@ -130,6 +130,25 @@ fn stages(c: &mut Criterion) {
             })
         })
     });
+    g.bench_function("tone_lut_x3_scalar", |bn| {
+        bn.iter(|| {
+            (0..H).for_each(|_| {
+                simd::scalar::lut_row(&b, &mut p8, lut.full(), W);
+                simd::scalar::lut_row(&d, &mut q8, lut.full(), W);
+                simd::scalar::lut_row(&e, &mut s8, lut.full(), W);
+            })
+        })
+    });
+    let poly = simd::poly::PolyTone::fit(lut.full()).expect("the curve fits");
+    g.bench_function("tone_poly_x3", |bn| {
+        bn.iter(|| {
+            (0..H).for_each(|_| {
+                simd::poly_row(&b, &mut p8, &poly, W);
+                simd::poly_row(&d, &mut q8, &poly, W);
+                simd::poly_row(&e, &mut s8, &poly, W);
+            })
+        })
+    });
     g.bench_function("narrow_x3", |bn| {
         bn.iter(|| {
             (0..H).for_each(|_| {
@@ -347,6 +366,10 @@ fn pipelines(c: &mut Criterion) {
         p.arithmetic = Arithmetic::Int;
         p
     };
+    let poly = |mut p: IspParams| {
+        p.arithmetic = Arithmetic::IntPolyTone;
+        p
+    };
     let stats = |mut p: IspParams| {
         p.stats = Some(StatsConfig::default());
         p
@@ -371,6 +394,13 @@ fn pipelines(c: &mut Criterion) {
         Scale::Full,
         "rgb",
     );
+    run(
+        c,
+        "e2e/rgb24_tuned_poly",
+        isp(poly(bilinear())),
+        Scale::Full,
+        "rgb",
+    );
     run(c, "e2e/nv12_tuned", isp(bilinear()), Scale::Full, "nv12");
     run(
         c,
@@ -390,6 +420,13 @@ fn pipelines(c: &mut Criterion) {
         c,
         "e2e/nv12_tuned_lsc_stats_int",
         isp(int(shaded(stats(bilinear())))),
+        Scale::Full,
+        "nv12",
+    );
+    run(
+        c,
+        "e2e/nv12_tuned_lsc_stats_poly",
+        isp(poly(shaded(stats(bilinear())))),
         Scale::Full,
         "nv12",
     );

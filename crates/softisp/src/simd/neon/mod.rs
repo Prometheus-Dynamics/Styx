@@ -105,10 +105,19 @@ pub(super) fn narrow_row(
 pub(super) fn lut_row(
     src: &[u16],
     dst: &mut [u8],
-    lut: &[u8; 4096],
+    lut: &super::ToneLut,
     width: usize,
 ) -> Option<(SimdBackend, usize)> {
-    done(unsafe { color::lut(src, dst, lut, width) })
+    done(unsafe { color::lut(src, dst, lut.full(), width) })
+}
+
+pub(super) fn poly_row(
+    src: &[u16],
+    dst: &mut [u8],
+    poly: &super::poly::PolyTone,
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    done(unsafe { color::poly(src, dst, &poly.c, width) })
 }
 
 pub(super) fn interleave_rgb_row(

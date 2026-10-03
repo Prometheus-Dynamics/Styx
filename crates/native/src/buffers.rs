@@ -287,7 +287,8 @@ impl NativeFrame {
     }
 
     /// The frame's bytes (`bytes_used` of them, or the whole buffer if the driver reported
-    /// none). The first call brackets CPU access with a dma-buf sync.
+    /// none). The first call starts CPU (read) access with a dma-buf sync, which invalidates
+    /// the CPU's cache over the buffer.
     pub fn data(&self) -> &[u8] {
         if !self.cpu_access.swap(true, Ordering::AcqRel)
             && let Some(fd) = self.dmabuf()
@@ -336,11 +337,11 @@ impl std::fmt::Debug for NativeFrame {
 
 impl Drop for NativeFrame {
     fn drop(&mut self) {
-        if self.cpu_access.load(Ordering::Acquire)
-            && let Some(fd) = self.dmabuf()
-        {
-            let _ = dma_heap::sync(fd, Access::Read, false);
-        }
+        // No `SYNC_END` for the read access `data` started: it only cleans the buffer's lines
+        // for the device (arm64 `dcache_clean_poc` over the whole buffer, 22 us per 1.3 MB
+        // frame on the CM5), and a CPU that only read them has none dirty. The next frame in
+        // this buffer starts its own access, which invalidates what the CPU may have cached
+        // meanwhile.
         self.lender.buffers.give_back(self.index);
     }
 }
