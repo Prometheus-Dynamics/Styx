@@ -32,8 +32,10 @@
 //!   digital gain makes up the rest; frames then never get less than `headroom / peak`, and
 //!   what clips in a raw frame is white in the output anyway. The sensor's exposure is cut
 //!   only as far as highlights need it (in a dim scene the analogue gain takes the cut, which
-//!   costs next to no noise). The headroom only moves when clearly more or less is needed
-//!   (hysteresis), so the sensor request stays put.
+//!   costs next to no noise). The highlights move with the flicker and with noise from frame
+//!   to frame, so the headroom follows the largest need of the last second or so (a maximum
+//!   that decays by [`HEADROOM_DECAY`] per second) and moves only when that is clearly more
+//!   or less than it has (hysteresis): the sensor request stays put.
 //! * **Hand-off.** An exposure of whole periods sees no flicker (`sinc = 0`): its predicted
 //!   brightness is 1 and its gain is AE's alone, so a switch between short and quantised
 //!   exposures needs nothing special; the headroom follows within a frame or two.
@@ -66,8 +68,12 @@ const HEADROOM_MARGIN: f64 = 1.02;
 pub(super) const HIGHLIGHT_QUANTILE: f64 = 0.999;
 /// Headroom: colour channels may clip before luma does by this much.
 const HIGHLIGHT_MARGIN: f64 = 1.25;
+/// Headroom: raised to what is needed times this (so small rises need no new request).
+const HEADROOM_RAISE: f64 = 1.03;
 /// Headroom: lowered only when this much more than needed.
-const HEADROOM_DROP: f64 = 1.06;
+const HEADROOM_DROP: f64 = 1.1;
+/// Headroom: the need remembered decays by this much per second.
+pub const HEADROOM_DECAY: f64 = 0.1;
 /// Rolling shutter: band gains only while the readout keeps at least this much of each
 /// harmonic in the frame mean the model was fitted to.
 const MIN_READOUT_SINC: f64 = 0.3;
@@ -198,6 +204,8 @@ impl FlickerCorrection {
 pub(super) struct DeflickerState {
     strength: f64,
     headroom: f64,
+    /// The largest headroom needed lately (decaying).
+    needed: f64,
     /// The smoothed model (its frequency, reference time and terms).
     smoothed: Option<FlickerCorrection>,
     last_time: Option<f64>,
@@ -208,6 +216,7 @@ impl Default for DeflickerState {
         Self {
             strength: 0.0,
             headroom: 1.0,
+            needed: 1.0,
             smoothed: None,
             last_time: None,
         }
@@ -313,12 +322,23 @@ impl DeflickerState {
         };
         if good.is_some() {
             let peak = full.peak(exposure).min(MAX_GAIN);
-            let needed = (peak * highlight * HIGHLIGHT_MARGIN).clamp(1.0, peak) * HEADROOM_MARGIN;
-            if needed > self.headroom || needed * HEADROOM_DROP < self.headroom {
-                self.headroom = needed;
+            let wanted = peak * highlight * HIGHLIGHT_MARGIN;
+            let needed = if wanted > 1.0 {
+                wanted.min(peak) * HEADROOM_MARGIN
+            } else {
+                1.0
+            };
+            self.needed = needed.max(self.needed - HEADROOM_DECAY * dt).max(1.0);
+            if self.needed > self.headroom || self.needed * HEADROOM_DROP < self.headroom {
+                self.headroom = if self.needed > 1.0 {
+                    self.needed * HEADROOM_RAISE
+                } else {
+                    1.0
+                };
             }
         } else if self.strength == 0.0 {
             self.headroom = 1.0;
+            self.needed = 1.0;
         }
         if self.strength == 0.0 && !model.is_some_and(|m| m.significant) {
             self.smoothed = None;

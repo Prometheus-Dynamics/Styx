@@ -89,6 +89,8 @@ pub struct Agc {
     last: Option<(Duration, f64)>,
     /// The last request.
     last_request: Option<SensorRequest>,
+    /// Deflicker's headroom the last request was made with.
+    last_headroom: f64,
     /// Frame on which the latest change of the request lands.
     lands_at: u64,
     /// Frame on which the latest change larger than the lock tolerance lands.
@@ -139,6 +141,7 @@ impl Agc {
             frozen: None,
             last: None,
             last_request: None,
+            last_headroom: 1.0,
             lands_at: 0,
             settles_at: 0,
             full_step_pending: false,
@@ -453,6 +456,7 @@ impl Algorithm for Agc {
         self.frozen = None;
         self.last = None;
         self.last_request = None;
+        self.last_headroom = 1.0;
         self.lands_at = 0;
         self.settles_at = 0;
         self.full_step_pending = false;
@@ -529,7 +533,9 @@ impl Algorithm for Agc {
         // The highlights on the output's scale under the mean light (see `deflicker`).
         let h = &stats.histogram;
         let top = h.quantile(deflicker::HIGHLIGHT_QUANTILE) / h.len().max(1) as f64;
-        let highlight = if h.total() == 0 || top >= 0.98 {
+        // Statistics are black-subtracted, not stretched: white is 1 − black.
+        let white = 1.0 - params.black_level.g.clamp(0.0, 0.5);
+        let highlight = if h.total() == 0 || top >= 0.95 * white {
             f64::INFINITY
         } else {
             let applied = if self.filtered > 0.0 && current > 0.0 {
@@ -537,7 +543,7 @@ impl Algorithm for Agc {
             } else {
                 1.0
             };
-            top * applied / flicker_k
+            top / white * applied / flicker_k
         };
         let deflicker = self.deflicker_for(meta, fixed_both, highlight);
         let headroom = deflicker.as_ref().map_or(1.0, |d| d.headroom);
@@ -654,11 +660,12 @@ impl Algorithm for Agc {
             last => {
                 let frame = self.config.delays.earliest_landing(meta.frame);
                 self.lands_at = frame;
-                // A change within the lock tolerance leaves a frame on target either way.
+                // A change within the lock tolerance leaves a frame on target either way (so
+                // does one of deflicker's headroom alone: the ISP makes up for it).
                 let total = |e: Duration, g: f64| e.as_secs_f64() * g;
                 let significant = last.is_none_or(|r| {
-                    let before = total(r.exposure, r.analogue_gain);
-                    let now = total(exposure, split.analogue_gain);
+                    let before = total(r.exposure, r.analogue_gain) * self.last_headroom;
+                    let now = total(exposure, split.analogue_gain) * headroom;
                     (now / before.max(1e-12) - 1.0).abs() > ON_TARGET
                 });
                 if significant {
@@ -690,6 +697,7 @@ impl Algorithm for Agc {
         };
         self.last = Some((exposure, split.analogue_gain));
         self.last_request = Some(request);
+        self.last_headroom = headroom;
         params.sensor = Some(request);
         params.digital_gain = split.digital_gain;
         params.deflicker = deflicker;

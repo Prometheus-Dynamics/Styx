@@ -54,13 +54,15 @@ tools/native-pipeline   pisp | soft | replay, with the measurements below
   gain), CCM, tone curve, black level, lens shading. The ISP digital gain for a frame is the
   algorithms' total exposure divided by what the sensor delivered for that frame (clamped to
   1..max), so the picture follows the target while a new exposure is in flight, as the
-  Raspberry Pi IPA does.
+  Raspberry Pi IPA does; divided by the brightness deflicker predicts for that frame (see
+  "Deflicker"). `Controller::retarget` sets both for the frame being processed.
 * **Timing.** PiSP: frame F's statistics arrive with its raw frame; F goes through the back
   end at once with the settings computed from F − 1 (its digital gain recomputed for what F
   got) while F's statistics go through the algorithms, so the settings from F process F + 1
   and the algorithms' time is hidden behind the back end job (see "PiSP path"). Sensor
   requests go out as early as before. While AE is locked and AWB converged the algorithms
-  run at 15 Hz (`PispOptions::settled_rate_hz`). The FE's RGB→Y weights and black levels
+  run at 15 Hz (`PispOptions::settled_rate_hz`), except while the light is seen
+  flickering (`Params::needs_every_frame`: the flicker fit needs every frame). The FE's RGB→Y weights and black levels
   follow on the config it takes next (configs are queued two ahead). Software ISP: statistics
   come out of processing F, so the settings from F process F + 1.
 * **Determinism.** `Controller::record_to` writes a `styx-algo` replay; replaying it gives the
@@ -505,6 +507,49 @@ frames (the output's 8-12% spread above is the light); AE no longer chases it. T
 Styx API (`AE_FLICKER_MODE` set at 120 fps, AE pinned at its limits in the dark scene) the
 detected period read back as 10000 µs after 1008 frames at 120 fps and 52 at 30 fps.
 
+### Deflicker (2026-10-03)
+
+The flicker left in short exposures is now taken out with each frame's ISP digital gain
+(algorithms.md, "Deflicker"; `Deflicker::Auto`, the default, is on with flicker avoidance;
+`NativeIspConfig::deflicker`, control `AE_DEFLICKER_MODE` 0 off / 1 on / 2 auto;
+`native-pipeline --deflicker`). On the PiSP path the back end job for frame F is queued with
+the settings from F − 1 retargeted to F (its number, duration, exposure and gains read back
+from embedded data), so the gain is the one for the frame the back end processes; temporal
+denoise scales its average by the predicted light as well (the TDN ratio is exposure × gain ×
+flicker). The software path does the same in `SoftLoop::settings_for`.
+
+The room's lamp at night (dark: AE at its limits, 8.2 ms × 8 at 120 fps), `native-pipeline
+pisp --cold --fps F --flicker auto --deflicker off|auto`, 10 s each, steady state over the
+second half; off with `--every-frame` (as measured before), auto as it ships; three
+interleaved pairs per rate because the scene drifted between runs (output SD of the frames'
+mean luma; frame to frame: mean relative change between consecutive frames):
+
+| | deflicker off: metered / output SD (frame to frame) | auto: metered / output SD (frame to frame) |
+|---|---|---|
+| 120 fps (8.2 ms) | 14.2-16.1% / 8.9-11.2% (15.1-18.2%) | 14.7-17.3% / 2.6-3.3% (3.4-4.7%) |
+| 90 fps (11.0 ms) | 13.0-14.6% / 9.1-10.5% (16.1-18.6%) | 14.3-15.1% / 2.7-4.0% (4.3-4.9%) |
+| 60 fps (16.6 ms) | 5.1-5.7% / 3.0-3.7% (3.2-3.6%) | 4.9-5.4% / 1.2-1.6% (1.5-1.6%) |
+| software ISP, 60 fps | 4.5% / 2.6% (2.8%) | 5.8% / 2.5% (1.6%) |
+
+AE locked on 100% of the steady-state frames either way; with deflicker the sensor request
+changes once or twice per run (the headroom: highlights clipped in this scene, so the
+analogue gain gives 1.2-1.4 of AE's total to the ISP: 8.2 ms × 5.9-6.4 at 120 fps instead of
+× 8) and the ISP's gain stays within 1.02..1.8 (AE's own digital gain at its limit included).
+The residual is mostly the scene, not the model: offline, one-frame-ahead predictions of a
+deflicker-off recording from 64 frames missed by 0.85% RMS with the three harmonics (6.3% raw
+spread), 0.63% with six; this dark scene drifts (a slow dimming restarted the fit in one
+recording). No visible pumping: no step in the output when the correction fades in over
+0.25 s, and before the first fix the headroom chased the frames' highlights every frame
+(the gain moved 7.0-7.8 and AE lost its lock), now it follows the largest need of the last
+second with hysteresis (replay of that recording: 90 → 7 request changes in 600 frames).
+
+CPU (`thread ... ms CPU/frame`, 120 fps, 10 s): the PiSP path at the settled rate 0.30 ms
+per frame without deflicker, 0.48 ms with it (3.6% → 5.7% of a core): the algorithms run on
+every frame while the light flickers (0.16 ms each); the correction itself is a few
+microseconds (frequency tracking: two more fits per frame on the fit in use). Software ISP at
+60 fps: 2.5 → 2.9 ms per frame (statistics and algorithms every frame, new ISP parameters
+every frame).
+
 `AE_STATE`/`AeStatus::locked` in a scene beyond AE's reach: before, AE kept searching at
 its limits for ever (the dark room at 120 fps: never locked); now it locks once it asks for
 the limit (`AeStatus::at_limit`): frame 6 at 120 fps on the kernel driver path, 8 through
@@ -743,9 +788,11 @@ fps); CPU unchanged. It is a Styx setting now (see "Denoise settings").
 * Algorithms at 15 Hz while settled: a scene change is seen up to one 15 Hz period later
   (`settled_rate_hz: None` runs them on every frame).
 * Brightness changes were forced exposure steps, not changes of the light.
-* Flicker on exposures shorter than a period stays in the frames (AE no longer chases it;
-  see "Flicker"). The flicker model could also scale each frame's ISP digital gain to take it
-  out of the output (gains below 1 for the brighter frames, or exposure headroom).
+* Deflicker (see "Deflicker"): band gains for rolling-shutter sensors are implemented
+  (folded into the lens shading grid) but unverified on a sensor; at 30 fps with exposures
+  shorter than a period 50 and 100 Hz alias onto each other and ~2% remain (simulated); the
+  frame times come from frame numbers and durations (the fit tracks the mains frequency in
+  that clock), not the frame-start timestamps.
 * The tool's software runs use one thread unless `--threads` says otherwise (the `styx`
   native backend's software mode uses min(4, cores), and the planner prices it as measured).
   On the CM5 one thread is the cheapest in CPU (four cost 0.6-1.4 ms more per frame); the
