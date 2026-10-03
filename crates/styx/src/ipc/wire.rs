@@ -7,12 +7,15 @@
 //!   order: one per memfd, one per dma-buf plane.
 //! - Accept / Reject (camera service): the consumer's plan, or why none fits.
 //! - Cameras (camera service): the cameras it serves, in answer to List.
+//! - Metrics (camera service): the format and length of the service's metrics, carried in the
+//!   attached memfd, in answer to a metrics request.
 //!
 //! Client to server:
 //! - Release: the id of a frame the client dropped.
 //! - Request (camera service): the consumer's `FrameRequirements`, and optionally which camera.
 //! - List (camera service): which cameras it serves.
 //! - Roi: a new region of interest, or none.
+//! - Metrics (camera service): the service's metrics, as JSON (0) or Prometheus text (1).
 
 use styx_core::prelude::*;
 
@@ -28,6 +31,8 @@ const KIND_REJECT: u16 = 5;
 const KIND_ROI: u16 = 6;
 const KIND_LIST: u16 = 7;
 const KIND_CAMERAS: u16 = 8;
+const KIND_METRICS: u16 = 9;
+const KIND_METRICS_REPLY: u16 = 10;
 /// Most cameras a camera list carries.
 const MAX_CAMERAS: usize = 64;
 /// Most identity keys per camera, formats per request and names in a forbid list.
@@ -70,6 +75,15 @@ pub(super) enum ClientMessage {
     Request(Box<FrameRequirements>, Option<String>),
     Roi(Option<FrameRect>),
     List,
+    /// The service's metrics, in this format.
+    Metrics(MetricsFormat),
+}
+
+/// How a camera service sends its metrics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MetricsFormat {
+    Json,
+    Prometheus,
 }
 
 /// A message from a server.
@@ -78,6 +92,8 @@ pub(super) enum ServerMessage {
     Accept(String),
     Reject(String),
     Cameras(Vec<CameraInfo>),
+    /// Metrics of this format and length in bytes, in the attached memfd.
+    Metrics(MetricsFormat, usize),
 }
 
 /// A camera a [`CameraService`](super::CameraService) serves.
@@ -543,6 +559,34 @@ fn read_request(r: &mut Reader<'_>) -> Result<FrameRequirements, IpcError> {
     Ok(req)
 }
 
+fn format_tag(format: MetricsFormat) -> u8 {
+    match format {
+        MetricsFormat::Json => 0,
+        MetricsFormat::Prometheus => 1,
+    }
+}
+
+fn format_from(tag: u8) -> Result<MetricsFormat, IpcError> {
+    match tag {
+        0 => Ok(MetricsFormat::Json),
+        1 => Ok(MetricsFormat::Prometheus),
+        _ => Err(IpcError::Malformed("unknown metrics format")),
+    }
+}
+
+pub(super) fn encode_metrics_request(format: MetricsFormat) -> Vec<u8> {
+    let mut w = Writer::new(KIND_METRICS);
+    w.u8(format_tag(format));
+    w.0
+}
+
+pub(super) fn encode_metrics_reply(format: MetricsFormat, len: usize) -> Vec<u8> {
+    let mut w = Writer::new(KIND_METRICS_REPLY);
+    w.u8(format_tag(format));
+    w.usize(len);
+    w.0
+}
+
 pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
     let (mut r, kind) = Reader::start(bytes)?;
     match kind {
@@ -556,6 +600,7 @@ pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
         }
         KIND_LIST => Ok(ClientMessage::List),
         KIND_ROI => Ok(ClientMessage::Roi(r.opt(Reader::rect)?)),
+        KIND_METRICS => Ok(ClientMessage::Metrics(format_from(r.u8()?)?)),
         _ => Err(IpcError::Malformed("unexpected message from a client")),
     }
 }
@@ -573,6 +618,7 @@ pub(super) fn decode_server(bytes: &[u8]) -> Result<ServerMessage, IpcError> {
         KIND_ACCEPT => Ok(ServerMessage::Accept(r.text()?)),
         KIND_REJECT => Ok(ServerMessage::Reject(r.text()?)),
         KIND_CAMERAS => Ok(ServerMessage::Cameras(read_cameras(&mut r)?)),
+        KIND_METRICS_REPLY => Ok(ServerMessage::Metrics(format_from(r.u8()?)?, r.usize()?)),
         _ => Err(IpcError::Malformed("unexpected message from a server")),
     }
 }
@@ -609,5 +655,14 @@ mod tests {
             panic!("not a camera list");
         };
         assert_eq!(back, cameras);
+        let request = encode_metrics_request(MetricsFormat::Prometheus);
+        assert!(matches!(
+            decode_client(&request),
+            Ok(ClientMessage::Metrics(MetricsFormat::Prometheus))
+        ));
+        assert!(matches!(
+            decode_server(&encode_metrics_reply(MetricsFormat::Json, 1234)),
+            Ok(ServerMessage::Metrics(MetricsFormat::Json, 1234))
+        ));
     }
 }

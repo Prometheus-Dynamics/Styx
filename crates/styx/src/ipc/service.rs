@@ -172,6 +172,7 @@ impl CameraService {
             cameras: Mutex::new(Vec::new()),
             counters: Counters::default(),
             connections: AtomicUsize::new(0),
+            client_metrics: Default::default(),
         });
         let accept = {
             let service = service.clone();
@@ -216,9 +217,24 @@ pub struct CameraServiceHandle {
 
 impl CameraServiceHandle {
     pub fn stats(&self) -> CameraServiceStats {
-        let counters = &self.service.counters;
+        self.service.stats()
+    }
+
+    /// The service's counters, each client's frames and hold times, and the metrics of every
+    /// capture in this process; what [`FrameClient::service_metrics`] gets from another
+    /// process.
+    ///
+    /// [`FrameClient::service_metrics`]: super::FrameClient::service_metrics
+    pub fn metrics(&self) -> crate::metrics::ServiceMetrics {
+        self.service.metrics()
+    }
+}
+
+impl Service {
+    fn stats(&self) -> CameraServiceStats {
+        let counters = &self.counters;
         CameraServiceStats {
-            clients: self.service.clients(),
+            clients: self.clients(),
             rejected: counters.rejected.load(Ordering::Relaxed),
             unauthorized: counters.unauthorized.load(Ordering::Relaxed),
             restarts: counters.restarts.load(Ordering::Relaxed),
@@ -229,6 +245,24 @@ impl CameraServiceHandle {
         }
     }
 
+    fn metrics(&self) -> crate::metrics::ServiceMetrics {
+        let stats = self.stats();
+        crate::metrics::ServiceMetrics {
+            clients: stats.clients,
+            rejected: stats.rejected,
+            unauthorized: stats.unauthorized,
+            restarts: stats.restarts,
+            sent: stats.sent,
+            copied: stats.copied,
+            skipped: stats.skipped,
+            revoked: stats.revoked,
+            client_metrics: self.client_metrics.snapshot(),
+            snapshot: crate::metrics::snapshot(),
+        }
+    }
+}
+
+impl CameraServiceHandle {
     /// The shared plans running now, one per camera in use, as text.
     pub fn plan(&self) -> Option<String> {
         let plans: Vec<String> = self
@@ -293,6 +327,8 @@ struct Service {
     counters: Counters,
     /// Open connections, including clients still sending their request.
     connections: AtomicUsize,
+    /// Each client's frames, for [`CameraServiceHandle::metrics`].
+    client_metrics: super::metrics::Clients,
 }
 
 /// Whether two probes found the same camera: probes list its identity keys in any order.
@@ -429,7 +465,11 @@ fn serve_client(service: &Service, mut conn: Connection) {
         }
     };
     if conn.send(&wire::encode_accept(&plan)).is_ok() {
+        service
+            .client_metrics
+            .add(id, &camera.device.identity.display, &mut conn);
         send_frames(service, &camera, &mut conn, id, &frames);
+        super::metrics::client_left(&mut conn);
     }
     camera.leave(id, &service.config);
 }
@@ -449,6 +489,10 @@ fn handshake(
                 }
                 ClientMessage::List => {
                     let _ = conn.send(&wire::encode_cameras(&service.list()));
+                    return None;
+                }
+                ClientMessage::Metrics(format) => {
+                    super::metrics::answer(conn, format, &service.metrics());
                     return None;
                 }
                 ClientMessage::Release(_) | ClientMessage::Roi(_) => {}
@@ -533,6 +577,9 @@ fn send_frames(
             }
             Ok(false) => {
                 counters.skipped.fetch_add(1, Ordering::Relaxed);
+                if let Some(stats) = &conn.stats {
+                    stats.dropped();
+                }
                 if let Some(frames) = frames.lock().as_ref()
                     && frames.plan().inter_coded()
                 {

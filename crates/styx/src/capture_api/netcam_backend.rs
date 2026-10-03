@@ -291,6 +291,7 @@ pub(super) fn start_netcam(
         shutdown_stats: Default::default(),
         retry_metrics,
         sequence_gaps: Default::default(),
+        live: Default::default(),
     })
 }
 

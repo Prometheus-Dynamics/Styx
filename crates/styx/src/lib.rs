@@ -44,7 +44,7 @@ pub mod ipc;
 #[cfg(feature = "facade")]
 pub mod memory;
 #[cfg(feature = "facade")]
-mod metrics;
+pub mod metrics;
 #[cfg(feature = "facade")]
 pub mod planner;
 #[cfg(all(feature = "facade", feature = "hooks"))]

@@ -7,7 +7,7 @@ use styx_capture::virtual_backend::VirtualCapture;
 use styx_core::prelude::*;
 
 use crate::BackendKind;
-use crate::capture_api::handle::{WorkerHandle, enqueue_capture_frame};
+use crate::capture_api::handle::WorkerHandle;
 use crate::capture_api::{
     CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig,
 };
@@ -50,7 +50,10 @@ pub(super) fn start_virtual(
     let timestamp_clock = capture_tunables.timestamp_clock;
     #[cfg(target_os = "linux")]
     let mut imported = imported::Slots::claim(config, &mode);
+    let live = crate::metrics::CaptureMetrics::default();
+    let live_worker = live.clone();
     let worker = thread::spawn(move || {
+        live_worker.register_thread();
         tracing::debug!(backend = "virtual", "capture worker started");
         let start = std::time::Instant::now();
         loop {
@@ -69,7 +72,13 @@ pub(super) fn start_virtual(
                 let meta = frame.meta_mut();
                 meta.timestamp = timestamp;
                 meta.clock = Some(clock);
-                if enqueue_capture_frame(&tx, frame, "virtual", frame_interval) {
+                if crate::capture_api::handle_metrics::deliver(
+                    &live_worker,
+                    &tx,
+                    frame,
+                    "virtual",
+                    frame_interval,
+                ) {
                     break;
                 }
                 if stop_rx.recv_timeout(frame_interval).is_ok() {
@@ -102,6 +111,7 @@ pub(super) fn start_virtual(
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
         sequence_gaps: Default::default(),
+        live,
     })
 }
 

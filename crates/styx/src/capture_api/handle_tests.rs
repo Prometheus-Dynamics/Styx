@@ -34,6 +34,7 @@ fn health_report_includes_capture_worker_error() {
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
         sequence_gaps: Default::default(),
+        live: Default::default(),
     };
 
     let report = handle.health_report();
@@ -73,6 +74,7 @@ fn health_report_includes_control_error() {
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
         sequence_gaps: Default::default(),
+        live: Default::default(),
     };
 
     let report = handle.health_report();
@@ -111,6 +113,7 @@ fn memory_stats_include_external_backing_telemetry() {
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
         sequence_gaps: Default::default(),
+        live: Default::default(),
     };
 
     let memory = handle.memory_stats();
