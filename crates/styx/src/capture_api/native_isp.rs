@@ -608,6 +608,10 @@ mod tests {
         let plan =
             crate::planner::plan_frames(&soft, &crate::planner::Frames::formats([FourCc::NV12]))
                 .unwrap();
+        // With `gpu-isp` on a host with a Vulkan GPU the GPU ISP takes that route instead.
+        if plan.to_string().contains("GPU ISP") {
+            return;
+        }
         assert!(plan.to_string().contains("software ISP"), "{plan}");
         assert!(plan.total.cpu_ms > 2.5, "{plan}");
         assert_eq!(plan.mode.format.resolution.width.get(), 1280, "{plan}");
