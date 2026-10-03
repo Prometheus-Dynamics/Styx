@@ -16,6 +16,7 @@ This directory holds repository-level documentation for the Styx workspace.
 - [performance.md](performance.md): benchmark surfaces and performance-validation notes
 - [runtime-debugging.md](runtime-debugging.md): runtime tracing, health, queue, and teardown diagnostics
 - [testing.md](testing.md): default and example-oriented validation surfaces
+- [fuzzing.md](fuzzing.md): the cargo-fuzz targets for every parser of untrusted bytes, how to run and add them
 
 ## Where To Start
 

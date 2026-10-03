@@ -131,3 +131,10 @@ path = "fuzz_targets/pipeline_rawrec.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ipc_request"
+path = "fuzz_targets/ipc_request.rs"
+test = false
+doc = false
+bench = false

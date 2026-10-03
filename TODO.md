@@ -139,6 +139,20 @@ box (OV9782 1280x800) unless stated.
 - [ ] Userspace UVC: a bulk / UVC 1.5 / SuperSpeed camera on hardware; status interrupt
       endpoint (control change events, button); still images; extension-unit controls.
 
+### Fuzzing
+- [x] cargo-fuzz targets for every parser of untrusted bytes (UVC descriptors and streams, sensor
+      descriptions, embedded data and kernel-driver reports, tuning files, PiSP statistics,
+      kernel messages, raw and MJPEG decoders, imported frame layouts, frame socket and camera
+      service messages and requests, recordings, raw recordings), `scripts/fuzz.sh`, nightly CI
+      smoke run; see [docs/fuzzing.md](docs/fuzzing.md). Found and fixed: out-of-bounds reads in
+      odd-width UYVY/NV12 decoding, SIGBUS on a short memfd from another process, unchecked
+      imported descriptors, allocations sized from headers, overflow panics.
+- [ ] Fuzz the netcam multipart parser (network input; only unit tests today) and the
+      libcamera/V4L2 control and metadata conversions.
+- [ ] The raw decoders still index with `get_unchecked` behind length checks (one was wrong);
+      replace with checked slices where it costs nothing measurable.
+- [ ] Longer runs (hours) and on AArch64 (the NEON paths are not fuzzed on x86).
+
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).
 - [x] 120 fps AE sometimes chases 100 Hz flicker (kernel-driver path); add anti-flicker.

@@ -91,6 +91,8 @@ run() {
     seed_from_repo "$target" "$corpus"
     local inputs=("$corpus")
     [[ -d "$fuzz/seeds/$target" ]] && inputs+=("$fuzz/seeds/$target")
+    # Requests are client messages: start from those.
+    [[ $target == ipc_request ]] && inputs+=("$fuzz/seeds/ipc_messages")
     local log="$fuzz/artifacts/$target.log"
     # shellcheck disable=SC2046 # options are split on purpose
     if cargo "+$toolchain" fuzz run -O --debug-assertions "$target" "${inputs[@]}" -- \

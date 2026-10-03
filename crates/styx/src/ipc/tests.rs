@@ -120,7 +120,7 @@ fn a_client_holding_a_frame_too_long_is_disconnected() {
 }
 
 /// Writes one of every message a service or client reads to `$STYX_FUZZ_SEEDS/ipc_messages/`,
-/// as seeds for the `ipc_messages` fuzz target (`docs/fuzzing.md`).
+/// as seeds for the `ipc_messages` and `ipc_request` fuzz targets (`docs/fuzzing.md`).
 #[test]
 #[ignore = "writes fuzz seeds; run with STYX_FUZZ_SEEDS set"]
 fn write_fuzz_seeds() {
@@ -140,12 +140,12 @@ fn write_fuzz_seeds() {
         backing: WireBacking::Memfd { len: 512 },
         companions: Vec::new(),
     };
-    let mut requirements = FrameRequirements::formats([FourCc::NV12, FourCc::MJPG])
-        .output_resolution(320, 180)
+    let request = crate::planner::Frames::formats([FourCc::NV12, FourCc::MJPG])
+        .size(320, 180)
+        .fps_between(15, 30)
         .pyramid(2)
-        .roi(FrameRect::new(1, 2, 3, 4));
-    requirements.min_fps = Some(15);
-    requirements.overrides.forbid = vec!["ffmpeg".into()];
+        .roi(FrameRect::new(1, 2, 3, 4))
+        .forbid("ffmpeg");
     let cameras = [CameraInfo {
         name: "cam".into(),
         keys: vec!["native:ov9782".into()],
@@ -159,8 +159,12 @@ fn write_fuzz_seeds() {
         ("roi", encode_roi(Some(FrameRect::new(1, 2, 3, 4)))),
         ("list", encode_list()),
         ("cameras", encode_cameras(&cameras)),
-        ("request", encode_request(&requirements, Some("cam"))),
-        ("luma", encode_request(&FrameRequirements::luma(), None)),
+        ("request", encode_request(&request, Some("cam"))),
+        (
+            "gray",
+            encode_request(&crate::planner::Frames::gray().every_frame(2), None),
+        ),
+        ("any", encode_request(&crate::planner::Frames::any(), None)),
     ];
     for (name, bytes) in messages {
         std::fs::write(dir.join(name), bytes).unwrap();
