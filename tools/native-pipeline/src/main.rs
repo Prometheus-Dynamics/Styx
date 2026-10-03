@@ -38,6 +38,8 @@
 //!   --cold               (pisp) start from the tuning's start-up values, not the last state
 //!   --fixed US:GAIN      AE off: this exposure and analogue gain on every frame
 //!   --flicker MODE       flicker avoidance: off (default), 50, 60 or auto
+//!   --deflicker MODE     take the flicker out of the frames: auto (default: with flicker
+//!                        avoidance), on or off
 //!   --ev STOPS           exposure compensation (AE aims STOPS brighter or darker)
 //!   --ct K               AWB off: the gains of this colour temperature (the tuning's CT curve)
 //!   --no-tdn             (pisp) no temporal denoise even if the tuning has it
@@ -99,6 +101,7 @@ pub struct Args {
     pub keep_open: bool,
     pub fixed: Option<(f64, f64)>,
     pub flicker: styx_algo::Flicker,
+    pub deflicker: styx_algo::Deflicker,
     pub ev: f64,
     pub ct: Option<f64>,
     pub no_tdn: bool,
@@ -139,6 +142,7 @@ fn parse() -> Result<Args, String> {
         keep_open: false,
         fixed: None,
         flicker: styx_algo::Flicker::Off,
+        deflicker: styx_algo::Deflicker::Auto,
         ev: 0.0,
         ct: None,
         no_tdn: false,
@@ -192,6 +196,14 @@ fn parse() -> Result<Args, String> {
                     "60" => styx_algo::Flicker::Mains60,
                     "auto" => styx_algo::Flicker::Auto,
                     v => return Err(format!("--flicker: off, 50, 60 or auto, not {v}")),
+                }
+            }
+            "--deflicker" => {
+                a.deflicker = match val()?.as_str() {
+                    "off" => styx_algo::Deflicker::Off,
+                    "on" => styx_algo::Deflicker::On,
+                    "auto" => styx_algo::Deflicker::Auto,
+                    v => return Err(format!("--deflicker: off, on or auto, not {v}")),
                 }
             }
             "--fixed" => {
@@ -255,6 +267,7 @@ pub fn controls_for(
 ) -> Option<styx_algo::Controls> {
     let mut c = styx_algo::Controls {
         flicker: a.flicker,
+        deflicker: a.deflicker,
         ev: a.ev,
         ..Default::default()
     };
@@ -277,7 +290,11 @@ pub fn controls_for(
         c.analogue_gain = Some(gain);
         return Some(c);
     }
-    (a.fixed.is_some() || a.ct.is_some() || a.flicker != styx_algo::Flicker::Off || a.ev != 0.0)
+    (a.fixed.is_some()
+        || a.ct.is_some()
+        || a.flicker != styx_algo::Flicker::Off
+        || a.deflicker != styx_algo::Deflicker::Auto
+        || a.ev != 0.0)
         .then_some(c)
 }
 

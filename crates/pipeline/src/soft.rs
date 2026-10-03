@@ -216,7 +216,7 @@ impl SoftLoop {
             && self
                 .latest
                 .as_ref()
-                .is_some_and(|(p, _)| p.ae.locked && p.awb.converged);
+                .is_some_and(|(p, _)| p.ae.locked && p.awb.converged && !p.needs_every_frame());
         let run = !settled
             || self
                 .last_run

@@ -83,6 +83,7 @@ pub fn run(a: &Args) -> Result<(), String> {
             base_values = Some((values.exposure, values.analogue_gain));
         }
         let mut log = FrameLog::new(&values, &out.step, frame_period * i as u32);
+        (log.isp_dg, log.deflicker) = (out.applied.digital_gain, out.applied.flicker);
         log.processing = processing;
         log.request_lands = out.step.sensor.map(|r| r.frame);
         log.out_y = output.level();

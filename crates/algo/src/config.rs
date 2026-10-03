@@ -107,6 +107,11 @@ pub struct CameraConfig {
     pub hflip: bool,
     /// Vertical flip.
     pub vflip: bool,
+    /// Rolling shutter: time from the first row's exposure to the last row's (zero, the
+    /// default, for a global shutter). Deflicker gives a rolling-shutter frame a gain per band
+    /// of rows ([`crate::FlickerCorrection::band_gains`]).
+    #[serde(default)]
+    pub readout: Duration,
     /// The ISP runs temporal denoise (keeps a long-term average of frames), so spatial and
     /// colour denoise can back off to their with-TDN strengths.
     pub temporal_denoise: bool,
@@ -126,6 +131,7 @@ impl Default for CameraConfig {
             crop: Crop::default(),
             hflip: false,
             vflip: false,
+            readout: Duration::ZERO,
             temporal_denoise: false,
         }
     }

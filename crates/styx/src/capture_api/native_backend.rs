@@ -71,6 +71,9 @@ pub mod controls {
     /// microseconds (`Int`, read only; 0 none yet; 10000 for 50 Hz mains), as libcamera's
     /// `AeFlickerDetected`.
     pub const AE_FLICKER_DETECTED: ControlId = ControlId(0xF400_0012);
+    /// Processed modes: deflicker (`Int`): 0 off, 1 on, 2 with flicker avoidance
+    /// (`NativeDeflicker::control_value`; the default from `NativeIspConfig::deflicker`).
+    pub const AE_DEFLICKER_MODE: ControlId = ControlId(0xF400_0013);
 }
 
 fn native_err(e: NativeError) -> CaptureError {
@@ -243,6 +246,15 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
             ControlValue::Int(0),
             ControlValue::Int(3),
             ControlValue::Int(3),
+            ControlValue::Int(1),
+        ),
+        meta(
+            controls::AE_DEFLICKER_MODE,
+            "ae_deflicker_mode",
+            ControlKind::Int,
+            ControlValue::Int(0),
+            ControlValue::Int(2),
+            ControlValue::Int(2),
             ControlValue::Int(1),
         ),
         ControlMeta {

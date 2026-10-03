@@ -30,6 +30,9 @@
 //!   frame against the mean light, so exposures shorter than a period (8 ms at 120 fps under
 //!   100 Hz light) do not chase the beat; [`crate::Flicker::Auto`] detects 50 or 60 Hz mains
 //!   from the same fits and then avoids it as if it had been set.
+//! * Deflicker: the same model predicts each frame's brightness for the ISP to divide out
+//!   ([`deflicker`]); while it does, the sensor is exposed with headroom for the brightest
+//!   frame and the ISP's digital gain makes up the rest.
 //!
 //! Per frame: meter the scene (weighted zone luma, iterated because saturated zones do not
 //! scale), apply the histogram constraints, compute the target total exposure relative to what
@@ -37,6 +40,7 @@
 //! gain / digital gain along the exposure profile, and snap the exposure time to the flicker
 //! period.
 
+pub mod deflicker;
 pub mod flicker;
 mod metering;
 pub mod tuning;
@@ -51,6 +55,7 @@ use crate::pipeline::Algorithm;
 use crate::stats::{Statistics, ZoneGrid};
 use crate::warm::WarmStart;
 
+use deflicker::DeflickerState;
 use flicker::FlickerFit;
 use tuning::{AgcTuning, Bound, ExposureProfile, MeteringMode};
 
@@ -106,6 +111,10 @@ pub struct Agc {
     periods: Vec<f64>,
     /// The lamp was seen flickering at the mains frequency: its period (seconds).
     mains_period_seen: Option<f64>,
+    /// The fit of the mains frequency in use (index into `fits`).
+    in_use: Option<usize>,
+    /// Deflicker (see [`deflicker`]).
+    deflicker: DeflickerState,
 }
 
 /// Exposure split into its parts.
@@ -141,6 +150,8 @@ impl Agc {
             detected: None,
             periods: Vec::new(),
             mains_period_seen: None,
+            in_use: None,
+            deflicker: DeflickerState::default(),
         })
     }
 
@@ -394,6 +405,34 @@ impl Agc {
         self.last_request = Some(request);
     }
 
+    /// The deflicker correction after this frame (see [`deflicker`]): from the fit of the
+    /// mains in use, else (detecting) the most significant one.
+    fn deflicker_for(
+        &mut self,
+        meta: &FrameMetadata,
+        fixed_both: bool,
+        highlight: f64,
+    ) -> Option<deflicker::FlickerCorrection> {
+        let c = &meta.controls;
+        let enabled = c.deflicker.enabled(c.flicker) && c.ae_enable && !fixed_both;
+        let model = self.in_use.and_then(|i| self.fits[i].model()).or_else(|| {
+            self.fits
+                .iter()
+                .filter_map(FlickerFit::significant)
+                .max_by(|a, b| a.f_stat.total_cmp(&b.f_stat))
+        });
+        let clock = self.clock.unwrap_or((meta.frame, 0.0));
+        self.deflicker.update(
+            enabled,
+            model,
+            clock,
+            meta.frame_duration.as_secs_f64(),
+            meta.exposure.as_secs_f64(),
+            self.config.readout.as_secs_f64(),
+            highlight,
+        )
+    }
+
     fn frame_duration_for(&self, exposure: f64, meta: Option<&FrameMetadata>) -> Duration {
         let (fd_lo, fd_hi) = self.frame_duration_limits(meta);
         let fd = (exposure + self.config.exposure_margin.as_secs_f64()).clamp(fd_lo, fd_hi);
@@ -425,6 +464,8 @@ impl Algorithm for Agc {
         self.detected = None;
         self.periods.clear();
         self.mains_period_seen = None;
+        self.in_use = None;
+        self.deflicker = DeflickerState::default();
         let (t, g) = self.start_values();
         self.filtered = t * g;
         self.set_start_request();
@@ -457,6 +498,7 @@ impl Algorithm for Agc {
             (self.filtered / (exposure * gain)).clamp(1.0, self.tuning.max_digital_gain);
         params.ae.total_exposure = self.filtered;
         params.ae.target_exposure = self.filtered;
+        params.deflicker = None;
         let (name, tuned) = self.metering_mode(None);
         params.histogram_weights = Some(metering::histogram_grid(&name, tuned));
     }
@@ -472,12 +514,33 @@ impl Algorithm for Agc {
         // Meter against the mean light: a frame the flicker made brighter needs more gain.
         let (_, flicker_k) = self.flicker(stats, meta, !unsettled);
         let gain = gain * flicker_k;
-        let on_target = (gain - 1.0).abs() < ON_TARGET;
 
         // Target total exposure, from what produced this frame: a frame exposed before a
         // change landed gives the same target as the frame that asked for it.
         let current =
             meta.exposure.as_secs_f64() * meta.analogue_gain * meta.digital_gain.max(1e-9);
+        // On target: the total this frame asks for is what AE aims at (the sensor's share of
+        // it may be smaller: the ISP's digital gain, deflicker's headroom).
+        let on_target = if self.filtered > 0.0 {
+            (current * gain / self.filtered - 1.0).abs() < ON_TARGET
+        } else {
+            (gain - 1.0).abs() < ON_TARGET
+        };
+        // The highlights on the output's scale under the mean light (see `deflicker`).
+        let h = &stats.histogram;
+        let top = h.quantile(deflicker::HIGHLIGHT_QUANTILE) / h.len().max(1) as f64;
+        let highlight = if h.total() == 0 || top >= 0.98 {
+            f64::INFINITY
+        } else {
+            let applied = if self.filtered > 0.0 && current > 0.0 {
+                self.filtered / current
+            } else {
+                1.0
+            };
+            top * applied / flicker_k
+        };
+        let deflicker = self.deflicker_for(meta, fixed_both, highlight);
+        let headroom = deflicker.as_ref().map_or(1.0, |d| d.headroom);
         // The total exposures AE can reach, and whether the scene wants one beyond them.
         let mut reach = (0.0, f64::INFINITY);
         let target = if fixed_both {
@@ -506,7 +569,6 @@ impl Algorithm for Agc {
         // brightness with digital gain meanwhile. Styx addition: only while at least half the
         // image is saturated; below that the metered gain is reliable and the extra cut would
         // undershoot.
-        let h = &stats.histogram;
         let mostly_saturated = h.total() == 0 || h.quantile(0.5) >= 0.95 * h.len() as f64;
         let desaturating = self.tuning.desaturate
             && mostly_saturated
@@ -567,7 +629,7 @@ impl Algorithm for Agc {
         let no_dg = if desaturating {
             total * self.tuning.fast_reduce_threshold
         } else {
-            total
+            total / headroom
         };
         let split = self.divide(no_dg, total, fixed, Some(meta));
         // Track what the sensor will do: after de-saturating, continue from the reduced
@@ -630,6 +692,7 @@ impl Algorithm for Agc {
         self.last_request = Some(request);
         params.sensor = Some(request);
         params.digital_gain = split.digital_gain;
+        params.deflicker = deflicker;
         params.ae = AeStatus {
             locked: self.lock_count >= LOCK_FRAMES,
             target_exposure: target,

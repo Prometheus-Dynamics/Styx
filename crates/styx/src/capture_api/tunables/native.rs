@@ -46,6 +46,44 @@ impl NativeFlicker {
     }
 }
 
+/// Taking light flicker out of a native camera's processed frames (exposures shorter than
+/// a flicker period, e.g. 8 ms at 120 fps, keep the flicker the frames see even when AE no
+/// longer chases it): each frame's ISP digital gain divided by the brightness AE's flicker
+/// model predicts for it. Also the `AE_DEFLICKER_MODE` control, as [`Self::control_value`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum NativeDeflicker {
+    /// Never.
+    Off,
+    /// Whenever the frames flicker, also with flicker avoidance off.
+    On,
+    /// Whenever flicker avoidance ([`NativeFlicker`]) is on (the default).
+    #[default]
+    Auto,
+}
+
+impl NativeDeflicker {
+    /// The `AE_DEFLICKER_MODE` control value: 0 off, 1 on, 2 auto.
+    pub fn control_value(self) -> i32 {
+        match self {
+            Self::Off => 0,
+            Self::On => 1,
+            Self::Auto => 2,
+        }
+    }
+
+    /// From an `AE_DEFLICKER_MODE` control value.
+    pub fn from_control_value(v: i64) -> Option<Self> {
+        Some(match v {
+            0 => Self::Off,
+            1 => Self::On,
+            2 => Self::Auto,
+            _ => return None,
+        })
+    }
+}
+
 /// What a native camera's ISP delivers for a processed (`NV12` / `RG24`) mode. The PiSP's
 /// back end makes two outputs from one pass over each raw frame: the main one and a second
 /// one (with the downscaler) attached to every frame as a `CompanionKind::Scaled` companion
@@ -94,6 +132,9 @@ pub struct NativeIspConfig {
     pub output_buffers: u32,
     /// Flicker avoidance of the 3A loop (default [`NativeFlicker::Auto`]).
     pub flicker: NativeFlicker,
+    /// Deflicker of the 3A loop (default [`NativeDeflicker::Auto`]: on with flicker
+    /// avoidance).
+    pub deflicker: NativeDeflicker,
 }
 
 impl Default for NativeIspConfig {
@@ -109,6 +150,7 @@ impl Default for NativeIspConfig {
             spatial_denoise_percent: 100,
             output_buffers: 6,
             flicker: NativeFlicker::Auto,
+            deflicker: NativeDeflicker::Auto,
         }
     }
 }
@@ -138,6 +180,12 @@ impl StyxConfig {
     /// Set a native camera's flicker avoidance (see [`NativeIspConfig::flicker`]).
     pub fn native_flicker(mut self, flicker: NativeFlicker) -> Self {
         self.backends.native.flicker = flicker;
+        self
+    }
+
+    /// Set a native camera's deflicker (see [`NativeIspConfig::deflicker`]).
+    pub fn native_deflicker(mut self, deflicker: NativeDeflicker) -> Self {
+        self.backends.native.deflicker = deflicker;
         self
     }
 
@@ -218,5 +266,23 @@ mod tests {
         assert_eq!(NativeFlicker::from_control_value(4), None);
         let c = StyxConfig::default().native_flicker(NativeFlicker::Mains50);
         assert_eq!(c.backends.native.flicker, NativeFlicker::Mains50);
+    }
+
+    #[test]
+    fn deflicker_defaults_to_auto_and_maps_to_control_values() {
+        assert_eq!(NativeIspConfig::default().deflicker, NativeDeflicker::Auto);
+        for d in [
+            NativeDeflicker::Off,
+            NativeDeflicker::On,
+            NativeDeflicker::Auto,
+        ] {
+            assert_eq!(
+                NativeDeflicker::from_control_value(i64::from(d.control_value())),
+                Some(d)
+            );
+        }
+        assert_eq!(NativeDeflicker::from_control_value(3), None);
+        let c = StyxConfig::default().native_deflicker(NativeDeflicker::Off);
+        assert_eq!(c.backends.native.deflicker, NativeDeflicker::Off);
     }
 }

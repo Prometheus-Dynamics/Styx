@@ -411,6 +411,8 @@ mod tests {
             sequence_mismatch: false,
             request_lands: None,
             settings_from: Some(6),
+            digital_gain: 1.0,
+            flicker: 1.0,
             times: PispTimes::default(),
         }
     }
