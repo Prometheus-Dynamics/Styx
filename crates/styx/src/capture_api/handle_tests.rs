@@ -309,3 +309,31 @@ fn write_temp_png(prefix: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     image.save(&path).expect("write png");
     (dir, path)
 }
+
+#[test]
+fn a_supervised_capture_keeps_its_metrics_across_backend_restarts() {
+    // Virtual captures are supervised in tests; an idle stop replaces the backend capture.
+    let device = crate::capture_api::make_virtual_rgb_device("metrics-restart", 4, 4, 60);
+    let handle = crate::capture_api::CaptureRequest::new(&device)
+        .config(crate::capture_api::StyxConfig::new().stop_when_idle(Duration::from_millis(150)))
+        .start()
+        .expect("virtual capture");
+    let take = |n| {
+        let mut got = 0;
+        while got < n {
+            if let RecvOutcome::Data(_) = handle.recv_blocking(Duration::from_millis(500)) {
+                got += 1;
+            }
+        }
+    };
+    take(5);
+    std::thread::sleep(Duration::from_millis(500));
+    take(5);
+    let m = handle.camera_metrics();
+    assert_eq!(m.frames.received, 10, "{m:?}");
+    assert!(m.frames.captured >= 10, "{m:?}");
+    assert!(m.restarts.idle_stops >= 1, "{m:?}");
+    assert_eq!(m.cpu.threads, 1, "{m:?}");
+    assert!(m.fps.measured.is_some(), "{m:?}");
+    handle.stop();
+}

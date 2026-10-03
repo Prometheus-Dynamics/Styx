@@ -46,6 +46,7 @@ impl CaptureHandle {
             worker_error: self.worker_error.clone(),
             retry: self.retry_metrics.clone(),
             external: self.external_backings.clone(),
+            gaps: self.sequence_gaps.clone(),
         });
         if let Ok(mut info) = live.0.info.lock()
             && info.backend.is_empty()

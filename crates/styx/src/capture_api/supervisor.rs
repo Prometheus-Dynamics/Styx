@@ -120,6 +120,7 @@ impl SupervisedCapture {
         match restart(&self.recipe, controls, backend_queue(&self.tx)) {
             Ok(handle) => {
                 tracing::debug!(camera = %self.recipe.identity.display, "capture resumed on demand");
+                handle.attach_metrics();
                 self.live.set_current(Some(handle.live.clone()));
                 *inner = Some(handle);
                 self.retry_metrics.record_idle_resume();
@@ -283,6 +284,7 @@ pub(crate) fn supervise(
     let active_interval = first.interval;
     let retry_metrics = first.retry_metrics.clone();
     let live = crate::metrics::CaptureMetrics::default();
+    first.attach_metrics();
     live.set_current(Some(first.live.clone()));
     let (tx, rx) = queue;
     let shared = Arc::new(SupervisedCapture {
@@ -399,6 +401,7 @@ fn run(
         match restart(recipe, controls, backend_queue(tx)) {
             Ok(handle) => {
                 tracing::info!(backend = %recipe.backend, camera = %recipe.identity.display, "capture restarted");
+                handle.attach_metrics();
                 shared.live.set_current(Some(handle.live.clone()));
                 *shared.inner.lock() = Some(handle);
                 restart_error = None;

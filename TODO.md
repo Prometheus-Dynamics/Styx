@@ -64,6 +64,14 @@ box (OV9782 1280x800) unless stated.
       30 MiB).
 - [x] Processed captures take AE/AWB controls (AE on/off, fixed exposure or gain, EV, AWB
       on/off, colour temperature, red/blue gains) and report AWB's colour temperature.
+- [x] Built-in per-camera metrics, cheap enough to leave on (262 ns per frame on the CM5;
+      PiSP path CPU unchanged within measurement): frames, measured vs configured fps, drops by
+      cause (sensor gaps, queue overflow, corrupt, ISP skips), sensor-to-delivery/receive
+      latency, ISP and worker CPU time, 3A state, restarts, buffers held and hold times, each
+      consumer of a shared capture and each camera service client; `camera_metrics()`,
+      `styx::metrics::snapshot()`, Prometheus text (+ `metrics-http`), serde, the camera
+      service's metrics request, `metrics_top`. Checked against the consumers' own measurement
+      on the CM5. See [docs/metrics.md](docs/metrics.md).
 
 ### HeliOS
 - [x] `helios-peripherals` runs on the native stack (HeliOS branch `styx-native-trial`):
@@ -86,6 +94,8 @@ box (OV9782 1280x800) unless stated.
 - [ ] Image: drop libcamera/libpisp, add the bridge module (Buildroot snippet in
       `kernel-modules/styx-sensor-bridge/buildroot`), config.txt overlay lines.
 - [ ] Not yet tested: a real CSI unplug, controls set by HeliOS, runs longer than 2 h.
+- [ ] Log or export `camera_metrics()` (or serve `styx::metrics::serve_http`) in
+      helios-peripherals in place of the `health_report`/`metrics` logging every 30 frames.
 
 ### Image quality
 - [x] Black level at high gain: not a black level difference. Zero-exposure levels through the
@@ -138,6 +148,15 @@ box (OV9782 1280x800) unless stated.
       sd); ~0.5-1% of a core more CPU. See [docs/uvc.md](docs/uvc.md).
 - [ ] Userspace UVC: a bulk / UVC 1.5 / SuperSpeed camera on hardware; status interrupt
       endpoint (control change events, button); still images; extension-unit controls.
+
+### Metrics
+- [ ] Producer-side metrics for libcamera, file, replay, netcam and simulation captures (today
+      counted as received); hold times for V4L2 and UVC buffers.
+- [ ] Per-consumer hold times for in-process consumers of shared captures (today per capture
+      buffer, and per camera service client); attribute a service client's queue drops to the
+      client (they show on its consumer row of the camera).
+- [ ] AF state once the loop has autofocus (`native/autofocus`); CPU of the software ISP's
+      worker pool per capture.
 
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).

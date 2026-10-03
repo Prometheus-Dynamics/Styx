@@ -515,8 +515,7 @@ impl CaptureMetrics {
             b.fetch_add(a.load(Relaxed), Relaxed);
         }
         if !Arc::ptr_eq(&from.sequence_gaps, &to.sequence_gaps) {
-            to.sequence_gaps
-                .fetch_add(from.sequence_gaps.load(Relaxed), Relaxed);
+            to.sequence_gaps.fetch_add(previous.gap_count(), Relaxed);
         }
         let (cpu, _) = previous.cpu_ns();
         to.cpu_ns_retired.fetch_add(cpu, Relaxed);

@@ -131,3 +131,18 @@ fn the_camera_service_reports_its_metrics_to_other_clients() {
     drop(client);
     service.stop();
 }
+
+#[cfg(feature = "metrics-http")]
+#[test]
+fn metrics_are_served_over_http() {
+    use std::io::{Read, Write};
+    let server = styx::metrics::serve_http("127.0.0.1:0").unwrap();
+    let mut stream = std::net::TcpStream::connect(server.local_addr()).unwrap();
+    stream
+        .write_all(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+    assert!(answer.contains("styx_process_cameras_open"), "{answer}");
+}

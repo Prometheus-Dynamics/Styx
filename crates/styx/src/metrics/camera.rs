@@ -240,9 +240,23 @@ pub(crate) struct Attached {
     pub(crate) worker_error: Arc<parking_lot::Mutex<Option<CaptureError>>>,
     pub(crate) retry: CaptureRetryMetrics,
     pub(crate) external: Vec<Arc<ExternalBackingTracker>>,
+    /// The handle's sequence gap counter (a backend that counts gaps itself, e.g. libcamera).
+    pub(crate) gaps: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl CaptureMetrics {
+    /// Sequence gaps counted here, and by the backend into its handle's counter.
+    pub(crate) fn gap_count(&self) -> u64 {
+        let own = &self.0.counters.sequence_gaps;
+        own.load(Relaxed)
+            + self
+                .0
+                .attached
+                .get()
+                .filter(|a| !Arc::ptr_eq(&a.gaps, own))
+                .map_or(0, |a| a.gaps.load(Relaxed))
+    }
+
     /// A snapshot of everything measured so far.
     pub fn snapshot(&self) -> CameraMetrics {
         let l = &*self.0;
@@ -266,11 +280,7 @@ impl CaptureMetrics {
             None => Default::default(),
         };
         let uptime = l.started.elapsed();
-        let gaps = l.counters.sequence_gaps.load(Relaxed)
-            + current
-                .as_ref()
-                .filter(|c| !Arc::ptr_eq(&c.0.counters.sequence_gaps, &l.counters.sequence_gaps))
-                .map_or(0, |c| c.0.counters.sequence_gaps.load(Relaxed));
+        let gaps = self.gap_count() + current.as_ref().map_or(0, CaptureMetrics::gap_count);
         let drops = Drops {
             sensor_sequence_gaps: gaps,
             queue_overflow: queue.send_timeouts + queue.evictions,
@@ -300,6 +310,17 @@ impl CaptureMetrics {
             (a + b, ta + tb)
         };
         let buffers = &producer.0.buffers;
+        // A reconnecting capture's backend capture tracks its own driver buffers.
+        let external: Vec<_> = external
+            .into_iter()
+            .chain(
+                current
+                    .as_ref()
+                    .and_then(|c| c.0.attached.get())
+                    .into_iter()
+                    .flat_map(|a| a.external.iter().map(|t| t.snapshot())),
+            )
+            .collect();
         let ext_held: u64 = external.iter().map(|e| e.current_buffers).sum();
         let ext_bytes: u64 = external.iter().map(|e| e.current_bytes).sum();
         let ext_peak: u64 = external.iter().map(|e| e.peak_buffers).sum();
