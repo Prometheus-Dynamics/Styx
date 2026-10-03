@@ -70,7 +70,7 @@ impl Pipeline {
     pub fn from_tuning(tuning: &Tuning) -> Result<Self> {
         tuning.validate()?;
         let mut p = Self::new();
-        p.push(BlackLevel::new(tuning.black_level));
+        p.push(BlackLevel::new(tuning.black_level.clone()));
         if let Some(lux) = &tuning.lux {
             p.push(Lux::new(*lux));
         }

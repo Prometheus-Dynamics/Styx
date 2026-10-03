@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 pub use crate::algos::agc::tuning::{AgcTuning, Bound, Constraint, ExposureProfile, MeteringMode};
 pub use crate::algos::alsc::{AlscCalibration, AlscTuning};
 pub use crate::algos::awb::tuning::{AwbMode, AwbPrior, AwbTuning};
-pub use crate::algos::black_level::BlackLevelTuning;
+pub use crate::algos::black_level::{BlackLevelTuning, GainBlackLevel};
 pub use crate::algos::ccm::{CcmTuning, CtCcm};
 pub use crate::algos::contrast::ContrastTuning;
 pub use crate::algos::denoise::{
@@ -83,6 +83,13 @@ impl Tuning {
         Ok(import)
     }
 
+    /// Write a Raspberry Pi tuning file (version 2) for `target` (`pisp` or `bcm2835`; `None`:
+    /// `bcm2835` for 16×12 lens shading tables, else `pisp`). Styx-only settings are left out;
+    /// see `docs/native-stack/algorithms.md`.
+    pub fn to_rpi_json_string(&self, target: Option<&str>) -> String {
+        rpi::export(self, target)
+    }
+
     /// Load a file: `.json` as a Raspberry Pi tuning, anything else as our TOML.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -99,6 +106,9 @@ impl Tuning {
 
     /// Check every section.
     pub fn validate(&self) -> Result<()> {
+        if let Some(b) = &self.black_level {
+            b.validate()?;
+        }
         if let Some(l) = &self.lux {
             l.validate()?;
         }

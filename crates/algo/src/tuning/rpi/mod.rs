@@ -16,6 +16,9 @@ use super::json::Value;
 use super::*;
 
 mod detail;
+mod export;
+
+pub(in crate::tuning) use export::export;
 
 /// The result of converting a Raspberry Pi tuning file.
 #[derive(Debug, Clone, PartialEq)]
@@ -170,6 +173,7 @@ fn black_level(s: &Section, ig: &mut Vec<String>) -> Result<BlackLevelTuning> {
         r: s.num_or("black_level_r", all)? / FULL,
         g: s.num_or("black_level_g", all)? / FULL,
         b: s.num_or("black_level_b", all)? / FULL,
+        by_gain: Vec::new(),
     })
 }
 
