@@ -226,6 +226,8 @@ pub(super) struct Worker {
     pub(super) timeout: Duration,
     /// The 3A loop's AE state after each frame (`controls::AE_STATE`): 1 searching, 2 locked.
     pub(super) ae_state: Arc<AtomicI32>,
+    /// Flicker avoidance shared with the control plane.
+    pub(super) flicker: super::FlickerState,
 }
 
 fn lease(
@@ -309,6 +311,8 @@ pub(super) fn spawn(
                 let locked = p.step().params.ae.locked;
                 w.ae_state
                     .store(if locked { 2 } else { 1 }, Ordering::Release);
+                let detected = p.step().params.ae.flicker_detected;
+                super::sync_flicker(&w.flicker, p.controller(), detected);
                 let mut leases: [Option<FrameLease>; 2] = [None, None];
                 let mut failed = None;
                 for (i, spec) in w.specs.iter().enumerate() {

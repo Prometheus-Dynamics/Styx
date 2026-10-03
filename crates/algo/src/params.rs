@@ -61,6 +61,19 @@ pub struct AeStatus {
     pub measured_y: f64,
     /// The exposure was cut quickly to leave saturation.
     pub desaturating: bool,
+    /// The flicker period exposures of at least that long are whole multiples of (the mains
+    /// period when the lamp flickers at the mains frequency, else half of it), while flicker
+    /// avoidance is on and a mains frequency is set or detected.
+    #[serde(default)]
+    pub flicker_period: Option<Duration>,
+    /// What [`crate::Flicker::Auto`] detected, as the light flicker period of full-wave lamps
+    /// on that mains (10 ms for 50 Hz mains, 8.33 ms for 60 Hz).
+    #[serde(default)]
+    pub flicker_detected: Option<Duration>,
+    /// How much brighter (relative) than the mean light the flicker made this frame, as AE
+    /// estimated and metered it (0 without a flicker fit).
+    #[serde(default)]
+    pub flicker_modulation: f64,
 }
 
 /// AWB state.

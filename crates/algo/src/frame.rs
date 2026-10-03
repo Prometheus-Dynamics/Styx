@@ -27,13 +27,17 @@ pub enum Flicker {
     Mains60,
     /// A given flicker period.
     Period(Duration),
+    /// Detect 50 or 60 Hz mains flicker from the frames' brightness and avoid it as if set;
+    /// nothing until detected (the detected period: `AeStatus::flicker_detected`).
+    Auto,
 }
 
 impl Flicker {
-    /// The flicker period to avoid, if any.
+    /// The flicker period to avoid, if set (`None` for [`Flicker::Auto`]: it depends on the
+    /// detection).
     pub fn period(self) -> Option<Duration> {
         match self {
-            Flicker::Off => None,
+            Flicker::Off | Flicker::Auto => None,
             Flicker::Mains50 => Some(Duration::from_nanos(10_000_000)),
             Flicker::Mains60 => Some(Duration::from_nanos(8_333_333)),
             Flicker::Period(p) if p.is_zero() => None,

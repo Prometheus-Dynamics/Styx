@@ -43,6 +43,9 @@ pub enum ControlPlane {
         controls: styx_native::CameraControls,
         /// The 3A loop's AE state of a processed mode (see `native_backend::controls::AE_STATE`).
         ae_state: Option<std::sync::Arc<std::sync::atomic::AtomicI32>>,
+        /// A processed mode's flicker avoidance: the mode asked for (`AE_FLICKER_MODE`) and the
+        /// period detected in microseconds (`AE_FLICKER_DETECTED`).
+        flicker: Option<std::sync::Arc<[std::sync::atomic::AtomicI32; 2]>>,
     },
     /// A reconnecting capture: controls go to whichever backend capture is running and are
     /// re-applied after a reconnect.
@@ -97,7 +100,23 @@ pub(crate) fn apply_control_to_plane(
                 .map_err(|_| CaptureError::control_apply("libcamera channel closed"))
         }
         #[cfg(feature = "native")]
-        ControlPlane::Native { controls, .. } => {
+        ControlPlane::Native {
+            controls, flicker, ..
+        } => {
+            if id == super::native_backend::controls::AE_FLICKER_MODE {
+                let state = flicker.as_ref().ok_or(CaptureError::ControlUnsupported)?;
+                let mode = match _value {
+                    ControlValue::Int(v) => Some(i64::from(v)),
+                    ControlValue::Uint(v) => Some(i64::from(v)),
+                    _ => None,
+                }
+                .and_then(super::NativeFlicker::from_control_value)
+                .ok_or_else(|| {
+                    CaptureError::control_apply("AE flicker mode: 0 off, 1 50 Hz, 2 60 Hz, 3 auto")
+                })?;
+                state[0].store(mode.control_value(), std::sync::atomic::Ordering::Release);
+                return Ok(());
+            }
             super::native_backend::apply_control(controls, id, &_value)
         }
         #[cfg(feature = "file-backend")]
@@ -157,7 +176,19 @@ pub(crate) fn read_control_from_plane(
                 })?
         }
         #[cfg(feature = "native")]
-        ControlPlane::Native { controls, ae_state } => {
+        ControlPlane::Native {
+            controls,
+            ae_state,
+            flicker,
+        } => {
+            use super::native_backend::controls::{AE_FLICKER_DETECTED, AE_FLICKER_MODE};
+            if id == AE_FLICKER_MODE || id == AE_FLICKER_DETECTED {
+                let i = usize::from(id == AE_FLICKER_DETECTED);
+                return flicker
+                    .as_ref()
+                    .map(|s| ControlValue::Int(s[i].load(std::sync::atomic::Ordering::Acquire)))
+                    .ok_or(CaptureError::ControlUnsupported);
+            }
             if id == super::native_backend::controls::AE_STATE {
                 return ae_state
                     .as_ref()

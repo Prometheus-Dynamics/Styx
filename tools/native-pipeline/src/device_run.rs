@@ -141,7 +141,9 @@ pub fn soft(a: &Args) -> Result<(), String> {
         };
         let done = monotonic();
         first.get_or_insert(f.raw.dequeued);
-        if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain))).is_none() {
+        if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain)))
+            .is_none_or(|c| c.ae_enable)
+        {
             base = Some((f.sensor.exposure, f.sensor.analogue_gain));
         }
         let mut log = FrameLog::new(&f.sensor, &f.output.step, f.raw.timestamp);
@@ -315,7 +317,9 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         let done = monotonic();
         first.get_or_insert(f.dequeued);
         mismatches += usize::from(f.sequence_mismatch);
-        if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain))).is_none() {
+        if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain)))
+            .is_none_or(|c| c.ae_enable)
+        {
             base = Some((f.sensor.exposure, f.sensor.analogue_gain));
         }
         let mut log = FrameLog::new(&f.sensor, p.step(), f.timestamp);

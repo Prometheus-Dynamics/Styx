@@ -9,6 +9,7 @@
 
 mod pisp_worker;
 
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -18,17 +19,18 @@ use smallvec::{SmallVec, smallvec};
 use styx_capture::prelude::*;
 use styx_core::prelude::{BackendFrameMeta, ExternalBacking, NativeFrameMeta, TimestampClock};
 use styx_native::{CameraInfo, NativeCamera, StreamSettings};
-use styx_pipeline::SensorValues;
 use styx_pipeline::device::{
     IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning, isp_kind, soft_capture_memory,
 };
+use styx_pipeline::styx_algo::Flicker;
+use styx_pipeline::{Controller, SensorValues};
 use styx_pisp::device::OutputMemory;
 use styx_softisp::{OutputBuffers, Scale};
 
 use super::control_plane::ControlPlane;
 use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle, enqueue_capture_frame};
 use super::request::CaptureError;
-use super::tunables::StyxConfig;
+use super::tunables::{NativeFlicker, StyxConfig};
 use crate::BackendKind;
 use crate::metrics::StageMetrics;
 
@@ -204,6 +206,35 @@ fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues)
     meta
 }
 
+/// A processed capture's flicker avoidance, shared with the control plane: the mode asked for
+/// (`AE_FLICKER_MODE`) and the period AE detected in microseconds (`AE_FLICKER_DETECTED`).
+pub(super) type FlickerState = Arc<[AtomicI32; 2]>;
+
+fn algo_flicker(f: NativeFlicker) -> Flicker {
+    match f {
+        NativeFlicker::Off => Flicker::Off,
+        NativeFlicker::Mains50 => Flicker::Mains50,
+        NativeFlicker::Mains60 => Flicker::Mains60,
+        NativeFlicker::Auto => Flicker::Auto,
+    }
+}
+
+/// Hands the flicker mode asked for to the 3A loop and publishes what it detected.
+pub(super) fn sync_flicker(
+    state: &[AtomicI32; 2],
+    controller: &mut Controller,
+    detected: Option<Duration>,
+) {
+    let mode = NativeFlicker::from_control_value(i64::from(state[0].load(Ordering::Acquire)))
+        .unwrap_or_default();
+    let want = algo_flicker(mode);
+    if controller.controls().flicker != want {
+        controller.set_flicker(want);
+    }
+    let us = detected.map_or(0, |p| p.as_micros().min(i32::MAX as u128) as i32);
+    state[1].store(us, Ordering::Release);
+}
+
 /// Starts processed capture on an opened camera.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn start_processed(
@@ -232,6 +263,11 @@ pub(super) fn start_processed(
     let ae_state = Arc::new(std::sync::atomic::AtomicI32::new(1));
     let ae_worker = Arc::clone(&ae_state);
     let ae_of = |locked: bool| if locked { 2 } else { 1 };
+    let flicker: FlickerState = Arc::new([
+        AtomicI32::new(config.backends.native.flicker.control_value()),
+        AtomicI32::new(0),
+    ]);
+    let flicker_worker = Arc::clone(&flicker);
     let worker_error = Arc::new(Mutex::new(None));
     let werr = Arc::clone(&worker_error);
     let send_timeout = Duration::from_millis(capture.queue_send_timeout_ms);
@@ -262,6 +298,7 @@ pub(super) fn start_processed(
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;
+            sync_flicker(&flicker, p.controller(), None);
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = |i: usize| p.output_format(i).map_or(0, |f| f.stride as usize);
@@ -278,6 +315,7 @@ pub(super) fn start_processed(
                     send_timeout,
                     timeout,
                     ae_state: ae_worker,
+                    flicker: flicker_worker,
                 },
             )?;
             (controls, worker)
@@ -298,6 +336,7 @@ pub(super) fn start_processed(
                 .unwrap_or_else(crate::planner::cost::default_softisp_threads);
             tracing::info!(backend = "native", threads, "software ISP threads");
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
+            sync_flicker(&flicker, p.soft_loop().controller(), None);
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = if code == FourCc::NV12 {
@@ -341,13 +380,12 @@ pub(super) fn start_processed(
                                 break;
                             }
                         };
-                        ae_worker.store(
-                            ae_of(f.output.step.params.ae.locked),
-                            std::sync::atomic::Ordering::Release,
-                        );
+                        ae_worker.store(ae_of(f.output.step.params.ae.locked), Ordering::Release);
+                        let detected = f.output.step.params.ae.flicker_detected;
                         let meta =
                             frame_meta(&worker_mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
                         drop(f);
+                        sync_flicker(&flicker_worker, p.soft_loop().controller(), detected);
                         let lease = FrameLease::from_external(
                             meta,
                             layouts(code, h as usize, stride),
@@ -374,6 +412,7 @@ pub(super) fn start_processed(
         control: ControlPlane::Native {
             controls,
             ae_state: Some(ae_state),
+            flicker: Some(flicker),
         },
         descriptor,
         mode,

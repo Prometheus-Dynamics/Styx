@@ -77,7 +77,9 @@ pub fn run(a: &Args) -> Result<(), String> {
         if let Some(r) = &out.step.sensor {
             sensor.request(r);
         }
-        if controls_for(a, i, Some((values.exposure, values.analogue_gain))).is_none() {
+        if controls_for(a, i, Some((values.exposure, values.analogue_gain)))
+            .is_none_or(|c| c.ae_enable)
+        {
             base_values = Some((values.exposure, values.analogue_gain));
         }
         let mut log = FrameLog::new(&values, &out.step, frame_period * i as u32);

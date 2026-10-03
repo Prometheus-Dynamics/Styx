@@ -25,6 +25,11 @@
 //!   level offset) is corrected at once too.
 //! * A warm start ([`crate::WarmStart`], e.g. the last session's values) replaces the tuning's
 //!   start-up exposure, re-split for the new mode's limits.
+//! * Flicker: besides quantising exposures to whole flicker periods (which needs exposures of
+//!   at least one period), AE fits the flicker the frames show ([`flicker`]) and meters each
+//!   frame against the mean light, so exposures shorter than a period (8 ms at 120 fps under
+//!   100 Hz light) do not chase the beat; [`crate::Flicker::Auto`] detects 50 or 60 Hz mains
+//!   from the same fits and then avoids it as if it had been set.
 //!
 //! Per frame: meter the scene (weighted zone luma, iterated because saturated zones do not
 //! scale), apply the histogram constraints, compute the target total exposure relative to what
@@ -32,6 +37,7 @@
 //! gain / digital gain along the exposure profile, and snap the exposure time to the flicker
 //! period.
 
+pub mod flicker;
 mod metering;
 pub mod tuning;
 
@@ -39,12 +45,13 @@ use std::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::error::Result;
-use crate::frame::{Controls, FrameMetadata};
+use crate::frame::{Controls, Flicker, FrameMetadata};
 use crate::params::{AeStatus, Params, SensorRequest};
 use crate::pipeline::Algorithm;
 use crate::stats::{Statistics, ZoneGrid};
 use crate::warm::WarmStart;
 
+use flicker::{FlickerFit, HARMONICS, MAINS_HZ};
 use tuning::{AgcTuning, Bound, ExposureProfile, MeteringMode};
 
 /// Luma targets are capped here: histograms cannot be read near saturation.
@@ -53,6 +60,12 @@ const EV_GAIN_Y_TARGET_LIMIT: f64 = 0.9;
 pub const LOCK_FRAMES: u32 = 2;
 /// A frame is on target when the gain it still needs is within this of 1.
 const ON_TARGET: f64 = 0.05;
+/// Automatic flicker detection: seconds a fit stays this significant (the F statistic of its
+/// flicker terms, the modulation the frames show, frames fitted) without a break.
+const DETECT_TIME: f64 = 0.5;
+const DETECT_F: f64 = 30.0;
+const DETECT_SAMPLES: usize = 16;
+const DETECT_VISIBLE: f64 = 0.008;
 
 /// The AGC algorithm. See the [module documentation](self).
 #[derive(Debug, Clone)]
@@ -80,6 +93,17 @@ pub struct Agc {
     lock_count: u32,
     /// Start-up exposure and gain from a warm start.
     warm: Option<(f64, f64)>,
+    /// The latest frame's number and start time (seconds since the first frame).
+    clock: Option<(u64, f64)>,
+    /// Flicker fits, one per frequency in use (see [`flicker`]).
+    fits: Vec<FlickerFit>,
+    /// Automatic detection: since when each fit has been significant.
+    detect_since: Vec<Option<f64>>,
+    /// The mains frequency detected automatically.
+    detected: Option<f64>,
+    /// Flicker periods exposures are quantised to (seconds, longest first: the first one the
+    /// exposure reaches), for [`Self::divide`].
+    periods: Vec<f64>,
 }
 
 /// Exposure split into its parts.
@@ -109,7 +133,124 @@ impl Agc {
             full_step_pending: false,
             lock_count: 0,
             warm: None,
+            clock: None,
+            fits: Vec::new(),
+            detect_since: Vec::new(),
+            detected: None,
+            periods: Vec::new(),
         })
+    }
+
+    /// The mains frequencies to fit for these controls.
+    fn flicker_mains(flicker: Flicker) -> Vec<f64> {
+        match flicker {
+            Flicker::Off => Vec::new(),
+            Flicker::Auto => MAINS_HZ.to_vec(),
+            // A light flicker period: the mains it comes from (full-wave) is twice as long.
+            f => f
+                .period()
+                .map(|p| vec![0.5 / p.as_secs_f64()])
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The start time of `meta`'s frame (seconds), from the frame numbers and durations.
+    fn frame_time(&mut self, meta: &FrameMetadata) -> f64 {
+        let fd = meta.frame_duration.as_secs_f64();
+        let t = match self.clock {
+            Some((f, t)) if meta.frame > f => t + (meta.frame - f) as f64 * fd,
+            Some((f, t)) if meta.frame == f => t,
+            _ => 0.0,
+        };
+        self.clock = Some((meta.frame, t));
+        t
+    }
+
+    /// Feeds the flicker fits with this frame, works out the flicker periods to avoid and
+    /// returns the mains frequency in use and how much brighter than the mean light the frame
+    /// is.
+    fn flicker(
+        &mut self,
+        stats: &Statistics,
+        meta: &FrameMetadata,
+        usable: bool,
+    ) -> (Option<f64>, f64) {
+        let flicker = meta.controls.flicker;
+        let wanted = Self::flicker_mains(flicker);
+        if self.fits.len() != wanted.len()
+            || self.fits.iter().zip(&wanted).any(|(f, w)| f.mains() != *w)
+        {
+            self.fits = wanted
+                .iter()
+                .map(|&hz| FlickerFit::new(hz, HARMONICS))
+                .collect();
+            self.detect_since = vec![None; wanted.len()];
+        }
+        if flicker != Flicker::Auto {
+            self.detected = None;
+        }
+        let time = self.frame_time(meta);
+        let (fd, t) = (
+            meta.frame_duration.as_secs_f64(),
+            meta.exposure.as_secs_f64(),
+        );
+        let total = t * meta.analogue_gain * meta.digital_gain.max(1e-9);
+        let y = stats.mean_luma();
+        if usable && total > 0.0 && (0.005..0.85).contains(&y) {
+            for f in &mut self.fits {
+                f.add(time, fd, t, y / total);
+            }
+        }
+        if flicker == Flicker::Auto {
+            for (i, f) in self.fits.iter().enumerate() {
+                let strong = f.significant().is_some_and(|m| {
+                    m.f_stat >= DETECT_F
+                        && m.visible >= DETECT_VISIBLE
+                        && m.samples >= DETECT_SAMPLES
+                });
+                self.detect_since[i] = strong.then(|| self.detect_since[i].unwrap_or(time));
+            }
+            // The strongest of those seen long enough; kept until another one is.
+            let best = (0..self.fits.len())
+                .filter(|&i| self.detect_since[i].is_some_and(|t0| time - t0 >= DETECT_TIME))
+                .max_by(|&a, &b| {
+                    let f = |i: usize| self.fits[i].model().map_or(0.0, |m| m.f_stat);
+                    f(a).total_cmp(&f(b))
+                });
+            if let Some(i) = best {
+                self.detected = Some(self.fits[i].mains());
+            }
+        }
+        let mains = match flicker {
+            Flicker::Auto => self.detected,
+            _ => self.fits.first().map(FlickerFit::mains),
+        };
+        let fit = mains.and_then(|hz| self.fits.iter().find(|f| f.mains() == hz));
+        // Whole mains periods when the lamp flickers at the mains frequency too, else (and
+        // for exposures shorter than that) whole half periods.
+        self.periods = match (fit, mains) {
+            (Some(f), Some(hz)) => {
+                let mut p = vec![f.avoid_period(), 0.5 / hz];
+                p.dedup();
+                p
+            }
+            _ => Vec::new(),
+        };
+        // Until a mains frequency is detected, AE meters against the most significant fit
+        // (its own prediction of these frames); exposures are quantised only once detected.
+        let provisional = || {
+            self.fits
+                .iter()
+                .filter(|f| f.significant().is_some())
+                .max_by(|a, b| {
+                    let f = |x: &FlickerFit| x.model().map_or(0.0, |m| m.f_stat);
+                    f(a).total_cmp(&f(b))
+                })
+        };
+        let correction = fit
+            .or_else(|| (flicker == Flicker::Auto).then(provisional).flatten())
+            .map_or(1.0, |f| f.correction(time, fd, t));
+        (mains, correction)
     }
 
     /// The tuning.
@@ -305,11 +446,21 @@ impl Agc {
                 }
             }
         }
+        let periods = if self.periods.is_empty() {
+            controls
+                .flicker
+                .period()
+                .map(|p| p.as_secs_f64())
+                .into_iter()
+                .collect()
+        } else {
+            self.periods.clone()
+        };
         if fixed.0.is_none()
             && fixed.1.is_none()
-            && let Some(period) = controls.flicker.period()
+            && controls.flicker != Flicker::Off
+            && let Some(&period) = periods.iter().find(|&&p| t >= p)
         {
-            let period = period.as_secs_f64();
             let n = (t / period).floor();
             if n >= 1.0 {
                 let snapped = n * period;
@@ -377,6 +528,11 @@ impl Algorithm for Agc {
         self.full_step_pending = false;
         self.lock_count = 0;
         self.warm = None;
+        self.clock = None;
+        self.fits.clear();
+        self.detect_since.clear();
+        self.detected = None;
+        self.periods.clear();
         let (t, g) = self.start_values();
         self.filtered = t * g;
         self.set_start_request();
@@ -392,6 +548,10 @@ impl Algorithm for Agc {
         if !(total.is_finite() && total > 0.0) {
             return;
         }
+        self.detected = warm
+            .flicker_detected
+            .filter(|p| !p.is_zero())
+            .map(|p| 0.5 / p.as_secs_f64());
         let s = self.divide(total, total, (None, None), None);
         self.warm = Some((s.exposure, s.analogue_gain));
         self.filtered = total;
@@ -415,6 +575,11 @@ impl Algorithm for Agc {
         let fixed_both = fixed.0.is_some() && fixed.1.is_some();
         params.histogram_weights = Some(self.histogram_weights(meta));
         let (gain, target_y, measured_y) = self.compute_gain(stats, meta, params);
+        // Frames whose levels have not settled say nothing about the scene (see below).
+        let unsettled = meta.frame < u64::from(self.config.unsettled_frames);
+        // Meter against the mean light: a frame the flicker made brighter needs more gain.
+        let (_, flicker_k) = self.flicker(stats, meta, !unsettled);
+        let gain = gain * flicker_k;
         let on_target = (gain - 1.0).abs() < ON_TARGET;
 
         // Target total exposure, from what produced this frame: a frame exposed before a
@@ -483,7 +648,6 @@ impl Algorithm for Agc {
         // Frames whose levels have not settled say nothing about the scene; for as many frames
         // after them, and while locked, AE leaves a frame that is on target alone (no hunting
         // within the lock tolerance).
-        let unsettled = meta.frame < u64::from(self.config.unsettled_frames);
         if unsettled {
             stable = f64::INFINITY;
         } else if self.lock_count >= LOCK_FRAMES
@@ -566,6 +730,9 @@ impl Algorithm for Agc {
             target_y,
             measured_y,
             desaturating,
+            flicker_period: self.periods.first().map(|&p| Duration::from_secs_f64(p)),
+            flicker_detected: self.detected.map(|hz| Duration::from_secs_f64(0.5 / hz)),
+            flicker_modulation: flicker_k - 1.0,
         };
     }
 }

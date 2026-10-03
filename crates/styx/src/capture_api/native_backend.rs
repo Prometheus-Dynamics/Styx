@@ -42,6 +42,13 @@ pub mod controls {
     /// AE state of a processed mode's 3A loop after the latest frame, as libcamera's
     /// `AeState` (`Int`, read only): 1 searching, 2 converged (AE locked).
     pub const AE_STATE: ControlId = ControlId(0xF400_0010);
+    /// Flicker avoidance of a processed mode's AE (`Int`): 0 off, 1 50 Hz mains, 2 60 Hz
+    /// mains, 3 automatic (`NativeFlicker::control_value`; the default from
+    /// `NativeIspConfig::flicker`).
+    pub const AE_FLICKER_MODE: ControlId = ControlId(0xF400_0011);
+    /// The light flicker period a processed mode's automatic flicker avoidance detected, in
+    /// microseconds (`Int`, read only; 0 none yet), as libcamera's `AeFlickerDetected`.
+    pub const AE_FLICKER_DETECTED: ControlId = ControlId(0xF400_0012);
 }
 
 fn native_err(e: NativeError) -> CaptureError {
@@ -402,6 +409,7 @@ pub(super) fn start_native(
         control: ControlPlane::Native {
             controls,
             ae_state: None,
+            flicker: None,
         },
         descriptor,
         mode,
