@@ -332,6 +332,9 @@ Specialized examples remain for feature-specific surfaces such as:
 - `pipeline_health`
 - `ffmpeg_scale`
 - `libcamera_ffmpeg_preview`
+- `uvc_capture` (`04_performance`, `--features uvc`): USB cameras through the userspace UVC
+  backend against `uvcvideo` (rate, timestamp jitter, latency, CPU, controls, replug), as
+  quoted in [docs/uvc.md](../docs/uvc.md); `crates/uvc/examples/uvc_raw.rs` uses `styx-uvc` alone
 - `native_capture`, `native_processed`, `native_isp_bench` (`04_performance`): the native
   stack's rates, latency, CPU and memory, as quoted in
   [docs/native-stack/pipeline.md](../docs/native-stack/pipeline.md)

@@ -127,6 +127,8 @@ pub enum BackendKind {
     Replay,
     /// A sensor Styx drives itself through the Styx sensor bridge (`styx-native`).
     Native,
+    /// A UVC camera from userspace over usbfs (`styx-uvc`); its handle's key is `usb:<port>`.
+    Uvc,
 }
 
 /// Backend-specific handle used for configuration/streaming.
@@ -184,6 +186,10 @@ pub enum BackendHandle {
         /// The camera's key in the native provider (`bridge:/dev/v4l-subdevN`).
         key: String,
     },
+    #[cfg(feature = "uvc")]
+    Uvc {
+        key: String,
+    },
 }
 
 #[cfg(feature = "facade")]
@@ -205,6 +211,8 @@ impl BackendHandle {
             BackendHandle::Replay { .. } => BackendKind::Replay,
             #[cfg(feature = "native")]
             BackendHandle::Native { .. } => BackendKind::Native,
+            #[cfg(feature = "uvc")]
+            BackendHandle::Uvc { .. } => BackendKind::Uvc,
         }
     }
 }
@@ -380,6 +388,7 @@ impl std::fmt::Display for BackendKind {
             BackendKind::Simulation => "simulation",
             BackendKind::Replay => "replay",
             BackendKind::Native => "native",
+            BackendKind::Uvc => "uvc",
         })
     }
 }
@@ -398,6 +407,7 @@ impl std::str::FromStr for BackendKind {
             "simulation" | "simulation-bevy" => Ok(BackendKind::Simulation),
             "replay" => Ok(BackendKind::Replay),
             "native" | "styx-native" => Ok(BackendKind::Native),
+            "uvc" | "usbfs" | "styx-uvc" | "userspace-uvc" => Ok(BackendKind::Uvc),
             _ => Err(BackendKindParseError {
                 value: value.to_string(),
             }),
@@ -481,6 +491,8 @@ pub(crate) fn probe_all_with_errors_with_options(_force_refresh: bool) -> ProbeR
             BackendKind::Native,
             #[cfg(feature = "v4l2")]
             BackendKind::V4l2,
+            #[cfg(feature = "uvc")]
+            BackendKind::Uvc,
             #[cfg(feature = "libcamera")]
             BackendKind::Libcamera,
         ]),
@@ -535,6 +547,8 @@ pub(crate) fn probe_backends_with_errors_with_options(
             merge_backend(&mut devices, dev.path.clone(), backend);
         }
     }
+    #[cfg(feature = "uvc")]
+    capture_api::probe_uvc_into(_backends, &mut devices, &mut errors);
     #[cfg(feature = "libcamera")]
     if _backends.is_none_or(|backends| backends.contains(&BackendKind::Libcamera)) {
         if let Some(config) = _config {
@@ -606,6 +620,7 @@ fn backend_error_prefix(backend: BackendKind) -> &'static str {
         BackendKind::Simulation => "simulation: ",
         BackendKind::Replay => "replay: ",
         BackendKind::Native => "native: ",
+        BackendKind::Uvc => "uvc: ",
     }
 }
 
@@ -620,6 +635,7 @@ fn parse_backend_probe_error(value: &str) -> Option<BackendProbeError> {
         BackendKind::Simulation,
         BackendKind::Replay,
         BackendKind::Native,
+        BackendKind::Uvc,
     ]
     .into_iter()
     .find_map(|backend| {

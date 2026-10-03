@@ -16,7 +16,7 @@ pub use frame::{FrameBackingExport, FrameExportError, FrameFdPlane};
 pub use meta::{
     BackendFrameMeta, ClockConversion, ClockSource, FrameLatency, FrameMeta, FrameMutability,
     FrameResidency, FrameTiming, LibcameraFrameMeta, NativeFrameMeta, ResidencyTransition,
-    ResidencyTransitionReason, TimestampClock, V4l2FrameMeta,
+    ResidencyTransitionReason, TimestampClock, UvcFrameMeta, V4l2FrameMeta,
 };
 pub use pool::{BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats};
 

@@ -30,6 +30,8 @@ raw-decoders = ["styx/raw-decoders"]
 # `sensor_check` and `raw_processing` examples use directly.
 native = ["styx/native", "frame-socket", "dep:styx-sensor", "dep:styx-softisp"]
 frame-socket = ["styx/frame-socket"]
+# USB cameras from userspace (`BackendKind::Uvc`), compared with uvcvideo through V4L2.
+uvc = ["styx/uvc", "v4l2"]
 # Any camera backend works (enable `native` or `libcamera` too for those cameras).
 camera-graph = ["graph-pipeline", "v4l2"]
 
@@ -47,6 +49,11 @@ styx-softisp = { workspace = true, optional = true }
 name = "native_capture"
 path = "04_performance/native_capture.rs"
 required-features = ["native"]
+
+[[bin]]
+name = "uvc_capture"
+path = "04_performance/uvc_capture.rs"
+required-features = ["uvc"]
 
 [[bin]]
 name = "native_processed"

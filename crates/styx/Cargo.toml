@@ -22,6 +22,7 @@ styx-codec = { workspace = true, optional = true }
 styx-libcamera = { workspace = true, optional = true, features = ["probe"] }
 styx-v4l2 = { workspace = true, optional = true }
 styx-native = { workspace = true, optional = true }
+styx-uvc = { workspace = true, optional = true }
 styx-pipeline = { workspace = true, optional = true, features = ["device"] }
 styx-pisp = { workspace = true, optional = true, features = ["device"] }
 styx-softisp = { workspace = true, optional = true }
@@ -106,6 +107,9 @@ native = [
     "styx-kernel",
     "frame-socket",
 ]
+# UVC cameras driven from userspace over usbfs (`styx-uvc`), without `uvcvideo`. Opt-in:
+# where `uvcvideo` also has the camera, it stays the default backend (docs/uvc.md).
+uvc = ["facade", "dep:styx-uvc", "styx-kernel"]
 async = [
     "styx-core/async",
     "tokio",

@@ -308,7 +308,7 @@ the application's job (libcamera-rs: a closure that you typically forward into a
 | Several consumers | Planned shared captures, both ISP outputs, per-consumer queues; camera service across processes | Several streams per configuration in one process |
 | Memory | Frames are leases on camera / ISP buffers (dma-bufs), exported to other processes without copies; a buffer a consumer holds is never rewritten | Request buffers you allocate and recycle |
 | Recording | Lossless MCAP recordings (Foxglove, ROS 2 tools) replayed as a camera | Not part of libcamera |
-| USB cameras | Its own V4L2 backend (UVC), MJPEG/YUYV decoders and converters | UVC pipeline handler |
+| USB cameras | Its own V4L2 backend (UVC), MJPEG/YUYV decoders and converters; optionally UVC from userspace over usbfs, without `uvcvideo` ([uvc.md](uvc.md)) | UVC pipeline handler |
 
 ## Measured
 
@@ -377,6 +377,11 @@ What is not comparable:
 * **Probe.** Both probes enumerate every backend compiled in (V4L2, native, libcamera's camera
   manager start); the native probe also reads each sensor's description and modes.
 * **Scenes.** Rows from different days had different light; compare within a table.
+
+USB cameras through the optional userspace UVC backend (`--features uvc`, [uvc.md](uvc.md))
+against `uvcvideo` (C270, CM5): same rate and delivery latency, `start()` 29-31 vs 52-53 ms,
+frame timestamps from the camera's PTS with 0.000 ms jitter (sd) against 1.9-3.8 ms
+(`uvcvideo` stamps URB completions), at about 0.5-1% of a core more CPU.
 
 ## What Styx does not do yet
 
