@@ -4,7 +4,7 @@
 //! Every section the import reads is written back with the same key names and units (16-bit
 //! levels, microseconds), in the order Raspberry Pi files use; values the Raspberry Pi IPA reads
 //! as integers are rounded. Styx-only settings (AWB `softness` and `hysteresis`, AGC
-//! `full_step`, black levels by gain, metering grids) have no Raspberry Pi key and are left
+//! `full_step`, black levels by gain, metering grids, AF `frame_exact`) have no Raspberry Pi key and are left
 //! out, so importing the result gives Styx's defaults for them. Metering modes without tuned
 //! weights get the built-in weights on the PiSP's 15×15 grid. The description has no place in
 //! the format either.
@@ -313,6 +313,56 @@ fn contrast(c: &ContrastTuning) -> J {
     ])
 }
 
+fn af(a: &crate::algos::af::AfTuning) -> J {
+    use crate::algos::af::{AfRangeTuning, AfSpeedTuning};
+    let range = |r: &AfRangeTuning| {
+        obj(vec![
+            ("min", num(r.min)),
+            ("max", num(r.max)),
+            ("default", num(r.default)),
+        ])
+    };
+    let speed = |s: &AfSpeedTuning| {
+        obj(vec![
+            ("step_coarse", num(s.step_coarse)),
+            ("step_fine", num(s.step_fine)),
+            ("contrast_ratio", num(s.contrast_ratio)),
+            ("retrigger_ratio", num(s.retrigger_ratio)),
+            ("retrigger_delay", int(f64::from(s.retrigger_delay))),
+            ("pdaf_gain", num(s.pdaf_gain)),
+            ("pdaf_squelch", num(s.pdaf_squelch)),
+            ("max_slew", num(s.max_slew)),
+            ("pdaf_frames", int(f64::from(s.pdaf_frames))),
+            ("dropout_frames", int(f64::from(s.dropout_frames))),
+            ("step_frames", int(f64::from(s.step_frames))),
+        ])
+    };
+    let mut ranges = vec![("normal", range(&a.ranges.normal))];
+    if let Some(m) = &a.ranges.r#macro {
+        ranges.push(("macro", range(m)));
+    }
+    if let Some(f) = &a.ranges.full {
+        ranges.push(("full", range(f)));
+    }
+    let mut speeds = vec![("normal", speed(&a.speeds.normal))];
+    if let Some(f) = &a.speeds.fast {
+        speeds.push(("fast", speed(f)));
+    }
+    let mut f = vec![
+        ("ranges", obj(ranges)),
+        ("speeds", obj(speeds)),
+        ("conf_epsilon", num(a.conf_epsilon)),
+        ("conf_thresh", num(a.conf_thresh)),
+        ("conf_clip", num(a.conf_clip)),
+        ("skip_frames", int(f64::from(a.skip_frames))),
+        ("check_for_ir", flag(a.check_for_ir)),
+    ];
+    if !a.map.is_empty() {
+        f.push(("map", pwl(&a.map, 1.0, 1.0)));
+    }
+    obj(f)
+}
+
 /// `rpi.noise`, `rpi.geq`, `rpi.denoise`, `rpi.dpc` (in that order) and `rpi.sharpen` (last).
 fn denoise(d: &DenoiseTuning) -> (Vec<(&'static str, J)>, Option<J>) {
     let mut out = vec![
@@ -406,6 +456,9 @@ pub(in crate::tuning) fn export(t: &Tuning, target: Option<&str>) -> String {
     }
     if let Some(c) = &t.ccm {
         algos.push(("rpi.ccm", ccm(c)));
+    }
+    if let Some(a) = &t.af {
+        algos.push(("rpi.af", af(a)));
     }
     if let Some(s) = sharpen {
         algos.push(("rpi.sharpen", s));
