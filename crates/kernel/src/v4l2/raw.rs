@@ -376,6 +376,18 @@ pub fn zeroed<T: Copy>() -> T {
     unsafe { std::mem::zeroed() }
 }
 
+/// A uAPI struct from (up to) its size in bytes, zero-filled past `bytes`. For fuzzing.
+pub(crate) fn from_bytes<T: Copy>(bytes: &[u8]) -> T {
+    let mut value = zeroed::<T>();
+    let n = bytes.len().min(size_of::<T>());
+    // SAFETY: as for `zeroed`, every bit pattern of these plain-data structs is a valid value
+    // (integers and integer arrays); `n` bytes fit in both.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), (&raw mut value).cast::<u8>(), n);
+    }
+    value
+}
+
 // Layouts common to all targets.
 const _: () = {
     assert!(size_of::<v4l2_capability>() == 104);

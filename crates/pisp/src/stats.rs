@@ -125,7 +125,7 @@ impl Statistics {
                 r_sum: a.r_sum.wrapping_add(z.r_sum),
                 g_sum: a.g_sum.wrapping_add(z.g_sum),
                 b_sum: a.b_sum.wrapping_add(z.b_sum),
-                counted: a.counted + z.counted,
+                counted: a.counted.wrapping_add(z.counted),
             })
     }
 
@@ -198,5 +198,14 @@ mod tests {
         assert_eq!(s.agc_floating[0].mean(), Some(100.0));
         assert_eq!(s.focus[63], 7);
         assert_eq!(Statistics::parse(&[0; 10]).unwrap_err(), BadStatsLength(10));
+    }
+
+    #[test]
+    fn saturated_counts_do_not_overflow() {
+        // A buffer of 0xFF bytes (a garbage or uninitialised buffer): the zone counts add up
+        // past u32 and wrap like the sums instead of panicking.
+        let s = Statistics::parse(&[0xFF; size_of::<RawStatistics>()]).unwrap();
+        assert_eq!(s.awb_total().counted, u32::MAX.wrapping_mul(1024));
+        assert_eq!(s.histogram_quantile(f64::NAN), Some(0));
     }
 }
