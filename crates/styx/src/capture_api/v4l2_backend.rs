@@ -10,6 +10,7 @@ use styx_kernel::v4l2::{BufType, Format, VideoDevice};
 
 use crate::capture_api::controls::apply_v4l2_controls;
 use crate::capture_api::handle::{CaptureQueue, enqueue_capture_frame, record_worker_error};
+use crate::capture_api::import::CaptureBuffers;
 use crate::capture_api::{
     CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle,
 };
@@ -206,16 +207,37 @@ pub(super) fn start_v4l2(
     let mut sequence_tracker = crate::metrics::SequenceGapTracker::new(sequence_gaps.clone());
     let v4l2_config = config.v4l2_config();
     let pool_limits = capture_tunables.pool_limits(4, frame_capacity, 8);
-    let manager = V4l2MmapManager::new(
-        dev,
-        BufType::VideoCapture,
-        u32::try_from(capture_tunables.queue_depth + capture_tunables.extra_buffers)
-            .unwrap_or(4)
-            .clamp(3, 16),
-        Duration::from_millis(v4l2_config.mmap_poll_ms),
-    )
-    .map(Arc::new)
-    .map_err(backend_err)?;
+    let poll = Duration::from_millis(v4l2_config.mmap_poll_ms);
+    let dev = match config
+        .capture_buffers
+        .as_ref()
+        .filter(|buffers| import_fits(buffers, &mode, negotiated_stride_bytes, negotiated_size))
+    {
+        Some(buffers) => {
+            match V4l2MmapManager::new_imported(dev, BufType::VideoCapture, buffers, poll) {
+                Ok(manager) => Ok(manager),
+                Err(refused) => {
+                    let (dev, why) = *refused;
+                    tracing::debug!(backend = "v4l2", path = %path, %why, "capturing into own buffers");
+                    Err(dev)
+                }
+            }
+        }
+        None => Err(dev),
+    };
+    let manager = match dev {
+        Ok(manager) => manager,
+        Err(dev) => V4l2MmapManager::new(
+            dev,
+            BufType::VideoCapture,
+            u32::try_from(capture_tunables.queue_depth + capture_tunables.extra_buffers)
+                .unwrap_or(4)
+                .clamp(3, 16),
+            poll,
+        )
+        .map_err(backend_err)?,
+    };
+    let manager = Arc::new(manager);
     let queue_depth = capture_tunables.queue_depth;
     let (tx, rx) = queue.unwrap_or_else(|| {
         styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow)
@@ -380,6 +402,20 @@ pub(super) fn start_v4l2(
         retry_metrics: Default::default(),
         sequence_gaps,
     })
+}
+
+/// Whether the driver's layout (`stride`, `size` bytes) is the one `buffers` are for, so frames
+/// can be captured into them as they are.
+fn import_fits(buffers: &CaptureBuffers, mode: &Mode, stride: usize, size: usize) -> bool {
+    let format = buffers.format();
+    let planes = buffers.planes();
+    format.code == mode.format.code
+        && format.resolution == mode.format.resolution
+        && supports_v4l2_mmap_zero_copy(mode.format.code)
+        && planes
+            .first()
+            .is_some_and(|p| p.offset == 0 && p.stride == stride)
+        && (0..buffers.len()).all(|i| buffers.bytes(i).is_some_and(|b| b.len() >= size))
 }
 
 /// Sets the capture format to `mode`'s size and pixel format, keeping the node's other

@@ -108,6 +108,43 @@ pub fn packed_size(fourcc: FourCc, width: u32, height: u32) -> Option<(u32, u32)
     })
 }
 
+/// Where each plane lies in a frame packed as [`packed_size`] says (planes one after another).
+pub fn packed_planes(fourcc: FourCc, width: u32, height: u32) -> Option<Vec<PlaneLayout>> {
+    let (row, total) = packed_size(fourcc, width, height)?;
+    let (w, h) = (width as usize, height as usize);
+    let shapes: &[(usize, usize)] = match fourcc {
+        FourCc::NV12 => &[(h, w), (h.div_ceil(2), 2 * w.div_ceil(2))],
+        FourCc::YU12 => &[
+            (h, w),
+            (h.div_ceil(2), w.div_ceil(2)),
+            (h.div_ceil(2), w.div_ceil(2)),
+        ],
+        _ => &[(h, row as usize)],
+    };
+    let mut offset = 0;
+    let planes: Vec<PlaneLayout> = shapes
+        .iter()
+        .map(|&(rows, stride)| {
+            let plane = PlaneLayout {
+                offset,
+                len: rows * stride,
+                stride,
+            };
+            offset += plane.len;
+            plane
+        })
+        .collect();
+    (offset == total as usize).then_some(planes)
+}
+
+/// Whether `frame` is laid out as [`packed_planes`] (so a buffer holding it needs no copy).
+pub fn is_packed(frame: &FrameLease) -> bool {
+    let format = frame.meta().format;
+    let res = format.resolution;
+    packed_planes(format.code, res.width.get(), res.height.get())
+        .is_some_and(|planes| frame.layouts().as_slice() == planes.as_slice())
+}
+
 /// Copy `frame`'s visible pixels into `dst` packed tightly (rows of `packed_size`'s stride,
 /// planes one after another). Returns the bytes written, `None` if `dst` is too small.
 pub fn copy_packed(frame: &FrameLease, dst: &mut [u8]) -> Option<usize> {
@@ -150,6 +187,19 @@ mod tests {
         assert_eq!(packed_size(FourCc::YUYV, 640, 480), Some((1280, 614_400)));
         assert_eq!(packed_size(FourCc::NV12, 640, 480), Some((640, 460_800)));
         assert_eq!(packed_size(FourCc::MJPG, 640, 480), None);
+    }
+
+    #[test]
+    fn packed_planes_follow_each_other() {
+        let planes = packed_planes(FourCc::NV12, 4, 2).unwrap();
+        assert_eq!(planes.len(), 2);
+        assert_eq!(
+            (planes[1].offset, planes[1].len, planes[1].stride),
+            (8, 4, 4)
+        );
+        let planes = packed_planes(FourCc::YUYV, 640, 480).unwrap();
+        assert_eq!((planes[0].len, planes[0].stride), (614_400, 1280));
+        assert!(packed_planes(FourCc::MJPG, 4, 2).is_none());
     }
 
     #[test]

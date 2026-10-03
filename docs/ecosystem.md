@@ -120,10 +120,10 @@ Each camera becomes a PipeWire stream node `styx.<name>` (`node.description` "<n
 Its `EnumFormat` params are what the planner can deliver (YUY2, UYVY, NV12, I420, RGB, BGR, RGBA,
 BGRA, GRAY8 at every mode's size and rates). When a consumer picks a format the node plans and
 starts the capture on its own thread; when the consumer pauses or leaves, the camera stops. The
-node drives the graph (`DRIVER`) and triggers a cycle for every camera frame; each frame is
-copied once into PipeWire's buffer (packed rows), which is what PipeWire's memfd buffers need.
-With `--service`, the camera service owns the camera and plans for all its clients;
-the node offers common sizes and drops frames of another size than negotiated.
+node drives the graph (`DRIVER`) and triggers a cycle for every camera frame (see "Buffers and
+zero copy" below for where the frames are). With `--service`, the camera service owns the camera
+and plans for all its clients; the node offers common sizes and drops frames of another size than
+negotiated. `--camera virtual:WIDTHxHEIGHT[:FOURCC]` publishes Styx's synthetic camera (tests).
 
 Tested on the development host (PipeWire 1.6.8, v4l2loopback YUYV 640x480 at 30 fps):
 
@@ -137,19 +137,66 @@ Tested on the development host (PipeWire 1.6.8, v4l2loopback YUYV 640x480 at 30 
 - `--service`: frames from a `CameraService` reach `pipewiresrc` at 30 fps.
 
 CPU for 600 frames YUY2 640x480 (20 s), release builds, two runs each; consumer is
-`pipewiresrc ! video/x-raw,format=YUY2 ! fakesink`:
+`pipewiresrc ! video/x-raw,format=YUY2 ! fakesink` (before the node allocated its own buffers):
 
 | Producer | Producer CPU | Consumer CPU | Idle (no consumer) |
 |---|---|---|---|
 | `styx-pipewire` | 0.3%, 0.3% | 0.2%, 0.2% | 0 (camera closed) |
 | `styxsrc ! pipewiresink mode=provide` | 0.6%, 0.6% | 0.1%, 0.2% | camera streaming |
 
-Frames are copied once into PipeWire's buffers (packed rows; ~0.6 MB per frame here). Passing
-camera dma-bufs instead (`SPA_DATA_DmaBuf`) is not done: PipeWire buffers are a fixed pool
-negotiated up front and consumers cache their mappings per buffer, while Styx frames come from
-the camera's own buffers in whatever order; it would need the camera's buffers to be the
-PipeWire pool. With `--service`, the camera service plans for all its clients; the node offers
-common sizes and drops frames of another size than negotiated.
+#### Buffers and zero copy
+
+PipeWire buffers are a fixed pool negotiated up front, and consumers map each buffer once, so a
+frame can only be passed without copying if it already lies in one of the pool's buffers. The
+node therefore allocates the pool itself (`PW_STREAM_FLAG_ALLOC_BUFFERS`): one sealed memfd per
+buffer (6 by default), and the same pages as a dma-buf through `/dev/udmabuf` where that device
+is usable. Consumers get the memfds (`SPA_DATA_MemFd`; every consumer maps them); for each offered
+format the node also offers a variant with the linear DRM modifier (`SPA_FORMAT_VIDEO_modifier`,
+mandatory), and a consumer that picks it (`pipewiresrc` with `video/x-raw(memory:DMABuf),
+format=DMA_DRM,drm-format=YUYV`, OBS) gets the dma-bufs (`SPA_DATA_DmaBuf`).
+
+The camera then captures into those buffers where it can, through
+`styx::capture_api::CaptureBuffers` (`FramePlan::capture_into`, `StyxConfig::capture_into`):
+
+- **When:** the plan passes the camera's frames through unchanged (the camera's own format at the
+  negotiated size; no decode or conversion) and the backend imports buffers laid out as packed
+  rows.
+- **V4L2:** `V4L2_MEMORY_DMABUF` with the pool's dma-bufs, one V4L2 buffer per PipeWire buffer,
+  when the driver accepts DMABUF import, gives exactly that many buffers and its `bytesperline`
+  is the packed stride. PipeWire buffer N is then V4L2 buffer N.
+- **Virtual camera:** frames are the pool's buffers (any kind).
+- **Lifetimes:** the frame in a buffer is held while a consumer has the buffer; the node drops it
+  when PipeWire gives the buffer back, and only then does the camera requeue it. So the camera
+  never refills a buffer that is being read, and a consumer that holds every buffer stalls the
+  camera instead of tearing frames. While the camera has the pool, the node never writes to it.
+- **Otherwise the frame is copied** into a free buffer (packed rows), as before: v4l2loopback
+  (MMAP only: `VIDIOC_REQBUFS` with `V4L2_MEMORY_DMABUF` or `USERPTR` returns `EINVAL`), drivers
+  that refuse the import or pad rows, converted routes (MJPEG decode, YUYV to RGB, ...), libcamera
+  and native PiSP cameras (no import yet), and `--service`. `STYX_PIPEWIRE_COPY=1` forces the copy.
+  The node says which applies when a stream starts ("the camera captures into the PipeWire
+  buffers (no copy)" or "copying frames into the PipeWire buffers") and counts frames captured in
+  place and bytes copied when it stops.
+
+Measured on the development host (PipeWire 1.6.8; release builds; 600 frames at 30 fps, two runs
+each; consumer `pipewiresrc ! <caps> ! fakesink`; producer CPU from `/proc/<pid>/stat`, 10 ms
+ticks):
+
+| Camera, format | Before (copy) | Now | Bytes copied per frame, before / now |
+|---|---|---|---|
+| v4l2loopback YUY2 640x480 | 0.50%, 0.35% | 0.40%, 0.40% (copy) | 614 400 / 614 400 |
+| virtual YUY2 640x480 | 0.75%, 0.60% | 0.20%, 0.15% | 614 400 / 0 |
+| virtual YUY2 1920x1080 | 14.1%, 13.7% | 0.20%, 0.15% | 4 147 200 / 0 |
+| virtual YUY2 1920x1080, DMA_DRM consumer (dma-bufs) | not offered | 0.20%, 0.20% | - / 0 |
+| virtual YUY2 1920x1080, `STYX_PIPEWIRE_COPY=1` | | 13.4%, 14.8% | - / 4 147 200 |
+
+The virtual camera's copy cost is mostly page faults (its own frame pool maps each buffer per
+frame, and the copy reads the fresh mapping), not the `memcpy`; a V4L2 camera's buffers stay
+mapped, so the copy there is the `memcpy` alone (about 0.15% of a core at 640x480 30 fps, within
+the tick resolution above). Frames checked as images through the copy path (YUY2 and RGB from
+v4l2loopback); `pipewiresrc` negotiates `DMA_DRM` caps and receives the dma-buf buffers. V4L2
+DMABUF import is covered by unit tests (layout checks; capturing into memfd-backed buffers with
+the virtual camera, buffers returned only when frames drop) but not yet run against a driver
+that imports (no such camera on the development host; the CM5 has no PipeWire).
 
 Note: `pipewiresrc ! fakesink` without caps or a converter fails with "target not found" for any
 video node (also nodes made by `pipewiresink`); give it caps or a `videoconvert`.
@@ -181,5 +228,10 @@ stream.
   buffers can be exported; an export failure costs one renegotiation.
 - The Raspberry Pi CM5 (HeliOS image) has neither GStreamer nor PipeWire, so neither bridge has
   run on the OV9782 yet.
+- `styx-pipewire` copies frames that do not come straight from a camera that imports its
+  buffers (see "Buffers and zero copy"). The pool's dma-bufs come from `udmabuf` (page-backed,
+  not contiguous): fine for USB cameras (`vb2-vmalloc`) and devices behind an IOMMU, not for CSI
+  receivers that need contiguous memory (a CMA dma-heap pool would be needed there). After a
+  pause, a buffer a consumer still holds may be refilled when the camera restarts.
 - A camera service sends a copy (memfd) of frames whose camera buffers cannot be exported as
   dma-bufs (v4l2loopback); before, such frames were not sent at all.

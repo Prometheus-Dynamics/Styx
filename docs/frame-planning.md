@@ -183,6 +183,14 @@ needs, and the service plans one shared capture for all of them. `FramePlan::exp
 `SharedFramePlan::exportable`) decode into memfds so frames reach other processes without
 copying. See [frame-server.md](frame-server.md).
 
+`FramePlan::capture_into(CaptureBuffers)` goes the other way: the caller owns a fixed set of
+buffers (memfds or dma-bufs, e.g. a PipeWire node's pool) and the camera captures into them, when
+the plan passes the camera's frames through unchanged and the backend imports buffers (V4L2
+`V4L2_MEMORY_DMABUF`, the virtual camera). `CaptureBuffers::index_of` names the buffer a frame is
+in; a buffer goes back to the camera when its frame is dropped. Elsewhere frames come in the
+capture's own buffers and `CaptureBuffers::in_use` stays false. See
+[ecosystem.md](ecosystem.md#buffers-and-zero-copy).
+
 ## Region of interest
 
 `FrameRequirements::roi` sets an initial region; `PlannedFrames::roi()` returns a handle to

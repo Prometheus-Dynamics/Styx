@@ -22,6 +22,8 @@ mod dispatch;
 pub(super) mod ffmpeg_util;
 #[cfg(feature = "file-backend")]
 pub(super) mod file_backend;
+#[cfg(target_os = "linux")]
+pub mod import;
 #[cfg(feature = "libcamera")]
 pub(super) mod libcamera_backend;
 #[cfg(feature = "native")]
@@ -39,6 +41,8 @@ pub use control_plane::ControlPlane;
 #[cfg(feature = "graph-pipeline")]
 pub(crate) use control_plane::{apply_control_to_plane, read_control_from_plane};
 pub use handle::{CaptureFrameIter, CaptureHandle, WorkerHandle};
+#[cfg(target_os = "linux")]
+pub use import::{CaptureBuffer, CaptureBuffers};
 #[cfg(feature = "native")]
 pub use native_backend::controls as native_controls;
 #[cfg(feature = "native")]
