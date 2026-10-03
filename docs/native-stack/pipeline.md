@@ -388,7 +388,9 @@ one (`min_fps`), whatever the priority, in single and shared plans and for a cap
 without an interval; the fastest rate (260 fps at 640x400 on the OV9782, its exposure limited
 to 3.8 ms) only when asked for. With `min_fps`: `Priority::Power` runs at exactly that rate,
 other priorities at the mode's fastest (unchanged). Modes with a list of rates (UVC) keep the
-list's fastest. Every output is handed out as a dma-buf, in process and to other
+list's fastest.
+
+Every output is handed out as a dma-buf, in process and to other
 processes through the camera service (planes exported with their offsets). Raw native modes are not routed through a Bayer decoder when an ISP route exists
 (that route has no 3A); Bayer decoders are priced at the software ISP's cost. `plan_frames`
 for NV12, RG24 or luma (NV12's Y plane) on the native OV9782 picks the PiSP mode on the CM5
@@ -484,7 +486,7 @@ which the CPU reads uncached: reading the raw frame is a third of the software p
 * Through the Styx API (`examples/04_performance/native_processed.rs`): `plan_best` for NV12, luma and RG24
   on the native OV9782 picks the native NV12 / RG24 modes with the PiSP (the raw modes are
   rejected: "raw pBAA would need a decoder without 3A"); capture runs at 120.625 fps (the plan
-  takes the fastest rate for latency), start → first frame 78-80 ms, exposure settled in 12
+  took the fastest rate for latency; without `min_fps` it is now 30 fps), start → first frame 78-80 ms, exposure settled in 12
   frames, 14.7-15.9% of a core, saved frames `native-processed-{nv12,luma,rgb}`.
 * libcamera on the same device and scene (the compare harness, `tools/compare` on
   `native/compare`, Styx's libcamera backend, NV12, median of 3): open → first frame 103 ms,

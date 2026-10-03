@@ -94,13 +94,22 @@ box (OV9782 1280x800) unless stated.
 - [ ] `AE_STATE` never reports converged when AE's target is out of reach (exposure and gain at
       their limits in a dark room); libcamera reports converged at the same final exposure
       (500 ms after open, docs/comparison.md).
-- [ ] OV9782 raw8 (`BA81`) through the bridge: frames report 342.9 ms × 0.5 at 30 fps and are far
-      darker than RAW10 at the same exposure and gain (embedded data decoded as RAW10? the raw8
-      registers?). RAW10 and the processed modes are fine.
+- [x] OV9782 raw8 (`BA81`) through the bridge: frames reported 342.9 ms × 0.5 at 30 fps and were
+      far darker than RAW10. The raw8 embedded line carries each 10-bit word's top 8 bits
+      (decoded as RAW10 it said VTS 4, and the schedule then limited exposure to that 4-line
+      frame), and the raw8 PLL runs at 192 MHz, not the driver's 200 MHz (30 fps ran at 28.8).
+      raw8 now has `pixel_rate = 192 MHz` and `embedded_data = false` (predicted values):
+      30 / 120 / 5 fps exact, levels equal RAW10's top 8 bits at the same exposure and gain.
 - [ ] Shared captures on the PiSP: frames queued for consumers hold back end buffers (4 per
       output) and the native path ignores the planner's `capture_extra_buffers`, so a slow
       consumer with a deep queue (`Priority::Power`: 3) paced the camera for both consumers
       (20 fps); the examples ask for queue depth 1.
-- [ ] MCAP recordings drop a native frame's exposure and gains (`NativeFrameMeta`).
-- [ ] A plan that asks no frame rate gets the mode's fastest (camera service clients: 260 fps
-      at 640x400); consider a default rate for services.
+- [x] MCAP recordings drop a native frame's exposure and gains (`NativeFrameMeta`): MCAP format
+      2 and `.styxrec` 2 record exposure, gains, frame duration and length, verified, error;
+      version 1 files still read. AE state, colour temperature and lux are controls, not
+      per-frame metadata, so not recorded (add them to `NativeFrameMeta` first).
+- [x] A plan that asks no frame rate gets the mode's fastest (camera service clients: 260 fps
+      at 640x400): modes with a rate range now run at `planner::DEFAULT_FPS` (30, within the
+      mode's range) without `min_fps`, in single and shared plans and plain native captures.
+- [ ] A frame-length or exposure value decoded from embedded data is trusted even when it is
+      impossible (VTS 4 on a 800-line mode); the control schedule could reject such reports.

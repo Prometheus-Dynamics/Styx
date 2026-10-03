@@ -240,17 +240,18 @@ FrameSocketStats { published: 301, copied: 0, served: 6, leases: 0, held_frames:
 ```
 
 `camera_service serve ov9782` with two clients at once, `client luma 320x200 5` and
-`client rgb 640x400 5` (no rate asked: the plan takes the mode's fastest, 260 fps at 640x400):
+`client rgb 640x400 5` (no rate asked: 30 fps, `planner::DEFAULT_FPS`; before that default
+the plan took the mode's fastest, 260 fps at 640x400, 0.4% and 0.8% CPU per client):
 
 ```text
 shared capture of ov9782 (styx bridge i2c 10-0060) via native NV12 640x400 for 2 consumers
-consumer 0: frame plan for ov9782 (styx bridge i2c 10-0060) via native NV12 640x400 @ 260 fps: ~5.2 ms latency, ~0.30 ms CPU per frame
+consumer 0: frame plan for ov9782 (styx bridge i2c 10-0060) via native NV12 640x400 @ 30 fps: ~5.2 ms latency, ~0.30 ms CPU per frame
   2. luma view  zero-copy   0.00 ms  Y plane of NV12
   3. scale      hardware    0.00 ms  320x200 from the ISP (the mode's field of view), on its second output
-consumer 1: frame plan for ov9782 (styx bridge i2c 10-0060) via native RG24 640x400 @ 260 fps: ~5.2 ms latency, ~0.30 ms CPU per frame
+consumer 1: frame plan for ov9782 (styx bridge i2c 10-0060) via native RG24 640x400 @ 30 fps: ~5.2 ms latency, ~0.30 ms CPU per frame
   note: RG24 from the ISP's output, no conversion
-1290 frames 320x200 via dma-buf: 257.9 fps, 1290 keyframes, 132051 kbit/s, age p50 4.6 ms, CPU 0.4%
-1299 frames 640x400 via dma-buf: 259.7 fps, 1299 keyframes, 1595756 kbit/s, age p50 4.6 ms, CPU 0.8%
+149 frames 320x200 via dma-buf: 29.8 fps, 149 keyframes, 15251 kbit/s, age p50 4.6 ms, CPU 0.0%
+150 frames 640x400 via dma-buf: 30.0 fps, 150 keyframes, 184316 kbit/s, age p50 4.6 ms, CPU 0.0%
 ```
 
 `landing 30 1` (`crates/native/examples`: the check of a new camera's control delays; image

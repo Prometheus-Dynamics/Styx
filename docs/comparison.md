@@ -274,8 +274,9 @@ while let RecvOutcome::Data(frame) = client.recv(Duration::from_secs(1)) { /* dm
 ```
 
 Measured on the CM5 (`camera_service` with two clients, 5 s): luma 320x200 and RGB 640x400 from
-one PiSP pass, both 258-260 fps, frames 4.6 ms old (p50) in the client, 0.4% and 0.8% CPU per
-client, nothing copied.
+one PiSP pass, frames 4.6 ms old (p50) in the client, nothing copied; at the mode's fastest
+rate (asked for: clients that ask for no rate get 30 fps) both 258-260 fps, 0.4% and 0.8% CPU
+per client.
 
 libcamera: a camera is acquired by one process at a time (`Camera::acquire`, and the media
 device lock across processes). Sharing goes through a service in front of it: PipeWire with
