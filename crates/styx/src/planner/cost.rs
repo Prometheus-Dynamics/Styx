@@ -78,6 +78,17 @@ pub(crate) const SOFTISP_BINNED_MS_PER_RAW_MP: f32 = 1.2;
 /// sharing memory bandwidth; 4 threads at 1280x800: 0.5 ms with NV12, 1.3 ms with RGB24).
 pub(crate) const SOFTISP_THREADS_CPU_MS: f32 = 0.9;
 
+/// GPU ISP (styx-gpuisp, feature `gpu-isp`): the software ISP's pipeline as Vulkan compute
+/// shaders. Host CPU per raw megapixel (copying the raw frame into a mapped buffer, the
+/// output out of one, the lens shading and tone tables, one submission and fence wait):
+/// 0.47 ms per 1280x800 NV12 frame for the whole loop (ISP, settings 0.2 ms, statistics
+/// conversion, 3A at 15 Hz) on a Ryzen host with an RX 6800 XT, against 1.77 ms for the
+/// software ISP on one of its cores (`native-pipeline gpu-bench`, 30 and 120 fps alike).
+pub(crate) const GPUISP_CPU_MS_PER_MP: f32 = 0.3;
+/// GPU ISP time from submission to the output being in host memory per raw megapixel (RX
+/// 6800 XT: 0.52 ms for NV12 1280x800, of it 0.21 ms on the GPU; 0.74 ms for RGB24).
+pub(crate) const GPUISP_LATENCY_MS_PER_MP: f32 = 0.6;
+
 /// Threads the native backend's software ISP uses by default: one per core, at most 4.
 pub(crate) fn default_softisp_threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get().min(4))

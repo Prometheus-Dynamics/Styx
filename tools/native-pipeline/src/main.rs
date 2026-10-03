@@ -6,6 +6,10 @@
 //! native-pipeline soft   [options]   software ISP on raw frames from csi2_ch0 (device feature)
 //! native-pipeline replay --recording BASE [options]   software ISP over a raw recording
 //! native-pipeline quality --recording BASE [options]  fp16 against integer software ISP
+//! native-pipeline gpu-quality --recording BASE [options]  GPU ISP against the software ISP
+//!                                    (gpu feature)
+//! native-pipeline gpu-bench --recording BASE [options]  software ISP (--threads) and GPU ISP
+//!                                    paced at --fps: CPU, wall and GPU time (gpu feature)
 //! native-pipeline latch  [options]   when within a frame a control write still lands on time
 //! native-pipeline be-replay --raw FILE --configs A.bin,B.bin   one 16-bit raw frame through the
 //!                                    back end with each config (device feature)
@@ -55,6 +59,8 @@
 mod be_replay;
 #[cfg(feature = "device")]
 mod device_run;
+#[cfg(feature = "gpu")]
+mod gpu;
 #[cfg(feature = "device")]
 mod latch;
 mod output;
@@ -325,6 +331,10 @@ fn main() -> ExitCode {
         match a.command.as_str() {
             "replay" => replay_run::run(&a),
             "quality" => quality::run(&a),
+            #[cfg(feature = "gpu")]
+            "gpu-quality" => gpu::quality(&a),
+            #[cfg(feature = "gpu")]
+            "gpu-bench" => gpu::bench(&a),
             #[cfg(feature = "device")]
             "pisp" => device_run::pisp(&a),
             #[cfg(feature = "device")]

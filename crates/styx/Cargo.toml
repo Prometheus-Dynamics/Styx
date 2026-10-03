@@ -106,6 +106,9 @@ native = [
     "styx-kernel",
     "frame-socket",
 ]
+# Native cameras without a PiSP process on a Vulkan GPU when one exists (styx-gpuisp: Vulkan
+# loaded at run time, the software ISP otherwise; `STYX_GPU_ISP=0` turns it off).
+gpu-isp = ["native", "styx-pipeline/gpu"]
 async = [
     "styx-core/async",
     "tokio",

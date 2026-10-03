@@ -94,6 +94,18 @@ pub(crate) fn processed_capture_step(
             ),
             "PiSP front end statistics and back end, raw frames as dma-bufs, 3A in Styx",
         ),
+        _ if gpu_isp().is_some() => {
+            // Binned modes read the whole raw frame too (half the GPU work, same copies in).
+            let raw_mp = if binned(backend, mode) { 4.0 * mp } else { mp };
+            (
+                StepExecution::Hardware,
+                StepCost::offloaded(
+                    sensor + cost::GPUISP_LATENCY_MS_PER_MP * raw_mp + cost::ALGORITHMS_MS,
+                    cost::GPUISP_CPU_MS_PER_MP * raw_mp + cost::ALGORITHMS_MS,
+                ),
+                "GPU ISP (Vulkan) and 3A in Styx",
+            )
+        }
         _ => {
             let threads = cost::default_softisp_threads();
             let extra = if threads > 1 {
@@ -123,4 +135,16 @@ pub(crate) fn processed_capture_step(
         detail: format!("{} ({how})", describe(backend, mode)),
         cost,
     })
+}
+
+/// The GPU the software path runs on (feature `gpu-isp`, a Vulkan device found), if any.
+fn gpu_isp() -> Option<String> {
+    #[cfg(feature = "gpu-isp")]
+    {
+        crate::gpu_isp::device().map(|d| d.name)
+    }
+    #[cfg(not(feature = "gpu-isp"))]
+    {
+        None
+    }
 }

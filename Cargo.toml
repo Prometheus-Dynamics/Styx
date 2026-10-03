@@ -13,6 +13,7 @@ members = [
     "crates/algo",
     "crates/native",
     "crates/softisp",
+    "crates/gpuisp",
     "crates/pipeline",
     "tools/native-spike",
     "tools/pisp-spike",
@@ -48,6 +49,7 @@ styx-pisp = { path = "crates/pisp", version = "2.0.0" }
 styx-algo = { path = "crates/algo", version = "2.0.0" }
 styx-native = { path = "crates/native", version = "2.0.0" }
 styx-softisp = { path = "crates/softisp", version = "2.0.0" }
+styx-gpuisp = { path = "crates/gpuisp", version = "2.0.0" }
 styx-pipeline = { path = "crates/pipeline", version = "2.0.0" }
 daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "main", version = "2.0.0", default-features = false }
 crossbeam-queue = "0.3.12"

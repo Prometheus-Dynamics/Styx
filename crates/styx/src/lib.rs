@@ -31,6 +31,8 @@ pub mod capture_api;
 mod device_identity;
 #[cfg(feature = "facade")]
 mod frame_sizing;
+#[cfg(feature = "gpu-isp")]
+mod gpu_isp;
 #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
 pub mod graph;
 #[cfg(all(feature = "facade", target_os = "linux"))]
