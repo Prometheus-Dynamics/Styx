@@ -139,6 +139,23 @@ box (OV9782 1280x800) unless stated.
 - [ ] Userspace UVC: a bulk / UVC 1.5 / SuperSpeed camera on hardware; status interrupt
       endpoint (control change events, button); still images; extension-unit controls.
 
+### Stills and DNG
+- [x] Still capture on a running capture (`capture_still` / `request_still` on `CaptureHandle`
+      and `Frames`): JPEG/NV12/RGB/raw, DNG, fixed exposure, EV brackets on the frames the
+      control schedule names, AE settle. CM5: preview 30.00 fps with 0 gaps while taking
+      stills; still 95-134 ms request → ready, bracket of 3 on consecutive frames in ~340 ms
+      (docs/stills-and-dng.md).
+- [x] `styx-dng`: DNG 1.4 writer (calibration from the tuning, GainMap lens shading, EXIF,
+      preview) and reader (camera DNGs: lossless JPEG tiles, packed samples); LibRaw renders
+      Styx's DNGs.
+- [ ] Run Adobe's `dng_validate` on Styx's DNGs (not available on the dev host).
+- [ ] V4L2 stills at full resolution without a reconfigure; UVC still-image methods (still
+      probe/commit, the still trigger); stills on a capture without a processed native mode
+      leave the consumer one frame short.
+- [ ] Still JPEG encoding: the `image` crate takes most of the ~45 ms still thread time at
+      1280x800; turbojpeg (C) is faster where it is allowed.
+- [ ] A per-camera DNG `NoiseProfile` from the tuning's noise model.
+
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).
 - [x] 120 fps AE sometimes chases 100 Hz flicker (kernel-driver path); add anti-flicker.

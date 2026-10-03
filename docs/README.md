@@ -9,6 +9,7 @@ This directory holds repository-level documentation for the Styx workspace.
 - [development.md](development.md): repository layout, validation commands, and contribution expectations
 - [api-ergonomics.md](api-ergonomics.md): import surfaces, common task recipes, and typed API boundaries
 - [frame-planning.md](frame-planning.md): describing the frames a consumer needs and letting Styx plan capture, decode, output size, pyramids and ROI
+- [stills-and-dng.md](stills-and-dng.md): stills from a running capture (PiSP / software ISP reprocessing, exposure brackets) and DNG raw files (`styx-dng` writer and reader)
 - [frame-server.md](frame-server.md): sharing camera frames with other processes without copying
 - [ecosystem.md](ecosystem.md): Styx cameras in GStreamer (`styxsrc`) and PipeWire (optional bridge crates)
 - [encoding.md](encoding.md): FFmpeg encoders, low-latency defaults, and handing camera buffers to encoders without copies

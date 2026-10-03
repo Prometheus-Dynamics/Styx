@@ -619,7 +619,8 @@ pub mod prelude {
     };
     #[cfg(feature = "facade")]
     pub use crate::capture_api::{
-        StillCapture, StillExposure, StillFormat, StillImage, StillMeta, StillRequest, StillShot,
+        PendingStill, StillCapture, StillExposure, StillFormat, StillImage, StillMeta,
+        StillRequest, StillShot,
     };
     #[cfg(all(feature = "facade", feature = "daedalus-plugin", feature = "hooks"))]
     pub use crate::graph::register_file_sequence_sink_node;

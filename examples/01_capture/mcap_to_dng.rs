@@ -12,7 +12,7 @@
 
 use styx_dng::{CfaPattern, DngMetadata, Packing, RawImage, SampleLayout};
 use styx_pipeline::still::{dng_calibrations, neutral_at, shot_calibration};
-use styx_pipeline::styx_algo::{Tuning, algos::Alsc};
+use styx_pipeline::styx_algo::{Algorithm, CameraConfig, Tuning, algos::Alsc};
 
 fn dng_pattern(p: styx_softisp::CfaPattern) -> CfaPattern {
     match p {
@@ -123,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .and_then(|t| t.alsc.clone())
         .and_then(|a| Alsc::new(a).ok())
+        .and_then(|mut a| a.prepare(&CameraConfig::default()).ok().map(|()| a))
         .map(|a| {
             let ls = a.tables(ct.unwrap_or(5000.0));
             styx_dng::opcode::bayer_gain_maps(

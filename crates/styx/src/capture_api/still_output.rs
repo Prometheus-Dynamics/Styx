@@ -137,6 +137,7 @@ pub(crate) fn rgb_to_nv12(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
 }
 
 /// A thumbnail of RGB24 at most `max_w` wide (box filter over whole factors).
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) fn thumbnail(rgb: &[u8], w: usize, h: usize, max_w: usize) -> (Vec<u8>, u32, u32) {
     let f = w.div_ceil(max_w.max(1)).max(1);
     let (tw, th) = (w / f, h / f);
@@ -158,6 +159,7 @@ pub(crate) fn thumbnail(rgb: &[u8], w: usize, h: usize, max_w: usize) -> (Vec<u8
 }
 
 /// The 16-bit Bayer code of a 2x2 pattern (`RG`, `BG`, `GR`, `GB` + bits).
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) fn bayer16_code(colors: [u8; 4], bits: u8) -> FourCc {
     let p = match colors {
         [0, 1, 1, 2] => b"RG",

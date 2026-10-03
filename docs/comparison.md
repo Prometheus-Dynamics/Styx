@@ -284,6 +284,16 @@ libcamera's SPA plugin (and the portal), or your own IPC with dma-buf passing.
 GStreamer: `tee` within one pipeline; across processes `pipewiresink` / `pipewiresrc`, or
 `shmsink` / `shmsrc` (copies).
 
+### Stills and raw files
+
+Styx: `frames.capture_still(&StillRequest::jpeg(92).with_dng(true))` while the stream keeps its
+rate (the raw frame reprocessed on the PiSP back end's second node group, or the software ISP),
+exposure brackets on the frames the control schedule names, DNGs with the tuning's colour
+calibration, and a DNG reader (`styx-dng`); see [stills-and-dng.md](stills-and-dng.md).
+libcamera: a still is a request on a `StillCapture` stream role, usually with a mode switch
+(Picamera2's `switch_mode_and_capture_file`); DNGs are written by the application (Picamera2,
+`rpicam-still --raw`).
+
 ### Async
 
 Styx: frames are awaited (`CaptureHandle::recv_async`, `Frames::next_frame_async`), the

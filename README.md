@@ -181,6 +181,7 @@ Optional Docker-backed facade validation:
 - [docs/native-stack/README.md](docs/native-stack/README.md): the native camera stack (sensors, PiSP, 3A, sensor bridge)
 - [docs/README.md](docs/README.md): repository documentation index
 - [docs/ecosystem.md](docs/ecosystem.md): GStreamer and PipeWire bridges
+- [docs/stills-and-dng.md](docs/stills-and-dng.md): stills from a running capture, exposure brackets, DNG raw files (`styx-dng`)
 - [docs/development.md](docs/development.md): repo layout, commands, and validation conventions
 - [docs/testing.md](docs/testing.md): test surfaces, example expectations, and CI notes
 - [CHANGELOG.md](CHANGELOG.md): release history and notable workspace changes

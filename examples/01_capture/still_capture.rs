@@ -3,14 +3,16 @@
 //! lands on), with the preview's rate and sequence gaps measured meanwhile.
 //!
 //! ```sh
-//! cargo run -p styx-examples --features native,v4l2,image --bin still_capture -- [out-dir] [fps]
+//! cargo run -p styx-examples --features native,v4l2,image --bin still_capture -- [out-dir] [fps] [native|v4l2]
 //! ```
 //!
-//! On a native camera with an ISP (the PiSP or the software ISP) the preview is the processed
-//! NV12 stream and stills come from its raw frames, reprocessed at full quality on another
-//! thread (the PiSP back end's second node group, or the software ISP's best demosaic); the
-//! DNG carries the tuning's colour calibration, black and white levels, lens shading and the
-//! exposure. Other cameras (V4L2) give their next frame as the still, without DNG or bracket.
+//! The preview is `Frames::nv12().fps(30).open(&camera)`; stills are asked for with
+//! `Frames::request_still` (or `capture_still`, which waits) while this thread keeps taking
+//! preview frames. On a native camera with an ISP (the PiSP or the software ISP) stills come
+//! from the stream's raw frames, reprocessed at full quality on another thread (the PiSP back
+//! end's second node group, or the software ISP's best demosaic); the DNG carries the
+//! tuning's colour calibration, black and white levels, lens shading and the exposure. Other
+//! cameras (V4L2) give their next frame as the still, without DNG or bracket.
 
 use std::time::{Duration, Instant};
 
@@ -27,27 +29,22 @@ struct Preview {
     last_seq: Option<u32>,
 }
 
-fn preview_loop(handle: &CaptureHandle, stop: &std::sync::atomic::AtomicBool) -> Preview {
-    let mut p = Preview::default();
-    while !stop.load(std::sync::atomic::Ordering::Acquire) {
-        let RecvOutcome::Data(frame) = handle.recv_blocking(Duration::from_millis(200)) else {
-            continue;
-        };
+impl Preview {
+    fn add(&mut self, frame: &FrameLease) {
         let m = frame.meta();
         let ts = m.timestamp;
-        if p.frames == 0 {
-            p.first_ts = ts;
+        if self.frames == 0 {
+            self.first_ts = ts;
         } else {
-            p.max_interval_ns = p.max_interval_ns.max(ts.saturating_sub(p.last_ts));
+            self.max_interval_ns = self.max_interval_ns.max(ts.saturating_sub(self.last_ts));
         }
-        if let (Some(last), Some(seq)) = (p.last_seq, m.sequence()) {
-            p.gaps += u64::from(seq.saturating_sub(last).saturating_sub(1));
+        if let (Some(last), Some(seq)) = (self.last_seq, m.sequence()) {
+            self.gaps += u64::from(seq.saturating_sub(last).saturating_sub(1));
         }
-        p.last_seq = m.sequence();
-        p.last_ts = ts;
-        p.frames += 1;
+        self.last_seq = m.sequence();
+        self.last_ts = ts;
+        self.frames += 1;
     }
-    p
 }
 
 fn describe(shot: &StillShot) -> String {
@@ -85,102 +82,102 @@ fn save(shot: &StillShot, dir: &std::path::Path, name: &str) -> std::io::Result<
     Ok(())
 }
 
+/// Takes preview frames for `secs`, or until `pending` is ready.
+fn preview_for(
+    frames: &mut Frames,
+    stats: &mut Preview,
+    secs: f64,
+    mut pending: Option<&mut PendingStill>,
+) -> Option<Result<StillCapture, CaptureError>> {
+    let until = Instant::now() + Duration::from_secs_f64(secs);
+    while Instant::now() < until {
+        if let RecvOutcome::Data(frame) = frames.next_frame(Duration::from_millis(200)) {
+            stats.add(&frame);
+        }
+        if let Some(r) = pending.as_mut().and_then(|p| p.try_take()) {
+            return Some(r);
+        }
+    }
+    None
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let dir = std::path::PathBuf::from(args.first().map_or("/tmp/stills", String::as_str));
     let fps: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
     std::fs::create_dir_all(&dir)?;
+    let kind = match args.get(2).map(String::as_str) {
+        Some("v4l2") => BackendKind::V4l2,
+        _ => BackendKind::Native,
+    };
     let devices = styx::probe_all();
-    // A native camera's processed NV12 mode, else any camera's first mode.
-    let (device, backend, mode) = devices
+    let device = devices
         .iter()
-        .find_map(|d| {
-            let b = d.backend(BackendKind::Native)?;
-            let m = b
-                .descriptor
-                .modes
-                .iter()
-                .find(|m| m.format.code == FourCc::NV12)?;
-            Some((d, b.kind, m.id.clone()))
-        })
-        .or_else(|| {
-            devices.iter().find_map(|d| {
-                let b = d.backends.first()?;
-                Some((d, b.kind, b.descriptor.modes.first()?.id.clone()))
-            })
-        })
+        .find(|d| d.backend(kind).is_some())
+        .or_else(|| devices.first())
         .ok_or("no camera")?;
-    let native = backend == BackendKind::Native;
+    let mut request = Frames::nv12().fps(fps);
+    if device.backend(kind).is_some() {
+        request = request.backend(kind);
+    }
+    let mut frames = request.open(device)?;
+    let native = frames.capture().backend() == BackendKind::Native;
+    let mode = frames.capture().mode().format;
     println!(
-        "{} via {backend}: {} {}x{} at {fps} fps",
+        "{} via {}: {} {}x{} at {fps} fps",
         device.identity.display,
-        mode.format.code,
-        mode.format.resolution.width,
-        mode.format.resolution.height
+        frames.capture().backend(),
+        mode.code,
+        mode.resolution.width,
+        mode.resolution.height
     );
-    let handle = CaptureRequest::new(device)
-        .backend(backend)
-        .mode(mode)
-        .interval(Interval::from_fps(fps).ok_or("fps")?)
-        .start()?;
-    let stop = std::sync::atomic::AtomicBool::new(false);
-    let preview = std::thread::scope(|s| -> Result<Preview, Box<dyn std::error::Error>> {
-        let consumer = s.spawn(|| preview_loop(&handle, &stop));
-        let stills = take_stills(&handle, &dir, native);
-        stop.store(true, std::sync::atomic::Ordering::Release);
-        let preview = consumer.join().map_err(|_| "preview thread panicked")?;
-        stills.map(|()| preview)
-    })?;
-    handle.stop();
-    let secs = (preview.last_ts.saturating_sub(preview.first_ts)) as f64 / 1e9;
-    println!(
-        "preview: {} frames in {secs:.2} s ({:.2} fps), {} sequence gaps, longest interval {:.1} ms",
-        preview.frames,
-        preview.frames.saturating_sub(1) as f64 / secs.max(1e-9),
-        preview.gaps,
-        preview.max_interval_ns as f64 / 1e6
-    );
-    println!("files in {}", dir.display());
-    Ok(())
-}
-
-/// A still (JPEG, and a DNG on native cameras), then a bracket, while the preview runs.
-fn take_stills(
-    handle: &CaptureHandle,
-    dir: &std::path::Path,
-    native: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stats = Preview::default();
     // Let AE and AWB settle on the preview.
-    std::thread::sleep(Duration::from_secs(2));
+    preview_for(&mut frames, &mut stats, 2.0, None);
 
     let t = Instant::now();
-    let still = handle.capture_still(&StillRequest::jpeg(92).with_dng(native).settle(true))?;
-    save(&still.shots[0], dir, "still")?;
+    let mut pending = frames.request_still(&StillRequest::jpeg(92).with_dng(native).settle(true));
+    let still =
+        preview_for(&mut frames, &mut stats, 10.0, Some(&mut pending)).ok_or("no still")??;
+    let latency = t.elapsed();
+    save(&still.shots[0], &dir, "still")?;
     println!(
-        "still: {} (request -> files {:.1} ms)\n  {}",
-        dir.join("still.jpg").display(),
+        "still: request -> ready {:.1} ms, -> files {:.1} ms\n  {}",
+        latency.as_secs_f64() * 1e3,
         t.elapsed().as_secs_f64() * 1e3,
         describe(&still.shots[0])
     );
-    std::thread::sleep(Duration::from_millis(500));
+    preview_for(&mut frames, &mut stats, 0.5, None);
 
     if native {
         let t = Instant::now();
-        let bracket = handle.capture_still(
+        let mut pending = frames.request_still(
             &StillRequest::jpeg(92)
                 .with_dng(true)
                 .bracket([-1.0, 0.0, 1.0]),
-        )?;
-        for (i, shot) in bracket.shots.iter().enumerate() {
-            save(shot, dir, &format!("bracket{i}"))?;
-            println!("bracket {i}: {}", describe(shot));
-        }
+        );
+        let bracket = preview_for(&mut frames, &mut stats, 10.0, Some(&mut pending))
+            .ok_or("no bracket")??;
         println!(
-            "bracket: {} shots, request -> files {:.1} ms",
+            "bracket: {} shots, request -> ready {:.1} ms",
             bracket.shots.len(),
             t.elapsed().as_secs_f64() * 1e3
         );
+        for (i, shot) in bracket.shots.iter().enumerate() {
+            save(shot, &dir, &format!("bracket{i}"))?;
+            println!("bracket {i}: {}", describe(shot));
+        }
     }
-    std::thread::sleep(Duration::from_secs(1));
+    preview_for(&mut frames, &mut stats, 1.0, None);
+    drop(frames);
+    let secs = (stats.last_ts.saturating_sub(stats.first_ts)) as f64 / 1e9;
+    println!(
+        "preview: {} frames in {secs:.2} s ({:.2} fps), {} sequence gaps, longest interval {:.1} ms",
+        stats.frames,
+        stats.frames.saturating_sub(1) as f64 / secs.max(1e-9),
+        stats.gaps,
+        stats.max_interval_ns as f64 / 1e6
+    );
+    println!("files in {}", dir.display());
     Ok(())
 }

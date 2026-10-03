@@ -256,7 +256,95 @@ pub struct StillCapture {
     pub latency: Duration,
 }
 
+/// A still on its way: from [`CaptureHandle::request_still`] or [`Frames::request_still`](crate::planner::Frames::request_still),
+/// so the caller can keep taking frames meanwhile.
+pub struct PendingStill {
+    rx: Option<std::sync::mpsc::Receiver<Result<StillCapture, CaptureError>>>,
+    ready: Option<Result<StillCapture, CaptureError>>,
+    deadline: Instant,
+}
+
+impl std::fmt::Debug for PendingStill {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingStill")
+            .field("ready", &self.ready.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+fn no_answer() -> CaptureError {
+    CaptureError::Backend("still: no answer from the capture (stopped or timed out)".into())
+}
+
+impl PendingStill {
+    /// The still if it is ready (`None`: not yet). Once it returned `Some`, it returns `None`.
+    pub fn try_take(&mut self) -> Option<Result<StillCapture, CaptureError>> {
+        if let Some(r) = self.ready.take() {
+            return Some(r);
+        }
+        let rx = self.rx.as_ref()?;
+        match rx.try_recv() {
+            Ok(r) => {
+                self.rx = None;
+                Some(r)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < self.deadline => None,
+            Err(_) => {
+                self.rx = None;
+                Some(Err(no_answer()))
+            }
+        }
+    }
+
+    /// Waits for the still (until the request's timeout).
+    pub fn wait(mut self) -> Result<StillCapture, CaptureError> {
+        if let Some(r) = self.ready.take() {
+            return r;
+        }
+        let rx = self.rx.take().ok_or_else(no_answer)?;
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        rx.recv_timeout(left).unwrap_or_else(|_| Err(no_answer()))
+    }
+}
+
 impl CaptureHandle {
+    /// Asks for a still and returns at once (see [`CaptureHandle::capture_still`]). On
+    /// captures without a still path the still is taken from the next frame before this
+    /// returns.
+    pub fn request_still(&self, request: &StillRequest) -> PendingStill {
+        let started = Instant::now();
+        let deadline = started + request.timeout + Duration::from_millis(500);
+        #[cfg(feature = "native")]
+        match native_loop(&self.control) {
+            Ok(Some(lc)) => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                lc.submit_still(super::native_isp::StillJob {
+                    request: request.clone(),
+                    reply: tx,
+                    requested: started,
+                });
+                return PendingStill {
+                    rx: Some(rx),
+                    ready: None,
+                    deadline,
+                };
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return PendingStill {
+                    rx: None,
+                    ready: Some(Err(e)),
+                    deadline,
+                };
+            }
+        }
+        PendingStill {
+            rx: None,
+            ready: Some(super::still_output::from_stream(self, request, started)),
+            deadline,
+        }
+    }
+
     /// Takes a still (or an exposure bracket) without stopping the stream where the camera
     /// allows: on processed native cameras the preview keeps its rate and the raw frame is
     /// reprocessed at full quality on another thread (see the [module docs](self)); other
@@ -264,23 +352,22 @@ impl CaptureHandle {
     /// consumer misses that frame) at the running mode, converted to the format asked for.
     /// Blocks until the still is ready or [`StillRequest::timeout`].
     pub fn capture_still(&self, request: &StillRequest) -> Result<StillCapture, CaptureError> {
-        let started = Instant::now();
-        #[cfg(feature = "native")]
-        if let Some(lc) = native_loop(&self.control)? {
-            let (tx, rx) = std::sync::mpsc::channel();
-            lc.submit_still(super::native_isp::StillJob {
-                request: request.clone(),
-                reply: tx,
-                requested: started,
-            });
-            return match rx.recv_timeout(request.timeout + Duration::from_millis(500)) {
-                Ok(r) => r,
-                Err(_) => Err(CaptureError::Backend(
-                    "still: no answer from the capture (stopped or timed out)".into(),
-                )),
-            };
-        }
-        super::still_output::from_stream(self, request, started)
+        self.request_still(request).wait()
+    }
+}
+
+impl crate::planner::Frames {
+    /// A still from the camera behind these frames, as [`CaptureHandle::capture_still`]
+    /// takes it: on a processed native camera the stream keeps running. On a shared capture
+    /// every consumer's stream keeps running too.
+    pub fn capture_still(&self, request: &StillRequest) -> Result<StillCapture, CaptureError> {
+        self.capture().capture_still(request)
+    }
+
+    /// Asks for a still and returns at once, so frames can be taken meanwhile (see
+    /// [`CaptureHandle::request_still`]).
+    pub fn request_still(&self, request: &StillRequest) -> PendingStill {
+        self.capture().request_still(request)
     }
 }
 

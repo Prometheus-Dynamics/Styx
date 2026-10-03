@@ -57,7 +57,8 @@ pub use request::{
     TdnOutputMode, start_capture,
 };
 pub use still::{
-    StillCapture, StillExposure, StillFormat, StillImage, StillMeta, StillRequest, StillShot,
+    PendingStill, StillCapture, StillExposure, StillFormat, StillImage, StillMeta, StillRequest,
+    StillShot,
 };
 pub use supervisor::SupervisedCapture;
 pub use tunables::{
