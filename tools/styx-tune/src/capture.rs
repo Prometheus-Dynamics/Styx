@@ -18,6 +18,9 @@ use styx_tune::raw::RawFrame;
 
 use crate::{Args, Res};
 
+/// A recorded frame's exposure (µs), gain and mean level.
+type Taken = (f64, f64, f64);
+
 /// An open camera taking raw frames at settings we choose.
 struct Camera {
     device: ProbedDevice,
@@ -91,11 +94,11 @@ impl Camera {
         gain: f64,
         n: usize,
         mut rec: Option<&mut StreamRecorder>,
-    ) -> Res<(Vec<(f64, f64, f64)>, RawFrame)> {
+    ) -> Res<(Vec<Taken>, RawFrame)> {
         self.set(exposure_us, gain)?;
         let deadline =
             Instant::now() + Duration::from_secs(5) + Duration::from_millis(100 * n as u64);
-        let mut out: Vec<(f64, f64, f64)> = Vec::new();
+        let mut out: Vec<Taken> = Vec::new();
         let mut last = None;
         while out.len() < n {
             if Instant::now() > deadline {

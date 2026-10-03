@@ -79,7 +79,10 @@ impl BlackLevelTuning {
         {
             return Err(AlgoError::tuning("black_level: levels must be in [0, 1)"));
         }
-        if self.by_gain.iter().any(|l| !(l.gain > 0.0))
+        if self
+            .by_gain
+            .iter()
+            .any(|l| l.gain.is_nan() || l.gain <= 0.0)
             || self.by_gain.windows(2).any(|w| w[1].gain <= w[0].gain)
         {
             return Err(AlgoError::tuning(

@@ -126,6 +126,16 @@ slow frames). An embedded layout written for one bit depth may not hold in anoth
 OV9782's raw8 line carries each value's top 8 bits only): `embedded_data = false` under that
 `[formats.<name>]` leaves the line uncaptured there, and frames report predicted values.
 
+## Tuning a camera
+
+A new sensor runs with Styx's generic tuning (grey-world white balance, identity colour
+matrix, assumed noise) until it has its own. `styx-tune` makes one from raw captures of a
+ColorChecker, flat fields under lights of known colour temperature and dark frames:
+`styx-tune capture` records them through Styx, `styx-tune calibrate` writes `<sensor>.toml`
+(and a Raspberry Pi `.json`); install it as `/etc/styx/tuning/<name>.toml`, where `<name>` is
+the stem of the description's `tuning =` entry. Equipment, shots and the comparison with
+libcamera's `ctt`: [docs/tuning.md](../tuning.md).
+
 ## Checking a camera
 
 * `bridge_capture` (`crates/native/examples`): lists every camera with its modes and exact

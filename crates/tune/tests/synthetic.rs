@@ -229,8 +229,8 @@ fn matrix_sensor_parameters_come_back() {
     assert_eq!(b.by_gain.len(), 3);
     for g in &b.by_gain {
         let want = m.black_at(g.gain);
-        for c in 0..4 {
-            let err = (g.levels[c] - want[c]) * 1024.0;
+        for (c, w) in want.iter().enumerate() {
+            let err = (g.levels[c] - w) * 1024.0;
             println!("black gain {} ch {c}: {:.3} codes off", g.gain, err);
             assert!(err.abs() < 0.1, "gain {} channel {c}: {err} codes", g.gain);
         }

@@ -155,8 +155,11 @@ fn diff90(a: f64, b: f64) -> f64 {
     d.min(90.0 - d)
 }
 
-/// The lattice: members as (component, lattice coordinates), and the pitch.
-fn lattice(comps: &[Comp]) -> Option<(Vec<(usize, i32, i32)>, f64)> {
+/// A lattice member: component index and lattice coordinates.
+type Member = (usize, i32, i32);
+
+/// The lattice: its members, and the pitch.
+fn lattice(comps: &[Comp]) -> Option<(Vec<Member>, f64)> {
     let n = comps.len();
     if n < 8 {
         return None;
