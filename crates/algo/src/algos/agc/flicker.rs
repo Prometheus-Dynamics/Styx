@@ -40,6 +40,10 @@
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 
+use super::{DETECT_F, DETECT_SAMPLES, DETECT_TIME, DETECT_VISIBLE};
+use crate::frame::{Flicker, FrameMetadata};
+use crate::stats::Statistics;
+
 /// Mains frequencies.
 pub const MAINS_HZ: [f64; 2] = [50.0, 60.0];
 /// Harmonics of the mains frequency fitted (50, 100 and 150 Hz on 50 Hz mains).
@@ -373,6 +377,124 @@ impl FlickerFit {
             && model.visible >= MIN_VISIBLE
             && (1..=self.harmonics).all(|k| model.depth(k) <= 1.5);
         Some(model)
+    }
+}
+
+/// AGC's flicker state: the fits it feeds, detection and the periods it quantises to.
+impl super::Agc {
+    /// The mains frequencies to fit for these controls.
+    pub(super) fn flicker_mains(flicker: Flicker) -> Vec<f64> {
+        match flicker {
+            Flicker::Off => Vec::new(),
+            Flicker::Auto => MAINS_HZ.to_vec(),
+            // A light flicker period: the mains it comes from (full-wave) is twice as long.
+            f => f
+                .period()
+                .map(|p| vec![0.5 / p.as_secs_f64()])
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The start time of `meta`'s frame (seconds), from the frame numbers and durations.
+    pub(super) fn frame_time(&mut self, meta: &FrameMetadata) -> f64 {
+        let fd = meta.frame_duration.as_secs_f64();
+        let t = match self.clock {
+            Some((f, t)) if meta.frame > f => t + (meta.frame - f) as f64 * fd,
+            Some((f, t)) if meta.frame == f => t,
+            _ => 0.0,
+        };
+        self.clock = Some((meta.frame, t));
+        t
+    }
+
+    /// Feeds the flicker fits with this frame, works out the flicker periods to avoid and
+    /// returns the mains frequency in use and how much brighter than the mean light the frame
+    /// is.
+    pub(super) fn flicker(
+        &mut self,
+        stats: &Statistics,
+        meta: &FrameMetadata,
+        usable: bool,
+    ) -> (Option<f64>, f64) {
+        let flicker = meta.controls.flicker;
+        let wanted = Self::flicker_mains(flicker);
+        if self.fits.len() != wanted.len()
+            || self.fits.iter().zip(&wanted).any(|(f, w)| f.mains() != *w)
+        {
+            self.fits = wanted
+                .iter()
+                .map(|&hz| FlickerFit::new(hz, HARMONICS))
+                .collect();
+            self.detect_since = vec![None; wanted.len()];
+        }
+        if flicker != Flicker::Auto {
+            self.detected = None;
+        }
+        let time = self.frame_time(meta);
+        let (fd, t) = (
+            meta.frame_duration.as_secs_f64(),
+            meta.exposure.as_secs_f64(),
+        );
+        let total = t * meta.analogue_gain * meta.digital_gain.max(1e-9);
+        let y = stats.mean_luma();
+        if usable && total > 0.0 && (0.005..0.85).contains(&y) {
+            for f in &mut self.fits {
+                f.add(time, fd, t, y / total);
+            }
+        }
+        if flicker == Flicker::Auto {
+            for (i, f) in self.fits.iter().enumerate() {
+                let strong = f.significant().is_some_and(|m| {
+                    m.f_stat >= DETECT_F
+                        && m.visible >= DETECT_VISIBLE
+                        && m.samples >= DETECT_SAMPLES
+                });
+                self.detect_since[i] = strong.then(|| self.detect_since[i].unwrap_or(time));
+            }
+            // The strongest of those seen long enough; kept until another one is.
+            let best = (0..self.fits.len())
+                .filter(|&i| self.detect_since[i].is_some_and(|t0| time - t0 >= DETECT_TIME))
+                .max_by(|&a, &b| {
+                    let f = |i: usize| self.fits[i].model().map_or(0.0, |m| m.f_stat);
+                    f(a).total_cmp(&f(b))
+                });
+            if let Some(i) = best {
+                self.detected = Some(self.fits[i].mains());
+            }
+        }
+        let mains = match flicker {
+            Flicker::Auto => self.detected,
+            _ => self.fits.first().map(FlickerFit::mains),
+        };
+        let fit = mains.and_then(|hz| self.fits.iter().find(|f| f.mains() == hz));
+        // Whole mains periods when the lamp flickers at the mains frequency too (shorter
+        // exposures are left alone: whole half periods would not cancel that flicker and
+        // longer exposures see less of it; measured at 60 fps under such a lamp, 10 ms
+        // exposures flickered 9.9% where 16.5 ms ones did 3.7%), else whole half periods.
+        // Kept once seen: whole mains periods hide that flicker from the fit.
+        let period = fit.map(FlickerFit::avoid_period);
+        let full = mains.map(|hz| 1.0 / hz);
+        if period.is_some() && period == full {
+            self.mains_period_seen = full;
+        } else if self.mains_period_seen != full {
+            self.mains_period_seen = None;
+        }
+        self.periods = self.mains_period_seen.or(period).into_iter().collect();
+        // Until a mains frequency is detected, AE meters against the most significant fit
+        // (its own prediction of these frames); exposures are quantised only once detected.
+        let provisional = || {
+            self.fits
+                .iter()
+                .filter(|f| f.significant().is_some())
+                .max_by(|a, b| {
+                    let f = |x: &FlickerFit| x.model().map_or(0.0, |m| m.f_stat);
+                    f(a).total_cmp(&f(b))
+                })
+        };
+        let correction = fit
+            .or_else(|| (flicker == Flicker::Auto).then(provisional).flatten())
+            .map_or(1.0, |f| f.correction(time, fd, t));
+        (mains, correction)
     }
 }
 

@@ -212,21 +212,37 @@ fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues)
 /// outside it (a frame server's leases); a deeper queue or more extra buffers (the planner's
 /// shared captures reserve every consumer's queue and the frame it works on) come on top, so
 /// consumers holding what the planner allows them never leave the camera without a buffer.
+/// With them all the outputs' buffers (`set_bytes` per buffer of every output) take at most
+/// half of `free` bytes (the contiguous memory they come from, when known; the front end's
+/// raw buffers and the back end's temporal denoise come from it too), but never fewer than
+/// `output_buffers`.
 ///
 /// [`NativeIspConfig::output_buffers`]: super::NativeIspConfig::output_buffers
-pub(super) fn pisp_output_buffers(config: &StyxConfig) -> u32 {
+pub(super) fn pisp_output_buffers(config: &StyxConfig, set_bytes: u64, free: Option<u64>) -> u32 {
     let capture = config.capture_tunables();
     let planned = capture.queue_depth + capture.extra_buffers;
     let baseline =
         super::tunables::DEFAULT_QUEUE_DEPTH + super::tunables::DEFAULT_CAPTURE_EXTRA_BUFFERS;
-    let extra = u32::try_from(planned.saturating_sub(baseline)).unwrap_or(u32::MAX);
-    config
-        .backends
-        .native
-        .output_buffers
-        .max(2)
-        .saturating_add(extra)
-        .min(MAX_OUTPUT_BUFFERS)
+    let mut extra = u32::try_from(planned.saturating_sub(baseline)).unwrap_or(u32::MAX);
+    let base = config.backends.native.output_buffers.max(2);
+    if let Some(free) = free {
+        let fits = (free / 2 / set_bytes.max(1)).saturating_sub(u64::from(base));
+        extra = extra.min(u32::try_from(fits).unwrap_or(u32::MAX));
+    }
+    base.saturating_add(extra).min(MAX_OUTPUT_BUFFERS.max(base))
+}
+
+/// Free contiguous memory (`CmaFree`), where the back end's cached dma-heap buffers come from.
+fn cma_free() -> Option<u64> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kib: u64 = info
+        .lines()
+        .find_map(|l| l.strip_prefix("CmaFree:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some(kib * 1024)
 }
 
 /// Most buffers per back end output (V4L2 allows 64; each is a frame of the output's size).
@@ -291,7 +307,11 @@ pub(super) fn start_processed(
                 },
                 temporal_denoise: config.backends.native.temporal_denoise,
                 spatial_denoise: f64::from(config.backends.native.spatial_denoise_percent) / 100.0,
-                be_buffers: pisp_output_buffers(config),
+                be_buffers: pisp_output_buffers(
+                    config,
+                    specs.iter().flatten().map(|s| s.bytes()).sum(),
+                    cma_free().filter(|_| !config.backends.native.driver_buffers),
+                ),
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;
@@ -441,19 +461,22 @@ mod tests {
 
     #[test]
     fn output_buffers_cover_what_the_planner_reserves() {
-        assert_eq!(pisp_output_buffers(&StyxConfig::default()), 6);
-        assert_eq!(
-            pisp_output_buffers(&StyxConfig::default().native_output_buffers(8)),
-            8
-        );
+        let set = 1280 * 800 * 3 / 2 + 640 * 400 * 3;
+        let buffers = |c: &StyxConfig| pisp_output_buffers(c, set, None);
+        assert_eq!(buffers(&StyxConfig::default()), 6);
+        assert_eq!(buffers(&StyxConfig::default().native_output_buffers(8)), 8);
         // A shared capture of two consumers with queues of 3 (the planner: queue 1, extra
         // 3 + 3 + 3 + 3 + 2 = 14): 11 on top of the 6.
         let shared = StyxConfig::new()
             .capture_queue_depth(1)
             .capture_extra_buffers(14);
-        assert_eq!(pisp_output_buffers(&shared), 17);
+        assert_eq!(buffers(&shared), 17);
         let huge = StyxConfig::new().capture_extra_buffers(200);
-        assert_eq!(pisp_output_buffers(&huge), MAX_OUTPUT_BUFFERS);
+        assert_eq!(buffers(&huge), MAX_OUTPUT_BUFFERS);
+        // All of them in at most half the free contiguous memory: 47 MB free on the CM5 holds
+        // 10 sets of NV12 1280x800 + RGB 640x400; never fewer than asked.
+        assert_eq!(pisp_output_buffers(&shared, set, Some(47 << 20)), 10);
+        assert_eq!(pisp_output_buffers(&shared, set, Some(0)), 6);
     }
 
     #[test]

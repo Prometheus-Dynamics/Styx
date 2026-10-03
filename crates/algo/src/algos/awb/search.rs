@@ -19,8 +19,12 @@ pub(crate) type Estimate = (f64, f64, f64);
 pub(crate) fn grey_world(zones: &[Zone], default_ct: f64) -> Estimate {
     let mut by_r = zones.to_vec();
     let mut by_b = zones.to_vec();
-    by_r.sort_by(|a, b| (a.0 * b.1).total_cmp(&(b.0 * a.1)));
-    by_b.sort_by(|a, b| (a.2 * b.1).total_cmp(&(b.2 * a.1)));
+    // By R/G and B/G; zones without green last (cross-multiplied comparisons are no order
+    // with them: every such zone compares equal to every other, which panicked the sort in a
+    // dark scene on the device).
+    let ratio = |c: f64, g: f64| if g > 0.0 { c / g } else { f64::INFINITY };
+    by_r.sort_by(|a, b| ratio(a.0, a.1).total_cmp(&ratio(b.0, b.1)));
+    by_b.sort_by(|a, b| ratio(a.2, a.1).total_cmp(&ratio(b.2, b.1)));
     let discard = zones.len() / 4;
     let keep = zones.len() - 2 * discard;
     let (mut rr, mut rg, mut bb, mut bg) = (0.0, 0.0, 0.0, 0.0);
@@ -241,6 +245,13 @@ mod tests {
         let (_, r, b) = grey_world(&zones, 4500.0);
         assert!((r - 2.0).abs() < 1e-9, "{r}");
         assert!((b - 4.0).abs() < 1e-9, "{b}");
+        // Zones without green (a dark scene) are ordered too.
+        let mut dark: Vec<Zone> = (0..40)
+            .map(|i| (f64::from(i % 3) * 0.01, f64::from(i % 2) * 0.01, 0.01))
+            .collect();
+        dark.extend(vec![(0.0, 0.0, 0.0); 40]);
+        let (_, r, b) = grey_world(&dark, 4500.0);
+        assert!(r.is_finite() && b.is_finite());
     }
 
     #[test]
