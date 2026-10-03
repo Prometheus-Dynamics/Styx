@@ -329,7 +329,8 @@ pub(super) fn spawn(
                 };
                 w.loop_controls.report(&p.step().params);
                 w.live.isp_time(f.times.be_job, f.times.total);
-                w.live.aaa(&aaa_sample(&p.step().params));
+                w.live
+                    .aaa(&aaa_sample(&p.step().params, p.controls(), f.sequence));
                 let mut leases: [Option<FrameLease>; 2] = [None, None];
                 let mut failed = None;
                 for (i, spec) in w.specs.iter().enumerate() {

@@ -202,8 +202,9 @@ box (OV9782 1280x800) unless stated.
 - [ ] Per-consumer hold times for in-process consumers of shared captures (today per capture
       buffer, and per camera service client); attribute a service client's queue drops to the
       client (they show on its consumer row of the camera).
-- [ ] AF state once the loop has autofocus (`native/autofocus`); CPU of the software ISP's
-      worker pool per capture.
+- [x] AF in the metrics: state, mode, lens position (dioptres), lens settled, scans started
+      (unit-tested; no camera with a lens on the dev box yet).
+- [ ] CPU of the software ISP's worker pool per capture.
 
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).

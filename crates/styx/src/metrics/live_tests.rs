@@ -166,3 +166,52 @@ fn the_text_exposition_names_every_camera() {
     // HELP and TYPE once per metric.
     assert_eq!(text.matches("# TYPE styx_camera_drops_total").count(), 1);
 }
+
+#[test]
+fn autofocus_state_lens_and_scans_are_reported() {
+    use super::super::af::{AfModeKind, AfSample, AfStateKind};
+    let m = CaptureMetrics::default();
+    let sample = |state, lens, settled| AaaSample {
+        af: Some(AfSample {
+            state,
+            mode: AfModeKind::Continuous,
+            lens_dioptres: lens,
+            lens_settled: settled,
+        }),
+        ..Default::default()
+    };
+    // Without a lens nothing AF is reported.
+    m.aaa(&AaaSample::default());
+    assert_eq!(m.snapshot().aaa.unwrap().af_state, None);
+    // Two scans: idle, scanning (x2), focused, scanning again, failed.
+    for (state, lens, settled) in [
+        (AfStateKind::Idle, Some(1.0), Some(true)),
+        (AfStateKind::Scanning, Some(2.0), Some(false)),
+        (AfStateKind::Scanning, Some(3.0), Some(false)),
+        (AfStateKind::Focused, Some(2.5), Some(true)),
+        (AfStateKind::Scanning, Some(4.0), None),
+        (AfStateKind::Failed, Some(4.5), Some(true)),
+    ] {
+        m.aaa(&sample(state, lens, settled));
+    }
+    let a = m.snapshot().aaa.unwrap();
+    assert_eq!(a.af_state.as_deref(), Some("failed"));
+    assert_eq!(a.af_mode.as_deref(), Some("continuous"));
+    assert_eq!(a.lens_position_dioptres, Some(4.5));
+    assert_eq!(a.lens_settled, Some(true));
+    assert_eq!(a.af_scans, Some(2));
+    m.aaa(&sample(AfStateKind::Scanning, None, None));
+    let a = m.snapshot().aaa.unwrap();
+    assert_eq!((a.lens_position_dioptres, a.lens_settled), (None, None));
+    assert_eq!(a.af_scans, Some(3));
+    let text = super::super::MetricsSnapshot {
+        cameras: vec![m.snapshot()],
+        ..Default::default()
+    }
+    .prometheus_text();
+    assert!(
+        text.contains("state=\"scanning\",mode=\"continuous\"} 1"),
+        "{text}"
+    );
+    assert!(text.contains("styx_camera_af_scans_total{"), "{text}");
+}
