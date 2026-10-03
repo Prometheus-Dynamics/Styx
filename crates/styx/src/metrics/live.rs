@@ -37,7 +37,10 @@ impl Ring {
     pub(crate) fn push(&self, ns: u64) {
         let i = self.next.fetch_add(1, Relaxed) as usize % WINDOW;
         self.slots[i].store(ns, Relaxed);
-        self.max.fetch_max(ns, Relaxed);
+        // A read first: the maximum rarely changes, and a plain load costs less than an RMW.
+        if ns > self.max.load(Relaxed) {
+            self.max.fetch_max(ns, Relaxed);
+        }
     }
 
     /// Samples ever pushed.

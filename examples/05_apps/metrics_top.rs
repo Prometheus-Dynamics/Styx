@@ -8,6 +8,8 @@
 //!     Opens every camera (or those whose name contains NAME) for NV12 frames, with N
 //!     consumers sharing each capture; with --slow the last consumer takes a frame only every
 //!     MS milliseconds (its drops show on its row).
+//!     With --verify, each consumer also measures frame rate, sequence gaps and latency itself
+//!     from the frames it receives, printed next to the metrics at the end.
 //! metrics_top --overhead
 //!     What recording the metrics costs the frame path per frame (no camera needed).
 //! metrics_top --service [PATH] [--prometheus | --json] [--seconds S] [--interval MS]
@@ -32,6 +34,7 @@ struct Options {
     service: Option<String>,
     prometheus: bool,
     json: bool,
+    verify: bool,
 }
 
 fn options() -> Result<Options, String> {
@@ -44,6 +47,7 @@ fn options() -> Result<Options, String> {
         service: None,
         prometheus: false,
         json: false,
+        verify: false,
     };
     let mut args = std::env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
@@ -85,6 +89,7 @@ fn options() -> Result<Options, String> {
             }
             "--prometheus" => o.prometheus = true,
             "--json" => o.json = true,
+            "--verify" => o.verify = true,
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -213,9 +218,53 @@ fn json(_: &MetricsSnapshot) -> String {
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
+/// What a consumer saw of each frame: sequence number, sensor timestamp, and the time from the
+/// timestamp to receiving it (ns).
+type Seen = Vec<(Option<u32>, u64, Option<u64>)>;
+
+/// A consumer thread: its camera, its frames (kept open until the end) and what it saw.
+type Consumer = std::thread::JoinHandle<(String, styx::planner::PlannedFrames, Seen)>;
+
+fn sequence(meta: &FrameMeta) -> Option<u32> {
+    match meta.backend.as_ref()? {
+        BackendFrameMeta::Native(n) => Some(n.sequence),
+        BackendFrameMeta::V4l2(v) => Some(v.sequence),
+        BackendFrameMeta::Uvc(u) => Some(u.sequence),
+        BackendFrameMeta::Libcamera(_) => None,
+    }
+}
+
+/// Frame rate, sequence gaps and latency percentiles from what a consumer saw (the last
+/// `window` frames for rate and latency, as the metrics' windows).
+fn verify(name: &str, seen: &Seen, window: usize) {
+    let gaps: u64 = seen
+        .windows(2)
+        .filter_map(|w| Some(u64::from(w[1].0?.checked_sub(w[0].0?)?.saturating_sub(1))))
+        .sum();
+    let tail = &seen[seen.len().saturating_sub(window)..];
+    let fps = match (tail.first(), tail.last()) {
+        (Some(a), Some(b)) if b.1 > a.1 => (tail.len() - 1) as f64 * 1e9 / (b.1 - a.1) as f64,
+        _ => 0.0,
+    };
+    let mut lat: Vec<u64> = tail.iter().filter_map(|s| s.2).collect();
+    lat.sort_unstable();
+    let at = |q: f64| {
+        lat.get(((lat.len().saturating_sub(1)) as f64 * q).round() as usize)
+            .map_or("-".into(), |v| format!("{:.2}", *v as f64 / 1e6))
+    };
+    println!(
+        "verify {name}: received {}  fps (last {}) {fps:.2}  sequence gaps seen {gaps}  sensor->receive ms p50/p95/max {}/{}/{}",
+        seen.len(),
+        tail.len(),
+        at(0.5),
+        at(0.95),
+        at(1.0)
+    );
+}
+
 /// Open each camera for NV12 frames with `consumers` consumers sharing its capture; the last
 /// takes a frame only every `slow`.
-fn open_cameras(o: &Options) -> Vec<std::thread::JoinHandle<()>> {
+fn open_cameras(o: &Options) -> Vec<Consumer> {
     let mut threads = Vec::new();
     for device in probe_all() {
         let name = device.identity.display.clone();
@@ -240,10 +289,18 @@ fn open_cameras(o: &Options) -> Vec<std::thread::JoinHandle<()>> {
         let last = consumers.len() - 1;
         for (i, mut frames) in consumers.into_iter().enumerate() {
             let slow = o.slow.filter(|_| i == last && last > 0 || o.consumers == 1);
+            let name = format!("{name} consumer {i}");
             threads.push(std::thread::spawn(move || {
+                let mut seen = Seen::new();
                 while !STOP.load(Ordering::Relaxed) {
                     match frames.next_frame(Duration::from_millis(500)) {
                         RecvOutcome::Data(frame) => {
+                            let meta = frame.meta();
+                            let latency = meta
+                                .clock
+                                .and_then(|c| c.now_ns())
+                                .and_then(|now| now.checked_sub(meta.timestamp));
+                            seen.push((sequence(meta), meta.timestamp, latency));
                             if let Some(slow) = slow {
                                 std::thread::sleep(slow);
                             }
@@ -253,6 +310,7 @@ fn open_cameras(o: &Options) -> Vec<std::thread::JoinHandle<()>> {
                         RecvOutcome::Closed => break,
                     }
                 }
+                (name, frames, seen)
             }));
         }
     }
@@ -309,8 +367,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     STOP.store(true, Ordering::Relaxed);
-    for consumer in cameras {
-        let _ = consumer.join();
+    // The captures stay open (nobody receives) until the metrics are compared.
+    let ended: Vec<_> = cameras.into_iter().filter_map(|c| c.join().ok()).collect();
+    if o.verify {
+        let s = styx::metrics::snapshot();
+        for c in &s.cameras {
+            let d = &c.drops;
+            println!(
+                "metrics {}: received {}  fps measured {}  drops gap/queue/corrupt/isp {}/{}/{}/{}  sensor->receive ms p50/p95/max {}",
+                c.name,
+                c.frames.received,
+                c.fps.measured.map_or("-".into(), |v| format!("{v:.2}")),
+                d.sensor_sequence_gaps,
+                d.queue_overflow,
+                d.corrupted,
+                d.isp_skipped,
+                window(&c.latency.sensor_to_receive)
+            );
+            for consumer in &c.consumers {
+                consumer_row(consumer);
+            }
+        }
+        for (name, _, seen) in &ended {
+            verify(name, seen, styx::metrics::WINDOW);
+        }
     }
+    drop(ended);
     Ok(())
 }
