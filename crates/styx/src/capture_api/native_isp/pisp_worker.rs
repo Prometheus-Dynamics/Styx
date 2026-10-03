@@ -230,6 +230,8 @@ pub(super) struct Worker {
     pub(super) second_kind: CompanionKind,
     pub(super) strides: [usize; 2],
     pub(super) tx: BoundedTx<FrameLease>,
+    /// Whether `tx` was made for this capture (closed when it ends) or is the consumer's.
+    pub(super) owns_queue: bool,
     pub(super) stop: mpsc::Receiver<()>,
     pub(super) error: Arc<Mutex<Option<CaptureError>>>,
     pub(super) send_timeout: Duration,
@@ -363,7 +365,9 @@ pub(super) fn spawn(
             if let Err(e) = p.close() {
                 tracing::warn!(backend = "native", error = %e, "closing the PiSP path");
             }
-            tx.close();
+            if w.owns_queue {
+                tx.close();
+            }
         })
         .map_err(|e| err(format!("worker: {e}")))
 }

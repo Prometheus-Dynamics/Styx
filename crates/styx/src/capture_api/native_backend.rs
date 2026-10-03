@@ -487,6 +487,9 @@ pub(super) fn start_native(
     let mut stream = camera.start().map_err(native_err)?;
 
     let capture = config.capture_tunables();
+    // A queue the supervisor passed in belongs to the consumer and outlives this capture (a
+    // reconnect starts the next one on it): only a queue made here is closed when it ends.
+    let owns_queue = queue.is_none();
     let (tx, rx) = queue.unwrap_or_else(|| {
         styx_core::queue::bounded_with(capture.queue_depth.max(1), capture.queue_overflow)
     });
@@ -525,7 +528,9 @@ pub(super) fn start_native(
             if let Err(e) = camera.close() {
                 tracing::warn!(backend = "native", error = %e, "closing the camera");
             }
-            tx.close();
+            if owns_queue {
+                tx.close();
+            }
             tracing::debug!(backend = "native", "capture worker stopped");
         })
         .map_err(|e| CaptureError::Backend(format!("native worker: {e}")))?;

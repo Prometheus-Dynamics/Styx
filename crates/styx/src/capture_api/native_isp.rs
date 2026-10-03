@@ -269,6 +269,9 @@ pub(super) fn start_processed(
     let kind = isp_kind(camera.info());
     tracing::info!(backend = "native", isp = kind.name(), tuning = %source, "processed capture");
     let capture = config.capture_tunables();
+    // A queue the supervisor passed in belongs to the consumer and outlives this capture (a
+    // reconnect starts the next one on it): only a queue made here is closed when it ends.
+    let owns_queue = queue.is_none();
     let (tx, rx) = queue.unwrap_or_else(|| {
         styx_core::queue::bounded_with(capture.queue_depth.max(1), capture.queue_overflow)
     });
@@ -332,6 +335,7 @@ pub(super) fn start_processed(
                     second_kind,
                     strides,
                     tx,
+                    owns_queue,
                     stop: stop_rx,
                     error: werr,
                     send_timeout,
@@ -436,7 +440,9 @@ pub(super) fn start_processed(
                     if let Err(e) = p.close() {
                         tracing::warn!(backend = "native", error = %e, "closing the software ISP path");
                     }
-                    tx.close();
+                    if owns_queue {
+                        tx.close();
+                    }
                 })
                 .map_err(|e| err(format!("worker: {e}")))?;
             (controls, worker)
