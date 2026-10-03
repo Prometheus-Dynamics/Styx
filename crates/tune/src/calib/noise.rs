@@ -42,14 +42,17 @@ pub struct NoiseFit {
 
 const FULL: f64 = 65536.0;
 
-/// Samples from a burst's temporal variance: `levels` (black removed) binned by level.
+/// Samples from a burst's temporal variance: `levels` (black removed) binned by level. Each
+/// bin's variance is the median of its pixels' variances (corrected for the median of a χ²
+/// distribution), so pixels that change for other reasons (edges of a scene that moves a
+/// little, a blinking LED, a lamp in view) do not count.
 pub fn temporal_samples(burst: &Burst, levels: &Planes) -> Vec<NoiseSample> {
     let Some(var) = &burst.variance else {
         return Vec::new();
     };
     const BINS: usize = 64;
     let (lo, hi) = (0.002, 0.9);
-    let mut sum = [(0.0f64, 0.0f64, 0usize); BINS];
+    let mut bins: Vec<(f64, Vec<f32>)> = vec![(0.0, Vec::new()); BINS];
     for c in 0..4 {
         for (l, v) in levels.ch[c].iter().zip(&var.ch[c]) {
             let l = f64::from(*l);
@@ -58,19 +61,25 @@ pub fn temporal_samples(burst: &Burst, levels: &Planes) -> Vec<NoiseSample> {
             }
             // Log-spaced bins: noise samples cover dark and bright parts evenly.
             let k = (((l / lo).ln() / (hi / lo).ln()) * BINS as f64) as usize;
-            let s = &mut sum[k.min(BINS - 1)];
-            s.0 += l;
-            s.1 += f64::from(*v);
-            s.2 += 1;
+            let b = &mut bins[k.min(BINS - 1)];
+            b.0 += l;
+            b.1.push(*v);
         }
     }
-    sum.iter()
-        .filter(|s| s.2 >= 200)
-        .map(|&(l, v, n)| NoiseSample {
-            level: l / n as f64 * FULL,
-            sigma: (v / n as f64).sqrt() * FULL,
-            gain: burst.gain(),
-            count: n,
+    // Median of χ²(k) / k, k = frames - 1 (Wilson-Hilferty).
+    let k = (burst.frames.max(2) - 1) as f64;
+    let chi_median = (1.0 - 2.0 / (9.0 * k)).powi(3);
+    bins.into_iter()
+        .filter(|b| b.1.len() >= 200)
+        .map(|(l, mut v)| {
+            let n = v.len();
+            let med = f64::from(crate::raw::median(&mut v)) / chi_median;
+            NoiseSample {
+                level: l / n as f64 * FULL,
+                sigma: med.sqrt() * FULL,
+                gain: burst.gain(),
+                count: n,
+            }
         })
         .collect()
 }

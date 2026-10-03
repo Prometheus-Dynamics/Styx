@@ -164,8 +164,14 @@ pub fn calibrate(shots: &[Shot], base: &Tuning, opts: &Options) -> Result<Calibr
     for p in &prepared {
         let s = p.shot;
         let white = 1.0 - p.black.iter().copied().fold(0.0, f64::max);
-        if p.burst.variance.is_some() {
+        let known = p.burst.exposure_us > 0.0;
+        if p.burst.variance.is_some() && known {
             temporal.extend(noise::temporal_samples(&p.burst, &p.planes));
+        } else if p.burst.variance.is_some() {
+            notes.push(format!(
+                "{}: exposure and gain not recorded (give them in the session); not used for noise",
+                s.name
+            ));
         }
         let correction = match (&alsc, s.ct) {
             (Some(a), Some(ct)) => Some(a.correction(ct, p.planes.width, p.planes.height)),
@@ -252,7 +258,7 @@ pub fn calibrate(shots: &[Shot], base: &Tuning, opts: &Options) -> Result<Calibr
                         b: 1.0 / wb,
                         source: s.name.clone(),
                     });
-                    if let Some(l) = s.lux {
+                    if let Some(l) = s.lux.filter(|_| known) {
                         lux = Some(lux_reference(p, (wr, wb), l));
                     }
                 }
@@ -264,7 +270,7 @@ pub fn calibrate(shots: &[Shot], base: &Tuning, opts: &Options) -> Result<Calibr
                     )),
                 }
                 for (q, u) in patches.iter().zip(&usable) {
-                    if !u {
+                    if !u || !known {
                         continue;
                     }
                     for c in 0..4 {

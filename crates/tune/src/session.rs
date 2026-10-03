@@ -24,6 +24,10 @@
 //! L lux), `grey_<T>k*` for a grey card filling the centre, `noise*` for a static scene for the
 //! noise profile.
 //!
+//! `exposure_us` and `gain` give the settings of frames whose file does not record them (DNGs
+//! without EXIF, MCAP recordings of format 1); frames without known settings are left out of
+//! the noise profile and the lux reference.
+//!
 //! `corners` are the centres of the chart's corner patches in full-resolution pixels: dark
 //! skin, bluish green, black, white (clockwise from top-left as printed), for when automatic
 //! detection fails. Paths are relative to the session file.
@@ -78,6 +82,12 @@ pub struct ShotSpec {
     /// Use at most this many frames.
     #[serde(default)]
     pub frames: Option<usize>,
+    /// Exposure of frames whose file does not record it, microseconds.
+    #[serde(default)]
+    pub exposure_us: Option<f64>,
+    /// Analogue gain of frames whose file does not record their exposure and gain.
+    #[serde(default)]
+    pub gain: Option<f64>,
 }
 
 /// A session file.
@@ -203,6 +213,8 @@ fn spec_from_name(stem: &str, file: PathBuf) -> Option<ShotSpec> {
         corners: None,
         skip: None,
         frames: None,
+        exposure_us: None,
+        gain: None,
     };
     if stem.starts_with("dark") || stem.starts_with("black") {
         return Some(spec(Kind::Dark, None, None));
@@ -225,9 +237,18 @@ fn spec_from_name(stem: &str, file: PathBuf) -> Option<ShotSpec> {
     Some(spec(Kind::Macbeth, Some(ct), number(rest, 'l')))
 }
 
-/// Frames to use: drop the first ones, keep the most common exposure and gain (dark shots keep
-/// every setting), at most `frames`.
+/// Frames to use: settings filled in where the file has none, the first frames dropped, the most
+/// common exposure and gain kept (dark shots keep every setting), at most `frames`.
 fn select(mut frames: Vec<RawFrame>, s: &ShotSpec) -> Vec<RawFrame> {
+    for f in frames.iter_mut().filter(|f| f.exposure_us <= 0.0) {
+        if let Some(e) = s.exposure_us {
+            f.exposure_us = e;
+        }
+        if let Some(g) = s.gain {
+            f.analogue_gain = g;
+            f.digital_gain = 1.0;
+        }
+    }
     let skip = s.skip.unwrap_or(if frames.len() >= 3 { 1 } else { 0 });
     frames.drain(..skip.min(frames.len()));
     if s.kind != Kind::Dark && !frames.is_empty() {

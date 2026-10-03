@@ -21,6 +21,7 @@ members = [
     "tools/pisp-spike",
     "tools/native-pipeline",
     "tools/compare",
+    "tools/styx-tune",
     "examples",
 ]
 # Optional bridges that link GStreamer/PipeWire; their own workspaces (docs/ecosystem.md).

@@ -134,6 +134,30 @@ pub fn text(c: &Calibration) -> String {
             n.offered,
             n.rms_error * 100.0
         );
+        // Each gain on its own: the √gain scaling is the Raspberry Pi model's assumption.
+        let mut gains: Vec<f64> = c.noise_samples.iter().map(|s| s.gain).collect();
+        gains.sort_by(f64::total_cmp);
+        gains.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+        if gains.len() > 1 {
+            for g in gains {
+                let at: Vec<_> = c
+                    .noise_samples
+                    .iter()
+                    .copied()
+                    .filter(|s| (s.gain - g).abs() < 1e-3)
+                    .collect();
+                if let Some(f) = crate::calib::noise::fit(&at) {
+                    let _ = writeln!(
+                        o,
+                        "  gain {g:.3} alone: constant {:.2}, slope {:.3} (as at gain 1); {} samples, RMS error {:.1}%",
+                        f.constant,
+                        f.slope,
+                        f.used,
+                        f.rms_error * 100.0
+                    );
+                }
+            }
+        }
     }
     if let Some(l) = &c.lux {
         let _ = writeln!(

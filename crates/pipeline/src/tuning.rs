@@ -12,7 +12,9 @@
 //!    copied), for sensors Styx has no tuning of its own for;
 //! 5. Styx's generic tuning ([`GENERIC_TUNING`]), else styx-algo's defaults.
 //!
-//! Files ending in `.json` are Raspberry Pi tuning files, anything else styx-algo's TOML.
+//! Files ending in `.json` are Raspberry Pi tuning files, anything else styx-algo's TOML. In
+//! Styx's own directories a `.json` name is looked for as `<stem>.toml` first (what
+//! `styx-tune` writes, with the Styx-only settings the JSON cannot hold), then as named.
 //!
 //! Built in:
 //!
@@ -113,10 +115,15 @@ impl TuningLibrary {
         }
         // A plain file name only: a description cannot point outside the search path.
         if let Some(name) = name.filter(|n| !n.is_empty() && !n.contains('/')) {
+            let own = Path::new(name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+                .then(|| Path::new(name).with_extension("toml"));
             for dir in &self.dirs {
-                let p = dir.join(name);
-                if let Some(t) = load(&p) {
-                    return (t, p.display().to_string());
+                for p in own.iter().map(|o| dir.join(o)).chain([dir.join(name)]) {
+                    if let Some(t) = load(&p) {
+                        return (t, p.display().to_string());
+                    }
                 }
             }
             if self.builtin
@@ -214,6 +221,11 @@ mod tests {
         .unwrap();
         let (_, src) = l.find(Some("ov9782.json"));
         assert!(src.starts_with(styx.to_str().unwrap()), "{src}");
+        // styx-tune's TOML of the same name comes first.
+        std::fs::write(styx.join("ov9782.toml"), "description = \"tuned\"\n").unwrap();
+        let (t, src) = l.find(Some("ov9782.json"));
+        assert!(src.ends_with("ov9782.toml"), "{src}");
+        assert_eq!(t.description.as_deref(), Some("tuned"));
         assert_eq!(l.find(Some("../ov9782.json")).1, "builtin:generic");
         std::fs::write(styx.join("mine.toml"), "description = \"mine\"\n").unwrap();
         l.file = Some(styx.join("mine.toml"));
