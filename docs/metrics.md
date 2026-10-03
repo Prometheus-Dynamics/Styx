@@ -8,9 +8,9 @@ on demand.
 ```rust
 use styx::prelude::*;
 
-let handle = CaptureRequest::new(&device).start()?;
+let frames = Frames::nv12().size(1280, 800).fps(30).open(&camera)?;
 // ...
-let m = handle.camera_metrics();          // this capture
+let m = frames.metrics();                 // this capture (CaptureHandle::camera_metrics() too)
 println!("{:.1} fps, {} dropped, {:?} ms", m.fps.measured.unwrap_or(0.0), m.drops.total,
          m.latency.sensor_to_delivery.p95_ms);
 
@@ -21,6 +21,8 @@ print!("{}", all.prometheus_text());      // Prometheus text exposition (version
 | API | what |
 |---|---|
 | `CaptureHandle::camera_metrics()` | `CameraMetrics` of that capture |
+| `Frames::metrics()` | the same for a `Frames` stream (`Frames::nv12()...open(&camera)?.metrics()`); on a shared capture every consumer is listed |
+| `Frames::consumer_metrics()` | that stream's own row on a shared capture: frames received, frames it did not take in time |
 | `CaptureHandle::live_metrics()` | the live `CaptureMetrics` (clone it, `snapshot()` any time, also after the handle is gone) |
 | `styx::metrics::snapshot()` | `MetricsSnapshot`: every running capture (opened through `CaptureRequest`, the planner, shared captures, a camera service) and `ProcessMetrics` |
 | `styx::metrics::process()` | `ProcessMetrics` alone |

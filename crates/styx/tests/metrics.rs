@@ -60,8 +60,7 @@ fn a_capture_reports_frames_rate_latency_and_cpu() {
 #[test]
 fn a_slow_consumer_of_a_shared_capture_is_the_one_that_drops() {
     let device = virtual_camera("metrics-shared", 120);
-    let req = FrameRequirements::formats([FourCc::RG24]);
-    let plan = styx::planner::plan_many(&device, &[req.clone(), req]).unwrap();
+    let plan = styx::planner::plan_many(&device, &[Frames::rgb(), Frames::rgb()]).unwrap();
     let mut consumers = plan.start().unwrap();
     let mut slow = consumers.pop().unwrap();
     let mut fast = consumers.pop().unwrap();
@@ -87,6 +86,13 @@ fn a_slow_consumer_of_a_shared_capture_is_the_one_that_drops() {
     assert!(fast_m.received > 3 * slow_m.received, "{camera:?}");
     assert!(slow_m.dropped > 50, "{camera:?}");
     assert!(fast_m.dropped <= 2, "{camera:?}");
+    // The same from each stream.
+    assert_eq!(slow.metrics().id, camera.id);
+    let own = slow.consumer_metrics().unwrap();
+    assert!(
+        own.dropped > 50 && own.received <= slow_m.received + 1,
+        "{own:?}"
+    );
 }
 
 #[test]
@@ -96,8 +102,7 @@ fn the_camera_service_reports_its_metrics_to_other_clients() {
         .keep_streaming()
         .serve(&socket)
         .unwrap();
-    let client =
-        FrameClient::request(&socket, &FrameRequirements::formats([FourCc::RG24])).unwrap();
+    let client = FrameClient::request(&socket, &Frames::rgb()).unwrap();
     let mut got = 0;
     while got < 10 {
         if let RecvOutcome::Data(frame) = client.recv(Duration::from_millis(500)) {

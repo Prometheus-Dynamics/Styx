@@ -389,6 +389,11 @@ impl Branch {
         self.group.shared.capture()
     }
 
+    /// This consumer's frames and drops, as the capture's metrics list it.
+    pub(crate) fn consumer_metrics(&self) -> crate::metrics::ConsumerMetrics {
+        self.metrics.snapshot()
+    }
+
     /// Skip inter-coded packets this consumer cannot decode: after joining a running stream, or
     /// after its queue dropped packets, until the keyframe it asks the encoder for.
     fn decodable(&mut self, outcome: RecvOutcome<FrameLease>) -> RecvOutcome<FrameLease> {

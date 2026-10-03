@@ -223,7 +223,7 @@ static STOP: AtomicBool = AtomicBool::new(false);
 type Seen = Vec<(Option<u32>, u64, Option<u64>)>;
 
 /// A consumer thread: its camera, its frames (kept open until the end) and what it saw.
-type Consumer = std::thread::JoinHandle<(String, styx::planner::PlannedFrames, Seen)>;
+type Consumer = std::thread::JoinHandle<(String, Frames, Seen)>;
 
 fn sequence(meta: &FrameMeta) -> Option<u32> {
     match meta.backend.as_ref()? {
@@ -274,7 +274,7 @@ fn open_cameras(o: &Options) -> Vec<Consumer> {
         {
             continue;
         }
-        let reqs = vec![FrameRequirements::formats([FourCc::NV12]); o.consumers];
+        let reqs = vec![Frames::nv12(); o.consumers];
         let consumers = match styx::planner::plan_many(&device, &reqs).map(|p| p.start()) {
             Ok(Ok(consumers)) => consumers,
             Ok(Err(e)) => {
