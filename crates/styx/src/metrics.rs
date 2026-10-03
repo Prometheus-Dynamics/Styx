@@ -1,3 +1,7 @@
+//! Pipeline health reports, and per-camera metrics cheap enough to leave on: see
+//! [`snapshot`], [`CaptureHandle::camera_metrics`](crate::capture_api::CaptureHandle::camera_metrics)
+//! and `docs/metrics.md`.
+
 use std::{
     collections::VecDeque,
     sync::{
@@ -7,15 +11,36 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "metrics/camera.rs"]
+mod camera;
 #[path = "metrics/export.rs"]
 mod export;
+#[path = "metrics/live.rs"]
+mod live;
+#[path = "metrics/openmetrics.rs"]
+mod openmetrics;
+#[path = "metrics/registry.rs"]
+mod registry;
 #[path = "metrics/retry.rs"]
 mod retry;
 #[cfg(any(feature = "libcamera", feature = "v4l2"))]
 #[path = "metrics/sequence_gaps.rs"]
 mod sequence_gaps;
 
+pub(crate) use camera::Attached;
+pub use camera::{
+    AaaState, Buffers, CameraMetrics, ConsumerMetrics, Cpu, Drops, FrameCounts, FrameRate,
+    IspTimes, Latency, Restarts, Window,
+};
 pub use export::{MetricKind, MetricSample, render_prometheus};
+#[cfg(feature = "native")]
+pub(crate) use live::AaaSample;
+pub(crate) use live::ConsumerStats;
+pub use live::{CaptureMetrics, WINDOW, frame_path_cost};
+#[cfg(feature = "metrics-http")]
+pub use openmetrics::{MetricsHttpServer, serve_http};
+pub use registry::{MetricsSnapshot, ProcessMetrics, ServiceMetrics, process, snapshot};
+pub(crate) use registry::{register, service_client};
 pub use retry::{CaptureRetryMetrics, CaptureRetryStats};
 #[cfg(any(feature = "libcamera", feature = "v4l2"))]
 pub(crate) use sequence_gaps::SequenceGapTracker;

@@ -81,6 +81,8 @@ pub struct CaptureHandle {
     pub(crate) shutdown_stats: Arc<Mutex<CaptureShutdownStats>>,
     pub(crate) retry_metrics: CaptureRetryMetrics,
     pub(crate) sequence_gaps: Arc<std::sync::atomic::AtomicU64>,
+    /// Per-camera metrics (see [`CaptureHandle::camera_metrics`]).
+    pub(crate) live: crate::metrics::CaptureMetrics,
 }
 
 /// Worker handle for capture backends.
@@ -163,7 +165,7 @@ impl CaptureHandle {
         let _demand = self.demand();
         match self.rx.recv() {
             RecvOutcome::Data(frame) => {
-                self.metrics.record(start.elapsed());
+                self.took(start, &frame);
                 RecvOutcome::Data(frame)
             }
             other => other,
@@ -177,7 +179,7 @@ impl CaptureHandle {
         let _demand = self.demand();
         match self.rx.recv_async().await {
             RecvOutcome::Data(frame) => {
-                self.metrics.record(start.elapsed());
+                self.took(start, &frame);
                 RecvOutcome::Data(frame)
             }
             other => other,
@@ -201,7 +203,7 @@ impl CaptureHandle {
         let _demand = self.demand();
         match self.rx.recv_blocking() {
             styx_core::queue::RecvWaitOutcome::Data(frame) => {
-                self.metrics.record(start.elapsed());
+                self.took(start, &frame);
                 RecvOutcome::Data(frame)
             }
             styx_core::queue::RecvWaitOutcome::Closed => RecvOutcome::Closed,
@@ -222,7 +224,7 @@ impl CaptureHandle {
         let outcome = self.rx.recv_timeout(timeout);
         match outcome {
             styx_core::queue::RecvWaitOutcome::Data(frame) => {
-                self.metrics.record(start.elapsed());
+                self.took(start, &frame);
                 styx_core::queue::RecvWaitOutcome::Data(frame)
             }
             styx_core::queue::RecvWaitOutcome::Closed => styx_core::queue::RecvWaitOutcome::Closed,

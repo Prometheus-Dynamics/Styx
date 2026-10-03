@@ -142,6 +142,9 @@ blocking task/thread, then use async receive/control APIs for coordination.
 - `graph-pipeline`: Daedalus-backed graph execution, edge policies, and graph telemetry.
 - `simulation-bevy`: Bevy-backed synthetic scene capture and the heaviest optional feature group.
 - `schema`, `serde`: API schema and serialization support.
+- `metrics-serde`, `metrics-http`: serde for metrics snapshots (also with `serde`,
+  `frame-socket` and `native`), and a tiny HTTP endpoint serving them as Prometheus text.
+  Metrics themselves are always on ([docs/metrics.md](docs/metrics.md)).
 - `examples`: convenience bundle for example-oriented features.
 
 ## Development
@@ -179,6 +182,7 @@ Optional Docker-backed facade validation:
 - [docs/comparison.md](docs/comparison.md): Styx compared with libcamera, raw V4L2 and GStreamer: code side by side, architecture, measurements
 - [examples/README.md](examples/README.md): runnable examples, with output from the CM5
 - [docs/native-stack/README.md](docs/native-stack/README.md): the native camera stack (sensors, PiSP, 3A, sensor bridge)
+- [docs/metrics.md](docs/metrics.md): per-camera health and performance metrics: every metric, how it is measured, its cost
 - [docs/README.md](docs/README.md): repository documentation index
 - [docs/ecosystem.md](docs/ecosystem.md): GStreamer and PipeWire bridges
 - [docs/development.md](docs/development.md): repo layout, commands, and validation conventions

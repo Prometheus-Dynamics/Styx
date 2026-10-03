@@ -357,19 +357,23 @@ pub(crate) struct Branch {
     awaiting_keyframe: bool,
     /// Packets this consumer's queue dropped so far.
     seen_evictions: u64,
+    /// This consumer in the capture's metrics.
+    metrics: Arc<crate::metrics::ConsumerStats>,
 }
 
 impl Branch {
     pub(crate) fn next(&mut self, wait: Duration) -> RecvOutcome<FrameLease> {
         let outcome = self.group.next(self.member, &self.rx, wait);
-        self.decodable(self.cropped(outcome))
+        let outcome = self.decodable(self.cropped(outcome));
+        self.metrics.count(outcome)
     }
 
     #[cfg(feature = "async")]
     pub(crate) async fn next_async(&mut self) -> RecvOutcome<FrameLease> {
         loop {
             let outcome = self.group.next_async(self.member, &self.rx).await;
-            match self.decodable(self.cropped(outcome)) {
+            let outcome = self.decodable(self.cropped(outcome));
+            match self.metrics.count(outcome) {
                 RecvOutcome::Empty => {}
                 other => return other,
             }
@@ -383,6 +387,11 @@ impl Branch {
     /// The shared capture.
     pub(crate) fn capture(&self) -> &CaptureHandle {
         self.group.shared.capture()
+    }
+
+    /// This consumer's frames and drops, as the capture's metrics list it.
+    pub(crate) fn consumer_metrics(&self) -> crate::metrics::ConsumerMetrics {
+        self.metrics.snapshot()
     }
 
     /// Skip inter-coded packets this consumer cannot decode: after joining a running stream, or
@@ -528,7 +537,13 @@ impl SharedSession {
             // It joins a running stream: its first packets need a keyframe.
             group.preparer.request_keyframe();
         }
+        let metrics = crate::metrics::ConsumerStats::for_queues(
+            &self.shared.capture().live,
+            format!("consumer {}.{member}", group.index),
+            [rx.clone(), group.raw_rx.clone()],
+        );
         let branch = Branch {
+            metrics,
             roi: group.open.then(|| roi.clone()),
             group,
             member,

@@ -80,7 +80,11 @@ replay-mcap = ["facade", "dep:mcap"]
 replay-styxrec = ["facade"]
 framelease = []
 # `ipc::FrameSocket`: the latest frame, leased, in the frame-lease transport HeliOS uses.
-frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde"]
+frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde", "metrics-serde"]
+# Serde for metrics snapshots (`styx::metrics`), and the camera service's metrics request.
+metrics-serde = ["facade", "dep:serde", "dep:serde_json"]
+# `styx::metrics::serve_http`: a tiny HTTP endpoint serving the metrics as Prometheus text.
+metrics-http = ["facade"]
 facade = [
     "dep:libc",
     "dep:parking_lot",
@@ -136,6 +140,7 @@ hotplug = ["facade", "dep:inotify"]
 examples = ["preview-window", "async"]
 serde = [
     "facade",
+    "metrics-serde",
     "dep:serde",
     "styx-core/serde",
     "styx-capture/serde",

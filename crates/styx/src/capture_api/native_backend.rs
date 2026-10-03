@@ -21,7 +21,8 @@ use styx_native::{
 };
 
 use super::control_plane::ControlPlane;
-use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle, enqueue_capture_frame};
+use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle};
+use super::handle_metrics::deliver;
 use super::request::CaptureError;
 use super::tunables::StyxConfig;
 use crate::metrics::StageMetrics;
@@ -401,7 +402,10 @@ impl ExternalBacking for NativeBacking {
 }
 
 /// Wraps a native frame as a frame lease (no copy).
-pub(crate) fn frame_lease(frame: NativeFrame) -> Option<FrameLease> {
+pub(crate) fn frame_lease(
+    frame: NativeFrame,
+    live: &crate::metrics::CaptureMetrics,
+) -> Option<FrameLease> {
     let res = Resolution::new(frame.width, frame.height)?;
     let format = MediaFormat::new(FourCc::from(frame.fourcc.0), res, ColorSpace::Unknown);
     let len = frame.stride as usize * frame.height as usize;
@@ -429,7 +433,7 @@ pub(crate) fn frame_lease(frame: NativeFrame) -> Option<FrameLease> {
     Some(FrameLease::from_external(
         meta,
         smallvec![layout],
-        Arc::new(NativeBacking { frame, len }),
+        Arc::new(live.track(NativeBacking { frame, len })),
     ))
 }
 
@@ -529,9 +533,12 @@ pub(super) fn start_native(
     let worker_error_for_thread = worker_error.clone();
     let send_timeout = Duration::from_millis(capture.queue_send_timeout_ms);
     let poll = Duration::from_millis(capture.idle_poll_ms.clamp(5, 100));
+    let live = crate::metrics::CaptureMetrics::default();
+    let live_worker = live.clone();
     let worker = thread::Builder::new()
         .name("styx-native-capture".into())
         .spawn(move || {
+            live_worker.register_thread();
             tracing::debug!(backend = "native", "capture worker started");
             loop {
                 if stop_rx.try_recv().is_ok() {
@@ -539,10 +546,10 @@ pub(super) fn start_native(
                 }
                 match stream.next_blocking(poll) {
                     Ok(Some(frame)) => {
-                        let Some(lease) = frame_lease(frame) else {
+                        let Some(lease) = frame_lease(frame, &live_worker) else {
                             continue;
                         };
-                        if enqueue_capture_frame(&tx, lease, "native", send_timeout) {
+                        if deliver(&live_worker, &tx, lease, "native", send_timeout) {
                             break;
                         }
                     }
@@ -588,7 +595,8 @@ pub(super) fn start_native(
         control_error: Arc::new(Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
-        sequence_gaps: Default::default(),
+        sequence_gaps: live.sequence_gaps(),
+        live,
     })
 }
 

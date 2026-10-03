@@ -21,6 +21,7 @@ mod connection;
 #[cfg(feature = "frame-socket")]
 pub mod frame_socket;
 mod mapcache;
+mod metrics;
 mod service;
 mod socket;
 mod wire;
