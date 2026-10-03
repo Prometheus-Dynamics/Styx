@@ -1,15 +1,19 @@
-//! What a frame consumer needs, independent of the camera or codec that will provide it.
+//! Pieces of a frame request that do not depend on a camera: regions of interest, output
+//! formats and pyramid companions.
 //!
-//! A consumer (e.g. a fiducial detector) states the frames it wants: Y8 rows aligned to 64
-//! bytes, a ½ and ¼ pyramid, a region of interest, low latency. Styx's planner (in the `styx`
-//! crate) turns that into a concrete capture + decode + preparation plan for a device, using
-//! hardware only where the enabled features and a runtime probe say it is available.
+//! The request itself, what a consumer wants from a camera (format, size, frame rate, how
+//! frames are delivered), is `styx::planner::FrameRequest` in the `styx` crate, built with
+//! `styx::prelude::Frames`: `Frames::nv12().size(1280, 800).fps(30).open(&camera)`. The planner
+//! turns it into a concrete capture, decode and preparation plan for a device.
 //!
-//! Planning is single-consumer today. Several consumers sharing one camera (e.g. a detector
-//! wanting Y8 and a recorder wanting MJPEG) will be planned as one capture with per-consumer
-//! branches; the types here are per-consumer so that extension does not change them.
+//! [`FrameRequirements`] and [`Priority`] are the previous form of that request, kept for one
+//! release as deprecated shims; `styx` converts them to a `FrameRequest`.
 
 use crate::format::FourCc;
+
+mod legacy;
+#[allow(deprecated)]
+pub use legacy::{FrameRequirements, HardwarePolicy, PlanOverrides, Priority};
 
 /// A rectangle in full-frame pixel coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -72,6 +76,19 @@ pub enum OutputFormat {
     Luma,
     /// Any of these formats, most preferred first.
     Formats(Vec<FourCc>),
+    /// Whatever the camera delivers, unconverted.
+    Any,
+}
+
+impl OutputFormat {
+    /// Whether `code` is this output without conversion.
+    pub fn accepts(&self, code: FourCc) -> bool {
+        match self {
+            OutputFormat::Luma => matches!(code, FourCc::GREY | FourCc::R8),
+            OutputFormat::Formats(formats) => formats.contains(&code),
+            OutputFormat::Any => true,
+        }
+    }
 }
 
 /// Where pyramid levels may come from.
@@ -87,180 +104,13 @@ pub enum PyramidSource {
     Software,
 }
 
-/// Pyramid companions to attach (`levels` = 2 means ½ and ¼).
+/// Pyramid companions to attach (`levels` = 2 means ½ and ¼): smaller copies of each frame
+/// with the same timestamp, for consumers that search at several scales.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PyramidRequest {
     pub levels: u8,
     pub source: PyramidSource,
-}
-
-/// What the planner optimises for when several plans satisfy the requirements.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Priority {
-    /// Shortest time from sensor to consumer: fewer queued frames, multi-core decode.
-    #[default]
-    Latency,
-    /// Most frames per second for the least total CPU time.
-    Throughput,
-    /// Least CPU: prefer hardware blocks even when they add latency.
-    Power,
-}
-
-/// Whether hardware decode/scaling may be used.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum HardwarePolicy {
-    /// Use hardware whose feature is enabled and whose runtime probe succeeds.
-    #[default]
-    Auto,
-    /// Software paths only.
-    Disabled,
-    /// Fail planning unless the decode/scale path runs on hardware.
-    Required,
-}
-
-/// Explicit choices that take precedence over the planner's own.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PlanOverrides {
-    /// Only consider this capture backend (`"libcamera"`, `"v4l2"`, ...).
-    pub backend: Option<String>,
-    /// Use exactly this decoder implementation (e.g. `"turbojpeg-luma"`, `"ffmpeg-hw"`).
-    pub decoder: Option<String>,
-    /// Never use these decoder implementations or hardware backends.
-    pub forbid: Vec<String>,
-    pub hardware: HardwarePolicy,
-    /// Decode threads per frame (`None` = derived from [`Priority`]).
-    pub decode_threads: Option<usize>,
-    /// Frames buffered between capture and consumer (`None` = derived from [`Priority`]).
-    pub queue_depth: Option<usize>,
-}
-
-/// What one consumer needs from a camera. Build with [`FrameRequirements::luma`] or
-/// [`FrameRequirements::formats`] and the builder methods.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct FrameRequirements {
-    pub output: OutputFormat,
-    /// Row stride (and buffer base) alignment in bytes, e.g. 64 for SIMD loads.
-    pub stride_alignment: Option<usize>,
-    pub pyramid: Option<PyramidRequest>,
-    /// Initial region of interest in full-frame coordinates; can be changed while running.
-    pub roi: Option<FrameRect>,
-    pub min_resolution: Option<(u32, u32)>,
-    pub max_resolution: Option<(u32, u32)>,
-    /// The frame size the consumer works at; see [`FrameRequirements::output_resolution`].
-    pub output_resolution: Option<(u32, u32)>,
-    pub min_fps: Option<u32>,
-    pub priority: Priority,
-    /// Fail instead of falling back when a requirement cannot be met exactly.
-    pub strict: bool,
-    pub overrides: PlanOverrides,
-}
-
-impl FrameRequirements {
-    /// 8-bit luma frames.
-    pub fn luma() -> Self {
-        Self::new(OutputFormat::Luma)
-    }
-
-    /// Any of `formats`, most preferred first.
-    pub fn formats(formats: impl IntoIterator<Item = FourCc>) -> Self {
-        Self::new(OutputFormat::Formats(formats.into_iter().collect()))
-    }
-
-    fn new(output: OutputFormat) -> Self {
-        Self {
-            output,
-            stride_alignment: None,
-            pyramid: None,
-            roi: None,
-            min_resolution: None,
-            max_resolution: None,
-            output_resolution: None,
-            min_fps: None,
-            priority: Priority::default(),
-            strict: false,
-            overrides: PlanOverrides::default(),
-        }
-    }
-
-    pub fn stride_alignment(mut self, bytes: usize) -> Self {
-        self.stride_alignment = Some(bytes);
-        self
-    }
-
-    /// Attach `levels` pyramid companions (½, ¼, ...), hardware-produced when possible.
-    pub fn pyramid(mut self, levels: u8) -> Self {
-        self.pyramid = Some(PyramidRequest {
-            levels,
-            source: PyramidSource::PreferHardware,
-        });
-        self
-    }
-
-    pub fn pyramid_source(mut self, source: PyramidSource) -> Self {
-        if let Some(pyramid) = &mut self.pyramid {
-            pyramid.source = source;
-        }
-        self
-    }
-
-    pub fn roi(mut self, roi: FrameRect) -> Self {
-        self.roi = Some(roi);
-        self
-    }
-
-    pub fn min_resolution(mut self, width: u32, height: u32) -> Self {
-        self.min_resolution = Some((width, height));
-        self
-    }
-
-    pub fn max_resolution(mut self, width: u32, height: u32) -> Self {
-        self.max_resolution = Some((width, height));
-        self
-    }
-
-    /// The frame size the consumer works at, e.g. 320x180 for a detector that downsizes
-    /// anyway. The planner prefers the smallest capture mode that covers it, and MJPEG decoded
-    /// with turbojpeg is decoded straight to ½, ¼ or ⅛ size (the smallest that still covers
-    /// it), which costs less CPU and memory than decoding in full. Frames are never upscaled;
-    /// routes that cannot scale deliver the capture size (`FramePlan::output_resolution` in
-    /// `styx` tells which).
-    pub fn output_resolution(mut self, width: u32, height: u32) -> Self {
-        self.output_resolution = Some((width, height));
-        self
-    }
-
-    pub fn min_fps(mut self, fps: u32) -> Self {
-        self.min_fps = Some(fps);
-        self
-    }
-
-    pub fn priority(mut self, priority: Priority) -> Self {
-        self.priority = priority;
-        self
-    }
-
-    pub fn strict(mut self) -> Self {
-        self.strict = true;
-        self
-    }
-
-    pub fn overrides(mut self, overrides: PlanOverrides) -> Self {
-        self.overrides = overrides;
-        self
-    }
-
-    /// Whether `code` satisfies [`FrameRequirements::output`] without conversion.
-    pub fn accepts(&self, code: FourCc) -> bool {
-        match &self.output {
-            OutputFormat::Luma => matches!(code, FourCc::GREY | FourCc::R8),
-            OutputFormat::Formats(formats) => formats.contains(&code),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -283,16 +133,10 @@ mod tests {
     }
 
     #[test]
-    fn builder_sets_luma_pyramid_and_roi() {
-        let req = FrameRequirements::luma()
-            .stride_alignment(64)
-            .pyramid(2)
-            .pyramid_source(PyramidSource::Software)
-            .roi(FrameRect::new(0, 0, 64, 64))
-            .priority(Priority::Throughput);
-        assert!(req.accepts(FourCc::GREY));
-        assert!(!req.accepts(FourCc::NV12));
-        assert_eq!(req.pyramid.unwrap().source, PyramidSource::Software);
-        assert_eq!(req.priority, Priority::Throughput);
+    fn output_formats_accept() {
+        assert!(OutputFormat::Luma.accepts(FourCc::GREY));
+        assert!(!OutputFormat::Luma.accepts(FourCc::NV12));
+        assert!(OutputFormat::Formats(vec![FourCc::NV12]).accepts(FourCc::NV12));
+        assert!(OutputFormat::Any.accepts(FourCc::MJPG));
     }
 }

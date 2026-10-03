@@ -45,7 +45,7 @@ fn c270_recording(name: &str) -> PathBuf {
     path
 }
 
-fn frame(frames: &mut styx::planner::PlannedFrames) -> FrameLease {
+fn frame(frames: &mut styx::planner::Frames) -> FrameLease {
     for _ in 0..50 {
         if let RecvOutcome::Data(frame) = frames.next_frame(Duration::from_millis(200)) {
             return frame;
@@ -66,8 +66,8 @@ fn consumers_of_one_camera_get_their_own_frames_from_one_capture() {
     let plan = plan_many(
         source.device(),
         &[
-            FrameRequirements::luma().output_resolution(320, 180),
-            FrameRequirements::formats([FourCc::RG24]),
+            Frames::gray().size(320, 180),
+            Frames::formats([FourCc::RG24]),
         ],
     )
     .unwrap();
@@ -113,12 +113,12 @@ fn consumers_with_the_same_needs_share_one_decode() {
             .loop_forever(true),
     )
     .unwrap();
-    let detector = FrameRequirements::luma().output_resolution(320, 180);
+    let detector = Frames::gray().size(320, 180);
     // The same needs, but only the top-left quarter of the frame.
     let region = detector.clone().roi(FrameRect::new(0, 0, 640, 360));
     let plan = plan_many(
         source.device(),
-        &[detector, FrameRequirements::formats([FourCc::RG24]), region],
+        &[detector, Frames::formats([FourCc::RG24]), region],
     )
     .unwrap();
     assert!(

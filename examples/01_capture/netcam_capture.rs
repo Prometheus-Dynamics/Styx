@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .resolution(width, height)
             .fps(fps),
     );
+    #[cfg_attr(not(feature = "preview-window"), allow(unused_variables))]
     let device = source.device();
     let decoder = Arc::new(MjpegDecoder::new(FourCc::RG24));
     let mut pipeline = MediaPipelineBuilder::new(source.capture_request())

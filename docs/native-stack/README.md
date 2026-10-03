@@ -26,7 +26,7 @@ camera service, IPC, codecs) sits on top unchanged.
 
 ```
 Apps and services     HeliOS, detectors, recorders, PipeWire / GStreamer bridges
-Styx API              FrameRequirements, async frame streams, typed controls   (exists, extended)
+Styx API              Frames requests, async frame streams, typed controls     (exists, extended)
 Planner and service   shared captures, many processes                          (exists)
 Session runtime       buffers, fences, per-frame control timing
 Algorithms            AE / AWB / lens shading / colour in Rust, data tuning
