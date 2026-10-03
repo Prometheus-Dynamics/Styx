@@ -161,7 +161,7 @@ different frame):
 
 (Earlier, the same with 8 buffers: 30.03 fps; three holding 1 s each with 4 buffers left
 3.6 fps.) No held frame changed in any run. A shared capture of NV12 1280x800 and RGB
-640x400 for two `Priority::Power` consumers (queues of 3; the planner reserves 14 extra
+640x400 for two consumers queueing 3 frames each (then `Priority::Power`, now `every_frame(3)`; the planner reserves 14 extra
 buffers, 10 sets fit in half the free CMA): with one consumer sleeping 200 ms per frame the
 other got 30.04 fps (no gap) and the slow one 4.99 fps; before, 17 sets were asked for and
 the CMA allocation failed (and without the planner's buffers both were paced to 20 fps).
@@ -310,8 +310,9 @@ noise as libcamera's, about 1.5 ms more back end time per 1280x800 frame: latenc
 scales the SDN noise model and the CDN threshold (0 turns both off). Both are per Styx
 instance (camera service): every capture of a native PiSP camera opened through it uses
 them. They are not per capture: a shared capture serves several consumers from one back end
-pass, so per-consumer denoise would need a merge rule, and the planner's `PlanOverrides`
-(and the IPC wire format) do not carry ISP settings. In `styx-pipeline`:
+pass, so per-consumer denoise would need a merge rule, and a `FrameRequest`
+(and the IPC wire format) does not carry ISP settings; an in-process plan takes them with
+`FramePlan::config`. In `styx-pipeline`:
 `PispOptions::temporal_denoise` / `spatial_denoise`, `Controller::set_spatial_denoise`,
 `IspSettings::with_spatial_denoise`; `native-pipeline pisp --no-tdn` / `--spatial-denoise K`.
 
@@ -489,11 +490,10 @@ power, as single plans do.
 
 Frame rates: a mode that runs at any rate in a range (a sensor Styx drives) runs at
 `planner::DEFAULT_FPS` (30 fps, or the nearest rate the mode allows) when no consumer asks for
-one (`min_fps`), whatever the priority, in single and shared plans and for a capture request
-without an interval; the fastest rate (260 fps at 640x400 on the OV9782, its exposure limited
-to 3.8 ms) only when asked for. With `min_fps`: `Priority::Power` runs at exactly that rate,
-other priorities at the mode's fastest (unchanged). Modes with a list of rates (UVC) keep the
-list's fastest.
+one, in single and shared plans and for a capture request without an interval; the fastest
+rate (260 fps at 640x400 on the OV9782, its exposure limited to 3.8 ms) only when asked for
+(`fps_at_least`). `fps(x)` runs at exactly `x`. Modes with a list of rates (UVC) run at the
+listed rate closest to 30 by default (see [frame-planning.md](../frame-planning.md)).
 
 Every output is handed out as a dma-buf, in process and to other
 processes through the camera service (planes exported with their offsets). Raw native modes are not routed through a Bayer decoder when an ISP route exists
@@ -668,8 +668,8 @@ which the CPU reads uncached: reading the raw frame is a third of the software p
   (default tuning, host replay of the recorded frames) ends at R/G 0.997, B/G 1.006.
 * Through the Styx API (`examples/04_performance/native_processed.rs`): `plan_best` for NV12, luma and RG24
   on the native OV9782 picks the native NV12 / RG24 modes with the PiSP (the raw modes are
-  rejected: "raw pBAA would need a decoder without 3A"); capture runs at 120.625 fps (the plan
-  took the fastest rate for latency; without `min_fps` it is now 30 fps), start → first frame 78-80 ms, exposure settled in 12
+  rejected: "raw pBAA would need a decoder without 3A"); capture runs at 120.625 fps (the example asks
+  `fps_at_least(30)`, the mode's fastest; with no rate it is 30 fps), start → first frame 78-80 ms, exposure settled in 12
   frames, 14.7-15.9% of a core, saved frames `native-processed-{nv12,luma,rgb}`.
 * libcamera on the same device and scene (the compare harness, `tools/compare` on
   `native/compare`, Styx's libcamera backend, NV12, median of 3): open → first frame 103 ms,

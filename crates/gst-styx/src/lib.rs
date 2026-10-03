@@ -1,12 +1,12 @@
 //! GStreamer plugin for Styx cameras.
 //!
-//! - `styxsrc`: a live source. Caps negotiation becomes Styx [`FrameRequirements`]
+//! - `styxsrc`: a live source. Caps negotiation becomes a Styx [`FrameRequest`]
 //!   (format, size, rate) and the Styx planner picks the capture mode and route (direct, decode,
 //!   convert, encode). Camera buffers are passed on without copying, as `GstDmaBufMemory` when
 //!   `video/x-raw(memory:DMABuf)` is negotiated (or `export-dmabuf` is set).
 //! - `styxdeviceprovider`: lists Styx cameras in `GstDeviceMonitor` (`gst-device-monitor-1.0`).
 //!
-//! [`FrameRequirements`]: styx::prelude::FrameRequirements
+//! [`FrameRequest`]: styx::prelude::FrameRequest
 
 use gst::glib;
 

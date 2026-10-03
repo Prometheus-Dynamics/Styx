@@ -53,6 +53,34 @@ box (OV9782 1280x800) unless stated.
       a code; RGB24 frame 1.59 → 1.11 ms on Zen 3) and an exact AVX2 table.
 - [x] Built-in OV9782 description and tuning; Styx tuning search path (`STYX_TUNING_PATH`, …).
 
+### Autofocus (simulation only so far)
+- [x] AF in Rust (`styx-algo`, from Raspberry Pi's `af.cpp`): PDAF loop, coarse + fine contrast
+      scans with parabola fits, continuous mode with scene-change retriggering, windows with
+      weights, manual / auto / continuous, `rpi.af` tuning import; Styx changes: frame-exact
+      scan steps on lens reports, contrast relative to level, noise-aware peak tests, failed
+      scans back to hyperfocal, backlash-aware approach. Simulated (`tests/sim_af.rs`): one-shot
+      9 frames (48 with libcamera's frame counting), within 0.02 D; continuous refocus after a
+      depth step in 20 frames with no hunting; PDAF 2 frames against 10; low light and blank
+      walls fail cleanly (algorithms.md, "AF: autofocus").
+- [x] Lenses as data (`styx-sensor::lens`): kernel lens drivers found by the sensor's ancillary
+      link (`FOCUS_ABSOLUTE`), VCMs on I²C (DW9714, DW9807/DW9817, AK7375, custom formats),
+      move-time model, frame-exact `LensSchedule`, `FrameControls::lens`; IMX708 PDAF decoding
+      from embedded data; software ISP focus statistics; PiSP CDAF noise from the noise profile;
+      Styx controls `AF_MODE`, `AF_TRIGGER`, `AF_STATE`, `LENS_POSITION`, `AF_WINDOWS`,
+      `AF_METERING`, `AF_RANGE`, `AF_SPEED`.
+- [ ] Hardware validation on a Camera Module 3 (IMX708 + DW9817): the lens entity and its
+      ancillary link appear as expected under `dw9807-vcm`; moves land on the frame
+      `FrameControls::lens` reports settled (settle time 12 ms and `delay = 2` are guesses);
+      the dioptre map (Raspberry Pi's 0 D → 445, 15 D → 925); the PDAF line's offset in the
+      metadata buffer (two mode lines in, as libcamera) and the sign of `pdaf_gain`; CDAF
+      figures of merit on the PiSP behave like the simulation's (peak width, noise); one-shot
+      and continuous AF times against libcamera's (`rpicam-hello --autofocus-mode`).
+- [ ] AF on a bridged sensor with an I²C VCM (no module here yet); the DW9807 busy flag is
+      not polled.
+- [ ] AF pause (libcamera's `AfPause`); PDAF from sensors other than the IMX708; the GPU ISP's
+      focus statistics; CDAF windows on the PiSP follow the AF windows (today the 8×8 grid
+      covers the frame and the windows weight its zones).
+
 ### Ecosystem (phase 5)
 - [x] GStreamer `styxsrc` + device provider (`crates/gst-styx`).
 - [x] PipeWire camera node daemon (`crates/pipewire-styx`).

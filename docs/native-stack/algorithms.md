@@ -9,7 +9,7 @@ dependency on other Styx crates; the session runtime converts between it and `st
 
 | Source | License | Use |
 |---|---|---|
-| Raspberry Pi IPA, libcamera `src/ipa/rpi/controller/**` (`agc_channel.cpp`, `awb.cpp`, `awb_bayes.cpp`, `alsc.cpp`, `ccm.cpp`, `contrast.cpp`, `black_level.cpp`, `lux.cpp`, `histogram.cpp`) | BSD-2-Clause (SPDX header in every file), Copyright Raspberry Pi Ltd | Ported, with a provenance comment on each module |
+| Raspberry Pi IPA, libcamera `src/ipa/rpi/controller/**` (`agc_channel.cpp`, `awb.cpp`, `awb_bayes.cpp`, `alsc.cpp`, `ccm.cpp`, `contrast.cpp`, `black_level.cpp`, `lux.cpp`, `histogram.cpp`, `af.cpp`), `src/ipa/rpi/cam_helper/cam_helper_imx708.cpp` (PDAF decoding, in `styx-sensor`) | BSD-2-Clause (SPDX header in every file), Copyright Raspberry Pi Ltd | Ported, with a provenance comment on each module |
 | libcamera `src/ipa/libipa/pwl.cpp` | BSD-2-Clause, Raspberry Pi Ltd / Ideas on Board | Semantics of `Pwl` (written anew) |
 | Raspberry Pi tuning files `src/ipa/rpi/{pisp,vc4}/data/*.json` | BSD-2-Clause (libcamera `REUSE.toml`) | Format read by the loader; imx219 CT curve, priors and CCMs used as simulator and test data (marked in the files) |
 | libcamera core and most of `libipa` | LGPL-2.1-or-later | Not used |
@@ -20,7 +20,7 @@ dependency on other Styx crates; the session runtime converts between it and `st
 ```text
 Statistics ─┐
 FrameMetadata (exposure, gain, frame duration, lux?, Controls) ─┤
-            └─► Pipeline: black_level → lux → awb → agc → alsc → ccm → contrast → denoise ─► Params
+            └─► Pipeline: black_level → lux → awb → agc → alsc → ccm → contrast → denoise → af ─► Params
 ```
 
 * `Statistics` (`stats.rs`): colour zones (sums of R, G, B normalised to full scale 1.0, black
@@ -84,6 +84,7 @@ record the warm start in their header.
 | `Agc` → ISP | `pisp.cpp` (`setHistogramWeights`) | AGC also writes `Params::histogram_weights`, the metering mode's weights on the tuning's grid (15×15), for ISPs that weight their luma histogram by zone: the PiSP front end, programmed as the Raspberry Pi IPA does |
 | `Ccm` | `ccm.cpp` | Interpolated by temperature, saturation control and saturation-by-lux |
 | `Contrast` | `contrast.cpp` | Gamma curve, adaptive histogram stretch, manual brightness/contrast |
+| `Af` | `af.cpp` | PDAF loop and CDAF scans driving a focus lens in dioptres; always in the pipeline, inert without a lens (`CameraConfig::lens`). Styx changes below |
 
 ### ALSC: adaptive refinement
 
@@ -251,6 +252,96 @@ frames 33 / 46 / 77 / 63 at 30 / 60 / 120 / 90 fps (60 Hz at 90 fps); none for s
 or for 120 Hz light at 120 fps. Long runs (20-30 s, noise, mains 0.03 Hz off) with avoidance
 never move exposure × gain after start-up. The device: pipeline.md, "Flicker".
 
+### AF: autofocus
+
+`Af` (`algos/af/`) drives a focus lens (a voice-coil motor) for cameras that have one
+(`CameraConfig::lens`: the driver position range, the frames from a write to the frame it is
+for, and the lens's own dioptre map). It works in dioptres (1 / distance in metres; 0 is
+infinity) and turns them into driver positions with the tuning's `map` (else the lens's,
+else a straight line from the normal range's far end at the lowest position to its near end
+at the highest: a guess for an uncalibrated VCM).
+
+Inputs: `Statistics::focus` (a figure of merit per zone, larger when sharper: the PiSP's 8×8
+CDAF grid, or the software ISP's 16×12 green-gradient energy with a noise floor,
+`StatsConfig::focus`), `Statistics::pdaf` (phase and confidence per cell, the IMX708's 16×12
+from its embedded data), the colour zones (scene changes, the infrared test),
+`FrameMetadata::lens` (where the lens was for the frame, `LensState`) and the controls.
+Outputs: `Params::lens` (a `LensRequest`: driver position and the frame it is for) and
+`Params::af` (`AfStatus`: mode, state, the lens position in dioptres, contrast, phase).
+
+Controls (`Controls`, recorded per frame so replays reproduce them): `af_mode` (`Manual`:
+`lens_position` in dioptres, the tuning's default position until one is given; `Auto`: one
+scan per trigger; `Continuous`), `af_trigger` / `af_cancel` (counters: a change starts or
+cancels a scan in auto mode), `af_range` (normal, macro, full), `af_speed` (normal, fast),
+`af_windows` (up to 10 rectangles as fractions of the output, with weights; empty: the middle
+half of the width and third of the height). States: idle, scanning, focused, failed.
+
+The method is Raspberry Pi's: with phase data of enough confidence a feedback loop moves the
+lens by `phase × pdaf_gain` per frame (slew limited by `max_slew`), for `pdaf_frames` frames
+when triggered (ending early once the phase is small), all the time in continuous mode (small
+moves squashed, cubically, below `pdaf_squelch`). Without phase data (or when it drops out for
+`dropout_frames`), a contrast scan: coarse steps of `step_coarse` dioptres (from the near or far
+end when triggered; in continuous mode in both directions from where the lens is) until the
+contrast falls below `contrast_ratio` of its peak, a parabola through the peak and its
+neighbours, a fine scan in `step_fine` steps back over it, a second parabola; two PDAF samples
+during a scan can end it early by interpolating the zero-phase position. Continuous mode
+without PDAF scans again after a scene change (contrast or the windows' colour moving by more
+than `retrigger_ratio`) once the scene has been still for `retrigger_delay` frames.
+
+Styx changes:
+
+* **Frame-exact lens moves and reported positions.** A move is a `LensRequest` for a frame;
+  the lens control writes it at the start of `frame − delay` (or at once when that has
+  passed), as the control schedule does for exposure, and every frame reports where the lens
+  was during its exposure, predicted from the moves and the lens's settle time (VCMs report
+  no position). A scan step is measured on the first frame exposed with the lens settled
+  there; libcamera waits `step_frames` (4-5) frames per step, which Styx still does when
+  frames carry no lens report (`frame_exact = false` in the tuning, or the lens control did
+  not report).
+* **Contrast relative to level.** The windows' figure of merit over their squared green level:
+  gradient energy then does not move with exposure and gain (AE settling during a scan,
+  flicker), and the same code works on the PiSP's and the software ISP's units.
+* **Noise-aware peak tests.** AF follows the contrast's frame-to-frame change while the lens
+  stands still. A coarse scan stops at a drop only when the drop is more than three times that
+  noise (far from focus the curve is flat and noisy and libcamera's scan stops there by
+  chance), and a scan is reported focused only when the noise is below half of
+  `1 − contrast_ratio` of the peak (in noise a flat curve passes libcamera's test by chance).
+* **Failing gracefully.** A failed scan moves the lens to the range's default (hyperfocal)
+  position, not the best point of a flat curve; until a scan succeeds again, continuous AF
+  retriggers on colour or brightness changes only (contrast that is mostly noise would
+  retrigger it forever).
+* **Backlash.** The fine scan's samples are taken moving one way, so a lens with backlash
+  sits on that side of each; the lens reaches the peak moving the same way (one fine step past
+  it first when the peak lies behind the last sample).
+* **Range ends.** A peak at the near or far end still gets three fine samples (libcamera's
+  fine scan then runs off the end with two and no parabola).
+* Contrast is the frame's own (libcamera's PDAF step runs before the frame's statistics are
+  in and uses the previous frame's contrast). Switching to manual applies `lens_position` at
+  once. Pausing continuous AF (libcamera's `AfPause`) is not implemented.
+
+**Simulated** (`tests/sim_af.rs`, `sim::FocusSim`, run with `--nocapture`): Raspberry Pi's
+IMX708 `rpi.af` tuning; the lens is the IMX708 module's map (0 D → 445, 15 D → 925) on a
+10-bit VCM settling in 12 ms, with 4 codes of backlash and 0.5 codes of position noise; a
+subject filling the middle of the image against a background at infinity, the figure of merit
+halving 0.6 D from focus, 2% frame-to-frame error plus what the noise floor leaves of the
+sensor noise (taken as before the gain), 30 fps with requests written in the frame the
+statistics came from (the PiSP path).
+
+| Case | Result |
+|---|---|
+| one-shot, subject at 2.5 D (40 cm) | focused 9 frames after the trigger, lens 2.513 D |
+| one-shot, subject at 0.4 D (2.5 m) / 7 D (14 cm) | 8 / 14 frames, lens 0.388 / 6.982 D |
+| one-shot, 2.5 D, frames without lens reports (libcamera's `step_frames` wait) | 48 frames, lens 2.482 D |
+| continuous, subject at 1 D, then 4 D at frame 200 | focused at frame 12 (lens 0.98 D); refocused 20 frames after the change (4.007 D); no lens move while the scene is still, before or after |
+| one-shot from 1 D to a subject at 3 D: CDAF / PDAF | lens within 0.1 D for good after 10 / 2 frames |
+| continuous PDAF, subject moving 1 → 5 D over 2 s | 0.17 D behind at most during the move, 0.04 D after |
+| 0.05 lux (AE at its limits, the curve is noise) | one-shot: failed, lens back at the default (0.92 D: backlash); continuous: one scan in 400 frames, failed |
+| no texture (a blank wall) at 300 lux | failed, lens at the default (1.04 D); continuous: one scan in 400 frames |
+| manual, 1 → 5 D | there within a few frames (1.5 D per frame, `max_slew`), state idle |
+
+Hardware is the open question: the lens map, the settle time and the PDAF sign and gain are
+Raspberry Pi's figures for the Camera Module 3 and have not been checked with Styx (TODO.md).
+
 ## Tuning
 
 Our format is TOML matching `Tuning` (`tuning/mod.rs`): sections `[black_level]`, `[lux]`,
@@ -282,7 +373,8 @@ key order (the first mode listed is the default), as libcamera's YAML-based read
 | `rpi.noise` | `denoise.noise.reference_constant/slope` |
 | `rpi.denoise` (its `normal` mode, or the flat form) `.sdn/.cdn/.tdn`, `rpi.sdn` (VC4) | `denoise.sdn/cdn/tdn` (same keys; CDN `deviation` is the no-TDN one; without `tdn` SDN/CDN keep their no-TDN values) |
 | `rpi.geq`, `rpi.dpc.strength`, `rpi.sharpen` | `denoise.geq`, `denoise.dpc`, `denoise.sharpen` |
-| `rpi.hdr`, `rpi.af`, `rpi.cac`, `rpi.sync`, `rpi.nn.awb`, … | ignored (not implemented yet) |
+| `rpi.af.ranges.{normal,macro,full}.{min,max,default}`, `speeds.{normal,fast}.*` (`step_coarse`, `step_fine`, `contrast_ratio`, `retrigger_ratio`, `retrigger_delay`, `pdaf_gain`, `pdaf_squelch`, `max_slew`, `pdaf_frames`, `dropout_frames`, `step_frames`), `conf_epsilon`, `conf_thresh`, `conf_clip`, `skip_frames`, `check_for_ir`, `map` | `af` with the same names (`macro` from `normal`, `full` from their union, `fast` from `normal`, as libcamera); `frame_exact` is Styx's own (true) |
+| `rpi.hdr`, `rpi.cac`, `rpi.sync`, `rpi.nn.awb`, … | ignored (not implemented yet) |
 
 All 67 pisp and vc4 tuning files in libcamera and both HeliOS OV9782 files convert and run.
 
@@ -304,6 +396,11 @@ All 67 pisp and vc4 tuning files in libcamera and both HeliOS OV9782 files conve
    dynamics, and check replays stay bit-identical.
 
 ## Simulator and replay
+
+`sim::FocusSim` (optional, `Simulation::focus`) adds a scene with depth and a focus lens
+(see "AF: autofocus" above): focus statistics and phase data follow the lens's real position,
+AF's `LensRequest`s move it with the settle time, backlash and noise of the model, and frames
+carry the lens control's predicted report.
 
 `sim::Simulation` models a scene (lux and colour temperature over frames, mains flicker with
 any number of components and a start phase (`Simulation::set_time`), reflectances), a sensor (CT response, responsivity, shot and read noise, texture, line-quantised

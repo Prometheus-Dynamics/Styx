@@ -489,6 +489,9 @@ Notes:
 
 ### 5.2 Consumer-declared requirements
 
+(The proposal as written; what was built is `styx::planner::FrameRequest`, built with
+`Frames::...`: see [frame-planning.md](frame-planning.md).)
+
 ```rust
 // crates/core (so Eidos can depend on the `framelease` feature only)
 

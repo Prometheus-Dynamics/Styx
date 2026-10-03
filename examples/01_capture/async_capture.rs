@@ -1,6 +1,6 @@
 //! Async capture, with Tokio and without any runtime.
 //!
-//! Frames are awaited (`PlannedFrames::next_frame_async`, `CaptureHandle::recv_async`); a
+//! Frames are awaited (`Frames::next_frame_async`, `CaptureHandle::recv_async`); a
 //! frame wakes the task that waits for it, nothing polls. The futures need no particular
 //! runtime: the same `consume` function runs under Tokio next to a timer, and on a ten-line
 //! `block_on` made of `std` alone (`--no-runtime`).
@@ -19,22 +19,20 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
 use std::time::{Duration, Instant};
 
-use styx::planner::PlannedFrames;
 use styx::prelude::*;
 
 /// What this example asks for: NV12 at 640x400 or the closest size above, 30 fps.
-fn start() -> Result<PlannedFrames, Box<dyn std::error::Error + Send + Sync>> {
-    let wants = FrameRequirements::formats([FourCc::NV12])
-        .output_resolution(640, 400)
-        .min_fps(30)
-        .priority(Priority::Power);
-    let plan = styx::planner::plan_best(&styx::probe_all(), &wants)?;
-    print!("{plan}");
-    Ok(plan.start()?)
+fn start() -> Result<Frames, Box<dyn std::error::Error + Send + Sync>> {
+    let frames = Frames::nv12()
+        .size(640, 400)
+        .fps(30)
+        .open_best(&styx::probe_all())?;
+    print!("{}", frames.plan());
+    Ok(frames)
 }
 
 /// Awaits `count` frames and reports how long each wait took. Runtime-agnostic.
-async fn consume(frames: &mut PlannedFrames, count: usize) -> usize {
+async fn consume(frames: &mut Frames, count: usize) -> usize {
     let mut got = 0;
     let mut waited = Duration::ZERO;
     while got < count {

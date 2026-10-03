@@ -1,4 +1,4 @@
-//! Candidate generation: every (backend, mode, route) that can satisfy the requirements.
+//! Candidate generation: every (backend, mode, route) that can deliver the frames asked for.
 
 use std::sync::Arc;
 
@@ -7,7 +7,8 @@ use styx_core::prelude::*;
 
 use super::cost::{self, StepCost, megapixels};
 use super::native::{self, native_isp, raw_bayer};
-use super::{PlanRejection, PlanStep, StepExecution, StepKind};
+use super::request::{FrameRequest, Hardware};
+use super::{PlanRejection, PlanStep, StepExecution, StepKind, rate};
 #[cfg(feature = "libcamera")]
 use crate::BackendHandle;
 use crate::BackendKind;
@@ -137,12 +138,12 @@ const NATIVE_ISP_FORMATS: [FourCc; 2] = [FourCc::NV12, FourCc::RG24];
 pub(crate) fn isp_format_candidate<'a>(
     backend: &'a ProbedBackend,
     mode: &Mode,
-    req: &FrameRequirements,
+    req: &FrameRequest,
     registry: &CodecRegistryHandle,
 ) -> Option<Candidate<'a>> {
     if !native_isp_outputs(backend, mode)
         || req.accepts(mode.format.code)
-        || matches!(req.output, OutputFormat::Luma)
+        || matches!(req.format, OutputFormat::Luma)
     {
         return None;
     }
@@ -185,21 +186,19 @@ pub(crate) fn describe(backend: &ProbedBackend, mode: &Mode) -> String {
 
 pub(crate) fn candidates<'a>(
     device: &'a ProbedDevice,
-    req: &FrameRequirements,
+    req: &FrameRequest,
     registry: &CodecRegistryHandle,
     rejected: &mut Vec<PlanRejection>,
 ) -> Vec<Candidate<'a>> {
     let mut out = Vec::new();
     for backend in &device.backends {
-        if let Some(wanted) = &req.overrides.backend
-            && !wanted.eq_ignore_ascii_case(backend_name(backend.kind))
-        {
+        if req.backend.is_some_and(|wanted| wanted != backend.kind) {
             continue;
         }
         // The userspace UVC backend only when asked for, or when nothing else has the camera
         // (`uvcvideo` stays the default).
         if backend.kind == BackendKind::Uvc
-            && req.overrides.backend.is_none()
+            && req.backend.is_none()
             && device.backends.iter().any(|b| b.kind != BackendKind::Uvc)
         {
             continue;
@@ -221,7 +220,7 @@ pub(crate) fn candidates<'a>(
 pub(crate) fn candidate<'a>(
     backend: &'a ProbedBackend,
     mode: &Mode,
-    req: &FrameRequirements,
+    req: &FrameRequest,
     registry: &CodecRegistryHandle,
 ) -> Result<Candidate<'a>, String> {
     let code = mode.format.code;
@@ -229,22 +228,17 @@ pub(crate) fn candidate<'a>(
         mode.format.resolution.width.get(),
         mode.format.resolution.height.get(),
     );
-    if let Some((min_w, min_h)) = req.min_resolution
+    if let Some((min_w, min_h)) = req.min_size
         && (width < min_w || height < min_h)
     {
         return Err(format!("below minimum resolution {min_w}x{min_h}"));
     }
-    if let Some((max_w, max_h)) = req.max_resolution
+    if let Some((max_w, max_h)) = req.max_size
         && (width > max_w || height > max_h)
     {
         return Err(format!("above maximum resolution {max_w}x{max_h}"));
     }
     let fps = mode_fps(mode);
-    if let (Some(min), Some(fps)) = (req.min_fps, fps)
-        && fps + 0.5 < min as f32
-    {
-        return Err(format!("{fps:.0} fps is below {min} fps"));
-    }
 
     let mp = megapixels(width, height);
     // A native camera with an ISP processes raw frames itself, with the 3A loop: a raw mode
@@ -262,7 +256,7 @@ pub(crate) fn candidate<'a>(
     let mut steps = vec![capture_step(backend, mode, fps)];
     let notes = Vec::new();
 
-    let wants_luma = matches!(req.output, OutputFormat::Luma);
+    let wants_luma = matches!(req.format, OutputFormat::Luma);
     let route = if req.accepts(code) {
         Route::Direct
     } else if wants_luma && code.layout_info().planes.subsampling.is_some() {
@@ -274,9 +268,7 @@ pub(crate) fn candidate<'a>(
         });
         Route::LumaView
     } else {
-        let scales_down = req
-            .output_resolution
-            .is_some_and(|(w, h)| w < width || h < height);
+        let scales_down = req.size.is_some_and(|(w, h)| w < width || h < height);
         let picked = pick_decoder(code, req, registry, scales_down);
         let (decoder, target) = match picked {
             Ok(picked) => picked,
@@ -294,7 +286,7 @@ pub(crate) fn candidate<'a>(
         };
         let descriptor = decoder.descriptor();
         let hardware = descriptor.is_hardware_accelerated();
-        let threads = cost::decode_threads(req.priority, req.overrides.decode_threads);
+        let threads = req.threads();
         steps.push(PlanStep {
             kind: StepKind::Decode,
             execution: if hardware {
@@ -323,7 +315,7 @@ pub(crate) fn candidate<'a>(
 fn finish<'a>(
     backend: &'a ProbedBackend,
     mode: &Mode,
-    req: &FrameRequirements,
+    req: &FrameRequest,
     fps: Option<f32>,
     route: Route,
     mut steps: Vec<PlanStep>,
@@ -336,7 +328,7 @@ fn finish<'a>(
     let mp = megapixels(width, height);
     let isp = backend.kind == BackendKind::Libcamera
         || (!raw_bayer(mode.format.code) && native_isp(backend) == Some("pisp"));
-    if matches!(req.overrides.hardware, HardwarePolicy::Required)
+    if matches!(req.hardware, Hardware::Required)
         && !isp
         && !matches!(
             route,
@@ -367,7 +359,7 @@ fn finish<'a>(
             cost: StepCost::ZERO,
         });
     } else if decode_scale == 1
-        && let Some((tw, th)) = req.output_resolution
+        && let Some((tw, th)) = req.size
         && (tw < width || th < height)
     {
         notes.push(format!(
@@ -400,7 +392,7 @@ fn finish<'a>(
             cost: StepCost::ZERO,
         });
     }
-    if let Some(align) = req.stride_alignment.filter(|_| !encoded) {
+    if let Some(align) = req.row_alignment.filter(|_| !encoded) {
         match &route {
             Route::Decode { decoder, .. } if decoder.descriptor().impl_name == "turbojpeg-luma" => {
             }
@@ -414,6 +406,8 @@ fn finish<'a>(
         }
     }
 
+    // Last, so a mode is rejected for its rate only when it could deliver the frames otherwise.
+    rate::check(mode, req.fps)?;
     let total = steps
         .iter()
         .fold(StepCost::ZERO, |sum, step| sum + step.cost);
@@ -432,17 +426,17 @@ fn finish<'a>(
     })
 }
 
-/// Size the ISP should deliver for `req.output_resolution`: the smallest even size with the
+/// Size the ISP should deliver for `req.size`: the smallest even size with the
 /// mode's aspect ratio (so its field of view) that covers it. Only for cameras behind a
 /// scaling ISP, on routes that pass frames through without decoding.
 fn isp_output(
     backend: &ProbedBackend,
     route: &Route,
-    req: &FrameRequirements,
+    req: &FrameRequest,
     code: FourCc,
     mode: (u32, u32),
 ) -> Option<(u32, u32)> {
-    let (tw, th) = req.output_resolution?;
+    let (tw, th) = req.size?;
     // Routes that pass frames through, or decode uncompressed ones (any size the ISP makes).
     let scalable = match route {
         Route::Direct | Route::LumaView => true,
@@ -456,7 +450,7 @@ fn isp_output(
             && !raw_bayer(code));
     if !scaling_isp
         || !scalable
-        || matches!(req.overrides.hardware, HardwarePolicy::Disabled)
+        || matches!(req.hardware, Hardware::Off)
         || (tw >= mode.0 && th >= mode.1)
     {
         return None;
@@ -470,10 +464,10 @@ fn isp_output(
     (w < mode.0 || h < mode.1).then_some((w.min(mode.0), h.min(mode.1)))
 }
 
-/// 1/N size the decoder produces for `req.output_resolution`: turbojpeg scales MJPEG in the DCT
+/// 1/N size the decoder produces for `req.size`: turbojpeg scales MJPEG in the DCT
 /// domain by 2, 4 or 8. 1 when nothing is to be gained or the decoder cannot scale.
-fn decode_scale(route: &Route, req: &FrameRequirements, source: (u32, u32)) -> u8 {
-    let (Some(target), Route::Decode { decoder, .. }) = (req.output_resolution, route) else {
+fn decode_scale(route: &Route, req: &FrameRequest, source: (u32, u32)) -> u8 {
+    let (Some(target), Route::Decode { decoder, .. }) = (req.size, route) else {
         return 1;
     };
     if !matches!(
@@ -529,13 +523,15 @@ fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanS
 /// decoders that can scale while decoding are preferred.
 fn pick_decoder(
     code: FourCc,
-    req: &FrameRequirements,
+    req: &FrameRequest,
     registry: &CodecRegistryHandle,
     scales_down: bool,
 ) -> Result<(Arc<dyn Codec>, FourCc), String> {
-    let targets: Vec<FourCc> = match &req.output {
+    let targets: Vec<FourCc> = match &req.format {
         OutputFormat::Luma => vec![FourCc::GREY],
         OutputFormat::Formats(formats) => formats.clone(),
+        // Any format is the camera's own: no decoder.
+        OutputFormat::Any => Vec::new(),
     };
     let accept = |d: &CodecDescriptor| codec_allowed(d, req) && d.kind == CodecKind::Decoder;
     let scaling =
@@ -561,27 +557,22 @@ fn pick_decoder(
 
 /// Whether the overrides allow codec `d` (forbid list, hardware policy and, for decoders, a
 /// named decoder).
-fn codec_allowed(d: &CodecDescriptor, req: &FrameRequirements) -> bool {
+fn codec_allowed(d: &CodecDescriptor, req: &FrameRequest) -> bool {
     let name = d.impl_name;
-    if req
-        .overrides
-        .forbid
-        .iter()
-        .any(|f| f.eq_ignore_ascii_case(name))
-    {
+    if req.forbid.iter().any(|f| f.eq_ignore_ascii_case(name)) {
         return false;
     }
     if d.kind == CodecKind::Decoder
-        && let Some(only) = &req.overrides.decoder
+        && let Some(only) = &req.decoder
         && !only.eq_ignore_ascii_case(name)
     {
         return false;
     }
     let hardware = d.is_hardware_accelerated();
-    match req.overrides.hardware {
-        HardwarePolicy::Auto => true,
-        HardwarePolicy::Disabled => !hardware,
-        HardwarePolicy::Required => hardware,
+    match req.hardware {
+        Hardware::Auto => true,
+        Hardware::Off => !hardware,
+        Hardware::Required => hardware,
     }
 }
 
@@ -590,12 +581,12 @@ fn codec_allowed(d: &CodecDescriptor, req: &FrameRequirements) -> bool {
 /// first. `None` when the consumer takes no compressed format.
 fn encode_route(
     code: FourCc,
-    req: &FrameRequirements,
+    req: &FrameRequest,
     registry: &CodecRegistryHandle,
     mp: f32,
     steps: &mut Vec<PlanStep>,
 ) -> Result<Option<Route>, String> {
-    let OutputFormat::Formats(formats) = &req.output else {
+    let OutputFormat::Formats(formats) = &req.format else {
         return Ok(None);
     };
     let targets: Vec<FourCc> = formats
@@ -724,7 +715,7 @@ fn add_pyramid_steps(
     backend: &ProbedBackend,
     mode: &Mode,
     route: &Route,
-    req: &FrameRequirements,
+    req: &FrameRequest,
     width: u32,
     height: u32,
     steps: &mut Vec<PlanStep>,
@@ -737,7 +728,7 @@ fn add_pyramid_steps(
     let native = native_isp_outputs(backend, mode) && mode.format.code == FourCc::NV12;
     let isp_possible = (has_isp_second_output(backend) || native)
         && matches!(route, Route::Direct | Route::LumaView)
-        && !matches!(req.overrides.hardware, HardwarePolicy::Disabled);
+        && !matches!(req.hardware, Hardware::Off);
     let isp_level = match pyramid.source {
         PyramidSource::Software => None,
         PyramidSource::PreferHardware => isp_possible.then_some(1),

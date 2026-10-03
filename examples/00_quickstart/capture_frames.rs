@@ -1,23 +1,24 @@
 //! Processed frames at a chosen size and frame rate, from whichever camera and route the
-//! planner finds best: say what you need (`FrameRequirements`), print the plan it chose (camera,
-//! backend, mode, every step with where it runs and its estimated cost, and the options it
-//! rejected), run it, and look at the frames. On the CM5's OV9782 the plan is the native
-//! backend with the PiSP and 3A in Rust; on a USB camera it is V4L2 plus a decoder or
-//! converter; the code does not change.
+//! planner finds best: say what you want (`Frames::nv12().size(w, h).fps(n)`), open it, print
+//! the plan it chose (camera, backend, mode, every step with where it runs and its estimated
+//! cost, and the options it rejected), and look at the frames. On the CM5's OV9782 the plan is
+//! the native backend with the PiSP and 3A in Rust; on a USB camera it is V4L2 plus a decoder
+//! or converter; the code does not change.
 //!
 //! ```sh
 //! cargo run -p styx-examples --features native,v4l2 --bin capture_frames -- nv12 1280x800 30 90
 //! capture_frames rgb 640x400 60 120      # RGB24 at 640x400 (the PiSP's second output scales)
-//! capture_frames luma 1280x800 30 90     # 8-bit luma (NV12's Y plane, no copy)
+//! capture_frames gray 1280x800 30 90     # 8-bit grey (NV12's Y plane, no copy)
 //! capture_frames nv12 1280x800 30 90 /tmp/out.pgm   # also save the last frame
 //! ```
 //!
 //! `STYX_CAMERA=uvc` limits the choice to cameras whose name or keys contain that text.
 //!
-//! `Priority::Power` with `min_fps` asks for exactly that rate where the camera can run at any
-//! rate (sensors Styx drives); the default priority (latency) with `min_fps` takes the fastest
-//! rate the mode has. Without `min_fps` such a camera runs at 30 fps (`planner::DEFAULT_FPS`,
-//! within the mode's range); a list of rates (USB cameras) runs at its fastest.
+//! `.fps(n)` is exactly `n` frames per second: any rate within the range of a sensor Styx
+//! drives, a listed rate on a USB camera (planning fails, naming the rates there are, when no
+//! mode has it). `.fps_at_least(n)` takes the fastest rate instead; without either a camera runs
+//! at its default (30 fps, or the listed rate closest to it). A rate of 0 here leaves it to the
+//! camera.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -35,14 +36,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fps: u32 = arg(2, "30").parse()?;
     let count: usize = arg(3, "90").parse()?;
 
-    let wants = match arg(0, "nv12").as_str() {
-        "rgb" => FrameRequirements::formats([FourCc::RG24]),
-        "luma" => FrameRequirements::luma(),
-        _ => FrameRequirements::formats([FourCc::NV12]),
+    let mut wants = match arg(0, "nv12").as_str() {
+        "rgb" => Frames::rgb(),
+        "luma" | "gray" => Frames::gray(),
+        _ => Frames::nv12(),
     }
-    .output_resolution(w, h)
-    .min_fps(fps)
-    .priority(Priority::Power);
+    .size(w, h);
+    if fps > 0 {
+        wants = wants.fps(fps);
+    }
 
     let mut cameras = styx::probe_all();
     if let Ok(name) = std::env::var("STYX_CAMERA") {
@@ -53,13 +55,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .any(|k| k.to_lowercase().contains(&name))
         });
     }
-    let plan = styx::planner::plan_best(&cameras, &wants)?;
-    print!("{plan}");
-    let (ow, oh) = plan.output_resolution();
+    let opened = Instant::now();
+    let mut frames = wants.open_best(&cameras)?;
+    print!("{}", frames.plan());
+    let (ow, oh) = frames.plan().output_resolution();
     println!("delivers {ow}x{oh}");
 
-    let opened = Instant::now();
-    let mut frames = plan.start()?;
     let (mut first, mut last, mut n) = (None, None, 0usize);
     let mut seq = (None, 0u32);
     while n < count {

@@ -3,7 +3,7 @@
 //! AF reports. Values follow libcamera's `AfMode`, `AfTrigger`, `AfState`, `AfRange`,
 //! `AfSpeed`, `AfMetering`, `AfWindows` and `LensPosition` (dioptres).
 
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 use parking_lot::Mutex;
 use styx_capture::prelude::{
@@ -24,6 +24,8 @@ pub(crate) struct AfReport {
     output: Mutex<(u32, u32)>,
     windows: Mutex<Vec<ControlRect>>,
     metering_windows: Mutex<bool>,
+    /// The camera has a focus lens (else the AF controls are not supported).
+    lens: AtomicBool,
 }
 
 impl Default for AfReport {
@@ -34,6 +36,7 @@ impl Default for AfReport {
             output: Mutex::new((0, 0)),
             windows: Mutex::new(Vec::new()),
             metering_windows: Mutex::new(false),
+            lens: AtomicBool::new(false),
         }
     }
 }
@@ -42,6 +45,11 @@ impl AfReport {
     /// The output size AF windows are given in.
     pub(crate) fn set_output(&self, width: u32, height: u32) {
         *self.output.lock() = (width, height);
+    }
+
+    /// Whether the camera has a focus lens.
+    pub(crate) fn set_lens(&self, lens: bool) {
+        self.lens.store(lens, Ordering::Release);
     }
 }
 
@@ -96,6 +104,12 @@ pub(crate) fn apply(
     c: &mut Controls,
 ) -> Option<Result<(), CaptureError>> {
     let bad = |m: &str| Some(Err(CaptureError::control_apply(m.to_owned())));
+    if !is_af(id) {
+        return None;
+    }
+    if !r.lens.load(Ordering::Acquire) {
+        return Some(Err(CaptureError::ControlUnsupported));
+    }
     match id {
         ids::AF_MODE => {
             c.af_mode = match int(value) {
@@ -170,6 +184,9 @@ pub(crate) fn apply(
 
 /// Reads an AF control (`None` when `id` is not one).
 pub(crate) fn read(r: &AfReport, id: ControlId, c: &Controls) -> Option<ControlValue> {
+    if !r.lens.load(Ordering::Acquire) {
+        return None;
+    }
     Some(match id {
         ids::AF_MODE => ControlValue::Int(match c.af_mode {
             AfMode::Manual => 0,
@@ -277,8 +294,14 @@ mod tests {
     #[test]
     fn af_controls_reach_the_loop_and_report_back() {
         let r = AfReport::default();
-        r.set_output(1000, 500);
         let mut c = Controls::default();
+        assert!(matches!(
+            apply(&r, ids::AF_MODE, &ControlValue::Int(1), &mut c),
+            Some(Err(CaptureError::ControlUnsupported))
+        ));
+        assert!(read(&r, ids::AF_STATE, &c).is_none());
+        r.set_lens(true);
+        r.set_output(1000, 500);
         let ok = |v: Option<Result<(), CaptureError>>| v.unwrap().unwrap();
         ok(apply(&r, ids::AF_MODE, &ControlValue::Int(1), &mut c));
         assert_eq!(c.af_mode, AfMode::Auto);

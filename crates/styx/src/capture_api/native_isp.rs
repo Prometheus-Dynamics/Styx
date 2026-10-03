@@ -284,6 +284,7 @@ pub(super) fn start_processed(
         config.backends.native.deflicker,
     ));
     loop_controls.af.set_output(w, h);
+    loop_controls.af.set_lens(camera.info().lens.is_some());
     for (id, value) in initial {
         loop_controls
             .apply(*id, value)
@@ -573,16 +574,16 @@ mod tests {
         let pisp = device("pisp");
         for (req, code, luma) in [
             (
-                FrameRequirements::formats([FourCc::NV12]),
+                crate::planner::Frames::formats([FourCc::NV12]),
                 FourCc::NV12,
                 false,
             ),
             (
-                FrameRequirements::formats([FourCc::RG24]),
+                crate::planner::Frames::formats([FourCc::RG24]),
                 FourCc::RG24,
                 false,
             ),
-            (FrameRequirements::luma(), FourCc::NV12, true),
+            (crate::planner::Frames::gray(), FourCc::NV12, true),
         ] {
             let plan = crate::planner::plan_frames(&pisp, &req).unwrap();
             assert_eq!(plan.backend, BackendKind::Native);
@@ -603,18 +604,23 @@ mod tests {
             );
         }
         // Raw stays raw.
-        let raw = FrameRequirements::formats([FourCc::new(*b"pBAA")]);
+        let raw = crate::planner::Frames::formats([FourCc::new(*b"pBAA")]);
         let plan = crate::planner::plan_frames(&pisp, &raw).unwrap();
         assert_eq!(plan.mode.format.code, FourCc::new(*b"pBAA"));
         // Without a PiSP the software ISP runs the loop, priced by the megapixel.
         let soft = device("software");
-        let plan = crate::planner::plan_frames(&soft, &FrameRequirements::formats([FourCc::NV12]))
-            .unwrap();
+        let plan =
+            crate::planner::plan_frames(&soft, &crate::planner::Frames::formats([FourCc::NV12]))
+                .unwrap();
+        // With `gpu-isp` on a host with a Vulkan GPU the GPU ISP takes that route instead.
+        if plan.to_string().contains("GPU ISP") {
+            return;
+        }
         assert!(plan.to_string().contains("software ISP"), "{plan}");
         assert!(plan.total.cpu_ms > 2.5, "{plan}");
         assert_eq!(plan.mode.format.resolution.width.get(), 1280, "{plan}");
         // A consumer of small frames gets the binned mode: no demosaic, less than half the CPU.
-        let small = FrameRequirements::formats([FourCc::NV12]).output_resolution(640, 400);
+        let small = crate::planner::Frames::formats([FourCc::NV12]).size(640, 400);
         let half = crate::planner::plan_frames(&soft, &small).unwrap();
         assert_eq!(half.mode.format.resolution.width.get(), 640, "{half}");
         assert!(

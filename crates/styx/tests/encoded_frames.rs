@@ -18,7 +18,7 @@ fn camera() -> ProbedDevice {
         .into_device()
 }
 
-fn packet(frames: &mut styx::planner::PlannedFrames) -> FrameLease {
+fn packet(frames: &mut styx::planner::Frames) -> FrameLease {
     for _ in 0..100 {
         if let RecvOutcome::Data(frame) = frames.next_frame(Duration::from_millis(100)) {
             return frame;
@@ -36,7 +36,7 @@ fn has_sps(packet: &FrameLease) -> bool {
 
 #[test]
 fn consumers_get_an_encoded_stream_they_can_start_on() {
-    let h264 = FrameRequirements::formats([FourCc::H264]);
+    let h264 = Frames::formats([FourCc::H264]);
     let plan = plan_frames(&camera(), &h264).unwrap();
     let encode = plan
         .steps
@@ -49,11 +49,7 @@ fn consumers_get_an_encoded_stream_they_can_start_on() {
     // Two viewers and a raw consumer on one capture; the viewers share one encoder.
     let shared = plan_many(
         &camera(),
-        &[
-            h264.clone(),
-            FrameRequirements::formats([FourCc::RG24]),
-            h264,
-        ],
+        &[h264.clone(), Frames::formats([FourCc::RG24]), h264],
     )
     .unwrap();
     assert!(
@@ -92,7 +88,7 @@ fn a_viewer_joining_a_served_stream_starts_at_a_keyframe() {
         .keep_streaming()
         .serve(&socket)
         .unwrap();
-    let h264 = FrameRequirements::formats([FourCc::H264]);
+    let h264 = Frames::formats([FourCc::H264]);
     let recv = |client: &FrameClient| {
         for _ in 0..100 {
             if let RecvOutcome::Data(frame) = client.recv(Duration::from_millis(100)) {

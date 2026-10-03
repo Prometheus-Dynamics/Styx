@@ -648,6 +648,8 @@ pub mod prelude {
         PipelineStageError, QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot,
         StageErrorMetrics, StageMetrics, StageSnapshot, render_prometheus,
     };
+    #[cfg(feature = "facade")]
+    pub use crate::planner::{Delivery, FrameRate, FrameRequest, Frames, Hardware, OpenError};
     #[cfg(all(feature = "facade", feature = "hooks"))]
     pub use crate::recording::{
         FrameRecorder, RecordingError, RecordingFormat, RecordingFrameIndexEntry, RecordingOptions,

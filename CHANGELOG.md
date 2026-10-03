@@ -8,6 +8,33 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added autofocus for native cameras with a focus lens (simulated; hardware validation
+  pending): AF in `styx-algo` (PDAF loop and contrast scans from Raspberry Pi's `af.cpp`, frame-
+  exact scan steps, `rpi.af` tuning import, `sim::FocusSim`), focus lenses as data in
+  `styx-sensor` (kernel lens drivers via `FOCUS_ABSOLUTE`, DW9714/DW9807/DW9817/AK7375 VCMs on
+  I²C, IMX708 PDAF), frame-exact lens moves with per-frame reported positions in `styx-native`
+  (`FrameControls::lens`), software ISP focus statistics, and the processed native controls
+  `AF_MODE`, `AF_TRIGGER`, `AF_STATE`, `LENS_POSITION`, `AF_WINDOWS`, `AF_METERING`,
+  `AF_RANGE`, `AF_SPEED` (continuous AF by default).
+- Added `Frames` / `FrameRequest`, the general "what frames do I want" API:
+  `Frames::nv12().size(1280, 800).fps(30).open(&camera)?` (also `rgb()`, `gray()`,
+  `formats([..])`, `any()`, `open_best`, and `camera.frames()...open()`). One meaning per choice:
+  size (`size`, `size_at_least`, `size_at_most`), frame rate (`fps` exactly, with an error naming
+  the available rates; `fps_at_least`; `fps_between`; none for the camera's default), delivery
+  (`latest()` newest-only, `every_frame(n)` queued with drops counted by `Frames::dropped`),
+  advanced options (`pyramid`, `roi`, `row_alignment`) and route control (`backend`,
+  `hardware(Hardware::..)`, `decoder`, `forbid`, `decode_threads`). The opened stream is the
+  planner's frame stream (`PlannedFrames`, renamed `Frames`), now with `set_control`,
+  `get_control`, `capture()` and `dropped()`; `FramePlan::config` passes capture settings.
+- Changed: the planner ranks routes by one cost (CPU + latency / 2, printed in every plan)
+  instead of by `Priority`; queue depth and decode threads follow the delivery. Without a rate,
+  list-rate (USB) cameras run at the listed rate closest to 30 fps instead of their fastest.
+  `FramePlan::requirements` is now `FramePlan::request`. The camera service wire format is
+  version 4 (carries a `FrameRequest`).
+- Deprecated: `FrameRequirements`, `Priority`, `PlanOverrides` and `HardwarePolicy` (styx-core)
+  and the `PlannedFrames` name; planner functions and `FrameClient::request` still accept
+  `FrameRequirements`, converted with `FrameRequest::from`. `styxsrc`'s `priority` property is
+  deprecated in favour of `queue-depth`.
 - Added frame planning: `FrameRequirements` (styx-core) describes what a consumer needs (format,
   stride alignment, pyramid, ROI, resolution/fps bounds, priority, overrides) and
   `styx::planner` picks the backend, mode and route, explains the plan, and runs it with a live

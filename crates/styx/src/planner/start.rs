@@ -15,7 +15,7 @@ use styx_core::prelude::*;
 
 use super::session::Branch;
 use super::{FramePlan, Route};
-use crate::capture_api::{CaptureError, CaptureRequest, IdleStop, StyxConfig};
+use crate::capture_api::{CaptureError, CaptureHandle, CaptureRequest, IdleStop};
 use crate::session::{MediaPipeline, MediaPipelineBuilder};
 
 /// Live region-of-interest control for a running plan. Cloneable; changes apply to the next
@@ -33,8 +33,12 @@ impl RoiHandle {
     }
 }
 
-/// Frames delivered according to a [`FramePlan`].
-pub struct PlannedFrames {
+/// A running stream of frames, as a [`FrameRequest`](super::FrameRequest) asked for: from
+/// [`FrameRequest::open`](super::FrameRequest::open) (`Frames::nv12().size(..).open(&camera)`),
+/// [`FramePlan::start`] or, one per consumer, [`SharedFramePlan::start`](super::SharedFramePlan::start).
+/// Take frames with [`Frames::next_frame`] (or as an iterator, or
+/// [`Frames::next_frame_async`]), set camera controls with [`Frames::set_control`].
+pub struct Frames {
     source: Source,
     roi: RoiHandle,
     plan: FramePlan,
@@ -49,7 +53,11 @@ enum Source {
     Branch(Box<Branch>),
 }
 
-impl PlannedFrames {
+/// The previous name of [`Frames`].
+#[deprecated(note = "renamed to Frames")]
+pub type PlannedFrames = Frames;
+
+impl Frames {
     pub(crate) fn branch(plan: &FramePlan, branch: Branch, roi: RoiHandle) -> Self {
         Self {
             source: Source::Branch(Box::new(branch)),
@@ -102,6 +110,34 @@ impl PlannedFrames {
         &self.plan
     }
 
+    /// The camera capture behind these frames (shared with the other consumers of a shared
+    /// capture): controls, mode and interval, metrics.
+    pub fn capture(&self) -> &CaptureHandle {
+        match &self.source {
+            Source::Pipeline(pipeline) => pipeline.capture(),
+            Source::Branch(branch) => branch.capture(),
+        }
+    }
+
+    /// Set a camera control (exposure, gain, white balance, ...; see the backend's controls).
+    /// On a shared capture it applies to every consumer's frames.
+    pub fn set_control(&self, id: ControlId, value: ControlValue) -> Result<(), CaptureError> {
+        self.capture().set_control(id, value)
+    }
+
+    /// A camera control's current value.
+    pub fn get_control(&self, id: ControlId) -> Result<ControlValue, CaptureError> {
+        self.capture().get_control(id)
+    }
+
+    /// Frames lost so far: dropped because this consumer did not take them in time (beyond its
+    /// queue: one frame with [`Delivery::Latest`](super::Delivery::Latest), `n` with
+    /// `EveryFrame(n)`), or by the capture. Nothing is lost silently: the health report says
+    /// where.
+    pub fn dropped(&self) -> u64 {
+        self.health_report().drop_count
+    }
+
     /// The underlying pipeline of a plan's own capture (`None` on a shared capture).
     pub fn pipeline(&mut self) -> Option<&mut MediaPipeline> {
         match &mut self.source {
@@ -126,7 +162,7 @@ impl PlannedFrames {
     }
 }
 
-impl Iterator for PlannedFrames {
+impl Iterator for Frames {
     type Item = FrameLease;
 
     fn next(&mut self) -> Option<FrameLease> {
@@ -142,8 +178,12 @@ impl Iterator for PlannedFrames {
 
 impl FramePlan {
     /// Start capturing with this plan.
-    pub fn start(&self) -> Result<PlannedFrames, CaptureError> {
-        let mut config = StyxConfig::new().capture_queue_depth(self.queue_depth);
+    pub fn start(&self) -> Result<Frames, CaptureError> {
+        let mut config = self
+            .config
+            .clone()
+            .unwrap_or_default()
+            .capture_queue_depth(self.queue_depth);
         if let Some(level) = self.isp_pyramid_level {
             config = config
                 .libcamera_pyramid_level(level)
@@ -160,7 +200,7 @@ impl FramePlan {
             None => config,
         };
         let roi = RoiHandle::default();
-        roi.set(self.requirements.roi);
+        roi.set(self.request.roi);
         let preparer = Arc::new(FramePreparer::new(self, roi.clone()));
         #[cfg(target_os = "linux")]
         if let Some(buffers) = &self.capture_buffers
@@ -181,7 +221,7 @@ impl FramePlan {
         #[cfg(target_os = "linux")]
         let builder = builder.shared_decode_output(false);
         let pipeline = builder.start()?;
-        Ok(PlannedFrames {
+        Ok(Frames {
             source: Source::Pipeline(Box::new(pipeline)),
             roi,
             plan: self.clone(),
@@ -219,7 +259,7 @@ pub(crate) struct FramePreparer {
 
 impl FramePreparer {
     pub(crate) fn new(plan: &FramePlan, roi: RoiHandle) -> Self {
-        let luma = matches!(plan.requirements.output, OutputFormat::Luma);
+        let luma = matches!(plan.request.format, OutputFormat::Luma);
         let output = match &plan.route {
             Route::Decode { decoder, .. } => decoder.descriptor().output,
             Route::Encode { encoder, .. } => encoder.descriptor().output,
@@ -270,8 +310,8 @@ impl FramePreparer {
             },
             route,
             luma,
-            pyramid_levels: plan.requirements.pyramid.map_or(0, |p| p.levels),
-            alignment: plan.requirements.stride_alignment,
+            pyramid_levels: plan.request.pyramid.map_or(0, |p| p.levels),
+            alignment: plan.request.row_alignment,
             #[cfg(feature = "codec-turbojpeg")]
             decode_scale: u32::from(plan.decode_scale.max(1)),
             roi_scale: (
@@ -527,7 +567,7 @@ fn output_bytes(plan: &FramePlan, output: FourCc) -> usize {
         FourCc::NV12 | FourCc::YU12 => w.div_ceil(2) * 3,
         _ => w * 4,
     };
-    let align = plan.requirements.stride_alignment.unwrap_or(64).max(1);
+    let align = plan.request.row_alignment.unwrap_or(64).max(1);
     let rows = if matches!(output, FourCc::NV12 | FourCc::YU12) {
         h.div_ceil(2) * 2
     } else {

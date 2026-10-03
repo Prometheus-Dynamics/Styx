@@ -76,7 +76,7 @@ description search path (`$STYX_SENSOR_PATH`, `~/.config/styx/sensors`, `/etc/st
 | OV9281 / OV9282 | `ov9281`, `ov9282` (mono codes) | libcamera's helper | no |
 | IMX219 | `imx219` | libcamera's helper, CCS embedded data | no |
 | IMX477 | `imx477` | libcamera's helper, CCS embedded data | no |
-| IMX708 | `imx708` | libcamera's helper, CCS embedded data | no |
+| IMX708 | `imx708` | libcamera's helper, CCS embedded data, PDAF, its DW9817 lens (`dw9807-vcm`) | no |
 | OV5647 | `ov5647` | libcamera's helper | no |
 
 Without a data file the camera still works: gain is taken as linear with the driver's
@@ -125,6 +125,82 @@ what a kernel driver reports (the OV9782's raw8 runs at 192 MHz, its driver says
 slow frames). An embedded layout written for one bit depth may not hold in another (the
 OV9782's raw8 line carries each value's top 8 bits only): `embedded_data = false` under that
 `[formats.<name>]` leaves the line uncaptured there, and frames report predicted values.
+
+## A camera with a focus motor
+
+Modules with autofocus move their lens with a voice-coil motor (VCM): a small I²C chip
+(DW9714, DW9807/DW9817, AK7375, …) that takes a position code (10 or 12 bits) and drives the
+coil. VCMs report no position; Styx predicts it from the moves it wrote and the lens's settle
+time. AF (`styx-algo`, see [algorithms.md](algorithms.md), "AF: autofocus") then drives it in
+dioptres through the processed captures' controls (`AF_MODE`, `AF_TRIGGER`, `AF_STATE`,
+`LENS_POSITION`, `AF_WINDOWS`, `AF_METERING`, `AF_RANGE`, `AF_SPEED`;
+`examples/01_capture/camera_controls.rs`).
+
+**The lens has a kernel driver** (`dw9807-vcm`, `ak7375`, `dw9714`; the device tree overlay
+of the module binds it, e.g. `dtoverlay=imx708` for the Camera Module 3, whose DW9817 sits at
+`0x0c` under `dw9807-vcm`). The driver registers a `MEDIA_ENT_F_LENS` subdevice that the
+sensor links to with an ancillary link; Styx finds it at discovery (`styx_native::lens::
+find_kernel_lens`, listed as the `lens` property), reads the `V4L2_CID_FOCUS_ABSOLUTE` range
+and moves the lens with that control. What the driver does not report goes in the sensor's
+data file:
+
+```toml
+# imx708.kernel.toml
+pdaf = "imx708"            # phase detection data in the embedded data (IMX708 layout)
+
+[lens]
+drivers = ["dw9807"]       # lens entity names (first word) this applies to; empty: any
+range = [0, 1023]          # default: the control's range
+settle_us = 12000          # a move settles within this
+delay = 2                  # frames from writing a move to the first frame exposed there
+map = [0.0, 445, 15.0, 925]   # dioptres -> position, if the AF tuning has no map
+```
+
+**Styx drives the VCM** (a sensor behind the bridge, or a lens without a kernel driver): the
+sensor description gets a `[lens]` section with the chip on I²C, and Styx writes the chip's
+command format on the sensor's bus (`styx_sensor::lens`):
+
+```toml
+[lens]
+settle_us = 10000
+map = [0.0, 120, 10.0, 900]
+i2c = { address = 0x0c, chip = "dw9714" }   # dw9714, dw9807, dw9817, ak7375, or custom:
+# i2c = { address = 0x0c, chip = "custom", format = { register = 0x03, bytes = 2, shift = 0,
+#         bits = 10, power_up = [[0x02, 0x00]], power_up_us = 1000, power_down = [[0x02, 0x01]] } }
+```
+
+Built-in formats: DW9714 (no register, `code << 4`, bit 15 powers down), DW9807 and DW9817
+(registers 0x03-0x04, control 0x02: 0 on, 1 off), AK7375 (registers 0x00-0x01, `code << 4`,
+12 bits; control 0x02: 0 active, 0x40 standby). The DW9807's busy flag (register 0x05) is not
+polled: moves come at most once a frame.
+
+**Frame-exact moves.** A move asked for frame `F` (`ControlHandle::request_lens_at`) is written
+at the start of frame `F − delay` (at once when that has passed, or before streaming); each
+frame's `FrameControls::lens` says where the lens was during its exposure (from the frame-start
+time, the exposure, the readout time and the moves) and whether it had settled. AF measures a
+scan step on the first settled frame. Choose `delay` so a move written at a frame start has
+settled before the exposure of the frame `delay` later begins (2 at 30 fps with a 10-15 ms
+VCM; 3 at 120 fps).
+
+**The dioptre map** says which code focuses where: `0 D` (infinity) and a near distance, as
+measured on the module (focus on a far target and on a chart at a known distance with
+`LENS_POSITION` in manual mode, read the codes). Raspberry Pi's tunings carry it as
+`rpi.af.map` (imported as the tuning's `af.map`, which wins over the lens's). Without any, AF
+assumes the lens's whole range spans the normal focus range (0-12 D), which scans more than it
+needs to.
+
+**Tuning.** A Raspberry Pi tuning's `rpi.af` converts (`imx708.json`'s: ranges, speeds, PDAF
+gain and confidence thresholds, the map); without an `af` section AF uses the defaults (the
+IMX708 module's, which are reasonable for a phone-style VCM). A sensor without phase detection
+uses contrast scans; set `dropout_frames = 0` in its tuning's speeds to skip the PDAF attempt.
+
+**Checking it** (none of this has run on hardware yet; the Camera Module 3 is the first
+target, TODO.md): with the camera in manual mode, step `LENS_POSITION` and check the image
+sharpens at the expected distances (the map), that a move lands on the frame
+`FrameControls::lens` reports as settled (the settle time and `delay`), then one-shot and
+continuous AF on a near and a far target; with the IMX708, that `ControlHandle::pdaf` returns
+cells with confidence and that the PDAF loop moves the lens the right way (the sign of
+`pdaf_gain`).
 
 ## Checking a camera
 

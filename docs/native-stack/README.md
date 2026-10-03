@@ -26,7 +26,7 @@ camera service, IPC, codecs) sits on top unchanged.
 
 ```
 Apps and services     HeliOS, detectors, recorders, PipeWire / GStreamer bridges
-Styx API              FrameRequirements, async frame streams, typed controls   (exists, extended)
+Styx API              Frames requests, async frame streams, typed controls     (exists, extended)
 Planner and service   shared captures, many processes                          (exists)
 Session runtime       buffers, fences, per-frame control timing
 Algorithms            AE / AWB / lens shading / colour in Rust, data tuning
@@ -42,10 +42,10 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | Path | Crate | What | Owner |
 |---|---|---|---|
 | `crates/kernel` | `styx-kernel` | Safe Rust kernel interfaces, `libc` only | kernel agent (`v4l2`, `media`, `subdev`, `dma_heap`, `event`), bridge agent (`bus`) |
-| `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description; descriptions of kernel-driven sensors from their subdevice plus a small data file (`sensors/kernel/*.toml`), driven through V4L2 controls | sensor agent |
+| `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description; descriptions of kernel-driven sensors from their subdevice plus a small data file (`sensors/kernel/*.toml`), driven through V4L2 controls; focus lenses (VCMs) as data, PDAF decoding | sensor agent |
 | `crates/graph` | `styx-graph` | Device graph, `Provider` trait, async reactor, mock provider | graph agent |
 | `crates/pisp` | `styx-pisp` | PiSP uAPI layouts, front/back end config builders, BE tiling, statistics, device layer (feature `device`); see `pisp.md` | pisp agent |
-| `crates/algo` | `styx-algo` | 3A algorithms (AE, AWB, lens shading, CCM, tone), tuning (TOML, Raspberry Pi JSON), simulator, replay; see [algorithms.md](algorithms.md) | algo agent |
+| `crates/algo` | `styx-algo` | 3A algorithms (AE, AWB, lens shading, CCM, tone, autofocus), tuning (TOML, Raspberry Pi JSON), simulator, replay; see [algorithms.md](algorithms.md) | algo agent |
 | `crates/native` | `styx-native` | The runtime for bridged sensors and sensors with an upstream kernel driver (`kernel.rs`, see [adding-a-camera.md](adding-a-camera.md)): description search path, discovery, `NativeCamera` (power, mode, receiver path, buffers, async frames, embedded data), frame-accurate typed controls, the `native` `Provider`; `styx` backend `BackendKind::Native` (feature `native`) | provider agent |
 | `crates/softisp` | `styx-softisp` | Software ISP: unpack, black level, gains, lens shading, demosaic, CCM, tone, RGB/YUV/luma, 3A statistics; SIMD row kernels. Backs `styx-codec`'s Bayer decoders | softisp agent |
 | `crates/pipeline` | `styx-pipeline` | The native processing pipeline: statistics conversion, the deterministic 3A loop runner (`Controller`), ISP settings for the PiSP and the software ISP, the PiSP and software paths on a native camera (feature `device`), raw recordings and a virtual sensor for host replays; see [pipeline.md](pipeline.md) | pipeline agent |

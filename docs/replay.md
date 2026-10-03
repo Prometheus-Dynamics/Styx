@@ -23,7 +23,7 @@ let replay = CaptureRequest::replay_source(
         .pacing(ReplayPacing::Unpaced)   // or Realtime (default)
         .loop_forever(false),
 )?;
-let handle = replay.open()?;             // or: plan_frames(replay.device(), &requirements)
+let handle = replay.open()?;             // or: Frames::nv12().open(replay.device())
 ```
 
 For frames whose format differs from the capture mode (pipeline or planner output), create

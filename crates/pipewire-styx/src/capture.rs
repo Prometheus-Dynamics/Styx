@@ -34,17 +34,18 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn requirements(&self, exact_size: bool) -> FrameRequirements {
-        let mut req =
-            FrameRequirements::formats([self.fourcc]).output_resolution(self.width, self.height);
+    /// The frames to ask Styx for: this format and size; at least the negotiated rate (the
+    /// capture then runs at the negotiated interval itself where the mode lists it).
+    pub fn frames(&self, exact_size: bool) -> FrameRequest {
+        let mut req = Frames::formats([self.fourcc]).size(self.width, self.height);
         if exact_size {
             req = req
-                .min_resolution(self.width, self.height)
-                .max_resolution(self.width, self.height);
+                .size_at_least(self.width, self.height)
+                .size_at_most(self.width, self.height);
         }
         let (num, den) = self.rate;
         if num > 0 && den > 0 {
-            req = req.min_fps((num / den).max(1));
+            req = req.fps_at_least((num / den).max(1));
         }
         req
     }
@@ -105,8 +106,7 @@ fn run(
 ) -> Result<(), String> {
     match source {
         Source::Local(device) => {
-            let mut plan =
-                plan_frames(device, &request.requirements(true)).map_err(|e| e.to_string())?;
+            let mut plan = plan_frames(device, &request.frames(true)).map_err(|e| e.to_string())?;
             let (num, den) = request.rate;
             if let Some(interval) = plan.mode.intervals.iter().copied().find(|i| {
                 u64::from(i.denominator.get()) * u64::from(den)
@@ -129,7 +129,7 @@ fn run(
             Ok(())
         }
         Source::Service { path, camera } => {
-            let client = FrameClient::request_camera(path, camera, &request.requirements(false))
+            let client = FrameClient::request_camera(path, camera, &request.frames(false))
                 .map_err(|e| format!("camera service {path}: {e}"))?
                 .reconnecting();
             while !stop.load(Ordering::Relaxed) {
