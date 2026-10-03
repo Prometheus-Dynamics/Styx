@@ -352,7 +352,11 @@ normalised to 1.0, times are microseconds (`*_us`), temperatures kelvin.
 Raspberry Pi file and anything else as TOML; `to_toml_string` converts.
 
 Raspberry Pi tuning files (version 2) convert with `Tuning::from_rpi_json_str`, which also
-lists what it did not use (`RpiImport::ignored`). The reader accepts trailing commas and keeps
+lists what it did not use (`RpiImport::ignored`), and back with `Tuning::to_rpi_json_string`
+(every libcamera pisp/vc4 file and the OV9782's round-trip unchanged; Styx-only settings, which
+have no key there, are left out). `[black_level] by_gain = [{ gain, r, g, b }, …]` (Styx only,
+written by `styx-tune`) gives levels measured at several analogue gains, interpolated by each
+frame's gain. Tunings for new sensors come from `styx-tune` ([../tuning.md](../tuning.md)). The reader accepts trailing commas and keeps
 key order (the first mode listed is the default), as libcamera's YAML-based reader does.
 
 | Raspberry Pi | styx-algo |

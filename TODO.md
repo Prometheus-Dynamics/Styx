@@ -121,7 +121,26 @@ box (OV9782 1280x800) unless stated.
       same); the 2.4 codes were most likely the 50 Hz lamp. To close it against libcamera
       itself: its raw at a 1-line exposure and 8× (pipeline.md, "Quality vs libcamera").
 - [ ] Verify the unverified kernel-sensor data files on real cameras (imx219, imx477, imx708, ov5647).
-- [ ] OV9782 tuning of our own (today: the HeliOS tuning).
+- [x] Camera calibration without libcamera's `ctt`: `styx-tune` (`crates/tune`, `tools/styx-tune`)
+      calibrates black level (per channel and gain; hot pixels), lens shading per colour
+      temperature, the AWB curve, colour matrices (chart found automatically or from corners),
+      the noise profile, lux and GEQ from Styx MCAP / raw recordings or DNGs, writes Styx TOML
+      and Raspberry Pi JSON (every libcamera tuning round-trips), and records the shots through
+      Styx (`styx-tune capture`). Recovers a synthetic sensor's parameters (black within 0.02
+      codes, shading tables 0.1%, CCM coefficients 0.011, noise 0.5%). See
+      [docs/tuning.md](docs/tuning.md).
+- [ ] OV9782 tuning of our own (today: the HeliOS tuning, identity colour matrix): a real
+      session (ColorChecker, 3-5 high-CRI lights 2700-6500 K with a colour meter, diffuser,
+      lux meter, lens cap; docs/tuning.md). From the CM5 without a chart so far: black level by
+      gain (65.5/64.9 codes by row at 1×) and the temporal noise (slope 2.75 + 38 against the
+      file's 5.38: `ctt`'s spatial estimate includes texture; its denoise strengths were tuned
+      against it).
+- [ ] Lux on the software ISP path: its statistics' luma is taken before white balance, the
+      PiSP's (and `styx-tune`'s lux reference, as `ctt`'s) after; lux estimates differ by the
+      white balance there.
+- [ ] `styx-tune`: DNG input through `styx-dng` once merged (`input::RawDecoder`); defective
+      pixel lists to the ISP; AWB priors from scene statistics; a covered-lens dark session on
+      the OV9782 for the black level at high gain.
 
 ### Performance
 - [x] PiSP: 0.12 ms/frame was the `pispbe` driver writing its whole config per job with a
