@@ -1,0 +1,73 @@
+# A minimal sensor description for a camera Styx drives itself through the Styx sensor bridge
+# (no kernel driver for the sensor). Copy it, replace every value with your sensor's
+# (datasheet, vendor register lists, an existing kernel driver), and check it:
+#
+#   cargo run -p styx-examples --features native --bin sensor_check -- examples/06_new_camera/example_sensor.toml
+#
+# Then on the board, with the bridge overlay bound to the sensor's I2C address (see
+# docs/native-stack/adding-a-camera.md): put the file on the search path as <name>.toml
+# (STYX_SENSOR_PATH, /etc/styx/sensors, /usr/share/styx/sensors) and run `list_cameras`,
+# `native-pipeline regcheck` (every register reads back) and `landing` (each control lands on
+# the frame the delays say). The values below are illustrative (an IMX219-like 2x2 binned
+# mode), not a working sensor. Field reference: `crates/sensor/src/lib.rs`; a complete,
+# verified description: `crates/sensor/sensors/ov9782.toml`.
+
+[sensor]
+name = "example"                      # the file is found as example.toml
+i2c_address = 0x10                    # 7-bit
+address_bits = 16                     # register address width
+chip_id = { address = 0x0000, bytes = 2, values = [0x0219] }
+clocks = { xclk = 24_000_000 }
+tuning = "example.json"               # 3A tuning; without one Styx uses its generic tuning
+
+[pixel_array]
+size = [3296, 2480]                   # including dummy / optical black pixels
+active = { left = 8, top = 8, width = 3280, height = 2464 }
+color_filter = "RGGB"                 # BGGR, GBRG, GRBG, RGGB or mono
+black_level = { value = 64, bits = 10 }
+
+[sequences]
+power_up = [
+    { clock = "xclk", on = true, optional = true },
+    { delay_ms = 5 },
+]
+power_down = [{ clock = "xclk", on = false, optional = true }]
+init = [[0x30eb, 0x05], [0x30eb, 0x0c]]
+stream_on = [[0x0100, 0x01]]
+stream_off = [[0x0100, 0x00]]
+
+[formats.raw10]                       # media bus code, pixel rate, the format's registers
+code = "SRGGB10_1X10"
+pixel_rate = 182_400_000
+link_frequency = 456_000_000
+registers = [[0x018c, 0x0a0a, 2]]
+
+# fps = pixel_rate / ((width + hblank) x (height + vblank)); any vblank in range is a rate.
+[[modes]]
+name = "1640x1232"
+size = [1640, 1232]
+crop = { left = 8, top = 8, width = 3280, height = 2464 }
+binning = [2, 2]
+hblank = { min = 1808, max = 1808, default = 1808 }
+vblank = { min = 4, max = 64303, default = 1450 }
+registers = [[0x0174, 0x01], [0x0175, 0x01]]
+
+[controls]
+frame_length = { address = 0x0160, bytes = 2 }              # VTS, lines
+line_length = { register = { address = 0x0162, bytes = 2 } }
+# Frames from writing a control to the first frame it affects: measure them with `landing`.
+delays = { exposure = 2, analog_gain = 1, frame_length = 2 }
+group_hold = { start = [[0x0104, 0x01]], end = [[0x0104, 0x00]] }
+
+[controls.exposure]                   # in lines
+register = { address = 0x015a, bytes = 2 }
+min = 4
+margin = 4                            # exposure <= frame length - margin
+default = 1000
+
+[controls.analog_gain]
+register = { address = 0x0157 }
+min_code = 0
+max_code = 232
+default_code = 0
+model = { reciprocal = { numerator = 256, base = 256 } }   # gain = 256 / (256 - code)
