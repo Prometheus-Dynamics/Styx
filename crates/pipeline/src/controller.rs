@@ -373,6 +373,46 @@ mod tests {
     }
 
     #[test]
+    fn a_camera_with_a_lens_gets_lens_moves() {
+        let config = CameraConfig {
+            lens: Some(styx_algo::LensConfig::default()),
+            ..CameraConfig::default()
+        };
+        let mut c = Controller::new(&Tuning::default(), config).unwrap();
+        // Start: the default position (1 D on the generic map: code 85).
+        let start = c.start().unwrap();
+        assert_eq!(start.lens.map(|l| l.position), Some(85));
+        c.set_controls(Controls {
+            lens_position: Some(3.0),
+            ..Controls::default()
+        });
+        let mut sensor = SensorValues {
+            frame: 0,
+            exposure: Duration::from_millis(10),
+            analogue_gain: 1.0,
+            digital_gain: 1.0,
+            frame_duration: Duration::from_millis(33),
+            verified: false,
+        };
+        let lens = Some(LensState {
+            position: 85.0,
+            settled: true,
+        });
+        let step = c
+            .process_with_lens(&stats(0.2, &sensor), &sensor, lens)
+            .unwrap();
+        let moved = step.lens.expect("a move");
+        assert_eq!(moved.position, 256);
+        // The same position again is not news.
+        sensor.frame = 1;
+        let step = c
+            .process_with_lens(&stats(0.2, &sensor), &sensor, lens)
+            .unwrap();
+        assert!(step.lens.is_none());
+        assert_eq!(step.params.af.lens_position, Some(3.0));
+    }
+
+    #[test]
     fn closed_loop_converges_lands_requests_and_replays() {
         let config = CameraConfig::default();
         let mut c = Controller::new(&Tuning::default(), config.clone()).unwrap();

@@ -48,6 +48,9 @@ pub struct CameraInfo {
     /// For a sensor a kernel driver owns: what it reported and the data that completed its
     /// description (`None` for a bridged sensor).
     pub kernel: Option<KernelSensor>,
+    /// The module's focus lens, if it has one (a kernel lens driver linked to the sensor, or
+    /// a VCM the description puts on I²C).
+    pub lens: Option<crate::lens::LensInfo>,
 }
 
 impl CameraInfo {
@@ -100,6 +103,14 @@ impl CameraInfo {
         ];
         if let Some(path) = &self.route.node_path {
             p.push(("video".to_owned(), path.display().to_string()));
+        }
+        if let Some(l) = &self.lens {
+            let [lo, hi] = l.range();
+            let what = match &l.kind {
+                crate::lens::LensKind::Kernel { entity, .. } => entity.clone(),
+                crate::lens::LensKind::I2c { bus, address } => format!("i2c {bus}-{address:04x}"),
+            };
+            p.push(("lens".to_owned(), format!("{what} ({lo}..{hi})")));
         }
         if let (Some(bus), Some(addr)) = (self.location.i2c_bus, self.location.i2c_address) {
             p.push(("i2c".to_owned(), format!("{bus}-{addr:04x}")));
@@ -197,7 +208,9 @@ pub fn discover_bridge(location: &BridgeLocation, library: &SensorLibrary) -> Re
         raw_formats,
         graph: GraphMap::empty(),
         kernel: None,
+        lens: None,
     };
+    info.lens = crate::lens::i2c_lens(info.description.lens.as_ref(), location.i2c_bus);
     info.graph = graph_for(&info);
     Ok(info)
 }

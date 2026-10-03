@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use styx_algo::{Params, Statistics, Tuning};
+use styx_algo::{LensState, Params, PdafZone, Statistics, Tuning, ZoneGrid};
 use styx_softisp::{
     Demosaic, IspParams, OutputBuffers, RawFormat, RawPacking, Scale, SoftIsp, StatsConfig,
     YuvMatrix,
@@ -58,6 +58,8 @@ pub struct SoftLoop {
     settled_every: u64,
     /// The frame the algorithms last ran on.
     last_run: Option<u64>,
+    /// Where the lens was for the next frame, and its phase detection data.
+    next_focus: (Option<LensState>, Option<ZoneGrid<PdafZone>>),
 }
 
 impl std::fmt::Debug for SoftLoop {
@@ -93,6 +95,7 @@ pub fn base_params() -> IspParams {
             histogram_bins: 256,
             saturation: 0.95,
             row_step: 4,
+            ..StatsConfig::default()
         }),
         ..IspParams::default()
     }
@@ -110,7 +113,13 @@ impl SoftLoop {
         let format = RawFormat::new(info.width, info.height, info.cfa, packing);
         let controller = Controller::new(tuning, info.camera.clone())?;
         let start = IspSettings::neutral(info.black_level);
-        let base = base_params();
+        let mut base = base_params();
+        // A camera with a focus lens gets focus statistics for AF.
+        if info.camera.lens.is_some()
+            && let Some(s) = base.stats.as_mut()
+        {
+            s.focus = true;
+        }
         let mut isp = SoftIsp::new(format, start.softisp(info.bits, &base))?.with_threads(threads);
         isp.set_lens_shading_tolerance(LSC_TOLERANCE);
         Ok(Self {
@@ -123,6 +132,7 @@ impl SoftLoop {
             applied: None,
             settled_every: 1,
             last_run: None,
+            next_focus: (None, None),
         }
         .with_settled_rate(Some(SETTLED_RATE_HZ)))
     }
@@ -233,6 +243,12 @@ impl SoftLoop {
         Ok(s)
     }
 
+    /// Where the focus lens was for the next frame to be processed, and the frame's phase
+    /// detection data (cameras with a lens; see `styx_algo::FrameMetadata::lens`).
+    pub fn set_frame_focus(&mut self, lens: Option<LensState>, pdaf: Option<ZoneGrid<PdafZone>>) {
+        self.next_focus = (lens, pdaf);
+    }
+
     /// The settings the next frame (described by `sensor`) is processed with.
     pub fn settings_for(&self, sensor: &SensorValues) -> IspSettings {
         match &self.latest {
@@ -284,11 +300,13 @@ impl SoftLoop {
         let t1 = Instant::now();
         let raw_stats = self.isp.process(raw, stride, scale, out)?;
         let t2 = Instant::now();
-        let stats = raw_stats
+        let mut stats = raw_stats
             .map(|s| {
                 stats::from_softisp(&s, self.info.black_level, settings.lens_shading.is_some())
             })
             .unwrap_or_default();
+        let (lens, pdaf) = std::mem::take(&mut self.next_focus);
+        stats.pdaf = pdaf;
         let t3 = Instant::now();
         let step = match (&self.latest, run) {
             (Some((params, _)), false) => Step {
@@ -299,7 +317,7 @@ impl SoftLoop {
                 params: params.clone(),
             },
             _ => {
-                let step = self.controller.process(&stats, sensor)?;
+                let step = self.controller.process_with_lens(&stats, sensor, lens)?;
                 self.latest = Some((step.params.clone(), step.frame));
                 self.last_run = Some(sensor.frame);
                 step

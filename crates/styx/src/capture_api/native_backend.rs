@@ -74,6 +74,26 @@ pub mod controls {
     /// Processed modes: deflicker (`Int`): 0 off, 1 on, 2 with flicker avoidance
     /// (`NativeDeflicker::control_value`; the default from `NativeIspConfig::deflicker`).
     pub const AE_DEFLICKER_MODE: ControlId = ControlId(0xF400_0013);
+    /// Processed modes of a camera with a focus lens: what drives the lens (`Int`, as
+    /// libcamera's `AfMode`): 0 manual (`LENS_POSITION`), 1 auto (a scan per `AF_TRIGGER`),
+    /// 2 continuous (the default).
+    pub const AF_MODE: ControlId = ControlId(0xF400_0020);
+    /// Auto mode: 0 starts a scan, 1 cancels it (`Int`, libcamera's `AfTrigger`).
+    pub const AF_TRIGGER: ControlId = ControlId(0xF400_0021);
+    /// What AF reports after the latest frame (`Int`, read only, libcamera's `AfState`):
+    /// 0 idle, 1 scanning, 2 focused, 3 failed.
+    pub const AF_STATE: ControlId = ControlId(0xF400_0022);
+    /// The lens position in dioptres (`Float`, 1 / metres; 0 is infinity): set in manual
+    /// mode; read: where AF or the manual setting put it.
+    pub const LENS_POSITION: ControlId = ControlId(0xF400_0023);
+    /// AF windows in output pixels (`Rects`, up to 10), used while `AF_METERING` is 1.
+    pub const AF_WINDOWS: ControlId = ControlId(0xF400_0024);
+    /// 0: AF looks at the middle of the image (default); 1: at `AF_WINDOWS` (`Int`).
+    pub const AF_METERING: ControlId = ControlId(0xF400_0025);
+    /// Focus range scans cover (`Int`): 0 normal, 1 macro, 2 full.
+    pub const AF_RANGE: ControlId = ControlId(0xF400_0026);
+    /// AF speed (`Int`): 0 normal, 1 fast.
+    pub const AF_SPEED: ControlId = ControlId(0xF400_0027);
 }
 
 fn native_err(e: NativeError) -> CaptureError {
@@ -282,6 +302,17 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
             )
         },
     ]
+    .into_iter()
+    .chain(info.lens.as_ref().map_or_else(Vec::new, |l| {
+        let m = &l.description.map;
+        let limits = if m.len() >= 4 {
+            (m[0], m[m.len() - 2])
+        } else {
+            (0.0, 12.0)
+        };
+        super::native_isp::af_metas(limits)
+    }))
+    .collect()
 }
 
 /// The probed device of a bridged camera: its raw modes, and `NV12` / `RG24` modes processed

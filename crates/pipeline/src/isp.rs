@@ -269,6 +269,17 @@ impl IspSettings {
         if c.agc_stats != agc {
             fe.set_agc_stats(agc);
         }
+        // The focus statistics' noise floor follows the frame's noise profile, as the
+        // Raspberry Pi IPA sets it (`applyFocusStats`: whole units of the 16-bit scale).
+        let n = &self.denoise;
+        if n.noise_constant > 0.0 || n.noise_slope > 0.0 {
+            let mut cdaf = fe.config().cdaf_stats;
+            cdaf.noise_constant = n.noise_constant.clamp(0.0, 65535.0) as u16;
+            cdaf.noise_slope = n.noise_slope.clamp(0.0, 65535.0) as u16;
+            if fe.config().cdaf_stats != cdaf {
+                fe.set_cdaf_stats(cdaf);
+            }
+        }
     }
 }
 

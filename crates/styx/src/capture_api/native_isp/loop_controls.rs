@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use styx_capture::prelude::{ControlId, ControlValue};
-use styx_pipeline::styx_algo::{Controls, Deflicker, Flicker, Params};
+use styx_pipeline::styx_algo::{AfMode, Controls, Deflicker, Flicker, Params};
 
 use super::super::native_backend::controls as ids;
 use super::super::request::CaptureError;
@@ -26,6 +26,8 @@ pub struct LoopControls {
     colour_temperature: AtomicU32,
     /// The flicker period automatic flicker avoidance detected, in microseconds (0: none).
     flicker_detected: AtomicI32,
+    /// What AF reported, and the AF windows as set.
+    pub(crate) af: super::af_controls::AfReport,
 }
 
 impl Default for LoopControls {
@@ -36,6 +38,7 @@ impl Default for LoopControls {
             ae_state: AtomicI32::new(1),
             colour_temperature: AtomicU32::new(0),
             flicker_detected: AtomicI32::new(0),
+            af: Default::default(),
         }
     }
 }
@@ -92,9 +95,11 @@ impl LoopControls {
     /// The loop's controls with this flicker avoidance and deflicker (handed to the loop
     /// before its start).
     pub(crate) fn with_flicker(flicker: NativeFlicker, deflicker: NativeDeflicker) -> Self {
+        // Continuous AF by default (it does nothing on a camera without a focus lens).
         let c = Controls {
             flicker: algo_flicker(flicker),
             deflicker: algo_deflicker(deflicker),
+            af_mode: AfMode::Continuous,
             ..Controls::default()
         };
         Self {
@@ -127,6 +132,14 @@ impl LoopControls {
             ids::AE_FLICKER_MODE,
             ids::AE_DEFLICKER_MODE,
         ];
+        if super::af_controls::is_af(id) {
+            let mut c = self.current.lock();
+            let r = super::af_controls::apply(&self.af, id, value, &mut c)?;
+            if r.is_ok() {
+                *self.pending.lock() = Some(c.clone());
+            }
+            return Some(r);
+        }
         if !LOOP.contains(&id) {
             return None;
         }
@@ -189,6 +202,9 @@ impl LoopControls {
     /// Reads one of the loop's controls (`None` for the camera's own).
     pub(crate) fn read(&self, id: ControlId) -> Option<ControlValue> {
         let c = self.current.lock();
+        if let Some(v) = super::af_controls::read(&self.af, id, &c) {
+            return Some(v);
+        }
         Some(match id {
             ids::AE_STATE => ControlValue::Int(self.ae_state.load(Ordering::Acquire)),
             ids::AE_FLICKER_MODE => ControlValue::Int(native_flicker(c.flicker).control_value()),
@@ -217,6 +233,7 @@ impl LoopControls {
 
     /// Records what the loop made of a frame.
     pub(crate) fn report(&self, params: &Params) {
+        super::af_controls::report(&self.af, params);
         self.ae_state
             .store(if params.ae.locked { 2 } else { 1 }, Ordering::Release);
         self.colour_temperature

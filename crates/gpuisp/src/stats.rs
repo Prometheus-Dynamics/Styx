@@ -58,5 +58,7 @@ pub(crate) fn read(bytes: &[u8], setup: &StatsSetup, gains: [f32; 3]) -> IspStat
             .collect(),
         samples: setup.samples,
         gains,
+        // Focus statistics are the CPU path's only (yet).
+        focus: Vec::new(),
     }
 }

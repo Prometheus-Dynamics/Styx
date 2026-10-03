@@ -1,6 +1,7 @@
 # Sony IMX708 (12 MP, Raspberry Pi Camera Module 3) under the Raspberry Pi `imx708` driver.
 # From public sources (libcamera's cam_helper_imx708.cpp, imx708.json); not checked on
-# hardware with Styx. HDR modes and phase detection data are not modelled.
+# hardware with Styx. HDR modes are not modelled; phase detection data and the lens are
+# described below (unverified).
 name = "imx708"
 vendor = "Sony"
 verified = false
@@ -9,6 +10,7 @@ tuning = "imx708.json"
 analog_gain = { reciprocal = { numerator = 1024, base = 1024 } }
 delays = { exposure = 2, analog_gain = 2, frame_length = 3 }
 black_level = { value = 64, bits = 10 }
+pdaf = "imx708"
 
 [embedded_data]
 lines = 2
@@ -19,3 +21,16 @@ registers = [
     { control = "analog_gain", address = 0x0204, bytes = 2 },
     { control = "frame_length", address = 0x0340, bytes = 2 },
 ]
+
+# Phase detection data on the third embedded line (cam_helper_imx708.cpp's parsePdafData).
+# Only when the driver sends that line (lines = 3 or more); unverified.
+# The lens: the module's DW9817 VCM under the kernel's `dw9807-vcm` driver (compatible
+# "dongwoon,dw9817-vcm", I2C 0x0c), FOCUS_ABSOLUTE 0..1023. Map and timing from Raspberry Pi's
+# imx708.json (`rpi.af` map 0 D -> 445, 15 D -> 925) and a typical DW98xx settle time.
+[lens]
+name = "dw9817"
+drivers = ["dw9807", "dw9817"]
+range = [0, 1023]
+settle_us = 12000
+delay = 2
+map = [0.0, 445, 15.0, 925]

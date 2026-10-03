@@ -298,3 +298,54 @@ fn parallel_bands_match_one_thread() {
         }
     }
 }
+
+/// Focus statistics: a sharp pattern scores far above a blurred one and a flat field, the
+/// noise floor keeps faint noise out, and zones are separate.
+#[test]
+fn focus_figure_of_merit() {
+    let format = RawFormat::new(W as u32, H as u32, CfaPattern::Bggr, RawPacking::Csi2Raw10);
+    let config = StatsConfig {
+        zones_x: 2,
+        zones_y: 1,
+        focus: true,
+        ..Default::default()
+    };
+    let run = |f: &dyn Fn(usize, usize) -> u16| {
+        let m = mosaic(W, H, CfaPattern::Bggr, |x, y| [f(x, y); 3]);
+        let (bytes, stride) = pack(&m, W, H, RawPacking::Csi2Raw10);
+        let (_, s) = rgb(format, &stats_params(config), &bytes, stride, Scale::Full);
+        s.unwrap().focus
+    };
+    // Bars 4 pixels wide (2 quads) on the left half; flat on the right.
+    let sharp = run(&|x, _| {
+        if x < W / 2 && (x / 4) % 2 == 0 {
+            800
+        } else {
+            200
+        }
+    });
+    // The same bars blurred into a ramp.
+    let soft = run(&|x, _| {
+        if x < W / 2 {
+            let p = (x % 8) as f64 / 8.0;
+            (500.0 + 300.0 * (2.0 * std::f64::consts::PI * p).sin()) as u16
+        } else {
+            200
+        }
+    });
+    // Faint noise (a 10-bit code: about 4 working codes) stays under the floor.
+    let noise = run(&|x, y| 300 + ((x * 7 + y * 13) % 2) as u16);
+    assert_eq!(sharp.len(), 2);
+    assert!(sharp[0] > 0.0 && sharp[1] == 0.0, "{sharp:?}");
+    assert!(sharp[0] > 2.0 * soft[0], "{sharp:?} vs {soft:?}");
+    assert!(noise.iter().all(|&v| v == 0.0), "{noise:?}");
+    // Off by default.
+    let m = mosaic(W, H, CfaPattern::Bggr, |_, _| [300; 3]);
+    let (bytes, stride) = pack(&m, W, H, RawPacking::Csi2Raw10);
+    let plain = StatsConfig {
+        focus: false,
+        ..config
+    };
+    let (_, s) = rgb(format, &stats_params(plain), &bytes, stride, Scale::Full);
+    assert!(s.unwrap().focus.is_empty());
+}

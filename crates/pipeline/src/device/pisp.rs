@@ -322,6 +322,7 @@ impl PispPipeline {
             SensorInfo::from_description(&desc, &configured.mode.mode, &configured.mode.format)?
                 .with_fps(fps, fps)?;
         info.camera.temporal_denoise = isp.be_dev.tdn_enabled();
+        info.camera.lens = super::lens_config(&camera);
         let mut controller = Controller::new(tuning, info.camera.clone())?;
         controller.set_spatial_denoise(options.spatial_denoise);
         let controls = camera.controls();
@@ -496,6 +497,9 @@ impl PispPipeline {
             if let Some(r) = start.sensor {
                 apply_request(&self.controls, &r)?;
             }
+            if let Some(l) = start.lens {
+                super::apply_lens(&self.controls, &l)?;
+            }
             start.isp.apply_fe(&mut self.fe);
             self.step = Step {
                 frame: 0,
@@ -604,6 +608,7 @@ impl PispPipeline {
             let ts = Instant::now();
             if run {
                 stats::from_pisp_raw(&self.raw_stats, &mut self.stats);
+                self.stats.pdaf = super::pdaf_grid(&self.controls, seq);
                 self.last_run = Some(seq);
             }
             let stats_time = ts.elapsed();
@@ -612,7 +617,9 @@ impl PispPipeline {
                 Ok(None)
             } else {
                 profile::time("loop", "algorithms", || {
-                    self.controller.process(&self.stats, &values)
+                    let lens = super::lens_state(&controls);
+                    self.controller
+                        .process_with_lens(&self.stats, &values, lens)
                 })
                 .and_then(|step| {
                     let lands = match &step.sensor {
@@ -621,6 +628,9 @@ impl PispPipeline {
                         })?),
                         None => None,
                     };
+                    if let Some(l) = &step.lens {
+                        super::apply_lens(&self.controls, l)?;
+                    }
                     step.isp.apply_fe(&mut self.fe);
                     self.step = step;
                     self.stepped = true;

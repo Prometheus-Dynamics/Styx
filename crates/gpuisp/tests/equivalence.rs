@@ -57,6 +57,7 @@ fn params(demosaic: Demosaic, shaded: bool, full: bool, bins: u32, row_step: u32
             histogram_bins: bins,
             saturation: 0.95,
             row_step,
+            ..StatsConfig::default()
         }),
         arithmetic: Arithmetic::Int,
         ..IspParams::default()

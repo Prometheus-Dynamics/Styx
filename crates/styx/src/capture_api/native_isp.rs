@@ -7,9 +7,11 @@
 //! from the back end's output buffers (mapped once, exported as dma-bufs, returned to the back
 //! end when the lease drops); software ISP frames are written into recycled heap buffers.
 
+mod af_controls;
 mod loop_controls;
 mod pisp_worker;
 
+pub(crate) use af_controls::metas as af_metas;
 pub(crate) use loop_controls::LoopControls;
 
 use std::sync::{Arc, mpsc};
@@ -281,6 +283,7 @@ pub(super) fn start_processed(
         config.backends.native.flicker,
         config.backends.native.deflicker,
     ));
+    loop_controls.af.set_output(w, h);
     for (id, value) in initial {
         loop_controls
             .apply(*id, value)
