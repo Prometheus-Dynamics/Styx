@@ -123,6 +123,10 @@ limits at that fps.
     `kernel-modules/styx-sensor-bridge/install/install.sh` (rerun it after rebuilding the
     module, then reboot).
   - Read-only probing needs no lock.
+  - **Use `scripts/with-device-lock.sh <owner> '<remote command>'` for every device run**
+    (`WAIT=1` to queue, `DMESG_LOG=<file>` to stream the kernel log). It takes the lock
+    atomically, runs nothing if that fails, and releases only its own lock. Hand-written
+    `mkdir … ; … ; rm -rf` chains have deleted other agents' locks three times.
   - Anything that uses a camera or changes device state (stopping `helios-peripherals`,
     binding/unbinding drivers, runtime overlays via configfs, loading our modules, streaming,
     switching the camera mode, rebooting) needs the device lock, taken atomically with
