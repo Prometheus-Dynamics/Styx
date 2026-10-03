@@ -617,6 +617,10 @@ pub mod prelude {
         TransformConfig, V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera,
         open_virtual_rgb, start_capture,
     };
+    #[cfg(feature = "facade")]
+    pub use crate::capture_api::{
+        StillCapture, StillExposure, StillFormat, StillImage, StillMeta, StillRequest, StillShot,
+    };
     #[cfg(all(feature = "facade", feature = "daedalus-plugin", feature = "hooks"))]
     pub use crate::graph::register_file_sequence_sink_node;
     #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]

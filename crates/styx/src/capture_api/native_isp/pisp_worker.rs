@@ -238,6 +238,8 @@ pub(super) struct Worker {
     pub(super) timeout: Duration,
     /// The 3A loop's controls and state.
     pub(super) loop_controls: Arc<super::LoopControls>,
+    /// Still requests.
+    pub(super) still: super::still_runner::StillRunner,
 }
 
 fn lease(
@@ -277,8 +279,12 @@ fn lease(
 /// Runs the capture on its own thread until stopped or the queue closes.
 pub(super) fn spawn(
     mut p: PispPipeline,
-    w: Worker,
+    mut w: Worker,
 ) -> Result<thread::JoinHandle<()>, CaptureError> {
+    let targets = w.still.targets();
+    p.set_raw_copy(Some(Box::new(move |s| {
+        targets.lock().iter().any(|t| t.wants(s))
+    })));
     thread::Builder::new()
         .name("styx-native-pisp".into())
         .spawn(move || {
@@ -298,7 +304,8 @@ pub(super) fn spawn(
                 if let Some(c) = w.loop_controls.take() {
                     p.controller().set_controls(c);
                 }
-                let f = match p.next(w.timeout) {
+                w.still.before_frame(&mut p);
+                let mut f = match p.next(w.timeout) {
                     Ok(f) => f,
                     // Consumers hold every output buffer: this frame is dropped (never wait
                     // for them: the camera keeps running), the next one after a buffer comes
@@ -322,6 +329,12 @@ pub(super) fn spawn(
                     }
                 };
                 w.loop_controls.report(&p.step().params);
+                let step = p.step();
+                let ae = (step.params.ae.total_exposure, step.params.ae.locked);
+                let request = step.sensor;
+                let raw = f.raw.take();
+                w.still
+                    .after_frame(&mut p, &f.sensor, (f.request_lands, request), ae, raw);
                 let mut leases: [Option<FrameLease>; 2] = [None, None];
                 let mut failed = None;
                 for (i, spec) in w.specs.iter().enumerate() {
@@ -415,6 +428,7 @@ mod tests {
             sequence_mismatch: false,
             request_lands: None,
             settings_from: Some(6),
+            raw: None,
             digital_gain: 1.0,
             flicker: 1.0,
             times: PispTimes::default(),

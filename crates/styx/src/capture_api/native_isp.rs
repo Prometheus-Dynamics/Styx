@@ -9,8 +9,11 @@
 
 mod loop_controls;
 mod pisp_worker;
+mod still_process;
+mod still_runner;
 
 pub(crate) use loop_controls::LoopControls;
+pub(crate) use still_runner::StillJob;
 
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -207,6 +210,29 @@ fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues)
     meta
 }
 
+/// A software path frame's raw rows held for a still.
+fn hold_soft(
+    f: &styx_pipeline::device::SoftFrame,
+    format: styx_softisp::RawFormat,
+) -> Box<styx_pipeline::still::HeldRaw> {
+    let stride = f.raw.stride as usize;
+    let len = (stride * format.height as usize).min(f.raw.data().len());
+    Box::new(styx_pipeline::still::HeldRaw {
+        sequence: f.sensor.frame,
+        timestamp: f.raw.timestamp,
+        width: format.width,
+        height: format.height,
+        stride,
+        packing: format.packing,
+        cfa: format.pattern,
+        bits: format.packing.bit_depth(),
+        data: f.raw.data()[..len].to_vec(),
+        sensor: f.sensor,
+        isp: f.output.applied.clone(),
+        params: Box::new(f.output.step.params.clone()),
+    })
+}
+
 /// Back end buffers per PiSP output: [`NativeIspConfig::output_buffers`] covers the back
 /// end's own and a capture with the default queue and extra buffers (2 + 2) plus slow holders
 /// outside it (a frame server's leases); a deeper queue or more extra buffers (the planner's
@@ -293,6 +319,23 @@ pub(super) fn start_processed(
     let timeout = Duration::from_secs(2);
     let code = mode.format.code;
     let worker_mode = mode.clone();
+    let still_ctx = Arc::new(still_process::StillContext {
+        kind,
+        source: styx_pipeline::still::StillSource {
+            model: camera.info().location.sensor_name.clone(),
+            unique_camera_model: format!("Styx {} ({source})", camera.info().location.sensor_name),
+            calibrations: styx_pipeline::still::dng_calibrations(&tuning),
+        },
+        threads: config
+            .backends
+            .native
+            .soft_threads
+            .unwrap_or_else(crate::planner::cost::default_softisp_threads),
+    });
+    let mut still = still_runner::StillRunner::new(
+        Arc::clone(&loop_controls),
+        Box::new(move || still_process::StillProcessor::spawn(Arc::clone(&still_ctx))),
+    );
     let (controls, worker): (styx_native::CameraControls, thread::JoinHandle<()>) = match kind {
         IspKind::Pisp => {
             let settings = StreamSettings {
@@ -341,6 +384,7 @@ pub(super) fn start_processed(
                     send_timeout,
                     timeout,
                     loop_controls: loop_worker,
+                    still,
                 },
             )?;
             (controls, worker)
@@ -398,6 +442,7 @@ pub(super) fn start_processed(
                         if let Some(c) = loop_worker.take() {
                             p.soft_loop().controller().set_controls(c);
                         }
+                        still.before_frame(&mut p);
                         let mut buf = ret_rx.try_recv().unwrap_or_else(|_| vec![0u8; len]);
                         let out = if code == FourCc::NV12 {
                             let (y, uv) = buf.split_at_mut(stride * h as usize);
@@ -422,9 +467,17 @@ pub(super) fn start_processed(
                             }
                         };
                         loop_worker.report(&f.output.step.params);
+                        let raw = still
+                            .wants(&f.sensor)
+                            .then(|| hold_soft(&f, p.soft_loop().format()));
+                        let step = &f.output.step;
+                        let ae = (step.params.ae.total_exposure, step.params.ae.locked);
+                        let request = step.sensor;
+                        let (sensor, lands) = (f.sensor, f.request_lands);
                         let meta =
                             frame_meta(&worker_mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
                         drop(f);
+                        still.after_frame(&mut p, &sensor, (lands, request), ae, raw);
                         let lease = FrameLease::from_external(
                             meta,
                             layouts(code, h as usize, stride),

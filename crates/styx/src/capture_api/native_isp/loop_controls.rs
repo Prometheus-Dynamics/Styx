@@ -26,6 +26,8 @@ pub struct LoopControls {
     colour_temperature: AtomicU32,
     /// The flicker period automatic flicker avoidance detected, in microseconds (0: none).
     flicker_detected: AtomicI32,
+    /// Still requests for the worker.
+    stills: Mutex<Vec<super::still_runner::StillJob>>,
 }
 
 impl Default for LoopControls {
@@ -36,6 +38,7 @@ impl Default for LoopControls {
             ae_state: AtomicI32::new(1),
             colour_temperature: AtomicU32::new(0),
             flicker_detected: AtomicI32::new(0),
+            stills: Mutex::new(Vec::new()),
         }
     }
 }
@@ -208,6 +211,21 @@ impl LoopControls {
             ids::BLUE_GAIN => ControlValue::Float(c.colour_gains.map_or(0.0, |g| g.1) as f32),
             _ => return None,
         })
+    }
+
+    /// The application's controls as they stand.
+    pub(crate) fn current(&self) -> Controls {
+        self.current.lock().clone()
+    }
+
+    /// Queues a still request for the worker.
+    pub(crate) fn submit_still(&self, job: super::still_runner::StillJob) {
+        self.stills.lock().push(job);
+    }
+
+    /// Still requests queued since the last call.
+    pub(crate) fn take_stills(&self) -> Vec<super::still_runner::StillJob> {
+        std::mem::take(&mut *self.stills.lock())
     }
 
     /// Controls changed since the last call, for the loop.

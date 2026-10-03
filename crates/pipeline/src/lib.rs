@@ -51,6 +51,7 @@ pub mod replay;
 pub mod sensor;
 pub mod soft;
 pub mod stats;
+pub mod still;
 pub mod tuning;
 pub mod warm;
 

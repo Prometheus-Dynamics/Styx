@@ -10,6 +10,7 @@
 mod pisp;
 mod pisp_options;
 mod soft;
+mod still_be;
 
 use styx_algo::SensorRequest;
 use styx_native::{CameraControls, FrameControls, NativeError};
@@ -18,6 +19,7 @@ use styx_sensor::ControlRequest;
 pub use pisp::{PispFrame, PispPipeline, PispStartup, PispTimes};
 pub use pisp_options::PispOptions;
 pub use soft::{SoftFrame, SoftPipeline};
+pub use still_be::StillBackEnd;
 
 use crate::controller::SensorValues;
 use crate::error::PipelineError;
@@ -35,6 +37,37 @@ impl From<styx_pisp::device::DeviceError> for PipelineError {
             e => PipelineError::Device(format!("pisp: {e}")),
         }
     }
+}
+
+/// Picks the frames whose raw data [`PispPipeline::set_raw_copy`] copies out, from what
+/// produced them.
+pub type RawCopy = Box<dyn FnMut(&SensorValues) -> bool + Send>;
+
+/// A held copy of a front end raw buffer (16-bit samples, the sensor's value at the top)
+/// with the settings `step` processes it with; `None` if the buffer is short.
+fn hold_raw(
+    data: &[u8],
+    format: styx_pisp::uapi::ImageFormatConfig,
+    info: &crate::SensorInfo,
+    step: &crate::Step,
+    values: &SensorValues,
+) -> Option<crate::still::HeldRaw> {
+    let stride = format.stride.max(0) as usize;
+    let len = stride * usize::from(format.height);
+    Some(crate::still::HeldRaw {
+        sequence: values.frame,
+        timestamp: std::time::Duration::ZERO,
+        width: u32::from(format.width),
+        height: u32::from(format.height),
+        stride,
+        packing: styx_softisp::RawPacking::U16Le { bits: 16 },
+        cfa: info.cfa,
+        bits: info.bits,
+        data: data.get(..len)?.to_vec(),
+        sensor: *values,
+        isp: step.isp.clone(),
+        params: Box::new(step.params.clone()),
+    })
 }
 
 /// What produced frame `sequence`, as the camera reports it.

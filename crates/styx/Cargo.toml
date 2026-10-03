@@ -26,6 +26,7 @@ styx-uvc = { workspace = true, optional = true }
 styx-pipeline = { workspace = true, optional = true, features = ["device"] }
 styx-pisp = { workspace = true, optional = true, features = ["device"] }
 styx-softisp = { workspace = true, optional = true }
+styx-dng = { workspace = true, optional = true }
 daedalus = { workspace = true, optional = true }
 smallvec = { workspace = true, optional = true }
 styx-kernel = { workspace = true, optional = true }
@@ -104,6 +105,7 @@ native = [
     "dep:styx-pipeline",
     "dep:styx-pisp",
     "dep:styx-softisp",
+    "dep:styx-dng",
     "styx-kernel",
     "frame-socket",
 ]
