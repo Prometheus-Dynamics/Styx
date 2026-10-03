@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -224,8 +224,8 @@ pub(super) struct Worker {
     pub(super) error: Arc<Mutex<Option<CaptureError>>>,
     pub(super) send_timeout: Duration,
     pub(super) timeout: Duration,
-    /// The 3A loop's AE state after each frame (`controls::AE_STATE`): 1 searching, 2 locked.
-    pub(super) ae_state: Arc<AtomicI32>,
+    /// The 3A loop's controls and state.
+    pub(super) loop_controls: Arc<super::LoopControls>,
 }
 
 fn lease(
@@ -283,6 +283,9 @@ pub(super) fn spawn(
                 while let Ok((i, index)) = ret_rx.try_recv() {
                     p.release_output(i, index);
                 }
+                if let Some(c) = w.loop_controls.take() {
+                    p.controller().set_controls(c);
+                }
                 let f = match p.next(w.timeout) {
                     Ok(f) => f,
                     // Consumers hold every output buffer: this frame is dropped (never wait
@@ -306,9 +309,7 @@ pub(super) fn spawn(
                         break;
                     }
                 };
-                let locked = p.step().params.ae.locked;
-                w.ae_state
-                    .store(if locked { 2 } else { 1 }, Ordering::Release);
+                w.loop_controls.report(&p.step().params);
                 let mut leases: [Option<FrameLease>; 2] = [None, None];
                 let mut failed = None;
                 for (i, spec) in w.specs.iter().enumerate() {

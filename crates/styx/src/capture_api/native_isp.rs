@@ -7,7 +7,10 @@
 //! from the back end's output buffers (mapped once, exported as dma-bufs, returned to the back
 //! end when the lease drops); software ISP frames are written into recycled heap buffers.
 
+mod loop_controls;
 mod pisp_worker;
+
+pub(crate) use loop_controls::LoopControls;
 
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -210,6 +213,7 @@ pub(super) fn start_processed(
     (camera, _cached): (NativeCamera, bool),
     mode: Mode,
     interval: Option<Interval>,
+    initial: &[(ControlId, ControlValue)],
     descriptor: CaptureDescriptor,
     config: &StyxConfig,
     queue: Option<CaptureQueue>,
@@ -228,10 +232,14 @@ pub(super) fn start_processed(
         styx_core::queue::bounded_with(capture.queue_depth.max(1), capture.queue_overflow)
     });
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
-    // The 3A loop's AE state after each frame (`controls::AE_STATE`): 1 searching, 2 locked.
-    let ae_state = Arc::new(std::sync::atomic::AtomicI32::new(1));
-    let ae_worker = Arc::clone(&ae_state);
-    let ae_of = |locked: bool| if locked { 2 } else { 1 };
+    // The 3A loop's controls (initial ones applied before the start) and its state.
+    let loop_controls = Arc::new(LoopControls::default());
+    for (id, value) in initial {
+        loop_controls
+            .apply(*id, value)
+            .unwrap_or(Err(CaptureError::ControlUnsupported))?;
+    }
+    let loop_worker = Arc::clone(&loop_controls);
     let worker_error = Arc::new(Mutex::new(None));
     let werr = Arc::clone(&worker_error);
     let send_timeout = Duration::from_millis(capture.queue_send_timeout_ms);
@@ -262,6 +270,9 @@ pub(super) fn start_processed(
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;
+            if let Some(c) = loop_controls.take() {
+                p.controller().set_controls(c);
+            }
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = |i: usize| p.output_format(i).map_or(0, |f| f.stride as usize);
@@ -277,7 +288,7 @@ pub(super) fn start_processed(
                     error: werr,
                     send_timeout,
                     timeout,
-                    ae_state: ae_worker,
+                    loop_controls: loop_worker,
                 },
             )?;
             (controls, worker)
@@ -298,6 +309,9 @@ pub(super) fn start_processed(
                 .unwrap_or_else(crate::planner::cost::default_softisp_threads);
             tracing::info!(backend = "native", threads, "software ISP threads");
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
+            if let Some(c) = loop_controls.take() {
+                p.soft_loop().controller().set_controls(c);
+            }
             p.start().map_err(err)?;
             let controls = p.controls().clone();
             let stride = if code == FourCc::NV12 {
@@ -317,6 +331,9 @@ pub(super) fn start_processed(
                     loop {
                         if stop_rx.try_recv().is_ok() {
                             break;
+                        }
+                        if let Some(c) = loop_worker.take() {
+                            p.soft_loop().controller().set_controls(c);
                         }
                         let mut buf = ret_rx.try_recv().unwrap_or_else(|_| vec![0u8; len]);
                         let out = if code == FourCc::NV12 {
@@ -341,10 +358,7 @@ pub(super) fn start_processed(
                                 break;
                             }
                         };
-                        ae_worker.store(
-                            ae_of(f.output.step.params.ae.locked),
-                            std::sync::atomic::Ordering::Release,
-                        );
+                        loop_worker.report(&f.output.step.params);
                         let meta =
                             frame_meta(&worker_mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
                         drop(f);
@@ -373,7 +387,7 @@ pub(super) fn start_processed(
         backend: BackendKind::Native,
         control: ControlPlane::Native {
             controls,
-            ae_state: Some(ae_state),
+            processed: Some(loop_controls),
         },
         descriptor,
         mode,

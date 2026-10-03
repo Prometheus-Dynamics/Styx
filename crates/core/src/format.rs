@@ -161,9 +161,14 @@ impl FrameLayoutInfo {
             FrameStorageKind::Compressed
             | FrameStorageKind::OpaqueGpu
             | FrameStorageKind::Unknown => None,
-            FrameStorageKind::Packed | FrameStorageKind::RawBayer => {
-                self.packed?.bytes_per_pixel.checked_mul(width)
-            }
+            FrameStorageKind::Packed | FrameStorageKind::RawBayer => match self.packed {
+                Some(packed) => packed.bytes_per_pixel.checked_mul(width),
+                None => Some(
+                    width
+                        .checked_mul(self.fourcc.csi2_packed_bits()?)?
+                        .div_ceil(8),
+                ),
+            },
             FrameStorageKind::SemiPlanar | FrameStorageKind::Planar => Some(width),
         }
     }
@@ -174,9 +179,9 @@ impl FrameLayoutInfo {
             FrameStorageKind::Compressed
             | FrameStorageKind::OpaqueGpu
             | FrameStorageKind::Unknown => None,
-            FrameStorageKind::Packed | FrameStorageKind::RawBayer => {
-                self.packed?.bytes_per_pixel.checked_mul(pixels)
-            }
+            FrameStorageKind::Packed | FrameStorageKind::RawBayer => self
+                .first_plane_visible_row_bytes(width)?
+                .checked_mul(height),
             FrameStorageKind::SemiPlanar | FrameStorageKind::Planar => {
                 match self.planes.subsampling {
                     Some(ChromaSubsampling::Cs420) => {
@@ -270,9 +275,29 @@ impl FourCc {
         self.info().jpeg_encoded
     }
 
-    /// Whether this FourCC names a raw Bayer mosaic format.
+    /// Whether this FourCC names a raw Bayer mosaic format: 8-bit (V4L2's `BA81` is 8-bit
+    /// BGGR), 10 to 16 bits in 16-bit words, or MIPI CSI-2 packed RAW10 / RAW12 (`pBAA`,
+    /// `pBCC` and their other orders).
     pub fn is_bayer_raw(self) -> bool {
-        matches!(self, Self::RGGB | Self::BGGR | Self::GBRG | Self::GRBG)
+        self.raw_bayer_bytes().is_some() || self.csi2_packed_bits().is_some()
+    }
+
+    /// Bits per sample of MIPI CSI-2 packed raw formats (rows are `width * bits / 8` bytes).
+    fn csi2_packed_bits(self) -> Option<usize> {
+        match &self.0 {
+            b"pBAA" | b"pGAA" | b"pgAA" | b"pRAA" => Some(10),
+            b"pBCC" | b"pGCC" | b"pgCC" | b"pRCC" => Some(12),
+            _ => None,
+        }
+    }
+
+    fn raw_bayer_bytes(self) -> Option<usize> {
+        match &self.0 {
+            b"RGGB" | b"BGGR" | b"GBRG" | b"GRBG" | b"BA81" => Some(1),
+            b"BG10" | b"GB10" | b"BA10" | b"GR10" | b"RG10" | b"BG12" | b"GB12" | b"BA12"
+            | b"GR12" | b"RG12" | b"BG16" | b"GB16" | b"GR16" | b"RG16" | b"BYR2" => Some(2),
+            _ => None,
+        }
     }
 
     /// Bytes per pixel for common single-plane packed raw formats.
@@ -344,11 +369,12 @@ impl FourCc {
                 bytes_per_pixel: 6,
                 order: PackedChannelOrder::Bgr,
             }),
-            Self::RGGB | Self::BGGR | Self::GBRG | Self::GRBG => Some(PackedPixelSchema {
-                bytes_per_pixel: 1,
-                order: PackedChannelOrder::RawBayer,
-            }),
-            _ => None,
+            _ => self
+                .raw_bayer_bytes()
+                .map(|bytes_per_pixel| PackedPixelSchema {
+                    bytes_per_pixel,
+                    order: PackedChannelOrder::RawBayer,
+                }),
         };
         let storage = if info.compressed {
             FrameStorageKind::Compressed
@@ -387,12 +413,10 @@ impl FourCc {
             | Self::VYUY
             | Self::I420
             | Self::YU12
-            | Self::YV12
-            | Self::RGGB
-            | Self::BGGR
-            | Self::GBRG
-            | Self::GRBG => BitDepth::U8,
+            | Self::YV12 => BitDepth::U8,
             Self::R16 => BitDepth::U16,
+            _ if self.raw_bayer_bytes() == Some(1) => BitDepth::U8,
+            _ if self.raw_bayer_bytes() == Some(2) => BitDepth::U16,
             Self::D32F => BitDepth::F32,
             Self::RG24 | Self::RGB3 | Self::BGR3 | Self::BG24 => BitDepth::U8x3,
             Self::RGBA | Self::BGRA | Self::XR24 | Self::XB24 => BitDepth::U8x4,
