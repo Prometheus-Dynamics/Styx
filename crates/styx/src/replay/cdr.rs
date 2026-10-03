@@ -43,6 +43,10 @@ impl CdrWriter {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
+    pub(crate) fn f32(&mut self, v: f32) {
+        self.u32(v.to_bits());
+    }
+
     pub(crate) fn u64(&mut self, v: u64) {
         self.align(8);
         self.buf.extend_from_slice(&v.to_le_bytes());
@@ -120,6 +124,16 @@ impl<'a> CdrReader<'a> {
     pub(crate) fn i32(&mut self) -> Result<i32, ReplayError> {
         self.align(4);
         Ok(i32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+
+    pub(crate) fn f32(&mut self) -> Result<f32, ReplayError> {
+        Ok(f32::from_bits(self.u32()?))
+    }
+
+    /// Whether every byte of the message has been read (fields appended by later versions
+    /// are absent from older messages).
+    pub(crate) fn at_end(&self) -> bool {
+        self.pos >= self.data.len()
     }
 
     pub(crate) fn u64(&mut self) -> Result<u64, ReplayError> {

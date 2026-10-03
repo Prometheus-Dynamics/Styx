@@ -14,8 +14,9 @@
 //! ```
 //!
 //! The last processed frame is saved next to the recording (`.ppm`). MCAP recordings keep each
-//! frame's pixels, timestamp and sequence; a native frame's exposure and gains are not in them
-//! yet (`styx-pipeline`'s raw recordings, `native-pipeline soft --record`, keep those).
+//! frame's pixels, timestamp and sequence, and for a sensor Styx drives the exposure, gains,
+//! frame duration and frame length that produced it (and whether they were read back from the
+//! frame): replayed frames report them like live ones.
 
 use std::io::Write;
 use std::time::{Duration, Instant};

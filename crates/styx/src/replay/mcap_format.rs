@@ -5,7 +5,11 @@
 //!   (`sensor_msgs/msg/CompressedImage`): the frame's pixels or bitstream.
 //! - `/styx/pyramid/<level>` (`sensor_msgs/msg/Image`): pyramid companions.
 //! - `/styx/frame_meta` (`styx/msg/FrameMeta`): one message per image message with what ROS
-//!   image types cannot hold (exact format, clock, backend sequence, crop, timing).
+//!   image types cannot hold (exact format, clock, backend sequence, crop, timing, and for
+//!   sensors Styx drives the exposure, gains and frame timing that produced the frame).
+//!
+//! Format version 2 appends the native sensor values to `styx/msg/FrameMeta` (backend 3);
+//! version 1 recordings (native frames stored as V4L2 buffers, no sensor values) still read.
 //! - Metadata record `styx.recording`: the device and capture mode.
 //!
 //! Messages of one frame share its MCAP `sequence` (the frame index) and `log_time` (the frame
@@ -29,7 +33,9 @@ pub(super) const IMAGE_TOPIC: &str = "/styx/image";
 pub(super) const COMPRESSED_TOPIC: &str = "/styx/image/compressed";
 pub(super) const META_TOPIC: &str = "/styx/frame_meta";
 pub(super) const RECORDING_METADATA: &str = "styx.recording";
-const FORMAT_VERSION: &str = "1";
+const FORMAT_VERSION: &str = "2";
+/// Versions this reader understands: 1 lacks the native sensor values.
+const READABLE_VERSIONS: [&str; 2] = ["1", "2"];
 
 const TIME_DEF: &str =
     "================================================================================
@@ -50,9 +56,9 @@ uint32 height
 uint8 color            # 0 sRGB, 1 BT.709, 2 BT.2020, 3 unknown
 uint64 timestamp       # nanoseconds on `clock`
 uint8 clock            # 0 unknown, 1 monotonic, 2 boottime, 3 realtime, 4 stream-relative
-uint8 backend          # 0 none, 1 v4l2, 2 libcamera
+uint8 backend          # 0 none, 1 v4l2, 2 libcamera, 3 native (a sensor Styx drives)
 uint32 sequence
-uint32 v4l2_bytes_used
+uint32 v4l2_bytes_used     # also native
 uint32 v4l2_field
 uint32 v4l2_flags
 bool v4l2_zero_copy
@@ -67,7 +73,15 @@ int64 decode_ns
 int64 transform_ns
 int64 hook_ns
 int64 encode_ns
-uint8[] pyramid_levels       # companions of this frame, each on /styx/pyramid/<level>";
+uint8[] pyramid_levels       # companions of this frame, each on /styx/pyramid/<level>
+# Native sensor values (backend 3; zero otherwise). Absent in format version 1.
+uint64 native_exposure_ns
+float32 native_analog_gain
+float32 native_digital_gain
+uint64 native_frame_duration_ns
+uint32 native_frame_length   # lines
+bool native_verified         # read back from the frame's embedded data, not predicted
+bool native_error            # the receiver flagged the frame";
 
 fn image_def() -> String {
     format!(
@@ -247,7 +261,7 @@ pub(super) fn header_from_map(
             .parse()
             .map_err(|_| ReplayError::Corrupt("recording metadata not a number"))
     };
-    if get("styx_format_version")? != FORMAT_VERSION {
+    if !READABLE_VERSIONS.contains(&get("styx_format_version")?.as_str()) {
         return Err(ReplayError::Corrupt("unsupported styx recording version"));
     }
     let resolution = Resolution::new(num("width")?, num("height")?)
@@ -320,6 +334,20 @@ fn duration_ns(d: Option<Duration>) -> i64 {
 
 pub(super) fn encode_meta(meta: &FrameMeta, topic: &str, levels: &[u8]) -> Vec<u8> {
     let mut w = CdrWriter::with_capacity(256);
+    encode_meta_v1_fields(&mut w, meta, topic, levels);
+    let n = meta.native().copied().unwrap_or_default();
+    w.u64(n.exposure_ns);
+    w.f32(n.analog_gain);
+    w.f32(n.digital_gain);
+    w.u64(n.frame_duration_ns);
+    w.u32(n.frame_length);
+    w.bool(n.verified);
+    w.bool(n.error);
+    w.finish()
+}
+
+/// The fields format version 1 has (all of a version 1 message).
+fn encode_meta_v1_fields(w: &mut CdrWriter, meta: &FrameMeta, topic: &str, levels: &[u8]) {
     w.string(topic);
     w.u32(meta.format.code.to_u32());
     w.string(&meta.format.code.to_string());
@@ -332,23 +360,12 @@ pub(super) fn encode_meta(meta: &FrameMeta, topic: &str, levels: &[u8]) -> Vec<u
         None => (0, 0, None, ""),
         Some(BackendFrameMeta::V4l2(m)) => (1, m.sequence, Some(m), ""),
         Some(BackendFrameMeta::Libcamera(m)) => (2, m.sequence, None, m.buffer_memory),
-        // Recorded as a V4L2 buffer (the control values are not recorded yet).
-        Some(BackendFrameMeta::Native(m)) => (
-            1,
-            m.sequence,
-            Some(V4l2FrameMeta {
-                sequence: m.sequence,
-                bytes_used: m.bytes_used,
-                field: 1,
-                flags: if m.error { 0x40 } else { 0 },
-                zero_copy: true,
-            }),
-            "",
-        ),
+        Some(BackendFrameMeta::Native(m)) => (3, m.sequence, None, ""),
     };
+    let native = meta.native().copied();
     w.u8(backend);
     w.u32(sequence);
-    w.u32(v4l2.map_or(0, |m| m.bytes_used));
+    w.u32(v4l2.map_or(native.map_or(0, |m| m.bytes_used), |m| m.bytes_used));
     w.u32(v4l2.map_or(0, |m| m.field));
     w.u32(v4l2.map_or(0, |m| m.flags));
     w.bool(v4l2.is_some_and(|m| m.zero_copy));
@@ -364,7 +381,6 @@ pub(super) fn encode_meta(meta: &FrameMeta, topic: &str, levels: &[u8]) -> Vec<u
         w.i64(duration_ns(d));
     }
     w.bytes(levels);
-    w.finish()
 }
 
 /// One image message's metadata, decoded.
@@ -410,6 +426,11 @@ pub(super) fn decode_meta(data: &[u8]) -> Result<PartMeta, ReplayError> {
                 _ => "recorded",
             },
         })),
+        3 => Some(BackendFrameMeta::Native(NativeFrameMeta {
+            sequence,
+            bytes_used,
+            ..Default::default()
+        })),
         _ => return Err(ReplayError::Corrupt("unknown backend metadata")),
     };
     let has_crop = r.bool()?;
@@ -420,7 +441,7 @@ pub(super) fn decode_meta(data: &[u8]) -> Result<PartMeta, ReplayError> {
         *d = (ns >= 0).then(|| Duration::from_nanos(ns as u64));
     }
     let [sensor_to_capture, decode, transform, hook, encode] = durations;
-    Ok(PartMeta {
+    let mut part = PartMeta {
         topic,
         format,
         timestamp,
@@ -445,7 +466,30 @@ pub(super) fn decode_meta(data: &[u8]) -> Result<PartMeta, ReplayError> {
             }
             levels
         },
-    })
+    };
+    // Version 2 appends the native sensor values; version 1 messages end here.
+    if !r.at_end() {
+        let (exposure_ns, analog_gain, digital_gain) = (r.u64()?, r.f32()?, r.f32()?);
+        let (frame_duration_ns, frame_length) = (r.u64()?, r.u32()?);
+        let (verified, error) = (r.bool()?, r.bool()?);
+        if let Some(BackendFrameMeta::Native(m)) = &mut part.backend {
+            *m = NativeFrameMeta {
+                exposure_ns,
+                analog_gain,
+                digital_gain,
+                frame_duration_ns,
+                frame_length,
+                verified,
+                error,
+                ..*m
+            };
+        }
+    } else if matches!(part.backend, Some(BackendFrameMeta::Native(_))) {
+        return Err(ReplayError::Corrupt(
+            "native frame without its sensor values",
+        ));
+    }
+    Ok(part)
 }
 
 /// The pixel or bitstream bytes of an image message.
@@ -554,4 +598,68 @@ fn clock_from_tag(tag: u8) -> Result<Option<TimestampClock>, ReplayError> {
         4 => Some(TimestampClock::StreamRelative),
         _ => return Err(ReplayError::Corrupt("unknown clock")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grey_meta() -> FrameMeta {
+        let format = MediaFormat::new(
+            FourCc::GREY,
+            Resolution::new(64, 32).unwrap(),
+            ColorSpace::Unknown,
+        );
+        FrameMeta::new(format, 5_000)
+    }
+
+    #[test]
+    fn version_1_messages_and_headers_still_read() {
+        let mut meta = grey_meta();
+        let v4l2 = BackendFrameMeta::V4l2(V4l2FrameMeta {
+            sequence: 7,
+            bytes_used: 2048,
+            field: 1,
+            flags: 0x40,
+            zero_copy: true,
+        });
+        meta.backend = Some(v4l2.clone());
+        let mut w = CdrWriter::with_capacity(256);
+        encode_meta_v1_fields(&mut w, &meta, IMAGE_TOPIC, &[]);
+        let part = decode_meta(&w.finish()).unwrap();
+        assert_eq!(part.backend, Some(v4l2));
+        assert_eq!(part.timestamp, 5_000);
+
+        let header = super::super::tests::header(meta.format);
+        let mut map = header_to_map(&header);
+        assert_eq!(map["styx_format_version"], "2");
+        map.insert("styx_format_version".into(), "1".into());
+        assert_eq!(header_from_map(&map).unwrap().format, header.format);
+        map.insert("styx_format_version".into(), "3".into());
+        assert!(header_from_map(&map).is_err());
+    }
+
+    #[test]
+    fn native_sensor_values_round_trip() {
+        let mut meta = grey_meta();
+        let native = NativeFrameMeta {
+            sequence: 41,
+            bytes_used: 2048,
+            error: true,
+            exposure_ns: 33_215_000,
+            analog_gain: 7.5,
+            digital_gain: 1.25,
+            frame_duration_ns: 33_333_333,
+            frame_length: 3662,
+            verified: true,
+        };
+        meta.backend = Some(BackendFrameMeta::Native(native));
+        let part = decode_meta(&encode_meta(&meta, IMAGE_TOPIC, &[1, 2])).unwrap();
+        assert_eq!(part.backend, Some(BackendFrameMeta::Native(native)));
+        assert_eq!(part.levels, [1, 2]);
+        // A native frame's message cut before its sensor values is damaged, not version 1.
+        let mut w = CdrWriter::with_capacity(256);
+        encode_meta_v1_fields(&mut w, &meta, IMAGE_TOPIC, &[]);
+        assert!(decode_meta(&w.finish()).is_err());
+    }
 }
