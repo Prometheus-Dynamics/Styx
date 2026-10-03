@@ -32,6 +32,9 @@ pub struct SupervisedCapture {
     pub(crate) controls: Mutex<Vec<(ControlId, ControlValue)>>,
     /// Sequence gaps counted by backend captures that have since been replaced.
     pub(crate) past_sequence_gaps: AtomicU64,
+    /// The consumer handle's metrics: counters of replaced backend captures added up, and the
+    /// running one's.
+    live: crate::metrics::CaptureMetrics,
     recipe: Recipe,
     tx: styx_core::queue::BoundedTx<FrameLease>,
     /// The consumer's receiver, to drop frames left over when streaming stops.
@@ -109,6 +112,7 @@ impl SupervisedCapture {
             }
             // The paused capture is gone: start a new one.
             if let Some(previous) = inner.take() {
+                self.retire(&previous);
                 previous.stop();
             }
         }
@@ -116,6 +120,8 @@ impl SupervisedCapture {
         match restart(&self.recipe, controls, backend_queue(&self.tx)) {
             Ok(handle) => {
                 tracing::debug!(camera = %self.recipe.identity.display, "capture resumed on demand");
+                handle.attach_metrics();
+                self.live.set_current(Some(handle.live.clone()));
                 *inner = Some(handle);
                 self.retry_metrics.record_idle_resume();
             }
@@ -155,6 +161,7 @@ impl SupervisedCapture {
         if let Some(previous) = inner.take() {
             let gaps = previous.sequence_gaps.load(Ordering::Relaxed);
             self.past_sequence_gaps.fetch_add(gaps, Ordering::Relaxed);
+            self.retire(&previous);
             // Still under the lock: a pull that arrives now waits for the camera to be released
             // before starting it again.
             previous.stop();
@@ -163,6 +170,12 @@ impl SupervisedCapture {
         self.retry_metrics.record_idle_stop();
         tracing::debug!(camera = %self.recipe.identity.display, idle_ms = after.as_millis() as u64, "capture stopped while idle");
         true
+    }
+
+    /// `previous` is replaced: its counters go to the consumer handle's metrics.
+    fn retire(&self, previous: &CaptureHandle) {
+        self.live.absorb(&previous.live);
+        self.live.set_current(None);
     }
 
     /// Control plane of the running capture.
@@ -270,11 +283,15 @@ pub(crate) fn supervise(
     let active_mode = first.mode.clone();
     let active_interval = first.interval;
     let retry_metrics = first.retry_metrics.clone();
+    let live = crate::metrics::CaptureMetrics::default();
+    first.attach_metrics();
+    live.set_current(Some(first.live.clone()));
     let (tx, rx) = queue;
     let shared = Arc::new(SupervisedCapture {
         inner: Mutex::new(Some(first)),
         controls: Mutex::new(controls),
         past_sequence_gaps: AtomicU64::new(0),
+        live: live.clone(),
         recipe,
         tx,
         rx: rx.clone(),
@@ -318,6 +335,7 @@ pub(crate) fn supervise(
         shutdown_stats: Default::default(),
         retry_metrics,
         sequence_gaps: Default::default(),
+        live,
     }
 }
 
@@ -376,12 +394,15 @@ fn run(
         if let Some(previous) = previous {
             let gaps = previous.sequence_gaps.load(Ordering::Relaxed);
             shared.past_sequence_gaps.fetch_add(gaps, Ordering::Relaxed);
+            shared.retire(&previous);
             previous.stop();
         }
         let controls = shared.controls.lock().clone();
         match restart(recipe, controls, backend_queue(tx)) {
             Ok(handle) => {
                 tracing::info!(backend = %recipe.backend, camera = %recipe.identity.display, "capture restarted");
+                handle.attach_metrics();
+                shared.live.set_current(Some(handle.live.clone()));
                 *shared.inner.lock() = Some(handle);
                 restart_error = None;
                 backoff = initial_backoff;
@@ -398,6 +419,7 @@ fn run(
         }
     }
     if let Some(inner) = shared.inner.lock().take() {
+        shared.retire(&inner);
         inner.stop();
     }
 }

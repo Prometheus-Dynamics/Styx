@@ -9,7 +9,7 @@ use styx_core::prelude::*;
 use styx_kernel::v4l2::{BufType, Format, VideoDevice};
 
 use crate::capture_api::controls::apply_v4l2_controls;
-use crate::capture_api::handle::{CaptureQueue, enqueue_capture_frame, record_worker_error};
+use crate::capture_api::handle::{CaptureQueue, record_worker_error};
 use crate::capture_api::import::CaptureBuffers;
 use crate::capture_api::{
     CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle,
@@ -248,7 +248,10 @@ pub(super) fn start_v4l2(
     let backing_tracker = Arc::new(ExternalBackingTracker::new("v4l2_mmap"));
     let manager_for_worker = Arc::clone(&manager);
     let tracker_for_worker = Arc::clone(&backing_tracker);
+    let live = crate::metrics::CaptureMetrics::with_sequence_gaps(sequence_gaps.clone());
+    let live_worker = live.clone();
     let worker = thread::spawn(move || {
+        live_worker.register_thread();
         let send_timeout = Duration::from_millis(v4l2_config.send_timeout_ms);
         let error_backoff = Duration::from_millis(v4l2_config.error_backoff_ms);
         let zero_copy_requested = supports_v4l2_mmap_zero_copy(mode_clone.format.code);
@@ -361,7 +364,13 @@ pub(super) fn start_v4l2(
                             Err(_) => continue,
                         }
                     };
-                    if enqueue_capture_frame(&tx, frame, "v4l2", send_timeout) {
+                    if crate::capture_api::handle_metrics::deliver(
+                        &live_worker,
+                        &tx,
+                        frame,
+                        "v4l2",
+                        send_timeout,
+                    ) {
                         let _ = manager_for_worker.stop_stream();
                         break;
                     }
@@ -401,6 +410,7 @@ pub(super) fn start_v4l2(
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
         sequence_gaps,
+        live,
     })
 }
 

@@ -42,6 +42,9 @@ pub struct SensorDescription {
     /// Embedded data layout, if the sensor sends register values with each frame.
     #[serde(default)]
     pub embedded_data: Option<EmbeddedData>,
+    /// The focus lens (a VCM), if the module has one.
+    #[serde(default)]
+    pub lens: Option<crate::lens::LensDescription>,
 }
 
 /// Who drives the sensor.

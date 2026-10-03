@@ -2,7 +2,7 @@
 //!
 //! Only the algorithms implemented here are converted: `rpi.black_level`, `rpi.lux`,
 //! `rpi.agc` (channel 0), `rpi.awb`, `rpi.alsc`,
-//! `rpi.ccm`, `rpi.contrast`, and `rpi.noise`, `rpi.denoise`, `rpi.sdn`, `rpi.geq`, `rpi.dpc`,
+//! `rpi.ccm`, `rpi.contrast`, `rpi.af`, and `rpi.noise`, `rpi.denoise`, `rpi.sdn`, `rpi.geq`, `rpi.dpc`,
 //! `rpi.sharpen` (into [`DenoiseTuning`]). Everything else is listed in
 //! [`RpiImport::ignored`].
 //! 16-bit levels are normalised to 1.0 and times stay in microseconds.
@@ -15,7 +15,11 @@ use crate::pwl::Pwl;
 use super::json::Value;
 use super::*;
 
+mod af;
 mod detail;
+mod export;
+
+pub(in crate::tuning) use export::export;
 
 /// The result of converting a Raspberry Pi tuning file.
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +142,7 @@ pub(super) fn convert(doc: &Value) -> Result<RpiImport> {
             "rpi.alsc" => t.alsc = Some(alsc(&s, &mut ignored)?),
             "rpi.ccm" => t.ccm = Some(ccm(&s, &mut ignored)?),
             "rpi.contrast" => t.contrast = Some(contrast(&s, &mut ignored)?),
+            "rpi.af" => t.af = Some(af::convert(&s, &mut ignored)?),
             _ => {
                 let mut d = t.denoise.clone().unwrap_or_default();
                 if detail::merge(&s, &mut d, &mut ignored)? {
@@ -170,6 +175,7 @@ fn black_level(s: &Section, ig: &mut Vec<String>) -> Result<BlackLevelTuning> {
         r: s.num_or("black_level_r", all)? / FULL,
         g: s.num_or("black_level_g", all)? / FULL,
         b: s.num_or("black_level_b", all)? / FULL,
+        by_gain: Vec::new(),
     })
 }
 

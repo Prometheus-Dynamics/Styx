@@ -401,6 +401,7 @@ impl SensorDescription {
                 test_pattern,
             },
             embedded_data: data.and_then(|d| d.embedded_data.clone()),
+            lens: data.and_then(|d| d.lens.clone()),
         };
         desc.validate().map_err(|issues| SensorError::Invalid {
             source_name: "subdev report".into(),

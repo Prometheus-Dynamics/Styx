@@ -138,6 +138,21 @@ impl Frames {
         self.health_report().drop_count
     }
 
+    /// The capture's metrics (`docs/metrics.md`): rate, drops by cause, latency, ISP and CPU
+    /// time, 3A, buffers; on a shared capture with every consumer listed.
+    pub fn metrics(&self) -> crate::metrics::CameraMetrics {
+        self.capture().camera_metrics()
+    }
+
+    /// This consumer's own counts on a shared capture: frames received, frames it did not take
+    /// in time (`None` for a plan's own capture: see [`Frames::metrics`]).
+    pub fn consumer_metrics(&self) -> Option<crate::metrics::ConsumerMetrics> {
+        match &self.source {
+            Source::Pipeline(_) => None,
+            Source::Branch(branch) => Some(branch.consumer_metrics()),
+        }
+    }
+
     /// The underlying pipeline of a plan's own capture (`None` on a shared capture).
     pub fn pipeline(&mut self) -> Option<&mut MediaPipeline> {
         match &mut self.source {

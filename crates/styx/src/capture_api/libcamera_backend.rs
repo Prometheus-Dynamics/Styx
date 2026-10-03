@@ -788,6 +788,7 @@ pub(super) fn start_libcamera(
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
         sequence_gaps,
+        live: Default::default(),
     })
 }
 

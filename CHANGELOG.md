@@ -8,6 +8,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added autofocus for native cameras with a focus lens (simulated; hardware validation
+  pending): AF in `styx-algo` (PDAF loop and contrast scans from Raspberry Pi's `af.cpp`, frame-
+  exact scan steps, `rpi.af` tuning import, `sim::FocusSim`), focus lenses as data in
+  `styx-sensor` (kernel lens drivers via `FOCUS_ABSOLUTE`, DW9714/DW9807/DW9817/AK7375 VCMs on
+  I²C, IMX708 PDAF), frame-exact lens moves with per-frame reported positions in `styx-native`
+  (`FrameControls::lens`), software ISP focus statistics, and the processed native controls
+  `AF_MODE`, `AF_TRIGGER`, `AF_STATE`, `LENS_POSITION`, `AF_WINDOWS`, `AF_METERING`,
+  `AF_RANGE`, `AF_SPEED` (continuous AF by default).
 - Added `Frames` / `FrameRequest`, the general "what frames do I want" API:
   `Frames::nv12().size(1280, 800).fps(30).open(&camera)?` (also `rgb()`, `gray()`,
   `formats([..])`, `any()`, `open_best`, and `camera.frames()...open()`). One meaning per choice:

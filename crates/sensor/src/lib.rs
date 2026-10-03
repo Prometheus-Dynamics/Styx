@@ -126,6 +126,8 @@
 //!   requested frame, and which values produced each frame.
 //! * [`SensorDriver`]: power, chip id, init, modes, streaming and scheduled controls over a
 //!   [`RegisterBus`]; [`MockBus`] and [`MockPins`] record operations for tests.
+//! * [`lens`]: focus lenses (VCMs) as data: the chip's I²C command format, the move time
+//!   model, the frame-exact [`LensSchedule`], and the IMX708's phase detection data.
 //! * [`SensorDescription::from_subdev_with`]: descriptions of sensors with kernel drivers,
 //!   built from a [`SubdevReport`] and, when there is one, a [`KernelSensorData`] file (gain
 //!   model, delays, black level, embedded data layout; `sensors/kernel/*.toml` ship built in).
@@ -139,6 +141,7 @@ mod error;
 mod fallback;
 mod gain;
 mod kernel_data;
+pub mod lens;
 mod mbus;
 pub mod schedule;
 mod timing;
@@ -156,6 +159,7 @@ pub use error::{Issue, Issues, Result, SensorError};
 pub use fallback::{ControlRange, KernelControl, SubdevFormat, SubdevReport, kernel_controls};
 pub use gain::{GainCode, GainSplit, Rounding, split_gain};
 pub use kernel_data::{BUILTIN_KERNEL_DATA, KernelSensorData};
+pub use lens::{LensDescription, LensFrame, LensMotion, LensSchedule, VcmChip, VcmFormat, VcmI2c};
 pub use mbus::{ColorFilter, MbusCode};
 pub use schedule::{
     Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Mismatch,

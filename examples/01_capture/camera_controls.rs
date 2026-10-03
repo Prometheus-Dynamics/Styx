@@ -4,6 +4,10 @@
 //! * auto exposure until AE converges (`AE_STATE`), then manual exposure and gain, exposure
 //!   compensation, AE back on;
 //! * white balance: AWB's estimate, a fixed colour temperature, manual red/blue gains;
+//! * autofocus, on a camera with a focus lens (the Raspberry Pi Camera Module 3, any module
+//!   whose lens has a kernel driver or a described VCM): continuous AF until `AF_STATE`
+//!   says focused, a one-shot scan (`AF_MODE` auto, `AF_TRIGGER`), a window, and the lens
+//!   placed by hand (`LENS_POSITION`, in dioptres);
 //! * denoise: a capture setting (`StyxConfig::native_temporal_denoise`, `native_spatial_denoise`),
 //!   given to the plan before it starts (`FramePlan::config`);
 //! * frame rate: a processed capture keeps its rate, so it is opened again at another.
@@ -90,6 +94,75 @@ fn ae_state(frames: &Frames) -> &'static str {
     }
 }
 
+fn af_state(frames: &Frames) -> &'static str {
+    match frames.get_control(ctl::AF_STATE) {
+        Ok(ControlValue::Int(0)) => "idle",
+        Ok(ControlValue::Int(1)) => "scanning",
+        Ok(ControlValue::Int(2)) => "focused",
+        Ok(ControlValue::Int(3)) => "failed",
+        _ => "-",
+    }
+}
+
+/// Waits (up to 120 frames) for AF to stop scanning; prints how long it took.
+fn wait_for_focus(frames: &mut Frames, what: &str) {
+    let t = Instant::now();
+    let mut n = 0;
+    while n < 120 && next(frames).is_some() {
+        n += 1;
+        if n > 2 && af_state(frames) != "scanning" {
+            break;
+        }
+    }
+    println!(
+        "  {what}: {} after {n} frames ({:.0} ms), lens at {:?} dioptres",
+        af_state(frames),
+        t.elapsed().as_secs_f64() * 1e3,
+        frames.get_control(ctl::LENS_POSITION).ok()
+    );
+}
+
+/// Autofocus, when the camera has a focus lens (its capture lists `AF_MODE`).
+fn autofocus(frames: &mut Frames) -> Result<()> {
+    if frames.get_control(ctl::AF_MODE).is_err() {
+        println!("no focus lens: no autofocus controls");
+        return Ok(());
+    }
+    println!("autofocus: continuous (the default)");
+    wait_for_focus(frames, "continuous");
+    println!("one-shot: AF_MODE auto, AF_TRIGGER start");
+    frames.set_control(ctl::AF_MODE, ControlValue::Int(1))?;
+    frames.set_control(ctl::AF_TRIGGER, ControlValue::Int(0))?;
+    wait_for_focus(frames, "one-shot");
+    println!("one-shot on the top-left quarter (AF_WINDOWS, AF_METERING windows)");
+    let r = frames.capture().mode().format.resolution;
+    let (w, h) = (r.width.get(), r.height.get());
+    let quarter = ControlRect {
+        x: 0,
+        y: 0,
+        width: w / 2,
+        height: h / 2,
+    };
+    frames.set_control(ctl::AF_WINDOWS, ControlValue::Rect(quarter))?;
+    frames.set_control(ctl::AF_METERING, ControlValue::Int(1))?;
+    frames.set_control(ctl::AF_TRIGGER, ControlValue::Int(0))?;
+    wait_for_focus(frames, "windowed one-shot");
+    println!("manual: lens at 2 dioptres (50 cm)");
+    frames.set_control(ctl::AF_MODE, ControlValue::Int(0))?;
+    frames.set_control(ctl::LENS_POSITION, ControlValue::Float(2.0))?;
+    for _ in 0..5 {
+        next(frames);
+    }
+    println!(
+        "  AF {}, lens at {:?} dioptres",
+        af_state(frames),
+        frames.get_control(ctl::LENS_POSITION)?
+    );
+    frames.set_control(ctl::AF_METERING, ControlValue::Int(0))?;
+    frames.set_control(ctl::AF_MODE, ControlValue::Int(2))?;
+    Ok(())
+}
+
 fn has_mode(device: &ProbedDevice, code: FourCc) -> bool {
     device
         .backend(BackendKind::Native)
@@ -131,6 +204,7 @@ fn processed(device: &ProbedDevice) -> Result<()> {
         }
     }
     println!("AWB: {:?} K", frames.get_control(ctl::COLOUR_TEMPERATURE)?);
+    autofocus(&mut frames)?;
 
     println!("manual: exposure 10 ms, gain 2.0");
     frames.set_control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(10_000))?;

@@ -42,7 +42,7 @@
 
 pub mod deflicker;
 pub mod flicker;
-mod metering;
+pub(crate) mod metering;
 pub mod tuning;
 
 use std::time::Duration;

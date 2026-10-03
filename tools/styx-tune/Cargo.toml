@@ -1,0 +1,31 @@
+[package]
+name = "styx-tune-cli"
+version.workspace = true
+edition.workspace = true
+description = "styx-tune: calibrate a camera for Styx from raw captures of standard targets, and capture them."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "styx-tune"
+path = "src/main.rs"
+
+[features]
+default = ["mcap"]
+# Read Styx MCAP recordings.
+mcap = ["styx-tune/mcap", "dep:styx"]
+# `styx-tune capture`: record the shots through Styx's native stack.
+capture = ["mcap", "styx/native"]
+
+[dependencies]
+styx = { workspace = true, optional = true, features = ["replay-mcap"] }
+styx-algo.workspace = true
+styx-pipeline.workspace = true
+styx-softisp.workspace = true
+styx-tune.workspace = true
+
+[lints]
+workspace = true

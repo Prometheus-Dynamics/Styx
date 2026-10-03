@@ -262,6 +262,19 @@ pub struct PendingStill {
     rx: Option<std::sync::mpsc::Receiver<Result<StillCapture, CaptureError>>>,
     ready: Option<Result<StillCapture, CaptureError>>,
     deadline: Instant,
+    metrics: crate::metrics::CaptureMetrics,
+}
+
+/// Counts a finished still request in the capture's metrics.
+fn record(
+    metrics: &crate::metrics::CaptureMetrics,
+    r: Result<StillCapture, CaptureError>,
+) -> Result<StillCapture, CaptureError> {
+    metrics.still(r.as_ref().ok().map(|c| {
+        let landed = c.shots.iter().filter(|s| s.meta.landed).count() as u64;
+        (c.latency, c.shots.len() as u64, landed)
+    }));
+    r
 }
 
 impl std::fmt::Debug for PendingStill {
@@ -280,30 +293,33 @@ impl PendingStill {
     /// The still if it is ready (`None`: not yet). Once it returned `Some`, it returns `None`.
     pub fn try_take(&mut self) -> Option<Result<StillCapture, CaptureError>> {
         if let Some(r) = self.ready.take() {
-            return Some(r);
+            return Some(record(&self.metrics, r));
         }
         let rx = self.rx.as_ref()?;
-        match rx.try_recv() {
-            Ok(r) => {
-                self.rx = None;
-                Some(r)
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < self.deadline => {
+                return None;
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < self.deadline => None,
-            Err(_) => {
-                self.rx = None;
-                Some(Err(no_answer()))
-            }
-        }
+            Err(_) => Err(no_answer()),
+        };
+        self.rx = None;
+        Some(record(&self.metrics, r))
     }
 
     /// Waits for the still (until the request's timeout).
     pub fn wait(mut self) -> Result<StillCapture, CaptureError> {
         if let Some(r) = self.ready.take() {
-            return r;
+            return record(&self.metrics, r);
         }
-        let rx = self.rx.take().ok_or_else(no_answer)?;
+        let Some(rx) = self.rx.take() else {
+            return Err(no_answer());
+        };
         let left = self.deadline.saturating_duration_since(Instant::now());
-        rx.recv_timeout(left).unwrap_or_else(|_| Err(no_answer()))
+        record(
+            &self.metrics,
+            rx.recv_timeout(left).unwrap_or_else(|_| Err(no_answer())),
+        )
     }
 }
 
@@ -327,6 +343,7 @@ impl CaptureHandle {
                     rx: Some(rx),
                     ready: None,
                     deadline,
+                    metrics: self.live.clone(),
                 };
             }
             Ok(None) => {}
@@ -335,6 +352,7 @@ impl CaptureHandle {
                     rx: None,
                     ready: Some(Err(e)),
                     deadline,
+                    metrics: self.live.clone(),
                 };
             }
         }
@@ -342,6 +360,7 @@ impl CaptureHandle {
             rx: None,
             ready: Some(super::still_output::from_stream(self, request, started)),
             deadline,
+            metrics: self.live.clone(),
         }
     }
 

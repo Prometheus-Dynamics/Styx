@@ -26,7 +26,8 @@ use styx_uvc::controls::Kind;
 use styx_uvc::{OpenOptions, UsbCameraInfo, UvcDevice, UvcError, UvcFrame};
 
 use super::control_plane::ControlPlane;
-use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle, enqueue_capture_frame};
+use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle};
+use super::handle_metrics::deliver;
 use super::request::CaptureError;
 use super::tunables::StyxConfig;
 use crate::metrics::StageMetrics;
@@ -454,9 +455,13 @@ pub(super) fn start_uvc(
     let send_timeout = Duration::from_millis(capture.queue_send_timeout_ms);
     let poll = Duration::from_millis(capture.idle_poll_ms.clamp(5, 100));
     let config_for_thread = config.clone();
+    // Gaps in UVC sequence numbers are damaged frames styx-uvc dropped.
+    let live = crate::metrics::CaptureMetrics::default().gaps_are_corrupt();
+    let live_worker = live.clone();
     let worker = thread::Builder::new()
         .name("styx-uvc-capture".into())
         .spawn(move || {
+            live_worker.register_thread();
             tracing::debug!(backend = "uvc", "capture worker started");
             loop {
                 if stop_rx.try_recv().is_ok() {
@@ -467,7 +472,7 @@ pub(super) fn start_uvc(
                         let Some(lease) = frame_lease(frame, clock_hz, &config_for_thread) else {
                             continue;
                         };
-                        if enqueue_capture_frame(&tx, lease, "uvc", send_timeout) {
+                        if deliver(&live_worker, &tx, lease, "uvc", send_timeout) {
                             break;
                         }
                     }
@@ -508,6 +513,7 @@ pub(super) fn start_uvc(
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
         sequence_gaps: Default::default(),
+        live,
     })
 }
 

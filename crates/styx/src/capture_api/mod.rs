@@ -22,6 +22,7 @@ mod dispatch;
 pub(super) mod ffmpeg_util;
 #[cfg(feature = "file-backend")]
 pub(super) mod file_backend;
+pub(crate) mod handle_metrics;
 #[cfg(target_os = "linux")]
 pub mod import;
 #[cfg(feature = "libcamera")]

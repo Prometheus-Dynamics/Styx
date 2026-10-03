@@ -269,6 +269,7 @@ impl<'a> CaptureRequest<'a> {
                     handle
                         .retry_metrics
                         .merge_snapshot(retry_metrics.snapshot());
+                    let name = self.device.identity.display.clone();
                     return Ok(match queue {
                         Some(queue) => super::supervisor::supervise(
                             handle,
@@ -281,7 +282,8 @@ impl<'a> CaptureRequest<'a> {
                             config,
                         ),
                         None => handle,
-                    });
+                    }
+                    .published(&name));
                 }
                 Err(err) => {
                     if policy.retry_with_tdn_disabled
@@ -373,6 +375,7 @@ impl<'a> CaptureRequest<'a> {
                     handle
                         .retry_metrics
                         .merge_snapshot(retry_metrics.snapshot());
+                    let name = self.device.identity.display.clone();
                     return Ok(match queue {
                         Some(queue) => super::supervisor::supervise(
                             handle,
@@ -385,7 +388,8 @@ impl<'a> CaptureRequest<'a> {
                             supervise_config,
                         ),
                         None => handle,
-                    });
+                    }
+                    .published(&name));
                 }
                 Err(err) => {
                     if policy.retry_with_tdn_disabled

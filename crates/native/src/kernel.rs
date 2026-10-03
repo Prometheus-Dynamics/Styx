@@ -281,7 +281,16 @@ fn discover_sensor(
             data_source,
             firmware_node: firmware_node(subdev),
         }),
+        lens: None,
     };
+    info.lens = crate::lens::find_kernel_lens(
+        topology,
+        entity,
+        info.kernel
+            .as_ref()
+            .and_then(|k| k.data.as_ref())
+            .and_then(|d| d.lens.as_ref()),
+    );
     info.rebuild_graph(topology.clone());
     Ok(info)
 }
@@ -371,6 +380,7 @@ impl NativeCamera {
         }
         let driver = SensorDriver::new(desc, SensorBus::Kernel(bus), CameraPins::None(NoPins));
         let control = Arc::new(Mutex::new(SensorControl::new(driver)));
+        crate::lens::attach(&info, &control);
         let sensor: Arc<dyn SensorSide> = control.clone();
         let bridge = Arc::new(KernelBridge::new().step("kernel sensor events")?);
         let session = Session::new(

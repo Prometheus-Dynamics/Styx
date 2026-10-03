@@ -97,6 +97,7 @@ pub(super) fn start_replay(
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
         sequence_gaps: Default::default(),
+        live: Default::default(),
     })
 }
 

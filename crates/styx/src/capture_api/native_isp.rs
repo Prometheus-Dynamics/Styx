@@ -7,11 +7,13 @@
 //! from the back end's output buffers (mapped once, exported as dma-bufs, returned to the back
 //! end when the lease drops); software ISP frames are written into recycled heap buffers.
 
+mod af_controls;
 mod loop_controls;
 mod pisp_worker;
 mod still_process;
 mod still_runner;
 
+pub(crate) use af_controls::metas as af_metas;
 pub(crate) use loop_controls::LoopControls;
 pub(crate) use still_runner::StillJob;
 
@@ -32,11 +34,12 @@ use styx_pisp::device::OutputMemory;
 use styx_softisp::{OutputBuffers, Scale};
 
 use super::control_plane::ControlPlane;
-use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle, enqueue_capture_frame};
+use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle};
+use super::handle_metrics::deliver;
 use super::request::CaptureError;
 use super::tunables::StyxConfig;
 use crate::BackendKind;
-use crate::metrics::StageMetrics;
+use crate::metrics::{AaaSample, CaptureMetrics, StageMetrics};
 
 /// Formats the native backend makes from raw frames.
 pub(crate) const PROCESSED: [FourCc; 2] = [FourCc::NV12, FourCc::RG24];
@@ -188,6 +191,17 @@ fn layouts(code: FourCc, h: usize, stride: usize) -> SmallVec<[PlaneLayout; 3]> 
     }
 }
 
+/// What the 3A loop made of a frame, for the capture's metrics.
+fn aaa_sample(params: &styx_pipeline::styx_algo::Params) -> AaaSample {
+    AaaSample {
+        ae_locked: params.ae.locked,
+        awb_converged: params.awb.converged,
+        colour_temperature: params.colour_temperature,
+        lux: params.lux,
+        flicker_period: params.ae.flicker_detected,
+    }
+}
+
 fn native_meta(sequence: u64, s: &SensorValues) -> NativeFrameMeta {
     NativeFrameMeta {
         sequence: sequence as u32,
@@ -307,6 +321,8 @@ pub(super) fn start_processed(
         config.backends.native.flicker,
         config.backends.native.deflicker,
     ));
+    loop_controls.af.set_output(w, h);
+    loop_controls.af.set_lens(camera.info().lens.is_some());
     for (id, value) in initial {
         loop_controls
             .apply(*id, value)
@@ -336,6 +352,9 @@ pub(super) fn start_processed(
         Arc::clone(&loop_controls),
         Box::new(move || still_process::StillProcessor::spawn(Arc::clone(&still_ctx))),
     );
+    let live = CaptureMetrics::default();
+    live.set_isp(kind.name());
+    let live_worker = live.clone();
     let (controls, worker): (styx_native::CameraControls, thread::JoinHandle<()>) = match kind {
         IspKind::Pisp => {
             let settings = StreamSettings {
@@ -385,6 +404,7 @@ pub(super) fn start_processed(
                     timeout,
                     loop_controls: loop_worker,
                     still,
+                    live: live_worker,
                 },
             )?;
             (controls, worker)
@@ -409,6 +429,7 @@ pub(super) fn start_processed(
             if let Some(ctx) = crate::gpu_isp::context() {
                 match p.use_gpu(&ctx) {
                     Ok(()) => {
+                        live.set_isp("gpu");
                         tracing::info!(backend = "native", device = %ctx.info().name, "GPU ISP")
                     }
                     Err(e) => {
@@ -434,6 +455,7 @@ pub(super) fn start_processed(
             let worker = thread::Builder::new()
                 .name("styx-native-softisp".into())
                 .spawn(move || {
+                    live_worker.register_thread();
                     let (ret_tx, ret_rx) = mpsc::channel::<Vec<u8>>();
                     loop {
                         if stop_rx.try_recv().is_ok() {
@@ -474,6 +496,9 @@ pub(super) fn start_processed(
                         let ae = (step.params.ae.total_exposure, step.params.ae.locked);
                         let request = step.sensor;
                         let (sensor, lands) = (f.sensor, f.request_lands);
+                        let t = &f.output.timing;
+                        live_worker.isp_time(t.isp, t.settings + t.isp + t.stats + t.algorithms);
+                        live_worker.aaa(&aaa_sample(&f.output.step.params));
                         let meta =
                             frame_meta(&worker_mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
                         drop(f);
@@ -481,12 +506,12 @@ pub(super) fn start_processed(
                         let lease = FrameLease::from_external(
                             meta,
                             layouts(code, h as usize, stride),
-                            Arc::new(HeapBacking {
+                            Arc::new(live_worker.track(HeapBacking {
                                 data: Some(buf),
                                 returns: ret_tx.clone(),
-                            }),
+                            })),
                         );
-                        if enqueue_capture_frame(&tx, lease, "native-softisp", send_timeout) {
+                        if deliver(&live_worker, &tx, lease, "native-softisp", send_timeout) {
                             break;
                         }
                     }
@@ -524,7 +549,8 @@ pub(super) fn start_processed(
         control_error: Arc::new(Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
-        sequence_gaps: Default::default(),
+        sequence_gaps: live.sequence_gaps(),
+        live,
     })
 }
 

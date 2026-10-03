@@ -53,6 +53,34 @@ box (OV9782 1280x800) unless stated.
       a code; RGB24 frame 1.59 → 1.11 ms on Zen 3) and an exact AVX2 table.
 - [x] Built-in OV9782 description and tuning; Styx tuning search path (`STYX_TUNING_PATH`, …).
 
+### Autofocus (simulation only so far)
+- [x] AF in Rust (`styx-algo`, from Raspberry Pi's `af.cpp`): PDAF loop, coarse + fine contrast
+      scans with parabola fits, continuous mode with scene-change retriggering, windows with
+      weights, manual / auto / continuous, `rpi.af` tuning import; Styx changes: frame-exact
+      scan steps on lens reports, contrast relative to level, noise-aware peak tests, failed
+      scans back to hyperfocal, backlash-aware approach. Simulated (`tests/sim_af.rs`): one-shot
+      9 frames (48 with libcamera's frame counting), within 0.02 D; continuous refocus after a
+      depth step in 20 frames with no hunting; PDAF 2 frames against 10; low light and blank
+      walls fail cleanly (algorithms.md, "AF: autofocus").
+- [x] Lenses as data (`styx-sensor::lens`): kernel lens drivers found by the sensor's ancillary
+      link (`FOCUS_ABSOLUTE`), VCMs on I²C (DW9714, DW9807/DW9817, AK7375, custom formats),
+      move-time model, frame-exact `LensSchedule`, `FrameControls::lens`; IMX708 PDAF decoding
+      from embedded data; software ISP focus statistics; PiSP CDAF noise from the noise profile;
+      Styx controls `AF_MODE`, `AF_TRIGGER`, `AF_STATE`, `LENS_POSITION`, `AF_WINDOWS`,
+      `AF_METERING`, `AF_RANGE`, `AF_SPEED`.
+- [ ] Hardware validation on a Camera Module 3 (IMX708 + DW9817): the lens entity and its
+      ancillary link appear as expected under `dw9807-vcm`; moves land on the frame
+      `FrameControls::lens` reports settled (settle time 12 ms and `delay = 2` are guesses);
+      the dioptre map (Raspberry Pi's 0 D → 445, 15 D → 925); the PDAF line's offset in the
+      metadata buffer (two mode lines in, as libcamera) and the sign of `pdaf_gain`; CDAF
+      figures of merit on the PiSP behave like the simulation's (peak width, noise); one-shot
+      and continuous AF times against libcamera's (`rpicam-hello --autofocus-mode`).
+- [ ] AF on a bridged sensor with an I²C VCM (no module here yet); the DW9807 busy flag is
+      not polled.
+- [ ] AF pause (libcamera's `AfPause`); PDAF from sensors other than the IMX708; the GPU ISP's
+      focus statistics; CDAF windows on the PiSP follow the AF windows (today the 8×8 grid
+      covers the frame and the windows weight its zones).
+
 ### Ecosystem (phase 5)
 - [x] GStreamer `styxsrc` + device provider (`crates/gst-styx`).
 - [x] PipeWire camera node daemon (`crates/pipewire-styx`).
@@ -64,6 +92,14 @@ box (OV9782 1280x800) unless stated.
       30 MiB).
 - [x] Processed captures take AE/AWB controls (AE on/off, fixed exposure or gain, EV, AWB
       on/off, colour temperature, red/blue gains) and report AWB's colour temperature.
+- [x] Built-in per-camera metrics, cheap enough to leave on (262 ns per frame on the CM5;
+      PiSP path CPU unchanged within measurement): frames, measured vs configured fps, drops by
+      cause (sensor gaps, queue overflow, corrupt, ISP skips), sensor-to-delivery/receive
+      latency, ISP and worker CPU time, 3A state, restarts, buffers held and hold times, each
+      consumer of a shared capture and each camera service client; `camera_metrics()`,
+      `styx::metrics::snapshot()`, Prometheus text (+ `metrics-http`), serde, the camera
+      service's metrics request, `metrics_top`. Checked against the consumers' own measurement
+      on the CM5. See [docs/metrics.md](docs/metrics.md).
 
 ### HeliOS
 - [x] `helios-peripherals` runs on the native stack (HeliOS branch `styx-native-trial`):
@@ -86,6 +122,8 @@ box (OV9782 1280x800) unless stated.
 - [ ] Image: drop libcamera/libpisp, add the bridge module (Buildroot snippet in
       `kernel-modules/styx-sensor-bridge/buildroot`), config.txt overlay lines.
 - [ ] Not yet tested: a real CSI unplug, controls set by HeliOS, runs longer than 2 h.
+- [ ] Log or export `camera_metrics()` (or serve `styx::metrics::serve_http`) in
+      helios-peripherals in place of the `health_report`/`metrics` logging every 30 frames.
 
 ### Image quality
 - [x] Black level at high gain: not a black level difference. Zero-exposure levels through the
@@ -93,7 +131,26 @@ box (OV9782 1280x800) unless stated.
       same); the 2.4 codes were most likely the 50 Hz lamp. To close it against libcamera
       itself: its raw at a 1-line exposure and 8× (pipeline.md, "Quality vs libcamera").
 - [ ] Verify the unverified kernel-sensor data files on real cameras (imx219, imx477, imx708, ov5647).
-- [ ] OV9782 tuning of our own (today: the HeliOS tuning).
+- [x] Camera calibration without libcamera's `ctt`: `styx-tune` (`crates/tune`, `tools/styx-tune`)
+      calibrates black level (per channel and gain; hot pixels), lens shading per colour
+      temperature, the AWB curve, colour matrices (chart found automatically or from corners),
+      the noise profile, lux and GEQ from Styx MCAP / raw recordings or DNGs, writes Styx TOML
+      and Raspberry Pi JSON (every libcamera tuning round-trips), and records the shots through
+      Styx (`styx-tune capture`). Recovers a synthetic sensor's parameters (black within 0.02
+      codes, shading tables 0.1%, CCM coefficients 0.011, noise 0.5%). See
+      [docs/tuning.md](docs/tuning.md).
+- [ ] OV9782 tuning of our own (today: the HeliOS tuning, identity colour matrix): a real
+      session (ColorChecker, 3-5 high-CRI lights 2700-6500 K with a colour meter, diffuser,
+      lux meter, lens cap; docs/tuning.md). From the CM5 without a chart so far: black level by
+      gain (65.5/64.9 codes by row at 1×) and the temporal noise (slope 2.75 + 38 against the
+      file's 5.38: `ctt`'s spatial estimate includes texture; its denoise strengths were tuned
+      against it).
+- [ ] Lux on the software ISP path: its statistics' luma is taken before white balance, the
+      PiSP's (and `styx-tune`'s lux reference, as `ctt`'s) after; lux estimates differ by the
+      white balance there.
+- [ ] `styx-tune`: DNG input through `styx-dng` once merged (`input::RawDecoder`); defective
+      pixel lists to the ISP; AWB priors from scene statistics; a covered-lens dark session on
+      the OV9782 for the black level at high gain.
 
 ### Performance
 - [x] PiSP: 0.12 ms/frame was the `pispbe` driver writing its whole config per job with a
@@ -155,6 +212,15 @@ box (OV9782 1280x800) unless stated.
 - [ ] Still JPEG encoding: the `image` crate takes most of the ~45 ms still thread time at
       1280x800; turbojpeg (C) is faster where it is allowed.
 - [ ] A per-camera DNG `NoiseProfile` from the tuning's noise model.
+
+### Metrics
+- [ ] Producer-side metrics for libcamera, file, replay, netcam and simulation captures (today
+      counted as received); hold times for V4L2 and UVC buffers.
+- [ ] Per-consumer hold times for in-process consumers of shared captures (today per capture
+      buffer, and per camera service client); attribute a service client's queue drops to the
+      client (they show on its consumer row of the camera).
+- [ ] AF state once the loop has autofocus (`native/autofocus`); CPU of the software ISP's
+      worker pool per capture.
 
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).
