@@ -26,6 +26,7 @@ const DEFAULT_CAMERA_BACKEND_PRIORITY: &[BackendKind] = &[
     BackendKind::Native,
     BackendKind::V4l2,
     BackendKind::Libcamera,
+    BackendKind::Uvc,
     BackendKind::Virtual,
     BackendKind::Netcam,
     BackendKind::File,

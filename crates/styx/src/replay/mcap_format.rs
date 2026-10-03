@@ -361,6 +361,8 @@ fn encode_meta_v1_fields(w: &mut CdrWriter, meta: &FrameMeta, topic: &str, level
         Some(BackendFrameMeta::V4l2(m)) => (1, m.sequence, Some(m), ""),
         Some(BackendFrameMeta::Libcamera(m)) => (2, m.sequence, None, m.buffer_memory),
         Some(BackendFrameMeta::Native(m)) => (3, m.sequence, None, ""),
+        // Recorded as the V4L2 metadata `uvcvideo` would give the frame.
+        Some(BackendFrameMeta::Uvc(m)) => (1, m.sequence, Some(m.as_v4l2()), ""),
     };
     let native = meta.native().copied();
     w.u8(backend);

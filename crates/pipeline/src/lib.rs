@@ -41,6 +41,7 @@
 pub mod controller;
 #[cfg(feature = "device")]
 pub mod device;
+mod engine;
 mod error;
 pub mod isp;
 pub mod measure;
@@ -54,8 +55,12 @@ pub mod tuning;
 pub mod warm;
 
 pub use controller::{Controller, SensorValues, Step};
+pub use engine::{IspEngine, RawFrame};
 pub use error::{PipelineError, Result};
 pub use isp::IspSettings;
 pub use sensor::SensorInfo;
 pub use soft::{SoftLoop, SoftOutput, SoftTiming};
 pub use styx_algo;
+/// The GPU ISP (feature `gpu`): [`SoftLoop::use_gpu`] runs the software path on it.
+#[cfg(feature = "gpu")]
+pub use styx_gpuisp;

@@ -238,7 +238,7 @@ pub(crate) fn queue_for(backend: BackendKind, config: &StyxConfig) -> Option<Cap
     // Virtual sources never disconnect; tests supervise them to exercise recovery.
     let supported = matches!(
         backend,
-        BackendKind::Libcamera | BackendKind::V4l2 | BackendKind::Native
+        BackendKind::Libcamera | BackendKind::V4l2 | BackendKind::Native | BackendKind::Uvc
     ) || (cfg!(test) && backend == BackendKind::Virtual);
     (supported && capture.reconnect.enabled)
         .then(|| styx_core::queue::bounded_with(capture.queue_depth.max(1), capture.queue_overflow))
@@ -501,6 +501,7 @@ mod tests {
             BackendKind::Libcamera,
             BackendKind::V4l2,
             BackendKind::Native,
+            BackendKind::Uvc,
         ] {
             assert!(
                 queue_for(backend, &config).is_some()

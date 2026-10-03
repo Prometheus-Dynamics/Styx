@@ -22,6 +22,8 @@ mod dispatch;
 pub(super) mod ffmpeg_util;
 #[cfg(feature = "file-backend")]
 pub(super) mod file_backend;
+#[cfg(target_os = "linux")]
+pub mod import;
 #[cfg(feature = "libcamera")]
 pub(super) mod libcamera_backend;
 #[cfg(feature = "native")]
@@ -31,6 +33,8 @@ pub(super) mod native_isp;
 #[cfg(feature = "netcam")]
 pub(super) mod netcam_backend;
 mod replay_backend;
+#[cfg(feature = "uvc")]
+pub(super) mod uvc_backend;
 #[cfg(feature = "v4l2")]
 pub(super) mod v4l2_backend;
 pub(super) mod virtual_backend;
@@ -39,6 +43,8 @@ pub use control_plane::ControlPlane;
 #[cfg(feature = "graph-pipeline")]
 pub(crate) use control_plane::{apply_control_to_plane, read_control_from_plane};
 pub use handle::{CaptureFrameIter, CaptureHandle, WorkerHandle};
+#[cfg(target_os = "linux")]
+pub use import::{CaptureBuffer, CaptureBuffers};
 #[cfg(feature = "native")]
 pub use native_backend::controls as native_controls;
 #[cfg(feature = "native")]
@@ -61,10 +67,12 @@ pub use tunables::{
     DEFAULT_NETCAM_STOP_POLL_MS, DEFAULT_NETCAM_TIMEOUT_SECS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN,
     DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH, DEFAULT_V4L2_ERROR_BACKOFF_MS,
     DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig, IdleStop,
-    LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, NativeFlicker,
-    NativeIspConfig, NetcamConfig, NetcamTunables, ReconnectPolicy, StyxConfig, TransformConfig,
-    V4l2Config,
+    LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, NativeDeflicker,
+    NativeFlicker, NativeIspConfig, NetcamConfig, NetcamTunables, ReconnectPolicy, StyxConfig,
+    TransformConfig, UvcConfig, V4l2Config,
 };
+#[cfg(feature = "uvc")]
+pub(crate) use uvc_backend::probe_into as probe_uvc_into;
 
 // Release policy: these backend handle types are consumed only by feature-gated constructors, so
 // some release feature combinations intentionally compile only a subset of the import list.

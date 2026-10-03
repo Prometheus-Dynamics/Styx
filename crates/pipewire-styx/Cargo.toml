@@ -30,6 +30,7 @@ turbojpeg = ["styx/codec-turbojpeg"]
 [dependencies]
 styx = { path = "../styx", default-features = false, features = ["facade", "raw-decoders", "codec-jpeg-decoder"] }
 pipewire = { version = "0.10", optional = true, features = ["v0_3_34"] }
+libc = "0.2"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

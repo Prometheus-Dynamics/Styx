@@ -404,6 +404,7 @@ fn backend_zero_copy_residencies(kind: BackendKind) -> Vec<FrameResidency> {
         ],
         BackendKind::Simulation => vec![FrameResidency::HostOwned, FrameResidency::HostExternal],
         BackendKind::Replay => vec![FrameResidency::HostOwned, FrameResidency::CompressedPacket],
+        BackendKind::Uvc => vec![FrameResidency::HostExternal],
     }
 }
 
@@ -424,6 +425,7 @@ fn backend_zero_copy_cross_process(kind: BackendKind) -> bool {
             | BackendKind::File
             | BackendKind::Simulation
             | BackendKind::Replay
+            | BackendKind::Uvc
     )
 }
 
@@ -436,7 +438,11 @@ fn backend_export_modes(kind: BackendKind) -> Vec<CrossProcessExportMode> {
         ],
         BackendKind::Libcamera | BackendKind::Native => vec![CrossProcessExportMode::Dmabuf],
         BackendKind::Virtual => vec![CrossProcessExportMode::Memfd],
-        BackendKind::Netcam | BackendKind::File | BackendKind::Simulation | BackendKind::Replay => {
+        BackendKind::Netcam
+        | BackendKind::File
+        | BackendKind::Simulation
+        | BackendKind::Replay
+        | BackendKind::Uvc => {
             vec![
                 CrossProcessExportMode::Memfd,
                 CrossProcessExportMode::CopyToMemfd,
@@ -470,6 +476,9 @@ fn backend_notes(kind: BackendKind) -> Vec<String> {
         ],
         BackendKind::Replay => vec![
             "recorded frames are decoded into host-owned buffers; they cross process by copy-to-memfd".into(),
+        ],
+        BackendKind::Uvc => vec![
+            "frames are assembled from the USB payloads straight into pooled buffers and handed out without another copy; they cross process by copy-to-memfd".into(),
         ],
         BackendKind::Simulation => vec![
             "readback can be host-owned or memfd-backed external staging".into(),

@@ -159,6 +159,15 @@ impl FramePlan {
             Some((after, _)) => config.stop_when_idle(after),
             None => config,
         };
+        let roi = RoiHandle::default();
+        roi.set(self.requirements.roi);
+        let preparer = Arc::new(FramePreparer::new(self, roi.clone()));
+        #[cfg(target_os = "linux")]
+        if let Some(buffers) = &self.capture_buffers
+            && preparer.passes_through()
+        {
+            config = config.capture_into(buffers.clone());
+        }
         let mut capture = CaptureRequest::new(&self.device)
             .backend(self.backend)
             .mode(self.mode.id.clone())
@@ -166,9 +175,6 @@ impl FramePlan {
         if let Some(interval) = self.interval {
             capture = capture.interval(interval);
         }
-        let roi = RoiHandle::default();
-        roi.set(self.requirements.roi);
-        let preparer = Arc::new(FramePreparer::new(self, roi.clone()));
         let builder = MediaPipelineBuilder::new(capture).decoder(preparer.clone());
         // Planned frames are for an in-process consumer: zero-copy views and pooled buffers,
         // not memfd/dma-buf exports for other processes.
@@ -305,6 +311,12 @@ impl FramePreparer {
                     .ok()
             })
             .as_ref()
+    }
+
+    /// Whether frames leave this stage as the camera delivered them (no decode, view or copy).
+    #[cfg(target_os = "linux")]
+    fn passes_through(&self) -> bool {
+        matches!(self.route, Route::Direct) && !self.luma
     }
 
     /// Make the next encoded frame a keyframe (plans that encode).

@@ -9,11 +9,11 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use styx_capture::prelude::{ControlId, ControlValue};
-use styx_pipeline::styx_algo::{Controls, Flicker, Params};
+use styx_pipeline::styx_algo::{Controls, Deflicker, Flicker, Params};
 
 use super::super::native_backend::controls as ids;
 use super::super::request::CaptureError;
-use super::super::tunables::NativeFlicker;
+use super::super::tunables::{NativeDeflicker, NativeFlicker};
 
 /// The loop's application controls and its latest state.
 #[derive(Debug)]
@@ -50,6 +50,23 @@ fn algo_flicker(f: NativeFlicker) -> Flicker {
     }
 }
 
+/// The loop's deflicker for a configured one.
+fn algo_deflicker(d: NativeDeflicker) -> Deflicker {
+    match d {
+        NativeDeflicker::Off => Deflicker::Off,
+        NativeDeflicker::On => Deflicker::On,
+        NativeDeflicker::Auto => Deflicker::Auto,
+    }
+}
+
+fn native_deflicker(d: Deflicker) -> NativeDeflicker {
+    match d {
+        Deflicker::Off => NativeDeflicker::Off,
+        Deflicker::On => NativeDeflicker::On,
+        Deflicker::Auto => NativeDeflicker::Auto,
+    }
+}
+
 /// The configured flicker avoidance closest to the loop's.
 fn native_flicker(f: Flicker) -> NativeFlicker {
     match f {
@@ -72,10 +89,12 @@ fn number(value: &ControlValue) -> Result<f64, CaptureError> {
 }
 
 impl LoopControls {
-    /// The loop's controls with this flicker avoidance (handed to the loop before its start).
-    pub(crate) fn with_flicker(flicker: NativeFlicker) -> Self {
+    /// The loop's controls with this flicker avoidance and deflicker (handed to the loop
+    /// before its start).
+    pub(crate) fn with_flicker(flicker: NativeFlicker, deflicker: NativeDeflicker) -> Self {
         let c = Controls {
             flicker: algo_flicker(flicker),
+            deflicker: algo_deflicker(deflicker),
             ..Controls::default()
         };
         Self {
@@ -94,7 +113,7 @@ impl LoopControls {
         id: ControlId,
         value: &ControlValue,
     ) -> Option<Result<(), CaptureError>> {
-        const LOOP: [ControlId; 11] = [
+        const LOOP: [ControlId; 12] = [
             ids::EXPOSURE_TIME_US,
             ids::GAIN,
             ids::AE_ENABLE,
@@ -106,6 +125,7 @@ impl LoopControls {
             ids::FRAME_RATE,
             ids::FRAME_DURATION_US,
             ids::AE_FLICKER_MODE,
+            ids::AE_DEFLICKER_MODE,
         ];
         if !LOOP.contains(&id) {
             return None;
@@ -128,6 +148,14 @@ impl LoopControls {
                 _ => {
                     return Some(Err(CaptureError::control_apply(
                         "AE flicker mode: 0 off, 1 50 Hz, 2 60 Hz, 3 auto",
+                    )));
+                }
+            },
+            ids::AE_DEFLICKER_MODE => match NativeDeflicker::from_control_value(v as i64) {
+                Some(d) if v.fract() == 0.0 => c.deflicker = algo_deflicker(d),
+                _ => {
+                    return Some(Err(CaptureError::control_apply(
+                        "AE deflicker mode: 0 off, 1 on, 2 with flicker avoidance",
                     )));
                 }
             },
@@ -164,6 +192,9 @@ impl LoopControls {
         Some(match id {
             ids::AE_STATE => ControlValue::Int(self.ae_state.load(Ordering::Acquire)),
             ids::AE_FLICKER_MODE => ControlValue::Int(native_flicker(c.flicker).control_value()),
+            ids::AE_DEFLICKER_MODE => {
+                ControlValue::Int(native_deflicker(c.deflicker).control_value())
+            }
             ids::AE_FLICKER_DETECTED => {
                 ControlValue::Int(self.flicker_detected.load(Ordering::Acquire))
             }
@@ -242,8 +273,18 @@ mod tests {
 
     #[test]
     fn flicker_avoidance_is_configured_and_controlled() {
-        let l = LoopControls::with_flicker(NativeFlicker::Auto);
+        let l = LoopControls::with_flicker(NativeFlicker::Auto, NativeDeflicker::Auto);
         assert_eq!(l.take().map(|c| c.flicker), Some(Flicker::Auto));
+        assert_eq!(l.read(ids::AE_DEFLICKER_MODE), Some(ControlValue::Int(2)));
+        l.apply(ids::AE_DEFLICKER_MODE, &ControlValue::Int(0))
+            .unwrap()
+            .unwrap();
+        assert_eq!(l.take().map(|c| c.deflicker), Some(Deflicker::Off));
+        assert!(
+            l.apply(ids::AE_DEFLICKER_MODE, &ControlValue::Int(3))
+                .unwrap()
+                .is_err()
+        );
         assert_eq!(l.read(ids::AE_FLICKER_MODE), Some(ControlValue::Int(3)));
         l.apply(ids::AE_FLICKER_MODE, &ControlValue::Int(1))
             .unwrap()

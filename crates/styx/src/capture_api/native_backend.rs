@@ -71,6 +71,9 @@ pub mod controls {
     /// microseconds (`Int`, read only; 0 none yet; 10000 for 50 Hz mains), as libcamera's
     /// `AeFlickerDetected`.
     pub const AE_FLICKER_DETECTED: ControlId = ControlId(0xF400_0012);
+    /// Processed modes: deflicker (`Int`): 0 off, 1 on, 2 with flicker avoidance
+    /// (`NativeDeflicker::control_value`; the default from `NativeIspConfig::deflicker`).
+    pub const AE_DEFLICKER_MODE: ControlId = ControlId(0xF400_0013);
 }
 
 fn native_err(e: NativeError) -> CaptureError {
@@ -243,6 +246,15 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
             ControlValue::Int(0),
             ControlValue::Int(3),
             ControlValue::Int(3),
+            ControlValue::Int(1),
+        ),
+        meta(
+            controls::AE_DEFLICKER_MODE,
+            "ae_deflicker_mode",
+            ControlKind::Int,
+            ControlValue::Int(0),
+            ControlValue::Int(2),
+            ControlValue::Int(2),
             ControlValue::Int(1),
         ),
         ControlMeta {
@@ -475,6 +487,9 @@ pub(super) fn start_native(
     let mut stream = camera.start().map_err(native_err)?;
 
     let capture = config.capture_tunables();
+    // A queue the supervisor passed in belongs to the consumer and outlives this capture (a
+    // reconnect starts the next one on it): only a queue made here is closed when it ends.
+    let owns_queue = queue.is_none();
     let (tx, rx) = queue.unwrap_or_else(|| {
         styx_core::queue::bounded_with(capture.queue_depth.max(1), capture.queue_overflow)
     });
@@ -513,7 +528,9 @@ pub(super) fn start_native(
             if let Err(e) = camera.close() {
                 tracing::warn!(backend = "native", error = %e, "closing the camera");
             }
-            tx.close();
+            if owns_queue {
+                tx.close();
+            }
             tracing::debug!(backend = "native", "capture worker stopped");
         })
         .map_err(|e| CaptureError::Backend(format!("native worker: {e}")))?;

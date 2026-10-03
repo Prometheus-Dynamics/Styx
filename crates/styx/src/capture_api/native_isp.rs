@@ -269,12 +269,18 @@ pub(super) fn start_processed(
     let kind = isp_kind(camera.info());
     tracing::info!(backend = "native", isp = kind.name(), tuning = %source, "processed capture");
     let capture = config.capture_tunables();
+    // A queue the supervisor passed in belongs to the consumer and outlives this capture (a
+    // reconnect starts the next one on it): only a queue made here is closed when it ends.
+    let owns_queue = queue.is_none();
     let (tx, rx) = queue.unwrap_or_else(|| {
         styx_core::queue::bounded_with(capture.queue_depth.max(1), capture.queue_overflow)
     });
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     // The 3A loop's controls (initial ones applied before the start) and its state.
-    let loop_controls = Arc::new(LoopControls::with_flicker(config.backends.native.flicker));
+    let loop_controls = Arc::new(LoopControls::with_flicker(
+        config.backends.native.flicker,
+        config.backends.native.deflicker,
+    ));
     for (id, value) in initial {
         loop_controls
             .apply(*id, value)
@@ -329,6 +335,7 @@ pub(super) fn start_processed(
                     second_kind,
                     strides,
                     tx,
+                    owns_queue,
                     stop: stop_rx,
                     error: werr,
                     send_timeout,
@@ -354,6 +361,17 @@ pub(super) fn start_processed(
                 .unwrap_or_else(crate::planner::cost::default_softisp_threads);
             tracing::info!(backend = "native", threads, "software ISP threads");
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
+            #[cfg(feature = "gpu-isp")]
+            if let Some(ctx) = crate::gpu_isp::context() {
+                match p.use_gpu(&ctx) {
+                    Ok(()) => {
+                        tracing::info!(backend = "native", device = %ctx.info().name, "GPU ISP")
+                    }
+                    Err(e) => {
+                        tracing::warn!(backend = "native", error = %e, "GPU ISP refused; software ISP")
+                    }
+                }
+            }
             if let Some(c) = loop_controls.take() {
                 p.soft_loop().controller().set_controls(c);
             }
@@ -422,7 +440,9 @@ pub(super) fn start_processed(
                     if let Err(e) = p.close() {
                         tracing::warn!(backend = "native", error = %e, "closing the software ISP path");
                     }
-                    tx.close();
+                    if owns_queue {
+                        tx.close();
+                    }
                 })
                 .map_err(|e| err(format!("worker: {e}")))?;
             (controls, worker)

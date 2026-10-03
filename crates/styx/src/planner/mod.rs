@@ -129,6 +129,9 @@ pub struct FramePlan {
     pub(crate) decode_threads: usize,
     pub(crate) queue_depth: usize,
     pub(crate) stop_when_idle: Option<(std::time::Duration, crate::capture_api::IdleStop)>,
+    /// Buffers to capture into when frames pass through unchanged.
+    #[cfg(target_os = "linux")]
+    pub(crate) capture_buffers: Option<crate::capture_api::CaptureBuffers>,
 }
 
 impl fmt::Debug for FramePlan {
@@ -285,6 +288,8 @@ pub(crate) fn plan_from(
         decode_threads: cost::decode_threads(req.priority, req.overrides.decode_threads),
         queue_depth: cost::queue_depth(req.priority, req.overrides.queue_depth),
         stop_when_idle: None,
+        #[cfg(target_os = "linux")]
+        capture_buffers: None,
     }
 }
 
@@ -421,6 +426,15 @@ impl FramePlan {
     /// other processes without copying (Linux). Camera buffers are shareable already.
     pub fn exportable(mut self) -> Self {
         self.exportable = true;
+        self
+    }
+
+    /// Capture into `buffers` (see [`crate::capture_api::import`]) when the plan delivers the
+    /// camera's frames unchanged and the backend can; otherwise frames come in the plan's own
+    /// buffers and [`crate::capture_api::CaptureBuffers::in_use`] stays false.
+    #[cfg(target_os = "linux")]
+    pub fn capture_into(mut self, buffers: crate::capture_api::CaptureBuffers) -> Self {
+        self.capture_buffers = Some(buffers);
         self
     }
 

@@ -40,6 +40,12 @@ box (OV9782 1280x800) unless stated.
       mean light, so 120 fps no longer chases it (exposure × gain spread 10% → 1%, cold start
       never locked → frame ~21 under the room's ±20% 50 Hz lamp); long exposures whole mains
       periods (30 fps: frame spread 2.4% → 0.2%); detects the mains frequency itself.
+- [x] Deflicker (`Deflicker::Auto`, on with flicker avoidance; `AE_DEFLICKER_MODE`): each
+      frame's ISP digital gain divided by the brightness the flicker model predicts for that
+      frame (mains frequency tracked, confidence-gated, faded, headroom only where highlights
+      would clip): output frame-to-frame spread under the room's lamp 15-18% → 3.4-4.7% at
+      120 fps, 16-19% → 4.3-4.9% at 90, 3.2-3.6% → 1.5-1.6% at 60 (simulated 13% → 0.12%);
+      PiSP CPU 0.30 → 0.48 ms/frame at 120 fps (algorithms on every frame while it flickers).
 - [x] AE locks at its limits in scenes beyond its reach (`AE_STATE` converged, as libcamera).
 - [x] Software ISP (`styx-softisp`): fp16 NEON path, cached capture read in place, 15 Hz stats
       when settled — 8.8–9.7 % of a core at 30 fps on one A76 core (was 47 %), bit-exact integer
@@ -90,23 +96,57 @@ box (OV9782 1280x800) unless stated.
 - [ ] OV9782 tuning of our own (today: the HeliOS tuning).
 
 ### Performance
-- [ ] PiSP: 0.12 ms/frame is the `pispbe` driver rewriting its whole config per job (kernel side).
+- [x] PiSP: 0.12 ms/frame was the `pispbe` driver writing its whole config per job with a
+      barrier per word. Patched driver (`kernel-modules/pispbe`: relaxed MMIO, only changed
+      words, cached config copy): 117 → 8 µs per job, Styx API 0.35 → 0.23-0.26 ms/frame at
+      30 fps (0.25 → 0.13-0.15 at 120), latency −0.11 ms, outputs bit-identical, libcamera
+      unaffected. Installed on the dev box as an override of `pisp_be`.
+- [ ] Ship the `pispbe` patch in the HeliOS image (kernel patch) and/or send it upstream (draft
+      in `kernel-modules/pispbe/README.md`; ask Raspberry Pi whether the config registers are
+      guaranteed to keep their values between jobs).
 - [ ] Software ISP: outside the image maths only ~0.3 ms of memory traffic and ~0.15 ms of
       dequeue/sync/bookkeeping are left (staging copy and end-of-access sync gone). Integer path
       (Pi 4 class): colour matrix 1.1 ms and tone table 1.5 ms per frame on the A76; not yet
       measured on a real Cortex-A72. AVX-512 VBMI exact tone table (untested: no AVX-512 host).
-- [ ] PipeWire node copies each frame once (zero-copy needs the camera buffers as the PipeWire pool).
+- [x] PipeWire node copies each frame once: the node now allocates the PipeWire pool (memfds, and
+      dma-bufs of them via `udmabuf` for DMA_DRM consumers) and the camera captures into it
+      (`CaptureBuffers`: V4L2 DMABUF import, virtual camera) when frames pass through unchanged;
+      a frame is held until the consumer returns its buffer. Copy otherwise (docs/ecosystem.md).
+- [ ] PipeWire zero copy, remaining: run V4L2 DMABUF import against a driver that takes it (a UVC
+      webcam; v4l2loopback is MMAP only); native PiSP outputs and libcamera capturing into caller
+      buffers; converted routes decoding into the pool; `--service` frames (the service's own
+      buffers); a CMA dma-heap pool for CSI receivers that need contiguous buffers.
 
 ### Platforms
 - [ ] A second bridged sensor and a non-Pi board (software ISP or its own ISP).
-- [ ] GPU ISP path where Vulkan exists (not on the HeliOS image).
-- [ ] Userspace UVC (optional).
+- [x] GPU ISP path where Vulkan exists (`styx-gpuisp`, optional): the software ISP's pipeline
+      as Vulkan compute shaders (ash, Vulkan loaded at run time), bit-exact with the integer
+      arithmetic (pictures and statistics, RADV and llvmpipe), capture dma-bufs imported and
+      outputs exportable, one submission per frame; `SoftLoop::use_gpu`, Styx feature
+      `gpu-isp` with a planner cost. RX 6800 XT: 0.47 ms CPU per 1280x800 NV12 frame against
+      1.77 ms for the software ISP on the same host, GPU 0.21 ms.
+- [ ] GPU ISP on the Pi 5 (v3dv): not on the HeliOS image (needs Mesa's broadcom Vulkan
+      driver, the loader, the v3d DRM driver); estimated slower than the A76 NEON path, so
+      only to free the CPU. Untested on a real non-x86 GPU.
+- [ ] GPU ISP: tables (0.2 ms per settings change: lens shading gain rows rebuilt with the
+      gains, as the integer path does) could move the channel gains to the GPU at the cost
+      of bit-exactness; outputs as exported dma-bufs through the Styx capture (today copied
+      into heap frames).
+- [x] Userspace UVC (optional): `styx-uvc` over usbfs, `BackendKind::Uvc` (feature `uvc`;
+      `uvcvideo` stays the default where it has the camera). C270 on the CM5: YUYV and MJPEG
+      at 30 fps, controls, replug, hotplug; PTS timestamps with no jitter (uvcvideo: 1.9 ms
+      sd); ~0.5-1% of a core more CPU. See [docs/uvc.md](docs/uvc.md).
+- [ ] Userspace UVC: a bulk / UVC 1.5 / SuperSpeed camera on hardware; status interrupt
+      endpoint (control change events, button); still images; extension-unit controls.
 
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).
 - [x] 120 fps AE sometimes chases 100 Hz flicker (kernel-driver path); add anti-flicker.
-- [ ] Flicker stays in the frames at exposures shorter than a period (AE no longer chases it):
-      per-frame ISP digital gain from the flicker model could take it out.
+- [x] Flicker stays in the frames at exposures shorter than a period: deflicker (above).
+- [ ] Deflicker: rolling-shutter band gains unverified on a sensor (needs `readout` from the
+      sensor description); 30 fps with short exposures leaves ~2% (50/100 Hz alias together).
+- [ ] With deflicker off, a clipped lamp in view under flicker makes AE chase the beat at
+      120 fps (simulated, also before deflicker; with deflicker on it locks).
 - [x] `AE_STATE` never reported converged when AE's target was out of reach; AE now reports
       converged once pinned at its limits (`AeStatus::at_limit`), as libcamera does.
 - [x] OV9782 raw8 (`BA81`) through the bridge: frames reported 342.9 ms × 0.5 at 30 fps and were

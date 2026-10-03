@@ -107,6 +107,7 @@ pub(crate) fn backend_name(kind: BackendKind) -> &'static str {
         BackendKind::Simulation => "simulation",
         BackendKind::Replay => "replay",
         BackendKind::Native => "native",
+        BackendKind::Uvc => "uvc",
     }
 }
 
@@ -192,6 +193,14 @@ pub(crate) fn candidates<'a>(
     for backend in &device.backends {
         if let Some(wanted) = &req.overrides.backend
             && !wanted.eq_ignore_ascii_case(backend_name(backend.kind))
+        {
+            continue;
+        }
+        // The userspace UVC backend only when asked for, or when nothing else has the camera
+        // (`uvcvideo` stays the default).
+        if backend.kind == BackendKind::Uvc
+            && req.overrides.backend.is_none()
+            && device.backends.iter().any(|b| b.kind != BackendKind::Uvc)
         {
             continue;
         }
@@ -491,7 +500,7 @@ fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanS
             cost::ISP_CAPTURE_LATENCY_MS,
             "ISP, cached dma-heap buffers",
         ),
-        BackendKind::Libcamera | BackendKind::V4l2 => (
+        BackendKind::Libcamera | BackendKind::V4l2 | BackendKind::Uvc => (
             StepExecution::ZeroCopy,
             cost::uvc_capture_latency_ms(fps),
             "camera exposure, encode and transfer",

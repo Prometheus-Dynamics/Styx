@@ -103,6 +103,10 @@ pub struct PispFrame {
     /// The frame whose statistics the back end settings came from (`None` before the
     /// algorithms have seen a frame).
     pub settings_from: Option<u64>,
+    /// The digital gain the back end gave this frame (with the white balance's green gain).
+    pub digital_gain: f64,
+    /// The flicker brightness deflicker took out of this frame (1: none).
+    pub flicker: f64,
     /// Time spent.
     pub times: PispTimes,
 }
@@ -550,8 +554,11 @@ impl PispPipeline {
         };
         // Settled: the algorithms (and the statistics they read) only every few frames.
         let p = &self.step.params;
-        let settled =
-            self.stepped && p.ae.locked && p.awb.converged && self.controller.controls().ae_enable;
+        let settled = self.stepped
+            && p.ae.locked
+            && p.awb.converged
+            && self.controller.controls().ae_enable
+            && !p.needs_every_frame();
         let run = !settled
             || match (self.last_seq, self.last_run) {
                 (Some(s), Some(r)) => s + 1 >= r + self.settled_every,
@@ -571,14 +578,17 @@ impl PispPipeline {
                 .ok_or_else(|| PipelineError::Device(format!("no control values for {seq}")))?;
             let values = sensor_values(seq, &controls);
             let t1 = Instant::now();
-            // The newest settings, with the digital gain for what this frame got.
+            // The newest settings, with the digital gain (and deflicker's correction) for
+            // this frame.
             let settings_from = self.stepped.then_some(self.step.frame);
             if self.stepped {
-                let g = self.step.params.colour_gains[1].max(1e-6);
-                self.step.isp.digital_gain =
-                    self.controller.digital_gain_for(&self.step.params, &values) * g;
+                self.controller
+                    .retarget(&mut self.step.isp, &self.step.params, &values);
             }
-            let exposure = values.exposure.as_secs_f64() * values.analogue_gain;
+            // Temporal denoise scales its average by the frame's light: exposure, gain and
+            // the flicker deflicker predicts.
+            let (digital_gain, flicker) = (self.step.isp.digital_gain, self.step.isp.flicker);
+            let exposure = values.exposure.as_secs_f64() * values.analogue_gain * flicker;
             profile::time("loop", "be_update", || {
                 self.be.update_frame(&self.step.isp, exposure)
             })?;
@@ -633,6 +643,8 @@ impl PispPipeline {
                 sequence_mismatch: held.sequence != image.sequence,
                 request_lands,
                 settings_from,
+                digital_gain,
+                flicker,
                 times: PispTimes {
                     stats: stats_time,
                     algorithms,

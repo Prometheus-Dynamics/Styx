@@ -54,13 +54,15 @@ tools/native-pipeline   pisp | soft | replay, with the measurements below
   gain), CCM, tone curve, black level, lens shading. The ISP digital gain for a frame is the
   algorithms' total exposure divided by what the sensor delivered for that frame (clamped to
   1..max), so the picture follows the target while a new exposure is in flight, as the
-  Raspberry Pi IPA does.
+  Raspberry Pi IPA does; divided by the brightness deflicker predicts for that frame (see
+  "Deflicker"). `Controller::retarget` sets both for the frame being processed.
 * **Timing.** PiSP: frame F's statistics arrive with its raw frame; F goes through the back
   end at once with the settings computed from F − 1 (its digital gain recomputed for what F
   got) while F's statistics go through the algorithms, so the settings from F process F + 1
   and the algorithms' time is hidden behind the back end job (see "PiSP path"). Sensor
   requests go out as early as before. While AE is locked and AWB converged the algorithms
-  run at 15 Hz (`PispOptions::settled_rate_hz`). The FE's RGB→Y weights and black levels
+  run at 15 Hz (`PispOptions::settled_rate_hz`), except while the light is seen
+  flickering (`Params::needs_every_frame`: the flicker fit needs every frame). The FE's RGB→Y weights and black levels
   follow on the config it takes next (configs are queued two ahead). Software ISP: statistics
   come out of processing F, so the settings from F process F + 1.
 * **Determinism.** `Controller::record_to` writes a `styx-algo` replay; replaying it gives the
@@ -219,7 +221,7 @@ Where the 0.26 ms per frame go now (Styx API, NV12, 30 fps; `--profile`, per-thr
 
 | | per frame |
 |---|---|
-| back end config `QBUF`: the `pispbe` driver writes the whole `pisp_be_config` to the hardware registers (MMIO) for every job | 0.12 ms |
+| back end config `QBUF`: the stock `pispbe` driver writes the whole `pisp_be_config` to the hardware registers (MMIO) for every job (0.008 ms with the patched driver, see below) | 0.12 ms |
 | algorithms: 0.13 ms per run, at 15 Hz while settled (0.11 ms per frame when run on every frame) | 0.07 ms |
 | ~20 V4L2 ioctls (1 µs each) and two waits of the pipeline thread | 0.025 ms |
 | frame starts and embedded data, read on the pipeline thread when it wakes (was the event thread, two wake-ups: 0.013 ms) | ~0.005 ms |
@@ -251,6 +253,38 @@ tuning, 2026-10-02, `native-pipeline pisp --no-read` / `native_isp_bench single`
 The latency, 8.3 ms, is 7.4 ms of sensor readout (the timestamp is the frame start, the front
 end's buffers complete at its end), 0.84 ms back end job (hardware; the algorithms run inside
 it) and about 0.05 ms on the host.
+
+### The back end driver's config write
+
+The largest piece of the PiSP path's CPU was not Styx's: the `QBUF` that completes a back end
+job ran the driver's `pispbe_queue_job()`, which writes all 1589 configuration words to the
+registers with `writel()` (117 µs per job, `function_graph`: everything inside
+`pispbe_schedule()`, 113.8 µs of it the per-word barrier). `kernel-modules/pispbe` is the same
+driver patched to write with relaxed MMIO, skip words equal to the last ones written, and read
+the config from a cached copy ([README](../../kernel-modules/pispbe/README.md)). On the dev box
+it is installed as an override of the image's `pisp_be` (`updates/`, loaded at boot).
+
+Measured 2026-10-03 (CM5, HeliOS tuning with temporal denoise, 3 rounds alternating the stock
+and the patched module by `rmmod`/`insmod` in one session; Styx API = `native_isp_bench single`,
+process CPU per frame; tool = `native-pipeline pisp --no-read --profile`, pipeline thread):
+
+| | stock `pisp_be` | patched |
+|---|---|---|
+| `pispbe-config.qbuf` (30 / 120 fps) | 119.7-120.1 µs | 6.3-6.4 / 8.2-9.2 µs |
+| Styx API, 30 fps: process CPU, latency median | 0.35 ms, 9.45-9.47 ms | 0.23-0.26 ms, 9.34 ms |
+| Styx API, 120 fps | 0.23-0.26 ms, 9.53-9.54 ms | 0.13-0.15 ms, 9.42 ms |
+| tool, 30 / 120 fps | 0.341-0.356 / 0.238-0.251 ms | 0.234-0.236 / 0.125-0.138 ms |
+| back end job (queue to output dequeued), median | 2.30-2.32 ms | 2.20-2.21 ms |
+| AE locked after | 6 frames | 6 frames |
+
+The 0.11 ms come off the latency as well (the write ran before the job could start). The
+outputs are bit-identical: `native-pipeline be-replay` over a 19-config sequence (live configs
+and variants that change and disable/re-enable blocks) gives the same md5 for every output
+under both drivers, with the skipping on and off. libcamera on the patched driver
+(`styx-compare --backend libcamera`, NV12 30 fps, libcamera mode): no drops, the same levels
+as on the stock one in back-to-back runs (mean 0.375 vs 0.377), its process CPU 0.8-0.9% vs
+1.2% of a core (libcamera's `QBUF` pays the same write). With Styx's patched configs ~250-300
+of the 1589 words change per frame.
 
 ### Controls through the Styx API
 
@@ -392,6 +426,43 @@ Bayesian AWB is bistable on this scene (warm lamp, blue LED). The integer path f
 way when its statistics are scaled by 1.0007 (fp16's differ by up to 0.05% per zone); live,
 both settle at the same temperature. That is a sensitivity of the AWB search, not of the ISP.
 
+## GPU ISP
+
+`styx-gpuisp` (optional crate, [README](../../crates/gpuisp/README.md)) runs the software ISP's
+pipeline as Vulkan compute shaders with the same parameters, outputs and statistics, computing
+the integer arithmetic bit for bit. The software path switches to it with
+`SoftLoop::use_gpu` / `SoftPipeline::use_gpu` (`styx-pipeline` feature `gpu`); with a GPU,
+`SoftPipeline` hands the camera's capture dma-bufs to the GPU, which reads them in place (no
+CPU mapping or cache maintenance). Styx's native backend (feature `gpu-isp`) opens a Vulkan
+device once per process (`STYX_GPU_ISP=0` turns it off, `STYX_GPUISP_DEVICE` picks one; never
+a software rasteriser unless named) and runs processed modes of cameras without a PiSP on it,
+falling back to the software ISP where there is none; the planner prices it (below). Vulkan is
+loaded at run time (`ash`), so nothing links against it.
+
+* **Quality** (`native-pipeline gpu-quality --recording BASE`, 160 recorded OV9782 frames with
+  the loop's settings; `crates/gpuisp/tests`): identical to the integer arithmetic, pictures
+  and statistics, on RADV and llvmpipe; 56-58 dB / at most 1 code from x86's tone quadratics;
+  53.7-55.2 dB / at most 2 codes from fp16 (what the A76 runs). The loop over a virtual sensor
+  gives the same pictures, requests and settings frame by frame on CPU and GPU
+  (`styx-pipeline/tests/gpu_loop.rs`).
+* **Performance** (`native-pipeline gpu-bench`, RX 6800 XT against `styx-softisp` on the same
+  Ryzen host, HeliOS tuning, 1280x800): NV12 0.47 ms of process CPU per frame against 1.77 ms
+  on one thread (1.96 ms on four), RGB24 0.62 against 1.80 ms; GPU time 0.21 (NV12) and 0.29 ms
+  (RGB24); loop wall time 0.77 ms (NV12), as four CPU threads (0.72) and less than one (1.83).
+  Same per frame at 120 fps (0.46 ms, 5.5% of a core against 20.4%). What is left on the CPU
+  is the frame's copy in, the output's copy out (both go with dma-bufs), the lens shading and
+  tone tables (0.2 ms when they change) and the submission and wait.
+* **Planner**: with `gpu-isp` and a device, processed native modes without a PiSP cost
+  0.3 ms/MP of CPU and 0.6 ms/MP of latency (plus the 3A) instead of the software ISP's
+  2.9 ms/MP (`planner/cost.rs`, `GPUISP_*`), executed as `Hardware`.
+* **CM5 / Pi 5**: the HeliOS image has no Vulkan driver. Mesa's v3dv (V3D 7.1) would need
+  Mesa with the broadcom Vulkan driver, the Vulkan loader and its ICD file, the `v3d` DRM
+  driver and render-node access (README, "Raspberry Pi 5"). Estimated at 4-8 ms of GPU per
+  1280x800 frame, V3D would not beat the A76's fp16 NEON path (2.6-3.0 ms on one core) on
+  time; it would take the ISP off the CPU (about 2.5% of a core left at 30 fps instead of
+  9-10%) at a few ms more latency. The CM5 has the PiSP; the GPU ISP is for boards with a GPU
+  and no ISP.
+
 ## Planner
 
 The native backend lists `NV12` and `RG24` modes at each sensor size (all rates of the raw
@@ -504,6 +575,49 @@ alone. Exposures shorter than a period (all of them at 120 fps) keep the flicker
 frames (the output's 8-12% spread above is the light); AE no longer chases it. Through the
 Styx API (`AE_FLICKER_MODE` set at 120 fps, AE pinned at its limits in the dark scene) the
 detected period read back as 10000 µs after 1008 frames at 120 fps and 52 at 30 fps.
+
+### Deflicker (2026-10-03)
+
+The flicker left in short exposures is now taken out with each frame's ISP digital gain
+(algorithms.md, "Deflicker"; `Deflicker::Auto`, the default, is on with flicker avoidance;
+`NativeIspConfig::deflicker`, control `AE_DEFLICKER_MODE` 0 off / 1 on / 2 auto;
+`native-pipeline --deflicker`). On the PiSP path the back end job for frame F is queued with
+the settings from F − 1 retargeted to F (its number, duration, exposure and gains read back
+from embedded data), so the gain is the one for the frame the back end processes; temporal
+denoise scales its average by the predicted light as well (the TDN ratio is exposure × gain ×
+flicker). The software path does the same in `SoftLoop::settings_for`.
+
+The room's lamp at night (dark: AE at its limits, 8.2 ms × 8 at 120 fps), `native-pipeline
+pisp --cold --fps F --flicker auto --deflicker off|auto`, 10 s each, steady state over the
+second half; off with `--every-frame` (as measured before), auto as it ships; three
+interleaved pairs per rate because the scene drifted between runs (output SD of the frames'
+mean luma; frame to frame: mean relative change between consecutive frames):
+
+| | deflicker off: metered / output SD (frame to frame) | auto: metered / output SD (frame to frame) |
+|---|---|---|
+| 120 fps (8.2 ms) | 14.2-16.1% / 8.9-11.2% (15.1-18.2%) | 14.7-17.3% / 2.6-3.3% (3.4-4.7%) |
+| 90 fps (11.0 ms) | 13.0-14.6% / 9.1-10.5% (16.1-18.6%) | 14.3-15.1% / 2.7-4.0% (4.3-4.9%) |
+| 60 fps (16.6 ms) | 5.1-5.7% / 3.0-3.7% (3.2-3.6%) | 4.9-5.4% / 1.2-1.6% (1.5-1.6%) |
+| software ISP, 60 fps | 4.5% / 2.6% (2.8%) | 5.8% / 2.5% (1.6%) |
+
+AE locked on 100% of the steady-state frames either way; with deflicker the sensor request
+changes once or twice per run (the headroom: highlights clipped in this scene, so the
+analogue gain gives 1.2-1.4 of AE's total to the ISP: 8.2 ms × 5.9-6.4 at 120 fps instead of
+× 8) and the ISP's gain stays within 1.02..1.8 (AE's own digital gain at its limit included).
+The residual is mostly the scene, not the model: offline, one-frame-ahead predictions of a
+deflicker-off recording from 64 frames missed by 0.85% RMS with the three harmonics (6.3% raw
+spread), 0.63% with six; this dark scene drifts (a slow dimming restarted the fit in one
+recording). No visible pumping: no step in the output when the correction fades in over
+0.25 s, and before the first fix the headroom chased the frames' highlights every frame
+(the gain moved 7.0-7.8 and AE lost its lock), now it follows the largest need of the last
+second with hysteresis (replay of that recording: 90 → 7 request changes in 600 frames).
+
+CPU (`thread ... ms CPU/frame`, 120 fps, 10 s): the PiSP path at the settled rate 0.30 ms
+per frame without deflicker, 0.48 ms with it (3.6% → 5.7% of a core): the algorithms run on
+every frame while the light flickers (0.16 ms each); the correction itself is a few
+microseconds (frequency tracking: two more fits per frame on the fit in use). Software ISP at
+60 fps: 2.5 → 2.9 ms per frame (statistics and algorithms every frame, new ISP parameters
+every frame).
 
 `AE_STATE`/`AeStatus::locked` in a scene beyond AE's reach: before, AE kept searching at
 its limits for ever (the dark room at 120 fps: never locked); now it locks once it asks for
@@ -735,17 +849,20 @@ fps); CPU unchanged. It is a Styx setting now (see "Denoise settings").
   memory traffic between front and back end).
 * The front end statistics set-up is fixed except for the histogram's zone weights (the
   metering mode's, as libcamera); AGC meters the AWB zones.
-* PiSP CPU left (see "PiSP path performance"): half of it is the `pispbe` driver writing the
-  whole back end config to the hardware by MMIO on every job (0.12 ms; the driver could write
-  only changed blocks, as it already does for the front end). The pipeline thread waits
+* PiSP CPU left (see "PiSP path performance"): with the stock `pispbe` driver half of it is
+  the driver writing the whole back end config to the hardware by MMIO on every job (0.12 ms;
+  8 µs with the patched driver in `kernel-modules/pispbe`, which images would need to carry
+  as a kernel patch until something like it is upstream). The pipeline thread waits
   twice per frame, for the front end's statistics and 0.84 ms later for the back end job; the
   two cannot share a wait without delaying the frame.
 * Algorithms at 15 Hz while settled: a scene change is seen up to one 15 Hz period later
   (`settled_rate_hz: None` runs them on every frame).
 * Brightness changes were forced exposure steps, not changes of the light.
-* Flicker on exposures shorter than a period stays in the frames (AE no longer chases it;
-  see "Flicker"). The flicker model could also scale each frame's ISP digital gain to take it
-  out of the output (gains below 1 for the brighter frames, or exposure headroom).
+* Deflicker (see "Deflicker"): band gains for rolling-shutter sensors are implemented
+  (folded into the lens shading grid) but unverified on a sensor; at 30 fps with exposures
+  shorter than a period 50 and 100 Hz alias onto each other and ~2% remain (simulated); the
+  frame times come from frame numbers and durations (the fit tracks the mains frequency in
+  that clock), not the frame-start timestamps.
 * The tool's software runs use one thread unless `--threads` says otherwise (the `styx`
   native backend's software mode uses min(4, cores), and the planner prices it as measured).
   On the CM5 one thread is the cheapest in CPU (four cost 0.6-1.4 ms more per frame); the

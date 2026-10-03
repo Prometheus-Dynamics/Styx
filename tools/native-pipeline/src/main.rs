@@ -6,6 +6,10 @@
 //! native-pipeline soft   [options]   software ISP on raw frames from csi2_ch0 (device feature)
 //! native-pipeline replay --recording BASE [options]   software ISP over a raw recording
 //! native-pipeline quality --recording BASE [options]  fp16 against integer software ISP
+//! native-pipeline gpu-quality --recording BASE [options]  GPU ISP against the software ISP
+//!                                    (gpu feature)
+//! native-pipeline gpu-bench --recording BASE [options]  software ISP (--threads) and GPU ISP
+//!                                    paced at --fps: CPU, wall and GPU time (gpu feature)
 //! native-pipeline latch  [options]   when within a frame a control write still lands on time
 //! native-pipeline be-replay --raw FILE --configs A.bin,B.bin   one 16-bit raw frame through the
 //!                                    back end with each config (device feature)
@@ -38,6 +42,8 @@
 //!   --cold               (pisp) start from the tuning's start-up values, not the last state
 //!   --fixed US:GAIN      AE off: this exposure and analogue gain on every frame
 //!   --flicker MODE       flicker avoidance: off (default), 50, 60 or auto
+//!   --deflicker MODE     take the flicker out of the frames: auto (default: with flicker
+//!                        avoidance), on or off
 //!   --ev STOPS           exposure compensation (AE aims STOPS brighter or darker)
 //!   --ct K               AWB off: the gains of this colour temperature (the tuning's CT curve)
 //!   --no-tdn             (pisp) no temporal denoise even if the tuning has it
@@ -53,6 +59,8 @@
 mod be_replay;
 #[cfg(feature = "device")]
 mod device_run;
+#[cfg(feature = "gpu")]
+mod gpu;
 #[cfg(feature = "device")]
 mod latch;
 mod output;
@@ -99,6 +107,7 @@ pub struct Args {
     pub keep_open: bool,
     pub fixed: Option<(f64, f64)>,
     pub flicker: styx_algo::Flicker,
+    pub deflicker: styx_algo::Deflicker,
     pub ev: f64,
     pub ct: Option<f64>,
     pub no_tdn: bool,
@@ -139,6 +148,7 @@ fn parse() -> Result<Args, String> {
         keep_open: false,
         fixed: None,
         flicker: styx_algo::Flicker::Off,
+        deflicker: styx_algo::Deflicker::Auto,
         ev: 0.0,
         ct: None,
         no_tdn: false,
@@ -192,6 +202,14 @@ fn parse() -> Result<Args, String> {
                     "60" => styx_algo::Flicker::Mains60,
                     "auto" => styx_algo::Flicker::Auto,
                     v => return Err(format!("--flicker: off, 50, 60 or auto, not {v}")),
+                }
+            }
+            "--deflicker" => {
+                a.deflicker = match val()?.as_str() {
+                    "off" => styx_algo::Deflicker::Off,
+                    "on" => styx_algo::Deflicker::On,
+                    "auto" => styx_algo::Deflicker::Auto,
+                    v => return Err(format!("--deflicker: off, on or auto, not {v}")),
                 }
             }
             "--fixed" => {
@@ -255,6 +273,7 @@ pub fn controls_for(
 ) -> Option<styx_algo::Controls> {
     let mut c = styx_algo::Controls {
         flicker: a.flicker,
+        deflicker: a.deflicker,
         ev: a.ev,
         ..Default::default()
     };
@@ -277,7 +296,11 @@ pub fn controls_for(
         c.analogue_gain = Some(gain);
         return Some(c);
     }
-    (a.fixed.is_some() || a.ct.is_some() || a.flicker != styx_algo::Flicker::Off || a.ev != 0.0)
+    (a.fixed.is_some()
+        || a.ct.is_some()
+        || a.flicker != styx_algo::Flicker::Off
+        || a.deflicker != styx_algo::Deflicker::Auto
+        || a.ev != 0.0)
         .then_some(c)
 }
 
@@ -308,6 +331,10 @@ fn main() -> ExitCode {
         match a.command.as_str() {
             "replay" => replay_run::run(&a),
             "quality" => quality::run(&a),
+            #[cfg(feature = "gpu")]
+            "gpu-quality" => gpu::quality(&a),
+            #[cfg(feature = "gpu")]
+            "gpu-bench" => gpu::bench(&a),
             #[cfg(feature = "device")]
             "pisp" => device_run::pisp(&a),
             #[cfg(feature = "device")]

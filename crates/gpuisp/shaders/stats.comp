@@ -1,0 +1,113 @@
+#version 450
+// 3A statistics as `styx-softisp` gathers them: one workgroup per zone sums the R, G, B of its
+// unclipped quads, counts them, sums every quad's luma (64-bit sums), and adds each quad's
+// luma bin to the histogram. Quad rows `qy` with `qy % row_step == 0` are sampled.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Per zone: R, G, B and luma sums as (low, high) words, the count, one word of padding; then
+// the histogram.
+layout(set = 0, binding = 3, std430) buffer Stats {
+    uint stats[];
+};
+
+const uint ZONE_WORDS = 10u;
+const uint LOCAL_BINS = 1024u;
+
+shared uint hist[LOCAL_BINS];
+shared uvec2 red[256];
+
+uvec2 add64(uvec2 a, uvec2 b) {
+    uint lo = a.x + b.x;
+    return uvec2(lo, a.y + b.y + (lo < a.x ? 1u : 0u));
+}
+
+// The sum of every invocation's `v` (64-bit), in invocation 0.
+uvec2 reduce(uvec2 v) {
+    uint i = gl_LocalInvocationIndex;
+    red[i] = v;
+    barrier();
+    for (uint s = 128u; s > 0u; s >>= 1) {
+        if (i < s) {
+            red[i] = add64(red[i], red[i + s]);
+        }
+        barrier();
+    }
+    uvec2 r = red[0];
+    barrier();
+    return r;
+}
+
+void main() {
+    uint i = gl_LocalInvocationIndex;
+    bool local = P.bins <= LOCAL_BINS;
+    if (local) {
+        for (uint b = i; b < P.bins; b += 256u) {
+            hist[b] = 0u;
+        }
+    }
+    barrier();
+    uint zx = gl_WorkGroupID.x, zy = gl_WorkGroupID.y;
+    uint qw = P.width / 2u, qh = P.height / 2u;
+    uint c0 = zx * qw / P.zones_x, c1 = (zx + 1u) * qw / P.zones_x;
+    // Quad rows whose zone row is `zy`: qy * zones_y / qh == zy.
+    uint r0 = (zy * qh + P.zones_y - 1u) / P.zones_y;
+    uint r1 = ((zy + 1u) * qh + P.zones_y - 1u) / P.zones_y;
+    // The first sampled row at or after r0.
+    uint first = (r0 + P.row_step - 1u) / P.row_step * P.row_step;
+    uint rows = first < r1 ? (r1 - first + P.row_step - 1u) / P.row_step : 0u;
+    uint cols = c1 - c0;
+    uint n = rows * cols;
+    uint rs = 0u, gs = 0u, bs = 0u, ls = 0u, count = 0u;
+    for (uint k = i; k < n; k += 256u) {
+        uint qx = c0 + k % cols, qy = first + (k / cols) * P.row_step;
+        uint q[4];
+        q[0] = front(2u * qx, 2u * qy);
+        q[1] = front(2u * qx + 1u, 2u * qy);
+        q[2] = front(2u * qx, 2u * qy + 1u);
+        q[3] = front(2u * qx + 1u, 2u * qy + 1u);
+        uvec3 c = quad_colours(q);
+        uint keep = max(c.r, max(c.g, c.b)) < P.saturation ? 1u : 0u;
+        rs += c.r * keep;
+        gs += c.g * keep;
+        bs += c.b * keep;
+        count += keep;
+        uint y = (c.r + 2u * c.g + c.b + 2u) >> 2;
+        ls += y;
+        uint bin = (y * P.bins) >> 12;
+        if (local) {
+            atomicAdd(hist[bin], 1u);
+        } else {
+            atomicAdd(stats[P.zones_x * P.zones_y * ZONE_WORDS + bin], 1u);
+        }
+    }
+    uvec2 r = reduce(uvec2(rs, 0u));
+    uvec2 g = reduce(uvec2(gs, 0u));
+    uvec2 b = reduce(uvec2(bs, 0u));
+    uvec2 l = reduce(uvec2(ls, 0u));
+    uvec2 cn = reduce(uvec2(count, 0u));
+    uint z = (zy * P.zones_x + zx) * ZONE_WORDS;
+    if (i == 0u) {
+        stats[z] = r.x;
+        stats[z + 1u] = r.y;
+        stats[z + 2u] = g.x;
+        stats[z + 3u] = g.y;
+        stats[z + 4u] = b.x;
+        stats[z + 5u] = b.y;
+        stats[z + 6u] = l.x;
+        stats[z + 7u] = l.y;
+        stats[z + 8u] = cn.x;
+    }
+    if (local) {
+        uint h0 = P.zones_x * P.zones_y * ZONE_WORDS;
+        for (uint bn = i; bn < P.bins; bn += 256u) {
+            uint v = hist[bn];
+            if (v != 0u) {
+                atomicAdd(stats[h0 + bn], v);
+            }
+        }
+    }
+}

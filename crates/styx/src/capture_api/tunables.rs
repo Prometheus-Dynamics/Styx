@@ -100,10 +100,12 @@ pub enum LibcameraBufferMemory {
 #[path = "tunables/capture.rs"]
 mod capture;
 mod native;
+mod uvc;
 #[cfg(feature = "netcam")]
 pub(crate) use capture::PoolLimits;
 pub use capture::{CaptureConfig, CaptureTunables, IdleStop, ReconnectPolicy};
-pub use native::{NativeFlicker, NativeIspConfig};
+pub use native::{NativeDeflicker, NativeFlicker, NativeIspConfig};
+pub use uvc::UvcConfig;
 
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -312,6 +314,8 @@ pub struct BackendConfig {
     pub file: FileBackendConfig,
     /// Native cameras' ISP outputs.
     pub native: NativeIspConfig,
+    /// The userspace UVC backend.
+    pub uvc: UvcConfig,
 }
 
 pub type TransformConfig = TransformPoolConfig;
@@ -364,6 +368,10 @@ pub struct StyxConfig {
     pub transforms: TransformConfig,
     pub backends: BackendConfig,
     pub codecs: CodecConfig,
+    /// Buffers to capture into (see [`StyxConfig::capture_into`]).
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub capture_buffers: Option<super::import::CaptureBuffers>,
 }
 
 impl StyxConfig {
@@ -374,6 +382,8 @@ impl StyxConfig {
             transforms: TransformConfig::default(),
             backends: BackendConfig::default(),
             codecs: CodecConfig::default(),
+            #[cfg(target_os = "linux")]
+            capture_buffers: None,
         }
     }
 

@@ -24,13 +24,19 @@ pub mod preview;
 pub use thiserror;
 
 #[cfg(feature = "facade")]
+mod backend_kind;
+#[cfg(feature = "facade")]
 pub mod capabilities;
 #[cfg(feature = "facade")]
 pub mod capture_api;
 #[cfg(feature = "facade")]
 mod device_identity;
 #[cfg(feature = "facade")]
+pub use backend_kind::BackendKindParseError;
+#[cfg(feature = "facade")]
 mod frame_sizing;
+#[cfg(feature = "gpu-isp")]
+mod gpu_isp;
 #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
 pub mod graph;
 #[cfg(all(feature = "facade", target_os = "linux"))]
@@ -127,6 +133,8 @@ pub enum BackendKind {
     Replay,
     /// A sensor Styx drives itself through the Styx sensor bridge (`styx-native`).
     Native,
+    /// A UVC camera from userspace over usbfs (`styx-uvc`); its handle's key is `usb:<port>`.
+    Uvc,
 }
 
 /// Backend-specific handle used for configuration/streaming.
@@ -184,6 +192,10 @@ pub enum BackendHandle {
         /// The camera's key in the native provider (`bridge:/dev/v4l-subdevN`).
         key: String,
     },
+    #[cfg(feature = "uvc")]
+    Uvc {
+        key: String,
+    },
 }
 
 #[cfg(feature = "facade")]
@@ -205,6 +217,8 @@ impl BackendHandle {
             BackendHandle::Replay { .. } => BackendKind::Replay,
             #[cfg(feature = "native")]
             BackendHandle::Native { .. } => BackendKind::Native,
+            #[cfg(feature = "uvc")]
+            BackendHandle::Uvc { .. } => BackendKind::Uvc,
         }
     }
 }
@@ -368,59 +382,6 @@ impl PartialEq<&str> for BackendProbeError {
     }
 }
 
-#[cfg(feature = "facade")]
-impl std::fmt::Display for BackendKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            BackendKind::V4l2 => "v4l2",
-            BackendKind::Libcamera => "libcamera",
-            BackendKind::Virtual => "virtual",
-            BackendKind::Netcam => "netcam",
-            BackendKind::File => "file",
-            BackendKind::Simulation => "simulation",
-            BackendKind::Replay => "replay",
-            BackendKind::Native => "native",
-        })
-    }
-}
-
-#[cfg(feature = "facade")]
-impl std::str::FromStr for BackendKind {
-    type Err = BackendKindParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "v4l2" | "video4linux" | "video4linux2" => Ok(BackendKind::V4l2),
-            "libcamera" => Ok(BackendKind::Libcamera),
-            "virtual" => Ok(BackendKind::Virtual),
-            "netcam" | "network" | "network-camera" => Ok(BackendKind::Netcam),
-            "file" | "file-backend" => Ok(BackendKind::File),
-            "simulation" | "simulation-bevy" => Ok(BackendKind::Simulation),
-            "replay" => Ok(BackendKind::Replay),
-            "native" | "styx-native" => Ok(BackendKind::Native),
-            _ => Err(BackendKindParseError {
-                value: value.to_string(),
-            }),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(feature = "facade")]
-pub struct BackendKindParseError {
-    value: String,
-}
-
-#[cfg(feature = "facade")]
-impl std::fmt::Display for BackendKindParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unknown backend kind: {}", self.value)
-    }
-}
-
-#[cfg(feature = "facade")]
-impl std::error::Error for BackendKindParseError {}
-
 /// Probe result that includes any backend errors encountered.
 ///
 /// # Example
@@ -481,6 +442,8 @@ pub(crate) fn probe_all_with_errors_with_options(_force_refresh: bool) -> ProbeR
             BackendKind::Native,
             #[cfg(feature = "v4l2")]
             BackendKind::V4l2,
+            #[cfg(feature = "uvc")]
+            BackendKind::Uvc,
             #[cfg(feature = "libcamera")]
             BackendKind::Libcamera,
         ]),
@@ -535,6 +498,8 @@ pub(crate) fn probe_backends_with_errors_with_options(
             merge_backend(&mut devices, dev.path.clone(), backend);
         }
     }
+    #[cfg(feature = "uvc")]
+    capture_api::probe_uvc_into(_backends, &mut devices, &mut errors);
     #[cfg(feature = "libcamera")]
     if _backends.is_none_or(|backends| backends.contains(&BackendKind::Libcamera)) {
         if let Some(config) = _config {
@@ -606,6 +571,7 @@ fn backend_error_prefix(backend: BackendKind) -> &'static str {
         BackendKind::Simulation => "simulation: ",
         BackendKind::Replay => "replay: ",
         BackendKind::Native => "native: ",
+        BackendKind::Uvc => "uvc: ",
     }
 }
 
@@ -620,6 +586,7 @@ fn parse_backend_probe_error(value: &str) -> Option<BackendProbeError> {
         BackendKind::Simulation,
         BackendKind::Replay,
         BackendKind::Native,
+        BackendKind::Uvc,
     ]
     .into_iter()
     .find_map(|backend| {
@@ -645,8 +612,8 @@ pub mod prelude {
         BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
         CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
         CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig, IdleStop,
-        LibcameraBufferMemory, LibcameraConfig, NativeFlicker, NativeIspConfig, NetcamConfig,
-        NetcamTunables, ReconnectPolicy, SelectedCamera, StyxConfig, TdnOutputMode,
+        LibcameraBufferMemory, LibcameraConfig, NativeDeflicker, NativeFlicker, NativeIspConfig,
+        NetcamConfig, NetcamTunables, ReconnectPolicy, SelectedCamera, StyxConfig, TdnOutputMode,
         TransformConfig, V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera,
         open_virtual_rgb, start_capture,
     };

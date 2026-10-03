@@ -240,6 +240,10 @@ fn write_backend(w: &mut impl Write, backend: Option<&BackendFrameMeta>) -> io::
             w.write_all(&m.sequence.to_le_bytes())?;
             write_str(w, m.buffer_memory)
         }
+        // Recorded as the V4L2 metadata `uvcvideo` would give the frame.
+        Some(BackendFrameMeta::Uvc(m)) => {
+            write_backend(w, Some(&BackendFrameMeta::V4l2(m.as_v4l2())))
+        }
         Some(BackendFrameMeta::Native(m)) => {
             w.write_all(&[3])?;
             w.write_all(&m.sequence.to_le_bytes())?;

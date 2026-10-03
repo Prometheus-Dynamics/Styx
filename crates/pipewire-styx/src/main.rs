@@ -21,6 +21,7 @@ mod formats;
 mod node;
 #[cfg(feature = "pipewire")]
 mod params;
+mod pool;
 
 use styx::prelude::*;
 
@@ -87,9 +88,15 @@ fn cameras(options: &Options) -> Result<Vec<Published>, String> {
             })
             .collect());
     }
-    Ok(probe_all()
+    let devices = match virtual_selectors(&options.cameras)? {
+        Some(devices) => devices,
+        None => probe_all()
+            .into_iter()
+            .filter(|d| matches(&options.cameras, &d.identity.display, &d.identity.keys))
+            .collect(),
+    };
+    Ok(devices
         .into_iter()
-        .filter(|d| matches(&options.cameras, &d.identity.display, &d.identity.keys))
         .map(|device| Published {
             name: device.identity.display.clone(),
             description: format!("{} (Styx)", device.identity.display),
@@ -98,6 +105,48 @@ fn cameras(options: &Options) -> Result<Vec<Published>, String> {
         })
         .filter(|p| !p.offers.is_empty())
         .collect())
+}
+
+/// Styx's synthetic test cameras (`virtual` or `virtual:WIDTHxHEIGHT[:FOURCC]`) when every
+/// selector names one; `None` when none does (real cameras are probed).
+fn virtual_selectors(selectors: &[String]) -> Result<Option<Vec<ProbedDevice>>, String> {
+    let specs: Vec<&str> = selectors
+        .iter()
+        .filter_map(|s| s.strip_prefix("virtual"))
+        .collect();
+    if specs.is_empty() {
+        return Ok(None);
+    }
+    if specs.len() != selectors.len() {
+        return Err("virtual cameras cannot be mixed with real ones".into());
+    }
+    specs
+        .into_iter()
+        .map(virtual_camera)
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
+fn virtual_camera(spec: &str) -> Result<ProbedDevice, String> {
+    let mut config = VirtualSourceConfig::new().name("virtual").fps(30);
+    if let Some(rest) = spec.strip_prefix(':') {
+        let (size, format) = rest.split_once(':').unwrap_or((rest, ""));
+        let (w, h) = size
+            .split_once('x')
+            .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+            .ok_or_else(|| format!("bad virtual camera size \"{size}\" (want WIDTHxHEIGHT)"))?;
+        config = config.resolution(w, h);
+        if !format.is_empty() {
+            let bytes: [u8; 4] = format
+                .as_bytes()
+                .try_into()
+                .map_err(|_| format!("bad virtual camera format \"{format}\" (want a fourcc)"))?;
+            config = config.format(FourCc::new(bytes));
+        }
+    } else if !spec.is_empty() {
+        return Err(format!("unknown camera \"virtual{spec}\""));
+    }
+    Ok(CaptureRequest::virtual_source(config).into_device())
 }
 
 /// Sizes offered for a camera behind a camera service (which decides the mode itself; frames of

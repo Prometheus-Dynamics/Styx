@@ -25,6 +25,8 @@ mod ioctl;
 mod mapping;
 pub mod media;
 pub mod subdev;
+pub mod uevent;
+pub mod usbfs;
 pub mod v4l2;
 
 pub use clock::monotonic_now;

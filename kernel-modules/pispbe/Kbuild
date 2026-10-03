@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0
+# Same object and module name as the in-tree driver (pisp-be.ko, module pisp_be),
+# so the build replaces it (drivers/media/platform/raspberrypi/pisp_be/Makefile).
+pisp-be-objs := pisp_be.o
+obj-m += pisp-be.o

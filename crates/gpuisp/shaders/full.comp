@@ -1,0 +1,134 @@
+#version 450
+// Full-size output: each invocation makes one 2x2 block of pixels (one Bayer quad, one 4:2:0
+// chroma sample). A workgroup's 32x16 block and a 2-sample border go through the front end
+// once, into shared memory; demosaic (bilinear or Malvar-He-Cutler), colour matrix, tone
+// curve and the output conversion follow `styx-softisp`'s integer kernels exactly.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 2, binding = 0, std430) writeonly buffer Out {
+    uint8_t outb[];
+};
+
+const int TW = 36;
+const int TH = 20;
+shared uint tile[TH * TW];
+
+uint t(int x, int y) {
+    return tile[y * TW + x];
+}
+
+// `simd::scalar::demosaic_bilinear_row` at tile position (x, y), image row parity `py`,
+// image column parity `px`.
+uvec3 bilinear(int x, int y, uint px, uint py) {
+    uint c = t(x, y);
+    uint h = t(x - 1, y) + t(x + 1, y);
+    uint v = t(x, y - 1) + t(x, y + 1);
+    uint gv, xv, yv;
+    if ((px == 0u) == (P.green_even[py] != 0u)) {
+        gv = c;
+        xv = (h + 1u) >> 1;
+        yv = (v + 1u) >> 1;
+    } else {
+        uint d = t(x - 1, y - 1) + t(x + 1, y - 1) + t(x - 1, y + 1) + t(x + 1, y + 1);
+        gv = (h + v + 2u) >> 2;
+        xv = c;
+        yv = (d + 2u) >> 2;
+    }
+    return P.x_is_red[py] != 0u ? uvec3(xv, gv, yv) : uvec3(yv, gv, xv);
+}
+
+uint mhc_round(int s) {
+    return uint(clamp((s + 8) >> 4, 0, int(WORK_MAX)));
+}
+
+// `simd::scalar::demosaic_mhc_row`.
+uvec3 mhc(int x, int y, uint px, uint py) {
+    int c = int(t(x, y));
+    int far_h = int(t(x - 2, y) + t(x + 2, y));
+    int far_v = int(t(x, y - 2) + t(x, y + 2));
+    int near_h = int(t(x - 1, y) + t(x + 1, y));
+    int near_v = int(t(x, y - 1) + t(x, y + 1));
+    int diag = int(t(x - 1, y - 1) + t(x + 1, y - 1) + t(x - 1, y + 1) + t(x + 1, y + 1));
+    uint gv, xv, yv;
+    if ((px == 0u) == (P.green_even[py] != 0u)) {
+        gv = uint(c);
+        xv = mhc_round(10 * c + 8 * near_h - 2 * (far_h + diag) + far_v);
+        yv = mhc_round(10 * c + 8 * near_v - 2 * (far_v + diag) + far_h);
+    } else {
+        gv = mhc_round(8 * c + 4 * (near_h + near_v) - 2 * (far_h + far_v));
+        xv = uint(c);
+        yv = mhc_round(12 * c + 4 * diag - 3 * (far_h + far_v));
+    }
+    return P.x_is_red[py] != 0u ? uvec3(xv, gv, yv) : uvec3(yv, gv, xv);
+}
+
+// `simd::scalar::bayer_luma_row`.
+uint bayer_luma(int x, int y) {
+    uint s = 0u;
+    for (int dx = -1; dx <= 1; dx++) {
+        uint vs = t(x + dx, y - 1) + 2u * t(x + dx, y) + t(x + dx, y + 1);
+        s += dx == 0 ? 2u * vs : vs;
+    }
+    return (s + 8u) >> 4;
+}
+
+void put(uint plane, uint x, uint y, uint v) {
+    outb[P.out_offset[plane] + y * P.out_stride[plane] + x] = uint8_t(v);
+}
+
+void main() {
+    ivec2 origin = ivec2(gl_WorkGroupID.xy) * ivec2(32, 16) - 2;
+    for (uint i = gl_LocalInvocationIndex; i < uint(TW * TH); i += 128u) {
+        int tx = int(i) % TW;
+        int ty = int(i) / TW;
+        tile[i] = front(reflect_into(origin.x + tx, P.width), reflect_into(origin.y + ty, P.height));
+    }
+    barrier();
+    uint x0 = gl_GlobalInvocationID.x * 2u;
+    uint y0 = gl_GlobalInvocationID.y * 2u;
+    if (x0 >= P.width || y0 >= P.height) {
+        return;
+    }
+    int lx = int(gl_LocalInvocationID.x) * 2 + 2;
+    int ly = int(gl_LocalInvocationID.y) * 2 + 2;
+    if (P.out_kind == OUT_LUMA) {
+        for (uint k = 0u; k < 4u; k++) {
+            uint dx = k & 1u, dy = k >> 1;
+            put(0u, x0 + dx, y0 + dy, tone(bayer_luma(lx + int(dx), ly + int(dy))));
+        }
+        return;
+    }
+    uvec3 px[4];
+    for (uint k = 0u; k < 4u; k++) {
+        uint dx = k & 1u, dy = k >> 1;
+        uvec3 rgb = P.demosaic == 0u
+            ? bilinear(lx + int(dx), ly + int(dy), (x0 + dx) & 1u, (y0 + dy) & 1u)
+            : mhc(lx + int(dx), ly + int(dy), (x0 + dx) & 1u, (y0 + dy) & 1u);
+        px[k] = tone3(colour(rgb));
+    }
+    if (P.out_kind == OUT_RGB24) {
+        for (uint k = 0u; k < 4u; k++) {
+            uint x = (x0 + (k & 1u)) * 3u, y = y0 + (k >> 1);
+            put(0u, x, y, px[k].r);
+            put(0u, x + 1u, y, px[k].g);
+            put(0u, x + 2u, y, px[k].b);
+        }
+        return;
+    }
+    for (uint k = 0u; k < 4u; k++) {
+        put(0u, x0 + (k & 1u), y0 + (k >> 1), luma8(px[k]));
+    }
+    ivec3 m = (ivec3(px[0] + px[1] + px[2] + px[3]) + 2) >> 2;
+    uint cb = chroma8(m, false), cr = chroma8(m, true);
+    if (P.out_kind == OUT_NV12) {
+        put(1u, x0, y0 >> 1, cb);
+        put(1u, x0 + 1u, y0 >> 1, cr);
+    } else {
+        put(1u, x0 >> 1, y0 >> 1, cb);
+        put(2u, x0 >> 1, y0 >> 1, cr);
+    }
+}

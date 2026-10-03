@@ -46,6 +46,33 @@ impl Flicker {
     }
 }
 
+/// Taking the flicker out of the frames: each frame's ISP digital gain divided by the
+/// brightness AE's flicker model predicts for it (exposures shorter than a flicker period,
+/// where avoidance cannot help; see `algos::agc::deflicker`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Deflicker {
+    /// Never.
+    Off,
+    /// Whenever the frames flicker (fitting 50 and 60 Hz mains as [`Flicker::Auto`] does
+    /// when flicker avoidance is off).
+    On,
+    /// When flicker avoidance is on (the default).
+    #[default]
+    Auto,
+}
+
+impl Deflicker {
+    /// Whether it is on with this flicker avoidance.
+    pub fn enabled(self, flicker: Flicker) -> bool {
+        match self {
+            Deflicker::Off => false,
+            Deflicker::On => true,
+            Deflicker::Auto => flicker != Flicker::Off,
+        }
+    }
+}
+
 /// What the application asks for. Recorded per frame, so replays reproduce control changes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -66,6 +93,8 @@ pub struct Controls {
     pub constraint_mode: Option<String>,
     /// Flicker avoidance.
     pub flicker: Flicker,
+    /// Taking the flicker out of the frames.
+    pub deflicker: Deflicker,
     /// Frame duration limits (min, max), within the camera configuration's.
     pub frame_duration_limits: Option<(Duration, Duration)>,
     /// Automatic white balance.
@@ -95,6 +124,7 @@ impl Default for Controls {
             exposure_mode: None,
             constraint_mode: None,
             flicker: Flicker::Off,
+            deflicker: Deflicker::Auto,
             frame_duration_limits: None,
             awb_enable: true,
             awb_mode: None,

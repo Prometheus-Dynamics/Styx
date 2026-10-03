@@ -1,0 +1,26 @@
+[package]
+name = "styx-gpuisp"
+version.workspace = true
+edition.workspace = true
+description = "The software ISP's pipeline as Vulkan compute shaders: the same parameters, outputs and 3A statistics as styx-softisp, with dma-buf import and export."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["camera", "isp", "bayer", "vulkan", "gpu"]
+categories = ["multimedia::images", "multimedia::video"]
+rust-version.workspace = true
+readme = "README.md"
+
+[dependencies]
+# Thin Vulkan bindings; `libvulkan.so.1` is loaded at run time (no link-time dependency, no
+# C build), so a binary with this crate starts on systems without Vulkan.
+ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
+styx-softisp.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+styx-kernel.workspace = true
+
+[lints]
+workspace = true

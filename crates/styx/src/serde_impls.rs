@@ -50,6 +50,10 @@ impl Serialize for BackendHandle {
                 Native {
                     key: String,
                 },
+                #[cfg(feature = "uvc")]
+                Uvc {
+                    key: String,
+                },
             }
 
             let human = match self {
@@ -99,6 +103,8 @@ impl Serialize for BackendHandle {
                 },
                 #[cfg(feature = "native")]
                 BackendHandle::Native { key } => HumanHandle::Native { key: key.clone() },
+                #[cfg(feature = "uvc")]
+                BackendHandle::Uvc { key } => HumanHandle::Uvc { key: key.clone() },
             };
             human.serialize(serializer)
         } else {
@@ -135,6 +141,10 @@ impl Serialize for BackendHandle {
                 },
                 #[cfg(feature = "native")]
                 Native {
+                    key: String,
+                },
+                #[cfg(feature = "uvc")]
+                Uvc {
                     key: String,
                 },
             }
@@ -185,6 +195,8 @@ impl Serialize for BackendHandle {
                 },
                 #[cfg(feature = "native")]
                 BackendHandle::Native { key } => BinaryHandle::Native { key: key.clone() },
+                #[cfg(feature = "uvc")]
+                BackendHandle::Uvc { key } => BinaryHandle::Uvc { key: key.clone() },
             };
             bin.serialize(serializer)
         }
@@ -236,6 +248,10 @@ impl<'de> Deserialize<'de> for BackendHandle {
                 Native {
                     key: String,
                 },
+                #[cfg(feature = "uvc")]
+                Uvc {
+                    key: String,
+                },
             }
             let human = HumanHandle::deserialize(deserializer)?;
             let handle = match human {
@@ -282,6 +298,8 @@ impl<'de> Deserialize<'de> for BackendHandle {
                 },
                 #[cfg(feature = "native")]
                 HumanHandle::Native { key } => BackendHandle::Native { key },
+                #[cfg(feature = "uvc")]
+                HumanHandle::Uvc { key } => BackendHandle::Uvc { key },
             };
             Ok(handle)
         } else {
@@ -317,6 +335,10 @@ impl<'de> Deserialize<'de> for BackendHandle {
                 },
                 #[cfg(feature = "native")]
                 Native {
+                    key: String,
+                },
+                #[cfg(feature = "uvc")]
+                Uvc {
                     key: String,
                 },
             }
@@ -365,6 +387,8 @@ impl<'de> Deserialize<'de> for BackendHandle {
                 },
                 #[cfg(feature = "native")]
                 BinaryHandle::Native { key } => BackendHandle::Native { key },
+                #[cfg(feature = "uvc")]
+                BinaryHandle::Uvc { key } => BackendHandle::Uvc { key },
             };
             Ok(handle)
         }

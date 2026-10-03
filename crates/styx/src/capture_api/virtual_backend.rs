@@ -48,6 +48,8 @@ pub(super) fn start_virtual(
         .max(Duration::from_millis(1));
     let idle_poll = Duration::from_millis(capture_tunables.idle_poll_ms);
     let timestamp_clock = capture_tunables.timestamp_clock;
+    #[cfg(target_os = "linux")]
+    let mut imported = imported::Slots::claim(config, &mode);
     let worker = thread::spawn(move || {
         tracing::debug!(backend = "virtual", "capture worker started");
         let start = std::time::Instant::now();
@@ -55,7 +57,14 @@ pub(super) fn start_virtual(
             if stop_rx.try_recv().is_ok() {
                 break;
             }
-            if let Some(mut frame) = capture.next_frame() {
+            #[cfg(target_os = "linux")]
+            let next = match imported.as_mut() {
+                Some(slots) => slots.next_frame(),
+                None => capture.next_frame(),
+            };
+            #[cfg(not(target_os = "linux"))]
+            let next = capture.next_frame();
+            if let Some(mut frame) = next {
                 let (timestamp, clock) = timestamp_clock.stamp_now(start.elapsed());
                 let meta = frame.meta_mut();
                 meta.timestamp = timestamp;
@@ -94,4 +103,58 @@ pub(super) fn start_virtual(
         retry_metrics: Default::default(),
         sequence_gaps: Default::default(),
     })
+}
+
+/// Frames "captured" into the caller's buffers (see [`super::import`]): the virtual camera
+/// writes nothing, so a frame is a buffer taken until the frame is dropped.
+#[cfg(target_os = "linux")]
+mod imported {
+    use std::sync::mpsc::{Receiver, Sender, channel};
+
+    use styx_core::prelude::*;
+
+    use crate::capture_api::StyxConfig;
+    use crate::capture_api::import::Claim;
+    use crate::prelude::Mode;
+
+    pub(super) struct Slots {
+        claim: Claim,
+        free: Vec<usize>,
+        returned: (Sender<usize>, Receiver<usize>),
+    }
+
+    impl Slots {
+        /// The config's buffers, when they are for `mode`'s frames and no other capture has them.
+        pub(super) fn claim(config: &StyxConfig, mode: &Mode) -> Option<Self> {
+            let buffers = config.capture_buffers.as_ref()?;
+            let format = buffers.format();
+            if (format.code, format.resolution) != (mode.format.code, mode.format.resolution) {
+                return None;
+            }
+            let claim = buffers.claim()?;
+            Some(Self {
+                free: (0..buffers.len()).rev().collect(),
+                claim,
+                returned: channel(),
+            })
+        }
+
+        /// A frame in a free buffer; `None` while every buffer is held.
+        pub(super) fn next_frame(&mut self) -> Option<FrameLease> {
+            self.free.extend(self.returned.1.try_iter());
+            let index = self.free.pop()?;
+            let buffers = self.claim.buffers();
+            let returned = self.returned.0.clone();
+            let meta =
+                FrameMeta::new(buffers.format(), 0).with_capture_instant(std::time::Instant::now());
+            Some(buffers.frame(
+                index,
+                meta,
+                buffers.planes().iter().copied().collect(),
+                move || {
+                    let _ = returned.send(index);
+                },
+            ))
+        }
+    }
 }
