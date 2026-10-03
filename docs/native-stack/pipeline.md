@@ -219,7 +219,7 @@ Where the 0.26 ms per frame go now (Styx API, NV12, 30 fps; `--profile`, per-thr
 
 | | per frame |
 |---|---|
-| back end config `QBUF`: the `pispbe` driver writes the whole `pisp_be_config` to the hardware registers (MMIO) for every job | 0.12 ms |
+| back end config `QBUF`: the stock `pispbe` driver writes the whole `pisp_be_config` to the hardware registers (MMIO) for every job (0.008 ms with the patched driver, see below) | 0.12 ms |
 | algorithms: 0.13 ms per run, at 15 Hz while settled (0.11 ms per frame when run on every frame) | 0.07 ms |
 | ~20 V4L2 ioctls (1 µs each) and two waits of the pipeline thread | 0.025 ms |
 | frame starts and embedded data, read on the pipeline thread when it wakes (was the event thread, two wake-ups: 0.013 ms) | ~0.005 ms |
@@ -251,6 +251,38 @@ tuning, 2026-10-02, `native-pipeline pisp --no-read` / `native_isp_bench single`
 The latency, 8.3 ms, is 7.4 ms of sensor readout (the timestamp is the frame start, the front
 end's buffers complete at its end), 0.84 ms back end job (hardware; the algorithms run inside
 it) and about 0.05 ms on the host.
+
+### The back end driver's config write
+
+The largest piece of the PiSP path's CPU was not Styx's: the `QBUF` that completes a back end
+job ran the driver's `pispbe_queue_job()`, which writes all 1589 configuration words to the
+registers with `writel()` (117 µs per job, `function_graph`: everything inside
+`pispbe_schedule()`, 113.8 µs of it the per-word barrier). `kernel-modules/pispbe` is the same
+driver patched to write with relaxed MMIO, skip words equal to the last ones written, and read
+the config from a cached copy ([README](../../kernel-modules/pispbe/README.md)). On the dev box
+it is installed as an override of the image's `pisp_be` (`updates/`, loaded at boot).
+
+Measured 2026-10-03 (CM5, HeliOS tuning with temporal denoise, 3 rounds alternating the stock
+and the patched module by `rmmod`/`insmod` in one session; Styx API = `native_isp_bench single`,
+process CPU per frame; tool = `native-pipeline pisp --no-read --profile`, pipeline thread):
+
+| | stock `pisp_be` | patched |
+|---|---|---|
+| `pispbe-config.qbuf` (30 / 120 fps) | 119.7-120.1 µs | 6.3-6.4 / 8.2-9.2 µs |
+| Styx API, 30 fps: process CPU, latency median | 0.35 ms, 9.45-9.47 ms | 0.23-0.26 ms, 9.34 ms |
+| Styx API, 120 fps | 0.23-0.26 ms, 9.53-9.54 ms | 0.13-0.15 ms, 9.42 ms |
+| tool, 30 / 120 fps | 0.341-0.356 / 0.238-0.251 ms | 0.234-0.236 / 0.125-0.138 ms |
+| back end job (queue to output dequeued), median | 2.30-2.32 ms | 2.20-2.21 ms |
+| AE locked after | 6 frames | 6 frames |
+
+The 0.11 ms come off the latency as well (the write ran before the job could start). The
+outputs are bit-identical: `native-pipeline be-replay` over a 19-config sequence (live configs
+and variants that change and disable/re-enable blocks) gives the same md5 for every output
+under both drivers, with the skipping on and off. libcamera on the patched driver
+(`styx-compare --backend libcamera`, NV12 30 fps, libcamera mode): no drops, the same levels
+as on the stock one in back-to-back runs (mean 0.375 vs 0.377), its process CPU 0.8-0.9% vs
+1.2% of a core (libcamera's `QBUF` pays the same write). With Styx's patched configs ~250-300
+of the 1589 words change per frame.
 
 ### Controls through the Styx API
 
@@ -735,9 +767,10 @@ fps); CPU unchanged. It is a Styx setting now (see "Denoise settings").
   memory traffic between front and back end).
 * The front end statistics set-up is fixed except for the histogram's zone weights (the
   metering mode's, as libcamera); AGC meters the AWB zones.
-* PiSP CPU left (see "PiSP path performance"): half of it is the `pispbe` driver writing the
-  whole back end config to the hardware by MMIO on every job (0.12 ms; the driver could write
-  only changed blocks, as it already does for the front end). The pipeline thread waits
+* PiSP CPU left (see "PiSP path performance"): with the stock `pispbe` driver half of it is
+  the driver writing the whole back end config to the hardware by MMIO on every job (0.12 ms;
+  8 µs with the patched driver in `kernel-modules/pispbe`, which images would need to carry
+  as a kernel patch until something like it is upstream). The pipeline thread waits
   twice per frame, for the front end's statistics and 0.84 ms later for the back end job; the
   two cannot share a wait without delaying the frame.
 * Algorithms at 15 Hz while settled: a scene change is seen up to one 15 Hz period later

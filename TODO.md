@@ -90,7 +90,14 @@ box (OV9782 1280x800) unless stated.
 - [ ] OV9782 tuning of our own (today: the HeliOS tuning).
 
 ### Performance
-- [ ] PiSP: 0.12 ms/frame is the `pispbe` driver rewriting its whole config per job (kernel side).
+- [x] PiSP: 0.12 ms/frame was the `pispbe` driver writing its whole config per job with a
+      barrier per word. Patched driver (`kernel-modules/pispbe`: relaxed MMIO, only changed
+      words, cached config copy): 117 → 8 µs per job, Styx API 0.35 → 0.23-0.26 ms/frame at
+      30 fps (0.25 → 0.13-0.15 at 120), latency −0.11 ms, outputs bit-identical, libcamera
+      unaffected. Installed on the dev box as an override of `pisp_be`.
+- [ ] Ship the `pispbe` patch in the HeliOS image (kernel patch) and/or send it upstream (draft
+      in `kernel-modules/pispbe/README.md`; ask Raspberry Pi whether the config registers are
+      guaranteed to keep their values between jobs).
 - [ ] Software ISP: outside the image maths only ~0.3 ms of memory traffic and ~0.15 ms of
       dequeue/sync/bookkeeping are left (staging copy and end-of-access sync gone). Integer path
       (Pi 4 class): colour matrix 1.1 ms and tone table 1.5 ms per frame on the A76; not yet

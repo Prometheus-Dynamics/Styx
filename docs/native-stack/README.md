@@ -51,6 +51,7 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | `crates/pipeline` | `styx-pipeline` | The native processing pipeline: statistics conversion, the deterministic 3A loop runner (`Controller`), ISP settings for the PiSP and the software ISP, the PiSP and software paths on a native camera (feature `device`), raw recordings and a virtual sensor for host replays; see [pipeline.md](pipeline.md) | pipeline agent |
 | `tools/compare` | `styx-compare` | Same capture through the libcamera and native backends: start latency (first frame, AE converged, exposure settled), rate and jitter, drops, CPU (with the IPA proxy), RSS/PSS and dma-bufs, frame statistics; JSON and markdown. `device-run.sh` runs the set on the CM5 | compare agent |
 | `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
+| `kernel-modules/pispbe` | (C, GPL-2.0) | The Raspberry Pi PiSP back end driver (`pisp_be`) patched for a cheaper per-job config write (117 → 8 µs), build and install scripts | pisp agent |
 
 Crates must not depend on each other except: `styx-sensor` may use `styx-kernel` types behind
 its `bus` trait implementation feature, and `styx-graph` and `styx-algo` depend on nothing new. `styx-pipeline`
@@ -118,7 +119,10 @@ limits at that fps.
     `config.txt` (`dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous` in place of HeliOS's
     `ov9782-overlay`; `overlays/styx-sensor-bridge-cm5.dtbo`) with `styx_sensor_bridge.ko` in
     `/lib/modules/$(uname -r)/updates/` (on the root overlay's upper layer, `depmod`ed: udev
-    loads it at boot). The bridge is bound at boot, `ov9282` is not, `helios-peripherals` and
+    loads it at boot). The patched back end driver `pisp-be.ko` is there too, overriding the
+    image's `pisp_be` in both camera modes (`kernel-modules/pispbe/install/`; `uninstall.sh`
+    goes back to the image's). The bridge is bound at boot, `ov9282` is not,
+    `helios-peripherals` and
     `styx-bridge.service` are disabled. Installed by
     `kernel-modules/styx-sensor-bridge/install/install.sh` (rerun it after rebuilding the
     module, then reboot).
