@@ -392,6 +392,43 @@ Bayesian AWB is bistable on this scene (warm lamp, blue LED). The integer path f
 way when its statistics are scaled by 1.0007 (fp16's differ by up to 0.05% per zone); live,
 both settle at the same temperature. That is a sensitivity of the AWB search, not of the ISP.
 
+## GPU ISP
+
+`styx-gpuisp` (optional crate, [README](../../crates/gpuisp/README.md)) runs the software ISP's
+pipeline as Vulkan compute shaders with the same parameters, outputs and statistics, computing
+the integer arithmetic bit for bit. The software path switches to it with
+`SoftLoop::use_gpu` / `SoftPipeline::use_gpu` (`styx-pipeline` feature `gpu`); with a GPU,
+`SoftPipeline` hands the camera's capture dma-bufs to the GPU, which reads them in place (no
+CPU mapping or cache maintenance). Styx's native backend (feature `gpu-isp`) opens a Vulkan
+device once per process (`STYX_GPU_ISP=0` turns it off, `STYX_GPUISP_DEVICE` picks one; never
+a software rasteriser unless named) and runs processed modes of cameras without a PiSP on it,
+falling back to the software ISP where there is none; the planner prices it (below). Vulkan is
+loaded at run time (`ash`), so nothing links against it.
+
+* **Quality** (`native-pipeline gpu-quality --recording BASE`, 160 recorded OV9782 frames with
+  the loop's settings; `crates/gpuisp/tests`): identical to the integer arithmetic, pictures
+  and statistics, on RADV and llvmpipe; 56-58 dB / at most 1 code from x86's tone quadratics;
+  53.7-55.2 dB / at most 2 codes from fp16 (what the A76 runs). The loop over a virtual sensor
+  gives the same pictures, requests and settings frame by frame on CPU and GPU
+  (`styx-pipeline/tests/gpu_loop.rs`).
+* **Performance** (`native-pipeline gpu-bench`, RX 6800 XT against `styx-softisp` on the same
+  Ryzen host, HeliOS tuning, 1280x800): NV12 0.47 ms of process CPU per frame against 1.77 ms
+  on one thread (1.96 ms on four), RGB24 0.62 against 1.80 ms; GPU time 0.21 (NV12) and 0.29 ms
+  (RGB24); loop wall time 0.77 ms (NV12), as four CPU threads (0.72) and less than one (1.83).
+  Same per frame at 120 fps (0.46 ms, 5.5% of a core against 20.4%). What is left on the CPU
+  is the frame's copy in, the output's copy out (both go with dma-bufs), the lens shading and
+  tone tables (0.2 ms when they change) and the submission and wait.
+* **Planner**: with `gpu-isp` and a device, processed native modes without a PiSP cost
+  0.3 ms/MP of CPU and 0.6 ms/MP of latency (plus the 3A) instead of the software ISP's
+  2.9 ms/MP (`planner/cost.rs`, `GPUISP_*`), executed as `Hardware`.
+* **CM5 / Pi 5**: the HeliOS image has no Vulkan driver. Mesa's v3dv (V3D 7.1) would need
+  Mesa with the broadcom Vulkan driver, the Vulkan loader and its ICD file, the `v3d` DRM
+  driver and render-node access (README, "Raspberry Pi 5"). Estimated at 4-8 ms of GPU per
+  1280x800 frame, V3D would not beat the A76's fp16 NEON path (2.6-3.0 ms on one core) on
+  time; it would take the ISP off the CPU (about 2.5% of a core left at 30 fps instead of
+  9-10%) at a few ms more latency. The CM5 has the PiSP; the GPU ISP is for boards with a GPU
+  and no ISP.
+
 ## Planner
 
 The native backend lists `NV12` and `RG24` modes at each sensor size (all rates of the raw

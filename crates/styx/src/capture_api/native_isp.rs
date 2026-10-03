@@ -354,6 +354,17 @@ pub(super) fn start_processed(
                 .unwrap_or_else(crate::planner::cost::default_softisp_threads);
             tracing::info!(backend = "native", threads, "software ISP threads");
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
+            #[cfg(feature = "gpu-isp")]
+            if let Some(ctx) = crate::gpu_isp::context() {
+                match p.use_gpu(&ctx) {
+                    Ok(()) => {
+                        tracing::info!(backend = "native", device = %ctx.info().name, "GPU ISP")
+                    }
+                    Err(e) => {
+                        tracing::warn!(backend = "native", error = %e, "GPU ISP refused; software ISP")
+                    }
+                }
+            }
             if let Some(c) = loop_controls.take() {
                 p.soft_loop().controller().set_controls(c);
             }

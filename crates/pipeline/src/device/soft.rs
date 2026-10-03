@@ -108,6 +108,13 @@ impl SoftPipeline {
         &mut self.soft
     }
 
+    /// Process frames on `context`'s GPU (see [`SoftLoop::use_gpu`]): capture buffers that
+    /// are dma-bufs are then read by the GPU in place, without a CPU mapping or cache sync.
+    #[cfg(feature = "gpu")]
+    pub fn use_gpu(&mut self, context: &styx_gpuisp::GpuContext) -> Result<()> {
+        self.soft.use_gpu(context)
+    }
+
     /// The camera.
     pub fn camera(&self) -> &NativeCamera {
         &self.camera
@@ -176,9 +183,19 @@ impl SoftPipeline {
             .or_else(|| self.controls.applied(seq))
             .ok_or_else(|| PipelineError::Device(format!("no control values for frame {seq}")))?;
         let sensor = sensor_values(seq, &controls);
+        let frame = match raw.dmabuf() {
+            #[cfg(feature = "gpu")]
+            Some(fd) if matches!(self.soft.engine(), crate::IspEngine::Gpu { .. }) => {
+                crate::RawFrame::DmaBuf {
+                    fd,
+                    len: raw.buffer_len(),
+                }
+            }
+            _ => crate::RawFrame::Bytes(raw.data()),
+        };
         let output = self
             .soft
-            .process(raw.data(), raw.stride as usize, &sensor, scale, out)?;
+            .process_frame(frame, raw.stride as usize, &sensor, scale, out)?;
         let request_lands = match &output.step.sensor {
             Some(r) => Some(apply_request(&self.controls, r)?),
             None => None,

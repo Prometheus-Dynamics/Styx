@@ -9,6 +9,10 @@ pub enum PipelineError {
     /// The software ISP refused a frame or its parameters.
     #[error("software ISP: {0}")]
     SoftIsp(#[from] styx_softisp::IspError),
+    /// The GPU ISP could not start or process a frame.
+    #[cfg(feature = "gpu")]
+    #[error("GPU ISP: {0}")]
+    GpuIsp(#[from] styx_gpuisp::GpuError),
     /// The sensor description does not have what is needed.
     #[error("sensor: {0}")]
     Sensor(String),

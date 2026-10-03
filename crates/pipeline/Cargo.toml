@@ -12,6 +12,8 @@ rust-version.workspace = true
 default = []
 # Run on the device: native cameras (styx-native) and the PiSP nodes (styx-pisp/device).
 device = ["dep:styx-native", "dep:styx-kernel", "styx-pisp/device"]
+# The software path on a Vulkan GPU (`styx-gpuisp`; loads libvulkan at run time).
+gpu = ["dep:styx-gpuisp"]
 
 [dependencies]
 bytemuck = "1.25"
@@ -25,6 +27,7 @@ styx-softisp.workspace = true
 thiserror.workspace = true
 styx-native = { workspace = true, optional = true }
 styx-kernel = { workspace = true, optional = true }
+styx-gpuisp = { workspace = true, optional = true }
 
 [lints]
 workspace = true

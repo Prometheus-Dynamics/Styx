@@ -99,7 +99,19 @@ box (OV9782 1280x800) unless stated.
 
 ### Platforms
 - [ ] A second bridged sensor and a non-Pi board (software ISP or its own ISP).
-- [ ] GPU ISP path where Vulkan exists (not on the HeliOS image).
+- [x] GPU ISP path where Vulkan exists (`styx-gpuisp`, optional): the software ISP's pipeline
+      as Vulkan compute shaders (ash, Vulkan loaded at run time), bit-exact with the integer
+      arithmetic (pictures and statistics, RADV and llvmpipe), capture dma-bufs imported and
+      outputs exportable, one submission per frame; `SoftLoop::use_gpu`, Styx feature
+      `gpu-isp` with a planner cost. RX 6800 XT: 0.47 ms CPU per 1280x800 NV12 frame against
+      1.77 ms for the software ISP on the same host, GPU 0.21 ms.
+- [ ] GPU ISP on the Pi 5 (v3dv): not on the HeliOS image (needs Mesa's broadcom Vulkan
+      driver, the loader, the v3d DRM driver); estimated slower than the A76 NEON path, so
+      only to free the CPU. Untested on a real non-x86 GPU.
+- [ ] GPU ISP: tables (0.2 ms per settings change: lens shading gain rows rebuilt with the
+      gains, as the integer path does) could move the channel gains to the GPU at the cost
+      of bit-exactness; outputs as exported dma-bufs through the Styx capture (today copied
+      into heap frames).
 - [ ] Userspace UVC (optional).
 
 ### Known issues

@@ -10,6 +10,8 @@ use styx_softisp::{
     YuvMatrix,
 };
 
+use crate::engine::{Engine, IspEngine, RawFrame};
+
 use crate::controller::{Controller, SensorValues, Start, Step};
 use crate::error::Result;
 use crate::isp::IspSettings;
@@ -46,7 +48,7 @@ pub struct SoftTiming {
 pub struct SoftLoop {
     info: SensorInfo,
     controller: Controller,
-    isp: SoftIsp,
+    isp: Engine,
     base: IspParams,
     /// The latest algorithm output and the frame it came from.
     latest: Option<(Params, u64)>,
@@ -62,7 +64,7 @@ impl std::fmt::Debug for SoftLoop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SoftLoop")
             .field("info", &self.info)
-            .field("isp", &self.isp)
+            .field("isp", &self.isp.kind())
             .finish_non_exhaustive()
     }
 }
@@ -114,7 +116,7 @@ impl SoftLoop {
         Ok(Self {
             info,
             controller,
-            isp,
+            isp: Engine::Cpu(isp),
             base,
             latest: None,
             start,
@@ -154,6 +156,50 @@ impl SoftLoop {
         self.isp.set_copy_input(copy);
     }
 
+    /// Which ISP processes the frames.
+    pub fn engine(&self) -> IspEngine {
+        self.isp.kind()
+    }
+
+    /// The GPU's time on the last frame (GPU ISP on a device with timestamp queries).
+    pub fn gpu_time(&self) -> Option<std::time::Duration> {
+        self.isp.gpu_time()
+    }
+
+    /// Process frames on `context`'s GPU from now on (`styx-gpuisp`: the same parameters,
+    /// pictures and statistics as the integer arithmetic of the software ISP). The loop's
+    /// state is kept; the next frame's settings are applied afresh.
+    #[cfg(feature = "gpu")]
+    pub fn use_gpu(&mut self, context: &styx_gpuisp::GpuContext) -> Result<()> {
+        let params = self.isp.params().clone();
+        let isp = styx_gpuisp::GpuIsp::with_context(context, self.isp.format(), params)?;
+        let copy = match &self.isp {
+            Engine::Cpu(_) => true,
+            Engine::Gpu(g) => g.copy_input,
+        };
+        self.isp = Engine::Gpu(Box::new(crate::engine::gpu::Gpu::new(isp, copy)));
+        self.applied = None;
+        Ok(())
+    }
+
+    /// Process frames with `styx-softisp` on `threads` threads (after [`Self::use_gpu`]).
+    #[cfg(feature = "gpu")]
+    pub fn use_cpu(&mut self, threads: usize) -> Result<()> {
+        if let Engine::Cpu(i) = &mut self.isp {
+            i.set_threads(threads);
+            return Ok(());
+        }
+        let params = self.isp.params().clone();
+        let mut isp = SoftIsp::new(self.isp.format(), params)?.with_threads(threads);
+        isp.set_lens_shading_tolerance(LSC_TOLERANCE);
+        if let Engine::Gpu(g) = &self.isp {
+            isp.set_copy_input(g.copy_input);
+        }
+        self.isp = Engine::Cpu(isp);
+        self.applied = None;
+        Ok(())
+    }
+
     /// The controller (controls, recording).
     pub fn controller(&mut self) -> &mut Controller {
         &mut self.controller
@@ -180,6 +226,7 @@ impl SoftLoop {
     pub fn start(&mut self) -> Result<Start> {
         let s = self.controller.start()?;
         self.start = s.isp.clone();
+        self.isp.forget_imports();
         self.latest = None;
         self.applied = None;
         self.last_run = None;
@@ -199,6 +246,18 @@ impl SoftLoop {
     pub fn process(
         &mut self,
         raw: &[u8],
+        stride: usize,
+        sensor: &SensorValues,
+        scale: Scale,
+        out: OutputBuffers<'_>,
+    ) -> Result<SoftOutput> {
+        self.process_frame(RawFrame::Bytes(raw), stride, sensor, scale, out)
+    }
+
+    /// [`Self::process`] from any [`RawFrame`] (a dma-buf with the GPU ISP).
+    pub fn process_frame(
+        &mut self,
+        raw: RawFrame<'_>,
         stride: usize,
         sensor: &SensorValues,
         scale: Scale,
@@ -268,7 +327,7 @@ impl SoftLoop {
         scale: Scale,
         out: OutputBuffers<'_>,
     ) -> Result<()> {
-        self.isp.process(raw, stride, scale, out)?;
+        self.isp.process(RawFrame::Bytes(raw), stride, scale, out)?;
         Ok(())
     }
 }
