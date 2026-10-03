@@ -36,6 +36,9 @@ pub struct WarmStart {
     pub awb_converged: bool,
     /// Scene illuminance estimate (lux).
     pub lux: f64,
+    /// The light flicker period AE detected (`Flicker::Auto`): the next session avoids it
+    /// from its first frame.
+    pub flicker_detected: Option<Duration>,
 }
 
 impl Default for WarmStart {
@@ -50,6 +53,7 @@ impl Default for WarmStart {
             colour_temperature: 4500.0,
             awb_converged: false,
             lux: 400.0,
+            flicker_detected: None,
         }
     }
 }
@@ -74,6 +78,7 @@ impl WarmStart {
             colour_temperature: p.colour_temperature,
             awb_converged: p.awb.converged,
             lux: p.lux,
+            flicker_detected: p.ae.flicker_detected,
         })
     }
 

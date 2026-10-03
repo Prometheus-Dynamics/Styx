@@ -31,6 +31,10 @@ pub struct FrameLog {
     /// Processing time on the host for this frame.
     pub processing: Duration,
     pub request_lands: Option<u64>,
+    /// AE's flicker estimate for this frame (relative brightness from the flicker).
+    pub flicker_mod: f64,
+    /// The flicker period AE detected, microseconds (0: none).
+    pub flicker_us: u64,
     /// Where the processing time went (software ISP loop only).
     pub timing: Option<styx_pipeline::SoftTiming>,
 }
@@ -50,6 +54,8 @@ impl FrameLog {
             wb: step.isp.wb,
             ct: p.colour_temperature,
             isp_dg: step.isp.digital_gain,
+            flicker_mod: p.ae.flicker_modulation,
+            flicker_us: p.ae.flicker_detected.map_or(0, |d| d.as_micros() as u64),
             ..Default::default()
         }
     }
@@ -117,6 +123,45 @@ fn convergence(frames: &[FrameLog], from: usize, to: usize, out: &mut String) {
         seg[seg.len() - 1].exposure_us,
         seg[seg.len() - 1].gain,
         seg[seg.len() - 1].out_y,
+    );
+}
+
+/// Relative standard deviation.
+fn rel_sd(v: &[f64]) -> f64 {
+    let m = v.iter().sum::<f64>() / v.len().max(1) as f64;
+    (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len().max(1) as f64).sqrt() / m.max(1e-12)
+}
+
+/// Frame-to-frame stability over the second half of the run (or after the last forced step):
+/// how much AE moved and how much the frames' brightness varied.
+fn stability(frames: &[FrameLog], from: usize, out: &mut String) {
+    let seg = &frames[from.min(frames.len())..];
+    if seg.len() < 4 {
+        return;
+    }
+    let total: Vec<f64> = seg.iter().map(FrameLog::total).collect();
+    let changes = total
+        .windows(2)
+        .filter(|w| (w[1] / w[0] - 1.0).abs() > 0.005)
+        .count();
+    let y: Vec<f64> = seg.iter().map(|f| f.measured_y).collect();
+    let out_y: Vec<f64> = seg.iter().map(|f| f.out_y).collect();
+    let locked = seg.iter().filter(|f| f.locked).count();
+    let detected = frames.iter().position(|f| f.flicker_us > 0);
+    let _ = writeln!(
+        out,
+        "steady state, frames {}..{}: exposure x gain SD {:.2}% ({} changes > 0.5%), metered Y SD {:.2}%, output Y SD {:.2}%, AE locked on {:.1}% of frames; flicker detected {}",
+        seg[0].seq,
+        seg[seg.len() - 1].seq,
+        100.0 * rel_sd(&total),
+        changes,
+        100.0 * rel_sd(&y),
+        100.0 * rel_sd(&out_y),
+        100.0 * locked as f64 / seg.len() as f64,
+        detected.map_or("never".into(), |i| format!(
+            "{} us at seq {}",
+            frames[i].flicker_us, frames[i].seq
+        )),
     );
 }
 
@@ -217,6 +262,14 @@ impl Summary<'_> {
             let _ = writeln!(out, " {what}:");
             convergence(f, *from, to, &mut out);
         }
+        let steady_from = a
+            .perturb
+            .iter()
+            .filter_map(|(at, _)| f.iter().position(|x| x.seq >= at + 2 * PERTURB_FRAMES))
+            .max()
+            .unwrap_or(0)
+            .max(f.len() / 2);
+        stability(f, steady_from, &mut out);
         if let Some(first) = f.iter().position(|x| x.locked) {
             let t = self.open_to_first + f[first].timestamp.saturating_sub(f[0].timestamp);
             let _ = writeln!(
@@ -244,12 +297,12 @@ pub fn write_csv(path: &Path, frames: &[FrameLog]) -> std::io::Result<()> {
     let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
     writeln!(
         w,
-        "seq,timestamp_ns,exposure_us,gain,verified,measured_y,target_y,locked,wb_r,wb_b,ct,isp_dg,out_y,latency_ms,processing_ms,request_lands"
+        "seq,timestamp_ns,exposure_us,gain,verified,measured_y,target_y,locked,wb_r,wb_b,ct,isp_dg,out_y,latency_ms,processing_ms,request_lands,flicker_mod,flicker_us"
     )?;
     for f in frames {
         writeln!(
             w,
-            "{},{},{:.1},{:.4},{},{:.5},{:.5},{},{:.4},{:.4},{:.0},{:.4},{:.2},{:.3},{:.3},{}",
+            "{},{},{:.1},{:.4},{},{:.5},{:.5},{},{:.4},{:.4},{:.0},{:.4},{:.2},{:.3},{:.3},{},{:.4},{}",
             f.seq,
             f.timestamp.as_nanos(),
             f.exposure_us,
@@ -265,7 +318,9 @@ pub fn write_csv(path: &Path, frames: &[FrameLog]) -> std::io::Result<()> {
             f.out_y,
             ms(f.latency),
             ms(f.processing),
-            f.request_lands.map_or(String::new(), |v| v.to_string())
+            f.request_lands.map_or(String::new(), |v| v.to_string()),
+            f.flicker_mod,
+            f.flicker_us
         )?;
     }
     w.flush()

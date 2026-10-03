@@ -159,6 +159,11 @@ impl Controller {
         self.controls = controls;
     }
 
+    /// Flicker avoidance from the next frame on (the other controls stay as they are).
+    pub fn set_flicker(&mut self, flicker: styx_algo::Flicker) {
+        self.controls.flicker = flicker;
+    }
+
     /// The controls in effect.
     pub fn controls(&self) -> &Controls {
         &self.controls

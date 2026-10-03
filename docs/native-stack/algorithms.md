@@ -77,7 +77,7 @@ record the warm start in their header.
 |---|---|---|
 | `BlackLevel` | `black_level.cpp` | Tuning levels, else the sensor description's |
 | `Lux` | `lux.cpp` | From exposure, gain and mean luma against a reference; metadata lux wins |
-| `Agc` | `agc_channel.cpp` (channel 0) | Metering (tuned or built-in centre-weighted / spot / average weights, resampled to the zone grid), histogram constraints, EV, exposure profiles, flicker periods, digital gain, damping, start-up, fast de-saturation, lock. Styx changes: output landing frame; frame duration chosen here; model-based steps (changes above `full_step`, 8% by default, go straight to the target at any time; after one lands, the rest is corrected at once; damping only for small changes); every frame's statistics used (frames in flight ask for the same total); de-saturates only while half the image is saturated and without damping; locked = no change beyond 5% in flight and on target (5%) for two frames, no hunting within that tolerance once locked; unsettled frames left out; warm starts |
+| `Agc` | `agc_channel.cpp` (channel 0) | Metering (tuned or built-in centre-weighted / spot / average weights, resampled to the zone grid), histogram constraints, EV, exposure profiles, flicker periods, digital gain, damping, start-up, fast de-saturation, lock. Styx changes: output landing frame; frame duration chosen here; model-based steps (changes above `full_step`, 8% by default, go straight to the target at any time; after one lands, the rest is corrected at once; damping only for small changes); every frame's statistics used (frames in flight ask for the same total); de-saturates only while half the image is saturated and without damping; locked = no change beyond 5% in flight and on target (5%) for two frames, no hunting within that tolerance once locked, and locked at its limits when the scene is beyond them (`AeStatus::at_limit`); unsettled frames left out; warm starts; flicker fitted from the frames and metered against, detected automatically (below) |
 | `Awb` | `awb.cpp`, `awb_bayes.cpp` | Bayesian search along the CT curve with lux-interpolated priors, coarse then fine (across the curve), or grey world; runs synchronously every `frame_period` frames (every frame during start-up), filtered by `speed`; modes; manual gains or temperature. Styx changes: start-up counts only usably exposed frames (mean luma 0.02..0.7; at most 4 × `startup_frames` frames); unsettled frames left out; warm starts; soft search and hysteresis (below) |
 | `Denoise` | `noise.cpp`, `denoise.cpp`, `geq.cpp`, `dpc.cpp`, `sharpen.cpp` | Noise profile × √analogue gain; SDN/CDN/TDN strengths (`normal` configuration), SDN and CDN starting at their no-TDN values and backing off by `backoff` per run while temporal denoise runs (`CameraConfig::temporal_denoise`, set by the ISP); GEQ by gain (and lux); DPC strength; sharpening factors. Output in `Params::denoise` / `Params::sharpen` (Raspberry Pi units: 16-bit pixel scale) for ISPs with those blocks (the PiSP back end) |
 | `Alsc` | `alsc.cpp` | Calibrated Cr/Cb tables interpolated by temperature, resampled to crop and flips, normalised, luminance table at `luminance_strength` (generated from `corner_strength` if given, else tuned). Adaptive refinement (below). Styx changes: the refinement runs in `process` and its result is used from the next frame on (libcamera: a thread, picked up a frame or more later); the filter and periods count frames, so running the algorithms at a lower rate keeps the per-frame speed |
@@ -139,6 +139,52 @@ with the libcamera tree's OV9782 tuning when present) and requires steps under 6
 0.1% (under 1 mired per 0.01% around the old flip), and checks that frames alternating
 either side of the tie keep the side chosen.
 
+### AE: flicker
+
+Raspberry Pi's AGC avoids mains flicker by making exposures whole flicker periods (10 ms for
+50 Hz mains), which needs exposures of at least a period: at 120 fps (8.1 ms at most) it does
+nothing, and a global-shutter sensor's frames beat at the alias frequency (100 Hz at 120 fps:
+20 Hz; a lamp flickering at 50 Hz: 50 Hz), which AE chased (on the CM5 at 120 fps under the
+room's lamp: exposure × gain spread 10%, never locked). Styx's AGC (`agc/flicker.rs`):
+
+* models the light as harmonics 1-3 of the mains frequency (50, 100, 150 Hz), so lamps
+  flickering at the mains frequency itself (half-wave LED drivers, the OV9782's room) are
+  covered as well as the usual full-wave 100 Hz; a frame sees each harmonic integrated over its
+  exposure (`sinc(kωT/2)` of it, at the exposure's centre);
+* fits the model by least squares (QR by Gram-Schmidt) to the last second of frames (at most
+  64): each frame's mean luma over its exposure × gain, so AE's own changes drop out, at times
+  from the frame numbers and durations (frames the algorithms skip are fine). Harmonics the
+  frames cannot see (aliased to a constant phase, e.g. 120 Hz at 120 fps; whole periods of
+  exposure) or cannot tell apart from one already in (50 and 100 Hz both at ±10 Hz at 30 fps;
+  the second harmonic goes in first) are left out; a frame far from the model (25%) is a scene
+  change and restarts the window;
+* meters each frame against the mean light: the metered gain is multiplied by the brightness
+  the model predicts for that frame (`AeStatus::flicker_modulation`), when the fit is
+  significant (F test of the flicker terms ≥ 12, modulation ≥ 0.4%);
+* quantises exposures of at least a period to whole periods: the mains period (20 ms) once
+  the lamp has been seen flickering at the mains frequency (kept: such exposures hide it from
+  the fit), else half of it (10 ms; also what `Flicker::Mains50` uses before a fit). Shorter
+  exposures are left alone (10 ms ones would not cancel a 50 Hz component, and longer ones see
+  less of it);
+* `Flicker::Auto` fits 50 and 60 Hz mains and takes the one whose fit stays strongly
+  significant (F ≥ 30, modulation ≥ 0.8%, 16 frames or more) for half a second; until then AE
+  meters against the most significant fit, and exposures are quantised only once detected.
+  The detection is kept (also across warm starts, `WarmStart::flicker_detected`) until the
+  other frequency is detected. Styx's native processed modes default to it
+  (`NativeIspConfig::flicker`, control `AE_FLICKER_MODE`, detected period
+  `AE_FLICKER_DETECTED`); `Controls::default()` keeps it off.
+
+Simulated (`tests/sim_flicker.rs`, the device's timing): under 100 Hz light whose beat puts
+±7% (±12%) on 8.1 ms frames at 120 fps, AE without avoidance moves exposure × gain by 5.4%
+(7.8%) frame to frame and never locks; with avoidance it does not move after locking. Under
+the room's half-wave lamp (50 Hz ±25%, 100 Hz ±10%, 150 Hz ±3%): 13% (off) against 0 (auto)
+at 120 fps, 12% against 0 at 60 fps; at 30 fps auto ends at 20 ms exposures and the frames'
+spread falls from 4.3% to 0.11%. 120 fps cold starts over 12 flicker phases (±3.5% beat):
+locked at frames 5-14 and once 77 without, 5-11 with. Detection (mains 0.07 Hz off nominal):
+frames 33 / 46 / 77 / 63 at 30 / 60 / 120 / 90 fps (60 Hz at 90 fps); none for steady light
+or for 120 Hz light at 120 fps. Long runs (20-30 s, noise, mains 0.03 Hz off) with avoidance
+never move exposure × gain after start-up. The device: pipeline.md, "Flicker".
+
 ## Tuning
 
 Our format is TOML matching `Tuning` (`tuning/mod.rs`): sections `[black_level]`, `[lux]`,
@@ -193,8 +239,8 @@ All 67 pisp and vc4 tuning files in libcamera and both HeliOS OV9782 files conve
 
 ## Simulator and replay
 
-`sim::Simulation` models a scene (lux and colour temperature over frames, mains flicker,
-reflectances), a sensor (CT response, responsivity, shot and read noise, texture, line-quantised
+`sim::Simulation` models a scene (lux and colour temperature over frames, mains flicker with
+any number of components and a start phase (`Simulation::set_time`), reflectances), a sensor (CT response, responsivity, shot and read noise, texture, line-quantised
 exposure) and the control scheduler's timing (per-control delays, requests from frame `F`
 written from `F + 2`, late landings counted). `sim::convergence` measures settle frames,
 overshoot and jitter. `SensorModel::black_error` adds a black level offset (luma not
@@ -215,6 +261,8 @@ fps (delays 2/2/1, written in the same frame: `tests/sim_start.rs`), run with `-
 | warm restart, same scene | | within 5% from frame 0, locked at 1, nothing re-requested |
 | 30 → 120 fps warm start | | 30 ms × 2.1 → 8.1 ms × 7.8, luma within 0.3%, locked at 1 |
 | 100 Hz flicker, 20 ms exposure | frame-to-frame jitter 2.1% without avoidance, 0.13% with 50 Hz avoidance |
+| 100 Hz flicker ±7% on 8.1 ms frames at 120 fps (`sim_flicker.rs`) | | exposure × gain spread 5.4% and never locked without avoidance; none, locked at 7 with it |
+| 0.05 lux (beyond AE's reach) at 30 fps, then 200 lux | | locked at its limits at frame 3, relocked 6 frames after the light came on |
 | AWB 3000 K → 6000 K / 6000 K → 3000 K | 5994 K / 2999 K (6004 / 3007 before the soft search), gains within 0.1% of truth, settled (3%) in 54–64 frames at the default `speed` 0.05 |
 | Late landings | none |
 

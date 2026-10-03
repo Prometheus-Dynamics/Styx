@@ -103,7 +103,7 @@ mod native;
 #[cfg(feature = "netcam")]
 pub(crate) use capture::PoolLimits;
 pub use capture::{CaptureConfig, CaptureTunables, IdleStop, ReconnectPolicy};
-pub use native::NativeIspConfig;
+pub use native::{NativeFlicker, NativeIspConfig};
 
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

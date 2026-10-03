@@ -140,12 +140,29 @@ Output buffers are reused in release order, and a buffer a consumer holds (a Sty
 frame server's latest frame, a frame another process has not released) is never written. When
 consumers hold every buffer of an output, `next` drops the frame (`PipelineError::OutputsHeld`:
 no job queued, the raw buffer goes back) and the Styx capture moves on to the next frame: the
-camera never waits for consumers. Each output has 4 buffers (`PispOptions::be_buffers`; through
-Styx `StyxConfig::native_output_buffers`). On the CM5 with the frame socket
-(`styx::ipc::FrameSocket`, NV12 1280x800 at 30 fps, 20 s each): two consumers holding a frame
-for 500 ms each cost frames with 4 buffers (17.3 fps delivered) and none with 8 (30.03 fps, no
-sequence gap); three holding 1 s each with 4 buffers left 3.6 fps; no held frame changed in
-any run.
+camera never waits for consumers. Each output has 6 buffers by default (`PispOptions::be_buffers`;
+through Styx `StyxConfig::native_output_buffers`, 4 before). A Styx capture adds whatever its
+queue and extra buffers go beyond the defaults (2 + 2): the planner's shared captures reserve
+every consumer's queue and the frame it works on that way, so a consumer holding what the
+planner allows it never takes the others' buffers; all the outputs' buffers stay within half
+the free CMA (never fewer than `output_buffers`; 32 at most).
+
+On the CM5 with the frame socket (`styx::ipc::FrameSocket`, NV12 1280x800 at 30 fps, 20 s
+each, consumers fetching the latest frame and holding it, staggered so each holds a
+different frame):
+
+| consumers holding 500 ms | 4 buffers | 6 buffers (default) |
+|---|---|---|
+| two | 17.00 fps delivered, 260 sequence gaps | 30.00 fps, no gap |
+| three | 6.00 fps, 476 gaps | 30.00 fps, no gap |
+| output 0 memory (NV12 1280x800, 1.54 MB per buffer) | 6.1 MB | 9.2 MB (+3.1 MB CMA) |
+
+(Earlier, the same with 8 buffers: 30.03 fps; three holding 1 s each with 4 buffers left
+3.6 fps.) No held frame changed in any run. A shared capture of NV12 1280x800 and RGB
+640x400 for two `Priority::Power` consumers (queues of 3; the planner reserves 14 extra
+buffers, 10 sets fit in half the free CMA): with one consumer sleeping 200 ms per frame the
+other got 30.04 fps (no gap) and the slow one 4.99 fps; before, 17 sets were asked for and
+the CMA allocation failed (and without the planner's buffers both were paced to 20 fps).
 
 The back end's outputs are cached dma-heap buffers (`linux,cma`) imported with
 `V4L2_MEMORY_DMABUF` (`OutputMemory::CachedHeap`, the default): vb2 does no cache maintenance
@@ -458,6 +475,41 @@ Warm restarts start at the remembered exposure and do not change it (exposure wi
 frame 0; output within 5% from frame 1, frame 0 being the unsettled one). The first frame of a
 warm start comes later than a cold one because it exposes for 17 ms instead of 1 ms.
 
+### Flicker (2026-10-02)
+
+The room's ceiling lamp flickers at 50 Hz (a half-wave LED driver on 50 Hz mains): measured
+from the frames, ±17% at 50 Hz on 8 ms exposures at 120 fps (the light itself ±23%), with
+smaller components at 100 and 150 Hz (spectrum of the per-frame mean luma: peaks at the
+aliases 50.06, 19.85 and 30.2 Hz at 120 fps, 9.96 Hz at 60 fps). Exposures of 10 ms do not
+cancel that, 20 ms ones do. AE's flicker avoidance (algorithms.md, "AE: flicker") with
+`native-pipeline pisp --cold --every-frame --flicker off|50|auto --ev E`, 10 s each, steady
+state over the second half: exposure × gain spread and changes (AE moving), the spread of
+the metered luma and of the output luma, frames AE reports locked. The evening scene was
+dark, so EV -4 / -3 brought AE off its limits at 120 / 60 fps.
+
+| | off | 50 Hz | auto |
+|---|---|---|---|
+| 120 fps, EV -4 (8.2 ms × ~4): exposure × gain SD, changes > 0.5% | 10.16%, 507 | 0.95%, 22 | 1.04%, 29 (detected at frame 83) |
+| same: metered / output luma SD, locked | 15.4% / 12.4%, never | 10.6% / 7.9%, 93% | 11.0% / 8.4%, 92% |
+| 120 fps, EV -4, cold start (5 runs): first locked frame | not within 120 frames | 20, 21, 21, 22, 29 | 20, 21, 21, 22, 22 |
+| 120 fps through the `ov9282` kernel driver (no embedded data), EV -4: exposure × gain SD, locked | 11.4%, 502 changes, never | | 2.0%, 77 changes, 77% (cold: locked at 19, 20, 21, 28; off never) |
+| 60 fps, EV -3 (16.5 ms × 4): exposure × gain SD, changes, locked | 2.80%, 77, 49% | | 0.00%, 0, 100% |
+| same: metered / output luma SD | 4.65% / 3.05% | | 3.36% / 2.31% |
+| 30 fps, EV 0: exposure, metered / output luma SD | 33.2 ms × 8, 2.36% / 1.32% | | 20.0 ms × 13.3, 0.20% / 0.11% |
+
+Before the lamp's 50 Hz component was modelled, AE quantised to 10 ms at 60 fps (10 ms × 13
+instead of 16.5 ms × 8) and the frames flickered more (9.9% against 3.7%); the period is now
+the mains period once the lamp is seen to flicker at it, and shorter exposures are left
+alone. Exposures shorter than a period (all of them at 120 fps) keep the flicker in the
+frames (the output's 8-12% spread above is the light); AE no longer chases it. Through the
+Styx API (`AE_FLICKER_MODE` set at 120 fps, AE pinned at its limits in the dark scene) the
+detected period read back as 10000 µs after 1008 frames at 120 fps and 52 at 30 fps.
+
+`AE_STATE`/`AeStatus::locked` in a scene beyond AE's reach: before, AE kept searching at
+its limits for ever (the dark room at 120 fps: never locked); now it locks once it asks for
+the limit (`AeStatus::at_limit`): frame 6 at 120 fps on the kernel driver path, 8 through
+the bridge.
+
 Through the Styx API (`styx-compare run --format NV12 --fps 30 --frames 90`, native with
 `--ae-state-control 0xF4000010`, the AE state the processed native modes now publish;
 libcamera with `systemctl stop styx-bridge` and `helios-peripherals` stopped, same scene):
@@ -615,8 +667,22 @@ trying a block of libcamera's in ours on identical input):
 
 Raw frames at the same exposure (libcamera `BYR2` vs `native-pipeline soft --record`) match
 within 0.1-0.5 codes at 2x gain; at 8x gain, in one dim run, ours were 2.3-2.4 codes lower
-(of 10-bit) uniformly, which looks like a black level difference between the kernel driver's
-and our register set at high gain; not settled (needs a covered lens).
+(of 10-bit) uniformly. That is not a black level difference (2026-10-02, no covered lens
+needed): the raw level extrapolated to zero exposure (exposures of 1 line, 50, 200, 500, 1000
+and 2000 µs, 8 frames each, the four Bayer sites) is the same through the bridge with our
+registers and through the `ov9282` kernel driver with its own, within 0.1 code at every gain:
+1 line at 8x 64.99 / 64.89 / 64.14 / 64.19 (bridge) and 65.02 / 64.92 / 64.31 / 64.21
+(driver), at 15.5x 65.06 / 65.22 / 63.71 / 63.63 and 64.84 / 65.02 / 63.72 / 63.67, at 1x
+64.74 / 64.74 / 65.34 / 65.34 for both (the description's 64 is within 0.6 code; the B/Gb
+rows read up to 1.5 codes above the Gr/R rows at 15.5x). The BLC registers read back over
+I²C on the bridge (0x4000 0xcf, target 0x4002..3 = 0x0040, lines 0x4008..9 = 0x04 / 0x0b,
+0x400c..d = 0x0007, 0x4010 0x40) are what both drivers write too; our register set differs
+from theirs only in 0x4f00 = 0x08 (PSV off, a bit the default 0x00 does not have set) and
+0x4307 = 0x31 (the embedded data line). The likely cause of the 2.4 codes is the room's
+light: the lamp flickers at 50 Hz by ±20% (see "Flicker"), which on a dim, short-exposure
+frame at 8x gain moves the signal above black by a few codes from session to session. A
+check against libcamera itself (no libcamera tools are on the device image) would need its
+raw frames at a fixed 1-line exposure and 8x gain (AE off), compared with the numbers above.
 
 Results (`tools/compare/zone_spread.py` over `quality.py`'s zones; CM5, the room lit this time; two scenes by exposure: dim 6 ms x 2, mean luma 0.20,
 and bright 33 ms x 3.5, luma 0.78; AWB auto in both stacks; two sessions of each, the zones
@@ -677,6 +743,9 @@ fps); CPU unchanged. It is a Styx setting now (see "Denoise settings").
 * Algorithms at 15 Hz while settled: a scene change is seen up to one 15 Hz period later
   (`settled_rate_hz: None` runs them on every frame).
 * Brightness changes were forced exposure steps, not changes of the light.
+* Flicker on exposures shorter than a period stays in the frames (AE no longer chases it;
+  see "Flicker"). The flicker model could also scale each frame's ISP digital gain to take it
+  out of the output (gains below 1 for the brighter frames, or exposure headroom).
 * The tool's software runs use one thread unless `--threads` says otherwise (the `styx`
   native backend's software mode uses min(4, cores), and the planner prices it as measured).
   On the CM5 one thread is the cheapest in CPU (four cost 0.6-1.4 ms more per frame); the

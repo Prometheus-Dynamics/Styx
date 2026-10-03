@@ -181,6 +181,9 @@ Notes:
   (`pisp-frames.csv` of a run), as it does on the bridge; what is left is the ±3-4% the
   100 Hz light puts on 8 ms exposures, which AE (5% tolerance, two frames in a row) sometimes
   chases for a few frames. The bridge's runs in the same minutes locked at frame 8 each time.
+  Flicker avoidance (`--flicker auto`, the Styx default) since: under a ±20% 50 Hz lamp at
+  EV -4, without it AE never locked in 150 frames, with it at frames 19-28 and moved
+  exposure × gain by 2% in steady state instead of 11% (pipeline.md, "Flicker").
 * The driver's register set gives the sensor about 12-15% less signal than the bridge's
   (HeliOS) registers at the same exposure and gain code; AE makes up for it with gain.
 * Starting is slower by 8 ms: the driver writes the whole mode at `STREAMON` on the 100 kHz

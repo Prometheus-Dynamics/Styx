@@ -645,10 +645,10 @@ pub mod prelude {
         BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
         CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
         CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig, IdleStop,
-        LibcameraBufferMemory, LibcameraConfig, NativeIspConfig, NetcamConfig, NetcamTunables,
-        ReconnectPolicy, SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig, V4l2Config,
-        VirtualCaptureConfig, VirtualSourceConfig, open_best_camera, open_virtual_rgb,
-        start_capture,
+        LibcameraBufferMemory, LibcameraConfig, NativeFlicker, NativeIspConfig, NetcamConfig,
+        NetcamTunables, ReconnectPolicy, SelectedCamera, StyxConfig, TdnOutputMode,
+        TransformConfig, V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera,
+        open_virtual_rgb, start_capture,
     };
     #[cfg(all(feature = "facade", feature = "daedalus-plugin", feature = "hooks"))]
     pub use crate::graph::register_file_sequence_sink_node;

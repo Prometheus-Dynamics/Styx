@@ -63,6 +63,14 @@ pub mod controls {
     /// AE state of a processed mode's 3A loop after the latest frame, as libcamera's
     /// `AeState` (`Int`, read only): 1 searching, 2 converged (AE locked).
     pub const AE_STATE: ControlId = ControlId(0xF400_0010);
+    /// Processed modes: flicker avoidance of AE (`Int`): 0 off, 1 50 Hz mains, 2 60 Hz mains,
+    /// 3 automatic (`NativeFlicker::control_value`; the default from
+    /// `NativeIspConfig::flicker`).
+    pub const AE_FLICKER_MODE: ControlId = ControlId(0xF400_0011);
+    /// Processed modes: the light flicker period automatic flicker avoidance detected, in
+    /// microseconds (`Int`, read only; 0 none yet; 10000 for 50 Hz mains), as libcamera's
+    /// `AeFlickerDetected`.
+    pub const AE_FLICKER_DETECTED: ControlId = ControlId(0xF400_0012);
 }
 
 fn native_err(e: NativeError) -> CaptureError {
@@ -228,6 +236,27 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
             ControlValue::Float(0.0),
             ControlValue::Float(0.01),
         ),
+        meta(
+            controls::AE_FLICKER_MODE,
+            "ae_flicker_mode",
+            ControlKind::Int,
+            ControlValue::Int(0),
+            ControlValue::Int(3),
+            ControlValue::Int(3),
+            ControlValue::Int(1),
+        ),
+        ControlMeta {
+            access: Access::ReadOnly,
+            ..meta(
+                controls::AE_FLICKER_DETECTED,
+                "ae_flicker_detected",
+                ControlKind::Int,
+                ControlValue::Int(0),
+                ControlValue::Int(1_000_000),
+                ControlValue::Int(0),
+                ControlValue::Int(1),
+            )
+        },
         ControlMeta {
             access: Access::ReadOnly,
             ..meta(

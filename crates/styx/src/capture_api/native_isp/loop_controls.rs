@@ -1,6 +1,7 @@
 //! Controls of a processed native capture's 3A loop: what the application asks of AE and AWB
-//! (on or off, a fixed exposure or gain, exposure compensation, a manual white balance), and
-//! what the loop reports back (AE state, colour temperature). Shared between the capture's
+//! (on or off, a fixed exposure or gain, exposure compensation, flicker avoidance, a manual
+//! white balance), and what the loop reports back (AE state, detected flicker, colour
+//! temperature). Shared between the capture's
 //! control plane and its worker, which hands a changed set to the loop before its next frame.
 
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
@@ -8,10 +9,11 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use styx_capture::prelude::{ControlId, ControlValue};
-use styx_pipeline::styx_algo::{Controls, Params};
+use styx_pipeline::styx_algo::{Controls, Flicker, Params};
 
 use super::super::native_backend::controls as ids;
 use super::super::request::CaptureError;
+use super::super::tunables::NativeFlicker;
 
 /// The loop's application controls and its latest state.
 #[derive(Debug)]
@@ -22,6 +24,8 @@ pub struct LoopControls {
     ae_state: AtomicI32,
     /// AWB's colour temperature for the latest frame, in kelvin.
     colour_temperature: AtomicU32,
+    /// The flicker period automatic flicker avoidance detected, in microseconds (0: none).
+    flicker_detected: AtomicI32,
 }
 
 impl Default for LoopControls {
@@ -31,7 +35,29 @@ impl Default for LoopControls {
             pending: Mutex::new(None),
             ae_state: AtomicI32::new(1),
             colour_temperature: AtomicU32::new(0),
+            flicker_detected: AtomicI32::new(0),
         }
+    }
+}
+
+/// The loop's flicker avoidance for a configured one.
+fn algo_flicker(f: NativeFlicker) -> Flicker {
+    match f {
+        NativeFlicker::Off => Flicker::Off,
+        NativeFlicker::Mains50 => Flicker::Mains50,
+        NativeFlicker::Mains60 => Flicker::Mains60,
+        NativeFlicker::Auto => Flicker::Auto,
+    }
+}
+
+/// The configured flicker avoidance closest to the loop's.
+fn native_flicker(f: Flicker) -> NativeFlicker {
+    match f {
+        Flicker::Off => NativeFlicker::Off,
+        Flicker::Auto => NativeFlicker::Auto,
+        Flicker::Mains60 => NativeFlicker::Mains60,
+        Flicker::Period(p) if p.as_secs_f64() < 0.0092 => NativeFlicker::Mains60,
+        _ => NativeFlicker::Mains50,
     }
 }
 
@@ -46,6 +72,19 @@ fn number(value: &ControlValue) -> Result<f64, CaptureError> {
 }
 
 impl LoopControls {
+    /// The loop's controls with this flicker avoidance (handed to the loop before its start).
+    pub(crate) fn with_flicker(flicker: NativeFlicker) -> Self {
+        let c = Controls {
+            flicker: algo_flicker(flicker),
+            ..Controls::default()
+        };
+        Self {
+            current: Mutex::new(c.clone()),
+            pending: Mutex::new(Some(c)),
+            ..Self::default()
+        }
+    }
+
     /// Applies a control to the loop. `None` when `id` is not one of the loop's.
     ///
     /// Exposure time and gain fix that value (AE then moves only the other one; both fixed is
@@ -55,7 +94,7 @@ impl LoopControls {
         id: ControlId,
         value: &ControlValue,
     ) -> Option<Result<(), CaptureError>> {
-        const LOOP: [ControlId; 10] = [
+        const LOOP: [ControlId; 11] = [
             ids::EXPOSURE_TIME_US,
             ids::GAIN,
             ids::AE_ENABLE,
@@ -66,6 +105,7 @@ impl LoopControls {
             ids::BLUE_GAIN,
             ids::FRAME_RATE,
             ids::FRAME_DURATION_US,
+            ids::AE_FLICKER_MODE,
         ];
         if !LOOP.contains(&id) {
             return None;
@@ -83,6 +123,14 @@ impl LoopControls {
             ids::GAIN => c.analogue_gain = positive,
             ids::AE_ENABLE => c.ae_enable = v != 0.0,
             ids::EXPOSURE_VALUE => c.ev = v,
+            ids::AE_FLICKER_MODE => match NativeFlicker::from_control_value(v as i64) {
+                Some(f) if v.fract() == 0.0 => c.flicker = algo_flicker(f),
+                _ => {
+                    return Some(Err(CaptureError::control_apply(
+                        "AE flicker mode: 0 off, 1 50 Hz, 2 60 Hz, 3 auto",
+                    )));
+                }
+            },
             ids::AWB_ENABLE => c.awb_enable = v != 0.0,
             ids::COLOUR_TEMPERATURE => {
                 c.colour_temperature = positive;
@@ -115,6 +163,10 @@ impl LoopControls {
         let c = self.current.lock();
         Some(match id {
             ids::AE_STATE => ControlValue::Int(self.ae_state.load(Ordering::Acquire)),
+            ids::AE_FLICKER_MODE => ControlValue::Int(native_flicker(c.flicker).control_value()),
+            ids::AE_FLICKER_DETECTED => {
+                ControlValue::Int(self.flicker_detected.load(Ordering::Acquire))
+            }
             ids::AE_ENABLE => ControlValue::Bool(c.ae_enable),
             ids::EXPOSURE_VALUE => ControlValue::Float(c.ev as f32),
             ids::AWB_ENABLE => ControlValue::Bool(c.awb_enable),
@@ -138,6 +190,11 @@ impl LoopControls {
             .store(if params.ae.locked { 2 } else { 1 }, Ordering::Release);
         self.colour_temperature
             .store(params.colour_temperature.round() as u32, Ordering::Release);
+        let us = params
+            .ae
+            .flicker_detected
+            .map_or(0, |p| i32::try_from(p.as_micros()).unwrap_or(i32::MAX));
+        self.flicker_detected.store(us, Ordering::Release);
     }
 }
 
@@ -181,5 +238,29 @@ mod tests {
                 .is_err()
         );
         assert!(l.apply(ControlId(1), &ControlValue::Uint(1)).is_none());
+    }
+
+    #[test]
+    fn flicker_avoidance_is_configured_and_controlled() {
+        let l = LoopControls::with_flicker(NativeFlicker::Auto);
+        assert_eq!(l.take().map(|c| c.flicker), Some(Flicker::Auto));
+        assert_eq!(l.read(ids::AE_FLICKER_MODE), Some(ControlValue::Int(3)));
+        l.apply(ids::AE_FLICKER_MODE, &ControlValue::Int(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(l.take().map(|c| c.flicker), Some(Flicker::Mains50));
+        assert!(
+            l.apply(ids::AE_FLICKER_MODE, &ControlValue::Int(7))
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(l.read(ids::AE_FLICKER_DETECTED), Some(ControlValue::Int(0)));
+        let mut p = Params::default();
+        p.ae.flicker_detected = Some(Duration::from_millis(10));
+        l.report(&p);
+        assert_eq!(
+            l.read(ids::AE_FLICKER_DETECTED),
+            Some(ControlValue::Int(10_000))
+        );
     }
 }

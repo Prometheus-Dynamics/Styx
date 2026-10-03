@@ -51,6 +51,16 @@ impl OutputSpec {
         }
     }
 
+    /// Bytes of one buffer of this output.
+    pub(super) fn bytes(self) -> u64 {
+        let px = u64::from(self.width) * u64::from(self.height);
+        if self.code == FourCc::NV12 {
+            px * 3 / 2
+        } else {
+            px * 3
+        }
+    }
+
     pub(super) fn setup(self) -> Result<BeOutputSetup, CaptureError> {
         Ok(BeOutputSetup {
             format: self.be_format()?,

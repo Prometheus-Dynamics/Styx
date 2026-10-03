@@ -48,7 +48,7 @@ impl PispOptions {
                 }),
             ],
             fe_buffers: 6,
-            be_buffers: 4,
+            be_buffers: 6,
             be_group: 0,
             configs_ahead: 2,
             settled_rate_hz: Some(15.0),

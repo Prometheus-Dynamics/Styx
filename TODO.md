@@ -35,6 +35,12 @@ box (OV9782 1280x800) unless stated.
 - [x] AE locked at frame 6 (229 ms from open; libcamera 664–675 ms); warm restarts lock by frame 2.
 - [x] PiSP path CPU 0.26 ms/frame through Styx (0.8 % of a core; libcamera 2.9 %).
 - [x] Image quality matches libcamera within libcamera's own session-to-session spread.
+- [x] Flicker avoidance (`Flicker::Auto`, the Styx default; `AE_FLICKER_MODE`): AE fits the
+      lamp's flicker (harmonics of 50/60 Hz mains) from the frames and meters against the
+      mean light, so 120 fps no longer chases it (exposure × gain spread 10% → 1%, cold start
+      never locked → frame ~21 under the room's ±20% 50 Hz lamp); long exposures whole mains
+      periods (30 fps: frame spread 2.4% → 0.2%); detects the mains frequency itself.
+- [x] AE locks at its limits in scenes beyond its reach (`AE_STATE` converged, as libcamera).
 - [x] Software ISP (`styx-softisp`): fp16 NEON path, cached capture read in place, 15 Hz stats
       when settled — 8.8–9.7 % of a core at 30 fps on one A76 core (was 47 %), bit-exact integer
       path elsewhere; x86 tone curve as fixed-point quadratics (`Arithmetic::IntPolyTone`, within
@@ -62,8 +68,9 @@ box (OV9782 1280x800) unless stated.
 ## TODO
 
 ### Decisions
-- [ ] Default PiSP output buffer count (`native_output_buffers`, now 4; 6–8 keeps 30 fps with slow
-      frame holders, 1.5 MB each).
+- [x] Default PiSP output buffer count: 6 (two frame-socket consumers holding 500 ms: 17 fps
+      with 4, 30 with 6; +3.1 MB CMA for NV12 1280x800), plus the planner's extra buffers
+      within half the free CMA (a slow shared consumer no longer slows the others).
 - [ ] When HeliOS drops libcamera (checklist in helios-trial.md).
 
 ### HeliOS (branch `styx-native-trial`)
@@ -75,8 +82,10 @@ box (OV9782 1280x800) unless stated.
 - [ ] Not yet tested: a real CSI unplug, controls set by HeliOS, runs longer than 2 h.
 
 ### Image quality
-- [ ] Black level at high gain: raw ~2.4 codes (10-bit) lower than libcamera's at 8× gain; confirm
-      with a covered lens and fix in the description.
+- [x] Black level at high gain: not a black level difference. Zero-exposure levels through the
+      bridge and through the `ov9282` driver agree within 0.1 code at 1-15.5× (BLC registers the
+      same); the 2.4 codes were most likely the 50 Hz lamp. To close it against libcamera
+      itself: its raw at a 1-line exposure and 8× (pipeline.md, "Quality vs libcamera").
 - [ ] Verify the unverified kernel-sensor data files on real cameras (imx219, imx477, imx708, ov5647).
 - [ ] OV9782 tuning of our own (today: the HeliOS tuning).
 
@@ -95,20 +104,20 @@ box (OV9782 1280x800) unless stated.
 
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).
-- [ ] 120 fps AE sometimes chases 100 Hz flicker (kernel-driver path); add anti-flicker.
-- [ ] `AE_STATE` never reports converged when AE's target is out of reach (exposure and gain at
-      their limits in a dark room); libcamera reports converged at the same final exposure
-      (500 ms after open, docs/comparison.md).
+- [x] 120 fps AE sometimes chases 100 Hz flicker (kernel-driver path); add anti-flicker.
+- [ ] Flicker stays in the frames at exposures shorter than a period (AE no longer chases it):
+      per-frame ISP digital gain from the flicker model could take it out.
+- [x] `AE_STATE` never reported converged when AE's target was out of reach; AE now reports
+      converged once pinned at its limits (`AeStatus::at_limit`), as libcamera does.
 - [x] OV9782 raw8 (`BA81`) through the bridge: frames reported 342.9 ms × 0.5 at 30 fps and were
       far darker than RAW10. The raw8 embedded line carries each 10-bit word's top 8 bits
       (decoded as RAW10 it said VTS 4, and the schedule then limited exposure to that 4-line
       frame), and the raw8 PLL runs at 192 MHz, not the driver's 200 MHz (30 fps ran at 28.8).
       raw8 now has `pixel_rate = 192 MHz` and `embedded_data = false` (predicted values):
       30 / 120 / 5 fps exact, levels equal RAW10's top 8 bits at the same exposure and gain.
-- [ ] Shared captures on the PiSP: frames queued for consumers hold back end buffers (4 per
-      output) and the native path ignores the planner's `capture_extra_buffers`, so a slow
-      consumer with a deep queue (`Priority::Power`: 3) paced the camera for both consumers
-      (20 fps); the examples ask for queue depth 1.
+- [x] Shared captures on the PiSP: a slow consumer with a deep queue paced the camera for every
+      consumer. Back end buffers now default to 6 plus the planner's `capture_extra_buffers`
+      (within half the free CMA); a consumer sleeping 200 ms gets 5 fps, the other keeps 30.
 - [x] MCAP recordings drop a native frame's exposure and gains (`NativeFrameMeta`): MCAP format
       2 and `.styxrec` 2 record exposure, gains, frame duration and length, verified, error;
       version 1 files still read. AE state, colour temperature and lux are controls, not

@@ -81,6 +81,9 @@ pub struct Scene {
     pub ct: Pwl,
     /// Flicker, if any.
     pub flicker: Option<SceneFlicker>,
+    /// More flicker components on top of [`Self::flicker`] (a lamp on 50 Hz mains flickering
+    /// at 50 Hz with harmonics at 100 and 150 Hz, say).
+    pub flicker_harmonics: Vec<SceneFlicker>,
     /// Reflectance per zone (r, g, b); resampled to the sensor's zone grid.
     pub reflectance: Vec<[f64; 3]>,
     /// Grid of `reflectance` (width, height).
@@ -95,6 +98,7 @@ impl Scene {
             lux: Pwl::constant(lux),
             ct: Pwl::constant(ct),
             flicker: None,
+            flicker_harmonics: Vec::new(),
             reflectance,
             grid,
         }
@@ -135,12 +139,20 @@ impl Scene {
 
     /// Mean light over an exposure `[t0, t0 + t]` relative to the steady level.
     fn flicker_factor(&self, t0: f64, t: f64) -> f64 {
-        let Some(f) = self.flicker else { return 1.0 };
-        let w = 2.0 * std::f64::consts::PI * f.hz;
-        if t <= 0.0 {
-            return 1.0 + f.depth * (w * t0).cos();
-        }
-        1.0 + f.depth * ((w * (t0 + t)).sin() - (w * t0).sin()) / (w * t)
+        let part = |f: &SceneFlicker| {
+            let w = 2.0 * std::f64::consts::PI * f.hz;
+            if t <= 0.0 {
+                f.depth * (w * t0).cos()
+            } else {
+                f.depth * ((w * (t0 + t)).sin() - (w * t0).sin()) / (w * t)
+            }
+        };
+        1.0 + self
+            .flicker
+            .iter()
+            .chain(&self.flicker_harmonics)
+            .map(part)
+            .sum::<f64>()
     }
 }
 
@@ -252,6 +264,8 @@ pub struct Simulation {
     pending: [BTreeMap<u64, f64>; 3],
     landed: [BTreeMap<u64, f64>; 3],
     late: u64,
+    /// The values last sent (or started with): a request repeating them is not news.
+    sent: Option<[f64; 3]>,
 }
 
 impl Simulation {
@@ -271,6 +285,7 @@ impl Simulation {
             pending: Default::default(),
             landed: Default::default(),
             late: 0,
+            sent: None,
         };
         s.start_with(0.001, 1.0, fd);
         s
@@ -286,6 +301,12 @@ impl Simulation {
         ] {
             self.landed[c].insert(0, v);
         }
+        self.sent = Some([exposure, gain, frame_duration]);
+    }
+
+    /// Starts the clock (the flicker's phase) at `seconds` instead of 0.
+    pub fn set_time(&mut self, seconds: f64) {
+        self.time = seconds;
     }
 
     /// Requests that landed later than asked.
@@ -406,20 +427,23 @@ impl Simulation {
             self.frame_start();
             let (meta, stats, lux, ct) = self.expose();
             let params = pipeline.process(&stats, &meta).clone();
-            let repeat = out
-                .last()
-                .is_some_and(|l: &SimFrame| l.params.sensor == params.sensor);
-            if let Some(req) = params.sensor.filter(|_| !repeat) {
+            // Only values that differ from the last ones sent are news (as the controller in
+            // `styx-pipeline` does).
+            let values = params.sensor.map(|r| {
+                [
+                    r.exposure.as_secs_f64(),
+                    r.analogue_gain,
+                    r.frame_duration.as_secs_f64(),
+                ]
+            });
+            if let Some((req, v)) = params
+                .sensor
+                .zip(values)
+                .filter(|(_, v)| self.sent != Some(*v))
+            {
+                self.sent = Some(v);
                 let latency = u64::from(self.config.delays.issue_latency);
-                self.incoming.push((
-                    self.frame + latency,
-                    req.frame,
-                    [
-                        req.exposure.as_secs_f64(),
-                        req.analogue_gain,
-                        req.frame_duration.as_secs_f64(),
-                    ],
-                ));
+                self.incoming.push((self.frame + latency, req.frame, v));
                 if latency == 0 {
                     // Written right away, during this frame.
                     self.accept();

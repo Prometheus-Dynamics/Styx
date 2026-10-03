@@ -37,6 +37,8 @@
 //!                        camera's last settled state (a dark or bright start)
 //!   --cold               (pisp) start from the tuning's start-up values, not the last state
 //!   --fixed US:GAIN      AE off: this exposure and analogue gain on every frame
+//!   --flicker MODE       flicker avoidance: off (default), 50, 60 or auto
+//!   --ev STOPS           exposure compensation (AE aims STOPS brighter or darker)
 //!   --ct K               AWB off: the gains of this colour temperature (the tuning's CT curve)
 //!   --no-tdn             (pisp) no temporal denoise even if the tuning has it
 //!   --spatial-denoise K  (pisp) spatial and colour denoise thresholds times K (default 1)
@@ -96,6 +98,8 @@ pub struct Args {
     pub power_settle: Option<Duration>,
     pub keep_open: bool,
     pub fixed: Option<(f64, f64)>,
+    pub flicker: styx_algo::Flicker,
+    pub ev: f64,
     pub ct: Option<f64>,
     pub no_tdn: bool,
     pub spatial_denoise: f64,
@@ -134,6 +138,8 @@ fn parse() -> Result<Args, String> {
         power_settle: None,
         keep_open: false,
         fixed: None,
+        flicker: styx_algo::Flicker::Off,
+        ev: 0.0,
         ct: None,
         no_tdn: false,
         spatial_denoise: 1.0,
@@ -178,6 +184,16 @@ fn parse() -> Result<Args, String> {
             "--no-tdn" => a.no_tdn = true,
             "--spatial-denoise" => a.spatial_denoise = num(val()?)?,
             "--ct" => a.ct = Some(num(val()?)?),
+            "--ev" => a.ev = num(val()?)?,
+            "--flicker" => {
+                a.flicker = match val()?.as_str() {
+                    "off" => styx_algo::Flicker::Off,
+                    "50" => styx_algo::Flicker::Mains50,
+                    "60" => styx_algo::Flicker::Mains60,
+                    "auto" => styx_algo::Flicker::Auto,
+                    v => return Err(format!("--flicker: off, 50, 60 or auto, not {v}")),
+                }
+            }
             "--fixed" => {
                 let v = val()?;
                 let (e, g) = v.split_once(':').ok_or("--fixed takes US:GAIN")?;
@@ -237,7 +253,11 @@ pub fn controls_for(
     f: u64,
     base: Option<(Duration, f64)>,
 ) -> Option<styx_algo::Controls> {
-    let mut c = styx_algo::Controls::default();
+    let mut c = styx_algo::Controls {
+        flicker: a.flicker,
+        ev: a.ev,
+        ..Default::default()
+    };
     if let Some(t) = a.ct {
         c.awb_enable = false;
         c.colour_temperature = Some(t);
@@ -257,7 +277,8 @@ pub fn controls_for(
         c.analogue_gain = Some(gain);
         return Some(c);
     }
-    (a.fixed.is_some() || a.ct.is_some()).then_some(c)
+    (a.fixed.is_some() || a.ct.is_some() || a.flicker != styx_algo::Flicker::Off || a.ev != 0.0)
+        .then_some(c)
 }
 
 /// `CLOCK_MONOTONIC` now (the clock buffer timestamps use).
