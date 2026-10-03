@@ -417,6 +417,9 @@ pub(super) fn start_native(
     let BackendHandle::Native { key } = &backend.handle else {
         return Err(CaptureError::BackendUnavailable(BackendKind::Native));
     };
+    // A request without a rate runs at the planner's default (30 fps within the mode's range),
+    // not the sensor's default frame length.
+    let interval = interval.or_else(|| crate::planner::default_interval(&mode));
     let provider = styx_native::NativeProvider::new(SensorLibrary::system())
         .with_options(CameraOptions::default());
     if super::native_isp::is_processed(mode.format.code) {
@@ -577,9 +580,17 @@ mod tests {
             assert_eq!(plan.interval, Interval::from_fps(fps));
             assert!(plan.to_string().contains("native pBAA 1280x800"), "{plan}");
         }
-        // Latency first: the fastest rate the mode has.
-        let plan =
-            crate::planner::plan_frames(&device, &FrameRequirements::formats([pbaa])).unwrap();
+        // Latency first, a rate asked for: the fastest rate the mode has.
+        let req = FrameRequirements::formats([pbaa]).min_fps(30);
+        let plan = crate::planner::plan_frames(&device, &req).unwrap();
         assert!((plan.interval.unwrap().fps() - 120.626).abs() < 0.01);
+        // No rate asked for, whatever the priority: 30 fps, not the fastest.
+        for priority in [Priority::Latency, Priority::Power] {
+            let req = FrameRequirements::formats([pbaa]).priority(priority);
+            let plan = crate::planner::plan_frames(&device, &req).unwrap();
+            assert_eq!(plan.interval, Interval::from_fps(30), "{priority:?}");
+            let shared = crate::planner::plan_many(&device, &[req]).unwrap();
+            assert_eq!(shared.interval, Interval::from_fps(30), "{priority:?}");
+        }
     }
 }

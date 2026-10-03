@@ -15,8 +15,9 @@
 //! `STYX_CAMERA=uvc` limits the choice to cameras whose name or keys contain that text.
 //!
 //! `Priority::Power` with `min_fps` asks for exactly that rate where the camera can run at any
-//! rate (sensors Styx drives); the default priority (latency) takes the fastest rate the mode
-//! has.
+//! rate (sensors Styx drives); the default priority (latency) with `min_fps` takes the fastest
+//! rate the mode has. Without `min_fps` such a camera runs at 30 fps (`planner::DEFAULT_FPS`,
+//! within the mode's range); a list of rates (USB cameras) runs at its fastest.
 
 use std::io::Write;
 use std::time::{Duration, Instant};

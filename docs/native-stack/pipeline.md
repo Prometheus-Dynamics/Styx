@@ -380,7 +380,15 @@ at half the main size (`NativeIspConfig::pyramid_level`, set by the plan), attac
 filtered from it. Measured (`native_isp_bench pyramid 30 300`, luma 1280x800 + 2 levels):
 0.42 ms process CPU per frame with the hardware level, 0.55 ms with both levels on the CPU
 (the consumer thread 0.07 ms vs 0.22 ms), latency 8.50 vs 8.56 ms. Shared plans of a sensor Styx drives run at exactly the rate asked when saving
-power, as single plans do. Every output is handed out as a dma-buf, in process and to other
+power, as single plans do.
+
+Frame rates: a mode that runs at any rate in a range (a sensor Styx drives) runs at
+`planner::DEFAULT_FPS` (30 fps, or the nearest rate the mode allows) when no consumer asks for
+one (`min_fps`), whatever the priority, in single and shared plans and for a capture request
+without an interval; the fastest rate (260 fps at 640x400 on the OV9782, its exposure limited
+to 3.8 ms) only when asked for. With `min_fps`: `Priority::Power` runs at exactly that rate,
+other priorities at the mode's fastest (unchanged). Modes with a list of rates (UVC) keep the
+list's fastest. Every output is handed out as a dma-buf, in process and to other
 processes through the camera service (planes exported with their offsets). Raw native modes are not routed through a Bayer decoder when an ISP route exists
 (that route has no 3A); Bayer decoders are priced at the software ISP's cost. `plan_frames`
 for NV12, RG24 or luma (NV12's Y plane) on the native OV9782 picks the PiSP mode on the CM5
