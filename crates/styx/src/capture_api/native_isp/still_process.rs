@@ -61,10 +61,12 @@ impl StillProcessor {
             .spawn(move || {
                 let mut be = BackEnd::default();
                 while let Ok(batch) = rx.recv() {
+                    let mut batch = batch;
+                    let request = batch.job.request.clone();
                     let shots = batch
                         .shots
-                        .iter()
-                        .map(|s| process(&ctx, &mut be, &batch.job.request, s))
+                        .iter_mut()
+                        .map(|s| process(&ctx, &mut be, &request, s))
                         .collect::<Result<Vec<_>, _>>();
                     let reply = shots.map(|shots| StillCapture {
                         shots,
@@ -156,9 +158,18 @@ fn process(
     ctx: &StillContext,
     be: &mut BackEnd,
     request: &StillRequest,
-    shot: &HeldShot,
+    shot: &mut HeldShot,
 ) -> Result<StillShot, CaptureError> {
     let t = Instant::now();
+    if let Some(want) = shot.want {
+        // The stream's digital gain makes up for AE's exposure not having landed yet (in a
+        // bracket AE already aims at the next shot); a fixed or bracketed still keeps its own
+        // exposure: only the white balance's green gain, and what the sensor fell short of.
+        let raw = &mut shot.raw;
+        let asked = want.0.as_secs_f64() * want.1;
+        let got = raw.sensor.total_exposure().max(1e-12);
+        raw.isp.digital_gain = raw.params.colour_gains[1].max(1e-6) * (asked / got).max(1.0);
+    }
     let raw = &shot.raw;
     let (w, h) = (raw.width, raw.height);
     let settings = raw.isp.clone().with_spatial_denoise(request.denoise);
