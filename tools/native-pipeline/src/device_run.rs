@@ -72,8 +72,13 @@ pub fn soft(a: &Args) -> Result<(), String> {
     let mut p =
         SoftPipeline::open(cam, &settings(a), &tuning, a.threads).map_err(|e| e.to_string())?;
     p.soft_loop().set_base_params(crate::soft_base(a));
-    if std::env::var_os("STYX_SOFT_NO_COPY").is_some() {
-        p.soft_loop().set_copy_input(false);
+    // Staging the raw rows: the pipeline's choice (off for cached dma-heap buffers) unless
+    // STYX_SOFT_COPY=0/1 (or STYX_SOFT_NO_COPY) says otherwise, for comparisons.
+    match std::env::var("STYX_SOFT_COPY").as_deref() {
+        Ok("1") => p.soft_loop().set_copy_input(true),
+        Ok("0") => p.soft_loop().set_copy_input(false),
+        _ if std::env::var_os("STYX_SOFT_NO_COPY").is_some() => p.soft_loop().set_copy_input(false),
+        _ => {}
     }
     if a.every_frame {
         p.soft_loop().set_settled_rate(None);
@@ -141,7 +146,9 @@ pub fn soft(a: &Args) -> Result<(), String> {
         };
         let done = monotonic();
         first.get_or_insert(f.raw.dequeued);
-        if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain))).is_none() {
+        if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain)))
+            .is_none_or(|c| c.ae_enable)
+        {
             base = Some((f.sensor.exposure, f.sensor.analogue_gain));
         }
         let mut log = FrameLog::new(&f.sensor, &f.output.step, f.raw.timestamp);
@@ -315,7 +322,9 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         let done = monotonic();
         first.get_or_insert(f.dequeued);
         mismatches += usize::from(f.sequence_mismatch);
-        if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain))).is_none() {
+        if controls_for(a, i, Some((f.sensor.exposure, f.sensor.analogue_gain)))
+            .is_none_or(|c| c.ae_enable)
+        {
             base = Some((f.sensor.exposure, f.sensor.analogue_gain));
         }
         let mut log = FrameLog::new(&f.sensor, p.step(), f.timestamp);

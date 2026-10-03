@@ -140,12 +140,29 @@ Output buffers are reused in release order, and a buffer a consumer holds (a Sty
 frame server's latest frame, a frame another process has not released) is never written. When
 consumers hold every buffer of an output, `next` drops the frame (`PipelineError::OutputsHeld`:
 no job queued, the raw buffer goes back) and the Styx capture moves on to the next frame: the
-camera never waits for consumers. Each output has 4 buffers (`PispOptions::be_buffers`; through
-Styx `StyxConfig::native_output_buffers`). On the CM5 with the frame socket
-(`styx::ipc::FrameSocket`, NV12 1280x800 at 30 fps, 20 s each): two consumers holding a frame
-for 500 ms each cost frames with 4 buffers (17.3 fps delivered) and none with 8 (30.03 fps, no
-sequence gap); three holding 1 s each with 4 buffers left 3.6 fps; no held frame changed in
-any run.
+camera never waits for consumers. Each output has 6 buffers by default (`PispOptions::be_buffers`;
+through Styx `StyxConfig::native_output_buffers`, 4 before). A Styx capture adds whatever its
+queue and extra buffers go beyond the defaults (2 + 2): the planner's shared captures reserve
+every consumer's queue and the frame it works on that way, so a consumer holding what the
+planner allows it never takes the others' buffers; all the outputs' buffers stay within half
+the free CMA (never fewer than `output_buffers`; 32 at most).
+
+On the CM5 with the frame socket (`styx::ipc::FrameSocket`, NV12 1280x800 at 30 fps, 20 s
+each, consumers fetching the latest frame and holding it, staggered so each holds a
+different frame):
+
+| consumers holding 500 ms | 4 buffers | 6 buffers (default) |
+|---|---|---|
+| two | 17.00 fps delivered, 260 sequence gaps | 30.00 fps, no gap |
+| three | 6.00 fps, 476 gaps | 30.00 fps, no gap |
+| output 0 memory (NV12 1280x800, 1.54 MB per buffer) | 6.1 MB | 9.2 MB (+3.1 MB CMA) |
+
+(Earlier, the same with 8 buffers: 30.03 fps; three holding 1 s each with 4 buffers left
+3.6 fps.) No held frame changed in any run. A shared capture of NV12 1280x800 and RGB
+640x400 for two `Priority::Power` consumers (queues of 3; the planner reserves 14 extra
+buffers, 10 sets fit in half the free CMA): with one consumer sleeping 200 ms per frame the
+other got 30.04 fps (no gap) and the slow one 4.99 fps; before, 17 sets were asked for and
+the CMA allocation failed (and without the planner's buffers both were paced to 20 fps).
 
 The back end's outputs are cached dma-heap buffers (`linux,cma`) imported with
 `V4L2_MEMORY_DMABUF` (`OutputMemory::CachedHeap`, the default): vb2 does no cache maintenance
@@ -235,6 +252,19 @@ The latency, 8.3 ms, is 7.4 ms of sensor readout (the timestamp is the frame sta
 end's buffers complete at its end), 0.84 ms back end job (hardware; the algorithms run inside
 it) and about 0.05 ms on the host.
 
+### Controls through the Styx API
+
+A processed capture's 3A loop takes the application's controls
+(`styx::capture_api::native_controls`, applied to `Controller::set_controls` before the next
+frame): `EXPOSURE_TIME_US` / `GAIN` fix that value for AE (both fixed is manual exposure; 0
+hands it back), `AE_ENABLE` (off holds the current values), `EXPOSURE_VALUE` (stops),
+`AWB_ENABLE`, `COLOUR_TEMPERATURE` (used while AWB is off; read: AWB's estimate for the latest
+frame), `RED_GAIN` / `BLUE_GAIN`; `AE_STATE` reads 1 (searching) or 2 (converged). Controls
+given with the `CaptureRequest` apply from frame 0. The frame rate is the capture's: `FRAME_RATE`
+and `FRAME_DURATION_US` are refused (restart at another rate); on raw captures they, and
+exposure and gain, go to the sensor's control schedule. `examples/01_capture/camera_controls.rs`
+shows each, with the frame it landed on.
+
 ### Denoise settings
 
 Through the Styx API (`StyxConfig`, also read from a serialised config): 
@@ -271,11 +301,14 @@ cheap (details and kernel timings in `crates/softisp/PERFORMANCE.md`):
 * **fp16 arithmetic** (`styx_softisp::Arithmetic::Half`, chosen automatically on CPUs with FP16
   arithmetic: the A76): front end fused with the RAW10 unpacking, demosaic and colour matrix
   in one pass, the tone curve as 48 segments looked up by the fp16 exponent with `tbl`, 4:2:0
-  output from registers. The integer path stays the reference (x86, Cortex-A72/A53).
+  output from registers. The integer path stays the reference (Cortex-A72/A53; on x86 with
+  the tone curve as fixed-point quadratics, within a code of the table).
 * **Cached capture buffers**: the raw frames go into `linux,cma` dma-heap buffers when the heap
   exists (`device::soft_capture_memory`; styx's processed native modes and `native-pipeline
   soft` do this unless `driver_buffers` / `--driver-buffers`), 0.6 ms less ISP time per frame
-  than the receiver's uncached MMAP buffers. Rows are still staged 16 KiB at a time.
+  than the receiver's uncached MMAP buffers, read in place (no staging copy: 0.15 ms less),
+  with one cache-maintenance call per frame (the start of the read access; ending it only
+  cleaned lines a reader cannot have dirtied, 22 us).
 * **Statistics on every fourth quad row** (65 536 quads, 340 per zone: 0.23 ms instead of
   0.92 ms on every row), and **statistics and algorithms at 15 Hz once settled** (AE locked
   and AWB converged, as the PiSP path; `SoftLoop::set_settled_rate(None)` /
@@ -318,18 +351,32 @@ rest is this round's (fp16 ISP, cached capture buffers 0.6 ms, statistics and se
 (NV12) to 1.4 ms (RGB24) more CPU: the cores share the memory bandwidth for the input and the
 output (helper threads 0.9-1.0 ms each against a quarter of 2.7 ms).
 
-Where the 3.1 ms of an RGB24 frame go now (30 fps, one thread):
+Where the 2.9 ms of an RGB24 frame go now (30 fps, one thread; before this round 3.1 ms, of
+which 0.15 ms was the staging copy and 0.02 ms the end-of-access cache maintenance):
 
 | | ms |
 |---|---:|
 | ISP: RAW10 unpack, black level, gains, lens shading (fp16) | 0.5 |
 | ISP: demosaic, colour matrix, tone curve, RGB24 | 1.6 |
 | ISP: statistics (0.23 ms on the frames that take them: every second once settled) | 0.12 |
-| ISP: staging the raw rows out of the CMA buffer, row loop, band edges | 0.5 |
+| ISP: the rest (input from DRAM after the invalidate, 3 MB of output, row loop) | 0.35 |
 | settings: gains (every frame), tone curve refit (when adaptive contrast moved it) | 0.07 |
 | algorithms (every second frame once settled) and statistics conversion | 0.07 |
-| dequeue / requeue, dma-buf cache maintenance, the tool's per-frame bookkeeping | 0.3 |
+| tool: per-frame output level (every eighth row and column) | 0.08 |
+| dequeue / requeue, one dma-buf sync, wake-ups | 0.05 |
 | event thread (frame starts, embedded data, control writes) | 0.03 |
+
+| 30 fps, one thread (2026-10-02, device time 2026-08-17) | before | now |
+|---|---|---|
+| RGB24 1280x800: main thread CPU per frame (ISP) | 3.08 ms (2.74) | 2.91 ms (2.58) |
+| NV12 1280x800 | 3.36 ms (3.07) | 3.20 ms (2.94) |
+| RGB24, 4 threads: main thread / ISP time | 1.46 / 1.05 ms | 1.35 / 1.02 ms |
+| RGB24, integer path (`--arithmetic int`, `cortex-a72` build) | 5.48 ms (settings 0.34) | 5.33 ms (settings 0.25) |
+| NV12, integer path, `cortex-a72` build | 5.54 ms | 5.39 ms |
+
+Latency (sensor timestamp to output) went from 10.44 to 10.31 ms (RGB24). The integer path
+is what a Cortex-A72 (Raspberry Pi 4) runs; its figures here are A76 timings (see
+`crates/softisp/PERFORMANCE.md`).
 
 NV12 costs 0.3 ms more than RGB24 (luma and chroma), luma alone 1 ms less, the binned half
 size 1.4 ms less. A frame at 120 fps costs the same as at 30 fps; once settled the statistics
@@ -367,7 +414,17 @@ at half the main size (`NativeIspConfig::pyramid_level`, set by the plan), attac
 filtered from it. Measured (`native_isp_bench pyramid 30 300`, luma 1280x800 + 2 levels):
 0.42 ms process CPU per frame with the hardware level, 0.55 ms with both levels on the CPU
 (the consumer thread 0.07 ms vs 0.22 ms), latency 8.50 vs 8.56 ms. Shared plans of a sensor Styx drives run at exactly the rate asked when saving
-power, as single plans do. Every output is handed out as a dma-buf, in process and to other
+power, as single plans do.
+
+Frame rates: a mode that runs at any rate in a range (a sensor Styx drives) runs at
+`planner::DEFAULT_FPS` (30 fps, or the nearest rate the mode allows) when no consumer asks for
+one (`min_fps`), whatever the priority, in single and shared plans and for a capture request
+without an interval; the fastest rate (260 fps at 640x400 on the OV9782, its exposure limited
+to 3.8 ms) only when asked for. With `min_fps`: `Priority::Power` runs at exactly that rate,
+other priorities at the mode's fastest (unchanged). Modes with a list of rates (UVC) keep the
+list's fastest.
+
+Every output is handed out as a dma-buf, in process and to other
 processes through the camera service (planes exported with their offsets). Raw native modes are not routed through a Bayer decoder when an ISP route exists
 (that route has no 3A); Bayer decoders are priced at the software ISP's cost. `plan_frames`
 for NV12, RG24 or luma (NV12's Y plane) on the native OV9782 picks the PiSP mode on the CM5
@@ -418,6 +475,41 @@ Warm restarts start at the remembered exposure and do not change it (exposure wi
 frame 0; output within 5% from frame 1, frame 0 being the unsettled one). The first frame of a
 warm start comes later than a cold one because it exposes for 17 ms instead of 1 ms.
 
+### Flicker (2026-10-02)
+
+The room's ceiling lamp flickers at 50 Hz (a half-wave LED driver on 50 Hz mains): measured
+from the frames, ±17% at 50 Hz on 8 ms exposures at 120 fps (the light itself ±23%), with
+smaller components at 100 and 150 Hz (spectrum of the per-frame mean luma: peaks at the
+aliases 50.06, 19.85 and 30.2 Hz at 120 fps, 9.96 Hz at 60 fps). Exposures of 10 ms do not
+cancel that, 20 ms ones do. AE's flicker avoidance (algorithms.md, "AE: flicker") with
+`native-pipeline pisp --cold --every-frame --flicker off|50|auto --ev E`, 10 s each, steady
+state over the second half: exposure × gain spread and changes (AE moving), the spread of
+the metered luma and of the output luma, frames AE reports locked. The evening scene was
+dark, so EV -4 / -3 brought AE off its limits at 120 / 60 fps.
+
+| | off | 50 Hz | auto |
+|---|---|---|---|
+| 120 fps, EV -4 (8.2 ms × ~4): exposure × gain SD, changes > 0.5% | 10.16%, 507 | 0.95%, 22 | 1.04%, 29 (detected at frame 83) |
+| same: metered / output luma SD, locked | 15.4% / 12.4%, never | 10.6% / 7.9%, 93% | 11.0% / 8.4%, 92% |
+| 120 fps, EV -4, cold start (5 runs): first locked frame | not within 120 frames | 20, 21, 21, 22, 29 | 20, 21, 21, 22, 22 |
+| 120 fps through the `ov9282` kernel driver (no embedded data), EV -4: exposure × gain SD, locked | 11.4%, 502 changes, never | | 2.0%, 77 changes, 77% (cold: locked at 19, 20, 21, 28; off never) |
+| 60 fps, EV -3 (16.5 ms × 4): exposure × gain SD, changes, locked | 2.80%, 77, 49% | | 0.00%, 0, 100% |
+| same: metered / output luma SD | 4.65% / 3.05% | | 3.36% / 2.31% |
+| 30 fps, EV 0: exposure, metered / output luma SD | 33.2 ms × 8, 2.36% / 1.32% | | 20.0 ms × 13.3, 0.20% / 0.11% |
+
+Before the lamp's 50 Hz component was modelled, AE quantised to 10 ms at 60 fps (10 ms × 13
+instead of 16.5 ms × 8) and the frames flickered more (9.9% against 3.7%); the period is now
+the mains period once the lamp is seen to flicker at it, and shorter exposures are left
+alone. Exposures shorter than a period (all of them at 120 fps) keep the flicker in the
+frames (the output's 8-12% spread above is the light); AE no longer chases it. Through the
+Styx API (`AE_FLICKER_MODE` set at 120 fps, AE pinned at its limits in the dark scene) the
+detected period read back as 10000 µs after 1008 frames at 120 fps and 52 at 30 fps.
+
+`AE_STATE`/`AeStatus::locked` in a scene beyond AE's reach: before, AE kept searching at
+its limits for ever (the dark room at 120 fps: never locked); now it locks once it asks for
+the limit (`AeStatus::at_limit`): frame 6 at 120 fps on the kernel driver path, 8 through
+the bridge.
+
 Through the Styx API (`styx-compare run --format NV12 --fps 30 --frames 90`, native with
 `--ae-state-control 0xF4000010`, the AE state the processed native modes now publish;
 libcamera with `systemctl stop styx-bridge` and `helios-peripherals` stopped, same scene):
@@ -460,10 +552,10 @@ which the CPU reads uncached: reading the raw frame is a third of the software p
   mean of the output and, for the software path, writing the raw recording).
 * The light is warm: the Bayesian AWB (CT curve from the tuning) keeps some of it, grey world
   (default tuning, host replay of the recorded frames) ends at R/G 0.997, B/G 1.006.
-* Through the Styx API (`examples/native_processed.rs`): `plan_best` for NV12, luma and RG24
+* Through the Styx API (`examples/04_performance/native_processed.rs`): `plan_best` for NV12, luma and RG24
   on the native OV9782 picks the native NV12 / RG24 modes with the PiSP (the raw modes are
   rejected: "raw pBAA would need a decoder without 3A"); capture runs at 120.625 fps (the plan
-  takes the fastest rate for latency), start → first frame 78-80 ms, exposure settled in 12
+  took the fastest rate for latency; without `min_fps` it is now 30 fps), start → first frame 78-80 ms, exposure settled in 12
   frames, 14.7-15.9% of a core, saved frames `native-processed-{nv12,luma,rgb}`.
 * libcamera on the same device and scene (the compare harness, `tools/compare` on
   `native/compare`, Styx's libcamera backend, NV12, median of 3): open → first frame 103 ms,
@@ -575,8 +667,22 @@ trying a block of libcamera's in ours on identical input):
 
 Raw frames at the same exposure (libcamera `BYR2` vs `native-pipeline soft --record`) match
 within 0.1-0.5 codes at 2x gain; at 8x gain, in one dim run, ours were 2.3-2.4 codes lower
-(of 10-bit) uniformly, which looks like a black level difference between the kernel driver's
-and our register set at high gain; not settled (needs a covered lens).
+(of 10-bit) uniformly. That is not a black level difference (2026-10-02, no covered lens
+needed): the raw level extrapolated to zero exposure (exposures of 1 line, 50, 200, 500, 1000
+and 2000 µs, 8 frames each, the four Bayer sites) is the same through the bridge with our
+registers and through the `ov9282` kernel driver with its own, within 0.1 code at every gain:
+1 line at 8x 64.99 / 64.89 / 64.14 / 64.19 (bridge) and 65.02 / 64.92 / 64.31 / 64.21
+(driver), at 15.5x 65.06 / 65.22 / 63.71 / 63.63 and 64.84 / 65.02 / 63.72 / 63.67, at 1x
+64.74 / 64.74 / 65.34 / 65.34 for both (the description's 64 is within 0.6 code; the B/Gb
+rows read up to 1.5 codes above the Gr/R rows at 15.5x). The BLC registers read back over
+I²C on the bridge (0x4000 0xcf, target 0x4002..3 = 0x0040, lines 0x4008..9 = 0x04 / 0x0b,
+0x400c..d = 0x0007, 0x4010 0x40) are what both drivers write too; our register set differs
+from theirs only in 0x4f00 = 0x08 (PSV off, a bit the default 0x00 does not have set) and
+0x4307 = 0x31 (the embedded data line). The likely cause of the 2.4 codes is the room's
+light: the lamp flickers at 50 Hz by ±20% (see "Flicker"), which on a dim, short-exposure
+frame at 8x gain moves the signal above black by a few codes from session to session. A
+check against libcamera itself (no libcamera tools are on the device image) would need its
+raw frames at a fixed 1-line exposure and 8x gain (AE off), compared with the numbers above.
 
 Results (`tools/compare/zone_spread.py` over `quality.py`'s zones; CM5, the room lit this time; two scenes by exposure: dim 6 ms x 2, mean luma 0.20,
 and bright 33 ms x 3.5, luma 0.78; AWB auto in both stacks; two sessions of each, the zones
@@ -637,6 +743,9 @@ fps); CPU unchanged. It is a Styx setting now (see "Denoise settings").
 * Algorithms at 15 Hz while settled: a scene change is seen up to one 15 Hz period later
   (`settled_rate_hz: None` runs them on every frame).
 * Brightness changes were forced exposure steps, not changes of the light.
+* Flicker on exposures shorter than a period stays in the frames (AE no longer chases it;
+  see "Flicker"). The flicker model could also scale each frame's ISP digital gain to take it
+  out of the output (gains below 1 for the brighter frames, or exposure headroom).
 * The tool's software runs use one thread unless `--threads` says otherwise (the `styx`
   native backend's software mode uses min(4, cores), and the planner prices it as measured).
   On the CM5 one thread is the cheapest in CPU (four cost 0.6-1.4 ms more per frame); the

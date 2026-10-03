@@ -49,6 +49,12 @@ impl CodecRegistry {
                 )),
             );
             self.register(
+                FourCc::YUYV,
+                Arc::new(crate::decoder::raw::YuyvToNv12Decoder::new(
+                    max_width, max_height,
+                )),
+            );
+            self.register(
                 FourCc::NV12,
                 Arc::new(crate::decoder::raw::Nv12ToRgbDecoder::new(
                     max_width, max_height,

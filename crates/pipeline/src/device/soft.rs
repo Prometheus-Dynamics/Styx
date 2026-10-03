@@ -78,7 +78,15 @@ impl SoftPipeline {
             &configured.mode.format,
         )?
         .with_fps(fps, fps)?;
-        let soft = SoftLoop::new(sensor, format.packing, tuning, threads)?;
+        let mut soft = SoftLoop::new(sensor, format.packing, tuning, threads)?;
+        // Buffers from a (cached) dma-heap are read in place: 0.17 ms per 1280x800 frame
+        // less than staging the rows on the CM5. The driver's MMAP buffers are often mapped
+        // uncached (rp1-cfe's are) and keep the staging copy.
+        let cached = matches!(
+            &camera.options().memory,
+            styx_native::BufferMemory::DmaHeap(heap) if !heap.contains("uncached")
+        );
+        soft.set_copy_input(!cached);
         let controls = camera.controls();
         Ok(Self {
             camera,

@@ -335,8 +335,34 @@ fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequirements) -> RankK
     }
 }
 
-/// The fastest interval that meets `min_fps`; the mode's default otherwise.
+/// The frame rate a plan runs at when no consumer asks for one, on a mode that can run at any
+/// rate in a range (a sensor Styx drives): 30 fps, or the nearest rate the mode allows. The
+/// fastest such a mode allows is rarely wanted (640x400 on the OV9782: 260 fps, its exposure
+/// limited to 3.8 ms). Modes with a list of rates (UVC cameras) keep the list's fastest.
+pub const DEFAULT_FPS: u32 = 30;
+
+/// [`DEFAULT_FPS`] within `mode`'s rate range; `None` for modes without one.
+pub(crate) fn default_interval(mode: &Mode) -> Option<Interval> {
+    let range = mode.interval_stepwise?;
+    let want = Interval::from_fps(DEFAULT_FPS)?;
+    Some(if want.fps() > range.min.fps() {
+        range.min
+    } else if want.fps() < range.max.fps() {
+        range.max
+    } else {
+        want
+    })
+}
+
+/// No `min_fps`: [`DEFAULT_FPS`] on a mode with a rate range. Otherwise, and on modes with a
+/// list of rates, the fastest (or with `Priority::Power` the slowest meeting `min_fps`,
+/// exactly `min_fps` where the mode has a range).
 fn pick_interval(mode: &Mode, req: &FrameRequirements) -> Option<Interval> {
+    if req.min_fps.is_none()
+        && let Some(default) = default_interval(mode)
+    {
+        return Some(default);
+    }
     let fastest = mode
         .intervals
         .iter()

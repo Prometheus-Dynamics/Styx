@@ -41,8 +41,8 @@ pub enum ControlPlane {
     #[cfg(feature = "native")]
     Native {
         controls: styx_native::CameraControls,
-        /// The 3A loop's AE state of a processed mode (see `native_backend::controls::AE_STATE`).
-        ae_state: Option<std::sync::Arc<std::sync::atomic::AtomicI32>>,
+        /// A processed mode's 3A loop: its controls and state (AE state, colour temperature).
+        processed: Option<std::sync::Arc<super::native_isp::LoopControls>>,
     },
     /// A reconnecting capture: controls go to whichever backend capture is running and are
     /// re-applied after a reconnect.
@@ -97,9 +97,13 @@ pub(crate) fn apply_control_to_plane(
                 .map_err(|_| CaptureError::control_apply("libcamera channel closed"))
         }
         #[cfg(feature = "native")]
-        ControlPlane::Native { controls, .. } => {
-            super::native_backend::apply_control(controls, id, &_value)
-        }
+        ControlPlane::Native {
+            controls,
+            processed,
+        } => match processed.as_ref().and_then(|p| p.apply(id, &_value)) {
+            Some(result) => result,
+            None => super::native_backend::apply_control(controls, id, &_value),
+        },
         #[cfg(feature = "file-backend")]
         ControlPlane::File { state } => file_backend::apply_file_control(state, id, _value),
         #[cfg(feature = "simulation-bevy")]
@@ -157,15 +161,13 @@ pub(crate) fn read_control_from_plane(
                 })?
         }
         #[cfg(feature = "native")]
-        ControlPlane::Native { controls, ae_state } => {
-            if id == super::native_backend::controls::AE_STATE {
-                return ae_state
-                    .as_ref()
-                    .map(|s| ControlValue::Int(s.load(std::sync::atomic::Ordering::Acquire)))
-                    .ok_or(CaptureError::ControlUnsupported);
-            }
-            super::native_backend::read_control(controls, id)
-        }
+        ControlPlane::Native {
+            controls,
+            processed,
+        } => match processed.as_ref().and_then(|p| p.read(id)) {
+            Some(value) => Ok(value),
+            None => super::native_backend::read_control(controls, id),
+        },
         #[cfg(feature = "file-backend")]
         ControlPlane::File { state } => file_backend::read_file_control(state, id),
         #[cfg(feature = "simulation-bevy")]

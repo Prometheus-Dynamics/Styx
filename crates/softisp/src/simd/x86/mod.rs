@@ -4,6 +4,7 @@
 
 mod bayer;
 mod color;
+pub(super) mod tone;
 mod vec;
 
 use super::{RowKind, SimdBackend, X86FeatureSet, YuvCoeffs};
@@ -215,6 +216,38 @@ pub(super) fn narrow_row(
         color::narrow_avx2(src, dst, width),
         color::narrow_sse2(src, dst, width)
     )
+}
+
+pub(super) fn lut_row(
+    f: X86FeatureSet,
+    src: &[u16],
+    dst: &mut [u8],
+    lut: &super::ToneLut,
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    if !f.avx2 {
+        return None;
+    }
+    // SAFETY: AVX2 detected; the dispatcher sized the slices for `width` pixels.
+    done(SimdBackend::X86Avx2, unsafe {
+        tone::lut_avx2(src, dst, &lut.cascades, width)
+    })
+}
+
+pub(super) fn poly_row(
+    f: X86FeatureSet,
+    src: &[u16],
+    dst: &mut [u8],
+    poly: &super::poly::PolyTone,
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    if !f.avx2 {
+        return None;
+    }
+    // SAFETY: AVX2 detected; the dispatcher sized the slices for `width` pixels.
+    done(SimdBackend::X86Avx2, unsafe {
+        tone::poly_avx2(src, dst, &poly.c, width)
+    })
 }
 
 pub(super) fn interleave_rgb_row(

@@ -173,7 +173,10 @@ impl NativeCamera {
         }
         let sensor: Arc<dyn SensorSide> = self.control.clone();
         self.session.set_embedded(None);
-        if self.options.embedded_data && self.info.description.embedded_data.is_some() {
+        let format = self.configured.as_ref().map(|c| c.mode.format.as_str());
+        if self.options.embedded_data
+            && format.is_some_and(|f| self.info.description.embedded_data_in(f))
+        {
             let media = MediaDevice::open(&self.info.media).step("open media device")?;
             let topo = media.topology().step("media topology")?;
             let (_, _, entity) = find_media(&self.info.location)?;

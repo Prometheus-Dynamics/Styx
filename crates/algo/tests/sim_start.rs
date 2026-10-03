@@ -158,3 +158,27 @@ fn a_black_level_error_costs_one_correction() {
     assert!(c.settle_frames.is_some_and(|f| f <= 4), "{c:?}");
     assert!(lock.is_some_and(|l| l <= 6), "{lock:?}");
 }
+
+#[test]
+fn ae_locks_at_its_limits_in_the_dark() {
+    // Too dark for the longest exposure at the highest gain: AE settles at its limits and
+    // reports it (locked, at the limit) instead of searching for ever; light again, it leaves.
+    let mut scene = Scene::constant(0.05, 3000.0);
+    scene.lux = Scene::step(60, 0.05, 200.0);
+    let (frames, _, late) = run(&device(30.0), scene, None, 100);
+    let lock = first_lock(&frames, 0);
+    println!("dark start: locked at {lock:?}, {:?}", frames[59].params.ae);
+    assert!(lock.is_some_and(|l| l <= 8), "{lock:?}");
+    assert!(
+        frames[20..60]
+            .iter()
+            .all(|f| f.params.ae.locked && f.params.ae.at_limit)
+    );
+    let relock = first_lock(&frames, 61);
+    println!(
+        "then 200 lux: locked after {relock:?}, {:?}",
+        frames[99].params.ae
+    );
+    assert!(!frames[99].params.ae.at_limit && frames[99].params.ae.locked);
+    assert_eq!(late, 0);
+}

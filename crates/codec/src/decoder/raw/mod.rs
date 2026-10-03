@@ -31,6 +31,8 @@ mod yuv;
 mod yuv420p;
 #[cfg(feature = "raw-decoders")]
 mod yuyv;
+#[cfg(feature = "raw-decoders")]
+mod yuyv_nv12;
 
 #[cfg(feature = "raw-decoders")]
 pub use bayer::{SoftIspDecoder, SoftIspOutput, bayer_decoders_for};
@@ -55,6 +57,8 @@ pub use yuv::{NvToRgbDecoder, Packed422ToRgbDecoder, PlanarYuvToRgbDecoder};
 pub use yuv420p::Yuv420pToRgbDecoder;
 #[cfg(feature = "raw-decoders")]
 pub use yuyv::{YuyvToLumaDecoder, YuyvToRgbDecoder};
+#[cfg(feature = "raw-decoders")]
+pub use yuyv_nv12::YuyvToNv12Decoder;
 
 pub(crate) fn raw_decoder_descriptor(
     input: FourCc,

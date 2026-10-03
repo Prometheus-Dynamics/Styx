@@ -35,14 +35,29 @@ box (OV9782 1280x800) unless stated.
 - [x] AE locked at frame 6 (229 ms from open; libcamera 664–675 ms); warm restarts lock by frame 2.
 - [x] PiSP path CPU 0.26 ms/frame through Styx (0.8 % of a core; libcamera 2.9 %).
 - [x] Image quality matches libcamera within libcamera's own session-to-session spread.
-- [x] Software ISP (`styx-softisp`): fp16 NEON path, cached capture, 15 Hz stats when settled —
-      9.4–10.2 % of a core at 30 fps on one A76 core (was 47 %), bit-exact integer path elsewhere.
+- [x] Flicker avoidance (`Flicker::Auto`, the Styx default; `AE_FLICKER_MODE`): AE fits the
+      lamp's flicker (harmonics of 50/60 Hz mains) from the frames and meters against the
+      mean light, so 120 fps no longer chases it (exposure × gain spread 10% → 1%, cold start
+      never locked → frame ~21 under the room's ±20% 50 Hz lamp); long exposures whole mains
+      periods (30 fps: frame spread 2.4% → 0.2%); detects the mains frequency itself.
+- [x] AE locks at its limits in scenes beyond its reach (`AE_STATE` converged, as libcamera).
+- [x] Software ISP (`styx-softisp`): fp16 NEON path, cached capture read in place, 15 Hz stats
+      when settled — 8.8–9.7 % of a core at 30 fps on one A76 core (was 47 %), bit-exact integer
+      path elsewhere; x86 tone curve as fixed-point quadratics (`Arithmetic::IntPolyTone`, within
+      a code; RGB24 frame 1.59 → 1.11 ms on Zen 3) and an exact AVX2 table.
 - [x] Built-in OV9782 description and tuning; Styx tuning search path (`STYX_TUNING_PATH`, …).
 
 ### Ecosystem (phase 5)
 - [x] GStreamer `styxsrc` + device provider (`crates/gst-styx`).
 - [x] PipeWire camera node daemon (`crates/pipewire-styx`).
 - [x] Frame socket with leases (`styx::ipc::FrameSocket`, HeliOS wire format).
+- [x] Examples for every task (listing, planned capture, async, controls and metadata, shared
+      captures, other processes, raw frames and recordings, hotplug, adding a camera), run on the
+      CM5; [docs/comparison.md](docs/comparison.md) against libcamera, V4L2 and GStreamer, with a
+      fresh side-by-side run (open → first frame 34 vs 101 ms, CPU 1.1 vs 2.7 %, PSS 25.6 vs
+      30 MiB).
+- [x] Processed captures take AE/AWB controls (AE on/off, fixed exposure or gain, EV, AWB
+      on/off, colour temperature, red/blue gains) and report AWB's colour temperature.
 
 ### HeliOS
 - [x] `helios-peripherals` runs on the native stack (HeliOS branch `styx-native-trial`):
@@ -53,8 +68,9 @@ box (OV9782 1280x800) unless stated.
 ## TODO
 
 ### Decisions
-- [ ] Default PiSP output buffer count (`native_output_buffers`, now 4; 6–8 keeps 30 fps with slow
-      frame holders, 1.5 MB each).
+- [x] Default PiSP output buffer count: 6 (two frame-socket consumers holding 500 ms: 17 fps
+      with 4, 30 with 6; +3.1 MB CMA for NV12 1280x800), plus the planner's extra buffers
+      within half the free CMA (a slow shared consumer no longer slows the others).
 - [ ] When HeliOS drops libcamera (checklist in helios-trial.md).
 
 ### HeliOS (branch `styx-native-trial`)
@@ -66,14 +82,19 @@ box (OV9782 1280x800) unless stated.
 - [ ] Not yet tested: a real CSI unplug, controls set by HeliOS, runs longer than 2 h.
 
 ### Image quality
-- [ ] Black level at high gain: raw ~2.4 codes (10-bit) lower than libcamera's at 8× gain; confirm
-      with a covered lens and fix in the description.
+- [x] Black level at high gain: not a black level difference. Zero-exposure levels through the
+      bridge and through the `ov9282` driver agree within 0.1 code at 1-15.5× (BLC registers the
+      same); the 2.4 codes were most likely the 50 Hz lamp. To close it against libcamera
+      itself: its raw at a 1-line exposure and 8× (pipeline.md, "Quality vs libcamera").
 - [ ] Verify the unverified kernel-sensor data files on real cameras (imx219, imx477, imx708, ov5647).
 - [ ] OV9782 tuning of our own (today: the HeliOS tuning).
 
 ### Performance
 - [ ] PiSP: 0.12 ms/frame is the `pispbe` driver rewriting its whole config per job (kernel side).
-- [ ] Software ISP: remaining ~1 ms outside the ISP (row copies, dequeue); x86 tone curve.
+- [ ] Software ISP: outside the image maths only ~0.3 ms of memory traffic and ~0.15 ms of
+      dequeue/sync/bookkeeping are left (staging copy and end-of-access sync gone). Integer path
+      (Pi 4 class): colour matrix 1.1 ms and tone table 1.5 ms per frame on the A76; not yet
+      measured on a real Cortex-A72. AVX-512 VBMI exact tone table (untested: no AVX-512 host).
 - [ ] PipeWire node copies each frame once (zero-copy needs the camera buffers as the PipeWire pool).
 
 ### Platforms
@@ -83,4 +104,26 @@ box (OV9782 1280x800) unless stated.
 
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).
-- [ ] 120 fps AE sometimes chases 100 Hz flicker (kernel-driver path); add anti-flicker.
+- [x] 120 fps AE sometimes chases 100 Hz flicker (kernel-driver path); add anti-flicker.
+- [ ] Flicker stays in the frames at exposures shorter than a period (AE no longer chases it):
+      per-frame ISP digital gain from the flicker model could take it out.
+- [x] `AE_STATE` never reported converged when AE's target was out of reach; AE now reports
+      converged once pinned at its limits (`AeStatus::at_limit`), as libcamera does.
+- [x] OV9782 raw8 (`BA81`) through the bridge: frames reported 342.9 ms × 0.5 at 30 fps and were
+      far darker than RAW10. The raw8 embedded line carries each 10-bit word's top 8 bits
+      (decoded as RAW10 it said VTS 4, and the schedule then limited exposure to that 4-line
+      frame), and the raw8 PLL runs at 192 MHz, not the driver's 200 MHz (30 fps ran at 28.8).
+      raw8 now has `pixel_rate = 192 MHz` and `embedded_data = false` (predicted values):
+      30 / 120 / 5 fps exact, levels equal RAW10's top 8 bits at the same exposure and gain.
+- [x] Shared captures on the PiSP: a slow consumer with a deep queue paced the camera for every
+      consumer. Back end buffers now default to 6 plus the planner's `capture_extra_buffers`
+      (within half the free CMA); a consumer sleeping 200 ms gets 5 fps, the other keeps 30.
+- [x] MCAP recordings drop a native frame's exposure and gains (`NativeFrameMeta`): MCAP format
+      2 and `.styxrec` 2 record exposure, gains, frame duration and length, verified, error;
+      version 1 files still read. AE state, colour temperature and lux are controls, not
+      per-frame metadata, so not recorded (add them to `NativeFrameMeta` first).
+- [x] A plan that asks no frame rate gets the mode's fastest (camera service clients: 260 fps
+      at 640x400): modes with a rate range now run at `planner::DEFAULT_FPS` (30, within the
+      mode's range) without `min_fps`, in single and shared plans and plain native captures.
+- [ ] A frame-length or exposure value decoded from embedded data is trusted even when it is
+      impossible (VTS 4 on a 800-line mode); the control schedule could reject such reports.

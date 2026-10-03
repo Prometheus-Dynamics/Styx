@@ -56,7 +56,7 @@ jobs:
       - name: Native stack without libcamera
         run: |
           cargo check -p styx --no-default-features --features native,v4l2 --all-targets
-          cargo check -p styx-examples --no-default-features --features native,v4l2 --all-targets
+          cargo check -p styx-examples --no-default-features --features native,v4l2,async,hotplug,replay-mcap --all-targets
           cargo test -p styx --features native,v4l2 --lib planner
 
       - name: Run perf smoke surface

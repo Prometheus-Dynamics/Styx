@@ -119,6 +119,13 @@ address in the device tree (`kernel-modules/styx-sensor-bridge`, overlay templat
 bridge makes the receiver see a sensor subdevice; Styx powers the sensor, writes its
 registers and starts and stops it when the receiver asks (`PROTOCOL.md`).
 
+Check every format's timing and embedded line on the board, not only the one you started
+with. A format's `pixel_rate` is the rate the sensor's system clock gives, which is not always
+what a kernel driver reports (the OV9782's raw8 runs at 192 MHz, its driver says 200 MHz: 4%
+slow frames). An embedded layout written for one bit depth may not hold in another (the
+OV9782's raw8 line carries each value's top 8 bits only): `embedded_data = false` under that
+`[formats.<name>]` leaves the line uncaptured there, and frames report predicted values.
+
 ## Checking a camera
 
 * `bridge_capture` (`crates/native/examples`): lists every camera with its modes and exact
@@ -174,6 +181,9 @@ Notes:
   (`pisp-frames.csv` of a run), as it does on the bridge; what is left is the ±3-4% the
   100 Hz light puts on 8 ms exposures, which AE (5% tolerance, two frames in a row) sometimes
   chases for a few frames. The bridge's runs in the same minutes locked at frame 8 each time.
+  Flicker avoidance (`--flicker auto`, the Styx default) since: under a ±20% 50 Hz lamp at
+  EV -4, without it AE never locked in 150 frames, with it at frames 19-28 and moved
+  exposure × gain by 2% in steady state instead of 11% (pipeline.md, "Flicker").
 * The driver's register set gives the sensor about 12-15% less signal than the bridge's
   (HeliOS) registers at the same exposure and gain code; AE makes up for it with gain.
 * Starting is slower by 8 ms: the driver writes the whole mode at `STREAMON` on the 100 kHz

@@ -283,6 +283,7 @@ impl SensorDescription {
                     pixel_rate,
                     link_frequency,
                     registers: Vec::new(),
+                    embedded_data: true,
                 },
             );
         }

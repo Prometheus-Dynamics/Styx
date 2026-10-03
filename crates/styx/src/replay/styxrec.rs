@@ -1,5 +1,8 @@
-//! The experimental `.styxrec` format (feature `replay-styxrec`), version 1: a compact
-//! Styx-only alternative to MCAP. All integers are little-endian.
+//! The experimental `.styxrec` format (feature `replay-styxrec`), version 2: a compact
+//! Styx-only alternative to MCAP. All integers are little-endian. Version 2 added backend
+//! metadata 3 (a sensor Styx drives: sequence:u32 bytes_used:u32 exposure_ns:u64
+//! analog_gain:f32 digital_gain:f32 frame_duration_ns:u64 frame_length:u32 verified:u8
+//! error:u8); version 1 files (native frames stored as V4L2 buffers) still read.
 //!
 //! ```text
 //! file    = "STYXREC1" version:u16 header frame* end
@@ -26,7 +29,7 @@ use super::{RecordingHeader, ReplayError, frame_from_payload};
 use crate::DeviceIdentity;
 
 pub(crate) const MAGIC: &[u8; 8] = b"STYXREC1";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const TAG_END: u8 = 0;
 const TAG_FRAME: u8 = 1;
 const COMPANION_PYRAMID: u8 = 1;
@@ -61,7 +64,7 @@ pub(crate) fn read_header(r: &mut impl Read) -> Result<RecordingHeader, ReplayEr
         return Err(ReplayError::NotARecording);
     }
     let version = read_u16(r)?;
-    if version != VERSION {
+    if !(1..=VERSION).contains(&version) {
         return Err(ReplayError::UnsupportedVersion(version));
     }
     let display = read_str(r)?;
@@ -237,14 +240,16 @@ fn write_backend(w: &mut impl Write, backend: Option<&BackendFrameMeta>) -> io::
             w.write_all(&m.sequence.to_le_bytes())?;
             write_str(w, m.buffer_memory)
         }
-        // Recorded as a V4L2 buffer (the control values are not recorded yet).
         Some(BackendFrameMeta::Native(m)) => {
-            w.write_all(&[1])?;
-            let flags = if m.error { 0x40 } else { 0 };
-            for v in [m.sequence, m.bytes_used, 1, flags] {
-                w.write_all(&v.to_le_bytes())?;
-            }
-            w.write_all(&[1])
+            w.write_all(&[3])?;
+            w.write_all(&m.sequence.to_le_bytes())?;
+            w.write_all(&m.bytes_used.to_le_bytes())?;
+            w.write_all(&m.exposure_ns.to_le_bytes())?;
+            w.write_all(&m.analog_gain.to_le_bytes())?;
+            w.write_all(&m.digital_gain.to_le_bytes())?;
+            w.write_all(&m.frame_duration_ns.to_le_bytes())?;
+            w.write_all(&m.frame_length.to_le_bytes())?;
+            w.write_all(&[m.verified as u8, m.error as u8])
         }
     }
 }
@@ -266,6 +271,17 @@ fn read_backend(r: &mut impl Read) -> Result<Option<BackendFrameMeta>, ReplayErr
                 "libcamera-allocator" => "libcamera-allocator",
                 _ => "recorded",
             },
+        })),
+        3 => Some(BackendFrameMeta::Native(NativeFrameMeta {
+            sequence: read_u32(r)?,
+            bytes_used: read_u32(r)?,
+            exposure_ns: read_u64(r)?,
+            analog_gain: f32::from_bits(read_u32(r)?),
+            digital_gain: f32::from_bits(read_u32(r)?),
+            frame_duration_ns: read_u64(r)?,
+            frame_length: read_u32(r)?,
+            verified: read_u8(r)? != 0,
+            error: read_u8(r)? != 0,
         })),
         _ => return Err(ReplayError::Corrupt("unknown backend metadata")),
     })
@@ -379,4 +395,23 @@ fn read_u64(r: &mut impl Read) -> io::Result<u64> {
     let mut b = [0u8; 8];
     r.read_exact(&mut b)?;
     Ok(u64::from_le_bytes(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_1_files_still_read() {
+        let header = super::super::tests::header(super::super::tests::grey(64, 32));
+        let mut bytes = Vec::new();
+        write_header(&mut bytes, &header).unwrap();
+        bytes[8..10].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(read_header(&mut &bytes[..]).unwrap().format, header.format);
+        bytes[8..10].copy_from_slice(&3u16.to_le_bytes());
+        assert!(matches!(
+            read_header(&mut &bytes[..]),
+            Err(ReplayError::UnsupportedVersion(3))
+        ));
+    }
 }

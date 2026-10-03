@@ -1,8 +1,10 @@
 //! Parameters compiled into the fixed-point tables the row loop uses.
 
 use crate::format::{CfaPattern, Channel, RawFormat};
+use crate::params::ToneCurve;
 use crate::params::{Arithmetic, Demosaic, IspParams, LensShading, YuvMatrix};
 use crate::prepare_half::HalfPrep;
+use crate::simd::poly::PolyTone;
 use crate::simd::scalar::WORK_MAX;
 use crate::simd::{ToneLut, YuvCoeffs};
 use crate::{IspError, StatsConfig};
@@ -55,6 +57,10 @@ pub(crate) struct IntPrep {
     /// Q12 colour matrix.
     pub ccm: Option<[i16; 9]>,
     pub lut: Option<ToneLut>,
+    /// The table as quadratics ([`Arithmetic::IntPolyTone`]), when they fit it.
+    pub poly: Option<Box<PolyTone>>,
+    /// The curve `lut` came from, and whether quadratics were wanted for it.
+    curve: (Option<ToneCurve>, bool),
 }
 
 /// Statistics geometry.
@@ -75,8 +81,15 @@ pub(crate) fn channel_index(c: Channel) -> usize {
     }
 }
 
+/// `round(g 4096)` (halves away from zero), clamped to `0..=65535`. Truncation plus a
+/// comparison: the same result as `f32::round`, which x86 without SSE4.1 calls `roundf` for
+/// (a lens shading table rebuild took 0.27 instead of 0.03 ms on Zen 3).
+#[inline]
 fn q12(g: f32) -> u16 {
-    (g.clamp(0.0, GAIN_MAX) * 4096.0).round() as u16
+    let y = g.clamp(0.0, GAIN_MAX) * 4096.0;
+    // Exact for 0 <= y < 2^24: `y - trunc(y)` is representable.
+    let r = y as i32;
+    (r + i32::from(y - r as f32 >= 0.5)) as u16
 }
 
 /// Sample positions of `n` output points spread over `nodes` grid nodes: index and Q16 weight.
@@ -86,9 +99,12 @@ pub(crate) fn grid_map(n: usize, nodes: usize) -> Vec<(u16, u32)> {
             if nodes < 2 || n < 2 {
                 return (0, 0);
             }
+            // `floor` and `round` (halves away from zero) of non-negative values by
+            // truncation: x86 without SSE4.1 calls libm for them.
             let pos = i as f64 * (nodes - 1) as f64 / (n - 1) as f64;
-            let idx = (pos.floor() as usize).min(nodes - 2);
-            let frac = ((pos - idx as f64) * 65536.0).round() as u32;
+            let idx = (pos as usize).min(nodes - 2);
+            let y = (pos - idx as f64) * 65536.0;
+            let frac = y as u32 + u32::from(y - f64::from(y as u32) >= 0.5);
             (idx as u16, frac.min(65536))
         })
         .collect()
@@ -157,7 +173,13 @@ impl Prepared {
                 previous_half,
                 lsc_tolerance,
             )),
-            None => Arith::Int(IntPrep::new(format, params, channel_gains)?),
+            None => {
+                let previous = previous.and_then(|p| match &p.arith {
+                    Arith::Int(i) => Some(i),
+                    Arith::Half(_) => None,
+                });
+                Arith::Int(IntPrep::new(format, params, channel_gains, previous)?)
+            }
         };
         let yuv = match params.yuv {
             YuvMatrix::Bt601Full => YuvCoeffs::BT601_FULL,
@@ -178,7 +200,8 @@ impl Prepared {
 
     /// The arithmetic in use.
     pub fn arithmetic(&self) -> Arithmetic {
-        match self.arith {
+        match &self.arith {
+            Arith::Int(i) if i.poly.is_some() => Arithmetic::IntPolyTone,
             Arith::Int(_) => Arithmetic::Int,
             Arith::Half(_) => Arithmetic::Half,
         }
@@ -190,6 +213,7 @@ impl IntPrep {
         format: &RawFormat,
         params: &IspParams,
         channel_gains: [f32; 3],
+        previous: Option<&IntPrep>,
     ) -> Result<Self, IspError> {
         let w = format.width as usize;
         let bits = format.packing.bit_depth();
@@ -213,16 +237,37 @@ impl IntPrep {
             }
             m
         });
-        let lut = params
-            .tone
-            .as_ref()
-            .map(|curve| ToneLut::from_curve(|x| curve.eval(x)));
+        let poly_wanted = match params.arithmetic {
+            Arithmetic::IntPolyTone => true,
+            Arithmetic::Auto => crate::simd::poly_preferred(),
+            Arithmetic::Int | Arithmetic::Half => false,
+        };
+        // The same curve keeps its table and quadratics (fitting costs tens of microseconds).
+        let (lut, poly) = match previous {
+            Some(p) if p.curve.0 == params.tone && p.curve.1 == poly_wanted => {
+                (p.lut.clone(), p.poly.clone())
+            }
+            _ => {
+                let lut = params
+                    .tone
+                    .as_ref()
+                    .map(|curve| ToneLut::from_curve(|x| curve.eval(x)));
+                let poly = lut
+                    .as_ref()
+                    .filter(|_| poly_wanted)
+                    .and_then(|l| PolyTone::fit(l.full()))
+                    .map(Box::new);
+                (lut, poly)
+            }
+        };
         Ok(Self {
             shift: 16 - bits as u32,
             black,
             gains,
             ccm,
             lut,
+            poly,
+            curve: (params.tone.clone(), poly_wanted),
         })
     }
 }
@@ -258,7 +303,7 @@ fn shaded_gains(
     let grids = [&ls.r, &ls.g, &ls.b];
     let x_map = grid_map(w, gw);
     // Columns of each parity: their weights of the second grid node, and runs of them between
-    // the same two grid nodes (so the inner loops below are plain vector arithmetic).
+    // the same two grid nodes.
     let lanes = [0, 1].map(|p| {
         let cols: Vec<(usize, usize, f32)> = x_map
             .iter()
@@ -278,6 +323,10 @@ fn shaded_gains(
         }
         (cols.iter().map(|c| c.2).collect::<Vec<f32>>(), runs)
     });
+    // Each column's two nodes, filled run by run, so that the arithmetic is one vector loop
+    // over the row (0.21 instead of 0.31 ms per rebuild on the Cortex-A76 with the rounding
+    // below; 0.25 vectorised per run).
+    let (mut a, mut b) = (vec![0.0f32; w.div_ceil(2)], vec![0.0f32; w.div_ceil(2)]);
     let rows = [0, 1].map(|parity| {
         // Everything but the shading depends on the column's parity only.
         let gain = [0, 1].map(|x| cell_gain(x, parity));
@@ -289,18 +338,18 @@ fn shaded_gains(
                     let node = &grid[p][gy * gw..][..gw];
                     let (ts, runs) = &lanes[p];
                     for &(k0, k1, i, j) in runs {
-                        let (a, b, g) = (node[i], node[j], gain[p]);
-                        for (d, &t) in out[k0..k1].iter_mut().zip(&ts[k0..k1]) {
-                            *d = q12(g * (a * (1.0 - t) + b * t));
-                        }
+                        a[k0..k1].fill(node[i]);
+                        b[k0..k1].fill(node[j]);
                     }
+                    q12_row(out, &a, &b, ts, gain[p]);
                 }
                 let mut row = vec![0u16; w];
-                for (k, pair) in row.chunks_mut(2).enumerate() {
-                    pair[0] = half[0][k];
-                    if let Some(odd) = pair.get_mut(1) {
-                        *odd = half[1][k];
-                    }
+                for ((pair, &even), &odd) in row.chunks_exact_mut(2).zip(&half[0]).zip(&half[1]) {
+                    pair[0] = even;
+                    pair[1] = odd;
+                }
+                if w % 2 == 1 {
+                    row[w - 1] = half[0][w / 2];
                 }
                 row
             })
@@ -310,6 +359,13 @@ fn shaded_gains(
         rows,
         y_map: grid_map(h, gh),
     })
+}
+
+/// `out[k] = q12(g (a[k] (1 - t[k]) + b[k] t[k]))`.
+fn q12_row(out: &mut [u16], a: &[f32], b: &[f32], t: &[f32], g: f32) {
+    for (((d, &a), &b), &t) in out.iter_mut().zip(a).zip(b).zip(t) {
+        *d = q12(g * (a * (1.0 - t) + b * t));
+    }
 }
 
 fn stats_setup(c: StatsConfig, w: usize, h: usize) -> Result<StatsSetup, IspError> {
@@ -352,6 +408,38 @@ impl GainRows {
                 }
                 scratch
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `q12` and `grid_map` round by truncation: the same as `round` (and `floor`) for every
+    /// value they meet, halves included.
+    #[test]
+    fn rounding_by_truncation_matches_round() {
+        let old = |g: f32| (g.clamp(0.0, GAIN_MAX) * 4096.0).round() as u16;
+        let halves = (0..70_000u32).map(|k| (k as f32 + 0.5) / 4096.0);
+        let near = (0..200_000u32).map(|k| f32::from_bits(0x3F00_0000 + k * 977) / 3.0);
+        let edges = [-1.0, 0.0, f32::NAN, f32::INFINITY, GAIN_MAX, 20.0, 1e-9];
+        for g in halves.chain(near).chain(edges) {
+            assert_eq!(q12(g), old(g), "{g}");
+        }
+        for (n, nodes) in [(1280, 32), (800, 32), (640, 16), (1281, 17), (7, 3), (1, 1)] {
+            let want: Vec<(u16, u32)> = (0..n)
+                .map(|i| {
+                    if nodes < 2 || n < 2 {
+                        return (0, 0);
+                    }
+                    let pos = i as f64 * (nodes - 1) as f64 / (n - 1) as f64;
+                    let idx = (pos.floor() as usize).min(nodes - 2);
+                    let frac = ((pos - idx as f64) * 65536.0).round() as u32;
+                    (idx as u16, frac.min(65536))
+                })
+                .collect();
+            assert_eq!(grid_map(n, nodes), want, "{n} {nodes}");
         }
     }
 }

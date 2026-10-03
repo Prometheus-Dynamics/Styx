@@ -292,8 +292,14 @@ fn shared_rank(candidates: &[Candidate<'_>], requirements: &[FrameRequirements])
 }
 
 /// The fastest interval, or the slowest meeting every `min_fps` when all consumers prefer
-/// power.
+/// power; [`DEFAULT_FPS`](super::DEFAULT_FPS) on a mode with a rate range when no consumer
+/// asks for a rate.
 fn shared_interval(mode: &Mode, requirements: &[FrameRequirements]) -> Option<Interval> {
+    if requirements.iter().all(|r| r.min_fps.is_none())
+        && let Some(default) = super::default_interval(mode)
+    {
+        return Some(default);
+    }
     let fastest = mode
         .intervals
         .iter()

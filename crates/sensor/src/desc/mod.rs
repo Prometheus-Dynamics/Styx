@@ -184,6 +184,16 @@ pub struct Format {
     /// Registers written for this format, before the mode's registers.
     #[serde(default)]
     pub registers: Vec<Step>,
+    /// Whether the `[embedded_data]` layout holds in this format (default: yes). `false` for
+    /// a bit depth whose embedded line the layout cannot read (the OV9782's raw8 sends each
+    /// 10-bit word's top 8 bits, dropping the low 2 bits of every value): the line is then
+    /// not captured and frames report the values predicted from the writes.
+    #[serde(default = "yes")]
+    pub embedded_data: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Format {
@@ -274,6 +284,12 @@ impl SensorDescription {
             .iter()
             .find(|m| m.name == name)
             .ok_or_else(|| SensorError::UnknownMode(name.into()))
+    }
+
+    /// Whether the embedded data layout applies to frames in `format`: the description has
+    /// one and the format does not opt out (`embedded_data = false`).
+    pub fn embedded_data_in(&self, format: &str) -> bool {
+        self.embedded_data.is_some() && self.formats.get(format).is_none_or(|f| f.embedded_data)
     }
 
     /// The format with this name, checked against the mode.

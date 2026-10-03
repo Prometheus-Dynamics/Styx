@@ -374,7 +374,8 @@ fn narrow_and_lut_match() {
             let dst = out[0].as_mut_slice();
             match runner {
                 Runner::Oracle => scalar::lut_row(&src, dst, lut.full(), w),
-                _ => drop(lut_row(&src, dst, &lut, w)),
+                Runner::Dispatch => drop(lut_row(&src, dst, &lut, w)),
+                _ => return leaf_call!(runner, lut_row(&src, &mut dst[..w], &lut, w)),
             }
             w
         });
@@ -387,6 +388,81 @@ fn narrow_and_lut_match() {
         lut.full()[16 * 100 + 8],
         (lut.nodes()[100] as u32 + lut.nodes()[101] as u32).div_ceil(2) as u8
     );
+}
+
+/// Every input code (and some above 4095) through every node set shape: random, extreme
+/// steps (0 next to 255 both ways), falling, flat.
+#[test]
+fn lut_every_code() {
+    let src: Vec<u16> = (0..4096 + 64)
+        .map(|x| if x < 4096 { x } else { u16::MAX - x })
+        .collect();
+    let shapes: [[u8; 257]; 5] = [
+        std::array::from_fn(|i| bytes(257, 7)[i]),
+        std::array::from_fn(|i| if i % 2 == 0 { 0 } else { 255 }),
+        std::array::from_fn(|i| 255 - (i as u32 * 255 / 256) as u8),
+        [200; 257],
+        std::array::from_fn(|i| if i < 128 { 0 } else { 255 }),
+    ];
+    for nodes in shapes {
+        let lut = ToneLut::from_nodes(nodes);
+        let mut want = vec![0u8; src.len()];
+        scalar::lut_row(&src, &mut want, lut.full(), src.len());
+        for runner in runners() {
+            let mut got = vec![0u8; src.len()];
+            let done = match runner {
+                Runner::Oracle => unreachable!(),
+                Runner::Dispatch => {
+                    let _ = lut_row(&src, &mut got, &lut, src.len());
+                    src.len()
+                }
+                _ => leaf_call!(runner, lut_row(&src, &mut got, &lut, src.len())),
+            };
+            assert_eq!(got[..done], want[..done], "{runner:?}");
+        }
+    }
+}
+
+/// The quadratic tone curve's leaves against its scalar evaluation, bit for bit: a fitted
+/// curve and coefficients that saturate (the sums and the output, both ways).
+#[test]
+fn poly_tone_matches() {
+    let srgb = ToneLut::from_curve(|x| crate::ToneCurve::Srgb.eval(x));
+    let polys = [
+        poly::PolyTone::fit(srgb.full()).expect("sRGB fits"),
+        poly::PolyTone {
+            c: [
+                [
+                    [-900, 30000, 8, -32768, 32767, 3, 8000, 0],
+                    [5, -7, 9000, 1, 2, -3, 0, 0],
+                ],
+                [
+                    [12000, -400, 32767, 0, -32768, 7000, -3, 5],
+                    [-32768, 1, 4, 0, 30000, 7, 0, 0],
+                ],
+                [
+                    [-30000, 20000, 0, 1, 32767, -2000, 15, 0],
+                    [9, 32767, -5, 6, 0, -20000, 0, 0],
+                ],
+            ],
+        },
+    ];
+    for (k, p) in polys.iter().enumerate() {
+        check("poly", 1, 1, 0xA7u8, |runner, w, out| {
+            let src = words(
+                w,
+                w as u64 + k as u64,
+                if w % 3 == 0 { u16::MAX } else { 4095 },
+            );
+            let dst = out[0].as_mut_slice();
+            match runner {
+                Runner::Oracle => poly::poly_row(&src, dst, p, w),
+                Runner::Dispatch => drop(poly_row(&src, dst, p, w)),
+                _ => return leaf_call!(runner, poly_row(&src, &mut dst[..w], p, w)),
+            }
+            w
+        });
+    }
 }
 
 #[test]

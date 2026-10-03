@@ -39,5 +39,8 @@ cargo test --workspace
 echo "==> Building example surface"
 cargo check -p styx-examples --no-default-features --features "async,file-backend,netcam,codec-jpeg-decoder"
 
+echo "==> Building the camera examples (native stack, V4L2; no libcamera)"
+cargo check -p styx-examples --no-default-features --features "native,v4l2,async,hotplug,replay-mcap" --all-targets
+
 echo "==> Running perf smoke baseline"
 "$root_dir/scripts/check-perf-smoke.sh"

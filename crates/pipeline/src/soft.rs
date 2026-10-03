@@ -164,6 +164,12 @@ impl SoftLoop {
         &self.info
     }
 
+    /// The arithmetic the ISP ran the last frame with ([`styx_softisp::Arithmetic::Auto`]
+    /// resolved, see [`SoftIsp::arithmetic`]).
+    pub fn arithmetic(&self) -> styx_softisp::Arithmetic {
+        self.isp.arithmetic()
+    }
+
     /// The raw format processed.
     pub fn format(&self) -> RawFormat {
         self.isp.format()

@@ -101,7 +101,8 @@
 //!   `delay_ms` steps; add `optional = true` to skip roles the board lacks), `init`,
 //!   `stream_on`, `stream_off` (register writes and delays only).
 //! * `[formats.<name>]`: `code`, `bit_depth` (only for codes this crate does not know),
-//!   `pixel_rate`, `link_frequency`, `registers`.
+//!   `pixel_rate`, `link_frequency`, `registers`, `embedded_data` (default `true`; `false`
+//!   when the `[embedded_data]` layout does not hold in this bit depth).
 //! * `[[modes]]`: `name`, `size`, `crop`, `formats` (default all), `binning`, `skipping`,
 //!   `hblank`, `vblank`, `pixel_rate` (override), `registers`.
 //! * `[controls]`: `frame_length`, `line_length` (`register`, `pixels_per_unit`), `exposure`

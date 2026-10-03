@@ -211,3 +211,50 @@ pub(in crate::simd) unsafe fn lut(
     }
     x
 }
+
+/// [`crate::simd::poly::PolyTone`]: the octave from the leading zeros, the position by a
+/// per-lane shift, the coefficients with `tbl`; 16 pixels at a time.
+///
+/// # Safety
+/// As [`ccm`]; `src` holds `width` samples, `dst` `width` bytes.
+#[target_feature(enable = "neon")]
+pub(in crate::simd) unsafe fn poly(
+    src: &[u16],
+    dst: &mut [u8],
+    c: &[[[i16; 8]; 2]; 3],
+    width: usize,
+) -> usize {
+    let mut x = 0;
+    // SAFETY: 16 samples read and 16 bytes written at `x`, `x + 16 <= width`; the tables are
+    // two times 16 bytes each.
+    unsafe {
+        let [c0, c1, c2] = c.map(|t| vld1q_u8_x2(t.as_ptr().cast()));
+        let (max, offset) = (vdupq_n_u16(4095), vdupq_n_u16(32));
+        let one = vdupq_n_s16(1 << 14);
+        while x + 16 <= width {
+            let mut out = [vdup_n_u8(0); 2];
+            for (j, out) in out.iter_mut().enumerate() {
+                let v = vld1q_u16(src.as_ptr().add(x + 8 * j));
+                let v = vaddq_u16(vminq_u16(v, max), offset);
+                // 15 - floor(log2 v), at least 4: the top octave takes 4096 and up.
+                let lz = vmaxq_u16(vclzq_u16(v), vdupq_n_u16(4));
+                let up = vreinterpretq_s16_u16(vsubq_u16(lz, vdupq_n_u16(1)));
+                let t = vsubq_u16(vshlq_u16(v, up), vreinterpretq_u16_s16(one));
+                // Index bytes (16 half + 2 octave, + 1), octave 10 - lz, half min(t >> 13, 1).
+                let half = vshlq_n_u16::<4>(vminq_u16(vshrq_n_u16::<13>(t), vdupq_n_u16(1)));
+                let s2 = vaddq_u16(vsubq_u16(vdupq_n_u16(20), vshlq_n_u16::<1>(lz)), half);
+                let at = vsliq_n_u16::<8>(s2, vaddq_u16(s2, vdupq_n_u16(1)));
+                let at = vreinterpretq_u8_u16(at);
+                let t = vreinterpretq_s16_u16(t);
+                let k = |t| vreinterpretq_s16_u8(vqtbl2q_u8(t, at));
+                let inner = vqaddq_s16(k(c1), vqrdmulhq_s16(k(c2), t));
+                let y = vqaddq_s16(k(c0), vqrdmulhq_s16(inner, t));
+                // mulhrs(y, 1024) is (y + 16) >> 5: a rounding narrowing shift.
+                *out = vqrshrun_n_s16::<5>(y);
+            }
+            vst1q_u8(dst.as_mut_ptr().add(x), vcombine_u8(out[0], out[1]));
+            x += 16;
+        }
+    }
+    x
+}

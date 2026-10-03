@@ -4,6 +4,48 @@ use styx_core::prelude::FourCc;
 
 use super::StyxConfig;
 
+/// Flicker avoidance of a native camera's processed modes (their AE): exposures of whole
+/// flicker periods when they are a period or longer, and AE metering against the mean light
+/// so shorter ones (8 ms at 120 fps) do not chase the beat flickering light puts on the frames.
+/// Also the `AE_FLICKER_MODE` control (`native_controls`), as [`Self::control_value`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum NativeFlicker {
+    /// No avoidance.
+    Off,
+    /// 50 Hz mains (light flickering at 100 Hz).
+    Mains50,
+    /// 60 Hz mains (light flickering at 120 Hz).
+    Mains60,
+    /// Detect 50 or 60 Hz flicker from the frames and avoid it once found (the default).
+    #[default]
+    Auto,
+}
+
+impl NativeFlicker {
+    /// The `AE_FLICKER_MODE` control value: 0 off, 1 50 Hz, 2 60 Hz, 3 auto.
+    pub fn control_value(self) -> i32 {
+        match self {
+            Self::Off => 0,
+            Self::Mains50 => 1,
+            Self::Mains60 => 2,
+            Self::Auto => 3,
+        }
+    }
+
+    /// From an `AE_FLICKER_MODE` control value.
+    pub fn from_control_value(v: i64) -> Option<Self> {
+        Some(match v {
+            0 => Self::Off,
+            1 => Self::Mains50,
+            2 => Self::Mains60,
+            3 => Self::Auto,
+            _ => return None,
+        })
+    }
+}
+
 /// What a native camera's ISP delivers for a processed (`NV12` / `RG24`) mode. The PiSP's
 /// back end makes two outputs from one pass over each raw frame: the main one and a second
 /// one (with the downscaler) attached to every frame as a `CompanionKind::Scaled` companion
@@ -43,12 +85,15 @@ pub struct NativeIspConfig {
     /// Strength of the PiSP's spatial and colour denoise in percent of the tuning's: their
     /// noise thresholds are scaled by this (100, the default: as tuned; 0: off).
     pub spatial_denoise_percent: u16,
-    /// Buffers of each PiSP back end output (default 4, at least 2). Frames consumers hold
+    /// Buffers of each PiSP back end output (default 6, at least 2). Frames consumers hold
     /// (a frame server's latest frame, frames other processes have not released) keep theirs;
     /// when every one is held, frames are dropped until one comes back. More buffers let slow
     /// consumers hold frames without costing frames, at one output frame's memory each
-    /// (1.5 MB for NV12 1280x800).
+    /// (1.5 MB for NV12 1280x800). A capture queue or extra buffers beyond the defaults (the
+    /// planner reserves every consumer's queue of a shared capture this way) add theirs.
     pub output_buffers: u32,
+    /// Flicker avoidance of the 3A loop (default [`NativeFlicker::Auto`]).
+    pub flicker: NativeFlicker,
 }
 
 impl Default for NativeIspConfig {
@@ -62,7 +107,8 @@ impl Default for NativeIspConfig {
             soft_threads: None,
             temporal_denoise: true,
             spatial_denoise_percent: 100,
-            output_buffers: 4,
+            output_buffers: 6,
+            flicker: NativeFlicker::Auto,
         }
     }
 }
@@ -86,6 +132,12 @@ impl StyxConfig {
     /// [`NativeIspConfig::output_buffers`]).
     pub fn native_output_buffers(mut self, buffers: u32) -> Self {
         self.backends.native.output_buffers = buffers.max(2);
+        self
+    }
+
+    /// Set a native camera's flicker avoidance (see [`NativeIspConfig::flicker`]).
+    pub fn native_flicker(mut self, flicker: NativeFlicker) -> Self {
+        self.backends.native.flicker = flicker;
         self
     }
 
@@ -146,5 +198,25 @@ mod tests {
             .native_spatial_denoise(50);
         assert!(!c.backends.native.temporal_denoise);
         assert_eq!(c.backends.native.spatial_denoise_percent, 50);
+    }
+
+    #[test]
+    fn flicker_defaults_to_auto_and_maps_to_control_values() {
+        assert_eq!(NativeIspConfig::default().flicker, NativeFlicker::Auto);
+        assert_eq!(NativeIspConfig::default().output_buffers, 6);
+        for f in [
+            NativeFlicker::Off,
+            NativeFlicker::Mains50,
+            NativeFlicker::Mains60,
+            NativeFlicker::Auto,
+        ] {
+            assert_eq!(
+                NativeFlicker::from_control_value(i64::from(f.control_value())),
+                Some(f)
+            );
+        }
+        assert_eq!(NativeFlicker::from_control_value(4), None);
+        let c = StyxConfig::default().native_flicker(NativeFlicker::Mains50);
+        assert_eq!(c.backends.native.flicker, NativeFlicker::Mains50);
     }
 }

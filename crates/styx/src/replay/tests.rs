@@ -104,7 +104,21 @@ fn round_trip(format: StreamFormat) {
     );
     let nv12_bytes: Vec<u8> = (0..64 * 32 * 3 / 2).map(|i| (i * 7) as u8).collect();
     let nv12 = FrameLease::from_visible_bytes(nv12_format, 3_000, &nv12_bytes).unwrap();
-    let originals = [frame(0, 0), with_pyramid, mjpeg, nv12];
+    // A frame of a sensor Styx drives: its exposure, gains and frame timing are kept.
+    let mut native = frame(4, 4_000);
+    native.meta_mut().clock = Some(TimestampClock::Monotonic);
+    native.meta_mut().backend = Some(BackendFrameMeta::Native(NativeFrameMeta {
+        sequence: 4,
+        bytes_used: 64 * 32,
+        error: false,
+        exposure_ns: 9_998_000,
+        analog_gain: 2.5,
+        digital_gain: 1.0,
+        frame_duration_ns: 33_333_000,
+        frame_length: 3662,
+        verified: true,
+    }));
+    let originals = [frame(0, 0), with_pyramid, mjpeg, nv12, native];
     let mut recorder = StreamRecorder::with_format(&path, &header(grey(64, 32)), format).unwrap();
     for f in &originals {
         recorder.record(f).unwrap();
@@ -115,7 +129,7 @@ fn round_trip(format: StreamFormat) {
     assert_eq!(read_header.device.keys, vec!["test:1".to_string()]);
     assert_eq!(read_header.interval, Interval::from_fps(50));
     let replayed: Vec<FrameLease> = frames.map(Result::unwrap).collect();
-    assert_eq!(replayed.len(), 4);
+    assert_eq!(replayed.len(), 5);
     assert_eq!(replayed[3].to_visible_vec().unwrap(), nv12_bytes);
     for (a, b) in originals.iter().zip(&replayed) {
         let (ma, mb) = (a.meta(), b.meta());

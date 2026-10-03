@@ -90,19 +90,29 @@ init = [
 stream_on = [[0x0100, 0x01]]
 stream_off = [[0x0100, 0x00]]
 
-# Pixel rates are what the driver reports: link frequency x 2 (DDR) x 2 lanes / bits per pixel.
-# PLL_CTRL_0D (0x030d) and ANA_CORE_2 (0x3662) select the bit depth.
+# PLL_CTRL_0D (0x030d, the system clock PLL multiplier: 0x50 = 80, 0x60 = 96) and ANA_CORE_2
+# (0x3662) select the bit depth. The pixel rate follows the system clock: 160 MHz at 0x50 and
+# 192 MHz at 0x60. The driver reports link frequency x 2 (DDR) x 2 lanes / bits per pixel
+# (160 and 200 MHz); for raw8 that is not what the sensor runs at. Measured on the device
+# (styx-native, frame start timestamps, 1280x800 raw8): with 200 MHz a 30 fps request ran at
+# 28.798 fps (x 0.960 = 192 / 200); with 192 MHz, 30 / 60 / 120 fps run exactly.
 [formats.raw10]
 code = "SBGGR10_1X10"
 pixel_rate = 160_000_000
 link_frequency = 400_000_000
 registers = [[0x030d, 0x50], [0x3662, 0x05]]
 
+# The embedded line in raw8 carries each 10-bit word's top 8 bits (measured: exposure 642
+# lines = 0x02 0x82 arrives as 0x00 0x20, gain code 0x20 as 0x08), so every value loses its
+# low 2 bits (the exposure's high byte with them) and cannot be read back: not captured.
+# Decoding it as RAW10 had reported VTS 4 and exposure 0, and the control schedule then
+# limited the exposure to the 4-line frame it believed in (frames nearly black).
 [formats.raw8]
 code = "SBGGR8_1X8"
-pixel_rate = 200_000_000
+pixel_rate = 192_000_000
 link_frequency = 400_000_000
 registers = [[0x030d, 0x60], [0x3662, 0x07]]
+embedded_data = false
 
 # hblank minimums are the driver's continuous-clock values (the device reports HBLANK min 176
 # at 1280x800). With a non-continuous clock the driver uses 250 (1280 wide) and 890 (640 wide).
