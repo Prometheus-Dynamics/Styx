@@ -33,6 +33,9 @@ bash "$root_dir/scripts/check-feature-combinations.sh"
 echo "==> Checking duplicate dependency surface"
 cargo tree -d --workspace --no-default-features
 
+echo "==> Checking the no_std crates (bare-metal and wasm targets, smoke test)"
+"$root_dir/scripts/check-nostd.sh"
+
 echo "==> Running tests"
 cargo test --workspace
 

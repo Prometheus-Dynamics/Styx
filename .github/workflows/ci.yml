@@ -69,6 +69,27 @@ jobs:
       - name: Run memory smoke
         run: ./scripts/check-mem-smoke.sh
 
+  nostd:
+    # The platform-neutral crates without std, for a Cortex-M33, a RISC-V microcontroller and
+    # WebAssembly, and the no_std smoke crate's host test (docs/portability.md).
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: thumbv8m.main-none-eabihf, riscv32imac-unknown-none-elf, wasm32-unknown-unknown
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build and test without std
+        run: ./scripts/check-nostd.sh
+
   simd-aarch64:
     # The NEON kernels only build on AArch64; check them against the scalar oracle natively.
     runs-on: ubuntu-24.04-arm
