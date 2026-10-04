@@ -95,12 +95,13 @@ pub mod controls {
     pub const AF_RANGE: ControlId = ControlId(0xF400_0026);
     /// AF speed (`Int`): 0 normal, 1 fast.
     pub const AF_SPEED: ControlId = ControlId(0xF400_0027);
-    /// Processed modes on the PiSP with the main output at the mode's size: deliver this region
-    /// of the frame at full resolution (`Rect` in frame pixels, rounded out to even pixels, at
-    /// least 16x16; zero size: the whole frame). It applies from the next frame the ISP
-    /// processes; frames carry the region they show as `FrameMeta::crop`. A second output keeps
-    /// seeing the whole frame (`NativeIspConfig::overview`).
-    pub const OUTPUT_CROP: ControlId = ControlId(0xF400_0030);
+    /// Processed modes on the PiSP with the main output at the mode's size, or on the software
+    /// ISP at a sensor mode's size: deliver this region of the frame at full resolution
+    /// (`Rect` in frame pixels, rounded out to even pixels, at least 16x16; zero size: the
+    /// whole frame). It applies from the next frame the ISP processes; frames carry the region
+    /// they show as `FrameMeta::crop`. The overview keeps seeing the whole frame
+    /// (`NativeIspConfig::overview`). The software ISP then processes only the region.
+    pub const OUTPUT_CROP: ControlId = crate::capture_api::OUTPUT_CROP;
     /// The first `region_crop` control (`REGION_CROP_BASE + index`).
     pub const REGION_CROP_BASE: ControlId = ControlId(0xF400_0040);
 
@@ -330,10 +331,13 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
     ]
     .into_iter()
     .chain(
-        (super::native_isp::isp_name(info) == "pisp")
-            .then(|| super::native_isp::crop_metas(info))
-            .into_iter()
-            .flatten(),
+        match super::native_isp::isp_name(info) {
+            "pisp" => Some(super::native_isp::crop_metas(info, true)),
+            "software" => Some(super::native_isp::crop_metas(info, false)),
+            _ => None,
+        }
+        .into_iter()
+        .flatten(),
     )
     .chain(info.lens.as_ref().map_or_else(Vec::new, |l| {
         let m = &l.description.map;

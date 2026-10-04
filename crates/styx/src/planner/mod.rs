@@ -33,6 +33,7 @@ mod rate;
 mod region;
 mod region_frames;
 mod region_shared;
+mod region_soft;
 mod request;
 mod roi;
 mod routes;
@@ -52,6 +53,9 @@ pub use delivered::{Delivered, Unmet};
 #[cfg(any(feature = "native", feature = "uvc"))]
 pub(crate) use rate::default_interval;
 pub use region::RoiCrop;
+#[cfg(feature = "native")]
+pub(crate) use region::{soft_overview_factor, soft_overview_size};
+
 pub use request::{
     CameraFrames, Delivery, FrameRate, FrameRequest, Hardware, MAX_REGIONS, OpenError,
 };

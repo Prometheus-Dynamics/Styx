@@ -129,6 +129,44 @@ pub(super) fn configure_streams(
     Ok((cfgs, status))
 }
 
+/// One request per primary buffer, each with its second output's buffer when there is one.
+pub(super) fn build_requests(
+    cam: &mut libcamera::camera::ActiveCamera<'_>,
+    primary: Vec<CaptureBuffer>,
+    second: Option<Vec<CaptureBuffer>>,
+    stream: &libcamera::stream::Stream,
+    second_stream: Option<&libcamera::stream::Stream>,
+) -> Result<Vec<libcamera::request::Request>, CaptureError> {
+    let err = |e: std::io::Error| super::util::classify_libcamera_backend_message(e.to_string());
+    let mut second = match second_stream {
+        Some(_) => match second {
+            Some(b) if !b.is_empty() => Some(b.into_iter()),
+            _ => return Err(CaptureError::LibcameraTdnOutputUnavailable),
+        },
+        None => None,
+    };
+    let mut requests = Vec::new();
+    for (i, buf) in primary.into_iter().enumerate() {
+        let extra = match (&mut second, second_stream) {
+            (Some(it), Some(s)) => match it.next() {
+                Some(b) => Some((b, s)),
+                // As many requests as both outputs have buffers.
+                None => break,
+            },
+            _ => None,
+        };
+        let mut req = cam
+            .create_request(Some(i as u64))
+            .ok_or_else(|| CaptureError::Backend("request create failed".into()))?;
+        buf.add_to(&mut req, stream).map_err(err)?;
+        if let Some((b, s)) = extra {
+            b.add_to(&mut req, s).map_err(err)?;
+        }
+        requests.push(req);
+    }
+    Ok(requests)
+}
+
 /// Attach the ISP's second output as a companion of `kind`. A companion whose timestamp does
 /// not match the primary is dropped rather than failing capture.
 pub(super) fn attach_companion(

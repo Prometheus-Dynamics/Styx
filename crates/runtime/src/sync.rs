@@ -7,28 +7,22 @@
 //! `Rc<T>`, so no lock or critical section is ever held across an I²C transfer. A cargo
 //! feature, not a generic: one binary has one answer.
 
-/// A counter of events: 64-bit where the target has 64-bit atomics, else 32-bit (it wraps
-/// after 2^32 events; frame counters at 60 fps wrap after two years).
+/// A 64-bit counter of events, relaxed: native atomics where the target has 64-bit ones (the
+/// same instructions as `core`'s), `portable-atomic`'s fallback where it does not (Cortex-M,
+/// 32-bit RISC-V).
 #[derive(Debug, Default)]
-pub struct Counter(Atomic);
-
-#[cfg(target_has_atomic = "64")]
-type Atomic = core::sync::atomic::AtomicU64;
-#[cfg(not(target_has_atomic = "64"))]
-type Atomic = core::sync::atomic::AtomicU32;
+pub struct Counter(portable_atomic::AtomicU64);
 
 impl Counter {
     /// A counter at zero.
     pub const fn new() -> Self {
-        Self(Atomic::new(0))
+        Self(portable_atomic::AtomicU64::new(0))
     }
 
     /// Adds `n`.
     #[inline]
     pub fn add(&self, n: u64) {
-        #[allow(clippy::cast_possible_truncation, clippy::useless_conversion)]
-        self.0
-            .fetch_add(n as _, core::sync::atomic::Ordering::Relaxed);
+        self.0.fetch_add(n, portable_atomic::Ordering::Relaxed);
     }
 
     /// Adds one.
@@ -40,8 +34,13 @@ impl Counter {
     /// The count.
     #[inline]
     pub fn get(&self) -> u64 {
-        #[allow(clippy::useless_conversion)]
-        u64::from(self.0.load(core::sync::atomic::Ordering::Relaxed))
+        self.0.load(portable_atomic::Ordering::Relaxed)
+    }
+
+    /// Sets the count.
+    #[inline]
+    pub fn set(&self, n: u64) {
+        self.0.store(n, portable_atomic::Ordering::Relaxed);
     }
 }
 

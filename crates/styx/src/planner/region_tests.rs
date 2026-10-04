@@ -44,6 +44,16 @@ fn pisp(isp: &str) -> ProbedDevice {
     }
 }
 
+/// A camera without an ISP to crop (NV12 frames as they come).
+fn virtual_camera() -> ProbedDevice {
+    let mut dev = pisp("software");
+    dev.backends[0].kind = BackendKind::Virtual;
+    dev.backends[0].handle = BackendHandle::Virtual;
+    dev.backends[0].properties.clear();
+    dev.backends[0].descriptor.modes.remove(0);
+    dev
+}
+
 fn registry() -> CodecRegistryHandle {
     CodecRegistry::with_enabled_codecs().unwrap().handle()
 }
@@ -91,17 +101,19 @@ fn one_consumer_crops_its_first_region_in_the_main_output_and_passes_the_others(
         plan.to_string().contains("extra ISP pass of the region"),
         "{plan}"
     );
-    // Without a PiSP, luma regions are views; others unmet.
+    // The software ISP processes region 0 alone; the other luma regions are views, others
+    // unmet.
     let soft = pisp("software");
-    let views = plan_frames_with(
-        &soft,
-        &Frames::gray().regions([rect(0), rect(200)]),
-        &registry(),
-    )
-    .unwrap();
-    assert_eq!(views.delivered().regions, vec![Some(View), Some(View)]);
-    let nv12 = plan_frames_with(&soft, &req, &registry()).unwrap();
-    assert_eq!(nv12.delivered().unmet, vec![Unmet::Roi]);
+    let gray = Frames::gray().regions([rect(0), rect(200)]);
+    let views = plan_frames_with(&soft, &gray, &registry()).unwrap();
+    if !views.to_string().contains("GPU ISP") {
+        assert_eq!(views.delivered().regions, vec![Some(Isp), Some(View)]);
+        let nv12 = plan_frames_with(&soft, &req, &registry()).unwrap();
+        assert_eq!(nv12.delivered().unmet, vec![Unmet::Roi]);
+    }
+    // Without an ISP to crop, luma regions are views.
+    let usb = plan_frames_with(&virtual_camera(), &gray, &registry()).unwrap();
+    assert_eq!(usb.delivered().regions, vec![Some(View), Some(View)]);
 }
 
 /// Two trackers, nobody needs the whole frame: the first's region is the main output's crop,
@@ -184,12 +196,11 @@ fn regions_beyond_the_slots_are_views_or_unmet() {
     assert!(d.regions.iter().all(|r| *r == Some(View)));
 }
 
-/// Without a PiSP the overview is box-filtered to the size asked for (not the whole frame).
+/// Without an ISP the overview is box-filtered to the size asked for (not the whole frame).
 #[test]
 fn without_an_isp_the_overview_is_box_filtered() {
-    let soft = pisp("software");
     let plan = plan_frames_with(
-        &soft,
+        &virtual_camera(),
         &Frames::gray().roi(rect(0)).overview(320, 200),
         &registry(),
     )

@@ -17,13 +17,8 @@ use super::super::still::{
 use super::super::still_output::{bayer16_code, encode_jpeg, nv12_to_rgb, thumbnail};
 use super::still_runner::StillJob;
 
-/// A held frame for one shot.
-pub(crate) struct HeldShot {
-    pub ev: f64,
-    pub want: Option<(Duration, f64)>,
-    pub target: Option<u64>,
-    pub raw: Box<HeldRaw>,
-}
+/// A held frame for one shot (the decisions' [`styx_pipeline::still_runner::HeldShot`]).
+pub(crate) type HeldShot = styx_pipeline::still_runner::HeldShot<Box<HeldRaw>>;
 
 /// One request's held frames.
 pub(crate) struct Batch {
@@ -162,13 +157,13 @@ fn process(
 ) -> Result<StillShot, CaptureError> {
     let t = Instant::now();
     if let Some(want) = shot.want {
-        // The stream's digital gain makes up for AE's exposure not having landed yet (in a
-        // bracket AE already aims at the next shot); a fixed or bracketed still keeps its own
-        // exposure: only the white balance's green gain, and what the sensor fell short of.
+        // A fixed or bracketed still keeps its own exposure (not the stream's digital gain).
         let raw = &mut shot.raw;
-        let asked = want.0.as_secs_f64() * want.1;
-        let got = raw.sensor.total_exposure().max(1e-12);
-        raw.isp.digital_gain = raw.params.colour_gains[1].max(1e-6) * (asked / got).max(1.0);
+        raw.isp.digital_gain = styx_pipeline::still_runner::fixed_exposure_gain(
+            want,
+            &raw.sensor,
+            raw.params.colour_gains[1],
+        );
     }
     let raw = &shot.raw;
     let (w, h) = (raw.width, raw.height);
@@ -241,8 +236,7 @@ fn process(
     };
     let s = &raw.sensor;
     let p = &raw.params;
-    let landed = shot.target.is_none_or(|t| t == raw.sequence)
-        && shot.want.is_none_or(|w| super::still_runner::matches(w, s));
+    let landed = shot.landed(raw.sequence, s);
     Ok(StillShot {
         image: still,
         dng,

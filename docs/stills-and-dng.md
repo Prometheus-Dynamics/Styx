@@ -60,7 +60,9 @@ with their exposure, and request → ready latency.
 ### Processed native cameras (PiSP or software ISP)
 
 The capture's worker thread runs the 3A loop over the stream. A still request reaches it
-through the loop's controls; a `StillRunner` there decides which frames' raw data to keep:
+through the loop's controls; the pipeline core's `StillRunner` (`styx_pipeline::still_runner`,
+platform-neutral and `no_std`: the same decisions on a microcontroller) decides there which
+frames' raw data to keep:
 
 * `Current`: the next frame (with `settle`: the first after AE reports locked).
 * `Fixed` / `Bracket`: the application's controls are put aside and the loop is given a fixed

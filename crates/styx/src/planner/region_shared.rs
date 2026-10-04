@@ -1,4 +1,5 @@
-//! Regions of interest on a shared capture: every consumer's regions from one native PiSP.
+//! Regions of interest on a shared capture: every consumer's regions from one native PiSP (the
+//! software ISP and libcamera crop one region only: shared, their consumers get views).
 //!
 //! One back end pass per frame makes the main and second outputs; extra passes over the same
 //! raw frame make further regions (`NativeIspConfig::regions`). The assignment, priced with
@@ -21,7 +22,7 @@
 use styx_core::prelude::*;
 
 use super::cost::{self, StepCost};
-use super::region::{IspPlace, RoiCrop};
+use super::region::{IspCrop, IspPlace, RoiCrop};
 use super::routes::Candidate;
 use super::{FramePlan, FrameRequest};
 use crate::capture_api::{MAX_NATIVE_REGIONS, StyxConfig};
@@ -36,6 +37,17 @@ pub(crate) fn assign(
     requests: &[FrameRequest],
     second_taken: bool,
 ) -> Result<(), String> {
+    // The software ISP and libcamera crop one region of the frame: shared, the regions and
+    // overviews come from the frames.
+    if candidates
+        .iter()
+        .any(|c| c.region.isp.is_some_and(|isp| isp != IspCrop::Pisp))
+    {
+        for (candidate, req) in candidates.iter_mut().zip(requests) {
+            candidate.without_isp_region(req);
+        }
+        return Ok(());
+    }
     let isp: Vec<bool> = candidates.iter().map(|c| c.region.isp()).collect();
     if !isp.iter().any(|&b| b) {
         return Ok(());
@@ -125,7 +137,8 @@ pub(crate) fn mark_second_output(consumers: &mut [FramePlan], config: &StyxConfi
         plan.region.crops[j] = Some(RoiCrop::Isp);
         plan.steps.retain(|s| s.kind != super::StepKind::Crop);
         let route = plan.route.clone();
-        super::region::region_steps(&plan.request, &route, &plan.region.crops, &mut plan.steps);
+        let crops = (&plan.region.crops[..], plan.region.isp);
+        super::region::region_steps(&plan.request, &route, crops, &mut plan.steps);
     }
 }
 

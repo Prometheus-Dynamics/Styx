@@ -395,15 +395,22 @@ fn stats_setup(c: StatsConfig, w: usize, h: usize) -> Result<StatsSetup, IspErro
 }
 
 impl GainRows {
-    /// The gains of image row `y` (`scratch` receives interpolated lens shading rows).
-    pub fn row<'a>(&'a self, y: usize, scratch: &'a mut Vec<u16>) -> &'a [u16] {
+    /// The gains of image row `y`, columns `x0 .. x0 + n` (`scratch` receives interpolated
+    /// lens shading rows).
+    pub fn row<'a>(
+        &'a self,
+        y: usize,
+        x0: usize,
+        n: usize,
+        scratch: &'a mut Vec<u16>,
+    ) -> &'a [u16] {
         match self {
-            Self::Flat(rows) => &rows[y & 1],
+            Self::Flat(rows) => &rows[y & 1][x0..x0 + n],
             Self::Shaded { rows, y_map } => {
                 let rows = &rows[y & 1];
                 let (i, f) = y_map[y];
-                let a = &rows[i as usize];
-                let b = &rows[(i as usize + 1).min(rows.len() - 1)];
+                let a = &rows[i as usize][x0..x0 + n];
+                let b = &rows[(i as usize + 1).min(rows.len() - 1)][x0..x0 + n];
                 scratch.resize(a.len(), 0);
                 // Q15 so that the product fits 32 bits.
                 let f = (f >> 1) as i32;

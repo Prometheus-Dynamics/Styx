@@ -16,7 +16,7 @@ use styx_softisp::{
     YuvMatrix,
 };
 
-use crate::engine::{Engine, IspEngine, RawFrame};
+use crate::engine::{Engine, IspEngine, RawFrame, SoftTarget};
 
 use crate::controller::{Controller, SensorValues, Start, Step};
 use crate::error::Result;
@@ -78,13 +78,13 @@ struct SoftRun<'a> {
 }
 
 impl FrameIsp for SoftRun<'_> {
-    type Input<'a> = (RawFrame<'a>, usize, Scale, OutputBuffers<'a>);
+    type Input<'a> = (RawFrame<'a>, usize, SoftTarget<'a>);
     type Job = ();
     type Output = ();
 
     fn submit(
         &mut self,
-        (raw, stride, scale, out): Self::Input<'_>,
+        (raw, stride, target): Self::Input<'_>,
         settings: &IspSettings,
         _values: &SensorValues,
         statistics: bool,
@@ -99,7 +99,7 @@ impl FrameIsp for SoftRun<'_> {
         self.isp.set_statistics(statistics);
         self.lens_shading = settings.lens_shading.is_some();
         let t1 = now();
-        self.stats = self.isp.process(raw, stride, scale, out)?;
+        self.stats = self.isp.process_target(raw, stride, target)?;
         self.times = (t1.since(t0), now().since(t1));
         Ok(())
     }
@@ -363,6 +363,20 @@ impl SoftLoop {
         out: OutputBuffers<'_>,
         controls: &impl SensorControls,
     ) -> Result<(SoftOutput, Option<u64>)> {
+        let target = SoftTarget::Frame(scale, out);
+        self.process_target_with(raw, stride, sensor, target, controls)
+    }
+
+    /// [`Self::process_frame_with`] making `target`: the whole frame, or regions of it and an
+    /// overview (the statistics, and so the 3A loop, still of the whole frame).
+    pub fn process_target_with(
+        &mut self,
+        raw: RawFrame<'_>,
+        stride: usize,
+        sensor: &SensorValues,
+        target: SoftTarget<'_>,
+        controls: &impl SensorControls,
+    ) -> Result<(SoftOutput, Option<u64>)> {
         // Settled: statistics and algorithms only every few frames.
         let run = self.algo.due(Some(sensor.frame));
         let (lens, pdaf) = core::mem::take(&mut self.next_focus);
@@ -385,7 +399,7 @@ impl SoftLoop {
             &mut isp,
             &mut NoInline,
             controls,
-            (raw, stride, scale, out),
+            (raw, stride, target),
             sensor,
             run,
             focus,

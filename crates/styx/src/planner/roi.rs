@@ -98,10 +98,11 @@ impl RoiHandle {
 }
 
 /// `rect` as the ISP's crop at `place` (`None`: the whole frame for the main output, no region
-/// otherwise). Only native cameras crop in their ISP.
-#[cfg(feature = "native")]
+/// otherwise): native cameras' ISPs, and a Raspberry Pi ISP through libcamera (the main
+/// output's only).
+#[cfg(any(feature = "native", feature = "libcamera"))]
 fn set_isp_crop(plane: &ControlPlane, place: IspPlace, rect: Option<FrameRect>) {
-    use crate::capture_api::{apply_control_to_plane, native_controls};
+    use crate::capture_api::apply_control_to_plane;
     let r = rect.unwrap_or(FrameRect::new(0, 0, 0, 0));
     let value = ControlValue::Rect(ControlRect {
         x: i32::try_from(r.x).unwrap_or(i32::MAX),
@@ -110,8 +111,11 @@ fn set_isp_crop(plane: &ControlPlane, place: IspPlace, rect: Option<FrameRect>) 
         height: r.height,
     });
     let id = match place {
-        IspPlace::Main => Some(native_controls::OUTPUT_CROP),
-        IspPlace::Slot(k) => native_controls::region_crop(k + 1),
+        IspPlace::Main => Some(crate::capture_api::OUTPUT_CROP),
+        #[cfg(feature = "native")]
+        IspPlace::Slot(k) => crate::capture_api::native_controls::region_crop(k + 1),
+        #[cfg(not(feature = "native"))]
+        IspPlace::Slot(_) => None,
     };
     let Some(id) = id else { return };
     if let Err(err) = apply_control_to_plane(plane, id, value) {
@@ -119,5 +123,5 @@ fn set_isp_crop(plane: &ControlPlane, place: IspPlace, rect: Option<FrameRect>) 
     }
 }
 
-#[cfg(not(feature = "native"))]
+#[cfg(not(any(feature = "native", feature = "libcamera")))]
 fn set_isp_crop(_: &ControlPlane, _: IspPlace, _: Option<FrameRect>) {}

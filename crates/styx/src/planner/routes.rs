@@ -399,7 +399,8 @@ fn finish<'a>(
     // then box-filtered from the (cropped) frames, or made by an extra pass of the region.
     let isp_region = super::region::isp_possible(backend, mode, &route, req, isp_output);
     let region_size = req.roi.map_or((width, height), |r| (r.width, r.height));
-    let pyramid_req = isp_region.then(|| super::region::isp_region_pyramid(req, region_size));
+    let pyramid_req =
+        isp_region.map(|isp| super::region::isp_region_pyramid(req, region_size, isp));
     let isp_pyramid_level = super::pyramid::add_pyramid_steps(
         backend,
         mode,
@@ -409,7 +410,7 @@ fn finish<'a>(
         height,
         &mut steps,
     )?;
-    if isp_region && isp_pyramid_level.is_some() {
+    if isp_region == Some(super::region::IspCrop::Pisp) && isp_pyramid_level.is_some() {
         for step in steps.iter_mut().filter(|s| {
             matches!(s.kind, StepKind::Pyramid { .. }) && s.execution == StepExecution::Hardware
         }) {

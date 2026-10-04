@@ -70,7 +70,7 @@ pub mod simd;
 mod stats;
 
 pub use format::{BAYER_FOURCCS, CfaPattern, Channel, RawFormat, RawPacking, bayer_fourcc};
-pub use isp::{IspError, SoftIsp, process};
+pub use isp::{IspError, SoftIsp, Window, process};
 pub use output::{OutputBuffers, Scale};
 pub use params::{
     Arithmetic, BlackLevel, ColorMatrix, Demosaic, IspParams, LensShading, StatsConfig, ToneCurve,
