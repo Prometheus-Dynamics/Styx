@@ -6,7 +6,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use styx_kernel::uevent::Uevent;
+use lemnos_linux::uevent::Uevent;
 
 fuzz_target!(|data: &[u8]| {
     let Some((&which, rest)) = data.split_first() else {

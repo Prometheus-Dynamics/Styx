@@ -19,7 +19,7 @@ pub use controls::{
     EmbeddedFormat, EmbeddedPacking, EmbeddedRegister, Exposure, Flip, Gain, GainModel, GroupHold,
     LineLength, TestPattern,
 };
-pub use step::{RegWrite, Step};
+pub use step::{RegWrite, Step, show_write};
 pub use types::{Blanking, Field, Rect, Size};
 
 use crate::error::{Result, SensorError};

@@ -14,15 +14,15 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use lemnos_linux::hal::I2cBus;
 use styx_graph::Fraction;
 use styx_kernel::FourCc;
-use styx_kernel::bus::i2c::{AddrWidth, I2cDevice};
 use styx_kernel::bus::{PadFormat, SensorBridge, StreamState, Timing as BridgeTiming};
 use styx_kernel::event::{EventType, Events, SubscribeFlags};
 use styx_kernel::media::{LinkFlags, MediaDevice};
 use styx_kernel::subdev::{MbusCode, MbusFormat, Subdev, Which};
 use styx_kernel::v4l2::{BufType, Format, PixFormat, VideoDevice};
-use styx_sensor::{ControlRequest, SensorDriver, Step};
+use styx_sensor::{AddressWidth, ControlRequest, SensorDriver, Step};
 
 use crate::buffers::BufferMemory;
 use crate::control::{BlankingHook, ControlHandle, ExpectedStart, SensorControl, lock};
@@ -301,16 +301,23 @@ impl NativeCamera {
             .i2c_address
             .or(desc.sensor.i2c_address)
             .ok_or_else(|| NativeError::InvalidConfig("no I2C address".into()))?;
-        let width = if desc.sensor.address_bits == 8 {
-            AddrWidth::Bits8
+        let width = AddressWidth::from_bits(desc.sensor.address_bits).ok_or_else(|| {
+            NativeError::InvalidConfig("register addresses of 8 or 16 bits".into())
+        })?;
+        let address = u8::try_from(addr)
+            .ok()
+            .filter(|a| *a <= 0x7f)
+            .ok_or_else(|| NativeError::InvalidConfig(format!("I2C address {addr:#x}")))?;
+        // Claimed with I2C_SLAVE, never forced: an address a kernel driver owns fails (EBUSY).
+        let mut i2c = I2cBus::open(bus).step(&format!("open I2C bus {bus}"))?;
+        i2c.claim(u16::from(address))
+            .step(&format!("claim I2C {bus}-{addr:04x}"))?;
+        let burst = if desc.sensor.burst_writes {
+            styx_sensor::MAX_BURST
         } else {
-            AddrWidth::Bits16
+            1
         };
-        let dev = I2cDevice::open(bus, addr, width).step(&format!("claim I2C {bus}-{addr:04x}"))?;
-        let address = u8::try_from(addr).unwrap_or(u8::MAX);
-        let regbus = I2cRegisterBus::new(dev, address, desc.sensor.address_bits)
-            .step("register bus")?
-            .with_bursts(desc.sensor.burst_writes);
+        let regbus = I2cRegisterBus::new(i2c, address, width).with_bursts(burst);
         let supplies: Vec<&str> = [&desc.sequences.power_up, &desc.sequences.power_down]
             .into_iter()
             .flatten()

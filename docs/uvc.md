@@ -44,7 +44,7 @@ PROBE / COMMIT                 format, frame and interval → dwMaxPayloadTransf
 payloads → frames              header parse (FID, EOF, PTS, SCR, STI, ERR), assembly into
                                pooled buffers (one copy, as uvcvideo), handed out as is
 clock                          bus time of every packet; SCR → device clock line; PTS → host
-hotplug                        kernel uevents (netlink) → sysfs rescan → added / removed /
+hotplug                        kernel uevents (netlink, lemnos_linux::uevent) → sysfs rescan → added / removed /
                                drivers changed
 ```
 

@@ -1,6 +1,7 @@
 //! Safe Rust interfaces to the Linux kernel's camera devices, with no C libraries: V4L2 video
-//! nodes, the media controller, V4L2 subdevices, V4L2 events, dma-heaps, and the buses a
-//! userspace sensor driver needs (I²C, GPIO, the Styx sensor bridge).
+//! nodes, the media controller, V4L2 subdevices, V4L2 events, dma-heaps, the Styx sensor bridge
+//! and usbfs. Generic buses (I²C, GPIO), embedded-hal over them and kernel uevents are Lemnos's
+//! (`lemnos-linux`).
 //!
 //! Every device type owns its file descriptor and implements [`std::os::fd::AsFd`], so an async
 //! layer can register it with any reactor. Devices are opened non-blocking: dequeue calls return
@@ -25,7 +26,6 @@ mod ioctl;
 mod mapping;
 pub mod media;
 pub mod subdev;
-pub mod uevent;
 pub mod usbfs;
 pub mod v4l2;
 

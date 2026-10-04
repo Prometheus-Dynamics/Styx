@@ -20,16 +20,16 @@ real MCU hardware.
 
 | Crate | Without `std` | Needs `std` |
 |---|---|---|
-| `styx-hal` | everything (no `alloc` either): power sequencing, DMA memory, the receiver, the lens actuator, `BoardPins`, `StaticDma` | `StdDelay`, `Send + Sync` on `SensorStart`, the `mock` platform |
+| `styx-hal` | everything (no `alloc` either): power sequencing, DMA memory, the receiver, the lens actuator, `BoardPins`, `StaticDma` | `Send + Sync` on `SensorStart`, the `mock` platform |
 | `styx-core-rs` | formats (`FourCc`, `MediaFormat`, layouts), plane layouts and their math (`PlaneLayout`, `plane_layout_from_dims`, `FrameAllocation`, `FrameValidationError`), plane views, frame metadata (`FrameMeta`, `NativeFrameMeta`, `FrameTiming`, `CaptureInstant`, ...), requirements (`FrameRect`, ...), controls (`ControlId`, `ControlValue`, descriptors), the SIMD row kernels | `FrameLease`, `BufferPool` and memfd / dma-buf backings, queues, transforms, `metrics`, clocks (`TimestampClock::now_ns` is `None` without std), `async` (tokio), `schema` (utoipa) |
 | `styx-algo` | every algorithm (AGC with flicker avoidance and deflicker, AWB, ALSC, CCM, contrast, denoise, black level, lux, AF), `Pipeline`, the tuning model, `Tuning::from_toml_str` / `to_toml_string`, Raspberry Pi JSON in and out, the simulator, `WarmStart` | `Tuning::load` (paths), `replay` (JSON Lines over `std::io`) |
 | `styx-softisp` | every kernel, `SoftIsp` on the calling thread (all outputs, statistics, both arithmetics) | `SoftIsp::with_threads` (the helper thread pool); run-time CPU feature detection |
-| `styx-sensor` | descriptions from strings or compiled (`from_postcard`, feature `postcard`), timing, gain models, the control scheduler, embedded data, lenses and VCM formats, PDAF decoding, kernel-sensor fallback descriptions, `SensorDriver` / `AsyncSensorDriver` over `I2cRegisters` / `SpiRegisters` (any embedded-hal bus) and `SensorPins` | `from_file`, `NoPins`, the `build` helper (a build-dependency) |
+| `styx-sensor` | descriptions from strings or compiled (`from_postcard`, feature `postcard`), timing, gain models, the control scheduler, embedded data, lenses (description and schedule; the VCM drivers are `lemnos-drivers-vcm`), PDAF decoding, kernel-sensor fallback descriptions, `SensorDriver` / `AsyncSensorDriver` over Lemnos's `I2cRegisters` / `SpiRegisters` (any embedded-hal bus) and `SensorPins` | `from_file`, `NoPins`, the `build` helper (a build-dependency) |
 | `styx-pisp` | uAPI layouts, front end and back end config builders, back end tiling, statistics decoding | `device` (the kernel nodes) |
 | `styx-dng` | the writer and the reader (in memory) | `DngError::Io` |
 
-Extra dependencies without `std`: `libm` (float maths, pure Rust), and `toml`'s own `no_std`
-build for TOML. `serde`, `serde_json` (std only, for `replay`), `thiserror` 2 and `smallvec`
+Extra dependencies without `std`: `libm` (float maths, pure Rust), `toml`'s own `no_std`
+build for TOML, and Lemnos's `no_std` crates (`lemnos-hal`, `lemnos-drivers-vcm`: no `alloc`). `serde`, `serde_json` (std only, for `replay`), `thiserror` 2 and `smallvec`
 are used without their `std` features.
 
 ### Targets
@@ -73,27 +73,32 @@ paths (libm, compile-time SIMD selection) are exercised, not only compiled.
 ## The hardware layer (`styx-hal`)
 
 `styx-hal` holds the camera-specific hardware traits, `no_std` and without `alloc`. The bus
-vocabulary is embedded-hal 1.0 and embedded-hal-async 1.0, used directly: generic I²C, SPI,
-GPIO, delay and clock work is the platform layer's (Lemnos, a chip HAL, `styx-kernel` for now),
-not Styx's.
+vocabulary is embedded-hal 1.0 and embedded-hal-async 1.0, used directly, and Lemnos 2.0
+(`lemnos-hal`: register maps over I²C/SPI, regulators, clock outputs, portable error kinds):
+generic I²C, SPI, GPIO, delay, supply and clock work is Lemnos's (`lemnos-linux` on Linux, a
+chip HAL on microcontrollers), not Styx's.
 
 | Piece | What |
 |---|---|
-| `SensorPins` / `AsyncSensorPins` | a sensor's power sequence by role (GPIO lines, the input clock, supplies) with an embedded-hal `DelayNs` (the delay is required: no `std::thread::sleep`); `BoardPins` builds them from embedded-hal `OutputPin`s, a `ClockEnable` and a delay |
+| `SensorPins` / `AsyncSensorPins` | a sensor's power sequence by role (GPIO lines, the input clock, supplies) with an embedded-hal `DelayNs` (the delay is required: no `std::thread::sleep`); `BoardPins` builds them from embedded-hal `OutputPin`s, a Lemnos `ClockOutput` (`FixedClock`, a PWM or PLL output) and a delay |
 | `DmaMemory` / `DmaBuffer` | buffers devices fill: CPU view, cache maintenance (`begin_cpu`/`end_cpu`), device address, export handle; `StaticDma` carves 32-byte-aligned buffers from a linker-placed region |
 | `Receiver` | the CSI-2 or parallel receiver: configure, queue, start/stop with a `SensorStart`, frame starts and filled buffers on separate wakers (`poll_sync`, `poll_done`) with non-blocking `try_` twins |
 | `LensActuator` / `AsyncLensActuator`, `NoLens` | focus lenses that are not a plain register device |
-| `ErrorKind`, `HalError` | what kind of failure an implementation's own error is (`Nack`, `NotFound`, `Disconnected`, ...), plus a platform code |
+| `ErrorKind`, `HalError` | what kind of failure an implementation's own error is (`Nack`, `NotFound`, `Disconnected`, ...), plus a platform code; Lemnos's `ErrorKind` converts into it (and is a `HalError`) |
 | `Blocking<T>` | a blocking implementation used through the async traits (its futures are ready at once) |
 | `mock` (feature) | an I²C sensor model (blocking and async, can really suspend and stop answering), recording pins and delay, a receiver with injected events and faults, heap DMA memory, a test `block_on` |
 
-Sensor registers are a thin layer over a bus: `styx_sensor::I2cRegisters<I>` over any
-embedded-hal `I2c` (one transfer per register write, bursts of consecutive registers when the
-description allows them, stack buffers), `SpiRegisters<S>` over any `SpiDevice`; both are
-`RegisterBus` over a blocking bus and `AsyncRegisterBus` over an async one. On Linux
-`styx-kernel`'s `I2cDevice` implements embedded-hal's `I2c` (and a requested GPIO line its
-`OutputPin`), so the native stack runs on the same code (`styx_native::regbus::I2cRegisterBus`
-is `I2cRegisters<I2cDevice>`).
+Sensor registers are Lemnos's register maps: `I2cRegisters<I>` over any embedded-hal `I2c`
+(one transfer per register write, bursts of consecutive registers when the description allows
+them, stack buffers), `SpiRegisters<S>` over any `SpiDevice` (`lemnos_hal::register`,
+re-exported by `styx-sensor`). `styx-sensor` makes them the driver's `RegisterBus` (blocking)
+and `AsyncRegisterBus` (async); `Registers<R>` does the same for any other Lemnos register map,
+and `SensorDescription::i2c_registers` builds one from a description. The driver's trait adds
+only what is camera-specific: a kernel driver's V4L2 controls (`set_controls`) and errors as
+`BusError`. On Linux, `lemnos_linux::hal::I2cBus` is the embedded-hal `I2c` over i2c-dev (each
+address claimed with `I2C_SLAVE`, never forced; no allocation per transfer) and `GpioLine` an
+`OutputPin` over GPIO uAPI v2, so the native stack runs on the same code
+(`styx_native::regbus::I2cRegisterBus` is `I2cRegisters<I2cBus>`).
 
 ### Async sensor driver
 
@@ -156,9 +161,12 @@ make zero allocations.
 - **Threads.** None: `SoftIsp` runs on the calling thread; the sensor driver and the control
   scheduler are plain state machines the caller steps per frame.
 - **Errors.** Every error type implements `core::error::Error`. `RegisterBus` and
-  `SensorPins` return a `BusError` (a `BusErrorKind` and a message): with `std`,
-  `std::io::Error` converts to it and back without loss (errno, message and wrapped errors
-  survive), so implementations over Linux devices use `?` as before.
+  `SensorPins` return a `BusError` (a `BusErrorKind`, which is Lemnos's `ErrorKind`, a
+  message and a platform code): with `std`, `std::io::Error` converts to it and back without
+  loss (errno, message and wrapped errors survive), so implementations over Linux devices use
+  `?` as before. Lemnos register errors convert with `BusError::from_register` (Lemnos's
+  classification; the errno when the bus error is an `io::Error`, as
+  `styx_native::sensor_bus::i2c_error` makes it for i2c-dev).
 - **Collections.** `alloc`'s `Vec`, `String`, `BTreeMap`, `VecDeque`; no `HashMap` was in these
   crates.
 
@@ -216,3 +224,33 @@ which x86 never runs in a pipeline), compiles to identical instructions before a
 - New: `AsyncRegisterBus`, `AsyncSensorDriver`, `I2cRegisters`, `SpiRegisters`,
   `SensorDriver::read_register`, `SensorDescription::{from_postcard, to_postcard}`,
   `include_description!`, `styx_sensor::build`.
+
+## API changes with Lemnos 2.0
+
+Styx's generic hardware code moved to Lemnos (`docs/portability-design.md`, "Moved to
+Lemnos"); Styx depends on `lemnos-hal`, `lemnos-linux` and `lemnos-drivers-vcm`.
+
+- `styx_sensor::{I2cRegisters, SpiRegisters}` are Lemnos's (`lemnos_hal::register`):
+  `I2cRegisters::new(i2c, address, AddressWidth::Bits16)` (infallible; the width is an
+  `AddressWidth`), `with_bursts(max_bytes)` (was `with_bursts(bool)`; Styx's sensors use
+  `styx_sensor::MAX_BURST`, 32), `i2c()`/`i2c_mut()`/`release()` (were
+  `inner()`/`inner_mut()`/`into_inner()`); `SpiRegisters::new(spi, width)` with
+  `with_flags(read, write)` (was a `read_flag` argument). `read_bytewise` is a free function.
+  `SensorDescription::i2c_registers(i2c)` builds the sensor's map from its description.
+- `RegWrite` is `lemnos_hal::RegWrite` (same fields; `RegWrite::new(address, bytes, value)`,
+  `byte`, `word`); it has no `Display`: `styx_sensor::show_write(&w)`. Compiled descriptions
+  are unchanged on the wire.
+- `BusErrorKind` is `lemnos_hal::ErrorKind`: `TimedOut` is `Timeout`, `Other` is `Failed`, and
+  `Busy`, `PermissionDenied`, `Unavailable`, `Overrun` exist. `BusError::from_register`,
+  `with_code` are new; `From<io::Error>` classifies by errno (`EREMOTEIO` is `Nack`).
+- Lens: `VcmChip` / `VcmFormat` / `VcmI2c` stay as the description's types; the command
+  formats and `encode` are `lemnos-drivers-vcm`'s (`VcmI2c::with_format`,
+  `VcmFormat::with_lemnos`, `VcmI2c::max_position`); a custom format has at most
+  `MAX_VCM_WRITES` power-up and power-down writes. `styx_native::lens::I2cVcm` drives
+  `lemnos_drivers_vcm::Vcm` over `I2cBus`.
+- `styx_hal`: `ClockEnable` is gone (`BoardPins` takes a `lemnos_hal::ClockOutput`; `NoClock`
+  implements it); `StdDelay` is gone (`lemnos_linux::hal::StdDelay`); `ErrorKind` gains
+  `PermissionDenied` and converts from and into `lemnos_hal::ErrorKind`; `styx_hal::lemnos_hal`
+  is re-exported.
+- `styx-kernel`: `bus::{i2c, gpio, eh}` and `uevent` are gone (`lemnos_linux::hal::{I2cBus,
+  GpioChip, GpioLine}`, `lemnos_linux::uevent`); `bus` is the sensor bridge only.

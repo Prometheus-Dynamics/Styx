@@ -2,14 +2,13 @@
 name = "styx-kernel"
 version.workspace = true
 edition.workspace = true
-description = "Safe Rust interfaces to the Linux kernel's camera devices: V4L2, media controller, subdevices, I2C, GPIO and dma-heaps."
+description = "Safe Rust interfaces to the Linux kernel's camera devices: V4L2, media controller, subdevices, dma-heaps, the Styx sensor bridge and usbfs."
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-embedded-hal.workspace = true
 libc.workspace = true
 
 [lints]

@@ -9,8 +9,8 @@ use std::time::Duration;
 use styx_hal::mock::{I2cMessage, MockDelay, MockI2c, MockPin, block_on};
 use styx_hal::{Blocking, BoardPins, Line};
 use styx_sensor::{
-    AsyncSensorDriver, ControlRequest, I2cRegisters, MockBus, MockPins, PinOp, SensorDescription,
-    SensorDriver, SensorError,
+    AddressWidth, AsyncSensorDriver, ControlRequest, I2cRegisters, MAX_BURST, MockBus, MockPins,
+    PinOp, SensorDescription, SensorDriver, SensorError,
 };
 
 const OV9782: &str = include_str!("../sensors/ov9782.toml");
@@ -33,9 +33,11 @@ fn exposure() -> ControlRequest {
 
 /// Bring-up, start, three frames with a request, stop, power down: the blocking driver.
 fn run_blocking(i2c: MockI2c, bursts: bool) -> Vec<PinOp> {
-    let bus = I2cRegisters::new(i2c, 0x60, 16)
-        .unwrap()
-        .with_bursts(bursts);
+    let bus = I2cRegisters::new(i2c, 0x60, AddressWidth::Bits16).with_bursts(if bursts {
+        MAX_BURST
+    } else {
+        1
+    });
     let mut d = SensorDriver::new(desc(), bus, MockPins::with_roles(&["avdd", "xvclk"]));
     d.power_up().unwrap();
     assert_eq!(d.verify_chip_id().unwrap(), 0x9782);
@@ -56,9 +58,11 @@ fn run_blocking(i2c: MockI2c, bursts: bool) -> Vec<PinOp> {
 
 /// The same steps on the async driver.
 async fn run_async(i2c: MockI2c, bursts: bool) -> Vec<PinOp> {
-    let bus = I2cRegisters::new(i2c, 0x60, 16)
-        .unwrap()
-        .with_bursts(bursts);
+    let bus = I2cRegisters::new(i2c, 0x60, AddressWidth::Bits16).with_bursts(if bursts {
+        MAX_BURST
+    } else {
+        1
+    });
     let pins = Blocking(MockPins::with_roles(&["avdd", "xvclk"]));
     let mut d = AsyncSensorDriver::new(desc(), bus, pins);
     d.power_up().await.unwrap();
@@ -139,7 +143,7 @@ fn a_sensor_that_stops_answering_fails_the_async_frame_start() {
     let i2c = sensor().with_pending_polls(1);
     let probe = i2c.clone();
     block_on(async move {
-        let bus = I2cRegisters::new(i2c, 0x60, 16).unwrap();
+        let bus = I2cRegisters::new(i2c, 0x60, AddressWidth::Bits16);
         let mut d = AsyncSensorDriver::new(desc(), bus, Blocking(MockPins::default()));
         d.power_up().await.unwrap();
         d.init().await.unwrap();
@@ -176,7 +180,7 @@ fn board_pins_with_an_async_delay_power_the_sensor() {
         ],
         delay.clone(),
     );
-    let bus = I2cRegisters::new(sensor().with_pending_polls(1), 0x60, 16).unwrap();
+    let bus = I2cRegisters::new(sensor().with_pending_polls(1), 0x60, AddressWidth::Bits16);
     block_on(async move {
         let mut d = AsyncSensorDriver::new(desc(), bus, pins);
         d.power_up().await.unwrap();
