@@ -1,11 +1,11 @@
-//! Cameras coming and going: kernel uevents (netlink) trigger a sysfs rescan, and the
-//! difference is reported. Without a netlink socket (some containers) it rescans on every
+//! Cameras coming and going: kernel uevents (netlink, through Lemnos's `lemnos_linux::uevent`)
+//! trigger a sysfs rescan, and the difference is reported. Without a netlink socket (some containers) it rescans on every
 //! poll instead.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use styx_kernel::uevent::UeventSocket;
+use lemnos_linux::uevent::{UeventRecv, UeventSocket};
 
 use crate::sysfs::{self, UsbCameraInfo};
 
@@ -73,20 +73,20 @@ impl Hotplug {
     /// Waits up to `timeout` for changes and returns them (empty on a timeout).
     pub fn poll(&mut self, timeout: Duration) -> Vec<HotplugEvent> {
         let deadline = Instant::now() + timeout;
-        let Some(sock) = &self.socket else {
+        let Some(sock) = &mut self.socket else {
             std::thread::sleep(timeout);
             return self.rescan();
         };
         let mut relevant = false;
         loop {
             match sock.recv() {
-                Ok(Some(ev)) => {
-                    relevant |= ev.get("SUBSYSTEM") == Some("usb");
+                Ok(Some(UeventRecv::Event(ev))) => {
+                    relevant |= ev.subsystem() == Some("usb");
                     continue;
                 }
                 Ok(None) => {}
-                // Overrun: something happened, rescan.
-                Err(_) => relevant = true,
+                // Overrun (events lost) or a failed receive: something happened, rescan.
+                Ok(Some(UeventRecv::Overflow)) | Err(_) => relevant = true,
             }
             let now = Instant::now();
             let wait = if relevant {
@@ -97,7 +97,7 @@ impl Hotplug {
                 return Vec::new();
             };
             match sock.wait(Some(wait)) {
-                Ok(r) if !r.is_empty() => continue,
+                Ok(true) => continue,
                 _ if relevant => return self.rescan(),
                 _ => {}
             }
