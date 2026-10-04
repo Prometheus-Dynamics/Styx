@@ -9,13 +9,17 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
+default = ["std"]
+# Float maths from std. Without it the crate (config builders,
+# back end tiling, statistics decoding) is `no_std` + `alloc`; docs/portability.md.
+std = []
 # Drive the front end (`rp1-cfe`) and back end (`pispbe`) device nodes through styx-kernel.
-device = ["dep:styx-kernel"]
+device = ["std", "dep:styx-kernel"]
 
 [dependencies]
 bytemuck = { version = "1.25", features = ["derive", "min_const_generics", "extern_crate_alloc"] }
 styx-kernel = { workspace = true, optional = true }
+libm.workspace = true
 
 [lints]
 workspace = true

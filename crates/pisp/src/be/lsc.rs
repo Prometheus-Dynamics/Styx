@@ -4,6 +4,11 @@
 //! the Raspberry Pi PiSP IPA, libcamera `src/ipa/rpi/pisp/pisp.cpp` (`packLscLut`,
 //! `resampleTable`; BSD-2-Clause, Copyright (C) 2023 Raspberry Pi Ltd), rewritten in Rust.
 
+use alloc::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use crate::uapi::{BE_LSC_LUT_SIZE, BeLscConfig};
 
 /// Gains per vertex of the 33x33 grid, `[channel (R, G, B)][row][column]`.

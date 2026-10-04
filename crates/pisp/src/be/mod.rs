@@ -12,6 +12,9 @@
 //! on every [`BackEnd::prepare`] (no dirty tracking) and the tiling is recomputed each time
 //! (it takes microseconds).
 
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 pub mod defaults;
 pub mod lsc;
 mod prepare;

@@ -1,7 +1,9 @@
 //! Tiling types (libpisp `tiling/types.hpp`, `pisp_tiling.hpp`; BSD-2-Clause, Copyright (C)
 //! 2021 - 2023, Raspberry Pi Ltd).
 
-use std::fmt;
+use alloc::string::String;
+
+use core::fmt;
 
 /// Direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,7 +45,7 @@ pub struct Crop {
     pub end: i32,
 }
 
-impl std::ops::Add for Crop {
+impl core::ops::Add for Crop {
     type Output = Crop;
     fn add(self, o: Crop) -> Crop {
         Crop {
@@ -203,9 +205,9 @@ impl fmt::Display for TilingError {
     }
 }
 
-impl std::error::Error for TilingError {}
+impl core::error::Error for TilingError {}
 
-pub(super) type Result<T> = std::result::Result<T, TilingError>;
+pub(super) type Result<T> = core::result::Result<T, TilingError>;
 
 pub(super) fn check(cond: bool, what: &str) -> Result<()> {
     if cond {

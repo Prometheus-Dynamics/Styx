@@ -4,7 +4,12 @@
 //! Ported from libpisp `src/libpisp/backend/backend_prepare.cpp` (BSD-2-Clause, Copyright
 //! (C) 2021 - 2023, Raspberry Pi Ltd).
 
-use std::fmt;
+use alloc::{boxed::Box, format, string::String, string::ToString};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
+use core::fmt;
 
 use super::tiling::{self, Interval, Interval2, Length2, TilingConfig};
 use super::{BackEnd, defaults};
@@ -29,7 +34,7 @@ impl fmt::Display for PrepareError {
     }
 }
 
-impl std::error::Error for PrepareError {}
+impl core::error::Error for PrepareError {}
 
 impl From<tiling::TilingError> for PrepareError {
     fn from(e: tiling::TilingError) -> Self {
@@ -37,7 +42,7 @@ impl From<tiling::TilingError> for PrepareError {
     }
 }
 
-type Result<T> = std::result::Result<T, PrepareError>;
+type Result<T> = core::result::Result<T, PrepareError>;
 
 fn fail<T>(msg: impl Into<String>) -> Result<T> {
     Err(PrepareError(msg.into()))

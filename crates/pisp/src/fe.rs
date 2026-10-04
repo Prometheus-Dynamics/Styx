@@ -10,6 +10,11 @@
 //! (BSD-2-Clause, Copyright (C) 2021 - 2023, Raspberry Pi Ltd), ported to Rust. One libpisp
 //! slip is not carried over: `fixOutputSize` writes the crop height into the width.
 
+use alloc::{format, string::String};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use crate::format::compute_stride_align;
 use crate::uapi::*;
 

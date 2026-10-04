@@ -141,6 +141,6 @@ float_impl!(
     atan2, hypot, fma
 );
 float_impl!(
-    f32, sqrtf, roundf, roundevenf, floorf, ceilf, truncf, powf, expf, exp2f, logf, log2f,
-    log10f, sinf, cosf, atan2f, hypotf, fmaf
+    f32, sqrtf, roundf, roundevenf, floorf, ceilf, truncf, powf, expf, exp2f, logf, log2f, log10f,
+    sinf, cosf, atan2f, hypotf, fmaf
 );

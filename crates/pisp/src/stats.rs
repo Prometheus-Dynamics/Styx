@@ -1,5 +1,10 @@
 //! Front end statistics decoded into plain Rust values.
 
+use alloc::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use crate::uapi::*;
 
 /// One white balance zone: channel sums over the pixels counted.
@@ -68,8 +73,8 @@ pub struct Statistics {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BadStatsLength(pub usize);
 
-impl std::fmt::Display for BadStatsLength {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for BadStatsLength {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "statistics buffer is {} bytes, expected at least {}",
@@ -79,7 +84,7 @@ impl std::fmt::Display for BadStatsLength {
     }
 }
 
-impl std::error::Error for BadStatsLength {}
+impl core::error::Error for BadStatsLength {}
 
 fn awb(z: &RawAwbZone) -> AwbZone {
     AwbZone {

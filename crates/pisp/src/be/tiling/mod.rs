@@ -10,6 +10,8 @@
 //! pipeline, push the widest input end down, trim back up, then push the crops down) is
 //! unchanged. See libpisp's `tiling/README.txt`.
 
+use alloc::vec::Vec;
+
 mod types;
 
 pub use types::*;
