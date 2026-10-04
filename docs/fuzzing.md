@@ -108,5 +108,30 @@ The first runs (2026-10, after which every target ran clean for its time) found:
   panics) or huge steps, PiSP statistics zone counts, luma rows and crops with absurd strides,
   raw recording indexes (zero height, huge strides, offsets past the end, no frames).
 
-Miri (`cargo +nightly miri test -p styx-core-rs --no-default-features --lib`, queue and SIMD
-scalar tests) found nothing.
+The runs, on a 24-core x86-64 host shared with other builds (ASan, overflow checks):
+
+| Target | Time | Inputs run |
+|---|---|---|
+| `uvc_descriptors` | 30 min | 22.2 M |
+| `replay_reader` | 30 min | 4.5 M |
+| `ipc_messages` | 30 min twice (request wire format 3, then 4) | 95.5 M, 323 M |
+| `ipc_request` | 30 min | 1.4 M |
+| `frame_socket_message` | 30 min | 15.3 M |
+| `core_frame_layout` | 30 min | 34.1 M |
+| `codec_raw` | 30 min | 1.8 M |
+| `uvc_stream` | 15 min | 4.9 M |
+| `sensor_description` | 15 min | 0.75 M |
+| `sensor_embedded` | 15 min | 5.1 M |
+| `sensor_subdev` | 15 min | 3.3 M |
+| `algo_tuning` | 15 min | 0.28 M |
+| `pisp_stats` | 15 min | 2.4 M |
+| `kernel_messages` | 15 min | 6.2 M |
+| `mjpeg_decode` | 15 min twice | 52 k |
+| `pipeline_rawrec` | 15 min | 34.4 M |
+
+One `mjpeg_decode` input timed out once under that load (22 s); alone it decodes (to an error)
+in microseconds in every decoder, and the second run was clean.
+
+Miri (`cargo +nightly miri test -p styx-core-rs --no-default-features --lib`: the queue, SIMD
+(scalar), buffer pool, frame layout and view, format and transform tests, 59 in all; the memfd
+and dma-buf tests need syscalls Miri does not have) found nothing.

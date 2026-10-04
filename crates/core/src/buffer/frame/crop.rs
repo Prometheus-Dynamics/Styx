@@ -36,7 +36,7 @@ impl FrameLease {
             .checked_mul(layout.stride)
             .and_then(|o| o.checked_add(x))
             .and_then(|o| o.checked_add(layout.offset))
-            .ok_or(overflow.clone())?;
+            .ok_or(overflow)?;
         let len = layout
             .stride
             .checked_mul(h - 1)
