@@ -1,12 +1,18 @@
 //! How the PiSP path is set up.
 
 use styx_pisp::device::{BeFormat, BeOutputSetup, OutputMemory};
+use styx_pisp::uapi::BeCropConfig;
 
 /// How the PiSP path is set up.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PispOptions {
     /// Back end outputs: format and size (output 1 has the downscaler).
     pub outputs: [Option<BeOutputSetup>; 2],
+    /// Each output's crop of the sensor frame (`None`: all of it). An output without a size of
+    /// its own is the crop at full resolution, written into the top left of its buffer (rows
+    /// keep the buffer's stride; the chroma plane stays where the buffer's size puts it).
+    /// Changeable while running ([`super::PispPipeline::set_output_crop`]).
+    pub crop: [Option<BeCropConfig>; 2],
     /// Front end buffers per queue (raw frames, statistics, configs).
     pub fe_buffers: u32,
     /// Back end buffers per output.
@@ -47,6 +53,7 @@ impl PispOptions {
                     height: height / 2,
                 }),
             ],
+            crop: [None; 2],
             fe_buffers: 6,
             be_buffers: 6,
             be_group: 0,

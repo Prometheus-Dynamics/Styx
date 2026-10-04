@@ -34,6 +34,7 @@ const TAG_END: u8 = 0;
 const TAG_FRAME: u8 = 1;
 const COMPANION_PYRAMID: u8 = 1;
 const COMPANION_SCALED: u8 = 2;
+const COMPANION_OVERVIEW: u8 = 3;
 const PAYLOAD_VISIBLE: u8 = 0;
 const PAYLOAD_BITSTREAM: u8 = 1;
 
@@ -162,6 +163,7 @@ fn write_body(w: &mut impl Write, frame: &FrameLease) -> Result<(), ReplayError>
         match kind {
             CompanionKind::Pyramid { level } => w.write_all(&[COMPANION_PYRAMID, level])?,
             CompanionKind::Scaled => w.write_all(&[COMPANION_SCALED, 0])?,
+            CompanionKind::Overview => w.write_all(&[COMPANION_OVERVIEW, 0])?,
         }
         write_body(w, companion)?;
     }
@@ -215,6 +217,7 @@ fn read_body(r: &mut impl Read, offset: u64, top_level: bool) -> Result<FrameLea
         let kind = match (read_u8(r)?, read_u8(r)?) {
             (COMPANION_PYRAMID, level) => CompanionKind::Pyramid { level },
             (COMPANION_SCALED, _) => CompanionKind::Scaled,
+            (COMPANION_OVERVIEW, _) => CompanionKind::Overview,
             _ => return Err(ReplayError::Corrupt("unknown companion kind")),
         };
         let companion = read_body(r, offset, false)?;

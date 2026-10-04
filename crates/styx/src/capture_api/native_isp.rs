@@ -8,12 +8,14 @@
 //! end when the lease drops); software ISP frames are written into recycled heap buffers.
 
 mod af_controls;
+mod crop_control;
 mod loop_controls;
 mod pisp_worker;
 mod still_process;
 mod still_runner;
 
 pub(crate) use af_controls::metas as af_metas;
+pub(crate) use crop_control::meta as crop_meta;
 pub(crate) use loop_controls::LoopControls;
 pub(crate) use still_runner::StillJob;
 
@@ -350,6 +352,15 @@ pub(super) fn start_processed(
     ));
     loop_controls.af.set_output(w, h);
     loop_controls.af.set_lens(camera.info().lens.is_some());
+    // The PiSP's main output at the mode's size can be a crop of the frame (`OUTPUT_CROP`).
+    if kind == IspKind::Pisp
+        && let Ok((specs, _)) = pisp_worker::output_specs(&mode, &config.backends.native)
+        && specs[0].is_some_and(|s| (s.width, s.height) == (w, h))
+    {
+        loop_controls
+            .crop
+            .enable((w, h), config.backends.native.crop);
+    }
     for (id, value) in initial {
         loop_controls
             .apply(*id, value)
@@ -423,6 +434,7 @@ pub(super) fn start_processed(
                     specs,
                     second_kind,
                     strides,
+                    crop: None,
                     tx,
                     owns_queue,
                     stop: stop_rx,

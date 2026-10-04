@@ -1,6 +1,6 @@
 //! The ISP outputs of a native camera's processed capture.
 
-use styx_core::prelude::FourCc;
+use styx_core::prelude::{FourCc, FrameRect};
 
 use super::StyxConfig;
 
@@ -105,6 +105,17 @@ pub struct NativeIspConfig {
     /// output's size, in its format (1 = ½, 2 = ¼, 3 = ⅛; 0, the default, off), read with
     /// `FrameLease::pyramid_level`. Takes the second output: `second_output` is then ignored.
     pub pyramid_level: u8,
+    /// PiSP, with the main output at the mode's size: deliver this region of the frame at
+    /// full resolution from the start (rounded out to even pixels, at least 16x16). The
+    /// `OUTPUT_CROP` control changes it while running; frames carry it as `FrameMeta::crop`.
+    /// `None` (default): the whole frame.
+    pub crop: Option<FrameRect>,
+    /// PiSP: attach the whole frame scaled to this size, in the main output's format, to every
+    /// frame as a `CompanionKind::Overview` companion (`FrameLease::overview`), from the second
+    /// output; with [`Self::crop`], a low-resolution view of everything around the region.
+    /// Takes the second output: `pyramid_level` and `second_output` are then ignored. `None`
+    /// (default): off.
+    pub overview: Option<(u32, u32)>,
     /// Use the ISP driver's own buffers, which the CPU reads uncached (the Y plane of a
     /// 1280x800 frame in 1.9 ms on the CM5). `false` (default): cached dma-heap buffers, read
     /// at memory speed (cache maintenance only when a frame's pixels are read). With the
@@ -145,6 +156,8 @@ impl Default for NativeIspConfig {
             output_format: None,
             second_output: None,
             pyramid_level: 0,
+            crop: None,
+            overview: None,
             driver_buffers: false,
             soft_threads: None,
             temporal_denoise: true,
@@ -222,6 +235,20 @@ impl StyxConfig {
     /// [`NativeIspConfig::pyramid_level`]).
     pub fn native_pyramid_level(mut self, level: u8) -> Self {
         self.backends.native.pyramid_level = level.min(3);
+        self
+    }
+
+    /// Deliver only `region` of the frame, at full resolution, from a native camera's ISP (see
+    /// [`NativeIspConfig::crop`]).
+    pub fn native_crop(mut self, region: FrameRect) -> Self {
+        self.backends.native.crop = Some(region);
+        self
+    }
+
+    /// Attach the whole frame at `width`x`height` to every frame from a native camera's second
+    /// ISP output (see [`NativeIspConfig::overview`]).
+    pub fn native_overview(mut self, width: u32, height: u32) -> Self {
+        self.backends.native.overview = Some((width, height));
         self
     }
 

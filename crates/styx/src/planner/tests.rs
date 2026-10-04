@@ -454,3 +454,71 @@ fn native_pisp_supplies_the_first_pyramid_level() {
     dev.backends[0].properties = vec![("isp".into(), "software".into())];
     assert!(plan_frames_with(&dev, &hardware, &registry()).is_err());
 }
+
+#[cfg(feature = "native")]
+#[test]
+fn native_pisp_crops_the_region_and_makes_the_overview() {
+    let mut dev = device(
+        BackendKind::Native,
+        BackendHandle::Native {
+            key: "bridge:/dev/v4l-subdev2".into(),
+        },
+        vec![
+            mode(FourCc::new(*b"pBAA"), 1280, 800, 30),
+            mode(FourCc::NV12, 1280, 800, 30),
+        ],
+    );
+    dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
+    let region = FrameRect::new(100, 50, 320, 200);
+    let tracker = Frames::gray().roi(region).overview(320, 200).pyramid(1);
+    let plan = plan_frames_with(&dev, &tracker, &registry()).unwrap();
+    let d = plan.delivered();
+    assert_eq!(d.roi, Some(RoiCrop::Isp), "{plan}");
+    assert_eq!((d.overview, d.hardware_overview), (Some((320, 200)), true));
+    assert!(d.unmet.is_empty(), "{:?}", d.unmet);
+    // The second output makes the overview: the pyramid (of the crop) is box-filtered.
+    assert_eq!(plan.isp_pyramid_level, None, "{plan}");
+    let config = plan.region_config(Default::default());
+    assert_eq!(config.backends.native.crop, Some(region));
+    assert_eq!(config.backends.native.overview, Some((320, 200)));
+    // Any format: the ISP crops NV12 too.
+    let nv12 = plan_frames_with(&dev, &Frames::nv12().roi(region), &registry()).unwrap();
+    assert_eq!(nv12.delivered().roi, Some(RoiCrop::Isp), "{nv12}");
+    assert_eq!(nv12.delivered().overview, None);
+    // Alone on a shared capture (a camera service's one client): still the ISP's, and the
+    // capture is set up for it.
+    let alone = plan_many_with(&dev, std::slice::from_ref(&tracker), &registry()).unwrap();
+    assert_eq!(alone.consumers[0].delivered().roi, Some(RoiCrop::Isp));
+    assert!(alone.setup_key().contains("region=Some"), "{alone}");
+    // Shared with another consumer: views of the frame, the uncropped frame as the overview.
+    let shared = plan_many_with(&dev, &[tracker.clone(), Frames::nv12()], &registry()).unwrap();
+    let d = shared.consumers[0].delivered();
+    assert_eq!(d.roi, Some(RoiCrop::View), "{shared}");
+    assert_eq!(
+        (d.overview, d.hardware_overview),
+        (Some((1280, 800)), false)
+    );
+    assert!(
+        d.unmet.contains(&Unmet::Overview {
+            wanted: (320, 200),
+            delivered: (1280, 800),
+        }),
+        "{:?}",
+        d.unmet
+    );
+    assert!(!shared.setup_key().contains("region=Some"), "{shared}");
+    // A hardware-only pyramid keeps the second output: the region is a view.
+    let pyramid = Frames::gray()
+        .roi(region)
+        .pyramid(1)
+        .pyramid_source(PyramidSource::HardwareOnly);
+    let plan = plan_frames_with(&dev, &pyramid, &registry()).unwrap();
+    assert_eq!(plan.delivered().roi, Some(RoiCrop::View), "{plan}");
+    assert_eq!(plan.isp_pyramid_level, Some(1));
+    // Without a PiSP, NV12 frames are not cropped: unmet.
+    dev.backends[0].properties = vec![("isp".into(), "software".into())];
+    let plan = plan_frames_with(&dev, &Frames::nv12().roi(region), &registry()).unwrap();
+    assert_eq!(plan.delivered().roi, None, "{plan}");
+    assert_eq!(plan.delivered().unmet, vec![Unmet::Roi]);
+    assert!(plan_frames_with(&dev, &Frames::nv12().roi(region).strict(), &registry()).is_err());
+}

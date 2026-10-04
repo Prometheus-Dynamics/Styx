@@ -161,7 +161,7 @@ impl McapRecorder {
             .companions()
             .filter_map(|(kind, companion)| match kind {
                 CompanionKind::Pyramid { level } => Some((level, companion)),
-                CompanionKind::Scaled => None,
+                CompanionKind::Scaled | CompanionKind::Overview => None,
             })
             .collect();
         let levels: Vec<u8> = pyramid.iter().map(|(level, _)| *level).collect();

@@ -20,7 +20,7 @@ use smallvec::SmallVec;
 use styx_capture::prelude::*;
 use styx_core::prelude::{
     BackendFrameMeta, CompanionKind, ExternalBacking, FrameBackingExport, FrameExportError,
-    FrameFdPlane, FrameResidency, TimestampClock,
+    FrameFdPlane, FrameRect, FrameResidency, TimestampClock,
 };
 use styx_core::queue::BoundedTx;
 use styx_kernel::Mapping;
@@ -28,6 +28,7 @@ use styx_kernel::dma_heap::{self, Access, DmaBuf};
 use styx_pipeline::PipelineError;
 use styx_pipeline::device::{PispFrame, PispPipeline};
 use styx_pisp::device::{BeFormat, BeOutputSetup};
+use styx_pisp::uapi::BeCropConfig;
 
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
@@ -88,6 +89,20 @@ pub(super) fn output_specs(
         height,
     };
     main.be_format()?;
+    if let Some((width, height)) = cfg.overview {
+        if cfg.pyramid_level > 0 || cfg.second_output.is_some() {
+            tracing::warn!(
+                backend = "native",
+                "pyramid and second output disabled: the overview uses the second output"
+            );
+        }
+        let overview = OutputSpec {
+            code: main.code,
+            width: width.clamp(16, res.width.get()) & !1,
+            height: height.clamp(16, res.height.get()) & !1,
+        };
+        return Ok(([Some(main), Some(overview)], CompanionKind::Overview));
+    }
     let level = cfg.pyramid_level.min(3);
     if level > 0 {
         if cfg.second_output.is_some() {
@@ -241,6 +256,8 @@ pub(super) struct Worker {
     /// What the second output is attached as.
     pub(super) second_kind: CompanionKind,
     pub(super) strides: [usize; 2],
+    /// The main output's crop the back end makes now (`OUTPUT_CROP`).
+    pub(super) crop: Option<FrameRect>,
     pub(super) tx: BoundedTx<FrameLease>,
     /// Whether `tx` was made for this capture (closed when it ends) or is the consumer's.
     pub(super) owns_queue: bool,
@@ -256,27 +273,39 @@ pub(super) struct Worker {
     pub(super) live: CaptureMetrics,
 }
 
+/// A lease of `buffer`, output `spec` of the frame `f`, or its `crop` at full resolution: the
+/// back end writes a crop into the top left of the buffer, its rows in the buffer's stride and
+/// the chroma plane where the buffer's height puts it.
+#[allow(clippy::too_many_arguments)]
 fn lease(
     spec: OutputSpec,
     stride: usize,
+    crop: Option<FrameRect>,
     buffer: BeBuffer,
     (output, index): (usize, u32),
     f: &PispFrame,
     returns: &mpsc::Sender<(usize, u32)>,
     live: &CaptureMetrics,
 ) -> FrameLease {
+    let (width, height) = crop.map_or((spec.width, spec.height), |c| (c.width, c.height));
     let in_buffer = layouts(spec.code, spec.height as usize, stride);
-    let planes = in_buffer.iter().map(|l| (l.offset, l.len)).collect();
+    let rows = |len: usize| len / spec.height as usize * height as usize;
+    let planes = in_buffer.iter().map(|l| (l.offset, rows(l.len))).collect();
     let plane_layouts = in_buffer
         .iter()
-        .map(|l| PlaneLayout { offset: 0, ..*l })
+        .map(|l| PlaneLayout {
+            offset: 0,
+            len: rows(l.len),
+            stride: l.stride,
+        })
         .collect();
-    let res = Resolution::new(spec.width, spec.height).expect("non-zero output size");
+    let res = Resolution::new(width, height).expect("non-zero output size");
     let format = MediaFormat::new(spec.code, res, ColorSpace::Srgb);
     let mut meta = FrameMeta::new(format, f.timestamp.as_nanos() as u64)
         .with_backend(BackendFrameMeta::Native(native_meta(f.sequence, &f.sensor)))
         .with_capture_instant(std::time::Instant::now());
     meta.clock = Some(TimestampClock::Monotonic);
+    meta.crop = crop;
     FrameLease::from_external(
         meta,
         plane_layouts,
@@ -289,6 +318,17 @@ fn lease(
             returns: returns.clone(),
         })),
     )
+}
+
+/// `rect` as the back end's crop config.
+fn be_crop(rect: FrameRect) -> BeCropConfig {
+    let side = |v: u32| u16::try_from(v).unwrap_or(u16::MAX);
+    BeCropConfig {
+        offset_x: side(rect.x),
+        offset_y: side(rect.y),
+        width: side(rect.width),
+        height: side(rect.height),
+    }
 }
 
 /// Runs the capture on its own thread until stopped or the queue closes.
@@ -321,6 +361,15 @@ pub(super) fn spawn(
                     p.controller().set_controls(c);
                 }
                 w.still.before_frame(&mut p);
+                if let Some(crop) = w.loop_controls.crop.take() {
+                    match p.set_output_crop(0, crop.map(be_crop)) {
+                        Ok(()) => w.crop = crop,
+                        Err(e) => {
+                            tracing::warn!(backend = "native", error = %e, "output crop refused");
+                            w.loop_controls.crop.revert(w.crop);
+                        }
+                    }
+                }
                 let mut f = match p.next(w.timeout) {
                     Ok(f) => f,
                     // Consumers hold every output buffer: this frame is dropped (never wait
@@ -363,8 +412,17 @@ pub(super) fn spawn(
                     };
                     match buffers.get(&p, &f, i) {
                         Ok(b) => {
-                            leases[i] =
-                                Some(lease(*spec, w.strides[i], b, (i, index), &f, &ret_tx, &w.live));
+                            let crop = if i == 0 { w.crop } else { None };
+                            leases[i] = Some(lease(
+                                *spec,
+                                w.strides[i],
+                                crop,
+                                b,
+                                (i, index),
+                                &f,
+                                &ret_tx,
+                                &w.live,
+                            ));
                         }
                         Err(e) => {
                             p.release_output(i, index);
@@ -466,7 +524,7 @@ mod tests {
         };
         let (tx, rx) = mpsc::channel();
         let live = CaptureMetrics::default();
-        let f = lease(spec, w, buffer(w, h), (0, 3), &frame(), &tx, &live);
+        let f = lease(spec, w, None, buffer(w, h), (0, 3), &frame(), &tx, &live);
         let planes = f.planes();
         assert_eq!(planes.len(), 2);
         assert!(planes[0].data().iter().all(|&v| v == 1));
@@ -489,6 +547,45 @@ mod tests {
         drop(planes);
         drop(f);
         assert_eq!(rx.try_recv().unwrap(), (0, 3));
+    }
+
+    /// A crop sits in the top left of the full-size buffer: the planes keep the buffer's stride
+    /// and the chroma plane its offset.
+    #[test]
+    fn cropped_leases_cover_the_crop_in_the_full_size_buffer() {
+        let (w, h) = (64, 32);
+        let spec = OutputSpec {
+            code: FourCc::NV12,
+            width: w as u32,
+            height: h as u32,
+        };
+        let (tx, _rx) = mpsc::channel();
+        let live = CaptureMetrics::default();
+        let crop = FrameRect::new(8, 4, 32, 16);
+        let f = lease(
+            spec,
+            w,
+            Some(crop),
+            buffer(w, h),
+            (0, 3),
+            &frame(),
+            &tx,
+            &live,
+        );
+        let res = f.meta().format.resolution;
+        assert_eq!((res.width.get(), res.height.get()), (32, 16));
+        assert_eq!(f.meta().crop, Some(crop));
+        assert_eq!(f.plane_strides().as_slice(), &[w, w]);
+        let planes = f.planes();
+        assert_eq!(planes[0].data().len(), w * 16);
+        assert!(planes[1].data().iter().all(|&v| v == 2));
+        let FrameBackingExport::DmabufPlanes { planes: fds } = f.export_backing().unwrap() else {
+            panic!("not a dma-buf export");
+        };
+        assert_eq!(
+            fds.iter().map(|p| (p.offset, p.len)).collect::<Vec<_>>(),
+            [(0, w * 16), (w * h, w * 8)]
+        );
     }
 
     #[test]
@@ -533,6 +630,16 @@ mod tests {
         };
         let (specs, kind) = output_specs(&mode, &pyramid).unwrap();
         assert_eq!(kind, CompanionKind::Pyramid { level: 1 });
+        // An overview takes the second output: the whole frame at its size, in the main format.
+        let overview = NativeIspConfig {
+            overview: Some((321, 200)),
+            pyramid_level: 1,
+            ..Default::default()
+        };
+        let (o, kind) = output_specs(&mode, &overview).unwrap();
+        assert_eq!(kind, CompanionKind::Overview);
+        let o = o[1].unwrap();
+        assert_eq!((o.width, o.height, o.code), (320, 200, FourCc::NV12));
         let s = specs[1].unwrap();
         assert_eq!((s.width, s.height, s.code), (640, 400, FourCc::NV12));
         let quarter = NativeIspConfig {

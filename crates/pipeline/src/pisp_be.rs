@@ -13,7 +13,7 @@ use alloc::format;
 
 use styx_algo::{LensShading, Pwl};
 use styx_pisp::be::BackEnd;
-use styx_pisp::uapi::{BeLscExtra, BeTilesConfig, ImageFormatConfig, bayer_enable};
+use styx_pisp::uapi::{BeCropConfig, BeLscExtra, BeTilesConfig, ImageFormatConfig, bayer_enable};
 
 use crate::error::{PipelineError, Result};
 use crate::isp::{IspSettings, be_lens_shading, gamma_points, level16};
@@ -96,6 +96,17 @@ impl BeConfigBuilder {
         self.tdn = true;
         self.tdn_last = None;
         self.fresh = true;
+    }
+
+    /// Output `i` cropped to `crop` of the input (`None`: all of it), from the next frame's
+    /// config on (a full prepare). Fails, changing nothing, if the back end cannot make it.
+    pub fn set_output_crop(&mut self, i: usize, crop: Option<BeCropConfig>) -> Result<()> {
+        let mut template = self.template.clone();
+        template.set_crop(i, crop.unwrap_or_default());
+        template.clone().prepare().map_err(config_error)?;
+        self.template = template;
+        self.fresh = true;
+        Ok(())
     }
 
     /// The temporal average starts over with the next frame.
@@ -410,5 +421,54 @@ mod tests {
         s.denoise = detail(0.0);
         b.update_frame(&s, 4.5).unwrap();
         assert_eq!(b.config().config.tdn.reset, 1);
+    }
+
+    /// A crop of output 0 at full resolution: the output is the crop's size in the buffer's
+    /// stride, output 1 still sees the whole frame, and a crop the back end cannot make
+    /// changes nothing.
+    #[test]
+    fn cropped_outputs_keep_their_stride() {
+        let mut b = BeConfigBuilder::new(template()).unwrap();
+        let s = IspSettings::from_params(&Params::default(), 0, 1.0);
+        b.update(&s).unwrap();
+        let stride = b.config().config.output_format[0].image.stride;
+        let crops = [
+            (0, 0, 1280, 800),
+            (640, 400, 320, 200),
+            (2, 2, 64, 32),
+            (1000, 600, 280, 200),
+        ];
+        for (x, y, w, h) in crops {
+            let crop = BeCropConfig {
+                offset_x: x,
+                offset_y: y,
+                width: w,
+                height: h,
+            };
+            let t = std::time::Instant::now();
+            b.set_output_crop(0, Some(crop)).unwrap();
+            assert_eq!(b.update(&s).unwrap(), BeUpdate::Rebuilt);
+            let took = t.elapsed();
+            let c = &b.config().config;
+            let out = c.output_format[0].image;
+            assert_eq!(
+                (out.width, out.height, out.stride),
+                (w, h, stride),
+                "{crop:?}"
+            );
+            assert_eq!(c.output_format[1].image.width, 640);
+            eprintln!("crop {crop:?}: {took:?}");
+        }
+        b.set_output_crop(0, None).unwrap();
+        b.update(&s).unwrap();
+        assert_eq!(b.config().config.output_format[0].image.width, 1280);
+        let wide = BeCropConfig {
+            offset_x: 0,
+            offset_y: 0,
+            width: 2000,
+            height: 800,
+        };
+        assert!(b.set_output_crop(0, Some(wide)).is_err());
+        assert_eq!(b.update(&s).unwrap(), BeUpdate::Unchanged);
     }
 }

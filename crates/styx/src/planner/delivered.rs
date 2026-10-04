@@ -5,7 +5,7 @@ use std::fmt;
 
 use styx_core::prelude::*;
 
-use super::{FramePlan, FrameRequest, Route};
+use super::{FramePlan, FrameRequest, RoiCrop, Route};
 
 /// A part of a request a plan does not meet. Frames still come, as [`Delivered`] describes,
 /// unless the request is [`FrameRequest::strict`], which turns any of these into a planning
@@ -21,6 +21,15 @@ pub enum Unmet {
         wanted: (u32, u32),
         delivered: (u32, u32),
     },
+    /// The region of interest ([`FrameRequest::roi`]) is not applied: frames are whole (a
+    /// route that crops only luma frames, or encoded frames).
+    Roi,
+    /// The overview ([`FrameRequest::overview`]) is larger in both dimensions than asked (no
+    /// ISP to scale it: it is the uncropped frame).
+    Overview {
+        wanted: (u32, u32),
+        delivered: (u32, u32),
+    },
 }
 
 impl fmt::Display for Unmet {
@@ -30,6 +39,11 @@ impl fmt::Display for Unmet {
                 wanted: (ww, wh),
                 delivered: (dw, dh),
             } => write!(f, "frames are {dw}x{dh}, not scaled to {ww}x{wh}"),
+            Unmet::Roi => write!(f, "frames are not cropped to the region of interest"),
+            Unmet::Overview {
+                wanted: (ww, wh),
+                delivered: (dw, dh),
+            } => write!(f, "the overview is {dw}x{dh}, not scaled to {ww}x{wh}"),
         }
     }
 }
@@ -66,6 +80,14 @@ pub struct Delivered {
     pub hardware_pyramid_level: Option<u8>,
     /// Inter-coded packets (H.264/H.265): only keyframes stand alone.
     pub inter_coded: bool,
+    /// How the region of interest is applied (frames are then the region, and say where it
+    /// is in `FrameMeta::crop`); `None` without one, or when it is not applied (see `unmet`).
+    /// `size` is the whole frame's.
+    pub roi: Option<RoiCrop>,
+    /// The size of the whole-frame overview attached to each frame (`FrameLease::overview`).
+    pub overview: Option<(u32, u32)>,
+    /// The ISP makes the overview (else it is the uncropped frame).
+    pub hardware_overview: bool,
     /// What of the request the frames do not meet (empty: everything is met).
     pub unmet: Vec<Unmet>,
 }
@@ -94,6 +116,9 @@ impl FramePlan {
             },
             hardware_pyramid_level: self.isp_pyramid_level,
             inter_coded: self.inter_coded(),
+            roi: self.region.roi,
+            overview: self.region.overview.map(|(size, _)| size),
+            hardware_overview: self.region.overview.is_some_and(|(_, isp)| isp),
             unmet: self.unmet.clone(),
         }
     }

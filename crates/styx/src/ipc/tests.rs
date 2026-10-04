@@ -159,6 +159,9 @@ fn write_fuzz_seeds() {
         pyramid_levels: 1,
         hardware_pyramid_level: Some(1),
         inter_coded: false,
+        roi: None,
+        overview: None,
+        hardware_overview: false,
         unmet: vec![crate::planner::Unmet::Size {
             wanted: (160, 90),
             delivered: (1280, 800),

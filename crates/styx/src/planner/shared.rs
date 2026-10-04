@@ -16,8 +16,8 @@ use super::request::{FrameRate, FrameRequest};
 use super::routes::{self, Candidate, backend_name, describe};
 use super::session::{SharedSession, same_preparation};
 use super::{
-    FramePlan, PlanError, PlanRejection, RankKey, StepKind, cost, default_registry, delivered,
-    no_candidates, plan_from, rate, strict_reason,
+    FramePlan, PlanError, PlanRejection, RankKey, StepKind, cost, default_registry, no_candidates,
+    plan_from, rate, strict_reason,
 };
 use crate::BackendKind;
 use crate::capture_api::{CaptureError, CaptureRequest, IdleStop, StyxConfig};
@@ -132,7 +132,7 @@ fn plan_shared(
             // Strict consumers take only modes that meet their request.
             let candidates = candidates.and_then(|candidates| {
                 for (i, (candidate, req)) in candidates.iter().zip(requests).enumerate() {
-                    let unmet = delivered::unmet(req, candidate.delivered_size());
+                    let unmet = candidate.unmet(req);
                     if req.strict && !unmet.is_empty() {
                         return Err(format!("consumer {i}: {}", strict_reason(&unmet)));
                     }
@@ -156,6 +156,13 @@ fn plan_shared(
     let Some((_, backend, mode, mut candidates)) = best else {
         return Err(no_candidates(fps, rejected));
     };
+    // The ISP crops for one consumer only: shared, regions and overviews come from the
+    // frames.
+    if requests.len() > 1 {
+        for (candidate, req) in candidates.iter_mut().zip(requests) {
+            candidate.without_isp_region(req);
+        }
+    }
     // The ISP has two outputs: the main one at the larger size consumers want and the second
     // at the smaller one (a native PiSP also in either processed format). Consumers that fit
     // neither (a third size or format, or with the second output taken by an ISP pyramid) get
@@ -430,8 +437,14 @@ impl SharedFramePlan {
             .find(|p| !p.isp_second_output)
             .map(output);
         let pyramid = self.consumers.iter().find_map(|p| p.isp_pyramid_level);
+        let region = self
+            .consumers
+            .iter()
+            .find(|p| p.region.isp())
+            .map(|p| (p.region, p.request.roi));
         format!(
-            "{:?} {:?} {:?} main={main:?} second={second:?} pyramid={pyramid:?} idle={:?}",
+            "{:?} {:?} {:?} main={main:?} second={second:?} pyramid={pyramid:?} region={region:?} \
+             idle={:?}",
             self.backend, self.mode.id, self.interval, self.stop_when_idle
         )
     }
@@ -458,6 +471,9 @@ impl SharedFramePlan {
         }
         if let Some(format) = main.and_then(|p| p.isp_format) {
             config = config.native_output_format(format);
+        }
+        if let Some(plan) = self.consumers.iter().find(|p| p.region.isp()) {
+            config = plan.region_config(config);
         }
         if let Some(second) = self.consumers.iter().find(|p| p.isp_second_output) {
             let res = self.mode.format.resolution;

@@ -95,6 +95,8 @@ pub(crate) struct Candidate<'a> {
     /// The ISP delivers this processed format instead of the capture mode's (a native camera's
     /// PiSP on a shared capture; `mode` is then this consumer's view of the capture).
     pub isp_format: Option<FourCc>,
+    /// How the region of interest and overview reach the frames.
+    pub region: super::region::Region,
     pub notes: Vec<String>,
 }
 
@@ -383,27 +385,31 @@ fn finish<'a>(
         height.div_ceil(decode_scale.into()),
     ));
 
-    let isp_pyramid_level =
-        add_pyramid_steps(backend, mode, &route, req, width, height, &mut steps)?;
+    // The PiSP crops the region and makes the overview from its second output: a pyramid is
+    // then box-filtered from the (cropped) frames.
+    let isp_region = super::region::isp_possible(backend, mode, &route, req, isp_output);
+    let pyramid_req = isp_region.then(|| super::region::software_pyramid(req));
+    let isp_pyramid_level = add_pyramid_steps(
+        backend,
+        mode,
+        &route,
+        pyramid_req.as_ref().unwrap_or(req),
+        width,
+        height,
+        &mut steps,
+    )?;
     let encoded = matches!(route, Route::Encode { .. });
     if encoded && req.pyramid.is_some_and(|p| p.levels > 0) {
         return Err("pyramid levels need uncompressed frames".into());
     }
-    if req.roi.is_some() && !encoded {
-        steps.push(PlanStep {
-            kind: StepKind::Crop,
-            execution: StepExecution::ZeroCopy,
-            detail: match &route {
-                Route::Decode { decoder, .. }
-                    if decoder.descriptor().impl_name == "turbojpeg-luma" =>
-                {
-                    "region of interest; the JPEG decoder skips rows below it".into()
-                }
-                _ => "region of interest view".into(),
-            },
-            cost: StepCost::ZERO,
-        });
-    }
+    let region = super::region::plan(
+        req,
+        &route,
+        isp_region,
+        (width, height),
+        &mut steps,
+        &mut notes,
+    )?;
     if let Some(align) = req.row_alignment.filter(|_| !encoded) {
         match &route {
             Route::Decode { decoder, .. } if decoder.descriptor().impl_name == "turbojpeg-luma" => {
@@ -434,6 +440,7 @@ fn finish<'a>(
         decode_scale,
         isp_output,
         isp_format: None,
+        region,
         notes,
     })
 }

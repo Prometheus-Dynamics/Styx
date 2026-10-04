@@ -473,6 +473,8 @@ pub(crate) fn same_preparation(a: &FramePlan, b: &FramePlan) -> bool {
         && a.isp_format == b.isp_format
         && a.isp_second_output == b.isp_second_output
         && a.isp_pyramid_level == b.isp_pyramid_level
+        && a.region.isp() == b.region.isp()
+        && a.region.overview == b.region.overview
         && a.exportable == b.exportable
 }
 
@@ -496,6 +498,9 @@ impl SharedSession {
     pub(crate) fn attach(&self, plan: &FramePlan, share: bool) -> super::Frames {
         let roi = RoiHandle::default();
         roi.set(plan.request.roi);
+        if plan.region.isp() {
+            roi.crop_in_isp(self.shared.capture());
+        }
         let depth = plan.queue_depth.max(1);
         let mut groups = self.groups.lock();
         groups.retain(|g| g.strong_count() > 0);

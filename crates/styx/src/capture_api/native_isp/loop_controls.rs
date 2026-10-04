@@ -30,6 +30,8 @@ pub struct LoopControls {
     stills: Mutex<Vec<super::still_runner::StillJob>>,
     /// What AF reported, and the AF windows as set.
     pub(crate) af: super::af_controls::AfReport,
+    /// The main output's crop (`OUTPUT_CROP`).
+    pub(crate) crop: super::crop_control::CropControl,
 }
 
 impl Default for LoopControls {
@@ -42,6 +44,7 @@ impl Default for LoopControls {
             flicker_detected: AtomicI32::new(0),
             stills: Mutex::new(Vec::new()),
             af: Default::default(),
+            crop: Default::default(),
         }
     }
 }
@@ -135,6 +138,9 @@ impl LoopControls {
             ids::AE_FLICKER_MODE,
             ids::AE_DEFLICKER_MODE,
         ];
+        if id == ids::OUTPUT_CROP {
+            return Some(self.crop.apply(value));
+        }
         if super::af_controls::is_af(id) {
             let mut c = self.current.lock();
             let r = super::af_controls::apply(&self.af, id, value, &mut c)?;
@@ -204,6 +210,9 @@ impl LoopControls {
 
     /// Reads one of the loop's controls (`None` for the camera's own).
     pub(crate) fn read(&self, id: ControlId) -> Option<ControlValue> {
+        if id == ids::OUTPUT_CROP {
+            return Some(self.crop.read());
+        }
         let c = self.current.lock();
         if let Some(v) = super::af_controls::read(&self.af, id, &c) {
             return Some(v);

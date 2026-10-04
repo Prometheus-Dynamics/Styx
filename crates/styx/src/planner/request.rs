@@ -114,6 +114,8 @@ pub struct FrameRequest {
     pub pyramid: Option<PyramidRequest>,
     /// Advanced: initial region of interest in full-frame pixels; can change while running.
     pub roi: Option<FrameRect>,
+    /// Advanced: the whole frame at about this size with every frame ([`FrameRequest::overview`]).
+    pub overview: Option<(u32, u32)>,
     /// Advanced: row stride (and buffer base) alignment in bytes.
     pub row_alignment: Option<usize>,
     /// Route control: only this capture backend.
@@ -176,6 +178,7 @@ impl FrameRequest {
             delivery: Delivery::Latest,
             pyramid: None,
             roi: None,
+            overview: None,
             row_alignment: None,
             backend: None,
             hardware: Hardware::Auto,
@@ -259,10 +262,24 @@ impl FrameRequest {
         self
     }
 
-    /// Advanced: deliver only this region (full-frame pixels; luma frames), changeable while
-    /// running ([`Frames::roi`]). An MJPEG decode skips the rows below it.
+    /// Advanced: deliver only this region (full-frame pixels), changeable while running
+    /// ([`Frames::roi`]); frames say where they are (`FrameMeta::crop`). A native camera's PiSP
+    /// crops it at full resolution in any format (frames are the region's size, rounded out to
+    /// even pixels); elsewhere luma frames are views of it, and an MJPEG decode skips the rows
+    /// below it. [`Delivered::roi`](super::Delivered::roi) says which.
     pub fn roi(mut self, roi: FrameRect) -> Self {
         self.roi = Some(roi);
+        self
+    }
+
+    /// Advanced: attach the whole frame, scaled to about `width`x`height` (keeping its aspect
+    /// ratio), to every frame as its overview (`FrameLease::overview`): with
+    /// [`FrameRequest::roi`], a low-resolution view of everything around the region, to find
+    /// the next one in. A native camera's PiSP makes it from its second output in the same
+    /// pass (pyramid levels are then box-filtered from the frame); elsewhere it is the
+    /// uncropped frame itself, unscaled. Uncompressed frames only.
+    pub fn overview(mut self, width: u32, height: u32) -> Self {
+        self.overview = Some((width, height));
         self
     }
 
@@ -430,6 +447,8 @@ impl<'a> CameraFrames<'a> {
         pyramid_source(source: PyramidSource);
         /// [`FrameRequest::roi`].
         roi(roi: FrameRect);
+        /// [`FrameRequest::overview`].
+        overview(width: u32, height: u32);
         /// [`FrameRequest::row_alignment`].
         row_alignment(bytes: usize);
         /// [`FrameRequest::backend`].
@@ -525,6 +544,7 @@ mod legacy {
                 delivery,
                 pyramid: old.pyramid,
                 roi: old.roi,
+                overview: None,
                 row_alignment: old.stride_alignment,
                 backend,
                 hardware: match o.hardware {

@@ -20,6 +20,10 @@ pub enum CompanionKind {
     /// The same capture at another size, from its own output (a Raspberry Pi ISP's second
     /// output), for a consumer that wants that size.
     Scaled,
+    /// The whole frame, scaled, when the primary frame is a region of it (an ISP crop or a
+    /// crop view; `meta().crop` says where): a low-resolution view to find the next region
+    /// in. Crops leave it alone.
+    Overview,
 }
 
 impl FrameLease {
@@ -60,6 +64,12 @@ impl FrameLease {
             return Some(self);
         }
         self.companion(CompanionKind::Pyramid { level })
+    }
+
+    /// The whole frame scaled down, when this frame is a region of it
+    /// ([`CompanionKind::Overview`]).
+    pub fn overview(&self) -> Option<&FrameLease> {
+        self.companion(CompanionKind::Overview)
     }
 
     /// All attached companions.

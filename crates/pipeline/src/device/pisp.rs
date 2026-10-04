@@ -173,12 +173,15 @@ impl Isp {
             options.be_buffers,
             options.output_memory,
         )?;
-        let be = be_template(
+        let mut be = be_template(
             input,
             order,
             info.black_level,
             [be_dev.output_format(0), be_dev.output_format(1)],
         )?;
+        for (i, crop) in options.crop.iter().enumerate() {
+            be.set_crop(i, crop.unwrap_or_default());
+        }
         // The template must prepare (sizes, strides, tiles) before streaming starts.
         let mut be = BeConfigBuilder::new(be)?;
         let mut tdn_error = None;

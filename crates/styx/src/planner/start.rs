@@ -15,23 +15,57 @@ use styx_core::prelude::*;
 
 use super::session::Branch;
 use super::{FramePlan, Route};
-use crate::capture_api::{CaptureError, CaptureHandle, CaptureRequest, IdleStop};
+#[cfg(feature = "native")]
+use crate::capture_api::apply_control_to_plane;
+use crate::capture_api::{CaptureError, CaptureHandle, CaptureRequest, ControlPlane, IdleStop};
 use crate::session::{MediaPipeline, MediaPipelineBuilder};
 
 /// Live region-of-interest control for a running plan. Cloneable; changes apply to the next
-/// frame. Coordinates are full-frame pixels.
+/// frame (on an ISP crop, [`RoiCrop::Isp`](super::RoiCrop), the next frame the ISP processes).
+/// Coordinates are full-frame pixels.
 #[derive(Clone, Default)]
-pub struct RoiHandle(Arc<Mutex<Option<FrameRect>>>);
+pub struct RoiHandle {
+    rect: Arc<Mutex<Option<FrameRect>>>,
+    /// The capture whose ISP crops the region (its `OUTPUT_CROP` control).
+    isp: Arc<std::sync::OnceLock<ControlPlane>>,
+}
 
 impl RoiHandle {
     pub fn set(&self, roi: Option<FrameRect>) {
-        *self.0.lock() = roi;
+        *self.rect.lock() = roi;
+        if let Some(plane) = self.isp.get() {
+            set_isp_crop(plane, roi);
+        }
     }
 
     pub fn get(&self) -> Option<FrameRect> {
-        *self.0.lock()
+        *self.rect.lock()
+    }
+
+    /// From now on the region is the ISP's crop on `capture`.
+    pub(crate) fn crop_in_isp(&self, capture: &CaptureHandle) {
+        let _ = self.isp.set(capture.control.clone());
     }
 }
+
+/// `roi` as the ISP's crop (`None`: the whole frame). Only native cameras crop in their ISP.
+#[cfg(feature = "native")]
+fn set_isp_crop(plane: &ControlPlane, roi: Option<FrameRect>) {
+    let r = roi.unwrap_or(FrameRect::new(0, 0, 0, 0));
+    let rect = ControlRect {
+        x: i32::try_from(r.x).unwrap_or(i32::MAX),
+        y: i32::try_from(r.y).unwrap_or(i32::MAX),
+        width: r.width,
+        height: r.height,
+    };
+    let crop = crate::capture_api::native_controls::OUTPUT_CROP;
+    if let Err(err) = apply_control_to_plane(plane, crop, ControlValue::Rect(rect)) {
+        tracing::warn!(error = %err, "region of interest not applied by the ISP");
+    }
+}
+
+#[cfg(not(feature = "native"))]
+fn set_isp_crop(_: &ControlPlane, _: Option<FrameRect>) {}
 
 /// A running stream of frames, as a [`FrameRequest`](super::FrameRequest) asked for: from
 /// [`FrameRequest::open`](super::FrameRequest::open) (`Frames::nv12().size(..).open(&camera)`),
@@ -209,6 +243,7 @@ impl FramePlan {
                 .libcamera_output_size(width, height)
                 .native_output_size(width, height);
         }
+        config = self.region_config(config);
         config = match self.stop_when_idle {
             Some((after, IdleStop::Pause)) => config.pause_when_idle(after),
             Some((after, _)) => config.stop_when_idle(after),
@@ -236,6 +271,9 @@ impl FramePlan {
         #[cfg(target_os = "linux")]
         let builder = builder.shared_decode_output(false);
         let pipeline = builder.start()?;
+        if self.region.isp() {
+            roi.crop_in_isp(pipeline.capture());
+        }
         Ok(Frames {
             source: Source::Pipeline(Box::new(pipeline)),
             roi,
@@ -250,6 +288,10 @@ pub(crate) struct FramePreparer {
     descriptor: CodecDescriptor,
     route: Route,
     luma: bool,
+    /// The ISP crops the region: frames arrive cropped.
+    isp_crop: bool,
+    /// The overview is the uncropped frame, attached here.
+    view_overview: bool,
     pyramid_levels: u8,
     alignment: Option<usize>,
     /// Frames are decoded at 1/`decode_scale` size.
@@ -325,6 +367,8 @@ impl FramePreparer {
             },
             route,
             luma,
+            isp_crop: plan.region.roi == Some(super::RoiCrop::Isp),
+            view_overview: plan.region.overview.is_some_and(|(_, isp)| !isp),
             pyramid_levels: plan.request.pyramid.map_or(0, |p| p.levels),
             alignment: plan.request.row_alignment,
             #[cfg(feature = "codec-turbojpeg")]
@@ -416,7 +460,7 @@ impl FramePreparer {
         frame: FrameLease,
         roi: Option<FrameRect>,
     ) -> Result<FrameLease, CodecError> {
-        let Some(roi) = roi.filter(|_| self.luma) else {
+        let Some(roi) = roi.filter(|_| self.luma && !self.isp_crop) else {
             return Ok(frame);
         };
         let res = frame.meta().format.resolution;
@@ -610,6 +654,11 @@ impl Codec for FramePreparer {
                 full.width.get().div_ceil(self.decode_scale),
                 full.height.get().div_ceil(self.decode_scale),
             );
+            if self.view_overview {
+                // The overview is the whole decoded frame: decode it all, then crop a view.
+                let frame = self.decode_jpeg(input, None)?;
+                return self.finish_view(frame, roi);
+            }
             let roi = roi
                 .and_then(|r| self.scaled_roi(r, decoded))
                 .map(|r| self.aligned_roi(r));
@@ -638,10 +687,25 @@ impl Codec for FramePreparer {
             _ => input,
         };
         if !self.luma {
-            return Ok(frame);
+            return self.with_view_overview(frame);
         }
+        self.finish_view(frame, roi)
+    }
+}
+
+impl FramePreparer {
+    /// A luma frame prepared without its region: with the uncropped frame as its overview when
+    /// the plan attaches it here, cropped to `roi` (unless the ISP cropped it already),
+    /// realigned, with its pyramid.
+    fn finish_view(
+        &self,
+        frame: FrameLease,
+        roi: Option<FrameRect>,
+    ) -> Result<FrameLease, CodecError> {
+        let frame = self.with_view_overview(frame)?;
         let decoded = frame.meta().format.resolution;
         let frame = match roi
+            .filter(|_| !self.isp_crop)
             .and_then(|r| self.scaled_roi(r, (decoded.width.get(), decoded.height.get())))
         {
             Some(rect) => frame
@@ -651,6 +715,23 @@ impl Codec for FramePreparer {
         };
         let frame = self.realign(frame)?;
         self.attach_pyramid(frame)
+    }
+
+    /// `frame` with itself, uncropped and shared without a copy, as its overview, when the plan
+    /// attaches the overview here (no ISP to make it).
+    fn with_view_overview(&self, frame: FrameLease) -> Result<FrameLease, CodecError> {
+        if !self.view_overview {
+            return Ok(frame);
+        }
+        let err = |e: FrameValidationError| CodecError::Codec(e.to_string());
+        let frame = frame.into_shareable();
+        let Some(mut overview) = frame.share() else {
+            return Ok(frame);
+        };
+        overview.take_companions();
+        frame
+            .with_companion(CompanionKind::Overview, overview)
+            .map_err(err)
     }
 }
 
@@ -662,7 +743,9 @@ fn luma_view(mut frame: FrameLease) -> Result<FrameLease, CodecError> {
     let mut frame = frame.into_luma().map_err(|e| err(&e))?;
     for (kind, companion) in companions {
         let companion = match kind {
-            CompanionKind::Pyramid { .. } if companion.has_luma_plane() => {
+            CompanionKind::Pyramid { .. } | CompanionKind::Overview
+                if companion.has_luma_plane() =>
+            {
                 companion.into_luma().map_err(|e| err(&e))?
             }
             _ => companion,

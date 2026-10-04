@@ -299,6 +299,15 @@ and `FRAME_DURATION_US` are refused (restart at another rate); on raw captures t
 exposure and gain, go to the sensor's control schedule. `examples/01_capture/camera_controls.rs`
 shows each, with the frame it landed on.
 
+`OUTPUT_CROP` (`Rect`, PiSP, main output at the mode's size) crops the back end's main output to
+a region of the frame at full resolution, from the next frame; the worker hands it to
+`PispPipeline::set_output_crop`, which re-prepares the back end config (tiles included, ~60 µs).
+The crop is written into the top left of the full-size output buffer, rows in its stride, the
+chroma plane where the buffer's height puts it (as the driver computes plane addresses), and
+the frame says where it is (`FrameMeta::crop`). `NativeIspConfig::overview` makes the second
+output the whole frame scaled down, attached as `CompanionKind::Overview`
+([frame-planning.md](../frame-planning.md#region-of-interest)).
+
 ### Denoise settings
 
 Through the Styx API (`StyxConfig`, also read from a serialised config): 

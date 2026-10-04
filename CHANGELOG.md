@@ -8,6 +8,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added ISP-cropped regions of interest and overviews on native cameras with a PiSP: with
+  `FrameRequest::roi` the back end's main output is the region at full resolution, in any format
+  (moved per frame with `Frames::roi` / `FrameClient::set_roi`), and `FrameRequest::overview(w, h)`
+  attaches the whole frame scaled down from the second output (`CompanionKind::Overview`,
+  `FrameLease::overview`; crops keep it whole). Elsewhere the overview is the uncropped frame.
+  `Delivered` says how (`roi: Option<RoiCrop>`, `overview`, `hardware_overview`), with
+  `Unmet::Roi` and `Unmet::Overview`. Below the planner: the native `OUTPUT_CROP` control,
+  `NativeIspConfig::crop` / `overview` (`StyxConfig::native_crop` / `native_overview`),
+  `PispPipeline::set_output_crop` and `PispOptions::crop`. Camera service wire format v7.
 - Added the `daedalus` feature to `styx-core-rs` (and `styx`, passed through): Styx frames in
   Daedalus graphs from one place, `styx_core::daedalus`. It provides the `styx:framelease` type
   key and `FrameLease` type, `FrameDescriptor` (format, size, planes, timestamp, residency, CPU
@@ -214,6 +223,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `FrameRequest::roi` no longer claims a crop it does not make: on routes that crop only luma
+  frames, an NV12 or RGB request's region is reported as `Unmet::Roi` (and refused when strict).
 - `FrameLease::can_read_planes`, `has_host_readable_bytes` and `require_host_readable` follow
   `cpu_access()`: a mapped dma-buf (e.g. a native camera's cached ISP output) is readable.
 - In-process plans keep the ISP's pyramid levels: the pipeline hands companions to the planner's

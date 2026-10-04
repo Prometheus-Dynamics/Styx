@@ -28,6 +28,7 @@ pub(crate) mod cost;
 mod delivered;
 mod native;
 mod rate;
+mod region;
 mod request;
 mod routes;
 mod session;
@@ -45,6 +46,7 @@ pub use cost::StepCost;
 pub use delivered::{Delivered, Unmet};
 #[cfg(any(feature = "native", feature = "uvc"))]
 pub(crate) use rate::default_interval;
+pub use region::RoiCrop;
 pub use request::{CameraFrames, Delivery, FrameRate, FrameRequest, Hardware, OpenError};
 pub(crate) use routes::Route;
 pub use shared::{SharedFramePlan, plan_many, plan_many_with};
@@ -138,6 +140,8 @@ pub struct FramePlan {
     pub(crate) isp_format: Option<FourCc>,
     /// On a shared capture: frames come from the ISP's second output (at `isp_output`).
     pub(crate) isp_second_output: bool,
+    /// How the region of interest and overview reach the frames.
+    pub(crate) region: region::Region,
     /// Frames the preparer makes go into memfd buffers other processes can map.
     pub(crate) exportable: bool,
     pub(crate) decode_threads: usize,
@@ -275,7 +279,7 @@ fn plan_devices(
     let mut best: Option<(RankKey, &ProbedDevice, routes::Candidate<'_>)> = None;
     for device in devices {
         for candidate in routes::candidates(device, req, registry, &mut rejected) {
-            let unmet = delivered::unmet(req, candidate.delivered_size());
+            let unmet = candidate.unmet(req);
             if req.strict && !unmet.is_empty() {
                 rejected.push(PlanRejection {
                     candidate: routes::describe(candidate.backend, &candidate.mode),
@@ -351,7 +355,7 @@ pub(crate) fn plan_from(
     interval: Option<Interval>,
     rejected: Vec<PlanRejection>,
 ) -> FramePlan {
-    let unmet = delivered::unmet(req, chosen.delivered_size());
+    let unmet = chosen.unmet(req);
     FramePlan {
         device: device.clone(),
         backend: chosen.backend.kind,
@@ -368,6 +372,7 @@ pub(crate) fn plan_from(
         decode_scale: chosen.decode_scale,
         isp_output: chosen.isp_output,
         isp_format: chosen.isp_format,
+        region: chosen.region,
         isp_second_output: false,
         exportable: false,
         decode_threads: req.threads(),

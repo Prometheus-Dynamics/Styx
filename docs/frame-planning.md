@@ -47,7 +47,8 @@ Advanced, for consumers with special needs (a feature detector, SIMD code):
 | Method | Meaning |
 |---|---|
 | `pyramid(levels)`, `pyramid_source(..)` | ½, ¼, ... companions with each frame (`frame.pyramid_level(n)`), the first from the ISP's second output where there is one |
-| `roi(rect)` | deliver only this region (full-frame pixels, luma frames); `Frames::roi()` changes it per frame |
+| `roi(rect)` | deliver only this region (full-frame pixels); `Frames::roi()` changes it per frame. A native camera's PiSP crops it at full resolution in any format; elsewhere luma frames are views of it |
+| `overview(w, h)` | the whole frame at about `w`x`h` with every frame (`frame.overview()`), to find the next region in; from the PiSP's second output where there is one |
 | `row_alignment(bytes)` | rows (and the buffer start) aligned, e.g. 64 for SIMD loads; copied only when the camera's rows are not |
 
 ```rust
@@ -275,15 +276,55 @@ capture's own buffers and `CaptureBuffers::in_use` stays false. See
 ## Region of interest
 
 `FrameRequest::roi` sets an initial region; `Frames::roi()` returns a handle to
-change it per frame. Regions are full-frame pixel coordinates of the capture, also when frames
-are decoded at a smaller output size.
+change it per frame (`FrameClient::set_roi` through a camera service). Regions are full-frame
+pixel coordinates of the capture, also when frames are decoded at a smaller output size.
+`Delivered::roi` says how the plan applies it, and a region a route cannot apply is unmet
+(`Unmet::Roi`; NV12 or RGB frames without a PiSP to crop them).
 
-- **ISP and raw paths:** frames become zero-copy crop views. The region's left edge is moved down
-  to the stride alignment so rows stay aligned.
+- **Native cameras with a PiSP (`RoiCrop::Isp`):** the back end's main output is the region at
+  full resolution, in any format, rounded out to even pixels (at least 16x16): frames are the
+  region's size, so nothing outside it is processed further or handed on. A new region applies
+  from the next frame the ISP processes (about 60 µs to re-plan the back end's tiles); frames
+  already processed arrive first. The capture's `OUTPUT_CROP` control does the same without the
+  planner (`StyxConfig::native_crop` for the first region). Pyramid levels are then
+  box-filtered from the region. It needs the main output at the mode's size and the capture to
+  itself: shared with other consumers (or a camera service with several clients), the region
+  is a view of the shared frame, as below.
+- **Other ISP and raw paths (`RoiCrop::View`):** luma frames become zero-copy crop views. The
+  region's left edge is moved down to the stride alignment so rows stay aligned.
 - **MJPEG:** the decoder decodes only the region. Rows below it are skipped entirely; rows above
   must still be entropy-decoded.
 - **Companions:** pyramid companions are cropped to the same region at their scale.
-- **Mapping back:** `FrameMeta::crop` gives each view's position in the full frame.
+- **Mapping back:** `FrameMeta::crop` gives each frame's position in the full frame.
+
+### Overview
+
+`FrameRequest::overview(w, h)` attaches the whole frame, scaled to the smallest even size with
+its aspect ratio covering `w`x`h`, to every frame as a `CompanionKind::Overview` companion
+(`frame.overview()`; crops leave it whole). A tracker crops to the regions around what it found
+and searches the overview to find them again, without asking for full frames. On a native PiSP
+it comes from the back end's second output in the same pass (`Delivered::hardware_overview`;
+it takes the second output, so a pyramid is box-filtered); elsewhere it is the uncropped frame
+itself, shared without a copy and unscaled (`Unmet::Overview` when larger than asked).
+
+```rust
+let mut frames = Frames::gray()
+    .roi(FrameRect::new(480, 260, 320, 200))
+    .overview(320, 200)
+    .open(&camera)?;
+let roi = frames.roi();
+while let RecvOutcome::Data(frame) = frames.next_frame(Duration::from_millis(500)) {
+    let crop = frame.meta().crop;            // where this frame is in the full frame
+    let overview = frame.overview();         // the whole frame, 320x180 for a 16:9 mode
+    // ... track in `frame`, reacquire in `overview`, then:
+    roi.set(Some(FrameRect::new(0, 0, 256, 256)));
+}
+```
+
+`examples/04_performance/native_roi.rs` moves the region through a planned stream, a camera
+service client and the raw control, and checks each region against the overview. On the CM5
+(OV9782 1280x720 at 30 fps) each region applies on the next processed frame and matches the
+overview's mean luma within 0.4 levels.
 
 ## Limits
 

@@ -26,7 +26,7 @@ use super::IpcError;
 use crate::planner::{Delivered, Delivery, FrameRate, FrameRequest, Hardware};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"STYX");
-const VERSION: u16 = 6;
+const VERSION: u16 = 7;
 const KIND_FRAME: u16 = 1;
 const KIND_RELEASE: u16 = 2;
 const KIND_REQUEST: u16 = 3;
@@ -327,6 +327,10 @@ fn write_frame(w: &mut Writer, frame: &WireFrame) {
                 w.u8(2);
                 w.u8(0);
             }
+            CompanionKind::Overview => {
+                w.u8(3);
+                w.u8(0);
+            }
         }
         write_frame(w, companion);
     }
@@ -384,6 +388,7 @@ fn read_frame(r: &mut Reader<'_>, top_level: bool) -> Result<WireFrame, IpcError
             let kind = match (r.u8()?, r.u8()?) {
                 (1, level) => CompanionKind::Pyramid { level },
                 (2, _) => CompanionKind::Scaled,
+                (3, _) => CompanionKind::Overview,
                 _ => return Err(IpcError::Malformed("unknown companion kind")),
             };
             Ok((kind, read_frame(r, false)?))
@@ -521,6 +526,7 @@ pub(super) fn encode_request(req: &FrameRequest, camera: Option<&str>) -> Vec<u8
         });
     });
     w.opt(req.roi, Writer::rect);
+    w.opt(req.overview, Writer::size);
     w.opt(req.row_alignment, Writer::usize);
     w.opt(req.backend.map(|b| b.to_string()).as_deref(), Writer::text);
     w.u8(match req.hardware {
@@ -580,6 +586,7 @@ fn read_request(r: &mut Reader<'_>) -> Result<FrameRequest, IpcError> {
         })
     })?;
     req.roi = r.opt(Reader::rect)?;
+    req.overview = r.opt(Reader::size)?;
     req.row_alignment = r.opt(Reader::usize)?;
     req.backend = r
         .opt(Reader::text)?
@@ -688,6 +695,7 @@ mod tests {
             .every_frame(3)
             .pyramid(2)
             .roi(FrameRect::new(1, 2, 3, 4))
+            .overview(320, 200)
             .row_alignment(64)
             .backend(BackendKind::Libcamera)
             .hardware(Hardware::Off)
@@ -729,10 +737,20 @@ mod tests {
             pyramid_levels: 2,
             hardware_pyramid_level: Some(1),
             inter_coded: false,
-            unmet: vec![Unmet::Size {
-                wanted: (160, 90),
-                delivered: (1280, 800),
-            }],
+            roi: Some(crate::planner::RoiCrop::Isp),
+            overview: Some((320, 200)),
+            hardware_overview: true,
+            unmet: vec![
+                Unmet::Size {
+                    wanted: (160, 90),
+                    delivered: (1280, 800),
+                },
+                Unmet::Roi,
+                Unmet::Overview {
+                    wanted: (100, 100),
+                    delivered: (640, 400),
+                },
+            ],
         };
         let ServerMessage::Accept(plan, back) =
             decode_server(&encode_accept("the plan", &delivered)).unwrap()

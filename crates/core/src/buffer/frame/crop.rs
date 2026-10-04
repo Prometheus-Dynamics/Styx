@@ -9,7 +9,8 @@ impl FrameLease {
     ///
     /// Planar/semi-planar YUV is first reduced to its Y plane. The view keeps the source row
     /// stride; row starts are `rect.x` bytes into the source rows. Pyramid companions are
-    /// cropped to the same region at their own scale. `meta().crop` records where the view sits
+    /// cropped to the same region at their own scale; an overview of the whole frame is kept as
+    /// it is. `meta().crop` records where the view sits
     /// in the full frame, composing with any earlier crop.
     pub fn crop_view(self, rect: FrameRect) -> Result<FrameLease, FrameValidationError> {
         let mut frame = self.into_luma()?;
@@ -68,6 +69,10 @@ impl FrameLease {
         for (kind, companion) in companions {
             let region = match kind {
                 CompanionKind::Pyramid { level } => rect.scaled_down(level),
+                CompanionKind::Overview => {
+                    frame = frame.with_companion(kind, companion)?;
+                    continue;
+                }
                 CompanionKind::Scaled => {
                     let (from, to) = (format.resolution, companion.meta.format.resolution);
                     rect.scaled(
@@ -136,6 +141,18 @@ mod tests {
         assert_eq!(half.meta().format.resolution.width.get(), 4);
         assert_eq!(half.meta().format.resolution.height.get(), 2);
         assert_eq!(half.meta().crop, Some(FrameRect::new(2, 1, 4, 2)));
+    }
+
+    #[test]
+    fn crop_view_keeps_the_overview_whole() {
+        let frame = grey(16, 8)
+            .with_companion(CompanionKind::Overview, grey(8, 4))
+            .unwrap()
+            .crop_view(FrameRect::new(4, 2, 8, 4))
+            .unwrap();
+        let overview = frame.overview().expect("overview kept");
+        assert_eq!(overview.meta().format.resolution.width.get(), 8);
+        assert_eq!(overview.meta().crop, None);
     }
 
     #[test]
