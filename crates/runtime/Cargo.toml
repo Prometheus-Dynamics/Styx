@@ -19,6 +19,7 @@ std = ["styx-sensor/std", "styx-hal/std", "thiserror/std"]
 # crates), as examples/nostd-smoke does.
 styx-hal = { path = "../hal", version = "2.0.0" }
 styx-sensor = { path = "../sensor", version = "2.0.0", default-features = false }
+portable-atomic.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

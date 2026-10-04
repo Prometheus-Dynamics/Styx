@@ -25,6 +25,9 @@
 //!   [`IspSettings::apply_fe`]).
 //! * [`SoftLoop`]: the loop with `styx-softisp` doing the processing and the statistics
 //!   (statistics of frame F set up the ISP for frame F + 1).
+//! * [`still`]: held raw frames, reprocessed at full quality and written as DNGs;
+//!   [`still_runner`]: the still and bracket decisions (which frame, fixed and bracketed
+//!   exposures on the control schedule, landing checks, AE's controls handed back).
 //! * [`rawrec`]: raw recordings (frames plus what produced them) and [`replay`]: a virtual
 //!   sensor that replays a recording at whatever exposure and gain the loop asks for, with
 //!   the sensor's control delays, so the closed loop runs on a host.
@@ -55,12 +58,14 @@ pub mod pisp_be;
 pub mod process;
 #[cfg(feature = "std")]
 pub mod rawrec;
+pub mod reexpose;
 #[cfg(feature = "std")]
 pub mod replay;
 pub mod sensor;
 pub mod soft;
 pub mod stats;
 pub mod still;
+pub mod still_runner;
 mod time;
 #[cfg(feature = "std")]
 pub mod tuning;

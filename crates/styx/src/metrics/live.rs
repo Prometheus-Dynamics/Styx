@@ -1,90 +1,30 @@
 //! Live per-capture metrics, recorded on the frame path with relaxed atomics only (no locks, no
-//! allocation): counters, and fixed rings of the last [`WINDOW`] samples for frame intervals,
-//! latencies, ISP times and buffer hold times. Snapshots (`super::camera`) read them on demand.
+//! allocation). The counters, the windows of the last [`WINDOW`] samples (frame intervals,
+//! latencies, ISP times) and the 3A, AF and still state are the runtime's
+//! (`styx_runtime::metrics::Counters`, `no_std`); this module feeds them from frame metadata
+//! and adds what only a Linux process has: buffers held by consumers, consumers, worker CPU
+//! time, reconnecting captures. Snapshots (`super::camera`) read them on demand.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use styx_core::prelude::{BackendFrameMeta, ExternalBacking, FrameMeta};
+pub(crate) use styx_runtime::metrics::AaaSample;
+pub use styx_runtime::metrics::WINDOW;
+pub(crate) use styx_runtime::metrics::{Counters as RuntimeCounters, FrameSample, Ring};
 
 use super::camera::Window;
 
-/// Samples kept per ring: the window percentiles and the measured frame rate are over the last
-/// `WINDOW` frames (about 4 s at 30 fps, 1 s at 120 fps).
-pub const WINDOW: usize = 128;
-
-/// The last [`WINDOW`] samples (nanoseconds) and the largest ever seen. Writers may race: a
-/// reader can see a slot one sample old, which a percentile does not notice.
-pub(crate) struct Ring {
-    next: AtomicU64,
-    max: AtomicU64,
-    slots: [AtomicU64; WINDOW],
+/// A ring's window as a snapshot shows it.
+pub(crate) trait RingWindow {
+    fn window(&self) -> Window;
 }
 
-impl Default for Ring {
-    fn default() -> Self {
-        Self {
-            next: AtomicU64::new(0),
-            max: AtomicU64::new(0),
-            slots: std::array::from_fn(|_| AtomicU64::new(0)),
-        }
+impl RingWindow for Ring {
+    fn window(&self) -> Window {
+        Window::from_samples(self.samples(), self.count(), self.max_ever())
     }
-}
-
-impl Ring {
-    #[inline]
-    pub(crate) fn push(&self, ns: u64) {
-        let i = self.next.fetch_add(1, Relaxed) as usize % WINDOW;
-        self.slots[i].store(ns, Relaxed);
-        // A read first: the maximum rarely changes, and a plain load costs less than an RMW.
-        if ns > self.max.load(Relaxed) {
-            self.max.fetch_max(ns, Relaxed);
-        }
-    }
-
-    /// Samples ever pushed.
-    pub(crate) fn count(&self) -> u64 {
-        self.next.load(Relaxed)
-    }
-
-    /// The samples in the window, unordered.
-    pub(crate) fn samples(&self) -> Vec<u64> {
-        let n = (self.count() as usize).min(WINDOW);
-        self.slots[..n].iter().map(|s| s.load(Relaxed)).collect()
-    }
-
-    pub(crate) fn window(&self) -> Window {
-        Window::from_samples(self.samples(), self.count(), self.max.load(Relaxed))
-    }
-}
-
-/// What a capture's 3A loop and sensor did for its latest frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct AaaSample {
-    pub ae_locked: bool,
-    pub awb_converged: bool,
-    pub colour_temperature: f64,
-    pub lux: f64,
-    /// Flicker period AE detected (`None`: none).
-    pub flicker_period: Option<Duration>,
-    /// Autofocus, for cameras with a focus lens.
-    pub af: Option<super::af::AfSample>,
-}
-
-/// Latest sensor and 3A values, as bits of `f32`s and plain integers.
-#[derive(Default)]
-struct Aaa {
-    /// 0 never reported; 1 searching; 2 converged.
-    ae: AtomicU32,
-    awb_converged: AtomicBool,
-    colour_temperature: AtomicU32,
-    lux: AtomicU32,
-    flicker_us: AtomicU32,
-    /// Exposure of the latest frame (0: not reported).
-    exposure_ns: AtomicU64,
-    analogue_gain: AtomicU32,
-    digital_gain: AtomicU32,
 }
 
 /// Buffers handed to consumers and not yet returned, and how long they were held.
@@ -174,28 +114,15 @@ impl ConsumerStats {
     }
 }
 
-/// Counters of a capture, added up across the backend captures a reconnecting capture ran.
+/// What a capture counts besides the runtime's counters.
 #[derive(Default)]
 pub(crate) struct Counters {
-    pub(crate) frames: AtomicU64,
-    pub(crate) received: AtomicU64,
+    /// Frames, drops by cause, windows, 3A and still state (`styx_runtime::metrics`).
+    pub(crate) rt: RuntimeCounters,
+    /// Sequence gaps: the runtime's tracking, or the backend's own (V4L2, libcamera), into
+    /// the counter the capture handle shares.
     pub(crate) sequence_gaps: Arc<AtomicU64>,
-    pub(crate) corrupted: AtomicU64,
-    pub(crate) isp_skipped: AtomicU64,
     pub(crate) cpu_ns_retired: AtomicU64,
-}
-
-/// Stills taken from a capture (`CaptureHandle::capture_still`).
-#[derive(Default)]
-pub(crate) struct StillStats {
-    pub(crate) requests: AtomicU64,
-    pub(crate) failed: AtomicU64,
-    pub(crate) shots: AtomicU64,
-    /// Shots on the frame their exposure was to land on, with it (brackets, fixed exposures).
-    pub(crate) landed: AtomicU64,
-    pub(crate) missed: AtomicU64,
-    /// Request to ready.
-    pub(crate) latency: Ring,
 }
 
 /// Static facts about a capture, set when it starts.
@@ -213,25 +140,8 @@ pub(crate) struct Live {
     pub(crate) started: Instant,
     pub(crate) info: Mutex<Info>,
     pub(crate) counters: Counters,
-    /// Sequence numbers count sensor frames here (gaps are lost frames).
-    track_sequence: AtomicBool,
     /// Gaps in the sequence are frames dropped as damaged (UVC), not lost by the sensor.
     gaps_are_corrupt: AtomicBool,
-    last_sequence: AtomicU64,
-    pending_isp_skips: AtomicU64,
-    /// Frames are recorded where the backend produces them (else where they are received).
-    producer: AtomicBool,
-    last_timestamp: AtomicU64,
-    pub(crate) intervals: Ring,
-    /// Sensor timestamp to the frame entering the consumer queue.
-    pub(crate) delivery: Ring,
-    /// Sensor timestamp to the consumer taking the frame.
-    pub(crate) receive: Ring,
-    pub(crate) isp: Ring,
-    pub(crate) processing: Ring,
-    aaa: Aaa,
-    aaa_reported: AtomicBool,
-    af: super::af::AfLive,
     pub(crate) buffers: Arc<BufferStats>,
     /// Worker threads (Linux thread ids) and their CPU time when last read.
     threads: Mutex<Vec<(i32, u64)>>,
@@ -239,7 +149,6 @@ pub(crate) struct Live {
     pub(crate) current: Mutex<Option<CaptureMetrics>>,
     pub(crate) attached: OnceLock<super::camera::Attached>,
     pub(crate) consumers: Mutex<Vec<Weak<ConsumerStats>>>,
-    pub(crate) stills: StillStats,
 }
 
 /// Live metrics of one capture: cheap to clone, recorded on the frame path, read by
@@ -256,26 +165,12 @@ impl Default for CaptureMetrics {
             started: Instant::now(),
             info: Mutex::new(Info::default()),
             counters: Counters::default(),
-            track_sequence: AtomicBool::new(true),
             gaps_are_corrupt: AtomicBool::new(false),
-            last_sequence: AtomicU64::new(u64::MAX),
-            pending_isp_skips: AtomicU64::new(0),
-            producer: AtomicBool::new(false),
-            last_timestamp: AtomicU64::new(0),
-            intervals: Ring::default(),
-            delivery: Ring::default(),
-            receive: Ring::default(),
-            isp: Ring::default(),
-            processing: Ring::default(),
-            aaa: Aaa::default(),
-            aaa_reported: AtomicBool::new(false),
-            af: Default::default(),
             buffers: Arc::default(),
             threads: Mutex::new(Vec::new()),
             current: Mutex::new(None),
             attached: OnceLock::new(),
             consumers: Mutex::new(Vec::new()),
-            stills: StillStats::default(),
         }))
     }
 }
@@ -288,14 +183,6 @@ impl std::fmt::Debug for CaptureMetrics {
     }
 }
 
-fn f32_bits(v: f64) -> u32 {
-    (v as f32).to_bits()
-}
-
-pub(crate) fn from_bits(v: u32) -> f64 {
-    f64::from(f32::from_bits(v))
-}
-
 impl CaptureMetrics {
     /// For a backend that counts sequence gaps itself (into `gaps`, V4L2 and libcamera).
     #[cfg_attr(not(any(feature = "v4l2", feature = "libcamera")), allow(dead_code))]
@@ -303,7 +190,7 @@ impl CaptureMetrics {
         let mut m = Self::default();
         let live = Arc::get_mut(&mut m.0).expect("new");
         live.counters.sequence_gaps = gaps;
-        live.track_sequence = AtomicBool::new(false);
+        live.counters.rt.set_track_sequence(false);
         m
     }
 
@@ -330,19 +217,7 @@ impl CaptureMetrics {
 
     /// A still request finished: `Some((latency, shots, landed))`, or `None` when it failed.
     pub(crate) fn still(&self, done: Option<(Duration, u64, u64)>) {
-        let s = &self.0.stills;
-        s.requests.fetch_add(1, Relaxed);
-        match done {
-            Some((latency, shots, landed)) => {
-                s.shots.fetch_add(shots, Relaxed);
-                s.landed.fetch_add(landed, Relaxed);
-                s.missed.fetch_add(shots.saturating_sub(landed), Relaxed);
-                s.latency.push(latency.as_nanos() as u64);
-            }
-            None => {
-                s.failed.fetch_add(1, Relaxed);
-            }
-        }
+        self.0.counters.rt.stills.record(done);
     }
 
     /// Count the calling thread's CPU time as this capture's (its worker threads).
@@ -380,40 +255,25 @@ impl CaptureMetrics {
     #[inline]
     pub(crate) fn frame(&self, meta: &FrameMeta) {
         let l = &*self.0;
-        l.counters.frames.fetch_add(1, Relaxed);
-        if !l.producer.load(Relaxed) {
-            l.producer.store(true, Relaxed);
-        }
-        self.timing(meta, &l.delivery);
-        let (sequence, error) = match &meta.backend {
-            Some(BackendFrameMeta::Native(n)) => {
-                l.aaa.exposure_ns.store(n.exposure_ns, Relaxed);
-                l.aaa.analogue_gain.store(n.analog_gain.to_bits(), Relaxed);
-                l.aaa.digital_gain.store(n.digital_gain.to_bits(), Relaxed);
-                (Some(n.sequence), n.error)
-            }
-            Some(BackendFrameMeta::Uvc(u)) => (Some(u.sequence), u.error),
+        let (sequence, error, exposure) = match &meta.backend {
+            Some(BackendFrameMeta::Native(n)) => (
+                Some(n.sequence),
+                n.error,
+                Some((n.exposure_ns, n.analog_gain, n.digital_gain)),
+            ),
+            Some(BackendFrameMeta::Uvc(u)) => (Some(u.sequence), u.error, None),
             // V4L2_BUF_FLAG_ERROR
-            Some(BackendFrameMeta::V4l2(v)) => (Some(v.sequence), v.flags & 0x40 != 0),
-            _ => (None, false),
+            Some(BackendFrameMeta::V4l2(v)) => (Some(v.sequence), v.flags & 0x40 != 0, None),
+            _ => (None, false, None),
         };
-        if error {
-            l.counters.corrupted.fetch_add(1, Relaxed);
-        }
-        if let Some(sequence) = sequence
-            && l.track_sequence.load(Relaxed)
-        {
-            let sequence = u64::from(sequence);
-            let last = l.last_sequence.swap(sequence, Relaxed);
-            if last != u64::MAX && sequence > last + 1 {
-                let gap = sequence - last - 1;
-                // Frames the ISP skipped are not the sensor's.
-                let skipped = l.pending_isp_skips.swap(0, Relaxed).min(gap);
-                self.gaps(gap - skipped);
-            } else {
-                l.pending_isp_skips.store(0, Relaxed);
-            }
-        }
+        let lost = l.counters.rt.frame(&FrameSample {
+            sequence: sequence.map(u64::from),
+            timestamp_ns: meta.timestamp,
+            now_ns: now_ns(meta),
+            corrupt: error,
+            exposure,
+        });
+        self.gaps(lost);
     }
 
     fn gaps(&self, gaps: u64) {
@@ -421,12 +281,14 @@ impl CaptureMetrics {
             return;
         }
         let l = &*self.0;
-        let counter = if l.gaps_are_corrupt.load(Relaxed) {
-            &l.counters.corrupted
+        let before = if l.gaps_are_corrupt.load(Relaxed) {
+            let c = &l.counters.rt.corrupted;
+            let before = c.get();
+            c.add(gaps);
+            before
         } else {
-            &*l.counters.sequence_gaps
+            l.counters.sequence_gaps.fetch_add(gaps, Relaxed)
         };
-        let before = counter.fetch_add(gaps, Relaxed);
         // Logged at 1, 2, 4, 8... lost frames: never once per frame.
         if (before + gaps).ilog2() != before.checked_ilog2().unwrap_or(u32::MAX) {
             tracing::info!(
@@ -438,93 +300,52 @@ impl CaptureMetrics {
         }
     }
 
-    /// Frame interval (from sensor timestamps) and sensor-to-now latency into `latency`.
-    #[inline]
-    fn timing(&self, meta: &FrameMeta, latency: &Ring) {
-        let ts = meta.timestamp;
-        if ts == 0 {
-            return;
-        }
-        let l = &*self.0;
-        if let Some(now) = meta.clock.and_then(|c| c.now_ns())
-            && now >= ts
-        {
-            latency.push(now - ts);
-        }
-        if std::ptr::eq(latency, &l.delivery) || !l.producer.load(Relaxed) {
-            let last = l.last_timestamp.swap(ts, Relaxed);
-            if last != 0 && ts > last {
-                l.intervals.push(ts - last);
-            }
-        }
-    }
-
     /// Record a frame the consumer took from the capture queue.
     #[inline]
     pub(crate) fn received(&self, meta: &FrameMeta) {
-        self.0.counters.received.fetch_add(1, Relaxed);
-        self.timing(meta, &self.0.receive);
+        self.0.counters.rt.received(meta.timestamp, now_ns(meta));
     }
 
     /// The ISP dropped a frame (all its output buffers were held by consumers).
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn isp_skipped(&self) {
-        self.0.counters.isp_skipped.fetch_add(1, Relaxed);
-        self.0.pending_isp_skips.fetch_add(1, Relaxed);
+        self.0.counters.rt.isp_skipped();
     }
 
     /// Time the ISP spent on a frame (`isp`: the back end job or the software ISP pass) and the
     /// whole of its processing (`processing`: raw frame dequeued to outputs ready).
     #[inline]
     pub(crate) fn isp_time(&self, isp: Duration, processing: Duration) {
-        self.0.isp.push(isp.as_nanos() as u64);
-        self.0.processing.push(processing.as_nanos() as u64);
+        self.0.counters.rt.isp_time(isp, processing);
     }
 
     #[inline]
     pub(crate) fn aaa(&self, s: &AaaSample) {
-        let a = &self.0.aaa;
-        a.ae.store(if s.ae_locked { 2 } else { 1 }, Relaxed);
-        a.awb_converged.store(s.awb_converged, Relaxed);
-        a.colour_temperature
-            .store(f32_bits(s.colour_temperature), Relaxed);
-        a.lux.store(f32_bits(s.lux), Relaxed);
-        let us = s.flicker_period.map_or(0, |p| p.as_micros() as u32);
-        a.flicker_us.store(us, Relaxed);
-        if let Some(af) = &s.af {
-            self.0.af.record(af);
-        }
-        if !self.0.aaa_reported.load(Relaxed) {
-            self.0.aaa_reported.store(true, Relaxed);
-        }
+        self.0.counters.rt.aaa.record(s);
     }
 
     pub(crate) fn aaa_state(&self) -> Option<super::camera::AaaState> {
-        let a = &self.0.aaa;
-        let exposure = a.exposure_ns.load(Relaxed);
-        let loop_ran = self.0.aaa_reported.load(Relaxed);
-        if exposure == 0 && !loop_ran {
-            return None;
-        }
-        let flicker = a.flicker_us.load(Relaxed);
+        let a = self.0.counters.rt.aaa.read()?;
+        let (exposure, analogue, digital) = match a.exposure {
+            Some((e, ag, dg)) => (Some(e.as_nanos() as f64 / 1000.0), Some(ag), Some(dg)),
+            None => (None, None, None),
+        };
         let mut state = super::camera::AaaState {
-            ae_state: match a.ae.load(Relaxed) {
-                2 => Some("converged".into()),
-                1 => Some("searching".into()),
-                _ => None,
-            },
-            exposure_us: (exposure > 0).then(|| exposure as f64 / 1000.0),
-            analogue_gain: (exposure > 0).then(|| from_bits(a.analogue_gain.load(Relaxed))),
-            digital_gain: (exposure > 0).then(|| from_bits(a.digital_gain.load(Relaxed))),
-            colour_temperature_k: loop_ran
-                .then(|| from_bits(a.colour_temperature.load(Relaxed)))
-                .filter(|k| *k > 0.0),
-            lux: loop_ran.then(|| from_bits(a.lux.load(Relaxed))),
-            awb_converged: loop_ran.then(|| a.awb_converged.load(Relaxed)),
-            flicker_hz: (flicker > 0).then(|| 1e6 / f64::from(flicker)),
+            ae_state: a
+                .ae_locked
+                .map(|l| if l { "converged" } else { "searching" }.into()),
+            exposure_us: exposure,
+            analogue_gain: analogue,
+            digital_gain: digital,
+            colour_temperature_k: a.colour_temperature,
+            lux: a.lux,
+            awb_converged: a.awb_converged,
+            flicker_hz: a.flicker_period.map(|p| 1e6 / p.as_micros() as f64),
             ..Default::default()
         };
-        self.0.af.read(&mut state);
+        if let Some(af) = &a.af {
+            super::af::fill(af, &mut state);
+        }
         Some(state)
     }
 
@@ -547,14 +368,7 @@ impl CaptureMetrics {
     /// Add `previous`'s counters to these (a reconnecting capture replacing its backend capture).
     pub(crate) fn absorb(&self, previous: &CaptureMetrics) {
         let (from, to) = (&previous.0.counters, &self.0.counters);
-        for (a, b) in [
-            (&from.frames, &to.frames),
-            (&from.received, &to.received),
-            (&from.corrupted, &to.corrupted),
-            (&from.isp_skipped, &to.isp_skipped),
-        ] {
-            b.fetch_add(a.load(Relaxed), Relaxed);
-        }
+        to.rt.absorb(&from.rt);
         if !Arc::ptr_eq(&from.sequence_gaps, &to.sequence_gaps) {
             to.sequence_gaps.fetch_add(previous.gap_count(), Relaxed);
         }
@@ -578,8 +392,17 @@ impl CaptureMetrics {
 
     /// Frames are recorded where the backend produces them.
     pub(crate) fn has_producer(&self) -> bool {
-        self.0.producer.load(Relaxed)
+        self.0.counters.rt.has_producer()
     }
+}
+
+/// The frame's clock now, when it has a timestamp to measure from.
+#[inline]
+fn now_ns(meta: &FrameMeta) -> Option<u64> {
+    if meta.timestamp == 0 {
+        return None;
+    }
+    meta.clock.and_then(|c| c.now_ns())
 }
 
 /// CPU time of thread `tid` of this process, in nanoseconds: `schedstat`'s run time, else
@@ -733,11 +556,11 @@ impl Drop for Live {
         tracing::info!(
             camera = %info.name,
             capture = self.id,
-            frames = c.frames.load(Relaxed),
-            received = c.received.load(Relaxed),
+            frames = c.rt.frames.get(),
+            received = c.rt.received.get(),
             sensor_sequence_gaps = c.sequence_gaps.load(Relaxed),
-            corrupted = c.corrupted.load(Relaxed),
-            isp_skipped = c.isp_skipped.load(Relaxed),
+            corrupted = c.rt.corrupted.get(),
+            isp_skipped = c.rt.isp_skipped.get(),
             seconds = self.started.elapsed().as_secs_f64(),
             "capture closed"
         );

@@ -1,0 +1,44 @@
+[package]
+name = "styx-nostd-camera"
+version.workspace = true
+edition.workspace = true
+description = "A firmware-like no_std camera: styx-runtime's Camera on a mock platform (a replay receiver and an OV9782 register model), the pipeline core's software ISP loop with 3A, stills and metrics counters. Built for bare-metal targets in CI, run as a host test over a replayed raw recording."
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# The same code over the std builds of every dependency (the Linux software path's
+# arithmetic): scripts/check-nostd.sh compares the two runs' traces bit for bit.
+std = [
+    "styx-algo/std",
+    "styx-hal/std",
+    "styx-pipeline/std",
+    "styx-runtime/std",
+    "styx-sensor/std",
+    "styx-softisp/std",
+]
+
+# Every Styx crate without its default `std` feature (docs/portability.md): path dependencies,
+# so the workspace entries keep their default features for the std crates.
+[dependencies]
+portable-atomic.workspace = true
+spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
+styx-algo = { path = "../../crates/algo", default-features = false }
+styx-hal = { path = "../../crates/hal" }
+styx-pipeline = { path = "../../crates/pipeline", default-features = false }
+styx-runtime = { path = "../../crates/runtime", default-features = false }
+styx-sensor = { path = "../../crates/sensor", default-features = false, features = ["postcard"] }
+styx-softisp = { path = "../../crates/softisp", default-features = false, features = ["neon", "x86"] }
+
+# The OV9782 description compiled at build time (validated on the host, postcard bytes in
+# OUT_DIR): the firmware reads it without a TOML parser.
+[build-dependencies]
+styx-sensor = { path = "../../crates/sensor", features = ["build"] }
+
+[lints]
+workspace = true

@@ -15,6 +15,9 @@
 //!   receiver's buffers from a [`Pool`], given back on drop, outliving their stream), and the
 //!   sensor service [`serve_sync`] (frame starts to the control schedule) for whatever waits
 //!   on the receiver's frame starts.
+//! * [`metrics::Counters`]: frames, drops by cause, latency and ISP time windows, the 3A
+//!   loop's and AF's state, stills; relaxed atomics, no allocation (`styx::metrics` snapshots
+//!   them on Linux).
 //! * [`Shared`], [`Counter`]: one answer per build (`Arc<Mutex>` with `std`, `Rc<RefCell>`
 //!   without), see [`sync`].
 //!
@@ -31,6 +34,7 @@ mod controls;
 mod error;
 mod health;
 mod lens;
+pub mod metrics;
 mod sensor;
 mod side;
 mod stream;

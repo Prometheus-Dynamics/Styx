@@ -28,7 +28,7 @@ use alloc::format;
 use core::time::Duration;
 
 use styx_algo::{LensRequest, LensState, PdafZone, SensorRequest, Statistics, ZoneGrid};
-use styx_runtime::Controls;
+use styx_runtime::{Controls, FrameControls};
 use styx_sensor::{ControlRequest, RegisterBus, SensorPins};
 
 use crate::controller::{Controller, SensorValues, Start, Step};
@@ -55,6 +55,18 @@ impl SensorControls for NoControls {
     }
     fn lens(&self, _r: &LensRequest) -> Result<()> {
         Ok(())
+    }
+}
+
+/// What produced frame `sequence`, as the camera's control schedule reports it.
+pub fn sensor_values(sequence: u64, c: &FrameControls) -> SensorValues {
+    SensorValues {
+        frame: sequence,
+        exposure: c.exposure,
+        analogue_gain: c.analog_gain,
+        digital_gain: c.digital_gain,
+        frame_duration: c.frame_duration,
+        verified: c.verified,
     }
 }
 

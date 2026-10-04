@@ -14,7 +14,8 @@ use styx_algo::SensorRequest;
 use styx_softisp::{RawFormat, RawPacking};
 
 use crate::controller::SensorValues;
-use crate::rawrec::{RawRecording, unpack_row};
+use crate::rawrec::RawRecording;
+use crate::reexpose::{Recorded, exposure_ratio, re_expose};
 
 /// The virtual sensor. Frames come out as 16-bit little-endian samples at the recording's
 /// bit depth.
@@ -107,28 +108,23 @@ impl<'a> VirtualSensor<'a> {
         self.current.verified = true;
         let src_index = (f as usize) % self.rec.len().max(1);
         let src = &self.rec.frames[src_index].sensor;
-        let k =
-            self.current.total_exposure() / src.total_exposure().max(1e-12) * (self.brightness)(f);
+        let k = exposure_ratio(&self.current, src, (self.brightness)(f));
         let h = &self.rec.header;
-        let bits = h.format.packing.bit_depth();
-        let full = f64::from((1u32 << bits) - 1);
-        let black = (h.sensor.black_level * f64::from(1u32 << bits)).round();
-        let (w, rows) = (h.format.width as usize, h.format.height as usize);
-        self.out.resize(w * 2 * rows, 0);
-        let data = self.rec.frame(src_index);
-        for y in 0..rows {
-            unpack_row(h.format.packing, &data[y * h.stride..], w, &mut self.row);
-            let dst = &mut self.out[y * w * 2..(y + 1) * w * 2];
-            for (x, &v) in self.row.iter().enumerate() {
-                let v = f64::from(v);
-                let o = if v >= full {
-                    full
-                } else {
-                    (black + (v - black) * k).clamp(0.0, full)
-                };
-                dst[2 * x..2 * x + 2].copy_from_slice(&(o.round() as u16).to_le_bytes());
-            }
-        }
+        let rec = Recorded {
+            packing: h.format.packing,
+            stride: h.stride,
+            width: h.format.width as usize,
+            height: h.format.height as usize,
+            black_level: h.sensor.black_level,
+        };
+        self.out.resize(rec.width * 2 * rec.height, 0);
+        re_expose(
+            self.rec.frame(src_index),
+            &rec,
+            k,
+            &mut self.out,
+            &mut self.row,
+        );
         (&self.out, self.current)
     }
 }
