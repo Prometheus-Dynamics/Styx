@@ -10,12 +10,14 @@
 mod af_controls;
 mod crop_control;
 mod loop_controls;
+mod pisp_lease;
+mod pisp_regions;
 mod pisp_worker;
 mod still_process;
 mod still_runner;
 
 pub(crate) use af_controls::metas as af_metas;
-pub(crate) use crop_control::meta as crop_meta;
+pub(crate) use crop_control::metas as crop_metas;
 pub(crate) use loop_controls::LoopControls;
 pub(crate) use still_runner::StillJob;
 
@@ -403,7 +405,31 @@ pub(super) fn start_processed(
                 interval: fraction,
             };
             let (specs, second_kind) = pisp_worker::output_specs(&mode, &config.backends.native)?;
+            let main = specs[0].ok_or_else(|| err("no main output"))?;
+            let regions = pisp_regions::Regions::new(
+                &config.backends.native,
+                main,
+                (w, h),
+                &loop_controls.regions,
+            )?;
             let setup = |i: usize| specs[i].map(|s| s.setup()).transpose();
+            let be_buffers = pisp_output_buffers(
+                config,
+                specs.iter().flatten().map(|s| s.bytes()).sum(),
+                cma_free().filter(|_| !config.backends.native.driver_buffers),
+            );
+            // Extra passes write into the main output's buffers: as many again per pass, as far
+            // as the limit and the memory allow (a pass without a free buffer skips a frame).
+            let passes = pisp_regions::pass_count(&config.backends.native) as u32;
+            let pass_buffers = (passes * be_buffers)
+                .min(MAX_OUTPUT_BUFFERS.saturating_sub(be_buffers))
+                .min(
+                    cma_free()
+                        .filter(|_| !config.backends.native.driver_buffers)
+                        .map_or(u32::MAX, |free| {
+                            u32::try_from(free / 4 / main.bytes().max(1)).unwrap_or(u32::MAX)
+                        }),
+                );
             let options = PispOptions {
                 outputs: [setup(0)?, setup(1)?],
                 output_memory: if config.backends.native.driver_buffers {
@@ -413,11 +439,8 @@ pub(super) fn start_processed(
                 },
                 temporal_denoise: config.backends.native.temporal_denoise,
                 spatial_denoise: f64::from(config.backends.native.spatial_denoise_percent) / 100.0,
-                be_buffers: pisp_output_buffers(
-                    config,
-                    specs.iter().flatten().map(|s| s.bytes()).sum(),
-                    cma_free().filter(|_| !config.backends.native.driver_buffers),
-                ),
+                be_buffers,
+                pass_buffers,
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;
@@ -435,6 +458,7 @@ pub(super) fn start_processed(
                     second_kind,
                     strides,
                     crop: None,
+                    regions,
                     tx,
                     owns_queue,
                     stop: stop_rx,

@@ -97,10 +97,11 @@ pub struct RegionDescriptor {
 #[derive(Clone, Debug, PartialEq, DaedalusTypeExpr, DaedalusToValue)]
 #[daedalus(type_key = "styx:companion_descriptor")]
 pub struct CompanionDescriptor {
-    /// `pyramid` (downscaled by 2^`level`), `scaled` (another output's size) or `overview`
-    /// (the whole frame, when this one is a region of it).
+    /// `pyramid` (downscaled by 2^`level`), `scaled` (another output's size), `overview`
+    /// (the whole frame, when this one is a region of it) or `region` (another region of
+    /// interest, its index in `level`).
     pub kind: String,
-    /// Pyramid level (1 = ½, 2 = ¼, ...); 0 otherwise.
+    /// Pyramid level (1 = ½, 2 = ¼, ...), or the region's index; 0 otherwise.
     pub level: u32,
     pub format: String,
     pub width: u32,
@@ -163,6 +164,7 @@ impl FrameDescriptor {
                         CompanionKind::Pyramid { level } => ("pyramid", u32::from(level)),
                         CompanionKind::Scaled => ("scaled", 0),
                         CompanionKind::Overview => ("overview", 0),
+                        CompanionKind::Region { index } => ("region", u32::from(index)),
                     };
                     CompanionDescriptor {
                         kind: kind.into(),

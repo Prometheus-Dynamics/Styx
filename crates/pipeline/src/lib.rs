@@ -52,6 +52,7 @@ mod math;
 #[cfg(feature = "std")]
 pub mod measure;
 pub mod pisp_be;
+pub mod pisp_passes;
 pub mod process;
 #[cfg(feature = "std")]
 pub mod rawrec;

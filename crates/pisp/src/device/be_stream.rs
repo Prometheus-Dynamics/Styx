@@ -18,7 +18,7 @@ use super::be_tdn::TdnBuffers;
 use super::config_buf::ConfigBuffer;
 use super::{DeviceError, Result, bayer16_fourcc, find_media};
 use crate::format::formats;
-use crate::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig};
+use crate::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig, rgb_enable};
 
 /// An output format of the back end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +65,8 @@ pub struct BeOutputSetup {
 /// A finished job: which output buffers hold the results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BeJob {
-    /// Output buffer index per output (`None` for an output that is not set up).
+    /// Output buffer index per output (`None` for an output that is not set up or that the
+    /// job's config does not enable).
     pub outputs: [Option<u32>; 2],
     /// From queueing the config to output 0 (or 1) completing.
     pub elapsed: Duration,
@@ -135,12 +136,12 @@ impl BackEndStream {
             inputs,
             input_len,
             outputs,
-            buffers,
+            [buffers; 2],
             OutputMemory::Driver,
         )
     }
 
-    /// [`Self::open`] with the output buffers from `memory`.
+    /// [`Self::open`] with the output buffers from `memory`, `buffers[i]` for output `i`.
     #[allow(clippy::too_many_arguments)]
     pub fn open_with(
         group: usize,
@@ -149,7 +150,7 @@ impl BackEndStream {
         inputs: Vec<OwnedFd>,
         input_len: u32,
         outputs: [Option<BeOutputSetup>; 2],
-        buffers: u32,
+        buffers: [u32; 2],
         memory: OutputMemory,
     ) -> Result<Self> {
         if outputs[0].is_none() || inputs.is_empty() {
@@ -238,7 +239,7 @@ impl BackEndStream {
                 "pispbe-output1"
             };
             let size = g.planes[0].size_image as usize;
-            let queue = OutputQueue::new(dev, memory, buffers.max(2), size, name)?;
+            let queue = OutputQueue::new(dev, memory, buffers[i].max(2), size, name)?;
             let free = (0..queue.len() as u32).collect();
             outs[i] = Some(Output {
                 queue,
@@ -358,9 +359,14 @@ impl BackEndStream {
     pub fn process_queued(&mut self, input: u32, cfg: &BeTilesConfig) -> Result<QueuedJob> {
         let bytes = cfg.as_bytes();
         super::profile::time("pispbe-config", "copy", || self.config.write(bytes));
+        // Only the outputs the config enables get a buffer (a job can write one of them, e.g.
+        // an extra pass for a region of the frame).
+        let enabled = cfg.config.global.rgb_enables;
         let mut picked = [None, None];
         for (i, o) in self.outputs.iter_mut().enumerate() {
-            if let Some(o) = o {
+            if let Some(o) = o
+                && enabled & rgb_enable::output(i) != 0
+            {
                 let Some(b) = o.free.pop_front() else {
                     self.give_back(picked);
                     return Err(DeviceError::OutputsHeld(i));
@@ -447,7 +453,8 @@ impl BackEndStream {
     fn wait(&self, job: &QueuedJob, timeout: Duration) -> Result<BeJob> {
         let mut elapsed = None;
         let mut error = false;
-        for o in self.outputs.iter().flatten() {
+        for (o, b) in self.outputs.iter().zip(job.outputs) {
+            let (Some(o), Some(_)) = (o, b) else { continue };
             let done = o.queue.dequeue(timeout)?;
             error |= done.flags.contains(BufferFlags::ERROR);
             elapsed.get_or_insert(job.start.elapsed());

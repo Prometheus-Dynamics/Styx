@@ -1,80 +1,32 @@
-//! The PiSP capture worker: frames leased straight from the back end's output buffers, the
-//! second output attached to each frame as a `CompanionKind::Scaled` companion, or as a
-//! `CompanionKind::Pyramid` one (the main output scaled by `2^-level`).
-//!
-//! Each output buffer is mapped and exported once (cached per buffer index) and shared by the
-//! leases that hold it; a lease returns its buffer to the back end when it drops, so the two
-//! outputs of a job can live for different times (consumers on a shared capture take the
-//! output they want). The CPU-access sync (`DMA_BUF_IOCTL_SYNC`) happens only when someone
-//! reads the pixels, not for frames handed on as dma-bufs (encoders, GPUs, other processes).
+//! The PiSP capture worker: frames leased straight from the back end's output buffers
+//! (`pisp_lease`), the second output attached to each frame as a `CompanionKind::Scaled`
+//! companion, a `CompanionKind::Pyramid` one (the main output scaled by `2^-level`), the
+//! overview or a region, and the regions extra back end passes make (`pisp_regions`) as
+//! `CompanionKind::Region` companions of the frame they were cut from.
 
-use std::collections::HashMap;
-use std::os::fd::{AsFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use smallvec::SmallVec;
 use styx_capture::prelude::*;
-use styx_core::prelude::{
-    BackendFrameMeta, CompanionKind, ExternalBacking, FrameBackingExport, FrameExportError,
-    FrameFdPlane, FrameRect, FrameResidency, TimestampClock,
-};
+use styx_core::prelude::{CompanionKind, FrameRect};
 use styx_core::queue::BoundedTx;
-use styx_kernel::Mapping;
-use styx_kernel::dma_heap::{self, Access, DmaBuf};
 use styx_pipeline::PipelineError;
-use styx_pipeline::device::{PispFrame, PispPipeline};
-use styx_pisp::device::{BeFormat, BeOutputSetup};
-use styx_pisp::uapi::BeCropConfig;
+use styx_pipeline::device::PispPipeline;
 
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
 use super::super::tunables::NativeIspConfig;
-use super::{aaa_sample, err, layouts, native_meta};
+use super::pisp_lease::{Buffers, Leaser, OutputSpec, Placed, be_crop};
+use super::pisp_regions::{Regions, hand_back};
+use super::{aaa_sample, err};
 use crate::metrics::CaptureMetrics;
-
-/// One back end output as the capture delivers it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct OutputSpec {
-    pub(super) code: FourCc,
-    pub(super) width: u32,
-    pub(super) height: u32,
-}
-
-impl OutputSpec {
-    fn be_format(self) -> Result<BeFormat, CaptureError> {
-        match self.code {
-            FourCc::NV12 => Ok(BeFormat::Nv12),
-            FourCc::RG24 => Ok(BeFormat::Rgb24),
-            c => Err(err(format!("the PiSP back end does not make {c}"))),
-        }
-    }
-
-    /// Bytes of one buffer of this output.
-    pub(super) fn bytes(self) -> u64 {
-        let px = u64::from(self.width) * u64::from(self.height);
-        if self.code == FourCc::NV12 {
-            px * 3 / 2
-        } else {
-            px * 3
-        }
-    }
-
-    pub(super) fn setup(self) -> Result<BeOutputSetup, CaptureError> {
-        Ok(BeOutputSetup {
-            format: self.be_format()?,
-            width: self.width,
-            height: self.height,
-        })
-    }
-}
 
 /// The outputs a processed `mode` capture delivers with `cfg`: the main one (the mode's
 /// format and size unless `cfg` says otherwise) and the optional second one, with the kind of
-/// companion it is attached as (a pyramid level of the main output, else another size).
+/// companion it is attached as (the overview, a pyramid level of the main output, a region,
+/// else another size).
 pub(super) fn output_specs(
     mode: &Mode,
     cfg: &NativeIspConfig,
@@ -90,10 +42,10 @@ pub(super) fn output_specs(
     };
     main.be_format()?;
     if let Some((width, height)) = cfg.overview {
-        if cfg.pyramid_level > 0 || cfg.second_output.is_some() {
+        if cfg.second_output.is_some() {
             tracing::warn!(
                 backend = "native",
-                "pyramid and second output disabled: the overview uses the second output"
+                "second output disabled: the overview uses the second output"
             );
         }
         let overview = OutputSpec {
@@ -124,6 +76,17 @@ pub(super) fn output_specs(
             CompanionKind::Pyramid { level },
         ));
     }
+    // The first region, cropped at full resolution by the second output (at the mode's size).
+    if let Some(k) = cfg.second_output_region() {
+        let region = OutputSpec {
+            code: cfg.regions[k].and_then(|r| r.format).unwrap_or(main.code),
+            width: res.width.get(),
+            height: res.height.get(),
+        };
+        region.be_format()?;
+        let index = k as u8 + 1;
+        return Ok(([Some(main), Some(region)], CompanionKind::Region { index }));
+    }
     let second = cfg.second_output.map(|((width, height), code)| OutputSpec {
         code,
         width,
@@ -135,121 +98,6 @@ pub(super) fn output_specs(
     Ok(([Some(main), second], CompanionKind::Scaled))
 }
 
-/// A back end output buffer, mapped once and shared by the leases of the frames it holds.
-#[derive(Clone)]
-struct BeBuffer {
-    map: Arc<Mapping>,
-    fd: Arc<OwnedFd>,
-    /// From a cached dma-heap, not the driver's uncached buffers.
-    cached: bool,
-}
-
-struct BeBacking {
-    buffer: BeBuffer,
-    /// Each plane's `(offset, len)` in the buffer (plane views start at their plane, as
-    /// for other dma-buf backings, so exports carry real plane offsets).
-    planes: SmallVec<[(usize, usize); 3]>,
-    output: usize,
-    index: u32,
-    synced: AtomicBool,
-    returns: mpsc::Sender<(usize, u32)>,
-}
-
-impl ExternalBacking for BeBacking {
-    fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        let &(offset, len) = self.planes.get(index)?;
-        // The pixels are about to be read on the CPU: sync once (a no-op for the driver's
-        // uncached buffers, cache maintenance for cached ones).
-        if !self.synced.swap(true, Ordering::AcqRel) {
-            let _ = dma_heap::sync(self.buffer.fd.as_fd(), Access::Read, true);
-        }
-        self.buffer.map.as_slice().get(offset..offset + len)
-    }
-
-    fn backing_bytes(&self) -> Option<usize> {
-        Some(self.buffer.map.len())
-    }
-
-    fn backing_kind(&self) -> &'static str {
-        "pispbe_dmabuf"
-    }
-
-    fn can_export(&self) -> bool {
-        true
-    }
-
-    fn residency(&self) -> FrameResidency {
-        FrameResidency::Dmabuf
-    }
-
-    fn cpu_access(&self) -> CpuAccess {
-        if self.buffer.cached {
-            CpuAccess::Cached
-        } else {
-            CpuAccess::Uncached
-        }
-    }
-
-    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
-        let planes = self
-            .planes
-            .iter()
-            .map(|&(offset, len)| {
-                Ok(FrameFdPlane {
-                    fd: self
-                        .buffer
-                        .fd
-                        .as_fd()
-                        .try_clone_to_owned()
-                        .map_err(FrameExportError::Fd)?,
-                    offset,
-                    len,
-                })
-            })
-            .collect::<Result<Vec<_>, FrameExportError>>()?;
-        Ok(Some(FrameBackingExport::DmabufPlanes { planes }))
-    }
-}
-
-impl Drop for BeBacking {
-    fn drop(&mut self) {
-        if self.synced.load(Ordering::Acquire) {
-            let _ = dma_heap::sync(self.buffer.fd.as_fd(), Access::Read, false);
-        }
-        let _ = self.returns.send((self.output, self.index));
-    }
-}
-
-/// Output buffers by (output, index), mapped and exported on first use.
-struct Buffers {
-    cache: HashMap<(usize, u32), BeBuffer>,
-}
-
-impl Buffers {
-    fn get(&mut self, p: &PispPipeline, f: &PispFrame, i: usize) -> Result<BeBuffer, String> {
-        let index = f.job.outputs[i].ok_or("no buffer")?;
-        if let Some(b) = self.cache.get(&(i, index)) {
-            return Ok(b.clone());
-        }
-        let fd = p
-            .output_dmabuf(i, &f.job)
-            .and_then(|fd| fd.try_clone_to_owned().ok())
-            .ok_or("no dma-buf")?;
-        let size = p.output(i, &f.job).map_or(0, <[u8]>::len);
-        let dup = fd.try_clone().map_err(|e| e.to_string())?;
-        let map = DmaBuf::from_fd(dup, size)
-            .map()
-            .map_err(|e| e.to_string())?;
-        let b = BeBuffer {
-            map: Arc::new(map),
-            fd: Arc::new(fd),
-            cached: p.output_cached(i),
-        };
-        self.cache.insert((i, index), b.clone());
-        Ok(b)
-    }
-}
-
 /// What the worker needs besides the pipeline.
 pub(super) struct Worker {
     pub(super) specs: [Option<OutputSpec>; 2],
@@ -258,6 +106,8 @@ pub(super) struct Worker {
     pub(super) strides: [usize; 2],
     /// The main output's crop the back end makes now (`OUTPUT_CROP`).
     pub(super) crop: Option<FrameRect>,
+    /// The other regions.
+    pub(super) regions: Regions,
     pub(super) tx: BoundedTx<FrameLease>,
     /// Whether `tx` was made for this capture (closed when it ends) or is the consumer's.
     pub(super) owns_queue: bool,
@@ -273,62 +123,77 @@ pub(super) struct Worker {
     pub(super) live: CaptureMetrics,
 }
 
-/// A lease of `buffer`, output `spec` of the frame `f`, or its `crop` at full resolution: the
-/// back end writes a crop into the top left of the buffer, its rows in the buffer's stride and
-/// the chroma plane where the buffer's height puts it.
-#[allow(clippy::too_many_arguments)]
-fn lease(
-    spec: OutputSpec,
-    stride: usize,
-    crop: Option<FrameRect>,
-    buffer: BeBuffer,
-    (output, index): (usize, u32),
-    f: &PispFrame,
+/// Frame `f` as delivered: the main output's lease with its companions (the second output's,
+/// the extra passes'). Buffers not leased go back through `returns`. `None`: no main output.
+fn frame_leases(
+    p: &PispPipeline,
+    f: &styx_pipeline::device::PispFrame,
+    buffers: &mut Buffers,
+    w: &Worker,
     returns: &mpsc::Sender<(usize, u32)>,
-    live: &CaptureMetrics,
-) -> FrameLease {
-    let (width, height) = crop.map_or((spec.width, spec.height), |c| (c.width, c.height));
-    let in_buffer = layouts(spec.code, spec.height as usize, stride);
-    let rows = |len: usize| len / spec.height as usize * height as usize;
-    let planes = in_buffer.iter().map(|l| (l.offset, rows(l.len))).collect();
-    let plane_layouts = in_buffer
-        .iter()
-        .map(|l| PlaneLayout {
-            offset: 0,
-            len: rows(l.len),
-            stride: l.stride,
-        })
-        .collect();
-    let res = Resolution::new(width, height).expect("non-zero output size");
-    let format = MediaFormat::new(spec.code, res, ColorSpace::Srgb);
-    let mut meta = FrameMeta::new(format, f.timestamp.as_nanos() as u64)
-        .with_backend(BackendFrameMeta::Native(native_meta(f.sequence, &f.sensor)))
-        .with_capture_instant(std::time::Instant::now());
-    meta.clock = Some(TimestampClock::Monotonic);
-    meta.crop = crop;
-    FrameLease::from_external(
-        meta,
-        plane_layouts,
-        Arc::new(live.track(BeBacking {
-            buffer,
-            planes,
-            output,
-            index,
-            synced: AtomicBool::new(false),
-            returns: returns.clone(),
-        })),
-    )
-}
-
-/// `rect` as the back end's crop config.
-fn be_crop(rect: FrameRect) -> BeCropConfig {
-    let side = |v: u32| u16::try_from(v).unwrap_or(u16::MAX);
-    BeCropConfig {
-        offset_x: side(rect.x),
-        offset_y: side(rect.y),
-        width: side(rect.width),
-        height: side(rect.height),
+) -> Result<Option<FrameLease>, String> {
+    let mut leaser = Leaser {
+        p,
+        f,
+        buffers,
+        returns,
+        live: &w.live,
+    };
+    let mut unleased = Vec::new();
+    let placed = |i: usize, spec: OutputSpec| Placed {
+        spec,
+        stride: w.strides[i],
+        size: None,
+        crop: (i == 0).then_some(w.crop).flatten(),
+    };
+    let mut main = None;
+    let mut second = None;
+    let mut failed = None;
+    for (i, spec) in w.specs.iter().enumerate() {
+        let (Some(spec), Some(index)) = (spec, f.job.outputs[i]) else {
+            continue;
+        };
+        let what = match i {
+            0 => Some((CompanionKind::Scaled, placed(0, *spec))),
+            _ => w.regions.second(w.second_kind, placed(1, *spec)),
+        };
+        let Some((kind, at)) = what.filter(|_| failed.is_none()) else {
+            unleased.push((i, index));
+            continue;
+        };
+        match leaser.lease(at, (i, index)) {
+            Ok(l) if i == 0 => main = Some(l),
+            Ok(l) => second = Some((kind, l)),
+            Err(e) => {
+                unleased.push((i, index));
+                failed = Some(e);
+            }
+        }
     }
+    let main_placed = w.specs[0].map(|s| placed(0, s));
+    let passes = match (main_placed, failed.is_none()) {
+        (Some(at), true) => w.regions.pass_companions(&mut leaser, f, at, &mut unleased),
+        _ => {
+            for pass in f.passes.iter().flatten() {
+                unleased.push((pass.output, pass.index));
+            }
+            Ok(Vec::new())
+        }
+    };
+    hand_back(returns, &unleased);
+    if let Some(e) = failed {
+        return Err(format!("output buffer: {e}"));
+    }
+    let passes = passes.map_err(|e| format!("output buffer: {e}"))?;
+    let Some(mut frame) = main else {
+        return Ok(None);
+    };
+    for (kind, lease) in second.into_iter().chain(passes) {
+        frame = frame
+            .with_companion(kind, lease)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(Some(frame))
 }
 
 /// Runs the capture on its own thread until stopped or the queue closes.
@@ -346,9 +211,7 @@ pub(super) fn spawn(
             w.live.register_thread();
             let tx = &w.tx;
             let (ret_tx, ret_rx) = mpsc::channel::<(usize, u32)>();
-            let mut buffers = Buffers {
-                cache: HashMap::new(),
-            };
+            let mut buffers = Buffers::default();
             let mut held_drops = 0u64;
             loop {
                 if w.stop.try_recv().is_ok() {
@@ -370,6 +233,7 @@ pub(super) fn spawn(
                         }
                     }
                 }
+                w.regions.apply(&mut p, &w.loop_controls.regions, w.crop);
                 let mut f = match p.next(w.timeout) {
                     Ok(f) => f,
                     // Consumers hold every output buffer: this frame is dropped (never wait
@@ -404,48 +268,13 @@ pub(super) fn spawn(
                 w.live.isp_time(f.times.be_job, f.times.total);
                 w.live
                     .aaa(&aaa_sample(&p.step().params, p.controls(), f.sequence));
-                let mut leases: [Option<FrameLease>; 2] = [None, None];
-                let mut failed = None;
-                for (i, spec) in w.specs.iter().enumerate() {
-                    let (Some(spec), Some(index)) = (spec, f.job.outputs[i]) else {
-                        continue;
-                    };
-                    match buffers.get(&p, &f, i) {
-                        Ok(b) => {
-                            let crop = if i == 0 { w.crop } else { None };
-                            leases[i] = Some(lease(
-                                *spec,
-                                w.strides[i],
-                                crop,
-                                b,
-                                (i, index),
-                                &f,
-                                &ret_tx,
-                                &w.live,
-                            ));
-                        }
-                        Err(e) => {
-                            p.release_output(i, index);
-                            failed = Some(e);
-                        }
+                let frame = match frame_leases(&p, &f, &mut buffers, &w, &ret_tx) {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        *w.error.lock() = Some(err(e));
+                        break;
                     }
-                }
-                if let Some(e) = failed {
-                    *w.error.lock() = Some(err(format!("output buffer: {e}")));
-                    break;
-                }
-                let [Some(main), second] = leases else {
-                    continue;
-                };
-                let frame = match second {
-                    Some(s) => match main.with_companion(w.second_kind, s) {
-                        Ok(f) => f,
-                        Err(e) => {
-                            *w.error.lock() = Some(err(e));
-                            break;
-                        }
-                    },
-                    None => main,
                 };
                 if deliver(&w.live, tx, frame, "native-pisp", w.send_timeout) {
                     break;
@@ -465,128 +294,7 @@ pub(super) fn spawn(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
-    use styx_pipeline::SensorValues;
-    use styx_pipeline::device::PispTimes;
-    use styx_pisp::device::BeJob;
-
     use super::*;
-
-    /// A back end buffer stand-in: a memfd holding an NV12 frame (Y = 1, CbCr = 2).
-    fn buffer(w: usize, h: usize) -> BeBuffer {
-        let len = w * h * 3 / 2;
-        let buf = DmaBuf::memfd("nv12", len).unwrap();
-        let mut map = buf.map().unwrap();
-        map.as_mut_slice()[..w * h].fill(1);
-        map.as_mut_slice()[w * h..].fill(2);
-        BeBuffer {
-            map: Arc::new(map),
-            fd: Arc::new(buf.into_fd()),
-            cached: true,
-        }
-    }
-
-    fn frame() -> PispFrame {
-        PispFrame {
-            sequence: 7,
-            timestamp: Duration::from_millis(5),
-            dequeued: Instant::now(),
-            sensor: SensorValues {
-                frame: 7,
-                exposure: Duration::from_millis(10),
-                analogue_gain: 2.0,
-                digital_gain: 1.0,
-                frame_duration: Duration::from_millis(33),
-                verified: true,
-            },
-            job: BeJob {
-                outputs: [Some(3), Some(1)],
-                elapsed: Duration::ZERO,
-            },
-            sequence_mismatch: false,
-            request_lands: None,
-            settings_from: Some(6),
-            raw: None,
-            digital_gain: 1.0,
-            flicker: 1.0,
-            times: PispTimes::default(),
-        }
-    }
-
-    #[test]
-    fn nv12_leases_export_their_planes_and_return_the_buffer() {
-        let (w, h) = (64, 32);
-        let spec = OutputSpec {
-            code: FourCc::NV12,
-            width: w as u32,
-            height: h as u32,
-        };
-        let (tx, rx) = mpsc::channel();
-        let live = CaptureMetrics::default();
-        let f = lease(spec, w, None, buffer(w, h), (0, 3), &frame(), &tx, &live);
-        let planes = f.planes();
-        assert_eq!(planes.len(), 2);
-        assert!(planes[0].data().iter().all(|&v| v == 1));
-        assert_eq!(planes[1].data().len(), w * h / 2);
-        assert!(planes[1].data().iter().all(|&v| v == 2));
-        assert_eq!(f.residency(), FrameResidency::Dmabuf);
-        // Exported as one plane per layout with its offset in the buffer, as another process
-        // (or a GPU) imports it.
-        let FrameBackingExport::DmabufPlanes { planes: fds } = f.export_backing().unwrap() else {
-            panic!("not a dma-buf export");
-        };
-        assert_eq!(
-            fds.iter().map(|p| (p.offset, p.len)).collect::<Vec<_>>(),
-            [(0, w * h), (w * h, w * h / 2)]
-        );
-        let imported = FrameLease::from_dmabuf(f.meta().clone(), f.layouts(), fds).expect("import");
-        assert!(imported.planes()[1].data().iter().all(|&v| v == 2));
-        drop(imported);
-        assert!(rx.try_recv().is_err(), "returned while held");
-        drop(planes);
-        drop(f);
-        assert_eq!(rx.try_recv().unwrap(), (0, 3));
-    }
-
-    /// A crop sits in the top left of the full-size buffer: the planes keep the buffer's stride
-    /// and the chroma plane its offset.
-    #[test]
-    fn cropped_leases_cover_the_crop_in_the_full_size_buffer() {
-        let (w, h) = (64, 32);
-        let spec = OutputSpec {
-            code: FourCc::NV12,
-            width: w as u32,
-            height: h as u32,
-        };
-        let (tx, _rx) = mpsc::channel();
-        let live = CaptureMetrics::default();
-        let crop = FrameRect::new(8, 4, 32, 16);
-        let f = lease(
-            spec,
-            w,
-            Some(crop),
-            buffer(w, h),
-            (0, 3),
-            &frame(),
-            &tx,
-            &live,
-        );
-        let res = f.meta().format.resolution;
-        assert_eq!((res.width.get(), res.height.get()), (32, 16));
-        assert_eq!(f.meta().crop, Some(crop));
-        assert_eq!(f.plane_strides().as_slice(), &[w, w]);
-        let planes = f.planes();
-        assert_eq!(planes[0].data().len(), w * 16);
-        assert!(planes[1].data().iter().all(|&v| v == 2));
-        let FrameBackingExport::DmabufPlanes { planes: fds } = f.export_backing().unwrap() else {
-            panic!("not a dma-buf export");
-        };
-        assert_eq!(
-            fds.iter().map(|p| (p.offset, p.len)).collect::<Vec<_>>(),
-            [(0, w * 16), (w * h, w * 8)]
-        );
-    }
 
     #[test]
     fn output_specs_follow_the_config() {

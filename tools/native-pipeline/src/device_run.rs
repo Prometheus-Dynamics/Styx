@@ -259,8 +259,26 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     }
     options.temporal_denoise = !a.no_tdn;
     options.spatial_denoise = a.spatial_denoise;
+    options.pass_tdn = crate::passes::parse_tdn(&a.pass_tdn)?;
+    options.pass_buffers = crate::passes::parse(&a.passes)?.len() as u32;
+    let mut run = crate::passes::PassRun::new(
+        crate::passes::parse(&a.passes)?,
+        a.pass_probe,
+        a.pass_move,
+        (1280, 800),
+    );
     let mut p =
         PispPipeline::open(cam, &settings(a), &tuning, options).map_err(|e| e.to_string())?;
+    for (i, ((x, y, w, h), _, _)) in crate::passes::parse(&a.main_crops)?.into_iter().enumerate() {
+        let crop = styx_pisp::uapi::BeCropConfig {
+            offset_x: x,
+            offset_y: y,
+            width: w,
+            height: h,
+        };
+        p.set_output_crop(i, Some(crop))
+            .map_err(|e| e.to_string())?;
+    }
     println!("pisp: temporal denoise {:?}", p.temporal_denoise());
     if let Some(w) = crate::restart::requested_warm(a) {
         p.set_warm_start(w);
@@ -313,6 +331,10 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             Some(c) => p.controller().set_controls(c),
             None => p.controller().set_controls(Default::default()),
         }
+        if let Err(e) = run.before_frame(&mut p, i) {
+            result = Err(format!("frame {i}: {e}"));
+            break;
+        }
         let f = match p.next(TIMEOUT) {
             Ok(f) => f,
             Err(e) => {
@@ -364,6 +386,10 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             }
             p.sync_output(1, &f.job, false).map_err(|e| e.to_string())?;
         }
+        let compared = (!a.no_read).then_some((s0, h0));
+        if let Err(e) = run.after_frame(&mut p, &f, compared) {
+            result = Err(format!("frame {i}: {e}"));
+        }
         p.release(&f.job);
         if !a.quiet {
             println!("{}", log.line());
@@ -374,6 +400,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let (cpu1, rss) = process_usage();
     let threads = thread_usage();
     let updates = p.be_updates();
+    let pass_lines = run.report(&p);
     let p_startup = *p.startup();
     p.controller().stop_recording().map_err(|e| e.to_string())?;
     let mut in_place = None;
@@ -396,6 +423,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         ),
     ];
     extra.push(startup_line(p_startup, opened_to_open, first));
+    extra.extend(pass_lines);
     let n = frames.len().max(1) as f64;
     for e in styx_pisp::device::profile::report() {
         extra.push(format!(

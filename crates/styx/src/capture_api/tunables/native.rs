@@ -84,6 +84,24 @@ impl NativeDeflicker {
     }
 }
 
+/// Regions of interest a native camera's PiSP makes besides its main output (see
+/// [`NativeIspConfig::regions`]).
+pub const MAX_NATIVE_REGIONS: usize = 15;
+
+/// A region of interest the PiSP crops at full resolution besides the main output, delivered
+/// with every frame as a `CompanionKind::Region` companion (see [`NativeIspConfig::regions`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct NativeRegion {
+    /// Where it starts (frame pixels, rounded out to even pixels, at least 16x16). `None`: no
+    /// region (no companion) until its control sets one.
+    pub rect: Option<FrameRect>,
+    /// Its format, `NV12` or `RG24` (`None`: the main output's). Only the region the second
+    /// output makes can differ from the main output's.
+    pub format: Option<FourCc>,
+}
+
 /// What a native camera's ISP delivers for a processed (`NV12` / `RG24`) mode. The PiSP's
 /// back end makes two outputs from one pass over each raw frame: the main one and a second
 /// one (with the downscaler) attached to every frame as a `CompanionKind::Scaled` companion
@@ -114,8 +132,19 @@ pub struct NativeIspConfig {
     /// frame as a `CompanionKind::Overview` companion (`FrameLease::overview`), from the second
     /// output; with [`Self::crop`], a low-resolution view of everything around the region.
     /// Takes the second output: `pyramid_level` and `second_output` are then ignored. `None`
-    /// (default): off.
+    /// (default): off. With [`Self::pyramid_level`] too, the pyramid level comes from an extra
+    /// back end pass (of the main output's region, following it).
     pub overview: Option<(u32, u32)>,
+    /// PiSP, with the main output at the mode's size: more regions of the frame, each cropped
+    /// at full resolution from the same raw frame and attached to every frame as a
+    /// `CompanionKind::Region { index }` companion (`FrameLease::region`; region `k` of this
+    /// list is index `k + 1`, the main output index 0), moved while running by the
+    /// `region_crop(index)` controls. The first comes from the second output when nothing else
+    /// takes it and the main output is the whole frame (whose pass then covers every region at
+    /// no extra cost); the others from extra back end passes over the raw frame, one per
+    /// region (about 0.05 ms of back end time for a 128x128 region, 0.4 ms for 640x400, and
+    /// 0.02 ms of CPU each on the CM5), in the main output's format. Empty slots make nothing.
+    pub regions: [Option<NativeRegion>; MAX_NATIVE_REGIONS],
     /// Use the ISP driver's own buffers, which the CPU reads uncached (the Y plane of a
     /// 1280x800 frame in 1.9 ms on the CM5). `false` (default): cached dma-heap buffers, read
     /// at memory speed (cache maintenance only when a frame's pixels are read). With the
@@ -158,6 +187,7 @@ impl Default for NativeIspConfig {
             pyramid_level: 0,
             crop: None,
             overview: None,
+            regions: [None; MAX_NATIVE_REGIONS],
             driver_buffers: false,
             soft_threads: None,
             temporal_denoise: true,
@@ -169,7 +199,47 @@ impl Default for NativeIspConfig {
     }
 }
 
+impl NativeIspConfig {
+    /// The region (slot in [`Self::regions`]) the second output makes: the first one, when no
+    /// overview, pyramid level or second output takes the second output and the main output is
+    /// not cropped (its pass then reads the whole frame, so a crop on the second output costs
+    /// nothing; two crops far apart in one pass cost more than a pass each, as all the tiles
+    /// between them are processed).
+    pub fn second_output_region(&self) -> Option<usize> {
+        let taken = self.overview.is_some()
+            || self.pyramid_level > 0
+            || self.second_output.is_some()
+            || self.crop.is_some();
+        if taken {
+            return None;
+        }
+        self.regions.iter().position(Option::is_some)
+    }
+
+    /// The regions extra back end passes make (slots in [`Self::regions`]).
+    pub fn pass_regions(&self) -> impl Iterator<Item = usize> + '_ {
+        let second = self.second_output_region();
+        (0..MAX_NATIVE_REGIONS).filter(move |&k| self.regions[k].is_some() && Some(k) != second)
+    }
+
+    /// An extra back end pass makes the pyramid level (the second output makes the overview).
+    pub fn pyramid_pass(&self) -> bool {
+        self.overview.is_some() && self.pyramid_level > 0
+    }
+}
+
 impl StyxConfig {
+    /// Have a native camera's PiSP also crop these regions from every frame (see
+    /// [`NativeIspConfig::regions`]; at most [`MAX_NATIVE_REGIONS`], the rest are ignored).
+    pub fn native_regions(mut self, regions: &[NativeRegion]) -> Self {
+        let mut slots = [None; MAX_NATIVE_REGIONS];
+        for (slot, region) in slots.iter_mut().zip(regions) {
+            *slot = Some(*region);
+        }
+        self.backends.native.regions = slots;
+        self
+    }
+
     /// Run a native camera's software ISP on `threads` threads (see
     /// [`NativeIspConfig::soft_threads`]).
     pub fn native_soft_threads(mut self, threads: usize) -> Self {
@@ -263,6 +333,24 @@ impl StyxConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_second_output_makes_a_region_only_when_free_and_the_main_output_is_whole() {
+        let r = NativeRegion {
+            rect: Some(FrameRect::new(0, 0, 64, 64)),
+            format: None,
+        };
+        let c = StyxConfig::default().native_regions(&[r, r, r]);
+        let n = c.backends.native;
+        assert_eq!(n.second_output_region(), Some(0));
+        assert_eq!(n.pass_regions().collect::<Vec<_>>(), [1, 2]);
+        let cropped = c.clone().native_crop(FrameRect::new(0, 0, 256, 256));
+        assert_eq!(cropped.backends.native.second_output_region(), None);
+        assert_eq!(cropped.backends.native.pass_regions().count(), 3);
+        let overview = c.native_overview(320, 200).native_pyramid_level(1);
+        assert_eq!(overview.backends.native.second_output_region(), None);
+        assert!(overview.backends.native.pyramid_pass());
+    }
 
     #[test]
     fn denoise_defaults_on_and_builders_set_it() {

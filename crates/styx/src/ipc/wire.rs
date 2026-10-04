@@ -331,6 +331,10 @@ fn write_frame(w: &mut Writer, frame: &WireFrame) {
                 w.u8(3);
                 w.u8(0);
             }
+            CompanionKind::Region { index } => {
+                w.u8(4);
+                w.u8(*index);
+            }
         }
         write_frame(w, companion);
     }
@@ -389,6 +393,7 @@ fn read_frame(r: &mut Reader<'_>, top_level: bool) -> Result<WireFrame, IpcError
                 (1, level) => CompanionKind::Pyramid { level },
                 (2, _) => CompanionKind::Scaled,
                 (3, _) => CompanionKind::Overview,
+                (4, index) => CompanionKind::Region { index },
                 _ => return Err(IpcError::Malformed("unknown companion kind")),
             };
             Ok((kind, read_frame(r, false)?))
