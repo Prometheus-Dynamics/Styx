@@ -27,6 +27,7 @@ members = [
     "tools/styx-tune",
     "examples",
     "examples/nostd-smoke",
+    "examples/nostd-camera",
 ]
 # Optional bridges that link GStreamer/PipeWire; their own workspaces (docs/ecosystem.md).
 exclude = ["crates/gst-styx", "crates/pipewire-styx"]

@@ -58,6 +58,7 @@ pub mod pisp_be;
 pub mod process;
 #[cfg(feature = "std")]
 pub mod rawrec;
+pub mod reexpose;
 #[cfg(feature = "std")]
 pub mod replay;
 pub mod sensor;

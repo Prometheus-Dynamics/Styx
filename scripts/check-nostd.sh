@@ -3,7 +3,10 @@
 # --no-default-features for a Cortex-M4F/M7, a Cortex-M33, a RISC-V microcontroller and
 # WebAssembly (styx-hal also without alloc: it has no allocator dependency at all), the no_std
 # smoke crate (examples/nostd-smoke) built for the same targets and its logic run as a host
-# test with every dependency built without std.
+# test with every dependency built without std; the firmware-like camera (examples/nostd-camera:
+# styx-runtime's Camera on a mock platform with the pipeline core's software ISP loop, 3A,
+# stills and metrics) built for the same targets, run as a host test without std and with it,
+# and the two runs' traces compared bit for bit.
 #
 # Needs the targets: rustup target add thumbv7em-none-eabihf thumbv8m.main-none-eabihf
 # riscv32imac-unknown-none-elf wasm32-unknown-unknown (the script adds them when rustup is
@@ -45,6 +48,8 @@ for target in "${targets[@]}"; do
     done
     echo "==> styx-nostd-smoke for $target"
     cargo clippy -q -p styx-nostd-smoke --target "$target" -- -D warnings
+    echo "==> styx-nostd-camera for $target"
+    cargo clippy -q -p styx-nostd-camera --target "$target" -- -D warnings
 done
 
 # The same crates without std on the host: the no_std code paths with SIMD (x86 / NEON leaves
@@ -59,3 +64,15 @@ done
 
 echo "==> styx-nostd-smoke host test (dependencies without std)"
 cargo test -q -p styx-nostd-smoke
+
+echo "==> styx-nostd-camera host run without std, then with std: traces bit for bit"
+trace_dir="$(mktemp -d)"
+trap 'rm -rf "$trace_dir"' EXIT
+STYX_NOSTD_TRACE="$trace_dir/nostd.txt" cargo test -q -p styx-nostd-camera
+STYX_NOSTD_TRACE="$trace_dir/std.txt" cargo test -q -p styx-nostd-camera --features std
+if ! cmp -s "$trace_dir/nostd.txt" "$trace_dir/std.txt"; then
+    diff "$trace_dir/nostd.txt" "$trace_dir/std.txt" | head -20
+    echo "the no_std and std runs differ" >&2
+    exit 1
+fi
+echo "    $(wc -l <"$trace_dir/std.txt") frames and shots identical"

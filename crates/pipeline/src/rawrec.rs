@@ -10,7 +10,9 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use styx_softisp::{RawFormat, RawPacking};
+use styx_softisp::RawFormat;
+#[cfg(test)]
+use styx_softisp::RawPacking;
 
 use crate::controller::SensorValues;
 use crate::error::{PipelineError, Result};
@@ -204,35 +206,7 @@ impl RawRecording {
     }
 }
 
-/// Unpacks one row of `width` samples to 16-bit values (at their bit depth, not shifted).
-pub fn unpack_row(packing: RawPacking, row: &[u8], width: usize, out: &mut [u16]) {
-    match packing {
-        RawPacking::U8 => {
-            for (o, &b) in out[..width].iter_mut().zip(row) {
-                *o = u16::from(b);
-            }
-        }
-        RawPacking::U16Le { .. } => {
-            for (o, c) in out[..width].iter_mut().zip(row.chunks_exact(2)) {
-                *o = u16::from_le_bytes([c[0], c[1]]);
-            }
-        }
-        RawPacking::Csi2Raw10 => {
-            for (i, o) in out[..width].iter_mut().enumerate() {
-                let g = (i / 4) * 5;
-                let lsb = (row[g + 4] >> ((i % 4) * 2)) & 3;
-                *o = (u16::from(row[g + i % 4]) << 2) | u16::from(lsb);
-            }
-        }
-        RawPacking::Csi2Raw12 => {
-            for (i, o) in out[..width].iter_mut().enumerate() {
-                let g = (i / 2) * 3;
-                let lsb = (row[g + 2] >> ((i % 2) * 4)) & 0xf;
-                *o = (u16::from(row[g + i % 2]) << 4) | u16::from(lsb);
-            }
-        }
-    }
-}
+pub use crate::reexpose::unpack_row;
 
 /// Packs 10-bit samples into a CSI-2 RAW10 row.
 pub fn pack_raw10_row(samples: &[u16], out: &mut [u8]) {
