@@ -397,7 +397,7 @@ impl SoftLoop {
             .clone()
             .unwrap_or_else(|| IspSettings::neutral(self.info.black_level));
         let (step, stats) = if p.ran {
-            (self.algo.step().clone(), self.algo.take_statistics())
+            (self.algo.take_step(), self.algo.take_statistics())
         } else {
             let step = Step {
                 frame: sensor.frame,

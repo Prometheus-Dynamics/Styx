@@ -186,6 +186,9 @@ pub struct Algorithms {
     step: Step,
     /// `step` came from a frame's statistics (not the start-up values).
     stepped: bool,
+    /// `step.isp` was taken ([`Self::take_step`]): rebuilt from the params for the next frame.
+    isp_taken: bool,
+    black_level: f64,
     /// The frame the algorithms last ran on.
     last_run: Option<u64>,
     /// While settled, the algorithms run every this many frames.
@@ -208,6 +211,8 @@ impl Algorithms {
                 params: Default::default(),
             },
             stepped: false,
+            isp_taken: false,
+            black_level,
             last_run: None,
             settled_every: 1,
             stats: Statistics::default(),
@@ -243,6 +248,20 @@ impl Algorithms {
     /// The statistics of the frame the algorithms last ran on.
     pub fn statistics(&self) -> &Statistics {
         &self.stats
+    }
+
+    /// The newest output, its settings moved out (no copy): the next frame's settings are
+    /// built from its params again. For callers that hand each new step on (the software loop).
+    pub fn take_step(&mut self) -> Step {
+        let isp = core::mem::replace(&mut self.step.isp, IspSettings::neutral(self.black_level));
+        self.isp_taken = self.stepped;
+        Step {
+            frame: self.step.frame,
+            sensor: self.step.sensor,
+            lens: self.step.lens,
+            isp,
+            params: self.step.params.clone(),
+        }
     }
 
     /// Takes the statistics of the frame the algorithms last ran on (leaving them empty).
@@ -285,6 +304,7 @@ impl Algorithms {
             params: Default::default(),
         };
         self.stepped = false;
+        self.isp_taken = false;
         self.last_run = None;
         Ok(start)
     }
@@ -309,7 +329,13 @@ impl Algorithms {
     /// The settings for the frame `values` describes: the newest the algorithms made, with
     /// the digital gain (and deflicker's correction) for the exposure that frame got.
     pub fn settings(&mut self, values: &SensorValues) -> &IspSettings {
-        if self.stepped {
+        if self.isp_taken {
+            // The same settings retargeting would give: from the params, for this frame.
+            self.step.isp = self
+                .controller
+                .isp_for(&self.step.params, self.step.frame, values);
+            self.isp_taken = false;
+        } else if self.stepped {
             self.controller
                 .retarget(&mut self.step.isp, &self.step.params, values);
         }
@@ -340,6 +366,7 @@ impl Algorithms {
         }
         self.step = step;
         self.stepped = true;
+        self.isp_taken = false;
         self.last_run = Some(values.frame);
         Ok(lands)
     }
