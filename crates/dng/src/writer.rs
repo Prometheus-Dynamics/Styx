@@ -1,8 +1,11 @@
 //! Writing DNG 1.4 files.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use alloc::{format, string::String, vec, vec::Vec};
+use core::time::Duration;
 
 use crate::color::{Illuminant, Matrix3};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::opcode::{self, Opcode};
 use crate::raw::{RawImage, SampleLayout};
 use crate::tiff::{Ifd, Value, rational, srational, tag};
@@ -51,8 +54,9 @@ pub struct DngMetadata {
     pub iso: Option<u32>,
     /// F-number, if the lens has a known one.
     pub f_number: Option<f64>,
-    /// When the frame was captured (wall clock).
-    pub capture_time: Option<SystemTime>,
+    /// When the frame was captured: wall-clock time since the Unix epoch (UTC; with std,
+    /// `SystemTime::now().duration_since(UNIX_EPOCH)`).
+    pub capture_time: Option<Duration>,
     /// Camera maker.
     pub make: String,
     /// Camera model.
@@ -109,9 +113,9 @@ fn civil(days: i64) -> (i64, u32, u32) {
     (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
-/// EXIF date `YYYY:MM:DD HH:MM:SS` (UTC) and the milliseconds.
-fn exif_time(t: SystemTime) -> (String, String) {
-    let d = t.duration_since(UNIX_EPOCH).unwrap_or_default();
+/// EXIF date `YYYY:MM:DD HH:MM:SS` (UTC) and the milliseconds, from the time since the Unix
+/// epoch.
+fn exif_time(d: Duration) -> (String, String) {
     let secs = d.as_secs() as i64;
     let (y, mo, da) = civil(secs.div_euclid(86_400));
     let s = secs.rem_euclid(86_400);
@@ -341,7 +345,7 @@ mod tests {
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(19_723), (2024, 1, 1));
         assert_eq!(civil(20_729), (2026, 10, 3));
-        let t = UNIX_EPOCH + Duration::from_millis(1_791_000_000_123);
+        let t = Duration::from_millis(1_791_000_000_123);
         assert_eq!(
             exif_time(t),
             ("2026:10:03 04:00:00".to_string(), "123".to_string())

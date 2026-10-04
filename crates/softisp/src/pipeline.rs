@@ -1,6 +1,8 @@
 //! The row loop: a worker turns a band of output rows into pixels, keeping a small ring of
 //! front-end rows (unpacked, black level, gains, lens shading) around the current row.
 
+use alloc::{vec, vec::Vec};
+
 use crate::format::RawPacking;
 use crate::output::{OutputBuffers, Scale};
 use crate::params::Demosaic;
@@ -115,10 +117,10 @@ impl Worker {
         if self.width != w {
             self.width = w;
             self.slots = vec![vec![0; w + 2 * PAD]; SLOTS];
-            self.rgb16 = std::array::from_fn(|_| vec![0; w]);
-            self.rgb8 = std::array::from_fn(|_| std::array::from_fn(|_| vec![0; w]));
+            self.rgb16 = core::array::from_fn(|_| vec![0; w]);
+            self.rgb8 = core::array::from_fn(|_| core::array::from_fn(|_| vec![0; w]));
             self.luma16 = vec![0; w];
-            self.quad = std::array::from_fn(|_| vec![0; w / 2]);
+            self.quad = core::array::from_fn(|_| vec![0; w / 2]);
         }
         match (p.stats.as_ref().filter(|_| stats), &mut self.stats) {
             (Some(setup), Some(acc))
@@ -170,7 +172,7 @@ impl Worker {
     /// Front rows `y - r ..= y + r`, each from column `-r`.
     fn window<const N: usize>(&mut self, p: &Prepared, src: &Source, y: usize) -> [usize; N] {
         let r = (N / 2) as isize;
-        std::array::from_fn(|i| self.front(p, src, y as isize - r + i as isize))
+        core::array::from_fn(|i| self.front(p, src, y as isize - r + i as isize))
     }
 
     /// Output row `oy`: planar 8-bit RGB in `rgb8[k]` and its luma, or packed instead, or (fp16 only, the second row of a 4:2:0 pair, `k` 1) luma and the

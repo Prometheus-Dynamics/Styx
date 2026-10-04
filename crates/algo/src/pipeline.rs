@@ -1,5 +1,7 @@
 //! The [`Algorithm`] trait and the [`Pipeline`] that runs an ordered set of them.
 
+use alloc::{boxed::Box, vec::Vec};
+
 use crate::algos::{Af, Agc, Alsc, Awb, BlackLevel, Ccm, Contrast, Denoise, Lux};
 use crate::config::CameraConfig;
 use crate::error::Result;
@@ -50,8 +52,8 @@ impl Default for Pipeline {
     }
 }
 
-impl std::fmt::Debug for Pipeline {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Pipeline {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Pipeline")
             .field("algorithms", &self.names())
             .finish_non_exhaustive()

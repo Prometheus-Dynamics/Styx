@@ -4,7 +4,8 @@
 //! them in order over the same `Params`, so e.g. CCM reads the colour temperature AWB wrote.
 //! Values persist from frame to frame until an algorithm changes them.
 
-use std::time::Duration;
+use alloc::{string::String, vec::Vec};
+use core::time::Duration;
 
 use serde::{Deserialize, Serialize};
 

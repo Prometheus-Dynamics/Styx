@@ -20,7 +20,8 @@
 //! in lines. Exposures are clamped at issue time to the frame length predicted for the frame
 //! they land on.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use crate::desc::Delays;
 
@@ -325,7 +326,7 @@ impl ControlScheduler {
                 None => d - 1,
             };
             let later = self.pending[i].split_off(&(due_limit + 1));
-            let due = std::mem::replace(&mut self.pending[i], later);
+            let due = core::mem::replace(&mut self.pending[i], later);
             // Of several due values the one for the latest frame wins; the others would land on
             // the same frame and be overwritten.
             let Some((_, mut value)) = due.into_iter().next_back() else {

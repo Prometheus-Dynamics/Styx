@@ -52,6 +52,8 @@
 //!   control at once.
 //! * Pausing continuous AF is not implemented yet.
 
+use alloc::{vec, vec::Vec};
+
 mod measure;
 mod scan;
 #[cfg(test)]
@@ -62,6 +64,8 @@ mod types;
 use crate::config::{CameraConfig, LensConfig};
 use crate::error::Result;
 use crate::frame::{Controls, FrameMetadata};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Algorithm;
 use crate::pwl::Pwl;

@@ -101,6 +101,17 @@ box (OV9782 1280x800) unless stated.
       service's metrics request, `metrics_top`. Checked against the consumers' own measurement
       on the CM5. See [docs/metrics.md](docs/metrics.md).
 
+### Portability (`no_std`, phase 1: the brains)
+- [x] `styx-core-rs` (formats, plane layouts, frame metadata, requirements, controls, SIMD
+      kernels), `styx-algo` (all 3A and AF, tuning from TOML / Raspberry Pi JSON strings, the
+      simulator), `styx-softisp` (kernels, `SoftIsp` on the calling thread), `styx-sensor`
+      (descriptions, timing, gains, scheduler, embedded data, lenses, the driver over a
+      `RegisterBus`), `styx-pisp` (config builders, tiling, statistics), `styx-dng` build as
+      `no_std` + `alloc` without their default `std` feature; Linux builds unchanged (softisp
+      benches within noise). Built for Cortex-M33, RISC-V and wasm32 in CI
+      (`scripts/check-nostd.sh`); `examples/nostd-smoke` runs AE/AWB and the ISP without std
+      as a host test. See [portability.md](docs/portability.md).
+
 ### HeliOS
 - [x] `helios-peripherals` runs on the native stack (HeliOS branch `styx-native-trial`):
       2 h with helios-engine consuming, 3.7 % CPU, 30 MB, no stalls; ship checklist in
@@ -176,6 +187,14 @@ box (OV9782 1280x800) unless stated.
 
 ### Platforms
 - [ ] A second bridged sensor and a non-Pi board (software ISP or its own ISP).
+- [ ] `no_std` phase 2: a HAL (I²C, GPIO, clocks, a CSI/DVP receiver, DMA buffers) and a
+      `no_std` camera runtime driving `SensorDriver`, the 3A `Pipeline` and `SoftIsp` per
+      frame; frames (`FrameLease`, pools) without std; run on real MCU hardware (so far only
+      built for bare-metal targets and run on the host).
+- [ ] `no_std` on targets without pointer-sized atomics (Cortex-M0, RISC-V without `a`):
+      `SensorDriver` and the fp16 tables hold `Arc`s (`portable-atomic`, or `Rc`).
+- [ ] `no_std` replays: 3A results through libm can differ from std's in the last bits, so a
+      replay recorded on Linux is not bit-exact on a `no_std` target (deterministic per build).
 - [x] GPU ISP path where Vulkan exists (`styx-gpuisp`, optional): the software ISP's pipeline
       as Vulkan compute shaders (ash, Vulkan loaded at run time), bit-exact with the integer
       arithmetic (pictures and statistics, RADV and llvmpipe), capture dma-bufs imported and
@@ -222,6 +241,20 @@ box (OV9782 1280x800) unless stated.
 - [x] AF in the metrics: state, mode, lens position (dioptres), lens settled, scans started
       (unit-tested; no camera with a lens on the dev box yet).
 - [ ] CPU of the software ISP's worker pool per capture.
+
+### Fuzzing
+- [x] cargo-fuzz targets for every parser of untrusted bytes (UVC descriptors and streams, sensor
+      descriptions, embedded data and kernel-driver reports, tuning files, PiSP statistics,
+      kernel messages, raw and MJPEG decoders, imported frame layouts, frame socket and camera
+      service messages and requests, recordings, raw recordings), `scripts/fuzz.sh`, nightly CI
+      smoke run; see [docs/fuzzing.md](docs/fuzzing.md). Found and fixed: out-of-bounds reads in
+      odd-width UYVY/NV12 decoding, SIGBUS on a short memfd from another process, unchecked
+      imported descriptors, allocations sized from headers, overflow panics.
+- [ ] Fuzz the netcam multipart parser (network input; only unit tests today) and the
+      libcamera/V4L2 control and metadata conversions.
+- [ ] The raw decoders still index with `get_unchecked` behind length checks (one was wrong);
+      replace with checked slices where it costs nothing measurable.
+- [ ] Longer runs (hours) and on AArch64 (the NEON paths are not fuzzed on x86).
 
 ### Known issues
 - [ ] rp1-cfe leaks one device-tree node per runtime overlay up/down (upstream; dev runtime path only).

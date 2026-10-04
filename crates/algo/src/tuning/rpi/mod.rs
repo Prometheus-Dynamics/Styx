@@ -7,7 +7,8 @@
 //! [`RpiImport::ignored`].
 //! 16-bit levels are normalised to 1.0 and times stay in microseconds.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
 
 use crate::error::{AlgoError, Result};
 use crate::pwl::Pwl;
@@ -40,7 +41,7 @@ struct Section<'a> {
 }
 
 impl<'a> Section<'a> {
-    fn err(&self, m: impl std::fmt::Display) -> AlgoError {
+    fn err(&self, m: impl core::fmt::Display) -> AlgoError {
         AlgoError::Tuning(format!("{}: {m}", self.name))
     }
 

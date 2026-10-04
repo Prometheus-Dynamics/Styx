@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use styx_kernel::bus::SensorBridge;
 use styx_kernel::bus::i2c::{self, AddrWidth, I2cDevice, Message};
-use styx_sensor::{RegWrite, RegisterBus, SensorPins};
+use styx_sensor::{BusResult, RegWrite, RegisterBus, SensorPins};
 
 /// The raw I²C transfers the register bus needs; [`I2cDevice`] in the spike, a recorder in
 /// tests.
@@ -94,7 +94,7 @@ pub fn encode_write(address: u16, bytes: u8, value: u32, width: AddrWidth) -> io
 }
 
 impl<T: I2cIo> RegisterBus for I2cRegisterBus<T> {
-    fn read(&mut self, address: u16, bytes: u8) -> io::Result<u32> {
+    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
         let n = check_width(bytes)?;
         let mut addr = [0u8; 2];
         let a = i2c::encode_reg_addr(address, self.addr_width, &mut addr)?;
@@ -103,9 +103,9 @@ impl<T: I2cIo> RegisterBus for I2cRegisterBus<T> {
         Ok(i2c::decode_value(&buf[..n]))
     }
 
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> io::Result<()> {
+    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
         let buf = encode_write(address, bytes, value, self.addr_width)?;
-        self.io.write_messages(&[&buf])
+        Ok(self.io.write_messages(&[&buf])?)
     }
 
     /// One transfer (start, address, register, data, stop) per register write, as the kernel
@@ -119,7 +119,7 @@ impl<T: I2cIo> RegisterBus for I2cRegisterBus<T> {
     /// does not always issue the repeated start between two write messages, and the SCCB
     /// target then takes the next message's register address as data. Reads (write then read)
     /// are unaffected: the direction change always restarts.
-    fn write_sequence(&mut self, writes: &[RegWrite]) -> io::Result<()> {
+    fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
         for w in writes {
             let buf = encode_write(w.address, w.bytes, w.value, self.addr_width)?;
             self.io.write_messages(&[&buf])?;
@@ -209,11 +209,11 @@ fn not_found(what: &str, role: &str) -> io::Error {
 }
 
 impl<S: PowerSwitch> SensorPins for BridgePins<S> {
-    fn set_gpio(&mut self, role: &str, _: bool) -> io::Result<()> {
-        Err(not_found("gpio", role))
+    fn set_gpio(&mut self, role: &str, _: bool) -> BusResult<()> {
+        Err(not_found("gpio", role).into())
     }
 
-    fn set_clock(&mut self, role: &str, rate_hz: Option<u32>) -> io::Result<()> {
+    fn set_clock(&mut self, role: &str, rate_hz: Option<u32>) -> BusResult<()> {
         let clock = self
             .clocks
             .iter_mut()
@@ -226,20 +226,21 @@ impl<S: PowerSwitch> SensorPins for BridgePins<S> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("clock '{role}' runs at {} Hz, not {rate} Hz", clock.1),
-            ));
+            )
+            .into());
         }
         clock.2 = rate_hz.is_some();
-        self.update()
+        Ok(self.update()?)
     }
 
-    fn set_supply(&mut self, role: &str, on: bool) -> io::Result<()> {
+    fn set_supply(&mut self, role: &str, on: bool) -> BusResult<()> {
         let supply = self
             .supplies
             .iter_mut()
             .find(|s| s.0 == role)
             .ok_or_else(|| not_found("supply", role))?;
         supply.1 = on;
-        self.update()
+        Ok(self.update()?)
     }
 }
 
@@ -249,7 +250,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use styx_sensor::{MockBus, SensorDescription, SensorDriver};
+    use styx_sensor::{BusErrorKind, MockBus, SensorDescription, SensorDriver};
 
     use super::*;
 
@@ -426,11 +427,11 @@ mod tests {
         assert!(pins.set_clock("xvclk", Some(19_200_000)).is_err());
         assert_eq!(
             pins.set_gpio("reset", true).unwrap_err().kind(),
-            io::ErrorKind::NotFound
+            BusErrorKind::NotFound
         );
         assert_eq!(
             pins.set_supply("vana", true).unwrap_err().kind(),
-            io::ErrorKind::NotFound
+            BusErrorKind::NotFound
         );
         pins.set_clock("xvclk", None).unwrap();
         pins.set_supply("dovdd", false).unwrap();

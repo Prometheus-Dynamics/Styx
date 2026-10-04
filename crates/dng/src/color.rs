@@ -2,6 +2,9 @@
 //! camera → XYZ D50) from an ISP's camera → sRGB CCM, and back. See the crate documentation
 //! for the derivation.
 
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 /// A 3x3 row-major matrix.
 pub type Matrix3 = [f64; 9];
 
@@ -38,7 +41,7 @@ pub fn srgb_white() -> [f64; 3] {
 
 /// `a · b`.
 pub fn mul(a: &Matrix3, b: &Matrix3) -> Matrix3 {
-    std::array::from_fn(|i| {
+    core::array::from_fn(|i| {
         let (r, c) = (i / 3, i % 3);
         (0..3).map(|k| a[r * 3 + k] * b[k * 3 + c]).sum()
     })
@@ -46,7 +49,7 @@ pub fn mul(a: &Matrix3, b: &Matrix3) -> Matrix3 {
 
 /// `m · v`.
 pub fn mul_vec(m: &Matrix3, v: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|r| (0..3).map(|k| m[r * 3 + k] * v[k]).sum())
+    core::array::from_fn(|r| (0..3).map(|k| m[r * 3 + k] * v[k]).sum())
 }
 
 /// The diagonal matrix of `v`.

@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use styx_kernel::FourCc;
 use styx_kernel::bus::{StreamAction, StreamRequest};
-use styx_sensor::{DriverState, MockBus, RegWrite, RegisterBus, SensorDescription, SensorDriver};
+use styx_sensor::{
+    BusResult, DriverState, MockBus, RegWrite, RegisterBus, SensorDescription, SensorDriver,
+};
 
 use crate::buffers::NativeFrame;
 use crate::control::{ExpectedStart, SensorControl, lock};
@@ -55,17 +57,17 @@ impl FaultBus {
 }
 
 impl RegisterBus for FaultBus {
-    fn read(&mut self, address: u16, bytes: u8) -> io::Result<u32> {
+    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
         self.check()?;
         lock(&self.bus).read(address, bytes)
     }
 
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> io::Result<()> {
+    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
         self.check()?;
         lock(&self.bus).write(address, bytes, value)
     }
 
-    fn write_sequence(&mut self, writes: &[RegWrite]) -> io::Result<()> {
+    fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
         writes
             .iter()
             .try_for_each(|w| self.write(w.address, w.bytes, w.value))

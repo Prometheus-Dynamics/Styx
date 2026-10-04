@@ -21,9 +21,9 @@ fn stats(contrast: f64) -> Statistics {
 fn meta(frame: u64, c: &Controls) -> FrameMetadata {
     let mut m = FrameMetadata::new(
         frame,
-        std::time::Duration::from_millis(10),
+        core::time::Duration::from_millis(10),
         1.0,
-        std::time::Duration::from_millis(33),
+        core::time::Duration::from_millis(33),
     );
     m.controls = c.clone();
     m

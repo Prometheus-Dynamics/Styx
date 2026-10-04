@@ -25,11 +25,14 @@
 mod focus;
 mod metrics;
 
-use std::collections::BTreeMap;
-use std::time::Duration;
+use alloc::collections::BTreeMap;
+use alloc::{vec, vec::Vec};
+use core::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::frame::{Controls, FrameMetadata};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Pipeline;
 use crate::pwl::Pwl;
@@ -146,7 +149,7 @@ impl Scene {
     /// Mean light over an exposure `[t0, t0 + t]` relative to the steady level.
     fn flicker_factor(&self, t0: f64, t: f64) -> f64 {
         let part = |f: &SceneFlicker| {
-            let w = 2.0 * std::f64::consts::PI * f.hz;
+            let w = 2.0 * core::f64::consts::PI * f.hz;
             if t <= 0.0 {
                 f.depth * (w * t0).cos()
             } else {

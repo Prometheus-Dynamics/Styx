@@ -9,8 +9,13 @@
 //! weights get the built-in weights on the PiSP's 15×15 grid. The description has no place in
 //! the format either.
 
+use alloc::borrow::ToOwned;
+use alloc::{format, string::String, vec, vec::Vec};
+
 use super::{FULL, alsc_grid};
 use crate::algos::agc::metering;
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::pwl::Pwl;
 use crate::tuning::*;
 

@@ -6,6 +6,8 @@
 //!
 //! Every dispatcher returns the [`SimdBackend`] that did the vector part of the work.
 
+use alloc::boxed::Box;
+
 pub mod f16;
 pub mod half;
 pub mod poly;
@@ -14,6 +16,8 @@ pub mod scalar;
 pub use styx_core::simd::{SimdBackend, X86FeatureSet, strongest_backend};
 
 use crate::format::CfaPattern;
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 #[cfg(all(feature = "neon", target_arch = "aarch64"))]
 mod neon;
@@ -299,8 +303,8 @@ pub struct ToneLut {
     cascades: Box<[x86::tone::Cascade; 2]>,
 }
 
-impl std::fmt::Debug for ToneLut {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ToneLut {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ToneLut")
             .field("nodes", &&self.nodes[..])
             .finish()
@@ -327,7 +331,7 @@ impl ToneLut {
 
     /// Nodes sampled from `curve` (0..1 to 0..1) at inputs `16 k / 4095`.
     pub fn from_curve(curve: impl Fn(f32) -> f32) -> Self {
-        let nodes = std::array::from_fn(|k| {
+        let nodes = core::array::from_fn(|k| {
             let x = (k as f32 * 16.0 / scalar::WORK_MAX as f32).min(1.0);
             (curve(x) * 255.0).round().clamp(0.0, 255.0) as u8
         });

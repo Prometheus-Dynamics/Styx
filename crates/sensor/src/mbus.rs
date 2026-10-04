@@ -1,6 +1,7 @@
 //! Media bus codes (`MEDIA_BUS_FMT_*`) and colour filter arrangements.
 
-use std::fmt;
+use alloc::format;
+use core::fmt;
 
 use serde::Deserialize;
 use serde::de::{self, Deserializer, Visitor};

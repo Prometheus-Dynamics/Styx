@@ -3,6 +3,8 @@
 //! (`computeWeights`, `getContrast`, `getPhase`, `getAverageAndTestIr`; BSD-2-Clause,
 //! Copyright (C) 2022-2023 Raspberry Pi Ltd), on normalised floating-point statistics.
 
+use alloc::{vec, vec::Vec};
+
 use super::types::AfWindow;
 use crate::stats::{PdafZone, Statistics, ZoneGrid};
 

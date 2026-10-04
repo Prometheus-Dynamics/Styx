@@ -46,11 +46,21 @@
 //! ```
 //!
 //! Each ported file names its libpisp source.
+//!
+//! # `no_std`
+//!
+//! Without the default `std` feature the crate is `no_std` + `alloc`: everything but
+//! [`device`] (docs/portability.md).
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
 
 pub mod be;
 #[cfg(feature = "device")]
 pub mod device;
 pub mod fe;
 pub mod format;
+mod math;
 pub mod stats;
 pub mod uapi;

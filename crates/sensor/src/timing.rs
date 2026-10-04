@@ -3,9 +3,11 @@
 //! `line_length = width + hblank` (pixels) and `frame_length = height + vblank` (lines). Exposure
 //! is counted in lines and may be at most `frame_length - margin`.
 
-use std::time::Duration;
+use core::time::Duration;
 
 use crate::desc::{Blanking, Exposure, Format, Mode};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// Timing of one mode and format at a chosen horizontal blanking.
 #[derive(Debug, Clone, Copy, PartialEq)]

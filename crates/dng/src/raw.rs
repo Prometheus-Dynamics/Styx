@@ -1,5 +1,7 @@
 //! Raw frames: samples, colour filter layout, unpacking of sensor packings.
 
+use alloc::{format, vec, vec::Vec};
+
 use crate::{Result, invalid};
 
 /// A 2x2 Bayer colour filter pattern, named by its first row then its second.

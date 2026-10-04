@@ -14,7 +14,7 @@ libc.workspace = true
 styx-graph.workspace = true
 styx-kernel.workspace = true
 styx-sensor.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }

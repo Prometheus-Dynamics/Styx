@@ -1,5 +1,7 @@
 //! 3A statistics, gathered on 2x2 quads of the mosaic in the processing pass.
 
+use alloc::{vec, vec::Vec};
+
 use serde::{Deserialize, Serialize};
 
 use crate::prepare::StatsSetup;

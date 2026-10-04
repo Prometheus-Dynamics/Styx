@@ -27,6 +27,8 @@
 //! registers = [{ control = "exposure", address = 0x015a, bytes = 2 }]
 //! ```
 
+use alloc::{borrow::ToOwned, format, string::String, string::ToString, vec::Vec};
+
 use serde::Deserialize;
 
 use crate::desc::{BlackLevel, Delays, EmbeddedData, GainModel};
@@ -113,6 +115,7 @@ impl KernelSensorData {
     }
 
     /// Reads and parses a data file.
+    #[cfg(feature = "std")]
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         let src = std::fs::read_to_string(path).map_err(|source| SensorError::ReadFile {

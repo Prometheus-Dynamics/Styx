@@ -1,4 +1,4 @@
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use super::*;
 use crate::color::{self, Illuminant};
@@ -47,7 +47,7 @@ fn what_the_writer_writes_reads_back() {
         baseline_exposure: Some(0.5),
         exposure_time: Some(Duration::from_micros(10_000)),
         iso: Some(250),
-        capture_time: Some(UNIX_EPOCH + Duration::from_secs(1_791_000_000)),
+        capture_time: Some(Duration::from_secs(1_791_000_000)),
         model: "ov9782".into(),
         description: Some("{\"sequence\":7}".into()),
         opcode_list2: bayer_gain_maps(CfaPattern::Bggr, (64, 48), (4, 3), [&r, &ones, &ones]),

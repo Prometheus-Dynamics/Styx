@@ -292,7 +292,7 @@ pub fn dng_metadata(
         baseline_exposure: Some(raw.isp.digital_gain.max(1e-6).log2()),
         exposure_time: Some(s.exposure),
         iso: Some((100.0 * s.analogue_gain * s.digital_gain).round() as u32),
-        capture_time: Some(captured),
+        capture_time: captured.duration_since(SystemTime::UNIX_EPOCH).ok(),
         model: source.model.clone(),
         unique_camera_model: source.unique_camera_model.clone(),
         software: concat!("Styx ", env!("CARGO_PKG_VERSION")).into(),

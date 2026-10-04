@@ -16,7 +16,7 @@ rust-version.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-styx-core.workspace = true
+styx-core = { workspace = true, features = ["std", "neon", "x86"] }
 styx-capture = { workspace = true, optional = true }
 styx-codec = { workspace = true, optional = true }
 styx-libcamera = { workspace = true, optional = true, features = ["probe"] }
@@ -30,7 +30,7 @@ styx-dng = { workspace = true, optional = true }
 daedalus = { workspace = true, optional = true }
 smallvec = { workspace = true, optional = true }
 styx-kernel = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+thiserror = { workspace = true, features = ["std"], optional = true }
 libcamera = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"], optional = true }
 image = { workspace = true, optional = true }
@@ -43,7 +43,7 @@ futures-util = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 mcap = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, features = ["derive", "std"], optional = true }
 serde_json = { workspace = true, optional = true }
 utoipa = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }

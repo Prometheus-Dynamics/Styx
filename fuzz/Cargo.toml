@@ -11,11 +11,22 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+bytemuck = "1.25"
+libc = "0.2"
 libfuzzer-sys = "0.4"
-styx = { path = "../crates/styx", default-features = false, features = ["replay-mcap", "replay-styxrec"] }
-styx-codec = { path = "../crates/codec", features = ["codec-turbojpeg", "codec-zune"] }
+smallvec = "1"
+styx = { path = "../crates/styx", default-features = false, features = ["replay-mcap", "replay-styxrec", "frame-socket"] }
+styx-algo = { path = "../crates/algo" }
+styx-codec = { path = "../crates/codec", features = ["codec-turbojpeg", "codec-zune", "raw-decoders"] }
 styx-core = { package = "styx-core-rs", path = "../crates/core" }
+styx-kernel = { path = "../crates/kernel" }
+styx-pipeline = { path = "../crates/pipeline" }
+styx-pisp = { path = "../crates/pisp" }
+styx-sensor = { path = "../crates/sensor" }
+styx-uvc = { path = "../crates/uvc" }
 
+# One binary per target: fuzz_targets/<name>.rs.
 [[bin]]
 name = "replay_reader"
 path = "fuzz_targets/replay_reader.rs"
@@ -33,6 +44,97 @@ bench = false
 [[bin]]
 name = "ipc_messages"
 path = "fuzz_targets/ipc_messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame_socket_message"
+path = "fuzz_targets/frame_socket_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "uvc_descriptors"
+path = "fuzz_targets/uvc_descriptors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "uvc_stream"
+path = "fuzz_targets/uvc_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sensor_description"
+path = "fuzz_targets/sensor_description.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sensor_embedded"
+path = "fuzz_targets/sensor_embedded.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sensor_subdev"
+path = "fuzz_targets/sensor_subdev.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "algo_tuning"
+path = "fuzz_targets/algo_tuning.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pisp_stats"
+path = "fuzz_targets/pisp_stats.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kernel_messages"
+path = "fuzz_targets/kernel_messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codec_raw"
+path = "fuzz_targets/codec_raw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "core_frame_layout"
+path = "fuzz_targets/core_frame_layout.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pipeline_rawrec"
+path = "fuzz_targets/pipeline_rawrec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc_request"
+path = "fuzz_targets/ipc_request.rs"
 test = false
 doc = false
 bench = false

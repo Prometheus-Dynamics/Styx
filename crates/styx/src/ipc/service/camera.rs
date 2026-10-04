@@ -263,5 +263,46 @@ pub(super) fn check_request(req: &FrameRequest) -> Result<(), String> {
     Ok(())
 }
 
+/// Decode `bytes` as a client's request, check it as the service does, then plan it alone and
+/// shared with another client on virtual cameras (MJPEG, YUYV and NV12 modes). For fuzzing.
+pub(in crate::ipc) fn fuzz_request(bytes: &[u8]) {
+    use std::sync::OnceLock;
+
+    use crate::capture_api::make_virtual_device;
+    use crate::ipc::wire::{ClientMessage, decode_client};
+    use crate::prelude::Mode;
+
+    static CAMERAS: OnceLock<Vec<ProbedDevice>> = OnceLock::new();
+    let Ok(ClientMessage::Request(request, _)) = decode_client(bytes) else {
+        return;
+    };
+    if check_request(&request).is_err() {
+        return;
+    }
+    let cameras = CAMERAS.get_or_init(|| {
+        let mode = |code, w, h, fps| {
+            Mode::with_interval(
+                MediaFormat::new(code, Resolution::new(w, h).expect("size"), ColorSpace::Srgb),
+                Interval::from_fps(fps).expect("rate"),
+            )
+        };
+        vec![
+            make_virtual_device(
+                "usb",
+                [
+                    mode(FourCc::MJPG, 1280, 720, 30),
+                    mode(FourCc::YUYV, 640, 480, 30),
+                    mode(FourCc::YUYV, 1280, 720, 10),
+                ],
+            ),
+            make_virtual_device("isp", [mode(FourCc::NV12, 1280, 800, 120)]),
+        ]
+    });
+    for camera in cameras {
+        let _ = plan_many(camera, std::slice::from_ref(&*request));
+        let _ = plan_many(camera, &[(*request).clone(), Frames::nv12()]);
+    }
+}
+
 /// How long a client thread waits for frames per poll.
 pub(super) const FRAME_WAIT: Duration = Duration::from_millis(50);

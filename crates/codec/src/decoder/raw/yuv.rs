@@ -544,7 +544,9 @@ impl Packed422ToRgbDecoder {
 
         let width = meta.format.resolution.width.get() as usize;
         let height = meta.format.resolution.height.get() as usize;
-        let stride = plane.stride().max(width * 2);
+        // A line of an odd width still ends in a whole Y0 U Y1 V group.
+        let line_bytes = width.div_ceil(2) * 4;
+        let stride = plane.stride().max(line_bytes);
         let required = stride
             .checked_mul(height)
             .ok_or_else(|| CodecError::Codec("yuv422 stride overflow".into()))?;
@@ -606,7 +608,7 @@ impl Packed422ToRgbDecoder {
         dst.par_chunks_mut(row_bytes)
             .enumerate()
             .for_each(|(y, dst_line)| {
-                let src_line = &src_required[y * stride..][..width * 2];
+                let src_line = &src_required[y * stride..][..line_bytes];
                 let pair_count = width / 2;
                 for pair in 0..pair_count {
                     let si = pair * 4;

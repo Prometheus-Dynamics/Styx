@@ -490,9 +490,28 @@ pub fn fetch_frame(path: impl AsRef<Path>, wait: Duration) -> Result<FrameLease,
             socket::Received::Closed => return Err(IpcError::Malformed("no frame served")),
         }
     };
-    let message: Message = serde_json::from_slice(&bytes[4..4 + payload_len])
+    let imported = import(&bytes[4..4 + payload_len], fds)?;
+    let inner = imported
+        .external_backing_handle()
+        .ok_or(IpcError::Malformed("frame without backing"))?;
+    let meta = imported.meta().clone();
+    let layouts = imported.layouts().iter().copied().collect();
+    drop(imported);
+    Ok(FrameLease::from_external(
+        meta,
+        layouts,
+        Arc::new(Leased {
+            inner,
+            _connection: socket,
+        }),
+    ))
+}
+
+/// The frame a server's message describes, over the descriptors that came with it.
+fn import(payload: &[u8], mut fds: Vec<OwnedFd>) -> Result<FrameLease, IpcError> {
+    let message: Message = serde_json::from_slice(payload)
         .map_err(|_| IpcError::Malformed("frame message is not valid JSON"))?;
-    let imported = match message.backing {
+    Ok(match message.backing {
         Backing::Memfd { .. } => {
             let fd = fds.pop().filter(|_| fds.is_empty());
             let fd = fd.ok_or(IpcError::Malformed("memfd frame needs one descriptor"))?;
@@ -515,21 +534,24 @@ pub fn fetch_frame(path: impl AsRef<Path>, wait: Duration) -> Result<FrameLease,
                 .collect();
             FrameLease::from_dmabuf_import(message.descriptor, planes)?
         }
-    };
-    let inner = imported
-        .external_backing_handle()
-        .ok_or(IpcError::Malformed("frame without backing"))?;
-    let meta = imported.meta().clone();
-    let layouts = imported.layouts().iter().copied().collect();
-    drop(imported);
-    Ok(FrameLease::from_external(
-        meta,
-        layouts,
-        Arc::new(Leased {
-            inner,
-            _connection: socket,
-        }),
-    ))
+    })
+}
+
+/// Import `payload` as a frame message over `fds` (memfds standing in for what a server
+/// sends) and read every plane, as a consumer would. For fuzzing.
+#[doc(hidden)]
+pub fn fuzz_import(payload: &[u8], fds: Vec<OwnedFd>) {
+    if let Ok(frame) = import(payload, fds) {
+        let _ = frame.validate_plane_layouts();
+        if let Ok(planes) = frame.planes_visible() {
+            for rows in planes {
+                for row in rows {
+                    std::hint::black_box(row.data().iter().fold(0u8, |a, b| a ^ b));
+                }
+            }
+        }
+        let _ = std::hint::black_box(frame.to_visible_vec());
+    }
 }
 
 /// A fetched frame's memory and the connection that is its lease.

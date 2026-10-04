@@ -1,7 +1,7 @@
 //! NEON row kernels. Each processes whole blocks of pixels from the start of the row and
 //! returns how many pixels it wrote; slices must hold `width` pixels.
 
-use std::arch::aarch64::*;
+use core::arch::aarch64::*;
 
 /// Reverse the 16 bytes of `v`.
 #[inline(always)]

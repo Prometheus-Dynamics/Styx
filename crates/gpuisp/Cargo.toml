@@ -16,7 +16,7 @@ readme = "README.md"
 # C build), so a binary with this crate starts on systems without Vulkan.
 ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
 styx-softisp.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 libc.workspace = true

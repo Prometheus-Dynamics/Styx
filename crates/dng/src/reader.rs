@@ -1,5 +1,7 @@
 //! Reading DNG files: the raw image and what calibration needs from the metadata.
 
+use alloc::{format, string::String, vec, vec::Vec};
+
 use crate::color::Matrix3;
 use crate::opcode::{self, Opcode};
 use crate::raw::CfaPattern;
@@ -143,7 +145,7 @@ impl DngFile {
 
 fn matrix(ifd: &Ifd, t: u16) -> Option<Matrix3> {
     let v = ifd.f64s(t)?;
-    (v.len() >= 9).then(|| std::array::from_fn(|i| v[i]))
+    (v.len() >= 9).then(|| core::array::from_fn(|i| v[i]))
 }
 
 /// The IFD holding the full-resolution raw image: `NewSubFileType` 0 with CFA or linear raw

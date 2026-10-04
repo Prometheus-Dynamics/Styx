@@ -1,5 +1,7 @@
 //! Output buffers and their validation and splitting into row bands.
 
+use alloc::{format, vec::Vec};
+
 use crate::IspError;
 
 /// Output scale.
@@ -112,9 +114,9 @@ impl<'a> OutputBuffers<'a> {
             let mut out = Vec::with_capacity(n);
             for i in 0..n {
                 if i + 1 == n {
-                    out.push(std::mem::take(&mut s));
+                    out.push(core::mem::take(&mut s));
                 } else {
-                    let t = std::mem::take(&mut s);
+                    let t = core::mem::take(&mut s);
                     let at = (stride * rows).min(t.len());
                     let (a, b) = t.split_at_mut(at);
                     out.push(a);

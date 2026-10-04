@@ -3,6 +3,8 @@
 //! planner function still takes one, so existing code builds with deprecation warnings.
 #![allow(deprecated)]
 
+use alloc::{string::String, vec::Vec};
+
 use super::{FrameRect, OutputFormat, PyramidRequest, PyramidSource};
 use crate::format::FourCc;
 

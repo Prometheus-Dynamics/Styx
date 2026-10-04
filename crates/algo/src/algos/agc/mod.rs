@@ -45,11 +45,14 @@ pub mod flicker;
 pub(crate) mod metering;
 pub mod tuning;
 
-use std::time::Duration;
+use alloc::{string::String, vec::Vec};
+use core::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::error::Result;
 use crate::frame::{Controls, Flicker, FrameMetadata};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::params::{AeStatus, Params, SensorRequest};
 use crate::pipeline::Algorithm;
 use crate::stats::{Statistics, ZoneGrid};

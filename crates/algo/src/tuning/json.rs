@@ -5,6 +5,8 @@
 //! This reader keeps key order, accepts trailing commas and `#` / `//` line comments, and is
 //! otherwise strict JSON.
 
+use alloc::{string::String, vec::Vec};
+
 use crate::error::{AlgoError, Result};
 
 /// A JSON value with ordered objects.
@@ -154,7 +156,7 @@ impl Parser<'_> {
                 break;
             }
         }
-        let text = std::str::from_utf8(&self.s[start..self.i]).map_err(|_| self.err("utf-8"))?;
+        let text = core::str::from_utf8(&self.s[start..self.i]).map_err(|_| self.err("utf-8"))?;
         text.parse::<f64>()
             .map(Value::Number)
             .map_err(|_| self.err("bad number"))
@@ -182,7 +184,7 @@ impl Parser<'_> {
                             let hex = self
                                 .s
                                 .get(self.i..self.i + 4)
-                                .and_then(|h| std::str::from_utf8(h).ok())
+                                .and_then(|h| core::str::from_utf8(h).ok())
                                 .and_then(|h| u32::from_str_radix(h, 16).ok())
                                 .ok_or_else(|| self.err("bad \\u escape"))?;
                             self.i += 4;

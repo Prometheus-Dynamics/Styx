@@ -22,10 +22,14 @@
 //! VCMs report no position: [`LensSchedule`] predicts each frame's from the moves written and
 //! [`LensMotion`] (a first-order approach that is complete after `settle`).
 
-use std::collections::{BTreeMap, VecDeque};
-use std::time::Duration;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::{format, string::String, vec, vec::Vec};
+use core::time::Duration;
 
 use serde::Deserialize;
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// A focus lens.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -410,6 +414,8 @@ impl LensSchedule {
 /// header; confidence is 11 bits, phase a signed 11-bit value (1/16 pixel) when confidence
 /// is non-zero.
 pub mod imx708_pdaf {
+    use alloc::vec::Vec;
+
     /// Cells across.
     pub const COLUMNS: usize = 16;
     /// Cells down.

@@ -11,11 +11,15 @@
 //! Units are the Raspberry Pi tuning's: noise constants, thresholds and the green
 //! equalisation offset on the 16-bit pixel scale, slopes and strengths as plain factors.
 
+use alloc::format;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::CameraConfig;
 use crate::error::{AlgoError, Result};
 use crate::frame::FrameMetadata;
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::params::{
     CdnParams, DenoiseParams, GeqParams, Params, SdnParams, SharpenParams, TdnParams,
 };
@@ -329,7 +333,7 @@ impl Algorithm for Denoise {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use core::time::Duration;
 
     use super::*;
 

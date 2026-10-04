@@ -50,9 +50,9 @@ fn scene(awb: &AwbTuning, ct: f64) -> Statistics {
 fn meta() -> FrameMetadata {
     FrameMetadata::new(
         0,
-        std::time::Duration::from_millis(10),
+        core::time::Duration::from_millis(10),
         1.0,
-        std::time::Duration::from_millis(33),
+        core::time::Duration::from_millis(33),
     )
 }
 

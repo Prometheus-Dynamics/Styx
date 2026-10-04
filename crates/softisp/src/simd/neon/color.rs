@@ -1,6 +1,6 @@
 //! NEON colour-domain kernels: matrix, narrowing, RGB interleave, YCbCr.
 
-use std::arch::aarch64::*;
+use core::arch::aarch64::*;
 
 use crate::simd::YuvCoeffs;
 
@@ -135,7 +135,7 @@ pub(in crate::simd) unsafe fn rgb_to_uv(
     unsafe {
         let (ku, kv) = (ChromaTerms::new(&c.u), ChromaTerms::new(&c.v));
         while i + 8 <= width {
-            let mean: [int16x8_t; 3] = std::array::from_fn(|ch| {
+            let mean: [int16x8_t; 3] = core::array::from_fn(|ch| {
                 let s = vpaddlq_u8(vld1q_u8(top[ch].as_ptr().add(2 * i)));
                 let s = vpadalq_u8(s, vld1q_u8(bottom[ch].as_ptr().add(2 * i)));
                 vreinterpretq_s16_u16(vrshrq_n_u16::<2>(s))
@@ -205,7 +205,7 @@ pub(in crate::simd) unsafe fn lut(
     unsafe {
         while x + 8 <= width {
             let w = lut8(lut, vld1q_u16(src.as_ptr().add(x)));
-            std::ptr::write_unaligned(dst.as_mut_ptr().add(x).cast::<u64>(), w.to_le());
+            core::ptr::write_unaligned(dst.as_mut_ptr().add(x).cast::<u64>(), w.to_le());
             x += 8;
         }
     }

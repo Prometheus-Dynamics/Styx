@@ -2,6 +2,8 @@
 //! map. Names and defaults follow Raspberry Pi's `rpi.af` (defaults: IMX708 in a Camera
 //! Module 3 with the standard lens), see [`super`].
 
+use alloc::{format, string::String};
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AlgoError, Result};

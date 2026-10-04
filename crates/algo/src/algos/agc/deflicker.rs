@@ -43,11 +43,15 @@
 //! Gains are limited to [`MAX_GAIN`] either way; the correction is off while AE is (manual
 //! exposure and gain leave no headroom).
 
-use std::f64::consts::PI;
+use alloc::vec::Vec;
+use core::f64::consts::PI;
 
 use serde::{Deserialize, Serialize};
 
 use super::flicker::{FlickerFit, FlickerModel, modulation, sinc};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// Seconds the correction takes to fade in or out.
 pub const FADE: f64 = 0.25;

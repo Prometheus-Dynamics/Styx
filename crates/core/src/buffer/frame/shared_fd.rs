@@ -201,6 +201,14 @@ impl SharedFdBacking {
         let Some(fd) = self.fd(fd_index) else {
             return Ok(None);
         };
+        // Pages of a file mapped past its end fault (SIGBUS) when read: a memfd shorter than
+        // its descriptor claims (sent by another process) must not be mapped. Dma-bufs refuse
+        // such mappings themselves.
+        if let Some(size) = regular_file_size(fd)
+            && offset.checked_add(len).is_none_or(|end| end as u64 > size)
+        {
+            return Ok(None);
+        }
         let page_size = system_page_size();
         let map_offset = offset - (offset % page_size);
         let delta = offset - map_offset;
@@ -343,7 +351,142 @@ pub(super) fn create_memfd(name: &str) -> Result<OwnedFd, FrameExportError> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+/// The size of the memory behind `fd`: a memfd's (or file's) length, a dma-buf's size; `None`
+/// when it cannot be told.
+pub(super) fn fd_size(fd: &OwnedFd) -> Option<u64> {
+    if let Some(size) = regular_file_size(fd) {
+        return Some(size);
+    }
+    // Dma-bufs report their size through `lseek(SEEK_END)`; the offset means nothing to them.
+    // SAFETY: plain syscalls on a valid descriptor.
+    let end = unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_END) };
+    // SAFETY: as above.
+    unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_SET) };
+    u64::try_from(end).ok().filter(|&n| n > 0)
+}
+
+/// The size of the regular file (memfd) behind `fd`; `None` for anything else.
+fn regular_file_size(fd: &OwnedFd) -> Option<u64> {
+    let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `fstat` writes a `stat` for a valid descriptor; it is read only on success.
+    let r = unsafe { libc::fstat(fd.as_raw_fd(), st.as_mut_ptr()) };
+    if r != 0 {
+        return None;
+    }
+    // SAFETY: `fstat` succeeded.
+    let st = unsafe { st.assume_init() };
+    ((st.st_mode & libc::S_IFMT) == libc::S_IFREG).then_some(st.st_size as u64)
+}
+
 fn system_page_size() -> usize {
     let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if ps > 0 { ps as usize } else { 4096 }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::super::*;
+    use crate::buffer::FramePlaneDescriptor;
+    use crate::format::{ColorSpace, FourCc, MediaFormat, Resolution};
+
+    #[test]
+    fn a_memfd_shorter_than_its_descriptor_is_not_read_past_its_end() {
+        // Another process sends a 100-byte memfd described as a 64x64 frame: reading the
+        // mapping past the file's end used to kill the reader with SIGBUS.
+        let fd = create_memfd("styx-short-memfd").unwrap();
+        // SAFETY: `fd` is a valid memfd.
+        assert_eq!(unsafe { libc::ftruncate(fd.as_raw_fd(), 100) }, 0);
+        let fmt = MediaFormat::new(
+            FourCc::GREY,
+            Resolution::new(64, 64).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let layout = PlaneLayout {
+            offset: 0,
+            len: 64 * 64,
+            stride: 64,
+        };
+        let frame = FrameLease::from_memfd(FrameMeta::new(fmt, 0), smallvec::smallvec![layout], fd);
+        assert!(frame.planes()[0].data().is_empty());
+        assert!(frame.visible_rows(0).is_err());
+        assert!(frame.to_visible_vec().is_err());
+    }
+
+    fn descriptor(
+        fourcc: FourCc,
+        w: u32,
+        h: u32,
+        planes: &[(usize, usize, usize)],
+    ) -> FrameLeaseDescriptor {
+        FrameLeaseDescriptor {
+            width: w,
+            height: h,
+            fourcc,
+            timestamp: 0,
+            color: ColorSpace::Srgb,
+            planes: planes
+                .iter()
+                .map(|&(offset, len, stride)| FramePlaneDescriptor {
+                    offset,
+                    len,
+                    stride,
+                })
+                .collect(),
+        }
+    }
+
+    fn memfd(len: i64) -> std::os::fd::OwnedFd {
+        let fd = create_memfd("styx-import").unwrap();
+        // SAFETY: `fd` is a valid memfd.
+        assert_eq!(unsafe { libc::ftruncate(fd.as_raw_fd(), len) }, 0);
+        fd
+    }
+
+    #[test]
+    fn imports_refuse_descriptors_their_memory_does_not_hold() {
+        let nv12 = descriptor(FourCc::NV12, 4, 2, &[(0, 8, 4), (8, 4, 4)]);
+        assert!(FrameLease::from_memfd_import(nv12.clone(), memfd(12)).is_ok());
+        // Planes past the memfd's end.
+        assert!(FrameLease::from_memfd_import(nv12.clone(), memfd(11)).is_err());
+        // Found by the `core_frame_layout` fuzz target: a 57054x57054 I420 frame in an empty
+        // memfd (copies of it then allocated gigabytes).
+        let huge = descriptor(FourCc::I420, 57054, 57054, &[(16059518511786942174, 0, 0)]);
+        assert!(FrameLease::from_memfd_import(huge, memfd(0)).is_err());
+        // Planes too short for the frame's rows.
+        let short = descriptor(FourCc::NV12, 64, 64, &[(0, 8, 4), (8, 4, 4)]);
+        assert!(FrameLease::from_memfd_import(short, memfd(12)).is_err());
+        // Dma-buf planes outside their buffers.
+        let plane = |offset, len| FrameFdPlane {
+            fd: memfd(8),
+            offset,
+            len,
+        };
+        let grey = descriptor(FourCc::GREY, 4, 2, &[(0, 8, 4)]);
+        assert!(FrameLease::from_dmabuf_import(grey.clone(), vec![plane(0, 8)]).is_ok());
+        assert!(FrameLease::from_dmabuf_import(grey.clone(), vec![plane(4, 8)]).is_err());
+        assert!(FrameLease::from_dmabuf_import(grey, vec![plane(usize::MAX, 8)]).is_err());
+    }
+
+    #[test]
+    fn materializing_copies_only_the_bytes_that_are_there() {
+        // A layout outside the mapping: its plane reads as empty, and the copy used to panic
+        // on the length mismatch or allocate the layout's offset.
+        let fmt = MediaFormat::new(
+            FourCc::GREY,
+            Resolution::new(4, 2).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let layout = PlaneLayout {
+            offset: usize::MAX / 2,
+            len: 8,
+            stride: 4,
+        };
+        let frame = FrameLease::from_memfd(
+            FrameMeta::new(fmt, 0),
+            smallvec::smallvec![layout],
+            memfd(8),
+        );
+        let owned = frame.materialize_owned();
+        assert_eq!(owned.layouts()[0].len, 0);
+    }
 }

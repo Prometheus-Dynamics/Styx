@@ -406,12 +406,91 @@ pub fn find_mode(
     None
 }
 
-/// The frame buffer size a frame needs.
+/// Largest frame buffer a camera may ask for: an 8K RGBA frame and then some. The sizes come
+/// from the device (`dwMaxVideoFrameSize`, `dwMaxVideoFrameBufferSize`), which may claim 4 GiB.
+const MAX_FRAME_CAPACITY: usize = 256 << 20;
+
+/// The frame buffer size a frame needs: what the device declares, at least an uncompressed
+/// frame's exact size, and no more than 4 bytes per pixel (plus headroom for tiny compressed
+/// frames) or [`MAX_FRAME_CAPACITY`].
 pub(crate) fn frame_capacity(format: &Format, frame: &Frame, params: &StreamingParams) -> usize {
     let declared = (params.max_video_frame_size as usize).max(frame.max_frame_size as usize);
     let exact = format.frame_bytes(frame).unwrap_or(0);
-    let fallback = usize::from(frame.width) * usize::from(frame.height) * 2;
+    let pixels = usize::from(frame.width) * usize::from(frame.height);
+    let fallback = pixels * 2;
+    let plausible = pixels * 4 + (64 << 10);
     declared
+        .min(plausible)
         .max(exact)
         .max(if declared == 0 { fallback } else { 0 })
+        .min(MAX_FRAME_CAPACITY)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::descriptors::{FormatKind, Intervals};
+
+    fn frame(width: u16, height: u16, max_frame_size: u32) -> Frame {
+        Frame {
+            index: 1,
+            width,
+            height,
+            max_frame_size,
+            default_interval: 333_333,
+            intervals: Intervals::Discrete(vec![333_333]),
+            bytes_per_line: 0,
+        }
+    }
+
+    fn format(kind: FormatKind) -> Format {
+        Format {
+            index: 1,
+            kind,
+            default_frame: 1,
+            frames: Vec::new(),
+            color: None,
+        }
+    }
+
+    #[test]
+    fn frame_buffers_are_bounded_whatever_the_device_declares() {
+        let mjpeg = format(FormatKind::Mjpeg);
+        let yuyv = format(FormatKind::Uncompressed {
+            guid: *b"YUY2\0\0\x10\0\x80\0\0\xaa\0\x38\x9b\x71",
+            bits_per_pixel: 16,
+        });
+        let params = |size| StreamingParams {
+            max_video_frame_size: size,
+            ..StreamingParams::default()
+        };
+        // The C270 at 640x480: what it declares.
+        assert_eq!(
+            frame_capacity(&yuyv, &frame(640, 480, 614_400), &params(614_400)),
+            614_400
+        );
+        assert_eq!(
+            frame_capacity(&mjpeg, &frame(640, 480, 614_400), &params(0)),
+            614_400
+        );
+        // Nothing declared: two bytes per pixel.
+        assert_eq!(
+            frame_capacity(&mjpeg, &frame(640, 480, 0), &params(0)),
+            614_400
+        );
+        // 4 GiB claimed for a 640x480 frame: 4 bytes per pixel and 64 KiB.
+        assert_eq!(
+            frame_capacity(&mjpeg, &frame(640, 480, u32::MAX), &params(u32::MAX)),
+            640 * 480 * 4 + (64 << 10)
+        );
+        // The largest frame a descriptor can describe.
+        assert_eq!(
+            frame_capacity(
+                &yuyv,
+                &frame(u16::MAX, u16::MAX, u32::MAX),
+                &params(u32::MAX)
+            ),
+            MAX_FRAME_CAPACITY
+        );
+    }
 }

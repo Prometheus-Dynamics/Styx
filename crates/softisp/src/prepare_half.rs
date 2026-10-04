@@ -1,7 +1,8 @@
 //! [`Arithmetic::Half`]'s tables: fp16 black levels and channel gains, lens shading rows, the
 //! colour matrix with the demosaic folded in, and the tone curve's segments.
 
-use std::sync::Arc;
+use alloc::sync::Arc;
+use alloc::{vec, vec::Vec};
 
 use crate::format::RawFormat;
 use crate::params::{Arithmetic, ColorMatrix, Demosaic, IspParams, LensShading, ToneCurve};
@@ -106,7 +107,7 @@ impl HalfPrep {
             gain,
             lsc,
             colour: [0, 1].map(|y| ColourCoeffs::new(&m, RowKind::of(pattern, y))),
-            quad: std::array::from_fn(|i| f16::from_f32(m[i / 3][i % 3])),
+            quad: core::array::from_fn(|i| f16::from_f32(m[i / 3][i % 3])),
             tone,
             stats_scale: f16::from_f64(4096.0 * full / (full + 1.0) / half::FULL),
             curve: params.tone.clone(),
@@ -166,7 +167,7 @@ impl HalfLsc {
                 half::from_f32_row(&diff, &mut rd);
                 a[parity].push(ra);
                 d[parity].push(rd);
-                std::mem::swap(&mut cur, &mut next);
+                core::mem::swap(&mut cur, &mut next);
             }
         }
         let y_map = grid_map(h, gh)

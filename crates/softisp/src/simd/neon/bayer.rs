@@ -1,7 +1,7 @@
 //! NEON mosaic-domain kernels: unpacking, front end, demosaic, luma, quads. Each processes
 //! whole vectors from the start of the row and returns the pixels it wrote.
 
-use std::arch::aarch64::*;
+use core::arch::aarch64::*;
 
 use crate::format::CfaPattern;
 use crate::simd::RowKind;

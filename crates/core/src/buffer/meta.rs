@@ -1,6 +1,76 @@
-use std::{fmt, time::Instant};
+use core::{fmt, time::Duration};
 
 use crate::format::MediaFormat;
+
+/// When Styx received a frame: nanoseconds on a monotonic clock.
+///
+/// With `std` this is std's [`Instant`](std::time::Instant) timeline ([`CaptureInstant::now`],
+/// `From<Instant>`): on Linux the nanoseconds are `CLOCK_MONOTONIC`'s (the clock of `Instant`
+/// and of V4L2 buffer timestamps). Without `std` the platform passes its own monotonic
+/// nanoseconds ([`CaptureInstant::from_nanos`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CaptureInstant(u64);
+
+impl CaptureInstant {
+    /// An instant `ns` nanoseconds into the monotonic clock.
+    pub const fn from_nanos(ns: u64) -> Self {
+        Self(ns)
+    }
+
+    /// The nanoseconds.
+    pub const fn as_nanos(self) -> u64 {
+        self.0
+    }
+
+    /// Time from `earlier` to `self`; zero when `earlier` is later.
+    pub fn duration_since(self, earlier: CaptureInstant) -> Duration {
+        Duration::from_nanos(self.0.saturating_sub(earlier.0))
+    }
+
+    /// Time from `earlier` to `self`, `None` when `earlier` is later.
+    pub fn checked_duration_since(self, earlier: CaptureInstant) -> Option<Duration> {
+        self.0.checked_sub(earlier.0).map(Duration::from_nanos)
+    }
+
+    /// Now.
+    #[cfg(feature = "std")]
+    pub fn now() -> Self {
+        std::time::Instant::now().into()
+    }
+
+    /// Time since this instant (zero if it lies in the future), as `Instant::elapsed`.
+    #[cfg(feature = "std")]
+    pub fn elapsed(self) -> Duration {
+        Self::now().duration_since(self)
+    }
+}
+
+/// An `Instant` and the nanoseconds it maps to, sampled once.
+#[cfg(feature = "std")]
+fn instant_anchor() -> &'static (std::time::Instant, u64) {
+    static ANCHOR: std::sync::OnceLock<(std::time::Instant, u64)> = std::sync::OnceLock::new();
+    ANCHOR.get_or_init(|| {
+        let at = std::time::Instant::now();
+        // Linux: `Instant` is `CLOCK_MONOTONIC`, so name the same nanoseconds. Elsewhere an
+        // arbitrary origin with room on both sides.
+        let ns = TimestampClock::Monotonic.now_ns().unwrap_or(u64::MAX / 2);
+        (at, ns)
+    })
+}
+
+#[cfg(feature = "std")]
+impl From<std::time::Instant> for CaptureInstant {
+    fn from(t: std::time::Instant) -> Self {
+        let (at, ns) = *instant_anchor();
+        let ns = match t.checked_duration_since(at) {
+            Some(after) => ns.saturating_add(after.as_nanos().min(u128::from(u64::MAX)) as u64),
+            None => {
+                ns.saturating_sub(at.duration_since(t).as_nanos().min(u128::from(u64::MAX)) as u64)
+            }
+        };
+        Self(ns)
+    }
+}
 
 /// Runtime-visible residency for a frame payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -249,7 +319,8 @@ pub struct FrameMeta {
     pub format: MediaFormat,
     pub timestamp: u64,
     pub backend: Option<BackendFrameMeta>,
-    pub capture_instant: Option<Instant>,
+    /// When Styx received the frame (for [`FrameMeta::latency`]).
+    pub capture_instant: Option<CaptureInstant>,
     pub residency: Option<FrameResidency>,
     pub mutability: FrameMutability,
     pub last_transition: Option<ResidencyTransition>,
@@ -282,7 +353,7 @@ impl TimestampClock {
     /// Current time on this clock in nanoseconds; `None` for stream-relative time or when the
     /// clock is unavailable on this platform.
     pub fn now_ns(self) -> Option<u64> {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(feature = "std", target_os = "linux"))]
         {
             let clock = match self {
                 Self::Monotonic => libc::CLOCK_MONOTONIC,
@@ -302,7 +373,7 @@ impl TimestampClock {
                 .checked_mul(1_000_000_000)?
                 .checked_add(now.tv_nsec as u64)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(all(feature = "std", not(target_os = "linux")))]
         {
             match self {
                 Self::Realtime => std::time::SystemTime::now()
@@ -312,14 +383,19 @@ impl TimestampClock {
                 _ => None,
             }
         }
+        #[cfg(not(feature = "std"))]
+        {
+            let _ = self;
+            None
+        }
     }
 
     /// Time elapsed since `timestamp_ns` on this clock, or `None` if the clock is unavailable
     /// or the timestamp lies in the future.
-    pub fn elapsed_since(self, timestamp_ns: u64) -> Option<std::time::Duration> {
+    pub fn elapsed_since(self, timestamp_ns: u64) -> Option<Duration> {
         self.now_ns()?
             .checked_sub(timestamp_ns)
-            .map(std::time::Duration::from_nanos)
+            .map(Duration::from_nanos)
     }
 }
 
@@ -353,7 +429,7 @@ impl ClockSource {
 
     /// Timestamp for a frame arriving now on a source without its own clock: the configured
     /// clock's current time, or `stream_elapsed` as stream-relative time for `Native`.
-    pub fn stamp_now(self, stream_elapsed: std::time::Duration) -> (u64, TimestampClock) {
+    pub fn stamp_now(self, stream_elapsed: Duration) -> (u64, TimestampClock) {
         self.clock()
             .and_then(|clock| Some((clock.now_ns()?, clock)))
             .unwrap_or((
@@ -399,16 +475,16 @@ impl ClockConversion {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameTiming {
     /// Sensor timestamp (typically start of exposure or of readout) → frame handed to Styx.
-    pub sensor_to_capture: Option<std::time::Duration>,
-    pub decode: Option<std::time::Duration>,
-    pub transform: Option<std::time::Duration>,
-    pub hook: Option<std::time::Duration>,
-    pub encode: Option<std::time::Duration>,
+    pub sensor_to_capture: Option<Duration>,
+    pub decode: Option<Duration>,
+    pub transform: Option<Duration>,
+    pub hook: Option<Duration>,
+    pub encode: Option<Duration>,
 }
 
 impl FrameTiming {
     /// Sum of the recorded processing stages.
-    pub fn processing(&self) -> std::time::Duration {
+    pub fn processing(&self) -> Duration {
         [self.decode, self.transform, self.hook, self.encode]
             .into_iter()
             .flatten()
@@ -432,13 +508,13 @@ impl FrameTiming {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLatency {
     /// Sensor → capture backend delivery.
-    pub sensor_to_capture: Option<std::time::Duration>,
+    pub sensor_to_capture: Option<Duration>,
     /// Time since the backend delivered the frame (queues, processing, consumer).
-    pub since_capture: Option<std::time::Duration>,
+    pub since_capture: Option<Duration>,
     /// Recorded pipeline processing time (decode + transform + hook + encode).
-    pub processing: std::time::Duration,
+    pub processing: Duration,
     /// Sensor → now, when both parts are known ("glass to app").
-    pub total: Option<std::time::Duration>,
+    pub total: Option<Duration>,
 }
 
 impl FrameMeta {
@@ -490,12 +566,13 @@ impl FrameMeta {
         self.backend.as_ref().map(BackendFrameMeta::sequence)
     }
 
-    pub fn with_capture_instant(mut self, capture_instant: Instant) -> Self {
-        self.capture_instant = Some(capture_instant);
+    /// Record when Styx received the frame (a [`CaptureInstant`], or with `std` an `Instant`).
+    pub fn with_capture_instant(mut self, capture_instant: impl Into<CaptureInstant>) -> Self {
+        self.capture_instant = Some(capture_instant.into());
         self
     }
 
-    pub fn capture_instant(&self) -> Option<Instant> {
+    pub fn capture_instant(&self) -> Option<CaptureInstant> {
         self.capture_instant
     }
 
@@ -538,8 +615,14 @@ impl FrameMeta {
     }
 
     /// Latency summary as of now.
+    #[cfg(feature = "std")]
     pub fn latency(&self) -> FrameLatency {
-        let since_capture = self.capture_instant.map(|at| at.elapsed());
+        self.latency_at(CaptureInstant::now())
+    }
+
+    /// Latency summary as of `now` (on the clock of [`FrameMeta::capture_instant`]).
+    pub fn latency_at(&self, now: CaptureInstant) -> FrameLatency {
+        let since_capture = self.capture_instant.map(|at| now.duration_since(at));
         FrameLatency {
             sensor_to_capture: self.timing.sensor_to_capture,
             since_capture,
@@ -601,11 +684,29 @@ impl FrameMeta {
 mod timing_tests {
     use super::*;
     use crate::format::{ColorSpace, FourCc, MediaFormat, Resolution};
-    use std::time::Duration;
+    use std::time::Instant;
 
     fn meta() -> FrameMeta {
         let res = Resolution::new(2, 2).unwrap();
         FrameMeta::new(MediaFormat::new(FourCc::GREY, res, ColorSpace::Unknown), 0)
+    }
+
+    #[test]
+    fn capture_instants_follow_instant() {
+        let a = Instant::now();
+        let b = a + Duration::from_millis(5);
+        let (ca, cb) = (CaptureInstant::from(a), CaptureInstant::from(b));
+        assert_eq!(cb.duration_since(ca), Duration::from_millis(5));
+        assert_eq!(ca.duration_since(cb), Duration::ZERO);
+        assert!(CaptureInstant::now() >= ca);
+        #[cfg(target_os = "linux")]
+        {
+            let mono = TimestampClock::Monotonic.now_ns().unwrap();
+            assert!(CaptureInstant::now().as_nanos().abs_diff(mono) < 50_000_000);
+        }
+        let meta = meta().with_capture_instant(CaptureInstant::from_nanos(1_000));
+        let latency = meta.latency_at(CaptureInstant::from_nanos(4_000));
+        assert_eq!(latency.since_capture, Some(Duration::from_nanos(3_000)));
     }
 
     #[test]

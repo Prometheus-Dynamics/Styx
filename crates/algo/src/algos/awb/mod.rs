@@ -16,6 +16,8 @@
 //! the CT curve minimising the zones' colour error minus the prior log likelihood for the
 //! current lux, then searches across the curve); grey world otherwise.
 
+use alloc::vec::Vec;
+
 mod search;
 pub mod tuning;
 

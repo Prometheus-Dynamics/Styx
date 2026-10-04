@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use styx_core::prelude::*;
 
+pub(super) use self::camera::fuzz_request;
 use self::camera::{Camera, FRAME_WAIT, FramesSlot, check_request};
 use super::connection::{self, Connection};
 use super::socket::{self, PeerCredentials};

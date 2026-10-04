@@ -12,7 +12,7 @@ rust-version.workspace = true
 libc.workspace = true
 styx-graph.workspace = true
 styx-kernel.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 tracing.workspace = true
 
 [dev-dependencies]

@@ -1,14 +1,37 @@
 //! The public processing API.
 
+use alloc::{format, string::String, vec, vec::Vec};
+
 use crate::format::RawFormat;
 use crate::output::{Kind, OutputBuffers, Scale};
 use crate::params::{Arithmetic, IspParams};
 use crate::pipeline::{Source, Worker};
+#[cfg(feature = "std")]
 use crate::pool::Pool;
 use crate::prepare::Prepared;
 use crate::stats::IspStats;
+#[cfg(feature = "std")]
 use std::sync::Mutex;
+#[cfg(feature = "std")]
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// A worker's scratch state: behind a mutex with `std` (helper threads take it), plain without.
+#[cfg(feature = "std")]
+type WorkerSlot = Mutex<Worker>;
+#[cfg(not(feature = "std"))]
+#[derive(Default)]
+struct WorkerSlot(Worker);
+
+fn worker_mut(w: &mut WorkerSlot) -> &mut Worker {
+    #[cfg(feature = "std")]
+    {
+        w.get_mut().unwrap_or_else(|e| e.into_inner())
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        &mut w.0
+    }
+}
 
 /// Why a frame could not be processed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -39,20 +62,22 @@ pub struct SoftIsp {
     format: RawFormat,
     params: IspParams,
     prepared: Prepared,
-    workers: Vec<Mutex<Worker>>,
+    workers: Vec<WorkerSlot>,
+    #[cfg(feature = "std")]
     threads: usize,
+    #[cfg(feature = "std")]
     pool: Option<Pool>,
     copy_input: bool,
     lsc_tolerance: f32,
     statistics: bool,
 }
 
-impl std::fmt::Debug for SoftIsp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for SoftIsp {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SoftIsp")
             .field("format", &self.format)
             .field("params", &self.params)
-            .field("threads", &self.threads)
+            .field("threads", &self.thread_setting())
             .finish()
     }
 }
@@ -64,8 +89,10 @@ impl SoftIsp {
             format,
             params,
             prepared,
-            workers: vec![Mutex::default()],
+            workers: vec![WorkerSlot::default()],
+            #[cfg(feature = "std")]
             threads: 1,
+            #[cfg(feature = "std")]
             pool: None,
             copy_input: true,
             lsc_tolerance: 0.0,
@@ -75,12 +102,15 @@ impl SoftIsp {
 
     /// Process each frame in row bands on `threads` threads: the calling thread and
     /// `threads - 1` helper threads this ISP starts on first use and keeps, asleep between
-    /// frames (0: one thread per CPU). Bands are claimed dynamically, two per thread.
+    /// frames (0: one thread per CPU). Bands are claimed dynamically, two per thread. Needs
+    /// `std`; without it frames run on the calling thread.
+    #[cfg(feature = "std")]
     pub fn with_threads(mut self, threads: usize) -> Self {
         self.set_threads(threads);
         self
     }
 
+    #[cfg(feature = "std")]
     pub fn set_threads(&mut self, threads: usize) {
         if threads != self.threads {
             self.pool = None;
@@ -89,8 +119,20 @@ impl SoftIsp {
     }
 
     /// The thread count set with [`Self::with_threads`].
+    #[cfg(feature = "std")]
     pub fn threads(&self) -> usize {
         self.threads
+    }
+
+    fn thread_setting(&self) -> usize {
+        #[cfg(feature = "std")]
+        {
+            self.threads
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            1
+        }
     }
 
     /// Whether input rows are copied, 16 KiB at a time, into a cached buffer before they are
@@ -197,45 +239,45 @@ impl SoftIsp {
         }
         let workers = &mut self.workers[..used];
         for w in workers.iter_mut() {
-            w.get_mut()
-                .unwrap_or_else(|e| e.into_inner())
-                .begin_frame(p, self.statistics);
+            worker_mut(w).begin_frame(p, self.statistics);
         }
         if used <= 1 {
-            let w = workers[0].get_mut().unwrap_or_else(|e| e.into_inner());
+            let w = worker_mut(&mut workers[0]);
             for (k, o) in outs.into_iter().enumerate() {
                 let o0 = k * bands;
                 w.run_band(p, &src, scale, o0, bands.min(oh - o0), o);
             }
         } else {
-            let pool = match &mut self.pool {
-                Some(pool) if pool.helpers() + 1 >= used => pool,
-                slot => slot.insert(Pool::new(threads - 1)),
-            };
-            // Bands are claimed in order by whichever thread is free.
-            let jobs: Vec<Mutex<Option<OutputBuffers<'_>>>> =
-                outs.into_iter().map(|o| Mutex::new(Some(o))).collect();
-            let next = AtomicUsize::new(0);
-            let workers = &*workers;
-            pool.run(used, &|t| {
-                let mut w = workers[t].lock().unwrap_or_else(|e| e.into_inner());
-                loop {
-                    let k = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(job) = jobs.get(k) else { break };
-                    let out = job
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take()
-                        .expect("each band is claimed once");
-                    let o0 = k * bands;
-                    w.run_band(p, &src, scale, o0, bands.min(oh - o0), out);
-                }
-            });
+            // Without std there is one thread (`thread_count`): this is the std build.
+            #[cfg(feature = "std")]
+            {
+                let pool = match &mut self.pool {
+                    Some(pool) if pool.helpers() + 1 >= used => pool,
+                    slot => slot.insert(Pool::new(threads - 1)),
+                };
+                // Bands are claimed in order by whichever thread is free.
+                let jobs: Vec<Mutex<Option<OutputBuffers<'_>>>> =
+                    outs.into_iter().map(|o| Mutex::new(Some(o))).collect();
+                let next = AtomicUsize::new(0);
+                let workers = &*workers;
+                pool.run(used, &|t| {
+                    let mut w = workers[t].lock().unwrap_or_else(|e| e.into_inner());
+                    loop {
+                        let k = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(job) = jobs.get(k) else { break };
+                        let out = job
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take()
+                            .expect("each band is claimed once");
+                        let o0 = k * bands;
+                        w.run_band(p, &src, scale, o0, bands.min(oh - o0), out);
+                    }
+                });
+            }
         }
         Ok(p.stats.as_ref().filter(|_| self.statistics).map(|setup| {
-            let mut ws = self.workers[..used]
-                .iter_mut()
-                .map(|w| w.get_mut().unwrap_or_else(|e| e.into_inner()));
+            let mut ws = self.workers[..used].iter_mut().map(worker_mut);
             let first = ws.next().expect("one worker at least");
             let mut acc = first.stats.clone().expect("stats prepared");
             for w in ws {
@@ -247,9 +289,16 @@ impl SoftIsp {
 
     /// Threads processing a frame.
     fn thread_count(&self) -> usize {
-        match self.threads {
-            0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
-            n => n,
+        #[cfg(feature = "std")]
+        {
+            match self.threads {
+                0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+                n => n,
+            }
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            1
         }
     }
 }
