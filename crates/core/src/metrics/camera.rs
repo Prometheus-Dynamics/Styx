@@ -396,7 +396,7 @@ impl StillCounters {
     }
 }
 
-/// A running camera's counters. See the [module documentation](self).
+/// A running camera's counters. See the [module documentation](crate::metrics).
 #[derive(Debug)]
 pub struct Counters {
     /// Frames produced (recorded with [`Self::frame`]).

@@ -206,6 +206,14 @@ box (OV9782 1280x800) unless stated.
       bare-metal targets, run on the host without `std` and bit for bit the same as over the
       `std` builds. CM5: bracket landed on consecutive frames, metrics overhead 270 ns before
       and after, CPU per frame within noise.
+- [x] `styx-core` frame path without `std` (`work/core-nostd`): `FrameLease`, `BufferPool`,
+      shared views, `MemoryRegion` (static / DMA memory with cache and release hooks), bounded
+      queues (non-blocking, waker-based async), transforms and metrics `no_std` + `alloc` (spin
+      or critical-section locks; parking_lot, memfd / dma-buf, blocking waits stay with `std`);
+      one metrics module (`styx_core::metrics`, the runtime re-exports it); runtime frames hand
+      on as `FrameLease`s (`Frame::into_lease`, the native capture's path on Linux too);
+      `examples/nostd-camera` hands its raw frames out as `FrameLease`s through a core queue.
+      Linux unchanged (host benches, CM5 syscalls/allocations/CPU/latency: portability.md).
 - [ ] The MCU port (`ports/stm32h7-dcmi`: swap `examples/nostd-camera`'s `board` for a DCMI
       receiver, I²C and a timer) and an `rkisp1` board; run on real MCU hardware. A linked
       firmware image (allocator, panic handler, `cortex-m-rt`) is not built yet: CI checks the
@@ -232,7 +240,9 @@ box (OV9782 1280x800) unless stated.
       OV9782 (also on a178a44): write-only or self-clearing registers to exclude from the
       check, or a description issue; the documented "all 93 identical" no longer holds.
 - [ ] `no_std` on targets without pointer-sized atomics (Cortex-M0, RISC-V without `a`):
-      `SensorDriver` and the fp16 tables hold `Arc`s (`portable-atomic`, or `Rc`).
+      `styx-core` builds there (feature `critical-section`: atomics, `Arc` and locks through
+      critical sections; not the queues, which need compare-and-swap); `SensorDriver`, the fp16
+      tables and `styx-runtime` hold `alloc::sync::Arc`s (`portable-atomic-util`, as core does).
 - [ ] `no_std` replays: 3A results through libm can differ from std's in the last bits, so a
       replay recorded on Linux is not bit-exact on a `no_std` target (deterministic per build).
       In `examples/nostd-camera`'s 90-frame run they were identical; the software ISP's `Auto`
