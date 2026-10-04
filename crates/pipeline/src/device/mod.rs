@@ -12,9 +12,9 @@ mod pisp_options;
 mod soft;
 mod still_be;
 
+use crate::process::SensorControls;
 use styx_algo::{LensConfig, LensRequest, LensState, PdafZone, Pwl, SensorRequest, ZoneGrid};
 use styx_native::{CameraControls, FrameControls, NativeCamera, NativeError};
-use styx_sensor::ControlRequest;
 
 pub use pisp::{PispFrame, PispPipeline, PispStartup, PispTimes};
 pub use pisp_options::PispOptions;
@@ -88,15 +88,32 @@ pub fn sensor_values(sequence: u64, c: &FrameControls) -> SensorValues {
 /// streaming the values for frame 0 are written at once). Returns the frame the last of them
 /// lands on.
 pub fn apply_request(controls: &CameraControls, r: &SensorRequest) -> crate::Result<u64> {
-    let landings = controls.request_at_now(
-        r.frame,
-        &ControlRequest {
-            exposure: Some(r.exposure),
-            gain: Some(r.analogue_gain),
-            frame_duration: Some(r.frame_duration),
-        },
-    )?;
+    let landings =
+        controls.request_at_now_landings(r.frame, &crate::process::control_request(r))?;
     Ok(landings.iter().map(|l| l.frame).max().unwrap_or(r.frame))
+}
+
+impl SensorControls for CameraControls {
+    fn request(&self, r: &SensorRequest) -> crate::Result<u64> {
+        apply_request(self, r)
+    }
+
+    fn lens(&self, r: &LensRequest) -> crate::Result<()> {
+        apply_lens(self, r)
+    }
+}
+
+/// A camera's controls with the requests timed for profiles (`sensor`, `request`).
+pub(crate) struct Profiled<'a>(pub(crate) &'a CameraControls);
+
+impl SensorControls for Profiled<'_> {
+    fn request(&self, r: &SensorRequest) -> crate::Result<u64> {
+        styx_pisp::device::profile::time("sensor", "request", || apply_request(self.0, r))
+    }
+
+    fn lens(&self, r: &LensRequest) -> crate::Result<()> {
+        apply_lens(self.0, r)
+    }
 }
 
 /// The algorithms' view of the camera's focus lens, when it has one that opened: its range

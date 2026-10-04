@@ -52,6 +52,7 @@ mod math;
 #[cfg(feature = "std")]
 pub mod measure;
 pub mod pisp_be;
+pub mod process;
 #[cfg(feature = "std")]
 pub mod rawrec;
 #[cfg(feature = "std")]
@@ -70,6 +71,9 @@ pub use controller::{Controller, SensorValues, Step};
 pub use engine::{IspEngine, RawFrame};
 pub use error::{PipelineError, Result};
 pub use isp::IspSettings;
+pub use process::{
+    Algorithms, FrameIsp, InlineIsp, NoControls, NoInline, Processed, SensorControls,
+};
 pub use sensor::SensorInfo;
 pub use soft::{SoftLoop, SoftOutput, SoftTiming};
 pub use styx_algo;

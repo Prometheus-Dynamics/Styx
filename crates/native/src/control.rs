@@ -136,6 +136,15 @@ impl<B: RegisterBus, P: SensorPins> ControlHandle<B, P> {
         Ok(self.inner.request_at_now(frame, req)?)
     }
 
+    /// [`Self::request_at_now`] without allocating: the landings in a fixed list.
+    pub fn request_at_now_landings(
+        &self,
+        frame: u64,
+        req: &ControlRequest,
+    ) -> Result<styx_sensor::Landings> {
+        Ok(self.inner.request_at_now_landings(frame, req)?)
+    }
+
     /// See [`SensorState::set_write_margin`].
     pub fn set_write_margin(&self, margin: Option<Duration>) {
         self.inner.set_write_margin(margin);
