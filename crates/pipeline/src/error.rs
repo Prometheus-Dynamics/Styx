@@ -1,5 +1,7 @@
 //! Errors.
 
+use alloc::string::String;
+
 /// What went wrong.
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
@@ -23,6 +25,7 @@ pub enum PipelineError {
     #[error("recording: {0}")]
     Recording(String),
     /// Reading or writing a file.
+    #[cfg(feature = "std")]
     #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
     /// The camera or the ISP device failed.
@@ -35,4 +38,4 @@ pub enum PipelineError {
 }
 
 /// Result alias.
-pub type Result<T> = std::result::Result<T, PipelineError>;
+pub type Result<T> = core::result::Result<T, PipelineError>;

@@ -2,6 +2,8 @@
 //! `styx-gpuisp`, the same pipeline as Vulkan compute shaders, which takes the same
 //! parameters and gives the same pictures and statistics.
 
+use alloc::string::String;
+
 use styx_softisp::{Arithmetic, IspParams, IspStats, OutputBuffers, RawFormat, Scale, SoftIsp};
 
 use crate::error::Result;
@@ -28,6 +30,28 @@ pub enum RawFrame<'a> {
     },
 }
 
+/// `isp` on `threads` row bands (the helper thread pool needs `std`: one band without it).
+pub(crate) fn with_threads(isp: SoftIsp, threads: usize) -> SoftIsp {
+    #[cfg(feature = "std")]
+    return isp.with_threads(threads);
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = threads;
+        isp
+    }
+}
+
+/// The row bands `isp` runs (1 without `std`).
+pub(crate) fn threads(isp: &SoftIsp) -> usize {
+    #[cfg(feature = "std")]
+    return isp.threads();
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = isp;
+        1
+    }
+}
+
 // One per loop, never moved per frame: the size difference costs nothing.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Engine {
@@ -40,7 +64,7 @@ impl Engine {
     pub fn kind(&self) -> IspEngine {
         match self {
             Self::Cpu(i) => IspEngine::Cpu {
-                threads: i.threads(),
+                threads: threads(i),
             },
             #[cfg(feature = "gpu")]
             Self::Gpu(g) => IspEngine::Gpu {
@@ -100,7 +124,7 @@ impl Engine {
     }
 
     /// GPU time of the last frame (GPU ISP with timestamp queries).
-    pub fn gpu_time(&self) -> Option<std::time::Duration> {
+    pub fn gpu_time(&self) -> Option<core::time::Duration> {
         match self {
             Self::Cpu(_) => None,
             #[cfg(feature = "gpu")]

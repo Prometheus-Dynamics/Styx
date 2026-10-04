@@ -2,7 +2,13 @@
 //! statistics in the same pass, the controller turns them into a sensor request and ISP
 //! settings, and those settings process the next frame.
 
-use std::time::Instant;
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+#[cfg(feature = "gpu")]
+use alloc::boxed::Box;
+use core::time::Duration;
+
+use crate::time::now;
 
 use styx_algo::{LensState, Params, PdafZone, Statistics, Tuning, ZoneGrid};
 use styx_softisp::{
@@ -35,13 +41,13 @@ pub struct SoftOutput {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SoftTiming {
     /// Preparing the ISP for new settings (lens shading tables, tone curve).
-    pub settings: std::time::Duration,
+    pub settings: Duration,
     /// The software ISP: the picture and its statistics.
-    pub isp: std::time::Duration,
+    pub isp: Duration,
     /// Converting the statistics for the algorithms.
-    pub stats: std::time::Duration,
+    pub stats: Duration,
     /// The algorithms (AE, AWB, lens shading, colour, tone).
-    pub algorithms: std::time::Duration,
+    pub algorithms: Duration,
 }
 
 /// The software ISP loop. See the [module documentation](self).
@@ -62,8 +68,8 @@ pub struct SoftLoop {
     next_focus: (Option<LensState>, Option<ZoneGrid<PdafZone>>),
 }
 
-impl std::fmt::Debug for SoftLoop {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for SoftLoop {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SoftLoop")
             .field("info", &self.info)
             .field("isp", &self.isp.kind())
@@ -120,7 +126,8 @@ impl SoftLoop {
         {
             s.focus = true;
         }
-        let mut isp = SoftIsp::new(format, start.softisp(info.bits, &base))?.with_threads(threads);
+        let isp = SoftIsp::new(format, start.softisp(info.bits, &base))?;
+        let mut isp = crate::engine::with_threads(isp, threads);
         isp.set_lens_shading_tolerance(LSC_TOLERANCE);
         Ok(Self {
             info,
@@ -172,7 +179,7 @@ impl SoftLoop {
     }
 
     /// The GPU's time on the last frame (GPU ISP on a device with timestamp queries).
-    pub fn gpu_time(&self) -> Option<std::time::Duration> {
+    pub fn gpu_time(&self) -> Option<Duration> {
         self.isp.gpu_time()
     }
 
@@ -279,7 +286,7 @@ impl SoftLoop {
         scale: Scale,
         out: OutputBuffers<'_>,
     ) -> Result<SoftOutput> {
-        let t0 = Instant::now();
+        let t0 = now();
         let settings = self.settings_for(sensor);
         if self.applied.as_ref() != Some(&settings) {
             self.isp
@@ -297,17 +304,17 @@ impl SoftLoop {
                 .last_run
                 .is_none_or(|r| sensor.frame >= r + self.settled_every);
         self.isp.set_statistics(run);
-        let t1 = Instant::now();
+        let t1 = now();
         let raw_stats = self.isp.process(raw, stride, scale, out)?;
-        let t2 = Instant::now();
+        let t2 = now();
         let mut stats = raw_stats
             .map(|s| {
                 stats::from_softisp(&s, self.info.black_level, settings.lens_shading.is_some())
             })
             .unwrap_or_default();
-        let (lens, pdaf) = std::mem::take(&mut self.next_focus);
+        let (lens, pdaf) = core::mem::take(&mut self.next_focus);
         stats.pdaf = pdaf;
-        let t3 = Instant::now();
+        let t3 = now();
         let step = match (&self.latest, run) {
             (Some((params, _)), false) => Step {
                 frame: sensor.frame,
@@ -323,16 +330,16 @@ impl SoftLoop {
                 step
             }
         };
-        let t4 = Instant::now();
+        let t4 = now();
         Ok(SoftOutput {
             step,
             applied: settings,
             stats,
             timing: SoftTiming {
-                settings: t1 - t0,
-                isp: t2 - t1,
-                stats: t3 - t2,
-                algorithms: t4 - t3,
+                settings: t1.since(t0),
+                isp: t2.since(t1),
+                stats: t3.since(t2),
+                algorithms: t4.since(t3),
             },
         })
     }

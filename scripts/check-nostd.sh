@@ -18,6 +18,7 @@ targets=(thumbv7em-none-eabihf thumbv8m.main-none-eabihf riscv32imac-unknown-non
 crates=(
     "styx-hal:"
     "styx-runtime:"
+    "styx-pipeline:"
     "styx-dng:"
     "styx-pisp:"
     "styx-algo:"

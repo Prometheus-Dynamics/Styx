@@ -5,10 +5,12 @@
 //! outputs bit for bit, so a recording made with [`Controller::record_to`] replays exactly with
 //! `styx_algo::replay`.
 
+use core::time::Duration;
+#[cfg(feature = "std")]
 use std::io::Write;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "std")]
 use styx_algo::replay::Recorder;
 use styx_algo::{
     CameraConfig, Controls, FrameMetadata, LensRequest, LensState, Params, Pipeline, SensorRequest,
@@ -80,8 +82,10 @@ pub struct Controller {
     max_digital_gain: f64,
     last_request: Option<SensorRequest>,
     last_lens: Option<i32>,
+    #[cfg(feature = "std")]
     recorder: Option<Recorder<Box<dyn Write + Send>>>,
     /// A recording asked for before the start: its header names the warm start.
+    #[cfg(feature = "std")]
     record_pending: Option<Box<dyn Write + Send>>,
     warm: Option<WarmStart>,
     started: bool,
@@ -89,8 +93,8 @@ pub struct Controller {
     spatial_denoise: f64,
 }
 
-impl std::fmt::Debug for Controller {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Controller {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Controller")
             .field("pipeline", &self.pipeline)
             .field("config", &self.config)
@@ -111,7 +115,9 @@ impl Controller {
             max_digital_gain: tuning.agc.as_ref().map_or(4.0, |a| a.max_digital_gain),
             last_request: None,
             last_lens: None,
+            #[cfg(feature = "std")]
             recorder: None,
+            #[cfg(feature = "std")]
             record_pending: None,
             warm: None,
             started: false,
@@ -176,9 +182,10 @@ impl Controller {
         &self.controls
     }
 
-    /// Records every frame (statistics, metadata, output) as a `styx-algo` replay. Before the
-    /// start the header is written at [`Self::start`] (with the configuration and warm start
-    /// the algorithms are prepared with).
+    /// Records every frame (statistics, metadata, output) as a `styx-algo` replay (feature
+    /// `std`). Before the start the header is written at [`Self::start`] (with the
+    /// configuration and warm start the algorithms are prepared with).
+    #[cfg(feature = "std")]
     pub fn record_to(&mut self, out: impl Write + Send + 'static) -> Result<()> {
         let out: Box<dyn Write + Send> = Box::new(out);
         if self.started {
@@ -194,6 +201,7 @@ impl Controller {
     }
 
     /// Stops recording and flushes.
+    #[cfg(feature = "std")]
     pub fn stop_recording(&mut self) -> Result<()> {
         if let Some(r) = self.recorder.take() {
             r.into_inner().flush()?;
@@ -212,6 +220,7 @@ impl Controller {
             .pipeline
             .prepare_warm(&self.config, warm.as_ref())?
             .clone();
+        #[cfg(feature = "std")]
         if let Some(out) = self.record_pending.take() {
             self.recorder = Some(Recorder::with_warm_start(out, &self.config, warm.as_ref())?);
         }
@@ -244,6 +253,7 @@ impl Controller {
         let mut meta = self.meta(sensor);
         meta.lens = lens;
         let params = self.pipeline.process(stats, &meta).clone();
+        #[cfg(feature = "std")]
         if let Some(r) = &mut self.recorder {
             r.record(stats, &meta, Some(&params))?;
         }

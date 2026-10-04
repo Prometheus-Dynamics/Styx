@@ -1,6 +1,11 @@
 //! ISP statistics → [`styx_algo::Statistics`] (normalised to full scale 1.0, black level
 //! removed, before white balance).
 
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use styx_algo::{ColourZone, Histogram, LumaZone, Statistics, ZoneGrid};
 use styx_pisp::stats::Statistics as PispStatistics;
 use styx_pisp::uapi::{AWB_STATS_SIZE, CDAF_STATS_SIZE, RawStatistics};
@@ -69,7 +74,7 @@ pub fn from_pisp_raw(raw: &RawStatistics, out: &mut Statistics) {
             counted: z.counted,
         }));
     out.luma = None;
-    let mut bins: Vec<u64> = std::mem::take(&mut out.histogram).into();
+    let mut bins: Vec<u64> = core::mem::take(&mut out.histogram).into();
     bins.clear();
     bins.extend(raw.agc.histogram.iter().map(|&c| u64::from(c)));
     out.histogram = Histogram::from(bins);

@@ -9,23 +9,44 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
+default = ["std"]
+# Recordings (raw recordings, algorithm replays), tunings and warm starts on disk, measurements,
+# the software ISP's helper threads, timings, DNG dates, I/O errors, float maths from std.
+# Without it the core (the 3A loop runner, ISP settings for the PiSP and the software ISP,
+# statistics, the processing loop over the ISP traits, the software ISP loop, stills) is
+# `no_std` + `alloc` (docs/portability.md).
+std = [
+    "dep:serde_json",
+    "serde/std",
+    "styx-algo/std",
+    "styx-core/std",
+    "styx-dng/std",
+    "styx-pisp/std",
+    "styx-runtime/std",
+    "styx-sensor/std",
+    "styx-softisp/std",
+    "thiserror/std",
+]
 # Run on the device: native cameras (styx-native) and the PiSP nodes (styx-pisp/device).
-device = ["dep:styx-native", "dep:styx-kernel", "styx-pisp/device"]
+device = ["std", "dep:styx-native", "dep:styx-kernel", "styx-pisp/device"]
 # The software path on a Vulkan GPU (`styx-gpuisp`; loads libvulkan at run time).
-gpu = ["dep:styx-gpuisp"]
+gpu = ["std", "dep:styx-gpuisp"]
 
+# Path dependencies without default features (the workspace entries keep theirs for the std
+# crates), as examples/nostd-smoke does.
 [dependencies]
 bytemuck = "1.25"
-serde = { workspace = true, features = ["derive", "std"] }
-serde_json = "1.0.145"
-styx-algo.workspace = true
-styx-core = { workspace = true, features = ["std", "neon", "x86"] }
-styx-dng.workspace = true
-styx-pisp.workspace = true
-styx-sensor.workspace = true
-styx-softisp.workspace = true
-thiserror = { workspace = true, features = ["std"] }
+libm.workspace = true
+serde = { workspace = true, features = ["derive", "alloc"] }
+serde_json = { version = "1.0.145", optional = true }
+styx-algo = { path = "../algo", version = "2.0.0", default-features = false }
+styx-core = { workspace = true, features = ["neon", "x86"] }
+styx-dng = { path = "../dng", version = "2.0.0", default-features = false }
+styx-pisp = { path = "../pisp", version = "2.0.0", default-features = false }
+styx-runtime = { path = "../runtime", version = "2.0.0", default-features = false }
+styx-sensor = { path = "../sensor", version = "2.0.0", default-features = false }
+styx-softisp = { path = "../softisp", version = "2.0.0", default-features = false, features = ["neon", "x86"] }
+thiserror.workspace = true
 styx-native = { workspace = true, optional = true }
 styx-kernel = { workspace = true, optional = true }
 styx-gpuisp = { workspace = true, optional = true }
