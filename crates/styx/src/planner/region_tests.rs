@@ -232,6 +232,8 @@ fn consumers_get_their_own_regions_from_the_capture_frames() {
         plan.region.places,
         vec![Some(IspPlace::Slot(0)), Some(IspPlace::Slot(1))]
     );
+    // Its frames arrive cropped: nothing crops them again.
+    assert!(plan.region.frames_cropped() && !plan.region.main_crop());
     let capture = grey(128, 128, 7, Some(rect(0)), 1)
         .with_companion(
             CompanionKind::Region { index: 1 },

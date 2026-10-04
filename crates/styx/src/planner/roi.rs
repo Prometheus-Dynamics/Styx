@@ -36,8 +36,10 @@ impl RoiHandle {
         self.region(0)
     }
 
-    /// Region `index` (`None`: none; for region 0, the whole frame). Only regions the request
-    /// asked for are delivered ([`FrameRequest::regions`](super::FrameRequest::regions)).
+    /// Region `index` (`None`: none; for region 0, the whole frame, except where an extra ISP
+    /// pass makes it on a shared capture: then no frames until it is set again). Only regions
+    /// the request asked for are delivered
+    /// ([`FrameRequest::regions`](super::FrameRequest::regions)).
     pub fn set_region(&self, index: usize, rect: Option<FrameRect>) {
         if index >= MAX_REGIONS {
             return;

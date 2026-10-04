@@ -76,9 +76,15 @@ impl Region {
         self.overview.filter(|(_, isp)| *isp).map(|(size, _)| size)
     }
 
-    /// The ISP crops region 0 in the main output: frames arrive cropped.
+    /// The ISP crops region 0 in the main output.
     pub(crate) fn main_crop(&self) -> bool {
         self.places.first() == Some(&Some(IspPlace::Main))
+    }
+
+    /// The ISP crops region 0 (the main output, or a region slot): frames arrive cropped, and
+    /// nothing crops them again.
+    pub(crate) fn frames_cropped(&self) -> bool {
+        self.places.first().is_some_and(Option::is_some)
     }
 
     /// The ISP's region slots this plan's regions use, with their region indices.

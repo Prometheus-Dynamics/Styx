@@ -79,7 +79,7 @@ pub(crate) struct FramePreparer {
     descriptor: CodecDescriptor,
     route: Route,
     luma: bool,
-    /// The ISP crops region 0: frames arrive cropped.
+    /// The ISP crops region 0 (main output or a region slot): frames arrive cropped.
     isp_crop: bool,
     /// The ISP makes regions or the overview: frames arrive with them as companions, numbered
     /// by the capture (`region_frames::consumer_frame` makes them this consumer's).
@@ -164,7 +164,7 @@ impl FramePreparer {
             },
             route,
             luma,
-            isp_crop: plan.region.main_crop(),
+            isp_crop: plan.region.frames_cropped(),
             isp_regions: plan.region.isp().then(|| Box::new(plan.clone())),
             view_overview: plan
                 .region
