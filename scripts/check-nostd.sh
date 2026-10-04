@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # The platform-neutral crates without std (docs/portability.md): each built and linted with
-# --no-default-features for a Cortex-M33, a RISC-V microcontroller and WebAssembly, the no_std
+# --no-default-features for a Cortex-M4F/M7, a Cortex-M33, a RISC-V microcontroller and
+# WebAssembly (styx-hal also without alloc: it has no allocator dependency at all), the no_std
 # smoke crate (examples/nostd-smoke) built for the same targets and its logic run as a host
 # test with every dependency built without std.
 #
-# Needs the targets: rustup target add thumbv8m.main-none-eabihf riscv32imac-unknown-none-elf
-# wasm32-unknown-unknown (the script adds them when rustup is there).
+# Needs the targets: rustup target add thumbv7em-none-eabihf thumbv8m.main-none-eabihf
+# riscv32imac-unknown-none-elf wasm32-unknown-unknown (the script adds them when rustup is
+# there).
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root_dir"
 
-targets=(thumbv8m.main-none-eabihf riscv32imac-unknown-none-elf wasm32-unknown-unknown)
+targets=(thumbv7em-none-eabihf thumbv8m.main-none-eabihf riscv32imac-unknown-none-elf wasm32-unknown-unknown)
 # crate: features besides no default ones
 crates=(
+    "styx-hal:"
     "styx-dng:"
     "styx-pisp:"
     "styx-algo:"
     "styx-sensor:"
+    "styx-sensor:postcard"
     "styx-core-rs:neon,x86"
     "styx-softisp:neon,x86"
 )

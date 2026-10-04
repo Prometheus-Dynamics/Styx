@@ -22,17 +22,18 @@
 //! VCMs report no position: [`LensSchedule`] predicts each frame's from the moves written and
 //! [`LensMotion`] (a first-order approach that is complete after `settle`).
 
-use alloc::collections::{BTreeMap, VecDeque};
+use crate::fixed::FixedVec;
+use crate::frame_map::FrameMap;
 use alloc::{format, string::String, vec, vec::Vec};
 use core::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
 
 /// A focus lens.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LensDescription {
     /// The actuator, informational (`dw9817`).
@@ -126,7 +127,7 @@ impl LensDescription {
 }
 
 /// VCM chips whose command formats are built in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VcmChip {
     /// Dongwoon DW9714: two bytes, no register, `position << 4 | slew` (10 bits), bit 15
@@ -144,7 +145,7 @@ pub enum VcmChip {
 }
 
 /// How a position is written: `[register?] ((position << shift) | or)` big-endian in `bytes`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VcmFormat {
     /// The register the value goes to (none: the value is the whole message).
@@ -211,7 +212,7 @@ impl VcmFormat {
 }
 
 /// A VCM Styx drives over I²C.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VcmI2c {
     /// 7-bit address (0x0c for the DW9714/DW9807/DW9817 family).
@@ -288,7 +289,7 @@ impl LensMotion {
 }
 
 /// A move written: when, from where (predicted), to where.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct Move {
     at: Duration,
     from: f64,
@@ -313,10 +314,15 @@ pub struct LensFrame {
 pub struct LensSchedule {
     motion: LensMotion,
     delay: u32,
-    pending: BTreeMap<u64, i32>,
-    moves: VecDeque<Move>,
+    /// Write frame -> position (fixed: lens moves run per frame without allocating).
+    pending: FrameMap<i32, 16>,
+    /// The last [`MOVES_KEPT`] moves, oldest first.
+    moves: FixedVec<Move, MOVES_KEPT>,
     rest: f64,
 }
+
+/// Moves kept to predict positions from.
+const MOVES_KEPT: usize = 16;
 
 impl LensSchedule {
     /// A schedule for a lens resting at `position`.
@@ -324,8 +330,8 @@ impl LensSchedule {
         Self {
             motion,
             delay,
-            pending: BTreeMap::new(),
-            moves: VecDeque::new(),
+            pending: FrameMap::default(),
+            moves: FixedVec::new(),
             rest: f64::from(position),
         }
     }
@@ -350,27 +356,21 @@ impl LensSchedule {
 
     /// Frame `seq` started: the position to write now, if one is due (the latest of them).
     pub fn due(&mut self, seq: u64) -> Option<i32> {
-        let due: Vec<u64> = self.pending.range(..=seq).map(|(k, _)| *k).collect();
-        let last = due.last().map(|k| self.pending[k]);
-        for k in due {
-            self.pending.remove(&k);
-        }
-        last
+        self.pending.take_up_to(seq)
     }
 
     /// Records a move written at `at` (`CLOCK_MONOTONIC`).
     pub fn written(&mut self, at: Duration, position: i32) {
         let (from, _) = self.at(at);
-        self.moves.push_back(Move {
+        let m = Move {
             at,
             from,
             to: f64::from(position),
-        });
-        while self.moves.len() > 16 {
-            if let Some(m) = self.moves.pop_front() {
-                self.rest = m.to;
-            }
+        };
+        if self.moves.len() == MOVES_KEPT {
+            self.rest = self.moves.remove(0).to;
         }
+        let _ = self.moves.push(m);
     }
 
     /// The predicted position at `t` and whether the lens had settled.
@@ -403,7 +403,7 @@ impl LensSchedule {
 
     /// The position last written (or the rest position).
     pub fn target(&self) -> i32 {
-        self.moves.back().map_or(self.rest, |m| m.to) as i32
+        self.moves.last().map_or(self.rest, |m| m.to) as i32
     }
 }
 

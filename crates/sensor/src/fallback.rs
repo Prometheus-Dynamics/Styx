@@ -15,10 +15,15 @@ use crate::kernel_data::KernelSensorData;
 use crate::mbus::MbusCode;
 use crate::schedule::{Control, ControlSet};
 
+/// V4L2 control values for one `VIDIOC_S_EXT_CTRLS` call (at most the four scheduled
+/// controls, so no allocation).
+pub type KernelControls = crate::fixed::FixedVec<(KernelControl, i64), 4>;
+
 /// Sensor-related V4L2 controls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum KernelControl {
     /// `V4L2_CID_EXPOSURE` (lines).
+    #[default]
     Exposure,
     /// `V4L2_CID_ANALOGUE_GAIN` (code).
     AnalogueGain,
@@ -405,6 +410,7 @@ impl SensorDescription {
             },
             embedded_data: data.and_then(|d| d.embedded_data.clone()),
             lens: data.and_then(|d| d.lens.clone()),
+            bus: None,
         };
         desc.validate().map_err(|issues| SensorError::Invalid {
             source_name: "subdev report".into(),
@@ -420,7 +426,7 @@ pub fn kernel_controls(
     codes: &ControlSet,
     height: u32,
     exposure_fraction_bits: u8,
-) -> Vec<(KernelControl, i64)> {
+) -> KernelControls {
     codes
         .iter()
         .map(|(c, v)| match c {

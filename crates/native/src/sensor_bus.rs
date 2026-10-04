@@ -6,13 +6,13 @@ use std::io;
 use std::io::{PipeReader, PipeWriter};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::Arc;
-use std::time::Duration;
 
 use styx_kernel::bus::i2c::I2cDevice;
 use styx_kernel::bus::{SensorBridge, StreamRequest, StreamState};
 use styx_kernel::subdev::Subdev;
 use styx_kernel::v4l2::{ControlValue, ControlWhich, Controls};
-use styx_sensor::{BusResult, KernelControl, RegWrite, RegisterBus, SensorPins};
+use styx_sensor::styx_hal::embedded_hal::delay::DelayNs;
+use styx_sensor::{BusError, BusResult, KernelControl, RegWrite, RegisterBus, SensorPins};
 
 use crate::device::BridgeDevice;
 use crate::regbus::{BridgePins, I2cRegisterBus};
@@ -117,7 +117,18 @@ pub enum CameraPins {
     None(styx_sensor::NoPins),
 }
 
+impl DelayNs for CameraPins {
+    fn delay_ns(&mut self, ns: u32) {
+        match self {
+            CameraPins::Bridge(p) => p.delay_ns(ns),
+            CameraPins::None(p) => p.delay_ns(ns),
+        }
+    }
+}
+
 impl SensorPins for CameraPins {
+    type Error = BusError;
+
     fn set_gpio(&mut self, role: &str, value: bool) -> BusResult<()> {
         match self {
             CameraPins::Bridge(p) => p.set_gpio(role, value),
@@ -136,13 +147,6 @@ impl SensorPins for CameraPins {
         match self {
             CameraPins::Bridge(p) => p.set_supply(role, on),
             CameraPins::None(p) => p.set_supply(role, on),
-        }
-    }
-
-    fn delay(&mut self, duration: Duration) {
-        match self {
-            CameraPins::Bridge(p) => p.delay(duration),
-            CameraPins::None(p) => p.delay(duration),
         }
     }
 }

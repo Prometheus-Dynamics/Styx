@@ -8,6 +8,7 @@ members = [
     "crates/v4l2",
     "crates/kernel",
     "crates/sensor",
+    "crates/hal",
     "crates/graph",
     "crates/pisp",
     "crates/algo",
@@ -51,6 +52,11 @@ styx-libcamera = { path = "crates/libcamera", version = "2.0.0" }
 styx-v4l2 = { path = "crates/v4l2", version = "2.0.0" }
 styx-kernel = { path = "crates/kernel", version = "2.0.0" }
 styx-sensor = { path = "crates/sensor", version = "2.0.0" }
+styx-hal = { path = "crates/hal", version = "2.0.0" }
+embedded-hal = "1.0"
+embedded-hal-async = "1.0"
+# Compact binary sensor descriptions for targets without a TOML parser (styx-sensor `build`).
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 styx-graph = { path = "crates/graph", version = "2.0.0" }
 styx-pisp = { path = "crates/pisp", version = "2.0.0" }
 styx-algo = { path = "crates/algo", version = "2.0.0" }

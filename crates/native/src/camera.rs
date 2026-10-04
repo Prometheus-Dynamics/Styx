@@ -307,7 +307,8 @@ impl NativeCamera {
             AddrWidth::Bits16
         };
         let dev = I2cDevice::open(bus, addr, width).step(&format!("claim I2C {bus}-{addr:04x}"))?;
-        let regbus = I2cRegisterBus::new(dev, desc.sensor.address_bits)
+        let address = u8::try_from(addr).unwrap_or(u8::MAX);
+        let regbus = I2cRegisterBus::new(dev, address, desc.sensor.address_bits)
             .step("register bus")?
             .with_bursts(desc.sensor.burst_writes);
         let supplies: Vec<&str> = [&desc.sequences.power_up, &desc.sequences.power_down]

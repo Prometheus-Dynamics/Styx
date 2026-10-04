@@ -1,10 +1,10 @@
 //! Small value types used throughout the schema.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A width and height in pixels. In TOML: `[1280, 800]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
-#[serde(from = "[u32; 2]")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(from = "[u32; 2]", into = "[u32; 2]")]
 pub struct Size {
     /// Width.
     pub width: u32,
@@ -19,6 +19,12 @@ impl Size {
     }
 }
 
+impl From<Size> for [u32; 2] {
+    fn from(s: Size) -> Self {
+        [s.width, s.height]
+    }
+}
+
 impl From<[u32; 2]> for Size {
     fn from([width, height]: [u32; 2]) -> Self {
         Self { width, height }
@@ -27,7 +33,7 @@ impl From<[u32; 2]> for Size {
 
 /// A rectangle in pixel-array coordinates. In TOML:
 /// `{ left = 8, top = 8, width = 1280, height = 800 }`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rect {
     /// Left edge.
@@ -57,7 +63,7 @@ impl Rect {
 ///
 /// In TOML: `{ address = 0x3500, bytes = 3, shift = 4, bits = 16 }`. `bytes` defaults to 1,
 /// `shift` to 0 and `bits` to the rest of the register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Field {
     /// First (most significant) register address.
@@ -133,7 +139,7 @@ fn mask(bits: u8) -> u32 {
 
 /// A blanking range with a default, in pixels (horizontal) or lines (vertical).
 /// In TOML: `{ min = 110, max = 51540, default = 1022 }`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Blanking {
     /// Minimum.

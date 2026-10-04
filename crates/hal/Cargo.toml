@@ -1,0 +1,29 @@
+[package]
+name = "styx-hal"
+version.workspace = true
+edition.workspace = true
+description = "Camera hardware traits for Styx without std or alloc: sensor power sequencing over embedded-hal pins and delays, DMA memory and buffers, the frame receiver, the lens actuator; a mock platform for tests."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# `Send + Sync` on `SensorStart` (`MaybeSendSync`), `std::io::Error` conversions, `StdDelay`.
+std = []
+# A mock platform for host tests: recording pins and an I²C sensor model (blocking and async),
+# a receiver with injectable events and faults, heap-backed DMA memory, a tiny `block_on`.
+mock = ["std"]
+
+[dependencies]
+# The bus vocabulary (I²C, SPI, output pins, delays): embedded-hal 1.0 and its async twin, used
+# directly (docs/portability-design.md: generic bus and pin work belongs to Lemnos).
+embedded-hal.workspace = true
+embedded-hal-async.workspace = true
+
+[dev-dependencies]
+styx-hal = { path = ".", features = ["mock"] }
+
+[lints]
+workspace = true

@@ -168,6 +168,11 @@ pub(super) fn validate(d: &SensorDescription) -> Result<(), Issues> {
     };
     let registers = d.sensor.backend == Backend::Registers;
 
+    // Bus wiring.
+    for (path, message) in d.bus.iter().flat_map(|b| b.problems()) {
+        c.err(path, message);
+    }
+
     // Identity.
     c.check(
         !d.sensor.name.trim().is_empty(),
@@ -468,6 +473,18 @@ pub(super) fn validate(d: &SensorDescription) -> Result<(), Issues> {
     }
 
     // Embedded data.
+    if let Some(ed) = &d.embedded_data {
+        let bytes = ed.entries.len()
+            + ed.registers
+                .iter()
+                .map(|r| usize::from(r.bytes))
+                .sum::<usize>();
+        c.check(
+            bytes <= crate::embedded::EMBEDDED_REGISTERS - 16,
+            "embedded_data",
+            "reads too many register bytes (at most 48 entries and register bytes)",
+        );
+    }
     if let Some(ed) = &d.embedded_data {
         c.check(ed.lines >= 1, "embedded_data.lines", "must be at least 1");
         let mut seen = BTreeSet::new();

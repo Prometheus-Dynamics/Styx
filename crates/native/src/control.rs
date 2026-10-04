@@ -399,7 +399,7 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
     /// Asks for typed values from frame `frame` on.
     pub fn request_at(&mut self, frame: u64, req: &ControlRequest) -> Result<Vec<Landing>> {
         Self::check(req)?;
-        Ok(self.driver.request(frame, req)?)
+        Ok(self.driver.request(frame, req)?.to_vec())
     }
 
     /// [`Self::request_at`], writing at once what is due in the current frame when enough of
@@ -422,9 +422,9 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
             DriverState::Off => false,
         };
         if in_time {
-            Ok(self.driver.request_now(frame, req)?)
+            Ok(self.driver.request_now(frame, req)?.to_vec())
         } else {
-            Ok(self.driver.request(frame, req)?)
+            Ok(self.driver.request(frame, req)?.to_vec())
         }
     }
 
@@ -466,7 +466,7 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
         if codes.is_empty() {
             return Ok(Vec::new());
         }
-        Ok(self.driver.report(seq, &codes)?)
+        Ok(self.driver.report(seq, &codes)?.to_vec())
     }
 
     /// Writes the stream-off registers whatever the driver's state (a start that failed half

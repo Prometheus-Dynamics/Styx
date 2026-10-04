@@ -187,10 +187,23 @@ box (OV9782 1280x800) unless stated.
 
 ### Platforms
 - [ ] A second bridged sensor and a non-Pi board (software ISP or its own ISP).
-- [ ] `no_std` phase 2: a HAL (I²C, GPIO, clocks, a CSI/DVP receiver, DMA buffers) and a
-      `no_std` camera runtime driving `SensorDriver`, the 3A `Pipeline` and `SoftIsp` per
-      frame; frames (`FrameLease`, pools) without std; run on real MCU hardware (so far only
-      built for bare-metal targets and run on the host).
+- [x] `no_std` phase 2, steps 1-3 ([portability-design.md](docs/portability-design.md)):
+      `styx-hal` (camera hardware traits, no `alloc`; embedded-hal 1.0 / embedded-hal-async 1.0
+      as the bus vocabulary), the sensor driver over any embedded-hal I²C/SPI bus, blocking and
+      async (`AsyncSensorDriver`), the `[bus]` section, descriptions compiled at build time
+      (postcard), zero allocations per frame in the schedule and the sensor frame path
+      (counting-allocator test); CM5 unchanged (first frame 34.4 vs 34.25 ms median, landing and
+      register read-back identical).
+- [ ] `no_std` phase 2, steps 4-8 (after the HeliOS image proof): `styx-runtime` (sensor side,
+      frames and `Receiver` implementations for Linux, the processing loop, stills and
+      counters), then the MCU port (`ports/stm32h7-dcmi`) and an `rkisp1` board; run on real
+      MCU hardware (so far only built for bare-metal targets and run on the host).
+- [ ] Move the generic pieces to Lemnos once it takes them (i2c-dev and GPIO embedded-hal
+      implementations in `styx-kernel`, delays and clocks, hotplug, the I²C mock;
+      list in portability-design.md "Slated to move to Lemnos").
+- [ ] `native-pipeline regcheck`: `0x0101` and `0x1000` read back 0 after bring-up on the
+      OV9782 (also on a178a44): write-only or self-clearing registers to exclude from the
+      check, or a description issue; the documented "all 93 identical" no longer holds.
 - [ ] `no_std` on targets without pointer-sized atomics (Cortex-M0, RISC-V without `a`):
       `SensorDriver` and the fp16 tables hold `Arc`s (`portable-atomic`, or `Rc`).
 - [ ] `no_std` replays: 3A results through libm can differ from std's in the last bits, so a

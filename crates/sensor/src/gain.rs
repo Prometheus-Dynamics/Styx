@@ -1,7 +1,5 @@
 //! The gain model: ratios to register codes with quantisation, and analogue/digital splitting.
 
-use alloc::{vec, vec::Vec};
-
 use crate::desc::{Gain, GainModel};
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
@@ -76,19 +74,23 @@ impl Gain {
     pub fn code_for_gain(&self, gain: f64, rounding: Rounding) -> GainCode {
         let (lo, hi) = self.range();
         let clamped = gain < lo - EPS || gain > hi + EPS;
-        let candidates: Vec<u32> = match &self.model {
-            GainModel::Table(t) => t.iter().map(|(c, _)| *c).collect(),
-            GainModel::Linear { step, offset } => bracket(gain / step - *offset as f64),
+        // Candidates: every table code, or the two codes around the model's exact value (no
+        // allocation: this runs for every gain request).
+        let (table, (pair, n)): (&[(u32, f64)], _) = match &self.model {
+            GainModel::Table(t) => (t, ([0, 0], 0)),
+            GainModel::Linear { step, offset } => (&[], bracket(gain / step - *offset as f64)),
             GainModel::Reciprocal { numerator, base } => {
                 if gain <= 0.0 {
-                    vec![self.min_code]
+                    (&[], ([self.min_code, 0], 1))
                 } else {
-                    bracket(base - numerator / gain)
+                    (&[], bracket(base - numerator / gain))
                 }
             }
         };
-        let codes = candidates
-            .into_iter()
+        let codes = table
+            .iter()
+            .map(|(c, _)| *c)
+            .chain(pair.into_iter().take(n))
             .map(|c| c.clamp(self.min_code, self.max_code));
         let best = match rounding {
             Rounding::Nearest => codes.min_by(|a, b| {
@@ -109,12 +111,13 @@ impl Gain {
     }
 }
 
-fn bracket(x: f64) -> Vec<u32> {
+/// The codes around `x` (and how many).
+fn bracket(x: f64) -> ([u32; 2], usize) {
     if !x.is_finite() {
-        return vec![u32::MAX];
+        return ([u32::MAX, 0], 1);
     }
     let f = x.floor().clamp(0.0, f64::from(u32::MAX)) as u32;
-    vec![f, f.saturating_add(1)]
+    ([f, f.saturating_add(1)], 2)
 }
 
 /// Split a total gain into analogue gain first, then digital gain for the remainder.

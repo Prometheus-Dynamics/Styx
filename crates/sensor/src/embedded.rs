@@ -1,11 +1,14 @@
 //! Reading applied control values back from a frame's embedded data.
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
+#[cfg(test)]
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::desc::{
     EmbeddedControlKind, EmbeddedData, EmbeddedFormat, EmbeddedPacking, Field, SensorDescription,
 };
+use crate::fixed::FixedVec;
 use crate::schedule::{Control, ControlSet};
 
 /// Unpacks CSI-2 RAW10 data: each group of five bytes gives four 10-bit words (high 8 bits,
@@ -20,6 +23,26 @@ pub fn unpack_raw10_bytes(data: &[u8]) -> Vec<u8> {
         })
         .collect()
 }
+
+/// Byte `k` of the embedded data as the layout's offsets count it (unpacked when the layout
+/// says RAW10), without unpacking the rest: `None` past the data (or its last whole group).
+fn unpacked_byte(packing: EmbeddedPacking, data: &[u8], k: usize) -> Option<u8> {
+    match packing {
+        EmbeddedPacking::Raw10 => {
+            let g = data.get(5 * (k / 4)..5 * (k / 4) + 5)?;
+            let i = k % 4;
+            Some(((u16::from(g[i]) << 2) | u16::from((g[4] >> (2 * i)) & 3)) as u8)
+        }
+        _ => data.get(k).copied(),
+    }
+}
+
+/// Register addresses an embedded layout reads, sorted and without repeats (at most
+/// [`EMBEDDED_REGISTERS`]; validation keeps layouts within it).
+type Addresses = FixedVec<u16, EMBEDDED_REGISTERS>;
+
+/// Most register bytes a layout reads back from embedded data.
+pub const EMBEDDED_REGISTERS: usize = 64;
 
 impl SensorDescription {
     /// The embedded data as the layout's offsets count it: unpacked if the layout says the
@@ -51,8 +74,8 @@ impl SensorDescription {
     }
 
     /// Register addresses the layout reads (the bytes of `entries`, `registers` and the
-    /// control register fields).
-    fn embedded_addresses(&self, layout: &EmbeddedData) -> BTreeSet<u16> {
+    /// control register fields), sorted, without repeats.
+    fn embedded_addresses(&self, layout: &EmbeddedData) -> Addresses {
         let ctl = &self.controls;
         let fields = [
             ctl.frame_length,
@@ -65,12 +88,21 @@ impl SensorDescription {
             .flatten()
             .map(|f| (f.address, f.bytes))
             .chain(layout.registers.iter().map(|r| (r.address, r.bytes)));
-        layout
+        let mut out = Addresses::new();
+        let all = layout
             .entries
             .iter()
             .map(|e| e.address)
-            .chain(spans.flat_map(|(a, n)| (0..u16::from(n)).map(move |i| a.wrapping_add(i))))
-            .collect()
+            .chain(spans.flat_map(|(a, n)| (0..u16::from(n)).map(move |i| a.wrapping_add(i))));
+        for a in all {
+            if let Err(at) = out.binary_search(&a) {
+                if out.push(a).is_err() {
+                    break;
+                }
+                out[at..].rotate_right(1);
+            }
+        }
+        out
     }
 
     /// Register bytes found in embedded data (as received), by address. Empty without a
@@ -80,7 +112,12 @@ impl SensorDescription {
             return BTreeMap::new();
         };
         if layout.format == EmbeddedFormat::Ccs {
-            return ccs_registers(data, layout.packing, &self.embedded_addresses(layout));
+            let wanted = self.embedded_addresses(layout);
+            let mut out = BTreeMap::new();
+            ccs_scan(data, layout.packing, &wanted, |a, v| {
+                out.insert(a, v);
+            });
+            return out;
         }
         let unpacked = self.embedded_unpacked(self.embedded_prefix(data));
         let data = unpacked.as_slice();
@@ -106,23 +143,41 @@ impl SensorDescription {
         if layout.controls.is_empty() || layout.format == EmbeddedFormat::Ccs {
             return set;
         }
-        let unpacked = self.embedded_unpacked(self.embedded_prefix(data));
         for c in &layout.controls {
             let start = c.offset as usize;
-            let Some(bytes) = unpacked.get(start..start + usize::from(c.bytes)) else {
-                continue;
-            };
-            let v = bytes.iter().fold(0u32, |a, b| (a << 8) | u32::from(*b)) << c.shift;
-            set.set(kind_control(c.control), v);
+            let v = (start..start + usize::from(c.bytes)).try_fold(0u32, |a, k| {
+                Some((a << 8) | u32::from(unpacked_byte(layout.packing, data, k)?))
+            });
+            if let Some(v) = v {
+                set.set(kind_control(c.control), v << c.shift);
+            }
         }
         set
     }
 
+    /// Without allocating (it runs for every frame): register bytes are looked up in the
+    /// line, or collected from a CCS line into a small fixed map.
     fn decode_embedded_registers(&self, data: &[u8]) -> ControlSet {
-        let regs = self.embedded_registers(data);
+        let Some(layout) = &self.embedded_data else {
+            return ControlSet::new();
+        };
+        let mut ccs = FixedVec::<(u16, u8), EMBEDDED_REGISTERS>::new();
+        if layout.format == EmbeddedFormat::Ccs {
+            let wanted = self.embedded_addresses(layout);
+            ccs_scan(data, layout.packing, &wanted, |a, v| {
+                let _ = ccs.push((a, v));
+            });
+        }
+        let byte = |address: u16| -> Option<u8> {
+            if layout.format == EmbeddedFormat::Ccs {
+                return ccs.iter().find(|(a, _)| *a == address).map(|(_, v)| *v);
+            }
+            let e = layout.entries.iter().find(|e| e.address == address)?;
+            unpacked_byte(layout.packing, data, usize::try_from(e.offset).ok()?)
+        };
         let read = |f: &Field| -> Option<u32> {
             (0..f.bytes).try_fold(0u32, |acc, i| {
-                Some((acc << 8) | u32::from(*regs.get(&f.address.checked_add(u16::from(i))?)?))
+                Some((acc << 8) | u32::from(byte(f.address.checked_add(u16::from(i))?)?))
             })
         };
         let ctl = &self.controls;
@@ -189,11 +244,23 @@ const CCS_LINE_END: u8 = 0x07;
 /// The `wanted` registers of a CCS tagged embedded line (see [`EmbeddedFormat::Ccs`]). Stops
 /// once all are found, at the line end, or at an unknown tag; a line not starting with the
 /// start code gives nothing.
-pub fn ccs_registers(
+#[cfg(test)]
+fn ccs_registers(
     data: &[u8],
     packing: EmbeddedPacking,
     wanted: &BTreeSet<u16>,
 ) -> BTreeMap<u16, u8> {
+    let wanted: alloc::vec::Vec<u16> = wanted.iter().copied().collect();
+    let mut out = BTreeMap::new();
+    ccs_scan(data, packing, &wanted, |a, v| {
+        out.insert(a, v);
+    });
+    out
+}
+
+/// [`ccs_registers`] over `wanted` sorted without repeats, giving each register found to
+/// `found` (once per register): no allocation.
+fn ccs_scan(data: &[u8], packing: EmbeddedPacking, wanted: &[u16], mut found: impl FnMut(u16, u8)) {
     let pad = match packing {
         EmbeddedPacking::None => usize::MAX,
         EmbeddedPacking::Raw10 => 5,
@@ -204,19 +271,26 @@ pub fn ccs_registers(
         .enumerate()
         .filter(|(i, _)| pad == usize::MAX || i % pad != pad - 1)
         .map(|(_, b)| *b);
-    let mut out = BTreeMap::new();
     if bytes.next() != Some(CCS_LINE_START) || wanted.is_empty() {
-        return out;
+        return;
     }
+    let mut seen = 0usize;
+    // Bit i: wanted[i] already found (a line repeats no register, but be safe).
+    let mut done = [0u64; EMBEDDED_REGISTERS.div_ceil(64)];
     let mut address: u16 = 0;
     while let (Some(tag), Some(value)) = (bytes.next(), bytes.next()) {
         match tag {
             CCS_ADDRESS_HIGH => address = (address & 0x00ff) | (u16::from(value) << 8),
             CCS_ADDRESS_LOW => address = (address & 0xff00) | u16::from(value),
             CCS_VALUE => {
-                if wanted.contains(&address) {
-                    out.insert(address, value);
-                    if out.len() == wanted.len() {
+                if let Ok(i) = wanted.binary_search(&address)
+                    && i < EMBEDDED_REGISTERS
+                    && done[i / 64] & (1 << (i % 64)) == 0
+                {
+                    done[i / 64] |= 1 << (i % 64);
+                    found(address, value);
+                    seen += 1;
+                    if seen == wanted.len().min(EMBEDDED_REGISTERS) {
                         break;
                     }
                 }
@@ -228,7 +302,6 @@ pub fn ccs_registers(
             _ => break,
         }
     }
-    out
 }
 
 #[cfg(test)]

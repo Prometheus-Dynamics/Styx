@@ -9,6 +9,7 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+embedded-hal.workspace = true
 libc.workspace = true
 
 [lints]

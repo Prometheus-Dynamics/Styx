@@ -4,13 +4,13 @@
 use alloc::collections::BTreeMap;
 use alloc::{string::String, vec::Vec};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::step::Step;
 use super::types::Field;
 
 /// Sensor controls and how they map to registers.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Controls {
     /// Frame length (VTS) register, in lines. Required for register-driven sensors.
@@ -48,7 +48,7 @@ pub struct Controls {
 }
 
 /// Line length (HTS) register. `line_length_pixels = register * pixels_per_unit`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LineLength {
     /// The register.
@@ -63,7 +63,7 @@ fn one() -> u32 {
 }
 
 /// Exposure in lines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Exposure {
     /// Register field holding the integer line count. The `fraction_bits` fractional bits sit
@@ -85,7 +85,7 @@ pub struct Exposure {
 }
 
 /// A gain control.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Gain {
     /// The register field. Absent for kernel-driven sensors.
@@ -109,7 +109,7 @@ pub struct Gain {
 /// model = { reciprocal = { numerator = 256, base = 256 } }    # gain = numerator / (base - code)
 /// model = { table = [[0x00, 1.0], [0x10, 2.0], [0x30, 4.0]] } # code -> gain pairs
 /// ```
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum GainModel {
     /// `gain = (code + offset) * step`.
@@ -134,7 +134,7 @@ pub enum GainModel {
 /// Control delays in frames: a value written during frame N first affects frame N + delay.
 /// With group hold, the writes of one frame are held and launched together and the delays
 /// count from the frame in which the group was launched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Delays {
     /// Exposure.
@@ -160,7 +160,7 @@ impl Default for Delays {
 }
 
 /// Register sequences that bracket a grouped update.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GroupHold {
     /// Written before the grouped writes.
@@ -174,7 +174,7 @@ pub struct GroupHold {
 }
 
 /// A flip or mirror bit, always written read-modify-write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Flip {
     /// Register address (one byte).
@@ -190,7 +190,7 @@ pub struct Flip {
 }
 
 /// Test pattern register and its named values.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestPattern {
     /// The register field.
@@ -205,7 +205,7 @@ pub struct TestPattern {
 /// multi-byte registers list each address. Only the controls whose every register byte is
 /// listed can be read back. Sensors that report a control's value in a layout of their own
 /// (not as its register bytes) list it under `controls` instead, which takes precedence.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddedData {
     /// Embedded data lines at the top of each frame.
@@ -230,7 +230,7 @@ pub struct EmbeddedData {
 }
 
 /// The layout of register values in an embedded data line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EmbeddedFormat {
     /// Register bytes at fixed offsets (`entries`).
@@ -245,7 +245,7 @@ pub enum EmbeddedFormat {
 }
 
 /// A control value read from registers in the embedded data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddedRegister {
     /// Which control.
@@ -261,7 +261,7 @@ pub struct EmbeddedRegister {
 }
 
 /// Packing of the embedded data bytes as received.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EmbeddedPacking {
     /// One value per byte.
@@ -276,7 +276,7 @@ pub enum EmbeddedPacking {
 }
 
 /// A control whose applied value the embedded data reports directly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddedControl {
     /// Which control.
@@ -296,7 +296,7 @@ fn one_byte() -> u8 {
 }
 
 /// Controls that embedded data can report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EmbeddedControlKind {
     /// Exposure (code units: lines << fraction bits).
@@ -310,7 +310,7 @@ pub enum EmbeddedControlKind {
 }
 
 /// One register byte in embedded data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddedEntry {
     /// Register address.

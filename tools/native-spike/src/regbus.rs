@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use styx_kernel::bus::SensorBridge;
 use styx_kernel::bus::i2c::{self, AddrWidth, I2cDevice, Message};
-use styx_sensor::{BusResult, RegWrite, RegisterBus, SensorPins};
+use styx_sensor::styx_hal::embedded_hal::delay::DelayNs;
+use styx_sensor::{BusError, BusResult, RegWrite, RegisterBus, SensorPins};
 
 /// The raw I²C transfers the register bus needs; [`I2cDevice`] in the spike, a recorder in
 /// tests.
@@ -208,7 +209,15 @@ fn not_found(what: &str, role: &str) -> io::Error {
     )
 }
 
+impl<S> DelayNs for BridgePins<S> {
+    fn delay_ns(&mut self, ns: u32) {
+        std::thread::sleep(Duration::from_nanos(u64::from(ns)));
+    }
+}
+
 impl<S: PowerSwitch> SensorPins for BridgePins<S> {
+    type Error = BusError;
+
     fn set_gpio(&mut self, role: &str, _: bool) -> BusResult<()> {
         Err(not_found("gpio", role).into())
     }

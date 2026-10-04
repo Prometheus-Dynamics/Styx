@@ -10,7 +10,8 @@
 //! * [`run_isp`]: the software ISP (`styx-softisp`) over a tiny synthetic RAW10 frame with the
 //!   3A's colour gains, statistics included.
 //! * [`sensor_timing`]: a sensor description (`styx-sensor`, the built-in OV9782) parsed from
-//!   TOML, and its frame length for a rate.
+//!   TOML, and its frame length for a rate; [`compiled_sensor_timing`] the same from the
+//!   description compiled at build time (`build.rs`, no TOML parsing on the target).
 //! * [`dng_round_trip`]: a DNG (`styx-dng`) written and read back in memory.
 //! * [`pisp_stats`]: PiSP front end statistics decoded (`styx-pisp`).
 //!
@@ -187,6 +188,17 @@ pub fn sensor_timing(fps: f64) -> (u32, f64) {
     (fl.lines, fl.fps)
 }
 
+/// [`sensor_timing`] from the description compiled by `build.rs` (`styx_sensor::build`): no
+/// TOML parser runs here.
+pub fn compiled_sensor_timing(fps: f64) -> (u32, f64) {
+    let desc =
+        styx_sensor::SensorDescription::from_postcard(styx_sensor::include_description!("ov9782"))
+            .expect("compiled description");
+    let timing = desc.timing("1280x800", "raw10").expect("mode and format");
+    let fl = timing.frame_length_for_fps(fps);
+    (fl.lines, fl.fps)
+}
+
 /// Writes `samples` (`width` x `height`, 10-bit RGGB) as a DNG in memory and reads it back:
 /// the samples read.
 pub fn dng_round_trip(width: u32, height: u32, samples: Vec<u16>) -> Vec<u16> {
@@ -278,6 +290,7 @@ mod tests {
     fn sensor_dng_and_pisp_work_without_std() {
         let (lines, fps) = sensor_timing(30.0);
         assert!(lines > 800 && (fps - 30.0).abs() < 0.05, "{lines} {fps}");
+        assert_eq!(compiled_sensor_timing(30.0), (lines, fps));
         let samples: Vec<u16> = (0..16 * 8).map(|i| 64 + (i * 7) % 900).collect();
         assert_eq!(dng_round_trip(16, 8, samples.clone()), samples);
         assert_eq!(pisp_stats(), 0);

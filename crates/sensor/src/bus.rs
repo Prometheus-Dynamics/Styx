@@ -1,7 +1,10 @@
-//! The traits a sensor driver runs over, and mock implementations for tests.
+//! The register access a sensor driver runs over, and mock implementations for tests.
 //!
-//! [`RegisterBus`] and [`SensorPins`] are implemented elsewhere (over i2c-dev and the GPIO
-//! character device in `styx-kernel`). This crate never touches the kernel.
+//! [`RegisterBus`] / [`AsyncRegisterBus`] are sensor register access: 8 or 16-bit register
+//! addresses, values most significant byte first, bursts, or a kernel driver's V4L2 controls.
+//! Over a plain bus they are [`I2cRegisters`](crate::I2cRegisters) /
+//! [`SpiRegisters`](crate::SpiRegisters) on any embedded-hal `I2c` / `SpiDevice`. Pins and power
+//! sequencing are `styx_hal::SensorPins`. This crate never touches the kernel.
 
 use alloc::borrow::ToOwned;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -9,6 +12,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::time::Duration;
+
+use embedded_hal::delay::DelayNs;
+use styx_hal::{Blocking, SensorPins};
 
 use crate::bus_error::{BusError, BusErrorKind};
 
@@ -64,50 +70,70 @@ impl<B: RegisterBus + ?Sized> RegisterBus for &mut B {
     }
 }
 
-/// GPIO lines, clocks and supplies of one sensor, by role name.
+/// [`RegisterBus`] over an async bus (an embedded-hal-async `I2c` through [`I2cRegisters`]).
+/// A blocking bus is one through [`Blocking`] (its futures complete on the first poll).
 ///
-/// Implementations return [`BusErrorKind::NotFound`] for roles the board does not have, so
-/// that optional steps can be skipped.
-pub trait SensorPins {
-    /// Set a GPIO line to a logical value (the implementation applies the line's polarity).
-    fn set_gpio(&mut self, role: &str, value: bool) -> BusResult<()>;
+/// [`I2cRegisters`]: crate::I2cRegisters
+#[allow(async_fn_in_trait)]
+pub trait AsyncRegisterBus {
+    /// See [`RegisterBus::read`].
+    async fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32>;
 
-    /// Enable a clock at `rate_hz`, or disable it with `None`.
-    fn set_clock(&mut self, role: &str, rate_hz: Option<u32>) -> BusResult<()>;
+    /// See [`RegisterBus::write`].
+    async fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()>;
 
-    /// Enable or disable a supply.
-    fn set_supply(&mut self, role: &str, on: bool) -> BusResult<()>;
-
-    /// Wait (with `std`, by default, `std::thread::sleep`).
-    #[cfg(feature = "std")]
-    fn delay(&mut self, duration: Duration) {
-        std::thread::sleep(duration);
+    /// See [`RegisterBus::write_sequence`].
+    async fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
+        for w in writes {
+            self.write(w.address, w.bytes, w.value).await?;
+        }
+        Ok(())
     }
 
-    /// Wait. Without `std` there is no default: the platform provides it.
-    #[cfg(not(feature = "std"))]
-    fn delay(&mut self, duration: Duration);
+    /// See [`RegisterBus::set_controls`].
+    async fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
+        let _ = controls;
+        Err(BusError::new(
+            BusErrorKind::Unsupported,
+            "a register bus has no V4L2 controls",
+        ))
+    }
 }
 
-impl<P: SensorPins + ?Sized> SensorPins for &mut P {
-    fn set_gpio(&mut self, role: &str, value: bool) -> BusResult<()> {
-        (**self).set_gpio(role, value)
+impl<B: AsyncRegisterBus + ?Sized> AsyncRegisterBus for &mut B {
+    async fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
+        (**self).read(address, bytes).await
     }
-    fn set_clock(&mut self, role: &str, rate_hz: Option<u32>) -> BusResult<()> {
-        (**self).set_clock(role, rate_hz)
+    async fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
+        (**self).write(address, bytes, value).await
     }
-    fn set_supply(&mut self, role: &str, on: bool) -> BusResult<()> {
-        (**self).set_supply(role, on)
+    async fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
+        (**self).write_sequence(writes).await
     }
-    fn delay(&mut self, duration: Duration) {
-        (**self).delay(duration)
+    async fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
+        (**self).set_controls(controls).await
+    }
+}
+
+impl<B: RegisterBus> AsyncRegisterBus for Blocking<B> {
+    async fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
+        self.0.read(address, bytes)
+    }
+    async fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
+        self.0.write(address, bytes, value)
+    }
+    async fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
+        self.0.write_sequence(writes)
+    }
+    async fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
+        self.0.set_controls(controls)
     }
 }
 
 /// Pins for boards where power, clock and reset are handled by firmware or the kernel: every
 /// role reports [`BusErrorKind::NotFound`] (optional steps are skipped, required ones fail) and
-/// delays sleep. Needs `std` (for the sleep); without it, implement [`SensorPins`] with the
-/// platform's delay.
+/// delays sleep. Needs `std` (for the sleep); without it, use `styx_hal::BoardPins` or
+/// implement [`SensorPins`] with the platform's delay.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoPins;
 
@@ -119,7 +145,15 @@ fn not_found(what: &str, role: &str) -> BusError {
 }
 
 #[cfg(feature = "std")]
+impl DelayNs for NoPins {
+    fn delay_ns(&mut self, ns: u32) {
+        std::thread::sleep(Duration::from_nanos(u64::from(ns)));
+    }
+}
+
+#[cfg(feature = "std")]
 impl SensorPins for NoPins {
+    type Error = BusError;
     fn set_gpio(&mut self, role: &str, _: bool) -> BusResult<()> {
         Err(not_found("gpio", role))
     }
@@ -295,7 +329,23 @@ impl MockPins {
     }
 }
 
+impl DelayNs for MockPins {
+    fn delay_ns(&mut self, ns: u32) {
+        self.log
+            .push(PinOp::Delay(Duration::from_nanos(u64::from(ns))));
+    }
+    fn delay_us(&mut self, us: u32) {
+        self.log
+            .push(PinOp::Delay(Duration::from_micros(u64::from(us))));
+    }
+    fn delay_ms(&mut self, ms: u32) {
+        self.log
+            .push(PinOp::Delay(Duration::from_millis(u64::from(ms))));
+    }
+}
+
 impl SensorPins for MockPins {
+    type Error = BusError;
     fn set_gpio(&mut self, role: &str, value: bool) -> BusResult<()> {
         self.check("gpio", role)?;
         self.log.push(PinOp::Gpio(role.into(), value));
@@ -310,9 +360,6 @@ impl SensorPins for MockPins {
         self.check("supply", role)?;
         self.log.push(PinOp::Supply(role.into(), on));
         Ok(())
-    }
-    fn delay(&mut self, duration: Duration) {
-        self.log.push(PinOp::Delay(duration));
     }
 }
 

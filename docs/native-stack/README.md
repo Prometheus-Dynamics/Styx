@@ -43,6 +43,7 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 |---|---|---|---|
 | `crates/kernel` | `styx-kernel` | Safe Rust kernel interfaces, `libc` only | kernel agent (`v4l2`, `media`, `subdev`, `dma_heap`, `event`), bridge agent (`bus`) |
 | `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description; descriptions of kernel-driven sensors from their subdevice plus a small data file (`sensors/kernel/*.toml`), driven through V4L2 controls; focus lenses (VCMs) as data, PDAF decoding | sensor agent |
+| `crates/hal` | `styx-hal` | Camera hardware traits without `std` or `alloc` (power sequencing over embedded-hal pins and delays, DMA memory, the receiver, lens actuators, a mock platform); see [portability.md](../portability.md) | hal agent |
 | `crates/graph` | `styx-graph` | Device graph, `Provider` trait, async reactor, mock provider | graph agent |
 | `crates/pisp` | `styx-pisp` | PiSP uAPI layouts, front/back end config builders, BE tiling, statistics, device layer (feature `device`); see `pisp.md` | pisp agent |
 | `crates/algo` | `styx-algo` | 3A algorithms (AE, AWB, lens shading, CCM, tone, autofocus), tuning (TOML, Raspberry Pi JSON), simulator, replay; see [algorithms.md](algorithms.md) | algo agent |

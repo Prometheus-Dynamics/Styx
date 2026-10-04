@@ -110,6 +110,9 @@
 //!   `digital_gain` (`register`, `min_code`, `max_code`, `default_code`, `model`), `delays`,
 //!   `group_hold` (`start`, `end`, `launch`), `hflip`/`vflip` (`address`, `mask`, `default`,
 //!   `changes_bayer_order`), `test_pattern` (`register`, `patterns`).
+//! * `[bus]` (only where no device tree describes the bus, e.g. microcontrollers): `parallel =
+//!   { width, pclk_rising, hsync_active_high, vsync_active_high, embedded_sync }` or `csi2 =
+//!   { lanes, continuous_clock, virtual_channel }`.
 //! * `[embedded_data]`: `lines`, `packing` (`none` or `raw10`), `entries = [{ address, offset }]`,
 //!   `controls = [{ control, offset, bytes, shift }]`.
 //!
@@ -133,6 +136,13 @@
 //!   model, delays, black level, embedded data layout; `sensors/kernel/*.toml` ship built in).
 //!   [`SensorDriver`] then drives them through V4L2 controls ([`RegisterBus::set_controls`]).
 //!
+//! # Compiled descriptions
+//!
+//! With feature `postcard`, [`SensorDescription::from_postcard`] reads a description in a
+//! compact binary form, so a target without `std` carries no TOML parser; feature `build`'s
+//! [`build`](crate::build) module validates TOML files in a build script and writes that form
+//! for [`include_description!`] (a broken description fails the firmware build).
+//!
 //! # `no_std`
 //!
 //! Without the default `std` feature the crate is `no_std` + `alloc`: descriptions from
@@ -145,40 +155,59 @@
 
 extern crate alloc;
 
+#[cfg(feature = "build")]
+pub mod build;
 mod bus;
 mod bus_error;
+#[cfg(feature = "postcard")]
+mod compiled;
 mod desc;
 mod driver;
 mod embedded;
 mod error;
 mod fallback;
+mod fixed;
+mod frame_map;
 mod gain;
 mod kernel_data;
 pub mod lens;
 mod math;
 mod mbus;
+mod registers;
 pub mod schedule;
 mod timing;
 
-pub use bus::{BusOp, BusResult, MockBus, MockPins, NoPins, PinOp, RegisterBus, SensorPins};
+pub use bus::{AsyncRegisterBus, BusOp, BusResult, MockBus, MockPins, NoPins, PinOp, RegisterBus};
 pub use bus_error::{BusError, BusErrorKind};
 pub use desc::{
-    Backend, BlackLevel, Blanking, ChipId, Controls, Delays, EmbeddedControl, EmbeddedControlKind,
-    EmbeddedData, EmbeddedEntry, EmbeddedFormat, EmbeddedPacking, EmbeddedRegister, Exposure,
-    Field, Flip, Format, Gain, GainModel, GroupHold, Identity, LineLength, Mode, PixelArray, Rect,
-    RegWrite, SensorDescription, Sequences, Size, Step, TestPattern,
+    Backend, BlackLevel, Blanking, BusSection, ChipId, Controls, Csi2Bus, Delays, EmbeddedControl,
+    EmbeddedControlKind, EmbeddedData, EmbeddedEntry, EmbeddedFormat, EmbeddedPacking,
+    EmbeddedRegister, Exposure, Field, Flip, Format, Gain, GainModel, GroupHold, Identity,
+    LineLength, Mode, ParallelBus, PixelArray, Rect, RegWrite, SensorDescription, Sequences, Size,
+    Step, TestPattern,
 };
-pub use driver::{ActiveMode, AppliedControls, ControlRequest, DriverState, SensorDriver};
+pub use driver::{
+    ActiveMode, AppliedControls, AsyncSensorDriver, ControlRequest, DriverState, SensorDriver,
+};
 pub use embedded::unpack_raw10_bytes as embedded_unpack_raw10;
 pub use error::{Issue, Issues, Result, SensorError};
-pub use fallback::{ControlRange, KernelControl, SubdevFormat, SubdevReport, kernel_controls};
+pub use fallback::{
+    ControlRange, KernelControl, KernelControls, SubdevFormat, SubdevReport, kernel_controls,
+};
+pub use fixed::FixedVec;
 pub use gain::{GainCode, GainSplit, Rounding, split_gain};
 pub use kernel_data::{BUILTIN_KERNEL_DATA, KernelSensorData};
 pub use lens::{LensDescription, LensFrame, LensMotion, LensSchedule, VcmChip, VcmFormat, VcmI2c};
 pub use mbus::{ColorFilter, MbusCode};
+pub use registers::{I2cRegisters, MAX_BURST, SpiRegisters};
 pub use schedule::{
-    Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Mismatch,
+    Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Landings,
+    Mismatch, Mismatches,
 };
+/// The camera hardware traits (`styx-hal`): power sequencing ([`SensorPins`],
+/// [`AsyncSensorPins`]), the [`Blocking`] adapter, and the embedded-hal crates it speaks.
+pub use styx_hal;
+pub use styx_hal::{AsyncSensorPins, Blocking, SensorPins};
 pub use timing::{ExposureLimits, ExposureSpec, ExposureValue, FrameLength, Timing};
 
 /// Sensor descriptions that ship with this crate (`sensors/*.toml`): `(sensor name, TOML)`.

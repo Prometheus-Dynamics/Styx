@@ -1,5 +1,6 @@
 //! The sensor description schema. See the crate documentation for a full example.
 
+mod bus;
 mod controls;
 mod step;
 mod types;
@@ -10,8 +11,9 @@ use alloc::{borrow::ToOwned, string::String, string::ToString, vec::Vec};
 #[cfg(feature = "std")]
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+pub use bus::{BusSection, Csi2Bus, ParallelBus};
 pub use controls::{
     Controls, Delays, EmbeddedControl, EmbeddedControlKind, EmbeddedData, EmbeddedEntry,
     EmbeddedFormat, EmbeddedPacking, EmbeddedRegister, Exposure, Flip, Gain, GainModel, GroupHold,
@@ -27,7 +29,7 @@ use crate::mbus::{ColorFilter, MbusCode};
 use crate::timing::Timing;
 
 /// A complete sensor description.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SensorDescription {
     /// Identity and bus details.
@@ -49,10 +51,13 @@ pub struct SensorDescription {
     /// The focus lens (a VCM), if the module has one.
     #[serde(default)]
     pub lens: Option<crate::lens::LensDescription>,
+    /// How the data bus is wired, where no device tree says it (microcontrollers).
+    #[serde(default)]
+    pub bus: Option<BusSection>,
 }
 
 /// Who drives the sensor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Backend {
     /// Styx drives the sensor's registers from userspace (the native path).
@@ -64,7 +69,7 @@ pub enum Backend {
 }
 
 /// Identity and bus details.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Identity {
     /// Sensor name, e.g. `ov9782`.
@@ -101,7 +106,7 @@ fn sixteen() -> u8 {
 }
 
 /// Chip identification register and the values that identify the sensor.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChipId {
     /// First register address.
@@ -118,7 +123,7 @@ fn one_u8() -> u8 {
 }
 
 /// Pixel array geometry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PixelArray {
     /// Full array including dummy and optical-black pixels.
@@ -133,7 +138,7 @@ pub struct PixelArray {
 }
 
 /// Black level, at a given bit depth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlackLevel {
     /// The pedestal.
@@ -154,7 +159,7 @@ impl BlackLevel {
 }
 
 /// Register sequences.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sequences {
     /// Power-up: supplies, clocks, GPIO lines, delays and any writes needed right after.
@@ -175,7 +180,7 @@ pub struct Sequences {
 }
 
 /// An output format (bit depth).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Format {
     /// Media bus code.
@@ -213,7 +218,7 @@ impl Format {
 }
 
 /// A sensor mode.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mode {
     /// Name, unique within the description.
