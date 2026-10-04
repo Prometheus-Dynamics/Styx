@@ -423,18 +423,13 @@ pub(super) fn start_processed(
                 specs.iter().flatten().map(|s| s.bytes()).sum(),
                 cma_free().filter(|_| !config.backends.native.driver_buffers),
             );
-            // Extra passes write into the main output's buffers: as many again per pass, as far
-            // as the limit and the memory allow (a pass without a free buffer skips a frame).
+            // Extra passes write into the main output's buffers: half as many again per pass
+            // (at least 3: one being written, one queued, one read), within the limit (a pass
+            // without a free buffer skips a frame; buffers beyond the contiguous memory come
+            // from the system heap).
             let passes = pisp_regions::pass_count(&config.backends.native) as u32;
-            let pass_buffers = (passes * be_buffers)
-                .min(MAX_OUTPUT_BUFFERS.saturating_sub(be_buffers))
-                .min(
-                    cma_free()
-                        .filter(|_| !config.backends.native.driver_buffers)
-                        .map_or(u32::MAX, |free| {
-                            u32::try_from(free / 4 / main.bytes().max(1)).unwrap_or(u32::MAX)
-                        }),
-                );
+            let pass_buffers = (passes * (be_buffers / 2).max(3))
+                .min(MAX_OUTPUT_BUFFERS.saturating_sub(be_buffers));
             let options = PispOptions {
                 outputs: [setup(0)?, setup(1)?],
                 output_memory: if config.backends.native.driver_buffers {

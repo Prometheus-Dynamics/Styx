@@ -22,8 +22,8 @@ pub enum OutputMemory {
     /// The driver's buffers (V4L2 MMAP): no cache maintenance, uncached CPU reads.
     #[default]
     Driver,
-    /// Buffers from a cached dma-heap (`linux,cma`, else `system`): cached CPU reads, cache
-    /// maintenance per job.
+    /// Buffers from a cached dma-heap (`linux,cma`, else, or when it runs out, `system`):
+    /// cached CPU reads, cache maintenance per job.
     CachedHeap,
 }
 
@@ -60,14 +60,33 @@ impl OutputQueue {
             Ok("cached") => OutputMemory::CachedHeap,
             _ => memory,
         };
-        let heap = CACHED_HEAPS.iter().find_map(|h| DmaHeap::open(h).ok());
-        match (memory, heap) {
-            (OutputMemory::CachedHeap, Some(heap)) => {
+        let heaps: Vec<DmaHeap> = CACHED_HEAPS
+            .iter()
+            .filter_map(|h| DmaHeap::open(h).ok())
+            .collect();
+        match (memory, heaps.is_empty()) {
+            (OutputMemory::CachedHeap, false) => {
                 let size = size.next_multiple_of(4096);
                 let mut maps = Vec::new();
                 let mut fds = Vec::new();
                 for _ in 0..count {
-                    let buf = heap.allocate(size)?;
+                    // Contiguous memory first; the system heap when it runs out (the CM5 has
+                    // 64 MiB of it, which many buffers of extra passes can exhaust).
+                    let mut last = None;
+                    let buf = heaps.iter().find_map(|heap| match heap.allocate(size) {
+                        Ok(buf) => Some(buf),
+                        Err(e) => {
+                            last = Some(e);
+                            None
+                        }
+                    });
+                    let buf = match (buf, last) {
+                        (Some(buf), _) => buf,
+                        (None, Some(e)) => return Err(e.into()),
+                        (None, None) => {
+                            return Err(DeviceError::Setup(format!("{name}: no dma-heap")));
+                        }
+                    };
                     maps.push(buf.map()?);
                     fds.push(buf.into_fd());
                 }

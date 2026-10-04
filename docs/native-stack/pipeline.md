@@ -323,7 +323,11 @@ frame copies the main config's blocks over (black level, gains, CCM, gamma, deno
 lens shading), so a region is processed exactly as the main output. The 3A statistics are the
 front end's and untouched. Its output buffer comes with the frame (`PispFrame::passes`, a
 `PassOutput` with the spec it was made with); passes write into the main output's buffers
-(`PispOptions::pass_buffers` more of them), and a pass without a free buffer skips that frame.
+(`PispOptions::pass_buffers` more of them; a capture gives each pass half as many again as an
+output has, at least 3), and a pass without a free buffer skips that frame. Cached output
+buffers come from the `linux,cma` heap, and from the `system` heap when it runs out (the CM5
+has 64 MiB of contiguous memory, which three consumers with passes nearly filled; the back end
+is behind an IOMMU, so scattered pages do).
 `BackEndStream` jobs take a buffer only for the outputs their config enables.
 
 Temporal denoise: the main job reads the running average and writes the new one; a pass must
