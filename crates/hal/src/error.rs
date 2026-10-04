@@ -13,6 +13,8 @@ pub enum ErrorKind {
     Disconnected,
     /// Owned by someone else.
     Busy,
+    /// The OS or the platform refused access.
+    PermissionDenied,
     /// The device did not answer in time.
     Timeout,
     /// An I²C address or data byte was not acknowledged.
@@ -41,6 +43,7 @@ impl ErrorKind {
         match self {
             ErrorKind::Disconnected => "device disconnected",
             ErrorKind::Busy => "device busy",
+            ErrorKind::PermissionDenied => "permission denied",
             ErrorKind::Timeout => "timed out",
             ErrorKind::Nack => "not acknowledged",
             ErrorKind::NotFound => "not found",
@@ -54,42 +57,72 @@ impl ErrorKind {
         }
     }
 
-    /// The kind of an embedded-hal I²C error.
+    /// The kind of an embedded-hal I²C error (classified by Lemnos).
     pub fn from_i2c(kind: embedded_hal::i2c::ErrorKind) -> Self {
-        use embedded_hal::i2c::ErrorKind as K;
-        match kind {
-            K::NoAcknowledge(_) => ErrorKind::Nack,
-            K::Bus | K::ArbitrationLoss | K::Overrun => ErrorKind::Io,
-            _ => ErrorKind::Other,
-        }
+        lemnos_hal::ErrorKind::from_i2c(kind).into()
     }
 
-    /// The kind of an embedded-hal SPI error.
+    /// The kind of an embedded-hal SPI error (classified by Lemnos).
     pub fn from_spi(kind: embedded_hal::spi::ErrorKind) -> Self {
-        use embedded_hal::spi::ErrorKind as K;
-        match kind {
-            K::Overrun | K::ModeFault | K::FrameFormat | K::ChipSelectFault => ErrorKind::Io,
-            _ => ErrorKind::Other,
-        }
+        lemnos_hal::ErrorKind::from_spi(kind).into()
     }
 
     /// The kind of an embedded-hal digital (GPIO) error.
-    pub fn from_digital(_kind: embedded_hal::digital::ErrorKind) -> Self {
-        ErrorKind::Io
+    pub fn from_digital(kind: embedded_hal::digital::ErrorKind) -> Self {
+        lemnos_hal::ErrorKind::from_digital(kind).into()
     }
 
-    /// The kind of a `std::io::Error`.
+    /// The kind of a `std::io::Error`: its errno classified by Lemnos (`ENXIO`/`EREMOTEIO`
+    /// are a NACK, `ENODEV` a disconnect, ...), else its I/O kind.
     #[cfg(feature = "std")]
     pub fn from_io(e: &std::io::Error) -> Self {
-        use std::io::ErrorKind as K;
-        match e.kind() {
-            K::NotFound => ErrorKind::NotFound,
-            K::Unsupported => ErrorKind::Unsupported,
-            K::InvalidInput => ErrorKind::InvalidConfig,
-            K::TimedOut => ErrorKind::Timeout,
-            K::ResourceBusy => ErrorKind::Busy,
-            K::OutOfMemory => ErrorKind::NoMemory,
-            _ => ErrorKind::Io,
+        if e.kind() == std::io::ErrorKind::OutOfMemory {
+            return ErrorKind::NoMemory;
+        }
+        match e.raw_os_error() {
+            Some(errno) => lemnos_hal::ErrorKind::from_errno(errno).into(),
+            None => lemnos_hal::ErrorKind::from_io(e.kind()).into(),
+        }
+    }
+}
+
+/// Lemnos's portable kinds (buses, pins, regulators, clocks) as camera hardware kinds.
+impl From<lemnos_hal::ErrorKind> for ErrorKind {
+    fn from(kind: lemnos_hal::ErrorKind) -> Self {
+        use lemnos_hal::ErrorKind as L;
+        match kind {
+            L::NotFound => ErrorKind::NotFound,
+            L::Unavailable => ErrorKind::Disconnected,
+            L::Busy => ErrorKind::Busy,
+            L::PermissionDenied => ErrorKind::PermissionDenied,
+            L::Timeout => ErrorKind::Timeout,
+            L::InvalidInput | L::Configuration => ErrorKind::InvalidConfig,
+            L::Unsupported => ErrorKind::Unsupported,
+            L::Nack => ErrorKind::Nack,
+            L::Overrun => ErrorKind::Overrun,
+            L::Failed => ErrorKind::Io,
+            _ => ErrorKind::Other,
+        }
+    }
+}
+
+/// The closest Lemnos kind (for Lemnos traits implemented over Styx errors).
+impl From<ErrorKind> for lemnos_hal::ErrorKind {
+    fn from(kind: ErrorKind) -> Self {
+        use lemnos_hal::ErrorKind as L;
+        match kind {
+            ErrorKind::Disconnected => L::Unavailable,
+            ErrorKind::Busy => L::Busy,
+            ErrorKind::PermissionDenied => L::PermissionDenied,
+            ErrorKind::Timeout => L::Timeout,
+            ErrorKind::Nack => L::Nack,
+            ErrorKind::NotFound => L::NotFound,
+            ErrorKind::Unsupported => L::Unsupported,
+            ErrorKind::InvalidConfig => L::InvalidInput,
+            ErrorKind::Overrun => L::Overrun,
+            ErrorKind::NoMemory | ErrorKind::Corrupt | ErrorKind::Io | ErrorKind::Other => {
+                L::Failed
+            }
         }
     }
 }
@@ -123,6 +156,13 @@ impl HalError for ErrorKind {
 impl HalError for core::convert::Infallible {
     fn kind(&self) -> ErrorKind {
         match *self {}
+    }
+}
+
+/// Lemnos's own kind (a regulator, clock or pin error) is a camera hardware error.
+impl HalError for lemnos_hal::ErrorKind {
+    fn kind(&self) -> ErrorKind {
+        (*self).into()
     }
 }
 

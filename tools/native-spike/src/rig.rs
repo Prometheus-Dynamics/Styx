@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use styx_kernel::bus::i2c::{AddrWidth, I2cDevice};
+use lemnos_linux::hal::I2cBus;
 use styx_kernel::bus::{BridgeLocation, PadFormat, SensorBridge, StreamAction, StreamRequest};
 use styx_kernel::event::{EventKind, EventType, Events, SubscribeFlags};
 use styx_kernel::media::{self, LinkFlags, MediaDevice};
@@ -21,7 +21,7 @@ use crate::regbus::{BridgePins, I2cRegisterBus};
 use crate::{Result, ResultExt, interrupted, log};
 
 /// The sensor driver as the spike runs it.
-pub type Driver = SensorDriver<I2cRegisterBus<I2cDevice>, BridgePins<Arc<SensorBridge>>>;
+pub type Driver = SensorDriver<I2cRegisterBus, BridgePins<Arc<SensorBridge>>>;
 
 const CAPTURE: BufType = BufType::VideoCapture;
 /// `V4L2_COLORSPACE_RAW`.
@@ -191,19 +191,17 @@ impl Rig {
             .i2c_address
             .or(desc.sensor.i2c_address)
             .ok_or("no I2C address in the bridge or the description")?;
-        let width = if desc.sensor.address_bits == 8 {
-            AddrWidth::Bits8
-        } else {
-            AddrWidth::Bits16
-        };
-        let dev = I2cDevice::open(bus, addr, width).ctx(&format!(
+        let mut i2c = I2cBus::open(bus).ctx(&format!("open /dev/i2c-{bus}"))?;
+        i2c.claim(addr).ctx(&format!(
             "claim I2C {bus}-{addr:04x} (is a kernel driver still bound?)"
         ))?;
         log!(
             "I2C: /dev/i2c-{bus} address {addr:#04x}, {}-bit registers",
             desc.sensor.address_bits
         );
-        let regbus = I2cRegisterBus::new(dev, desc.sensor.address_bits).ctx("register bus")?;
+        let width = styx_sensor::AddressWidth::from_bits(desc.sensor.address_bits)
+            .ok_or("register addresses of 8 or 16 bits")?;
+        let regbus = I2cRegisterBus::new(i2c, u8::try_from(addr).ctx("I2C address")?, width);
         let supplies: Vec<&str> = [&desc.sequences.power_up, &desc.sequences.power_down]
             .into_iter()
             .flatten()
@@ -273,10 +271,8 @@ impl Rig {
         );
         let id = d.verify_chip_id().ctx("chip id")?;
         if let Some(c) = d.description().sensor.chip_id.clone() {
-            let bytewise = d
-                .bus_mut()
-                .read_bytewise(c.address, c.bytes)
-                .ctx("chip id bytes")?;
+            let bytewise =
+                styx_sensor::read_bytewise(d.bus_mut(), c.address, c.bytes).ctx("chip id bytes")?;
             log!("chip id {id:#06x} (burst read), {bytewise:#06x} (byte reads)");
             if bytewise != id {
                 return Err(format!("chip id burst {id:#x} != bytewise {bytewise:#x}"));

@@ -11,16 +11,18 @@ rust-version.workspace = true
 [features]
 default = []
 # `Send + Sync` on `SensorStart` (`MaybeSendSync`), `std::io::Error` conversions, `StdDelay`.
-std = []
+std = ["lemnos-hal/std"]
 # A mock platform for host tests: recording pins and an I²C sensor model (blocking and async),
 # a receiver with injectable events and faults, heap-backed DMA memory, a tiny `block_on`.
 mock = ["std"]
 
 [dependencies]
 # The bus vocabulary (I²C, SPI, output pins, delays): embedded-hal 1.0 and its async twin, used
-# directly (docs/portability-design.md: generic bus and pin work belongs to Lemnos).
+# directly; supplies, clock outputs and portable error kinds from Lemnos (no_std, no alloc;
+# docs/portability-design.md: generic bus and pin work belongs to Lemnos).
 embedded-hal.workspace = true
 embedded-hal-async.workspace = true
+lemnos-hal.workspace = true
 
 [dev-dependencies]
 styx-hal = { path = ".", features = ["mock"] }

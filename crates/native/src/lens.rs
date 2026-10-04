@@ -6,7 +6,8 @@
 //!   subdevice ([`find_kernel_lens`]). The sensor's data file can add a `[lens]` section
 //!   (settle time, dioptre map).
 //! * A VCM Styx drives over I²C: the sensor description's `[lens]` with `i2c = { address,
-//!   chip }` (`styx_sensor::lens`), written on the sensor's bus.
+//!   chip }` (`styx_sensor::lens`), driven by Lemnos's VCM driver (`lemnos-drivers-vcm`) on the
+//!   sensor's bus.
 //!
 //! Moves follow the control schedule's frame starts: a position for frame `F` is written at
 //! the start of `F - delay` ([`LensSchedule`]), and every frame reports the position predicted
@@ -20,12 +21,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use styx_kernel::bus::i2c::{AddrWidth, I2cDevice, Message};
+use lemnos_drivers_vcm::{Vcm, VcmError};
+use lemnos_linux::hal::{I2cBus, IoError, StdDelay};
 use styx_kernel::media::{EntityFunction, LinkType, Topology};
 use styx_kernel::subdev::Subdev;
 use styx_kernel::v4l2::{ControlValue, Controls, cid};
 use styx_sensor::lens::imx708_pdaf;
-use styx_sensor::{LensDescription, LensFrame, LensSchedule, RegisterBus, SensorPins, VcmFormat};
+use styx_sensor::{LensDescription, LensFrame, LensSchedule, RegisterBus, SensorPins, VcmI2c};
 
 use crate::control::{ControlHandle, FrameControls, SensorControl, lock};
 use crate::error::{NativeError, Result};
@@ -153,37 +155,66 @@ impl LensActuator for KernelLens {
     }
 }
 
-/// A VCM on I²C, in its chip's command format.
+/// A VCM on I²C: Lemnos's driver (`lemnos_drivers_vcm::Vcm`) in the description's chip
+/// format, on its own i2c-dev handle (the address claimed, never forced).
 #[derive(Debug)]
 pub struct I2cVcm {
-    dev: I2cDevice,
-    format: VcmFormat,
+    bus: I2cBus,
+    address: u8,
+    vcm: VcmI2c,
+}
+
+fn vcm_error(e: VcmError<IoError>) -> io::Error {
+    match e {
+        VcmError::I2c(e) => e.into_io(),
+        VcmError::Format(e) => io::Error::new(io::ErrorKind::InvalidInput, e),
+    }
 }
 
 impl I2cVcm {
-    fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        self.dev.transfer(&mut [Message::Write(bytes)])
+    /// The VCM `vcm` describes at 7-bit `address` on `bus`.
+    pub fn open(bus: u32, address: u16, vcm: VcmI2c) -> io::Result<Self> {
+        let address = u8::try_from(address)
+            .ok()
+            .filter(|a| *a <= 0x7f)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "7-bit address"))?;
+        let mut i2c = I2cBus::open(bus)?;
+        i2c.claim(u16::from(address))?;
+        Ok(Self {
+            bus: i2c,
+            address,
+            vcm,
+        })
+    }
+
+    /// Runs `f` on Lemnos's driver for this chip (built per call over the borrowed bus: the
+    /// lens schedule, not the driver, keeps the state).
+    fn with_driver<R>(
+        &mut self,
+        f: impl FnOnce(&mut Vcm<'_, &mut I2cBus>) -> std::result::Result<R, VcmError<IoError>>,
+    ) -> io::Result<R> {
+        let Self { bus, address, vcm } = self;
+        vcm.with_format(|format| {
+            let mut driver = Vcm::new(bus, *address, *format)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            f(&mut driver).map_err(vcm_error)
+        })
     }
 }
 
 impl LensActuator for I2cVcm {
     fn power(&mut self, on: bool) -> io::Result<()> {
-        let writes = if on {
-            &self.format.power_up
-        } else {
-            &self.format.power_down
-        };
-        for w in writes.iter().filter(|w| !w.is_empty()) {
-            self.write(w)?;
-        }
-        if on && self.format.power_up_us > 0 {
-            std::thread::sleep(Duration::from_micros(u64::from(self.format.power_up_us)));
-        }
-        Ok(())
+        self.with_driver(|d| {
+            if on {
+                d.power_up(&mut StdDelay)
+            } else {
+                d.power_down()
+            }
+        })
     }
 
     fn move_to(&mut self, position: i32) -> io::Result<()> {
-        self.write(&self.format.encode(position))
+        self.with_driver(|d| d.move_to(position).map(|_| ()))
     }
 }
 
@@ -219,13 +250,10 @@ pub fn open_actuator(info: &LensInfo) -> Result<Box<dyn LensActuator>> {
                 .i2c
                 .as_ref()
                 .ok_or_else(|| NativeError::InvalidConfig("lens without i2c".into()))?;
-            let dev = I2cDevice::open(*bus, *address, AddrWidth::Bits8).map_err(|e| {
+            let vcm = I2cVcm::open(*bus, *address, i2c.clone()).map_err(|e| {
                 NativeError::InvalidConfig(format!("lens I2C {bus}-{address:04x}: {e}"))
             })?;
-            Ok(Box::new(I2cVcm {
-                dev,
-                format: i2c.format(),
-            }))
+            Ok(Box::new(vcm))
         }
     }
 }

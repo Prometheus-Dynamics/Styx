@@ -1,11 +1,14 @@
 //! Sensor power sequencing: GPIO lines, the input clock and supplies by role, plus a delay.
 //!
 //! A sensor description's power sequence names roles (`reset`, `powerdown`, `xclk`, `avdd`,
-//! ...); [`SensorPins`] switches them. Delays are embedded-hal's `DelayNs` (the pins are one),
-//! so a board's pins are any embedded-hal `OutputPin`s and its delay ([`BoardPins`]).
+//! ...); [`SensorPins`] maps them onto the generic hardware: embedded-hal `OutputPin`s and
+//! `DelayNs`, and Lemnos's [`ClockOutput`] for the input clock ([`BoardPins`]). Only the role
+//! mapping is camera-specific; pins, clocks and regulators are Lemnos's (`lemnos_hal`).
 
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
+pub use lemnos_hal::ClockOutput;
+use lemnos_hal::HalError as _;
 
 use crate::error::{ErrorKind, HalError};
 
@@ -100,25 +103,24 @@ impl<P: SensorPins> AsyncSensorPins for Blocking<P> {
     }
 }
 
-/// The camera's input clock where the board makes it (an STM32 MCO output, an ESP32 LEDC
-/// channel): enable at a rate, disable.
-pub trait ClockEnable {
-    /// Starts the clock at (about) `hz`; returns the rate obtained.
-    fn enable(&mut self, hz: u32) -> Result<u32, ErrorKind>;
-    /// Stops the clock.
-    fn disable(&mut self);
-}
-
-/// A board without a switchable camera clock (a fixed oscillator on the module): every clock
-/// role is [`ErrorKind::NotFound`], so the description's clock steps must be `optional`.
+/// A board without a switchable camera clock (a fixed oscillator on the module): the type of
+/// [`BoardPins::new`]'s absent clock. Every clock role is [`ErrorKind::NotFound`], so the
+/// description's clock steps must be `optional`. (A clock that always runs at one rate and
+/// should accept its role is Lemnos's `FixedClock`.)
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoClock;
 
-impl ClockEnable for NoClock {
-    fn enable(&mut self, _hz: u32) -> Result<u32, ErrorKind> {
-        Err(ErrorKind::NotFound)
+impl ClockOutput for NoClock {
+    type Error = lemnos_hal::ErrorKind;
+    fn enable(&mut self) -> Result<(), Self::Error> {
+        Err(lemnos_hal::ErrorKind::NotFound)
     }
-    fn disable(&mut self) {}
+    fn disable(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn rate_hz(&mut self) -> Result<u32, Self::Error> {
+        Err(lemnos_hal::ErrorKind::NotFound)
+    }
 }
 
 /// What a [`Line`] of [`BoardPins`] is for.
@@ -171,8 +173,9 @@ impl<G> Line<G> {
     }
 }
 
-/// [`SensorPins`] from embedded-hal parts: `N` output pins by role (GPIOs and supply enables),
-/// an optional input clock, and a delay (blocking `DelayNs` for [`SensorPins`], async for
+/// [`SensorPins`] from generic parts: `N` embedded-hal output pins by role (GPIOs and supply
+/// enables, as Lemnos's `GpioRegulator`), an optional input clock (a Lemnos [`ClockOutput`]:
+/// `FixedClock`, a PWM or PLL output), and a delay (blocking `DelayNs` for [`SensorPins`], async for
 /// [`AsyncSensorPins`]). Use one pin type for all lines (most HALs have a type-erased output,
 /// e.g. Embassy's `Output<'static>`).
 #[derive(Debug)]
@@ -193,7 +196,7 @@ impl<G: OutputPin, D, const N: usize> BoardPins<G, NoClock, D, N> {
     }
 }
 
-impl<G: OutputPin, C: ClockEnable, D, const N: usize> BoardPins<G, C, D, N> {
+impl<G: OutputPin, C: ClockOutput, D, const N: usize> BoardPins<G, C, D, N> {
     /// Pins on `lines` with `delay` and the clock role `role` on `clock`.
     pub fn with_clock(lines: [Line<G>; N], role: &'static str, clock: C, delay: D) -> Self {
         Self {
@@ -225,13 +228,7 @@ impl<G: OutputPin, C: ClockEnable, D, const N: usize> BoardPins<G, C, D, N> {
 
     fn switch_clock(&mut self, role: &str, rate_hz: Option<u32>) -> Result<(), ErrorKind> {
         match &mut self.clock {
-            Some((r, clock)) if *r == role => match rate_hz {
-                Some(hz) => clock.enable(hz).map(|_| ()),
-                None => {
-                    clock.disable();
-                    Ok(())
-                }
-            },
+            Some((r, clock)) if *r == role => clock.set(rate_hz).map_err(|e| e.kind().into()),
             _ => Err(ErrorKind::NotFound),
         }
     }
@@ -263,7 +260,7 @@ impl<G, C, D: embedded_hal_async::delay::DelayNs, const N: usize> embedded_hal_a
     }
 }
 
-impl<G: OutputPin, C: ClockEnable, D: DelayNs, const N: usize> SensorPins
+impl<G: OutputPin, C: ClockOutput, D: DelayNs, const N: usize> SensorPins
     for BoardPins<G, C, D, N>
 {
     type Error = ErrorKind;
@@ -278,7 +275,7 @@ impl<G: OutputPin, C: ClockEnable, D: DelayNs, const N: usize> SensorPins
     }
 }
 
-impl<G: OutputPin, C: ClockEnable, D: embedded_hal_async::delay::DelayNs, const N: usize>
+impl<G: OutputPin, C: ClockOutput, D: embedded_hal_async::delay::DelayNs, const N: usize>
     AsyncSensorPins for BoardPins<G, C, D, N>
 {
     type Error = ErrorKind;

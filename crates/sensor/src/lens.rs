@@ -7,8 +7,10 @@
 //! * a kernel lens driver (`dw9807-vcm`, `ak7375`, `dw9714`, …): a `MEDIA_ENT_F_LENS`
 //!   subdevice linked to the sensor by an ancillary link, moved with `V4L2_CID_FOCUS_ABSOLUTE`;
 //!   the data here adds what the driver does not report (settle time, the dioptre map);
-//! * a VCM Styx drives itself over I²C ([`VcmI2c`]): the chip's command format
-//!   ([`VcmChip`], or [`VcmFormat`] for another chip), its address, power-up writes.
+//! * a VCM Styx drives itself over I²C ([`VcmI2c`]): which chip ([`VcmChip`], or a
+//!   [`VcmFormat`] for another one) at which address. The chips' command formats and the
+//!   driver are Lemnos's (`lemnos-drivers-vcm`); this module only describes the lens and
+//!   schedules its moves.
 //!
 //! ```toml
 //! [lens]                         # in a sensor description or a kernel data file
@@ -24,8 +26,9 @@
 
 use crate::fixed::FixedVec;
 use crate::frame_map::FrameMap;
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use core::time::Duration;
+use lemnos_drivers_vcm as vcm;
 
 use serde::{Deserialize, Serialize};
 
@@ -93,7 +96,7 @@ impl LensDescription {
     /// The range: the description's, else the chip's, else 10 bits.
     pub fn range(&self) -> [i32; 2] {
         self.range
-            .or_else(|| self.i2c.as_ref().map(|i| [0, i.format().max_position()]))
+            .or_else(|| self.i2c.as_ref().map(|i| [0, i.max_position()]))
             .unwrap_or([0, 1023])
     }
 
@@ -120,31 +123,48 @@ impl LensDescription {
             return Err("lens map needs two or more [dioptres, position] pairs".into());
         }
         if let Some(i) = &self.i2c {
-            i.format().check()?;
+            i.check()?;
         }
         Ok(())
     }
 }
 
-/// VCM chips whose command formats are built in.
+/// VCM chips whose command formats Lemnos has built in (`lemnos_drivers_vcm::VcmChip`), by
+/// their description name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VcmChip {
-    /// Dongwoon DW9714: two bytes, no register, `position << 4 | slew` (10 bits), bit 15
-    /// powers down.
+    /// Dongwoon DW9714.
     Dw9714,
-    /// Dongwoon DW9807: register 0x03-0x04 (10 bits), control register 0x02 (0 on, 1 off).
+    /// Dongwoon DW9807.
     Dw9807,
-    /// Dongwoon DW9817 (Raspberry Pi Camera Module 3): the DW9807's register layout.
+    /// Dongwoon DW9817 (Raspberry Pi Camera Module 3).
     Dw9817,
-    /// Asahi Kasei AK7375: register 0x00-0x01 `position << 4` (12 bits), control register
-    /// 0x02 (0 active, 0x40 standby).
+    /// Asahi Kasei AK7375.
     Ak7375,
-    /// [`VcmI2c::format`] gives it.
+    /// Another chip: [`VcmI2c::format`] describes it.
     Custom,
 }
 
-/// How a position is written: `[register?] ((position << shift) | or)` big-endian in `bytes`.
+impl VcmChip {
+    /// Lemnos's chip (`None` for [`VcmChip::Custom`]).
+    pub fn lemnos(self) -> Option<vcm::VcmChip> {
+        match self {
+            VcmChip::Dw9714 => Some(vcm::VcmChip::Dw9714),
+            VcmChip::Dw9807 => Some(vcm::VcmChip::Dw9807),
+            VcmChip::Dw9817 => Some(vcm::VcmChip::Dw9817),
+            VcmChip::Ak7375 => Some(vcm::VcmChip::Ak7375),
+            VcmChip::Custom => None,
+        }
+    }
+}
+
+/// Most power-up or power-down writes a [`VcmFormat`] may list.
+pub const MAX_VCM_WRITES: usize = 4;
+
+/// The command format of a chip Lemnos does not have built in, as a description writes it
+/// (`lemnos_drivers_vcm::VcmFormat` with owned messages): `[register?] ((position << shift) |
+/// or)` big-endian in `bytes`, and the raw power-up and power-down writes.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VcmFormat {
@@ -163,13 +183,14 @@ pub struct VcmFormat {
     /// Constant bits or-ed in (mode, slew).
     #[serde(default)]
     pub or: u16,
-    /// Writes (raw messages) that power the chip up, then the time to wait.
+    /// Writes (raw messages) that power the chip up, then the time to wait (at most
+    /// [`MAX_VCM_WRITES`]).
     #[serde(default)]
     pub power_up: Vec<Vec<u8>>,
     /// Microseconds after power-up before the first move.
     #[serde(default)]
     pub power_up_us: u32,
-    /// Writes that put the chip in standby.
+    /// Writes that put the chip in standby (at most [`MAX_VCM_WRITES`]).
     #[serde(default)]
     pub power_down: Vec<Vec<u8>>,
 }
@@ -183,35 +204,40 @@ fn ten() -> u8 {
 }
 
 impl VcmFormat {
-    /// The highest position.
-    pub fn max_position(&self) -> i32 {
-        (1i32 << self.bits.min(16)) - 1
-    }
-
-    /// The message moving to `position` (clamped to the chip's bits).
-    pub fn encode(&self, position: i32) -> Vec<u8> {
-        let p = position.clamp(0, self.max_position()) as u32;
-        let v = (p << self.shift) | u32::from(self.or);
-        let mut out: Vec<u8> = self.register.into_iter().collect();
-        if self.bytes >= 2 {
-            out.push((v >> 8) as u8);
+    /// Runs `f` with this format as Lemnos's (borrowing the messages; nothing allocated).
+    pub fn with_lemnos<R>(&self, f: impl FnOnce(&vcm::VcmFormat<'_>) -> R) -> R {
+        let mut up: [&[u8]; MAX_VCM_WRITES] = [&[]; MAX_VCM_WRITES];
+        let mut down: [&[u8]; MAX_VCM_WRITES] = [&[]; MAX_VCM_WRITES];
+        for (slot, m) in up.iter_mut().zip(&self.power_up) {
+            *slot = m;
         }
-        out.push(v as u8);
-        out
+        for (slot, m) in down.iter_mut().zip(&self.power_down) {
+            *slot = m;
+        }
+        f(&vcm::VcmFormat {
+            register: self.register,
+            bytes: self.bytes,
+            shift: self.shift,
+            bits: self.bits,
+            or: self.or,
+            power_up: &up[..self.power_up.len().min(MAX_VCM_WRITES)],
+            power_up_us: self.power_up_us,
+            power_down: &down[..self.power_down.len().min(MAX_VCM_WRITES)],
+        })
     }
 
     fn check(&self) -> Result<(), String> {
-        if !(1..=2).contains(&self.bytes) || self.bits == 0 {
-            return Err("VCM format: bytes must be 1 or 2, bits at least 1".into());
+        if self.power_up.len() > MAX_VCM_WRITES || self.power_down.len() > MAX_VCM_WRITES {
+            return Err(format!(
+                "VCM format: at most {MAX_VCM_WRITES} power-up and power-down writes"
+            ));
         }
-        if u32::from(self.bits) + u32::from(self.shift) > 8 * u32::from(self.bytes) {
-            return Err("VCM format: position does not fit its bytes".into());
-        }
-        Ok(())
+        self.with_lemnos(|f| f.check())
+            .map_err(|e| format!("VCM format: {e}"))
     }
 }
 
-/// A VCM Styx drives over I²C.
+/// A VCM Styx drives over I²C (through `lemnos-drivers-vcm`).
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VcmI2c {
@@ -228,42 +254,31 @@ pub struct VcmI2c {
 }
 
 impl VcmI2c {
-    /// The command format: the given one, else the chip's.
-    pub fn format(&self) -> VcmFormat {
-        if let Some(f) = &self.format {
-            return f.clone();
+    /// Runs `f` with the command format: the given one, else Lemnos's for the chip (a
+    /// [`VcmChip::Custom`] chip without one has the DW9807's layout, and fails
+    /// [`LensDescription::check`]).
+    pub fn with_format<R>(&self, f: impl FnOnce(&vcm::VcmFormat<'_>) -> R) -> R {
+        match &self.format {
+            Some(format) => format.with_lemnos(f),
+            None => f(&self.chip.lemnos().unwrap_or(vcm::VcmChip::Dw9807).format()),
         }
-        match self.chip {
-            VcmChip::Dw9714 => VcmFormat {
-                register: None,
-                bytes: 2,
-                shift: 4,
-                bits: 10,
-                or: 0,
-                power_up: Vec::new(),
-                power_up_us: 12_000,
-                power_down: vec![vec![0x80, 0x00]],
-            },
-            VcmChip::Dw9807 | VcmChip::Dw9817 | VcmChip::Custom => VcmFormat {
-                register: Some(0x03),
-                bytes: 2,
-                shift: 0,
-                bits: 10,
-                or: 0,
-                power_up: vec![vec![0x02, 0x00]],
-                power_up_us: 1_000,
-                power_down: vec![vec![0x02, 0x01]],
-            },
-            VcmChip::Ak7375 => VcmFormat {
-                register: Some(0x00),
-                bytes: 2,
-                shift: 4,
-                bits: 12,
-                or: 0,
-                power_up: vec![vec![0x02, 0x00]],
-                power_up_us: 10_000,
-                power_down: vec![vec![0x02, 0x40]],
-            },
+    }
+
+    /// The highest position the chip takes.
+    pub fn max_position(&self) -> i32 {
+        self.with_format(|f| f.max_position())
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if u8::try_from(self.address).map_or(true, |a| a > 0x7f) {
+            return Err(format!("lens i2c address {:#x} is not 7-bit", self.address));
+        }
+        match &self.format {
+            Some(f) => f.check(),
+            None if self.chip == VcmChip::Custom => {
+                Err("a custom VCM chip needs a `format`".into())
+            }
+            None => Ok(()),
         }
     }
 }
@@ -462,34 +477,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chip_formats() {
-        let vcm = |chip| VcmI2c {
+    fn chip_formats_are_lemnos() {
+        let lens = |chip, format| VcmI2c {
             address: 0x0c,
             bus: None,
             chip,
-            format: None,
+            format,
+        };
+        let encode = |v: &VcmI2c, p| {
+            v.with_format(|f| {
+                let (m, n, _) = f.encode(p);
+                m[..n].to_vec()
+            })
         };
         // DW9714: 0x1ff << 4.
-        assert_eq!(vcm(VcmChip::Dw9714).format().encode(0x1ff), [0x1f, 0xf0]);
+        assert_eq!(encode(&lens(VcmChip::Dw9714, None), 0x1ff), [0x1f, 0xf0]);
         assert_eq!(
-            vcm(VcmChip::Dw9807).format().encode(0x2a5),
-            [0x03, 0x02, 0xa5]
-        );
-        assert_eq!(
-            vcm(VcmChip::Dw9807).format().encode(5000),
+            encode(&lens(VcmChip::Dw9807, None), 5000),
             [0x03, 0x03, 0xff]
         );
-        assert_eq!(
-            vcm(VcmChip::Ak7375).format().encode(0xabc),
-            [0x00, 0xab, 0xc0]
-        );
-        assert_eq!(vcm(VcmChip::Ak7375).format().max_position(), 4095);
-        let bad = VcmFormat {
-            bytes: 1,
+        assert_eq!(lens(VcmChip::Ak7375, None).max_position(), 4095);
+        let custom = VcmFormat {
+            register: Some(0x10),
+            bytes: 2,
+            shift: 0,
             bits: 10,
-            ..vcm(VcmChip::Dw9807).format()
+            or: 0,
+            power_up: vec![vec![0x02, 0x00]],
+            power_up_us: 100,
+            power_down: vec![],
         };
-        assert!(bad.check().is_err());
+        let v = lens(VcmChip::Custom, Some(custom.clone()));
+        assert!(v.check().is_ok());
+        assert_eq!(encode(&v, 0x2a5), [0x10, 0x02, 0xa5]);
+        v.with_format(|f| assert_eq!(f.power_up, [&[0x02, 0x00][..]]));
+        assert!(lens(VcmChip::Custom, None).check().is_err());
+        let bad = VcmFormat { bytes: 1, ..custom };
+        assert!(lens(VcmChip::Custom, Some(bad)).check().is_err());
     }
 
     #[test]

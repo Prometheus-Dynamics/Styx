@@ -7,15 +7,28 @@ use embedded_hal::i2c::I2c as _;
 use crate::mock::{I2cMessage, MockDelay, MockI2c, MockPin, MockReceiver, block_on};
 use crate::*;
 
-struct Xclk(Vec<Option<u32>>);
+use lemnos_hal::ErrorKind as LemnosKind;
 
-impl ClockEnable for Xclk {
-    fn enable(&mut self, hz: u32) -> Result<u32, ErrorKind> {
-        self.0.push(Some(hz));
-        Ok(hz)
+/// A clock whose rate can be set, recording what it was asked for.
+#[derive(Default)]
+struct Xclk(Vec<Option<u32>>, u32);
+
+impl ClockOutput for Xclk {
+    type Error = LemnosKind;
+    fn enable(&mut self) -> Result<(), LemnosKind> {
+        self.0.push(Some(self.1));
+        Ok(())
     }
-    fn disable(&mut self) {
+    fn disable(&mut self) -> Result<(), LemnosKind> {
         self.0.push(None);
+        Ok(())
+    }
+    fn rate_hz(&mut self) -> Result<u32, LemnosKind> {
+        Ok(self.1)
+    }
+    fn set_rate_hz(&mut self, hz: u32) -> Result<u32, LemnosKind> {
+        self.1 = hz;
+        Ok(hz)
     }
 }
 
@@ -30,7 +43,7 @@ fn board_pins_switch_roles_with_polarity() {
             Line::supply("avdd", avdd.clone()),
         ],
         "xclk",
-        Xclk(Vec::new()),
+        Xclk::default(),
         delay.clone(),
     );
     SensorPins::set_supply(&mut pins, "avdd", true).unwrap();

@@ -7,10 +7,11 @@ use std::io::{PipeReader, PipeWriter};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::Arc;
 
-use styx_kernel::bus::i2c::I2cDevice;
+use lemnos_linux::hal::{I2cBus, IoError};
 use styx_kernel::bus::{SensorBridge, StreamRequest, StreamState};
 use styx_kernel::subdev::Subdev;
 use styx_kernel::v4l2::{ControlValue, ControlWhich, Controls};
+use styx_sensor::lemnos_hal::register::{RegisterBus as RegisterMap, RegisterError};
 use styx_sensor::styx_hal::embedded_hal::delay::DelayNs;
 use styx_sensor::{BusError, BusResult, KernelControl, RegWrite, RegisterBus, SensorPins};
 
@@ -72,36 +73,42 @@ impl RegisterBus for SubdevBus {
 #[derive(Debug)]
 pub enum SensorBus {
     /// Registers over I²C.
-    I2c(I2cRegisterBus<I2cDevice>),
+    I2c(I2cRegisterBus<I2cBus>),
     /// A kernel driver's V4L2 controls.
     Kernel(SubdevBus),
+}
+
+/// A Lemnos register error on i2c-dev as a [`BusError`], keeping the errno (`EREMOTEIO`, a
+/// NACK; `EBUSY`, a kernel driver owns the address; ...) and Lemnos's classification.
+pub fn i2c_error(e: RegisterError<IoError>) -> BusError {
+    BusError::from_register(e.map_bus(IoError::into_io))
 }
 
 impl RegisterBus for SensorBus {
     fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
         match self {
-            SensorBus::I2c(b) => b.read(address, bytes),
+            SensorBus::I2c(b) => RegisterMap::read(b, address, bytes).map_err(i2c_error),
             SensorBus::Kernel(b) => b.read(address, bytes),
         }
     }
 
     fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
         match self {
-            SensorBus::I2c(b) => b.write(address, bytes, value),
+            SensorBus::I2c(b) => RegisterMap::write(b, address, bytes, value).map_err(i2c_error),
             SensorBus::Kernel(b) => b.write(address, bytes, value),
         }
     }
 
     fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
         match self {
-            SensorBus::I2c(b) => b.write_sequence(writes),
+            SensorBus::I2c(b) => RegisterMap::write_sequence(b, writes).map_err(i2c_error),
             SensorBus::Kernel(b) => b.write_sequence(writes),
         }
     }
 
     fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         match self {
-            SensorBus::I2c(b) => b.set_controls(controls),
+            SensorBus::I2c(b) => RegisterBus::set_controls(b, controls),
             SensorBus::Kernel(b) => b.set_controls(controls),
         }
     }
@@ -206,6 +213,17 @@ impl BridgeDevice for KernelBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn i2c_errors_keep_their_errno() {
+        let e = i2c_error(RegisterError::bus(
+            styx_sensor::BusErrorKind::Nack,
+            IoError::from(io::Error::from_raw_os_error(121)),
+        ));
+        assert_eq!(e.kind(), styx_sensor::BusErrorKind::Nack);
+        assert_eq!(e.code(), Some(121));
+        assert_eq!(io::Error::from(e).raw_os_error(), Some(121));
+    }
 
     #[test]
     fn the_kernel_bridge_never_asks_and_is_always_idle() {
