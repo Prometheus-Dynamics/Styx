@@ -56,7 +56,7 @@ start.
 ### Moved to Lemnos
 
 Generic pieces built in Styx that Lemnos 2.0 took over (Lemnos `docs/foundation.md`), now
-deleted here. Styx depends on a pinned commit of Lemnos `dev` by git until 2.0 is on crates.io (a local
+deleted here. Styx depends on the Lemnos `dev` branch by git until 2.0 is on crates.io (a local
 checkout can be patched in through an untracked `.cargo/config.toml`, see the root `Cargo.toml`).
 
 | piece | was | now | state |
