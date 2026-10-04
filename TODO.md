@@ -202,8 +202,8 @@ box (OV9782 1280x800) unless stated.
       error kinds (`lemnos-hal`), i2c-dev, GPIO and uevents (`lemnos-linux`), VCM drivers
       (`lemnos-drivers-vcm`), clock outputs; Styx's copies deleted (portability-design.md
       "Moved to Lemnos"). Lemnos fix on the way: i2c-dev transfers without allocation.
-- [ ] Lemnos: switch the path dependencies (`../lemnos-foundation`) to a git rev, then
-      crates.io 2.0, once Lemnos 2.0 is pushed (root `Cargo.toml`, `fuzz/Cargo.toml`).
+- [ ] Lemnos: Styx depends on the Lemnos `dev` branch by git (root `Cargo.toml`, `fuzz/Cargo.toml`);
+      switch to crates.io 2.0 once it is published.
 - [ ] Lemnos: `styx-hal`'s I²C mock (`MockI2c`) needs shared clones, async suspension and a
       dead target before `lemnos_hal::mock` can replace it; `styx::watch` (inotify on `/dev`)
       could use `LinuxHotplugWatcher`; the native provider's hotplug polls sysfs on a timer
