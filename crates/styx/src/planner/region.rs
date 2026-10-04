@@ -12,7 +12,7 @@ use crate::prelude::{Mode, ProbedBackend};
 
 use super::cost;
 use super::native::{binned, native_isp, raw_bayer};
-use super::routes::{Candidate, native_isp_outputs};
+use super::routes::{Candidate, has_isp_second_output, native_isp_outputs};
 use super::{
     FramePlan, FrameRequest, Hardware, PlanStep, PyramidSource, Route, StepCost, StepExecution,
     StepKind, Unmet,
@@ -25,6 +25,9 @@ pub(crate) enum IspCrop {
     Pisp,
     /// A native camera's software ISP: the region processed alone, the overview binned.
     Software,
+    /// A Raspberry Pi ISP through libcamera: per-output crops (`rpi::ScalerCrops`), the main
+    /// output at the first region's size, the second the whole frame.
+    Libcamera,
 }
 
 /// How a region of interest reaches the frames.
@@ -49,6 +52,8 @@ pub(crate) struct Region {
     pub overview: Option<((u32, u32), bool)>,
     /// The software ISP crops: the capture step's cost before it was priced for the region.
     pub full_capture_cost: Option<StepCost>,
+    /// The ISP that crops and makes the overview.
+    pub isp: Option<IspCrop>,
 }
 
 impl Region {
@@ -80,12 +85,21 @@ pub(crate) fn isp_possible(
     {
         return None;
     }
-    if native_isp_outputs(backend, mode) {
-        let hardware_pyramid = req
+    let hardware = !matches!(req.hardware, Hardware::Off)
+        && !req
             .pyramid
             .is_some_and(|p| p.levels > 0 && p.source == PyramidSource::HardwareOnly);
-        return (!matches!(req.hardware, Hardware::Off) && !hardware_pyramid)
-            .then_some(IspCrop::Pisp);
+    if native_isp_outputs(backend, mode) {
+        return hardware.then_some(IspCrop::Pisp);
+    }
+    // libcamera crops to a region's size: one is needed to size the main output.
+    if has_isp_second_output(backend) {
+        let crops = backend
+            .descriptor
+            .controls
+            .iter()
+            .any(|c| c.name == "ScalerCrops");
+        return (hardware && crops && req.roi.is_some()).then_some(IspCrop::Libcamera);
     }
     (native_isp(backend) == Some("software")
         && !raw_bayer(mode.format.code)
@@ -219,6 +233,14 @@ pub(crate) fn plan(
                 .into(),
             cost: StepCost::ZERO,
         }),
+        Some(RoiCrop::Isp) if isp == Some(IspCrop::Libcamera) => steps.push(PlanStep {
+            kind: StepKind::Crop,
+            execution: StepExecution::Hardware,
+            detail: "region of interest cropped by the ISP (rpi::ScalerCrops) to the first \
+                     region's size; a new region shows 2-3 frames after it is set"
+                .into(),
+            cost: StepCost::ZERO,
+        }),
         Some(RoiCrop::Isp) => steps.push(PlanStep {
             kind: StepKind::Crop,
             execution: StepExecution::Hardware,
@@ -284,6 +306,7 @@ pub(crate) fn plan(
         roi,
         overview,
         full_capture_cost,
+        isp,
     })
 }
 
@@ -291,9 +314,19 @@ impl FramePlan {
     /// `config` with the capture set up for this plan's ISP crop and overview: the initial
     /// region, and the second output making the overview.
     pub(crate) fn region_config(&self, mut config: StyxConfig) -> StyxConfig {
-        if self.region.roi == Some(RoiCrop::Isp)
-            && let Some(roi) = self.request.roi
-        {
+        let roi = self
+            .request
+            .roi
+            .filter(|_| self.region.roi == Some(RoiCrop::Isp));
+        if self.region.isp == Some(IspCrop::Libcamera) {
+            let Some(roi) = roi else { return config };
+            // The main output at the region's size (even, at least 16x16, in the frame).
+            let fit = crate::capture_api::fit_crop(roi, self.output_resolution()).unwrap_or(roi);
+            return config
+                .libcamera_output_size(fit.width, fit.height)
+                .libcamera_crop(fit, self.region.isp_overview());
+        }
+        if let Some(roi) = roi {
             config = config.native_crop(roi);
         }
         if let Some((width, height)) = self.region.isp_overview() {

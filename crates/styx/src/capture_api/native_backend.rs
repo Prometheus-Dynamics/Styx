@@ -101,7 +101,7 @@ pub mod controls {
     /// whole frame). It applies from the next frame the ISP processes; frames carry the region
     /// they show as `FrameMeta::crop`. The overview keeps seeing the whole frame
     /// (`NativeIspConfig::overview`). The software ISP then processes only the region.
-    pub const OUTPUT_CROP: ControlId = ControlId(0xF400_0030);
+    pub const OUTPUT_CROP: ControlId = crate::capture_api::OUTPUT_CROP;
 }
 
 fn native_err(e: NativeError) -> CaptureError {

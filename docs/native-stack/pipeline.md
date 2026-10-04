@@ -306,7 +306,9 @@ The crop is written into the top left of the full-size output buffer, rows in it
 chroma plane where the buffer's height puts it (as the driver computes plane addresses), and
 the frame says where it is (`FrameMeta::crop`). `NativeIspConfig::overview` makes the second
 output the whole frame scaled down, attached as `CompanionKind::Overview`
-([frame-planning.md](../frame-planning.md#region-of-interest)).
+([frame-planning.md](../frame-planning.md#region-of-interest)). On the software path the same
+control and setting make the software ISP process only the region, and the overview a binned
+pass over the whole frame ([Regions of interest](#regions-of-interest-on-the-software-path)).
 
 ### Denoise settings
 
@@ -436,6 +438,52 @@ Bayesian AWB is bistable on this scene (warm lamp, blue LED). The integer path f
 way when its statistics are scaled by 1.0007 (fp16's differ by up to 0.05% per zone); live,
 both settle at the same temperature. That is a sensitivity of the AWB search, not of the ISP.
 
+### Regions of interest on the software path
+
+With a crop (`OUTPUT_CROP`, `NativeIspConfig::crop`, or the planner's `FrameRequest::roi`) the
+software ISP makes only the region, at full resolution (`SoftIsp::process_window`): the
+front end runs on the region's rows and columns plus the one or two the demosaic reads around
+them (columns from a multiple of 4, so every packing's groups stay whole; neighbours outside
+the frame reflected as for the whole frame), lens shading tables are read from the region's
+column, and the Bayer phase is the frame's (even origins). The region's pixels are the same as
+that region of the whole frame's picture, bit for bit, in both arithmetics and every output
+(4:2:0 chroma pairs from an even origin, as the whole frame's): `tests/regions.rs` checks every
+packing, demosaic, output, thread count and the frame's edges, and on the CM5
+`native-pipeline soft --roi X,Y,W,H --check-roi` processed each live frame whole again with the
+settings it had and found every region equal to its crop (150 frames each, NV12 and RGB24, at
+the centre and in a corner).
+
+The overview (`NativeIspConfig::overview`, `FrameRequest::overview`) is a binned pass over the
+whole frame (`SoftIsp::process_binned`): each pixel one 2x2 quad as in the half-size picture,
+by an even factor `f`, the largest whose picture covers the size asked (2: every quad; more:
+every `f`/2-th quad of every `f`/2-th quad row, so the front end runs on 2/`f` of the rows).
+The 3A statistics come from that pass, over the whole frame and the same quad rows as before
+(statistics identical to the whole frame's, checked on every live frame above); without an
+overview they have a pass of their own (`SoftIsp::statistics`, the front end on the quarter of
+the rows they read). AE and AWB therefore behave as with whole frames. Several regions per
+frame are `SoftParts::regions` (`SoftPipeline::next_target`); the native backend asks for one.
+
+CM5, OV9782 1280x800 RAW10, NV12, one ISP thread, 30 fps, 300 frames from a cold start
+(`native-pipeline soft --output nv12 --cold`), process CPU per frame and the ISP's own time:
+
+| Frames | CPU per frame | ISP (mean) |
+|---|---:|---:|
+| whole frame | 3.2 ms | 2.88 ms |
+| whole frame + 320x200 overview (binned 1/4) | 3.9 ms | 3.54 ms |
+| 640x400 region + 320x200 overview | 1.8 ms | 1.57 ms |
+| 320x200 region + 320x200 overview | 1.3 ms | 1.01 ms |
+| 320x200 region, statistics alone | 0.7 ms | 0.45 ms |
+
+AE locked on frame 9 (330 ms after open) and AWB settled at 2439 K (gains R 0.935, B 2.864) in
+every run. Single passes (`cargo bench -p styx-softisp --bench regions`, CM5, statistics on
+every fourth quad row): whole frame 2.92 ms; 320x200 / 640x400 window 0.19 / 0.69 ms; binned
+by 2 / 4 / 8 with the statistics 1.36 / 0.82 / 0.45 ms; statistics alone 0.37 ms. The planner
+prices the capture step from these (`planner::cost::SOFTISP_REGION_MS_PER_MP` and the
+`SOFTISP_BIN_*` constants). Through the Styx API (`examples/04_performance/native_roi.rs`
+with `STYX_NATIVE_ISP=software`) regions move through the plan, a camera service client and
+the control, each applied on the next frame (control) or the one after (plan, service), and
+match the overview's mean luma within 0.6 levels.
+
 ### All four cores
 
 A heavy software ISP load on the dev box's CM5 at 2.4 GHz hangs the board: within seconds
@@ -543,7 +591,10 @@ at half the main size (`NativeIspConfig::pyramid_level`, set by the plan), attac
 filtered from it. Measured (`native_isp_bench pyramid 30 300`, luma 1280x800 + 2 levels):
 0.42 ms process CPU per frame with the hardware level, 0.55 ms with both levels on the CPU
 (the consumer thread 0.07 ms vs 0.22 ms), latency 8.50 vs 8.56 ms. Shared plans of a sensor Styx drives run at exactly the rate asked when saving
-power, as single plans do.
+power, as single plans do. A region of interest on the software ISP (full-size modes, CPU ISP)
+is priced for the region and the overview instead of the whole frame: 2.8 ms per megapixel of
+region, the binned overview's front end, pixels and statistics (`SOFTISP_BIN_*`), or the
+statistics' own pass (see [Regions of interest](#regions-of-interest-on-the-software-path)).
 
 Frame rates: a mode that runs at any rate in a range (a sensor Styx drives) runs at
 `planner::DEFAULT_FPS` (30 fps, or the nearest rate the mode allows) when no consumer asks for

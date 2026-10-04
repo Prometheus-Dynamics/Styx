@@ -574,3 +574,49 @@ fn native_software_isp_processes_only_the_region_and_bins_the_overview() {
     assert_eq!(plan.delivered().unmet, vec![Unmet::Roi]);
     assert!(plan_frames_with(&dev, &small.strict(), &registry()).is_err());
 }
+
+#[cfg(feature = "libcamera")]
+#[test]
+fn raspberry_pi_isp_crops_the_region_through_libcamera() {
+    let mut dev = device(
+        BackendKind::Libcamera,
+        BackendHandle::Libcamera {
+            id: "/base/axi/pcie@1000120000/rp1/i2c@88000/ov9782@60".into(),
+        },
+        vec![mode(FourCc::NV12, 1280, 800, 30)],
+    );
+    let region = FrameRect::new(101, 50, 319, 200);
+    let tracker = Frames::gray().roi(region).overview(320, 200);
+    // Without the per-output crop control: views of the frame.
+    let plan = plan_frames_with(&dev, &tracker, &registry()).unwrap();
+    assert_eq!(plan.delivered().roi, Some(RoiCrop::View), "{plan}");
+    let rect = ControlValue::Rects(Vec::new());
+    dev.backends[0].descriptor.controls.push(ControlMeta {
+        id: ControlId(20003),
+        name: "ScalerCrops".into(),
+        kind: ControlKind::Rectangle,
+        access: Access::ReadWrite,
+        min: rect.clone(),
+        max: rect.clone(),
+        default: rect,
+        step: None,
+        menu: None,
+        metadata: Default::default(),
+    });
+    let plan = plan_frames_with(&dev, &tracker, &registry()).unwrap();
+    let d = plan.delivered();
+    assert_eq!(d.roi, Some(RoiCrop::Isp), "{plan}");
+    assert_eq!((d.overview, d.hardware_overview), (Some((320, 200)), true));
+    assert!(plan.to_string().contains("ScalerCrops"), "{plan}");
+    // The main output at the region's size (even), the second the overview.
+    let lc = plan.region_config(Default::default()).backends.libcamera;
+    let even = FrameRect::new(100, 50, 320, 200);
+    assert_eq!((lc.crop, lc.output_size), (Some(even), Some((320, 200))));
+    assert_eq!(
+        (lc.second_output_size, lc.overview),
+        (Some((320, 200)), true)
+    );
+    // An overview alone sizes nothing: the uncropped frame.
+    let plan = plan_frames_with(&dev, &Frames::gray().overview(320, 200), &registry()).unwrap();
+    assert_eq!(plan.delivered().hardware_overview, false, "{plan}");
+}

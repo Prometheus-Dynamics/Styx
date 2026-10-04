@@ -407,7 +407,9 @@ impl SoftIsp {
     ) -> Result<Option<StatsAccum>, IspError> {
         let ow = g.ow;
         out.validate(ow, oh)?;
-        if matches!(out.kind(), Kind::Nv12 | Kind::I420) && (!ow.is_multiple_of(2) || !oh.is_multiple_of(2)) {
+        if matches!(out.kind(), Kind::Nv12 | Kind::I420)
+            && (!ow.is_multiple_of(2) || !oh.is_multiple_of(2))
+        {
             return Err(IspError::Unsupported(format!(
                 "4:2:0 output of odd size {ow}x{oh}"
             )));

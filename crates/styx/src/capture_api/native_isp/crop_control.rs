@@ -10,9 +10,7 @@ use styx_native::CameraInfo;
 
 use super::super::native_backend::controls as ids;
 use super::super::request::CaptureError;
-
-/// Smallest crop the back end makes (its smallest tile).
-const MIN_SIDE: u32 = 16;
+use crate::capture_api::fit_crop as fit;
 
 /// The crop as set, and a change the worker has not taken yet.
 #[derive(Debug, Default)]
@@ -122,27 +120,6 @@ pub(crate) fn meta(info: &CameraInfo) -> Option<ControlMeta> {
         menu: None,
         metadata: ControlMetadata::default(),
     })
-}
-
-/// `rect` as the back end can crop it from a `frame`-sized frame: clipped to the frame,
-/// rounded out to even pixels, at least 16x16 (grown towards the frame's middle). `None` when
-/// it does not overlap the frame.
-pub(crate) fn fit(rect: FrameRect, frame: (u32, u32)) -> Option<FrameRect> {
-    let rect = rect.clipped_to(frame.0, frame.1)?;
-    let axis = |start: u32, len: u32, size: u32| {
-        let size = size & !1;
-        let mut lo = start & !1;
-        let mut hi = (start + len).next_multiple_of(2).min(size);
-        let min = MIN_SIDE.min(size);
-        if hi - lo < min {
-            hi = (lo + min).min(size);
-            lo = hi - min;
-        }
-        (lo, hi - lo)
-    };
-    let (x, width) = axis(rect.x, rect.width, frame.0);
-    let (y, height) = axis(rect.y, rect.height, frame.1);
-    Some(FrameRect::new(x, y, width, height))
 }
 
 #[cfg(test)]

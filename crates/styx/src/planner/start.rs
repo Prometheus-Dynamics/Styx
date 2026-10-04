@@ -15,7 +15,7 @@ use styx_core::prelude::*;
 
 use super::session::Branch;
 use super::{FramePlan, Route};
-#[cfg(feature = "native")]
+#[cfg(any(feature = "native", feature = "libcamera"))]
 use crate::capture_api::apply_control_to_plane;
 use crate::capture_api::{CaptureError, CaptureHandle, CaptureRequest, ControlPlane, IdleStop};
 use crate::session::{MediaPipeline, MediaPipelineBuilder};
@@ -48,8 +48,9 @@ impl RoiHandle {
     }
 }
 
-/// `roi` as the ISP's crop (`None`: the whole frame). Only native cameras crop in their ISP.
-#[cfg(feature = "native")]
+/// `roi` as the ISP's crop (`None`: the whole frame): native cameras' ISPs, and a Raspberry Pi
+/// ISP through libcamera.
+#[cfg(any(feature = "native", feature = "libcamera"))]
 fn set_isp_crop(plane: &ControlPlane, roi: Option<FrameRect>) {
     let r = roi.unwrap_or(FrameRect::new(0, 0, 0, 0));
     let rect = ControlRect {
@@ -58,13 +59,13 @@ fn set_isp_crop(plane: &ControlPlane, roi: Option<FrameRect>) {
         width: r.width,
         height: r.height,
     };
-    let crop = crate::capture_api::native_controls::OUTPUT_CROP;
+    let crop = crate::capture_api::OUTPUT_CROP;
     if let Err(err) = apply_control_to_plane(plane, crop, ControlValue::Rect(rect)) {
         tracing::warn!(error = %err, "region of interest not applied by the ISP");
     }
 }
 
-#[cfg(not(feature = "native"))]
+#[cfg(not(any(feature = "native", feature = "libcamera")))]
 fn set_isp_crop(_: &ControlPlane, _: Option<FrameRect>) {}
 
 /// A running stream of frames, as a [`FrameRequest`](super::FrameRequest) asked for: from

@@ -47,8 +47,8 @@ Advanced, for consumers with special needs (a feature detector, SIMD code):
 | Method | Meaning |
 |---|---|
 | `pyramid(levels)`, `pyramid_source(..)` | ½, ¼, ... companions with each frame (`frame.pyramid_level(n)`), the first from the ISP's second output where there is one |
-| `roi(rect)` | deliver only this region (full-frame pixels); `Frames::roi()` changes it per frame. A native camera's PiSP crops it at full resolution in any format; elsewhere luma frames are views of it |
-| `overview(w, h)` | the whole frame at about `w`x`h` with every frame (`frame.overview()`), to find the next region in; from the PiSP's second output where there is one |
+| `roi(rect)` | deliver only this region (full-frame pixels); `Frames::roi()` changes it per frame. A native camera's PiSP crops it at full resolution in any format, its software ISP processes only the region, a Raspberry Pi ISP through libcamera crops it per output; elsewhere luma frames are views of it |
+| `overview(w, h)` | the whole frame at about `w`x`h` with every frame (`frame.overview()`), to find the next region in; from the ISP's second output where there is one, binned by the software ISP |
 | `row_alignment(bytes)` | rows (and the buffer start) aligned, e.g. 64 for SIMD loads; copied only when the camera's rows are not |
 
 ```rust
@@ -279,7 +279,7 @@ capture's own buffers and `CaptureBuffers::in_use` stays false. See
 change it per frame (`FrameClient::set_roi` through a camera service). Regions are full-frame
 pixel coordinates of the capture, also when frames are decoded at a smaller output size.
 `Delivered::roi` says how the plan applies it, and a region a route cannot apply is unmet
-(`Unmet::Roi`; NV12 or RGB frames without a PiSP to crop them).
+(`Unmet::Roi`; NV12 or RGB frames without an ISP to crop them).
 
 - **Native cameras with a PiSP (`RoiCrop::Isp`):** the back end's main output is the region at
   full resolution, in any format, rounded out to even pixels (at least 16x16): frames are the
@@ -290,6 +290,23 @@ pixel coordinates of the capture, also when frames are decoded at a smaller outp
   box-filtered from the region. It needs the main output at the mode's size and the capture to
   itself: shared with other consumers (or a camera service with several clients), the region
   is a view of the shared frame, as below.
+- **Native cameras on the software ISP (`RoiCrop::Isp`):** the software ISP processes only
+  the region, at full resolution, in any format (rounded out to even pixels, at least 16x16):
+  the same pixels as that region of the whole frame's picture, bit for bit, at a fraction of
+  the cost (CM5, 1280x800: 3.2 ms of CPU per frame whole, 1.3 ms for a 320x200 region with a
+  320x200 overview, 0.7 ms for the region alone). The 3A statistics still cover the whole
+  frame (from the overview's pass, or a pass of their own), so AE and AWB behave as before.
+  The plan's capture step is priced for the region and the overview. A new region applies from
+  the next frame the ISP processes. It needs a full-size mode (not a binned one) and the CPU
+  ISP (not `gpu-isp`); shared with other consumers, the region is a view as below.
+- **A Raspberry Pi ISP through libcamera (`RoiCrop::Isp`):** per-output crops
+  (`rpi::ScalerCrops`, in HeliOS's libcamera 0.6.0 `+rpt20251202`): the main output
+  shows the region, at the first region's size (even, at least 16x16), the second output the
+  whole frame as the overview. Frames say which region they show (`FrameMeta::crop`, from the
+  request's metadata). A new region shows 2-3 frames (~100 ms at 30 fps) after it is set,
+  because the requests already queued carry the old one; a region of another size is scaled to
+  the first one's size by the ISP (keep its aspect ratio). It needs an initial region (it
+  sizes the main output); an overview alone is the uncropped frame.
 - **Other ISP and raw paths (`RoiCrop::View`):** luma frames become zero-copy crop views. The
   region's left edge is moved down to the stride alignment so rows stay aligned.
 - **MJPEG:** the decoder decodes only the region. Rows below it are skipped entirely; rows above
@@ -304,8 +321,12 @@ its aspect ratio covering `w`x`h`, to every frame as a `CompanionKind::Overview`
 (`frame.overview()`; crops leave it whole). A tracker crops to the regions around what it found
 and searches the overview to find them again, without asking for full frames. On a native PiSP
 it comes from the back end's second output in the same pass (`Delivered::hardware_overview`;
-it takes the second output, so a pyramid is box-filtered); elsewhere it is the uncropped frame
-itself, shared without a copy and unscaled (`Unmet::Overview` when larger than asked).
+it takes the second output, so a pyramid is box-filtered), as through libcamera with a region;
+the native software ISP bins the whole frame for it by an even factor (the largest whose
+picture covers the size asked, so 320x200 of a 1280x800 frame, 640x360 of 1280x720 asked at
+320x200; `Unmet::Overview` when it is larger than asked), every `f`/2-th quad of every
+`f`/2-th quad row beyond 2; elsewhere it is the uncropped frame itself, shared without a copy
+and unscaled (`Unmet::Overview` when larger than asked).
 
 ```rust
 let mut frames = Frames::gray()
@@ -324,7 +345,10 @@ while let RecvOutcome::Data(frame) = frames.next_frame(Duration::from_millis(500
 `examples/04_performance/native_roi.rs` moves the region through a planned stream, a camera
 service client and the raw control, and checks each region against the overview. On the CM5
 (OV9782 1280x720 at 30 fps) each region applies on the next processed frame and matches the
-overview's mean luma within 0.4 levels.
+overview's mean luma within 0.4 levels; with `STYX_NATIVE_ISP=software` (the software ISP)
+within 0.6. `examples/04_performance/libcamera_crops.rs [control|plan]` does the same through
+libcamera (`ScalerCrops` set directly, and the plan): each region shows 2-3 frames after it is
+set and matches the second output within 0.7 levels.
 
 ## Limits
 

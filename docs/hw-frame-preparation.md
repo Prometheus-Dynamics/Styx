@@ -74,6 +74,15 @@ sampling do.
 | libcamera manager stopped at exit | 0 orphaned IPA helpers after exit (was 1 per process) |
 | NV12/I420 on single-planar V4L2 | Unit-tested; no NV12 UVC camera on hand |
 
+**Regions of interest (2026-10-04), verified on `helios`** (details in
+[frame-planning.md](frame-planning.md#region-of-interest)):
+
+| Change | Result |
+|---|---|
+| Native PiSP crop and overview (`RoiCrop::Isp`, `OUTPUT_CROP`) | the back end crops at full resolution, the second output is the overview; applied on the next processed frame |
+| Native software ISP: only the region processed, the overview binned (`SoftIsp::process_window` / `process_binned`) | OV9782 1280x800 NV12, one thread: 3.2 ms CPU per frame whole, 1.3 ms for a 320x200 region + 320x200 overview, 0.7 ms for the region alone; regions bit-identical to the whole frame's crop, statistics identical, AE/AWB unchanged |
+| libcamera per-output crops (`rpi::ScalerCrops`, libcamera 0.6.0 `+rpt20251202`) for ROI plans | main output = the region at the first region's size, second output = the overview; a new region shows 2-3 frames (100-133 ms at 30 fps) after it is set (the queued requests carry the old one); frames carry `FrameMeta::crop` from the request metadata |
+
 **Still open:** V4L2 multi-planar capture with dma-heap import (needed for RK3588 rkisp and i.MX CSI),
 RGA/VIC scalers, on-hardware validation of the FFmpeg backends, and the `FrameRequirements` planner.
 
@@ -146,7 +155,7 @@ Full reasoning is in [Ranked plan](#4-ranked-plan).
 - Uses one stream by default (role ViewFinder). **A second stream is already configured when TDN
   output is enabled** (L186–189, L230–240), but it is forced to the *same* format and size, and only
   one of the two buffers is emitted per Request (L552–566).
-- No ScalerCrop support: Rectangle controls are mapped to `Unknown` and skipped (`crates/libcamera/src/lib.rs` L284).
+- No ScalerCrop support: Rectangle controls are mapped to `Unknown` and skipped (`crates/libcamera/src/lib.rs` L284). *(Since fixed: rectangles round-trip, and ROI plans use `rpi::ScalerCrops`, 2026-10-04.)*
 - **Bug:** `stream_role_for_request` maps `GREY` to `StreamRole::Raw` (util.rs L165–178). Asking
   PiSP for GREY therefore requests the raw Bayer stream, not luma.
 
@@ -217,7 +226,8 @@ Your questions, answered on `helios` [M-CM5] unless marked:
   - `ScalerCrop` and the Pi vendor control `ScalerCrops` (per output) are both exposed.
   - Setting a centre-quarter `ScalerCrop` showed up in the request metadata **4 frames later**
     (~133 ms at 30 fps).
-  - Styx drops all Rectangle controls today.
+  - Styx dropped all Rectangle controls then; since 2026-10-04 ROI plans crop with
+    `rpi::ScalerCrops` (2-3 frames after a region is set with libcamera's request queue).
 - **Stride:** PiSP output strides are 64-byte aligned (160 px → 192 B). Keep reading
   `StreamConfiguration::stride`.
 - **Memory:** see [TL;DR #1](#tldr). For CPU consumers, Styx should allocate cached dma-heap buffers
@@ -349,7 +359,7 @@ Effort: S ≈ ≤3 days, M ≈ 1–2 weeks, L ≈ 3+ weeks (including on-device 
 | All | libjpeg-turbo crop (ROI) | `tj3SetCroppingRegion` | Missing | S | 38–62% for centre ROIs, 16–24% for bottom half [M-CM5] |
 | All | Y-plane view of NV12/I420 | none (view) | Partial (planes exposed, no luma helper) | S | Avoids `Nv12ToLuma` copy (~0.05–0.2 ms) [E] |
 | Pi 5 | PiSP BE dual output (pyramid) | libcamera 2 processed streams | **Partial** (TDN 2-stream, same size, 1 buffer emitted) | M | Pyramid at 0 CPU, frame-matched (150/150) [M-CM5]; saves the SW box (~0.06 ms) |
-| Pi 5 | ScalerCrop / ScalerCrops | libcamera controls | Missing (Rectangle skipped) | S–M | ISP-side, applies after 4 frames [M-CM5] |
+| Pi 5 | ScalerCrop / ScalerCrops | libcamera controls | **Done** (2026-10-04: ROI plans, per-output `ScalerCrops`) | S–M | ISP-side, applies 2-3 frames after it is set [M-CM5] |
 | Pi 5 | Direct R8 output | libcamera | **Not available** for colour sensors (rewritten to raw) [M-CM5] | n/a | Use the NV12/YUV420 plane-0 view |
 | Pi 5 | HW JPEG decode | none (no block) | n/a | n/a | n/a |
 | RK3588 | MPP JPEG/H.264/H.265 decode | librockchip_mpp or ffmpeg-rockchip | Missing (FFmpeg DRM PRIME path reusable) | M (via ffmpeg-rockchip) / L (native) | ~4–10 ms/frame for 720p–1080p MJPEG on A76 [E] |
