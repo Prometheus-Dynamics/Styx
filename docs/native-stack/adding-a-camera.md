@@ -126,6 +126,33 @@ slow frames). An embedded layout written for one bit depth may not hold in anoth
 OV9782's raw8 line carries each value's top 8 bits only): `embedded_data = false` under that
 `[formats.<name>]` leaves the line uncaptured there, and frames report predicted values.
 
+### The `[bus]` section (boards without a device tree)
+
+On Linux the receiver's device tree endpoint says how the sensor is wired (lanes, clock mode),
+and the description needs nothing about it. On a microcontroller nothing does, so the
+description says it in an optional `[bus]` section, read by the platform's receiver
+(`SensorDescription::bus`, `BusSection::to_hal` gives a `styx_hal::Bus`); Linux ignores it:
+
+```toml
+[bus]
+# A parallel (DVP) port: data width 8 to 16 bits; pclk_rising and hsync_active_high default
+# to true, vsync_active_high and embedded_sync (BT.656 codes) to false.
+parallel = { width = 8, pclk_rising = true, hsync_active_high = true, vsync_active_high = false }
+# or MIPI CSI-2: 1 to 4 data lanes, continuous_clock (default true), virtual_channel (default 0).
+# The link frequency comes from the format (`formats.<name>.link_frequency`).
+# csi2 = { lanes = 2, continuous_clock = true }
+```
+
+Exactly one of `parallel` and `csi2`; validation reports a missing or doubled bus, widths
+outside 8-16 bits, lane counts outside 1-4 and virtual channels above 15.
+
+For a target without `std`, compile the description at build time instead of parsing TOML on
+the device: `styx_sensor::build::compile(&["sensors/ov5640.toml"])` in `build.rs` (feature
+`build`) validates it (a broken description fails the build) and writes its compact binary
+form, which the firmware reads with
+`SensorDescription::from_postcard(styx_sensor::include_description!("ov5640"))` (feature
+`postcard`). See [portability.md](../portability.md).
+
 ## A camera with a focus motor
 
 Modules with autofocus move their lens with a voice-coil motor (VCM): a small I²C chip

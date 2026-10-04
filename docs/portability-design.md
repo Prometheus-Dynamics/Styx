@@ -1,9 +1,58 @@
 # Portable camera runtime: `styx-hal` and a `no_std` runtime
 
-Status: design for review, nothing restructured yet. Branch `native/hal-design` (from
-`native-stack` 840927c). Assumes the parallel `native/nostd` work lands first (`styx-dng`,
-`styx-pisp` without `device`, `styx-algo`, `styx-softisp`, `styx-sensor`, the formats and types
-of `styx-core` build as `no_std` + `alloc`).
+Status: reviewed; steps 1-3 landed on branch `native/hal` (see [Status](#status) below),
+steps 4-8 wait for the HeliOS image proof. Decisions from the review: async I²C now (not
+later), `styx-native` keeps its name, ports live in this repository under `ports/`. Since the
+review, **Lemnos** (Prometheus Dynamics' hardware discovery, driver and bus workspace) is the
+lower layer for generic driver and communication work: Styx uses the embedded-hal 1.0 /
+embedded-hal-async 1.0 traits as its bus vocabulary and keeps only camera-specific traits in
+`styx-hal` (sections 2.2, 2.3 and 2.7 below are superseded where they say otherwise).
+
+## Status
+
+| # | step | state |
+|---|---|---|
+| 1 | `styx-hal` | **landed** (`2fe7432`): `SensorPins`/`AsyncSensorPins` (power sequencing by role over embedded-hal `DelayNs`), `BoardPins` (embedded-hal `OutputPin`s + `ClockEnable` + delay), `DmaMemory`/`DmaBuffer`/`StaticDma`, `Receiver` and its types (2.5), `LensActuator`/`AsyncLensActuator`/`NoLens`, `ErrorKind`/`HalError`, `Blocking`, `Instant`; feature `mock` (I²C sensor model blocking and async, pins, delay, receiver, memory, `block_on`). No `alloc`. `styx-kernel`: `I2cDevice` is an embedded-hal `I2c`, `GpioPin` an `OutputPin`. CI: `thumbv7em-none-eabihf`, `thumbv8m.main-none-eabihf`, `riscv32imac-unknown-none-elf`, `wasm32-unknown-unknown` |
+| 2 | `styx-sensor` on `styx-hal` | **landed** (`413408a`): `I2cRegisters`/`SpiRegisters` over embedded-hal buses (blocking `RegisterBus`, async `AsyncRegisterBus`, shared encoding), `AsyncSensorDriver` (driver logic written once as async code; the blocking `SensorDriver` runs it over `Blocking` adapters in one poll), `delay` required (`DelayNs`), the `[bus]` section, compiled descriptions (`build` helper in `build.rs`, postcard, `from_postcard`, `include_description!`); `styx-native`'s bus is `I2cRegisters<I2cDevice>`. `RegisterBus` stays in `styx-sensor` (a sensor register layer, not a bus abstraction); `KernelControl` keeps its name |
+| 3 | allocation-free sensor frame path | **landed** (`06b2d47`): scheduler rings (`FrameMap`), `Landings`/`Mismatches`/`KernelControls`, stack batches, gain codes and embedded decoding without allocation; `tests/no_alloc.rs` (counting allocator, 300 frames, blocking + async + kernel-driven: zero) |
+| 4-8 | runtime | after the HeliOS image proof |
+
+CM5 (OV9782, native mode, baseline a178a44 against step 3, alternating runs): open → first
+frame median 34.25 ms (34.1-34.8, 12 runs) against 34.4 ms (34.0-35.1); `camera_controls` raw
+exposure/gain land 2 frames after the request and 60 fps lands on the predicted frame (read
+back from embedded data) in both; `native-pipeline regcheck` reads back the same 91 of 93
+registers in both (`0x0101` and `0x1000` read 0 in the baseline too).
+
+### Async I²C
+
+The driver's register paths have an async variant (`AsyncSensorDriver` over
+`AsyncRegisterBus`: `I2cRegisters` on an embedded-hal-async `I2c`, e.g. Embassy's). The logic
+is shared, not copied: it is written once as async code, and the blocking driver runs it over
+`styx_hal::Blocking` adapters whose futures are ready at once (one poll, no executor). Blocking
+code over an async-only bus needs an executor, which Styx does not hide: firmware runs the
+async driver in its own (Embassy task, `embassy_futures::block_on`). On Linux the sensor keeps
+the blocking path: i2c-dev has no asynchronous interface (`I2C_RDWR` is a synchronous ioctl
+and the node is not pollable, so the epoll reactor has nothing to wait on); async there would
+be the blocking call inline (`Blocking(SensorBus)` works today) or a worker thread, adding two
+context switches to 0.1-0.5 ms transfers that already run on the event thread at the frame
+start.
+
+### Slated to move to Lemnos
+
+Generic pieces built in Styx that Lemnos will take over (then removed here):
+
+| piece | where today |
+|---|---|
+| embedded-hal `I2c` over i2c-dev (`I2cDevice`, `IoError`), the `I2C_RDWR` message building | `styx-kernel` `bus::i2c`, `bus::eh` |
+| embedded-hal `OutputPin` over GPIO character devices (`GpioChip`, `GpioLines`, `GpioPin`) | `styx-kernel` `bus::gpio`, `bus::eh` |
+| delays (`StdDelay`), the monotonic clock (`styx_kernel::monotonic_now`, `Instant` sources) | `styx-hal` `time`, `styx-kernel` `clock` |
+| the camera input clock enable (`ClockEnable`), if Lemnos grows a clock trait | `styx-hal` `power` |
+| hotplug (`uevent`), sysfs discovery of I²C buses and devices | `styx-kernel` `uevent`, `styx-native` discovery |
+| the I²C mock bus model (`mock::MockI2c`) | `styx-hal` `mock` |
+
+What stays in Styx: the camera-specific traits (`Receiver`, DMA memory, ISP traits, lens
+actuators that are not plain I²C devices, power sequencing by role), the sensor register layer
+over a generic bus (`I2cRegisters`, `SpiRegisters`), descriptions, the driver and the runtime.
 
 ## The decision in one page
 
@@ -132,6 +181,10 @@ what kind of failure it was.
 
 ### 2.1 Time, errors
 
+> **As built:** `Instant`, `ErrorKind` and `HalError` as below (`HalError` also requires
+> `Display`); no `Clock` or `Delay` trait: delays are embedded-hal's `DelayNs`, and clocks
+> belong to the platform layer (Lemnos).
+
 ```rust
 #![no_std]
 pub use core::time::Duration;
@@ -187,6 +240,11 @@ pub trait HalError: core::fmt::Debug + From<ErrorKind> {
 
 ### 2.2 Register bus (I²C, SPI): the existing trait, `io` removed
 
+> **As built:** `RegisterBus` stayed in `styx-sensor` with `BusError`, as a thin sensor
+> register layer over embedded-hal (`I2cRegisters<I: I2c>`, `SpiRegisters<S: SpiDevice>`,
+> blocking and async). `KernelControl` kept its name. There is no Styx bus trait in
+> `styx-hal`.
+
 `RegisterBus` moves from `styx-sensor` to `styx-hal` unchanged except for the error type and
 the name of the control-level method; `styx-sensor` re-exports it so drivers do not change.
 
@@ -220,6 +278,10 @@ The address width (8 or 16 bit) and the 7-bit device address stay in the impleme
 in `I2cRegisterBus::new(io, address_bits)` today. SPI sensors implement the same trait.
 
 ### 2.3 Pins and power
+
+> **As built:** `SensorPins` has an associated `Error: HalError` and embedded-hal's `DelayNs` as
+> a supertrait (the delay); `AsyncSensorPins` is its async twin. There is no `Clock` or `Delay`
+> trait in `styx-hal` (embedded-hal `DelayNs`; the clock is the platform's).
 
 ```rust
 /// GPIO lines, clocks and supplies of one sensor, by role name from the description's power
@@ -459,6 +521,11 @@ pub trait ClockEnable { fn enable(&mut self, hz: u32) -> Result<u32, ErrorKind>;
 `embedded-hal-async` versions come later if wanted (10, open question 1): the
 synchronous bus is enough at frame rates (a group-held exposure/gain/frame-length write is
 about 0.5 ms at 400 kHz) and keeps the trait object-free.
+
+> **As built:** the review chose async I²C now. embedded-hal and embedded-hal-async are
+> always-on dependencies (the vocabulary, not adapters): `BoardPins` implements both pin
+> traits, `I2cRegisters` both bus traits, and `AsyncSensorDriver` runs the driver over the
+> async ones (Status, "Async I²C").
 
 ---
 
@@ -1168,11 +1235,10 @@ says which, and latency metrics use it.
 
 ## 10. Open questions for the review
 
-1. Async I²C now or later (8.6)? Recommendation: later.
-2. Keep `styx-native` as the Linux crate's name (recommended: avoids churn for HeliOS and
-   `styx` features) or rename to `styx-linux` once the move is done?
-3. Ports in-tree (`ports/`, excluded from default members, built in CI for the target) or
-   separate repositories? Recommendation: in-tree for the first two, so the HAL cannot drift
-   from them.
-4. Should steps 1-3 land before the HeliOS ship (they touch the sensor path) or after?
-   Recommendation: after the ship's image freeze; they are low-risk but not urgent.
+Answered by the review:
+
+1. Async I²C now or later (8.6)? **Now** (landed with step 2).
+2. Keep `styx-native` as the Linux crate's name or rename to `styx-linux`? **Keep.**
+3. Ports in-tree (`ports/`) or separate repositories? **In-tree, under `ports/`.**
+4. Should steps 1-3 land before the HeliOS ship? **Steps 1-3 now; 4-6 after the HeliOS image
+   proof.**
