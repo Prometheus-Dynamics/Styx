@@ -489,31 +489,20 @@ fn native_pisp_crops_the_region_and_makes_the_overview() {
     // capture is set up for it.
     let alone = plan_many_with(&dev, std::slice::from_ref(&tracker), &registry()).unwrap();
     assert_eq!(alone.consumers[0].delivered().roi, Some(RoiCrop::Isp));
-    assert!(alone.setup_key().contains("region=Some"), "{alone}");
-    // Shared with another consumer: views of the frame, the uncropped frame as the overview.
+    assert!(alone.setup_key().contains("region=[(["), "{alone}");
+    // Shared with a viewer of the whole frame: views of it, the overview from the ISP.
     let shared = plan_many_with(&dev, &[tracker.clone(), Frames::nv12()], &registry()).unwrap();
     let d = shared.consumers[0].delivered();
     assert_eq!(d.roi, Some(RoiCrop::View), "{shared}");
-    assert_eq!(
-        (d.overview, d.hardware_overview),
-        (Some((1280, 800)), false)
-    );
-    assert!(
-        d.unmet.contains(&Unmet::Overview {
-            wanted: (320, 200),
-            delivered: (1280, 800),
-        }),
-        "{:?}",
-        d.unmet
-    );
-    assert!(!shared.setup_key().contains("region=Some"), "{shared}");
-    // A hardware-only pyramid keeps the second output: the region is a view.
+    assert_eq!((d.overview, d.hardware_overview), (Some((320, 200)), true));
+    assert!(d.unmet.is_empty(), "{:?}", d.unmet);
+    // A hardware-only pyramid of the region: from an extra pass of it.
     let pyramid = Frames::gray()
         .roi(region)
         .pyramid(1)
         .pyramid_source(PyramidSource::HardwareOnly);
     let plan = plan_frames_with(&dev, &pyramid, &registry()).unwrap();
-    assert_eq!(plan.delivered().roi, Some(RoiCrop::View), "{plan}");
+    assert_eq!(plan.delivered().roi, Some(RoiCrop::Isp), "{plan}");
     assert_eq!(plan.isp_pyramid_level, Some(1));
 }
 
@@ -558,10 +547,12 @@ fn native_software_isp_processes_only_the_region_and_bins_the_overview() {
     let gray = plan_frames_with(&dev, &Frames::gray().roi(region), &registry()).unwrap();
     assert_eq!(gray.delivered().roi, Some(RoiCrop::Isp), "{gray}");
     assert!(gray.total.cpu_ms < plan.total.cpu_ms, "{gray} vs {plan}");
-    // Shared with another consumer: the whole frame, priced as such.
+    // Shared with another consumer: the whole frame, priced as such; the overview box-filtered
+    // from it on the CPU.
     let shared = plan_many_with(&dev, &[tracker.clone(), Frames::nv12()], &registry()).unwrap();
     let d = shared.consumers[0].delivered();
-    assert_eq!((d.roi, d.overview), (None, Some((1280, 800))), "{shared}");
+    assert_eq!((d.roi, d.overview), (None, Some((320, 200))), "{shared}");
+    assert!(!d.hardware_overview);
     assert!(
         shared.consumers[0].total.cpu_ms >= whole.total.cpu_ms,
         "{shared}"

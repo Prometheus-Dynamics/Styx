@@ -12,6 +12,7 @@ use std::time::Duration;
 use styx_codec::CodecRegistryHandle;
 use styx_core::prelude::*;
 
+use super::region_shared;
 use super::request::{FrameRate, FrameRequest};
 use super::routes::{self, Candidate, backend_name, describe};
 use super::session::{SharedSession, same_preparation};
@@ -156,13 +157,6 @@ fn plan_shared(
     let Some((_, backend, mode, mut candidates)) = best else {
         return Err(no_candidates(fps, rejected));
     };
-    // The ISP crops for one consumer only: shared, regions and overviews come from the
-    // frames.
-    if requests.len() > 1 {
-        for (candidate, req) in candidates.iter_mut().zip(requests) {
-            candidate.without_isp_region(req);
-        }
-    }
     // The ISP has two outputs: the main one at the larger size consumers want and the second
     // at the smaller one (a native PiSP also in either processed format). Consumers that fit
     // neither (a third size or format, or with the second output taken by an ISP pyramid) get
@@ -233,6 +227,12 @@ fn plan_shared(
     let outs = outputs_of(&candidates);
     let two_outputs = outs.len() == 2 && isp_two;
     let second_output = two_outputs.then(|| outs[1]);
+    // Every consumer's regions from the one PiSP: the main output, the second, extra passes.
+    if requests.len() > 1 {
+        let second_taken =
+            second_output.is_some() || candidates.iter().any(|c| c.isp_pyramid_level.is_some());
+        region_shared::assign(&mut candidates, requests, second_taken).map_err(rejection)?;
+    }
     let interval = rate::pick(mode, fps);
     let consumers: Vec<FramePlan> = candidates
         .into_iter()
@@ -268,6 +268,11 @@ fn plan_shared(
             }],
         });
     }
+    let config = region_shared::region_config(
+        &consumers,
+        outputs_config(&consumers, mode, StyxConfig::default()),
+    );
+    region_shared::mark_second_output(&mut consumers, &config);
     let groups = prepare_groups(&consumers);
     for group in groups.iter().filter(|g| g.len() > 1) {
         let list = group
@@ -437,13 +442,9 @@ impl SharedFramePlan {
             .find(|p| !p.isp_second_output)
             .map(output);
         let pyramid = self.consumers.iter().find_map(|p| p.isp_pyramid_level);
-        let region = self
-            .consumers
-            .iter()
-            .find(|p| p.region.isp())
-            .map(|p| (p.region, p.request.roi));
+        let region = region_shared::layout_key(&self.consumers);
         format!(
-            "{:?} {:?} {:?} main={main:?} second={second:?} pyramid={pyramid:?} region={region:?} \
+            "{:?} {:?} {:?} main={main:?} second={second:?} pyramid={pyramid:?} region={region} \
              idle={:?}",
             self.backend, self.mode.id, self.interval, self.stop_when_idle
         )
@@ -458,34 +459,10 @@ impl SharedFramePlan {
             .unwrap_or_default()
             .capture_queue_depth(1)
             .capture_extra_buffers(held);
-        if let Some(level) = self.consumers.iter().find_map(|p| p.isp_pyramid_level) {
-            config = config
-                .libcamera_pyramid_level(level)
-                .native_pyramid_level(level);
-        }
-        let main = self.consumers.iter().find(|p| !p.isp_second_output);
-        if let Some((width, height)) = main.and_then(|p| p.isp_output) {
-            config = config
-                .libcamera_output_size(width, height)
-                .native_output_size(width, height);
-        }
-        if let Some(format) = main.and_then(|p| p.isp_format) {
-            config = config.native_output_format(format);
-        }
-        if let Some(plan) = self.consumers.iter().find(|p| p.region.isp()) {
-            config = plan.region_config(config);
-        }
-        if let Some(second) = self.consumers.iter().find(|p| p.isp_second_output) {
-            let res = self.mode.format.resolution;
-            let (width, height) = second
-                .isp_output
-                .unwrap_or((res.width.get(), res.height.get()));
-            if second.isp_output.is_some() {
-                config = config.libcamera_second_output(width, height);
-            }
-            let format = second.isp_format.unwrap_or(self.mode.format.code);
-            config = config.native_second_output(width, height, format);
-        }
+        config = region_shared::region_config(
+            &self.consumers,
+            outputs_config(&self.consumers, &self.mode, config),
+        );
         config = match self.stop_when_idle {
             Some((after, IdleStop::Pause)) => config.pause_when_idle(after),
             Some((after, _)) => config.stop_when_idle(after),
@@ -500,6 +477,37 @@ impl SharedFramePlan {
         }
         request
     }
+}
+
+/// `config` with the ISP outputs `consumers` of a shared capture of `mode` use: the main
+/// output's size and format, the second output's, the pyramid level.
+fn outputs_config(consumers: &[FramePlan], mode: &Mode, mut config: StyxConfig) -> StyxConfig {
+    if let Some(level) = consumers.iter().find_map(|p| p.isp_pyramid_level) {
+        config = config
+            .libcamera_pyramid_level(level)
+            .native_pyramid_level(level);
+    }
+    let main = consumers.iter().find(|p| !p.isp_second_output);
+    if let Some((width, height)) = main.and_then(|p| p.isp_output) {
+        config = config
+            .libcamera_output_size(width, height)
+            .native_output_size(width, height);
+    }
+    if let Some(format) = main.and_then(|p| p.isp_format) {
+        config = config.native_output_format(format);
+    }
+    if let Some(second) = consumers.iter().find(|p| p.isp_second_output) {
+        let res = mode.format.resolution;
+        let (width, height) = second
+            .isp_output
+            .unwrap_or((res.width.get(), res.height.get()));
+        if second.isp_output.is_some() {
+            config = config.libcamera_second_output(width, height);
+        }
+        let format = second.isp_format.unwrap_or(mode.format.code);
+        config = config.native_second_output(width, height, format);
+    }
+    config
 }
 
 /// Consumers whose frames are prepared the same way: same requests apart from the region of

@@ -24,6 +24,10 @@ pub enum CompanionKind {
     /// crop view; `meta().crop` says where): a low-resolution view to find the next region
     /// in. Crops leave it alone.
     Overview,
+    /// Another region of interest of the same capture (`index` 1, 2, ...; the primary frame
+    /// is region 0), cropped by the ISP from the same raw frame: `meta().crop` says where.
+    /// Crops leave it alone.
+    Region { index: u8 },
 }
 
 impl FrameLease {
@@ -70,6 +74,23 @@ impl FrameLease {
     /// ([`CompanionKind::Overview`]).
     pub fn overview(&self) -> Option<&FrameLease> {
         self.companion(CompanionKind::Overview)
+    }
+
+    /// Region of interest `index` of this capture: 0 is this frame, 1, 2, ... the
+    /// [`CompanionKind::Region`] companions.
+    pub fn region(&self, index: u8) -> Option<&FrameLease> {
+        if index == 0 {
+            return Some(self);
+        }
+        self.companion(CompanionKind::Region { index })
+    }
+
+    /// This frame and its region companions, by region index (see [`Self::region`]).
+    pub fn regions(&self) -> impl Iterator<Item = (u8, &FrameLease)> {
+        core::iter::once((0, self)).chain(self.companions().filter_map(|(kind, f)| match kind {
+            CompanionKind::Region { index } => Some((index, f)),
+            _ => None,
+        }))
     }
 
     /// All attached companions.

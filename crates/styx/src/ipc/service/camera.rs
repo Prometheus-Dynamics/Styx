@@ -155,12 +155,14 @@ impl Camera {
         }
     }
 
-    pub(super) fn set_roi(&self, id: u64, roi: Option<FrameRect>, frames: &FramesSlot) {
+    /// A client's regions of interest now (region 0 first; empty: the whole frame).
+    pub(super) fn set_roi(&self, id: u64, regions: &[FrameRect], frames: &FramesSlot) {
         if let Some(client) = self.state.lock().clients.iter_mut().find(|c| c.id == id) {
-            client.request.roi = roi;
+            client.request.roi = regions.first().copied();
+            client.request.extra_regions = regions.iter().skip(1).copied().collect();
         }
         if let Some(frames) = frames.lock().as_ref() {
-            frames.roi().set(roi);
+            frames.roi().set_regions(regions);
         }
     }
 
@@ -229,10 +231,9 @@ pub(super) fn check_request(req: &FrameRequest) -> Result<(), String> {
     if !size_ok(req.min_size) || !size_ok(req.max_size) || !size_ok(req.size) {
         return Err(format!("sizes must be 1 to {MAX_SIZE} pixels"));
     }
-    if let Some(roi) = req.roi
-        && (roi.x.saturating_add(roi.width) > MAX_SIZE
-            || roi.y.saturating_add(roi.height) > MAX_SIZE)
-    {
+    if req.all_regions().iter().any(|roi| {
+        roi.x.saturating_add(roi.width) > MAX_SIZE || roi.y.saturating_add(roi.height) > MAX_SIZE
+    }) {
         return Err("region of interest is outside any frame".into());
     }
     if req

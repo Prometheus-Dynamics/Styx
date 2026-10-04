@@ -57,6 +57,8 @@ pub struct BeConfigBuilder {
     /// Exposure × analogue gain of the last frame with temporal denoise on (`None`: the next
     /// one starts a new average).
     tdn_last: Option<f64>,
+    /// Full prepares so far (extra passes re-prepare when it moves).
+    generation: u64,
 }
 
 /// Above this exposure ratio between frames the temporal average starts over (as the
@@ -84,6 +86,7 @@ impl BeConfigBuilder {
             counts: BeUpdateCounts::default(),
             tdn: false,
             tdn_last: None,
+            generation: 0,
         })
     }
 
@@ -100,10 +103,26 @@ impl BeConfigBuilder {
 
     /// Output `i` cropped to `crop` of the input (`None`: all of it), from the next frame's
     /// config on (a full prepare). Fails, changing nothing, if the back end cannot make it.
+    ///
+    /// The temporal average is only updated where a frame's tiles read: a crop that moves
+    /// mostly outside what the last frame covered starts it over rather than reading what an
+    /// older frame left there.
     pub fn set_output_crop(&mut self, i: usize, crop: Option<BeCropConfig>) -> Result<()> {
         let mut template = self.template.clone();
         template.set_crop(i, crop.unwrap_or_default());
-        template.clone().prepare().map_err(config_error)?;
+        let next = template.clone().prepare().map_err(config_error)?;
+        let (a, b) = (
+            crate::pisp_passes::tiles_cover(&self.cfg),
+            crate::pisp_passes::tiles_cover(&next),
+        );
+        let overlap =
+            |lo0: u32, hi0: u32, lo1: u32, hi1: u32| hi0.min(hi1).saturating_sub(lo0.max(lo1));
+        let shared =
+            u64::from(overlap(a.0, a.2, b.0, b.2)) * u64::from(overlap(a.1, a.3, b.1, b.3));
+        let area = u64::from(b.2.saturating_sub(b.0)) * u64::from(b.3.saturating_sub(b.1));
+        if shared * 2 < area {
+            self.reset_tdn();
+        }
         self.template = template;
         self.fresh = true;
         Ok(())
@@ -172,6 +191,7 @@ impl BeConfigBuilder {
             self.gamma.clone_from(&isp.gamma);
             self.lens_shading.clone_from(&isp.lens_shading);
             self.counts.rebuilt += 1;
+            self.generation += 1;
             return Ok(BeUpdate::Rebuilt);
         }
         let w = &mut self.work;
@@ -240,6 +260,18 @@ impl BeConfigBuilder {
     /// How often each kind of update happened.
     pub fn counts(&self) -> BeUpdateCounts {
         self.counts
+    }
+
+    /// The builder behind [`Self::config`]: its blocks as last set, its geometry the
+    /// template's (extra passes prepare their own geometry from it).
+    pub fn work(&self) -> &BackEnd {
+        &self.work
+    }
+
+    /// Counts the full prepares: a config patched since keeps it (its tiles and enables are
+    /// the same).
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 }
 

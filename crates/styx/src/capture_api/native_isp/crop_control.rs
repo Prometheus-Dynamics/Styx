@@ -1,7 +1,8 @@
-//! The main output's crop of a processed native capture (`OUTPUT_CROP`): the PiSP's back end,
-//! or the software ISP processing only that region, delivers it at full resolution, and frames
-//! say where it is (`FrameMeta::crop`). Set by the application, or by the planner for a request's region of
-//! interest; the worker hands a changed crop to the back end before its next frame.
+//! The main output's crop of a processed native capture (`OUTPUT_CROP`) and its other regions
+//! (`region_crop(index)`): the PiSP's back end, or the software ISP processing only the main
+//! output's region, delivers each region of the frame at full resolution, and frames say where
+//! they are (`FrameMeta::crop`). Set by the application, or by the planner for a request's
+//! regions of interest; the worker hands a changed crop to the ISP before its next frame.
 
 use parking_lot::Mutex;
 use styx_capture::prelude::*;
@@ -10,6 +11,7 @@ use styx_native::CameraInfo;
 
 use super::super::native_backend::controls as ids;
 use super::super::request::CaptureError;
+use super::super::tunables::MAX_NATIVE_REGIONS;
 use crate::capture_api::fit_crop as fit;
 
 /// The crop as set, and a change the worker has not taken yet.
@@ -29,6 +31,11 @@ impl CropControl {
         if let Some(rect) = initial {
             self.set(fit(rect, frame));
         }
+    }
+
+    /// Whether crops are possible ([`Self::enable`]).
+    pub(crate) fn enabled(&self) -> bool {
+        self.frame.lock().is_some()
     }
 
     /// Applies an `OUTPUT_CROP` value: a rectangle of the frame (rounded out to even pixels,
@@ -97,9 +104,12 @@ impl CropControl {
 }
 
 /// The `OUTPUT_CROP` control of a camera whose processed modes run on the PiSP or the software
-/// ISP: rectangles up to its largest mode.
-pub(crate) fn meta(info: &CameraInfo) -> Option<ControlMeta> {
-    let (width, height) = info.modes.iter().map(|m| (m.width, m.height)).max()?;
+/// ISP, and with `regions` (the PiSP) the `region_crop` ones: rectangles up to its largest
+/// mode.
+pub(crate) fn metas(info: &CameraInfo, regions: bool) -> Vec<ControlMeta> {
+    let Some((width, height)) = info.modes.iter().map(|m| (m.width, m.height)).max() else {
+        return Vec::new();
+    };
     let rect = |width, height| {
         ControlValue::Rect(ControlRect {
             x: 0,
@@ -108,9 +118,9 @@ pub(crate) fn meta(info: &CameraInfo) -> Option<ControlMeta> {
             height,
         })
     };
-    Some(ControlMeta {
-        id: ids::OUTPUT_CROP,
-        name: "output_crop".into(),
+    let meta = |id, name: String| ControlMeta {
+        id,
+        name,
         kind: ControlKind::Rectangle,
         access: Access::ReadWrite,
         min: rect(0, 0),
@@ -119,7 +129,53 @@ pub(crate) fn meta(info: &CameraInfo) -> Option<ControlMeta> {
         step: Some(rect(2, 2)),
         menu: None,
         metadata: ControlMetadata::default(),
-    })
+    };
+    std::iter::once(meta(ids::OUTPUT_CROP, "output_crop".into()))
+        .chain(
+            (1..=MAX_NATIVE_REGIONS as u8)
+                .filter(|_| regions)
+                .filter_map(|i| ids::region_crop(i).map(|id| meta(id, format!("region_crop_{i}")))),
+        )
+        .collect()
+}
+
+/// The crops of a capture's regions (`NativeIspConfig::regions`), by slot (region index − 1).
+#[derive(Debug)]
+pub(crate) struct RegionCrops(Vec<CropControl>);
+
+impl Default for RegionCrops {
+    fn default() -> Self {
+        Self(
+            (0..MAX_NATIVE_REGIONS)
+                .map(|_| CropControl::default())
+                .collect(),
+        )
+    }
+}
+
+impl RegionCrops {
+    /// Slot `k`'s control.
+    pub(crate) fn slot(&self, k: usize) -> Option<&CropControl> {
+        self.0.get(k)
+    }
+
+    /// Applies `region_crop(index)`.
+    pub(crate) fn apply(&self, index: u8, value: &ControlValue) -> Result<(), CaptureError> {
+        match self.0.get(usize::from(index).wrapping_sub(1)) {
+            Some(c) if c.enabled() => c.apply(value),
+            _ => Err(CaptureError::control_apply(format!(
+                "region crop {index}: this capture has no region {index} (NativeIspConfig::regions)"
+            ))),
+        }
+    }
+
+    /// Reads `region_crop(index)`.
+    pub(crate) fn read(&self, index: u8) -> Option<ControlValue> {
+        self.0
+            .get(usize::from(index).wrapping_sub(1))
+            .filter(|c| c.enabled())
+            .map(CropControl::read)
+    }
 }
 
 #[cfg(test)]

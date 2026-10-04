@@ -310,6 +310,67 @@ output the whole frame scaled down, attached as `CompanionKind::Overview`
 control and setting make the software ISP process only the region, and the overview a binned
 pass over the whole frame ([Regions of interest](#regions-of-interest-on-the-software-path)).
 
+### Extra back end passes (regions of interest)
+
+The back end works memory to memory, so the raw frame a job read can go through it again while
+the front end still holds it: `PispPipeline::set_pass(k, Some(PassSpec))` runs pass `k` over
+every frame after the main job, before the raw buffer goes back
+(`styx_pipeline::pisp_passes`, `device/pisp/passes.rs`). A pass is the frame's main config with
+its own geometry: crop, size (output 1 has the downscaler, output 0 only the resampler),
+format, and only its output enabled, so its tiles read just the input around the region.
+Its tiles are prepared when it is set (and again when the main config is re-prepared); every
+frame copies the main config's blocks over (black level, gains, CCM, gamma, denoise, sharpening,
+lens shading), so a region is processed exactly as the main output. The 3A statistics are the
+front end's and untouched. Its output buffer comes with the frame (`PispFrame::passes`, a
+`PassOutput` with the spec it was made with); passes write into the main output's buffers
+(`PispOptions::pass_buffers` more of them; a capture gives each pass half as many again as an
+output has, at least 3), and a pass without a free buffer skips that frame. Cached output
+buffers come from the `linux,cma` heap, and from the `system` heap when it runs out (the CM5
+has 64 MiB of contiguous memory, which three consumers with passes nearly filled; the back end
+is behind an IOMMU, so scattered pages do).
+`BackEndStream` jobs take a buffer only for the outputs their config enables.
+
+Temporal denoise: the main job reads the running average and writes the new one; a pass must
+not write it (that would fold the frame in twice). With `PassTdn::Read` (the default) a pass
+enables `TDN` and `TDN_INPUT` without `TDN_OUTPUT`, reset off and unit ratio: it reads the
+average the main job just wrote (the driver takes a job with a TDN input buffer and no output
+buffer; `BackEndStream` queues only the input). The main job writes the average only where its
+tiles read, so a pass outside them (the main output a crop elsewhere) runs without temporal
+denoise, and a main crop that jumps to where less than half of it was covered starts the average
+over (`BeConfigBuilder::set_output_crop`): elsewhere the average is whatever frame last covered
+it.
+
+Measured on the CM5 (OV9782 1280x800, 30 fps, OV9782 tuning with temporal denoise,
+`native-pipeline pisp --passes`, 150 frames each):
+
+| Pass | Back end job (median, p95) | CPU per frame (pipeline thread) |
+|---|---|---|
+| none (the main job: 1280x800 NV12 + 640x400 RGB, TDN) | 2.26 ms | 0.344 ms |
+| one 128x128 | 0.052, 0.059 ms | 0.350 ms (+1 wake-up) |
+| four 128x128 | 0.050 ms each, 0.23 ms in all | 0.419 ms |
+| four 128x128, moved 6 px every frame (tiles prepared again) | 0.051 ms each | 0.417 ms |
+| one 640x400 | 0.41, 0.48 ms | 0.357 ms |
+| 1280x800 at full size / at 640x400 (output 0 or 1) | 1.39 / 1.10 ms | 0.35 ms |
+
+So a pass costs about 0.03 ms plus 1.35 ns per pixel of its region of back end time on the
+frame's path, and 0.02-0.03 ms of CPU. Two crops in the frame's own pass instead (output 0 and
+output 1 cropped, no other output): 0.27 ms side by side, 0.51 ms at opposite corners (the
+tiles between them are processed too): a pass each is cheaper unless the main output is the
+whole frame anyway. The region of a pass against the same region of the main output of the same
+frame: mean |difference| 0.20 levels (max 19, at strong edges) with `PassTdn::Read`, 1.84 with
+`PassTdn::Off` (no temporal denoise: temporal noise 34.1 against 29.1); the main output's own
+noise is unchanged by passes (28.0-30.1 across runs with and without).
+
+Captures: `NativeIspConfig::regions` (`StyxConfig::native_regions`) lists regions besides the
+main output, each delivered as a `CompanionKind::Region { index }` companion of the frame it
+was cut from and moved by the `region_crop(index)` control (`native_controls::region_crop`). The
+second output makes the first when nothing else takes it and the main output is not cropped
+(`NativeIspConfig::second_output_region`), extra passes the others; with the overview on the
+second output, or the main output cropped, `pyramid_level` comes from an extra pass of the
+main output's region too (`NativeIspConfig::pyramid_pass`). The planner uses these for
+`FrameRequest::regions`
+([frame-planning.md](../frame-planning.md#region-of-interest)).
+
 ### Denoise settings
 
 Through the Styx API (`StyxConfig`, also read from a serialised config): 

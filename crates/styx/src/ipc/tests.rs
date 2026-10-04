@@ -160,6 +160,7 @@ fn write_fuzz_seeds() {
         hardware_pyramid_level: Some(1),
         inter_coded: false,
         roi: None,
+        regions: Vec::new(),
         overview: None,
         hardware_overview: false,
         unmet: vec![crate::planner::Unmet::Size {
@@ -172,7 +173,7 @@ fn write_fuzz_seeds() {
         ("release", encode_release(1)),
         ("accept", encode_accept("plan", &delivered)),
         ("reject", encode_reject("busy")),
-        ("roi", encode_roi(Some(FrameRect::new(1, 2, 3, 4)))),
+        ("roi", encode_roi(&[FrameRect::new(1, 2, 3, 4)])),
         ("list", encode_list()),
         ("cameras", encode_cameras(&cameras)),
         ("request", encode_request(&request, Some("cam"))),

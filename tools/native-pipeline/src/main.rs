@@ -58,6 +58,11 @@
 //!                        (45 frames each), starting from the state the last session settled on
 //!   --keep-open          (pisp) with --then: keep the camera open and powered between the
 //!                        sessions (stop, reconfigure for another rate, start)
+//!   --passes REGIONS     (pisp) extra back end passes over every frame: WxH@X,Y[;...]
+//!   --pass-tdn MODE      (pisp) temporal denoise in the passes: read (default) or off
+//!   --pass-move PX       (pisp) move the regions PX pixels right every frame
+//!   --pass-probe         (pisp) measure the --passes regions in the main output, run none
+//!   --main-crops REGIONS (pisp) crop output 0 (and 1) of the main pass: WxH@X,Y[;WxH@X,Y]
 //!   --quiet              no per-frame lines
 //! ```
 
@@ -70,6 +75,8 @@ mod gpu;
 #[cfg(feature = "device")]
 mod latch;
 mod output;
+#[cfg(feature = "device")]
+mod passes;
 mod quality;
 #[cfg(feature = "device")]
 mod regcheck;
@@ -124,6 +131,11 @@ pub struct Args {
     pub arithmetic: styx_softisp::Arithmetic,
     pub raw: Option<PathBuf>,
     pub configs: Vec<PathBuf>,
+    pub passes: String,
+    pub pass_tdn: String,
+    pub pass_move: u16,
+    pub pass_probe: bool,
+    pub main_crops: String,
     pub roi: Option<styx_softisp::Window>,
     pub overview: Option<u32>,
     pub check_roi: bool,
@@ -168,6 +180,11 @@ fn parse() -> Result<Args, String> {
         arithmetic: styx_softisp::Arithmetic::Auto,
         raw: None,
         configs: Vec::new(),
+        passes: String::new(),
+        pass_tdn: "read".into(),
+        pass_move: 0,
+        pass_probe: false,
+        main_crops: String::new(),
         roi: None,
         overview: None,
         check_roi: false,
@@ -201,6 +218,11 @@ fn parse() -> Result<Args, String> {
                     v => return Err(format!("--arithmetic {v}: auto, int, int-poly or half")),
                 }
             }
+            "--passes" => a.passes = val()?,
+            "--pass-tdn" => a.pass_tdn = val()?,
+            "--pass-move" => a.pass_move = num(val()?)? as u16,
+            "--pass-probe" => a.pass_probe = true,
+            "--main-crops" => a.main_crops = val()?,
             "--no-read" => a.no_read = true,
             "--profile" => a.profile = true,
             "--driver-buffers" => a.driver_buffers = true,

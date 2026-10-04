@@ -10,7 +10,7 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use styx_codec::{Codec, CodecError};
+use styx_codec::Codec;
 use styx_core::prelude::*;
 use styx_core::queue::{BoundedRx, BoundedTx, QueueOverflow, RecvWaitOutcome, bounded_with};
 
@@ -299,42 +299,22 @@ impl PreparedGroup {
     }
 
     /// A captured frame prepared for this group; a frame that fails to prepare (e.g. a corrupt
-    /// JPEG) is skipped.
+    /// JPEG, or one without this group's ISP region) is skipped.
     fn prepared(&self, outcome: RecvOutcome<FrameLease>) -> RecvOutcome<FrameLease> {
         match outcome {
-            RecvOutcome::Data(frame) => match self
-                .isp_output(frame)
-                .and_then(|frame| self.preparer.process(frame))
-            {
-                Ok(frame) => RecvOutcome::Data(frame),
-                Err(err) => {
-                    tracing::warn!(group = self.index, error = %err, "frame skipped");
-                    RecvOutcome::Empty
+            RecvOutcome::Data(frame) => {
+                match super::region_frames::consumer_frame(frame, &self.plan)
+                    .and_then(|frame| self.preparer.process(frame))
+                {
+                    Ok(frame) => RecvOutcome::Data(frame),
+                    Err(err) => {
+                        tracing::debug!(group = self.index, error = %err, "frame skipped");
+                        RecvOutcome::Empty
+                    }
                 }
-            },
+            }
             other => other,
         }
-    }
-
-    /// This group's ISP output of a shared frame: the frame itself, or its second output.
-    fn isp_output(&self, mut frame: FrameLease) -> Result<FrameLease, CodecError> {
-        let companions = frame.take_companions();
-        if self.plan.isp_second_output {
-            return companions
-                .into_iter()
-                .find(|(kind, _)| *kind == CompanionKind::Scaled)
-                .map(|(_, frame)| frame)
-                .ok_or_else(|| CodecError::Codec("frame without the ISP's second output".into()));
-        }
-        // The other consumers' output is not for this group.
-        for (kind, companion) in companions {
-            if kind != CompanionKind::Scaled {
-                frame = frame
-                    .with_companion(kind, companion)
-                    .map_err(|e| CodecError::Codec(e.to_string()))?;
-            }
-        }
-        Ok(frame)
     }
 }
 
@@ -421,15 +401,13 @@ impl Branch {
 
     fn cropped(&self, outcome: RecvOutcome<FrameLease>) -> RecvOutcome<FrameLease> {
         match (outcome, &self.roi) {
-            (RecvOutcome::Data(frame), Some(roi)) => {
-                match self.group.preparer.crop(frame, roi.get()) {
-                    Ok(frame) => RecvOutcome::Data(frame),
-                    Err(err) => {
-                        tracing::warn!(consumer = self.member, error = %err, "frame skipped");
-                        RecvOutcome::Empty
-                    }
+            (RecvOutcome::Data(frame), Some(roi)) => match self.group.preparer.crop(frame, roi) {
+                Ok(frame) => RecvOutcome::Data(frame),
+                Err(err) => {
+                    tracing::warn!(consumer = self.member, error = %err, "frame skipped");
+                    RecvOutcome::Empty
                 }
-            }
+            },
             (outcome, _) => outcome,
         }
     }
@@ -463,6 +441,7 @@ pub(crate) fn same_preparation(a: &FramePlan, b: &FramePlan) -> bool {
     let key = |plan: &FramePlan| {
         let mut req = plan.request.clone();
         req.roi = None;
+        req.extra_regions.fill(FrameRect::new(0, 0, 0, 0));
         req.fps = Default::default();
         req
     };
@@ -473,7 +452,9 @@ pub(crate) fn same_preparation(a: &FramePlan, b: &FramePlan) -> bool {
         && a.isp_format == b.isp_format
         && a.isp_second_output == b.isp_second_output
         && a.isp_pyramid_level == b.isp_pyramid_level
+        // Views are cut per consumer; ISP regions come from the consumer's own outputs.
         && a.region.isp() == b.region.isp()
+        && (!a.region.isp() || a.region.places == b.region.places)
         && a.region.overview == b.region.overview
         && a.exportable == b.exportable
 }
@@ -497,9 +478,9 @@ impl SharedSession {
     /// which applies its region while preparing (e.g. a JPEG decode skips the rows below it).
     pub(crate) fn attach(&self, plan: &FramePlan, share: bool) -> super::Frames {
         let roi = RoiHandle::default();
-        roi.set(plan.request.roi);
+        roi.set_regions(&plan.request.all_regions());
         if plan.region.isp() {
-            roi.crop_in_isp(self.shared.capture());
+            roi.crop_in_isp(self.shared.capture(), plan.region.places.clone());
         }
         let depth = plan.queue_depth.max(1);
         let mut groups = self.groups.lock();
@@ -527,7 +508,8 @@ impl SharedSession {
                     } else {
                         roi.clone()
                     },
-                ),
+                )
+                .for_shared(),
                 fanout: Fanout::new(),
                 plan: plan.clone(),
                 open: share,
