@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let size = nodes.frame_size.alias("size");
     let graph = registry
         .graph_builder()?
-        .input_typed::<FrameLease>("frame")
+        .input_typed::<FrameLease>("frame")?
         .try_node(&mean)?
         .try_node(&size)?
         .try_connect("frame", &mean.inputs.frame)?

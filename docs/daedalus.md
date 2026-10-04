@@ -43,10 +43,11 @@ The module is `styx_core::daedalus`, or `styx::core::daedalus` through the facad
 adds only the Daedalus types, macros and plugin registry (`daedalus-rs` with `plugins`). The app
 picks the engine and any GPU features it wants.
 
-**Daedalus source.** Until Daedalus 2.0 is on crates.io, Styx depends on a pinned commit of its
-`dev` branch by its canonical git URL (`https://github.com/Prometheus-Dynamics/Daedalus.git`; the
-`rev` is in the root `Cargo.toml`). Apps and libraries that use Styx from git depend on Daedalus
-the same way, so both resolve to one `daedalus-rs`. To develop against a local Daedalus checkout,
+**Daedalus source.** Until Daedalus 2.0 is on crates.io, Styx depends on Daedalus's `dev` branch
+by its canonical git URL (`https://github.com/Prometheus-Dynamics/Daedalus.git`, `branch = "dev"`
+in the root `Cargo.toml`). Apps and libraries that use Styx from git depend on Daedalus the same
+way, so both resolve to one `daedalus-rs` (a `Cargo.lock` fixes the commit; `cargo update -p
+daedalus-rs` moves it to the branch's head). To develop against a local Daedalus checkout,
 override the git source in an untracked `.cargo/config.toml` (or the app's `[patch]`):
 
 ```toml
@@ -82,7 +83,7 @@ let nodes = AppNodes::new();
 registry.install(&nodes)?;
 let graph = registry
     .graph_builder()?
-    .input_typed::<FrameLease>("frame")        // typed: feeds both port types
+    .input_typed::<FrameLease>("frame")?       // typed: feeds both port types
     // ... nodes and edges ...
     .build();
 let mut host = Engine::new(EngineConfig::default())?.compile_registry(&registry, graph)?;
