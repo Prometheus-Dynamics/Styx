@@ -168,6 +168,11 @@ pub(super) fn validate(d: &SensorDescription) -> Result<(), Issues> {
     };
     let registers = d.sensor.backend == Backend::Registers;
 
+    // Bus wiring.
+    for (path, message) in d.bus.iter().flat_map(|b| b.problems()) {
+        c.err(path, message);
+    }
+
     // Identity.
     c.check(
         !d.sensor.name.trim().is_empty(),

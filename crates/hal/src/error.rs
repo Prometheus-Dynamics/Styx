@@ -103,8 +103,9 @@ impl fmt::Display for ErrorKind {
 impl core::error::Error for ErrorKind {}
 
 /// An error of a hardware trait implementation: its [`ErrorKind`] and, where there is one, a
-/// platform code for logs (an errno on Linux, a vendor status on microcontrollers).
-pub trait HalError: fmt::Debug {
+/// platform code for logs (an errno on Linux, a vendor status on microcontrollers). `Display`
+/// is its message.
+pub trait HalError: fmt::Debug + fmt::Display {
     /// What kind of failure this is.
     fn kind(&self) -> ErrorKind;
     /// A platform code, if any.

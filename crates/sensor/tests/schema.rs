@@ -344,3 +344,40 @@ fn embedded_controls_in_raw10_packing() {
         err(&bad)
     );
 }
+
+#[test]
+fn the_bus_section_describes_the_wiring() {
+    let d = parse(&format!(
+        "{BASE}\n[bus]\nparallel = {{ width = 8, vsync_active_high = true }}\n"
+    ))
+    .unwrap();
+    assert_eq!(
+        d.bus.unwrap().to_hal(None),
+        Some(styx_sensor::styx_hal::Bus::Parallel {
+            width: 8,
+            pclk_rising: true,
+            hsync_active_high: true,
+            vsync_active_high: true,
+            embedded_sync: false,
+        })
+    );
+    let d = parse(&format!("{BASE}\n[bus]\ncsi2 = {{ lanes = 2 }}\n")).unwrap();
+    assert_eq!(
+        d.bus.unwrap().to_hal(Some(400_000_000)),
+        Some(styx_sensor::styx_hal::Bus::Csi2 {
+            lanes: 2,
+            link_frequency: 400_000_000,
+            continuous_clock: true,
+            virtual_channel: 0,
+        })
+    );
+    assert!(parse(BASE).unwrap().bus.is_none());
+    let e = err(&format!(
+        "{BASE}\n[bus]\ncsi2 = {{ lanes = 5 }}\nparallel = {{ width = 4 }}\n"
+    ));
+    for problem in ["bus: give either", "bus.csi2.lanes", "bus.parallel.width"] {
+        assert!(e.contains(problem), "{e}");
+    }
+    assert!(err(&format!("{BASE}\n[bus]\n")).contains("bus: needs parallel or csi2"));
+    assert!(err(&format!("{BASE}\n[bus]\nusb = true\n")).contains("unknown field"));
+}

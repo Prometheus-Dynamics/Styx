@@ -26,9 +26,10 @@ use alloc::vec::Vec;
 use crate::desc::Delays;
 
 /// A scheduled control.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum Control {
     /// Frame length (VTS) in lines. Ordered first so it is written before exposure.
+    #[default]
     FrameLength,
     /// Exposure code.
     Exposure,

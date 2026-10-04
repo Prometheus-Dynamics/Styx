@@ -4,11 +4,11 @@ use alloc::{format, string::String, vec::Vec};
 use core::fmt;
 use core::time::Duration;
 
-use serde::Deserialize;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Serialize};
 
 /// One register write: `bytes` bytes starting at `address`, most significant byte first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RegWrite {
     /// Register address.
     pub address: u16,
@@ -195,8 +195,49 @@ impl StepTable {
     }
 }
 
+/// The compact binary form of a [`Step`] (`SensorDescription::to_postcard`): an enum, where
+/// TOML has arrays and tables.
+#[derive(Serialize, Deserialize)]
+enum BinaryStep {
+    Write(RegWrite),
+    Delay(Duration),
+    Gpio(String, bool, bool),
+    Clock(String, bool, bool),
+    Supply(String, bool, bool),
+}
+
+impl Serialize for Step {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.clone() {
+            Step::Write(w) => BinaryStep::Write(w),
+            Step::Delay(d) => BinaryStep::Delay(d),
+            Step::Gpio {
+                role,
+                value,
+                optional,
+            } => BinaryStep::Gpio(role, value, optional),
+            Step::Clock { role, on, optional } => BinaryStep::Clock(role, on, optional),
+            Step::Supply { role, on, optional } => BinaryStep::Supply(role, on, optional),
+        }
+        .serialize(s)
+    }
+}
+
 impl<'de> Deserialize<'de> for Step {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        if !d.is_human_readable() {
+            return Ok(match BinaryStep::deserialize(d)? {
+                BinaryStep::Write(w) => Step::Write(w),
+                BinaryStep::Delay(d) => Step::Delay(d),
+                BinaryStep::Gpio(role, value, optional) => Step::Gpio {
+                    role,
+                    value,
+                    optional,
+                },
+                BinaryStep::Clock(role, on, optional) => Step::Clock { role, on, optional },
+                BinaryStep::Supply(role, on, optional) => Step::Supply { role, on, optional },
+            });
+        }
         struct V;
         impl<'de> Visitor<'de> for V {
             type Value = Step;

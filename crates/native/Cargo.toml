@@ -17,6 +17,7 @@ styx-sensor.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+styx-hal = { workspace = true, features = ["mock"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [lints]

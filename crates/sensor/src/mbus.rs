@@ -3,11 +3,11 @@
 use alloc::format;
 use core::fmt;
 
-use serde::Deserialize;
 use serde::de::{self, Deserializer, Visitor};
+use serde::{Deserialize, Serialize};
 
 /// Colour filter arrangement of the pixel array, as seen with no flips applied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum ColorFilter {
     /// Bayer, first row B G.
     #[serde(rename = "BGGR")]
@@ -137,8 +137,18 @@ impl fmt::Display for MbusCode {
     }
 }
 
+/// The code as a number (the compact binary form, `SensorDescription::to_postcard`).
+impl Serialize for MbusCode {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u32(self.0)
+    }
+}
+
 impl<'de> Deserialize<'de> for MbusCode {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        if !d.is_human_readable() {
+            return u32::deserialize(d).map(MbusCode);
+        }
         struct V;
         impl Visitor<'_> for V {
             type Value = MbusCode;

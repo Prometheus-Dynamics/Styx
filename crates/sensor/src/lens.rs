@@ -26,13 +26,13 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::{format, string::String, vec, vec::Vec};
 use core::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
 
 /// A focus lens.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LensDescription {
     /// The actuator, informational (`dw9817`).
@@ -126,7 +126,7 @@ impl LensDescription {
 }
 
 /// VCM chips whose command formats are built in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VcmChip {
     /// Dongwoon DW9714: two bytes, no register, `position << 4 | slew` (10 bits), bit 15
@@ -144,7 +144,7 @@ pub enum VcmChip {
 }
 
 /// How a position is written: `[register?] ((position << shift) | or)` big-endian in `bytes`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VcmFormat {
     /// The register the value goes to (none: the value is the whole message).
@@ -211,7 +211,7 @@ impl VcmFormat {
 }
 
 /// A VCM Styx drives over I²C.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VcmI2c {
     /// 7-bit address (0x0c for the DW9714/DW9807/DW9817 family).

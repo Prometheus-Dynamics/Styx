@@ -21,6 +21,7 @@ crates=(
     "styx-pisp:"
     "styx-algo:"
     "styx-sensor:"
+    "styx-sensor:postcard"
     "styx-core-rs:neon,x86"
     "styx-softisp:neon,x86"
 )
