@@ -17,7 +17,7 @@ const I2C_SLAVE: u32 = 0x0703;
 const I2C_FUNCS: u32 = 0x0705;
 const I2C_RDWR: u32 = 0x0707;
 
-const I2C_M_RD: u16 = 0x0001;
+pub(crate) const I2C_M_RD: u16 = 0x0001;
 const I2C_FUNC_I2C: libc::c_ulong = 0x0000_0001;
 
 /// Most messages the kernel accepts in one `I2C_RDWR` call (`I2C_RDWR_IOCTL_MAX_MSGS`).
@@ -138,7 +138,7 @@ fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }
 
-fn msg_len(len: usize) -> io::Result<u16> {
+pub(crate) fn msg_len(len: usize) -> io::Result<u16> {
     if len == 0 || len > MAX_MESSAGE_LEN {
         return Err(invalid(format!(
             "I2C message of {len} bytes (1..={MAX_MESSAGE_LEN})"
@@ -253,12 +253,17 @@ impl I2cDevice {
     /// Runs `messages` as one combined transfer (repeated starts, one stop).
     pub fn transfer(&self, messages: &mut [Message<'_>]) -> io::Result<()> {
         let mut msgs = build_messages(self.addr, messages)?;
+        self.rdwr(&mut msgs)
+    }
+
+    /// One `I2C_RDWR` call over kernel messages whose buffers the caller keeps alive.
+    pub(crate) fn rdwr(&self, msgs: &mut [I2cMsg]) -> io::Result<()> {
         let mut data = I2cRdwrData {
             msgs: msgs.as_mut_ptr(),
             nmsgs: msgs.len() as u32,
         };
-        // SAFETY: `data` points at `msgs`, whose buffers point into `messages`; all stay alive
-        // and unmoved for the duration of the call. Read buffers are exclusively borrowed.
+        // SAFETY: `data` points at `msgs`, whose buffers point into memory the caller keeps
+        // alive and unmoved for the duration of the call. Read buffers are exclusively borrowed.
         let done = unsafe { ioctl(self.file.as_fd(), I2C_RDWR, &mut data) }?;
         if done as usize != msgs.len() {
             return Err(io::Error::other(format!(
