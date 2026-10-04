@@ -1,6 +1,11 @@
 //! `rpi.af` into [`AfTuning`]: the same names and units (dioptres, frames, the sensor's PDAF
 //! units, the dioptre → lens driver map).
 
+use alloc::{format, string::String, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use super::*;
 
 const RANGE_KEYS: [&str; 3] = ["min", "max", "default"];

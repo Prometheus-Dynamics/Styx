@@ -4,6 +4,11 @@
 //! Ported from Raspberry Pi's `contrast.cpp` (BSD-2-Clause, Copyright (C) 2019 Raspberry Pi
 //! Ltd), on normalised values (the Raspberry Pi files use 16 bits; the loader converts).
 
+use alloc::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::CameraConfig;

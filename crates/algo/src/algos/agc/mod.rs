@@ -40,12 +40,17 @@
 //! gain / digital gain along the exposure profile, and snap the exposure time to the flicker
 //! period.
 
+use alloc::{string::String, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 pub mod deflicker;
 pub mod flicker;
 pub(crate) mod metering;
 pub mod tuning;
 
-use std::time::Duration;
+use core::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::error::Result;

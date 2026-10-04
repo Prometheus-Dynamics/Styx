@@ -6,6 +6,8 @@
 //! callers clamp to the [`Pwl::domain`] where extrapolation is unwanted. Written from those
 //! semantics, not translated.
 
+use alloc::{format, vec, vec::Vec};
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AlgoError, Result};

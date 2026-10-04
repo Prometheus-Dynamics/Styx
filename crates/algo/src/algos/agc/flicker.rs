@@ -46,8 +46,13 @@
 //! minimum ([`FlickerFit::hz`]). Phases are fitted relative to the newest frame
 //! ([`FlickerModel::reference`]) so frequency changes do not swing them.
 
-use std::collections::VecDeque;
-use std::f64::consts::PI;
+use alloc::{vec, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
+use alloc::collections::VecDeque;
+use core::f64::consts::PI;
 
 use super::{DETECT_F, DETECT_SAMPLES, DETECT_TIME, DETECT_VISIBLE};
 use crate::frame::{Deflicker, Flicker, FrameMetadata};
@@ -393,7 +398,7 @@ impl FlickerFit {
             c.hypot(s) / nf <= MAX_PHASE_RESULTANT
         };
         let sampled: Vec<bool> = (0..=self.harmonics).map(|k| k > 0 && sampled(k)).collect();
-        for j in std::iter::once(0).chain(order) {
+        for j in core::iter::once(0).chain(order) {
             // Leave room for the residual.
             if j > 0 && n < used.len() + 1 + MIN_DOF {
                 break;

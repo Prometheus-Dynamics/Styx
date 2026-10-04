@@ -10,6 +10,11 @@
 //! tables) leave their input unchanged (their `std::for_each` lambdas return a value instead of
 //! assigning it), so this port does not rescale either: the results match what libcamera runs.
 
+use alloc::{vec, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use crate::stats::ZoneGrid;
 
 /// Marks a zone without usable colour statistics.

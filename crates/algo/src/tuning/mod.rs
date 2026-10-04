@@ -7,9 +7,12 @@
 //! Units: times in microseconds (`*_us`), levels normalised to full scale 1.0, colour
 //! temperatures in kelvin.
 
+use alloc::{string::String, string::ToString};
+
 pub mod json;
 mod rpi;
 
+#[cfg(feature = "std")]
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -95,6 +98,7 @@ impl Tuning {
     }
 
     /// Load a file: `.json` as a Raspberry Pi tuning, anything else as our TOML.
+    #[cfg(feature = "std")]
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path)?;

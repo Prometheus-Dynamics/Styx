@@ -15,6 +15,11 @@
 //! the tables' grid (the PiSP's 32x32 AWB zones); on other grids the tables follow the
 //! calibration only, as with `n_iter = 0`.
 
+use alloc::{format, string::String, vec, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 mod adaptive;
 
 use serde::{Deserialize, Serialize};

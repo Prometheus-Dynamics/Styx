@@ -7,6 +7,8 @@
 //! measured at several gains (`by_gain`, written by `styx-tune` from dark frames); each frame
 //! then gets the levels interpolated at the gain that produced it.
 
+use alloc::vec::Vec;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::CameraConfig;

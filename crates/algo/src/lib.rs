@@ -26,14 +26,25 @@
 //! ```
 //!
 //! See `docs/native-stack/algorithms.md` for adding an algorithm and the tuning mapping.
+//!
+//! # `no_std`
+//!
+//! Without the default `std` feature the crate is `no_std` + `alloc`: everything but
+//! [`Tuning::load`] (files) and [`replay`] (docs/portability.md).
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
 
 pub mod algos;
 mod config;
 mod error;
 mod frame;
+mod math;
 mod params;
 mod pipeline;
 pub mod pwl;
+#[cfg(feature = "std")]
 pub mod replay;
 pub mod sim;
 pub mod stats;

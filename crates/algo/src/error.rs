@@ -1,5 +1,7 @@
 //! Errors.
 
+use alloc::string::String;
+
 use thiserror::Error;
 
 /// Errors from tuning, configuration and replay.
@@ -31,6 +33,7 @@ pub enum AlgoError {
         message: String,
     },
     /// I/O.
+    #[cfg(feature = "std")]
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -42,4 +45,4 @@ impl AlgoError {
 }
 
 /// Result alias.
-pub type Result<T, E = AlgoError> = std::result::Result<T, E>;
+pub type Result<T, E = AlgoError> = core::result::Result<T, E>;

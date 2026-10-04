@@ -21,8 +21,13 @@
 //!   noise that grows as confidence falls; confidence falls with defocus and with texture ×
 //!   signal-to-noise.
 
-use std::collections::BTreeMap;
-use std::time::Duration;
+use alloc::{vec, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
+use alloc::collections::BTreeMap;
+use core::time::Duration;
 
 use super::Rng;
 use crate::algos::af::{AfWindow, LensRequest, LensState};

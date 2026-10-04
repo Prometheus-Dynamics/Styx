@@ -25,6 +25,7 @@ pub(crate) trait Float: Sized {
     fn log10(self) -> Self;
     fn sin(self) -> Self;
     fn cos(self) -> Self;
+    fn sin_cos(self) -> (Self, Self);
     fn atan2(self, x: Self) -> Self;
     fn hypot(self, y: Self) -> Self;
     fn mul_add(self, a: Self, b: Self) -> Self;
@@ -34,7 +35,7 @@ pub(crate) trait Float: Sized {
 macro_rules! float_impl {
     ($t:ty, $sqrt:ident, $round:ident, $roundeven:ident, $floor:ident, $ceil:ident,
      $trunc:ident, $pow:ident, $exp:ident, $exp2:ident, $ln:ident, $log2:ident,
-     $log10:ident, $sin:ident, $cos:ident, $atan2:ident, $hypot:ident, $fma:ident) => {
+     $log10:ident, $sin:ident, $cos:ident, $sincos:ident, $atan2:ident, $hypot:ident, $fma:ident) => {
         impl Float for $t {
             #[inline]
             fn sqrt(self) -> $t {
@@ -115,6 +116,10 @@ macro_rules! float_impl {
                 libm::$cos(self)
             }
             #[inline]
+            fn sin_cos(self) -> ($t, $t) {
+                libm::$sincos(self)
+            }
+            #[inline]
             fn atan2(self, x: $t) -> $t {
                 libm::$atan2(self, x)
             }
@@ -138,9 +143,9 @@ macro_rules! float_impl {
 
 float_impl!(
     f64, sqrt, round, roundeven, floor, ceil, trunc, pow, exp, exp2, log, log2, log10, sin, cos,
-    atan2, hypot, fma
+    sincos, atan2, hypot, fma
 );
 float_impl!(
-    f32, sqrtf, roundf, roundevenf, floorf, ceilf, truncf, powf, expf, exp2f, logf, log2f, log10f,
-    sinf, cosf, atan2f, hypotf, fmaf
+    f32, sqrtf, roundf, roundevenf, floorf, ceilf, truncf, powf, expf, exp2f, logf, log2f,
+    log10f, sinf, cosf, sincosf, atan2f, hypotf, fmaf
 );

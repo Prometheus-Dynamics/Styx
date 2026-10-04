@@ -1,6 +1,8 @@
 //! `rpi.noise`, `rpi.denoise` (its `normal` mode, or the flat form), `rpi.sdn` (VC4),
 //! `rpi.geq`, `rpi.dpc` and `rpi.sharpen` into [`DenoiseTuning`].
 
+use alloc::{format, string::String, vec::Vec};
+
 use super::*;
 
 /// Merge one of the sections into `d`; false if `s` is not one of them.

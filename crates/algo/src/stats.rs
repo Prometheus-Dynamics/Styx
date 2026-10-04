@@ -11,6 +11,11 @@
 //!   gradients), larger when sharper. AF uses only their ratios, so the units are the ISP's.
 //! * A software ISP: accumulate demosaiced or per-Bayer-quad values with [`StatsAccumulator`].
 
+use alloc::{vec, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use serde::{Deserialize, Serialize};
 
 /// Rec.601 luma of linear RGB.

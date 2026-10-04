@@ -1,7 +1,7 @@
 //! Camera configuration given to [`crate::Algorithm::prepare`]: the sensor mode's limits and
 //! control timing.
 
-use std::time::Duration;
+use core::time::Duration;
 
 use serde::{Deserialize, Serialize};
 

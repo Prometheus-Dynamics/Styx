@@ -8,7 +8,7 @@
 //! [`crate::Pipeline::prepare_warm`] starts from one. It is plain data (serde), so callers can
 //! keep it per camera in memory or on disk.
 
-use std::time::Duration;
+use core::time::Duration;
 
 use serde::{Deserialize, Serialize};
 

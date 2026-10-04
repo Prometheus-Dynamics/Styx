@@ -2,6 +2,8 @@
 //!
 //! Ported from Raspberry Pi's `ccm.cpp` (BSD-2-Clause, Copyright (C) 2019 Raspberry Pi Ltd).
 
+use alloc::{vec, vec::Vec};
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::CameraConfig;
@@ -69,7 +71,7 @@ impl CcmTuning {
         let i = self.ccms.iter().position(|c| c.ct >= ct).unwrap_or(1);
         let (a, b) = (&self.ccms[i - 1], &self.ccms[i]);
         let l = (ct - a.ct) / (b.ct - a.ct);
-        std::array::from_fn(|k| l * b.ccm[k] + (1.0 - l) * a.ccm[k])
+        core::array::from_fn(|k| l * b.ccm[k] + (1.0 - l) * a.ccm[k])
     }
 }
 

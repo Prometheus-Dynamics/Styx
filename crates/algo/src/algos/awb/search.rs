@@ -5,6 +5,11 @@
 //! the `+ 1` guards against 16-bit integer zero divisions in the original are replaced by an
 //! explicit check on G.
 
+use alloc::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use crate::pwl::Pwl;
 
 use super::tuning::{AwbMode, AwbPrior, AwbTuning, CtCurve};

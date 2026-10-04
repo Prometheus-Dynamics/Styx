@@ -52,6 +52,11 @@
 //!   control at once.
 //! * Pausing continuous AF is not implemented yet.
 
+use alloc::{vec, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 mod measure;
 mod scan;
 #[cfg(test)]
