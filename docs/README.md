@@ -6,6 +6,7 @@ This directory holds repository-level documentation for the Styx workspace.
 
 - [comparison.md](comparison.md): Styx compared with libcamera, raw V4L2 and GStreamer: the same tasks in code, architecture, measured numbers, what Styx does not do yet
 - [native-stack/README.md](native-stack/README.md): the native camera stack (sensor bridge, sensors as data, PiSP, 3A in Rust)
+- [portability-design.md](portability-design.md): design for review: `styx-hal` and a `no_std` camera runtime, Linux as the reference platform, MCU and rkisp1 port sketches, migration plan
 - [development.md](development.md): repository layout, validation commands, and contribution expectations
 - [api-ergonomics.md](api-ergonomics.md): import surfaces, common task recipes, and typed API boundaries
 - [frame-planning.md](frame-planning.md): describing the frames a consumer needs and letting Styx plan capture, decode, output size, pyramids and ROI
