@@ -16,7 +16,7 @@ bytemuck = "1.25"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 smallvec = "1"
-lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
+lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b39232f1c9755db5babdaac61ae040109342b4d7", default-features = false }
 styx = { path = "../crates/styx", default-features = false, features = ["replay-mcap", "replay-styxrec", "frame-socket"] }
 styx-algo = { path = "../crates/algo" }
 styx-codec = { path = "../crates/codec", features = ["codec-turbojpeg", "codec-zune", "raw-decoders"] }
