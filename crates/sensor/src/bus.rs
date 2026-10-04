@@ -1,9 +1,10 @@
 //! The register access a sensor driver runs over, and mock implementations for tests.
 //!
-//! [`RegisterBus`] / [`AsyncRegisterBus`] are sensor register access: 8 or 16-bit register
-//! addresses, values most significant byte first, bursts, or a kernel driver's V4L2 controls.
-//! Over a plain bus they are [`I2cRegisters`](crate::I2cRegisters) /
-//! [`SpiRegisters`](crate::SpiRegisters) on any embedded-hal `I2c` / `SpiDevice`. Pins and power
+//! [`RegisterBus`] / [`AsyncRegisterBus`] are what a sensor driver runs over: the sensor's
+//! registers, or a kernel driver's V4L2 controls. Over a plain bus they are Lemnos's register
+//! maps ([`I2cRegisters`](crate::I2cRegisters) / [`SpiRegisters`](crate::SpiRegisters) on any
+//! embedded-hal `I2c` / `SpiDevice`, or any `lemnos_hal::RegisterBus` through
+//! [`Registers`](crate::Registers)), which own the register encoding. Pins and power
 //! sequencing are `styx_hal::SensorPins`. This crate never touches the kernel.
 
 use alloc::borrow::ToOwned;
@@ -24,8 +25,10 @@ use crate::fallback::KernelControl;
 /// The result of a bus or pin operation.
 pub type BusResult<T> = core::result::Result<T, BusError>;
 
-/// Register access to one sensor. Addresses are 8 or 16 bits as the description says; values
-/// wider than one byte are consecutive registers, most significant byte first.
+/// Register access to one sensor, as the driver uses it: Lemnos's register map
+/// (`lemnos_hal::RegisterBus`) plus a kernel driver's V4L2 controls, errors as [`BusError`].
+/// Addresses are 8 or 16 bits as the description says; values wider than one byte are
+/// consecutive registers, most significant byte first.
 pub trait RegisterBus {
     /// Read `bytes` (1 to 4) bytes starting at `address`.
     fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32>;

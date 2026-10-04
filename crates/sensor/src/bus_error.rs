@@ -2,35 +2,21 @@
 //! operation, without `std`.
 
 use alloc::borrow::Cow;
-use alloc::format;
 use alloc::string::ToString;
 use core::fmt;
 
+use lemnos_hal::register::RegisterError;
 use styx_hal::{ErrorKind, HalError};
 
-/// What kind of failure a [`BusError`] is. The driver skips optional power steps whose role
-/// is [`NotFound`](Self::NotFound).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum BusErrorKind {
-    /// The role (GPIO, clock, supply) or device does not exist.
-    NotFound,
-    /// The operation is not available on this bus (e.g. registers of a sensor a kernel
-    /// driver owns, V4L2 controls on a register bus).
-    Unsupported,
-    /// The arguments do not fit (register width, value range, clock rate).
-    InvalidInput,
-    /// The device did not answer in time.
-    TimedOut,
-    /// An I²C address or data byte was not acknowledged (the sensor did not answer).
-    Nack,
-    /// Anything else (the device did not acknowledge, the transfer failed, ...).
-    Other,
-}
+/// What kind of failure a [`BusError`] is: Lemnos's portable kind (`lemnos_hal::ErrorKind`).
+/// The driver skips optional power steps whose role is [`NotFound`](Self::NotFound); a
+/// register bus without registers (a kernel-driven sensor) and V4L2 controls on a register
+/// bus are [`Unsupported`](Self::Unsupported).
+pub use lemnos_hal::ErrorKind as BusErrorKind;
 
-/// The error of a bus or pin operation: a [`BusErrorKind`] and a message. With `std`, an
-/// `std::io::Error` converts to and from it losslessly (the I/O error is kept inside, so its
-/// errno and message survive a round trip).
+/// The error of a bus or pin operation: a [`BusErrorKind`], a message and, where there is one,
+/// the platform code (an errno on Linux). With `std`, an `std::io::Error` converts to and from
+/// it losslessly (the I/O error is kept inside, so its errno and message survive a round trip).
 pub struct BusError {
     kind: BusErrorKind,
     message: Cow<'static, str>,
@@ -51,35 +37,51 @@ impl BusError {
         }
     }
 
+    /// The same error with a platform code (an errno on Linux).
+    pub fn with_code(mut self, code: i32) -> Self {
+        self.code = Some(code);
+        self
+    }
+
     /// The error of a [`styx_hal`] implementation (sensor pins, a lens): its kind, its
     /// platform code and its message.
     pub fn from_hal<E: HalError>(e: &E) -> Self {
-        let kind = match e.kind() {
-            ErrorKind::NotFound => BusErrorKind::NotFound,
-            ErrorKind::Unsupported => BusErrorKind::Unsupported,
-            ErrorKind::InvalidConfig => BusErrorKind::InvalidInput,
-            ErrorKind::Timeout => BusErrorKind::TimedOut,
-            ErrorKind::Nack => BusErrorKind::Nack,
-            _ => BusErrorKind::Other,
-        };
-        let mut b = Self::new(kind, e.to_string());
+        let mut b = Self::new(e.kind().into(), e.to_string());
         b.code = e.code();
         b
     }
 
-    /// The error of an embedded-hal I²C bus.
-    pub fn from_i2c<E: embedded_hal::i2c::Error>(e: &E) -> Self {
-        use embedded_hal::i2c::ErrorKind as K;
-        let kind = match e.kind() {
-            K::NoAcknowledge(_) => BusErrorKind::Nack,
-            _ => BusErrorKind::Other,
-        };
-        Self::new(kind, format!("I2C: {e:?}"))
+    /// The error of a Lemnos register map ([`I2cRegisters`](crate::I2cRegisters),
+    /// [`SpiRegisters`](crate::SpiRegisters)): Lemnos's classification and its message (with
+    /// the bus's own error). A bus error that is an `std::io::Error` (with `std`) keeps its
+    /// errno: map a Linux bus's error to one first ([`RegisterError::map_bus`]).
+    pub fn from_register<E: fmt::Debug + 'static>(e: RegisterError<E>) -> Self {
+        let kind = lemnos_hal::HalError::kind(&e);
+        #[cfg(feature = "std")]
+        if let RegisterError::Bus { error, .. } = &e
+            && let Some(io) = (error as &dyn core::any::Any).downcast_ref::<std::io::Error>()
+        {
+            let mut b = Self::new(kind, e.to_string());
+            b.code = io.raw_os_error();
+            return b;
+        }
+        Self::new(kind, e.to_string())
     }
 
-    /// The error of an embedded-hal SPI device.
+    /// The error of an embedded-hal I²C bus (classified by Lemnos).
+    pub fn from_i2c<E: embedded_hal::i2c::Error>(e: &E) -> Self {
+        Self::new(
+            BusErrorKind::from_i2c(e.kind()),
+            alloc::format!("I2C: {e:?}"),
+        )
+    }
+
+    /// The error of an embedded-hal SPI device (classified by Lemnos).
     pub fn from_spi<E: embedded_hal::spi::Error>(e: &E) -> Self {
-        Self::other(format!("SPI: {e:?}"))
+        Self::new(
+            BusErrorKind::from_spi(e.kind()),
+            alloc::format!("SPI: {e:?}"),
+        )
     }
 
     /// A platform code (an errno on Linux), if known.
@@ -91,9 +93,9 @@ impl BusError {
         self.code
     }
 
-    /// An error of kind [`BusErrorKind::Other`].
+    /// An error of kind [`BusErrorKind::Failed`].
     pub fn other(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::new(BusErrorKind::Other, message)
+        Self::new(BusErrorKind::Failed, message)
     }
 
     /// The kind of failure.
@@ -117,6 +119,7 @@ impl fmt::Debug for BusError {
         f.debug_struct("BusError")
             .field("kind", &self.kind)
             .field("message", &self.message)
+            .field("code", &self.code)
             .finish()
     }
 }
@@ -143,30 +146,25 @@ impl core::error::Error for BusError {
 
 impl HalError for BusError {
     fn kind(&self) -> ErrorKind {
-        match self.kind {
-            BusErrorKind::NotFound => ErrorKind::NotFound,
-            BusErrorKind::Unsupported => ErrorKind::Unsupported,
-            BusErrorKind::InvalidInput => ErrorKind::InvalidConfig,
-            BusErrorKind::TimedOut => ErrorKind::Timeout,
-            BusErrorKind::Nack => ErrorKind::Nack,
-            BusErrorKind::Other => ErrorKind::Io,
-        }
+        self.kind.into()
     }
     fn code(&self) -> Option<i32> {
         BusError::code(self)
     }
 }
 
+impl lemnos_hal::HalError for BusError {
+    fn kind(&self) -> BusErrorKind {
+        self.kind
+    }
+}
+
 #[cfg(feature = "std")]
 impl From<std::io::Error> for BusError {
     fn from(io: std::io::Error) -> Self {
-        use std::io::ErrorKind as K;
-        let kind = match io.kind() {
-            K::NotFound => BusErrorKind::NotFound,
-            K::Unsupported => BusErrorKind::Unsupported,
-            K::InvalidInput => BusErrorKind::InvalidInput,
-            K::TimedOut => BusErrorKind::TimedOut,
-            _ => BusErrorKind::Other,
+        let kind = match io.raw_os_error() {
+            Some(errno) => BusErrorKind::from_errno(errno),
+            None => BusErrorKind::from_io(io.kind()),
         };
         Self {
             kind,
@@ -184,16 +182,18 @@ impl From<BusError> for std::io::Error {
         if let Some(io) = e.io {
             return io;
         }
+        if let Some(code) = e.code {
+            return std::io::Error::from_raw_os_error(code);
+        }
         let kind = match e.kind {
             BusErrorKind::NotFound => K::NotFound,
             BusErrorKind::Unsupported => K::Unsupported,
             BusErrorKind::InvalidInput => K::InvalidInput,
-            BusErrorKind::TimedOut => K::TimedOut,
-            BusErrorKind::Nack | BusErrorKind::Other => K::Other,
+            BusErrorKind::Timeout => K::TimedOut,
+            BusErrorKind::Busy => K::ResourceBusy,
+            BusErrorKind::PermissionDenied => K::PermissionDenied,
+            _ => K::Other,
         };
-        if let Some(code) = e.code {
-            return std::io::Error::from_raw_os_error(code);
-        }
         std::io::Error::new(kind, e.message.into_owned())
     }
 }
@@ -205,12 +205,26 @@ mod tests {
     #[test]
     fn io_errors_round_trip() {
         let e = BusError::from(std::io::Error::from_raw_os_error(121));
-        assert_eq!(e.kind(), BusErrorKind::Other);
+        assert_eq!(e.kind(), BusErrorKind::Nack);
+        assert_eq!(e.code(), Some(121));
         assert_eq!(std::io::Error::from(e).raw_os_error(), Some(121));
         let e = BusError::new(BusErrorKind::NotFound, "no gpio 'reset'");
         assert_eq!(e.to_string(), "no gpio 'reset'");
         let io = std::io::Error::from(e);
         assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
         assert_eq!(io.to_string(), "no gpio 'reset'");
+    }
+
+    #[test]
+    fn register_errors_keep_kind_and_errno() {
+        let e = BusError::from_register(RegisterError::bus(
+            BusErrorKind::Nack,
+            std::io::Error::from_raw_os_error(121),
+        ));
+        assert_eq!((e.kind(), e.code()), (BusErrorKind::Nack, Some(121)));
+        assert_eq!(HalError::kind(&e), ErrorKind::Nack);
+        let e = BusError::from_register(RegisterError::<()>::InvalidWidth(5));
+        assert_eq!(e.kind(), BusErrorKind::InvalidInput);
+        assert_eq!(HalError::kind(&e), ErrorKind::InvalidConfig);
     }
 }

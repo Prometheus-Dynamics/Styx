@@ -19,9 +19,9 @@ use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::{ErrorType, I2c, Operation};
 use styx_sensor::styx_hal::{Blocking, ErrorKind};
 use styx_sensor::{
-    AsyncSensorDriver, BusResult, ControlRange, ControlRequest, I2cRegisters, KernelControl,
-    KernelSensorData, MbusCode, Rect, RegisterBus, SensorDescription, SensorDriver, SensorPins,
-    Size, SubdevFormat, SubdevReport,
+    AddressWidth, AsyncSensorDriver, BusResult, ControlRange, ControlRequest, I2cRegisters,
+    KernelControl, KernelSensorData, MAX_BURST, MbusCode, Rect, RegisterBus, SensorDescription,
+    SensorDriver, SensorPins, Size, SubdevFormat, SubdevReport,
 };
 
 struct Counting;
@@ -199,9 +199,7 @@ const FRAMES: u64 = 300;
 
 #[test]
 fn the_blocking_driver_streams_without_allocating() {
-    let bus = I2cRegisters::new(Sensor::new(), 0x60, 16)
-        .unwrap()
-        .with_bursts(true);
+    let bus = I2cRegisters::new(Sensor::new(), 0x60, AddressWidth::Bits16).with_bursts(MAX_BURST);
     let mut d = SensorDriver::new(ov9782(), bus, Pins);
     d.power_up().unwrap();
     d.verify_chip_id().unwrap();
@@ -225,7 +223,7 @@ fn the_blocking_driver_streams_without_allocating() {
         d.stop_streaming().unwrap();
     });
     assert_eq!(n, 0, "allocations in {FRAMES} frames");
-    assert!(d.bus().inner().transfers > FRAMES);
+    assert!(d.bus().i2c().transfers > FRAMES);
     assert_eq!(d.scheduler().unwrap().dropped_requests(), 0);
 }
 
@@ -242,7 +240,7 @@ fn run<F: Future>(f: F) -> F::Output {
 
 #[test]
 fn the_async_driver_streams_without_allocating() {
-    let bus = I2cRegisters::new(Sensor::new(), 0x60, 16).unwrap();
+    let bus = I2cRegisters::new(Sensor::new(), 0x60, AddressWidth::Bits16);
     let mut d = AsyncSensorDriver::new(ov9782(), bus, Blocking(Pins));
     run(async {
         d.power_up().await.unwrap();

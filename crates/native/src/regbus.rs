@@ -1,21 +1,22 @@
-//! `styx-sensor`'s register bus and `styx-hal`'s sensor pins over the kernel: registers over
-//! i2c-dev ([`I2cRegisterBus`], the generic embedded-hal register layer on [`I2cDevice`]) and
-//! [`SensorPins`] over the bridge's power control.
+//! `styx-sensor`'s register bus and `styx-hal`'s sensor pins on Linux: registers over i2c-dev
+//! ([`I2cRegisterBus`]: Lemnos's register map on Lemnos's [`I2cBus`]) and [`SensorPins`] over
+//! the bridge's power control.
 
 use std::io;
 use std::time::Duration;
 
+use lemnos_linux::hal::{I2cBus, StdDelay};
 use styx_kernel::bus::SensorBridge;
-use styx_kernel::bus::i2c::I2cDevice;
 use styx_sensor::styx_hal::embedded_hal::delay::DelayNs;
 use styx_sensor::{BusError, BusResult, SensorPins};
 
-/// A sensor's registers over i2c-dev: [`styx_sensor::I2cRegisters`] on the kernel's
-/// [`I2cDevice`] (an embedded-hal `I2c`). One transfer per register write, or bursts of
-/// consecutive registers with `with_bursts` (the description's `burst_writes`).
-pub type I2cRegisterBus<T = I2cDevice> = styx_sensor::I2cRegisters<T>;
+/// A sensor's registers over i2c-dev: Lemnos's register map ([`styx_sensor::I2cRegisters`]) on
+/// Lemnos's [`I2cBus`] (the sensor's address claimed with `I2C_SLAVE`, never forced). One
+/// transfer per register write, or bursts of consecutive registers with `with_bursts` (the
+/// description's `burst_writes`, [`MAX_BURST`] bytes).
+pub type I2cRegisterBus<T = I2cBus> = styx_sensor::I2cRegisters<T>;
 
-/// Longest burst [`I2cRegisterBus::with_bursts`] sends in one transfer, in data bytes.
+/// Longest burst a `burst_writes` sensor gets in one transfer, in data bytes.
 pub use styx_sensor::MAX_BURST;
 
 /// Something that switches the sensor's supplies and clock together: the bridge's
@@ -100,7 +101,7 @@ fn not_found(what: &str, role: &str) -> io::Error {
 
 impl<S> DelayNs for BridgePins<S> {
     fn delay_ns(&mut self, ns: u32) {
-        std::thread::sleep(Duration::from_nanos(u64::from(ns)));
+        StdDelay.delay_ns(ns);
     }
 }
 
@@ -148,20 +149,26 @@ mod tests {
     use std::sync::Arc;
 
     use styx_sensor::styx_hal::mock::{I2cMessage, MockI2c};
-    use styx_sensor::{BusErrorKind, MockBus, RegisterBus, SensorDescription, SensorDriver};
+    use styx_sensor::{
+        AddressWidth, BusErrorKind, MockBus, RegisterBus, SensorDescription, SensorDriver,
+        read_bytewise,
+    };
 
     use super::*;
 
     fn ov9782_bus() -> (I2cRegisterBus<MockI2c>, MockI2c) {
         let i2c = MockI2c::new(0x60, 16).with_register(0x300a, 2, 0x9782);
-        (I2cRegisterBus::new(i2c.clone(), 0x60, 16).unwrap(), i2c)
+        (
+            I2cRegisterBus::new(i2c.clone(), 0x60, AddressWidth::Bits16),
+            i2c,
+        )
     }
 
     #[test]
     fn two_byte_chip_id_is_one_burst_with_a_16_bit_address() {
         let (mut bus, i2c) = ov9782_bus();
         assert_eq!(bus.read(0x300a, 2).unwrap(), 0x9782);
-        assert_eq!(bus.read_bytewise(0x300a, 2).unwrap(), 0x9782);
+        assert_eq!(read_bytewise(&mut bus, 0x300a, 2).unwrap(), 0x9782);
         let read = |a: u16, n| {
             vec![
                 I2cMessage::Write(a.to_be_bytes().to_vec()),

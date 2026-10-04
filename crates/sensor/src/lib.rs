@@ -2,9 +2,10 @@
 //! rate and blanking), exposure and gain models, frame-accurate control scheduling, and a
 //! userspace sensor driver that runs a description over a register bus.
 //!
-//! This crate does not touch the kernel. Register access goes through [`RegisterBus`] and
-//! power/reset/clock lines through [`SensorPins`], implemented elsewhere (i2c-dev and GPIO in
-//! `styx-kernel`). See `docs/native-stack/README.md` for where this fits.
+//! This crate does not touch the kernel. Register access goes through [`RegisterBus`] (Lemnos's
+//! register maps, [`I2cRegisters`] / [`SpiRegisters`], on any embedded-hal bus) and
+//! power/reset/clock lines through [`SensorPins`]; the buses themselves are Lemnos's
+//! (`lemnos-linux` on Linux, a chip HAL on microcontrollers). See `docs/native-stack/README.md` for where this fits.
 //!
 //! # Sensor descriptions
 //!
@@ -129,8 +130,8 @@
 //!   requested frame, and which values produced each frame.
 //! * [`SensorDriver`]: power, chip id, init, modes, streaming and scheduled controls over a
 //!   [`RegisterBus`]; [`MockBus`] and [`MockPins`] record operations for tests.
-//! * [`lens`]: focus lenses (VCMs) as data: the chip's I²C command format, the move time
-//!   model, the frame-exact [`LensSchedule`], and the IMX708's phase detection data.
+//! * [`lens`]: focus lenses (VCMs) as data: which chip (driven by `lemnos-drivers-vcm`), the
+//!   move time model, the frame-exact [`LensSchedule`], and the IMX708's phase detection data.
 //! * [`SensorDescription::from_subdev_with`]: descriptions of sensors with kernel drivers,
 //!   built from a [`SubdevReport`] and, when there is one, a [`KernelSensorData`] file (gain
 //!   model, delays, black level, embedded data layout; `sensors/kernel/*.toml` ship built in).
@@ -184,7 +185,7 @@ pub use desc::{
     EmbeddedControlKind, EmbeddedData, EmbeddedEntry, EmbeddedFormat, EmbeddedPacking,
     EmbeddedRegister, Exposure, Field, Flip, Format, Gain, GainModel, GroupHold, Identity,
     LineLength, Mode, ParallelBus, PixelArray, Rect, RegWrite, SensorDescription, Sequences, Size,
-    Step, TestPattern,
+    Step, TestPattern, show_write,
 };
 pub use driver::{
     ActiveMode, AppliedControls, AsyncSensorDriver, ControlRequest, DriverState, SensorDriver,
@@ -197,9 +198,15 @@ pub use fallback::{
 pub use fixed::FixedVec;
 pub use gain::{GainCode, GainSplit, Rounding, split_gain};
 pub use kernel_data::{BUILTIN_KERNEL_DATA, KernelSensorData};
+/// Lemnos's hardware vocabulary (register maps, regulators, clocks, error kinds) and its VCM
+/// lens drivers, re-exported so users name the same versions.
+pub use lemnos_drivers_vcm;
+pub use lemnos_hal;
 pub use lens::{LensDescription, LensFrame, LensMotion, LensSchedule, VcmChip, VcmFormat, VcmI2c};
 pub use mbus::{ColorFilter, MbusCode};
-pub use registers::{I2cRegisters, MAX_BURST, SpiRegisters};
+pub use registers::{
+    AddressWidth, Endian, I2cRegisters, MAX_BURST, Registers, SpiRegisters, read_bytewise,
+};
 pub use schedule::{
     Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Landings,
     Mismatch, Mismatches,

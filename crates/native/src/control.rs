@@ -102,9 +102,11 @@ pub fn standby_problems(desc: &SensorDescription, mode: &str, format: &str) -> V
                 .iter()
                 .any(|s| s.address == w.address && s.value == w.value)
             {
+                let w = styx_sensor::show_write(w);
                 problems.push(format!("{what} writes {w}, the stream-on value"));
             }
             if w.address == 0x0103 && w.value & 1 != 0 {
+                let w = styx_sensor::show_write(w);
                 problems.push(format!("{what} writes {w} (software reset)"));
             }
         }

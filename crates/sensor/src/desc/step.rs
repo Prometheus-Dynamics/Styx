@@ -7,33 +7,21 @@ use core::time::Duration;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
-/// One register write: `bytes` bytes starting at `address`, most significant byte first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RegWrite {
-    /// Register address.
-    pub address: u16,
-    /// Value.
-    pub value: u32,
-    /// Width in bytes, 1 to 4.
-    pub bytes: u8,
-}
+/// One register write: `bytes` (1 to 4) bytes of `value` starting at `address`, most
+/// significant byte first. Lemnos's register write (`lemnos_hal::RegWrite`), so a sequence goes
+/// to a register map as it is.
+pub use lemnos_hal::RegWrite;
 
-impl RegWrite {
-    /// A one-byte write.
-    pub const fn byte(address: u16, value: u8) -> Self {
-        Self {
-            address,
-            value: value as u32,
-            bytes: 1,
+/// A register write for messages: `0x0100 <- 0x01` (the value as wide as the write).
+pub fn show_write(w: &RegWrite) -> impl fmt::Display + '_ {
+    struct Show<'a>(&'a RegWrite);
+    impl fmt::Display for Show<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            let w = usize::from(self.0.bytes) * 2;
+            write!(f, "0x{:04x} <- 0x{:0w$x}", self.0.address, self.0.value)
         }
     }
-}
-
-impl fmt::Display for RegWrite {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let w = usize::from(self.bytes) * 2;
-        write!(f, "0x{:04x} <- 0x{:0w$x}", self.address, self.value)
-    }
+    Show(w)
 }
 
 /// One step of a sequence.
@@ -199,7 +187,8 @@ impl StepTable {
 /// TOML has arrays and tables.
 #[derive(Serialize, Deserialize)]
 enum BinaryStep {
-    Write(RegWrite),
+    /// Address, value, bytes.
+    Write(u16, u32, u8),
     Delay(Duration),
     Gpio(String, bool, bool),
     Clock(String, bool, bool),
@@ -209,7 +198,7 @@ enum BinaryStep {
 impl Serialize for Step {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self.clone() {
-            Step::Write(w) => BinaryStep::Write(w),
+            Step::Write(w) => BinaryStep::Write(w.address, w.value, w.bytes),
             Step::Delay(d) => BinaryStep::Delay(d),
             Step::Gpio {
                 role,
@@ -227,7 +216,11 @@ impl<'de> Deserialize<'de> for Step {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         if !d.is_human_readable() {
             return Ok(match BinaryStep::deserialize(d)? {
-                BinaryStep::Write(w) => Step::Write(w),
+                BinaryStep::Write(address, value, bytes) => Step::Write(RegWrite {
+                    address,
+                    value,
+                    bytes,
+                }),
                 BinaryStep::Delay(d) => Step::Delay(d),
                 BinaryStep::Gpio(role, value, optional) => Step::Gpio {
                     role,

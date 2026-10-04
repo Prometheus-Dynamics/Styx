@@ -9,7 +9,7 @@ box (OV9782 1280x800) unless stated.
 
 ### Foundations and stand-alone (phases 0–1)
 - [x] Pure-Rust kernel interfaces (`styx-kernel`): V4L2, media controller, subdevs, events,
-      dma-heaps, I²C, GPIO.
+      dma-heaps (I²C, GPIO and uevents moved to Lemnos 2.0, `lemnos-linux`).
 - [x] V4L2 backend on `styx-kernel`; the `v4l` crate is gone everywhere.
 - [x] libcamera fully optional: no default build pulls it, CI job without it, checks in
       `scripts/check-feature-combinations.sh`.
@@ -198,9 +198,16 @@ box (OV9782 1280x800) unless stated.
       frames and `Receiver` implementations for Linux, the processing loop, stills and
       counters), then the MCU port (`ports/stm32h7-dcmi`) and an `rkisp1` board; run on real
       MCU hardware (so far only built for bare-metal targets and run on the host).
-- [ ] Move the generic pieces to Lemnos once it takes them (i2c-dev and GPIO embedded-hal
-      implementations in `styx-kernel`, delays and clocks, hotplug, the I²C mock;
-      list in portability-design.md "Slated to move to Lemnos").
+- [x] Generic hardware on Lemnos 2.0 (`native/lemnos-switch`): register maps, `RegWrite`,
+      error kinds (`lemnos-hal`), i2c-dev, GPIO and uevents (`lemnos-linux`), VCM drivers
+      (`lemnos-drivers-vcm`), clock outputs; Styx's copies deleted (portability-design.md
+      "Moved to Lemnos"). Lemnos fix on the way: i2c-dev transfers without allocation.
+- [ ] Lemnos: Styx depends on a pinned commit of Lemnos `dev` by git (root `Cargo.toml`, `fuzz/Cargo.toml`);
+      switch to crates.io 2.0 once it is published.
+- [ ] Lemnos: `styx-hal`'s I²C mock (`MockI2c`) needs shared clones, async suspension and a
+      dead target before `lemnos_hal::mock` can replace it; `styx::watch` (inotify on `/dev`)
+      could use `LinuxHotplugWatcher`; the native provider's hotplug polls sysfs on a timer
+      (uevent wake-ups through `lemnos_linux::uevent` would cut its latency).
 - [ ] `native-pipeline regcheck`: `0x0101` and `0x1000` read back 0 after bring-up on the
       OV9782 (also on a178a44): write-only or self-clearing registers to exclude from the
       check, or a description issue; the documented "all 93 identical" no longer holds.

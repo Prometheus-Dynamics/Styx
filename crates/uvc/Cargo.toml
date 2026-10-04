@@ -9,6 +9,8 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Kernel uevents (hotplug) from Lemnos.
+lemnos-linux.workspace = true
 libc.workspace = true
 styx-graph.workspace = true
 styx-kernel.workspace = true

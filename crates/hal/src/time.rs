@@ -68,15 +68,3 @@ pub async fn wait_async(delay: &mut impl embedded_hal_async::delay::DelayNs, dur
         }
     }
 }
-
-/// `std::thread::sleep` as an embedded-hal delay.
-#[cfg(feature = "std")]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct StdDelay;
-
-#[cfg(feature = "std")]
-impl DelayNs for StdDelay {
-    fn delay_ns(&mut self, ns: u32) {
-        std::thread::sleep(Duration::from_nanos(u64::from(ns)));
-    }
-}

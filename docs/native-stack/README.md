@@ -32,7 +32,8 @@ Session runtime       buffers, fences, per-frame control timing
 Algorithms            AE / AWB / lens shading / colour in Rust, data tuning
 Device graph          nodes, ports, capabilities, providers                    styx-graph
 Sensor drivers        descriptions, timing, register sequences                 styx-sensor
-Kernel interfaces     V4L2, media controller, subdevs, I²C, GPIO, dma-heaps    styx-kernel
+Kernel interfaces     V4L2, media controller, subdevs, dma-heaps, bridge       styx-kernel
+Generic hardware      register maps, i2c-dev, GPIO, uevents, VCM drivers      Lemnos 2.0
 ─────────────────────────────────────── kernel ───────────────────────────────────────
 Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo or usbfs)
 ```
@@ -41,9 +42,10 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 
 | Path | Crate | What | Owner |
 |---|---|---|---|
-| `crates/kernel` | `styx-kernel` | Safe Rust kernel interfaces, `libc` only | kernel agent (`v4l2`, `media`, `subdev`, `dma_heap`, `event`), bridge agent (`bus`) |
-| `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description; descriptions of kernel-driven sensors from their subdevice plus a small data file (`sensors/kernel/*.toml`), driven through V4L2 controls; focus lenses (VCMs) as data, PDAF decoding | sensor agent |
-| `crates/hal` | `styx-hal` | Camera hardware traits without `std` or `alloc` (power sequencing over embedded-hal pins and delays, DMA memory, the receiver, lens actuators, a mock platform); see [portability.md](../portability.md) | hal agent |
+| `crates/kernel` | `styx-kernel` | Safe Rust kernel interfaces for cameras, `libc` only: V4L2, media controller, subdevices, events, dma-heaps, the sensor bridge (`bus`), usbfs. Generic buses and uevents are Lemnos's | kernel agent (`v4l2`, `media`, `subdev`, `dma_heap`, `event`), bridge agent (`bus`) |
+| `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences (over Lemnos's register maps), OV9782 description; descriptions of kernel-driven sensors from their subdevice plus a small data file (`sensors/kernel/*.toml`), driven through V4L2 controls; focus lenses (VCMs) as data and their frame-exact schedule (the chips are `lemnos-drivers-vcm`'s), PDAF decoding | sensor agent |
+| `crates/hal` | `styx-hal` | Camera hardware traits without `std` or `alloc` (power sequencing by role over embedded-hal pins and delays and a Lemnos clock output, DMA memory, the receiver, lens actuators, a mock platform); see [portability.md](../portability.md) | hal agent |
+| Lemnos (git, pinned `dev` commit) | `lemnos-hal`, `lemnos-linux`, `lemnos-drivers-vcm` | Lemnos 2.0, the hardware foundation Styx depends on: register maps over I²C/SPI, regulators, clocks, error kinds (`no_std`); i2c-dev, GPIO uAPI v2, uevents (Linux); VCM lens drivers (`no_std`); see `docs/portability-design.md` "Moved to Lemnos" | Lemnos |
 | `crates/graph` | `styx-graph` | Device graph, `Provider` trait, async reactor, mock provider | graph agent |
 | `crates/pisp` | `styx-pisp` | PiSP uAPI layouts, front/back end config builders, BE tiling, statistics, device layer (feature `device`); see `pisp.md` | pisp agent |
 | `crates/algo` | `styx-algo` | 3A algorithms (AE, AWB, lens shading, CCM, tone, autofocus), tuning (TOML, Raspberry Pi JSON), simulator, replay; see [algorithms.md](algorithms.md) | algo agent |
@@ -52,7 +54,7 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | `crates/pipeline` | `styx-pipeline` | The native processing pipeline: statistics conversion, the deterministic 3A loop runner (`Controller`), ISP settings for the PiSP and the software ISP, the PiSP and software paths on a native camera (feature `device`), raw recordings and a virtual sensor for host replays; see [pipeline.md](pipeline.md) | pipeline agent |
 | `tools/compare` | `styx-compare` | Same capture through the libcamera and native backends: start latency (first frame, AE converged, exposure settled), rate and jitter, drops, CPU (with the IPA proxy), RSS/PSS and dma-bufs, frame statistics; JSON and markdown. `device-run.sh` runs the set on the CM5 | compare agent |
 | `crates/dng` | `styx-dng` | DNG 1.4 writer and reader in pure Rust (no Styx dependencies): raw frames with calibration, lens shading opcodes, EXIF, preview; camera DNGs read for calibration; see [stills-and-dng.md](../stills-and-dng.md) | stills agent |
-| `crates/uvc` | `styx-uvc` | USB Video Class cameras from userspace over usbfs (`styx-kernel::usbfs`, `uevent`): descriptors, PROBE/COMMIT, isochronous/bulk streaming, frame assembly, PTS/SCR timestamps, controls, hotplug; `styx` backend `BackendKind::Uvc` (feature `uvc`); see [uvc.md](../uvc.md) | usb-uvc agent |
+| `crates/uvc` | `styx-uvc` | USB Video Class cameras from userspace over usbfs (`styx-kernel::usbfs`; hotplug through `lemnos_linux::uevent`): descriptors, PROBE/COMMIT, isochronous/bulk streaming, frame assembly, PTS/SCR timestamps, controls, hotplug; `styx` backend `BackendKind::Uvc` (feature `uvc`); see [uvc.md](../uvc.md) | usb-uvc agent |
 | `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
 | `kernel-modules/pispbe` | (C, GPL-2.0) | The Raspberry Pi PiSP back end driver (`pisp_be`) patched for a cheaper per-job config write (117 → 8 µs), build and install scripts | pisp agent |
 

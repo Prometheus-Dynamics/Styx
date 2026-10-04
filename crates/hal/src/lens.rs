@@ -1,6 +1,6 @@
 //! Focus lens actuators that are not a plain register device: a kernel lens driver
-//! (`FOCUS_ABSOLUTE`), a module's own firmware. A VCM on the sensor's I²C bus is one too, built
-//! over an embedded-hal `I2c` in `styx-sensor` (`I2cVcm`) from the chip's command format.
+//! (`FOCUS_ABSOLUTE`), a module's own firmware. A VCM chip on the sensor's I²C bus is driven
+//! by Lemnos (`lemnos-drivers-vcm`); Styx keeps only the frame-exact schedule of its moves.
 
 use crate::error::{ErrorKind, HalError};
 use crate::power::Blocking;

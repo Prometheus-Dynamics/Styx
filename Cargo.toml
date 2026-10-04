@@ -55,6 +55,17 @@ styx-sensor = { path = "crates/sensor", version = "2.0.0" }
 styx-hal = { path = "crates/hal", version = "2.0.0" }
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
+# Lemnos 2.0: the hardware foundation under Styx (generic buses, pins, power, hotplug;
+# docs/portability-design.md). A pinned commit of Lemnos `dev` until 2.0 is on crates.io. To build
+# against a local Lemnos checkout, override it in an untracked `.cargo/config.toml`:
+#   [patch."https://github.com/Prometheus-Dynamics/Lemnos.git"]
+#   lemnos-hal = { path = "../lemnos/crates/lemnos-hal" }   (same for the other two)
+# lemnos-hal: no_std, no alloc (register maps, regulators, clocks, ErrorKind).
+lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b39232f1c9755db5babdaac61ae040109342b4d7", version = "2.0.0", default-features = false }
+# lemnos-linux: i2c-dev, GPIO v2 and uevents in pure Rust (Linux only).
+lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b39232f1c9755db5babdaac61ae040109342b4d7", version = "2.0.0", default-features = false }
+# lemnos-drivers-vcm: no_std focus lens (VCM) drivers.
+lemnos-drivers-vcm = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b39232f1c9755db5babdaac61ae040109342b4d7", version = "2.0.0" }
 # Compact binary sensor descriptions for targets without a TOML parser (styx-sensor `build`).
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 styx-graph = { path = "crates/graph", version = "2.0.0" }
