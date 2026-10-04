@@ -53,6 +53,7 @@ mod health;
 pub mod kernel;
 #[cfg(test)]
 mod kernel_tests;
+pub mod lens;
 pub mod library;
 pub mod modes;
 pub mod provider;
@@ -71,6 +72,7 @@ pub use discover::{CameraInfo, discover, discover_bridge};
 pub use error::{NativeError, Result};
 pub use external::SensorStream;
 pub use kernel::{KernelSensor, discover_kernel};
+pub use lens::{LensActuator, LensControl, LensInfo, LensKind};
 pub use library::SensorLibrary;
 pub use modes::SensorMode;
 pub use provider::{NativeDevice, NativeProvider, PROVIDER_NAME};

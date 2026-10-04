@@ -1,6 +1,7 @@
 //! Consistency checks beyond what the types enforce.
 
-use std::collections::BTreeSet;
+use alloc::collections::BTreeSet;
+use alloc::{format, string::String, vec::Vec};
 
 use super::{Backend, Field, Gain, GainModel, Rect, SensorDescription, Step};
 use crate::error::{Issue, Issues};
@@ -133,7 +134,7 @@ impl Checker {
             GainModel::Table(t) => {
                 self.check(!t.is_empty(), path, "gain table is empty");
                 for w in t.windows(2) {
-                    if w[1].1.partial_cmp(&w[0].1) != Some(std::cmp::Ordering::Greater) {
+                    if w[1].1.partial_cmp(&w[0].1) != Some(core::cmp::Ordering::Greater) {
                         self.err(
                             path,
                             format!(

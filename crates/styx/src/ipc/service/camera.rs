@@ -9,14 +9,16 @@ use styx_core::prelude::*;
 
 use super::{Counters, ServiceConfig};
 use crate::capture_api::IdleStop;
-use crate::planner::{PlanError, PlannedFrames, SharedFramePlan, SharedSession, plan_many};
+use crate::planner::{
+    FrameRate, FrameRequest, Frames, PlanError, SharedFramePlan, SharedSession, plan_many,
+};
 use crate::prelude::ProbedDevice;
 
 /// Clients a capture is sized for beyond those connected when it starts, so another can join
 /// without restarting it.
 const SPARE_CLIENTS: usize = 1;
 
-pub(super) type FramesSlot = Arc<Mutex<Option<PlannedFrames>>>;
+pub(super) type FramesSlot = Arc<Mutex<Option<Frames>>>;
 
 pub(super) struct Camera {
     pub(super) device: ProbedDevice,
@@ -31,7 +33,7 @@ struct State {
 
 struct Client {
     id: u64,
-    requirements: FrameRequirements,
+    request: FrameRequest,
     /// Its frames on the running capture; replaced when the capture restarts.
     frames: FramesSlot,
 }
@@ -69,21 +71,17 @@ impl Camera {
             .map(|running| running.plan.to_string())
     }
 
-    /// Plan for the connected clients plus `requirements`; attach the new client to the running
+    /// Plan for the connected clients plus `request`; attach the new client to the running
     /// capture if it fits, else restart the capture for everyone.
     pub(super) fn join(
         &self,
-        requirements: FrameRequirements,
+        request: FrameRequest,
         config: &ServiceConfig,
         counters: &Counters,
     ) -> Result<(u64, String, FramesSlot), String> {
         let mut state = self.state.lock();
-        let mut all: Vec<FrameRequirements> = state
-            .clients
-            .iter()
-            .map(|c| c.requirements.clone())
-            .collect();
-        all.push(requirements.clone());
+        let mut all: Vec<FrameRequest> = state.clients.iter().map(|c| c.request.clone()).collect();
+        all.push(request.clone());
         let plan = self.plan_for(&all, config).map_err(|err| describe(&err))?;
         let new = plan.consumers.last().expect("one plan per client");
         let text = new.to_string();
@@ -123,7 +121,7 @@ impl Camera {
         let slot = Arc::new(Mutex::new(Some(frames)));
         state.clients.push(Client {
             id,
-            requirements,
+            request,
             frames: slot.clone(),
         });
         Ok((id, text, slot))
@@ -131,10 +129,10 @@ impl Camera {
 
     fn plan_for(
         &self,
-        requirements: &[FrameRequirements],
+        request: &[FrameRequest],
         config: &ServiceConfig,
     ) -> Result<SharedFramePlan, PlanError> {
-        let plan = plan_many(&self.device, requirements)?.exportable();
+        let plan = plan_many(&self.device, request)?.exportable();
         Ok(match config.idle {
             Some((after, IdleStop::Pause)) => plan.pause_when_idle(after),
             Some((after, _)) => plan.stop_when_idle(after),
@@ -157,7 +155,7 @@ impl Camera {
 
     pub(super) fn set_roi(&self, id: u64, roi: Option<FrameRect>, frames: &FramesSlot) {
         if let Some(client) = self.state.lock().clients.iter_mut().find(|c| c.id == id) {
-            client.requirements.roi = roi;
+            client.request.roi = roi;
         }
         if let Some(frames) = frames.lock().as_ref() {
             frames.roi().set(roi);
@@ -182,7 +180,7 @@ fn restart(
     plan: SharedFramePlan,
     clients: usize,
     config: &ServiceConfig,
-) -> Result<PlannedFrames, String> {
+) -> Result<Frames, String> {
     // The old capture must let the camera go before the new one opens it.
     for client in &state.clients {
         client.frames.lock().take();
@@ -219,17 +217,14 @@ fn describe(err: &PlanError) -> String {
     }
 }
 
-/// Refuse requirements no camera needs and that would make the service allocate or spend without
+/// Refuse requests no camera needs and that would make the service allocate or spend without
 /// bound: another process wrote them.
-pub(super) fn check_request(req: &FrameRequirements) -> Result<(), String> {
+pub(super) fn check_request(req: &FrameRequest) -> Result<(), String> {
     const MAX_SIZE: u32 = 16_384;
     let size_ok = |size: Option<(u32, u32)>| {
         size.is_none_or(|(w, h)| (1..=MAX_SIZE).contains(&w) && (1..=MAX_SIZE).contains(&h))
     };
-    if !size_ok(req.min_resolution)
-        || !size_ok(req.max_resolution)
-        || !size_ok(req.output_resolution)
-    {
+    if !size_ok(req.min_size) || !size_ok(req.max_size) || !size_ok(req.size) {
         return Err(format!("sizes must be 1 to {MAX_SIZE} pixels"));
     }
     if let Some(roi) = req.roi
@@ -239,29 +234,74 @@ pub(super) fn check_request(req: &FrameRequirements) -> Result<(), String> {
         return Err("region of interest is outside any frame".into());
     }
     if req
-        .stride_alignment
+        .row_alignment
         .is_some_and(|a| !a.is_power_of_two() || a > 4096)
     {
-        return Err("stride alignment must be a power of two up to 4096".into());
+        return Err("row alignment must be a power of two up to 4096".into());
     }
     if req.pyramid.is_some_and(|p| p.levels > 4) {
         return Err("at most 4 pyramid levels".into());
     }
-    if req.min_fps.is_some_and(|fps| fps > 1000) {
-        return Err("minimum frame rate above 1000 fps".into());
+    let fastest = match req.fps {
+        FrameRate::CameraDefault => 0,
+        FrameRate::Exactly(fps) | FrameRate::AtLeast(fps) => fps,
+        FrameRate::Between(min, _) => min,
+    };
+    if fastest > 1000 {
+        return Err("frame rate above 1000 fps".into());
     }
-    let o = &req.overrides;
-    if o.queue_depth.is_some_and(|d| !(1..=8).contains(&d)) {
-        return Err("queue depth must be 1 to 8".into());
+    if !(1..=8).contains(&req.delivery.queue_depth()) {
+        return Err("at most 8 queued frames".into());
     }
-    if o.decode_threads.is_some_and(|t| t > 64) {
+    if req.decode_threads.is_some_and(|t| t > 64) {
         return Err("at most 64 decode threads".into());
     }
-    let names = o.backend.iter().chain(&o.decoder).chain(&o.forbid);
-    if names.clone().count() > 18 || names.clone().any(|n| n.len() > 64) {
-        return Err("override names are too long".into());
+    let names = req.decoder.iter().chain(&req.forbid);
+    if names.clone().count() > 17 || names.clone().any(|n| n.len() > 64) {
+        return Err("decoder names are too long".into());
     }
     Ok(())
+}
+
+/// Decode `bytes` as a client's request, check it as the service does, then plan it alone and
+/// shared with another client on virtual cameras (MJPEG, YUYV and NV12 modes). For fuzzing.
+pub(in crate::ipc) fn fuzz_request(bytes: &[u8]) {
+    use std::sync::OnceLock;
+
+    use crate::capture_api::make_virtual_device;
+    use crate::ipc::wire::{ClientMessage, decode_client};
+    use crate::prelude::Mode;
+
+    static CAMERAS: OnceLock<Vec<ProbedDevice>> = OnceLock::new();
+    let Ok(ClientMessage::Request(request, _)) = decode_client(bytes) else {
+        return;
+    };
+    if check_request(&request).is_err() {
+        return;
+    }
+    let cameras = CAMERAS.get_or_init(|| {
+        let mode = |code, w, h, fps| {
+            Mode::with_interval(
+                MediaFormat::new(code, Resolution::new(w, h).expect("size"), ColorSpace::Srgb),
+                Interval::from_fps(fps).expect("rate"),
+            )
+        };
+        vec![
+            make_virtual_device(
+                "usb",
+                [
+                    mode(FourCc::MJPG, 1280, 720, 30),
+                    mode(FourCc::YUYV, 640, 480, 30),
+                    mode(FourCc::YUYV, 1280, 720, 10),
+                ],
+            ),
+            make_virtual_device("isp", [mode(FourCc::NV12, 1280, 800, 120)]),
+        ]
+    });
+    for camera in cameras {
+        let _ = plan_many(camera, std::slice::from_ref(&*request));
+        let _ = plan_many(camera, &[(*request).clone(), Frames::nv12()]);
+    }
 }
 
 /// How long a client thread waits for frames per poll.

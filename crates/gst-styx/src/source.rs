@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use styx::ipc::FrameClient;
-use styx::planner::{PlannedFrames, plan_frames};
+use styx::planner::plan_frames;
 use styx::prelude::*;
 
 use crate::caps::Negotiated;
@@ -75,7 +75,7 @@ fn virtual_camera(spec: &str) -> Result<ProbedDevice, String> {
 
 /// A running stream of frames.
 pub enum Stream {
-    Local(Box<PlannedFrames>),
+    Local(Box<Frames>),
     Service(Box<FrameClient>),
 }
 
@@ -83,8 +83,8 @@ pub enum Stream {
 pub struct StreamOptions<'a> {
     pub service: Option<&'a str>,
     pub camera: Option<&'a str>,
-    pub priority: Priority,
-    pub queue_depth: Option<usize>,
+    /// How frames are queued for the element.
+    pub delivery: Delivery,
 }
 
 impl Stream {
@@ -96,7 +96,7 @@ impl Stream {
         options: &StreamOptions<'_>,
     ) -> Result<(Self, String), String> {
         if let Some(path) = options.service {
-            let req = with_options(caps.requirements(false), options);
+            let req = with_options(caps.request(false), options);
             let client = match options.camera.filter(|c| !c.is_empty()) {
                 Some(camera) => FrameClient::request_camera(path, camera, &req),
                 None => FrameClient::request(path, &req),
@@ -107,7 +107,7 @@ impl Stream {
             return Ok((Self::Service(Box::new(client)), plan));
         }
         let device = device.ok_or("no camera")?;
-        let req = with_options(caps.requirements(true), options);
+        let req = with_options(caps.request(true), options);
         let mut plan = plan_frames(device, &req).map_err(|e| e.to_string())?;
         if plan.output_resolution() != (caps.width, caps.height) {
             return Err(format!(
@@ -148,12 +148,7 @@ impl Stream {
     /// Set a camera control (in-process cameras only).
     pub fn set_control(&mut self, id: ControlId, value: ControlValue) -> Result<(), String> {
         match self {
-            Self::Local(frames) => frames
-                .pipeline()
-                .ok_or("no capture to control")?
-                .capture()
-                .set_control(id, value)
-                .map_err(|e| e.to_string()),
+            Self::Local(frames) => frames.set_control(id, value).map_err(|e| e.to_string()),
             Self::Service(_) => Err("controls are not available through a camera service".into()),
         }
     }
@@ -166,10 +161,9 @@ impl Stream {
     }
 }
 
-fn with_options(req: FrameRequirements, options: &StreamOptions<'_>) -> FrameRequirements {
-    let mut overrides = req.overrides.clone();
-    overrides.queue_depth = options.queue_depth;
-    req.priority(options.priority).overrides(overrides)
+fn with_options(mut req: FrameRequest, options: &StreamOptions<'_>) -> FrameRequest {
+    req.delivery = options.delivery;
+    req
 }
 
 /// `name` as a control key: lower case, runs of other characters as `_` (V4L2's

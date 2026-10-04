@@ -175,6 +175,8 @@ impl FrameLease {
         Ok(Self::from_external(meta, layouts, Arc::new(backing)))
     }
 
+    /// A frame another process described (`descriptor`) over the memfd it sent. The planes
+    /// must lie within the memfd and hold the visible rows the format needs.
     #[cfg(unix)]
     pub fn from_memfd_import(
         descriptor: FrameLeaseDescriptor,
@@ -183,9 +185,16 @@ impl FrameLease {
         let meta = descriptor
             .to_meta()
             .ok_or(FrameExportError::InvalidDescriptor)?;
-        Ok(Self::from_memfd(meta, descriptor.layouts(), fd))
+        let layouts = descriptor.layouts();
+        let size = fd_size(&fd).unwrap_or(0);
+        if layouts.iter().any(|l| !fits(l.offset, l.len, size)) {
+            return Err(FrameExportError::InvalidDescriptor);
+        }
+        Self::from_memfd(meta, layouts, fd).checked_import()
     }
 
+    /// A frame another process described (`descriptor`) over the dma-bufs (or memfds) it sent,
+    /// one per plane. Each plane must lie within its buffer when the buffer's size can be read.
     #[cfg(unix)]
     pub fn from_dmabuf_import(
         descriptor: FrameLeaseDescriptor,
@@ -194,7 +203,24 @@ impl FrameLease {
         let meta = descriptor
             .to_meta()
             .ok_or(FrameExportError::InvalidDescriptor)?;
-        Self::from_dmabuf(meta, descriptor.layouts(), planes)
+        let layouts = descriptor.layouts();
+        for (plane, layout) in planes.iter().zip(&layouts) {
+            let inside = fd_size(&plane.fd).is_none_or(|size| fits(plane.offset, plane.len, size));
+            if !inside || !fits(layout.offset, layout.len, plane.len as u64) {
+                return Err(FrameExportError::InvalidDescriptor);
+            }
+        }
+        Self::from_dmabuf(meta, layouts, planes)?.checked_import()
+    }
+
+    /// An imported frame whose layouts do not hold its format is refused (formats whose
+    /// layout Styx does not know are taken as they are).
+    #[cfg(unix)]
+    fn checked_import(self) -> Result<Self, FrameExportError> {
+        match self.validate_plane_layouts() {
+            Ok(()) | Err(FrameValidationError::UnknownStorageLayout) => Ok(self),
+            Err(_) => Err(FrameExportError::InvalidDescriptor),
+        }
     }
 
     pub fn allocate_host_owned(
@@ -295,4 +321,12 @@ impl FrameLease {
             .collect();
         Ok(Self::multi_plane(meta, buffers, layouts))
     }
+}
+
+/// Whether `len` bytes at `offset` lie within `size` bytes.
+#[cfg(unix)]
+fn fits(offset: usize, len: usize, size: u64) -> bool {
+    offset
+        .checked_add(len)
+        .is_some_and(|end| end as u64 <= size)
 }

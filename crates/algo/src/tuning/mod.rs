@@ -7,17 +7,21 @@
 //! Units: times in microseconds (`*_us`), levels normalised to full scale 1.0, colour
 //! temperatures in kelvin.
 
+use alloc::{string::String, string::ToString};
+
 pub mod json;
 mod rpi;
 
+#[cfg(feature = "std")]
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::algos::af::tuning::{AfRangeTuning, AfRanges, AfSpeedTuning, AfSpeeds, AfTuning};
 pub use crate::algos::agc::tuning::{AgcTuning, Bound, Constraint, ExposureProfile, MeteringMode};
 pub use crate::algos::alsc::{AlscCalibration, AlscTuning};
 pub use crate::algos::awb::tuning::{AwbMode, AwbPrior, AwbTuning};
-pub use crate::algos::black_level::BlackLevelTuning;
+pub use crate::algos::black_level::{BlackLevelTuning, GainBlackLevel};
 pub use crate::algos::ccm::{CcmTuning, CtCcm};
 pub use crate::algos::contrast::ContrastTuning;
 pub use crate::algos::denoise::{
@@ -60,6 +64,9 @@ pub struct Tuning {
     /// blocks only some ISPs have).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub denoise: Option<DenoiseTuning>,
+    /// Autofocus (cameras with a focus lens; the generic defaults without a section).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub af: Option<AfTuning>,
 }
 
 impl Tuning {
@@ -83,7 +90,15 @@ impl Tuning {
         Ok(import)
     }
 
+    /// Write a Raspberry Pi tuning file (version 2) for `target` (`pisp` or `bcm2835`; `None`:
+    /// `bcm2835` for 16×12 lens shading tables, else `pisp`). Styx-only settings are left out;
+    /// see `docs/native-stack/algorithms.md`.
+    pub fn to_rpi_json_string(&self, target: Option<&str>) -> String {
+        rpi::export(self, target)
+    }
+
     /// Load a file: `.json` as a Raspberry Pi tuning, anything else as our TOML.
+    #[cfg(feature = "std")]
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path)?;
@@ -99,6 +114,9 @@ impl Tuning {
 
     /// Check every section.
     pub fn validate(&self) -> Result<()> {
+        if let Some(b) = &self.black_level {
+            b.validate()?;
+        }
         if let Some(l) = &self.lux {
             l.validate()?;
         }
@@ -119,6 +137,9 @@ impl Tuning {
         }
         if let Some(d) = &self.denoise {
             d.validate()?;
+        }
+        if let Some(a) = &self.af {
+            a.validate()?;
         }
         Ok(())
     }

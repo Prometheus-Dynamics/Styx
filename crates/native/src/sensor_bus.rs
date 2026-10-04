@@ -12,7 +12,7 @@ use styx_kernel::bus::i2c::I2cDevice;
 use styx_kernel::bus::{SensorBridge, StreamRequest, StreamState};
 use styx_kernel::subdev::Subdev;
 use styx_kernel::v4l2::{ControlValue, ControlWhich, Controls};
-use styx_sensor::{KernelControl, RegWrite, RegisterBus, SensorPins};
+use styx_sensor::{BusResult, KernelControl, RegWrite, RegisterBus, SensorPins};
 
 use crate::device::BridgeDevice;
 use crate::regbus::{BridgePins, I2cRegisterBus};
@@ -44,15 +44,15 @@ fn no_registers() -> io::Error {
 }
 
 impl RegisterBus for SubdevBus {
-    fn read(&mut self, _: u16, _: u8) -> io::Result<u32> {
-        Err(no_registers())
+    fn read(&mut self, _: u16, _: u8) -> BusResult<u32> {
+        Err(no_registers().into())
     }
 
-    fn write(&mut self, _: u16, _: u8, _: u32) -> io::Result<()> {
-        Err(no_registers())
+    fn write(&mut self, _: u16, _: u8, _: u32) -> BusResult<()> {
+        Err(no_registers().into())
     }
 
-    fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> io::Result<()> {
+    fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         let values: Vec<(u32, ControlValue)> = controls
             .iter()
             .map(|(c, v)| {
@@ -60,7 +60,10 @@ impl RegisterBus for SubdevBus {
                 (c.cid(), ControlValue::Integer(v))
             })
             .collect();
-        Ok(self.subdev.set_controls(ControlWhich::Current, &values)?)
+        Ok(self
+            .subdev
+            .set_controls(ControlWhich::Current, &values)
+            .map_err(io::Error::from)?)
     }
 }
 
@@ -75,28 +78,28 @@ pub enum SensorBus {
 }
 
 impl RegisterBus for SensorBus {
-    fn read(&mut self, address: u16, bytes: u8) -> io::Result<u32> {
+    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
         match self {
             SensorBus::I2c(b) => b.read(address, bytes),
             SensorBus::Kernel(b) => b.read(address, bytes),
         }
     }
 
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> io::Result<()> {
+    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
         match self {
             SensorBus::I2c(b) => b.write(address, bytes, value),
             SensorBus::Kernel(b) => b.write(address, bytes, value),
         }
     }
 
-    fn write_sequence(&mut self, writes: &[RegWrite]) -> io::Result<()> {
+    fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
         match self {
             SensorBus::I2c(b) => b.write_sequence(writes),
             SensorBus::Kernel(b) => b.write_sequence(writes),
         }
     }
 
-    fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> io::Result<()> {
+    fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         match self {
             SensorBus::I2c(b) => b.set_controls(controls),
             SensorBus::Kernel(b) => b.set_controls(controls),
@@ -115,21 +118,21 @@ pub enum CameraPins {
 }
 
 impl SensorPins for CameraPins {
-    fn set_gpio(&mut self, role: &str, value: bool) -> io::Result<()> {
+    fn set_gpio(&mut self, role: &str, value: bool) -> BusResult<()> {
         match self {
             CameraPins::Bridge(p) => p.set_gpio(role, value),
             CameraPins::None(p) => p.set_gpio(role, value),
         }
     }
 
-    fn set_clock(&mut self, role: &str, rate_hz: Option<u32>) -> io::Result<()> {
+    fn set_clock(&mut self, role: &str, rate_hz: Option<u32>) -> BusResult<()> {
         match self {
             CameraPins::Bridge(p) => p.set_clock(role, rate_hz),
             CameraPins::None(p) => p.set_clock(role, rate_hz),
         }
     }
 
-    fn set_supply(&mut self, role: &str, on: bool) -> io::Result<()> {
+    fn set_supply(&mut self, role: &str, on: bool) -> BusResult<()> {
         match self {
             CameraPins::Bridge(p) => p.set_supply(role, on),
             CameraPins::None(p) => p.set_supply(role, on),

@@ -13,19 +13,26 @@ styx = { version = "2.0.0", default-features = false, features = ["native", "v4l
 use styx::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let wants = FrameRequirements::formats([FourCc::NV12])
-        .output_resolution(1280, 800)
-        .min_fps(30)
-        .priority(Priority::Power); // exactly 30 fps where the camera can
-    let plan = styx::planner::plan_best(&styx::probe_all(), &wants)?;
-    println!("{plan}"); // camera, mode, every step and its cost, rejected options
-    for frame in plan.start()?.take(90) {
+    let frames = Frames::nv12()     // or rgb(), gray(), formats([..]), any()
+        .size(1280, 800)            // the nearest the camera does that covers it; never upscaled
+        .fps(30)                    // exactly 30 fps (an error naming the rates if it cannot)
+        .open_best(&styx::probe_all())?;
+    println!("{}", frames.plan()); // camera, mode, every step and its cost, rejected options
+    for frame in frames.take(90) {
         let meta = frame.meta(); // timestamp, sequence, exposure and gain that made it
         println!("{} {} {:?}", meta.timestamp, meta.format.code, meta.native());
     }
     Ok(())
 }
 ```
+
+One choice per meaning: the format, the size, the frame rate (`fps(x)` exactly,
+`fps_at_least(x)` the camera's fastest, `fps_between(a, b)`, none for the camera's default of
+30), and how frames are delivered (`latest()`, the default: the newest frame only; or
+`every_frame(n)`: up to `n` queued, drops counted). `camera.frames().nv12()...open()` does the
+same for one probed camera. The planner takes the cheapest route that meets the request
+(CPU time and latency together, hardware blocks first) and says why in its plan
+([docs/frame-planning.md](docs/frame-planning.md)).
 
 The same code takes a USB camera (V4L2, YUYV converted), a CSI sensor Styx drives itself (the
 Raspberry Pi PiSP or a software ISP, 3A in Rust) or, with the `libcamera` feature, a libcamera
@@ -135,6 +142,9 @@ blocking task/thread, then use async receive/control APIs for coordination.
 - `graph-pipeline`: Daedalus-backed graph execution, edge policies, and graph telemetry.
 - `simulation-bevy`: Bevy-backed synthetic scene capture and the heaviest optional feature group.
 - `schema`, `serde`: API schema and serialization support.
+- `metrics-serde`, `metrics-http`: serde for metrics snapshots (also with `serde`,
+  `frame-socket` and `native`), and a tiny HTTP endpoint serving them as Prometheus text.
+  Metrics themselves are always on ([docs/metrics.md](docs/metrics.md)).
 - `examples`: convenience bundle for example-oriented features.
 
 ## Development
@@ -172,8 +182,10 @@ Optional Docker-backed facade validation:
 - [docs/comparison.md](docs/comparison.md): Styx compared with libcamera, raw V4L2 and GStreamer: code side by side, architecture, measurements
 - [examples/README.md](examples/README.md): runnable examples, with output from the CM5
 - [docs/native-stack/README.md](docs/native-stack/README.md): the native camera stack (sensors, PiSP, 3A, sensor bridge)
+- [docs/metrics.md](docs/metrics.md): per-camera health and performance metrics: every metric, how it is measured, its cost
 - [docs/README.md](docs/README.md): repository documentation index
 - [docs/ecosystem.md](docs/ecosystem.md): GStreamer and PipeWire bridges
+- [docs/stills-and-dng.md](docs/stills-and-dng.md): stills from a running capture, exposure brackets, DNG raw files (`styx-dng`)
 - [docs/development.md](docs/development.md): repo layout, commands, and validation conventions
 - [docs/testing.md](docs/testing.md): test surfaces, example expectations, and CI notes
 - [CHANGELOG.md](CHANGELOG.md): release history and notable workspace changes

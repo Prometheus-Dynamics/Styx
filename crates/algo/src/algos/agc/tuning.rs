@@ -1,7 +1,8 @@
 //! AGC tuning. Field names and defaults follow Raspberry Pi's `rpi.agc` (channel 0), with
 //! times in microseconds and luma targets normalised to 1.0.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::{format, string::String, vec, vec::Vec};
 
 use serde::{Deserialize, Serialize};
 
@@ -195,7 +196,7 @@ impl AgcTuning {
             if p.exposure_us
                 .iter()
                 .chain(&p.gain)
-                .any(|v| v.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater))
+                .any(|v| v.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater))
             {
                 return err(format!("exposure mode {name:?} has a non-positive value"));
             }

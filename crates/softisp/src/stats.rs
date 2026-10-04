@@ -1,5 +1,7 @@
 //! 3A statistics, gathered on 2x2 quads of the mosaic in the processing pass.
 
+use alloc::{vec, vec::Vec};
+
 use serde::{Deserialize, Serialize};
 
 use crate::prepare::StatsSetup;
@@ -46,6 +48,11 @@ pub struct IspStats {
     pub samples: u32,
     /// The R, G, B gains (white balance times digital gain) the sums include.
     pub gains: [f32; 3],
+    /// Focus figure of merit per zone (row-major) when [`crate::StatsConfig::focus`] is on,
+    /// else empty: the mean over the zone's quads of the green gradient energy above the
+    /// noise floor, on the 0..1 scale (gains included). Larger is sharper.
+    #[serde(default)]
+    pub focus: Vec<f64>,
 }
 
 impl IspStats {
@@ -96,6 +103,9 @@ pub(crate) struct StatsAccum {
     samples: u32,
     /// The bins of the row being added.
     bin_row: Vec<u16>,
+    /// Focus: gradient energy per zone, and the previous sampled quad row's green.
+    focus: Vec<u64>,
+    prev_green: Option<(usize, Vec<u16>)>,
 }
 
 impl StatsAccum {
@@ -110,6 +120,12 @@ impl StatsAccum {
             bins: setup.config.histogram_bins as usize,
             samples: 0,
             bin_row: Vec::new(),
+            focus: if setup.config.focus {
+                vec![0; zones]
+            } else {
+                Vec::new()
+            },
+            prev_green: None,
         }
     }
 
@@ -120,6 +136,48 @@ impl StatsAccum {
         self.quads.fill(0);
         self.histogram.fill(0);
         self.samples = 0;
+        self.focus.fill(0);
+        self.prev_green = None;
+    }
+
+    /// Green gradient energy of quad row `qy` (horizontal, and vertical against the row
+    /// above when it was the previous quad row) above the noise floor, into its zones.
+    fn add_focus(&mut self, setup: &StatsSetup, qy: usize, zy: usize, green: &[u16]) {
+        let t2 = {
+            let t = f64::from(setup.config.focus_threshold.max(0.0));
+            (t * t) as u64
+        };
+        let energy = |d: i32| (u64::from(d.unsigned_abs()).pow(2)).saturating_sub(t2);
+        let above = self
+            .prev_green
+            .as_ref()
+            .filter(|(row, g)| *row + 1 == qy && g.len() == green.len())
+            .map(|(_, g)| g.as_slice());
+        let zx_count = setup.config.zones_x as usize;
+        for zx in 0..zx_count {
+            let (c0, c1) = (
+                setup.col_edges[zx],
+                setup.col_edges[zx + 1].min(green.len()),
+            );
+            let mut e = 0u64;
+            for i in c0..c1 {
+                if i + 1 < c1 {
+                    e += energy(i32::from(green[i + 1]) - i32::from(green[i]));
+                }
+                if let Some(a) = above {
+                    e += energy(i32::from(green[i]) - i32::from(a[i]));
+                }
+            }
+            self.focus[zy * zx_count + zx] += e;
+        }
+        match &mut self.prev_green {
+            Some((row, g)) => {
+                *row = qy;
+                g.clear();
+                g.extend_from_slice(green);
+            }
+            None => self.prev_green = Some((qy, green.to_vec())),
+        }
     }
 
     /// Add quad row `qy` (R, G, B of each quad).
@@ -138,6 +196,9 @@ impl StatsAccum {
             self.count[z] += n;
             self.luma[z] += ls as u64;
             self.quads[z] += (c1 - c0) as u32;
+        }
+        if !self.focus.is_empty() {
+            self.add_focus(setup, qy, zy, rgb[1]);
         }
         // Histogram: bins computed in vectors, then counted four quads at a time into the
         // four copies.
@@ -175,6 +236,10 @@ impl StatsAccum {
             .iter_mut()
             .zip(&other.luma)
             .for_each(|(a, b)| *a += b);
+        self.focus
+            .iter_mut()
+            .zip(&other.focus)
+            .for_each(|(a, b)| *a += b);
         self.samples += other.samples;
     }
 
@@ -201,6 +266,19 @@ impl StatsAccum {
                 .collect(),
             samples: self.samples,
             gains,
+            focus: self
+                .focus
+                .iter()
+                .zip(&self.quads)
+                .map(|(&e, &q)| {
+                    let full = f64::from(WORK_MAX) * f64::from(WORK_MAX);
+                    if q == 0 {
+                        0.0
+                    } else {
+                        e as f64 / (f64::from(q) * full)
+                    }
+                })
+                .collect(),
         }
     }
 }

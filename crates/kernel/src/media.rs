@@ -30,6 +30,43 @@ pub use topology::{
     LinkFlags, LinkType, Pad, PadFlags, PadRef, Topology,
 };
 
+/// Build a topology from what `MEDIA_IOC_G_TOPOLOGY` would fill in, from `bytes` (four
+/// counts, then the arrays), and resolve every link. For fuzzing.
+#[doc(hidden)]
+pub fn fuzz_topology(bytes: &[u8]) {
+    fn take<T: Copy>(bytes: &mut &[u8], count: u8) -> Vec<T> {
+        (0..count)
+            .map(|_| {
+                let n = bytes.len().min(size_of::<T>());
+                let value = crate::v4l2::raw::from_bytes::<T>(&bytes[..n]);
+                *bytes = &bytes[n..];
+                value
+            })
+            .collect()
+    }
+    let Some((counts, mut rest)) = bytes.split_first_chunk::<4>() else {
+        return;
+    };
+    let entities = take::<raw::media_v2_entity>(&mut rest, counts[0] % 32);
+    let interfaces = take::<raw::media_v2_interface>(&mut rest, counts[1] % 32);
+    let pads = take::<raw::media_v2_pad>(&mut rest, counts[2] % 64);
+    let links = take::<raw::media_v2_link>(&mut rest, counts[3] % 64);
+    let topology = Topology::from_raw(7, &entities, &interfaces, &pads, &links);
+    let _ = topology.data_links();
+    for e in &topology.entities {
+        let _ = topology.entity_by_name(&e.name);
+        let _ = (topology.pads_of(e.id), topology.links_from(e.id));
+        let _ = (topology.links_to(e.id), topology.interface_of(e.id));
+        let _ = (e.function.name(), e.flags);
+    }
+    for i in &topology.interfaces {
+        let _ = (topology.entity_of_interface(i.id), i.intf_type.name());
+    }
+    for l in &topology.links {
+        let _ = l.flags.link_type();
+    }
+}
+
 /// Information about a media device (`MEDIA_IOC_DEVICE_INFO`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceInfo {

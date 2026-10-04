@@ -83,6 +83,20 @@ pub fn sync(dmabuf: BorrowedFd<'_>, access: Access, start: bool) -> Result<()> {
     Ok(())
 }
 
+/// The size of a dma-buf (or any seekable file, e.g. a memfd) in bytes, as the kernel has it:
+/// `lseek(SEEK_END)`, which dma-bufs answer with their size, then back to the start.
+pub fn dmabuf_size(dmabuf: BorrowedFd<'_>) -> Result<u64> {
+    let fd = dmabuf.as_raw_fd();
+    // SAFETY: lseek on a borrowed, open descriptor; no memory is passed.
+    let end = unsafe { libc::lseek(fd, 0, libc::SEEK_END) };
+    if end < 0 {
+        return Err(Error::sys("lseek"));
+    }
+    // SAFETY: as above. dma-bufs only accept offset 0 here; the result does not matter.
+    unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
+    Ok(end as u64)
+}
+
 /// An open dma-heap (`/dev/dma_heap/<name>`).
 #[derive(Debug)]
 pub struct DmaHeap {
@@ -248,6 +262,14 @@ mod tests {
         // The descriptor is closed; both mappings still share the memory.
         assert_eq!(b.as_slice()[100], 7);
         assert!(DmaBuf::memfd("empty", 0).is_err());
+    }
+
+    #[test]
+    fn dmabuf_size_reports_what_the_kernel_allocated() {
+        let buf = DmaBuf::memfd("styx-test", 12_345).unwrap();
+        assert_eq!(dmabuf_size(buf.as_fd()).unwrap(), 12_345);
+        // Twice: the offset went back to the start.
+        assert_eq!(dmabuf_size(buf.as_fd()).unwrap(), 12_345);
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]

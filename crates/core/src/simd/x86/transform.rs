@@ -2,9 +2,9 @@
 //! `k`, reversed when `reverse`. SSE2 for 1-, 2- and 4-byte pixels, SSSE3 for 3-byte pixels.
 
 #[cfg(target_arch = "x86")]
-use std::arch::x86::*;
+use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+use core::arch::x86_64::*;
 
 #[inline(always)]
 unsafe fn load(p: *const u8) -> __m128i {
@@ -55,7 +55,7 @@ pub(in crate::simd) unsafe fn transpose_tile_u8_sse2(
     // SAFETY: 8 rows of 8 bytes in and out, per the caller.
     unsafe {
         let r: [__m128i; 8] =
-            std::array::from_fn(|i| _mm_loadl_epi64(src.add(i * src_stride).cast()));
+            core::array::from_fn(|i| _mm_loadl_epi64(src.add(i * src_stride).cast()));
         let pairs = transpose_u8x8(r);
         for (p, pair) in pairs.into_iter().enumerate() {
             let mut cols = [0u64; 2];
@@ -90,9 +90,9 @@ pub(in crate::simd) unsafe fn transpose_tile_u16_sse2(
 ) {
     // SAFETY: as above.
     unsafe {
-        let r: [__m128i; 8] = std::array::from_fn(|i| load(src.add(i * src_stride)));
+        let r: [__m128i; 8] = core::array::from_fn(|i| load(src.add(i * src_stride)));
         // a[2j]: pixels 0-3 of rows 2j, 2j+1 interleaved; a[2j+1]: pixels 4-7.
-        let a: [__m128i; 8] = std::array::from_fn(|i| {
+        let a: [__m128i; 8] = core::array::from_fn(|i| {
             let (x, y) = (r[i / 2 * 2], r[i / 2 * 2 + 1]);
             if i % 2 == 0 {
                 _mm_unpacklo_epi16(x, y)
@@ -136,7 +136,7 @@ pub(in crate::simd) unsafe fn transpose_tile_u32_sse2(
 ) {
     // SAFETY: as above. rows[i][h] holds pixels 4h..4h+4 of row i.
     unsafe {
-        let rows: [[__m128i; 2]; 8] = std::array::from_fn(|i| {
+        let rows: [[__m128i; 2]; 8] = core::array::from_fn(|i| {
             let p = src.add(i * src_stride);
             [load(p), load(p.add(16))]
         });

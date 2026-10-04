@@ -309,3 +309,65 @@ fn a_consumer_before_the_first_frame_waits_for_it() {
     assert_eq!(frame.meta().timestamp, 5);
     assert_eq!(bytes(&frame)[0], 5);
 }
+
+/// Writes frame messages (memfd and dma-buf planes) to `$STYX_FUZZ_SEEDS/frame_socket_message/`
+/// as seeds for the `frame_socket_message` fuzz target (`docs/fuzzing.md`): a shape byte
+/// (descriptor count and size, see the target) and the JSON.
+#[test]
+#[ignore = "writes fuzz seeds; run with STYX_FUZZ_SEEDS set"]
+fn write_fuzz_seeds() {
+    use super::{Backing, Message, Plane};
+    let Some(dir) = std::env::var_os("STYX_FUZZ_SEEDS") else {
+        return;
+    };
+    let dir = std::path::Path::new(&dir).join("frame_socket_message");
+    std::fs::create_dir_all(&dir).unwrap();
+    let nv12 = FrameLease::from_visible_bytes(
+        MediaFormat::new(
+            FourCc::NV12,
+            Resolution::new(64, 32).unwrap(),
+            ColorSpace::Bt709,
+        ),
+        7,
+        &[1; 64 * 48],
+    )
+    .unwrap();
+    let descriptor = nv12.descriptor();
+    // In one memfd, the chroma plane follows the luma plane.
+    let mut packed = descriptor.clone();
+    packed.planes[1].offset = 64 * 32;
+    let messages = [
+        // One 4096-byte memfd.
+        ("memfd", 0b1000, packed, Backing::Memfd { len: 64 * 48 }),
+        // Two 4096-byte descriptors, one per plane.
+        (
+            "dmabuf",
+            0b1001,
+            descriptor,
+            Backing::DmabufPlanes {
+                planes: vec![
+                    Plane {
+                        offset: 0,
+                        len: 2048,
+                    },
+                    Plane {
+                        offset: 0,
+                        len: 1024,
+                    },
+                ],
+            },
+        ),
+    ];
+    for (name, shape, descriptor, backing) in messages {
+        let mut bytes = vec![shape];
+        serde_json::to_writer(
+            &mut bytes,
+            &Message {
+                descriptor,
+                backing,
+            },
+        )
+        .unwrap();
+        std::fs::write(dir.join(name), bytes).unwrap();
+    }
+}

@@ -99,7 +99,8 @@ impl Nv12ToRgbDecoder {
             let width = meta.format.resolution.width.get() as usize;
             let height = meta.format.resolution.height.get() as usize;
             let chroma_width = width.div_ceil(2);
-            let stride = plane.stride().max(width);
+            // The chroma rows of an odd width hold one more byte than the luma rows.
+            let stride = plane.stride().max(width).max(chroma_width * 2);
             let chroma_height = height.div_ceil(2);
             let y_required = stride
                 .checked_mul(height)
@@ -432,7 +433,8 @@ impl Nv12ToBgrDecoder {
             let width = meta.format.resolution.width.get() as usize;
             let height = meta.format.resolution.height.get() as usize;
             let chroma_width = width.div_ceil(2);
-            let stride = plane.stride().max(width);
+            // The chroma rows of an odd width hold one more byte than the luma rows.
+            let stride = plane.stride().max(width).max(chroma_width * 2);
             let chroma_height = height.div_ceil(2);
             let y_required = stride
                 .checked_mul(height)

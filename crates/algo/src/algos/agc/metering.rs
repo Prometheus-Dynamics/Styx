@@ -1,5 +1,9 @@
 //! Metering: zone weights and the weighted mean luma after a trial gain.
 
+use alloc::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::stats::{Histogram, Statistics, ZoneGrid, rec601};
 
 use super::tuning::MeteringMode;

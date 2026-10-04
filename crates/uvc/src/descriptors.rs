@@ -205,10 +205,12 @@ impl Intervals {
         match self {
             Intervals::Discrete(v) => v.iter().copied().min_by_key(|&i| i.abs_diff(wanted)),
             Intervals::Continuous { min, max, step } => {
-                let w = wanted.clamp(*min, *max);
-                let step = (*step).max(1);
-                let n = (w - min + step / 2) / step;
-                Some((min + n * step).min(*max))
+                // A device may describe the range backwards or with a step past its end.
+                let (lo, hi) = (u64::from(*min.min(max)), u64::from(*min.max(max)));
+                let w = u64::from(wanted).clamp(lo, hi);
+                let step = u64::from(*step).max(1);
+                let n = (w - lo + step / 2) / step;
+                Some((lo + n * step).min(hi) as u32)
             }
         }
     }

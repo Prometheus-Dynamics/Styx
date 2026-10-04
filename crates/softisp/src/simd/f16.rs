@@ -8,6 +8,9 @@
 //! as long as the terms span fewer than 53 bits (always for the values the ISP produces:
 //! magnitudes between 2^-24 and 2^18).
 
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 /// Positive infinity.
 pub const INF: u16 = 0x7C00;
 

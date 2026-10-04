@@ -29,10 +29,11 @@ use styx_pipeline::PipelineError;
 use styx_pipeline::device::{PispFrame, PispPipeline};
 use styx_pisp::device::{BeFormat, BeOutputSetup};
 
-use super::super::handle::enqueue_capture_frame;
+use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
 use super::super::tunables::NativeIspConfig;
-use super::{err, layouts, native_meta};
+use super::{aaa_sample, err, layouts, native_meta};
+use crate::metrics::CaptureMetrics;
 
 /// One back end output as the capture delivers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,6 +239,10 @@ pub(super) struct Worker {
     pub(super) timeout: Duration,
     /// The 3A loop's controls and state.
     pub(super) loop_controls: Arc<super::LoopControls>,
+    /// Still requests.
+    pub(super) still: super::still_runner::StillRunner,
+    /// The capture's metrics.
+    pub(super) live: CaptureMetrics,
 }
 
 fn lease(
@@ -247,6 +252,7 @@ fn lease(
     (output, index): (usize, u32),
     f: &PispFrame,
     returns: &mpsc::Sender<(usize, u32)>,
+    live: &CaptureMetrics,
 ) -> FrameLease {
     let in_buffer = layouts(spec.code, spec.height as usize, stride);
     let planes = in_buffer.iter().map(|l| (l.offset, l.len)).collect();
@@ -263,25 +269,30 @@ fn lease(
     FrameLease::from_external(
         meta,
         plane_layouts,
-        Arc::new(BeBacking {
+        Arc::new(live.track(BeBacking {
             buffer,
             planes,
             output,
             index,
             synced: AtomicBool::new(false),
             returns: returns.clone(),
-        }),
+        })),
     )
 }
 
 /// Runs the capture on its own thread until stopped or the queue closes.
 pub(super) fn spawn(
     mut p: PispPipeline,
-    w: Worker,
+    mut w: Worker,
 ) -> Result<thread::JoinHandle<()>, CaptureError> {
+    let targets = w.still.targets();
+    p.set_raw_copy(Some(Box::new(move |s| {
+        targets.lock().iter().any(|t| t.wants(s))
+    })));
     thread::Builder::new()
         .name("styx-native-pisp".into())
         .spawn(move || {
+            w.live.register_thread();
             let tx = &w.tx;
             let (ret_tx, ret_rx) = mpsc::channel::<(usize, u32)>();
             let mut buffers = Buffers {
@@ -298,13 +309,15 @@ pub(super) fn spawn(
                 if let Some(c) = w.loop_controls.take() {
                     p.controller().set_controls(c);
                 }
-                let f = match p.next(w.timeout) {
+                w.still.before_frame(&mut p);
+                let mut f = match p.next(w.timeout) {
                     Ok(f) => f,
                     // Consumers hold every output buffer: this frame is dropped (never wait
                     // for them: the camera keeps running), the next one after a buffer comes
                     // back is processed.
                     Err(PipelineError::OutputsHeld(output)) => {
                         held_drops += 1;
+                        w.live.isp_skipped();
                         if held_drops == 1 {
                             tracing::info!(
                                 backend = "native",
@@ -322,6 +335,15 @@ pub(super) fn spawn(
                     }
                 };
                 w.loop_controls.report(&p.step().params);
+                let step = p.step();
+                let ae = (step.params.ae.total_exposure, step.params.ae.locked);
+                let request = step.sensor;
+                let raw = f.raw.take();
+                w.still
+                    .after_frame(&mut p, &f.sensor, (f.request_lands, request), ae, raw);
+                w.live.isp_time(f.times.be_job, f.times.total);
+                w.live
+                    .aaa(&aaa_sample(&p.step().params, p.controls(), f.sequence));
                 let mut leases: [Option<FrameLease>; 2] = [None, None];
                 let mut failed = None;
                 for (i, spec) in w.specs.iter().enumerate() {
@@ -331,7 +353,7 @@ pub(super) fn spawn(
                     match buffers.get(&p, &f, i) {
                         Ok(b) => {
                             leases[i] =
-                                Some(lease(*spec, w.strides[i], b, (i, index), &f, &ret_tx));
+                                Some(lease(*spec, w.strides[i], b, (i, index), &f, &ret_tx, &w.live));
                         }
                         Err(e) => {
                             p.release_output(i, index);
@@ -356,7 +378,7 @@ pub(super) fn spawn(
                     },
                     None => main,
                 };
-                if enqueue_capture_frame(tx, frame, "native-pisp", w.send_timeout) {
+                if deliver(&w.live, tx, frame, "native-pisp", w.send_timeout) {
                     break;
                 }
             }
@@ -415,6 +437,7 @@ mod tests {
             sequence_mismatch: false,
             request_lands: None,
             settings_from: Some(6),
+            raw: None,
             digital_gain: 1.0,
             flicker: 1.0,
             times: PispTimes::default(),
@@ -430,7 +453,8 @@ mod tests {
             height: h as u32,
         };
         let (tx, rx) = mpsc::channel();
-        let f = lease(spec, w, buffer(w, h), (0, 3), &frame(), &tx);
+        let live = CaptureMetrics::default();
+        let f = lease(spec, w, buffer(w, h), (0, 3), &frame(), &tx, &live);
         let planes = f.planes();
         assert_eq!(planes.len(), 2);
         assert!(planes[0].data().iter().all(|&v| v == 1));

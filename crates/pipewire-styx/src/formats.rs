@@ -53,9 +53,9 @@ pub fn offers(device: &ProbedDevice) -> Vec<Offer> {
                 let native = code == mode.format.code;
                 let key = (code, w, h);
                 if !native && !found.contains_key(&key) {
-                    let req = FrameRequirements::formats([code])
-                        .min_resolution(w, h)
-                        .max_resolution(w, h);
+                    let req = Frames::formats([code])
+                        .size_at_least(w, h)
+                        .size_at_most(w, h);
                     match plan_frames_with(device, &req, &registry) {
                         Ok(plan) if plan.output_resolution() == (w, h) => {}
                         _ => continue,

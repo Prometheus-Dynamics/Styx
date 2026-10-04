@@ -32,6 +32,8 @@ pub struct FrameControls {
     pub frame_duration: Duration,
     /// Some values were read back from the frame (embedded data) rather than predicted.
     pub verified: bool,
+    /// Where the focus lens was (cameras with a lens; predicted from the moves written).
+    pub lens: Option<styx_sensor::LensFrame>,
 }
 
 impl FrameControls {
@@ -51,6 +53,7 @@ impl From<&AppliedControls> for FrameControls {
             frame_length: a.frame_length,
             frame_duration: a.frame_duration,
             verified: !a.codes.reported.is_empty(),
+            lens: None,
         }
     }
 }
@@ -147,6 +150,10 @@ pub struct SensorControl<B, P> {
     last_start_at: Option<Duration>,
     /// Immediate writes: how long before the current frame ends a write must be done.
     write_margin: Option<Duration>,
+    /// The focus lens, if the camera has one.
+    pub(crate) lens: Option<crate::lens::LensControl>,
+    /// Phase detection data from the embedded data.
+    pub(crate) pdaf: crate::lens::PdafFrames,
 }
 
 /// How long before a frame ends [`SensorControl::request_at_now`] must have written by
@@ -166,6 +173,8 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
             bring_up_times: BringUpTimes::default(),
             last_start_at: None,
             write_margin: Some(DEFAULT_WRITE_MARGIN),
+            lens: None,
+            pdaf: crate::lens::PdafFrames::default(),
         }
     }
 
@@ -357,7 +366,9 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
         if self.driver.state() != DriverState::Streaming {
             return Ok(ControlSet::new());
         }
-        Ok(self.driver.frame_start(seq)?.controls)
+        let set = self.driver.frame_start(seq)?.controls;
+        self.lens_frame_start(seq, at)?;
+        Ok(set)
     }
 
     /// The last frame start seen in this stream.
@@ -433,7 +444,13 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
 
     /// The values that produced frame `seq` (predicted, or read back where reported).
     pub fn applied(&self, seq: u64) -> Option<FrameControls> {
-        self.driver.applied(seq).as_ref().map(FrameControls::from)
+        let f = self.driver.applied(seq).as_ref().map(FrameControls::from)?;
+        Some(self.with_lens(seq, f))
+    }
+
+    /// Whether the sensor streams.
+    pub fn is_streaming(&self) -> bool {
+        self.driver.state() == DriverState::Streaming
     }
 
     /// The values predicted for the latest started frame (or frame 0 before streaming).
@@ -444,6 +461,7 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
     /// Records the control values read back from a frame's embedded data. Returns the values
     /// that differ from the prediction.
     pub fn report_embedded(&mut self, seq: u64, data: &[u8]) -> Result<Vec<Mismatch>> {
+        self.decode_pdaf(seq, data);
         let codes = self.driver.description().decode_embedded(data);
         if codes.is_empty() {
             return Ok(Vec::new());
@@ -463,7 +481,7 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
             .filter_map(Step::as_write)
             .copied()
             .collect();
-        self.driver.bus_mut().write_sequence(&off)
+        Ok(self.driver.bus_mut().write_sequence(&off)?)
     }
 
     /// Puts the sensor back in standby and powers it down (whatever state it is in). Best
@@ -471,6 +489,9 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
     /// anyway and the first error is returned.
     pub fn shut_down(&mut self) -> Result<()> {
         self.last_start = None;
+        if let Some(l) = &mut self.lens {
+            l.power_down();
+        }
         let mut result: Result<()> = Ok(());
         if self.driver.state() == DriverState::Streaming
             && let Err(e) = self.driver.stop_streaming()

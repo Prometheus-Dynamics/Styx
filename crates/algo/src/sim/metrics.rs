@@ -1,5 +1,8 @@
 //! Convergence measurements over a series of per-frame values.
 
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 /// How a series settled after a change.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Convergence {

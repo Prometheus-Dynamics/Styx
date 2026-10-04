@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use styx_core::prelude::*;
 
+pub(super) use self::camera::fuzz_request;
 use self::camera::{Camera, FRAME_WAIT, FramesSlot, check_request};
 use super::connection::{self, Connection};
 use super::socket::{self, PeerCredentials};
@@ -30,7 +31,8 @@ type Authorize = Arc<dyn Fn(&PeerCredentials) -> bool + Send + Sync>;
 
 /// Serves cameras to [`FrameClient`](super::FrameClient)s in other processes.
 ///
-/// Each client names a camera (or takes the first) and sends the [`FrameRequirements`] it needs
+/// Each client names a camera (or takes the first) and sends the
+/// [`FrameRequest`](crate::planner::FrameRequest) for the frames it needs
 /// ([`FrameClient::request`](super::FrameClient::request)). For each camera the service plans one
 /// shared capture for all its clients ([`plan_many`](crate::planner::plan_many)): hardware
 /// scaling, both ISP outputs, decoding and encoding once for clients with the same needs. A
@@ -172,6 +174,7 @@ impl CameraService {
             cameras: Mutex::new(Vec::new()),
             counters: Counters::default(),
             connections: AtomicUsize::new(0),
+            client_metrics: Default::default(),
         });
         let accept = {
             let service = service.clone();
@@ -216,9 +219,24 @@ pub struct CameraServiceHandle {
 
 impl CameraServiceHandle {
     pub fn stats(&self) -> CameraServiceStats {
-        let counters = &self.service.counters;
+        self.service.stats()
+    }
+
+    /// The service's counters, each client's frames and hold times, and the metrics of every
+    /// capture in this process; what [`FrameClient::service_metrics`] gets from another
+    /// process.
+    ///
+    /// [`FrameClient::service_metrics`]: super::FrameClient::service_metrics
+    pub fn metrics(&self) -> crate::metrics::ServiceMetrics {
+        self.service.metrics()
+    }
+}
+
+impl Service {
+    fn stats(&self) -> CameraServiceStats {
+        let counters = &self.counters;
         CameraServiceStats {
-            clients: self.service.clients(),
+            clients: self.clients(),
             rejected: counters.rejected.load(Ordering::Relaxed),
             unauthorized: counters.unauthorized.load(Ordering::Relaxed),
             restarts: counters.restarts.load(Ordering::Relaxed),
@@ -229,6 +247,24 @@ impl CameraServiceHandle {
         }
     }
 
+    fn metrics(&self) -> crate::metrics::ServiceMetrics {
+        let stats = self.stats();
+        crate::metrics::ServiceMetrics {
+            clients: stats.clients,
+            rejected: stats.rejected,
+            unauthorized: stats.unauthorized,
+            restarts: stats.restarts,
+            sent: stats.sent,
+            copied: stats.copied,
+            skipped: stats.skipped,
+            revoked: stats.revoked,
+            client_metrics: self.client_metrics.snapshot(),
+            snapshot: crate::metrics::snapshot(),
+        }
+    }
+}
+
+impl CameraServiceHandle {
     /// The shared plans running now, one per camera in use, as text.
     pub fn plan(&self) -> Option<String> {
         let plans: Vec<String> = self
@@ -293,6 +329,8 @@ struct Service {
     counters: Counters,
     /// Open connections, including clients still sending their request.
     connections: AtomicUsize,
+    /// Each client's frames, for [`CameraServiceHandle::metrics`].
+    client_metrics: super::metrics::Clients,
 }
 
 /// Whether two probes found the same camera: probes list its identity keys in any order.
@@ -402,10 +440,10 @@ fn accept_loop(service: &Arc<Service>, listener: &OwnedFd) {
 }
 
 fn serve_client(service: &Service, mut conn: Connection) {
-    let Some((requirements, selector)) = handshake(service, &mut conn) else {
+    let Some((request, selector)) = handshake(service, &mut conn) else {
         return;
     };
-    let joined = check_request(&requirements)
+    let joined = check_request(&request)
         .and_then(|()| {
             if service.clients() >= service.config.max_clients {
                 return Err(format!(
@@ -417,7 +455,7 @@ fn serve_client(service: &Service, mut conn: Connection) {
         })
         .and_then(|camera| {
             camera
-                .join(requirements, &service.config, &service.counters)
+                .join(request, &service.config, &service.counters)
                 .map(|joined| (camera, joined))
         });
     let (camera, (id, plan, frames)) = match joined {
@@ -429,7 +467,11 @@ fn serve_client(service: &Service, mut conn: Connection) {
         }
     };
     if conn.send(&wire::encode_accept(&plan)).is_ok() {
+        service
+            .client_metrics
+            .add(id, &camera.device.identity.display, &mut conn);
         send_frames(service, &camera, &mut conn, id, &frames);
+        super::metrics::client_left(&mut conn);
     }
     camera.leave(id, &service.config);
 }
@@ -438,17 +480,21 @@ fn serve_client(service: &Service, mut conn: Connection) {
 fn handshake(
     service: &Service,
     conn: &mut Connection,
-) -> Option<(FrameRequirements, Option<String>)> {
+) -> Option<(crate::planner::FrameRequest, Option<String>)> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     while Instant::now() < deadline && !service.stopping.load(Ordering::Acquire) {
         let messages = conn.poll(Duration::from_millis(100)).ok()?;
         for message in messages {
             match message {
-                ClientMessage::Request(requirements, camera) => {
-                    return Some((*requirements, camera));
+                ClientMessage::Request(request, camera) => {
+                    return Some((*request, camera));
                 }
                 ClientMessage::List => {
                     let _ = conn.send(&wire::encode_cameras(&service.list()));
+                    return None;
+                }
+                ClientMessage::Metrics(format) => {
+                    super::metrics::answer(conn, format, &service.metrics());
                     return None;
                 }
                 ClientMessage::Release(_) | ClientMessage::Roi(_) => {}
@@ -533,6 +579,9 @@ fn send_frames(
             }
             Ok(false) => {
                 counters.skipped.fetch_add(1, Ordering::Relaxed);
+                if let Some(stats) = &conn.stats {
+                    stats.dropped();
+                }
                 if let Some(frames) = frames.lock().as_ref()
                     && frames.plan().inter_coded()
                 {

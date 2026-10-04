@@ -109,6 +109,8 @@ pub struct PispFrame {
     pub flicker: f64,
     /// Time spent.
     pub times: PispTimes,
+    /// The raw frame, copied when [`PispPipeline::set_raw_copy`] asked for it.
+    pub raw: Option<Box<crate::still::HeldRaw>>,
 }
 
 fn bayer(c: CfaPattern) -> BayerOrder {
@@ -229,6 +231,8 @@ pub struct PispPipeline {
     last_run: Option<u64>,
     /// While settled, the algorithms run every this many frames.
     settled_every: u64,
+    /// Which frames' raw data to copy out (stills).
+    raw_copy: Option<super::RawCopy>,
 }
 
 /// Serves the sensor side until the front end's statistics are ready: frame starts are only
@@ -322,6 +326,7 @@ impl PispPipeline {
             SensorInfo::from_description(&desc, &configured.mode.mode, &configured.mode.format)?
                 .with_fps(fps, fps)?;
         info.camera.temporal_denoise = isp.be_dev.tdn_enabled();
+        info.camera.lens = super::lens_config(&camera);
         let mut controller = Controller::new(tuning, info.camera.clone())?;
         controller.set_spatial_denoise(options.spatial_denoise);
         let controls = camera.controls();
@@ -347,6 +352,7 @@ impl PispPipeline {
             step: Step {
                 frame: 0,
                 sensor: None,
+                lens: None,
                 isp: IspSettings::neutral(black_level),
                 params: Default::default(),
             },
@@ -356,6 +362,7 @@ impl PispPipeline {
             last_seq: None,
             last_run: None,
             settled_every: 1,
+            raw_copy: None,
         })
     }
 
@@ -495,10 +502,14 @@ impl PispPipeline {
             if let Some(r) = start.sensor {
                 apply_request(&self.controls, &r)?;
             }
+            if let Some(l) = start.lens {
+                super::apply_lens(&self.controls, &l)?;
+            }
             start.isp.apply_fe(&mut self.fe);
             self.step = Step {
                 frame: 0,
                 sensor: start.sensor,
+                lens: start.lens,
                 isp: start.isp,
                 params: Default::default(),
             };
@@ -594,6 +605,19 @@ impl PispPipeline {
             })?;
             let be_prepare = t1.elapsed();
             let job = be_dev.process_queued(image.index, self.be.config())?;
+            let raw = match self.raw_copy.as_mut().is_some_and(|want| want(&values)) {
+                true => {
+                    let data = fe_dev.image_data(image.index).unwrap_or(&[]);
+                    super::hold_raw(data, fe_dev.image_format(), &self.info, &self.step, &values)
+                        .map(|h| {
+                            Box::new(crate::still::HeldRaw {
+                                timestamp: image.timestamp,
+                                ..h
+                            })
+                        })
+                }
+                false => None,
+            };
             self.last_seq = Some(seq);
             // A frame start that came meanwhile (at high rates the next frame starts about when
             // this one's statistics arrive): the request below knows how much of it is left.
@@ -602,6 +626,7 @@ impl PispPipeline {
             let ts = Instant::now();
             if run {
                 stats::from_pisp_raw(&self.raw_stats, &mut self.stats);
+                self.stats.pdaf = super::pdaf_grid(&self.controls, seq);
                 self.last_run = Some(seq);
             }
             let stats_time = ts.elapsed();
@@ -610,7 +635,9 @@ impl PispPipeline {
                 Ok(None)
             } else {
                 profile::time("loop", "algorithms", || {
-                    self.controller.process(&self.stats, &values)
+                    let lens = super::lens_state(&controls);
+                    self.controller
+                        .process_with_lens(&self.stats, &values, lens)
                 })
                 .and_then(|step| {
                     let lands = match &step.sensor {
@@ -619,6 +646,9 @@ impl PispPipeline {
                         })?),
                         None => None,
                     };
+                    if let Some(l) = &step.lens {
+                        super::apply_lens(&self.controls, l)?;
+                    }
                     step.isp.apply_fe(&mut self.fe);
                     self.step = step;
                     self.stepped = true;
@@ -652,6 +682,7 @@ impl PispPipeline {
                     be_job: job.elapsed,
                     total: dequeued.elapsed(),
                 },
+                raw,
             })
         })();
         fe_dev.release_image(image.index)?;
@@ -659,6 +690,12 @@ impl PispPipeline {
             profile::record("loop", "dequeued_to_return", dequeued.elapsed());
         }
         result
+    }
+
+    /// Copies the raw frame of every frame `want` accepts (given what produced it) into its
+    /// [`PispFrame::raw`] while the back end processes it (`None`: none).
+    pub fn set_raw_copy(&mut self, want: Option<super::RawCopy>) {
+        self.raw_copy = want;
     }
 
     /// Output `i`'s bytes for a frame's job.

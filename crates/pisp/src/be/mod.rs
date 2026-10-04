@@ -17,6 +17,8 @@ pub mod lsc;
 mod prepare;
 pub mod tiling;
 
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::uapi::*;
 
 pub use prepare::PrepareError;

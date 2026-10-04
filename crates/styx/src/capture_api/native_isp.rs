@@ -7,10 +7,15 @@
 //! from the back end's output buffers (mapped once, exported as dma-bufs, returned to the back
 //! end when the lease drops); software ISP frames are written into recycled heap buffers.
 
+mod af_controls;
 mod loop_controls;
 mod pisp_worker;
+mod still_process;
+mod still_runner;
 
+pub(crate) use af_controls::metas as af_metas;
 pub(crate) use loop_controls::LoopControls;
+pub(crate) use still_runner::StillJob;
 
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -29,11 +34,12 @@ use styx_pisp::device::OutputMemory;
 use styx_softisp::{OutputBuffers, Scale};
 
 use super::control_plane::ControlPlane;
-use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle, enqueue_capture_frame};
+use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle};
+use super::handle_metrics::deliver;
 use super::request::CaptureError;
 use super::tunables::StyxConfig;
 use crate::BackendKind;
-use crate::metrics::StageMetrics;
+use crate::metrics::{AaaSample, CaptureMetrics, StageMetrics};
 
 /// Formats the native backend makes from raw frames.
 pub(crate) const PROCESSED: [FourCc; 2] = [FourCc::NV12, FourCc::RG24];
@@ -185,6 +191,44 @@ fn layouts(code: FourCc, h: usize, stride: usize) -> SmallVec<[PlaneLayout; 3]> 
     }
 }
 
+/// What the 3A loop made of frame `seq`, for the capture's metrics; with a focus lens, whether
+/// it had settled during the frame (from `controls`).
+fn aaa_sample(
+    params: &styx_pipeline::styx_algo::Params,
+    controls: &styx_native::CameraControls,
+    seq: u64,
+) -> AaaSample {
+    use crate::metrics::{AfModeKind, AfSample, AfStateKind};
+    use styx_pipeline::styx_algo::{AfMode, AfState};
+    let af = &params.af;
+    AaaSample {
+        ae_locked: params.ae.locked,
+        awb_converged: params.awb.converged,
+        colour_temperature: params.colour_temperature,
+        lux: params.lux,
+        flicker_period: params.ae.flicker_detected,
+        // Only cameras with a lens: the lookup takes the control schedule's lock.
+        af: af.active.then(|| AfSample {
+            state: match af.state {
+                AfState::Idle => AfStateKind::Idle,
+                AfState::Scanning => AfStateKind::Scanning,
+                AfState::Focused => AfStateKind::Focused,
+                AfState::Failed => AfStateKind::Failed,
+            },
+            mode: match af.mode {
+                AfMode::Manual => AfModeKind::Manual,
+                AfMode::Auto => AfModeKind::Auto,
+                AfMode::Continuous => AfModeKind::Continuous,
+            },
+            lens_dioptres: af.lens_position,
+            lens_settled: controls
+                .applied(seq)
+                .and_then(|c| c.lens)
+                .map(|l| l.settled),
+        }),
+    }
+}
+
 fn native_meta(sequence: u64, s: &SensorValues) -> NativeFrameMeta {
     NativeFrameMeta {
         sequence: sequence as u32,
@@ -205,6 +249,29 @@ fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues)
         .with_capture_instant(std::time::Instant::now());
     meta.clock = Some(TimestampClock::Monotonic);
     meta
+}
+
+/// A software path frame's raw rows held for a still.
+fn hold_soft(
+    f: &styx_pipeline::device::SoftFrame,
+    format: styx_softisp::RawFormat,
+) -> Box<styx_pipeline::still::HeldRaw> {
+    let stride = f.raw.stride as usize;
+    let len = (stride * format.height as usize).min(f.raw.data().len());
+    Box::new(styx_pipeline::still::HeldRaw {
+        sequence: f.sensor.frame,
+        timestamp: f.raw.timestamp,
+        width: format.width,
+        height: format.height,
+        stride,
+        packing: format.packing,
+        cfa: format.pattern,
+        bits: format.packing.bit_depth(),
+        data: f.raw.data()[..len].to_vec(),
+        sensor: f.sensor,
+        isp: f.output.applied.clone(),
+        params: Box::new(f.output.step.params.clone()),
+    })
 }
 
 /// Back end buffers per PiSP output: [`NativeIspConfig::output_buffers`] covers the back
@@ -281,6 +348,8 @@ pub(super) fn start_processed(
         config.backends.native.flicker,
         config.backends.native.deflicker,
     ));
+    loop_controls.af.set_output(w, h);
+    loop_controls.af.set_lens(camera.info().lens.is_some());
     for (id, value) in initial {
         loop_controls
             .apply(*id, value)
@@ -293,6 +362,26 @@ pub(super) fn start_processed(
     let timeout = Duration::from_secs(2);
     let code = mode.format.code;
     let worker_mode = mode.clone();
+    let still_ctx = Arc::new(still_process::StillContext {
+        kind,
+        source: styx_pipeline::still::StillSource {
+            model: camera.info().location.sensor_name.clone(),
+            unique_camera_model: format!("Styx {} ({source})", camera.info().location.sensor_name),
+            calibrations: styx_pipeline::still::dng_calibrations(&tuning),
+        },
+        threads: config
+            .backends
+            .native
+            .soft_threads
+            .unwrap_or_else(crate::planner::cost::default_softisp_threads),
+    });
+    let mut still = still_runner::StillRunner::new(
+        Arc::clone(&loop_controls),
+        Box::new(move || still_process::StillProcessor::spawn(Arc::clone(&still_ctx))),
+    );
+    let live = CaptureMetrics::default();
+    live.set_isp(kind.name());
+    let live_worker = live.clone();
     let (controls, worker): (styx_native::CameraControls, thread::JoinHandle<()>) = match kind {
         IspKind::Pisp => {
             let settings = StreamSettings {
@@ -341,6 +430,8 @@ pub(super) fn start_processed(
                     send_timeout,
                     timeout,
                     loop_controls: loop_worker,
+                    still,
+                    live: live_worker,
                 },
             )?;
             (controls, worker)
@@ -365,6 +456,7 @@ pub(super) fn start_processed(
             if let Some(ctx) = crate::gpu_isp::context() {
                 match p.use_gpu(&ctx) {
                     Ok(()) => {
+                        live.set_isp("gpu");
                         tracing::info!(backend = "native", device = %ctx.info().name, "GPU ISP")
                     }
                     Err(e) => {
@@ -387,9 +479,11 @@ pub(super) fn start_processed(
                 .map(|l| l.offset + l.len)
                 .max()
                 .unwrap_or(0);
+            let lens_controls = p.controls().clone();
             let worker = thread::Builder::new()
                 .name("styx-native-softisp".into())
                 .spawn(move || {
+                    live_worker.register_thread();
                     let (ret_tx, ret_rx) = mpsc::channel::<Vec<u8>>();
                     loop {
                         if stop_rx.try_recv().is_ok() {
@@ -398,6 +492,7 @@ pub(super) fn start_processed(
                         if let Some(c) = loop_worker.take() {
                             p.soft_loop().controller().set_controls(c);
                         }
+                        still.before_frame(&mut p);
                         let mut buf = ret_rx.try_recv().unwrap_or_else(|_| vec![0u8; len]);
                         let out = if code == FourCc::NV12 {
                             let (y, uv) = buf.split_at_mut(stride * h as usize);
@@ -422,18 +517,33 @@ pub(super) fn start_processed(
                             }
                         };
                         loop_worker.report(&f.output.step.params);
+                        let raw = still
+                            .wants(&f.sensor)
+                            .then(|| hold_soft(&f, p.soft_loop().format()));
+                        let step = &f.output.step;
+                        let ae = (step.params.ae.total_exposure, step.params.ae.locked);
+                        let request = step.sensor;
+                        let (sensor, lands) = (f.sensor, f.request_lands);
+                        let t = &f.output.timing;
+                        live_worker.isp_time(t.isp, t.settings + t.isp + t.stats + t.algorithms);
+                        live_worker.aaa(&aaa_sample(
+                            &f.output.step.params,
+                            &lens_controls,
+                            f.sensor.frame,
+                        ));
                         let meta =
                             frame_meta(&worker_mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
                         drop(f);
+                        still.after_frame(&mut p, &sensor, (lands, request), ae, raw);
                         let lease = FrameLease::from_external(
                             meta,
                             layouts(code, h as usize, stride),
-                            Arc::new(HeapBacking {
+                            Arc::new(live_worker.track(HeapBacking {
                                 data: Some(buf),
                                 returns: ret_tx.clone(),
-                            }),
+                            })),
                         );
-                        if enqueue_capture_frame(&tx, lease, "native-softisp", send_timeout) {
+                        if deliver(&live_worker, &tx, lease, "native-softisp", send_timeout) {
                             break;
                         }
                     }
@@ -471,7 +581,8 @@ pub(super) fn start_processed(
         control_error: Arc::new(Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
-        sequence_gaps: Default::default(),
+        sequence_gaps: live.sequence_gaps(),
+        live,
     })
 }
 
@@ -570,16 +681,16 @@ mod tests {
         let pisp = device("pisp");
         for (req, code, luma) in [
             (
-                FrameRequirements::formats([FourCc::NV12]),
+                crate::planner::Frames::formats([FourCc::NV12]),
                 FourCc::NV12,
                 false,
             ),
             (
-                FrameRequirements::formats([FourCc::RG24]),
+                crate::planner::Frames::formats([FourCc::RG24]),
                 FourCc::RG24,
                 false,
             ),
-            (FrameRequirements::luma(), FourCc::NV12, true),
+            (crate::planner::Frames::gray(), FourCc::NV12, true),
         ] {
             let plan = crate::planner::plan_frames(&pisp, &req).unwrap();
             assert_eq!(plan.backend, BackendKind::Native);
@@ -600,18 +711,23 @@ mod tests {
             );
         }
         // Raw stays raw.
-        let raw = FrameRequirements::formats([FourCc::new(*b"pBAA")]);
+        let raw = crate::planner::Frames::formats([FourCc::new(*b"pBAA")]);
         let plan = crate::planner::plan_frames(&pisp, &raw).unwrap();
         assert_eq!(plan.mode.format.code, FourCc::new(*b"pBAA"));
         // Without a PiSP the software ISP runs the loop, priced by the megapixel.
         let soft = device("software");
-        let plan = crate::planner::plan_frames(&soft, &FrameRequirements::formats([FourCc::NV12]))
-            .unwrap();
+        let plan =
+            crate::planner::plan_frames(&soft, &crate::planner::Frames::formats([FourCc::NV12]))
+                .unwrap();
+        // With `gpu-isp` on a host with a Vulkan GPU the GPU ISP takes that route instead.
+        if plan.to_string().contains("GPU ISP") {
+            return;
+        }
         assert!(plan.to_string().contains("software ISP"), "{plan}");
         assert!(plan.total.cpu_ms > 2.5, "{plan}");
         assert_eq!(plan.mode.format.resolution.width.get(), 1280, "{plan}");
         // A consumer of small frames gets the binned mode: no demosaic, less than half the CPU.
-        let small = FrameRequirements::formats([FourCc::NV12]).output_resolution(640, 400);
+        let small = crate::planner::Frames::formats([FourCc::NV12]).size(640, 400);
         let half = crate::planner::plan_frames(&soft, &small).unwrap();
         assert_eq!(half.mode.format.resolution.width.get(), 640, "{half}");
         assert!(

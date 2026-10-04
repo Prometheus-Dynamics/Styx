@@ -1,10 +1,11 @@
 //! The userspace sensor driver: runs a description over a [`RegisterBus`] and [`SensorPins`].
 
-use std::io;
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::sync::Arc;
+use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
+use core::time::Duration;
 
 use crate::bus::{RegisterBus, SensorPins};
+use crate::bus_error::BusErrorKind;
 use crate::desc::{Backend, Field, Flip, RegWrite, SensorDescription, Step};
 use crate::error::{Result, SensorError};
 use crate::fallback::{KernelControl, kernel_controls};
@@ -195,7 +196,7 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
                 Step::Write(_) => unreachable!("handled above"),
             };
             match res {
-                Err(e) if optional && e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) if optional && e.kind() == BusErrorKind::NotFound => {}
                 Err(source) => {
                     return Err(SensorError::Pins {
                         what,
@@ -291,7 +292,7 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
             if matches!(step, Step::Write(_)) {
                 continue;
             }
-            let r = self.run(std::slice::from_ref(step));
+            let r = self.run(core::slice::from_ref(step));
             if first.is_ok() {
                 first = r;
             }

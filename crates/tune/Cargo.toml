@@ -1,0 +1,28 @@
+[package]
+name = "styx-tune"
+version.workspace = true
+edition.workspace = true
+description = "Camera calibration for Styx: black level, lens shading, AWB curve, colour matrices, noise and lux from raw captures of standard targets, written as a Styx (TOML) or Raspberry Pi (JSON) tuning."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Read Styx MCAP recordings (`StreamRecorder`, per-frame exposure and gains).
+mcap = ["dep:styx"]
+
+[dependencies]
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json.workspace = true
+styx-algo.workspace = true
+styx-dng.workspace = true
+styx-pipeline.workspace = true
+styx-softisp.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+toml = "1.1"
+styx = { workspace = true, optional = true, features = ["replay-mcap"] }
+
+[lints]
+workspace = true

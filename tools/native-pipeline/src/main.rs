@@ -25,7 +25,8 @@
 //!                        hand back to AE (a brightness step of 1/K as AE sees it); repeatable
 //!   --record BASE        (soft) record the raw frames and their sensor values
 //!   --algo-record PATH   record the algorithms' inputs and outputs (styx-algo replay)
-//!   --threads N          (soft, replay) software ISP row bands (default 1)
+//!   --threads N          (soft, replay) software ISP row bands (default 1; more than 2 can
+//!                        hang the dev box's CM5 at 2.4 GHz: pipeline.md "All four cores")
 //!   --output KIND        (soft, replay) rgb (default), nv12 or luma, each optionally -half
 //!   --arithmetic A       (soft, replay) software ISP arithmetic: auto (default), int, int-poly
 //!                        (int with the tone curve as quadratics) or half

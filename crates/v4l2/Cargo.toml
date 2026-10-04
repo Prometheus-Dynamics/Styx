@@ -16,7 +16,7 @@ rust-version.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-styx-core.workspace = true
+styx-core = { workspace = true, features = ["std", "neon", "x86"] }
 styx-capture.workspace = true
 smallvec.workspace = true
 styx-kernel.workspace = true

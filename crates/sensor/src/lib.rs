@@ -126,12 +126,27 @@
 //!   requested frame, and which values produced each frame.
 //! * [`SensorDriver`]: power, chip id, init, modes, streaming and scheduled controls over a
 //!   [`RegisterBus`]; [`MockBus`] and [`MockPins`] record operations for tests.
+//! * [`lens`]: focus lenses (VCMs) as data: the chip's I²C command format, the move time
+//!   model, the frame-exact [`LensSchedule`], and the IMX708's phase detection data.
 //! * [`SensorDescription::from_subdev_with`]: descriptions of sensors with kernel drivers,
 //!   built from a [`SubdevReport`] and, when there is one, a [`KernelSensorData`] file (gain
 //!   model, delays, black level, embedded data layout; `sensors/kernel/*.toml` ship built in).
 //!   [`SensorDriver`] then drives them through V4L2 controls ([`RegisterBus::set_controls`]).
+//!
+//! # `no_std`
+//!
+//! Without the default `std` feature the crate is `no_std` + `alloc`: descriptions from
+//! strings, timing, gain models, the control scheduler, embedded data, lenses and the driver
+//! over a [`RegisterBus`]. `from_file`, [`NoPins`] and the sleeping default of
+//! [`SensorPins::delay`] need `std`. Bus and pin operations fail with a [`BusError`] (with
+//! `std`, `std::io::Error` converts to and from it; docs/portability.md).
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
 
 mod bus;
+mod bus_error;
 mod desc;
 mod driver;
 mod embedded;
@@ -139,11 +154,14 @@ mod error;
 mod fallback;
 mod gain;
 mod kernel_data;
+pub mod lens;
+mod math;
 mod mbus;
 pub mod schedule;
 mod timing;
 
-pub use bus::{BusOp, MockBus, MockPins, NoPins, PinOp, RegisterBus, SensorPins};
+pub use bus::{BusOp, BusResult, MockBus, MockPins, NoPins, PinOp, RegisterBus, SensorPins};
+pub use bus_error::{BusError, BusErrorKind};
 pub use desc::{
     Backend, BlackLevel, Blanking, ChipId, Controls, Delays, EmbeddedControl, EmbeddedControlKind,
     EmbeddedData, EmbeddedEntry, EmbeddedFormat, EmbeddedPacking, EmbeddedRegister, Exposure,
@@ -156,6 +174,7 @@ pub use error::{Issue, Issues, Result, SensorError};
 pub use fallback::{ControlRange, KernelControl, SubdevFormat, SubdevReport, kernel_controls};
 pub use gain::{GainCode, GainSplit, Rounding, split_gain};
 pub use kernel_data::{BUILTIN_KERNEL_DATA, KernelSensorData};
+pub use lens::{LensDescription, LensFrame, LensMotion, LensSchedule, VcmChip, VcmFormat, VcmI2c};
 pub use mbus::{ColorFilter, MbusCode};
 pub use schedule::{
     Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Mismatch,

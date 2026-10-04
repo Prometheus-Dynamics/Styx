@@ -1,4 +1,8 @@
-use std::{fmt, num::NonZeroU32, str::FromStr};
+use alloc::string::String;
+use core::{fmt, num::NonZeroU32, str::FromStr};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// Four-character code describing a pixel/stream format.
 ///
@@ -262,7 +266,7 @@ impl FourCc {
 
     /// Try to convert to a printable string.
     pub fn as_str(&self) -> Option<&str> {
-        std::str::from_utf8(&self.0).ok()
+        core::str::from_utf8(&self.0).ok()
     }
 
     /// Whether this format is stored as a compressed packet rather than raw image planes.

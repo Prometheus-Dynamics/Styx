@@ -16,11 +16,15 @@ members = [
     "crates/gpuisp",
     "crates/pipeline",
     "crates/uvc",
+    "crates/dng",
+    "crates/tune",
     "tools/native-spike",
     "tools/pisp-spike",
     "tools/native-pipeline",
     "tools/compare",
+    "tools/styx-tune",
     "examples",
+    "examples/nostd-smoke",
 ]
 # Optional bridges that link GStreamer/PipeWire; their own workspaces (docs/ecosystem.md).
 exclude = ["crates/gst-styx", "crates/pipewire-styx"]
@@ -38,7 +42,9 @@ rust-version = "1.94"
 [workspace.dependencies]
 mcap = { version = "0.25", default-features = false }
 styx = { path = "crates/styx", version = "2.0.0", default-features = false }
-styx-core = { package = "styx-core-rs", path = "crates/core", version = "2.0.0" }
+# No default features so styx-softisp can use it without std; the other crates ask for
+# `std`, `neon` and `x86` (styx-core's defaults).
+styx-core = { package = "styx-core-rs", path = "crates/core", version = "2.0.0", default-features = false }
 styx-capture = { path = "crates/capture", version = "2.0.0" }
 styx-codec = { path = "crates/codec", version = "2.0.0" }
 styx-libcamera = { path = "crates/libcamera", version = "2.0.0" }
@@ -53,10 +59,15 @@ styx-softisp = { path = "crates/softisp", version = "2.0.0" }
 styx-gpuisp = { path = "crates/gpuisp", version = "2.0.0" }
 styx-pipeline = { path = "crates/pipeline", version = "2.0.0" }
 styx-uvc = { path = "crates/uvc", version = "2.0.0" }
+styx-dng = { path = "crates/dng", version = "2.0.0" }
+styx-tune = { path = "crates/tune", version = "2.0.0" }
 daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "main", version = "2.0.0", default-features = false }
 crossbeam-queue = "0.3.12"
 smallvec = "1.15.1"
-thiserror = "2.0.18"
+# thiserror and serde without default features so the no_std crates can use them (crates that
+# want `std` ask for it; docs/portability.md). libm: float maths for no_std builds.
+thiserror = { version = "2.0.18", default-features = false }
+libm = "0.2.16"
 tokio = "1.52.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 # FFmpeg types only: Styx calls FFmpeg through libraries it loads at runtime
@@ -66,7 +77,7 @@ libcamera = { version = "0.7", default-features = false, features = ["libcamera_
 tokio-util = { version = "0.7.18", features = ["io"] }
 futures-core = "0.3.32"
 futures-util = { version = "0.3.32", features = ["io"] }
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 serde_json = "1.0.145"
 utoipa = { version = "5.4.0", default-features = false, features = ["macros"] }
 parking_lot = "0.12.5"

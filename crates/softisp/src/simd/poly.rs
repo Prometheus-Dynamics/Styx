@@ -23,7 +23,12 @@
 //! recorded OV9782 session; steeper ones (gamma 3) do not and keep the table. Whole octaves
 //! missed by two codes on most of those adaptive curves.
 
+use alloc::vec;
+
 use super::scalar::WORK_MAX;
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// Added to the input so that its octaves `[2^5, 2^12)` cover `0..=4095`.
 const OFFSET: u16 = 32;
@@ -241,7 +246,7 @@ mod tests {
 
     #[test]
     fn rough_tables_do_not_fit() {
-        let nodes = std::array::from_fn(|i| if i % 2 == 0 { 0 } else { 255 });
+        let nodes = core::array::from_fn(|i| if i % 2 == 0 { 0 } else { 255 });
         assert!(PolyTone::fit(ToneLut::from_nodes(nodes).full()).is_none());
     }
 }

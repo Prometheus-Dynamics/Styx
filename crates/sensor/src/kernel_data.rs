@@ -17,11 +17,17 @@
 //! black_level = { value = 64, bits = 10 }
 //! exposure_margin = 4             # default: what the driver's EXPOSURE maximum implies
 //! frame_length_extra_lines = 0
+//! pdaf = "imx708"                 # phase detection data in the embedded data
+//! [lens]                          # a focus lens its kernel driver moves (styx_sensor::lens)
+//! settle_us = 12000
+//! map = [0.0, 445, 15.0, 925]
 //! [embedded_data]                 # as in a sensor description
 //! lines = 2
 //! format = "ccs"
 //! registers = [{ control = "exposure", address = 0x015a, bytes = 2 }]
 //! ```
+
+use alloc::{borrow::ToOwned, format, string::String, string::ToString, vec::Vec};
 
 use serde::Deserialize;
 
@@ -80,6 +86,13 @@ pub struct KernelSensorData {
     /// Embedded data layout, when the driver sends it on a metadata pad.
     #[serde(default)]
     pub embedded_data: Option<EmbeddedData>,
+    /// The focus lens a kernel lens driver moves (settle time, the dioptre map), for modules
+    /// with one; a lens linked to the sensor without this gets the defaults.
+    #[serde(default)]
+    pub lens: Option<crate::lens::LensDescription>,
+    /// Phase detection data in the embedded data (`"imx708"`), for AF.
+    #[serde(default)]
+    pub pdaf: Option<String>,
 }
 
 /// The data files that ship with this crate (`sensors/kernel/*.toml`).
@@ -102,6 +115,7 @@ impl KernelSensorData {
     }
 
     /// Reads and parses a data file.
+    #[cfg(feature = "std")]
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         let src = std::fs::read_to_string(path).map_err(|source| SensorError::ReadFile {

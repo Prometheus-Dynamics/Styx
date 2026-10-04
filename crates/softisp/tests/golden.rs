@@ -70,6 +70,7 @@ fn params(demosaic: Demosaic, shaded: bool, stats: bool, arithmetic: Arithmetic)
             histogram_bins: 64,
             saturation: 0.95,
             row_step: 1,
+            ..StatsConfig::default()
         }),
         arithmetic,
     }

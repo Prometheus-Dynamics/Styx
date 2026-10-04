@@ -47,6 +47,7 @@ pub fn from_pisp(s: &PispStatistics) -> Statistics {
             height: focus_side,
             zones: s.focus.iter().map(|&f| f as f64).collect(),
         }),
+        pdaf: None,
         before_wb: true,
         before_lsc: true,
     }
@@ -123,7 +124,14 @@ pub fn from_softisp(s: &IspStats, black_level: f64, with_lens_shading: bool) -> 
             zones: luma,
         }),
         histogram: Histogram::from(rescale_histogram(&s.histogram, range / g[1])),
-        focus: None,
+        // Gradient energy without the gains (squared) and on the black-subtracted scale, as
+        // the colour zones.
+        focus: (s.focus.len() == s.zones.len() && !s.focus.is_empty()).then(|| ZoneGrid {
+            width: s.zones_x,
+            height: s.zones_y,
+            zones: s.focus.iter().map(|f| f * (range / g[1]).powi(2)).collect(),
+        }),
+        pdaf: None,
         before_wb: true,
         before_lsc: !with_lens_shading,
     }
@@ -207,6 +215,7 @@ mod tests {
             luma: Some(ZoneGrid::default()),
             histogram: Histogram::from(vec![1, 2, 3]),
             focus: None,
+            pdaf: None,
             before_wb: false,
             before_lsc: false,
         }
@@ -235,6 +244,7 @@ mod tests {
             histogram: vec![0, 0, 10, 10],
             samples: 20,
             gains: [2.0, 1.0, 4.0],
+            focus: Vec::new(),
         };
         let s = from_softisp(&st, bl, false);
         let (r, g, b) = s.colour.zones[0].mean();

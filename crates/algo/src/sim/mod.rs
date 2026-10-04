@@ -16,20 +16,29 @@
 //!   `F` itself, right after its statistics). Requests that arrive too late land late and are
 //!   counted ([`Simulation::late_landings`]).
 //!
+//! * Focus ([`FocusSim`], optional): a scene with depth and a focus lens; the frames get
+//!   focus statistics and phase data from the lens's real position, and AF's lens requests
+//!   move it (see [`focus`](FocusSim)).
+//!
 //! Everything is deterministic: noise comes from a seeded generator without libm calls.
 
+mod focus;
 mod metrics;
 
-use std::collections::BTreeMap;
-use std::time::Duration;
+use alloc::collections::BTreeMap;
+use alloc::{vec, vec::Vec};
+use core::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::frame::{Controls, FrameMetadata};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Pipeline;
 use crate::pwl::Pwl;
 use crate::stats::{Statistics, StatsAccumulator};
 
+pub use focus::{FocusScene, FocusSim, LensModel, Optics, PdafModel};
 pub use metrics::{Convergence, convergence};
 
 /// A small deterministic generator (SplitMix64).
@@ -140,7 +149,7 @@ impl Scene {
     /// Mean light over an exposure `[t0, t0 + t]` relative to the steady level.
     fn flicker_factor(&self, t0: f64, t: f64) -> f64 {
         let part = |f: &SceneFlicker| {
-            let w = 2.0 * std::f64::consts::PI * f.hz;
+            let w = 2.0 * core::f64::consts::PI * f.hz;
             if t <= 0.0 {
                 f.depth * (w * t0).cos()
             } else {
@@ -266,6 +275,8 @@ pub struct Simulation {
     late: u64,
     /// The values last sent (or started with): a request repeating them is not news.
     sent: Option<[f64; 3]>,
+    /// Focus: a scene with depth and a lens (`None`: no lens).
+    pub focus: Option<FocusSim>,
 }
 
 impl Simulation {
@@ -286,6 +297,7 @@ impl Simulation {
             landed: Default::default(),
             late: 0,
             sent: None,
+            focus: None,
         };
         s.start_with(0.001, 1.0, fd);
         s
@@ -324,6 +336,9 @@ impl Simulation {
     fn frame_start(&mut self) {
         self.accept();
         self.issue();
+        if let Some(f) = &mut self.focus {
+            f.frame_start(self.frame, self.time);
+        }
     }
 
     fn accept(&mut self) {
@@ -425,8 +440,20 @@ impl Simulation {
         let mut out = Vec::with_capacity(frames as usize);
         for _ in 0..frames {
             self.frame_start();
-            let (meta, stats, lux, ct) = self.expose();
+            let start = self.time;
+            let (mut meta, mut stats, lux, ct) = self.expose();
+            if let Some(f) = &mut self.focus {
+                let exposure = meta.exposure.as_secs_f64();
+                let t0 = start + meta.frame_duration.as_secs_f64() - exposure;
+                let noise = (self.sensor.shot_noise, self.sensor.read_noise);
+                let gain = meta.analogue_gain;
+                meta.lens = f.observe(self.frame, t0, exposure, noise, gain, &mut stats);
+            }
             let params = pipeline.process(&stats, &meta).clone();
+            if let (Some(f), Some(r)) = (&mut self.focus, params.lens) {
+                let latency = u64::from(self.config.delays.issue_latency);
+                f.request(&r, self.frame, latency, self.time);
+            }
             // Only values that differ from the last ones sent are news (as the controller in
             // `styx-pipeline` does).
             let values = params.sensor.map(|r| {

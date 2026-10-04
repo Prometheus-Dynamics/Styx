@@ -104,6 +104,8 @@ pub(super) struct Connection {
     /// Frames sent and not yet released: when, and the buffers they keep alive.
     held: HashMap<u64, (Instant, Vec<Arc<dyn ExternalBacking>>)>,
     next_id: u64,
+    /// This client in the camera service's metrics.
+    pub(super) stats: Option<Arc<crate::metrics::ConsumerStats>>,
 }
 
 impl Connection {
@@ -112,6 +114,7 @@ impl Connection {
             socket,
             held: HashMap::new(),
             next_id: 0,
+            stats: None,
         }
     }
 
@@ -129,6 +132,9 @@ impl Connection {
         }
         self.next_id += 1;
         self.held.insert(id, (Instant::now(), frame.keep.clone()));
+        if let Some(stats) = &self.stats {
+            stats.sent();
+        }
         Ok(true)
     }
 
@@ -141,6 +147,16 @@ impl Connection {
         socket::send(&self.socket, message, &[])
     }
 
+    /// Send `message` with descriptors attached.
+    pub(super) fn send_with_fds(&self, message: &[u8], fds: &[RawFd]) -> io::Result<bool> {
+        socket::send(&self.socket, message, fds)
+    }
+
+    /// The client process, as the kernel reports it.
+    pub(super) fn peer(&self) -> Option<socket::PeerCredentials> {
+        socket::peer_credentials(&self.socket).ok()
+    }
+
     /// Messages from the client, waiting up to `wait` for the first; releases are applied here.
     /// `Err` once the client is gone.
     pub(super) fn poll(&mut self, wait: Duration) -> Result<Vec<ClientMessage>, ()> {
@@ -150,7 +166,11 @@ impl Connection {
             match socket::recv(&self.socket, wait) {
                 Ok(socket::Received::Message(bytes, _)) => match wire::decode_client(&bytes) {
                     Ok(ClientMessage::Release(id)) => {
-                        self.held.remove(&id);
+                        if let (Some((since, _)), Some(stats)) =
+                            (self.held.remove(&id), &self.stats)
+                        {
+                            stats.released(since.elapsed());
+                        }
                     }
                     Ok(message) => messages.push(message),
                     Err(err) => tracing::debug!(error = %err, "client message ignored"),

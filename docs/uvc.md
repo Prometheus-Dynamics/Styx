@@ -84,7 +84,7 @@ println!("{} bytes captured at {:?} (from PTS: {})", frame.data.len(), frame.tim
 Through Styx (`--features uvc`): `probe_all` lists every UVC camera, also those `uvcvideo`
 holds. A camera both can see is one `ProbedDevice` (matched on the USB bus path) with the V4L2
 backend first: **`uvcvideo` stays the default**, and the planner considers the userspace
-backend only when asked for it (`PlanOverrides { backend: Some("uvc") }`,
+backend only when asked for it (`Frames::...backend(BackendKind::Uvc)`,
 `CaptureRequest::backend(BackendKind::Uvc)`) or when nothing else has the camera.
 
 Using it on a camera `uvcvideo` holds needs the interfaces free: either unbind it

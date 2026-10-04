@@ -3,7 +3,8 @@
 //!
 //! Scalar kernels ([`scalar`]) are the correctness oracle. The x86 (SSE2, SSSE3, AVX2) and
 //! AArch64 NEON modules are backend slots only: they must produce exactly the scalar result.
-//! x86 leaves are chosen at run time from the detected CPU features; NEON is part of the
+//! x86 leaves are chosen at run time from the detected CPU features (without `std`: at compile
+//! time, from the target features); NEON is part of the
 //! AArch64 baseline. Cargo features `x86` and `neon` (on by default) compile the backends in;
 //! without them everything runs the scalar kernels.
 //!
@@ -53,14 +54,32 @@ pub struct X86FeatureSet {
 
 impl X86FeatureSet {
     /// The running CPU's features (all false on other architectures, or without the `x86`
-    /// feature). `is_x86_feature_detected!` caches its answer.
+    /// feature). `is_x86_feature_detected!` caches its answer. Without `std` there is no run
+    /// time detection: the features the target is compiled for (`-C target-feature`,
+    /// `-C target-cpu`).
     pub fn detect() -> Self {
-        #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+        #[cfg(all(
+            feature = "std",
+            feature = "x86",
+            any(target_arch = "x86", target_arch = "x86_64")
+        ))]
         {
             Self {
                 sse2: std::is_x86_feature_detected!("sse2"),
                 ssse3: std::is_x86_feature_detected!("ssse3"),
                 avx2: std::is_x86_feature_detected!("avx2"),
+            }
+        }
+        #[cfg(all(
+            not(feature = "std"),
+            feature = "x86",
+            any(target_arch = "x86", target_arch = "x86_64")
+        ))]
+        {
+            Self {
+                sse2: cfg!(target_feature = "sse2"),
+                ssse3: cfg!(target_feature = "ssse3"),
+                avx2: cfg!(target_feature = "avx2"),
             }
         }
         #[cfg(not(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64"))))]
@@ -218,7 +237,7 @@ pub fn box2_row(top: &[u8], bottom: &[u8], dst: &mut [u8], width: usize) -> Simd
 pub fn reverse_row(src: &[u8], dst: &mut [u8], width: usize, bpp: usize) -> SimdBackend {
     let (src, dst) = (&src[..width * bpp], &mut dst[..width * bpp]);
     #[allow(unused_mut, unused_assignments)]
-    let mut outcome: Option<(SimdBackend, std::ops::Range<usize>)> = None;
+    let mut outcome: Option<(SimdBackend, core::ops::Range<usize>)> = None;
     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
     {
         outcome = neon::reverse_row(src, dst, width, bpp);

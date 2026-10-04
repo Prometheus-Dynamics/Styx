@@ -1,0 +1,1 @@
+{"descriptor":{"width":64,"height":32,"fourcc":"NV12","timestamp":7,"color":"Bt709","planes":[{"offset":0,"len":2048,"stride":64},{"offset":2048,"len":1024,"stride":64}]},"backing":{"kind":"memfd","len":3072}}

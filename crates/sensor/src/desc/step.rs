@@ -1,7 +1,8 @@
 //! Sequence steps: register writes, delays, GPIO lines, clocks and supplies.
 
-use std::fmt;
-use std::time::Duration;
+use alloc::{format, string::String, vec::Vec};
+use core::fmt;
+use core::time::Duration;
 
 use serde::Deserialize;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};

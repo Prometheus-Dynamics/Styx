@@ -5,7 +5,9 @@ mod step;
 mod types;
 mod validate;
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::{borrow::ToOwned, string::String, string::ToString, vec::Vec};
+#[cfg(feature = "std")]
 use std::path::Path;
 
 use serde::Deserialize;
@@ -19,6 +21,8 @@ pub use step::{RegWrite, Step};
 pub use types::{Blanking, Field, Rect, Size};
 
 use crate::error::{Result, SensorError};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::mbus::{ColorFilter, MbusCode};
 use crate::timing::Timing;
 
@@ -42,6 +46,9 @@ pub struct SensorDescription {
     /// Embedded data layout, if the sensor sends register values with each frame.
     #[serde(default)]
     pub embedded_data: Option<EmbeddedData>,
+    /// The focus lens (a VCM), if the module has one.
+    #[serde(default)]
+    pub lens: Option<crate::lens::LensDescription>,
 }
 
 /// Who drives the sensor.
@@ -264,6 +271,7 @@ impl SensorDescription {
     }
 
     /// Read, parse and validate a description file.
+    #[cfg(feature = "std")]
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let src = std::fs::read_to_string(path).map_err(|source| SensorError::ReadFile {
@@ -274,7 +282,7 @@ impl SensorDescription {
     }
 
     /// Check the description for consistency. Returns every problem found.
-    pub fn validate(&self) -> std::result::Result<(), crate::Issues> {
+    pub fn validate(&self) -> core::result::Result<(), crate::Issues> {
         validate::validate(self)
     }
 

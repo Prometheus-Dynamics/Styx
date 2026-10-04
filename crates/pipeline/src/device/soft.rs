@@ -78,6 +78,8 @@ impl SoftPipeline {
             &configured.mode.format,
         )?
         .with_fps(fps, fps)?;
+        let mut sensor = sensor;
+        sensor.camera.lens = super::lens_config(&camera);
         let mut soft = SoftLoop::new(sensor, format.packing, tuning, threads)?;
         // Buffers from a (cached) dma-heap are read in place: 0.17 ms per 1280x800 frame
         // less than staging the rows on the CM5. The driver's MMAP buffers are often mapped
@@ -153,6 +155,9 @@ impl SoftPipeline {
         if let Some(r) = start.sensor {
             apply_request(&self.controls, &r)?;
         }
+        if let Some(l) = start.lens {
+            super::apply_lens(&self.controls, &l)?;
+        }
         self.stream = Some(self.camera.start()?);
         Ok(())
     }
@@ -193,9 +198,16 @@ impl SoftPipeline {
             }
             _ => crate::RawFrame::Bytes(raw.data()),
         };
+        self.soft.set_frame_focus(
+            super::lens_state(&controls),
+            super::pdaf_grid(&self.controls, seq),
+        );
         let output = self
             .soft
             .process_frame(frame, raw.stride as usize, &sensor, scale, out)?;
+        if let Some(l) = &output.step.lens {
+            super::apply_lens(&self.controls, l)?;
+        }
         let request_lands = match &output.step.sensor {
             Some(r) => Some(apply_request(&self.controls, r)?),
             None => None,

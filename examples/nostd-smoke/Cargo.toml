@@ -1,0 +1,25 @@
+[package]
+name = "styx-nostd-smoke"
+version.workspace = true
+edition.workspace = true
+description = "A no_std library over Styx's platform-neutral crates (3A, software ISP, sensor descriptions, DNG): built for bare-metal targets in CI, its logic run as a host test."
+license.workspace = true
+publish = false
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# Every Styx crate without its default `std` feature: this crate proves they build and work
+# without std (scripts/check-nostd.sh, docs/portability.md). Path dependencies: the workspace
+# entries keep their default features for the std crates.
+[dependencies]
+styx-algo = { path = "../../crates/algo", default-features = false }
+styx-core = { package = "styx-core-rs", path = "../../crates/core", default-features = false, features = ["neon", "x86"] }
+styx-dng = { path = "../../crates/dng", default-features = false }
+styx-pisp = { path = "../../crates/pisp", default-features = false }
+styx-sensor = { path = "../../crates/sensor", default-features = false }
+styx-softisp = { path = "../../crates/softisp", default-features = false, features = ["neon", "x86"] }
+
+[lints]
+workspace = true

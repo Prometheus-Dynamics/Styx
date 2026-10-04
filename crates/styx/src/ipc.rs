@@ -21,6 +21,7 @@ mod connection;
 #[cfg(feature = "frame-socket")]
 pub mod frame_socket;
 mod mapcache;
+mod metrics;
 mod service;
 mod socket;
 mod wire;
@@ -236,6 +237,13 @@ pub fn fuzz_messages(bytes: &[u8]) {
         }
     }
     let _ = wire::decode_server(bytes);
+}
+
+/// Decode `bytes` as a camera service client's request, check it and plan it on virtual
+/// cameras, as the service does before opening a camera. For fuzzing.
+#[doc(hidden)]
+pub fn fuzz_service_request(bytes: &[u8]) {
+    service::fuzz_request(bytes);
 }
 
 #[cfg(test)]

@@ -1,11 +1,12 @@
 //! Camera configuration given to [`crate::Algorithm::prepare`]: the sensor mode's limits and
 //! control timing.
 
-use std::time::Duration;
+use core::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AlgoError, Result};
+use crate::pwl::Pwl;
 
 /// Frame delays of the sensor controls, as in `styx-sensor`'s `Delays`, plus the issue latency.
 ///
@@ -115,6 +116,33 @@ pub struct CameraConfig {
     /// The ISP runs temporal denoise (keeps a long-term average of frames), so spatial and
     /// colour denoise can back off to their with-TDN strengths.
     pub temporal_denoise: bool,
+    /// The focus lens (a VCM), if the camera has one: AF drives it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lens: Option<LensConfig>,
+}
+
+/// A focus lens as AF sees it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LensConfig {
+    /// Lowest and highest driver position (e.g. `0..=1023` for a 10-bit VCM).
+    pub range: (i32, i32),
+    /// Frames from the frame a move is written in to the first frame exposed with the lens
+    /// there (the lens control writes a move for frame `F` at the start of `F - delay`).
+    pub delay: u32,
+    /// Dioptres → driver position from the lens's description, used when the AF tuning has
+    /// no map.
+    pub map: Option<Pwl>,
+}
+
+impl Default for LensConfig {
+    fn default() -> Self {
+        Self {
+            range: (0, 1023),
+            delay: 1,
+            map: None,
+        }
+    }
 }
 
 impl Default for CameraConfig {
@@ -133,6 +161,7 @@ impl Default for CameraConfig {
             vflip: false,
             readout: Duration::ZERO,
             temporal_denoise: false,
+            lens: None,
         }
     }
 }
@@ -155,6 +184,11 @@ impl CameraConfig {
         }
         if !(self.sensitivity > 0.0 && self.sensitivity.is_finite()) {
             return bad("sensitivity must be positive");
+        }
+        if let Some(l) = &self.lens
+            && l.range.0 >= l.range.1
+        {
+            return bad("lens range must be ordered");
         }
         Ok(())
     }

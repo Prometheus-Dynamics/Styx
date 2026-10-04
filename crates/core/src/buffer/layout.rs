@@ -1,7 +1,15 @@
 //! Plane layout construction and validation helpers.
 
-#[allow(unused_imports)]
-use super::*;
+// The validation helpers serve `FrameLease` (std).
+#![cfg_attr(not(feature = "std"), allow(dead_code))]
+
+use core::num::NonZeroU32;
+
+use smallvec::{SmallVec, smallvec};
+
+use super::meta::FrameResidency;
+use super::plane::{FrameValidationError, PlaneLayout};
+use crate::format::{ChromaSubsampling, FrameLayoutInfo, FrameStorageKind, MediaFormat};
 
 pub fn plane_layout_from_dims(
     width: NonZeroU32,

@@ -1,6 +1,10 @@
 //! The gain model: ratios to register codes with quantisation, and analogue/digital splitting.
 
+use alloc::{vec, vec::Vec};
+
 use crate::desc::{Gain, GainModel};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// How to quantise a gain that falls between codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

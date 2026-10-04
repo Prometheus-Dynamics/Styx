@@ -29,7 +29,7 @@ let config = StyxConfig::new()
   request from its backlog of old raw frames, which is what made frames hundreds of milliseconds
   old.
 - **`latest_frame_only()`:** a queue depth of 1 with `DropOldest`. The planner uses this for
-  `Priority::Latency`.
+  `latest()` delivery (the default).
 
 The defaults (queue depth 2, 2 extra buffers) use 4 device buffers, and `latest_frame_only()`
 uses 3. For V4L2 this saves 0.6–0.7 MB per USB camera compared with 4; a consumer slower than
@@ -74,5 +74,5 @@ consumer spins for the given time on each frame.
   the new default is slightly worse than before. Previously the driver dropped frames once its
   4 buffers were full; now the extra buffers keep 4 queued frames. Use `latest_frame_only()`
   when frame age matters.
-- **Planner:** at `Priority::Latency` it matches `latest_frame_only()` (OV9782: 41 ms, C270:
+- **Planner:** with `latest()` delivery it matches `latest_frame_only()` (OV9782: 41 ms, C270:
   102 ms at 100 ms of work).

@@ -1,7 +1,8 @@
 //! The `[controls]` section: exposure, gain, frame length, delays, group hold, flips, test
 //! patterns and the embedded data layout.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::{string::String, vec::Vec};
 
 use serde::Deserialize;
 

@@ -1,7 +1,10 @@
 //! Generic defaults for sensors without a description: build one from what the kernel driver
 //! reports, with controls going through V4L2 controls instead of registers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use alloc::{borrow::ToOwned, string::ToString};
+use alloc::{format, string::String, vec, vec::Vec};
+
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::desc::{
     Backend, Blanking, Controls, Exposure, Field, Flip, Format, Gain, GainModel, Identity, Mode,
@@ -401,6 +404,7 @@ impl SensorDescription {
                 test_pattern,
             },
             embedded_data: data.and_then(|d| d.embedded_data.clone()),
+            lens: data.and_then(|d| d.lens.clone()),
         };
         desc.validate().map_err(|issues| SensorError::Invalid {
             source_name: "subdev report".into(),
@@ -570,9 +574,9 @@ mod tests {
         drv.request(
             0,
             &ControlRequest {
-                exposure: Some(std::time::Duration::from_millis(5)),
+                exposure: Some(core::time::Duration::from_millis(5)),
                 gain: Some(2.0),
-                frame_duration: Some(std::time::Duration::from_secs_f64(1.0 / 30.0)),
+                frame_duration: Some(core::time::Duration::from_secs_f64(1.0 / 30.0)),
             },
         )
         .unwrap();

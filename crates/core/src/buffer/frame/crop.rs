@@ -28,9 +28,28 @@ impl FrameLease {
             rect.width as usize,
             rect.height as usize,
         );
+        // The view must lie within the Y plane's layout, whatever stride the frame claims (a
+        // layout from another process or a recording); this also bounds the arithmetic.
+        crate::buffer::layout::validate_plane_layout(
+            0,
+            Some(&layout),
+            width as usize,
+            height as usize,
+        )?;
+        let overflow = FrameValidationError::UnknownStorageLayout;
+        let offset = y
+            .checked_mul(layout.stride)
+            .and_then(|o| o.checked_add(x))
+            .and_then(|o| o.checked_add(layout.offset))
+            .ok_or(overflow)?;
+        let len = layout
+            .stride
+            .checked_mul(h - 1)
+            .and_then(|l| l.checked_add(w))
+            .ok_or(overflow)?;
         frame.layouts[0] = PlaneLayout {
-            offset: layout.offset + y * layout.stride + x,
-            len: layout.stride * (h - 1) + w,
+            offset,
+            len,
             stride: layout.stride,
         };
         let resolution =
@@ -122,5 +141,29 @@ mod tests {
     #[test]
     fn empty_regions_are_rejected() {
         assert!(grey(4, 4).crop_view(FrameRect::new(8, 8, 2, 2)).is_err());
+    }
+
+    #[test]
+    fn crops_of_frames_with_absurd_strides_are_refused() {
+        // Found by the `core_frame_layout` fuzz target: a 60288x65535 frame claiming a
+        // 9.8e18-byte stride over a 29 KB plane overflowed computing the view.
+        let res = Resolution::new(60288, 65535).unwrap();
+        let mut buf = BufferPool::with_limits(1, 4351 + 29041, 0).lease();
+        buf.resize(4351 + 29041);
+        let layout = PlaneLayout {
+            offset: 4351,
+            len: 29041,
+            stride: 9_813_625_275_759_559_555,
+        };
+        let frame = FrameLease::multi_plane(
+            FrameMeta::new(MediaFormat::new(FourCc::R8, res, ColorSpace::Srgb), 0),
+            smallvec::smallvec![buf],
+            smallvec::smallvec![layout],
+        );
+        assert!(
+            frame
+                .crop_view(FrameRect::new(19306, 106, 31375, 378))
+                .is_err()
+        );
     }
 }

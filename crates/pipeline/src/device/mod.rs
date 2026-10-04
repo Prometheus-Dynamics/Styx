@@ -10,14 +10,16 @@
 mod pisp;
 mod pisp_options;
 mod soft;
+mod still_be;
 
-use styx_algo::SensorRequest;
-use styx_native::{CameraControls, FrameControls, NativeError};
+use styx_algo::{LensConfig, LensRequest, LensState, PdafZone, Pwl, SensorRequest, ZoneGrid};
+use styx_native::{CameraControls, FrameControls, NativeCamera, NativeError};
 use styx_sensor::ControlRequest;
 
 pub use pisp::{PispFrame, PispPipeline, PispStartup, PispTimes};
 pub use pisp_options::PispOptions;
 pub use soft::{SoftFrame, SoftPipeline};
+pub use still_be::StillBackEnd;
 
 use crate::controller::SensorValues;
 use crate::error::PipelineError;
@@ -35,6 +37,37 @@ impl From<styx_pisp::device::DeviceError> for PipelineError {
             e => PipelineError::Device(format!("pisp: {e}")),
         }
     }
+}
+
+/// Picks the frames whose raw data [`PispPipeline::set_raw_copy`] copies out, from what
+/// produced them.
+pub type RawCopy = Box<dyn FnMut(&SensorValues) -> bool + Send>;
+
+/// A held copy of a front end raw buffer (16-bit samples, the sensor's value at the top)
+/// with the settings `step` processes it with; `None` if the buffer is short.
+fn hold_raw(
+    data: &[u8],
+    format: styx_pisp::uapi::ImageFormatConfig,
+    info: &crate::SensorInfo,
+    step: &crate::Step,
+    values: &SensorValues,
+) -> Option<crate::still::HeldRaw> {
+    let stride = format.stride.max(0) as usize;
+    let len = stride * usize::from(format.height);
+    Some(crate::still::HeldRaw {
+        sequence: values.frame,
+        timestamp: std::time::Duration::ZERO,
+        width: u32::from(format.width),
+        height: u32::from(format.height),
+        stride,
+        packing: styx_softisp::RawPacking::U16Le { bits: 16 },
+        cfa: info.cfa,
+        bits: info.bits,
+        data: data.get(..len)?.to_vec(),
+        sensor: *values,
+        isp: step.isp.clone(),
+        params: Box::new(step.params.clone()),
+    })
 }
 
 /// What produced frame `sequence`, as the camera reports it.
@@ -64,6 +97,53 @@ pub fn apply_request(controls: &CameraControls, r: &SensorRequest) -> crate::Res
         },
     )?;
     Ok(landings.iter().map(|l| l.frame).max().unwrap_or(r.frame))
+}
+
+/// The algorithms' view of the camera's focus lens, when it has one that opened: its range
+/// and delay from the lens control, the dioptre map from its description.
+pub fn lens_config(camera: &NativeCamera) -> Option<LensConfig> {
+    let (range, delay) = camera.controls().lens_range()?;
+    let map = camera
+        .info()
+        .lens
+        .as_ref()
+        .and_then(|l| Pwl::from_flat(&l.description.map).ok())
+        .filter(|m| m.points().len() >= 2);
+    Some(LensConfig {
+        range: (range[0], range[1]),
+        delay,
+        map,
+    })
+}
+
+/// Where the lens was for a frame, as the algorithms take it.
+pub fn lens_state(c: &FrameControls) -> Option<LensState> {
+    c.lens.map(|l| LensState {
+        position: l.position,
+        settled: l.settled,
+    })
+}
+
+/// Frame `seq`'s phase detection data (IMX708: 16×12 cells), as statistics.
+pub fn pdaf_grid(controls: &CameraControls, seq: u64) -> Option<ZoneGrid<PdafZone>> {
+    let cells = controls.pdaf(seq)?;
+    let cols = styx_native::styx_sensor::lens::imx708_pdaf::COLUMNS as u32;
+    Some(ZoneGrid {
+        width: cols,
+        height: cells.len() as u32 / cols,
+        zones: cells
+            .iter()
+            .map(|c| PdafZone {
+                phase: f64::from(c.phase),
+                conf: f64::from(c.conf),
+            })
+            .collect(),
+    })
+}
+
+/// Hands a lens move to the camera's lens control, for the frame it names.
+pub fn apply_lens(controls: &CameraControls, r: &LensRequest) -> crate::Result<()> {
+    Ok(controls.request_lens_at(r.frame, r.position)?)
 }
 
 /// Which ISP processes a native camera's frames.

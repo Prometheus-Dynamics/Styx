@@ -1,8 +1,11 @@
 //! Per-frame inputs besides statistics: what the sensor did and what the application asked for.
 
-use std::time::Duration;
+use alloc::{string::String, vec::Vec};
+use core::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+use crate::algos::af::{AfMode, AfRange, AfSpeed, AfWindow, LensState};
 
 /// Names of the metering modes found in tunings.
 pub mod metering {
@@ -111,6 +114,22 @@ pub struct Controls {
     pub brightness: f64,
     /// Contrast factor about mid-grey.
     pub contrast: f64,
+    /// What drives the lens (cameras with a focus lens).
+    pub af_mode: AfMode,
+    /// The focus range scans cover.
+    pub af_range: AfRange,
+    /// AF speed.
+    pub af_speed: AfSpeed,
+    /// AF windows (fractions of the output image, up to 10); empty: the middle of the image.
+    pub af_windows: Vec<AfWindow>,
+    /// Starts a scan in [`AfMode::Auto`] whenever it changes (a counter the application
+    /// increments per trigger, so recordings replay triggers).
+    pub af_trigger: u32,
+    /// Cancels a scan in [`AfMode::Auto`] whenever it changes.
+    pub af_cancel: u32,
+    /// Lens position in dioptres (1 / distance in metres; 0 is infinity) for
+    /// [`AfMode::Manual`]; `None`: the tuning's default (hyperfocal) position.
+    pub lens_position: Option<f64>,
 }
 
 impl Default for Controls {
@@ -133,6 +152,13 @@ impl Default for Controls {
             saturation: 1.0,
             brightness: 0.0,
             contrast: 1.0,
+            af_mode: AfMode::Manual,
+            af_range: AfRange::Normal,
+            af_speed: AfSpeed::Normal,
+            af_windows: Vec::new(),
+            af_trigger: 0,
+            af_cancel: 0,
+            lens_position: None,
         }
     }
 }
@@ -155,6 +181,10 @@ pub struct FrameMetadata {
     /// Scene illuminance from another source (e.g. a light sensor), overriding the estimate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lux: Option<f64>,
+    /// Where the focus lens was during the frame, as the lens control reports it (`None`
+    /// without a lens or a report).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lens: Option<LensState>,
     /// Application controls in effect for this frame's processing.
     #[serde(default)]
     pub controls: Controls,
@@ -179,6 +209,7 @@ impl FrameMetadata {
             digital_gain: 1.0,
             frame_duration,
             lux: None,
+            lens: None,
             controls: Controls::default(),
         }
     }

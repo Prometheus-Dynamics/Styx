@@ -1,0 +1,24 @@
+[package]
+name = "styx-dng"
+version.workspace = true
+edition.workspace = true
+description = "DNG (Adobe Digital Negative) raw files in pure Rust: a writer for raw Bayer/mono frames with colour calibration, lens shading opcodes, EXIF and a preview, and a reader for calibration tools."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["dng", "raw", "camera", "tiff"]
+categories = ["multimedia::images"]
+
+[features]
+default = ["std"]
+# `std::io::Error` in `DngError`, float maths from std. Without it the crate is `no_std` +
+# `alloc` (floats through `libm`); docs/portability.md.
+std = ["thiserror/std"]
+
+[dependencies]
+thiserror.workspace = true
+libm.workspace = true
+
+[lints]
+workspace = true

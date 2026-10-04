@@ -7,9 +7,16 @@
 //! * PiSP front end: `sum / 2^bits_of_the_stat` per channel, `counted` as reported (AWB regions
 //!   become [`Statistics::colour`], AGC regions [`Statistics::luma`], the Y histogram
 //!   [`Statistics::histogram`], the CDAF regions [`Statistics::focus`]).
+//! * Focus values ([`Statistics::focus`]) are figures of merit (sharpness, e.g. the energy of
+//!   gradients), larger when sharper. AF uses only their ratios, so the units are the ISP's.
 //! * A software ISP: accumulate demosaiced or per-Bayer-quad values with [`StatsAccumulator`].
 
+use alloc::{vec, vec::Vec};
+
 use serde::{Deserialize, Serialize};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// Rec.601 luma of linear RGB.
 pub fn rec601(r: f64, g: f64, b: f64) -> f64 {
@@ -47,6 +54,16 @@ pub struct LumaZone {
     pub y: f64,
     /// Pixels counted.
     pub counted: u32,
+}
+
+/// One phase-detection (PDAF) cell, as the sensor reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct PdafZone {
+    /// Phase difference in the sensor's units (IMX708: 1/16 pixel); the AF tuning's
+    /// `pdaf_gain` turns it into dioptres.
+    pub phase: f64,
+    /// Confidence in the sensor's units (0: no data).
+    pub conf: f64,
 }
 
 /// A row-major grid of zones, `zones.len() == width * height`.
@@ -219,6 +236,9 @@ pub struct Statistics {
     /// Focus figures of merit per zone, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<ZoneGrid<f64>>,
+    /// Phase-detection data from the sensor (e.g. the IMX708's embedded PDAF line), for AF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdaf: Option<ZoneGrid<PdafZone>>,
     /// Colour statistics were taken before white-balance gains (true for PiSP and most ISPs).
     #[serde(default = "yes")]
     pub before_wb: bool,
@@ -296,6 +316,7 @@ impl StatsAccumulator {
             luma: Some(self.luma),
             histogram: Histogram::from(self.bins),
             focus: None,
+            pdaf: None,
             before_wb: true,
             before_lsc: true,
         }

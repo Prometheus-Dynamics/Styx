@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use styx_kernel::FourCc;
 use styx_kernel::bus::{StreamAction, StreamRequest};
-use styx_sensor::{DriverState, MockBus, RegWrite, RegisterBus, SensorDescription, SensorDriver};
+use styx_sensor::{
+    BusResult, DriverState, MockBus, RegWrite, RegisterBus, SensorDescription, SensorDriver,
+};
 
 use crate::buffers::NativeFrame;
 use crate::control::{ExpectedStart, SensorControl, lock};
@@ -55,17 +57,17 @@ impl FaultBus {
 }
 
 impl RegisterBus for FaultBus {
-    fn read(&mut self, address: u16, bytes: u8) -> io::Result<u32> {
+    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
         self.check()?;
         lock(&self.bus).read(address, bytes)
     }
 
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> io::Result<()> {
+    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
         self.check()?;
         lock(&self.bus).write(address, bytes, value)
     }
 
-    fn write_sequence(&mut self, writes: &[RegWrite]) -> io::Result<()> {
+    fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
         writes
             .iter()
             .try_for_each(|w| self.write(w.address, w.bytes, w.value))
@@ -646,4 +648,20 @@ fn many_restarts_keep_no_resources() {
     assert!(after <= before + 16, "{before} -> {after} descriptors");
     rig.session.shutdown().unwrap();
     rig.assert_shut_down();
+}
+
+#[test]
+fn capture_buffers_smaller_than_the_format_are_refused() {
+    use crate::buffers::{Allocator, BufferSet};
+    let queue = FakeQueue::new(FakeBridge::new(template()), BUFFER_LEN);
+    let video = || -> Arc<dyn CaptureDevice> { queue.open() };
+    // The driver's buffers are a page; a format that needs more is refused before any QBUF.
+    let e = BufferSet::allocate_with(video(), None, 4, BUFFER_LEN + 1).err();
+    assert!(matches!(e, Some(NativeError::InvalidConfig(_))), "{e:?}");
+    // An imported dma-buf is checked at the size the kernel allocated, not the size asked for.
+    let e = BufferSet::allocate_with(video(), Some(Allocator::MemfdOf(1000)), 4, 1024).err();
+    assert!(matches!(e, Some(NativeError::InvalidConfig(_))), "{e:?}");
+    let set = BufferSet::allocate_with(video(), Some(Allocator::MemfdOf(2048)), 4, 1024).unwrap();
+    assert_eq!(set.len(), 1024);
+    assert_eq!(queue.counters().bad_qbufs, 0);
 }

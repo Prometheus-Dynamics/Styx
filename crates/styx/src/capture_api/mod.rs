@@ -22,6 +22,7 @@ mod dispatch;
 pub(super) mod ffmpeg_util;
 #[cfg(feature = "file-backend")]
 pub(super) mod file_backend;
+pub(crate) mod handle_metrics;
 #[cfg(target_os = "linux")]
 pub mod import;
 #[cfg(feature = "libcamera")]
@@ -33,6 +34,8 @@ pub(super) mod native_isp;
 #[cfg(feature = "netcam")]
 pub(super) mod netcam_backend;
 mod replay_backend;
+mod still;
+mod still_output;
 #[cfg(feature = "uvc")]
 pub(super) mod uvc_backend;
 #[cfg(feature = "v4l2")]
@@ -53,6 +56,10 @@ pub use request::{
     CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, CaptureError,
     CaptureRequest, CaptureSource, CaptureStartPolicy, ControlApplyKind, SelectedCamera,
     TdnOutputMode, start_capture,
+};
+pub use still::{
+    PendingStill, StillCapture, StillExposure, StillFormat, StillImage, StillMeta, StillRequest,
+    StillShot,
 };
 pub use supervisor::SupervisedCapture;
 pub use tunables::{

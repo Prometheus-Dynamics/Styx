@@ -75,7 +75,7 @@ fn frame_meta_can_carry_capture_instant() {
     let before = std::time::Instant::now();
     let meta = FrameMeta::new(fmt, 123).with_capture_instant(before);
 
-    assert_eq!(meta.capture_instant(), Some(before));
+    assert_eq!(meta.capture_instant(), Some(before.into()));
 }
 
 #[test]

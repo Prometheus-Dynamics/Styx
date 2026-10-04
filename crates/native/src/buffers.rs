@@ -46,6 +46,9 @@ pub(crate) enum Allocator {
     /// memfds (tests).
     #[cfg(test)]
     Memfd,
+    /// memfds of this size whatever is asked for (tests: a heap that hands out too little).
+    #[cfg(test)]
+    MemfdOf(usize),
 }
 
 impl Allocator {
@@ -54,8 +57,22 @@ impl Allocator {
             Allocator::Heap(h) => h.allocate(len).step("allocate from dma-heap"),
             #[cfg(test)]
             Allocator::Memfd => DmaBuf::memfd("styx-native-test", len).step("memfd"),
+            #[cfg(test)]
+            Allocator::MemfdOf(n) => DmaBuf::memfd("styx-native-test", *n).step("memfd"),
         }
     }
+}
+
+/// Refuses a capture buffer smaller than the format's `sizeimage` (`need`): the receiver would
+/// write past its end (vb2 checks imported buffers against the length userspace passes, which
+/// is ours), into memory that is not the frame's.
+fn check_len(what: &str, have: usize, need: usize) -> Result<()> {
+    if have < need {
+        return Err(NativeError::InvalidConfig(format!(
+            "{what} of {have} bytes is smaller than the format's {need} bytes per frame"
+        )));
+    }
+    Ok(())
 }
 
 /// The buffers of one stream.
@@ -107,6 +124,7 @@ impl BufferSet {
             None => {
                 for i in 0..got {
                     let map = set.video.map_buffer(i).step("mmap buffer")?;
+                    check_len("driver buffer", map.len(), len)?;
                     // Export for sharing; drivers without EXPBUF still capture into the mapping.
                     let dmabuf = set.video.export_buffer(i).ok();
                     set.len = map.len();
@@ -116,6 +134,10 @@ impl BufferSet {
             Some(alloc) => {
                 for _ in 0..got {
                     let buf = alloc.allocate(len)?;
+                    // What the kernel allocated, not what was asked for: the receiver is told
+                    // `len` at every QBUF and writes up to the format's `sizeimage`.
+                    let size = dma_heap::dmabuf_size(buf.as_fd()).step("dma-buf size")?;
+                    check_len("imported dma-buf", usize::try_from(size).unwrap_or(0), len)?;
                     let map = buf.map().step("map dma-buf")?;
                     set.buffers.push(Buffer {
                         map,

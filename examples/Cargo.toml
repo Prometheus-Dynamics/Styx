@@ -26,9 +26,11 @@ simulation-bevy = ["styx/simulation-bevy"]
 # YUYV into NV12 / RGB / luma.
 v4l2 = ["styx/v4l2", "raw-decoders"]
 raw-decoders = ["styx/raw-decoders"]
+# Pure-Rust JPEG encoding for stills (the `image` crate) when no other JPEG encoder is enabled.
+image = ["styx/image"]
 # The native stack; also brings `frame-socket` and the sensor / software ISP crates the
 # `sensor_check` and `raw_processing` examples use directly.
-native = ["styx/native", "frame-socket", "dep:styx-sensor", "dep:styx-softisp"]
+native = ["styx/native", "frame-socket", "dep:styx-sensor", "dep:styx-softisp", "dep:styx-dng", "dep:styx-pipeline"]
 frame-socket = ["styx/frame-socket"]
 # USB cameras from userspace (`BackendKind::Uvc`), compared with uvcvideo through V4L2.
 uvc = ["styx/uvc", "v4l2"]
@@ -44,6 +46,8 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time
 libc.workspace = true
 styx-sensor = { workspace = true, optional = true }
 styx-softisp = { workspace = true, optional = true }
+styx-dng = { workspace = true, optional = true }
+styx-pipeline = { workspace = true, optional = true }
 
 [[bin]]
 name = "native_capture"
@@ -235,6 +239,10 @@ name = "camera_service"
 path = "05_apps/camera_service.rs"
 
 [[bin]]
+name = "metrics_top"
+path = "05_apps/metrics_top.rs"
+
+[[bin]]
 name = "reliable_recording"
 path = "05_apps/reliable_recording.rs"
 required-features = ["file-backend"]
@@ -243,3 +251,12 @@ required-features = ["file-backend"]
 name = "libcamera_ffmpeg_preview"
 path = "05_apps/libcamera_ffmpeg_preview.rs"
 required-features = ["libcamera", "codec-ffmpeg", "preview-window"]
+
+[[bin]]
+name = "still_capture"
+path = "01_capture/still_capture.rs"
+
+[[bin]]
+name = "mcap_to_dng"
+path = "01_capture/mcap_to_dng.rs"
+required-features = ["native", "replay-mcap"]

@@ -234,6 +234,13 @@ impl Event {
     }
 }
 
+/// Decode a `struct v4l2_event` from `bytes`. For fuzzing.
+#[doc(hidden)]
+pub fn fuzz_event(bytes: &[u8]) {
+    let event = Event::from_raw(&crate::v4l2::raw::from_bytes::<raw::v4l2_event>(bytes));
+    let _ = (EventType::from_raw(event.id), std::hint::black_box(event));
+}
+
 /// Event subscription and delivery, shared by video nodes and subdevices.
 pub trait Events: AsFd {
     /// Subscribes to an event (`VIDIOC_SUBSCRIBE_EVENT`). `id` selects the source: the control

@@ -10,7 +10,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-serde.workspace = true
+serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 styx = { workspace = true, default-features = false, features = ["facade"] }
 styx-softisp.workspace = true

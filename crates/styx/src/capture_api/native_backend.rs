@@ -21,7 +21,8 @@ use styx_native::{
 };
 
 use super::control_plane::ControlPlane;
-use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle, enqueue_capture_frame};
+use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle};
+use super::handle_metrics::deliver;
 use super::request::CaptureError;
 use super::tunables::StyxConfig;
 use crate::metrics::StageMetrics;
@@ -74,6 +75,26 @@ pub mod controls {
     /// Processed modes: deflicker (`Int`): 0 off, 1 on, 2 with flicker avoidance
     /// (`NativeDeflicker::control_value`; the default from `NativeIspConfig::deflicker`).
     pub const AE_DEFLICKER_MODE: ControlId = ControlId(0xF400_0013);
+    /// Processed modes of a camera with a focus lens: what drives the lens (`Int`, as
+    /// libcamera's `AfMode`): 0 manual (`LENS_POSITION`), 1 auto (a scan per `AF_TRIGGER`),
+    /// 2 continuous (the default).
+    pub const AF_MODE: ControlId = ControlId(0xF400_0020);
+    /// Auto mode: 0 starts a scan, 1 cancels it (`Int`, libcamera's `AfTrigger`).
+    pub const AF_TRIGGER: ControlId = ControlId(0xF400_0021);
+    /// What AF reports after the latest frame (`Int`, read only, libcamera's `AfState`):
+    /// 0 idle, 1 scanning, 2 focused, 3 failed.
+    pub const AF_STATE: ControlId = ControlId(0xF400_0022);
+    /// The lens position in dioptres (`Float`, 1 / metres; 0 is infinity): set in manual
+    /// mode; read: where AF or the manual setting put it.
+    pub const LENS_POSITION: ControlId = ControlId(0xF400_0023);
+    /// AF windows in output pixels (`Rects`, up to 10), used while `AF_METERING` is 1.
+    pub const AF_WINDOWS: ControlId = ControlId(0xF400_0024);
+    /// 0: AF looks at the middle of the image (default); 1: at `AF_WINDOWS` (`Int`).
+    pub const AF_METERING: ControlId = ControlId(0xF400_0025);
+    /// Focus range scans cover (`Int`): 0 normal, 1 macro, 2 full.
+    pub const AF_RANGE: ControlId = ControlId(0xF400_0026);
+    /// AF speed (`Int`): 0 normal, 1 fast.
+    pub const AF_SPEED: ControlId = ControlId(0xF400_0027);
 }
 
 fn native_err(e: NativeError) -> CaptureError {
@@ -282,6 +303,17 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
             )
         },
     ]
+    .into_iter()
+    .chain(info.lens.as_ref().map_or_else(Vec::new, |l| {
+        let m = &l.description.map;
+        let limits = if m.len() >= 4 {
+            (m[0], m[m.len() - 2])
+        } else {
+            (0.0, 12.0)
+        };
+        super::native_isp::af_metas(limits)
+    }))
+    .collect()
 }
 
 /// The probed device of a bridged camera: its raw modes, and `NV12` / `RG24` modes processed
@@ -370,7 +402,10 @@ impl ExternalBacking for NativeBacking {
 }
 
 /// Wraps a native frame as a frame lease (no copy).
-pub(crate) fn frame_lease(frame: NativeFrame) -> Option<FrameLease> {
+pub(crate) fn frame_lease(
+    frame: NativeFrame,
+    live: &crate::metrics::CaptureMetrics,
+) -> Option<FrameLease> {
     let res = Resolution::new(frame.width, frame.height)?;
     let format = MediaFormat::new(FourCc::from(frame.fourcc.0), res, ColorSpace::Unknown);
     let len = frame.stride as usize * frame.height as usize;
@@ -398,7 +433,7 @@ pub(crate) fn frame_lease(frame: NativeFrame) -> Option<FrameLease> {
     Some(FrameLease::from_external(
         meta,
         smallvec![layout],
-        Arc::new(NativeBacking { frame, len }),
+        Arc::new(live.track(NativeBacking { frame, len })),
     ))
 }
 
@@ -498,9 +533,12 @@ pub(super) fn start_native(
     let worker_error_for_thread = worker_error.clone();
     let send_timeout = Duration::from_millis(capture.queue_send_timeout_ms);
     let poll = Duration::from_millis(capture.idle_poll_ms.clamp(5, 100));
+    let live = crate::metrics::CaptureMetrics::default();
+    let live_worker = live.clone();
     let worker = thread::Builder::new()
         .name("styx-native-capture".into())
         .spawn(move || {
+            live_worker.register_thread();
             tracing::debug!(backend = "native", "capture worker started");
             loop {
                 if stop_rx.try_recv().is_ok() {
@@ -508,10 +546,10 @@ pub(super) fn start_native(
                 }
                 match stream.next_blocking(poll) {
                     Ok(Some(frame)) => {
-                        let Some(lease) = frame_lease(frame) else {
+                        let Some(lease) = frame_lease(frame, &live_worker) else {
                             continue;
                         };
-                        if enqueue_capture_frame(&tx, lease, "native", send_timeout) {
+                        if deliver(&live_worker, &tx, lease, "native", send_timeout) {
                             break;
                         }
                     }
@@ -557,7 +595,8 @@ pub(super) fn start_native(
         control_error: Arc::new(Mutex::new(None)),
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
-        sequence_gaps: Default::default(),
+        sequence_gaps: live.sequence_gaps(),
+        live,
     })
 }
 
@@ -618,25 +657,25 @@ mod tests {
             }],
         };
         for fps in [30, 60, 120] {
-            let req = FrameRequirements::formats([pbaa])
-                .min_fps(fps)
-                .priority(Priority::Power);
+            let req = crate::planner::FrameRequest::formats([pbaa]).fps(fps);
             let plan = crate::planner::plan_frames(&device, &req).unwrap();
             assert_eq!(plan.backend, BackendKind::Native);
             assert_eq!(plan.interval, Interval::from_fps(fps));
             assert!(plan.to_string().contains("native pBAA 1280x800"), "{plan}");
         }
-        // Latency first, a rate asked for: the fastest rate the mode has.
-        let req = FrameRequirements::formats([pbaa]).min_fps(30);
+        // At least a rate: the fastest rate the mode has.
+        let req = crate::planner::FrameRequest::formats([pbaa]).fps_at_least(30);
         let plan = crate::planner::plan_frames(&device, &req).unwrap();
         assert!((plan.interval.unwrap().fps() - 120.626).abs() < 0.01);
-        // No rate asked for, whatever the priority: 30 fps, not the fastest.
-        for priority in [Priority::Latency, Priority::Power] {
-            let req = FrameRequirements::formats([pbaa]).priority(priority);
+        // No rate asked for, whatever the delivery: 30 fps, not the fastest.
+        for req in [
+            crate::planner::FrameRequest::formats([pbaa]),
+            crate::planner::FrameRequest::formats([pbaa]).every_frame(3),
+        ] {
             let plan = crate::planner::plan_frames(&device, &req).unwrap();
-            assert_eq!(plan.interval, Interval::from_fps(30), "{priority:?}");
-            let shared = crate::planner::plan_many(&device, &[req]).unwrap();
-            assert_eq!(shared.interval, Interval::from_fps(30), "{priority:?}");
+            assert_eq!(plan.interval, Interval::from_fps(30), "{req:?}");
+            let shared = crate::planner::plan_many(&device, std::slice::from_ref(&req)).unwrap();
+            assert_eq!(shared.interval, Interval::from_fps(30), "{req:?}");
         }
     }
 }

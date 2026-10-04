@@ -12,14 +12,18 @@ rust-version.workspace = true
 
 [dependencies]
 styx-core.workspace = true
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "alloc"] }
 thiserror.workspace = true
+libm.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 
 [features]
-default = ["neon", "x86"]
+default = ["std", "neon", "x86"]
+# The helper thread pool (`SoftIsp::with_threads`), run-time CPU feature detection, float maths
+# from std. Without it the crate is `no_std` + `alloc` (docs/portability.md).
+std = ["styx-core/std", "serde/std", "thiserror/std"]
 # SIMD backends, as in `styx-core::simd`: AArch64 NEON, x86 SSE2/SSSE3/AVX2 chosen at run time.
 neon = ["styx-core/neon"]
 x86 = ["styx-core/x86"]

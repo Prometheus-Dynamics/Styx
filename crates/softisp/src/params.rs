@@ -1,6 +1,11 @@
 //! Pipeline parameters: plain data, serde-able, one optional block per stage.
 
+use alloc::vec::Vec;
+
 use serde::{Deserialize, Serialize};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// Every stage of the pipeline, in processing order. `None` skips a stage.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -255,6 +260,13 @@ pub struct StatsConfig {
     pub saturation: f32,
     /// Sample every `row_step`-th quad row (1: all).
     pub row_step: u32,
+    /// Focus statistics ([`crate::IspStats::focus`]): per zone, the energy of the green
+    /// gradient between neighbouring quads (horizontally, and vertically when every quad row
+    /// is sampled), for autofocus. Off by default (it costs a pass over each sampled row).
+    pub focus: bool,
+    /// Focus statistics' noise floor: a gradient `d` (12-bit codes) counts `d² − t²` when
+    /// `|d| > t`, so sensor noise adds little energy.
+    pub focus_threshold: f32,
 }
 
 impl Default for StatsConfig {
@@ -265,6 +277,8 @@ impl Default for StatsConfig {
             histogram_bins: 256,
             saturation: 0.95,
             row_step: 1,
+            focus: false,
+            focus_threshold: 6.0,
         }
     }
 }

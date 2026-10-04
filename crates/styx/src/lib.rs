@@ -44,7 +44,7 @@ pub mod ipc;
 #[cfg(feature = "facade")]
 pub mod memory;
 #[cfg(feature = "facade")]
-mod metrics;
+pub mod metrics;
 #[cfg(feature = "facade")]
 pub mod planner;
 #[cfg(all(feature = "facade", feature = "hooks"))]
@@ -617,6 +617,11 @@ pub mod prelude {
         TransformConfig, V4l2Config, VirtualCaptureConfig, VirtualSourceConfig, open_best_camera,
         open_virtual_rgb, start_capture,
     };
+    #[cfg(feature = "facade")]
+    pub use crate::capture_api::{
+        PendingStill, StillCapture, StillExposure, StillFormat, StillImage, StillMeta,
+        StillRequest, StillShot,
+    };
     #[cfg(all(feature = "facade", feature = "daedalus-plugin", feature = "hooks"))]
     pub use crate::graph::register_file_sequence_sink_node;
     #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
@@ -648,6 +653,8 @@ pub mod prelude {
         PipelineStageError, QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot,
         StageErrorMetrics, StageMetrics, StageSnapshot, render_prometheus,
     };
+    #[cfg(feature = "facade")]
+    pub use crate::planner::{Delivery, FrameRate, FrameRequest, Frames, Hardware, OpenError};
     #[cfg(all(feature = "facade", feature = "hooks"))]
     pub use crate::recording::{
         FrameRecorder, RecordingError, RecordingFormat, RecordingFrameIndexEntry, RecordingOptions,

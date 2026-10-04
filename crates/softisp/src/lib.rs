@@ -44,12 +44,25 @@
 //! fp16 oracle ([`simd::f16`](mod@simd::f16)).
 //!
 #![doc = include_str!("../PERFORMANCE.md")]
+//!
+//! # `no_std`
+//!
+//! Without the default `std` feature the crate is `no_std` + `alloc`: the kernels and
+//! [`SoftIsp`] on the calling thread. `SoftIsp::with_threads` (the helper thread pool) needs
+//! `std`; the SIMD leaves are then chosen from the target's compile-time features
+//! (docs/portability.md).
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
 
 pub mod format;
 mod isp;
+mod math;
 mod output;
 pub mod params;
 mod pipeline;
+#[cfg(feature = "std")]
 mod pool;
 mod prepare;
 mod prepare_half;

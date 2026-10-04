@@ -26,7 +26,7 @@ camera service, IPC, codecs) sits on top unchanged.
 
 ```
 Apps and services     HeliOS, detectors, recorders, PipeWire / GStreamer bridges
-Styx API              FrameRequirements, async frame streams, typed controls   (exists, extended)
+Styx API              Frames requests, async frame streams, typed controls     (exists, extended)
 Planner and service   shared captures, many processes                          (exists)
 Session runtime       buffers, fences, per-frame control timing
 Algorithms            AE / AWB / lens shading / colour in Rust, data tuning
@@ -42,17 +42,22 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | Path | Crate | What | Owner |
 |---|---|---|---|
 | `crates/kernel` | `styx-kernel` | Safe Rust kernel interfaces, `libc` only | kernel agent (`v4l2`, `media`, `subdev`, `dma_heap`, `event`), bridge agent (`bus`) |
-| `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description; descriptions of kernel-driven sensors from their subdevice plus a small data file (`sensors/kernel/*.toml`), driven through V4L2 controls | sensor agent |
+| `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences, OV9782 description; descriptions of kernel-driven sensors from their subdevice plus a small data file (`sensors/kernel/*.toml`), driven through V4L2 controls; focus lenses (VCMs) as data, PDAF decoding | sensor agent |
 | `crates/graph` | `styx-graph` | Device graph, `Provider` trait, async reactor, mock provider | graph agent |
 | `crates/pisp` | `styx-pisp` | PiSP uAPI layouts, front/back end config builders, BE tiling, statistics, device layer (feature `device`); see `pisp.md` | pisp agent |
-| `crates/algo` | `styx-algo` | 3A algorithms (AE, AWB, lens shading, CCM, tone), tuning (TOML, Raspberry Pi JSON), simulator, replay; see [algorithms.md](algorithms.md) | algo agent |
+| `crates/algo` | `styx-algo` | 3A algorithms (AE, AWB, lens shading, CCM, tone, autofocus), tuning (TOML, Raspberry Pi JSON), simulator, replay; see [algorithms.md](algorithms.md) | algo agent |
 | `crates/native` | `styx-native` | The runtime for bridged sensors and sensors with an upstream kernel driver (`kernel.rs`, see [adding-a-camera.md](adding-a-camera.md)): description search path, discovery, `NativeCamera` (power, mode, receiver path, buffers, async frames, embedded data), frame-accurate typed controls, the `native` `Provider`; `styx` backend `BackendKind::Native` (feature `native`) | provider agent |
 | `crates/softisp` | `styx-softisp` | Software ISP: unpack, black level, gains, lens shading, demosaic, CCM, tone, RGB/YUV/luma, 3A statistics; SIMD row kernels. Backs `styx-codec`'s Bayer decoders | softisp agent |
 | `crates/pipeline` | `styx-pipeline` | The native processing pipeline: statistics conversion, the deterministic 3A loop runner (`Controller`), ISP settings for the PiSP and the software ISP, the PiSP and software paths on a native camera (feature `device`), raw recordings and a virtual sensor for host replays; see [pipeline.md](pipeline.md) | pipeline agent |
 | `tools/compare` | `styx-compare` | Same capture through the libcamera and native backends: start latency (first frame, AE converged, exposure settled), rate and jitter, drops, CPU (with the IPA proxy), RSS/PSS and dma-bufs, frame statistics; JSON and markdown. `device-run.sh` runs the set on the CM5 | compare agent |
+| `crates/dng` | `styx-dng` | DNG 1.4 writer and reader in pure Rust (no Styx dependencies): raw frames with calibration, lens shading opcodes, EXIF, preview; camera DNGs read for calibration; see [stills-and-dng.md](../stills-and-dng.md) | stills agent |
 | `crates/uvc` | `styx-uvc` | USB Video Class cameras from userspace over usbfs (`styx-kernel::usbfs`, `uevent`): descriptors, PROBE/COMMIT, isochronous/bulk streaming, frame assembly, PTS/SCR timestamps, controls, hotplug; `styx` backend `BackendKind::Uvc` (feature `uvc`); see [uvc.md](../uvc.md) | usb-uvc agent |
 | `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
 | `kernel-modules/pispbe` | (C, GPL-2.0) | The Raspberry Pi PiSP back end driver (`pisp_be`) patched for a cheaper per-job config write (117 → 8 µs), build and install scripts | pisp agent |
+
+`styx-core-rs`, `styx-sensor`, `styx-pisp` (without `device`), `styx-algo`, `styx-softisp` and
+`styx-dng` build as `no_std` + `alloc` without their default `std` feature, for targets with no
+Linux underneath: see [portability.md](../portability.md).
 
 Crates must not depend on each other except: `styx-sensor` may use `styx-kernel` types behind
 its `bus` trait implementation feature, and `styx-graph` and `styx-algo` depend on nothing new. `styx-pipeline`
@@ -153,10 +158,15 @@ limits at that fps.
     the lock.
   - Never use I2C force access (`I2C_SLAVE_FORCE`, `i2ctransfer -f`) while a kernel driver owns
     the address.
-  - The device has rebooted unexpectedly several times (cause unknown; there is a hardware
-    watchdog). While you hold the lock, stream its kernel log to a file on the host
-    (`ssh root@helios dmesg -w > <worktree>/target/helios-dmesg-<time>.log &`) so a reboot leaves
-    evidence; if it reboots or hangs, stop device work and report what you were doing.
+  - The device has rebooted unexpectedly several times (there is a hardware watchdog). One
+    cause is known: a heavy software ISP load on all cores at 2.4 GHz hangs it within seconds
+    (`native-pipeline --threads 4`, `StyxConfig::native_soft_threads(4)`; three at 120 fps;
+    see [pipeline.md](pipeline.md#all-four-cores)); the software ISP defaults to two threads.
+    While you hold the lock, stream its kernel log to a file on the host
+    (`ssh root@helios dmesg -w > <worktree>/target/helios-dmesg-<time>.log &`) so a reboot
+    leaves evidence; if it reboots or hangs, stop device work and report what you were doing.
+    Other (HeliOS) workloads also run on the box without this lock (`helios-vision-probe`,
+    `eidos-eval-fast-neon` were seen on 2026-10-03): check `ps` before a long run.
 - Licensing: Styx is MIT/Apache. Register values in `ov9782.toml` come from the HeliOS
   `ov9782.c` driver; the project owner wrote it and cleared their use. Both it and the HeliOS
   OV9782 tuning (`crates/pipeline/tuning/ov9782.json`, the owner's) are built into Styx. The bridge module is

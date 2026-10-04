@@ -16,7 +16,7 @@ rust-version.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-styx-core.workspace = true
+styx-core = { workspace = true, features = ["std", "neon", "x86"] }
 styx-capture = { workspace = true, optional = true }
 styx-codec = { workspace = true, optional = true }
 styx-libcamera = { workspace = true, optional = true, features = ["probe"] }
@@ -26,10 +26,11 @@ styx-uvc = { workspace = true, optional = true }
 styx-pipeline = { workspace = true, optional = true, features = ["device"] }
 styx-pisp = { workspace = true, optional = true, features = ["device"] }
 styx-softisp = { workspace = true, optional = true }
+styx-dng = { workspace = true, optional = true }
 daedalus = { workspace = true, optional = true }
 smallvec = { workspace = true, optional = true }
 styx-kernel = { workspace = true, optional = true }
-thiserror = { workspace = true, optional = true }
+thiserror = { workspace = true, features = ["std"], optional = true }
 libcamera = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"], optional = true }
 image = { workspace = true, optional = true }
@@ -42,7 +43,7 @@ futures-util = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 mcap = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, features = ["derive", "std"], optional = true }
 serde_json = { workspace = true, optional = true }
 utoipa = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
@@ -80,7 +81,11 @@ replay-mcap = ["facade", "dep:mcap"]
 replay-styxrec = ["facade"]
 framelease = []
 # `ipc::FrameSocket`: the latest frame, leased, in the frame-lease transport HeliOS uses.
-frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde"]
+frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde", "metrics-serde"]
+# Serde for metrics snapshots (`styx::metrics`), and the camera service's metrics request.
+metrics-serde = ["facade", "dep:serde", "dep:serde_json"]
+# `styx::metrics::serve_http`: a tiny HTTP endpoint serving the metrics as Prometheus text.
+metrics-http = ["facade"]
 facade = [
     "dep:libc",
     "dep:parking_lot",
@@ -104,6 +109,7 @@ native = [
     "dep:styx-pipeline",
     "dep:styx-pisp",
     "dep:styx-softisp",
+    "dep:styx-dng",
     "styx-kernel",
     "frame-socket",
 ]
@@ -136,6 +142,7 @@ hotplug = ["facade", "dep:inotify"]
 examples = ["preview-window", "async"]
 serde = [
     "facade",
+    "metrics-serde",
     "dep:serde",
     "styx-core/serde",
     "styx-capture/serde",
