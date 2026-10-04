@@ -1,7 +1,10 @@
 //! Errors.
 
-use std::fmt;
-use std::io;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
+
+use crate::bus_error::BusError;
 
 /// One problem found while validating a description, with the path of the offending value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,12 +57,13 @@ pub enum SensorError {
         issues: Issues,
     },
     /// Reading a description file failed.
+    #[cfg(feature = "std")]
     #[error("reading {path}: {source}")]
     ReadFile {
         /// The path.
         path: String,
         /// The error.
-        source: io::Error,
+        source: std::io::Error,
     },
     /// A register access failed.
     #[error("{op} register 0x{address:04x}: {source}")]
@@ -69,7 +73,7 @@ pub enum SensorError {
         /// Register address.
         address: u16,
         /// The bus error.
-        source: io::Error,
+        source: BusError,
     },
     /// A GPIO, clock or supply operation failed.
     #[error("{what} '{role}': {source}")]
@@ -79,7 +83,7 @@ pub enum SensorError {
         /// The role name.
         role: String,
         /// The error.
-        source: io::Error,
+        source: BusError,
     },
     /// The chip id read back did not match.
     #[error("chip id mismatch: expected one of {expected:x?}, read 0x{found:x}")]
@@ -109,7 +113,7 @@ pub enum SensorError {
         /// The controls and values, e.g. `EXPOSURE=642 ANALOGUE_GAIN=16`.
         controls: String,
         /// The error.
-        source: io::Error,
+        source: BusError,
     },
     /// No test pattern with that name.
     #[error("unknown test pattern '{0}'")]
@@ -120,4 +124,4 @@ pub enum SensorError {
 }
 
 /// Result alias.
-pub type Result<T, E = SensorError> = std::result::Result<T, E>;
+pub type Result<T, E = SensorError> = core::result::Result<T, E>;

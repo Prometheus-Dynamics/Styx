@@ -1,6 +1,8 @@
 //! Reading applied control values back from a frame's embedded data.
 
-use std::collections::{BTreeMap, BTreeSet};
+use alloc::vec::Vec;
+
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::desc::{
     EmbeddedControlKind, EmbeddedData, EmbeddedFormat, EmbeddedPacking, Field, SensorDescription,
@@ -253,7 +255,7 @@ mod tests {
         }
         pairs
             .chunks(4)
-            .flat_map(|c| c.iter().copied().chain(std::iter::once(CCS_SKIP)))
+            .flat_map(|c| c.iter().copied().chain(core::iter::once(CCS_SKIP)))
             .collect()
     }
 

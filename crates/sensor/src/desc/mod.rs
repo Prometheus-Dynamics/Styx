@@ -1,11 +1,17 @@
 //! The sensor description schema. See the crate documentation for a full example.
 
+use alloc::{borrow::ToOwned, string::String, string::ToString, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 mod controls;
 mod step;
 mod types;
 mod validate;
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+#[cfg(feature = "std")]
 use std::path::Path;
 
 use serde::Deserialize;
@@ -267,6 +273,7 @@ impl SensorDescription {
     }
 
     /// Read, parse and validate a description file.
+    #[cfg(feature = "std")]
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let src = std::fs::read_to_string(path).map_err(|source| SensorError::ReadFile {
@@ -277,7 +284,7 @@ impl SensorDescription {
     }
 
     /// Check the description for consistency. Returns every problem found.
-    pub fn validate(&self) -> std::result::Result<(), crate::Issues> {
+    pub fn validate(&self) -> core::result::Result<(), crate::Issues> {
         validate::validate(self)
     }
 

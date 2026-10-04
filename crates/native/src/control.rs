@@ -481,7 +481,7 @@ impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
             .filter_map(Step::as_write)
             .copied()
             .collect();
-        self.driver.bus_mut().write_sequence(&off)
+        Ok(self.driver.bus_mut().write_sequence(&off)?)
     }
 
     /// Puts the sensor back in standby and powers it down (whatever state it is in). Best
