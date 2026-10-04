@@ -199,10 +199,20 @@ box (OV9782 1280x800) unless stated.
       `styx-native` as its Linux platform (`V4l2Receiver` with the rp1-cfe handshake inside),
       the processing loop written once over `FrameIsp`/`InlineIsp` in a `no_std` pipeline core;
       CM5 unchanged (same syscalls and allocations per frame, CPU and latency within noise).
-- [ ] `no_std` phase 2, steps 7-8: stills decisions and metrics counters into the runtime
-      (`portable-atomic` for 64-bit counters), a `no_std` host run of `Camera<Mock>` with the
-      software loop over a replayed recording; then the MCU port (`ports/stm32h7-dcmi`) and an
-      `rkisp1` board; run on real MCU hardware.
+- [x] `no_std` phase 2, steps 7-8 (`work/runtime-78`): still and bracket decisions in the
+      pipeline core (`still_runner`), metrics counters in the runtime (`styx_runtime::metrics`,
+      `portable-atomic`), `styx` keeping the mechanics; `examples/nostd-camera`: `Camera` on a
+      mock platform with the software loop, 3A, a bracket and the counters, built for the
+      bare-metal targets, run on the host without `std` and bit for bit the same as over the
+      `std` builds. CM5: bracket landed on consecutive frames, metrics overhead 270 ns before
+      and after, CPU per frame within noise.
+- [ ] The MCU port (`ports/stm32h7-dcmi`: swap `examples/nostd-camera`'s `board` for a DCMI
+      receiver, I²C and a timer) and an `rkisp1` board; run on real MCU hardware. A linked
+      firmware image (allocator, panic handler, `cortex-m-rt`) is not built yet: CI checks the
+      crates and runs the logic on the host.
+- [ ] `examples/nostd-camera` reprocesses stills inline on the superloop (a bracket costs three
+      full-quality software passes between two frames); a firmware with an executor would run
+      them in a low-priority task.
 - [ ] Runtime follow-ups: the PiSP front end as a `Receiver` (`PispFeReceiver`; the external
       "driven" path still runs the event thread and `serve_sync` directly); the Linux sensor
       side and devices are `dyn` (one indirect call each per frame, measured free) — static
@@ -225,6 +235,9 @@ box (OV9782 1280x800) unless stated.
       `SensorDriver` and the fp16 tables hold `Arc`s (`portable-atomic`, or `Rc`).
 - [ ] `no_std` replays: 3A results through libm can differ from std's in the last bits, so a
       replay recorded on Linux is not bit-exact on a `no_std` target (deterministic per build).
+      In `examples/nostd-camera`'s 90-frame run they were identical; the software ISP's `Auto`
+      arithmetic is not (an x86 `std` build with AVX2 picks `IntPolyTone`, a `no_std` build
+      picks by its compile-time features): runs that compare builds ask for `Int`.
 - [x] GPU ISP path where Vulkan exists (`styx-gpuisp`, optional): the software ISP's pipeline
       as Vulkan compute shaders (ash, Vulkan loaded at run time), bit-exact with the integer
       arithmetic (pictures and statistics, RADV and llvmpipe), capture dma-bufs imported and

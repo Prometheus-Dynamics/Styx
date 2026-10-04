@@ -3,7 +3,9 @@
 Every capture records its health and performance while it runs, cheaply enough to leave on:
 relaxed atomic counters and fixed rings of the last 128 samples, written on the frame path
 without locks or allocation (262 ns per frame on the CM5, see [Cost](#cost)). Snapshots are taken
-on demand.
+on demand. The counters, rings and 3A/AF/still state are the portable runtime's
+(`styx_runtime::metrics`, `no_std`, the same on a microcontroller); `styx` feeds them from frame
+metadata and adds what a Linux process has (consumers, buffers held, worker CPU time).
 
 ```rust
 use styx::prelude::*;
@@ -174,7 +176,8 @@ the ISP times and 3A values. Ring writes are a relaxed `fetch_add` and a store; 
 read before it is updated.
 
 `metrics_top --overhead` (all of the above for one frame, 7 runs of a million frames):
-262 ns per frame on the CM5 (Cortex-A76 2.4 GHz), 116 ns on a Zen 3 desktop. At 120 fps that is
+262 ns per frame on the CM5 (Cortex-A76 2.4 GHz), 116 ns on a Zen 3 desktop (270 ns on the CM5
+before and after the counters moved into `styx-runtime`, measured on the same day). At 120 fps that is
 31 µs per second, 0.003% of a core.
 
 The PiSP path, `native_processed 900` (NV12, luma view, RGB at 120 fps, 1280x800, whole process
