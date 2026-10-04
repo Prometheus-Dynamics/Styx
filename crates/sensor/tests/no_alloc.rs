@@ -189,7 +189,9 @@ fn request(seq: u64) -> ControlRequest {
     ControlRequest {
         exposure: Some(Duration::from_micros(4000 + 37 * (seq % 50))),
         gain: Some(1.0 + (seq % 7) as f64 * 0.25),
-        frame_duration: seq.is_multiple_of(40).then(|| Duration::from_micros(33_333 + seq % 3)),
+        frame_duration: seq
+            .is_multiple_of(40)
+            .then(|| Duration::from_micros(33_333 + seq % 3)),
     }
 }
 
