@@ -19,7 +19,10 @@ core and the metrics counters in the runtime, and the proof: a firmware-like `no
 (`examples/nostd-camera`) running `Camera` on a mock platform with the software ISP loop, 3A,
 a bracket and the counters, built for the bare-metal targets and run on the host without
 `std`, bit for bit the same as over the `std` builds ([The bare-metal proof](#the-bare-metal-proof)).
-Still missing: a port to real MCU hardware.
+Step 9 ([The frame path without `std`](#the-frame-path-without-std-styx-core)): `styx-core`'s
+`FrameLease`, pools, queues, transforms and metrics build without `std`, so the frame type and
+queues Linux consumers get are the same on a microcontroller. Still missing: a port to real
+MCU hardware.
 
 ## What builds without `std`
 
@@ -27,10 +30,10 @@ Still missing: a port to real MCU hardware.
 
 | Crate | Without `std` | Needs `std` |
 |---|---|---|
-| `styx-runtime` | everything: the sensor side (`SensorState`, `Controls`, lens, health), `Camera<P>`, `FrameStream`, buffer leases, the sensor service, metrics counters (`metrics`); shared state is `Rc<RefCell>` | `Arc<Mutex>` shared state and `Send + Sync` handles (feature `std`, the default) |
+| `styx-runtime` | everything: the sensor side (`SensorState`, `Controls`, lens, health), `Camera<P>`, `FrameStream`, buffer leases, frames handed on as `FrameLease`s (`Frame::into_lease`), the sensor service, metrics counters (`metrics`, `styx_core`'s); shared state is `Arc<RefCell>` | `Arc<Mutex>` shared state and `Send + Sync` handles (feature `std`, the default) |
 | `styx-pipeline` | the core: `Controller` (the 3A loop runner), `IspSettings` for the PiSP and the software ISP, statistics, the back end config builder, the processing loop (`process`: `Algorithms`, `FrameIsp`, `InlineIsp`, `SensorControls`), `SoftLoop`, stills (`dng_metadata_at`, `soft_still`) and their decisions (`still_runner`), re-exposing recorded frames (`reexpose`) | algorithm replay recording, raw recordings, tunings and warm starts on disk, measurements, timings, the device paths (`device`), the GPU ISP |
 | `styx-hal` | everything (no `alloc` either): power sequencing, DMA memory, the receiver, the lens actuator, `BoardPins`, `StaticDma` | `Send + Sync` on `SensorStart`, the `mock` platform |
-| `styx-core-rs` | formats (`FourCc`, `MediaFormat`, layouts), plane layouts and their math (`PlaneLayout`, `plane_layout_from_dims`, `FrameAllocation`, `FrameValidationError`), plane views, frame metadata (`FrameMeta`, `NativeFrameMeta`, `FrameTiming`, `CaptureInstant`, ...), requirements (`FrameRect`, ...), controls (`ControlId`, `ControlValue`, descriptors), the SIMD row kernels | `FrameLease`, `BufferPool` and memfd / dma-buf backings, queues, transforms, `metrics`, clocks (`TimestampClock::now_ns` is `None` without std), `async` (tokio), `schema` (utoipa) |
+| `styx-core-rs` | formats (`FourCc`, `MediaFormat`, layouts), plane layouts and their math, plane views, frame metadata (`FrameMeta`, `NativeFrameMeta`, `FrameTiming`, `CaptureInstant`, ...), requirements, controls, the SIMD row kernels; the frame path: `FrameLease`, `BufferPool` (heap), `MemoryRegion` (static / DMA memory), shared views and companions, bounded queues (non-blocking and waker-based async; not on targets without compare-and-swap), transforms, `metrics` (pool and camera counters), the platform's clocks (`set_platform_clock`) | memfd / dma-buf backings and their export and import, `SharedBufferPool`, blocking queue waits with timeouts, OS clocks, `schema` (utoipa), `daedalus` |
 | `styx-algo` | every algorithm (AGC with flicker avoidance and deflicker, AWB, ALSC, CCM, contrast, denoise, black level, lux, AF), `Pipeline`, the tuning model, `Tuning::from_toml_str` / `to_toml_string`, Raspberry Pi JSON in and out, the simulator, `WarmStart` | `Tuning::load` (paths), `replay` (JSON Lines over `std::io`) |
 | `styx-softisp` | every kernel, `SoftIsp` on the calling thread (all outputs, statistics, both arithmetics) | `SoftIsp::with_threads` (the helper thread pool); run-time CPU feature detection |
 | `styx-sensor` | descriptions from strings or compiled (`from_postcard`, feature `postcard`), timing, gain models, the control scheduler, embedded data, lenses (description and schedule; the VCM drivers are `lemnos-drivers-vcm`), PDAF decoding, kernel-sensor fallback descriptions, `SensorDriver` / `AsyncSensorDriver` over Lemnos's `I2cRegisters` / `SpiRegisters` (any embedded-hal bus) and `SensorPins` | `from_file`, `NoPins`, the `build` helper (a build-dependency) |
@@ -49,6 +52,10 @@ CI (`scripts/check-nostd.sh`) builds and lints every crate above without `std` f
 for the host (`styx-sensor` also with `postcard`). `SensorDriver` and `SoftIsp`'s fp16 tables hold
 `Arc`s, which need pointer-sized atomics (`target_has_atomic = "ptr"`): ARMv6-M
 (`thumbv6m`, Cortex-M0) and RISC-V without the `a` extension lack them.
+
+`styx-core-rs` also builds for `thumbv6m-none-eabi` and `riscv32imc-unknown-none-elf` (no
+compare-and-swap) with feature `critical-section` (atomics, `Arc` and its locks through the
+platform's critical section; the queues need compare-and-swap and are left out there).
 
 Floats: the crates use `f64` (3A, sensor timing) and `f32` (ISP parameters). A target without
 a double-precision FPU emulates `f64` in software; the software ISP's per-pixel work is
@@ -301,6 +308,99 @@ frames; `strace` is not on the device), CPU from the thread's scheduler time:
 The software loop replays a CM5 recording identically before and after (algorithm recording,
 image and per-frame values), and allocates the same 50 times per frame on the host.
 
+## The frame path without `std` (`styx-core`)
+
+Without `std`, `styx-core` is the whole frame path, not only its types:
+
+| Piece | Without `std` | With `std` (unchanged on Linux) |
+|---|---|---|
+| `FrameLease`, shared views (`into_shareable`, `share`), companions and pyramids, crops, `materialize_owned` | yes | yes |
+| `BufferPool` / `BufferLease` (pooled heap buffers) | yes | yes |
+| `MemoryRegion` + `RegionHooks` (`FrameLease::from_region`): a static buffer or a DMA region, read in place; `begin_cpu_read` once before the first read (a D-cache invalidate), `release` when the last view drops (queue the buffer again) | yes | yes |
+| memfd / dma-buf backings, `export_backing`, `from_memfd_import` / `from_dmabuf_import`, `SharedBufferPool`, `dmabuf_begin_cpu_read` | no | unix / Linux |
+| bounded and newest-value queues: `send`, `recv`, `poll_recv`, `recv_async`, `send_async` (waker lists in the queue: any executor, or a superloop polling with a no-op waker) | yes (targets with compare-and-swap) | yes |
+| `send_wait` / `recv_wait` / `*_timeout` / `*_blocking` | no | yes (parking_lot condvars) |
+| transforms (`transform_packed_frame`, its pool) | yes | yes |
+| `metrics`: `Metrics` (pools, queues), `Counters` and the camera counters, `Counter`, `Ring` | yes | yes |
+| clocks: `TimestampClock::now_ns`, `ClockSource::stamp_now`, `CaptureInstant::try_now` | the platform's (`set_platform_clock`), else `None` | the platform's when set, else the OS's |
+
+Locks (`styx_core::sync`) are held for a few instructions (a free list, a waker list): with
+`std` parking_lot as before; without it spin locks (tasks, superloops, multicore), or with
+feature `critical-section` critical sections (for a pool or queue also touched from an
+interrupt handler, and for targets without compare-and-swap, where `Arc` is
+`portable-atomic-util`'s). 64-bit counters are `portable-atomic`'s (native instructions on
+x86_64 and AArch64). `tracing` was a dependency without a use and is gone. The async queue
+operations no longer need tokio (`async` is kept as a feature for compatibility).
+
+**One metrics module.** The runtime's camera counters (`Counters`, `Ring`, `AaaCounters`,
+`StillCounters`, ...) moved into `styx_core::metrics` next to the pool counters (`Metrics`),
+all over `styx_core::sync::Counter`; `styx_runtime::metrics` and `styx_runtime::sync::Counter`
+re-export them, so every path still works.
+
+**Frames from the runtime.** `styx_runtime::Frame<R>` stays the stream's item: typed by the
+receiver, no allocation (the runtime's zero-allocation test holds), carrying what the frame
+loop needs (sequence, controls, buffer index). `Frame::into_lease(meta, layouts)` (or
+`into_backing(len)`) makes it a `styx_core` `FrameLease` over the receiver's buffer without
+copying: the buffer goes back to the receiver when the last view drops, and the buffer type's
+`LeaseBuffer` says how the CPU reads it, where it lives and how it is exported. That is the one
+frame type consumers get on every target: `styx`'s native capture now hands its frames on this
+way (`styx-native`'s V4L2 buffer implements `LeaseBuffer`: dma-buf, cached when imported from
+a dma-heap, exported as itself), replacing its own backing type at the same cost (one `Arc`
+per frame, as before), and `examples/nostd-camera` hands its raw frames to a consumer as
+`FrameLease`s through a `styx_core` queue. Making `FrameStream` yield `FrameLease`s directly
+would add that allocation and a `FrameMeta` to every frame of the runtime's loop, which needs
+neither, so `Frame` and the lease stay separate types joined by `into_lease`. For a frame to
+cross threads on every target, the runtime's `Ref` is `Arc` without `std` too (was `Rc`;
+`Arc<RefCell<T>>` is still not `Send`, so the sensor state cannot leave its task) and the
+pool's give-back is lock-free (two atomic counters in place of a lock around the re-queue).
+
+`scripts/check-nostd.sh` builds `styx-core` without `std` with spin locks and with
+`critical-section` for the four targets, for the two targets without compare-and-swap, and
+runs its unit tests on the host without `std` both ways (the harness links std; the code under
+test takes the `no_std` paths). Miri (`cargo +nightly miri test -p styx-core-rs
+--no-default-features --lib -- buffer:: queue:: metrics:: transform:: sync::`: 55 tests, and
+the same with `--features std` skipping the memfd / dma-buf tests: 72) found nothing.
+
+### Linux is unchanged by step 9
+
+Host (Ryzen 9 5900X, shared with other builds: load 16-26 during the runs), `dev` 3cc597f
+against `work/core-nostd`, alternating; `cargo bench -p styx-core-rs` (new: pools, frames,
+queues, a transform, best of the runs) and `cargo bench -p styx-softisp` (52 benchmarks, best
+of two each: geometric mean −0.6 %, within the noise of a loaded host; the software ISP's code
+did not change):
+
+| Benchmark | Before | After |
+|---|---|---|
+| `pool/lease_drop` | 25.3 ns | 25.4 ns |
+| `pool/lease_sized_drop` | 53.2 ns | 53.9 ns |
+| `frame/from_external_planes` | 28.1 ns | 28.5 ns |
+| `frame/into_shareable_share2` (1280x800, buffer zeroed) | 11.6 µs | 11.8 µs |
+| `frame/box_pyramid_level` | 35.4 µs | 36.1 µs |
+| `transform/rotate90_grey` | 99.6 µs | 100.3 µs |
+| `queue/send_recv` | 19.5-20.5 ns | 20.3-21.1 ns |
+| `queue/drop_oldest_send3_recv` | 51.6-54.2 ns | 52.9-55.0 ns |
+| `queue/send_recv_timeout` | 42.6 ns | 44.2 ns |
+| `queue/threaded_1k` (1000 values across two threads) | 160 µs | 163 µs |
+
+CM5 (OV9782 1280x800, native mode), `dev` 3cc597f against `work/core-nostd`, built alike
+(release, `aarch64-unknown-linux-gnu`), run alternately; libc calls per frame from an
+`LD_PRELOAD` counter (the difference between 300- and 1200-frame runs, twice each):
+
+| | before | after |
+|---|---|---|
+| Styx API NV12 30 fps (`native_isp_bench single 30 600`, 4 runs each): PiSP worker CPU per frame | 0.220-0.228 ms | 0.219-0.224 ms |
+| same: latency median / whole-process CPU per frame | 9.34-9.35 ms / 0.23-0.25 ms | 9.33-9.35 ms / 0.21-0.25 ms |
+| same at 120 fps (1200 frames, 2 runs): PiSP worker CPU / latency median | 0.369-0.372 ms / 9.46 ms | 0.314-0.369 ms / 9.45-9.46 ms |
+| same, 30 fps: `malloc` / `realloc` / `ioctl` / `poll` per frame (whole process) | 71.3-71.7 / 6.4-6.6 / 25.8-26.0 / 6.0 | 69.7-71.5 / 6.5 / 26.0 / 6.0 |
+| `native-pipeline pisp` 30 fps (450 frames, 2 runs): pipeline thread CPU per frame, latency median | 0.333-0.335 ms, 8.29 ms | 0.333-0.334 ms, 8.29 ms |
+| same at 120 fps (1200 frames) | 0.281-0.286 ms, 8.28 ms | 0.282-0.296 ms, 8.28 ms |
+| same: `malloc` / `ioctl` / `poll` / `write` per frame | 25.4 / 26.0 / 6.0 / 1.0 | 25.3 / 26.0 / 6.0 / 1.0 |
+| `metrics_top --overhead` (7 x 1M frames, median) | 266 ns | 266 ns |
+| `capture_frames nv12 1280x800 30 90` | 30.000 fps, first frame 34.2 ms | 30.000 fps, first frame 34.6 ms |
+| `still_capture` (PiSP): bracket of 3 | frames 84, 85, 86, landed, 333.4 ms | frames 84, 85, 86, landed, 335.3 ms |
+| same: preview meanwhile | 30.00 fps, no gaps (122 frames) | 30.00 fps, no gaps (122 frames) |
+| camera service, two clients in other processes (NV12 1280x800 and RGB 640x400, `--read`, 300 frames each) | 30.000 fps each, latency 9.81 / 9.80 ms, client CPU 0.37 / 0.20 ms, service 0.23 ms per frame, 620 sent, 0 copied | 30.000 fps each, latency 9.80 / 9.81 ms, client CPU 0.37 / 0.23 ms, service 0.21 ms per frame, 620 sent, 0 copied |
+
 ## What changes without `std`
 
 - **Floats.** `core` has no `sqrt`, `exp`, `powf`, `round`, ...; each crate has a small
@@ -415,6 +515,28 @@ Lemnos"); Styx depends on `lemnos-hal`, `lemnos-linux` and `lemnos-drivers-vcm`.
   is re-exported.
 - `styx-kernel`: `bus::{i2c, gpio, eh}` and `uevent` are gone (`lemnos_linux::hal::{I2cBus,
   GpioChip, GpioLine}`, `lemnos_linux::uevent`); `bus` is the sensor bridge only.
+
+## API changes with the `styx-core` frame path without `std` (step 9)
+
+The `styx` API is unchanged.
+
+- `styx_core::queue::BoundedRx::recv_async` / `BoundedTx::send_async` return named futures
+  (`RecvNext`, `SendNext`) instead of `async fn` futures, and exist without the `async`
+  feature (which no longer pulls in tokio); new `BoundedRx::poll_recv`. `QueueStats::
+  async_recv_waits` / `async_send_waits` count pending polls.
+- `styx_core::metrics::Metrics` is built on `styx_core::sync::Counter` (same methods, plus
+  `Metrics::new`); `styx_core::metrics` also holds the camera counters (`Counters`, `Ring`,
+  `WINDOW`, `AaaCounters`, `StillCounters`, the samples and readings), which were
+  `styx_runtime::metrics`'s (that path re-exports them). `Counter` gains `fetch_add`, `sub`,
+  `max` and `Clone`.
+- New in `styx_core`: `sync` (`Arc`, atomics, `Counter`), `buffer::{MemoryRegion,
+  RegionHooks, FrameLeaseParts, PlatformClock, set_platform_clock}`,
+  `FrameLease::from_region`, `CaptureInstant::try_now`, feature `critical-section`. The
+  `tracing` dependency is gone.
+- `styx_runtime`: `Frame::{into_lease, into_backing}`, `FrameBacking`, `LeaseBuffer`, feature
+  `mock` (`LeaseBuffer` for `styx-hal`'s mock buffers), `styx_runtime::styx_core`; without
+  `std`, `Ref<T>` / `Shared<T>` are `Arc<T>` / `Arc<RefCell<T>>` (were `Rc`).
+- `styx_native::NativeFrame::into_backing`; `V4l2Buffer` implements `LeaseBuffer`.
 
 ## API changes with stills and metrics in the runtime (phase 2, steps 7-8)
 

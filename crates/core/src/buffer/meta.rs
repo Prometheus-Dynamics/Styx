@@ -2,75 +2,9 @@ use core::{fmt, time::Duration};
 
 use crate::format::MediaFormat;
 
-/// When Styx received a frame: nanoseconds on a monotonic clock.
-///
-/// With `std` this is std's [`Instant`](std::time::Instant) timeline ([`CaptureInstant::now`],
-/// `From<Instant>`): on Linux the nanoseconds are `CLOCK_MONOTONIC`'s (the clock of `Instant`
-/// and of V4L2 buffer timestamps). Without `std` the platform passes its own monotonic
-/// nanoseconds ([`CaptureInstant::from_nanos`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CaptureInstant(u64);
-
-impl CaptureInstant {
-    /// An instant `ns` nanoseconds into the monotonic clock.
-    pub const fn from_nanos(ns: u64) -> Self {
-        Self(ns)
-    }
-
-    /// The nanoseconds.
-    pub const fn as_nanos(self) -> u64 {
-        self.0
-    }
-
-    /// Time from `earlier` to `self`; zero when `earlier` is later.
-    pub fn duration_since(self, earlier: CaptureInstant) -> Duration {
-        Duration::from_nanos(self.0.saturating_sub(earlier.0))
-    }
-
-    /// Time from `earlier` to `self`, `None` when `earlier` is later.
-    pub fn checked_duration_since(self, earlier: CaptureInstant) -> Option<Duration> {
-        self.0.checked_sub(earlier.0).map(Duration::from_nanos)
-    }
-
-    /// Now.
-    #[cfg(feature = "std")]
-    pub fn now() -> Self {
-        std::time::Instant::now().into()
-    }
-
-    /// Time since this instant (zero if it lies in the future), as `Instant::elapsed`.
-    #[cfg(feature = "std")]
-    pub fn elapsed(self) -> Duration {
-        Self::now().duration_since(self)
-    }
-}
-
-/// An `Instant` and the nanoseconds it maps to, sampled once.
-#[cfg(feature = "std")]
-fn instant_anchor() -> &'static (std::time::Instant, u64) {
-    static ANCHOR: std::sync::OnceLock<(std::time::Instant, u64)> = std::sync::OnceLock::new();
-    ANCHOR.get_or_init(|| {
-        let at = std::time::Instant::now();
-        // Linux: `Instant` is `CLOCK_MONOTONIC`, so name the same nanoseconds. Elsewhere an
-        // arbitrary origin with room on both sides.
-        let ns = TimestampClock::Monotonic.now_ns().unwrap_or(u64::MAX / 2);
-        (at, ns)
-    })
-}
-
-#[cfg(feature = "std")]
-impl From<std::time::Instant> for CaptureInstant {
-    fn from(t: std::time::Instant) -> Self {
-        let (at, ns) = *instant_anchor();
-        let ns = match t.checked_duration_since(at) {
-            Some(after) => ns.saturating_add(after.as_nanos().min(u128::from(u64::MAX)) as u64),
-            None => {
-                ns.saturating_sub(at.duration_since(t).as_nanos().min(u128::from(u64::MAX)) as u64)
-            }
-        };
-        Self(ns)
-    }
-}
+pub use super::clock::{
+    CaptureInstant, ClockConversion, ClockSource, PlatformClock, TimestampClock, set_platform_clock,
+};
 
 /// Runtime-visible residency for a frame payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -335,141 +269,6 @@ pub struct FrameMeta {
     pub delta: bool,
 }
 
-/// Clock a frame's `timestamp` is expressed in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum TimestampClock {
-    /// `CLOCK_MONOTONIC`: steady, stops during suspend (V4L2 buffers, `std::time::Instant`).
-    Monotonic,
-    /// `CLOCK_BOOTTIME`: steady, keeps counting during suspend (libcamera, Android sensors).
-    Boottime,
-    /// `CLOCK_REALTIME`: wall-clock nanoseconds since the Unix epoch; can jump.
-    Realtime,
-    /// Nanoseconds since the capture stream started (file, network and synthetic sources).
-    StreamRelative,
-}
-
-impl TimestampClock {
-    /// Current time on this clock in nanoseconds; `None` for stream-relative time or when the
-    /// clock is unavailable on this platform.
-    pub fn now_ns(self) -> Option<u64> {
-        #[cfg(all(feature = "std", target_os = "linux"))]
-        {
-            let clock = match self {
-                Self::Monotonic => libc::CLOCK_MONOTONIC,
-                Self::Boottime => libc::CLOCK_BOOTTIME,
-                Self::Realtime => libc::CLOCK_REALTIME,
-                Self::StreamRelative => return None,
-            };
-            let mut now = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            // SAFETY: `now` is valid writable storage for clock_gettime.
-            if unsafe { libc::clock_gettime(clock, &mut now) } != 0 {
-                return None;
-            }
-            (now.tv_sec as u64)
-                .checked_mul(1_000_000_000)?
-                .checked_add(now.tv_nsec as u64)
-        }
-        #[cfg(all(feature = "std", not(target_os = "linux")))]
-        {
-            match self {
-                Self::Realtime => std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map(|d| d.as_nanos() as u64),
-                _ => None,
-            }
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            let _ = self;
-            None
-        }
-    }
-
-    /// Time elapsed since `timestamp_ns` on this clock, or `None` if the clock is unavailable
-    /// or the timestamp lies in the future.
-    pub fn elapsed_since(self, timestamp_ns: u64) -> Option<Duration> {
-        self.now_ns()?
-            .checked_sub(timestamp_ns)
-            .map(Duration::from_nanos)
-    }
-}
-
-/// Which clock capture backends should stamp frames with.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum ClockSource {
-    /// Keep each backend's own clock (libcamera: boottime, V4L2: usually monotonic, files and
-    /// network streams: stream-relative). `FrameMeta::clock` says which one.
-    #[default]
-    Native,
-    Monotonic,
-    Boottime,
-    Realtime,
-}
-
-impl ClockSource {
-    pub fn clock(self) -> Option<TimestampClock> {
-        match self {
-            Self::Native => None,
-            Self::Monotonic => Some(TimestampClock::Monotonic),
-            Self::Boottime => Some(TimestampClock::Boottime),
-            Self::Realtime => Some(TimestampClock::Realtime),
-        }
-    }
-    /// Conversion from a backend's `native` clock to this source; `None` for `Native` or when
-    /// the clocks cannot be related (stream-relative time).
-    pub fn conversion_from(self, native: TimestampClock) -> Option<ClockConversion> {
-        ClockConversion::new(native, self.clock()?)
-    }
-
-    /// Timestamp for a frame arriving now on a source without its own clock: the configured
-    /// clock's current time, or `stream_elapsed` as stream-relative time for `Native`.
-    pub fn stamp_now(self, stream_elapsed: Duration) -> (u64, TimestampClock) {
-        self.clock()
-            .and_then(|clock| Some((clock.now_ns()?, clock)))
-            .unwrap_or((
-                stream_elapsed.as_nanos().min(u128::from(u64::MAX)) as u64,
-                TimestampClock::StreamRelative,
-            ))
-    }
-}
-
-/// A fixed offset between two system clocks, sampled once so related timestamps (e.g. a frame
-/// and its pyramid companion) convert identically.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClockConversion {
-    target: TimestampClock,
-    offset_ns: i128,
-}
-
-impl ClockConversion {
-    /// Conversion from `from` to `to`; `None` if either is stream-relative or unavailable.
-    pub fn new(from: TimestampClock, to: TimestampClock) -> Option<Self> {
-        let offset_ns = if from == to {
-            0
-        } else {
-            i128::from(to.now_ns()?) - i128::from(from.now_ns()?)
-        };
-        Some(Self {
-            target: to,
-            offset_ns,
-        })
-    }
-
-    pub fn target(&self) -> TimestampClock {
-        self.target
-    }
-
-    pub fn apply(&self, timestamp_ns: u64) -> u64 {
-        (i128::from(timestamp_ns) + self.offset_ns).clamp(0, i128::from(u64::MAX)) as u64
-    }
-}
-
 /// Per-frame latency breakdown. Backends fill `sensor_to_capture`; pipelines fill the stage
 /// durations. Stages a frame did not pass through stay `None`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -680,7 +479,7 @@ impl FrameMeta {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod timing_tests {
     use super::*;
     use crate::format::{ColorSpace, FourCc, MediaFormat, Resolution};

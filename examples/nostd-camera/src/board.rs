@@ -158,6 +158,9 @@ impl FrameBuffer for BufferHandle {
     fn end_cpu(&self, _access: Access) {}
 }
 
+/// Coherent RAM the receiver owns: the defaults (cached, nothing to export).
+impl styx_runtime::LeaseBuffer for BufferHandle {}
+
 #[derive(Default)]
 struct State {
     configured: u32,

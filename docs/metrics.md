@@ -4,7 +4,8 @@ Every capture records its health and performance while it runs, cheaply enough t
 relaxed atomic counters and fixed rings of the last 128 samples, written on the frame path
 without locks or allocation (262 ns per frame on the CM5, see [Cost](#cost)). Snapshots are taken
 on demand. The counters, rings and 3A/AF/still state are the portable runtime's
-(`styx_runtime::metrics`, `no_std`, the same on a microcontroller); `styx` feeds them from frame
+(`styx_core::metrics`, re-exported as `styx_runtime::metrics`, `no_std`, the same on a
+microcontroller); `styx` feeds them from frame
 metadata and adds what a Linux process has (consumers, buffers held, worker CPU time).
 
 ```rust

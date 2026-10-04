@@ -11,10 +11,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use smallvec::smallvec;
 use styx_capture::prelude::*;
-use styx_core::prelude::{
-    BackendFrameMeta, ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane,
-    FrameResidency, NativeFrameMeta, TimestampClock,
-};
+use styx_core::prelude::{BackendFrameMeta, NativeFrameMeta, TimestampClock};
 use styx_native::{
     CameraControls, CameraInfo, CameraOptions, NativeError, NativeFrame, SensorLibrary, SensorMode,
     StreamSettings,
@@ -391,59 +388,6 @@ pub(crate) fn probe() -> (Vec<ProbedDevice>, Vec<String>) {
     )
 }
 
-/// A frame's buffer as a frame backing: mapped for reading, exportable as its dma-buf.
-struct NativeBacking {
-    frame: NativeFrame,
-    len: usize,
-}
-
-impl ExternalBacking for NativeBacking {
-    fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        (index == 0).then(|| {
-            let d = self.frame.data();
-            &d[..self.len.min(d.len())]
-        })
-    }
-
-    fn backing_bytes(&self) -> Option<usize> {
-        Some(self.frame.buffer_len())
-    }
-
-    fn backing_kind(&self) -> &'static str {
-        "native_dmabuf"
-    }
-
-    fn can_export(&self) -> bool {
-        self.frame.dmabuf().is_some()
-    }
-
-    fn residency(&self) -> FrameResidency {
-        FrameResidency::Dmabuf
-    }
-
-    fn cpu_access(&self) -> CpuAccess {
-        if self.frame.cpu_cached() {
-            CpuAccess::Cached
-        } else {
-            CpuAccess::Uncached
-        }
-    }
-
-    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
-        let Some(fd) = self.frame.dmabuf() else {
-            return Ok(None);
-        };
-        let fd = fd.try_clone_to_owned().map_err(FrameExportError::Fd)?;
-        Ok(Some(FrameBackingExport::DmabufPlanes {
-            planes: vec![FrameFdPlane {
-                fd,
-                offset: 0,
-                len: self.len,
-            }],
-        }))
-    }
-}
-
 /// Wraps a native frame as a frame lease (no copy).
 pub(crate) fn frame_lease(
     frame: NativeFrame,
@@ -476,7 +420,7 @@ pub(crate) fn frame_lease(
     Some(FrameLease::from_external(
         meta,
         smallvec![layout],
-        Arc::new(live.track(NativeBacking { frame, len })),
+        Arc::new(live.track(frame.into_backing(len))),
     ))
 }
 

@@ -90,7 +90,12 @@ styx-tune = { path = "crates/tune", version = "2.0.0" }
 #   [patch."https://github.com/Prometheus-Dynamics/Daedalus.git"]
 #   daedalus-rs = { path = "../Daedalus/crates/daedalus" }
 daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "0a9820188583e44f19760148e37ebdcac395f3d8", version = "2.0.0", default-features = false }
-crossbeam-queue = "0.3.12"
+crossbeam-queue = { version = "0.3.12", default-features = false, features = ["alloc"] }
+# Locks for the no_std frame path (styx-core without `std`), and its targets without
+# compare-and-swap (`critical-section`, `portable-atomic-util`'s `Arc`).
+spin = { version = "0.10", default-features = false, features = ["spin_mutex", "rwlock"] }
+critical-section = "1.2"
+portable-atomic-util = { version = "0.2.7", default-features = false, features = ["alloc"] }
 smallvec = "1.15.1"
 # thiserror and serde without default features so the no_std crates can use them (crates that
 # want `std` ask for it; docs/portability.md). libm: float maths for no_std builds.

@@ -1,8 +1,10 @@
 //! The firmware: a processed camera written once over any [`Platform`] whose sensor side is a
 //! `styx-runtime` [`SensorState`]. A superloop drives it: [`Firmware::service`] at frame-start
 //! interrupts (the frame-exact control schedule), [`Firmware::poll`] when frames are done
-//! (the software ISP with 3A, the requests to the schedule, stills, metrics counters). Nothing
-//! here knows the board.
+//! (the software ISP with 3A, the requests to the schedule, stills, metrics counters). Each raw
+//! frame becomes a `styx_core` [`FrameLease`] over the receiver's buffer (no copy), processed
+//! from there and handed to a consumer through a `styx_core` queue ([`Firmware::raw_frames`]),
+//! the same frame type and queue Linux consumers get. Nothing here knows the board.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -20,10 +22,15 @@ use styx_pipeline::still_runner::{
 };
 use styx_pipeline::{PipelineError, RawFrame, SensorInfo, SensorValues, SoftLoop};
 use styx_runtime::metrics::{AaaSample, Counters, FrameSample};
+use styx_runtime::styx_core::buffer::{
+    BackendFrameMeta, CaptureInstant, FrameLease, FrameMeta, NativeFrameMeta, PlaneLayout,
+};
+use styx_runtime::styx_core::format::{ColorSpace, FourCc, MediaFormat, Resolution};
+use styx_runtime::styx_core::queue::{BoundedRx, BoundedTx, QueueOverflow, bounded_with};
 use styx_runtime::sync::{Lock, MaybeSend, Shared};
 use styx_runtime::{
-    Camera, CameraOptions, Clock, Controls, DEFAULT_WRITE_MARGIN, FrameStream, Platform,
-    SensorHandle, SensorState, instant_duration, serve_sync,
+    Camera, CameraOptions, Clock, Controls, DEFAULT_WRITE_MARGIN, Frame, FrameStream, LeaseBuffer,
+    Platform, SensorHandle, SensorState, instant_duration, serve_sync,
 };
 use styx_sensor::{RegisterBus, SensorPins};
 use styx_softisp::{OutputBuffers, RawFormat, RawPacking, Scale};
@@ -139,6 +146,8 @@ pub struct Firmware<P: Platform, B, Pn> {
     rgb: Vec<u8>,
     arithmetic: styx_softisp::Arithmetic,
     clock: Clock,
+    /// Where the raw frames go once processed ([`Self::raw_frames`]).
+    raw: Option<BoundedTx<FrameLease>>,
 }
 
 impl<P, B, Pn> Firmware<P, B, Pn>
@@ -148,6 +157,8 @@ where
     Pn: SensorPins + MaybeSend + 'static,
     Lock<SensorState<B, Pn>>: MaybeSendSync,
     SensorHandle<P::Sensor>: SensorStart,
+    P::Receiver: Send + Sync + 'static,
+    <P::Receiver as Receiver>::Buffer: LeaseBuffer + Send + Sync,
 {
     /// A camera on `receiver` and `sensor` (brought up), processing frames of `info`'s mode
     /// stored as `packing` with `tuning`'s algorithms, on the platform `clock`.
@@ -181,7 +192,49 @@ where
             rgb,
             arithmetic: styx_softisp::Arithmetic::Auto,
             clock,
+            raw: None,
         })
+    }
+
+    /// The raw frames, as `FrameLease`s over the receiver's buffers, after processing: the
+    /// newest `depth` are kept (older ones are dropped, giving their buffer back), so a slow
+    /// consumer holds at most `depth` buffers.
+    pub fn raw_frames(&mut self, depth: usize) -> BoundedRx<FrameLease> {
+        let (tx, rx) = bounded_with(depth, QueueOverflow::DropOldest);
+        self.raw = Some(tx);
+        rx
+    }
+
+    /// `frame` as a `FrameLease`: its format, timestamp, the values that produced it and when
+    /// it arrived.
+    fn lease(&self, frame: Frame<P::Receiver>, values: &SensorValues, now: Duration) -> FrameLease {
+        let (w, h) = (self.format.width, self.format.height);
+        let stride = w as usize * 2;
+        let format = MediaFormat::new(
+            FourCc::new(*b"BG16"),
+            Resolution::new(w, h).expect("frame size"),
+            ColorSpace::Unknown,
+        );
+        let native = NativeFrameMeta {
+            sequence: frame.sequence as u32,
+            bytes_used: frame.bytes_used as u32,
+            error: frame.corrupt,
+            exposure_ns: values.exposure.as_nanos() as u64,
+            analog_gain: values.analogue_gain as f32,
+            digital_gain: values.digital_gain as f32,
+            frame_duration_ns: values.frame_duration.as_nanos() as u64,
+            frame_length: 0,
+            verified: values.verified,
+        };
+        let meta = FrameMeta::new(format, instant_duration(frame.timestamp).as_nanos() as u64)
+            .with_backend(BackendFrameMeta::Native(native))
+            .with_capture_instant(CaptureInstant::from_nanos(now.as_nanos() as u64));
+        let layout = PlaneLayout {
+            offset: 0,
+            len: stride * h as usize,
+            stride,
+        };
+        frame.into_lease(meta, smallvec::smallvec![layout])
     }
 
     /// Resets the algorithms, writes their start-up exposure for frame 0 and starts streaming.
@@ -254,7 +307,10 @@ where
             .or_else(|| self.controls.applied(seq))
             .ok_or_else(|| FirmwareError::Camera(format!("no values for frame {seq}")))?;
         let values = styx_pipeline::process::sensor_values(seq, &applied);
-        let data = frame.data();
+        let (timestamp, corrupt) = (frame.timestamp, frame.corrupt);
+        let lease = self.lease(frame, &values, now);
+        let planes = lease.planes();
+        let data = planes[0].data();
         let stride = self.format.width as usize * 2;
         let w = self.format.width as usize;
         let (out, lands) = self.soft.process_frame_with(
@@ -273,7 +329,7 @@ where
             let len = stride * self.format.height as usize;
             Box::new(HeldRaw {
                 sequence: seq,
-                timestamp: instant_duration(frame.timestamp),
+                timestamp: instant_duration(timestamp),
                 width: self.format.width,
                 height: self.format.height,
                 stride,
@@ -305,12 +361,12 @@ where
             means: means(&self.rgb),
         };
         // Metrics: the frame, its ISP time, the 3A state.
-        let ts = instant_duration(frame.timestamp).as_nanos() as u64;
+        let ts = instant_duration(timestamp).as_nanos() as u64;
         let lost = self.counters.frame(&FrameSample {
             sequence: Some(seq),
             timestamp_ns: ts,
             now_ns: Some(now.as_nanos() as u64),
-            corrupt: frame.corrupt,
+            corrupt,
             exposure: Some((
                 values.exposure.as_nanos() as u64,
                 values.analogue_gain as f32,
@@ -330,7 +386,11 @@ where
             af: None,
         });
         self.counters.received(ts, Some(now.as_nanos() as u64));
-        drop(frame);
+        drop(planes);
+        // To the consumer (dropping the oldest it has not taken), or back to the receiver.
+        if let Some(raw) = &self.raw {
+            let _ = raw.send(lease);
+        }
         if let Some(o) = self
             .stills
             .after_frame(&mut self.soft, &values, &report, raw)

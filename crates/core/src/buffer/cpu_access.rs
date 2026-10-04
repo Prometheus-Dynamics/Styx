@@ -3,7 +3,7 @@
 use core::fmt;
 
 /// Whether the CPU can read a frame's planes, and at what cost. Where the memory lives
-/// ([`FrameResidency`]) does not decide it: a dma-buf mapped from a cached heap reads as fast as
+/// ([`FrameResidency`](crate::buffer::FrameResidency)) does not decide it: a dma-buf mapped from a cached heap reads as fast as
 /// heap memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

@@ -12,17 +12,24 @@ rust-version.workspace = true
 default = ["std"]
 # Shared state behind `Arc<Mutex>` (else `Rc<RefCell>`: a microcontroller camera lives in one
 # task), `Send + Sync` handles, `std::io` conversions in the sensor crate.
-std = ["styx-sensor/std", "styx-hal/std", "thiserror/std"]
+std = ["styx-sensor/std", "styx-hal/std", "styx-core/std", "thiserror/std"]
+# `LeaseBuffer` for `styx-hal`'s mock buffers (frames on the mock platform as `FrameLease`s).
+mock = ["styx-hal/mock"]
 
 [dependencies]
 # Path dependencies without default features (the workspace entries keep theirs for the std
 # crates), as examples/nostd-smoke does.
 styx-hal = { path = "../hal", version = "2.0.0" }
 styx-sensor = { path = "../sensor", version = "2.0.0", default-features = false }
-portable-atomic.workspace = true
+# Frames handed to consumers (`Frame::into_lease`) and the metrics counters.
+styx-core = { package = "styx-core-rs", path = "../core", version = "2.0.0", default-features = false }
+smallvec.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# The tests' frames go through `Frame::into_lease` on the mock platform.
+styx-runtime = { path = ".", features = ["mock"] }
+styx-core = { package = "styx-core-rs", path = "../core", version = "2.0.0" }
 styx-hal = { path = "../hal", version = "2.0.0", features = ["mock"] }
 styx-sensor = { path = "../sensor", version = "2.0.0" }
 

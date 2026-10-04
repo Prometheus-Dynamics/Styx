@@ -12,17 +12,40 @@ styx-core-rs = "2.0.0"
 ```
 
 ## Modules
-- `buffer`: `BufferPool`, `BufferLease`, `FrameLease`, plane views, and helpers like `plane_layout_from_dims`/`plane_layout_with_stride`.
-- `queue`: bounded, default-capacity bounded, and newest-value queues with backpressure-aware `SendOutcome`/`RecvOutcome`.
+- `buffer`: `BufferPool`, `BufferLease`, `FrameLease`, plane views, frames over caller-provided memory (`MemoryRegion`), and helpers like `plane_layout_from_dims`/`plane_layout_with_stride`.
+- `queue`: bounded, default-capacity bounded, and newest-value queues with backpressure-aware `SendOutcome`/`RecvOutcome`; non-blocking, waker-based async (`poll_recv`, `recv_async`, `send_async`, any executor) and, with `std`, blocking with timeouts.
 - `format`: `FourCc`, `Resolution`, `MediaFormat`, `Interval`/`IntervalStepwise`, and `ColorSpace`.
 - `controls`: `ControlId`, `ControlMeta`, `ControlValue`, and validation logic.
-- `metrics`: simple hit/miss/allocation counters for pools.
+- `metrics`: hit/miss/allocation counters for pools and queues (`Metrics`), and a camera's counters (`Counters`: frames, drops, latency rings, 3A, stills; `styx_runtime::metrics` re-exports them).
+- `sync`: the `Arc`, atomics and `Counter` the frame path uses on every target.
+- `transform`: packed-frame rotations and mirrors.
 
 ## `no_std`
 Without the default `std` feature (`default-features = false, features = ["neon", "x86"]`) the
-crate is `no_std` + `alloc`: formats, plane layouts and their math, plane views, frame metadata
-(`FrameMeta`, `CaptureInstant`), requirements, controls and the SIMD kernels. Frames and pools,
-queues, transforms and metrics need `std`. See the repository's `docs/portability.md`.
+crate is `no_std` + `alloc`, frame path included: formats, plane layouts, frame metadata,
+controls, the SIMD kernels, `FrameLease` and `BufferPool` over heap memory, frames over static
+or DMA memory (`MemoryRegion` with `RegionHooks` for cache maintenance and giving the buffer
+back), shared views and companions, the bounded queues (non-blocking and waker-based),
+transforms and metrics. Locks are spin locks; feature `critical-section` makes them critical
+sections (for pools or queues touched from interrupt handlers) and builds the crate for
+targets without compare-and-swap (Cortex-M0, RISC-V without `a`; the queues need it). Clocks
+come from the platform (`buffer::set_platform_clock`). `std` adds memfd / dma-buf backings,
+their export and import (unix), `SharedBufferPool` (Linux), blocking queue waits with
+timeouts, OS clocks, parking_lot locks and run-time SIMD detection. See the repository's
+`docs/portability.md`.
+
+```rust
+use styx_core::prelude::*;
+
+static PIXELS: [u8; 16] = [7; 16];
+let format = MediaFormat::new(FourCc::GREY, Resolution::new(4, 4).unwrap(), ColorSpace::Unknown);
+let frame = FrameLease::from_region(
+    FrameMeta::new(format, 0),
+    smallvec::smallvec![plane_layout_from_dims(format.resolution.width, format.resolution.height, 1)],
+    MemoryRegion::from_static(&PIXELS),
+);
+assert_eq!(frame.planes()[0].data()[0], 7);
+```
 
 ## Zero-copy buffers and frames
 Frames are built from pooled buffers to avoid churn:

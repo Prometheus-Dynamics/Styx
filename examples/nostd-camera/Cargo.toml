@@ -27,6 +27,7 @@ std = [
 # so the workspace entries keep their default features for the std crates.
 [dependencies]
 portable-atomic.workspace = true
+smallvec.workspace = true
 spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
 styx-algo = { path = "../../crates/algo", default-features = false }
 styx-hal = { path = "../../crates/hal" }

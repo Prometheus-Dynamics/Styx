@@ -15,10 +15,13 @@
 //!   receiver's buffers from a [`Pool`], given back on drop, outliving their stream), and the
 //!   sensor service [`serve_sync`] (frame starts to the control schedule) for whatever waits
 //!   on the receiver's frame starts.
+//! * [`Frame::into_lease`]: a frame handed on as a `styx_core` [`FrameLease`](styx_core::buffer::FrameLease)
+//!   over the receiver's buffer, without copying ([`FrameBacking`], described by the buffer's
+//!   [`LeaseBuffer`]): the one frame type consumers see on every target.
 //! * [`metrics::Counters`]: frames, drops by cause, latency and ISP time windows, the 3A
 //!   loop's and AF's state, stills; relaxed atomics, no allocation (`styx::metrics` snapshots
-//!   them on Linux).
-//! * [`Shared`], [`Counter`]: one answer per build (`Arc<Mutex>` with `std`, `Rc<RefCell>`
+//!   them on Linux). `styx_core::metrics`, re-exported.
+//! * [`Shared`], [`Counter`]: one answer per build (`Arc<Mutex>` with `std`, `Arc<RefCell>`
 //!   without), see [`sync`].
 //!
 //! The runtime never spawns, sleeps or blocks on its own: the platform runs its parts (on
@@ -26,6 +29,10 @@
 //! platform and the reference implementation. See `docs/portability-design.md`.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+// Without `std`, `Ref` is an `Arc` also around state that is not `Sync` (it is then an `Rc`
+// with atomic counts: it cannot leave its task); `Arc` so that what is `Sync` (the receiver,
+// the frame pool, frames handed on as `FrameLease`s) can be shared (see `sync`).
+#![cfg_attr(not(feature = "std"), allow(clippy::arc_with_non_send_sync))]
 
 extern crate alloc;
 
@@ -33,8 +40,8 @@ mod camera;
 mod controls;
 mod error;
 mod health;
+mod lease;
 mod lens;
-pub mod metrics;
 mod sensor;
 mod side;
 mod stream;
@@ -44,6 +51,7 @@ pub use camera::{Camera, CameraError, CameraOptions, Platform, RunError, SensorH
 pub use controls::{BlankingHook, Controls};
 pub use error::{Error, Result};
 pub use health::{Fault, Health, MAX_CONTROL_FAILURES};
+pub use lease::{FrameBacking, LeaseBuffer};
 pub use lens::{LensControl, LensDrive, PdafFrames};
 pub use sensor::{
     BringUpTimes, Clock, DEFAULT_WRITE_MARGIN, FrameControls, SensorState, ServeError, StartFormat,
@@ -53,6 +61,9 @@ pub use side::{SensorSide, SyncSource, serve_sync, sync_event};
 pub use stream::{
     Frame, FrameItem, FrameStream, Lease, Pool, ReceiverError, StreamStats, instant_duration,
 };
+pub use styx_core;
+/// The camera's counters: `styx_core::metrics` (one set from the receiver to `styx::metrics`).
+pub use styx_core::metrics;
 pub use styx_hal;
 pub use styx_sensor;
 pub use sync::{Counter, Shared};

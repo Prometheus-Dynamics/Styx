@@ -22,7 +22,7 @@ fn lazy_pool_starts_empty_and_recycles_on_release() {
     assert_eq!(stats.retained_bytes, 16);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 #[test]
 fn shared_pool_reports_active_and_retained_memory() {
     let pool = SharedBufferPool::with_limits(1, 16, 2).expect("shared pool");
@@ -68,6 +68,7 @@ fn frame_meta_can_carry_v4l2_backend_details() {
     assert!(v4l2.zero_copy);
 }
 
+#[cfg(feature = "std")]
 #[test]
 fn frame_meta_can_carry_capture_instant() {
     let res = Resolution::new(2, 2).unwrap();
@@ -343,7 +344,7 @@ fn i420_allocation_uses_three_plane_420_layout() {
     assert_eq!(frame.visible_rows(2).unwrap().len(), 2);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 #[test]
 fn shared_plane_address_space_rejects_overlapping_layouts() {
     use std::ffi::CString;
@@ -633,7 +634,7 @@ fn frame_descriptor_round_trips_layout_metadata() {
     assert_eq!(frame.layout_slice(), frame.layouts().as_slice());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 #[test]
 fn memfd_import_exposes_shared_backing_without_copying() {
     use std::ffi::CString;
@@ -665,7 +666,7 @@ fn memfd_import_exposes_shared_backing_without_copying() {
     assert_eq!(planes[0].data(), &bytes);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 #[test]
 fn export_or_copy_memfd_materializes_owned_frame_for_import() {
     use std::os::fd::AsRawFd;
@@ -701,7 +702,7 @@ fn export_or_copy_memfd_materializes_owned_frame_for_import() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 #[test]
 fn shared_buffer_pool_frame_exports_without_fallback_copy() {
     let res = Resolution::new(2, 2).unwrap();
@@ -735,7 +736,7 @@ fn shared_buffer_pool_frame_exports_without_fallback_copy() {
     assert_eq!(planes[0].data(), expected.as_slice());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 #[test]
 fn resized_shared_buffer_lease_is_not_recycled_into_fixed_size_pool() {
     let pool = SharedBufferPool::with_limits(1, 8, 1).unwrap();

@@ -105,6 +105,43 @@ fn frames_outlive_their_stream_and_never_go_back_to_a_newer_one() {
 }
 
 #[test]
+fn frames_become_frame_leases_that_give_the_buffer_back_with_the_last_view() {
+    use smallvec::smallvec;
+    use styx_core::buffer::{FrameMeta, PlaneLayout};
+    use styx_core::format::{ColorSpace, FourCc, MediaFormat, Resolution};
+
+    let (mut camera, receiver) = camera();
+    let (mut frames, _) = camera.start(&config(2)).unwrap();
+    receiver.frame(0);
+    let Poll::Ready(Some(Ok(frame))) = frames.poll_frame(&mut noop()) else {
+        panic!()
+    };
+    let (sequence, buffer) = (frame.sequence, frame.index());
+    let format = MediaFormat::new(
+        FourCc::GREY,
+        Resolution::new(64, 32).unwrap(),
+        ColorSpace::Unknown,
+    );
+    let lease = frame.into_lease(
+        FrameMeta::new(format, sequence),
+        smallvec![PlaneLayout {
+            offset: 1024,
+            len: 64 * 32,
+            stride: 64,
+        }],
+    );
+    assert_eq!(receiver.queued(), [1], "lent out as a lease");
+    let view = lease.share().expect("an external backing shares");
+    std::thread::spawn(move || assert_eq!(view.planes()[0].data().len(), 64 * 32))
+        .join()
+        .unwrap();
+    assert_eq!(lease.planes()[0].data().len(), 64 * 32);
+    assert_eq!(lease.external_backing_kind(), Some("receiver"));
+    drop(lease);
+    assert_eq!(receiver.queued(), [1, buffer], "the last view gave it back");
+}
+
+#[test]
 fn missing_frame_starts_are_inferred_from_frames() {
     let (mut camera, receiver) = camera();
     let (mut frames, _) = camera.start(&config(2)).unwrap();

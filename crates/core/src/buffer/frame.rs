@@ -1,12 +1,19 @@
+use alloc::boxed::Box;
+#[allow(unused_imports)]
+use alloc::vec;
+use alloc::vec::Vec;
 use smallvec::{SmallVec, smallvec};
-use std::sync::Arc;
 
-#[cfg(unix)]
-use std::os::fd::{AsRawFd, OwnedFd};
+#[cfg(all(feature = "std", target_os = "linux"))]
+use std::os::fd::AsRawFd;
+#[cfg(all(feature = "std", unix))]
+use std::os::fd::OwnedFd;
+
+use crate::sync::Arc;
 
 use super::cpu_access::CpuAccess;
 use super::meta::{FrameMeta, FrameMutability, FrameResidency};
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 use super::pool::SharedBufferLease;
 use super::pool::{BufferLease, BufferPool};
 use crate::format::{FrameLayoutInfo, MediaFormat};
@@ -15,6 +22,7 @@ mod companion;
 mod construct;
 mod crop;
 mod luma;
+mod region;
 mod share;
 mod visible;
 
@@ -24,14 +32,18 @@ use super::plane::{FrameAllocation, FrameLeaseDescriptor, FrameValidationError, 
 use super::views::{FramePlaneShape, Plane, PlaneMut, VisibleRows, VisibleRowsMut};
 
 pub use companion::{CompanionKind, box_downscale_luma, box_downscale_luma_in};
-#[cfg(unix)]
+pub use region::{MemoryRegion, RegionHooks};
+#[cfg(all(feature = "std", unix))]
 mod shared_fd;
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 use shared_fd::create_memfd;
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 use shared_fd::{SharedFdBacking, fd_size};
 
 /// External backing for frames when zero-copy sharing external memory.
+///
+/// `Send + Sync` on every target, so frames move between threads, tasks and interrupt
+/// contexts alike.
 pub trait ExternalBacking: Send + Sync {
     fn plane_data(&self, index: usize) -> Option<&[u8]>;
 
@@ -63,12 +75,26 @@ pub trait ExternalBacking: Send + Sync {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(feature = "std", unix))]
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         Ok(None)
     }
 }
 
+/// `backing` as a shared frame backing (through a `Box` where `Arc` cannot coerce to a trait
+/// object: `portable-atomic-util`'s, on targets without compare-and-swap).
+pub(crate) fn shared_backing<B: ExternalBacking + 'static>(backing: B) -> Arc<dyn ExternalBacking> {
+    #[cfg(target_has_atomic = "ptr")]
+    {
+        Arc::new(backing)
+    }
+    #[cfg(not(target_has_atomic = "ptr"))]
+    {
+        Arc::from(Box::new(backing) as Box<dyn ExternalBacking>)
+    }
+}
+
+#[cfg(all(feature = "std", unix))]
 #[derive(Debug, thiserror::Error)]
 pub enum FrameExportError {
     #[error("frame backing is process-local and cannot be exported without copying")]
@@ -83,7 +109,7 @@ pub enum FrameExportError {
     PlaneCountMismatch { expected: usize, actual: usize },
 }
 
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 #[derive(Debug)]
 pub struct FrameFdPlane {
     pub fd: OwnedFd,
@@ -91,7 +117,7 @@ pub struct FrameFdPlane {
     pub len: usize,
 }
 
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 #[derive(Debug)]
 pub enum FrameBackingExport {
     Memfd { fd: OwnedFd, len: usize },
@@ -367,7 +393,7 @@ impl FrameLease {
         &self.layouts
     }
 
-    #[cfg(unix)]
+    #[cfg(all(feature = "std", unix))]
     pub fn export_backing(&self) -> Result<FrameBackingExport, FrameExportError> {
         self.external
             .as_ref()
@@ -376,14 +402,14 @@ impl FrameLease {
             .ok_or(FrameExportError::NotExportable)
     }
 
-    #[cfg(unix)]
+    #[cfg(all(feature = "std", unix))]
     pub fn export_descriptor_and_backing(
         &self,
     ) -> Result<(FrameLeaseDescriptor, FrameBackingExport), FrameExportError> {
         Ok((self.descriptor(), self.export_backing()?))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "std", target_os = "linux"))]
     pub fn export_or_copy_memfd(
         &self,
     ) -> Result<(FrameLeaseDescriptor, FrameBackingExport), FrameExportError> {
@@ -459,6 +485,7 @@ impl FrameLease {
         owned
     }
 
+    #[cfg(all(feature = "std", target_os = "linux"))]
     fn backing_span_len(&self) -> usize {
         self.layouts
             .iter()
@@ -476,7 +503,7 @@ impl FrameLease {
             .is_some_and(|backing| matches!(backing.backing_kind(), "memfd" | "memfd_pool"))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "std", target_os = "linux"))]
     fn copy_to_memfd(&self) -> Result<OwnedFd, FrameExportError> {
         let fd = create_memfd("styx-frame")?;
         let len = self.backing_span_len();

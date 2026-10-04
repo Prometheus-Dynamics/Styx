@@ -4,6 +4,8 @@
 //! primary. Producers guarantee the companion shows the same capture (same timestamp): an ISP's
 //! second output from the same request, or a filter applied to the decoded frame.
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use smallvec::{SmallVec, smallvec};
 
 use super::{FrameLease, FrameValidationError, PlaneLayout};

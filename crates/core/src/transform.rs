@@ -1,12 +1,13 @@
-use std::fmt;
-use std::sync::OnceLock;
+//! Packed-frame rotations and mirrors (`no_std`), into a process-wide pool.
+
+use core::fmt;
 
 use crate::buffer::{
     BufferPool, BufferPoolStats, FrameLease, FrameResidency, ResidencyTransition,
     ResidencyTransitionReason, plane_layout_from_dims,
 };
 use crate::format::{FourCc, MediaFormat, Resolution};
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 
 /// Rotation in 90-degree steps.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,7 +83,8 @@ impl Default for TransformPoolConfig {
     }
 }
 
-static TRANSFORM_POOL: OnceLock<Mutex<(BufferPool, TransformPoolConfig)>> = OnceLock::new();
+/// The pool and its sizing, made on first use.
+static TRANSFORM_POOL: Mutex<Option<(BufferPool, TransformPoolConfig)>> = Mutex::new(None);
 
 #[derive(Clone, Debug)]
 pub struct TransformResidencyCapabilities {
@@ -93,18 +95,19 @@ pub struct TransformResidencyCapabilities {
 }
 
 fn transform_pool(min_size: usize) -> BufferPool {
-    let default_config = TransformPoolConfig {
-        bytes: min_size,
-        ..TransformPoolConfig::default()
-    };
-    let lock = TRANSFORM_POOL
-        .get_or_init(|| Mutex::new((BufferPool::with_limits(2, min_size, 4), default_config)));
-    let mut guard = lock.lock();
-    if guard.1.bytes < min_size {
-        guard.1.bytes = min_size;
-        guard.0 = BufferPool::with_limits(guard.1.min, guard.1.bytes, guard.1.spare);
+    let mut guard = TRANSFORM_POOL.lock();
+    let (pool, config) = guard.get_or_insert_with(|| {
+        let config = TransformPoolConfig {
+            bytes: min_size,
+            ..TransformPoolConfig::default()
+        };
+        (BufferPool::with_limits(2, min_size, 4), config)
+    });
+    if config.bytes < min_size {
+        config.bytes = min_size;
+        *pool = BufferPool::with_limits(config.min, config.bytes, config.spare);
     }
-    guard.0.clone()
+    pool.clone()
 }
 
 /// Configure the process-wide packed-transform pool used by `transform_packed_frame`.
@@ -114,45 +117,38 @@ pub fn configure_transform_pool(config: TransformPoolConfig) {
         bytes: config.bytes.max(1),
         spare: config.spare,
     };
-    let lock = TRANSFORM_POOL.get_or_init(|| {
-        Mutex::new((
-            BufferPool::with_limits(config.min, config.bytes, config.spare),
-            config,
-        ))
-    });
-    let mut guard = lock.lock();
-    *guard = (
+    *TRANSFORM_POOL.lock() = Some((
         BufferPool::with_limits(config.min, config.bytes, config.spare),
         config,
-    );
+    ));
 }
 
 pub fn transform_pool_config() -> TransformPoolConfig {
-    let lock = TRANSFORM_POOL.get_or_init(|| {
-        let config = TransformPoolConfig::default();
-        Mutex::new((
-            BufferPool::with_limits(config.min, config.bytes, config.spare),
-            config,
-        ))
-    });
-    lock.lock().1
+    TRANSFORM_POOL
+        .lock()
+        .get_or_insert_with(|| {
+            let config = TransformPoolConfig::default();
+            (
+                BufferPool::with_limits(config.min, config.bytes, config.spare),
+                config,
+            )
+        })
+        .1
 }
 
 pub fn transform_pool_stats() -> Option<BufferPoolStats> {
-    let lock = TRANSFORM_POOL.get()?;
-    let guard = lock.lock();
-    Some(guard.0.stats())
+    TRANSFORM_POOL.lock().as_ref().map(|(pool, _)| pool.stats())
 }
 
 pub fn reset_transform_pool() {
-    if let Some(lock) = TRANSFORM_POOL.get() {
-        let mut guard = lock.lock();
+    let mut guard = TRANSFORM_POOL.lock();
+    if let Some(entry) = guard.as_mut() {
         let config = TransformPoolConfig {
             min: 0,
             bytes: 1,
             spare: 0,
         };
-        *guard = (BufferPool::with_limits(0, 1, 0), config);
+        *entry = (BufferPool::with_limits(0, 1, 0), config);
     }
 }
 

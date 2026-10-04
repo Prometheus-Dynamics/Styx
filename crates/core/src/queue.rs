@@ -1,12 +1,23 @@
+//! Bounded queues between a frame's producer and its consumers, `no_std` + `alloc`.
+//!
+//! A lock-free ring (crossbeam's `ArrayQueue`) with an overflow policy, non-blocking sends and
+//! receives, and waker-based async ones ([`BoundedRx::recv_async`], [`BoundedRx::poll_recv`],
+//! [`BoundedTx::send_async`]) that run on any executor, or a superloop polling with a no-op
+//! waker. With `std`: blocking sends and receives with timeouts. Needs compare-and-swap on
+//! pointers (`target_has_atomic = "ptr"`).
+
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
+
 use crossbeam_queue::ArrayQueue;
-use parking_lot::{Condvar, Mutex};
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
-};
+use smallvec::SmallVec;
+
+use crate::sync::{Arc, AtomicBool, AtomicU64, Mutex, Ordering};
+#[cfg(feature = "std")]
+use parking_lot::Condvar;
+#[cfg(feature = "std")]
+use std::time::{Duration, Instant};
 
 /// Result of attempting to enqueue.
 ///
@@ -156,6 +167,7 @@ impl<T> BoundedTx<T> {
     }
 
     /// Wait for capacity or closure, with an optional timeout.
+    #[cfg(feature = "std")]
     pub fn send_wait(&self, mut value: T, timeout: Option<Duration>) -> SendWaitOutcome<T> {
         let deadline = timeout.map(|wait| Instant::now() + wait);
         loop {
@@ -200,11 +212,13 @@ impl<T> BoundedTx<T> {
     }
 
     /// Wait with a fixed timeout for capacity or closure.
+    #[cfg(feature = "std")]
     pub fn send_timeout(&self, value: T, timeout: Duration) -> SendWaitOutcome<T> {
         self.send_wait(value, Some(timeout))
     }
 
     /// Wait indefinitely for capacity or closure.
+    #[cfg(feature = "std")]
     pub fn send_blocking(&self, value: T) -> SendWaitOutcome<T> {
         self.send_wait(value, None)
     }
@@ -215,30 +229,62 @@ impl<T> BoundedTx<T> {
     }
 }
 
-#[cfg(feature = "async")]
 impl<T> BoundedTx<T> {
-    /// Async helper that yields on backpressure.
-    pub async fn send_async(&self, mut value: T) -> SendOutcome {
-        loop {
-            // Register interest before attempting the push so a capacity wake cannot be lost.
-            let notified = self.inner.send_notify.notified();
-            let state = self.inner.wait_state.lock();
-            if self.inner.closed.load(Ordering::Acquire) {
-                return SendOutcome::Closed;
+    /// Sends, waiting (asynchronously) for room: `Ok`, or `Closed`. Any executor; the wait
+    /// registers the task's waker with the queue.
+    pub fn send_async(&self, value: T) -> SendNext<'_, T> {
+        SendNext {
+            tx: self,
+            value: Some(value),
+        }
+    }
+
+    /// One attempt for [`SendNext`]: pushed, closed, or the waker registered (under the lock
+    /// pushes and pops are ordered by, so a pop between the attempt and the registration is
+    /// seen) and the value handed back.
+    fn poll_send_value(&self, value: T, cx: &mut Context<'_>) -> Result<SendOutcome, T> {
+        let mut state = self.inner.wait_state.lock();
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Ok(SendOutcome::Closed);
+        }
+        match self.inner.push(value) {
+            Ok(evicted) => {
+                drop(state);
+                drop(evicted);
+                self.inner.notify_recv_ready();
+                Ok(SendOutcome::Ok)
             }
-            match self.inner.push(value) {
-                Ok(evicted) => {
-                    drop(state);
-                    drop(evicted);
-                    self.inner.notify_recv_ready();
-                    return SendOutcome::Ok;
-                }
-                Err(v) => {
-                    drop(state);
-                    value = v;
-                    self.inner.async_send_waits.fetch_add(1, Ordering::Relaxed);
-                    notified.await;
-                }
+            Err(value) => {
+                register(&mut state.send_wakers, cx.waker());
+                drop(state);
+                self.inner.async_send_waits.fetch_add(1, Ordering::Relaxed);
+                Err(value)
+            }
+        }
+    }
+}
+
+/// The future of [`BoundedTx::send_async`].
+#[must_use = "futures do nothing unless polled"]
+pub struct SendNext<'a, T> {
+    tx: &'a BoundedTx<T>,
+    value: Option<T>,
+}
+
+impl<T> Unpin for SendNext<'_, T> {}
+
+impl<T> Future for SendNext<'_, T> {
+    type Output = SendOutcome;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<SendOutcome> {
+        let Some(value) = self.value.take() else {
+            return Poll::Ready(SendOutcome::Closed);
+        };
+        match self.tx.poll_send_value(value, cx) {
+            Ok(outcome) => Poll::Ready(outcome),
+            Err(value) => {
+                self.value = Some(value);
+                Poll::Pending
             }
         }
     }
@@ -306,6 +352,7 @@ impl<T> BoundedRx<T> {
     }
 
     /// Wait for data or closure, with an optional timeout.
+    #[cfg(feature = "std")]
     pub fn recv_wait(&self, timeout: Option<Duration>) -> RecvWaitOutcome<T> {
         let deadline = timeout.map(|wait| Instant::now() + wait);
         loop {
@@ -349,11 +396,13 @@ impl<T> BoundedRx<T> {
     }
 
     /// Wait with a fixed timeout for data or closure.
+    #[cfg(feature = "std")]
     pub fn recv_timeout(&self, timeout: Duration) -> RecvWaitOutcome<T> {
         self.recv_wait(Some(timeout))
     }
 
     /// Wait indefinitely for data or closure.
+    #[cfg(feature = "std")]
     pub fn recv_blocking(&self) -> RecvWaitOutcome<T> {
         self.recv_wait(None)
     }
@@ -364,21 +413,67 @@ impl<T> BoundedRx<T> {
     }
 }
 
-#[cfg(feature = "async")]
 impl<T> BoundedRx<T> {
-    /// Async helper that waits until data or closure.
-    pub async fn recv_async(&self) -> RecvOutcome<T> {
-        loop {
-            // Register interest before polling so a data wake cannot be lost.
-            let notified = self.inner.recv_notify.notified();
-            match self.recv() {
-                RecvOutcome::Empty => {
-                    self.inner.async_recv_waits.fetch_add(1, Ordering::Relaxed);
-                    notified.await;
-                }
-                other => return other,
-            }
+    /// Receives, waiting (asynchronously) for data: `Data`, or `Closed` once closed and
+    /// drained. Any executor; a superloop polls [`Self::poll_recv`] with a no-op waker.
+    pub fn recv_async(&self) -> RecvNext<'_, T> {
+        RecvNext { rx: self }
+    }
+
+    /// Data, `Closed` (closed and drained), or `Pending` with `cx`'s waker registered: it is
+    /// woken by the next send or by closing.
+    pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<RecvOutcome<T>> {
+        match self.recv() {
+            RecvOutcome::Empty => {}
+            other => return Poll::Ready(other),
         }
+        let mut state = self.inner.wait_state.lock();
+        // Pushes happen under this lock: a send that missed the pop above is seen here, a
+        // later one finds the waker.
+        if let Some(value) = self.inner.queue.pop() {
+            drop(state);
+            self.inner.notify_send_ready();
+            return Poll::Ready(RecvOutcome::Data(value));
+        }
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Poll::Ready(RecvOutcome::Closed);
+        }
+        register(&mut state.recv_wakers, cx.waker());
+        drop(state);
+        self.inner.async_recv_waits.fetch_add(1, Ordering::Relaxed);
+        Poll::Pending
+    }
+}
+
+/// The future of [`BoundedRx::recv_async`].
+#[must_use = "futures do nothing unless polled"]
+pub struct RecvNext<'a, T> {
+    rx: &'a BoundedRx<T>,
+}
+
+impl<T> Future for RecvNext<'_, T> {
+    type Output = RecvOutcome<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<RecvOutcome<T>> {
+        self.rx.poll_recv(cx)
+    }
+}
+
+/// Adds `waker` unless it would wake a task already there.
+fn register(wakers: &mut Wakers, waker: &Waker) {
+    if !wakers.iter().any(|w| w.will_wake(waker)) {
+        wakers.push(waker.clone());
+    }
+}
+
+/// Tasks waiting on one side of a queue (inline for two).
+type Wakers = SmallVec<[Waker; 2]>;
+
+/// Wakes and forgets every waiting task.
+fn wake_all(wakers: Wakers, wakes: &AtomicU64) {
+    wakes.fetch_add(1, Ordering::Relaxed);
+    for waker in wakers {
+        waker.wake();
     }
 }
 
@@ -397,17 +492,17 @@ struct QueueInner<T> {
     async_send_wakes: AtomicU64,
     async_recv_wakes: AtomicU64,
     wait_state: Mutex<QueueWaitState>,
+    #[cfg(feature = "std")]
     recv_cv: Condvar,
+    #[cfg(feature = "std")]
     send_cv: Condvar,
-    #[cfg(feature = "async")]
-    recv_notify: tokio::sync::Notify,
-    #[cfg(feature = "async")]
-    send_notify: tokio::sync::Notify,
 }
 
 struct QueueWaitState {
     recv_version: u64,
     send_version: u64,
+    recv_wakers: Wakers,
+    send_wakers: Wakers,
 }
 
 impl<T> QueueInner<T> {
@@ -448,45 +543,49 @@ impl<T> QueueInner<T> {
     }
 
     fn close(&self) {
-        {
+        let (recv, send) = {
             let mut state = self.wait_state.lock();
             self.closed.store(true, Ordering::Release);
             state.recv_version = state.recv_version.saturating_add(1);
             state.send_version = state.send_version.saturating_add(1);
-        }
-        self.recv_cv.notify_all();
-        self.send_cv.notify_all();
-        #[cfg(feature = "async")]
+            (
+                core::mem::take(&mut state.recv_wakers),
+                core::mem::take(&mut state.send_wakers),
+            )
+        };
+        #[cfg(feature = "std")]
         {
-            self.async_recv_wakes.fetch_add(1, Ordering::Relaxed);
-            self.async_send_wakes.fetch_add(1, Ordering::Relaxed);
-            self.recv_notify.notify_waiters();
-            self.send_notify.notify_waiters();
+            self.recv_cv.notify_all();
+            self.send_cv.notify_all();
         }
+        wake_all(recv, &self.async_recv_wakes);
+        wake_all(send, &self.async_send_wakes);
     }
 
     fn notify_recv_ready(&self) {
-        {
+        let wakers = {
             let mut state = self.wait_state.lock();
             state.recv_version = state.recv_version.saturating_add(1);
-        }
+            (!state.recv_wakers.is_empty()).then(|| core::mem::take(&mut state.recv_wakers))
+        };
+        #[cfg(feature = "std")]
         self.recv_cv.notify_all();
-        #[cfg(feature = "async")]
-        self.async_recv_wakes.fetch_add(1, Ordering::Relaxed);
-        #[cfg(feature = "async")]
-        self.recv_notify.notify_one();
+        if let Some(wakers) = wakers {
+            wake_all(wakers, &self.async_recv_wakes);
+        }
     }
 
     fn notify_send_ready(&self) {
-        {
+        let wakers = {
             let mut state = self.wait_state.lock();
             state.send_version = state.send_version.saturating_add(1);
-        }
+            (!state.send_wakers.is_empty()).then(|| core::mem::take(&mut state.send_wakers))
+        };
+        #[cfg(feature = "std")]
         self.send_cv.notify_all();
-        #[cfg(feature = "async")]
-        self.async_send_wakes.fetch_add(1, Ordering::Relaxed);
-        #[cfg(feature = "async")]
-        self.send_notify.notify_one();
+        if let Some(wakers) = wakers {
+            wake_all(wakers, &self.async_send_wakes);
+        }
     }
 }
 
@@ -548,13 +647,13 @@ pub fn bounded_with<T>(capacity: usize, overflow: QueueOverflow) -> (BoundedTx<T
         wait_state: Mutex::new(QueueWaitState {
             recv_version: 0,
             send_version: 0,
+            recv_wakers: Wakers::new(),
+            send_wakers: Wakers::new(),
         }),
+        #[cfg(feature = "std")]
         recv_cv: Condvar::new(),
+        #[cfg(feature = "std")]
         send_cv: Condvar::new(),
-        #[cfg(feature = "async")]
-        recv_notify: tokio::sync::Notify::new(),
-        #[cfg(feature = "async")]
-        send_notify: tokio::sync::Notify::new(),
     });
     (
         BoundedTx {
@@ -580,96 +679,12 @@ pub fn default_bounded<T>() -> (BoundedTx<T>, BoundedRx<T>) {
     bounded(DEFAULT_QUEUE_CAPACITY)
 }
 
-/// Newest-value queue: always returns the latest value without backpressure.
-///
-/// # Example
-/// ```rust
-/// use styx_core::prelude::{newest, RecvOutcome};
-///
-/// let (tx, rx) = newest::<u8>();
-/// let _ = tx.send(5);
-/// assert!(matches!(rx.recv(), RecvOutcome::Data(_)));
-/// ```
-pub fn newest<T>() -> (NewestTx<T>, NewestRx<T>)
-where
-    T: Clone,
-{
-    let shared = Arc::new(NewestInner {
-        slot: parking_lot::RwLock::new(None),
-        closed: AtomicBool::new(false),
-    });
-    (
-        NewestTx {
-            inner: shared.clone(),
-        },
-        NewestRx { inner: shared },
-    )
-}
+mod newest;
+pub use newest::{NewestRx, NewestTx, newest};
 
-/// Sender for newest-value queue.
-///
-/// # Example
-/// ```rust
-/// use styx_core::prelude::newest;
-///
-/// let (tx, _rx) = newest::<u8>();
-/// let _ = tx.send(1);
-/// ```
-#[derive(Clone)]
-pub struct NewestTx<T> {
-    inner: Arc<NewestInner<T>>,
-}
-
-impl<T: Clone> NewestTx<T> {
-    /// Overwrite with the latest value.
-    pub fn send(&self, value: T) -> SendOutcome {
-        if self.inner.closed.load(Ordering::Acquire) {
-            return SendOutcome::Closed;
-        }
-        *self.inner.slot.write() = Some(value);
-        SendOutcome::Ok
-    }
-
-    /// Close the queue.
-    pub fn close(&self) {
-        self.inner.closed.store(true, Ordering::Release);
-    }
-}
-
-/// Receiver for newest-value queue.
-///
-/// # Example
-/// ```rust
-/// use styx_core::prelude::{newest, RecvOutcome};
-///
-/// let (_tx, rx) = newest::<u8>();
-/// assert!(matches!(rx.recv(), RecvOutcome::Empty | RecvOutcome::Closed));
-/// ```
-#[derive(Clone)]
-pub struct NewestRx<T> {
-    inner: Arc<NewestInner<T>>,
-}
-
-impl<T: Clone> NewestRx<T> {
-    /// Get the latest value if present.
-    pub fn recv(&self) -> RecvOutcome<T> {
-        let read = self.inner.slot.read();
-        if let Some(value) = read.as_ref() {
-            RecvOutcome::Data(value.clone())
-        } else if self.inner.closed.load(Ordering::Acquire) {
-            RecvOutcome::Closed
-        } else {
-            RecvOutcome::Empty
-        }
-    }
-}
-
-struct NewestInner<T> {
-    slot: parking_lot::RwLock<Option<T>>,
-    closed: AtomicBool,
-}
-
-#[cfg(all(test, feature = "async"))]
+#[cfg(all(test, feature = "std"))]
 mod async_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests;
+#[cfg(test)]
+mod waker_tests;
