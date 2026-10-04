@@ -427,6 +427,54 @@ Bayesian AWB is bistable on this scene (warm lamp, blue LED). The integer path f
 way when its statistics are scaled by 1.0007 (fp16's differ by up to 0.05% per zone); live,
 both settle at the same temperature. That is a sensitivity of the AWB search, not of the ISP.
 
+### All four cores
+
+A heavy software ISP load on the dev box's CM5 at 2.4 GHz hangs the board: within seconds
+(often after 25-40 frames) everything stops, the kernel prints nothing (not over netconsole
+either), and the hardware watchdog reboots it. It is the CPU load, not the camera:
+`native-pipeline replay --threads 4` over a recording, with no camera streaming, does it too,
+and the same loads run for minutes at 1.8 GHz (`scaling_max_freq`). That points at the board's
+power delivery or the CPU's operating point at 2.4 GHz rather than at Styx or a driver; a
+user-space program cannot otherwise hang the kernel without a message. It was the software
+path's "regression" through the Styx API (2026-10-03): its default was one thread per core, at
+most 4, so `STYX_NATIVE_ISP=software capture_frames` and software ISP stills ran on all four
+cores. Bisecting found no bad commit (2c149a5, taken as good, hangs the same way). Why the
+earlier runs at 4 threads (the 2026-10-02 tables above) passed is not known; the box has
+changed since (a USB camera is attached, among others), and a margin that thin may depend on
+such things.
+
+| 2026-10-03, dev box CM5, OV9782 1280x800 (recording, or live) | result |
+|---|---|
+| replay (no camera), fp16, 4 threads, 2.4 GHz | hang (2 of 2 runs) |
+| replay, fp16, 4 threads, 1.8 GHz, 3000 frames (27 s) | fine |
+| replay, fp16, 3 threads, 2.4 GHz, 2 x 3000 frames (42 s) | fine |
+| replay, integer arithmetic, 4 threads, 2.4 GHz, 900 + 4000 frames | fine |
+| live, 4 threads, 30 fps, capture into `linux,cma` or `system` heap buffers (read in place, through a staging copy, or not read at all) | hang in 13 of 15 runs (not: 90 frames; one run slowed by heavy tracing) |
+| live, 4 threads, the driver's MMAP buffers (read uncached: the cores wait on memory) | `native-pipeline` RGB24: fine (90, 900, 3600 frames at 120 fps); Styx API NV12: hang |
+| live, 4 threads, NV12, 120 fps, integer arithmetic | hang |
+| live, 3 threads, NV12, 120 fps | hang |
+| live, 4 threads, NV12, 120 fps, 1.8 GHz, 3600 frames | fine |
+| live, 2 threads, NV12, 120 fps, 3600 frames | fine |
+| live, 2 or 3 threads at 30 fps, or 4 threads pinned to 1 or 3 cores, 900 frames | fine |
+| 4 threads streaming memory with scalar code, or NEON arithmetic in registers (continuous, or 1.5 ms bursts at 120 Hz) | fine |
+
+The capture side was checked and is not it: the receiver writes `sizeimage` bytes into buffers
+at least that large (the IOMMU maps 0x139000 bytes for 0x138800-byte frames), each imported
+buffer is mapped once and never freed while queued, the last trace events before a hang are an
+ordinary `QBUF` or frame start, and unloading `pisp_be` changes nothing. The PiSP path (0.3 ms
+of CPU per frame) never shows it.
+
+So the software ISP now defaults to half the cores, at most 4
+(`planner::cost::softisp_threads_for`: 2 on the CM5); at 1280x800 that is about 1 ms more
+latency per frame than 4 threads, and less CPU (the helper threads' overhead). Through the Styx
+API with that default the software path ran 5 x 300 frames at 30 fps, 5 x 1200 at 120 fps and
+3 still captures without a reboot. `StyxConfig::native_soft_threads(n)` and `native-pipeline
+--threads n` still do what they say; more than 2 on this box needs it fixed first (supply, or
+a lower `arm_freq`). Separately, capture buffers smaller than the format's `sizeimage` (driver
+buffers, or a dma-buf at the size the kernel allocated, `dma_heap::dmabuf_size`) are now
+refused before the first `QBUF` (`styx-native`'s `BufferSet`), so a mis-sized buffer fails
+cleanly instead of letting the receiver write past it.
+
 ## GPU ISP
 
 `styx-gpuisp` (optional crate, [README](../../crates/gpuisp/README.md)) runs the software ISP's

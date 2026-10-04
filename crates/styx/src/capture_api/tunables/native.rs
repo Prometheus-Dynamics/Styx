@@ -111,8 +111,9 @@ pub struct NativeIspConfig {
     /// software ISP this is the raw capture's buffers (the receiver's MMAP buffers cost the
     /// software ISP 0.6 ms more per 1280x800 frame on the CM5).
     pub driver_buffers: bool,
-    /// Threads of the software ISP (cameras without a PiSP). `None` (default): one per core,
-    /// at most 4.
+    /// Threads of the software ISP (cameras without a PiSP). `None` (default): half the
+    /// cores, at most 4 (2 on the CM5). More can hang a CM5 at 2.4 GHz within seconds (three
+    /// at 120 fps, four at any rate: `docs/native-stack/pipeline.md`, "All four cores").
     pub soft_threads: Option<usize>,
     /// Temporal denoise in the PiSP's back end when the tuning has it (`true`, the default):
     /// a running average of the frame, two extra raw-sized buffers read and written by every

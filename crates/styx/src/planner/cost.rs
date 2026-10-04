@@ -87,9 +87,19 @@ pub(crate) const GPUISP_CPU_MS_PER_MP: f32 = 0.3;
 /// 6800 XT: 0.52 ms for NV12 1280x800, of it 0.21 ms on the GPU; 0.74 ms for RGB24).
 pub(crate) const GPUISP_LATENCY_MS_PER_MP: f32 = 0.6;
 
-/// Threads the native backend's software ISP uses by default: one per core, at most 4.
+/// Threads the native backend's software ISP uses by default: [`softisp_threads_for`] the
+/// cores this process may run on.
 pub(crate) fn default_softisp_threads() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+    softisp_threads_for(std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
+/// The software ISP's default thread count on `cores` cores: half of them, at most 4 (2 on the
+/// CM5). More hangs the dev box's CM5 at 2.4 GHz: three ISP threads at 120 fps, or four (even
+/// replaying a recording, no camera streaming) stop it within seconds without a kernel message
+/// and the hardware watchdog reboots it, where two threads at 120 fps, or four at 1.8 GHz, ran
+/// for minutes (`docs/native-stack/pipeline.md`, "All four cores").
+pub(crate) fn softisp_threads_for(cores: usize) -> usize {
+    (cores / 2).clamp(1, 4)
 }
 
 /// Software ISP time per megapixel on `threads` threads (row bands spread over the cores:
@@ -157,6 +167,17 @@ pub(crate) fn score(total: StepCost) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_software_isp_uses_half_the_cores_by_default() {
+        // Three or four threads on a 4-core CM5 hung the board (see `softisp_threads_for`).
+        assert_eq!(softisp_threads_for(4), 2);
+        assert_eq!(softisp_threads_for(1), 1);
+        assert_eq!(softisp_threads_for(2), 1);
+        assert_eq!(softisp_threads_for(6), 3);
+        assert_eq!(softisp_threads_for(16), 4);
+        assert!(default_softisp_threads() >= 1);
+    }
 
     #[test]
     fn hardware_blocks_beat_the_cpu_doing_the_same_work() {

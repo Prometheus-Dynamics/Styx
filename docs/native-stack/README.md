@@ -154,10 +154,15 @@ limits at that fps.
     the lock.
   - Never use I2C force access (`I2C_SLAVE_FORCE`, `i2ctransfer -f`) while a kernel driver owns
     the address.
-  - The device has rebooted unexpectedly several times (cause unknown; there is a hardware
-    watchdog). While you hold the lock, stream its kernel log to a file on the host
-    (`ssh root@helios dmesg -w > <worktree>/target/helios-dmesg-<time>.log &`) so a reboot leaves
-    evidence; if it reboots or hangs, stop device work and report what you were doing.
+  - The device has rebooted unexpectedly several times (there is a hardware watchdog). One
+    cause is known: a heavy software ISP load on all cores at 2.4 GHz hangs it within seconds
+    (`native-pipeline --threads 4`, `StyxConfig::native_soft_threads(4)`; three at 120 fps;
+    see [pipeline.md](pipeline.md#all-four-cores)); the software ISP defaults to two threads.
+    While you hold the lock, stream its kernel log to a file on the host
+    (`ssh root@helios dmesg -w > <worktree>/target/helios-dmesg-<time>.log &`) so a reboot
+    leaves evidence; if it reboots or hangs, stop device work and report what you were doing.
+    Other (HeliOS) workloads also run on the box without this lock (`helios-vision-probe`,
+    `eidos-eval-fast-neon` were seen on 2026-10-03): check `ps` before a long run.
 - Licensing: Styx is MIT/Apache. Register values in `ov9782.toml` come from the HeliOS
   `ov9782.c` driver; the project owner wrote it and cleared their use. Both it and the HeliOS
   OV9782 tuning (`crates/pipeline/tuning/ov9782.json`, the owner's) are built into Styx. The bridge module is

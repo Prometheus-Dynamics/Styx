@@ -272,6 +272,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- The native software ISP no longer runs on every core by default: on the dev box's CM5 at
+  2.4 GHz, four ISP threads (or three at 120 fps) hung the board within seconds (no kernel
+  message, watchdog reboot), camera or not, which is what `STYX_NATIVE_ISP=software` captures
+  and stills did. The default is now half the cores, at most 4 (`NativeIspConfig::soft_threads`;
+  `docs/native-stack/pipeline.md`, "All four cores"). Capture buffers smaller than the format's
+  `sizeimage` (driver buffers, or imported dma-bufs at the size the kernel allocated,
+  `styx_kernel::dma_heap::dmabuf_size`) are refused before they are queued.
 - Damaged input no longer crashes Styx or makes it allocate far beyond the data:
   - `.styxrec` payload lengths allocated up to 4 GiB before reading (118 MB from an 8 KB file)
     and companion frames could nest without bound;
