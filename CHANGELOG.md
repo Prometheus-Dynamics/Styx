@@ -8,6 +8,20 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added regions of interest and overviews on the native software ISP: the ISP processes only
+  the region at full resolution (bit-exact against the whole frame's crop) and bins the whole
+  frame for the overview, gathering the whole frame's statistics there (or in a pass of their
+  own), so AE and AWB are unchanged and a small region costs a fraction of a frame (CM5,
+  1280x800: 3.2 ms CPU per frame whole, 1.3 ms for a 320x200 region with a 320x200 overview).
+  The planner plans `RoiCrop::Isp` on it and prices the capture for the region and overview;
+  `OUTPUT_CROP` is offered on software ISP cameras. `styx-softisp`: `SoftIsp::process_window`,
+  `window_size`, `process_binned`, `binned_size`, `statistics` and `Window`. `styx-pipeline`:
+  `SoftTarget`, `SoftParts`, `SoftLoop::process_target_with`, `SoftPipeline::next_target`.
+  `native-pipeline soft --roi / --overview / --check-roi / --cold`.
+- Added libcamera regions of interest on a Raspberry Pi ISP: ROI plans crop per output with
+  `rpi::ScalerCrops` (the main output the region at the first region's size, the second the
+  overview), moved with `OUTPUT_CROP` (`Frames::roi`); frames carry `FrameMeta::crop` from the
+  request metadata. `LibcameraConfig::crop` / `overview`, `StyxConfig::libcamera_crop`.
 - Added ISP-cropped regions of interest and overviews on native cameras with a PiSP: with
   `FrameRequest::roi` the back end's main output is the region at full resolution, in any format
   (moved per frame with `Frames::roi` / `FrameClient::set_roi`), and `FrameRequest::overview(w, h)`

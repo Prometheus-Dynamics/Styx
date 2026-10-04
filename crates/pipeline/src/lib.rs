@@ -73,7 +73,7 @@ pub mod tuning;
 pub mod warm;
 
 pub use controller::{Controller, SensorValues, Step};
-pub use engine::{IspEngine, RawFrame};
+pub use engine::{IspEngine, RawFrame, SoftParts, SoftTarget};
 pub use error::{PipelineError, Result};
 pub use isp::IspSettings;
 pub use process::{

@@ -1,5 +1,5 @@
 use styx_codec::prelude::{CodecRegistryConfig, DEFAULT_CODEC_MAX_HEIGHT, DEFAULT_CODEC_MAX_WIDTH};
-use styx_core::prelude::{ClockSource, QueueOverflow};
+use styx_core::prelude::{ClockSource, FrameRect, QueueOverflow};
 use styx_core::transform::TransformPoolConfig;
 
 /// Default capture queue depth (frames). Full queues drop their oldest frame, so a deeper queue
@@ -181,6 +181,13 @@ pub struct LibcameraConfig {
     /// output TDN and pyramid companions use, so it is ignored when either is on. `None`
     /// (default) leaves the second output off.
     pub second_output_size: Option<(u32, u32)>,
+    /// Raspberry Pi ISP: the main output shows this region of the frame (`rpi::ScalerCrops`;
+    /// the `OUTPUT_CROP` control moves it, frames say which region they show in
+    /// `FrameMeta::crop`), scaled to the output size. `None` (default): the whole frame.
+    pub crop: Option<FrameRect>,
+    /// Attach the second output as the whole frame's overview (`CompanionKind::Overview`)
+    /// instead of `CompanionKind::Scaled`.
+    pub overview: bool,
 }
 
 impl Default for LibcameraConfig {
@@ -201,6 +208,8 @@ impl Default for LibcameraConfig {
             pyramid_level: 0,
             output_size: None,
             second_output_size: None,
+            crop: None,
+            overview: false,
         }
     }
 }
@@ -223,6 +232,8 @@ impl LibcameraConfig {
             pyramid_level: self.pyramid_level.min(3),
             output_size: self.output_size.filter(|&(w, h)| w > 0 && h > 0),
             second_output_size: self.second_output_size.filter(|&(w, h)| w > 0 && h > 0),
+            crop: self.crop.filter(|r| r.width > 0 && r.height > 0),
+            overview: self.overview,
         }
     }
 }
@@ -592,6 +603,18 @@ impl StyxConfig {
     /// `CompanionKind::Scaled` companion (see [`LibcameraConfig::second_output_size`]).
     pub fn libcamera_second_output(mut self, width: u32, height: u32) -> Self {
         self.backends.libcamera.second_output_size = Some((width, height));
+        self
+    }
+
+    /// The libcamera ISP's main output shows `region` of the frame (see
+    /// [`LibcameraConfig::crop`]) and its second output the whole frame at `overview`, if
+    /// given, as `CompanionKind::Overview`.
+    pub fn libcamera_crop(mut self, region: FrameRect, overview: Option<(u32, u32)>) -> Self {
+        self.backends.libcamera.crop = Some(region);
+        if let Some(size) = overview {
+            self.backends.libcamera.second_output_size = Some(size);
+            self.backends.libcamera.overview = true;
+        }
         self
     }
 

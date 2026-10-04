@@ -3,8 +3,11 @@
 //! parameters and gives the same pictures and statistics.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
-use styx_softisp::{Arithmetic, IspParams, IspStats, OutputBuffers, RawFormat, Scale, SoftIsp};
+use styx_softisp::{
+    Arithmetic, IspParams, IspStats, OutputBuffers, RawFormat, Scale, SoftIsp, Window,
+};
 
 use crate::error::Result;
 
@@ -28,6 +31,29 @@ pub enum RawFrame<'a> {
         fd: std::os::fd::BorrowedFd<'a>,
         len: usize,
     },
+}
+
+/// What the software ISP makes of a frame.
+#[derive(Debug)]
+pub enum SoftTarget<'a> {
+    /// The whole frame at a scale (with its statistics in the same pass).
+    Frame(Scale, OutputBuffers<'a>),
+    /// Parts of it: the frame's statistics are gathered on their own (or by the overview's
+    /// pass), so a small region costs a small part of a frame. CPU ISP only.
+    Parts(SoftParts<'a>),
+}
+
+/// Regions of a frame and an overview of all of it ([`SoftTarget::Parts`]).
+#[derive(Debug, Default)]
+pub struct SoftParts<'a> {
+    /// Regions at full resolution, each into buffers of its size: the same pixels as that
+    /// region of the whole frame's picture (`SoftIsp::process_window`). The whole frame as a
+    /// region is the whole frame's picture.
+    pub regions: Vec<(Window, OutputBuffers<'a>)>,
+    /// The whole frame binned by an even factor, into buffers of
+    /// `SoftIsp::binned_size(factor)`; its pass also gathers the statistics
+    /// (`SoftIsp::process_binned`).
+    pub overview: Option<(u32, OutputBuffers<'a>)>,
 }
 
 /// `isp` on `threads` row bands (the helper thread pool needs `std`: one band without it).
@@ -138,6 +164,36 @@ impl Engine {
         if let Self::Gpu(g) = self {
             g.forget_imports();
         }
+    }
+
+    /// Makes `target` of `raw`; the statistics when the parameters ask for them.
+    pub fn process_target(
+        &mut self,
+        raw: RawFrame<'_>,
+        stride: usize,
+        target: SoftTarget<'_>,
+    ) -> Result<Option<IspStats>> {
+        let parts = match target {
+            SoftTarget::Frame(scale, out) => return self.process(raw, stride, scale, out),
+            SoftTarget::Parts(parts) => parts,
+        };
+        let (isp, b) = match (self, raw) {
+            (Self::Cpu(isp), RawFrame::Bytes(b)) => (isp, b),
+            #[cfg(feature = "gpu")]
+            _ => {
+                return Err(crate::PipelineError::Config(
+                    "regions of frames need the CPU ISP and frames in memory".into(),
+                ));
+            }
+        };
+        let stats = match parts.overview {
+            Some((factor, out)) => isp.process_binned(b, stride, factor, out)?,
+            None => isp.statistics(b, stride)?,
+        };
+        for (window, out) in parts.regions {
+            isp.process_window(b, stride, window, Scale::Full, out)?;
+        }
+        Ok(stats)
     }
 
     pub fn process(

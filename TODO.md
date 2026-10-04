@@ -52,6 +52,15 @@ box (OV9782 1280x800) unless stated.
       path elsewhere; x86 tone curve as fixed-point quadratics (`Arithmetic::IntPolyTone`, within
       a code; RGB24 frame 1.59 → 1.11 ms on Zen 3) and an exact AVX2 table.
 - [x] Built-in OV9782 description and tuning; Styx tuning search path (`STYX_TUNING_PATH`, …).
+- [x] Regions of interest without a PiSP: the software ISP processes only the region (bit-exact
+      against the whole frame's crop) and bins the overview, statistics still of the whole frame
+      (CM5 1280x800: 3.2 → 1.3 ms CPU per frame for a 320x200 region + overview, AE/AWB
+      unchanged); libcamera ROI plans crop per output with `rpi::ScalerCrops` (2-3 frames late).
+- [ ] Regions, remaining: several regions per client in the planner and the camera service
+      (the software ISP already takes a list, `SoftParts::regions`); a true 4x4 bin for the
+      software overview beyond 2 (today every second quad of every second quad row); libcamera
+      regions of a size other than the first are scaled to it (reconfigure, or a second crop
+      stream); the GPU ISP and binned software modes do not crop.
 
 ### Autofocus (simulation only so far)
 - [x] AF in Rust (`styx-algo`, from Raspberry Pi's `af.cpp`): PDAF loop, coarse + fine contrast
