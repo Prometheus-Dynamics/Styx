@@ -9,27 +9,29 @@
 //!   chip }` (`styx_sensor::lens`), driven by Lemnos's VCM driver (`lemnos-drivers-vcm`) on the
 //!   sensor's bus.
 //!
-//! Moves follow the control schedule's frame starts: a position for frame `F` is written at
-//! the start of `F - delay` ([`LensSchedule`]), and every frame reports the position predicted
-//! for its exposure from the moves and the lens's settle time (`FrameControls::lens`). Phase
-//! detection data from the embedded data (IMX708) is decoded per frame
-//! ([`ControlHandle::pdaf`]).
+//! Moves follow the control schedule's frame starts (the runtime's [`LensControl`]): a position
+//! for frame `F` is written at the start of `F - delay`, and every frame reports the position
+//! predicted for its exposure from the moves and the lens's settle time
+//! (`FrameControls::lens`). Phase detection data from the embedded data (IMX708) is decoded per
+//! frame ([`ControlHandle::pdaf`](crate::ControlHandle::pdaf)). The actuators here implement
+//! [`styx_hal::LensActuator`](LensActuator) with `std::io::Error`.
 
-use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use lemnos_drivers_vcm::{Vcm, VcmError};
 use lemnos_linux::hal::{I2cBus, IoError, StdDelay};
 use styx_kernel::media::{EntityFunction, LinkType, Topology};
 use styx_kernel::subdev::Subdev;
 use styx_kernel::v4l2::{ControlValue, Controls, cid};
-use styx_sensor::lens::imx708_pdaf;
-use styx_sensor::{LensDescription, LensFrame, LensSchedule, RegisterBus, SensorPins, VcmI2c};
+use styx_runtime::LensDrive;
+use styx_sensor::{LensDescription, RegisterBus, SensorPins, VcmI2c};
 
-use crate::control::{ControlHandle, FrameControls, SensorControl, lock};
+pub use styx_runtime::styx_hal::LensActuator;
+pub use styx_runtime::{LensControl, PdafFrames};
+
+use crate::control::{SensorControl, lock};
 use crate::error::{NativeError, Result};
 
 /// Where a camera's lens is driven from.
@@ -130,20 +132,14 @@ pub fn i2c_lens(
     })
 }
 
-/// Moves a lens.
-pub trait LensActuator: Send {
-    /// Powers the actuator up or down.
-    fn power(&mut self, on: bool) -> io::Result<()>;
-    /// Moves to `position` (driver units).
-    fn move_to(&mut self, position: i32) -> io::Result<()>;
-}
-
 /// A kernel lens driver: `FOCUS_ABSOLUTE` on its subdevice (the driver powers it with its
 /// runtime PM while the subdevice is open).
 #[derive(Debug)]
 pub struct KernelLens(Subdev);
 
 impl LensActuator for KernelLens {
+    type Error = io::Error;
+
     fn power(&mut self, _on: bool) -> io::Result<()> {
         Ok(())
     }
@@ -203,6 +199,8 @@ impl I2cVcm {
 }
 
 impl LensActuator for I2cVcm {
+    type Error = io::Error;
+
     fn power(&mut self, on: bool) -> io::Result<()> {
         self.with_driver(|d| {
             if on {
@@ -226,6 +224,8 @@ pub struct MockLens {
 }
 
 impl LensActuator for MockLens {
+    type Error = io::Error;
+
     fn power(&mut self, _on: bool) -> io::Result<()> {
         Ok(())
     }
@@ -237,7 +237,7 @@ impl LensActuator for MockLens {
 }
 
 /// Opens the actuator of a lens.
-pub fn open_actuator(info: &LensInfo) -> Result<Box<dyn LensActuator>> {
+pub fn open_actuator(info: &LensInfo) -> Result<Box<dyn LensDrive>> {
     match &info.kind {
         LensKind::Kernel { subdev, .. } => {
             Ok(Box::new(KernelLens(Subdev::open(subdev).map_err(|e| {
@@ -258,146 +258,6 @@ pub fn open_actuator(info: &LensInfo) -> Result<Box<dyn LensActuator>> {
     }
 }
 
-/// The lens side of a camera's controls.
-pub struct LensControl {
-    actuator: Box<dyn LensActuator>,
-    schedule: LensSchedule,
-    range: [i32; 2],
-    /// Frame starts seen (sequence, `CLOCK_MONOTONIC`), the latest last.
-    starts: VecDeque<(u64, Duration)>,
-    powered: bool,
-}
-
-impl std::fmt::Debug for LensControl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LensControl")
-            .field("range", &self.range)
-            .field("target", &self.schedule.target())
-            .finish_non_exhaustive()
-    }
-}
-
-impl LensControl {
-    /// A lens driven by `actuator`, resting at `rest` (its default position, else the low
-    /// end of its range).
-    pub fn new(actuator: Box<dyn LensActuator>, description: &LensDescription) -> Self {
-        let range = description.range();
-        let rest = description.default_position.unwrap_or(range[0]);
-        Self {
-            actuator,
-            schedule: LensSchedule::new(description.motion(), description.delay, rest),
-            range,
-            starts: VecDeque::new(),
-            powered: false,
-        }
-    }
-
-    /// Driver position range.
-    pub fn range(&self) -> [i32; 2] {
-        self.range
-    }
-
-    /// Frames from a write to the frame it is for.
-    pub fn delay(&self) -> u32 {
-        self.schedule.delay()
-    }
-
-    fn write(&mut self, position: i32, at: Duration) -> Result<()> {
-        if !self.powered {
-            self.actuator
-                .power(true)
-                .map_err(|e| NativeError::InvalidConfig(format!("lens power: {e}")))?;
-            self.powered = true;
-        }
-        let p = position.clamp(self.range[0], self.range[1]);
-        self.actuator
-            .move_to(p)
-            .map_err(|e| NativeError::InvalidConfig(format!("lens move: {e}")))?;
-        self.schedule.written(at, p);
-        Ok(())
-    }
-
-    /// Moves for frame `frame` (written at once when due, else at its frame start);
-    /// `current` is the latest frame start (`None` before streaming: at once).
-    pub fn request_at(&mut self, frame: u64, position: i32, current: Option<u64>) -> Result<()> {
-        let now = styx_kernel::monotonic_now();
-        match self.schedule.request(frame, position, current) {
-            None => self.write(position, now),
-            Some(_) if current.is_none() => self.write(position, now),
-            Some(_) => Ok(()),
-        }
-    }
-
-    /// Frame `seq` started at `at`: writes what is due.
-    pub fn frame_start(&mut self, seq: u64, at: Duration) -> Result<()> {
-        self.starts.push_back((seq, at));
-        while self.starts.len() > 32 {
-            self.starts.pop_front();
-        }
-        match self.schedule.due(seq) {
-            Some(p) => self.write(p, at),
-            None => Ok(()),
-        }
-    }
-
-    /// Where the lens was for frame `seq` given its exposure and readout time.
-    pub fn frame(&self, seq: u64, exposure: Duration, readout: Duration) -> Option<LensFrame> {
-        let (_, at) = self.starts.iter().rev().find(|(s, _)| *s == seq)?;
-        // Rows end their exposure from the frame start to the end of the readout.
-        Some(
-            self.schedule
-                .frame(at.saturating_sub(exposure), *at + readout),
-        )
-    }
-
-    /// Puts the actuator in standby.
-    pub fn power_down(&mut self) {
-        if self.powered {
-            let _ = self.actuator.power(false);
-            self.powered = false;
-        }
-    }
-
-    /// Forgets frame starts (a new stream numbers frames from 0 again).
-    pub fn restart(&mut self) {
-        self.starts.clear();
-    }
-}
-
-/// Phase detection data decoded from the embedded data: which layout, and the last frames'.
-#[derive(Debug, Default)]
-pub struct PdafFrames {
-    /// The sensor's layout (`imx708`).
-    pub format: Option<String>,
-    frames: VecDeque<(u64, Arc<[imx708_pdaf::Cell]>)>,
-}
-
-impl PdafFrames {
-    /// Decodes frame `seq`'s embedded data (mode `width`, `bits` per pixel).
-    pub fn decode(&mut self, seq: u64, data: &[u8], width: u32, bits: u32) {
-        if self.format.as_deref() != Some("imx708") {
-            return;
-        }
-        // As libcamera: the PDAF line starts two mode lines into the buffer.
-        let offset = 2 * (width as usize * bits as usize / 8);
-        if let Some(cells) = data.get(offset..).and_then(|l| imx708_pdaf::parse(l, bits)) {
-            self.frames.push_back((seq, cells.into()));
-            while self.frames.len() > 8 {
-                self.frames.pop_front();
-            }
-        }
-    }
-
-    /// Frame `seq`'s cells (16×12, row-major).
-    pub fn get(&self, seq: u64) -> Option<Arc<[imx708_pdaf::Cell]>> {
-        self.frames
-            .iter()
-            .rev()
-            .find(|(s, _)| *s == seq)
-            .map(|(_, c)| Arc::clone(c))
-    }
-}
-
 /// Opens the lens of `info` (if any) for a camera's control, and the phase detection layout
 /// its data names. A lens that cannot be opened leaves the camera without one.
 pub(crate) fn attach<B: RegisterBus, P: SensorPins>(
@@ -408,7 +268,7 @@ pub(crate) fn attach<B: RegisterBus, P: SensorPins>(
     if let Some(l) = &info.lens
         && let Ok(actuator) = open_actuator(l)
     {
-        c.set_lens(Some(LensControl::new(actuator, &l.description)));
+        c.set_lens(Some(LensControl::boxed(actuator, &l.description)));
     }
     let pdaf = info
         .kernel
@@ -418,146 +278,18 @@ pub(crate) fn attach<B: RegisterBus, P: SensorPins>(
     c.set_pdaf_format(pdaf);
 }
 
-impl<B: RegisterBus, P: SensorPins> SensorControl<B, P> {
-    /// Gives the camera a lens.
-    pub fn set_lens(&mut self, lens: Option<LensControl>) {
-        self.lens = lens;
-    }
-
-    /// Phase detection data in this layout (`imx708`) is decoded from the embedded data.
-    pub fn set_pdaf_format(&mut self, format: Option<String>) {
-        self.pdaf.format = format;
-    }
-
-    pub(crate) fn lens_frame_start(&mut self, seq: u64, at: Option<Duration>) -> Result<()> {
-        if seq == 0
-            && let Some(l) = &mut self.lens
-        {
-            l.restart();
-        }
-        match &mut self.lens {
-            Some(l) => l.frame_start(seq, at.unwrap_or_else(styx_kernel::monotonic_now)),
-            None => Ok(()),
-        }
-    }
-
-    /// Fills in where the lens was for the frame `f` describes.
-    pub(crate) fn with_lens(&self, seq: u64, mut f: FrameControls) -> FrameControls {
-        if let (Some(l), Some(t)) = (&self.lens, self.timing()) {
-            let line = f64::from(t.width + t.hblank) / t.pixel_rate.max(1) as f64;
-            let readout = Duration::from_secs_f64(line * f64::from(t.height));
-            f.lens = l.frame(seq, f.exposure, readout);
-        }
-        f
-    }
-
-    pub(crate) fn decode_pdaf(&mut self, seq: u64, data: &[u8]) {
-        if self.pdaf.format.is_none() {
-            return;
-        }
-        if let Some(m) = self.driver().mode() {
-            let bits = u32::from(m.code.bit_depth().unwrap_or(10));
-            let width = m.timing.width;
-            self.pdaf.decode(seq, data, width, bits);
-        }
-    }
-}
-
-impl<B: RegisterBus, P: SensorPins> ControlHandle<B, P> {
-    /// Whether the camera has a focus lens.
-    pub fn has_lens(&self) -> bool {
-        lock(self.shared()).lens.is_some()
-    }
-
-    /// The lens's driver position range and its delay in frames.
-    pub fn lens_range(&self) -> Option<([i32; 2], u32)> {
-        lock(self.shared())
-            .lens
-            .as_ref()
-            .map(|l| (l.range(), l.delay()))
-    }
-
-    /// Moves the lens to `position` (driver units) for frame `frame` on: written at the
-    /// start of `frame - delay`, or at once when that has passed (or before streaming).
-    pub fn request_lens_at(&self, frame: u64, position: i32) -> Result<()> {
-        let mut c = lock(self.shared());
-        let current = c.current_frame().filter(|_| c.is_streaming());
-        match &mut c.lens {
-            Some(l) => l.request_at(frame, position, current),
-            None => Err(NativeError::InvalidConfig("the camera has no lens".into())),
-        }
-    }
-
-    /// Moves the lens to `position` as soon as possible.
-    pub fn set_lens_position(&self, position: i32) -> Result<()> {
-        let mut c = lock(self.shared());
-        match &mut c.lens {
-            Some(l) => l.request_at(0, position, None),
-            None => Err(NativeError::InvalidConfig("the camera has no lens".into())),
-        }
-    }
-
-    /// Frame `seq`'s phase detection cells, when the sensor sends them.
-    pub fn pdaf(&self, seq: u64) -> Option<Arc<[imx708_pdaf::Cell]>> {
-        lock(self.shared()).pdaf.get(seq)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
-    use styx_sensor::LensMotion;
 
     #[test]
-    fn moves_are_written_at_their_frame_start_and_frames_report_them() {
+    fn a_mock_lens_drives_the_runtime_lens_control() {
         let lens = MockLens::default();
         let moves = Arc::clone(&lens.moves);
-        let mut d = LensDescription::generic([0, 1023]);
-        d.settle_us = 10_000;
-        let mut c = LensControl::new(Box::new(lens), &d);
-        let ms = Duration::from_millis;
-        for seq in 0..3 {
-            c.frame_start(seq, ms(33 * seq)).unwrap();
-        }
-        // For frame 6: written at the start of frame 4.
-        c.request_at(6, 500, Some(2)).unwrap();
-        c.frame_start(3, ms(99)).unwrap();
-        assert!(lock(&moves).is_empty());
-        c.frame_start(4, ms(132)).unwrap();
-        assert_eq!(*lock(&moves), [500]);
-        for seq in 5..7 {
-            c.frame_start(seq, ms(33 * seq)).unwrap();
-        }
-        // Frame 3 saw the rest position; frame 4's rows were read out while the lens moved
-        // (written at its start); frame 5's exposure began 1 ms after the move; frame 6 saw
-        // the new position.
-        let f = c.frame(3, ms(10), ms(5)).unwrap();
-        assert_eq!((f.position, f.settled), (0.0, true));
-        assert!(!c.frame(4, ms(10), ms(5)).unwrap().settled);
-        let f = c.frame(5, ms(32), ms(5)).unwrap();
-        assert!(!f.settled);
-        let f = c.frame(6, ms(10), ms(5)).unwrap();
-        assert_eq!((f.position, f.settled, f.target), (500.0, true, 500));
-        // Late requests are written at once; positions are clamped to the range.
-        c.request_at(5, 2000, Some(6)).unwrap();
-        assert_eq!(*lock(&moves), [500, 1023]);
-        let _ = LensMotion { settle: ms(1) };
-    }
-
-    #[test]
-    fn pdaf_frames_decode_at_the_third_line() {
-        let mut p = PdafFrames {
-            format: Some("imx708".into()),
-            ..Default::default()
-        };
-        let width = 1536;
-        let mut data = vec![0u8; 3 * width * 10 / 8];
-        let at = 2 * width * 10 / 8 + 2 * 5;
-        data[at] = 0x10;
-        p.decode(7, &data, width as u32, 10);
-        let cells = p.get(7).unwrap();
-        assert_eq!(cells.len(), 192);
-        assert_eq!(cells[0].conf, 0x80);
-        assert!(p.get(6).is_none());
+        let mut c = LensControl::new(lens, &LensDescription::generic([0, 1023]));
+        c.request_at(0, 2000, None, Duration::ZERO).unwrap();
+        assert_eq!(*lock(&moves), [1023]);
     }
 }

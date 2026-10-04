@@ -3,7 +3,14 @@
 //! `device::StillBackEnd`), and written as a DNG ([`dng_metadata`], with the colour
 //! calibration of [`dng_calibrations`] from the tuning).
 
-use std::time::{Duration, SystemTime};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::time::Duration;
 
 use styx_algo::{Params, Tuning};
 use styx_dng::color::{self, Matrix3};
@@ -133,9 +140,9 @@ pub fn soft_still(
         ..Default::default()
     };
     let params = settings.softisp(raw.packing.bit_depth(), &base);
-    let mut isp = SoftIsp::new(format, params)
-        .map_err(|e| PipelineError::Config(format!("software ISP: {e}")))?
-        .with_threads(threads.max(1));
+    let isp = SoftIsp::new(format, params)
+        .map_err(|e| PipelineError::Config(format!("software ISP: {e}")))?;
+    let mut isp = crate::engine::with_threads(isp, threads.max(1));
     let (w, h) = (raw.width as usize, raw.height as usize);
     let mut out = vec![0u8; pixels.bytes(raw.width, raw.height)];
     let buffers = match pixels {
@@ -175,7 +182,7 @@ pub fn neutral_at(tuning: &Tuning, ct: f64) -> Option<[f64; 3]> {
         let i = curve.iter().position(|p| p[0] >= ct).unwrap_or(1).max(1);
         let (a, b) = (curve[i - 1], curve[i]);
         let t = (ct - a[0]) / (b[0] - a[0]);
-        std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t)
+        core::array::from_fn(|k| a[k] + (b[k] - a[k]) * t)
     };
     Some([p[1], 1.0, p[2]])
 }
@@ -229,11 +236,27 @@ pub struct StillSource {
 /// the calibrations, the ISP's digital gain as baseline exposure, exposure time, ISO (100 ×
 /// the sensor's gain), lens shading as `GainMap`s (with `lens_shading`), a JSON description
 /// of the frame (sequence, timestamp, gains, colour temperature, lux) and the preview.
+#[cfg(feature = "std")]
 pub fn dng_metadata(
     raw: &HeldRaw,
     source: &StillSource,
     lens_shading: bool,
-    captured: SystemTime,
+    captured: std::time::SystemTime,
+    preview: Option<Preview>,
+) -> DngMetadata {
+    let at = captured
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .ok();
+    dng_metadata_at(raw, source, lens_shading, at, preview)
+}
+
+/// [`dng_metadata`] with the capture time as a duration since the Unix epoch (`None`: not
+/// known), for builds without `std`.
+pub fn dng_metadata_at(
+    raw: &HeldRaw,
+    source: &StillSource,
+    lens_shading: bool,
+    captured: Option<Duration>,
     preview: Option<Preview>,
 ) -> DngMetadata {
     let full = f64::from(1u32 << raw.bits);
@@ -292,7 +315,7 @@ pub fn dng_metadata(
         baseline_exposure: Some(raw.isp.digital_gain.max(1e-6).log2()),
         exposure_time: Some(s.exposure),
         iso: Some((100.0 * s.analogue_gain * s.digital_gain).round() as u32),
-        capture_time: captured.duration_since(SystemTime::UNIX_EPOCH).ok(),
+        capture_time: captured,
         model: source.model.clone(),
         unique_camera_model: source.unique_camera_model.clone(),
         software: concat!("Styx ", env!("CARGO_PKG_VERSION")).into(),
@@ -421,7 +444,7 @@ mod tests {
                 ..Default::default()
             },
             true,
-            SystemTime::UNIX_EPOCH,
+            std::time::SystemTime::UNIX_EPOCH,
             None,
         );
         // BGGR: blue first.
@@ -439,7 +462,7 @@ mod tests {
                 &raw,
                 &StillSource::default(),
                 false,
-                SystemTime::UNIX_EPOCH,
+                std::time::SystemTime::UNIX_EPOCH,
                 None,
             ),
         )

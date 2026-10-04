@@ -6,13 +6,16 @@ they run on microcontrollers, RTOSes, WebAssembly and SoCs without Linux. Each h
 `std` feature; on Linux nothing changes (same code, same speed, same results: see
 [Linux is unchanged](#linux-is-unchanged)).
 
-Phase 2 adds the hardware side ([portability-design.md](portability-design.md)). Its first
-three steps have landed ([The hardware layer](#the-hardware-layer-styx-hal)): `styx-hal`
-(camera hardware traits, no `std`, no allocation, over embedded-hal), the sensor driver over
-any embedded-hal I²C or SPI bus, blocking or async, sensor descriptions compiled at build
-time, and a frame path that allocates nothing. Still missing: the `no_std` camera runtime
-that ties a receiver, the sensor and the ISP together per frame (steps 4-8), and a port to
-real MCU hardware.
+Phase 2 adds the hardware side and the camera runtime
+([portability-design.md](portability-design.md)). Steps 1-3 ([The hardware
+layer](#the-hardware-layer-styx-hal)): `styx-hal` (camera hardware traits, no `std`, no
+allocation, over embedded-hal), the sensor driver over any embedded-hal I²C or SPI bus,
+blocking or async, sensor descriptions compiled at build time, and a sensor frame path that
+allocates nothing. Steps 4-6 ([The camera runtime](#the-camera-runtime-styx-runtime)):
+`styx-runtime`, the `no_std` runtime that ties a receiver, the sensor and the frames together
+(Linux is its reference platform, at no cost), and the processing loop written once over ISP
+traits in a `no_std` pipeline core. Still missing: stills and metrics counters in the runtime,
+a bare-metal proof run of the whole loop (steps 7-8), and a port to real MCU hardware.
 
 ## What builds without `std`
 
@@ -20,6 +23,8 @@ real MCU hardware.
 
 | Crate | Without `std` | Needs `std` |
 |---|---|---|
+| `styx-runtime` | everything: the sensor side (`SensorState`, `Controls`, lens, health), `Camera<P>`, `FrameStream`, buffer leases, the sensor service; shared state is `Rc<RefCell>` | `Arc<Mutex>` shared state and `Send + Sync` handles (feature `std`, the default) |
+| `styx-pipeline` | the core: `Controller` (the 3A loop runner), `IspSettings` for the PiSP and the software ISP, statistics, the back end config builder, the processing loop (`process`: `Algorithms`, `FrameIsp`, `InlineIsp`, `SensorControls`), `SoftLoop`, stills (`dng_metadata_at`) | algorithm replay recording, raw recordings, tunings and warm starts on disk, measurements, timings, the device paths (`device`), the GPU ISP |
 | `styx-hal` | everything (no `alloc` either): power sequencing, DMA memory, the receiver, the lens actuator, `BoardPins`, `StaticDma` | `Send + Sync` on `SensorStart`, the `mock` platform |
 | `styx-core-rs` | formats (`FourCc`, `MediaFormat`, layouts), plane layouts and their math (`PlaneLayout`, `plane_layout_from_dims`, `FrameAllocation`, `FrameValidationError`), plane views, frame metadata (`FrameMeta`, `NativeFrameMeta`, `FrameTiming`, `CaptureInstant`, ...), requirements (`FrameRect`, ...), controls (`ControlId`, `ControlValue`, descriptors), the SIMD row kernels | `FrameLease`, `BufferPool` and memfd / dma-buf backings, queues, transforms, `metrics`, clocks (`TimestampClock::now_ns` is `None` without std), `async` (tokio), `schema` (utoipa) |
 | `styx-algo` | every algorithm (AGC with flicker avoidance and deflicker, AWB, ALSC, CCM, contrast, denoise, black level, lux, AF), `Pipeline`, the tuning model, `Tuning::from_toml_str` / `to_toml_string`, Raspberry Pi JSON in and out, the simulator, `WarmStart` | `Tuning::load` (paths), `replay` (JSON Lines over `std::io`) |
@@ -140,6 +145,86 @@ a counting allocator: 300 frames of frame starts, 3A requests, immediate request
 reports and applied values, over the blocking and async drivers and a kernel-driven sensor,
 make zero allocations.
 
+## The camera runtime (`styx-runtime`)
+
+`styx-runtime` is the logic that runs a camera, written once against `styx-hal` and the
+sensor driver, `no_std` + `alloc` (feature `std` on Linux). It never spawns, sleeps or blocks:
+the platform runs its parts on threads (Linux), tasks (Embassy) or one loop.
+
+| Piece | What |
+|---|---|
+| `SensorState<B, P>` | the sensor side: bring-up sequencing (power, chip id, stream-off before init for a sensor a dead owner left streaming, init, mode; refused when the description would leave standby early), the receiver's start and stop (`serve_start` with the start-format check, `serve_stop`), frame starts driving the frame-exact schedule, typed requests with immediate writes inside the current frame (`request_at_now`, allocation-free `request_at_now_landings`), the values that produced each frame, embedded data reports, the lens and PDAF data, shut-down. Time from a platform `Clock` (`fn() -> Duration`; without one every request waits for a frame start) |
+| `Controls<B, P>` | a cloneable handle on it: requests, ranges, the lens |
+| `LensControl`, `PdafFrames` | the focus lens moved frame-exactly over any boxed `styx_hal::LensActuator` |
+| `Health`, `Fault` | the fault that ends a stream (by `ErrorKind`) and its counters |
+| `Platform`, `Camera<P>` | a receiver and a sensor side (`SensorSide`); start (configure, queue every buffer, start the receiver) and stop (retire the pool, stop, release, standby) in the order every path ends clean; `attach` gives a receiver whose own machinery serves the sensor (Linux) the stream's sensor side and health |
+| `Pool`, `Lease`, `Frame` | the receiver's buffers lent out as frames, given back on drop while the stream runs; a frame keeps its buffer handle after a stop, so it outlives its stream |
+| `FrameStream<P>` | filled buffers to frames through `Receiver::poll_done` (the caller's waker registered before looking: any executor, or a no-op waker in a superloop), frame starts inferred from frames when the receiver's events go missing, sequence gaps, the corrupt-frame limit, faults ending the stream after one error item |
+| `serve_sync` | the sensor service: pending frame starts (`Receiver::try_sync`, or any `SyncSource`) to the control schedule, embedded data to the reports |
+
+`styx-hal` changed for it: `FrameBuffer` is the read side of `DmaBuffer` (also implemented by
+`&T`), and `Receiver::buffer` returns a handle (`Option<Self::Buffer>`) that keeps the buffer's
+memory, so frames outlive a receiver's release.
+
+### Linux as the reference platform
+
+`styx-native` is the `Linux` platform: `SensorControl` is `SensorState` on `CLOCK_MONOTONIC`
+(`sensor_control`), the bridge's requests are served through it (`BridgeServe`), and
+`V4l2Receiver` implements `Receiver` over the capture node with everything `rp1-cfe` needs
+inside it, unchanged: the event thread with its own `poll(2)` and the quiesce around
+`STREAMON`/`STREAMOFF`, the bridge's start and stop served from that thread, the embedded data
+node started first and stopped last, the failed start the bridge reports in its state, buffers
+from MMAP + EXPBUF or a dma-heap. `NativeCamera`'s raw route is `Camera<Linux>`; `NativeFrame`
+and `FrameStream` wrap the runtime's, with the same public API. The sensor side and the devices
+stay behind `dyn` on Linux (so the host fault tests run the same receiver over fake devices);
+measured, that costs nothing (below).
+
+### The processing loop
+
+`styx_pipeline::process` (in the `no_std` core) is the per-frame loop written once:
+`Algorithms` decides which frames run the algorithms (every frame until settled, then about
+15 Hz), gives each frame the newest settings retargeted to the exposure it got, runs the
+algorithms on its statistics and hands their requests to `SensorControls`; `process` puts a
+frame through a `FrameIsp` (the PiSP back end, the software ISP, the GPU ISP) with the
+algorithms overlapped with the job when an `InlineIsp` (the PiSP front end) delivered the
+statistics, or after it when the frame ISP made them. `PispPipeline` and `SoftLoop` (and with it
+`SoftPipeline` and the replay tools) run on it. A software-loop replay of a CM5 recording gives
+the same algorithm recording, image and per-frame values as before the move.
+
+### No allocation per frame in the runtime
+
+`crates/runtime/tests/no_alloc.rs`: 300 frames on the mock platform (frame starts through the
+sensor service, frames through the stream with their values, the bytes read, a 3A-style
+request per frame, the buffer given back) make zero allocations. On the CM5 the allocations per
+frame of the whole process are the same as before the runtime (counted with an `LD_PRELOAD`
+counter, below).
+
+### Linux is unchanged by the runtime
+
+CM5 (OV9782 1280x800, native mode, HeliOS tuning), `dev` fcc4343 (before) against
+`native/runtime` (after), built alike and run alternately; syscalls and allocations per frame
+from an `LD_PRELOAD` counter of libc calls (150- and 450-frame runs, the difference over 300
+frames; `strace` is not on the device), CPU from the thread's scheduler time:
+
+| | before | after |
+|---|---|---|
+| PiSP, 30 fps: `ioctl` / `poll` / `write` per frame | 28.0-28.1 / 6.0 / 0.01 | 28.0 / 6.0 / 0.01 |
+| PiSP: `malloc` + `realloc` per frame (whole process, mostly the algorithms) | 45.5-45.6 | 45.5 |
+| raw (Styx API, 30/60/120 fps segments): `ioctl` / `poll` / `read` / `write` per frame | 75.8-77.1 / 59.4-63.3 / 19.8-21.0 / 5.8-7.0 | 75.9-77.1 / 59.7-63.2 / 19.9-21.0 / 5.9-7.0 |
+| software ISP, 30 fps: `ioctl` / `poll` / `malloc` per frame | 11.2-11.4 / 10.6-11.2 / 57.1-57.6 | 11.3-11.4 / 10.9-11.4 / 57.3 |
+| PiSP CPU per frame (pipeline thread), 30 fps, median of 14 runs (spread) | 0.284 ms (0.267-0.306) | 0.290 ms (0.277-0.337) |
+| same, 8 alternating runs | 0.286 ms | 0.286 ms |
+| PiSP CPU per frame, 120 fps | 0.172-0.180 ms | 0.173-0.177 ms |
+| PiSP latency (frame start → outputs), 30 / 120 fps, median | 9.80-9.86 / 9.87-9.89 ms | 9.80-9.88 / 9.87 ms |
+| software ISP, 30 fps, 1 thread: CPU per frame (pipeline + event thread) | 2.92-2.98 ms | 2.95-2.97 ms |
+| Styx API NV12 30 fps (`native_isp_bench single`): latency median, peak RSS | 9.42-9.45 ms, 19.3-19.6 MiB | 9.44-9.47 ms, 19.2-19.6 MiB |
+| open → first frame: PiSP tool / Styx API raw | 29.8-30.3 / 36.0-38.3 ms | 29.6-30.1 / 35.9-36.2 ms |
+| AE locked after (cold start, 30 fps) | 6 frames | 6 frames |
+| raw landing (`camera_controls`): exposure/gain after the request | 2 frames | 2 frames |
+
+The software loop replays a CM5 recording identically before and after (algorithm recording,
+image and per-frame values), and allocates the same 50 times per frame on the host.
+
 ## What changes without `std`
 
 - **Floats.** `core` has no `sqrt`, `exp`, `powf`, `round`, ...; each crate has a small
@@ -254,3 +339,22 @@ Lemnos"); Styx depends on `lemnos-hal`, `lemnos-linux` and `lemnos-drivers-vcm`.
   is re-exported.
 - `styx-kernel`: `bus::{i2c, gpio, eh}` and `uevent` are gone (`lemnos_linux::hal::{I2cBus,
   GpioChip, GpioLine}`, `lemnos_linux::uevent`); `bus` is the sensor bridge only.
+
+## API changes with the runtime (phase 2, steps 4-6)
+
+The `styx` API is unchanged; so are `NativeCamera`, `NativeFrame`, `FrameStream`,
+`CameraControls`, `PispPipeline`, `SoftPipeline` and `SoftLoop` (new methods only).
+
+- `styx_native::SensorControl<B, P>` is `styx_runtime::SensorState<B, P>`: build it with
+  `styx_native::control::sensor_control(driver)`; its methods return `styx_runtime::Error`
+  (`NativeError: From` it, losslessly); `serve`/`serve_detailed` come from the `BridgeServe`
+  trait; `ExpectedStart` is `StartFormat` (same fields). `FrameControls`, `BringUpTimes`,
+  `standby_problems`, `DEFAULT_WRITE_MARGIN` are the runtime's, re-exported.
+- `styx_native::LensActuator` is `styx_hal::LensActuator` (`Error = io::Error` for the Linux
+  actuators); `LensControl::new` takes any actuator (`boxed` a `Box<dyn LensDrive>`),
+  `request_at` takes the time; `open_actuator` returns `Box<dyn LensDrive>`.
+- `styx_hal`: `FrameBuffer` (split out of `DmaBuffer`, whose users import both),
+  `Receiver::buffer(&self, index) -> Option<Self::Buffer>`.
+- `styx_pipeline`: feature `std` (default; `device` and `gpu` imply it); `dng_metadata_at`
+  (capture time as a duration) next to `dng_metadata`; new `process` module, `SoftLoop::{
+  start_with, process_frame_with, algorithms}`; `ControlHandle::request_at_now_landings`.

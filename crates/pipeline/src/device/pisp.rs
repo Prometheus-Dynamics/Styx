@@ -27,17 +27,18 @@ use styx_kernel::subdev::MbusCode;
 use styx_native::{
     CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
 };
-use styx_pisp::device::{BackEndStream, BeJob, FrontEndDevice, FrontEndSetup, profile};
+use styx_pisp::device::{BackEndStream, BeJob, FrontEndDevice, FrontEndSetup, QueuedJob, profile};
 use styx_pisp::fe::FrontEnd;
 use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
 use styx_softisp::CfaPattern;
 
 use super::pisp_options::PispOptions;
-use super::{apply_request, sensor_values};
+use super::{Profiled, sensor_values};
 use crate::controller::{Controller, SensorValues, Step};
 use crate::error::{PipelineError, Result};
 use crate::isp::{IspSettings, be_template, level16};
 use crate::pisp_be::{BeConfigBuilder, BeUpdateCounts};
+use crate::process::{Algorithms, FrameIsp, InlineIsp};
 use crate::sensor::{ISSUE_LATENCY, SensorInfo};
 use crate::stats;
 
@@ -207,7 +208,8 @@ pub struct PispPipeline {
     controls: CameraControls,
     configured: Configured,
     info: SensorInfo,
-    controller: Controller,
+    /// The 3A side of the loop (`crate::process`): settings, scheduling, the algorithms.
+    algo: Algorithms,
     fe: FrontEnd,
     fe_dev: Option<FrontEndDevice>,
     be_dev: Option<BackEndStream>,
@@ -216,22 +218,14 @@ pub struct PispPipeline {
     options: PispOptions,
     startup: PispStartup,
     warm_override: Option<Option<WarmStart>>,
-    /// The last frame's statistics, as copied from the front end and as converted.
+    /// The last frame's statistics, as copied from the front end.
     raw_stats: Box<RawStatistics>,
-    stats: Statistics,
-    /// The algorithms' newest output (its `isp` processes the next frame).
-    step: Step,
-    /// `step` came from a frame's statistics (not the start-up values).
-    stepped: bool,
     /// The tuning has temporal denoise (the back end then sets up its buffers).
     want_tdn: bool,
     /// Why the back end's temporal denoise could not be set up.
     tdn_error: Option<String>,
-    /// The last frame dequeued and the last one the algorithms ran on.
+    /// The last frame dequeued.
     last_seq: Option<u64>,
-    last_run: Option<u64>,
-    /// While settled, the algorithms run every this many frames.
-    settled_every: u64,
     /// Which frames' raw data to copy out (stills).
     raw_copy: Option<super::RawCopy>,
 }
@@ -331,15 +325,18 @@ impl PispPipeline {
         let mut controller = Controller::new(tuning, info.camera.clone())?;
         controller.set_spatial_denoise(options.spatial_denoise);
         let controls = camera.controls();
-        let black_level = info.black_level;
         startup.isp_and_algorithms = t.elapsed();
         startup.open = t_open.elapsed();
         Ok(Self {
             camera,
             controls,
             configured,
+            algo: {
+                let mut a = Algorithms::new(controller, info.black_level);
+                a.set_profiler(Some(profile_record));
+                a
+            },
             info,
-            controller,
             fe: isp.fe,
             fe_dev: Some(isp.fe_dev),
             be_dev: Some(isp.be_dev),
@@ -349,20 +346,9 @@ impl PispPipeline {
             startup,
             warm_override: None,
             raw_stats: bytemuck::allocation::zeroed_box(),
-            stats: Statistics::default(),
-            step: Step {
-                frame: 0,
-                sensor: None,
-                lens: None,
-                isp: IspSettings::neutral(black_level),
-                params: Default::default(),
-            },
-            stepped: false,
             want_tdn,
             tdn_error: isp.tdn_error,
             last_seq: None,
-            last_run: None,
-            settled_every: 1,
             raw_copy: None,
         })
     }
@@ -389,7 +375,7 @@ impl PispPipeline {
 
     /// The controller (controls, recording).
     pub fn controller(&mut self) -> &mut Controller {
-        &mut self.controller
+        self.algo.controller()
     }
 
     /// The camera's controls.
@@ -399,13 +385,13 @@ impl PispPipeline {
 
     /// The statistics of the frame [`Self::next`] returned last, as the algorithms see them.
     pub fn statistics(&self) -> &Statistics {
-        &self.stats
+        self.algo.statistics()
     }
 
     /// The algorithms' newest output, from the statistics of the frame [`Self::next`] returned
     /// last (`step.frame`); its `isp` settings process the next frame.
     pub fn step(&self) -> &Step {
-        &self.step
+        self.algo.step()
     }
 
     /// How often the back end config was rebuilt, patched or reused.
@@ -465,7 +451,9 @@ impl PispPipeline {
             self.tdn_error = isp.tdn_error;
             if isp.be_dev.tdn_enabled() != self.info.camera.temporal_denoise {
                 self.info.camera.temporal_denoise = isp.be_dev.tdn_enabled();
-                self.controller.set_config(self.info.camera.clone())?;
+                self.algo
+                    .controller()
+                    .set_config(self.info.camera.clone())?;
             }
             (self.fe, self.be) = (isp.fe, isp.be);
             self.fe_dev = Some(isp.fe_dev);
@@ -493,37 +481,20 @@ impl PispPipeline {
             ISSUE_LATENCY
         };
         self.sensor = Some(sensor);
-        self.controller.set_issue_latency(latency);
+        self.algo.controller().set_issue_latency(latency);
         let warm = match self.warm_override.take() {
             Some(w) => w,
             None => crate::warm::recall(&self.camera.info().key),
         };
-        self.controller.set_warm_start(warm);
-        let values = self.controller.start().and_then(|start| {
-            if let Some(r) = start.sensor {
-                apply_request(&self.controls, &r)?;
-            }
-            if let Some(l) = start.lens {
-                super::apply_lens(&self.controls, &l)?;
-            }
-            start.isp.apply_fe(&mut self.fe);
-            self.step = Step {
-                frame: 0,
-                sensor: start.sensor,
-                lens: start.lens,
-                isp: start.isp,
-                params: Default::default(),
-            };
-            self.stepped = false;
-            Ok(())
-        });
+        self.algo.controller().set_warm_start(warm);
+        let values = self
+            .algo
+            .start(&self.controls)
+            .map(|start| start.isp.apply_fe(&mut self.fe));
         let fps = self.configured.interval.fps();
-        self.settled_every = self
-            .options
-            .settled_rate_hz
-            .filter(|r| *r > 0.0)
-            .map_or(1, |r| (fps / r).round().max(1.0) as u64);
-        (self.last_seq, self.last_run) = (None, None);
+        self.algo
+            .set_settled_rate(fps, self.options.settled_rate_hz);
+        self.last_seq = None;
         if let Err(e) = values {
             self.camera.quiesce_external();
             let _ = self.camera.stop();
@@ -564,18 +535,9 @@ impl PispPipeline {
         ) else {
             return Err(PipelineError::Device("not started".into()));
         };
-        // Settled: the algorithms (and the statistics they read) only every few frames.
-        let p = &self.step.params;
-        let settled = self.stepped
-            && p.ae.locked
-            && p.awb.converged
-            && self.controller.controls().ae_enable
-            && !p.needs_every_frame();
-        let run = !settled
-            || match (self.last_seq, self.last_run) {
-                (Some(s), Some(r)) => s + 1 >= r + self.settled_every,
-                _ => true,
-            };
+        // Settled: the algorithms (and the statistics they read) only every few frames. Decided
+        // for the frame expected next, before its statistics are copied out.
+        let run = self.algo.due(self.last_seq.map(|s| s + 1));
         wait_for_statistics(fe_dev, sensor, timeout)?;
         let held =
             fe_dev.next_held_raw(&mut self.fe, timeout, run.then_some(&mut *self.raw_stats))?;
@@ -589,98 +551,65 @@ impl PispPipeline {
             let controls = profile::time("sensor", "applied", || sensor.applied(seq))
                 .ok_or_else(|| PipelineError::Device(format!("no control values for {seq}")))?;
             let values = sensor_values(seq, &controls);
-            let t1 = Instant::now();
-            // The newest settings, with the digital gain (and deflicker's correction) for
-            // this frame.
-            let settings_from = self.stepped.then_some(self.step.frame);
-            if self.stepped {
-                self.controller
-                    .retarget(&mut self.step.isp, &self.step.params, &values);
-            }
-            // Temporal denoise scales its average by the frame's light: exposure, gain and
-            // the flicker deflicker predicts.
-            let (digital_gain, flicker) = (self.step.isp.digital_gain, self.step.isp.flicker);
-            let exposure = values.exposure.as_secs_f64() * values.analogue_gain * flicker;
-            profile::time("loop", "be_update", || {
-                self.be.update_frame(&self.step.isp, exposure)
-            })?;
-            let be_prepare = t1.elapsed();
-            let job = be_dev.process_queued(image.index, self.be.config())?;
-            let raw = match self.raw_copy.as_mut().is_some_and(|want| want(&values)) {
-                true => {
-                    let data = fe_dev.image_data(image.index).unwrap_or(&[]);
-                    super::hold_raw(data, fe_dev.image_format(), &self.info, &self.step, &values)
-                        .map(|h| {
-                            Box::new(crate::still::HeldRaw {
-                                timestamp: image.timestamp,
-                                ..h
-                            })
-                        })
-                }
-                false => None,
+            let focus = (
+                super::lens_state(&controls),
+                run.then(|| super::pdaf_grid(&self.controls, seq)).flatten(),
+            );
+            let mut be = BackEnd {
+                dev: be_dev,
+                builder: &mut self.be,
+                timeout,
+                prepare: Duration::ZERO,
             };
-            self.last_seq = Some(seq);
-            // A frame start that came meanwhile (at high rates the next frame starts about when
-            // this one's statistics arrive): the request below knows how much of it is left.
-            sensor.service();
-            // While the back end works: this frame's statistics through the algorithms.
-            let ts = Instant::now();
-            if run {
-                stats::from_pisp_raw(&self.raw_stats, &mut self.stats);
-                self.stats.pdaf = super::pdaf_grid(&self.controls, seq);
-                self.last_run = Some(seq);
-            }
-            let stats_time = ts.elapsed();
-            let t0 = Instant::now();
-            let ran = if !run {
-                Ok(None)
-            } else {
-                profile::time("loop", "algorithms", || {
-                    let lens = super::lens_state(&controls);
-                    self.controller
-                        .process_with_lens(&self.stats, &values, lens)
-                })
-                .and_then(|step| {
-                    let lands = match &step.sensor {
-                        Some(r) => Some(profile::time("sensor", "request", || {
-                            apply_request(&self.controls, r)
-                        })?),
-                        None => None,
-                    };
-                    if let Some(l) = &step.lens {
-                        super::apply_lens(&self.controls, l)?;
+            let mut fe = FeStats {
+                raw: &self.raw_stats,
+                fe: &mut self.fe,
+            };
+            let (raw_copy, info, last_seq) = (&mut self.raw_copy, &self.info, &mut self.last_seq);
+            let mut raw = None;
+            let p = self.algo.process(
+                &mut be,
+                &mut fe,
+                &Profiled(&self.controls),
+                image.index,
+                &values,
+                run,
+                focus,
+                |_, step| {
+                    if raw_copy.as_mut().is_some_and(|want| want(&values)) {
+                        let data = fe_dev.image_data(image.index).unwrap_or(&[]);
+                        raw = super::hold_raw(data, fe_dev.image_format(), info, step, &values)
+                            .map(|h| {
+                                Box::new(crate::still::HeldRaw {
+                                    timestamp: image.timestamp,
+                                    ..h
+                                })
+                            });
                     }
-                    step.isp.apply_fe(&mut self.fe);
-                    self.step = step;
-                    self.stepped = true;
-                    Ok(lands)
-                })
-            };
-            let algorithms = t0.elapsed();
-            let job = be_dev.wait_job(job, timeout)?;
-            let request_lands = match ran {
-                Ok(lands) => lands,
-                Err(e) => {
-                    be_dev.release(&job);
-                    return Err(e);
-                }
-            };
+                    *last_seq = Some(seq);
+                    // A frame start that came meanwhile (at high rates the next frame starts
+                    // about when this one's statistics arrive): the request below knows how
+                    // much of it is left.
+                    sensor.service();
+                },
+            )?;
+            let be_prepare = p.times.settings + be.prepare;
             Ok(PispFrame {
                 sequence: seq,
                 timestamp: image.timestamp,
                 dequeued,
                 sensor: values,
-                job,
+                job: p.output,
                 sequence_mismatch: held.sequence != image.sequence,
-                request_lands,
-                settings_from,
-                digital_gain,
-                flicker,
+                request_lands: p.request_lands,
+                settings_from: p.settings_from,
+                digital_gain: p.digital_gain,
+                flicker: p.flicker,
                 times: PispTimes {
-                    stats: stats_time,
-                    algorithms,
+                    stats: p.times.stats,
+                    algorithms: p.times.algorithms,
                     be_prepare,
-                    be_job: job.elapsed,
+                    be_job: p.output.elapsed,
                     total: dequeued.elapsed(),
                 },
                 raw,
@@ -752,7 +681,7 @@ impl PispPipeline {
         .with_fps(fps, fps)?;
         let mut info = info;
         info.camera.temporal_denoise = self.info.camera.temporal_denoise;
-        self.controller.set_config(info.camera.clone())?;
+        self.algo.controller().set_config(info.camera.clone())?;
         if (info.width, info.height, configured.mode.code)
             != (self.info.width, self.info.height, self.configured.mode.code)
         {
@@ -772,7 +701,7 @@ impl PispPipeline {
     /// ([`crate::warm`]).
     pub fn stop(&mut self) -> Result<()> {
         if self.sensor.is_some()
-            && let Some(w) = self.controller.warm_state()
+            && let Some(w) = self.algo.controller_ref().warm_state()
         {
             crate::warm::remember(&self.camera.info().key, w);
         }
@@ -796,5 +725,72 @@ impl PispPipeline {
         let closed = camera.stop();
         drop(camera);
         stopped.and(closed.map_err(Into::into))
+    }
+}
+
+/// Records a profile timing when profiling is on.
+fn profile_record(what: &'static str, op: &'static str, d: Duration) {
+    if profile::enabled() {
+        profile::record(what, op, d);
+    }
+}
+
+/// The back end as the loop's [`FrameIsp`]: the config patched for the frame's settings and
+/// exposure, the job queued with the front end's raw buffer as input, then waited for.
+struct BackEnd<'a> {
+    dev: &'a mut BackEndStream,
+    builder: &'a mut BeConfigBuilder,
+    timeout: Duration,
+    /// Updating the config (and its tiles, when they change).
+    prepare: Duration,
+}
+
+impl FrameIsp for BackEnd<'_> {
+    type Input<'a> = u32;
+    type Job = QueuedJob;
+    type Output = BeJob;
+
+    fn submit(
+        &mut self,
+        index: u32,
+        settings: &IspSettings,
+        values: &SensorValues,
+        _statistics: bool,
+    ) -> Result<QueuedJob> {
+        let t = Instant::now();
+        // Temporal denoise scales its average by the frame's light: exposure, gain and the
+        // flicker deflicker predicts.
+        let exposure = values.exposure.as_secs_f64() * values.analogue_gain * settings.flicker;
+        profile::time("loop", "be_update", || {
+            self.builder.update_frame(settings, exposure)
+        })?;
+        self.prepare = t.elapsed();
+        Ok(self.dev.process_queued(index, self.builder.config())?)
+    }
+
+    fn finish(&mut self, job: QueuedJob) -> Result<BeJob> {
+        Ok(self.dev.wait_job(job, self.timeout)?)
+    }
+
+    fn discard(&mut self, job: &BeJob) {
+        self.dev.release(job);
+    }
+}
+
+/// The front end as the loop's [`InlineIsp`]: the statistics copied out at the dequeue (when
+/// the algorithms run), settings queued with its next config.
+struct FeStats<'a> {
+    raw: &'a RawStatistics,
+    fe: &'a mut FrontEnd,
+}
+
+impl InlineIsp for FeStats<'_> {
+    fn statistics(&mut self, out: &mut Statistics) -> bool {
+        stats::from_pisp_raw(self.raw, out);
+        true
+    }
+
+    fn set_settings(&mut self, settings: &IspSettings) {
+        settings.apply_fe(self.fe);
     }
 }

@@ -26,8 +26,10 @@ pub enum Region {
     Large,
 }
 
-/// One buffer a device writes or reads.
-pub trait DmaBuffer {
+/// A buffer a device fills and the CPU reads (a receiver's frame buffers): length, the CPU
+/// view, cache maintenance and export handles. Shared handles implement it too (`&T`, and an
+/// `Arc` on platforms with one), so a frame can keep its buffer after its stream stopped.
+pub trait FrameBuffer {
     /// A handle another process or device can import (Linux: the dma-buf descriptor).
     type Export<'a>: Copy
     where
@@ -44,9 +46,6 @@ pub trait DmaBuffer {
     /// The CPU view. Contents are defined only between [`Self::begin_cpu`] and
     /// [`Self::end_cpu`] (or always, on coherent memory).
     fn bytes(&self) -> &[u8];
-
-    /// The CPU view, writable.
-    fn bytes_mut(&mut self) -> &mut [u8];
 
     /// Cache maintenance before the CPU touches the buffer: `DMA_BUF_IOCTL_SYNC` start on
     /// Linux (cached dma-heap buffers), a D-cache invalidate by address on a Cortex-M7, nothing
@@ -66,6 +65,39 @@ pub trait DmaBuffer {
     /// A handle for other processes or devices, if the platform has one.
     fn export(&self) -> Option<Self::Export<'_>> {
         None
+    }
+}
+
+/// One buffer a device writes or reads, which the CPU may also write (ISP outputs, buffers
+/// from [`DmaMemory`]).
+pub trait DmaBuffer: FrameBuffer {
+    /// The CPU view, writable.
+    fn bytes_mut(&mut self) -> &mut [u8];
+}
+
+impl<T: FrameBuffer + ?Sized> FrameBuffer for &T {
+    type Export<'a>
+        = T::Export<'a>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+    fn bytes(&self) -> &[u8] {
+        (**self).bytes()
+    }
+    fn begin_cpu(&self, access: Access) {
+        (**self).begin_cpu(access);
+    }
+    fn end_cpu(&self, access: Access) {
+        (**self).end_cpu(access);
+    }
+    fn device_address(&self) -> Option<u64> {
+        (**self).device_address()
+    }
+    fn export(&self) -> Option<Self::Export<'_>> {
+        (**self).export()
     }
 }
 
@@ -170,15 +202,18 @@ pub struct StaticBuffer {
 }
 
 impl DmaBuffer for StaticBuffer {
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        self.data
+    }
+}
+
+impl FrameBuffer for StaticBuffer {
     type Export<'a> = ();
 
     fn len(&self) -> usize {
         self.data.len()
     }
     fn bytes(&self) -> &[u8] {
-        self.data
-    }
-    fn bytes_mut(&mut self) -> &mut [u8] {
         self.data
     }
     fn begin_cpu(&self, access: Access) {

@@ -8,6 +8,9 @@
 //! frame patches the blocks whose register values changed. Lens shading tables are resampled
 //! to the back end's grid and gamma curves converted only when they change.
 
+use alloc::boxed::Box;
+use alloc::format;
+
 use styx_algo::{LensShading, Pwl};
 use styx_pisp::be::BackEnd;
 use styx_pisp::uapi::{BeLscExtra, BeTilesConfig, ImageFormatConfig, bayer_enable};

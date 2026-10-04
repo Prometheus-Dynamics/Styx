@@ -79,6 +79,58 @@ impl NativeError {
     }
 }
 
+impl From<styx_runtime::Error> for NativeError {
+    fn from(e: styx_runtime::Error) -> Self {
+        use styx_runtime::Error as E;
+        match e {
+            E::Sensor(e) => NativeError::Sensor(e),
+            E::Bus { during, source } => NativeError::kernel(during, source),
+            E::Hal {
+                during,
+                kind,
+                code,
+                message,
+            } => NativeError::kernel(
+                during,
+                code.map_or_else(
+                    || io::Error::new(hal_io_kind(kind), message),
+                    io::Error::from_raw_os_error,
+                ),
+            ),
+            E::InvalidConfig(what) => NativeError::InvalidConfig(what),
+            E::State(what) => NativeError::State(what),
+            E::Busy(what) => NativeError::Busy(what),
+            E::Disconnected => NativeError::Disconnected,
+            E::Timeout => NativeError::Timeout,
+            E::Fault(f) => crate::health::fault_error(&f),
+            other => NativeError::kernel(other.to_string(), io::Error::other("runtime")),
+        }
+    }
+}
+
+impl From<styx_runtime::RunError<NativeError>> for NativeError {
+    fn from(e: styx_runtime::RunError<NativeError>) -> Self {
+        match e {
+            styx_runtime::RunError::Receiver(e) => e,
+            styx_runtime::RunError::Runtime(e) => e.into(),
+        }
+    }
+}
+
+/// The `std::io` kind of a hardware error kind.
+fn hal_io_kind(kind: styx_runtime::styx_hal::ErrorKind) -> io::ErrorKind {
+    use styx_runtime::styx_hal::ErrorKind as K;
+    match kind {
+        K::NotFound => io::ErrorKind::NotFound,
+        K::Unsupported => io::ErrorKind::Unsupported,
+        K::InvalidConfig => io::ErrorKind::InvalidInput,
+        K::Timeout => io::ErrorKind::TimedOut,
+        K::Busy => io::ErrorKind::ResourceBusy,
+        K::NoMemory => io::ErrorKind::OutOfMemory,
+        _ => io::ErrorKind::Other,
+    }
+}
+
 /// Adds the step to a kernel error.
 pub(crate) trait KernelContext<T> {
     fn step(self, what: &str) -> Result<T>;

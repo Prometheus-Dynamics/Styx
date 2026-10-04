@@ -17,6 +17,7 @@ lemnos-linux = { workspace = true, features = ["i2c"] }
 libc.workspace = true
 styx-graph.workspace = true
 styx-kernel.workspace = true
+styx-runtime.workspace = true
 styx-sensor.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 

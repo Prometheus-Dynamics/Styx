@@ -141,7 +141,7 @@ impl Rig {
             &[("xvclk", 24_000_000)],
             Duration::ZERO,
         );
-        let mut c = SensorControl::new(SensorDriver::new(desc, bus.clone(), pins));
+        let mut c = crate::control::sensor_control(SensorDriver::new(desc, bus.clone(), pins));
         c.bring_up("1280x800", "raw10").unwrap();
         c.expect_start(ExpectedStart {
             code: 0x3007,

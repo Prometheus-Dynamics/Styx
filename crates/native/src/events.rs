@@ -27,15 +27,16 @@ use std::task::Waker;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use styx_kernel::bus::StreamAction;
+use styx_kernel::bus::{StreamAction, StreamRequest};
 use styx_kernel::event::EventKind;
 use styx_kernel::{Wait, poll};
+use styx_runtime::styx_hal::{Instant as HalInstant, SyncEvent};
+use styx_runtime::{SensorSide, SyncSource, serve_sync};
 
-use crate::control::lock;
+use crate::control::{lock, start_format};
 use crate::device::{BridgeDevice, CaptureDevice};
 use crate::embedded::EmbeddedCapture;
-use crate::health::{Fault, Health};
-use crate::stream::SensorSide;
+use crate::health::{Fault, Health, IoError, fault_from_io};
 
 /// `STYX_NATIVE_DEBUG=1`: trace the event thread on stderr.
 fn debug() -> bool {
@@ -58,25 +59,24 @@ const VIDEO_ERROR_BACKOFF: Duration = Duration::from_millis(5);
 /// How long [`EventThread::quiesce`] waits for the thread to let go of the capture node.
 const QUIESCE_WAIT: Duration = Duration::from_millis(500);
 
-/// Wakes the event thread (a byte on its pipe).
-#[derive(Clone)]
-pub(crate) struct Poke(Arc<Mutex<PipeWriter>>);
-
-impl Poke {
-    pub(crate) fn poke(&self) {
-        let _ = lock(&self.0).write_all(&[1]);
-    }
-}
-
-/// How the frame stream waits for a frame: it registers its waker and pokes the thread, which
-/// then also waits for the node to be readable and wakes it.
+/// How the frame stream waits for a frame: it registers its waker and pokes the event thread
+/// (a byte on its pipe), which then also waits for the node to be readable and wakes it. One per
+/// receiver; each event thread installs its pipe.
+#[derive(Default)]
 pub(crate) struct FrameNotify {
     waker: Mutex<Option<Waker>>,
     want: AtomicBool,
-    poke: Poke,
+    poke: Mutex<Option<PipeWriter>>,
 }
 
 impl FrameNotify {
+    /// Wakes the event thread.
+    pub(crate) fn poke(&self) {
+        if let Some(w) = lock(&self.poke).as_mut() {
+            let _ = w.write_all(&[1]);
+        }
+    }
+
     /// Wake `waker` when a frame may be ready (or something ended the stream).
     pub(crate) fn register(&self, waker: &Waker) {
         {
@@ -86,7 +86,7 @@ impl FrameNotify {
             }
         }
         if !self.want.swap(true, Ordering::AcqRel) {
-            self.poke.poke();
+            self.poke();
         }
     }
 
@@ -119,7 +119,6 @@ struct Gate {
 
 pub(crate) struct EventThread {
     stop: Arc<AtomicBool>,
-    poke: Poke,
     gate: Arc<Gate>,
     notify: Arc<FrameNotify>,
     handle: Option<JoinHandle<()>>,
@@ -141,16 +140,13 @@ pub(crate) struct EventSources {
 }
 
 impl EventThread {
-    /// Starts serving, quiesced (the camera calls `STREAMON` next, then [`Self::resume`]).
-    pub(crate) fn spawn(sources: EventSources) -> std::io::Result<Self> {
+    /// Starts serving, quiesced (the camera calls `STREAMON` next, then [`Self::resume`]);
+    /// `notify` (the receiver's) wakes it for frames.
+    pub(crate) fn spawn(sources: EventSources, notify: Arc<FrameNotify>) -> std::io::Result<Self> {
         let (reader, writer) = std::io::pipe()?;
         styx_graph::rt::set_nonblocking(reader.as_fd())?;
-        let poke = Poke(Arc::new(Mutex::new(writer)));
-        let notify = Arc::new(FrameNotify {
-            waker: Mutex::new(None),
-            want: AtomicBool::new(false),
-            poke: poke.clone(),
-        });
+        *lock(&notify.poke) = Some(writer);
+        notify.want.store(false, Ordering::Release);
         let gate = Arc::new(Gate::default());
         lock(&gate.state).quiet = true;
         let stop = Arc::new(AtomicBool::new(false));
@@ -160,16 +156,10 @@ impl EventThread {
             .spawn(move || run(&sources, &reader, &keep, &g, &n))?;
         Ok(Self {
             stop,
-            poke,
             gate,
             notify,
             handle: Some(handle),
         })
-    }
-
-    /// How the frame stream waits for frames.
-    pub(crate) fn notify(&self) -> Arc<FrameNotify> {
-        Arc::clone(&self.notify)
     }
 
     /// Stops touching the capture node; returns once the thread confirmed (or after a bounded
@@ -181,7 +171,7 @@ impl EventThread {
             st.requested += 1;
             st.requested
         };
-        self.poke.poke();
+        self.notify.poke();
         let deadline = Instant::now() + QUIESCE_WAIT;
         let mut st = lock(&self.gate.state);
         while st.quiesced < want && self.handle.as_ref().is_some_and(|h| !h.is_finished()) {
@@ -201,7 +191,7 @@ impl EventThread {
     /// Touches the capture node again (after `STREAMON` returned).
     pub(crate) fn resume(&self) {
         lock(&self.gate.state).quiet = false;
-        self.poke.poke();
+        self.notify.poke();
     }
 
     /// Stops the thread and waits for it.
@@ -211,10 +201,11 @@ impl EventThread {
 
     fn shutdown(&mut self) {
         self.stop.store(true, Ordering::Release);
-        self.poke.poke();
+        self.notify.poke();
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+        lock(&self.notify.poke).take();
         self.notify.wake();
     }
 }
@@ -231,10 +222,10 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
         let req = match s.bridge.try_next_request() {
             Ok(Some(req)) => req,
             Ok(None) => return Ok(()),
-            Err(e) => return Err(Fault::from_io("bridge stream request", &e)),
+            Err(e) => return Err(fault_from_io("bridge stream request", &e)),
         };
         trace!("request {:?} seq {} dequeued", req.action, req.sequence);
-        let result = s.sensor.serve(&req).map_err(|(errno, why)| {
+        let result = serve_bridge(s.sensor.as_ref(), &req).map_err(|(errno, why)| {
             s.health.serve_failed(why);
             errno
         });
@@ -246,7 +237,7 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
         );
         match acked {
             Ok(()) => {
-                s.health.acks.fetch_add(1, Ordering::Relaxed);
+                s.health.acks.incr();
             }
             Err(e) if crate::error::io_errno(&e) == Some(libc::ESTALE) => {
                 // The bridge stopped waiting (timed out, or the start was abandoned): the
@@ -254,45 +245,69 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
                 if req.action == StreamAction::Start && result.is_ok() {
                     s.sensor.standby();
                 }
-                s.health.late_acks.fetch_add(1, Ordering::Relaxed);
+                s.health.late_acks.incr();
             }
-            Err(e) => return Err(Fault::from_io("acknowledging a bridge request", &e)),
+            Err(e) => return Err(fault_from_io("acknowledging a bridge request", &e)),
         }
     }
 }
 
-/// Drives the control schedule from every pending frame-start event. `Err`: the node is gone.
-fn serve_frame_starts(s: &EventSources) -> Result<(), Fault> {
-    drain_frame_starts(s.video.as_ref(), s.sensor.as_ref(), &s.health)
+/// Serves one bridge request on the sensor side: the acknowledgement (an errno and why on
+/// failure). A start request must carry the format the camera was configured for.
+pub(crate) fn serve_bridge(
+    sensor: &dyn SensorSide,
+    req: &StreamRequest,
+) -> std::result::Result<(), (i32, String)> {
+    let served = match req.action {
+        StreamAction::Start => sensor.serve_start(Some(&start_format(req))),
+        StreamAction::Stop => sensor.serve_stop(),
+    };
+    served.map_err(|e| {
+        let errno = match e.kind {
+            styx_runtime::styx_hal::ErrorKind::InvalidConfig => libc::EINVAL,
+            _ => libc::EIO,
+        };
+        (errno, e.why)
+    })
 }
 
-/// Feeds every frame-start event pending on `video` to the control schedule. `Err`: the node
-/// is gone.
+/// A capture node's frame-start events (`V4L2_EVENT_FRAME_SYNC`, `DQEVENT`) as the runtime's
+/// sensor service reads them.
+pub(crate) struct VideoSync<'a>(pub(crate) &'a dyn CaptureDevice);
+
+impl SyncSource for VideoSync<'_> {
+    type Error = IoError;
+
+    fn try_sync(&self) -> std::result::Result<Option<SyncEvent>, IoError> {
+        loop {
+            match self.0.dequeue_event().map_err(IoError)? {
+                Some(ev) => {
+                    if let EventKind::FrameSync { frame_sequence } = ev.kind {
+                        let ns = u64::try_from(ev.timestamp.as_nanos()).unwrap_or(u64::MAX);
+                        return Ok(Some(SyncEvent::FrameStart {
+                            sequence: u64::from(frame_sequence),
+                            at: HalInstant::from_nanos(ns),
+                        }));
+                    }
+                }
+                None => return Ok(None),
+            }
+        }
+    }
+}
+
+/// Drives the control schedule from every frame-start event pending on `video` (the runtime's
+/// sensor service). `Err`: the node is gone.
 pub(crate) fn drain_frame_starts(
     video: &dyn CaptureDevice,
     sensor: &dyn SensorSide,
     health: &Health,
 ) -> Result<(), Fault> {
-    loop {
-        match video.dequeue_event() {
-            Ok(Some(ev)) => {
-                if let EventKind::FrameSync { frame_sequence } = ev.kind {
-                    health.frame_syncs.fetch_add(1, Ordering::Relaxed);
-                    health.control_write(
-                        sensor.frame_start(u64::from(frame_sequence), Some(ev.timestamp)),
-                    );
-                }
-            }
-            Ok(None) => return Ok(()),
-            // Other errors (a queue that is not streaming) are left to the frame stream.
-            Err(e) => {
-                return match Fault::from_io("frame-start event", &e) {
-                    f @ Fault::Disconnected(_) => Err(f),
-                    _ => Ok(()),
-                };
-            }
-        }
-    }
+    serve_sync(&VideoSync(video), sensor, health)
+}
+
+fn serve_frame_starts(s: &EventSources) -> Result<(), Fault> {
+    drain_frame_starts(s.video.as_ref(), s.sensor.as_ref(), &s.health)
 }
 
 /// Lets go of the capture node when asked to; returns whether it must be left alone.
@@ -366,7 +381,7 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
         let ready = match ready {
             Ok(r) => r,
             Err(e) => {
-                fail(Fault::from_io("waiting for events", &e.into()));
+                fail(fault_from_io("waiting for events", &e.into()));
                 return;
             }
         };
@@ -379,7 +394,7 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
             // A request may still be pending next to the error; then the bridge is gone.
             let fault = serve_requests(s)
                 .err()
-                .unwrap_or_else(|| Fault::Disconnected("the sensor bridge went away".into()));
+                .unwrap_or_else(|| Fault::disconnected("the sensor bridge went away"));
             fail(fault);
             return;
         }
@@ -389,7 +404,7 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
         let e = ready.get(3).copied().unwrap_or_default();
         if v.hangup || e.hangup {
             // Keep serving the bridge: the receiver's stop request follows.
-            fail(Fault::Disconnected("the capture node went away".into()));
+            fail(Fault::disconnected("the capture node went away"));
             video_gone = true;
             continue;
         }

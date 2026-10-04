@@ -10,8 +10,8 @@
 //! * [`SensorPins`] / [`AsyncSensorPins`]: a sensor's power sequence by role (GPIO lines, the
 //!   input clock, supplies) with a `DelayNs`; [`BoardPins`] builds them from embedded-hal
 //!   output pins, a Lemnos [`ClockOutput`] and a delay.
-//! * [`DmaMemory`] / [`DmaBuffer`]: buffers devices fill, with cache maintenance and export
-//!   handles; [`StaticDma`] carves them out of a linker-placed region.
+//! * [`DmaMemory`] / [`DmaBuffer`] / [`FrameBuffer`]: buffers devices fill, with cache
+//!   maintenance and export handles; [`StaticDma`] carves them out of a linker-placed region.
 //! * [`Receiver`]: the CSI-2 or parallel receiver that fills them, with frame-start and
 //!   filled-buffer events on separate wakers (`poll_*`) and non-blocking `try_*` twins.
 //! * [`LensActuator`] / [`AsyncLensActuator`]: focus lenses that are not a plain register
@@ -38,7 +38,9 @@ mod power;
 mod receiver;
 mod time;
 
-pub use dma::{Access, CacheOps, DmaBuffer, DmaMemory, Region, StaticBuffer, StaticDma};
+pub use dma::{
+    Access, CacheOps, DmaBuffer, DmaMemory, FrameBuffer, Region, StaticBuffer, StaticDma,
+};
 pub use error::{ErrorKind, HalError};
 pub use lens::{AsyncLensActuator, LensActuator, NoLens};
 pub use power::{

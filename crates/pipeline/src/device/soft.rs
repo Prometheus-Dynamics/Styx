@@ -8,7 +8,7 @@ use styx_native::{
 };
 use styx_softisp::{OutputBuffers, RawFormat, Scale};
 
-use super::{apply_request, sensor_values};
+use super::sensor_values;
 use crate::controller::SensorValues;
 use crate::error::{PipelineError, Result};
 use crate::sensor::SensorInfo;
@@ -151,13 +151,7 @@ impl SoftPipeline {
         let c = self.soft.controller();
         c.set_issue_latency(latency);
         c.set_warm_start(warm);
-        let start = self.soft.start()?;
-        if let Some(r) = start.sensor {
-            apply_request(&self.controls, &r)?;
-        }
-        if let Some(l) = start.lens {
-            super::apply_lens(&self.controls, &l)?;
-        }
+        self.soft.start_with(&self.controls)?;
         self.stream = Some(self.camera.start()?);
         Ok(())
     }
@@ -202,16 +196,15 @@ impl SoftPipeline {
             super::lens_state(&controls),
             super::pdaf_grid(&self.controls, seq),
         );
-        let output = self
-            .soft
-            .process_frame(frame, raw.stride as usize, &sensor, scale, out)?;
-        if let Some(l) = &output.step.lens {
-            super::apply_lens(&self.controls, l)?;
-        }
-        let request_lands = match &output.step.sensor {
-            Some(r) => Some(apply_request(&self.controls, r)?),
-            None => None,
-        };
+        // The algorithms' requests go to the control schedule as they are made.
+        let (output, request_lands) = self.soft.process_frame_with(
+            frame,
+            raw.stride as usize,
+            &sensor,
+            scale,
+            out,
+            &self.controls,
+        )?;
         Ok(Some(SoftFrame {
             raw,
             sensor,

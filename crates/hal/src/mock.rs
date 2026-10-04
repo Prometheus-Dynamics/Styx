@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use embedded_hal::i2c::{self, NoAcknowledgeSource, Operation};
 
-use crate::dma::{Access, DmaBuffer, DmaMemory, Region};
+use crate::dma::{Access, DmaBuffer, DmaMemory, FrameBuffer, Region};
 use crate::error::ErrorKind;
 use crate::receiver::{
     Configured, FrameDone, Receiver, ReceiverCaps, ReceiverConfig, SensorStart, StartOrder,
@@ -288,6 +288,12 @@ impl MockBuffer {
 }
 
 impl DmaBuffer for MockBuffer {
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+}
+
+impl FrameBuffer for MockBuffer {
     type Export<'a> = usize;
     fn len(&self) -> usize {
         self.data.len()
@@ -295,14 +301,30 @@ impl DmaBuffer for MockBuffer {
     fn bytes(&self) -> &[u8] {
         &self.data
     }
-    fn bytes_mut(&mut self) -> &mut [u8] {
-        &mut self.data
-    }
     fn begin_cpu(&self, _access: Access) {
         lock(&self.syncs).0 += 1;
     }
     fn end_cpu(&self, _access: Access) {
         lock(&self.syncs).1 += 1;
+    }
+    fn export(&self) -> Option<usize> {
+        Some(self.data.as_ptr() as usize)
+    }
+}
+
+impl FrameBuffer for Arc<MockBuffer> {
+    type Export<'a> = usize;
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+    fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+    fn begin_cpu(&self, access: Access) {
+        MockBuffer::begin_cpu(self, access);
+    }
+    fn end_cpu(&self, access: Access) {
+        MockBuffer::end_cpu(self, access);
     }
     fn export(&self) -> Option<usize> {
         Some(self.data.as_ptr() as usize)
@@ -354,7 +376,7 @@ struct ReceiverState {
 /// contents are not written (zeros).
 #[derive(Debug)]
 pub struct MockReceiver {
-    buffers: Vec<MockBuffer>,
+    buffers: Vec<Arc<MockBuffer>>,
     state: Mutex<ReceiverState>,
     sequence: Mutex<u64>,
 }
@@ -364,7 +386,7 @@ impl MockReceiver {
     pub fn new(max_buffers: u32, buffer_len: usize) -> Self {
         let mut memory = MockMemory::default();
         let buffers = (0..max_buffers)
-            .map(|_| memory.allocate(buffer_len, 64, Region::Any))
+            .map(|_| memory.allocate(buffer_len, 64, Region::Any).map(Arc::new))
             .collect::<Result<Vec<_>, _>>()
             .unwrap_or_default();
         Self {
@@ -436,7 +458,7 @@ impl MockReceiver {
 
 impl Receiver for MockReceiver {
     type Error = ErrorKind;
-    type Buffer = MockBuffer;
+    type Buffer = Arc<MockBuffer>;
 
     fn caps(&self) -> ReceiverCaps {
         ReceiverCaps {
@@ -451,7 +473,7 @@ impl Receiver for MockReceiver {
     fn configure(&self, cfg: &ReceiverConfig) -> Result<Configured, ErrorKind> {
         let stride = cfg.stride.unwrap_or(cfg.width * 2);
         let buffer_len = stride as usize * cfg.height as usize;
-        let room = self.buffers.first().map_or(0, MockBuffer::len);
+        let room = self.buffers.first().map_or(0, |b| b.len());
         if cfg.buffers == 0 || cfg.buffers as usize > self.buffers.len() || buffer_len > room {
             return Err(ErrorKind::InvalidConfig);
         }
@@ -465,8 +487,8 @@ impl Receiver for MockReceiver {
         })
     }
 
-    fn buffer(&self, index: u32) -> &MockBuffer {
-        &self.buffers[index as usize]
+    fn buffer(&self, index: u32) -> Option<Arc<MockBuffer>> {
+        self.buffers.get(index as usize).cloned()
     }
 
     fn queue(&self, index: u32) -> Result<(), ErrorKind> {

@@ -3,7 +3,7 @@
 
 use core::task::{Context, Poll};
 
-use crate::dma::DmaBuffer;
+use crate::dma::FrameBuffer;
 use crate::error::{ErrorKind, HalError};
 use crate::time::Instant;
 
@@ -205,15 +205,17 @@ pub trait SensorStart: MaybeSendSync + 'static {
 pub trait Receiver: Sync {
     /// The error.
     type Error: HalError;
-    /// The buffers.
-    type Buffer: DmaBuffer;
+    /// A handle on one of its buffers: it keeps the buffer's memory while held, also after
+    /// [`Self::release`] (an `Arc` on Linux, a `&'static` buffer on a microcontroller), so a
+    /// frame can outlive its stream.
+    type Buffer: FrameBuffer;
 
     /// What it can do.
     fn caps(&self) -> ReceiverCaps;
     /// Configure (allocates the buffers).
     fn configure(&self, cfg: &ReceiverConfig) -> Result<Configured, Self::Error>;
-    /// Buffer `index`.
-    fn buffer(&self, index: u32) -> &Self::Buffer;
+    /// Buffer `index` of the current configuration.
+    fn buffer(&self, index: u32) -> Option<Self::Buffer>;
     /// Embedded data in `slot`.
     fn embedded(&self, slot: u32) -> Option<&[u8]> {
         let _ = slot;
