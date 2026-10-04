@@ -5,7 +5,7 @@
 //! Every function needs NEON and FP16 (the dispatcher checks FP16 at run time) and slices
 //! sized for `width` pixels as the dispatcher documents.
 
-use std::arch::aarch64::*;
+use core::arch::aarch64::*;
 
 use super::color::ChromaTerms;
 use crate::format::CfaPattern;
@@ -128,7 +128,7 @@ unsafe fn chroma8(
 ) -> (uint8x8_t, uint8x8_t) {
     // SAFETY: the callers keep `x + 16` within the first row.
     unsafe {
-        let mean: [int16x8_t; 3] = std::array::from_fn(|k| {
+        let mean: [int16x8_t; 3] = core::array::from_fn(|k| {
             let s = vpaddlq_u8(vld1q_u8(top[k].add(x)));
             vreinterpretq_s16_u16(vrshrq_n_u16::<2>(vpadalq_u8(s, rgb[k])))
         });
@@ -342,7 +342,7 @@ unsafe fn colour8(
         let g = vbslq_f16(mask, centre, vaddq_f16(hs, vs));
         let xs = vbslq_f16(mask, hs, centre);
         let ys = vbslq_f16(mask, vs, diag);
-        std::array::from_fn(|k| {
+        core::array::from_fn(|k| {
             let acc = vfmaq_f16(
                 vfmaq_f16(vfmaq_f16(sixteen, g, c[k][0]), xs, c[k][1]),
                 ys,
@@ -377,7 +377,7 @@ pub(in crate::simd) unsafe fn colour(
         x = emit!(out, width, |x| {
             let a = colour8(rows, x, mask, &c);
             let b = colour8(rows, x + 8, mask, &c);
-            std::array::from_fn(|k| t.apply(a[k], b[k]))
+            core::array::from_fn(|k| t.apply(a[k], b[k]))
         });
     }
     x
@@ -416,7 +416,7 @@ pub(in crate::simd) unsafe fn quad_colour(
         let sixteen = splat(H_16);
         let t = Tables::new(tone);
         let colour = |q: [float16x8_t; 3]| -> [float16x8_t; 3] {
-            std::array::from_fn(|k| {
+            core::array::from_fn(|k| {
                 let acc = vfmaq_f16(
                     vfmaq_f16(vfmaq_f16(sixteen, q[0], m[3 * k]), q[1], m[3 * k + 1]),
                     q[2],
@@ -436,7 +436,7 @@ pub(in crate::simd) unsafe fn quad_colour(
                 vld2q_u16(bottom.as_ptr().add(2 * i + 16)),
                 pos,
             ));
-            std::array::from_fn(|k| t.apply(a[k], b[k]))
+            core::array::from_fn(|k| t.apply(a[k], b[k]))
         });
     }
     i

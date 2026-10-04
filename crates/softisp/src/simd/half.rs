@@ -11,6 +11,9 @@
 //! fp16 `1024 + v`), the colour matrix is nine multiply-adds per 8 pixels, and the tone curve
 //! is looked up with `tbl` from the fp16 bits themselves (see [`HalfTone`]).
 
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use super::f16;
 #[cfg(all(feature = "neon", target_arch = "aarch64"))]
 use super::neon;
@@ -28,12 +31,18 @@ pub const FULL: f64 = 4080.0;
 /// fp16 of 4095 / 4080: working values to the 12-bit scale.
 pub const H_TO_12BIT: u16 = 0x3C04;
 
-/// Whether the FP16 leaves run on this CPU.
+/// Whether the FP16 leaves run on this CPU (detected at run time with `std`; without it,
+/// whether the target is compiled with `fp16`).
 #[inline]
 pub fn hardware() -> bool {
-    #[cfg(all(feature = "neon", target_arch = "aarch64"))]
+    #[cfg(all(feature = "std", feature = "neon", target_arch = "aarch64"))]
     {
-        std::arch::is_aarch64_feature_detected!("fp16")
+        core::arch::is_aarch64_feature_detected!("fp16")
+    }
+    // Without std, no run time detection: the target's compile-time features.
+    #[cfg(all(not(feature = "std"), feature = "neon", target_arch = "aarch64"))]
+    {
+        cfg!(target_feature = "fp16")
     }
     #[cfg(not(all(feature = "neon", target_arch = "aarch64")))]
     {
@@ -76,7 +85,7 @@ impl HalfTone {
         let mut slope = [0u8; Self::SEGMENTS];
         let mut next = AT.map(|f| at(0, f));
         for i in 0..Self::SEGMENTS {
-            let ys = std::mem::replace(&mut next, AT.map(|f| at(i + 1, f)));
+            let ys = core::mem::replace(&mut next, AT.map(|f| at(i + 1, f)));
             if ys.windows(2).any(|w| w[1] < w[0]) || next[0] < ys[16] {
                 return None;
             }
@@ -135,9 +144,9 @@ impl ColourCoeffs {
     pub fn new(m: &[[f32; 3]; 3], kind: super::RowKind) -> Self {
         let (x_col, y_col) = if kind.x_is_red { (0, 2) } else { (2, 0) };
         let cols = [1, x_col, y_col];
-        let c = std::array::from_fn(|k| {
-            std::array::from_fn(|j| {
-                std::array::from_fn(|parity| {
+        let c = core::array::from_fn(|k| {
+            core::array::from_fn(|j| {
+                core::array::from_fn(|parity| {
                     let green = (parity == 0) == kind.green_even;
                     let scale = if green {
                         [1.0, 0.5, 0.5][j]
@@ -233,7 +242,7 @@ pub struct LscRow<'a> {
 #[cfg(test)]
 thread_local! {
     /// Tests: run the scalar oracle alone.
-    pub(crate) static SCALAR_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static SCALAR_ONLY: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
 #[inline(always)]
@@ -354,7 +363,7 @@ pub fn colour_row(
         } else {
             [f16::add(hs, vs), cur[x + 1], diag]
         };
-        let rgb = std::array::from_fn(|k| {
+        let rgb = core::array::from_fn(|k| {
             let c = &cc.c[k];
             let acc = f16::fma(
                 f16::fma(f16::fma(H_16, sums[0], c[0][p]), sums[1], c[1][p]),
@@ -419,7 +428,7 @@ pub fn quad_colour_row(
     let pos = quad_positions(pattern);
     for i in done..width {
         let [r, g, b] = quad(top, bottom, i, pos);
-        let rgb = std::array::from_fn(|k| {
+        let rgb = core::array::from_fn(|k| {
             let acc = f16::fma(
                 f16::fma(f16::fma(H_16, r, m[3 * k]), g, m[3 * k + 1]),
                 b,

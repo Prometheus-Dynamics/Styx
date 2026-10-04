@@ -1,5 +1,10 @@
 //! Pipeline parameters: plain data, serde-able, one optional block per stage.
 
+use alloc::vec::Vec;
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use serde::{Deserialize, Serialize};
 
 /// Every stage of the pipeline, in processing order. `None` skips a stage.

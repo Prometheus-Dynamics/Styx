@@ -12,9 +12,9 @@
 //! byte stores: 2x faster on Zen 3.
 
 #[cfg(target_arch = "x86")]
-use std::arch::x86::*;
+use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+use core::arch::x86_64::*;
 
 /// Cascade tables of one 256-entry lookup: `[k]` for `k < 8` the lower half's differences,
 /// `[8 + k]` the upper half's, each 16 bytes repeated for both 128-bit lanes.
@@ -22,9 +22,9 @@ pub(in crate::simd) type Cascade = [[u8; 32]; 16];
 
 /// The cascade tables of `table` (256 entries).
 pub(in crate::simd) fn cascade(table: impl Fn(usize) -> u8) -> Cascade {
-    std::array::from_fn(|t| {
+    core::array::from_fn(|t| {
         let (half, k) = (t / 8, t % 8);
-        std::array::from_fn(|j| {
+        core::array::from_fn(|j| {
             let at = |k: usize| table(128 * half + 16 * k + j % 16);
             if k == 0 { at(0) } else { at(k) ^ at(k - 1) }
         })
@@ -129,7 +129,7 @@ pub(in crate::simd) unsafe fn lut_avx2(
 ) -> usize {
     let n = width / 64 * 64;
     assert!(src.len() >= n && dst.len() >= n);
-    let levels = std::hint::black_box(8usize);
+    let levels = core::hint::black_box(8usize);
     let mut n0 = [0u8; 64];
     let mut n1 = [0u8; 64];
     // SAFETY: loads of 64 samples and stores of 64 bytes at `i` with `i + 64 <= n`.

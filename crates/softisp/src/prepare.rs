@@ -1,5 +1,10 @@
 //! Parameters compiled into the fixed-point tables the row loop uses.
 
+use alloc::{boxed::Box, format, vec, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
+
 use crate::format::{CfaPattern, Channel, RawFormat};
 use crate::params::ToneCurve;
 use crate::params::{Arithmetic, Demosaic, IspParams, LensShading, YuvMatrix};

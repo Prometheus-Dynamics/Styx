@@ -4,9 +4,9 @@
 //! from wrappers that enabled the matching feature.
 
 #[cfg(target_arch = "x86")]
-use std::arch::x86::*;
+use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+use core::arch::x86_64::*;
 
 pub(super) trait Vx: Copy {
     /// Bytes per vector.
