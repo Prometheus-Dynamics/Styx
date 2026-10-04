@@ -43,8 +43,6 @@ pub(super) mod v4l2_backend;
 pub(super) mod virtual_backend;
 
 pub use control_plane::ControlPlane;
-#[cfg(feature = "graph-pipeline")]
-pub(crate) use control_plane::{apply_control_to_plane, read_control_from_plane};
 pub use handle::{CaptureFrameIter, CaptureHandle, WorkerHandle};
 #[cfg(target_os = "linux")]
 pub use import::{CaptureBuffer, CaptureBuffers};

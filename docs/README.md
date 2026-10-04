@@ -19,6 +19,7 @@ This directory holds repository-level documentation for the Styx workspace.
 - [performance.md](performance.md): benchmark surfaces and performance-validation notes
 - [runtime-debugging.md](runtime-debugging.md): runtime tracing, health, queue, and teardown diagnostics
 - [metrics.md](metrics.md): per-camera health and performance metrics (rates, drops by cause, latency, ISP/CPU time, 3A, consumers), Prometheus text and the camera service's metrics request
+- [daedalus.md](daedalus.md): Styx frames in Daedalus graphs: the `daedalus` feature of `styx-core-rs` (frame type, descriptor, metadata adapter, zero-copy payloads) and how to enable it
 - [testing.md](testing.md): default and example-oriented validation surfaces
 - [fuzzing.md](fuzzing.md): the cargo-fuzz targets for every parser of untrusted bytes, how to run and add them
 

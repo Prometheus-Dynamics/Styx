@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::metrics::{GraphTelemetryStats, HealthReport, PipelineMemoryStats};
+use crate::metrics::{HealthReport, PipelineMemoryStats};
 
 mod display;
 mod dmabuf;
@@ -18,7 +18,6 @@ pub struct RuntimeMemoryReport {
     pub kernel_dmabuf: KernelDmabufStats,
     pub styx: Option<PipelineMemoryStats>,
     pub health: Option<HealthReport>,
-    pub graph: Option<GraphTelemetryStats>,
     pub unexplained_pss_bytes: Option<u64>,
     pub warnings: Vec<String>,
 }
@@ -227,21 +226,19 @@ struct MappingAccumulator {
 }
 
 pub fn runtime_memory_report() -> RuntimeMemoryReport {
-    runtime_memory_report_parts(None, None, None)
+    runtime_memory_report_parts(None, None)
 }
 
 pub fn runtime_memory_report_with_styx(
     styx: PipelineMemoryStats,
     health: Option<HealthReport>,
-    graph: Option<GraphTelemetryStats>,
 ) -> RuntimeMemoryReport {
-    runtime_memory_report_parts(Some(styx), health, graph)
+    runtime_memory_report_parts(Some(styx), health)
 }
 
 pub(crate) fn runtime_memory_report_parts(
     styx: Option<PipelineMemoryStats>,
     health: Option<HealthReport>,
-    graph: Option<GraphTelemetryStats>,
 ) -> RuntimeMemoryReport {
     let mut warnings = Vec::new();
     let process = collect_process_memory(&mut warnings);
@@ -250,7 +247,7 @@ pub(crate) fn runtime_memory_report_parts(
     let kernel_dmabuf = collect_kernel_dmabuf_stats();
     let unexplained_pss_bytes = process
         .pss_bytes
-        .map(|pss| pss.saturating_sub(known_memory_bytes(styx.as_ref(), graph.as_ref())));
+        .map(|pss| pss.saturating_sub(known_memory_bytes(styx.as_ref())));
 
     RuntimeMemoryReport {
         process,
@@ -259,16 +256,12 @@ pub(crate) fn runtime_memory_report_parts(
         kernel_dmabuf,
         styx,
         health,
-        graph,
         unexplained_pss_bytes,
         warnings,
     }
 }
 
-fn known_memory_bytes(
-    styx: Option<&PipelineMemoryStats>,
-    graph: Option<&GraphTelemetryStats>,
-) -> u64 {
+fn known_memory_bytes(styx: Option<&PipelineMemoryStats>) -> u64 {
     let mut known = 0u64;
     if let Some(styx) = styx {
         known = known.saturating_add(
@@ -295,11 +288,6 @@ fn known_memory_bytes(
                 known = known.saturating_add(pool.retained_bytes as u64);
             }
         }
-    }
-    if let Some(graph) = graph {
-        known = known.saturating_add(graph.copied_bytes);
-        known = known.saturating_add(graph.transport_bytes);
-        known = known.saturating_add(graph.current_queue_bytes);
     }
     known
 }

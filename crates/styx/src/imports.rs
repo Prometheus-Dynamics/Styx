@@ -84,21 +84,6 @@ pub mod codec {
     pub use styx_core::prelude::{FourCc, FrameLease, MediaFormat, Resolution};
 }
 
-/// Graph pipeline APIs.
-#[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
-pub mod graph {
-    pub use crate::graph::{
-        GraphPolicy, SinkNodeConfig, SinkPolicy, StyxCaptureSourceOptions, StyxCodecNodeDescriptor,
-        StyxCodecNodeOptions, StyxControlEvent, StyxControlResult, StyxMediaPlugin,
-        StyxSinkDescriptor, StyxSourceDescriptor, StyxSourceKind, bounded_blocking,
-        bounded_drop_oldest, latest_only, register_camera_sources_all,
-        register_camera_sources_limit, register_camera_sources_with_policy,
-        register_capture_request_source_with_policy, register_capture_source_node,
-        register_capture_source_node_with_options, register_control_types,
-        register_frame_sink_node, register_framelease_type, register_network_stream_sink_node,
-    };
-}
-
 /// Service event and lifecycle APIs.
 #[cfg(feature = "facade")]
 pub mod service {

@@ -367,7 +367,7 @@ Run examples through the `styx-examples` package with explicit features:
 ```bash
 cargo run -p styx-examples --bin quickstart_capture_virtual
 cargo run -p styx-examples --bin quickstart_runtime_memory_report
-cargo run -p styx-examples --features camera-graph --bin camera_graph_metrics
+cargo run -p styx-examples --features daedalus --bin daedalus_frames
 ```
 
 Canonical examples for the intended facade:
@@ -384,7 +384,7 @@ Specialized examples remain for feature-specific surfaces such as:
 
 - `async_pipeline`
 - `probe_and_select`
-- `graph_fanout`
+- `daedalus_frames` (`--features daedalus`): camera frames through a Daedalus graph
 - `v4l2_hardware_bench`
 - `pipeline_health`
 - `ffmpeg_scale`

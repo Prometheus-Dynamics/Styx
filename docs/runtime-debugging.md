@@ -98,7 +98,7 @@ present.
 
 Use `styx::memory::runtime_memory_report()` for a process-level snapshot, or
 `MediaPipeline::runtime_memory_report()` when a running pipeline should attach Styx capture stats,
-copy counters, residency transitions, and graph telemetry to the process snapshot. The report
+copy counters, and residency transitions to the process snapshot. The report
 combines:
 
 - `/proc/self/smaps_rollup` process RSS, PSS, private, shared, and swap totals.
@@ -154,8 +154,7 @@ Interpret the major fields this way:
 - Shared codec pools report retained bytes, active in-use bytes, free spare bytes, and chunk size.
   Codec-owned CPU pools exposed by the pipeline report retained bytes, active in-use bytes, and
   chunk size when the codec implementation exposes pool stats.
-- Unexplained PSS is a diagnostic delta. It is process PSS minus currently tracked Styx pools and
-  graph copy/transport bytes, so it can include allocator overhead, thread stacks, library pages,
+- Unexplained PSS is a diagnostic delta. It is process PSS minus currently tracked Styx pools, so it can include allocator overhead, thread stacks, library pages,
   libcamera internals, service state, watchers, API clients, and mappings that Styx cannot classify
   as owned.
 - Kernel DMA/CMA memory may not be visible in normal process PSS. If debugfs DMA-BUF telemetry is
@@ -174,7 +173,7 @@ Recent buffer-sizing observations:
   explicit `max_jpeg_bytes` limit applies.
 - Codec-owned lazy CPU pools for FFmpeg/MJPEG/JPEG paths previously retained 1 MiB scratch chunks by
   default. They now start at 64 KiB and grow leases to the actual decoded or encoded payload size.
-- A local `runtime_memory_probe idle` run with `libcamera,graph-pipeline,hooks,codec-ffmpeg`
+- A local `runtime_memory_probe idle` run with `libcamera,hooks,codec-ffmpeg`
   features completed successfully and reported process PSS/RSS plus Styx pool fields. Target-device
   capture numbers should still be collected with the same probe modes used for release validation.
 

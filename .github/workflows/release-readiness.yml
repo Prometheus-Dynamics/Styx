@@ -54,7 +54,7 @@ jobs:
 
       - name: Check selected release feature groups
         run: |
-          cargo check -p styx --features async,netcam,file-backend,graph-pipeline,codec-ffmpeg,v4l2,libcamera
+          cargo check -p styx --features async,netcam,file-backend,codec-ffmpeg,v4l2,libcamera
 
   semver:
     name: Public API compatibility

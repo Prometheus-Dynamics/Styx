@@ -79,7 +79,7 @@ Useful example entry points:
 - `cargo run -p styx-examples --no-default-features --features file-backend --bin reliable_recording -- /tmp/styx-recordings 30`
 - `cargo run -p styx-examples --no-default-features --bin latest_frame_fanout`
 - `cargo run -p styx-examples --no-default-features --features async --bin async_pipeline`
-- `cargo run -p styx-examples --no-default-features --features "v4l2 graph-pipeline" --bin v4l2_hardware_bench`
+- `cargo run -p styx-examples --no-default-features --features v4l2 --bin v4l2_hardware_bench`
 - `cargo run -p styx-examples --no-default-features --features "netcam preview-window" --bin netcam_capture -- http://cam/mjpeg`
 - `cargo run -p styx-examples --no-default-features --features "file-backend preview-window" --bin file_replay -- frame1.png frame2.png`
 - `cargo run -p styx-examples --no-default-features --features "libcamera codec-ffmpeg preview-window" --bin libcamera_ffmpeg_preview --release`
@@ -139,7 +139,8 @@ blocking task/thread, then use async receive/control APIs for coordination.
 - `netcam`: Reqwest-backed network camera capture; combine with `async` for async workers.
 - `netcam-video`: FFmpeg-backed fallback for container/video netcam streams.
 - `file-backend`, `file-backend-video`: disk-backed replay sources; video replay enables FFmpeg.
-- `graph-pipeline`: Daedalus-backed graph execution, edge policies, and graph telemetry.
+- `daedalus`: Styx frames in Daedalus graphs (`styx::core::daedalus`, owned by `styx-core-rs`):
+  the frame type and descriptor, a metadata adapter and zero-copy payloads ([docs/daedalus.md](docs/daedalus.md)).
 - `simulation-bevy`: Bevy-backed synthetic scene capture and the heaviest optional feature group.
 - `schema`, `serde`: API schema and serialization support.
 - `metrics-serde`, `metrics-http`: serde for metrics snapshots (also with `serde`,

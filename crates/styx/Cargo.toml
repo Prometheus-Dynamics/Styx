@@ -27,7 +27,6 @@ styx-pipeline = { workspace = true, optional = true, features = ["device"] }
 styx-pisp = { workspace = true, optional = true, features = ["device"] }
 styx-softisp = { workspace = true, optional = true }
 styx-dng = { workspace = true, optional = true }
-daedalus = { workspace = true, optional = true }
 smallvec = { workspace = true, optional = true }
 styx-kernel = { workspace = true, optional = true }
 thiserror = { workspace = true, features = ["std"], optional = true }
@@ -86,6 +85,8 @@ frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde", "met
 metrics-serde = ["facade", "dep:serde", "dep:serde_json"]
 # `styx::metrics::serve_http`: a tiny HTTP endpoint serving the metrics as Prometheus text.
 metrics-http = ["facade"]
+# Styx frames in Daedalus graphs: `styx::core::daedalus` (owned by styx-core-rs; docs/daedalus.md).
+daedalus = ["styx-core/daedalus"]
 facade = [
     "dep:libc",
     "dep:parking_lot",
@@ -95,8 +96,6 @@ facade = [
     "dep:thiserror",
     "dep:tracing",
 ]
-daedalus-plugin = ["facade", "dep:daedalus", "daedalus/engine", "daedalus/plugins"]
-graph-pipeline = ["daedalus-plugin"]
 hooks = ["facade"]
 image = ["facade", "dep:image", "styx-codec/dynamic-image"]
 libcamera = ["facade", "styx-libcamera", "dep:libcamera", "raw-decoders"]

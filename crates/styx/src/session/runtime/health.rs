@@ -26,23 +26,7 @@ impl MediaPipeline {
             .iter()
             .map(|stats| stats.current_bytes)
             .sum();
-        #[cfg(feature = "graph-pipeline")]
-        let graph = self.graph_telemetry_stats();
-        #[cfg(not(feature = "graph-pipeline"))]
-        let graph: Option<crate::metrics::GraphTelemetryStats> = None;
-        let mut drop_reasons = capture.drop_reasons.clone();
-        if let Some(graph) = &graph {
-            crate::metrics::push_drop_reason(
-                &mut drop_reasons,
-                crate::metrics::FrameDropReason::GraphDrop,
-                graph.drops,
-            );
-            crate::metrics::push_drop_reason(
-                &mut drop_reasons,
-                crate::metrics::FrameDropReason::GraphLatestReplacement,
-                graph.latest_replacements,
-            );
-        }
+        let drop_reasons = capture.drop_reasons.clone();
         let drop_count = crate::metrics::total_frame_drops(&drop_reasons);
         let report = crate::metrics::HealthReport {
             output_fps: end_to_end.fps.or(capture.output_fps),
@@ -69,13 +53,12 @@ impl MediaPipeline {
             sink_p50_ms: sink.p50_millis,
             sink_p95_ms: sink.p95_millis,
             copy_count: copies.copies,
-            bytes_moved: copies.bytes_moved + graph.as_ref().map(|g| g.copied_bytes).unwrap_or(0),
+            bytes_moved: copies.bytes_moved,
             external_inflight_buffers,
             external_inflight_bytes,
             recent_residency_transitions: residency.transitions,
             recent_stage_errors: stage_errors,
             drop_reasons,
-            graph,
             capture_shutdown: capture.capture_shutdown,
             capture_retries: capture.capture_retries,
         };

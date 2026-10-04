@@ -78,7 +78,10 @@ styx-pipeline = { path = "crates/pipeline", version = "2.0.0" }
 styx-uvc = { path = "crates/uvc", version = "2.0.0" }
 styx-dng = { path = "crates/dng", version = "2.0.0" }
 styx-tune = { path = "crates/tune", version = "2.0.0" }
-daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "main", version = "2.0.0", default-features = false }
+# Daedalus (graph runtime): the local checkout next to this one while the stack is stitched
+# together (apps build against local checkouts; versioned releases come later). Used only by
+# `styx-core-rs`'s optional `daedalus` feature.
+daedalus = { package = "daedalus-rs", path = "../Daedalus/crates/daedalus", default-features = false }
 crossbeam-queue = "0.3.12"
 smallvec = "1.15.1"
 # thiserror and serde without default features so the no_std crates can use them (crates that

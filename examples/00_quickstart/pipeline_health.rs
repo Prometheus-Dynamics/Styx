@@ -34,16 +34,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if Instant::now() >= next_report {
             let report = pipeline.health_report();
             let last_transition = report.recent_residency_transitions.last().copied();
-            let graph_copied_bytes = report
-                .graph
-                .as_ref()
-                .map(|graph| graph.copied_bytes)
-                .unwrap_or(0);
-            let graph_pressure = report
-                .graph
-                .as_ref()
-                .map(|graph| graph.pressure_events)
-                .unwrap_or(0);
             if let Some(error) = report.recent_stage_errors.last() {
                 eprintln!("last_pipeline_error={error}");
             }
@@ -51,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("last_stage_error={error}");
             }
             println!(
-                "fps={:.1?} queue={}/{} drops={} drop_reasons={:?} backpressure={} copies={} bytes_moved={} graph_copied_bytes={} graph_pressure={} p50={:.2?}ms source_p50={:.2?}ms inflight={} buffers last_transition={:?}",
+                "fps={:.1?} queue={}/{} drops={} drop_reasons={:?} backpressure={} copies={} bytes_moved={} p50={:.2?}ms source_p50={:.2?}ms inflight={} buffers last_transition={:?}",
                 report.output_fps,
                 report.capture_queue_depth,
                 report.capture_queue_capacity,
@@ -60,8 +50,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 report.capture_backpressure_count,
                 report.copy_count,
                 report.bytes_moved,
-                graph_copied_bytes,
-                graph_pressure,
                 report.latency_p50_ms,
                 report.source_latency_p50_ms,
                 report.external_inflight_buffers,

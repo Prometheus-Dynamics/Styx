@@ -150,7 +150,6 @@ pub struct HealthReport {
     pub recent_residency_transitions: Vec<styx_core::buffer::ResidencyTransition>,
     pub recent_stage_errors: Vec<PipelineStageError>,
     pub drop_reasons: Vec<FrameDropStats>,
-    pub graph: Option<GraphTelemetryStats>,
     pub capture_shutdown: CaptureShutdownStats,
     pub capture_retries: CaptureRetryStats,
 }
@@ -202,8 +201,6 @@ pub enum FrameDropReason {
     CaptureQueueSendTimeout,
     /// Queued frames replaced by newer ones (`QueueOverflow::DropOldest`).
     CaptureQueueEviction,
-    GraphDrop,
-    GraphLatestReplacement,
     /// Frames missing from the backend's sequence numbers: lost by the sensor, driver or ISP
     /// before Styx received them (libcamera and V4L2).
     SensorSequenceGap,
@@ -227,34 +224,6 @@ pub(crate) fn push_drop_reason(
 
 pub(crate) fn total_frame_drops(reasons: &[FrameDropStats]) -> u64 {
     reasons.iter().map(|stats| stats.count).sum()
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GraphTelemetryStats {
-    pub nodes_executed: u64,
-    pub graph_duration_ns: u64,
-    pub unattributed_runtime_duration_ns: u64,
-    pub node_total_duration_ns: u64,
-    pub node_handler_duration_ns: u64,
-    pub node_cpu_duration_ns: u64,
-    pub edge_wait_duration_ns: u64,
-    pub edge_transport_apply_duration_ns: u64,
-    pub edge_adapter_duration_ns: u64,
-    pub copied_bytes: u64,
-    pub transport_bytes: u64,
-    pub transport_count: u64,
-    pub payload_clones: u64,
-    pub unique_handoffs: u64,
-    pub shared_handoffs: u64,
-    pub pressure_events: u64,
-    pub backpressure_events: u64,
-    pub current_queue_bytes: u64,
-    pub peak_queue_bytes: u64,
-    pub bounded_queue_capacity: u64,
-    pub drops: u64,
-    pub latest_replacements: u64,
-    pub adapter_count: u64,
-    pub adapter_errors: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -754,11 +723,11 @@ mod tests {
                 count: 2,
             },
             FrameDropStats {
-                reason: FrameDropReason::GraphDrop,
+                reason: FrameDropReason::CaptureQueueEviction,
                 count: 3,
             },
             FrameDropStats {
-                reason: FrameDropReason::GraphLatestReplacement,
+                reason: FrameDropReason::SensorSequenceGap,
                 count: 5,
             },
         ];

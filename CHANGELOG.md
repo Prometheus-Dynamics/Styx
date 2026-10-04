@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added the `daedalus` feature to `styx-core-rs` (and `styx`, passed through): Styx frames in
+  Daedalus graphs from one place, `styx_core::daedalus`. It provides the `styx:framelease` type
+  key and `FrameLease` type, `FrameDescriptor` (format, size, planes, timestamp, residency, CPU
+  access, companions), a `MetadataOnly` frame-to-descriptor adapter, an inspection serializer,
+  all registered by `StyxFramesPlugin`, and zero-copy `frame_payload` with residency mapping.
+  See `docs/daedalus.md` and the `daedalus_frames` example.
 - Added `CpuAccess` (`None`, `Uncached`, `Cached`), `ExternalBacking::cpu_access` and
   `FrameLease::cpu_access`: whether the CPU can read a frame's planes and how fast, apart from
   its residency. Native ISP and sensor buffers, libcamera buffers, IPC frames (as the sender
@@ -288,6 +294,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - libcamera frame timestamps are now the sensor's start-of-exposure time (`SensorTimestamp`)
   instead of the buffer completion time, matching V4L2 (8.2 ms vs 0.05 ms old on arrival on a
   CM5). Pyramid companions share it.
+
+### Removed
+
+- Removed `styx::graph` and the `daedalus-plugin` / `graph-pipeline` features (the graph-backed
+  `MediaPipeline` runtime, Styx's own Daedalus nodes, `PipelineExecutionMode::Graph`, the
+  `graph_*` builder options, `submit_control_event`, `graph_telemetry*`, `StyxServiceEvent::Control`,
+  `GraphTelemetryStats`, `HealthReport::graph`, `RuntimeMemoryReport::graph`, and the graph drop
+  reasons; `runtime_memory_report_with_styx` drops its graph argument), and the `graph_fanout` and
+  `camera_graph_metrics` examples. Styx has one Daedalus path, the `daedalus` feature: build the
+  graph with Daedalus and feed it frames.
 
 ### Fixed
 

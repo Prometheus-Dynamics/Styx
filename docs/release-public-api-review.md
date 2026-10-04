@@ -25,7 +25,7 @@ Validated release-sensitive surfaces with:
 
 - `cargo check -p styx --no-default-features`
 - `cargo check -p styx --no-default-features --features async`
-- `cargo check -p styx --no-default-features --features graph-pipeline`
+- `cargo check -p styx --no-default-features --features daedalus`
 - `cargo check -p styx-examples --no-default-features --features 'async,file-backend,netcam'`
 
 Current release conclusion: public exports are grouped by task for narrower imports, the broad prelude remains stable for existing users, and the reviewed feature combinations compile.

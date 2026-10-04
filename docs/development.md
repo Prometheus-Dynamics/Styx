@@ -90,8 +90,6 @@ Public selector/ID policy for this release:
 - Backend selection uses `BackendKind`.
 - Runtime codec selection uses `CodecSelector`; codec implementation keys use `CodecImplementationId`.
 - Service sink categories use `SinkKind`.
-- Graph node IDs remain strings at Styx API boundaries because Daedalus owns `NodeHandle`/`NodeId`
-  semantics; keep string usage there localized to graph registration/descriptors.
 
 ## Logging Policy
 
@@ -122,7 +120,7 @@ cargo tree -d -p styx --all-features
 
 Accepted dependency risks for the current release surface:
 
-- `daedalus` is pinned to revision `ae98541285caeb48da7ff2fa3c101d5daf15e482`; prefer a crates.io release or tag when one is available.
+- `daedalus` (only for `styx-core-rs/daedalus`) is the local checkout at `../Daedalus` while the stack is stitched together; every workspace build needs it. Move to a git revision or a release before publishing ([daedalus.md](daedalus.md)).
 - Duplicate `bindgen` versions come from `libcamera-sys` and `ffmpeg-sys-next`; this is transitive backend/tooling churn rather than direct workspace drift.
 - Duplicate `thiserror`, `rustix`, `nix`, and `toml_edit` versions are currently pulled by optional backend, preview, graph, and build-time dependency trees. Keep them visible in release notes unless upstream dependency upgrades collapse them.
 - Heavy dependencies remain feature-scoped: Bevy under `simulation-bevy`, FFmpeg under FFmpeg codec/video features, Minifb under `preview-window`, and Reqwest under netcam/async paths.

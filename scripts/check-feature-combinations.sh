@@ -19,7 +19,7 @@ declare -a checks=(
     "codec-ffmpeg::cargo check -p styx --no-default-features --features codec-ffmpeg"
     "codec-mozjpeg::cargo check -p styx --no-default-features --features codec-mozjpeg"
     "codec-turbojpeg::cargo check -p styx --no-default-features --features codec-turbojpeg"
-    "graph-pipeline::cargo check -p styx --no-default-features --features graph-pipeline"
+    "daedalus::cargo check -p styx --no-default-features --features daedalus"
     "netcam-video::cargo check -p styx --no-default-features --features netcam,netcam-video"
     "file-backend-video::cargo check -p styx --no-default-features --features file-backend,file-backend-video"
     "simulation-bevy::cargo check -p styx --no-default-features --features simulation-bevy"
@@ -27,7 +27,7 @@ declare -a checks=(
     "async-netcam-file::cargo check -p styx --no-default-features --features async,netcam,file-backend"
     "serde::cargo check -p styx --no-default-features --features serde"
     "schema::cargo check -p styx --no-default-features --features schema"
-    "release-linux-media::cargo check -p styx --no-default-features --features async,netcam,file-backend,codec-jpeg-decoder,raw-decoders,graph-pipeline,v4l2,libcamera"
+    "release-linux-media::cargo check -p styx --no-default-features --features async,netcam,file-backend,codec-jpeg-decoder,raw-decoders,v4l2,libcamera"
     "all-features::cargo check -p styx --all-features"
 )
 

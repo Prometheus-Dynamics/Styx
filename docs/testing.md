@@ -20,7 +20,7 @@ The public examples under `examples/` are the main end-to-end validation surface
 - `cargo run -p styx-examples --no-default-features --bin latest_frame_fanout`
 - `cargo run -p styx-examples --no-default-features --features file-backend --bin reliable_recording -- /tmp/styx-recordings 12`
 - `cargo run -p styx-examples --no-default-features --features async --bin async_pipeline`
-- `cargo run -p styx-examples --no-default-features --features "v4l2 graph-pipeline" --bin v4l2_hardware_bench`
+- `cargo run -p styx-examples --no-default-features --features v4l2 --bin v4l2_hardware_bench`
 - `cargo run -p styx-examples --no-default-features --features "netcam codec-jpeg-decoder preview-window" --bin netcam_capture`
 - `cargo run -p styx-examples --no-default-features --features "file-backend preview-window" --bin file_replay`
 

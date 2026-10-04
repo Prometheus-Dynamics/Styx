@@ -20,9 +20,6 @@ pub enum StyxServiceEvent {
     Sink(SinkLifecycleEvent),
     /// Recording lifecycle change.
     Recording(RecordingLifecycleEvent),
-    /// Graph control response routed through the service event stream.
-    #[cfg(feature = "daedalus-plugin")]
-    Control(crate::graph::StyxControlResult),
 }
 
 impl StyxServiceEvent {
@@ -34,8 +31,6 @@ impl StyxServiceEvent {
             Self::Pipeline(_) => StyxServiceEventKind::Pipeline,
             Self::Sink(_) => StyxServiceEventKind::Sink,
             Self::Recording(_) => StyxServiceEventKind::Recording,
-            #[cfg(feature = "daedalus-plugin")]
-            Self::Control(_) => StyxServiceEventKind::Control,
         }
     }
 }
@@ -48,8 +43,6 @@ pub enum StyxServiceEventKind {
     Pipeline,
     Sink,
     Recording,
-    #[cfg(feature = "daedalus-plugin")]
-    Control,
 }
 
 impl StyxServiceEventKind {
@@ -60,8 +53,6 @@ impl StyxServiceEventKind {
             Self::Pipeline => "pipeline",
             Self::Sink => "sink",
             Self::Recording => "recording",
-            #[cfg(feature = "daedalus-plugin")]
-            Self::Control => "control",
         }
     }
 }
@@ -462,12 +453,6 @@ impl StyxServiceRuntime {
     /// Record a recording lifecycle event.
     pub fn record_recording_event(&mut self, event: RecordingLifecycleEvent) {
         self.push_event(StyxServiceEvent::Recording(event));
-    }
-
-    /// Record a graph control result.
-    #[cfg(feature = "daedalus-plugin")]
-    pub fn record_control_result(&mut self, result: crate::graph::StyxControlResult) {
-        self.push_event(StyxServiceEvent::Control(result));
     }
 
     fn record_inventory_events(&mut self, events: &[InventoryEvent]) {

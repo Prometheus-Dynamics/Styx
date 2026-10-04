@@ -37,8 +37,6 @@ pub use backend_kind::BackendKindParseError;
 mod frame_sizing;
 #[cfg(feature = "gpu-isp")]
 mod gpu_isp;
-#[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
-pub mod graph;
 #[cfg(all(feature = "facade", target_os = "linux"))]
 pub mod ipc;
 #[cfg(feature = "facade")]
@@ -622,22 +620,6 @@ pub mod prelude {
         PendingStill, StillCapture, StillExposure, StillFormat, StillImage, StillMeta,
         StillRequest, StillShot,
     };
-    #[cfg(all(feature = "facade", feature = "daedalus-plugin", feature = "hooks"))]
-    pub use crate::graph::register_file_sequence_sink_node;
-    #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
-    pub use crate::graph::{
-        CONTROL_EVENT_TYPE_KEY, CONTROL_RESULT_TYPE_KEY, FRAMELEASE_TYPE_KEY, GraphPolicy,
-        SinkNodeConfig, SinkPolicy, StyxCaptureSourceOptions, StyxCodecNodeDescriptor,
-        StyxCodecNodeOptions, StyxControlEvent, StyxControlResult, StyxMediaPlugin,
-        StyxSinkDescriptor, StyxSourceDescriptor, StyxSourceKind, bounded_blocking,
-        bounded_drop_oldest, concrete_codec_node_id, control_event_payload, control_event_type_key,
-        control_result_type_key, framelease_daedalus_residency, framelease_payload,
-        framelease_type_key, latest_only, register_camera_sources_all,
-        register_camera_sources_limit, register_camera_sources_with_policy,
-        register_capture_request_source_with_policy, register_capture_source_node,
-        register_capture_source_node_with_options, register_control_types,
-        register_frame_sink_node, register_framelease_type, register_network_stream_sink_node,
-    };
     pub use crate::imports::framelease::*;
     #[cfg(feature = "facade")]
     pub use crate::memory::{
@@ -648,10 +630,10 @@ pub mod prelude {
     };
     #[cfg(feature = "facade")]
     pub use crate::metrics::{
-        CopyMetrics, CopyStats, FrameDropReason, FrameDropStats, GraphTelemetryStats, HealthReport,
-        MetricKind, MetricSample, PipelineMemoryStats, PipelineMetrics, PipelineStage,
-        PipelineStageError, QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot,
-        StageErrorMetrics, StageMetrics, StageSnapshot, render_prometheus,
+        CopyMetrics, CopyStats, FrameDropReason, FrameDropStats, HealthReport, MetricKind,
+        MetricSample, PipelineMemoryStats, PipelineMetrics, PipelineStage, PipelineStageError,
+        QueueTelemetryStats, ResidencyMetrics, ResidencySnapshot, StageErrorMetrics, StageMetrics,
+        StageSnapshot, render_prometheus,
     };
     #[cfg(feature = "facade")]
     pub use crate::planner::{Delivery, FrameRate, FrameRequest, Frames, Hardware, OpenError};
@@ -705,8 +687,6 @@ pub mod prelude {
     pub use crate::{BackendKindParseError, BackendProbeError};
     #[cfg(feature = "facade")]
     pub use crate::{probe_all, probe_all_with_config, probe_all_with_errors_with_config};
-    #[cfg(all(feature = "facade", feature = "daedalus-plugin"))]
-    pub use daedalus::engine::MetricsLevel as GraphMetricsLevel;
     #[cfg(feature = "facade")]
     pub use styx_capture::prelude::*;
     #[cfg(feature = "facade")]

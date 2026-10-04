@@ -16,5 +16,5 @@ Goal: remove arbitrary buffer sizes where Styx can derive a safer value from the
 - [x] Review fixed shared pool retain counts such as min `2` and spare `4` and decide whether they should remain defaults or become runtime policy.
 - [x] Add memory-report fields or debug output needed to distinguish shared pool capacity, active leases, retained spares, and codec-owned scratch buffers.
 - [x] Run targeted unit tests for frame sizing, runtime memory reports, codec pool sizing, and MJPEG netcam sizing.
-- [x] Run the runtime memory probe with libcamera, graph-pipeline, hooks, and codec-ffmpeg features enabled.
+- [x] Run the runtime memory probe with libcamera, hooks, and codec-ffmpeg features enabled.
 - [x] Record before/after memory observations in the runtime debugging docs.

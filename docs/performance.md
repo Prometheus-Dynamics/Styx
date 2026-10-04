@@ -79,11 +79,10 @@ Before tagging a release, run the representative benchmark surface that matches 
 | Pipeline under backpressure | `cargo bench -p styx --bench pipeline_worker_perf` | Covers bounded queue send timeout behavior when a capture queue is full. |
 | Async queue receive | `cargo bench -p styx --features async --bench pipeline_worker_perf` | Covers async receive overhead and wake/wait accounting. |
 | V4L2 mmap frame construction | `cargo bench -p styx --bench v4l2_capture_paths` | Synthetic zero-copy construction benchmark; pair with hardware validation for driver latency. |
-| V4L2 hardware capture | `cargo run --release -p styx-examples --no-default-features --features "v4l2 graph-pipeline" --bin v4l2_hardware_bench` | Requires a real camera; record advertised mode, CPU, copy count, bytes moved, p50, and p95. |
+| V4L2 hardware capture | `cargo run --release -p styx-examples --no-default-features --features v4l2 --bin v4l2_hardware_bench` | Requires a real camera; record advertised mode, CPU, copy count, bytes moved, p50, and p95. |
 | MJPEG decode | `cargo bench -p styx --bench pipeline_stage_perf` | Covers MJPEG decode into `RG24`. |
 | Raw decoder transforms | `cargo bench -p styx --bench pipeline_stage_perf` | Covers packed `RG24` rotate and mirror transforms. |
 | Netcam MJPEG path | `cargo run -p styx-examples --no-default-features --features "netcam codec-jpeg-decoder" --bin netcam_capture -- <url>` | Requires an MJPEG endpoint; use health reports and logs for queue pressure, reconnects, and decode timing. |
-| Libcamera capture | `cargo run -p styx-examples --no-default-features --features "libcamera graph-pipeline" --bin camera_graph_metrics` | Requires libcamera hardware; record mode, CPU, drop reasons, copied bytes, p50, and p95. |
 
 The hardware rows are not expected to pass in generic CI. Keep them in release notes as manual validation evidence for the supported camera/backend set.
 
@@ -192,10 +191,11 @@ Observed release timings:
 | 1080p YUYV | 116.88 us | 25.76 ns |
 | 4K YUYV | 1.27 ms | 26.44 ns |
 
-Hardware graph-backed V4L2 run on the plugged-in `046d:0825` camera:
+Hardware V4L2 run on the plugged-in `046d:0825` camera (recorded when the bench ran through the
+now-removed `graph-pipeline` runtime; the bench now runs the media pipeline and reports `zero_copy`):
 
 ```sh
-cargo run --release -p styx-examples --features "v4l2 graph-pipeline" --bin v4l2_hardware_bench
+cargo run --release -p styx-examples --features v4l2 --bin v4l2_hardware_bench
 ```
 
 Representative result:
@@ -210,9 +210,9 @@ this table intentionally covers only modes the camera advertised.
 
 ## Hardware Coverage
 
-- Run the in-repo graph-backed hardware example on real webcams:
-  `cargo run -p styx-examples --no-default-features --features "v4l2 graph-pipeline" --bin v4l2_hardware_bench`
-- Record CPU, copy count, bytes moved, Daedalus copied bytes, median latency,
+- Run the in-repo hardware example on real webcams:
+  `cargo run -p styx-examples --no-default-features --features v4l2 --bin v4l2_hardware_bench`
+- Record CPU, copy count, bytes moved, median latency,
   and p95 latency at 720p, 1080p, and 4K when the camera advertises those modes
 - Keep the stable perf smoke baseline aligned with supported non-hardware
   representatives.
@@ -253,7 +253,7 @@ Health-report usage:
 ```rust,no_run
 let report = pipeline.health_report();
 println!(
-    "fps={:.1?} queue={}/{} backpressure={} drops={} drop_reasons={:?} async_waits={}/{} copies={} bytes_moved={} graph_copied_bytes={} p50={:.2?}ms last_transition={:?}",
+    "fps={:.1?} queue={}/{} backpressure={} drops={} drop_reasons={:?} async_waits={}/{} copies={} bytes_moved={} p50={:.2?}ms last_transition={:?}",
     report.output_fps,
     report.capture_queue_depth,
     report.capture_queue_capacity,
@@ -264,7 +264,6 @@ println!(
     report.capture_async_recv_waits,
     report.copy_count,
     report.bytes_moved,
-    report.graph.as_ref().map(|g| g.copied_bytes).unwrap_or(0),
     report.latency_p50_ms,
     report.recent_residency_transitions.last(),
 );
@@ -309,8 +308,7 @@ CI uses the aggregate baseline checker:
 That script runs the decode/transform smoke path, the C270 luma decode, shared captures and the
 frame server (`shared_perf`: three consumers sharing one decode, and a publish-and-receive
 round trip), file replay, and mozjpeg encode, then compares p95 timings against
-`testing/perf/baseline.txt`. These checks deliberately avoid the graph feature
-so Daedalus runtime work cannot block the non-graph media performance surface.
+`testing/perf/baseline.txt`.
 
 ## SIMD Kernels
 

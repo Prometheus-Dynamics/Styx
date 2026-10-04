@@ -35,7 +35,7 @@ fn quickstart_pipeline_health_reports_metrics() {
 
     assert!(stdout.contains("processed_frames="));
     assert!(stdout.contains("copies="));
-    assert!(stdout.contains("graph_copied_bytes="));
+    assert!(stdout.contains("bytes_moved="));
 }
 
 #[test]
@@ -66,4 +66,21 @@ fn latest_frame_fanout_reports_branch_counts() {
     assert!(stdout.contains("fanout pushed="));
     assert!(stdout.contains("preview_seen="));
     assert!(stdout.contains("analysis_seen="));
+}
+
+#[cfg(feature = "daedalus")]
+#[test]
+fn daedalus_frames_runs_camera_frames_through_a_graph() {
+    let stdout = assert_success(
+        Command::new(env!("CARGO_BIN_EXE_daedalus_frames"))
+            .output()
+            .expect("daedalus_frames should run"),
+        "daedalus_frames",
+    );
+
+    // The planner put the metadata adapter on the frame -> descriptor edge.
+    assert!(stdout.contains("styx.frame_descriptor"), "{stdout}");
+    // Inspection shows frames as their descriptor, not an opaque summary.
+    assert!(stdout.contains("\"residency\""), "{stdout}");
+    assert!(stdout.contains("frames=8"), "{stdout}");
 }

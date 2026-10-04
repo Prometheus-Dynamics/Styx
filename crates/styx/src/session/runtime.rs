@@ -14,8 +14,6 @@ use crate::service::{PipelineWorkerEvent, PipelineWorkerStopReason, SharedStyxSe
 
 mod codec_lookup;
 mod companions;
-#[cfg(feature = "graph-pipeline")]
-mod graph;
 mod health;
 mod iter;
 mod residency;
@@ -27,10 +25,6 @@ mod worker;
 use crate::frame_sizing::{SHARED_CODEC_POOL_MIN, SHARED_CODEC_POOL_SPARE};
 pub(super) use codec_lookup::lookup_codec;
 use companions::carry_companions;
-#[cfg(feature = "graph-pipeline")]
-pub(super) use graph::GraphMediaRuntime;
-#[cfg(feature = "graph-pipeline")]
-use graph::summarize_graph_telemetry;
 pub use iter::MediaPipelineFrameIter;
 use residency::*;
 use stage_timing::{TimedStage, stamp_stage};
@@ -40,8 +34,6 @@ use stage_timing::{TimedStage, stamp_stage};
 /// Use `try_next` or `next_blocking` to pull frames through the pipeline.
 pub struct MediaPipeline {
     pub(super) capture: CaptureHandle,
-    #[cfg(feature = "graph-pipeline")]
-    pub(super) graph_runtime: Option<GraphMediaRuntime>,
     pub(super) decoder: Option<Arc<dyn Codec>>,
     pub(super) encoder: Option<Arc<dyn Codec>>,
     #[cfg(feature = "hooks")]
@@ -94,12 +86,10 @@ impl MediaPipeline {
         self.output_recorder.take()
     }
 
-    #[cfg(not(feature = "graph-pipeline"))]
     pub fn set_decoder(&mut self, decoder: Option<Arc<dyn Codec>>) {
         self.decoder = decoder;
     }
 
-    #[cfg(not(feature = "graph-pipeline"))]
     pub fn set_decoder_from_registry(
         &mut self,
         registry: &CodecRegistryHandle,
@@ -117,12 +107,10 @@ impl MediaPipeline {
         Ok(())
     }
 
-    #[cfg(not(feature = "graph-pipeline"))]
     pub fn set_encoder(&mut self, encoder: Option<Arc<dyn Codec>>) {
         self.encoder = encoder;
     }
 
-    #[cfg(not(feature = "graph-pipeline"))]
     pub fn set_encoder_from_registry(
         &mut self,
         registry: &CodecRegistryHandle,
@@ -140,7 +128,7 @@ impl MediaPipeline {
         Ok(())
     }
 
-    #[cfg(all(feature = "hooks", not(feature = "graph-pipeline")))]
+    #[cfg(feature = "hooks")]
     pub fn set_hook<F>(&mut self, hook: Option<F>)
     where
         F: FnMut(FrameLease) -> FrameLease + Send + 'static,
@@ -148,7 +136,7 @@ impl MediaPipeline {
         self.hook = hook.map(|h| HookStore::Local(Some(Box::new(h) as HookFn)));
     }
 
-    #[cfg(all(feature = "hooks", not(feature = "graph-pipeline")))]
+    #[cfg(feature = "hooks")]
     pub fn set_frame_hook<F>(&mut self, hook: Option<F>)
     where
         F: FnMut(FrameLease) -> FrameLease + Send + 'static,
@@ -161,22 +149,6 @@ impl MediaPipeline {
         request: crate::capture_api::CaptureRequest<'_>,
     ) -> Result<(), crate::capture_api::CaptureError> {
         self.capture.reconfigure_in_place(request)
-    }
-
-    /// Submit a capture control event through the graph-backed control stream.
-    #[cfg(feature = "graph-pipeline")]
-    pub fn submit_control_event(
-        &mut self,
-        event: crate::graph::StyxControlEvent,
-    ) -> Result<crate::graph::StyxControlResult, crate::capture_api::CaptureError> {
-        if let Some(graph) = &mut self.graph_runtime {
-            return graph
-                .submit_control_event(event)
-                .map_err(crate::capture_api::CaptureError::Backend);
-        }
-        Err(crate::capture_api::CaptureError::Backend(
-            "graph control stream is not available".into(),
-        ))
     }
 
     pub fn stop(mut self) {
@@ -199,37 +171,35 @@ impl MediaPipeline {
         old.stop();
     }
 
-    #[cfg(not(feature = "graph-pipeline"))]
     pub fn enable_decode(&mut self, enabled: bool) {
         self.decode_enabled = enabled;
     }
 
-    #[cfg(not(feature = "graph-pipeline"))]
     pub fn enable_encode(&mut self, enabled: bool) {
         self.encode_enabled = enabled;
     }
 
-    #[cfg(all(target_os = "linux", not(feature = "graph-pipeline")))]
+    #[cfg(target_os = "linux")]
     pub fn enable_shared_decode_output(&mut self, enabled: bool) {
         self.shared_decode_enabled = enabled;
     }
 
-    #[cfg(all(target_os = "linux", not(feature = "graph-pipeline")))]
+    #[cfg(target_os = "linux")]
     pub fn enable_owned_decode_fallback(&mut self, enabled: bool) {
         self.owned_decode_fallback_enabled = enabled;
     }
 
-    #[cfg(all(target_os = "linux", not(feature = "graph-pipeline")))]
+    #[cfg(target_os = "linux")]
     pub fn enable_shared_encode_output(&mut self, enabled: bool) {
         self.shared_encode_enabled = enabled;
     }
 
-    #[cfg(all(target_os = "linux", not(feature = "graph-pipeline")))]
+    #[cfg(target_os = "linux")]
     pub fn enable_owned_encode_fallback(&mut self, enabled: bool) {
         self.owned_encode_fallback_enabled = enabled;
     }
 
-    #[cfg(all(feature = "hooks", not(feature = "graph-pipeline")))]
+    #[cfg(feature = "hooks")]
     pub fn set_frame_transform(&mut self, transform: FrameTransform) {
         self.frame_transform = transform;
     }
@@ -238,23 +208,7 @@ impl MediaPipeline {
         self.metrics.clone()
     }
 
-    #[cfg(feature = "graph-pipeline")]
-    pub fn graph_telemetry(&self) -> Option<daedalus::runtime::ExecutionTelemetry> {
-        self.graph_runtime
-            .as_ref()
-            .and_then(GraphMediaRuntime::last_telemetry)
-            .cloned()
-    }
-
-    #[cfg(feature = "graph-pipeline")]
-    pub fn graph_telemetry_stats(&self) -> Option<crate::metrics::GraphTelemetryStats> {
-        self.graph_runtime
-            .as_ref()
-            .and_then(GraphMediaRuntime::last_telemetry)
-            .map(summarize_graph_telemetry)
-    }
-
-    /// Most recent decode, encode, graph, transform, or sink failure recorded by the pipeline.
+    /// Most recent decode, encode, transform, or sink failure recorded by the pipeline.
     ///
     /// This is useful for callers using the infallible `try_next`, `next_blocking`,
     /// `next_forever`, or `next_async_receive` convenience methods, which map stage failures
@@ -288,10 +242,6 @@ impl MediaPipeline {
         crate::memory::runtime_memory_report_parts(
             Some(self.memory_stats()),
             Some(self.health_report()),
-            #[cfg(feature = "graph-pipeline")]
-            self.graph_telemetry_stats(),
-            #[cfg(not(feature = "graph-pipeline"))]
-            None,
         )
     }
 
@@ -332,31 +282,6 @@ impl MediaPipeline {
         let source_capture_instant = frame.meta().capture_instant();
         if let Some(latency) = frame.meta().timing.sensor_to_capture {
             self.metrics.sensor_to_capture.record(latency);
-        }
-        #[cfg(feature = "graph-pipeline")]
-        if let Some(graph) = &mut self.graph_runtime {
-            self.metrics.copies.record_input(&frame);
-            match graph.process(frame) {
-                Ok(cur) => {
-                    self.metrics.copies.record_output(&cur);
-                    self.metrics.end_to_end.record(pipeline_start.elapsed());
-                    if let Some(capture_instant) = source_capture_instant {
-                        self.metrics
-                            .source_to_sink
-                            .record(capture_instant.elapsed());
-                    }
-                    return Ok(cur);
-                }
-                Err(err) => {
-                    tracing::error!(
-                        stage = %err.stage,
-                        component = %err.component,
-                        error = %err.message,
-                        "graph-backed media pipeline failed"
-                    );
-                    return Err(self.record_stage_error(err.stage, err.component, err.message));
-                }
-            }
         }
         let mut cur = frame;
         let mut current_residency = cur.residency();

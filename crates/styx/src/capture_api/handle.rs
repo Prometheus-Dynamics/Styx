@@ -489,7 +489,6 @@ impl CaptureHandle {
         crate::memory::runtime_memory_report_parts(
             Some(self.memory_stats()),
             Some(self.health_report()),
-            None,
         )
     }
 
@@ -567,7 +566,6 @@ impl CaptureHandle {
             recent_residency_transitions: Vec::new(),
             recent_stage_errors,
             drop_reasons,
-            graph: None,
             capture_shutdown: self.shutdown_stats.lock().clone(),
             capture_retries: self.retry_metrics.snapshot(),
         }

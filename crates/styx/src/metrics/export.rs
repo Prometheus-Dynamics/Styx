@@ -31,18 +31,14 @@ impl FrameDropReason {
         match self {
             Self::CaptureQueueSendTimeout => "capture_queue_send_timeout",
             Self::CaptureQueueEviction => "capture_queue_eviction",
-            Self::GraphDrop => "graph_drop",
-            Self::GraphLatestReplacement => "graph_latest_replacement",
             Self::SensorSequenceGap => "sensor_sequence_gap",
         }
     }
 }
 
-const DROP_REASONS: [FrameDropReason; 5] = [
+const DROP_REASONS: [FrameDropReason; 3] = [
     FrameDropReason::CaptureQueueSendTimeout,
     FrameDropReason::CaptureQueueEviction,
-    FrameDropReason::GraphDrop,
-    FrameDropReason::GraphLatestReplacement,
     FrameDropReason::SensorSequenceGap,
 ];
 

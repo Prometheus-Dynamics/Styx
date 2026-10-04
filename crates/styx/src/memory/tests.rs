@@ -186,7 +186,7 @@ size    	flags   	mode    	count   	exp_name	ino     	name
 }
 
 #[test]
-fn known_memory_adds_styx_and_graph_tracked_bytes() {
+fn known_memory_adds_styx_tracked_bytes() {
     let styx = PipelineMemoryStats {
         capture_queue: None,
         external_backings: vec![crate::metrics::ExternalBackingStats {
@@ -204,17 +204,7 @@ fn known_memory_adds_styx_and_graph_tracked_bytes() {
         #[cfg(target_os = "linux")]
         shared_encode_pool: None,
     };
-    let graph = GraphTelemetryStats {
-        copied_bytes: 1024,
-        transport_bytes: 2048,
-        current_queue_bytes: 512,
-        ..GraphTelemetryStats::default()
-    };
-
-    assert_eq!(
-        known_memory_bytes(Some(&styx), Some(&graph)),
-        4096 + 1024 + 2048 + 512
-    );
+    assert_eq!(known_memory_bytes(Some(&styx)), 4096);
 }
 
 #[test]

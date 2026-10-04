@@ -6,6 +6,8 @@ extern crate alloc;
 
 pub mod buffer;
 pub mod controls;
+#[cfg(feature = "daedalus")]
+pub mod daedalus;
 pub mod format;
 mod math;
 #[cfg(feature = "std")]

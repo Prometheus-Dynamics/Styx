@@ -9,8 +9,6 @@ use crate::recording::FrameRecorder;
 use super::{FrameHookFn, HookFn, HookStore};
 use crate::capture_api::{CaptureHandle, CaptureRequest, StyxConfig};
 use crate::service::{SharedStyxServiceRuntime, StyxServiceConfig, StyxServiceRuntime};
-#[cfg(feature = "graph-pipeline")]
-use crate::session::runtime::GraphMediaRuntime;
 use crate::session::runtime::MediaPipeline;
 
 /// Builder for a capture→decode→hook→encode pipeline.
@@ -61,16 +59,6 @@ pub struct MediaPipelineBuilder<'a> {
     shared_encode_enabled: bool,
     #[cfg(target_os = "linux")]
     owned_encode_fallback_enabled: bool,
-    #[cfg(feature = "graph-pipeline")]
-    graph_metrics_level: daedalus::engine::MetricsLevel,
-    #[cfg(feature = "graph-pipeline")]
-    graph_frame_policy: crate::graph::GraphPolicy,
-    #[cfg(feature = "graph-pipeline")]
-    graph_control_policy: crate::graph::GraphPolicy,
-    #[cfg(feature = "graph-pipeline")]
-    graph_host_input_policy: crate::graph::GraphPolicy,
-    #[cfg(feature = "graph-pipeline")]
-    graph_host_output_policy: crate::graph::GraphPolicy,
     service_runtime: Option<SharedStyxServiceRuntime>,
 }
 
@@ -79,15 +67,11 @@ pub struct MediaPipelineBuilder<'a> {
 pub enum PipelineExecutionMode {
     /// Use the release default for the compiled feature set.
     ///
-    /// With `graph-pipeline` enabled this currently selects the graph-backed runtime;
-    /// otherwise it selects the linear runtime.
+    /// Currently the linear runtime.
     #[default]
     Auto,
     /// Use direct capture→decode→hook→encode processing.
     Linear,
-    /// Use the Daedalus graph-backed runtime.
-    #[cfg(feature = "graph-pipeline")]
-    Graph,
 }
 
 impl<'a> MediaPipelineBuilder<'a> {
@@ -121,16 +105,6 @@ impl<'a> MediaPipelineBuilder<'a> {
             shared_encode_enabled: true,
             #[cfg(target_os = "linux")]
             owned_encode_fallback_enabled: false,
-            #[cfg(feature = "graph-pipeline")]
-            graph_metrics_level: daedalus::engine::MetricsLevel::Basic,
-            #[cfg(feature = "graph-pipeline")]
-            graph_frame_policy: crate::graph::GraphPolicy::default(),
-            #[cfg(feature = "graph-pipeline")]
-            graph_control_policy: crate::graph::GraphPolicy::default(),
-            #[cfg(feature = "graph-pipeline")]
-            graph_host_input_policy: daedalus::runtime::RuntimeEdgePolicy::bounded(1),
-            #[cfg(feature = "graph-pipeline")]
-            graph_host_output_policy: daedalus::runtime::RuntimeEdgePolicy::bounded(1),
             service_runtime: None,
         }
     }
@@ -196,13 +170,6 @@ impl<'a> MediaPipelineBuilder<'a> {
         self
     }
 
-    /// Use graph-backed pipeline execution.
-    #[cfg(feature = "graph-pipeline")]
-    pub fn graph_execution(mut self) -> Self {
-        self.execution_mode = PipelineExecutionMode::Graph;
-        self
-    }
-
     /// Toggle whether decode runs.
     ///
     /// Disabling decode can be useful when capture already produces the
@@ -262,49 +229,6 @@ impl<'a> MediaPipelineBuilder<'a> {
     #[cfg(target_os = "linux")]
     pub fn owned_encode_fallback(mut self, enabled: bool) -> Self {
         self.owned_encode_fallback_enabled = enabled;
-        self
-    }
-
-    /// Set the Daedalus metrics level used by graph-backed pipelines.
-    ///
-    /// The default is `Basic` to keep production frame latency low. Use
-    /// `Detailed` or higher for profiling node/edge timing and transport
-    /// byte counters.
-    #[cfg(feature = "graph-pipeline")]
-    pub fn graph_metrics_level(mut self, level: daedalus::engine::MetricsLevel) -> Self {
-        self.graph_metrics_level = level;
-        self
-    }
-
-    /// Set the Daedalus edge policy used between frame-processing nodes.
-    ///
-    /// This affects the graph-internal frame path only. Host input/output queues
-    /// are configured separately with `graph_host_input_policy` and
-    /// `graph_host_output_policy`.
-    #[cfg(feature = "graph-pipeline")]
-    pub fn graph_frame_policy(mut self, policy: crate::graph::GraphPolicy) -> Self {
-        self.graph_frame_policy = policy;
-        self
-    }
-
-    /// Set the Daedalus edge policy used for graph-routed control events.
-    #[cfg(feature = "graph-pipeline")]
-    pub fn graph_control_policy(mut self, policy: crate::graph::GraphPolicy) -> Self {
-        self.graph_control_policy = policy;
-        self
-    }
-
-    /// Set the Daedalus host input queue policy for graph-backed pipelines.
-    #[cfg(feature = "graph-pipeline")]
-    pub fn graph_host_input_policy(mut self, policy: crate::graph::GraphPolicy) -> Self {
-        self.graph_host_input_policy = policy;
-        self
-    }
-
-    /// Set the Daedalus host output queue policy for graph-backed pipelines.
-    #[cfg(feature = "graph-pipeline")]
-    pub fn graph_host_output_policy(mut self, policy: crate::graph::GraphPolicy) -> Self {
-        self.graph_host_output_policy = policy;
         self
     }
 
@@ -413,20 +337,7 @@ impl<'a> MediaPipelineBuilder<'a> {
         self,
         policy: crate::capture_api::CaptureStartPolicy,
     ) -> Result<MediaPipeline, crate::capture_api::CaptureError> {
-        #[cfg(feature = "graph-pipeline")]
-        {
-            match self.execution_mode {
-                PipelineExecutionMode::Auto | PipelineExecutionMode::Graph => {
-                    self.start_graph_backed_with_policy(policy)
-                }
-                PipelineExecutionMode::Linear => self.start_linear_with_policy(policy),
-            }
-        }
-
-        #[cfg(not(feature = "graph-pipeline"))]
-        {
-            self.start_linear_with_policy(policy)
-        }
+        self.start_linear_with_policy(policy)
     }
 
     fn start_linear_with_policy(
@@ -455,8 +366,6 @@ impl<'a> MediaPipelineBuilder<'a> {
         }
         Ok(MediaPipeline {
             capture,
-            #[cfg(feature = "graph-pipeline")]
-            graph_runtime: None,
             decoder: self.decoder,
             encoder: self.encoder,
             #[cfg(feature = "hooks")]
@@ -489,255 +398,4 @@ impl<'a> MediaPipelineBuilder<'a> {
             recorder_sink_started,
         })
     }
-
-    #[cfg(feature = "graph-pipeline")]
-    fn start_graph_backed_with_policy(
-        self,
-        policy: crate::capture_api::CaptureStartPolicy,
-    ) -> Result<MediaPipeline, crate::capture_api::CaptureError> {
-        let capture_request = self.capture.clone();
-        let service_runtime = self.service_runtime.clone();
-        let decode_enabled = self.decode_enabled;
-        let encode_enabled = self.encode_enabled;
-        #[cfg(target_os = "linux")]
-        let shared_decode_enabled = self.shared_decode_enabled;
-        #[cfg(target_os = "linux")]
-        let owned_decode_fallback_enabled = self.owned_decode_fallback_enabled;
-        #[cfg(target_os = "linux")]
-        let shared_encode_enabled = self.shared_encode_enabled;
-        #[cfg(target_os = "linux")]
-        let owned_encode_fallback_enabled = self.owned_encode_fallback_enabled;
-        let capture: CaptureHandle = capture_request.start_with_policy(policy)?;
-        let graph_runtime = self.build_graph_runtime(capture.control.clone())?;
-        Ok(MediaPipeline {
-            capture,
-            graph_runtime,
-            decoder: None,
-            encoder: None,
-            #[cfg(feature = "hooks")]
-            hook: None,
-            #[cfg(feature = "hooks")]
-            frame_hook: None,
-            #[cfg(feature = "hooks")]
-            frame_transform: FrameTransform::default(),
-            #[cfg(feature = "hooks")]
-            output_recorder: None,
-            #[cfg(feature = "hooks")]
-            output_recorder_sink_id: "recording".into(),
-            metrics: crate::metrics::PipelineMetrics::default(),
-            decode_enabled,
-            encode_enabled,
-            #[cfg(target_os = "linux")]
-            shared_decode_enabled,
-            #[cfg(target_os = "linux")]
-            owned_decode_fallback_enabled,
-            #[cfg(target_os = "linux")]
-            shared_decode_pool: None,
-            #[cfg(target_os = "linux")]
-            shared_encode_enabled,
-            #[cfg(target_os = "linux")]
-            owned_encode_fallback_enabled,
-            #[cfg(target_os = "linux")]
-            shared_encode_pool: None,
-            service_runtime,
-            #[cfg(feature = "hooks")]
-            recorder_sink_started: false,
-        })
-    }
-
-    #[cfg(feature = "graph-pipeline")]
-    fn build_graph_runtime(
-        self,
-        control: crate::capture_api::ControlPlane,
-    ) -> Result<Option<GraphMediaRuntime>, crate::capture_api::CaptureError> {
-        let mut registry = daedalus::runtime::plugins::PluginRegistry::new();
-        crate::graph::register_framelease_type();
-        crate::graph::register_control_types();
-        let mut media = crate::graph::StyxMediaPlugin::new();
-        if let Some(service) = &self.service_runtime {
-            media.set_service_runtime(service.clone());
-        }
-        let mut nodes = Vec::<daedalus::NodeHandle>::new();
-        let control_node = crate::graph::register_capture_control_node(
-            &mut registry,
-            "styx.pipeline.capture_control",
-            control,
-        )
-        .map_err(graph_start_error)?
-        .alias("capture_control");
-
-        if self.decode_enabled
-            && let Some(decoder) = self.decoder
-        {
-            let decoder_node = daedalus::NodeHandle::new(crate::graph::concrete_codec_node_id(
-                decoder.descriptor(),
-            ))
-            .alias("decode");
-            let options = codec_node_options(
-                #[cfg(target_os = "linux")]
-                self.shared_decode_enabled,
-                #[cfg(target_os = "linux")]
-                self.owned_decode_fallback_enabled,
-            );
-            media.add_codec(decoder, options);
-            nodes.push(decoder_node);
-        }
-
-        #[cfg(feature = "hooks")]
-        if let Some(frame_hook) = self.frame_hook {
-            nodes.push(
-                register_hook_store_node(&mut media, "styx.pipeline.frame_hook", frame_hook)
-                    .alias("frame_hook"),
-            );
-        }
-
-        #[cfg(feature = "hooks")]
-        if !self.frame_transform.is_identity() {
-            nodes.push(
-                media
-                    .add_transform("styx.pipeline.transform", self.frame_transform)
-                    .alias("transform"),
-            );
-        }
-
-        #[cfg(feature = "hooks")]
-        if let Some(hook) = self.hook {
-            nodes.push(
-                register_hook_store_node(&mut media, "styx.pipeline.hook", hook).alias("hook"),
-            );
-        }
-
-        if self.encode_enabled
-            && let Some(encoder) = self.encoder
-        {
-            let encoder_node = daedalus::NodeHandle::new(crate::graph::concrete_codec_node_id(
-                encoder.descriptor(),
-            ))
-            .alias("encode");
-            let options = codec_node_options(
-                #[cfg(target_os = "linux")]
-                self.shared_encode_enabled,
-                #[cfg(target_os = "linux")]
-                self.owned_encode_fallback_enabled,
-            );
-            media.add_codec(encoder, options);
-            nodes.push(encoder_node);
-        }
-
-        #[cfg(feature = "hooks")]
-        if let Some(recorder) = self.output_recorder {
-            let sink_id = self
-                .output_recorder_sink_id
-                .unwrap_or_else(|| "recording".to_string());
-            nodes.push(
-                media
-                    .add_recorder_sink(sink_id.clone(), recorder)
-                    .alias(sink_id),
-            );
-        }
-
-        let frame_path_enabled = !nodes.is_empty();
-        registry.install(&media).map_err(graph_start_error)?;
-
-        let graph = registry
-            .graph_builder()
-            .map_err(graph_start_error)?
-            .inputs(|g| {
-                g.input("frame");
-                g.input("control");
-            })
-            .outputs(|g| {
-                g.output("frame");
-                g.output("control_result");
-            })
-            .nodes(|g| {
-                g.add_handle(&control_node);
-                for node in &nodes {
-                    g.add_handle(node);
-                }
-            })
-            .edges(|g| {
-                g.connect_policy(
-                    "control",
-                    &control_node.input("control"),
-                    self.graph_control_policy.clone(),
-                );
-                g.connect_policy(
-                    &control_node.output("control_result"),
-                    "control_result",
-                    self.graph_control_policy.clone(),
-                );
-                for (idx, node) in nodes.iter().enumerate() {
-                    let input = node.input("frame");
-                    let output = node.output("frame");
-                    if idx == 0 {
-                        g.connect_policy("frame", &input, self.graph_frame_policy.clone());
-                    } else {
-                        let prev = nodes[idx - 1].output("frame");
-                        g.connect_policy(&prev, &input, self.graph_frame_policy.clone());
-                    }
-                    if idx + 1 == nodes.len() {
-                        g.connect_policy(&output, "frame", self.graph_frame_policy.clone());
-                    }
-                }
-            })
-            .build();
-        let engine = daedalus::engine::Engine::new(
-            daedalus::engine::EngineConfig::from(daedalus::engine::GpuBackend::Cpu)
-                .with_metrics_level(self.graph_metrics_level)
-                .with_default_host_input_policy(self.graph_host_input_policy)
-                .with_default_host_output_policy(self.graph_host_output_policy),
-        )
-        .map_err(|err| graph_start_error(err.to_string()))?;
-        let runtime = engine
-            .compile_registry(&registry, graph)
-            .map_err(|err| graph_start_error(err.to_string()))?;
-        Ok(Some(GraphMediaRuntime::new(
-            runtime,
-            frame_path_enabled,
-            self.service_runtime,
-        )))
-    }
 }
-
-#[cfg(feature = "graph-pipeline")]
-fn graph_start_error(err: impl std::fmt::Display) -> crate::capture_api::CaptureError {
-    crate::capture_api::CaptureError::Backend(format!("graph pipeline start failed: {err}"))
-}
-
-#[cfg(all(feature = "graph-pipeline", target_os = "linux"))]
-fn codec_node_options(
-    shared_output: bool,
-    owned_fallback: bool,
-) -> crate::graph::StyxCodecNodeOptions {
-    crate::graph::StyxCodecNodeOptions {
-        shared_output,
-        owned_fallback,
-    }
-}
-
-#[cfg(all(feature = "graph-pipeline", not(target_os = "linux")))]
-fn codec_node_options() -> crate::graph::StyxCodecNodeOptions {
-    crate::graph::StyxCodecNodeOptions::default()
-}
-
-#[cfg(all(feature = "graph-pipeline", feature = "hooks"))]
-fn register_hook_store_node<T>(
-    media: &mut crate::graph::StyxMediaPlugin,
-    node_id: impl Into<String>,
-    mut hook: HookStore<T>,
-) -> daedalus::NodeHandle
-where
-    T: FnMut(FrameLease) -> FrameLease + Send + 'static,
-{
-    media.add_frame_hook(node_id, move |frame| {
-        let mut hook_fn = HookStore::take(&mut hook);
-        let out = hook_fn(frame);
-        HookStore::put(&mut hook, hook_fn);
-        out
-    })
-}
-
-#[cfg(all(test, feature = "graph-pipeline"))]
-#[path = "builder_tests.rs"]
-mod tests;

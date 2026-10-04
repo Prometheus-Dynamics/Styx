@@ -15,7 +15,8 @@ codec-jpeg-decoder = ["styx/codec-jpeg-decoder"]
 codec-mozjpeg = ["styx/codec-mozjpeg"]
 codec-turbojpeg = ["styx/codec-turbojpeg"]
 file-backend = ["styx/file-backend"]
-graph-pipeline = ["styx/graph-pipeline", "dep:daedalus"]
+# Styx frames in Daedalus graphs (`styx::core::daedalus`); the engine for the example host.
+daedalus = ["styx/daedalus", "dep:daedalus"]
 hotplug = ["styx/hotplug"]
 libcamera = ["styx/libcamera"]
 netcam = ["styx/netcam"]
@@ -34,8 +35,6 @@ native = ["styx/native", "frame-socket", "dep:styx-sensor", "dep:styx-softisp", 
 frame-socket = ["styx/frame-socket"]
 # USB cameras from userspace (`BackendKind::Uvc`), compared with uvcvideo through V4L2.
 uvc = ["styx/uvc", "v4l2"]
-# Any camera backend works (enable `native` or `libcamera` too for those cameras).
-camera-graph = ["graph-pipeline", "v4l2"]
 
 [dependencies]
 styx = { workspace = true, default-features = false, features = ["hooks"] }
@@ -162,18 +161,13 @@ path = "01_capture/simulation_cycle_preview.rs"
 required-features = ["simulation-bevy", "preview-window"]
 
 [[bin]]
-name = "graph_fanout"
-path = "02_graph/graph_fanout.rs"
-required-features = ["graph-pipeline"]
+name = "daedalus_frames"
+path = "02_graph/daedalus_frames.rs"
+required-features = ["daedalus"]
 
 [[bin]]
 name = "latest_frame_fanout"
 path = "02_graph/latest_frame_fanout.rs"
-
-[[bin]]
-name = "camera_graph_metrics"
-path = "02_graph/camera_graph_metrics.rs"
-required-features = ["camera-graph"]
 
 [[bin]]
 name = "mjpeg_decode"
@@ -222,7 +216,7 @@ required-features = ["file-backend"]
 [[bin]]
 name = "v4l2_hardware_bench"
 path = "04_performance/v4l2_hardware_bench.rs"
-required-features = ["v4l2", "graph-pipeline"]
+required-features = ["v4l2"]
 
 [[bin]]
 name = "v4l2request_dmabuf_validate"

@@ -24,7 +24,7 @@ use styx_core::prelude::{FourCc, FrameLease, Resolution};
 
 Feature-specific surfaces should stay local to the feature:
 
-- graph workflows: `styx::graph` and the `daedalus-plugin` feature
+- Daedalus graphs: `styx::core::daedalus` and the `daedalus` feature ([daedalus.md](daedalus.md))
 - watch workflows: `styx::watch`
 - service event workflows: `styx::service`
 - preview windows: `styx::extras::preview_window` with the `preview-window` feature

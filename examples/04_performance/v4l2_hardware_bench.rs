@@ -97,7 +97,6 @@ fn measure_mode(device: &ProbedDevice, mode: &Mode) -> Result<(), Box<dyn std::e
     let mut zero_copy_frames = 0u32;
     let mut copied_frames = 0u32;
     let mut frame_deltas_ns = Vec::new();
-    let mut graph_copied_bytes = 0u64;
 
     while start.elapsed() < Duration::from_secs(3) {
         match pipeline.next_blocking_result(Duration::from_millis(100))? {
@@ -115,16 +114,6 @@ fn measure_mode(device: &ProbedDevice, mode: &Mode) -> Result<(), Box<dyn std::e
                     Some(true) => zero_copy_frames += 1,
                     Some(false) => copied_frames += 1,
                     None => {}
-                }
-                #[cfg(feature = "graph-pipeline")]
-                if let Some(telemetry) = pipeline.graph_telemetry() {
-                    graph_copied_bytes = graph_copied_bytes.saturating_add(
-                        telemetry
-                            .edge_metrics
-                            .values()
-                            .map(|metrics| metrics.copied_bytes)
-                            .sum::<u64>(),
-                    );
                 }
             }
             RecvOutcome::Empty => {}
@@ -167,7 +156,7 @@ fn measure_mode(device: &ProbedDevice, mode: &Mode) -> Result<(), Box<dyn std::e
         .unwrap_or_else(|| "default".to_string());
 
     println!(
-        "{:?} {}x{} interval={} wall_fps={:.2} source_fps={:.2} cpu_percent={:.1} median_delta_ms={:.2} p95_delta_ms={:.2} e2e_p50_ms={:.2?} e2e_p95_ms={:.2?} source_p50_ms={:.2?} source_p95_ms={:.2?} frames={} zero_copy={} copied={} pipeline_copies={} pipeline_bytes_moved={} graph_copied_bytes={} handoff={}",
+        "{:?} {}x{} interval={} wall_fps={:.2} source_fps={:.2} cpu_percent={:.1} median_delta_ms={:.2} p95_delta_ms={:.2} e2e_p50_ms={:.2?} e2e_p95_ms={:.2?} source_p50_ms={:.2?} source_p95_ms={:.2?} frames={} zero_copy={} copied={} pipeline_copies={} pipeline_bytes_moved={} handoff={}",
         mode.format.code,
         mode.format.resolution.width,
         mode.format.resolution.height,
@@ -186,15 +175,14 @@ fn measure_mode(device: &ProbedDevice, mode: &Mode) -> Result<(), Box<dyn std::e
         copied_frames,
         report.copy_count,
         report.bytes_moved,
-        graph_copied_bytes,
         if frames == 0 {
             "no_frames"
-        } else if zero_copy_frames == frames && graph_copied_bytes == 0 {
-            "zero_copy_graph"
-        } else if graph_copied_bytes == 0 {
-            "graph_no_copy_capture_mixed"
+        } else if zero_copy_frames == frames && report.bytes_moved == 0 {
+            "zero_copy"
+        } else if report.bytes_moved == 0 {
+            "no_copy_capture_mixed"
         } else {
-            "graph_copied"
+            "copied"
         }
     );
 
@@ -207,10 +195,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Enable the `v4l2` feature to run this example.");
         return Ok(());
     }
-    if !cfg!(feature = "graph-pipeline") {
-        println!("Enable the `graph-pipeline` feature to benchmark V4L2 through Daedalus.");
-        return Ok(());
-    }
 
     let device = find_device()?;
     let backend = device
@@ -220,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("device missing V4L2 backend")?;
 
     println!("device: {}", device.identity.display);
-    println!("measuring V4L2 through the graph-backed pipeline for 3 seconds per mode");
+    println!("measuring V4L2 through the media pipeline for 3 seconds per mode");
 
     let mut modes = backend
         .descriptor

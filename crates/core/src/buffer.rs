@@ -5,8 +5,8 @@
 //! [`FrameValidationError`]) and borrowed plane views ([`Plane`], [`VisibleRows`]). With `std`:
 //! frames and pools ([`FrameLease`], [`BufferPool`]), memfd / dma-buf backings.
 
-#[cfg(all(feature = "std", target_os = "linux"))]
 mod cpu_access;
+#[cfg(all(feature = "std", target_os = "linux"))]
 mod dmabuf_sync;
 #[cfg(feature = "std")]
 mod frame;

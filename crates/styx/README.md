@@ -33,8 +33,8 @@ backend, service, graph, or preview modules.
 - `BackendHandle/BackendKind`, `ProbedDevice`, `ProbedBackend`: describe discovered devices and selected backends.
 - `capture_api`: request/source builders for virtual, netcam, file, and physical capture plus tunables.
 - `session`: `MediaPipeline` for capture→decode→hook→encode flows (sync-first; async helpers when `async` is enabled).
-- `graph` (feature `graph-pipeline`): Daedalus-backed `FrameLease` transport, source/sink nodes, media edge policies, and graph telemetry.
-- `service`: retained runtime event stream for inventory, health, sink, recording, and graph-control events.
+- `core::daedalus` (feature `daedalus`, from `styx-core-rs`): `FrameLease` in Daedalus graphs: type key, descriptor, metadata adapter, zero-copy payloads (`docs/daedalus.md`).
+- `service`: retained runtime event stream for inventory, health, sink, and recording events.
 - `capabilities`: capture/codec/transform/backing inventory plus path explanation helpers for planner integration.
 - `recording` (feature `hooks`): record encoded frames directly, or attach an encoder to record raw frames without the `image` crate.
 - `preview` (feature `preview-window`): simple RGBA/RGB preview window for examples.
