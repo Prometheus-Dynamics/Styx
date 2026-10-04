@@ -34,6 +34,13 @@ box (OV9782 1280x800) unless stated.
       (ported, matches libcamera to 1e-12), CCM, contrast, denoise/sharpen from tuning, TDN.
 - [x] AE locked at frame 6 (229 ms from open; libcamera 664–675 ms); warm restarts lock by frame 2.
 - [x] PiSP path CPU 0.26 ms/frame through Styx (0.8 % of a core; libcamera 2.9 %).
+- [x] Regions of interest from the PiSP for every consumer (`FrameRequest::regions`, up to 16
+      each): the main output's crop, the second output's, extra back end passes over the same
+      raw frame (0.03 ms + 1.35 ns/pixel of back end time, ~0.03 ms CPU per pass; 4 regions
+      0.385 ms CPU and 9.1 ms latency per frame against 0.29 ms / 8.9 ms for one), regions
+      paired with their frame (companions), temporal denoise read but not written by passes,
+      `skip_stale_regions`; overview box-filtered without a PiSP. See
+      [frame-planning.md](docs/frame-planning.md#region-of-interest).
 - [x] Image quality matches libcamera within libcamera's own session-to-session spread.
 - [x] Flicker avoidance (`Flicker::Auto`, the Styx default; `AE_FLICKER_MODE`): AE fits the
       lamp's flicker (harmonics of 50/60 Hz mains) from the frames and meters against the
@@ -169,6 +176,15 @@ box (OV9782 1280x800) unless stated.
       words, cached config copy): 117 → 8 µs per job, Styx API 0.35 → 0.23-0.26 ms/frame at
       30 fps (0.25 → 0.13-0.15 at 120), latency −0.11 ms, outputs bit-identical, libcamera
       unaffected. Installed on the dev box as an override of `pisp_be`.
+- [ ] Extra back end passes run one after another, each waited for: queue them together (the
+      raw buffer at more input slots, the TDN input buffer shared) to save ~0.03 ms of latency
+      per pass. Pass buffers are allocated at start (`PispOptions::pass_buffers`); a camera
+      service client joining with more regions than planned restarts the capture
+      (`VIDIOC_CREATE_BUFS` could add them while streaming).
+- [ ] Regions: scaled regions and regions in another format than the main output's
+      (`PassSpec::size` / `format` exist) are not planned yet; a main-output crop that moves
+      by more than half its size restarts the temporal average (a tracker's crop moving fast
+      runs without temporal denoise on those frames).
 - [ ] Ship the `pispbe` patch in the HeliOS image (kernel patch) and/or send it upstream (draft
       in `kernel-modules/pispbe/README.md`; ask Raspberry Pi whether the config registers are
       guaranteed to keep their values between jobs).

@@ -2,8 +2,8 @@
 //! route (decode or luma view), region of interest, pyramid levels and row alignment.
 
 use std::sync::Arc;
-use std::time::Duration;
 
+#[cfg(feature = "codec-turbojpeg")]
 use parking_lot::Mutex;
 use smallvec::smallvec;
 #[cfg(feature = "codec-turbojpeg")]
@@ -13,217 +13,13 @@ use styx_codec::prelude::{
 use styx_codec::{Codec, CodecDescriptor, CodecError, CodecKind};
 use styx_core::prelude::*;
 
-use super::session::Branch;
+pub use super::frames::Frames;
+#[allow(deprecated)]
+pub use super::frames::PlannedFrames;
+pub use super::roi::RoiHandle;
 use super::{FramePlan, Route};
-#[cfg(feature = "native")]
-use crate::capture_api::apply_control_to_plane;
-use crate::capture_api::{CaptureError, CaptureHandle, CaptureRequest, ControlPlane, IdleStop};
-use crate::session::{MediaPipeline, MediaPipelineBuilder};
-
-/// Live region-of-interest control for a running plan. Cloneable; changes apply to the next
-/// frame (on an ISP crop, [`RoiCrop::Isp`](super::RoiCrop), the next frame the ISP processes).
-/// Coordinates are full-frame pixels.
-#[derive(Clone, Default)]
-pub struct RoiHandle {
-    rect: Arc<Mutex<Option<FrameRect>>>,
-    /// The capture whose ISP crops the region (its `OUTPUT_CROP` control).
-    isp: Arc<std::sync::OnceLock<ControlPlane>>,
-}
-
-impl RoiHandle {
-    pub fn set(&self, roi: Option<FrameRect>) {
-        *self.rect.lock() = roi;
-        if let Some(plane) = self.isp.get() {
-            set_isp_crop(plane, roi);
-        }
-    }
-
-    pub fn get(&self) -> Option<FrameRect> {
-        *self.rect.lock()
-    }
-
-    /// From now on the region is the ISP's crop on `capture`.
-    pub(crate) fn crop_in_isp(&self, capture: &CaptureHandle) {
-        let _ = self.isp.set(capture.control.clone());
-    }
-}
-
-/// `roi` as the ISP's crop (`None`: the whole frame). Only native cameras crop in their ISP.
-#[cfg(feature = "native")]
-fn set_isp_crop(plane: &ControlPlane, roi: Option<FrameRect>) {
-    let r = roi.unwrap_or(FrameRect::new(0, 0, 0, 0));
-    let rect = ControlRect {
-        x: i32::try_from(r.x).unwrap_or(i32::MAX),
-        y: i32::try_from(r.y).unwrap_or(i32::MAX),
-        width: r.width,
-        height: r.height,
-    };
-    let crop = crate::capture_api::native_controls::OUTPUT_CROP;
-    if let Err(err) = apply_control_to_plane(plane, crop, ControlValue::Rect(rect)) {
-        tracing::warn!(error = %err, "region of interest not applied by the ISP");
-    }
-}
-
-#[cfg(not(feature = "native"))]
-fn set_isp_crop(_: &ControlPlane, _: Option<FrameRect>) {}
-
-/// A running stream of frames, as a [`FrameRequest`](super::FrameRequest) asked for: from
-/// [`FrameRequest::open`](super::FrameRequest::open) (`Frames::nv12().size(..).open(&camera)`),
-/// [`FramePlan::start`] or, one per consumer, [`SharedFramePlan::start`](super::SharedFramePlan::start).
-/// Take frames with [`Frames::next_frame`] (or as an iterator, or
-/// [`Frames::next_frame_async`]), set camera controls with [`Frames::set_control`].
-pub struct Frames {
-    source: Source,
-    roi: RoiHandle,
-    plan: FramePlan,
-    /// The preparation stage of a plan's own pipeline.
-    preparer: Option<Arc<FramePreparer>>,
-}
-
-enum Source {
-    /// The plan's own capture.
-    Pipeline(Box<MediaPipeline>),
-    /// One consumer of a capture shared through a [`super::SharedFramePlan`].
-    Branch(Box<Branch>),
-}
-
-/// The previous name of [`Frames`].
-#[deprecated(note = "renamed to Frames")]
-pub type PlannedFrames = Frames;
-
-impl Frames {
-    pub(crate) fn branch(plan: &FramePlan, branch: Branch, roi: RoiHandle) -> Self {
-        Self {
-            source: Source::Branch(Box::new(branch)),
-            roi,
-            plan: plan.clone(),
-            preparer: None,
-        }
-    }
-
-    /// Next frame, waiting up to `wait`. A frame that fails to prepare (e.g. a corrupt JPEG) is
-    /// skipped on a shared capture and ends a plan's own pipeline.
-    pub fn next_frame(&mut self, wait: Duration) -> RecvOutcome<FrameLease> {
-        match &mut self.source {
-            Source::Pipeline(pipeline) => pipeline.next_blocking(wait),
-            Source::Branch(branch) => branch.next(wait),
-        }
-    }
-
-    /// Await the next frame, or `Closed` when the capture ends. The frame is prepared (decoded,
-    /// scaled) on the calling task, as `MediaPipeline::next_async_receive` does; move heavy
-    /// plans to a blocking task.
-    #[cfg(feature = "async")]
-    pub async fn next_frame_async(&mut self) -> RecvOutcome<FrameLease> {
-        match &mut self.source {
-            Source::Pipeline(pipeline) => pipeline.next_async_receive().await,
-            Source::Branch(branch) => branch.next_async().await,
-        }
-    }
-
-    /// For plans that encode H.264/H.265: make the next packet a keyframe, e.g. when a viewer
-    /// starts or lost packets. Consumers of a shared capture ask for one on their own when they
-    /// join or fall behind.
-    pub fn request_keyframe(&self) {
-        match &self.source {
-            Source::Pipeline(_) => {
-                if let Some(preparer) = &self.preparer {
-                    preparer.request_keyframe();
-                }
-            }
-            Source::Branch(branch) => branch.request_keyframe(),
-        }
-    }
-
-    /// Change the region of interest while running (`None` = full frame).
-    pub fn roi(&self) -> RoiHandle {
-        self.roi.clone()
-    }
-
-    pub fn plan(&self) -> &FramePlan {
-        &self.plan
-    }
-
-    /// The camera capture behind these frames (shared with the other consumers of a shared
-    /// capture): controls, mode and interval, metrics.
-    pub fn capture(&self) -> &CaptureHandle {
-        match &self.source {
-            Source::Pipeline(pipeline) => pipeline.capture(),
-            Source::Branch(branch) => branch.capture(),
-        }
-    }
-
-    /// Set a camera control (exposure, gain, white balance, ...; see the backend's controls).
-    /// On a shared capture it applies to every consumer's frames.
-    pub fn set_control(&self, id: ControlId, value: ControlValue) -> Result<(), CaptureError> {
-        self.capture().set_control(id, value)
-    }
-
-    /// A camera control's current value.
-    pub fn get_control(&self, id: ControlId) -> Result<ControlValue, CaptureError> {
-        self.capture().get_control(id)
-    }
-
-    /// Frames lost so far: dropped because this consumer did not take them in time (beyond its
-    /// queue: one frame with [`Delivery::Latest`](super::Delivery::Latest), `n` with
-    /// `EveryFrame(n)`), or by the capture. Nothing is lost silently: the health report says
-    /// where.
-    pub fn dropped(&self) -> u64 {
-        self.health_report().drop_count
-    }
-
-    /// The capture's metrics (`docs/metrics.md`): rate, drops by cause, latency, ISP and CPU
-    /// time, 3A, buffers; on a shared capture with every consumer listed.
-    pub fn metrics(&self) -> crate::metrics::CameraMetrics {
-        self.capture().camera_metrics()
-    }
-
-    /// This consumer's own counts on a shared capture: frames received, frames it did not take
-    /// in time (`None` for a plan's own capture: see [`Frames::metrics`]).
-    pub fn consumer_metrics(&self) -> Option<crate::metrics::ConsumerMetrics> {
-        match &self.source {
-            Source::Pipeline(_) => None,
-            Source::Branch(branch) => Some(branch.consumer_metrics()),
-        }
-    }
-
-    /// The underlying pipeline of a plan's own capture (`None` on a shared capture).
-    pub fn pipeline(&mut self) -> Option<&mut MediaPipeline> {
-        match &mut self.source {
-            Source::Pipeline(pipeline) => Some(pipeline),
-            Source::Branch(_) => None,
-        }
-    }
-
-    /// Health of the capture; on a shared capture, with this consumer's own dropped frames
-    /// (those it was too slow to take) counted as queue evictions.
-    pub fn health_report(&self) -> crate::metrics::HealthReport {
-        match &self.source {
-            Source::Pipeline(pipeline) => pipeline.health_report(),
-            Source::Branch(branch) => branch.health_report(),
-        }
-    }
-
-    pub fn stop(self) {
-        if let Source::Pipeline(pipeline) = self.source {
-            pipeline.stop();
-        }
-    }
-}
-
-impl Iterator for Frames {
-    type Item = FrameLease;
-
-    fn next(&mut self) -> Option<FrameLease> {
-        loop {
-            match self.next_frame(Duration::from_secs(1)) {
-                RecvOutcome::Data(frame) => return Some(frame),
-                RecvOutcome::Empty => {}
-                RecvOutcome::Closed => return None,
-            }
-        }
-    }
-}
+use crate::capture_api::{CaptureError, CaptureRequest, IdleStop};
+use crate::session::MediaPipelineBuilder;
 
 impl FramePlan {
     /// Start capturing with this plan.
@@ -250,7 +46,7 @@ impl FramePlan {
             None => config,
         };
         let roi = RoiHandle::default();
-        roi.set(self.request.roi);
+        roi.set_regions(&self.request.all_regions());
         let preparer = Arc::new(FramePreparer::new(self, roi.clone()));
         #[cfg(target_os = "linux")]
         if let Some(buffers) = &self.capture_buffers
@@ -272,14 +68,9 @@ impl FramePlan {
         let builder = builder.shared_decode_output(false);
         let pipeline = builder.start()?;
         if self.region.isp() {
-            roi.crop_in_isp(pipeline.capture());
+            roi.crop_in_isp(pipeline.capture(), self.region.places.clone());
         }
-        Ok(Frames {
-            source: Source::Pipeline(Box::new(pipeline)),
-            roi,
-            plan: self.clone(),
-            preparer: Some(preparer),
-        })
+        Ok(Frames::of_pipeline(pipeline, roi, self.clone(), preparer))
     }
 }
 
@@ -288,10 +79,16 @@ pub(crate) struct FramePreparer {
     descriptor: CodecDescriptor,
     route: Route,
     luma: bool,
-    /// The ISP crops the region: frames arrive cropped.
+    /// The ISP crops region 0: frames arrive cropped.
     isp_crop: bool,
-    /// The overview is the uncropped frame, attached here.
-    view_overview: bool,
+    /// The ISP makes regions or the overview: frames arrive with them as companions, numbered
+    /// by the capture (`region_frames::consumer_frame` makes them this consumer's).
+    isp_regions: Option<Box<FramePlan>>,
+    /// The overview made here (not by the ISP), at this size: box-filtered from the frame's
+    /// luma, or the uncropped frame itself when it is that size.
+    view_overview: Option<(u32, u32)>,
+    /// Regions after the first made here, as views (their indices).
+    view_regions: Vec<u8>,
     pyramid_levels: u8,
     alignment: Option<usize>,
     /// Frames are decoded at 1/`decode_scale` size.
@@ -367,8 +164,17 @@ impl FramePreparer {
             },
             route,
             luma,
-            isp_crop: plan.region.roi == Some(super::RoiCrop::Isp),
-            view_overview: plan.region.overview.is_some_and(|(_, isp)| !isp),
+            isp_crop: plan.region.main_crop(),
+            isp_regions: plan.region.isp().then(|| Box::new(plan.clone())),
+            view_overview: plan
+                .region
+                .overview
+                .filter(|(_, isp)| !isp)
+                .map(|(size, _)| size),
+            view_regions: (1..plan.region.crops.len())
+                .filter(|&i| plan.region.crops[i] == Some(super::RoiCrop::View))
+                .map(|i| i as u8)
+                .collect(),
             pyramid_levels: plan.request.pyramid.map_or(0, |p| p.levels),
             alignment: plan.request.row_alignment,
             #[cfg(feature = "codec-turbojpeg")]
@@ -453,24 +259,44 @@ impl FramePreparer {
         roi.scaled(from, to).clipped_to(decoded.0, decoded.1)
     }
 
-    /// `frame` (prepared without a region) cropped to `roi`, for one of several consumers
-    /// sharing it. Only luma frames are cropped, as when preparing.
+    /// `frame` (prepared without a region) cropped to `roi`'s regions, for one of several
+    /// consumers sharing it. Only luma frames are cropped, as when preparing.
     pub(crate) fn crop(
         &self,
         frame: FrameLease,
-        roi: Option<FrameRect>,
+        roi: &RoiHandle,
     ) -> Result<FrameLease, CodecError> {
-        let Some(roi) = roi.filter(|_| self.luma && !self.isp_crop) else {
+        if !self.luma {
+            return Ok(frame);
+        }
+        let res = frame.meta().format.resolution;
+        let decoded = (res.width.get(), res.height.get());
+        let views: Vec<(u8, FrameRect)> = self
+            .view_regions
+            .iter()
+            .filter_map(|&i| {
+                let rect = roi.region(usize::from(i))?;
+                Some((i, self.aligned_roi(self.scaled_roi(rect, decoded)?)))
+            })
+            .collect();
+        let frame = super::region_frames::attach_views(frame, &views)?;
+        let Some(roi) = roi.get().filter(|_| !self.isp_crop) else {
             return Ok(frame);
         };
-        let res = frame.meta().format.resolution;
-        let Some(rect) = self.scaled_roi(roi, (res.width.get(), res.height.get())) else {
+        let Some(rect) = self.scaled_roi(roi, decoded) else {
             return Ok(frame);
         };
         let frame = frame
             .crop_view(self.aligned_roi(rect))
             .map_err(|e| CodecError::Codec(e.to_string()))?;
         self.realign(frame)
+    }
+
+    /// This preparer for a shared capture's group, which makes each consumer's frame from the
+    /// capture's itself (`region_frames::consumer_frame`) before preparing it.
+    pub(crate) fn for_shared(mut self) -> Self {
+        self.isp_regions = None;
+        self
     }
 
     /// Region aligned outward so cropped rows keep the requested base alignment.
@@ -647,6 +473,10 @@ impl Codec for FramePreparer {
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         let roi = self.roi.get();
+        let input = match &self.isp_regions {
+            Some(plan) => super::region_frames::consumer_frame(input, plan)?,
+            None => input,
+        };
         #[cfg(feature = "codec-turbojpeg")]
         if self.jpeg.lock().is_some() {
             let full = input.meta().format.resolution;
@@ -654,8 +484,9 @@ impl Codec for FramePreparer {
                 full.width.get().div_ceil(self.decode_scale),
                 full.height.get().div_ceil(self.decode_scale),
             );
-            if self.view_overview {
-                // The overview is the whole decoded frame: decode it all, then crop a view.
+            if self.view_overview.is_some() || !self.view_regions.is_empty() {
+                // The overview and the other regions are of the whole decoded frame: decode
+                // it all, then crop views.
                 let frame = self.decode_jpeg(input, None)?;
                 return self.finish_view(frame, roi);
             }
@@ -704,9 +535,11 @@ impl FramePreparer {
     ) -> Result<FrameLease, CodecError> {
         let frame = self.with_view_overview(frame)?;
         let decoded = frame.meta().format.resolution;
+        let decoded = (decoded.width.get(), decoded.height.get());
+        let frame = self.with_view_regions(frame, decoded)?;
         let frame = match roi
             .filter(|_| !self.isp_crop)
-            .and_then(|r| self.scaled_roi(r, (decoded.width.get(), decoded.height.get())))
+            .and_then(|r| self.scaled_roi(r, decoded))
         {
             Some(rect) => frame
                 .crop_view(self.aligned_roi(rect))
@@ -717,18 +550,49 @@ impl FramePreparer {
         self.attach_pyramid(frame)
     }
 
-    /// `frame` with itself, uncropped and shared without a copy, as its overview, when the plan
-    /// attaches the overview here (no ISP to make it).
+    /// `frame` (whole, `decoded` in size) with views of the regions after the first that the
+    /// plan crops here.
+    fn with_view_regions(
+        &self,
+        frame: FrameLease,
+        decoded: (u32, u32),
+    ) -> Result<FrameLease, CodecError> {
+        let views: Vec<(u8, FrameRect)> = self
+            .view_regions
+            .iter()
+            .filter_map(|&i| {
+                let rect = self.roi.region(usize::from(i))?;
+                Some((i, self.aligned_roi(self.scaled_roi(rect, decoded)?)))
+            })
+            .collect();
+        super::region_frames::attach_views(frame, &views)
+    }
+
+    /// `frame` with the overview the plan makes here: its luma box-filtered down to the
+    /// overview's size (or the uncropped frame itself, shared without a copy, when it is that
+    /// size or has no luma plane).
     fn with_view_overview(&self, frame: FrameLease) -> Result<FrameLease, CodecError> {
-        if !self.view_overview {
-            return Ok(frame);
-        }
-        let err = |e: FrameValidationError| CodecError::Codec(e.to_string());
-        let frame = frame.into_shareable();
-        let Some(mut overview) = frame.share() else {
+        let Some(size) = self.view_overview else {
             return Ok(frame);
         };
-        overview.take_companions();
+        let err = |e: FrameValidationError| CodecError::Codec(e.to_string());
+        let frame = frame.into_shareable();
+        let res = frame.meta().format.resolution;
+        let overview = if (res.width.get(), res.height.get()) != size {
+            super::region_frames::box_overview(&frame, size, &self.pyramid_pool)?
+        } else {
+            None
+        };
+        let overview = match overview {
+            Some(o) => o,
+            None => {
+                let Some(mut whole) = frame.share() else {
+                    return Ok(frame);
+                };
+                whole.take_companions();
+                whole
+            }
+        };
         frame
             .with_companion(CompanionKind::Overview, overview)
             .map_err(err)
@@ -743,7 +607,9 @@ fn luma_view(mut frame: FrameLease) -> Result<FrameLease, CodecError> {
     let mut frame = frame.into_luma().map_err(|e| err(&e))?;
     for (kind, companion) in companions {
         let companion = match kind {
-            CompanionKind::Pyramid { .. } | CompanionKind::Overview
+            CompanionKind::Pyramid { .. }
+            | CompanionKind::Overview
+            | CompanionKind::Region { .. }
                 if companion.has_luma_plane() =>
             {
                 companion.into_luma().map_err(|e| err(&e))?

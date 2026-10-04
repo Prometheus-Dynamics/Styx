@@ -14,19 +14,22 @@
 //! - Release: the id of a frame the client dropped.
 //! - Request (camera service): the consumer's `FrameRequest`, and optionally which camera.
 //! - List (camera service): which cameras it serves.
-//! - Roi: a new region of interest, or none.
+//! - Roi: the regions of interest now (none: the whole frame).
 //! - Metrics (camera service): the service's metrics, as JSON (0) or Prometheus text (1).
 
 use styx_core::prelude::*;
 
 mod delivered;
+mod request;
 
 use self::delivered::{read_delivered, write_delivered};
+pub(in crate::ipc) use self::request::encode_request;
+use self::request::read_request;
 use super::IpcError;
-use crate::planner::{Delivered, Delivery, FrameRate, FrameRequest, Hardware};
+use crate::planner::{Delivered, FrameRequest};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"STYX");
-const VERSION: u16 = 7;
+const VERSION: u16 = 8;
 const KIND_FRAME: u16 = 1;
 const KIND_RELEASE: u16 = 2;
 const KIND_REQUEST: u16 = 3;
@@ -43,7 +46,7 @@ const MAX_CAMERAS: usize = 64;
 const MAX_KEYS: u8 = 8;
 const MAX_NAMES: u8 = 16;
 const MAX_PLANES: usize = 4;
-const MAX_COMPANIONS: usize = 3;
+const MAX_COMPANIONS: usize = 3 + crate::planner::MAX_REGIONS;
 /// Longest text in Accept and Reject messages.
 const MAX_TEXT: usize = 3072;
 
@@ -79,7 +82,8 @@ pub(super) enum ClientMessage {
     Release(u64),
     /// These frames, from the named camera (or the service's first).
     Request(Box<FrameRequest>, Option<String>),
-    Roi(Option<FrameRect>),
+    /// The regions of interest now, region 0 first (empty: the whole frame).
+    Roi(Vec<FrameRect>),
     List,
     /// The service's metrics, in this format.
     Metrics(MetricsFormat),
@@ -434,10 +438,22 @@ pub(super) fn encode_reject(reason: &str) -> Vec<u8> {
     w.0
 }
 
-pub(super) fn encode_roi(roi: Option<FrameRect>) -> Vec<u8> {
+pub(super) fn encode_roi(regions: &[FrameRect]) -> Vec<u8> {
     let mut w = Writer::new(KIND_ROI);
-    w.opt(roi, Writer::rect);
+    let regions = &regions[..regions.len().min(crate::planner::MAX_REGIONS)];
+    w.u8(regions.len() as u8);
+    for rect in regions {
+        w.rect(*rect);
+    }
     w.0
+}
+
+fn read_regions(r: &mut Reader<'_>, max: usize) -> Result<Vec<FrameRect>, IpcError> {
+    let count = usize::from(r.u8()?);
+    if count > max {
+        return Err(IpcError::Malformed("too many regions"));
+    }
+    (0..count).map(|_| r.rect()).collect()
 }
 
 pub(super) fn encode_list() -> Vec<u8> {
@@ -482,140 +498,6 @@ fn read_cameras(r: &mut Reader<'_>) -> Result<Vec<CameraInfo>, IpcError> {
         .collect()
 }
 
-pub(super) fn encode_request(req: &FrameRequest, camera: Option<&str>) -> Vec<u8> {
-    let mut w = Writer::new(KIND_REQUEST);
-    w.opt(camera, Writer::text);
-    match &req.format {
-        OutputFormat::Luma => w.u8(0),
-        OutputFormat::Formats(formats) => {
-            w.u8(1);
-            w.u8(formats.len().min(usize::from(MAX_NAMES)) as u8);
-            for code in formats.iter().take(usize::from(MAX_NAMES)) {
-                w.u32(code.to_u32());
-            }
-        }
-        OutputFormat::Any => w.u8(2),
-    }
-    w.opt(req.size, Writer::size);
-    w.opt(req.min_size, Writer::size);
-    w.opt(req.max_size, Writer::size);
-    match req.fps {
-        FrameRate::CameraDefault => w.u8(0),
-        FrameRate::Exactly(fps) => {
-            w.u8(1);
-            w.u32(fps);
-        }
-        FrameRate::AtLeast(fps) => {
-            w.u8(2);
-            w.u32(fps);
-        }
-        FrameRate::Between(min, max) => {
-            w.u8(3);
-            w.u32(min);
-            w.u32(max);
-        }
-    }
-    match req.delivery {
-        Delivery::Latest => w.u8(0),
-        Delivery::EveryFrame(n) => {
-            w.u8(1);
-            w.usize(n);
-        }
-    }
-    w.opt(req.pyramid, |w, p| {
-        w.u8(p.levels);
-        w.u8(match p.source {
-            PyramidSource::PreferHardware => 0,
-            PyramidSource::HardwareOnly => 1,
-            PyramidSource::Software => 2,
-        });
-    });
-    w.opt(req.roi, Writer::rect);
-    w.opt(req.overview, Writer::size);
-    w.opt(req.row_alignment, Writer::usize);
-    w.opt(req.backend.map(|b| b.to_string()).as_deref(), Writer::text);
-    w.u8(match req.hardware {
-        Hardware::Auto => 0,
-        Hardware::Required => 1,
-        Hardware::Off => 2,
-    });
-    w.opt(req.decoder.as_deref(), Writer::text);
-    w.u8(req.forbid.len().min(usize::from(MAX_NAMES)) as u8);
-    for name in req.forbid.iter().take(usize::from(MAX_NAMES)) {
-        w.text(name);
-    }
-    w.opt(req.decode_threads, Writer::usize);
-    w.bool(req.strict);
-    w.0
-}
-
-fn read_request(r: &mut Reader<'_>) -> Result<FrameRequest, IpcError> {
-    let mut req = match r.u8()? {
-        0 => FrameRequest::new(OutputFormat::Luma),
-        1 => {
-            let count = r.u8()?;
-            if count > MAX_NAMES {
-                return Err(IpcError::Malformed("too many formats"));
-            }
-            let formats = (0..count)
-                .map(|_| Ok(FourCc::new(r.u32()?.to_le_bytes())))
-                .collect::<Result<Vec<_>, IpcError>>()?;
-            FrameRequest::formats(formats)
-        }
-        2 => FrameRequest::new(OutputFormat::Any),
-        _ => return Err(IpcError::Malformed("unknown output")),
-    };
-    req.size = r.opt(Reader::size)?;
-    req.min_size = r.opt(Reader::size)?;
-    req.max_size = r.opt(Reader::size)?;
-    req.fps = match r.u8()? {
-        0 => FrameRate::CameraDefault,
-        1 => FrameRate::Exactly(r.u32()?),
-        2 => FrameRate::AtLeast(r.u32()?),
-        3 => FrameRate::Between(r.u32()?, r.u32()?),
-        _ => return Err(IpcError::Malformed("unknown frame rate")),
-    };
-    req.delivery = match r.u8()? {
-        0 => Delivery::Latest,
-        1 => Delivery::EveryFrame(r.usize()?),
-        _ => return Err(IpcError::Malformed("unknown delivery")),
-    };
-    req.pyramid = r.opt(|r| {
-        Ok(PyramidRequest {
-            levels: r.u8()?,
-            source: match r.u8()? {
-                1 => PyramidSource::HardwareOnly,
-                2 => PyramidSource::Software,
-                _ => PyramidSource::PreferHardware,
-            },
-        })
-    })?;
-    req.roi = r.opt(Reader::rect)?;
-    req.overview = r.opt(Reader::size)?;
-    req.row_alignment = r.opt(Reader::usize)?;
-    req.backend = r
-        .opt(Reader::text)?
-        .map(|name| name.parse())
-        .transpose()
-        .map_err(|_| IpcError::Malformed("unknown backend"))?;
-    req.hardware = match r.u8()? {
-        1 => Hardware::Required,
-        2 => Hardware::Off,
-        _ => Hardware::Auto,
-    };
-    req.decoder = r.opt(Reader::text)?;
-    let forbidden = r.u8()?;
-    if forbidden > MAX_NAMES {
-        return Err(IpcError::Malformed("too many forbidden codecs"));
-    }
-    req.forbid = (0..forbidden)
-        .map(|_| r.text())
-        .collect::<Result<_, IpcError>>()?;
-    req.decode_threads = r.opt(Reader::usize)?;
-    req.strict = r.bool()?;
-    Ok(req)
-}
-
 fn format_tag(format: MetricsFormat) -> u8 {
     match format {
         MetricsFormat::Json => 0,
@@ -656,7 +538,10 @@ pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
             ))
         }
         KIND_LIST => Ok(ClientMessage::List),
-        KIND_ROI => Ok(ClientMessage::Roi(r.opt(Reader::rect)?)),
+        KIND_ROI => Ok(ClientMessage::Roi(read_regions(
+            &mut r,
+            crate::planner::MAX_REGIONS,
+        )?)),
         KIND_METRICS => Ok(ClientMessage::Metrics(format_from(r.u8()?)?)),
         _ => Err(IpcError::Malformed("unexpected message from a client")),
     }
@@ -686,7 +571,7 @@ pub(super) fn decode_server(bytes: &[u8]) -> Result<ServerMessage, IpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planner::Unmet;
+    use crate::planner::{Hardware, Unmet};
 
     #[test]
     fn requests_survive_the_wire() {
@@ -699,7 +584,12 @@ mod tests {
             .fps_between(15, 60)
             .every_frame(3)
             .pyramid(2)
-            .roi(FrameRect::new(1, 2, 3, 4))
+            .regions([
+                FrameRect::new(1, 2, 3, 4),
+                FrameRect::new(10, 20, 30, 40),
+                FrameRect::new(5, 6, 7, 8),
+            ])
+            .skip_stale_regions()
             .overview(320, 200)
             .row_alignment(64)
             .backend(BackendKind::Libcamera)
@@ -743,6 +633,12 @@ mod tests {
             hardware_pyramid_level: Some(1),
             inter_coded: false,
             roi: Some(crate::planner::RoiCrop::Isp),
+            regions: vec![
+                Some(crate::planner::RoiCrop::Isp),
+                Some(crate::planner::RoiCrop::IspPass),
+                None,
+                Some(crate::planner::RoiCrop::View),
+            ],
             overview: Some((320, 200)),
             hardware_overview: true,
             unmet: vec![

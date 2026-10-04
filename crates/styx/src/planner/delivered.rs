@@ -24,8 +24,7 @@ pub enum Unmet {
     /// The region of interest ([`FrameRequest::roi`]) is not applied: frames are whole (a
     /// route that crops only luma frames, or encoded frames).
     Roi,
-    /// The overview ([`FrameRequest::overview`]) is larger in both dimensions than asked (no
-    /// ISP to scale it: it is the uncropped frame).
+    /// The overview ([`FrameRequest::overview`]) is larger in both dimensions than asked.
     Overview {
         wanted: (u32, u32),
         delivered: (u32, u32),
@@ -84,9 +83,13 @@ pub struct Delivered {
     /// is in `FrameMeta::crop`); `None` without one, or when it is not applied (see `unmet`).
     /// `size` is the whole frame's.
     pub roi: Option<RoiCrop>,
+    /// How each region of interest is applied, region 0 (`roi`) first, then the others
+    /// (`FrameRequest::regions`, attached as `CompanionKind::Region` companions); `None` where
+    /// one is not applied (see `unmet`). Empty without regions.
+    pub regions: Vec<Option<RoiCrop>>,
     /// The size of the whole-frame overview attached to each frame (`FrameLease::overview`).
     pub overview: Option<(u32, u32)>,
-    /// The ISP makes the overview (else it is the uncropped frame).
+    /// The ISP makes the overview (else it is box-filtered from the frame's luma on the CPU).
     pub hardware_overview: bool,
     /// What of the request the frames do not meet (empty: everything is met).
     pub unmet: Vec<Unmet>,
@@ -116,7 +119,8 @@ impl FramePlan {
             },
             hardware_pyramid_level: self.isp_pyramid_level,
             inter_coded: self.inter_coded(),
-            roi: self.region.roi,
+            roi: self.region.roi(),
+            regions: self.region.crops.clone(),
             overview: self.region.overview.map(|(size, _)| size),
             hardware_overview: self.region.overview.is_some_and(|(_, isp)| isp),
             unmet: self.unmet.clone(),

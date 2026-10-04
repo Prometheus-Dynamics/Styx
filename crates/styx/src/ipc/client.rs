@@ -354,11 +354,19 @@ impl FrameClient {
 
     /// Change the region of interest (full-frame pixels) of a camera service's frames.
     pub fn set_roi(&self, roi: Option<FrameRect>) -> Result<(), IpcError> {
+        self.set_regions(roi.as_slice())
+    }
+
+    /// Change all regions of interest of a camera service's frames at once (region 0 first;
+    /// see `FrameRequest::regions`; empty: the whole frame).
+    pub fn set_regions(&self, regions: &[FrameRect]) -> Result<(), IpcError> {
         if let Some(request) = &self.request {
-            request.lock().frames.roi = roi;
+            let mut request = request.lock();
+            request.frames.roi = regions.first().copied();
+            request.frames.extra_regions = regions.iter().skip(1).copied().collect();
         }
         if let Some(socket) = self.link.lock().socket.clone() {
-            socket::send(&socket, &wire::encode_roi(roi), &[])?;
+            socket::send(&socket, &wire::encode_roi(regions), &[])?;
         }
         Ok(())
     }

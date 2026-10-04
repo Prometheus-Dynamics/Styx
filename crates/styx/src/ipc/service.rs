@@ -526,8 +526,8 @@ fn send_frames(
         match conn.poll(wait) {
             Ok(messages) => {
                 for message in messages {
-                    if let ClientMessage::Roi(roi) = message {
-                        camera.set_roi(id, roi, frames);
+                    if let ClientMessage::Roi(regions) = message {
+                        camera.set_roi(id, &regions, frames);
                     }
                 }
             }

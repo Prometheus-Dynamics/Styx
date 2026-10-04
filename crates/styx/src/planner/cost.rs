@@ -64,6 +64,23 @@ pub(crate) fn native_capture_latency_ms(fps: Option<f32>) -> f32 {
 /// (0.12 ms of it the driver writing the back end config to the hardware).
 pub(crate) const PISP_PROCESS_LATENCY_MS: f32 = 0.9;
 pub(crate) const PISP_PROCESS_CPU_MS: f32 = 0.3;
+/// An extra PiSP back end pass over a frame's raw input (a region of interest; CM5, OV9782,
+/// temporal denoise read, `native-pipeline pisp --passes`): 0.03 ms per job plus 1.35 ns per
+/// pixel of its region (128x128: 0.05 ms, 640x400: 0.41 ms, 1280x800: 1.39 ms) on the frame's
+/// path, and about 0.025 ms of CPU (config copied, queued, waited for; tiles prepared again when
+/// the region moved).
+pub(crate) const PISP_PASS_MS: f32 = 0.03;
+pub(crate) const PISP_PASS_MS_PER_MP: f32 = 1.35;
+pub(crate) const PISP_PASS_CPU_MS: f32 = 0.025;
+
+/// One extra PiSP pass over a `width`x`height` region.
+pub(crate) fn pisp_pass(width: u32, height: u32) -> StepCost {
+    StepCost::offloaded(
+        PISP_PASS_MS + PISP_PASS_MS_PER_MP * megapixels(width, height),
+        PISP_PASS_CPU_MS,
+    )
+}
+
 /// Software ISP (styx-softisp, CPU time on A76 cores): unpack, black level, white balance,
 /// lens shading, demosaic, CCM, tone curve, NV12/RGB out plus statistics, fp16 arithmetic,
 /// from cached capture buffers: 2.75 (RGB24) - 3.05 (NV12) ms per 1280x800 frame on one core

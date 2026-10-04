@@ -112,6 +112,16 @@ impl Candidate<'_> {
     }
 }
 
+/// The format `route` delivers frames of `mode` in.
+pub(crate) fn route_output(route: &Route, mode: &Mode) -> FourCc {
+    match route {
+        Route::Direct => mode.format.code,
+        Route::LumaView => FourCc::GREY,
+        Route::Decode { decoder, .. } => decoder.descriptor().output,
+        Route::Encode { encoder, .. } => encoder.descriptor().output,
+    }
+}
+
 pub(crate) fn backend_name(kind: BackendKind) -> &'static str {
     match kind {
         BackendKind::V4l2 => "v4l2",
@@ -386,10 +396,11 @@ fn finish<'a>(
     ));
 
     // The PiSP crops the region and makes the overview from its second output: a pyramid is
-    // then box-filtered from the (cropped) frames.
+    // then box-filtered from the (cropped) frames, or made by an extra pass of the region.
     let isp_region = super::region::isp_possible(backend, mode, &route, req, isp_output);
-    let pyramid_req = isp_region.then(|| super::region::software_pyramid(req));
-    let isp_pyramid_level = add_pyramid_steps(
+    let region_size = req.roi.map_or((width, height), |r| (r.width, r.height));
+    let pyramid_req = isp_region.then(|| super::region::isp_region_pyramid(req, region_size));
+    let isp_pyramid_level = super::pyramid::add_pyramid_steps(
         backend,
         mode,
         &route,
@@ -398,6 +409,14 @@ fn finish<'a>(
         height,
         &mut steps,
     )?;
+    if isp_region && isp_pyramid_level.is_some() {
+        for step in steps.iter_mut().filter(|s| {
+            matches!(s.kind, StepKind::Pyramid { .. }) && s.execution == StepExecution::Hardware
+        }) {
+            step.detail = "level 1 from an extra ISP pass of the region".into();
+            step.cost = cost::pisp_pass(region_size.0, region_size.1);
+        }
+    }
     let encoded = matches!(route, Route::Encode { .. });
     if encoded && req.pyramid.is_some_and(|p| p.levels > 0) {
         return Err("pyramid levels need uncompressed frames".into());
@@ -406,7 +425,7 @@ fn finish<'a>(
         req,
         &route,
         isp_region,
-        (width, height),
+        ((width, height), route_output(&route, mode)),
         &mut steps,
         &mut notes,
     )?;
@@ -727,61 +746,4 @@ fn decode_cost(code: FourCc, descriptor: &CodecDescriptor, mp: f32, threads: usi
         _ => cost::RGB_LUMA_MS_PER_MP,
     };
     StepCost::cpu(per_mp * mp)
-}
-
-/// Pyramid steps; returns the level the ISP produces, if any.
-fn add_pyramid_steps(
-    backend: &ProbedBackend,
-    mode: &Mode,
-    route: &Route,
-    req: &FrameRequest,
-    width: u32,
-    height: u32,
-    steps: &mut Vec<PlanStep>,
-) -> Result<Option<u8>, String> {
-    let Some(pyramid) = req.pyramid.filter(|p| p.levels > 0) else {
-        return Ok(None);
-    };
-    // A native PiSP mode's second output in the mode's format: NV12, whose Y plane the
-    // further levels are box-filtered from.
-    let native = native_isp_outputs(backend, mode) && mode.format.code == FourCc::NV12;
-    let isp_possible = (has_isp_second_output(backend) || native)
-        && matches!(route, Route::Direct | Route::LumaView)
-        && !matches!(req.hardware, Hardware::Off);
-    let isp_level = match pyramid.source {
-        PyramidSource::Software => None,
-        PyramidSource::PreferHardware => isp_possible.then_some(1),
-        PyramidSource::HardwareOnly => {
-            if !isp_possible {
-                return Err("hardware pyramid required but no ISP second output".into());
-            }
-            if pyramid.levels > 1 {
-                return Err(format!(
-                    "hardware pyramid required for {} levels; the ISP provides one",
-                    pyramid.levels
-                ));
-            }
-            Some(1)
-        }
-    };
-    for level in 1..=pyramid.levels {
-        let (w, h) = (width >> level, height >> level);
-        if isp_level == Some(level) {
-            steps.push(PlanStep {
-                kind: StepKind::Pyramid { level },
-                execution: StepExecution::Hardware,
-                detail: format!("{w}x{h} from the ISP's second output"),
-                cost: StepCost::ZERO,
-            });
-        } else {
-            let source_mp = megapixels(width >> (level - 1), height >> (level - 1));
-            steps.push(PlanStep {
-                kind: StepKind::Pyramid { level },
-                execution: StepExecution::Cpu,
-                detail: format!("{w}x{h} 2x2 box filter"),
-                cost: StepCost::cpu(cost::BOX_LEVEL_MS_PER_MP * source_mp),
-            });
-        }
-    }
-    Ok(isp_level)
 }

@@ -133,7 +133,7 @@ pub struct NativeIspConfig {
     /// output; with [`Self::crop`], a low-resolution view of everything around the region.
     /// Takes the second output: `pyramid_level` and `second_output` are then ignored. `None`
     /// (default): off. With [`Self::pyramid_level`] too, the pyramid level comes from an extra
-    /// back end pass (of the main output's region, following it).
+    /// back end pass (of the main output's region, following it), as with [`Self::crop`].
     pub overview: Option<(u32, u32)>,
     /// PiSP, with the main output at the mode's size: more regions of the frame, each cropped
     /// at full resolution from the same raw frame and attached to every frame as a
@@ -222,9 +222,10 @@ impl NativeIspConfig {
         (0..MAX_NATIVE_REGIONS).filter(move |&k| self.regions[k].is_some() && Some(k) != second)
     }
 
-    /// An extra back end pass makes the pyramid level (the second output makes the overview).
+    /// An extra back end pass makes the pyramid level: the second output makes the overview, or
+    /// the main output is a crop (the second output would scale the whole frame, not the crop).
     pub fn pyramid_pass(&self) -> bool {
-        self.overview.is_some() && self.pyramid_level > 0
+        self.pyramid_level > 0 && (self.overview.is_some() || self.crop.is_some())
     }
 }
 

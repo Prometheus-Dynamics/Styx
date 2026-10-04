@@ -16,6 +16,14 @@ Goal: frames should reach Eidos already in the shape it wants: Y8, stride-aligne
   marked *verify* are the ones I'm least sure about and should be checked on the device first.
 - **[E]** Estimate derived from [M] with a stated scaling factor.
 
+Update 2026-10-04: regions of interest are a companion kind now, as section 5.1 proposed
+(`CompanionKind::Region { index }`, the actual rectangle in each region's `FrameMeta::crop`):
+`FrameRequest::regions` asks for up to 16 per consumer, cut from one capture. On a native
+camera's PiSP they come from the main output's crop, the second output's, or extra back end
+passes over the same raw frame (0.05 ms of back end time and ~0.03 ms of CPU per 128x128
+region on the CM5); elsewhere luma frames get views, and the overview is box-filtered on the
+CPU. See [frame-planning.md](frame-planning.md#region-of-interest).
+
 ---
 
 ## Implemented (2026-09-26)

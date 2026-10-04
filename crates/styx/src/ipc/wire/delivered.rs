@@ -4,10 +4,27 @@
 use styx_core::prelude::*;
 
 use super::{IpcError, Reader, Writer};
-use crate::planner::{Delivered, RoiCrop, Unmet};
+use crate::planner::{Delivered, MAX_REGIONS, RoiCrop, Unmet};
 
 /// Most unmet requirements an accept message carries.
 const MAX_UNMET: u8 = 8;
+
+fn crop_code(crop: RoiCrop) -> u8 {
+    match crop {
+        RoiCrop::Isp => 1,
+        RoiCrop::View => 2,
+        RoiCrop::IspPass => 3,
+    }
+}
+
+fn read_crop(r: &mut Reader<'_>) -> Result<RoiCrop, IpcError> {
+    match r.u8()? {
+        1 => Ok(RoiCrop::Isp),
+        2 => Ok(RoiCrop::View),
+        3 => Ok(RoiCrop::IspPass),
+        _ => Err(IpcError::Malformed("unknown region crop")),
+    }
+}
 
 pub(super) fn write_delivered(w: &mut Writer, d: &Delivered) {
     w.u32(d.format.to_u32());
@@ -16,12 +33,12 @@ pub(super) fn write_delivered(w: &mut Writer, d: &Delivered) {
     w.u8(d.pyramid_levels);
     w.opt(d.hardware_pyramid_level, Writer::u8);
     w.bool(d.inter_coded);
-    w.opt(d.roi, |w, roi| {
-        w.u8(match roi {
-            RoiCrop::Isp => 1,
-            RoiCrop::View => 2,
-        })
-    });
+    w.opt(d.roi, |w, roi| w.u8(crop_code(roi)));
+    let regions = &d.regions[..d.regions.len().min(MAX_REGIONS)];
+    w.u8(regions.len() as u8);
+    for crop in regions {
+        w.opt(*crop, |w, crop| w.u8(crop_code(crop)));
+    }
     w.opt(d.overview, Writer::size);
     w.bool(d.hardware_overview);
     w.u8(d.unmet.len().min(usize::from(MAX_UNMET)) as u8);
@@ -49,11 +66,14 @@ pub(super) fn read_delivered(r: &mut Reader<'_>) -> Result<Delivered, IpcError> 
     let pyramid_levels = r.u8()?;
     let hardware_pyramid_level = r.opt(Reader::u8)?;
     let inter_coded = r.bool()?;
-    let roi = r.opt(|r| match r.u8()? {
-        1 => Ok(RoiCrop::Isp),
-        2 => Ok(RoiCrop::View),
-        _ => Err(IpcError::Malformed("unknown region crop")),
-    })?;
+    let roi = r.opt(read_crop)?;
+    let count = usize::from(r.u8()?);
+    if count > MAX_REGIONS {
+        return Err(IpcError::Malformed("too many regions"));
+    }
+    let regions = (0..count)
+        .map(|_| r.opt(read_crop))
+        .collect::<Result<_, IpcError>>()?;
     let overview = r.opt(Reader::size)?;
     let hardware_overview = r.bool()?;
     let count = r.u8()?;
@@ -82,6 +102,7 @@ pub(super) fn read_delivered(r: &mut Reader<'_>) -> Result<Delivered, IpcError> 
         hardware_pyramid_level,
         inter_coded,
         roi,
+        regions,
         overview,
         hardware_overview,
         unmet,

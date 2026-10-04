@@ -56,7 +56,7 @@ pub(super) fn output_specs(
         return Ok(([Some(main), Some(overview)], CompanionKind::Overview));
     }
     let level = cfg.pyramid_level.min(3);
-    if level > 0 {
+    if level > 0 && !cfg.pyramid_pass() {
         if cfg.second_output.is_some() {
             tracing::warn!(
                 backend = "native",

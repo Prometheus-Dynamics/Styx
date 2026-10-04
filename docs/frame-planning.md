@@ -48,7 +48,9 @@ Advanced, for consumers with special needs (a feature detector, SIMD code):
 |---|---|
 | `pyramid(levels)`, `pyramid_source(..)` | ½, ¼, ... companions with each frame (`frame.pyramid_level(n)`), the first from the ISP's second output where there is one |
 | `roi(rect)` | deliver only this region (full-frame pixels); `Frames::roi()` changes it per frame. A native camera's PiSP crops it at full resolution in any format; elsewhere luma frames are views of it |
-| `overview(w, h)` | the whole frame at about `w`x`h` with every frame (`frame.overview()`), to find the next region in; from the PiSP's second output where there is one |
+| `regions([rect, ..])` | several regions (up to 16): the first is the frame, the others its `frame.region(i)` companions, all from the same capture; `Frames::roi().set_regions(..)` moves them |
+| `skip_stale_regions()` | skip frames the ISP cropped before a region last moved, instead of delivering them |
+| `overview(w, h)` | the whole frame at about `w`x`h` with every frame (`frame.overview()`), to find the next region in; from the PiSP's second output where there is one, else box-filtered on the CPU |
 | `row_alignment(bytes)` | rows (and the buffer start) aligned, e.g. 64 for SIMD loads; copied only when the camera's rows are not |
 
 ```rust
@@ -210,6 +212,9 @@ let detector = consumers.pop().unwrap();
   sizes get the larger from the main output and the smaller from the second, both scaled in
   hardware from the same exposure. With a third size, or when an ISP pyramid uses the second
   output, the ISP delivers the mode's size and those consumers scale on their own.
+- **Regions:** each consumer's regions of interest come from the one PiSP: the main output's
+  crop, the second output's, extra back end passes, or views of the whole frame (see
+  [Region of interest](#region-of-interest)).
 - **Decoding once:** consumers with the same request apart from the region of interest and the
   rate share their preparation: each frame is decoded (and its pyramid built) once, and each
   consumer's region is a zero-copy crop of the shared result. The plan notes which consumers
@@ -275,27 +280,85 @@ capture's own buffers and `CaptureBuffers::in_use` stays false. See
 
 ## Region of interest
 
-`FrameRequest::roi` sets an initial region; `Frames::roi()` returns a handle to
-change it per frame (`FrameClient::set_roi` through a camera service). Regions are full-frame
-pixel coordinates of the capture, also when frames are decoded at a smaller output size.
-`Delivered::roi` says how the plan applies it, and a region a route cannot apply is unmet
-(`Unmet::Roi`; NV12 or RGB frames without a PiSP to crop them).
+`FrameRequest::roi` sets an initial region; `Frames::roi()` returns a handle to change it per
+frame (`FrameClient::set_roi` through a camera service). `FrameRequest::regions([..])` asks for
+several (up to 16, `MAX_REGIONS`): region 0 is the frame itself (`roi`), regions 1, 2, ... come
+with it as `CompanionKind::Region { index }` companions (`frame.region(i)`, `frame.regions()`),
+cut from the same capture, so they share its timestamp and metadata. `RoiHandle::set_regions`
+/ `set_region(i, ..)` (`FrameClient::set_regions`) move them while running; `None` for a region
+after the first means none (no companion). Regions are full-frame pixel coordinates of the
+capture, also when frames are decoded at a smaller output size, and every frame or region says
+where it is (`FrameMeta::crop`). `Delivered::regions` says how each is made (`Delivered::roi` is
+region 0); a region a route cannot apply is unmet (`Unmet::Roi`: NV12 or RGB frames without a
+PiSP to crop them, or more regions than the capture has slots for).
 
-- **Native cameras with a PiSP (`RoiCrop::Isp`):** the back end's main output is the region at
-  full resolution, in any format, rounded out to even pixels (at least 16x16): frames are the
-  region's size, so nothing outside it is processed further or handed on. A new region applies
-  from the next frame the ISP processes (about 60 µs to re-plan the back end's tiles); frames
-  already processed arrive first. The capture's `OUTPUT_CROP` control does the same without the
-  planner (`StyxConfig::native_crop` for the first region). Pyramid levels are then
-  box-filtered from the region. It needs the main output at the mode's size and the capture to
-  itself: shared with other consumers (or a camera service with several clients), the region
-  is a view of the shared frame, as below.
-- **Other ISP and raw paths (`RoiCrop::View`):** luma frames become zero-copy crop views. The
-  region's left edge is moved down to the stride alignment so rows stay aligned.
-- **MJPEG:** the decoder decodes only the region. Rows below it are skipped entirely; rows above
-  must still be entropy-decoded.
-- **Companions:** pyramid companions are cropped to the same region at their scale.
-- **Mapping back:** `FrameMeta::crop` gives each frame's position in the full frame.
+How regions are made (`RoiCrop`):
+
+- **`Isp`, a native camera's PiSP in the frame's own pass:** the back end's main output is the
+  region at full resolution, in any format, rounded out to even pixels (at least 16x16): frames
+  are the region's size, so nothing outside it is processed further or handed on, and the pass
+  reads only the input around it (two 128x128 crops side by side: 0.27 ms of back end time
+  against 2.26 ms for the whole 1280x800 frame, with temporal denoise). The second output can crop another region the same way when the main output is the
+  whole frame (its pass then covers the region already: free).
+- **`IspPass`, an extra back end pass over the same raw frame:** the back end works memory to
+  memory, so after the frame's pass it runs again over the raw frame (still held) for each
+  further region, into the main output's buffers (`NativeIspConfig::regions`). Measured on the
+  CM5 (OV9782 1280x800, 30 fps): 0.03 ms of back end time per pass plus 1.35 ns per pixel of the
+  region (128x128: 0.05 ms, 640x400: 0.41 ms, the whole frame 1.39 ms), on the frame's path
+  (the frame comes with all its regions), and about 0.03 ms of CPU per pass. Through the planner
+  (`native_regions bench`, regions moving 2 px every frame, one gray consumer): 1 region 0.294 ms
+  of CPU per frame and 8.94 ms from frame start to delivery, 2 regions 0.300 ms / 9.01 ms, 4
+  regions 0.385 ms / 9.14 ms. The old fallback, views of a whole frame a viewer shares, costs
+  0.27-0.28 ms and 9.56 ms (the frame's pass processes the whole frame). Each pass's region
+  against the same pixels of a
+  viewer's frame from the same capture: mean |difference| 0.2 levels (temporal denoise, below);
+  the second output's crop and views are identical.
+- **`View`:** luma frames become zero-copy crop views of the captured (or decoded) frame. The
+  region's left edge is moved down to the stride alignment so rows stay aligned. An MJPEG
+  decode skips the rows below region 0 (rows above must still be entropy-decoded) unless other
+  regions or the overview need the whole frame.
+
+The planner prices the choices ([`cost`](../crates/styx/src/planner/cost.rs) `pisp_pass`): a
+consumer alone on its capture gets region 0 as the main output's crop and the others as extra
+passes. On a shared capture (or a camera service with several clients):
+
+- when no consumer needs the whole frame (only trackers), the first tracker's region 0 is the
+  main output's crop and every other region an extra pass;
+- otherwise the main output is the whole frame: luma regions are views of it (free, cheaper than
+  a pass), others the second output's crop (when nothing else takes the second output) and
+  extra passes, in the main output's format;
+- the capture has 15 region slots; regions beyond them fall back to views (luma, whole frame) or
+  are unmet;
+- moving a region never restarts the capture: the capture's set-up key has where each
+  consumer's regions are made, not where they are.
+
+A new region applies from the next frame the ISP processes (about 60 µs to re-plan the back end's
+tiles); frames already processed arrive first, one or two after a change.
+`FrameRequest::skip_stale_regions()` skips those instead: a frame whose ISP-cropped regions do
+not cover the regions as set now is not delivered (views are always current). On the CM5,
+regions jumping every 4 frames: 28 of 120 frames showed stale regions without it, none with it
+(at 24 instead of 30 frames per second).
+
+Temporal denoise keeps a running average of the frame in the back end; the frame's own pass
+reads and writes it. Extra passes read the average the frame's pass just wrote and write
+nothing, so the region is denoised as the main output is and the main stream is untouched
+(`native-pipeline pisp --passes`, a static 256x256 region, mean squared difference between
+consecutive frames: the pass 30.5 against the main output's 30.1 on the same frames; with
+temporal denoise off in the pass 34.1 against 29.1; the main output without passes 28.0-28.7,
+within the spread between runs). The main pass updates the average only where its tiles
+read: a pass outside them (the main output a crop elsewhere) runs without, and a main crop that
+jumps mostly outside what the last frame covered starts the average over.
+
+The capture's `OUTPUT_CROP` control (main output) and `region_crop(index)` controls (regions,
+`NativeIspConfig::regions`) do the same without the planner (`StyxConfig::native_crop`,
+`native_regions` for the first rectangles).
+
+- **Companions:** pyramid companions are cropped to the same region at their scale; overviews
+  and other regions are kept whole. A hardware-only pyramid of an ISP-cropped region comes from
+  an extra pass of it (one level); otherwise levels are box-filtered from the region (cheaper
+  than a pass at any size on the CM5).
+- **Mapping back:** `FrameMeta::crop` gives each frame's and region's position in the full
+  frame.
 
 ### Overview
 
@@ -304,27 +367,36 @@ its aspect ratio covering `w`x`h`, to every frame as a `CompanionKind::Overview`
 (`frame.overview()`; crops leave it whole). A tracker crops to the regions around what it found
 and searches the overview to find them again, without asking for full frames. On a native PiSP
 it comes from the back end's second output in the same pass (`Delivered::hardware_overview`;
-it takes the second output, so a pyramid is box-filtered); elsewhere it is the uncropped frame
-itself, shared without a copy and unscaled (`Unmet::Overview` when larger than asked).
+one for the capture, the largest any consumer asked for; it takes the second output, so a
+pyramid is box-filtered or comes from an extra pass); elsewhere it is the frame's luma
+box-filtered down on the CPU (halved while that still covers the size, then an area resize;
+0.16 ms per megapixel halved), or the uncropped frame itself for frames without a luma plane.
 
 ```rust
 let mut frames = Frames::gray()
-    .roi(FrameRect::new(480, 260, 320, 200))
+    .regions([FrameRect::new(480, 260, 128, 128), FrameRect::new(100, 80, 128, 128)])
     .overview(320, 200)
+    .skip_stale_regions()
     .open(&camera)?;
 let roi = frames.roi();
 while let RecvOutcome::Data(frame) = frames.next_frame(Duration::from_millis(500)) {
-    let crop = frame.meta().crop;            // where this frame is in the full frame
-    let overview = frame.overview();         // the whole frame, 320x180 for a 16:9 mode
-    // ... track in `frame`, reacquire in `overview`, then:
-    roi.set(Some(FrameRect::new(0, 0, 256, 256)));
+    for (i, region) in frame.regions() {     // region 0 is `frame` itself
+        let at = region.meta().crop;         // where it is in the full frame
+        // ... track in `region`
+    }
+    let overview = frame.overview();         // the whole frame, 320x200
+    // ... reacquire in `overview`, then:
+    roi.set_regions(&[FrameRect::new(0, 0, 256, 256), FrameRect::new(600, 300, 128, 128)]);
 }
 ```
 
-`examples/04_performance/native_roi.rs` moves the region through a planned stream, a camera
+`examples/04_performance/native_roi.rs` moves one region through a planned stream, a camera
 service client and the raw control, and checks each region against the overview. On the CM5
 (OV9782 1280x720 at 30 fps) each region applies on the next processed frame and matches the
-overview's mean luma within 0.4 levels.
+overview's mean luma within 0.4 levels. `examples/04_performance/native_regions.rs` measures
+regions (`bench N`, `views N`), compares their pixels with a viewer's frame from the same
+capture (`pixels`), runs two trackers (`trackers`), stale frames (`stale`) and two camera
+service clients with two regions each (`service`).
 
 ## Limits
 
@@ -332,3 +404,7 @@ overview's mean luma within 0.4 levels.
   implemented but not yet validated on hardware.
 - A consumer sharing its preparation gets its region cropped from the full decoded frame; alone,
   an MJPEG decode skips the rows below the region.
+- Extra back end passes run one after another after the frame's pass (each waits for the
+  previous); queueing them together would save their wake-ups (~0.03 ms of latency each).
+- A region made by an extra pass is in the main output's format, at full resolution: scaled
+  regions and other formats are supported by `PassSpec` but not planned yet.
