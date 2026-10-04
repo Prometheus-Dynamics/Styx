@@ -174,6 +174,9 @@ pub struct Processed<O> {
     pub ran: bool,
     /// The frame the sensor request made from this frame's statistics lands on.
     pub request_lands: Option<u64>,
+    /// The settings the frame was processed with, when handed out
+    /// ([`Algorithms::set_hand_out_settings`]).
+    pub settings: Option<IspSettings>,
     /// Where the time went.
     pub times: ProcessTimes,
 }
@@ -188,6 +191,8 @@ pub struct Algorithms {
     stepped: bool,
     /// `step.isp` was taken ([`Self::take_step`]): rebuilt from the params for the next frame.
     isp_taken: bool,
+    /// [`Algorithms::process`] hands each frame's settings out ([`Processed::settings`]).
+    hand_out: bool,
     black_level: f64,
     /// The frame the algorithms last ran on.
     last_run: Option<u64>,
@@ -212,12 +217,20 @@ impl Algorithms {
             },
             stepped: false,
             isp_taken: false,
+            hand_out: false,
             black_level,
             last_run: None,
             settled_every: 1,
             stats: Statistics::default(),
             profiler: None,
         }
+    }
+
+    /// Hands each frame's settings out of [`Self::process`] ([`Processed::settings`]), moved
+    /// rather than copied (the next frame's are built from the params again): for callers that
+    /// keep them with the frame (the software loop).
+    pub fn set_hand_out_settings(&mut self, on: bool) {
+        self.hand_out = on;
     }
 
     /// Records the algorithms' run time (`loop`, `algorithms`) with `profiler`.
@@ -400,6 +413,15 @@ impl Algorithms {
         let t2 = now();
         times.submit = t2.since(t1);
         between(&job, &self.step);
+        let handed = self.hand_out.then(|| {
+            if self.stepped {
+                self.isp_taken = true;
+                core::mem::replace(&mut self.step.isp, IspSettings::neutral(self.black_level))
+            } else {
+                // The start-up settings stay for the next frames.
+                self.step.isp.clone()
+            }
+        });
         let (lens, pdaf) = focus;
         let mut pdaf = Some(pdaf);
         // While the ISP works: the statistics that came with the frame through the algorithms.
@@ -456,6 +478,7 @@ impl Algorithms {
             flicker,
             ran,
             request_lands,
+            settings: handed,
             times,
         })
     }

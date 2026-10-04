@@ -170,7 +170,8 @@ impl SoftLoop {
         let format = RawFormat::new(info.width, info.height, info.cfa, packing);
         let controller = Controller::new(tuning, info.camera.clone())?;
         let start = IspSettings::neutral(info.black_level);
-        let algo = Algorithms::new(controller, info.black_level);
+        let mut algo = Algorithms::new(controller, info.black_level);
+        algo.set_hand_out_settings(true);
         let mut base = base_params();
         // A camera with a focus lens gets focus statistics for AF.
         if info.camera.lens.is_some()
@@ -391,10 +392,9 @@ impl SoftLoop {
             |(), _| {},
         )?;
         let (params_time, isp_time) = isp.times;
-        // Set by the submit.
-        let applied = self
-            .applied
-            .clone()
+        // Handed out (set_hand_out_settings).
+        let applied = p
+            .settings
             .unwrap_or_else(|| IspSettings::neutral(self.info.black_level));
         let (step, stats) = if p.ran {
             (self.algo.take_step(), self.algo.take_statistics())
