@@ -43,11 +43,16 @@ The module is `styx_core::daedalus`, or `styx::core::daedalus` through the facad
 adds only the Daedalus types, macros and plugin registry (`daedalus-rs` with `plugins`). The app
 picks the engine and any GPU features it wants.
 
-**Daedalus source.** While the stack is stitched together, the workspace depends on the local
-Daedalus checkout next to this one (`../Daedalus`, branch `dev`; see the root `Cargo.toml`). Every
-workspace build needs that checkout, including CI and Docker builds, even with the feature off,
-because Cargo loads path dependencies when it resolves the workspace. Switching to a git or
-crates.io dependency later is a one-line change to the root `Cargo.toml`.
+**Daedalus source.** Until Daedalus 2.0 is on crates.io, Styx depends on a pinned commit of its
+`dev` branch by its canonical git URL (`https://github.com/Prometheus-Dynamics/Daedalus.git`; the
+`rev` is in the root `Cargo.toml`). Apps and libraries that use Styx from git depend on Daedalus
+the same way, so both resolve to one `daedalus-rs`. To develop against a local Daedalus checkout,
+override the git source in an untracked `.cargo/config.toml` (or the app's `[patch]`):
+
+```toml
+[patch."https://github.com/Prometheus-Dynamics/Daedalus.git"]
+daedalus-rs = { path = "../Daedalus/crates/daedalus" }
+```
 
 ## Using it
 

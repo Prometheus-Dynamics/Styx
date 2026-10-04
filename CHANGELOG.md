@@ -14,6 +14,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   access, companions), a `MetadataOnly` frame-to-descriptor adapter, an inspection serializer,
   all registered by `StyxFramesPlugin`, and zero-copy `frame_payload` with residency mapping.
   See `docs/daedalus.md` and the `daedalus_frames` example.
+  Daedalus is a pinned commit of its `dev` branch by git (a local `[patch]` overrides it).
 - Added `CpuAccess` (`None`, `Uncached`, `Cached`), `ExternalBacking::cpu_access` and
   `FrameLease::cpu_access`: whether the CPU can read a frame's planes and how fast, apart from
   its residency. Native ISP and sensor buffers, libcamera buffers, IPC frames (as the sender
