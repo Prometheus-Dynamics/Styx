@@ -618,5 +618,5 @@ fn raspberry_pi_isp_crops_the_region_through_libcamera() {
     );
     // An overview alone sizes nothing: the uncropped frame.
     let plan = plan_frames_with(&dev, &Frames::gray().overview(320, 200), &registry()).unwrap();
-    assert_eq!(plan.delivered().hardware_overview, false, "{plan}");
+    assert!(!plan.delivered().hardware_overview, "{plan}");
 }
