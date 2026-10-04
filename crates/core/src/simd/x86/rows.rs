@@ -4,9 +4,9 @@
 //! that those bytes are inside the row and are rewritten by the next block or the scalar tail.
 
 #[cfg(target_arch = "x86")]
-use std::arch::x86::*;
+use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+use core::arch::x86_64::*;
 
 /// A shuffle mask from 16 byte indexes (0x80: zero).
 #[inline(always)]

@@ -17,24 +17,37 @@ name = "styx_core"
 path = "src/lib.rs"
 
 [features]
-default = ["neon", "x86"]
-# SIMD backends (see `simd`): AArch64 NEON, and x86 SSE2/SSSE3/AVX2 chosen at run time.
+default = ["std", "neon", "x86"]
+# Frames and pools (`FrameLease`, `BufferPool`, memfd / dma-buf backings), queues, transforms,
+# metrics, clocks. Without it the crate is `no_std` + `alloc`: formats, plane layouts, frame
+# metadata, requirements, controls, the SIMD kernels (docs/portability.md).
+std = [
+    "dep:crossbeam-queue",
+    "dep:parking_lot",
+    "dep:tracing",
+    "dep:libc",
+    "thiserror/std",
+    "serde?/std",
+]
+# SIMD backends (see `simd`): AArch64 NEON, and x86 SSE2/SSSE3/AVX2, chosen at run time with
+# `std` (at compile time from the target features without it).
 neon = []
 x86 = []
-async = ["tokio"]
+async = ["std", "tokio"]
 serde = ["dep:serde", "smallvec/serde"]
-schema = ["dep:utoipa", "serde"]
+schema = ["std", "dep:utoipa", "serde"]
 
 [dependencies]
-crossbeam-queue.workspace = true
+crossbeam-queue = { workspace = true, optional = true }
 smallvec.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"], optional = true }
-parking_lot.workspace = true
-thiserror = { workspace = true, features = ["std"] }
-serde = { workspace = true, features = ["derive", "std"], optional = true }
+parking_lot = { workspace = true, optional = true }
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 utoipa = { workspace = true, optional = true }
-tracing.workspace = true
-libc.workspace = true
+tracing = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+libm.workspace = true
 
 [lints]
 workspace = true

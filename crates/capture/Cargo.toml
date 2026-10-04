@@ -16,7 +16,7 @@ rust-version.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-styx-core.workspace = true
+styx-core = { workspace = true, features = ["std", "neon", "x86"] }
 smallvec.workspace = true
 serde = { workspace = true, features = ["derive", "std"], optional = true }
 utoipa = { workspace = true, optional = true }

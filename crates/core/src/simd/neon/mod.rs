@@ -110,7 +110,7 @@ pub(super) fn reverse_row(
     dst: &mut [u8],
     width: usize,
     bpp: usize,
-) -> Option<(SimdBackend, std::ops::Range<usize>)> {
+) -> Option<(SimdBackend, core::ops::Range<usize>)> {
     // SAFETY: as above.
     let end = unsafe { rows::reverse(src, dst, width, bpp) };
     (end > 0).then_some((SimdBackend::Neon, 0..end))

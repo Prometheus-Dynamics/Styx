@@ -146,7 +146,7 @@ impl Replay {
                 return Ok(Played::Stopped);
             }
             // Recorded metadata is kept; only the delivery time is new.
-            frame.meta_mut().capture_instant = Some(Instant::now());
+            frame.meta_mut().capture_instant = Some(Instant::now().into());
             let closed = match self.pacing {
                 ReplayPacing::Realtime => enqueue_capture_frame(tx, frame, "replay", send_timeout),
                 ReplayPacing::Unpaced => send_every_frame(tx, frame, stop_rx),

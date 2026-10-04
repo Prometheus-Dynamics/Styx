@@ -1,7 +1,7 @@
 //! NEON 8x8 tile transposes (see `scalar::transpose_tile`): output row `k` is input column `k`,
 //! reversed when `reverse`.
 
-use std::arch::aarch64::*;
+use core::arch::aarch64::*;
 
 /// Columns of an 8x8 byte tile given its rows.
 #[inline(always)]
@@ -36,7 +36,7 @@ pub(in crate::simd) unsafe fn transpose_tile_u8(
 ) {
     // SAFETY: 8 rows of 8 bytes in and out, per the caller.
     unsafe {
-        let rows = std::array::from_fn(|i| vld1_u8(src.add(i * src_stride)));
+        let rows = core::array::from_fn(|i| vld1_u8(src.add(i * src_stride)));
         for (k, col) in transpose_u8x8(rows).into_iter().enumerate() {
             let col = if reverse { vrev64_u8(col) } else { col };
             vst1_u8(dst.offset(k as isize * dst_stride), col);
@@ -56,7 +56,7 @@ pub(in crate::simd) unsafe fn transpose_tile_rgb(
 ) {
     // SAFETY: as above; each channel plane is transposed on its own.
     unsafe {
-        let rows: [uint8x8x3_t; 8] = std::array::from_fn(|i| vld3_u8(src.add(i * src_stride)));
+        let rows: [uint8x8x3_t; 8] = core::array::from_fn(|i| vld3_u8(src.add(i * src_stride)));
         let planes = [
             transpose_u8x8(rows.map(|r| r.0)),
             transpose_u8x8(rows.map(|r| r.1)),
@@ -86,7 +86,7 @@ pub(in crate::simd) unsafe fn transpose_tile_u16(
     // SAFETY: as above.
     unsafe {
         let r: [uint16x8_t; 8] =
-            std::array::from_fn(|i| vreinterpretq_u16_u8(vld1q_u8(src.add(i * src_stride))));
+            core::array::from_fn(|i| vreinterpretq_u16_u8(vld1q_u8(src.add(i * src_stride))));
         let t = [
             vtrnq_u16(r[0], r[1]),
             vtrnq_u16(r[2], r[3]),
@@ -138,7 +138,7 @@ pub(in crate::simd) unsafe fn transpose_tile_u32(
 ) {
     // SAFETY: as above. The tile is four 4x4 blocks: rows[i][h] holds pixels 4h..4h+4 of row i.
     unsafe {
-        let rows: [[uint32x4_t; 2]; 8] = std::array::from_fn(|i| {
+        let rows: [[uint32x4_t; 2]; 8] = core::array::from_fn(|i| {
             let p = src.add(i * src_stride);
             [
                 vreinterpretq_u32_u8(vld1q_u8(p)),

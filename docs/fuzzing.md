@@ -132,6 +132,6 @@ The runs, on a 24-core x86-64 host shared with other builds (ASan, overflow chec
 One `mjpeg_decode` input timed out once under that load (22 s); alone it decodes (to an error)
 in microseconds in every decoder, and the second run was clean.
 
-Miri (`cargo +nightly miri test -p styx-core-rs --no-default-features --lib`: the queue, SIMD
+Miri (`cargo +nightly miri test -p styx-core-rs --no-default-features --features std --lib`: the queue, SIMD
 (scalar), buffer pool, frame layout and view, format and transform tests, 59 in all; the memfd
 and dma-buf tests need syscalls Miri does not have) found nothing.

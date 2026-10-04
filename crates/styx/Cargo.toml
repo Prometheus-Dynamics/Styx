@@ -16,7 +16,7 @@ rust-version.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-styx-core.workspace = true
+styx-core = { workspace = true, features = ["std", "neon", "x86"] }
 styx-capture = { workspace = true, optional = true }
 styx-codec = { workspace = true, optional = true }
 styx-libcamera = { workspace = true, optional = true, features = ["probe"] }

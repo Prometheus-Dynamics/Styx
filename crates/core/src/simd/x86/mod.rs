@@ -203,7 +203,7 @@ pub(super) fn reverse_row(
     dst: &mut [u8],
     width: usize,
     bpp: usize,
-) -> Option<(SimdBackend, std::ops::Range<usize>)> {
+) -> Option<(SimdBackend, core::ops::Range<usize>)> {
     let f = X86FeatureSet::detect();
     let (backend, range) = match bpp {
         1 if f.ssse3 => (

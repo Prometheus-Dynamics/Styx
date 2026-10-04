@@ -9,6 +9,8 @@
 //! [`FrameRequirements`] and [`Priority`] are the previous form of that request, kept for one
 //! release as deprecated shims; `styx` converts them to a `FrameRequest`.
 
+use alloc::vec::Vec;
+
 use crate::format::FourCc;
 
 mod legacy;

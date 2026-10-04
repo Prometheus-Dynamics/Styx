@@ -30,7 +30,12 @@ impl FrameLease {
         );
         // The view must lie within the Y plane's layout, whatever stride the frame claims (a
         // layout from another process or a recording); this also bounds the arithmetic.
-        super::layout::validate_plane_layout(0, Some(&layout), width as usize, height as usize)?;
+        crate::buffer::layout::validate_plane_layout(
+            0,
+            Some(&layout),
+            width as usize,
+            height as usize,
+        )?;
         let overflow = FrameValidationError::UnknownStorageLayout;
         let offset = y
             .checked_mul(layout.stride)

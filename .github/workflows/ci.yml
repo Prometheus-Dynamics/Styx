@@ -46,7 +46,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Run SIMD kernels without backends (scalar only)
-        run: cargo test -p styx-core-rs --no-default-features --lib simd
+        run: cargo test -p styx-core-rs --no-default-features --features std --lib simd
 
       - name: Run damaged-input tests (MJPEG decoders, netcam parser)
         run: |

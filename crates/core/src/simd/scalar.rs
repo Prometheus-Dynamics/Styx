@@ -166,7 +166,7 @@ pub unsafe fn transpose_tile<const N: usize>(
             let j = if reverse { 7 - i } else { i };
             // SAFETY: pixel (row i, column k) of the source tile and pixel j of output row k.
             unsafe {
-                std::ptr::copy_nonoverlapping(src.add(i * src_stride + k * N), out.add(j * N), N)
+                core::ptr::copy_nonoverlapping(src.add(i * src_stride + k * N), out.add(j * N), N)
             };
         }
     }

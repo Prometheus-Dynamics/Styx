@@ -41,7 +41,9 @@ rust-version = "1.94"
 [workspace.dependencies]
 mcap = { version = "0.25", default-features = false }
 styx = { path = "crates/styx", version = "2.0.0", default-features = false }
-styx-core = { package = "styx-core-rs", path = "crates/core", version = "2.0.0" }
+# No default features so styx-softisp can use it without std; the other crates ask for
+# `std`, `neon` and `x86` (styx-core's defaults).
+styx-core = { package = "styx-core-rs", path = "crates/core", version = "2.0.0", default-features = false }
 styx-capture = { path = "crates/capture", version = "2.0.0" }
 styx-codec = { path = "crates/codec", version = "2.0.0" }
 styx-libcamera = { path = "crates/libcamera", version = "2.0.0" }
