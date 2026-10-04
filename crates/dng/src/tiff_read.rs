@@ -2,7 +2,6 @@
 //! checked against the file.
 
 use alloc::string::ToString;
-
 use alloc::{format, string::String, vec::Vec};
 
 use crate::tiff::kind;

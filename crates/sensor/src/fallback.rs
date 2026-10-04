@@ -2,7 +2,6 @@
 //! reports, with controls going through V4L2 controls instead of registers.
 
 use alloc::{borrow::ToOwned, string::ToString};
-
 use alloc::{format, string::String, vec, vec::Vec};
 
 use alloc::collections::{BTreeMap, BTreeSet};

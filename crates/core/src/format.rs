@@ -1,7 +1,8 @@
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use alloc::string::String;
 use core::{fmt, num::NonZeroU32, str::FromStr};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// Four-character code describing a pixel/stream format.
 ///

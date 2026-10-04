@@ -1,8 +1,7 @@
 //! Reading applied control values back from a frame's embedded data.
 
-use alloc::vec::Vec;
-
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec::Vec;
 
 use crate::desc::{
     EmbeddedControlKind, EmbeddedData, EmbeddedFormat, EmbeddedPacking, Field, SensorDescription,

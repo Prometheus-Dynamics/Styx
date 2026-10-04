@@ -1,7 +1,6 @@
 //! Per-frame inputs besides statistics: what the sensor did and what the application asked for.
 
 use alloc::{string::String, vec::Vec};
-
 use core::time::Duration;
 
 use serde::{Deserialize, Serialize};

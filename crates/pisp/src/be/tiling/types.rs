@@ -2,7 +2,6 @@
 //! 2021 - 2023, Raspberry Pi Ltd).
 
 use alloc::string::String;
-
 use core::fmt;
 
 /// Direction.

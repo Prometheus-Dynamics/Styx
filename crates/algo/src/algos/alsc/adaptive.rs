@@ -14,7 +14,6 @@ use alloc::{vec, vec::Vec};
 
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
-
 use crate::stats::ZoneGrid;
 
 /// Marks a zone without usable colour statistics.

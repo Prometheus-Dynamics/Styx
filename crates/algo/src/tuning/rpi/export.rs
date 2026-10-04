@@ -10,14 +10,12 @@
 //! the format either.
 
 use alloc::borrow::ToOwned;
-
 use alloc::{format, string::String, vec, vec::Vec};
-
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 
 use super::{FULL, alsc_grid};
 use crate::algos::agc::metering;
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::pwl::Pwl;
 use crate::tuning::*;
 

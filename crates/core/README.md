@@ -18,6 +18,12 @@ styx-core-rs = "2.0.0"
 - `controls`: `ControlId`, `ControlMeta`, `ControlValue`, and validation logic.
 - `metrics`: simple hit/miss/allocation counters for pools.
 
+## `no_std`
+Without the default `std` feature (`default-features = false, features = ["neon", "x86"]`) the
+crate is `no_std` + `alloc`: formats, plane layouts and their math, plane views, frame metadata
+(`FrameMeta`, `CaptureInstant`), requirements, controls and the SIMD kernels. Frames and pools,
+queues, transforms and metrics need `std`. See the repository's `docs/portability.md`.
+
 ## Zero-copy buffers and frames
 Frames are built from pooled buffers to avoid churn:
 ```rust

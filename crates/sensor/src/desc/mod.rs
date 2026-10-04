@@ -1,16 +1,12 @@
 //! The sensor description schema. See the crate documentation for a full example.
 
-use alloc::{borrow::ToOwned, string::String, string::ToString, vec::Vec};
-
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
-
 mod controls;
 mod step;
 mod types;
 mod validate;
 
 use alloc::collections::BTreeMap;
+use alloc::{borrow::ToOwned, string::String, string::ToString, vec::Vec};
 #[cfg(feature = "std")]
 use std::path::Path;
 
@@ -25,6 +21,8 @@ pub use step::{RegWrite, Step};
 pub use types::{Blanking, Field, Rect, Size};
 
 use crate::error::{Result, SensorError};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::mbus::{ColorFilter, MbusCode};
 use crate::timing::Timing;
 

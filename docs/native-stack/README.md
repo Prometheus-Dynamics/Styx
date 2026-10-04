@@ -55,6 +55,10 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
 | `kernel-modules/pispbe` | (C, GPL-2.0) | The Raspberry Pi PiSP back end driver (`pisp_be`) patched for a cheaper per-job config write (117 → 8 µs), build and install scripts | pisp agent |
 
+`styx-core-rs`, `styx-sensor`, `styx-pisp` (without `device`), `styx-algo`, `styx-softisp` and
+`styx-dng` build as `no_std` + `alloc` without their default `std` feature, for targets with no
+Linux underneath: see [portability.md](../portability.md).
+
 Crates must not depend on each other except: `styx-sensor` may use `styx-kernel` types behind
 its `bus` trait implementation feature, and `styx-graph` and `styx-algo` depend on nothing new. `styx-pipeline`
 is where the pieces meet (`styx-algo`, `styx-pisp`, `styx-softisp`, `styx-sensor`; `styx-native`

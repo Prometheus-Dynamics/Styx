@@ -2,10 +2,9 @@
 
 use alloc::{vec, vec::Vec};
 
+use crate::desc::{Gain, GainModel};
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
-
-use crate::desc::{Gain, GainModel};
 
 /// How to quantise a gain that falls between codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,9 +1,8 @@
 //! AWB tuning. Field names and defaults follow Raspberry Pi's `rpi.awb`; `min_g` is normalised
 //! to full scale 1.0.
 
-use alloc::{format, string::String, vec::Vec};
-
 use alloc::collections::BTreeMap;
+use alloc::{format, string::String, vec::Vec};
 
 use serde::{Deserialize, Serialize};
 

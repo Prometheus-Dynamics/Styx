@@ -12,10 +12,9 @@
 
 use alloc::{format, string::String};
 
+use crate::format::compute_stride_align;
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
-
-use crate::format::compute_stride_align;
 use crate::uapi::*;
 
 /// Front end LSC interpolation precision (libpisp `FrontEnd::InterpPrecision`).

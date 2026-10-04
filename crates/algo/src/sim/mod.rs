@@ -22,19 +22,17 @@
 //!
 //! Everything is deterministic: noise comes from a seeded generator without libm calls.
 
-use alloc::{vec, vec::Vec};
-
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
-
 mod focus;
 mod metrics;
 
 use alloc::collections::BTreeMap;
+use alloc::{vec, vec::Vec};
 use core::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::frame::{Controls, FrameMetadata};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Pipeline;
 use crate::pwl::Pwl;

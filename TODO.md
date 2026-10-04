@@ -101,6 +101,17 @@ box (OV9782 1280x800) unless stated.
       service's metrics request, `metrics_top`. Checked against the consumers' own measurement
       on the CM5. See [docs/metrics.md](docs/metrics.md).
 
+### Portability (`no_std`, phase 1: the brains)
+- [x] `styx-core-rs` (formats, plane layouts, frame metadata, requirements, controls, SIMD
+      kernels), `styx-algo` (all 3A and AF, tuning from TOML / Raspberry Pi JSON strings, the
+      simulator), `styx-softisp` (kernels, `SoftIsp` on the calling thread), `styx-sensor`
+      (descriptions, timing, gains, scheduler, embedded data, lenses, the driver over a
+      `RegisterBus`), `styx-pisp` (config builders, tiling, statistics), `styx-dng` build as
+      `no_std` + `alloc` without their default `std` feature; Linux builds unchanged (softisp
+      benches within noise). Built for Cortex-M33, RISC-V and wasm32 in CI
+      (`scripts/check-nostd.sh`); `examples/nostd-smoke` runs AE/AWB and the ISP without std
+      as a host test. See [portability.md](docs/portability.md).
+
 ### HeliOS
 - [x] `helios-peripherals` runs on the native stack (HeliOS branch `styx-native-trial`):
       2 h with helios-engine consuming, 3.7 % CPU, 30 MB, no stalls; ship checklist in
@@ -176,6 +187,14 @@ box (OV9782 1280x800) unless stated.
 
 ### Platforms
 - [ ] A second bridged sensor and a non-Pi board (software ISP or its own ISP).
+- [ ] `no_std` phase 2: a HAL (I²C, GPIO, clocks, a CSI/DVP receiver, DMA buffers) and a
+      `no_std` camera runtime driving `SensorDriver`, the 3A `Pipeline` and `SoftIsp` per
+      frame; frames (`FrameLease`, pools) without std; run on real MCU hardware (so far only
+      built for bare-metal targets and run on the host).
+- [ ] `no_std` on targets without pointer-sized atomics (Cortex-M0, RISC-V without `a`):
+      `SensorDriver` and the fp16 tables hold `Arc`s (`portable-atomic`, or `Rc`).
+- [ ] `no_std` replays: 3A results through libm can differ from std's in the last bits, so a
+      replay recorded on Linux is not bit-exact on a `no_std` target (deterministic per build).
 - [x] GPU ISP path where Vulkan exists (`styx-gpuisp`, optional): the software ISP's pipeline
       as Vulkan compute shaders (ash, Vulkan loaded at run time), bit-exact with the integer
       arithmetic (pictures and statistics, RADV and llvmpipe), capture dma-bufs imported and

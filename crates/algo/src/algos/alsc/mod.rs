@@ -17,9 +17,6 @@
 
 use alloc::{format, string::String, vec, vec::Vec};
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
-
 mod adaptive;
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::{CameraConfig, Crop};
 use crate::error::{AlgoError, Result};
 use crate::frame::FrameMetadata;
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::params::{LensShading, Params};
 use crate::pipeline::Algorithm;
 use crate::stats::Statistics;

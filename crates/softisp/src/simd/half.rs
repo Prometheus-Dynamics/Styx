@@ -11,13 +11,12 @@
 //! fp16 `1024 + v`), the colour matrix is nine multiply-adds per 8 pixels, and the tone curve
 //! is looked up with `tbl` from the fp16 bits themselves (see [`HalfTone`]).
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
-
 use super::f16;
 #[cfg(all(feature = "neon", target_arch = "aarch64"))]
 use super::neon;
 use crate::format::CfaPattern;
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// fp16 constants.
 pub const H_HALF: u16 = 0x3800;

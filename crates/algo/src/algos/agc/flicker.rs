@@ -46,16 +46,14 @@
 //! minimum ([`FlickerFit::hz`]). Phases are fitted relative to the newest frame
 //! ([`FlickerModel::reference`]) so frequency changes do not swing them.
 
-use alloc::{vec, vec::Vec};
-
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
-
 use alloc::collections::VecDeque;
+use alloc::{vec, vec::Vec};
 use core::f64::consts::PI;
 
 use super::{DETECT_F, DETECT_SAMPLES, DETECT_TIME, DETECT_VISIBLE};
 use crate::frame::{Deflicker, Flicker, FrameMetadata};
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::stats::Statistics;
 
 /// Mains frequencies.

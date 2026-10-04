@@ -2,10 +2,10 @@
 
 use alloc::vec::Vec;
 
+use serde::{Deserialize, Serialize};
+
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
-
-use serde::{Deserialize, Serialize};
 
 /// Every stage of the pipeline, in processing order. `None` skips a stage.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

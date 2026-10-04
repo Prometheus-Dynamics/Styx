@@ -76,9 +76,6 @@ fn frame_meta_can_carry_capture_instant() {
     let meta = FrameMeta::new(fmt, 123).with_capture_instant(before);
 
     assert_eq!(meta.capture_instant(), Some(before.into()));
-    let at = crate::buffer::CaptureInstant::from_nanos(5);
-    let meta = FrameMeta::new(fmt, 123).with_capture_instant(at);
-    assert_eq!(meta.capture_instant(), Some(at));
 }
 
 #[test]

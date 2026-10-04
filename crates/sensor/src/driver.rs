@@ -1,8 +1,7 @@
 //! The userspace sensor driver: runs a description over a [`RegisterBus`] and [`SensorPins`].
 
-use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
-
 use alloc::sync::Arc;
+use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
 use core::time::Duration;
 
 use crate::bus::{RegisterBus, SensorPins};

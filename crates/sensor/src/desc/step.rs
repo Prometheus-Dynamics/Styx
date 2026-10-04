@@ -1,7 +1,6 @@
 //! Sequence steps: register writes, delays, GPIO lines, clocks and supplies.
 
 use alloc::{format, string::String, vec::Vec};
-
 use core::fmt;
 use core::time::Duration;
 

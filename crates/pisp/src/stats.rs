@@ -4,7 +4,6 @@ use alloc::vec::Vec;
 
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
-
 use crate::uapi::*;
 
 /// One white balance zone: channel sums over the pixels counted.

@@ -44,15 +44,14 @@
 //! exposure and gain leave no headroom).
 
 use alloc::vec::Vec;
-
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
-
 use core::f64::consts::PI;
 
 use serde::{Deserialize, Serialize};
 
 use super::flicker::{FlickerFit, FlickerModel, modulation, sinc};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// Seconds the correction takes to fade in or out.
 pub const FADE: f64 = 0.25;

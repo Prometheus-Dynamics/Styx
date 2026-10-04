@@ -22,15 +22,14 @@
 //! VCMs report no position: [`LensSchedule`] predicts each frame's from the moves written and
 //! [`LensMotion`] (a first-order approach that is complete after `settle`).
 
-use alloc::{format, string::String, vec, vec::Vec};
-
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
-
 use alloc::collections::{BTreeMap, VecDeque};
+use alloc::{format, string::String, vec, vec::Vec};
 use core::time::Duration;
 
 use serde::Deserialize;
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// A focus lens.
 #[derive(Debug, Clone, PartialEq, Deserialize)]

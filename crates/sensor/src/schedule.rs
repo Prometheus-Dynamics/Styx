@@ -20,9 +20,8 @@
 //! in lines. Exposures are clamped at issue time to the frame length predicted for the frame
 //! they land on.
 
-use alloc::vec::Vec;
-
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use crate::desc::Delays;
 

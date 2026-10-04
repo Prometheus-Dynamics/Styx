@@ -7,9 +7,8 @@
 //! [`RpiImport::ignored`].
 //! 16-bit levels are normalised to 1.0 and times stay in microseconds.
 
-use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
-
 use alloc::collections::BTreeMap;
+use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
 
 use crate::error::{AlgoError, Result};
 use crate::pwl::Pwl;

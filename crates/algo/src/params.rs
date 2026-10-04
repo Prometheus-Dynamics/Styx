@@ -5,7 +5,6 @@
 //! Values persist from frame to frame until an algorithm changes them.
 
 use alloc::{string::String, vec::Vec};
-
 use core::time::Duration;
 
 use serde::{Deserialize, Serialize};

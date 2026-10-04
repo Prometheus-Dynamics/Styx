@@ -263,10 +263,11 @@ impl FrameLease {
     ) -> Result<Self, FrameValidationError> {
         // Check the size before allocating, so a wrong or corrupt `format` (e.g. from a damaged
         // recording) cannot allocate far more than `bytes` holds.
-        let allocated: usize = crate::buffer::layout::default_layouts_for_format(format, None, None)?
-            .iter()
-            .map(|layout| layout.offset.saturating_add(layout.len))
-            .fold(0, usize::saturating_add);
+        let allocated: usize =
+            crate::buffer::layout::default_layouts_for_format(format, None, None)?
+                .iter()
+                .map(|layout| layout.offset.saturating_add(layout.len))
+                .fold(0, usize::saturating_add);
         if allocated > bytes.len().saturating_mul(2).saturating_add(4096) {
             return Err(FrameValidationError::VisibleLenMismatch {
                 expected: allocated,

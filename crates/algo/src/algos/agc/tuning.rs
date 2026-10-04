@@ -1,9 +1,8 @@
 //! AGC tuning. Field names and defaults follow Raspberry Pi's `rpi.agc` (channel 0), with
 //! times in microseconds and luma targets normalised to 1.0.
 
-use alloc::{format, string::String, vec, vec::Vec};
-
 use alloc::collections::BTreeMap;
+use alloc::{format, string::String, vec, vec::Vec};
 
 use serde::{Deserialize, Serialize};
 

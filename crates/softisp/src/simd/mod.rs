@@ -8,9 +8,6 @@
 
 use alloc::boxed::Box;
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
-
 pub mod f16;
 pub mod half;
 pub mod poly;
@@ -19,6 +16,8 @@ pub mod scalar;
 pub use styx_core::simd::{SimdBackend, X86FeatureSet, strongest_backend};
 
 use crate::format::CfaPattern;
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 #[cfg(all(feature = "neon", target_arch = "aarch64"))]
 mod neon;

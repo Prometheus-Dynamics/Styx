@@ -6,14 +6,13 @@
 
 use alloc::vec::Vec;
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
-
 use serde::{Deserialize, Serialize};
 
 use crate::config::CameraConfig;
 use crate::error::{AlgoError, Result};
 use crate::frame::FrameMetadata;
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Algorithm;
 use crate::pwl::Pwl;

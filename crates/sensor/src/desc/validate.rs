@@ -1,8 +1,7 @@
 //! Consistency checks beyond what the types enforce.
 
-use alloc::{format, string::String, vec::Vec};
-
 use alloc::collections::BTreeSet;
+use alloc::{format, string::String, vec::Vec};
 
 use super::{Backend, Field, Gain, GainModel, Rect, SensorDescription, Step};
 use crate::error::{Issue, Issues};

@@ -8,7 +8,6 @@ use alloc::vec::Vec;
 
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
-
 use crate::uapi::{BE_LSC_LUT_SIZE, BeLscConfig};
 
 /// Gains per vertex of the 33x33 grid, `[channel (R, G, B)][row][column]`.
