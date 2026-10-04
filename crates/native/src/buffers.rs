@@ -220,6 +220,12 @@ impl V4l2Buffer {
     fn buffer(&self) -> &Buffer {
         &self.set.buffers[self.index as usize]
     }
+
+    /// Whether the buffer was imported from a dma-heap (cached for the CPU) rather than being
+    /// the driver's own (uncached).
+    pub(crate) fn cpu_cached(&self) -> bool {
+        self.set.memory() == Memory::DmaBuf
+    }
 }
 
 impl FrameBuffer for V4l2Buffer {
@@ -330,7 +336,7 @@ impl NativeFrame {
     /// Whether the buffer is imported from a dma-heap (cached for the CPU) rather than the
     /// driver's (uncached).
     pub fn cpu_cached(&self) -> bool {
-        self.lender.buffers.memory() == Memory::DmaBuf
+        self.frame.buffer().cpu_cached()
     }
 
     /// Size of the whole buffer in bytes.
