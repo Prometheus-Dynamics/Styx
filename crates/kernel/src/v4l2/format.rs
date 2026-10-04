@@ -211,6 +211,14 @@ impl Format {
         }
     }
 
+    /// Decode a `struct v4l2_format` from `bytes`. For fuzzing.
+    #[doc(hidden)]
+    pub fn fuzz_from_bytes(bytes: &[u8]) {
+        if let Ok(format) = Self::from_raw(&raw::from_bytes::<raw::v4l2_format>(bytes)) {
+            let _ = (format.size(), format.fourcc());
+        }
+    }
+
     fn from_raw(raw: &raw::v4l2_format) -> Result<Self> {
         let ty = BufType::from_raw(raw.type_)
             .ok_or_else(|| Error::Invalid(format!("unknown buffer type {}", raw.type_)))?;

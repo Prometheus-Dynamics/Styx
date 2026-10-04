@@ -28,10 +28,10 @@ pub use views::{
 pub use companion::{CompanionKind, box_downscale_luma, box_downscale_luma_in};
 #[cfg(unix)]
 mod shared_fd;
-#[cfg(unix)]
-use shared_fd::SharedFdBacking;
 #[cfg(target_os = "linux")]
 use shared_fd::create_memfd;
+#[cfg(unix)]
+use shared_fd::{SharedFdBacking, fd_size};
 
 /// External backing for frames when zero-copy sharing external memory.
 pub trait ExternalBacking: Send + Sync {
@@ -529,33 +529,37 @@ impl FrameLease {
     }
 
     pub fn materialize_owned(&self) -> Self {
-        let max_len = self
-            .layouts
+        // Each plane gets its own buffer holding the bytes that are there (a plane outside an
+        // external backing has none), so nothing is sized from a layout's offset or length.
+        let planes = self.planes();
+        let max_len = planes
             .iter()
-            .map(|layout| layout.offset.saturating_add(layout.len))
+            .map(|p| p.data().len())
             .max()
             .unwrap_or(1)
             .max(1);
         let pool = BufferPool::with_limits(self.layouts.len().max(1), max_len, self.layouts.len());
-        let buffers = self
-            .planes()
+        let mut layouts = SmallVec::new();
+        let buffers = planes
             .into_iter()
-            .zip(self.layouts.iter().copied())
+            .zip(self.layouts.iter())
             .map(|(plane, layout)| {
-                let required = layout.offset.saturating_add(layout.len);
+                let data = plane.data();
                 let mut lease = pool.lease();
-                lease.resize(required);
-                if layout.len > 0 {
-                    let dst = &mut lease.as_mut_slice()[layout.offset..required];
-                    dst.copy_from_slice(plane.data());
-                }
+                lease.resize(data.len());
+                lease.as_mut_slice().copy_from_slice(data);
+                layouts.push(PlaneLayout {
+                    offset: 0,
+                    len: data.len(),
+                    stride: layout.stride,
+                });
                 lease
             })
             .collect();
         let mut meta = self.meta.clone();
         meta.residency = Some(FrameResidency::HostOwned);
         meta.mutability = FrameMutability::Mutable;
-        let mut owned = FrameLease::multi_plane(meta, buffers, self.layouts.clone());
+        let mut owned = FrameLease::multi_plane(meta, buffers, layouts);
         owned.companions = self.materialize_companions();
         owned
     }

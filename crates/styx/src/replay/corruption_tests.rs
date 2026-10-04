@@ -61,7 +61,12 @@ fn read_all(bytes: &[u8]) -> usize {
         else {
             return 0;
         };
-        frames.take(64).filter(Result::is_ok).count()
+        // Read each frame's pixels too, as a consumer would.
+        frames
+            .take(64)
+            .filter_map(Result::ok)
+            .map(|f| drop(f.to_visible_vec()))
+            .count()
     });
     assert!(
         largest <= READ_BUFFER.max(4 * bytes.len() + 8192),
@@ -153,4 +158,58 @@ fn chunk_headers_claiming_huge_fields_are_rejected() {
     damaged[chunk + 37..chunk + 41].copy_from_slice(&0x7FFF_FFF0u32.to_le_bytes());
     // `read_all` fails the test if this allocates more than the file.
     read_all(&damaged);
+}
+
+/// Writes small recordings of every format to `$STYX_FUZZ_SEEDS/replay_reader/` as seeds for
+/// the `replay_reader` fuzz target (`docs/fuzzing.md`).
+#[test]
+#[ignore = "writes fuzz seeds; run with STYX_FUZZ_SEEDS set"]
+fn write_fuzz_seeds() {
+    let Some(dir) = std::env::var_os("STYX_FUZZ_SEEDS") else {
+        return;
+    };
+    let dir = std::path::Path::new(&dir).join("replay_reader");
+    std::fs::create_dir_all(&dir).unwrap();
+    for format in formats() {
+        std::fs::write(
+            dir.join(format!("sample-{format:?}")),
+            sample(format, "seed"),
+        )
+        .unwrap();
+        // A small native capture: two 16x8 frames with the sensor's exposure and gains.
+        let path = temp_path(&format!("seed-native-{format:?}"));
+        let mut recorder =
+            StreamRecorder::with_format(&path, &header(grey(16, 8)), format).unwrap();
+        for i in 0..2u8 {
+            let bytes: Vec<u8> = (0..16 * 8).map(|p| (p as u8).wrapping_add(i)).collect();
+            let mut f =
+                FrameLease::from_visible_bytes(grey(16, 8), u64::from(i) * 33_000_000, &bytes)
+                    .unwrap();
+            f.meta_mut().clock = Some(TimestampClock::Monotonic);
+            f.meta_mut().backend = Some(BackendFrameMeta::Native(NativeFrameMeta {
+                sequence: u32::from(i),
+                bytes_used: 128,
+                error: false,
+                exposure_ns: 9_998_000,
+                analog_gain: 2.5,
+                digital_gain: 1.0,
+                frame_duration_ns: 33_333_000,
+                frame_length: 3662,
+                verified: true,
+            }));
+            recorder.record(&f).unwrap();
+        }
+        recorder.finish().unwrap();
+        std::fs::copy(&path, dir.join(format!("native-{format:?}"))).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Inputs the `replay_reader` fuzz target found (`fuzz_regressions/`): each must read without
+/// panicking or allocating beyond the file.
+#[test]
+fn fuzz_regressions_read_without_panicking() {
+    // A `.styxrec` frame whose format claims ~3.8 EB of pixels: the copy of its visible rows
+    // was allocated before its planes were checked.
+    read_all(include_bytes!("fuzz_regressions/styxrec-huge-plane"));
 }

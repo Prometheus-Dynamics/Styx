@@ -129,7 +129,15 @@ impl RawRecording {
     /// Reads `<base>.jsonl` and `<base>.raw`.
     pub fn open(base: &Path) -> Result<Self> {
         let (index, data_path) = paths(base);
-        let mut lines = BufReader::new(File::open(index)?).lines();
+        let index = BufReader::new(File::open(index)?);
+        let mut data = Vec::new();
+        File::open(data_path)?.read_to_end(&mut data)?;
+        Self::from_reader(index, data)
+    }
+
+    /// A recording from its index (the `.jsonl` lines) and its frames' bytes (checked).
+    pub fn from_reader(index: impl BufRead, data: Vec<u8>) -> Result<Self> {
+        let mut lines = index.lines();
         let header: Header =
             serde_json::from_str(&lines.next().ok_or_else(|| bad("empty index"))??).map_err(bad)?;
         if header.styx_raw_recording != VERSION {
@@ -142,20 +150,33 @@ impl RawRecording {
                 frames.push(serde_json::from_str(&line).map_err(bad)?);
             }
         }
-        let mut data = Vec::new();
-        File::open(data_path)?.read_to_end(&mut data)?;
         Self::from_parts(header, frames, data)
     }
 
     /// A recording from its parts (checked).
     pub fn from_parts(header: Header, frames: Vec<FrameRecord>, data: Vec<u8>) -> Result<Self> {
-        let row = header.format.min_stride();
-        let need = header.stride * (header.format.height as usize - 1) + row;
+        let f = header.format;
+        if f.width == 0 || f.height == 0 {
+            return Err(bad("empty frames"));
+        }
+        if !(1..=16).contains(&f.packing.bit_depth()) {
+            return Err(bad(format!("{} bits per sample", f.packing.bit_depth())));
+        }
+        if frames.is_empty() {
+            return Err(bad("no frames"));
+        }
+        let row = f.min_stride();
         if header.stride < row {
             return Err(bad(format!("stride {} below {row}", header.stride)));
         }
+        let need = header
+            .stride
+            .checked_mul(f.height as usize - 1)
+            .and_then(|n| n.checked_add(row))
+            .ok_or_else(|| bad("frames larger than memory"))?;
         for (i, f) in frames.iter().enumerate() {
-            if (f.len as usize) < need || f.offset + f.len > data.len() as u64 {
+            let end = f.offset.checked_add(f.len);
+            if (f.len as usize) < need || end.is_none_or(|end| end > data.len() as u64) {
                 return Err(bad(format!("frame {i} is outside the data or too short")));
             }
         }
@@ -278,5 +299,81 @@ mod tests {
         assert_eq!(r.frames[0].sensor, v);
         assert_eq!(r.frame(0), &[7u8; 64][..]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Writes a small recording (index, a NUL byte, the frames) to
+    /// `$STYX_FUZZ_SEEDS/pipeline_rawrec/` as a seed for that fuzz target (`docs/fuzzing.md`).
+    #[test]
+    #[ignore = "writes fuzz seeds; run with STYX_FUZZ_SEEDS set"]
+    fn write_fuzz_seeds() {
+        let Some(dir) = std::env::var_os("STYX_FUZZ_SEEDS") else {
+            return;
+        };
+        let dir = Path::new(&dir).join("pipeline_rawrec");
+        std::fs::create_dir_all(&dir).unwrap();
+        let info = SensorInfo::from_description(&ov9782(), "640x400", "raw10").unwrap();
+        let header = Header {
+            styx_raw_recording: VERSION,
+            format: RawFormat::new(8, 4, CfaPattern::Bggr, RawPacking::Csi2Raw10),
+            stride: 10,
+            sensor: info,
+            notes: String::new(),
+        };
+        let mut bytes = serde_json::to_vec(&header).unwrap();
+        for (i, gain) in [1.0, 2.0].into_iter().enumerate() {
+            let rec = FrameRecord {
+                sensor: SensorValues {
+                    frame: i as u64,
+                    exposure: Duration::from_micros(5000),
+                    analogue_gain: gain,
+                    digital_gain: 1.0,
+                    frame_duration: Duration::from_micros(33333),
+                    verified: true,
+                },
+                timestamp_ns: i as u64 * 33_333_000,
+                offset: i as u64 * 40,
+                len: 40,
+            };
+            bytes.push(b'\n');
+            bytes.extend(serde_json::to_vec(&rec).unwrap());
+        }
+        bytes.push(0);
+        bytes.extend((0..80u8).map(|i| i.wrapping_mul(37)));
+        std::fs::write(dir.join("ov9782"), bytes).unwrap();
+    }
+
+    #[test]
+    fn broken_indexes_are_rejected() {
+        let info = SensorInfo::from_description(&ov9782(), "640x400", "raw10").unwrap();
+        let header = |width, height, packing, stride| Header {
+            styx_raw_recording: VERSION,
+            format: RawFormat::new(width, height, CfaPattern::Bggr, packing),
+            stride,
+            sensor: info.clone(),
+            notes: String::new(),
+        };
+        let frame = |offset, len| FrameRecord {
+            sensor: SensorValues {
+                frame: 0,
+                exposure: Duration::from_micros(5000),
+                analogue_gain: 1.0,
+                digital_gain: 1.0,
+                frame_duration: Duration::from_micros(33333),
+                verified: true,
+            },
+            timestamp_ns: 0,
+            offset,
+            len,
+        };
+        let open = |h, frames| RawRecording::from_parts(h, frames, vec![0; 64]);
+        let raw8 = RawPacking::U8;
+        assert!(open(header(8, 4, raw8, 8), vec![frame(0, 32)]).is_ok());
+        // Each of these panicked (underflow, overflow) or replayed garbage before.
+        assert!(open(header(8, 0, raw8, 8), vec![frame(0, 32)]).is_err());
+        assert!(open(header(8, 4, raw8, usize::MAX), vec![frame(0, 32)]).is_err());
+        assert!(open(header(8, 4, raw8, 8), vec![frame(u64::MAX, 32)]).is_err());
+        assert!(open(header(8, 4, raw8, 8), Vec::new()).is_err());
+        let wide = RawPacking::U16Le { bits: 40 };
+        assert!(open(header(4, 4, wide, 8), vec![frame(0, 32)]).is_err());
     }
 }

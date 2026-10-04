@@ -40,7 +40,10 @@ impl FrameLease {
         let data = plane
             .get(layout.offset..layout.offset.saturating_add(layout.len))
             .ok_or(FrameValidationError::NoPlanes)?;
-        let expected_len = layout.stride * (height - 1) + width;
+        let expected_len = layout
+            .stride
+            .saturating_mul(height - 1)
+            .saturating_add(width);
         if data.len() < expected_len {
             return Err(FrameValidationError::PlaneLenTooSmall {
                 index: 0,
@@ -166,5 +169,24 @@ mod tests {
             frame.into_luma().err(),
             Some(FrameValidationError::NoLumaPlane(FourCc::YUYV))
         );
+    }
+
+    #[test]
+    fn a_huge_stride_is_too_short_not_an_overflow() {
+        // Found by the `core_frame_layout` fuzz target: stride × (height − 1) overflowed.
+        let res = Resolution::new(60288, 65535).unwrap();
+        let meta = FrameMeta::new(MediaFormat::new(FourCc::R8, res, ColorSpace::Srgb), 0);
+        let mut buf = BufferPool::with_limits(1, 34858, 0).lease();
+        buf.resize(34858);
+        let layout = PlaneLayout {
+            offset: 0,
+            len: 34858,
+            stride: 3_602_879_701_896_396_544,
+        };
+        let frame = FrameLease::multi_plane(meta, smallvec![buf], smallvec![layout]);
+        assert!(matches!(
+            frame.luma_rows(),
+            Err(FrameValidationError::PlaneLenTooSmall { .. })
+        ));
     }
 }

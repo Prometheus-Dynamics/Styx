@@ -234,3 +234,27 @@ fn rejects_broken_descriptors() {
     // A device that is not a camera.
     assert!(UvcFunction::parse(&C270[..18]).is_err());
 }
+
+#[test]
+fn continuous_intervals_from_a_broken_device_do_not_panic() {
+    // min above max (clamp panicked) and steps that overflow u32 arithmetic.
+    let backwards = Intervals::Continuous {
+        min: 666_666,
+        max: 333_333,
+        step: 1,
+    };
+    assert_eq!(backwards.closest(0), Some(333_333));
+    assert_eq!(backwards.closest(u32::MAX), Some(666_666));
+    let huge = Intervals::Continuous {
+        min: 0,
+        max: u32::MAX,
+        step: u32::MAX,
+    };
+    assert_eq!(huge.closest(u32::MAX - 1), Some(u32::MAX));
+    let zero = Intervals::Continuous {
+        min: 0,
+        max: 0,
+        step: 0,
+    };
+    assert_eq!(zero.closest(333_333), Some(0));
+}
