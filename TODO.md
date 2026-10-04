@@ -194,10 +194,20 @@ box (OV9782 1280x800) unless stated.
       (postcard), zero allocations per frame in the schedule and the sensor frame path
       (counting-allocator test); CM5 unchanged (first frame 34.4 vs 34.25 ms median, landing and
       register read-back identical).
-- [ ] `no_std` phase 2, steps 4-8 (after the HeliOS image proof): `styx-runtime` (sensor side,
-      frames and `Receiver` implementations for Linux, the processing loop, stills and
-      counters), then the MCU port (`ports/stm32h7-dcmi`) and an `rkisp1` board; run on real
-      MCU hardware (so far only built for bare-metal targets and run on the host).
+- [x] `no_std` phase 2, steps 4-6 (`native/runtime`): `styx-runtime` (the sensor side,
+      `Camera<P>`, frame stream and buffer leases, the sensor service; `no_std` + `alloc`),
+      `styx-native` as its Linux platform (`V4l2Receiver` with the rp1-cfe handshake inside),
+      the processing loop written once over `FrameIsp`/`InlineIsp` in a `no_std` pipeline core;
+      CM5 unchanged (same syscalls and allocations per frame, CPU and latency within noise).
+- [ ] `no_std` phase 2, steps 7-8: stills decisions and metrics counters into the runtime
+      (`portable-atomic` for 64-bit counters), a `no_std` host run of `Camera<Mock>` with the
+      software loop over a replayed recording; then the MCU port (`ports/stm32h7-dcmi`) and an
+      `rkisp1` board; run on real MCU hardware.
+- [ ] Runtime follow-ups: the PiSP front end as a `Receiver` (`PispFeReceiver`; the external
+      "driven" path still runs the event thread and `serve_sync` directly); the Linux sensor
+      side and devices are `dyn` (one indirect call each per frame, measured free) — static
+      dispatch if a profile ever shows it; `Receiver::poll_sync` on Linux is woken only at stop
+      (the event thread serves frame starts itself).
 - [x] Generic hardware on Lemnos 2.0 (`native/lemnos-switch`): register maps, `RegWrite`,
       error kinds (`lemnos-hal`), i2c-dev, GPIO and uevents (`lemnos-linux`), VCM drivers
       (`lemnos-drivers-vcm`), clock outputs; Styx's copies deleted (portability-design.md
