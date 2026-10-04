@@ -2,8 +2,8 @@
 //! MCAP recordings (feature `mcap`: frames recorded by `StreamRecorder` with each frame's
 //! exposure and gains) and DNG files.
 //!
-//! DNG decoding sits behind [`RawDecoder`]: the built-in [`dng::MinimalDng`] reads the
-//! uncompressed CFA DNGs cameras and `picamera2` write; a fuller decoder can be plugged in with
+//! DNG decoding sits behind [`RawDecoder`]: the built-in [`dng::StyxDng`] (`styx-dng`) reads the
+//! DNGs Styx, cameras and `picamera2` write (uncompressed or lossless JPEG); another decoder can be plugged in with
 //! [`Loader::with_dng`].
 
 pub mod dng;
@@ -30,7 +30,7 @@ pub struct Loader {
 impl Default for Loader {
     fn default() -> Self {
         Self {
-            dng: Box::new(dng::MinimalDng),
+            dng: Box::new(dng::StyxDng),
         }
     }
 }

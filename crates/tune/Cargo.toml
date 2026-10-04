@@ -17,6 +17,7 @@ mcap = ["dep:styx"]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 styx-algo.workspace = true
+styx-dng.workspace = true
 styx-pipeline.workspace = true
 styx-softisp.workspace = true
 thiserror.workspace = true

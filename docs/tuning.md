@@ -109,9 +109,10 @@ and appends each shot to `session.toml`.
 
 * Styx MCAP recordings (`StreamRecorder`, format 2: per-frame exposure and gains).
 * Styx raw recordings (`styx-pipeline::rawrec`, `.jsonl` + `.raw`, e.g. `native-pipeline --record`).
-* DNG: uncompressed CFA DNGs (8/16 bit or packed 10/12/14; `ExposureTime`, `ISOSpeedRatings`
-  as gain × 100, `BlackLevel`, `WhiteLevel`), through a small reader behind the
-  `RawDecoder` trait (`Loader::with_dng` takes another decoder, e.g. `styx-dng`'s once merged).
+* DNG: Styx's stills (`capture_still`, `mcap_to_dng`), `picamera2`'s and cameras' CFA DNGs
+  (uncompressed at any depth or lossless JPEG, strips or tiles; cropped to the active area;
+  `ExposureTime`, `ISOSpeedRatings` as gain × 100, `BlackLevel`, `WhiteLevel`), read by
+  `styx-dng` behind the `RawDecoder` trait (`Loader::with_dng` takes another decoder).
 
 A session file says what each capture is:
 

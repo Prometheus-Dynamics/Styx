@@ -50,6 +50,11 @@ colour temperature, lux, the bracket's EV, the frame the exposure was to land on
 did (`landed`), whether the values were read back from the frame (`verified`), what
 processed it (`pisp`, `software`, `stream`) and how long that took.
 
+The capture's metrics count them (`camera_metrics().stills`, OpenMetrics
+`styx_camera_stills_total{kind=requests|failed|shots|landed|missed}` and
+`styx_camera_still_latency_ms`): requests, failures, shots, shots that landed on their frame
+with their exposure, and request → ready latency.
+
 ## How it works
 
 ### Processed native cameras (PiSP or software ISP)

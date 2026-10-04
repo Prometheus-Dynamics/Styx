@@ -316,6 +316,9 @@ mod tests {
                 .capture_still(&StillRequest::default().bracket([0.0, 1.0]))
                 .is_err()
         );
+        let m = handle.camera_metrics().stills;
+        assert_eq!((m.requests, m.failed, m.shots, m.landed), (2, 1, 1, 1));
+        assert_eq!(m.latency.total, 1);
         handle.stop();
     }
 }
