@@ -23,8 +23,9 @@
 //! Sensor register access (8/16-bit register addresses, burst writes) is Lemnos's register map
 //! (`lemnos_hal::register`: `I2cRegisters`, `SpiRegisters`) under `styx-sensor`'s driver.
 //!
-//! Features: `std` (`MaybeSendSync` is `Send + Sync`, `std::io::Error` as a [`HalError`],
-//! [`StdDelay`]); `mock` (a mock platform for host tests: [`mock`]).
+//! Features: `std` (`MaybeSendSync` is `Send + Sync`, `std::io::Error` as a [`HalError`]; a
+//! sleeping delay is Lemnos's `lemnos_linux::hal::StdDelay`); `mock` (a mock platform for host
+//! tests: [`mock`]).
 
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 
@@ -47,8 +48,6 @@ pub use receiver::{
     BufferSource, Bus, Configured, EmbeddedConfig, FrameDone, MaybeSendSync, Receiver,
     ReceiverCaps, ReceiverConfig, SensorStart, StartOrder, SyncEvent, TimestampPoint,
 };
-#[cfg(feature = "std")]
-pub use time::StdDelay;
 pub use time::{Instant, wait, wait_async};
 
 /// The embedded-hal crates and Lemnos's hardware vocabulary this one speaks, re-exported so

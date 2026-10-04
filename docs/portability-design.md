@@ -5,8 +5,10 @@ steps 4-8 wait for the HeliOS image proof. Decisions from the review: async I²C
 later), `styx-native` keeps its name, ports live in this repository under `ports/`. Since the
 review, **Lemnos** (Prometheus Dynamics' hardware discovery, driver and bus workspace) is the
 lower layer for generic driver and communication work: Styx uses the embedded-hal 1.0 /
-embedded-hal-async 1.0 traits as its bus vocabulary and keeps only camera-specific traits in
-`styx-hal` (sections 2.2, 2.3 and 2.7 below are superseded where they say otherwise).
+embedded-hal-async 1.0 traits as its bus vocabulary, depends on Lemnos 2.0 for everything
+generic (register maps, i2c-dev, GPIO, uevents, VCM drivers, regulators and clocks; see
+[Moved to Lemnos](#moved-to-lemnos)) and keeps only camera-specific traits in `styx-hal`
+(sections 2.2, 2.3 and 2.7 below are superseded where they say otherwise).
 
 ## Status
 
@@ -15,6 +17,7 @@ embedded-hal-async 1.0 traits as its bus vocabulary and keeps only camera-specif
 | 1 | `styx-hal` | **landed** (`2fe7432`): `SensorPins`/`AsyncSensorPins` (power sequencing by role over embedded-hal `DelayNs`), `BoardPins` (embedded-hal `OutputPin`s + `ClockEnable` + delay), `DmaMemory`/`DmaBuffer`/`StaticDma`, `Receiver` and its types (2.5), `LensActuator`/`AsyncLensActuator`/`NoLens`, `ErrorKind`/`HalError`, `Blocking`, `Instant`; feature `mock` (I²C sensor model blocking and async, pins, delay, receiver, memory, `block_on`). No `alloc`. `styx-kernel`: `I2cDevice` is an embedded-hal `I2c`, `GpioPin` an `OutputPin`. CI: `thumbv7em-none-eabihf`, `thumbv8m.main-none-eabihf`, `riscv32imac-unknown-none-elf`, `wasm32-unknown-unknown` |
 | 2 | `styx-sensor` on `styx-hal` | **landed** (`413408a`): `I2cRegisters`/`SpiRegisters` over embedded-hal buses (blocking `RegisterBus`, async `AsyncRegisterBus`, shared encoding), `AsyncSensorDriver` (driver logic written once as async code; the blocking `SensorDriver` runs it over `Blocking` adapters in one poll), `delay` required (`DelayNs`), the `[bus]` section, compiled descriptions (`build` helper in `build.rs`, postcard, `from_postcard`, `include_description!`); `styx-native`'s bus is `I2cRegisters<I2cDevice>`. `RegisterBus` stays in `styx-sensor` (a sensor register layer, not a bus abstraction); `KernelControl` keeps its name |
 | 3 | allocation-free sensor frame path | **landed** (`06b2d47`): scheduler rings (`FrameMap`), `Landings`/`Mismatches`/`KernelControls`, stack batches, gain codes and embedded decoding without allocation; `tests/no_alloc.rs` (counting allocator, 300 frames, blocking + async + kernel-driven: zero) |
+| Lemnos | generic hardware on Lemnos 2.0 | **landed** (branch `native/lemnos-switch`): register maps, `RegWrite` and error kinds from `lemnos-hal`; i2c-dev and uevents from `lemnos-linux`; VCM lenses from `lemnos-drivers-vcm`; Styx's copies deleted ([Moved to Lemnos](#moved-to-lemnos)) |
 | 4-8 | runtime | after the HeliOS image proof |
 
 CM5 (OV9782, native mode, baseline a178a44 against step 3, alternating runs): open → first
@@ -37,22 +40,31 @@ be the blocking call inline (`Blocking(SensorBus)` works today) or a worker thre
 context switches to 0.1-0.5 ms transfers that already run on the event thread at the frame
 start.
 
-### Slated to move to Lemnos
+### Moved to Lemnos
 
-Generic pieces built in Styx that Lemnos will take over (then removed here):
+Generic pieces built in Styx that Lemnos 2.0 took over (`lemnos-foundation`
+`docs/foundation.md`), now deleted here. Styx depends on Lemnos by path
+(`../lemnos-foundation`) until Lemnos 2.0 is pushed, then by git rev, then crates.io 2.0.
 
-| piece | where today |
-|---|---|
-| embedded-hal `I2c` over i2c-dev (`I2cDevice`, `IoError`), the `I2C_RDWR` message building | `styx-kernel` `bus::i2c`, `bus::eh` |
-| embedded-hal `OutputPin` over GPIO character devices (`GpioChip`, `GpioLines`, `GpioPin`) | `styx-kernel` `bus::gpio`, `bus::eh` |
-| delays (`StdDelay`), the monotonic clock (`styx_kernel::monotonic_now`, `Instant` sources) | `styx-hal` `time`, `styx-kernel` `clock` |
-| the camera input clock enable (`ClockEnable`), if Lemnos grows a clock trait | `styx-hal` `power` |
-| hotplug (`uevent`), sysfs discovery of I²C buses and devices | `styx-kernel` `uevent`, `styx-native` discovery |
-| the I²C mock bus model (`mock::MockI2c`) | `styx-hal` `mock` |
+| piece | was | now | state |
+|---|---|---|---|
+| register maps over I²C/SPI: address widths, big-endian values, bursts, one message per write (`I2cRegisters`, `SpiRegisters`, `RegWrite`, `MAX_BURST`, encoders) | `styx-sensor` `registers.rs`, `desc::RegWrite` | `lemnos_hal::register` (blocking + async), re-exported; Styx's `RegisterBus` is implemented for them (`registers.rs`, 145 lines, no encoding) | done |
+| bus error kinds (`BusErrorKind`) | `styx-sensor` `bus_error.rs` | `lemnos_hal::ErrorKind` (re-exported as `BusErrorKind`); `BusError::from_register` keeps the errno | done |
+| embedded-hal `I2c` over i2c-dev (`I2cDevice`, `IoError`), the `I2C_RDWR` message building | `styx-kernel` `bus::i2c`, `bus::eh`, `bus::ioctl` | `lemnos_linux::hal::I2cBus` (address claimed with `I2C_SLAVE`, never forced; messages on the stack, a Lemnos fix for Styx's no-allocation frame path) | done |
+| embedded-hal `OutputPin` over GPIO character devices (`GpioChip`, `GpioLines`, `GpioPin`) | `styx-kernel` `bus::gpio`, `bus::eh` | `lemnos_linux::hal::{GpioChip, GpioLines, GpioLine}` (uAPI v2; the native camera has no GPIO roles, the bridge powers it) | done |
+| VCM command formats and the I²C VCM driver (`VcmFormat::encode`, chip tables, `I2cVcm` transfers) | `styx-sensor` `lens.rs`, `styx-native` `lens.rs` | `lemnos-drivers-vcm` (DW9714, DW9807, DW9817, AK7375, custom formats); Styx keeps the description, the frame-exact `LensSchedule` and `LensMotion` | done |
+| hotplug (`uevent`) | `styx-kernel` `uevent` | `lemnos_linux::uevent` (UVC hotplug, the uevent fuzz target) | done |
+| delays (`StdDelay`) | `styx-hal` `time` | `lemnos_linux::hal::StdDelay` | done |
+| the camera input clock enable (`ClockEnable`) | `styx-hal` `power` | `lemnos_hal::ClockOutput` (`FixedClock`; `BoardPins` takes one) | done |
+| error kinds of buses, pins, regulators and clocks | `styx-hal` `ErrorKind::from_{i2c,spi,digital,io}` | classified by `lemnos_hal::ErrorKind`, converted into the camera `ErrorKind` | done |
+| the monotonic clock (`styx_kernel::monotonic_now`, `Instant`) | `styx-hal` `time`, `styx-kernel` `clock` | stays: camera timing (Lemnos's clock trait is a clock signal, not time) | kept |
+| sysfs discovery | `styx-native` discovery | stays: it finds sensor bridges and media graphs, not I²C devices | kept |
+| the I²C mock bus model (`mock::MockI2c`) | `styx-hal` `mock` | stays for now: Styx's tests need its shared clones, async suspension (`with_pending_polls`) and a target that stops answering (`set_dead`), which `lemnos_hal::mock::MockI2c` does not have | kept |
 
 What stays in Styx: the camera-specific traits (`Receiver`, DMA memory, ISP traits, lens
-actuators that are not plain I²C devices, power sequencing by role), the sensor register layer
-over a generic bus (`I2cRegisters`, `SpiRegisters`), descriptions, the driver and the runtime.
+actuators that are not plain I²C devices, power sequencing by role), the driver's
+`RegisterBus` (Lemnos register maps plus a kernel driver's V4L2 controls), descriptions, the
+driver and the runtime.
 
 ## The decision in one page
 
@@ -835,14 +847,14 @@ dropped, which puts the sensor in standby and powers it down whatever failed.
 |---|---|---|
 | `Clock` | `LinuxClock` (`CLOCK_MONOTONIC`) | `styx_kernel::monotonic_now` |
 | `Delay` | `std::thread::sleep` | `SensorPins::delay` default |
-| `RegisterBus` | `SensorBus::{I2c(I2cRegisterBus<I2cDevice>), Kernel(SubdevBus)}` | `sensor_bus.rs`, `regbus.rs` |
+| `RegisterBus` | `SensorBus::{I2c(I2cRegisterBus<I2cBus>), Kernel(SubdevBus)}` (Lemnos's register map on Lemnos's i2c-dev bus) | `sensor_bus.rs`, `regbus.rs` |
 | `SensorPins` | `CameraPins::{Bridge(BridgePins), None(NoPins)}` | `sensor_bus.rs` |
 | `DmaMemory`, `DmaBuffer` | `HeapMemory` (dma-heaps), `V4l2Buffer` (MMAP + `EXPBUF`), `Export = BorrowedFd` | `buffers.rs`, `styx_kernel::dma_heap` |
 | `Receiver` (raw route) | `V4l2Receiver`: video node, optional embedded node, the bridge (`StartOrder::ReceiverDriven`) or a kernel-driven sensor (`ReceiverFirst`), the event thread with its quiesce gate | `device.rs`, `events.rs`, `session.rs`, `embedded.rs`, `camera.rs` (links, pads, formats) |
 | `Receiver` (PiSP) | `PispFeReceiver`: `fe_image0` + `fe_stats` + FE config queue (+ the bridge); `stats_slot` on each `FrameDone` | `external.rs`, `styx_pisp::device::FrontEndDevice` |
 | `InlineIsp` | `PispFrontEnd` (`IspSettings::apply_fe`, `stats::from_pisp_raw`) | `pipeline/device/pisp.rs` |
 | `FrameIsp` | `PispBackEnd` (`BackEndStream::process_queued`/`wait_job`, `BeConfigBuilder`), `SoftIsp` (`SoftLoop`, helper threads), `GpuIsp` | `pipeline/device/*`, `soft.rs`, `styx-gpuisp` |
-| `LensActuator` | `KernelLens`, `I2cVcm` | `lens.rs` |
+| `LensActuator` | `KernelLens`, `I2cVcm` (`lemnos_drivers_vcm::Vcm`) | `lens.rs` |
 | `Platform` | `struct Linux;` | (new, 15 lines) |
 | `NativeCamera` | `pub struct NativeCamera { camera: Camera<Linux>, info: CameraInfo, ... }` with today's methods | `camera.rs` |
 | `PispPipeline`, `SoftPipeline` | `ProcessedCamera<Linux, PispBackEnd, PispFrontEnd>`, `ProcessedCamera<Linux, SoftIsp>` behind today's names | `pipeline/device/*` |
@@ -893,11 +905,11 @@ not part of this plan.
 | `Receiver` | yes | write it: the only substantial code |
 | `DmaMemory` / `DmaBuffer` | yes (often 50-150 lines) | write it, or reuse `StaticDma` |
 | `Clock` | yes (10-20 lines) | the platform timer (`embassy-time`, a SysTick counter, `CLOCK_MONOTONIC`) |
-| `RegisterBus` | yes | `styx_hal::eh::I2cBus` over the chip HAL's embedded-hal I²C: zero lines |
-| `SensorPins` | yes | `BoardPins` over embedded-hal `OutputPin`s + a `ClockEnable`: a constructor call |
+| `RegisterBus` | yes | Lemnos's `I2cRegisters` over the chip HAL's embedded-hal I²C (`SensorDescription::i2c_registers`): zero lines |
+| `SensorPins` | yes | `BoardPins` over embedded-hal `OutputPin`s + a Lemnos `ClockOutput`: a constructor call |
 | sensor description | per sensor | TOML (identity, power sequence, init/mode registers, controls, delays, a `[bus]` section) |
 | `InlineIsp` / `FrameIsp` | only with a hardware ISP | statistics conversion + settings mapping |
-| `LensActuator` | only with a lens | `I2cVcm` on the sensor bus: zero lines |
+| `LensActuator` | only with a lens | `lemnos_drivers_vcm::Vcm` on the sensor bus: zero lines |
 | tuning | only for the 3A loop | `styx-tune` or a Raspberry Pi tuning |
 
 New description section, used where no device tree describes the bus:

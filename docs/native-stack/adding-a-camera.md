@@ -117,7 +117,13 @@ Put it on the search path as `<name>.toml` (descriptions that ship with Styx are
 installed file overrides them), and bind the generic bridge to the sensor's I²C
 address in the device tree (`kernel-modules/styx-sensor-bridge`, overlay template there). The
 bridge makes the receiver see a sensor subdevice; Styx powers the sensor, writes its
-registers and starts and stops it when the receiver asks (`PROTOCOL.md`).
+registers and starts and stops it when the receiver asks (`PROTOCOL.md`). The registers go
+through Lemnos (`lemnos_hal::register::I2cRegisters` on `lemnos_linux::hal::I2cBus`): the
+sensor's address is claimed with `I2C_SLAVE`, never forced, so opening fails with `EBUSY`
+while a kernel driver is still bound to it. On a board without the bridge, the same
+description runs over any embedded-hal bus (`SensorDescription::i2c_registers`) with
+`styx_hal::BoardPins` over Lemnos GPIO lines (`lemnos_linux::hal::GpioLine`) or the chip HAL's
+pins.
 
 Check every format's timing and embedded line on the board, not only the one you started
 with. A format's `pixel_rate` is the rate the sensor's system clock gives, which is not always
@@ -184,8 +190,9 @@ map = [0.0, 445, 15.0, 925]   # dioptres -> position, if the AF tuning has no ma
 ```
 
 **Styx drives the VCM** (a sensor behind the bridge, or a lens without a kernel driver): the
-sensor description gets a `[lens]` section with the chip on I²C, and Styx writes the chip's
-command format on the sensor's bus (`styx_sensor::lens`):
+sensor description gets a `[lens]` section with the chip on I²C, and Styx drives it with
+Lemnos's VCM driver (`lemnos-drivers-vcm`) on the sensor's bus; Styx schedules the moves
+(`styx_sensor::lens`):
 
 ```toml
 [lens]
@@ -196,9 +203,10 @@ i2c = { address = 0x0c, chip = "dw9714" }   # dw9714, dw9807, dw9817, ak7375, or
 #         bits = 10, power_up = [[0x02, 0x00]], power_up_us = 1000, power_down = [[0x02, 0x01]] } }
 ```
 
-Built-in formats: DW9714 (no register, `code << 4`, bit 15 powers down), DW9807 and DW9817
-(registers 0x03-0x04, control 0x02: 0 on, 1 off), AK7375 (registers 0x00-0x01, `code << 4`,
-12 bits; control 0x02: 0 active, 0x40 standby). The DW9807's busy flag (register 0x05) is not
+Built-in formats (Lemnos's `VcmChip`): DW9714 (no register, `code << 4`, bit 15 powers down),
+DW9807 and DW9817 (registers 0x03-0x04, control 0x02: 0 on, 1 off), AK7375 (registers
+0x00-0x01, `code << 4`, 12 bits; control 0x02: 0 active, 0x40 standby). A custom format has at
+most four power-up and four power-down writes. The DW9807's busy flag (register 0x05) is not
 polled: moves come at most once a frame.
 
 **Frame-exact moves.** A move asked for frame `F` (`ControlHandle::request_lens_at`) is written
