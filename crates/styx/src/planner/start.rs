@@ -596,6 +596,11 @@ impl Codec for FramePreparer {
         &self.descriptor
     }
 
+    /// ISP pyramid levels are kept (as luma views on luma routes), not computed again.
+    fn handles_companions(&self) -> bool {
+        true
+    }
+
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         let roi = self.roi.get();
         #[cfg(feature = "codec-turbojpeg")]

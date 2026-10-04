@@ -19,11 +19,14 @@
 
 use styx_core::prelude::*;
 
+mod delivered;
+
+use self::delivered::{read_delivered, write_delivered};
 use super::IpcError;
-use crate::planner::{Delivered, Delivery, FrameRate, FrameRequest, Hardware, Unmet};
+use crate::planner::{Delivered, Delivery, FrameRate, FrameRequest, Hardware};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"STYX");
-const VERSION: u16 = 5;
+const VERSION: u16 = 6;
 const KIND_FRAME: u16 = 1;
 const KIND_RELEASE: u16 = 2;
 const KIND_REQUEST: u16 = 3;
@@ -66,6 +69,8 @@ pub(super) struct WireFrame {
     pub meta: FrameMeta,
     pub layouts: Vec<PlaneLayout>,
     pub backing: WireBacking,
+    /// Whether the sender's memory reads cached on the CPU (it is the same memory here).
+    pub cpu_access: CpuAccess,
     pub companions: Vec<(CompanionKind, WireFrame)>,
 }
 
@@ -285,6 +290,11 @@ fn write_frame(w: &mut Writer, frame: &WireFrame) {
     w.u64(frame.meta.timestamp);
     w.u8(clock_tag(frame.meta.clock));
     w.bool(frame.meta.delta);
+    w.u8(match frame.cpu_access {
+        CpuAccess::None => 0,
+        CpuAccess::Uncached => 1,
+        CpuAccess::Cached => 2,
+    });
     w.opt(frame.meta.crop, Writer::rect);
     w.u8(frame.layouts.len() as u8);
     for layout in &frame.layouts {
@@ -330,6 +340,12 @@ fn read_frame(r: &mut Reader<'_>, top_level: bool) -> Result<WireFrame, IpcError
     let mut meta = FrameMeta::new(MediaFormat::new(code, resolution, color), r.u64()?);
     meta.clock = clock_from(r.u8()?);
     meta.delta = r.bool()?;
+    let cpu_access = match r.u8()? {
+        0 => CpuAccess::None,
+        1 => CpuAccess::Uncached,
+        2 => CpuAccess::Cached,
+        _ => return Err(IpcError::Malformed("unknown CPU access")),
+    };
     meta.crop = r.opt(Reader::rect)?;
     let planes = usize::from(r.u8()?);
     if planes == 0 || planes > MAX_PLANES {
@@ -377,6 +393,7 @@ fn read_frame(r: &mut Reader<'_>, top_level: bool) -> Result<WireFrame, IpcError
         meta,
         layouts,
         backing,
+        cpu_access,
         companions,
     })
 }
@@ -392,59 +409,6 @@ pub(super) fn encode_release(id: u64) -> Vec<u8> {
     let mut w = Writer::new(KIND_RELEASE);
     w.u64(id);
     w.0
-}
-
-/// Most unmet requirements an accept message carries.
-const MAX_UNMET: u8 = 8;
-
-fn write_delivered(w: &mut Writer, d: &Delivered) {
-    w.u32(d.format.to_u32());
-    w.size(d.size);
-    w.opt(d.fps, |w, fps| w.u32(fps.to_bits()));
-    w.u8(d.pyramid_levels);
-    w.opt(d.hardware_pyramid_level, Writer::u8);
-    w.bool(d.inter_coded);
-    w.u8(d.unmet.len().min(usize::from(MAX_UNMET)) as u8);
-    for unmet in d.unmet.iter().take(usize::from(MAX_UNMET)) {
-        match unmet {
-            Unmet::Size { wanted, delivered } => {
-                w.u8(1);
-                w.size(*wanted);
-                w.size(*delivered);
-            }
-        }
-    }
-}
-
-fn read_delivered(r: &mut Reader<'_>) -> Result<Delivered, IpcError> {
-    let format = FourCc::new(r.u32()?.to_le_bytes());
-    let size = r.size()?;
-    let fps = r.opt(|r| Ok(f32::from_bits(r.u32()?)))?;
-    let pyramid_levels = r.u8()?;
-    let hardware_pyramid_level = r.opt(Reader::u8)?;
-    let inter_coded = r.bool()?;
-    let count = r.u8()?;
-    if count > MAX_UNMET {
-        return Err(IpcError::Malformed("too many unmet requirements"));
-    }
-    let unmet = (0..count)
-        .map(|_| match r.u8()? {
-            1 => Ok(Unmet::Size {
-                wanted: r.size()?,
-                delivered: r.size()?,
-            }),
-            _ => Err(IpcError::Malformed("unknown unmet requirement")),
-        })
-        .collect::<Result<_, IpcError>>()?;
-    Ok(Delivered {
-        format,
-        size,
-        fps,
-        pyramid_levels,
-        hardware_pyramid_level,
-        inter_coded,
-        unmet,
-    })
 }
 
 pub(super) fn encode_accept(plan: &str, delivered: &Delivered) -> Vec<u8> {
@@ -710,6 +674,7 @@ pub(super) fn decode_server(bytes: &[u8]) -> Result<ServerMessage, IpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::planner::Unmet;
 
     #[test]
     fn requests_survive_the_wire() {

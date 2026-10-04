@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added `CpuAccess` (`None`, `Uncached`, `Cached`), `ExternalBacking::cpu_access` and
+  `FrameLease::cpu_access`: whether the CPU can read a frame's planes and how fast, apart from
+  its residency. Native ISP and sensor buffers, libcamera buffers, IPC frames (as the sender
+  reports) and readable DRM-PRIME frames say how they read; other dma-buf backings are not
+  readable unless they opt in. Adds `Codec::handles_companions`.
 - Added `FramePlan::delivered()` (`Delivered`: format, size, frame rate, pyramid levels and the
   hardware one, inter-coding, and `unmet` requirements as `Unmet`) and `FramePlan::unmet`;
   `FrameClient::delivered()` carries it from the camera service's answer. `FrameRequest::strict`
@@ -202,6 +207,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `FrameLease::can_read_planes`, `has_host_readable_bytes` and `require_host_readable` follow
+  `cpu_access()`: a mapped dma-buf (e.g. a native camera's cached ISP output) is readable.
+- In-process plans keep the ISP's pyramid levels: the pipeline hands companions to the planner's
+  stage instead of setting them aside, which made it compute them again on the CPU.
+- The `styx::ipc` wire format is version 6 (frames carry their CPU access).
 - The `styx::ipc` wire format is version 5 (requests carry `strict`, accepts carry `Delivered`);
   `FrameClient` connections are non-blocking.
 - `FrameLease::descriptor` no longer allocates: `FrameLeaseDescriptor::planes` is a

@@ -119,6 +119,12 @@ Clients connect with `FrameClient::connect` and get every published frame they h
 - **Copied once:** other frames (on the heap) are copied into one memfd per frame, shared by every
   client. Plans made exportable decode into memfds and avoid this.
 - **Companions:** pyramid levels travel with their frame, as their own descriptors.
+- **Reading them:** frames say whether the CPU can read them and how fast, apart from where
+  they live: `FrameLease::cpu_access()` is `Cached` (memory speed), `Uncached` (readable, slow:
+  copy once if reading more than once) or `None`, and `can_read_planes()` follows it. A camera
+  buffer from a cached dma-heap is a `Dmabuf` frame that reads `Cached`, here and in the client:
+  the sender tells the client how its memory reads. On a CM5 a 1280x800 Y plane reads in 0.17 ms
+  per pass either way, the same as heap memory.
 - **Async:** `FrameClient::recv_async` awaits frames on Tokio (feature `async`).
 
 ## Buffers and slow clients

@@ -331,6 +331,12 @@ impl NativeFrame {
         self.lender.buffers.dmabuf(self.index)
     }
 
+    /// Whether the buffer is imported from a dma-heap (cached for the CPU) rather than the
+    /// driver's (uncached).
+    pub fn cpu_cached(&self) -> bool {
+        self.lender.buffers.memory() == Memory::DmaBuf
+    }
+
     /// Size of the whole buffer in bytes.
     pub fn buffer_len(&self) -> usize {
         self.lender.buffers.len()

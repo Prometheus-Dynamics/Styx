@@ -650,6 +650,7 @@ pub(super) fn start_libcamera(
                             outstanding_backings_for_thread.clone(),
                             outstanding_lease_tracker_for_thread.clone(),
                             mapped_lease_tracker_for_thread.clone(),
+                            buffer_memory == "dma-heap",
                         );
                         let timestamp = timing.sensor_timestamp.unwrap_or(frame_parts.timestamp);
                         match timing.frame_duration_ns {

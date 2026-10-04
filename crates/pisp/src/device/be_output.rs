@@ -120,6 +120,12 @@ impl OutputQueue {
     }
 
     /// Number of buffers.
+    /// Whether the buffers come from a cached dma-heap (CPU reads at memory speed) rather than
+    /// the driver (uncached).
+    pub(super) fn cached(&self) -> bool {
+        self.memory == Memory::DmaBuf
+    }
+
     pub(super) fn len(&self) -> usize {
         self.maps.len()
     }

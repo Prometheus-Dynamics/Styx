@@ -30,6 +30,7 @@ pub(super) fn export(frame: &FrameLease) -> Result<Exported, IpcError> {
             meta: frame.meta().clone(),
             layouts: Vec::new(),
             backing: WireBacking::Memfd { len: 0 },
+            cpu_access: CpuAccess::Cached,
             companions: Vec::new(),
         },
         fds: Vec::new(),
@@ -46,6 +47,8 @@ fn export_part(
     top_level: bool,
 ) -> Result<WireFrame, IpcError> {
     let layouts = frame.layouts();
+    let copied_before = out.copied;
+    out.copied = false;
     let backing = match frame.export_backing() {
         Ok(backing) => {
             out.keep.extend(frame.external_backing_handle());
@@ -64,6 +67,8 @@ fn export_part(
         }
         Err(err) => return Err(err.into()),
     };
+    let copied_here = out.copied;
+    out.copied |= copied_before;
     let backing = match backing {
         FrameBackingExport::Memfd { fd, len } => {
             out.fds.push(fd);
@@ -93,6 +98,12 @@ fn export_part(
     Ok(WireFrame {
         meta: frame.meta().clone(),
         layouts: layouts.to_vec(),
+        // A copy lands in a memfd: host memory, cached.
+        cpu_access: if copied_here {
+            CpuAccess::Cached
+        } else {
+            frame.cpu_access()
+        },
         backing,
         companions,
     })

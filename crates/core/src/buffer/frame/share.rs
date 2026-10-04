@@ -25,6 +25,11 @@ impl ExternalBacking for SharedPlanes {
     fn residency(&self) -> FrameResidency {
         self.residency
     }
+
+    fn cpu_access(&self) -> super::super::cpu_access::CpuAccess {
+        // Pooled host buffers, whatever the frame's residency says.
+        super::super::cpu_access::CpuAccess::Cached
+    }
 }
 
 impl FrameLease {

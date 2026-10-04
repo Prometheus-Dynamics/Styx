@@ -386,6 +386,14 @@ impl ExternalBacking for NativeBacking {
         FrameResidency::Dmabuf
     }
 
+    fn cpu_access(&self) -> CpuAccess {
+        if self.frame.cpu_cached() {
+            CpuAccess::Cached
+        } else {
+            CpuAccess::Uncached
+        }
+    }
+
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         let Some(fd) = self.frame.dmabuf() else {
             return Ok(None);

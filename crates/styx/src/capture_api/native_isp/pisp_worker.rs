@@ -125,6 +125,8 @@ pub(super) fn output_specs(
 struct BeBuffer {
     map: Arc<Mapping>,
     fd: Arc<OwnedFd>,
+    /// From a cached dma-heap, not the driver's uncached buffers.
+    cached: bool,
 }
 
 struct BeBacking {
@@ -163,6 +165,14 @@ impl ExternalBacking for BeBacking {
 
     fn residency(&self) -> FrameResidency {
         FrameResidency::Dmabuf
+    }
+
+    fn cpu_access(&self) -> CpuAccess {
+        if self.buffer.cached {
+            CpuAccess::Cached
+        } else {
+            CpuAccess::Uncached
+        }
     }
 
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
@@ -218,6 +228,7 @@ impl Buffers {
         let b = BeBuffer {
             map: Arc::new(map),
             fd: Arc::new(fd),
+            cached: p.output_cached(i),
         };
         self.cache.insert((i, index), b.clone());
         Ok(b)
@@ -414,6 +425,7 @@ mod tests {
         BeBuffer {
             map: Arc::new(map),
             fd: Arc::new(buf.into_fd()),
+            cached: true,
         }
     }
 

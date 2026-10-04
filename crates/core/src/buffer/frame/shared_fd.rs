@@ -274,6 +274,16 @@ impl ExternalBacking for SharedFdBacking {
         true
     }
 
+    fn cpu_access(&self) -> super::super::cpu_access::CpuAccess {
+        use super::super::cpu_access::CpuAccess;
+        match self.kind {
+            SharedFdBackingKind::Memfd(_) => CpuAccess::Cached,
+            // Mapped (and synced) on first read; whether the exporter's memory is cached is not
+            // known here.
+            SharedFdBackingKind::Dmabuf(_) => CpuAccess::Uncached,
+        }
+    }
+
     fn residency(&self) -> FrameResidency {
         match self.kind {
             SharedFdBackingKind::Memfd(_) => FrameResidency::HostExternal,

@@ -211,6 +211,11 @@ impl ExternalBacking for CachedDmabuf {
         FrameResidency::Dmabuf
     }
 
+    fn cpu_access(&self) -> CpuAccess {
+        // Mapped here; the sender says whether its memory is cached (see `Released`).
+        CpuAccess::Uncached
+    }
+
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         let planes = self
             .fds

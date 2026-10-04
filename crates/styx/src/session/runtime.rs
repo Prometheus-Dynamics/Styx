@@ -370,7 +370,13 @@ impl MediaPipeline {
             }
             let span = tracing::trace_span!("decode_stage");
             let _enter = span.enter();
-            let carried = cur.take_companions();
+            // A stage that handles companions gets them (e.g. the planner's, which keeps an
+            // ISP's pyramid levels instead of computing them again).
+            let carried = if dec.handles_companions() {
+                Vec::new()
+            } else {
+                cur.take_companions()
+            };
             let input_meta = cur.meta().clone();
             let t = Instant::now();
             #[cfg(target_os = "linux")]

@@ -138,6 +138,7 @@ fn write_fuzz_seeds() {
             stride: 64,
         }],
         backing: WireBacking::Memfd { len: 512 },
+        cpu_access: CpuAccess::Cached,
         companions: Vec::new(),
     };
     let request = crate::planner::Frames::formats([FourCc::NV12, FourCc::MJPG])
@@ -181,4 +182,76 @@ fn write_fuzz_seeds() {
     for (name, bytes) in messages {
         std::fs::write(dir.join(name), bytes).unwrap();
     }
+}
+
+/// A dma-buf as a camera's would be: exported as dma-buf planes (here a memfd stands in for
+/// the buffer), cached or not as it says.
+struct CameraBuffer {
+    fd: OwnedFd,
+    map: Vec<u8>,
+    access: CpuAccess,
+}
+
+impl ExternalBacking for CameraBuffer {
+    fn plane_data(&self, index: usize) -> Option<&[u8]> {
+        (index == 0).then_some(self.map.as_slice())
+    }
+
+    fn residency(&self) -> FrameResidency {
+        FrameResidency::Dmabuf
+    }
+
+    fn cpu_access(&self) -> CpuAccess {
+        self.access
+    }
+
+    fn can_export(&self) -> bool {
+        true
+    }
+
+    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
+        Ok(Some(FrameBackingExport::DmabufPlanes {
+            planes: vec![FrameFdPlane {
+                fd: self.fd.try_clone().map_err(FrameExportError::Fd)?,
+                offset: 0,
+                len: 512,
+            }],
+        }))
+    }
+}
+
+#[test]
+fn received_frames_read_as_cached_as_the_senders_memory() {
+    let path = socket_path("cpu-access");
+    let server = FrameServer::bind(&path).unwrap().max_in_flight(4);
+    let client = FrameClient::connect(&path).unwrap();
+    for access in [CpuAccess::Cached, CpuAccess::Uncached] {
+        let source = memfd_frame();
+        let fd = match source.export_backing().unwrap() {
+            FrameBackingExport::Memfd { fd, .. } => fd,
+            FrameBackingExport::DmabufPlanes { .. } => unreachable!(),
+        };
+        let frame = FrameLease::from_external(
+            meta(64, 8),
+            smallvec![PlaneLayout {
+                offset: 0,
+                len: 512,
+                stride: 64,
+            }],
+            std::sync::Arc::new(CameraBuffer {
+                fd,
+                map: vec![7; 512],
+                access,
+            }),
+        );
+        assert_eq!(server.publish(&frame).unwrap(), 1);
+        let got = recv(&client);
+        assert_eq!(got.residency(), FrameResidency::Dmabuf);
+        assert_eq!(got.cpu_access(), access);
+        assert!(got.can_read_planes());
+        assert_eq!(got.planes()[0].data()[0], 7);
+    }
+    // Copied on the way (heap frames): the copy is cached host memory.
+    server.publish(&heap_frame(1)).unwrap();
+    assert_eq!(recv(&client).cpu_access(), CpuAccess::Cached);
 }

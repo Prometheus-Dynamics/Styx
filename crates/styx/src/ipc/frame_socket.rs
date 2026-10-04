@@ -581,6 +581,10 @@ impl ExternalBacking for Leased {
         self.inner.residency()
     }
 
+    fn cpu_access(&self) -> CpuAccess {
+        self.inner.cpu_access()
+    }
+
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         self.inner.export_backing()
     }

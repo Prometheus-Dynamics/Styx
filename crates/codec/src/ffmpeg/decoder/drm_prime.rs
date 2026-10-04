@@ -169,6 +169,15 @@ impl ExternalBacking for FfmpegDrmPrimeBacking {
         FrameResidency::Dmabuf
     }
 
+    fn cpu_access(&self) -> CpuAccess {
+        // GPU memory mapped for the CPU is typically write-combined.
+        if self.cpu_readable {
+            CpuAccess::Uncached
+        } else {
+            CpuAccess::None
+        }
+    }
+
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         let mut planes = Vec::with_capacity(self.planes.len());
         for plane in &self.planes {

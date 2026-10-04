@@ -19,6 +19,7 @@
 //! black levels follow on the next config it takes (configs are queued a couple of frames
 //! ahead).
 
+mod outputs;
 use std::time::{Duration, Instant};
 
 use styx_algo::{Statistics, Tuning, WarmStart};

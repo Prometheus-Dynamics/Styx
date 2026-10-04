@@ -248,6 +248,13 @@ pub trait Codec: Any + Send + Sync + 'static {
     /// headers), e.g. for a consumer that joins or lost packets. Others ignore it.
     fn request_keyframe(&self) {}
 
+    /// Whether the codec reads and keeps its input's companions itself (e.g. a stage that turns
+    /// an ISP's pyramid levels into views of their own). Pipelines otherwise set companions
+    /// aside around the codec and put them back on its output.
+    fn handles_companions(&self) -> bool {
+        false
+    }
+
     /// A new codec configured like this one, without its state (an encoder's stream, a
     /// decoder's reference frames), for one more independent stream. `None` for stateless
     /// codecs, which can be shared.

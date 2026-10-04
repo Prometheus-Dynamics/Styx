@@ -496,6 +496,15 @@ impl BackEndStream {
         Ok(())
     }
 
+    /// Whether output `i`'s buffers are cached for the CPU (a cached dma-heap) rather than the
+    /// driver's uncached ones.
+    pub fn output_cached(&self, i: usize) -> bool {
+        self.outputs
+            .get(i)
+            .and_then(Option::as_ref)
+            .is_some_and(|o| o.queue.cached())
+    }
+
     /// The dma-buf of output `i`'s buffer `index`.
     pub fn output_dmabuf(&self, i: usize, index: u32) -> Option<BorrowedFd<'_>> {
         let o = self.outputs.get(i)?.as_ref()?;

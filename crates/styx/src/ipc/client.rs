@@ -531,6 +531,7 @@ fn import(
     release: &Arc<Release>,
     maps: &Arc<MapCache>,
 ) -> Result<FrameLease, IpcError> {
+    let cpu_access = frame.cpu_access;
     let count = frame.backing.fd_count();
     let mut own: Vec<OwnedFd> = fds.by_ref().take(count).collect();
     if own.len() != count {
@@ -576,6 +577,7 @@ fn import(
         Arc::new(Released {
             inner,
             _release: release.clone(),
+            cpu_access,
         }),
     );
     for (kind, companion) in frame.companions {
@@ -603,6 +605,8 @@ impl Drop for Release {
 struct Released {
     inner: Arc<dyn ExternalBacking>,
     _release: Arc<Release>,
+    /// As the sender reported it for its memory.
+    cpu_access: CpuAccess,
 }
 
 impl ExternalBacking for Released {
@@ -620,6 +624,10 @@ impl ExternalBacking for Released {
 
     fn can_export(&self) -> bool {
         self.inner.can_export()
+    }
+
+    fn cpu_access(&self) -> CpuAccess {
+        self.cpu_access
     }
 
     fn residency(&self) -> FrameResidency {

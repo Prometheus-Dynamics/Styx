@@ -6,6 +6,7 @@
 //! frames and pools ([`FrameLease`], [`BufferPool`]), memfd / dma-buf backings.
 
 #[cfg(all(feature = "std", target_os = "linux"))]
+mod cpu_access;
 mod dmabuf_sync;
 #[cfg(feature = "std")]
 mod frame;
@@ -16,6 +17,7 @@ mod plane;
 mod pool;
 mod views;
 
+pub use cpu_access::CpuAccess;
 pub use layout::{plane_layout_from_dims, plane_layout_with_stride};
 pub use meta::{
     BackendFrameMeta, CaptureInstant, ClockConversion, ClockSource, FrameLatency, FrameMeta,
@@ -43,5 +45,7 @@ pub use dmabuf_sync::{dmabuf_begin_cpu_read, dmabuf_end_cpu_read};
 #[cfg(all(feature = "std", target_os = "linux"))]
 pub use pool::{SharedBufferLease, SharedBufferPool, SharedBufferPoolStats};
 
+#[cfg(test)]
+mod cpu_access_tests;
 #[cfg(test)]
 mod tests;

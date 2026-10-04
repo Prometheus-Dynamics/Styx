@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use smallvec::SmallVec;
 use std::os::fd::{FromRawFd, OwnedFd};
 use styx_core::prelude::{
-    ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane, FrameResidency,
+    CpuAccess, ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane, FrameResidency,
 };
 
 use crate::metrics::ExternalBackingTracker;
@@ -356,6 +356,8 @@ pub(super) struct LibcameraBacking {
     outstanding_tracker: Arc<ExternalBackingTracker>,
     mapped_tracker: Arc<ExternalBackingTracker>,
     backing_bytes: usize,
+    /// Buffers from a cached dma-heap rather than libcamera's allocator.
+    cached: bool,
 }
 
 impl LibcameraBacking {
@@ -370,6 +372,7 @@ impl LibcameraBacking {
         outstanding_backings: Arc<AtomicUsize>,
         outstanding_tracker: Arc<ExternalBackingTracker>,
         mapped_tracker: Arc<ExternalBackingTracker>,
+        cached: bool,
     ) -> std::sync::Arc<Self> {
         outstanding_backings.fetch_add(1, Ordering::AcqRel);
         let request = Arc::new(RequestReturn {
@@ -378,7 +381,14 @@ impl LibcameraBacking {
             shutting_down,
             outstanding_backings,
         });
-        Self::with_request(request, planes, cache, outstanding_tracker, mapped_tracker)
+        Self::with_request(
+            request,
+            planes,
+            cache,
+            outstanding_tracker,
+            mapped_tracker,
+            cached,
+        )
     }
 
     /// A backing for another stream's buffer in the same request (e.g. a pyramid companion).
@@ -390,6 +400,7 @@ impl LibcameraBacking {
             self.cache.clone(),
             self.outstanding_tracker.clone(),
             self.mapped_tracker.clone(),
+            self.cached,
         )
     }
 
@@ -399,6 +410,7 @@ impl LibcameraBacking {
         cache: Arc<MappingCache>,
         outstanding_tracker: Arc<ExternalBackingTracker>,
         mapped_tracker: Arc<ExternalBackingTracker>,
+        cached: bool,
     ) -> std::sync::Arc<Self> {
         let backing_bytes = unique_backing_plane_bytes(&planes);
         outstanding_tracker.acquire_many(1, backing_bytes);
@@ -410,6 +422,7 @@ impl LibcameraBacking {
             outstanding_tracker,
             mapped_tracker,
             backing_bytes,
+            cached,
         })
     }
 
@@ -458,6 +471,14 @@ impl ExternalBacking for LibcameraBacking {
 
     fn residency(&self) -> FrameResidency {
         FrameResidency::Dmabuf
+    }
+
+    fn cpu_access(&self) -> CpuAccess {
+        if self.cached {
+            CpuAccess::Cached
+        } else {
+            CpuAccess::Uncached
+        }
     }
 
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {

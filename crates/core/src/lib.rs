@@ -20,13 +20,13 @@ pub mod transform;
 pub mod prelude {
     pub use crate::{
         buffer::{
-            BackendFrameMeta, CaptureInstant, ClockConversion, ClockSource, FrameAllocation,
-            FrameLatency, FrameLeaseDescriptor, FrameMeta, FrameMutability, FramePlaneDescriptor,
-            FramePlaneShape, FrameResidency, FrameTiming, FrameValidationError, LibcameraFrameMeta,
-            NativeFrameMeta, Plane, PlaneLayout, PlaneMut, ResidencyTransition,
-            ResidencyTransitionReason, TimestampClock, UvcFrameMeta, V4l2FrameMeta, VisibleRow,
-            VisibleRowMut, VisibleRows, VisibleRowsMut, plane_layout_from_dims,
-            plane_layout_with_stride,
+            BackendFrameMeta, CaptureInstant, ClockConversion, ClockSource, CpuAccess,
+            FrameAllocation, FrameLatency, FrameLeaseDescriptor, FrameMeta, FrameMutability,
+            FramePlaneDescriptor, FramePlaneShape, FrameResidency, FrameTiming,
+            FrameValidationError, LibcameraFrameMeta, NativeFrameMeta, Plane, PlaneLayout,
+            PlaneMut, ResidencyTransition, ResidencyTransitionReason, TimestampClock, UvcFrameMeta,
+            V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
+            plane_layout_from_dims, plane_layout_with_stride,
         },
         controls::{
             Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlRect, ControlValue,

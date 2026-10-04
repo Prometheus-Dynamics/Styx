@@ -4,6 +4,7 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, OwnedFd};
 
+use super::cpu_access::CpuAccess;
 use super::meta::{FrameMeta, FrameMutability, FrameResidency};
 #[cfg(target_os = "linux")]
 use super::pool::SharedBufferLease;
@@ -48,6 +49,18 @@ pub trait ExternalBacking: Send + Sync {
 
     fn residency(&self) -> FrameResidency {
         FrameResidency::HostExternal
+    }
+
+    /// Whether [`ExternalBacking::plane_data`] reads the planes, and at what cost. Host memory
+    /// is readable and cached; a dma-buf or GPU memory is not readable unless the backing says
+    /// so (one that maps a dma-buf reports whether the mapping is cached).
+    fn cpu_access(&self) -> CpuAccess {
+        match self.residency() {
+            FrameResidency::HostOwned
+            | FrameResidency::HostExternal
+            | FrameResidency::CompressedPacket => CpuAccess::Cached,
+            FrameResidency::Dmabuf | FrameResidency::GpuTexture => CpuAccess::None,
+        }
     }
 
     #[cfg(unix)]
@@ -194,13 +207,20 @@ impl FrameLease {
         self.meta.format.code.layout_info()
     }
 
+    /// Whether the CPU can read the planes, and at what cost ([`CpuAccess`]). Frames in their
+    /// own buffers are cached host memory; others ask their backing.
+    pub fn cpu_access(&self) -> CpuAccess {
+        match (&self.external, self.meta.residency) {
+            (_, Some(FrameResidency::GpuTexture)) => CpuAccess::None,
+            (Some(backing), _) => backing.cpu_access(),
+            (None, _) => CpuAccess::Cached,
+        }
+    }
+
+    /// Whether the CPU can read the planes ([`FrameLease::cpu_access`]): host memory, and mapped
+    /// dma-bufs.
     pub fn has_host_readable_bytes(&self) -> bool {
-        matches!(
-            self.residency(),
-            FrameResidency::HostOwned
-                | FrameResidency::HostExternal
-                | FrameResidency::CompressedPacket
-        )
+        self.cpu_access().readable()
     }
 
     pub fn has_host_writable_bytes(&self) -> bool {

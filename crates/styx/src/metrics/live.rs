@@ -653,6 +653,10 @@ impl<B: ExternalBacking> ExternalBacking for MeteredBacking<B> {
         self.inner.residency()
     }
 
+    fn cpu_access(&self) -> styx_core::prelude::CpuAccess {
+        self.inner.cpu_access()
+    }
+
     #[cfg(unix)]
     fn export_backing(
         &self,
