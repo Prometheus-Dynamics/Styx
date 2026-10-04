@@ -10,6 +10,11 @@
 //! * [`LensControl`], [`PdafFrames`]: the focus lens moved frame-exactly over any
 //!   [`styx_hal::LensActuator`], and phase detection data per frame.
 //! * [`Health`]: the fault that ends a stream and its counters.
+//! * [`Camera`] on a [`Platform`] (a [`styx_hal::Receiver`] and a [`SensorSide`]): start and
+//!   stop in the order every path ends clean, a [`FrameStream`] of [`Frame`]s (leases on the
+//!   receiver's buffers from a [`Pool`], given back on drop, outliving their stream), and the
+//!   sensor service [`serve_sync`] (frame starts to the control schedule) for whatever waits
+//!   on the receiver's frame starts.
 //! * [`Shared`], [`Counter`]: one answer per build (`Arc<Mutex>` with `std`, `Rc<RefCell>`
 //!   without), see [`sync`].
 //!
@@ -21,13 +26,17 @@
 
 extern crate alloc;
 
+mod camera;
 mod controls;
 mod error;
 mod health;
 mod lens;
 mod sensor;
+mod side;
+mod stream;
 pub mod sync;
 
+pub use camera::{Camera, CameraError, CameraOptions, Platform, RunError, SensorHandle};
 pub use controls::{BlankingHook, Controls};
 pub use error::{Error, Result};
 pub use health::{Fault, Health, MAX_CONTROL_FAILURES};
@@ -35,6 +44,10 @@ pub use lens::{LensControl, LensDrive, PdafFrames};
 pub use sensor::{
     BringUpTimes, Clock, DEFAULT_WRITE_MARGIN, FrameControls, SensorState, ServeError, StartFormat,
     standby_problems,
+};
+pub use side::{SensorSide, SyncSource, serve_sync, sync_event};
+pub use stream::{
+    Frame, FrameItem, FrameStream, Lease, Pool, ReceiverError, StreamStats, instant_duration,
 };
 pub use styx_hal;
 pub use styx_sensor;

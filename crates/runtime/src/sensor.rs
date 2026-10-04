@@ -13,8 +13,8 @@ use core::time::Duration;
 
 use styx_hal::ErrorKind;
 use styx_sensor::{
-    AppliedControls, ControlRequest, ControlSet, DriverState, Landing, Mismatch, RegWrite,
-    RegisterBus, SensorDescription, SensorDriver, SensorPins, Step, Timing,
+    AppliedControls, ControlRequest, ControlSet, DriverState, Landing, Landings, Mismatch,
+    RegWrite, RegisterBus, SensorDescription, SensorDriver, SensorPins, Step, Timing,
 };
 
 use crate::error::{Error, Result};
@@ -460,8 +460,13 @@ impl<B: RegisterBus, P: SensorPins> SensorState<B, P> {
 
     /// Asks for typed values from frame `frame` on.
     pub fn request_at(&mut self, frame: u64, req: &ControlRequest) -> Result<Vec<Landing>> {
+        Ok(self.request_at_landings(frame, req)?.to_vec())
+    }
+
+    /// [`Self::request_at`] without allocating: the landings in a fixed list.
+    pub fn request_at_landings(&mut self, frame: u64, req: &ControlRequest) -> Result<Landings> {
         Self::check(req)?;
-        Ok(self.driver.request(frame, req)?.to_vec())
+        Ok(self.driver.request(frame, req)?)
     }
 
     /// [`Self::request_at`], writing at once what is due in the current frame when enough of
@@ -474,6 +479,16 @@ impl<B: RegisterBus, P: SensorPins> SensorState<B, P> {
         req: &ControlRequest,
         now: Duration,
     ) -> Result<Vec<Landing>> {
+        Ok(self.request_at_now_landings(frame, req, now)?.to_vec())
+    }
+
+    /// [`Self::request_at_now`] without allocating: the landings in a fixed list.
+    pub fn request_at_now_landings(
+        &mut self,
+        frame: u64,
+        req: &ControlRequest,
+        now: Duration,
+    ) -> Result<Landings> {
         Self::check(req)?;
         let in_time = match self.driver.state() {
             DriverState::Powered => true,
@@ -484,9 +499,9 @@ impl<B: RegisterBus, P: SensorPins> SensorState<B, P> {
             DriverState::Off => false,
         };
         if in_time {
-            Ok(self.driver.request_now(frame, req)?.to_vec())
+            Ok(self.driver.request_now(frame, req)?)
         } else {
-            Ok(self.driver.request(frame, req)?.to_vec())
+            Ok(self.driver.request(frame, req)?)
         }
     }
 

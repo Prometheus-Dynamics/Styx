@@ -3,7 +3,8 @@
 //! Buffers are driver-allocated (`MMAP`, each also exported as a dma-buf with `VIDIOC_EXPBUF`)
 //! or allocated from a dma-heap and imported (`DMABUF`). Either way every frame has a CPU
 //! mapping and a dma-buf descriptor, so it can be read in place or handed to another process or
-//! device without a copy. A frame returns its buffer to the queue when dropped.
+//! device without a copy. A frame returns its buffer to the queue when dropped (the runtime's
+//! buffer pool).
 //!
 //! Frames may outlive their stream. Stopping a stream releases the queue's buffers at once
 //! (`REQBUFS 0`, which leaves buffers that are still mapped or exported to the memory that
@@ -12,17 +13,19 @@
 //! it is dropped; it is never queued again.
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use styx_kernel::dma_heap::{self, Access, DmaBuf, DmaHeap};
+use styx_kernel::dma_heap::{self, DmaBuf, DmaHeap};
 use styx_kernel::v4l2::{Memory, QueueBuffer};
 use styx_kernel::{FourCc, Mapping};
+use styx_runtime::styx_hal::{Access, FrameBuffer};
 
-use crate::control::{FrameControls, lock};
+use crate::control::FrameControls;
 use crate::device::CaptureDevice;
 use crate::error::{KernelContext, NativeError, Result};
+use crate::receiver::V4l2Receiver;
 
 /// Where capture buffers come from.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -75,17 +78,13 @@ fn check_len(what: &str, have: usize, need: usize) -> Result<()> {
     Ok(())
 }
 
-/// The buffers of one stream.
+/// The buffers of one stream: mappings and dma-bufs, kept until the last frame holding one is
+/// dropped.
 pub(crate) struct BufferSet {
     buffers: Vec<Buffer>,
     video: Arc<dyn CaptureDevice>,
     memory: Memory,
     len: usize,
-    /// Frames currently lent out.
-    outstanding: AtomicUsize,
-    /// Whether frames go back to the queue when dropped. Cleared (under the lock, so no frame
-    /// queues a buffer after) when the stream stops.
-    live: Mutex<bool>,
     /// The queue no longer holds these buffers (`REQBUFS 0` done).
     released: AtomicBool,
 }
@@ -113,8 +112,6 @@ impl BufferSet {
             video,
             memory: kmem,
             len,
-            outstanding: AtomicUsize::new(0),
-            live: Mutex::new(true),
             released: AtomicBool::new(false),
         };
         if got == 0 {
@@ -154,16 +151,13 @@ impl BufferSet {
     }
 
     /// Bytes per buffer.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.len
     }
 
     pub(crate) fn memory(&self) -> Memory {
         self.memory
-    }
-
-    pub(crate) fn outstanding(&self) -> usize {
-        self.outstanding.load(Ordering::Acquire)
     }
 
     /// Queues buffer `index`.
@@ -187,26 +181,9 @@ impl BufferSet {
         self.video.queue(&req).step("VIDIOC_QBUF")
     }
 
-    /// Queues every buffer.
-    pub(crate) fn queue_all(&self) -> Result<()> {
-        (0..self.buffers.len() as u32).try_for_each(|i| self.queue(i))
-    }
-
-    /// Whether frames still go back to the queue.
-    pub(crate) fn is_live(&self) -> bool {
-        *lock(&self.live)
-    }
-
-    /// Stops lending buffers back to the queue: frames dropped from now on keep their buffer
-    /// out of it. Waits for a frame that is queueing its buffer right now.
-    pub(crate) fn retire(&self) {
-        *lock(&self.live) = false;
-    }
-
-    /// Frees the queue's buffers (`REQBUFS 0`) after [`Self::retire`] and `STREAMOFF`. Held
-    /// frames keep their mappings and dma-bufs; the next stream allocates new buffers.
+    /// Frees the queue's buffers (`REQBUFS 0`) after `STREAMOFF`. Held frames keep their
+    /// mappings and dma-bufs; the next stream allocates new buffers.
     pub(crate) fn release(&self) -> Result<()> {
-        self.retire();
         if self.released.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
@@ -214,29 +191,6 @@ impl BufferSet {
             .request_buffers(self.memory, 0)
             .map(|_| ())
             .step("VIDIOC_REQBUFS 0")
-    }
-
-    fn data(&self, index: u32) -> &[u8] {
-        self.buffers[index as usize].map.as_slice()
-    }
-
-    fn dmabuf(&self, index: u32) -> Option<BorrowedFd<'_>> {
-        self.buffers[index as usize]
-            .dmabuf
-            .as_ref()
-            .map(|f| f.as_fd())
-    }
-
-    /// Returns a lent buffer: queues it again while the stream runs.
-    fn give_back(&self, index: u32) {
-        {
-            let live = lock(&self.live);
-            if *live {
-                // Fails only when the device went away; the stream reports that.
-                let _ = self.queue(index);
-            }
-        }
-        self.outstanding.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -251,9 +205,65 @@ impl Drop for BufferSet {
     }
 }
 
-/// What lets a frame give its buffer back.
-pub(crate) struct Lender {
-    pub(crate) buffers: Arc<BufferSet>,
+/// One capture buffer, as the runtime's pool lends it out: it keeps its stream's buffers (the
+/// mappings and dma-bufs) alive while held.
+pub struct V4l2Buffer {
+    set: Arc<BufferSet>,
+    index: u32,
+}
+
+impl V4l2Buffer {
+    pub(crate) fn new(set: Arc<BufferSet>, index: u32) -> Option<Self> {
+        (set.buffers.get(index as usize).is_some()).then_some(Self { set, index })
+    }
+
+    fn buffer(&self) -> &Buffer {
+        &self.set.buffers[self.index as usize]
+    }
+}
+
+impl FrameBuffer for V4l2Buffer {
+    type Export<'a> = BorrowedFd<'a>;
+
+    /// Size of the whole buffer in bytes.
+    fn len(&self) -> usize {
+        self.set.len
+    }
+
+    fn bytes(&self) -> &[u8] {
+        self.buffer().map.as_slice()
+    }
+
+    /// A dma-buf sync (start) for reads: invalidates the CPU's cache over the buffer.
+    fn begin_cpu(&self, access: Access) {
+        if let Some(fd) = self.export() {
+            let access = match access {
+                Access::Read => dma_heap::Access::Read,
+                Access::Write => dma_heap::Access::Write,
+                Access::ReadWrite => dma_heap::Access::ReadWrite,
+            };
+            let _ = dma_heap::sync(fd, access, true);
+        }
+    }
+
+    /// No `SYNC_END` after reads: it only cleans the buffer's lines for the device (arm64
+    /// `dcache_clean_poc` over the whole buffer, 22 us per 1.3 MB frame on the CM5), and a CPU
+    /// that only read them has none dirty.
+    fn end_cpu(&self, access: Access) {
+        if access != Access::Read
+            && let Some(fd) = self.export()
+        {
+            let access = match access {
+                Access::Write => dma_heap::Access::Write,
+                _ => dma_heap::Access::ReadWrite,
+            };
+            let _ = dma_heap::sync(fd, access, false);
+        }
+    }
+
+    fn export(&self) -> Option<BorrowedFd<'_>> {
+        self.buffer().dmabuf.as_ref().map(|f| f.as_fd())
+    }
 }
 
 /// A captured frame. Dropping it returns its buffer to the capture queue.
@@ -278,33 +288,30 @@ pub struct NativeFrame {
     pub stride: u32,
     /// Exposure, gain and frame duration that produced this frame.
     pub controls: Option<FrameControls>,
-    index: u32,
-    lender: Arc<Lender>,
-    cpu_access: AtomicBool,
+    frame: styx_runtime::Frame<V4l2Receiver>,
 }
 
 impl NativeFrame {
     pub(crate) fn new(
-        index: u32,
-        lender: Arc<Lender>,
-        head: FrameHead,
-        controls: Option<FrameControls>,
+        frame: styx_runtime::Frame<V4l2Receiver>,
+        dequeued: Instant,
+        fourcc: FourCc,
+        width: u32,
+        height: u32,
+        stride: u32,
     ) -> Self {
-        lender.buffers.outstanding.fetch_add(1, Ordering::AcqRel);
         NativeFrame {
-            sequence: head.sequence,
-            timestamp: head.timestamp,
-            dequeued: Instant::now(),
-            bytes_used: head.bytes_used,
-            error: head.error,
-            fourcc: head.fourcc,
-            width: head.width,
-            height: head.height,
-            stride: head.stride,
-            controls,
-            index,
-            lender,
-            cpu_access: AtomicBool::new(false),
+            sequence: frame.sequence as u32,
+            timestamp: styx_runtime::instant_duration(frame.timestamp),
+            dequeued,
+            bytes_used: frame.bytes_used,
+            error: frame.corrupt,
+            fourcc,
+            width,
+            height,
+            stride,
+            controls: frame.controls,
+            frame,
         }
     }
 
@@ -312,33 +319,22 @@ impl NativeFrame {
     /// none). The first call starts CPU (read) access with a dma-buf sync, which invalidates
     /// the CPU's cache over the buffer.
     pub fn data(&self) -> &[u8] {
-        if !self.cpu_access.swap(true, Ordering::AcqRel)
-            && let Some(fd) = self.dmabuf()
-        {
-            let _ = dma_heap::sync(fd, Access::Read, true);
-        }
-        let all = self.lender.buffers.data(self.index);
-        let n = if self.bytes_used == 0 {
-            all.len()
-        } else {
-            self.bytes_used.min(all.len())
-        };
-        &all[..n]
+        self.frame.data()
     }
 
     /// The buffer's dma-buf descriptor (borrowed; `try_clone_to_owned` to keep it).
     pub fn dmabuf(&self) -> Option<BorrowedFd<'_>> {
-        self.lender.buffers.dmabuf(self.index)
+        self.frame.buffer().export()
     }
 
     /// Size of the whole buffer in bytes.
     pub fn buffer_len(&self) -> usize {
-        self.lender.buffers.len()
+        self.frame.buffer().len()
     }
 
     /// Buffer index in the capture queue.
     pub fn buffer_index(&self) -> u32 {
-        self.index
+        self.frame.index()
     }
 }
 
@@ -355,28 +351,4 @@ impl std::fmt::Debug for NativeFrame {
             .field("controls", &self.controls)
             .finish_non_exhaustive()
     }
-}
-
-impl Drop for NativeFrame {
-    fn drop(&mut self) {
-        // No `SYNC_END` for the read access `data` started: it only cleans the buffer's lines
-        // for the device (arm64 `dcache_clean_poc` over the whole buffer, 22 us per 1.3 MB
-        // frame on the CM5), and a CPU that only read them has none dirty. The next frame in
-        // this buffer starts its own access, which invalidates what the CPU may have cached
-        // meanwhile.
-        self.lender.buffers.give_back(self.index);
-    }
-}
-
-/// The per-frame values read from a dequeued buffer.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct FrameHead {
-    pub sequence: u32,
-    pub timestamp: Duration,
-    pub bytes_used: usize,
-    pub error: bool,
-    pub fourcc: FourCc,
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
 }

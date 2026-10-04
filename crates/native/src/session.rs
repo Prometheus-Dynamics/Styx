@@ -1,6 +1,7 @@
-//! The running part of a camera: the event thread, buffers, `STREAMON`/`STREAMOFF`, and the
-//! clean state every path ends in (sensor in standby and powered down, bridge idle and off,
-//! the queue's buffers released).
+//! The running part of a camera: the runtime's [`Camera`] on the Linux receiver (event thread,
+//! buffers, `STREAMON`/`STREAMOFF`), the sensor side serving another device's capture
+//! (`external.rs`), and the clean state every path ends in (sensor in standby and powered down,
+//! bridge idle and off, the queue's buffers released).
 //!
 //! It talks to the bridge and the capture node through [`BridgeDevice`] and [`CaptureDevice`],
 //! so the host tests drive it over fakes that inject faults (`fault_tests.rs`).
@@ -10,28 +11,22 @@ use std::time::{Duration, Instant};
 
 use styx_kernel::FourCc;
 use styx_kernel::bus::StreamState;
-use styx_kernel::dma_heap::DmaHeap;
+use styx_runtime::styx_hal::{BufferSource as HalBufferSource, Bus, ReceiverConfig};
+use styx_runtime::{Camera, CameraOptions as RuntimeOptions};
 
-use crate::buffers::{Allocator, BufferMemory, BufferSet, Lender};
 use crate::device::{BridgeDevice, CaptureDevice};
 use crate::embedded::EmbeddedCapture;
 use crate::error::{KernelContext, NativeError, Result, io_errno};
-use crate::events::{EventSources, EventThread};
-use crate::health::{Health, fault_error};
-use crate::stream::{FrameStream, SensorSide, StreamShared};
+use crate::events::{EventSources, EventThread, FrameNotify};
+use crate::health::Health;
+use crate::receiver::{Linux, V4l2Receiver, kernel_start_error};
+use crate::stream::{FrameStream, SensorSide};
+
+pub(crate) use crate::receiver::BufferSource;
 
 /// How long shutting down waits for the bridge to become idle so it can be switched off
 /// (longer than the default acknowledgement timeout).
 const POWER_OFF_WAIT: Duration = Duration::from_millis(2500);
-
-/// Where a session's buffers come from.
-#[derive(Clone, Debug)]
-pub(crate) enum BufferSource {
-    Memory(BufferMemory),
-    /// memfds imported as `DMABUF` (tests).
-    #[cfg(test)]
-    Memfd,
-}
 
 /// Format of the frames of a stream.
 #[derive(Clone, Copy, Debug)]
@@ -51,11 +46,6 @@ pub(crate) struct SessionOptions {
     pub(crate) max_error_frames: u32,
 }
 
-struct Running {
-    shared: Arc<StreamShared>,
-    events: EventThread,
-}
-
 /// The sensor side running for another device's capture (see `external.rs`).
 struct External {
     events: EventThread,
@@ -65,11 +55,11 @@ struct External {
 pub(crate) struct Session {
     bridge: Arc<dyn BridgeDevice>,
     sensor: Arc<dyn SensorSide>,
-    video: Option<Arc<dyn CaptureDevice>>,
     embedded: Option<Arc<EmbeddedCapture>>,
     frame_sync: bool,
     options: SessionOptions,
-    running: Option<Running>,
+    /// The raw route, once a capture node is attached.
+    camera: Option<Camera<Linux>>,
     external: Option<External>,
 }
 
@@ -82,11 +72,10 @@ impl Session {
         Self {
             bridge,
             sensor,
-            video: None,
             embedded: None,
             frame_sync: false,
             options,
-            running: None,
+            camera: None,
             external: None,
         }
     }
@@ -98,12 +87,29 @@ impl Session {
         video: Arc<dyn CaptureDevice>,
         frame_sync: bool,
     ) -> Result<()> {
-        self.video = Some(video);
+        let receiver = V4l2Receiver::new(
+            Arc::clone(&self.bridge),
+            video,
+            frame_sync,
+            self.options.source.clone(),
+        );
+        receiver.set_embedded(self.embedded.clone());
+        self.camera = Some(Camera::new(
+            Arc::new(receiver),
+            Arc::clone(&self.sensor),
+            RuntimeOptions {
+                frame_sync,
+                max_error_frames: self.options.max_error_frames,
+            },
+        ));
         self.frame_sync = frame_sync;
         Ok(())
     }
 
     pub(crate) fn set_embedded(&mut self, embedded: Option<Arc<EmbeddedCapture>>) {
+        if let Some(c) = &self.camera {
+            c.receiver().set_embedded(embedded.clone());
+        }
         self.embedded = embedded;
     }
 
@@ -116,14 +122,14 @@ impl Session {
     }
 
     pub(crate) fn is_streaming(&self) -> bool {
-        self.running.is_some() || self.external.is_some()
+        self.camera.as_ref().is_some_and(Camera::is_streaming) || self.external.is_some()
     }
 
     /// Health of the running stream.
     pub(crate) fn health(&self) -> Option<&Arc<Health>> {
-        self.running
+        self.camera
             .as_ref()
-            .map(|r| &r.shared.health)
+            .and_then(Camera::health)
             .or(self.external.as_ref().map(|e| &e.health))
     }
 
@@ -141,15 +147,18 @@ impl Session {
             return Err(NativeError::Busy("already streaming".into()));
         }
         let health = Arc::new(Health::default());
-        let events = EventThread::spawn(EventSources {
-            bridge: Arc::clone(&self.bridge),
-            video,
-            frame_sync,
-            caller_drives,
-            sensor: Arc::clone(&self.sensor),
-            embedded: self.embedded.clone(),
-            health: Arc::clone(&health),
-        })
+        let events = EventThread::spawn(
+            EventSources {
+                bridge: Arc::clone(&self.bridge),
+                video,
+                frame_sync,
+                caller_drives,
+                sensor: Arc::clone(&self.sensor),
+                embedded: self.embedded.clone(),
+                health: Arc::clone(&health),
+            },
+            Arc::new(FrameNotify::default()),
+        )
         .step("start the event thread")?;
         if let Some(e) = &self.embedded
             && let Err(err) = e.start()
@@ -203,104 +212,33 @@ impl Session {
     /// served). On failure everything started is undone: buffers released, the event thread
     /// stopped, the sensor in standby.
     pub(crate) fn start(&mut self, format: StreamFormat) -> Result<FrameStream> {
-        if self.running.is_some() {
+        if self.external.is_some() {
             return Err(NativeError::Busy("already streaming".into()));
         }
-        let video = Arc::clone(
-            self.video
-                .as_ref()
-                .ok_or(NativeError::State("configure before starting"))?,
-        );
-        let health = Arc::new(Health::default());
-        // Spawned quiesced: it leaves the capture node alone until STREAMON returned.
-        let events = EventThread::spawn(EventSources {
-            bridge: Arc::clone(&self.bridge),
-            video: Arc::clone(&video),
-            frame_sync: self.frame_sync,
-            caller_drives: false,
-            sensor: Arc::clone(&self.sensor),
-            embedded: self.embedded.clone(),
-            health: Arc::clone(&health),
-        })
-        .step("start the event thread")?;
-        let allocator = match &self.options.source {
-            BufferSource::Memory(BufferMemory::Mmap) => None,
-            BufferSource::Memory(BufferMemory::DmaHeap(name)) => Some(Allocator::Heap(
-                DmaHeap::open(name).step(&format!("open dma-heap {name}"))?,
-            )),
-            #[cfg(test)]
-            BufferSource::Memfd => Some(Allocator::Memfd),
+        let camera = self
+            .camera
+            .as_mut()
+            .ok_or(NativeError::State("configure before starting"))?;
+        camera.receiver().set_size_image(format.size_image as usize);
+        let config = ReceiverConfig {
+            bus: Bus::Other,
+            bus_code: 0,
+            fourcc: format.fourcc.0.to_le_bytes(),
+            width: format.width,
+            height: format.height,
+            stride: Some(format.stride),
+            buffers: self.options.buffers,
+            memory: HalBufferSource::Own,
+            embedded: None,
+            frame_starts: self.frame_sync,
         };
-        let buffers = BufferSet::allocate_with(
-            Arc::clone(&video),
-            allocator,
-            self.options.buffers,
-            format.size_image as usize,
-        )
-        .map_err(|e| started_error(e, &health))?;
-        // Dropping the set frees its buffers again.
-        buffers.queue_all().map_err(|e| started_error(e, &health))?;
-        let lender = Arc::new(Lender {
-            buffers: Arc::new(buffers),
-        });
-        let mut shared = StreamShared::new(
-            Arc::clone(&video),
-            events.notify(),
-            Arc::clone(&lender),
-            Arc::clone(&self.sensor),
-            Arc::clone(&health),
+        let started = Instant::now();
+        let (frames, _) = camera.start(&config).map_err(NativeError::from)?;
+        Ok(FrameStream::new(
+            frames,
             (format.fourcc, format.width, format.height, format.stride),
-        );
-        shared.embedded = self.embedded.clone();
-        shared.frame_sync = self.frame_sync;
-        shared.max_error_frames = self.options.max_error_frames;
-        let shared = Arc::new(shared);
-        let undo = |events: EventThread, embedded: Option<&Arc<EmbeddedCapture>>| {
-            if let Some(e) = embedded {
-                e.stop();
-            }
-            let _ = video.stream_off();
-            let _ = lender.buffers.release();
-            events.join();
-            self.sensor.standby();
-        };
-        if let Some(e) = &self.embedded
-            && let Err(err) = e.start()
-        {
-            undo(events, None);
-            return Err(err);
-        }
-        // A kernel driver's sensor starts with the receiver: frame 0's values go first.
-        if self.bridge.kernel_driven()
-            && let Err(why) = self.sensor.start_streaming()
-        {
-            undo(events, self.embedded.as_ref());
-            return Err(kernel_start_error(why));
-        }
-        if let Err(e) = video.stream_on() {
-            undo(events, self.embedded.as_ref());
-            return Err(stream_on_error(e, &health));
-        }
-        // By default the bridge does not fail STREAMON for a failed start (rp1-cfe's error
-        // path oopses); it reports it in its state, and the receiver must be stopped.
-        if let Ok(StreamState::StartFailed) = self.bridge.stream_state() {
-            let errno = if health.serve_error().is_some() {
-                libc::EIO
-            } else {
-                libc::ETIMEDOUT
-            };
-            undo(events, self.embedded.as_ref());
-            return Err(stream_on_error(
-                std::io::Error::from_raw_os_error(errno),
-                &health,
-            ));
-        }
-        events.resume();
-        self.running = Some(Running {
-            shared: Arc::clone(&shared),
-            events,
-        });
-        Ok(FrameStream::new(shared))
+            started,
+        ))
     }
 
     /// Stops streaming. Frame streams end; frames still held keep their memory until dropped
@@ -317,29 +255,9 @@ impl Session {
             self.sensor.standby();
             return Ok(());
         }
-        let Some(running) = self.running.take() else {
-            return Ok(());
-        };
-        let buffers = &running.shared.lender.buffers;
-        buffers.retire();
-        // The stream ends: wake it if it waits.
-        running.shared.notify.wake();
-        // Nothing may poll the node while STREAMOFF holds its lock and waits for the bridge.
-        running.events.quiesce();
-        let result = running.shared.video.stream_off().step("VIDIOC_STREAMOFF");
-        // rp1-cfe stops the receiver (and asks the bridge to stop the sensor) when the last
-        // node stops streaming, which can be the embedded data node: stop it while the event
-        // thread still serves the bridge (every stop timed out after 1 s otherwise).
-        if let Some(e) = &self.embedded {
-            e.stop();
-        }
-        running.events.join();
-        let released = buffers.release();
-        self.sensor.standby();
-        match result {
-            // The node is gone: there is nothing left to stop.
-            Err(e) if e.is_disconnect() => Err(NativeError::Disconnected),
-            r => r.and(released),
+        match self.camera.as_mut() {
+            Some(c) => c.stop().map_err(NativeError::from),
+            None => Ok(()),
         }
     }
 
@@ -353,7 +271,7 @@ impl Session {
         while matches!(self.bridge.is_idle(), Ok(false)) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        let down = self.sensor.shut_down();
+        let down = self.sensor.shut_down().map_err(NativeError::from);
         while matches!(self.bridge.power(), Ok(true)) {
             match self.bridge.set_power(false) {
                 Err(e) if io_errno(&e) == Some(libc::EBUSY) && Instant::now() < deadline => {
@@ -375,42 +293,4 @@ impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
-}
-
-/// An error during start, with a disconnect seen by the event thread taking precedence.
-fn started_error(e: NativeError, health: &Health) -> NativeError {
-    match health.fault() {
-        Some(f) if f.is_disconnect() => fault_error(&f),
-        _ => e,
-    }
-}
-
-/// Setting a kernel-driven sensor's start values failed.
-fn kernel_start_error(why: String) -> NativeError {
-    NativeError::kernel(
-        format!("setting the sensor's start values: {why}"),
-        std::io::Error::from_raw_os_error(libc::EIO),
-    )
-}
-
-/// Why `STREAMON` failed, as clearly as the parts know it.
-fn stream_on_error(e: std::io::Error, health: &Health) -> NativeError {
-    if let Some(f) = health.fault()
-        && f.is_disconnect()
-    {
-        return fault_error(&f);
-    }
-    let errno = io_errno(&e);
-    let what = match (errno, health.serve_error()) {
-        (_, Some(why)) => format!("VIDIOC_STREAMON: the sensor did not start ({why})"),
-        (Some(libc::ETIMEDOUT), None) => {
-            "VIDIOC_STREAMON: the sensor bridge timed out waiting for the start acknowledgement"
-                .to_owned()
-        }
-        (Some(libc::ENOTCONN), None) => {
-            "VIDIOC_STREAMON: nobody serves the sensor bridge's requests".to_owned()
-        }
-        _ => "VIDIOC_STREAMON".to_owned(),
-    };
-    NativeError::kernel(what, e)
 }

@@ -22,6 +22,7 @@ styx-sensor = { path = "../sensor", version = "2.0.0", default-features = false 
 thiserror.workspace = true
 
 [dev-dependencies]
+styx-hal = { path = "../hal", version = "2.0.0", features = ["mock"] }
 styx-sensor = { path = "../sensor", version = "2.0.0" }
 
 [lints]

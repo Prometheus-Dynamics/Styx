@@ -108,6 +108,15 @@ impl From<styx_runtime::Error> for NativeError {
     }
 }
 
+impl From<styx_runtime::RunError<NativeError>> for NativeError {
+    fn from(e: styx_runtime::RunError<NativeError>) -> Self {
+        match e {
+            styx_runtime::RunError::Receiver(e) => e,
+            styx_runtime::RunError::Runtime(e) => e.into(),
+        }
+    }
+}
+
 /// The `std::io` kind of a hardware error kind.
 fn hal_io_kind(kind: styx_runtime::styx_hal::ErrorKind) -> io::ErrorKind {
     use styx_runtime::styx_hal::ErrorKind as K;

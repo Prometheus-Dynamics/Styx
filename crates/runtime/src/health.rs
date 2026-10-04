@@ -63,6 +63,8 @@ pub struct Health {
     /// Start requests served after the receiver gave up waiting (the sensor was put back in
     /// standby).
     pub late_acks: Counter,
+    /// Non-fatal receiver problems ([`SyncEvent::Glitch`](styx_hal::SyncEvent::Glitch)).
+    pub glitches: Counter,
 }
 
 impl Default for Health {
@@ -75,6 +77,7 @@ impl Default for Health {
             control_failures: Counter::new(),
             consecutive_control_failures: AtomicU32::new(0),
             late_acks: Counter::new(),
+            glitches: Counter::new(),
         }
     }
 }

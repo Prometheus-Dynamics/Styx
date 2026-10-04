@@ -57,13 +57,14 @@ pub mod lens;
 pub mod library;
 pub mod modes;
 pub mod provider;
+mod receiver;
 pub mod regbus;
 pub mod sensor_bus;
 mod session;
 mod stream;
 pub mod topology;
 
-pub use buffers::{BufferMemory, NativeFrame};
+pub use buffers::{BufferMemory, NativeFrame, V4l2Buffer};
 pub use camera::{
     CameraControls, CameraOptions, Configured, NativeCamera, StreamSettings, select_mode,
 };
@@ -76,6 +77,7 @@ pub use lens::{LensActuator, LensControl, LensInfo, LensKind};
 pub use library::SensorLibrary;
 pub use modes::SensorMode;
 pub use provider::{NativeDevice, NativeProvider, PROVIDER_NAME};
+pub use receiver::{Linux, V4l2Receiver};
 pub use stream::{FrameStream, StreamStats};
 pub use styx_graph::Fraction;
 pub use styx_kernel::FourCc as KernelFourCc;

@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use core::time::Duration;
 
 use styx_sensor::lens::imx708_pdaf;
-use styx_sensor::{Control, ControlRequest, Landing, RegisterBus, SensorPins, Timing};
+use styx_sensor::{Control, ControlRequest, Landing, Landings, RegisterBus, SensorPins, Timing};
 
 use crate::error::{Error, Result};
 use crate::sensor::{FrameControls, SensorState};
@@ -98,6 +98,24 @@ impl<B: RegisterBus, P: SensorPins> Controls<B, P> {
             } else {
                 // No clock, no way to tell how much of the frame is left.
                 c.request_at(frame.max(first), req)?
+            };
+            (l, c.timing())
+        };
+        self.blanking(timing, req);
+        Ok(landings)
+    }
+
+    /// [`Self::request_at_now`] without allocating (the landings in a fixed list): what a 3A
+    /// loop calls per frame.
+    pub fn request_at_now_landings(&self, frame: u64, req: &ControlRequest) -> Result<Landings> {
+        let (landings, timing) = {
+            let mut c = lock(&self.inner);
+            let first = c.next_frame();
+            let now = c.now();
+            let l = if c.clock().is_some() {
+                c.request_at_now_landings(frame.max(first), req, now)?
+            } else {
+                c.request_at_landings(frame.max(first), req)?
             };
             (l, c.timing())
         };
