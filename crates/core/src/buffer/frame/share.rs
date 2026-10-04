@@ -41,8 +41,8 @@ impl FrameLease {
         let companions = self.take_companions();
         if self.external.is_none() {
             let residency = self.residency();
-            let buffers = std::mem::take(&mut self.buffers);
-            self.external = Some(Arc::new(SharedPlanes { buffers, residency }));
+            let buffers = core::mem::take(&mut self.buffers);
+            self.external = Some(shared_backing(SharedPlanes { buffers, residency }));
             self.meta.mutability = FrameMutability::ReadOnly;
         }
         for (kind, companion) in companions {

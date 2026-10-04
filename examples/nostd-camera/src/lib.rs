@@ -10,7 +10,8 @@
 //!   "captures" a raw recording re-exposed with what the sensor's registers say, the OV9782 as
 //!   a register model, pins, the clock.
 //! * [`run`]: the superloop over a synthetic recording ([`recording`]): frames processed, 3A
-//!   converging, a bracket taken once AE has locked, the counters counted.
+//!   converging, a bracket taken once AE has locked, the counters counted, and a consumer
+//!   taking the raw frames as `styx_core` `FrameLease`s from a `styx_core` queue.
 //!
 //! `scripts/check-nostd.sh` builds it for `thumbv7em-none-eabihf`, `thumbv8m.main-none-eabihf`,
 //! `riscv32imac-unknown-none-elf` and `wasm32-unknown-unknown`, runs [`run`] as a host test
@@ -33,6 +34,8 @@ use styx_algo::Tuning;
 use styx_pipeline::SensorInfo;
 use styx_pipeline::still_runner::ShotExposure;
 use styx_runtime::metrics::Counters;
+use styx_runtime::styx_core::buffer::BackendFrameMeta;
+use styx_runtime::styx_core::queue::RecvOutcome;
 use styx_softisp::RawPacking;
 
 use board::{Board, MockBoard, Recording, receiver_config};
@@ -116,6 +119,9 @@ pub struct Run {
     pub counters: Counters,
     /// Register writes the sensor got.
     pub register_writes: u64,
+    /// Raw frames the consumer took as `FrameLease`s, and the ones it saw with the sequence,
+    /// size and capture values of the frame they were processed as.
+    pub raw_frames: (u64, u64),
 }
 
 /// The superloop: `frames` frames of [`recording`] through the camera, a bracket of -1, 0 and
@@ -137,8 +143,10 @@ pub fn run(frames: u64) -> Run {
     // The reference arithmetic: the same pictures with and without std (`Auto` picks by the
     // CPU features found at run time, which only std builds can look for).
     fw.set_arithmetic(styx_softisp::Arithmetic::Int);
+    let raw = fw.raw_frames(1);
     fw.start(&config).expect("start");
     let mut out = Run::default();
+    let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
     for _ in 0..frames {
         // The frame-start interrupt, then the frame's end.
         board.frame_start();
@@ -148,6 +156,18 @@ pub fn run(frames: u64) -> Run {
             if f.ae_locked && out.ae_locked_at.is_none() {
                 out.ae_locked_at = Some(f.values.frame);
                 fw.request_still(ShotExposure::Bracket(alloc::vec![-1.0, 0.0, 1.0]), false);
+            }
+            // The consumer: the raw frame the report came from, in the receiver's buffer.
+            if let core::task::Poll::Ready(RecvOutcome::Data(lease)) = raw.poll_recv(&mut cx) {
+                out.raw_frames.0 += 1;
+                let matches = matches!(
+                    lease.meta().backend.as_ref(),
+                    Some(BackendFrameMeta::Native(n))
+                        if u64::from(n.sequence) == f.values.frame
+                            && n.exposure_ns == f.values.exposure.as_nanos() as u64
+                ) && lease.planes()[0].data().len()
+                    == WIDTH as usize * HEIGHT as usize * 2;
+                out.raw_frames.1 += u64::from(matches);
             }
             out.frames.push(f);
         }

@@ -88,7 +88,7 @@ impl FrameLease {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "std", target_os = "linux"))]
     pub fn single_plane_shared(
         mut meta: FrameMeta,
         mut buffer: SharedBufferLease,
@@ -110,7 +110,7 @@ impl FrameLease {
         ))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "std", target_os = "linux"))]
     pub fn multi_plane_shared(
         mut meta: FrameMeta,
         mut buffer: SharedBufferLease,
@@ -133,7 +133,7 @@ impl FrameLease {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(all(feature = "std", unix))]
     pub fn from_shared_fd(
         meta: FrameMeta,
         layouts: SmallVec<[PlaneLayout; 3]>,
@@ -142,7 +142,7 @@ impl FrameLease {
         Self::from_memfd(meta, layouts, fd)
     }
 
-    #[cfg(unix)]
+    #[cfg(all(feature = "std", unix))]
     pub fn from_memfd(
         mut meta: FrameMeta,
         layouts: SmallVec<[PlaneLayout; 3]>,
@@ -158,7 +158,7 @@ impl FrameLease {
         Self::from_external(meta, layouts, Arc::new(backing))
     }
 
-    #[cfg(unix)]
+    #[cfg(all(feature = "std", unix))]
     pub fn from_dmabuf(
         mut meta: FrameMeta,
         layouts: SmallVec<[PlaneLayout; 3]>,
@@ -177,7 +177,7 @@ impl FrameLease {
 
     /// A frame another process described (`descriptor`) over the memfd it sent. The planes
     /// must lie within the memfd and hold the visible rows the format needs.
-    #[cfg(unix)]
+    #[cfg(all(feature = "std", unix))]
     pub fn from_memfd_import(
         descriptor: FrameLeaseDescriptor,
         fd: OwnedFd,
@@ -195,7 +195,7 @@ impl FrameLease {
 
     /// A frame another process described (`descriptor`) over the dma-bufs (or memfds) it sent,
     /// one per plane. Each plane must lie within its buffer when the buffer's size can be read.
-    #[cfg(unix)]
+    #[cfg(all(feature = "std", unix))]
     pub fn from_dmabuf_import(
         descriptor: FrameLeaseDescriptor,
         planes: Vec<FrameFdPlane>,
@@ -215,7 +215,7 @@ impl FrameLease {
 
     /// An imported frame whose layouts do not hold its format is refused (formats whose
     /// layout Styx does not know are taken as they are).
-    #[cfg(unix)]
+    #[cfg(all(feature = "std", unix))]
     fn checked_import(self) -> Result<Self, FrameExportError> {
         match self.validate_plane_layouts() {
             Ok(()) | Err(FrameValidationError::UnknownStorageLayout) => Ok(self),
@@ -324,7 +324,7 @@ impl FrameLease {
 }
 
 /// Whether `len` bytes at `offset` lie within `size` bytes.
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 fn fits(offset: usize, len: usize, size: u64) -> bool {
     offset
         .checked_add(len)

@@ -21,7 +21,7 @@ use crate::error::Error;
 use crate::health::{Fault, Health};
 use crate::sensor::FrameControls;
 use crate::side::SensorSide;
-use crate::sync::{Lock, Ref, lock, new_lock};
+use crate::sync::Ref;
 
 /// The buffers of one stream, lent out as frames.
 pub struct Pool<R: Receiver + ?Sized> {
@@ -29,9 +29,12 @@ pub struct Pool<R: Receiver + ?Sized> {
     buffers: Vec<R::Buffer>,
     /// Frames currently lent out.
     outstanding: AtomicUsize,
-    /// Whether frames go back to the receiver when dropped. Cleared (under the lock, so no
-    /// frame queues a buffer after) when the stream stops.
-    live: Lock<bool>,
+    /// Whether frames go back to the receiver when dropped. Cleared when the stream stops;
+    /// [`Self::retire`] then waits out the frames giving their buffer back right now
+    /// (`returning`), so no frame queues a buffer after it.
+    live: AtomicBool,
+    /// Frames between deciding to give their buffer back and having done it.
+    returning: AtomicUsize,
 }
 
 impl<R: Receiver + ?Sized> core::fmt::Debug for Pool<R> {
@@ -53,7 +56,8 @@ impl<R: Receiver + ?Sized> Pool<R> {
             receiver,
             buffers,
             outstanding: AtomicUsize::new(0),
-            live: new_lock(true),
+            live: AtomicBool::new(true),
+            returning: AtomicUsize::new(0),
         })
     }
 
@@ -74,13 +78,21 @@ impl<R: Receiver + ?Sized> Pool<R> {
 
     /// Whether frames still go back to the receiver.
     pub fn is_live(&self) -> bool {
-        *lock(&self.live)
+        self.live.load(Ordering::Acquire)
     }
 
     /// Stops lending buffers back to the receiver: frames dropped from now on keep their
     /// buffer out of it. Waits for a frame that is giving its buffer back right now.
     pub fn retire(&self) {
-        *lock(&self.live) = false;
+        // SeqCst against `give_back`: either it sees `live` cleared, or this sees it counted
+        // in `returning` and waits for its queue to finish.
+        self.live.store(false, Ordering::SeqCst);
+        while self.returning.load(Ordering::SeqCst) != 0 {
+            #[cfg(feature = "std")]
+            std::thread::yield_now();
+            #[cfg(not(feature = "std"))]
+            core::hint::spin_loop();
+        }
     }
 
     /// Buffer `index`.
@@ -101,13 +113,12 @@ impl<R: Receiver + ?Sized> Pool<R> {
 
     /// Returns a lent buffer: queues it again while the stream runs.
     fn give_back(&self, index: u32) {
-        {
-            let live = lock(&self.live);
-            if *live {
-                // Fails only when the device went away; the stream reports that.
-                let _ = self.receiver.queue(index);
-            }
+        self.returning.fetch_add(1, Ordering::SeqCst);
+        if self.live.load(Ordering::SeqCst) {
+            // Fails only when the device went away; the stream reports that.
+            let _ = self.receiver.queue(index);
         }
+        self.returning.fetch_sub(1, Ordering::SeqCst);
         self.outstanding.fetch_sub(1, Ordering::AcqRel);
     }
 }
@@ -169,7 +180,7 @@ pub struct Frame<R: Receiver + ?Sized> {
     pub corrupt: bool,
     /// Exposure, gain and frame duration that produced this frame.
     pub controls: Option<FrameControls>,
-    lease: Lease<R>,
+    pub(crate) lease: Lease<R>,
 }
 
 impl<R: Receiver + ?Sized> core::fmt::Debug for Frame<R> {

@@ -18,22 +18,29 @@ path = "src/lib.rs"
 
 [features]
 default = ["std", "neon", "x86"]
-# Frames and pools (`FrameLease`, `BufferPool`, memfd / dma-buf backings), queues, transforms,
-# metrics, clocks. Without it the crate is `no_std` + `alloc`: formats, plane layouts, frame
-# metadata, requirements, controls, the SIMD kernels (docs/portability.md).
+# Without it the crate is `no_std` + `alloc` (docs/portability.md): formats, layouts, frame
+# metadata, controls, the SIMD kernels, and the frame path itself: `FrameLease`, `BufferPool`
+# over heap memory, caller-provided (static or DMA) regions, shared views, the bounded queues
+# (non-blocking and waker-based), transforms, metrics. `std` adds what needs an OS: memfd /
+# dma-buf backings and their export and import (unix / Linux), blocking queue receives with
+# timeouts, parking_lot's locks, run-time SIMD detection, system clocks.
 std = [
-    "dep:crossbeam-queue",
     "dep:parking_lot",
-    "dep:tracing",
     "dep:libc",
     "thiserror/std",
     "serde?/std",
 ]
+# Targets without compare-and-swap (ARMv6-M, RISC-V without `a`): atomics, `Arc` and the
+# locks through `critical-section` (the platform provides its implementation). Without `std`
+# and without this, locks are spin locks (never held across anything that waits).
+critical-section = ["dep:critical-section", "portable-atomic/critical-section"]
 # SIMD backends (see `simd`): AArch64 NEON, and x86 SSE2/SSSE3/AVX2, chosen at run time with
 # `std` (at compile time from the target features without it).
 neon = []
 x86 = []
-async = ["std", "tokio"]
+# The async sends and receives are always there (waker-based, any executor); kept for
+# compatibility.
+async = ["std"]
 serde = ["dep:serde", "smallvec/serde"]
 schema = ["std", "dep:utoipa", "serde"]
 # Daedalus integration: the `styx:framelease` type, its descriptor, a metadata adapter and
@@ -41,17 +48,37 @@ schema = ["std", "dep:utoipa", "serde"]
 daedalus = ["std", "dep:daedalus"]
 
 [dependencies]
-crossbeam-queue = { workspace = true, optional = true }
 smallvec.workspace = true
-tokio = { workspace = true, features = ["sync", "rt"], optional = true }
 parking_lot = { workspace = true, optional = true }
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 utoipa = { workspace = true, optional = true }
-tracing = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 libm.workspace = true
 daedalus = { workspace = true, optional = true, features = ["plugins"] }
+portable-atomic.workspace = true
+critical-section = { workspace = true, optional = true }
+
+# The bounded queue's ring (lock-free: compare-and-swap on pointers), and the spin locks of the
+# no_std frame path (the default without `std` and `critical-section`).
+[target.'cfg(target_has_atomic = "ptr")'.dependencies]
+crossbeam-queue = { workspace = true }
+spin = { workspace = true }
+
+# `Arc` where `alloc::sync` does not exist (no compare-and-swap).
+[target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]
+portable-atomic-util = { workspace = true }
+
+[dev-dependencies]
+criterion.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+# A critical-section implementation for the host tests of `--features critical-section`.
+critical-section = { workspace = true, features = ["std"] }
+
+[[bench]]
+name = "core"
+harness = false
+required-features = ["std"]
 
 [lints]
 workspace = true

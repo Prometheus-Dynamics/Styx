@@ -84,6 +84,8 @@ fn the_camera_runs_converges_takes_a_bracket_and_counts() {
         (1, 3, 3, 0)
     );
     assert!(run.register_writes > 0);
+    // Every raw frame reached the consumer as a FrameLease of the frame it was processed as.
+    assert_eq!(run.raw_frames, (90, 90));
 
     // The trace, for comparing builds (scripts/check-nostd.sh): written where asked.
     if let Some(path) = std::env::var_os("STYX_NOSTD_TRACE") {

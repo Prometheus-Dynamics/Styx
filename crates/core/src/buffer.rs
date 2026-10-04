@@ -1,19 +1,21 @@
-//! Frames and their memory.
+//! Frames and their memory, `no_std` + `alloc`.
 //!
-//! `no_std` (always built): frame metadata ([`FrameMeta`] and the backend records), plane
-//! layouts and their math ([`PlaneLayout`], [`plane_layout_from_dims`], [`FrameAllocation`],
-//! [`FrameValidationError`]) and borrowed plane views ([`Plane`], [`VisibleRows`]). With `std`:
-//! frames and pools ([`FrameLease`], [`BufferPool`]), memfd / dma-buf backings.
+//! Frame metadata ([`FrameMeta`] and the backend records), plane layouts and their math
+//! ([`PlaneLayout`], [`plane_layout_from_dims`], [`FrameAllocation`], [`FrameValidationError`]),
+//! borrowed plane views ([`Plane`], [`VisibleRows`]), frames ([`FrameLease`]) over pooled heap
+//! buffers ([`BufferPool`]), over caller-provided memory ([`MemoryRegion`]: a static buffer or a
+//! DMA region, with [`RegionHooks`] for cache maintenance and giving the buffer back) or over
+//! any [`ExternalBacking`], shared views and companions. With `std` on unix: memfd / dma-buf
+//! backings, their export and import, the memfd pool ([`SharedBufferPool`], Linux).
 
+mod clock;
 mod cpu_access;
 #[cfg(all(feature = "std", target_os = "linux"))]
 mod dmabuf_sync;
-#[cfg(feature = "std")]
 mod frame;
 mod layout;
 mod meta;
 mod plane;
-#[cfg(feature = "std")]
 mod pool;
 mod views;
 
@@ -22,7 +24,8 @@ pub use layout::{plane_layout_from_dims, plane_layout_with_stride};
 pub use meta::{
     BackendFrameMeta, CaptureInstant, ClockConversion, ClockSource, FrameLatency, FrameMeta,
     FrameMutability, FrameResidency, FrameTiming, LibcameraFrameMeta, NativeFrameMeta,
-    ResidencyTransition, ResidencyTransitionReason, TimestampClock, UvcFrameMeta, V4l2FrameMeta,
+    PlatformClock, ResidencyTransition, ResidencyTransitionReason, TimestampClock, UvcFrameMeta,
+    V4l2FrameMeta, set_platform_clock,
 };
 pub use plane::{
     FrameAllocation, FrameLeaseDescriptor, FramePlaneDescriptor, FrameValidationError, PlaneLayout,
@@ -31,13 +34,12 @@ pub use views::{
     FramePlaneShape, Plane, PlaneMut, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
 };
 
-#[cfg(feature = "std")]
 pub use frame::{
-    CompanionKind, ExternalBacking, FrameLease, box_downscale_luma, box_downscale_luma_in,
+    CompanionKind, ExternalBacking, FrameLease, FrameLeaseParts, MemoryRegion, RegionHooks,
+    box_downscale_luma, box_downscale_luma_in,
 };
 #[cfg(all(feature = "std", unix))]
 pub use frame::{FrameBackingExport, FrameExportError, FrameFdPlane};
-#[cfg(feature = "std")]
 pub use pool::{BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats};
 
 #[cfg(all(feature = "std", target_os = "linux"))]

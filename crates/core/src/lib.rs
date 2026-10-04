@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 #![deny(clippy::print_stderr, clippy::print_stdout)]
-#![cfg_attr(not(feature = "std"), no_std)]
+// Without `std` the crate is `no_std`; its unit tests still link std (the harness, test-only
+// helpers) while the code under test takes the `no_std` paths.
+#![cfg_attr(not(any(feature = "std", test)), no_std)]
 
 extern crate alloc;
 
@@ -10,13 +12,12 @@ pub mod controls;
 pub mod daedalus;
 pub mod format;
 mod math;
-#[cfg(feature = "std")]
 pub mod metrics;
-#[cfg(feature = "std")]
+#[cfg(target_has_atomic = "ptr")]
 pub mod queue;
 pub mod requirements;
 pub mod simd;
-#[cfg(feature = "std")]
+pub mod sync;
 pub mod transform;
 
 pub mod prelude {
@@ -45,24 +46,26 @@ pub mod prelude {
     #[allow(deprecated)]
     pub use crate::requirements::{FrameRequirements, HardwarePolicy, PlanOverrides, Priority};
 
-    #[cfg(feature = "std")]
     pub use crate::{
         buffer::{
             BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats, CompanionKind,
-            ExternalBacking, FrameLease, box_downscale_luma, box_downscale_luma_in,
+            ExternalBacking, FrameLease, MemoryRegion, RegionHooks, box_downscale_luma,
+            box_downscale_luma_in,
         },
         metrics::Metrics,
-        queue::{
-            BoundedRx, BoundedTx, DEFAULT_QUEUE_CAPACITY, QueueOverflow, QueueStats, RecvOutcome,
-            RecvWaitOutcome, SendOutcome, SendWaitOutcome, bounded, bounded_with, default_bounded,
-            newest,
-        },
         transform::{
             FrameTransform, Rotation90, TransformError, TransformPoolConfig,
             TransformResidencyCapabilities, configure_transform_pool,
             packed_transform_residency_capabilities, transform_packed_frame, transform_pool_config,
             transform_pool_stats,
         },
+    };
+
+    #[cfg(target_has_atomic = "ptr")]
+    pub use crate::queue::{
+        BoundedRx, BoundedTx, DEFAULT_QUEUE_CAPACITY, QueueOverflow, QueueStats, RecvOutcome,
+        RecvWaitOutcome, SendOutcome, SendWaitOutcome, bounded, bounded_with, default_bounded,
+        newest,
     };
 
     #[cfg(all(feature = "std", unix))]

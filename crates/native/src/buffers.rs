@@ -20,6 +20,9 @@ use std::time::{Duration, Instant};
 use styx_kernel::dma_heap::{self, DmaBuf, DmaHeap};
 use styx_kernel::v4l2::{Memory, QueueBuffer};
 use styx_kernel::{FourCc, Mapping};
+use styx_runtime::styx_core::buffer::{
+    CpuAccess, FrameBackingExport, FrameExportError, FrameFdPlane, FrameResidency,
+};
 use styx_runtime::styx_hal::{Access, FrameBuffer};
 
 use crate::control::FrameControls;
@@ -272,6 +275,43 @@ impl FrameBuffer for V4l2Buffer {
     }
 }
 
+/// A capture buffer behind a `FrameLease` ([`NativeFrame::into_backing`]): a dma-buf, read in
+/// place (cached when imported from a dma-heap), exported as itself.
+impl styx_runtime::LeaseBuffer for V4l2Buffer {
+    fn cpu_access(&self) -> CpuAccess {
+        if self.cpu_cached() {
+            CpuAccess::Cached
+        } else {
+            CpuAccess::Uncached
+        }
+    }
+
+    fn residency(&self) -> FrameResidency {
+        FrameResidency::Dmabuf
+    }
+
+    fn backing_kind(&self) -> &'static str {
+        "native_dmabuf"
+    }
+
+    fn can_export(&self) -> bool {
+        self.export().is_some()
+    }
+
+    fn export_backing(
+        &self,
+        len: usize,
+    ) -> std::result::Result<Option<FrameBackingExport>, FrameExportError> {
+        let Some(fd) = self.export() else {
+            return Ok(None);
+        };
+        let fd = fd.try_clone_to_owned().map_err(FrameExportError::Fd)?;
+        Ok(Some(FrameBackingExport::DmabufPlanes {
+            planes: vec![FrameFdPlane { fd, offset: 0, len }],
+        }))
+    }
+}
+
 /// A captured frame. Dropping it returns its buffer to the capture queue.
 pub struct NativeFrame {
     /// Frame sequence number from the receiver (starts at 0 with each stream start).
@@ -347,6 +387,13 @@ impl NativeFrame {
     /// Buffer index in the capture queue.
     pub fn buffer_index(&self) -> u32 {
         self.frame.index()
+    }
+
+    /// This frame as a `styx_core` frame backing whose payload is its first `len` bytes: read
+    /// in place, exported as its dma-buf, the buffer given back when the last view of the
+    /// frame is dropped (`styx_runtime::Frame::into_backing`).
+    pub fn into_backing(self, len: usize) -> styx_runtime::FrameBacking<V4l2Receiver> {
+        self.frame.into_backing(len)
     }
 }
 

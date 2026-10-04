@@ -4,9 +4,9 @@
 //! state for the latest frame, and stills. 64-bit atomics come from `portable-atomic` (native
 //! on 64-bit targets, a lock-based fallback on Cortex-M and 32-bit RISC-V).
 //!
-//! The runtime only counts; reading is the platform's: `styx::metrics` snapshots these into
-//! its `CameraMetrics` (percentiles, rates, CPU time, consumers), a firmware reads the
-//! counters directly.
+//! `styx-runtime` and the platforms only count (`styx_runtime::metrics` is this module);
+//! reading is the platform's: `styx::metrics` snapshots these into its `CameraMetrics`
+//! (percentiles, rates, CPU time, consumers), a firmware reads the counters directly.
 
 use alloc::vec::Vec;
 use core::time::Duration;
