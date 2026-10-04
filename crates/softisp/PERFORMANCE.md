@@ -111,6 +111,30 @@ fp16 against the integer reference, PSNR and largest difference in 8-bit codes:
   are those of the code before this work); the fp16 hashes are the same from the scalar
   oracle on x86 and from the FP16 leaves on the A76.
 
+## Regions and binned overviews
+
+`SoftIsp::process_window` makes a window of the frame from its rows and columns plus the
+demosaic's neighbours (front rows from a multiple of 4 columns; 202 front rows for a 200-row
+window inside the frame), the same pixels as that window of the whole picture bit for bit
+(`tests/regions.rs`); `process_binned` makes the whole frame binned by an even factor with the
+statistics (the front end on 2/`factor` of the rows); `statistics` gathers them alone (the front
+end on the quad rows they sample). One 1280x800 RAW10 frame, NV12, lens shading, statistics on
+every fourth quad row, one thread (`benches/regions.rs`):
+
+| | CM5 | x86 (Zen 3) |
+|---|---:|---:|
+| whole frame | 2.92 ms | 1.47 ms |
+| window 320x200 / 640x400 | 0.19 / 0.69 ms | 0.10 / 0.37 ms |
+| binned by 2 / 4 / 8, with the statistics | 1.36 / 0.82 / 0.45 ms | 0.74 / 0.45 / 0.24 ms |
+| binned by 2 / 4 / 8, without | 1.13 / 0.60 / 0.22 ms | 0.67 / 0.34 / 0.14 ms |
+| statistics alone | 0.37 ms | 0.18 ms |
+| window 320x200 + binned by 4 | 1.01 ms | 0.52 ms |
+
+The statistics' zone sums and histogram (0.23 ms on the CM5) are what a frame's statistics
+cost wherever they come from. A 4:2:0 pair's statistics are gathered straight after each row
+of the pair, while its front rows are still in the ring (binned by 8, the second row's rows
+evicted the first's: 0.59 → 0.45 ms).
+
 ## Uncached input
 
 Receivers' V4L2 MMAP buffers are often mapped uncached (write-combined) into the process, as

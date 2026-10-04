@@ -118,6 +118,18 @@ pub fn soft(a: &Args) -> Result<(), String> {
     }
     let (w, h) = (cfg.mode.width as usize, cfg.mode.height as usize);
     let mut output = crate::output::Output::new(a.output.0, a.output.1, w, h);
+    let mut parts = crate::soft_roi::Parts::new(a, w, h);
+    let mut checker = match &parts {
+        Some(_) if a.check_roi => Some(crate::soft_roi::Checker::new(
+            a,
+            format,
+            p.soft_loop().info().bits,
+        )?),
+        _ => None,
+    };
+    if a.cold {
+        p.set_warm_start(None);
+    }
     let mut frames = Vec::new();
     let (cpu0, _) = process_usage();
     let threads0 = thread_usage();
@@ -135,7 +147,10 @@ pub fn soft(a: &Args) -> Result<(), String> {
             Some(c) => p.soft_loop().controller().set_controls(c),
             None => p.soft_loop().controller().set_controls(Default::default()),
         }
-        let got = p.next(TIMEOUT, output.scale, output.buffers());
+        let got = match &mut parts {
+            Some(parts) => p.next_target(TIMEOUT, parts.target()),
+            None => p.next(TIMEOUT, output.scale, output.buffers()),
+        };
         let f = match got {
             Ok(Some(f)) => f,
             Ok(None) => break,
@@ -156,8 +171,18 @@ pub fn soft(a: &Args) -> Result<(), String> {
         log.latency = done.saturating_sub(f.raw.timestamp);
         log.processing = f.raw.dequeued.elapsed();
         log.request_lands = f.request_lands;
-        log.out_y = output.level();
+        log.out_y = parts
+            .as_ref()
+            .map_or_else(|| output.level(), |p| p.region.level());
         log.timing = Some(f.output.timing);
+        if let (Some(c), Some(parts)) = (&mut checker, &parts) {
+            c.check(
+                f.raw.data(),
+                f.raw.stride as usize,
+                &f.output.applied,
+                parts,
+            )?;
+        }
         if let Some(wr) = &mut writer {
             wr.write(f.raw.data(), &f.sensor, f.raw.timestamp.as_nanos() as u64)
                 .map_err(|e| e.to_string())?;
@@ -183,7 +208,16 @@ pub fn soft(a: &Args) -> Result<(), String> {
     }
     result?;
     stopped?;
-    let (saved, ratios) = output.save(&a.out, "soft").map_err(|e| e.to_string())?;
+    let (saved, ratios) = match &parts {
+        Some(parts) => {
+            if let Some((_, o)) = &parts.overview {
+                o.save(&a.out, "soft-overview").map_err(|e| e.to_string())?;
+            }
+            parts.region.save(&a.out, "soft-region")
+        }
+        None => output.save(&a.out, "soft"),
+    }
+    .map_err(|e| e.to_string())?;
     write_csv(&a.out.join("soft-frames.csv"), &frames).map_err(|e| e.to_string())?;
     let summary = Summary {
         name: "soft (software ISP on the native camera)",
@@ -194,6 +228,8 @@ pub fn soft(a: &Args) -> Result<(), String> {
         peak_rss: rss,
         extra: {
             let mut v = crate::output::summary_lines(&saved, ratios);
+            v.extend(parts.as_ref().map(|p| p.summary()));
+            v.extend(checker.as_ref().map(|c| c.summary()));
             v.extend(thread_lines(
                 &threads0,
                 &threads,
@@ -259,8 +295,26 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     }
     options.temporal_denoise = !a.no_tdn;
     options.spatial_denoise = a.spatial_denoise;
+    options.pass_tdn = crate::passes::parse_tdn(&a.pass_tdn)?;
+    options.pass_buffers = crate::passes::parse(&a.passes)?.len() as u32;
+    let mut run = crate::passes::PassRun::new(
+        crate::passes::parse(&a.passes)?,
+        a.pass_probe,
+        a.pass_move,
+        (1280, 800),
+    );
     let mut p =
         PispPipeline::open(cam, &settings(a), &tuning, options).map_err(|e| e.to_string())?;
+    for (i, ((x, y, w, h), _, _)) in crate::passes::parse(&a.main_crops)?.into_iter().enumerate() {
+        let crop = styx_pisp::uapi::BeCropConfig {
+            offset_x: x,
+            offset_y: y,
+            width: w,
+            height: h,
+        };
+        p.set_output_crop(i, Some(crop))
+            .map_err(|e| e.to_string())?;
+    }
     println!("pisp: temporal denoise {:?}", p.temporal_denoise());
     if let Some(w) = crate::restart::requested_warm(a) {
         p.set_warm_start(w);
@@ -313,6 +367,10 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             Some(c) => p.controller().set_controls(c),
             None => p.controller().set_controls(Default::default()),
         }
+        if let Err(e) = run.before_frame(&mut p, i) {
+            result = Err(format!("frame {i}: {e}"));
+            break;
+        }
         let f = match p.next(TIMEOUT) {
             Ok(f) => f,
             Err(e) => {
@@ -364,6 +422,10 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             }
             p.sync_output(1, &f.job, false).map_err(|e| e.to_string())?;
         }
+        let compared = (!a.no_read).then_some((s0, h0));
+        if let Err(e) = run.after_frame(&mut p, &f, compared) {
+            result = Err(format!("frame {i}: {e}"));
+        }
         p.release(&f.job);
         if !a.quiet {
             println!("{}", log.line());
@@ -374,6 +436,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let (cpu1, rss) = process_usage();
     let threads = thread_usage();
     let updates = p.be_updates();
+    let pass_lines = run.report(&p);
     let p_startup = *p.startup();
     p.controller().stop_recording().map_err(|e| e.to_string())?;
     let mut in_place = None;
@@ -396,6 +459,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
         ),
     ];
     extra.push(startup_line(p_startup, opened_to_open, first));
+    extra.extend(pass_lines);
     let n = frames.len().max(1) as f64;
     for e in styx_pisp::device::profile::report() {
         extra.push(format!(

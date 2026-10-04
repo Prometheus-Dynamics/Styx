@@ -8,6 +8,33 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added several regions of interest per consumer: `FrameRequest::regions([..])` (up to
+  `MAX_REGIONS`, 16; region 0 is the frame, the others `CompanionKind::Region { index }`
+  companions, `FrameLease::region` / `regions`), moved with `RoiHandle::set_regions` /
+  `set_region` (`FrameClient::set_regions`), and `FrameRequest::skip_stale_regions` to skip
+  frames the ISP cropped before a region moved. On a native PiSP every consumer of a shared
+  capture gets ISP-cropped regions: the main output's crop (when no consumer needs the whole
+  frame), the second output's, or extra back end passes over the same raw frame (`RoiCrop::IspPass`;
+  `Delivered::regions`); luma regions of a whole frame are views. Without a PiSP the overview is
+  box-filtered to the size asked for. Below the planner: `PispPipeline::set_pass`
+  (`styx_pipeline::pisp_passes`: `PassSpec`, `PassTdn`, `PispFrame::passes`),
+  `NativeIspConfig::regions` (`NativeRegion`, `StyxConfig::native_regions`) with the
+  `region_crop(index)` controls, a pyramid level from an extra pass when the second output makes
+  the overview or the main output is cropped. Camera service wire format v8.
+- Added regions of interest and overviews on the native software ISP: the ISP processes only
+  the region at full resolution (bit-exact against the whole frame's crop) and bins the whole
+  frame for the overview, gathering the whole frame's statistics there (or in a pass of their
+  own), so AE and AWB are unchanged and a small region costs a fraction of a frame (CM5,
+  1280x800: 3.2 ms CPU per frame whole, 1.3 ms for a 320x200 region with a 320x200 overview).
+  The planner plans `RoiCrop::Isp` on it and prices the capture for the region and overview;
+  `OUTPUT_CROP` is offered on software ISP cameras. `styx-softisp`: `SoftIsp::process_window`,
+  `window_size`, `process_binned`, `binned_size`, `statistics` and `Window`. `styx-pipeline`:
+  `SoftTarget`, `SoftParts`, `SoftLoop::process_target_with`, `SoftPipeline::next_target`.
+  `native-pipeline soft --roi / --overview / --check-roi / --cold`.
+- Added libcamera regions of interest on a Raspberry Pi ISP: ROI plans crop per output with
+  `rpi::ScalerCrops` (the main output the region at the first region's size, the second the
+  overview), moved with `OUTPUT_CROP` (`Frames::roi`); frames carry `FrameMeta::crop` from the
+  request metadata. `LibcameraConfig::crop` / `overview`, `StyxConfig::libcamera_crop`.
 - Added ISP-cropped regions of interest and overviews on native cameras with a PiSP: with
   `FrameRequest::roi` the back end's main output is the region at full resolution, in any format
   (moved per frame with `Frames::roi` / `FrameClient::set_roi`), and `FrameRequest::overview(w, h)`

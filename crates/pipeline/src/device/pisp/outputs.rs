@@ -1,15 +1,30 @@
 //! The back end's outputs: how their buffers read on the CPU, and their crops.
 
-use styx_pisp::uapi::{BE_MIN_TILE_HEIGHT, BE_MIN_TILE_WIDTH, BeCropConfig};
+use styx_pisp::uapi::BeCropConfig;
 
 use super::PispPipeline;
 use crate::error::{PipelineError, Result};
+use crate::pisp_passes::check_crop;
 
 impl PispPipeline {
     /// Whether output `i`'s buffers are cached for the CPU (a cached dma-heap) rather than the
     /// driver's uncached ones.
     pub fn output_cached(&self, i: usize) -> bool {
         self.be_dev.as_ref().is_some_and(|b| b.output_cached(i))
+    }
+
+    /// The bytes of output `i`'s buffer `index` (a frame's job or one of its passes).
+    pub fn output_buffer(&self, i: usize, index: u32) -> Option<&[u8]> {
+        self.be_dev.as_ref()?.output_data(i, index)
+    }
+
+    /// The dma-buf of output `i`'s buffer `index`.
+    pub fn output_buffer_dmabuf(
+        &self,
+        i: usize,
+        index: u32,
+    ) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.be_dev.as_ref()?.output_dmabuf(i, index)
     }
 
     /// Output `i`'s crop of the sensor frame (see [`super::PispOptions::crop`]).
@@ -35,32 +50,6 @@ impl PispPipeline {
         self.options.crop[i] = crop;
         Ok(())
     }
-}
-
-/// Whether the back end can crop a `frame`-sized input to `c`.
-pub(crate) fn check_crop(c: BeCropConfig, frame: (u32, u32)) -> Result<()> {
-    let (x, y, w, h) = (
-        u32::from(c.offset_x),
-        u32::from(c.offset_y),
-        u32::from(c.width),
-        u32::from(c.height),
-    );
-    let fail = |why: &str| {
-        Err(PipelineError::Config(format!(
-            "crop {w}x{h} at ({x}, {y}) of {}x{}: {why}",
-            frame.0, frame.1
-        )))
-    };
-    if w < BE_MIN_TILE_WIDTH || h < BE_MIN_TILE_HEIGHT {
-        return fail("smaller than 16x16");
-    }
-    if (x | y | w | h) & 1 != 0 {
-        return fail("offsets and sizes must be even");
-    }
-    if x + w > frame.0 || y + h > frame.1 {
-        return fail("outside the frame");
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -114,6 +114,13 @@ pub struct FrameRequest {
     pub pyramid: Option<PyramidRequest>,
     /// Advanced: initial region of interest in full-frame pixels; can change while running.
     pub roi: Option<FrameRect>,
+    /// Advanced: more regions of interest after `roi` (regions 1, 2, ...;
+    /// [`FrameRequest::regions`]), attached to each frame as `CompanionKind::Region`
+    /// companions.
+    pub extra_regions: Vec<FrameRect>,
+    /// Advanced: skip frames whose regions the ISP cropped before they last moved
+    /// ([`FrameRequest::skip_stale_regions`]).
+    pub skip_stale_regions: bool,
     /// Advanced: the whole frame at about this size with every frame ([`FrameRequest::overview`]).
     pub overview: Option<(u32, u32)>,
     /// Advanced: row stride (and buffer base) alignment in bytes.
@@ -132,6 +139,10 @@ pub struct FrameRequest {
     /// Fail rather than deliver frames that do not meet the request ([`FrameRequest::strict`]).
     pub strict: bool,
 }
+
+/// Regions of interest a request can ask for ([`FrameRequest::regions`]): the frame and 15
+/// companions.
+pub const MAX_REGIONS: usize = 16;
 
 impl Default for FrameRequest {
     fn default() -> Self {
@@ -178,6 +189,8 @@ impl FrameRequest {
             delivery: Delivery::Latest,
             pyramid: None,
             roi: None,
+            extra_regions: Vec::new(),
+            skip_stale_regions: false,
             overview: None,
             row_alignment: None,
             backend: None,
@@ -269,6 +282,37 @@ impl FrameRequest {
     /// below it. [`Delivered::roi`](super::Delivered::roi) says which.
     pub fn roi(mut self, roi: FrameRect) -> Self {
         self.roi = Some(roi);
+        self
+    }
+
+    /// Advanced: several regions of interest (full-frame pixels; at most 16 apply): the first
+    /// is [`FrameRequest::roi`], the frame itself; the others come with it as
+    /// `CompanionKind::Region { index }` companions (`frame.region(index)`), cut from the same
+    /// capture. All move while running ([`RoiHandle::set_regions`](super::RoiHandle)). A
+    /// native camera's PiSP crops each at full resolution (the main output, its second output,
+    /// or an extra back end pass over the same raw frame); elsewhere luma frames get views.
+    /// [`Delivered::regions`](super::Delivered::regions) says how each is made.
+    pub fn regions(mut self, regions: impl IntoIterator<Item = FrameRect>) -> Self {
+        let mut regions = regions.into_iter();
+        self.roi = regions.next();
+        self.extra_regions = regions.take(MAX_REGIONS - 1).collect();
+        self
+    }
+
+    /// The regions of interest asked for: `roi` first, then `extra_regions`.
+    pub fn all_regions(&self) -> Vec<FrameRect> {
+        self.roi
+            .iter()
+            .chain(self.extra_regions.iter().take(MAX_REGIONS - 1))
+            .copied()
+            .collect()
+    }
+
+    /// Advanced: with ISP-cropped regions, skip a frame whose crops do not cover the regions
+    /// as set now (frames the ISP processed before a region moved, one or two after a change)
+    /// rather than deliver it. Regions that are views of the frame are always current.
+    pub fn skip_stale_regions(mut self) -> Self {
+        self.skip_stale_regions = true;
         self
     }
 
@@ -449,6 +493,8 @@ impl<'a> CameraFrames<'a> {
         roi(roi: FrameRect);
         /// [`FrameRequest::overview`].
         overview(width: u32, height: u32);
+        /// [`FrameRequest::skip_stale_regions`].
+        skip_stale_regions();
         /// [`FrameRequest::row_alignment`].
         row_alignment(bytes: usize);
         /// [`FrameRequest::backend`].
@@ -464,6 +510,12 @@ impl<'a> CameraFrames<'a> {
     /// [`FrameRequest::decoder`].
     pub fn decoder(mut self, name: impl Into<String>) -> Self {
         self.request = self.request.decoder(name);
+        self
+    }
+
+    /// [`FrameRequest::regions`].
+    pub fn regions(mut self, regions: impl IntoIterator<Item = FrameRect>) -> Self {
+        self.request = self.request.regions(regions);
         self
     }
 
@@ -544,6 +596,8 @@ mod legacy {
                 delivery,
                 pyramid: old.pyramid,
                 roi: old.roi,
+                extra_regions: Vec::new(),
+                skip_stale_regions: false,
                 overview: None,
                 row_alignment: old.stride_alignment,
                 backend,

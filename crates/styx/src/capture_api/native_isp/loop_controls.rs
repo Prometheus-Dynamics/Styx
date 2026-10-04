@@ -32,6 +32,8 @@ pub struct LoopControls {
     pub(crate) af: super::af_controls::AfReport,
     /// The main output's crop (`OUTPUT_CROP`).
     pub(crate) crop: super::crop_control::CropControl,
+    /// The other regions' crops (`region_crop(index)`).
+    pub(crate) regions: super::crop_control::RegionCrops,
 }
 
 impl Default for LoopControls {
@@ -45,6 +47,7 @@ impl Default for LoopControls {
             stills: Mutex::new(Vec::new()),
             af: Default::default(),
             crop: Default::default(),
+            regions: Default::default(),
         }
     }
 }
@@ -141,6 +144,9 @@ impl LoopControls {
         if id == ids::OUTPUT_CROP {
             return Some(self.crop.apply(value));
         }
+        if let Some(index) = ids::region_crop_index(id) {
+            return Some(self.regions.apply(index, value));
+        }
         if super::af_controls::is_af(id) {
             let mut c = self.current.lock();
             let r = super::af_controls::apply(&self.af, id, value, &mut c)?;
@@ -212,6 +218,9 @@ impl LoopControls {
     pub(crate) fn read(&self, id: ControlId) -> Option<ControlValue> {
         if id == ids::OUTPUT_CROP {
             return Some(self.crop.read());
+        }
+        if let Some(index) = ids::region_crop_index(id) {
+            return self.regions.read(index);
         }
         let c = self.current.lock();
         if let Some(v) = super::af_controls::read(&self.af, id, &c) {

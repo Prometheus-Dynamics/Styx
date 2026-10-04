@@ -103,6 +103,19 @@ The tiles are the userspace's job: each `pisp_tile` gives the input window (with
 context each side for the Bayer/RGB pipeline), per-output crops that remove the context,
 downscaler/resampler input sizes and initial phases, the output window and byte offsets.
 
+Several jobs per raw frame (Styx's extra passes for regions of interest): the input node is
+memory to memory, so the same raw buffer can be queued again once the previous job finished
+(not while it is queued: vb2 refuses a buffer index twice). A job may enable only one output
+(the other node then gets no buffer: the driver skips its buffer check, and a buffer queued
+there anyway is pulled into the job and handed back); `BackEndStream` queues buffers only for
+the outputs a config enables. A job with `TDN_INPUT` and without `TDN_OUTPUT` reads the
+average without writing one (only the TDN input node needs a buffer). Each output's crop is per
+job; the tiles cover only the input the enabled outputs need, so a job for a 128x128 region
+takes 0.05 ms where the whole 1280x800 frame takes 2.26 ms (with temporal denoise and both
+outputs). The driver's shadow of the last register values makes alternating configs cheap:
+only the words that differ (enables, crops, formats, TDN) are written. See
+[pipeline.md](pipeline.md#extra-back-end-passes-regions-of-interest).
+
 ## What libcamera does (`src/libcamera/pipeline/rpi/pisp/pisp.cpp`)
 
 - Match: `rp1-cfe` with a sensor, and a free `pispbe` node group.

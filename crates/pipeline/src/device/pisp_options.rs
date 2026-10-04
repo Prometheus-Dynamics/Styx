@@ -17,6 +17,9 @@ pub struct PispOptions {
     pub fe_buffers: u32,
     /// Back end buffers per output.
     pub be_buffers: u32,
+    /// More buffers for output 0, for the extra passes that write into them
+    /// ([`super::PispPipeline::set_pass`]).
+    pub pass_buffers: u32,
     /// Back end node group (0 or 1).
     pub be_group: usize,
     /// Front end configs queued ahead of the frames.
@@ -35,6 +38,8 @@ pub struct PispOptions {
     /// Spatial and colour denoise thresholds times this (1: as tuned, 0: off; see
     /// [`crate::Controller::set_spatial_denoise`]).
     pub spatial_denoise: f64,
+    /// What extra passes ([`super::PispPipeline::set_pass`]) do with temporal denoise.
+    pub pass_tdn: crate::pisp_passes::PassTdn,
 }
 
 impl PispOptions {
@@ -56,12 +61,14 @@ impl PispOptions {
             crop: [None; 2],
             fe_buffers: 6,
             be_buffers: 6,
+            pass_buffers: 0,
             be_group: 0,
             configs_ahead: 2,
             settled_rate_hz: Some(15.0),
             output_memory: OutputMemory::CachedHeap,
             temporal_denoise: true,
             spatial_denoise: 1.0,
+            pass_tdn: Default::default(),
         }
     }
 }

@@ -42,8 +42,42 @@ pub(super) mod uvc_backend;
 pub(super) mod v4l2_backend;
 pub(super) mod virtual_backend;
 
+/// The ISP's crop of a processed capture's main output, in frame pixels: a native camera's
+/// `native_controls::OUTPUT_CROP`, and on a Raspberry Pi ISP through libcamera the same id,
+/// turned into `rpi::ScalerCrops`.
+#[cfg(any(feature = "native", feature = "libcamera"))]
+pub(crate) const OUTPUT_CROP: styx_capture::prelude::ControlId =
+    styx_capture::prelude::ControlId(0xF400_0030);
+
+/// Smallest crop an ISP makes (the PiSP back end's smallest tile).
+const MIN_CROP_SIDE: u32 = 16;
+
+/// `rect` as the back end can crop it from a `frame`-sized frame: clipped to the frame,
+/// rounded out to even pixels, at least 16x16 (grown towards the frame's middle). `None` when
+/// it does not overlap the frame.
+pub(crate) fn fit_crop(
+    rect: styx_core::prelude::FrameRect,
+    frame: (u32, u32),
+) -> Option<styx_core::prelude::FrameRect> {
+    let rect = rect.clipped_to(frame.0, frame.1)?;
+    let axis = |start: u32, len: u32, size: u32| {
+        let size = size & !1;
+        let mut lo = start & !1;
+        let mut hi = (start + len).next_multiple_of(2).min(size);
+        let min = MIN_CROP_SIDE.min(size);
+        if hi - lo < min {
+            hi = (lo + min).min(size);
+            lo = hi - min;
+        }
+        (lo, hi - lo)
+    };
+    let (x, width) = axis(rect.x, rect.width, frame.0);
+    let (y, height) = axis(rect.y, rect.height, frame.1);
+    Some(styx_core::prelude::FrameRect::new(x, y, width, height))
+}
+
 pub use control_plane::ControlPlane;
-#[cfg(feature = "native")]
+#[cfg(any(feature = "native", feature = "libcamera"))]
 pub(crate) use control_plane::apply_control_to_plane;
 pub use handle::{CaptureFrameIter, CaptureHandle, WorkerHandle};
 #[cfg(target_os = "linux")]
@@ -74,9 +108,9 @@ pub use tunables::{
     DEFAULT_NETCAM_STOP_POLL_MS, DEFAULT_NETCAM_TIMEOUT_SECS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN,
     DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH, DEFAULT_V4L2_ERROR_BACKOFF_MS,
     DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig, IdleStop,
-    LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, NativeDeflicker,
-    NativeFlicker, NativeIspConfig, NetcamConfig, NetcamTunables, ReconnectPolicy, StyxConfig,
-    TransformConfig, UvcConfig, V4l2Config,
+    LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, MAX_NATIVE_REGIONS,
+    NativeDeflicker, NativeFlicker, NativeIspConfig, NativeRegion, NetcamConfig, NetcamTunables,
+    ReconnectPolicy, StyxConfig, TransformConfig, UvcConfig, V4l2Config,
 };
 #[cfg(feature = "uvc")]
 pub(crate) use uvc_backend::probe_into as probe_uvc_into;

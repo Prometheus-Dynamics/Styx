@@ -26,10 +26,16 @@
 
 pub(crate) mod cost;
 mod delivered;
+mod frames;
 mod native;
+mod pyramid;
 mod rate;
 mod region;
+mod region_frames;
+mod region_shared;
+mod region_soft;
 mod request;
+mod roi;
 mod routes;
 mod session;
 pub(crate) use session::SharedSession;
@@ -47,7 +53,12 @@ pub use delivered::{Delivered, Unmet};
 #[cfg(any(feature = "native", feature = "uvc"))]
 pub(crate) use rate::default_interval;
 pub use region::RoiCrop;
-pub use request::{CameraFrames, Delivery, FrameRate, FrameRequest, Hardware, OpenError};
+#[cfg(feature = "native")]
+pub(crate) use region::{soft_overview_factor, soft_overview_size};
+
+pub use request::{
+    CameraFrames, Delivery, FrameRate, FrameRequest, Hardware, MAX_REGIONS, OpenError,
+};
 pub(crate) use routes::Route;
 pub use shared::{SharedFramePlan, plan_many, plan_many_with};
 #[allow(deprecated)]
@@ -537,6 +548,9 @@ impl FramePlan {
     }
 }
 
+#[cfg(test)]
+#[cfg(feature = "native")]
+mod region_tests;
 #[cfg(test)]
 mod request_tests;
 #[cfg(test)]

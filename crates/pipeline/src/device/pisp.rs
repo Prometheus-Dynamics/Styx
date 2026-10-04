@@ -19,7 +19,11 @@
 //! black levels follow on the next config it takes (configs are queued a couple of frames
 //! ahead).
 
+mod frame;
 mod outputs;
+mod passes;
+
+pub use frame::{PassOutput, PispFrame, PispStartup, PispTimes};
 use std::time::{Duration, Instant};
 
 use styx_algo::{Statistics, Tuning, WarmStart};
@@ -38,82 +42,10 @@ use crate::controller::{Controller, SensorValues, Step};
 use crate::error::{PipelineError, Result};
 use crate::isp::{IspSettings, be_template, level16};
 use crate::pisp_be::{BeConfigBuilder, BeUpdateCounts};
+use crate::pisp_passes::PassConfigs;
 use crate::process::{Algorithms, FrameIsp, InlineIsp};
 use crate::sensor::{ISSUE_LATENCY, SensorInfo};
 use crate::stats;
-
-/// Where one frame's time went.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PispTimes {
-    /// Converting the statistics for the algorithms.
-    pub stats: Duration,
-    /// Running the algorithms on this frame's statistics (while the back end works).
-    pub algorithms: Duration,
-    /// Updating the back end config (and its tiles, when they change).
-    pub be_prepare: Duration,
-    /// The back end job (config queued to output dequeued).
-    pub be_job: Duration,
-    /// From the front end's buffers being dequeued to the outputs being ready.
-    pub total: Duration,
-}
-
-/// Where opening and starting the PiSP path spent its time.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PispStartup {
-    /// Sensor and bridge set-up ([`NativeCamera::configure_external`]): power, chip id, init and
-    /// mode registers, bridge format and timing.
-    pub configure: Duration,
-    /// The sensor bring-up within `configure`.
-    pub bring_up: styx_native::BringUpTimes,
-    /// Front end: links, formats, buffers.
-    pub fe_open: Duration,
-    /// Back end: formats, buffers, the front end's buffers imported.
-    pub be_open: Duration,
-    /// Back end template and the algorithms.
-    pub isp_and_algorithms: Duration,
-    /// Everything [`PispPipeline::open`] took.
-    pub open: Duration,
-    /// Algorithms' start-up values and the sensor request for frame 0.
-    pub start_values: Duration,
-    /// Embedded data capture and the event thread.
-    pub start_external: Duration,
-    /// The front end's `STREAMON`: the receiver starts, the bridge asks and the sensor starts.
-    pub stream_on: Duration,
-    /// Everything [`PispPipeline::start`] took.
-    pub start: Duration,
-    /// When `start` returned (for measuring the first frame from there).
-    pub started_at: Option<Instant>,
-}
-
-/// One frame through the PiSP.
-#[derive(Debug)]
-pub struct PispFrame {
-    /// Frame sequence.
-    pub sequence: u64,
-    /// Capture timestamp (`CLOCK_MONOTONIC`, frame start on `rp1-cfe`).
-    pub timestamp: Duration,
-    /// When the front end's buffers were dequeued.
-    pub dequeued: Instant,
-    /// What produced the frame.
-    pub sensor: SensorValues,
-    /// The back end job: hand it to [`PispPipeline::output`] and [`PispPipeline::release`].
-    pub job: BeJob,
-    /// The statistics buffer's sequence differed from the raw frame's.
-    pub sequence_mismatch: bool,
-    /// Frame the sensor request made from this frame's statistics lands on, if one was made.
-    pub request_lands: Option<u64>,
-    /// The frame whose statistics the back end settings came from (`None` before the
-    /// algorithms have seen a frame).
-    pub settings_from: Option<u64>,
-    /// The digital gain the back end gave this frame (with the white balance's green gain).
-    pub digital_gain: f64,
-    /// The flicker brightness deflicker took out of this frame (1: none).
-    pub flicker: f64,
-    /// Time spent.
-    pub times: PispTimes,
-    /// The raw frame, copied when [`PispPipeline::set_raw_copy`] asked for it.
-    pub raw: Option<Box<crate::still::HeldRaw>>,
-}
 
 fn bayer(c: CfaPattern) -> BayerOrder {
     match c {
@@ -170,7 +102,10 @@ impl Isp {
             fe_dev.image_dmabufs()?,
             input_len,
             options.outputs,
-            options.be_buffers,
+            [
+                options.be_buffers + options.pass_buffers,
+                options.be_buffers,
+            ],
             options.output_memory,
         )?;
         let mut be = be_template(
@@ -231,6 +166,8 @@ pub struct PispPipeline {
     last_seq: Option<u64>,
     /// Which frames' raw data to copy out (stills).
     raw_copy: Option<super::RawCopy>,
+    /// Extra back end passes over every frame (regions of interest).
+    passes: PassConfigs,
 }
 
 /// Serves the sensor side until the front end's statistics are ready: frame starts are only
@@ -330,6 +267,10 @@ impl PispPipeline {
         let controls = camera.controls();
         startup.isp_and_algorithms = t.elapsed();
         startup.open = t_open.elapsed();
+        let passes = PassConfigs::new(
+            [isp.be_dev.output_format(0), isp.be_dev.output_format(1)],
+            options.pass_tdn,
+        );
         Ok(Self {
             camera,
             controls,
@@ -353,6 +294,7 @@ impl PispPipeline {
             tdn_error: isp.tdn_error,
             last_seq: None,
             raw_copy: None,
+            passes,
         })
     }
 
@@ -459,6 +401,8 @@ impl PispPipeline {
                     .set_config(self.info.camera.clone())?;
             }
             (self.fe, self.be) = (isp.fe, isp.be);
+            // A new builder: the passes prepare again against it.
+            self.passes.invalidate();
             self.fe_dev = Some(isp.fe_dev);
             self.be_dev = Some(isp.be_dev);
             (self.startup.fe_open, self.startup.be_open) = (fe_open, be_open);
@@ -597,6 +541,16 @@ impl PispPipeline {
                 },
             )?;
             let be_prepare = p.times.settings + be.prepare;
+            let t_passes = Instant::now();
+            let passes =
+                match passes::run(be.dev, &mut self.passes, be.builder, image.index, timeout) {
+                    Ok(passes) => passes,
+                    Err(e) => {
+                        be.dev.release(&p.output);
+                        return Err(e);
+                    }
+                };
+            let passes_took = t_passes.elapsed();
             Ok(PispFrame {
                 sequence: seq,
                 timestamp: image.timestamp,
@@ -614,8 +568,10 @@ impl PispPipeline {
                     be_prepare,
                     be_job: p.output.elapsed,
                     total: dequeued.elapsed(),
+                    passes: passes_took,
                 },
                 raw,
+                passes,
             })
         })();
         fe_dev.release_image(image.index)?;

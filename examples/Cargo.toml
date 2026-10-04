@@ -69,6 +69,16 @@ path = "04_performance/native_roi.rs"
 required-features = ["native"]
 
 [[bin]]
+name = "native_regions"
+path = "04_performance/native_regions.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "libcamera_crops"
+path = "04_performance/libcamera_crops.rs"
+required-features = ["libcamera"]
+
+[[bin]]
 name = "native_isp_bench"
 path = "04_performance/native_isp_bench.rs"
 required-features = ["native"]

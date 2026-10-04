@@ -55,6 +55,7 @@ mod math;
 #[cfg(feature = "std")]
 pub mod measure;
 pub mod pisp_be;
+pub mod pisp_passes;
 pub mod process;
 #[cfg(feature = "std")]
 pub mod rawrec;
@@ -73,7 +74,7 @@ pub mod tuning;
 pub mod warm;
 
 pub use controller::{Controller, SensorValues, Step};
-pub use engine::{IspEngine, RawFrame};
+pub use engine::{IspEngine, RawFrame, SoftParts, SoftTarget};
 pub use error::{PipelineError, Result};
 pub use isp::IspSettings;
 pub use process::{

@@ -169,6 +169,16 @@ impl SoftPipeline {
         scale: Scale,
         out: OutputBuffers<'_>,
     ) -> Result<Option<SoftFrame>> {
+        self.next_target(timeout, crate::SoftTarget::Frame(scale, out))
+    }
+
+    /// [`Self::next`] making `target`: the whole frame, or regions of it and an overview
+    /// ([`crate::SoftParts`]; the 3A loop still sees the whole frame).
+    pub fn next_target(
+        &mut self,
+        timeout: Duration,
+        target: crate::SoftTarget<'_>,
+    ) -> Result<Option<SoftFrame>> {
         let stream = self
             .stream
             .as_mut()
@@ -197,12 +207,11 @@ impl SoftPipeline {
             super::pdaf_grid(&self.controls, seq),
         );
         // The algorithms' requests go to the control schedule as they are made.
-        let (output, request_lands) = self.soft.process_frame_with(
+        let (output, request_lands) = self.soft.process_target_with(
             frame,
             raw.stride as usize,
             &sensor,
-            scale,
-            out,
+            target,
             &self.controls,
         )?;
         Ok(Some(SoftFrame {
