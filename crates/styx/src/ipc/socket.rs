@@ -113,6 +113,64 @@ pub(super) fn connect(path: &Path) -> io::Result<OwnedFd> {
     connect_kind(path, libc::SOCK_SEQPACKET)
 }
 
+/// A non-blocking connection being made: [`Connecting::attempt`] does not wait, so a caller can
+/// give up at its own deadline (or await between attempts).
+pub(super) struct Connecting {
+    socket: OwnedFd,
+    addr: libc::sockaddr_un,
+    len: libc::socklen_t,
+}
+
+impl Connecting {
+    pub(super) fn new(path: &Path) -> io::Result<Self> {
+        let socket = unix_socket(libc::SOCK_SEQPACKET | libc::SOCK_NONBLOCK)?;
+        let (addr, len) = address(path)?;
+        Ok(Self { socket, addr, len })
+    }
+
+    /// Try once; `Ok(true)` when connected, `Ok(false)` when the listener's backlog is full and
+    /// another attempt may succeed.
+    pub(super) fn attempt(&self) -> io::Result<bool> {
+        loop {
+            // SAFETY: `addr` is a valid `sockaddr_un` of `len` bytes; the fd is open.
+            let ret = unsafe {
+                libc::connect(
+                    self.socket.as_raw_fd(),
+                    (&raw const self.addr).cast::<libc::sockaddr>(),
+                    self.len,
+                )
+            };
+            if ret == 0 {
+                return Ok(true);
+            }
+            let err = io::Error::last_os_error();
+            return match err.raw_os_error() {
+                Some(libc::EINTR) => continue,
+                Some(libc::EISCONN) => Ok(true),
+                Some(libc::EAGAIN | libc::EINPROGRESS | libc::EALREADY) => Ok(false),
+                _ => Err(err),
+            };
+        }
+    }
+
+    /// The connected socket (non-blocking: every send and receive here polls or does not wait).
+    pub(super) fn into_socket(self) -> OwnedFd {
+        self.socket
+    }
+}
+
+/// Connect, giving up at `deadline`.
+pub(super) fn connect_until(path: &Path, deadline: std::time::Instant) -> io::Result<OwnedFd> {
+    let connecting = Connecting::new(path)?;
+    while !connecting.attempt()? {
+        if std::time::Instant::now() >= deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    Ok(connecting.into_socket())
+}
+
 /// [`connect`] for a `SOCK_STREAM` socket.
 #[cfg(feature = "frame-socket")]
 pub(super) fn connect_stream(path: &Path) -> io::Result<OwnedFd> {

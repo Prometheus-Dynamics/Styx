@@ -127,6 +127,8 @@ pub struct FrameRequest {
     /// [`Delivery::Latest`] (several cores per frame when the JPEG allows), one with
     /// [`Delivery::EveryFrame`].
     pub decode_threads: Option<usize>,
+    /// Fail rather than deliver frames that do not meet the request ([`FrameRequest::strict`]).
+    pub strict: bool,
 }
 
 impl Default for FrameRequest {
@@ -180,6 +182,7 @@ impl FrameRequest {
             decoder: None,
             forbid: Vec::new(),
             decode_threads: None,
+            strict: false,
         }
     }
 
@@ -297,6 +300,14 @@ impl FrameRequest {
     /// Route control: decode threads per frame (0 = automatic).
     pub fn decode_threads(mut self, threads: usize) -> Self {
         self.decode_threads = Some(threads);
+        self
+    }
+
+    /// Fail planning instead of delivering frames that miss part of the request (an
+    /// [`Unmet`](super::Unmet), e.g. a size no route scales to). By default the plan delivers the
+    /// nearest it can and says what it missed ([`FramePlan::delivered`]).
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
         self
     }
 
@@ -427,6 +438,8 @@ impl<'a> CameraFrames<'a> {
         hardware(hardware: Hardware);
         /// [`FrameRequest::decode_threads`].
         decode_threads(threads: usize);
+        /// [`FrameRequest::strict`].
+        strict();
     }
 
     /// [`FrameRequest::decoder`].
@@ -522,6 +535,7 @@ mod legacy {
                 decoder: o.decoder.clone(),
                 forbid: o.forbid.clone(),
                 decode_threads: o.decode_threads,
+                strict: old.strict,
             };
             // The priority set the threads (automatic for latency), not the queue depth: keep
             // them where the delivery would now choose others.

@@ -458,7 +458,7 @@ fn serve_client(service: &Service, mut conn: Connection) {
                 .join(request, &service.config, &service.counters)
                 .map(|joined| (camera, joined))
         });
-    let (camera, (id, plan, frames)) = match joined {
+    let (camera, (id, plan, delivered, frames)) = match joined {
         Ok(joined) => joined,
         Err(reason) => {
             service.counters.rejected.fetch_add(1, Ordering::Relaxed);
@@ -466,7 +466,7 @@ fn serve_client(service: &Service, mut conn: Connection) {
             return;
         }
     };
-    if conn.send(&wire::encode_accept(&plan)).is_ok() {
+    if conn.send(&wire::encode_accept(&plan, &delivered)).is_ok() {
         service
             .client_metrics
             .add(id, &camera.device.identity.display, &mut conn);

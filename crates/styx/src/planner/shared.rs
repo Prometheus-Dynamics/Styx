@@ -16,8 +16,8 @@ use super::request::{FrameRate, FrameRequest};
 use super::routes::{self, Candidate, backend_name, describe};
 use super::session::{SharedSession, same_preparation};
 use super::{
-    FramePlan, PlanError, PlanRejection, RankKey, StepKind, cost, default_registry, no_candidates,
-    plan_from, rate,
+    FramePlan, PlanError, PlanRejection, RankKey, StepKind, cost, default_registry, delivered,
+    no_candidates, plan_from, rate, strict_reason,
 };
 use crate::BackendKind;
 use crate::capture_api::{CaptureError, CaptureRequest, IdleStop, StyxConfig};
@@ -129,6 +129,16 @@ fn plan_shared(
                     .map_err(|reason| format!("consumer {i}: {reason}"))
                 })
                 .collect();
+            // Strict consumers take only modes that meet their request.
+            let candidates = candidates.and_then(|candidates| {
+                for (i, (candidate, req)) in candidates.iter().zip(requests).enumerate() {
+                    let unmet = delivered::unmet(req, candidate.delivered_size());
+                    if req.strict && !unmet.is_empty() {
+                        return Err(format!("consumer {i}: {}", strict_reason(&unmet)));
+                    }
+                }
+                Ok(candidates)
+            });
             match candidates {
                 Ok(candidates) => {
                     let key = shared_rank(&candidates, requests);
@@ -235,6 +245,22 @@ fn plan_shared(
         })
         .collect();
     let mut consumers: Vec<FramePlan> = consumers;
+    // The ISP outputs shared out above may leave a strict consumer without its size.
+    if let Some((i, plan)) = consumers
+        .iter()
+        .enumerate()
+        .find(|(_, plan)| plan.request.strict && !plan.unmet.is_empty())
+    {
+        return Err(PlanError::NoCandidates {
+            rejected: vec![PlanRejection {
+                candidate: describe(backend, mode),
+                reason: format!(
+                    "consumer {i}: {} (other consumers need the ISP's outputs)",
+                    strict_reason(&plan.unmet)
+                ),
+            }],
+        });
+    }
     let groups = prepare_groups(&consumers);
     for group in groups.iter().filter(|g| g.len() > 1) {
         let list = group

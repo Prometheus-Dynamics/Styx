@@ -151,10 +151,22 @@ fn write_fuzz_seeds() {
         keys: vec!["native:ov9782".into()],
         in_use: false,
     }];
+    let delivered = crate::planner::Delivered {
+        format: FourCc::GREY,
+        size: (1280, 800),
+        fps: Some(60.0),
+        pyramid_levels: 1,
+        hardware_pyramid_level: Some(1),
+        inter_coded: false,
+        unmet: vec![crate::planner::Unmet::Size {
+            wanted: (160, 90),
+            delivered: (1280, 800),
+        }],
+    };
     let messages = [
         ("frame", encode_frame(1, &frame)),
         ("release", encode_release(1)),
-        ("accept", encode_accept("plan")),
+        ("accept", encode_accept("plan", &delivered)),
         ("reject", encode_reject("busy")),
         ("roi", encode_roi(Some(FrameRect::new(1, 2, 3, 4)))),
         ("list", encode_list()),

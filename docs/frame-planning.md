@@ -146,6 +146,20 @@ size in the DCT domain: the smallest of those that still covers the request. Fra
 upscaled. `FramePlan::output_resolution()` gives the size frames arrive at, and the plan says
 when its route cannot scale.
 
+## What arrives, and strict requests
+
+`FramePlan::delivered()` says what the frames are before the first one arrives: format, size,
+frame rate, pyramid levels (and the deepest one the ISP makes; the rest are box-filtered on the
+CPU), whether they are inter-coded packets, and `unmet`: the parts of the request the plan does
+not meet (`Unmet::Size { wanted, delivered }` when no route scales to the size asked for, so
+frames arrive larger in both dimensions; covering it in one dimension at the camera's aspect
+ratio is meeting it). Consumers can size buffers and regions once, at plan time.
+
+By default a plan delivers the nearest it can and reports what it missed. `.strict()` refuses
+instead: planning skips candidates that would miss part of the request and fails, naming what
+they would miss, when none meets it. On a shared capture a strict consumer also refuses a setup
+another consumer would force on it.
+
 On a Raspberry Pi the ISP scales instead (libcamera's output size; a `scale` step in the plan).
 It keeps the mode's aspect ratio so the field of view is not cropped: 320x180 from a 16:10
 OV9782 arrives at 320x200. Modes are ranked by the size of the frames they deliver, so a wide

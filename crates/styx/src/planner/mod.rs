@@ -25,6 +25,7 @@
 //! them and plans a branch per consumer.
 
 pub(crate) mod cost;
+mod delivered;
 mod native;
 mod rate;
 mod request;
@@ -41,6 +42,7 @@ use styx_codec::{CodecRegistry, CodecRegistryHandle};
 use styx_core::prelude::*;
 
 pub use cost::StepCost;
+pub use delivered::{Delivered, Unmet};
 #[cfg(any(feature = "native", feature = "uvc"))]
 pub(crate) use rate::default_interval;
 pub use request::{CameraFrames, Delivery, FrameRate, FrameRequest, Hardware, OpenError};
@@ -124,6 +126,8 @@ pub struct FramePlan {
     /// Estimated cost per frame across all steps.
     pub total: StepCost,
     pub notes: Vec<String>,
+    /// What of the request the frames do not meet ([`FramePlan::delivered`]); empty when all is.
+    pub unmet: Vec<Unmet>,
     pub rejected: Vec<PlanRejection>,
     pub(crate) route: Route,
     pub(crate) isp_pyramid_level: Option<u8>,
@@ -271,6 +275,14 @@ fn plan_devices(
     let mut best: Option<(RankKey, &ProbedDevice, routes::Candidate<'_>)> = None;
     for device in devices {
         for candidate in routes::candidates(device, req, registry, &mut rejected) {
+            let unmet = delivered::unmet(req, candidate.delivered_size());
+            if req.strict && !unmet.is_empty() {
+                rejected.push(PlanRejection {
+                    candidate: routes::describe(candidate.backend, &candidate.mode),
+                    reason: strict_reason(&unmet),
+                });
+                continue;
+            }
             let key = rank_key(&candidate, req);
             if best.as_ref().is_none_or(|(best_key, _, _)| key < *best_key) {
                 best = Some((key, device, candidate));
@@ -286,6 +298,12 @@ fn plan_devices(
 
 /// The error when nothing meets the request: about the rate when that is all that stopped some
 /// mode, naming the rates there are.
+/// Why a strict request rejects a candidate.
+pub(crate) fn strict_reason(unmet: &[Unmet]) -> String {
+    let unmet: Vec<String> = unmet.iter().map(ToString::to_string).collect();
+    format!("strict: {}", unmet.join("; "))
+}
+
 pub(crate) fn no_candidates(fps: FrameRate, rejected: Vec<PlanRejection>) -> PlanError {
     // Modes by the rates they run at: "30, 25, 15 fps (v4l2 YUYV 640x480 and 3 more)".
     let mut rates: Vec<(&str, Vec<&str>)> = Vec::new();
@@ -333,6 +351,7 @@ pub(crate) fn plan_from(
     interval: Option<Interval>,
     rejected: Vec<PlanRejection>,
 ) -> FramePlan {
+    let unmet = delivered::unmet(req, chosen.delivered_size());
     FramePlan {
         device: device.clone(),
         backend: chosen.backend.kind,
@@ -342,6 +361,7 @@ pub(crate) fn plan_from(
         steps: chosen.steps,
         total: chosen.total,
         notes: chosen.notes,
+        unmet,
         rejected,
         route: chosen.route,
         isp_pyramid_level: chosen.isp_pyramid_level,

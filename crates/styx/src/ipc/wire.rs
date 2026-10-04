@@ -20,10 +20,10 @@
 use styx_core::prelude::*;
 
 use super::IpcError;
-use crate::planner::{Delivery, FrameRate, FrameRequest, Hardware};
+use crate::planner::{Delivered, Delivery, FrameRate, FrameRequest, Hardware, Unmet};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"STYX");
-const VERSION: u16 = 4;
+const VERSION: u16 = 5;
 const KIND_FRAME: u16 = 1;
 const KIND_RELEASE: u16 = 2;
 const KIND_REQUEST: u16 = 3;
@@ -90,7 +90,8 @@ pub(super) enum MetricsFormat {
 /// A message from a server.
 pub(super) enum ServerMessage {
     Frame(u64, Box<WireFrame>),
-    Accept(String),
+    /// The plan, as text, and what its frames are.
+    Accept(String, Box<Delivered>),
     Reject(String),
     Cameras(Vec<CameraInfo>),
     /// Metrics of this format and length in bytes, in the attached memfd.
@@ -393,8 +394,62 @@ pub(super) fn encode_release(id: u64) -> Vec<u8> {
     w.0
 }
 
-pub(super) fn encode_accept(plan: &str) -> Vec<u8> {
+/// Most unmet requirements an accept message carries.
+const MAX_UNMET: u8 = 8;
+
+fn write_delivered(w: &mut Writer, d: &Delivered) {
+    w.u32(d.format.to_u32());
+    w.size(d.size);
+    w.opt(d.fps, |w, fps| w.u32(fps.to_bits()));
+    w.u8(d.pyramid_levels);
+    w.opt(d.hardware_pyramid_level, Writer::u8);
+    w.bool(d.inter_coded);
+    w.u8(d.unmet.len().min(usize::from(MAX_UNMET)) as u8);
+    for unmet in d.unmet.iter().take(usize::from(MAX_UNMET)) {
+        match unmet {
+            Unmet::Size { wanted, delivered } => {
+                w.u8(1);
+                w.size(*wanted);
+                w.size(*delivered);
+            }
+        }
+    }
+}
+
+fn read_delivered(r: &mut Reader<'_>) -> Result<Delivered, IpcError> {
+    let format = FourCc::new(r.u32()?.to_le_bytes());
+    let size = r.size()?;
+    let fps = r.opt(|r| Ok(f32::from_bits(r.u32()?)))?;
+    let pyramid_levels = r.u8()?;
+    let hardware_pyramid_level = r.opt(Reader::u8)?;
+    let inter_coded = r.bool()?;
+    let count = r.u8()?;
+    if count > MAX_UNMET {
+        return Err(IpcError::Malformed("too many unmet requirements"));
+    }
+    let unmet = (0..count)
+        .map(|_| match r.u8()? {
+            1 => Ok(Unmet::Size {
+                wanted: r.size()?,
+                delivered: r.size()?,
+            }),
+            _ => Err(IpcError::Malformed("unknown unmet requirement")),
+        })
+        .collect::<Result<_, IpcError>>()?;
+    Ok(Delivered {
+        format,
+        size,
+        fps,
+        pyramid_levels,
+        hardware_pyramid_level,
+        inter_coded,
+        unmet,
+    })
+}
+
+pub(super) fn encode_accept(plan: &str, delivered: &Delivered) -> Vec<u8> {
     let mut w = Writer::new(KIND_ACCEPT);
+    write_delivered(&mut w, delivered);
     w.text(plan);
     w.0
 }
@@ -515,6 +570,7 @@ pub(super) fn encode_request(req: &FrameRequest, camera: Option<&str>) -> Vec<u8
         w.text(name);
     }
     w.opt(req.decode_threads, Writer::usize);
+    w.bool(req.strict);
     w.0
 }
 
@@ -580,6 +636,7 @@ fn read_request(r: &mut Reader<'_>) -> Result<FrameRequest, IpcError> {
         .map(|_| r.text())
         .collect::<Result<_, IpcError>>()?;
     req.decode_threads = r.opt(Reader::usize)?;
+    req.strict = r.bool()?;
     Ok(req)
 }
 
@@ -639,7 +696,10 @@ pub(super) fn decode_server(bytes: &[u8]) -> Result<ServerMessage, IpcError> {
                 Box::new(read_frame(&mut r, true)?),
             ))
         }
-        KIND_ACCEPT => Ok(ServerMessage::Accept(r.text()?)),
+        KIND_ACCEPT => {
+            let delivered = read_delivered(&mut r)?;
+            Ok(ServerMessage::Accept(r.text()?, Box::new(delivered)))
+        }
         KIND_REJECT => Ok(ServerMessage::Reject(r.text()?)),
         KIND_CAMERAS => Ok(ServerMessage::Cameras(read_cameras(&mut r)?)),
         KIND_METRICS_REPLY => Ok(ServerMessage::Metrics(format_from(r.u8()?)?, r.usize()?)),
@@ -667,7 +727,8 @@ mod tests {
             .backend(BackendKind::Libcamera)
             .hardware(Hardware::Off)
             .forbid("ffmpeg")
-            .decode_threads(2);
+            .decode_threads(2)
+            .strict();
         let ClientMessage::Request(back, camera) =
             decode_client(&encode_request(&req, Some("ov9782"))).unwrap()
         else {
@@ -696,6 +757,24 @@ mod tests {
             panic!("not a camera list");
         };
         assert_eq!(back, cameras);
+        let delivered = Delivered {
+            format: FourCc::GREY,
+            size: (1280, 800),
+            fps: Some(59.94),
+            pyramid_levels: 2,
+            hardware_pyramid_level: Some(1),
+            inter_coded: false,
+            unmet: vec![Unmet::Size {
+                wanted: (160, 90),
+                delivered: (1280, 800),
+            }],
+        };
+        let ServerMessage::Accept(plan, back) =
+            decode_server(&encode_accept("the plan", &delivered)).unwrap()
+        else {
+            panic!("not an accept");
+        };
+        assert_eq!((plan.as_str(), *back), ("the plan", delivered));
         let request = encode_metrics_request(MetricsFormat::Prometheus);
         assert!(matches!(
             decode_client(&request),

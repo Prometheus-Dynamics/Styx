@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added `FramePlan::delivered()` (`Delivered`: format, size, frame rate, pyramid levels and the
+  hardware one, inter-coding, and `unmet` requirements as `Unmet`) and `FramePlan::unmet`;
+  `FrameClient::delivered()` carries it from the camera service's answer. `FrameRequest::strict`
+  refuses plans that miss part of the request (planning error, or a camera service rejection).
+- Added `FrameClient::options` (`ClientOptions`: camera, timeout, reconnecting) with a timeout for
+  connecting and the service's answer together (`DEFAULT_OPEN_TIMEOUT`, 10 s) and
+  `request_async`, which awaits the connection without blocking and gives up when dropped.
 - Added autofocus for native cameras with a focus lens (simulated; hardware validation
   pending): AF in `styx-algo` (PDAF loop and contrast scans from Raspberry Pi's `af.cpp`, frame-
   exact scan steps, `rpi.af` tuning import, `sim::FocusSim`), focus lenses as data in
@@ -195,6 +202,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- The `styx::ipc` wire format is version 5 (requests carry `strict`, accepts carry `Delivered`);
+  `FrameClient` connections are non-blocking.
 - `FrameLease::descriptor` no longer allocates: `FrameLeaseDescriptor::planes` is a
   `SmallVec<[FramePlaneDescriptor; 4]>` (it was a `Vec`, one allocation per call).
 - `FrameClient::plan` returns `Option<String>`; the `styx::ipc` wire format is version 3.

@@ -13,10 +13,11 @@ use styx_core::prelude::*;
 use super::mapcache::{CachedDmabuf, MapCache};
 use super::wire::{self, CameraInfo, ServerMessage, WireBacking, WireFrame};
 use super::{IpcError, socket};
-use crate::planner::FrameRequest;
+use crate::planner::{Delivered, FrameRequest};
 
-/// How long a request waits for the service's answer.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long opening a connection may take, connecting and the service's answer together,
+/// unless [`ClientOptions::timeout`] says otherwise.
+pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Backoff between reconnection attempts.
 const RETRY_MIN: Duration = Duration::from_millis(100);
 const RETRY_MAX: Duration = Duration::from_secs(2);
@@ -38,11 +39,14 @@ struct Request {
     path: PathBuf,
     camera: Option<String>,
     frames: FrameRequest,
+    /// How long each (re)connection may take.
+    timeout: Duration,
 }
 
 struct Link {
     socket: Option<Arc<OwnedFd>>,
     plan: Option<String>,
+    delivered: Option<Delivered>,
     next_attempt: Instant,
     backoff: Duration,
     #[cfg(feature = "async")]
@@ -50,9 +54,9 @@ struct Link {
 }
 
 impl Link {
-    fn connected(&mut self, socket: OwnedFd, plan: Option<String>) {
+    fn connected(&mut self, socket: OwnedFd, accepted: Option<(String, Delivered)>) {
         self.socket = Some(Arc::new(socket));
-        self.plan = plan;
+        (self.plan, self.delivered) = accepted.map_or((None, None), |(p, d)| (Some(p), Some(d)));
         self.backoff = RETRY_MIN;
         #[cfg(feature = "async")]
         {
@@ -75,24 +79,69 @@ impl Link {
     }
 }
 
-/// Connect to a camera service and make `request`; the socket and the plan it answered with.
-fn open(request: &Request) -> Result<(OwnedFd, String), IpcError> {
-    let socket = socket::connect(&request.path)?;
+/// A camera service's answer to a request: the socket, and the plan and frames it accepted.
+type Opened = (OwnedFd, (String, Delivered));
+
+/// Connect to a camera service and make `request`, within its timeout.
+fn open(request: &Request) -> Result<Opened, IpcError> {
+    let deadline = Instant::now() + request.timeout;
+    let socket = socket::connect_until(&request.path, deadline)?;
     socket::send(
         &socket,
         &wire::encode_request(&request.frames, request.camera.as_deref()),
         &[],
     )?;
-    match answer(&socket)? {
-        ServerMessage::Accept(plan) => Ok((socket, plan)),
+    accepted(answer(&socket, deadline)?).map(|accepted| (socket, accepted))
+}
+
+fn accepted(message: ServerMessage) -> Result<(String, Delivered), IpcError> {
+    match message {
+        ServerMessage::Accept(plan, delivered) => Ok((plan, *delivered)),
         ServerMessage::Reject(reason) => Err(IpcError::Rejected(reason)),
         _ => Err(IpcError::Malformed("expected an answer to the request")),
     }
 }
 
-/// The service's answer to a request (frames before it are skipped).
-fn answer(socket: &OwnedFd) -> Result<ServerMessage, IpcError> {
-    let deadline = Instant::now() + REQUEST_TIMEOUT;
+/// [`open`] on Tokio: awaits the connection and the answer without blocking a thread; dropping
+/// the future gives up.
+#[cfg(feature = "async")]
+async fn open_async(request: &Request) -> Result<Opened, IpcError> {
+    let timed_out = || IpcError::Io(std::io::ErrorKind::TimedOut.into());
+    tokio::time::timeout(request.timeout, async {
+        let connecting = socket::Connecting::new(&request.path)?;
+        while !connecting.attempt()? {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let socket = connecting.into_socket();
+        socket::send(
+            &socket,
+            &wire::encode_request(&request.frames, request.camera.as_deref()),
+            &[],
+        )?;
+        let fd = tokio::io::unix::AsyncFd::with_interest(
+            socket.try_clone()?,
+            tokio::io::Interest::READABLE,
+        )?;
+        loop {
+            let mut ready = fd.readable().await?;
+            match socket::recv(&socket, Duration::ZERO)? {
+                socket::Received::Message(bytes, _) => match wire::decode_server(&bytes)? {
+                    ServerMessage::Frame(..) => {}
+                    message => return accepted(message).map(|accepted| (socket, accepted)),
+                },
+                socket::Received::Nothing => ready.clear_ready(),
+                socket::Received::Closed => {
+                    return Err(IpcError::Io(std::io::ErrorKind::ConnectionReset.into()));
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| timed_out())?
+}
+
+/// The service's answer (frames before it are skipped), waiting until `deadline`.
+fn answer(socket: &OwnedFd, deadline: Instant) -> Result<ServerMessage, IpcError> {
     loop {
         let wait = deadline.saturating_duration_since(Instant::now());
         if wait.is_zero() {
@@ -111,21 +160,126 @@ fn answer(socket: &OwnedFd) -> Result<ServerMessage, IpcError> {
     }
 }
 
+/// How a [`FrameClient`] opens its connection: which camera, how long it may take, whether it
+/// reconnects. From [`FrameClient::options`].
+#[derive(Clone, Debug)]
+pub struct ClientOptions {
+    path: PathBuf,
+    camera: Option<String>,
+    timeout: Duration,
+    reconnect: bool,
+}
+
+impl ClientOptions {
+    /// From the camera this names (its name, part of it, or an identity key) rather than the
+    /// service's first.
+    pub fn camera(mut self, camera: impl Into<String>) -> Self {
+        self.camera = Some(camera.into());
+        self
+    }
+
+    /// How long opening may take, connecting and the service's answer together (default
+    /// [`DEFAULT_OPEN_TIMEOUT`]); after it, opening fails with a `TimedOut` I/O error. Also the
+    /// limit for each reconnection attempt.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Reconnect when the service goes away ([`FrameClient::reconnecting`]).
+    pub fn reconnecting(mut self) -> Self {
+        self.reconnect = true;
+        self
+    }
+
+    fn request_for(&self, frames: FrameRequest) -> Request {
+        Request {
+            path: self.path.clone(),
+            camera: self.camera.clone(),
+            frames,
+            timeout: self.timeout,
+        }
+    }
+
+    /// Ask the camera service for the frames `request` asks for ([`FrameClient::request`]).
+    pub fn request<R: Clone + Into<FrameRequest>>(
+        &self,
+        request: &R,
+    ) -> Result<FrameClient, IpcError> {
+        let request = self.request_for(request.clone().into());
+        let (socket, accepted) = open(&request)?;
+        Ok(FrameClient::new(
+            socket,
+            Some(accepted),
+            Some(request),
+            self.reconnect,
+        ))
+    }
+
+    /// [`ClientOptions::request`] on Tokio: the connection and the service's answer are awaited
+    /// without blocking a thread, and dropping the future gives up (e.g. at shutdown).
+    #[cfg(feature = "async")]
+    pub async fn request_async<R: Clone + Into<FrameRequest>>(
+        &self,
+        request: &R,
+    ) -> Result<FrameClient, IpcError> {
+        let request = self.request_for(request.clone().into());
+        let (socket, accepted) = open_async(&request).await?;
+        Ok(FrameClient::new(
+            socket,
+            Some(accepted),
+            Some(request),
+            self.reconnect,
+        ))
+    }
+
+    /// The cameras the camera service serves ([`FrameClient::cameras`]).
+    pub fn cameras(&self) -> Result<Vec<CameraInfo>, IpcError> {
+        let deadline = Instant::now() + self.timeout;
+        let socket = socket::connect_until(&self.path, deadline)?;
+        socket::send(&socket, &wire::encode_list(), &[])?;
+        match answer(&socket, deadline)? {
+            ServerMessage::Cameras(cameras) => Ok(cameras),
+            ServerMessage::Reject(reason) => Err(IpcError::Rejected(reason)),
+            _ => Err(IpcError::Malformed("expected a camera list")),
+        }
+    }
+
+    /// Connect to a [`FrameServer`](super::FrameServer) ([`FrameClient::connect`]).
+    pub fn connect(&self) -> Result<FrameClient, IpcError> {
+        let socket = socket::connect_until(&self.path, Instant::now() + self.timeout)?;
+        Ok(FrameClient::new(socket, None, None, false))
+    }
+}
+
 impl FrameClient {
+    /// How to open a connection to the camera service or frame server at `path`: camera,
+    /// timeout, reconnecting ([`ClientOptions`]).
+    pub fn options(path: impl AsRef<Path>) -> ClientOptions {
+        ClientOptions {
+            path: path.as_ref().to_path_buf(),
+            camera: None,
+            timeout: DEFAULT_OPEN_TIMEOUT,
+            reconnect: false,
+        }
+    }
+
     /// Connect to a [`FrameServer`](super::FrameServer).
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, IpcError> {
-        Ok(Self::new(socket::connect(path.as_ref())?, None, None))
+        Self::options(path).connect()
     }
 
     /// Ask the [`CameraService`](super::CameraService) at `path` for the frames `request` asks
     /// for (`&Frames::gray().size(320, 200)`), from its first camera. Fails with
     /// [`IpcError::Rejected`] (and the planner's reasons) when the camera cannot serve them next
-    /// to its other clients.
+    /// to its other clients, or a [strict](FrameRequest::strict) request would not be met;
+    /// otherwise [`FrameClient::delivered`] says what the frames are. Waits up to
+    /// [`DEFAULT_OPEN_TIMEOUT`]; [`FrameClient::options`] sets another.
     pub fn request<R: Clone + Into<FrameRequest>>(
         path: impl AsRef<Path>,
         request: &R,
     ) -> Result<Self, IpcError> {
-        Self::request_from(path, None, request.clone().into())
+        Self::options(path).request(request)
     }
 
     /// [`FrameClient::request`] from the camera `camera` names: its name, part of it, or one
@@ -135,49 +289,43 @@ impl FrameClient {
         camera: &str,
         request: &R,
     ) -> Result<Self, IpcError> {
-        Self::request_from(path, Some(camera), request.clone().into())
-    }
-
-    fn request_from(
-        path: impl AsRef<Path>,
-        camera: Option<&str>,
-        frames: FrameRequest,
-    ) -> Result<Self, IpcError> {
-        let request = Request {
-            path: path.as_ref().to_path_buf(),
-            camera: camera.map(str::to_owned),
-            frames,
-        };
-        let (socket, plan) = open(&request)?;
-        Ok(Self::new(socket, Some(plan), Some(request)))
+        Self::options(path).camera(camera).request(request)
     }
 
     /// The cameras the [`CameraService`](super::CameraService) at `path` serves.
     pub fn cameras(path: impl AsRef<Path>) -> Result<Vec<CameraInfo>, IpcError> {
-        let socket = socket::connect(path.as_ref())?;
-        socket::send(&socket, &wire::encode_list(), &[])?;
-        match answer(&socket)? {
-            ServerMessage::Cameras(cameras) => Ok(cameras),
-            ServerMessage::Reject(reason) => Err(IpcError::Rejected(reason)),
-            _ => Err(IpcError::Malformed("expected a camera list")),
-        }
+        Self::options(path).cameras()
     }
 
-    fn new(socket: OwnedFd, plan: Option<String>, request: Option<Request>) -> Self {
+    fn new(
+        socket: OwnedFd,
+        accepted: Option<(String, Delivered)>,
+        request: Option<Request>,
+        reconnect: bool,
+    ) -> Self {
+        let (plan, delivered) = accepted.map_or((None, None), |(p, d)| (Some(p), Some(d)));
         Self {
             link: Mutex::new(Link {
                 socket: Some(Arc::new(socket)),
                 plan,
+                delivered,
                 next_attempt: Instant::now(),
                 backoff: RETRY_MIN,
                 #[cfg(feature = "async")]
                 async_fd: None,
             }),
             maps: Arc::new(MapCache::default()),
+            reconnect: reconnect && request.is_some(),
             request: request.map(Mutex::new),
-            reconnect: false,
             reconnects: AtomicU64::new(0),
         }
+    }
+
+    /// What the camera service's frames for this client are: format, size, rate, pyramid, and
+    /// what of the request they do not meet (the latest, after reconnecting). `None` for a
+    /// [`FrameServer`](super::FrameServer)'s frames.
+    pub fn delivered(&self) -> Option<Delivered> {
+        self.link.lock().delivered.clone()
     }
 
     /// Keep receiving across service restarts: when the connection to the camera service
@@ -267,8 +415,8 @@ impl FrameClient {
         }
         let request = request.lock().clone();
         match open(&request) {
-            Ok((socket, plan)) => {
-                self.link.lock().connected(socket, Some(plan));
+            Ok((socket, accepted)) => {
+                self.link.lock().connected(socket, Some(accepted));
                 self.reconnects.fetch_add(1, Ordering::Relaxed);
                 true
             }
@@ -332,7 +480,7 @@ impl FrameClient {
         }
     }
 
-    /// Wait for the next attempt, then connect again off the async runtime's threads.
+    /// Wait for the next attempt, then connect again without blocking the runtime.
     #[cfg(feature = "async")]
     async fn reconnect_async(&self) {
         let Some(request) = &self.request else {
@@ -341,9 +489,9 @@ impl FrameClient {
         let next = self.link.lock().next_attempt;
         tokio::time::sleep_until(next.into()).await;
         let request = request.lock().clone();
-        match tokio::task::spawn_blocking(move || open(&request)).await {
-            Ok(Ok((socket, plan))) => {
-                self.link.lock().connected(socket, Some(plan));
+        match open_async(&request).await {
+            Ok((socket, accepted)) => {
+                self.link.lock().connected(socket, Some(accepted));
                 self.reconnects.fetch_add(1, Ordering::Relaxed);
             }
             _ => self.link.lock().failed(),

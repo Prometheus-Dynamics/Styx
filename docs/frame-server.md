@@ -27,6 +27,7 @@ let frames = FrameClient::request(
     &Frames::gray().size(320, 180),
 )?;
 print!("{}", frames.plan().unwrap_or_default()); // what the service planned for it
+let delivered = frames.delivered().unwrap(); // format, size, fps, pyramid, unmet
 while let RecvOutcome::Data(frame) = frames.recv(Duration::from_secs(1)) {
     // 320x180 (or 320x200: the camera's aspect ratio) Y8, in the camera's or a memfd's memory
 }
@@ -40,6 +41,13 @@ while let RecvOutcome::Data(frame) = frames.recv(Duration::from_secs(1)) {
   everyone; the other clients stay connected and see a short gap.
 - **Refusing:** a request the camera cannot serve next to the others fails with
   `IpcError::Rejected` and the planner's reasons; the other clients are not affected.
+- **What arrives:** `FrameClient::delivered()` (from the service's answer, before the first
+  frame) gives the format, size, frame rate and pyramid of the frames, and what of the request
+  they do not meet (see [frame-planning.md](frame-planning.md#what-arrives-and-strict-requests)).
+  A `.strict()` request is refused instead of being served less.
+- **Timeouts:** opening waits up to 10 s for the connection and the answer together;
+  `FrameClient::options(path).timeout(d).request(&frames)` sets another, and `request_async`
+  (feature `async`) awaits it without blocking a thread, giving up when the future is dropped.
 - **Idle:** a client gets frames only as fast as it drops them, so a camera nobody reads from
   idles. By default the service pauses it after 2 s (libcamera stays configured and wakes in
   ~0.1 s; V4L2 releases). `stop_when_idle` releases instead, `keep_streaming` never stops.

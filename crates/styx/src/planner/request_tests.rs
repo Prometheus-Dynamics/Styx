@@ -362,3 +362,48 @@ mod deprecated {
         assert_eq!(shared.interval, Interval::from_fps(30));
     }
 }
+
+#[test]
+fn plans_say_what_they_deliver_and_strict_requests_refuse_less() {
+    let cam = camera(vec![
+        listed(FourCc::NV12, 640, 360, &[30]),
+        listed(FourCc::NV12, 1280, 720, &[30]),
+    ]);
+    // Nothing scales NV12 here: the smallest mode arrives, and the plan says so.
+    let plan = plan_frames_with(&cam, &Frames::nv12().size(160, 90), &registry()).unwrap();
+    let delivered = plan.delivered();
+    assert_eq!(delivered.format, FourCc::NV12);
+    assert_eq!(delivered.size, (640, 360));
+    assert_eq!(delivered.fps, Some(30.0));
+    assert_eq!(
+        delivered.unmet,
+        [Unmet::Size {
+            wanted: (160, 90),
+            delivered: (640, 360),
+        }]
+    );
+    // A size the camera has is met.
+    let plan = plan_frames_with(&cam, &Frames::nv12().size(640, 360), &registry()).unwrap();
+    assert!(plan.delivered().unmet.is_empty());
+
+    // Strict: no degraded plan, and the reasons name what is missing.
+    let strict = Frames::nv12().size(160, 90).strict();
+    match plan_frames_with(&cam, &strict, &registry()) {
+        Err(PlanError::NoCandidates { rejected }) => assert!(
+            rejected
+                .iter()
+                .all(|r| r.reason.contains("strict: frames are")),
+            "{rejected:?}"
+        ),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // Shared: a strict consumer refuses, a lenient one is told.
+    assert!(plan_many_with(&cam, &[Frames::nv12(), strict.clone()], &registry()).is_err());
+    let shared = plan_many_with(
+        &cam,
+        &[Frames::nv12(), Frames::nv12().size(160, 90)],
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(shared.consumers[1].unmet.len(), 1);
+}

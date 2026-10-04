@@ -98,6 +98,18 @@ pub(crate) struct Candidate<'a> {
     pub notes: Vec<String>,
 }
 
+impl Candidate<'_> {
+    /// Width and height of the frames this route delivers, after the ISP or decoder scales them.
+    pub(crate) fn delivered_size(&self) -> (u32, u32) {
+        let res = self.mode.format.resolution;
+        let scale = u32::from(self.decode_scale.max(1));
+        self.isp_output.unwrap_or((
+            res.width.get().div_ceil(scale),
+            res.height.get().div_ceil(scale),
+        ))
+    }
+}
+
 pub(crate) fn backend_name(kind: BackendKind) -> &'static str {
     match kind {
         BackendKind::V4l2 => "v4l2",

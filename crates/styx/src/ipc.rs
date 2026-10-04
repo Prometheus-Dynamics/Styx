@@ -32,7 +32,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use styx_core::prelude::*;
 
-pub use self::client::FrameClient;
+pub use self::client::{ClientOptions, DEFAULT_OPEN_TIMEOUT, FrameClient};
 use self::connection::Connection;
 #[cfg(feature = "frame-socket")]
 pub use self::frame_socket::{

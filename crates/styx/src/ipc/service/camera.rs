@@ -10,7 +10,8 @@ use styx_core::prelude::*;
 use super::{Counters, ServiceConfig};
 use crate::capture_api::IdleStop;
 use crate::planner::{
-    FrameRate, FrameRequest, Frames, PlanError, SharedFramePlan, SharedSession, plan_many,
+    Delivered, FrameRate, FrameRequest, Frames, PlanError, SharedFramePlan, SharedSession,
+    plan_many,
 };
 use crate::prelude::ProbedDevice;
 
@@ -78,13 +79,14 @@ impl Camera {
         request: FrameRequest,
         config: &ServiceConfig,
         counters: &Counters,
-    ) -> Result<(u64, String, FramesSlot), String> {
+    ) -> Result<(u64, String, Delivered, FramesSlot), String> {
         let mut state = self.state.lock();
         let mut all: Vec<FrameRequest> = state.clients.iter().map(|c| c.request.clone()).collect();
         all.push(request.clone());
         let plan = self.plan_for(&all, config).map_err(|err| describe(&err))?;
         let new = plan.consumers.last().expect("one plan per client");
         let text = new.to_string();
+        let delivered = new.delivered();
         let setup = plan.setup_key();
         let fits = state
             .running
@@ -124,7 +126,7 @@ impl Camera {
             request,
             frames: slot.clone(),
         });
-        Ok((id, text, slot))
+        Ok((id, text, delivered, slot))
     }
 
     fn plan_for(

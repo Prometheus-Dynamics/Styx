@@ -337,3 +337,82 @@ fn a_reconnecting_client_survives_a_service_restart() {
     assert!(client.is_connected());
     assert_eq!(client.reconnects(), 1);
 }
+
+#[test]
+fn clients_learn_what_they_get_and_strict_ones_are_refused_less() {
+    let socket = socket_path("delivered");
+    let _service = CameraService::new(virtual_camera("virtual-delivered"))
+        .keep_streaming()
+        .serve(&socket)
+        .unwrap();
+    // The virtual camera cannot scale RGB: frames come at its size, and the client is told.
+    let small = FrameRequest::formats([FourCc::RG24]).size(160, 90);
+    let client = FrameClient::request(&socket, &small).unwrap();
+    let delivered = client.delivered().unwrap();
+    assert_eq!(delivered.format, FourCc::RG24);
+    assert_eq!(delivered.size, (320, 180));
+    assert_eq!(
+        delivered.unmet,
+        [styx::planner::Unmet::Size {
+            wanted: (160, 90),
+            delivered: (320, 180),
+        }]
+    );
+    let first = frame(&client);
+    let res = first.meta().format.resolution;
+    assert_eq!((res.width.get(), res.height.get()), delivered.size);
+
+    match FrameClient::request(&socket, &small.clone().strict()) {
+        Err(IpcError::Rejected(reason)) => assert!(reason.contains("strict"), "{reason}"),
+        other => panic!("expected a refusal, got {:?}", other.map(|c| c.plan())),
+    }
+}
+
+#[test]
+fn opening_gives_up_at_its_timeout() {
+    // A socket that takes connections but never answers them.
+    let socket = socket_path("silent");
+    let _silent = styx::ipc::FrameServer::bind(&socket).unwrap();
+    let started = std::time::Instant::now();
+    let result = FrameClient::options(&socket)
+        .timeout(Duration::from_millis(200))
+        .request(&FrameRequest::formats([FourCc::RG24]));
+    let took = started.elapsed();
+    match result {
+        Err(IpcError::Io(err)) => assert_eq!(err.kind(), std::io::ErrorKind::TimedOut),
+        other => panic!("expected a timeout, got {:?}", other.map(|c| c.plan())),
+    }
+    assert!(
+        took >= Duration::from_millis(200) && took < Duration::from_secs(2),
+        "{took:?}"
+    );
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn opening_asynchronously_can_time_out_or_be_dropped() {
+    let socket = socket_path("silent-async");
+    let _silent = styx::ipc::FrameServer::bind(&socket).unwrap();
+    let options = FrameClient::options(&socket).timeout(Duration::from_millis(150));
+    let rgb = FrameRequest::formats([FourCc::RG24]);
+    match options.request_async(&rgb).await {
+        Err(IpcError::Io(err)) => assert_eq!(err.kind(), std::io::ErrorKind::TimedOut),
+        other => panic!("expected a timeout, got {:?}", other.map(|c| c.plan())),
+    }
+    // Shutting down: the caller drops the open while it waits.
+    let long = FrameClient::options(&socket).timeout(Duration::from_secs(30));
+    let dropped = tokio::time::timeout(Duration::from_millis(50), long.request_async(&rgb)).await;
+    assert!(dropped.is_err());
+
+    // And against a real service, it opens.
+    let served = socket_path("served-async");
+    let _service = CameraService::new(virtual_camera("virtual-async"))
+        .keep_streaming()
+        .serve(&served)
+        .unwrap();
+    let client = FrameClient::options(&served)
+        .request_async(&rgb)
+        .await
+        .unwrap();
+    assert_eq!(client.delivered().unwrap().format, FourCc::RG24);
+}
