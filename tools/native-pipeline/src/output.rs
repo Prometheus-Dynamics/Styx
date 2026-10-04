@@ -65,6 +65,12 @@ impl Output {
         }
     }
 
+    /// The image's bytes: RGB24, luma, or NV12's Y plane; NV12's UV plane (else empty).
+    #[cfg(feature = "device")]
+    pub fn planes(&self) -> (&[u8], &[u8]) {
+        (&self.data, &self.uv)
+    }
+
     pub fn buffers(&mut self) -> OutputBuffers<'_> {
         let w = self.width;
         match self.kind {

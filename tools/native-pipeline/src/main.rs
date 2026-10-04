@@ -30,6 +30,11 @@
 //!   --output KIND        (soft, replay) rgb (default), nv12 or luma, each optionally -half
 //!   --arithmetic A       (soft, replay) software ISP arithmetic: auto (default), int, int-poly
 //!                        (int with the tone curve as quadratics) or half
+//!   --roi X,Y,W,H        (soft) process only this region of each frame at full resolution
+//!                        (the statistics in a pass of their own, or the overview's)
+//!   --overview F         (soft) also the whole frame binned by F (even), with the statistics
+//!   --check-roi          (soft) with --roi: process each frame whole again with its settings
+//!                        and compare the region with its crop (adds that work to the CPU)
 //!   --heap NAME          (soft) capture into buffers from this dma-heap (default: linux,cma
 //!                        when it exists: cached, synced per frame)
 //!   --no-read            (pisp) do not read the output on the CPU (no per-frame output mean)
@@ -40,7 +45,7 @@
 //!                        when settled
 //!   --start-exposure US:GAIN  (pisp) start AE from this exposure and gain instead of the
 //!                        camera's last settled state (a dark or bright start)
-//!   --cold               (pisp) start from the tuning's start-up values, not the last state
+//!   --cold               (pisp, soft) start from the tuning's start-up values, not the last state
 //!   --fixed US:GAIN      AE off: this exposure and analogue gain on every frame
 //!   --flicker MODE       flicker avoidance: off (default), 50, 60 or auto
 //!   --deflicker MODE     take the flicker out of the frames: auto (default: with flicker
@@ -72,6 +77,8 @@ mod replay_run;
 mod report;
 #[cfg(feature = "device")]
 mod restart;
+#[cfg(feature = "device")]
+mod soft_roi;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -117,6 +124,9 @@ pub struct Args {
     pub arithmetic: styx_softisp::Arithmetic,
     pub raw: Option<PathBuf>,
     pub configs: Vec<PathBuf>,
+    pub roi: Option<styx_softisp::Window>,
+    pub overview: Option<u32>,
+    pub check_roi: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -158,6 +168,9 @@ fn parse() -> Result<Args, String> {
         arithmetic: styx_softisp::Arithmetic::Auto,
         raw: None,
         configs: Vec::new(),
+        roi: None,
+        overview: None,
+        check_roi: false,
     };
     while let Some(x) = it.next() {
         let mut val = || it.next().ok_or(format!("{x} needs a value"));
@@ -175,6 +188,9 @@ fn parse() -> Result<Args, String> {
             "--configs" => a.configs = val()?.split(',').map(PathBuf::from).collect(),
             "--threads" => a.threads = num(val()?)? as usize,
             "--quiet" => a.quiet = true,
+            "--roi" => a.roi = Some(parse_rect(&val()?)?),
+            "--overview" => a.overview = Some(num(val()?)? as u32),
+            "--check-roi" => a.check_roi = true,
             "--output" => a.output = output::parse(&val()?)?,
             "--arithmetic" => {
                 a.arithmetic = match val()?.as_str() {
@@ -243,6 +259,19 @@ fn parse() -> Result<Args, String> {
         }
     }
     Ok(a)
+}
+
+/// `X,Y,W,H`.
+pub fn parse_rect(s: &str) -> Result<styx_softisp::Window, String> {
+    let v: Vec<u32> = s
+        .split(',')
+        .map(|v| v.trim().parse::<u32>())
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("--roi {s}: {e}"))?;
+    match v[..] {
+        [x, y, w, h] => Ok(styx_softisp::Window::new(x, y, w, h)),
+        _ => Err(format!("--roi {s}: X,Y,W,H")),
+    }
 }
 
 /// The software ISP's fixed parameters with `--arithmetic`.

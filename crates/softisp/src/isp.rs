@@ -5,11 +5,11 @@ use alloc::{format, string::String, vec, vec::Vec};
 use crate::format::RawFormat;
 use crate::output::{Kind, OutputBuffers, Scale};
 use crate::params::{Arithmetic, IspParams};
-use crate::pipeline::{Source, Worker};
+use crate::pipeline::{Geom, Source, Worker};
 #[cfg(feature = "std")]
 use crate::pool::Pool;
 use crate::prepare::Prepared;
-use crate::stats::IspStats;
+use crate::stats::{IspStats, StatsAccum};
 #[cfg(feature = "std")]
 use std::sync::Mutex;
 #[cfg(feature = "std")]
@@ -30,6 +30,29 @@ fn worker_mut(w: &mut WorkerSlot) -> &mut Worker {
     #[cfg(not(feature = "std"))]
     {
         &mut w.0
+    }
+}
+
+/// A rectangle of the frame in mosaic pixels ([`SoftIsp::process_window`]): even origin and
+/// size.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct Window {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Window {
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -206,6 +229,156 @@ impl SoftIsp {
         scale: Scale,
         out: OutputBuffers<'_>,
     ) -> Result<Option<IspStats>, IspError> {
+        let src = self.source(input, stride)?;
+        let (_, oh) = output_size(&self.format, scale);
+        let g = Geom::frame(self.format.width as usize, scale, true);
+        let acc = self.run(&src, g, oh as usize, out)?;
+        Ok(self.finish(acc))
+    }
+
+    /// Process only `window` of the frame, at `scale`, into `out` (sized
+    /// [`Self::window_size`]): the rows and columns of the window and the neighbours the
+    /// demosaic needs, so a small window costs a small part of a frame. The pixels are those
+    /// of the same window of [`Self::process`]'s picture, bit for bit. No statistics: those of
+    /// the whole frame come from [`Self::process_binned`] or [`Self::statistics`].
+    pub fn process_window(
+        &mut self,
+        input: &[u8],
+        stride: usize,
+        window: Window,
+        scale: Scale,
+        out: OutputBuffers<'_>,
+    ) -> Result<(), IspError> {
+        let src = self.source(input, stride)?;
+        let (w, h) = (self.format.width, self.format.height);
+        let Window {
+            x,
+            y,
+            width,
+            height,
+        } = window;
+        if width == 0
+            || height == 0
+            || !(x | y | width | height).is_multiple_of(2)
+            || x + width > w
+            || y + height > h
+        {
+            return Err(IspError::Unsupported(format!(
+                "window {width}x{height} at ({x}, {y}): even origin and size within the \
+                 {w}x{h} frame"
+            )));
+        }
+        let margin = match self.prepared.demosaic {
+            crate::params::Demosaic::Mhc => 2,
+            crate::params::Demosaic::Bilinear => 1,
+        };
+        let g = Geom::window(
+            w as usize,
+            (x as usize, y as usize, width as usize),
+            scale,
+            margin,
+        );
+        let (_, oh) = self.window_size(window, scale);
+        self.run(&src, g, oh as usize, out).map(drop)
+    }
+
+    /// The output size of `window` at `scale`.
+    pub fn window_size(&self, window: Window, scale: Scale) -> (u32, u32) {
+        match scale {
+            Scale::Full => (window.width, window.height),
+            Scale::Half => (window.width / 2, window.height / 2),
+        }
+    }
+
+    /// The whole frame at 1/`factor` size (`factor` even) into `out` (sized
+    /// [`Self::binned_size`]), with the whole frame's statistics: each pixel is a 2x2 quad
+    /// of the mosaic, as [`Scale::Half`] (`factor` 2: every quad, the same picture); beyond 2
+    /// every (`factor` / 2)-th quad of every (`factor` / 2)-th quad row, so the front end
+    /// runs on 2 / `factor` of the rows (and the statistics' own). The cheap overview of a
+    /// frame whose regions are processed with [`Self::process_window`].
+    pub fn process_binned(
+        &mut self,
+        input: &[u8],
+        stride: usize,
+        factor: u32,
+        out: OutputBuffers<'_>,
+    ) -> Result<Option<IspStats>, IspError> {
+        let src = self.source(input, stride)?;
+        let (ow, oh) = self.binned_size(factor);
+        if factor < 2 || !factor.is_multiple_of(2) || ow == 0 || oh == 0 {
+            return Err(IspError::Unsupported(format!(
+                "binning by {factor}: an even factor from 2 leaving at least 2x2 pixels"
+            )));
+        }
+        let step = factor as usize / 2;
+        let g = Geom::quads(self.format.width as usize, step, ow as usize, true);
+        let acc = self.run(&src, g, oh as usize, out)?;
+        // Quad rows below the last output row's.
+        let (covered, quad_rows) = (oh as usize * step, self.format.height as usize / 2);
+        let acc = match acc {
+            Some(acc) if covered < quad_rows => {
+                self.stats_rows(&src, covered..quad_rows, Some(acc))
+            }
+            acc => acc,
+        };
+        Ok(self.finish(acc))
+    }
+
+    /// The output size of [`Self::process_binned`] by `factor`: even sides.
+    pub fn binned_size(&self, factor: u32) -> (u32, u32) {
+        let f = factor.max(1);
+        ((self.format.width / f) & !1, (self.format.height / f) & !1)
+    }
+
+    /// Only the frame's statistics (as [`Self::process`] gathers them), for a frame whose
+    /// picture is made of windows alone: the front end on the quad rows they sample.
+    pub fn statistics(
+        &mut self,
+        input: &[u8],
+        stride: usize,
+    ) -> Result<Option<IspStats>, IspError> {
+        let src = self.source(input, stride)?;
+        if !self.statistics || self.prepared.stats.is_none() {
+            return Ok(None);
+        }
+        let quad_rows = self.format.height as usize / 2;
+        let acc = self.stats_rows(&src, 0..quad_rows, None);
+        Ok(self.finish(acc))
+    }
+
+    /// `acc` with the statistics of `quad_rows` added (gathered on the first worker).
+    fn stats_rows(
+        &mut self,
+        src: &Source<'_>,
+        quad_rows: core::ops::Range<usize>,
+        acc: Option<StatsAccum>,
+    ) -> Option<StatsAccum> {
+        let p = &self.prepared;
+        let w = worker_mut(&mut self.workers[0]);
+        w.begin_frame(p, true);
+        w.begin_band();
+        let g = Geom::frame(p.width, Scale::Half, true);
+        for qy in quad_rows {
+            w.stats_pair(p, src, &g, 2 * qy);
+        }
+        let part = w.stats.as_ref()?;
+        Some(match acc {
+            Some(mut acc) => {
+                acc.merge(part);
+                acc
+            }
+            None => part.clone(),
+        })
+    }
+
+    /// The statistics of `acc`.
+    fn finish(&self, acc: Option<StatsAccum>) -> Option<IspStats> {
+        let p = &self.prepared;
+        Some(acc?.finish(p.stats.as_ref()?, p.channel_gains))
+    }
+
+    /// The input checked against the format.
+    fn source<'a>(&self, input: &'a [u8], stride: usize) -> Result<Source<'a>, IspError> {
         let (w, h) = (self.format.width as usize, self.format.height as usize);
         let row = self.format.min_stride();
         if stride < row || input.len() < stride * (h - 1) + row {
@@ -215,37 +388,49 @@ impl SoftIsp {
                 self.format.packing
             )));
         }
-        let (ow, oh) = output_size(&self.format, scale);
-        let (ow, oh) = (ow as usize, oh as usize);
-        out.validate(ow, oh)?;
-        if matches!(out.kind(), Kind::Nv12 | Kind::I420) && (ow % 2 != 0 || oh % 2 != 0) {
-            return Err(IspError::Unsupported(format!(
-                "4:2:0 output of odd size {ow}x{oh}"
-            )));
-        }
-        let src = Source {
+        Ok(Source {
             data: input,
             stride,
             packing: self.format.packing,
             copy: self.copy_input,
-        };
+        })
+    }
+
+    /// `oh` output rows of `g` into `out`, in bands on the threads; the statistics when `g`
+    /// gathers them and the parameters ask.
+    fn run(
+        &mut self,
+        src: &Source<'_>,
+        g: Geom,
+        oh: usize,
+        out: OutputBuffers<'_>,
+    ) -> Result<Option<StatsAccum>, IspError> {
+        let ow = g.ow;
+        out.validate(ow, oh)?;
+        if matches!(out.kind(), Kind::Nv12 | Kind::I420) && (!ow.is_multiple_of(2) || !oh.is_multiple_of(2)) {
+            return Err(IspError::Unsupported(format!(
+                "4:2:0 output of odd size {ow}x{oh}"
+            )));
+        }
+        let stats = g.stats && self.statistics;
         let p = &self.prepared;
         let threads = self.thread_count();
         let bands = band_rows(oh, threads);
         let outs = out.into_bands(bands, oh);
-        let used = threads.min(outs.len());
+        let used = threads.min(outs.len()).max(1);
         if self.workers.len() < used {
             self.workers.resize_with(used, Default::default);
         }
         let workers = &mut self.workers[..used];
         for w in workers.iter_mut() {
-            worker_mut(w).begin_frame(p, self.statistics);
+            worker_mut(w).begin_frame(p, stats);
         }
+        let g = &g;
         if used <= 1 {
             let w = worker_mut(&mut workers[0]);
             for (k, o) in outs.into_iter().enumerate() {
                 let o0 = k * bands;
-                w.run_band(p, &src, scale, o0, bands.min(oh - o0), o);
+                w.run_band(p, src, g, o0, bands.min(oh - o0), o);
             }
         } else {
             // Without std there is one thread (`thread_count`): this is the std build.
@@ -271,19 +456,19 @@ impl SoftIsp {
                             .take()
                             .expect("each band is claimed once");
                         let o0 = k * bands;
-                        w.run_band(p, &src, scale, o0, bands.min(oh - o0), out);
+                        w.run_band(p, src, g, o0, bands.min(oh - o0), out);
                     }
                 });
             }
         }
-        Ok(p.stats.as_ref().filter(|_| self.statistics).map(|setup| {
+        Ok(p.stats.as_ref().filter(|_| stats).map(|_| {
             let mut ws = self.workers[..used].iter_mut().map(worker_mut);
             let first = ws.next().expect("one worker at least");
             let mut acc = first.stats.clone().expect("stats prepared");
             for w in ws {
                 acc.merge(w.stats.as_ref().expect("stats prepared"));
             }
-            acc.finish(setup, p.channel_gains)
+            acc
         }))
     }
 

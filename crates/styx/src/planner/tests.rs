@@ -515,10 +515,62 @@ fn native_pisp_crops_the_region_and_makes_the_overview() {
     let plan = plan_frames_with(&dev, &pyramid, &registry()).unwrap();
     assert_eq!(plan.delivered().roi, Some(RoiCrop::View), "{plan}");
     assert_eq!(plan.isp_pyramid_level, Some(1));
-    // Without a PiSP, NV12 frames are not cropped: unmet.
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn native_software_isp_processes_only_the_region_and_bins_the_overview() {
+    let mut dev = device(
+        BackendKind::Native,
+        BackendHandle::Native {
+            key: "bridge:/dev/v4l-subdev2".into(),
+        },
+        vec![
+            mode(FourCc::new(*b"pBAA"), 1280, 800, 30),
+            mode(FourCc::NV12, 1280, 800, 30),
+            mode(FourCc::NV12, 640, 400, 30),
+        ],
+    );
     dev.backends[0].properties = vec![("isp".into(), "software".into())];
-    let plan = plan_frames_with(&dev, &Frames::nv12().roi(region), &registry()).unwrap();
+    let whole = plan_frames_with(&dev, &Frames::nv12(), &registry()).unwrap();
+    // With `gpu-isp` on a host with a Vulkan GPU the GPU ISP runs the path: no regions.
+    if whole.to_string().contains("GPU ISP") {
+        return;
+    }
+    let region = FrameRect::new(100, 50, 320, 200);
+    let tracker = Frames::nv12().roi(region).overview(320, 200);
+    let plan = plan_frames_with(&dev, &tracker, &registry()).unwrap();
+    let d = plan.delivered();
+    assert_eq!(d.roi, Some(RoiCrop::Isp), "{plan}");
+    assert_eq!((d.overview, d.hardware_overview), (Some((320, 200)), true));
+    assert!(d.unmet.is_empty(), "{:?}", d.unmet);
+    assert!(plan.to_string().contains("binned 1/4"), "{plan}");
+    // Priced for the region and the overview: a fraction of the whole frame (CM5: 1.3
+    // against 3.2 ms).
+    assert!(
+        plan.total.cpu_ms < 0.6 * whole.total.cpu_ms,
+        "{plan} vs {whole}"
+    );
+    let config = plan.region_config(Default::default());
+    assert_eq!(config.backends.native.crop, Some(region));
+    assert_eq!(config.backends.native.overview, Some((320, 200)));
+    // Luma too (a view of the region's Y plane); without an overview, the statistics alone.
+    let gray = plan_frames_with(&dev, &Frames::gray().roi(region), &registry()).unwrap();
+    assert_eq!(gray.delivered().roi, Some(RoiCrop::Isp), "{gray}");
+    assert!(gray.total.cpu_ms < plan.total.cpu_ms, "{gray} vs {plan}");
+    // Shared with another consumer: the whole frame, priced as such.
+    let shared = plan_many_with(&dev, &[tracker.clone(), Frames::nv12()], &registry()).unwrap();
+    let d = shared.consumers[0].delivered();
+    assert_eq!((d.roi, d.overview), (None, Some((1280, 800))), "{shared}");
+    assert!(
+        shared.consumers[0].total.cpu_ms >= whole.total.cpu_ms,
+        "{shared}"
+    );
+    // A binned mode (frames of half size) is not cropped: unmet.
+    let small = Frames::nv12().size(640, 400).roi(region);
+    let plan = plan_frames_with(&dev, &small, &registry()).unwrap();
+    assert_eq!(plan.mode.format.resolution.width.get(), 640, "{plan}");
     assert_eq!(plan.delivered().roi, None, "{plan}");
     assert_eq!(plan.delivered().unmet, vec![Unmet::Roi]);
-    assert!(plan_frames_with(&dev, &Frames::nv12().roi(region).strict(), &registry()).is_err());
+    assert!(plan_frames_with(&dev, &small.strict(), &registry()).is_err());
 }

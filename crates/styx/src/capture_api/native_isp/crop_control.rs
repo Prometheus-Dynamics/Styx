@@ -1,6 +1,6 @@
-//! The main output's crop of a processed native capture (`OUTPUT_CROP`): the PiSP's back end
-//! delivers that region of the frame at full resolution, and frames say where it is
-//! (`FrameMeta::crop`). Set by the application, or by the planner for a request's region of
+//! The main output's crop of a processed native capture (`OUTPUT_CROP`): the PiSP's back end,
+//! or the software ISP processing only that region, delivers it at full resolution, and frames
+//! say where it is (`FrameMeta::crop`). Set by the application, or by the planner for a request's region of
 //! interest; the worker hands a changed crop to the back end before its next frame.
 
 use parking_lot::Mutex;
@@ -17,8 +17,8 @@ const MIN_SIDE: u32 = 16;
 /// The crop as set, and a change the worker has not taken yet.
 #[derive(Debug, Default)]
 pub(crate) struct CropControl {
-    /// The frame crops lie in; `None` while this capture cannot crop (the software ISP, or a
-    /// main output scaled to another size).
+    /// The frame crops lie in; `None` while this capture cannot crop (a main output scaled to
+    /// another size, a binned software ISP mode).
     frame: Mutex<Option<(u32, u32)>>,
     current: Mutex<Option<FrameRect>>,
     pending: Mutex<Option<Option<FrameRect>>>,
@@ -38,7 +38,8 @@ impl CropControl {
     pub(crate) fn apply(&self, value: &ControlValue) -> Result<(), CaptureError> {
         let Some(frame) = *self.frame.lock() else {
             return Err(CaptureError::control_apply(
-                "output crop: only the PiSP crops, with its main output at the mode's size",
+                "output crop: only the PiSP (main output at the mode's size) and the software ISP \
+                 (a sensor mode's size) crop",
             ));
         };
         let rect = match value {
@@ -97,8 +98,8 @@ impl CropControl {
     }
 }
 
-/// The `OUTPUT_CROP` control of a camera whose processed modes run on the PiSP: rectangles up
-/// to its largest mode.
+/// The `OUTPUT_CROP` control of a camera whose processed modes run on the PiSP or the software
+/// ISP: rectangles up to its largest mode.
 pub(crate) fn meta(info: &CameraInfo) -> Option<ControlMeta> {
     let (width, height) = info.modes.iter().map(|m| (m.width, m.height)).max()?;
     let rect = |width, height| {

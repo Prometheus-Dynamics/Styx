@@ -53,7 +53,7 @@ pub(crate) fn native_isp(backend: &ProbedBackend) -> Option<&str> {
 }
 
 /// Whether processed `mode` is a binned one: no raw mode of its size, one of twice it.
-fn binned(backend: &ProbedBackend, mode: &Mode) -> bool {
+pub(crate) fn binned(backend: &ProbedBackend, mode: &Mode) -> bool {
     let (w, h) = (
         mode.format.resolution.width.get(),
         mode.format.resolution.height.get(),
@@ -135,6 +135,11 @@ pub(crate) fn processed_capture_step(
         detail: format!("{} ({how})", describe(backend, mode)),
         cost,
     })
+}
+
+/// Whether the software path runs on a GPU (feature `gpu-isp`, a Vulkan device found).
+pub(crate) fn gpu_isp_present() -> bool {
+    gpu_isp().is_some()
 }
 
 /// The GPU the software path runs on (feature `gpu-isp`, a Vulkan device found), if any.

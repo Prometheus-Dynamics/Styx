@@ -35,5 +35,9 @@ rayon = []
 name = "softisp"
 harness = false
 
+[[bench]]
+name = "regions"
+harness = false
+
 [lints]
 workspace = true

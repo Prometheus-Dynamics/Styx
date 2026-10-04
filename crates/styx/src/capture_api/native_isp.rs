@@ -11,6 +11,7 @@ mod af_controls;
 mod crop_control;
 mod loop_controls;
 mod pisp_worker;
+mod soft_worker;
 mod still_process;
 mod still_runner;
 
@@ -33,11 +34,10 @@ use styx_pipeline::device::{
     IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning, isp_kind, soft_capture_memory,
 };
 use styx_pisp::device::OutputMemory;
-use styx_softisp::{OutputBuffers, Scale};
+use styx_softisp::Scale;
 
 use super::control_plane::ControlPlane;
 use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle};
-use super::handle_metrics::deliver;
 use super::request::CaptureError;
 use super::tunables::StyxConfig;
 use crate::BackendKind;
@@ -361,6 +361,12 @@ pub(super) fn start_processed(
             .crop
             .enable((w, h), config.backends.native.crop);
     }
+    // The software ISP processes a crop alone, at full resolution, on a full-size mode.
+    if kind == IspKind::Software && soft_capture_size(camera.info(), (w, h)).1 == Scale::Full {
+        loop_controls
+            .crop
+            .enable((w, h), config.backends.native.crop);
+    }
     for (id, value) in initial {
         loop_controls
             .apply(*id, value)
@@ -371,7 +377,6 @@ pub(super) fn start_processed(
     let werr = Arc::clone(&worker_error);
     let send_timeout = Duration::from_millis(capture.queue_send_timeout_ms);
     let timeout = Duration::from_secs(2);
-    let code = mode.format.code;
     let worker_mode = mode.clone();
     let still_ctx = Arc::new(still_process::StillContext {
         kind,
@@ -386,7 +391,7 @@ pub(super) fn start_processed(
             .soft_threads
             .unwrap_or_else(crate::planner::cost::default_softisp_threads),
     });
-    let mut still = still_runner::StillRunner::new(
+    let still = still_runner::StillRunner::new(
         Arc::clone(&loop_controls),
         Box::new(move || still_process::StillProcessor::spawn(Arc::clone(&still_ctx))),
     );
@@ -481,92 +486,33 @@ pub(super) fn start_processed(
             }
             p.start().map_err(err)?;
             let controls = p.controls().clone();
-            let stride = if code == FourCc::NV12 {
-                w as usize
-            } else {
-                w as usize * 3
-            };
-            let len = layouts(code, h as usize, stride)
-                .iter()
-                .map(|l| l.offset + l.len)
-                .max()
-                .unwrap_or(0);
-            let lens_controls = p.controls().clone();
-            let worker = thread::Builder::new()
-                .name("styx-native-softisp".into())
-                .spawn(move || {
-                    live_worker.register_thread();
-                    let (ret_tx, ret_rx) = mpsc::channel::<Vec<u8>>();
-                    loop {
-                        if stop_rx.try_recv().is_ok() {
-                            break;
-                        }
-                        if let Some(c) = loop_worker.take() {
-                            p.soft_loop().controller().set_controls(c);
-                        }
-                        still.before_frame(&mut p);
-                        let mut buf = ret_rx.try_recv().unwrap_or_else(|_| vec![0u8; len]);
-                        let out = if code == FourCc::NV12 {
-                            let (y, uv) = buf.split_at_mut(stride * h as usize);
-                            OutputBuffers::Nv12 {
-                                y,
-                                y_stride: stride,
-                                uv,
-                                uv_stride: stride,
-                            }
-                        } else {
-                            OutputBuffers::Rgb24 {
-                                data: &mut buf,
-                                stride,
-                            }
-                        };
-                        let f = match p.next(timeout, scale, out) {
-                            Ok(Some(f)) => f,
-                            Ok(None) => break,
-                            Err(e) => {
-                                *werr.lock() = Some(err(e));
-                                break;
-                            }
-                        };
-                        loop_worker.report(&f.output.step.params);
-                        let raw = still
-                            .wants(&f.sensor)
-                            .then(|| hold_soft(&f, p.soft_loop().format()));
-                        let step = &f.output.step;
-                        let ae = (step.params.ae.total_exposure, step.params.ae.locked);
-                        let request = step.sensor;
-                        let (sensor, lands) = (f.sensor, f.request_lands);
-                        let t = &f.output.timing;
-                        live_worker.isp_time(t.isp, t.settings + t.isp + t.stats + t.algorithms);
-                        live_worker.aaa(&aaa_sample(
-                            &f.output.step.params,
-                            &lens_controls,
-                            f.sensor.frame,
-                        ));
-                        let meta =
-                            frame_meta(&worker_mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
-                        drop(f);
-                        still.after_frame(&mut p, &sensor, (lands, request), ae, raw);
-                        let lease = FrameLease::from_external(
-                            meta,
-                            layouts(code, h as usize, stride),
-                            Arc::new(live_worker.track(HeapBacking {
-                                data: Some(buf),
-                                returns: ret_tx.clone(),
-                            })),
-                        );
-                        if deliver(&live_worker, &tx, lease, "native-softisp", send_timeout) {
-                            break;
-                        }
-                    }
-                    if let Err(e) = p.close() {
-                        tracing::warn!(backend = "native", error = %e, "closing the software ISP path");
-                    }
-                    if owns_queue {
-                        tx.close();
-                    }
-                })
-                .map_err(|e| err(format!("worker: {e}")))?;
+            // Regions and overviews need the CPU ISP (and a full-size mode to crop).
+            let cpu = matches!(p.soft_loop().engine(), styx_pipeline::IspEngine::Cpu { .. });
+            let overview = config
+                .backends
+                .native
+                .overview
+                .filter(|_| cpu)
+                .map(|wanted| crate::planner::soft_overview_factor((cw, ch), wanted));
+            let worker = soft_worker::spawn(
+                p,
+                soft_worker::SoftWorker {
+                    mode: worker_mode,
+                    scale,
+                    crops: cpu && scale == Scale::Full,
+                    overview: overview.filter(|_| scale == Scale::Full),
+                    tx,
+                    owns_queue,
+                    stop: stop_rx,
+                    error: werr,
+                    send_timeout,
+                    timeout,
+                    loop_controls: loop_worker,
+                    still,
+                    live: live_worker,
+                    controls: controls.clone(),
+                },
+            )?;
             (controls, worker)
         }
     };

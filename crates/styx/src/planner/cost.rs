@@ -72,6 +72,21 @@ pub(crate) const SOFTISP_MS_PER_MP: f32 = 2.9;
 /// Binned (half-size) processed modes: each 2x2 quad becomes a pixel, priced per megapixel
 /// of the raw frame read (1.25 ms for a 1280x800 frame).
 pub(crate) const SOFTISP_BINNED_MS_PER_RAW_MP: f32 = 1.2;
+/// Regions of interest on the software ISP (`SoftIsp::process_window`): the region's pixels
+/// at full resolution, without statistics, per megapixel of the region (CM5, NV12, one
+/// thread: 0.19 ms for 320x200, 0.69 ms for 640x400 of a 1280x800 frame).
+pub(crate) const SOFTISP_REGION_MS_PER_MP: f32 = 2.8;
+/// The software ISP's binned overview (`SoftIsp::process_binned` by `f`): its front end on
+/// 2/`f` of the raw frame's rows, per raw megapixel at `f` 2 ...
+pub(crate) const SOFTISP_BIN_FRONT_MS_PER_RAW_MP: f32 = 0.8;
+/// ... plus its pixels (one quad each), per output megapixel ...
+pub(crate) const SOFTISP_BIN_OUT_MS_PER_MP: f32 = 1.6;
+/// ... plus the frame's statistics (16x12 zones, a 256-bin histogram, every fourth quad row),
+/// per raw megapixel. Without an overview the statistics have a pass of their own, with the
+/// front end on the quarter of the rows they read (0.37 ms per 1280x800 frame). Measured
+/// (CM5, NV12, one thread, 1280x800): binned by 2 / 4 / 8 with the statistics 1.36 / 0.82 /
+/// 0.45 ms.
+pub(crate) const SOFTISP_STATS_MS_PER_RAW_MP: f32 = 0.23;
 /// CPU the software ISP's helper threads add per frame (wake-ups, band edges, the cores
 /// sharing memory bandwidth; 4 threads at 1280x800: 0.5 ms with NV12, 1.3 ms with RGB24).
 pub(crate) const SOFTISP_THREADS_CPU_MS: f32 = 0.9;

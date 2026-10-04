@@ -95,11 +95,12 @@ pub mod controls {
     pub const AF_RANGE: ControlId = ControlId(0xF400_0026);
     /// AF speed (`Int`): 0 normal, 1 fast.
     pub const AF_SPEED: ControlId = ControlId(0xF400_0027);
-    /// Processed modes on the PiSP with the main output at the mode's size: deliver this region
-    /// of the frame at full resolution (`Rect` in frame pixels, rounded out to even pixels, at
-    /// least 16x16; zero size: the whole frame). It applies from the next frame the ISP
-    /// processes; frames carry the region they show as `FrameMeta::crop`. A second output keeps
-    /// seeing the whole frame (`NativeIspConfig::overview`).
+    /// Processed modes on the PiSP with the main output at the mode's size, or on the software
+    /// ISP at a sensor mode's size: deliver this region of the frame at full resolution
+    /// (`Rect` in frame pixels, rounded out to even pixels, at least 16x16; zero size: the
+    /// whole frame). It applies from the next frame the ISP processes; frames carry the region
+    /// they show as `FrameMeta::crop`. The overview keeps seeing the whole frame
+    /// (`NativeIspConfig::overview`). The software ISP then processes only the region.
     pub const OUTPUT_CROP: ControlId = ControlId(0xF400_0030);
 }
 
@@ -311,7 +312,7 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
     ]
     .into_iter()
     .chain(
-        (super::native_isp::isp_name(info) == "pisp")
+        matches!(super::native_isp::isp_name(info), "pisp" | "software")
             .then(|| super::native_isp::crop_meta(info))
             .flatten(),
     )

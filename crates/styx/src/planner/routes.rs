@@ -388,7 +388,7 @@ fn finish<'a>(
     // The PiSP crops the region and makes the overview from its second output: a pyramid is
     // then box-filtered from the (cropped) frames.
     let isp_region = super::region::isp_possible(backend, mode, &route, req, isp_output);
-    let pyramid_req = isp_region.then(|| super::region::software_pyramid(req));
+    let pyramid_req = isp_region.map(|_| super::region::software_pyramid(req));
     let isp_pyramid_level = add_pyramid_steps(
         backend,
         mode,
