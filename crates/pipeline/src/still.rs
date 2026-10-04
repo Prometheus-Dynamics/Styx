@@ -16,7 +16,8 @@ use styx_algo::{Params, Tuning};
 use styx_dng::color::{self, Matrix3};
 use styx_dng::{ColorCalibration, DngMetadata, Illuminant, Preview, RawImage, SampleLayout};
 use styx_softisp::{
-    CfaPattern, Demosaic, OutputBuffers, RawFormat, RawPacking, Scale, SoftIsp, YuvMatrix,
+    Arithmetic, CfaPattern, Demosaic, OutputBuffers, RawFormat, RawPacking, Scale, SoftIsp,
+    YuvMatrix,
 };
 
 use crate::controller::SensorValues;
@@ -132,8 +133,21 @@ pub fn soft_still(
     pixels: StillPixels,
     threads: usize,
 ) -> Result<Vec<u8>> {
+    soft_still_with(raw, settings, pixels, threads, Arithmetic::Auto)
+}
+
+/// [`soft_still`] with the software ISP's per-pixel `arithmetic` (`Int`, the reference, gives
+/// the same image on every CPU and build).
+pub fn soft_still_with(
+    raw: &HeldRaw,
+    settings: &IspSettings,
+    pixels: StillPixels,
+    threads: usize,
+    arithmetic: Arithmetic,
+) -> Result<Vec<u8>> {
     let format = raw.format();
     let base = styx_softisp::IspParams {
+        arithmetic,
         demosaic: Demosaic::Mhc,
         yuv: YuvMatrix::Bt601Full,
         stats: None,

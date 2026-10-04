@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use styx_core::prelude::FrameLease;
 use styx_core::queue::BoundedRx;
 
-use super::live::CaptureMetrics;
+use super::live::{CaptureMetrics, RingWindow as _};
 use super::{CaptureRetryMetrics, ExternalBackingTracker};
 use crate::capture_api::CaptureError;
 
@@ -300,8 +300,8 @@ impl CaptureMetrics {
         let isp_kind = info
             .isp
             .or_else(|| current.as_ref().and_then(|c| c.0.info.lock().ok()?.isp));
-        let captured = both(&|m| m.0.counters.frames.load(Relaxed));
-        let received = l.counters.received.load(Relaxed);
+        let captured = both(&|m| m.0.counters.rt.frames.get());
+        let received = l.counters.rt.received.get();
         let (queue, retry, last_error, external) = match l.attached.get() {
             Some(a) => (
                 a.queue.stats(),
@@ -316,8 +316,8 @@ impl CaptureMetrics {
         let drops = Drops {
             sensor_sequence_gaps: gaps,
             queue_overflow: queue.send_timeouts + queue.evictions,
-            corrupted: both(&|m| m.0.counters.corrupted.load(Relaxed)),
-            isp_skipped: both(&|m| m.0.counters.isp_skipped.load(Relaxed)),
+            corrupted: both(&|m| m.0.counters.rt.corrupted.get()),
+            isp_skipped: both(&|m| m.0.counters.rt.isp_skipped.get()),
             total: 0,
         };
         let drops = Drops {
@@ -327,10 +327,10 @@ impl CaptureMetrics {
                 + drops.isp_skipped,
             ..drops
         };
-        let intervals = if producer.0.intervals.count() > 0 {
-            producer.0.intervals.samples()
+        let intervals = if producer.0.counters.rt.intervals.count() > 0 {
+            producer.0.counters.rt.intervals.samples()
         } else {
-            l.intervals.samples()
+            l.counters.rt.intervals.samples()
         };
         let measured = (!intervals.is_empty()).then(|| {
             let mean = intervals.iter().sum::<u64>() as f64 / intervals.len() as f64;
@@ -388,13 +388,13 @@ impl CaptureMetrics {
             },
             drops,
             latency: Latency {
-                sensor_to_delivery: producer.0.delivery.window(),
-                sensor_to_receive: l.receive.window(),
+                sensor_to_delivery: producer.0.counters.rt.delivery.window(),
+                sensor_to_receive: l.counters.rt.receive.window(),
             },
             isp: isp_kind.map(|kind| IspTimes {
                 kind: kind.to_string(),
-                isp: producer.0.isp.window(),
-                processing: producer.0.processing.window(),
+                isp: producer.0.counters.rt.isp.window(),
+                processing: producer.0.counters.rt.processing.window(),
             }),
             cpu: Cpu {
                 threads: threads as u64,
@@ -419,13 +419,16 @@ impl CaptureMetrics {
                 hold: buffers.hold.window(),
             },
             consumers,
-            stills: StillMetrics {
-                requests: l.stills.requests.load(Relaxed),
-                failed: l.stills.failed.load(Relaxed),
-                shots: l.stills.shots.load(Relaxed),
-                landed: l.stills.landed.load(Relaxed),
-                missed: l.stills.missed.load(Relaxed),
-                latency: l.stills.latency.window(),
+            stills: {
+                let s = &l.counters.rt.stills;
+                StillMetrics {
+                    requests: s.requests.get(),
+                    failed: s.failed.get(),
+                    shots: s.shots.get(),
+                    landed: s.landed.get(),
+                    missed: s.missed.get(),
+                    latency: s.latency.window(),
+                }
             },
         }
     }

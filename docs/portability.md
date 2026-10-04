@@ -14,8 +14,12 @@ blocking or async, sensor descriptions compiled at build time, and a sensor fram
 allocates nothing. Steps 4-6 ([The camera runtime](#the-camera-runtime-styx-runtime)):
 `styx-runtime`, the `no_std` runtime that ties a receiver, the sensor and the frames together
 (Linux is its reference platform, at no cost), and the processing loop written once over ISP
-traits in a `no_std` pipeline core. Still missing: stills and metrics counters in the runtime,
-a bare-metal proof run of the whole loop (steps 7-8), and a port to real MCU hardware.
+traits in a `no_std` pipeline core. Steps 7-8: the still and bracket decisions in the pipeline
+core and the metrics counters in the runtime, and the proof: a firmware-like `no_std` crate
+(`examples/nostd-camera`) running `Camera` on a mock platform with the software ISP loop, 3A,
+a bracket and the counters, built for the bare-metal targets and run on the host without
+`std`, bit for bit the same as over the `std` builds ([The bare-metal proof](#the-bare-metal-proof)).
+Still missing: a port to real MCU hardware.
 
 ## What builds without `std`
 
@@ -23,8 +27,8 @@ a bare-metal proof run of the whole loop (steps 7-8), and a port to real MCU har
 
 | Crate | Without `std` | Needs `std` |
 |---|---|---|
-| `styx-runtime` | everything: the sensor side (`SensorState`, `Controls`, lens, health), `Camera<P>`, `FrameStream`, buffer leases, the sensor service; shared state is `Rc<RefCell>` | `Arc<Mutex>` shared state and `Send + Sync` handles (feature `std`, the default) |
-| `styx-pipeline` | the core: `Controller` (the 3A loop runner), `IspSettings` for the PiSP and the software ISP, statistics, the back end config builder, the processing loop (`process`: `Algorithms`, `FrameIsp`, `InlineIsp`, `SensorControls`), `SoftLoop`, stills (`dng_metadata_at`) | algorithm replay recording, raw recordings, tunings and warm starts on disk, measurements, timings, the device paths (`device`), the GPU ISP |
+| `styx-runtime` | everything: the sensor side (`SensorState`, `Controls`, lens, health), `Camera<P>`, `FrameStream`, buffer leases, the sensor service, metrics counters (`metrics`); shared state is `Rc<RefCell>` | `Arc<Mutex>` shared state and `Send + Sync` handles (feature `std`, the default) |
+| `styx-pipeline` | the core: `Controller` (the 3A loop runner), `IspSettings` for the PiSP and the software ISP, statistics, the back end config builder, the processing loop (`process`: `Algorithms`, `FrameIsp`, `InlineIsp`, `SensorControls`), `SoftLoop`, stills (`dng_metadata_at`, `soft_still`) and their decisions (`still_runner`), re-exposing recorded frames (`reexpose`) | algorithm replay recording, raw recordings, tunings and warm starts on disk, measurements, timings, the device paths (`device`), the GPU ISP |
 | `styx-hal` | everything (no `alloc` either): power sequencing, DMA memory, the receiver, the lens actuator, `BoardPins`, `StaticDma` | `Send + Sync` on `SensorStart`, the `mock` platform |
 | `styx-core-rs` | formats (`FourCc`, `MediaFormat`, layouts), plane layouts and their math (`PlaneLayout`, `plane_layout_from_dims`, `FrameAllocation`, `FrameValidationError`), plane views, frame metadata (`FrameMeta`, `NativeFrameMeta`, `FrameTiming`, `CaptureInstant`, ...), requirements (`FrameRect`, ...), controls (`ControlId`, `ControlValue`, descriptors), the SIMD row kernels | `FrameLease`, `BufferPool` and memfd / dma-buf backings, queues, transforms, `metrics`, clocks (`TimestampClock::now_ns` is `None` without std), `async` (tokio), `schema` (utoipa) |
 | `styx-algo` | every algorithm (AGC with flicker avoidance and deflicker, AWB, ALSC, CCM, contrast, denoise, black level, lux, AF), `Pipeline`, the tuning model, `Tuning::from_toml_str` / `to_toml_string`, Raspberry Pi JSON in and out, the simulator, `WarmStart` | `Tuning::load` (paths), `replay` (JSON Lines over `std::io`) |
@@ -191,6 +195,78 @@ statistics, or after it when the frame ISP made them. `PispPipeline` and `SoftLo
 `SoftPipeline` and the replay tools) run on it. A software-loop replay of a CM5 recording gives
 the same algorithm recording, image and per-frame values as before the move.
 
+### Stills and metrics counters
+
+The still and bracket decisions are platform-neutral code in the pipeline core
+(`styx_pipeline::still_runner`, `no_std`): `StillRunner<J, H>` (`J` the platform's request,
+`H` a held frame) queues requests, starts one once a frame has said what AE does, hands fixed
+and bracketed exposures to the loop through a `StillHost` (implemented for `SoftLoop`) on the
+control schedule, arms each shot for the frame its request lands on (or whatever comes
+`GIVE_UP` frames later), hands AE's controls back once every exposure is on its way, times
+requests out on the clock it is given, and ends each in a `StillOutcome`; `HeldShot::landed`
+and `fixed_exposure_gain` are the landing check and the digital gain a fixed shot is processed
+with. The Linux side keeps only the mechanics: the control-plane queue, the targets the PiSP
+pipeline's raw copy hook reads (copied only when they change), the still thread (PiSP back
+end node group 1, or the software ISP's MHC demosaic), JPEG and DNG.
+
+The metrics counters are the runtime's (`styx_runtime::metrics`, `no_std`): `Counters`
+(frames, received, drops by cause: corrupted, ISP skipped, sequence gaps with the ISP's skips
+told apart; rings of the last 128 frame intervals, capture-to-delivery and capture-to-receive
+latencies, ISP and processing times; `AaaCounters` for the latest exposure, AE/AWB state,
+colour temperature, lux, flicker and AF with its scans; `StillCounters`), relaxed atomics only,
+no allocation. 64-bit atomics come from `portable-atomic` (the same instructions as `core`'s on
+x86_64 and AArch64, a lock-based fallback on Cortex-M and 32-bit RISC-V), and so does
+`sync::Counter`, now 64-bit everywhere. `styx::metrics` feeds them from frame metadata and
+snapshots them into `CameraMetrics`; buffers held by consumers, consumers, worker CPU time and
+reconnecting captures stay in `styx`. The frame path costs the same: `metrics_top --overhead`
+270 ns per frame on the CM5 before and after.
+
+CM5 (OV9782 1280x800, native mode), `dev` 492a7eb (before) against steps 7-8 (after), built
+alike, run alternately:
+
+| | before | after |
+|---|---|---|
+| `metrics_top --overhead` (7 x 1M frames, median) | 270 ns | 270 ns |
+| Styx API NV12 30 fps (`native_isp_bench single 30 600`, 4 runs each): PiSP worker CPU per frame | 0.318-0.345 ms (median 0.334) | 0.300-0.338 ms (median 0.309) |
+| same: latency median / whole-process CPU per frame | 9.44-9.49 ms / 0.33-0.36 ms | 9.44-9.47 ms / 0.31-0.36 ms |
+| `still_capture` (PiSP): bracket of 3 | frames 84, 85, 86, landed, 333.6 ms request → ready | frames 84, 85, 86, landed, 333.5 ms |
+| same: preview meanwhile | 30.00 fps, no gaps (122 frames) | 30.00 fps, no gaps (122 frames) |
+| `metrics_top --verify`, 12 s: metrics / the consumer's own measurement | | 30.00 / 30.00 fps, 0 / 0 gaps, latency p50 9.43 / 9.43 ms, p95 10.29 / 10.29 ms |
+
+### The bare-metal proof
+
+`examples/nostd-camera` is a firmware-like `#![no_std]` crate over `styx-runtime`, the
+pipeline core, `styx-softisp`, `styx-algo`, `styx-sensor` and `styx-hal`, every one without
+`std`:
+
+* `firmware`: the camera a microcontroller runs, generic over any `Platform` whose sensor
+  side is a `SensorState`: `Camera` start and stop, frame starts served to the control
+  schedule (`serve_sync`), frames polled from the `FrameStream` with a no-op waker (a
+  superloop), the software ISP loop (`SoftLoop`, AE and AWB) with its requests on the
+  schedule, `still_runner` with the shots reprocessed inline (`soft_still_with`), the
+  runtime's `Counters`.
+* `board`: the mock platform, the part a real port replaces: a receiver that captures a raw
+  recording into its own buffers (re-exposed with what the control schedule put on each frame:
+  `styx_pipeline::reexpose`, the arithmetic `replay::VirtualSensor` uses), the OV9782 as a
+  register model on a bus, pins without roles, a board clock; the OV9782 description compiled
+  in at build time (postcard).
+
+`scripts/check-nostd.sh` builds it for `thumbv7em-none-eabihf`, `thumbv8m.main-none-eabihf`,
+`riscv32imac-unknown-none-elf` and `wasm32-unknown-unknown` and runs it on the host: 90 frames
+of a 256x192 recording, with every dependency built without `std` (`cargo test -p
+styx-nostd-camera`; no `std` feature anywhere in its tree): AE locks at frame 8 (the scene was
+recorded dark), grey world takes out the warm cast, a -1/0/+1 EV bracket requested when AE
+locks lands on three consecutive frames (13, 14, 15) with its exposures, and the counters say
+90 frames, no drops, 30.00 fps, 3 shots landed. The same run over the `std` builds
+(`--features std`: the Linux software path's arithmetic: std's float maths, run-time SIMD
+detection) gives the same trace bit for bit: every frame's sensor values, digital gain, AE
+and AWB state and colour gains, every processed image and every still. The images match with
+the software ISP's reference arithmetic (`Arithmetic::Int`, which the run asks for); with the
+default `Auto` a `std` build on an x86 host with AVX2 picks `IntPolyTone` (the tone curve as
+quadratics, within one code of the table) and the pictures differ by those codes, while a
+`no_std` build picks by its compile-time target features. Here libm's and glibc's float
+maths gave identical 3A results; in general they can differ in the last bits.
+
 ### No allocation per frame in the runtime
 
 `crates/runtime/tests/no_alloc.rs`: 300 frames on the mock platform (frame starts through the
@@ -339,6 +415,22 @@ Lemnos"); Styx depends on `lemnos-hal`, `lemnos-linux` and `lemnos-drivers-vcm`.
   is re-exported.
 - `styx-kernel`: `bus::{i2c, gpio, eh}` and `uevent` are gone (`lemnos_linux::hal::{I2cBus,
   GpioChip, GpioLine}`, `lemnos_linux::uevent`); `bus` is the sensor bridge only.
+
+## API changes with stills and metrics in the runtime (phase 2, steps 7-8)
+
+The `styx` API is unchanged (`CameraMetrics`, still requests and results as before).
+
+- `styx_runtime::metrics` (new): `Counters`, `Ring`, `FrameSample`, `AaaCounters`,
+  `AaaSample`, `AaaReading`, `AfSample`, `AfReading`, `AfStateKind`, `AfModeKind`,
+  `StillCounters`, `WINDOW`. `styx_runtime::sync::Counter` is 64-bit on every target
+  (`portable-atomic`; was 32-bit where 64-bit atomics were missing) and gains `set`.
+- `styx_pipeline::still_runner` (new): `StillRunner`, `StillHost` (implemented for
+  `SoftLoop`), `StillOrder`, `ShotExposure`, `LoopReport`, `StillOutcome`, `StillFailure`,
+  `HeldShot`, `Target`, `matches`, `split_exposure`, `fixed_exposure_gain`, `GIVE_UP`.
+- `styx_pipeline::reexpose` (new, `no_std`): `re_expose`, `exposure_ratio`, `Recorded`,
+  `unpack_row` (still re-exported as `rawrec::unpack_row`).
+- `styx_pipeline::process::sensor_values` (moved from `device`, which re-exports it);
+  `still::soft_still_with` (`soft_still` with an `Arithmetic`).
 
 ## API changes with the runtime (phase 2, steps 4-6)
 

@@ -70,17 +70,7 @@ fn hold_raw(
     })
 }
 
-/// What produced frame `sequence`, as the camera reports it.
-pub fn sensor_values(sequence: u64, c: &FrameControls) -> SensorValues {
-    SensorValues {
-        frame: sequence,
-        exposure: c.exposure,
-        analogue_gain: c.analog_gain,
-        digital_gain: c.digital_gain,
-        frame_duration: c.frame_duration,
-        verified: c.verified,
-    }
-}
+pub use crate::process::sensor_values;
 
 /// Hands a sensor request to the camera's control schedule: exposure, analogue gain and frame
 /// duration together from `r.frame` (the scheduler writes each `delay` frames earlier; what is
