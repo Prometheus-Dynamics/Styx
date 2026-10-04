@@ -36,7 +36,7 @@ pub const H_TO_12BIT: u16 = 0x3C04;
 pub fn hardware() -> bool {
     #[cfg(all(feature = "std", feature = "neon", target_arch = "aarch64"))]
     {
-        core::arch::is_aarch64_feature_detected!("fp16")
+        std::arch::is_aarch64_feature_detected!("fp16")
     }
     // Without std, no run time detection: the target's compile-time features.
     #[cfg(all(not(feature = "std"), feature = "neon", target_arch = "aarch64"))]
