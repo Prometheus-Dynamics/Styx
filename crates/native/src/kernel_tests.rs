@@ -58,7 +58,8 @@ fn a_kernel_driven_sensor_streams_with_scheduled_controls() {
     bridge.set_kernel_driver();
     let queue = FakeQueue::new(Arc::clone(&bridge), BUFFER_LEN);
     let desc = Arc::new(SensorDescription::from_subdev(&report()).unwrap());
-    let mut c: Control = SensorControl::new(SensorDriver::new(desc, MockBus::new(), NoPins));
+    let mut c: Control =
+        crate::control::sensor_control(SensorDriver::new(desc, MockBus::new(), NoPins));
     c.bring_up("1280x800", "raw10").unwrap();
     let control = Arc::new(Mutex::new(c));
     let sensor: Arc<dyn SensorSide> = control.clone();

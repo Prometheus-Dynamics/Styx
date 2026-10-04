@@ -6,7 +6,6 @@
 //! so the host tests drive it over fakes that inject faults (`fault_tests.rs`).
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use styx_kernel::FourCc;
@@ -18,7 +17,7 @@ use crate::device::{BridgeDevice, CaptureDevice};
 use crate::embedded::EmbeddedCapture;
 use crate::error::{KernelContext, NativeError, Result, io_errno};
 use crate::events::{EventSources, EventThread};
-use crate::health::{Fault, Health};
+use crate::health::{Health, fault_error};
 use crate::stream::{FrameStream, SensorSide, StreamShared};
 
 /// How long shutting down waits for the bridge to become idle so it can be switched off
@@ -368,12 +367,7 @@ impl Session {
 
     /// Frame starts and acknowledgements seen by the event thread of the running stream.
     pub(crate) fn event_counts(&self) -> Option<(u64, u64)> {
-        self.health().map(|h| {
-            (
-                h.frame_syncs.load(Ordering::Relaxed),
-                h.acks.load(Ordering::Relaxed),
-            )
-        })
+        self.health().map(|h| (h.frame_syncs.get(), h.acks.get()))
     }
 }
 
@@ -386,7 +380,7 @@ impl Drop for Session {
 /// An error during start, with a disconnect seen by the event thread taking precedence.
 fn started_error(e: NativeError, health: &Health) -> NativeError {
     match health.fault() {
-        Some(f @ Fault::Disconnected(_)) => f.to_error(),
+        Some(f) if f.is_disconnect() => fault_error(&f),
         _ => e,
     }
 }
@@ -401,8 +395,10 @@ fn kernel_start_error(why: String) -> NativeError {
 
 /// Why `STREAMON` failed, as clearly as the parts know it.
 fn stream_on_error(e: std::io::Error, health: &Health) -> NativeError {
-    if let Some(f @ Fault::Disconnected(_)) = health.fault() {
-        return f.to_error();
+    if let Some(f) = health.fault()
+        && f.is_disconnect()
+    {
+        return fault_error(&f);
     }
     let errno = io_errno(&e);
     let what = match (errno, health.serve_error()) {

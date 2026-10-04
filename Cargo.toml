@@ -9,6 +9,7 @@ members = [
     "crates/kernel",
     "crates/sensor",
     "crates/hal",
+    "crates/runtime",
     "crates/graph",
     "crates/pisp",
     "crates/algo",
@@ -53,6 +54,7 @@ styx-v4l2 = { path = "crates/v4l2", version = "2.0.0" }
 styx-kernel = { path = "crates/kernel", version = "2.0.0" }
 styx-sensor = { path = "crates/sensor", version = "2.0.0" }
 styx-hal = { path = "crates/hal", version = "2.0.0" }
+styx-runtime = { path = "crates/runtime", version = "2.0.0" }
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 # Compact binary sensor descriptions for targets without a TOML parser (styx-sensor `build`).

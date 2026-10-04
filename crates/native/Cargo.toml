@@ -13,6 +13,7 @@ futures-core.workspace = true
 libc.workspace = true
 styx-graph.workspace = true
 styx-kernel.workspace = true
+styx-runtime.workspace = true
 styx-sensor.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 

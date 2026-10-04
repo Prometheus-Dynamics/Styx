@@ -336,7 +336,7 @@ impl NativeCamera {
         // without a subscriber.
         bridge.subscribe().step("subscribe to bridge events")?;
         let driver = SensorDriver::new(desc, SensorBus::I2c(regbus), pins);
-        let control = Arc::new(Mutex::new(SensorControl::new(driver)));
+        let control = Arc::new(Mutex::new(crate::control::sensor_control(driver)));
         crate::lens::attach(&info, &control);
         let sensor: Arc<dyn SensorSide> = control.clone();
         let session = Session::new(

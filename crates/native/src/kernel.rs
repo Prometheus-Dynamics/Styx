@@ -34,7 +34,7 @@ use styx_sensor::{
 };
 
 use crate::camera::{CameraOptions, NativeCamera, StreamSettings, select_mode};
-use crate::control::{SensorControl, lock};
+use crate::control::lock;
 use crate::discover::{CameraInfo, query_raw_formats};
 use crate::error::{KernelContext, NativeError, Result};
 use crate::library::SensorLibrary;
@@ -379,7 +379,7 @@ impl NativeCamera {
             styx_sensor::RegisterBus::set_controls(&mut bus, &flips).step("set the flips")?;
         }
         let driver = SensorDriver::new(desc, SensorBus::Kernel(bus), CameraPins::None(NoPins));
-        let control = Arc::new(Mutex::new(SensorControl::new(driver)));
+        let control = Arc::new(Mutex::new(crate::control::sensor_control(driver)));
         crate::lens::attach(&info, &control);
         let sensor: Arc<dyn SensorSide> = control.clone();
         let bridge = Arc::new(KernelBridge::new().step("kernel sensor events")?);

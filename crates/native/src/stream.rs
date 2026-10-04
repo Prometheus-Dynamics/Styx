@@ -14,15 +14,16 @@ use styx_graph::rt;
 use styx_kernel::FourCc;
 use styx_kernel::bus::StreamRequest;
 use styx_kernel::v4l2::BufferFlags;
-use styx_sensor::{DriverState, RegisterBus, SensorPins};
+use styx_runtime::styx_hal::ErrorKind;
+use styx_sensor::{RegisterBus, SensorPins};
 
 use crate::buffers::{FrameHead, Lender, NativeFrame};
-use crate::control::{FrameControls, SensorControl, lock};
+use crate::control::{BridgeServe, FrameControls, SensorControl, lock};
 use crate::device::CaptureDevice;
 use crate::embedded::EmbeddedCapture;
 use crate::error::{KernelContext, NativeError, Result};
 use crate::events::FrameNotify;
-use crate::health::{Fault, Health};
+use crate::health::{Fault, Health, fault_error};
 
 /// What the stream and the event thread need from the sensor side, without its bus types.
 pub(crate) trait SensorSide: Send + Sync {
@@ -51,7 +52,7 @@ where
     P: SensorPins + Send,
 {
     fn serve(&self, req: &StreamRequest) -> std::result::Result<(), (i32, String)> {
-        lock(self).serve_detailed(req)
+        BridgeServe::serve_detailed(&mut *lock(self), req)
     }
 
     fn start_streaming(&self) -> std::result::Result<(), String> {
@@ -78,14 +79,11 @@ where
     }
 
     fn standby(&self) {
-        let mut c = lock(self);
-        if c.driver().state() == DriverState::Streaming {
-            let _ = c.driver_mut().stop_streaming();
-        }
+        lock(self).standby();
     }
 
     fn shut_down(&self) -> Result<()> {
-        lock(self).shut_down()
+        Ok(lock(self).shut_down()?)
     }
 }
 
@@ -184,7 +182,7 @@ impl StreamShared {
         if !self.frame_sync {
             return true;
         }
-        let syncs = self.health.frame_syncs.load(Ordering::Relaxed);
+        let syncs = self.health.frame_syncs.get();
         if self.syncs_seen.swap(syncs, Ordering::Relaxed) != syncs {
             self.frames_without_sync.store(0, Ordering::Relaxed);
             self.sync_fallback.store(false, Ordering::Relaxed);
@@ -221,10 +219,11 @@ impl StreamShared {
             self.errors.fetch_add(1, Ordering::Relaxed);
             let n = self.consecutive_errors.fetch_add(1, Ordering::Relaxed) + 1;
             if self.max_error_frames > 0 && n >= self.max_error_frames {
-                self.health.fail(Fault::Kernel {
-                    what: format!("the receiver flagged {n} frames in a row as corrupted"),
-                    errno: Some(libc::EIO),
-                });
+                self.health.fail(Fault::new(
+                    ErrorKind::Corrupt,
+                    format!("the receiver flagged {n} frames in a row as corrupted"),
+                    Some(libc::EIO),
+                ));
             }
         } else {
             self.consecutive_errors.store(0, Ordering::Relaxed);
@@ -255,10 +254,10 @@ impl StreamShared {
 
     fn fault(&self) -> Option<NativeError> {
         let f = self.health.fault()?;
-        if matches!(f, Fault::Disconnected(_)) {
+        if f.is_disconnect() {
             self.disconnected.store(true, Ordering::Release);
         }
-        Some(f.to_error())
+        Some(fault_error(&f))
     }
 
     /// The next frame, `None` once the stream stopped, or `Pending` with `cx`'s waker

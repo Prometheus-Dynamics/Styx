@@ -1,0 +1,28 @@
+[package]
+name = "styx-runtime"
+version.workspace = true
+edition.workspace = true
+description = "The portable Styx camera runtime, no_std + alloc: sensor bring-up sequencing, frame-exact controls, lens and health over styx-hal and the styx-sensor driver."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+# Shared state behind `Arc<Mutex>` (else `Rc<RefCell>`: a microcontroller camera lives in one
+# task), `Send + Sync` handles, `std::io` conversions in the sensor crate.
+std = ["styx-sensor/std", "styx-hal/std", "thiserror/std"]
+
+[dependencies]
+# Path dependencies without default features (the workspace entries keep theirs for the std
+# crates), as examples/nostd-smoke does.
+styx-hal = { path = "../hal", version = "2.0.0" }
+styx-sensor = { path = "../sensor", version = "2.0.0", default-features = false }
+thiserror.workspace = true
+
+[dev-dependencies]
+styx-sensor = { path = "../sensor", version = "2.0.0" }
+
+[lints]
+workspace = true

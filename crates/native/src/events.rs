@@ -34,7 +34,7 @@ use styx_kernel::{Wait, poll};
 use crate::control::lock;
 use crate::device::{BridgeDevice, CaptureDevice};
 use crate::embedded::EmbeddedCapture;
-use crate::health::{Fault, Health};
+use crate::health::{Fault, Health, fault_from_io};
 use crate::stream::SensorSide;
 
 /// `STYX_NATIVE_DEBUG=1`: trace the event thread on stderr.
@@ -231,7 +231,7 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
         let req = match s.bridge.try_next_request() {
             Ok(Some(req)) => req,
             Ok(None) => return Ok(()),
-            Err(e) => return Err(Fault::from_io("bridge stream request", &e)),
+            Err(e) => return Err(fault_from_io("bridge stream request", &e)),
         };
         trace!("request {:?} seq {} dequeued", req.action, req.sequence);
         let result = s.sensor.serve(&req).map_err(|(errno, why)| {
@@ -246,7 +246,7 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
         );
         match acked {
             Ok(()) => {
-                s.health.acks.fetch_add(1, Ordering::Relaxed);
+                s.health.acks.incr();
             }
             Err(e) if crate::error::io_errno(&e) == Some(libc::ESTALE) => {
                 // The bridge stopped waiting (timed out, or the start was abandoned): the
@@ -254,9 +254,9 @@ fn serve_requests(s: &EventSources) -> Result<(), Fault> {
                 if req.action == StreamAction::Start && result.is_ok() {
                     s.sensor.standby();
                 }
-                s.health.late_acks.fetch_add(1, Ordering::Relaxed);
+                s.health.late_acks.incr();
             }
-            Err(e) => return Err(Fault::from_io("acknowledging a bridge request", &e)),
+            Err(e) => return Err(fault_from_io("acknowledging a bridge request", &e)),
         }
     }
 }
@@ -277,7 +277,7 @@ pub(crate) fn drain_frame_starts(
         match video.dequeue_event() {
             Ok(Some(ev)) => {
                 if let EventKind::FrameSync { frame_sequence } = ev.kind {
-                    health.frame_syncs.fetch_add(1, Ordering::Relaxed);
+                    health.frame_syncs.incr();
                     health.control_write(
                         sensor.frame_start(u64::from(frame_sequence), Some(ev.timestamp)),
                     );
@@ -286,10 +286,8 @@ pub(crate) fn drain_frame_starts(
             Ok(None) => return Ok(()),
             // Other errors (a queue that is not streaming) are left to the frame stream.
             Err(e) => {
-                return match Fault::from_io("frame-start event", &e) {
-                    f @ Fault::Disconnected(_) => Err(f),
-                    _ => Ok(()),
-                };
+                let f = fault_from_io("frame-start event", &e);
+                return if f.is_disconnect() { Err(f) } else { Ok(()) };
             }
         }
     }
@@ -366,7 +364,7 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
         let ready = match ready {
             Ok(r) => r,
             Err(e) => {
-                fail(Fault::from_io("waiting for events", &e.into()));
+                fail(fault_from_io("waiting for events", &e.into()));
                 return;
             }
         };
@@ -379,7 +377,7 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
             // A request may still be pending next to the error; then the bridge is gone.
             let fault = serve_requests(s)
                 .err()
-                .unwrap_or_else(|| Fault::Disconnected("the sensor bridge went away".into()));
+                .unwrap_or_else(|| Fault::disconnected("the sensor bridge went away"));
             fail(fault);
             return;
         }
@@ -389,7 +387,7 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
         let e = ready.get(3).copied().unwrap_or_default();
         if v.hangup || e.hangup {
             // Keep serving the bridge: the receiver's stop request follows.
-            fail(Fault::Disconnected("the capture node went away".into()));
+            fail(Fault::disconnected("the capture node went away"));
             video_gone = true;
             continue;
         }
