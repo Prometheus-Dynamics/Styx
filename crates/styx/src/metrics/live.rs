@@ -184,8 +184,8 @@ impl std::fmt::Debug for CaptureMetrics {
 }
 
 impl CaptureMetrics {
-    /// For a backend that counts sequence gaps itself (into `gaps`, V4L2 and libcamera).
-    #[cfg_attr(not(any(feature = "v4l2", feature = "libcamera")), allow(dead_code))]
+    /// For a backend that counts sequence gaps itself (into `gaps`; the V4L2 backend).
+    #[cfg_attr(not(feature = "v4l2"), allow(dead_code))]
     pub(crate) fn with_sequence_gaps(gaps: Arc<AtomicU64>) -> Self {
         let mut m = Self::default();
         let live = Arc::get_mut(&mut m.0).expect("new");
