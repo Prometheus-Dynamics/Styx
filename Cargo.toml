@@ -56,6 +56,9 @@ styx-sensor = { path = "crates/sensor", version = "2.0.0" }
 styx-hal = { path = "crates/hal", version = "2.0.0" }
 styx-runtime = { path = "crates/runtime", version = "2.0.0" }
 embedded-hal = "1.0"
+# 64-bit atomics everywhere: native where the target has them (x86_64, aarch64: the same
+# instructions as core's), a lock-based fallback where it does not (Cortex-M, RISC-V 32).
+portable-atomic = { version = "1.13", default-features = false, features = ["fallback"] }
 embedded-hal-async = "1.0"
 # Lemnos 2.0: the hardware foundation under Styx (generic buses, pins, power, hotplug;
 # docs/portability-design.md). A pinned commit of Lemnos `dev` until 2.0 is on crates.io. To build

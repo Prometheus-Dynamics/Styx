@@ -24,6 +24,8 @@ styx-v4l2 = { workspace = true, optional = true }
 styx-native = { workspace = true, optional = true }
 styx-uvc = { workspace = true, optional = true }
 styx-pipeline = { workspace = true, optional = true, features = ["device"] }
+# Metrics counters (and, with `native`, the camera runtime).
+styx-runtime.workspace = true
 styx-pisp = { workspace = true, optional = true, features = ["device"] }
 styx-softisp = { workspace = true, optional = true }
 styx-dng = { workspace = true, optional = true }
