@@ -167,6 +167,7 @@ mod embedded;
 mod error;
 mod fallback;
 mod fixed;
+mod frame_map;
 mod gain;
 mod kernel_data;
 pub mod lens;
@@ -200,7 +201,8 @@ pub use lens::{LensDescription, LensFrame, LensMotion, LensSchedule, VcmChip, Vc
 pub use mbus::{ColorFilter, MbusCode};
 pub use registers::{I2cRegisters, MAX_BURST, SpiRegisters};
 pub use schedule::{
-    Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Mismatch,
+    Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Landings,
+    Mismatch, Mismatches,
 };
 /// The camera hardware traits (`styx-hal`): power sequencing ([`SensorPins`],
 /// [`AsyncSensorPins`]), the [`Blocking`] adapter, and the embedded-hal crates it speaks.

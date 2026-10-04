@@ -16,7 +16,6 @@ use ::core::task::{Context, Poll, Waker};
 use ::core::time::Duration;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use styx_hal::{Blocking, SensorPins};
 
@@ -28,7 +27,7 @@ use crate::bus::RegisterBus;
 use crate::desc::SensorDescription;
 use crate::error::Result;
 use crate::mbus::{ColorFilter, MbusCode};
-use crate::schedule::{Applied, ControlScheduler, ControlSet, IssueBatch, Landing, Mismatch};
+use crate::schedule::{Applied, ControlScheduler, ControlSet, IssueBatch, Landings, Mismatches};
 use crate::timing::Timing;
 
 /// Power and streaming state.
@@ -150,18 +149,18 @@ macro_rules! common_methods {
 
         /// Ask for typed values from frame `frame`. Returns where each lands. Nothing is
         /// written now: the writes go out at the frame starts that make them land.
-        pub fn request(&mut self, frame: u64, req: &ControlRequest) -> Result<Vec<Landing>> {
+        pub fn request(&mut self, frame: u64, req: &ControlRequest) -> Result<Landings> {
             let set = self.core.codes_for(frame, req)?;
             self.core.request_codes(frame, &set)
         }
 
         /// Ask for raw codes from frame `frame`.
-        pub fn request_codes(&mut self, frame: u64, set: &ControlSet) -> Result<Vec<Landing>> {
+        pub fn request_codes(&mut self, frame: u64, set: &ControlSet) -> Result<Landings> {
             self.core.request_codes(frame, set)
         }
 
         /// Record codes read back for a frame (e.g. from embedded data).
-        pub fn report(&mut self, frame: u64, codes: &ControlSet) -> Result<Vec<Mismatch>> {
+        pub fn report(&mut self, frame: u64, codes: &ControlSet) -> Result<Mismatches> {
             self.core.report(frame, codes)
         }
 
@@ -278,7 +277,7 @@ impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
     /// now instead of at the next frame start (see [`ControlScheduler::request_now`]): the
     /// caller must know the current frame has not ended yet. Before streaming, values for frame
     /// 0 are written at once rather than with the stream-on sequence.
-    pub fn request_now(&mut self, frame: u64, req: &ControlRequest) -> Result<Vec<Landing>> {
+    pub fn request_now(&mut self, frame: u64, req: &ControlRequest) -> Result<Landings> {
         complete(self.core.request_now(frame, req))
     }
 

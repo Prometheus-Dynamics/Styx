@@ -19,7 +19,7 @@ use crate::fallback::{KernelControl, KernelControls, kernel_controls};
 use crate::gain::split_gain;
 use crate::mbus::ColorFilter;
 use crate::schedule::{
-    Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Mismatch,
+    Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landings, Mismatches,
 };
 use crate::timing::Timing;
 
@@ -121,7 +121,7 @@ impl<B, P> DriverCore<B, P> {
         Ok(set)
     }
 
-    pub(crate) fn request_codes(&mut self, frame: u64, set: &ControlSet) -> Result<Vec<Landing>> {
+    pub(crate) fn request_codes(&mut self, frame: u64, set: &ControlSet) -> Result<Landings> {
         let sched = self
             .scheduler
             .as_mut()
@@ -129,7 +129,7 @@ impl<B, P> DriverCore<B, P> {
         Ok(sched.request(frame, set))
     }
 
-    pub(crate) fn report(&mut self, frame: u64, codes: &ControlSet) -> Result<Vec<Mismatch>> {
+    pub(crate) fn report(&mut self, frame: u64, codes: &ControlSet) -> Result<Mismatches> {
         Ok(self
             .scheduler
             .as_mut()
@@ -601,8 +601,9 @@ impl<B: AsyncRegisterBus, P: AsyncSensorPins> DriverCore<B, P> {
         let desc = Arc::clone(&self.desc);
         self.run(&desc.sequences.stream_off).await?;
         self.state = DriverState::Powered;
-        if let Some(old) = self.scheduler.take() {
-            let latest = old.predicted(u64::MAX);
+        // The old schedule's last values (not the ~9 KiB schedule) are kept across the write.
+        let latest = self.scheduler.take().map(|old| old.predicted(u64::MAX));
+        if let Some(latest) = latest {
             self.write_controls(&latest, false).await?;
             self.scheduler = Some(new_scheduler(&desc, latest));
         }
@@ -613,7 +614,7 @@ impl<B: AsyncRegisterBus, P: AsyncSensorPins> DriverCore<B, P> {
         &mut self,
         frame: u64,
         req: &ControlRequest,
-    ) -> Result<Vec<Landing>> {
+    ) -> Result<Landings> {
         let set = self.codes_for(frame, req)?;
         let (landings, batch) = self
             .scheduler

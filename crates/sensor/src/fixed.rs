@@ -31,6 +31,19 @@ impl<T: Copy + Default, const N: usize> FixedVec<T, N> {
         Ok(())
     }
 
+    /// Removes and returns the value at `index`, shifting the later ones down.
+    ///
+    /// # Panics
+    ///
+    /// When `index` is out of bounds.
+    pub fn remove(&mut self, index: usize) -> T {
+        assert!(index < self.len, "FixedVec::remove index out of bounds");
+        let v = self.items[index];
+        self.items.copy_within(index + 1..self.len, index);
+        self.len -= 1;
+        v
+    }
+
     /// The capacity.
     pub const fn capacity(&self) -> usize {
         N

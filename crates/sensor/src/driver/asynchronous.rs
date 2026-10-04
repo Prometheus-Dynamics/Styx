@@ -1,7 +1,6 @@
 //! The driver over async buses.
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use styx_hal::AsyncSensorPins;
 
@@ -13,7 +12,7 @@ use crate::bus::RegisterBus;
 use crate::desc::SensorDescription;
 use crate::error::Result;
 use crate::mbus::ColorFilter;
-use crate::schedule::{ControlScheduler, ControlSet, IssueBatch, Landing, Mismatch};
+use crate::schedule::{ControlScheduler, ControlSet, IssueBatch, Landings, Mismatches};
 use crate::timing::Timing;
 
 /// [`SensorDriver`](super::SensorDriver) over an async register bus and pins (an
@@ -114,7 +113,7 @@ impl<B: AsyncRegisterBus, P: AsyncSensorPins> AsyncSensorDriver<B, P> {
     }
 
     /// See [`SensorDriver::request_now`](super::SensorDriver::request_now).
-    pub async fn request_now(&mut self, frame: u64, req: &ControlRequest) -> Result<Vec<Landing>> {
+    pub async fn request_now(&mut self, frame: u64, req: &ControlRequest) -> Result<Landings> {
         self.core.request_now(frame, req).await
     }
 

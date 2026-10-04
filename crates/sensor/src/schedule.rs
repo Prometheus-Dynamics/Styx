@@ -20,10 +20,9 @@
 //! in lines. Exposures are clamped at issue time to the frame length predicted for the frame
 //! they land on.
 
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
-
 use crate::desc::Delays;
+use crate::fixed::FixedVec;
+use crate::frame_map::FrameMap;
 
 /// A scheduled control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
@@ -100,7 +99,7 @@ impl ControlSet {
 }
 
 /// Where a requested value is predicted to land.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Landing {
     /// The control.
     pub control: Control,
@@ -151,7 +150,7 @@ pub struct Applied {
 }
 
 /// A reported value that differs from the prediction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Mismatch {
     /// The frame.
     pub frame: u64,
@@ -174,20 +173,37 @@ pub struct ExposureLimit {
     pub fraction_bits: u8,
 }
 
+/// Where the values of one request land: one entry per control set, at most four.
+pub type Landings = FixedVec<Landing, 4>;
+
+/// Reported values that differ from the prediction: at most one per control.
+pub type Mismatches = FixedVec<Mismatch, 4>;
+
 /// Frames of history kept for [`ControlScheduler::applied`].
 pub const HISTORY_FRAMES: u64 = 64;
 
+/// Requests per control waiting for their frame (requests for distinct frames not issued yet;
+/// a full queue drops its oldest request, [`ControlScheduler::dropped_requests`]).
+pub const PENDING_REQUESTS: usize = 16;
+
+/// Issued values and reports kept per control: [`HISTORY_FRAMES`] plus room for values issued
+/// ahead (control delays) and the value in effect before the history.
+const HISTORY_SLOTS: usize = HISTORY_FRAMES as usize + 32;
+
 /// The control scheduler. See the [module documentation](self).
+///
+/// It does not allocate: requests, issued values and reports live in fixed rings sorted by
+/// frame (about 9 KiB), so the frame path runs without a heap once streaming.
 #[derive(Debug, Clone)]
 pub struct ControlScheduler {
     delays: [u32; 4],
     limit: Option<ExposureLimit>,
     started: Option<u64>,
     /// Per control: requested frame -> value, not yet issued.
-    pending: [BTreeMap<u64, u32>; 4],
+    pending: [FrameMap<u32, PENDING_REQUESTS>; 4],
     /// Per control: first frame -> value, issued.
-    committed: [BTreeMap<u64, u32>; 4],
-    reported: BTreeMap<u64, ControlSet>,
+    committed: [FrameMap<u32, HISTORY_SLOTS>; 4],
+    reported: FrameMap<ControlSet, HISTORY_SLOTS>,
 }
 
 impl ControlScheduler {
@@ -204,7 +220,7 @@ impl ControlScheduler {
             started: None,
             pending: Default::default(),
             committed: Default::default(),
-            reported: BTreeMap::new(),
+            reported: FrameMap::default(),
         };
         for (c, v) in initial.iter() {
             s.committed[c.index()].insert(0, v);
@@ -233,6 +249,13 @@ impl ControlScheduler {
         self.started
     }
 
+    /// Requests dropped because a control had [`PENDING_REQUESTS`] requests for later frames
+    /// waiting (the oldest goes). Zero in normal use: requests are issued at most a few frames
+    /// ahead.
+    pub fn dropped_requests(&self) -> u64 {
+        self.pending.iter().map(FrameMap::dropped).sum()
+    }
+
     /// Whether requested values wait for a later frame start to be written (a caller that
     /// drives frame starts itself must then wait for them).
     pub fn has_pending(&self) -> bool {
@@ -252,7 +275,7 @@ impl ControlScheduler {
 
     /// Ask for values to be in effect from frame `frame`. Returns where each value is predicted
     /// to land. A later request for the same control and frame replaces an earlier one.
-    pub fn request(&mut self, frame: u64, controls: &ControlSet) -> Vec<Landing> {
+    pub fn request(&mut self, frame: u64, controls: &ControlSet) -> Landings {
         controls
             .iter()
             .map(|(c, v)| {
@@ -283,7 +306,7 @@ impl ControlScheduler {
     /// one). Values then land `delay` frames after the current frame, so a request for
     /// `current + delay` is on time. Before streaming this is [`Self::issue_now`] after the
     /// request.
-    pub fn request_now(&mut self, frame: u64, controls: &ControlSet) -> (Vec<Landing>, IssueBatch) {
+    pub fn request_now(&mut self, frame: u64, controls: &ControlSet) -> (Landings, IssueBatch) {
         for (c, v) in controls.iter() {
             self.pending[c.index()].insert(frame, v);
         }
@@ -326,11 +349,9 @@ impl ControlScheduler {
                 None if d == 0 => continue,
                 None => d - 1,
             };
-            let later = self.pending[i].split_off(&(due_limit + 1));
-            let due = core::mem::replace(&mut self.pending[i], later);
             // Of several due values the one for the latest frame wins; the others would land on
             // the same frame and be overwritten.
-            let Some((_, mut value)) = due.into_iter().next_back() else {
+            let Some(mut value) = self.pending[i].take_up_to(due_limit) else {
                 continue;
             };
             let lands = at.map_or(0, |s| s + d);
@@ -363,17 +384,16 @@ impl ControlScheduler {
         // issued value beats a report (the write is assumed to have landed after it was read
         // back), and a pending request beats both.
         let committed = self.committed[i]
-            .range(..=frame)
-            .next_back()
-            .map(|(f, v)| (*f, 1, *v));
+            .last_at_or_before(frame)
+            .map(|(f, v)| (f, 1, v));
         let reported = self
             .reported
-            .range(..=frame)
+            .up_to(frame)
             .rev()
-            .find_map(|(f, set)| set.get(c).map(|v| (*f, 0, v)));
+            .find_map(|(f, set)| set.get(c).map(|v| (f, 0, v)));
         let pending = self.pending[i]
             .iter()
-            .map(|(t, v)| (self.landing(c, *t), *t, *v))
+            .map(|(t, v)| (self.landing(c, t), t, *v))
             .filter(|(l, _, _)| *l <= frame)
             .max_by_key(|(l, t, _)| (*l, *t))
             .map(|(l, _, v)| (l, 2, v));
@@ -398,12 +418,13 @@ impl ControlScheduler {
     /// Record values read back for a frame (e.g. from embedded data). Returns the values that
     /// differ from the prediction. A reported value also predicts later frames until a value
     /// issued to land after the reported frame takes over.
-    pub fn report(&mut self, frame: u64, values: &ControlSet) -> Vec<Mismatch> {
-        let mut mismatches = Vec::new();
+    pub fn report(&mut self, frame: u64, values: &ControlSet) -> Mismatches {
+        let mut mismatches = Mismatches::new();
         for (c, v) in values.iter() {
             let predicted = self.predicted_value(c, frame);
             if predicted != Some(v) {
-                mismatches.push(Mismatch {
+                // At most one per control: never full.
+                let _ = mismatches.push(Mismatch {
                     frame,
                     control: c,
                     predicted,
@@ -411,7 +432,7 @@ impl ControlScheduler {
                 });
             }
         }
-        let entry = self.reported.entry(frame).or_default();
+        let entry = self.reported.entry(frame);
         for (c, v) in values.iter() {
             entry.set(c, v);
         }
@@ -420,7 +441,7 @@ impl ControlScheduler {
 
     /// The values that produced a frame: reported where available, predicted otherwise.
     pub fn applied(&self, frame: u64) -> Applied {
-        let reported = self.reported.get(&frame).copied().unwrap_or_default();
+        let reported = self.reported.get(frame).copied().unwrap_or_default();
         let mut values = self.predicted(frame);
         for (c, v) in reported.iter() {
             values.set(c, v);
@@ -435,16 +456,15 @@ impl ControlScheduler {
     /// Forget history before `frame` (the value in effect at `frame` is kept).
     pub fn prune(&mut self, frame: u64) {
         for map in &mut self.committed {
-            let keep = map.split_off(&frame);
-            if let Some((_, v)) = map.iter().next_back() {
-                let v = *v;
-                *map = keep;
-                map.entry(frame).or_insert(v);
-            } else {
-                *map = keep;
+            let in_effect = map.last_at_or_before(frame);
+            map.remove_before(frame);
+            if let Some((_, v)) = in_effect
+                && map.get(frame).is_none()
+            {
+                map.insert(frame, v);
             }
         }
-        self.reported = self.reported.split_off(&frame);
+        self.reported.remove_before(frame);
     }
 }
 
