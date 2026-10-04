@@ -1,6 +1,8 @@
 //! DNG opcode lists (`OpcodeList1/2/3`, always big-endian) and the `GainMap` opcode, which
 //! carries lens shading: a grid of gains over the image, per CFA channel.
 
+use alloc::vec::Vec;
+
 use crate::raw::CfaPattern;
 use crate::{Result, malformed};
 

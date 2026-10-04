@@ -1,6 +1,10 @@
 //! TIFF reading: either byte order, IFD entries decoded on demand, every offset and count
 //! checked against the file.
 
+use alloc::string::ToString;
+
+use alloc::{format, string::String, vec::Vec};
+
 use crate::tiff::kind;
 use crate::{Result, malformed};
 

@@ -30,8 +30,8 @@ crossbeam-queue.workspace = true
 smallvec.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"], optional = true }
 parking_lot.workspace = true
-thiserror.workspace = true
-serde = { workspace = true, features = ["derive"], optional = true }
+thiserror = { workspace = true, features = ["std"] }
+serde = { workspace = true, features = ["derive", "std"], optional = true }
 utoipa = { workspace = true, optional = true }
 tracing.workspace = true
 libc.workspace = true

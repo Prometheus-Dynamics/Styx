@@ -14,13 +14,13 @@ default = []
 mcap = ["dep:styx"]
 
 [dependencies]
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "std"] }
 serde_json.workspace = true
 styx-algo.workspace = true
 styx-dng.workspace = true
 styx-pipeline.workspace = true
 styx-softisp.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 toml = "1.1"
 styx = { workspace = true, optional = true, features = ["replay-mcap"] }
 

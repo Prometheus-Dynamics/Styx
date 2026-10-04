@@ -19,7 +19,7 @@ path = "src/lib.rs"
 styx-core.workspace = true
 styx-capture.workspace = true
 styx-softisp = { workspace = true, optional = true }
-thiserror.workspace = true
+thiserror = { workspace = true, features = ["std"] }
 jpeg-decoder = { workspace = true, optional = true }
 zune-jpeg = { workspace = true, optional = true }
 zune-core = { workspace = true, optional = true }
@@ -32,7 +32,7 @@ yuvutils-rs = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 parking_lot.workspace = true
-serde = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, features = ["derive", "std"], optional = true }
 utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]

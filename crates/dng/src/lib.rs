@@ -38,8 +38,15 @@
 //! interpolate for the shot's light, which they find from `AsShotNeutral` (`1 / g`).
 //! [`color::ccm_from_color_matrix`] goes back from a `ColorMatrix` to the CCM and neutral.
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+use alloc::string::String;
+
 pub mod color;
 pub mod ljpeg;
+mod math;
 pub mod opcode;
 mod raw;
 mod reader;
@@ -66,12 +73,13 @@ pub enum DngError {
     #[error("unsupported: {0}")]
     Unsupported(String),
     /// Writing failed.
+    #[cfg(feature = "std")]
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
 
 /// Shorthand for results of this crate.
-pub type Result<T> = std::result::Result<T, DngError>;
+pub type Result<T> = core::result::Result<T, DngError>;
 
 pub(crate) fn invalid(msg: impl Into<String>) -> DngError {
     DngError::Invalid(msg.into())

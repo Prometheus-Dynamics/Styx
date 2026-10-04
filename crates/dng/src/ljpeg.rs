@@ -1,6 +1,8 @@
 //! Lossless JPEG (ITU T.81 process 14, `SOF3`) decoding, as DNG files from cameras and from
 //! Adobe's converter compress their raw tiles (`Compression` = 7).
 
+use alloc::{format, string::String, vec, vec::Vec};
+
 use crate::{DngError, Result};
 
 fn err(msg: impl Into<String>) -> DngError {

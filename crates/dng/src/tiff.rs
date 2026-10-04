@@ -4,7 +4,11 @@
 //! Layout: header, then every IFD in tree order (each followed by the values that do not fit
 //! in its entries), then the image strips. Offsets are computed before anything is written.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::{string::String, vec, vec::Vec};
+
+#[cfg(not(feature = "std"))]
+use crate::math::Float as _;
 
 /// TIFF field types.
 pub(crate) mod kind {

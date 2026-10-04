@@ -10,8 +10,15 @@ rust-version.workspace = true
 keywords = ["dng", "raw", "camera", "tiff"]
 categories = ["multimedia::images"]
 
+[features]
+default = ["std"]
+# `std::io::Error` in `DngError`, float maths from std. Without it the crate is `no_std` +
+# `alloc` (floats through `libm`); docs/portability.md.
+std = ["thiserror/std"]
+
 [dependencies]
 thiserror.workspace = true
+libm.workspace = true
 
 [lints]
 workspace = true

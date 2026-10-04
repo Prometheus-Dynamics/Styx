@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 styx-core.workspace = true
 smallvec.workspace = true
-serde = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, features = ["derive", "std"], optional = true }
 utoipa = { workspace = true, optional = true }
 
 [features]

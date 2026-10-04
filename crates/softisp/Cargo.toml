@@ -12,8 +12,8 @@ rust-version.workspace = true
 
 [dependencies]
 styx-core.workspace = true
-serde = { workspace = true, features = ["derive"] }
-thiserror.workspace = true
+serde = { workspace = true, features = ["derive", "std"] }
+thiserror = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 criterion.workspace = true
