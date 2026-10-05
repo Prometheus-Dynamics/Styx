@@ -535,7 +535,7 @@ fn log_start_retry(
     retry_action: &'static str,
     err: &CaptureError,
 ) {
-    tracing::warn!(
+    crate::trace::warn!(
         ?backend,
         attempt,
         max_attempts,

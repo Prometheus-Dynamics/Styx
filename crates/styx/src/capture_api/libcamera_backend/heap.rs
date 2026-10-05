@@ -125,7 +125,7 @@ pub(super) fn allocate_stream_buffers(
         Ok(buffers) => {
             drop(allocated);
             if let Err(err) = alloc.free(stream) {
-                tracing::debug!(backend = "libcamera", error = %err, "libcamera allocator free failed");
+                crate::trace::debug!(backend = "libcamera", error = %err, "libcamera allocator free failed");
             }
             Ok(StreamBuffers {
                 buffers,
@@ -133,7 +133,7 @@ pub(super) fn allocate_stream_buffers(
             })
         }
         Err(err) => {
-            tracing::warn!(
+            crate::trace::warn!(
                 backend = "libcamera",
                 heap = %heap.display(),
                 error = %err,

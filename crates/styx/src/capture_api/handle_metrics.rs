@@ -64,7 +64,7 @@ impl CaptureHandle {
         self.attach_metrics();
         if let Ok(mut info) = self.live.0.info.lock() {
             info.name = name.to_string();
-            tracing::info!(
+            crate::trace::info!(
                 camera = name,
                 capture = self.live.0.id,
                 backend = %info.backend,

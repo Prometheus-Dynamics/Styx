@@ -25,7 +25,7 @@ pub(super) fn wait_for_backings_to_drain(
     loop {
         let outstanding = outstanding_backings.load(Ordering::Acquire);
         if outstanding == 0 {
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = "libcamera",
                 idle_drain_ms = start.elapsed().as_millis() as u64,
                 "libcamera external backings drained"
@@ -33,7 +33,7 @@ pub(super) fn wait_for_backings_to_drain(
             return true;
         }
         if start.elapsed() >= timeout {
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = "libcamera",
                 outstanding_backings = outstanding,
                 idle_drain_ms = start.elapsed().as_millis() as u64,

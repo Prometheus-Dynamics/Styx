@@ -200,7 +200,7 @@ pub(super) fn spawn(
                 }
             }
             if let Err(e) = p.close() {
-                tracing::warn!(backend = "native", error = %e, "closing the software ISP path");
+                crate::trace::warn!(backend = "native", error = %e, "closing the software ISP path");
             }
             if w.owns_queue {
                 w.tx.close();

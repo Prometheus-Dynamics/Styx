@@ -338,7 +338,7 @@ fn limit_held(state: &mut State, max: usize) {
     state.leases.retain(|l| l.frame.number > oldest);
     let revoked = (before - state.leases.len()) as u64;
     state.stats.revoked += revoked;
-    tracing::debug!(
+    crate::trace::debug!(
         revoked,
         "frame socket: more than {max} frames held, ended the leases on the oldest"
     );
@@ -450,7 +450,7 @@ fn serve(shared: &Shared, wake: &UnixStream) {
         });
         if revoked > 0 {
             state.stats.revoked += revoked;
-            tracing::warn!(
+            crate::trace::warn!(
                 revoked,
                 max_hold = ?options.max_hold,
                 "frame socket: closed consumers that held a frame too long (their buffers may be reused)"

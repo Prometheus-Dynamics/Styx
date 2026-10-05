@@ -1,7 +1,7 @@
 //! Live per-capture metrics, recorded on the frame path with relaxed atomics only (no locks, no
 //! allocation). The counters, the windows of the last [`WINDOW`] samples (frame intervals,
 //! latencies, ISP times) and the 3A, AF and still state are the runtime's
-//! (`styx_runtime::metrics::Counters`, `no_std`); this module feeds them from frame metadata
+//! (`styx_core::metrics::Counters`, `no_std`); this module feeds them from frame metadata
 //! and adds what only a Linux process has: buffers held by consumers, consumers, worker CPU
 //! time, reconnecting captures. Snapshots (`super::camera`) read them on demand.
 
@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
+pub(crate) use styx_core::metrics::AaaSample;
+pub use styx_core::metrics::WINDOW;
+pub(crate) use styx_core::metrics::{Counters as RuntimeCounters, FrameSample, Ring};
 use styx_core::prelude::{BackendFrameMeta, ExternalBacking, FrameMeta};
-pub(crate) use styx_runtime::metrics::AaaSample;
-pub use styx_runtime::metrics::WINDOW;
-pub(crate) use styx_runtime::metrics::{Counters as RuntimeCounters, FrameSample, Ring};
 
 use super::camera::Window;
 
@@ -117,7 +117,7 @@ impl ConsumerStats {
 /// What a capture counts besides the runtime's counters.
 #[derive(Default)]
 pub(crate) struct Counters {
-    /// Frames, drops by cause, windows, 3A and still state (`styx_runtime::metrics`).
+    /// Frames, drops by cause, windows, 3A and still state (`styx_core::metrics`).
     pub(crate) rt: RuntimeCounters,
     /// Sequence gaps: the runtime's tracking, or the backend's own (V4L2, libcamera), into
     /// the counter the capture handle shares.
@@ -291,7 +291,7 @@ impl CaptureMetrics {
         };
         // Logged at 1, 2, 4, 8... lost frames: never once per frame.
         if (before + gaps).ilog2() != before.checked_ilog2().unwrap_or(u32::MAX) {
-            tracing::info!(
+            crate::trace::info!(
                 capture = l.id,
                 lost = before + gaps,
                 corrupt = l.gaps_are_corrupt.load(Relaxed),
@@ -553,7 +553,7 @@ impl Drop for Live {
             return;
         }
         let c = &self.counters;
-        tracing::info!(
+        crate::trace::info!(
             camera = %info.name,
             capture = self.id,
             frames = c.rt.frames.get(),

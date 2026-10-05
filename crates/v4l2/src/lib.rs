@@ -47,8 +47,9 @@ pub fn probe_devices() -> (Vec<V4l2DeviceInfo>, Vec<String>) {
     for path in styx_kernel::v4l2::list_video_nodes() {
         match build_info(&path) {
             Ok(Probed::Camera(info)) => devices.push(info),
-            Ok(Probed::Skipped(why)) => {
-                tracing::debug!(node = %path.display(), "v4l2 probe: skipped, {why}");
+            Ok(Probed::Skipped(_why)) => {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(node = %path.display(), "v4l2 probe: skipped, {_why}");
             }
             Err(e) => errors.push(format!("{}: {e}", path.display())),
         };

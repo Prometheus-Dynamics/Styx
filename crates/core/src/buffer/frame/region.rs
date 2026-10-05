@@ -222,6 +222,11 @@ impl<H: RegionHooks> ExternalBacking for MemoryRegion<H> {
         self.is_writable()
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        span(self.ptr.as_ptr() as usize, self.len);
+        true
+    }
+
     fn plane_data_mut(&mut self, _index: usize) -> Option<&mut [u8]> {
         self.bytes_mut()
     }

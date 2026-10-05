@@ -126,7 +126,7 @@ impl Regions {
             match applied {
                 Ok(()) => self.applied[k] = change,
                 Err(e) => {
-                    tracing::warn!(backend = "native", region = k + 1, error = %e, "region refused");
+                    crate::trace::warn!(backend = "native", region = k + 1, error = %e, "region refused");
                     control.revert(self.applied[k]);
                 }
             }
@@ -144,7 +144,7 @@ impl Regions {
             match p.set_pass(i, Some(spec)) {
                 Ok(()) => self.pyramid_for = Some(main_crop),
                 Err(e) => {
-                    tracing::warn!(backend = "native", error = %e, "pyramid pass refused");
+                    crate::trace::warn!(backend = "native", error = %e, "pyramid pass refused");
                     self.pyramid_for = Some(main_crop);
                     let _ = p.set_pass(i, None);
                 }

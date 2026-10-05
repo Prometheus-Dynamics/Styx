@@ -15,7 +15,11 @@ libc.workspace = true
 styx-graph.workspace = true
 styx-kernel.workspace = true
 thiserror = { workspace = true, features = ["std"] }
-tracing.workspace = true
+tracing = { workspace = true, optional = true }
+
+[features]
+# Debug logs through `tracing` (`styx` turns it on with its `tracing` feature).
+tracing = ["dep:tracing"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }

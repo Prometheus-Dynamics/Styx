@@ -68,7 +68,7 @@ impl StillProcessor {
                         latency: batch.job.requested.elapsed(),
                     });
                     if let Ok(c) = &reply {
-                        tracing::info!(
+                        crate::trace::info!(
                             backend = "native",
                             shots = c.shots.len(),
                             latency_ms = c.latency.as_secs_f64() * 1e3,
@@ -80,11 +80,11 @@ impl StillProcessor {
                 if let Some(b) = be.dev.take()
                     && let Err(e) = b.close()
                 {
-                    tracing::warn!(backend = "native", error = %e, "closing the still back end");
+                    crate::trace::warn!(backend = "native", error = %e, "closing the still back end");
                 }
             });
         if let Err(e) = spawned {
-            tracing::warn!(backend = "native", error = %e, "no still thread");
+            crate::trace::warn!(backend = "native", error = %e, "no still thread");
         }
         Self { tx }
     }
@@ -129,7 +129,7 @@ fn reprocess(
             out
         }) {
             Ok((bytes, took)) => {
-                tracing::debug!(
+                crate::trace::debug!(
                     backend = "native",
                     job_ms = took.as_secs_f64() * 1e3,
                     "still back end job"
@@ -137,7 +137,7 @@ fn reprocess(
                 return Ok((bytes, "pisp"));
             }
             Err(e) => {
-                tracing::warn!(backend = "native", error = %e, "still back end unavailable; software ISP");
+                crate::trace::warn!(backend = "native", error = %e, "still back end unavailable; software ISP");
                 be.failed = true;
                 if let Some(d) = be.dev.take() {
                     let _ = d.close();

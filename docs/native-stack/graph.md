@@ -176,7 +176,7 @@ The existing backends live in `crates/styx/src/capture_api/` and are selected by
 | `Mode` + `Interval` | `StreamConfig { path, format, size, interval }` |
 | `start_backend` (`dispatch.rs`) | `Provider::open` → `Device::configure` → `Device::start` |
 | `CaptureHandle` frame queue | `OutputStream.frames` (async; blocking via `block_on`) |
-| `watch` (inotify, libcamera hotplug) | `Provider::hotplug()` streams |
+| `watch` (kernel uevents, libcamera hotplug) | `Provider::hotplug()` streams |
 
 Per backend:
 

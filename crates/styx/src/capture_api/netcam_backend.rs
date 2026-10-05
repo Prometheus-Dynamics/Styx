@@ -100,7 +100,7 @@ pub(super) fn start_netcam(
     let tunables = config.netcam_tunables();
     #[cfg(feature = "netcam")]
     let worker_fn = move || {
-        tracing::debug!(
+        crate::trace::debug!(
             backend = "netcam",
             mode = "sync",
             url = %url_for_thread,
@@ -121,7 +121,7 @@ pub(super) fn start_netcam(
             Err(err) => {
                 let capture_err = CaptureError::Backend(format!("netcam client failed: {err}"));
                 record_worker_error(&worker_error_for_thread, &capture_err);
-                tracing::warn!(backend = "netcam", error = %err, "failed to create netcam client");
+                crate::trace::warn!(backend = "netcam", error = %err, "failed to create netcam client");
                 return;
             }
         };
@@ -131,7 +131,7 @@ pub(super) fn start_netcam(
         let mut consecutive_failures: u32 = 0;
         loop {
             if netcam_stopped(&stop_for_thread) {
-                tracing::debug!(backend = "netcam", "netcam worker stopped");
+                crate::trace::debug!(backend = "netcam", "netcam worker stopped");
                 return;
             }
             // First try MJPEG.
@@ -147,7 +147,7 @@ pub(super) fn start_netcam(
                         .and_then(|h| h.to_str().ok())
                         .and_then(parse_boundary);
                     if let Some(boundary) = boundary {
-                        tracing::debug!(
+                        crate::trace::debug!(
                             backend = "netcam",
                             stream = "mjpeg",
                             width,
@@ -174,7 +174,7 @@ pub(super) fn start_netcam(
                             return;
                         }
                     } else {
-                        tracing::debug!(
+                        crate::trace::debug!(
                             backend = "netcam",
                             "netcam response was not multipart mjpeg"
                         );
@@ -184,7 +184,7 @@ pub(super) fn start_netcam(
                     let capture_err =
                         CaptureError::Backend(format!("netcam request failed: {err}"));
                     record_worker_error(&worker_error_for_thread, &capture_err);
-                    tracing::warn!(backend = "netcam", error = %err, "netcam request failed");
+                    crate::trace::warn!(backend = "netcam", error = %err, "netcam request failed");
                 }
             }
             // Fallback to FFmpeg for H264/H265/other container streams.
@@ -209,7 +209,7 @@ pub(super) fn start_netcam(
                         let capture_err =
                             CaptureError::Backend(format!("netcam ffmpeg fallback failed: {err}"));
                         record_worker_error(&worker_error_for_thread, &capture_err);
-                        tracing::warn!(
+                        crate::trace::warn!(
                             backend = "netcam",
                             stream = "ffmpeg",
                             error = %err,
@@ -218,7 +218,7 @@ pub(super) fn start_netcam(
                     }
                 }
             }
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = "netcam",
                 backoff_ms = backoff.as_millis() as u64,
                 "netcam retry backoff"
@@ -311,7 +311,7 @@ async fn async_netcam_worker(
         worker_error,
         retry_metrics,
     } = worker;
-    tracing::debug!(
+    crate::trace::debug!(
         backend = "netcam",
         mode = "async",
         url = %url,
@@ -333,7 +333,7 @@ async fn async_netcam_worker(
         Err(err) => {
             let capture_err = CaptureError::Backend(format!("netcam client failed: {err}"));
             record_worker_error(&worker_error, &capture_err);
-            tracing::warn!(backend = "netcam", error = %err, "failed to create netcam client");
+            crate::trace::warn!(backend = "netcam", error = %err, "failed to create netcam client");
             return;
         }
     };
@@ -344,7 +344,7 @@ async fn async_netcam_worker(
     let mut consecutive_failures: u32 = 0;
     loop {
         if netcam_stopped(&stop) {
-            tracing::debug!(backend = "netcam", "netcam worker stopped");
+            crate::trace::debug!(backend = "netcam", "netcam worker stopped");
             return;
         }
         let response = tokio::select! {
@@ -362,7 +362,7 @@ async fn async_netcam_worker(
                     .and_then(|h| h.to_str().ok())
                     .and_then(parse_boundary);
                 if let Some(boundary) = boundary {
-                    tracing::debug!(
+                    crate::trace::debug!(
                         backend = "netcam",
                         stream = "mjpeg",
                         width,
@@ -394,7 +394,7 @@ async fn async_netcam_worker(
                         return;
                     }
                 } else {
-                    tracing::debug!(
+                    crate::trace::debug!(
                         backend = "netcam",
                         "netcam response was not multipart mjpeg"
                     );
@@ -403,7 +403,7 @@ async fn async_netcam_worker(
             Err(err) => {
                 let capture_err = CaptureError::Backend(format!("netcam request failed: {err}"));
                 record_worker_error(&worker_error, &capture_err);
-                tracing::warn!(backend = "netcam", error = %err, "netcam request failed");
+                crate::trace::warn!(backend = "netcam", error = %err, "netcam request failed");
             }
         }
         #[cfg(feature = "netcam-video")]
@@ -439,7 +439,7 @@ async fn async_netcam_worker(
                     let capture_err =
                         CaptureError::Backend(format!("netcam ffmpeg fallback failed: {err}"));
                     record_worker_error(&worker_error, &capture_err);
-                    tracing::warn!(
+                    crate::trace::warn!(
                         backend = "netcam",
                         stream = "ffmpeg",
                         error = %err,
@@ -448,7 +448,7 @@ async fn async_netcam_worker(
                 }
             }
         }
-        tracing::debug!(
+        crate::trace::debug!(
             backend = "netcam",
             backoff_ms = backoff.as_millis() as u64,
             "netcam retry backoff"
@@ -537,11 +537,11 @@ pub(super) fn enqueue_netcam_frame(
             false
         }
         SendWaitOutcome::Closed(_frame) => {
-            tracing::debug!(backend = "netcam", stream, "netcam output queue closed");
+            crate::trace::debug!(backend = "netcam", stream, "netcam output queue closed");
             true
         }
         SendWaitOutcome::Timeout(_frame) => {
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = "netcam",
                 stream,
                 drop_reason = "capture_queue_send_timeout",
@@ -567,11 +567,11 @@ pub(super) async fn enqueue_netcam_frame_async(
             false
         }
         Ok(SendOutcome::Closed) => {
-            tracing::debug!(backend = "netcam", stream, "netcam output queue closed");
+            crate::trace::debug!(backend = "netcam", stream, "netcam output queue closed");
             true
         }
         Ok(SendOutcome::Full) => {
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = "netcam",
                 stream,
                 drop_reason = "capture_queue_send_full",
@@ -580,7 +580,7 @@ pub(super) async fn enqueue_netcam_frame_async(
             false
         }
         Err(_) => {
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = "netcam",
                 stream,
                 drop_reason = "capture_queue_send_timeout",
@@ -618,7 +618,7 @@ fn ffmpeg_loop(
             match format::input_with_interrupt(url, move || netcam_stopped(&interrupt_stop)) {
                 Ok(ctx) => ctx,
                 Err(e) => {
-                    tracing::warn!(
+                    crate::trace::warn!(
                         backend = "netcam",
                         stream = "ffmpeg",
                         error = %e,
@@ -741,7 +741,7 @@ fn ffmpeg_loop(
                 return Ok(frame_idx);
             }
         }
-        tracing::debug!(
+        crate::trace::debug!(
             backend = "netcam",
             stream = "ffmpeg",
             "netcam video stream ended; reconnecting"

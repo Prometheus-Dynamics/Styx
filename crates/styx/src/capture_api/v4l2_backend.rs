@@ -187,7 +187,7 @@ pub(super) fn start_v4l2(
             .max(negotiated_size)
             .max(width.saturating_mul(fmt.height as usize).saturating_mul(3))
     };
-    tracing::debug!(
+    crate::trace::debug!(
         backend = "v4l2",
         path = %path,
         width = fmt.width,
@@ -218,7 +218,7 @@ pub(super) fn start_v4l2(
                 Ok(manager) => Ok(manager),
                 Err(refused) => {
                     let (dev, why) = *refused;
-                    tracing::debug!(backend = "v4l2", path = %path, %why, "capturing into own buffers");
+                    crate::trace::debug!(backend = "v4l2", path = %path, %why, "capturing into own buffers");
                     Err(dev)
                 }
             }
@@ -380,7 +380,7 @@ pub(super) fn start_v4l2(
                 Err(err) if err.is_no_device() => {
                     // The device is gone; retrying the dequeue cannot succeed.
                     let err = CaptureError::Disconnected(to_io(err).to_string());
-                    tracing::warn!(backend = "v4l2", error = %err, "v4l2 device disconnected");
+                    crate::trace::warn!(backend = "v4l2", error = %err, "v4l2 device disconnected");
                     record_worker_error(&worker_error_for_thread, &err);
                     break;
                 }

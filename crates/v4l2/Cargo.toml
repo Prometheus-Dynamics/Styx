@@ -21,10 +21,12 @@ styx-capture.workspace = true
 smallvec.workspace = true
 styx-kernel.workspace = true
 libc.workspace = true
-tracing.workspace = true
+tracing = { workspace = true, optional = true }
 
 [features]
 default = []
+# Debug logs through `tracing` (`styx` turns it on with its `tracing` feature).
+tracing = ["dep:tracing"]
 
 [lints]
 workspace = true

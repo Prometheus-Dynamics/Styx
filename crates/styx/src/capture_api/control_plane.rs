@@ -61,7 +61,7 @@ pub(crate) fn apply_control_to_plane(
 ) -> Result<(), CaptureError> {
     let backend = control_plane_backend(control);
     let started = Instant::now();
-    tracing::debug!(
+    crate::trace::debug!(
         backend,
         control_id = id.0,
         operation = "set",
@@ -128,7 +128,7 @@ pub(crate) fn read_control_from_plane(
 ) -> Result<ControlValue, CaptureError> {
     let backend = control_plane_backend(control);
     let started = Instant::now();
-    tracing::debug!(
+    crate::trace::debug!(
         backend,
         control_id = id.0,
         operation = "get",
@@ -218,14 +218,14 @@ fn log_control_result<T>(
 ) {
     let elapsed_ms = started.elapsed().as_millis() as u64;
     match result {
-        Ok(_) => tracing::debug!(
+        Ok(_) => crate::trace::debug!(
             backend,
             control_id = id.0,
             operation,
             elapsed_ms,
             "control request completed"
         ),
-        Err(err) => tracing::warn!(
+        Err(err) => crate::trace::warn!(
             backend,
             control_id = id.0,
             operation,

@@ -88,6 +88,14 @@ pub trait ExternalBacking: Send + Sync {
         false
     }
 
+    /// The host address ranges the backing's memory occupies, for overlap checks
+    /// ([`FrameLease::may_alias`]): calls `span(start, len)` for each and returns `true`, or
+    /// returns `false` when they are not known (the default; e.g. device memory). Must not
+    /// touch the memory (no cache maintenance, no hooks).
+    fn host_spans(&self, _span: &mut dyn FnMut(usize, usize)) -> bool {
+        false
+    }
+
     /// The memory holding plane `index`, for writing: as [`ExternalBacking::plane_data`] (the
     /// whole buffer the plane's layout offset is in; planes may share one buffer). Slices for
     /// different indices must be the same buffer or not overlap. The first call opens a CPU
@@ -311,32 +319,51 @@ impl FrameLease {
     }
 
     pub fn may_alias(&self, other: &Self) -> Result<bool, FrameValidationError> {
-        if let (Some(left), Some(right)) = (&self.external, &other.external) {
-            return Ok(Arc::ptr_eq(left, right));
+        if let (Some(left), Some(right)) = (&self.external, &other.external)
+            && Arc::ptr_eq(left, right)
+        {
+            return Ok(true);
         }
-        if self.external.is_some() || other.external.is_some() {
-            return Err(FrameValidationError::AliasUnknown);
-        }
-        for left in &self.buffers {
-            let left = left.as_slice();
-            if left.is_empty() {
-                continue;
-            }
-            let left_start = left.as_ptr() as usize;
-            let left_end = left_start.saturating_add(left.len());
-            for right in &other.buffers {
-                let right = right.as_slice();
-                if right.is_empty() {
-                    continue;
+        // Compare the host address ranges of both sides where they are known: owned and pooled
+        // buffers, and external backings that report theirs (caller-provided regions).
+        let mut overlap = false;
+        let mut right_known = true;
+        let left_known = self.host_spans(&mut |left_start, left_len| {
+            let left_end = left_start.saturating_add(left_len);
+            right_known &= other.host_spans(&mut |right_start, right_len| {
+                if left_start < right_start.saturating_add(right_len) && right_start < left_end {
+                    overlap = true;
                 }
-                let right_start = right.as_ptr() as usize;
-                let right_end = right_start.saturating_add(right.len());
-                if left_start < right_end && right_start < left_end {
-                    return Ok(true);
+            });
+        });
+        if left_known && right_known {
+            return Ok(overlap);
+        }
+        // Two distinct external backings are separate memory (as before); an external backing
+        // with unknown memory against owned buffers cannot be told apart.
+        if self.external.is_some() && other.external.is_some() {
+            return Ok(false);
+        }
+        Err(FrameValidationError::AliasUnknown)
+    }
+
+    /// Calls `span(start, len)` for each non-empty host memory range the frame's planes live
+    /// in; `false` if an external backing does not report its ranges.
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        if let Some(backing) = &self.external {
+            return backing.host_spans(&mut |start, len| {
+                if len > 0 {
+                    span(start, len);
                 }
+            });
+        }
+        for buffer in &self.buffers {
+            let bytes = buffer.as_slice();
+            if !bytes.is_empty() {
+                span(bytes.as_ptr() as usize, bytes.len());
             }
         }
-        Ok(false)
+        true
     }
 
     pub fn external_backing_bytes(&self) -> Option<usize> {

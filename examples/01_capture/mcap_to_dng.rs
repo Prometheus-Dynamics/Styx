@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .transpose()?,
     };
     let full = f64::from(img.max_value() + 1);
-    let bl = tuning.as_ref().and_then(|t| t.black_level).map_or(
+    let bl = tuning.as_ref().and_then(|t| t.black_level.as_ref()).map_or(
         // 64 at 10 bits (the OV9782's), scaled.
         [64.0 / 1024.0; 3],
         |b| [b.r, b.g, b.b],

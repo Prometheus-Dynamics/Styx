@@ -29,7 +29,6 @@ turbojpeg = { workspace = true, optional = true }
 ffmpeg-sys-next = { workspace = true, optional = true }
 smallvec.workspace = true
 yuvutils-rs = { workspace = true, optional = true }
-rayon = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive", "std"], optional = true }
@@ -46,9 +45,9 @@ required-features = ["codec-turbojpeg"]
 [features]
 default = []
 dynamic-image = ["dep:image", "image"]
-image = ["dep:rayon", "dep:yuvutils-rs"]
+image = ["dep:yuvutils-rs"]
 codec-jpeg-decoder = ["dep:jpeg-decoder"]
-raw-decoders = ["dep:rayon", "dep:yuvutils-rs", "dep:styx-softisp"]
+raw-decoders = ["dep:yuvutils-rs", "dep:styx-softisp"]
 codec-zune = ["zune-jpeg", "zune-core"]
 codec-mozjpeg = ["mozjpeg"]
 codec-turbojpeg = ["turbojpeg"]

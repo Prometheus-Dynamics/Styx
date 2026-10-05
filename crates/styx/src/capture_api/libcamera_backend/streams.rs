@@ -52,7 +52,7 @@ pub(super) fn choose_second_stream(
         SecondStream::None
     };
     if pyramid_level > 0 && second != SecondStream::Pyramid(pyramid_level) {
-        tracing::warn!(
+        crate::trace::warn!(
             backend = "libcamera",
             pyramid_level,
             tdn_enabled = tdn,
@@ -60,7 +60,7 @@ pub(super) fn choose_second_stream(
         );
     }
     if second_output_size.is_some() && !matches!(second, SecondStream::Scaled(..)) {
-        tracing::warn!(
+        crate::trace::warn!(
             backend = "libcamera",
             tdn_enabled = tdn,
             pyramid_level,
@@ -178,7 +178,7 @@ pub(super) fn attach_companion(
         return Ok(frame);
     };
     if companion.meta().timestamp != frame.meta().timestamp {
-        tracing::debug!(
+        crate::trace::debug!(
             backend = "libcamera",
             "companion timestamp mismatch; dropping companion"
         );

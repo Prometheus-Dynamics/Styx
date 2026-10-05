@@ -54,7 +54,7 @@ pub(super) fn start_virtual(
     let live_worker = live.clone();
     let worker = thread::spawn(move || {
         live_worker.register_thread();
-        tracing::debug!(backend = "virtual", "capture worker started");
+        crate::trace::debug!(backend = "virtual", "capture worker started");
         let start = std::time::Instant::now();
         loop {
             if stop_rx.try_recv().is_ok() {
@@ -88,7 +88,7 @@ pub(super) fn start_virtual(
                 break;
             }
         }
-        tracing::debug!(backend = "virtual", "capture worker stopped");
+        crate::trace::debug!(backend = "virtual", "capture worker stopped");
     });
     Ok(CaptureHandle {
         backend: BackendKind::Virtual,

@@ -1,80 +1,48 @@
+//! Video devices coming and going on Linux: kernel uevents (netlink, through Lemnos's
+//! `lemnos_linux::uevent`) for `video4linux`, `media` and `usb` devices. Where no netlink
+//! socket can be opened (some containers and sandboxes), every poll compares a listing of
+//! `/dev` and `/sys/bus/usb/devices` with the previous one instead.
+
 use crate::BackendKind;
-use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
-use std::collections::{BTreeMap, BTreeSet};
+use lemnos_linux::uevent::{Uevent, UeventRecv, UeventSocket};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::{DeviceWatchEvent, DeviceWatcher, WatchError};
 
-const WATCHER_NAME: &str = "linux.video.fs";
-const DEFAULT_EVENT_BUFFER_SIZE: usize = 16 * 1024;
-const WATCH_MASK: WatchMask = WatchMask::CREATE
-    .union(WatchMask::DELETE)
-    .union(WatchMask::MOVED_FROM)
-    .union(WatchMask::MOVED_TO)
-    .union(WatchMask::DELETE_SELF)
-    .union(WatchMask::MOVE_SELF);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct WatchRegistration {
-    path: PathBuf,
-    backends: Vec<BackendKind>,
-}
+const WATCHER_NAME: &str = "linux.video.uevent";
+const BACKENDS: [BackendKind; 2] = [BackendKind::V4l2, BackendKind::Libcamera];
 
 #[derive(Debug)]
+enum Source {
+    Uevents(UeventSocket),
+    /// The relevant entries of `/dev` and `/sys/bus/usb/devices` at the last poll.
+    Rescan(BTreeSet<PathBuf>),
+}
+
+/// Reports V4L2 and libcamera device changes (video and media nodes, USB devices).
+/// Non-blocking: [`DeviceWatcher::poll`] returns what happened since the last poll.
+#[derive(Debug)]
 pub struct LinuxVideoFsWatcher {
-    inotify: Inotify,
-    buffer: Vec<u8>,
-    watched_paths: BTreeMap<PathBuf, WatchDescriptor>,
-    registrations: BTreeMap<WatchDescriptor, WatchRegistration>,
+    source: Source,
 }
 
 impl LinuxVideoFsWatcher {
+    /// Listens to kernel uevents, or rescans on every poll where netlink is not available.
     pub fn new() -> Result<Self, WatchError> {
-        let inotify = Inotify::init()?;
-        let mut watcher = Self {
-            inotify,
-            buffer: vec![0; DEFAULT_EVENT_BUFFER_SIZE],
-            watched_paths: BTreeMap::new(),
-            registrations: BTreeMap::new(),
+        let source = match UeventSocket::open() {
+            Ok(socket) => Source::Uevents(socket),
+            Err(_e) => {
+                crate::trace::debug!(error = %_e, "device watch: no netlink, rescanning on poll");
+                Source::Rescan(listing())
+            }
         };
-
-        watcher.add_watch(
-            PathBuf::from("/dev"),
-            vec![BackendKind::V4l2, BackendKind::Libcamera],
-        )?;
-        watcher.add_watch(
-            PathBuf::from("/sys/class/video4linux"),
-            vec![BackendKind::V4l2, BackendKind::Libcamera],
-        )?;
-        watcher.add_watch(
-            PathBuf::from("/sys/bus/usb/devices"),
-            vec![BackendKind::V4l2, BackendKind::Libcamera],
-        )?;
-        watcher.add_watch(
-            PathBuf::from("/dev/v4l/by-id"),
-            vec![BackendKind::V4l2, BackendKind::Libcamera],
-        )?;
-
-        Ok(watcher)
+        Ok(Self { source })
     }
 
-    fn add_watch(&mut self, path: PathBuf, backends: Vec<BackendKind>) -> Result<(), WatchError> {
-        if self.watched_paths.contains_key(&path) || !path.exists() {
-            return Ok(());
-        }
-
-        let descriptor = self.inotify.watches().add(&path, WATCH_MASK)?;
-        let registration = WatchRegistration {
-            path: path.clone(),
-            backends,
-        };
-        self.watched_paths.insert(path, descriptor.clone());
-        self.registrations.insert(descriptor, registration);
-        Ok(())
-    }
-
-    fn registration_for(&self, descriptor: &WatchDescriptor) -> Option<&WatchRegistration> {
-        self.registrations.get(descriptor)
+    /// Whether kernel uevents are available (otherwise every poll rescans).
+    pub fn uses_uevents(&self) -> bool {
+        matches!(self.source, Source::Uevents(_))
     }
 }
 
@@ -84,83 +52,108 @@ impl DeviceWatcher for LinuxVideoFsWatcher {
     }
 
     fn poll(&mut self) -> Result<Vec<DeviceWatchEvent>, WatchError> {
-        let events = match self.inotify.read_events(&mut self.buffer) {
-            Ok(events) => events.map(|event| event.to_owned()).collect::<Vec<_>>(),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(Vec::new()),
-            Err(error) => return Err(WatchError::Io(error)),
-        };
-
-        if events.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut backends = BTreeSet::new();
+        let mut relevant = false;
         let mut paths = BTreeSet::new();
-
-        for event in events {
-            if event.mask.contains(EventMask::Q_OVERFLOW) {
-                backends.insert(BackendKind::V4l2);
-                backends.insert(BackendKind::Libcamera);
-                continue;
+        match &mut self.source {
+            Source::Uevents(socket) => loop {
+                match socket.recv() {
+                    Ok(Some(UeventRecv::Event(event))) => {
+                        if let Some(path) = event_path(&event) {
+                            relevant = true;
+                            paths.insert(path);
+                        }
+                    }
+                    // Events were lost: something may have changed.
+                    Ok(Some(UeventRecv::Overflow)) => relevant = true,
+                    Ok(None) => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(WatchError::Io(error)),
+                }
+            },
+            Source::Rescan(known) => {
+                let now = listing();
+                paths.extend(known.symmetric_difference(&now).cloned());
+                relevant = !paths.is_empty();
+                *known = now;
             }
-
-            let Some(registration) = self.registration_for(&event.wd) else {
-                continue;
-            };
-            if !is_relevant_event(registration, &event) {
-                continue;
-            }
-
-            backends.extend(registration.backends.iter().copied());
-            paths.insert(event_path(&registration.path, event.name.as_deref()));
         }
-
-        if backends.is_empty() && paths.is_empty() {
+        if !relevant {
             return Ok(Vec::new());
         }
-
         Ok(vec![DeviceWatchEvent::new(
             self.name(),
-            backends.into_iter().collect(),
+            BACKENDS.to_vec(),
             paths.into_iter().collect(),
         )])
     }
 }
 
-fn event_path(root: &Path, name: Option<&std::ffi::OsStr>) -> PathBuf {
-    match name {
-        Some(name) => root.join(name),
-        None => root.to_path_buf(),
+/// The path a relevant uevent names (the `/dev` node, else the sysfs device), or `None` for
+/// events of other subsystems.
+fn event_path(event: &Uevent) -> Option<PathBuf> {
+    match event.subsystem()? {
+        "video4linux" | "media" => Some(match event.get("DEVNAME") {
+            Some(name) => Path::new("/dev").join(name),
+            None => sys_path(&event.devpath),
+        }),
+        "usb" => Some(sys_path(&event.devpath)),
+        _ => None,
     }
 }
 
-fn is_relevant_event(
-    registration: &WatchRegistration,
-    event: &inotify::Event<std::ffi::OsString>,
-) -> bool {
-    if event
-        .mask
-        .intersects(EventMask::DELETE_SELF | EventMask::MOVE_SELF)
-    {
-        return true;
-    }
+fn sys_path(devpath: &str) -> PathBuf {
+    Path::new("/sys").join(devpath.trim_start_matches('/'))
+}
 
-    let Some(name) = event.name.as_deref().and_then(|name| name.to_str()) else {
-        return false;
+/// Video and media nodes in `/dev` and the USB devices, for the rescan fallback.
+fn listing() -> BTreeSet<PathBuf> {
+    let mut out = BTreeSet::new();
+    let mut add = |dir: &str, keep: fn(&str) -> bool| {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_str().is_some_and(keep) {
+                out.insert(entry.path());
+            }
+        }
     };
+    add("/dev", |name| {
+        name.starts_with("video") || name.starts_with("media")
+    });
+    add("/sys/bus/usb/devices", |name| !name.starts_with('.'));
+    out
+}
 
-    let path = registration.path.as_path();
-    if path == Path::new("/dev") {
-        return name.starts_with("video") || name.starts_with("media") || name == "v4l";
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uevent(msg: &[u8]) -> Uevent {
+        Uevent::parse(msg).expect("uevent")
     }
-    if path == Path::new("/dev/v4l/by-id") {
-        return true;
+
+    #[test]
+    fn video_media_and_usb_events_are_relevant() {
+        let video = uevent(
+            b"add@/devices/platform/x/video4linux/video3\0ACTION=add\0SUBSYSTEM=video4linux\0DEVNAME=video3\0",
+        );
+        assert_eq!(event_path(&video), Some(PathBuf::from("/dev/video3")));
+        let media = uevent(b"remove@/devices/x/media1\0SUBSYSTEM=media\0DEVNAME=media1\0");
+        assert_eq!(event_path(&media), Some(PathBuf::from("/dev/media1")));
+        let usb = uevent(b"bind@/devices/pci0/usb3/3-1\0SUBSYSTEM=usb\0DEVTYPE=usb_device\0");
+        assert_eq!(
+            event_path(&usb),
+            Some(PathBuf::from("/sys/devices/pci0/usb3/3-1"))
+        );
+        let other = uevent(b"change@/devices/virtual/net/lo\0SUBSYSTEM=net\0");
+        assert_eq!(event_path(&other), None);
     }
-    if path == Path::new("/sys/class/video4linux") {
-        return name.starts_with("video");
+
+    #[test]
+    fn a_watcher_starts_and_polls_without_events() {
+        let mut watcher = LinuxVideoFsWatcher::new().expect("watcher");
+        // Whatever the host does meanwhile, a poll never blocks or fails.
+        watcher.poll().expect("poll");
     }
-    if path == Path::new("/sys/bus/usb/devices") {
-        return !name.starts_with('.');
-    }
-    true
 }

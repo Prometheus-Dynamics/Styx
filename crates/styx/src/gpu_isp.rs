@@ -26,11 +26,11 @@ pub(crate) fn context() -> Option<GpuContext> {
         match GpuContext::open(DeviceSelect::Auto) {
             Ok(c) => {
                 let i = c.info();
-                tracing::info!(device = %i.name, driver = %i.driver, "GPU ISP available");
+                crate::trace::info!(device = %i.name, driver = %i.driver, "GPU ISP available");
                 Some(c)
             }
             Err(e) => {
-                tracing::debug!(error = %e, "no GPU ISP");
+                crate::trace::debug!(error = %e, "no GPU ISP");
                 None
             }
         }

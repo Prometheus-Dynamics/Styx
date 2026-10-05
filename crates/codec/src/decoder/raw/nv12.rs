@@ -4,7 +4,6 @@ use crate::decoder::raw::yuv_to_rgb;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
-use rayon::prelude::*;
 use yuvutils_rs::{YuvBiPlanarImage, YuvConversionMode, YuvRange, YuvStandardMatrix};
 
 #[inline(always)]
@@ -162,46 +161,44 @@ impl Nv12ToRgbDecoder {
         )
         .is_err()
         {
-            dst.par_chunks_mut(row_bytes)
-                .enumerate()
-                .for_each(|(y, dst_line)| {
-                    let y_line = &y_plane_data[y * y_stride..][..width];
-                    let uv_line = &uv_plane_data[(y / 2) * uv_stride..][..chroma_width * 2];
-                    let pair_count = width / 2;
-                    for pair in 0..pair_count {
-                        let y_base = pair * 2;
-                        let uv_idx = pair * 2;
-                        let di = pair * 6;
-                        let y0 = unsafe { *y_line.get_unchecked(y_base) as i32 };
-                        let y1 = unsafe { *y_line.get_unchecked(y_base + 1) as i32 };
-                        let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
-                        let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
-                        let (r0, g0, b0) = yuv_to_rgb(y0, u, v, color);
-                        let (r1, g1, b1) = yuv_to_rgb(y1, u, v, color);
-                        unsafe {
-                            *dst_line.get_unchecked_mut(di) = r0;
-                            *dst_line.get_unchecked_mut(di + 1) = g0;
-                            *dst_line.get_unchecked_mut(di + 2) = b0;
-                            *dst_line.get_unchecked_mut(di + 3) = r1;
-                            *dst_line.get_unchecked_mut(di + 4) = g1;
-                            *dst_line.get_unchecked_mut(di + 5) = b1;
-                        }
+            crate::par::for_each_row(&mut dst[..], row_bytes, |y, dst_line| {
+                let y_line = &y_plane_data[y * y_stride..][..width];
+                let uv_line = &uv_plane_data[(y / 2) * uv_stride..][..chroma_width * 2];
+                let pair_count = width / 2;
+                for pair in 0..pair_count {
+                    let y_base = pair * 2;
+                    let uv_idx = pair * 2;
+                    let di = pair * 6;
+                    let y0 = unsafe { *y_line.get_unchecked(y_base) as i32 };
+                    let y1 = unsafe { *y_line.get_unchecked(y_base + 1) as i32 };
+                    let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
+                    let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
+                    let (r0, g0, b0) = yuv_to_rgb(y0, u, v, color);
+                    let (r1, g1, b1) = yuv_to_rgb(y1, u, v, color);
+                    unsafe {
+                        *dst_line.get_unchecked_mut(di) = r0;
+                        *dst_line.get_unchecked_mut(di + 1) = g0;
+                        *dst_line.get_unchecked_mut(di + 2) = b0;
+                        *dst_line.get_unchecked_mut(di + 3) = r1;
+                        *dst_line.get_unchecked_mut(di + 4) = g1;
+                        *dst_line.get_unchecked_mut(di + 5) = b1;
                     }
-                    if width % 2 == 1 && width >= 1 {
-                        let last_idx = width - 1;
-                        let uv_idx = (last_idx / 2) * 2;
-                        let di = last_idx * 3;
-                        let y_val = unsafe { *y_line.get_unchecked(last_idx) as i32 };
-                        let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
-                        let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
-                        let (r, g, b) = yuv_to_rgb(y_val, u, v, color);
-                        unsafe {
-                            *dst_line.get_unchecked_mut(di) = r;
-                            *dst_line.get_unchecked_mut(di + 1) = g;
-                            *dst_line.get_unchecked_mut(di + 2) = b;
-                        }
+                }
+                if width % 2 == 1 && width >= 1 {
+                    let last_idx = width - 1;
+                    let uv_idx = (last_idx / 2) * 2;
+                    let di = last_idx * 3;
+                    let y_val = unsafe { *y_line.get_unchecked(last_idx) as i32 };
+                    let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
+                    let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
+                    let (r, g, b) = yuv_to_rgb(y_val, u, v, color);
+                    unsafe {
+                        *dst_line.get_unchecked_mut(di) = r;
+                        *dst_line.get_unchecked_mut(di + 1) = g;
+                        *dst_line.get_unchecked_mut(di + 2) = b;
                     }
-                });
+                }
+            });
         }
 
         Ok(FrameMeta::new(
@@ -496,46 +493,44 @@ impl Nv12ToBgrDecoder {
         )
         .is_err()
         {
-            dst.par_chunks_mut(row_bytes)
-                .enumerate()
-                .for_each(|(y, dst_line)| {
-                    let y_line = &y_plane_data[y * y_stride..][..width];
-                    let uv_line = &uv_plane_data[(y / 2) * uv_stride..][..chroma_width * 2];
-                    let pair_count = width / 2;
-                    for pair in 0..pair_count {
-                        let y_base = pair * 2;
-                        let uv_idx = pair * 2;
-                        let di = pair * 6;
-                        let y0 = unsafe { *y_line.get_unchecked(y_base) as i32 };
-                        let y1 = unsafe { *y_line.get_unchecked(y_base + 1) as i32 };
-                        let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
-                        let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
-                        let (r0, g0, b0) = yuv_to_rgb(y0, u, v, color);
-                        let (r1, g1, b1) = yuv_to_rgb(y1, u, v, color);
-                        unsafe {
-                            *dst_line.get_unchecked_mut(di) = b0;
-                            *dst_line.get_unchecked_mut(di + 1) = g0;
-                            *dst_line.get_unchecked_mut(di + 2) = r0;
-                            *dst_line.get_unchecked_mut(di + 3) = b1;
-                            *dst_line.get_unchecked_mut(di + 4) = g1;
-                            *dst_line.get_unchecked_mut(di + 5) = r1;
-                        }
+            crate::par::for_each_row(&mut dst[..], row_bytes, |y, dst_line| {
+                let y_line = &y_plane_data[y * y_stride..][..width];
+                let uv_line = &uv_plane_data[(y / 2) * uv_stride..][..chroma_width * 2];
+                let pair_count = width / 2;
+                for pair in 0..pair_count {
+                    let y_base = pair * 2;
+                    let uv_idx = pair * 2;
+                    let di = pair * 6;
+                    let y0 = unsafe { *y_line.get_unchecked(y_base) as i32 };
+                    let y1 = unsafe { *y_line.get_unchecked(y_base + 1) as i32 };
+                    let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
+                    let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
+                    let (r0, g0, b0) = yuv_to_rgb(y0, u, v, color);
+                    let (r1, g1, b1) = yuv_to_rgb(y1, u, v, color);
+                    unsafe {
+                        *dst_line.get_unchecked_mut(di) = b0;
+                        *dst_line.get_unchecked_mut(di + 1) = g0;
+                        *dst_line.get_unchecked_mut(di + 2) = r0;
+                        *dst_line.get_unchecked_mut(di + 3) = b1;
+                        *dst_line.get_unchecked_mut(di + 4) = g1;
+                        *dst_line.get_unchecked_mut(di + 5) = r1;
                     }
-                    if width % 2 == 1 && width >= 1 {
-                        let last_idx = width - 1;
-                        let uv_idx = (last_idx / 2) * 2;
-                        let di = last_idx * 3;
-                        let y_val = unsafe { *y_line.get_unchecked(last_idx) as i32 };
-                        let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
-                        let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
-                        let (r, g, b) = yuv_to_rgb(y_val, u, v, color);
-                        unsafe {
-                            *dst_line.get_unchecked_mut(di) = b;
-                            *dst_line.get_unchecked_mut(di + 1) = g;
-                            *dst_line.get_unchecked_mut(di + 2) = r;
-                        }
+                }
+                if width % 2 == 1 && width >= 1 {
+                    let last_idx = width - 1;
+                    let uv_idx = (last_idx / 2) * 2;
+                    let di = last_idx * 3;
+                    let y_val = unsafe { *y_line.get_unchecked(last_idx) as i32 };
+                    let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
+                    let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
+                    let (r, g, b) = yuv_to_rgb(y_val, u, v, color);
+                    unsafe {
+                        *dst_line.get_unchecked_mut(di) = b;
+                        *dst_line.get_unchecked_mut(di + 1) = g;
+                        *dst_line.get_unchecked_mut(di + 2) = r;
                     }
-                });
+                }
+            });
         }
 
         Ok(FrameMeta::new(
