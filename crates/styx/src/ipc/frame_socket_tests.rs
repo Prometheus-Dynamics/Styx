@@ -275,6 +275,11 @@ fn consumers_closing_at_once_get_the_wire_format_helios_reads() {
     let mut payload = vec![0u8; u32::from_le_bytes(header) as usize];
     std::io::Read::read_exact(&mut stream, &mut payload).unwrap();
     drop(stream);
+    // The bytes peers already read (golden: they must not change).
+    assert_eq!(
+        std::str::from_utf8(&payload).unwrap(),
+        r#"{"descriptor":{"width":64,"height":64,"fourcc":"GREY","timestamp":9,"color":"Srgb","planes":[{"offset":0,"len":4096,"stride":64}]},"backing":{"kind":"memfd","len":4096}}"#
+    );
     let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
     assert_eq!(json["backing"]["kind"], "memfd");
     assert_eq!(json["backing"]["len"], LEN);
@@ -310,13 +315,125 @@ fn a_consumer_before_the_first_frame_waits_for_it() {
     assert_eq!(bytes(&frame)[0], 5);
 }
 
+/// Connects as a raw consumer and reads the frame message (header and payload); the
+/// connection stays open.
+fn raw_fetch(path: &std::path::Path) -> std::os::unix::net::UnixStream {
+    use std::io::Read;
+    let mut stream = std::os::unix::net::UnixStream::connect(path).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut header = [0u8; 4];
+    stream.read_exact(&mut header).unwrap();
+    let mut payload = vec![0u8; u32::from_le_bytes(header) as usize];
+    stream.read_exact(&mut payload).unwrap();
+    stream
+}
+
+/// The server closed the connection: end of stream, or a reset when the consumer's byte was
+/// still unread.
+fn assert_closed(stream: &mut std::os::unix::net::UnixStream) {
+    match std::io::Read::read(stream, &mut [0u8; 1]) {
+        Ok(0) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("connection not closed: {other:?}"),
+    }
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let t = Instant::now();
+    while !done() {
+        assert!(t.elapsed() < Duration::from_secs(2), "{what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn any_byte_or_a_close_releases_the_lease() {
+    use std::io::Write;
+    let path = socket_path("release");
+    let socket = FrameSocket::bind(&path).unwrap();
+    let camera = Camera::new(4);
+    socket.publish(&camera.capture(1).unwrap()).unwrap();
+    let mut a = raw_fetch(&path);
+    let b = raw_fetch(&path);
+    socket.publish(&camera.capture(2).unwrap()).unwrap();
+    assert_eq!((socket.stats().leases, socket.stats().held_frames), (2, 1));
+    // A byte releases the lease; the server then closes the connection.
+    a.write_all(&[0]).unwrap();
+    wait_until("byte did not release", || socket.stats().leases == 1);
+    assert_closed(&mut a);
+    // Closing (as the kernel does for a consumer that exits) releases the other.
+    drop(b);
+    wait_until("close did not release", || socket.stats().leases == 0);
+    // Frame 1's buffer is back with the camera; frame 2 (the latest) is still kept.
+    assert_eq!(camera.free.lock().len(), 3);
+    assert_eq!(socket.stats().revoked, 0);
+}
+
+#[test]
+fn at_max_hold_the_connection_closes_and_the_pixels_may_change() {
+    let path = socket_path("expiry");
+    let options = FrameSocketOptions {
+        max_hold: Some(Duration::from_millis(100)),
+        ..Default::default()
+    };
+    let socket = FrameSocket::bind_with(&path, options).unwrap();
+    let camera = Camera::new(2);
+    socket.publish(&camera.capture(1).unwrap()).unwrap();
+    let held = fetch_frame(&path, Duration::from_secs(2)).unwrap();
+    let mut raw = raw_fetch(&path);
+    socket.publish(&camera.capture(2).unwrap()).unwrap();
+    assert!(camera.capture(3).is_none(), "both buffers held: dropped");
+    // The consumer sees its connection closed at the cutoff.
+    let t = Instant::now();
+    assert_closed(&mut raw);
+    assert!(t.elapsed() < Duration::from_secs(1));
+    wait_until("not revoked", || socket.stats().revoked == 2);
+    // Its frame's buffer is the camera's again: the next capture writes it while the
+    // consumer may still have it mapped.
+    assert_eq!(bytes(&held)[0], 1);
+    socket.publish(&camera.capture(4).unwrap()).unwrap();
+    assert_eq!(bytes(&held)[0], 4, "rewritten after the cutoff");
+}
+
+#[test]
+fn consumers_get_the_newest_frame_and_nothing_queued() {
+    let path = socket_path("newest");
+    let options = FrameSocketOptions {
+        first_frame_wait: Duration::from_millis(50),
+        ..Default::default()
+    };
+    let socket = FrameSocket::bind_with(&path, options).unwrap();
+    let camera = Camera::new(4);
+    for seq in 1..=3 {
+        socket.publish(&camera.capture(seq).unwrap()).unwrap();
+    }
+    // Frames 1 and 2 were never served: one connection, one frame, the latest.
+    let first = fetch_frame(&path, Duration::from_secs(2)).unwrap();
+    assert_eq!(first.meta().timestamp, 3);
+    // Nothing new published: the same frame again (same timestamp, same buffer).
+    let again = fetch_frame(&path, Duration::from_secs(2)).unwrap();
+    assert_eq!(again.meta().timestamp, 3);
+    drop((first, again));
+    // No frame to offer: the consumer waits `first_frame_wait`, then the server closes.
+    socket.clear();
+    let t = Instant::now();
+    assert!(fetch_frame(&path, Duration::from_secs(2)).is_err());
+    assert!(t.elapsed() < Duration::from_secs(1));
+    assert_eq!(socket.stats().unserved, 1);
+    assert_eq!(socket.stats().published, 3);
+}
+
 /// Writes frame messages (memfd and dma-buf planes) to `$STYX_FUZZ_SEEDS/frame_socket_message/`
 /// as seeds for the `frame_socket_message` fuzz target (`docs/fuzzing.md`): a shape byte
 /// (descriptor count and size, see the target) and the JSON.
 #[test]
 #[ignore = "writes fuzz seeds; run with STYX_FUZZ_SEEDS set"]
 fn write_fuzz_seeds() {
-    use super::{Backing, Message, Plane};
+    use styx_core::lease_codec::{
+        LeaseBacking as Backing, LeaseMessage as Message, LeasePlane as Plane,
+    };
     let Some(dir) = std::env::var_os("STYX_FUZZ_SEEDS") else {
         return;
     };

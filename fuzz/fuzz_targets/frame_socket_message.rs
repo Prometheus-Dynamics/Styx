@@ -1,5 +1,5 @@
 //! Frame socket messages (`styx-frame-lease-v1`: JSON with the frame descriptor and its
-//! backing) as a consumer imports them, over memfds standing in for the descriptors the server
+//! backing) as a consumer imports them (`styx_core::lease_codec::decode`), over memfds standing in for the descriptors the server
 //! sends, then every plane read. A message must never make the consumer read outside what it
 //! was sent.
 //!
@@ -29,5 +29,16 @@ fuzz_target!(|data: &[u8]| {
     let count = usize::from(shape & 3) + 1;
     let len = [0, 1, 4096, 65536][usize::from(shape >> 2 & 3)];
     let fds = (0..count).map(|_| memfd(len)).collect();
-    styx::ipc::frame_socket::fuzz_import(json, fds);
+    let Ok(frame) = styx::ipc::lease_codec::decode(json, fds) else {
+        return;
+    };
+    let _ = frame.validate_plane_layouts();
+    if let Ok(planes) = frame.planes_visible() {
+        for rows in planes {
+            for row in rows {
+                std::hint::black_box(row.data().iter().fold(0u8, |a, b| a ^ b));
+            }
+        }
+    }
+    let _ = std::hint::black_box(frame.to_visible_vec());
 });

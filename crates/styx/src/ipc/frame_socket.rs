@@ -2,7 +2,7 @@
 //! camera service and its consumers (`styx-frame-lease-v1`), served so a consumer's frame is
 //! not written again while the consumer holds it.
 //!
-//! # Wire format (unchanged)
+//! # Wire format
 //!
 //! A consumer connects to the `SOCK_STREAM` socket and gets the latest frame as one message:
 //! a little-endian `u32` payload length, the JSON payload, and the frame's descriptors attached
@@ -15,25 +15,54 @@
 //! ```
 //!
 //! (`"backing": {"kind": "memfd", "len": ...}` with one descriptor for frames copied into a
-//! memfd.) This is what helios-peripherals sends and helios-engine reads
-//! ([`FrameLeaseDescriptor`] as Styx serialises it).
+//! memfd.) The message is styx-core's [`lease_codec`] (also
+//! [`crate::ipc::lease_codec`]): [`LeaseMessage`](styx_core::lease_codec::LeaseMessage), the
+//! descriptor order (memfd: one; dma-buf planes: one per plane, in plane order), the limits
+//! (4 descriptors, 64 KiB of JSON), `encode` / `decode`. A consumer that needs nothing else
+//! of Styx depends on `styx-core-rs` with the `lease-codec` feature. Providers advertise the
+//! socket as `styx-frame-lease+unix://<path>` (`lease_codec::endpoint_uri`).
 //!
-//! # Leases
+//! # Leases and flow control
 //!
-//! The connection is the lease: the server keeps the frame (and so the camera buffer behind
-//! its dma-bufs) until the consumer closes the connection, sends anything, or has held it for
-//! longer than [`FrameSocketOptions::max_hold`]; then the server closes the connection and lets
-//! the buffer go. [`fetch_frame`] keeps the connection open for as long as the returned
-//! [`FrameLease`] lives. A consumer that closes the connection as soon as it has the frame (as
-//! helios-engine does today) gets what it got before: the frame stays held while it is the
-//! latest, then for [`FrameSocketOptions::linger`].
-//!
-//! Consumers on the same frame share its buffer. The capture never waits for consumers: with
-//! every camera buffer held, frames are dropped until one comes back (the native PiSP path does
-//! this; `StyxConfig::native_output_buffers` gives it more buffers for slow consumers). A
-//! service that would rather keep the frame rate than slow consumers' leases caps the frames
-//! held for them ([`FrameSocketOptions::max_held_frames`]): publishing one more ends the leases
-//! on the oldest.
+//! - **Held:** the connection is the lease. From the moment the frame is sent, the server
+//!   keeps the frame (and so the camera buffer behind its descriptors) while the consumer keeps
+//!   the connection open. [`fetch_frame`] keeps it open for as long as the returned
+//!   [`FrameLease`] (and every view of it) lives.
+//! - **Released** when the consumer closes the connection, or sends any byte on it (the
+//!   server then closes it); when the consumer's process exits or dies, the kernel closes its
+//!   descriptors, which is the same close. The buffer is kept [`FrameSocketOptions::linger`]
+//!   longer (default zero) for consumers that close at once and read afterwards (as
+//!   helios-engine did): those are otherwise protected only while their frame is the latest.
+//! - **Expiry:** a consumer holding the frame longer than [`FrameSocketOptions::max_hold`]
+//!   (default 2 s, [`DEFAULT_MAX_HOLD`](super::DEFAULT_MAX_HOLD); `None`: no limit) loses
+//!   the lease: the server closes the connection (the consumer reads end of stream, or a reset
+//!   if it had sent unread bytes), counts it in [`FrameSocketStats::revoked`] and lets the
+//!   buffer go. The consumer's mapping stays valid (no fault, no signal) but the capture may
+//!   write the next frames into the buffer from then on: pixels read after the cutoff may
+//!   belong to later frames. A consumer that needs a frame longer copies it within `max_hold`.
+//!   [`fetch_frame`]'s caller is not told; a raw consumer sees the closed connection.
+//! - **Every buffer held:** the socket never blocks the publisher ([`FrameSocket::publish`]
+//!   only swaps the latest frame), and the capture never waits for consumers: with every
+//!   camera buffer held, it drops frames until one comes back (the native PiSP path does this,
+//!   `PipelineError::OutputsHeld` inside the capture). Meanwhile the latest frame stays what it
+//!   was, so consumers fetching then get it again (same `timestamp`). A service that would
+//!   rather keep the frame rate than slow consumers' leases caps the frames held for them
+//!   ([`FrameSocketOptions::max_held_frames`]): publishing one more ends the leases on the
+//!   oldest (counted as revoked, with the expiry's consequences).
+//! - **Sizing:** the socket keeps the latest frame (one buffer), each frame some consumer
+//!   holds keeps one more (consumers on the same frame share its buffer), and the ISP and the
+//!   capture queue need theirs. On a native PiSP give each output
+//!   `StyxConfig::native_output_buffers` of at least N + 3, N the distinct frames consumers may
+//!   hold at once: at most the number of consumers, and fewer when they fetch within the same
+//!   frame period. N consumers each holding a frame across a graph tick need N + 3; the default
+//!   6 serves three without a dropped frame (measured on the CM5, `docs/native-stack/pipeline.md`).
+//! - **Ordering:** a connection gets one frame, the latest published when it is served (a
+//!   consumer that connects before the first frame waits up to
+//!   [`FrameSocketOptions::first_frame_wait`], then the connection is closed with nothing
+//!   sent). Nothing is queued: frames published between two fetches are never seen, and a
+//!   fetch after nothing new was published returns the same frame. The message carries no
+//!   sequence number; the descriptor's `timestamp` (the frame's capture timestamp) tells frames
+//!   apart: equal means the same frame, later means newer.
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -43,36 +72,14 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use styx_core::lease_codec;
 use styx_core::prelude::*;
 
 use super::{IpcError, socket};
 
-/// The transport name helios-peripherals writes in its stream metadata.
-pub const FRAME_SOCKET_TRANSPORT: &str = "styx-frame-lease-v1";
-/// Most descriptors a frame message carries.
-const MAX_FDS: usize = 4;
-/// Largest JSON payload accepted.
-const MAX_PAYLOAD: usize = 64 * 1024;
-
-#[derive(Serialize, Deserialize)]
-struct Message {
-    descriptor: FrameLeaseDescriptor,
-    backing: Backing,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Backing {
-    Memfd { len: usize },
-    DmabufPlanes { planes: Vec<Plane> },
-}
-
-#[derive(Serialize, Deserialize)]
-struct Plane {
-    offset: usize,
-    len: usize,
-}
+/// The transport name helios-peripherals writes in its stream metadata
+/// ([`lease_codec::TRANSPORT`]).
+pub const FRAME_SOCKET_TRANSPORT: &str = lease_codec::TRANSPORT;
 
 /// How a [`FrameSocket`] treats consumers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -277,34 +284,7 @@ impl WakeExt for &UnixStream {
 /// buffer kept), other memory copied once into a memfd.
 fn export(frame: &FrameLease) -> Result<Served, IpcError> {
     let keep = frame.external_backing_handle().filter(|b| b.can_export());
-    let (descriptor, backing) = frame.export_or_copy_memfd()?;
-    let (backing, fds) = match backing {
-        FrameBackingExport::Memfd { fd, len } => (Backing::Memfd { len }, vec![fd]),
-        FrameBackingExport::DmabufPlanes { planes } => {
-            let wire = planes
-                .iter()
-                .map(|p| Plane {
-                    offset: p.offset,
-                    len: p.len,
-                })
-                .collect();
-            (
-                Backing::DmabufPlanes { planes: wire },
-                planes.into_iter().map(|p| p.fd).collect(),
-            )
-        }
-    };
-    if fds.len() > MAX_FDS {
-        return Err(IpcError::Malformed("too many planes"));
-    }
-    let payload = serde_json::to_vec(&Message {
-        descriptor,
-        backing,
-    })
-    .map_err(|_| IpcError::Malformed("frame descriptor not serialisable"))?;
-    let mut message = Vec::with_capacity(4 + payload.len());
-    message.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    message.extend_from_slice(&payload);
+    let (message, fds) = lease_codec::encode_framed(frame)?;
     Ok(Served {
         number: 0,
         message,
@@ -468,12 +448,10 @@ pub fn fetch_frame(path: impl AsRef<Path>, wait: Duration) -> Result<FrameLease,
     let mut bytes = Vec::new();
     let mut fds = Vec::new();
     let payload_len = loop {
-        if bytes.len() >= 4 {
-            let len = u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")) as usize;
-            if len > MAX_PAYLOAD {
-                return Err(IpcError::Malformed("frame message too large"));
-            }
-            if bytes.len() >= 4 + len {
+        const HEADER: usize = lease_codec::HEADER_LEN;
+        if bytes.len() >= HEADER {
+            let len = lease_codec::payload_len(bytes[..HEADER].try_into().expect("header"))?;
+            if bytes.len() >= HEADER + len {
                 break len;
             }
         }
@@ -490,7 +468,8 @@ pub fn fetch_frame(path: impl AsRef<Path>, wait: Duration) -> Result<FrameLease,
             socket::Received::Closed => return Err(IpcError::Malformed("no frame served")),
         }
     };
-    let imported = import(&bytes[4..4 + payload_len], fds)?;
+    let payload = &bytes[lease_codec::HEADER_LEN..lease_codec::HEADER_LEN + payload_len];
+    let imported = lease_codec::decode(payload, fds)?;
     let inner = imported
         .external_backing_handle()
         .ok_or(IpcError::Malformed("frame without backing"))?;
@@ -507,41 +486,11 @@ pub fn fetch_frame(path: impl AsRef<Path>, wait: Duration) -> Result<FrameLease,
     ))
 }
 
-/// The frame a server's message describes, over the descriptors that came with it.
-fn import(payload: &[u8], mut fds: Vec<OwnedFd>) -> Result<FrameLease, IpcError> {
-    let message: Message = serde_json::from_slice(payload)
-        .map_err(|_| IpcError::Malformed("frame message is not valid JSON"))?;
-    Ok(match message.backing {
-        Backing::Memfd { .. } => {
-            let fd = fds.pop().filter(|_| fds.is_empty());
-            let fd = fd.ok_or(IpcError::Malformed("memfd frame needs one descriptor"))?;
-            FrameLease::from_memfd_import(message.descriptor, fd)?
-        }
-        Backing::DmabufPlanes { planes } => {
-            if planes.len() != fds.len() {
-                return Err(IpcError::Malformed(
-                    "descriptor count does not match the planes",
-                ));
-            }
-            let planes = fds
-                .into_iter()
-                .zip(planes)
-                .map(|(fd, p)| FrameFdPlane {
-                    fd,
-                    offset: p.offset,
-                    len: p.len,
-                })
-                .collect();
-            FrameLease::from_dmabuf_import(message.descriptor, planes)?
-        }
-    })
-}
-
 /// Import `payload` as a frame message over `fds` (memfds standing in for what a server
-/// sends) and read every plane, as a consumer would. For fuzzing.
+/// sends) with [`lease_codec::decode`] and read every plane, as a consumer would. For fuzzing.
 #[doc(hidden)]
 pub fn fuzz_import(payload: &[u8], fds: Vec<OwnedFd>) {
-    if let Ok(frame) = import(payload, fds) {
+    if let Ok(frame) = lease_codec::decode(payload, fds) {
         let _ = frame.validate_plane_layouts();
         if let Ok(planes) = frame.planes_visible() {
             for rows in planes {

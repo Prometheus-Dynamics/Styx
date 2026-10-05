@@ -363,7 +363,7 @@ pub(super) fn create_memfd(name: &str) -> Result<OwnedFd, FrameExportError> {
 
 /// The size of the memory behind `fd`: a memfd's (or file's) length, a dma-buf's size; `None`
 /// when it cannot be told.
-pub(super) fn fd_size(fd: &OwnedFd) -> Option<u64> {
+pub(crate) fn fd_size(fd: &OwnedFd) -> Option<u64> {
     if let Some(size) = regular_file_size(fd) {
         return Some(size);
     }
