@@ -1,8 +1,8 @@
 //! [`Arithmetic::Half`]'s tables: fp16 black levels and channel gains, lens shading rows, the
 //! colour matrix with the demosaic folded in, and the tone curve's segments.
 
-use alloc::sync::Arc;
 use alloc::{vec, vec::Vec};
+use styx_core::sync::Arc;
 
 use crate::format::RawFormat;
 use crate::params::{Arithmetic, ColorMatrix, Demosaic, IspParams, LensShading, ToneCurve};

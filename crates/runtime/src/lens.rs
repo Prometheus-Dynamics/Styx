@@ -12,8 +12,8 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::sync::Arc;
 use core::time::Duration;
+use styx_core::sync::Arc;
 
 use styx_hal::LensActuator;
 use styx_sensor::lens::imx708_pdaf;

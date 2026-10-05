@@ -18,7 +18,7 @@ styx-algo = { path = "../../crates/algo", default-features = false }
 styx-core = { package = "styx-core-rs", path = "../../crates/core", default-features = false, features = ["neon", "x86"] }
 styx-dng = { path = "../../crates/dng", default-features = false }
 styx-pisp = { path = "../../crates/pisp", default-features = false }
-styx-sensor = { path = "../../crates/sensor", default-features = false, features = ["postcard"] }
+styx-sensor = { path = "../../crates/sensor", default-features = false, features = ["postcard", "toml"] }
 styx-softisp = { path = "../../crates/softisp", default-features = false, features = ["neon", "x86"] }
 
 # The OV9782 description compiled at build time (validated on the host, postcard bytes in

@@ -15,8 +15,11 @@
 //! and in the firmware (`styx-sensor` with feature `postcard`, no `std`):
 //!
 //! ```ignore
-//! let desc = SensorDescription::from_postcard(styx_sensor::include_description!("ov5640"))?;
+//! let desc = SensorDescription::from_compiled(styx_sensor::include_description!("ov5640"))?;
 //! ```
+//!
+//! (`from_compiled` trusts the build's validation; `from_postcard` validates again, for bytes
+//! from elsewhere.)
 
 use alloc::borrow::ToOwned;
 use alloc::string::ToString;
@@ -38,6 +41,18 @@ impl SensorDescription {
             issues,
         })?;
         Ok(desc)
+    }
+
+    /// A description `styx_sensor::build` compiled in this crate's build script
+    /// ([`include_description!`](crate::include_description)): decoded without validating it
+    /// again (the build did, with this same crate), so the validator and its messages stay out
+    /// of a firmware image (docs/mcu.md). Bytes from anywhere else (a file, a flash partition
+    /// written later) go through [`Self::from_postcard`].
+    pub fn from_compiled(bytes: &[u8]) -> Result<Self> {
+        postcard::from_bytes(bytes).map_err(|e| SensorError::Parse {
+            source_name: "compiled description".to_owned(),
+            message: e.to_string(),
+        })
     }
 
     /// The compiled form.
@@ -75,8 +90,10 @@ mod tests {
                 bytes.len()
             );
             assert_eq!(SensorDescription::from_postcard(&bytes).unwrap(), d);
+            assert_eq!(SensorDescription::from_compiled(&bytes).unwrap(), d);
         }
         assert!(!BUILTIN_KERNEL_DATA.is_empty());
         assert!(SensorDescription::from_postcard(&[1, 2, 3]).is_err());
+        assert!(SensorDescription::from_compiled(&[1, 2, 3]).is_err());
     }
 }

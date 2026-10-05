@@ -10,12 +10,12 @@
 mod asynchronous;
 mod core;
 
+use crate::Arc;
 use ::core::future::Future;
 use ::core::pin::pin;
 use ::core::task::{Context, Poll, Waker};
 use ::core::time::Duration;
 use alloc::string::String;
-use alloc::sync::Arc;
 
 use styx_hal::{Blocking, SensorPins};
 

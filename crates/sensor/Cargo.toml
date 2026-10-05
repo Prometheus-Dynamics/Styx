@@ -12,12 +12,16 @@ rust-version.workspace = true
 default = ["std"]
 # Descriptions and data files from paths (`from_file`), `NoPins` and the sleeping default of
 # `SensorPins::delay`, `std::io::Error` conversions of `BusError`, float maths from std.
-# Without it the crate is `no_std` + `alloc` (descriptions from strings, timing, gain models,
-# the control scheduler, embedded data, lenses, the driver over a `RegisterBus`;
-# docs/portability.md).
-std = ["serde/std", "thiserror/std", "toml/std", "styx-hal/std", "lemnos-hal/std"]
-# Descriptions in a compact binary form (postcard): `SensorDescription::from_postcard`, for
-# targets that should not carry a TOML parser. `no_std`.
+# Without it the crate is `no_std` + `alloc` (descriptions from TOML strings with `toml` or
+# compiled with `postcard`, timing, gain models, the control scheduler, embedded data, lenses,
+# the driver over a `RegisterBus`; docs/portability.md).
+std = ["serde/std", "thiserror/std", "toml", "toml?/std", "styx-hal/std", "lemnos-hal/std"]
+# Descriptions and kernel-sensor data files from TOML strings (`from_toml_str`,
+# `KernelSensorData::builtin`); on with `std`. A firmware reads compiled descriptions instead
+# (`postcard`), with no TOML parser in the image (docs/mcu.md).
+toml = ["dep:toml"]
+# Descriptions in a compact binary form (postcard): `SensorDescription::from_postcard` and
+# `from_compiled`, for targets that should not carry a TOML parser. `no_std`.
 postcard = ["dep:postcard"]
 # The build-script helper (`styx_sensor::build`): validates description files on the host and
 # compiles them to that form, so a broken description fails the firmware build. Use it as a
@@ -33,9 +37,15 @@ lemnos-hal.workspace = true
 lemnos-drivers-vcm.workspace = true
 serde = { workspace = true, features = ["alloc"] }
 thiserror.workspace = true
-toml = { version = "1.1", default-features = false, features = ["serde", "parse", "display"] }
+toml = { version = "1.1", default-features = false, features = ["serde", "parse", "display"], optional = true }
 libm.workspace = true
 postcard = { workspace = true, optional = true }
+
+# `Arc` where `alloc::sync` does not exist (no compare-and-swap: Cortex-M0+), the same one
+# styx-core uses there; atomics through the platform's critical section (styx-core's
+# `critical-section` feature).
+[target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]
+portable-atomic-util.workspace = true
 
 [dev-dependencies]
 styx-hal = { workspace = true, features = ["mock"] }
