@@ -6,8 +6,10 @@ copying them.
 - **`CameraService`** owns a camera. Each client process asks for the frames it needs, and the
   service plans one shared capture for all of them.
 - **`FrameServer`** publishes frames your own code produces to whoever connects.
+- **`FrameSocket`** (feature `frame-socket`) serves the latest frame, leased, in the
+  `styx-frame-lease-v1` format HeliOS uses (see [Frame socket](#frame-socket-styx-frame-lease-v1)).
 
-Both deliver to a `FrameClient`, which receives ordinary `FrameLease`s.
+The first two deliver to a `FrameClient`, which receives ordinary `FrameLease`s.
 
 ## Camera service
 
@@ -109,6 +111,79 @@ for frame in &mut frames {
 ```
 
 Clients connect with `FrameClient::connect` and get every published frame they have room for.
+
+## Frame socket (`styx-frame-lease-v1`)
+
+```rust
+use styx::ipc::{FrameSocket, fetch_frame, lease_codec};
+
+let socket = FrameSocket::bind("/run/styx/front-frames.sock")?;
+// Advertise it (an Orion `ResourceEndpoint::Custom`: scheme `styx-frame-lease+unix`, the
+// path as payload): "styx-frame-lease+unix:///run/styx/front-frames.sock".
+let uri = lease_codec::endpoint_uri(socket.path());
+for frame in &mut frames {
+    socket.publish(&frame)?; // never blocks
+}
+
+// A consumer, in another process: the frame is leased while `frame` lives.
+let frame = fetch_frame("/run/styx/front-frames.sock", Duration::from_secs(1))?;
+```
+
+Each connection gets the latest frame once, as a little-endian `u32` length, a JSON payload and
+the frame's descriptors (`SCM_RIGHTS`) in one `sendmsg`. Styx owns the message and the lease:
+discovery (Orion) carries only the endpoint record, never frame bytes or lease state.
+
+**The message** is `styx_core::lease_codec` (feature `lease-codec` of `styx-core-rs`, unix;
+re-exported as `styx::ipc::lease_codec`), so a consumer needs no more of Styx:
+
+- `LeaseMessage { descriptor: FrameLeaseDescriptor, backing: LeaseBacking }`, `LeaseBacking`
+  `Memfd { len }` (JSON `{"kind": "memfd", "len": ...}`) or `DmabufPlanes { planes: [LeasePlane
+  { offset, len }] }` (`{"kind": "dmabuf_planes", ...}`).
+- Descriptor order: `Memfd` one descriptor holding every plane at its descriptor offset;
+  `DmabufPlanes` one descriptor per plane, in plane order.
+- Limits: `MAX_FDS` 4 descriptors, `MAX_PAYLOAD` 64 KiB of JSON; `TRANSPORT` is
+  `"styx-frame-lease-v1"`.
+- `encode(&FrameLease) -> (payload, fds)` (dma-bufs and memfds as they are, other frames copied
+  once into a memfd; `encode_framed` adds the length), `decode(&payload, fds) -> FrameLease`:
+  checks the payload size, the descriptor count against the backing, every plane within its
+  descriptor (a memfd's `len` within the memfd) and the layouts against the format, with a
+  typed `LeaseCodecError`. `payload_len(header)` reads the length.
+- `endpoint_uri(path)`, `parse_endpoint_uri(uri)`, `parse_endpoint(scheme, payload)`: the
+  `styx-frame-lease+unix://<absolute path>` record (scheme in any case).
+
+**Holds and flow control:**
+
+- *Held* from the send while the consumer keeps the connection open (`fetch_frame`: while the
+  returned frame lives). Consumers on the same frame share its buffer.
+- *Released* when the consumer closes the connection or sends any byte (the server then
+  closes it); a consumer that exits or dies has its descriptors closed by the kernel, which
+  releases the same way. `FrameSocketOptions::linger` (default 0) keeps the buffer a little
+  longer for consumers that close at once and read afterwards.
+- *Expiry:* after `FrameSocketOptions::max_hold` (default 2 s) the server closes the connection
+  (the consumer reads end of stream, or a reset if it had sent unread bytes) and lets the buffer
+  go; `FrameSocketStats::revoked` counts it. The consumer's mapping stays valid, but later
+  captures may write the buffer: pixels read after the cutoff may belong to newer frames. Copy a
+  frame you need for longer.
+- *Every buffer held:* `publish` never blocks and the capture never waits: it drops frames
+  until a buffer comes back (native PiSP: `PipelineError::OutputsHeld` inside the capture), and
+  the latest frame stays the same meanwhile, so fetches return it again.
+  `FrameSocketOptions::max_held_frames` caps the frames held for consumers besides the latest:
+  one more ends the leases on the oldest (counted as revoked).
+- *Sizing:* the socket keeps the latest frame, each distinct frame a consumer holds keeps one
+  more buffer, and the ISP and the capture queue keep theirs. On a native PiSP use
+  `StyxConfig::native_output_buffers` ≥ N + 3, N the distinct frames held at once (at most the
+  consumers; consumers fetching in the same frame period share one). N consumers each holding a
+  frame across a graph tick: N + 3. The default 6 served three consumers holding 500 ms each at
+  30 fps without a gap; 4 dropped frames with two ([native-stack/pipeline.md](native-stack/pipeline.md)).
+- *Ordering:* one frame per connection, the newest published when it is served; nothing is
+  queued, so frames between two fetches are skipped and a fetch with nothing new returns the
+  same frame. The message has no sequence number: the descriptor's `timestamp` (the capture
+  time) is equal for the same frame and larger for a newer one. A consumer connecting before
+  any frame waits `first_frame_wait` (1 s), then the connection is closed with nothing sent.
+
+Each rule is a host test (`crates/styx/src/ipc/frame_socket_tests.rs`), the message bytes have a
+golden test (`crates/core/src/lease_codec_tests.rs`), and `decode` is fuzzed (target
+`frame_socket_message`).
 
 ## How frames travel
 

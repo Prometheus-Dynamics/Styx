@@ -36,10 +36,12 @@ pub use companion::{CompanionKind, box_downscale_luma, box_downscale_luma_in};
 pub use region::{MemoryRegion, RegionHooks};
 #[cfg(all(feature = "std", unix))]
 mod shared_fd;
+#[cfg(all(feature = "std", unix))]
+use shared_fd::SharedFdBacking;
 #[cfg(all(feature = "std", target_os = "linux"))]
 use shared_fd::create_memfd;
 #[cfg(all(feature = "std", unix))]
-use shared_fd::{SharedFdBacking, fd_size};
+pub(crate) use shared_fd::fd_size;
 
 /// External backing for frames when zero-copy sharing external memory.
 ///

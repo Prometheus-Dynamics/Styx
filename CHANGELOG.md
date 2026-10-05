@@ -8,6 +8,19 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added a public `styx-frame-lease-v1` codec without a transport: `styx_core::lease_codec`
+  (styx-core feature `lease-codec`, unix; re-exported as `styx::ipc::lease_codec`) with
+  `LeaseMessage { descriptor, backing }`, `LeaseBacking::{Memfd { len }, DmabufPlanes { planes }}`,
+  `LeasePlane { offset, len }` (the frame socket's JSON, unchanged and golden-tested), the
+  descriptor order (memfd: one; dma-buf planes: one per plane, in order), `MAX_FDS`,
+  `MAX_PAYLOAD`, `TRANSPORT`, `HEADER_LEN`, `encode` / `encode_framed` / `payload_len` /
+  `decode` / `decode_message` with a typed `LeaseCodecError` (descriptor count, payload size,
+  planes within their descriptors, a memfd's `len` within the memfd), and the endpoint record
+  helpers `endpoint_uri`, `endpoint_payload`, `parse_endpoint_uri`, `parse_endpoint`
+  (`styx-frame-lease+unix://<path>`). `FrameSocket` and `fetch_frame` use it; codec errors are
+  `IpcError::Lease`. The `frame_socket_message` fuzz target decodes through it. The frame
+  socket's hold, release, expiry, every-buffer-held, sizing and ordering rules are documented
+  (module docs, `docs/frame-server.md`) and each is a host test.
 - Added writable frames over caller-provided memory: `MemoryRegion::from_raw_mut` /
   `from_static_mut` make a region a frame writes in place (`planes_mut`, the new
   `FrameLease::plane_data_mut`, `visible_rows_mut` and the visible-plane copies) while it is the

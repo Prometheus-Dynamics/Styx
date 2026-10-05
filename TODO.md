@@ -101,6 +101,9 @@ box (OV9782 1280x800) unless stated.
 - [x] GStreamer `styxsrc` + device provider (`crates/gst-styx`).
 - [x] PipeWire camera node daemon (`crates/pipewire-styx`).
 - [x] Frame socket with leases (`styx::ipc::FrameSocket`, HeliOS wire format).
+- [x] Public frame-lease codec (`styx_core::lease_codec`: message, descriptor order, limits,
+      encode/decode, `styx-frame-lease+unix://` endpoint records) and the frame socket's hold and
+      flow-control rules documented and tested (`docs/frame-server.md`).
 - [x] Examples for every task (listing, planned capture, async, controls and metadata, shared
       captures, other processes, raw frames and recordings, hotplug, adding a camera), run on the
       CM5; [docs/comparison.md](docs/comparison.md) against libcamera, V4L2 and GStreamer, with a
@@ -145,7 +148,9 @@ box (OV9782 1280x800) unless stated.
 ### HeliOS (branch `styx-native-trial`)
 - [ ] Merge the branch; build helios-peripherals without the `libcamera` feature.
 - [ ] Publish frames through `styx::ipc::FrameSocket` and keep the engine's connection open while
-      it holds a frame (real leases).
+      it holds a frame (real leases); advertise it to Orion as `styx-frame-lease+unix://<path>`
+      (`lease_codec::endpoint_uri`) and decode with `styx_core::lease_codec` (feature
+      `lease-codec`).
 - [ ] Image: drop libcamera/libpisp, add the bridge module (Buildroot snippet in
       `kernel-modules/styx-sensor-bridge/buildroot`), config.txt overlay lines.
 - [ ] Not yet tested: a real CSI unplug, controls set by HeliOS, runs longer than 2 h.

@@ -338,6 +338,15 @@ client 17.9%.
   buffer (`StyxConfig::native_output_buffers` adds buffers), and Styx's own camera service and
   frame server bound holds the same way (`max_hold`). Measured on the CM5: two consumers
   holding 500 ms each saw no change in 80 holds; see `pipeline.md`.
+  The message is now a public codec in styx-core (`styx_core::lease_codec`, feature
+  `lease-codec`; `styx::ipc::lease_codec`): `LeaseMessage`/`LeaseBacking`/`LeasePlane` (the same
+  JSON, golden-tested), `encode`/`decode` with typed errors, `MAX_FDS`/`MAX_PAYLOAD`/`TRANSPORT`,
+  and `endpoint_uri`/`parse_endpoint_uri` for the `styx-frame-lease+unix:///run/...` record.
+  Agreed split: Styx owns frame content and lease/flow control; Orion only carries discovery
+  and the endpoint record (`ResourceEndpoint::Custom`, scheme `styx-frame-lease+unix`, the path
+  as payload) and never frame bytes or lease state (its generic `UnixFdLatest*` has no
+  hold/release); HeliOS connects to the `FrameSocket` the record names. The hold, expiry,
+  every-buffer-held, sizing and ordering rules are in `docs/frame-server.md`.
 * helios-engine at a 10 ms execution interval took 27-30 of the 30 frames/s (a tick also
   publishes its session to Orion); the default 250 ms takes 4. An engine that waits for the
   next frame instead of polling would take all of them.

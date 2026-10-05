@@ -42,6 +42,9 @@ x86 = []
 # compatibility.
 async = ["std"]
 serde = ["dep:serde", "smallvec/serde"]
+# The `styx-frame-lease-v1` frame message (`lease_codec`, unix): what Styx's frame socket sends,
+# encoded and decoded without a transport, for consumers that need no more of Styx.
+lease-codec = ["std", "serde", "dep:serde_json"]
 schema = ["std", "dep:utoipa", "serde"]
 # Daedalus integration: the `styx:framelease` type, its descriptor, a metadata adapter and
 # zero-copy payload wrapping, registered by one plugin (`styx_core::daedalus`, docs/daedalus.md).
@@ -52,6 +55,7 @@ smallvec.workspace = true
 parking_lot = { workspace = true, optional = true }
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
+serde_json = { workspace = true, optional = true }
 utoipa = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 libm.workspace = true

@@ -34,6 +34,8 @@ pub use views::{
     FramePlaneShape, Plane, PlaneMut, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
 };
 
+#[cfg(all(feature = "lease-codec", unix))]
+pub(crate) use frame::fd_size;
 pub use frame::{
     CompanionKind, ExternalBacking, FrameLease, FrameLeaseParts, MemoryRegion, RegionHooks,
     box_downscale_luma, box_downscale_luma_in, shared_backing,

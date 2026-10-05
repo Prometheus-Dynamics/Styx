@@ -11,6 +11,8 @@ pub mod controls;
 #[cfg(feature = "daedalus")]
 pub mod daedalus;
 pub mod format;
+#[cfg(all(feature = "lease-codec", unix))]
+pub mod lease_codec;
 pub mod math;
 pub mod metrics;
 pub mod queue;

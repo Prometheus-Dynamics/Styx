@@ -43,6 +43,11 @@ pub use self::service::{
 };
 pub use self::socket::PeerCredentials;
 pub use self::wire::CameraInfo;
+/// The `styx-frame-lease-v1` message codec the frame socket uses (styx-core's
+/// `lease_codec`; a consumer that needs nothing else depends on `styx-core-rs` with the
+/// `lease-codec` feature).
+#[cfg(feature = "frame-socket")]
+pub use styx_core::lease_codec;
 
 /// Decides whether a connecting process may be served.
 type Authorize = dyn Fn(&PeerCredentials) -> bool + Send + Sync;
@@ -62,6 +67,10 @@ pub enum IpcError {
     Export(#[from] FrameExportError),
     #[error("malformed message: {0}")]
     Malformed(&'static str),
+    /// A frame socket message (`styx-frame-lease-v1`) could not be encoded or decoded.
+    #[cfg(feature = "frame-socket")]
+    #[error("frame lease message: {0}")]
+    Lease(#[from] styx_core::lease_codec::LeaseCodecError),
     /// The camera service cannot serve the requested frames next to its other clients.
     #[error("camera service rejected the request: {0}")]
     Rejected(String),
