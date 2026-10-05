@@ -147,7 +147,9 @@ bracket 281.4 / 735.4 KB. What changed:
   top of streaming.
 
 Allocator overhead and fragmentation come on top: size the heap at about 1.5 times the
-"other" column plus whatever frame buffers it holds.
+"other" column plus whatever frame buffers it holds. Not on the heap: the metrics `Counters`
+(6.4 KB of counters and latency rings, on D's stack here; a firmware keeps them in a
+`static`), and stack use in general, which is not measured.
 
 ## Frame buffers
 
