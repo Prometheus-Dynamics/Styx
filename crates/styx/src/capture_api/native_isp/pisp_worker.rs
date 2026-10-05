@@ -43,7 +43,7 @@ pub(super) fn output_specs(
     main.be_format()?;
     if let Some((width, height)) = cfg.overview {
         if cfg.second_output.is_some() {
-            tracing::warn!(
+            crate::trace::warn!(
                 backend = "native",
                 "second output disabled: the overview uses the second output"
             );
@@ -58,7 +58,7 @@ pub(super) fn output_specs(
     let level = cfg.pyramid_level.min(3);
     if level > 0 && !cfg.pyramid_pass() {
         if cfg.second_output.is_some() {
-            tracing::warn!(
+            crate::trace::warn!(
                 backend = "native",
                 level,
                 "second output disabled: the pyramid companion uses it"
@@ -228,7 +228,7 @@ pub(super) fn spawn(
                     match p.set_output_crop(0, crop.map(be_crop)) {
                         Ok(()) => w.crop = crop,
                         Err(e) => {
-                            tracing::warn!(backend = "native", error = %e, "output crop refused");
+                            crate::trace::warn!(backend = "native", error = %e, "output crop refused");
                             w.loop_controls.crop.revert(w.crop);
                         }
                     }
@@ -243,13 +243,13 @@ pub(super) fn spawn(
                         held_drops += 1;
                         w.live.isp_skipped();
                         if held_drops == 1 {
-                            tracing::info!(
+                            crate::trace::info!(
                                 backend = "native",
                                 output,
                                 "consumers hold every back end buffer: dropping frames until one is released"
                             );
                         } else {
-                            tracing::debug!(backend = "native", output, held_drops, "frame dropped: buffers held");
+                            crate::trace::debug!(backend = "native", output, held_drops, "frame dropped: buffers held");
                         }
                         continue;
                     }
@@ -283,7 +283,7 @@ pub(super) fn spawn(
             // Leases still out return their buffers to a closed channel; the back end frees
             // its buffers once they are dropped.
             if let Err(e) = p.close() {
-                tracing::warn!(backend = "native", error = %e, "closing the PiSP path");
+                crate::trace::warn!(backend = "native", error = %e, "closing the PiSP path");
             }
             if w.owns_queue {
                 tx.close();

@@ -73,7 +73,7 @@ pub(crate) fn start_simulation(
     let state_for_worker = state.clone();
 
     let worker_fn = move || {
-        tracing::debug!(backend = "simulation", "capture worker started");
+        crate::trace::debug!(backend = "simulation", "capture worker started");
         let output_res = mode_clone.format.resolution;
         let rgb_frame_len = (output_res.width.get() as usize)
             .saturating_mul(output_res.height.get() as usize)
@@ -159,7 +159,7 @@ pub(crate) fn start_simulation(
                 break;
             }
         }
-        tracing::debug!(backend = "simulation", "capture worker stopped");
+        crate::trace::debug!(backend = "simulation", "capture worker stopped");
     };
 
     let worker = WorkerHandle::Thread(thread::spawn(worker_fn));

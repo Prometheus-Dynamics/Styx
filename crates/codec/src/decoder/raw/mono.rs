@@ -3,7 +3,6 @@ use styx_core::prelude::*;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
-use rayon::prelude::*;
 
 /// Monochrome 8-bit → RGB24 (channel replicate).
 pub struct Mono8ToRgbDecoder {
@@ -65,13 +64,10 @@ impl Mono8ToRgbDecoder {
         }
 
         let src = plane.data();
-        dst[..out_len]
-            .par_chunks_mut(row_bytes)
-            .enumerate()
-            .for_each(|(y, dst_line)| {
-                let src_line = &src[y * stride..][..width];
-                styx_core::simd::gray8_to_rgb24_row(src_line, dst_line, width);
-            });
+        crate::par::for_each_row(&mut dst[..out_len], row_bytes, |y, dst_line| {
+            let src_line = &src[y * stride..][..width];
+            styx_core::simd::gray8_to_rgb24_row(src_line, dst_line, width);
+        });
 
         Ok(FrameMeta::new(
             MediaFormat::new(
@@ -264,13 +260,10 @@ impl Mono16ToRgbDecoder {
         }
 
         let src = plane.data();
-        dst[..out_len]
-            .par_chunks_mut(row_bytes)
-            .enumerate()
-            .for_each(|(y, dst_line)| {
-                let src_line = &src[y * stride..][..width * 2];
-                styx_core::simd::gray16le_to_rgb24_row(src_line, dst_line, width);
-            });
+        crate::par::for_each_row(&mut dst[..out_len], row_bytes, |y, dst_line| {
+            let src_line = &src[y * stride..][..width * 2];
+            styx_core::simd::gray16le_to_rgb24_row(src_line, dst_line, width);
+        });
 
         Ok(FrameMeta::new(
             MediaFormat::new(

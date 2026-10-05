@@ -2,13 +2,21 @@
 //!
 //! [`StreamRecorder`] writes frames with their full metadata to a recording: pixel data or
 //! bitstream, timestamp and clock, backend sequence numbers, crop, timing and pyramid
-//! companions. Recordings are MCAP files (feature `replay-mcap`, on by default) that ROS 2
+//! companions. Recordings are MCAP files (feature `replay-mcap`, opt-in) that ROS 2
 //! tools and Foxglove can open; the experimental `.styxrec` format is available with feature
 //! `replay-styxrec`. [`CaptureRequest::replay_source`](crate::capture_api::CaptureRequest::replay_source)
 //! plays it back as a camera, so pipelines and the planner run on recorded data exactly as they
 //! would live.
 //!
-//! ```rust,no_run
+#![cfg_attr(
+    any(feature = "replay-mcap", feature = "replay-styxrec"),
+    doc = "```rust,no_run"
+)]
+// Without a recording format there is no `StreamRecorder` to show.
+#![cfg_attr(
+    not(any(feature = "replay-mcap", feature = "replay-styxrec")),
+    doc = "```rust,ignore"
+)]
 //! use std::time::Duration;
 //! use styx::prelude::*;
 //!
@@ -328,6 +336,9 @@ pub fn open_recording_reader(
         let mut magic = [0u8; 8];
         let n = read_up_to(&mut reader, &mut magic)?;
         let start = std::io::Cursor::new(magic[..n].to_vec()).chain(reader);
+        // `.styxrec` frames are bounded by their own headers.
+        #[cfg(not(feature = "replay-mcap"))]
+        let _ = len;
         #[cfg(feature = "replay-mcap")]
         if magic[..n] == mcap::MAGIC[..] {
             let limit = usize::try_from(len).unwrap_or(usize::MAX);
@@ -438,7 +449,7 @@ pub(crate) fn frame_from_payload(
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "replay-mcap", feature = "replay-styxrec")))]
 mod corruption_tests;
-#[cfg(test)]
+#[cfg(all(test, any(feature = "replay-mcap", feature = "replay-styxrec")))]
 mod tests;

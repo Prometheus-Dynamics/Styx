@@ -70,7 +70,7 @@ pub(super) fn start_replay(
             }
         };
         if let Err(err) = result {
-            tracing::warn!(backend = "replay", error = %err, "replay failed");
+            crate::trace::warn!(backend = "replay", error = %err, "replay failed");
             *worker_error_for_thread.lock() = Some(CaptureError::Backend(format!("replay: {err}")));
         }
         // End of the recording: queued frames drain, then receivers see `Closed`.

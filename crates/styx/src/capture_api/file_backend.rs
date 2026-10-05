@@ -113,7 +113,7 @@ pub(super) fn start_file(
 
     let worker_state = control_state.clone();
     let worker_fn = move || {
-        tracing::debug!(backend = "file", "capture worker started");
+        crate::trace::debug!(backend = "file", "capture worker started");
         let output_res = mode_clone.format.resolution;
         let pool_limits = capture_tunables.pool_limits(
             4,
@@ -136,7 +136,7 @@ pub(super) fn start_file(
         loop {
             for (path_idx, path) in paths.iter().enumerate() {
                 if file_stop_requested(&stop_rx, Duration::ZERO) {
-                    tracing::debug!(backend = "file", "capture worker stopped");
+                    crate::trace::debug!(backend = "file", "capture worker stopped");
                     return;
                 }
                 #[cfg(feature = "file-backend-video")]
@@ -228,7 +228,7 @@ pub(super) fn start_file(
                                 .saturating_add(frame_delay_ms.saturating_mul(1_000_000));
                             if file_stop_requested(&stop_rx, Duration::from_millis(frame_delay_ms))
                             {
-                                tracing::debug!(backend = "file", "capture worker stopped");
+                                crate::trace::debug!(backend = "file", "capture worker stopped");
                                 return;
                             }
                         }
@@ -237,7 +237,7 @@ pub(super) fn start_file(
                 }
 
                 if file_stop_requested(&stop_rx, Duration::from_millis(frame_delay_ms)) {
-                    tracing::debug!(backend = "file", "capture worker stopped");
+                    crate::trace::debug!(backend = "file", "capture worker stopped");
                     return;
                 }
             }
@@ -246,7 +246,7 @@ pub(super) fn start_file(
                 break;
             }
         }
-        tracing::debug!(backend = "file", "capture worker stopped");
+        crate::trace::debug!(backend = "file", "capture worker stopped");
     };
 
     let worker = WorkerHandle::Thread(thread::spawn(worker_fn));

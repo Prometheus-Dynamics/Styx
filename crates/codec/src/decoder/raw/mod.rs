@@ -1,7 +1,5 @@
 //! Raw format decoders (pixel format conversions).
 
-#[cfg(feature = "raw-decoders")]
-use rayon::prelude::*;
 use styx_core::prelude::*;
 
 #[cfg(any(feature = "raw-decoders", target_os = "linux"))]
@@ -148,13 +146,11 @@ pub(crate) fn decode_strided_rows_to_rgb24(
     dst_row_bytes: usize,
     convert_row: impl Fn(&[u8], &mut [u8]) + Sync,
 ) {
-    dst.par_chunks_mut(dst_row_bytes)
-        .take(row_count)
-        .enumerate()
-        .for_each(|(y, dst_line)| {
-            let src_line = &src[y * src_stride..][..src_row_bytes];
-            convert_row(src_line, dst_line);
-        });
+    let len = row_count.saturating_mul(dst_row_bytes).min(dst.len());
+    crate::par::for_each_row(&mut dst[..len], dst_row_bytes, |y, dst_line| {
+        let src_line = &src[y * src_stride..][..src_row_bytes];
+        convert_row(src_line, dst_line);
+    });
 }
 
 #[cfg(target_os = "linux")]

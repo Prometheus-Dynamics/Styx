@@ -179,7 +179,7 @@ impl FrameServer {
             keep
         });
         if revoked > 0 {
-            tracing::warn!(
+            crate::trace::warn!(
                 revoked,
                 connected = before,
                 "frame server: disconnected clients holding a frame longer than {max_hold:?}"

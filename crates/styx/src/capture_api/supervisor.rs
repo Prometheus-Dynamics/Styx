@@ -105,7 +105,7 @@ impl SupervisedCapture {
         // Paused: the camera is still configured.
         if let Some(paused) = inner.as_ref() {
             if paused.resume_streaming() {
-                tracing::debug!(camera = %self.recipe.identity.display, "capture resumed on demand");
+                crate::trace::debug!(camera = %self.recipe.identity.display, "capture resumed on demand");
                 self.retry_metrics.record_idle_resume();
                 self.idle.store(false, Ordering::SeqCst);
                 return;
@@ -119,14 +119,14 @@ impl SupervisedCapture {
         let controls = self.controls.lock().clone();
         match restart(&self.recipe, controls, backend_queue(&self.tx)) {
             Ok(handle) => {
-                tracing::debug!(camera = %self.recipe.identity.display, "capture resumed on demand");
+                crate::trace::debug!(camera = %self.recipe.identity.display, "capture resumed on demand");
                 handle.attach_metrics();
                 self.live.set_current(Some(handle.live.clone()));
                 *inner = Some(handle);
                 self.retry_metrics.record_idle_resume();
             }
             Err(err) => {
-                tracing::warn!(camera = %self.recipe.identity.display, error = %err, "capture could not resume; reconnecting");
+                crate::trace::warn!(camera = %self.recipe.identity.display, error = %err, "capture could not resume; reconnecting");
             }
         }
         self.idle.store(false, Ordering::SeqCst);
@@ -155,7 +155,7 @@ impl SupervisedCapture {
         if paused {
             drop(inner);
             self.retry_metrics.record_idle_stop();
-            tracing::debug!(camera = %self.recipe.identity.display, idle_ms = after.as_millis() as u64, "capture paused while idle");
+            crate::trace::debug!(camera = %self.recipe.identity.display, idle_ms = after.as_millis() as u64, "capture paused while idle");
             return true;
         }
         if let Some(previous) = inner.take() {
@@ -168,7 +168,7 @@ impl SupervisedCapture {
         }
         drop(inner);
         self.retry_metrics.record_idle_stop();
-        tracing::debug!(camera = %self.recipe.identity.display, idle_ms = after.as_millis() as u64, "capture stopped while idle");
+        crate::trace::debug!(camera = %self.recipe.identity.display, idle_ms = after.as_millis() as u64, "capture stopped while idle");
         true
     }
 
@@ -386,7 +386,7 @@ fn run(
         if Instant::now() < next_attempt {
             continue;
         }
-        tracing::warn!(backend = %recipe.backend, camera = %recipe.identity.display, reason = %reason, "capture lost; reconnecting");
+        crate::trace::warn!(backend = %recipe.backend, camera = %recipe.identity.display, reason = %reason, "capture lost; reconnecting");
         *worker_error.lock() = Some(CaptureError::Disconnected(reason.clone()));
         retry_metrics.record_disconnected_since(last_progress);
         retry_metrics.record_reconnect_attempt("reconnect", reason);
@@ -400,7 +400,7 @@ fn run(
         let controls = shared.controls.lock().clone();
         match restart(recipe, controls, backend_queue(tx)) {
             Ok(handle) => {
-                tracing::info!(backend = %recipe.backend, camera = %recipe.identity.display, "capture restarted");
+                crate::trace::info!(backend = %recipe.backend, camera = %recipe.identity.display, "capture restarted");
                 handle.attach_metrics();
                 shared.live.set_current(Some(handle.live.clone()));
                 *shared.inner.lock() = Some(handle);
@@ -411,7 +411,7 @@ fn run(
                 last_progress = Instant::now();
             }
             Err(err) => {
-                tracing::debug!(backend = %recipe.backend, error = %err, retry_in_ms = backoff.as_millis() as u64, "capture restart failed");
+                crate::trace::debug!(backend = %recipe.backend, error = %err, retry_in_ms = backoff.as_millis() as u64, "capture restart failed");
                 restart_error = Some(format!("restart failed: {err}"));
                 next_attempt = Instant::now() + backoff;
                 backoff = (backoff * 2).min(max_backoff);

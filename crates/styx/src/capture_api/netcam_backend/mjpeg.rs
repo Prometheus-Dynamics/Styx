@@ -107,7 +107,7 @@ where
                 .filter(|&n| n > 0)
                 .is_none()
             {
-                tracing::debug!(backend = "netcam", stream = "mjpeg", "stream ended");
+                crate::trace::debug!(backend = "netcam", stream = "mjpeg", "stream ended");
                 break;
             }
             if !parser.accept_boundary_line() {
@@ -137,7 +137,7 @@ where
         match content_length {
             Some(len) => {
                 if len > max_jpeg_bytes {
-                    tracing::warn!(
+                    crate::trace::warn!(
                         backend = "netcam",
                         stream = "mjpeg-async",
                         content_length = len,
@@ -146,7 +146,7 @@ where
                         "dropping oversized mjpeg frame"
                     );
                     let drained = drain_async(reader, len).await;
-                    tracing::warn!(
+                    crate::trace::warn!(
                         backend = "netcam",
                         stream = "mjpeg-async",
                         content_length = len,
@@ -173,7 +173,7 @@ where
                     reader.consume(take);
                 }
                 if parser.frame_bytes().len() < target {
-                    tracing::warn!(
+                    crate::trace::warn!(
                         backend = "netcam",
                         stream = "mjpeg-async",
                         expected_bytes = target,
@@ -289,7 +289,7 @@ pub(super) fn mjpeg_loop(
                 .filter(|&n| n > 0)
                 .is_none()
             {
-                tracing::debug!(backend = "netcam", stream = "mjpeg", "stream ended");
+                crate::trace::debug!(backend = "netcam", stream = "mjpeg", "stream ended");
                 break;
             }
             if !parser.accept_boundary_line() {
@@ -318,7 +318,7 @@ pub(super) fn mjpeg_loop(
         match content_length {
             Some(len) => {
                 if len > max_jpeg_bytes {
-                    tracing::warn!(
+                    crate::trace::warn!(
                         backend = "netcam",
                         stream = "mjpeg-sync",
                         content_length = len,
@@ -327,7 +327,7 @@ pub(super) fn mjpeg_loop(
                         "dropping oversized mjpeg frame"
                     );
                     let drained = drain_sync(&mut reader, len);
-                    tracing::warn!(
+                    crate::trace::warn!(
                         backend = "netcam",
                         stream = "mjpeg-sync",
                         content_length = len,
@@ -357,7 +357,7 @@ pub(super) fn mjpeg_loop(
                     reader.consume(take);
                 }
                 if parser.frame_bytes().len() < target {
-                    tracing::warn!(
+                    crate::trace::warn!(
                         backend = "netcam",
                         stream = "mjpeg-sync",
                         expected_bytes = target,
@@ -557,7 +557,7 @@ where
         return None;
     }
     if buf.len() >= max_jpeg_bytes {
-        tracing::warn!(
+        crate::trace::warn!(
             backend = "netcam",
             stream = "mjpeg",
             max_bytes = max_jpeg_bytes,

@@ -60,6 +60,8 @@ pub mod session;
 #[cfg(all(feature = "facade", feature = "simulation-bevy"))]
 pub mod simulation;
 #[cfg(feature = "facade")]
+mod trace;
+#[cfg(feature = "facade")]
 pub mod watch;
 
 #[cfg(all(feature = "facade", feature = "preview-window"))]

@@ -24,11 +24,11 @@ pub(crate) fn enqueue_capture_frame(
     match tx.send_timeout(frame, timeout) {
         SendWaitOutcome::Ok => false,
         SendWaitOutcome::Closed(_frame) => {
-            tracing::debug!(backend, "capture output queue closed");
+            crate::trace::debug!(backend, "capture output queue closed");
             true
         }
         SendWaitOutcome::Timeout(_frame) => {
-            tracing::debug!(
+            crate::trace::debug!(
                 backend,
                 drop_reason = "capture_queue_send_timeout",
                 timeout_ms = timeout.as_millis() as u64,
@@ -310,7 +310,7 @@ impl CaptureHandle {
         self.finish_teardown();
         let teardown_ms = teardown_started.elapsed().as_millis() as u64;
         self.record_teardown_ms(teardown_ms);
-        tracing::debug!(
+        crate::trace::debug!(
             backend = %backend,
             teardown_ms,
             "capture teardown complete"
@@ -333,7 +333,7 @@ impl CaptureHandle {
         self.finish_teardown();
         let teardown_ms = teardown_started.elapsed().as_millis() as u64;
         self.record_teardown_ms(teardown_ms);
-        tracing::debug!(
+        crate::trace::debug!(
             backend = %backend,
             teardown_ms,
             "capture async teardown complete"
@@ -348,7 +348,7 @@ impl CaptureHandle {
         self.rx.close();
         let signal_close_ms = start.elapsed().as_millis() as u64;
         self.shutdown_stats.lock().last_signal_close_ms = Some(signal_close_ms);
-        tracing::debug!(
+        crate::trace::debug!(
             backend = %self.backend,
             signal_close_ms,
             "capture stop signaled and queue closed"
@@ -367,7 +367,7 @@ impl CaptureHandle {
             stats.last_drain_ms = Some(drain_ms);
             stats.last_drained_frames = drained;
         }
-        tracing::debug!(
+        crate::trace::debug!(
             backend = %self.backend,
             drained_frames = drained,
             drain_ms,
@@ -691,7 +691,7 @@ impl CaptureHandle {
         self.finish_teardown();
         let teardown_ms = teardown_started.elapsed().as_millis() as u64;
         self.record_teardown_ms(teardown_ms);
-        tracing::debug!(
+        crate::trace::debug!(
             backend = %backend,
             teardown_ms,
             "capture async-drop teardown signaled without blocking on worker joins"
@@ -704,7 +704,7 @@ fn join_worker_sync(backend: BackendKind, worker: WorkerHandle, label: &'static 
     match worker {
         WorkerHandle::Thread(h) => {
             let _ = h.join();
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = %backend,
                 worker = label,
                 join_ms = join_started.elapsed().as_millis() as u64,
@@ -714,7 +714,7 @@ fn join_worker_sync(backend: BackendKind, worker: WorkerHandle, label: &'static 
         #[cfg(feature = "async")]
         WorkerHandle::Async(h) => {
             h.abort();
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = %backend,
                 worker = label,
                 abort_ms = join_started.elapsed().as_millis() as u64,
@@ -728,7 +728,7 @@ fn join_worker_sync(backend: BackendKind, worker: WorkerHandle, label: &'static 
 fn detach_worker_from_async_drop(backend: BackendKind, worker: WorkerHandle, label: &'static str) {
     match worker {
         WorkerHandle::Thread(_h) => {
-            tracing::warn!(
+            crate::trace::warn!(
                 backend = %backend,
                 worker = label,
                 "capture thread worker detached during async drop; call stop_async for deterministic shutdown"
@@ -736,7 +736,7 @@ fn detach_worker_from_async_drop(backend: BackendKind, worker: WorkerHandle, lab
         }
         WorkerHandle::Async(h) => {
             h.abort();
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = %backend,
                 worker = label,
                 "capture async worker aborted during async drop"
@@ -751,7 +751,7 @@ async fn join_worker_async(backend: BackendKind, worker: WorkerHandle, label: &'
     match worker {
         WorkerHandle::Thread(h) => {
             let _ = tokio::task::spawn_blocking(move || h.join()).await;
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = %backend,
                 worker = label,
                 join_ms = join_started.elapsed().as_millis() as u64,
@@ -760,7 +760,7 @@ async fn join_worker_async(backend: BackendKind, worker: WorkerHandle, label: &'
         }
         WorkerHandle::Async(h) => {
             let _ = h.await;
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = %backend,
                 worker = label,
                 join_ms = join_started.elapsed().as_millis() as u64,

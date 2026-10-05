@@ -343,6 +343,7 @@ pub mod encoder;
 #[cfg(feature = "codec-ffmpeg")]
 pub mod ffmpeg;
 pub mod frame_image;
+// Row-parallel loops of the CPU converters (a persistent helper pool).
 #[cfg(feature = "dynamic-image")]
 pub mod image_any;
 #[cfg(feature = "dynamic-image")]
@@ -359,6 +360,8 @@ pub mod mjpeg_turbojpeg;
 pub mod mjpeg_turbojpeg_luma;
 #[cfg(feature = "codec-zune")]
 pub mod mjpeg_zune;
+#[cfg(any(feature = "image", feature = "raw-decoders"))]
+mod par;
 pub mod prelude;
 #[cfg(feature = "codec-turbojpeg")]
 mod turbojpeg_raw;

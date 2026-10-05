@@ -1,7 +1,8 @@
-//! Hotplug: cameras coming and going while the program runs. A watcher (inotify on `/dev`,
-//! plus libcamera's hotplug signal when that backend is built) wakes the inventory, which
-//! re-probes and reports what was added, removed or changed. Here every camera that appears
-//! gets a capture, and a camera that goes away has its capture dropped.
+//! Hotplug: cameras coming and going while the program runs. A watcher (kernel uevents for
+//! video, media and USB devices, plus libcamera's hotplug signal when that backend is built)
+//! wakes the inventory, which re-probes and reports what was added, removed or changed. Here
+//! every camera that appears gets a capture, and a camera that goes away has its capture
+//! dropped.
 //!
 //! ```sh
 //! cargo run -p styx-examples --features hotplug,native,v4l2 --bin hotplug -- [seconds]

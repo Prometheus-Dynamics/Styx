@@ -21,7 +21,7 @@ impl MediaPipeline {
     /// iterator-style callers. Use this method when production code needs the exact
     /// decode, encode, or graph failure cause.
     pub fn try_next_result(&mut self) -> Result<RecvOutcome<FrameLease>, PipelineStageError> {
-        let span = tracing::trace_span!(
+        let span = crate::trace::trace_span!(
             "capture_stage",
             receive = "try",
             processing = "sync",
@@ -51,7 +51,7 @@ impl MediaPipeline {
         &mut self,
         wait: Duration,
     ) -> Result<RecvOutcome<FrameLease>, PipelineStageError> {
-        let span = tracing::trace_span!(
+        let span = crate::trace::trace_span!(
             "capture_stage",
             receive = "blocking_timeout",
             processing = "sync",
@@ -80,7 +80,7 @@ impl MediaPipeline {
 
     /// Wait indefinitely for the next processed frame, preserving pipeline stage errors.
     pub fn next_forever_result(&mut self) -> Result<RecvOutcome<FrameLease>, PipelineStageError> {
-        let span = tracing::trace_span!(
+        let span = crate::trace::trace_span!(
             "capture_stage",
             receive = "blocking_forever",
             processing = "sync",
@@ -125,7 +125,7 @@ impl MediaPipeline {
     pub async fn next_async_receive_result(
         &mut self,
     ) -> Result<RecvOutcome<FrameLease>, PipelineStageError> {
-        let span = tracing::trace_span!(
+        let span = crate::trace::trace_span!(
             "capture_stage",
             receive = "async",
             processing = "sync",
@@ -166,7 +166,7 @@ impl MediaPipeline {
     }
 
     fn run_blocking_worker(mut self) -> Result<(), PipelineStageError> {
-        let span = tracing::trace_span!(
+        let span = crate::trace::trace_span!(
             "pipeline_worker",
             worker = "thread",
             receive = "blocking_forever",
@@ -183,7 +183,7 @@ impl MediaPipeline {
                     return Ok(());
                 }
                 Err(err) => {
-                    tracing::error!(
+                    crate::trace::error!(
                         stage = %err.stage,
                         component = %err.component,
                         error = %err.message,

@@ -248,6 +248,7 @@ impl UvcStream {
             8
         };
         let expected = format.frame_bytes(&frame);
+        #[cfg(feature = "tracing")]
         tracing::debug!(
             fourcc = %String::from_utf8_lossy(&fourcc),
             width = frame.width,
