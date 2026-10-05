@@ -22,6 +22,14 @@ impl ExternalBacking for SharedPlanes {
         "shared_pool"
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        for buffer in &self.buffers {
+            let bytes = buffer.as_slice();
+            span(bytes.as_ptr() as usize, bytes.len());
+        }
+        true
+    }
+
     fn residency(&self) -> FrameResidency {
         self.residency
     }

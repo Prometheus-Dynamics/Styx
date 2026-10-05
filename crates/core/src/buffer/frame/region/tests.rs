@@ -106,3 +106,79 @@ fn device_only_regions_are_not_readable() {
     assert!(!frame.has_host_readable_bytes());
     assert!(frame.planes()[0].data().is_empty());
 }
+
+fn grey_region(bytes: &'static [u8], w: u32, h: u32) -> FrameLease {
+    FrameLease::from_region(
+        meta(w, h),
+        smallvec![PlaneLayout {
+            offset: 0,
+            len: (w * h) as usize,
+            stride: w as usize,
+        }],
+        MemoryRegion::from_static(bytes),
+    )
+}
+
+#[test]
+fn regions_alias_only_where_their_memory_overlaps() {
+    let a = grey_region(&PIXELS[..16], 4, 4);
+    let b = grey_region(&PIXELS[16..], 4, 4);
+    let c = grey_region(&PIXELS[8..24], 4, 4);
+    assert!(a.may_alias(&a).unwrap());
+    assert!(a.may_alias(&a.share().unwrap()).unwrap());
+    assert!(!a.may_alias(&b).unwrap());
+    assert!(a.may_alias(&c).unwrap());
+    assert!(c.may_alias(&b).unwrap());
+}
+
+#[test]
+fn regions_never_alias_heap_or_pool_frames() {
+    let region = grey_region(&PIXELS[..16], 4, 4);
+    let format = MediaFormat::new(
+        FourCc::GREY,
+        Resolution::new(4, 4).unwrap(),
+        ColorSpace::Unknown,
+    );
+    let owned = FrameLease::allocate_host_owned(format, 1).unwrap();
+    assert!(!region.may_alias(&owned).unwrap());
+    assert!(!owned.may_alias(&region).unwrap());
+    // A shareable heap frame keeps its pooled buffers behind shared ownership: known ranges.
+    let shared = owned.into_shareable();
+    let view = shared.share().unwrap();
+    assert!(!region.may_alias(&view).unwrap());
+    assert!(view.may_alias(&shared).unwrap());
+}
+
+/// External memory that does not report where it lives.
+struct Opaque([u8; 16]);
+
+impl ExternalBacking for Opaque {
+    fn plane_data(&self, _index: usize) -> Option<&[u8]> {
+        Some(&self.0)
+    }
+}
+
+#[test]
+fn unknown_external_memory_against_owned_frames_stays_unknown() {
+    let opaque = FrameLease::from_external(
+        meta(4, 4),
+        smallvec![PlaneLayout {
+            offset: 0,
+            len: 16,
+            stride: 4,
+        }],
+        Arc::new(Opaque([0; 16])),
+    );
+    let format = MediaFormat::new(
+        FourCc::GREY,
+        Resolution::new(4, 4).unwrap(),
+        ColorSpace::Unknown,
+    );
+    let owned = FrameLease::allocate_host_owned(format, 1).unwrap();
+    assert!(matches!(
+        opaque.may_alias(&owned),
+        Err(crate::buffer::FrameValidationError::AliasUnknown)
+    ));
+    // Two distinct external backings are separate memory, as before.
+    assert!(!opaque.may_alias(&grey_region(&PIXELS[..16], 4, 4)).unwrap());
+}

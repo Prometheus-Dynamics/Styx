@@ -336,8 +336,13 @@ mod tests {
         assert_eq!(out_plane, vec![2, 0, 0, 1, 0, 0]);
     }
 
+    /// Tests that set the process-wide transform pool run one at a time: in parallel, one
+    /// could replace the configuration another just set before it checks it.
+    static GLOBAL_POOL_TESTS: Mutex<()> = Mutex::new(());
+
     #[test]
     fn transform_pool_config_is_runtime_configurable() {
+        let _serial = GLOBAL_POOL_TESTS.lock();
         configure_transform_pool(TransformPoolConfig {
             min: 3,
             bytes: 128,
@@ -356,6 +361,7 @@ mod tests {
 
     #[test]
     fn repeated_hd_transforms_reuse_pool() {
+        let _serial = GLOBAL_POOL_TESTS.lock();
         reset_transform_pool();
         configure_transform_pool(TransformPoolConfig {
             min: 1,
