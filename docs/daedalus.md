@@ -43,7 +43,7 @@ The module is `styx_core::daedalus`, or `styx::core::daedalus` through the facad
 adds only the Daedalus types, macros and plugin registry (`daedalus-rs` with `plugins`). The app
 picks the engine and any GPU features it wants.
 
-**Daedalus source.** Until Daedalus 2.0 is on crates.io, Styx depends on Daedalus's `dev` branch
+**Daedalus source.** Until Daedalus 3.0 is on crates.io, Styx depends on Daedalus's `dev` branch
 by its canonical git URL (`https://github.com/Prometheus-Dynamics/Daedalus.git`, `branch = "dev"`
 in the root `Cargo.toml`). Apps and libraries that use Styx from git depend on Daedalus the same
 way, so both resolve to one `daedalus-rs` (a `Cargo.lock` fixes the commit; `cargo update -p

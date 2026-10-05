@@ -85,12 +85,12 @@ styx-pipeline = { path = "crates/pipeline", version = "2.0.0" }
 styx-uvc = { path = "crates/uvc", version = "2.0.0" }
 styx-dng = { path = "crates/dng", version = "2.0.0" }
 styx-tune = { path = "crates/tune", version = "2.0.0" }
-# Daedalus (graph runtime): the Daedalus `dev` branch until 2.0 is on crates.io. Used only
+# Daedalus (graph runtime, 3.0): the Daedalus `dev` branch until 3.0 is on crates.io. Used only
 # by `styx-core-rs`'s optional `daedalus` feature. To build against a local Daedalus checkout,
 # override it in an untracked `.cargo/config.toml`:
 #   [patch."https://github.com/Prometheus-Dynamics/Daedalus.git"]
 #   daedalus-rs = { path = "../Daedalus/crates/daedalus" }
-daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "dev", version = "2.0.0", default-features = false }
+daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "dev", version = "3.0.0", default-features = false }
 crossbeam-queue = { version = "0.3.12", default-features = false, features = ["alloc"] }
 # Locks for the no_std frame path (styx-core without `std`), and its targets without
 # compare-and-swap (`critical-section`, `portable-atomic-util`'s `Arc`).
