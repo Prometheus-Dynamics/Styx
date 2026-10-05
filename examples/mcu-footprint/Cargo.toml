@@ -54,7 +54,7 @@ styx-core = { package = "styx-core-rs", path = "../../crates/core", default-feat
 styx-hal = { path = "../../crates/hal" }
 styx-pipeline = { path = "../../crates/pipeline", default-features = false }
 styx-runtime = { path = "../../crates/runtime", default-features = false }
-styx-sensor = { path = "../../crates/sensor", default-features = false, features = ["postcard"] }
+styx-sensor = { path = "../../crates/sensor", default-features = false, features = ["postcard", "short-history"] }
 styx-softisp = { path = "../../crates/softisp", default-features = false }
 
 # Targets without compare-and-swap (Cortex-M0+): atomics, `Arc` and locks through critical

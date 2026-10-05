@@ -22,7 +22,14 @@ criterion.workspace = true
 default = ["std", "neon", "x86"]
 # The helper thread pool (`SoftIsp::with_threads`), run-time CPU feature detection, float maths
 # from std. Without it the crate is `no_std` + `alloc` (docs/portability.md).
-std = ["styx-core/std", "serde/std", "thiserror/std"]
+std = ["styx-core/std", "serde/std", "thiserror/std", "fp16", "poly-tone"]
+# `Arithmetic::Half` (fp16 tables and kernels: 2-3x faster on CPUs with FP16 arithmetic,
+# emulated elsewhere). On with `std`; without it `Half` runs as `Int` (as for set-ups it does
+# not apply to), and its code stays out of a firmware image (docs/mcu.md).
+fp16 = []
+# `Arithmetic::IntPolyTone` (the tone curve as quadratics: faster with AVX2). On with `std`;
+# without it the table is used.
+poly-tone = []
 # SIMD backends, as in `styx-core::simd`: AArch64 NEON, x86 SSE2/SSSE3/AVX2 chosen at run time.
 neon = ["styx-core/neon"]
 x86 = ["styx-core/x86"]

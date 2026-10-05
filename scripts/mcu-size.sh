@@ -9,7 +9,8 @@
 #                                       examples/mcu-footprint/size-limits.txt
 #   MCU_PROFILE=mcu-speed scripts/mcu-size.sh    opt-level "s" instead of "z"
 #   MCU_TARGETS="thumbv7em-none-eabihf" ...      other targets
-#   MCU_FEATURES="..." ...                       features of styx-mcu-footprint
+#   MCU_FEATURES="..." ...                       features (e.g. styx-algo/af)
+#   CARGO_TARGET_DIR, RUSTFLAGS                  as for cargo (e.g. -C target-cpu=cortex-m7)
 #
 # Needs the targets and llvm-tools (added when rustup is there).
 set -euo pipefail
@@ -40,7 +41,7 @@ for target in "${targets[@]}"; do
     cargo build -q -p styx-mcu-footprint --profile "$profile" --target "$target" \
         ${features:+--features "$features"} --bins
     for config in a b c d; do
-        elf="target/$target/$profile/footprint-$config"
+        elf="${CARGO_TARGET_DIR:-target}/$target/$profile/footprint-$config"
         read -r flash ram < <("$size_tool" -A "$elf" | awk '
             $1 == ".vector_table" || $1 == ".text" || $1 == ".rodata" { flash += $2 }
             $1 == ".data" { flash += $2; ram += $2 }
@@ -48,7 +49,7 @@ for target in "${targets[@]}"; do
             END { print flash, ram }')
         name="$(tr '[:lower:]' '[:upper:]' <<<"$config")"
         printf '%-24s %-6s %10d %10d\n' "$target" "$name" "$flash" "$ram"
-        if ((check)) && [[ "$profile" == "mcu" && -z "$features" ]]; then
+        if ((check)) && [[ "$profile" == "mcu" && -z "$features" && -z "${RUSTFLAGS:-}" ]]; then
             limit="$(awk -v t="$target" -v c="$name" '$1 == t && $2 == c { print $3 }' "$limits")"
             if [[ -n "$limit" ]] && ((flash > limit)); then
                 echo "    $target $name: $flash bytes of flash, over its limit of $limit ($limits)" >&2

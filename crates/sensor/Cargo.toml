@@ -23,6 +23,10 @@ toml = ["dep:toml"]
 # Descriptions in a compact binary form (postcard): `SensorDescription::from_postcard` and
 # `from_compiled`, for targets that should not carry a TOML parser. `no_std`.
 postcard = ["dep:postcard"]
+# 16 frames of control history (`HISTORY_FRAMES`) instead of 64: the scheduler shrinks from
+# about 9 to 3 KiB, for a firmware that looks up each frame's values when it arrives
+# (docs/mcu.md). Lookups of older frames return `None`.
+short-history = []
 # The build-script helper (`styx_sensor::build`): validates description files on the host and
 # compiles them to that form, so a broken description fails the firmware build. Use it as a
 # build-dependency.

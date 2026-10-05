@@ -1,6 +1,9 @@
 //! [`Arithmetic::Half`]'s tables: fp16 black levels and channel gains, lens shading rows, the
 //! colour matrix with the demosaic folded in, and the tone curve's segments.
 
+// Feature `fp16` (on with `std`); without it nothing here is made.
+#![cfg_attr(not(feature = "fp16"), allow(dead_code, unused_imports))]
+
 use alloc::{vec, vec::Vec};
 use styx_core::sync::Arc;
 
@@ -29,6 +32,10 @@ pub(crate) struct HalfPrep {
     pub stats_scale: u16,
     /// The curve `tone` came from.
     curve: Option<ToneCurve>,
+    /// Without feature `fp16` no `HalfPrep` can exist (this field has no value): the fp16
+    /// paths still compile, but every match arm on `Arith::Half` is dead and drops out.
+    #[cfg(not(feature = "fp16"))]
+    never: core::convert::Infallible,
 }
 
 /// Lens shading without the channel gains (those change every frame; these only when the
@@ -53,6 +60,9 @@ impl HalfPrep {
         params: &IspParams,
         previous: Option<&HalfPrep>,
     ) -> Option<HalfTone> {
+        if !cfg!(feature = "fp16") {
+            return None;
+        }
         let wanted = match params.arithmetic {
             Arithmetic::Int | Arithmetic::IntPolyTone => false,
             Arithmetic::Half => true,
@@ -74,6 +84,20 @@ impl HalfPrep {
         }
     }
 
+    /// Without feature `fp16` there is nothing to make ([`Self::eligible`] says `None`).
+    #[cfg(not(feature = "fp16"))]
+    pub fn new(
+        _format: &RawFormat,
+        _params: &IspParams,
+        _tone: HalfTone,
+        _channel_gains: [f32; 3],
+        _previous: Option<&HalfPrep>,
+        _lsc_tolerance: f32,
+    ) -> Self {
+        unreachable!("fp16 arithmetic without feature `fp16`")
+    }
+
+    #[cfg(feature = "fp16")]
     pub fn new(
         format: &RawFormat,
         params: &IspParams,
