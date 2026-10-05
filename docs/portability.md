@@ -22,7 +22,8 @@ a bracket and the counters, built for the bare-metal targets and run on the host
 Step 9 ([The frame path without `std`](#the-frame-path-without-std-styx-core)): `styx-core`'s
 `FrameLease`, pools, queues, transforms and metrics build without `std`, so the frame type and
 queues Linux consumers get are the same on a microcontroller. Still missing: a port to real
-MCU hardware.
+MCU hardware. How small a firmware image gets, what fits on which microcontroller and which
+features to pick: [mcu.md](mcu.md).
 
 ## What builds without `std`
 
@@ -33,15 +34,15 @@ MCU hardware.
 | `styx-runtime` | everything: the sensor side (`SensorState`, `Controls`, lens, health), `Camera<P>`, `FrameStream`, buffer leases, frames handed on as `FrameLease`s (`Frame::into_lease`), the sensor service, metrics counters (`metrics`, `styx_core`'s); shared state is `Arc<RefCell>` | `Arc<Mutex>` shared state and `Send + Sync` handles (feature `std`, the default) |
 | `styx-pipeline` | the core: `Controller` (the 3A loop runner), `IspSettings` for the PiSP and the software ISP, statistics, the back end config builder, the processing loop (`process`: `Algorithms`, `FrameIsp`, `InlineIsp`, `SensorControls`), `SoftLoop`, stills (`dng_metadata_at`, `soft_still`) and their decisions (`still_runner`), re-exposing recorded frames (`reexpose`) | algorithm replay recording, raw recordings, tunings and warm starts on disk, measurements, timings, the device paths (`device`), the GPU ISP |
 | `styx-hal` | everything (no `alloc` either): power sequencing, DMA memory, the receiver, the lens actuator, `BoardPins`, `StaticDma` | `Send + Sync` on `SensorStart`, the `mock` platform |
-| `styx-core-rs` | formats (`FourCc`, `MediaFormat`, layouts), plane layouts and their math, plane views, frame metadata (`FrameMeta`, `NativeFrameMeta`, `FrameTiming`, `CaptureInstant`, ...), requirements, controls, the SIMD row kernels; the frame path: `FrameLease`, `BufferPool` (heap), `MemoryRegion` (static / DMA memory), shared views and companions, bounded queues (non-blocking and waker-based async; not on targets without compare-and-swap), transforms, `metrics` (pool and camera counters), the platform's clocks (`set_platform_clock`) | memfd / dma-buf backings and their export and import, `SharedBufferPool`, blocking queue waits with timeouts, OS clocks, `schema` (utoipa), `daedalus` |
-| `styx-algo` | every algorithm (AGC with flicker avoidance and deflicker, AWB, ALSC, CCM, contrast, denoise, black level, lux, AF), `Pipeline`, the tuning model, `Tuning::from_toml_str` / `to_toml_string`, Raspberry Pi JSON in and out, the simulator, `WarmStart` | `Tuning::load` (paths), `replay` (JSON Lines over `std::io`) |
-| `styx-softisp` | every kernel, `SoftIsp` on the calling thread (all outputs, statistics, both arithmetics) | `SoftIsp::with_threads` (the helper thread pool); run-time CPU feature detection |
-| `styx-sensor` | descriptions from strings or compiled (`from_postcard`, feature `postcard`), timing, gain models, the control scheduler, embedded data, lenses (description and schedule; the VCM drivers are `lemnos-drivers-vcm`), PDAF decoding, kernel-sensor fallback descriptions, `SensorDriver` / `AsyncSensorDriver` over Lemnos's `I2cRegisters` / `SpiRegisters` (any embedded-hal bus) and `SensorPins` | `from_file`, `NoPins`, the `build` helper (a build-dependency) |
+| `styx-core-rs` | formats (`FourCc`, `MediaFormat`, layouts), plane layouts and their math, plane views, frame metadata (`FrameMeta`, `NativeFrameMeta`, `FrameTiming`, `CaptureInstant`, ...), requirements, controls, the SIMD row kernels; the frame path: `FrameLease`, `BufferPool` (heap), `MemoryRegion` (static / DMA memory), shared views and companions, bounded queues (non-blocking and waker-based async; a ring in a critical section on targets without compare-and-swap), transforms, `metrics` (pool and camera counters), the platform's clocks (`set_platform_clock`) | memfd / dma-buf backings and their export and import, `SharedBufferPool`, blocking queue waits with timeouts, OS clocks, `schema` (utoipa), `daedalus` |
+| `styx-algo` | every algorithm (AGC with flicker avoidance and deflicker, AWB, ALSC, CCM, contrast, denoise, black level, lux, AF; the optional ones with their features: `af`, `alsc`, `awb-bayes`, `denoise`, `flicker`, `lux`, or `all-algorithms`), `Pipeline`, the tuning model, `Tuning::from_toml_str` / `to_toml_string` (feature `toml`), Raspberry Pi JSON in and out, the simulator, `WarmStart` | `Tuning::load` (paths), `replay` (JSON Lines over `std::io`) |
+| `styx-softisp` | every kernel, `SoftIsp` on the calling thread (all outputs, statistics, the integer arithmetic; fp16 and the tone quadratics with features `fp16` and `poly-tone`) | `SoftIsp::with_threads` (the helper thread pool); run-time CPU feature detection |
+| `styx-sensor` | descriptions from TOML strings (feature `toml`) or compiled (`from_postcard`, `from_compiled`, feature `postcard`), timing, gain models, the control scheduler, embedded data, lenses (description and schedule; the VCM drivers are `lemnos-drivers-vcm`), PDAF decoding, kernel-sensor fallback descriptions, `SensorDriver` / `AsyncSensorDriver` over Lemnos's `I2cRegisters` / `SpiRegisters` (any embedded-hal bus) and `SensorPins` | `from_file`, `NoPins`, the `build` helper (a build-dependency) |
 | `styx-pisp` | uAPI layouts, front end and back end config builders, back end tiling, statistics decoding | `device` (the kernel nodes) |
 | `styx-dng` | the writer and the reader (in memory) | `DngError::Io` |
 
 Extra dependencies without `std`: `libm` (float maths, pure Rust), `toml`'s own `no_std`
-build for TOML, and Lemnos's `no_std` crates (`lemnos-hal`, `lemnos-drivers-vcm`: no `alloc`). `serde`, `serde_json` (std only, for `replay`), `thiserror` 2 and `smallvec`
+build for TOML (features `toml` of `styx-algo` and `styx-sensor`; on with `std`), and Lemnos's `no_std` crates (`lemnos-hal`, `lemnos-drivers-vcm`: no `alloc`). `serde`, `serde_json` (std only, for `replay`), `thiserror` 2 and `smallvec`
 are used without their `std` features.
 
 ### Targets
@@ -49,26 +50,32 @@ are used without their `std` features.
 CI (`scripts/check-nostd.sh`) builds and lints every crate above without `std` for
 `thumbv7em-none-eabihf` (Cortex-M4F/M7, e.g. an STM32H7), `thumbv8m.main-none-eabihf`
 (Cortex-M33/M55 with an FPU), `riscv32imac-unknown-none-elf` and `wasm32-unknown-unknown`, and
-for the host (`styx-sensor` also with `postcard`). `SensorDriver` and `SoftIsp`'s fp16 tables hold
-`Arc`s, which need pointer-sized atomics (`target_has_atomic = "ptr"`): ARMv6-M
-(`thumbv6m`, Cortex-M0) and RISC-V without the `a` extension lack them.
+for the host (`styx-sensor` also with `postcard`, the optional features also on).
 
-`styx-core-rs` also builds for `thumbv6m-none-eabi` and `riscv32imc-unknown-none-elf` (no
-compare-and-swap) with feature `critical-section` (atomics, `Arc` and its locks through the
-platform's critical section; the queues need compare-and-swap and are left out there).
+Targets without compare-and-swap (`thumbv6m-none-eabi`: Cortex-M0/M0+, e.g. the RP2040;
+`riscv32imc-unknown-none-elf`) take the whole stack with `styx-core`'s feature
+`critical-section`: atomics, `Arc` (`portable-atomic-util`'s, which `styx_core::sync::Arc`,
+`styx_sensor::Arc` and the runtime's `Ref` / `Shared` all are there), locks and the queues'
+ring go through the platform's critical section. CI builds `styx-core` for both targets and
+links the four firmware images of `examples/mcu-footprint` for the Cortex-M0+
+([mcu.md](mcu.md)).
 
 Floats: the crates use `f64` (3A, sensor timing) and `f32` (ISP parameters). A target without
 a double-precision FPU emulates `f64` in software; the software ISP's per-pixel work is
-integer (or fp16 on AArch64), so it is unaffected.
+integer (or fp16 on AArch64), so it is unaffected. In flash the emulation is small (a
+Cortex-M7 image with its double-precision FPU, `-C target-cpu=cortex-m7`, is no smaller:
+[mcu.md](mcu.md)); its speed on a Cortex-M4F or M0+ is not measured yet.
 
 ## Building for a bare-metal target
 
 ```toml
 [dependencies]
-styx-algo = { version = "2", default-features = false }
+styx-algo = { version = "2", default-features = false, features = ["all-algorithms"] }
 styx-softisp = { version = "2", default-features = false, features = ["neon", "x86"] }
-styx-sensor = { version = "2", default-features = false }
+styx-sensor = { version = "2", default-features = false, features = ["postcard"] }
 ```
+
+(A microcontroller picks fewer: [mcu.md](mcu.md) lists what each feature costs.)
 
 ```sh
 rustup target add thumbv8m.main-none-eabihf
@@ -140,8 +147,10 @@ the frame start. Neither helps, so `styx-native` keeps `SensorDriver`.
 (a build-dependency), `styx_sensor::build::compile(&["sensors/ov5640.toml"])` in `build.rs`
 validates descriptions on the host (every problem reported with its path; a broken file fails
 the build) and writes them as postcard bytes to `OUT_DIR`; the firmware reads them with
-`SensorDescription::from_postcard(include_description!("ov5640"))` (feature `postcard`,
-`no_std`). The OV9782 description is 1.3 KB compiled against 13 KB of TOML.
+`SensorDescription::from_compiled(include_description!("ov5640"))` (feature `postcard`,
+`no_std`; `from_compiled` trusts the build's validation, so the validator stays out of the
+image, while `from_postcard` validates again, for bytes from elsewhere). The OV9782
+description is 1.3 KB compiled against 13 KB of TOML; decoding it is about 16 KB of code.
 `examples/nostd-smoke` does this for the built-in OV9782.
 
 ### No allocation per frame
@@ -549,6 +558,32 @@ The `styx` API is unchanged.
   `mock` (`LeaseBuffer` for `styx-hal`'s mock buffers), `styx_runtime::styx_core`; without
   `std`, `Ref<T>` / `Shared<T>` are `Arc<T>` / `Arc<RefCell<T>>` (were `Rc`).
 - `styx_native::NativeFrame::into_backing`; `V4l2Buffer` implements `LeaseBuffer`.
+
+## API changes with the MCU footprint work
+
+Linux builds are unchanged (`std` turns every new feature on). Without `std`:
+
+- `styx-algo`: AF, ALSC, Bayesian AWB, denoise, flicker fitting / deflicker and lux are in
+  only with features `af`, `alsc`, `awb-bayes`, `denoise`, `flicker`, `lux` (or
+  `all-algorithms`); `Pipeline::from_tuning` leaves out what is not built (tuning sections
+  for it are ignored), AWB is grey world without `awb-bayes`, AE avoids flicker only by whole
+  periods of the frequency the controls name without `flicker`, and
+  `FlickerCorrection::active` is false then. `Tuning::from_toml_str` / `to_toml_string` need
+  feature `toml`. A `no_std` user that wants everything asks for
+  `features = ["all-algorithms", "toml"]`.
+- `styx-sensor`: `from_toml_str` (descriptions, kernel data) and `KernelSensorData::builtin`
+  need feature `toml`; `SensorDescription::from_compiled` (new); feature `short-history`
+  (16 frames of control history instead of 64); `styx_sensor::Arc` (new: the `Arc` the
+  driver takes its description in).
+- `styx-softisp`: `Arithmetic::Half` needs feature `fp16` and `IntPolyTone` feature
+  `poly-tone` (else they run as `Int`).
+- `styx-core`: the queues exist on targets without compare-and-swap (with
+  `critical-section`); `styx_core::buffer::shared_backing` is public.
+- `styx-runtime`: `Ref` / `Shared` are `styx_core::sync::Arc` without `std` (the same type as
+  before where the target has compare-and-swap); the invalid-gain error message carries the
+  value only with `std`.
+- AGC tuning errors quote mode names as `"name"` (were `{:?}`: the same text unless the name
+  needs escaping).
 
 ## API changes with writable regions, the public float shim and the full atomics set
 

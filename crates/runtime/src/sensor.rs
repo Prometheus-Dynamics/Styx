@@ -514,7 +514,12 @@ impl<B: RegisterBus, P: SensorPins> SensorState<B, P> {
         if let Some(g) = req.gain
             && !(g.is_finite() && g > 0.0)
         {
+            // The value only with std: formatting a float would bring core's float
+            // formatting (about 8 KB) into a firmware image for this one message.
+            #[cfg(feature = "std")]
             return Err(Error::InvalidConfig(format!("gain {g}")));
+            #[cfg(not(feature = "std"))]
+            return Err(Error::InvalidConfig("gain not finite and positive".into()));
         }
         Ok(())
     }

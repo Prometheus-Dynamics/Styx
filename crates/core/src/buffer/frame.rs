@@ -111,9 +111,10 @@ pub trait ExternalBacking: Send + Sync {
     fn finish_cpu_write(&self) {}
 }
 
-/// `backing` as a shared frame backing (through a `Box` where `Arc` cannot coerce to a trait
-/// object: `portable-atomic-util`'s, on targets without compare-and-swap).
-pub(crate) fn shared_backing<B: ExternalBacking + 'static>(backing: B) -> Arc<dyn ExternalBacking> {
+/// `backing` as a shared frame backing for [`FrameLease::from_external`] (through a `Box` where
+/// `Arc` cannot coerce to a trait object: `portable-atomic-util`'s, on targets without
+/// compare-and-swap), so the same code builds on every target.
+pub fn shared_backing<B: ExternalBacking + 'static>(backing: B) -> Arc<dyn ExternalBacking> {
     #[cfg(target_has_atomic = "ptr")]
     {
         Arc::new(backing)

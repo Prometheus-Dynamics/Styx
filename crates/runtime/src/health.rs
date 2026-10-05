@@ -4,7 +4,7 @@
 
 use alloc::format;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU32, Ordering};
+use styx_core::sync::{AtomicU32, Ordering};
 
 use styx_hal::ErrorKind;
 

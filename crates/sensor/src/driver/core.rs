@@ -5,7 +5,7 @@
 //! [`SensorDriver`]: super::SensorDriver
 //! [`AsyncSensorDriver`]: super::AsyncSensorDriver
 
-use alloc::sync::Arc;
+use crate::Arc;
 use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
 
 use styx_hal::AsyncSensorPins;

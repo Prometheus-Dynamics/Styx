@@ -52,30 +52,45 @@
 //!   control at once.
 //! * Pausing continuous AF is not implemented yet.
 
+// The algorithm needs feature `af` (on with `std`); its types and tuning are always there.
+#[cfg(feature = "af")]
 use alloc::{vec, vec::Vec};
 
+#[cfg(feature = "af")]
 mod measure;
+#[cfg(feature = "af")]
 mod scan;
-#[cfg(test)]
+#[cfg(all(test, feature = "af"))]
 mod tests;
 pub mod tuning;
 mod types;
 
+#[cfg(feature = "af")]
 use crate::config::{CameraConfig, LensConfig};
+#[cfg(feature = "af")]
 use crate::error::Result;
+#[cfg(feature = "af")]
 use crate::frame::{Controls, FrameMetadata};
-#[cfg(not(feature = "std"))]
+#[cfg(all(feature = "af", not(feature = "std")))]
 use crate::math::Float as _;
+#[cfg(feature = "af")]
 use crate::params::Params;
+#[cfg(feature = "af")]
 use crate::pipeline::Algorithm;
+#[cfg(feature = "af")]
 use crate::pwl::Pwl;
+#[cfg(feature = "af")]
 use crate::stats::Statistics;
 
-pub use measure::MAX_WINDOWS;
+/// At most this many windows are used (as libcamera).
+pub const MAX_WINDOWS: usize = 10;
+
+#[cfg(feature = "af")]
 use measure::{Measure, Measurement};
 pub use tuning::{AfRangeTuning, AfRanges, AfSpeedTuning, AfSpeeds, AfTuning};
 pub use types::{AfMode, AfRange, AfSpeed, AfState, AfStatus, AfWindow, LensRequest, LensState};
 
+#[cfg(feature = "af")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Scan {
     Idle,
@@ -89,6 +104,7 @@ enum Scan {
     Settle,
 }
 
+#[cfg(feature = "af")]
 #[derive(Debug, Clone, Copy)]
 struct Record {
     focus: f64,
@@ -97,6 +113,7 @@ struct Record {
     conf: f64,
 }
 
+#[cfg(feature = "af")]
 /// The AF algorithm. See the [module documentation](self).
 #[derive(Debug, Clone)]
 pub struct Af {
@@ -153,6 +170,7 @@ pub struct Af {
     approach: f64,
 }
 
+#[cfg(feature = "af")]
 impl Af {
     /// AF with this tuning.
     pub fn new(tuning: AfTuning) -> Result<Self> {
@@ -540,6 +558,7 @@ impl Af {
     }
 }
 
+#[cfg(feature = "af")]
 impl Algorithm for Af {
     fn name(&self) -> &'static str {
         "af"

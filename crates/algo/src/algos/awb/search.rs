@@ -5,6 +5,9 @@
 //! the `+ 1` guards against 16-bit integer zero divisions in the original are replaced by an
 //! explicit check on G.
 
+// The search needs feature `awb-bayes` (on with `std`); grey world is always there.
+#![cfg_attr(not(feature = "awb-bayes"), allow(dead_code, unused_imports))]
+
 use alloc::vec::Vec;
 
 #[cfg(not(feature = "std"))]
@@ -12,6 +15,7 @@ use crate::math::Float as _;
 use crate::pwl::Pwl;
 
 use super::tuning::{AwbMode, AwbPrior, AwbTuning, CtCurve};
+use crate::math::{keyed, sort_keyed};
 
 /// A usable zone: mean (r, g, b).
 pub(crate) type Zone = (f64, f64, f64);
@@ -21,18 +25,19 @@ pub(crate) type Estimate = (f64, f64, f64);
 
 /// Grey world: average the middle half of the zones sorted by R/G (and B/G).
 pub(crate) fn grey_world(zones: &[Zone], default_ct: f64) -> Estimate {
-    let mut by_r = zones.to_vec();
-    let mut by_b = zones.to_vec();
-    // By R/G and B/G; zones without green last (cross-multiplied comparisons are no order
-    // with them: every such zone compares equal to every other, which panicked the sort in a
-    // dark scene on the device).
+    // By R/G and B/G (equal ratios in zone order); zones without green last (cross-multiplied
+    // comparisons are no order with them: every such zone compares equal to every other, which
+    // panicked the sort in a dark scene on the device).
     let ratio = |c: f64, g: f64| if g > 0.0 { c / g } else { f64::INFINITY };
-    by_r.sort_by(|a, b| ratio(a.0, a.1).total_cmp(&ratio(b.0, b.1)));
-    by_b.sort_by(|a, b| ratio(a.2, a.1).total_cmp(&ratio(b.2, b.1)));
+    let mut by_r = keyed(zones.iter().map(|z| ratio(z.0, z.1)));
+    let mut by_b = keyed(zones.iter().map(|z| ratio(z.2, z.1)));
+    sort_keyed(&mut by_r);
+    sort_keyed(&mut by_b);
     let discard = zones.len() / 4;
     let keep = zones.len() - 2 * discard;
     let (mut rr, mut rg, mut bb, mut bg) = (0.0, 0.0, 0.0, 0.0);
-    for (zr, zb) in by_r.iter().zip(&by_b).skip(discard).take(keep) {
+    for (r, b) in by_r.iter().zip(&by_b).skip(discard).take(keep) {
+        let (zr, zb) = (&zones[r.1 as usize], &zones[b.1 as usize]);
         rr += zr.0;
         rg += zr.1;
         bb += zb.2;

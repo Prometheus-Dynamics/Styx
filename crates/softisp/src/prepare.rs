@@ -241,11 +241,13 @@ impl IntPrep {
             }
             m
         });
-        let poly_wanted = match params.arithmetic {
-            Arithmetic::IntPolyTone => true,
-            Arithmetic::Auto => crate::simd::poly_preferred(),
-            Arithmetic::Int | Arithmetic::Half => false,
-        };
+        // Never without feature `poly-tone`.
+        let poly_wanted = cfg!(feature = "poly-tone")
+            && match params.arithmetic {
+                Arithmetic::IntPolyTone => true,
+                Arithmetic::Auto => crate::simd::poly_preferred(),
+                Arithmetic::Int | Arithmetic::Half => false,
+            };
         // The same curve keeps its table and quadratics (fitting costs tens of microseconds).
         let (lut, poly) = match previous {
             Some(p) if p.curve.0 == params.tone && p.curve.1 == poly_wanted => {

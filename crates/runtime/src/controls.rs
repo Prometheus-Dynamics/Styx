@@ -1,8 +1,8 @@
 //! A cloneable handle for typed, frame-accurate controls of an open camera.
 
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::time::Duration;
+use styx_core::sync::Arc;
 
 use styx_sensor::lens::imx708_pdaf;
 use styx_sensor::{Control, ControlRequest, Landing, Landings, RegisterBus, SensorPins, Timing};

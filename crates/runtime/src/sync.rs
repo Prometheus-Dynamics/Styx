@@ -4,7 +4,8 @@
 //! thread): [`Shared<T>`] is `Arc<Mutex<T>>` and [`Ref<T>`] is `Arc<T>`, exactly what the Linux
 //! runtime locked with before. Without it they run in one task (a microcontroller camera;
 //! interrupt handlers touch only the receiver's own atomics and wakers): `Arc<RefCell<T>>` and
-//! `Arc<T>`, so no lock or critical section is ever held across an I²C transfer. `Arc` (not
+//! `Arc<T>`, so no lock or critical section is ever held across an I²C transfer (`styx_core`'s
+//! `Arc`: `portable-atomic-util`'s on targets without compare-and-swap, Cortex-M0+). `Arc` (not
 //! `Rc`) so that what is `Sync` (a receiver, the frame pool) can be shared: a frame handed on as
 //! a `FrameLease` is `Send` on every target; `Arc<RefCell<T>>` itself is not, so the sensor
 //! state still cannot leave its task. A cargo feature, not a generic: one binary has one
@@ -39,13 +40,13 @@ mod imp {
 #[cfg(not(feature = "std"))]
 mod imp {
     /// State shared between a camera's parts.
-    pub type Shared<T> = alloc::sync::Arc<core::cell::RefCell<T>>;
+    pub type Shared<T> = styx_core::sync::Arc<core::cell::RefCell<T>>;
     /// The lock inside a [`Shared`].
     pub type Lock<T> = core::cell::RefCell<T>;
     /// A locked [`Lock`].
     pub type Guard<'a, T> = core::cell::RefMut<'a, T>;
     /// A shared reference (internally synchronised state).
-    pub type Ref<T> = alloc::sync::Arc<T>;
+    pub type Ref<T> = styx_core::sync::Arc<T>;
 
     /// Borrows mutably (the parts run in one task: a nested borrow is a bug and panics).
     #[inline]

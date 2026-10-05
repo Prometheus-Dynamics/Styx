@@ -13,7 +13,6 @@ pub mod daedalus;
 pub mod format;
 pub mod math;
 pub mod metrics;
-#[cfg(target_has_atomic = "ptr")]
 pub mod queue;
 pub mod requirements;
 pub mod simd;
@@ -61,7 +60,6 @@ pub mod prelude {
         },
     };
 
-    #[cfg(target_has_atomic = "ptr")]
     pub use crate::queue::{
         BoundedRx, BoundedTx, DEFAULT_QUEUE_CAPACITY, QueueOverflow, QueueStats, RecvOutcome,
         RecvWaitOutcome, SendOutcome, SendWaitOutcome, bounded, bounded_with, default_bounded,

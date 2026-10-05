@@ -90,7 +90,7 @@ where
         FrameLease::from_external(
             meta,
             layouts,
-            styx_core::sync::Arc::new(self.into_backing(len)),
+            styx_core::buffer::shared_backing(self.into_backing(len)),
         )
     }
 }

@@ -169,6 +169,8 @@ impl AgcTuning {
     /// Check the tuning is consistent.
     pub fn validate(&self) -> Result<()> {
         let err = |m: String| Err(AlgoError::Tuning(format!("agc: {m}")));
+        // Names in quotes as `{:?}` gives them (without its escaping, which brings core's
+        // Unicode tables into a firmware image).
         if self.y_target.is_empty() {
             return err("y_target is empty".into());
         }
@@ -176,21 +178,24 @@ impl AgcTuning {
             .exposure_modes
             .contains_key(&self.default_exposure_mode)
         {
-            return err(format!("no exposure mode {:?}", self.default_exposure_mode));
+            return err(format!(
+                "no exposure mode \"{}\"",
+                self.default_exposure_mode
+            ));
         }
         if !self
             .constraint_modes
             .contains_key(&self.default_constraint_mode)
         {
             return err(format!(
-                "no constraint mode {:?}",
+                "no constraint mode \"{}\"",
                 self.default_constraint_mode
             ));
         }
         for (name, p) in &self.exposure_modes {
             if p.exposure_us.len() < 2 || p.exposure_us.len() != p.gain.len() {
                 return err(format!(
-                    "exposure mode {name:?} needs at least two stages and as many gains as times"
+                    "exposure mode \"{name}\" needs at least two stages and as many gains as times"
                 ));
             }
             if p.exposure_us
@@ -198,25 +203,27 @@ impl AgcTuning {
                 .chain(&p.gain)
                 .any(|v| v.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater))
             {
-                return err(format!("exposure mode {name:?} has a non-positive value"));
+                return err(format!("exposure mode \"{name}\" has a non-positive value"));
             }
         }
         for (name, m) in &self.metering_modes {
             if m.weights.is_empty() || m.weights.iter().any(|w| w.is_nan() || *w < 0.0) {
-                return err(format!("metering mode {name:?} needs non-negative weights"));
+                return err(format!(
+                    "metering mode \"{name}\" needs non-negative weights"
+                ));
             }
             if let Some((w, h)) = m.grid
                 && (w * h) as usize != m.weights.len()
             {
                 return err(format!(
-                    "metering mode {name:?}: grid does not match weights"
+                    "metering mode \"{name}\": grid does not match weights"
                 ));
             }
         }
         for (name, cs) in &self.constraint_modes {
             for c in cs {
                 if !(0.0..=1.0).contains(&c.q_lo) || !(c.q_lo..=1.0).contains(&c.q_hi) {
-                    return err(format!("constraint mode {name:?}: bad quantiles"));
+                    return err(format!("constraint mode \"{name}\": bad quantiles"));
                 }
             }
         }

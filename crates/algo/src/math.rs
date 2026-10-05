@@ -149,3 +149,15 @@ float_impl!(
     f32, sqrtf, roundf, roundevenf, floorf, ceilf, truncf, powf, expf, exp2f, logf, log2f, log10f,
     sinf, cosf, sincosf, atan2f, hypotf, fmaf
 );
+
+/// Sorts `items` by key, ties by index: with the items' positions as indices, the order a
+/// stable sort by key gives. One unstable sort shared by every caller, so a firmware image
+/// carries one copy of the sort code instead of one per comparison closure (docs/mcu.md).
+pub(crate) fn sort_keyed(items: &mut [(f64, u32)]) {
+    items.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+}
+
+/// `values` with their positions, for [`sort_keyed`].
+pub(crate) fn keyed(values: impl Iterator<Item = f64>) -> alloc::vec::Vec<(f64, u32)> {
+    values.enumerate().map(|(i, v)| (v, i as u32)).collect()
+}

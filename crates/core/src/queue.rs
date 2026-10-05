@@ -3,14 +3,18 @@
 //! A lock-free ring (crossbeam's `ArrayQueue`) with an overflow policy, non-blocking sends and
 //! receives, and waker-based async ones ([`BoundedRx::recv_async`], [`BoundedRx::poll_recv`],
 //! [`BoundedTx::send_async`]) that run on any executor, or a superloop polling with a no-op
-//! waker. With `std`: blocking sends and receives with timeouts. Needs compare-and-swap on
-//! pointers (`target_has_atomic = "ptr"`).
+//! waker. With `std`: blocking sends and receives with timeouts. On targets without
+//! compare-and-swap (`critical-section`: Cortex-M0+, RISC-V without `a`) the ring is a
+//! `VecDeque` in a critical section, with the same behaviour.
 
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
+#[cfg(target_has_atomic = "ptr")]
 use crossbeam_queue::ArrayQueue;
+#[cfg(not(target_has_atomic = "ptr"))]
+use ring::ArrayQueue;
 use smallvec::SmallVec;
 
 use crate::sync::{Arc, AtomicBool, AtomicU64, Mutex, Ordering};
@@ -681,6 +685,8 @@ pub fn default_bounded<T>() -> (BoundedTx<T>, BoundedRx<T>) {
 
 mod newest;
 pub use newest::{NewestRx, NewestTx, newest};
+#[cfg(any(test, not(target_has_atomic = "ptr")))]
+mod ring;
 
 #[cfg(all(test, feature = "std"))]
 mod async_tests;

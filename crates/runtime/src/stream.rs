@@ -10,9 +10,9 @@
 //! with other buffers.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 use core::time::Duration;
+use styx_core::sync::{AtomicBool, AtomicUsize, Ordering};
 
 use styx_hal::{Access, ErrorKind, FrameBuffer, FrameDone, HalError, Instant, Receiver};
 

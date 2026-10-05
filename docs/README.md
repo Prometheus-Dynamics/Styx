@@ -7,6 +7,7 @@ This directory holds repository-level documentation for the Styx workspace.
 - [comparison.md](comparison.md): Styx compared with libcamera, raw V4L2 and GStreamer: the same tasks in code, architecture, measured numbers, what Styx does not do yet
 - [native-stack/README.md](native-stack/README.md): the native camera stack (sensor bridge, sensors as data, PiSP, 3A in Rust)
 - [portability.md](portability.md): the platform-neutral crates without `std` (3A, software ISP, sensors, PiSP config, DNG, formats) on microcontrollers, RTOSes and WebAssembly
+- [mcu.md](mcu.md): Styx's footprint on microcontrollers: flash, static RAM and heap of four firmware configurations (Cortex-M7/M4F, Cortex-M0+), what fits on STM32H7/F4, RP2040 and ESP32-S3, the features and profile to use
 - [portability-design.md](portability-design.md): design for review: `styx-hal` and a `no_std` camera runtime, Linux as the reference platform, MCU and rkisp1 port sketches, migration plan
 - [development.md](development.md): repository layout, validation commands, and contribution expectations
 - [api-ergonomics.md](api-ergonomics.md): import surfaces, common task recipes, and typed API boundaries

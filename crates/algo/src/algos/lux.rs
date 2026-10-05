@@ -4,6 +4,9 @@
 //! `lux = ref_lux × (ref_exposure / exposure) × (ref_gain / gain) × (Y / ref_Y) / sensitivity`.
 //! A lux value in the frame metadata (e.g. from a light sensor) takes precedence.
 
+// The tuning types are always there; the algorithm needs feature `lux` (on with `std`).
+#![cfg_attr(not(feature = "lux"), allow(dead_code, unused_imports))]
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::CameraConfig;
@@ -52,6 +55,7 @@ impl LuxTuning {
     }
 }
 
+#[cfg(feature = "lux")]
 /// The lux estimator.
 #[derive(Debug, Clone)]
 pub struct Lux {
@@ -59,6 +63,7 @@ pub struct Lux {
     sensitivity: f64,
 }
 
+#[cfg(feature = "lux")]
 impl Lux {
     /// A lux estimator.
     pub fn new(tuning: LuxTuning) -> Self {
@@ -81,6 +86,7 @@ impl Lux {
     }
 }
 
+#[cfg(feature = "lux")]
 impl Algorithm for Lux {
     fn name(&self) -> &'static str {
         "lux"

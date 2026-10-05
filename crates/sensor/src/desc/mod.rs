@@ -7,7 +7,9 @@ mod types;
 mod validate;
 
 use alloc::collections::BTreeMap;
-use alloc::{borrow::ToOwned, string::String, string::ToString, vec::Vec};
+#[cfg(feature = "toml")]
+use alloc::{borrow::ToOwned, string::ToString};
+use alloc::{string::String, vec::Vec};
 #[cfg(feature = "std")]
 use std::path::Path;
 
@@ -262,7 +264,9 @@ impl Mode {
 }
 
 impl SensorDescription {
-    /// Parse and validate a description. `source_name` labels error messages.
+    /// Parse and validate a description. `source_name` labels error messages (feature
+    /// `toml`, on with `std`).
+    #[cfg(feature = "toml")]
     pub fn from_toml_str(source: &str, source_name: &str) -> Result<Self> {
         let desc: Self = toml::from_str(source).map_err(|e| SensorError::Parse {
             source_name: source_name.to_owned(),

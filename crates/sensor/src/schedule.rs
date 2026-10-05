@@ -179,8 +179,14 @@ pub type Landings = FixedVec<Landing, 4>;
 /// Reported values that differ from the prediction: at most one per control.
 pub type Mismatches = FixedVec<Mismatch, 4>;
 
-/// Frames of history kept for [`ControlScheduler::applied`].
+/// Frames of history kept for [`ControlScheduler::applied`]: 64, or 16 with feature
+/// `short-history` (a firmware that looks up each frame's values as it arrives).
+#[cfg(not(feature = "short-history"))]
 pub const HISTORY_FRAMES: u64 = 64;
+/// Frames of history kept for [`ControlScheduler::applied`]: 64, or 16 with feature
+/// `short-history` (a firmware that looks up each frame's values as it arrives).
+#[cfg(feature = "short-history")]
+pub const HISTORY_FRAMES: u64 = 16;
 
 /// Requests per control waiting for their frame (requests for distinct frames not issued yet;
 /// a full queue drops its oldest request, [`ControlScheduler::dropped_requests`]).
@@ -188,12 +194,19 @@ pub const PENDING_REQUESTS: usize = 16;
 
 /// Issued values and reports kept per control: [`HISTORY_FRAMES`] plus room for values issued
 /// ahead (control delays) and the value in effect before the history.
-const HISTORY_SLOTS: usize = HISTORY_FRAMES as usize + 32;
+const HISTORY_SLOTS: usize = HISTORY_FRAMES as usize + AHEAD_SLOTS;
+
+/// The room for values issued ahead in [`HISTORY_SLOTS`].
+#[cfg(not(feature = "short-history"))]
+const AHEAD_SLOTS: usize = 32;
+#[cfg(feature = "short-history")]
+const AHEAD_SLOTS: usize = 16;
 
 /// The control scheduler. See the [module documentation](self).
 ///
 /// It does not allocate: requests, issued values and reports live in fixed rings sorted by
-/// frame (about 9 KiB), so the frame path runs without a heap once streaming.
+/// frame (about 9 KiB; under 4 KiB with `short-history`), so the frame path runs without a heap
+/// once streaming.
 #[derive(Debug, Clone)]
 pub struct ControlScheduler {
     delays: [u32; 4],

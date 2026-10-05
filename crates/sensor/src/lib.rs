@@ -156,6 +156,14 @@
 
 extern crate alloc;
 
+/// The `Arc` drivers share their description through: `alloc::sync`'s, or on targets without
+/// compare-and-swap (Cortex-M0+, RISC-V without `a`) `portable-atomic-util`'s, the same type as
+/// `styx_core::sync::Arc` on every target.
+#[cfg(target_has_atomic = "ptr")]
+pub use alloc::sync::Arc;
+#[cfg(not(target_has_atomic = "ptr"))]
+pub use portable_atomic_util::Arc;
+
 #[cfg(feature = "build")]
 pub mod build;
 mod bus;

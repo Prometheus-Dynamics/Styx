@@ -15,8 +15,12 @@
 //! the tables' grid (the PiSP's 32x32 AWB zones); on other grids the tables follow the
 //! calibration only, as with `n_iter = 0`.
 
+// The tuning types are always there; the algorithm needs feature `alsc` (on with `std`).
+#![cfg_attr(not(feature = "alsc"), allow(dead_code, unused_imports))]
+
 use alloc::{format, string::String, vec, vec::Vec};
 
+#[cfg(feature = "alsc")]
 mod adaptive;
 
 use serde::{Deserialize, Serialize};
@@ -192,6 +196,7 @@ impl AlscTuning {
     }
 }
 
+#[cfg(feature = "alsc")]
 /// Interpolate the calibrations at a temperature (unity when there are none).
 fn cal_table(cals: &[AlscCalibration], ct: f64, n: usize) -> Vec<f64> {
     match cals {
@@ -210,6 +215,7 @@ fn cal_table(cals: &[AlscCalibration], ct: f64, n: usize) -> Vec<f64> {
     }
 }
 
+#[cfg(feature = "alsc")]
 /// Bilinear resampling of a full-array table to the crop, with flips.
 fn resample(t: &[f64], (w, h): (u32, u32), crop: Crop, hflip: bool, vflip: bool) -> Vec<f64> {
     let (wi, hi) = (w as i64, h as i64);
@@ -242,9 +248,11 @@ fn resample(t: &[f64], (w, h): (u32, u32), crop: Crop, hflip: bool, vflip: bool)
     out
 }
 
+#[cfg(feature = "alsc")]
 /// Relative distance below which the filtered tables take the target.
 const SNAP: f64 = 1e-3;
 
+#[cfg(feature = "alsc")]
 /// The ALSC algorithm.
 #[derive(Debug, Clone)]
 pub struct Alsc {
@@ -271,6 +279,7 @@ pub struct Alsc {
     last_iterations: (u32, u32),
 }
 
+#[cfg(feature = "alsc")]
 impl Alsc {
     /// An ALSC algorithm.
     pub fn new(tuning: AlscTuning) -> Result<Self> {
@@ -380,6 +389,7 @@ impl Alsc {
     }
 }
 
+#[cfg(feature = "alsc")]
 impl Algorithm for Alsc {
     fn name(&self) -> &'static str {
         "alsc"
@@ -476,7 +486,7 @@ impl Algorithm for Alsc {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "alsc"))]
 mod tests {
     use super::*;
 

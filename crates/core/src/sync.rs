@@ -82,13 +82,10 @@ mod imp {
             }
         }
 
-        // The queue (the one reader-writer user) needs compare-and-swap.
-        #[cfg_attr(not(target_has_atomic = "ptr"), allow(dead_code))]
         pub(crate) fn read(&self) -> Guard<'_, T> {
             self.lock()
         }
 
-        #[cfg_attr(not(target_has_atomic = "ptr"), allow(dead_code))]
         pub(crate) fn write(&self) -> Guard<'_, T> {
             self.lock()
         }
@@ -124,12 +121,10 @@ mod imp {
     }
 
     /// Readers and writers alike take the critical section.
-    #[cfg_attr(not(target_has_atomic = "ptr"), allow(dead_code))]
     pub(crate) type RwLock<T> = Mutex<T>;
 }
 
 pub(crate) use imp::Mutex;
-#[cfg(target_has_atomic = "ptr")]
 pub(crate) use imp::RwLock;
 
 /// A 64-bit counter of events, relaxed: native atomics where the target has 64-bit ones (the

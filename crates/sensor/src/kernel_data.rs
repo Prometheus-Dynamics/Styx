@@ -27,11 +27,14 @@
 //! registers = [{ control = "exposure", address = 0x015a, bytes = 2 }]
 //! ```
 
-use alloc::{borrow::ToOwned, format, string::String, string::ToString, vec::Vec};
+#[cfg(feature = "toml")]
+use alloc::{borrow::ToOwned, format, string::ToString};
+use alloc::{string::String, vec::Vec};
 
 use serde::Deserialize;
 
 use crate::desc::{BlackLevel, Delays, EmbeddedData, GainModel};
+#[cfg(feature = "toml")]
 use crate::error::{Result, SensorError};
 
 /// Facts about a sensor a kernel driver drives that the driver does not report.
@@ -106,7 +109,8 @@ pub const BUILTIN_KERNEL_DATA: &[(&str, &str)] = &[
 ];
 
 impl KernelSensorData {
-    /// Parses a data file. `source_name` labels errors.
+    /// Parses a data file. `source_name` labels errors (feature `toml`, on with `std`).
+    #[cfg(feature = "toml")]
     pub fn from_toml_str(source: &str, source_name: &str) -> Result<Self> {
         toml::from_str(source).map_err(|e| SensorError::Parse {
             source_name: source_name.to_owned(),
@@ -125,7 +129,8 @@ impl KernelSensorData {
         Self::from_toml_str(&src, &path.display().to_string())
     }
 
-    /// The data files that ship with this crate.
+    /// The data files that ship with this crate (feature `toml`, on with `std`).
+    #[cfg(feature = "toml")]
     pub fn builtin() -> Vec<Self> {
         BUILTIN_KERNEL_DATA
             .iter()

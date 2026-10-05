@@ -1,6 +1,6 @@
 //! The driver over async buses.
 
-use alloc::sync::Arc;
+use crate::Arc;
 
 use styx_hal::AsyncSensorPins;
 
