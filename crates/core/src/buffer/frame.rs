@@ -25,6 +25,7 @@ mod luma;
 mod region;
 mod share;
 mod visible;
+mod write;
 
 #[allow(unused_imports)]
 use super::layout::*;
@@ -79,6 +80,27 @@ pub trait ExternalBacking: Send + Sync {
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         Ok(None)
     }
+
+    /// Whether the CPU may write the planes through [`ExternalBacking::plane_data_mut`]
+    /// (default `false`: external memory is read-only). A frame writes only while it is the
+    /// backing's one owner (no shared views or handles out).
+    fn cpu_writable(&self) -> bool {
+        false
+    }
+
+    /// The memory holding plane `index`, for writing: as [`ExternalBacking::plane_data`] (the
+    /// whole buffer the plane's layout offset is in; planes may share one buffer). Slices for
+    /// different indices must be the same buffer or not overlap. The first call opens a CPU
+    /// write window (cache maintenance), closed by [`ExternalBacking::finish_cpu_write`].
+    /// Default `None`.
+    fn plane_data_mut(&mut self, _index: usize) -> Option<&mut [u8]> {
+        None
+    }
+
+    /// Closes a CPU write window opened by [`ExternalBacking::plane_data_mut`] (cache
+    /// maintenance so devices see the writes): the frame is about to be shared or handed out.
+    /// Nothing when no window is open; default nothing.
+    fn finish_cpu_write(&self) {}
 }
 
 /// `backing` as a shared frame backing (through a `Box` where `Arc` cannot coerce to a trait
@@ -156,6 +178,7 @@ impl FrameLease {
     /// that releases them later (e.g. an encoder that holds its input). The slices from
     /// [`FrameLease::planes`] stay valid while the handle lives. `None` for pooled host memory.
     pub fn external_backing_handle(&self) -> Option<Arc<dyn ExternalBacking>> {
+        self.finish_cpu_write();
         self.external.clone()
     }
 
@@ -249,12 +272,22 @@ impl FrameLease {
         self.cpu_access().readable()
     }
 
+    /// Whether the CPU can write the planes: a mutable frame in its own host buffers, or over a
+    /// writable backing ([`MemoryRegion::from_raw_mut`]) this frame is the one owner of (no
+    /// shared views or backing handles out).
     pub fn has_host_writable_bytes(&self) -> bool {
-        matches!(
-            self.residency(),
-            FrameResidency::HostOwned | FrameResidency::CompressedPacket
-        ) && self.mutability() == FrameMutability::Mutable
-            && self.external.is_none()
+        if self.mutability() != FrameMutability::Mutable {
+            return false;
+        }
+        match &self.external {
+            None => matches!(
+                self.residency(),
+                FrameResidency::HostOwned | FrameResidency::CompressedPacket
+            ),
+            Some(backing) => {
+                backing.cpu_writable() && self.cpu_access().readable() && write::sole_owner(backing)
+            }
+        }
     }
 
     pub fn require_host_readable(&self) -> Result<(), FrameValidationError> {
@@ -354,16 +387,12 @@ impl FrameLease {
         }
     }
 
+    /// The planes for writing. Frames in their own buffers always; frames over external memory
+    /// when [`FrameLease::can_write_planes`] (a writable [`MemoryRegion`], this frame its one
+    /// owner), else empty slices.
     pub fn planes_mut(&mut self) -> SmallVec<[PlaneMut<'_>; 3]> {
         if self.external.is_some() {
-            return self
-                .layouts
-                .iter()
-                .map(|layout| PlaneMut {
-                    data: &mut [],
-                    stride: layout.stride,
-                })
-                .collect();
+            return self.external_planes_mut();
         }
         self.layouts
             .iter()

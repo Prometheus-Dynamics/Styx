@@ -16,7 +16,7 @@ use super::f16;
 use super::neon;
 use crate::format::CfaPattern;
 #[cfg(not(feature = "std"))]
-use crate::math::Float as _;
+use styx_core::math::Float as _;
 
 /// fp16 constants.
 pub const H_HALF: u16 = 0x3800;

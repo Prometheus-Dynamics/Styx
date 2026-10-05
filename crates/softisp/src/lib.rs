@@ -58,7 +58,6 @@ extern crate alloc;
 
 pub mod format;
 mod isp;
-mod math;
 mod output;
 pub mod params;
 mod pipeline;

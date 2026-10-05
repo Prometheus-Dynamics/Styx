@@ -305,7 +305,7 @@ impl Algorithms {
         self.settled_every = rate_hz.filter(|r| *r > 0.0 && fps > 0.0).map_or(1, |r| {
             let n = fps / r;
             #[cfg(not(feature = "std"))]
-            use crate::math::Float as _;
+            use styx_core::math::Float as _;
             n.round().max(1.0) as u64
         });
     }

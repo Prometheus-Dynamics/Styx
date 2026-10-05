@@ -4,8 +4,8 @@
 //! ([`PlaneLayout`], [`plane_layout_from_dims`], [`FrameAllocation`], [`FrameValidationError`]),
 //! borrowed plane views ([`Plane`], [`VisibleRows`]), frames ([`FrameLease`]) over pooled heap
 //! buffers ([`BufferPool`]), over caller-provided memory ([`MemoryRegion`]: a static buffer or a
-//! DMA region, with [`RegionHooks`] for cache maintenance and giving the buffer back) or over
-//! any [`ExternalBacking`], shared views and companions. With `std` on unix: memfd / dma-buf
+//! DMA region, read-only or written in place, with [`RegionHooks`] for cache maintenance and
+//! giving the buffer back) or over any [`ExternalBacking`], shared views and companions. With `std` on unix: memfd / dma-buf
 //! backings, their export and import, the memfd pool ([`SharedBufferPool`], Linux).
 
 mod clock;
@@ -43,7 +43,9 @@ pub use frame::{FrameBackingExport, FrameExportError, FrameFdPlane};
 pub use pool::{BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats};
 
 #[cfg(all(feature = "std", target_os = "linux"))]
-pub use dmabuf_sync::{dmabuf_begin_cpu_read, dmabuf_end_cpu_read};
+pub use dmabuf_sync::{
+    dmabuf_begin_cpu_read, dmabuf_begin_cpu_write, dmabuf_end_cpu_read, dmabuf_end_cpu_write,
+};
 #[cfg(all(feature = "std", target_os = "linux"))]
 pub use pool::{SharedBufferLease, SharedBufferPool, SharedBufferPoolStats};
 

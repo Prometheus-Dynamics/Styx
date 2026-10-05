@@ -3,14 +3,14 @@
 //! `device::StillBackEnd`), and written as a DNG ([`dng_metadata`], with the colour
 //! calibration of [`dng_calibrations`] from the tuning).
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::time::Duration;
+#[cfg(not(feature = "std"))]
+use styx_core::math::Float as _;
 
 use styx_algo::{Params, Tuning};
 use styx_dng::color::{self, Matrix3};

@@ -78,7 +78,12 @@ impl FrameLease {
         if meta.residency.is_none() {
             meta.residency = Some(backing.residency());
         }
-        meta.mutability = FrameMutability::ReadOnly;
+        // Writable only over a backing the CPU may write (a writable `MemoryRegion`).
+        meta.mutability = if backing.cpu_writable() {
+            FrameMutability::Mutable
+        } else {
+            FrameMutability::ReadOnly
+        };
         Self {
             meta,
             buffers: SmallVec::new(),

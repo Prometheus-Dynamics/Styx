@@ -8,7 +8,7 @@
 //! darker ones keep the clipped value's scaled level.
 
 #[cfg(not(feature = "std"))]
-use crate::math::Float as _;
+use styx_core::math::Float as _;
 use styx_softisp::RawPacking;
 
 use crate::controller::SensorValues;

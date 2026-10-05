@@ -3,8 +3,6 @@
 use alloc::{boxed::Box, format, vec, vec::Vec};
 
 use crate::format::{CfaPattern, Channel, RawFormat};
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use crate::params::ToneCurve;
 use crate::params::{Arithmetic, Demosaic, IspParams, LensShading, YuvMatrix};
 use crate::prepare_half::HalfPrep;
@@ -12,6 +10,8 @@ use crate::simd::poly::PolyTone;
 use crate::simd::scalar::WORK_MAX;
 use crate::simd::{ToneLut, YuvCoeffs};
 use crate::{IspError, StatsConfig};
+#[cfg(not(feature = "std"))]
+use styx_core::math::Float as _;
 
 /// Q12 gain limit (16x).
 const GAIN_MAX: f32 = 65535.0 / 4096.0;

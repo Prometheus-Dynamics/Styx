@@ -36,7 +36,6 @@ gpu = ["std", "dep:styx-gpuisp"]
 # crates), as examples/nostd-smoke does.
 [dependencies]
 bytemuck = "1.25"
-libm.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"] }
 serde_json = { version = "1.0.145", optional = true }
 styx-algo = { path = "../algo", version = "2.0.0", default-features = false }

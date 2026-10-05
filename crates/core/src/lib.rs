@@ -11,7 +11,7 @@ pub mod controls;
 #[cfg(feature = "daedalus")]
 pub mod daedalus;
 pub mod format;
-mod math;
+pub mod math;
 pub mod metrics;
 #[cfg(target_has_atomic = "ptr")]
 pub mod queue;
@@ -74,6 +74,6 @@ pub mod prelude {
     #[cfg(all(feature = "std", target_os = "linux"))]
     pub use crate::buffer::{
         SharedBufferLease, SharedBufferPool, SharedBufferPoolStats, dmabuf_begin_cpu_read,
-        dmabuf_end_cpu_read,
+        dmabuf_begin_cpu_write, dmabuf_end_cpu_read, dmabuf_end_cpu_write,
     };
 }

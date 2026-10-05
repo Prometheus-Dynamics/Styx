@@ -1,10 +1,10 @@
 //! ISP statistics → [`styx_algo::Statistics`] (normalised to full scale 1.0, black level
 //! removed, before white balance).
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use alloc::vec;
 use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use styx_core::math::Float as _;
 
 use styx_algo::{ColourZone, Histogram, LumaZone, Statistics, ZoneGrid};
 use styx_pisp::stats::Statistics as PispStatistics;
