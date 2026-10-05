@@ -1,0 +1,80 @@
+[package]
+name = "styx-mcu-footprint"
+version.workspace = true
+edition.workspace = true
+description = "Firmware images that measure Styx's footprint on microcontrollers (docs/mcu.md): four configurations from frame types and a queue to a full software-ISP camera, built for Cortex-M7/M4F and Cortex-M0+, plus host runs that measure their heap."
+license.workspace = true
+publish = false
+rust-version.workspace = true
+autobins = false
+
+[lib]
+path = "src/lib.rs"
+test = true
+
+# A: styx-core frames from a receiver's buffers through a queue to a consumer.
+[[bin]]
+name = "footprint-a"
+path = "src/bin/a.rs"
+test = false
+bench = false
+
+# B: A + the sensor driver (compiled description, control schedule, embedded data) + Camera.
+[[bin]]
+name = "footprint-b"
+path = "src/bin/b.rs"
+test = false
+bench = false
+
+# C: B + AE/AWB on statistics of the raw frames, no ISP.
+[[bin]]
+name = "footprint-c"
+path = "src/bin/c.rs"
+test = false
+bench = false
+
+# D: C + the software ISP (Bayer to NV12) with full 3A, stills and metrics counters.
+[[bin]]
+name = "footprint-d"
+path = "src/bin/d.rs"
+test = false
+bench = false
+
+[features]
+default = []
+
+# Every Styx crate without `std` (path dependencies: the workspace entries keep their default
+# features for the std crates).
+[dependencies]
+portable-atomic.workspace = true
+smallvec.workspace = true
+critical-section.workspace = true
+styx-algo = { path = "../../crates/algo", default-features = false, features = ["alsc"] }
+styx-core = { package = "styx-core-rs", path = "../../crates/core", default-features = false }
+styx-hal = { path = "../../crates/hal" }
+styx-pipeline = { path = "../../crates/pipeline", default-features = false }
+styx-runtime = { path = "../../crates/runtime", default-features = false }
+styx-sensor = { path = "../../crates/sensor", default-features = false, features = ["postcard"] }
+styx-softisp = { path = "../../crates/softisp", default-features = false }
+
+# Targets without compare-and-swap (Cortex-M0+): atomics, `Arc` and locks through critical
+# sections.
+[target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]
+styx-core = { package = "styx-core-rs", path = "../../crates/core", default-features = false, features = ["critical-section"] }
+
+# The firmware: start-up code, a single-core critical section, a heap.
+[target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+embedded-alloc = { version = "0.7", default-features = false, features = ["llff"] }
+
+# Host runs (heap measurement): critical sections from std.
+[target.'cfg(not(target_os = "none"))'.dependencies]
+critical-section = { workspace = true, features = ["std"] }
+
+# The OV9782 description compiled at build time (postcard bytes in OUT_DIR).
+[build-dependencies]
+styx-sensor = { path = "../../crates/sensor", features = ["build"] }
+
+[lints]
+workspace = true

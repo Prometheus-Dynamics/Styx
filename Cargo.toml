@@ -28,6 +28,7 @@ members = [
     "examples",
     "examples/nostd-smoke",
     "examples/nostd-camera",
+    "examples/mcu-footprint",
 ]
 # Optional bridges that link GStreamer/PipeWire; their own workspaces (docs/ecosystem.md).
 exclude = ["crates/gst-styx", "crates/pipewire-styx"]
@@ -130,6 +131,21 @@ libcamera-sys = "0.7"
 inotify = { version = "0.11.1", default-features = false }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 tracing = "0.1.44"
+
+# Firmware images measured for size (examples/mcu-footprint, docs/mcu.md): smallest code,
+# whole-program optimisation, no unwinding. `mcu-speed` is the same at `opt-level = "s"`.
+[profile.mcu]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+incremental = false
+
+[profile.mcu-speed]
+inherits = "mcu"
+opt-level = "s"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
