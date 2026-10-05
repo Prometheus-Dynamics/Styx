@@ -20,11 +20,11 @@
 //! every shot held ─► StillOutcome::Taken
 //! ```
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::time::Duration;
+#[cfg(not(feature = "std"))]
+use styx_core::math::Float as _;
 
 use styx_algo::{CameraConfig, Controls, SensorRequest};
 

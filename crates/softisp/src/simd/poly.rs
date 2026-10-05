@@ -28,7 +28,7 @@ use alloc::vec;
 use super::scalar::WORK_MAX;
 
 #[cfg(not(feature = "std"))]
-use crate::math::Float as _;
+use styx_core::math::Float as _;
 
 /// Added to the input so that its octaves `[2^5, 2^12)` cover `0..=4095`.
 const OFFSET: u16 = 32;

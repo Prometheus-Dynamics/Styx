@@ -51,7 +51,6 @@ pub mod device;
 mod engine;
 mod error;
 pub mod isp;
-mod math;
 #[cfg(feature = "std")]
 pub mod measure;
 pub mod pisp_be;

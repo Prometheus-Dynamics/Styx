@@ -1,10 +1,10 @@
 //! The sensor mode as the algorithms and the ISPs see it, from a `styx-sensor` description.
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use alloc::format;
 use alloc::string::ToString;
 use core::time::Duration;
+#[cfg(not(feature = "std"))]
+use styx_core::math::Float as _;
 
 use serde::{Deserialize, Serialize};
 use styx_algo::{CameraConfig, ControlDelays};

@@ -239,6 +239,14 @@ box (OV9782 1280x800) unless stated.
       on as `FrameLease`s (`Frame::into_lease`, the native capture's path on Linux too);
       `examples/nostd-camera` hands its raw frames out as `FrameLease`s through a core queue.
       Linux unchanged (host benches, CM5 syscalls/allocations/CPU/latency: portability.md).
+- [x] `styx-core` gaps Eidos reported (`work/core-gaps`): writable frames over caller-provided
+      memory (`MemoryRegion::from_raw_mut`, `begin_cpu_write` / `end_cpu_write` hooks,
+      `FrameLease::plane_data_mut`), the float shim public (`styx_core::math::Float`, used by
+      `styx-pipeline` and `styx-softisp`), every atomic, the fences and `Weak` in
+      `styx_core::sync`.
+- [ ] `styx-algo`, `styx-dng`, `styx-pisp` and `styx-sensor` keep private copies of the float
+      shim (they do not depend on `styx-core`); fold them into one if a lower crate ever holds
+      it (e.g. `styx-hal`).
 - [ ] The MCU port (`ports/stm32h7-dcmi`: swap `examples/nostd-camera`'s `board` for a DCMI
       receiver, I²C and a timer) and an `rkisp1` board; run on real MCU hardware. A linked
       firmware image (allocator, panic handler, `cortex-m-rt`) is not built yet: CI checks the

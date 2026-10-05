@@ -234,16 +234,8 @@ impl FrameLease {
         let Some(layout) = self.layouts.get(plane_index).copied() else {
             return Err(FrameValidationError::NoPlanes);
         };
-        let Some(buffer) = self.buffers.get_mut(plane_index) else {
-            return Err(FrameValidationError::NoPlanes);
-        };
-        let end = layout.offset.saturating_add(layout.len);
-        if buffer.len() < end {
-            buffer.resize(end);
-        }
-        let data = buffer
-            .as_mut_slice()
-            .get_mut(layout.offset..end)
+        let data = self
+            .plane_data_mut(plane_index)
             .ok_or(FrameValidationError::NoPlanes)?;
         Ok(VisibleRowsMut {
             data,

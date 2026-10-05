@@ -1,10 +1,16 @@
 //! Shared ownership, atomics and locks for the frame path, one answer per build.
 //!
-//! | Build | [`Arc`] | Atomics | Locks (internal) |
+//! | Build | [`Arc`] / [`Weak`] | Atomics, [`fence`], [`compiler_fence`] | Locks (internal) |
 //! |---|---|---|---|
-//! | `std` | `alloc::sync::Arc` (std's) | `portable-atomic` (core's instructions where the target has them) | parking_lot |
-//! | no `std` | `alloc::sync::Arc` | `portable-atomic` (64-bit: a lock-based fallback on 32-bit MCUs) | spin locks |
-//! | no `std`, `critical-section` | `alloc::sync::Arc`, or `portable-atomic-util`'s where the target has no compare-and-swap | through `critical-section` | critical sections |
+//! | `std` | `alloc::sync`'s (std's) | `portable-atomic` (core's instructions where the target has them) | parking_lot |
+//! | no `std` | `alloc::sync`'s | `portable-atomic` (64-bit: a lock-based fallback on 32-bit MCUs) | spin locks |
+//! | no `std`, `critical-section` | `alloc::sync`'s, or `portable-atomic-util`'s where the target has no compare-and-swap | through `critical-section` | critical sections |
+//!
+//! Every integer width (8 to 64 bits, signed and unsigned, and pointer-sized), [`AtomicBool`]
+//! and [`AtomicPtr`] are here, with core's API (`portable-atomic` mirrors it, adding the
+//! read-modify-write operations everywhere). Code that takes all of them from this module
+//! builds unchanged on every target Styx builds for, Cortex-M0 included. Where the target has
+//! the instructions the types are core's in all but name: the same code, no lock.
 //!
 //! Locks are only held for a few instructions (a free list push or pop, a waker list) and
 //! never across anything that waits. A spin lock is right for tasks and superloops; a
@@ -12,11 +18,14 @@
 //! `critical-section`, so the interrupt cannot land while the task holds the lock.
 
 #[cfg(target_has_atomic = "ptr")]
-pub use alloc::sync::Arc;
+pub use alloc::sync::{Arc, Weak};
 #[cfg(not(target_has_atomic = "ptr"))]
-pub use portable_atomic_util::Arc;
+pub use portable_atomic_util::{Arc, Weak};
 
-pub use portable_atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+pub use portable_atomic::{
+    AtomicBool, AtomicI8, AtomicI16, AtomicI32, AtomicI64, AtomicIsize, AtomicPtr, AtomicU8,
+    AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering, compiler_fence, fence,
+};
 
 #[cfg(all(not(target_has_atomic = "ptr"), not(feature = "critical-section")))]
 compile_error!(
@@ -183,3 +192,30 @@ impl Clone for Counter {
         Self(AtomicU64::new(self.get()))
     }
 }
+
+// Every exported atomic and its read-modify-write operations, named once outside the tests: the
+// builds for each target (`scripts/check-nostd.sh`: Cortex-M4F/M7/M33, RISC-V, wasm, and with
+// `critical-section` Cortex-M0 and RISC-V without atomics) check the whole set exists there.
+// Never called.
+const _: fn() = || {
+    let o = Ordering::Relaxed;
+    let _ = AtomicBool::new(false).fetch_xor(true, o);
+    let _ = AtomicI8::new(0).fetch_add(1, o);
+    let _ = AtomicI16::new(0).fetch_sub(1, o);
+    let _ = AtomicI32::new(0).fetch_max(1, o);
+    let _ = AtomicI64::new(0).fetch_min(1, o);
+    let _ = AtomicIsize::new(0).swap(1, o);
+    let _ = AtomicU8::new(0).fetch_or(1, o);
+    let _ = AtomicU16::new(0).fetch_and(1, o);
+    let _ = AtomicU32::new(0).compare_exchange(0, 1, o, o);
+    let _ = AtomicU64::new(0).fetch_update(o, o, |v| Some(v + 1));
+    let _ = AtomicUsize::new(0).fetch_add(1, o);
+    let _ = AtomicPtr::<u8>::new(core::ptr::null_mut()).swap(core::ptr::null_mut(), o);
+    fence(Ordering::SeqCst);
+    compiler_fence(Ordering::SeqCst);
+    let arc = Arc::new(0u8);
+    let _ = Arc::downgrade(&arc).upgrade();
+};
+
+#[cfg(test)]
+mod tests;

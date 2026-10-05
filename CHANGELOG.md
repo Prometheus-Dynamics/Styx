@@ -8,6 +8,23 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added writable frames over caller-provided memory: `MemoryRegion::from_raw_mut` /
+  `from_static_mut` make a region a frame writes in place (`planes_mut`, the new
+  `FrameLease::plane_data_mut`, `visible_rows_mut` and the visible-plane copies) while it is the
+  region's one owner, without `std`. `RegionHooks::begin_cpu_write` runs before the first write
+  and `end_cpu_write` once the writes are done (the frame is shared, its backing handed out,
+  `FrameLease::finish_cpu_write`, or dropped, before `release`); on Linux
+  `dmabuf_begin_cpu_write` / `dmabuf_end_cpu_write` are the dma-buf syncs for them. Other
+  backings opt in through `ExternalBacking::{cpu_writable, plane_data_mut, finish_cpu_write}`.
+- Made `styx_core::math` public: `Float` (sealed), std's float methods for `f32` / `f64`
+  without `std` through `libm` under std's names (std builds still call the inherent methods),
+  now also `div_euclid`, `ln_1p`, `cbrt`, `tan`, `asin`, `acos`, `atan` and `tanh`. Exact
+  functions match std bit for bit, transcendental ones within 1 ulp (`tanh` 3), tested
+  against std for `f32` and `f64`.
+- Added the rest of the atomics to `styx_core::sync`: `AtomicI8`, `AtomicI16`, `AtomicI32`,
+  `AtomicI64`, `AtomicIsize`, `AtomicU16`, `AtomicPtr`, `fence`, `compiler_fence`, and `Weak`
+  next to `Arc`, from the same source as before (`portable-atomic`, critical sections with
+  `critical-section`), checked on every `no_std` target including Cortex-M0.
 - Added several regions of interest per consumer: `FrameRequest::regions([..])` (up to
   `MAX_REGIONS`, 16; region 0 is the frame, the others `CompanionKind::Region { index }`
   companions, `FrameLease::region` / `regions`), moved with `RoiHandle::set_regions` /
@@ -250,6 +267,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `styx-pipeline` and `styx-softisp` use `styx_core::math::Float` instead of their own copies
+  (and no longer depend on `libm` directly).
 - `FrameRequest::roi` no longer claims a crop it does not make: on routes that crop only luma
   frames, an NV12 or RGB request's region is reported as `Unmet::Roi` (and refused when strict).
 - `FrameLease::can_read_planes`, `has_host_readable_bytes` and `require_host_readable` follow

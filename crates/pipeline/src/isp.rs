@@ -1,9 +1,9 @@
 //! The ISP part of the algorithms' output, and how it maps onto each ISP.
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use alloc::vec;
 use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use styx_core::math::Float as _;
 
 use serde::{Deserialize, Serialize};
 use styx_algo::{

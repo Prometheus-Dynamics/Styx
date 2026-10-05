@@ -1,7 +1,10 @@
 use alloc::string::String;
 use core::{fmt, num::NonZeroU32, str::FromStr};
 
+// Unused when a dependency links std after all (the critical-section dev-dependency in
+// `--all-targets` builds): std's inherent float methods are found wherever std is loaded.
 #[cfg(not(any(feature = "std", test)))]
+#[allow(unused_imports)]
 use crate::math::Float as _;
 
 /// Four-character code describing a pixel/stream format.

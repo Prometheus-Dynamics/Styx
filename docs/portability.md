@@ -317,7 +317,8 @@ Without `std`, `styx-core` is the whole frame path, not only its types:
 | `FrameLease`, shared views (`into_shareable`, `share`), companions and pyramids, crops, `materialize_owned` | yes | yes |
 | `BufferPool` / `BufferLease` (pooled heap buffers) | yes | yes |
 | `MemoryRegion` + `RegionHooks` (`FrameLease::from_region`): a static buffer or a DMA region, read in place; `begin_cpu_read` once before the first read (a D-cache invalidate), `release` when the last view drops (queue the buffer again) | yes | yes |
-| memfd / dma-buf backings, `export_backing`, `from_memfd_import` / `from_dmabuf_import`, `SharedBufferPool`, `dmabuf_begin_cpu_read` | no | unix / Linux |
+| writable regions (`MemoryRegion::from_raw_mut` / `from_static_mut`): an operation's output written in place (`planes_mut`, `plane_data_mut`, `visible_rows_mut`) while the frame is the region's one owner; `begin_cpu_write` before the first write, `end_cpu_write` when the frame is shared, its backing handed out (`external_backing_handle`), `finish_cpu_write` is called, or before `release` (a D-cache clean; `dmabuf_begin_cpu_write` / `dmabuf_end_cpu_write` on Linux) | yes | yes |
+| memfd / dma-buf backings, `export_backing`, `from_memfd_import` / `from_dmabuf_import`, `SharedBufferPool`, `dmabuf_begin_cpu_read`, `dmabuf_begin_cpu_write` | no | unix / Linux |
 | bounded and newest-value queues: `send`, `recv`, `poll_recv`, `recv_async`, `send_async` (waker lists in the queue: any executor, or a superloop polling with a no-op waker) | yes (targets with compare-and-swap) | yes |
 | `send_wait` / `recv_wait` / `*_timeout` / `*_blocking` | no | yes (parking_lot condvars) |
 | transforms (`transform_packed_frame`, its pool) | yes | yes |
@@ -328,8 +329,12 @@ Locks (`styx_core::sync`) are held for a few instructions (a free list, a waker 
 `std` parking_lot as before; without it spin locks (tasks, superloops, multicore), or with
 feature `critical-section` critical sections (for a pool or queue also touched from an
 interrupt handler, and for targets without compare-and-swap, where `Arc` is
-`portable-atomic-util`'s). 64-bit counters are `portable-atomic`'s (native instructions on
-x86_64 and AArch64). `tracing` was a dependency without a use and is gone. The async queue
+`portable-atomic-util`'s, as is `Weak`). 64-bit counters are `portable-atomic`'s (native
+instructions on x86_64 and AArch64). `styx_core::sync` exports every atomic (`AtomicBool`,
+`AtomicI8`..`AtomicI64`, `AtomicIsize`, `AtomicU8`..`AtomicU64`, `AtomicUsize`, `AtomicPtr`),
+`fence`, `compiler_fence` and `Ordering` from that one source, so a consumer that takes them
+all from there builds unchanged on every target, Cortex-M0 included (the builds for each
+target check the whole set). `tracing` was a dependency without a use and is gone. The async queue
 operations no longer need tokio (`async` is kept as a feature for compatibility).
 
 **One metrics module.** The runtime's camera counters (`Counters`, `Ring`, `AaaCounters`,
@@ -359,7 +364,9 @@ pool's give-back is lock-free (two atomic counters in place of a lock around the
 runs its unit tests on the host without `std` both ways (the harness links std; the code under
 test takes the `no_std` paths). Miri (`cargo +nightly miri test -p styx-core-rs
 --no-default-features --lib -- buffer:: queue:: metrics:: transform:: sync::`: 55 tests, and
-the same with `--features std` skipping the memfd / dma-buf tests: 72) found nothing.
+the same with `--features std` skipping the memfd / dma-buf tests: 72) found nothing; with the
+writable regions and the atomics tests, 64 tests without `std`, and the region tests also under
+Tree Borrows (`MIRIFLAGS=-Zmiri-tree-borrows`), found nothing.
 
 ### Linux is unchanged by step 9
 
@@ -403,9 +410,14 @@ CM5 (OV9782 1280x800, native mode), `dev` 3cc597f against `work/core-nostd`, bui
 
 ## What changes without `std`
 
-- **Floats.** `core` has no `sqrt`, `exp`, `powf`, `round`, ...; each crate has a small
-  `math` module that gives `f32`/`f64` those methods through `libm` and is imported only
-  without `std`. With `std` the inherent methods are called, as before. libm's `pow`, `exp`,
+- **Floats.** `core` has no `sqrt`, `exp`, `powf`, `round`, ...; `styx_core::math::Float`
+  gives `f32`/`f64` those methods through `libm` under std's names (public, sealed, for
+  consumers too: `use styx_core::math::Float as _;`). `styx-core`, `styx-pipeline` and
+  `styx-softisp` import it only without `std`; the crates that do not depend on `styx-core`
+  (`styx-algo`, `styx-dng`, `styx-pisp`, `styx-sensor`) keep a private copy of the same
+  shim. With `std` the inherent methods are called, as before. The exact functions (`sqrt`,
+  rounding, `mul_add`, `rem_euclid`, `powi`, ...) match std bit for bit; the transcendental
+  ones are within 1 ulp of glibc's (`tanh` 3), tested on the host. libm's `pow`, `exp`,
   `ln`, `sin`/`cos` can differ from the platform's libm in the last bit, so 3A results (and
   replays, which are bit-exact on one platform) can differ in the last bits between a `std`
   and a `no_std` build; the integer ISP path is bit-exact either way.
@@ -537,6 +549,25 @@ The `styx` API is unchanged.
   `mock` (`LeaseBuffer` for `styx-hal`'s mock buffers), `styx_runtime::styx_core`; without
   `std`, `Ref<T>` / `Shared<T>` are `Arc<T>` / `Arc<RefCell<T>>` (were `Rc`).
 - `styx_native::NativeFrame::into_backing`; `V4l2Buffer` implements `LeaseBuffer`.
+
+## API changes with writable regions, the public float shim and the full atomics set
+
+Additions only; nothing existing changes behaviour except that a frame over a writable region
+is `Mutable` (frames over other external memory stay `ReadOnly`, views from `share` are
+`ReadOnly`).
+
+- `MemoryRegion::{from_raw_mut, from_static_mut, is_writable, bytes_mut, finish_cpu_write}`;
+  `RegionHooks::{begin_cpu_write, end_cpu_write}` (default nothing); `FrameLease::
+  {plane_data_mut, finish_cpu_write}`; `planes_mut`, `visible_rows_mut`,
+  `try_as_contiguous_visible_plane_mut`, `copy_slice_to_visible_plane`, `can_write_planes` and
+  `require_host_writable` cover writable regions. `ExternalBacking::{cpu_writable,
+  plane_data_mut, finish_cpu_write}` (defaults: read-only) let other backings opt in.
+  `dmabuf_begin_cpu_write` / `dmabuf_end_cpu_write` (Linux, `std`).
+- `styx_core::math` is public: `Float` (sealed) for `f32` / `f64`, gaining `div_euclid`,
+  `ln_1p`, `cbrt`, `tan`, `asin`, `acos`, `atan`, `tanh`. `styx-pipeline` and `styx-softisp`
+  use it (their copies and their `libm` dependency are gone).
+- `styx_core::sync` adds `AtomicI8`, `AtomicI16`, `AtomicI32`, `AtomicI64`, `AtomicIsize`,
+  `AtomicU16`, `AtomicPtr`, `fence`, `compiler_fence` and `Weak`.
 
 ## API changes with stills and metrics in the runtime (phase 2, steps 7-8)
 

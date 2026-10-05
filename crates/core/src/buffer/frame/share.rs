@@ -56,6 +56,8 @@ impl FrameLease {
     /// Another view of the same pixels, metadata and companions, without copying. `None` when
     /// the frame owns its buffers; [`FrameLease::into_shareable`] makes any frame shareable.
     pub fn share(&self) -> Option<FrameLease> {
+        // The views read what this frame wrote: end its CPU writes first.
+        self.finish_cpu_write();
         let mut out = FrameLease {
             meta: self.meta.clone(),
             buffers: SmallVec::new(),
@@ -63,6 +65,8 @@ impl FrameLease {
             external: Some(self.external.clone()?),
             companions: None,
         };
+        // Views read; only a sole owner writes.
+        out.meta.mutability = FrameMutability::ReadOnly;
         for (kind, companion) in self.companions() {
             let companions = out.companions.get_or_insert_with(Default::default);
             companions.push((kind, companion.share()?));

@@ -2,11 +2,11 @@
 //! statistics in the same pass, the controller turns them into a sensor request and ISP
 //! settings, and those settings process the next frame.
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 #[cfg(feature = "gpu")]
 use alloc::boxed::Box;
 use core::time::Duration;
+#[cfg(not(feature = "std"))]
+use styx_core::math::Float as _;
 
 use crate::time::now;
 
