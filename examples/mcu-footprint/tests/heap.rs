@@ -2,8 +2,9 @@
 //! the firmware images run, under a counting allocator, with the frame buffers (receiver
 //! buffers and ISP outputs, allocated inside `styx_mcu_footprint::frame_memory`) counted apart
 //! from everything else. `cargo test -p styx-mcu-footprint --test heap -- --nocapture` prints
-//! the table docs/mcu.md quotes. The host is 64-bit: pointers, `usize`s and `Vec` headers are
-//! twice their size on a 32-bit microcontroller, so the "other" column is an upper bound.
+//! the table. On a 64-bit host pointers, `usize`s and `Vec` headers are twice their size on a
+//! 32-bit microcontroller, so the "other" column is an upper bound; docs/mcu.md quotes the
+//! same test built for `wasm32-wasip1` (32-bit) and run under Node (`wasi-run.mjs`).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Mutex;

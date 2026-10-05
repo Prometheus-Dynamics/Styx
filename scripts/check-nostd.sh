@@ -9,7 +9,11 @@
 # built for the same targets, run as a host test without std and with it, and the two runs'
 # traces compared bit for bit. styx-core's frame path (FrameLease, pools, queues, transforms,
 # metrics) is also built with spin locks and with critical-section locks, and for two targets
-# without compare-and-swap (Cortex-M0, RISC-V without atomics) with `critical-section`.
+# without compare-and-swap (Cortex-M0, RISC-V without atomics) with `critical-section`. Last,
+# the firmware images of examples/mcu-footprint (docs/mcu.md: configurations A-D, the whole
+# stack, for a Cortex-M7/M4F and a Cortex-M0+) are linked and linted, their flash checked
+# against examples/mcu-footprint/size-limits.txt (scripts/mcu-size.sh --check), and their
+# logic run on the host for the heap high-water marks.
 #
 # Needs the targets: rustup target add thumbv7em-none-eabihf thumbv8m.main-none-eabihf
 # riscv32imac-unknown-none-elf wasm32-unknown-unknown thumbv6m-none-eabi
@@ -28,12 +32,15 @@ crates=(
     "styx-dng:"
     "styx-pisp:"
     "styx-algo:"
+    "styx-algo:all-algorithms,toml"
     "styx-sensor:"
     "styx-sensor:postcard"
+    "styx-sensor:postcard,toml,short-history"
     "styx-core-rs:"
     "styx-core-rs:neon,x86"
     "styx-core-rs:neon,x86,critical-section"
     "styx-softisp:neon,x86"
+    "styx-softisp:neon,x86,fp16,poly-tone"
 )
 
 # Targets without compare-and-swap: styx-core only, through critical-section.
@@ -94,3 +101,13 @@ if ! cmp -s "$trace_dir/nostd.txt" "$trace_dir/std.txt"; then
     exit 1
 fi
 echo "    $(wc -l <"$trace_dir/std.txt") frames and shots identical"
+
+echo "==> mcu-footprint firmware images (thumbv7em, thumbv6m): lint, link, size limits"
+for target in thumbv7em-none-eabihf thumbv6m-none-eabi; do
+    cargo clippy -q -p styx-mcu-footprint --profile mcu --target "$target" --lib --bins \
+        -- -D warnings
+done
+./scripts/mcu-size.sh --check
+
+echo "==> mcu-footprint heap high-water marks on the host"
+cargo test -q -p styx-mcu-footprint --release --test heap

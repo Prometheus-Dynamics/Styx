@@ -205,7 +205,7 @@ const AHEAD_SLOTS: usize = 16;
 /// The control scheduler. See the [module documentation](self).
 ///
 /// It does not allocate: requests, issued values and reports live in fixed rings sorted by
-/// frame (about 9 KiB; 3 KiB with `short-history`), so the frame path runs without a heap
+/// frame (about 9 KiB; under 4 KiB with `short-history`), so the frame path runs without a heap
 /// once streaming.
 #[derive(Debug, Clone)]
 pub struct ControlScheduler {

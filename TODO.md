@@ -247,10 +247,19 @@ box (OV9782 1280x800) unless stated.
 - [ ] `styx-algo`, `styx-dng`, `styx-pisp` and `styx-sensor` keep private copies of the float
       shim (they do not depend on `styx-core`); fold them into one if a lower crate ever holds
       it (e.g. `styx-hal`).
-- [ ] The MCU port (`ports/stm32h7-dcmi`: swap `examples/nostd-camera`'s `board` for a DCMI
-      receiver, I²C and a timer) and an `rkisp1` board; run on real MCU hardware. A linked
-      firmware image (allocator, panic handler, `cortex-m-rt`) is not built yet: CI checks the
-      crates and runs the logic on the host.
+- [ ] The MCU port (`ports/stm32h7-dcmi`: swap `examples/mcu-footprint`'s `board` for a DCMI
+      receiver, I²C and a timer) and an `rkisp1` board; run on real MCU hardware (cycle
+      counts per frame: the footprint images are linked and sized, not yet run on a core).
+- [x] MCU footprint (`work/mcu-size`, [docs/mcu.md](docs/mcu.md)): `examples/mcu-footprint`
+      links four firmware images (A: frames and a queue; B: + sensor driver and `Camera`; C:
+      + AE/AWB without an ISP; D: + software ISP, full 3A, stills, metrics) for Cortex-M7/M4F
+      and Cortex-M0+, `scripts/mcu-size.sh` sizes them (CI: size limits), a host test gives
+      their heap. Cortex-M7, `opt-level = "z"`: A 11.5 KB, B 116 -> 89 KB, C 191 -> 128 KB,
+      D 298 -> 205 KB of flash; the whole stack builds for the M0+ (A-D 11-227 KB). Cut:
+      algorithms and TOML behind features (`af`, `alsc`, `awb-bayes`, `denoise`, `flicker`,
+      `lux`, `toml`; all on with `std`), `from_compiled` descriptions, softisp `fp16` /
+      `poly-tone`, sensor `short-history`, one shared sort, no float or `{:?}` formatting
+      on firmware paths.
 - [ ] `examples/nostd-camera` reprocesses stills inline on the superloop (a bracket costs three
       full-quality software passes between two frames); a firmware with an executor would run
       them in a low-priority task.
@@ -272,10 +281,20 @@ box (OV9782 1280x800) unless stated.
 - [ ] `native-pipeline regcheck`: `0x0101` and `0x1000` read back 0 after bring-up on the
       OV9782 (also on a178a44): write-only or self-clearing registers to exclude from the
       check, or a description issue; the documented "all 93 identical" no longer holds.
-- [ ] `no_std` on targets without pointer-sized atomics (Cortex-M0, RISC-V without `a`):
-      `styx-core` builds there (feature `critical-section`: atomics, `Arc` and locks through
-      critical sections; not the queues, which need compare-and-swap); `SensorDriver`, the fp16
-      tables and `styx-runtime` hold `alloc::sync::Arc`s (`portable-atomic-util`, as core does).
+- [x] `no_std` on targets without pointer-sized atomics (Cortex-M0, RISC-V without `a`):
+      the whole stack (`styx-core` with `critical-section`: atomics, `Arc`, locks and now the
+      queues through critical sections; the sensor driver, the runtime and the fp16 tables on
+      `styx-core`'s `Arc`); `examples/mcu-footprint` links all four configurations for
+      `thumbv6m-none-eabi`.
+- [ ] MCU footprint follow-ups (docs/mcu.md): the compiled description's postcard decoding is
+      16 KB of every image with a sensor (generated Rust constructors instead would trade it
+      for data); 3A runs in `f64` (soft-float on Cortex-M4F/M0+: size is small, speed is not
+      measured); a bracket holds every shot's raw frame until the last one lands (a firmware
+      with little RAM takes single shots or reprocesses each as it lands); panic messages and
+      locations need nightly `build-std` (`panic_immediate_abort`) to go; an ESP32-S3
+      (Xtensa, PSRAM) build is untested; a compiled (postcard) tuning needs a serde form
+      without `skip_serializing_if` (postcard cannot read skipped fields back), so a
+      firmware builds its `Tuning` in code.
 - [ ] `no_std` replays: 3A results through libm can differ from std's in the last bits, so a
       replay recorded on Linux is not bit-exact on a `no_std` target (deterministic per build).
       In `examples/nostd-camera`'s 90-frame run they were identical; the software ISP's `Auto`
