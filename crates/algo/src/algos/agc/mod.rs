@@ -70,13 +70,19 @@ pub const LOCK_FRAMES: u32 = 2;
 const ON_TARGET: f64 = 0.05;
 /// Automatic flicker detection: seconds a fit stays this significant (the F statistic of its
 /// flicker terms, the modulation the frames show, frames fitted) without a break.
+#[cfg(feature = "flicker")]
 const DETECT_TIME: f64 = 0.5;
+#[cfg(feature = "flicker")]
 const DETECT_F: f64 = 30.0;
+#[cfg(feature = "flicker")]
 const DETECT_SAMPLES: usize = 16;
+#[cfg(feature = "flicker")]
 const DETECT_VISIBLE: f64 = 0.008;
 
 /// The AGC algorithm. See the [module documentation](self).
 #[derive(Debug, Clone)]
+// Without `flicker` the fit state is kept (and reset) but not read.
+#[cfg_attr(not(feature = "flicker"), allow(dead_code))]
 pub struct Agc {
     tuning: AgcTuning,
     config: CameraConfig,
@@ -413,6 +419,7 @@ impl Agc {
 
     /// The deflicker correction after this frame (see [`deflicker`]): from the fit of the
     /// mains in use, else (detecting) the most significant one.
+    #[cfg(feature = "flicker")]
     fn deflicker_for(
         &mut self,
         meta: &FrameMetadata,
@@ -437,6 +444,17 @@ impl Agc {
             self.config.readout.as_secs_f64(),
             highlight,
         )
+    }
+
+    /// No deflicker without feature `flicker`.
+    #[cfg(not(feature = "flicker"))]
+    fn deflicker_for(
+        &mut self,
+        _meta: &FrameMetadata,
+        _fixed_both: bool,
+        _highlight: f64,
+    ) -> Option<deflicker::FlickerCorrection> {
+        None
     }
 
     fn frame_duration_for(&self, exposure: f64, meta: Option<&FrameMetadata>) -> Duration {

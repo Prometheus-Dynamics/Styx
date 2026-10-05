@@ -11,6 +11,9 @@
 //! Units are the Raspberry Pi tuning's: noise constants, thresholds and the green
 //! equalisation offset on the 16-bit pixel scale, slopes and strengths as plain factors.
 
+// The tuning types are always there; the algorithm needs feature `denoise` (on with `std`).
+#![cfg_attr(not(feature = "denoise"), allow(dead_code, unused_imports))]
+
 use alloc::format;
 
 use serde::{Deserialize, Serialize};
@@ -199,6 +202,7 @@ impl DenoiseTuning {
     }
 }
 
+#[cfg(feature = "denoise")]
 /// The algorithm. See the [module documentation](self).
 #[derive(Debug, Clone)]
 pub struct Denoise {
@@ -211,6 +215,7 @@ pub struct Denoise {
     cdn_deviation: f64,
 }
 
+#[cfg(feature = "denoise")]
 impl Denoise {
     /// The algorithm for a tuning.
     pub fn new(tuning: DenoiseTuning) -> Result<Self> {
@@ -257,6 +262,7 @@ impl Denoise {
     }
 }
 
+#[cfg(feature = "denoise")]
 impl Algorithm for Denoise {
     fn name(&self) -> &'static str {
         "denoise"
@@ -331,7 +337,7 @@ impl Algorithm for Denoise {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "denoise"))]
 mod tests {
     use core::time::Duration;
 

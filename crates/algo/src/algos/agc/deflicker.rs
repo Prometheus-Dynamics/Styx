@@ -43,6 +43,9 @@
 //! Gains are limited to [`MAX_GAIN`] either way; the correction is off while AE is (manual
 //! exposure and gain leave no headroom).
 
+// The fits and deflicker need feature `flicker` (on with `std`); the types are always there.
+#![cfg_attr(not(feature = "flicker"), allow(dead_code, unused_imports))]
+
 use alloc::vec::Vec;
 use core::f64::consts::PI;
 
@@ -103,9 +106,11 @@ pub struct FlickerCorrection {
 }
 
 impl FlickerCorrection {
-    /// Whether frames are corrected.
+    /// Whether frames are corrected. Never without feature `flicker` (AE makes no correction
+    /// then, and one replayed or made by hand is not applied: the model's code stays out of a
+    /// firmware image).
     pub fn active(&self) -> bool {
-        self.strength > 0.0 && !self.terms.is_empty()
+        cfg!(feature = "flicker") && self.strength > 0.0 && !self.terms.is_empty()
     }
 
     /// Start time of frame `frame` on the fit's clock (frames last `frame_duration` seconds

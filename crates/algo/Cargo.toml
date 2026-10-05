@@ -11,15 +11,39 @@ rust-version.workspace = true
 [features]
 default = ["std"]
 # Tuning files from paths (`Tuning::load`), `replay` (JSON Lines over `std::io`), I/O errors,
-# float maths from std. Without it the crate is `no_std` + `alloc`: the algorithms, the
-# simulator, the tuning model, TOML and Raspberry Pi JSON from strings (docs/portability.md).
-std = ["dep:serde_json", "serde/std", "thiserror/std", "toml/std"]
+# float maths from std, and everything below: a `std` build (Linux) has every algorithm and the
+# TOML tuning format. Without it the crate is `no_std` + `alloc` with the algorithms and parts
+# asked for (docs/portability.md, docs/mcu.md): black level, AE (exposure profiles, metering,
+# flicker avoidance by whole periods for a given mains frequency), grey-world AWB, CCM and
+# contrast are always in.
+std = ["dep:serde_json", "serde/std", "thiserror/std", "toml?/std", "all-algorithms", "toml"]
+# Every optional algorithm (what `std` has).
+all-algorithms = ["af", "alsc", "awb-bayes", "denoise", "flicker", "lux"]
+# Autofocus (contrast detection and PDAF over a focus lens). Without it `Pipeline::from_tuning`
+# leaves AF out (it does nothing without a lens).
+af = []
+# Adaptive lens shading correction. Without it `from_tuning` ignores an `alsc` section.
+alsc = []
+# AWB's Bayesian search along the CT curve with priors; without it AWB is grey world whatever
+# the tuning says.
+awb-bayes = []
+# Denoise, green equalisation, defective pixels and sharpening parameters (ISP blocks the
+# software ISP does not have). Without it `from_tuning` ignores a `denoise` section.
+denoise = []
+# Mains flicker fitting: automatic 50/60 Hz detection, metering against the flicker, deflicker.
+# Without it AE avoids flicker only by whole periods of the frequency the controls name.
+flicker = []
+# Lux estimation. Without it `from_tuning` ignores a `lux` section.
+lux = []
+# Our TOML tuning format (`Tuning::from_toml_str`, `to_toml_string`). Raspberry Pi JSON
+# (`from_rpi_json_str`) needs no parser crate and is always there.
+toml = ["dep:toml"]
 
 [dependencies]
 serde = { workspace = true, features = ["alloc"] }
 serde_json = { workspace = true, optional = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
-toml = { version = "1.1", default-features = false, features = ["serde", "parse", "display"] }
+toml = { version = "1.1", default-features = false, features = ["serde", "parse", "display"], optional = true }
 libm.workspace = true
 
 [lints]

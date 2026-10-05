@@ -46,10 +46,14 @@
 //! minimum ([`FlickerFit::hz`]). Phases are fitted relative to the newest frame
 //! ([`FlickerModel::reference`]) so frequency changes do not swing them.
 
+// The fits and deflicker need feature `flicker` (on with `std`); the types are always there.
+#![cfg_attr(not(feature = "flicker"), allow(dead_code, unused_imports))]
+
 use alloc::collections::VecDeque;
 use alloc::{vec, vec::Vec};
 use core::f64::consts::PI;
 
+#[cfg(feature = "flicker")]
 use super::{DETECT_F, DETECT_SAMPLES, DETECT_TIME, DETECT_VISIBLE};
 use crate::frame::{Deflicker, Flicker, FrameMetadata};
 #[cfg(not(feature = "std"))]
@@ -488,6 +492,7 @@ impl FlickerFit {
 }
 
 /// AGC's flicker state: the fits it feeds, detection and the periods it quantises to.
+#[cfg(feature = "flicker")]
 impl super::Agc {
     /// The flicker avoidance the fits and the detection work as: [`Flicker::Auto`] when
     /// avoidance is off but deflicker is on (exposures are then not quantised: see
@@ -622,7 +627,30 @@ impl super::Agc {
     }
 }
 
-#[cfg(test)]
+/// Without feature `flicker`: no fits, no detection. Exposures avoid flicker by whole periods
+/// of the light the controls name (or that a warm start detected, with [`Flicker::Auto`]),
+/// as Raspberry Pi's AGC does; frames are metered as they are.
+#[cfg(not(feature = "flicker"))]
+impl super::Agc {
+    /// The mains frequency in use and how much brighter than the mean light the frame is
+    /// (always 1); sets the periods exposures are quantised to.
+    pub(super) fn flicker(
+        &mut self,
+        _stats: &Statistics,
+        meta: &FrameMetadata,
+        _usable: bool,
+    ) -> (Option<f64>, f64) {
+        let mains = match meta.controls.flicker {
+            Flicker::Off => None,
+            Flicker::Auto => self.detected,
+            f => f.period().map(|p| 0.5 / p.as_secs_f64()),
+        };
+        self.periods = mains.map(|hz| 0.5 / hz).into_iter().collect();
+        (mains, 1.0)
+    }
+}
+
+#[cfg(all(test, feature = "flicker"))]
 mod tests {
     use super::*;
 

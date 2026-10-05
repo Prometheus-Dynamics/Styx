@@ -2,7 +2,15 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::algos::{Af, Agc, Alsc, Awb, BlackLevel, Ccm, Contrast, Denoise, Lux};
+#[cfg(feature = "af")]
+use crate::algos::Af;
+#[cfg(feature = "alsc")]
+use crate::algos::Alsc;
+#[cfg(feature = "denoise")]
+use crate::algos::Denoise;
+#[cfg(feature = "lux")]
+use crate::algos::Lux;
+use crate::algos::{Agc, Awb, BlackLevel, Ccm, Contrast};
 use crate::config::CameraConfig;
 use crate::error::Result;
 use crate::frame::FrameMetadata;
@@ -67,26 +75,33 @@ impl Pipeline {
     }
 
     /// The standard pipeline for a tuning, in this order: black level, lux (if tuned), AWB,
-    /// AGC, ALSC (if tuned), CCM, contrast, denoise (if tuned), AF (does nothing without a lens). Sections missing from the tuning use defaults, so an
-    /// empty tuning gives a working grey-world, centre-weighted pipeline.
+    /// AGC, ALSC (if tuned), CCM, contrast, denoise (if tuned), AF (does nothing without a
+    /// lens). Sections missing from the tuning use defaults, so an empty tuning gives a working
+    /// grey-world, centre-weighted pipeline. Without `std`, lux, ALSC, denoise and AF are in
+    /// only with their features (`lux`, `alsc`, `denoise`, `af`); a section for one left out is
+    /// ignored.
     pub fn from_tuning(tuning: &Tuning) -> Result<Self> {
         tuning.validate()?;
         let mut p = Self::new();
         p.push(BlackLevel::new(tuning.black_level.clone()));
+        #[cfg(feature = "lux")]
         if let Some(lux) = &tuning.lux {
             p.push(Lux::new(*lux));
         }
         p.push(Awb::new(tuning.awb.clone().unwrap_or_default())?);
         p.push(Agc::new(tuning.agc.clone().unwrap_or_default())?);
+        #[cfg(feature = "alsc")]
         if let Some(alsc) = &tuning.alsc {
             p.push(Alsc::new(alsc.clone())?);
         }
         p.push(Ccm::new(tuning.ccm.clone().unwrap_or_default())?);
         p.push(Contrast::new(tuning.contrast.clone().unwrap_or_default()));
+        #[cfg(feature = "denoise")]
         if let Some(d) = &tuning.denoise {
             p.push(Denoise::new(d.clone())?);
         }
         // Inert without a lens (`CameraConfig::lens`); the generic defaults without a section.
+        #[cfg(feature = "af")]
         p.push(Af::new(tuning.af.clone().unwrap_or_default())?);
         Ok(p)
     }

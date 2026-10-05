@@ -8,8 +8,7 @@ use alloc::{vec, vec::Vec};
 use super::types::AfWindow;
 use crate::stats::{PdafZone, Statistics, ZoneGrid};
 
-/// At most this many windows are used (as libcamera).
-pub const MAX_WINDOWS: usize = 10;
+use super::MAX_WINDOWS;
 
 /// Zone weights for one grid size.
 #[derive(Debug, Clone, Default, PartialEq)]

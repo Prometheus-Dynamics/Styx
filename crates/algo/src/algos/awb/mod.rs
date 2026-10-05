@@ -14,7 +14,8 @@
 //!
 //! Estimators: the Bayesian search when the tuning has a CT curve, priors and modes (steps along
 //! the CT curve minimising the zones' colour error minus the prior log likelihood for the
-//! current lux, then searches across the curve); grey world otherwise.
+//! current lux, then searches across the curve; feature `awb-bayes`, on with `std`); grey world
+//! otherwise.
 
 use alloc::vec::Vec;
 
@@ -29,7 +30,9 @@ use crate::pipeline::Algorithm;
 use crate::stats::Statistics;
 use crate::warm::WarmStart;
 
-use search::{Estimate, Search, Zone};
+#[cfg(feature = "awb-bayes")]
+use search::Search;
+use search::{Estimate, Zone};
 use tuning::{AwbTuning, CtCurve};
 
 /// Colour temperature reported by grey world, which cannot estimate one.
@@ -61,7 +64,8 @@ impl Awb {
     pub fn new(tuning: AwbTuning) -> Result<Self> {
         tuning.validate()?;
         let curve = tuning.curve()?;
-        let bayes = tuning.uses_bayes();
+        // Grey world without feature `awb-bayes`, whatever the tuning says.
+        let bayes = cfg!(feature = "awb-bayes") && tuning.uses_bayes();
         let mut awb = Self {
             tuning,
             curve,
@@ -134,6 +138,7 @@ impl Awb {
         out
     }
 
+    #[cfg_attr(not(feature = "awb-bayes"), allow(unused_variables))]
     fn estimate(
         &self,
         stats: &Statistics,
@@ -144,11 +149,24 @@ impl Awb {
         if zones.len() <= self.tuning.min_regions as usize {
             return None;
         }
+        match (&self.curve, self.bayes) {
+            #[cfg(feature = "awb-bayes")]
+            (Some(c), true) => Some(self.search(c, &zones, stats, meta, params)),
+            _ => Some((search::grey_world(&zones, DEFAULT_CT), DEFAULT_CT)),
+        }
+    }
+
+    /// The Bayesian search along `curve` (feature `awb-bayes`).
+    #[cfg(feature = "awb-bayes")]
+    fn search(
+        &self,
+        curve: &CtCurve,
+        zones: &[Zone],
+        stats: &Statistics,
+        meta: &FrameMetadata,
+        params: &Params,
+    ) -> (Estimate, f64) {
         let t = &self.tuning;
-        let curve = match (&self.curve, self.bayes) {
-            (Some(c), true) => c,
-            _ => return Some((search::grey_world(&zones, DEFAULT_CT), DEFAULT_CT)),
-        };
         let ratios: Vec<(f64, f64)> = zones
             .iter()
             .filter(|z| z.1 > 0.0)
@@ -171,7 +189,7 @@ impl Awb {
             anchor: self.anchor.map(|t| 1e6 / t),
         };
         let ((ct, r, b), best) = s.run(*mode);
-        Some(((ct, t.sensitivity_r / r, t.sensitivity_b / b), best))
+        ((ct, t.sensitivity_r / r, t.sensitivity_b / b), best)
     }
 
     /// Manual gains or temperature, if the controls ask for them.

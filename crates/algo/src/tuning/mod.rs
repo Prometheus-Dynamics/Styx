@@ -7,7 +7,9 @@
 //! Units: times in microseconds (`*_us`), levels normalised to full scale 1.0, colour
 //! temperatures in kelvin.
 
-use alloc::{string::String, string::ToString};
+use alloc::string::String;
+#[cfg(feature = "toml")]
+use alloc::string::ToString;
 
 pub mod json;
 mod rpi;
@@ -28,7 +30,9 @@ pub use crate::algos::denoise::{
     CdnTuning, DenoiseTuning, GeqTuning, NoiseTuning, SdnTuning, SharpenTuning, TdnTuning,
 };
 pub use crate::algos::lux::LuxTuning;
-use crate::error::{AlgoError, Result};
+#[cfg(feature = "toml")]
+use crate::error::AlgoError;
+use crate::error::Result;
 pub use rpi::RpiImport;
 
 /// A camera's tuning. Absent sections use each algorithm's defaults (see
@@ -70,14 +74,16 @@ pub struct Tuning {
 }
 
 impl Tuning {
-    /// Parse our TOML format.
+    /// Parse our TOML format (feature `toml`, on with `std`).
+    #[cfg(feature = "toml")]
     pub fn from_toml_str(text: &str) -> Result<Self> {
         let t: Tuning = toml::from_str(text).map_err(|e| AlgoError::Toml(e.to_string()))?;
         t.validate()?;
         Ok(t)
     }
 
-    /// Write our TOML format.
+    /// Write our TOML format (feature `toml`, on with `std`).
+    #[cfg(feature = "toml")]
     pub fn to_toml_string(&self) -> Result<String> {
         toml::to_string(self).map_err(|e| AlgoError::Toml(e.to_string()))
     }
@@ -145,7 +151,7 @@ impl Tuning {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "toml"))]
 mod tests {
     use super::*;
 

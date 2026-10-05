@@ -11,6 +11,7 @@ use alloc::{format, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AlgoError, Result};
+use crate::math::{keyed, sort_keyed};
 
 /// A piecewise-linear function through points with strictly increasing x.
 ///
@@ -176,10 +177,12 @@ impl Pwl {
         Self::from_xs(xs, |x| f(x, a.eval(x), b.eval(x)))
     }
 
-    fn from_xs(mut xs: Vec<f64>, f: impl Fn(f64) -> f64) -> Pwl {
-        xs.sort_by(f64::total_cmp);
+    fn from_xs(xs: Vec<f64>, f: impl Fn(f64) -> f64) -> Pwl {
+        // Equal keys are equal values: the same order as any sort by value.
+        let mut xs = keyed(xs.into_iter());
+        sort_keyed(&mut xs);
         let mut points: Vec<(f64, f64)> = Vec::with_capacity(xs.len());
-        for x in xs {
+        for (x, _) in xs {
             if points.last().is_none_or(|p| x - p.0 > EPS) {
                 points.push((x, f(x)));
             }

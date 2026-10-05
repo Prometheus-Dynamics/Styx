@@ -14,7 +14,7 @@ path = "src/lib.rs"
 # without std (scripts/check-nostd.sh, docs/portability.md). Path dependencies: the workspace
 # entries keep their default features for the std crates.
 [dependencies]
-styx-algo = { path = "../../crates/algo", default-features = false }
+styx-algo = { path = "../../crates/algo", default-features = false, features = ["all-algorithms", "toml"] }
 styx-core = { package = "styx-core-rs", path = "../../crates/core", default-features = false, features = ["neon", "x86"] }
 styx-dng = { path = "../../crates/dng", default-features = false }
 styx-pisp = { path = "../../crates/pisp", default-features = false }
