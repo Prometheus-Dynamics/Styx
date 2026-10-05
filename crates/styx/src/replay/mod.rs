@@ -8,7 +8,15 @@
 //! plays it back as a camera, so pipelines and the planner run on recorded data exactly as they
 //! would live.
 //!
-//! ```rust,no_run
+#![cfg_attr(
+    any(feature = "replay-mcap", feature = "replay-styxrec"),
+    doc = "```rust,no_run"
+)]
+// Without a recording format there is no `StreamRecorder` to show.
+#![cfg_attr(
+    not(any(feature = "replay-mcap", feature = "replay-styxrec")),
+    doc = "```rust,ignore"
+)]
 //! use std::time::Duration;
 //! use styx::prelude::*;
 //!
