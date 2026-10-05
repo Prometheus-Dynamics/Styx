@@ -3,7 +3,6 @@ use styx_core::prelude::*;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
-use rayon::prelude::*;
 
 /// 16-bit per channel RGB/BGR → RGB24 (drop precision, optional swap).
 pub struct Rgb48ToRgbDecoder {
@@ -71,13 +70,10 @@ impl Rgb48ToRgbDecoder {
 
         let data = plane.data();
         let swap_rb = self.swap_rb;
-        dst[..out_len]
-            .par_chunks_mut(row_bytes)
-            .enumerate()
-            .for_each(|(y, dst_line)| {
-                let src_line = &data[y * stride..][..width * 6];
-                styx_core::simd::rgb48le_to_rgb24_row(src_line, dst_line, width, swap_rb);
-            });
+        crate::par::for_each_row(&mut dst[..out_len], row_bytes, |y, dst_line| {
+            let src_line = &data[y * stride..][..width * 6];
+            styx_core::simd::rgb48le_to_rgb24_row(src_line, dst_line, width, swap_rb);
+        });
 
         Ok(FrameMeta::new(
             MediaFormat::new(

@@ -429,7 +429,7 @@ impl FrameClient {
                 true
             }
             Err(err) => {
-                tracing::debug!(error = %err, "camera service not back yet");
+                crate::trace::debug!(error = %err, "camera service not back yet");
                 self.link.lock().failed();
                 false
             }
@@ -526,7 +526,7 @@ impl FrameClient {
             Ok(Some(frame)) => RecvOutcome::Data(frame),
             Ok(None) => RecvOutcome::Empty,
             Err(err) => {
-                tracing::warn!(error = %err, "shared frame skipped");
+                crate::trace::warn!(error = %err, "shared frame skipped");
                 RecvOutcome::Empty
             }
         }

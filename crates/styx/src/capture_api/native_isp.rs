@@ -130,7 +130,7 @@ pub(crate) fn open_for_isp(
             match NativeCamera::open(info, options) {
                 Ok(c) => Ok((c, true)),
                 Err(e) => {
-                    tracing::warn!(backend = "native", error = %e, "cached capture buffers unavailable");
+                    crate::trace::warn!(backend = "native", error = %e, "cached capture buffers unavailable");
                     provider.open_camera(key).map(|c| (c, false)).map_err(err)
                 }
             }
@@ -338,7 +338,7 @@ pub(super) fn start_processed(
         interval.map(|i| styx_native::Fraction::new(i.numerator.get(), i.denominator.get()));
     let (tuning, source) = find_tuning(&camera.info().description);
     let kind = isp_kind(camera.info());
-    tracing::info!(backend = "native", isp = kind.name(), tuning = %source, "processed capture");
+    crate::trace::info!(backend = "native", isp = kind.name(), tuning = %source, "processed capture");
     let capture = config.capture_tunables();
     // A queue the supervisor passed in belongs to the consumer and outlives this capture (a
     // reconnect starts the next one on it): only a queue made here is closed when it ends.
@@ -486,17 +486,17 @@ pub(super) fn start_processed(
                 .native
                 .soft_threads
                 .unwrap_or_else(crate::planner::cost::default_softisp_threads);
-            tracing::info!(backend = "native", threads, "software ISP threads");
+            crate::trace::info!(backend = "native", threads, "software ISP threads");
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
             #[cfg(feature = "gpu-isp")]
             if let Some(ctx) = crate::gpu_isp::context() {
                 match p.use_gpu(&ctx) {
                     Ok(()) => {
                         live.set_isp("gpu");
-                        tracing::info!(backend = "native", device = %ctx.info().name, "GPU ISP")
+                        crate::trace::info!(backend = "native", device = %ctx.info().name, "GPU ISP")
                     }
                     Err(e) => {
-                        tracing::warn!(backend = "native", error = %e, "GPU ISP refused; software ISP")
+                        crate::trace::warn!(backend = "native", error = %e, "GPU ISP refused; software ISP")
                     }
                 }
             }

@@ -266,8 +266,7 @@ box (OV9782 1280x800) unless stated.
 - [ ] Lemnos: Styx depends on the Lemnos `dev` branch by git (root `Cargo.toml`, `fuzz/Cargo.toml`);
       switch to crates.io 2.0 once it is published.
 - [ ] Lemnos: `styx-hal`'s I²C mock (`MockI2c`) needs shared clones, async suspension and a
-      dead target before `lemnos_hal::mock` can replace it; `styx::watch` (inotify on `/dev`)
-      could use `LinuxHotplugWatcher`; the native provider's hotplug polls sysfs on a timer
+      dead target before `lemnos_hal::mock` can replace it; the native provider's hotplug polls sysfs on a timer
       (uevent wake-ups through `lemnos_linux::uevent` would cut its latency).
 - [ ] `native-pipeline regcheck`: `0x0101` and `0x1000` read back 0 after bring-up on the
       OV9782 (also on a178a44): write-only or self-clearing registers to exclude from the

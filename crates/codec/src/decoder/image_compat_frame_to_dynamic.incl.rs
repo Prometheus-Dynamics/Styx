@@ -200,7 +200,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             let mut out = vec![0u8; len];
             let src = &plane.data()[..required];
             let xb24 = c == FourCc::XB24;
-            out.par_chunks_mut(dst_stride).enumerate().for_each(|(y, dst_line)| {
+            crate::par::for_each_row(&mut out[..], dst_stride, |y, dst_line| {
                 let start = y * stride;
                 let src_line = &src[start..start + (width as usize * 4)];
                 styx_core::simd::x32_to_rgb24_row(src_line, dst_line, width as usize, xb24);
@@ -229,7 +229,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
                 .is_err()
             {
                 let src = &plane.data()[..required];
-                rgb.par_chunks_mut(dst_stride).enumerate().for_each(|(y, dst_line)| {
+                crate::par::for_each_row(&mut rgb[..], dst_stride, |y, dst_line| {
                     let line = &src[y * stride..][..(width as usize) * 2];
                     let pair_count = (width as usize) / 2;
                     for pair in 0..pair_count {
@@ -303,7 +303,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             if ok.is_err() {
                 let y_data = &y_plane.data()[..y_required];
                 let uv_data = &uv_plane.data()[..uv_required];
-                rgb.par_chunks_mut(dst_stride).enumerate().for_each(|(y, dst_line)| {
+                crate::par::for_each_row(&mut rgb[..], dst_stride, |y, dst_line| {
                     let y_line = &y_data[y * y_stride..][..width as usize];
                     let uv_line = &uv_data[(y / 2) * uv_stride..][..chroma_width * 2];
                     for (x, yv) in y_line.iter().enumerate() {
@@ -365,7 +365,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
                 let y_data = &y_plane.data()[..y_required];
                 let u_data = &u_plane.data()[..u_required];
                 let v_data = &v_plane.data()[..v_required];
-                rgb.par_chunks_mut(dst_stride).enumerate().for_each(|(y, dst_line)| {
+                crate::par::for_each_row(&mut rgb[..], dst_stride, |y, dst_line| {
                     let y_line = &y_data[y * y_stride..][..width as usize];
                     let u_line = &u_data[(y / 2) * u_stride..][..chroma_width];
                     let v_line = &v_data[(y / 2) * v_stride..][..chroma_width];

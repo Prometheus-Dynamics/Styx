@@ -267,6 +267,34 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Lighter `styx` dependency tree (default features: 65 crates to 26; `native` 86 to 64;
+  `native,v4l2,uvc,async,hotplug,gpu-isp,codec-turbojpeg,raw-decoders` 116 to 88).
+  **Breaking, with migration:**
+  - `replay-mcap` is no longer a default feature (the MCAP reader brings binrw, enumset,
+    darling and their proc macros). Builds that record or replay MCAP files ask for it:
+    `styx = { version = "2.0.0", features = ["replay-mcap"] }`. Without a recording format,
+    `StreamRecorder::create` and `open_recording` return `ReplayError::NoFormat`.
+  - Diagnostics through `tracing` are the new `tracing` feature of `styx` (default on), of
+    `styx-v4l2` and of `styx-uvc` (off; `styx/tracing` turns them on). Builds with
+    `default-features = false` that want Styx's log events add `"tracing"`; without it the
+    log and span macros compile to nothing. `tracing` is built without default features
+    (no `tracing-attributes`).
+  - `styx` no longer depends on `styx-runtime` (and through it `styx-sensor`, `styx-hal`,
+    Lemnos and `toml`) outside `native`: the metrics counters come from `styx_core::metrics`,
+    as they did through `styx-runtime`'s re-export.
+  - `hotplug`: `LinuxVideoFsWatcher` listens to kernel uevents (`video4linux`, `media` and
+    `usb` devices, through `lemnos_linux::uevent`) instead of inotify on `/dev` and sysfs;
+    where no netlink socket can be opened it compares a listing of `/dev` and
+    `/sys/bus/usb/devices` on every poll. Its events carry the watcher name
+    `linux.video.uevent` (was `linux.video.fs`) and `/dev/...` or `/sys/devices/...` paths;
+    `LinuxVideoFsWatcher::uses_uevents` is new. The `inotify` dependency is gone.
+  - `styx-codec` no longer depends on `rayon`: the CPU converters (`raw-decoders`, `image`)
+    split rows over a persistent pool of up to 8 threads of their own (`styx-codec-N`),
+    started on first use; a conversion that finds the pool busy runs on its own thread.
+    Throughput on a loaded 24-thread x86 host: Mono8 to RGB 1080p 0.32-0.54 ms to
+    0.10-0.13 ms, BGRA to RGB 1080p 0.86-1.24 ms to 0.33-0.45 ms; MJPEG decode (which never
+    used rayon) unchanged.
+  - `futures-util` is built without default features (no `futures-macro`).
 - `styx-pipeline` and `styx-softisp` use `styx_core::math::Float` instead of their own copies
   (and no longer depend on `libm` directly).
 - `FrameRequest::roi` no longer claims a crop it does not make: on routes that crop only luma

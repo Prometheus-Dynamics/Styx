@@ -61,7 +61,7 @@ fn export_part(
         // The backing cannot hand out a descriptor (e.g. v4l2loopback has no VIDIOC_EXPBUF):
         // send a copy rather than nothing.
         Err(FrameExportError::Fd(err)) if frame.can_read_planes() => {
-            tracing::debug!(error = %err, "frame not exportable, copying it");
+            crate::trace::debug!(error = %err, "frame not exportable, copying it");
             out.copied = true;
             frame.materialize_owned().export_or_copy_memfd()?.1
         }
@@ -184,7 +184,7 @@ impl Connection {
                         }
                     }
                     Ok(message) => messages.push(message),
-                    Err(err) => tracing::debug!(error = %err, "client message ignored"),
+                    Err(err) => crate::trace::debug!(error = %err, "client message ignored"),
                 },
                 Ok(socket::Received::Nothing) => return Ok(messages),
                 Ok(socket::Received::Closed) | Err(_) => return Err(()),

@@ -24,8 +24,6 @@ styx-v4l2 = { workspace = true, optional = true }
 styx-native = { workspace = true, optional = true }
 styx-uvc = { workspace = true, optional = true }
 styx-pipeline = { workspace = true, optional = true, features = ["device"] }
-# Metrics counters (and, with `native`, the camera runtime).
-styx-runtime.workspace = true
 styx-pisp = { workspace = true, optional = true, features = ["device"] }
 styx-softisp = { workspace = true, optional = true }
 styx-dng = { workspace = true, optional = true }
@@ -49,7 +47,8 @@ serde_json = { workspace = true, optional = true }
 utoipa = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
-inotify = { workspace = true, optional = true }
+# Kernel uevents for `styx::watch` (feature `hotplug`).
+lemnos-linux = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -75,8 +74,9 @@ path = "src/bin/runtime_memory_probe.rs"
 required-features = ["facade"]
 
 [features]
-default = ["facade", "replay-mcap"]
-# Recordings as MCAP files with ROS 2 message types (the default recording format).
+default = ["facade", "tracing"]
+# Recordings as MCAP files with ROS 2 message types (the main recording format). Opt-in: the
+# MCAP reader brings binrw, enumset and their proc macros.
 replay-mcap = ["facade", "dep:mcap"]
 # Experimental compact Styx-only recording format (`.styxrec`).
 replay-styxrec = ["facade"]
@@ -96,8 +96,10 @@ facade = [
     "dep:styx-capture",
     "dep:styx-codec",
     "dep:thiserror",
-    "dep:tracing",
 ]
+# Diagnostics through `tracing` (Styx's own crates and the V4L2/UVC backends). Off, the log
+# and span macros compile to nothing.
+tracing = ["dep:tracing", "styx-v4l2?/tracing", "styx-uvc?/tracing"]
 hooks = ["facade"]
 image = ["facade", "dep:image", "styx-codec/dynamic-image"]
 libcamera = ["facade", "styx-libcamera", "dep:libcamera", "raw-decoders"]
@@ -139,7 +141,9 @@ file-backend = ["facade", "dep:image", "dep:jpeg-decoder"]
 file-backend-video = ["facade", "styx-codec/codec-ffmpeg-format"]
 preview-window = ["facade", "dep:minifb"]
 simulation-bevy = ["facade", "dep:bevy", "dep:crossbeam-channel"]
-hotplug = ["facade", "dep:inotify"]
+# `styx::watch::LinuxVideoFsWatcher`: device changes from kernel uevents (Lemnos), a rescan per
+# poll where netlink is not available.
+hotplug = ["facade", "dep:lemnos-linux"]
 examples = ["preview-window", "async"]
 serde = [
     "facade",

@@ -46,7 +46,10 @@ impl Hotplug {
     /// Starts watching; the cameras present now are [`Hotplug::cameras`].
     pub fn new() -> Hotplug {
         let socket = UeventSocket::open()
-            .inspect_err(|e| tracing::debug!(error = %e, "uvc hotplug: no netlink, rescanning"))
+            .inspect_err(|_e| {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(error = %_e, "uvc hotplug: no netlink, rescanning");
+            })
             .ok();
         let known = sysfs::enumerate()
             .0

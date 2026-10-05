@@ -45,6 +45,9 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace
 
+      - name: Run recording tests (MCAP and .styxrec are opt-in features)
+        run: cargo test -p styx --lib --features replay-mcap,replay-styxrec replay
+
       - name: Run SIMD kernels without backends (scalar only)
         run: cargo test -p styx-core-rs --no-default-features --features std --lib simd
 

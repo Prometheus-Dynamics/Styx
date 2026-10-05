@@ -430,7 +430,7 @@ fn accept_loop(service: &Arc<Service>, listener: &OwnedFd) {
                 });
             match spawned {
                 Ok(handle) => clients.push(handle),
-                Err(err) => tracing::warn!(error = %err, "camera client not served"),
+                Err(err) => crate::trace::warn!(error = %err, "camera client not served"),
             }
         }
     }
@@ -535,7 +535,7 @@ fn send_frames(
         }
         if conn.overheld(service.config.max_hold) {
             counters.revoked.fetch_add(1, Ordering::Relaxed);
-            tracing::warn!(
+            crate::trace::warn!(
                 max_hold = ?service.config.max_hold,
                 "camera service: disconnecting a client that held a frame too long"
             );
@@ -564,7 +564,7 @@ fn send_frames(
         let exported = match connection::export(&frame) {
             Ok(exported) => exported,
             Err(err) => {
-                tracing::warn!(error = %err, "frame not sent");
+                crate::trace::warn!(error = %err, "frame not sent");
                 continue;
             }
         };

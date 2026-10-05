@@ -276,7 +276,7 @@ impl MediaPipeline {
         &mut self,
         frame: FrameLease,
     ) -> Result<FrameLease, PipelineStageError> {
-        let pipeline_span = tracing::trace_span!("pipeline_frame");
+        let pipeline_span = crate::trace::trace_span!("pipeline_frame");
         let _pipeline_enter = pipeline_span.enter();
         let pipeline_start = Instant::now();
         let source_capture_instant = frame.meta().capture_instant();
@@ -291,9 +291,9 @@ impl MediaPipeline {
         {
             let capabilities = dec.residency_capabilities();
             if !stage_accepts_residency(capabilities.accepted_inputs, current_residency) {
-                tracing::trace!(stage = "decode", residency = %current_residency, "decoder rejected frame residency");
+                crate::trace::trace!(stage = "decode", residency = %current_residency, "decoder rejected frame residency");
             }
-            let span = tracing::trace_span!("decode_stage");
+            let span = crate::trace::trace_span!("decode_stage");
             let _enter = span.enter();
             // A stage that handles companions gets them (e.g. the planner's, which keeps an
             // ISP's pyramid levels instead of computing them again).
@@ -335,7 +335,7 @@ impl MediaPipeline {
                     cur = carry_companions(f, carried);
                     stamp_stage(&mut cur, &input_meta, TimedStage::Decode, elapsed);
                     if !stage_accepts_residency(capabilities.possible_outputs, cur.residency()) {
-                        tracing::trace!(stage = "decode", output_residency = %cur.residency(), "decoder produced unexpected output residency");
+                        crate::trace::trace!(stage = "decode", output_residency = %cur.residency(), "decoder produced unexpected output residency");
                     }
                     annotate_residency_transition(
                         &self.metrics.residency,
@@ -348,7 +348,7 @@ impl MediaPipeline {
                 Err(err) => {
                     let descriptor = dec.descriptor();
                     let component = format!("{}:{}", descriptor.name, descriptor.impl_name);
-                    tracing::error!(
+                    crate::trace::error!(
                         stage = "decode",
                         codec = %component,
                         error = %err,
@@ -364,7 +364,7 @@ impl MediaPipeline {
         }
         #[cfg(feature = "hooks")]
         if let Some(hook) = &mut self.frame_hook {
-            let span = tracing::trace_span!("transform_stage", kind = "frame_hook");
+            let span = crate::trace::trace_span!("transform_stage", kind = "frame_hook");
             let _enter = span.enter();
             let mut h = HookStore::take(hook);
             let (input_meta, t) = (cur.meta().clone(), Instant::now());
@@ -382,7 +382,8 @@ impl MediaPipeline {
         #[cfg(feature = "hooks")]
         {
             if !self.frame_transform.is_identity() {
-                let span = tracing::trace_span!("transform_stage", kind = "packed_frame_transform");
+                let span =
+                    crate::trace::trace_span!("transform_stage", kind = "packed_frame_transform");
                 let _enter = span.enter();
                 let stage_bytes = cur.payload_bytes();
                 let companions = cur.take_companions();
@@ -413,13 +414,13 @@ impl MediaPipeline {
                         current_residency = cur.residency();
                     }
                     Err(err) => {
-                        tracing::trace!(error = %err, "packed frame transform skipped");
+                        crate::trace::trace!(error = %err, "packed frame transform skipped");
                         cur = carry_companions(cur, companions);
                     }
                 }
             }
             if let Some(hook) = &mut self.hook {
-                let span = tracing::trace_span!("transform_stage", kind = "framelease_hook");
+                let span = crate::trace::trace_span!("transform_stage", kind = "framelease_hook");
                 let _enter = span.enter();
                 let mut h = HookStore::take(hook);
                 let (input_meta, t) = (cur.meta().clone(), Instant::now());
@@ -440,9 +441,9 @@ impl MediaPipeline {
         {
             let capabilities = enc.residency_capabilities();
             if !stage_accepts_residency(capabilities.accepted_inputs, current_residency) {
-                tracing::trace!(stage = "encode", residency = %current_residency, "encoder rejected frame residency");
+                crate::trace::trace!(stage = "encode", residency = %current_residency, "encoder rejected frame residency");
             }
-            let span = tracing::trace_span!("encode_stage");
+            let span = crate::trace::trace_span!("encode_stage");
             let _enter = span.enter();
             let input_meta = cur.meta().clone();
             let t = Instant::now();
@@ -477,7 +478,7 @@ impl MediaPipeline {
                     cur = f;
                     stamp_stage(&mut cur, &input_meta, TimedStage::Encode, elapsed);
                     if !stage_accepts_residency(capabilities.possible_outputs, cur.residency()) {
-                        tracing::trace!(stage = "encode", output_residency = %cur.residency(), "encoder produced unexpected output residency");
+                        crate::trace::trace!(stage = "encode", output_residency = %cur.residency(), "encoder produced unexpected output residency");
                     }
                     annotate_residency_transition(
                         &self.metrics.residency,
@@ -489,7 +490,7 @@ impl MediaPipeline {
                 Err(err) => {
                     let descriptor = enc.descriptor();
                     let component = format!("{}:{}", descriptor.name, descriptor.impl_name);
-                    tracing::error!(
+                    crate::trace::error!(
                         stage = "encode",
                         codec = %component,
                         error = %err,
@@ -505,7 +506,7 @@ impl MediaPipeline {
         }
         #[cfg(feature = "hooks")]
         if let Some(recorder) = &mut self.output_recorder {
-            let span = tracing::trace_span!("sink_stage", kind = "record");
+            let span = crate::trace::trace_span!("sink_stage", kind = "record");
             let _enter = span.enter();
             let t = Instant::now();
             let sequence = recorder.next_sequence();

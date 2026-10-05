@@ -39,6 +39,9 @@ echo "==> Checking the no_std crates (bare-metal and wasm targets, smoke test)"
 echo "==> Running tests"
 cargo test --workspace
 
+echo "==> Running the recording tests (MCAP and .styxrec are opt-in features)"
+cargo test -p styx --lib --features replay-mcap,replay-styxrec replay
+
 echo "==> Building example surface"
 cargo check -p styx-examples --no-default-features --features "async,file-backend,netcam,codec-jpeg-decoder"
 

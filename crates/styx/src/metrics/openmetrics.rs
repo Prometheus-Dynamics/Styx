@@ -444,7 +444,7 @@ pub fn serve_http(addr: impl std::net::ToSocketAddrs) -> std::io::Result<Metrics
                 );
             }
         })?;
-    tracing::info!(%addr, "metrics served over HTTP");
+    crate::trace::info!(%addr, "metrics served over HTTP");
     Ok(MetricsHttpServer {
         addr,
         stop,

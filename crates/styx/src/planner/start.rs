@@ -212,7 +212,7 @@ impl FramePreparer {
             .get_or_init(|| {
                 // Buffers of exactly this size are recycled; a few cover the queues.
                 SharedBufferPool::with_limits(0, self.output_bytes, 8)
-                    .inspect_err(|err| tracing::warn!(error = %err, "no memfd frame pool; frames stay on the heap"))
+                    .inspect_err(|err| crate::trace::warn!(error = %err, "no memfd frame pool; frames stay on the heap"))
                     .ok()
             })
             .as_ref()

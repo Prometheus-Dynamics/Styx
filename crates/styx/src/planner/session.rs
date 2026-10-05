@@ -308,7 +308,7 @@ impl PreparedGroup {
                 {
                     Ok(frame) => RecvOutcome::Data(frame),
                     Err(err) => {
-                        tracing::debug!(group = self.index, error = %err, "frame skipped");
+                        crate::trace::debug!(group = self.index, error = %err, "frame skipped");
                         RecvOutcome::Empty
                     }
                 }
@@ -404,7 +404,7 @@ impl Branch {
             (RecvOutcome::Data(frame), Some(roi)) => match self.group.preparer.crop(frame, roi) {
                 Ok(frame) => RecvOutcome::Data(frame),
                 Err(err) => {
-                    tracing::warn!(consumer = self.member, error = %err, "frame skipped");
+                    crate::trace::warn!(consumer = self.member, error = %err, "frame skipped");
                     RecvOutcome::Empty
                 }
             },

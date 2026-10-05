@@ -526,7 +526,7 @@ pub(super) fn start_native(
         .name("styx-native-capture".into())
         .spawn(move || {
             live_worker.register_thread();
-            tracing::debug!(backend = "native", "capture worker started");
+            crate::trace::debug!(backend = "native", "capture worker started");
             loop {
                 if stop_rx.try_recv().is_ok() {
                     break;
@@ -543,7 +543,7 @@ pub(super) fn start_native(
                     Ok(None) => break,
                     Err(NativeError::Timeout) => {}
                     Err(e) => {
-                        tracing::warn!(backend = "native", error = %e, "capture failed");
+                        crate::trace::warn!(backend = "native", error = %e, "capture failed");
                         *worker_error_for_thread.lock() = Some(native_err(e));
                         break;
                     }
@@ -551,12 +551,12 @@ pub(super) fn start_native(
             }
             drop(stream);
             if let Err(e) = camera.close() {
-                tracing::warn!(backend = "native", error = %e, "closing the camera");
+                crate::trace::warn!(backend = "native", error = %e, "closing the camera");
             }
             if owns_queue {
                 tx.close();
             }
-            tracing::debug!(backend = "native", "capture worker stopped");
+            crate::trace::debug!(backend = "native", "capture worker stopped");
         })
         .map_err(|e| CaptureError::Backend(format!("native worker: {e}")))?;
     Ok(CaptureHandle {

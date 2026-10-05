@@ -243,7 +243,7 @@ pub(super) fn start_libcamera(
             if matches!(status, CameraConfigurationStatus::Invalid)
                 && matches!(second, SecondStream::Pyramid(_) | SecondStream::Scaled(..))
             {
-                tracing::warn!(
+                crate::trace::warn!(
                     backend = "libcamera",
                     second = ?second,
                     "libcamera second output rejected by the pipeline; continuing without it"
@@ -368,7 +368,7 @@ pub(super) fn start_libcamera(
                     MediaFormat::new(code, res, mode_for_thread.format.color),
                 ))
             });
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = "libcamera",
                 camera_id = %id_for_thread,
                 requested_fourcc = ?requested_code,
@@ -404,7 +404,7 @@ pub(super) fn start_libcamera(
             } else {
                 "libcamera-allocator"
             };
-            tracing::debug!(
+            crate::trace::debug!(
                 backend = "libcamera",
                 camera_id = %id_for_thread,
                 buffer_count = primary.buffers.len(),
@@ -635,7 +635,7 @@ pub(super) fn start_libcamera(
                             match completed_frame_parts(fb, format, stride) {
                                 Ok(parts) => Some((kind, format, parts)),
                                 Err(err) => {
-                                    tracing::debug!(backend = "libcamera", error = %err, "second output frame unavailable");
+                                    crate::trace::debug!(backend = "libcamera", error = %err, "second output frame unavailable");
                                     None
                                 }
                             }
@@ -748,7 +748,7 @@ pub(super) fn start_libcamera(
 
         if let Err(e) = res {
             record_worker_error(&worker_error_for_thread, &e);
-            tracing::error!(backend = "libcamera", error = %e, "libcamera capture worker failed");
+            crate::trace::error!(backend = "libcamera", error = %e, "libcamera capture worker failed");
             let _ = setup_tx.send(Err(e));
         }
     });

@@ -176,7 +176,7 @@ fn cached_controls(info: &UsbCameraInfo) -> Vec<ControlMeta> {
             metas
         }
         Err(e) => {
-            tracing::debug!(camera = %info.key(), error = %e, "uvc probe: controls not read");
+            crate::trace::debug!(camera = %info.key(), error = %e, "uvc probe: controls not read");
             Vec::new()
         }
     }
@@ -462,7 +462,7 @@ pub(super) fn start_uvc(
         .name("styx-uvc-capture".into())
         .spawn(move || {
             live_worker.register_thread();
-            tracing::debug!(backend = "uvc", "capture worker started");
+            crate::trace::debug!(backend = "uvc", "capture worker started");
             loop {
                 if stop_rx.try_recv().is_ok() {
                     break;
@@ -478,7 +478,7 @@ pub(super) fn start_uvc(
                     }
                     Err(UvcError::Timeout) => {}
                     Err(e) => {
-                        tracing::warn!(backend = "uvc", error = %e, "capture failed");
+                        crate::trace::warn!(backend = "uvc", error = %e, "capture failed");
                         *worker_error_for_thread.lock() = Some(uvc_err(e));
                         break;
                     }
@@ -489,7 +489,7 @@ pub(super) fn start_uvc(
             if owns_queue {
                 tx.close();
             }
-            tracing::debug!(backend = "uvc", ?stats, "capture worker stopped");
+            crate::trace::debug!(backend = "uvc", ?stats, "capture worker stopped");
         })
         .map_err(|e| CaptureError::Backend(format!("uvc worker: {e}")))?;
     Ok(CaptureHandle {

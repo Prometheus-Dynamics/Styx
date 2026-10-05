@@ -94,7 +94,7 @@ impl<'a> MjpegFrameParser<'a> {
         let (take, outcome) = self.body.append_chunk(data, &mut self.buf);
         match outcome {
             BoundaryRead::Continue if self.buf.len() >= self.parser.max_jpeg_bytes => {
-                tracing::warn!(
+                crate::trace::warn!(
                     backend = "netcam",
                     stream,
                     max_bytes = self.parser.max_jpeg_bytes,
@@ -112,7 +112,7 @@ impl<'a> MjpegFrameParser<'a> {
             }
             BoundaryRead::End => {
                 if !self.buf.is_empty() {
-                    tracing::warn!(
+                    crate::trace::warn!(
                         backend = "netcam",
                         stream,
                         buffered_bytes = self.buf.len(),
@@ -148,7 +148,7 @@ impl<'a> BoundaryBodyReader<'a> {
             return if self.pending.is_empty() {
                 (0, BoundaryRead::End)
             } else {
-                tracing::warn!(
+                crate::trace::warn!(
                     backend = "netcam",
                     stream = "mjpeg",
                     parser_event = "stream_ended_with_pending_boundary_bytes",
@@ -176,7 +176,7 @@ impl<'a> BoundaryBodyReader<'a> {
                 buf.extend_from_slice(&combined[..boundary_idx]);
                 self.pending.clear();
                 self.pending.extend_from_slice(&combined[boundary_idx..]);
-                tracing::trace!(
+                crate::trace::trace!(
                     backend = "netcam",
                     stream = "mjpeg",
                     parser_event = "boundary_line_pending",
@@ -195,7 +195,7 @@ impl<'a> BoundaryBodyReader<'a> {
                 boundary_idx,
                 self.boundary.len(),
             );
-            tracing::trace!(
+            crate::trace::trace!(
                 backend = "netcam",
                 stream = "mjpeg",
                 parser_event = "boundary_detected",

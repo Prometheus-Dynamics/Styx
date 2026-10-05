@@ -46,8 +46,9 @@ impl Drop for Inner {
         // Rebinding the control interface's driver probes the whole function again (uvcvideo
         // claims the streaming interfaces itself); the rest is for drivers that bind each.
         for &n in &self.detached {
-            if let Err(e) = self.usb.attach_kernel_driver(n) {
-                tracing::debug!(interface = n, error = %e, "uvc: reattaching the kernel driver");
+            if let Err(_e) = self.usb.attach_kernel_driver(n) {
+                #[cfg(feature = "tracing")]
+                tracing::debug!(interface = n, error = %_e, "uvc: reattaching the kernel driver");
             }
         }
     }
@@ -107,6 +108,7 @@ impl UvcDevice {
                                 )));
                             }
                         }
+                        #[cfg(feature = "tracing")]
                         tracing::info!(interface = n, %driver, "uvc: detached the kernel driver");
                     }
                     Some(driver) => {
@@ -219,8 +221,9 @@ impl UvcDevice {
             for def in controls::announced(unit, bitmap) {
                 match self.control_info(def) {
                     Ok(info) => out.push(info),
-                    Err(e) => {
-                        tracing::debug!(control = def.name, error = %e, "uvc: control skipped")
+                    Err(_e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!(control = def.name, error = %_e, "uvc: control skipped");
                     }
                 }
             }
@@ -362,6 +365,7 @@ impl UvcDevice {
         let n = self.streaming_request(interface, request::GET_CUR, VS_PROBE_CONTROL, &mut cur)?;
         let got = StreamingParams::decode(&cur[..n]);
         if got.format_index != format || got.frame_index != frame {
+            #[cfg(feature = "tracing")]
             tracing::debug!(?got, "uvc: the camera changed the probe");
         }
         let mut commit = got.encode(len);

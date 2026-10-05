@@ -5,6 +5,12 @@ back as a camera. Pipelines, the planner and your own code then run on recorded 
 exactly as they would on the live camera. Use it to reproduce a bug, write regression tests
 against real footage, or tune a vision pipeline away from the hardware.
 
+Recording needs a format feature; MCAP is the usual one:
+
+```toml
+styx = { version = "2.0.0", features = ["replay-mcap"] }
+```
+
 ```rust
 use std::time::Duration;
 use styx::prelude::*;
@@ -31,7 +37,7 @@ the recorder with `StreamRecorder::with_header` and the output format.
 
 ## Formats
 
-- **MCAP** (`.mcap`, feature `replay-mcap`, on by default): the open recording format used by
+- **MCAP** (`.mcap`, feature `replay-mcap`, opt-in): the open recording format used by
   ROS 2 and Foxglove. Recordings open in the Foxglove app and in the `mcap` CLI, and can be read
   from Python, C++ and other languages.
 - **`.styxrec`** (feature `replay-styxrec`, experimental and opt-in): a compact Styx-only

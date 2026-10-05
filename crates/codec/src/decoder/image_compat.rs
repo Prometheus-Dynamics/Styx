@@ -3,7 +3,6 @@
 use crate::decoder::raw::yuv_to_rgb;
 use crate::{Codec, CodecError};
 use image::{DynamicImage, GenericImageView};
-use rayon::prelude::*;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use styx_core::prelude::{
@@ -87,7 +86,7 @@ pub fn clear_packed_frame_pools() {
 
 pub fn clear_packed_frame_pools_all_threads() {
     clear_packed_frame_pools();
-    rayon::broadcast(|_| clear_packed_frame_pools());
+    crate::par::broadcast(clear_packed_frame_pools);
 }
 
 pub fn packed_frame_pool_stats() -> Vec<PackedFramePoolStats> {

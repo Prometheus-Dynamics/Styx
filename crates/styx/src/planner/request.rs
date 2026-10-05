@@ -584,7 +584,7 @@ mod legacy {
             };
             let backend = o.backend.as_deref().and_then(|name| {
                 name.parse()
-                    .inspect_err(|err| tracing::warn!(%err, "backend override ignored"))
+                    .inspect_err(|err| crate::trace::warn!(%err, "backend override ignored"))
                     .ok()
             });
             let mut new = FrameRequest {

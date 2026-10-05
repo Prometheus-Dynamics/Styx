@@ -119,7 +119,7 @@ fn set_isp_crop(plane: &ControlPlane, place: IspPlace, rect: Option<FrameRect>) 
     };
     let Some(id) = id else { return };
     if let Err(err) = apply_control_to_plane(plane, id, value) {
-        tracing::warn!(error = %err, "region of interest not applied by the ISP");
+        crate::trace::warn!(error = %err, "region of interest not applied by the ISP");
     }
 }
 
