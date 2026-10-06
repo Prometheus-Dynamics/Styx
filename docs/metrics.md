@@ -340,3 +340,21 @@ NV12 1280x800) queried by `metrics_top --service` from a third process: 2 client
 frames sent, 0 dropped, 1 held, hold p50 33.3 ms (each client keeps a frame until the next);
 the capture's sensor-to-receive 9.69 ms where the clients measured a frame age of 9.7 ms
 themselves; `service_clients 2`, `cameras_open 1`.
+
+### Measuring the hop breakdown on the CM5
+
+`hop_breakdown` prints, for native PiSP NV12 1280x800 at 30 fps, each hop's p50/p99/max, the
+copies and dma-buf syncs per frame of each process and their heap allocations per frame (every
+thread), for a consumer in the capturing process, behind a frame socket and behind a camera
+service. Built static, so it runs on the device as it is:
+
+```sh
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld cargo build --release \
+    --target aarch64-unknown-linux-musl -p styx-examples --features native,v4l2 \
+    --bin hop_breakdown --bin metrics_top
+scp target/aarch64-unknown-linux-musl/release/{hop_breakdown,metrics_top} root@helios:/tmp/
+DMESG_LOG=target/helios-dmesg-hops.log WAIT=1 scripts/with-device-lock.sh hops '
+  cd /tmp && ./metrics_top --overhead && ./hop_breakdown inproc 20 &&
+  { ./hop_breakdown socket-serve /tmp/hops.sock 30 & sleep 3; ./hop_breakdown socket-fetch /tmp/hops.sock 20; wait; } &&
+  { ./hop_breakdown service-serve /tmp/hops-svc.sock 32 & sleep 3; ./hop_breakdown service-client /tmp/hops-svc.sock 20; wait; }'
+```
