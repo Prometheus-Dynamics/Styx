@@ -11,38 +11,90 @@ driven from userspace by Styx. Written once; no sensor-specific code, no I²C ac
 | `styx_sensor_bridge.h` | Userspace ABI: event id, payload, private controls |
 | `PROTOCOL.md` | Device tree binding, controls, events, acknowledgement, start/stop order |
 | `dts/styx-sensor-bridge-cm5-overlay.dts` | CM5/Pi 5 camera-port overlay with the HeliOS OV9782 wiring |
-| `dts/styx-sensor-bridge-cm5-runtime-overlay.dts` | The same, applied at runtime (configfs) on top of a HeliOS tree booted with `ov9782-overlay` on cam0 |
+| `dts/styx-sensor-bridge-cm5-runtime-overlay.dts` | The same, applied at runtime (configfs) on top of a HeliOS tree booted with `ov9782-overlay` on cam0 (`-runtime-emb`: with the embedded data pad) |
+| `dts/styx-cam0-i2c-fast-overlay.dts` | cam0's I²C bus at a faster clock |
 | `spike/` | The first on-device spike: `up.sh`/`down.sh`, offline overlay checks, [`spike/README.md`](spike/README.md) |
 | `install/` | Dev-box install: `install.sh` (boot overlay and module), `camera-mode.sh` (native / libcamera switch), `styx-bridge.service` (the runtime path, libcamera mode only) |
 | `Kbuild`, `Makefile`, `Kconfig` | Out-of-tree and in-tree build glue |
-| `build.sh` | Builds the `.ko` and `.dtbo` for the exact HeliOS kernel and checks vermagic/CRCs |
+| `build.sh` | Builds the `.ko` and `.dtbo`s for an exact device kernel (6.12 or 7.2), test-applies the overlays, checks vermagic/CRCs |
+| `../kernel-env.sh` | Kernel selection shared with `../pispbe/build.sh` (`STYX_KERNEL=6.12\|7.2`) |
 | `tools/check_crcs.py` | Compares a `Module.symvers` with the CRCs recorded in modules from the device |
-| `buildroot/` | Buildroot linux extension (`linux-ext-styx-sensor-bridge.mk`, `Config.ext.in`) |
+| `buildroot/` | Buildroot linux extension (`linux-ext-styx-sensor-bridge.mk`, `Config.ext.in`), kernel-agnostic; optionally the PiSP back end driver |
 
-## Building for the HeliOS CM5 image
+## Kernels
+
+One source for both kernels in the field; no version guards are needed (every API the module
+uses is the same in both, and the platform driver's `remove()` already returns `void`).
+
+| Kernel | Images | Release | Tree for `build.sh` |
+|---|---|---|---|
+| Raspberry Pi `stable_20250916` | HeliOS, Raze 1.0.x | `6.12.47-v8-16k` | `STYX_KERNEL=6.12` (default): the HeliOS Gaia Buildroot `linux-custom` |
+| Raspberry Pi `rpi-7.2.y` | Raze 1.1.0 | `7.2.9-v8-16k` (`53679a5`) | `STYX_KERNEL=7.2`: an O= build at `../linux-rpi-7.2/build`, or the image's `linux-custom` via `KERNEL_TREE` |
+
+Both are `bcm2712_defconfig` with 4K pages despite the `-v8-16k` release name: Buildroot sets
+`CONFIG_ARM64_4K_PAGES` (its default `BR2_ARM64_PAGE_SIZE_4K`) over the defconfig's 16K, and
+the Raze package adds `VIDEO_OV9282=m`. The Raze kernel is defined by the Raze device package in
+Atlas-Hardware-Manager `dev` (`devices/raze/gaia`, `RAZE_PKG` in `kernel-env.sh`); the older
+`Atlas-raze` checkout is stale. A 7.2 tree that matches the Raze 1.1.0 kernel's config
+and compiler (the HeliOS Buildroot GCC 14.3):
+
+```sh
+# The commit the Raze package pins (rpi-7.2.y, Linux 7.2.9)
+git init ../linux-rpi-7.2/linux && cd ../linux-rpi-7.2/linux
+git fetch --depth 1 https://github.com/raspberrypi/linux.git 53679a5788f7912272b412fd78029bccae6f2b1a
+git checkout FETCH_HEAD
+# The Raze package's ov9782 patches (Atlas-Hardware-Manager dev, Raze 1.1.0 / fd52491)
+RAZE_PKG=../../Atlas-Hardware-Manager/devices/raze/gaia
+for p in "$RAZE_PKG"/buildroot-external/linux/ov9782/*.patch; do git apply "$p"; done
+CC=<HeliOS Gaia output>/host/bin/aarch64-linux-
+make O=../build ARCH=arm64 CROSS_COMPILE=$CC bcm2712_defconfig
+scripts/config --file ../build/.config --enable ARM64_4K_PAGES --disable ARM64_16K_PAGES \
+    --module VIDEO_OV9282
+make O=../build ARCH=arm64 CROSS_COMPILE=$CC olddefconfig
+# LOCALVERSION= keeps setlocalversion from appending "+" for a git tree (a tarball build has none)
+make O=../build ARCH=arm64 CROSS_COMPILE=$CC LOCALVERSION= -j$(nproc) Image modules dtbs
+```
+
+Its `Module.symvers` CRCs only match a device whose kernel was built from the same commit,
+config and compiler; for a device check build against that image's own tree.
+
+On 7.2 the receiver module is `rp1-cfe-downstream` (same driver, name `rp1-cfe`, compatible
+and video node names as 6.12's `rp1-cfe`; `verify` fetches the right one). Its sensor-facing
+code is unchanged, including the failed-start oops behind `report_start_errors` (see
+`docs/native-stack/README.md`).
+
+## Building for a device image
 
 Modules only load when vermagic and every imported symbol CRC (`CONFIG_MODVERSIONS`) match the
 running kernel, so the module is built against the configured and built kernel tree that
 produced the image: Buildroot's `output/build/linux-custom`, compiled with the same Buildroot
 cross GCC. `build.sh` copies the external-module subset of that tree (headers, `.config`,
 `Module.symvers`, host tools) with the kernel's own `scripts/package/install-extmod-build`, never
-writing to it, into `../linux-build-styx/kbuild-<release>/` next to the repository.
+writing to it, into `../linux-build-styx/kbuild-<release>/` next to the repository. An O= tree
+works too (its `source` link gives the source tree).
 
 ```sh
 ./build.sh prepare               # once per kernel build (slow on a busy disk)
 ./build.sh build                 # -> ../linux-build-styx/out/<release>/{styx_sensor_bridge.ko,*.dtbo}
 DEVICE=root@helios ./build.sh verify   # vermagic + CRC comparison, read-only on the device
+STYX_KERNEL=7.2 ./build.sh all   # the same for rpi-7.2.y
 ```
 
-`KERNEL_TREE`, `BR_HOST`, `CROSS_COMPILE`, `KERNEL_RELEASE` and `STYX_KBUILD_ROOT` override the
-defaults (see the script header). The default `KERNEL_TREE` is the Gaia build of
-`HeliOS-architecture-overhaul` (`helios-full-cm5`), whose `Module.symvers` matches the device
-image `6.12.47-v8-16k #1 SMP PREEMPT Thu May 7 00:00:13 PDT 2026`. (The older
+`build` also applies every overlay to the tree's `bcm2712-rpi-cm5-cm5io` and `bcm2712-rpi-5-b`
+device trees with `fdtoverlay`, so a renamed label fails the build rather than the boot (the
+firmware's `__overrides__`, e.g. `cam0`, are not evaluated there).
+
+`STYX_KERNEL`, `KERNEL_TREE`, `KERNEL_SRC`, `BR_HOST`, `CROSS_COMPILE`, `KERNEL_RELEASE` and
+`STYX_KBUILD_ROOT` override the defaults (see the script header and `../kernel-env.sh`). The
+default 6.12 `KERNEL_TREE` is the Gaia build of `HeliOS-architecture-overhaul`
+(`helios-full-cm5`), whose `Module.symvers` matches the device image
+`6.12.47-v8-16k #1 SMP PREEMPT Thu May 7 00:00:13 PDT 2026`. (The older
 `HeliOS/gaia/build/buildroot/output-cm5` tree has the same release string but different CRCs:
 modules built against it would be rejected.)
 
 For images built from now on, `buildroot/linux-ext-styx-sensor-bridge.mk` builds the module as
-part of the kernel instead, so it always matches.
+part of whatever kernel the image uses (6.12 or 7.2, e.g. in the Raze 1.1.0 device package's
+external tree) instead, so it always matches.
 
 ## On the HeliOS CM5 dev box
 

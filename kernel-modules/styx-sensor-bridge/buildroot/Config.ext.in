@@ -2,5 +2,16 @@ config BR2_LINUX_KERNEL_EXT_STYX_SENSOR_BRIDGE
 	bool "Styx sensor bridge"
 	help
 	  Build styx_sensor_bridge.ko, the generic V4L2 sensor subdevice
-	  for camera sensors driven from userspace by Styx, and the CM5
-	  camera overlay that binds it (styx-sensor-bridge-cm5.dtbo).
+	  for camera sensors driven from userspace by Styx, into the
+	  kernel the package builds (Raspberry Pi 6.12 or rpi-7.2.y), and
+	  the CM5 camera overlays (styx-sensor-bridge-cm5.dtbo,
+	  styx-cam0-i2c-fast.dtbo).
+
+config BR2_LINUX_KERNEL_EXT_STYX_PISPBE
+	bool "Styx PiSP back end driver"
+	help
+	  Replace the kernel's PiSP back end driver (pisp_be) with Styx's
+	  version, which writes the per-job configuration faster (same
+	  uAPI and register values). Applied only when the kernel's own
+	  pisp_be.c is the one the Styx version was made from; otherwise
+	  the kernel's driver is kept and the build log says so.

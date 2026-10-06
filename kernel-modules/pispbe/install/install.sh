@@ -9,6 +9,8 @@
 #
 #   install.sh [--reload|--reboot] [root@helios] [module]
 #
+#   KERNEL_RELEASE (default 6.12.47-v8-16k) picks the default module, e.g. 7.2.9-v8-16k.
+#
 #   --reload  swap the running module now (refused while the back end is in use: stop
 #             libcamera users first, e.g. helios-peripherals in libcamera mode)
 #   --reboot  reboot into it
@@ -25,7 +27,7 @@ case "${1:-}" in
     ;;
 esac
 dev="${1:-root@helios}"
-ko="${2:-$here/../../../target/kernel-modules/6.12.47-v8-16k/pisp-be.ko}"
+ko="${2:-$here/../../../target/kernel-modules/${KERNEL_RELEASE:-6.12.47-v8-16k}/pisp-be.ko}"
 [ -f "$ko" ] || { echo "no $ko; run ../build.sh first" >&2; exit 1; }
 
 ssh "$dev" "cat > /tmp/pisp-be-new.ko" <"$ko"

@@ -6,7 +6,8 @@
 
 SPIKE_DIR="${SPIKE_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
-KERNEL_RELEASE="6.12.47-v8-16k"
+# The kernel the module was built for (KERNEL_RELEASE=7.2.9-v8-16k for an rpi-7.2.y image).
+KERNEL_RELEASE="${KERNEL_RELEASE:-6.12.47-v8-16k}"
 SERVICE="helios-peripherals"
 
 MODULE="styx_sensor_bridge"
