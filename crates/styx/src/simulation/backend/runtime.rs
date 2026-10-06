@@ -86,7 +86,7 @@ impl BevySimulationRuntime {
                 size,
                 TextureDimension::D2,
                 &[0; 4],
-                TextureFormat::bevy_default(),
+                TextureFormat::Rgba8UnormSrgb,
                 RenderAssetUsages::default(),
             );
             render_target_image.texture_descriptor.usage |= TextureUsages::COPY_SRC
@@ -137,7 +137,7 @@ impl BevySimulationRuntime {
         };
         app.world_mut().spawn((
             Name::new("simulation_scene"),
-            SceneRoot(scene_handle),
+            WorldAssetRoot(scene_handle),
             Transform::default(),
             GlobalTransform::default(),
         ));
@@ -151,7 +151,7 @@ impl BevySimulationRuntime {
             Name::new("simulation_key_light"),
             DirectionalLight {
                 illuminance: 10_000.0,
-                shadows_enabled: true,
+                shadow_maps_enabled: true,
                 ..default()
             },
             Transform::from_xyz(5.0, 8.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -280,7 +280,7 @@ impl BevySimulationRuntime {
 }
 
 fn shrink_padded_rgba(buffer: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let row_bytes = width as usize * TextureFormat::bevy_default().pixel_size().unwrap_or(4);
+    let row_bytes = width as usize * TextureFormat::Rgba8UnormSrgb.pixel_size().unwrap_or(4);
     let aligned_row_bytes = RenderDevice::align_copy_bytes_per_row(row_bytes);
     if row_bytes == aligned_row_bytes {
         return buffer[..row_bytes.saturating_mul(height as usize).min(buffer.len())].to_vec();
@@ -308,7 +308,12 @@ fn rgba32float_depth_to_meters(buffer: &[u8], width: u32, height: u32, out: &mut
     {
         let src = &row[..src_row_bytes.min(row.len())];
         let dst = &mut out[row_index * dst_row_bytes..(row_index + 1) * dst_row_bytes];
-        for (src_px, dst_px) in src.chunks_exact(16).zip(dst.chunks_exact_mut(4)) {
+        for (src_px, dst_px) in src
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .zip(dst.as_chunks_mut::<4>().0)
+        {
             dst_px.copy_from_slice(&src_px[..4]);
         }
     }

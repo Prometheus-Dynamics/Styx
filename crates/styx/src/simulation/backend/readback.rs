@@ -2,12 +2,11 @@ use bevy::app::App;
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssets;
-use bevy::render::render_graph::{self, RenderGraph, RenderGraphContext, RenderLabel};
 use bevy::render::render_resource::{
     Buffer, BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Extent3d, MapMode, PollType,
     TexelCopyBufferInfo, TexelCopyBufferLayout,
 };
-use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue};
+use bevy::render::renderer::{RenderDevice, RenderGraph, RenderGraphSystems, RenderQueue};
 use bevy::render::texture::GpuImage;
 use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSystems};
 use crossbeam_channel::{Receiver, Sender};
@@ -64,12 +63,6 @@ impl ImageCopier {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, RenderLabel)]
-struct ImageCopyNodeLabel;
-
-#[derive(Default)]
-struct ImageCopyNode;
-
 pub(super) struct ImageCopyPlugin;
 
 impl Plugin for ImageCopyPlugin {
@@ -77,13 +70,12 @@ impl Plugin for ImageCopyPlugin {
         let (sender, receiver) = crossbeam_channel::unbounded();
         app.insert_resource(MainWorldReceiver(receiver));
 
-        let render_app = app.sub_app_mut(RenderApp);
-        let mut graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        graph.add_node(ImageCopyNodeLabel, ImageCopyNode);
-        graph.add_node_edge(bevy::render::graph::CameraDriverLabel, ImageCopyNodeLabel);
-        render_app
+        // The copies run in the render graph schedule once the frame's commands are submitted,
+        // so they read this frame's images.
+        app.sub_app_mut(RenderApp)
             .insert_resource(RenderWorldSender(sender))
             .add_systems(ExtractSchedule, image_copy_extract)
+            .add_systems(RenderGraph, copy_images.in_set(RenderGraphSystems::Finish))
             .add_systems(
                 Render,
                 receive_image_from_buffer.after(RenderSystems::Render),
@@ -97,58 +89,50 @@ fn image_copy_extract(mut commands: Commands, image_copiers: Extract<Query<&Imag
     ));
 }
 
-impl render_graph::Node for ImageCopyNode {
-    fn run(
-        &self,
-        _graph: &mut RenderGraphContext,
-        render_context: &mut RenderContext,
-        world: &World,
-    ) -> Result<(), render_graph::NodeRunError> {
-        let Some(image_copiers) = world.get_resource::<ImageCopiers>() else {
-            return Ok(());
+fn copy_images(
+    image_copiers: Option<Res<ImageCopiers>>,
+    gpu_images: Option<Res<RenderAssets<GpuImage>>>,
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+) {
+    let (Some(image_copiers), Some(gpu_images)) = (image_copiers, gpu_images) else {
+        return;
+    };
+    for image_copier in image_copiers.iter() {
+        let Some(src_image) = gpu_images.get(&image_copier.src_image) else {
+            continue;
         };
-        let Some(gpu_images) = world.get_resource::<RenderAssets<GpuImage>>() else {
-            return Ok(());
+
+        let mut encoder =
+            render_device.create_command_encoder(&CommandEncoderDescriptor::default());
+
+        let format = src_image.texture_descriptor.format;
+        let size = src_image.texture_descriptor.size;
+        let block_dimensions = format.block_dimensions();
+        let block_size = format.block_copy_size(None).unwrap_or(4);
+        let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(
+            (size.width as usize / block_dimensions.0 as usize) * block_size as usize,
+        );
+        let texture_extent = Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
         };
 
-        for image_copier in image_copiers.iter() {
-            let Some(src_image) = gpu_images.get(&image_copier.src_image) else {
-                continue;
-            };
-
-            let mut encoder = render_context
-                .render_device()
-                .create_command_encoder(&CommandEncoderDescriptor::default());
-
-            let block_dimensions = src_image.texture_format.block_dimensions();
-            let block_size = src_image.texture_format.block_copy_size(None).unwrap_or(4);
-            let padded_bytes_per_row = RenderDevice::align_copy_bytes_per_row(
-                (src_image.size.width as usize / block_dimensions.0 as usize) * block_size as usize,
-            );
-            let texture_extent = Extent3d {
-                width: src_image.size.width,
-                height: src_image.size.height,
-                depth_or_array_layers: 1,
-            };
-
-            encoder.copy_texture_to_buffer(
-                src_image.texture.as_image_copy(),
-                TexelCopyBufferInfo {
-                    buffer: &image_copier.buffer,
-                    layout: TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(padded_bytes_per_row as u32),
-                        rows_per_image: None,
-                    },
+        encoder.copy_texture_to_buffer(
+            src_image.texture.as_image_copy(),
+            TexelCopyBufferInfo {
+                buffer: &image_copier.buffer,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row as u32),
+                    rows_per_image: None,
                 },
-                texture_extent,
-            );
+            },
+            texture_extent,
+        );
 
-            let render_queue = world.resource::<RenderQueue>();
-            render_queue.submit(std::iter::once(encoder.finish()));
-        }
-
-        Ok(())
+        render_queue.submit(std::iter::once(encoder.finish()));
     }
 }
 

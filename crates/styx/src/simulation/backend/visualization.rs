@@ -179,7 +179,7 @@ fn update_visualization_entities(
         } else {
             Visibility::Hidden
         };
-        if let Some(material) = materials.get_mut(&material_handle.0) {
+        if let Some(mut material) = materials.get_mut(&material_handle.0) {
             material.settings[0] = 2.0;
             material.settings[1] = view_state.near_m;
             material.settings[2] = view_state.far_m;

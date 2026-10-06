@@ -60,7 +60,7 @@ styx-runtime = { path = "crates/runtime", version = "2.0.0" }
 embedded-hal = "1.0"
 # 64-bit atomics everywhere: native where the target has them (x86_64, aarch64: the same
 # instructions as core's), a lock-based fallback where it does not (Cortex-M, RISC-V 32).
-portable-atomic = { version = "1.13", default-features = false, features = ["fallback"] }
+portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
 embedded-hal-async = "1.0"
 # Lemnos 2.0: the hardware foundation under Styx (generic buses, pins, power, hotplug;
 # docs/portability-design.md). The Lemnos `dev` branch until 2.0 is on crates.io. To build
@@ -91,42 +91,42 @@ styx-tune = { path = "crates/tune", version = "2.0.0" }
 #   [patch."https://github.com/Prometheus-Dynamics/Daedalus.git"]
 #   daedalus-rs = { path = "../Daedalus/crates/daedalus" }
 daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "dev", version = "3.0.0", default-features = false }
-crossbeam-queue = { version = "0.3.12", default-features = false, features = ["alloc"] }
+crossbeam-queue = { version = "0.3.14", default-features = false, features = ["alloc"] }
 # Locks for the no_std frame path (styx-core without `std`), and its targets without
 # compare-and-swap (`critical-section`, `portable-atomic-util`'s `Arc`).
-spin = { version = "0.10", default-features = false, features = ["spin_mutex", "rwlock"] }
+spin = { version = "0.12", default-features = false, features = ["spin_mutex", "rwlock"] }
 critical-section = "1.2"
-portable-atomic-util = { version = "0.2.7", default-features = false, features = ["alloc"] }
-smallvec = "1.15.1"
+portable-atomic-util = { version = "0.2.8", default-features = false, features = ["alloc"] }
+smallvec = "1.16.2"
 # thiserror and serde without default features so the no_std crates can use them (crates that
 # want `std` ask for it; docs/portability.md). libm: float maths for no_std builds.
-thiserror = { version = "2.0.18", default-features = false }
+thiserror = { version = "2.0.21", default-features = false }
 libm = "0.2.16"
-tokio = "1.52.1"
+tokio = "1.53.2"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 # FFmpeg types only: Styx calls FFmpeg through libraries it loads at runtime
 # (styx-codec `ffmpeg::ff`), so binaries do not link FFmpeg.
-ffmpeg-sys-next = { version = "8.1.0", default-features = false, features = ["avcodec", "avformat", "swscale"] }
+ffmpeg-sys-next = { version = "9.0.0", default-features = false, features = ["avcodec", "avformat", "swscale"] }
 libcamera = { version = "0.7", default-features = false, features = ["libcamera_semver_versioning"] }
-tokio-util = { version = "0.7.18", features = ["io"] }
-futures-core = "0.3.32"
+tokio-util = { version = "0.7.19", features = ["io"] }
+futures-core = "0.3.34"
 # Without `async-await-macro` (no futures-macro proc macro): Styx uses the stream adapters only.
-futures-util = { version = "0.3.32", default-features = false, features = ["io", "std"] }
-serde = { version = "1.0.228", default-features = false, features = ["derive"] }
-serde_json = "1.0.145"
-utoipa = { version = "5.4.0", default-features = false, features = ["macros"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["io", "std"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive"] }
+serde_json = "1.0.151"
+utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
 parking_lot = "0.12.5"
 jpeg-decoder = "0.3.2"
 zune-jpeg = "0.5.15"
-zune-core = "0.5.1"
+zune-core = "0.5.3"
 mozjpeg = "0.10.13"
-turbojpeg = "1.4.0"
+turbojpeg = "1.5.1"
 yuvutils-rs = { version = "0.8.3", features = ["fast_mode"] }
-reqwest = { version = "0.13.2", default-features = false }
-minifb = "0.28.0"
+reqwest = { version = "0.13.5", default-features = false }
+minifb = "0.29.0"
 libc = "0.2"
-bevy = { version = "0.18.1", default-features = false, features = ["bevy_asset", "bevy_scene", "bevy_gltf", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_winit", "png", "x11"] }
-crossbeam-channel = "0.5.15"
+bevy = { version = "0.19.1", default-features = false, features = ["bevy_asset", "bevy_world_serialization", "bevy_gltf", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_winit", "png", "x11"] }
+crossbeam-channel = "0.5.17"
 libcamera-sys = "0.7"
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 # Without default features: Styx uses no `#[instrument]` (no tracing-attributes proc macro).
