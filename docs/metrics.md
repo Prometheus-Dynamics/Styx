@@ -304,8 +304,8 @@ also reads the clock twice). `metrics_top --overhead` measures both: the frame p
 its hops, and the hops alone for a frame sent to another process (every stamp and the three
 records): on a Zen 3 desktop 182 ns per frame for the frame path (116 ns before the hops) and
 244 ns for all of a sent frame's hops. Without `path-metrics` (a `no_std` build that does not
-enable it) `FrameHops` is empty and every stamp compiles to nothing; the MCU images stay within
-their limits (`scripts/mcu-size.sh --check`).
+enable it) `FrameHops` is empty and every stamp compiles to nothing: the MCU images' flash is
+what [mcu.md](mcu.md) lists (`scripts/mcu-size.sh --check`, A-D on Cortex-M7/M4F and M0+).
 
 The PiSP path, `native_processed 900` (NV12, luma view, RGB at 120 fps, 1280x800, whole process
 CPU from `/proc/self/stat` over each 7.5 s run, two rounds alternating), before (native-stack
