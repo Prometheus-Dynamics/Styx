@@ -205,7 +205,7 @@ pub fn quality(a: &Args) -> Result<(), String> {
                 w,
                 h,
             )?;
-            for (p, q) in c.0.chunks_exact(3).zip(g.0.chunks_exact(3)) {
+            for (p, q) in c.0.as_chunks::<3>().0.iter().zip(g.0.as_chunks::<3>().0) {
                 for ch in 0..3 {
                     diffs[k][ch].add(p[ch], q[ch]);
                 }

@@ -98,11 +98,9 @@ pub(super) fn completed_frame_parts(
                 }
                 let plane_height = plane_height_for_format(code, idx, height);
                 let stride = if idx == 0 && active_stride > 0 {
-                    if plane_height == 0 {
-                        active_stride
-                    } else {
-                        let max_stride = slice_len / plane_height;
-                        active_stride.min(max_stride.max(1))
+                    match slice_len.checked_div(plane_height) {
+                        None => active_stride,
+                        Some(max_stride) => active_stride.min(max_stride.max(1)),
                     }
                 } else {
                     backing::infer_stride(len, slice_len, plane_height)

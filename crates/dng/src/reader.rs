@@ -182,7 +182,9 @@ fn unpack(src: &[u8], count: usize, bits: u16, order: Order) -> Vec<u16> {
     match bits {
         8 => src.iter().take(count).map(|&b| u16::from(b)).collect(),
         16 => src
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .take(count)
             .map(|c| order.u16(c))
             .collect(),

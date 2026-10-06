@@ -202,7 +202,7 @@ fn split_pairs(src: &[u8], stride: usize, cw: usize, ch: usize, a: &mut Vec<u8>,
     for row in 0..ch {
         let line = &src[row * stride..][..cw * 2];
         let (ra, rb) = (&mut a[row * cw..][..cw], &mut b[row * cw..][..cw]);
-        for ((pair, x), y) in line.chunks_exact(2).zip(ra).zip(rb) {
+        for ((pair, x), y) in line.as_chunks::<2>().0.iter().zip(ra).zip(rb) {
             *x = pair[0];
             *y = pair[1];
         }
@@ -476,7 +476,7 @@ mod tests {
         let px = planes[0].data();
         let n = (px.len() / 3) as f64;
         let mut sum = [0.0; 3];
-        for p in px.chunks_exact(3) {
+        for p in px.as_chunks::<3>().0 {
             for c in 0..3 {
                 sum[c] += f64::from(p[c]);
             }

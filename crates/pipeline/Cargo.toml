@@ -37,7 +37,7 @@ gpu = ["std", "dep:styx-gpuisp"]
 [dependencies]
 bytemuck = "1.25"
 serde = { workspace = true, features = ["derive", "alloc"] }
-serde_json = { version = "1.0.145", optional = true }
+serde_json = { version = "1.0.151", optional = true }
 styx-algo = { path = "../algo", version = "2.0.0", default-features = false }
 styx-core = { workspace = true, features = ["neon", "x86"] }
 styx-dng = { path = "../dng", version = "2.0.0", default-features = false }

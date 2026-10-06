@@ -471,7 +471,7 @@ where
 /// Mean R, G, B of an RGB24 image.
 fn means(rgb: &[u8]) -> [f64; 3] {
     let mut s = [0u64; 3];
-    for px in rgb.chunks_exact(3) {
+    for px in rgb.as_chunks::<3>().0 {
         for c in 0..3 {
             s[c] += u64::from(px[c]);
         }

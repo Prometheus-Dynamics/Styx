@@ -22,7 +22,7 @@ pub fn unpack_row(packing: RawPacking, row: &[u8], width: usize, out: &mut [u16]
             }
         }
         RawPacking::U16Le { .. } => {
-            for (o, c) in out[..width].iter_mut().zip(row.chunks_exact(2)) {
+            for (o, c) in out[..width].iter_mut().zip(row.as_chunks::<2>().0) {
                 *o = u16::from_le_bytes([c[0], c[1]]);
             }
         }

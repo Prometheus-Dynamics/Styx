@@ -12,7 +12,7 @@ publish = false
 [dependencies]
 lemnos-linux = { workspace = true, features = ["i2c"] }
 libc.workspace = true
-signal-hook = { version = "0.3.18", default-features = false }
+signal-hook = { version = "0.4.5", default-features = false }
 styx-kernel.workspace = true
 styx-sensor.workspace = true
 

@@ -2,7 +2,7 @@
 name = "pipewire-styx"
 version = "2.0.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.99"
 authors = ["Mathias Petersen"]
 license = "MIT OR Apache-2.0"
 description = "Publishes Styx cameras as PipeWire video sources (for browsers and OBS through the camera portal)."

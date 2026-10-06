@@ -232,12 +232,10 @@ mod tests {
     fn phase_needs_enough_confidence() {
         let w = Weights::compute(2, 2, &[AfWindow::new(0.0, 0.0, 1.0, 1.0)]);
         let mut g = ZoneGrid::<PdafZone>::new(2, 2);
-        for z in &mut g.zones {
-            *z = PdafZone {
-                phase: 10.0,
-                conf: 100.0,
-            };
-        }
+        g.zones.fill(PdafZone {
+            phase: 10.0,
+            conf: 100.0,
+        });
         let (p, c) = phase(&w, &g, 16.0, 512.0);
         assert!((p - 10.0).abs() < 1e-12 && (c - 92.0).abs() < 1e-12);
         for z in &mut g.zones {

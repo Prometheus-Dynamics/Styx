@@ -16,7 +16,9 @@ use crate::schedule::{Control, ControlSet};
 /// (its low 8 bits: embedded lines carry one byte value per word). A partial group at the end
 /// is dropped.
 pub fn unpack_raw10_bytes(data: &[u8]) -> Vec<u8> {
-    data.chunks_exact(5)
+    data.as_chunks::<5>()
+        .0
+        .iter()
         .flat_map(|g| {
             let low = g[4];
             (0..4).map(move |i| ((u16::from(g[i]) << 2) | u16::from((low >> (2 * i)) & 3)) as u8)

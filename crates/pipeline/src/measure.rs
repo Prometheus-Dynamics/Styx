@@ -30,7 +30,7 @@ pub fn overshoot(values: &[f64], from: usize) -> f64 {
 pub fn rgb_means(rgb: &[u8], width: usize, height: usize, stride: usize) -> [f64; 3] {
     let mut s = [0u64; 3];
     for y in 0..height {
-        for px in rgb[y * stride..y * stride + width * 3].chunks_exact(3) {
+        for px in rgb[y * stride..y * stride + width * 3].as_chunks::<3>().0 {
             for c in 0..3 {
                 s[c] += u64::from(px[c]);
             }
@@ -66,7 +66,7 @@ pub fn grey_ratios(
 ) -> (f64, f64) {
     let mut s = [0u64; 3];
     for y in 0..height {
-        for px in rgb[y * stride..y * stride + width * 3].chunks_exact(3) {
+        for px in rgb[y * stride..y * stride + width * 3].as_chunks::<3>().0 {
             if px.iter().all(|&v| v >= lo && v <= hi) {
                 for c in 0..3 {
                     s[c] += u64::from(px[c]);

@@ -214,9 +214,7 @@ impl V4l2MmapManager {
         }
         self.device.stream_off(self.buf_type)?;
         state.active = false;
-        for queued in &mut state.queued {
-            *queued = false;
-        }
+        state.queued.fill(false);
         Ok(())
     }
 

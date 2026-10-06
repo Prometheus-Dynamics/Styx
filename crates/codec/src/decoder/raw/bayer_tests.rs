@@ -85,7 +85,9 @@ fn packed_and_unpacked_decode_to_the_colour() {
         assert!(
             out.planes()[0]
                 .data()
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .all(|p| p.iter().zip(want).all(|(&a, b)| near(a, b)))
         );
 

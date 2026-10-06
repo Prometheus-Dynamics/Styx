@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use bevy::app::App;
 use bevy::asset::{Asset, Assets, uuid_handle};
+use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Exposure, PhysicalCameraParameters};
 use bevy::light::NotShadowCaster;
 use bevy::pbr::{Material, MaterialPlugin, MeshMaterial3d, StandardMaterial};
@@ -19,11 +20,11 @@ const PREPASS_OUTPUT_SHADER: &str = r#"
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::prepass_utils::{prepass_depth, prepass_normal}
 
-@group(2) @binding(0) var<uniform> material: vec4<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> material: vec4<f32>;
 
+// Bevy's perspective projection is reverse-Z with an infinite far plane: depth = near / z.
 fn linearize_depth(depth: f32, near_m: f32, far_m: f32) -> f32 {
-    let z_ndc = depth * 2.0 - 1.0;
-    return (2.0 * near_m * far_m) / max(far_m + near_m - z_ndc * (far_m - near_m), 0.0001);
+    return min(near_m / max(depth, 0.000001), far_m);
 }
 
 @fragment
@@ -67,7 +68,7 @@ struct SegmentationStandardMaterial(Handle<StandardMaterial>);
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 struct PrepassOutputMaterial {
     #[uniform(0)]
-    settings: [f32; 4],
+    settings: Vec4,
 }
 
 impl Material for PrepassOutputMaterial {
@@ -77,6 +78,16 @@ impl Material for PrepassOutputMaterial {
 
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Opaque
+    }
+
+    /// The overlay quad reads the scene's prepass, so it must not write its own depth and
+    /// normal into it.
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
     }
 }
 
@@ -179,10 +190,10 @@ fn update_visualization_entities(
         } else {
             Visibility::Hidden
         };
-        if let Some(material) = materials.get_mut(&material_handle.0) {
-            material.settings[0] = 2.0;
-            material.settings[1] = view_state.near_m;
-            material.settings[2] = view_state.far_m;
+        if let Some(mut material) = materials.get_mut(&material_handle.0) {
+            material.settings.x = 2.0;
+            material.settings.y = view_state.near_m;
+            material.settings.z = view_state.far_m;
         }
     }
 }
@@ -284,6 +295,10 @@ fn fov_radians(sensor_height_mm: f32, focal_length_mm: f32) -> f32 {
         .clamp(0.01, PI - 0.01)
 }
 
+/// The render layer of the depth overlay: the depth camera renders layers 0 (the scene) and this
+/// one, the colour camera only layer 0.
+pub(super) const DEPTH_OVERLAY_LAYER: usize = 1;
+
 pub(super) fn spawn_overlay_entities(
     app: &mut App,
     sensor_entity: Entity,
@@ -295,7 +310,7 @@ pub(super) fn spawn_overlay_entities(
             .world_mut()
             .resource_mut::<Assets<PrepassOutputMaterial>>();
         materials.add(PrepassOutputMaterial {
-            settings: [2.0, config.sensor.near_m, config.sensor.far_m, 0.0],
+            settings: Vec4::new(2.0, config.sensor.near_m, config.sensor.far_m, 0.0),
         })
     };
     let depth_overlay_material = {
@@ -303,7 +318,7 @@ pub(super) fn spawn_overlay_entities(
             .world_mut()
             .resource_mut::<Assets<PrepassOutputMaterial>>();
         materials.add(PrepassOutputMaterial {
-            settings: [1.0, config.sensor.near_m, config.sensor.far_m, 0.0],
+            settings: Vec4::new(1.0, config.sensor.near_m, config.sensor.far_m, 0.0),
         })
     };
     let overlay_mesh = {
@@ -334,6 +349,9 @@ pub(super) fn spawn_overlay_entities(
             Transform::from_xyz(0.0, 0.0, -0.2),
             Visibility::Visible,
             NotShadowCaster,
+            // Only the depth camera sees it; the colour camera would render the quad instead of
+            // the scene.
+            RenderLayers::layer(DEPTH_OVERLAY_LAYER),
         ))
         .id();
     app.world_mut()

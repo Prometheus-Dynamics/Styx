@@ -58,7 +58,9 @@ impl Drop for Kernels {
 
 fn spirv(bytes: &[u8]) -> Vec<u32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
         .collect()
 }

@@ -350,7 +350,13 @@ fn shaded_gains(
                     q12_row(out, &a, &b, ts, gain[p]);
                 }
                 let mut row = vec![0u16; w];
-                for ((pair, &even), &odd) in row.chunks_exact_mut(2).zip(&half[0]).zip(&half[1]) {
+                for ((pair, &even), &odd) in row
+                    .as_chunks_mut::<2>()
+                    .0
+                    .iter_mut()
+                    .zip(&half[0])
+                    .zip(&half[1])
+                {
                     pair[0] = even;
                     pair[1] = odd;
                 }

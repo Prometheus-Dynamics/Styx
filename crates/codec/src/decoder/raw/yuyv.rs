@@ -110,8 +110,10 @@ impl YuyvToRgbDecoder {
                 let src_line = &src[y * stride..][..width * 2];
                 let dst_line = &mut dst[y * row_bytes..(y + 1) * row_bytes];
                 for (dst_px, src_px) in dst_line
-                    .chunks_exact_mut(6)
-                    .zip(src_line[..width * 2].chunks_exact(4))
+                    .as_chunks_mut::<6>()
+                    .0
+                    .iter_mut()
+                    .zip(src_line[..width * 2].as_chunks::<4>().0)
                 {
                     let y0 = unsafe { *src_px.get_unchecked(0) as i32 };
                     let u = unsafe { *src_px.get_unchecked(1) as i32 };

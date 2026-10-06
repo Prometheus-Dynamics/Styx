@@ -150,7 +150,7 @@ impl TimerFd {
     pub fn set(&self, after: Option<Duration>) -> io::Result<()> {
         let value = match after {
             Some(d) => libc::timespec {
-                tv_sec: d.as_secs() as libc::time_t,
+                tv_sec: d.as_secs() as _,
                 tv_nsec: d.subsec_nanos().max(u32::from(d.as_secs() == 0)) as libc::c_long,
             },
             None => libc::timespec {

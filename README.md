@@ -61,8 +61,8 @@ libcamera, V4L2 and GStreamer, with measurements.
 
 ## Getting Started
 
-Styx currently requires Rust 1.94.0. The workspace pins this toolchain in
-`rust-toolchain.toml` and mirrors it as `rust-version = "1.94"` in
+Styx currently requires Rust 1.99.0. The workspace pins this toolchain in
+`rust-toolchain.toml` and mirrors it as `rust-version = "1.99"` in
 `Cargo.toml` so release builds, docs, examples, and CI use the same compiler.
 
 Add the facade crate:

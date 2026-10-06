@@ -9,12 +9,12 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-futures-core = "0.3.32"
+futures-core = "0.3.34"
 libc = "0.2"
-thiserror = "2.0.18"
+thiserror = "2.0.21"
 
 [dev-dependencies]
-tokio = { version = "1.52.1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.53.2", features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [lints]
 workspace = true

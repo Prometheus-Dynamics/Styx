@@ -148,7 +148,9 @@ impl GainMap {
             origin_h: f(64),
             map_planes,
             gains: gains_bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .take(n)
                 .map(|c| f32::from_be_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),

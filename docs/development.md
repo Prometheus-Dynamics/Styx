@@ -32,7 +32,7 @@ See [`testing.md`](testing.md) for the default and example-focused validation su
 
 ## Tooling
 
-- Rust 1.94.0 is the release toolchain and MSRV for this workspace.
+- Rust 1.99.0 is the release toolchain and MSRV for this workspace.
 - Rust toolchain is pinned in [`rust-toolchain.toml`](../rust-toolchain.toml)
 - Root dependency versions are aligned in [`Cargo.toml`](../Cargo.toml)
 - Local validation entrypoint lives in [`scripts/ci.sh`](../scripts/ci.sh)

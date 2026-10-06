@@ -453,7 +453,9 @@ mod tests {
 
         let expected: Vec<u8> = (0u8..16)
             .collect::<Vec<_>>()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|px| px[..3].iter().copied())
             .collect();
         assert_eq!(data, expected.as_slice());

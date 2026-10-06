@@ -89,7 +89,7 @@ impl YuyvToNv12Decoder {
             // An odd last row pairs with itself.
             let b = &src[(2 * r + 1).min(h - 1) * stride..][..row];
             let out = &mut uv[r * w..][..w];
-            for (i, o) in out.chunks_exact_mut(2).enumerate() {
+            for (i, o) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                 let (u, v) = (4 * i + 1, 4 * i + 3);
                 o[0] = (u16::from(a[u]) + u16::from(b[u])).div_ceil(2) as u8;
                 o[1] = (u16::from(a[v]) + u16::from(b[v])).div_ceil(2) as u8;

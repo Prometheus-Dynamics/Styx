@@ -76,3 +76,36 @@ fn the_plugin_installs_once_per_registry() {
     registry.install(&StyxFramesPlugin::new()).unwrap();
     assert!(registry.installed_plugin_version("styx.frames").is_some());
 }
+
+#[test]
+fn the_plugin_registers_this_build_so_conflicts_name_the_feature_difference() {
+    use ::daedalus::runtime::plugins::CrateBuildInfo;
+
+    let mut registry = PluginRegistry::new();
+    registry.install(&StyxFramesPlugin::new()).unwrap();
+    let host = registry.crate_builds()["styx_core"];
+    assert_eq!(host.version, env!("CARGO_PKG_VERSION"));
+    assert!(host.feature_list().contains(&"daedalus"));
+
+    // A dynamic plugin whose styx-core build lacks `std` and has a feature the host lacks:
+    // the diff names exactly those two.
+    let mut features: Vec<&str> = host.feature_list();
+    features.retain(|feature| *feature != "std");
+    features.push("plugin-only");
+    let plugin = CrateBuildInfo {
+        features: String::leak(features.join(",")),
+        ..host
+    };
+    let diffs = registry.crate_build_diffs([&plugin]);
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].missing_in_plugin(), ["std"]);
+    assert_eq!(diffs[0].extra_in_plugin(), ["plugin-only"]);
+    let text = diffs[0].to_string();
+    assert!(text.starts_with("crate `styx_core`"), "{text}");
+    assert!(
+        text.contains("missing in plugin: std; only in plugin: plugin-only"),
+        "{text}"
+    );
+    // The same build is no conflict.
+    assert!(registry.crate_build_diffs([&host]).is_empty());
+}

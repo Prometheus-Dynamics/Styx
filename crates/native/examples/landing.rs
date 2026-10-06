@@ -39,7 +39,7 @@ fn level(f: &NativeFrame, black: f64) -> f64 {
     for row in (0..f.height as usize).step_by(4) {
         let line = &d[row * stride..];
         if packed10 {
-            for g in line[..w * 5 / 4].chunks_exact(5).step_by(2) {
+            for g in line[..w * 5 / 4].as_chunks::<5>().0.iter().step_by(2) {
                 for (i, &b) in g[..4].iter().enumerate() {
                     sum += f64::from((u16::from(b) << 2) | u16::from((g[4] >> (2 * i)) & 3));
                     n += 1.0;

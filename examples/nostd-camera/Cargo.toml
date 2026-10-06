@@ -28,7 +28,7 @@ std = [
 [dependencies]
 portable-atomic.workspace = true
 smallvec.workspace = true
-spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
+spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 # Every algorithm, as the std build has (the traces are compared bit for bit).
 styx-algo = { path = "../../crates/algo", default-features = false, features = ["all-algorithms"] }
 styx-hal = { path = "../../crates/hal" }
