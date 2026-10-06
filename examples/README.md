@@ -396,6 +396,9 @@ Specialized examples remain for feature-specific surfaces such as:
 - `native_capture`, `native_processed`, `native_isp_bench` (`04_performance`): the native
   stack's rates, latency, CPU and memory, as quoted in
   [docs/native-stack/pipeline.md](../docs/native-stack/pipeline.md)
+- `libcamera_format_check` (`04_performance`, `--features libcamera`): the R/G/B means of each
+  RGB format a libcamera camera delivers (RG24, BG24, XR24, XB24, RGBA, BGRA) against NV12
+  converted to RGB, with a PASS / FAIL (R and B swapped) verdict per format
 
 CI builds the portable subset with `async`, `file-backend` and `netcam`, and every example
 above with `native,v4l2,async,hotplug,replay-mcap` in a job without libcamera installed.

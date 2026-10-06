@@ -85,6 +85,11 @@ path = "04_performance/libcamera_crops.rs"
 required-features = ["libcamera"]
 
 [[bin]]
+name = "libcamera_format_check"
+path = "04_performance/libcamera_format_check.rs"
+required-features = ["libcamera"]
+
+[[bin]]
 name = "native_isp_bench"
 path = "04_performance/native_isp_bench.rs"
 required-features = ["native"]
