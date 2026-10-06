@@ -294,6 +294,10 @@ impl styx_runtime::LeaseBuffer for V4l2Buffer {
         "native_dmabuf"
     }
 
+    fn dmabuf(&self) -> Option<BorrowedFd<'_>> {
+        self.export()
+    }
+
     fn can_export(&self) -> bool {
         self.export().is_some()
     }

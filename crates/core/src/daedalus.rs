@@ -11,11 +11,17 @@
 //!   so host inspection shows frames as their descriptor. Install it once per registry.
 //! - [`frame_payload`] / [`shared_frame_payload`]: a frame as a Daedalus [`Payload`] without
 //!   copying it, with its residency mapped ([`payload_residency`]).
+//! - `FrameLease: FrameSource`: Daedalus's generic `daedalus:frame` v1 view ([`FrameView`]),
+//!   registered as a provider by the plugin, so nodes that know nothing of Styx (separately
+//!   built plugins included) read a Styx frame in place: DRM format and modifier
+//!   ([`crate::format::drm`]), the lease's own plane pointers, strides and offsets, the
+//!   dma-buf descriptors, never a host pointer the CPU cannot read. [`frame_view`] views a
+//!   lease directly.
 //!
 //! ```ignore
 //! let mut registry = daedalus::runtime::plugins::PluginRegistry::new();
 //! registry.install(&styx_core::daedalus::StyxFramesPlugin::new())?;
-//! // Nodes take `&FrameLease`, or `&FrameDescriptor` through the adapter.
+//! // Nodes take `&FrameLease`, `FrameView<'_>`, or `&FrameDescriptor` through the adapters.
 //! host.push_payload("frame", styx_core::daedalus::frame_payload(frame));
 //! ```
 
@@ -23,7 +29,8 @@ use std::sync::Arc;
 
 use ::daedalus::data::to_value::ToValue;
 use ::daedalus::runtime::plugins::{PluginRegistry, PluginResult};
-use ::daedalus::transport::{Payload, Residency, TransportError};
+use ::daedalus::transport::{ForeignBorrow, Payload, Residency, TransportError};
+pub use ::daedalus::transport::{FrameInterface, FrameView};
 use ::daedalus::{DaedalusToValue, DaedalusTypeExpr, adapt, plugin};
 
 use crate::buffer::{CompanionKind, CpuAccess, FrameLease, FrameResidency, PlaneLayout};
@@ -199,8 +206,11 @@ pub fn frame_payload(frame: FrameLease) -> Payload {
     shared_frame_payload(Arc::new(frame))
 }
 
-/// [`frame_payload`] for a frame already shared (e.g. one also kept by the caller).
+/// [`frame_payload`] for a frame already shared (e.g. one also kept by the caller). CPU writes
+/// still open on the frame's memory are finished first, so devices reading it by descriptor
+/// see them.
 pub fn shared_frame_payload(frame: Arc<FrameLease>) -> Payload {
+    frame.finish_cpu_write();
     let residency = payload_residency(&frame);
     let bytes = frame.payload_bytes() as u64;
     Payload::shared_with(FRAME_TYPE_KEY, frame, residency, None, Some(bytes))
@@ -224,7 +234,9 @@ fn install(registry: &mut PluginRegistry) -> PluginResult<()> {
 }
 
 /// Registers Styx frames with a Daedalus registry: the frame type ([`FRAME_TYPE_KEY`]), the
-/// descriptor types, the metadata adapter and the inspection serializer. Install it once:
+/// descriptor types, the metadata adapter, the `daedalus:frame` provider (a `View` adapter,
+/// `daedalus.foreign:styx:framelease->daedalus:frame`, which the planner inserts before ports
+/// taking [`FrameView`]) and the inspection serializer. Install it once:
 /// `registry.install(&StyxFramesPlugin::new())`.
 #[plugin(
     id = "styx.frames",
@@ -232,7 +244,8 @@ fn install(registry: &mut PluginRegistry) -> PluginResult<()> {
     crate_build,
     types(FrameLease),
     values(FrameDescriptor),
-    adapters(frame_descriptor)
+    adapters(frame_descriptor),
+    foreign_providers(FrameLease => FrameInterface)
 )]
 pub struct StyxFramesPlugin;
 
@@ -240,6 +253,19 @@ pub struct StyxFramesPlugin;
 pub fn cpu_readable(frame: &FrameLease) -> bool {
     frame.cpu_access() != CpuAccess::None
 }
+
+/// `frame` through `daedalus:frame` v1, borrowed (no handle, no allocation), as a node taking
+/// [`FrameView`] sees it: for hosts and tests calling such code directly.
+pub fn frame_view(frame: &FrameLease) -> FrameView<'_> {
+    match ForeignBorrow::of::<FrameLease, FrameInterface>(frame).view() {
+        Ok(view) => view,
+        // The provider and the view are this build's one copy of the interface.
+        Err(_) => unreachable!("daedalus:frame differs from itself"),
+    }
+}
+
+mod frame_view;
+pub use frame_view::view_residency;
 
 #[cfg(test)]
 mod tests;

@@ -151,6 +151,28 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   all registered by `StyxFramesPlugin`, and zero-copy `frame_payload` with residency mapping.
   See `docs/daedalus.md` and the `daedalus_frames` example.
   Daedalus is its `dev` branch by git, now Daedalus 3.0.0 (a local `[patch]` overrides it).
+- Added Daedalus's generic frame view for Styx frames: `FrameLease` implements
+  `daedalus:frame` v1 (`FrameSource`), registered by `StyxFramesPlugin` as a provider
+  (`foreign_providers(FrameLease => FrameInterface)`, adapter
+  `daedalus.foreign:styx:framelease->daedalus:frame`), so nodes taking `FrameView<'_>`,
+  including separately built plugins that know nothing of Styx, read a frame in place: DRM
+  fourcc and modifier, the lease's plane pointers, lengths, strides and offsets, and borrowed
+  dma-buf descriptors. Planes the CPU cannot read (`CpuAccess::None`) have no host pointer, only
+  their dma-buf where the backing reports one. `styx_core::daedalus::{frame_view,
+  view_residency, FrameView, FrameInterface}`. `shared_frame_payload` finishes open CPU writes
+  first. Plugin id, type keys and existing adapter ids unchanged. `zero_alloc` covers the view:
+  no copy, one allocation per received frame as before.
+- Added `styx_core::format::drm` (`no_std`): `to_drm(FourCc) -> Option<DrmFormat>` and
+  `from_drm(fourcc, modifier) -> Option<FourCc>` over a public table (`MAPPINGS`, `ALIASES`,
+  `UNMAPPED`) covering every pixel format Styx defines: greyscale, packed RGB (Styx `RG24` =
+  V4L2 `RGB3` is DRM `BG24`, and the other byte-order differences), packed, semi-planar and
+  planar YUV, and Bayer and CSI-2 packed raw in libcamera's DRM extension
+  (`MIPI_FORMAT_MOD_CSI2_PACKED`, `DrmRegistry::Libcamera`); compressed formats have none.
+- Added `ExternalBacking::dmabuf_plane` and `FrameLease::dmabuf_plane` (`DmabufPlane`: a
+  plane's dma-buf, borrowed, and its offset in it) for handing a plane to a device by
+  descriptor without duplicating it, reported by the PiSP, libcamera, native capture
+  (`LeaseBuffer::dmabuf`), imported, received IPC and shared-fd backings; and
+  `FrameLease::plane_at` (one plane without building the others).
 - Added `CpuAccess` (`None`, `Uncached`, `Cached`), `ExternalBacking::cpu_access` and
   `FrameLease::cpu_access`: whether the CPU can read a frame's planes and how fast, apart from
   its residency. Native ISP and sensor buffers, libcamera buffers, IPC frames (as the sender

@@ -384,7 +384,8 @@ Specialized examples remain for feature-specific surfaces such as:
 
 - `async_pipeline`
 - `probe_and_select`
-- `daedalus_frames` (`--features daedalus`): camera frames through a Daedalus graph
+- `daedalus_frames` (`--features daedalus`): camera frames through a Daedalus graph, read as
+  `&FrameLease`, as Daedalus's generic `FrameView` and as their descriptor
 - `v4l2_hardware_bench`
 - `pipeline_health`
 - `ffmpeg_scale`

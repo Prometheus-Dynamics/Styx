@@ -1,8 +1,10 @@
 //! Camera frames in a Daedalus graph through `styx::core::daedalus` (feature `daedalus`).
 //!
 //! The app only writes its nodes: Styx registers the frame type, its descriptor, the metadata
-//! adapter and the inspection serializer (`StyxFramesPlugin`), and wraps frames as payloads
-//! without copying them (`frame_payload`).
+//! adapter, the `daedalus:frame` provider and the inspection serializer (`StyxFramesPlugin`),
+//! and wraps frames as payloads without copying them (`frame_payload`). One node takes Daedalus's
+//! generic `FrameView`, as a plugin that knows nothing of Styx would: it reads the same camera
+//! buffer through the provider, with the format as a DRM fourcc.
 //!
 //! `cargo run -p styx-examples --features daedalus --bin daedalus_frames`
 
@@ -12,7 +14,9 @@ use daedalus::engine::{Engine, EngineConfig};
 use daedalus::macros::{node, plugin};
 use daedalus::runtime::NodeError;
 use daedalus::runtime::plugins::PluginRegistry;
-use styx::core::daedalus::{FrameDescriptor, StyxFramesPlugin, cpu_readable, frame_payload};
+use styx::core::daedalus::{
+    FrameDescriptor, FrameView, StyxFramesPlugin, cpu_readable, frame_payload,
+};
 use styx::prelude::*;
 
 const FRAMES: u32 = 8;
@@ -41,7 +45,32 @@ fn frame_size(descriptor: &FrameDescriptor) -> Result<String, NodeError> {
     ))
 }
 
-#[plugin(id = "app.nodes", nodes(mean_first_plane, frame_size))]
+/// Daedalus's generic frame view (`daedalus:frame`): the planner inserts Styx's provider
+/// (`daedalus.foreign:styx:framelease->daedalus:frame`); the node reads the lease's planes in
+/// place, or gets the dma-buf descriptor when the CPU cannot read them.
+#[node(id = "app.view_summary", inputs("frame"), outputs("summary"))]
+fn view_summary(frame: FrameView<'_>) -> Result<String, NodeError> {
+    let format = frame.format().to_le_bytes();
+    let plane = frame
+        .plane(0)
+        .ok_or_else(|| NodeError::InvalidInput("frame without planes".into()))?;
+    let memory = match (plane.data, plane.dmabuf_fd) {
+        (Some(data), _) => format!("mapped at {:p}", data.as_ptr()),
+        (None, Some(fd)) => format!("dma-buf fd {fd} offset {}", plane.offset),
+        (None, None) => return Err(NodeError::InvalidInput("frame not readable".into())),
+    };
+    Ok(format!(
+        "{} {}x{} seq {} {:?}, plane 0 stride {} {memory}",
+        String::from_utf8_lossy(&format),
+        frame.width(),
+        frame.height(),
+        frame.sequence(),
+        frame.residency(),
+        plane.stride,
+    ))
+}
+
+#[plugin(id = "app.nodes", nodes(mean_first_plane, frame_size, view_summary))]
 struct AppNodes;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,15 +81,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mean = nodes.mean_first_plane.alias("mean");
     let size = nodes.frame_size.alias("size");
+    let view = nodes.view_summary.alias("view");
     let graph = registry
         .graph_builder()?
         .input_typed::<FrameLease>("frame")?
         .try_node(&mean)?
         .try_node(&size)?
+        .try_node(&view)?
         .try_connect("frame", &mean.inputs.frame)?
         .try_connect("frame", &size.inputs.descriptor)?
+        .try_connect("frame", &view.inputs.frame)?
         .try_connect(&mean.outputs.mean, "mean")?
         .try_connect(&size.outputs.size, "size")?
+        .try_connect(&view.outputs.summary, "view")?
         .build();
     let mut host = Engine::new(EngineConfig::default())?.compile_registry(&registry, graph)?;
     for edge in host.explain_plan().edges {

@@ -123,6 +123,14 @@ impl ExternalBacking for BeBacking {
         FrameResidency::Dmabuf
     }
 
+    fn dmabuf_plane(&self, index: usize) -> Option<styx_core::buffer::DmabufPlane<'_>> {
+        let &(offset, _) = self.planes.get(index)?;
+        Some(styx_core::buffer::DmabufPlane {
+            fd: self.buffer.fd.as_fd(),
+            offset,
+        })
+    }
+
     fn cpu_access(&self) -> CpuAccess {
         if self.buffer.cached {
             CpuAccess::Cached

@@ -517,6 +517,11 @@ impl<B: ExternalBacking> ExternalBacking for MeteredBacking<B> {
     }
 
     #[cfg(unix)]
+    fn dmabuf_plane(&self, index: usize) -> Option<styx_core::buffer::DmabufPlane<'_>> {
+        self.inner.dmabuf_plane(index)
+    }
+
+    #[cfg(unix)]
     fn export_backing(
         &self,
     ) -> Result<Option<styx_core::prelude::FrameBackingExport>, styx_core::prelude::FrameExportError>

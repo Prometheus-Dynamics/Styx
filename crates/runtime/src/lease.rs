@@ -39,6 +39,13 @@ pub trait LeaseBuffer: FrameBuffer {
         false
     }
 
+    /// The buffer's dma-buf, borrowed, when it is one (for handing it to a device by
+    /// descriptor without duplicating it: [`ExternalBacking::dmabuf_plane`]).
+    #[cfg(all(feature = "std", unix))]
+    fn dmabuf(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        None
+    }
+
     /// The buffer for another process: its first `len` bytes as an fd (a dma-buf), `None`
     /// when it cannot be shared without a copy.
     #[cfg(all(feature = "std", unix))]
@@ -127,6 +134,15 @@ where
 
     fn cpu_access(&self) -> CpuAccess {
         self.frame.buffer().cpu_access()
+    }
+
+    /// Every plane lies in the buffer, from its start (the layouts carry the offsets).
+    #[cfg(all(feature = "std", unix))]
+    fn dmabuf_plane(&self, _index: usize) -> Option<styx_core::buffer::DmabufPlane<'_>> {
+        Some(styx_core::buffer::DmabufPlane {
+            fd: self.frame.buffer().dmabuf()?,
+            offset: 0,
+        })
     }
 
     #[cfg(all(feature = "std", unix))]
