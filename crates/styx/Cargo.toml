@@ -51,6 +51,10 @@ crossbeam-channel = { workspace = true, optional = true }
 lemnos-linux = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The reactor `ipc::FrameClient` waits on without a thread of its own (any executor).
+styx-graph = { workspace = true, optional = true }
+
 [dev-dependencies]
 criterion.workspace = true
 image.workspace = true
@@ -90,6 +94,8 @@ metrics-http = ["facade"]
 # Styx frames in Daedalus graphs: `styx::core::daedalus` (owned by styx-core-rs; docs/daedalus.md).
 daedalus = ["styx-core/daedalus"]
 facade = [
+    "dep:futures-core",
+    "dep:styx-graph",
     "dep:libc",
     "dep:parking_lot",
     "dep:smallvec",
@@ -126,7 +132,7 @@ async = [
     "styx-core/async",
     "tokio",
     "tokio-util",
-    "futures-core",
+    "dep:futures-core",
     "futures-util",
     "reqwest?/stream",
 ]

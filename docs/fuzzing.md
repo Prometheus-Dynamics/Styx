@@ -23,7 +23,7 @@ an error, never a panic, a read outside a buffer, a hang, or an allocation sized
 | `mjpeg_decode` | bytes | MJPEG frames through the turbojpeg, turbojpeg-luma and zune decoders |
 | `core_frame_layout` | structured | frame descriptors (format, sizes, offsets, strides) imported over memfds, dma-buf-like descriptors or host buffers, then every read, copy, crop, pyramid and re-allocation |
 | `frame_socket_message` | bytes: descriptor shape byte, JSON | frame socket messages decoded as a consumer decodes them (`styx_core::lease_codec::decode`), every plane read |
-| `ipc_messages` | bytes | camera service and frame client messages; decoded requests must encode back to themselves |
+| `ipc_messages` | bytes | camera service and frame client messages (camera control requests, replies, events and control lists too); decoded requests must encode back to themselves |
 | `ipc_request` | bytes | camera service requests (wire format 4, `FrameRequest`): decoded, checked as the service checks them, planned on virtual cameras alone and shared |
 | `replay_reader` | bytes | MCAP and `.styxrec` recordings (CDR messages included), every frame's pixels read |
 | `pipeline_rawrec` | bytes: index, NUL, frames | `styx-pipeline` raw recordings and the virtual sensor replaying them |

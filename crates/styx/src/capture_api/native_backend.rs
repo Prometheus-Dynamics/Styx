@@ -430,6 +430,15 @@ pub(crate) fn apply_control(
     id: ControlId,
     value: &ControlValue,
 ) -> Result<(), CaptureError> {
+    apply_control_landing(controls, id, value).map(|_| ())
+}
+
+/// [`apply_control`], and the first frame (sensor sequence) predicted to use the value.
+pub(crate) fn apply_control_landing(
+    controls: &CameraControls,
+    id: ControlId,
+    value: &ControlValue,
+) -> Result<Option<u64>, CaptureError> {
     let num = match value {
         ControlValue::Uint(v) => f64::from(*v),
         ControlValue::Int(v) => f64::from(*v),
@@ -445,7 +454,7 @@ pub(crate) fn apply_control(
         controls::FRAME_RATE => controls.set_frame_rate(num),
         _ => return Err(CaptureError::ControlUnsupported),
     };
-    r.map(|_| ())
+    r.map(|landings| landings.iter().map(|l| l.frame).max())
         .map_err(|e| CaptureError::control_apply(e.to_string()))
 }
 

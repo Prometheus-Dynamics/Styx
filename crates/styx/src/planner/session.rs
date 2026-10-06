@@ -473,6 +473,11 @@ impl SharedSession {
         }
     }
 
+    /// The camera capture every consumer shares (controls, descriptor).
+    pub(crate) fn capture(&self) -> &CaptureHandle {
+        self.shared.capture()
+    }
+
     /// A consumer for `plan` (which must fit the running capture). With `share`, it joins an
     /// open group preparing frames the same way, or starts one; otherwise it gets its own group,
     /// which applies its region while preparing (e.g. a JPEG decode skips the rows below it).

@@ -58,7 +58,7 @@ pub(super) fn client_left(conn: &mut Connection) {
     }
 }
 
-fn memfd(bytes: &[u8]) -> std::io::Result<OwnedFd> {
+pub(super) fn memfd(bytes: &[u8]) -> std::io::Result<OwnedFd> {
     // SAFETY: memfd_create returns a new descriptor or -1 (checked).
     let fd = unsafe { libc::memfd_create(c"styx-metrics".as_ptr(), libc::MFD_CLOEXEC) };
     if fd < 0 {

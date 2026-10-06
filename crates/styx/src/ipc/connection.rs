@@ -230,6 +230,11 @@ impl Connection {
         socket::send(&self.socket, message, fds)
     }
 
+    /// Another descriptor for the client's socket (to send it messages from other threads).
+    pub(super) fn try_clone_socket(&self) -> io::Result<OwnedFd> {
+        self.socket.try_clone()
+    }
+
     /// The client process, as the kernel reports it.
     pub(super) fn peer(&self) -> Option<socket::PeerCredentials> {
         socket::peer_credentials(&self.socket).ok()

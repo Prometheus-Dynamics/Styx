@@ -292,3 +292,26 @@ async fn works_under_tokio_current_thread() {
             .is_err()
     );
 }
+
+#[test]
+fn poll_ready_wakes_the_task_that_polled_last() {
+    let (reader, mut writer) = nonblocking_pipe();
+    let poll = |reader: &AsyncFd<std::io::PipeReader>| {
+        reader.poll_read_ready(&mut Context::from_waker(Waker::noop()))
+    };
+    assert!(poll(&reader).is_pending());
+    assert!(poll(&reader).is_pending());
+    let t = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        writer.write_all(b"x").unwrap();
+        writer
+    });
+    let ready = block_on(timeout(
+        LONG,
+        std::future::poll_fn(|cx| reader.poll_read_ready(cx)),
+    ))
+    .unwrap()
+    .unwrap();
+    assert!(ready.is_readable());
+    drop(t.join().unwrap());
+}

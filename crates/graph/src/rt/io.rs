@@ -5,7 +5,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use super::reactor::{Reactor, Registration};
@@ -33,6 +33,8 @@ use super::{Interest, Ready};
 pub struct AsyncFd<T: AsFd> {
     inner: Option<T>,
     reg: Arc<Registration>,
+    /// The waiter of [`AsyncFd::poll_ready`] (0: none).
+    polled: Mutex<u64>,
 }
 
 impl<T: AsFd> AsyncFd<T> {
@@ -46,6 +48,7 @@ impl<T: AsFd> AsyncFd<T> {
         Ok(AsyncFd {
             inner: Some(inner),
             reg,
+            polled: Mutex::new(0),
         })
     }
 
@@ -79,6 +82,23 @@ impl<T: AsFd> AsyncFd<T> {
     /// Wait for priority data: a pending V4L2 event, TCP urgent data.
     pub fn priority(&self) -> Readiness<'_> {
         self.ready(Interest::PRIORITY)
+    }
+
+    /// Poll for `interest` from a hand-written future or `Stream` (like tokio's
+    /// `poll_read_ready`): `Ready` once the descriptor reports it, else `Pending` with `cx`'s
+    /// waker woken when it does. One waiter per descriptor: the task polling last is woken.
+    /// Allocates nothing once registered (the waker is cloned, not boxed).
+    pub fn poll_ready(&self, interest: Interest, cx: &mut Context<'_>) -> Poll<io::Result<Ready>> {
+        let mut id = self.polled.lock().unwrap_or_else(|e| e.into_inner());
+        match self.reg.poll_ready(&mut id, interest, cx.waker()) {
+            Some(result) => Poll::Ready(result),
+            None => Poll::Pending,
+        }
+    }
+
+    /// [`AsyncFd::poll_ready`] for [`Interest::READABLE`].
+    pub fn poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<Ready>> {
+        self.poll_ready(Interest::READABLE, cx)
     }
 
     /// Run `op` until it does not return `WouldBlock`, waiting for `interest` in between.

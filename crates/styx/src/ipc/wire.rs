@@ -9,6 +9,11 @@
 //! - Cameras (camera service): the cameras it serves, in answer to List.
 //! - Metrics (camera service): the format and length of the service's metrics, carried in the
 //!   attached memfd, in answer to a metrics request.
+//! - ControlReply, ControlEvent (camera service): answers to control requests, and control
+//!   changes for connections that subscribed (`controls.rs`).
+//!
+//! The accept message carries the client's id and token on its camera as a trailer older
+//! clients ignore.
 //!
 //! Frames carry their hops (sensor to send) and releases the client's receive and import times
 //! as a trailer older peers ignore (`hops.rs`).
@@ -19,13 +24,23 @@
 //! - List (camera service): which cameras it serves.
 //! - Roi: the regions of interest now (none: the whole frame).
 //! - Metrics (camera service): the service's metrics, as JSON (0) or Prometheus text (1).
+//! - Control (camera service): set, get or list camera controls, or subscribe to changes.
 
 use styx_core::prelude::*;
 
+mod controls;
 mod delivered;
 mod hops;
 mod request;
 
+pub(super) use self::controls::{
+    ControlOp, ControlReply, ControlRequest, MAX_CONTROL_LIST, decode_control_list, encode_control,
+    encode_control_event, encode_control_list, encode_control_reply,
+};
+use self::controls::{
+    KIND_CONTROL, KIND_CONTROL_EVENT, KIND_CONTROL_REPLY, read_control, read_control_event,
+    read_control_reply,
+};
 use self::delivered::{read_delivered, write_delivered};
 pub(super) use self::hops::ClientHops;
 use self::hops::{read_frame_hops, read_release_hops, write_frame_hops};
@@ -94,6 +109,8 @@ pub(super) enum ClientMessage {
     List,
     /// The service's metrics, in this format.
     Metrics(MetricsFormat),
+    /// A camera control request (`controls.rs`).
+    Control(Box<ControlRequest>),
 }
 
 /// How a camera service sends its metrics.
@@ -107,13 +124,28 @@ pub(super) enum MetricsFormat {
 pub(super) enum ServerMessage {
     /// A frame (read with [`decode_frame_into`]).
     Frame,
-    /// The plan, as text, and what its frames are.
-    Accept(String, Box<Delivered>),
+    /// The plan, as text, what its frames are, and the client's id and token on the camera
+    /// (a trailer older services do not send).
+    Accept(String, Box<Delivered>, Option<ClientToken>),
     Reject(String),
     Cameras(Vec<CameraInfo>),
     /// Metrics of this format and length in bytes, in the attached memfd.
     Metrics(MetricsFormat, usize),
+    /// The answer to the control request of this sequence number.
+    ControlReply(u32, ControlReply),
+    ControlEvent(crate::ipc::ControlEvent),
 }
+
+/// A client's id on its camera (shown to other clients in control events) and its token (kept
+/// between the client and the service: it proves the client on control requests).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ClientToken {
+    pub id: u64,
+    pub token: u64,
+}
+
+/// Tag of the accept message's client token trailer.
+const TOKEN_TAG: u8 = 1;
 
 /// A camera a [`CameraService`](super::CameraService) serves.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -510,11 +542,30 @@ pub(super) fn encode_release(id: u64) -> Vec<u8> {
     release_bytes(id, ClientHops::default()).to_vec()
 }
 
-pub(super) fn encode_accept(plan: &str, delivered: &Delivered) -> Vec<u8> {
+pub(super) fn encode_accept(
+    plan: &str,
+    delivered: &Delivered,
+    token: Option<ClientToken>,
+) -> Vec<u8> {
     let mut w = Writer::new(KIND_ACCEPT);
     write_delivered(&mut w, delivered);
     w.text(plan);
+    if let Some(t) = token {
+        w.u8(TOKEN_TAG);
+        w.u64(t.id);
+        w.u64(t.token);
+    }
     w.0
+}
+
+fn read_token(r: &mut Reader<'_>) -> Result<Option<ClientToken>, IpcError> {
+    if r.0.is_empty() || r.u8()? != TOKEN_TAG {
+        return Ok(None);
+    }
+    Ok(Some(ClientToken {
+        id: r.u64()?,
+        token: r.u64()?,
+    }))
 }
 
 pub(super) fn encode_reject(reason: &str) -> Vec<u8> {
@@ -631,6 +682,7 @@ pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
             crate::planner::MAX_REGIONS,
         )?)),
         KIND_METRICS => Ok(ClientMessage::Metrics(format_from(r.u8()?)?)),
+        KIND_CONTROL => Ok(ClientMessage::Control(Box::new(read_control(&mut r)?))),
         _ => Err(IpcError::Malformed("unexpected message from a client")),
     }
 }
@@ -641,114 +693,24 @@ pub(super) fn decode_server(bytes: &[u8]) -> Result<ServerMessage, IpcError> {
         KIND_FRAME => Ok(ServerMessage::Frame),
         KIND_ACCEPT => {
             let delivered = read_delivered(&mut r)?;
-            Ok(ServerMessage::Accept(r.text()?, Box::new(delivered)))
+            let plan = r.text()?;
+            Ok(ServerMessage::Accept(
+                plan,
+                Box::new(delivered),
+                read_token(&mut r)?,
+            ))
         }
         KIND_REJECT => Ok(ServerMessage::Reject(r.text()?)),
         KIND_CAMERAS => Ok(ServerMessage::Cameras(read_cameras(&mut r)?)),
         KIND_METRICS_REPLY => Ok(ServerMessage::Metrics(format_from(r.u8()?)?, r.usize()?)),
+        KIND_CONTROL_REPLY => {
+            let (seq, reply) = read_control_reply(&mut r)?;
+            Ok(ServerMessage::ControlReply(seq, reply))
+        }
+        KIND_CONTROL_EVENT => Ok(ServerMessage::ControlEvent(read_control_event(&mut r)?)),
         _ => Err(IpcError::Malformed("unexpected message from a server")),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::planner::{Hardware, Unmet};
-
-    #[test]
-    fn requests_survive_the_wire() {
-        use crate::BackendKind;
-        use crate::planner::Frames;
-
-        let req = Frames::formats([FourCc::NV12, FourCc::MJPG])
-            .size(320, 180)
-            .size_at_most(1920, 1080)
-            .fps_between(15, 60)
-            .every_frame(3)
-            .pyramid(2)
-            .regions([
-                FrameRect::new(1, 2, 3, 4),
-                FrameRect::new(10, 20, 30, 40),
-                FrameRect::new(5, 6, 7, 8),
-            ])
-            .skip_stale_regions()
-            .overview(320, 200)
-            .row_alignment(64)
-            .backend(BackendKind::Libcamera)
-            .hardware(Hardware::Off)
-            .forbid("ffmpeg")
-            .decode_threads(2)
-            .strict();
-        let ClientMessage::Request(back, camera) =
-            decode_client(&encode_request(&req, Some("ov9782"))).unwrap()
-        else {
-            panic!("not a request");
-        };
-        assert_eq!(*back, req);
-        assert_eq!(camera.as_deref(), Some("ov9782"));
-        for req in [
-            Frames::gray().fps(30),
-            Frames::any().fps_at_least(15),
-            Frames::rgb(),
-        ] {
-            let ClientMessage::Request(back, None) =
-                decode_client(&encode_request(&req, None)).unwrap()
-            else {
-                panic!("not a request");
-            };
-            assert_eq!(*back, req);
-        }
-        let cameras = vec![CameraInfo {
-            name: "ov9782".into(),
-            keys: vec!["i2c:ov9782".into()],
-            in_use: true,
-        }];
-        let ServerMessage::Cameras(back) = decode_server(&encode_cameras(&cameras)).unwrap() else {
-            panic!("not a camera list");
-        };
-        assert_eq!(back, cameras);
-        let delivered = Delivered {
-            format: FourCc::GREY,
-            size: (1280, 800),
-            fps: Some(59.94),
-            pyramid_levels: 2,
-            hardware_pyramid_level: Some(1),
-            inter_coded: false,
-            roi: Some(crate::planner::RoiCrop::Isp),
-            regions: vec![
-                Some(crate::planner::RoiCrop::Isp),
-                Some(crate::planner::RoiCrop::IspPass),
-                None,
-                Some(crate::planner::RoiCrop::View),
-            ],
-            overview: Some((320, 200)),
-            hardware_overview: true,
-            unmet: vec![
-                Unmet::Size {
-                    wanted: (160, 90),
-                    delivered: (1280, 800),
-                },
-                Unmet::Roi,
-                Unmet::Overview {
-                    wanted: (100, 100),
-                    delivered: (640, 400),
-                },
-            ],
-        };
-        let ServerMessage::Accept(plan, back) =
-            decode_server(&encode_accept("the plan", &delivered)).unwrap()
-        else {
-            panic!("not an accept");
-        };
-        assert_eq!((plan.as_str(), *back), ("the plan", delivered));
-        let request = encode_metrics_request(MetricsFormat::Prometheus);
-        assert!(matches!(
-            decode_client(&request),
-            Ok(ClientMessage::Metrics(MetricsFormat::Prometheus))
-        ));
-        assert!(matches!(
-            decode_server(&encode_metrics_reply(MetricsFormat::Json, 1234)),
-            Ok(ServerMessage::Metrics(MetricsFormat::Json, 1234))
-        ));
-    }
-}
+mod tests;
