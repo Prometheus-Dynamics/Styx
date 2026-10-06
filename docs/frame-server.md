@@ -181,9 +181,23 @@ re-exported as `styx::ipc::lease_codec`), so a consumer needs no more of Styx:
   time) is equal for the same frame and larger for a newer one. A consumer connecting before
   any frame waits `first_frame_wait` (1 s), then the connection is closed with nothing sent.
 
+**Hops and statistics:** a frame that carries hops (`FrameMeta::hops`: sensor, dequeue, ISP,
+queue times) is sent with them and the send time as the message's last member, `"hops"`
+(`LeaseMessage::hops`, a `HopRecord` with the sequence number); a frame without hops is sent as
+before, and peers that do not know the member skip it. `fetch_frame` and `FrameFetcher` add the
+receive and import times, so the consumer has the frame's whole path ([metrics.md](metrics.md#hops-where-each-frames-time-goes)).
+A consumer fetching again and again uses a `FrameFetcher`: its buffers and the mapping of each
+camera buffer it has read are kept between fetches (one allocation per fetch, the frame's lease;
+no `mmap` in steady state; `LeaseMessageInline` parses without allocating). The server's
+statistics (counters, lease hold times, hops of the frames sent, its process's metrics) are
+`FrameSocket::metrics()`, and for other processes the sibling endpoint `<path>.stats`: connect,
+write `json` or `prometheus`, read to the end (`frame_socket::fetch_metrics`,
+`fetch_metrics_text`; `metrics_top --frame-socket PATH`). The frame socket itself never reads a
+request: a connection to it is always a frame lease.
+
 Each rule is a host test (`crates/styx/src/ipc/frame_socket_tests.rs`), the message bytes have a
-golden test (`crates/core/src/lease_codec_tests.rs`), and `decode` is fuzzed (target
-`frame_socket_message`).
+golden test (`crates/core/src/lease_codec_tests.rs`, with and without hops), and `decode` and
+the inline parse are fuzzed (target `frame_socket_message`).
 
 ## How frames travel
 
@@ -194,6 +208,13 @@ golden test (`crates/core/src/lease_codec_tests.rs`), and `decode` is fuzzed (ta
 - **Copied once:** other frames (on the heap) are copied into one memfd per frame, shared by every
   client. Plans made exportable decode into memfds and avoid this.
 - **Companions:** pyramid levels travel with their frame, as their own descriptors.
+- **Hops:** a frame's hops (sensor to send) go with it as a trailer of the frame message, and the
+  client's receive and import times come back with its release, so the service's metrics have
+  each client's whole path (`ConsumerMetrics::hops`) and the client its own
+  (`FrameClient::hop_metrics`). Older peers ignore the trailers; the protocol version is
+  unchanged.
+- **Mapped once:** a client keeps the mapping of each buffer it has read (dma-bufs and memfds),
+  so a frame in a buffer it has seen maps nothing.
 - **Reading them:** frames say whether the CPU can read them and how fast, apart from where
   they live: `FrameLease::cpu_access()` is `Cached` (memory speed), `Uncached` (readable, slow:
   copy once if reading more than once) or `None`, and `can_read_planes()` follows it. A camera

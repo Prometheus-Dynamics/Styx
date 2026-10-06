@@ -15,6 +15,8 @@ use smallvec::smallvec;
 use styx_core::prelude::*;
 
 use super::{FrameSocket, FrameSocketOptions, fetch_frame};
+#[allow(unused_imports)]
+use styx_core::prelude::Hop;
 
 const LEN: usize = 4096;
 
@@ -475,17 +477,87 @@ fn write_fuzz_seeds() {
             },
         ),
     ];
-    for (name, shape, descriptor, backing) in messages {
-        let mut bytes = vec![shape];
-        serde_json::to_writer(
-            &mut bytes,
-            &Message {
-                descriptor,
-                backing,
-                hops: None,
-            },
-        )
-        .unwrap();
-        std::fs::write(dir.join(name), bytes).unwrap();
+    let mut hops = FrameHops::new();
+    hops.set_sequence(Some(42));
+    for (hop, ns) in [
+        (Hop::Sensor, 1_000),
+        (Hop::Dequeued, 9_000),
+        (Hop::Sent, 12_000),
+    ] {
+        hops.set(hop, ns);
     }
+    for (name, shape, descriptor, backing) in messages {
+        for (suffix, hops) in [("", None), ("-hops", Some(HopRecord::new(None, &hops)))] {
+            let mut bytes = vec![shape];
+            serde_json::to_writer(
+                &mut bytes,
+                &Message {
+                    descriptor: descriptor.clone(),
+                    backing: backing.clone(),
+                    hops,
+                },
+            )
+            .unwrap();
+            std::fs::write(dir.join(format!("{name}{suffix}")), bytes).unwrap();
+        }
+    }
+}
+
+/// A frame with hops is sent with them and the send time; the consumer adds its receive and
+/// import times; the server's statistics (hold times, hops) are read from `<path>.stats`.
+#[test]
+fn hops_travel_with_the_frame_and_statistics_are_served() {
+    use super::{FrameFetcher, fetch_metrics, fetch_metrics_text, stats_path};
+    let path = socket_path("hops");
+    let socket = FrameSocket::bind(&path).unwrap();
+    assert!(stats_path(&path).exists());
+    let camera = Camera::new(4);
+    let mut frame = camera.capture(3).unwrap();
+    let now = TimestampClock::Monotonic.now_ns().unwrap();
+    let hops = &mut frame.meta_mut().hops;
+    hops.set_sequence(Some(3));
+    hops.set(Hop::Sensor, now - 9_000_000);
+    hops.set(Hop::Dequeued, now - 4_000_000);
+    hops.set(Hop::Queued, now - 1_000_000);
+    socket.publish(&frame).unwrap();
+    let mut fetcher = FrameFetcher::new(&path);
+    let fetched = fetcher.fetch(Duration::from_secs(2)).unwrap();
+    let record = fetched.meta().hop_record();
+    assert_eq!(record.sequence, Some(3));
+    assert_eq!(fetched.meta().sequence(), Some(3));
+    let (sent, received, imported) = (
+        record.sent.unwrap(),
+        record.received.unwrap(),
+        record.imported.unwrap(),
+    );
+    assert!(record.queued.unwrap() <= sent && sent <= received && received <= imported);
+    assert_eq!(bytes(&fetched).len(), LEN);
+    drop(fetched);
+    wait_until("the lease ends", || socket.stats().leases == 0);
+    let consumer = fetcher.hop_metrics();
+    let names: Vec<_> = consumer.hops.iter().map(|h| h.to.as_str()).collect();
+    assert_eq!(
+        names,
+        ["dequeued", "queued", "sent", "received", "imported"]
+    );
+    // The server, read as another process would.
+    let m = fetch_metrics(&path).unwrap();
+    assert_eq!((m.published, m.served), (1, 1));
+    assert_eq!(m.hold.total, 1);
+    assert_eq!(m.hops.frames, 1);
+    assert!(m.hops.hop("sent").is_some());
+    let text = fetch_metrics_text(&path).unwrap();
+    assert!(text.contains("styx_frame_socket_events_total"), "{text}");
+    assert!(text.contains("styx_consumer_hop_ms"), "{text}");
+    assert!(text.contains("styx_frame_socket_hold_ms"), "{text}");
+    // A frame without hops goes out as before: no "hops" member.
+    socket.publish(&camera.capture(4).unwrap()).unwrap();
+    let mut stream = std::os::unix::net::UnixStream::connect(&path).unwrap();
+    let mut header = [0u8; 4];
+    std::io::Read::read_exact(&mut stream, &mut header).unwrap();
+    let mut payload = vec![0u8; u32::from_le_bytes(header) as usize];
+    std::io::Read::read_exact(&mut stream, &mut payload).unwrap();
+    assert!(!std::str::from_utf8(&payload).unwrap().contains("hops"));
+    drop(socket);
+    assert!(!stats_path(&path).exists());
 }

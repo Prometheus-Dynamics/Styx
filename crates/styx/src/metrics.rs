@@ -45,7 +45,7 @@ pub(crate) use live::ConsumerStats;
 #[cfg(feature = "frame-socket")]
 pub(crate) use live::RingWindow;
 pub(crate) use live::stamp_queued;
-pub use live::{CaptureMetrics, WINDOW, frame_path_cost};
+pub use live::{CaptureMetrics, WINDOW, frame_path_cost, hop_path_cost};
 #[cfg(feature = "metrics-http")]
 pub use openmetrics::{MetricsHttpServer, serve_http};
 #[cfg(feature = "frame-socket")]

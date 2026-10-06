@@ -50,6 +50,7 @@ fn handle(rx: styx_core::queue::BoundedRx<FrameLease>, live: CaptureMetrics) -> 
 }
 
 #[test]
+#[allow(clippy::print_stdout)]
 fn pisp_frames_reach_an_in_process_consumer_without_allocating_or_copying() {
     let live = CaptureMetrics::default();
     let (queue_tx, queue_rx) = styx_core::queue::bounded(2);

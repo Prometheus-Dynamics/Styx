@@ -403,6 +403,26 @@ fn camera_service() {
     }
     IS_TEST.with(|t| t.set(false));
     drop(client);
+    // The client's receive and import times came back with its releases.
+    let t = std::time::Instant::now();
+    loop {
+        let m = service.metrics();
+        let hops = m.client_metrics.first().and_then(|c| c.hops.clone());
+        if let Some(h) = hops.filter(|h| h.hop("imported").is_some() && h.frames > FRAMES) {
+            assert!(
+                h.hop("sent").is_some() && h.hop("received").is_some(),
+                "{h:?}"
+            );
+            assert_eq!(h.copied, 0);
+            break;
+        }
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "no client hops: {:?}",
+            m.client_metrics
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     drop(service);
 }
 

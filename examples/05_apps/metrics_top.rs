@@ -15,14 +15,21 @@
 //! metrics_top --service [PATH] [--prometheus | --json] [--seconds S] [--interval MS]
 //!     The metrics of a camera service running in another process (default socket:
 //!     $STYX_SOCKET or /tmp/styx-camera.sock, as `camera_service serve` uses).
+//! metrics_top --frame-socket PATH [--prometheus | --json] [--seconds S] [--interval MS]
+//!     The statistics of a frame socket served by another process (its `PATH.stats`).
 //! ```
+//!
+//! Under each camera: the time between the hops of the frames its consumers took (sensor,
+//! dequeued, ISP done, queued, taken; p50/p99/max) and their copies; for each camera service
+//! client the whole path to its import; on the process line the copies by site, dma-buf syncs
+//! and exhausted pools.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use styx::ipc::FrameClient;
-use styx::metrics::{CameraMetrics, ConsumerMetrics, MetricsSnapshot, Window};
+use styx::metrics::{CameraMetrics, ConsumerMetrics, MetricsSnapshot, PathMetrics, Window};
 use styx::prelude::*;
 
 struct Options {
@@ -32,6 +39,7 @@ struct Options {
     seconds: Option<f64>,
     interval: Duration,
     service: Option<String>,
+    frame_socket: Option<String>,
     prometheus: bool,
     json: bool,
     verify: bool,
@@ -45,6 +53,7 @@ fn options() -> Result<Options, String> {
         seconds: None,
         interval: Duration::from_secs(1),
         service: None,
+        frame_socket: None,
         prometheus: false,
         json: false,
         verify: false,
@@ -72,6 +81,7 @@ fn options() -> Result<Options, String> {
                 };
                 o.service = Some(path);
             }
+            "--frame-socket" => o.frame_socket = Some(value()?),
             "--overhead" => {
                 // Warm up, then the median of several runs.
                 styx::metrics::frame_path_cost(100_000);
@@ -84,6 +94,17 @@ fn options() -> Result<Options, String> {
                     runs[3].as_nanos(),
                     runs[0].as_nanos(),
                     runs[6].as_nanos()
+                );
+                styx::metrics::hop_path_cost(100_000);
+                let mut hops: Vec<_> = (0..7)
+                    .map(|_| styx::metrics::hop_path_cost(1_000_000))
+                    .collect();
+                hops.sort();
+                println!(
+                    "hops alone, every hop of a frame sent to another process: {:.0} ns per frame (median of 7 x 1M frames; min {:.0}, max {:.0})",
+                    hops[3].as_nanos(),
+                    hops[0].as_nanos(),
+                    hops[6].as_nanos()
                 );
                 std::process::exit(0);
             }
@@ -127,6 +148,32 @@ fn consumer_row(c: &ConsumerMetrics) {
         c.held,
         window(&c.hold)
     );
+    if let Some(h) = &c.hops {
+        print!("{}", styx::metrics::hop_lines(h));
+    }
+}
+
+/// Copies by site, dma-buf syncs and exhausted pools of a process.
+fn path_row(p: &PathMetrics) {
+    let (copies, bytes) = p.total_copies();
+    let sites: Vec<String> = p
+        .copies
+        .iter()
+        .filter(|s| s.copies > 0)
+        .map(|s| format!("{} {}", s.site, s.copies))
+        .collect();
+    println!(
+        "copies {copies} ({:.1} MiB){}  dma-buf syncs {} ({:.1} ms)  pools exhausted {}",
+        bytes as f64 / 1048576.0,
+        if sites.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", sites.join(", "))
+        },
+        p.dmabuf_syncs,
+        p.dmabuf_sync_ns as f64 / 1e6,
+        p.pool_exhausted
+    );
 }
 
 fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
@@ -142,6 +189,7 @@ fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
         p.dmabufs,
         p.dmabuf_bytes as f64 / 1048576.0
     );
+    path_row(&p.path);
     println!(
         "{:<14} {:<7} {:<15} {:>11} {:>17} {:>15} {:>20} {:>14} {:>6} {:<34} {:>5} {:>4}",
         "camera",
@@ -212,6 +260,7 @@ fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
         if let Some(err) = &c.restarts.last_error {
             println!("    last error: {err}");
         }
+        print!("{}", styx::metrics::hop_lines(&c.path));
         for consumer in &c.consumers {
             consumer_row(consumer);
         }
@@ -226,6 +275,49 @@ fn json(s: &MetricsSnapshot) -> String {
 #[cfg(not(feature = "frame-socket"))]
 fn json(_: &MetricsSnapshot) -> String {
     "JSON needs the frame-socket feature (styx's metrics-serde)".into()
+}
+
+/// A frame socket's statistics, from its `PATH.stats` endpoint.
+#[cfg(feature = "frame-socket")]
+fn frame_socket(
+    path: &str,
+    o: &Options,
+    last: &mut HashMap<u64, (u64, u64)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use styx::ipc::frame_socket::{fetch_metrics, fetch_metrics_text};
+    if o.prometheus {
+        print!("{}", fetch_metrics_text(path)?);
+        return Ok(());
+    }
+    let m = fetch_metrics(path)?;
+    if o.json {
+        println!("{}", m.to_json());
+        return Ok(());
+    }
+    println!(
+        "frame socket {}: published {}  copied {}  served {}  leases {}  held {}  revoked {}  unserved {}  hold ms p50/p95/max {}",
+        m.path,
+        m.published,
+        m.copied,
+        m.served,
+        m.leases,
+        m.held_frames,
+        m.revoked,
+        m.unserved,
+        window(&m.hold)
+    );
+    print!("{}", styx::metrics::hop_lines(&m.hops));
+    table(&m.snapshot, last);
+    Ok(())
+}
+
+#[cfg(not(feature = "frame-socket"))]
+fn frame_socket(
+    _: &str,
+    _: &Options,
+    _: &mut HashMap<u64, (u64, u64)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Err("--frame-socket needs the frame-socket feature".into())
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -331,7 +423,7 @@ fn open_cameras(o: &Options) -> Vec<Consumer> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let o = options()?;
-    let cameras = if o.service.is_none() {
+    let cameras = if o.service.is_none() && o.frame_socket.is_none() {
         open_cameras(&o)
     } else {
         Vec::new()
@@ -340,34 +432,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last = HashMap::new();
     loop {
         std::thread::sleep(o.interval);
-        match &o.service {
-            Some(path) if o.prometheus => print!("{}", FrameClient::service_metrics_text(path)?),
-            #[cfg(feature = "frame-socket")]
-            Some(path) => {
-                let m = FrameClient::service_metrics(path)?;
-                if o.json {
-                    println!("{}", m.to_json());
-                } else {
-                    println!(
-                        "service: clients {}  sent {}  skipped {}  copied {}  restarts {}  revoked {}  rejected {}",
-                        m.clients, m.sent, m.skipped, m.copied, m.restarts, m.revoked, m.rejected
-                    );
-                    for c in &m.client_metrics {
-                        consumer_row(c);
-                    }
-                    table(&m.snapshot, &mut last);
+        if let Some(path) = &o.frame_socket {
+            frame_socket(path, &o, &mut last)?;
+        } else {
+            match &o.service {
+                Some(path) if o.prometheus => {
+                    print!("{}", FrameClient::service_metrics_text(path)?)
                 }
-            }
-            #[cfg(not(feature = "frame-socket"))]
-            Some(path) => print!("{}", FrameClient::service_metrics_text(path)?),
-            None => {
-                let s = styx::metrics::snapshot();
-                if o.prometheus {
-                    print!("{}", s.prometheus_text());
-                } else if o.json {
-                    println!("{}", json(&s));
-                } else {
-                    table(&s, &mut last);
+                #[cfg(feature = "frame-socket")]
+                Some(path) => {
+                    let m = FrameClient::service_metrics(path)?;
+                    if o.json {
+                        println!("{}", m.to_json());
+                    } else {
+                        println!(
+                            "service: clients {}  sent {}  skipped {}  copied {}  restarts {}  revoked {}  rejected {}",
+                            m.clients,
+                            m.sent,
+                            m.skipped,
+                            m.copied,
+                            m.restarts,
+                            m.revoked,
+                            m.rejected
+                        );
+                        for c in &m.client_metrics {
+                            consumer_row(c);
+                        }
+                        table(&m.snapshot, &mut last);
+                    }
+                }
+                #[cfg(not(feature = "frame-socket"))]
+                Some(path) => print!("{}", FrameClient::service_metrics_text(path)?),
+                None => {
+                    let s = styx::metrics::snapshot();
+                    if o.prometheus {
+                        print!("{}", s.prometheus_text());
+                    } else if o.json {
+                        println!("{}", json(&s));
+                    } else {
+                        table(&s, &mut last);
+                    }
                 }
             }
         }

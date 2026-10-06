@@ -594,6 +594,52 @@ pub fn frame_path_cost(iterations: u32) -> Duration {
     start.elapsed() / iterations.max(1)
 }
 
+/// What the hops alone cost per frame, over `iterations` frames, on every path a frame can
+/// take: a native backend's hops (sensor, dequeue, ISP done) and the queue's stamped, taken by
+/// a consumer and recorded in the capture's windows; then sent to another process (stamped and
+/// recorded by the server, through the wire record), received and imported (stamped and
+/// recorded by the consumer). For the overhead check in `metrics_top --overhead`.
+#[doc(hidden)]
+pub fn hop_path_cost(iterations: u32) -> Duration {
+    use styx_core::prelude::{FrameHops, HopRecord};
+    let capture = HopCounters::new();
+    let server = HopCounters::new();
+    let consumer = HopCounters::new();
+    let res = styx_core::prelude::Resolution::new(1280, 800).expect("size");
+    let format = styx_core::prelude::MediaFormat::new(
+        styx_core::prelude::FourCc::NV12,
+        res,
+        styx_core::prelude::ColorSpace::Srgb,
+    );
+    let mut meta = FrameMeta::new(format, 1).with_backend(BackendFrameMeta::Native(
+        styx_core::prelude::NativeFrameMeta::default(),
+    ));
+    meta.clock = Some(styx_core::prelude::TimestampClock::Monotonic);
+    let start = Instant::now();
+    for i in 0..iterations {
+        let now = styx_core::prelude::CaptureInstant::now().as_nanos();
+        meta.timestamp = now - 9_000_000;
+        meta.hops = FrameHops::new();
+        meta.hops.set(Hop::Dequeued, now - 3_000_000);
+        meta.hops.set(Hop::IspDone, now - 1_000_000);
+        if let Some(BackendFrameMeta::Native(n)) = &mut meta.backend {
+            n.sequence = i;
+        }
+        stamp_queued(&mut meta);
+        meta.hops.mark(Hop::Taken);
+        capture.record(std::hint::black_box(&meta.hops));
+        let mut sent = meta.hops;
+        sent.mark(Hop::Sent);
+        server.record(&sent);
+        let record = std::hint::black_box(HopRecord::new(meta.sequence(), &sent));
+        let mut received = record.hops();
+        received.mark(Hop::Received);
+        received.mark(Hop::Imported);
+        consumer.record(std::hint::black_box(&received));
+    }
+    start.elapsed() / iterations.max(1)
+}
+
 impl Drop for Live {
     fn drop(&mut self) {
         let Ok(info) = self.info.lock() else {

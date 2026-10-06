@@ -170,6 +170,32 @@ fn write_fuzz_seeds() {
     };
     let messages = [
         ("frame", encode_frame(1, &frame)),
+        ("frame-hops", {
+            let mut with_hops = WireFrame {
+                meta: frame.meta.clone(),
+                layouts: frame.layouts.clone(),
+                backing: WireBacking::Memfd { len: 512 },
+                cpu_access: CpuAccess::Cached,
+                companions: Vec::new(),
+            };
+            let hops = &mut with_hops.meta.hops;
+            hops.set_sequence(Some(7));
+            hops.set(Hop::Sensor, 1_000);
+            hops.set(Hop::Queued, 5_000);
+            hops.copied(64);
+            encode_frame(2, &with_hops)
+        }),
+        (
+            "release-hops",
+            release_bytes(
+                3,
+                ClientHops {
+                    received: Some(6_000),
+                    imported: Some(6_500),
+                },
+            )
+            .to_vec(),
+        ),
         ("release", encode_release(1)),
         ("accept", encode_accept("plan", &delivered)),
         ("reject", encode_reject("busy")),
