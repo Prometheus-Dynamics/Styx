@@ -157,6 +157,53 @@ while let RecvOutcome::Data(e) = events.recv(Duration::from_secs(1)) { /* e.id, 
 sets one. Tests: `crates/styx/tests/service_controls.rs` (virtual cameras with controls:
 `capture_api::make_virtual_device_with_controls`).
 
+### Control clients (no frames)
+
+A settings screen, or a process that only steers exposure, needs no frames: a `ControlClient`
+has the same control methods as a `FrameClient` (`set_control`, `get_control`, `controls`, the
+typed setters) and follows changes, but makes no frame request:
+
+```rust
+use styx::ipc::ControlClient;
+
+let controls = ControlClient::connect_camera(path, "front")?;  // or ControlClient::connect(path)
+controls.set_exposure_us(8000)?;
+let gain = controls.get_control(StandardControl::Gain)?;
+while let RecvOutcome::Data(e) = controls.try_event() { /* e.id, e.value, e.by */ }
+
+// Without blocking, before the service is up, and across its restarts:
+let controls = ControlClient::options(path).camera("front").reconnecting().controls_nonblocking()?;
+// ... poll(controls.as_raw_fd()) in the engine's loop, then drain try_event() ...
+controls.ready().await?;                                       // or await it, on any executor
+controls.set_control_async(StandardControl::ExposureUs, ControlValue::Uint(8000)).await?;
+```
+
+- **Not a frame client:** it never joins the camera's frame plan, so connecting or leaving never
+  changes the plan, starts, restarts or stops the capture, or keeps it from idling, and it
+  holds no buffers. It is not counted in `CameraServiceStats::clients`, `CameraInfo::in_use` or
+  the per-client metrics, nor against `max_clients` (its connections count toward the
+  service's connection limit). A frame rate the camera cannot change while streaming still
+  restarts the capture for every client when one is set, as the policy allows.
+- **Policy:** `ControlPolicy` applies to it like any client: `ControlCaller::client` is `None`
+  and it is never the owner (under `owner_only()` it can read and list, not change).
+- **While nothing streams:** a control set is remembered and applied when a frame client starts
+  the capture (`AppliedControl::deferred`); reads return the value set, else the default.
+- **Events:** the client's own connection is an event subscription: its descriptor (`AsFd`) is
+  readable when `try_event()` has a change or news (connected, closed, the next attempt due);
+  `recv_event(wait)`, `next_event().await`, `events()` (a `Stream`). Changes it makes are
+  announced with `by: None`.
+- **Requests:** `set_control`, `get_control`, `controls` wait for the service's answer (up to
+  the timeout; an error at once when the service is not there); `set_control_async`,
+  `get_control_async`, `controls_async` await it on any executor (styx-graph's reactor), never
+  blocking a thread. `FrameClient` has the async forms too. They use a connection of their own,
+  opened on first use and again after the service restarted.
+- **Wire:** nothing new: a control request without a client token names a camera (or none: the
+  first), as before; the service looks the camera up once per connection.
+
+`service_controls` (example; `--demo` for a virtual camera) sets exposure and prints every
+change; `crates/styx/tests/control_client.rs` tests control clients (no plan change, no restart,
+no capture started, no frames sent, the policy) and non-blocking connections.
+
 ### Without a thread per client
 
 A `FrameClient` need not have a thread blocked in `recv`:
@@ -166,6 +213,8 @@ A `FrameClient` need not have a thread blocked in `recv`:
   reconnecting client's next attempt or the service's answer). `try_next()` never blocks: a
   frame, `Empty`, or `Closed` (and the descriptor stays readable after that, so a poll loop
   learns it). A reconnecting client reconnects inside `try_next` without blocking either.
+- **Connecting:** `ClientOptions::request_nonblocking` returns at once, before the service
+  answers (see "Connecting without blocking"); `client.ready().await` waits for it.
 - **Async on any executor:** `client.next().await`, `client.stream()` (a
   `futures_core::Stream`) and `client.poll_next(cx)` for hand-written futures wake through
   styx-graph's reactor (one thread per process, started on first use): tokio, smol, or
@@ -178,7 +227,9 @@ Many cameras on one thread (for HeliOS: N cameras into Daedalus host inputs):
 
 ```rust
 let clients: Vec<FrameClient> = ["front", "left", "right"].iter()
-    .map(|cam| FrameClient::options(path).camera(*cam).reconnecting().request(&Frames::nv12()))
+    // Non-blocking: a camera (or the service) that is not there yet does not hold this up.
+    .map(|cam| FrameClient::options(path).camera(*cam).reconnecting()
+        .request_nonblocking(&Frames::nv12()))
     .collect::<Result<_, _>>()?;
 
 // One poll(2) (or an epoll set, or the GUI loop's descriptor watch) over every client:
@@ -214,6 +265,44 @@ cameras on one thread, a service going away, a reconnecting client coming back).
 drops, receives return `Empty` instead of `Closed` while the client reconnects (backing off from
 100 ms to 2 s) and asks for the same frames again, with its latest region of interest.
 `FrameClient::reconnects()` counts the reconnections.
+
+### Connecting without blocking
+
+`FrameClient::request` (and `ControlClient::connect`) wait for the service's answer, up to the
+timeout: a graph thread opening a camera that is not there would wait. Made with
+`request_nonblocking` (or `controls_nonblocking`), a client comes back at once and connects in
+the background:
+
+```rust
+let client = FrameClient::options(path)
+    .camera("left")
+    .reconnecting()                     // keep trying until the service and camera are there
+    .request_nonblocking(&Frames::nv12())?;  // never waits; fails only without descriptors
+// poll loop: the descriptor is readable when the answer comes or the next attempt is due
+match client.try_next() {
+    RecvOutcome::Data(frame) => {}      // connected, frames flowing
+    RecvOutcome::Empty => {}            // not ready (yet): not an error
+    RecvOutcome::Closed => {}           // gave up (not reconnecting): client.last_error()
+}
+// or async, on any executor: the awaitable form of FrameClient::request
+client.ready().await?;
+```
+
+- **Steps, not threads:** each attempt is a non-blocking connect and the request; the answer is
+  taken when it arrives. `try_next`, `poll_next`/`next().await`, `ready().await` and `recv(wait)`
+  drive it (`recv` never waits longer than `wait`, connecting or not). The client's descriptor
+  wakes for the answer and for the next attempt, so a poll loop never spins or blocks.
+- **Until connected:** `try_next` returns `Empty`, `is_connected()` is false, `delivered()`
+  and `plan()` are `None`, and `last_error()` says why the last attempt failed (no service,
+  timed out, `Rejected`: no such camera, or it cannot serve the request). Control requests work
+  meanwhile, as a control client's (no token yet).
+- **Giving up:** a reconnecting client never does (backing off from 100 ms to 2 s; its first
+  connection is not counted in `reconnects()`). One that does not reconnect gives up when the
+  service refuses the request or has not accepted it within `ClientOptions::timeout`: then
+  `try_next` returns `Closed` (the descriptor stays readable) and `ready()` the error.
+- **The blocking API is unchanged:** `FrameClient::request`, `request_camera`,
+  `ClientOptions::request` and `request_async` (Tokio) still wait for the answer and return
+  its error.
 
 ## Frame server
 

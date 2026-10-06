@@ -10,11 +10,12 @@
 //! camera_service controls [--camera NAME] [NAME VALUE]     # list the camera's controls, or set one
 //! ```
 //!
-//! `camera_service_async` takes many cameras' frames on one thread.
+//! `camera_service_async` takes many cameras' frames on one thread; `service_controls` follows
+//! a camera's controls without its frames.
 
 use std::time::{Duration, Instant};
 
-use styx::ipc::{CameraService, FrameClient};
+use styx::ipc::{CameraService, ControlClient, FrameClient};
 use styx::prelude::*;
 
 fn socket_path() -> String {
@@ -133,13 +134,13 @@ fn client(mut args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 /// List the camera's controls, or set the one named (its name or id) to a number.
 fn controls(mut args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let mut options = FrameClient::options(socket_path());
+    let mut options = ControlClient::options(socket_path());
     if args.first().is_some_and(|a| a == "--camera") {
         options = options.camera(args.get(1).ok_or("--camera NAME")?);
         args = args.get(2..).unwrap_or_default();
     }
-    // A small frame request makes this a client of the camera (controls need one).
-    let client = options.request(&Frames::gray().size(160, 90))?;
+    // Controls only: no frames, so the camera's capture is left as it is.
+    let client = options.controls()?;
     let list = client.controls()?;
     if let [name, value] = args {
         let control = list

@@ -8,6 +8,28 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `ControlClient`: a camera service client for controls only (docs/frame-server.md "Control
+  clients"). `ControlClient::connect(path)`, `connect_camera(path, camera)`,
+  `ControlClient::options(path)` (`ClientOptions::controls()`, `controls_nonblocking()`,
+  `.reconnecting()`). The same control methods as `FrameClient` (`set_control`,
+  `get_control`, `controls`, typed setters) and events: an `AsFd` descriptor readable when
+  `try_event()` has a change or news, `recv_event(wait)`, `poll_event(cx)`,
+  `next_event().await` (`NextEvent`), `events()` (`ControlEventStream`). It makes no frame
+  request: it never joins the camera's frame plan, never starts, restarts or stops a capture
+  by connecting or leaving, holds no buffers, and is not counted among the service's clients
+  or metrics; `ControlPolicy` applies to it (never the owner, `ControlCaller::client: None`).
+  No protocol change: it sends the existing token-less control requests; the service now
+  looks their camera up once per control connection instead of per request.
+- Async control requests on any executor, for `FrameClient` and `ControlClient`:
+  `set_control_async`, `get_control_async`, `controls_async` (styx-graph's reactor, never
+  blocking a thread).
+- Connecting without blocking: `ClientOptions::request_nonblocking(&request)` returns a
+  `FrameClient` at once, before (or without) the service; it connects in steps driven by its
+  descriptor (`try_next` returns `Empty` until frames arrive, `recv(wait)` never waits longer
+  than `wait`), `ready().await` (`Ready`) / `poll_ready(cx)` wait for the connection on any
+  executor, `last_error()` says why it is not connected. Reconnecting, it keeps trying until
+  the service and camera are there; otherwise it gives up after the timeout or a rejection
+  (`Closed`). The blocking `request` is unchanged.
 - Camera controls over a camera service's socket (docs/frame-server.md "Camera controls"):
   `FrameClient::set_control(id or StandardControl, value) -> AppliedControl` (the value in
   effect, whether it was clamped, the first frame using it on frame-exact backends, deferred

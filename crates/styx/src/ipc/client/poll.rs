@@ -19,8 +19,9 @@ use std::time::{Duration, Instant};
 use styx_core::prelude::*;
 use styx_graph::rt::AsyncFd;
 
-use super::{FrameClient, ServerMessage, accepted};
-use crate::ipc::{socket, wire};
+use super::control_client::{Ready, Waiting};
+use super::{FrameClient, ServerMessage, Step, accepted};
+use crate::ipc::{IpcError, socket, wire};
 
 /// An epoll set with the client's sockets, and a timer for reconnection attempts.
 pub(super) struct PollSet {
@@ -101,8 +102,18 @@ impl PollSet {
         };
     }
 
+    /// The epoll descriptor: readable when the client has something to do.
+    pub(super) fn fd(&self) -> BorrowedFd<'_> {
+        self.epoll.as_fd()
+    }
+
+    /// Wait up to `wait` for the set to be readable (for blocking receives).
+    pub(super) fn wait(&self, wait: Duration) {
+        socket::readable(&self.epoll, wait);
+    }
+
     /// The timer fired: not readable for it any more.
-    fn clear_timer(&self) {
+    pub(super) fn clear_timer(&self) {
         let mut expirations = 0u64;
         // SAFETY: reads 8 bytes into a u64 from a non-blocking timerfd.
         let _ = unsafe {
@@ -114,7 +125,7 @@ impl PollSet {
         };
     }
 
-    fn reactor(&self) -> io::Result<&AsyncFd<OwnedFd>> {
+    pub(super) fn reactor(&self) -> io::Result<&AsyncFd<OwnedFd>> {
         self.reactor
             .get_or_init(|| AsyncFd::new(self.epoll.try_clone()?))
             .as_ref()
@@ -128,18 +139,18 @@ impl PollSet {
 /// with any reactor), then call [`FrameClient::try_next`] until it returns `Empty`.
 impl AsFd for FrameClient {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.poll.epoll.as_fd()
+        self.poll.fd()
     }
 }
 
 impl AsRawFd for FrameClient {
     fn as_raw_fd(&self) -> RawFd {
-        self.poll.epoll.as_raw_fd()
+        self.poll.fd().as_raw_fd()
     }
 }
 
 /// Most messages [`FrameClient::try_next`] reads before giving the caller its turn back.
-const TRY_MESSAGES: usize = 8;
+pub(super) const TRY_MESSAGES: usize = 8;
 
 impl FrameClient {
     /// The next frame if one has arrived, without waiting: `Empty` when none has (wait for the
@@ -152,7 +163,7 @@ impl FrameClient {
         for _ in 0..TRY_MESSAGES {
             let socket = self.link.lock().socket.clone();
             let Some(socket) = socket else {
-                if !self.reconnect {
+                if !self.retries() {
                     // Stay readable: whoever polls learns it is closed.
                     self.poll.wake_at(Some(Instant::now()));
                     return RecvOutcome::Closed;
@@ -182,76 +193,81 @@ impl FrameClient {
         RecvOutcome::Empty
     }
 
-    /// One step of reconnecting without blocking: start an attempt when one is due, or take
-    /// the service's answer to the attempt under way. Whether the client is connected again.
-    fn reconnect_step(&self) -> bool {
+    /// One step of (re)connecting without blocking: start an attempt when one is due, or take
+    /// the service's answer to the attempt under way. Whether the client is connected now.
+    pub(super) fn reconnect_step(&self) -> bool {
         let Some(request) = &self.request else {
             return false;
         };
+        let request = request.lock().clone();
         let mut link = self.link.lock();
-        if let Some((pending, deadline)) = link.pending.take() {
-            let outcome = match socket::recv(&pending, Duration::ZERO) {
-                Ok(socket::Received::Message(bytes, _)) => match wire::decode_server(&bytes) {
-                    Ok(ServerMessage::Frame | ServerMessage::ControlEvent(_)) => None,
-                    Ok(message) => Some(accepted(message)),
-                    Err(err) => Some(Err(err)),
-                },
-                Ok(socket::Received::Nothing) if Instant::now() < deadline => None,
-                Ok(socket::Received::Nothing) => {
-                    Some(Err(io::Error::from(io::ErrorKind::TimedOut).into()))
-                }
-                Ok(socket::Received::Closed) => {
-                    Some(Err(io::Error::from(io::ErrorKind::ConnectionReset).into()))
-                }
-                Err(err) => Some(Err(err.into())),
-            };
-            return match outcome {
-                None => {
-                    link.pending = Some((pending, deadline));
-                    self.poll.wake_at(Some(deadline));
-                    false
-                }
-                Some(Ok(accepted)) => {
-                    link.connected(pending, Some(accepted), &self.poll);
+        if link.socket.is_some() {
+            return true;
+        }
+        let step = link.dial.step(
+            &self.poll,
+            &request.path,
+            request.timeout,
+            self.reconnect,
+            || wire::encode_request(&request.frames, request.camera.as_deref()),
+            |message| match message {
+                ServerMessage::Frame | ServerMessage::ControlEvent(_) => None,
+                message => Some(accepted(message)),
+            },
+        );
+        match step {
+            Step::Connected(socket, accepted) => {
+                if link.connected(socket, Some(accepted), &self.poll) {
                     self.reconnects
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    true
                 }
-                Some(Err(err)) => {
-                    crate::trace::debug!(error = %err, "camera service not back yet");
-                    link.pending = Some((pending, deadline));
-                    link.failed(&self.poll);
-                    false
+                true
+            }
+            Step::Waiting | Step::GaveUp => false,
+        }
+    }
+
+    /// Poll for the client's connection from a hand-written future: `Ready(Ok)` once it is
+    /// connected, `Ready(Err)` when a client that does not reconnect gave up (why), else
+    /// `Pending` with `cx`'s waker woken when the client's descriptor becomes readable. Drives
+    /// a [non-blocking](super::ClientOptions::request_nonblocking) client's connection without
+    /// taking frames.
+    pub fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), IpcError>> {
+        loop {
+            self.poll.clear_timer();
+            if self.is_connected() || self.reconnect_step() {
+                return Poll::Ready(Ok(()));
+            }
+            {
+                let link = self.link.lock();
+                if link.socket.is_none() && !self.reconnect && !link.dial.first_pending() {
+                    let err = link
+                        .dial
+                        .error()
+                        .unwrap_or_else(|| IpcError::Io(io::ErrorKind::NotConnected.into()));
+                    return Poll::Ready(Err(err));
                 }
+            }
+            let reactor = match self.poll.reactor() {
+                Ok(reactor) => reactor,
+                Err(err) => return Poll::Ready(Err(err.into())),
             };
-        }
-        if Instant::now() < link.next_attempt {
-            self.poll.wake_at(Some(link.next_attempt));
-            return false;
-        }
-        let request = request.lock().clone();
-        let started = socket::Connecting::new(&request.path).and_then(|connecting| {
-            if !connecting.attempt()? {
-                return Err(io::ErrorKind::WouldBlock.into());
-            }
-            let socket = connecting.into_socket();
-            let message = wire::encode_request(&request.frames, request.camera.as_deref());
-            socket::send(&socket, &message, &[])?;
-            Ok(socket)
-        });
-        match started {
-            Ok(socket) => {
-                let deadline = Instant::now() + request.timeout;
-                self.poll.watch(&socket);
-                self.poll.wake_at(Some(deadline));
-                link.pending = Some((socket, deadline));
-            }
-            Err(err) => {
-                crate::trace::debug!(error = %err, "camera service not back yet");
-                link.failed(&self.poll);
+            match reactor.poll_read_ready(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(_)) => {}
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err.into())),
             }
         }
-        false
+    }
+
+    /// Wait until the client is connected, on any executor: at once for a connected client;
+    /// a [non-blocking](super::ClientOptions::request_nonblocking) one once the service
+    /// accepted its request (an error when it gave up). With
+    /// [`ClientOptions::request_nonblocking`](super::ClientOptions::request_nonblocking), the
+    /// async form of [`FrameClient::request`]:
+    /// `let client = options.request_nonblocking(&frames)?; client.ready().await?;`.
+    pub fn ready(&self) -> Ready<'_> {
+        Ready(Waiting::Frames(self))
     }
 
     /// Poll for the next frame from a hand-written future or stream: `Ready` with a frame (or

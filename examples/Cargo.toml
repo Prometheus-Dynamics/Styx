@@ -258,6 +258,10 @@ name = "camera_service_async"
 path = "05_apps/camera_service_async.rs"
 
 [[bin]]
+name = "service_controls"
+path = "05_apps/service_controls.rs"
+
+[[bin]]
 name = "metrics_top"
 path = "05_apps/metrics_top.rs"
 
