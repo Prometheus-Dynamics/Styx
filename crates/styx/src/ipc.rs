@@ -9,7 +9,9 @@
 //! Clients of a camera service can also set, read and list its camera's controls and follow
 //! their changes ([`FrameClient::set_control`], [`ControlPolicy`]), and receive frames without
 //! a thread of their own ([`FrameClient::try_next`] on a pollable descriptor,
-//! [`FrameClient::next`] on any executor).
+//! [`FrameClient::next`] on any executor). A [`ControlClient`] does the controls without
+//! taking frames (it never joins a camera's capture), and
+//! [`ClientOptions::request_nonblocking`] makes a client that connects in the background.
 //!
 //! Frames in dma-bufs (libcamera, V4L2) and memfds are passed as their file descriptors, without
 //! copying; other frames are copied once into a memfd. Pyramid levels and other companions travel
@@ -39,7 +41,8 @@ use parking_lot::Mutex;
 use styx_core::prelude::*;
 
 pub use self::client::{
-    AfMode, ClientOptions, ControlEvents, DEFAULT_OPEN_TIMEOUT, FrameClient, FrameStream, NextFrame,
+    AfMode, ClientOptions, ControlClient, ControlEventStream, ControlEvents, DEFAULT_OPEN_TIMEOUT,
+    FrameClient, FrameStream, NextEvent, NextFrame, Ready,
 };
 use self::connection::Connection;
 pub use self::controls::{

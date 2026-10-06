@@ -411,7 +411,8 @@ fn accept_loop(service: &Arc<Service>, listener: &OwnedFd) {
     let mut clients: Vec<JoinHandle<()>> = Vec::new();
     // Connections beyond this are closed at once, so a flood of connections cannot exhaust
     // threads while handshakes are pending. Each client may also hold a control connection
-    // and an event subscription.
+    // and an event subscription; control clients without frames hold only those (they are not
+    // among the `max_clients` frame clients).
     let max_connections = service.config.max_clients * 3 + 8;
     while !service.stopping.load(Ordering::Acquire) {
         if !socket::readable(listener, Duration::from_millis(100)) {
@@ -533,18 +534,26 @@ fn handshake(service: &Service, conn: &mut Connection) -> Option<(First, Option<
 }
 
 impl Service {
+    /// A caller without frames (a control client, or a frame client's request naming no
+    /// client): never the owner.
+    fn control_caller(&self, peer: Option<PeerCredentials>) -> super::ControlCaller {
+        super::ControlCaller {
+            peer,
+            client: None,
+            owner: false,
+        }
+    }
+
     /// The camera a control request is about (its client's, by token, else the one it names
-    /// or the first) and who is asking.
+    /// or the first) and who is asking. A request without a token (a
+    /// [`ControlClient`](super::ControlClient)'s) does not make it a client of the camera:
+    /// the camera is looked up, not joined.
     fn control_camera(
         &self,
         request: &wire::ControlRequest,
         peer: Option<PeerCredentials>,
     ) -> Result<(Arc<Camera>, super::ControlCaller), String> {
-        let mut caller = super::ControlCaller {
-            peer,
-            client: None,
-            owner: false,
-        };
+        let mut caller = self.control_caller(peer);
         if let Some(token) = request.token {
             let cameras = self.cameras.lock().clone();
             for camera in cameras {

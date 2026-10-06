@@ -4,9 +4,14 @@
 //! - Without a thread (`poll.rs`): the client's descriptor ([`AsFd`](std::os::fd::AsFd)) is
 //!   readable when [`FrameClient::try_next`] has something; [`FrameClient::poll_next`],
 //!   [`FrameClient::next`] and [`FrameClient::stream`] await frames on any executor.
-//! - Controls (`control.rs`): set, read and list the camera's controls, and follow changes.
+//! - Controls (`control.rs`): set, read and list the camera's controls, and follow changes;
+//!   [`ControlClient`] (`control_client.rs`) does that without taking frames.
+//! - Connecting without blocking (`dial.rs`): [`ClientOptions::request_nonblocking`] and
+//!   reconnecting clients connect in steps driven by the client's descriptor.
 
 mod control;
+mod control_client;
+mod dial;
 mod import;
 mod poll;
 
@@ -21,7 +26,10 @@ use styx_core::prelude::*;
 
 use styx_core::metrics::HopCounters;
 
+use self::control::ControlChannel;
 pub use self::control::{AfMode, ControlEvents};
+pub use self::control_client::{ControlClient, ControlEventStream, NextEvent, Ready};
+use self::dial::{Dialer, Step};
 use self::import::{Release, import};
 use self::poll::PollSet;
 pub use self::poll::{FrameStream, NextFrame};
@@ -34,9 +42,6 @@ use crate::planner::{Delivered, FrameRequest};
 /// How long opening a connection may take, connecting and the service's answer together,
 /// unless [`ClientOptions::timeout`] says otherwise.
 pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
-/// Backoff between reconnection attempts.
-const RETRY_MIN: Duration = Duration::from_millis(100);
-const RETRY_MAX: Duration = Duration::from_secs(2);
 
 /// Receives frames from a [`CameraService`](super::CameraService) or a
 /// [`FrameServer`](super::FrameServer) in another process.
@@ -58,13 +63,10 @@ pub struct FrameClient {
     scratch: Mutex<Scratch>,
     /// Hop times (sensor to import) and copies of the frames received.
     hops: HopCounters,
-    /// Where it connected (control connections go there too), and how long opening may take.
-    path: PathBuf,
-    timeout: Duration,
     /// Readiness for consumers without a thread of their own.
     poll: PollSet,
-    /// The control connection, opened on first use.
-    control: Mutex<Option<control::ControlLink>>,
+    /// The control connection (opened on first use), to where the client connected.
+    control: ControlChannel,
 }
 
 /// What a receive reuses: nothing is allocated per frame for the message once these have grown.
@@ -101,17 +103,16 @@ struct Link {
     plan: Option<String>,
     delivered: Option<Delivered>,
     token: Option<ClientToken>,
-    next_attempt: Instant,
-    backoff: Duration,
-    /// A reconnection made without blocking ([`FrameClient::try_next`]): its socket, waiting
-    /// for the service's answer until the deadline.
-    pending: Option<(OwnedFd, Instant)>,
+    /// Connecting and reconnecting without blocking ([`FrameClient::try_next`]).
+    dial: Dialer,
     #[cfg(feature = "async")]
     async_fd: Option<Arc<tokio::io::unix::AsyncFd<OwnedFd>>>,
 }
 
 impl Link {
-    fn connected(&mut self, socket: OwnedFd, accepted: Option<Accepted>, poll: &PollSet) {
+    /// Connected (again): whether it was a reconnection (not the first connection of a client
+    /// made with [`ClientOptions::request_nonblocking`]).
+    fn connected(&mut self, socket: OwnedFd, accepted: Option<Accepted>, poll: &PollSet) -> bool {
         poll.watch(&socket);
         poll.wake_at(None);
         if let Some(old) = self.socket.take() {
@@ -120,11 +121,11 @@ impl Link {
         self.socket = Some(Arc::new(socket));
         (self.plan, self.delivered, self.token) =
             accepted.map_or((None, None, None), |(p, d, t)| (Some(p), Some(d), t));
-        self.backoff = RETRY_MIN;
         #[cfg(feature = "async")]
         {
             self.async_fd = None;
         }
+        !self.dial.succeeded()
     }
 
     /// The connection is gone: a reconnecting client's descriptor wakes for the next attempt,
@@ -135,7 +136,7 @@ impl Link {
             poll.unwatch(&socket);
         }
         poll.wake_at(Some(if reconnect {
-            self.next_attempt
+            self.dial.next_attempt
         } else {
             Instant::now()
         }));
@@ -143,16 +144,6 @@ impl Link {
         {
             self.async_fd = None;
         }
-    }
-
-    /// Schedule the next attempt after a failed one.
-    fn failed(&mut self, poll: &PollSet) {
-        if let Some((socket, _)) = self.pending.take() {
-            poll.unwatch(&socket);
-        }
-        self.next_attempt = Instant::now() + self.backoff;
-        self.backoff = (self.backoff * 2).min(RETRY_MAX);
-        poll.wake_at(Some(self.next_attempt));
     }
 }
 
@@ -257,13 +248,17 @@ impl ClientOptions {
 
     /// How long opening may take, connecting and the service's answer together (default
     /// [`DEFAULT_OPEN_TIMEOUT`]); after it, opening fails with a `TimedOut` I/O error. Also the
-    /// limit for each reconnection attempt and each control request.
+    /// limit for each reconnection attempt and each control request, and how long a
+    /// [non-blocking](ClientOptions::request_nonblocking) client that does not reconnect tries
+    /// to connect.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    /// Reconnect when the service goes away ([`FrameClient::reconnecting`]).
+    /// Reconnect when the service goes away ([`FrameClient::reconnecting`],
+    /// [`ControlClient::reconnecting`]). A [non-blocking](ClientOptions::request_nonblocking)
+    /// client also keeps trying until its first connection, however long that takes.
     pub fn reconnecting(mut self) -> Self {
         self.reconnect = true;
         self
@@ -279,13 +274,55 @@ impl ClientOptions {
     }
 
     /// Ask the camera service for the frames `request` asks for ([`FrameClient::request`]).
+    /// Blocks until the service answers (up to the [timeout](ClientOptions::timeout));
+    /// [`ClientOptions::request_nonblocking`] does not.
     pub fn request<R: Clone + Into<FrameRequest>>(
         &self,
         request: &R,
     ) -> Result<FrameClient, IpcError> {
         let request = self.request_for(request.clone().into());
         let (socket, accepted) = open(&request)?;
-        FrameClient::new(self, socket, Some(accepted), Some(request))
+        FrameClient::new(self, Some((socket, accepted)), Some(request))
+    }
+
+    /// [`ClientOptions::request`] without waiting: the client comes back at once, connecting
+    /// in the background, even when the service is not there yet. Until the service accepts
+    /// the request, [`FrameClient::try_next`] returns `Empty` (not an error) and
+    /// [`FrameClient::is_connected`] is false; the client's descriptor
+    /// ([`AsFd`](std::os::fd::AsFd)) becomes readable when the answer comes or the next
+    /// attempt is due, and frames follow. `client.ready().await` waits for the connection on
+    /// any executor ([`FrameClient::ready`]).
+    ///
+    /// Not [reconnecting](ClientOptions::reconnecting), the client gives up when the service
+    /// refuses the request or has not accepted it within the
+    /// [timeout](ClientOptions::timeout): receives then return `Closed`, and
+    /// [`FrameClient::last_error`] says why. Reconnecting, it keeps trying (backing off from
+    /// 100 ms to 2 s), and after the service accepted it, reconnects as
+    /// [`FrameClient::reconnecting`] does. Fails only when the client's own descriptors cannot
+    /// be made.
+    pub fn request_nonblocking<R: Clone + Into<FrameRequest>>(
+        &self,
+        request: &R,
+    ) -> Result<FrameClient, IpcError> {
+        let request = self.request_for(request.clone().into());
+        let client = FrameClient::new(self, None, Some(request))?;
+        client.poll.clear_timer();
+        client.reconnect_step();
+        Ok(client)
+    }
+
+    /// A [`ControlClient`] for the camera service's camera (the one
+    /// [`ClientOptions::camera`] names, else its first): controls only, no frames. Blocks
+    /// until the service has answered (up to the timeout); fails when it is not there or has
+    /// no such camera. [`ClientOptions::controls_nonblocking`] does not wait.
+    pub fn controls(&self) -> Result<ControlClient, IpcError> {
+        ControlClient::open(self)
+    }
+
+    /// [`ClientOptions::controls`] without waiting: the client comes back at once and
+    /// connects in the background ([`ControlClient`] has the details).
+    pub fn controls_nonblocking(&self) -> Result<ControlClient, IpcError> {
+        ControlClient::start(self)
     }
 
     /// [`ClientOptions::request`] on Tokio: the connection and the service's answer are awaited
@@ -297,7 +334,7 @@ impl ClientOptions {
     ) -> Result<FrameClient, IpcError> {
         let request = self.request_for(request.clone().into());
         let (socket, accepted) = open_async(&request).await?;
-        FrameClient::new(self, socket, Some(accepted), Some(request))
+        FrameClient::new(self, Some((socket, accepted)), Some(request))
     }
 
     /// The cameras the camera service serves ([`FrameClient::cameras`]).
@@ -315,7 +352,9 @@ impl ClientOptions {
     /// Connect to a [`FrameServer`](super::FrameServer) ([`FrameClient::connect`]).
     pub fn connect(&self) -> Result<FrameClient, IpcError> {
         let socket = socket::connect_until(&self.path, Instant::now() + self.timeout)?;
-        FrameClient::new(self, socket, None, None)
+        let client = FrameClient::new(self, None, None)?;
+        client.link.lock().connected(socket, None, &client.poll);
+        Ok(client)
     }
 }
 
@@ -364,25 +403,31 @@ impl FrameClient {
         Self::options(path).cameras()
     }
 
+    /// A client connected with `opened`, else one connecting in the background (a request)
+    /// or about to be connected by the caller (a frame server's client).
     fn new(
         options: &ClientOptions,
-        socket: OwnedFd,
-        accepted: Option<Accepted>,
+        opened: Option<Opened>,
         request: Option<Request>,
     ) -> Result<Self, IpcError> {
         let poll = PollSet::new()?;
+        let connecting = opened.is_none() && request.is_some();
         let mut link = Link {
             socket: None,
             plan: None,
             delivered: None,
             token: None,
-            next_attempt: Instant::now(),
-            backoff: RETRY_MIN,
-            pending: None,
+            dial: if connecting {
+                Dialer::connecting((!options.reconnect).then(|| Instant::now() + options.timeout))
+            } else {
+                Dialer::connected()
+            },
             #[cfg(feature = "async")]
             async_fd: None,
         };
-        link.connected(socket, accepted, &poll);
+        if let Some((socket, accepted)) = opened {
+            link.connected(socket, Some(accepted), &poll);
+        }
         Ok(Self {
             link: Mutex::new(link),
             maps: Arc::new(MapCache::default()),
@@ -391,10 +436,8 @@ impl FrameClient {
             reconnects: AtomicU64::new(0),
             scratch: Mutex::new(Scratch::default()),
             hops: HopCounters::new(),
-            path: options.path.clone(),
-            timeout: options.timeout,
             poll,
-            control: Mutex::new(None),
+            control: ControlChannel::new(&options.path, options.timeout),
         })
     }
 
@@ -422,15 +465,30 @@ impl FrameClient {
     /// Keep receiving across service restarts: when the connection to the camera service
     /// drops, reconnect (backing off from 100 ms to 2 s) and ask for the same frames again,
     /// with the region of interest last set. Receives return `Empty` meanwhile instead of
-    /// `Closed`. Only for clients made with [`FrameClient::request`].
+    /// `Closed`. Only for clients of a camera service (made with [`FrameClient::request`] or
+    /// [`ClientOptions::request_nonblocking`]).
     pub fn reconnecting(mut self) -> Self {
         self.reconnect = self.request.is_some();
         self
     }
 
-    /// Whether the client has a connection now.
+    /// Whether the client has a connection now (false while a
+    /// [non-blocking](ClientOptions::request_nonblocking) client is still connecting).
     pub fn is_connected(&self) -> bool {
         self.link.lock().socket.is_some()
+    }
+
+    /// Why the last connection attempt failed (a copy; `None` once connected): the service is
+    /// not there, timed out, or [rejected](IpcError::Rejected) the request. For clients that
+    /// connect in the background ([`ClientOptions::request_nonblocking`], reconnecting).
+    pub fn last_error(&self) -> Option<IpcError> {
+        self.link.lock().dial.error()
+    }
+
+    /// Whether a lost or missing connection is (still) being made: the client reconnects, or
+    /// a non-blocking client has not connected or given up yet.
+    fn retries(&self) -> bool {
+        self.reconnect || self.link.lock().dial.first_pending()
     }
 
     /// Times a [`FrameClient::reconnecting`] client connected again.
@@ -464,28 +522,26 @@ impl FrameClient {
 
     /// The next frame, waiting up to `wait`; `Closed` once the server is gone (unless the
     /// client is [reconnecting](FrameClient::reconnecting)). The server keeps the frame's
-    /// buffers until the returned frame (and its companions) are dropped.
+    /// buffers until the returned frame (and its companions) are dropped. While the client
+    /// (re)connects, it waits no longer than `wait` either: attempts and the service's answer
+    /// are awaited on the client's descriptor.
     pub fn recv(&self, wait: Duration) -> RecvOutcome<FrameLease> {
         let deadline = Instant::now() + wait;
         loop {
             let socket = self.link.lock().socket.clone();
             let Some(socket) = socket else {
-                if !self.reconnect {
+                if !self.retries() {
                     return RecvOutcome::Closed;
                 }
-                if self.try_reconnect() {
+                self.poll.clear_timer();
+                if self.reconnect_step() {
                     continue;
                 }
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     return RecvOutcome::Empty;
                 }
-                let next = self.link.lock().next_attempt;
-                std::thread::sleep(
-                    next.saturating_duration_since(Instant::now())
-                        .min(remaining)
-                        .max(Duration::from_millis(1)),
-                );
+                self.poll.wait(remaining);
                 continue;
             };
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -524,31 +580,6 @@ impl FrameClient {
         }
     }
 
-    /// Connect again and repeat the request, if an attempt is due; whether it worked.
-    fn try_reconnect(&self) -> bool {
-        let Some(request) = &self.request else {
-            return false;
-        };
-        if Instant::now() < self.link.lock().next_attempt {
-            return false;
-        }
-        let request = request.lock().clone();
-        match open(&request) {
-            Ok((socket, accepted)) => {
-                self.link
-                    .lock()
-                    .connected(socket, Some(accepted), &self.poll);
-                self.reconnects.fetch_add(1, Ordering::Relaxed);
-                true
-            }
-            Err(err) => {
-                crate::trace::debug!(error = %err, "camera service not back yet");
-                self.link.lock().failed(&self.poll);
-                false
-            }
-        }
-    }
-
     /// Await the next frame on Tokio; `Closed` once the server is gone (unless reconnecting).
     /// [`FrameClient::next`] does the same on any executor.
     #[cfg(feature = "async")]
@@ -576,7 +607,7 @@ impl FrameClient {
                 }
             };
             let Some((socket, fd)) = connected else {
-                if !self.reconnect {
+                if !self.retries() {
                     return RecvOutcome::Closed;
                 }
                 self.reconnect_async().await;
@@ -601,17 +632,24 @@ impl FrameClient {
         let Some(request) = &self.request else {
             return;
         };
-        let next = self.link.lock().next_attempt;
+        let next = self.link.lock().dial.next_attempt;
         tokio::time::sleep_until(next.into()).await;
         let request = request.lock().clone();
         match open_async(&request).await {
             Ok((socket, accepted)) => {
-                self.link
+                if self
+                    .link
                     .lock()
-                    .connected(socket, Some(accepted), &self.poll);
-                self.reconnects.fetch_add(1, Ordering::Relaxed);
+                    .connected(socket, Some(accepted), &self.poll)
+                {
+                    self.reconnects.fetch_add(1, Ordering::Relaxed);
+                }
             }
-            _ => self.link.lock().failed(&self.poll),
+            Err(err) => self
+                .link
+                .lock()
+                .dial
+                .failed(&self.poll, err, self.reconnect),
         }
     }
 
