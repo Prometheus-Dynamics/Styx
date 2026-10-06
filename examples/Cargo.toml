@@ -43,6 +43,7 @@ daedalus = { workspace = true, features = ["engine", "plugins"], optional = true
 image.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
 libc.workspace = true
+styx-graph.workspace = true
 styx-sensor = { workspace = true, optional = true }
 styx-softisp = { workspace = true, optional = true }
 styx-dng = { workspace = true, optional = true }
@@ -251,6 +252,10 @@ required-features = ["preview-window"]
 [[bin]]
 name = "camera_service"
 path = "05_apps/camera_service.rs"
+
+[[bin]]
+name = "camera_service_async"
+path = "05_apps/camera_service_async.rs"
 
 [[bin]]
 name = "metrics_top"

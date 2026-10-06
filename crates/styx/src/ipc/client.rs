@@ -1,4 +1,14 @@
 //! Receiving frames in another process.
+//!
+//! - Blocking: [`FrameClient::recv`] on a thread of its own.
+//! - Without a thread (`poll.rs`): the client's descriptor ([`AsFd`](std::os::fd::AsFd)) is
+//!   readable when [`FrameClient::try_next`] has something; [`FrameClient::poll_next`],
+//!   [`FrameClient::next`] and [`FrameClient::stream`] await frames on any executor.
+//! - Controls (`control.rs`): set, read and list the camera's controls, and follow changes.
+
+mod control;
+mod import;
+mod poll;
 
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -7,13 +17,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use smallvec::SmallVec;
 use styx_core::prelude::*;
 
 use styx_core::metrics::HopCounters;
 
-use super::mapcache::{CachedDmabuf, Fds, Inner, MapCache};
-use super::wire::{self, CameraInfo, ClientHops, ServerMessage, WireBacking, WireFrame};
+pub use self::control::{AfMode, ControlEvents};
+use self::import::{Release, import};
+use self::poll::PollSet;
+pub use self::poll::{FrameStream, NextFrame};
+use super::mapcache::MapCache;
+use super::wire::{self, CameraInfo, ClientHops, ClientToken, ServerMessage, WireFrame};
 use super::{IpcError, socket};
 use crate::metrics::HopMetrics;
 use crate::planner::{Delivered, FrameRequest};
@@ -27,6 +40,12 @@ const RETRY_MAX: Duration = Duration::from_secs(2);
 
 /// Receives frames from a [`CameraService`](super::CameraService) or a
 /// [`FrameServer`](super::FrameServer) in another process.
+///
+/// Receive on a thread of its own ([`FrameClient::recv`]), or without one: the client is a
+/// file descriptor ([`AsFd`](std::os::fd::AsFd)) that is readable when
+/// [`FrameClient::try_next`] has a frame (or news: closed, reconnecting), for a `poll`/`epoll`
+/// loop over many clients; or await frames on any executor ([`FrameClient::next`],
+/// [`FrameClient::poll_next`], [`FrameClient::stream`]).
 pub struct FrameClient {
     link: Mutex<Link>,
     /// Mappings of the buffers received, kept across frames.
@@ -39,6 +58,13 @@ pub struct FrameClient {
     scratch: Mutex<Scratch>,
     /// Hop times (sensor to import) and copies of the frames received.
     hops: HopCounters,
+    /// Where it connected (control connections go there too), and how long opening may take.
+    path: PathBuf,
+    timeout: Duration,
+    /// Readiness for consumers without a thread of their own.
+    poll: PollSet,
+    /// The control connection, opened on first use.
+    control: Mutex<Option<control::ControlLink>>,
 }
 
 /// What a receive reuses: nothing is allocated per frame for the message once these have grown.
@@ -67,20 +93,33 @@ struct Request {
     timeout: Duration,
 }
 
+/// A camera service's answer to a request: the plan, the frames, the client's id and token.
+type Accepted = (String, Delivered, Option<ClientToken>);
+
 struct Link {
     socket: Option<Arc<OwnedFd>>,
     plan: Option<String>,
     delivered: Option<Delivered>,
+    token: Option<ClientToken>,
     next_attempt: Instant,
     backoff: Duration,
+    /// A reconnection made without blocking ([`FrameClient::try_next`]): its socket, waiting
+    /// for the service's answer until the deadline.
+    pending: Option<(OwnedFd, Instant)>,
     #[cfg(feature = "async")]
     async_fd: Option<Arc<tokio::io::unix::AsyncFd<OwnedFd>>>,
 }
 
 impl Link {
-    fn connected(&mut self, socket: OwnedFd, accepted: Option<(String, Delivered)>) {
+    fn connected(&mut self, socket: OwnedFd, accepted: Option<Accepted>, poll: &PollSet) {
+        poll.watch(&socket);
+        poll.wake_at(None);
+        if let Some(old) = self.socket.take() {
+            poll.unwatch(&old);
+        }
         self.socket = Some(Arc::new(socket));
-        (self.plan, self.delivered) = accepted.map_or((None, None), |(p, d)| (Some(p), Some(d)));
+        (self.plan, self.delivered, self.token) =
+            accepted.map_or((None, None, None), |(p, d, t)| (Some(p), Some(d), t));
         self.backoff = RETRY_MIN;
         #[cfg(feature = "async")]
         {
@@ -88,8 +127,18 @@ impl Link {
         }
     }
 
-    fn lost(&mut self) {
-        self.socket = None;
+    /// The connection is gone: a reconnecting client's descriptor wakes for the next attempt,
+    /// another's stays readable (receives return `Closed`).
+    fn lost(&mut self, poll: &PollSet, reconnect: bool) {
+        if let Some(socket) = self.socket.take() {
+            // Frames still held keep the socket open: it must leave the poll set now.
+            poll.unwatch(&socket);
+        }
+        poll.wake_at(Some(if reconnect {
+            self.next_attempt
+        } else {
+            Instant::now()
+        }));
         #[cfg(feature = "async")]
         {
             self.async_fd = None;
@@ -97,14 +146,18 @@ impl Link {
     }
 
     /// Schedule the next attempt after a failed one.
-    fn failed(&mut self) {
+    fn failed(&mut self, poll: &PollSet) {
+        if let Some((socket, _)) = self.pending.take() {
+            poll.unwatch(&socket);
+        }
         self.next_attempt = Instant::now() + self.backoff;
         self.backoff = (self.backoff * 2).min(RETRY_MAX);
+        poll.wake_at(Some(self.next_attempt));
     }
 }
 
 /// A camera service's answer to a request: the socket, and the plan and frames it accepted.
-type Opened = (OwnedFd, (String, Delivered));
+type Opened = (OwnedFd, Accepted);
 
 /// Connect to a camera service and make `request`, within its timeout.
 fn open(request: &Request) -> Result<Opened, IpcError> {
@@ -118,9 +171,9 @@ fn open(request: &Request) -> Result<Opened, IpcError> {
     accepted(answer(&socket, deadline)?).map(|accepted| (socket, accepted))
 }
 
-fn accepted(message: ServerMessage) -> Result<(String, Delivered), IpcError> {
+fn accepted(message: ServerMessage) -> Result<Accepted, IpcError> {
     match message {
-        ServerMessage::Accept(plan, delivered) => Ok((plan, *delivered)),
+        ServerMessage::Accept(plan, delivered, token) => Ok((plan, *delivered, token)),
         ServerMessage::Reject(reason) => Err(IpcError::Rejected(reason)),
         _ => Err(IpcError::Malformed("expected an answer to the request")),
     }
@@ -164,7 +217,7 @@ async fn open_async(request: &Request) -> Result<Opened, IpcError> {
     .map_err(|_| timed_out())?
 }
 
-/// The service's answer (frames before it are skipped), waiting until `deadline`.
+/// The service's answer (frames and events before it are skipped), waiting until `deadline`.
 fn answer(socket: &OwnedFd, deadline: Instant) -> Result<ServerMessage, IpcError> {
     loop {
         let wait = deadline.saturating_duration_since(Instant::now());
@@ -173,7 +226,7 @@ fn answer(socket: &OwnedFd, deadline: Instant) -> Result<ServerMessage, IpcError
         }
         match socket::recv(socket, wait)? {
             socket::Received::Message(bytes, _) => match wire::decode_server(&bytes)? {
-                ServerMessage::Frame => {}
+                ServerMessage::Frame | ServerMessage::ControlEvent(_) => {}
                 message => return Ok(message),
             },
             socket::Received::Nothing => {}
@@ -204,7 +257,7 @@ impl ClientOptions {
 
     /// How long opening may take, connecting and the service's answer together (default
     /// [`DEFAULT_OPEN_TIMEOUT`]); after it, opening fails with a `TimedOut` I/O error. Also the
-    /// limit for each reconnection attempt.
+    /// limit for each reconnection attempt and each control request.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -232,12 +285,7 @@ impl ClientOptions {
     ) -> Result<FrameClient, IpcError> {
         let request = self.request_for(request.clone().into());
         let (socket, accepted) = open(&request)?;
-        Ok(FrameClient::new(
-            socket,
-            Some(accepted),
-            Some(request),
-            self.reconnect,
-        ))
+        FrameClient::new(self, socket, Some(accepted), Some(request))
     }
 
     /// [`ClientOptions::request`] on Tokio: the connection and the service's answer are awaited
@@ -249,12 +297,7 @@ impl ClientOptions {
     ) -> Result<FrameClient, IpcError> {
         let request = self.request_for(request.clone().into());
         let (socket, accepted) = open_async(&request).await?;
-        Ok(FrameClient::new(
-            socket,
-            Some(accepted),
-            Some(request),
-            self.reconnect,
-        ))
+        FrameClient::new(self, socket, Some(accepted), Some(request))
     }
 
     /// The cameras the camera service serves ([`FrameClient::cameras`]).
@@ -272,7 +315,7 @@ impl ClientOptions {
     /// Connect to a [`FrameServer`](super::FrameServer) ([`FrameClient::connect`]).
     pub fn connect(&self) -> Result<FrameClient, IpcError> {
         let socket = socket::connect_until(&self.path, Instant::now() + self.timeout)?;
-        Ok(FrameClient::new(socket, None, None, false))
+        FrameClient::new(self, socket, None, None)
     }
 }
 
@@ -322,29 +365,37 @@ impl FrameClient {
     }
 
     fn new(
+        options: &ClientOptions,
         socket: OwnedFd,
-        accepted: Option<(String, Delivered)>,
+        accepted: Option<Accepted>,
         request: Option<Request>,
-        reconnect: bool,
-    ) -> Self {
-        let (plan, delivered) = accepted.map_or((None, None), |(p, d)| (Some(p), Some(d)));
-        Self {
-            link: Mutex::new(Link {
-                socket: Some(Arc::new(socket)),
-                plan,
-                delivered,
-                next_attempt: Instant::now(),
-                backoff: RETRY_MIN,
-                #[cfg(feature = "async")]
-                async_fd: None,
-            }),
+    ) -> Result<Self, IpcError> {
+        let poll = PollSet::new()?;
+        let mut link = Link {
+            socket: None,
+            plan: None,
+            delivered: None,
+            token: None,
+            next_attempt: Instant::now(),
+            backoff: RETRY_MIN,
+            pending: None,
+            #[cfg(feature = "async")]
+            async_fd: None,
+        };
+        link.connected(socket, accepted, &poll);
+        Ok(Self {
+            link: Mutex::new(link),
             maps: Arc::new(MapCache::default()),
-            reconnect: reconnect && request.is_some(),
+            reconnect: options.reconnect && request.is_some(),
             request: request.map(Mutex::new),
             reconnects: AtomicU64::new(0),
             scratch: Mutex::new(Scratch::default()),
             hops: HopCounters::new(),
-        }
+            path: options.path.clone(),
+            timeout: options.timeout,
+            poll,
+            control: Mutex::new(None),
+        })
     }
 
     /// Hop times (the frames' path in the sending process, then their receive and import
@@ -358,6 +409,14 @@ impl FrameClient {
     /// [`FrameServer`](super::FrameServer)'s frames.
     pub fn delivered(&self) -> Option<Delivered> {
         self.link.lock().delivered.clone()
+    }
+
+    /// This client's id on its camera (the latest, after reconnecting), as control events name
+    /// the client that changed a control ([`ControlEvent::by`](super::ControlEvent::by)).
+    /// `None` for a [`FrameServer`](super::FrameServer)'s frames, or from a service that
+    /// predates controls.
+    pub fn client_id(&self) -> Option<u64> {
+        self.link.lock().token.map(|t| t.id)
     }
 
     /// Keep receiving across service restarts: when the connection to the camera service
@@ -430,27 +489,37 @@ impl FrameClient {
                 continue;
             };
             let remaining = deadline.saturating_duration_since(Instant::now());
-            // Another thread receiving at the same time gets buffers of its own.
-            let mut own = None;
-            let mut guard = self.scratch.try_lock();
-            let scratch = match guard.as_deref_mut() {
-                Some(s) => s,
-                None => own.insert(Scratch::default()),
-            };
-            scratch.bytes.clear();
-            scratch.fds.clear();
-            match socket::recv_into(&socket, remaining, &mut scratch.bytes, &mut scratch.fds) {
-                Ok(socket::Got::Message) => {
-                    return self.frame(&socket, scratch);
+            match self.receive(&socket, remaining) {
+                Some(outcome) => return outcome,
+                None if !self.reconnect => return RecvOutcome::Closed,
+                None => {}
+            }
+        }
+    }
+
+    /// One message from `socket`, waiting up to `wait`: a frame or `Empty`; `None` when the
+    /// connection is gone (forgotten here).
+    fn receive(&self, socket: &Arc<OwnedFd>, wait: Duration) -> Option<RecvOutcome<FrameLease>> {
+        // Another thread receiving at the same time gets buffers of its own.
+        let mut own = None;
+        let mut guard = self.scratch.try_lock();
+        let scratch = match guard.as_deref_mut() {
+            Some(s) => s,
+            None => own.insert(Scratch::default()),
+        };
+        scratch.bytes.clear();
+        scratch.fds.clear();
+        match socket::recv_into(socket, wait, &mut scratch.bytes, &mut scratch.fds) {
+            Ok(socket::Got::Message) => Some(self.frame(socket, scratch)),
+            Ok(socket::Got::Nothing) => Some(RecvOutcome::Empty),
+            Ok(socket::Got::Closed) | Err(_) => {
+                drop(guard);
+                let mut link = self.link.lock();
+                // Unless another thread already reconnected.
+                if link.socket.as_ref().is_some_and(|s| Arc::ptr_eq(s, socket)) {
+                    link.lost(&self.poll, self.reconnect);
                 }
-                Ok(socket::Got::Nothing) => return RecvOutcome::Empty,
-                Ok(socket::Got::Closed) | Err(_) => {
-                    drop(guard);
-                    self.link.lock().lost();
-                    if !self.reconnect {
-                        return RecvOutcome::Closed;
-                    }
-                }
+                None
             }
         }
     }
@@ -466,19 +535,22 @@ impl FrameClient {
         let request = request.lock().clone();
         match open(&request) {
             Ok((socket, accepted)) => {
-                self.link.lock().connected(socket, Some(accepted));
+                self.link
+                    .lock()
+                    .connected(socket, Some(accepted), &self.poll);
                 self.reconnects.fetch_add(1, Ordering::Relaxed);
                 true
             }
             Err(err) => {
                 crate::trace::debug!(error = %err, "camera service not back yet");
-                self.link.lock().failed();
+                self.link.lock().failed(&self.poll);
                 false
             }
         }
     }
 
-    /// Await the next frame; `Closed` once the server is gone (unless reconnecting).
+    /// Await the next frame on Tokio; `Closed` once the server is gone (unless reconnecting).
+    /// [`FrameClient::next`] does the same on any executor.
     #[cfg(feature = "async")]
     pub async fn recv_async(&self) -> RecvOutcome<FrameLease> {
         loop {
@@ -513,28 +585,12 @@ impl FrameClient {
             let Ok(mut ready) = fd.readable().await else {
                 return RecvOutcome::Closed;
             };
-            let mut scratch = Scratch::default();
-            let got = {
-                let mut guard = self.scratch.try_lock();
-                let s = guard.as_deref_mut().unwrap_or(&mut scratch);
-                s.bytes.clear();
-                s.fds.clear();
-                match socket::recv_into(&socket, Duration::ZERO, &mut s.bytes, &mut s.fds) {
-                    Ok(socket::Got::Message) => Some(self.frame(&socket, s)),
-                    Ok(socket::Got::Nothing) => None,
-                    Ok(socket::Got::Closed) | Err(_) => Some(RecvOutcome::Closed),
-                }
-            };
-            match got {
+            match self.receive(&socket, Duration::ZERO) {
                 Some(RecvOutcome::Data(frame)) => return RecvOutcome::Data(frame),
-                Some(RecvOutcome::Empty) => {}
-                None => ready.clear_ready(),
-                Some(RecvOutcome::Closed) => {
-                    self.link.lock().lost();
-                    if !self.reconnect {
-                        return RecvOutcome::Closed;
-                    }
-                }
+                Some(RecvOutcome::Empty) => ready.clear_ready(),
+                Some(RecvOutcome::Closed) => return RecvOutcome::Closed,
+                None if !self.reconnect => return RecvOutcome::Closed,
+                None => {}
             }
         }
     }
@@ -550,15 +606,17 @@ impl FrameClient {
         let request = request.lock().clone();
         match open_async(&request).await {
             Ok((socket, accepted)) => {
-                self.link.lock().connected(socket, Some(accepted));
+                self.link
+                    .lock()
+                    .connected(socket, Some(accepted), &self.poll);
                 self.reconnects.fetch_add(1, Ordering::Relaxed);
             }
-            _ => self.link.lock().failed(),
+            _ => self.link.lock().failed(&self.poll),
         }
     }
 
     /// The frame message in `scratch` imported over its descriptors: one allocation (the
-    /// frame's release record) for a frame on one dma-buf.
+    /// frame's release record) for a frame on one dma-buf. Other messages: `Empty`.
     fn frame(&self, socket: &Arc<OwnedFd>, scratch: &mut Scratch) -> RecvOutcome<FrameLease> {
         let received = CaptureInstant::try_now().map(CaptureInstant::as_nanos);
         let imported =
@@ -588,178 +646,5 @@ impl FrameClient {
                 RecvOutcome::Empty
             }
         }
-    }
-}
-
-/// `frame` over the descriptors `fds` yields, released on the server with `release` once it
-/// and its companions are dropped. Its hops get the receive (from `release`) and import times.
-fn import(
-    frame: &WireFrame,
-    fds: &mut impl Iterator<Item = OwnedFd>,
-    mut release: Release,
-    maps: &Arc<MapCache>,
-) -> Result<FrameLease, IpcError> {
-    let imported = CaptureInstant::try_now().map(CaptureInstant::as_nanos);
-    release.hops.imported = imported;
-    let mut meta = frame.meta.clone();
-    if let Some(ns) = release.hops.received {
-        meta.hops.set(Hop::Received, ns);
-    }
-    if let Some(ns) = imported {
-        meta.hops.set(Hop::Imported, ns);
-    }
-    let handle = if frame.companions.is_empty() {
-        ReleaseHandle::Own(release)
-    } else {
-        ReleaseHandle::Shared(Arc::new(release))
-    };
-    let shared = match &handle {
-        ReleaseHandle::Shared(r) => Some(r.clone()),
-        ReleaseHandle::Own(_) => None,
-    };
-    let mut out = import_part(frame, meta, fds, handle, maps)?;
-    for (kind, companion) in &frame.companions {
-        let release = ReleaseHandle::Shared(shared.clone().expect("shared with companions"));
-        let part = import_part(companion, companion.meta.clone(), fds, release, maps)?;
-        out = out
-            .with_companion(*kind, part)
-            .map_err(|_| IpcError::Malformed("companion does not match its frame"))?;
-    }
-    Ok(out)
-}
-
-fn import_part(
-    frame: &WireFrame,
-    mut meta: FrameMeta,
-    fds: &mut impl Iterator<Item = OwnedFd>,
-    release: ReleaseHandle,
-    maps: &Arc<MapCache>,
-) -> Result<FrameLease, IpcError> {
-    let count = frame.backing.fd_count();
-    let own: Fds = fds.by_ref().take(count).collect();
-    if own.len() != count {
-        return Err(IpcError::Malformed("descriptors missing"));
-    }
-    let layouts: SmallVec<[PlaneLayout; 3]> = frame.layouts.iter().copied().collect();
-    let inner = match &frame.backing {
-        WireBacking::Dmabuf(spans) => {
-            if spans.len() != layouts.len() {
-                return Err(FrameExportError::PlaneCountMismatch {
-                    expected: layouts.len(),
-                    actual: spans.len(),
-                }
-                .into());
-            }
-            meta.residency = Some(FrameResidency::Dmabuf);
-            // Planes on one buffer (the usual case) read through the cached mappings.
-            match CachedDmabuf::new(maps, own, spans) {
-                Ok(cached) => Inner::Cached(cached),
-                Err(own) => {
-                    let planes = own
-                        .into_iter()
-                        .zip(spans)
-                        .map(|(fd, &(offset, len))| FrameFdPlane { fd, offset, len })
-                        .collect();
-                    let f = FrameLease::from_dmabuf(meta.clone(), layouts.clone(), planes)?;
-                    Inner::Other(external(&f)?)
-                }
-            }
-        }
-        WireBacking::Memfd { len } => {
-            let fd = own.into_iter().next().expect("one descriptor");
-            // Read through the cached mappings too (a capture cycles through its memfds).
-            match CachedDmabuf::memfd(maps, fd, *len, layouts.len()) {
-                Ok(cached) => {
-                    meta.residency = Some(FrameResidency::HostExternal);
-                    Inner::Cached(cached)
-                }
-                Err(fd) => {
-                    let f = FrameLease::from_memfd(meta.clone(), layouts.clone(), fd);
-                    meta.residency = f.meta().residency;
-                    Inner::Other(external(&f)?)
-                }
-            }
-        }
-    };
-    Ok(FrameLease::from_external(
-        meta,
-        layouts,
-        Arc::new(Released {
-            inner,
-            _release: release,
-            cpu_access: frame.cpu_access,
-        }),
-    ))
-}
-
-fn external(frame: &FrameLease) -> Result<Arc<dyn ExternalBacking>, IpcError> {
-    frame
-        .external_backing_handle()
-        .ok_or(IpcError::Malformed("frame without backing"))
-}
-
-/// Tells the server a frame was dropped, so it can let go of its buffers; with the frame's
-/// receive and import times here.
-struct Release {
-    socket: Arc<OwnedFd>,
-    id: u64,
-    hops: ClientHops,
-}
-
-impl Drop for Release {
-    fn drop(&mut self) {
-        let _ = socket::send(&self.socket, &wire::release_bytes(self.id, self.hops), &[]);
-    }
-}
-
-/// A frame's release: its own (no companions), or shared with its companions.
-enum ReleaseHandle {
-    Own(#[allow(dead_code)] Release),
-    Shared(#[allow(dead_code)] Arc<Release>),
-}
-
-/// A received frame's memory; the frame is released on the server once it and its companions
-/// are all dropped.
-struct Released {
-    inner: Inner,
-    _release: ReleaseHandle,
-    /// As the sender reported it for its memory.
-    cpu_access: CpuAccess,
-}
-
-impl ExternalBacking for Released {
-    fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        self.inner.backing().plane_data(index)
-    }
-
-    fn backing_bytes(&self) -> Option<usize> {
-        self.inner.backing().backing_bytes()
-    }
-
-    fn backing_kind(&self) -> &'static str {
-        "ipc"
-    }
-
-    fn can_export(&self) -> bool {
-        self.inner.backing().can_export()
-    }
-
-    fn cpu_access(&self) -> CpuAccess {
-        self.cpu_access
-    }
-
-    fn residency(&self) -> FrameResidency {
-        self.inner.backing().residency()
-    }
-
-    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
-        self.inner.backing().export_backing()
-    }
-
-    fn export_into(
-        &self,
-        out: &mut Vec<FrameFdPlane>,
-    ) -> Result<Option<ExportedKind>, FrameExportError> {
-        self.inner.export_into(out)
     }
 }

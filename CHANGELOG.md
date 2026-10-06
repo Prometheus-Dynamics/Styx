@@ -8,6 +8,40 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Camera controls over a camera service's socket (docs/frame-server.md "Camera controls"):
+  `FrameClient::set_control(id or StandardControl, value) -> AppliedControl` (the value in
+  effect, whether it was clamped, the first frame using it on frame-exact backends, deferred
+  while the camera is stopped, restarted for a frame rate), `get_control`, `controls()`
+  (`ControlDescriptor`: the backend's `ControlMeta`, the value now, the `StandardControl` it
+  answers, whether this client may change it), typed helpers (`set_exposure_us`, `set_gain`,
+  `set_ae`, `set_ev`, `set_fps`, `set_awb`, `set_colour_temperature`, `set_colour_gains`,
+  `set_af_mode`, `trigger_af`, `cancel_af`, `set_lens_position`) and
+  `FrameClient::control_events()` (`ControlEvents`: every accepted change on the camera, with
+  the client that made it, `FrameClient::client_id`). Refusals are
+  `IpcError::ControlRefused(ControlRefusal::{Unsupported, ReadOnly, Invalid, NotPermitted,
+  Failed})`. `StandardControl`s map to native and virtual cameras' controls by name, to
+  libcamera's by name and to V4L2/UVC ids with unit conversion. A frame rate the camera cannot
+  change while streaming restarts the capture for every client at that rate
+  (`SERVICE_FRAME_RATE`). Controls set are applied again after every capture restart.
+  `CameraService::control_policy(ControlPolicy)`: any client by default (last write wins,
+  everyone subscribed told), `owner_only()`, `read_only()`, `read_only_control(..)`,
+  `allow(|caller, id| ..)`, `no_restart()`. New message kinds Control, ControlReply,
+  ControlEvent and an accept trailer with the client's id and token; protocol version 8
+  unchanged (old clients never get the new messages). Fuzzed (`ipc_messages`, new seeds).
+- `FrameClient` without a thread of its own: `AsFd`/`AsRawFd` (an epoll descriptor readable
+  when there is a frame or news, stable across reconnections), `try_next()` (never blocks, a
+  reconnecting client reconnects without blocking too), and runtime-agnostic
+  `poll_next(cx)`, `next().await` (`NextFrame`) and `stream()` (`FrameStream`, a
+  `futures_core::Stream`) waking through styx-graph's reactor (one thread per process).
+  Steady state unchanged: one allocation per frame (its release record), zero copies
+  (`tests/zero_alloc.rs` covers poll + `try_next` and `next().await`, and the reactor thread).
+  `examples/05_apps/camera_service_async.rs` takes several cameras' frames on one thread, both
+  ways; `camera_service controls` lists or sets a camera's controls.
+- `styx_graph::rt::AsyncFd::poll_ready` / `poll_read_ready` for hand-written futures.
+- Virtual cameras with controls: `capture_api::make_virtual_device_with_controls`
+  (`ControlPlane::VirtualControls`, `VirtualControls`: values checked, kept and read back).
+  `CaptureHandle::set_control_landing` (the first frame using the value on a native camera's
+  raw modes) and `CaptureHandle::control_metas`.
 - Added per-frame hop timestamps and frame path counters (docs/metrics.md "Hops", "Copies,
   dma-buf syncs, exhausted pools"): `FrameMeta::hops` (`styx_core::buffer::FrameHops`: fixed
   size, `Copy`, no allocation; empty without the new styx-core feature `path-metrics`, which

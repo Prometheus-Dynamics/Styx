@@ -197,7 +197,11 @@ fn write_fuzz_seeds() {
             .to_vec(),
         ),
         ("release", encode_release(1)),
-        ("accept", encode_accept("plan", &delivered)),
+        ("accept", encode_accept("plan", &delivered, None)),
+        (
+            "accept-token",
+            encode_accept("plan", &delivered, Some(ClientToken { id: 3, token: 99 })),
+        ),
         ("reject", encode_reject("busy")),
         ("roi", encode_roi(&[FrameRect::new(1, 2, 3, 4)])),
         ("list", encode_list()),
@@ -209,9 +213,129 @@ fn write_fuzz_seeds() {
         ),
         ("any", encode_request(&crate::planner::Frames::any(), None)),
     ];
+    let messages = messages.into_iter().chain(control_seeds());
     for (name, bytes) in messages {
         std::fs::write(dir.join(name), bytes).unwrap();
     }
+}
+
+/// Control requests, replies, events and a control list (`wire/controls.rs`).
+fn control_seeds() -> Vec<(&'static str, Vec<u8>)> {
+    use super::controls::*;
+    use super::wire::*;
+    let request = |op| ControlRequest {
+        seq: 7,
+        camera: Some("cam".into()),
+        token: Some(42),
+        op,
+    };
+    let applied = AppliedControl {
+        id: ControlId(0xF400_0001),
+        requested: ControlValue::Uint(100_000),
+        value: ControlValue::Uint(33_000),
+        clamped: true,
+        frame: Some(1234),
+        deferred: false,
+        restarted: false,
+    };
+    let rect = ControlRect {
+        x: 1,
+        y: 2,
+        width: 30,
+        height: 40,
+    };
+    let list = vec![ControlDescriptor {
+        meta: ControlMeta {
+            id: ControlId(9),
+            name: "ae_flicker_mode".into(),
+            kind: ControlKind::Menu,
+            access: Access::ReadWrite,
+            min: ControlValue::Int(0),
+            max: ControlValue::Int(3),
+            default: ControlValue::Int(3),
+            step: Some(ControlValue::Int(1)),
+            menu: Some(vec!["off".into(), "50".into(), "60".into(), "auto".into()]),
+            metadata: ControlMetadata::default(),
+        },
+        current: Some(ControlValue::Int(1)),
+        standard: Some(StandardControl::AeEnable),
+        writable: true,
+    }];
+    vec![
+        (
+            "control-set",
+            encode_control(&request(ControlOp::Set(
+                StandardControl::ExposureUs.into(),
+                ControlValue::Uint(1000),
+            ))),
+        ),
+        (
+            "control-set-rects",
+            encode_control(&request(ControlOp::Set(
+                ControlId(0xF400_0024).into(),
+                ControlValue::Rects(vec![rect, rect]),
+            ))),
+        ),
+        (
+            "control-get",
+            encode_control(&request(ControlOp::Get(ControlId(5).into()))),
+        ),
+        ("control-list", encode_control(&request(ControlOp::List))),
+        (
+            "control-subscribe",
+            encode_control(&request(ControlOp::Subscribe)),
+        ),
+        (
+            "control-applied",
+            encode_control_reply(7, &ControlReply::Applied(applied)),
+        ),
+        (
+            "control-value",
+            encode_control_reply(
+                7,
+                &ControlReply::Value(ControlId(1), ControlValue::Rect(rect)),
+            ),
+        ),
+        (
+            "control-refused",
+            encode_control_reply(
+                7,
+                &ControlReply::Refused(ControlRefusal::NotPermitted("owner only".into())),
+            ),
+        ),
+        (
+            "control-list-reply",
+            encode_control_reply(7, &ControlReply::List(1, 64)),
+        ),
+        (
+            "control-event",
+            encode_control_event(&ControlEvent {
+                id: ControlId(0xF400_0002),
+                standard: Some(StandardControl::Gain),
+                value: ControlValue::Float(2.5),
+                frame: Some(10),
+                by: Some(1),
+            }),
+        ),
+        ("control-list-body", encode_control_list(&list)),
+    ]
+}
+
+#[test]
+fn control_messages_survive_the_wire() {
+    use super::wire::*;
+    for (name, bytes) in control_seeds() {
+        let decoded = decode_client(&bytes).is_ok()
+            || decode_server(&bytes).is_ok()
+            || decode_control_list(&bytes).is_ok_and(|l| l.len() == 1);
+        assert!(decoded, "{name} does not decode");
+        // The fuzz target's round trips hold for them.
+        super::fuzz_messages(&bytes);
+    }
+    let (_, body) = control_seeds().pop().unwrap();
+    let list = decode_control_list(&body).unwrap();
+    assert_eq!(list[0].meta.menu.as_ref().unwrap().len(), 4);
+    assert_eq!(list[0].current, Some(ControlValue::Int(1)));
 }
 
 /// A dma-buf as a camera's would be: exported as dma-buf planes (here a memfd stands in for

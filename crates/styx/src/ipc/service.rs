@@ -2,6 +2,7 @@
 //! service plans one shared capture per camera for all of that camera's clients.
 
 mod camera;
+mod control_conn;
 
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -58,6 +59,7 @@ pub(crate) struct ServiceConfig {
     max_clients: usize,
     authorize: Option<Authorize>,
     socket_mode: Option<u32>,
+    controls: super::ControlPolicy,
 }
 
 #[derive(Clone)]
@@ -97,6 +99,7 @@ impl CameraService {
                 max_clients: DEFAULT_MAX_CLIENTS,
                 authorize: None,
                 socket_mode: None,
+                controls: super::ControlPolicy::default(),
             },
         }
     }
@@ -148,6 +151,15 @@ impl CameraService {
         allow: impl Fn(&PeerCredentials) -> bool + Send + Sync + 'static,
     ) -> Self {
         self.config.authorize = Some(Arc::new(allow));
+        self
+    }
+
+    /// Who may change camera controls over the socket, and how (default
+    /// [`ControlPolicy::anyone`](super::ControlPolicy::anyone): any client, the last write
+    /// wins, every subscribed client is told; frame rates the camera cannot change while
+    /// streaming restart the capture for every client).
+    pub fn control_policy(mut self, policy: super::ControlPolicy) -> Self {
+        self.config.controls = policy;
         self
     }
 
@@ -398,8 +410,9 @@ impl Service {
 fn accept_loop(service: &Arc<Service>, listener: &OwnedFd) {
     let mut clients: Vec<JoinHandle<()>> = Vec::new();
     // Connections beyond this are closed at once, so a flood of connections cannot exhaust
-    // threads while handshakes are pending.
-    let max_connections = service.config.max_clients + 8;
+    // threads while handshakes are pending. Each client may also hold a control connection
+    // and an event subscription.
+    let max_connections = service.config.max_clients * 3 + 8;
     while !service.stopping.load(Ordering::Acquire) {
         if !socket::readable(listener, Duration::from_millis(100)) {
             clients.retain(|c| !c.is_finished());
@@ -443,6 +456,13 @@ fn serve_client(service: &Service, mut conn: Connection) {
     let Some((request, selector)) = handshake(service, &mut conn) else {
         return;
     };
+    let (request, selector) = match request {
+        First::Frames(request) => (*request, selector),
+        First::Control(control) => {
+            control_conn::serve(service, &mut conn, *control);
+            return;
+        }
+    };
     let joined = check_request(&request)
         .and_then(|()| {
             if service.clients() >= service.config.max_clients {
@@ -458,7 +478,7 @@ fn serve_client(service: &Service, mut conn: Connection) {
                 .join(request, &service.config, &service.counters)
                 .map(|joined| (camera, joined))
         });
-    let (camera, (id, plan, delivered, frames)) = match joined {
+    let (camera, (token, plan, delivered, frames)) = match joined {
         Ok(joined) => joined,
         Err(reason) => {
             service.counters.rejected.fetch_add(1, Ordering::Relaxed);
@@ -466,7 +486,11 @@ fn serve_client(service: &Service, mut conn: Connection) {
             return;
         }
     };
-    if conn.send(&wire::encode_accept(&plan, &delivered)).is_ok() {
+    let id = token.id;
+    if conn
+        .send(&wire::encode_accept(&plan, &delivered, Some(token)))
+        .is_ok()
+    {
         service
             .client_metrics
             .add(id, &camera.device.identity.display, &mut conn);
@@ -476,19 +500,23 @@ fn serve_client(service: &Service, mut conn: Connection) {
     camera.leave(id, &service.config);
 }
 
+/// What a connection is for: frames, or camera controls.
+enum First {
+    Frames(Box<crate::planner::FrameRequest>),
+    Control(Box<wire::ControlRequest>),
+}
+
 /// The client's request; a camera list request is answered here (and ends the connection).
-fn handshake(
-    service: &Service,
-    conn: &mut Connection,
-) -> Option<(crate::planner::FrameRequest, Option<String>)> {
+fn handshake(service: &Service, conn: &mut Connection) -> Option<(First, Option<String>)> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     while Instant::now() < deadline && !service.stopping.load(Ordering::Acquire) {
         let messages = conn.poll(Duration::from_millis(100)).ok()?;
         for message in messages {
             match message {
                 ClientMessage::Request(request, camera) => {
-                    return Some((*request, camera));
+                    return Some((First::Frames(request), camera));
                 }
+                ClientMessage::Control(control) => return Some((First::Control(control), None)),
                 ClientMessage::List => {
                     let _ = conn.send(&wire::encode_cameras(&service.list()));
                     return None;
@@ -502,6 +530,34 @@ fn handshake(
         }
     }
     None
+}
+
+impl Service {
+    /// The camera a control request is about (its client's, by token, else the one it names
+    /// or the first) and who is asking.
+    fn control_camera(
+        &self,
+        request: &wire::ControlRequest,
+        peer: Option<PeerCredentials>,
+    ) -> Result<(Arc<Camera>, super::ControlCaller), String> {
+        let mut caller = super::ControlCaller {
+            peer,
+            client: None,
+            owner: false,
+        };
+        if let Some(token) = request.token {
+            let cameras = self.cameras.lock().clone();
+            for camera in cameras {
+                if let Some((id, owner)) = camera.client_of(token) {
+                    caller.client = Some(id);
+                    caller.owner = owner;
+                    return Ok((camera, caller));
+                }
+            }
+        }
+        self.camera(request.camera.as_deref())
+            .map(|camera| (camera, caller))
+    }
 }
 
 /// Send frames while the client reads them: a client holding `max_in_flight` frames is not
