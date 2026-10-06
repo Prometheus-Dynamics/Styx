@@ -191,7 +191,8 @@ controls.set_control_async(StandardControl::ExposureUs, ControlValue::Uint(8000)
 - **Events:** the client's own connection is an event subscription: its descriptor (`AsFd`) is
   readable when `try_event()` has a change or news (connected, closed, the next attempt due);
   `recv_event(wait)`, `next_event().await`, `events()` (a `Stream`). Changes it makes are
-  announced with `by: None`.
+  announced with `by: None`. `try_client_event()` adds connection changes, in order (see
+  "Connection changes"): re-apply settings on `Connected`.
 - **Requests:** `set_control`, `get_control`, `controls` wait for the service's answer (up to
   the timeout; an error at once when the service is not there); `set_control_async`,
   `get_control_async`, `controls_async` await it on any executor (styx-graph's reactor), never
@@ -303,6 +304,62 @@ client.ready().await?;
 - **The blocking API is unchanged:** `FrameClient::request`, `request_camera`,
   `ClientOptions::request` and `request_async` (Tokio) still wait for the answer and return
   its error.
+
+### Connection changes
+
+A client that reconnects says so: `try_client_event()` returns what `try_next()` (frames) or
+`try_event()` (control changes) return, plus each change of the connection, in order, as a
+`ClientEvent`:
+
+```rust
+use styx::ipc::{ClientEvent, ControlClient};
+
+let controls = ControlClient::options(path).camera("front").reconnecting().controls_nonblocking()?;
+// poll(controls.as_raw_fd()) in the engine's loop, then:
+loop {
+    match controls.try_client_event() {
+        RecvOutcome::Data(ClientEvent::Connected { reconnects }) => {
+            // The first connection (reconnects == 0) and every reconnection: the service may
+            // have restarted with defaults, so apply the persisted settings again.
+            controls.set_exposure_us(settings.exposure_us)?;
+        }
+        RecvOutcome::Data(ClientEvent::Disconnected { error }) => { /* show "camera offline" */ }
+        RecvOutcome::Data(ClientEvent::Data(event)) => { /* a control change */ }
+        RecvOutcome::Empty => break,           // nothing more: wait for the descriptor again
+        RecvOutcome::Closed => break,          // gave up (not reconnecting)
+    }
+}
+// Or awaited, on any executor (futures' StreamExt::next):
+let mut events = controls.client_events();
+while let Some(event) = events.next().await { /* the same */ }
+```
+
+`FrameClient` has the same: `try_client_event()`, `poll_client_event(cx)`,
+`next_client_event().await` and `client_events()` (a `Stream`), with `ClientEvent::Data(frame)`.
+
+- **Once each, in order:** `Connected { reconnects }` for the first connection and each
+  reconnection (`reconnects` as `reconnects()` counts them: 0 the first time),
+  `Disconnected { error }` when the connection is lost (a `ConnectionReset` I/O error when the
+  service closed it). What arrived on a connection comes before its `Disconnected`; nothing from
+  a new connection comes before its `Connected`.
+- **Wakes:** the client's descriptor (`AsFd`) becomes readable for each change, and a task in
+  `poll_client_event`/`next_client_event`/`client_events` is woken, so a poll loop never has
+  to check `is_connected()`. Once read, a change does not wake it again.
+- **The first connection:** reported by every client, also when a blocking `request`/`connect`
+  already returned connected: `Connected { reconnects: 0 }` is then its first event.
+- **Giving up:** a client that does not reconnect reports `Disconnected` once (the connection
+  lost, or, never connected, why it gave up), then `Closed`, and the stream ends.
+- **Between reads:** changes are queued, each kept until read, so several reconnections between
+  two reads are all reported, in order. At most 16 wait: beyond, the oldest pair is dropped (a
+  client that reads its events never gets near, reconnections being at least 100 ms apart), so
+  what is read still alternates and ends with the state now.
+- **Compatibility:** `try_next`, `recv`, `poll_next`, `next`, `stream`, `try_event`,
+  `recv_event`, `poll_event`, `next_event` and `events` are unchanged: they return no connection
+  changes (and leave them unread). Use `try_client_event` and its forms instead of them, not next
+  to them: reading with both splits what arrives between them. Moving from `try_event` is a
+  `match` arm: `RecvOutcome::Data(event)` becomes `RecvOutcome::Data(ClientEvent::Data(event))`.
+- **Requests after a restart:** control requests reconnect on their own; one made on
+  `Connected` goes to the new service.
 
 ## Frame server
 

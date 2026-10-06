@@ -11,6 +11,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::PollSet;
+use super::news::{Change, News};
 use crate::ipc::wire::{self, ServerMessage};
 use crate::ipc::{IpcError, socket};
 
@@ -32,6 +33,10 @@ pub(super) struct Dialer {
     gave_up: bool,
     /// Why the last attempt failed; cleared on connecting.
     error: Option<IpcError>,
+    /// Connections made so far.
+    connections: u64,
+    /// Connection changes not read yet ([`ClientEvent`](super::ClientEvent)).
+    pub(super) news: News,
 }
 
 /// How an attempt ended when it was not answered yet.
@@ -54,6 +59,8 @@ impl Dialer {
             first: None,
             gave_up: false,
             error: None,
+            connections: 0,
+            news: News::default(),
         }
     }
 
@@ -75,11 +82,19 @@ impl Dialer {
         self.error.as_ref().map(copy_error)
     }
 
-    /// A connection was made: no backoff for the next loss. Whether it was the first.
-    pub(super) fn succeeded(&mut self) -> bool {
+    /// A connection was made: no backoff for the next loss, and `Connected` is news. Whether
+    /// it was the first of a client that connected in the background.
+    pub(super) fn succeeded(&mut self, poll: &PollSet) -> bool {
         self.backoff = RETRY_MIN;
         self.error = None;
+        self.news.push(poll, Change::Connected(self.connections));
+        self.connections += 1;
         self.first.take().is_some()
+    }
+
+    /// The connection was lost (`err`: why): news.
+    pub(super) fn lost(&mut self, poll: &PollSet, err: IpcError) {
+        self.news.push(poll, Change::Disconnected(err));
     }
 
     /// Schedule the next attempt after `err`; a client that does not reconnect gives up when
@@ -101,6 +116,8 @@ impl Dialer {
         if !reconnect && (refused || deadline.is_none_or(|d| now >= d)) {
             self.first = None;
             self.gave_up = true;
+            let why = copy_error(self.error.as_ref().expect("set above"));
+            self.news.push(poll, Change::Disconnected(why));
             // Readable from now on: whoever polls learns it is closed.
             poll.wake_at(Some(now));
             return;

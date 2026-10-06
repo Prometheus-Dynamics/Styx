@@ -8,11 +8,14 @@
 //!   [`ControlClient`] (`control_client.rs`) does that without taking frames.
 //! - Connecting without blocking (`dial.rs`): [`ClientOptions::request_nonblocking`] and
 //!   reconnecting clients connect in steps driven by the client's descriptor.
+//! - Connection changes (`news.rs`): `try_client_event` and its async forms report each
+//!   connection and loss ([`ClientEvent`]) in order with the frames or control changes.
 
 mod control;
 mod control_client;
 mod dial;
 mod import;
+mod news;
 mod poll;
 
 use std::os::fd::OwnedFd;
@@ -31,6 +34,7 @@ pub use self::control::{AfMode, ControlEvents};
 pub use self::control_client::{ControlClient, ControlEventStream, NextEvent, Ready};
 use self::dial::{Dialer, Step};
 use self::import::{Release, import};
+pub use self::news::{ClientEvent, ClientEventStream, NextClientEvent};
 use self::poll::PollSet;
 pub use self::poll::{FrameStream, NextFrame};
 use super::mapcache::MapCache;
@@ -125,12 +129,12 @@ impl Link {
         {
             self.async_fd = None;
         }
-        !self.dial.succeeded()
+        !self.dial.succeeded(poll)
     }
 
-    /// The connection is gone: a reconnecting client's descriptor wakes for the next attempt,
-    /// another's stays readable (receives return `Closed`).
-    fn lost(&mut self, poll: &PollSet, reconnect: bool) {
+    /// The connection is gone (`err`: why): a reconnecting client's descriptor wakes for the
+    /// next attempt, another's stays readable (receives return `Closed`).
+    fn lost(&mut self, poll: &PollSet, reconnect: bool, err: IpcError) {
         if let Some(socket) = self.socket.take() {
             // Frames still held keep the socket open: it must leave the poll set now.
             poll.unwatch(&socket);
@@ -140,6 +144,8 @@ impl Link {
         } else {
             Instant::now()
         }));
+        // Wakes now: the loss is news.
+        self.dial.lost(poll, err);
         #[cfg(feature = "async")]
         {
             self.async_fd = None;
@@ -565,19 +571,19 @@ impl FrameClient {
         };
         scratch.bytes.clear();
         scratch.fds.clear();
-        match socket::recv_into(socket, wait, &mut scratch.bytes, &mut scratch.fds) {
-            Ok(socket::Got::Message) => Some(self.frame(socket, scratch)),
-            Ok(socket::Got::Nothing) => Some(RecvOutcome::Empty),
-            Ok(socket::Got::Closed) | Err(_) => {
-                drop(guard);
-                let mut link = self.link.lock();
-                // Unless another thread already reconnected.
-                if link.socket.as_ref().is_some_and(|s| Arc::ptr_eq(s, socket)) {
-                    link.lost(&self.poll, self.reconnect);
-                }
-                None
-            }
+        let err = match socket::recv_into(socket, wait, &mut scratch.bytes, &mut scratch.fds) {
+            Ok(socket::Got::Message) => return Some(self.frame(socket, scratch)),
+            Ok(socket::Got::Nothing) => return Some(RecvOutcome::Empty),
+            Ok(socket::Got::Closed) => IpcError::Io(std::io::ErrorKind::ConnectionReset.into()),
+            Err(err) => err.into(),
+        };
+        drop(guard);
+        let mut link = self.link.lock();
+        // Unless another thread already reconnected.
+        if link.socket.as_ref().is_some_and(|s| Arc::ptr_eq(s, socket)) {
+            link.lost(&self.poll, self.reconnect, err);
         }
+        None
     }
 
     /// Await the next frame on Tokio; `Closed` once the server is gone (unless reconnecting).

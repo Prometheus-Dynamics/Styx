@@ -8,6 +8,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Connection changes, in order with what a client receives (docs/frame-server.md "Connection
+  changes"): `FrameClient::try_client_event()` and `ControlClient::try_client_event()` return
+  `RecvOutcome<ClientEvent<T>>` (`T`: `FrameLease`, `ControlEvent`), with
+  `ClientEvent::Connected { reconnects }` (the first connection, also after a blocking connect,
+  and each reconnection), `ClientEvent::Disconnected { error }` (the connection lost, or a client
+  that does not reconnect gave up; then `Closed`) and `ClientEvent::Data(T)`; each change once,
+  waking the client's descriptor and waker; `poll_client_event(cx)`,
+  `next_client_event().await` (`NextClientEvent`) and `client_events()` (`ClientEventStream`).
+  Additive: `try_next`/`stream` and `try_event`/`events` are unchanged and return no connection
+  changes. A client re-applies persisted settings on `Connected` without checking
+  `is_connected()` (the `service_controls` example does).
 - `ControlClient`: a camera service client for controls only (docs/frame-server.md "Control
   clients"). `ControlClient::connect(path)`, `connect_camera(path, camera)`,
   `ControlClient::options(path)` (`ClientOptions::controls()`, `controls_nonblocking()`,
@@ -555,6 +566,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- A control request right after the camera service restarted failed with a broken pipe on the
+  kept control connection; it is now sent again on a fresh connection, like a reset one.
 - `XR24` and `XB24` byte order now follows V4L2 and DRM everywhere: `XR24` (V4L2 `XBGR32`, DRM
   `XRGB8888`, what libcamera delivers) is bytes B, G, R, x; `XB24` (V4L2 `RGBX32`, DRM
   `XBGR8888`) is R, G, B, x. Colour output changes for `XR24` / `XB24` users, whose red and

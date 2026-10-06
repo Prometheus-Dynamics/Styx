@@ -72,6 +72,13 @@ fn reset() -> IpcError {
 
 type Answer = (ControlReply, Option<OwnedFd>);
 
+/// A kept connection the service closed (it went away, or restarted): sending fails with a
+/// broken pipe, receiving with a reset. Tried again on a fresh connection.
+fn stale(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{BrokenPipe, ConnectionReset, NotConnected};
+    matches!(err.kind(), BrokenPipe | ConnectionReset | NotConnected)
+}
+
 impl ControlChannel {
     pub(super) fn new(path: &Path, timeout: Duration) -> Self {
         Self {
@@ -102,9 +109,7 @@ impl ControlChannel {
             link.seq = link.seq.wrapping_add(1);
             let message = to.message(link.seq, op.clone());
             match exchange(&link.socket, &message, deadline) {
-                Err(IpcError::Io(err))
-                    if attempt == 0 && err.kind() == std::io::ErrorKind::ConnectionReset =>
-                {
+                Err(IpcError::Io(err)) if attempt == 0 && stale(&err) => {
                     *guard = None;
                 }
                 Err(err) => {
@@ -141,10 +146,7 @@ impl ControlChannel {
             let message = to.message(link.seq, op.clone());
             match rt::timeout(self.timeout, exchange_async(&link.socket, &message)).await {
                 Err(_) => return Err(timed_out()),
-                Ok(Err(IpcError::Io(err)))
-                    if attempt == 0
-                        && !fresh
-                        && err.kind() == std::io::ErrorKind::ConnectionReset => {}
+                Ok(Err(IpcError::Io(err))) if attempt == 0 && !fresh && stale(&err) => {}
                 Ok(Err(err)) => return Err(err),
                 Ok(Ok(answer)) => {
                     let mut slot = self.link.lock();
