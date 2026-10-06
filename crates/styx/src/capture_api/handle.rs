@@ -632,7 +632,7 @@ impl CaptureHandle {
         result
     }
 
-    fn record_control_result<T>(&self, result: &Result<T, CaptureError>) {
+    pub(super) fn record_control_result<T>(&self, result: &Result<T, CaptureError>) {
         if let Err(err) = result {
             *self.control_error.lock() = Some(err.clone());
         }

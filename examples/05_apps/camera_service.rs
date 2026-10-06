@@ -7,7 +7,10 @@
 //!                                                  #   $STYX_SOCKET or /tmp/styx-camera.sock
 //! camera_service cameras                           # what the service serves
 //! camera_service client [--camera NAME] luma [WxH] [seconds]   # also: rgb, nv12, mjpg, h264
+//! camera_service controls [--camera NAME] [NAME VALUE]     # list the camera's controls, or set one
 //! ```
+//!
+//! `camera_service_async` takes many cameras' frames on one thread.
 
 use std::time::{Duration, Instant};
 
@@ -30,9 +33,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some("client") => client(&args[1..]),
+        Some("controls") => controls(&args[1..]),
         _ => Err(
             "usage: camera_service serve [camera] | cameras | client [--camera NAME] \
-                  <luma|rgb|nv12|mjpg|h264> [WxH] [seconds]"
+                  <luma|rgb|nv12|mjpg|h264> [WxH] [seconds] | controls [--camera NAME] \
+                  [NAME VALUE]"
                 .into(),
         ),
     }
@@ -123,6 +128,42 @@ fn client(mut args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         ages.get(ages.len() / 2).copied().unwrap_or(0.0),
         (cpu_ms() - cpu_start) / secs / 10.0
     );
+    Ok(())
+}
+
+/// List the camera's controls, or set the one named (its name or id) to a number.
+fn controls(mut args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut options = FrameClient::options(socket_path());
+    if args.first().is_some_and(|a| a == "--camera") {
+        options = options.camera(args.get(1).ok_or("--camera NAME")?);
+        args = args.get(2..).unwrap_or_default();
+    }
+    // A small frame request makes this a client of the camera (controls need one).
+    let client = options.request(&Frames::gray().size(160, 90))?;
+    let list = client.controls()?;
+    if let [name, value] = args {
+        let control = list
+            .iter()
+            .find(|d| &d.meta.name == name || d.meta.id.0.to_string() == *name)
+            .ok_or("no such control")?;
+        let applied = client.set_control(control.meta.id, ControlValue::Float(value.parse()?))?;
+        println!("{name}: {applied:?}");
+        return Ok(());
+    }
+    for d in list {
+        let m = &d.meta;
+        println!(
+            "{:#010x} {:<28} {:?} {:?}..{:?} now {:?}{}{}",
+            m.id.0,
+            m.name,
+            m.kind,
+            m.min,
+            m.max,
+            d.current,
+            d.standard.map(|s| format!(" ({s:?})")).unwrap_or_default(),
+            if d.writable { "" } else { " read only" }
+        );
+    }
     Ok(())
 }
 

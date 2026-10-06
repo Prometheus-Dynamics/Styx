@@ -14,13 +14,81 @@ use crate::capture_api::{
 use crate::metrics::StageMetrics;
 use crate::prelude::{Interval, Mode};
 
+/// The controls of a virtual camera whose descriptor lists some
+/// ([`make_virtual_device_with_controls`](super::make_virtual_device_with_controls)): a value is
+/// checked against its control (unknown: unsupported; read only or out of range: refused),
+/// kept, and read back; a control never set reads its default.
+#[derive(Debug)]
+pub struct VirtualControls {
+    metas: Vec<ControlMeta>,
+    values: parking_lot::Mutex<Vec<(ControlId, ControlValue)>>,
+}
+
+impl VirtualControls {
+    pub(crate) fn new(metas: Vec<ControlMeta>) -> Self {
+        Self {
+            metas,
+            values: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn meta(&self, id: ControlId) -> Result<&ControlMeta, CaptureError> {
+        self.metas
+            .iter()
+            .find(|m| m.id == id)
+            .ok_or(CaptureError::ControlUnsupported)
+    }
+
+    pub(crate) fn apply(&self, id: ControlId, value: ControlValue) -> Result<(), CaptureError> {
+        let meta = self.meta(id)?;
+        if meta.access == Access::ReadOnly {
+            return Err(CaptureError::control_apply(format!(
+                "{} is read only",
+                meta.name
+            )));
+        }
+        if !meta.validate(&value) {
+            return Err(CaptureError::control_apply(format!(
+                "{}: {value:?} is out of range",
+                meta.name
+            )));
+        }
+        let mut values = self.values.lock();
+        match values.iter_mut().find(|(i, _)| *i == id) {
+            Some(slot) => slot.1 = value,
+            None => values.push((id, value)),
+        }
+        Ok(())
+    }
+
+    pub(crate) fn read(&self, id: ControlId) -> Result<ControlValue, CaptureError> {
+        let meta = self.meta(id)?;
+        Ok(self
+            .values
+            .lock()
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map_or_else(|| meta.default.clone(), |(_, v)| v.clone()))
+    }
+}
+
 pub(super) fn start_virtual(
     mode: Mode,
     interval: Option<Interval>,
     descriptor: CaptureDescriptor,
+    controls: Vec<(ControlId, ControlValue)>,
     config: &StyxConfig,
     queue: Option<super::handle::CaptureQueue>,
 ) -> Result<CaptureHandle, CaptureError> {
+    let control = if descriptor.controls.is_empty() {
+        ControlPlane::Virtual
+    } else {
+        let state = VirtualControls::new(descriptor.controls.clone());
+        for (id, value) in controls {
+            state.apply(id, value)?;
+        }
+        ControlPlane::VirtualControls(Arc::new(state))
+    };
     let capture_tunables = config.capture_tunables();
     let pool_limits = capture_tunables.pool_limits(4, 1 << 20, 8);
     #[cfg(target_os = "linux")]
@@ -95,7 +163,7 @@ pub(super) fn start_virtual(
         .map_err(|err| CaptureError::Backend(format!("virtual capture worker: {err}")))?;
     Ok(CaptureHandle {
         backend: BackendKind::Virtual,
-        control: ControlPlane::Virtual,
+        control,
         descriptor,
         mode,
         interval,

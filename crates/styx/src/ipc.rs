@@ -6,6 +6,11 @@
 //! - [`FrameServer`] publishes frames your own code produces to any clients that connect
 //!   ([`FrameClient::connect`]).
 //!
+//! Clients of a camera service can also set, read and list its camera's controls and follow
+//! their changes ([`FrameClient::set_control`], [`ControlPolicy`]), and receive frames without
+//! a thread of their own ([`FrameClient::try_next`] on a pollable descriptor,
+//! [`FrameClient::next`] on any executor).
+//!
 //! Frames in dma-bufs (libcamera, V4L2) and memfds are passed as their file descriptors, without
 //! copying; other frames are copied once into a memfd. Pyramid levels and other companions travel
 //! with their frame. The sender keeps a frame's buffers until the client has dropped it (and its
@@ -18,6 +23,7 @@
 
 mod client;
 mod connection;
+mod controls;
 #[cfg(feature = "frame-socket")]
 pub mod frame_socket;
 mod mapcache;
@@ -32,8 +38,14 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use styx_core::prelude::*;
 
-pub use self::client::{ClientOptions, DEFAULT_OPEN_TIMEOUT, FrameClient};
+pub use self::client::{
+    AfMode, ClientOptions, ControlEvents, DEFAULT_OPEN_TIMEOUT, FrameClient, FrameStream, NextFrame,
+};
 use self::connection::Connection;
+pub use self::controls::{
+    AppliedControl, ControlCaller, ControlDescriptor, ControlEvent, ControlPolicy, ControlRefusal,
+    ControlTarget, ControlWriters, SERVICE_FRAME_RATE, StandardControl,
+};
 #[cfg(feature = "frame-socket")]
 pub use self::frame_socket::{
     FRAME_SOCKET_TRANSPORT, FrameFetcher, FrameSocket, FrameSocketMetrics, FrameSocketOptions,
@@ -75,6 +87,9 @@ pub enum IpcError {
     /// The camera service cannot serve the requested frames next to its other clients.
     #[error("camera service rejected the request: {0}")]
     Rejected(String),
+    /// The camera service refused a control change or read.
+    #[error("camera control refused: {0}")]
+    ControlRefused(#[from] ControlRefusal),
 }
 
 /// Counters of a [`FrameServer`].
@@ -254,7 +269,27 @@ pub fn fuzz_messages(bytes: &[u8]) {
             _ => panic!("a decoded request did not decode again"),
         }
     }
-    let _ = wire::decode_server(bytes);
+    if let Ok(wire::ClientMessage::Control(request)) = wire::decode_client(bytes) {
+        match wire::decode_client(&wire::encode_control(&request)) {
+            Ok(wire::ClientMessage::Control(back)) => {
+                // Floats compare by bits (a NaN is the same NaN).
+                assert_eq!(format!("{back:?}"), format!("{request:?}"));
+            }
+            _ => panic!("a decoded control request did not decode again"),
+        }
+    }
+    if let Ok(wire::ServerMessage::ControlReply(seq, reply)) = wire::decode_server(bytes) {
+        let again = wire::encode_control_reply(seq, &reply);
+        assert!(matches!(
+            wire::decode_server(&again),
+            Ok(wire::ServerMessage::ControlReply(s, _)) if s == seq
+        ));
+    }
+    if let Ok(list) = wire::decode_control_list(bytes) {
+        let again = wire::decode_control_list(&wire::encode_control_list(&list))
+            .expect("a decoded control list decodes again");
+        assert_eq!(again.len(), list.len());
+    }
     let mut frame = wire::WireFrame::empty();
     if let Ok(Some(_)) = wire::decode_frame_into(bytes, &mut frame) {
         std::hint::black_box(frame.meta.hop_record());

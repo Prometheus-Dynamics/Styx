@@ -37,7 +37,7 @@ pub(crate) fn start_backend(
 ) -> Result<CaptureHandle, CaptureError> {
     match backend.kind {
         BackendKind::Virtual => {
-            virtual_backend::start_virtual(mode, interval, descriptor, config, _queue)
+            virtual_backend::start_virtual(mode, interval, descriptor, _controls, config, _queue)
         }
         #[cfg(feature = "v4l2")]
         BackendKind::V4l2 => v4l2_backend::start_v4l2(

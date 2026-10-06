@@ -83,13 +83,130 @@ Requests come from other processes. The service:
 
 - checks each request before planning it: sizes up to 16384, queue depth 1–8, at most 64 decode
   threads, 4 pyramid levels, power-of-two alignment up to 4096, short override names;
-- serves at most `max_clients` clients (default 16) and closes connections beyond that, even
-  before they send a request, and drops clients that send nothing within 5 s;
+- serves at most `max_clients` clients (default 16) and closes connections beyond three per
+  client (frames, controls, control events) and 8 more, even before they send a request, and
+  drops clients that send nothing within 5 s;
 - can check who connects: `authorize(|peer| peer.uid == 1000)` gets the kernel's process, user
   and group IDs for the connection; `socket_mode(0o660)` sets who may open the socket.
 
-Message decoding is fuzzed (`fuzz/`, target `ipc_messages`): 46 million inputs found nothing in
-5 minutes.
+Message decoding is fuzzed (`fuzz/`, target `ipc_messages`, control messages included): 46
+million inputs found nothing in 5 minutes.
+
+### Camera controls
+
+A client sets, reads and lists the shared camera's controls over the service's socket:
+
+```rust
+let applied = frames.set_exposure_us(8000)?;       // or set_gain, set_ae, set_ev, set_fps,
+                                                   // set_awb, set_colour_temperature,
+                                                   // set_colour_gains, set_af_mode, trigger_af,
+                                                   // set_lens_position
+println!("{:?} in effect from frame {:?}", applied.value, applied.frame);
+frames.set_control(ControlId(0x0098_0900), ControlValue::Int(40))?; // a backend's own control
+let gain = frames.get_control(StandardControl::Gain)?;
+for c in frames.controls()? {                       // for a settings screen
+    println!("{} {:?}..{:?} now {:?} {:?} writable {}",
+        c.meta.name, c.meta.min, c.meta.max, c.current, c.standard, c.writable);
+}
+let events = frames.control_events()?;              // changes by any client
+while let RecvOutcome::Data(e) = events.recv(Duration::from_secs(1)) { /* e.id, e.value, e.by */ }
+```
+
+- **Which control:** a backend's id (as `controls()` lists them: native, libcamera, V4L2, UVC,
+  virtual), or a `StandardControl` in one set of units whatever the backend: exposure (µs),
+  gain (ratio), AE, EV (stops), frame rate (fps), AWB, colour temperature (K), red and blue
+  gains, AF mode, AF trigger, lens position (dioptres). The service finds the backend's control
+  by its snake-case name (native and virtual cameras: `exposure_time_us`, ...), its libcamera
+  name (`ExposureTime`, `AnalogueGain`, `AeEnable`, ...) or its V4L2/UVC id (exposure in
+  100 µs and EV in thousandths converted; gains and lens positions in the device's units).
+- **The answer:** `AppliedControl`: the value in effect (read back where the backend applies
+  at once: V4L2, UVC, virtual; else the value applied, which later frames carry in their
+  metadata: `NativeFrameMeta` exposure and gains), `clamped` when the value was outside the
+  control's range or between its steps (numbers of any type are taken for the control's type),
+  `frame`: on a native camera's raw modes the sensor sequence of the first frame using it,
+  `deferred` while the camera is stopped (applied when it starts), `restarted` for a frame
+  rate. Refused: `IpcError::ControlRefused(ControlRefusal::...)`: `Unsupported` (no such
+  control), `ReadOnly`, `Invalid` (wrong type, not a menu entry), `NotPermitted` (the policy),
+  `Failed` (the camera refused it).
+- **Frame rate:** through the camera's control where it has one that works while streaming
+  (a native camera's raw modes); otherwise the service plans every client's frames at that
+  rate and restarts the capture once for all of them (`AppliedControl::restarted`; listed and
+  answered as `SERVICE_FRAME_RATE`), or, with `ControlPolicy::no_restart()`, refuses with that
+  reason. A rate the camera cannot give is refused with the planner's reason and the old
+  capture continues.
+- **Kept:** controls clients set are applied again whenever the capture restarts (a client
+  joining with another setup, a frame rate); an AF trigger is not repeated.
+- **Who may:** `CameraService::control_policy(ControlPolicy)`. By default any client may
+  change any writable control; conflicting writes: the last one wins, and every subscribed
+  client is told. `ControlPolicy::owner_only()`: only the camera's owner, its longest-connected
+  client (the next one when it leaves). `read_only()`: nobody. `read_only_control(id or
+  StandardControl)`: that one stays as it is. `allow(|caller, id| ...)`: an allow-list given
+  the caller's process credentials, client id and ownership. Reading and listing are always
+  allowed; `ControlDescriptor::writable` says what this client may change.
+- **Events:** `control_events()` opens a connection that gets every accepted change on the
+  camera (`ControlEvent`: id, standard control, value in effect, frame, and `by`, the client
+  that made it, as `FrameClient::client_id` names clients); readable (`AsFd`) when one waits.
+- **Wire:** requests go on a connection of their own (opened on first use), never between
+  frames. New message kinds (Control, ControlReply, ControlEvent) and a trailer on the accept
+  message (the client's id and a token proving it on control requests); the protocol version
+  stays 8: older clients never send the new requests and never get the new messages (events go
+  only to connections that subscribed), and read the accept message as before. A control list
+  travels in a memfd. A service that predates controls does not answer: the request times out.
+
+`camera_service controls [--camera NAME] [NAME VALUE]` (example) lists a camera's controls or
+sets one. Tests: `crates/styx/tests/service_controls.rs` (virtual cameras with controls:
+`capture_api::make_virtual_device_with_controls`).
+
+### Without a thread per client
+
+A `FrameClient` need not have a thread blocked in `recv`:
+
+- **Pollable:** it is a file descriptor (`AsFd`, `AsRawFd`; an epoll set of its own, the same
+  across reconnections) that is readable when `try_next()` has a frame or news (closed; a
+  reconnecting client's next attempt or the service's answer). `try_next()` never blocks: a
+  frame, `Empty`, or `Closed` (and the descriptor stays readable after that, so a poll loop
+  learns it). A reconnecting client reconnects inside `try_next` without blocking either.
+- **Async on any executor:** `client.next().await`, `client.stream()` (a
+  `futures_core::Stream`) and `client.poll_next(cx)` for hand-written futures wake through
+  styx-graph's reactor (one thread per process, started on first use): tokio, smol, or
+  `styx_graph::rt::block_on` with no runtime at all. One task polls a client at a time.
+  `recv_async` (feature `async`) stays for Tokio.
+- **The same cost:** one allocation per frame (its release record), no copies, nothing on the
+  reactor's thread (`tests/zero_alloc.rs`).
+
+Many cameras on one thread (for HeliOS: N cameras into Daedalus host inputs):
+
+```rust
+let clients: Vec<FrameClient> = ["front", "left", "right"].iter()
+    .map(|cam| FrameClient::options(path).camera(*cam).reconnecting().request(&Frames::nv12()))
+    .collect::<Result<_, _>>()?;
+
+// One poll(2) (or an epoll set, or the GUI loop's descriptor watch) over every client:
+let mut fds: Vec<libc::pollfd> = clients.iter()
+    .map(|c| libc::pollfd { fd: c.as_raw_fd(), events: libc::POLLIN, revents: 0 }).collect();
+loop {
+    unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 100) };
+    for (i, p) in fds.iter().enumerate().filter(|(_, p)| p.revents != 0) {
+        while let RecvOutcome::Data(frame) = clients[i].try_next() {
+            hosts[i].push_payload("frame", frame_payload(frame)); // or any consumer
+        }
+    }
+}
+
+// Or one future over every client, on any executor:
+poll_fn(|cx| {
+    for (i, c) in clients.iter().enumerate() {
+        while let Poll::Ready(RecvOutcome::Data(frame)) = c.poll_next(cx) {
+            hosts[i].push_payload("frame", frame_payload(frame));
+        }
+    }
+    Poll::<()>::Pending
+}).await;
+```
+
+`examples/05_apps/camera_service_async.rs` runs both (`--demo`: three virtual cameras in the
+same process); `crates/styx/tests/frame_client_async.rs` tests them (three clients of two
+cameras on one thread, a service going away, a reconnecting client coming back).
 
 ### Reconnecting clients
 
@@ -221,7 +338,10 @@ the inline parse are fuzzed (target `frame_socket_message`).
   buffer from a cached dma-heap is a `Dmabuf` frame that reads `Cached`, here and in the client:
   the sender tells the client how its memory reads. On a CM5 a 1280x800 Y plane reads in 0.17 ms
   per pass either way, the same as heap memory.
-- **Async:** `FrameClient::recv_async` awaits frames on Tokio (feature `async`).
+- **Async:** `FrameClient::next().await` / `stream()` / `poll_next(cx)` on any executor, and
+  `try_next` on the client's pollable descriptor (see
+  [Without a thread per client](#without-a-thread-per-client)); `FrameClient::recv_async`
+  awaits frames on Tokio (feature `async`).
 
 ## Buffers and slow clients
 

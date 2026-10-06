@@ -8,6 +8,9 @@
 //!   (taking the frame, exporting, sending, taking releases), the client receiving, importing,
 //!   reading and releasing each frame (test thread).
 //!
+//! - a camera service's client without a thread: `poll(2)` and `try_next`, and `next().await`
+//!   on styx-graph's `block_on` (its reactor thread allocating nothing per frame either).
+//!
 //! And the copy counters (`HopMetrics`, `styx::metrics::path`) say nothing was copied.
 
 #![cfg(all(target_os = "linux", feature = "frame-socket"))]
@@ -31,7 +34,7 @@ struct Counting;
 
 static ARMED: AtomicBool = AtomicBool::new(false);
 /// Allocations by thread kind: [`Kind`].
-static COUNTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
@@ -44,6 +47,8 @@ enum Kind {
     ServiceClient = 2,
     /// Anything else (capture workers).
     Other = 3,
+    /// styx-graph's reactor thread (waking awaited frame clients).
+    Reactor = 4,
 }
 
 thread_local! {
@@ -66,6 +71,8 @@ fn kind() -> Kind {
         Kind::FrameSocket
     } else if name.starts_with(b"styx-camera-cli") {
         Kind::ServiceClient
+    } else if name.starts_with(b"styx-reactor") {
+        Kind::Reactor
     } else {
         Kind::Other
     };
@@ -107,7 +114,7 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOC: Counting = Counting;
 
 /// Allocations by kind while `run` runs (armed for its duration).
-fn counted(run: impl FnOnce()) -> [u64; 4] {
+fn counted(run: impl FnOnce()) -> [u64; 5] {
     for c in &COUNTS {
         c.store(0, Ordering::Relaxed);
     }
@@ -426,9 +433,90 @@ fn camera_service() {
     drop(service);
 }
 
+/// A camera service's client without a thread of its own: `poll(2)` on its descriptor and
+/// `try_next`, then frames awaited with `next()` (one `block_on` over all of them, so the
+/// executor's own waker is made once). Each allocates nothing per frame beyond the frame's
+/// release record, and the reactor's thread (styx-graph) nothing at all.
+fn camera_service_without_a_thread() {
+    let res = Resolution::new(WIDTH, HEIGHT).unwrap();
+    let mode = Mode::with_interval(
+        MediaFormat::new(FourCc::NV12, res, ColorSpace::Srgb),
+        Interval::from_fps(200).unwrap(),
+    );
+    let device = styx::capture_api::make_virtual_device("zero-alloc-poll", [mode]);
+    let path = socket_path("service-poll");
+    let _service = CameraService::new(device)
+        .keep_streaming()
+        .serve(&path)
+        .unwrap();
+    let client = FrameClient::request(&path, &Frames::nv12().size(WIDTH, HEIGHT)).unwrap();
+    let polled = |client: &FrameClient| loop {
+        let mut fd = libc::pollfd {
+            fd: std::os::fd::AsRawFd::as_raw_fd(client),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd.
+        unsafe { libc::poll(&mut fd, 1, 2000) };
+        if let RecvOutcome::Data(frame) = client.try_next() {
+            return frame;
+        }
+    };
+    let awaited = |client: &FrameClient, frames: u64| {
+        styx_graph::rt::block_on(async {
+            for _ in 0..frames {
+                match client.next().await {
+                    RecvOutcome::Data(frame) => {
+                        std::hint::black_box(read(&frame));
+                    }
+                    _ => panic!("closed"),
+                }
+            }
+        });
+    };
+    IS_TEST.with(|t| t.set(true));
+    for _ in 0..100 {
+        std::hint::black_box(read(&polled(&client)));
+    }
+    awaited(&client, 100);
+    let counts = counted(|| {
+        for _ in 0..FRAMES {
+            std::hint::black_box(read(&polled(&client)));
+        }
+    });
+    let per = |n: u64| n as f64 / FRAMES as f64;
+    println!(
+        "camera service, poll + try_next: client {:.2} allocations per frame, service thread {:.2}",
+        per(counts[Kind::Test as usize]),
+        per(counts[Kind::ServiceClient as usize]),
+    );
+    assert!(
+        counts[Kind::Test as usize] <= FRAMES,
+        "poll + try_next allocates {} times for {FRAMES} frames",
+        counts[Kind::Test as usize]
+    );
+    assert_eq!(counts[Kind::ServiceClient as usize], 0);
+    let counts = counted(|| awaited(&client, FRAMES));
+    println!(
+        "camera service, next().await: client {:.2} allocations per frame, reactor thread {:.2}",
+        per(counts[Kind::Test as usize]),
+        per(counts[Kind::Reactor as usize]),
+    );
+    assert_eq!(counts[Kind::Reactor as usize], 0, "the reactor allocates");
+    // The frames' release records, and block_on's waker once.
+    assert!(
+        counts[Kind::Test as usize] <= FRAMES + 1,
+        "next().await allocates {} times for {FRAMES} frames",
+        counts[Kind::Test as usize]
+    );
+    assert_eq!(client.hop_metrics().copied, 0);
+    IS_TEST.with(|t| t.set(false));
+}
+
 /// One test: the counting is process-wide, so nothing else may run meanwhile.
 #[test]
 fn steady_state_ipc_paths_do_not_allocate_or_copy() {
     frame_socket();
     camera_service();
+    camera_service_without_a_thread();
 }
