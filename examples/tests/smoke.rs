@@ -86,7 +86,7 @@ fn daedalus_frames_runs_camera_frames_through_a_graph() {
         stdout.contains("daedalus.foreign:styx:framelease->daedalus:frame"),
         "{stdout}"
     );
-    assert!(stdout.contains("view=\"BG24 320x240"), "{stdout}");
+    assert!(stdout.contains("view=\"BG24 (Pixel) 320x240"), "{stdout}");
     assert!(stdout.contains("mapped at"), "{stdout}");
     // Inspection shows frames as their descriptor, not an opaque summary.
     assert!(stdout.contains("\"residency\""), "{stdout}");

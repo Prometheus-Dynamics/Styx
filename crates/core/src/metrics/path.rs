@@ -8,6 +8,8 @@
 //!   ([`FrameHops::copied`]).
 //! * [`synced`] / [`timed_sync`]: dma-buf cache maintenance (`DMA_BUF_IOCTL_SYNC`) calls and
 //!   their time, process-wide.
+//! * [`frame_mapped`] / [`PathCounters::cpu_reads`]: frame memory mapped for the CPU, and
+//!   bracketed CPU reads of frames.
 //! * [`pool_exhausted`]: a pool or a capture had no free buffer (every one held).
 
 use core::time::Duration;
@@ -79,6 +81,14 @@ pub struct PathCounters {
     pub syncs: Counter,
     /// Time spent in them, nanoseconds.
     pub sync_ns: Counter,
+    /// `mmap` calls frame backings made to read frame memory on the CPU (lazily, on the first
+    /// read of a buffer they had not mapped).
+    pub frame_maps: Counter,
+    /// Bracketed CPU reads asked of frames ([`FrameLease::begin_cpu_read`]: Daedalus's
+    /// `daedalus:frame` `plane_data`).
+    ///
+    /// [`FrameLease::begin_cpu_read`]: crate::buffer::FrameLease::begin_cpu_read
+    pub cpu_reads: Counter,
     /// A pool or a capture had no free buffer: every one was held (a frame dropped or a buffer
     /// allocated instead).
     pub pool_exhausted: Counter,
@@ -89,6 +99,8 @@ static PATH: PathCounters = PathCounters {
     copied_bytes: [const { Counter::new() }; COPY_SITES],
     syncs: Counter::new(),
     sync_ns: Counter::new(),
+    frame_maps: Counter::new(),
+    cpu_reads: Counter::new(),
     pool_exhausted: Counter::new(),
 };
 
@@ -150,6 +162,12 @@ pub fn timed_sync<R>(sync: impl FnOnce() -> R) -> R {
     let r = sync();
     synced(start.elapsed().as_nanos() as u64);
     r
+}
+
+/// Counts one `mmap` a frame backing made to read frame memory on the CPU.
+#[inline]
+pub fn frame_mapped() {
+    PATH.frame_maps.incr();
 }
 
 /// A pool or a capture found every buffer held.

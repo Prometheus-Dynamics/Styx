@@ -496,6 +496,14 @@ impl<B: ExternalBacking> ExternalBacking for MeteredBacking<B> {
         self.inner.plane_data(index)
     }
 
+    fn begin_cpu_read(&self, index: usize) -> Option<&[u8]> {
+        self.inner.begin_cpu_read(index)
+    }
+
+    fn end_cpu_read(&self, index: usize) {
+        self.inner.end_cpu_read(index)
+    }
+
     fn backing_bytes(&self) -> Option<usize> {
         self.inner.backing_bytes()
     }
