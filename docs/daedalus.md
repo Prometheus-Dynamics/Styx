@@ -19,7 +19,7 @@ it Styx frames as below.
 | `FrameDescriptor` (`"styx:frame_descriptor"`) | The frame as graphs, editors and host inspection see it, never the pixels: `format` (FourCC), `width`, `height`, `color`, `timestamp_ns`, `clock`, `delta`, `crop`, `planes` (`offset`, `len`, `stride`), `residency`, `cpu_access` and `companions` (pyramid levels or a second ISP output, each with its size, planes, residency and CPU access). `FrameDescriptor::of(&frame)` builds one. |
 | `styx.frame_descriptor` adapter | `MetadataOnly`: the planner inserts it on an edge from a frame port to a `&FrameDescriptor` port. It reads metadata only. |
 | Value serializer | Host payload inspection (`HostGraph::inspect_payload`, `inspect_outputs`) shows a frame as its descriptor rather than an opaque summary. |
-| `StyxFramesPlugin` (`"styx.frames"`) | Registers all of the above: the frame type, the descriptor types, the adapter and the serializer. Install it once per registry. |
+| `StyxFramesPlugin` (`"styx.frames"`) | Registers all of the above: the frame type, the descriptor types, the adapter and the serializer, plus styx-core's build (`#[plugin(.., crate_build)]`: crate `styx_core`, its version and enabled features, exported by styx-core's `build.rs`). Install it once per registry. |
 | `frame_payload(frame)`, `shared_frame_payload(arc)` | A frame as a Daedalus `Payload` without copying it. The payload owns the frame, and with it the camera buffer, until the graph drops it. |
 | `payload_residency(&frame)` | Maps the frame's memory to a Daedalus `Residency`: host-owned memory and compressed packets → `Cpu`; dma-bufs and driver or memfd buffers → `External`; GPU textures → `Gpu`. |
 | `cpu_readable(&frame)` | Whether a node can read the planes in place (`CpuAccess` is not `None`). |
@@ -109,3 +109,12 @@ The type keys (`styx:framelease`, `styx:frame_descriptor`, `styx:plane_descripto
 `styx:region`, `styx:companion_descriptor`) and the plugin and adapter ids (`styx.frames`,
 `styx.frame_descriptor`) are stored in graph documents, so they do not change. New descriptor
 fields may be added.
+
+## Dynamic plugins built separately
+
+A Rust-ABI dynamic plugin must come from the same cargo build as the host. When it does not,
+Daedalus (plugin ABI 9) refuses it with a boundary type conflict on `styx:framelease`, and
+because `StyxFramesPlugin` registers styx-core's build on both sides, the error names the
+difference, e.g. ``crate `styx_core` 2.0.0: host features `daedalus,std,v4l2`, plugin features
+`daedalus,std` (missing in plugin: v4l2)``. `PluginLibrary::crate_build_diff(&registry)` lists
+the same differences before installing, as a warning to log.
