@@ -116,5 +116,5 @@ A Rust-ABI dynamic plugin must come from the same cargo build as the host. When 
 Daedalus (plugin ABI 9) refuses it with a boundary type conflict on `styx:framelease`, and
 because `StyxFramesPlugin` registers styx-core's build on both sides, the error names the
 difference, e.g. ``crate `styx_core` 2.0.0: host features `daedalus,serde,std`, plugin features
-`daedalus,std` (missing in plugin: v4l2)``. `PluginLibrary::crate_build_diff(&registry)` lists
+`daedalus,std` (missing in plugin: serde)``. `PluginLibrary::crate_build_diff(&registry)` lists
 the same differences before installing, as a warning to log.
