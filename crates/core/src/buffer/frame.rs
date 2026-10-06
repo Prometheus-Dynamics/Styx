@@ -134,6 +134,26 @@ pub trait ExternalBacking: Send + Sync {
     /// maintenance so devices see the writes): the frame is about to be shared or handed out.
     /// Nothing when no window is open; default nothing.
     fn finish_cpu_write(&self) {}
+
+    /// The dma-buf plane `index` lies in, borrowed, and the offset in it of the first byte
+    /// [`ExternalBacking::plane_data`] gives for the plane (the plane's layout offset comes on
+    /// top): for handing the plane to a device or API by descriptor (GPU import, KMS, a
+    /// Daedalus frame view) without duplicating the descriptor or mapping the memory. Must not
+    /// touch the memory. Default `None`: not a dma-buf (a memfd is not one either).
+    #[cfg(all(feature = "std", unix))]
+    fn dmabuf_plane(&self, _index: usize) -> Option<DmabufPlane<'_>> {
+        None
+    }
+}
+
+/// A plane's dma-buf, borrowed from the frame's backing: valid while the backing lives
+/// ([`ExternalBacking::dmabuf_plane`], [`FrameLease::dmabuf_plane`]).
+#[cfg(all(feature = "std", unix))]
+#[derive(Clone, Copy, Debug)]
+pub struct DmabufPlane<'a> {
+    pub fd: std::os::fd::BorrowedFd<'a>,
+    /// Bytes from the start of the dma-buf.
+    pub offset: usize,
 }
 
 /// `backing` as a shared frame backing for [`FrameLease::from_external`] (through a `Box` where
@@ -413,40 +433,40 @@ impl FrameLease {
     }
 
     pub fn planes(&self) -> SmallVec<[Plane<'_>; 3]> {
-        if let Some(backing) = &self.external {
-            self.layouts
-                .iter()
-                .enumerate()
-                .map(|(idx, layout)| {
-                    let slice = backing
-                        .plane_data(idx)
-                        .map(|s| {
-                            let end = layout.offset.saturating_add(layout.len);
-                            s.get(layout.offset..end).unwrap_or(&[])
-                        })
-                        .unwrap_or(&[]);
-                    Plane {
-                        data: slice,
-                        stride: layout.stride,
-                    }
-                })
-                .collect()
-        } else {
-            self.layouts
-                .iter()
-                .zip(self.buffers.iter())
-                .map(|(layout, buf)| {
-                    let slice = buf
-                        .as_slice()
-                        .get(layout.offset..layout.offset + layout.len)
-                        .unwrap_or(&[]);
-                    Plane {
-                        data: slice,
-                        stride: layout.stride,
-                    }
-                })
-                .collect()
-        }
+        (0..self.layouts.len())
+            .map_while(|index| self.plane_at(index))
+            .collect()
+    }
+
+    /// Plane `index` of [`FrameLease::planes`] alone (nothing built for the others), `None` past
+    /// the last. Its data is empty when the memory is not readable here.
+    pub fn plane_at(&self, index: usize) -> Option<Plane<'_>> {
+        let layout = self.layouts.get(index)?;
+        let end = layout.offset.saturating_add(layout.len);
+        let data = match &self.external {
+            Some(backing) => backing
+                .plane_data(index)
+                .and_then(|s| s.get(layout.offset..end)),
+            None => self.buffers.get(index)?.as_slice().get(layout.offset..end),
+        };
+        Some(Plane {
+            data: data.unwrap_or(&[]),
+            stride: layout.stride,
+        })
+    }
+
+    /// The dma-buf plane `index` lies in, borrowed from the backing, and the plane's offset in
+    /// it (its layout offset included), for handing it to a device by descriptor. `None` when the
+    /// frame is not over a dma-buf, or its backing does not say
+    /// ([`ExternalBacking::dmabuf_plane`]).
+    #[cfg(all(feature = "std", unix))]
+    pub fn dmabuf_plane(&self, index: usize) -> Option<DmabufPlane<'_>> {
+        let layout = self.layouts.get(index)?;
+        let plane = self.external.as_ref()?.dmabuf_plane(index)?;
+        Some(DmabufPlane {
+            fd: plane.fd,
+            offset: plane.offset.checked_add(layout.offset)?,
+        })
     }
 
     /// The planes for writing. Frames in their own buffers always; frames over external memory

@@ -172,6 +172,10 @@ impl ExternalBacking for Released {
         self.inner.backing().residency()
     }
 
+    fn dmabuf_plane(&self, index: usize) -> Option<DmabufPlane<'_>> {
+        self.inner.backing().dmabuf_plane(index)
+    }
+
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         self.inner.backing().export_backing()
     }

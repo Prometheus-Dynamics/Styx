@@ -268,6 +268,17 @@ impl ExternalBacking for Imported {
         true
     }
 
+    fn dmabuf_plane(&self, index: usize) -> Option<styx_core::buffer::DmabufPlane<'_>> {
+        // Every plane lies in the one buffer, from its start (the layouts carry the offsets).
+        let slot = &self.buffers.inner.slots[self.index];
+        (slot.buffer.dmabuf && index < self.buffers.planes().len().max(1)).then(|| {
+            styx_core::buffer::DmabufPlane {
+                fd: slot.buffer.fd.as_fd(),
+                offset: 0,
+            }
+        })
+    }
+
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         let slot = &self.buffers.inner.slots[self.index];
         let fd = slot.buffer.fd.try_clone().map_err(FrameExportError::Fd)?;

@@ -291,6 +291,17 @@ impl ExternalBacking for SharedFdBacking {
         }
     }
 
+    fn dmabuf_plane(&self, index: usize) -> Option<super::DmabufPlane<'_>> {
+        let SharedFdBackingKind::Dmabuf(fds) = &self.kind else {
+            return None;
+        };
+        let plane = self.planes.get(index)?;
+        Some(super::DmabufPlane {
+            fd: std::os::fd::AsFd::as_fd(fds.get(plane.fd_index)?),
+            offset: plane.offset,
+        })
+    }
+
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         match &self.kind {
             SharedFdBackingKind::Memfd(fd) => Ok(Some(FrameBackingExport::Memfd {

@@ -23,6 +23,8 @@ it Styx frames as below.
 | `frame_payload(frame)`, `shared_frame_payload(arc)` | A frame as a Daedalus `Payload` without copying it. The payload owns the frame, and with it the camera buffer, until the graph drops it. |
 | `payload_residency(&frame)` | Maps the frame's memory to a Daedalus `Residency`: host-owned memory and compressed packets → `Cpu`; dma-bufs and driver or memfd buffers → `External`; GPU textures → `Gpu`. |
 | `cpu_readable(&frame)` | Whether a node can read the planes in place (`CpuAccess` is not `None`). |
+| `FrameLease: FrameSource` | Daedalus's generic frame view, `daedalus:frame` v1: nodes take `FrameView<'_>` of a Styx frame without knowing Styx (see [Generic frame view](#generic-frame-view)). The plugin registers it as a provider (`daedalus.foreign:styx:framelease->daedalus:frame`, a `View` adapter). |
+| `frame_view(&frame)`, `view_residency(&frame)` | A lease as a `FrameView` directly (borrowed, nothing allocated), and the residency it reports. `FrameView` and `FrameInterface` are re-exported. |
 
 ## Enabling it
 
@@ -103,12 +105,67 @@ reported.
 cargo run -p styx-examples --features daedalus --bin daedalus_frames
 ```
 
+## Generic frame view
+
+Daedalus's `daedalus:frame` v1 interface (`FrameSource` / `FrameView`, Daedalus's
+`docs/foreign-frame-interface.md`) is how a node reads any library's frames, including a node in
+a plugin built separately from Styx. A node takes `frame: FrameView<'_>`; fed a
+`styx:framelease` payload, the planner inserts Styx's provider, which retypes the payload in
+place, and the node reads the lease itself through the interface's vtable:
+
+```rust
+#[node(id = "app.luma_mean", inputs("frame"), outputs("mean"))]
+fn luma_mean(frame: FrameView<'_>) -> Result<f64, NodeError> {
+    let luma = frame.plane(0).and_then(|p| p.data)
+        .ok_or(NodeError::InvalidInput("frame is not CPU-mapped".into()))?;
+    Ok(luma.iter().map(|&p| f64::from(p)).sum::<f64>() / luma.len() as f64)
+}
+```
+
+What the view reports:
+
+| Field | From the lease |
+| --- | --- |
+| `width`, `height` | The format's size. |
+| `format`, `modifier` | `styx_core::format::drm::to_drm` of the FourCC: e.g. `NV12` → `NV12`/linear, `RG24` (bytes R, G, B) → `BG24`/linear, `pBAA` → `BG10` + `MIPI_FORMAT_MOD_CSI2_PACKED`. Compressed formats (MJPEG, H.264/H.265) report `0` (`DRM_FORMAT_INVALID`) and `DRM_FORMAT_MOD_INVALID`. |
+| `timestamp_ns`, `sequence` | The frame's timestamp (in its clock, `FrameDescriptor::clock`) and the driver's sequence number (0 when unknown). |
+| `residency` | `Cpu` for frames in their own host memory and compressed packets; `External` for dma-bufs and memory owned elsewhere (driver, memfd, IPC, caller buffers); `Gpu` for GPU textures. Never `Cpu` for a frame the CPU cannot read. |
+| plane `data` | The lease's own bytes in place when `CpuAccess` is not `None` (an uncached mapping is readable too, but slow: copy once if you read it more than once). `None` otherwise: no host pointer is handed out for memory the CPU cannot read. |
+| plane `len`, `stride` | The plane layout's. |
+| plane `dmabuf_fd`, `offset` | The dma-buf the plane lies in (`FrameLease::dmabuf_plane`, borrowed from the backing: duplicate it to keep it) and the plane's offset in it, for `GpuContextHandle::import_dmabuf` or KMS. Without a dma-buf, no fd and `offset` is the layout's offset in its buffer. |
+
+So a dma-buf frame without CPU access (an unmapped dma-buf, `CpuAccess::None`) shows its
+geometry and descriptor but no bytes, and a GPU texture or a backing that reports no dma-buf
+shows neither; nodes refuse those with an error. The PiSP, libcamera, native capture, imported,
+IPC and shared-fd backings report their dma-bufs.
+
+**Lifetime.** The view borrows the payload (or the lease, for `frame_view`), which owns the
+lease and with it the camera buffer, so the planes and the descriptor stay valid for as long as
+the view; nothing is copied, allocated or reference counted per frame or per consumer. A payload
+crossing into a stable-ABI plugin is wrapped in a handle to the same `Arc` (one reference count
+increment). `crates/styx/tests/zero_alloc.rs` checks it: a camera service client reading each
+frame through `FrameView` allocates once per frame (the received frame's release record) and
+copies nothing; wrapping it in a payload adds `frame_payload`'s own two allocations.
+
+**FourCC mapping.** `styx_core::format::drm` (`to_drm`, `from_drm`, the `MAPPINGS` /
+`ALIASES` / `UNMAPPED` tables, `no_std`) maps every Styx pixel format by memory layout, byte
+for byte. Packed RGB differs in name between the two: DRM names a little-endian word from its
+most significant end, so Styx `RG24` (= V4L2 `RGB3`) is DRM `BG24`, `BG24` is `RG24`, `RGBA`
+is `AB24`, `BGRA` is `AR24`, `RG48` is `BG48`; V4L2's own `XR24` / `XB24` equal DRM's.
+Greyscale wider than 8 bits (`Y10 `, `Y12 `, `Y16 `) is DRM's single-channel `R10` / `R12` /
+`R16`. The kernel defines no Bayer formats: those rows follow libcamera's extension of
+`drm_fourcc.h` (`DrmRegistry::Libcamera`), with the CSI-2 packing as a modifier; two of its codes
+differ from V4L2's (`BA14` for 14-bit GRBG, `RGB6` for 16-bit RGGB, which is also V4L2's
+48-bit RGB code). Compressed formats and 14-bit greyscale have no DRM format.
+
 ## Stability
 
 The type keys (`styx:framelease`, `styx:frame_descriptor`, `styx:plane_descriptor`,
 `styx:region`, `styx:companion_descriptor`) and the plugin and adapter ids (`styx.frames`,
-`styx.frame_descriptor`) are stored in graph documents, so they do not change. New descriptor
-fields may be added.
+`styx.frame_descriptor`, and Daedalus's `daedalus.foreign:styx:framelease->daedalus:frame` for
+the frame view) are stored in graph documents, so they do not change. New descriptor fields may
+be added. The frame view follows `daedalus:frame` v1; a new version of the interface is a new
+provider.
 
 ## Dynamic plugins built separately
 

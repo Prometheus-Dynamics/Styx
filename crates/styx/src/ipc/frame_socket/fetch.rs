@@ -213,6 +213,10 @@ impl ExternalBacking for Fetched {
         self.inner.backing().residency()
     }
 
+    fn dmabuf_plane(&self, index: usize) -> Option<DmabufPlane<'_>> {
+        self.inner.backing().dmabuf_plane(index)
+    }
+
     fn cpu_access(&self) -> CpuAccess {
         self.inner.backing().cpu_access()
     }

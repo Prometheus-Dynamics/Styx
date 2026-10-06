@@ -264,6 +264,18 @@ impl ExternalBacking for CachedDmabuf {
         }
     }
 
+    fn dmabuf_plane(&self, index: usize) -> Option<styx_core::buffer::DmabufPlane<'_>> {
+        if self.memfd {
+            return None;
+        }
+        let &(offset, _) = self.planes.get(index)?;
+        let fd = self.fds.get(index).or(self.fds.first())?;
+        Some(styx_core::buffer::DmabufPlane {
+            fd: fd.as_fd(),
+            offset,
+        })
+    }
+
     fn cpu_access(&self) -> CpuAccess {
         // Mapped here; the sender says whether its memory is cached (see `Released`).
         if self.memfd {

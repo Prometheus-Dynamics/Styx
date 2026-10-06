@@ -473,6 +473,16 @@ impl ExternalBacking for LibcameraBacking {
         FrameResidency::Dmabuf
     }
 
+    fn dmabuf_plane(&self, index: usize) -> Option<styx_core::buffer::DmabufPlane<'_>> {
+        let plane = self.planes.get(index)?;
+        (plane.fd >= 0).then(|| styx_core::buffer::DmabufPlane {
+            // SAFETY: libcamera's frame buffer owns the descriptor and outlives this backing,
+            // which keeps the request (and with it the buffer) until it drops.
+            fd: unsafe { std::os::fd::BorrowedFd::borrow_raw(plane.fd) },
+            offset: plane.offset,
+        })
+    }
+
     fn cpu_access(&self) -> CpuAccess {
         if self.cached {
             CpuAccess::Cached
