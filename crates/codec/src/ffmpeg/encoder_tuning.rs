@@ -206,7 +206,12 @@ mod tests {
         let defaults = FfmpegEncoderOptions::default();
         assert_eq!(
             defaults.open_options("libx264"),
-            vec![("tune", "zerolatency"), ("preset", LOW_LATENCY_PRESET)]
+            vec![
+                ("tune", "zerolatency"),
+                ("preset", LOW_LATENCY_PRESET),
+                ("forced-idr", "1"),
+                ("x264-params", "repeat-headers=1")
+            ]
         );
         assert!(defaults.open_options("h264_v4l2m2m").is_empty());
         let custom = FfmpegEncoderOptions {
@@ -218,7 +223,9 @@ mod tests {
             vec![
                 ("preset", "ultrafast"),
                 ("crf", "28"),
-                ("tune", "zerolatency")
+                ("tune", "zerolatency"),
+                ("forced-idr", "1"),
+                ("x265-params", "repeat-headers=1")
             ]
         );
         let off = FfmpegEncoderOptions {

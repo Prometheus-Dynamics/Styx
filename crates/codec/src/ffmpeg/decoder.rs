@@ -429,7 +429,7 @@ impl FfmpegVideoDecoder {
         };
         let bpp = bytes_per_pixel(target_fmt)
             .ok_or_else(|| CodecError::Codec("unsupported packed format".into()))?;
-        let stride = src.stride(0) as usize;
+        let stride = src.stride(0);
         let row_len = width as usize * bpp;
         let required = row_len.saturating_mul(height as usize);
         let mut buf = self.pool.lease();
@@ -487,7 +487,7 @@ impl FfmpegVideoDecoder {
         };
         let bpp = bytes_per_pixel(target_fmt)
             .ok_or_else(|| CodecError::Codec("unsupported packed format".into()))?;
-        let stride = src.stride(0) as usize;
+        let stride = src.stride(0);
         let row_len = width as usize * bpp;
         let required = row_len.saturating_mul(height as usize);
         let mut lease = pool
