@@ -11,12 +11,13 @@
 //!   so host inspection shows frames as their descriptor. Install it once per registry.
 //! - [`frame_payload`] / [`shared_frame_payload`]: a frame as a Daedalus [`Payload`] without
 //!   copying it, with its residency mapped ([`payload_residency`]).
-//! - `FrameLease: FrameSource`: Daedalus's generic `daedalus:frame` v1 view ([`FrameView`]),
+//! - `FrameLease: FrameSource`: Daedalus's generic `daedalus:frame` v2 view ([`FrameView`]),
 //!   registered as a provider by the plugin, so nodes that know nothing of Styx (separately
-//!   built plugins included) read a Styx frame in place: DRM format and modifier
-//!   ([`crate::format::drm`]), the lease's own plane pointers, strides and offsets, the
-//!   dma-buf descriptors, never a host pointer the CPU cannot read. [`frame_view`] views a
-//!   lease directly.
+//!   built plugins included) read a Styx frame in place: DRM format, modifier and format kind
+//!   ([`crate::format::drm`]), the planes' dma-bufs, offsets, strides and lengths without
+//!   touching the pixels, and the lease's own bytes through bracketed CPU reads
+//!   ([`FrameLease::begin_cpu_read`]: mapped on first use, dma-bufs synced while read), never
+//!   a host pointer the CPU cannot read. [`frame_view`] views a lease directly.
 //!
 //! ```ignore
 //! let mut registry = daedalus::runtime::plugins::PluginRegistry::new();
@@ -30,7 +31,7 @@ use std::sync::Arc;
 use ::daedalus::data::to_value::ToValue;
 use ::daedalus::runtime::plugins::{PluginRegistry, PluginResult};
 use ::daedalus::transport::{ForeignBorrow, Payload, Residency, TransportError};
-pub use ::daedalus::transport::{FrameInterface, FrameView};
+pub use ::daedalus::transport::{FrameFormatKind, FrameInterface, FrameView, PlaneMapping};
 use ::daedalus::{DaedalusToValue, DaedalusTypeExpr, adapt, plugin};
 
 use crate::buffer::{CompanionKind, CpuAccess, FrameLease, FrameResidency, PlaneLayout};
@@ -254,7 +255,7 @@ pub fn cpu_readable(frame: &FrameLease) -> bool {
     frame.cpu_access() != CpuAccess::None
 }
 
-/// `frame` through `daedalus:frame` v1, borrowed (no handle, no allocation), as a node taking
+/// `frame` through `daedalus:frame` v2, borrowed (no handle, no allocation), as a node taking
 /// [`FrameView`] sees it: for hosts and tests calling such code directly.
 pub fn frame_view(frame: &FrameLease) -> FrameView<'_> {
     match ForeignBorrow::of::<FrameLease, FrameInterface>(frame).view() {
@@ -265,7 +266,7 @@ pub fn frame_view(frame: &FrameLease) -> FrameView<'_> {
 }
 
 mod frame_view;
-pub use frame_view::view_residency;
+pub use frame_view::{format_kind, plane_mapping, view_residency};
 
 #[cfg(test)]
 mod tests;

@@ -185,16 +185,31 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   See `docs/daedalus.md` and the `daedalus_frames` example.
   Daedalus is its `dev` branch by git, now Daedalus 3.0.0 (a local `[patch]` overrides it).
 - Added Daedalus's generic frame view for Styx frames: `FrameLease` implements
-  `daedalus:frame` v1 (`FrameSource`), registered by `StyxFramesPlugin` as a provider
+  `daedalus:frame` v2 (`FrameSource`; Daedalus `dev` at `ed7ddde`, which v1 builds and plugins
+  refuse), registered by `StyxFramesPlugin` as a provider
   (`foreign_providers(FrameLease => FrameInterface)`, adapter
   `daedalus.foreign:styx:framelease->daedalus:frame`), so nodes taking `FrameView<'_>`,
-  including separately built plugins that know nothing of Styx, read a frame in place: DRM
-  fourcc and modifier, the lease's plane pointers, lengths, strides and offsets, and borrowed
-  dma-buf descriptors. Planes the CPU cannot read (`CpuAccess::None`) have no host pointer, only
-  their dma-buf where the backing reports one. `styx_core::daedalus::{frame_view,
-  view_residency, FrameView, FrameInterface}`. `shared_frame_payload` finishes open CPU writes
-  first. Plugin id, type keys and existing adapter ids unchanged. `zero_alloc` covers the view:
-  no copy, one allocation per received frame as before.
+  including separately built plugins that know nothing of Styx, read a frame in place. Plane
+  metadata never maps or syncs: DRM fourcc, modifier and format kind (`Pixel`; `Bayer` for
+  libcamera's raw codes, with `MIPI_FORMAT_MOD_CSI2_PACKED` when CSI-2 packed; `Compressed`
+  with the V4L2 fourcc, e.g. `MJPG`; `Unknown` without a DRM code), `u64` offsets, strides and
+  lengths, borrowed dma-buf descriptors, and the plane mapping (`Cached`, `Uncached`,
+  `Unmapped` from `CpuAccess`). Bytes come from `plane_data` / `end_cpu_access`
+  (`FrameLease::begin_cpu_read` / `end_cpu_read`): mapped on first use, dma-bufs synced while
+  read; none for planes the CPU cannot read. `styx_core::daedalus::{frame_view,
+  view_residency, plane_mapping, format_kind, FrameView, FrameInterface, FrameFormatKind,
+  PlaneMapping}`. `shared_frame_payload` finishes open CPU writes first. Plugin id, type keys
+  and existing adapter ids unchanged. `zero_alloc` covers the view: no copy, one allocation
+  per received frame as before, and an fd-only consumer of dma-buf frames makes no `mmap`, no
+  `plane_data` call and no dma-buf sync.
+- Added bracketed CPU reads of frames: `FrameLease::begin_cpu_read` / `end_cpu_read` and
+  `ExternalBacking::begin_cpu_read` / `end_cpu_read` (default: `plane_data`, nothing to end),
+  counted by `styx_core::buffer::CpuReadWindow`: the first open read starts CPU access
+  (`DMA_BUF_IOCTL_SYNC` START), the last ends it, while plain reads (`planes()`) still hold it
+  until the frame drops. The shared-fd, IPC (`CachedDmabuf`), libcamera, PiSP and native
+  capture backings map lazily as before and sync through it (their wrappers forward it); the
+  native runtime's `Lease` / `Frame` gain `begin_read` / `end_read`. Path metrics count
+  `frame_maps` (`mmap`s made to read frames) and `cpu_reads`.
 - Added `styx_core::format::drm` (`no_std`): `to_drm(FourCc) -> Option<DrmFormat>` and
   `from_drm(fourcc, modifier) -> Option<FourCc>` over a public table (`MAPPINGS`, `ALIASES`,
   `UNMAPPED`) covering every pixel format Styx defines: greyscale, packed RGB (Styx `RG24` =

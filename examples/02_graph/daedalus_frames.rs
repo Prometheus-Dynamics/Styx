@@ -3,8 +3,10 @@
 //! The app only writes its nodes: Styx registers the frame type, its descriptor, the metadata
 //! adapter, the `daedalus:frame` provider and the inspection serializer (`StyxFramesPlugin`),
 //! and wraps frames as payloads without copying them (`frame_payload`). One node takes Daedalus's
-//! generic `FrameView`, as a plugin that knows nothing of Styx would: it reads the same camera
-//! buffer through the provider, with the format as a DRM fourcc.
+//! generic `FrameView` (`daedalus:frame` v2), as a plugin that knows nothing of Styx would: it
+//! reads the format (a DRM fourcc and its kind) and the plane layout as metadata, then the same
+//! camera buffer's bytes through a CPU access that ends when its guard drops (a dma-buf is
+//! mapped on first use and synced only while read).
 //!
 //! `cargo run -p styx-examples --features daedalus --bin daedalus_frames`
 
@@ -45,23 +47,25 @@ fn frame_size(descriptor: &FrameDescriptor) -> Result<String, NodeError> {
     ))
 }
 
-/// Daedalus's generic frame view (`daedalus:frame`): the planner inserts Styx's provider
-/// (`daedalus.foreign:styx:framelease->daedalus:frame`); the node reads the lease's planes in
-/// place, or gets the dma-buf descriptor when the CPU cannot read them.
+/// Daedalus's generic frame view (`daedalus:frame` v2): the planner inserts Styx's provider
+/// (`daedalus.foreign:styx:framelease->daedalus:frame`). Plane metadata never touches the
+/// pixels; `plane_bytes` begins a CPU access to the lease's own bytes (ended when the guard
+/// drops), and a plane the CPU cannot read still has its dma-buf descriptor.
 #[node(id = "app.view_summary", inputs("frame"), outputs("summary"))]
 fn view_summary(frame: FrameView<'_>) -> Result<String, NodeError> {
     let format = frame.format().to_le_bytes();
     let plane = frame
         .plane(0)
         .ok_or_else(|| NodeError::InvalidInput("frame without planes".into()))?;
-    let memory = match (plane.data, plane.dmabuf_fd) {
-        (Some(data), _) => format!("mapped at {:p}", data.as_ptr()),
+    let memory = match (frame.plane_bytes(0), plane.dmabuf_fd) {
+        (Some(bytes), _) => format!("mapped at {:p} ({:?})", bytes.as_ptr(), plane.mapping),
         (None, Some(fd)) => format!("dma-buf fd {fd} offset {}", plane.offset),
         (None, None) => return Err(NodeError::InvalidInput("frame not readable".into())),
     };
     Ok(format!(
-        "{} {}x{} seq {} {:?}, plane 0 stride {} {memory}",
+        "{} ({:?}) {}x{} seq {} {:?}, plane 0 stride {} {memory}",
         String::from_utf8_lossy(&format),
+        frame.format_kind(),
         frame.width(),
         frame.height(),
         frame.sequence(),

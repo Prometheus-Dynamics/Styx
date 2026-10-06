@@ -20,6 +20,7 @@ use crate::format::{FrameLayoutInfo, MediaFormat};
 
 mod companion;
 mod construct;
+mod cpu_read;
 mod crop;
 mod luma;
 mod region;
@@ -134,6 +135,21 @@ pub trait ExternalBacking: Send + Sync {
     /// maintenance so devices see the writes): the frame is about to be shared or handed out.
     /// Nothing when no window is open; default nothing.
     fn finish_cpu_write(&self) {}
+
+    /// Begins a bracketed CPU read of plane `index` and gives its memory, as
+    /// [`ExternalBacking::plane_data`] does; every `Some` is followed by exactly one
+    /// [`ExternalBacking::end_cpu_read`] for the plane (Daedalus's `daedalus:frame` access,
+    /// through [`FrameLease::begin_cpu_read`]). Reads may overlap. Backings over memory a device
+    /// writes count them ([`CpuReadWindow`](crate::buffer::CpuReadWindow)): map on first use,
+    /// cache maintenance (a dma-buf's `DMA_BUF_IOCTL_SYNC` START) when the first open read
+    /// begins, END when the last ends. The default is `plane_data`, whose cache maintenance (if
+    /// any) lasts until the backing drops.
+    fn begin_cpu_read(&self, index: usize) -> Option<&[u8]> {
+        self.plane_data(index)
+    }
+
+    /// Ends a read begun by [`ExternalBacking::begin_cpu_read`]. Default nothing.
+    fn end_cpu_read(&self, _index: usize) {}
 
     /// The dma-buf plane `index` lies in, borrowed, and the offset in it of the first byte
     /// [`ExternalBacking::plane_data`] gives for the plane (the plane's layout offset comes on

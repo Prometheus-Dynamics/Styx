@@ -7,11 +7,14 @@ pub(super) struct SharedFdBacking {
     kind: SharedFdBackingKind,
     planes: Vec<SharedFdPlane>,
     mapped: std::sync::OnceLock<Mapped>,
+    /// CPU access to the mapped dma-bufs (`DMA_BUF_IOCTL_SYNC`), held or bracketed.
+    window: crate::buffer::CpuReadWindow,
 }
 
 /// The mappings made on first CPU access: one per underlying buffer (planes whose descriptors
 /// refer to the same buffer, e.g. the Y and CbCr planes of one NV12 dma-buf, share one mapping
-/// and one CPU-access sync), and which mapping each plane is in.
+/// and one CPU-access sync), and which mapping each plane is in. Mapping does not sync: the
+/// reads do ([`SharedFdBacking::window`]).
 struct Mapped {
     ranges: Vec<MappedFdRange>,
     /// The descriptor each range was mapped from (for the end-of-access sync).
@@ -54,6 +57,7 @@ impl SharedFdBacking {
                 plane_count
             ],
             mapped: std::sync::OnceLock::new(),
+            window: crate::buffer::CpuReadWindow::new(),
         }
     }
 
@@ -75,6 +79,7 @@ impl SharedFdBacking {
             kind: SharedFdBackingKind::Dmabuf(fds),
             planes,
             mapped: std::sync::OnceLock::new(),
+            window: crate::buffer::CpuReadWindow::new(),
         }
     }
 
@@ -157,17 +162,28 @@ impl SharedFdBacking {
                     _ => group_range.push(None),
                 }
             }
-            let mapped = Mapped {
+            Mapped {
                 ranges,
                 range_fds,
                 plane_range: plane_group
                     .into_iter()
                     .map(|g| g.and_then(|g| group_range[g]))
                     .collect(),
-            };
-            self.sync_dmabufs(&mapped.range_fds, true);
-            mapped
+            }
         })
+    }
+
+    /// Plane `index`'s bytes in the mapping (made on first use), no sync.
+    fn mapped_plane(&self, index: usize) -> Option<(&Mapped, &[u8])> {
+        let plane = self.planes.get(index)?;
+        let mapped = self.mapped();
+        let range = mapped.ranges.get((*mapped.plane_range.get(index)?)?)?;
+        let offset = plane.offset.checked_sub(range.map_offset)?;
+        // SAFETY: the range maps `offset + plane.len` bytes (the group's span covers the plane)
+        // until the backing drops.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(range.ptr.cast::<u8>().add(offset), plane.len) };
+        Some((mapped, bytes))
     }
 
     /// Bracket CPU reads of imported dma-bufs so cached mappings never serve stale lines (once
@@ -230,6 +246,7 @@ impl SharedFdBacking {
         if addr == libc::MAP_FAILED {
             return Err(FrameExportError::Mmap(std::io::Error::last_os_error()));
         }
+        crate::metrics::frame_mapped();
         Ok(Some(MappedFdRange {
             ptr: addr,
             map_len,
@@ -249,11 +266,24 @@ unsafe impl Sync for SharedFdBacking {}
 
 impl ExternalBacking for SharedFdBacking {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        let plane = self.planes.get(index)?;
-        let mapped = self.mapped();
-        let range = mapped.ranges.get((*mapped.plane_range.get(index)?)?)?;
-        let offset = plane.offset.checked_sub(range.map_offset)?;
-        Some(unsafe { std::slice::from_raw_parts(range.ptr.cast::<u8>().add(offset), plane.len) })
+        let (mapped, bytes) = self.mapped_plane(index)?;
+        self.window
+            .hold(|| self.sync_dmabufs(&mapped.range_fds, true));
+        Some(bytes)
+    }
+
+    fn begin_cpu_read(&self, index: usize) -> Option<&[u8]> {
+        let (mapped, bytes) = self.mapped_plane(index)?;
+        self.window
+            .begin(|| self.sync_dmabufs(&mapped.range_fds, true));
+        Some(bytes)
+    }
+
+    fn end_cpu_read(&self, _index: usize) {
+        if let Some(mapped) = self.mapped.get() {
+            self.window
+                .end(|| self.sync_dmabufs(&mapped.range_fds, false));
+        }
     }
 
     fn backing_bytes(&self) -> Option<usize> {
@@ -359,7 +389,8 @@ impl ExternalBacking for SharedFdBacking {
 impl Drop for SharedFdBacking {
     fn drop(&mut self) {
         if let Some(mapped) = self.mapped.take() {
-            self.sync_dmabufs(&mapped.range_fds, false);
+            self.window
+                .close(|| self.sync_dmabufs(&mapped.range_fds, false));
             for range in mapped.ranges {
                 unsafe {
                     libc::munmap(range.ptr, range.map_len);

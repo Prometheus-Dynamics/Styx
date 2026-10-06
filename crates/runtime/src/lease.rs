@@ -116,6 +116,18 @@ where
         Some(&data[..self.len.min(data.len())])
     }
 
+    fn begin_cpu_read(&self, _index: usize) -> Option<&[u8]> {
+        if !self.frame.buffer().cpu_access().readable() {
+            return None;
+        }
+        let data = self.frame.begin_read();
+        Some(&data[..self.len.min(data.len())])
+    }
+
+    fn end_cpu_read(&self, _index: usize) {
+        self.frame.end_read();
+    }
+
     fn backing_bytes(&self) -> Option<usize> {
         Some(self.frame.buffer().len())
     }

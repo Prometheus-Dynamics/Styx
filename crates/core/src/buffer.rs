@@ -20,7 +20,7 @@ mod plane;
 mod pool;
 mod views;
 
-pub use cpu_access::CpuAccess;
+pub use cpu_access::{CpuAccess, CpuReadWindow};
 pub use layout::{plane_layout_from_dims, plane_layout_with_stride};
 pub use meta::{
     BackendFrameMeta, CaptureInstant, ClockConversion, ClockSource, FrameHops, FrameLatency,

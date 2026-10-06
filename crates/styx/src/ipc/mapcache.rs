@@ -10,11 +10,11 @@
 //! kept alive for long.
 
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 use smallvec::SmallVec;
+use styx_core::buffer::CpuReadWindow;
 use styx_core::prelude::*;
 
 /// Imports after which an entry no frame used is dropped (a few seconds at camera rates).
@@ -52,7 +52,11 @@ impl Map {
                 0,
             )
         };
-        (ptr != libc::MAP_FAILED).then_some(Self { ptr, len })
+        if ptr == libc::MAP_FAILED {
+            return None;
+        }
+        styx_core::metrics::frame_mapped();
+        Some(Self { ptr, len })
     }
 
     fn bytes(&self) -> &[u8] {
@@ -153,7 +157,9 @@ pub(super) struct CachedDmabuf {
     fds: Fds,
     planes: SmallVec<[(usize, usize); 3]>,
     map: OnceLock<Option<Arc<Map>>>,
-    synced: AtomicBool,
+    /// CPU access to the dma-buf (`DMA_BUF_IOCTL_SYNC`; none for a memfd): held by plain reads
+    /// until the frame drops, or bracketed (Daedalus's `daedalus:frame` access).
+    window: CpuReadWindow,
 }
 
 /// A frame's descriptors, inline (no allocation per frame).
@@ -187,7 +193,7 @@ impl CachedDmabuf {
             fds,
             planes: spans.iter().copied().collect(),
             map: OnceLock::new(),
-            synced: AtomicBool::new(false),
+            window: CpuReadWindow::new(),
         })
     }
 
@@ -215,6 +221,26 @@ impl CachedDmabuf {
         }
     }
 
+    /// Plane `index` in the buffer's mapping (made through the cache on first use), no sync.
+    fn bytes(&self, index: usize) -> Option<&[u8]> {
+        let &(offset, len) = self.planes.get(index)?;
+        self.mapped()?.bytes().get(offset..offset.checked_add(len)?)
+    }
+
+    /// Starts (`true`) or ends CPU reads of the dma-buf; nothing for a memfd.
+    fn sync(&self, start: bool) {
+        if self.memfd {
+            return;
+        }
+        if let Some(fd) = self.fds.first() {
+            let _ = if start {
+                styx_core::buffer::dmabuf_begin_cpu_read(fd.as_raw_fd())
+            } else {
+                styx_core::buffer::dmabuf_end_cpu_read(fd.as_raw_fd())
+            };
+        }
+    }
+
     fn mapped(&self) -> Option<&Map> {
         self.map
             .get_or_init(|| {
@@ -233,15 +259,19 @@ impl CachedDmabuf {
 
 impl ExternalBacking for CachedDmabuf {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        let &(offset, len) = self.planes.get(index)?;
-        let map = self.mapped()?;
-        if !self.memfd
-            && !self.synced.swap(true, Ordering::AcqRel)
-            && let Some(fd) = self.fds.first()
-        {
-            let _ = styx_core::buffer::dmabuf_begin_cpu_read(fd.as_raw_fd());
-        }
-        map.bytes().get(offset..offset + len)
+        let bytes = self.bytes(index)?;
+        self.window.hold(|| self.sync(true));
+        Some(bytes)
+    }
+
+    fn begin_cpu_read(&self, index: usize) -> Option<&[u8]> {
+        let bytes = self.bytes(index)?;
+        self.window.begin(|| self.sync(true));
+        Some(bytes)
+    }
+
+    fn end_cpu_read(&self, _index: usize) {
+        self.window.end(|| self.sync(false));
     }
 
     fn backing_bytes(&self) -> Option<usize> {
@@ -329,11 +359,7 @@ impl CachedDmabuf {
 
 impl Drop for CachedDmabuf {
     fn drop(&mut self) {
-        if self.synced.load(Ordering::Acquire)
-            && let Some(fd) = self.fds.first()
-        {
-            let _ = styx_core::buffer::dmabuf_end_cpu_read(fd.as_raw_fd());
-        }
+        self.window.close(|| self.sync(false));
     }
 }
 

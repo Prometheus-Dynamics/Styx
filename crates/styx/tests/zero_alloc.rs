@@ -12,8 +12,11 @@
 //!   on styx-graph's `block_on` (its reactor thread allocating nothing per frame either).
 //!
 //! - with `daedalus`: a camera service's client reading each frame through Daedalus's generic
-//!   frame view (`FrameView`, `daedalus:frame`), borrowed from the frame and from a payload
-//!   retyped by Styx's provider, as a node in a separately built plugin reads it.
+//!   frame view (`FrameView`, `daedalus:frame` v2), borrowed from the frame and from a payload
+//!   retyped by Styx's provider, as a node in a separately built plugin reads it; and a frame
+//!   socket's dma-buf frames (from the system dma-heap where there is one) handed to an fd-only
+//!   consumer (a GPU importer), which makes Styx map nothing, sync nothing and begin no CPU
+//!   access (`plane_data`), against a CPU consumer that does each once per frame and plane.
 //!
 //! And the copy counters (`HopMetrics`, `styx::metrics::path`) say nothing was copied.
 
@@ -221,10 +224,12 @@ impl Drop for CameraBuffer {
 
 impl Camera {
     fn new(buffers: usize) -> Arc<Self> {
-        Arc::new(Self {
-            buffers: (0..buffers).map(|_| memfd(LEN)).collect(),
-            free: Mutex::new((0..buffers).collect()),
-        })
+        Self::over((0..buffers).map(|_| memfd(LEN)).collect())
+    }
+
+    fn over(buffers: Vec<OwnedFd>) -> Arc<Self> {
+        let free = Mutex::new((0..buffers.len()).collect());
+        Arc::new(Self { buffers, free })
     }
 
     /// The next frame in a free buffer, with the hops a native capture stamps.
@@ -517,109 +522,9 @@ fn camera_service_without_a_thread() {
     IS_TEST.with(|t| t.set(false));
 }
 
-/// The bytes a Daedalus node reads through `FrameView`, sampled as [`read`] does.
 #[cfg(feature = "daedalus")]
-fn read_view(view: styx::core::daedalus::FrameView<'_>) -> u8 {
-    view.planes()
-        .flat_map(|p| p.data.unwrap_or_default().iter().step_by(1024))
-        .fold(0, |a, &b| a ^ b)
-}
-
-/// A camera service's client handing each frame to Daedalus code as its generic frame view:
-/// borrowed straight from the lease (`frame_view`), and from a payload (`frame_payload`) retyped
-/// by Styx's `daedalus:frame` provider, as the planner's `View` adapter does before a
-/// `FrameView` port. The view reads the lease's own planes: nothing copied, and nothing
-/// allocated per frame beyond the received frame's release record (a payload adds its own two,
-/// the shared lease and its storage, with or without the view).
-#[cfg(feature = "daedalus")]
-fn camera_service_frame_view() {
-    use styx::core::daedalus::{FrameInterface, frame_payload, frame_view};
-
-    let res = Resolution::new(WIDTH, HEIGHT).unwrap();
-    let mode = Mode::with_interval(
-        MediaFormat::new(FourCc::NV12, res, ColorSpace::Srgb),
-        Interval::from_fps(200).unwrap(),
-    );
-    let device = styx::capture_api::make_virtual_device("zero-alloc-view", [mode]);
-    let path = socket_path("service-view");
-    let _service = CameraService::new(device)
-        .keep_streaming()
-        .serve(&path)
-        .unwrap();
-    let client = FrameClient::request(&path, &Frames::nv12().size(WIDTH, HEIGHT)).unwrap();
-    let next = |client: &FrameClient| loop {
-        if let RecvOutcome::Data(frame) = client.recv(Duration::from_secs(2)) {
-            return frame;
-        }
-    };
-    let viewed = |frame: &FrameLease| {
-        let view = frame_view(frame);
-        assert_eq!(view.format(), u32::from_le_bytes(*b"NV12"));
-        assert_eq!(view.plane_count() as usize, frame.layout_slice().len());
-        // In place: the view's planes are the lease's.
-        let luma = view.plane(0).and_then(|p| p.data).expect("CPU-mapped");
-        assert_eq!(luma.as_ptr(), frame.planes()[0].data().as_ptr());
-        std::hint::black_box(read_view(view));
-    };
-    let through_payload = |frame: FrameLease| {
-        let payload = frame_payload(frame)
-            .provide_foreign::<FrameLease, FrameInterface>()
-            .unwrap();
-        let view = payload.foreign_borrow().unwrap().view::<FrameInterface>();
-        std::hint::black_box(read_view(view.unwrap()));
-    };
-    IS_TEST.with(|t| t.set(true));
-    for _ in 0..100 {
-        viewed(&next(&client));
-        through_payload(next(&client));
-    }
-    let copies_before = styx::metrics::path().total_copies();
-    let per = |n: u64| n as f64 / FRAMES as f64;
-    let counts = counted(|| {
-        for _ in 0..FRAMES {
-            viewed(&next(&client));
-        }
-    });
-    println!(
-        "camera service, FrameView of each frame: client {:.2} allocations per frame, service thread {:.2}",
-        per(counts[Kind::Test as usize]),
-        per(counts[Kind::ServiceClient as usize]),
-    );
-    // One refcounted record per received frame (its release), as without the view.
-    assert!(
-        counts[Kind::Test as usize] <= FRAMES,
-        "receiving and viewing allocates {} times for {FRAMES} frames",
-        counts[Kind::Test as usize]
-    );
-    assert_eq!(counts[Kind::ServiceClient as usize], 0);
-    let mut receive = 0;
-    let counts = counted(|| {
-        for _ in 0..FRAMES {
-            let frame = counted_here(&mut receive, || next(&client));
-            through_payload(frame);
-        }
-    });
-    println!(
-        "camera service, FrameView through a payload: receive {:.2}, payload + view + release {:.2} allocations per frame",
-        per(receive),
-        per(counts[Kind::Test as usize] - receive),
-    );
-    assert!(receive <= FRAMES, "receiving allocates {receive} times");
-    // `frame_payload`'s own two (the shared lease and the payload's storage); the provider
-    // retypes the payload in place and the view borrows it.
-    let payload = counts[Kind::Test as usize] - receive;
-    assert!(
-        payload <= 2 * FRAMES,
-        "a payload and its view allocate {payload} times for {FRAMES} frames"
-    );
-    assert_eq!(
-        styx::metrics::path().total_copies(),
-        copies_before,
-        "frames were copied"
-    );
-    assert_eq!(client.hop_metrics().copied, 0);
-    IS_TEST.with(|t| t.set(false));
-}
+#[path = "zero_alloc/daedalus.rs"]
+mod daedalus;
 
 /// One test: the counting is process-wide, so nothing else may run meanwhile.
 #[test]
@@ -628,5 +533,7 @@ fn steady_state_ipc_paths_do_not_allocate_or_copy() {
     camera_service();
     camera_service_without_a_thread();
     #[cfg(feature = "daedalus")]
-    camera_service_frame_view();
+    daedalus::camera_service_frame_view();
+    #[cfg(feature = "daedalus")]
+    daedalus::frame_socket_frame_view();
 }

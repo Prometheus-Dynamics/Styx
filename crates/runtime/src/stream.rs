@@ -12,6 +12,7 @@
 use alloc::vec::Vec;
 use core::task::{Context, Poll};
 use core::time::Duration;
+use styx_core::buffer::CpuReadWindow;
 use styx_core::sync::{AtomicBool, AtomicUsize, Ordering};
 
 use styx_hal::{Access, ErrorKind, FrameBuffer, FrameDone, HalError, Instant, Receiver};
@@ -107,7 +108,7 @@ impl<R: Receiver + ?Sized> Pool<R> {
         Some(Lease {
             pool: Ref::clone(this),
             index,
-            cpu_access: AtomicBool::new(false),
+            cpu_access: CpuReadWindow::new(),
         })
     }
 
@@ -127,7 +128,9 @@ impl<R: Receiver + ?Sized> Pool<R> {
 pub struct Lease<R: Receiver + ?Sized> {
     pool: Ref<Pool<R>>,
     index: u32,
-    cpu_access: AtomicBool,
+    /// CPU read access to the buffer ([`FrameBuffer::begin_cpu`]): held from the first plain
+    /// read on, or bracketed ([`Lease::begin_read`]).
+    cpu_access: CpuReadWindow,
 }
 
 impl<R: Receiver + ?Sized> Lease<R> {
@@ -146,10 +149,27 @@ impl<R: Receiver + ?Sized> Lease<R> {
     /// Cortex-M7); no end of access follows for reads.
     pub fn bytes(&self, bytes_used: usize) -> &[u8] {
         let buffer = self.buffer();
-        if !self.cpu_access.swap(true, Ordering::AcqRel) {
-            buffer.begin_cpu(Access::Read);
-        }
-        let all = buffer.bytes();
+        self.cpu_access.hold(|| buffer.begin_cpu(Access::Read));
+        Self::used(buffer.bytes(), bytes_used)
+    }
+
+    /// [`Lease::bytes`] as a bracketed read, ended by exactly one [`Lease::end_read`]: reads
+    /// may overlap; the first to begin starts CPU access ([`FrameBuffer::begin_cpu`]) unless
+    /// it is open already, the last to end ends it ([`FrameBuffer::end_cpu`]) unless a plain
+    /// read holds it.
+    pub fn begin_read(&self, bytes_used: usize) -> &[u8] {
+        let buffer = self.buffer();
+        self.cpu_access.begin(|| buffer.begin_cpu(Access::Read));
+        Self::used(buffer.bytes(), bytes_used)
+    }
+
+    /// Ends a read begun by [`Lease::begin_read`].
+    pub fn end_read(&self) {
+        let buffer = self.buffer();
+        self.cpu_access.end(|| buffer.end_cpu(Access::Read));
+    }
+
+    fn used(all: &[u8], bytes_used: usize) -> &[u8] {
         let n = if bytes_used == 0 {
             all.len()
         } else {
@@ -199,6 +219,17 @@ impl<R: Receiver + ?Sized> Frame<R> {
     /// The frame's bytes (see [`Lease::bytes`]).
     pub fn data(&self) -> &[u8] {
         self.lease.bytes(self.bytes_used)
+    }
+
+    /// The frame's bytes as a bracketed read (see [`Lease::begin_read`]), ended by exactly one
+    /// [`Frame::end_read`].
+    pub fn begin_read(&self) -> &[u8] {
+        self.lease.begin_read(self.bytes_used)
+    }
+
+    /// Ends a read begun by [`Frame::begin_read`].
+    pub fn end_read(&self) {
+        self.lease.end_read()
     }
 
     /// The buffer (export handles, device address, length).

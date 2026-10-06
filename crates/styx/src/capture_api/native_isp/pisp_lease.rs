@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
+use styx_core::buffer::CpuReadWindow;
 use styx_core::prelude::{
     BackendFrameMeta, CaptureInstant, ExportedKind, ExternalBacking, FrameBackingExport,
     FrameExportError, FrameFdPlane, FrameRect, FrameResidency, Hop, TimestampClock,
@@ -92,19 +92,29 @@ struct BeBacking {
     planes: SmallVec<[(usize, usize); 3]>,
     output: usize,
     index: u32,
-    synced: AtomicBool,
+    /// CPU access to the buffer (`DMA_BUF_IOCTL_SYNC`): held by plain reads until the lease
+    /// drops, or bracketed (Daedalus's `daedalus:frame` access).
+    window: CpuReadWindow,
     returns: Returns,
 }
 
 impl ExternalBacking for BeBacking {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        let &(offset, len) = self.planes.get(index)?;
+        let bytes = self.bytes(index)?;
         // The pixels are about to be read on the CPU: sync once (a no-op for the driver's
         // uncached buffers, cache maintenance for cached ones).
-        if !self.synced.swap(true, Ordering::AcqRel) {
-            let _ = dma_heap::sync(self.buffer.fd.as_fd(), Access::Read, true);
-        }
-        self.buffer.map.as_slice().get(offset..offset + len)
+        self.window.hold(|| self.sync(true));
+        Some(bytes)
+    }
+
+    fn begin_cpu_read(&self, index: usize) -> Option<&[u8]> {
+        let bytes = self.bytes(index)?;
+        self.window.begin(|| self.sync(true));
+        Some(bytes)
+    }
+
+    fn end_cpu_read(&self, _index: usize) {
+        self.window.end(|| self.sync(false));
     }
 
     fn backing_bytes(&self) -> Option<usize> {
@@ -176,11 +186,25 @@ impl ExternalBacking for BeBacking {
     }
 }
 
+impl BeBacking {
+    /// Plane `index` in the buffer's mapping (made when the buffer was first leased).
+    fn bytes(&self, index: usize) -> Option<&[u8]> {
+        let &(offset, len) = self.planes.get(index)?;
+        self.buffer
+            .map
+            .as_slice()
+            .get(offset..offset.checked_add(len)?)
+    }
+
+    /// Starts (`true`) or ends CPU reads of the buffer.
+    fn sync(&self, start: bool) {
+        let _ = dma_heap::sync(self.buffer.fd.as_fd(), Access::Read, start);
+    }
+}
+
 impl Drop for BeBacking {
     fn drop(&mut self) {
-        if self.synced.load(Ordering::Acquire) {
-            let _ = dma_heap::sync(self.buffer.fd.as_fd(), Access::Read, false);
-        }
+        self.window.close(|| self.sync(false));
         let _ = self.returns.send((self.output, self.index));
     }
 }
@@ -305,7 +329,7 @@ fn lease(
             planes,
             output,
             index,
-            synced: AtomicBool::new(false),
+            window: CpuReadWindow::new(),
             returns: returns.clone(),
         })),
     )

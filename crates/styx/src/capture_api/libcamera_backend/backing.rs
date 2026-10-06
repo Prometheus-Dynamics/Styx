@@ -252,6 +252,7 @@ fn map_backing_planes(planes: &[BackingPlaneView]) -> Option<LazyMappedBackingSt
         if addr == libc::MAP_FAILED {
             return None;
         }
+        styx_core::metrics::frame_mapped();
         mapped_bytes = mapped_bytes.saturating_add(map_len);
         mmaps.push((
             fd,
@@ -353,6 +354,9 @@ pub(super) struct LibcameraBacking {
     planes: SmallVec<[BackingPlaneView; 3]>,
     cache: Arc<MappingCache>,
     mapped: OnceLock<Option<Arc<LazyMappedBackingState>>>,
+    /// CPU access to the mapped buffers (`DMA_BUF_IOCTL_SYNC`): held by plain reads until the
+    /// backing drops, or bracketed (Daedalus's `daedalus:frame` access).
+    window: styx_core::buffer::CpuReadWindow,
     outstanding_tracker: Arc<ExternalBackingTracker>,
     mapped_tracker: Arc<ExternalBackingTracker>,
     backing_bytes: usize,
@@ -419,6 +423,7 @@ impl LibcameraBacking {
             planes,
             cache,
             mapped: OnceLock::new(),
+            window: styx_core::buffer::CpuReadWindow::new(),
             outstanding_tracker,
             mapped_tracker,
             backing_bytes,
@@ -426,12 +431,25 @@ impl LibcameraBacking {
         })
     }
 
+    /// Plane `index`'s bytes in the buffers' mappings (made on first use, cached across frames),
+    /// no sync.
+    fn mapped_plane(&self, index: usize) -> Option<(&LazyMappedBackingState, &[u8])> {
+        let plane = self.planes.get(index)?;
+        let mapped = self.mapped_state()?;
+        let (_, range) = mapped.mmaps.iter().find(|(fd, _)| *fd == plane.fd)?;
+        let offset = plane.offset.checked_sub(range.map_offset)?;
+        let ptr: *const u8 = range.ptr.cast();
+        // SAFETY: `mapped_state` keeps the mmap alive for `self`, `offset` is within the mapped
+        // range selected for this fd, and `plane.len` was validated before mapping.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr.add(offset), plane.len) };
+        Some((mapped, bytes))
+    }
+
     fn mapped_state(&self) -> Option<&LazyMappedBackingState> {
         self.mapped
             .get_or_init(|| {
                 let mapped = self.cache.map(&self.planes);
                 if let Some(state) = mapped.as_ref() {
-                    state.begin_cpu_read();
                     self.mapped_tracker.acquire(state.mapped_bytes);
                 }
                 mapped
@@ -451,14 +469,21 @@ unsafe impl Sync for LibcameraBacking {}
 
 impl ExternalBacking for LibcameraBacking {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        let plane = self.planes.get(index)?;
-        let mapped = self.mapped_state()?;
-        let (_, range) = mapped.mmaps.iter().find(|(fd, _)| *fd == plane.fd)?;
-        let offset = plane.offset.checked_sub(range.map_offset)?;
-        let ptr: *const u8 = range.ptr.cast();
-        // SAFETY: `mapped_state` keeps the mmap alive for `self`, `offset` is within the mapped
-        // range selected for this fd, and `plane.len` was validated before mapping.
-        Some(unsafe { std::slice::from_raw_parts(ptr.add(offset), plane.len) })
+        let (mapped, bytes) = self.mapped_plane(index)?;
+        self.window.hold(|| mapped.begin_cpu_read());
+        Some(bytes)
+    }
+
+    fn begin_cpu_read(&self, index: usize) -> Option<&[u8]> {
+        let (mapped, bytes) = self.mapped_plane(index)?;
+        self.window.begin(|| mapped.begin_cpu_read());
+        Some(bytes)
+    }
+
+    fn end_cpu_read(&self, _index: usize) {
+        if let Some(Some(mapped)) = self.mapped.get() {
+            self.window.end(|| mapped.end_cpu_read());
+        }
     }
 
     fn backing_bytes(&self) -> Option<usize> {
@@ -517,7 +542,7 @@ impl Drop for LibcameraBacking {
         // End the CPU read before the request can be requeued by `RequestReturn`; the mapping
         // itself stays cached for the next frame that uses this buffer.
         if let Some(mapped) = self.mapped.take().flatten() {
-            mapped.end_cpu_read();
+            self.window.close(|| mapped.end_cpu_read());
             self.mapped_tracker.release(mapped.mapped_bytes);
         }
         self.outstanding_tracker.release_many(1, self.backing_bytes);

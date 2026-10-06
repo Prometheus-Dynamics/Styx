@@ -152,6 +152,14 @@ impl ExternalBacking for Released {
         self.inner.backing().plane_data(index)
     }
 
+    fn begin_cpu_read(&self, index: usize) -> Option<&[u8]> {
+        self.inner.backing().begin_cpu_read(index)
+    }
+
+    fn end_cpu_read(&self, index: usize) {
+        self.inner.backing().end_cpu_read(index)
+    }
+
     fn backing_bytes(&self) -> Option<usize> {
         self.inner.backing().backing_bytes()
     }
