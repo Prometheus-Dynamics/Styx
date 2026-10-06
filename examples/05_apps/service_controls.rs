@@ -1,6 +1,8 @@
 //! A camera's controls without its frames: a `ControlClient` sets exposure and follows every
 //! control change on the camera, never joining the camera's frame plan or holding a buffer.
-//! It connects without blocking, so it can start before the service (or the camera) is there.
+//! It connects without blocking, so it can start before the service (or the camera) is there,
+//! and applies its exposure again on every (re)connection (`ClientEvent::Connected`), so the
+//! setting survives service restarts.
 //!
 //! ```text
 //! service_controls [--camera NAME] [EXPOSURE_US]   # the service at $STYX_SOCKET
@@ -12,7 +14,7 @@ use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
 use styx::capture_api::make_virtual_device_with_controls;
-use styx::ipc::{CameraService, ControlClient, FrameClient};
+use styx::ipc::{CameraService, ClientEvent, ControlClient, FrameClient};
 use styx::prelude::*;
 
 fn socket_path() -> String {
@@ -39,7 +41,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The demo's service (and a frame client of its own) appear only now.
     let demo = demo.then(|| demo_service(&path)).transpose()?;
 
-    // One poll loop: the client's descriptor is readable when an event or news is waiting.
+    // One poll loop: the client's descriptor is readable when an event or a connection
+    // change is waiting.
     let mut set = false;
     let until = Instant::now() + Duration::from_secs(if demo.is_some() { 2 } else { 10 });
     while Instant::now() < until {
@@ -51,8 +54,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // SAFETY: a valid pollfd for the call's duration.
         unsafe { libc::poll(&mut p, 1, 100) };
         loop {
-            match controls.try_event() {
-                RecvOutcome::Data(e) => println!(
+            match controls.try_client_event() {
+                // The first connection and every reconnection: (re-)apply the settings.
+                RecvOutcome::Data(ClientEvent::Connected { reconnects }) => {
+                    println!("connected (reconnections: {reconnects})");
+                    set = true;
+                    let applied = controls.set_exposure_us(exposure)?;
+                    println!(
+                        "exposure {:?}{}{}",
+                        applied.value,
+                        if applied.clamped { " (clamped)" } else { "" },
+                        if applied.deferred {
+                            " (applied when the camera starts)"
+                        } else {
+                            ""
+                        }
+                    );
+                    // Another client's change reaches this one too.
+                    if let Some((_, frames)) = &demo {
+                        frames.set_gain(2.0)?;
+                    }
+                }
+                RecvOutcome::Data(ClientEvent::Disconnected { error }) => {
+                    println!("disconnected ({error}); reconnecting");
+                }
+                RecvOutcome::Data(ClientEvent::Data(e)) => println!(
                     "{:?} {:#010x} = {:?} (by {})",
                     e.standard,
                     e.id.0,
@@ -61,24 +87,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 RecvOutcome::Empty => break,
                 RecvOutcome::Closed => return Err("the camera service went away".into()),
-            }
-        }
-        if !set && controls.is_connected() {
-            set = true;
-            let applied = controls.set_exposure_us(exposure)?;
-            println!(
-                "exposure {:?}{}{}",
-                applied.value,
-                if applied.clamped { " (clamped)" } else { "" },
-                if applied.deferred {
-                    " (applied when the camera starts)"
-                } else {
-                    ""
-                }
-            );
-            // Another client's change reaches this one too.
-            if let Some((_, frames)) = &demo {
-                frames.set_gain(2.0)?;
             }
         }
     }

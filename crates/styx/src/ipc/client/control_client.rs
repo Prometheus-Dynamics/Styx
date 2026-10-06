@@ -15,6 +15,7 @@ use styx_core::prelude::*;
 
 use super::control::{ControlChannel, ControlTo, control_methods};
 use super::dial::{Dialer, Step};
+use super::news::{ClientEvent, ClientEventStream, EventSource, NextClientEvent, poll_with};
 use super::poll::{PollSet, TRY_MESSAGES};
 use super::{ClientOptions, FrameClient};
 use crate::ipc::controls::ControlEvent;
@@ -161,7 +162,7 @@ impl ControlClient {
         self.poll.watch(&socket);
         self.poll.wake_at(None);
         events.socket = Some(socket);
-        if !events.dial.succeeded() {
+        if !events.dial.succeeded(&self.poll) {
             self.reconnects.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -200,9 +201,18 @@ impl ControlClient {
     /// connecting ([`ControlClient::last_error`]). Connects and reconnects here, without
     /// blocking.
     pub fn try_event(&self) -> RecvOutcome<ControlEvent> {
+        self.take_event(false)
+    }
+
+    /// [`ControlClient::try_event`]; with `news`, `Empty` as soon as a connection change waits
+    /// (nothing from a new connection is read before its `Connected` is).
+    fn take_event(&self, news: bool) -> RecvOutcome<ControlEvent> {
         self.poll.clear_timer();
         for _ in 0..TRY_MESSAGES {
             let mut events = self.events.lock();
+            if news && events.dial.news.pending() {
+                return RecvOutcome::Empty;
+            }
             let Some(socket) = &events.socket else {
                 if !self.retries(&events) {
                     // Stay readable: whoever polls learns it is closed.
@@ -230,6 +240,9 @@ impl ControlClient {
                     } else {
                         Instant::now()
                     }));
+                    // Wakes now: the loss is news.
+                    let reset = IpcError::Io(io::ErrorKind::ConnectionReset.into());
+                    events.dial.lost(&self.poll, reset);
                 }
             }
         }
@@ -257,20 +270,53 @@ impl ControlClient {
     /// `Closed`), else `Pending` with `cx`'s waker woken when the client's descriptor becomes
     /// readable (through styx-graph's reactor, so on any executor).
     pub fn poll_event(&self, cx: &mut Context<'_>) -> Poll<RecvOutcome<ControlEvent>> {
-        loop {
-            match self.try_event() {
-                RecvOutcome::Empty => {}
-                outcome => return Poll::Ready(outcome),
-            }
-            match self
-                .poll
-                .reactor()
-                .map(|reactor| reactor.poll_read_ready(cx))
-            {
-                Ok(Poll::Pending) => return Poll::Pending,
-                Ok(Poll::Ready(Ok(_))) => {}
-                Ok(Poll::Ready(Err(_))) | Err(_) => return Poll::Ready(RecvOutcome::Closed),
-            }
+        poll_with(&self.poll, cx, || self.try_event())
+    }
+
+    /// [`ControlClient::try_event`] with the client's connection changes, in order:
+    /// `Connected` (the first connection, also of a client whose blocking `connect` returned
+    /// connected, and each reconnection: re-apply settings here), `Disconnected` (the
+    /// connection lost, or a client that does not reconnect gave up connecting), and `Data`
+    /// with each control change. Each change is reported once, and the descriptor ([`AsFd`])
+    /// becomes readable for it; changes received on a connection come after its `Connected`
+    /// and before its `Disconnected`. `Closed` after the last `Disconnected` of a client that
+    /// does not reconnect. Use it instead of `try_event` (which leaves connection changes
+    /// unread), not next to it.
+    pub fn try_client_event(&self) -> RecvOutcome<ClientEvent<ControlEvent>> {
+        if let Some(change) = self.events.lock().dial.news.pop(&self.poll) {
+            return RecvOutcome::Data(change.into());
+        }
+        match self.take_event(true) {
+            RecvOutcome::Data(event) => RecvOutcome::Data(ClientEvent::Data(event)),
+            // What this call noticed (connected, lost, gave up), else nothing (yet), or closed.
+            outcome => match self.events.lock().dial.news.pop(&self.poll) {
+                Some(change) => RecvOutcome::Data(change.into()),
+                None if matches!(outcome, RecvOutcome::Closed) => RecvOutcome::Closed,
+                None => RecvOutcome::Empty,
+            },
+        }
+    }
+
+    /// [`ControlClient::try_client_event`] from a hand-written future: `Pending` with `cx`'s
+    /// waker woken when the client's descriptor becomes readable (any executor).
+    pub fn poll_client_event(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<RecvOutcome<ClientEvent<ControlEvent>>> {
+        poll_with(&self.poll, cx, || self.try_client_event())
+    }
+
+    /// Await the next control or connection change on any executor.
+    pub fn next_client_event(&self) -> NextClientEvent<'_, ControlEvent> {
+        NextClientEvent { client: self }
+    }
+
+    /// Control and connection changes as a [`Stream`](futures_core::Stream), ending when the
+    /// client is closed (never for a reconnecting one).
+    pub fn client_events(&self) -> ClientEventStream<'_, ControlEvent> {
+        ClientEventStream {
+            client: self,
+            done: false,
         }
     }
 
@@ -323,6 +369,15 @@ impl ControlClient {
     /// [`ClientOptions::controls_nonblocking`], the async form of [`ControlClient::connect`].
     pub fn ready(&self) -> Ready<'_> {
         Ready(Waiting::Controls(self))
+    }
+}
+
+impl EventSource<ControlEvent> for ControlClient {
+    fn poll_client_event(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<RecvOutcome<ClientEvent<ControlEvent>>> {
+        ControlClient::poll_client_event(self, cx)
     }
 }
 

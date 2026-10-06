@@ -20,6 +20,7 @@ use styx_core::prelude::*;
 use styx_graph::rt::AsyncFd;
 
 use super::control_client::{Ready, Waiting};
+use super::news::{ClientEvent, ClientEventStream, EventSource, NextClientEvent, poll_with};
 use super::{FrameClient, ServerMessage, Step, accepted};
 use crate::ipc::{IpcError, socket, wire};
 
@@ -159,8 +160,17 @@ impl FrameClient {
     /// here without blocking either: an attempt when it is due, the service's answer when it
     /// comes. Allocates nothing per frame beyond the frame's release record.
     pub fn try_next(&self) -> RecvOutcome<FrameLease> {
+        self.take_frame(false)
+    }
+
+    /// [`FrameClient::try_next`]; with `news`, `Empty` as soon as a connection change waits
+    /// (nothing from a new connection is read before its `Connected` is).
+    fn take_frame(&self, news: bool) -> RecvOutcome<FrameLease> {
         self.poll.clear_timer();
         for _ in 0..TRY_MESSAGES {
+            if news && self.link.lock().dial.news.pending() {
+                return RecvOutcome::Empty;
+            }
             let socket = self.link.lock().socket.clone();
             let Some(socket) = socket else {
                 if !self.retries() {
@@ -275,23 +285,56 @@ impl FrameClient {
     /// readable. Waits through styx-graph's reactor, so it works on any executor. One task
     /// polls a client at a time (the last one to poll is woken).
     pub fn poll_next(&self, cx: &mut Context<'_>) -> Poll<RecvOutcome<FrameLease>> {
-        loop {
-            match self.try_next() {
-                RecvOutcome::Empty => {}
-                outcome => return Poll::Ready(outcome),
-            }
-            let reactor = match self.poll.reactor() {
-                Ok(reactor) => reactor,
-                Err(err) => {
-                    crate::trace::warn!(error = %err, "no reactor for the frame client");
-                    return Poll::Ready(RecvOutcome::Closed);
-                }
-            };
-            match reactor.poll_read_ready(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Ok(_)) => {}
-                Poll::Ready(Err(_)) => return Poll::Ready(RecvOutcome::Closed),
-            }
+        if let Err(err) = self.poll.reactor() {
+            crate::trace::warn!(error = %err, "no reactor for the frame client");
+        }
+        poll_with(&self.poll, cx, || self.try_next())
+    }
+
+    /// [`FrameClient::try_next`] with the client's connection changes, in order: `Connected`
+    /// (the first connection, also of a client whose blocking `request` returned connected,
+    /// and each reconnection), `Disconnected` (the connection lost, or a client that does not
+    /// reconnect gave up connecting), and `Data` with each frame. Each change is reported
+    /// once, and the descriptor ([`AsFd`]) becomes readable for it; frames of a connection
+    /// come after its `Connected` and before its `Disconnected`. `Closed` after the last
+    /// `Disconnected` of a client that does not reconnect. Use it instead of `try_next`
+    /// (which leaves changes unread), not next to it.
+    pub fn try_client_event(&self) -> RecvOutcome<ClientEvent<FrameLease>> {
+        if let Some(change) = self.link.lock().dial.news.pop(&self.poll) {
+            return RecvOutcome::Data(change.into());
+        }
+        match self.take_frame(true) {
+            RecvOutcome::Data(frame) => RecvOutcome::Data(ClientEvent::Data(frame)),
+            // What this call noticed (connected, lost, gave up), else nothing (yet), or closed.
+            outcome => match self.link.lock().dial.news.pop(&self.poll) {
+                Some(change) => RecvOutcome::Data(change.into()),
+                None if matches!(outcome, RecvOutcome::Closed) => RecvOutcome::Closed,
+                None => RecvOutcome::Empty,
+            },
+        }
+    }
+
+    /// [`FrameClient::try_client_event`] from a hand-written future or stream: `Pending` with
+    /// `cx`'s waker woken when the client's descriptor becomes readable (styx-graph's reactor,
+    /// any executor).
+    pub fn poll_client_event(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<RecvOutcome<ClientEvent<FrameLease>>> {
+        poll_with(&self.poll, cx, || self.try_client_event())
+    }
+
+    /// Await the next frame or connection change on any executor.
+    pub fn next_client_event(&self) -> NextClientEvent<'_, FrameLease> {
+        NextClientEvent { client: self }
+    }
+
+    /// Frames and connection changes as a [`Stream`](futures_core::Stream), ending when the
+    /// client is closed (never for a reconnecting one).
+    pub fn client_events(&self) -> ClientEventStream<'_, FrameLease> {
+        ClientEventStream {
+            client: self,
+            done: false,
         }
     }
 
@@ -308,6 +351,15 @@ impl FrameClient {
             client: self,
             done: false,
         }
+    }
+}
+
+impl EventSource<FrameLease> for FrameClient {
+    fn poll_client_event(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<RecvOutcome<ClientEvent<FrameLease>>> {
+        FrameClient::poll_client_event(self, cx)
     }
 }
 

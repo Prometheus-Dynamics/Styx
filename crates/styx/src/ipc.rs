@@ -41,8 +41,9 @@ use parking_lot::Mutex;
 use styx_core::prelude::*;
 
 pub use self::client::{
-    AfMode, ClientOptions, ControlClient, ControlEventStream, ControlEvents, DEFAULT_OPEN_TIMEOUT,
-    FrameClient, FrameStream, NextEvent, NextFrame, Ready,
+    AfMode, ClientEvent, ClientEventStream, ClientOptions, ControlClient, ControlEventStream,
+    ControlEvents, DEFAULT_OPEN_TIMEOUT, FrameClient, FrameStream, NextClientEvent, NextEvent,
+    NextFrame, Ready,
 };
 use self::connection::Connection;
 pub use self::controls::{
