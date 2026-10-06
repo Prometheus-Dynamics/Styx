@@ -61,25 +61,6 @@
 #define N_HW_ADDRESSES			13
 #define N_HW_ENABLES			2
 
-/*
- * The part of struct pisp_be_config written to the registers as supplied by
- * userspace: everything from global.bayer_order onwards (the addresses and
- * enables before it are written by the driver).
- */
-#define PISP_BE_CONFIG_WORDS		(sizeof(struct pisp_be_config) / sizeof(u32))
-#define PISP_BE_CONFIG_FIRST_WORD	\
-	(offsetof(struct pisp_be_config, global.bayer_order) / sizeof(u32))
-
-/*
- * Write only the configuration words that differ from the last values written
- * to the hardware. The configuration registers hold their values between jobs;
- * the shadow copy is dropped whenever that may not be true (clock off, error).
- */
-static bool skip_unchanged_config = true;
-module_param(skip_unchanged_config, bool, 0644);
-MODULE_PARM_DESC(skip_unchanged_config,
-		 "Write only the configuration words that changed since the last job (default: on)");
-
 #define PISP_BE_VERSION_2712		0x02252700
 #define PISP_BE_VERSION_MINOR_BITS	0xf
 
@@ -242,8 +223,7 @@ struct pispbe_job_descriptor {
 	struct pispbe_buffer *buffers[PISPBE_NUM_NODES];
 	struct pispbe_node_group *node_group;
 	dma_addr_t hw_dma_addrs[N_HW_ADDRESSES];
-	const struct pisp_be_config *config;
-	unsigned int num_tiles;
+	struct pisp_be_tiles_config *config;
 	struct pispbe_hw_enables hw_enables;
 	dma_addr_t tiles;
 };
@@ -265,9 +245,6 @@ struct pispbe_dev {
 	int irq;
 	u32 hw_version;
 	u8 done, started;
-	/* Last values written to the configuration registers, see pispbe_queue_job() */
-	u32 config_shadow[PISP_BE_CONFIG_WORDS];
-	bool config_shadow_valid;
 };
 
 static u32 pispbe_rd(struct pispbe_dev *pispbe, unsigned int offset)
@@ -285,19 +262,10 @@ static void pispbe_wr(struct pispbe_dev *pispbe, unsigned int offset, u32 val)
  * Caller must ensure it is "safe to queue", i.e. we don't already have a
  * queued, unstarted job.
  */
-static void pispbe_wr_relaxed(struct pispbe_dev *pispbe, unsigned int offset,
-			      u32 val)
-{
-	writel_relaxed(val, pispbe->be_reg_base + offset);
-}
-
 static void pispbe_queue_job(struct pispbe_dev *pispbe,
 			     struct pispbe_job_descriptor *job)
 {
-	const u32 *config = (const u32 *)job->config;
-	u32 *shadow = pispbe->config_shadow;
-	bool all = !pispbe->config_shadow_valid ||
-		   !READ_ONCE(skip_unchanged_config);
+	unsigned int begin, end;
 
 	if (pispbe_rd(pispbe, PISP_BE_STATUS_REG) & PISP_BE_STATUS_QUEUED)
 		dev_err(pispbe->dev, "ERROR: not safe to queue new job!\n");
@@ -307,39 +275,25 @@ static void pispbe_queue_job(struct pispbe_dev *pispbe,
 	 * are passed separately, because the driver needs to sanitize them,
 	 * and we don't want to modify (or be vulnerable to modifications of)
 	 * the mmap'd buffer.
-	 *
-	 * Writes to the same device are not reordered, so the register
-	 * writes need no barriers between them: the writel() of the control
-	 * register below orders them, and the tiles in memory, before the
-	 * job is queued. A barrier per word made this loop ~6x slower.
 	 */
 	for (unsigned int u = 0; u < N_HW_ADDRESSES; ++u) {
-		pispbe_wr_relaxed(pispbe, PISP_BE_IO_ADDR_LOW(u),
-				  lower_32_bits(job->hw_dma_addrs[u]));
-		pispbe_wr_relaxed(pispbe, PISP_BE_IO_ADDR_HIGH(u),
-				  upper_32_bits(job->hw_dma_addrs[u]));
+		pispbe_wr(pispbe, PISP_BE_IO_ADDR_LOW(u),
+			  lower_32_bits(job->hw_dma_addrs[u]));
+		pispbe_wr(pispbe, PISP_BE_IO_ADDR_HIGH(u),
+			  upper_32_bits(job->hw_dma_addrs[u]));
 	}
-	pispbe_wr_relaxed(pispbe, PISP_BE_GLOBAL_BAYER_ENABLE,
-			  job->hw_enables.bayer_enables);
-	pispbe_wr_relaxed(pispbe, PISP_BE_GLOBAL_RGB_ENABLE,
-			  job->hw_enables.rgb_enables);
+	pispbe_wr(pispbe, PISP_BE_GLOBAL_BAYER_ENABLE,
+		  job->hw_enables.bayer_enables);
+	pispbe_wr(pispbe, PISP_BE_GLOBAL_RGB_ENABLE,
+		  job->hw_enables.rgb_enables);
 
-	/*
-	 * Everything else is as supplied by the user. The registers keep
-	 * their values between jobs, so only the words that differ from the
-	 * last ones written need writing (most of the configuration usually
-	 * stays the same from one frame to the next).
-	 */
-	for (unsigned int u = PISP_BE_CONFIG_FIRST_WORD;
-	     u < PISP_BE_CONFIG_WORDS; u++) {
-		if (!all && shadow[u] == config[u])
-			continue;
-		pispbe_wr_relaxed(pispbe,
-				  PISP_BE_CONFIG_BASE_REG + sizeof(u32) * u,
-				  config[u]);
-		shadow[u] = config[u];
-	}
-	pispbe->config_shadow_valid = true;
+	/* Everything else is as supplied by the user. */
+	begin =	offsetof(struct pisp_be_config, global.bayer_order) /
+		sizeof(u32);
+	end = sizeof(struct pisp_be_config) / sizeof(u32);
+	for (unsigned int u = begin; u < end; u++)
+		pispbe_wr(pispbe, PISP_BE_CONFIG_BASE_REG + sizeof(u32) * u,
+			  ((u32 *)job->config)[u]);
 
 	/* Read back the addresses -- an error here could be fatal */
 	for (unsigned int u = 0; u < N_HW_ADDRESSES; ++u) {
@@ -350,8 +304,6 @@ static void pispbe_queue_job(struct pispbe_dev *pispbe,
 		if (along != (u64)(job->hw_dma_addrs[u])) {
 			dev_dbg(pispbe->dev,
 				"ISP BE config error: check if ISP RAMs enabled?\n");
-			/* The registers may not hold what we wrote. */
-			pispbe->config_shadow_valid = false;
 			return;
 		}
 	}
@@ -366,20 +318,13 @@ static void pispbe_queue_job(struct pispbe_dev *pispbe,
 	/* Enqueue the job */
 	pispbe_wr(pispbe, PISP_BE_CONTROL_REG,
 		  PISP_BE_CONTROL_COPY_CONFIG | PISP_BE_CONTROL_QUEUE_JOB |
-		  PISP_BE_CONTROL_NUM_TILES(job->num_tiles));
+		  PISP_BE_CONTROL_NUM_TILES(job->config->num_tiles));
 }
 
 struct pispbe_buffer {
 	struct vb2_v4l2_buffer vb;
 	struct list_head ready_list;
 	unsigned int config_index;
-	/*
-	 * Config node only: the validated copy of the configuration, in
-	 * cached memory (the tiles go to the DMA-coherent buffer the hardware
-	 * reads; reading the rest from there word by word is slow).
-	 */
-	struct pisp_be_config *config;
-	unsigned int num_tiles;
 };
 
 static int pispbe_get_planes_addr(dma_addr_t addr[3], struct pispbe_buffer *buf,
@@ -433,13 +378,13 @@ static void pispbe_xlate_addrs(struct pispbe_job_descriptor *job,
 			       struct pispbe_node_group *node_group)
 {
 	struct pispbe_hw_enables *hw_en = &job->hw_enables;
-	const struct pisp_be_config *config = job->config;
+	struct pisp_be_tiles_config *config = job->config;
 	dma_addr_t *addrs = job->hw_dma_addrs;
 	int ret;
 
 	/* Take a copy of the "enable" bitmaps so we can modify them. */
-	hw_en->bayer_enables = config->global.bayer_enables;
-	hw_en->rgb_enables = config->global.rgb_enables;
+	hw_en->bayer_enables = config->config.global.bayer_enables;
+	hw_en->rgb_enables = config->config.global.rgb_enables;
 
 	/*
 	 * Main input first. There are 3 address pointers, corresponding to up
@@ -465,11 +410,11 @@ static void pispbe_xlate_addrs(struct pispbe_job_descriptor *job,
 		if (addrs[3] == 0 ||
 		    !(hw_en->bayer_enables & PISP_BE_BAYER_ENABLE_TDN_INPUT) ||
 		    !(hw_en->bayer_enables & PISP_BE_BAYER_ENABLE_TDN) ||
-		    (config->tdn.reset & 1)) {
+		    (config->config.tdn.reset & 1)) {
 			hw_en->bayer_enables &=
 				~(PISP_BE_BAYER_ENABLE_TDN_INPUT |
 				  PISP_BE_BAYER_ENABLE_TDN_DECOMPRESS);
-			if (!(config->tdn.reset & 1))
+			if (!(config->config.tdn.reset & 1))
 				hw_en->bayer_enables &=
 					~PISP_BE_BAYER_ENABLE_TDN;
 		}
@@ -564,8 +509,7 @@ static int pispbe_prepare_job(struct pispbe_node_group *node_group)
 	job->buffers[CONFIG_NODE] = buf[CONFIG_NODE];
 
 	config_index = buf[CONFIG_NODE]->vb.vb2_buf.index;
-	job->config = buf[CONFIG_NODE]->config;
-	job->num_tiles = buf[CONFIG_NODE]->num_tiles;
+	job->config = &node_group->config[config_index];
 	job->tiles = node_group->config_dma_addr +
 		     config_index * sizeof(struct pisp_be_tiles_config) +
 		     offsetof(struct pisp_be_tiles_config, tiles);
@@ -573,9 +517,9 @@ static int pispbe_prepare_job(struct pispbe_node_group *node_group)
 	/* remember: srcimages, captures then metadata */
 	for (unsigned int i = 0; i < PISPBE_NUM_NODES; i++) {
 		unsigned int bayer_en =
-			job->config->global.bayer_enables;
+			job->config->config.global.bayer_enables;
 		unsigned int rgb_en =
-			job->config->global.rgb_enables;
+			job->config->config.global.rgb_enables;
 		bool ignore_buffers = false;
 
 		/* Config node is handled outside the loop above. */
@@ -760,11 +704,10 @@ static irqreturn_t pispbe_isr(int irq, void *dev)
 }
 
 static int pisp_be_validate_config(struct pispbe_node_group *node_group,
-				   const struct pisp_be_config *config,
-				   unsigned int num_tiles)
+				   struct pisp_be_tiles_config *config)
 {
-	u32 bayer_enables = config->global.bayer_enables;
-	u32 rgb_enables = config->global.rgb_enables;
+	u32 bayer_enables = config->config.global.bayer_enables;
+	u32 rgb_enables = config->config.global.rgb_enables;
 	struct device *dev = node_group->pispbe->dev;
 	struct v4l2_format *fmt;
 	unsigned int bpl, size;
@@ -775,17 +718,18 @@ static int pisp_be_validate_config(struct pispbe_node_group *node_group,
 		return -EIO;
 	}
 
-	if (num_tiles == 0 || num_tiles > PISP_BACK_END_NUM_TILES) {
+	if (config->num_tiles == 0 ||
+	    config->num_tiles > PISP_BACK_END_NUM_TILES) {
 		dev_dbg(dev, "%s: Invalid number of tiles: %d\n", __func__,
-			num_tiles);
+			config->num_tiles);
 		return -EINVAL;
 	}
 
 	/* Ensure output config strides and buffer sizes match the V4L2 formats. */
 	fmt = &node_group->node[TDN_OUTPUT_NODE].format;
 	if (bayer_enables & PISP_BE_BAYER_ENABLE_TDN_OUTPUT) {
-		bpl = config->tdn_output_format.stride;
-		size = bpl * config->tdn_output_format.height;
+		bpl = config->config.tdn_output_format.stride;
+		size = bpl * config->config.tdn_output_format.height;
 
 		if (fmt->fmt.pix_mp.plane_fmt[0].bytesperline < bpl) {
 			dev_dbg(dev, "%s: bpl mismatch on tdn_output\n",
@@ -802,8 +746,8 @@ static int pisp_be_validate_config(struct pispbe_node_group *node_group,
 
 	fmt = &node_group->node[STITCH_OUTPUT_NODE].format;
 	if (bayer_enables & PISP_BE_BAYER_ENABLE_STITCH_OUTPUT) {
-		bpl = config->stitch_output_format.stride;
-		size = bpl * config->stitch_output_format.height;
+		bpl = config->config.stitch_output_format.stride;
+		size = bpl * config->config.stitch_output_format.height;
 
 		if (fmt->fmt.pix_mp.plane_fmt[0].bytesperline < bpl) {
 			dev_dbg(dev, "%s: bpl mismatch on stitch_output\n",
@@ -822,17 +766,17 @@ static int pisp_be_validate_config(struct pispbe_node_group *node_group,
 		if (!(rgb_enables & PISP_BE_RGB_ENABLE_OUTPUT(j)))
 			continue;
 
-		if (config->output_format[j].image.format &
+		if (config->config.output_format[j].image.format &
 		    PISP_IMAGE_FORMAT_WALLPAPER_ROLL)
 			continue; /* TODO: Size checks for wallpaper formats */
 
 		fmt = &node_group->node[OUTPUT0_NODE + j].format;
 		for (unsigned int i = 0; i < fmt->fmt.pix_mp.num_planes; i++) {
-			bpl = !i ? config->output_format[j].image.stride
-			    : config->output_format[j].image.stride2;
-			size = bpl * config->output_format[j].image.height;
+			bpl = !i ? config->config.output_format[j].image.stride
+			    : config->config.output_format[j].image.stride2;
+			size = bpl * config->config.output_format[j].image.height;
 
-			if (config->output_format[j].image.format &
+			if (config->config.output_format[j].image.format &
 						PISP_IMAGE_FORMAT_SAMPLING_420)
 				size >>= 1;
 
@@ -916,48 +860,15 @@ static int pispbe_node_buffer_prepare(struct vb2_buffer *vb)
 	}
 
 	if (node->id == CONFIG_NODE) {
-		struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
-		struct pispbe_buffer *buf =
-			container_of(vbuf, struct pispbe_buffer, vb);
-		struct pisp_be_tiles_config *dst =
-			&node->node_group->config[vb->index];
-		const struct pisp_be_tiles_config *src = vb2_plane_vaddr(vb, 0);
-		int ret;
+		void *dst = &node->node_group->config[vb->index];
+		void *src = vb2_plane_vaddr(vb, 0);
 
-		if (!buf->config) {
-			buf->config = kmalloc(sizeof(*buf->config), GFP_KERNEL);
-			if (!buf->config)
-				return -ENOMEM;
-		}
+		memcpy(dst, src, sizeof(struct pisp_be_tiles_config));
 
-		/*
-		 * Copy once, then use only the copies: the cached one for the
-		 * registers, the tiles (as many as the validated count) in
-		 * the DMA-coherent buffer the hardware reads them from.
-		 */
-		memcpy(buf->config, &src->config, sizeof(*buf->config));
-		buf->num_tiles = READ_ONCE(src->num_tiles);
-
-		ret = pisp_be_validate_config(node->node_group, buf->config,
-					      buf->num_tiles);
-		if (ret)
-			return ret;
-
-		memcpy(dst->tiles, src->tiles,
-		       buf->num_tiles * sizeof(struct pisp_tile));
-		return 0;
+		return pisp_be_validate_config(node->node_group, dst);
 	}
 
 	return 0;
-}
-
-static void pispbe_node_buffer_cleanup(struct vb2_buffer *vb)
-{
-	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
-	struct pispbe_buffer *buf = container_of(vbuf, struct pispbe_buffer, vb);
-
-	kfree(buf->config);
-	buf->config = NULL;
 }
 
 static void pispbe_node_buffer_queue(struct vb2_buffer *buf)
@@ -1073,7 +984,6 @@ static void pispbe_node_stop_streaming(struct vb2_queue *q)
 static const struct vb2_ops pispbe_node_queue_ops = {
 	.queue_setup = pispbe_node_queue_setup,
 	.buf_prepare = pispbe_node_buffer_prepare,
-	.buf_cleanup = pispbe_node_buffer_cleanup,
 	.buf_queue = pispbe_node_buffer_queue,
 	.start_streaming = pispbe_node_start_streaming,
 	.stop_streaming = pispbe_node_stop_streaming,
@@ -1193,8 +1103,9 @@ static void pispbe_set_plane_params(struct v4l2_format *f,
 		 */
 		const unsigned int align =
 			p->bytesperline ? fmt->min_align : fmt->opt_align;
+		unsigned int pixel_grouping = fmt->pixel_grouping ?: 1;
 
-		bpl = (f->fmt.pix_mp.width * fmt->bit_depth) >> 3;
+		bpl = ((f->fmt.pix_mp.width / pixel_grouping) * fmt->bit_depth) >> 3;
 		bpl = ALIGN(max(p->bytesperline, bpl), align);
 
 		plane_size = bpl * f->fmt.pix_mp.height *
@@ -1754,8 +1665,6 @@ static int pispbe_runtime_suspend(struct device *dev)
 {
 	struct pispbe_dev *pispbe = dev_get_drvdata(dev);
 
-	/* Do not count on the registers keeping their values without a clock. */
-	pispbe->config_shadow_valid = false;
 	clk_disable_unprepare(pispbe->clk);
 
 	return 0;
@@ -1771,7 +1680,6 @@ static int pispbe_runtime_resume(struct device *dev)
 		dev_err(dev, "Unable to enable clock\n");
 		return ret;
 	}
-	pispbe->config_shadow_valid = false;
 
 	dev_dbg(dev, "%s: Enabled clock, rate=%lu\n",
 		__func__, clk_get_rate(pispbe->clk));
@@ -1891,7 +1799,6 @@ static int pispbe_probe(struct platform_device *pdev)
 			goto disable_nodes_err;
 	}
 
-	pm_runtime_mark_last_busy(pispbe->dev);
 	pm_runtime_put_autosuspend(pispbe->dev);
 
 	return 0;
@@ -1933,7 +1840,7 @@ MODULE_DEVICE_TABLE(of, pispbe_of_match);
 
 static struct platform_driver pispbe_pdrv = {
 	.probe		= pispbe_probe,
-	.remove_new	= pispbe_remove,
+	.remove		= pispbe_remove,
 	.driver		= {
 		.name	= PISPBE_NAME,
 		.of_match_table = pispbe_of_match,
