@@ -114,6 +114,7 @@ pub use tunables::{
 };
 #[cfg(feature = "uvc")]
 pub(crate) use uvc_backend::probe_into as probe_uvc_into;
+pub use virtual_backend::VirtualControls;
 
 // Release policy: these backend handle types are consumed only by feature-gated constructors, so
 // some release feature combinations intentionally compile only a subset of the import list.
@@ -366,6 +367,23 @@ pub fn make_virtual_device(name: &str, modes: impl IntoIterator<Item = Mode>) ->
         },
         backends: vec![backend],
     }
+}
+
+/// [`make_virtual_device`] with camera controls: the capture checks values against `controls`
+/// (unknown: unsupported; read only or out of range: refused), keeps them and reads them back,
+/// so control paths (e.g. a camera service's) can be tested without a camera. Controls named as
+/// the native ones (`exposure_time_us`, `gain`, `ae_enable`, ...) answer the standard controls
+/// of [`crate::ipc`].
+pub fn make_virtual_device_with_controls(
+    name: &str,
+    modes: impl IntoIterator<Item = Mode>,
+    controls: Vec<ControlMeta>,
+) -> ProbedDevice {
+    let mut device = make_virtual_device(name, modes);
+    for backend in &mut device.backends {
+        backend.descriptor.controls = controls.clone();
+    }
+    device
 }
 
 /// Create a virtual RGB device with one RG24/sRGB mode.

@@ -37,6 +37,8 @@ pub enum ControlPlane {
         state: simulation_backend::SimulationControlStateHandle,
     },
     Virtual,
+    /// A virtual camera whose descriptor lists controls: values are checked and kept.
+    VirtualControls(std::sync::Arc<super::virtual_backend::VirtualControls>),
     /// A native camera: frame-accurate typed controls.
     #[cfg(feature = "native")]
     Native {
@@ -86,6 +88,7 @@ pub(crate) fn apply_control_to_plane(
             Err(err) => Err(err),
         },
         ControlPlane::None | ControlPlane::Virtual => Err(CaptureError::ControlUnsupported),
+        ControlPlane::VirtualControls(state) => state.apply(id, _value),
         #[cfg(feature = "v4l2")]
         ControlPlane::V4l2 { path } => apply_v4l2_controls(path, &[(id, _value)]),
         #[cfg(feature = "libcamera")]
@@ -120,6 +123,61 @@ pub(crate) fn apply_control_to_plane(
     };
     log_control_result(backend, id, "set", started, &result);
     result
+}
+
+/// [`apply_control_to_plane`], and for frame-exact backends (a native camera's raw modes) the
+/// first frame (sensor sequence, as `NativeFrameMeta::sequence`) predicted to use the value.
+pub(crate) fn apply_control_landing(
+    control: &ControlPlane,
+    id: ControlId,
+    value: ControlValue,
+) -> Result<Option<u64>, CaptureError> {
+    match control {
+        ControlPlane::Supervised(shared) => match shared.current_control() {
+            Ok(inner) => {
+                let result = apply_control_landing(&inner, id, value.clone());
+                if result.is_ok() {
+                    shared.remember_control(id, value);
+                }
+                result
+            }
+            Err(_) => apply_control_to_plane(control, id, value).map(|()| None),
+        },
+        #[cfg(feature = "native")]
+        ControlPlane::Native {
+            controls,
+            processed,
+        } => {
+            let started = Instant::now();
+            let result = match processed.as_ref().and_then(|p| p.apply(id, &value)) {
+                Some(result) => result.map(|()| None),
+                None => super::native_backend::apply_control_landing(controls, id, &value),
+            };
+            log_control_result("native", id, "set", started, &result);
+            result
+        }
+        _ => apply_control_to_plane(control, id, value).map(|()| None),
+    }
+}
+
+impl super::CaptureHandle {
+    /// [`CaptureHandle::set_control`](super::CaptureHandle::set_control), and on frame-exact
+    /// backends (a native camera's raw modes) the first frame predicted to use the value (its
+    /// sensor sequence, as `NativeFrameMeta::sequence`); `None` elsewhere.
+    pub fn set_control_landing(
+        &self,
+        id: ControlId,
+        value: ControlValue,
+    ) -> Result<Option<u64>, CaptureError> {
+        let result = apply_control_landing(&self.control, id, value);
+        self.record_control_result(&result);
+        result
+    }
+
+    /// The controls this capture lists (its backend's descriptor).
+    pub fn control_metas(&self) -> &[styx_capture::prelude::ControlMeta] {
+        &self.descriptor.controls
+    }
 }
 
 pub(crate) fn read_control_from_plane(
@@ -183,6 +241,7 @@ pub(crate) fn read_control_from_plane(
         ControlPlane::Simulation { state } => {
             simulation_backend::read_simulation_control(state, id)
         }
+        ControlPlane::VirtualControls(state) => state.read(id),
         _ => Err(CaptureError::ControlUnsupported),
     };
     log_control_result(backend, id, "get", started, &result);
@@ -193,7 +252,7 @@ fn control_plane_backend(control: &ControlPlane) -> &'static str {
     match control {
         ControlPlane::None => "none",
         ControlPlane::Supervised(_) => "supervised",
-        ControlPlane::Virtual => "virtual",
+        ControlPlane::Virtual | ControlPlane::VirtualControls(_) => "virtual",
         #[cfg(feature = "native")]
         ControlPlane::Native { .. } => "native",
         #[cfg(feature = "v4l2")]

@@ -1,5 +1,8 @@
 //! One camera of a camera service: its clients and the shared capture planned for them.
 
+mod controls;
+
+use std::os::fd::OwnedFd;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -9,6 +12,7 @@ use styx_core::prelude::*;
 
 use super::{Counters, ServiceConfig};
 use crate::capture_api::IdleStop;
+use crate::ipc::wire::ClientToken;
 use crate::planner::{
     Delivered, FrameRate, FrameRequest, Frames, PlanError, SharedFramePlan, SharedSession,
     plan_many,
@@ -30,10 +34,20 @@ struct State {
     clients: Vec<Client>,
     running: Option<Running>,
     next_id: u64,
+    /// Controls clients set (backend ids and values), applied again when the capture restarts.
+    controls: Vec<(ControlId, ControlValue)>,
+    /// A frame rate a client set that the camera cannot change while streaming: every
+    /// client's request is planned at it.
+    fps_override: Option<u32>,
+    /// Control connections that subscribed to changes (their key, a duplicate of the socket).
+    subscribers: Vec<(u64, OwnedFd)>,
+    next_subscriber: u64,
 }
 
 struct Client {
     id: u64,
+    /// Proves the client on control requests (see `wire::ClientToken`).
+    token: u64,
     request: FrameRequest,
     /// Its frames on the running capture; replaced when the capture restarts.
     frames: FramesSlot,
@@ -56,6 +70,10 @@ impl Camera {
                 clients: Vec::new(),
                 running: None,
                 next_id: 0,
+                controls: Vec::new(),
+                fps_override: None,
+                subscribers: Vec::new(),
+                next_subscriber: 0,
             }),
         }
     }
@@ -79,11 +97,13 @@ impl Camera {
         request: FrameRequest,
         config: &ServiceConfig,
         counters: &Counters,
-    ) -> Result<(u64, String, Delivered, FramesSlot), String> {
+    ) -> Result<(ClientToken, String, Delivered, FramesSlot), String> {
         let mut state = self.state.lock();
         let mut all: Vec<FrameRequest> = state.clients.iter().map(|c| c.request.clone()).collect();
         all.push(request.clone());
-        let plan = self.plan_for(&all, config).map_err(|err| describe(&err))?;
+        let plan = self
+            .plan_for(&all, state.fps_override, config)
+            .map_err(|err| describe(&err))?;
         let new = plan.consumers.last().expect("one plan per client");
         let text = new.to_string();
         let delivered = new.delivered();
@@ -104,13 +124,13 @@ impl Camera {
                     if restarting {
                         counters.restarts.fetch_add(1, Ordering::Relaxed);
                     }
-                    frames
+                    frames.expect("a consumer for the new client")
                 }
                 Err(err) => {
                     // Keep serving the clients that were there.
                     let existing = &all[..all.len() - 1];
                     if !existing.is_empty()
-                        && let Ok(plan) = self.plan_for(existing, config)
+                        && let Ok(plan) = self.plan_for(existing, state.fps_override, config)
                     {
                         let _ = restart(&mut state, plan, existing.len(), config);
                     }
@@ -120,20 +140,40 @@ impl Camera {
         };
         let id = state.next_id;
         state.next_id += 1;
+        let token = new_token(id);
         let slot = Arc::new(Mutex::new(Some(frames)));
         state.clients.push(Client {
             id,
+            token,
             request,
             frames: slot.clone(),
         });
-        Ok((id, text, delivered, slot))
+        Ok((ClientToken { id, token }, text, delivered, slot))
     }
 
+    /// A plan for `request` (at `fps` when a client set a frame rate the camera cannot change
+    /// while streaming).
     fn plan_for(
         &self,
         request: &[FrameRequest],
+        fps: Option<u32>,
         config: &ServiceConfig,
     ) -> Result<SharedFramePlan, PlanError> {
+        let at_rate: Vec<FrameRequest>;
+        let request = match fps {
+            Some(fps) => {
+                at_rate = request
+                    .iter()
+                    .map(|r| {
+                        let mut r = r.clone();
+                        r.fps = FrameRate::Exactly(fps);
+                        r
+                    })
+                    .collect();
+                &at_rate
+            }
+            None => request,
+        };
         let plan = plan_many(&self.device, request)?.exportable();
         Ok(match config.idle {
             Some((after, IdleStop::Pause)) => plan.pause_when_idle(after),
@@ -176,15 +216,24 @@ impl Camera {
     }
 }
 
+/// A client's token: not guessable by other processes (a fresh random hash per client).
+fn new_token(id: u64) -> u64 {
+    use std::hash::BuildHasher;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    std::collections::hash_map::RandomState::new().hash_one((id, nanos, std::process::id()))
+}
+
 /// Start `plan`'s capture in place of the running one: the connected clients get their frames
-/// from it (in plan order), and the frames for the plan's last consumer (the new client) are
-/// returned.
+/// from it (in plan order), the controls clients set are applied again, and when the plan has
+/// one more consumer than there are clients, its frames (for the new client) are returned.
 fn restart(
     state: &mut State,
     plan: SharedFramePlan,
     clients: usize,
     config: &ServiceConfig,
-) -> Result<Frames, String> {
+) -> Result<Option<Frames>, String> {
     // The old capture must let the camera go before the new one opens it.
     for client in &state.clients {
         client.frames.lock().take();
@@ -194,10 +243,16 @@ fn restart(
     let session = plan
         .start_session(capacity, config.max_in_flight)
         .map_err(|err| format!("the camera did not start: {err}"))?;
+    for (id, value) in &state.controls {
+        if let Err(err) = session.capture().set_control(*id, value.clone()) {
+            crate::trace::warn!(control = id.0, error = %err, "control not applied again");
+        }
+    }
     for (client, consumer) in state.clients.iter().zip(&plan.consumers) {
         *client.frames.lock() = Some(session.attach(consumer, true));
     }
-    let frames = session.attach(plan.consumers.last().expect("a consumer"), true);
+    let frames = (plan.consumers.len() > state.clients.len())
+        .then(|| session.attach(plan.consumers.last().expect("a consumer"), true));
     state.running = Some(Running {
         session,
         setup: plan.setup_key(),
