@@ -497,7 +497,7 @@ fn handshake(
                     super::metrics::answer(conn, format, &service.metrics());
                     return None;
                 }
-                ClientMessage::Release(_) | ClientMessage::Roi(_) => {}
+                ClientMessage::Release(..) | ClientMessage::Roi(_) => {}
             }
         }
     }
@@ -517,6 +517,8 @@ fn send_frames(
     let counters = &service.counters;
     // An H.264/H.265 client that missed a packet cannot decode until the next keyframe.
     let mut awaiting_keyframe = false;
+    // Refilled for each frame (no allocation per frame once its lists have grown).
+    let mut exported = connection::Exported::default();
     while !service.stopping.load(Ordering::Acquire) {
         let wait = if conn.in_flight() >= max_in_flight {
             Duration::from_millis(20)
@@ -561,19 +563,21 @@ fn send_frames(
         if awaiting_keyframe && delta {
             continue;
         }
-        let exported = match connection::export(&frame) {
-            Ok(exported) => exported,
-            Err(err) => {
-                crate::trace::warn!(error = %err, "frame not sent");
-                continue;
-            }
-        };
+        if let Err(err) = connection::export_into(&frame, &mut exported) {
+            crate::trace::warn!(error = %err, "frame not sent");
+            exported.clear();
+            continue;
+        }
         drop(frame);
-        match conn.send_frame(&exported) {
+        let sent = conn.send_frame(&exported);
+        let copied = exported.copied;
+        // The client's copy keeps the buffers it needs; this one lets go.
+        exported.clear();
+        match sent {
             Ok(true) => {
                 awaiting_keyframe = false;
                 counters.sent.fetch_add(1, Ordering::Relaxed);
-                if exported.copied {
+                if copied {
                     counters.copied.fetch_add(1, Ordering::Relaxed);
                 }
             }

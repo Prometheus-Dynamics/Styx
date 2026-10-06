@@ -7,20 +7,27 @@ use super::camera::{CameraMetrics, ConsumerMetrics, Window};
 use super::registry::{MetricsSnapshot, ServiceMetrics};
 
 /// Escapes a label value.
-fn esc(v: &str) -> String {
+pub(super) fn esc(v: &str) -> String {
     v.replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
 }
 
 #[derive(Default)]
-struct Text {
-    out: String,
+pub(super) struct Text {
+    pub(super) out: String,
     declared: std::collections::HashSet<&'static str>,
 }
 
 impl Text {
-    fn sample(&mut self, name: &'static str, kind: &str, help: &str, labels: &str, value: f64) {
+    pub(super) fn sample(
+        &mut self,
+        name: &'static str,
+        kind: &str,
+        help: &str,
+        labels: &str,
+        value: f64,
+    ) {
         if self.declared.insert(name) {
             let _ = writeln!(self.out, "# HELP {name} {help}");
             let _ = writeln!(self.out, "# TYPE {name} {kind}");
@@ -32,18 +39,29 @@ impl Text {
         }
     }
 
-    fn gauge(&mut self, name: &'static str, help: &str, labels: &str, value: Option<f64>) {
+    pub(super) fn gauge(
+        &mut self,
+        name: &'static str,
+        help: &str,
+        labels: &str,
+        value: Option<f64>,
+    ) {
         if let Some(v) = value {
             self.sample(name, "gauge", help, labels, v);
         }
     }
 
-    fn counter(&mut self, name: &'static str, help: &str, labels: &str, value: u64) {
+    pub(super) fn counter(&mut self, name: &'static str, help: &str, labels: &str, value: u64) {
         self.sample(name, "counter", help, labels, value as f64);
     }
 
-    fn window(&mut self, name: &'static str, help: &str, labels: &str, w: &Window) {
-        for (q, v) in [("0.5", w.p50_ms), ("0.95", w.p95_ms), ("1", w.max_ms)] {
+    pub(super) fn window(&mut self, name: &'static str, help: &str, labels: &str, w: &Window) {
+        for (q, v) in [
+            ("0.5", w.p50_ms),
+            ("0.95", w.p95_ms),
+            ("0.99", w.p99_ms),
+            ("1", w.max_ms),
+        ] {
             self.gauge(name, help, &format!("{labels},quantile=\"{q}\""), v);
         }
     }
@@ -261,6 +279,7 @@ impl Text {
             &l,
             &b.hold,
         );
+        self.hops(super::path::CAMERA_HOPS, &l, &c.path);
         for consumer in &c.consumers {
             self.consumer(&l, consumer);
         }
@@ -292,9 +311,12 @@ impl Text {
             &l,
             &c.hold,
         );
+        if let Some(h) = &c.hops {
+            self.hops(super::path::CONSUMER_HOPS, &l, h);
+        }
     }
 
-    fn snapshot(&mut self, s: &MetricsSnapshot) {
+    pub(super) fn snapshot(&mut self, s: &MetricsSnapshot) {
         let p = &s.process;
         for (name, help, v) in [
             (
@@ -333,6 +355,7 @@ impl Text {
             "",
             p.cpu_ns as f64 / 1e9,
         );
+        self.path(&p.path);
         for c in &s.cameras {
             self.camera(c);
         }

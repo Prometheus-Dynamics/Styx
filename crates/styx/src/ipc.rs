@@ -36,7 +36,8 @@ pub use self::client::{ClientOptions, DEFAULT_OPEN_TIMEOUT, FrameClient};
 use self::connection::Connection;
 #[cfg(feature = "frame-socket")]
 pub use self::frame_socket::{
-    FRAME_SOCKET_TRANSPORT, FrameSocket, FrameSocketOptions, FrameSocketStats, fetch_frame,
+    FRAME_SOCKET_TRANSPORT, FrameFetcher, FrameSocket, FrameSocketMetrics, FrameSocketOptions,
+    FrameSocketStats, fetch_frame,
 };
 pub use self::service::{
     CameraService, CameraServiceHandle, CameraServiceStats, DEFAULT_MAX_CLIENTS,
@@ -96,6 +97,8 @@ pub struct FrameServerStats {
 struct ServerState {
     clients: Vec<Connection>,
     stats: FrameServerStats,
+    /// The frame being published (refilled for each).
+    exported: connection::Exported,
 }
 
 /// Publishes frames to [`FrameClient`]s in other processes over a Unix socket.
@@ -122,6 +125,7 @@ impl FrameServer {
             state: Mutex::new(ServerState {
                 clients: Vec::new(),
                 stats: FrameServerStats::default(),
+                exported: connection::Exported::default(),
             }),
         })
     }
@@ -202,20 +206,25 @@ impl FrameServer {
         if ready.is_empty() {
             return Ok(0);
         }
-        let exported = connection::export(frame)?;
-        if exported.copied {
+        let state = &mut *state;
+        if let Err(err) = connection::export_into(frame, &mut state.exported) {
+            state.exported.clear();
+            return Err(err);
+        }
+        if state.exported.copied {
             state.stats.copied += 1;
         }
         let (mut sent, mut full) = (0, 0);
         let mut gone = Vec::new();
         for i in ready {
-            match state.clients[i].send_frame(&exported) {
+            match state.clients[i].send_frame(&state.exported) {
                 Ok(true) => sent += 1,
                 // Its socket is full: it is not reading.
                 Ok(false) => full += 1,
                 Err(_) => gone.push(i),
             }
         }
+        state.exported.clear();
         for i in gone.into_iter().rev() {
             state.clients.swap_remove(i);
         }
@@ -246,6 +255,10 @@ pub fn fuzz_messages(bytes: &[u8]) {
         }
     }
     let _ = wire::decode_server(bytes);
+    let mut frame = wire::WireFrame::empty();
+    if let Ok(Some(_)) = wire::decode_frame_into(bytes, &mut frame) {
+        std::hint::black_box(frame.meta.hop_record());
+    }
 }
 
 /// Decode `bytes` as a camera service client's request, check it and plan it on virtual

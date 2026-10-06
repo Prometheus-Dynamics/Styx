@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 pub(crate) use styx_core::metrics::AaaSample;
 pub use styx_core::metrics::WINDOW;
-pub(crate) use styx_core::metrics::{Counters as RuntimeCounters, FrameSample, Ring};
-use styx_core::prelude::{BackendFrameMeta, ExternalBacking, FrameMeta};
+pub(crate) use styx_core::metrics::{Counters as RuntimeCounters, FrameSample, HopCounters, Ring};
+use styx_core::prelude::{BackendFrameMeta, ExternalBacking, FrameMeta, Hop};
 
 use super::camera::Window;
 
@@ -46,6 +46,8 @@ pub(crate) struct ConsumerStats {
     /// Frames it holds now.
     pub(crate) held: AtomicI64,
     pub(crate) hold: Ring,
+    /// Hop times and copies of the frames sent to it (camera service clients).
+    pub(crate) hops: HopCounters,
     /// Where the consumer's own drop counters live, read at snapshot time (queue evictions).
     pub(crate) extra_drops: OnceLock<Box<dyn Fn() -> u64 + Send + Sync>>,
 }
@@ -110,6 +112,7 @@ impl ConsumerStats {
             dropped: self.dropped.load(Relaxed) + extra,
             held: self.held.load(Relaxed).max(0) as u64,
             hold: self.hold.window(),
+            hops: (self.hops.frames.get() > 0).then(|| super::path::HopMetrics::of(&self.hops)),
         }
     }
 }
@@ -123,6 +126,8 @@ pub(crate) struct Counters {
     /// the counter the capture handle shares.
     pub(crate) sequence_gaps: Arc<AtomicU64>,
     pub(crate) cpu_ns_retired: AtomicU64,
+    /// Hop times of the frames consumers took, and their copies.
+    pub(crate) hops: HopCounters,
 }
 
 /// Static facts about a capture, set when it starts.
@@ -306,9 +311,19 @@ impl CaptureMetrics {
         self.0.counters.rt.received(meta.timestamp, now_ns(meta));
     }
 
+    /// A frame the consumer took: its [`Hop::Taken`] stamped, its hops (sensor to taken) and
+    /// copies recorded.
+    #[inline]
+    pub(crate) fn taken(&self, meta: &mut FrameMeta) {
+        meta.hops.mark(Hop::Taken);
+        self.0.counters.hops.record(&meta.hops);
+        self.received(meta);
+    }
+
     /// The ISP dropped a frame (all its output buffers were held by consumers).
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn isp_skipped(&self) {
+        styx_core::metrics::pool_exhausted();
         self.0.counters.rt.isp_skipped();
     }
 
@@ -394,6 +409,27 @@ impl CaptureMetrics {
     pub(crate) fn has_producer(&self) -> bool {
         self.0.counters.rt.has_producer()
     }
+}
+
+/// Stamps the hops a frame entering the consumer queue has passed: [`Hop::Sensor`] from its
+/// timestamp (on `CLOCK_MONOTONIC`) and [`Hop::Dequeued`] from its capture instant when the
+/// backend did not set them, and [`Hop::Queued`] now.
+#[inline]
+pub(crate) fn stamp_queued(meta: &mut FrameMeta) {
+    if meta.hops.get(Hop::Sensor).is_none()
+        && let Some(ns) = meta.sensor_monotonic_ns()
+    {
+        meta.hops.set(Hop::Sensor, ns);
+    }
+    if meta.hops.get(Hop::Dequeued).is_none()
+        && let Some(at) = meta.capture_instant
+    {
+        meta.hops.set(Hop::Dequeued, at.as_nanos());
+    }
+    if meta.hops.sequence().is_none() {
+        meta.hops.set_sequence(meta.sequence());
+    }
+    meta.hops.mark(Hop::Queued);
 }
 
 /// The frame's clock now, when it has a timestamp to measure from.
@@ -487,11 +523,21 @@ impl<B: ExternalBacking> ExternalBacking for MeteredBacking<B> {
     {
         self.inner.export_backing()
     }
+
+    #[cfg(unix)]
+    fn export_into(
+        &self,
+        out: &mut Vec<styx_core::prelude::FrameFdPlane>,
+    ) -> Result<Option<styx_core::prelude::ExportedKind>, styx_core::prelude::FrameExportError>
+    {
+        self.inner.export_into(out)
+    }
 }
 
 /// What the frame path pays for metrics per frame, measured over `iterations` frames: a frame
-/// recorded before delivery (with 3A values and ISP times, as the PiSP path records them), its
-/// buffer tracked, the frame received and the buffer released. For the overhead check in
+/// recorded before delivery (with 3A values and ISP times, as the PiSP path records them, and
+/// its hops stamped), its buffer tracked, the frame received (its taken hop stamped and its hops
+/// recorded) and the buffer released. For the overhead check in
 /// `metrics_top --overhead`.
 #[doc(hidden)]
 pub fn frame_path_cost(iterations: u32) -> Duration {
@@ -536,10 +582,60 @@ pub fn frame_path_cost(iterations: u32) -> Duration {
         }
         m.isp_time(Duration::from_micros(2500), Duration::from_micros(3000));
         m.aaa(&aaa);
+        meta.hops = styx_core::prelude::FrameHops::new();
+        meta.hops.set(Hop::Dequeued, meta.timestamp + 5_000_000);
+        meta.hops.set(Hop::IspDone, meta.timestamp + 8_000_000);
+        stamp_queued(&mut meta);
         m.frame(std::hint::black_box(&meta));
         let buffer = m.track(Empty);
-        m.received(std::hint::black_box(&meta));
+        m.taken(std::hint::black_box(&mut meta));
         drop(std::hint::black_box(buffer));
+    }
+    start.elapsed() / iterations.max(1)
+}
+
+/// What the hops alone cost per frame, over `iterations` frames, on every path a frame can
+/// take: a native backend's hops (sensor, dequeue, ISP done) and the queue's stamped, taken by
+/// a consumer and recorded in the capture's windows; then sent to another process (stamped and
+/// recorded by the server, through the wire record), received and imported (stamped and
+/// recorded by the consumer). For the overhead check in `metrics_top --overhead`.
+#[doc(hidden)]
+pub fn hop_path_cost(iterations: u32) -> Duration {
+    use styx_core::prelude::{FrameHops, HopRecord};
+    let capture = HopCounters::new();
+    let server = HopCounters::new();
+    let consumer = HopCounters::new();
+    let res = styx_core::prelude::Resolution::new(1280, 800).expect("size");
+    let format = styx_core::prelude::MediaFormat::new(
+        styx_core::prelude::FourCc::NV12,
+        res,
+        styx_core::prelude::ColorSpace::Srgb,
+    );
+    let mut meta = FrameMeta::new(format, 1).with_backend(BackendFrameMeta::Native(
+        styx_core::prelude::NativeFrameMeta::default(),
+    ));
+    meta.clock = Some(styx_core::prelude::TimestampClock::Monotonic);
+    let start = Instant::now();
+    for i in 0..iterations {
+        let now = styx_core::prelude::CaptureInstant::now().as_nanos();
+        meta.timestamp = now - 9_000_000;
+        meta.hops = FrameHops::new();
+        meta.hops.set(Hop::Dequeued, now - 3_000_000);
+        meta.hops.set(Hop::IspDone, now - 1_000_000);
+        if let Some(BackendFrameMeta::Native(n)) = &mut meta.backend {
+            n.sequence = i;
+        }
+        stamp_queued(&mut meta);
+        meta.hops.mark(Hop::Taken);
+        capture.record(std::hint::black_box(&meta.hops));
+        let mut sent = meta.hops;
+        sent.mark(Hop::Sent);
+        server.record(&sent);
+        let record = std::hint::black_box(HopRecord::new(meta.sequence(), &sent));
+        let mut received = record.hops();
+        received.mark(Hop::Received);
+        received.mark(Hop::Imported);
+        consumer.record(std::hint::black_box(&received));
     }
     start.elapsed() / iterations.max(1)
 }

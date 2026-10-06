@@ -83,6 +83,29 @@ pub trait ExternalBacking: Send + Sync {
         Ok(None)
     }
 
+    /// [`ExternalBacking::export_backing`] into `out` (appended), for a sender exporting frame
+    /// after frame into one list: a memfd as one entry (offset 0, its length), dma-buf planes
+    /// as theirs. `None` when the backing cannot be exported. The default goes through
+    /// `export_backing` (whose dma-buf plane list is a new allocation); backings exported on
+    /// every frame override it.
+    #[cfg(all(feature = "std", unix))]
+    fn export_into(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<Option<ExportedKind>, FrameExportError> {
+        Ok(match self.export_backing()? {
+            None => None,
+            Some(FrameBackingExport::Memfd { fd, len }) => {
+                out.push(FrameFdPlane { fd, offset: 0, len });
+                Some(ExportedKind::Memfd)
+            }
+            Some(FrameBackingExport::DmabufPlanes { planes }) => {
+                out.extend(planes);
+                Some(ExportedKind::DmabufPlanes)
+            }
+        })
+    }
+
     /// Whether the CPU may write the planes through [`ExternalBacking::plane_data_mut`]
     /// (default `false`: external memory is read-only). A frame writes only while it is the
     /// backing's one owner (no shared views or handles out).
@@ -148,6 +171,15 @@ pub struct FrameFdPlane {
     pub fd: OwnedFd,
     pub offset: usize,
     pub len: usize,
+}
+
+/// What [`ExternalBacking::export_into`] appended: one memfd holding every plane at its layout
+/// offset, or one dma-buf (or memfd) per plane.
+#[cfg(all(feature = "std", unix))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportedKind {
+    Memfd,
+    DmabufPlanes,
 }
 
 #[cfg(all(feature = "std", unix))]
@@ -468,6 +500,39 @@ impl FrameLease {
         Ok((self.descriptor(), self.export_backing()?))
     }
 
+    /// [`FrameLease::export_backing`] into `out` (appended; see [`ExternalBacking::export_into`]).
+    #[cfg(all(feature = "std", unix))]
+    pub fn export_backing_into(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<ExportedKind, FrameExportError> {
+        self.external
+            .as_ref()
+            .ok_or(FrameExportError::NotExportable)?
+            .export_into(out)?
+            .ok_or(FrameExportError::NotExportable)
+    }
+
+    /// [`FrameLease::export_or_copy_memfd`] into `out` (appended): the descriptor, what was
+    /// appended, and whether the frame was copied (into a new memfd).
+    #[cfg(all(feature = "std", target_os = "linux"))]
+    pub fn export_or_copy_memfd_into(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<(FrameLeaseDescriptor, ExportedKind, bool), FrameExportError> {
+        if let Some(backing) = self.external.as_ref()
+            && let Some(kind) = backing.export_into(out)?
+        {
+            return Ok((self.descriptor(), kind, false));
+        }
+        out.push(FrameFdPlane {
+            fd: self.copy_to_memfd()?,
+            offset: 0,
+            len: self.backing_span_len(),
+        });
+        Ok((self.descriptor(), ExportedKind::Memfd, true))
+    }
+
     #[cfg(all(feature = "std", target_os = "linux"))]
     pub fn export_or_copy_memfd(
         &self,
@@ -539,6 +604,12 @@ impl FrameLease {
         let mut meta = self.meta.clone();
         meta.residency = Some(FrameResidency::HostOwned);
         meta.mutability = FrameMutability::Mutable;
+        #[cfg(feature = "path-metrics")]
+        crate::metrics::copied_frame(
+            &mut meta,
+            crate::metrics::CopySite::Materialize,
+            layouts.iter().map(|l: &PlaneLayout| l.len).sum::<usize>(),
+        );
         let mut owned = FrameLease::multi_plane(meta, buffers, layouts);
         owned.companions = self.materialize_companions();
         owned
@@ -572,6 +643,7 @@ impl FrameLease {
         for (plane, layout) in self.planes().into_iter().zip(self.layouts.iter()) {
             let data = plane.data();
             let copy_len = data.len().min(layout.len);
+            crate::metrics::copied(crate::metrics::CopySite::MemfdExport, copy_len);
             let mut written = 0usize;
             while written < copy_len {
                 let ret = unsafe {

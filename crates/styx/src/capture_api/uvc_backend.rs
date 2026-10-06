@@ -339,7 +339,9 @@ fn frame_lease(frame: UvcFrame, clock_hz: u32, config: &StyxConfig) -> Option<Fr
     };
     let clock = TimestampClock::Monotonic;
     let target = config.capture_tunables().timestamp_clock;
-    let meta = FrameMeta::new(format, frame.timestamp.as_nanos() as u64)
+    // The payloads were copied into the frame as they arrived (the one copy of this path).
+    styx_core::metrics::copied(styx_core::metrics::CopySite::Capture, frame.data.len());
+    let mut meta = FrameMeta::new(format, frame.timestamp.as_nanos() as u64)
         .with_capture_instant(frame.dequeued)
         .with_sensor_latency(clock)
         .in_clock(clock, target.conversion_from(clock))
@@ -350,6 +352,7 @@ fn frame_lease(frame: UvcFrame, clock_hz: u32, config: &StyxConfig) -> Option<Fr
             copied: false,
         })
         .with_backend(BackendFrameMeta::Uvc(uvc));
+    meta.hops.copied(frame.data.len());
     Some(FrameLease::from_external(
         meta,
         planes,

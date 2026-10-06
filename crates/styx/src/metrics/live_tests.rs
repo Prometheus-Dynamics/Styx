@@ -215,3 +215,64 @@ fn autofocus_state_lens_and_scans_are_reported() {
     );
     assert!(text.contains("styx_camera_af_scans_total{"), "{text}");
 }
+
+#[test]
+fn taken_frames_record_their_hops_and_copies() {
+    let m = CaptureMetrics::default();
+    let now = TimestampClock::Monotonic.now_ns().unwrap();
+    for i in 0..10u32 {
+        let mut f = meta(i, 0, false);
+        f.timestamp = now - 9_000_000;
+        f.hops.set(Hop::Dequeued, now - 3_000_000);
+        f.hops.set(Hop::IspDone, now - 1_000_000);
+        if i == 9 {
+            styx_core::metrics::copied_frame(&mut f, styx_core::metrics::CopySite::Region, 100);
+        }
+        stamp_queued(&mut f);
+        assert_eq!(f.hops.get(Hop::Sensor), Some(now - 9_000_000));
+        assert_eq!(f.hops.sequence(), Some(i));
+        m.frame(&f);
+        m.taken(&mut f);
+        assert!(f.hops.get(Hop::Taken) >= f.hops.get(Hop::Queued));
+    }
+    let s = m.snapshot();
+    let p = &s.path;
+    assert_eq!(
+        (p.frames, p.zero_copy, p.copied, p.copied_bytes),
+        (10, 9, 1, 100)
+    );
+    let names: Vec<_> = p
+        .hops
+        .iter()
+        .map(|h| (h.from.as_str(), h.to.as_str()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("sensor", "dequeued"),
+            ("dequeued", "isp_done"),
+            ("isp_done", "queued"),
+            ("queued", "taken")
+        ]
+    );
+    let dequeue = p.hop("dequeued").unwrap().window.p50_ms.unwrap();
+    assert!((dequeue - 6.0).abs() < 1e-6, "{dequeue}");
+    assert!(p.total.p99_ms.unwrap() >= 9.0);
+    let snapshot = super::super::MetricsSnapshot {
+        cameras: vec![s],
+        process: super::super::process(),
+        ..Default::default()
+    };
+    let text = snapshot.prometheus_text();
+    for name in [
+        "styx_camera_hop_ms{",
+        "from=\"isp_done\",to=\"queued\",quantile=\"0.99\"",
+        "styx_camera_path_ms{",
+        "styx_camera_path_frames_total{",
+        "styx_process_copies_total{site=\"region\"}",
+        "styx_process_dmabuf_syncs_total",
+        "styx_process_pool_exhausted_total",
+    ] {
+        assert!(text.contains(name), "{name} missing:\n{text}");
+    }
+}

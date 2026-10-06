@@ -8,6 +8,42 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Added per-frame hop timestamps and frame path counters (docs/metrics.md "Hops", "Copies,
+  dma-buf syncs, exhausted pools"): `FrameMeta::hops` (`styx_core::buffer::FrameHops`: fixed
+  size, `Copy`, no allocation; empty without the new styx-core feature `path-metrics`, which
+  `std` enables) with `Hop::{Sensor, Dequeued, IspDone, Queued, Taken, Sent, Received,
+  Imported}` in `CLOCK_MONOTONIC` ns, the copies made of the frame and the sequence number
+  (`FrameMeta::sequence` falls back to it); `FrameMeta::hop_record()` / `HopRecord` (serde) as
+  the join key for other tools. Native PiSP and software ISP captures stamp dequeue and ISP
+  done, every capture its queue time, `recv*` the take; `styx_core::metrics::HopCounters`
+  windows them per capture (`CameraMetrics::path`, a `HopMetrics`), per frame socket, per
+  camera service client (`ConsumerMetrics::hops`) and per consumer
+  (`FrameFetcher::hop_metrics`, `FrameClient::hop_metrics`). Copies are counted at every
+  copy site through one helper (`styx_core::metrics::copied_frame` / `copied`, by `CopySite`),
+  `DMA_BUF_IOCTL_SYNC` calls with their time, and exhausted pools: `ProcessMetrics::path`
+  (`PathMetrics`, `styx::metrics::path()`). `Window::p99_ms`; Prometheus `styx_camera_hop_ms`,
+  `styx_camera_path_*`, `styx_consumer_hop_ms`, `styx_process_copies_total{site}`,
+  `styx_process_dmabuf_sync*`, `styx_process_pool_exhausted_total`, quantile 0.99.
+  `metrics_top` shows them (and `--frame-socket PATH`); `metrics_top --overhead` also measures
+  the hops; `hop_breakdown` (example) prints a frame's path hop by hop in-process, through a
+  frame socket and through a camera service, with copies, syncs and allocations per frame.
+- The frame lease message carries the frame's hops as an optional last member `"hops"`
+  (`LeaseMessage::hops`, `Option<HopRecord>`): left out for frames without hops (the bytes are
+  then the same as before, golden-tested), ignored by older peers. `FrameSocket` adds the send
+  time, `fetch_frame` / `FrameFetcher` the receive and import times. The camera service's frame
+  message carries the hops and its release message the client's receive and import times, as
+  trailers older peers ignore (protocol version unchanged).
+- Added `FrameSocket::metrics()` (`FrameSocketMetrics`: counters, lease hold times, hops of
+  the frames sent, the process snapshot) and the statistics endpoint `<path>.stats`
+  (`frame_socket::stats_path`, `fetch_metrics`, `fetch_metrics_text`): JSON or Prometheus text
+  for a profiler polling a running frame socket.
+- Added `FrameFetcher`: fetches from a frame socket again and again with its buffers and the
+  mapping of each frame buffer kept (a fetch maps nothing in steady state and allocates one
+  record, the frame's lease); `lease_codec::LeaseMessageInline` parses and checks a message
+  without allocating; `LeaseMessageRef` / `EncodedFrame` / `write_framed` write one into a
+  reused buffer. `ExternalBacking::export_into` / `FrameLease::export_backing_into` /
+  `export_or_copy_memfd_into` export into the sender's list (`ExportedKind`).
+
 - Added a public `styx-frame-lease-v1` codec without a transport: `styx_core::lease_codec`
   (styx-core feature `lease-codec`, unix; re-exported as `styx::ipc::lease_codec`) with
   `LeaseMessage { descriptor, backing }`, `LeaseBacking::{Memfd { len }, DmabufPlanes { planes }}`,
@@ -280,6 +316,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- The frame socket, the camera service and its clients reuse their message buffers, frame
+  records and descriptor lists, and camera service clients read memfd frames through their
+  mapping cache too (they were mapped per frame): the steady-state path to a consumer in
+  another process allocates only each received frame's release record, and none of it copies
+  (tests with a counting allocator: `crates/styx/tests/zero_alloc.rs`, and the in-process PiSP
+  path in `native_isp::pisp_lease`). The PiSP worker takes its buffers back through a fixed
+  ring instead of a channel. The virtual camera's capture thread is named `styx-virtual`.
 - Lighter `styx` dependency tree (default features: 65 crates to 26; `native` 86 to 64;
   `native,v4l2,uvc,async,hotplug,gpu-isp,codec-turbojpeg,raw-decoders` 116 to 88).
   **Breaking, with migration:**

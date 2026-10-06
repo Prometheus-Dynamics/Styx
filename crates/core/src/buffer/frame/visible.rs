@@ -288,6 +288,8 @@ impl FrameLease {
         for plane in 0..self.layouts.len() {
             offset += self.copy_visible_plane_to_slice(plane, &mut dst[offset..])?;
         }
+        #[cfg(feature = "path-metrics")]
+        crate::metrics::copied(crate::metrics::CopySite::Materialize, offset);
         Ok(offset)
     }
 

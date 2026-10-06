@@ -52,44 +52,47 @@ pub(super) fn start_virtual(
     let mut imported = imported::Slots::claim(config, &mode);
     let live = crate::metrics::CaptureMetrics::default();
     let live_worker = live.clone();
-    let worker = thread::spawn(move || {
-        live_worker.register_thread();
-        crate::trace::debug!(backend = "virtual", "capture worker started");
-        let start = std::time::Instant::now();
-        loop {
-            if stop_rx.try_recv().is_ok() {
-                break;
-            }
-            #[cfg(target_os = "linux")]
-            let next = match imported.as_mut() {
-                Some(slots) => slots.next_frame(),
-                None => capture.next_frame(),
-            };
-            #[cfg(not(target_os = "linux"))]
-            let next = capture.next_frame();
-            if let Some(mut frame) = next {
-                let (timestamp, clock) = timestamp_clock.stamp_now(start.elapsed());
-                let meta = frame.meta_mut();
-                meta.timestamp = timestamp;
-                meta.clock = Some(clock);
-                if crate::capture_api::handle_metrics::deliver(
-                    &live_worker,
-                    &tx,
-                    frame,
-                    "virtual",
-                    frame_interval,
-                ) {
+    let worker = thread::Builder::new()
+        .name("styx-virtual".into())
+        .spawn(move || {
+            live_worker.register_thread();
+            crate::trace::debug!(backend = "virtual", "capture worker started");
+            let start = std::time::Instant::now();
+            loop {
+                if stop_rx.try_recv().is_ok() {
                     break;
                 }
-                if stop_rx.recv_timeout(frame_interval).is_ok() {
+                #[cfg(target_os = "linux")]
+                let next = match imported.as_mut() {
+                    Some(slots) => slots.next_frame(),
+                    None => capture.next_frame(),
+                };
+                #[cfg(not(target_os = "linux"))]
+                let next = capture.next_frame();
+                if let Some(mut frame) = next {
+                    let (timestamp, clock) = timestamp_clock.stamp_now(start.elapsed());
+                    let meta = frame.meta_mut();
+                    meta.timestamp = timestamp;
+                    meta.clock = Some(clock);
+                    if crate::capture_api::handle_metrics::deliver(
+                        &live_worker,
+                        &tx,
+                        frame,
+                        "virtual",
+                        frame_interval,
+                    ) {
+                        break;
+                    }
+                    if stop_rx.recv_timeout(frame_interval).is_ok() {
+                        break;
+                    }
+                } else if stop_rx.recv_timeout(idle_poll).is_ok() {
                     break;
                 }
-            } else if stop_rx.recv_timeout(idle_poll).is_ok() {
-                break;
             }
-        }
-        crate::trace::debug!(backend = "virtual", "capture worker stopped");
-    });
+            crate::trace::debug!(backend = "virtual", "capture worker stopped");
+        })
+        .map_err(|err| CaptureError::Backend(format!("virtual capture worker: {err}")))?;
     Ok(CaptureHandle {
         backend: BackendKind::Virtual,
         control: ControlPlane::Virtual,

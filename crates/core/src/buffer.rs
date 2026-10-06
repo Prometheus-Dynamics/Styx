@@ -13,6 +13,7 @@ mod cpu_access;
 #[cfg(all(feature = "std", target_os = "linux"))]
 mod dmabuf_sync;
 mod frame;
+mod hops;
 mod layout;
 mod meta;
 mod plane;
@@ -22,10 +23,10 @@ mod views;
 pub use cpu_access::CpuAccess;
 pub use layout::{plane_layout_from_dims, plane_layout_with_stride};
 pub use meta::{
-    BackendFrameMeta, CaptureInstant, ClockConversion, ClockSource, FrameLatency, FrameMeta,
-    FrameMutability, FrameResidency, FrameTiming, LibcameraFrameMeta, NativeFrameMeta,
-    PlatformClock, ResidencyTransition, ResidencyTransitionReason, TimestampClock, UvcFrameMeta,
-    V4l2FrameMeta, set_platform_clock,
+    BackendFrameMeta, CaptureInstant, ClockConversion, ClockSource, FrameHops, FrameLatency,
+    FrameMeta, FrameMutability, FrameResidency, FrameTiming, HOP_COUNT, Hop, HopRecord,
+    LibcameraFrameMeta, NativeFrameMeta, PlatformClock, ResidencyTransition,
+    ResidencyTransitionReason, TimestampClock, UvcFrameMeta, V4l2FrameMeta, set_platform_clock,
 };
 pub use plane::{
     FrameAllocation, FrameLeaseDescriptor, FramePlaneDescriptor, FrameValidationError, PlaneLayout,
@@ -41,7 +42,7 @@ pub use frame::{
     box_downscale_luma, box_downscale_luma_in, shared_backing,
 };
 #[cfg(all(feature = "std", unix))]
-pub use frame::{FrameBackingExport, FrameExportError, FrameFdPlane};
+pub use frame::{ExportedKind, FrameBackingExport, FrameExportError, FrameFdPlane};
 pub use pool::{BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats};
 
 #[cfg(all(feature = "std", target_os = "linux"))]

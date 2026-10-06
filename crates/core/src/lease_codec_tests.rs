@@ -6,6 +6,7 @@ use std::path::Path;
 use smallvec::smallvec;
 
 use super::*;
+use crate::buffer::Hop;
 use crate::prelude::*;
 
 fn memfd(bytes: &[u8]) -> OwnedFd {
@@ -200,4 +201,127 @@ fn endpoint_records() {
     assert_eq!(parse_endpoint_uri("unix:///run/styx/front.sock"), None);
     assert_eq!(parse_endpoint_uri("styx-frame-lease+unix://run/x"), None);
     assert_eq!(parse_endpoint_uri("/run/styx/front.sock"), None);
+}
+
+/// A frame with hops carries them as the last member; the other members' bytes are the same.
+#[test]
+fn hops_are_the_last_member_and_come_back() {
+    let mut frame = memfd_frame();
+    let hops = &mut frame.meta_mut().hops;
+    hops.set_sequence(Some(42));
+    hops.set(Hop::Sensor, 1_000);
+    hops.set(Hop::Dequeued, 9_000);
+    hops.set(Hop::IspDone, 11_000);
+    hops.set(Hop::Queued, 11_200);
+    hops.set(Hop::Taken, 11_300);
+    let (payload, fds) = encode(&frame).unwrap();
+    assert_eq!(
+        std::str::from_utf8(&payload).unwrap(),
+        format!(
+            r#"{{"descriptor":{DESCRIPTOR_MEMFD},"backing":{{"kind":"memfd","len":3072}},"hops":{{"sequence":42,"sensor":1000,"dequeued":9000,"isp_done":11000,"queued":11200,"taken":11300}}}}"#
+        )
+    );
+    let back = decode(&payload, fds).unwrap();
+    assert_eq!(back.meta().hops, frame.meta().hops);
+    assert_eq!(back.meta().sequence(), Some(42));
+    assert_eq!(back.meta().hop_record().sent, None);
+
+    // A transport adds its send time and writes the message framed, into a reused buffer.
+    let (mut message, _fds) = encode_message(&frame).unwrap();
+    message.hops.as_mut().unwrap().sent = Some(11_400);
+    let mut out = Vec::new();
+    write_framed(&message, &mut out).unwrap();
+    let len = payload_len(out[..HEADER_LEN].try_into().unwrap()).unwrap();
+    assert_eq!(len, out.len() - HEADER_LEN);
+    // The borrowed message writes the owned message's bytes.
+    assert_eq!(&out[HEADER_LEN..], message.to_json().unwrap().as_slice());
+    assert!(
+        std::str::from_utf8(&out[HEADER_LEN..])
+            .unwrap()
+            .ends_with(r#""taken":11300,"sent":11400}}"#)
+    );
+
+    // Copies count into the record; a peer's members it does not know are skipped.
+    let parsed = LeaseMessage::parse(
+        format!(
+            r#"{{"descriptor":{DESCRIPTOR_MEMFD},"backing":{{"kind":"memfd","len":3072}},"hops":{{"sensor":5,"copies":1,"copied_bytes":3072,"future":true}},"other":1}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let record = parsed.hops.unwrap();
+    assert_eq!(
+        (record.sensor, record.copies, record.copied_bytes),
+        (Some(5), 1, 3072)
+    );
+    // Old messages (no hops) parse with none.
+    let (payload, _) = encode(&dmabuf_frame()).unwrap();
+    assert!(LeaseMessage::parse(&payload).unwrap().hops.is_none());
+}
+
+/// A heap frame copied into a memfd says so in its record.
+#[test]
+fn memfd_copies_are_counted_in_the_record() {
+    let grey = FrameLease::from_visible_bytes(
+        MediaFormat::new(
+            FourCc::GREY,
+            Resolution::new(16, 4).unwrap(),
+            ColorSpace::Srgb,
+        ),
+        3,
+        &[9; 64],
+    )
+    .unwrap();
+    let (message, _) = encode_message(&grey).unwrap();
+    let record = message.hops.unwrap();
+    assert_eq!((record.copies, record.copied_bytes), (1, 64));
+}
+
+/// The inline parse reads the same messages, without allocating its planes, and checks what
+/// `decode` checks.
+#[test]
+fn inline_messages_parse_and_check_as_decode_does() {
+    let mut frame = dmabuf_frame();
+    frame.meta_mut().hops.set(Hop::Sensor, 5);
+    let (payload, fds) = encode(&frame).unwrap();
+    let inline = LeaseMessageInline::parse(&payload).unwrap();
+    let owned = LeaseMessage::parse(&payload).unwrap();
+    assert_eq!(inline.descriptor, owned.descriptor);
+    let LeaseBackingInline::DmabufPlanes { planes } = &inline.backing else {
+        panic!("not dma-buf planes");
+    };
+    let LeaseBacking::DmabufPlanes {
+        planes: owned_planes,
+    } = &owned.backing
+    else {
+        panic!("not dma-buf planes");
+    };
+    assert_eq!(planes.as_slice(), owned_planes.as_slice());
+    assert!(!planes.spilled());
+    assert_eq!(inline.hops, owned.hops);
+    assert_eq!(inline.meta().unwrap().hops.get(Hop::Sensor), Some(5));
+    inline.check(&fds).unwrap();
+    assert!(matches!(
+        inline.check(&fds[..1]),
+        Err(LeaseCodecError::FdCount { expected: 2, .. })
+    ));
+    let small = vec![memfd(&[0; 2048]), memfd(&[0; 512])];
+    assert!(matches!(
+        inline.check(&small),
+        Err(LeaseCodecError::Frame(_))
+    ));
+    // Members in another order, and unknown ones, are read too.
+    let reordered = format!(
+        r#"{{"backing":{{"planes":[{{"offset":0,"len":3072}}],"x":1,"kind":"dmabuf_planes"}},"descriptor":{DESCRIPTOR_MEMFD}}}"#
+    );
+    let back = LeaseMessageInline::parse(reordered.as_bytes()).unwrap();
+    assert_eq!(back.fd_count(), 1);
+    let (payload, fds) = encode(&memfd_frame()).unwrap();
+    let memfd_message = LeaseMessageInline::parse(&payload).unwrap();
+    assert_eq!(
+        memfd_message.backing,
+        LeaseBackingInline::Memfd { len: 3072 }
+    );
+    memfd_message.check(&fds).unwrap();
+    assert!(LeaseMessageInline::parse(br#"{"descriptor":1}"#).is_err());
 }

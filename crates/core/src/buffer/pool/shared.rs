@@ -59,6 +59,10 @@ impl SharedBufferPool {
             self.inner.metrics.hit();
             fd
         } else {
+            // Every buffer is out (not the pool's first lease): another one is made.
+            if self.inner.metrics.leases_out() > 0 {
+                crate::metrics::pool_exhausted();
+            }
             self.inner.metrics.miss();
             self.inner.metrics.alloc();
             create_sized_memfd(self.inner.chunk_size)?

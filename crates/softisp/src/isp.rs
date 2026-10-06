@@ -167,6 +167,11 @@ impl SoftIsp {
         self.copy_input = copy;
     }
 
+    /// Whether input rows are staged ([`Self::set_copy_input`]).
+    pub fn copies_input(&self) -> bool {
+        self.copy_input
+    }
+
     /// See [`Self::set_copy_input`].
     pub fn with_copy_input(mut self, copy: bool) -> Self {
         self.copy_input = copy;

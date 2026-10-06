@@ -1,6 +1,7 @@
 //! Unit-test allocator that remembers the largest single allocation of each thread, so tests
-//! can check that damaged input never makes Styx request huge buffers. (Linux overcommits, so
-//! such requests often succeed on a desktop but fail on small devices.)
+//! can check that damaged input never makes Styx request huge buffers (Linux overcommits, so
+//! such requests often succeed on a desktop but fail on small devices), and counts each
+//! thread's allocations, so tests can check a frame path allocates nothing per frame.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -9,11 +10,13 @@ struct Tracking;
 
 thread_local! {
     static LARGEST: Cell<usize> = const { Cell::new(0) };
+    static COUNT: Cell<u64> = const { Cell::new(0) };
 }
 
 fn note(size: usize) {
     // `try_with`: allocations during thread teardown must not touch a destroyed local.
     let _ = LARGEST.try_with(|largest| largest.set(largest.get().max(size)));
+    let _ = COUNT.try_with(|count| count.set(count.get() + 1));
 }
 
 // SAFETY: forwards to the system allocator unchanged.
@@ -47,4 +50,12 @@ pub(crate) fn largest_allocation<T>(f: impl FnOnce() -> T) -> (T, usize) {
     LARGEST.with(|largest| largest.set(0));
     let value = f();
     (value, LARGEST.with(Cell::get))
+}
+
+/// Run `f` and return its result with the allocations (and reallocations) it made on this thread.
+#[allow(dead_code)]
+pub(crate) fn allocations<T>(f: impl FnOnce() -> T) -> (T, u64) {
+    let before = COUNT.with(Cell::get);
+    let value = f();
+    (value, COUNT.with(Cell::get) - before)
 }

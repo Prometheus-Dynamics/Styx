@@ -13,10 +13,11 @@ use crate::metrics::{Attached, CameraMetrics, CaptureMetrics};
 pub(crate) fn deliver(
     live: &CaptureMetrics,
     tx: &BoundedTx<FrameLease>,
-    frame: FrameLease,
+    mut frame: FrameLease,
     backend: &'static str,
     timeout: Duration,
 ) -> bool {
+    crate::metrics::stamp_queued(frame.meta_mut());
     live.frame(frame.meta());
     enqueue_capture_frame(tx, frame, backend, timeout)
 }
@@ -79,8 +80,8 @@ impl CaptureHandle {
 
     /// A frame the consumer took after waiting since `start`.
     #[inline]
-    pub(super) fn took(&self, start: Instant, frame: &FrameLease) {
+    pub(super) fn took(&self, start: Instant, frame: &mut FrameLease) {
         self.metrics.record(start.elapsed());
-        self.live.received(frame.meta());
+        self.live.taken(frame.meta_mut());
     }
 }

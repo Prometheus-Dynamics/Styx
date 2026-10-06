@@ -10,8 +10,11 @@
 //! - Metrics (camera service): the format and length of the service's metrics, carried in the
 //!   attached memfd, in answer to a metrics request.
 //!
+//! Frames carry their hops (sensor to send) and releases the client's receive and import times
+//! as a trailer older peers ignore (`hops.rs`).
+//!
 //! Client to server:
-//! - Release: the id of a frame the client dropped.
+//! - Release: the id of a frame the client dropped (and its receive and import times).
 //! - Request (camera service): the consumer's `FrameRequest`, and optionally which camera.
 //! - List (camera service): which cameras it serves.
 //! - Roi: the regions of interest now (none: the whole frame).
@@ -20,9 +23,12 @@
 use styx_core::prelude::*;
 
 mod delivered;
+mod hops;
 mod request;
 
 use self::delivered::{read_delivered, write_delivered};
+pub(super) use self::hops::ClientHops;
+use self::hops::{read_frame_hops, read_release_hops, write_frame_hops};
 pub(in crate::ipc) use self::request::encode_request;
 use self::request::read_request;
 use super::IpcError;
@@ -79,7 +85,8 @@ pub(super) struct WireFrame {
 
 /// A message from a client.
 pub(super) enum ClientMessage {
-    Release(u64),
+    /// A frame the client dropped, and when it received and imported it.
+    Release(u64, Option<ClientHops>),
     /// These frames, from the named camera (or the service's first).
     Request(Box<FrameRequest>, Option<String>),
     /// The regions of interest now, region 0 first (empty: the whole frame).
@@ -98,7 +105,8 @@ pub(super) enum MetricsFormat {
 
 /// A message from a server.
 pub(super) enum ServerMessage {
-    Frame(u64, Box<WireFrame>),
+    /// A frame (read with [`decode_frame_into`]).
+    Frame,
     /// The plan, as text, and what its frames are.
     Accept(String, Box<Delivered>),
     Reject(String),
@@ -122,7 +130,13 @@ struct Writer(Vec<u8>);
 
 impl Writer {
     fn new(kind: u16) -> Self {
-        let mut w = Self(Vec::with_capacity(192));
+        Self::reuse(Vec::with_capacity(192), kind)
+    }
+
+    /// A message of `kind` written into `buf` (cleared first).
+    fn reuse(mut buf: Vec<u8>, kind: u16) -> Self {
+        buf.clear();
+        let mut w = Self(buf);
         w.u32(MAGIC);
         w.u16(VERSION);
         w.u16(kind);
@@ -344,7 +358,12 @@ fn write_frame(w: &mut Writer, frame: &WireFrame) {
     }
 }
 
-fn read_frame(r: &mut Reader<'_>, top_level: bool) -> Result<WireFrame, IpcError> {
+/// A frame's fields into `frame`, its lists reused.
+fn read_frame_into(
+    r: &mut Reader<'_>,
+    frame: &mut WireFrame,
+    top_level: bool,
+) -> Result<(), IpcError> {
     let code = FourCc::new(r.u32()?.to_le_bytes());
     let resolution =
         Resolution::new(r.u32()?, r.u32()?).ok_or(IpcError::Malformed("zero-sized frame"))?;
@@ -352,38 +371,43 @@ fn read_frame(r: &mut Reader<'_>, top_level: bool) -> Result<WireFrame, IpcError
     let mut meta = FrameMeta::new(MediaFormat::new(code, resolution, color), r.u64()?);
     meta.clock = clock_from(r.u8()?);
     meta.delta = r.bool()?;
-    let cpu_access = match r.u8()? {
+    frame.cpu_access = match r.u8()? {
         0 => CpuAccess::None,
         1 => CpuAccess::Uncached,
         2 => CpuAccess::Cached,
         _ => return Err(IpcError::Malformed("unknown CPU access")),
     };
     meta.crop = r.opt(Reader::rect)?;
+    frame.meta = meta;
     let planes = usize::from(r.u8()?);
     if planes == 0 || planes > MAX_PLANES {
         return Err(IpcError::Malformed("bad plane count"));
     }
-    let layouts = (0..planes)
-        .map(|_| {
-            Ok(PlaneLayout {
-                offset: r.usize()?,
-                len: r.usize()?,
-                stride: r.usize()?,
-            })
-        })
-        .collect::<Result<Vec<_>, IpcError>>()?;
-    let backing = match r.u8()? {
+    frame.layouts.clear();
+    for _ in 0..planes {
+        frame.layouts.push(PlaneLayout {
+            offset: r.usize()?,
+            len: r.usize()?,
+            stride: r.usize()?,
+        });
+    }
+    frame.backing = match r.u8()? {
         0 => WireBacking::Memfd { len: r.usize()? },
         1 => {
             let count = usize::from(r.u8()?);
             if count != planes {
                 return Err(IpcError::Malformed("bad dma-buf plane count"));
             }
-            WireBacking::Dmabuf(
-                (0..count)
-                    .map(|_| Ok((r.usize()?, r.usize()?)))
-                    .collect::<Result<_, IpcError>>()?,
-            )
+            let mut spans =
+                match std::mem::replace(&mut frame.backing, WireBacking::Memfd { len: 0 }) {
+                    WireBacking::Dmabuf(v) => v,
+                    WireBacking::Memfd { .. } => Vec::new(),
+                };
+            spans.clear();
+            for _ in 0..count {
+                spans.push((r.usize()?, r.usize()?));
+            }
+            WireBacking::Dmabuf(spans)
         }
         _ => return Err(IpcError::Malformed("unknown backing")),
     };
@@ -391,38 +415,99 @@ fn read_frame(r: &mut Reader<'_>, top_level: bool) -> Result<WireFrame, IpcError
     if count > MAX_COMPANIONS || (count > 0 && !top_level) {
         return Err(IpcError::Malformed("bad companions"));
     }
-    let companions = (0..count)
-        .map(|_| {
-            let kind = match (r.u8()?, r.u8()?) {
-                (1, level) => CompanionKind::Pyramid { level },
-                (2, _) => CompanionKind::Scaled,
-                (3, _) => CompanionKind::Overview,
-                (4, index) => CompanionKind::Region { index },
-                _ => return Err(IpcError::Malformed("unknown companion kind")),
-            };
-            Ok((kind, read_frame(r, false)?))
-        })
-        .collect::<Result<_, IpcError>>()?;
-    Ok(WireFrame {
-        meta,
-        layouts,
-        backing,
-        cpu_access,
-        companions,
-    })
+    frame.companions.truncate(count);
+    for i in 0..count {
+        let kind = match (r.u8()?, r.u8()?) {
+            (1, level) => CompanionKind::Pyramid { level },
+            (2, _) => CompanionKind::Scaled,
+            (3, _) => CompanionKind::Overview,
+            (4, index) => CompanionKind::Region { index },
+            _ => return Err(IpcError::Malformed("unknown companion kind")),
+        };
+        if frame.companions.len() == i {
+            frame.companions.push((kind, WireFrame::empty()));
+        }
+        frame.companions[i].0 = kind;
+        read_frame_into(r, &mut frame.companions[i].1, false)?;
+    }
+    Ok(())
 }
 
-pub(super) fn encode_frame(id: u64, frame: &WireFrame) -> Vec<u8> {
-    let mut w = Writer::new(KIND_FRAME);
+impl WireFrame {
+    /// A placeholder to be filled ([`decode_frame_into`], `connection::export_into`).
+    pub(super) fn empty() -> Self {
+        let res = Resolution::new(1, 1).expect("non-zero");
+        WireFrame {
+            meta: FrameMeta::new(MediaFormat::new(FourCc::GREY, res, ColorSpace::Unknown), 0),
+            layouts: Vec::new(),
+            backing: WireBacking::Memfd { len: 0 },
+            cpu_access: CpuAccess::Cached,
+            companions: Vec::new(),
+        }
+    }
+}
+
+/// When `bytes` is a frame message: its id, the frame decoded into `frame` (its lists reused),
+/// with its hops. `Ok(None)` for other messages ([`decode_server`] reads those).
+pub(super) fn decode_frame_into(
+    bytes: &[u8],
+    frame: &mut WireFrame,
+) -> Result<Option<u64>, IpcError> {
+    let (mut r, kind) = Reader::start(bytes)?;
+    if kind != KIND_FRAME {
+        return Ok(None);
+    }
+    let id = r.u64()?;
+    read_frame_into(&mut r, frame, true)?;
+    if let Some(hops) = read_frame_hops(&mut r)? {
+        frame.meta.hops = hops;
+    }
+    Ok(Some(id))
+}
+
+/// Bytes of a release message with its hops.
+pub(super) const RELEASE_LEN: usize = 4 + 2 + 2 + 8 + 1 + 8 + 8;
+
+/// A release message, on the stack (sent from a frame's drop: no allocation).
+pub(super) fn release_bytes(id: u64, hops: ClientHops) -> [u8; RELEASE_LEN] {
+    let mut out = [0u8; RELEASE_LEN];
+    let fields: [&[u8]; 7] = [
+        &MAGIC.to_le_bytes(),
+        &VERSION.to_le_bytes(),
+        &KIND_RELEASE.to_le_bytes(),
+        &id.to_le_bytes(),
+        &[1],
+        &hops.received.unwrap_or(0).to_le_bytes(),
+        &hops.imported.unwrap_or(0).to_le_bytes(),
+    ];
+    let mut at = 0;
+    for f in fields {
+        out[at..at + f.len()].copy_from_slice(f);
+        at += f.len();
+    }
+    out
+}
+
+/// A frame message into `out` (cleared first; its room reused), with `hops` as its trailer
+/// (the frame's own, with the send time).
+pub(super) fn encode_frame_into(id: u64, frame: &WireFrame, hops: &FrameHops, out: &mut Vec<u8>) {
+    let mut w = Writer::reuse(std::mem::take(out), KIND_FRAME);
     w.u64(id);
     write_frame(&mut w, frame);
-    w.0
+    write_frame_hops(&mut w, hops);
+    *out = w.0;
 }
 
+#[cfg(test)]
+pub(super) fn encode_frame(id: u64, frame: &WireFrame) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_frame_into(id, frame, &frame.meta.hops, &mut out);
+    out
+}
+
+#[cfg(test)]
 pub(super) fn encode_release(id: u64) -> Vec<u8> {
-    let mut w = Writer::new(KIND_RELEASE);
-    w.u64(id);
-    w.0
+    release_bytes(id, ClientHops::default()).to_vec()
 }
 
 pub(super) fn encode_accept(plan: &str, delivered: &Delivered) -> Vec<u8> {
@@ -529,7 +614,10 @@ pub(super) fn encode_metrics_reply(format: MetricsFormat, len: usize) -> Vec<u8>
 pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
     let (mut r, kind) = Reader::start(bytes)?;
     match kind {
-        KIND_RELEASE => Ok(ClientMessage::Release(r.u64()?)),
+        KIND_RELEASE => {
+            let id = r.u64()?;
+            Ok(ClientMessage::Release(id, read_release_hops(&mut r)?))
+        }
         KIND_REQUEST => {
             let camera = r.opt(Reader::text)?;
             Ok(ClientMessage::Request(
@@ -550,13 +638,7 @@ pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
 pub(super) fn decode_server(bytes: &[u8]) -> Result<ServerMessage, IpcError> {
     let (mut r, kind) = Reader::start(bytes)?;
     match kind {
-        KIND_FRAME => {
-            let id = r.u64()?;
-            Ok(ServerMessage::Frame(
-                id,
-                Box::new(read_frame(&mut r, true)?),
-            ))
-        }
+        KIND_FRAME => Ok(ServerMessage::Frame),
         KIND_ACCEPT => {
             let delivered = read_delivered(&mut r)?;
             Ok(ServerMessage::Accept(r.text()?, Box::new(delivered)))

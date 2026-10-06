@@ -225,6 +225,9 @@ fn area_resize_luma(
     meta.backend = source.meta().backend.clone();
     meta.capture_instant = source.meta().capture_instant;
     meta.clock = source.meta().clock;
+    meta.hops = source.meta().hops;
+    // New pixels, scaled from the frame's.
+    styx_core::metrics::copied_frame(&mut meta, styx_core::metrics::CopySite::Other, stride * h);
     Ok(FrameLease::multi_plane(
         meta,
         smallvec![buf],

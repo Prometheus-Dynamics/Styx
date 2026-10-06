@@ -317,6 +317,32 @@ impl ExternalBacking for SharedFdBacking {
             }
         }
     }
+
+    fn export_into(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<Option<super::ExportedKind>, FrameExportError> {
+        let SharedFdBackingKind::Dmabuf(fds) = &self.kind else {
+            return match self.export_backing()? {
+                Some(FrameBackingExport::Memfd { fd, len }) => {
+                    out.push(FrameFdPlane { fd, offset: 0, len });
+                    Ok(Some(super::ExportedKind::Memfd))
+                }
+                _ => Ok(None),
+            };
+        };
+        for plane in &self.planes {
+            let fd = fds
+                .get(plane.fd_index)
+                .ok_or(FrameExportError::InvalidDescriptor)?;
+            out.push(FrameFdPlane {
+                fd: dup_owned_fd(fd)?,
+                offset: plane.offset,
+                len: plane.len,
+            });
+        }
+        Ok(Some(super::ExportedKind::DmabufPlanes))
+    }
 }
 
 impl Drop for SharedFdBacking {

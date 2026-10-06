@@ -25,11 +25,11 @@ pub mod prelude {
     pub use crate::{
         buffer::{
             BackendFrameMeta, CaptureInstant, ClockConversion, ClockSource, CpuAccess,
-            FrameAllocation, FrameLatency, FrameLeaseDescriptor, FrameMeta, FrameMutability,
-            FramePlaneDescriptor, FramePlaneShape, FrameResidency, FrameTiming,
-            FrameValidationError, LibcameraFrameMeta, NativeFrameMeta, Plane, PlaneLayout,
-            PlaneMut, ResidencyTransition, ResidencyTransitionReason, TimestampClock, UvcFrameMeta,
-            V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
+            FrameAllocation, FrameHops, FrameLatency, FrameLeaseDescriptor, FrameMeta,
+            FrameMutability, FramePlaneDescriptor, FramePlaneShape, FrameResidency, FrameTiming,
+            FrameValidationError, Hop, HopRecord, LibcameraFrameMeta, NativeFrameMeta, Plane,
+            PlaneLayout, PlaneMut, ResidencyTransition, ResidencyTransitionReason, TimestampClock,
+            UvcFrameMeta, V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
             plane_layout_from_dims, plane_layout_with_stride,
         },
         controls::{
@@ -69,7 +69,7 @@ pub mod prelude {
     };
 
     #[cfg(all(feature = "std", unix))]
-    pub use crate::buffer::{FrameBackingExport, FrameExportError, FrameFdPlane};
+    pub use crate::buffer::{ExportedKind, FrameBackingExport, FrameExportError, FrameFdPlane};
 
     #[cfg(all(feature = "std", target_os = "linux"))]
     pub use crate::buffer::{

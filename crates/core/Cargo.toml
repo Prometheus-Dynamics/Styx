@@ -25,11 +25,16 @@ default = ["std", "neon", "x86"]
 # dma-buf backings and their export and import (unix / Linux), blocking queue receives with
 # timeouts, parking_lot's locks, run-time SIMD detection, system clocks.
 std = [
+    "path-metrics",
     "dep:parking_lot",
     "dep:libc",
     "thiserror/std",
     "serde?/std",
 ]
+# Per-frame hop timestamps (`FrameMeta::hops`) and the copy and dma-buf sync counters
+# (`metrics::path`), on with `std`. Without it the hop record is empty (zero-sized) and the
+# counters are not built: a microcontroller pays nothing.
+path-metrics = []
 # Targets without compare-and-swap (ARMv6-M, RISC-V without `a`): atomics, `Arc` and the
 # locks through `critical-section` (the platform provides its implementation). Without `std`
 # and without this, locks are spin locks (never held across anything that waits).

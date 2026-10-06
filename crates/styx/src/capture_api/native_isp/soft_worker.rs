@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use styx_capture::prelude::*;
-use styx_core::prelude::{CompanionKind, FrameRect};
+use styx_core::prelude::{CompanionKind, FrameRect, Hop};
 use styx_core::queue::BoundedTx;
 use styx_pipeline::device::SoftPipeline;
 use styx_pipeline::{SoftParts, SoftTarget};
@@ -99,6 +99,20 @@ fn lease(
     )
 }
 
+/// The software ISP's copies of a frame: raw rows staged out of uncached receiver buffers, and
+/// a GPU ISP's upload and read-back of the frame.
+fn count_isp_copies(p: &mut SoftPipeline, f: &styx_pipeline::device::SoftFrame, out_bytes: usize) {
+    use styx_core::metrics::{CopySite, copied};
+    let soft = p.soft_loop();
+    if soft.copies_input() {
+        let raw = f.raw.stride as usize * f.raw.height as usize;
+        copied(CopySite::SoftIsp, raw);
+    }
+    if matches!(soft.engine(), styx_pipeline::IspEngine::Gpu { .. }) {
+        copied(CopySite::SoftIsp, out_bytes);
+    }
+}
+
 /// Runs the capture on its own thread until stopped or the queue closes.
 pub(super) fn spawn(
     mut p: SoftPipeline,
@@ -161,6 +175,8 @@ pub(super) fn spawn(
                         break;
                     }
                 };
+                let isp_done = styx_core::prelude::CaptureInstant::now();
+                count_isp_copies(&mut p, &f, image_bytes(code, size));
                 w.loop_controls.report(&f.output.step.params);
                 let raw = w
                     .still
@@ -178,7 +194,10 @@ pub(super) fn spawn(
                     &w.controls,
                     f.sensor.frame,
                 ));
-                let meta = frame_meta(&w.mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
+                let mut meta = frame_meta(&w.mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
+                let dequeued = styx_core::prelude::CaptureInstant::from(f.raw.dequeued);
+                meta.hops.set(Hop::Dequeued, dequeued.as_nanos());
+                meta.hops.set(Hop::IspDone, isp_done.as_nanos());
                 drop(f);
                 w.still
                     .after_frame(&mut p, &sensor, (lands, request), ae, raw);

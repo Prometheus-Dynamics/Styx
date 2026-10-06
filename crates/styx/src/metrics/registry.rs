@@ -28,6 +28,9 @@ pub struct ProcessMetrics {
     /// Distinct dma-bufs the process has open (camera, ISP and imported buffers).
     pub dmabufs: u64,
     pub dmabuf_bytes: u64,
+    /// Copies of frame pixels by site, dma-buf syncs, exhausted pools.
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub path: super::path::PathMetrics,
 }
 
 /// A camera service's metrics, as [`FrameClient::service_metrics`] returns them.
@@ -148,6 +151,7 @@ fn process_with(cameras_open: usize) -> ProcessMetrics {
         pid: std::process::id(),
         cameras_open,
         service_clients: SERVICE_CLIENTS.load(Ordering::Relaxed),
+        path: super::path::path(),
         ..Default::default()
     };
     #[cfg(target_os = "linux")]

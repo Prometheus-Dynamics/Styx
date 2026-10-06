@@ -164,8 +164,8 @@ impl CaptureHandle {
         let start = Instant::now();
         let _demand = self.demand();
         match self.rx.recv() {
-            RecvOutcome::Data(frame) => {
-                self.took(start, &frame);
+            RecvOutcome::Data(mut frame) => {
+                self.took(start, &mut frame);
                 RecvOutcome::Data(frame)
             }
             other => other,
@@ -178,8 +178,8 @@ impl CaptureHandle {
         let start = Instant::now();
         let _demand = self.demand();
         match self.rx.recv_async().await {
-            RecvOutcome::Data(frame) => {
-                self.took(start, &frame);
+            RecvOutcome::Data(mut frame) => {
+                self.took(start, &mut frame);
                 RecvOutcome::Data(frame)
             }
             other => other,
@@ -202,8 +202,8 @@ impl CaptureHandle {
         let start = Instant::now();
         let _demand = self.demand();
         match self.rx.recv_blocking() {
-            styx_core::queue::RecvWaitOutcome::Data(frame) => {
-                self.took(start, &frame);
+            styx_core::queue::RecvWaitOutcome::Data(mut frame) => {
+                self.took(start, &mut frame);
                 RecvOutcome::Data(frame)
             }
             styx_core::queue::RecvWaitOutcome::Closed => RecvOutcome::Closed,
@@ -223,8 +223,8 @@ impl CaptureHandle {
         let _demand = self.demand();
         let outcome = self.rx.recv_timeout(timeout);
         match outcome {
-            styx_core::queue::RecvWaitOutcome::Data(frame) => {
-                self.took(start, &frame);
+            styx_core::queue::RecvWaitOutcome::Data(mut frame) => {
+                self.took(start, &mut frame);
                 styx_core::queue::RecvWaitOutcome::Data(frame)
             }
             styx_core::queue::RecvWaitOutcome::Closed => styx_core::queue::RecvWaitOutcome::Closed,

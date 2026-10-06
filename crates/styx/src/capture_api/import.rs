@@ -280,6 +280,21 @@ impl ExternalBacking for Imported {
             FrameBackingExport::Memfd { fd, len }
         }))
     }
+
+    fn export_into(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<Option<ExportedKind>, FrameExportError> {
+        let slot = &self.buffers.inner.slots[self.index];
+        let fd = slot.buffer.fd.try_clone().map_err(FrameExportError::Fd)?;
+        let len = slot.buffer.len;
+        out.push(FrameFdPlane { fd, offset: 0, len });
+        Ok(Some(if slot.buffer.dmabuf {
+            ExportedKind::DmabufPlanes
+        } else {
+            ExportedKind::Memfd
+        }))
+    }
 }
 
 impl Drop for Imported {

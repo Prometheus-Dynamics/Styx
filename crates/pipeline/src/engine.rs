@@ -124,6 +124,16 @@ impl Engine {
         }
     }
 
+    /// Whether raw input is copied before processing: rows staged (CPU), or uploaded into the
+    /// GPU's buffer (GPU, which also copies its output back).
+    pub fn copies_input(&self) -> bool {
+        match self {
+            Self::Cpu(i) => i.copies_input(),
+            #[cfg(feature = "gpu")]
+            Self::Gpu(g) => g.copy_input,
+        }
+    }
+
     pub fn arithmetic(&self) -> Arithmetic {
         match self {
             Self::Cpu(i) => i.arithmetic(),

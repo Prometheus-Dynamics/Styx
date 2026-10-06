@@ -63,6 +63,26 @@
 //!   fetch after nothing new was published returns the same frame. The message carries no
 //!   sequence number; the descriptor's `timestamp` (the frame's capture timestamp) tells frames
 //!   apart: equal means the same frame, later means newer.
+//!
+//! # Hops and statistics
+//!
+//! A published frame that carries hops ([`FrameMeta::hops`]: its sensor timestamp, dequeue,
+//! ISP and queue times) is sent with them, the send time added ([`Hop::Sent`]), as the
+//! message's `"hops"` member (see [`lease_codec`]); [`fetch_frame`] and [`FrameFetcher`] add
+//! the consumer's receive and import times ([`Hop::Received`], [`Hop::Imported`]), so the
+//! consumer has the frame's whole path with its sequence number as the join key. A frame
+//! without hops is sent as before (no `"hops"`).
+//!
+//! The server counts what it sends ([`FrameSocket::metrics`]): its counters, how long
+//! consumers held their leases, the hop times of the frames it sent and their copies. Another
+//! process reads them without disturbing the frame socket from the sibling endpoint
+//! `<path>.stats` ([`stats_path`]): connect, write `json` or `prometheus` (a line), read the
+//! answer to the end ([`fetch_metrics`], [`fetch_metrics_text`]; `socat - UNIX:<path>.stats`
+//! with `prometheus` typed works too). The frame socket itself is unchanged: a connection to it
+//! is always a frame lease.
+
+mod fetch;
+mod stats;
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -72,9 +92,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
-use styx_core::lease_codec;
+use styx_core::lease_codec::{self, EncodedFrame};
+use styx_core::metrics::{HopCounters, Ring};
 use styx_core::prelude::*;
 
+pub use self::fetch::{FrameFetcher, fetch_frame, fuzz_import};
+pub use self::stats::{FrameSocketMetrics, fetch_metrics, fetch_metrics_text, stats_path};
 use super::{IpcError, socket};
 
 /// The transport name helios-peripherals writes in its stream metadata
@@ -130,14 +153,22 @@ pub struct FrameSocketStats {
     pub unserved: u64,
 }
 
-/// A published frame, ready to send any number of times.
+/// A published frame, ready to send any number of times. Kept (empty) after its last
+/// consumer let go, to be filled with a later frame without allocating.
 struct Served {
     /// Publication order.
     number: u64,
-    message: Vec<u8>,
-    fds: Vec<OwnedFd>,
+    encoded: EncodedFrame,
     /// The camera buffer behind the descriptors, kept while anyone may read them.
-    _keep: Option<Arc<dyn ExternalBacking>>,
+    keep: Option<Arc<dyn ExternalBacking>>,
+}
+
+impl Served {
+    /// Lets go of the frame's memory (descriptors and buffer), keeping the room.
+    fn release(&mut self) {
+        self.encoded.clear();
+        self.keep = None;
+    }
 }
 
 struct Lease {
@@ -152,15 +183,59 @@ struct State {
     latest: Option<Arc<Served>>,
     leases: Vec<Lease>,
     waiting: Vec<(OwnedFd, Instant)>,
+    /// Frames no longer the latest: released once no lease holds them, then refilled.
+    retired: Vec<Arc<Served>>,
+    /// Connections to the stats endpoint waiting for their request.
+    stats_waiting: Vec<(OwnedFd, Instant)>,
     stats: FrameSocketStats,
     stopping: bool,
 }
 
+impl State {
+    /// Releases retired frames no lease holds any more (their camera buffers go back).
+    fn release_unheld(&mut self) {
+        for served in &mut self.retired {
+            if let Some(s) = Arc::get_mut(served) {
+                s.release();
+            }
+        }
+    }
+
+    /// A frame to fill: a released retired one, else a new one.
+    fn spare(&mut self) -> Arc<Served> {
+        match self
+            .retired
+            .iter_mut()
+            .position(|s| Arc::get_mut(s).is_some())
+        {
+            Some(i) => self.retired.swap_remove(i),
+            None => Arc::new(Served {
+                number: 0,
+                encoded: EncodedFrame::default(),
+                keep: None,
+            }),
+        }
+    }
+
+    fn retire(&mut self, served: Option<Arc<Served>>) {
+        if let Some(served) = served {
+            self.retired.push(served);
+        }
+        self.release_unheld();
+    }
+}
+
 struct Shared {
     listener: OwnedFd,
+    stats_listener: Option<OwnedFd>,
     options: FrameSocketOptions,
     state: Mutex<State>,
     wake: UnixStream,
+    /// Lease hold times: send to the consumer's close (or the lease's end).
+    hold: Ring,
+    /// Hop times (up to the send) and copies of the frames sent.
+    hops: HopCounters,
+    path: PathBuf,
 }
 
 /// Serves the latest published frame on a Unix socket in the `styx-frame-lease-v1` format, with
@@ -177,27 +252,41 @@ impl FrameSocket {
         Self::bind_with(path, FrameSocketOptions::default())
     }
 
-    /// Listen on `path` and serve consumers on a background thread until dropped.
+    /// Listen on `path` and serve consumers on a background thread until dropped; the
+    /// statistics on `<path>.stats` ([`stats_path`]; not served if that cannot be bound).
     pub fn bind_with(
         path: impl AsRef<Path>,
         options: FrameSocketOptions,
     ) -> Result<Self, IpcError> {
         let path = path.as_ref().to_path_buf();
         let listener = socket::listen_stream(&path)?;
+        let stats_listener = match socket::listen_stream(&stats_path(&path)) {
+            Ok(l) => Some(l),
+            Err(err) => {
+                crate::trace::warn!(error = %err, "frame socket statistics not served");
+                None
+            }
+        };
         let (wake, wake_rx) = UnixStream::pair()?;
         wake.set_nonblocking(true)?;
         wake_rx.set_nonblocking(true)?;
         let shared = Arc::new(Shared {
             listener,
+            stats_listener,
             options,
             state: Mutex::new(State {
                 latest: None,
                 leases: Vec::new(),
                 waiting: Vec::new(),
+                retired: Vec::new(),
+                stats_waiting: Vec::new(),
                 stats: FrameSocketStats::default(),
                 stopping: false,
             }),
             wake,
+            hold: Ring::new(),
+            hops: HopCounters::new(),
+            path: path.clone(),
         });
         let thread = {
             let shared = shared.clone();
@@ -217,18 +306,28 @@ impl FrameSocket {
     }
 
     /// Make `frame` the latest one: consumers connecting from now on get it. The previous one
-    /// is let go once no consumer holds it.
+    /// is let go once no consumer holds it. Allocates nothing in steady state (the frame's
+    /// message and descriptor lists are reused), except what the frame's own export needs.
     pub fn publish(&self, frame: &FrameLease) -> Result<(), IpcError> {
-        let mut served = export(frame)?;
-        let copied = served._keep.is_none();
+        let mut served = self.shared.state.lock().spare();
+        let s = Arc::get_mut(&mut served).expect("a spare frame is not shared");
+        let filled = s.encoded.fill(frame);
+        if let Err(err) = filled {
+            s.release();
+            self.shared.state.lock().retire(Some(served));
+            return Err(err.into());
+        }
+        s.keep = frame.external_backing_handle().filter(|b| b.can_export());
+        let copied = s.encoded.copied;
         {
             let mut state = self.shared.state.lock();
-            served.number = state.stats.published;
-            state.latest = Some(Arc::new(served));
+            Arc::get_mut(&mut served).expect("not shared yet").number = state.stats.published;
+            let previous = state.latest.replace(served);
+            state.retire(previous);
             state.stats.published += 1;
             state.stats.copied += u64::from(copied);
             if let Some(max) = self.shared.options.max_held_frames {
-                limit_held(&mut state, max);
+                limit_held(&mut state, max, &self.shared.hold);
             }
         }
         self.wake();
@@ -237,20 +336,32 @@ impl FrameSocket {
 
     /// Stop offering a frame (e.g. the capture stopped); consumers holding one keep it.
     pub fn clear(&self) {
-        self.shared.state.lock().latest = None;
+        let mut state = self.shared.state.lock();
+        let latest = state.latest.take();
+        state.retire(latest);
     }
 
     pub fn stats(&self) -> FrameSocketStats {
-        let state = self.shared.state.lock();
-        FrameSocketStats {
-            leases: state.leases.len(),
-            held_frames: held_frames(&state).len(),
-            ..state.stats
-        }
+        stats_of(&self.shared)
+    }
+
+    /// Counters, lease hold times, hop times and copies of the frames sent, and this process's
+    /// metrics snapshot: what `<path>.stats` answers.
+    pub fn metrics(&self) -> FrameSocketMetrics {
+        stats::metrics_of(&self.shared)
     }
 
     fn wake(&self) {
         let _ = (&self.shared.wake).write_all_nonblocking();
+    }
+}
+
+fn stats_of(shared: &Shared) -> FrameSocketStats {
+    let state = shared.state.lock();
+    FrameSocketStats {
+        leases: state.leases.len(),
+        held_frames: held_count(&state),
+        ..state.stats
     }
 }
 
@@ -262,6 +373,9 @@ impl Drop for FrameSocket {
             let _ = thread.join();
         }
         let _ = std::fs::remove_file(&self.path);
+        if self.shared.stats_listener.is_some() {
+            let _ = std::fs::remove_file(stats_path(&self.path));
+        }
     }
 }
 
@@ -280,81 +394,126 @@ impl WakeExt for &UnixStream {
     }
 }
 
-/// The frame as a message and its descriptors; dma-bufs are passed as they are (and their
-/// buffer kept), other memory copied once into a memfd.
-fn export(frame: &FrameLease) -> Result<Served, IpcError> {
-    let keep = frame.external_backing_handle().filter(|b| b.can_export());
-    let (message, fds) = lease_codec::encode_framed(frame)?;
-    Ok(Served {
-        number: 0,
-        message,
-        fds,
-        _keep: keep,
-    })
-}
-
-/// Frames held for consumers besides the latest, oldest first.
-fn held_frames(state: &State) -> Vec<u64> {
+/// Frames held for consumers besides the latest (distinct publication numbers).
+fn held_count(state: &State) -> usize {
     let latest = state.latest.as_ref().map(|l| l.number);
-    let mut held: Vec<u64> = state
-        .leases
-        .iter()
-        .map(|l| l.frame.number)
-        .filter(|&n| Some(n) != latest)
-        .collect();
-    held.sort_unstable();
-    held.dedup();
-    held
+    let mut count = 0;
+    for (i, lease) in state.leases.iter().enumerate() {
+        let n = lease.frame.number;
+        if Some(n) != latest && !state.leases[..i].iter().any(|l| l.frame.number == n) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Ends the leases on the oldest held frames while more than `max` are held.
-fn limit_held(state: &mut State, max: usize) {
-    let held = held_frames(state);
-    if held.len() <= max {
-        return;
+fn limit_held(state: &mut State, max: usize, hold: &Ring) {
+    let latest = state.latest.as_ref().map(|l| l.number);
+    let mut revoked = 0u64;
+    while held_count(state) > max {
+        let Some(oldest) = state
+            .leases
+            .iter()
+            .map(|l| l.frame.number)
+            .filter(|&n| Some(n) != latest)
+            .min()
+        else {
+            break;
+        };
+        state.leases.retain(|l| {
+            let keep = l.frame.number != oldest;
+            if !keep {
+                hold.push_duration(l.since.elapsed());
+                revoked += 1;
+            }
+            keep
+        });
     }
-    let oldest = held[held.len() - max - 1];
-    let before = state.leases.len();
-    state.leases.retain(|l| l.frame.number > oldest);
-    let revoked = (before - state.leases.len()) as u64;
+    state.release_unheld();
     state.stats.revoked += revoked;
-    crate::trace::debug!(
-        revoked,
-        "frame socket: more than {max} frames held, ended the leases on the oldest"
-    );
+    if revoked > 0 {
+        crate::trace::debug!(
+            revoked,
+            "frame socket: more than {max} frames held, ended the leases on the oldest"
+        );
+    }
 }
 
-/// Send `frame` on a new connection; `None` if the consumer could not take it.
-fn send(socket: OwnedFd, frame: &Arc<Served>) -> Option<Lease> {
-    let raw: Vec<RawFd> = frame.fds.iter().map(AsRawFd::as_raw_fd).collect();
-    match socket::send(&socket, &frame.message, &raw) {
-        Ok(true) => Some(Lease {
-            socket: Some(socket),
-            frame: frame.clone(),
-            since: Instant::now(),
-            closed: None,
-        }),
+/// Send `frame` on a new connection, its hops with the send time (written into `out`, reused);
+/// `None` if the consumer could not take it.
+fn send(
+    socket: OwnedFd,
+    frame: &Arc<Served>,
+    out: &mut Vec<u8>,
+    hops: &HopCounters,
+) -> Option<Lease> {
+    let mut record = frame.encoded.hops;
+    if let Some(r) = &mut record {
+        r.sent = CaptureInstant::try_now().map(CaptureInstant::as_nanos);
+    }
+    frame
+        .encoded
+        .message(record.as_ref())
+        .write_framed(out)
+        .ok()?;
+    let fds = &frame.encoded.fds;
+    let mut raw = [0 as RawFd; lease_codec::MAX_FDS];
+    for (r, fd) in raw.iter_mut().zip(fds) {
+        *r = fd.as_raw_fd();
+    }
+    match socket::send(&socket, out, &raw[..fds.len()]) {
+        Ok(true) => {
+            if let Some(r) = &record {
+                hops.record(&r.hops());
+            }
+            Some(Lease {
+                socket: Some(socket),
+                frame: frame.clone(),
+                since: Instant::now(),
+                closed: None,
+            })
+        }
         _ => None,
     }
 }
 
-/// The service thread: accepts consumers, sends them the latest frame, ends their leases.
+/// Where each kind of descriptor sits in the poll list.
+const POLL_WAKE: usize = 0;
+const POLL_LISTENER: usize = 1;
+const POLL_STATS: usize = 2;
+const POLL_FIRST: usize = 3;
+
+/// The service thread: accepts consumers, sends them the latest frame, ends their leases,
+/// answers statistics requests. Its lists are kept across iterations: nothing is allocated
+/// per frame once they have grown.
 fn serve(shared: &Shared, wake: &UnixStream) {
     let options = shared.options;
+    let mut polls: Vec<libc::pollfd> = Vec::new();
+    let mut out: Vec<u8> = Vec::new();
+    let mut stats_ready: Vec<OwnedFd> = Vec::new();
     loop {
         // What to watch, and how long until something expires.
-        let (fds, timeout) = {
+        let timeout = {
             let state = shared.state.lock();
             if state.stopping {
                 return;
             }
             let now = Instant::now();
-            let mut fds = vec![wake.as_raw_fd(), shared.listener.as_raw_fd()];
+            polls.clear();
+            polls.push(socket::pollfd(wake.as_raw_fd()));
+            polls.push(socket::pollfd(shared.listener.as_raw_fd()));
+            polls.push(socket::pollfd(
+                shared
+                    .stats_listener
+                    .as_ref()
+                    .map_or(-1, AsRawFd::as_raw_fd),
+            ));
             let mut next = now + Duration::from_secs(1);
             for lease in &state.leases {
                 match (&lease.socket, lease.closed) {
                     (Some(s), _) => {
-                        fds.push(s.as_raw_fd());
+                        polls.push(socket::pollfd(s.as_raw_fd()));
                         if let Some(max) = options.max_hold {
                             next = next.min(lease.since + max);
                         }
@@ -363,179 +522,115 @@ fn serve(shared: &Shared, wake: &UnixStream) {
                     (None, None) => {}
                 }
             }
+            for (s, since) in &state.stats_waiting {
+                polls.push(socket::pollfd(s.as_raw_fd()));
+                next = next.min(*since + stats::REQUEST_WAIT);
+            }
             for (_, since) in &state.waiting {
                 next = next.min(*since + options.first_frame_wait);
             }
-            (fds, next.saturating_duration_since(now))
+            next.saturating_duration_since(now)
         };
-        let Ok(ready) = socket::poll_readable(&fds, timeout + Duration::from_millis(1)) else {
+        if socket::poll_readable(&mut polls, timeout + Duration::from_millis(1)).is_err() {
             std::thread::sleep(Duration::from_millis(10));
             continue;
+        }
+        let ready = |fd: RawFd| {
+            polls[POLL_FIRST..]
+                .iter()
+                .any(|p| p.fd == fd && p.revents != 0)
         };
-        if ready[0] {
+        if polls[POLL_WAKE].revents != 0 {
             let mut buf = [0u8; 64];
             while matches!(std::io::Read::read(&mut &*wake, &mut buf), Ok(n) if n > 0) {}
         }
-        let readable: Vec<RawFd> = fds[2..]
-            .iter()
-            .zip(&ready[2..])
-            .filter(|&(_, &r)| r)
-            .map(|(&fd, _)| fd)
-            .collect();
-        let mut state = shared.state.lock();
-        let state = &mut *state;
-        if ready[1] {
-            while let Ok(Some(socket)) = socket::accept(&shared.listener) {
-                state.waiting.push((socket, Instant::now()));
+        {
+            let mut state = shared.state.lock();
+            let state = &mut *state;
+            if polls[POLL_LISTENER].revents != 0 {
+                while let Ok(Some(socket)) = socket::accept(&shared.listener) {
+                    state.waiting.push((socket, Instant::now()));
+                }
             }
-        }
-        let now = Instant::now();
-        // Serve the waiting consumers, or give up on them.
-        let latest = state.latest.clone();
-        for (socket, since) in std::mem::take(&mut state.waiting) {
-            match &latest {
-                Some(frame) => match send(socket, frame) {
-                    Some(lease) => {
-                        state.stats.served += 1;
-                        state.leases.push(lease);
+            if polls[POLL_STATS].revents != 0
+                && let Some(listener) = &shared.stats_listener
+            {
+                while let Ok(Some(socket)) = socket::accept(listener) {
+                    state.stats_waiting.push((socket, Instant::now()));
+                }
+            }
+            let now = Instant::now();
+            // Serve the waiting consumers, or give up on them.
+            let latest = state.latest.clone();
+            let mut i = 0;
+            while i < state.waiting.len() {
+                match &latest {
+                    Some(frame) => {
+                        let (socket, _) = state.waiting.swap_remove(i);
+                        match send(socket, frame, &mut out, &shared.hops) {
+                            Some(lease) => {
+                                state.stats.served += 1;
+                                state.leases.push(lease);
+                            }
+                            None => state.stats.unserved += 1,
+                        }
                     }
-                    None => state.stats.unserved += 1,
-                },
-                None if now.duration_since(since) >= options.first_frame_wait => {
-                    state.stats.unserved += 1;
-                }
-                None => state.waiting.push((socket, since)),
-            }
-        }
-        // Consumers that closed (or sent anything: a release) end their lease, after the
-        // linger; consumers holding too long lose theirs.
-        let mut revoked = 0u64;
-        state.leases.retain_mut(|lease| {
-            if let Some(socket) = &lease.socket {
-                if readable.contains(&socket.as_raw_fd()) {
-                    lease.socket = None;
-                    lease.closed = Some(now);
-                } else if options
-                    .max_hold
-                    .is_some_and(|max| now.duration_since(lease.since) >= max)
-                {
-                    revoked += 1;
-                    return false;
+                    None if now.duration_since(state.waiting[i].1) >= options.first_frame_wait => {
+                        state.waiting.swap_remove(i);
+                        state.stats.unserved += 1;
+                    }
+                    None => i += 1,
                 }
             }
-            match lease.closed {
-                Some(closed) => now.duration_since(closed) < options.linger,
-                None => true,
+            drop(latest);
+            // Consumers that closed (or sent anything: a release) end their lease, after the
+            // linger; consumers holding too long lose theirs.
+            let mut revoked = 0u64;
+            state.leases.retain_mut(|lease| {
+                if let Some(socket) = &lease.socket {
+                    if ready(socket.as_raw_fd()) {
+                        lease.socket = None;
+                        lease.closed = Some(now);
+                        shared.hold.push_duration(now.duration_since(lease.since));
+                    } else if options
+                        .max_hold
+                        .is_some_and(|max| now.duration_since(lease.since) >= max)
+                    {
+                        shared.hold.push_duration(now.duration_since(lease.since));
+                        revoked += 1;
+                        return false;
+                    }
+                }
+                match lease.closed {
+                    Some(closed) => now.duration_since(closed) < options.linger,
+                    None => true,
+                }
+            });
+            state.release_unheld();
+            if revoked > 0 {
+                state.stats.revoked += revoked;
+                crate::trace::warn!(
+                    revoked,
+                    max_hold = ?options.max_hold,
+                    "frame socket: closed consumers that held a frame too long (their buffers may be reused)"
+                );
             }
-        });
-        if revoked > 0 {
-            state.stats.revoked += revoked;
-            crate::trace::warn!(
-                revoked,
-                max_hold = ?options.max_hold,
-                "frame socket: closed consumers that held a frame too long (their buffers may be reused)"
-            );
-        }
-    }
-}
-
-/// Fetch the latest frame from a [`FrameSocket`] (or any `styx-frame-lease-v1` server),
-/// waiting up to `wait` for it. The frame is leased: the connection stays open, and the
-/// server keeps the frame's buffer, until the returned lease (and every view of it) is dropped.
-pub fn fetch_frame(path: impl AsRef<Path>, wait: Duration) -> Result<FrameLease, IpcError> {
-    let socket = socket::connect_stream(path.as_ref())?;
-    let deadline = Instant::now() + wait;
-    let mut bytes = Vec::new();
-    let mut fds = Vec::new();
-    let payload_len = loop {
-        const HEADER: usize = lease_codec::HEADER_LEN;
-        if bytes.len() >= HEADER {
-            let len = lease_codec::payload_len(bytes[..HEADER].try_into().expect("header"))?;
-            if bytes.len() >= HEADER + len {
-                break len;
-            }
-        }
-        let left = deadline.saturating_duration_since(Instant::now());
-        match socket::recv(&socket, left)? {
-            socket::Received::Message(more, more_fds) => {
-                bytes.extend_from_slice(&more);
-                fds.extend(more_fds);
-            }
-            socket::Received::Nothing if left.is_zero() => {
-                return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
-            }
-            socket::Received::Nothing => {}
-            socket::Received::Closed => return Err(IpcError::Malformed("no frame served")),
-        }
-    };
-    let payload = &bytes[lease_codec::HEADER_LEN..lease_codec::HEADER_LEN + payload_len];
-    let imported = lease_codec::decode(payload, fds)?;
-    let inner = imported
-        .external_backing_handle()
-        .ok_or(IpcError::Malformed("frame without backing"))?;
-    let meta = imported.meta().clone();
-    let layouts = imported.layouts().iter().copied().collect();
-    drop(imported);
-    Ok(FrameLease::from_external(
-        meta,
-        layouts,
-        Arc::new(Leased {
-            inner,
-            _connection: socket,
-        }),
-    ))
-}
-
-/// Import `payload` as a frame message over `fds` (memfds standing in for what a server
-/// sends) with [`lease_codec::decode`] and read every plane, as a consumer would. For fuzzing.
-#[doc(hidden)]
-pub fn fuzz_import(payload: &[u8], fds: Vec<OwnedFd>) {
-    if let Ok(frame) = lease_codec::decode(payload, fds) {
-        let _ = frame.validate_plane_layouts();
-        if let Ok(planes) = frame.planes_visible() {
-            for rows in planes {
-                for row in rows {
-                    std::hint::black_box(row.data().iter().fold(0u8, |a, b| a ^ b));
+            // Statistics requests that arrived (answered below, without the lock), or gave up.
+            let mut i = 0;
+            while i < state.stats_waiting.len() {
+                let (socket, since) = &state.stats_waiting[i];
+                if ready(socket.as_raw_fd()) {
+                    stats_ready.push(state.stats_waiting.swap_remove(i).0);
+                } else if now.duration_since(*since) >= stats::REQUEST_WAIT {
+                    state.stats_waiting.swap_remove(i);
+                } else {
+                    i += 1;
                 }
             }
         }
-        let _ = std::hint::black_box(frame.to_visible_vec());
-    }
-}
-
-/// A fetched frame's memory and the connection that is its lease.
-struct Leased {
-    inner: Arc<dyn ExternalBacking>,
-    _connection: OwnedFd,
-}
-
-impl ExternalBacking for Leased {
-    fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        self.inner.plane_data(index)
-    }
-
-    fn backing_bytes(&self) -> Option<usize> {
-        self.inner.backing_bytes()
-    }
-
-    fn backing_kind(&self) -> &'static str {
-        "frame_socket"
-    }
-
-    fn can_export(&self) -> bool {
-        self.inner.can_export()
-    }
-
-    fn residency(&self) -> FrameResidency {
-        self.inner.residency()
-    }
-
-    fn cpu_access(&self) -> CpuAccess {
-        self.inner.cpu_access()
-    }
-
-    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
-        self.inner.export_backing()
+        for socket in stats_ready.drain(..) {
+            stats::answer(shared, socket);
+        }
     }
 }
 
