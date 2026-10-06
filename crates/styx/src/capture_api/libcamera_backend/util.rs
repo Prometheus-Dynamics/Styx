@@ -214,29 +214,33 @@ pub(super) fn pisp_disallowed_fourcc(code: FourCc) -> bool {
     )
 }
 
+/// The format to ask libcamera for. libcamera names formats by DRM fourcc, so this maps by
+/// memory layout (`styx_core::format::drm`): `RG24` (bytes R, G, B) is DRM `BG24`, `RGBA` is
+/// `AB24`, `XR24` / `XB24` are themselves. Formats outside the kernel's DRM table (raw Bayer,
+/// CSI-2 packed raw) keep their Styx code.
 pub(super) fn normalize_requested_fourcc_for_libcamera(code: FourCc) -> FourCc {
-    match &code.to_u32().to_le_bytes() {
-        b"RG24" => FourCc::new(*b"RGB3"),
-        b"BG24" => FourCc::BGR3,
-        b"XR24" => FourCc::new(*b"RGB0"),
-        b"XB24" => FourCc::new(*b"BGR0"),
+    match styx_core::format::drm::mapping(code) {
+        Some(m) if m.registry == styx_core::format::drm::DrmRegistry::Kernel => {
+            FourCc::new(m.drm.fourcc.to_le_bytes())
+        }
         _ => code,
     }
 }
 
+/// Whether a request is for 24-bit RGB (emulated from YUV on PiSP).
+pub(super) fn is_rgb24_request(code: FourCc) -> bool {
+    matches!(
+        code,
+        FourCc::RG24 | FourCc::RGB3 | FourCc::BG24 | FourCc::BGR3
+    )
+}
+
+/// The Styx format of a libcamera pixel format (a DRM fourcc and modifier), by memory layout.
 pub(super) fn map_pixel_format_to_fourcc(pf: libcamera::pixel_format::PixelFormat) -> FourCc {
-    let base = FourCc::from(pf.fourcc());
-    const RGB3: [u8; 4] = *b"RGB3";
-    const BGR3: [u8; 4] = *b"BGR3";
-    const RGB0: [u8; 4] = *b"RGB0";
-    const BGR0: [u8; 4] = *b"BGR0";
-    match base.to_u32().to_le_bytes() {
-        RGB3 => return FourCc::RG24,
-        BGR3 => return FourCc::BG24,
-        RGB0 => return FourCc::XR24,
-        BGR0 => return FourCc::XB24,
-        _ => {}
+    if let Some(code) = styx_core::format::drm::from_drm(pf.fourcc(), pf.modifier()) {
+        return code;
     }
+    let base = FourCc::from(pf.fourcc());
     let Some(info) = pf.info() else {
         return base;
     };

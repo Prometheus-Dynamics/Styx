@@ -166,3 +166,96 @@ fn no_drm_format_for_compressed_unknown_or_inexact() {
     assert_eq!(from_drm(drm_fourcc(b"RG16"), 0), None); // RGB565
     assert_eq!(from_drm(drm_fourcc(b"P010"), 0), None);
 }
+
+/// Packed RGB rows of the kernel's `drm_fourcc.h`: the channels of the little-endian word from
+/// its most significant end, as the header writes them (`x` an unused byte).
+const DRM_WORD_ORDER: &[(&[u8; 4], &str)] = &[
+    (b"RG24", "RGB"),  // DRM_FORMAT_RGB888: [23:0] R:G:B little endian
+    (b"BG24", "BGR"),  // DRM_FORMAT_BGR888: [23:0] B:G:R little endian
+    (b"XR24", "xRGB"), // DRM_FORMAT_XRGB8888: [31:0] x:R:G:B little endian
+    (b"XB24", "xBGR"), // DRM_FORMAT_XBGR8888: [31:0] x:B:G:R little endian
+    (b"AR24", "ARGB"), // DRM_FORMAT_ARGB8888: [31:0] A:R:G:B little endian
+    (b"AB24", "ABGR"), // DRM_FORMAT_ABGR8888: [31:0] A:B:G:R little endian
+    (b"RG48", "RGB"),  // DRM_FORMAT_RGB161616: [47:0] R:G:B 16:16:16 little endian
+    (b"BG48", "BGR"),  // DRM_FORMAT_BGR161616: [47:0] B:G:R 16:16:16 little endian
+];
+
+fn channel_letter(c: crate::format::Channel) -> char {
+    use crate::format::Channel;
+    match c {
+        Channel::Red => 'R',
+        Channel::Green => 'G',
+        Channel::Blue => 'B',
+        Channel::Alpha => 'A',
+        Channel::Padding => 'x',
+        other => panic!("not an RGB channel: {other:?}"),
+    }
+}
+
+/// `FourCc::layout_info`'s channel order (memory order) is the DRM word order reversed, for
+/// every packed RGB format the DRM table maps, and every packed RGB format is mapped.
+#[test]
+fn layout_table_agrees_with_drm_byte_order() {
+    use crate::format::PackedChannelOrder as O;
+    let rgb = |o: O| matches!(o, O::Rgb | O::Bgr | O::Rgba | O::Bgra | O::Rgbx | O::Bgrx);
+    let mut checked = 0;
+    let codes = MAPPINGS
+        .iter()
+        .map(|m| m.fourcc)
+        .chain(ALIASES.iter().map(|&(alias, _)| alias));
+    for code in codes {
+        let m = mapping(code).unwrap();
+        let Some(packed) = code.layout_info().packed else {
+            continue;
+        };
+        if !rgb(packed.order) {
+            continue;
+        }
+        let drm = m.drm.fourcc.to_le_bytes();
+        let (_, word) = DRM_WORD_ORDER
+            .iter()
+            .find(|(c, _)| **c == drm)
+            .unwrap_or_else(|| panic!("{code} maps to a DRM format not in the table"));
+        let memory: std::string::String = word.chars().rev().collect();
+        let styx: std::string::String = packed
+            .order
+            .channels()
+            .iter()
+            .copied()
+            .map(channel_letter)
+            .collect();
+        assert_eq!(styx, memory, "{code} (DRM {word})");
+        assert_eq!(packed.bytes_per_pixel % memory.len(), 0, "{code}");
+        checked += 1;
+    }
+    // RG24, BG24, RGBA, BGRA, XR24, XB24, RG48, BG48 and the aliases RGB3, BGR3.
+    assert_eq!(checked, 10);
+
+    for code in [
+        FourCc::RG24,
+        FourCc::RGB3,
+        FourCc::BG24,
+        FourCc::BGR3,
+        FourCc::RGBA,
+        FourCc::BGRA,
+        FourCc::XR24,
+        FourCc::XB24,
+        FourCc::RG48,
+        FourCc::BG48,
+    ] {
+        assert!(to_drm(code).is_some(), "{code} has no DRM format");
+    }
+}
+
+/// `XR24` is bytes B, G, R, x and `XB24` R, G, B, x (V4L2 `XBGR32` / `RGBX32`, DRM
+/// `XRGB8888` / `XBGR8888`).
+#[test]
+fn x24_byte_order() {
+    use crate::format::{Channel as C, PackedChannelOrder as O};
+    let order = |c: FourCc| c.layout_info().packed.unwrap().order;
+    assert_eq!(order(FourCc::XR24), O::Bgrx);
+    assert_eq!(order(FourCc::XB24), O::Rgbx);
+    assert_eq!(O::Bgrx.channels(), &[C::Blue, C::Green, C::Red, C::Padding]);
+    assert_eq!(O::Rgbx.channels(), &[C::Red, C::Green, C::Blue, C::Padding]);
+    assert_eq!(to_drm(FourCc::XB24), Some(DrmFormat::linear(b"XB24")));
+}
