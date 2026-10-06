@@ -283,9 +283,10 @@ impl CodecRegistry {
                     max_height,
                 )),
             );
+            // V4L2 / DRM byte order: `XB24` is R, G, B, x and `XR24` is B, G, R, x in memory.
             self.register(
                 FourCc::XB24,
-                Arc::new(crate::decoder::raw::BgraToRgbDecoder::with_input_for_max(
+                Arc::new(crate::decoder::raw::RgbaToRgbDecoder::with_input_for_max(
                     FourCc::XB24,
                     "xb24-strip",
                     max_width,
@@ -294,7 +295,7 @@ impl CodecRegistry {
             );
             self.register(
                 FourCc::XR24,
-                Arc::new(crate::decoder::raw::RgbaToRgbDecoder::with_input_for_max(
+                Arc::new(crate::decoder::raw::BgraToRgbDecoder::with_input_for_max(
                     FourCc::XR24,
                     "xr24-strip",
                     max_width,

@@ -207,9 +207,8 @@ pub(super) fn start_libcamera(
                 )));
             }
             let libcamera_code = normalize_requested_fourcc_for_libcamera(requested_code);
-            let is_rgb24_request =
-                matches!(&libcamera_code.to_u32().to_le_bytes(), b"RGB3" | b"BGR3");
-            let emulate_rgb24 = is_rgb24_request && util::is_rpi_pisp_sensor_i2c(&id_for_thread);
+            let emulate_rgb24 = util::is_rgb24_request(requested_code)
+                && util::is_rpi_pisp_sensor_i2c(&id_for_thread);
             // Buffers for the queue plus headroom, so a full queue never leaves libcamera
             // without requests (it would then hand out its oldest raw frames).
             let depth_u32 = u32::try_from(queue_depth + extra_buffers)

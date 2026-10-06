@@ -53,13 +53,15 @@ pub enum Channel {
     Green,
     Blue,
     Alpha,
+    /// An unused byte (the `X` of `XR24` / `XB24`).
+    Padding,
     Luma,
     ChromaBlue,
     ChromaRed,
     Depth,
 }
 
-/// Channel order for known packed pixel layouts.
+/// Channel order for known packed pixel layouts, bytes in memory order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackedChannelOrder {
     Luma,
@@ -67,8 +69,10 @@ pub enum PackedChannelOrder {
     Bgr,
     Rgba,
     Bgra,
-    Xrgb,
-    Xbgr,
+    /// Bytes R, G, B, x: `XB24` (V4L2 `RGBX32`, DRM `XBGR8888`).
+    Rgbx,
+    /// Bytes B, G, R, x: `XR24` (V4L2 `XBGR32`, DRM `XRGB8888`).
+    Bgrx,
     Yuyv,
     Uyvy,
     Yvyu,
@@ -85,8 +89,18 @@ impl PackedChannelOrder {
             Self::Bgr => &[Channel::Blue, Channel::Green, Channel::Red],
             Self::Rgba => &[Channel::Red, Channel::Green, Channel::Blue, Channel::Alpha],
             Self::Bgra => &[Channel::Blue, Channel::Green, Channel::Red, Channel::Alpha],
-            Self::Xrgb => &[Channel::Alpha, Channel::Red, Channel::Green, Channel::Blue],
-            Self::Xbgr => &[Channel::Alpha, Channel::Blue, Channel::Green, Channel::Red],
+            Self::Rgbx => &[
+                Channel::Red,
+                Channel::Green,
+                Channel::Blue,
+                Channel::Padding,
+            ],
+            Self::Bgrx => &[
+                Channel::Blue,
+                Channel::Green,
+                Channel::Red,
+                Channel::Padding,
+            ],
             Self::Yuyv => &[
                 Channel::Luma,
                 Channel::ChromaBlue,
@@ -338,11 +352,11 @@ impl FourCc {
             }),
             Self::XR24 => Some(PackedPixelSchema {
                 bytes_per_pixel: 4,
-                order: PackedChannelOrder::Xrgb,
+                order: PackedChannelOrder::Bgrx,
             }),
             Self::XB24 => Some(PackedPixelSchema {
                 bytes_per_pixel: 4,
-                order: PackedChannelOrder::Xbgr,
+                order: PackedChannelOrder::Rgbx,
             }),
             Self::YUYV => Some(PackedPixelSchema {
                 bytes_per_pixel: 2,

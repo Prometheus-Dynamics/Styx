@@ -394,6 +394,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `PackedChannelOrder::Xrgb` / `Xbgr` are now `Bgrx` / `Rgbx` (bytes in memory order, like
+  `Rgba` / `Bgra`), and `Channel` has a `Padding` variant for the unused byte of `XR24` / `XB24`.
 - Rust 1.99.0: the pinned toolchain (`rust-toolchain.toml`), the MSRV (`rust-version = "1.99"`,
   also for gst-styx and pipewire-styx) and CI. MCU images are 0.1-1.6% smaller (docs/mcu.md).
 - Every dependency at its newest release. Majors that reach Styx's public API, with migration:
@@ -552,6 +554,23 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   graph with Daedalus and feed it frames.
 
 ### Fixed
+
+- `XR24` and `XB24` byte order now follows V4L2 and DRM everywhere: `XR24` (V4L2 `XBGR32`, DRM
+  `XRGB8888`, what libcamera delivers) is bytes B, G, R, x; `XB24` (V4L2 `RGBX32`, DRM
+  `XBGR8888`) is R, G, B, x. Colour output changes for `XR24` / `XB24` users, whose red and
+  blue were swapped:
+  - styx-codec's `xr24-strip` decoder read `XR24` as R, G, B (now B, G, R), and `xb24-strip`
+    read `XB24` as B, G, R (now R, G, B);
+  - `frame_to_dynamic_image` (the `image` bridge) had the same swap for both;
+  - `FourCc::layout_info` gave `XR24` as x, R, G, B and `XB24` as x, B, G, R (now `Bgrx` /
+    `Rgbx`, checked against `format::drm` in a test).
+- The libcamera backend and probe name libcamera's formats by memory layout
+  (`styx_core::format::drm`): libcamera uses DRM fourccs, so its `RG24` (`RGB888`, bytes B, G,
+  R) is now Styx `BG24` and its `BG24` Styx `RG24` (before: the other way round, swapped
+  colours), its `AB24` / `AR24` are `RGBA` / `BGRA`, and CSI-2 packed raw is `pBAA` and friends
+  by modifier. Requests go the other way: `XR24` / `XB24` are asked for as themselves (before:
+  the unknown codes `RGB0` / `BGR0`, which libcamera replaced), `RG24` / `BG24` as DRM `BG24` /
+  `RG24` (before: `RGB3` / `BGR3`), `RGBA` / `BGRA` as `AB24` / `AR24`.
 
 - The native software ISP no longer runs on every core by default: on the dev box's CM5 at
   2.4 GHz, four ISP threads (or three at 120 fps) hung the board within seconds (no kernel

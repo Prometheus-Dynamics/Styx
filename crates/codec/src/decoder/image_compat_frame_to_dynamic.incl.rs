@@ -199,11 +199,12 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
             let len = dst_stride.checked_mul(height as usize)?;
             let mut out = vec![0u8; len];
             let src = &plane.data()[..required];
-            let xb24 = c == FourCc::XB24;
+            // `XR24` is B, G, R, x in memory (V4L2 `XBGR32`, DRM `XRGB8888`), `XB24` R, G, B, x.
+            let swap = c == FourCc::XR24;
             crate::par::for_each_row(&mut out[..], dst_stride, |y, dst_line| {
                 let start = y * stride;
                 let src_line = &src[start..start + (width as usize * 4)];
-                styx_core::simd::x32_to_rgb24_row(src_line, dst_line, width as usize, xb24);
+                styx_core::simd::x32_to_rgb24_row(src_line, dst_line, width as usize, swap);
             });
             image::RgbImage::from_raw(width, height, out).map(DynamicImage::ImageRgb8)
         }

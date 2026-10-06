@@ -379,6 +379,9 @@ mod corruption_tests;
 #[cfg(all(test, feature = "raw-decoders"))]
 mod raw_corruption_tests;
 
+#[cfg(all(test, feature = "raw-decoders"))]
+mod x32_byte_order_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

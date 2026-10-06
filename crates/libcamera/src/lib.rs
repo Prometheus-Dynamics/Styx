@@ -219,16 +219,12 @@ fn pisp_disallowed_fourcc(code: FourCc) -> bool {
 
 #[cfg(feature = "probe")]
 fn map_pixel_format_to_fourcc(pf: libcamera::pixel_format::PixelFormat) -> FourCc {
-    let base = FourCc::from(pf.fourcc());
-    match base.to_u32().to_le_bytes() {
-        // Normalize libcamera's RGB/BGR FourCCs into Styx's "friendly" aliases.
-        // This keeps the rest of the stack consistent (encoders/decoders default to `RG24`).
-        bytes if bytes == *b"RGB3" => return FourCc::RG24,
-        bytes if bytes == *b"BGR3" => return FourCc::BG24,
-        bytes if bytes == *b"RGB0" => return FourCc::XR24,
-        bytes if bytes == *b"BGR0" => return FourCc::XB24,
-        _ => {}
+    // libcamera names formats by DRM fourcc and modifier: map by memory layout (DRM `RG24` is
+    // Styx `BG24`, `AB24` is `RGBA`, `XR24` is `XR24`, CSI-2 packed raw is `pBAA` and friends).
+    if let Some(code) = styx_core::format::drm::from_drm(pf.fourcc(), pf.modifier()) {
+        return code;
     }
+    let base = FourCc::from(pf.fourcc());
     let Some(info) = pf.info() else {
         return base;
     };
@@ -594,4 +590,24 @@ pub mod prelude {
     };
     pub use crate::{LibcameraCapture, LibcameraDeviceInfo};
     pub use styx_capture::prelude::*;
+}
+
+#[cfg(all(test, feature = "probe"))]
+mod format_tests {
+    use super::*;
+
+    /// Probed formats are named by memory layout: libcamera's DRM `XR24` (bytes B, G, R, x) is
+    /// Styx `XR24`, DRM `RG24` (bytes B, G, R) is Styx `BG24`, DRM `AB24` is `RGBA`.
+    #[test]
+    fn probed_formats_map_by_memory_layout() {
+        let lc = |code: &[u8; 4]| {
+            libcamera::pixel_format::PixelFormat::new(u32::from_le_bytes(*code), 0)
+        };
+        assert_eq!(map_pixel_format_to_fourcc(lc(b"XR24")), FourCc::XR24);
+        assert_eq!(map_pixel_format_to_fourcc(lc(b"XB24")), FourCc::XB24);
+        assert_eq!(map_pixel_format_to_fourcc(lc(b"AB24")), FourCc::RGBA);
+        assert_eq!(map_pixel_format_to_fourcc(lc(b"AR24")), FourCc::BGRA);
+        assert_eq!(map_pixel_format_to_fourcc(lc(b"RG24")), FourCc::BG24);
+        assert_eq!(map_pixel_format_to_fourcc(lc(b"BG24")), FourCc::RG24);
+    }
 }
