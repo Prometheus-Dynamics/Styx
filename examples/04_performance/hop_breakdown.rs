@@ -17,6 +17,10 @@
 //! per frame in its process (and, for the IPC paths, in the serving process), and the heap
 //! allocations per frame of its whole process (every thread: the capture, the ISP and its 3A
 //! algorithms included).
+//!
+//! The camera is the first one the enabled backends probe (`--features frame-socket,native`
+//! for a native camera; `--features frame-socket,libcamera` probes libcamera only, so a
+//! libcamera camera, e.g. through the Raspberry Pi PiSP, is used).
 
 #![allow(unsafe_code)]
 
