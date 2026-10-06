@@ -15,6 +15,8 @@
 #
 #   install.sh [--reboot] [root@helios] [kbuild-out-dir]
 #
+# KERNEL_RELEASE (default 6.12.47-v8-16k) picks the default kbuild-out-dir, e.g. 7.2.9-v8-16k.
+#
 # Run under the device lock. Rerun after rebuilding the module to update it (then reboot, or
 # unbind rp1-cfe, rmmod/modprobe, rebind). Back to the image's camera (ov9282, libcamera):
 # `sh /usr/local/lib/styx-bridge/camera-mode.sh libcamera` (reboots).
@@ -27,7 +29,7 @@ if [ "${1:-}" = "--reboot" ]; then
     shift
 fi
 dev="${1:-root@helios}"
-out="${2:-$here/../../../target/kbuild/out/6.12.47-v8-16k}"
+out="${2:-$here/../../../target/kbuild/out/${KERNEL_RELEASE:-6.12.47-v8-16k}}"
 dst=/usr/local/lib/styx-bridge
 
 ssh "$dev" "mkdir -p $dst"

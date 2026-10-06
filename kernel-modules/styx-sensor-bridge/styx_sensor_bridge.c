@@ -37,11 +37,11 @@
 #define STYX_EXITING_WAIT_MS 50
 
 /*
- * rp1-cfe (Raspberry Pi 6.12) oopses when the sensor's s_stream(1) fails while
- * its front end is unused: its error path stops CSI-2 channel -1
- * (cfe_stop_channel(node, true) with fe_csi2_channel = -1). By default a failed
- * start is therefore not reported to the receiver; see
- * STYX_BRIDGE_STATE_START_FAILED.
+ * rp1-cfe (Raspberry Pi 6.12; rp1-cfe-downstream in rpi-7.2.y, unchanged there)
+ * oopses when the sensor's s_stream(1) fails while its front end is unused: its
+ * error path stops CSI-2 channel -1 (cfe_stop_channel(node, true) with
+ * fe_csi2_channel = -1). By default a failed start is therefore not reported
+ * to the receiver; see STYX_BRIDGE_STATE_START_FAILED.
  */
 static bool report_start_errors;
 module_param(report_start_errors, bool, 0644);
@@ -668,9 +668,8 @@ static int styx_bridge_init_state(struct v4l2_subdev *sd,
 	styx_bridge_fill_fmt(b, v4l2_subdev_state_get_format(state, 0),
 			     b->codes[0], b->max_width, b->max_height);
 	if (b->num_pads > STYX_PAD_EMBEDDED)
-		styx_bridge_fill_emb_fmt(
-			v4l2_subdev_state_get_format(state, STYX_PAD_EMBEDDED),
-			b->emb_width, b->emb_lines);
+		styx_bridge_fill_emb_fmt(v4l2_subdev_state_get_format(state, STYX_PAD_EMBEDDED),
+					 b->emb_width, b->emb_lines);
 	return 0;
 }
 
@@ -783,8 +782,9 @@ static int styx_bridge_get_mbus_config(struct v4l2_subdev *sd,
 /*
  * One CSI-2 stream per source pad (virtual channel 0): the image with the data
  * type of its bus code, embedded data with the device tree's data type. The
- * Raspberry Pi 6.12 rp1-cfe asks this per sensor pad and needs exactly one
- * entry; it links the second source pad to its embedded data channel.
+ * Raspberry Pi rp1-cfe (6.12; rp1-cfe-downstream in rpi-7.2.y) asks this per
+ * sensor pad and needs exactly one entry; it links the second source pad to
+ * its embedded data channel.
  */
 static int styx_bridge_get_frame_desc(struct v4l2_subdev *sd, unsigned int pad,
 				      struct v4l2_mbus_frame_desc *fd)

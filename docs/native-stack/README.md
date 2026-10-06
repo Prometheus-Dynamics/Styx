@@ -177,7 +177,27 @@ limits at that fps.
 - Commits: concise messages ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
   Never push.
 
-## rp1-cfe pitfalls (Raspberry Pi 6.12), measured on the device
+## Kernels: Raspberry Pi 6.12 and rpi-7.2.y
+
+Two kernels are in the field: HeliOS / Raze 1.0.x run Raspberry Pi `stable_20250916`
+(6.12.47-v8-16k), Raze 1.1.0 moves to `rpi-7.2.y` (7.2.9-v8-16k at `53679a5`). Both
+`kernel-modules/` builds take `STYX_KERNEL=6.12|7.2` (`kernel-modules/kernel-env.sh`); the
+bridge and the PiSP back end use one source for both. Checked on the host for 7.2 (no device
+run yet): the bridge builds unchanged (`W=1` and checkpatch clean, the subdev, async, fwnode,
+control and event APIs it uses did not change), the overlays' labels all exist in the 7.2
+`bcm2712-rpi-cm5-cm5io`/`bcm2712-rpi-5-b` trees, `pisp_be` re-imported with the Styx patch
+applying unchanged. In rpi-7.2.y the receiver module is `rp1-cfe-downstream`
+(`drivers/media/platform/raspberrypi/rp1_cfe/`, same driver name `rp1-cfe`, compatible
+`raspberrypi,rp1-cfe` and node names), next to the mainline driver `rp1-cfe`
+(`raspberrypi,rp1-cfe-upstream`, not used by the Raspberry Pi device trees). Its sensor-facing
+behaviour is the same as 6.12's: `s_stream` on the sensor, one frame descriptor entry per
+sensor pad, the failed-start oops below, and `v4l2_get_link_freq()` now asks the sensor's
+`get_mbus_config` first, which falls back to `V4L2_CID_LINK_FREQ` as before because the bridge
+leaves `link_freq` at 0. libcamera `v0.7.2+rpt20260817` with libpisp `v1.7.0` builds the
+`libcamera` feature unchanged (control ids Styx patches by number are the same; new: `Hue`,
+the rpi CNN and `ControlListSequence` controls, named through libcamera's own id lookup).
+
+## rp1-cfe pitfalls (Raspberry Pi 6.12, measured on the device; the code is unchanged in rpi-7.2.y)
 
 - `VIDIOC_STREAMON`/`STREAMOFF` hold the video node's lock while the bridge waits for the
   acknowledgement, and `poll` on the node (`vb2_fop_poll`) and every ioctl on it take the same

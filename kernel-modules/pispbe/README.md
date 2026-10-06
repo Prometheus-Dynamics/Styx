@@ -1,7 +1,7 @@
 # pispbe: the PiSP back end driver with a cheaper per-job config write
 
 A patched build of the Raspberry Pi PiSP back end driver (`pisp_be`, GPL-2.0) that replaces the
-image's module. Same module name, same uAPI, same hardware programming; the hardware sees the
+image's module (Raspberry Pi 6.12 for HeliOS / Raze 1.0.x, rpi-7.2.y for Raze 1.1.0). Same module name, same uAPI, same hardware programming; the hardware sees the
 same register values for every job. It only writes them faster: per job the stock driver spent
 117 µs of CPU in `pispbe_schedule()`, this one 7-8 µs. See
 [pisp.md](../../docs/native-stack/pisp.md#back-end-per-job) and
@@ -10,26 +10,33 @@ measurements.
 
 | File | What |
 |---|---|
-| `pisp_be.c`, `pisp_be_formats.h` | The driver. Imported unchanged (first commit) from the kernel the HeliOS CM5 image is built from, then patched |
+| `pisp_be.c`, `pisp_be_formats.h` | The driver. Imported unchanged (own commit) from rpi-7.2.y, then patched |
 | `Kbuild` | Out-of-tree build, object `pisp-be.ko` like the in-tree Makefile |
 | `build.sh` | Builds against the exact image kernel (vermagic and symbol CRCs checked), `diff` prints the patch |
 | `install/install.sh`, `install/uninstall.sh` | Dev-box override in `/lib/modules/<release>/updates/` |
 
 ## Provenance
 
-- Source: `drivers/media/platform/raspberrypi/pisp_be/{pisp_be.c,pisp_be_formats.h}` of the
-  Raspberry Pi kernel tag `stable_20250916`
-  (`https://github.com/raspberrypi/linux/archive/refs/tags/stable_20250916.tar.gz`, Buildroot's
-  `BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION`), as unpacked in the HeliOS Gaia CM5 build
-  (`HeliOS-architecture-overhaul/gaia/build/helios-full-cm5/image/buildroot-output/build/linux-custom`,
-  release `6.12.47-v8-16k`, `#1 SMP PREEMPT Thu May 7 00:00:13 PDT 2026`).
-  sha256 of the originals: `pisp_be.c` 6a7dee220c85acf941fed18020bdb7c1e9505acfc663214755976f034327d8e5,
-  `pisp_be_formats.h` 8f462bfe8ad078d49db49f4482aa9bf512d603c9466ab661bde12daa25db8f89
-  (`pisp_be_formats.h` is unchanged).
+- Source: `drivers/media/platform/raspberrypi/pisp_be/{pisp_be.c,pisp_be_formats.h}` of
+  raspberrypi/linux branch `rpi-7.2.y` at commit `53679a578` ("misc: rp1-pio: Minor cyclic DMA
+  error path fixes", `make kernelversion` 7.2.9), the kernel of Raze 1.1.0.
+  sha256 of the originals: `pisp_be.c` 6d36c1076af7276aeb5b3f5f9d8f3f88ee6a3deb16477d1e3a977ca2459adbce,
+  `pisp_be_formats.h` 2315e82cb18e89020e83220d3e3b7b13b64818ade5a70603021ea21dce635835
+  (`pisp_be_formats.h` is unchanged). The directory's `pisp_be_config.h` is not used by the
+  driver (it includes the uAPI header) and is not imported.
+- Changes upstream since the first import (`stable_20250916`, 6.12.47: `pisp_be.c`
+  6a7dee22…d8e5, `pisp_be_formats.h` 8f462bfe…db89): the NV12MT_COL128 and NV12MT_10_COL128
+  output formats (a `pixel_grouping` field for the 10-bit one's 3-pixels-per-word line size),
+  `.remove_new` renamed `.remove`, and `pm_runtime_mark_last_busy()` dropped before
+  `pm_runtime_put_autosuspend()` at the end of probe (7.x marks it there itself). The Styx
+  patch applied to the new source unchanged (offset one line).
+- Both kernels: the same source builds W=1 clean against 6.12.47-v8-16k and 7.2.9-v8-16k.
+  On 6.12 it adds the two COL128 formats and, after probe, starts the autosuspend delay from
+  the last earlier busy mark; nothing in the per-job path differs.
 - Licence: GPL-2.0 (SPDX header kept), Copyright (c) 2021-2024 Raspberry Pi Limited; the changes
   are GPL-2.0 too. Like the bridge module it lives apart from the MIT/Apache Rust crates.
-- `git log -- kernel-modules/pispbe/pisp_be.c` shows the import and the patch separately;
-  `./build.sh diff` prints the patch against the kernel tree.
+- `git log -- kernel-modules/pispbe/pisp_be.c` shows each import and the patch separately;
+  `STYX_KERNEL=7.2 ./build.sh diff` prints the patch against the kernel tree.
 
 ## What changed
 
@@ -87,6 +94,8 @@ on it unchanged.
 ../styx-sensor-bridge/build.sh prepare         # once per kernel build (shared kbuild subset)
 DEVICE=root@helios ./build.sh all              # -> target/kernel-modules/6.12.47-v8-16k/pisp-be.ko
                                                #    vermagic + imported symbol CRCs vs the device
+STYX_KERNEL=7.2 ../styx-sensor-bridge/build.sh prepare
+STYX_KERNEL=7.2 ./build.sh all                 # -> target/kernel-modules/7.2.9-v8-16k/pisp-be.ko
 # under the device lock (scripts/with-device-lock.sh):
 install/install.sh --reboot root@helios        # updates/pisp-be.ko + depmod, reboot into it
 install/install.sh --reload root@helios        # or swap the running module (no back end users:
@@ -94,11 +103,16 @@ install/install.sh --reload root@helios        # or swap the running module (no 
 install/uninstall.sh --reboot root@helios      # back to the image's module
 ```
 
+`install.sh` takes the module of `$KERNEL_RELEASE` (default 6.12.47-v8-16k) or an explicit path
+as its second argument, and refuses a module whose vermagic differs from the device's.
+
 Check: `modinfo -n pisp_be` is `/lib/modules/<release>/updates/pisp-be.ko` and
 `/sys/module/pisp_be/parameters/skip_unchanged_config` exists. The override lives on the root
 overlay's upper layer, like the bridge module: an update to the other A/B slot starts without it.
-For images, the patch belongs in the kernel build (a Buildroot `linux` patch) rather than an
-out-of-tree module.
+For images, the driver belongs in the kernel build rather than an out-of-tree module:
+`../styx-sensor-bridge/buildroot/linux-ext-styx-sensor-bridge.mk` has an optional
+`BR2_LINUX_KERNEL_EXT_STYX_PISPBE` that replaces the kernel's `pisp_be.c` when it is the stock
+file this one was made from (sha256 above) and otherwise keeps the kernel's driver.
 
 ## Upstreaming
 

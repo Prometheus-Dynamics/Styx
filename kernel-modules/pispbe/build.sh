@@ -14,8 +14,10 @@
 #   ./build.sh all       build + verify
 #   ./build.sh clean
 #
-# Environment: KERNEL_TREE, BR_HOST, CROSS_COMPILE, KERNEL_RELEASE, STYX_KBUILD_ROOT,
-# DEVICE as in ../styx-sensor-bridge/build.sh.
+# Environment: STYX_KERNEL (6.12 or 7.2), KERNEL_TREE, KERNEL_SRC, BR_HOST, CROSS_COMPILE,
+# KERNEL_RELEASE, STYX_KBUILD_ROOT, DEVICE as in ../styx-sensor-bridge/build.sh (defaults in
+# ../kernel-env.sh). The source here is rpi-7.2.y's driver with the Styx changes; it builds
+# against both kernels (README).
 
 set -euo pipefail
 
@@ -23,17 +25,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 workspace="$(cd "$repo/.." && pwd)"
 
-KERNEL_RELEASE="${KERNEL_RELEASE:-6.12.47-v8-16k}"
-STYX_KBUILD_ROOT="${STYX_KBUILD_ROOT:-$workspace/linux-build-styx}"
-KERNEL_TREE="${KERNEL_TREE:-$workspace/HeliOS-architecture-overhaul/gaia/build/helios-full-cm5/image/buildroot-output/build/linux-custom}"
-BR_HOST="${BR_HOST:-$(cd "$KERNEL_TREE/../.." 2>/dev/null && pwd)/host}"
-if [[ -z "${CROSS_COMPILE:-}" ]]; then
-    if [[ -x "$BR_HOST/bin/aarch64-linux-gcc" ]]; then
-        CROSS_COMPILE="$BR_HOST/bin/aarch64-linux-"
-    else
-        CROSS_COMPILE="aarch64-linux-gnu-"
-    fi
-fi
+# shellcheck source=../kernel-env.sh
+source "$here/../kernel-env.sh"
 
 kbuild="$STYX_KBUILD_ROOT/kbuild-$KERNEL_RELEASE"
 objdir="$repo/target/kernel-modules/obj/pispbe"
@@ -64,7 +57,7 @@ verify() {
     [[ "$(modinfo -F name "$ko")" == pisp_be ]] || die "module name is not pisp_be"
     local vermagic want
     vermagic="$(modinfo -F vermagic "$ko")"
-    want="$KERNEL_RELEASE SMP preempt mod_unload modversions aarch64"
+    want="$(kernel_vermagic)"
     if [[ -n "${DEVICE:-}" ]]; then
         want="$(ssh -o BatchMode=yes "$DEVICE" 'modinfo -F vermagic videodev')"
     fi
@@ -86,9 +79,10 @@ verify() {
 }
 
 diff_stock() {
-    # The patch against the source the image was built from (exit status 1 = differences).
+    # The patch against the kernel tree's stock source (for STYX_KERNEL=7.2 the Styx changes
+    # alone; against 6.12 it also shows the upstream changes between the two kernels).
     for f in pisp_be.c pisp_be_formats.h; do
-        diff -u --label "a/$stock/$f" --label "b/$stock/$f" "$KERNEL_TREE/$stock/$f" "$here/$f" || true
+        diff -u --label "a/$stock/$f" --label "b/$stock/$f" "$KERNEL_SRC/$stock/$f" "$here/$f" || true
     done
 }
 
