@@ -67,16 +67,20 @@ pub(super) fn camera_service_frame_view() {
     });
     println!(
         "camera service, FrameView of each frame: client {:.2} allocations per frame, service thread {:.2}",
-        per(counts[Kind::Test as usize]),
-        per(counts[Kind::ServiceClient as usize]),
+        per(counts[Kind::Test]),
+        per(counts[Kind::ServiceClient]),
     );
-    // One refcounted record per received frame (its release), as without the view.
-    assert!(
-        counts[Kind::Test as usize] <= FRAMES,
-        "receiving and viewing allocates {} times for {FRAMES} frames",
-        counts[Kind::Test as usize]
+    // One refcounted record per received frame (its release), as without the view (and a
+    // buffer's mapping, if the capture's pool had to make one).
+    counts.assert_maps_only_new_buffers();
+    assert_eq!(
+        counts[Kind::Test],
+        FRAMES + counts.maps,
+        "receiving and viewing allocates {} times for {FRAMES} frames ({} buffers mapped)",
+        counts[Kind::Test],
+        counts.maps
     );
-    assert_eq!(counts[Kind::ServiceClient as usize], 0);
+    assert_eq!(counts[Kind::ServiceClient], 0);
     let mut receive = 0;
     let counts = counted(|| {
         for _ in 0..FRAMES {
@@ -87,15 +91,18 @@ pub(super) fn camera_service_frame_view() {
     println!(
         "camera service, FrameView through a payload: receive {:.2}, payload + view + release {:.2} allocations per frame",
         per(receive),
-        per(counts[Kind::Test as usize] - receive),
+        per(counts[Kind::Test] - receive),
     );
-    assert!(receive <= FRAMES, "receiving allocates {receive} times");
+    assert_eq!(receive, FRAMES, "receiving allocates {receive} times");
     // `frame_payload`'s own two (the shared lease and the payload's storage); the provider
-    // retypes the payload in place and the view borrows it.
-    let payload = counts[Kind::Test as usize] - receive;
-    assert!(
-        payload <= 2 * FRAMES,
-        "a payload and its view allocate {payload} times for {FRAMES} frames"
+    // retypes the payload in place and the view borrows it (its read maps a new buffer).
+    counts.assert_maps_only_new_buffers();
+    let payload = counts[Kind::Test] - receive;
+    assert_eq!(
+        payload,
+        2 * FRAMES + counts.maps,
+        "a payload and its view allocate {payload} times for {FRAMES} frames ({} buffers mapped)",
+        counts.maps
     );
     assert_eq!(
         styx::metrics::path().total_copies(),
@@ -212,7 +219,7 @@ pub(super) fn frame_socket_frame_view() {
     (direct, payload) = (0, 0);
     let copies_before = styx::metrics::path().total_copies();
     let before = costs();
-    counted(|| {
+    let counts = counted(|| {
         for _ in 0..FRAMES {
             let frame = next(&mut fetch);
             fd_only(frame, &mut direct, &mut payload);
@@ -237,10 +244,12 @@ pub(super) fn frame_socket_frame_view() {
         (0, 0, 0),
         "an fd-only consumer made Styx map, begin CPU access or sync"
     );
-    assert!(fetch <= FRAMES, "fetching allocates {fetch} times");
+    assert_eq!(fetch, FRAMES, "fetching allocates {fetch} times");
+    assert_eq!(counts[Kind::FrameSocket], 0, "sending allocates");
     assert_eq!(direct, 0, "a borrowed view allocates");
-    assert!(
-        payload <= 2 * FRAMES,
+    assert_eq!(
+        payload,
+        2 * FRAMES,
         "a payload and its view allocate {payload} times"
     );
 
@@ -259,7 +268,8 @@ pub(super) fn frame_socket_frame_view() {
     println!(
         "frame socket, CPU FrameView consumer: {maps} mmaps, {plane_data} plane_data calls, {syncs} dma-buf syncs for {FRAMES} frames"
     );
-    assert!(maps <= 6, "{maps} mmaps for 6 buffers");
+    // Each buffer once (the fd-only consumer mapped none), the camera using them in turn.
+    assert_eq!(maps, 6, "{maps} mmaps for 6 buffers");
     assert_eq!(plane_data, 2 * FRAMES);
     assert_eq!(syncs, 2 * FRAMES, "one START and one END per frame");
     assert_eq!(styx::metrics::path().total_copies(), copies_before);

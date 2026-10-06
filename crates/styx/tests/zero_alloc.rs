@@ -19,6 +19,17 @@
 //!   access (`plane_data`), against a CPU consumer that does each once per frame and plane.
 //!
 //! And the copy counters (`HopMetrics`, `styx::metrics::path`) say nothing was copied.
+//!
+//! The counts are exact, not bounds: each frame's own records and nothing else, whatever the
+//! timing (the proof runs under CPU load too). Two things allocate once rather than per frame,
+//! and only when timing makes them happen, so they are kept out of the windows: parking_lot's
+//! table of waiting threads, made before any window ([`presize_parking_table`]), and a
+//! consumer's mapping of a buffer: a pool's buffers are used in turn, so each stays mapped once
+//! mapped in the warm-up, and only a buffer that a pool which ran out made meanwhile is mapped
+//! in a window, one allocation each, counted as such.
+//!
+//! `STYX_ZERO_ALLOC_TRACE=1` prints the call stack of every counted allocation (the rare ones
+//! symbolised) as the test ends, to name an unexpected one.
 
 #![cfg(all(target_os = "linux", feature = "frame-socket"))]
 #![allow(unsafe_code)]
@@ -88,8 +99,10 @@ fn kind() -> Kind {
 }
 
 fn note() {
-    if ARMED.load(Ordering::Relaxed) {
-        COUNTS[kind() as usize].fetch_add(1, Ordering::Relaxed);
+    if ARMED.load(Ordering::Relaxed) && !trace::inside() {
+        let k = kind();
+        COUNTS[k as usize].fetch_add(1, Ordering::Relaxed);
+        trace::record(k);
     }
 }
 
@@ -120,15 +133,100 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static ALLOC: Counting = Counting;
 
-/// Allocations by kind while `run` runs (armed for its duration).
-fn counted(run: impl FnOnce()) -> [u64; 5] {
+/// What a measurement window counted.
+struct Counted {
+    /// Allocations by thread kind ([`Kind`]).
+    kinds: [u64; 5],
+    /// Buffers a consumer in this process mapped (`frame_maps`): each is one allocation, the
+    /// mapping its frames share (`styx::ipc`'s map cache).
+    maps: u64,
+    /// Times a buffer pool in this process found every buffer held and made another one, a
+    /// buffer its consumers had not mapped yet.
+    pool_grew: u64,
+}
+
+impl std::ops::Index<Kind> for Counted {
+    type Output = u64;
+
+    fn index(&self, kind: Kind) -> &u64 {
+        &self.kinds[kind as usize]
+    }
+}
+
+impl Counted {
+    /// The consumer mapped only the buffers a pool made in the window (none, unless frames
+    /// were held long enough for the capture to run out of buffers): a buffer it had mapped
+    /// before was not dropped from its cache and mapped again.
+    fn assert_maps_only_new_buffers(&self) {
+        assert!(
+            self.maps <= self.pool_grew,
+            "{} buffers mapped (again) with {} new ones",
+            self.maps,
+            self.pool_grew
+        );
+    }
+}
+
+/// What the window counted while `run` runs (armed for its duration). With
+/// `STYX_ZERO_ALLOC_TRACE=1`, every allocation's call stack, printed as the test ends.
+#[track_caller]
+fn counted(run: impl FnOnce()) -> Counted {
+    let at = std::panic::Location::caller();
+    trace::init();
     for c in &COUNTS {
         c.store(0, Ordering::Relaxed);
     }
+    let path = styx::core::metrics::path_counters();
+    let (maps, pool_grew) = (path.frame_maps.get(), path.pool_exhausted.get());
     ARMED.store(true, Ordering::SeqCst);
     run();
     ARMED.store(false, Ordering::SeqCst);
-    std::array::from_fn(|i| COUNTS[i].load(Ordering::Relaxed))
+    trace::report(&at.to_string());
+    Counted {
+        kinds: std::array::from_fn(|i| COUNTS[i].load(Ordering::Relaxed)),
+        maps: path.frame_maps.get() - maps,
+        pool_grew: path.pool_exhausted.get() - pool_grew,
+    }
+}
+
+/// parking_lot parks a waiting thread in one process-wide table, made on the first lock any
+/// thread had to wait for and grown (to three slots per thread) when a thread first waits on
+/// one with more threads alive than it has room for: an allocation or two, once, on whichever
+/// thread first waits, which in the frame paths is a matter of timing (a lock taken while
+/// another thread holds it). Done here first, for more threads than the test ever has, so it
+/// is never counted.
+fn presize_parking_table() {
+    const THREADS: usize = 64;
+    let shared = Arc::new((Mutex::new((0usize, false)), parking_lot::Condvar::new()));
+    let threads: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                let (lock, cv) = &*shared;
+                let mut state = lock.lock();
+                state.0 += 1;
+                cv.notify_all();
+                // Waiting gives the thread its parking data (growing the table) before it
+                // lets go of the lock.
+                while !state.1 {
+                    cv.wait(&mut state);
+                }
+            })
+        })
+        .collect();
+    {
+        let (lock, cv) = &*shared;
+        let mut state = lock.lock();
+        // Seen with the lock: every thread is waiting (its parking data made).
+        while state.0 < THREADS {
+            cv.wait(&mut state);
+        }
+        state.1 = true;
+        cv.notify_all();
+    }
+    for t in threads {
+        t.join().unwrap();
+    }
 }
 
 /// Allocations on the test thread while `run` runs.
@@ -334,17 +432,21 @@ fn frame_socket() {
         "frame socket, allocations per frame: camera {:.2}, publish {:.2}, send (frame socket thread) {:.2}, fetch + import {:.2}, read + release {:.2}",
         per(capture),
         per(publish),
-        per(counts[Kind::FrameSocket as usize]),
+        per(counts[Kind::FrameSocket]),
         per(fetch),
         per(consume)
     );
+    // The camera's own frame record (its buffer's handle), as a capture makes one per frame.
+    assert_eq!(capture, FRAMES, "the camera allocates {capture} times");
     assert_eq!(publish, 0, "publishing allocates");
-    assert_eq!(counts[Kind::FrameSocket as usize], 0, "sending allocates");
+    assert_eq!(counts[Kind::FrameSocket], 0, "sending allocates");
     // A fetched frame is the consumer's to keep: one refcounted record (its lease) each.
-    assert!(
-        fetch <= FRAMES,
+    assert_eq!(
+        fetch, FRAMES,
         "fetching allocates {fetch} times for {FRAMES} frames"
     );
+    // The camera's six buffers were mapped in the warm-up, once each.
+    assert_eq!(counts.maps, 0, "buffers mapped again");
     assert_eq!(consume, 0, "reading or releasing allocates");
     let hops = fetcher.hop_metrics();
     assert_eq!((hops.copied, hops.zero_copy), (0, FRAMES + 50));
@@ -392,20 +494,24 @@ fn camera_service() {
     let per = |n: u64| n as f64 / FRAMES as f64;
     println!(
         "camera service, allocations per frame: capture (virtual camera) {:.2}, service thread for the client {:.2}, client receive + import + read + release {:.2}",
-        per(counts[Kind::Other as usize]),
-        per(counts[Kind::ServiceClient as usize]),
-        per(counts[Kind::Test as usize]),
+        per(counts[Kind::Other]),
+        per(counts[Kind::ServiceClient]),
+        per(counts[Kind::Test]),
     );
     assert_eq!(
-        counts[Kind::ServiceClient as usize],
+        counts[Kind::ServiceClient],
         0,
         "the service's thread allocates per frame"
     );
-    // One refcounted record per received frame (its release).
-    assert!(
-        counts[Kind::Test as usize] <= FRAMES,
-        "the client allocates {} times for {FRAMES} frames",
-        counts[Kind::Test as usize]
+    // One refcounted record per received frame (its release), and the mapping of a buffer
+    // the capture's pool made meanwhile, if it had to.
+    counts.assert_maps_only_new_buffers();
+    assert_eq!(
+        counts[Kind::Test],
+        FRAMES + counts.maps,
+        "the client allocates {} times for {FRAMES} frames ({} buffers mapped)",
+        counts[Kind::Test],
+        counts.maps
     );
     assert_eq!(
         styx::metrics::path().total_copies(),
@@ -418,8 +524,8 @@ fn camera_service() {
         assert!(hops.hop(hop).is_some(), "no {hop} hop: {hops:?}");
     }
     IS_TEST.with(|t| t.set(false));
-    drop(client);
-    // The client's receive and import times came back with its releases.
+    // The client's receive and import times came back with its releases: looked at while it is
+    // connected (the service forgets a client's statistics as it leaves).
     let t = std::time::Instant::now();
     loop {
         let m = service.metrics();
@@ -439,6 +545,7 @@ fn camera_service() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    drop(client);
     drop(service);
 }
 
@@ -496,31 +603,40 @@ fn camera_service_without_a_thread() {
     let per = |n: u64| n as f64 / FRAMES as f64;
     println!(
         "camera service, poll + try_next: client {:.2} allocations per frame, service thread {:.2}",
-        per(counts[Kind::Test as usize]),
-        per(counts[Kind::ServiceClient as usize]),
+        per(counts[Kind::Test]),
+        per(counts[Kind::ServiceClient]),
     );
-    assert!(
-        counts[Kind::Test as usize] <= FRAMES,
-        "poll + try_next allocates {} times for {FRAMES} frames",
-        counts[Kind::Test as usize]
+    counts.assert_maps_only_new_buffers();
+    assert_eq!(
+        counts[Kind::Test],
+        FRAMES + counts.maps,
+        "poll + try_next allocates {} times for {FRAMES} frames ({} buffers mapped)",
+        counts[Kind::Test],
+        counts.maps
     );
-    assert_eq!(counts[Kind::ServiceClient as usize], 0);
+    assert_eq!(counts[Kind::ServiceClient], 0);
     let counts = counted(|| awaited(&client, FRAMES));
     println!(
         "camera service, next().await: client {:.2} allocations per frame, reactor thread {:.2}",
-        per(counts[Kind::Test as usize]),
-        per(counts[Kind::Reactor as usize]),
+        per(counts[Kind::Test]),
+        per(counts[Kind::Reactor]),
     );
-    assert_eq!(counts[Kind::Reactor as usize], 0, "the reactor allocates");
+    assert_eq!(counts[Kind::Reactor], 0, "the reactor allocates");
     // The frames' release records, and block_on's waker once.
-    assert!(
-        counts[Kind::Test as usize] <= FRAMES + 1,
-        "next().await allocates {} times for {FRAMES} frames",
-        counts[Kind::Test as usize]
+    counts.assert_maps_only_new_buffers();
+    assert_eq!(
+        counts[Kind::Test],
+        FRAMES + 1 + counts.maps,
+        "next().await allocates {} times for {FRAMES} frames ({} buffers mapped)",
+        counts[Kind::Test],
+        counts.maps
     );
     assert_eq!(client.hop_metrics().copied, 0);
     IS_TEST.with(|t| t.set(false));
 }
+
+#[path = "zero_alloc/trace.rs"]
+mod trace;
 
 #[cfg(feature = "daedalus")]
 #[path = "zero_alloc/daedalus.rs"]
@@ -529,6 +645,8 @@ mod daedalus;
 /// One test: the counting is process-wide, so nothing else may run meanwhile.
 #[test]
 fn steady_state_ipc_paths_do_not_allocate_or_copy() {
+    let _flush = trace::Flush;
+    presize_parking_table();
     frame_socket();
     camera_service();
     camera_service_without_a_thread();

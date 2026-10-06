@@ -1,5 +1,6 @@
 //! The memfd pool: buffers another process can map (Linux).
 
+use std::collections::VecDeque;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -42,7 +43,10 @@ impl SharedBufferPool {
     ) -> Result<Self, FrameExportError> {
         let chunk_size = chunk_size.max(1);
         let inner = Arc::new(SharedPoolInner {
-            free: Mutex::new(Vec::with_capacity(capacity)),
+            // Room for every buffer the pool may keep, so returning one never allocates.
+            free: Mutex::new(VecDeque::with_capacity(
+                capacity.max(max_free.min(MAX_PRESIZED_FREE)),
+            )),
             chunk_size,
             max_free,
             metrics: Arc::new(Metrics::default()),
@@ -54,7 +58,7 @@ impl SharedBufferPool {
     }
 
     pub fn lease(&self) -> Result<SharedBufferLease, FrameExportError> {
-        let fd = self.inner.free.lock().pop();
+        let fd = self.inner.free.lock().pop_front();
         let fd = if let Some(fd) = fd {
             self.inner.metrics.hit();
             fd
@@ -97,8 +101,17 @@ impl SharedBufferPool {
     }
 }
 
+/// Free-list slots reserved up front at most (a larger `max_free` grows the list as needed).
+const MAX_PRESIZED_FREE: usize = 64;
+
 struct SharedPoolInner {
-    free: Mutex<Vec<OwnedFd>>,
+    /// Oldest returned first: the buffers are used in turn, as a capture's queue cycles
+    /// through its buffers, so each comes round every few frames. A consumer in another
+    /// process keeps its mapping of each (`styx::ipc`'s map cache drops one no frame used for a
+    /// while); handing out the latest returned first would leave the others unused for as long
+    /// as frames go back quickly, for them to be dropped and mapped again (an `mmap` and an
+    /// allocation in the consumer) whenever a slow frame makes the pool reach one.
+    free: Mutex<VecDeque<OwnedFd>>,
     chunk_size: usize,
     max_free: usize,
     metrics: Arc<Metrics>,
@@ -108,7 +121,7 @@ impl SharedPoolInner {
     fn recycle(&self, fd: OwnedFd) {
         let mut free = self.free.lock();
         if free.len() < self.max_free {
-            free.push(fd);
+            free.push_back(fd);
         }
     }
 }
@@ -335,4 +348,27 @@ fn dup_owned_fd(fd: &OwnedFd) -> Result<OwnedFd, FrameExportError> {
         return Err(FrameExportError::Fd(std::io::Error::last_os_error()));
     }
     Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SharedBufferPool;
+
+    /// The buffers are handed out in turn (the one returned longest ago first), so each comes
+    /// round every few frames and a consumer's mapping of it stays in use.
+    #[test]
+    fn buffers_are_used_in_turn() {
+        let pool = SharedBufferPool::with_capacity(3, 16).unwrap();
+        let mut leases: Vec<_> = (0..3).map(|_| pool.lease().unwrap()).collect();
+        for (mark, lease) in (1u8..).zip(&mut leases) {
+            lease.try_resize(1).unwrap();
+            lease.as_mut_slice()[0] = mark;
+        }
+        drop(leases);
+        for expected in [1u8, 2, 3, 1, 2, 3] {
+            let mut lease = pool.lease().unwrap();
+            lease.try_resize(1).unwrap();
+            assert_eq!(lease.as_slice()[0], expected);
+        }
+    }
 }
