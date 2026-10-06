@@ -144,7 +144,9 @@ pub struct VideoCodec(Codec);
 impl VideoCodec {
     /// Pixel formats the codec accepts or produces, when it reports them.
     pub fn formats(&self) -> Option<std::vec::IntoIter<Pixel>> {
-        let get = loader::loaded().get_supported_config?;
+        let Some(get) = loader::loaded().get_supported_config else {
+            return self.static_formats();
+        };
         let mut configs: *const std::ffi::c_void = ptr::null();
         let mut count: c_int = 0;
         // SAFETY: AV_CODEC_CONFIG_PIX_FORMAT (0) returns an AVPixelFormat array of `count`.
@@ -161,6 +163,33 @@ impl VideoCodec {
                 .collect::<Vec<_>>()
                 .into_iter(),
         )
+    }
+
+    /// `AVCodec.pix_fmts`, for FFmpeg before 7.1 (no `avcodec_get_supported_config`). Without
+    /// it an encoder there reports no formats, so its input is converted to a default format
+    /// even when the encoder takes it unchanged, and is never read in place.
+    #[cfg(ffmpeg_codec_pix_fmts)]
+    fn static_formats(&self) -> Option<std::vec::IntoIter<Pixel>> {
+        // SAFETY: a valid codec; `pix_fmts` is null or terminated by AV_PIX_FMT_NONE.
+        let mut format = unsafe { (*self.0.ptr).pix_fmts };
+        if format.is_null() {
+            return None;
+        }
+        let mut list = Vec::new();
+        // SAFETY: as above, read up to the terminator.
+        unsafe {
+            while *format != raw::AVPixelFormat::AV_PIX_FMT_NONE {
+                list.push(Pixel(*format));
+                format = format.add(1);
+            }
+        }
+        Some(list.into_iter())
+    }
+
+    /// FFmpeg 9.0+ dropped `AVCodec.pix_fmts`; it always has `avcodec_get_supported_config`.
+    #[cfg(not(ffmpeg_codec_pix_fmts))]
+    fn static_formats(&self) -> Option<std::vec::IntoIter<Pixel>> {
+        None
     }
 }
 
