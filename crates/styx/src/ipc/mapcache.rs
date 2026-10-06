@@ -81,9 +81,19 @@ struct Entry {
 }
 
 /// See the [module documentation](self).
-#[derive(Default)]
 pub(super) struct MapCache {
     inner: Mutex<(u64, Vec<Entry>)>,
+}
+
+impl Default for MapCache {
+    /// With room for the entries kept (and as many mapped since the last trim), so that a
+    /// buffer mapped for the first time costs its one allocation (the shared mapping), not a
+    /// growing list besides.
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new((0, Vec::with_capacity(2 * MAX_ENTRIES))),
+        }
+    }
 }
 
 /// Device and inode of the buffer behind `fd`.
