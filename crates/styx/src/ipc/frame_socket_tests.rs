@@ -482,6 +482,7 @@ fn write_fuzz_seeds() {
             &Message {
                 descriptor,
                 backing,
+                hops: None,
             },
         )
         .unwrap();

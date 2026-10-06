@@ -4,7 +4,8 @@
 //! the exporter maps those buffers cached (dma-heap buffers do), the CPU must bracket its reads
 //! with a sync START/END pair or it may read stale cache lines, and its writes with another so
 //! devices read them (not what is left in the CPU's cache). Buffers mapped uncached make the
-//! ioctl a cheap no-op, and non-dma-buf fds reject it with `ENOTTY`.
+//! ioctl a cheap no-op, and non-dma-buf fds reject it with `ENOTTY`. Every call is counted with
+//! its time ([`crate::metrics::path_counters`]).
 
 use std::io;
 use std::os::fd::RawFd;
@@ -22,6 +23,10 @@ struct DmaBufSync {
 }
 
 fn dma_buf_sync(fd: RawFd, flags: u64) -> io::Result<()> {
+    crate::metrics::timed_sync(|| dma_buf_sync_untimed(fd, flags))
+}
+
+fn dma_buf_sync_untimed(fd: RawFd, flags: u64) -> io::Result<()> {
     let arg = DmaBufSync { flags };
     loop {
         // SAFETY: `arg` is a valid `struct dma_buf_sync` for the duration of the call and the

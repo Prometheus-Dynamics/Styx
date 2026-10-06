@@ -24,6 +24,8 @@ pub struct Window {
     pub total: u64,
     pub p50_ms: Option<f64>,
     pub p95_ms: Option<f64>,
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub p99_ms: Option<f64>,
     /// Largest in the window.
     pub max_ms: Option<f64>,
     /// Largest since the capture started.
@@ -43,6 +45,7 @@ impl Window {
             total,
             p50_ms: at(0.5),
             p95_ms: at(0.95),
+            p99_ms: at(0.99),
             max_ms: ns.last().copied().map(ms),
             max_ever_ms: (total > 0).then(|| ms(max_ever)),
         }
@@ -215,6 +218,13 @@ pub struct ConsumerMetrics {
     pub held: u64,
     /// Send to release (camera service clients).
     pub hold: Window,
+    /// Hop times and copies of the frames sent to it (camera service clients: up to the
+    /// send, and the receive and import times the client reports back).
+    #[cfg_attr(
+        feature = "metrics-serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub hops: Option<super::path::HopMetrics>,
 }
 
 /// Everything measured for one capture.
@@ -243,6 +253,10 @@ pub struct CameraMetrics {
     pub consumers: Vec<ConsumerMetrics>,
     /// Stills taken from the capture.
     pub stills: StillMetrics,
+    /// Hop times (sensor, dequeued, ISP done, queued, taken) and copies of the frames
+    /// consumers took.
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub path: super::path::HopMetrics,
 }
 
 /// Stills taken from a capture (`CaptureHandle::capture_still`).
@@ -430,6 +444,7 @@ impl CaptureMetrics {
                     latency: s.latency.window(),
                 }
             },
+            path: super::path::HopMetrics::of(&l.counters.hops),
         }
     }
 }

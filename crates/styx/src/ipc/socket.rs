@@ -13,6 +13,9 @@ use std::time::Duration;
 pub(super) const MAX_MESSAGE: usize = 8192;
 /// Most descriptors one message carries (one per plane, for a frame and its companions).
 const MAX_FDS: usize = 16;
+/// `u64` words of a control buffer for [`MAX_FDS`] descriptors (`CMSG_SPACE(16 * 4)` is 80
+/// bytes on Linux; room to spare).
+const CONTROL_WORDS: usize = 16;
 
 pub(super) enum Received {
     Message(Vec<u8>, Vec<OwnedFd>),
@@ -197,6 +200,12 @@ pub(super) fn send(socket: &OwnedFd, bytes: &[u8], fds: &[RawFd]) -> io::Result<
         iov_base: bytes.as_ptr().cast_mut().cast(),
         iov_len: bytes.len(),
     };
+    if fds.len() > MAX_FDS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "too many descriptors for one message",
+        ));
+    }
     let fd_bytes = std::mem::size_of_val(fds) as u32;
     // SAFETY: `CMSG_SPACE` is a pure size computation.
     let space = if fds.is_empty() {
@@ -204,8 +213,9 @@ pub(super) fn send(socket: &OwnedFd, bytes: &[u8], fds: &[RawFd]) -> io::Result<
     } else {
         unsafe { libc::CMSG_SPACE(fd_bytes) as usize }
     };
-    // u64 elements keep the control buffer aligned for `cmsghdr`.
-    let mut control = vec![0u64; space.div_ceil(8)];
+    // On the stack (no allocation per message); u64 elements keep it aligned for `cmsghdr`.
+    let mut control = [0u64; CONTROL_WORDS];
+    debug_assert!(space <= std::mem::size_of_val(&control));
     // SAFETY: `msghdr` is plain data; all-zero is a valid value.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_iov = &mut iov;
@@ -252,17 +262,14 @@ pub(super) fn send(socket: &OwnedFd, bytes: &[u8], fds: &[RawFd]) -> io::Result<
     Ok(true)
 }
 
-/// Which of `fds` are readable (or closed by the other end), waiting up to `wait` for any.
+/// Waits up to `wait` until any of `polls` (`pollfd`s for `POLLIN`) is readable (or closed by
+/// the other end); their `revents` say which. The caller keeps `polls` across calls (no
+/// allocation per wait).
 #[cfg(feature = "frame-socket")]
-pub(super) fn poll_readable(fds: &[RawFd], wait: Duration) -> io::Result<Vec<bool>> {
-    let mut polls: Vec<libc::pollfd> = fds
-        .iter()
-        .map(|&fd| libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        })
-        .collect();
+pub(super) fn poll_readable(polls: &mut [libc::pollfd], wait: Duration) -> io::Result<()> {
+    for p in polls.iter_mut() {
+        p.revents = 0;
+    }
     let timeout = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
     // SAFETY: `polls` holds `polls.len()` valid `pollfd`s for the duration of the call.
     let ready = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, timeout) };
@@ -272,7 +279,17 @@ pub(super) fn poll_readable(fds: &[RawFd], wait: Duration) -> io::Result<Vec<boo
             return Err(err);
         }
     }
-    Ok(polls.iter().map(|p| p.revents != 0).collect())
+    Ok(())
+}
+
+/// A `pollfd` waiting for `fd` to be readable.
+#[cfg(feature = "frame-socket")]
+pub(super) fn pollfd(fd: RawFd) -> libc::pollfd {
+    libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    }
 }
 
 /// The process at the other end of a connected Unix socket, as the kernel reports it.
@@ -316,8 +333,35 @@ pub(super) fn readable(socket: &OwnedFd, wait: Duration) -> bool {
     unsafe { libc::poll(&mut poll, 1, timeout) > 0 }
 }
 
+/// What [`recv_into`] got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Got {
+    /// A message (its bytes appended to the buffer, its descriptors to the list).
+    Message,
+    Nothing,
+    Closed,
+}
+
 /// Receive one message and its descriptors, waiting up to `wait` (zero: without waiting).
 pub(super) fn recv(socket: &OwnedFd, wait: Duration) -> io::Result<Received> {
+    let mut bytes = Vec::new();
+    let mut fds = Vec::new();
+    Ok(match recv_into(socket, wait, &mut bytes, &mut fds)? {
+        Got::Message => Received::Message(bytes, fds),
+        Got::Nothing => Received::Nothing,
+        Got::Closed => Received::Closed,
+    })
+}
+
+/// [`recv`] into the caller's buffers: the message's bytes appended to `bytes` (room for
+/// [`MAX_MESSAGE`] more is reserved), its descriptors to `fds`. Reusing them, a receive
+/// allocates nothing once they have grown.
+pub(super) fn recv_into(
+    socket: &OwnedFd,
+    wait: Duration,
+    bytes: &mut Vec<u8>,
+    fds: &mut Vec<OwnedFd>,
+) -> io::Result<Got> {
     let mut poll = libc::pollfd {
         fd: socket.as_raw_fd(),
         events: libc::POLLIN,
@@ -329,22 +373,25 @@ pub(super) fn recv(socket: &OwnedFd, wait: Duration) -> io::Result<Received> {
     if ready < 0 {
         let err = io::Error::last_os_error();
         return match err.kind() {
-            io::ErrorKind::Interrupted => Ok(Received::Nothing),
+            io::ErrorKind::Interrupted => Ok(Got::Nothing),
             _ => Err(err),
         };
     }
     if ready == 0 {
-        return Ok(Received::Nothing);
+        return Ok(Got::Nothing);
     }
-    let mut bytes = vec![0u8; MAX_MESSAGE];
+    let start = bytes.len();
+    bytes.reserve(MAX_MESSAGE);
+    let room = bytes.spare_capacity_mut();
     let mut iov = libc::iovec {
-        iov_base: bytes.as_mut_ptr().cast(),
-        iov_len: bytes.len(),
+        iov_base: room.as_mut_ptr().cast(),
+        iov_len: room.len().min(MAX_MESSAGE),
     };
     // SAFETY: `CMSG_SPACE` is a pure size computation.
     let space =
         unsafe { libc::CMSG_SPACE((MAX_FDS * std::mem::size_of::<RawFd>()) as u32) as usize };
-    let mut control = vec![0u64; space.div_ceil(8)];
+    let mut control = [0u64; CONTROL_WORDS];
+    debug_assert!(space <= std::mem::size_of_val(&control));
     // SAFETY: `msghdr` is plain data; all-zero is a valid value.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_iov = &mut iov;
@@ -362,13 +409,13 @@ pub(super) fn recv(socket: &OwnedFd, wait: Duration) -> io::Result<Received> {
     if len < 0 {
         let err = io::Error::last_os_error();
         return match err.kind() {
-            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => Ok(Received::Nothing),
-            io::ErrorKind::ConnectionReset => Ok(Received::Closed),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => Ok(Got::Nothing),
+            io::ErrorKind::ConnectionReset => Ok(Got::Closed),
             _ => Err(err),
         };
     }
     // Descriptors first, so they are owned (and closed) whatever happens next.
-    let mut fds = Vec::new();
+    let fds_before = fds.len();
     // SAFETY: walking the control headers `recvmsg` filled in, within `msg_controllen`.
     unsafe {
         let mut header = libc::CMSG_FIRSTHDR(&msg);
@@ -384,8 +431,8 @@ pub(super) fn recv(socket: &OwnedFd, wait: Duration) -> io::Result<Received> {
             header = libc::CMSG_NXTHDR(&msg, header);
         }
     }
-    if len == 0 && fds.is_empty() {
-        return Ok(Received::Closed);
+    if len == 0 && fds.len() == fds_before {
+        return Ok(Got::Closed);
     }
     if msg.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
         return Err(io::Error::new(
@@ -393,6 +440,7 @@ pub(super) fn recv(socket: &OwnedFd, wait: Duration) -> io::Result<Received> {
             "message or descriptors truncated",
         ));
     }
-    bytes.truncate(len as usize);
-    Ok(Received::Message(bytes, fds))
+    // SAFETY: `recvmsg` wrote `len` bytes into the spare capacity after `start`.
+    unsafe { bytes.set_len(start + len as usize) };
+    Ok(Got::Message)
 }

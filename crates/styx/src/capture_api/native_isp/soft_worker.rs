@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use styx_capture::prelude::*;
-use styx_core::prelude::{CompanionKind, FrameRect};
+use styx_core::prelude::{CompanionKind, FrameRect, Hop};
 use styx_core::queue::BoundedTx;
 use styx_pipeline::device::SoftPipeline;
 use styx_pipeline::{SoftParts, SoftTarget};
@@ -161,6 +161,7 @@ pub(super) fn spawn(
                         break;
                     }
                 };
+                let isp_done = styx_core::prelude::CaptureInstant::now();
                 w.loop_controls.report(&f.output.step.params);
                 let raw = w
                     .still
@@ -178,7 +179,10 @@ pub(super) fn spawn(
                     &w.controls,
                     f.sensor.frame,
                 ));
-                let meta = frame_meta(&w.mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
+                let mut meta = frame_meta(&w.mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
+                let dequeued = styx_core::prelude::CaptureInstant::from(f.raw.dequeued);
+                meta.hops.set(Hop::Dequeued, dequeued.as_nanos());
+                meta.hops.set(Hop::IspDone, isp_done.as_nanos());
                 drop(f);
                 w.still
                     .after_frame(&mut p, &sensor, (lands, request), ae, raw);

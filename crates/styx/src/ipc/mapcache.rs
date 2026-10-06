@@ -135,33 +135,41 @@ impl MapCache {
 pub(super) struct CachedDmabuf {
     cache: Arc<MapCache>,
     id: (u64, u64),
-    fds: Vec<OwnedFd>,
+    fds: Fds,
     planes: SmallVec<[(usize, usize); 3]>,
     map: OnceLock<Option<Arc<Map>>>,
     synced: AtomicBool,
 }
 
+/// A frame's descriptors, inline (no allocation per frame).
+pub(super) type Fds = SmallVec<[OwnedFd; 4]>;
+
 impl CachedDmabuf {
-    /// The planes `(fd, offset, len)`, when every descriptor refers to one buffer; `None`
-    /// otherwise (or when a descriptor cannot be inspected).
+    /// The planes (each `fds[i]` holding `spans[i]`, an offset and a length), when every
+    /// descriptor refers to one buffer; the descriptors back otherwise (or when one cannot be
+    /// inspected).
     pub(super) fn new(
         cache: &Arc<MapCache>,
-        planes: Vec<FrameFdPlane>,
-    ) -> Result<Self, Vec<FrameFdPlane>> {
-        let ids: Option<Vec<(u64, u64)>> = planes.iter().map(|p| identity(p.fd.as_fd())).collect();
-        let Some(id) = ids
-            .filter(|ids| ids.windows(2).all(|w| w[0] == w[1]))
-            .and_then(|ids| ids.first().copied())
-        else {
-            return Err(planes);
+        fds: Fds,
+        spans: &[(usize, usize)],
+    ) -> Result<Self, Fds> {
+        let mut id = None;
+        for fd in &fds {
+            match (identity(fd.as_fd()), id) {
+                (Some(this), None) => id = Some(this),
+                (Some(this), Some(first)) if this == first => {}
+                _ => return Err(fds),
+            }
+        }
+        let Some(id) = id else {
+            return Err(fds);
         };
         cache.tick();
-        let spans = planes.iter().map(|p| (p.offset, p.len)).collect();
         Ok(Self {
             cache: cache.clone(),
             id,
-            fds: planes.into_iter().map(|p| p.fd).collect(),
-            planes: spans,
+            fds,
+            planes: spans.iter().copied().collect(),
             map: OnceLock::new(),
             synced: AtomicBool::new(false),
         })
@@ -269,24 +277,16 @@ mod tests {
         bytes[4096..].fill(2);
         let fd = memfd(&bytes);
         let cache = Arc::new(MapCache::default());
-        let planes = |fd: &OwnedFd| {
-            vec![
-                FrameFdPlane {
-                    fd: fd.try_clone().unwrap(),
-                    offset: 0,
-                    len: 4096,
-                },
-                FrameFdPlane {
-                    fd: fd.try_clone().unwrap(),
-                    offset: 4096,
-                    len: 4096,
-                },
-            ]
+        let planes = |fd: &OwnedFd| -> Fds {
+            [fd.try_clone().unwrap(), fd.try_clone().unwrap()]
+                .into_iter()
+                .collect()
         };
-        let a = CachedDmabuf::new(&cache, planes(&fd)).ok().unwrap();
+        let spans = [(0, 4096), (4096, 4096)];
+        let a = CachedDmabuf::new(&cache, planes(&fd), &spans).ok().unwrap();
         assert!(a.plane_data(0).unwrap().iter().all(|&v| v == 1));
         assert!(a.plane_data(1).unwrap().iter().all(|&v| v == 2));
-        let b = CachedDmabuf::new(&cache, planes(&fd)).ok().unwrap();
+        let b = CachedDmabuf::new(&cache, planes(&fd), &spans).ok().unwrap();
         assert_eq!(b.plane_data(1).unwrap()[0], 2);
         // One mapping, used by both frames.
         assert_eq!(cache.inner.lock().1.len(), 1);
@@ -294,8 +294,8 @@ mod tests {
         // Planes on two buffers are not this backing's.
         let other = memfd(&bytes);
         let mut mixed = planes(&fd);
-        mixed[1].fd = other.try_clone().unwrap();
-        assert!(CachedDmabuf::new(&cache, mixed).is_err());
+        mixed[1] = other.try_clone().unwrap();
+        assert!(CachedDmabuf::new(&cache, mixed, &spans).is_err());
         // Exports keep the plane offsets.
         let Some(FrameBackingExport::DmabufPlanes { planes: out }) = a.export_backing().unwrap()
         else {

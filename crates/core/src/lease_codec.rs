@@ -22,6 +22,21 @@
 //! transport's (the frame socket's connection is the lease); this module only encodes and
 //! checks messages, so other transports (or a test) can carry them.
 //!
+//! **Hops.** A message may carry the frame's hop record (`"hops"`, a [`HopRecord`]: the
+//! sequence number and `CLOCK_MONOTONIC` nanoseconds of each step from the sensor to the send,
+//! and the copies made on the way), the last member of the object:
+//!
+//! ```json
+//! {"descriptor":{...},"backing":{...},
+//!  "hops":{"sequence":7,"sensor":1000,"dequeued":9000,"isp_done":11000,"queued":11200,
+//!          "taken":11300,"sent":11400}}
+//! ```
+//!
+//! It is optional both ways: [`encode`] leaves it out for a frame without hops (the bytes are
+//! then those of a peer that predates it), and a peer that does not know it ignores it (serde
+//! skips unknown members). [`decode`] puts it in the frame's [`FrameMeta::hops`](crate::buffer::FrameMeta::hops),
+//! the sequence number included ([`FrameMeta::sequence`](crate::buffer::FrameMeta::sequence)).
+//!
 //! An endpoint record names a frame socket as `styx-frame-lease+unix://<absolute path>`
 //! ([`endpoint_uri`], [`parse_endpoint_uri`]): scheme [`ENDPOINT_SCHEME`], the socket path as
 //! its payload.
@@ -32,7 +47,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::buffer::{
-    FrameBackingExport, FrameExportError, FrameFdPlane, FrameLease, FrameLeaseDescriptor, fd_size,
+    FrameBackingExport, FrameExportError, FrameFdPlane, FrameLease, FrameLeaseDescriptor,
+    HopRecord, fd_size,
 };
 
 /// The transport name a provider advertises for a frame socket.
@@ -51,6 +67,10 @@ pub const ENDPOINT_SCHEME: &str = "styx-frame-lease+unix";
 pub struct LeaseMessage {
     pub descriptor: FrameLeaseDescriptor,
     pub backing: LeaseBacking,
+    /// The frame's hops up to the send (see the module documentation); `None` for a frame
+    /// without hops, or from a peer that does not send them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hops: Option<HopRecord>,
 }
 
 /// How the descriptors sent with a [`LeaseMessage`] hold the frame (JSON: `"kind"` is
@@ -130,30 +150,130 @@ impl LeaseMessage {
 /// rewritten keeps `frame` (or its backing) for as long as the receiver may read it.
 #[cfg(target_os = "linux")]
 pub fn encode(frame: &FrameLease) -> Result<(Vec<u8>, Vec<OwnedFd>), LeaseCodecError> {
-    let (descriptor, backing) = frame.export_or_copy_memfd()?;
-    let (backing, fds) = match backing {
-        FrameBackingExport::Memfd { fd, len } => (LeaseBacking::Memfd { len }, vec![fd]),
-        FrameBackingExport::DmabufPlanes { planes } => {
-            let wire = planes
-                .iter()
-                .map(|p| LeasePlane {
-                    offset: p.offset,
-                    len: p.len,
-                })
-                .collect();
-            let fds = planes.into_iter().map(|p| p.fd).collect();
-            (LeaseBacking::DmabufPlanes { planes: wire }, fds)
-        }
+    let (message, fds) = encode_message(frame)?;
+    Ok((message.to_json()?, fds))
+}
+
+/// [`encode`] before the JSON: the message (its [`hops`](LeaseMessage::hops) from the frame's
+/// metadata, with a copy into a memfd counted) and the descriptors, for a transport that adds
+/// to the hops before it sends (e.g. the send time).
+#[cfg(target_os = "linux")]
+pub fn encode_message(frame: &FrameLease) -> Result<(LeaseMessage, Vec<OwnedFd>), LeaseCodecError> {
+    let mut encoded = EncodedFrame::default();
+    encoded.fill(frame)?;
+    let message = LeaseMessage {
+        descriptor: encoded.descriptor.clone(),
+        backing: match encoded.memfd_len {
+            Some(len) => LeaseBacking::Memfd { len },
+            None => LeaseBacking::DmabufPlanes {
+                planes: std::mem::take(&mut encoded.planes),
+            },
+        },
+        hops: encoded.hops,
     };
-    if fds.len() > MAX_FDS {
-        return Err(LeaseCodecError::TooManyFds(fds.len()));
+    Ok((message, std::mem::take(&mut encoded.fds)))
+}
+
+/// A frame encoded for sending, kept to send any number of times and refilled for the next
+/// frame without allocating once its lists have grown ([`EncodedFrame::fill`]).
+#[derive(Debug)]
+pub struct EncodedFrame {
+    pub descriptor: FrameLeaseDescriptor,
+    /// `Some(len)`: one memfd of `len` bytes holds every plane; `None`: one descriptor per
+    /// entry of `planes`.
+    pub memfd_len: Option<usize>,
+    pub planes: Vec<LeasePlane>,
+    /// The descriptors, in message order.
+    pub fds: Vec<OwnedFd>,
+    /// The frame's hops (with a memfd copy counted); `None` for a frame without hops.
+    pub hops: Option<HopRecord>,
+    /// The frame was copied into a memfd (it was not in shareable memory).
+    pub copied: bool,
+}
+
+impl Default for EncodedFrame {
+    fn default() -> Self {
+        Self {
+            descriptor: FrameLeaseDescriptor {
+                width: 0,
+                height: 0,
+                fourcc: crate::format::FourCc::GREY,
+                timestamp: 0,
+                color: crate::format::ColorSpace::Unknown,
+                planes: smallvec::SmallVec::new(),
+            },
+            memfd_len: None,
+            planes: Vec::new(),
+            fds: Vec::new(),
+            hops: None,
+            copied: false,
+        }
     }
-    let payload = LeaseMessage {
-        descriptor,
-        backing,
+}
+
+impl EncodedFrame {
+    /// `frame`, replacing what was there: its descriptor and descriptors (dma-bufs and memfds
+    /// duplicated, other memory copied once into a new memfd) and its hops.
+    #[cfg(target_os = "linux")]
+    pub fn fill(&mut self, frame: &FrameLease) -> Result<(), LeaseCodecError> {
+        self.fds.clear();
+        self.planes.clear();
+        let exportable = frame
+            .external_backing_handle()
+            .is_some_and(|b| b.can_export());
+        let (descriptor, backing) = frame.export_or_copy_memfd()?;
+        self.descriptor = descriptor;
+        match backing {
+            FrameBackingExport::Memfd { fd, len } => {
+                self.memfd_len = Some(len);
+                self.fds.push(fd);
+            }
+            FrameBackingExport::DmabufPlanes { planes } => {
+                self.memfd_len = None;
+                for p in planes {
+                    self.planes.push(LeasePlane {
+                        offset: p.offset,
+                        len: p.len,
+                    });
+                    self.fds.push(p.fd);
+                }
+            }
+        }
+        if self.fds.len() > MAX_FDS {
+            let n = self.fds.len();
+            self.fds.clear();
+            return Err(LeaseCodecError::TooManyFds(n));
+        }
+        self.copied = !exportable;
+        let mut hops = frame.meta().hops;
+        if self.copied {
+            hops.copied(frame.layout_slice().iter().map(|l| l.len).sum());
+        }
+        let record = HopRecord::new(frame.meta().sequence(), &hops);
+        self.hops = (!record.is_empty()).then_some(record);
+        Ok(())
     }
-    .to_json()?;
-    Ok((payload, fds))
+
+    /// Lets go of the descriptors (the frame's memory), keeping the lists' room.
+    pub fn clear(&mut self) {
+        self.fds.clear();
+        self.planes.clear();
+        self.hops = None;
+    }
+
+    /// The message, with `hops` (e.g. [`EncodedFrame::hops`] with the send time added).
+    pub fn message<'a>(&'a self, hops: Option<&'a HopRecord>) -> LeaseMessageRef<'a> {
+        LeaseMessageRef {
+            descriptor: &self.descriptor,
+            backing: match self.memfd_len {
+                Some(len) => LeaseBackingRef::Memfd { len },
+                None => LeaseBackingRef::DmabufPlanes {
+                    planes: &self.planes,
+                },
+            },
+            hops,
+        }
+    }
 }
 
 /// [`encode`], the payload preceded by its length as the frame socket sends it.
@@ -187,6 +307,72 @@ pub fn decode(payload: &[u8], fds: Vec<OwnedFd>) -> Result<FrameLease, LeaseCode
     decode_message(message, fds)
 }
 
+/// A [`LeaseMessage`] borrowed from its parts, for a sender that keeps them between sends
+/// (written with [`LeaseMessageRef::write_framed`], the same bytes as the owned message).
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct LeaseMessageRef<'a> {
+    pub descriptor: &'a FrameLeaseDescriptor,
+    pub backing: LeaseBackingRef<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hops: Option<&'a HopRecord>,
+}
+
+/// [`LeaseBacking`], borrowed.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LeaseBackingRef<'a> {
+    Memfd { len: usize },
+    DmabufPlanes { planes: &'a [LeasePlane] },
+}
+
+impl LeaseMessage {
+    /// The message, borrowed.
+    pub fn as_ref(&self) -> LeaseMessageRef<'_> {
+        LeaseMessageRef {
+            descriptor: &self.descriptor,
+            backing: match &self.backing {
+                LeaseBacking::Memfd { len } => LeaseBackingRef::Memfd { len: *len },
+                LeaseBacking::DmabufPlanes { planes } => LeaseBackingRef::DmabufPlanes { planes },
+            },
+            hops: self.hops.as_ref(),
+        }
+    }
+}
+
+impl LeaseMessageRef<'_> {
+    /// Descriptors the message needs.
+    pub fn fd_count(&self) -> usize {
+        match self.backing {
+            LeaseBackingRef::Memfd { .. } => 1,
+            LeaseBackingRef::DmabufPlanes { planes } => planes.len(),
+        }
+    }
+
+    /// [`write_framed`] for the borrowed message.
+    pub fn write_framed(&self, out: &mut Vec<u8>) -> Result<(), LeaseCodecError> {
+        out.clear();
+        out.extend_from_slice(&[0; HEADER_LEN]);
+        serde_json::to_writer(&mut *out, self)?;
+        finish_framed(out)
+    }
+}
+
+/// Writes `message` as a frame socket sends it into `out` (cleared first): the length header
+/// and the JSON payload. Reusing `out` across messages, nothing is allocated once it has grown
+/// to a message's size.
+pub fn write_framed(message: &LeaseMessage, out: &mut Vec<u8>) -> Result<(), LeaseCodecError> {
+    message.as_ref().write_framed(out)
+}
+
+fn finish_framed(out: &mut [u8]) -> Result<(), LeaseCodecError> {
+    let len = out.len() - HEADER_LEN;
+    if len > MAX_PAYLOAD {
+        return Err(LeaseCodecError::PayloadTooLarge(len));
+    }
+    out[..HEADER_LEN].copy_from_slice(&(len as u32).to_le_bytes());
+    Ok(())
+}
+
 /// [`decode`] for an already parsed message.
 pub fn decode_message(
     message: LeaseMessage,
@@ -207,7 +393,8 @@ pub fn decode_message(
     if expected > MAX_FDS {
         return Err(LeaseCodecError::TooManyFds(expected));
     }
-    Ok(match message.backing {
+    let hops = message.hops;
+    let mut frame = match message.backing {
         LeaseBacking::Memfd { len } => {
             let fd = fds.pop().expect("one descriptor");
             let within_len = message
@@ -233,7 +420,11 @@ pub fn decode_message(
                 .collect();
             FrameLease::from_dmabuf_import(message.descriptor, planes)?
         }
-    })
+    };
+    if let Some(record) = hops {
+        frame.meta_mut().hops = record.hops();
+    }
+    Ok(frame)
 }
 
 /// The endpoint record URI of a frame socket at `path`: `styx-frame-lease+unix://` and the

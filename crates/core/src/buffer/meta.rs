@@ -2,6 +2,8 @@ use core::{fmt, time::Duration};
 
 use crate::format::MediaFormat;
 
+pub use super::hops::{FrameHops, HOP_COUNT, Hop, HopRecord};
+
 pub use super::clock::{
     CaptureInstant, ClockConversion, ClockSource, PlatformClock, TimestampClock, set_platform_clock,
 };
@@ -267,6 +269,9 @@ pub struct FrameMeta {
     /// An inter-coded packet (H.264/H.265 P-frame): decoding it needs the packets before it, back
     /// to the last keyframe. `false` for raw frames, JPEG and keyframes.
     pub delta: bool,
+    /// When the frame passed each step from the sensor to its consumer, and the copies made of
+    /// it on the way (empty without the `path-metrics` feature; see [`super::hops`]).
+    pub hops: FrameHops,
 }
 
 /// Per-frame latency breakdown. Backends fill `sensor_to_capture`; pipelines fill the stage
@@ -330,6 +335,7 @@ impl FrameMeta {
             crop: None,
             clock: None,
             delta: false,
+            hops: FrameHops::new(),
         }
     }
 
@@ -360,9 +366,13 @@ impl FrameMeta {
         self.backend.as_ref().and_then(BackendFrameMeta::as_uvc)
     }
 
-    /// Driver frame sequence number, when the backend reports one.
+    /// Driver frame sequence number, when the backend reports one (or, for a frame from
+    /// another process, the one carried with its hops).
     pub fn sequence(&self) -> Option<u32> {
-        self.backend.as_ref().map(BackendFrameMeta::sequence)
+        self.backend
+            .as_ref()
+            .map(BackendFrameMeta::sequence)
+            .or(self.hops.sequence())
     }
 
     /// Record when Styx received the frame (a [`CaptureInstant`], or with `std` an `Instant`).
@@ -449,6 +459,26 @@ impl FrameMeta {
             self.clock = input.clock;
         }
         self.timing = self.timing.merged_with(input.timing);
+        self.hops.merge_from(&input.hops);
+    }
+
+    /// This frame's hops as exported, with the sequence number as the join key.
+    pub fn hop_record(&self) -> HopRecord {
+        HopRecord::new(self.sequence(), &self.hops)
+    }
+
+    /// The sensor timestamp on `CLOCK_MONOTONIC` ([`Hop::Sensor`]): `timestamp` when the frame's
+    /// clock is monotonic, converted from boottime or realtime, `None` for stream-relative or
+    /// unknown clocks.
+    pub fn sensor_monotonic_ns(&self) -> Option<u64> {
+        if self.timestamp == 0 {
+            return None;
+        }
+        match self.clock? {
+            TimestampClock::Monotonic => Some(self.timestamp),
+            TimestampClock::StreamRelative => None,
+            _ => self.timestamp_in(TimestampClock::Monotonic),
+        }
     }
 
     pub fn with_residency(mut self, residency: FrameResidency) -> Self {

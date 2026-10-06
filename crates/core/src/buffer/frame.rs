@@ -539,6 +539,12 @@ impl FrameLease {
         let mut meta = self.meta.clone();
         meta.residency = Some(FrameResidency::HostOwned);
         meta.mutability = FrameMutability::Mutable;
+        #[cfg(feature = "path-metrics")]
+        crate::metrics::copied_frame(
+            &mut meta,
+            crate::metrics::CopySite::Materialize,
+            layouts.iter().map(|l: &PlaneLayout| l.len).sum::<usize>(),
+        );
         let mut owned = FrameLease::multi_plane(meta, buffers, layouts);
         owned.companions = self.materialize_companions();
         owned
@@ -572,6 +578,7 @@ impl FrameLease {
         for (plane, layout) in self.planes().into_iter().zip(self.layouts.iter()) {
             let data = plane.data();
             let copy_len = data.len().min(layout.len);
+            crate::metrics::copied(crate::metrics::CopySite::MemfdExport, copy_len);
             let mut written = 0usize;
             while written < copy_len {
                 let ret = unsafe {

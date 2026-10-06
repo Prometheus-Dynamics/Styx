@@ -72,15 +72,29 @@ impl Access {
     }
 }
 
+static SYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SYNC_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Brackets CPU access to any dma-buf (`DMA_BUF_IOCTL_SYNC`): call with `start = true` before
-/// touching a mapping and `start = false` after.
+/// touching a mapping and `start = false` after. Counted with its time ([`sync_stats`]).
 pub fn sync(dmabuf: BorrowedFd<'_>, access: Access, start: bool) -> Result<()> {
+    use std::sync::atomic::Ordering::Relaxed;
     let mut raw = dma_buf_sync {
         flags: access.bits() | if start { SYNC_START } else { SYNC_END },
     };
+    let at = std::time::Instant::now();
     // SAFETY: DMA_BUF_IOCTL_SYNC takes a `dma_buf_sync`.
-    unsafe { ioctl::ioctl(dmabuf, DMA_BUF_IOCTL_SYNC, &mut raw)? };
+    let r = unsafe { ioctl::ioctl(dmabuf, DMA_BUF_IOCTL_SYNC, &mut raw) };
+    SYNCS.fetch_add(1, Relaxed);
+    SYNC_NS.fetch_add(at.elapsed().as_nanos() as u64, Relaxed);
+    r?;
     Ok(())
+}
+
+/// `DMA_BUF_IOCTL_SYNC` calls [`sync`] made in this process, and the nanoseconds they took.
+pub fn sync_stats() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (SYNCS.load(Relaxed), SYNC_NS.load(Relaxed))
 }
 
 /// The size of a dma-buf (or any seekable file, e.g. a memfd) in bytes, as the kernel has it:

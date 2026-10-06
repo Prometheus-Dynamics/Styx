@@ -10,9 +10,12 @@ use parking_lot::Mutex;
 use smallvec::SmallVec;
 use styx_core::prelude::*;
 
-use super::mapcache::{CachedDmabuf, MapCache};
-use super::wire::{self, CameraInfo, ServerMessage, WireBacking, WireFrame};
+use styx_core::metrics::HopCounters;
+
+use super::mapcache::{CachedDmabuf, Fds, MapCache};
+use super::wire::{self, CameraInfo, ClientHops, ServerMessage, WireBacking, WireFrame};
 use super::{IpcError, socket};
+use crate::metrics::HopMetrics;
 use crate::planner::{Delivered, FrameRequest};
 
 /// How long opening a connection may take, connecting and the service's answer together,
@@ -32,6 +35,27 @@ pub struct FrameClient {
     request: Option<Mutex<Request>>,
     reconnect: bool,
     reconnects: AtomicU64,
+    /// The receive buffers and the frame being decoded, kept between frames.
+    scratch: Mutex<Scratch>,
+    /// Hop times (sensor to import) and copies of the frames received.
+    hops: HopCounters,
+}
+
+/// What a receive reuses: nothing is allocated per frame for the message once these have grown.
+struct Scratch {
+    bytes: Vec<u8>,
+    fds: Vec<OwnedFd>,
+    frame: WireFrame,
+}
+
+impl Default for Scratch {
+    fn default() -> Self {
+        Self {
+            bytes: Vec::new(),
+            fds: Vec::new(),
+            frame: WireFrame::empty(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -126,7 +150,7 @@ async fn open_async(request: &Request) -> Result<Opened, IpcError> {
             let mut ready = fd.readable().await?;
             match socket::recv(&socket, Duration::ZERO)? {
                 socket::Received::Message(bytes, _) => match wire::decode_server(&bytes)? {
-                    ServerMessage::Frame(..) => {}
+                    ServerMessage::Frame => {}
                     message => return accepted(message).map(|accepted| (socket, accepted)),
                 },
                 socket::Received::Nothing => ready.clear_ready(),
@@ -149,7 +173,7 @@ fn answer(socket: &OwnedFd, deadline: Instant) -> Result<ServerMessage, IpcError
         }
         match socket::recv(socket, wait)? {
             socket::Received::Message(bytes, _) => match wire::decode_server(&bytes)? {
-                ServerMessage::Frame(..) => {}
+                ServerMessage::Frame => {}
                 message => return Ok(message),
             },
             socket::Received::Nothing => {}
@@ -318,7 +342,15 @@ impl FrameClient {
             reconnect: reconnect && request.is_some(),
             request: request.map(Mutex::new),
             reconnects: AtomicU64::new(0),
+            scratch: Mutex::new(Scratch::default()),
+            hops: HopCounters::new(),
         }
+    }
+
+    /// Hop times (the frames' path in the sending process, then their receive and import
+    /// here) and copies of the frames received.
+    pub fn hop_metrics(&self) -> HopMetrics {
+        HopMetrics::of(&self.hops)
     }
 
     /// What the camera service's frames for this client are: format, size, rate, pyramid, and
@@ -398,12 +430,22 @@ impl FrameClient {
                 continue;
             };
             let remaining = deadline.saturating_duration_since(Instant::now());
-            match socket::recv(&socket, remaining) {
-                Ok(socket::Received::Message(bytes, fds)) => {
-                    return self.frame(&socket, &bytes, fds);
+            // Another thread receiving at the same time gets buffers of its own.
+            let mut own = None;
+            let mut guard = self.scratch.try_lock();
+            let scratch = match guard.as_deref_mut() {
+                Some(s) => s,
+                None => own.insert(Scratch::default()),
+            };
+            scratch.bytes.clear();
+            scratch.fds.clear();
+            match socket::recv_into(&socket, remaining, &mut scratch.bytes, &mut scratch.fds) {
+                Ok(socket::Got::Message) => {
+                    return self.frame(&socket, scratch);
                 }
-                Ok(socket::Received::Nothing) => return RecvOutcome::Empty,
-                Ok(socket::Received::Closed) | Err(_) => {
+                Ok(socket::Got::Nothing) => return RecvOutcome::Empty,
+                Ok(socket::Got::Closed) | Err(_) => {
+                    drop(guard);
                     self.link.lock().lost();
                     if !self.reconnect {
                         return RecvOutcome::Closed;
@@ -471,14 +513,23 @@ impl FrameClient {
             let Ok(mut ready) = fd.readable().await else {
                 return RecvOutcome::Closed;
             };
-            match socket::recv(&socket, Duration::ZERO) {
-                Ok(socket::Received::Message(bytes, fds)) => {
-                    if let RecvOutcome::Data(frame) = self.frame(&socket, &bytes, fds) {
-                        return RecvOutcome::Data(frame);
-                    }
+            let mut scratch = Scratch::default();
+            let got = {
+                let mut guard = self.scratch.try_lock();
+                let s = guard.as_deref_mut().unwrap_or(&mut scratch);
+                s.bytes.clear();
+                s.fds.clear();
+                match socket::recv_into(&socket, Duration::ZERO, &mut s.bytes, &mut s.fds) {
+                    Ok(socket::Got::Message) => Some(self.frame(&socket, s)),
+                    Ok(socket::Got::Nothing) => None,
+                    Ok(socket::Got::Closed) | Err(_) => Some(RecvOutcome::Closed),
                 }
-                Ok(socket::Received::Nothing) => ready.clear_ready(),
-                Ok(socket::Received::Closed) | Err(_) => {
+            };
+            match got {
+                Some(RecvOutcome::Data(frame)) => return RecvOutcome::Data(frame),
+                Some(RecvOutcome::Empty) => {}
+                None => ready.clear_ready(),
+                Some(RecvOutcome::Closed) => {
                     self.link.lock().lost();
                     if !self.reconnect {
                         return RecvOutcome::Closed;
@@ -506,24 +557,31 @@ impl FrameClient {
         }
     }
 
-    fn frame(
-        &self,
-        socket: &Arc<OwnedFd>,
-        bytes: &[u8],
-        fds: Vec<OwnedFd>,
-    ) -> RecvOutcome<FrameLease> {
-        let imported = wire::decode_server(bytes).and_then(|message| match message {
-            ServerMessage::Frame(id, frame) => {
-                let release = Arc::new(Release {
-                    socket: socket.clone(),
-                    id,
-                });
-                import(*frame, &mut fds.into_iter(), &release, &self.maps).map(Some)
-            }
-            _ => Ok(None),
-        });
+    /// The frame message in `scratch` imported over its descriptors: one allocation (the
+    /// frame's release record) for a frame on one dma-buf.
+    fn frame(&self, socket: &Arc<OwnedFd>, scratch: &mut Scratch) -> RecvOutcome<FrameLease> {
+        let received = CaptureInstant::try_now().map(CaptureInstant::as_nanos);
+        let imported =
+            wire::decode_frame_into(&scratch.bytes, &mut scratch.frame).and_then(|id| match id {
+                Some(id) => {
+                    let release = Release {
+                        socket: socket.clone(),
+                        id,
+                        hops: ClientHops {
+                            received,
+                            imported: None,
+                        },
+                    };
+                    let mut fds = scratch.fds.drain(..);
+                    import(&scratch.frame, &mut fds, release, &self.maps).map(Some)
+                }
+                None => Ok(None),
+            });
         match imported {
-            Ok(Some(frame)) => RecvOutcome::Data(frame),
+            Ok(Some(frame)) => {
+                self.hops.record(&frame.meta().hops);
+                RecvOutcome::Data(frame)
+            }
             Ok(None) => RecvOutcome::Empty,
             Err(err) => {
                 crate::trace::warn!(error = %err, "shared frame skipped");
@@ -533,97 +591,157 @@ impl FrameClient {
     }
 }
 
+/// `frame` over the descriptors `fds` yields, released on the server with `release` once it
+/// and its companions are dropped. Its hops get the receive (from `release`) and import times.
 fn import(
-    frame: WireFrame,
+    frame: &WireFrame,
     fds: &mut impl Iterator<Item = OwnedFd>,
-    release: &Arc<Release>,
+    mut release: Release,
     maps: &Arc<MapCache>,
 ) -> Result<FrameLease, IpcError> {
-    let cpu_access = frame.cpu_access;
-    let count = frame.backing.fd_count();
-    let mut own: Vec<OwnedFd> = fds.by_ref().take(count).collect();
-    if own.len() != count {
-        return Err(IpcError::Malformed("descriptors missing"));
+    let imported = CaptureInstant::try_now().map(CaptureInstant::as_nanos);
+    release.hops.imported = imported;
+    let mut meta = frame.meta.clone();
+    if let Some(ns) = release.hops.received {
+        meta.hops.set(Hop::Received, ns);
     }
-    let layouts: SmallVec<[PlaneLayout; 3]> = frame.layouts.iter().copied().collect();
-    let imported = match frame.backing {
-        WireBacking::Memfd { .. } => {
-            FrameLease::from_memfd(frame.meta, layouts.clone(), own.remove(0))
-        }
-        WireBacking::Dmabuf(planes) => {
-            let planes: Vec<FrameFdPlane> = own
-                .into_iter()
-                .zip(planes)
-                .map(|(fd, (offset, len))| FrameFdPlane { fd, offset, len })
-                .collect();
-            if planes.len() != layouts.len() {
-                return Err(FrameExportError::PlaneCountMismatch {
-                    expected: layouts.len(),
-                    actual: planes.len(),
-                }
-                .into());
-            }
-            // Planes on one buffer (the usual case) read through the cached mappings.
-            match CachedDmabuf::new(maps, planes) {
-                Ok(cached) => {
-                    let mut meta = frame.meta;
-                    meta.residency = Some(FrameResidency::Dmabuf);
-                    FrameLease::from_external(meta, layouts.clone(), Arc::new(cached))
-                }
-                Err(planes) => FrameLease::from_dmabuf(frame.meta, layouts.clone(), planes)?,
-            }
-        }
+    if let Some(ns) = imported {
+        meta.hops.set(Hop::Imported, ns);
+    }
+    let handle = if frame.companions.is_empty() {
+        ReleaseHandle::Own(release)
+    } else {
+        ReleaseHandle::Shared(Arc::new(release))
     };
-    let inner = imported
-        .external_backing_handle()
-        .ok_or(IpcError::Malformed("frame without backing"))?;
-    let meta = imported.meta().clone();
-    drop(imported);
-    let mut out = FrameLease::from_external(
-        meta,
-        layouts,
-        Arc::new(Released {
-            inner,
-            _release: release.clone(),
-            cpu_access,
-        }),
-    );
-    for (kind, companion) in frame.companions {
+    let shared = match &handle {
+        ReleaseHandle::Shared(r) => Some(r.clone()),
+        ReleaseHandle::Own(_) => None,
+    };
+    let mut out = import_part(frame, meta, fds, handle, maps)?;
+    for (kind, companion) in &frame.companions {
+        let release = ReleaseHandle::Shared(shared.clone().expect("shared with companions"));
+        let part = import_part(companion, companion.meta.clone(), fds, release, maps)?;
         out = out
-            .with_companion(kind, import(companion, fds, release, maps)?)
+            .with_companion(*kind, part)
             .map_err(|_| IpcError::Malformed("companion does not match its frame"))?;
     }
     Ok(out)
 }
 
-/// Tells the server a frame was dropped, so it can let go of its buffers.
+fn import_part(
+    frame: &WireFrame,
+    mut meta: FrameMeta,
+    fds: &mut impl Iterator<Item = OwnedFd>,
+    release: ReleaseHandle,
+    maps: &Arc<MapCache>,
+) -> Result<FrameLease, IpcError> {
+    let count = frame.backing.fd_count();
+    let own: Fds = fds.by_ref().take(count).collect();
+    if own.len() != count {
+        return Err(IpcError::Malformed("descriptors missing"));
+    }
+    let layouts: SmallVec<[PlaneLayout; 3]> = frame.layouts.iter().copied().collect();
+    let inner = match &frame.backing {
+        WireBacking::Dmabuf(spans) => {
+            if spans.len() != layouts.len() {
+                return Err(FrameExportError::PlaneCountMismatch {
+                    expected: layouts.len(),
+                    actual: spans.len(),
+                }
+                .into());
+            }
+            meta.residency = Some(FrameResidency::Dmabuf);
+            // Planes on one buffer (the usual case) read through the cached mappings.
+            match CachedDmabuf::new(maps, own, spans) {
+                Ok(cached) => Inner::Cached(cached),
+                Err(own) => {
+                    let planes = own
+                        .into_iter()
+                        .zip(spans)
+                        .map(|(fd, &(offset, len))| FrameFdPlane { fd, offset, len })
+                        .collect();
+                    let f = FrameLease::from_dmabuf(meta.clone(), layouts.clone(), planes)?;
+                    Inner::Other(external(&f)?)
+                }
+            }
+        }
+        WireBacking::Memfd { .. } => {
+            let fd = own.into_iter().next().expect("one descriptor");
+            let f = FrameLease::from_memfd(meta.clone(), layouts.clone(), fd);
+            meta.residency = f.meta().residency;
+            Inner::Other(external(&f)?)
+        }
+    };
+    Ok(FrameLease::from_external(
+        meta,
+        layouts,
+        Arc::new(Released {
+            inner,
+            _release: release,
+            cpu_access: frame.cpu_access,
+        }),
+    ))
+}
+
+fn external(frame: &FrameLease) -> Result<Arc<dyn ExternalBacking>, IpcError> {
+    frame
+        .external_backing_handle()
+        .ok_or(IpcError::Malformed("frame without backing"))
+}
+
+/// Tells the server a frame was dropped, so it can let go of its buffers; with the frame's
+/// receive and import times here.
 struct Release {
     socket: Arc<OwnedFd>,
     id: u64,
+    hops: ClientHops,
 }
 
 impl Drop for Release {
     fn drop(&mut self) {
-        let _ = socket::send(&self.socket, &wire::encode_release(self.id), &[]);
+        let _ = socket::send(&self.socket, &wire::release_bytes(self.id, self.hops), &[]);
+    }
+}
+
+/// A frame's release: its own (no companions), or shared with its companions.
+enum ReleaseHandle {
+    Own(#[allow(dead_code)] Release),
+    Shared(#[allow(dead_code)] Arc<Release>),
+}
+
+/// A received frame's memory.
+enum Inner {
+    /// One dma-buf, read through the client's mapping cache.
+    Cached(CachedDmabuf),
+    /// Anything else (a memfd, planes on several buffers).
+    Other(Arc<dyn ExternalBacking>),
+}
+
+impl Inner {
+    fn backing(&self) -> &dyn ExternalBacking {
+        match self {
+            Inner::Cached(c) => c,
+            Inner::Other(o) => o.as_ref(),
+        }
     }
 }
 
 /// A received frame's memory; the frame is released on the server once it and its companions
 /// are all dropped.
 struct Released {
-    inner: Arc<dyn ExternalBacking>,
-    _release: Arc<Release>,
+    inner: Inner,
+    _release: ReleaseHandle,
     /// As the sender reported it for its memory.
     cpu_access: CpuAccess,
 }
 
 impl ExternalBacking for Released {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        self.inner.plane_data(index)
+        self.inner.backing().plane_data(index)
     }
 
     fn backing_bytes(&self) -> Option<usize> {
-        self.inner.backing_bytes()
+        self.inner.backing().backing_bytes()
     }
 
     fn backing_kind(&self) -> &'static str {
@@ -631,7 +749,7 @@ impl ExternalBacking for Released {
     }
 
     fn can_export(&self) -> bool {
-        self.inner.can_export()
+        self.inner.backing().can_export()
     }
 
     fn cpu_access(&self) -> CpuAccess {
@@ -639,10 +757,10 @@ impl ExternalBacking for Released {
     }
 
     fn residency(&self) -> FrameResidency {
-        self.inner.residency()
+        self.inner.backing().residency()
     }
 
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
-        self.inner.export_backing()
+        self.inner.backing().export_backing()
     }
 }

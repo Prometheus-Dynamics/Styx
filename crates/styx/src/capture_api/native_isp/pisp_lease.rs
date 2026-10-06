@@ -12,8 +12,8 @@ use std::sync::{Arc, mpsc};
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
 use styx_core::prelude::{
-    BackendFrameMeta, ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane,
-    FrameRect, FrameResidency, TimestampClock,
+    BackendFrameMeta, CaptureInstant, ExternalBacking, FrameBackingExport, FrameExportError,
+    FrameFdPlane, FrameRect, FrameResidency, Hop, TimestampClock,
 };
 use styx_kernel::Mapping;
 use styx_kernel::dma_heap::{self, Access, DmaBuf};
@@ -252,6 +252,12 @@ fn lease(
         .with_capture_instant(std::time::Instant::now());
     meta.clock = Some(TimestampClock::Monotonic);
     meta.crop = placed.crop;
+    let dequeued = CaptureInstant::from(f.dequeued);
+    meta.hops.set(Hop::Dequeued, dequeued.as_nanos());
+    // The back end job (and its extra passes) done: the outputs were ready `total` after the
+    // front end's buffers were dequeued.
+    let done = CaptureInstant::from(f.dequeued + f.times.total);
+    meta.hops.set(Hop::IspDone, done.as_nanos());
     FrameLease::from_external(
         meta,
         plane_layouts,
