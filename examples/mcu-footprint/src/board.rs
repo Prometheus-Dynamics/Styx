@@ -369,7 +369,7 @@ pub fn receiver_config(width: u32, height: u32, buffers: u32) -> ReceiverConfig 
 pub fn expose(out: &mut [u8], width: usize, exposure_us: u32, gain_q8: u32) {
     let scale = u64::from(exposure_us) * u64::from(gain_q8);
     for (y, row) in out.chunks_exact_mut(width * 2).enumerate() {
-        for (x, px) in row.chunks_exact_mut(2).enumerate() {
+        for (x, px) in row.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let k: u64 = match (y & 1, x & 1) {
                 (0, 0) => 45,
                 (1, 1) => 100,

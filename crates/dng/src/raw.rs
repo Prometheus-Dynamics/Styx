@@ -119,7 +119,7 @@ fn unpack_row(packing: Packing, row: &[u8], out: &mut [u16]) {
             } else {
                 (1u16 << bits) - 1
             };
-            for (o, c) in out.iter_mut().zip(row.chunks_exact(2)) {
+            for (o, c) in out.iter_mut().zip(row.as_chunks::<2>().0) {
                 *o = u16::from_le_bytes([c[0], c[1]]) & mask;
             }
         }

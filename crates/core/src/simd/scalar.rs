@@ -4,8 +4,10 @@
 /// BGR ↔ RGB: swap bytes 0 and 2 of each 3-byte pixel. `src` and `dst` may be the same row.
 pub fn swap_rb24_row(src: &[u8], dst: &mut [u8], width: usize) {
     for (d, s) in dst[..width * 3]
-        .chunks_exact_mut(3)
-        .zip(src[..width * 3].chunks_exact(3))
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(src[..width * 3].as_chunks::<3>().0)
     {
         let (r, g, b) = (s[2], s[1], s[0]);
         d[0] = r;
@@ -17,8 +19,10 @@ pub fn swap_rb24_row(src: &[u8], dst: &mut [u8], width: usize) {
 /// BGRA ↔ RGBA: swap bytes 0 and 2 of each 4-byte pixel, keeping byte 3.
 pub fn swap_rb32_row(src: &[u8], dst: &mut [u8], width: usize) {
     for (d, s) in dst[..width * 4]
-        .chunks_exact_mut(4)
-        .zip(src[..width * 4].chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src[..width * 4].as_chunks::<4>().0)
     {
         d.copy_from_slice(&[s[2], s[1], s[0], s[3]]);
     }
@@ -28,8 +32,10 @@ pub fn swap_rb32_row(src: &[u8], dst: &mut [u8], width: usize) {
 /// (BGRA/BGRX → RGB).
 pub fn x32_to_rgb24_row(src: &[u8], dst: &mut [u8], width: usize, swap: bool) {
     for (d, s) in dst[..width * 3]
-        .chunks_exact_mut(3)
-        .zip(src[..width * 4].chunks_exact(4))
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(src[..width * 4].as_chunks::<4>().0)
     {
         let (a, c) = if swap { (s[2], s[0]) } else { (s[0], s[2]) };
         d[0] = a;
@@ -79,8 +85,10 @@ pub fn rgb_to_luma_row(src: &[u8], dst: &mut [u8], width: usize, layout: ColorLa
 /// RGB24 to RGBA with alpha 255.
 pub fn rgb24_to_rgba_row(src: &[u8], dst: &mut [u8], width: usize) {
     for (d, s) in dst[..width * 4]
-        .chunks_exact_mut(4)
-        .zip(src[..width * 3].chunks_exact(3))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src[..width * 3].as_chunks::<3>().0)
     {
         d.copy_from_slice(&[s[0], s[1], s[2], 255]);
     }
@@ -88,7 +96,12 @@ pub fn rgb24_to_rgba_row(src: &[u8], dst: &mut [u8], width: usize) {
 
 /// Grey to RGB: each byte three times.
 pub fn gray8_to_rgb24_row(src: &[u8], dst: &mut [u8], width: usize) {
-    for (d, &g) in dst[..width * 3].chunks_exact_mut(3).zip(&src[..width]) {
+    for (d, &g) in dst[..width * 3]
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(&src[..width])
+    {
         d.fill(g);
     }
 }
@@ -96,8 +109,10 @@ pub fn gray8_to_rgb24_row(src: &[u8], dst: &mut [u8], width: usize) {
 /// Little-endian 16-bit grey to RGB: the high byte three times.
 pub fn gray16le_to_rgb24_row(src: &[u8], dst: &mut [u8], width: usize) {
     for (d, s) in dst[..width * 3]
-        .chunks_exact_mut(3)
-        .zip(src[..width * 2].chunks_exact(2))
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(src[..width * 2].as_chunks::<2>().0)
     {
         d.fill(s[1]);
     }
@@ -106,8 +121,10 @@ pub fn gray16le_to_rgb24_row(src: &[u8], dst: &mut [u8], width: usize) {
 /// Little-endian 16-bit RGB (or BGR with `swap`) to RGB24: the high byte of each channel.
 pub fn rgb48le_to_rgb24_row(src: &[u8], dst: &mut [u8], width: usize, swap: bool) {
     for (d, s) in dst[..width * 3]
-        .chunks_exact_mut(3)
-        .zip(src[..width * 6].chunks_exact(6))
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(src[..width * 6].as_chunks::<6>().0)
     {
         let (a, c) = if swap { (s[5], s[1]) } else { (s[1], s[5]) };
         d[0] = a;
@@ -120,7 +137,7 @@ pub fn rgb48le_to_rgb24_row(src: &[u8], dst: &mut [u8], width: usize, swap: bool
 pub fn yuyv_luma_row(src: &[u8], dst: &mut [u8], width: usize) {
     for (d, s) in dst[..width]
         .iter_mut()
-        .zip(src[..width * 2].chunks_exact(2))
+        .zip(src[..width * 2].as_chunks::<2>().0)
     {
         *d = s[0];
     }
@@ -130,8 +147,8 @@ pub fn yuyv_luma_row(src: &[u8], dst: &mut [u8], width: usize) {
 pub fn box2_row(top: &[u8], bottom: &[u8], dst: &mut [u8], width: usize) {
     for ((d, t), b) in dst[..width]
         .iter_mut()
-        .zip(top[..width * 2].chunks_exact(2))
-        .zip(bottom[..width * 2].chunks_exact(2))
+        .zip(top[..width * 2].as_chunks::<2>().0)
+        .zip(bottom[..width * 2].as_chunks::<2>().0)
     {
         let sum = t[0] as u16 + t[1] as u16 + b[0] as u16 + b[1] as u16;
         *d = ((sum + 2) >> 2) as u8;

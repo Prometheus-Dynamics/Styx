@@ -2,7 +2,7 @@
 name = "gst-styx"
 version = "2.0.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.99"
 authors = ["Mathias Petersen"]
 license = "MIT OR Apache-2.0"
 description = "GStreamer plugin: styxsrc, a live source for Styx cameras, and a device provider."

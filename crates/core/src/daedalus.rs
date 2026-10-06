@@ -206,15 +206,23 @@ pub fn shared_frame_payload(frame: Arc<FrameLease>) -> Payload {
     Payload::shared_with(FRAME_TYPE_KEY, frame, residency, None, Some(bytes))
 }
 
-/// The planner inserts this on an edge from a frame port to a descriptor port: it reads the
-/// frame's metadata, never its pixels.
-#[adapt(
-    id = "styx.frame_descriptor",
-    kind = ::daedalus::transport::AdapterKind::MetadataOnly
-)]
-fn frame_descriptor(frame: &FrameLease) -> Result<FrameDescriptor, TransportError> {
-    Ok(FrameDescriptor::of(frame))
+// Daedalus's `#[adapt]` expands to `::core::u32::MAX`, deprecated since Rust 1.99; the
+// expansion lives in this module so the allow covers its generated registration function too.
+#[allow(deprecated)]
+mod adapters {
+    use super::*;
+
+    /// The planner inserts this on an edge from a frame port to a descriptor port: it reads the
+    /// frame's metadata, never its pixels.
+    #[adapt(
+        id = "styx.frame_descriptor",
+        kind = ::daedalus::transport::AdapterKind::MetadataOnly
+    )]
+    pub(super) fn frame_descriptor(frame: &FrameLease) -> Result<FrameDescriptor, TransportError> {
+        Ok(FrameDescriptor::of(frame))
+    }
 }
+use adapters::*;
 
 /// Host payload inspection shows frames as their descriptor instead of an opaque summary.
 fn install(registry: &mut PluginRegistry) -> PluginResult<()> {

@@ -95,7 +95,7 @@ pub(super) fn plan_v4l2_single_plane_layout(
     }
 
     let min_stride = min_stride_for_fourcc(code, width).max(1);
-    let inferred_stride = if height > 0 { bytes_used / height } else { 0 };
+    let inferred_stride = bytes_used.checked_div(height).unwrap_or(0);
     let stride = negotiated_stride.max(inferred_stride).max(min_stride);
     let required = height.checked_mul(stride)?;
     if required == 0 || bytes_used < required {

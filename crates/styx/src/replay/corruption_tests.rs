@@ -3,8 +3,6 @@
 
 use std::io::Cursor;
 
-use styx_core::prelude::*;
-
 use super::tests::{formats, frame, grey, header, temp_path};
 use super::*;
 

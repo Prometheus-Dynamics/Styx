@@ -36,7 +36,7 @@ fn flat_colours_round_trip_for_every_pattern_packing_and_demosaic() {
                             ..Default::default()
                         };
                         let (out, _) = rgb(format, &params, &bytes, stride, Scale::Full);
-                        for px in out.chunks_exact(3) {
+                        for px in out.as_chunks::<3>().0 {
                             assert!(
                                 near(px, &want, tol),
                                 "{pattern:?} {packing:?} {demosaic:?} {arithmetic:?} {c8:?}: \
@@ -51,7 +51,10 @@ fn flat_colours_round_trip_for_every_pattern_packing_and_demosaic() {
                     let (half, _) = rgb(format, &params, &bytes, stride, Scale::Half);
                     assert_eq!(half.len(), W * H * 3 / 4);
                     assert!(
-                        half.chunks_exact(3).all(|px| near(px, &want, tol)),
+                        half.as_chunks::<3>()
+                            .0
+                            .iter()
+                            .all(|px| near(px, &want, tol)),
                         "half {pattern:?} {packing:?} {arithmetic:?}"
                     );
                 }
@@ -157,7 +160,9 @@ fn yuv_outputs_match_the_colour() {
         let close = |v: u8, w: u8| (i32::from(v) - i32::from(w)).abs() <= tol;
         assert!(y.iter().all(|&v| close(v, want_y[0])), "{arithmetic:?}");
         assert!(
-            uv.chunks_exact(2)
+            uv.as_chunks::<2>()
+                .0
+                .iter()
                 .all(|p| close(p[0], want_u) && close(p[1], want_v)),
             "{matrix:?} {arithmetic:?}"
         );
@@ -231,7 +236,9 @@ fn luma_comes_straight_from_the_mosaic() {
 
 /// Colour error (|R - G| + |B - G|) summed over a demosaiced grey image.
 fn false_colour(out: &[u8]) -> u64 {
-    out.chunks_exact(3)
+    out.as_chunks::<3>()
+        .0
+        .iter()
         .map(|p| {
             (p[0] as i32 - p[1] as i32).unsigned_abs() as u64
                 + (p[2] as i32 - p[1] as i32).unsigned_abs() as u64

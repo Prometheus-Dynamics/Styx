@@ -195,7 +195,7 @@ impl Source<'_> {
                 .for_each(|(d, &s)| *d = s as u16),
             RawPacking::U16Le { bits } => {
                 let max = ((1u32 << bits) - 1) as u16;
-                for (d, s) in dst[..width].iter_mut().zip(row.chunks_exact(2)) {
+                for (d, s) in dst[..width].iter_mut().zip(row.as_chunks::<2>().0) {
                     *d = u16::from_le_bytes([s[0], s[1]]).min(max);
                 }
             }
@@ -342,7 +342,7 @@ impl Worker {
                 for (dst, s) in self.dec.iter_mut().zip([t, b]) {
                     let row = &self.slots[s][col..];
                     let quads = row.chunks(2 * step);
-                    for (d, q) in dst[..2 * g.ow].chunks_exact_mut(2).zip(quads) {
+                    for (d, q) in dst[..2 * g.ow].as_chunks_mut::<2>().0.iter_mut().zip(quads) {
                         d.copy_from_slice(&q[..2]);
                     }
                 }

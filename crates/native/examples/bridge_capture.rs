@@ -94,7 +94,7 @@ fn mean(f: &NativeFrame) -> f64 {
     let mut sum = 0u64;
     let mut n = 0u64;
     for row in (0..f.height as usize).step_by(8) {
-        for group in d[row * f.stride as usize..][..line].chunks_exact(5) {
+        for group in d[row * f.stride as usize..][..line].as_chunks::<5>().0 {
             sum += group[..4].iter().map(|&b| u64::from(b)).sum::<u64>();
             n += 4;
         }

@@ -41,7 +41,7 @@ authors = ["Mathias Petersen"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Prometheus-Dynamics/Styx"
 homepage = "https://github.com/Prometheus-Dynamics/Styx"
-rust-version = "1.94"
+rust-version = "1.99"
 
 [workspace.dependencies]
 mcap = { version = "0.25", default-features = false }

@@ -209,14 +209,14 @@ impl StatsAccum {
         let (h0, rest) = self.histogram.split_at_mut(bins);
         let (h1, rest) = rest.split_at_mut(bins);
         let (h2, h3) = rest.split_at_mut(bins);
-        let mut four = self.bin_row.chunks_exact(4);
-        for q in &mut four {
+        let (four, remainder) = self.bin_row.as_chunks::<4>();
+        for q in four {
             h0[q[0] as usize] += 1;
             h1[q[1] as usize] += 1;
             h2[q[2] as usize] += 1;
             h3[q[3] as usize] += 1;
         }
-        for &b in four.remainder() {
+        for &b in remainder {
             h0[b as usize] += 1;
         }
         self.samples += quads as u32;

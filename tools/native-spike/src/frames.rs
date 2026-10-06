@@ -29,7 +29,7 @@ pub fn choose_format(offered: &[FourCc]) -> Option<FourCc> {
 /// `width * 5 / 4` bytes; `width` must be a multiple of 4.
 pub fn unpack_raw10_line(line: &[u8], width: usize, out: &mut Vec<u16>) {
     out.clear();
-    for group in line[..width / 4 * 5].chunks_exact(5) {
+    for group in line[..width / 4 * 5].as_chunks::<5>().0 {
         let low = group[4];
         for (i, &hi) in group[..4].iter().enumerate() {
             out.push((u16::from(hi) << 2) | u16::from((low >> (2 * i)) & 3));
@@ -82,7 +82,7 @@ impl Raw10Layout {
         let mut n = 0u64;
         for row in (0..self.height).step_by(row_step.max(1)) {
             let line = &data[row * self.stride..][..self.width / 4 * 5];
-            for group in line.chunks_exact(5) {
+            for group in line.as_chunks::<5>().0 {
                 sum += group[..4].iter().map(|&b| u64::from(b)).sum::<u64>();
                 n += 4;
             }

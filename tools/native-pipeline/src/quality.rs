@@ -146,7 +146,12 @@ pub fn run(a: &Args) -> Result<(), String> {
                 },
             )
             .map_err(|e| e.to_string())?;
-        for (p, q) in rgb_i.chunks_exact(3).zip(rgb_h.chunks_exact(3)) {
+        for (p, q) in rgb_i
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(rgb_h.as_chunks::<3>().0)
+        {
             for c in 0..3 {
                 rgb[c].add(p[c], q[c]);
             }

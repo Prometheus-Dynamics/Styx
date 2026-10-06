@@ -198,7 +198,12 @@ pub fn lut_row(src: &[u16], dst: &mut [u8], lut: &[u8; 4096], width: usize) {
 /// Planar 8-bit R, G, B to packed RGB24.
 pub fn interleave_rgb_row(planes: [&[u8]; 3], dst: &mut [u8], width: usize) {
     let [r, g, b] = planes;
-    for (x, px) in dst[..width * 3].chunks_exact_mut(3).enumerate() {
+    for (x, px) in dst[..width * 3]
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
         px[0] = r[x];
         px[1] = g[x];
         px[2] = b[x];

@@ -1,4 +1,4 @@
-FROM rust:1.94.0
+FROM rust:1.99.0
 
 WORKDIR /workspace
 

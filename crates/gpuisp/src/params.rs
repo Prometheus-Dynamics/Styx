@@ -340,7 +340,9 @@ fn shaded_gains(
                 *d = q12(g * (a * wa + b * wb));
             }
             words.extend(
-                row.chunks_exact(2)
+                row.as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|p| p[0] as u32 | (p[1] as u32) << 16),
             );
         }

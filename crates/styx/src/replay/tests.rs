@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use styx_core::prelude::*;
-
 use super::*;
 use crate::capture_api::CaptureRequest;
 use crate::{BackendKind, DeviceIdentity};
