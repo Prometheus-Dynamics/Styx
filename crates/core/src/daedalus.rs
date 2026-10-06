@@ -237,6 +237,7 @@ fn install(registry: &mut PluginRegistry) -> PluginResult<()> {
 #[plugin(
     id = "styx.frames",
     install = install,
+    crate_build,
     types(FrameLease),
     values(FrameDescriptor),
     adapters(frame_descriptor)
