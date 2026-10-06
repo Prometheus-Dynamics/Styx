@@ -23,24 +23,25 @@ on a register bus, a clock) that a real port replaces. KB here is 1000 bytes.
 
 | Image | Before | After | Static RAM |
 |---|---|---|---|
-| A, Cortex-M7/M4F | 11.5 KB | 11.5 KB | 2.2 KB |
-| B, Cortex-M7/M4F | 116.2 KB | 89.5 KB (-23%) | 2.2 KB |
+| A, Cortex-M7/M4F | 11.5 KB | 11.4 KB | 2.2 KB |
+| B, Cortex-M7/M4F | 116.2 KB | 88.8 KB (-24%) | 2.2 KB |
 | C, Cortex-M7/M4F | 191.4 KB | 127.6 KB (-33%) | 2.2 KB |
-| D, Cortex-M7/M4F | 298.3 KB | 205.3 KB (-31%) | 2.2 KB |
-| A, Cortex-M0+ | did not build (queues) | 11.4 KB | 36 B |
-| B, Cortex-M0+ | did not build (`Arc`, TOML) | 89.4 KB | 40 B |
-| C, Cortex-M0+ | did not build | 128.5 KB | 40 B |
-| D, Cortex-M0+ | did not build | 227.1 KB | 48 B |
+| D, Cortex-M7/M4F | 298.3 KB | 205.0 KB (-31%) | 2.2 KB |
+| A, Cortex-M0+ | did not build (queues) | 11.1 KB | 36 B |
+| B, Cortex-M0+ | did not build (`Arc`, TOML) | 88.0 KB | 40 B |
+| C, Cortex-M0+ | did not build | 126.9 KB | 40 B |
+| D, Cortex-M0+ | did not build | 223.5 KB | 48 B |
 
 "Before" is `dev` at 0bee9e4 with the same configurations and the features it had (every
-algorithm in, descriptions validated again on the device). The 2.2 KB of static RAM on the
-Cortex-M4F/M7 is `portable-atomic`'s lock table for 64-bit atomics (the counters); a
-single-core part builds with `RUSTFLAGS="--cfg portable_atomic_unsafe_assume_single_core"`
-and has 36-40 bytes (and 0.3-0.9 KB less flash). The Cortex-M0+ goes through
-`critical-section` anyway. With `opt-level = "s"` (profile `mcu-speed`) the images are larger:
-A 12.3, B 103.7, C 151.1, D 244.4 KB (M7); D 262.7 KB (M0+). A Cortex-M7 with its
-double-precision FPU (`-C target-cpu=cortex-m7`) is not smaller (D 209.0 KB): the soft-float
-`f64` routines are a few KB, the rest is the same code.
+algorithm in, descriptions validated again on the device). "After" is measured with Rust 1.99.0
+and the dependencies of October 2026 (with 1.94.0 they were 0.1-1.6% larger). The 2.2 KB of
+static RAM on the Cortex-M4F/M7 is `portable-atomic`'s lock table for 64-bit atomics (the
+counters); a single-core part builds with
+`RUSTFLAGS="--cfg portable_atomic_unsafe_assume_single_core"` and has 36-40 bytes (and 0.3-0.9
+KB less flash). The Cortex-M0+ goes through `critical-section` anyway. With `opt-level = "s"` (profile `mcu-speed`)
+the images are larger: A 12.3, B 103.7, C 151.1, D 244.4 KB (M7); D 262.7 KB (M0+). A Cortex-M7
+with its double-precision FPU (`-C target-cpu=cortex-m7`) is not smaller (D 209.0 KB): the
+soft-float `f64` routines are a few KB, the rest is the same code.
 
 What the optional parts cost (Cortex-M7, added to the C and D images above):
 

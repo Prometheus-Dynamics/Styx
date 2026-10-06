@@ -88,7 +88,7 @@ impl PollSet {
                 .max(Duration::from_nanos(1))
         });
         let ts = |d: Duration| libc::timespec {
-            tv_sec: d.as_secs() as libc::time_t,
+            tv_sec: d.as_secs() as _,
             tv_nsec: libc::c_long::from(d.subsec_nanos() as i32),
         };
         let spec = libc::itimerspec {

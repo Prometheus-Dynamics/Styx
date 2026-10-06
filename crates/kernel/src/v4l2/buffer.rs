@@ -205,8 +205,8 @@ fn timeval_to_duration(tv: libc::timeval) -> Duration {
 
 fn duration_to_timeval(d: Duration) -> libc::timeval {
     libc::timeval {
-        tv_sec: d.as_secs() as libc::time_t,
-        tv_usec: d.subsec_micros() as libc::suseconds_t,
+        tv_sec: d.as_secs() as _,
+        tv_usec: d.subsec_micros() as _,
     }
 }
 

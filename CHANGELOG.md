@@ -350,6 +350,26 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Rust 1.99.0: the pinned toolchain (`rust-toolchain.toml`), the MSRV (`rust-version = "1.99"`,
+  also for gst-styx and pipewire-styx) and CI. MCU images are 0.1-1.6% smaller (docs/mcu.md).
+- Every dependency at its newest release. Majors that reach Styx's public API, with migration:
+  - `utoipa` 5 → 6 (feature `schema`): Styx's types derive utoipa 6's `ToSchema`. An app
+    building an OpenAPI document from them moves to `utoipa = "6"` (upstream: `OpenApi::to_yaml`
+    now returns `yaml_serde::Error`; expression `ignore` in `ToSchema` was removed).
+  - `minifb` 0.28 → 0.29 (feature `preview-window`): `PreviewWindow::new`, `for_mode` and
+    `for_frame` return minifb 0.29's `Error`. An app matching on it moves to `minifb = "0.29"`.
+  - `bevy` 0.18 → 0.19 (feature `simulation-bevy`): internal to the simulation backend, but
+    apps that build a Bevy app next to it move to 0.19. Glb scenes load through Bevy's
+    `bevy_world_serialization` (`WorldAssetRoot`, formerly `SceneRoot`) instead of
+    `bevy_scene`; the readback copy runs in Bevy's `RenderGraph` schedule.
+  - Internal only: `ffmpeg-sys-next` 8 → 9 (still generated from the system's FFmpeg headers,
+    3.x to 9.x; FFmpeg is still loaded at run time by the major it was built against),
+    `spin` 0.10 → 0.12, `signal-hook` 0.3 → 0.4 (tools).
+- Daedalus `dev` at b6be6d4 (plugin ABI 9). `StyxFramesPlugin` registers styx-core's build
+  (`#[plugin(.., crate_build)]`; styx-core gained a `build.rs` exporting its features with the
+  `daedalus` feature), so a separately built dynamic plugin refused for `styx:framelease` is
+  told which styx-core features differ (docs/daedalus.md). The plugin id and the type keys are
+  unchanged.
 - The frame socket, the camera service and its clients reuse their message buffers, frame
   records and descriptor lists, and camera service clients read memfd frames through their
   mapping cache too (they were mapped per frame): the steady-state path to a consumer in
