@@ -362,6 +362,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
     apps that build a Bevy app next to it move to 0.19. Glb scenes load through Bevy's
     `bevy_world_serialization` (`WorldAssetRoot`, formerly `SceneRoot`) instead of
     `bevy_scene`; the readback copy runs in Bevy's `RenderGraph` schedule.
+- The Bevy simulation camera works again (it panicked on dev before the upgrade: glTF scenes
+  spawn only reflection-registered types, now `reflect_auto_register`). Fixed while checking
+  every output mode: the depth overlay is on its own render layer (the colour camera rendered
+  it instead of the scene), the overlay material uses `#{MATERIAL_BIND_GROUP}`, a `Vec4`
+  uniform and no prepass of its own (normals and depth showed the quad's), and depth is
+  linearised for Bevy's reverse-Z projection (2.5 m to the test box, was a constant).
   - Internal only: `ffmpeg-sys-next` 8 → 9 (still generated from the system's FFmpeg headers,
     3.x to 9.x; FFmpeg is still loaded at run time by the major it was built against),
     `spin` 0.10 → 0.12, `signal-hook` 0.3 → 0.4 (tools).

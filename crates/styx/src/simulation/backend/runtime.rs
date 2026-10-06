@@ -2,6 +2,7 @@ use std::path::Path;
 
 use bevy::app::App;
 use bevy::asset::{AssetPlugin, Assets, RenderAssetUsages};
+use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Exposure, ImageRenderTarget, RenderTarget, Viewport};
 use bevy::image::{Image, TextureFormatPixelInfo};
 use bevy::light::GlobalAmbientLight;
@@ -21,7 +22,7 @@ use super::readback::{
 };
 use super::state::{SimulationControlState, rgba_to_rgb};
 use super::visualization::{
-    SimulationSceneKey, SimulationViewState, SimulationVisualizationPlugin,
+    DEPTH_OVERLAY_LAYER, SimulationSceneKey, SimulationViewState, SimulationVisualizationPlugin,
     perspective_projection_from_config, physical_camera_params_from_config, render_extent,
     spawn_overlay_entities, sync_camera_entity, transform_from_pose,
 };
@@ -199,6 +200,7 @@ impl BevySimulationRuntime {
                     ..default()
                 },
                 RenderTarget::Image(ImageRenderTarget::from(depth_image_handle.clone())),
+                RenderLayers::from_layers(&[0, DEPTH_OVERLAY_LAYER]),
                 Msaa::Off,
                 bevy::core_pipeline::prepass::DepthPrepass,
                 bevy::core_pipeline::tonemapping::Tonemapping::None,
