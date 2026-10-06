@@ -130,7 +130,7 @@ fn frame_leases(
     f: &styx_pipeline::device::PispFrame,
     buffers: &mut Buffers,
     w: &Worker,
-    returns: &mpsc::Sender<(usize, u32)>,
+    returns: &super::pisp_lease::Returns,
 ) -> Result<Option<FrameLease>, String> {
     let mut leaser = Leaser {
         p,
@@ -210,14 +210,14 @@ pub(super) fn spawn(
         .spawn(move || {
             w.live.register_thread();
             let tx = &w.tx;
-            let (ret_tx, ret_rx) = mpsc::channel::<(usize, u32)>();
+            let (ret_tx, ret_rx) = super::pisp_lease::returns();
             let mut buffers = Buffers::default();
             let mut held_drops = 0u64;
             loop {
                 if w.stop.try_recv().is_ok() {
                     break;
                 }
-                while let Ok((i, index)) = ret_rx.try_recv() {
+                while let RecvOutcome::Data((i, index)) = ret_rx.recv() {
                     p.release_output(i, index);
                 }
                 if let Some(c) = w.loop_controls.take() {
@@ -263,6 +263,9 @@ pub(super) fn spawn(
                 let ae = (step.params.ae.total_exposure, step.params.ae.locked);
                 let request = step.sensor;
                 let raw = f.raw.take();
+                if let Some(r) = &raw {
+                    styx_core::metrics::copied(styx_core::metrics::CopySite::Raw, r.data.len());
+                }
                 w.still
                     .after_frame(&mut p, &f.sensor, (f.request_lands, request), ae, raw);
                 w.live.isp_time(f.times.be_job, f.times.total);

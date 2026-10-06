@@ -99,6 +99,20 @@ fn lease(
     )
 }
 
+/// The software ISP's copies of a frame: raw rows staged out of uncached receiver buffers, and
+/// a GPU ISP's upload and read-back of the frame.
+fn count_isp_copies(p: &mut SoftPipeline, f: &styx_pipeline::device::SoftFrame, out_bytes: usize) {
+    use styx_core::metrics::{CopySite, copied};
+    let soft = p.soft_loop();
+    if soft.copies_input() {
+        let raw = f.raw.stride as usize * f.raw.height as usize;
+        copied(CopySite::SoftIsp, raw);
+    }
+    if matches!(soft.engine(), styx_pipeline::IspEngine::Gpu { .. }) {
+        copied(CopySite::SoftIsp, out_bytes);
+    }
+}
+
 /// Runs the capture on its own thread until stopped or the queue closes.
 pub(super) fn spawn(
     mut p: SoftPipeline,
@@ -162,6 +176,7 @@ pub(super) fn spawn(
                     }
                 };
                 let isp_done = styx_core::prelude::CaptureInstant::now();
+                count_isp_copies(&mut p, &f, image_bytes(code, size));
                 w.loop_controls.report(&f.output.step.params);
                 let raw = w
                     .still

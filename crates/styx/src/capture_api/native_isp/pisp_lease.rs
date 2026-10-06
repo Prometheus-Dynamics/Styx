@@ -6,14 +6,14 @@
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
 use styx_core::prelude::{
-    BackendFrameMeta, CaptureInstant, ExternalBacking, FrameBackingExport, FrameExportError,
-    FrameFdPlane, FrameRect, FrameResidency, Hop, TimestampClock,
+    BackendFrameMeta, CaptureInstant, ExportedKind, ExternalBacking, FrameBackingExport,
+    FrameExportError, FrameFdPlane, FrameRect, FrameResidency, Hop, TimestampClock,
 };
 use styx_kernel::Mapping;
 use styx_kernel::dma_heap::{self, Access, DmaBuf};
@@ -24,6 +24,21 @@ use styx_pisp::uapi::BeCropConfig;
 use super::super::request::CaptureError;
 use super::{err, layouts, native_meta};
 use crate::metrics::CaptureMetrics;
+
+/// Where leases give their output buffers back to the worker: a fixed lock-free ring (sending
+/// allocates nothing, unlike a channel that grows in blocks), with room for every buffer.
+pub(super) type Returns = styx_core::queue::BoundedTx<(usize, u32)>;
+
+/// The worker's end of [`Returns`].
+pub(super) type ReturnsRx = styx_core::queue::BoundedRx<(usize, u32)>;
+
+/// Room for every output buffer of the back end (a few per output, 32 at most each).
+const RETURNS: usize = 256;
+
+/// A ring for buffers coming back.
+pub(super) fn returns() -> (Returns, ReturnsRx) {
+    styx_core::queue::bounded(RETURNS)
+}
 
 /// One back end output as the capture delivers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,7 +93,7 @@ struct BeBacking {
     output: usize,
     index: u32,
     synced: AtomicBool,
-    returns: mpsc::Sender<(usize, u32)>,
+    returns: Returns,
 }
 
 impl ExternalBacking for BeBacking {
@@ -134,6 +149,22 @@ impl ExternalBacking for BeBacking {
             })
             .collect::<Result<Vec<_>, FrameExportError>>()?;
         Ok(Some(FrameBackingExport::DmabufPlanes { planes }))
+    }
+
+    fn export_into(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<Option<ExportedKind>, FrameExportError> {
+        for &(offset, len) in &self.planes {
+            let fd = self
+                .buffer
+                .fd
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(FrameExportError::Fd)?;
+            out.push(FrameFdPlane { fd, offset, len });
+        }
+        Ok(Some(ExportedKind::DmabufPlanes))
     }
 }
 
@@ -196,7 +227,7 @@ pub(super) struct Leaser<'a> {
     pub(super) p: &'a PispPipeline,
     pub(super) f: &'a PispFrame,
     pub(super) buffers: &'a mut Buffers,
-    pub(super) returns: &'a mpsc::Sender<(usize, u32)>,
+    pub(super) returns: &'a Returns,
     pub(super) live: &'a CaptureMetrics,
 }
 
@@ -225,7 +256,7 @@ fn lease(
     buffer: BeBuffer,
     (output, index): (usize, u32),
     f: &PispFrame,
-    returns: &mpsc::Sender<(usize, u32)>,
+    returns: &Returns,
     live: &CaptureMetrics,
 ) -> FrameLease {
     let spec = placed.spec;
@@ -284,6 +315,10 @@ pub(super) fn be_crop(rect: FrameRect) -> BeCropConfig {
 }
 
 #[cfg(test)]
+#[path = "pisp_lease_alloc_tests.rs"]
+mod alloc_tests;
+
+#[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
@@ -294,7 +329,7 @@ mod tests {
     use super::*;
 
     /// A back end buffer stand-in: a memfd holding an NV12 frame (Y = 1, CbCr = 2).
-    fn buffer(w: usize, h: usize) -> BeBuffer {
+    pub(super) fn buffer(w: usize, h: usize) -> BeBuffer {
         let len = w * h * 3 / 2;
         let buf = DmaBuf::memfd("nv12", len).unwrap();
         let mut map = buf.map().unwrap();
@@ -307,7 +342,7 @@ mod tests {
         }
     }
 
-    fn frame() -> PispFrame {
+    pub(super) fn frame() -> PispFrame {
         PispFrame {
             sequence: 7,
             timestamp: Duration::from_millis(5),
@@ -343,7 +378,7 @@ mod tests {
             width: w as u32,
             height: h as u32,
         };
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = returns();
         let live = CaptureMetrics::default();
         let placed = Placed {
             spec,
@@ -370,10 +405,13 @@ mod tests {
         let imported = FrameLease::from_dmabuf(f.meta().clone(), f.layouts(), fds).expect("import");
         assert!(imported.planes()[1].data().iter().all(|&v| v == 2));
         drop(imported);
-        assert!(rx.try_recv().is_err(), "returned while held");
+        assert!(
+            matches!(rx.recv(), RecvOutcome::Empty),
+            "returned while held"
+        );
         drop(planes);
         drop(f);
-        assert_eq!(rx.try_recv().unwrap(), (0, 3));
+        assert!(matches!(rx.recv(), RecvOutcome::Data((0, 3))));
     }
 
     /// A crop sits in the top left of the full-size buffer: the planes keep the buffer's stride
@@ -386,7 +424,7 @@ mod tests {
             width: w as u32,
             height: h as u32,
         };
-        let (tx, _rx) = mpsc::channel();
+        let (tx, _rx) = returns();
         let live = CaptureMetrics::default();
         let crop = FrameRect::new(8, 4, 32, 16);
         let placed = Placed {

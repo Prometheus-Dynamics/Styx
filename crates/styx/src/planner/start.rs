@@ -234,6 +234,8 @@ impl FramePreparer {
     /// Decode with `decoder`, into the memfd pool when the plan is exportable.
     fn decode(&self, decoder: &dyn Codec, input: FrameLease) -> Result<FrameLease, CodecError> {
         let (clock, capture_instant) = (input.meta().clock, input.meta().capture_instant);
+        let hops = input.meta().hops;
+        let source = input.external_backing_handle();
         #[cfg(target_os = "linux")]
         let shared = match self.shared_pool() {
             Some(pool) => decoder.process_shared(&input, pool)?,
@@ -245,10 +247,24 @@ impl FramePreparer {
             Some(frame) => frame,
             None => decoder.process(input)?,
         };
-        // Decoders keep the timestamp; keep the clock it is in and when it was captured, too.
+        // A conversion (or decode) into new memory, unless the decoder handed the input on.
+        let same = match (&source, frame.external_backing_handle()) {
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, &b),
+            _ => false,
+        };
+        let bytes = frame.layout_slice().iter().map(|l| l.len).sum();
+        // Decoders keep the timestamp; keep the clock it is in and when it was captured, too,
+        // and the hops the frame passed.
         let meta = frame.meta_mut();
         meta.clock = meta.clock.or(clock);
         meta.capture_instant = meta.capture_instant.or(capture_instant);
+        if !same {
+            // Decoders that carry the capture context over have the hops already.
+            if meta.hops.is_empty() {
+                meta.hops = hops;
+            }
+            styx_core::metrics::copied_frame(meta, styx_core::metrics::CopySite::Conversion, bytes);
+        }
         Ok(frame)
     }
 
@@ -396,6 +412,11 @@ impl FramePreparer {
             }
             let mut meta = frame.meta().clone();
             meta.residency = None;
+            styx_core::metrics::copied_frame(
+                &mut meta,
+                styx_core::metrics::CopySite::Region,
+                width * height,
+            );
             let out = FrameLease::single_plane_shared(meta, lease, stride * height, stride)
                 .map_err(|e| CodecError::Codec(e.to_string()))?;
             return reattach_companions(out, frame);
@@ -410,6 +431,11 @@ impl FramePreparer {
         }
         let mut meta = frame.meta().clone();
         meta.residency = None;
+        styx_core::metrics::copied_frame(
+            &mut meta,
+            styx_core::metrics::CopySite::Region,
+            width * height,
+        );
         let out = FrameLease::multi_plane(
             meta,
             smallvec![buf],

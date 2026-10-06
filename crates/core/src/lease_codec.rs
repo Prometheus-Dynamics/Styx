@@ -47,8 +47,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::buffer::{
-    FrameBackingExport, FrameExportError, FrameFdPlane, FrameLease, FrameLeaseDescriptor,
-    HopRecord, fd_size,
+    ExportedKind, FrameExportError, FrameFdPlane, FrameLease, FrameLeaseDescriptor, HopRecord,
+    fd_size,
 };
 
 /// The transport name a provider advertises for a frame socket.
@@ -189,6 +189,8 @@ pub struct EncodedFrame {
     pub hops: Option<HopRecord>,
     /// The frame was copied into a memfd (it was not in shareable memory).
     pub copied: bool,
+    /// What the frame's backing exported, before it is split into `planes` and `fds`.
+    exported: Vec<FrameFdPlane>,
 }
 
 impl Default for EncodedFrame {
@@ -207,6 +209,7 @@ impl Default for EncodedFrame {
             fds: Vec::new(),
             hops: None,
             copied: false,
+            exported: Vec::new(),
         }
     }
 }
@@ -218,33 +221,28 @@ impl EncodedFrame {
     pub fn fill(&mut self, frame: &FrameLease) -> Result<(), LeaseCodecError> {
         self.fds.clear();
         self.planes.clear();
-        let exportable = frame
-            .external_backing_handle()
-            .is_some_and(|b| b.can_export());
-        let (descriptor, backing) = frame.export_or_copy_memfd()?;
+        self.exported.clear();
+        let (descriptor, kind, copied) = frame.export_or_copy_memfd_into(&mut self.exported)?;
         self.descriptor = descriptor;
-        match backing {
-            FrameBackingExport::Memfd { fd, len } => {
-                self.memfd_len = Some(len);
-                self.fds.push(fd);
+        self.memfd_len = match kind {
+            ExportedKind::Memfd => self.exported.first().map(|p| p.len),
+            ExportedKind::DmabufPlanes => None,
+        };
+        for p in self.exported.drain(..) {
+            if self.memfd_len.is_none() {
+                self.planes.push(LeasePlane {
+                    offset: p.offset,
+                    len: p.len,
+                });
             }
-            FrameBackingExport::DmabufPlanes { planes } => {
-                self.memfd_len = None;
-                for p in planes {
-                    self.planes.push(LeasePlane {
-                        offset: p.offset,
-                        len: p.len,
-                    });
-                    self.fds.push(p.fd);
-                }
-            }
+            self.fds.push(p.fd);
         }
-        if self.fds.len() > MAX_FDS {
+        if self.fds.len() > MAX_FDS || (self.memfd_len.is_some() && self.fds.len() != 1) {
             let n = self.fds.len();
             self.fds.clear();
             return Err(LeaseCodecError::TooManyFds(n));
         }
-        self.copied = !exportable;
+        self.copied = copied;
         let mut hops = frame.meta().hops;
         if self.copied {
             hops.copied(frame.layout_slice().iter().map(|l| l.len).sum());
@@ -305,6 +303,172 @@ pub fn decode(payload: &[u8], fds: Vec<OwnedFd>) -> Result<FrameLease, LeaseCode
     }
     let message = LeaseMessage::parse(payload)?;
     decode_message(message, fds)
+}
+
+/// A frame message parsed without allocating (its planes inline), for consumers that import
+/// frames over and over ([`LeaseMessageInline::parse`], [`LeaseMessageInline::check`]); the
+/// same JSON as [`LeaseMessage`].
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct LeaseMessageInline {
+    pub descriptor: FrameLeaseDescriptor,
+    pub backing: LeaseBackingInline,
+    #[serde(default)]
+    pub hops: Option<HopRecord>,
+}
+
+/// [`LeaseBacking`] with its planes inline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeaseBackingInline {
+    Memfd {
+        len: usize,
+    },
+    DmabufPlanes {
+        planes: smallvec::SmallVec<[LeasePlane; MAX_FDS]>,
+    },
+}
+
+impl<'de> Deserialize<'de> for LeaseBackingInline {
+    /// By hand: serde's internally tagged enums buffer the object (allocating) to find the tag.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = LeaseBackingInline;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a frame message backing")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                use serde::de::Error;
+                let mut kind: Option<Kind> = None;
+                let mut len = None;
+                let mut planes: Option<smallvec::SmallVec<[LeasePlane; MAX_FDS]>> = None;
+                while let Some(key) = map.next_key::<Field>()? {
+                    match key {
+                        Field::Kind => kind = Some(map.next_value()?),
+                        Field::Len => len = Some(map.next_value()?),
+                        Field::Planes => planes = Some(map.next_value()?),
+                        Field::Other => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                match kind.ok_or_else(|| A::Error::missing_field("kind"))? {
+                    Kind::Memfd => Ok(LeaseBackingInline::Memfd {
+                        len: len.ok_or_else(|| A::Error::missing_field("len"))?,
+                    }),
+                    Kind::DmabufPlanes => Ok(LeaseBackingInline::DmabufPlanes {
+                        planes: planes.ok_or_else(|| A::Error::missing_field("planes"))?,
+                    }),
+                }
+            }
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Kind {
+            Memfd,
+            DmabufPlanes,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Field {
+            Kind,
+            Len,
+            Planes,
+            #[serde(other)]
+            Other,
+        }
+        d.deserialize_map(Visitor)
+    }
+}
+
+impl LeaseMessageInline {
+    /// Parse a payload (without its length header), checking its size; nothing is allocated
+    /// for a message of up to [`MAX_FDS`] planes.
+    pub fn parse(payload: &[u8]) -> Result<Self, LeaseCodecError> {
+        if payload.len() > MAX_PAYLOAD {
+            return Err(LeaseCodecError::PayloadTooLarge(payload.len()));
+        }
+        Ok(serde_json::from_slice(payload)?)
+    }
+
+    /// Descriptors the message needs.
+    pub fn fd_count(&self) -> usize {
+        match &self.backing {
+            LeaseBackingInline::Memfd { .. } => 1,
+            LeaseBackingInline::DmabufPlanes { planes } => planes.len(),
+        }
+    }
+
+    /// The checks [`decode`] makes before it builds the frame, for a consumer that builds the
+    /// frame itself: the descriptor count; a memfd backing within its memfd and holding every
+    /// plane; one dma-buf plane per image plane, each within its descriptor (when its size can
+    /// be read) and holding its image plane. The plane layouts' fit to the format is the
+    /// frame's (`FrameLease::validate_plane_layouts`).
+    pub fn check(&self, fds: &[OwnedFd]) -> Result<(), LeaseCodecError> {
+        let expected = self.fd_count();
+        if expected > MAX_FDS || fds.len() > MAX_FDS {
+            return Err(LeaseCodecError::TooManyFds(expected.max(fds.len())));
+        }
+        if fds.len() != expected {
+            let backing = match self.backing {
+                LeaseBackingInline::Memfd { .. } => "memfd",
+                LeaseBackingInline::DmabufPlanes { .. } => "dmabuf_planes",
+            };
+            return Err(LeaseCodecError::FdCount {
+                backing,
+                expected,
+                actual: fds.len(),
+            });
+        }
+        let fits = |offset: usize, len: usize, size: u64| {
+            offset
+                .checked_add(len)
+                .is_some_and(|end| end as u64 <= size)
+        };
+        let layouts = &self.descriptor.planes;
+        match &self.backing {
+            LeaseBackingInline::Memfd { len } => {
+                let within_len = layouts.iter().all(|p| fits(p.offset, p.len, *len as u64));
+                let within_fd = fd_size(&fds[0]).is_none_or(|size| *len as u64 <= size);
+                if !within_len || !within_fd {
+                    return Err(LeaseCodecError::MemfdSize { len: *len });
+                }
+            }
+            LeaseBackingInline::DmabufPlanes { planes } => {
+                if planes.len() != layouts.len() {
+                    return Err(FrameExportError::PlaneCountMismatch {
+                        expected: layouts.len(),
+                        actual: planes.len(),
+                    }
+                    .into());
+                }
+                for ((fd, plane), layout) in fds.iter().zip(planes).zip(layouts) {
+                    let inside = fd_size(fd).is_none_or(|size| fits(plane.offset, plane.len, size));
+                    if !inside || !fits(layout.offset, layout.len, plane.len as u64) {
+                        return Err(FrameExportError::InvalidDescriptor.into());
+                    }
+                }
+            }
+        }
+        if self.descriptor.to_meta().is_none() {
+            return Err(FrameExportError::InvalidDescriptor.into());
+        }
+        Ok(())
+    }
+
+    /// The frame's metadata: the descriptor's format and timestamp, and its hops (with the
+    /// sequence number).
+    pub fn meta(&self) -> Option<crate::buffer::FrameMeta> {
+        let mut meta = self.descriptor.to_meta()?;
+        if let Some(record) = &self.hops {
+            meta.hops = record.hops();
+        }
+        Some(meta)
+    }
 }
 
 /// A [`LeaseMessage`] borrowed from its parts, for a sender that keeps them between sends

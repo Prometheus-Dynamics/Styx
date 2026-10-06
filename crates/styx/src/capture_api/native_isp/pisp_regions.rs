@@ -8,8 +8,6 @@
 //! `CompanionKind::Region { index }` companion whose `FrameMeta::crop` says where it is: frame,
 //! regions, overview and metadata always belong to one raw frame.
 
-use std::sync::mpsc;
-
 use styx_capture::prelude::*;
 use styx_core::prelude::{CompanionKind, FrameRect};
 use styx_pipeline::device::{PispFrame, PispPipeline};
@@ -243,7 +241,7 @@ fn region_pass(rect: FrameRect) -> PassSpec {
 
 /// Buffers a frame's extra passes leave unleased go back to the back end through `returns`
 /// (as a lease's drop does).
-pub(super) fn hand_back(returns: &mpsc::Sender<(usize, u32)>, unleased: &[(usize, u32)]) {
+pub(super) fn hand_back(returns: &super::pisp_lease::Returns, unleased: &[(usize, u32)]) {
     for &b in unleased {
         let _ = returns.send(b);
     }

@@ -426,6 +426,9 @@ pub(crate) fn stamp_queued(meta: &mut FrameMeta) {
     {
         meta.hops.set(Hop::Dequeued, at.as_nanos());
     }
+    if meta.hops.sequence().is_none() {
+        meta.hops.set_sequence(meta.sequence());
+    }
     meta.hops.mark(Hop::Queued);
 }
 
@@ -519,6 +522,15 @@ impl<B: ExternalBacking> ExternalBacking for MeteredBacking<B> {
     ) -> Result<Option<styx_core::prelude::FrameBackingExport>, styx_core::prelude::FrameExportError>
     {
         self.inner.export_backing()
+    }
+
+    #[cfg(unix)]
+    fn export_into(
+        &self,
+        out: &mut Vec<styx_core::prelude::FrameFdPlane>,
+    ) -> Result<Option<styx_core::prelude::ExportedKind>, styx_core::prelude::FrameExportError>
+    {
+        self.inner.export_into(out)
     }
 }
 

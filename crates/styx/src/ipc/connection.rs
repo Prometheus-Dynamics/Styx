@@ -24,6 +24,8 @@ pub(super) struct Exported {
     keep: Keep,
     /// Some of it had to be copied into a memfd.
     pub(super) copied: bool,
+    /// What a backing exported, before it goes into `fds` and the wire frame.
+    exported: Vec<FrameFdPlane>,
 }
 
 impl Default for Exported {
@@ -33,6 +35,7 @@ impl Default for Exported {
             fds: Vec::new(),
             keep: Keep::new(),
             copied: false,
+            exported: Vec::new(),
         }
     }
 }
@@ -67,44 +70,54 @@ fn export_part(
     top_level: bool,
 ) -> Result<(), IpcError> {
     let layouts = frame.layout_slice();
-    let (backing, copied_here) = match frame.export_backing() {
-        Ok(backing) => {
+    out.exported.clear();
+    let (kind, copied_here) = match frame.export_backing_into(&mut out.exported) {
+        Ok(kind) => {
             out.keep.extend(frame.external_backing_handle());
-            (backing, false)
+            (kind, false)
         }
-        Err(FrameExportError::NotExportable) => (frame.export_or_copy_memfd()?.1, true),
+        Err(FrameExportError::NotExportable) => {
+            out.exported.clear();
+            (frame.export_or_copy_memfd_into(&mut out.exported)?.1, true)
+        }
         // The backing cannot hand out a descriptor (e.g. v4l2loopback has no VIDIOC_EXPBUF):
         // send a copy rather than nothing.
         Err(FrameExportError::Fd(err)) if frame.can_read_planes() => {
             crate::trace::debug!(error = %err, "frame not exportable, copying it");
-            (frame.materialize_owned().export_or_copy_memfd()?.1, true)
+            out.exported.clear();
+            let owned = frame.materialize_owned();
+            (owned.export_or_copy_memfd_into(&mut out.exported)?.1, true)
         }
         Err(err) => return Err(err.into()),
     };
     out.copied |= copied_here;
-    wire.backing = match backing {
-        FrameBackingExport::Memfd { fd, len } => {
-            out.fds.push(fd);
-            WireBacking::Memfd { len }
+    wire.backing = match kind {
+        ExportedKind::Memfd => {
+            let plane = out
+                .exported
+                .pop()
+                .ok_or(IpcError::Malformed("memfd export without a descriptor"))?;
+            out.fds.push(plane.fd);
+            WireBacking::Memfd { len: plane.len }
         }
-        FrameBackingExport::DmabufPlanes { mut planes } => {
-            if planes.len() < layouts.len() {
+        ExportedKind::DmabufPlanes => {
+            if out.exported.len() < layouts.len() {
                 return Err(FrameExportError::PlaneCountMismatch {
                     expected: layouts.len(),
-                    actual: planes.len(),
+                    actual: out.exported.len(),
                 }
                 .into());
             }
             // A view (e.g. the Y plane of NV12) uses the first planes of its buffer.
-            planes.truncate(layouts.len());
+            out.exported.truncate(layouts.len());
             let mut spans =
                 match std::mem::replace(&mut wire.backing, WireBacking::Memfd { len: 0 }) {
                     WireBacking::Dmabuf(v) => v,
                     WireBacking::Memfd { .. } => Vec::new(),
                 };
             spans.clear();
-            spans.extend(planes.iter().map(|p| (p.offset, p.len)));
-            out.fds.extend(planes.into_iter().map(|p| p.fd));
+            spans.extend(out.exported.iter().map(|p| (p.offset, p.len)));
+            out.fds.extend(out.exported.drain(..).map(|p| p.fd));
             WireBacking::Dmabuf(spans)
         }
     };

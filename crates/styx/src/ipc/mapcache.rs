@@ -96,6 +96,18 @@ fn identity(fd: BorrowedFd<'_>) -> Option<(u64, u64)> {
     Some((st.st_dev as u64, st.st_ino as u64))
 }
 
+/// The length of the file (memfd) behind `fd`.
+fn file_size(fd: BorrowedFd<'_>) -> Option<u64> {
+    let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `fstat` fills the buffer for a valid descriptor; it is read only on success.
+    if unsafe { libc::fstat(fd.as_raw_fd(), st.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: `fstat` succeeded.
+    let st = unsafe { st.assume_init() };
+    u64::try_from(st.st_size).ok()
+}
+
 impl MapCache {
     /// Counts an imported frame and drops entries that went unused for a while.
     fn tick(&self) {
@@ -135,6 +147,9 @@ impl MapCache {
 pub(super) struct CachedDmabuf {
     cache: Arc<MapCache>,
     id: (u64, u64),
+    /// A memfd (one descriptor, every plane at its layout offset in it; no cache maintenance)
+    /// rather than dma-buf planes.
+    memfd: bool,
     fds: Fds,
     planes: SmallVec<[(usize, usize); 3]>,
     map: OnceLock<Option<Arc<Map>>>,
@@ -168,11 +183,36 @@ impl CachedDmabuf {
         Ok(Self {
             cache: cache.clone(),
             id,
+            memfd: false,
             fds,
             planes: spans.iter().copied().collect(),
             map: OnceLock::new(),
             synced: AtomicBool::new(false),
         })
+    }
+
+    /// A memfd of `len` bytes holding `planes` planes (each at its layout offset), read through
+    /// the cache as dma-bufs are; the descriptor back when it cannot be inspected.
+    pub(super) fn memfd(
+        cache: &Arc<MapCache>,
+        fd: OwnedFd,
+        len: usize,
+        planes: usize,
+    ) -> Result<Self, OwnedFd> {
+        // A memfd shorter than the message says would fault on reading past its end.
+        if file_size(fd.as_fd()).is_none_or(|size| (len as u64) > size) {
+            return Err(fd);
+        }
+        let mut fds = Fds::new();
+        fds.push(fd);
+        let spans: SmallVec<[(usize, usize); 3]> = (0..planes.max(1)).map(|_| (0, len)).collect();
+        match Self::new(cache, fds, &spans) {
+            Ok(mut cached) => {
+                cached.memfd = true;
+                Ok(cached)
+            }
+            Err(fds) => Err(fds.into_iter().next().expect("one descriptor")),
+        }
     }
 
     fn mapped(&self) -> Option<&Map> {
@@ -195,7 +235,8 @@ impl ExternalBacking for CachedDmabuf {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
         let &(offset, len) = self.planes.get(index)?;
         let map = self.mapped()?;
-        if !self.synced.swap(true, Ordering::AcqRel)
+        if !self.memfd
+            && !self.synced.swap(true, Ordering::AcqRel)
             && let Some(fd) = self.fds.first()
         {
             let _ = styx_core::buffer::dmabuf_begin_cpu_read(fd.as_raw_fd());
@@ -208,7 +249,7 @@ impl ExternalBacking for CachedDmabuf {
     }
 
     fn backing_kind(&self) -> &'static str {
-        "dmabuf"
+        if self.memfd { "memfd_import" } else { "dmabuf" }
     }
 
     fn can_export(&self) -> bool {
@@ -216,15 +257,28 @@ impl ExternalBacking for CachedDmabuf {
     }
 
     fn residency(&self) -> FrameResidency {
-        FrameResidency::Dmabuf
+        if self.memfd {
+            FrameResidency::HostExternal
+        } else {
+            FrameResidency::Dmabuf
+        }
     }
 
     fn cpu_access(&self) -> CpuAccess {
         // Mapped here; the sender says whether its memory is cached (see `Released`).
-        CpuAccess::Uncached
+        if self.memfd {
+            CpuAccess::Cached
+        } else {
+            CpuAccess::Uncached
+        }
     }
 
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
+        if self.memfd {
+            let fd = self.fds[0].try_clone().map_err(FrameExportError::Fd)?;
+            let len = self.backing_bytes().unwrap_or(0);
+            return Ok(Some(FrameBackingExport::Memfd { fd, len }));
+        }
         let planes = self
             .fds
             .iter()
@@ -241,12 +295,60 @@ impl ExternalBacking for CachedDmabuf {
     }
 }
 
+impl CachedDmabuf {
+    /// [`ExternalBacking::export_into`]: the descriptors duplicated, without a list of its own.
+    pub(super) fn export_fds(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<ExportedKind, FrameExportError> {
+        if self.memfd {
+            let fd = self.fds[0].try_clone().map_err(FrameExportError::Fd)?;
+            let len = self.backing_bytes().unwrap_or(0);
+            out.push(FrameFdPlane { fd, offset: 0, len });
+            return Ok(ExportedKind::Memfd);
+        }
+        for (fd, &(offset, len)) in self.fds.iter().zip(&self.planes) {
+            let fd = fd.try_clone().map_err(FrameExportError::Fd)?;
+            out.push(FrameFdPlane { fd, offset, len });
+        }
+        Ok(ExportedKind::DmabufPlanes)
+    }
+}
+
 impl Drop for CachedDmabuf {
     fn drop(&mut self) {
         if self.synced.load(Ordering::Acquire)
             && let Some(fd) = self.fds.first()
         {
             let _ = styx_core::buffer::dmabuf_end_cpu_read(fd.as_raw_fd());
+        }
+    }
+}
+
+/// A received frame's memory.
+pub(super) enum Inner {
+    /// One buffer (a dma-buf or a memfd), read through the receiver's mapping cache.
+    Cached(CachedDmabuf),
+    /// Anything else (planes on several buffers, descriptors that could not be inspected).
+    Other(Arc<dyn ExternalBacking>),
+}
+
+impl Inner {
+    pub(super) fn backing(&self) -> &dyn ExternalBacking {
+        match self {
+            Inner::Cached(c) => c,
+            Inner::Other(o) => o.as_ref(),
+        }
+    }
+
+    /// [`ExternalBacking::export_into`] of the memory.
+    pub(super) fn export_into(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<Option<ExportedKind>, FrameExportError> {
+        match self {
+            Inner::Cached(c) => c.export_fds(out).map(Some),
+            Inner::Other(o) => o.export_into(out),
         }
     }
 }

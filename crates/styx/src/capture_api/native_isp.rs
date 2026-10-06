@@ -271,7 +271,10 @@ fn hold_soft(
         packing: format.packing,
         cfa: format.pattern,
         bits: format.packing.bit_depth(),
-        data: f.raw.data()[..len].to_vec(),
+        data: {
+            styx_core::metrics::copied(styx_core::metrics::CopySite::Raw, len);
+            f.raw.data()[..len].to_vec()
+        },
         sensor: f.sensor,
         isp: f.output.applied.clone(),
         params: Box::new(f.output.step.params.clone()),

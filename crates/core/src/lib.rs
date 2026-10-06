@@ -69,7 +69,7 @@ pub mod prelude {
     };
 
     #[cfg(all(feature = "std", unix))]
-    pub use crate::buffer::{FrameBackingExport, FrameExportError, FrameFdPlane};
+    pub use crate::buffer::{ExportedKind, FrameBackingExport, FrameExportError, FrameFdPlane};
 
     #[cfg(all(feature = "std", target_os = "linux"))]
     pub use crate::buffer::{

@@ -12,7 +12,7 @@ use styx_core::prelude::*;
 
 use styx_core::metrics::HopCounters;
 
-use super::mapcache::{CachedDmabuf, Fds, MapCache};
+use super::mapcache::{CachedDmabuf, Fds, Inner, MapCache};
 use super::wire::{self, CameraInfo, ClientHops, ServerMessage, WireBacking, WireFrame};
 use super::{IpcError, socket};
 use crate::metrics::HopMetrics;
@@ -665,11 +665,20 @@ fn import_part(
                 }
             }
         }
-        WireBacking::Memfd { .. } => {
+        WireBacking::Memfd { len } => {
             let fd = own.into_iter().next().expect("one descriptor");
-            let f = FrameLease::from_memfd(meta.clone(), layouts.clone(), fd);
-            meta.residency = f.meta().residency;
-            Inner::Other(external(&f)?)
+            // Read through the cached mappings too (a capture cycles through its memfds).
+            match CachedDmabuf::memfd(maps, fd, *len, layouts.len()) {
+                Ok(cached) => {
+                    meta.residency = Some(FrameResidency::HostExternal);
+                    Inner::Cached(cached)
+                }
+                Err(fd) => {
+                    let f = FrameLease::from_memfd(meta.clone(), layouts.clone(), fd);
+                    meta.residency = f.meta().residency;
+                    Inner::Other(external(&f)?)
+                }
+            }
         }
     };
     Ok(FrameLease::from_external(
@@ -709,23 +718,6 @@ enum ReleaseHandle {
     Shared(#[allow(dead_code)] Arc<Release>),
 }
 
-/// A received frame's memory.
-enum Inner {
-    /// One dma-buf, read through the client's mapping cache.
-    Cached(CachedDmabuf),
-    /// Anything else (a memfd, planes on several buffers).
-    Other(Arc<dyn ExternalBacking>),
-}
-
-impl Inner {
-    fn backing(&self) -> &dyn ExternalBacking {
-        match self {
-            Inner::Cached(c) => c,
-            Inner::Other(o) => o.as_ref(),
-        }
-    }
-}
-
 /// A received frame's memory; the frame is released on the server once it and its companions
 /// are all dropped.
 struct Released {
@@ -762,5 +754,12 @@ impl ExternalBacking for Released {
 
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         self.inner.backing().export_backing()
+    }
+
+    fn export_into(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<Option<ExportedKind>, FrameExportError> {
+        self.inner.export_into(out)
     }
 }

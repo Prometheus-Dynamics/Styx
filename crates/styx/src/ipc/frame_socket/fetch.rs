@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use styx_core::lease_codec;
+use smallvec::SmallVec;
+use styx_core::lease_codec::{self, LeaseBackingInline, LeaseMessageInline};
 use styx_core::metrics::HopCounters;
 use styx_core::prelude::*;
 
+use super::super::mapcache::{CachedDmabuf, Fds, Inner, MapCache};
 use super::super::{IpcError, socket};
 use crate::metrics::HopMetrics;
 
@@ -16,19 +18,23 @@ use crate::metrics::HopMetrics;
 /// `styx-frame-lease-v1` server), waiting up to `wait` for it. The frame is leased: the
 /// connection stays open, and the server keeps the frame's buffer, until the returned lease (and
 /// every view of it) is dropped. Its hops (`FrameMeta::hops`) end with this process's receive
-/// and import times. [`FrameFetcher`] does the same with its buffers kept between fetches and
-/// the hop times recorded.
+/// and import times. A consumer fetching again and again uses a [`FrameFetcher`], which keeps
+/// its buffers and the mappings of the frames' buffers between fetches.
 pub fn fetch_frame(path: impl AsRef<Path>, wait: Duration) -> Result<FrameLease, IpcError> {
     FrameFetcher::new(path).fetch(wait)
 }
 
-/// Fetches frames from one frame socket again and again: its receive buffers are kept between
-/// fetches, and the hop times of the frames it fetched (sensor to import, with the server's
-/// hops) are recorded ([`FrameFetcher::hop_metrics`]).
+/// Fetches frames from one frame socket again and again. Its receive buffers are kept between
+/// fetches, and so is the mapping of each buffer it has read (a capture cycles through a few
+/// buffers, sent as new descriptors each time: mapping one costs more than reading it), so a
+/// fetch allocates one record (the frame's lease) and maps nothing in steady state. The hop
+/// times of the frames it fetched (sensor to import, with the server's hops) are recorded
+/// ([`FrameFetcher::hop_metrics`]).
 pub struct FrameFetcher {
     path: PathBuf,
     bytes: Vec<u8>,
     fds: Vec<OwnedFd>,
+    maps: Arc<MapCache>,
     hops: HopCounters,
 }
 
@@ -39,6 +45,7 @@ impl FrameFetcher {
             path: path.as_ref().to_path_buf(),
             bytes: Vec::new(),
             fds: Vec::new(),
+            maps: Arc::new(MapCache::default()),
             hops: HopCounters::new(),
         }
     }
@@ -73,28 +80,81 @@ impl FrameFetcher {
             }
         };
         let received = CaptureInstant::try_now();
-        let payload = &self.bytes[HEADER..HEADER + payload_len];
-        let fds = std::mem::take(&mut self.fds);
-        let imported = lease_codec::decode(payload, fds)?;
-        let inner = imported
-            .external_backing_handle()
-            .ok_or(IpcError::Malformed("frame without backing"))?;
-        let mut meta = imported.meta().clone();
-        let layouts = imported.layouts();
-        drop(imported);
+        let message = LeaseMessageInline::parse(&self.bytes[HEADER..HEADER + payload_len])?;
+        message.check(&self.fds)?;
+        let mut meta = message.meta().ok_or(FrameExportError::InvalidDescriptor)?;
+        let layouts = message.descriptor.layouts();
+        let inner = self.import(&message, &mut meta)?;
         if let Some(at) = received {
             meta.hops.set(Hop::Received, at.as_nanos());
         }
         meta.hops.mark(Hop::Imported);
-        self.hops.record(&meta.hops);
-        Ok(FrameLease::from_external(
+        let frame = FrameLease::from_external(
             meta,
             layouts,
-            Arc::new(Leased {
+            Arc::new(Fetched {
                 inner,
                 _connection: socket,
             }),
-        ))
+        );
+        match frame.validate_plane_layouts() {
+            Ok(()) | Err(FrameValidationError::UnknownStorageLayout) => {}
+            Err(_) => return Err(FrameExportError::InvalidDescriptor.into()),
+        }
+        self.hops.record(&frame.meta().hops);
+        Ok(frame)
+    }
+
+    /// The frame's memory over the descriptors received (checked), through the mapping cache
+    /// when they are one buffer.
+    fn import(
+        &mut self,
+        message: &LeaseMessageInline,
+        meta: &mut FrameMeta,
+    ) -> Result<Inner, IpcError> {
+        let external = |frame: FrameLease| {
+            frame
+                .external_backing_handle()
+                .ok_or(IpcError::Malformed("frame without backing"))
+        };
+        Ok(match &message.backing {
+            LeaseBackingInline::Memfd { len } => {
+                let fd = self.fds.pop().expect("checked: one descriptor");
+                let planes = message.descriptor.planes.len();
+                meta.residency = Some(FrameResidency::HostExternal);
+                match CachedDmabuf::memfd(&self.maps, fd, *len, planes) {
+                    Ok(cached) => Inner::Cached(cached),
+                    Err(fd) => Inner::Other(external(FrameLease::from_memfd_import(
+                        message.descriptor.clone(),
+                        fd,
+                    )?)?),
+                }
+            }
+            LeaseBackingInline::DmabufPlanes { planes } => {
+                let fds: Fds = self.fds.drain(..).collect();
+                let spans: SmallVec<[(usize, usize); 4]> =
+                    planes.iter().map(|p| (p.offset, p.len)).collect();
+                meta.residency = Some(FrameResidency::Dmabuf);
+                match CachedDmabuf::new(&self.maps, fds, &spans) {
+                    Ok(cached) => Inner::Cached(cached),
+                    Err(fds) => {
+                        let planes = fds
+                            .into_iter()
+                            .zip(planes)
+                            .map(|(fd, p)| FrameFdPlane {
+                                fd,
+                                offset: p.offset,
+                                len: p.len,
+                            })
+                            .collect();
+                        Inner::Other(external(FrameLease::from_dmabuf_import(
+                            message.descriptor.clone(),
+                            planes,
+                        )?)?)
+                    }
+                }
+            }
+        })
     }
 
     /// Hop times (the server's, then receive and import here) and copies of the frames fetched.
@@ -104,9 +164,14 @@ impl FrameFetcher {
 }
 
 /// Import `payload` as a frame message over `fds` (memfds standing in for what a server
-/// sends) with [`lease_codec::decode`] and read every plane, as a consumer would. For fuzzing.
+/// sends) with [`lease_codec::decode`] and read every plane, as a consumer would; and parse and
+/// check it as [`FrameFetcher`] does. For fuzzing.
 #[doc(hidden)]
 pub fn fuzz_import(payload: &[u8], fds: Vec<OwnedFd>) {
+    if let Ok(message) = LeaseMessageInline::parse(payload) {
+        let _ = message.check(&fds);
+        let _ = std::hint::black_box(message.meta());
+    }
     if let Ok(frame) = lease_codec::decode(payload, fds) {
         let _ = frame.validate_plane_layouts();
         let _ = std::hint::black_box(frame.meta().hop_record());
@@ -122,18 +187,18 @@ pub fn fuzz_import(payload: &[u8], fds: Vec<OwnedFd>) {
 }
 
 /// A fetched frame's memory and the connection that is its lease.
-struct Leased {
-    inner: Arc<dyn ExternalBacking>,
+struct Fetched {
+    inner: Inner,
     _connection: OwnedFd,
 }
 
-impl ExternalBacking for Leased {
+impl ExternalBacking for Fetched {
     fn plane_data(&self, index: usize) -> Option<&[u8]> {
-        self.inner.plane_data(index)
+        self.inner.backing().plane_data(index)
     }
 
     fn backing_bytes(&self) -> Option<usize> {
-        self.inner.backing_bytes()
+        self.inner.backing().backing_bytes()
     }
 
     fn backing_kind(&self) -> &'static str {
@@ -141,18 +206,25 @@ impl ExternalBacking for Leased {
     }
 
     fn can_export(&self) -> bool {
-        self.inner.can_export()
+        self.inner.backing().can_export()
     }
 
     fn residency(&self) -> FrameResidency {
-        self.inner.residency()
+        self.inner.backing().residency()
     }
 
     fn cpu_access(&self) -> CpuAccess {
-        self.inner.cpu_access()
+        self.inner.backing().cpu_access()
     }
 
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
-        self.inner.export_backing()
+        self.inner.backing().export_backing()
+    }
+
+    fn export_into(
+        &self,
+        out: &mut Vec<FrameFdPlane>,
+    ) -> Result<Option<ExportedKind>, FrameExportError> {
+        self.inner.export_into(out)
     }
 }

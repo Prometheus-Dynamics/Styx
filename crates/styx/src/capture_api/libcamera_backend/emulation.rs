@@ -42,6 +42,18 @@ impl Emulation {
     }
 
     pub(super) fn process(&self, frame: FrameLease) -> Result<FrameLease, CaptureError> {
+        let hops = frame.meta().hops;
+        let mut out = self.convert(frame)?;
+        let bytes = out.layout_slice().iter().map(|l| l.len).sum();
+        let meta = out.meta_mut();
+        if meta.hops.is_empty() {
+            meta.hops = hops;
+        }
+        styx_core::metrics::copied_frame(meta, styx_core::metrics::CopySite::Conversion, bytes);
+        Ok(out)
+    }
+
+    fn convert(&self, frame: FrameLease) -> Result<FrameLease, CaptureError> {
         match self {
             Self::Nv12ToRgb(dec) => dec.process(frame).map_err(|err| {
                 CaptureError::Backend(format!("nv12->rgb conversion failed: {err}"))

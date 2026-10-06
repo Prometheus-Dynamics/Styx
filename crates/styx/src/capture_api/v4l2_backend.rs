@@ -98,7 +98,12 @@ impl Drop for V4l2MmapBacking {
 }
 
 /// Copy each plane of a single-planar YUV buffer into its own owned buffer.
-fn copy_planes(meta: FrameMeta, src: &[u8], planes: &[PlaneLayout]) -> FrameLease {
+fn copy_planes(mut meta: FrameMeta, src: &[u8], planes: &[PlaneLayout]) -> FrameLease {
+    styx_core::metrics::copied_frame(
+        &mut meta,
+        styx_core::metrics::CopySite::Capture,
+        planes.iter().map(|p| p.len).sum(),
+    );
     let largest = planes.iter().map(|plane| plane.len).max().unwrap_or(0);
     let pool = BufferPool::with_limits(planes.len(), largest, planes.len());
     let mut buffers = SmallVec::<[BufferLease; 3]>::new();
@@ -350,8 +355,14 @@ pub(super) fn start_v4l2(
                             let _ = manager_for_worker.recycle(index);
                             continue;
                         }
+                        let mut meta = meta;
                         if let Some(src) = manager_for_worker.mapped_plane(index) {
                             lease.as_mut_slice()[..bytes_used].copy_from_slice(&src[..bytes_used]);
+                            styx_core::metrics::copied_frame(
+                                &mut meta,
+                                styx_core::metrics::CopySite::Capture,
+                                bytes_used,
+                            );
                         }
                         let _ = manager_for_worker.recycle(index);
                         match FrameLease::single_plane_shared(

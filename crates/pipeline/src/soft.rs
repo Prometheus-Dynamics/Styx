@@ -223,6 +223,11 @@ impl SoftLoop {
         self.isp.set_copy_input(copy);
     }
 
+    /// Whether raw rows are copied before unpacking ([`Self::set_copy_input`]).
+    pub fn copies_input(&self) -> bool {
+        self.isp.copies_input()
+    }
+
     /// Which ISP processes the frames.
     pub fn engine(&self) -> IspEngine {
         self.isp.kind()

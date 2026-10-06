@@ -42,7 +42,7 @@ pub use frame::{
     box_downscale_luma, box_downscale_luma_in, shared_backing,
 };
 #[cfg(all(feature = "std", unix))]
-pub use frame::{FrameBackingExport, FrameExportError, FrameFdPlane};
+pub use frame::{ExportedKind, FrameBackingExport, FrameExportError, FrameFdPlane};
 pub use pool::{BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats};
 
 #[cfg(all(feature = "std", target_os = "linux"))]
