@@ -33,12 +33,19 @@ uses is the same in both, and the platform driver's `remove()` already returns `
 
 Both are `bcm2712_defconfig` with 4K pages despite the `-v8-16k` release name: Buildroot sets
 `CONFIG_ARM64_4K_PAGES` (its default `BR2_ARM64_PAGE_SIZE_4K`) over the defconfig's 16K, and
-the Raze package adds `VIDEO_OV9282=m`. A 7.2 tree that matches the Raze 1.1.0 kernel's config
+the Raze package adds `VIDEO_OV9282=m`. The Raze kernel is defined by the Raze device package in
+Atlas-Hardware-Manager `dev` (`devices/raze/gaia`, `RAZE_PKG` in `kernel-env.sh`); the older
+`Atlas-raze` checkout is stale. A 7.2 tree that matches the Raze 1.1.0 kernel's config
 and compiler (the HeliOS Buildroot GCC 14.3):
 
 ```sh
-git clone --depth 1 -b rpi-7.2.y https://github.com/raspberrypi/linux.git ../linux-rpi-7.2/linux
-cd ../linux-rpi-7.2/linux
+# The commit the Raze package pins (rpi-7.2.y, Linux 7.2.9)
+git init ../linux-rpi-7.2/linux && cd ../linux-rpi-7.2/linux
+git fetch --depth 1 https://github.com/raspberrypi/linux.git 53679a5788f7912272b412fd78029bccae6f2b1a
+git checkout FETCH_HEAD
+# The Raze package's ov9782 patches (Atlas-Hardware-Manager dev, Raze 1.1.0 / fd52491)
+RAZE_PKG=../../Atlas-Hardware-Manager/devices/raze/gaia
+for p in "$RAZE_PKG"/buildroot-external/linux/ov9782/*.patch; do git apply "$p"; done
 CC=<HeliOS Gaia output>/host/bin/aarch64-linux-
 make O=../build ARCH=arm64 CROSS_COMPILE=$CC bcm2712_defconfig
 scripts/config --file ../build/.config --enable ARM64_4K_PAGES --disable ARM64_16K_PAGES \

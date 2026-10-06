@@ -11,7 +11,9 @@
 #                     configured and built O= tree at ../linux-rpi-7.2/build next to the
 #                     repository (bcm2712_defconfig with Buildroot's 4K pages and VIDEO_OV9282=m,
 #                     see the README); point KERNEL_TREE at the Buildroot linux-custom of the
-#                     image instead to match a device.
+#                     image instead to match a device. The Raze 1.1.0 kernel (commit, hash,
+#                     ov9782 patches) is defined by the Raze device package in
+#                     Atlas-Hardware-Manager (dev), $RAZE_PKG.
 #
 # Every variable can still be set directly:
 #   KERNEL_TREE       built kernel tree (in-tree build, or the O= object tree of an out-of-tree one)
@@ -20,12 +22,15 @@
 #   CROSS_COMPILE     toolchain prefix (default: $BR_HOST/bin/aarch64-linux-, else aarch64-linux-gnu-)
 #   KERNEL_RELEASE    expected release (6.12: 6.12.47-v8-16k; 7.2: read from $KERNEL_TREE)
 #   STYX_KBUILD_ROOT  work dir outside the git tree (default: ../linux-build-styx next to the repo)
+#   RAZE_PKG          the Raze device package (default: ../Atlas-Hardware-Manager/devices/raze/gaia;
+#                     not the old Atlas-raze checkout)
 
 # shellcheck shell=bash
 # Callers set $workspace (the directory containing the repository).
 
 STYX_KERNEL="${STYX_KERNEL:-6.12}"
 helios_br="$workspace/HeliOS-architecture-overhaul/gaia/build/helios-full-cm5/image/buildroot-output"
+RAZE_PKG="${RAZE_PKG:-$workspace/Atlas-Hardware-Manager/devices/raze/gaia}"
 
 case "$STYX_KERNEL" in
 6.12)
@@ -82,4 +87,4 @@ kernel_vermagic() {
     echo "$KERNEL_RELEASE SMP preempt mod_unload modversions aarch64"
 }
 
-export STYX_KERNEL KERNEL_TREE KERNEL_SRC KERNEL_RELEASE BR_HOST CROSS_COMPILE STYX_KBUILD_ROOT
+export STYX_KERNEL RAZE_PKG KERNEL_TREE KERNEL_SRC KERNEL_RELEASE BR_HOST CROSS_COMPILE STYX_KBUILD_ROOT
