@@ -417,7 +417,13 @@ mod tests {
         let stride = width as usize * 3;
         let mut buf = BufferPool::with_limits(1, stride * height as usize, 1).lease();
         buf.resize(stride * height as usize);
-        for (i, px) in buf.as_mut_slice().chunks_exact_mut(3).enumerate() {
+        for (i, px) in buf
+            .as_mut_slice()
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
             let x = (i % width as usize) as u8;
             px.copy_from_slice(&[x, x, x]);
         }
@@ -582,7 +588,7 @@ mod tests {
 
     fn restart_jpeg(width: usize, height: usize) -> Vec<u8> {
         let mut rgb = vec![0u8; width * height * 3];
-        for (i, px) in rgb.chunks_exact_mut(3).enumerate() {
+        for (i, px) in rgb.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let (x, y) = (i % width, i / width);
             px.copy_from_slice(&[(x * 7 + y) as u8, (x ^ y) as u8, (y * 3) as u8]);
         }
@@ -714,7 +720,7 @@ mod tests {
         let mean = |f: &FrameLease| {
             let data = f.planes()[0].data();
             let mut sums = [0u64; 3];
-            for px in data.chunks_exact(3) {
+            for px in data.as_chunks::<3>().0 {
                 for c in 0..3 {
                     sums[c] += u64::from(px[c]);
                 }

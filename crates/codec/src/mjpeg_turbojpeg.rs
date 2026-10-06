@@ -476,7 +476,7 @@ mod tests {
         let px = planes[0].data();
         let n = (px.len() / 3) as f64;
         let mut sum = [0.0; 3];
-        for p in px.chunks_exact(3) {
+        for p in px.as_chunks::<3>().0 {
             for c in 0..3 {
                 sum[c] += f64::from(p[c]);
             }
