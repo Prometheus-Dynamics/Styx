@@ -41,6 +41,16 @@ while let RecvOutcome::Data(frame) = frames.recv(Duration::from_secs(1)) {
 - **Joining:** a client whose frames the running capture can already give is attached without
   disturbing the others. One that needs another mode or ISP setup restarts the capture once, for
   everyone; the other clients stay connected and see a short gap.
+- **Low priority:** a client made with `FrameClient::options(path).low_priority()`
+  (`ClientPriority::Low`; previews, monitors) never changes what the others get. Normal clients
+  are planned as if it were not there; it gets its own request when that leaves their plans as
+  they are and adds no CPU work to the service, otherwise a share of a normal client's frames
+  (another format or size: `delivered()` says which); it never restarts a capture normal
+  clients use (it is refused instead), cannot set a frame rate that restarts it, and is never
+  the camera's owner while a normal client is connected. When the capture starts or restarts
+  anyway, it may take the ISP's free second output. The priority is a trailer of the request
+  message: older services ignore it (serving the client as a normal one), the protocol version
+  stays 8. See [preview.md](preview.md).
 - **Refusing:** a request the camera cannot serve next to the others fails with
   `IpcError::Rejected` and the planner's reasons; the other clients are not affected.
 - **What arrives:** `FrameClient::delivered()` (from the service's answer, before the first

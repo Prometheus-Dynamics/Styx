@@ -17,7 +17,13 @@ pub use styx_core as core;
 pub use styx_libcamera as libcamera;
 #[cfg(all(feature = "facade", feature = "v4l2"))]
 pub use styx_v4l2 as v4l2;
-#[cfg(all(feature = "facade", feature = "preview-window"))]
+#[cfg(all(
+    feature = "facade",
+    any(
+        feature = "preview-window",
+        all(feature = "preview", target_os = "linux")
+    )
+))]
 pub mod preview;
 
 #[cfg(feature = "facade")]

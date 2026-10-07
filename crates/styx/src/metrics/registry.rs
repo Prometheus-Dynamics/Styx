@@ -74,6 +74,9 @@ pub struct MetricsSnapshot {
     pub unix_ms: u64,
     pub process: ProcessMetrics,
     pub cameras: Vec<CameraMetrics>,
+    /// Preview encoders running in the process (`styx::preview`).
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub previews: Vec<super::preview::PreviewMetrics>,
 }
 
 #[cfg(feature = "metrics-serde")]
@@ -138,6 +141,7 @@ pub fn snapshot() -> MetricsSnapshot {
             .map_or(0, |d| d.as_millis() as u64),
         process: process_with(cameras.len()),
         cameras,
+        previews: super::preview::previews(),
     }
 }
 

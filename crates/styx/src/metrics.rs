@@ -23,6 +23,8 @@ mod live;
 mod openmetrics;
 #[path = "metrics/path.rs"]
 mod path;
+#[path = "metrics/preview.rs"]
+mod preview;
 #[path = "metrics/registry.rs"]
 mod registry;
 #[path = "metrics/retry.rs"]
@@ -51,6 +53,9 @@ pub use openmetrics::{MetricsHttpServer, serve_http};
 #[cfg(feature = "frame-socket")]
 pub(crate) use path::frame_socket_text;
 pub use path::{CopySiteMetrics, HopMetrics, HopWindow, PathMetrics, hop_lines, path};
+#[cfg(all(feature = "preview", target_os = "linux"))]
+pub(crate) use preview::PreviewCounters;
+pub use preview::PreviewMetrics;
 pub use registry::{MetricsSnapshot, ProcessMetrics, ServiceMetrics, process, snapshot};
 pub(crate) use registry::{register, service_client};
 pub use retry::{CaptureRetryMetrics, CaptureRetryStats};

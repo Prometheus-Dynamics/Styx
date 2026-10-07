@@ -206,12 +206,30 @@ fn write_fuzz_seeds() {
         ("roi", encode_roi(&[FrameRect::new(1, 2, 3, 4)])),
         ("list", encode_list()),
         ("cameras", encode_cameras(&cameras)),
-        ("request", encode_request(&request, Some("cam"))),
+        (
+            "request",
+            encode_request(&request, Some("cam"), super::ClientPriority::Normal),
+        ),
+        (
+            "request-low",
+            encode_request(&request, Some("cam"), super::ClientPriority::Low),
+        ),
         (
             "gray",
-            encode_request(&crate::planner::Frames::gray().every_frame(2), None),
+            encode_request(
+                &crate::planner::Frames::gray().every_frame(2),
+                None,
+                super::ClientPriority::Normal,
+            ),
         ),
-        ("any", encode_request(&crate::planner::Frames::any(), None)),
+        (
+            "any",
+            encode_request(
+                &crate::planner::Frames::any(),
+                None,
+                super::ClientPriority::Normal,
+            ),
+        ),
     ];
     let messages = messages.into_iter().chain(control_seeds());
     for (name, bytes) in messages {

@@ -262,8 +262,15 @@ impl Camera {
     /// The client with this token, and whether it is the owner (connected longest).
     pub(in crate::ipc::service) fn client_of(&self, token: u64) -> Option<(u64, bool)> {
         let state = self.state.lock();
-        let i = state.clients.iter().position(|c| c.token == token)?;
-        Some((state.clients[i].id, i == 0))
+        let client = state.clients.iter().find(|c| c.token == token)?;
+        // The longest-connected normal client; low-priority ones only when there is none.
+        let owner = state
+            .clients
+            .iter()
+            .find(|c| !c.low)
+            .or(state.clients.first())
+            .is_some_and(|c| c.id == client.id);
+        Some((client.id, owner))
     }
 
     /// Change a control for `caller`, as `policy` allows.
@@ -285,7 +292,7 @@ impl Camera {
         }
         config.controls.check(caller, r.id, r.standard)?;
         if r.id == SERVICE_FRAME_RATE {
-            return self.restart_at(&mut state, value, &config.controls, config, counters);
+            return self.restart_at(&mut state, value, caller, config, counters);
         }
         let backend_value = to_backend(r.scale, &value);
         let (fitted, clamped) = match &r.meta {
@@ -313,7 +320,7 @@ impl Camera {
                 }
                 // A frame rate the camera cannot change while streaming: restart at it.
                 Err(_) if r.standard == Some(StandardControl::FrameRate) => {
-                    return self.restart_at(&mut state, value, &config.controls, config, counters);
+                    return self.restart_at(&mut state, value, caller, config, counters);
                 }
                 Err(err) => return Err(refusal(err)),
             },
@@ -341,10 +348,18 @@ impl Camera {
         &self,
         state: &mut State,
         value: ControlValue,
-        policy: &ControlPolicy,
+        caller: &ControlCaller,
         config: &ServiceConfig,
         counters: &Counters,
     ) -> Result<AppliedControl, ControlRefusal> {
+        let policy = &config.controls;
+        if let Some(id) = caller.client
+            && state.clients.iter().any(|c| c.id == id && c.low)
+        {
+            return Err(ControlRefusal::NotPermitted(
+                "a low-priority client does not restart the capture for a frame rate".into(),
+            ));
+        }
         let fps = number(&value)
             .filter(|f| f.is_finite() && *f >= 0.5)
             .ok_or_else(|| ControlRefusal::Invalid(format!("frame rate {value:?}")))?;
@@ -367,15 +382,19 @@ impl Camera {
             restarted: false,
         };
         if !state.clients.is_empty() {
-            let requests: Vec<_> = state.clients.iter().map(|c| c.request.clone()).collect();
+            let requests: Vec<_> = state
+                .clients
+                .iter()
+                .map(|c| (c.request.clone(), c.low))
+                .collect();
             let started = self
-                .plan_for(&requests, Some(rounded), config)
+                .plan_clients(&requests, Some(rounded), None, config)
                 .map_err(|err| super::describe(&err))
-                .and_then(|plan| restart(state, plan, requests.len(), config));
+                .and_then(|planned| restart(state, planned, config));
             if let Err(reason) = started {
                 state.fps_override = previous;
-                if let Ok(plan) = self.plan_for(&requests, previous, config) {
-                    let _ = restart(state, plan, requests.len(), config);
+                if let Ok(planned) = self.plan_clients(&requests, previous, None, config) {
+                    let _ = restart(state, planned, config);
                 }
                 return Err(ControlRefusal::Failed(format!(
                     "{rounded} fps for every client: {reason}"

@@ -359,6 +359,9 @@ impl Text {
         for c in &s.cameras {
             self.camera(c);
         }
+        for p in &s.previews {
+            self.preview(p);
+        }
     }
 }
 

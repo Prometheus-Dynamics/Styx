@@ -132,6 +132,32 @@ the socket's message size. Older services ignore the request (the client times o
 client's `hops` is the whole path of the frames sent to it: the service's hops up to the send,
 and the client's receive and import times, which come back with its releases.
 
+## Previews
+
+`Preview::metrics()` (`styx::preview`, feature `preview`) and `snapshot().previews` return one
+`PreviewMetrics` per preview in the process ([preview.md](preview.md)):
+
+| field | meaning | how it is measured |
+|---|---|---|
+| `name`, `encoder` | `PreviewConfig::name`, the JPEG encoder (`turbojpeg`, `mozjpeg`, `image`) | |
+| `frames_in` | frames offered (`Preview::offer`) or received from the camera service | counted on arrival |
+| `encoded`, `passthrough` | JPEG frames published; of those, camera JPEG passed through | |
+| `dropped_rate`, `dropped_busy`, `dropped_unwatched`, `errors` | frames not published: over the frame rate cap, replaced by a newer one while the encoder was busy (latest-frame semantics), nobody watching, could not be scaled or encoded (`last_error`) | counted where the frame is let go, before any work on it |
+| `encode` | JPEG encode time per frame (window) | around the encoder call |
+| `scale` | choosing the source and scaling it to the preview size (the frame is held only for this) | from taking the frame to releasing it |
+| `capture_to_encoded` | capture timestamp to JPEG published | `FrameMeta::latency()` when taken, plus the time to publish |
+| `bytes_total`, `bytes_per_frame`, `bytes_p95` | JPEG bytes: total, mean and 95th percentile over the window | |
+| `size`, `source_size` | the preview's size and the frame it was scaled from (a share of the vision client's frames shows its size here) | |
+| `cpu_ns`, `cpu_percent` | CPU time of the preview thread, and as a share of one core since it started | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` on the preview thread after each frame |
+| `subscribers` | viewers subscribed now (camera service previews) | |
+
+Prometheus (labels `preview`, `encoder`): `styx_preview_frames_in_total`,
+`styx_preview_frames_encoded_total`, `styx_preview_frames_dropped_total{cause}` (rate, busy,
+unwatched, error), `styx_preview_bytes_total`, `styx_preview_bytes_per_frame`,
+`styx_preview_encode_ms{quantile}`, `styx_preview_scale_ms{quantile}`,
+`styx_preview_capture_to_encoded_ms{quantile}`, `styx_preview_cpu_seconds_total`,
+`styx_preview_subscribers`.
+
 ## Hops: where each frame's time goes
 
 Every frame carries a hop record from the sensor to its consumer (`FrameMeta::hops`, a

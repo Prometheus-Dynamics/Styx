@@ -33,6 +33,12 @@ image = ["styx/image"]
 # `sensor_check` and `raw_processing` examples use directly.
 native = ["styx/native", "frame-socket", "dep:styx-sensor", "dep:styx-softisp", "dep:styx-dng", "dep:styx-pipeline"]
 frame-socket = ["styx/frame-socket"]
+# Camera previews (`styx::preview`) with libjpeg-turbo: the `preview_server` (a tiny std HTTP
+# server, no framework) and `preview_encode_bench` examples. `preview-only` leaves the JPEG
+# encoder to other features (mozjpeg and libjpeg-turbo do not link into one binary):
+# `--features preview-only,codec-mozjpeg,image` benchmarks those.
+preview-only = ["styx/preview"]
+preview = ["preview-only", "codec-turbojpeg"]
 # USB cameras from userspace (`BackendKind::Uvc`), compared with uvcvideo through V4L2.
 uvc = ["styx/uvc", "v4l2"]
 
@@ -93,6 +99,16 @@ required-features = ["libcamera"]
 name = "native_isp_bench"
 path = "04_performance/native_isp_bench.rs"
 required-features = ["native"]
+
+[[bin]]
+name = "preview_encode_bench"
+path = "04_performance/preview_encode_bench.rs"
+required-features = ["preview-only"]
+
+[[bin]]
+name = "preview_server"
+path = "05_apps/preview_server.rs"
+required-features = ["preview"]
 
 [[bin]]
 name = "list_cameras"

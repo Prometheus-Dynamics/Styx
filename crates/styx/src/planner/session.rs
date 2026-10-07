@@ -459,6 +459,19 @@ pub(crate) fn same_preparation(a: &FramePlan, b: &FramePlan) -> bool {
         && a.exportable == b.exportable
 }
 
+/// Whether two plans give a consumer the same frames the same way: the same capture (backend,
+/// mode, rate), the same preparation and ISP outputs ([`same_preparation`]), regions and queue.
+/// A low-priority camera service client must leave every normal client's plan so.
+pub(crate) fn same_plan(a: &FramePlan, b: &FramePlan) -> bool {
+    a.backend == b.backend
+        && a.mode.id == b.mode.id
+        && a.interval == b.interval
+        && a.queue_depth == b.queue_depth
+        && a.request.roi == b.request.roi
+        && a.region.places == b.region.places
+        && same_preparation(a, b)
+}
+
 /// A running shared capture that consumers can join.
 pub(crate) struct SharedSession {
     shared: Arc<SharedCapture>,

@@ -457,8 +457,8 @@ fn serve_client(service: &Service, mut conn: Connection) {
     let Some((request, selector)) = handshake(service, &mut conn) else {
         return;
     };
-    let (request, selector) = match request {
-        First::Frames(request) => (*request, selector),
+    let (request, priority, selector) = match request {
+        First::Frames(request, priority) => (*request, priority, selector),
         First::Control(control) => {
             control_conn::serve(service, &mut conn, *control);
             return;
@@ -476,7 +476,7 @@ fn serve_client(service: &Service, mut conn: Connection) {
         })
         .and_then(|camera| {
             camera
-                .join(request, &service.config, &service.counters)
+                .join(request, priority, &service.config, &service.counters)
                 .map(|joined| (camera, joined))
         });
     let (camera, (token, plan, delivered, frames)) = match joined {
@@ -503,7 +503,7 @@ fn serve_client(service: &Service, mut conn: Connection) {
 
 /// What a connection is for: frames, or camera controls.
 enum First {
-    Frames(Box<crate::planner::FrameRequest>),
+    Frames(Box<crate::planner::FrameRequest>, super::ClientPriority),
     Control(Box<wire::ControlRequest>),
 }
 
@@ -514,8 +514,8 @@ fn handshake(service: &Service, conn: &mut Connection) -> Option<(First, Option<
         let messages = conn.poll(Duration::from_millis(100)).ok()?;
         for message in messages {
             match message {
-                ClientMessage::Request(request, camera) => {
-                    return Some((First::Frames(request), camera));
+                ClientMessage::Request(request, camera, priority) => {
+                    return Some((First::Frames(request, priority), camera));
                 }
                 ClientMessage::Control(control) => return Some((First::Control(control), None)),
                 ClientMessage::List => {

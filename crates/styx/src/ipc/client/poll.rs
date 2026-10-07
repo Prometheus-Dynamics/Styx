@@ -219,7 +219,7 @@ impl FrameClient {
             &request.path,
             request.timeout,
             self.reconnect,
-            || wire::encode_request(&request.frames, request.camera.as_deref()),
+            || wire::encode_request(&request.frames, request.camera.as_deref(), request.priority),
             |message| match message {
                 ServerMessage::Frame | ServerMessage::ControlEvent(_) => None,
                 message => Some(accepted(message)),

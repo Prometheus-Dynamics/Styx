@@ -8,6 +8,43 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Camera previews for user interfaces: `styx::preview` (feature `preview`, Linux;
+  docs/preview.md). `Preview::from_service(ClientOptions, PreviewConfig)` (a low-priority,
+  reconnecting camera service client, connected only while someone watches) or `Preview::new`
+  with `Preview::offer(&FrameLease)` / `offer_owned`; `PreviewConfig` (`size`, `max_fps`,
+  `quality`, `encoder: JpegBackend`, `nice`, `encode_unwatched`, `passthrough_jpeg`,
+  `idle_disconnect`, `with_request`). Encoding on a thread of its own (niced to 10 by
+  default): the frame or its smallest covering companion is scaled to planar YUV 4:2:0 (2x2
+  box halvings with `styx_core::simd::box2_row`, then one bilinear pass; NV12, NV21, I420,
+  YV12, YUYV, UYVY, grey, RGB24/BGR24) and released before encoding; camera MJPEG passes
+  through. Latest-frame semantics: one frame waits at most (`dropped_busy`), frames over the
+  cap are dropped before any work (`dropped_rate`), viewers (`PreviewSubscriber`: `recv`,
+  `try_recv`, `next().await`, `Stream`) get the newest JPEG (`PreviewFrame`: `jpeg: Bytes`,
+  `sequence`, `timestamp_ns`, `clock`, `width`, `height`, `gray`, `passthrough`, `encode_us`).
+  Serving without an HTTP framework: `MjpegStream` (`multipart/x-mixed-replace` as a `Stream`
+  of `Bytes`; `fallible()` for hyper/axum; `MJPEG_CONTENT_TYPE`), `ws_message` /
+  `parse_ws_message` (`SPV1`: a 32-byte header with sequence, timestamp, clock, size, flags,
+  then the JPEG). New optional dependency: `bytes`.
+- `styx_codec::jpeg_planar`: `PlanarJpegEncoder` encodes planar YUV 4:2:0 or grey
+  (`JpegInput`) with `JpegBackend::{Turbojpeg (YUV planes as they are), Mozjpeg (raw data),
+  Image (pure Rust)}`, keeping the encoder and its buffers between images.
+- Low-priority camera service clients: `ClientOptions::low_priority()` / `priority(..)`,
+  `ClientPriority::{Normal, Low}`. The service plans normal clients as if low-priority ones
+  were not there; a low-priority client gets its own request only when that leaves every
+  normal client's plan as it is (`same_plan`: mode, rate, route, ISP outputs, regions) and adds
+  no CPU step to the service, else a share of a normal client's frames; it never restarts a
+  capture normal clients use (refused instead), cannot set a frame rate that restarts it, and
+  is never the camera's owner while a normal client is connected. Protocol: a trailer on the
+  request message, ignored by older services; the version stays 8.
+- Preview metrics: `PreviewMetrics` in `MetricsSnapshot::previews` and Prometheus
+  `styx_preview_*` (frames in, encoded, dropped by cause, bytes, encode/scale/capture-to-encoded
+  windows, preview thread CPU from `CLOCK_THREAD_CPUTIME_ID`, subscribers; docs/metrics.md).
+- Examples (feature `preview` of `styx-examples`): `preview_server` (a virtual or real camera
+  through a camera service, a vision client, the preview served by a tiny std HTTP server:
+  MJPEG, latest JPEG, the WebSocket message, metrics; measurements each second) and
+  `preview_encode_bench` (encode cost per encoder, size, quality and input; the whole preview
+  path).
+
 - Connection changes, in order with what a client receives (docs/frame-server.md "Connection
   changes"): `FrameClient::try_client_event()` and `ControlClient::try_client_event()` return
   `RecvOutcome<ClientEvent<T>>` (`T`: `FrameLease`, `ControlEvent`), with
@@ -420,6 +457,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- The minifb preview window moved to `crates/styx/src/preview/window.rs`; its path
+  (`styx::preview::PreviewWindow`, `styx::extras::preview_window`) is unchanged.
 - `PackedChannelOrder::Xrgb` / `Xbgr` are now `Bgrx` / `Rgbx` (bytes in memory order, like
   `Rgba` / `Bgra`), and `Channel` has a `Padding` variant for the unused byte of `XR24` / `XB24`.
 - Rust 1.99.0: the pinned toolchain (`rust-toolchain.toml`), the MSRV (`rust-version = "1.99"`,
