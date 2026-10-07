@@ -376,13 +376,15 @@ impl BridgeDevice for KernelBridge {
 mod tests {
     use std::cell::RefCell;
 
-    use styx_sensor::styx_hal::mock::{I2cMessage, MockI2c};
+    use styx_sensor::styx_hal::mock::{I2cTransfer, MockI2c, MockOp};
     use styx_sensor::{AddressWidth, MockBus, SensorDescription, SensorDriver, read_bytewise};
 
     use super::*;
 
     fn ov9782_bus() -> (I2cRegisters<MockI2c>, MockI2c) {
-        let i2c = MockI2c::new(0x60, 16).with_register(0x300a, 2, 0x9782);
+        let i2c = MockI2c::new()
+            .with_target(0x60, AddressWidth::Bits16)
+            .with_registers(0x60, 0x300a, &[0x97, 0x82]);
         (
             I2cRegisters::new(i2c.clone(), 0x60, AddressWidth::Bits16),
             i2c,
@@ -394,14 +396,12 @@ mod tests {
         let (mut bus, i2c) = ov9782_bus();
         assert_eq!(bus.read(0x300a, 2).unwrap(), 0x9782);
         assert_eq!(read_bytewise(&mut bus, 0x300a, 2).unwrap(), 0x9782);
-        let read = |a: u16, n| {
-            vec![
-                I2cMessage::Write(a.to_be_bytes().to_vec()),
-                I2cMessage::Read(n),
-            ]
+        let read = |a: u16, n| I2cTransfer {
+            address: 0x60,
+            ops: vec![MockOp::Write(a.to_be_bytes().to_vec()), MockOp::Read(n)],
         };
         assert_eq!(
-            i2c.transactions(),
+            i2c.transfers(),
             [read(0x300a, 2), read(0x300a, 1), read(0x300b, 1)]
         );
     }
@@ -431,11 +431,11 @@ mod tests {
             d.bring_up();
         }
         let written: Vec<Vec<u8>> = i2c
-            .transactions()
+            .transfers()
             .into_iter()
-            .flatten()
+            .flat_map(|t| t.ops)
             .filter_map(|m| match m {
-                I2cMessage::Write(b) if b.len() > 2 => Some(b),
+                MockOp::Write(b) if b.len() > 2 => Some(b),
                 _ => None,
             })
             .collect();

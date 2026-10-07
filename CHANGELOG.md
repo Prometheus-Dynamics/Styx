@@ -436,6 +436,20 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   through and keeps an `io::Error` with its errno). `styx_hal::Blocking` implements
   `lemnos_hal::asynch::RegisterBus` over a blocking map. MCU images B-D grow by 0.3-0.4 KB
   (docs/mcu.md).
+- Styx's Lemnos stopgaps are Lemnos's own (Lemnos `dev` at 572e25d): `styx_hal::Blocking` is
+  `lemnos_hal::asynch::Blocking` (same tuple struct; Lemnos adds embedded-hal-async `I2c`,
+  `SpiDevice` and `DelayNs` and register maps over their blocking twins, Styx keeps
+  `AsyncSensorPins`, `AsyncLensActuator` and `AsyncDriverBus` on it);
+  `styx_hal::mock::MockI2c` is `lemnos_hal::mock::MockI2c` (re-exported with `I2cTransfer`,
+  `MockOp`, `MockI2cTarget`: a bus of targets, so `MockI2c::new(addr, bits)` is
+  `MockI2c::new().with_target(addr, width)`, `with_register(reg, n, value)` is
+  `with_registers(addr, reg, &bytes)`, `value`/`set_dead` take the target address,
+  `transactions()` is `transfers()`, `registers()` is `target(addr)` and failed transfers are
+  logged too); `styx_sensor::VcmChip` is `lemnos_drivers_vcm::VcmChip` and
+  `styx_sensor::VcmFormat` is `lemnos_drivers_vcm::OwnedVcmFormat` (features `alloc`,
+  `serde`). Lens descriptions parse, check and compile exactly as before (TOML, postcard bytes
+  and error messages: `crates/sensor/tests/lens_format.rs`). MCU images: Cortex-M0+ B-D 0.4-0.5
+  KB smaller (Lemnos), Cortex-M7 B-D 0.6-0.7 KB larger (docs/mcu.md).
 - `styx-native`: `SensorBus` and `SubdevBus` implement Lemnos's `RegisterBus` (bus error
   `BusError`) and `DriverBus`; `SensorBus::I2c` holds `I2cRegisters<I2cBus>`. `BridgePins` and
   `PowerSwitch` moved to `styx_native::sensor_bus`.
@@ -594,12 +608,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - `styx_sensor::Registers<R>` (any Lemnos register map is a `DriverBus` with an empty impl) and
   `styx_native::regbus` (re-exports `BridgePins`, `PowerSwitch`, `MAX_BURST`, and
   `I2cRegisterBus` = `styx_sensor::I2cRegisters<I2cBus>`).
+- `VcmChip::lemnos` and `VcmFormat::with_lemnos` are the deprecated traits
+  `styx_sensor::lens::{VcmChipLemnos, VcmFormatWithLemnos}` (the types are Lemnos's: use the
+  chip directly and `VcmFormat::with_format`).
 
 ### Removed
 
 - `styx-native`'s `regbus.rs` and `native-spike`'s copy of it (the I²C register bus is
   `I2cRegisters<lemnos_linux::hal::I2cBus>`; the spike takes `BridgePins` from `styx-native`),
   and Styx's own `RegisterBus`/`AsyncRegisterBus` traits with their adapters (now Lemnos's).
+- `styx_hal::mock::{I2cMessage, MockI2cError}` (Lemnos's mock records `MockOp`s in
+  `I2cTransfer`s and fails with `lemnos_hal::ErrorKind`).
 
 - Removed `styx::graph` and the `daedalus-plugin` / `graph-pipeline` features (the graph-backed
   `MediaPipeline` runtime, Styx's own Daedalus nodes, `PipelineExecutionMode::Graph`, the

@@ -67,57 +67,18 @@ impl<P: AsyncSensorPins + ?Sized> AsyncSensorPins for &mut P {
     }
 }
 
-/// A blocking implementation used through an async trait: every operation runs to completion
-/// when first polled (its future is always ready).
+/// A blocking implementation used through the async traits: Lemnos's adapter
+/// (`lemnos_hal::asynch::Blocking`), whose every future is ready when first polled. Lemnos
+/// gives it embedded-hal-async's `I2c`, `SpiDevice` and `DelayNs` and
+/// `lemnos_hal::asynch::RegisterBus` over their blocking twins; Styx adds
+/// [`AsyncSensorPins`] over [`SensorPins`] and `AsyncLensActuator` over `LensActuator`.
 ///
 /// This is the sound direction. The other one, blocking code over an async-only
 /// implementation, needs an executor to wait on its futures; Styx ships none (Linux code has
 /// its own threads and reactor, firmware its own executor, e.g. Embassy). To drive an
 /// async-only bus from blocking code, run the async API (e.g. `styx_sensor::AsyncSensorDriver`)
 /// in the platform's executor (`embassy_futures::block_on`, `pollster`, a task) instead.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Blocking<T>(pub T);
-
-impl<T: DelayNs> embedded_hal_async::delay::DelayNs for Blocking<T> {
-    async fn delay_ns(&mut self, ns: u32) {
-        self.0.delay_ns(ns)
-    }
-    async fn delay_us(&mut self, us: u32) {
-        self.0.delay_us(us)
-    }
-    async fn delay_ms(&mut self, ms: u32) {
-        self.0.delay_ms(ms)
-    }
-}
-
-// TODO(lemnos gap): Lemnos has no blocking-to-async adapter for its register maps
-// (`lemnos_hal::asynch::RegisterBus` over a blocking `lemnos_hal::RegisterBus`); until it
-// does, `Blocking` provides it so `styx-sensor`'s async driver core runs over blocking buses.
-impl<R: lemnos_hal::RegisterBus> lemnos_hal::asynch::RegisterBus for Blocking<R> {
-    type BusError = R::BusError;
-    fn endian(&self) -> lemnos_hal::Endian {
-        self.0.endian()
-    }
-    async fn read_burst(&mut self, address: u16, buf: &mut [u8]) -> RegisterResult<(), R> {
-        self.0.read_burst(address, buf)
-    }
-    async fn write_burst(&mut self, address: u16, data: &[u8]) -> RegisterResult<(), R> {
-        self.0.write_burst(address, data)
-    }
-    async fn read(&mut self, address: u16, bytes: u8) -> RegisterResult<u32, R> {
-        self.0.read(address, bytes)
-    }
-    async fn write(&mut self, address: u16, bytes: u8, value: u32) -> RegisterResult<(), R> {
-        self.0.write(address, bytes, value)
-    }
-    async fn write_sequence(&mut self, writes: &[lemnos_hal::RegWrite]) -> RegisterResult<(), R> {
-        self.0.write_sequence(writes)
-    }
-}
-
-/// The result of a register operation on the blocking map `R`.
-type RegisterResult<T, R> =
-    lemnos_hal::register::RegisterResult<T, <R as lemnos_hal::RegisterBus>::BusError>;
+pub use lemnos_hal::asynch::Blocking;
 
 impl<P: SensorPins> AsyncSensorPins for Blocking<P> {
     type Error = P::Error;

@@ -1,8 +1,9 @@
-//! A mock platform for host tests (feature `mock`): an I²C sensor model (blocking and async
-//! embedded-hal), output pins and a delay that record, a receiver with injectable events and
-//! faults, heap-backed DMA memory, and a tiny [`block_on`] for async tests.
+//! A mock platform for host tests (feature `mock`): output pins and a delay that record, a
+//! receiver with injectable events and faults, heap-backed DMA memory, and a tiny [`block_on`]
+//! for async tests. The I²C sensor model is Lemnos's ([`MockI2c`]: register-file targets,
+//! blocking and async, shared clones, suspending async transfers, dead targets), re-exported.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -10,7 +11,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::thread::Thread;
 use std::time::Duration;
 
-use embedded_hal::i2c::{self, NoAcknowledgeSource, Operation};
+pub use lemnos_hal::mock::{I2cTransfer, MockI2c, MockI2cTarget, MockOp};
 
 use crate::dma::{Access, DmaBuffer, DmaMemory, FrameBuffer, Region};
 use crate::error::ErrorKind;
@@ -57,164 +58,6 @@ async fn yield_times(n: u32) {
         }
     })
     .await
-}
-
-/// One message of a recorded I²C transaction.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum I2cMessage {
-    /// Bytes written.
-    Write(Vec<u8>),
-    /// A read of this many bytes.
-    Read(usize),
-}
-
-/// The error of [`MockI2c`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MockI2cError(pub i2c::ErrorKind);
-
-impl i2c::Error for MockI2cError {
-    fn kind(&self) -> i2c::ErrorKind {
-        self.0
-    }
-}
-
-#[derive(Debug, Default)]
-struct I2cState {
-    registers: BTreeMap<u16, u8>,
-    transactions: Vec<Vec<I2cMessage>>,
-    dead: bool,
-    pending_polls: u32,
-}
-
-/// A sensor on an I²C bus: a register file with 8- or 16-bit register addresses (sent most
-/// significant byte first) that auto-increments within a message, recording every
-/// transaction. Implements the blocking and the async embedded-hal `I2c`. Clones share the
-/// sensor, so a test keeps one to look at what a driver did with another.
-#[derive(Clone, Debug)]
-pub struct MockI2c {
-    address: u8,
-    address_bytes: usize,
-    state: Arc<Mutex<I2cState>>,
-}
-
-impl MockI2c {
-    /// A sensor at 7-bit `address` with `address_bits` (8 or 16) register addresses.
-    pub fn new(address: u8, address_bits: u8) -> Self {
-        Self {
-            address,
-            address_bytes: if address_bits == 8 { 1 } else { 2 },
-            state: Arc::default(),
-        }
-    }
-
-    /// Presets `bytes` registers from `address` with `value`, most significant byte first.
-    pub fn with_register(self, address: u16, bytes: u8, value: u32) -> Self {
-        {
-            let mut s = lock(&self.state);
-            for i in 0..bytes {
-                let shift = 8 * u32::from(bytes - 1 - i);
-                s.registers
-                    .insert(address.wrapping_add(u16::from(i)), (value >> shift) as u8);
-            }
-        }
-        self
-    }
-
-    /// Async operations return `Pending` this many times before completing.
-    pub fn with_pending_polls(self, n: u32) -> Self {
-        lock(&self.state).pending_polls = n;
-        self
-    }
-
-    /// Every transfer from now on is not acknowledged (the sensor stopped answering).
-    pub fn set_dead(&self, dead: bool) {
-        lock(&self.state).dead = dead;
-    }
-
-    /// The value of `bytes` registers from `address`.
-    pub fn value(&self, address: u16, bytes: u8) -> u32 {
-        let s = lock(&self.state);
-        (0..bytes).fold(0u32, |acc, i| {
-            let b = s.registers.get(&address.wrapping_add(u16::from(i)));
-            (acc << 8) | u32::from(b.copied().unwrap_or(0))
-        })
-    }
-
-    /// The register file.
-    pub fn registers(&self) -> BTreeMap<u16, u8> {
-        lock(&self.state).registers.clone()
-    }
-
-    /// Every transaction so far.
-    pub fn transactions(&self) -> Vec<Vec<I2cMessage>> {
-        lock(&self.state).transactions.clone()
-    }
-
-    /// Forgets the recorded transactions.
-    pub fn clear_log(&self) {
-        lock(&self.state).transactions.clear();
-    }
-
-    fn run(&self, address: u8, operations: &mut [Operation<'_>]) -> Result<(), MockI2cError> {
-        let mut s = lock(&self.state);
-        if s.dead || address != self.address {
-            return Err(MockI2cError(i2c::ErrorKind::NoAcknowledge(
-                NoAcknowledgeSource::Address,
-            )));
-        }
-        let mut log = Vec::with_capacity(operations.len());
-        let mut pointer = 0u16;
-        for op in operations {
-            match op {
-                Operation::Write(bytes) => {
-                    log.push(I2cMessage::Write(bytes.to_vec()));
-                    let n = self.address_bytes.min(bytes.len());
-                    pointer = bytes[..n]
-                        .iter()
-                        .fold(0u16, |a, b| (a << 8) | u16::from(*b));
-                    for b in &bytes[n..] {
-                        s.registers.insert(pointer, *b);
-                        pointer = pointer.wrapping_add(1);
-                    }
-                }
-                Operation::Read(buf) => {
-                    log.push(I2cMessage::Read(buf.len()));
-                    for b in buf.iter_mut() {
-                        *b = s.registers.get(&pointer).copied().unwrap_or(0);
-                        pointer = pointer.wrapping_add(1);
-                    }
-                }
-            }
-        }
-        s.transactions.push(log);
-        Ok(())
-    }
-}
-
-impl i2c::ErrorType for MockI2c {
-    type Error = MockI2cError;
-}
-
-impl i2c::I2c for MockI2c {
-    fn transaction(
-        &mut self,
-        address: u8,
-        operations: &mut [Operation<'_>],
-    ) -> Result<(), Self::Error> {
-        self.run(address, operations)
-    }
-}
-
-impl embedded_hal_async::i2c::I2c for MockI2c {
-    async fn transaction(
-        &mut self,
-        address: u8,
-        operations: &mut [Operation<'_>],
-    ) -> Result<(), Self::Error> {
-        let n = lock(&self.state).pending_polls;
-        yield_times(n).await;
-        self.run(address, operations)
-    }
 }
 
 /// A recording output pin (shared log of levels).

@@ -114,12 +114,6 @@ impl I2c for Sensor {
     }
 }
 
-impl embedded_hal_async::i2c::I2c for Sensor {
-    async fn transaction(&mut self, a: u8, ops: &mut [Operation<'_>]) -> Result<(), Infallible> {
-        I2c::transaction(self, a, ops)
-    }
-}
-
 /// Pins with every role and no waiting.
 struct Pins;
 
@@ -246,7 +240,8 @@ fn run<F: Future>(f: F) -> F::Output {
 
 #[test]
 fn the_async_driver_streams_without_allocating() {
-    let bus = I2cRegisters::new(Sensor::new(), 0x60, AddressWidth::Bits16);
+    // The blocking sensor through Lemnos's async `I2c` adapter.
+    let bus = I2cRegisters::new(Blocking(Sensor::new()), 0x60, AddressWidth::Bits16);
     let mut d = AsyncSensorDriver::new(ov9782(), bus, Blocking(Pins));
     run(async {
         d.power_up().await.unwrap();
