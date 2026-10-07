@@ -74,6 +74,9 @@ pub struct MetricsSnapshot {
     pub unix_ms: u64,
     pub process: ProcessMetrics,
     pub cameras: Vec<CameraMetrics>,
+    /// Every live multi-camera frame grouper's sync quality (`styx::multicam`).
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub sync_groups: Vec<super::sync::SyncGroupMetrics>,
 }
 
 #[cfg(feature = "metrics-serde")]
@@ -138,6 +141,7 @@ pub fn snapshot() -> MetricsSnapshot {
             .map_or(0, |d| d.as_millis() as u64),
         process: process_with(cameras.len()),
         cameras,
+        sync_groups: super::sync::sync_groups(),
     }
 }
 

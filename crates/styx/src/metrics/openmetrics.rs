@@ -359,6 +359,9 @@ impl Text {
         for c in &s.cameras {
             self.camera(c);
         }
+        for g in &s.sync_groups {
+            self.sync_group(g);
+        }
     }
 }
 

@@ -43,6 +43,8 @@ pub mod ipc;
 pub mod memory;
 #[cfg(feature = "facade")]
 pub mod metrics;
+#[cfg(all(feature = "facade", target_os = "linux"))]
+pub mod multicam;
 #[cfg(feature = "facade")]
 pub mod planner;
 #[cfg(all(feature = "facade", feature = "hooks"))]

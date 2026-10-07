@@ -280,6 +280,7 @@ impl FileSourceConfig {
 }
 
 pub(crate) mod handle;
+mod handle_poll;
 #[cfg(test)]
 mod handle_tests;
 mod request;

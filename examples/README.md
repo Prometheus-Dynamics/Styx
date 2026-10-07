@@ -368,6 +368,7 @@ Run examples through the `styx-examples` package with explicit features:
 cargo run -p styx-examples --bin quickstart_capture_virtual
 cargo run -p styx-examples --bin quickstart_runtime_memory_report
 cargo run -p styx-examples --features daedalus --bin daedalus_frames
+cargo run -p styx-examples --features daedalus --bin daedalus_multicam
 ```
 
 Canonical examples for the intended facade:
@@ -386,6 +387,9 @@ Specialized examples remain for feature-specific surfaces such as:
 - `probe_and_select`
 - `daedalus_frames` (`--features daedalus`): camera frames through a Daedalus graph, read as
   `&FrameLease`, as Daedalus's generic `FrameView` and as their descriptor
+- `daedalus_multicam` (`--features daedalus`): two cameras grouped by timestamp
+  (`styx::multicam`), each group pushed into a Daedalus graph as one tick
+  ([docs/multi-camera-sync.md](../docs/multi-camera-sync.md))
 - `v4l2_hardware_bench`
 - `pipeline_health`
 - `ffmpeg_scale`

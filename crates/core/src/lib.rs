@@ -15,6 +15,7 @@ pub mod format;
 pub mod lease_codec;
 pub mod math;
 pub mod metrics;
+pub mod multicam;
 pub mod queue;
 pub mod requirements;
 pub mod simd;

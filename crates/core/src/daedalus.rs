@@ -11,6 +11,9 @@
 //!   so host inspection shows frames as their descriptor. Install it once per registry.
 //! - [`frame_payload`] / [`shared_frame_payload`]: a frame as a Daedalus [`Payload`] without
 //!   copying it, with its residency mapped ([`payload_residency`]).
+//! - [`push_group`] / [`group_payloads`]: a multi-camera [`FrameGroup`](crate::multicam::FrameGroup)
+//!   pushed as one atomic host batch, so the graph ticks once per synchronized set, with its
+//!   [`FrameGroupInfo`] (`styx:frame_group`: spread, offsets, cameras present).
 //! - `FrameLease: FrameSource`: Daedalus's generic `daedalus:frame` v2 view ([`FrameView`]),
 //!   registered as a provider by the plugin, so nodes that know nothing of Styx (separately
 //!   built plugins included) read a Styx frame in place: DRM format, modifier and format kind
@@ -244,7 +247,7 @@ fn install(registry: &mut PluginRegistry) -> PluginResult<()> {
     install = install,
     crate_build,
     types(FrameLease),
-    values(FrameDescriptor),
+    values(FrameDescriptor, FrameGroupInfo),
     adapters(frame_descriptor),
     foreign_providers(FrameLease => FrameInterface)
 )]
@@ -268,5 +271,10 @@ pub fn frame_view(frame: &FrameLease) -> FrameView<'_> {
 mod frame_view;
 pub use frame_view::{format_kind, plane_mapping, view_residency};
 
+mod group;
+pub use group::{FrameGroupInfo, GROUP_INFO_TYPE_KEY, GroupPorts, group_payloads, push_group};
+
+#[cfg(test)]
+mod group_tests;
 #[cfg(test)]
 mod tests;

@@ -108,6 +108,15 @@ reported.
 cargo run -p styx-examples --features daedalus --bin daedalus_frames
 ```
 
+## Several cameras in one tick
+
+`push_group(host.host(), &GroupPorts::new(["left", "right"]).info("sync"), group)` pushes a
+`styx::multicam` frame group (every camera's frame of one instant) as one atomic host batch,
+with a `FrameGroupInfo` (`styx:frame_group`: spread, offsets, cameras present), so the graph
+ticks once per group and never mixes instants. See
+[multi-camera-sync.md](multi-camera-sync.md#daedalus-one-tick-per-group) and
+`examples/02_graph/daedalus_multicam.rs`.
+
 ## Generic frame view
 
 Daedalus's `daedalus:frame` v2 interface (`FrameSource` / `FrameView`, Daedalus's

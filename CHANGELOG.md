@@ -8,6 +8,44 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Multi-camera frame grouping by sensor timestamp** (docs/multi-camera-sync.md).
+  `styx_core::multicam` (`no_std` + `alloc`, no clock of its own): `Grouper<T>` groups frames
+  of N cameras whose timestamps lie within `GroupConfig::tolerance_ns` into `FrameGroup`s
+  (members, `reference_ns`, `spread_ns`, `complete`), under `GroupPolicy::{Strict, Partial,
+  Latest}` and `RateMatch::{Nearest, Slowest}` (cameras at different rates paired to the
+  slowest), with a deadline for late cameras, at most `depth` frames per camera and
+  `output_depth` groups held (dropped frames are released at once), cameras connecting,
+  disconnecting and being removed, and every drop counted by `DropReason`. `SyncStats` /
+  `SyncReport`: spread per group and p50/p99/max over the last 256 groups, each camera's offset
+  to a reference camera and its drift in ppm (`DriftEstimator`, exponentially weighted least
+  squares), frame period, match rate, drops by reason per camera.
+  `styx::multicam::FrameGrouper` (Linux): sources `CaptureHandle`, `MediaPipeline`,
+  `FrameClient` (its `Connected`/`Disconnected` events mark the camera present or absent),
+  `BoundedRx<FrameLease>` or any `GroupSource`; timestamps put on one clock
+  (`ClockMode::Common(clock)` converting monotonic/boottime/realtime, `Arrival` for sources
+  without a sensor clock, `Raw`), frames on clocks that cannot be related refused with
+  `ClockError`; `try_next`, `recv(wait)`, `try_event`/`recv_event` (`GroupEvent`),
+  `poll_next`, `next().await`, `stream()`, and an `AsFd` descriptor readable when it has work
+  (eventfd waker for in-process queues, timerfd for deadlines, the clients' descriptors).
+  `CaptureHandle::poll_recv(cx)` and `MediaPipeline::poll_next(cx)` are new for it.
+- **Sync quality metrics**: named groupers (`FrameGrouper::named`) are listed in
+  `styx::metrics::snapshot().sync_groups` (`SyncGroupMetrics`, `styx::metrics::sync_groups()`)
+  and exported as `styx_sync_groups_total{kind}`, `styx_sync_match_ratio`,
+  `styx_sync_spread_ms{quantile}`, `styx_sync_frames_total{camera,stage}`,
+  `styx_sync_drops_total{camera,reason}`, `styx_sync_offset_ms`, `styx_sync_offset_mean_ms`,
+  `styx_sync_drift_ppm`, `styx_sync_frame_period_ms`, `styx_sync_camera_connected` (label
+  `group`; docs/metrics.md). `MetricsSnapshot` gained `sync_groups` (serde default; the
+  `styx::ipc` wire version is unchanged). `metrics-serde` now enables `styx-core/serde`.
+- **Frame groups into Daedalus as one tick** (`styx_core::daedalus`, feature `daedalus`):
+  `push_group(host, &GroupPorts, group)` pushes each camera's frame (`frame_payload`, no copy)
+  to its port, and optionally a `FrameGroupInfo` (`styx:frame_group`: sequence, reference,
+  spread, cameras present, offsets; registered by `StyxFramesPlugin`), as one atomic
+  `HostBridgeHandle::push_batch`, so a tick sees a whole group or none of it;
+  `group_payloads` builds the batch. Example `daedalus_multicam`.
+- docs/multi-camera-sync.md: the grouper, clocks per backend, metrics, Daedalus, and hardware
+  sync of the OV9782/OV9281/OV9282 (FSIN trigger and strobe registers from the RPi `ov9282`
+  driver, what needs the datasheet, what a CM5 carrier needs, a proposed `[sync]` sensor
+  description section, expected software vs hardware sync quality).
 - Connection changes, in order with what a client receives (docs/frame-server.md "Connection
   changes"): `FrameClient::try_client_event()` and `ControlClient::try_client_event()` return
   `RecvOutcome<ClientEvent<T>>` (`T`: `FrameLease`, `ControlEvent`), with
