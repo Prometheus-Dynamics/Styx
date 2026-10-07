@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cell::{RefCell, UnsafeCell};
+use core::convert::Infallible;
 use core::task::{Context, Poll, Waker};
 use core::time::Duration;
 
@@ -18,7 +19,8 @@ use styx_hal::{
     Access, BufferSource, Bus, Configured, ErrorKind, FrameBuffer, FrameDone, Instant, Receiver,
     ReceiverCaps, ReceiverConfig, SensorStart, StartOrder, SyncEvent, TimestampPoint,
 };
-use styx_sensor::{BusResult, RegisterBus, SensorPins};
+use styx_sensor::lemnos_hal::register::RegisterResult;
+use styx_sensor::{BusResult, DriverBus, RegisterBus, SensorPins};
 
 /// The platform clock in nanoseconds (a hardware timer on a microcontroller).
 static NOW_NS: AtomicU64 = AtomicU64::new(0);
@@ -48,20 +50,29 @@ pub struct Registers {
 }
 
 impl RegisterBus for Registers {
-    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
-        let id = |a: u16| match a {
-            0x300a => 0x97,
-            0x300b => 0x82,
-            _ => 0,
-        };
-        Ok((0..u16::from(bytes)).fold(0, |v, i| v << 8 | id(address.wrapping_add(i))))
+    type BusError = Infallible;
+
+    fn read_burst(&mut self, address: u16, buf: &mut [u8]) -> RegisterResult<(), Infallible> {
+        let mut at = address;
+        for b in buf {
+            *b = match at {
+                0x300a => 0x97,
+                0x300b => 0x82,
+                _ => 0,
+            };
+            at = at.wrapping_add(1);
+        }
+        Ok(())
     }
 
-    fn write(&mut self, _address: u16, _bytes: u8, _value: u32) -> BusResult<()> {
+    /// One register value (the driver writes one per call): counted.
+    fn write_burst(&mut self, _address: u16, _data: &[u8]) -> RegisterResult<(), Infallible> {
         self.writes += 1;
         Ok(())
     }
 }
+
+impl DriverBus for Registers {}
 
 /// Pins with no roles (the description's optional power steps are skipped), no waiting.
 pub struct Pins;

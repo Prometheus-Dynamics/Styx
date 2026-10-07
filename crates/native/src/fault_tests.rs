@@ -12,8 +12,10 @@ use std::time::Duration;
 
 use styx_kernel::FourCc;
 use styx_kernel::bus::{StreamAction, StreamRequest};
+use styx_sensor::lemnos_hal::register::{RegisterError, RegisterResult};
 use styx_sensor::{
-    BusResult, DriverState, MockBus, RegWrite, RegisterBus, SensorDescription, SensorDriver,
+    BusError, BusErrorKind, DriverBus, DriverState, MockBus, RegisterBus, SensorDescription,
+    SensorDriver,
 };
 
 use crate::buffers::NativeFrame;
@@ -21,7 +23,7 @@ use crate::control::{ExpectedStart, SensorControl, lock};
 use crate::device::{BridgeDevice, CaptureDevice};
 use crate::error::NativeError;
 use crate::fake::{BridgeState, FakeBridge, FakeQueue, pattern_of};
-use crate::regbus::BridgePins;
+use crate::sensor_bus::BridgePins;
 use crate::session::{BufferSource, Session, SessionOptions, StreamFormat};
 use crate::stream::{FrameStream, SensorSide};
 
@@ -38,13 +40,14 @@ pub(crate) struct FaultBus {
 }
 
 impl FaultBus {
-    fn check(&self) -> io::Result<()> {
+    fn check(&self) -> RegisterResult<(), BusError> {
         let d = *lock(&self.delay);
         if !d.is_zero() {
             std::thread::sleep(d);
         }
         if self.dead.load(Ordering::Acquire) {
-            Err(io::Error::from_raw_os_error(libc::EREMOTEIO))
+            let nack = io::Error::from_raw_os_error(libc::EREMOTEIO);
+            Err(RegisterError::bus(BusErrorKind::Nack, nack.into()))
         } else {
             Ok(())
         }
@@ -57,22 +60,30 @@ impl FaultBus {
 }
 
 impl RegisterBus for FaultBus {
-    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
+    type BusError = BusError;
+
+    fn read_burst(&mut self, address: u16, buf: &mut [u8]) -> RegisterResult<(), BusError> {
+        self.check()?;
+        lock(&self.bus).read_burst(address, buf)
+    }
+
+    fn write_burst(&mut self, address: u16, data: &[u8]) -> RegisterResult<(), BusError> {
+        self.check()?;
+        lock(&self.bus).write_burst(address, data)
+    }
+
+    fn read(&mut self, address: u16, bytes: u8) -> RegisterResult<u32, BusError> {
         self.check()?;
         lock(&self.bus).read(address, bytes)
     }
 
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
+    fn write(&mut self, address: u16, bytes: u8, value: u32) -> RegisterResult<(), BusError> {
         self.check()?;
         lock(&self.bus).write(address, bytes, value)
     }
-
-    fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-        writes
-            .iter()
-            .try_for_each(|w| self.write(w.address, w.bytes, w.value))
-    }
 }
+
+impl DriverBus for FaultBus {}
 
 pub(crate) type Control = SensorControl<FaultBus, BridgePins<Arc<FakeBridge>>>;
 

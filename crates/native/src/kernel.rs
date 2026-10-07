@@ -376,7 +376,7 @@ impl NativeCamera {
         .filter_map(|(f, c)| f.map(|f| (c, i64::from(f.default))))
         .collect();
         if !flips.is_empty() {
-            styx_sensor::RegisterBus::set_controls(&mut bus, &flips).step("set the flips")?;
+            styx_sensor::DriverBus::set_controls(&mut bus, &flips).step("set the flips")?;
         }
         let driver = SensorDriver::new(desc, SensorBus::Kernel(bus), CameraPins::None(NoPins));
         let control = Arc::new(Mutex::new(crate::control::sensor_control(driver)));

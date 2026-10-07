@@ -1,7 +1,7 @@
 //! The userspace sensor driver: runs a description over a register bus and sensor pins.
 //!
-//! [`SensorDriver`] is blocking ([`RegisterBus`], [`SensorPins`]); [`AsyncSensorDriver`] is the
-//! same driver over async buses ([`AsyncRegisterBus`], [`AsyncSensorPins`]: an embedded-hal-async
+//! [`SensorDriver`] is blocking ([`DriverBus`], [`SensorPins`]); [`AsyncSensorDriver`] is the
+//! same driver over async buses ([`AsyncDriverBus`], [`AsyncSensorPins`]: an embedded-hal-async
 //! `I2c` through [`I2cRegisters`](crate::I2cRegisters)). The logic (bring-up sequences, control
 //! writes, register reads, the schedule) is written once, as async code in `core.rs`; the
 //! blocking driver runs it over [`Blocking`] adapters, whose futures are ready when first
@@ -22,8 +22,8 @@ use styx_hal::{Blocking, SensorPins};
 pub use self::asynchronous::AsyncSensorDriver;
 use self::core::DriverCore;
 #[allow(unused_imports)]
-use crate::bus::AsyncRegisterBus;
-use crate::bus::RegisterBus;
+use crate::bus::AsyncDriverBus;
+use crate::bus::DriverBus;
 use crate::desc::SensorDescription;
 use crate::error::Result;
 use crate::mbus::{ColorFilter, MbusCode};
@@ -108,7 +108,7 @@ macro_rules! common_methods {
         }
 
         /// Whether a kernel driver owns the sensor ([`Backend::Kernel`]): controls are V4L2
-        /// controls ([`RegisterBus::set_controls`]) and there are no registers.
+        /// controls ([`DriverBus::set_controls`]) and there are no registers.
         ///
         /// [`Backend::Kernel`]: crate::Backend::Kernel
         pub fn is_kernel(&self) -> bool {
@@ -209,7 +209,7 @@ impl<B, P> SensorDriver<B, P> {
     common_methods!();
 }
 
-impl<B: RegisterBus, P: SensorPins> SensorDriver<B, P> {
+impl<B: DriverBus, P: SensorPins> SensorDriver<B, P> {
     /// Run the power-up sequence.
     pub fn power_up(&mut self) -> Result<()> {
         complete(self.core.power_up())

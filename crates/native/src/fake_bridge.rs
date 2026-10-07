@@ -13,7 +13,7 @@ use styx_kernel::bus::{StreamAction, StreamRequest, StreamState};
 
 use crate::device::BridgeDevice;
 use crate::fake::{Signal, errno, lock};
-use crate::regbus::PowerSwitch;
+use crate::sensor_bus::PowerSwitch;
 
 /// Bridge stream states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

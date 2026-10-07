@@ -61,7 +61,10 @@ checkout can be patched in through an untracked `.cargo/config.toml`, see the ro
 
 | piece | was | now | state |
 |---|---|---|---|
-| register maps over I²C/SPI: address widths, big-endian values, bursts, one message per write (`I2cRegisters`, `SpiRegisters`, `RegWrite`, `MAX_BURST`, encoders) | `styx-sensor` `registers.rs`, `desc::RegWrite` | `lemnos_hal::register` (blocking + async), re-exported; Styx's `RegisterBus` is implemented for them (`registers.rs`, 145 lines, no encoding) | done |
+| register maps over I²C/SPI: address widths, big-endian values, bursts, one message per write (`I2cRegisters`, `SpiRegisters`, `RegWrite`, `MAX_BURST`, encoders) | `styx-sensor` `registers.rs`, `desc::RegWrite` | `lemnos_hal::register` (blocking + async), re-exported; they are the driver's bus directly (`registers.rs`: empty `DriverBus` impls, `SensorDescription::i2c_registers`) | done |
+| the register-bus trait (`RegisterBus`, `AsyncRegisterBus`: read/write/sequence over a register map) | `styx-sensor` `bus.rs`, adapters in `registers.rs` and `styx-native` `sensor_bus.rs` | `lemnos_hal::RegisterBus` / `lemnos_hal::asynch::RegisterBus`, re-exported under the old names; Styx adds only `DriverBus`/`AsyncDriverBus` (`set_controls`, a kernel driver's V4L2 controls) | done |
+| the I²C register bus of the native stack and the spike (`regbus.rs`: `I2cRegisterBus`) | `styx-native` `regbus.rs`, `native-spike` `regbus.rs` | `I2cRegisters<lemnos_linux::hal::I2cBus>`; the bridge's pins (`BridgePins`, camera specific) moved to `styx-native` `sensor_bus.rs`, the spike uses them from there; `styx_native::regbus` is a deprecated re-export | done |
+| a blocking register map through the async driver core | Styx's `RegisterBus for Blocking<B>` | `styx_hal::Blocking` implements `lemnos_hal::asynch::RegisterBus` (Lemnos has no such adapter: TODO in `styx-hal` `power.rs`) | done here, Lemnos gap |
 | bus error kinds (`BusErrorKind`) | `styx-sensor` `bus_error.rs` | `lemnos_hal::ErrorKind` (re-exported as `BusErrorKind`); `BusError::from_register` keeps the errno | done |
 | embedded-hal `I2c` over i2c-dev (`I2cDevice`, `IoError`), the `I2C_RDWR` message building | `styx-kernel` `bus::i2c`, `bus::eh`, `bus::ioctl` | `lemnos_linux::hal::I2cBus` (address claimed with `I2C_SLAVE`, never forced; messages on the stack, a Lemnos fix for Styx's no-allocation frame path) | done |
 | embedded-hal `OutputPin` over GPIO character devices (`GpioChip`, `GpioLines`, `GpioPin`) | `styx-kernel` `bus::gpio`, `bus::eh` | `lemnos_linux::hal::{GpioChip, GpioLines, GpioLine}` (uAPI v2; the native camera has no GPIO roles, the bridge powers it) | done |
@@ -75,9 +78,9 @@ checkout can be patched in through an untracked `.cargo/config.toml`, see the ro
 | the I²C mock bus model (`mock::MockI2c`) | `styx-hal` `mock` | stays for now: Styx's tests need its shared clones, async suspension (`with_pending_polls`) and a target that stops answering (`set_dead`), which `lemnos_hal::mock::MockI2c` does not have | kept |
 
 What stays in Styx: the camera-specific traits (`Receiver`, DMA memory, ISP traits, lens
-actuators that are not plain I²C devices, power sequencing by role), the driver's
-`RegisterBus` (Lemnos register maps plus a kernel driver's V4L2 controls), descriptions, the
-driver and the runtime.
+actuators that are not plain I²C devices, power sequencing by role), `DriverBus` (a Lemnos
+register map plus a kernel driver's V4L2 controls), the sensor bridge, V4L2, the media
+controller and dma-heaps (`styx-kernel`), descriptions, the driver and the runtime.
 
 ## The decision in one page
 
@@ -265,10 +268,10 @@ pub trait HalError: core::fmt::Debug + From<ErrorKind> {
 
 ### 2.2 Register bus (I²C, SPI): the existing trait, `io` removed
 
-> **As built:** `RegisterBus` stayed in `styx-sensor` with `BusError`, as a thin sensor
-> register layer over embedded-hal (`I2cRegisters<I: I2c>`, `SpiRegisters<S: SpiDevice>`,
-> blocking and async). `KernelControl` kept its name. There is no Styx bus trait in
-> `styx-hal`.
+> **As built:** `RegisterBus` is Lemnos's (`lemnos_hal::RegisterBus`, re-exported by
+> `styx-sensor`; `I2cRegisters<I: I2c>`, `SpiRegisters<S: SpiDevice>`, blocking and async).
+> The control-level method lives in `styx-sensor`'s `DriverBus: RegisterBus`
+> (`set_controls`); `KernelControl` kept its name. There is no Styx bus trait in `styx-hal`.
 
 `RegisterBus` moves from `styx-sensor` to `styx-hal` unchanged except for the error type and
 the name of the control-level method; `styx-sensor` re-exports it so drivers do not change.
@@ -862,7 +865,7 @@ dropped, which puts the sensor in standby and powers it down whatever failed.
 |---|---|---|
 | `Clock` | `LinuxClock` (`CLOCK_MONOTONIC`) | `styx_kernel::monotonic_now` |
 | `Delay` | `std::thread::sleep` | `SensorPins::delay` default |
-| `RegisterBus` | `SensorBus::{I2c(I2cRegisterBus<I2cBus>), Kernel(SubdevBus)}` (Lemnos's register map on Lemnos's i2c-dev bus) | `sensor_bus.rs`, `regbus.rs` |
+| `RegisterBus` (`DriverBus`) | `SensorBus::{I2c(I2cRegisters<I2cBus>), Kernel(SubdevBus)}` (Lemnos's register map on Lemnos's i2c-dev bus) | `sensor_bus.rs` |
 | `SensorPins` | `CameraPins::{Bridge(BridgePins), None(NoPins)}` | `sensor_bus.rs` |
 | `DmaMemory`, `DmaBuffer` | `HeapMemory` (dma-heaps), `V4l2Buffer` (MMAP + `EXPBUF`), `Export = BorrowedFd` | `buffers.rs`, `styx_kernel::dma_heap` |
 | `Receiver` (raw route) | `V4l2Receiver`: video node, optional embedded node, the bridge (`StartOrder::ReceiverDriven`) or a kernel-driven sensor (`ReceiverFirst`), the event thread with its quiesce gate | `device.rs`, `events.rs`, `session.rs`, `embedded.rs`, `camera.rs` (links, pads, formats) |

@@ -29,7 +29,7 @@ use core::time::Duration;
 
 use styx_algo::{LensRequest, LensState, PdafZone, SensorRequest, Statistics, ZoneGrid};
 use styx_runtime::{Controls, FrameControls};
-use styx_sensor::{ControlRequest, RegisterBus, SensorPins};
+use styx_sensor::{ControlRequest, DriverBus, SensorPins};
 
 use crate::controller::{Controller, SensorValues, Start, Step};
 use crate::error::{PipelineError, Result};
@@ -79,7 +79,7 @@ pub fn control_request(r: &SensorRequest) -> ControlRequest {
     }
 }
 
-impl<B: RegisterBus, P: SensorPins> SensorControls for Controls<B, P> {
+impl<B: DriverBus, P: SensorPins> SensorControls for Controls<B, P> {
     /// What is due in the current frame is written at once while enough of it is left; before
     /// streaming the values for frame 0 are written at once. No allocation.
     fn request(&self, r: &SensorRequest) -> Result<u64> {

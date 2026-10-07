@@ -6,9 +6,9 @@ use styx_hal::AsyncSensorPins;
 
 use super::core::DriverCore;
 use super::{ActiveMode, AppliedControls, ControlRequest, DriverState, common_methods};
-use crate::bus::AsyncRegisterBus;
+use crate::bus::AsyncDriverBus;
 #[allow(unused_imports)]
-use crate::bus::RegisterBus;
+use crate::bus::DriverBus;
 use crate::desc::SensorDescription;
 use crate::error::Result;
 use crate::mbus::ColorFilter;
@@ -55,7 +55,7 @@ impl<B, P> AsyncSensorDriver<B, P> {
     common_methods!();
 }
 
-impl<B: AsyncRegisterBus, P: AsyncSensorPins> AsyncSensorDriver<B, P> {
+impl<B: AsyncDriverBus, P: AsyncSensorPins> AsyncSensorDriver<B, P> {
     /// See [`SensorDriver::power_up`](super::SensorDriver::power_up).
     pub async fn power_up(&mut self) -> Result<()> {
         self.core.power_up().await

@@ -118,7 +118,8 @@ installed file overrides them), and bind the generic bridge to the sensor's I²C
 address in the device tree (`kernel-modules/styx-sensor-bridge`, overlay template there). The
 bridge makes the receiver see a sensor subdevice; Styx powers the sensor, writes its
 registers and starts and stops it when the receiver asks (`PROTOCOL.md`). The registers go
-through Lemnos (`lemnos_hal::register::I2cRegisters` on `lemnos_linux::hal::I2cBus`): the
+through Lemnos (`lemnos_hal::register::I2cRegisters` on `lemnos_linux::hal::I2cBus`, the
+driver's bus as is): the
 sensor's address is claimed with `I2C_SLAVE`, never forced, so opening fails with `EBUSY`
 while a kernel driver is still bound to it. On a board without the bridge, the same
 description runs over any embedded-hal bus (`SensorDescription::i2c_registers`) with

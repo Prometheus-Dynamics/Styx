@@ -114,18 +114,22 @@ chip HAL on microcontrollers), not Styx's.
 Sensor registers are Lemnos's register maps: `I2cRegisters<I>` over any embedded-hal `I2c`
 (one transfer per register write, bursts of consecutive registers when the description allows
 them, stack buffers), `SpiRegisters<S>` over any `SpiDevice` (`lemnos_hal::register`,
-re-exported by `styx-sensor`). `styx-sensor` makes them the driver's `RegisterBus` (blocking)
-and `AsyncRegisterBus` (async); `Registers<R>` does the same for any other Lemnos register map,
-and `SensorDescription::i2c_registers` builds one from a description. The driver's trait adds
-only what is camera-specific: a kernel driver's V4L2 controls (`set_controls`) and errors as
-`BusError`. On Linux, `lemnos_linux::hal::I2cBus` is the embedded-hal `I2c` over i2c-dev (each
-address claimed with `I2C_SLAVE`, never forced; no allocation per transfer) and `GpioLine` an
-`OutputPin` over GPIO uAPI v2, so the native stack runs on the same code
-(`styx_native::regbus::I2cRegisterBus` is `I2cRegisters<I2cBus>`).
+re-exported by `styx-sensor`). The driver writes registers through Lemnos's own trait:
+`styx_sensor::RegisterBus` is `lemnos_hal::RegisterBus` and `AsyncRegisterBus` is
+`lemnos_hal::asynch::RegisterBus`, re-exported. Its bus is a `DriverBus` (blocking) or
+`AsyncDriverBus` (async): a Lemnos register map plus the one camera-specific thing, a kernel
+driver's V4L2 controls (`set_controls`, for a sensor whose registers the kernel owns; a plain
+register map implements the trait with an empty body, and `I2cRegisters`/`SpiRegisters`
+already do). Register errors become a `BusError` in the driver (`BusError::from_register`).
+`SensorDescription::i2c_registers` builds the map from a description. On Linux,
+`lemnos_linux::hal::I2cBus` is the embedded-hal `I2c` over i2c-dev (each address claimed with
+`I2C_SLAVE`, never forced; no allocation per transfer) and `GpioLine` an `OutputPin` over GPIO
+uAPI v2, so the native stack runs on the same code (`I2cRegisters<I2cBus>` in
+`styx_native::sensor_bus::SensorBus::I2c`).
 
 ### Async sensor driver
 
-`AsyncSensorDriver<B: AsyncRegisterBus, P: AsyncSensorPins>` is the sensor driver with every
+`AsyncSensorDriver<B: AsyncDriverBus, P: AsyncSensorPins>` is the sensor driver with every
 call that talks to the sensor `async`: bring-up sequences, mode and control writes, register
 reads, frame starts. The driver's logic is written once, as async code; `SensorDriver` (the
 blocking one, used on Linux) runs it over `Blocking` adapters, whose futures complete when
@@ -442,13 +446,14 @@ CM5 (OV9782 1280x800, native mode), `dev` 3cc597f against `work/core-nostd`, bui
   given (exposure, frame duration, sequence), never from a clock.
 - **Threads.** None: `SoftIsp` runs on the calling thread; the sensor driver and the control
   scheduler are plain state machines the caller steps per frame.
-- **Errors.** Every error type implements `core::error::Error`. `RegisterBus` and
-  `SensorPins` return a `BusError` (a `BusErrorKind`, which is Lemnos's `ErrorKind`, a
+- **Errors.** Every error type implements `core::error::Error`. `DriverBus::set_controls`
+  and `SensorPins` return a `BusError` (a `BusErrorKind`, which is Lemnos's `ErrorKind`, a
   message and a platform code): with `std`, `std::io::Error` converts to it and back without
   loss (errno, message and wrapped errors survive), so implementations over Linux devices use
-  `?` as before. Lemnos register errors convert with `BusError::from_register` (Lemnos's
-  classification; the errno when the bus error is an `io::Error`, as
-  `styx_native::sensor_bus::i2c_error` makes it for i2c-dev).
+  `?` as before. Register maps return Lemnos's `RegisterError`, which the driver converts with
+  `BusError::from_register` (Lemnos's classification; a bus error that is a `BusError` is
+  passed through, one that is an `io::Error` keeps its errno, as `styx_native::sensor_bus`
+  makes it for i2c-dev).
 - **Collections.** `alloc`'s `Vec`, `String`, `BTreeMap`, `VecDeque`; no `HashMap` was in these
   crates.
 
@@ -536,6 +541,28 @@ Lemnos"); Styx depends on `lemnos-hal`, `lemnos-linux` and `lemnos-drivers-vcm`.
   is re-exported.
 - `styx-kernel`: `bus::{i2c, gpio, eh}` and `uevent` are gone (`lemnos_linux::hal::{I2cBus,
   GpioChip, GpioLine}`, `lemnos_linux::uevent`); `bus` is the sensor bridge only.
+
+### `RegisterBus` is Lemnos's
+
+The last Styx register-bus code went (CHANGELOG, Unreleased):
+
+- `styx_sensor::RegisterBus` is `lemnos_hal::RegisterBus` and `AsyncRegisterBus` is
+  `lemnos_hal::asynch::RegisterBus` (re-exported): `read_burst`/`write_burst` are required,
+  `read`/`write`/`write_sequence` return `RegisterResult<T, Self::BusError>`, and there is an
+  associated `BusError`. The driver's bound is the new `DriverBus` / `AsyncDriverBus`
+  (`RegisterBus` plus `set_controls`): `SensorDriver<B: DriverBus, P>`,
+  `AsyncSensorDriver<B: AsyncDriverBus, P>`, and so `SensorState`, `Controls`,
+  `SensorControl`, `ControlHandle`. Porting a bus: implement `read_burst`/`write_burst` (and
+  `read`/`write` where one value is one transfer), then `impl DriverBus for MyBus {}`; a bus
+  with V4L2 controls moves `set_controls` into that impl. `MockBus` keeps its log and its
+  `BusError` (as the map's `BusError`).
+- `Registers<R>` is deprecated (any Lemnos register map is a `DriverBus` with an empty impl).
+- `read_bytewise` takes any `RegisterBus` and still returns `BusResult`.
+- `styx_native::regbus` is deprecated: `BridgePins` and `PowerSwitch` are in
+  `styx_native::sensor_bus`, `I2cRegisterBus` is `styx_sensor::I2cRegisters<I2cBus>`;
+  `SensorBus` and `SubdevBus` implement Lemnos's `RegisterBus` (with `BusError` as the bus
+  error) and `DriverBus`.
+- `styx_hal::Blocking<R>` implements `lemnos_hal::asynch::RegisterBus` for a blocking map.
 
 ## API changes with the `styx-core` frame path without `std` (step 9)
 

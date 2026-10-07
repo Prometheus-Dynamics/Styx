@@ -11,7 +11,7 @@ use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
 use styx_hal::AsyncSensorPins;
 
 use super::{ActiveMode, AppliedControls, ControlRequest, DriverState};
-use crate::bus::AsyncRegisterBus;
+use crate::bus::AsyncDriverBus;
 use crate::bus_error::{BusError, BusErrorKind};
 use crate::desc::{Backend, Field, Flip, RegWrite, SensorDescription, Step};
 use crate::error::{Result, SensorError};
@@ -169,7 +169,7 @@ impl<B, P> DriverCore<B, P> {
 }
 
 /// The part that talks to the sensor.
-impl<B: AsyncRegisterBus, P: AsyncSensorPins> DriverCore<B, P> {
+impl<B: AsyncDriverBus, P: AsyncSensorPins> DriverCore<B, P> {
     async fn run(&mut self, steps: &[Step]) -> Result<()> {
         let mut batch = [RegWrite::byte(0, 0); BATCH];
         let mut n = 0;
@@ -242,10 +242,10 @@ impl<B: AsyncRegisterBus, P: AsyncSensorPins> DriverCore<B, P> {
         self.bus
             .write_sequence(batch)
             .await
-            .map_err(|source| SensorError::Bus {
+            .map_err(|e| SensorError::Bus {
                 op: "write sequence at",
                 address,
-                source,
+                source: BusError::from_register(e),
             })
     }
 
@@ -259,10 +259,10 @@ impl<B: AsyncRegisterBus, P: AsyncSensorPins> DriverCore<B, P> {
         self.bus
             .write(field.address, field.bytes, reg)
             .await
-            .map_err(|source| SensorError::Bus {
+            .map_err(|e| SensorError::Bus {
                 op: "write",
                 address: field.address,
-                source,
+                source: BusError::from_register(e),
             })
     }
 
@@ -270,10 +270,10 @@ impl<B: AsyncRegisterBus, P: AsyncSensorPins> DriverCore<B, P> {
         self.bus
             .read(address, bytes)
             .await
-            .map_err(|source| SensorError::Bus {
+            .map_err(|e| SensorError::Bus {
                 op: "read",
                 address,
-                source,
+                source: BusError::from_register(e),
             })
     }
 
@@ -517,10 +517,10 @@ impl<B: AsyncRegisterBus, P: AsyncSensorPins> DriverCore<B, P> {
         self.bus
             .write(f.address, 1, value)
             .await
-            .map_err(|source| SensorError::Bus {
+            .map_err(|e| SensorError::Bus {
                 op: "write",
                 address: f.address,
-                source,
+                source: BusError::from_register(e),
             })
     }
 

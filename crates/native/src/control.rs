@@ -11,9 +11,7 @@ use std::time::Duration;
 
 use styx_kernel::bus::{StreamAction, StreamRequest};
 use styx_runtime::{Controls, SensorState, StartFormat};
-use styx_sensor::{
-    Control, ControlRequest, Landing, RegisterBus, SensorDriver, SensorPins, Timing,
-};
+use styx_sensor::{Control, ControlRequest, DriverBus, Landing, SensorDriver, SensorPins, Timing};
 
 use crate::error::Result;
 
@@ -29,7 +27,7 @@ pub type SensorControl<B, P> = SensorState<B, P>;
 pub type ExpectedStart = StartFormat;
 
 /// A sensor control on `CLOCK_MONOTONIC` (the clock of V4L2 buffer and event timestamps).
-pub fn sensor_control<B: RegisterBus, P: SensorPins>(
+pub fn sensor_control<B: DriverBus, P: SensorPins>(
     driver: SensorDriver<B, P>,
 ) -> SensorControl<B, P> {
     SensorState::new(driver).with_clock(styx_kernel::monotonic_now)
@@ -57,7 +55,7 @@ pub trait BridgeServe {
     fn serve_detailed(&mut self, req: &StreamRequest) -> std::result::Result<(), (i32, String)>;
 }
 
-impl<B: RegisterBus, P: SensorPins> BridgeServe for SensorState<B, P> {
+impl<B: DriverBus, P: SensorPins> BridgeServe for SensorState<B, P> {
     fn serve_detailed(&mut self, req: &StreamRequest) -> std::result::Result<(), (i32, String)> {
         let served = match req.action {
             StreamAction::Start => self.serve_start(Some(&start_format(req))),
@@ -98,7 +96,7 @@ impl<B, P> std::fmt::Debug for ControlHandle<B, P> {
     }
 }
 
-impl<B: RegisterBus, P: SensorPins> ControlHandle<B, P> {
+impl<B: DriverBus, P: SensorPins> ControlHandle<B, P> {
     /// A handle on a shared control.
     pub fn new(inner: Arc<Mutex<SensorControl<B, P>>>, blanking: Option<BlankingHook>) -> Self {
         Self {

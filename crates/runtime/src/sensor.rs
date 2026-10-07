@@ -13,8 +13,8 @@ use core::time::Duration;
 
 use styx_hal::ErrorKind;
 use styx_sensor::{
-    AppliedControls, ControlRequest, ControlSet, DriverState, Landing, Landings, Mismatch,
-    RegWrite, RegisterBus, SensorDescription, SensorDriver, SensorPins, Step, Timing,
+    AppliedControls, ControlRequest, ControlSet, DriverBus, DriverState, Landing, Landings,
+    Mismatch, RegWrite, SensorDescription, SensorDriver, SensorPins, Step, Timing,
 };
 
 use crate::error::{Error, Result};
@@ -184,7 +184,7 @@ pub struct SensorState<B, P> {
     pdaf: PdafFrames,
 }
 
-impl<B: RegisterBus, P: SensorPins> SensorState<B, P> {
+impl<B: DriverBus, P: SensorPins> SensorState<B, P> {
     /// Wraps a driver (no clock: see [`Self::with_clock`]).
     pub fn new(driver: SensorDriver<B, P>) -> Self {
         Self {
@@ -563,7 +563,10 @@ impl<B: RegisterBus, P: SensorPins> SensorState<B, P> {
             .filter_map(Step::as_write)
             .copied()
             .collect();
-        self.driver.bus_mut().write_sequence(&off)
+        self.driver
+            .bus_mut()
+            .write_sequence(&off)
+            .map_err(styx_sensor::BusError::from_register)
     }
 
     /// Puts the sensor back in standby and powers it down (whatever state it is in). Best

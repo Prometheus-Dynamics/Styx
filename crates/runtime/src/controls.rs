@@ -5,7 +5,7 @@ use core::time::Duration;
 use styx_core::sync::Arc;
 
 use styx_sensor::lens::imx708_pdaf;
-use styx_sensor::{Control, ControlRequest, Landing, Landings, RegisterBus, SensorPins, Timing};
+use styx_sensor::{Control, ControlRequest, DriverBus, Landing, Landings, SensorPins, Timing};
 
 use crate::error::{Error, Result};
 use crate::sensor::{FrameControls, SensorState};
@@ -41,7 +41,7 @@ impl<B, P> core::fmt::Debug for Controls<B, P> {
     }
 }
 
-impl<B: RegisterBus, P: SensorPins> Controls<B, P> {
+impl<B: DriverBus, P: SensorPins> Controls<B, P> {
     /// A handle on a shared sensor state.
     pub fn new(inner: Shared<SensorState<B, P>>, blanking: Option<BlankingHook>) -> Self {
         Self { inner, blanking }
