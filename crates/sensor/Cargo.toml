@@ -38,7 +38,9 @@ embedded-hal-async.workspace = true
 styx-hal.workspace = true
 # Register maps over I²C/SPI (blocking and async) and the VCM lens drivers: Lemnos, no_std.
 lemnos-hal.workspace = true
-lemnos-drivers-vcm.workspace = true
+# `alloc` + `serde`: descriptions name the chip (`VcmChip`) and spell out a custom format
+# (`OwnedVcmFormat`, Styx's `VcmFormat`) with Lemnos's own types.
+lemnos-drivers-vcm = { workspace = true, features = ["alloc", "serde"] }
 serde = { workspace = true, features = ["alloc"] }
 thiserror.workspace = true
 toml = { version = "1.1", default-features = false, features = ["serde", "parse", "display"], optional = true }
@@ -53,6 +55,8 @@ portable-atomic-util.workspace = true
 
 [dev-dependencies]
 styx-hal = { workspace = true, features = ["mock"] }
+# The compiled form in tests whatever the features (`tests/lens_format.rs`).
+postcard.workspace = true
 
 [lints]
 workspace = true

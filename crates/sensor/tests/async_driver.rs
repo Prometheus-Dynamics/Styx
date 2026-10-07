@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use styx_hal::mock::{I2cMessage, MockDelay, MockI2c, MockPin, block_on};
+use styx_hal::mock::{I2cTransfer, MockDelay, MockI2c, MockOp, MockPin, block_on};
 use styx_hal::{Blocking, BoardPins, Line};
 use styx_sensor::{
     AddressWidth, AsyncSensorDriver, ControlRequest, I2cRegisters, MAX_BURST, MockBus, MockPins,
@@ -20,7 +20,9 @@ fn desc() -> Arc<SensorDescription> {
 }
 
 fn sensor() -> MockI2c {
-    MockI2c::new(0x60, 16).with_register(0x300a, 2, 0x9782)
+    MockI2c::new()
+        .with_target(0x60, AddressWidth::Bits16)
+        .with_registers(0x60, 0x300a, &[0x97, 0x82])
 }
 
 fn exposure() -> ControlRequest {
@@ -89,10 +91,11 @@ fn async_and_blocking_drivers_write_the_same_transfers() {
         let sync_pins = run_blocking(sync_i2c.clone(), bursts);
         let async_i2c = sensor().with_pending_polls(2);
         let async_pins = block_on(run_async(async_i2c.clone(), bursts));
-        assert_eq!(sync_i2c.transactions(), async_i2c.transactions());
-        assert_eq!(sync_i2c.registers(), async_i2c.registers());
+        assert_eq!(sync_i2c.transfers(), async_i2c.transfers());
+        let registers = |i2c: &MockI2c| i2c.target(0x60).unwrap().registers;
+        assert_eq!(registers(&sync_i2c), registers(&async_i2c));
         assert_eq!(sync_pins, async_pins);
-        assert!(sync_i2c.transactions().len() > 20);
+        assert!(sync_i2c.transfers().len() > 20);
     }
 }
 
@@ -119,23 +122,24 @@ fn i2c_registers_write_what_the_mock_bus_records() {
     d.stop_streaming().unwrap();
     d.power_down().unwrap();
     // Every write as its own transfer: address (2 bytes) then the value, most significant first.
-    let expected: Vec<Vec<I2cMessage>> = d
+    let expected: Vec<I2cTransfer> = d
         .bus()
         .log
         .iter()
         .map(|op| match op {
             styx_sensor::BusOp::Read { address, bytes, .. } => vec![
-                I2cMessage::Write(address.to_be_bytes().to_vec()),
-                I2cMessage::Read(usize::from(*bytes)),
+                MockOp::Write(address.to_be_bytes().to_vec()),
+                MockOp::Read(usize::from(*bytes)),
             ],
             styx_sensor::BusOp::Write(w) => {
                 let mut m = w.address.to_be_bytes().to_vec();
                 m.extend_from_slice(&w.value.to_be_bytes()[4 - usize::from(w.bytes)..]);
-                vec![I2cMessage::Write(m)]
+                vec![MockOp::Write(m)]
             }
         })
+        .map(|ops| I2cTransfer { address: 0x60, ops })
         .collect();
-    assert_eq!(i2c.transactions(), expected);
+    assert_eq!(i2c.transfers(), expected);
 }
 
 #[test]
@@ -150,7 +154,7 @@ fn a_sensor_that_stops_answering_fails_the_async_frame_start() {
         d.set_mode("1280x800", "raw10").await.unwrap();
         d.start_streaming().await.unwrap();
         d.request(2, &exposure()).unwrap();
-        probe.set_dead(true);
+        probe.set_dead(0x60, true);
         let mut failed = None;
         for seq in 0..4 {
             if let Err(e) = d.frame_start(seq).await {

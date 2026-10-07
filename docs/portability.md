@@ -108,8 +108,8 @@ chip HAL on microcontrollers), not Styx's.
 | `Receiver` | the CSI-2 or parallel receiver: configure, queue, start/stop with a `SensorStart`, frame starts and filled buffers on separate wakers (`poll_sync`, `poll_done`) with non-blocking `try_` twins |
 | `LensActuator` / `AsyncLensActuator`, `NoLens` | focus lenses that are not a plain register device |
 | `ErrorKind`, `HalError` | what kind of failure an implementation's own error is (`Nack`, `NotFound`, `Disconnected`, ...), plus a platform code; Lemnos's `ErrorKind` converts into it (and is a `HalError`) |
-| `Blocking<T>` | a blocking implementation used through the async traits (its futures are ready at once) |
-| `mock` (feature) | an I²C sensor model (blocking and async, can really suspend and stop answering), recording pins and delay, a receiver with injected events and faults, heap DMA memory, a test `block_on` |
+| `Blocking<T>` | a blocking implementation used through the async traits (its futures are ready at once): Lemnos's `lemnos_hal::asynch::Blocking` (register maps, `I2c`, `SpiDevice`, `DelayNs`), plus `SensorPins` and `LensActuator` here |
+| `mock` (feature) | Lemnos's I²C mock (`lemnos_hal::mock::MockI2c`: register-file targets, blocking and async, can really suspend and stop answering), recording pins and delay, a receiver with injected events and faults, heap DMA memory, a test `block_on` |
 
 Sensor registers are Lemnos's register maps: `I2cRegisters<I>` over any embedded-hal `I2c`
 (one transfer per register write, bursts of consecutive registers when the description allows
@@ -532,8 +532,11 @@ Lemnos"); Styx depends on `lemnos-hal`, `lemnos-linux` and `lemnos-drivers-vcm`.
   `with_code` are new; `From<io::Error>` classifies by errno (`EREMOTEIO` is `Nack`).
 - Lens: `VcmChip` / `VcmFormat` / `VcmI2c` stay as the description's types; the command
   formats and `encode` are `lemnos-drivers-vcm`'s (`VcmI2c::with_format`,
-  `VcmFormat::with_lemnos`, `VcmI2c::max_position`); a custom format has at most
-  `MAX_VCM_WRITES` power-up and power-down writes. `styx_native::lens::I2cVcm` drives
+  `VcmFormat::with_format`, `VcmI2c::max_position`); a custom format has at most
+  `MAX_VCM_WRITES` power-up and power-down writes. Since Lemnos 572e25d `VcmChip` is
+  `lemnos_drivers_vcm::VcmChip` and `VcmFormat` is `lemnos_drivers_vcm::OwnedVcmFormat`
+  (same serde and postcard form; `VcmChip::lemnos` and `VcmFormat::with_lemnos` are
+  deprecated traits, `VcmChipLemnos` and `VcmFormatWithLemnos`). `styx_native::lens::I2cVcm` drives
   `lemnos_drivers_vcm::Vcm` over `I2cBus`.
 - `styx_hal`: `ClockEnable` is gone (`BoardPins` takes a `lemnos_hal::ClockOutput`; `NoClock`
   implements it); `StdDelay` is gone (`lemnos_linux::hal::StdDelay`); `ErrorKind` gains
@@ -562,7 +565,10 @@ The last Styx register-bus code went (CHANGELOG, Unreleased):
   `styx_native::sensor_bus`, `I2cRegisterBus` is `styx_sensor::I2cRegisters<I2cBus>`;
   `SensorBus` and `SubdevBus` implement Lemnos's `RegisterBus` (with `BusError` as the bus
   error) and `DriverBus`.
-- `styx_hal::Blocking<R>` implements `lemnos_hal::asynch::RegisterBus` for a blocking map.
+- `styx_hal::Blocking` is `lemnos_hal::asynch::Blocking` (Lemnos 572e25d), which implements
+  `lemnos_hal::asynch::RegisterBus` for a blocking map; `styx_hal::mock::MockI2c` is
+  `lemnos_hal::mock::MockI2c` (a bus of targets: `MockI2c::new().with_target(addr, width)`,
+  `with_registers`, `value(addr, reg, bytes)`, `transfers()`, `set_dead(addr, dead)`).
 
 ## API changes with the `styx-core` frame path without `std` (step 9)
 

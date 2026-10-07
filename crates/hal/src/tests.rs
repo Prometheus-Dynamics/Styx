@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use embedded_hal::i2c::I2c as _;
 
-use crate::mock::{I2cMessage, MockDelay, MockI2c, MockPin, MockReceiver, block_on};
+use crate::mock::{I2cTransfer, MockDelay, MockI2c, MockOp, MockPin, MockReceiver, block_on};
 use crate::*;
 
+use lemnos_hal::AddressWidth;
 use lemnos_hal::ErrorKind as LemnosKind;
 
 /// A clock whose rate can be set, recording what it was asked for.
@@ -96,12 +97,14 @@ fn board_pins_and_blocking_adapters_work_async() {
 
 #[test]
 fn mock_i2c_models_a_register_file() {
-    let mut i2c = MockI2c::new(0x36, 16).with_register(0x300a, 2, 0x9782);
+    let mut i2c = MockI2c::new()
+        .with_target(0x36, AddressWidth::Bits16)
+        .with_registers(0x36, 0x300a, &[0x97, 0x82]);
     let mut buf = [0u8; 2];
     i2c.write_read(0x36, &[0x30, 0x0a], &mut buf).unwrap();
     assert_eq!(buf, [0x97, 0x82]);
     i2c.write(0x36, &[0x38, 0x0e, 0x03, 0x52]).unwrap();
-    assert_eq!(i2c.value(0x380e, 2), 0x0352);
+    assert_eq!(i2c.value(0x36, 0x380e, 2), 0x0352);
     assert!(i2c.write(0x10, &[0, 0, 0]).is_err());
     let async_i2c = i2c.clone().with_pending_polls(3);
     block_on(async {
@@ -110,12 +113,15 @@ fn mock_i2c_models_a_register_file() {
             .await
             .unwrap();
     });
-    assert_eq!(i2c.value(0x0100, 1), 1);
+    assert_eq!(i2c.value(0x36, 0x0100, 1), 1);
     assert_eq!(
-        i2c.transactions().last().unwrap(),
-        &[I2cMessage::Write(vec![0x01, 0x00, 0x01])]
+        i2c.transfers().last().unwrap(),
+        &I2cTransfer {
+            address: 0x36,
+            ops: vec![MockOp::Write(vec![0x01, 0x00, 0x01])]
+        }
     );
-    i2c.set_dead(true);
+    i2c.set_dead(0x36, true);
     assert!(i2c.write(0x36, &[0x01, 0x00, 0x00]).is_err());
 }
 
