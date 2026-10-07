@@ -10,9 +10,13 @@
 //! `INCONCLUSIVE` (R and B are too close in the scene to tell; point the camera at something
 //! coloured). Exits 1 on any `FAIL`, else 2 on any `MISMATCH`.
 //!
+//! A format the camera's probe did not list (libcamera does not offer it on any stream role) is
+//! skipped; `--force` requests it anyway, to see what the backend says (Styx refuses it before
+//! libcamera validates it: some pipelines abort the process on a format they cannot take).
+//!
 //! ```sh
 //! libcamera_format_check [--camera N|NAME] [--size 640x480] [--frames 10] [--tolerance 6]
-//!                        [--formats NV12,RG24,...]
+//!                        [--formats NV12,RG24,...] [--force]
 //! ```
 
 use std::time::{Duration, Instant};
@@ -175,9 +179,10 @@ fn measure(
     code: FourCc,
     (w, h): (u32, u32),
     frames: usize,
+    force: bool,
 ) -> Result<Measured, Error> {
-    // The probed mode of this format nearest the size; one made from NV12's otherwise (the
-    // backend then says whether the format works).
+    // The probed mode of this format nearest the size; with `--force`, one made from NV12's
+    // otherwise (the backend then says whether the format works).
     let mut device = device.clone();
     let backend = device
         .backends
@@ -198,6 +203,13 @@ fn measure(
     };
     let mode = match nearest(code) {
         Some(m) => m,
+        None if !force => {
+            return Err(format!(
+                "skipped: not among the probed modes (libcamera does not offer {code}); \
+                 --force requests it anyway"
+            )
+            .into());
+        }
         None => {
             let mut m = nearest(FourCc::NV12).ok_or("no NV12 mode")?;
             println!("  {code}: not among the probed modes; requesting it anyway");
@@ -249,6 +261,7 @@ struct Args {
     frames: usize,
     tolerance: f64,
     formats: Vec<FourCc>,
+    force: bool,
 }
 
 fn args() -> Result<Args, Error> {
@@ -258,6 +271,7 @@ fn args() -> Result<Args, Error> {
         frames: 10,
         tolerance: 6.0,
         formats: FORMATS.to_vec(),
+        force: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -270,6 +284,7 @@ fn args() -> Result<Args, Error> {
                 a.size = (w.parse()?, h.parse()?);
             }
             "--frames" => a.frames = value()?.parse()?,
+            "--force" => a.force = true,
             "--tolerance" => a.tolerance = value()?.parse()?,
             "--formats" => {
                 a.formats = value()?
@@ -280,7 +295,7 @@ fn args() -> Result<Args, Error> {
             _ => {
                 return Err(
                     "usage: libcamera_format_check [--camera N|NAME] [--size WxH] \
-                            [--frames N] [--tolerance T] [--formats NV12,RG24,...]"
+                            [--frames N] [--tolerance T] [--formats NV12,RG24,...] [--force]"
                         .into(),
                 );
             }
@@ -308,11 +323,13 @@ fn main() -> Result<(), Error> {
     println!("{} through libcamera", device.identity.display);
     let mut rows = Vec::new();
     for &code in &args.formats {
-        let result = measure(device, code, args.size, args.frames).map_err(|e| e.to_string());
+        let result =
+            measure(device, code, args.size, args.frames, args.force).map_err(|e| e.to_string());
         match &result {
             Ok((got, (w, h), stride, _)) => {
                 println!("  {code}: negotiated {got} {w}x{h}, stride {stride}")
             }
+            Err(e) if e.starts_with("skipped") => println!("  {code}: {e}"),
             Err(e) => println!("  {code}: unsupported: {e}"),
         }
         rows.push(Row {
@@ -333,6 +350,9 @@ fn main() -> Result<(), Error> {
                 got.to_string(),
                 format!("{w}x{h}")
             ),
+            Err(e) if e.starts_with("skipped") => {
+                println!("{:<6} skipped", row.requested.to_string())
+            }
             Err(_) => println!("{:<6} unsupported", row.requested.to_string()),
         }
     }
@@ -351,9 +371,16 @@ fn main() -> Result<(), Error> {
     let (mut failed, mut mismatched, mut inconclusive) = (false, false, false);
     for row in rows.iter().filter(|r| r.requested != FourCc::NV12) {
         let name = row.requested;
-        let Ok((got, _, _, means)) = &row.result else {
-            println!("  {name}: unsupported");
-            continue;
+        let (got, means) = match &row.result {
+            Ok((got, _, _, means)) => (got, means),
+            Err(e) if e.starts_with("skipped") => {
+                println!("  {name}: skipped (not offered)");
+                continue;
+            }
+            Err(_) => {
+                println!("  {name}: unsupported");
+                continue;
+            }
         };
         if *got == FourCc::NV12 {
             println!("  {name}: delivered NV12 instead; nothing to check");

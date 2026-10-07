@@ -84,6 +84,41 @@ pub(super) fn processed_stream_role(
     }
 }
 
+/// Whether the capture uses PiSP's temporal-denoise output: as `mode` says, or (`Auto`) when a
+/// requested control needs it. An error when it is needed but off, or on but unavailable.
+pub(super) fn tdn_output(
+    descriptor: &CaptureDescriptor,
+    requested: &[(styx_core::controls::ControlId, ControlValue)],
+    mode: crate::capture_api::TdnOutputMode,
+    id: &str,
+) -> Result<bool, CaptureError> {
+    use crate::capture_api::TdnOutputMode;
+    let requires = requested.iter().any(|(id, value)| {
+        control_value_enabled(value)
+            && descriptor
+                .controls
+                .iter()
+                .find(|meta| meta.id == *id)
+                .is_some_and(|meta| meta.metadata.requires_tdn_output)
+    });
+    let enable = match mode {
+        TdnOutputMode::Off => false,
+        TdnOutputMode::Auto => requires,
+        TdnOutputMode::Force => true,
+    };
+    if enable && !is_rpi_pisp_sensor_i2c(id) {
+        return Err(CaptureError::InvalidConfig(
+            "tdn output not supported for this device".into(),
+        ));
+    }
+    if requires && !enable {
+        return Err(CaptureError::InvalidConfig(
+            "tdn output required by requested controls".into(),
+        ));
+    }
+    Ok(enable)
+}
+
 pub(super) fn supports_frame_duration_limits(descriptor: &CaptureDescriptor) -> bool {
     descriptor
         .controls
@@ -124,47 +159,6 @@ pub(super) fn classify_libcamera_backend_message(message: impl Into<String>) -> 
 
 fn contains_any(message: &str, tokens: &[&str]) -> bool {
     tokens.iter().any(|token| message.contains(token))
-}
-
-fn rect(r: &libcamera::geometry::Rectangle) -> ControlRect {
-    ControlRect {
-        x: r.x,
-        y: r.y,
-        width: r.width,
-        height: r.height,
-    }
-}
-
-pub(super) fn from_lc_value(value: &LcValue) -> Option<ControlValue> {
-    match value {
-        LcValue::None => Some(ControlValue::None),
-        LcValue::Bool(v) if v.len() == 1 => v.first().copied().map(ControlValue::Bool),
-        LcValue::Int32(v) if v.len() == 1 => v.first().copied().map(ControlValue::Int),
-        LcValue::Int64(v) if v.len() == 1 => v
-            .first()
-            .copied()
-            .and_then(|n| i32::try_from(n).ok())
-            .map(ControlValue::Int),
-        LcValue::Int64(v) if v.len() == 2 => {
-            let a = v.first().copied()?;
-            let b = v.get(1).copied()?;
-            if a == b {
-                i32::try_from(a).ok().map(ControlValue::Int)
-            } else {
-                None
-            }
-        }
-        LcValue::Uint16(v) if v.len() == 1 => {
-            v.first().copied().map(|n| ControlValue::Uint(n as u32))
-        }
-        LcValue::Uint32(v) if v.len() == 1 => v.first().copied().map(ControlValue::Uint),
-        LcValue::Float(v) if v.len() == 1 => v.first().copied().map(ControlValue::Float),
-        LcValue::Rectangle(v) if v.len() == 1 => v.first().map(|r| ControlValue::Rect(rect(r))),
-        LcValue::Rectangle(v) if !v.is_empty() => {
-            Some(ControlValue::Rects(v.iter().map(rect).collect()))
-        }
-        _ => None,
-    }
 }
 
 pub(super) fn to_lc_value(value: &ControlValue) -> Result<LcValue, CaptureError> {
@@ -210,7 +204,18 @@ pub(super) fn is_rpi_pisp_sensor_i2c(id: &str) -> bool {
 pub(super) fn pisp_disallowed_fourcc(code: FourCc) -> bool {
     matches!(
         &code.to_u32().to_le_bytes(),
-        b"YV12" | b"XB24" | b"XR24" | b"YU16" | b"YV16" | b"YU24" | b"YV24" | b"YVYU" | b"VYUY"
+        b"YV12"
+            | b"XB24"
+            | b"XR24"
+            | b"YU16"
+            | b"YV16"
+            | b"YU24"
+            | b"YV24"
+            | b"YVYU"
+            | b"VYUY"
+            // DRM `AB24` / `AR24`: no PiSP output format; `toPiSPImageFormat` asserts on them.
+            | b"RGBA"
+            | b"BGRA"
     )
 }
 

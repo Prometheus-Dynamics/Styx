@@ -16,7 +16,13 @@
 //! into each hop from the one before it, sensor to the last hop, the copies and dma-buf syncs
 //! per frame in its process (and, for the IPC paths, in the serving process), and the heap
 //! allocations per frame of its whole process (every thread: the capture, the ISP and its 3A
-//! algorithms included).
+//! algorithms included; Rust's heap only, not libcamera's C++ one). Allocations are sampled in
+//! one-second windows: the median window is the steady state, the whole run's average includes
+//! one-off work such as answering a statistics request or a client joining or leaving.
+//!
+//! The frame-socket consumer takes each frame once, as it is published
+//! (`FrameFetcher::fetch_next`, the socket's `<path>.next` endpoint); the server's counts of
+//! sends, distinct frames and repeated sends say whether any frame went out twice.
 //!
 //! The camera is the first one the enabled backends probe (`--features frame-socket,native`
 //! for a native camera; `--features frame-socket,libcamera` probes libcamera only, so a
@@ -67,11 +73,52 @@ fn allocations() -> u64 {
     ALLOCATIONS.load(Ordering::Relaxed)
 }
 
-fn allocations_per_frame(title: &str, since: u64, frames: u64) {
-    println!(
-        "{title}: {:.2} heap allocations per frame (whole process, every thread)",
-        allocations().saturating_sub(since) as f64 / frames.max(1) as f64
-    );
+/// Heap allocations per frame, sampled in one-second windows.
+struct AllocRate {
+    start: (u64, u64),
+    last: (u64, u64),
+    at: Instant,
+    windows: Vec<f64>,
+}
+
+impl AllocRate {
+    /// Starts counting now, `frames` frames seen so far.
+    fn start(frames: u64) -> Self {
+        let now = (allocations(), frames);
+        Self {
+            start: now,
+            last: now,
+            at: Instant::now(),
+            windows: Vec::with_capacity(64),
+        }
+    }
+
+    /// `frames` seen so far: closes a window when a second has passed.
+    fn sample(&mut self, frames: u64) {
+        if self.at.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        let now = (allocations(), frames);
+        let n = now.1.saturating_sub(self.last.1);
+        if n > 0 {
+            self.windows
+                .push(now.0.saturating_sub(self.last.0) as f64 / n as f64);
+        }
+        self.last = now;
+        self.at = Instant::now();
+    }
+
+    fn print(&mut self, title: &str, frames: u64) {
+        let whole = allocations().saturating_sub(self.start.0) as f64
+            / frames.saturating_sub(self.start.1).max(1) as f64;
+        self.windows.sort_by(f64::total_cmp);
+        let median = self.windows.get(self.windows.len() / 2).copied();
+        println!(
+            "{title}: {} heap allocations per frame in steady state (median of {} one-second windows), {whole:.2} over the whole run (whole process, every thread)",
+            median.map_or_else(|| "-".into(), |m| format!("{m:.2}")),
+            self.windows.len(),
+        );
+    }
 }
 
 const WIDTH: u32 = 1280;
@@ -162,7 +209,7 @@ fn inproc(seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
         let _ = frames.next_frame(Duration::from_millis(500));
     }
     let before = styx::metrics::path();
-    let allocs = allocations();
+    let mut allocs = AllocRate::start(0);
     let end = Instant::now() + Duration::from_secs(seconds);
     let mut n = 0u64;
     let mut x = 0u8;
@@ -171,8 +218,9 @@ fn inproc(seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
             x ^= touch(&frame);
             n += 1;
         }
+        allocs.sample(n);
     }
-    allocations_per_frame("process", allocs, n);
+    allocs.print("process", n);
     let after = styx::metrics::path();
     let m = frames.capture().camera_metrics();
     table(
@@ -190,22 +238,27 @@ fn socket_serve(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Erro
     println!("serving {path} for {seconds} s");
     let start = Instant::now();
     let end = start + Duration::from_secs(seconds);
-    let (mut allocs, mut n) = (None, 0u64);
+    let (mut allocs, mut n) = (None::<AllocRate>, 0u64);
     while Instant::now() < end {
         if let RecvOutcome::Data(frame) = frames.next_frame(Duration::from_millis(500)) {
             socket.publish(&frame)?;
-            if start.elapsed() > Duration::from_secs(3) {
-                allocs.get_or_insert_with(allocations);
-                n += 1;
-            }
+            n += 1;
+        }
+        if start.elapsed() > Duration::from_secs(3) {
+            allocs.get_or_insert_with(|| AllocRate::start(n)).sample(n);
         }
     }
-    allocations_per_frame("server process, after 3 s", allocs.unwrap_or(0), n);
+    if let Some(a) = &mut allocs {
+        a.print("server process, after 3 s", n);
+    }
     let m = socket.metrics();
     table("frame socket server (sensor to send)", &m.hops);
     println!(
-        "leases: {} served, hold ms p50/p99/max {}/{}/{}",
+        "sends: {} ({} distinct frames, {} repeated) of {} published; leases hold ms p50/p99/max {}/{}/{}",
         m.served,
+        m.served_frames,
+        m.repeated,
+        m.published,
         ms(m.hold.p50_ms),
         ms(m.hold.p99_ms),
         ms(m.hold.max_ms)
@@ -215,51 +268,49 @@ fn socket_serve(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Erro
 }
 
 fn socket_fetch(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
+    // Each frame once, as it is published: no polling, no frame sent twice.
     let mut fetcher = FrameFetcher::new(path);
-    let mut last = 0u64;
-    let fetch_new = |fetcher: &mut FrameFetcher, last: &mut u64| -> Option<FrameLease> {
-        let frame = fetcher.fetch(Duration::from_secs(2)).ok()?;
-        if frame.meta().timestamp == *last {
-            return None;
-        }
-        *last = frame.meta().timestamp;
-        Some(frame)
-    };
     let warm = Instant::now() + Duration::from_secs(2);
     while Instant::now() < warm {
-        if fetch_new(&mut fetcher, &mut last).is_none() {
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        drop(fetcher.fetch_next(Duration::from_secs(2))?);
     }
-    let server_before = frame_socket::fetch_metrics(path)?.snapshot.process.path;
+    let server_before = frame_socket::fetch_metrics(path)?;
     let mut fetcher = FrameFetcher::new(path);
     let before = styx::metrics::path();
-    let allocs = allocations();
+    let mut allocs = AllocRate::start(0);
     let end = Instant::now() + Duration::from_secs(seconds);
     let (mut n, mut x) = (0u64, 0u8);
     while Instant::now() < end {
-        match fetch_new(&mut fetcher, &mut last) {
-            Some(frame) => {
-                x ^= touch(&frame);
-                n += 1;
-            }
-            // The same frame again: wait a little for the next.
-            None => std::thread::sleep(Duration::from_millis(2)),
-        }
+        let frame = fetcher.fetch_next(Duration::from_secs(2))?;
+        x ^= touch(&frame);
+        n += 1;
+        drop(frame);
+        allocs.sample(n);
     }
-    allocations_per_frame("consumer process", allocs, n);
+    allocs.print("consumer process", n);
     let after = styx::metrics::path();
     let server = frame_socket::fetch_metrics(path)?;
+    let f = fetcher.stats();
     table(
-        &format!("frame socket consumer ({n} frames read, x={x})"),
+        &format!(
+            "frame socket consumer ({n} frames read, {} repeated, {} polled, x={x})",
+            f.repeated, f.polled
+        ),
         &fetcher.hop_metrics(),
     );
     per_frame("consumer process", &before, &after, n);
     per_frame(
         "server process",
-        &server_before,
+        &server_before.snapshot.process.path,
         &server.snapshot.process.path,
         n,
+    );
+    println!(
+        "server, meanwhile: {} sends, {} distinct frames, {} repeated sends, {} published",
+        server.served - server_before.served,
+        server.served_frames - server_before.served_frames,
+        server.repeated - server_before.repeated,
+        server.published - server_before.published,
     );
     println!(
         "leases: hold ms p50/p99/max {}/{}/{}",
@@ -275,13 +326,13 @@ fn service_serve(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Err
     println!("camera service on {path} for {seconds} s");
     // Clients connect and warm up meanwhile; allocations are counted from then on.
     std::thread::sleep(Duration::from_secs(5.min(seconds)));
-    let (allocs, sent) = (allocations(), service.stats().sent);
-    std::thread::sleep(Duration::from_secs(seconds.saturating_sub(5)));
-    allocations_per_frame(
-        "service process, after 5 s",
-        allocs,
-        service.stats().sent.saturating_sub(sent),
-    );
+    let mut allocs = AllocRate::start(service.stats().sent);
+    let end = Instant::now() + Duration::from_secs(seconds.saturating_sub(5));
+    while Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(100));
+        allocs.sample(service.stats().sent);
+    }
+    allocs.print("service process, after 5 s", service.stats().sent);
     let m = service.metrics();
     for c in &m.client_metrics {
         if let Some(h) = &c.hops {
@@ -300,7 +351,7 @@ fn service_client(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Er
     }
     let server_before = FrameClient::service_metrics(path)?.snapshot.process.path;
     let before = styx::metrics::path();
-    let allocs = allocations();
+    let mut allocs = AllocRate::start(0);
     let end = Instant::now() + Duration::from_secs(seconds);
     let (mut n, mut x) = (0u64, 0u8);
     while Instant::now() < end {
@@ -308,8 +359,9 @@ fn service_client(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Er
             x ^= touch(&frame);
             n += 1;
         }
+        allocs.sample(n);
     }
-    allocations_per_frame("client process", allocs, n);
+    allocs.print("client process", n);
     let after = styx::metrics::path();
     let service = FrameClient::service_metrics(path)?;
     table(

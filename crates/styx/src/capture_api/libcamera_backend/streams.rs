@@ -1,9 +1,11 @@
 //! Stream configuration for the primary output and the ISP's optional second output.
 
 use libcamera::framebuffer::AsFrameBuffer;
+use libcamera::pixel_format::PixelFormat;
 use styx_core::prelude::{CompanionKind, FourCc, FrameLease};
 
 use super::heap::CaptureBuffer;
+use super::util::map_pixel_format_to_fourcc;
 use crate::capture_api::CaptureError;
 
 pub(super) fn framebuffer_refs(buffers: &[CaptureBuffer]) -> Vec<&dyn AsFrameBuffer> {
@@ -70,7 +72,67 @@ pub(super) fn choose_second_stream(
     second
 }
 
+/// Roles a stream may be generated with, in the order the probe lists their formats.
+const ROLES: [libcamera::stream::StreamRole; 4] = [
+    libcamera::stream::StreamRole::ViewFinder,
+    libcamera::stream::StreamRole::VideoRecording,
+    libcamera::stream::StreamRole::StillCapture,
+    libcamera::stream::StreamRole::Raw,
+];
+
+/// The pixel format, among those libcamera offers for a stream (its `StreamFormats`), that is
+/// `code` (a DRM fourcc, or a Styx raw code): matched by memory layout, so a raw request picks
+/// the offered format with its packing modifier. `None`: libcamera does not offer it there,
+/// and must not be asked for it (validating an unoffered format can abort the process: PiSP
+/// asserts on formats it has no V4L2 mapping for, e.g. `AB24`).
+pub(super) fn pick_offered(
+    code: FourCc,
+    offered: impl IntoIterator<Item = PixelFormat>,
+) -> Option<PixelFormat> {
+    let wanted = map_pixel_format_to_fourcc(PixelFormat::new(code.to_u32(), 0));
+    offered
+        .into_iter()
+        .find(|pf| map_pixel_format_to_fourcc(*pf) == wanted)
+}
+
+fn offered_formats(cfg: &libcamera::stream::StreamConfigurationRef<'_>) -> Vec<PixelFormat> {
+    cfg.formats().pixel_formats().into_iter().collect()
+}
+
+/// What libcamera offers on any role, as Styx codes (for an error message), or `None` when
+/// it offers nothing at all.
+pub(super) fn offered(
+    cam: &libcamera::camera::ActiveCamera<'_>,
+    first: libcamera::stream::StreamRole,
+) -> Option<String> {
+    let mut codes: Vec<FourCc> = Vec::new();
+    for role in std::iter::once(first).chain(ROLES) {
+        let Some(cfgs) = cam.generate_configuration(&[role]) else {
+            continue;
+        };
+        if let Some(cfg) = cfgs.get(0) {
+            for pf in offered_formats(&cfg) {
+                let code = map_pixel_format_to_fourcc(pf);
+                if !codes.contains(&code) {
+                    codes.push(code);
+                }
+            }
+        }
+    }
+    (!codes.is_empty()).then(|| {
+        codes
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
 /// Generate and validate a stream configuration for `code` at `size`, plus the second output.
+///
+/// Every stream is set only to a pixel format libcamera offers for it: the primary on `role`,
+/// else on the first other role that offers `code`; a stream that is not offered `code` makes
+/// the configuration `Invalid` without asking libcamera to validate it.
 pub(super) fn configure_streams(
     cam: &libcamera::camera::ActiveCamera<'_>,
     role: libcamera::stream::StreamRole,
@@ -85,6 +147,7 @@ pub(super) fn configure_streams(
     ),
     CaptureError,
 > {
+    use libcamera::camera::CameraConfigurationStatus;
     use libcamera::stream::StreamRole;
 
     let (second_role, second_size) = match second {
@@ -102,26 +165,60 @@ pub(super) fn configure_streams(
             libcamera::geometry::Size::new((width & !1).max(2), (height & !1).max(2)),
         ),
     };
-    let mut roles = vec![role];
-    roles.extend(second_role);
-    let mut cfgs = cam
-        .generate_configuration(&roles)
-        .ok_or(CaptureError::LibcameraGenerateConfigurationFailed)?;
+    // The primary's role: the requested one if it offers `code`, else another that does.
+    let mut generated = None;
+    let other = |r: &StreamRole| std::mem::discriminant(r) != std::mem::discriminant(&role);
+    for primary in std::iter::once(role).chain(ROLES.into_iter().filter(other)) {
+        let mut roles = vec![primary];
+        roles.extend(second_role);
+        let cfgs = cam
+            .generate_configuration(&roles)
+            .ok_or(CaptureError::LibcameraGenerateConfigurationFailed)?;
+        let offered = cfgs
+            .get(0)
+            .and_then(|cfg| pick_offered(code, offered_formats(&cfg)));
+        let first = generated.is_none();
+        if offered.is_some() || first {
+            generated = Some((cfgs, roles.len(), offered));
+        }
+        if offered.is_some() {
+            break;
+        }
+    }
+    let (mut cfgs, streams, primary_format) =
+        generated.ok_or(CaptureError::LibcameraGenerateConfigurationFailed)?;
     if second_role.is_some() && cfgs.get(1).is_none() {
         return Err(match second {
             SecondStream::Tdn => CaptureError::LibcameraTdnOutputUnavailable,
             _ => CaptureError::Backend("camera has no second processed output".into()),
         });
     }
-    for (index, stream_size) in [size, second_size]
-        .into_iter()
-        .take(roles.len())
-        .enumerate()
-    {
+    let Some(primary_format) = primary_format else {
+        crate::trace::debug!(
+            backend = "libcamera",
+            requested = %code,
+            "libcamera does not offer this format on any role; not validating it"
+        );
+        return Ok((cfgs, CameraConfigurationStatus::Invalid));
+    };
+    for (index, stream_size) in [size, second_size].into_iter().take(streams).enumerate() {
         let mut cfg = cfgs
             .get_mut(index)
             .ok_or_else(|| CaptureError::Backend("missing stream config".into()))?;
-        cfg.set_pixel_format(libcamera::pixel_format::PixelFormat::new(code.to_u32(), 0));
+        let format = if index == 0 {
+            Some(primary_format)
+        } else {
+            pick_offered(code, offered_formats(&cfg))
+        };
+        let Some(format) = format else {
+            crate::trace::debug!(
+                backend = "libcamera",
+                requested = %code,
+                "libcamera's second output does not offer this format"
+            );
+            return Ok((cfgs, CameraConfigurationStatus::Invalid));
+        };
+        cfg.set_pixel_format(format);
         cfg.set_size(stream_size);
         cfg.set_buffer_count(buffer_count);
     }

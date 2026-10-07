@@ -63,6 +63,12 @@
 //!   fetch after nothing new was published returns the same frame. The message carries no
 //!   sequence number; the descriptor's `timestamp` (the frame's capture timestamp) tells frames
 //!   apart: equal means the same frame, later means newer.
+//! - **Each frame once:** a consumer that wants every frame, once, as it is published, asks the
+//!   sibling endpoint `<path>.next` ([`next_path`], [`FrameFetcher::fetch_next`]) with the
+//!   timestamp of the frame it has: the server answers when there is another one, so the
+//!   consumer neither polls nor gets a frame twice. Same message, same lease (see the
+//!   [`next`] module). Polling the frame socket itself sends the same frame again until the
+//!   next is published ([`FrameSocketStats::repeated`] counts those sends).
 //!
 //! # Hops and statistics
 //!
@@ -82,6 +88,7 @@
 //! is always a frame lease.
 
 mod fetch;
+pub mod next;
 mod stats;
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
@@ -96,7 +103,8 @@ use styx_core::lease_codec::{self, EncodedFrame};
 use styx_core::metrics::{HopCounters, Ring};
 use styx_core::prelude::*;
 
-pub use self::fetch::{FrameFetcher, fetch_frame, fuzz_import};
+pub use self::fetch::{FetchStats, FrameFetcher, fetch_frame, fuzz_import};
+pub use self::next::next_path;
 pub use self::stats::{FrameSocketMetrics, fetch_metrics, fetch_metrics_text, stats_path};
 use super::{IpcError, socket};
 
@@ -140,8 +148,13 @@ pub struct FrameSocketStats {
     pub published: u64,
     /// Published frames copied into a memfd (not in shareable memory).
     pub copied: u64,
-    /// Frames sent to consumers.
+    /// Frames sent to consumers (every send, a frame sent twice counted twice).
     pub served: u64,
+    /// Distinct published frames sent at least once.
+    pub served_frames: u64,
+    /// Sends on the frame socket itself of a frame it had sent before: a consumer (or another
+    /// one) fetching again before the next frame was published.
+    pub repeated: u64,
     /// Leases open now (consumers holding a frame, or lingering).
     pub leases: usize,
     /// Frames held now for consumers besides the latest one.
@@ -158,6 +171,10 @@ pub struct FrameSocketStats {
 struct Served {
     /// Publication order.
     number: u64,
+    /// Its descriptor's timestamp: what tells it apart for `<path>.next` consumers.
+    timestamp: u64,
+    /// Times it was sent.
+    sends: std::sync::atomic::AtomicU64,
     encoded: EncodedFrame,
     /// The camera buffer behind the descriptors, kept while anyone may read them.
     keep: Option<Arc<dyn ExternalBacking>>,
@@ -183,6 +200,8 @@ struct State {
     latest: Option<Arc<Served>>,
     leases: Vec<Lease>,
     waiting: Vec<(OwnedFd, Instant)>,
+    /// Consumers on `<path>.next` waiting for a frame they have not seen.
+    next_waiting: Vec<next::Waiter>,
     /// Frames no longer the latest: released once no lease holds them, then refilled.
     retired: Vec<Arc<Served>>,
     /// Connections to the stats endpoint waiting for their request.
@@ -211,6 +230,8 @@ impl State {
             Some(i) => self.retired.swap_remove(i),
             None => Arc::new(Served {
                 number: 0,
+                timestamp: 0,
+                sends: std::sync::atomic::AtomicU64::new(0),
                 encoded: EncodedFrame::default(),
                 keep: None,
             }),
@@ -228,6 +249,7 @@ impl State {
 struct Shared {
     listener: OwnedFd,
     stats_listener: Option<OwnedFd>,
+    next_listener: Option<OwnedFd>,
     options: FrameSocketOptions,
     state: Mutex<State>,
     wake: UnixStream,
@@ -267,17 +289,26 @@ impl FrameSocket {
                 None
             }
         };
+        let next_listener = match socket::listen_stream(&next_path(&path)) {
+            Ok(l) => Some(l),
+            Err(err) => {
+                crate::trace::warn!(error = %err, "frame socket next-frame endpoint not served");
+                None
+            }
+        };
         let (wake, wake_rx) = UnixStream::pair()?;
         wake.set_nonblocking(true)?;
         wake_rx.set_nonblocking(true)?;
         let shared = Arc::new(Shared {
             listener,
             stats_listener,
+            next_listener,
             options,
             state: Mutex::new(State {
                 latest: None,
                 leases: Vec::new(),
                 waiting: Vec::new(),
+                next_waiting: Vec::new(),
                 retired: Vec::new(),
                 stats_waiting: Vec::new(),
                 stats: FrameSocketStats::default(),
@@ -318,6 +349,8 @@ impl FrameSocket {
             return Err(err.into());
         }
         s.keep = frame.external_backing_handle().filter(|b| b.can_export());
+        s.timestamp = s.encoded.descriptor.timestamp;
+        *s.sends.get_mut() = 0;
         let copied = s.encoded.copied;
         {
             let mut state = self.shared.state.lock();
@@ -375,6 +408,9 @@ impl Drop for FrameSocket {
         let _ = std::fs::remove_file(&self.path);
         if self.shared.stats_listener.is_some() {
             let _ = std::fs::remove_file(stats_path(&self.path));
+        }
+        if self.shared.next_listener.is_some() {
+            let _ = std::fs::remove_file(next_path(&self.path));
         }
     }
 }
@@ -441,12 +477,16 @@ fn limit_held(state: &mut State, max: usize, hold: &Ring) {
 }
 
 /// Send `frame` on a new connection, its hops with the send time (written into `out`, reused);
-/// `None` if the consumer could not take it.
+/// `None` if the consumer could not take it. The hops are recorded when the frame is new to
+/// the consumer: always on `<path>.next` (`next`), else on the frame's first send (a frame
+/// sent again is counted in `repeated`, its growing age not taken for a hop time).
 fn send(
     socket: OwnedFd,
     frame: &Arc<Served>,
     out: &mut Vec<u8>,
     hops: &HopCounters,
+    next: bool,
+    stats: &mut FrameSocketStats,
 ) -> Option<Lease> {
     let mut record = frame.encoded.hops;
     if let Some(r) = &mut record {
@@ -464,7 +504,16 @@ fn send(
     }
     match socket::send(&socket, out, &raw[..fds.len()]) {
         Ok(true) => {
-            if let Some(r) = &record {
+            let first = frame
+                .sends
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                == 0;
+            stats.served += 1;
+            stats.served_frames += u64::from(first);
+            stats.repeated += u64::from(!first && !next);
+            if let Some(r) = &record
+                && (first || next)
+            {
                 hops.record(&r.hops());
             }
             Some(Lease {
@@ -482,7 +531,8 @@ fn send(
 const POLL_WAKE: usize = 0;
 const POLL_LISTENER: usize = 1;
 const POLL_STATS: usize = 2;
-const POLL_FIRST: usize = 3;
+const POLL_NEXT: usize = 3;
+const POLL_FIRST: usize = 4;
 
 /// The service thread: accepts consumers, sends them the latest frame, ends their leases,
 /// answers statistics requests. Its lists are kept across iterations: nothing is allocated
@@ -509,7 +559,14 @@ fn serve(shared: &Shared, wake: &UnixStream) {
                     .as_ref()
                     .map_or(-1, AsRawFd::as_raw_fd),
             ));
+            polls.push(socket::pollfd(
+                shared.next_listener.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+            ));
             let mut next = now + Duration::from_secs(1);
+            for w in &state.next_waiting {
+                polls.push(socket::pollfd(w.socket.as_raw_fd()));
+                next = next.min(w.since + next::NEXT_WAIT);
+            }
             for lease in &state.leases {
                 match (&lease.socket, lease.closed) {
                     (Some(s), _) => {
@@ -560,6 +617,13 @@ fn serve(shared: &Shared, wake: &UnixStream) {
                 }
             }
             let now = Instant::now();
+            if polls[POLL_NEXT].revents != 0
+                && let Some(listener) = &shared.next_listener
+            {
+                while let Ok(Some(socket)) = socket::accept(listener) {
+                    state.next_waiting.push(next::Waiter::new(socket, now));
+                }
+            }
             // Serve the waiting consumers, or give up on them.
             let latest = state.latest.clone();
             let mut i = 0;
@@ -567,11 +631,15 @@ fn serve(shared: &Shared, wake: &UnixStream) {
                 match &latest {
                     Some(frame) => {
                         let (socket, _) = state.waiting.swap_remove(i);
-                        match send(socket, frame, &mut out, &shared.hops) {
-                            Some(lease) => {
-                                state.stats.served += 1;
-                                state.leases.push(lease);
-                            }
+                        match send(
+                            socket,
+                            frame,
+                            &mut out,
+                            &shared.hops,
+                            false,
+                            &mut state.stats,
+                        ) {
+                            Some(lease) => state.leases.push(lease),
                             None => state.stats.unserved += 1,
                         }
                     }
@@ -580,6 +648,33 @@ fn serve(shared: &Shared, wake: &UnixStream) {
                         state.stats.unserved += 1;
                     }
                     None => i += 1,
+                }
+            }
+            // `<path>.next` consumers: read their line, send them a frame they have not seen.
+            let mut i = 0;
+            while i < state.next_waiting.len() {
+                let w = &mut state.next_waiting[i];
+                let alive = !ready(w.socket.as_raw_fd()) || w.read();
+                let frame = latest.as_ref().filter(|f| w.wants(f.timestamp));
+                if alive && let Some(frame) = frame {
+                    let w = state.next_waiting.swap_remove(i);
+                    let socket = OwnedFd::from(w.socket);
+                    match send(
+                        socket,
+                        frame,
+                        &mut out,
+                        &shared.hops,
+                        true,
+                        &mut state.stats,
+                    ) {
+                        Some(lease) => state.leases.push(lease),
+                        None => state.stats.unserved += 1,
+                    }
+                } else if !alive || now.duration_since(w.since) >= next::NEXT_WAIT {
+                    state.next_waiting.swap_remove(i);
+                    state.stats.unserved += 1;
+                } else {
+                    i += 1;
                 }
             }
             drop(latest);

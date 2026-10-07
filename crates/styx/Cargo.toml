@@ -31,6 +31,7 @@ smallvec = { workspace = true, optional = true }
 styx-kernel = { workspace = true, optional = true }
 thiserror = { workspace = true, features = ["std"], optional = true }
 libcamera = { workspace = true, optional = true }
+libcamera-sys = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"], optional = true }
 image = { workspace = true, optional = true }
 jpeg-decoder = { workspace = true, optional = true }
@@ -113,7 +114,7 @@ facade = [
 tracing = ["dep:tracing", "styx-v4l2?/tracing", "styx-uvc?/tracing"]
 hooks = ["facade"]
 image = ["facade", "dep:image", "styx-codec/dynamic-image"]
-libcamera = ["facade", "styx-libcamera", "dep:libcamera", "raw-decoders"]
+libcamera = ["facade", "styx-libcamera", "dep:libcamera", "dep:libcamera-sys", "raw-decoders"]
 libcamera-vendor-rpi = ["libcamera", "styx-libcamera/vendor_rpi", "dep:libcamera"]
 v4l2 = ["facade", "styx-v4l2", "styx-kernel"]
 # Sensors driven by Styx through the Styx sensor bridge (the native stack).
