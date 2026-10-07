@@ -1,0 +1,40 @@
+[package]
+name = "styx-record-cli"
+version.workspace = true
+edition.workspace = true
+description = "styx-record: grey (Y plane) test recordings from a Styx camera service or a camera opened directly."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "styx_record"
+path = "src/lib.rs"
+
+[[bin]]
+name = "styx-record"
+path = "src/main.rs"
+
+[features]
+default = []
+# Direct mode (`--source direct`) through libcamera, for devices where no Styx camera service
+# runs and libcamera owns the camera (the PhotonVision image). Links libcamera.
+libcamera = ["styx/libcamera"]
+# Direct mode through Styx's native stack (sensors Styx drives itself).
+native = ["styx/native"]
+# Direct mode for V4L2 (USB) cameras.
+v4l2 = ["styx/v4l2"]
+
+[dependencies]
+# The facade without codecs: the camera service client (`styx::ipc`) and the planner.
+styx = { workspace = true, default-features = false, features = ["facade"] }
+libc.workspace = true
+
+[dev-dependencies]
+# Replayed cameras with exact frames and sequence numbers for the tests.
+styx = { workspace = true, default-features = false, features = ["facade", "replay-styxrec"] }
+
+[lints]
+workspace = true

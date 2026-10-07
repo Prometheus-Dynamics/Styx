@@ -122,6 +122,11 @@ fn export_part(
         }
     };
     wire.meta.clone_from(frame.meta());
+    // The sequence travels in the hops trailer; captures that do not stamp their hops
+    // (libcamera, replays) still have it in their backend metadata.
+    if wire.meta.hops.sequence().is_none() {
+        wire.meta.hops.set_sequence(frame.meta().sequence());
+    }
     if copied_here {
         wire.meta.hops.copied(layouts.iter().map(|l| l.len).sum());
     }
