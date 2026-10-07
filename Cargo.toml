@@ -25,6 +25,7 @@ members = [
     "tools/native-pipeline",
     "tools/compare",
     "tools/styx-tune",
+    "tools/styx-record",
     "examples",
     "examples/nostd-smoke",
     "examples/nostd-camera",

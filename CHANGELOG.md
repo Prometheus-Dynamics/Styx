@@ -8,6 +8,20 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx-record` (`tools/styx-record`, docs/recording.md): grey test recordings for Eidos. The
+  Y plane at the camera's native size in Eidos's raw grey video layout
+  (`<name>_<W>x<H>_gray.raw`: frames back to back, no header), a per-frame sidecar
+  (`<name>.frames.csv`: sequence, sensor timestamp, clock, frames dropped before each, from
+  sequence numbers or else timestamps) and the camera settings (`<name>.json`: exposure,
+  analogue gain, frame rate and duration, size, format, camera, AE/AWB, every control and its
+  changes while recording, Styx commit, start and end time, SHA-256 of the raw file). From a
+  Styx camera service as a normal `FrameClient` (no capture restart for the other clients;
+  `--mode every` reporting drops, or `--mode latest`), or `--source direct` through
+  libcamera (feature `libcamera`) or the native stack where no service runs, with a clear
+  error when another process holds the camera. Stills for calibration (`--stills N --on-key`
+  or `--every-secs K`) in Eidos's live-capture layout (`.gray.raw`, `.pgm`, `.txt`). Ctrl-C
+  finalises the files; the disk writer has its own thread and a bounded queue and reports when
+  the disk does not keep up. No codecs; without features it links only glibc and libgcc_s.
 - Connection changes, in order with what a client receives (docs/frame-server.md "Connection
   changes"): `FrameClient::try_client_event()` and `ControlClient::try_client_event()` return
   `RecvOutcome<ClientEvent<T>>` (`T`: `FrameLease`, `ControlEvent`), with
@@ -581,6 +595,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Camera service frames from libcamera and replayed captures carry their sequence number
+  (`FrameMeta::sequence()` on the client): only captures that stamp their hops when they
+  deliver a frame (virtual, V4L2, native, UVC) sent it; the service now fills the hops trailer
+  from the frame's backend metadata. No protocol change.
 - A control request right after the camera service restarted failed with a broken pipe on the
   kept control connection; it is now sent again on a fresh connection, like a reset one.
 - `XR24` and `XB24` byte order now follows V4L2 and DRM everywhere: `XR24` (V4L2 `XBGR32`, DRM
