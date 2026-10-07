@@ -32,8 +32,9 @@ uses is the same in both, and the platform driver's `remove()` already returns `
 | Raspberry Pi `rpi-7.2.y` | Raze 1.1.0 | `7.2.9-v8-16k` (`53679a5`) | `STYX_KERNEL=7.2`: an O= build at `../linux-rpi-7.2/build`, or the image's `linux-custom` via `KERNEL_TREE` |
 
 Both are `bcm2712_defconfig` with 4K pages despite the `-v8-16k` release name: Buildroot sets
-`CONFIG_ARM64_4K_PAGES` (its default `BR2_ARM64_PAGE_SIZE_4K`) over the defconfig's 16K, and
-the Raze package adds `VIDEO_OV9282=m`. The Raze kernel is defined by the Raze device package in
+`CONFIG_ARM64_4K_PAGES` (its default `BR2_ARM64_PAGE_SIZE_4K`) over the defconfig's 16K
+(`-v8-16k` is only the defconfig's `LOCALVERSION`; confirmed on the 7.2.9 PhotonVision image:
+`KernelPageSize: 4 kB` in `/proc/self/smaps`), and the Raze package adds `VIDEO_OV9282=m`. The Raze kernel is defined by the Raze device package in
 Atlas-Hardware-Manager `dev` (`devices/raze/gaia`, `RAZE_PKG` in `kernel-env.sh`); the older
 `Atlas-raze` checkout is stale. A 7.2 tree that matches the Raze 1.1.0 kernel's config
 and compiler (the HeliOS Buildroot GCC 14.3):
