@@ -30,6 +30,8 @@ mod retry;
 #[cfg(any(feature = "libcamera", feature = "v4l2"))]
 #[path = "metrics/sequence_gaps.rs"]
 mod sequence_gaps;
+#[path = "metrics/sync.rs"]
+mod sync;
 
 #[cfg(feature = "native")]
 pub(crate) use af::{AfModeKind, AfSample, AfStateKind};
@@ -56,6 +58,10 @@ pub(crate) use registry::{register, service_client};
 pub use retry::{CaptureRetryMetrics, CaptureRetryStats};
 #[cfg(any(feature = "libcamera", feature = "v4l2"))]
 pub(crate) use sequence_gaps::SequenceGapTracker;
+pub use sync::{
+    CameraSyncReport, DropReason as SyncDropReason, SyncGroupMetrics, SyncReport, sync_groups,
+};
+pub(crate) use sync::{SyncSource, register as register_sync};
 
 const DEFAULT_WINDOW: usize = 120;
 const DEFAULT_TRANSITION_WINDOW: usize = 16;

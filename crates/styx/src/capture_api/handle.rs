@@ -150,7 +150,7 @@ impl Iterator for CaptureFrameIter<'_> {
 impl CaptureHandle {
     /// For a supervised capture, a guard marking a receive in progress (and starting a capture
     /// stopped while idle).
-    fn demand(&self) -> Option<super::supervisor::DemandGuard> {
+    pub(super) fn demand(&self) -> Option<super::supervisor::DemandGuard> {
         match &self.control {
             ControlPlane::Supervised(shared) => Some(shared.demand()),
             _ => None,

@@ -88,7 +88,7 @@ framelease = []
 # `ipc::FrameSocket`: the latest frame, leased, in the frame-lease transport HeliOS uses.
 frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde", "styx-core/lease-codec", "metrics-serde"]
 # Serde for metrics snapshots (`styx::metrics`), and the camera service's metrics request.
-metrics-serde = ["facade", "dep:serde", "dep:serde_json"]
+metrics-serde = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde"]
 # `styx::metrics::serve_http`: a tiny HTTP endpoint serving the metrics as Prometheus text.
 metrics-http = ["facade"]
 # Styx frames in Daedalus graphs: `styx::core::daedalus` (owned by styx-core-rs; docs/daedalus.md).

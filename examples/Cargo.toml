@@ -192,6 +192,11 @@ path = "02_graph/daedalus_frames.rs"
 required-features = ["daedalus"]
 
 [[bin]]
+name = "daedalus_multicam"
+path = "02_graph/daedalus_multicam.rs"
+required-features = ["daedalus"]
+
+[[bin]]
 name = "latest_frame_fanout"
 path = "02_graph/latest_frame_fanout.rs"
 

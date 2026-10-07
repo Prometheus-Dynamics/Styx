@@ -92,3 +92,19 @@ fn daedalus_frames_runs_camera_frames_through_a_graph() {
     assert!(stdout.contains("\"residency\""), "{stdout}");
     assert!(stdout.contains("frames=8"), "{stdout}");
 }
+
+#[cfg(feature = "daedalus")]
+#[test]
+fn daedalus_multicam_ticks_once_per_frame_group() {
+    let stdout = assert_success(
+        Command::new(env!("CARGO_BIN_EXE_daedalus_multicam"))
+            .output()
+            .expect("daedalus_multicam should run"),
+        "daedalus_multicam",
+    );
+
+    // Every tick saw both cameras' frames and the group's info.
+    assert!(stdout.contains("spread "), "{stdout}");
+    assert_eq!(stdout.matches("320x240 + 320x240").count(), 10, "{stdout}");
+    assert!(stdout.contains("groups="), "{stdout}");
+}

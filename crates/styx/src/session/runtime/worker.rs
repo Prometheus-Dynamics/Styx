@@ -1,3 +1,4 @@
+use std::task::{Context, Poll};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,6 +37,23 @@ impl MediaPipeline {
             }
             RecvOutcome::Empty => Ok(RecvOutcome::Empty),
             RecvOutcome::Closed => Ok(RecvOutcome::Closed),
+        }
+    }
+
+    /// A processed frame, `Closed` (the capture closed, or a stage failed), or `Pending` with
+    /// `cx`'s waker registered for the capture's next frame. Processing runs on the caller, as
+    /// in [`Self::try_next`].
+    pub fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<RecvOutcome<FrameLease>> {
+        let capture_start = Instant::now();
+        match self.capture.poll_recv(cx) {
+            Poll::Ready(RecvOutcome::Data(frame)) => {
+                self.metrics.capture.record(capture_start.elapsed());
+                Poll::Ready(match self.process_frame_result(frame) {
+                    Ok(frame) => RecvOutcome::Data(frame),
+                    Err(_) => RecvOutcome::Closed,
+                })
+            }
+            other => other,
         }
     }
 

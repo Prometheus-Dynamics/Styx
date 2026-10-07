@@ -38,6 +38,7 @@ print!("{}", all.prometheus_text());      // Prometheus text exposition (version
 | `CameraMetrics::path`, `ConsumerMetrics::hops`, `FrameFetcher::hop_metrics()`, `FrameClient::hop_metrics()` | hop times and copies of the frames a capture's consumers took, a service client got, a consumer process imported ([Hops](#hops-where-each-frames-time-goes)) |
 | `styx::metrics::path()`, `ProcessMetrics::path` | the process's copies by site, dma-buf syncs and exhausted pools |
 | `FrameMeta::hops`, `FrameMeta::hop_record()` | one frame's hops, and its record for joining with other tools' |
+| `MetricsSnapshot::sync_groups`, `styx::metrics::sync_groups()`, `FrameGrouper::report()` / `metrics()` | multi-camera sync quality of every named frame grouper ([Multi-camera sync](#multi-camera-sync)) |
 
 `CaptureHandle::metrics()` (the receive-wait `StageMetrics`) and `health_report()` are unchanged.
 
@@ -224,11 +225,32 @@ CM5) and camera service clients mapped every memfd frame; the frame socket, the 
 clients built their messages, descriptor lists and frame records anew for every frame; the
 PiSP's buffer returns went through a channel that allocates in blocks.
 
+## Multi-camera sync
+
+Every named `styx::multicam::FrameGrouper` (docs/multi-camera-sync.md) is listed in
+`MetricsSnapshot::sync_groups` (`SyncGroupMetrics`: name, policy, tolerance, camera names and a
+`SyncReport`) while it lives:
+
+| field | meaning |
+|---|---|
+| `groups_complete`, `groups_partial`, `groups_stale` | groups with every camera, missing one, replaced before they were taken |
+| `frames_received`, `frames_grouped`, `match_rate` | frames from the cameras, frames in groups, their ratio |
+| `spread_last_ns`, `spread_p50_ns`, `spread_p99_ns`, `spread_max_ns`, `spread_max_ever_ns` | latest minus earliest timestamp in a group: the last, percentiles and max over the last 256 groups, max since the start |
+| `drops[reason]` | frames dropped by `DropReason`: unmatched, superseded, incomplete, overflow, late, stale, clock, disconnected |
+| `cameras[..]` | per camera: `received`, `grouped`, `drops`, `period_ns`, `offset_ns` (to the reference camera, last group), `offset_mean_ns`, `drift_ppm` (slope of the offset, weighted least squares over `drift_window` groups), `connected` |
+
 ## Prometheus names
 
 Process: `styx_process_cameras_open`, `styx_process_service_clients`,
 `styx_process_cpu_seconds_total`, `styx_process_rss_bytes`, `styx_process_threads`,
 `styx_process_dmabufs`, `styx_process_dmabuf_bytes`.
+
+Multi-camera sync (label `group`, and `camera` per camera): `styx_sync_groups_total{kind}`
+(complete, partial, stale), `styx_sync_match_ratio`, `styx_sync_spread_ms{quantile}` (0.5, 0.99,
+1 = window max), `styx_sync_frames_total{camera,stage}` (received, grouped),
+`styx_sync_drops_total{camera,reason}`, `styx_sync_camera_connected{camera}`,
+`styx_sync_frame_period_ms{camera}`, `styx_sync_offset_ms{camera}`,
+`styx_sync_offset_mean_ms{camera}`, `styx_sync_drift_ppm{camera}`.
 
 Per camera (labels `camera`, `id`, `backend`): `styx_camera_frames_total{stage}` (captured,
 delivered, received), `styx_camera_fps{kind}` (configured, measured, average),
