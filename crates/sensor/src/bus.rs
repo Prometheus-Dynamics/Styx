@@ -1,11 +1,12 @@
-//! The register access a sensor driver runs over, and mock implementations for tests.
+//! The bus a sensor driver runs over, and mock implementations for tests.
 //!
-//! [`RegisterBus`] / [`AsyncRegisterBus`] are what a sensor driver runs over: the sensor's
-//! registers, or a kernel driver's V4L2 controls. Over a plain bus they are Lemnos's register
-//! maps ([`I2cRegisters`](crate::I2cRegisters) / [`SpiRegisters`](crate::SpiRegisters) on any
-//! embedded-hal `I2c` / `SpiDevice`, or any `lemnos_hal::RegisterBus` through
-//! [`Registers`](crate::Registers)), which own the register encoding. Pins and power
-//! sequencing are `styx_hal::SensorPins`. This crate never touches the kernel.
+//! Register access is Lemnos's register map, used as is: [`RegisterBus`] is
+//! `lemnos_hal::RegisterBus` and [`AsyncRegisterBus`] `lemnos_hal::asynch::RegisterBus`
+//! ([`I2cRegisters`](crate::I2cRegisters) / [`SpiRegisters`](crate::SpiRegisters) on any
+//! embedded-hal `I2c` / `SpiDevice`, or a platform's own map). [`DriverBus`] /
+//! [`AsyncDriverBus`] add the one thing a camera needs on top: a kernel driver's V4L2 controls
+//! for a sensor whose registers the kernel owns. Pins and power sequencing are
+//! `styx_hal::SensorPins`. This crate never touches the kernel.
 
 use alloc::borrow::ToOwned;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -15,6 +16,7 @@ use alloc::vec::Vec;
 use core::time::Duration;
 
 use embedded_hal::delay::DelayNs;
+use lemnos_hal::register::{RegisterError, RegisterResult};
 use styx_hal::{Blocking, SensorPins};
 
 use crate::bus_error::{BusError, BusErrorKind};
@@ -22,112 +24,71 @@ use crate::bus_error::{BusError, BusErrorKind};
 use crate::desc::RegWrite;
 use crate::fallback::KernelControl;
 
+/// Lemnos's register map (`lemnos_hal::RegisterBus`): 8- or 16-bit register addresses, values
+/// of 1 to 4 consecutive registers, batched sequences. What [`SensorDriver`] writes registers
+/// through.
+///
+/// [`SensorDriver`]: crate::SensorDriver
+pub use lemnos_hal::register::RegisterBus;
+
+/// Lemnos's async register map (`lemnos_hal::asynch::RegisterBus`); a blocking one is one
+/// through [`Blocking`].
+pub use lemnos_hal::register::asynch::RegisterBus as AsyncRegisterBus;
+
 /// The result of a bus or pin operation.
 pub type BusResult<T> = core::result::Result<T, BusError>;
 
-/// Register access to one sensor, as the driver uses it: Lemnos's register map
-/// (`lemnos_hal::RegisterBus`) plus a kernel driver's V4L2 controls, errors as [`BusError`].
-/// Addresses are 8 or 16 bits as the description says; values wider than one byte are
-/// consecutive registers, most significant byte first.
-pub trait RegisterBus {
-    /// Read `bytes` (1 to 4) bytes starting at `address`.
-    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32>;
+fn no_controls() -> BusError {
+    BusError::new(
+        BusErrorKind::Unsupported,
+        "a register bus has no V4L2 controls",
+    )
+}
 
-    /// Write `bytes` (1 to 4) bytes starting at `address`.
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()>;
-
-    /// Write several registers in order. Implementations may batch them into one transfer.
-    fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-        for w in writes {
-            self.write(w.address, w.bytes, w.value)?;
-        }
-        Ok(())
-    }
-
-    /// Sets V4L2 controls of a sensor a kernel driver owns ([`Backend::Kernel`]), in order and
-    /// in one call (`VIDIOC_S_EXT_CTRLS`). Register buses do not have them
-    /// ([`BusErrorKind::Unsupported`]).
-    ///
-    /// [`Backend::Kernel`]: crate::Backend::Kernel
+/// The bus a [`SensorDriver`](crate::SensorDriver) runs over: Lemnos's register map plus, for
+/// a sensor a kernel driver owns ([`Backend::Kernel`]), that driver's V4L2 controls.
+///
+/// A plain register bus implements it with an empty body (`impl DriverBus for MyBus {}`);
+/// Lemnos's [`I2cRegisters`](crate::I2cRegisters) and [`SpiRegisters`](crate::SpiRegisters)
+/// already do. Register errors become a [`BusError`] in the driver
+/// ([`BusError::from_register`]).
+///
+/// [`Backend::Kernel`]: crate::Backend::Kernel
+pub trait DriverBus: RegisterBus<BusError: 'static> {
+    /// Sets V4L2 controls of a sensor a kernel driver owns, in order and in one call
+    /// (`VIDIOC_S_EXT_CTRLS`). Register buses do not have them
+    /// ([`BusErrorKind::Unsupported`], the default).
     fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         let _ = controls;
-        Err(BusError::new(
-            BusErrorKind::Unsupported,
-            "a register bus has no V4L2 controls",
-        ))
+        Err(no_controls())
     }
 }
 
-impl<B: RegisterBus + ?Sized> RegisterBus for &mut B {
-    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
-        (**self).read(address, bytes)
-    }
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
-        (**self).write(address, bytes, value)
-    }
-    fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-        (**self).write_sequence(writes)
-    }
+impl<B: DriverBus + ?Sized> DriverBus for &mut B {
     fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         (**self).set_controls(controls)
     }
 }
 
-/// [`RegisterBus`] over an async bus (an embedded-hal-async `I2c` through [`I2cRegisters`]).
-/// A blocking bus is one through [`Blocking`] (its futures complete on the first poll).
-///
-/// [`I2cRegisters`]: crate::I2cRegisters
+/// [`DriverBus`] over an async register map (an embedded-hal-async `I2c` through
+/// [`I2cRegisters`](crate::I2cRegisters)). A blocking bus is one through [`Blocking`] (its
+/// futures complete on the first poll).
 #[allow(async_fn_in_trait)]
-pub trait AsyncRegisterBus {
-    /// See [`RegisterBus::read`].
-    async fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32>;
-
-    /// See [`RegisterBus::write`].
-    async fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()>;
-
-    /// See [`RegisterBus::write_sequence`].
-    async fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-        for w in writes {
-            self.write(w.address, w.bytes, w.value).await?;
-        }
-        Ok(())
-    }
-
-    /// See [`RegisterBus::set_controls`].
+pub trait AsyncDriverBus: AsyncRegisterBus<BusError: 'static> {
+    /// See [`DriverBus::set_controls`].
     async fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         let _ = controls;
-        Err(BusError::new(
-            BusErrorKind::Unsupported,
-            "a register bus has no V4L2 controls",
-        ))
+        Err(no_controls())
     }
 }
 
-impl<B: AsyncRegisterBus + ?Sized> AsyncRegisterBus for &mut B {
-    async fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
-        (**self).read(address, bytes).await
-    }
-    async fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
-        (**self).write(address, bytes, value).await
-    }
-    async fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-        (**self).write_sequence(writes).await
-    }
+impl<B: AsyncDriverBus + ?Sized> AsyncDriverBus for &mut B {
     async fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         (**self).set_controls(controls).await
     }
 }
 
-impl<B: RegisterBus> AsyncRegisterBus for Blocking<B> {
-    async fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
-        self.0.read(address, bytes)
-    }
-    async fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
-        self.0.write(address, bytes, value)
-    }
-    async fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-        self.0.write_sequence(writes)
-    }
+impl<B: DriverBus> AsyncDriverBus for Blocking<B> {
     async fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         self.0.set_controls(controls)
     }
@@ -193,7 +154,7 @@ pub struct MockBus {
     pub log: Vec<BusOp>,
     /// Writes to these addresses fail with an I/O error.
     pub fail_writes: BTreeSet<u16>,
-    /// Every [`RegisterBus::set_controls`] call (kernel-driven sensors), in order.
+    /// Every [`DriverBus::set_controls`] call (kernel-driven sensors), in order.
     pub control_log: Vec<Vec<(KernelControl, i64)>>,
 }
 
@@ -261,8 +222,37 @@ impl MockBus {
     }
 }
 
+fn injected() -> RegisterError<BusError> {
+    RegisterError::bus(
+        BusErrorKind::Failed,
+        BusError::other("injected write failure"),
+    )
+}
+
+/// Byte-wise access to the map; [`read`](RegisterBus::read) and
+/// [`write`](RegisterBus::write) record one [`BusOp`] per value (burst transfers are not
+/// recorded).
 impl RegisterBus for MockBus {
-    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
+    type BusError = BusError;
+
+    fn read_burst(&mut self, address: u16, buf: &mut [u8]) -> RegisterResult<(), BusError> {
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = self.value(address.wrapping_add(i as u16), 1) as u8;
+        }
+        Ok(())
+    }
+
+    fn write_burst(&mut self, address: u16, data: &[u8]) -> RegisterResult<(), BusError> {
+        if self.fail_writes.contains(&address) {
+            return Err(injected());
+        }
+        for (i, b) in data.iter().enumerate() {
+            self.store(address.wrapping_add(i as u16), 1, u32::from(*b));
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, address: u16, bytes: u8) -> RegisterResult<u32, BusError> {
         let value = self.value(address, bytes);
         self.log.push(BusOp::Read {
             address,
@@ -272,9 +262,9 @@ impl RegisterBus for MockBus {
         Ok(value)
     }
 
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
+    fn write(&mut self, address: u16, bytes: u8, value: u32) -> RegisterResult<(), BusError> {
         if self.fail_writes.contains(&address) {
-            return Err(BusError::other("injected write failure"));
+            return Err(injected());
         }
         self.store(address, bytes, value);
         self.log.push(BusOp::Write(RegWrite {
@@ -284,7 +274,9 @@ impl RegisterBus for MockBus {
         }));
         Ok(())
     }
+}
 
+impl DriverBus for MockBus {
     fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         self.control_log.push(controls.to_vec());
         Ok(())

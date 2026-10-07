@@ -12,6 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+use core::convert::Infallible;
 use core::task::{Context, Poll, Waker};
 use core::time::Duration;
 
@@ -26,7 +27,8 @@ use styx_pipeline::reexpose::{Recorded, exposure_ratio, re_expose};
 use styx_pipeline::{SensorValues, process::sensor_values};
 use styx_runtime::sync::{Lock, Ref, Shared, lock};
 use styx_runtime::{Platform, SensorSide, SensorState};
-use styx_sensor::{BusResult, RegisterBus, SensorDescription, SensorDriver, SensorPins};
+use styx_sensor::lemnos_hal::register::RegisterResult;
+use styx_sensor::{BusResult, DriverBus, RegisterBus, SensorDescription, SensorDriver, SensorPins};
 
 /// The platform clock in nanoseconds (a hardware timer on a microcontroller; the board
 /// advances it as frames come).
@@ -66,19 +68,30 @@ impl Registers {
 }
 
 impl RegisterBus for Registers {
-    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
-        Ok(self.value(address, bytes))
+    type BusError = Infallible;
+
+    fn read_burst(&mut self, address: u16, buf: &mut [u8]) -> RegisterResult<(), Infallible> {
+        let mut at = address;
+        for b in buf {
+            *b = self.values[usize::from(at)];
+            at = at.wrapping_add(1);
+        }
+        Ok(())
     }
 
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
-        for i in 0..bytes {
-            let shift = 8 * u32::from(bytes - 1 - i);
-            self.values[usize::from(address.wrapping_add(u16::from(i)))] = (value >> shift) as u8;
+    /// One register value (the driver writes one per call): counted.
+    fn write_burst(&mut self, address: u16, data: &[u8]) -> RegisterResult<(), Infallible> {
+        let mut at = address;
+        for b in data {
+            self.values[usize::from(at)] = *b;
+            at = at.wrapping_add(1);
         }
         self.writes += 1;
         Ok(())
     }
 }
+
+impl DriverBus for Registers {}
 
 /// Pins with no roles (the description's optional power steps are skipped), no waiting.
 pub struct Pins;

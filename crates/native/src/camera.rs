@@ -31,7 +31,7 @@ use crate::embedded::{EmbeddedCapture, embedded_link};
 use crate::error::{KernelContext, NativeError, Result};
 use crate::formats;
 use crate::modes::{SensorMode, interval_duration};
-use crate::regbus::{BridgePins, I2cRegisterBus};
+use crate::sensor_bus::BridgePins;
 use crate::sensor_bus::{CameraPins, SensorBus};
 use crate::session::{BufferSource, Session, SessionOptions, StreamFormat};
 use crate::stream::{FrameStream, SensorSide};
@@ -317,7 +317,7 @@ impl NativeCamera {
         } else {
             1
         };
-        let regbus = I2cRegisterBus::new(i2c, address, width).with_bursts(burst);
+        let regbus = styx_sensor::I2cRegisters::new(i2c, address, width).with_bursts(burst);
         let supplies: Vec<&str> = [&desc.sequences.power_up, &desc.sequences.power_down]
             .into_iter()
             .flatten()

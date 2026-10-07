@@ -58,7 +58,20 @@ pub mod library;
 pub mod modes;
 pub mod provider;
 mod receiver;
-pub mod regbus;
+/// The old home of the I²C register bus and the bridge's pins.
+#[deprecated(
+    since = "2.0.0",
+    note = "the register bus is Lemnos's (`styx_sensor::I2cRegisters`, i.e. \
+            `lemnos_hal::I2cRegisters<lemnos_linux::hal::I2cBus>`); the bridge's pins moved to \
+            `sensor_bus`"
+)]
+pub mod regbus {
+    pub use crate::sensor_bus::{BridgePins, PowerSwitch};
+    pub use styx_sensor::MAX_BURST;
+
+    /// A sensor's registers over i2c-dev: Lemnos's register map on Lemnos's i2c-dev bus.
+    pub type I2cRegisterBus<T = lemnos_linux::hal::I2cBus> = styx_sensor::I2cRegisters<T>;
+}
 pub mod sensor_bus;
 mod session;
 mod stream;

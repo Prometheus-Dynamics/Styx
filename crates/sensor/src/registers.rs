@@ -1,18 +1,19 @@
 //! Sensor registers over a plain bus: Lemnos's register maps (`lemnos_hal::register`:
 //! [`I2cRegisters`] on any embedded-hal `I2c`, [`SpiRegisters`] on any `SpiDevice`, blocking
-//! or async) run the driver. Lemnos owns the encoding (8/16-bit register addresses, big-endian
-//! values, bursts of consecutive registers, one transfer per write message); this module only
-//! makes them the driver's [`RegisterBus`] / [`AsyncRegisterBus`] (errors as [`BusError`]),
-//! and builds them from a description.
+//! or async) run the driver directly. Lemnos owns the encoding (8/16-bit register addresses,
+//! big-endian values, bursts of consecutive registers, one transfer per write message); this
+//! module only makes them a [`DriverBus`] / [`AsyncDriverBus`] (no V4L2 controls) and builds
+//! them from a description.
+
+#![allow(deprecated)]
 
 use embedded_hal::i2c::I2c;
 use embedded_hal::spi::SpiDevice;
-use lemnos_hal::register::asynch::RegisterBus as AsyncRegisterMap;
-use lemnos_hal::register::{RegisterBus as RegisterMap, RegisterError};
+use lemnos_hal::register::RegisterResult;
 
 pub use lemnos_hal::register::{AddressWidth, Endian, I2cRegisters, SpiRegisters};
 
-use crate::bus::{AsyncRegisterBus, BusResult, RegisterBus};
+use crate::bus::{AsyncDriverBus, AsyncRegisterBus, BusResult, DriverBus, RegisterBus};
 use crate::bus_error::{BusError, BusErrorKind};
 use crate::desc::{RegWrite, SensorDescription};
 
@@ -20,88 +21,75 @@ use crate::desc::{RegWrite, SensorDescription};
 /// what Styx has run on the CM5 (Lemnos allows up to `lemnos_hal::register::MAX_BURST`).
 pub const MAX_BURST: usize = 32;
 
-fn bus<E: core::fmt::Debug + 'static>(e: RegisterError<E>) -> BusError {
-    BusError::from_register(e)
-}
+impl<T: I2c<Error: 'static>> DriverBus for I2cRegisters<T> {}
+impl<T: embedded_hal_async::i2c::I2c<Error: 'static>> AsyncDriverBus for I2cRegisters<T> {}
+impl<T: SpiDevice<Error: 'static>> DriverBus for SpiRegisters<T> {}
+impl<T: embedded_hal_async::spi::SpiDevice<Error: 'static>> AsyncDriverBus for SpiRegisters<T> {}
 
-/// Implements the driver's traits over a Lemnos register map type.
-macro_rules! register_map {
-    ($ty:ident, $blocking:path, $asynch:path) => {
-        impl<T: $blocking> RegisterBus for $ty<T>
-        where
-            T::Error: 'static,
-        {
-            fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
-                RegisterMap::read(self, address, bytes).map_err(bus)
-            }
-            fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
-                RegisterMap::write(self, address, bytes, value).map_err(bus)
-            }
-            fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-                RegisterMap::write_sequence(self, writes).map_err(bus)
-            }
-        }
-
-        impl<T: $asynch> AsyncRegisterBus for $ty<T>
-        where
-            T::Error: 'static,
-        {
-            async fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
-                AsyncRegisterMap::read(self, address, bytes)
-                    .await
-                    .map_err(bus)
-            }
-            async fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
-                AsyncRegisterMap::write(self, address, bytes, value)
-                    .await
-                    .map_err(bus)
-            }
-            async fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-                AsyncRegisterMap::write_sequence(self, writes)
-                    .await
-                    .map_err(bus)
-            }
-        }
-    };
-}
-
-register_map!(I2cRegisters, I2c, embedded_hal_async::i2c::I2c);
-register_map!(SpiRegisters, SpiDevice, embedded_hal_async::spi::SpiDevice);
-
-/// Any other Lemnos register map (`lemnos_hal::RegisterBus`, blocking or async) as the
-/// driver's bus.
+/// A Lemnos register map as the driver's bus.
+#[deprecated(
+    since = "2.0.0",
+    note = "`RegisterBus` is `lemnos_hal::RegisterBus` now: implement `DriverBus` for the map \
+            (`impl DriverBus for MyMap {}`) and pass it to the driver directly"
+)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Registers<R>(pub R);
 
-impl<R: RegisterMap> RegisterBus for Registers<R>
-where
-    R::BusError: 'static,
-{
-    fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
-        self.0.read(address, bytes).map_err(bus)
+impl<R: RegisterBus> RegisterBus for Registers<R> {
+    type BusError = R::BusError;
+    fn endian(&self) -> Endian {
+        self.0.endian()
     }
-    fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
-        self.0.write(address, bytes, value).map_err(bus)
+    fn read_burst(&mut self, address: u16, buf: &mut [u8]) -> RegisterResult<(), R::BusError> {
+        self.0.read_burst(address, buf)
     }
-    fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-        self.0.write_sequence(writes).map_err(bus)
+    fn write_burst(&mut self, address: u16, data: &[u8]) -> RegisterResult<(), R::BusError> {
+        self.0.write_burst(address, data)
+    }
+    fn read(&mut self, address: u16, bytes: u8) -> RegisterResult<u32, R::BusError> {
+        self.0.read(address, bytes)
+    }
+    fn write(&mut self, address: u16, bytes: u8, value: u32) -> RegisterResult<(), R::BusError> {
+        self.0.write(address, bytes, value)
+    }
+    fn write_sequence(&mut self, writes: &[RegWrite]) -> RegisterResult<(), R::BusError> {
+        self.0.write_sequence(writes)
     }
 }
 
-impl<R: AsyncRegisterMap> AsyncRegisterBus for Registers<R>
-where
-    R::BusError: 'static,
-{
-    async fn read(&mut self, address: u16, bytes: u8) -> BusResult<u32> {
-        self.0.read(address, bytes).await.map_err(bus)
+impl<R: AsyncRegisterBus> AsyncRegisterBus for Registers<R> {
+    type BusError = R::BusError;
+    fn endian(&self) -> Endian {
+        self.0.endian()
     }
-    async fn write(&mut self, address: u16, bytes: u8, value: u32) -> BusResult<()> {
-        self.0.write(address, bytes, value).await.map_err(bus)
+    async fn read_burst(
+        &mut self,
+        address: u16,
+        buf: &mut [u8],
+    ) -> RegisterResult<(), R::BusError> {
+        self.0.read_burst(address, buf).await
     }
-    async fn write_sequence(&mut self, writes: &[RegWrite]) -> BusResult<()> {
-        self.0.write_sequence(writes).await.map_err(bus)
+    async fn write_burst(&mut self, address: u16, data: &[u8]) -> RegisterResult<(), R::BusError> {
+        self.0.write_burst(address, data).await
+    }
+    async fn read(&mut self, address: u16, bytes: u8) -> RegisterResult<u32, R::BusError> {
+        self.0.read(address, bytes).await
+    }
+    async fn write(
+        &mut self,
+        address: u16,
+        bytes: u8,
+        value: u32,
+    ) -> RegisterResult<(), R::BusError> {
+        self.0.write(address, bytes, value).await
+    }
+    async fn write_sequence(&mut self, writes: &[RegWrite]) -> RegisterResult<(), R::BusError> {
+        self.0.write_sequence(writes).await
     }
 }
+
+impl<R: RegisterBus<BusError: 'static>> DriverBus for Registers<R> {}
+impl<R: AsyncRegisterBus<BusError: 'static>> AsyncDriverBus for Registers<R> {}
 
 impl SensorDescription {
     /// The sensor's registers on `i2c`: its 7-bit `i2c_address`, its register address width,
@@ -132,14 +120,16 @@ impl SensorDescription {
 
 /// Reads `bytes` registers one at a time (separate transfers) and joins them big-endian: a
 /// cross-check for a register map's burst read.
-pub fn read_bytewise<B: RegisterBus + ?Sized>(
-    bus: &mut B,
-    address: u16,
-    bytes: u8,
-) -> BusResult<u32> {
+pub fn read_bytewise<B>(bus: &mut B, address: u16, bytes: u8) -> BusResult<u32>
+where
+    B: RegisterBus<BusError: 'static> + ?Sized,
+{
     let mut value = 0u32;
     for i in 0..bytes {
-        value = (value << 8) | bus.read(address.wrapping_add(u16::from(i)), 1)?;
+        let byte = bus
+            .read(address.wrapping_add(u16::from(i)), 1)
+            .map_err(BusError::from_register)?;
+        value = (value << 8) | byte;
     }
     Ok(value)
 }

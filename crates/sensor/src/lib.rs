@@ -2,8 +2,8 @@
 //! rate and blanking), exposure and gain models, frame-accurate control scheduling, and a
 //! userspace sensor driver that runs a description over a register bus.
 //!
-//! This crate does not touch the kernel. Register access goes through [`RegisterBus`] (Lemnos's
-//! register maps, [`I2cRegisters`] / [`SpiRegisters`], on any embedded-hal bus) and
+//! This crate does not touch the kernel. Register access goes through Lemnos's [`RegisterBus`]
+//! (`lemnos_hal::RegisterBus`, re-exported; register maps [`I2cRegisters`] / [`SpiRegisters`], on any embedded-hal bus) and
 //! power/reset/clock lines through [`SensorPins`]; the buses themselves are Lemnos's
 //! (`lemnos-linux` on Linux, a chip HAL on microcontrollers). See `docs/native-stack/README.md` for where this fits.
 //!
@@ -129,13 +129,13 @@
 //! * [`ControlScheduler`]: which writes to issue at each frame start so values land on the
 //!   requested frame, and which values produced each frame.
 //! * [`SensorDriver`]: power, chip id, init, modes, streaming and scheduled controls over a
-//!   [`RegisterBus`]; [`MockBus`] and [`MockPins`] record operations for tests.
+//!   [`DriverBus`] (a Lemnos [`RegisterBus`]); [`MockBus`] and [`MockPins`] record operations for tests.
 //! * [`lens`]: focus lenses (VCMs) as data: which chip (driven by `lemnos-drivers-vcm`), the
 //!   move time model, the frame-exact [`LensSchedule`], and the IMX708's phase detection data.
 //! * [`SensorDescription::from_subdev_with`]: descriptions of sensors with kernel drivers,
 //!   built from a [`SubdevReport`] and, when there is one, a [`KernelSensorData`] file (gain
 //!   model, delays, black level, embedded data layout; `sensors/kernel/*.toml` ship built in).
-//!   [`SensorDriver`] then drives them through V4L2 controls ([`RegisterBus::set_controls`]).
+//!   [`SensorDriver`] then drives them through V4L2 controls ([`DriverBus::set_controls`]).
 //!
 //! # Compiled descriptions
 //!
@@ -148,7 +148,7 @@
 //!
 //! Without the default `std` feature the crate is `no_std` + `alloc`: descriptions from
 //! strings, timing, gain models, the control scheduler, embedded data, lenses and the driver
-//! over a [`RegisterBus`]. `from_file`, [`NoPins`] and the sleeping default of
+//! over a [`DriverBus`]. `from_file`, [`NoPins`] and the sleeping default of
 //! [`SensorPins::delay`] need `std`. Bus and pin operations fail with a [`BusError`] (with
 //! `std`, `std::io::Error` converts to and from it; docs/portability.md).
 
@@ -186,7 +186,10 @@ mod registers;
 pub mod schedule;
 mod timing;
 
-pub use bus::{AsyncRegisterBus, BusOp, BusResult, MockBus, MockPins, NoPins, PinOp, RegisterBus};
+pub use bus::{
+    AsyncDriverBus, AsyncRegisterBus, BusOp, BusResult, DriverBus, MockBus, MockPins, NoPins,
+    PinOp, RegisterBus,
+};
 pub use bus_error::{BusError, BusErrorKind};
 pub use desc::{
     Backend, BlackLevel, Blanking, BusSection, ChipId, Controls, Csi2Bus, Delays, EmbeddedControl,
@@ -212,6 +215,7 @@ pub use lemnos_drivers_vcm;
 pub use lemnos_hal;
 pub use lens::{LensDescription, LensFrame, LensMotion, LensSchedule, VcmChip, VcmFormat, VcmI2c};
 pub use mbus::{ColorFilter, MbusCode};
+#[allow(deprecated)]
 pub use registers::{
     AddressWidth, Endian, I2cRegisters, MAX_BURST, Registers, SpiRegisters, read_bytewise,
 };

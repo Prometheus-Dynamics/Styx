@@ -420,6 +420,26 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Sensor register access is Lemnos's trait, with no Styx bus layer left (docs/portability.md
+  "`RegisterBus` is Lemnos's"; Lemnos `dev` at 10269f9): `styx_sensor::RegisterBus` is
+  `lemnos_hal::RegisterBus` and `styx_sensor::AsyncRegisterBus` is
+  `lemnos_hal::asynch::RegisterBus`, re-exported under the old names. The sensor driver runs
+  over the new `DriverBus` / `AsyncDriverBus` (a Lemnos register map plus `set_controls`, a
+  kernel driver's V4L2 controls): `SensorDriver<B: DriverBus, P>`,
+  `AsyncSensorDriver<B: AsyncDriverBus, P>`, and the runtime's `SensorState`, `Controls`,
+  `SensorSide`, `styx-native`'s `SensorControl`/`ControlHandle` and `styx-pipeline`'s controls
+  take the same bound. Migration: a custom bus implements Lemnos's `read_burst`/`write_burst`
+  (overriding `read`/`write` where one value is one transfer), names its `BusError`, and adds
+  `impl DriverBus for MyBus {}` (moving `set_controls` there if it has V4L2 controls);
+  `I2cRegisters`/`SpiRegisters` and `MockBus` need nothing. Calls on the bus return Lemnos's
+  `RegisterResult`; `BusError::from_register` converts (it now passes a `BusError` bus error
+  through and keeps an `io::Error` with its errno). `styx_hal::Blocking` implements
+  `lemnos_hal::asynch::RegisterBus` over a blocking map. MCU images B-D grow by 0.3-0.4 KB
+  (docs/mcu.md).
+- `styx-native`: `SensorBus` and `SubdevBus` implement Lemnos's `RegisterBus` (bus error
+  `BusError`) and `DriverBus`; `SensorBus::I2c` holds `I2cRegisters<I2cBus>`. `BridgePins` and
+  `PowerSwitch` moved to `styx_native::sensor_bus`.
+
 - `PackedChannelOrder::Xrgb` / `Xbgr` are now `Bgrx` / `Rgbx` (bytes in memory order, like
   `Rgba` / `Bgra`), and `Channel` has a `Padding` variant for the unused byte of `XR24` / `XB24`.
 - Rust 1.99.0: the pinned toolchain (`rust-toolchain.toml`), the MSRV (`rust-version = "1.99"`,
@@ -569,7 +589,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   instead of the buffer completion time, matching V4L2 (8.2 ms vs 0.05 ms old on arrival on a
   CM5). Pyramid companions share it.
 
+### Deprecated
+
+- `styx_sensor::Registers<R>` (any Lemnos register map is a `DriverBus` with an empty impl) and
+  `styx_native::regbus` (re-exports `BridgePins`, `PowerSwitch`, `MAX_BURST`, and
+  `I2cRegisterBus` = `styx_sensor::I2cRegisters<I2cBus>`).
+
 ### Removed
+
+- `styx-native`'s `regbus.rs` and `native-spike`'s copy of it (the I²C register bus is
+  `I2cRegisters<lemnos_linux::hal::I2cBus>`; the spike takes `BridgePins` from `styx-native`),
+  and Styx's own `RegisterBus`/`AsyncRegisterBus` traits with their adapters (now Lemnos's).
 
 - Removed `styx::graph` and the `daedalus-plugin` / `graph-pipeline` features (the graph-backed
   `MediaPipeline` runtime, Styx's own Daedalus nodes, `PipelineExecutionMode::Graph`, the

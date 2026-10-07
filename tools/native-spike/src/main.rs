@@ -23,7 +23,6 @@ mod experiments;
 mod frames;
 mod kernel_path;
 mod pipeline;
-mod regbus;
 mod rig;
 mod verify;
 

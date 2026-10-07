@@ -90,6 +90,35 @@ impl<T: DelayNs> embedded_hal_async::delay::DelayNs for Blocking<T> {
     }
 }
 
+// TODO(lemnos gap): Lemnos has no blocking-to-async adapter for its register maps
+// (`lemnos_hal::asynch::RegisterBus` over a blocking `lemnos_hal::RegisterBus`); until it
+// does, `Blocking` provides it so `styx-sensor`'s async driver core runs over blocking buses.
+impl<R: lemnos_hal::RegisterBus> lemnos_hal::asynch::RegisterBus for Blocking<R> {
+    type BusError = R::BusError;
+    fn endian(&self) -> lemnos_hal::Endian {
+        self.0.endian()
+    }
+    async fn read_burst(&mut self, address: u16, buf: &mut [u8]) -> RegisterResult<(), R> {
+        self.0.read_burst(address, buf)
+    }
+    async fn write_burst(&mut self, address: u16, data: &[u8]) -> RegisterResult<(), R> {
+        self.0.write_burst(address, data)
+    }
+    async fn read(&mut self, address: u16, bytes: u8) -> RegisterResult<u32, R> {
+        self.0.read(address, bytes)
+    }
+    async fn write(&mut self, address: u16, bytes: u8, value: u32) -> RegisterResult<(), R> {
+        self.0.write(address, bytes, value)
+    }
+    async fn write_sequence(&mut self, writes: &[lemnos_hal::RegWrite]) -> RegisterResult<(), R> {
+        self.0.write_sequence(writes)
+    }
+}
+
+/// The result of a register operation on the blocking map `R`.
+type RegisterResult<T, R> =
+    lemnos_hal::register::RegisterResult<T, <R as lemnos_hal::RegisterBus>::BusError>;
+
 impl<P: SensorPins> AsyncSensorPins for Blocking<P> {
     type Error = P::Error;
     async fn set_gpio(&mut self, role: &str, value: bool) -> Result<(), Self::Error> {

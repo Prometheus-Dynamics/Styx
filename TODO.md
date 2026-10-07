@@ -277,6 +277,15 @@ box (OV9782 1280x800) unless stated.
       error kinds (`lemnos-hal`), i2c-dev, GPIO and uevents (`lemnos-linux`), VCM drivers
       (`lemnos-drivers-vcm`), clock outputs; Styx's copies deleted (portability-design.md
       "Moved to Lemnos"). Lemnos fix on the way: i2c-dev transfers without allocation.
+- [x] Lemnos switch-over finished (`work/lemnos-switch`): `styx_sensor::RegisterBus` is
+      `lemnos_hal::RegisterBus` (async: `lemnos_hal::asynch::RegisterBus`); the driver runs
+      over `DriverBus` (that plus a kernel driver's V4L2 controls); `styx-native`'s and the
+      spike's `regbus.rs` deleted (`I2cRegisters<I2cBus>`, `BridgePins` in `sensor_bus.rs`).
+- [ ] Lemnos gaps found by the switch-over (Styx carries the glue, marked `TODO(lemnos gap)`):
+      a blocking-to-async adapter for register maps (`styx_hal::Blocking` implements
+      `lemnos_hal::asynch::RegisterBus`); `serde` on `lemnos_drivers_vcm::{VcmChip, VcmFormat}`
+      (an owned format) so descriptions can name them without Styx's mirror types in
+      `styx-sensor` `lens.rs`.
 - [ ] Lemnos: Styx depends on the Lemnos `dev` branch by git (root `Cargo.toml`, `fuzz/Cargo.toml`);
       switch to crates.io 2.0 once it is published.
 - [ ] Lemnos: `styx-hal`'s I²C mock (`MockI2c`) needs shared clones, async suspension and a

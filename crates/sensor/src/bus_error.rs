@@ -51,21 +51,39 @@ impl BusError {
         b
     }
 
-    /// The error of a Lemnos register map ([`I2cRegisters`](crate::I2cRegisters),
-    /// [`SpiRegisters`](crate::SpiRegisters)): Lemnos's classification and its message (with
-    /// the bus's own error). A bus error that is an `std::io::Error` (with `std`) keeps its
-    /// errno: map a Linux bus's error to one first ([`RegisterError::map_bus`]).
+    /// The error of a Lemnos register map ([`RegisterBus`](crate::RegisterBus)): Lemnos's
+    /// classification and its message. A bus error that already is a [`BusError`] is passed
+    /// through; one that is an `std::io::Error` (with `std`) is kept inside, so its errno
+    /// survives (map a Linux bus's error to one first, [`RegisterError::map_bus`]).
     pub fn from_register<E: fmt::Debug + 'static>(e: RegisterError<E>) -> Self {
         let kind = lemnos_hal::HalError::kind(&e);
-        #[cfg(feature = "std")]
-        if let RegisterError::Bus { error, .. } = &e
-            && let Some(io) = (error as &dyn core::any::Any).downcast_ref::<std::io::Error>()
+        let RegisterError::Bus { error, .. } = e else {
+            return Self::new(kind, misuse(&e));
+        };
+        let mut error = Some(error);
+        let any = &mut error as &mut dyn core::any::Any;
+        if let Some(b) = any
+            .downcast_mut::<Option<BusError>>()
+            .and_then(Option::take)
         {
-            let mut b = Self::new(kind, e.to_string());
-            b.code = io.raw_os_error();
             return b;
         }
-        Self::new(kind, e.to_string())
+        #[cfg(feature = "std")]
+        if let Some(io) = any
+            .downcast_mut::<Option<std::io::Error>>()
+            .and_then(Option::take)
+        {
+            return Self {
+                kind,
+                message: Cow::Borrowed(""),
+                code: None,
+                io: Some(io),
+            };
+        }
+        let Some(error) = error else {
+            return Self::new(kind, "register bus");
+        };
+        Self::new(kind, alloc::format!("register bus {kind}: {error:?}"))
     }
 
     /// The error of an embedded-hal I²C bus (classified by Lemnos).
@@ -107,6 +125,19 @@ impl BusError {
     #[cfg(feature = "std")]
     pub fn io_error(&self) -> Option<&std::io::Error> {
         self.io.as_ref()
+    }
+}
+
+/// What a register error that is not the bus's own says (static: no formatting code in a
+/// firmware that never fails; the driver's error names the register).
+fn misuse<E>(e: &RegisterError<E>) -> &'static str {
+    match e {
+        RegisterError::InvalidWidth(_) => "register access of more than 4 bytes",
+        RegisterError::ValueTooWide { .. } => "value wider than its registers",
+        RegisterError::AddressTooWide(_) => "register address wider than the address width",
+        RegisterError::TooLong(_) => "register transfer too long",
+        RegisterError::Mismatch { .. } => "register read back a different value",
+        _ => "register access failed",
     }
 }
 
@@ -223,6 +254,12 @@ mod tests {
         ));
         assert_eq!((e.kind(), e.code()), (BusErrorKind::Nack, Some(121)));
         assert_eq!(HalError::kind(&e), ErrorKind::Nack);
+        let e = BusError::from_register(RegisterError::bus(
+            BusErrorKind::Failed,
+            BusError::new(BusErrorKind::Busy, "owned by a kernel driver"),
+        ));
+        assert_eq!(e.kind(), BusErrorKind::Busy);
+        assert_eq!(e.to_string(), "owned by a kernel driver");
         let e = BusError::from_register(RegisterError::<()>::InvalidWidth(5));
         assert_eq!(e.kind(), BusErrorKind::InvalidInput);
         assert_eq!(HalError::kind(&e), ErrorKind::InvalidConfig);

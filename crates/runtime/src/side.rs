@@ -6,7 +6,7 @@ use alloc::string::{String, ToString};
 use core::time::Duration;
 
 use styx_hal::{ErrorKind, HalError, MaybeSendSync, Receiver, SyncEvent};
-use styx_sensor::{RegisterBus, SensorPins};
+use styx_sensor::{DriverBus, SensorPins};
 
 use crate::health::{Fault, Health};
 use crate::sensor::{FrameControls, SensorState, ServeError, StartFormat};
@@ -40,7 +40,7 @@ pub trait SensorSide: MaybeSendSync + 'static {
 
 impl<B, P> SensorSide for Lock<SensorState<B, P>>
 where
-    B: RegisterBus + MaybeSend + 'static,
+    B: DriverBus + MaybeSend + 'static,
     P: SensorPins + MaybeSend + 'static,
     Lock<SensorState<B, P>>: MaybeSendSync,
 {

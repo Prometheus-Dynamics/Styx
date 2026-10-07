@@ -32,7 +32,7 @@ use styx_runtime::{
     Camera, CameraOptions, Clock, Controls, DEFAULT_WRITE_MARGIN, Frame, FrameStream, LeaseBuffer,
     Platform, SensorHandle, SensorState, instant_duration, serve_sync,
 };
-use styx_sensor::{RegisterBus, SensorPins};
+use styx_sensor::{DriverBus, SensorPins};
 use styx_softisp::{OutputBuffers, RawFormat, RawPacking, Scale};
 
 /// What went wrong.
@@ -153,7 +153,7 @@ pub struct Firmware<P: Platform, B, Pn> {
 impl<P, B, Pn> Firmware<P, B, Pn>
 where
     P: Platform<Sensor = Lock<SensorState<B, Pn>>>,
-    B: RegisterBus + MaybeSend + 'static,
+    B: DriverBus + MaybeSend + 'static,
     Pn: SensorPins + MaybeSend + 'static,
     Lock<SensorState<B, Pn>>: MaybeSendSync,
     SensorHandle<P::Sensor>: SensorStart,

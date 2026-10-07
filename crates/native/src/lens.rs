@@ -26,7 +26,7 @@ use styx_kernel::media::{EntityFunction, LinkType, Topology};
 use styx_kernel::subdev::Subdev;
 use styx_kernel::v4l2::{ControlValue, Controls, cid};
 use styx_runtime::LensDrive;
-use styx_sensor::{LensDescription, RegisterBus, SensorPins, VcmI2c};
+use styx_sensor::{DriverBus, LensDescription, SensorPins, VcmI2c};
 
 pub use styx_runtime::styx_hal::LensActuator;
 pub use styx_runtime::{LensControl, PdafFrames};
@@ -260,7 +260,7 @@ pub fn open_actuator(info: &LensInfo) -> Result<Box<dyn LensDrive>> {
 
 /// Opens the lens of `info` (if any) for a camera's control, and the phase detection layout
 /// its data names. A lens that cannot be opened leaves the camera without one.
-pub(crate) fn attach<B: RegisterBus, P: SensorPins>(
+pub(crate) fn attach<B: DriverBus, P: SensorPins>(
     info: &crate::CameraInfo,
     control: &std::sync::Mutex<SensorControl<B, P>>,
 ) {

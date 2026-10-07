@@ -13,12 +13,18 @@ use styx_kernel::media::{self, LinkFlags, MediaDevice};
 use styx_kernel::subdev::{MbusCode, MbusFormat, Subdev, Which};
 use styx_kernel::v4l2::{BufType, Format, Memory, PixFormat, QueueBuffer, VideoDevice};
 use styx_kernel::{FourCc, Mapping};
+use styx_native::sensor_bus::BridgePins;
 use styx_sensor::{DriverState, SensorDescription, SensorDriver, Step, Timing};
 
 use crate::frames::{self, FrameSample, Raw10Layout};
 use crate::pipeline;
-use crate::regbus::{BridgePins, I2cRegisterBus};
 use crate::{Result, ResultExt, interrupted, log};
+
+/// A sensor's registers over i2c-dev: Lemnos's register map (big-endian register addresses of
+/// the description's width, one transfer per register write: combined write transfers lost or
+/// misplaced writes on the CM5's RP1 I²C with the OV9782) on Lemnos's i2c-dev bus (the address
+/// claimed, never forced).
+pub type I2cRegisterBus = styx_sensor::I2cRegisters<I2cBus>;
 
 /// The sensor driver as the spike runs it.
 pub type Driver = SensorDriver<I2cRegisterBus, BridgePins<Arc<SensorBridge>>>;

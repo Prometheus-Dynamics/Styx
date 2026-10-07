@@ -17,11 +17,12 @@ use std::time::Duration;
 
 use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::{ErrorType, I2c, Operation};
+use styx_sensor::lemnos_hal::RegisterError;
 use styx_sensor::styx_hal::{Blocking, ErrorKind};
 use styx_sensor::{
-    AddressWidth, AsyncSensorDriver, BusResult, ControlRange, ControlRequest, I2cRegisters,
-    KernelControl, KernelSensorData, MAX_BURST, MbusCode, Rect, RegisterBus, SensorDescription,
-    SensorDriver, SensorPins, Size, SubdevFormat, SubdevReport,
+    AddressWidth, AsyncSensorDriver, BusResult, ControlRange, ControlRequest, DriverBus,
+    I2cRegisters, KernelControl, KernelSensorData, MAX_BURST, MbusCode, Rect, RegisterBus,
+    SensorDescription, SensorDriver, SensorPins, Size, SubdevFormat, SubdevReport,
 };
 
 struct Counting;
@@ -146,12 +147,17 @@ struct Controls {
 }
 
 impl RegisterBus for Controls {
-    fn read(&mut self, _: u16, _: u8) -> BusResult<u32> {
-        Ok(0)
-    }
-    fn write(&mut self, _: u16, _: u8, _: u32) -> BusResult<()> {
+    type BusError = core::convert::Infallible;
+    fn read_burst(&mut self, _: u16, buf: &mut [u8]) -> Result<(), RegisterError<Self::BusError>> {
+        buf.fill(0);
         Ok(())
     }
+    fn write_burst(&mut self, _: u16, _: &[u8]) -> Result<(), RegisterError<Self::BusError>> {
+        Ok(())
+    }
+}
+
+impl DriverBus for Controls {
     fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
         assert!(!controls.is_empty());
         self.calls += 1;
