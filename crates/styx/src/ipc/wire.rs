@@ -20,7 +20,8 @@
 //!
 //! Client to server:
 //! - Release: the id of a frame the client dropped (and its receive and import times).
-//! - Request (camera service): the consumer's `FrameRequest`, and optionally which camera.
+//! - Request (camera service): the consumer's `FrameRequest`, and optionally which camera; a
+//!   low-priority client adds a priority trailer older services ignore (`request.rs`).
 //! - List (camera service): which cameras it serves.
 //! - Roi: the regions of interest now (none: the whole frame).
 //! - Metrics (camera service): the service's metrics, as JSON (0) or Prometheus text (1).
@@ -45,7 +46,7 @@ use self::delivered::{read_delivered, write_delivered};
 pub(super) use self::hops::ClientHops;
 use self::hops::{read_frame_hops, read_release_hops, write_frame_hops};
 pub(in crate::ipc) use self::request::encode_request;
-use self::request::read_request;
+use self::request::{read_priority, read_request};
 use super::IpcError;
 use crate::planner::{Delivered, FrameRequest};
 
@@ -102,8 +103,8 @@ pub(super) struct WireFrame {
 pub(super) enum ClientMessage {
     /// A frame the client dropped, and when it received and imported it.
     Release(u64, Option<ClientHops>),
-    /// These frames, from the named camera (or the service's first).
-    Request(Box<FrameRequest>, Option<String>),
+    /// These frames, from the named camera (or the service's first), at this priority.
+    Request(Box<FrameRequest>, Option<String>, super::ClientPriority),
     /// The regions of interest now, region 0 first (empty: the whole frame).
     Roi(Vec<FrameRect>),
     List,
@@ -671,9 +672,11 @@ pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
         }
         KIND_REQUEST => {
             let camera = r.opt(Reader::text)?;
+            let request = read_request(&mut r)?;
             Ok(ClientMessage::Request(
-                Box::new(read_request(&mut r)?),
+                Box::new(request),
                 camera,
+                read_priority(&mut r)?,
             ))
         }
         KIND_LIST => Ok(ClientMessage::List),

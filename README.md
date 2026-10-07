@@ -125,6 +125,9 @@ blocking task/thread, then use async receive/control APIs for coordination.
   Use `CaptureHandle::stop_async` or `stop_async_in_place` when explicit teardown matters in
   Tokio code.
 - `preview-window`: Minifb preview window support for examples.
+- `preview`: low-latency JPEG camera previews for user interfaces (`styx::preview`): a
+  low-priority camera service client that never changes the vision consumer's capture, MJPEG
+  and WebSocket serving helpers, metrics; JPEG from `codec-turbojpeg` ([docs/preview.md](docs/preview.md)).
 - `raw-decoders`: CPU raw/YUV/Bayer conversion stack; this enables Rayon and `yuvutils-rs`.
 - `codec-jpeg-decoder`: pure-Rust MJPEG/JPEG decode via `jpeg-decoder`.
 - `codec-ffmpeg`, `codec-mozjpeg`, `codec-turbojpeg`, `codec-zune`: alternate codec integrations; FFmpeg and native JPEG backends add their respective system/library dependency surface.
@@ -184,6 +187,7 @@ Optional Docker-backed facade validation:
 - [examples/README.md](examples/README.md): runnable examples, with output from the CM5
 - [docs/native-stack/README.md](docs/native-stack/README.md): the native camera stack (sensors, PiSP, 3A, sensor bridge)
 - [docs/metrics.md](docs/metrics.md): per-camera health and performance metrics: every metric, how it is measured, its cost
+- [docs/preview.md](docs/preview.md): camera previews for user interfaces (MJPEG/WebSocket) next to a vision consumer: the encode path chosen and its cost, low-priority planning, serving, CM5 measurement plan
 - [docs/README.md](docs/README.md): repository documentation index
 - [docs/ecosystem.md](docs/ecosystem.md): GStreamer and PipeWire bridges
 - [docs/stills-and-dng.md](docs/stills-and-dng.md): stills from a running capture, exposure brackets, DNG raw files (`styx-dng`)

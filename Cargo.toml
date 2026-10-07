@@ -111,6 +111,8 @@ ffmpeg-sys-next = { version = "9.0.0", default-features = false, features = ["av
 libcamera = { version = "0.7", default-features = false, features = ["libcamera_semver_versioning"] }
 tokio-util = { version = "0.7.19", features = ["io"] }
 futures-core = "0.3.34"
+# Shared JPEG buffers of `styx::preview` (feature `preview`).
+bytes = "1.12"
 # Without `async-await-macro` (no futures-macro proc macro): Styx uses the stream adapters only.
 futures-util = { version = "0.3.34", default-features = false, features = ["io", "std"] }
 serde = { version = "1.0.229", default-features = false, features = ["derive"] }

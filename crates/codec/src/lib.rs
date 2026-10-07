@@ -350,6 +350,7 @@ pub mod image_any;
 pub mod image_utils;
 #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
 pub mod jpeg_encoder;
+pub mod jpeg_planar;
 #[cfg(feature = "codec-turbojpeg")]
 mod jpeg_slices;
 #[cfg(feature = "codec-jpeg-decoder")]

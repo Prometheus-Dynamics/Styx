@@ -362,6 +362,9 @@ impl Text {
         for g in &s.sync_groups {
             self.sync_group(g);
         }
+        for p in &s.previews {
+            self.preview(p);
+        }
     }
 }
 

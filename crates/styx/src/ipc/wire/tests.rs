@@ -25,21 +25,38 @@ fn requests_survive_the_wire() {
         .forbid("ffmpeg")
         .decode_threads(2)
         .strict();
-    let ClientMessage::Request(back, camera) =
-        decode_client(&encode_request(&req, Some("ov9782"))).unwrap()
-    else {
+    let ClientMessage::Request(back, camera, priority) = decode_client(&encode_request(
+        &req,
+        Some("ov9782"),
+        crate::ipc::ClientPriority::Normal,
+    ))
+    .unwrap() else {
         panic!("not a request");
     };
     assert_eq!(*back, req);
     assert_eq!(camera.as_deref(), Some("ov9782"));
+    assert_eq!(priority, crate::ipc::ClientPriority::Normal);
+    // A low-priority request: the same request, and the priority as a trailer older services
+    // stop reading before (the request bytes are a prefix).
+    let low = encode_request(&req, Some("ov9782"), crate::ipc::ClientPriority::Low);
+    let normal = encode_request(&req, Some("ov9782"), crate::ipc::ClientPriority::Normal);
+    assert!(low.starts_with(&normal) && low.len() == normal.len() + 2);
+    let ClientMessage::Request(back, _, priority) = decode_client(&low).unwrap() else {
+        panic!("not a request");
+    };
+    assert_eq!(*back, req);
+    assert_eq!(priority, crate::ipc::ClientPriority::Low);
     for req in [
         Frames::gray().fps(30),
         Frames::any().fps_at_least(15),
         Frames::rgb(),
     ] {
-        let ClientMessage::Request(back, None) =
-            decode_client(&encode_request(&req, None)).unwrap()
-        else {
+        let ClientMessage::Request(back, None, _) = decode_client(&encode_request(
+            &req,
+            None,
+            crate::ipc::ClientPriority::Normal,
+        ))
+        .unwrap() else {
             panic!("not a request");
         };
         assert_eq!(*back, req);

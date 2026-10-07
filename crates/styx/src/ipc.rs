@@ -66,6 +66,23 @@ pub use self::wire::CameraInfo;
 #[cfg(feature = "frame-socket")]
 pub use styx_core::lease_codec;
 
+/// How a [`CameraService`] plans a client's frames next to its other clients
+/// ([`ClientOptions::low_priority`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ClientPriority {
+    /// The client's request is planned with the others': it may change the shared capture
+    /// (restarting it once) to get the frames it asks for.
+    #[default]
+    Normal,
+    /// The client never changes what the normal clients get: their plans are made as if it
+    /// were not there, it never restarts a running capture, and when its own request would
+    /// change anything (or add CPU work to the service) it gets a share of a normal client's
+    /// frames instead: another format or size than it asked for (`delivered()` says which).
+    /// For previews and monitors. A low-priority client is never the camera's owner while a
+    /// normal client is connected, and cannot set a frame rate that restarts the capture.
+    Low,
+}
+
 /// Decides whether a connecting process may be served.
 type Authorize = dyn Fn(&PeerCredentials) -> bool + Send + Sync;
 
@@ -263,12 +280,15 @@ impl Drop for FrameServer {
 /// processes; requests must survive being encoded again. For fuzzing.
 #[doc(hidden)]
 pub fn fuzz_messages(bytes: &[u8]) {
-    if let Ok(wire::ClientMessage::Request(requirements, camera)) = wire::decode_client(bytes) {
-        let again = wire::encode_request(&requirements, camera.as_deref());
+    if let Ok(wire::ClientMessage::Request(requirements, camera, priority)) =
+        wire::decode_client(bytes)
+    {
+        let again = wire::encode_request(&requirements, camera.as_deref(), priority);
         match wire::decode_client(&again) {
-            Ok(wire::ClientMessage::Request(back, back_camera)) => {
+            Ok(wire::ClientMessage::Request(back, back_camera, back_priority)) => {
                 assert_eq!(back, requirements);
                 assert_eq!(back_camera, camera);
+                assert_eq!(back_priority, priority);
             }
             _ => panic!("a decoded request did not decode again"),
         }

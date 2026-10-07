@@ -3,9 +3,18 @@
 use styx_core::prelude::*;
 
 use super::{IpcError, KIND_REQUEST, MAX_NAMES, Reader, Writer, read_regions};
+use crate::ipc::ClientPriority;
 use crate::planner::{Delivery, FrameRate, FrameRequest, Hardware};
 
-pub(in crate::ipc) fn encode_request(req: &FrameRequest, camera: Option<&str>) -> Vec<u8> {
+/// Tag of the request's priority trailer: older services stop reading before it, so a
+/// low-priority request reaches them as a normal one.
+const PRIORITY_TAG: u8 = 1;
+
+pub(in crate::ipc) fn encode_request(
+    req: &FrameRequest,
+    camera: Option<&str>,
+    priority: ClientPriority,
+) -> Vec<u8> {
     let mut w = Writer::new(KIND_REQUEST);
     w.opt(camera, Writer::text);
     match &req.format {
@@ -75,7 +84,23 @@ pub(in crate::ipc) fn encode_request(req: &FrameRequest, camera: Option<&str>) -
     }
     w.opt(req.decode_threads, Writer::usize);
     w.bool(req.strict);
+    // Normal requests stay as they were: no trailer.
+    if priority == ClientPriority::Low {
+        w.u8(PRIORITY_TAG);
+        w.u8(1);
+    }
     w.0
+}
+
+/// The priority trailer after a request (none: normal; an unknown tag is ignored).
+pub(super) fn read_priority(r: &mut Reader<'_>) -> Result<ClientPriority, IpcError> {
+    if r.0.is_empty() || r.u8()? != PRIORITY_TAG {
+        return Ok(ClientPriority::Normal);
+    }
+    Ok(match r.u8()? {
+        0 => ClientPriority::Normal,
+        _ => ClientPriority::Low,
+    })
 }
 
 pub(super) fn read_request(r: &mut Reader<'_>) -> Result<FrameRequest, IpcError> {

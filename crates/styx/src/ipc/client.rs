@@ -39,7 +39,7 @@ use self::poll::PollSet;
 pub use self::poll::{FrameStream, NextFrame};
 use super::mapcache::MapCache;
 use super::wire::{self, CameraInfo, ClientHops, ClientToken, ServerMessage, WireFrame};
-use super::{IpcError, socket};
+use super::{ClientPriority, IpcError, socket};
 use crate::metrics::HopMetrics;
 use crate::planner::{Delivered, FrameRequest};
 
@@ -95,6 +95,7 @@ struct Request {
     path: PathBuf,
     camera: Option<String>,
     frames: FrameRequest,
+    priority: ClientPriority,
     /// How long each (re)connection may take.
     timeout: Duration,
 }
@@ -162,7 +163,7 @@ fn open(request: &Request) -> Result<Opened, IpcError> {
     let socket = socket::connect_until(&request.path, deadline)?;
     socket::send(
         &socket,
-        &wire::encode_request(&request.frames, request.camera.as_deref()),
+        &wire::encode_request(&request.frames, request.camera.as_deref(), request.priority),
         &[],
     )?;
     accepted(answer(&socket, deadline)?).map(|accepted| (socket, accepted))
@@ -189,7 +190,7 @@ async fn open_async(request: &Request) -> Result<Opened, IpcError> {
         let socket = connecting.into_socket();
         socket::send(
             &socket,
-            &wire::encode_request(&request.frames, request.camera.as_deref()),
+            &wire::encode_request(&request.frames, request.camera.as_deref(), request.priority),
             &[],
         )?;
         let fd = tokio::io::unix::AsyncFd::with_interest(
@@ -242,9 +243,25 @@ pub struct ClientOptions {
     camera: Option<String>,
     timeout: Duration,
     reconnect: bool,
+    priority: ClientPriority,
 }
 
 impl ClientOptions {
+    /// Ask at low priority ([`ClientPriority::Low`]): the camera service never changes what
+    /// its other clients get, or restarts their capture, for this client; it may get a share
+    /// of another client's frames instead of the format and size it asked for (see
+    /// [`FrameClient::delivered`]). For previews and monitors (`styx::preview`). A service
+    /// that predates priorities serves it as a normal client.
+    pub fn low_priority(self) -> Self {
+        self.priority(ClientPriority::Low)
+    }
+
+    /// Ask at this priority (default [`ClientPriority::Normal`]).
+    pub fn priority(mut self, priority: ClientPriority) -> Self {
+        self.priority = priority;
+        self
+    }
+
     /// From the camera this names (its name, part of it, or an identity key) rather than the
     /// service's first.
     pub fn camera(mut self, camera: impl Into<String>) -> Self {
@@ -275,6 +292,7 @@ impl ClientOptions {
             path: self.path.clone(),
             camera: self.camera.clone(),
             frames,
+            priority: self.priority,
             timeout: self.timeout,
         }
     }
@@ -373,6 +391,7 @@ impl FrameClient {
             camera: None,
             timeout: DEFAULT_OPEN_TIMEOUT,
             reconnect: false,
+            priority: ClientPriority::Normal,
         }
     }
 

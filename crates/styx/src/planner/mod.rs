@@ -38,7 +38,7 @@ mod request;
 mod roi;
 mod routes;
 mod session;
-pub(crate) use session::SharedSession;
+pub(crate) use session::{SharedSession, same_plan};
 mod shared;
 mod start;
 

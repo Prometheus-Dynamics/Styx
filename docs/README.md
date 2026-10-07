@@ -15,6 +15,7 @@ This directory holds repository-level documentation for the Styx workspace.
 - [stills-and-dng.md](stills-and-dng.md): stills from a running capture (PiSP / software ISP reprocessing, exposure brackets) and DNG raw files (`styx-dng` writer and reader)
 - [frame-server.md](frame-server.md): sharing camera frames with other processes without copying
 - [recording.md](recording.md): `styx-record`, grey test recordings (Y plane, Eidos raw video layout) with a timestamp/sequence sidecar and the camera settings, from a camera service or the camera directly; stills for calibration
+- [preview.md](preview.md): camera previews for user interfaces: small JPEGs (MJPEG over HTTP, WebSocket messages) from a low-priority camera service client that never changes the vision consumer's capture; encoder benchmarks and the CM5 measurement plan
 - [ecosystem.md](ecosystem.md): Styx cameras in GStreamer (`styxsrc`) and PipeWire (optional bridge crates)
 - [encoding.md](encoding.md): FFmpeg encoders, low-latency defaults, and handing camera buffers to encoders without copies
 - [hw-frame-preparation.md](hw-frame-preparation.md): hardware frame-preparation investigation and on-device results
