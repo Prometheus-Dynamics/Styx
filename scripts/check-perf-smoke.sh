@@ -43,25 +43,26 @@ done <"$baseline_file"
 
 cd "$root_dir"
 
-run_and_record \
-    "pipeline decode/transform perf smoke" \
-    cargo run --release -p "$package" --no-default-features --features codec-jpeg-decoder --bin perf_smoke --quiet
+# Three release builds instead of one per binary. Each group keeps what its binaries measure:
+# - libjpeg-turbo + MCAP: luma_perf (its decoder named explicitly) and shared_perf (the planner
+#   picks the decoder, so exactly its own features); check-mem-smoke.sh builds mem_smoke with
+#   the same features, so CI shares this build.
+# - jpeg-decoder + file backend: perf_smoke (its decoder named explicitly) and file_replay_perf
+#   (the file backend decodes with `image`/`jpeg-decoder` itself, not through the registry).
+# - mozjpeg on its own: it and libjpeg-turbo do not link into one binary.
+build() {
+    cargo build --release -q -p "$package" --no-default-features --features "$1" "${@:2}"
+}
+build codec-turbojpeg,replay-mcap --bin luma_perf --bin shared_perf
+build codec-jpeg-decoder,file-backend --bin perf_smoke --bin file_replay_perf
+build codec-mozjpeg --bin encode_perf
+bin_dir="${CARGO_TARGET_DIR:-$root_dir/target}/release"
 
-run_and_record \
-    "MJPEG luma perf smoke (C270 fixture)" \
-    cargo run --release -p "$package" --no-default-features --features codec-turbojpeg --bin luma_perf --quiet
-
-run_and_record \
-    "shared capture and frame server perf smoke (C270 fixture)" \
-    cargo run --release -p "$package" --no-default-features --features codec-turbojpeg,replay-mcap --bin shared_perf --quiet
-
-run_and_record \
-    "file replay perf smoke" \
-    cargo run --release -p "$package" --no-default-features --features file-backend --bin file_replay_perf --quiet
-
-run_and_record \
-    "mozjpeg encode perf smoke" \
-    cargo run --release -p "$package" --no-default-features --features codec-mozjpeg --bin encode_perf --quiet
+run_and_record "pipeline decode/transform perf smoke" "$bin_dir/perf_smoke"
+run_and_record "MJPEG luma perf smoke (C270 fixture)" "$bin_dir/luma_perf"
+run_and_record "shared capture and frame server perf smoke (C270 fixture)" "$bin_dir/shared_perf"
+run_and_record "file replay perf smoke" "$bin_dir/file_replay_perf"
+run_and_record "mozjpeg encode perf smoke" "$bin_dir/encode_perf"
 
 failures=0
 for metric in "${!limit_by_metric[@]}"; do

@@ -50,5 +50,10 @@ styx-native = { workspace = true, optional = true }
 styx-kernel = { workspace = true, optional = true }
 styx-gpuisp = { workspace = true, optional = true }
 
+# GPU loop tests: skipped without `gpu` (no empty test binary).
+[[test]]
+name = "gpu_loop"
+required-features = ["gpu"]
+
 [lints]
 workspace = true

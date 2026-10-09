@@ -5,25 +5,18 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root_dir"
 
 echo "==> Checking formatting"
-cargo fmt \
-  -p styx-core-rs \
-  -p styx-capture \
-  -p styx-codec \
-  -p styx-libcamera \
-  -p styx \
-  -p styx-v4l2 \
-  -p styx-examples \
-  -- --check
+cargo fmt --all --check
 
 echo "==> Checking file sizes"
 "$root_dir/scripts/check-file-sizes.sh"
 
+echo "==> Checking that targets without test harnesses hold no tests"
+"$root_dir/scripts/check-test-targets.sh"
+
 echo "==> Running clippy"
 cargo clippy --workspace --all-targets -- -D warnings
 
-echo "==> Running all-feature workspace check"
-cargo check --workspace --all-targets --all-features
-
+# Clippy type-checks everything `cargo check` would, so no separate all-feature check.
 echo "==> Running all-feature clippy"
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -39,8 +32,8 @@ echo "==> Checking the no_std crates (bare-metal and wasm targets, smoke test)"
 echo "==> Running tests"
 cargo test --workspace
 
-echo "==> Running the recording tests (MCAP and .styxrec are opt-in features)"
-cargo test -p styx --lib --features replay-mcap,replay-styxrec replay
+echo "==> Running the recording, netcam parser and native planner tests (opt-in features, one build)"
+cargo test -p styx --lib --features replay-mcap,replay-styxrec,netcam,native,v4l2 -- replay parser planner
 
 echo "==> Building example surface"
 cargo check -p styx-examples --no-default-features --features "async,file-backend,netcam,codec-jpeg-decoder"

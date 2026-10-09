@@ -28,43 +28,36 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: >
-          cargo fmt
-          -p styx-core-rs
-          -p styx-capture
-          -p styx-codec
-          -p styx-libcamera
-          -p styx
-          -p styx-v4l2
-          -p styx-examples
-          -- --check
+        run: cargo fmt --all --check
 
       - name: Run file-size lint
         run: ./scripts/check-file-sizes.sh
 
+      - name: Check targets without test harnesses hold no tests
+        run: ./scripts/check-test-targets.sh
+
       - name: Run workspace tests
         run: cargo test --workspace
-
-      - name: Run recording tests (MCAP and .styxrec are opt-in features)
-        run: cargo test -p styx --lib --features replay-mcap,replay-styxrec replay
 
       - name: Run SIMD kernels without backends (scalar only)
         run: cargo test -p styx-core-rs --no-default-features --features std --lib simd
 
-      - name: Run damaged-input tests (MJPEG decoders, netcam parser)
-        run: |
-          cargo test -p styx-codec --lib --features codec-turbojpeg,codec-jpeg-decoder,codec-zune corruption
-          cargo test -p styx --lib --features netcam parser
+      - name: Run damaged-input tests (MJPEG decoders)
+        run: cargo test -p styx-codec --lib --features codec-turbojpeg,codec-jpeg-decoder,codec-zune corruption
+
+      # One build of styx's library tests for the opt-in features: the recordings (MCAP and
+      # .styxrec), the netcam parser (damaged input) and the native/V4L2 planner. This job installs
+      # no libcamera: the native stack and V4L2 build, probe and plan without it.
+      - name: Run recording, netcam parser and native planner tests
+        run: cargo test -p styx --lib --features replay-mcap,replay-styxrec,netcam,native,v4l2 -- replay parser planner
 
       - name: Build example surface
         run: cargo check -p styx-examples --no-default-features --features "async,file-backend,netcam"
 
-      # This job installs no libcamera: the native stack and V4L2 build, probe and plan without it.
       - name: Native stack without libcamera
         run: |
           cargo check -p styx --no-default-features --features native,v4l2 --all-targets
           cargo check -p styx-examples --no-default-features --features native,v4l2,async,hotplug,replay-mcap --all-targets
-          cargo test -p styx --features native,v4l2 --lib planner
 
       - name: Run perf smoke surface
         run: ./scripts/check-perf-smoke.sh
@@ -152,9 +145,7 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Run all-feature workspace check
-        run: cargo check --workspace --all-targets --all-features
-
+      # Clippy type-checks everything `cargo check` would: no separate all-feature check.
       - name: Run all-feature clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 

@@ -13,16 +13,110 @@ Use these commands for the default local validation loop:
 
 ```bash
 ./scripts/repo-clean.sh
-cargo fmt -p styx-core-rs -p styx-capture -p styx-codec -p styx-libcamera -p styx -p styx-v4l2 -p styx-examples -- --check
+cargo fmt --all --check
 ./scripts/check-file-sizes.sh
+./scripts/check-test-targets.sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 bash ./scripts/check-feature-combinations.sh
 cargo tree -d --workspace --no-default-features
 cargo doc --workspace --no-deps
 ```
+
+## The Gate
+
+`scripts/gate.sh` runs the gate before a merge to `dev` with as little compile work as covers
+it; `scripts/gate.sh --list` prints its steps:
+
+| Step | What it runs |
+| --- | --- |
+| `fmt`, `file-sizes`, `test-targets` | `cargo fmt --all --check`, `check-file-sizes.sh`, `check-test-targets.sh` |
+| `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` (default features) |
+| `clippy-features` | `styx` with `native,v4l2,async,libcamera,daedalus,frame-socket,preview,codec-turbojpeg` and `styx-record-cli` with all its features, in one pass |
+| `test` | the workspace's tests with default features: `cargo nextest run --workspace`, then `cargo test --workspace --doc` |
+| `test-features` | `styx` and `styx-record-cli` in one build: `styx` with `native,daedalus,codec-turbojpeg,replay-mcap,preview`, `styx-record-cli` with all features (styx's native tests, `zero_alloc` with Daedalus, the recorder, and `camera_service`, `scaled_planning`, `shared_planning` and `preview`) |
+| `nostd` | `check-nostd.sh`, which ends with `mcu-size.sh --check` |
+| `perf-smoke` | `check-perf-smoke.sh` |
+| `fuzz` | `cargo +nightly check` in `fuzz/` (skipped without nightly) |
+| `musl-clippy` | `styx` (native) and `styx-native`, `native-spike` (all targets) for `aarch64-unknown-linux-musl` |
+| `cross` | a release build of `styx` and `styx-record-cli` (native, V4L2) for `aarch64-unknown-linux-gnu`, when `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER` names an aarch64 glibc linker (e.g. the HeliOS buildroot's `aarch64-linux-gcc`) |
+
+`scripts/gate.sh --full` adds what is rarely needed: `zero_alloc` repeated
+(`GATE_STRESS_RUNS`, default 10), every release feature set of `styx`
+(`check-feature-combinations.sh`), the all-feature workspace clippy (needs FFmpeg), the memory
+smoke, and the workspace's tests under `cargo test` (all tests of a binary in one process).
+`GATE_SKIP="fuzz cross"` skips steps by name; the summary names every skipped step.
+
+How the gate keeps the work small:
+
+- **Three feature sets instead of five.** `styx` and the crates under it are compiled for the
+  workspace's defaults (linted and tested), the `clippy-features` set and the `test-features`
+  set: four compilations of the stack for the host, where the former gate made seven (two more
+  clippy passes, and test builds for the native tests, the recorder and `zero_alloc` apart).
+- **nextest** runs every test binary at once, each test in its own process (process-global state
+  such as `zero_alloc`'s counting allocator or a static lock never sees another test). Doctests,
+  which nextest does not run, follow with `cargo test --doc`. Without `cargo-nextest` installed
+  the gate falls back to `cargo test`.
+- **Debug info.** `[profile.dev]` emits line tables only for the workspace's crates (backtraces keep
+  file, line and function) and none for dependencies. A clean `cargo test --workspace --no-run`
+  writes 3.8 GB instead of 7.2 GB, and an edit to `styx-core` relinks 1.8 GB of test binaries
+  instead of 3.9 GB. `CARGO_PROFILE_DEV_DEBUG=true` gives the workspace full debug info (a
+  rebuild).
+- **The numeric crates at `opt-level = 1`** (`styx-algo`, `styx-tune`, `styx-softisp`,
+  `styx-gpuisp`, debug builds only; overflow checks and debug assertions stay on): their
+  simulations and fits dominate the test run, which drops from about 190 to 70 CPU-seconds
+  (the slowest test from 20 s to 4 s) for about 70 CPU-seconds more when they are compiled.
+- **No empty test binaries.** Binaries without tests are `test = false` (`check-test-targets.sh`
+  fails if one gains a test), and integration tests that need features name them in
+  `required-features`, so `cargo test` no longer builds and links a harness with no tests in it.
+- **Three release builds for the perf smoke instead of five**, grouped so that each binary keeps
+  what it measures (see `check-perf-smoke.sh`); `check-mem-smoke.sh` shares the libjpeg-turbo +
+  MCAP one in CI.
+- **`zero_alloc` once.** Its counts are exact and the flake behind the repeats is fixed; a repeat
+  proves nothing new. `--full` keeps a stress run. `mcu-size.sh --check` runs once, inside
+  `check-nostd.sh`.
+- **One set of RUSTFLAGS.** The gate sets none, so no step invalidates another's artifacts. Do not
+  export `RUSTFLAGS` or `CARGO_INCREMENTAL` around it: either rebuilds every workspace crate.
+
+Measured on a 24-thread machine shared with other builds (CPU seconds are user + sys; the former
+gate with `zero_alloc` three times; Daedalus `ed7ddde` for both):
+
+| | Former gate | `scripts/gate.sh` |
+| --- | --- | --- |
+| From a clean `target/` | 2080-2340 CPU-s, 21.2 GB written | 1880 CPU-s, 12.9 GB written |
+| After an edit to `styx` | 536 CPU-s, 5.9 GB written | 335 CPU-s, 2.8 GB written |
+| `target/` afterwards | 19.3 GB | 11.3 GB |
+
+On a disk that is busy (as here, a shared spinning disk), the bytes written decide the wall time:
+the former gate took 600 s to 73 min from clean depending on the other load.
+
+The linker is not a lever: Rust 1.99 links `x86_64-unknown-linux-gnu` with the bundled `rust-lld`
+already, so the repository has no `.cargo/config.toml` (one would also collide with the untracked
+one used to patch Lemnos or Daedalus to a local checkout).
+
+What the gate no longer covers that the former manual gate did:
+
+- `styx`'s feature-set clippy runs with `replay-styxrec` also enabled (pulled in by
+  `styx-record-cli`'s dev-dependency in the shared pass), and `styx-record-cli`'s with that whole
+  `styx` feature set rather than only what the recorder enables. A warning that only appears with
+  exactly the old feature set (say, an import unused without `replay-styxrec`) is not caught.
+- The native tests, the recorder's tests and `zero_alloc` with Daedalus run in one build with each
+  other's features (and libjpeg-turbo, MCAP replay and previews) enabled, not each with only its
+  own. Every test of the former runs is still run (checked by name); tests that need libjpeg-turbo
+  absent run in the default-feature `test` step.
+- Tests run in one process per test (nextest), not in one process per test binary, except under
+  `--full`.
+- `zero_alloc` runs once, not 3 to 13 times (`--full` repeats it).
+- `styx-algo`, `styx-tune`, `styx-softisp` and `styx-gpuisp` are tested at `opt-level = 1`, not 0
+  (the same semantics: overflow checks and debug assertions are on in both).
+- Example binaries with no tests are no longer built as test harnesses (they still build as
+  binaries for the examples' smoke test and are linted by clippy).
+
+CI caches `target/` with `CARGO_INCREMENTAL=0` (set by `Swatinem/rust-cache`); from clean that
+writes about a quarter less than an incremental build. Locally, keep incremental builds:
+switching `CARGO_INCREMENTAL` rebuilds every workspace crate, and incremental rebuilds after an
+edit cost a third to a half of the CPU.
 
 ## Examples
 
@@ -35,7 +129,7 @@ See [`testing.md`](testing.md) for the default and example-focused validation su
 - Rust 1.99.0 is the release toolchain and MSRV for this workspace.
 - Rust toolchain is pinned in [`rust-toolchain.toml`](../rust-toolchain.toml)
 - Root dependency versions are aligned in [`Cargo.toml`](../Cargo.toml)
-- Local validation entrypoint lives in [`scripts/ci.sh`](../scripts/ci.sh)
+- Local validation entrypoints live in [`scripts/gate.sh`](../scripts/gate.sh) (the gate before merging to `dev`) and [`scripts/ci.sh`](../scripts/ci.sh) (what CI runs)
 - Local cleanup entrypoint lives in [`scripts/repo-clean.sh`](../scripts/repo-clean.sh)
 - CI entrypoints live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
 

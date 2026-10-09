@@ -40,13 +40,14 @@ jobs:
             libturbojpeg0-dev \
             pkg-config
 
+      # On pull requests the CI workflow formats and lints the workspace already; these run for
+      # pushes (dev has no other workflow). Clippy type-checks everything `cargo check` would.
       - name: Check formatting
+        if: github.event_name == 'push'
         run: cargo fmt --check
 
-      - name: Check workspace
-        run: cargo check --workspace --all-targets
-
       - name: Clippy workspace
+        if: github.event_name == 'push'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Check styx all features
