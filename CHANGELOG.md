@@ -526,6 +526,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Built and tested against Daedalus `dev` at `66659f7` (plugin ABI 9 unchanged; smaller
+  `#[node]` expansions). No Styx code change; `ed7ddde` remains the minimum.
+
 - Sensor register access is Lemnos's trait, with no Styx bus layer left (docs/portability.md
   "`RegisterBus` is Lemnos's"; Lemnos `dev` at 10269f9): `styx_sensor::RegisterBus` is
   `lemnos_hal::RegisterBus` and `styx_sensor::AsyncRegisterBus` is

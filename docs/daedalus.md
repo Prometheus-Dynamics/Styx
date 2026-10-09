@@ -50,8 +50,9 @@ by its canonical git URL (`https://github.com/Prometheus-Dynamics/Daedalus.git`,
 in the root `Cargo.toml`). Apps and libraries that use Styx from git depend on Daedalus the same
 way, so both resolve to one `daedalus-rs` (a `Cargo.lock` fixes the commit; `cargo update -p
 daedalus-rs` moves it to the branch's head). Styx is built and tested against Daedalus `dev` at
-`ed7ddde` (`daedalus:frame` v2; the `Cargo.lock` is not committed, so pin it with `cargo update
--p daedalus-rs --precise ed7ddde`); a Daedalus with `daedalus:frame` v1 does not build with
+`66659f7` (plugin ABI 9, `daedalus:frame` v2; the `Cargo.lock` is not committed, so pin it with
+`cargo update -p daedalus-rs --precise 66659f7`); it needs at least `ed7ddde` (`daedalus:frame`
+v2). A Daedalus with `daedalus:frame` v1 does not build with
 this Styx, and v1 and v2 plugins refuse each other. To develop against a local Daedalus checkout,
 override the git source in an untracked `.cargo/config.toml` (or the app's `[patch]`):
 

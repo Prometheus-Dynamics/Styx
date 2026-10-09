@@ -162,7 +162,7 @@ With `metrics-serde`, `SyncReport` and `SyncGroupMetrics` are serde types. `Metr
 
 ## Daedalus: one tick per group
 
-Daedalus (`dev` at `ed7ddde`) synchronizes multi-input ticks through its host bridge.
+Daedalus (`dev` at `66659f7`; since `ed7ddde`) synchronizes multi-input ticks through its host bridge.
 
 - `HostBridgeHandle::push_batch` and `HostGraph::batch()` enqueue several payloads under one
   bridge lock and wake the graph once.
