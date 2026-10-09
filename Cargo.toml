@@ -162,6 +162,15 @@ opt-level = 1
 [profile.dev.package.styx-gpuisp]
 opt-level = 1
 
+# Device builds to try things on (scripts/cross-aarch64.sh's default, docs/development.md
+# "Building for the device"): release code generation, but incremental and in many codegen
+# units, so the first build takes less CPU and a rebuild after an edit a fraction of a release
+# build's. `release` stays what ships and what the perf smoke measures.
+[profile.device]
+inherits = "release"
+incremental = true
+codegen-units = 256
+
 # Firmware images measured for size (examples/mcu-footprint, docs/mcu.md): smallest code,
 # whole-program optimisation, no unwinding. `mcu-speed` is the same at `opt-level = "s"`.
 [profile.mcu]

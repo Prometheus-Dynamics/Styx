@@ -8,6 +8,11 @@ on:
       - master
   workflow_dispatch:
 
+# A newer push to a pull request cancels its run in progress (pushes to branches finish).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   docker-facade:
     runs-on: ubuntu-latest

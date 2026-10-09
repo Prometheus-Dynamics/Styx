@@ -5,11 +5,19 @@ on:
     branches:
       - main
       - master
+    # Documentation only (crate READMEs are doctests, so only docs/ and the root's Markdown).
+    paths-ignore: ["docs/**", "*.md", "LICENSE-*"]
   pull_request:
+    paths-ignore: ["docs/**", "*.md", "LICENSE-*"]
   schedule:
     # Nightly: the fuzz smoke run (and everything else) against main.
     - cron: "17 3 * * *"
   workflow_dispatch:
+
+# A newer push to a pull request cancels its run in progress (pushes to branches finish).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   workspace:
@@ -66,8 +74,10 @@ jobs:
         run: ./scripts/check-mem-smoke.sh
 
   nostd:
-    # The platform-neutral crates without std, for a Cortex-M33, a RISC-V microcontroller and
-    # WebAssembly, and the no_std smoke crate's host test (docs/portability.md).
+    # The platform-neutral crates without std, for Cortex-M, RISC-V microcontrollers and
+    # WebAssembly, the no_std host tests, and the MCU firmware images' size limits
+    # (docs/portability.md, docs/mcu.md). `--verify` first proves that linting the crates in
+    # groups gives each crate exactly the features it has alone.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -77,14 +87,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.99.0
         with:
-          components: clippy
-          targets: thumbv8m.main-none-eabihf, riscv32imac-unknown-none-elf, wasm32-unknown-unknown
+          components: clippy, llvm-tools
+          targets: thumbv7em-none-eabihf, thumbv8m.main-none-eabihf, riscv32imac-unknown-none-elf, wasm32-unknown-unknown, thumbv6m-none-eabi, riscv32imc-unknown-none-elf
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Build and test without std
-        run: ./scripts/check-nostd.sh
+        run: ./scripts/check-nostd.sh --verify
 
   simd-aarch64:
     # The NEON kernels only build on AArch64; check them against the scalar oracle natively.
