@@ -453,6 +453,19 @@ re-exported as `styx::ipc::lease_codec`), so a consumer needs no more of Styx:
   same frame. The message has no sequence number: the descriptor's `timestamp` (the capture
   time) is equal for the same frame and larger for a newer one. A consumer connecting before
   any frame waits `first_frame_wait` (1 s), then the connection is closed with nothing sent.
+- *Each frame once:* a consumer that wants every frame once, as it is published, connects to
+  the sibling endpoint `<path>.next` (`frame_socket::next_path`) and writes the `timestamp` of
+  the frame it has (`0` for none) as one ASCII decimal line, `"<timestamp>\n"`. The server
+  answers with the first frame whose timestamp differs, at once or when the next one is
+  published (within `NEXT_WAIT`, 10 s, else it closes the connection with nothing sent). The
+  answer is the same message and the connection the same lease as on the frame socket.
+  `FrameFetcher::fetch_next(wait)` does this (and against a server without the endpoint
+  fetches from the frame socket until the frame is new). Polling the frame socket instead
+  sends the same frame again until the next is published: the server counts every send
+  (`served`), the distinct frames sent (`served_frames`) and those repeated sends
+  (`repeated`), and records each frame's hops once per consumer it was new to; the fetcher
+  counts the frames it got twice (`FrameFetcher::stats().repeated`) and records their hops
+  once.
 
 **Hops and statistics:** a frame that carries hops (`FrameMeta::hops`: sensor, dequeue, ISP,
 queue times) is sent with them and the send time as the message's last member, `"hops"`

@@ -213,7 +213,18 @@ fn pisp_disallowed_fourcc(code: FourCc) -> bool {
     // PiSP asserts on several formats during configuration validation.
     matches!(
         &code.to_u32().to_le_bytes(),
-        b"YV12" | b"XB24" | b"XR24" | b"YU16" | b"YV16" | b"YU24" | b"YV24" | b"YVYU" | b"VYUY"
+        b"YV12"
+            | b"XB24"
+            | b"XR24"
+            | b"YU16"
+            | b"YV16"
+            | b"YU24"
+            | b"YV24"
+            | b"YVYU"
+            | b"VYUY"
+            // DRM `AB24` / `AR24`: no PiSP output format; `toPiSPImageFormat` asserts on them.
+            | b"RGBA"
+            | b"BGRA"
     )
 }
 

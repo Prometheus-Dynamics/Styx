@@ -141,3 +141,69 @@ pub(super) fn completed_frame_parts(
         plane_views,
     })
 }
+
+/// The clock of libcamera's `SensorTimestamp`. libcamera documents `CLOCK_BOOTTIME`, but on
+/// V4L2 pipelines (Raspberry Pi's included) it is the receiver's buffer timestamp, which the
+/// kernel takes on `CLOCK_MONOTONIC`. The two differ by the time the system spent suspended:
+/// when that is under a second (a device that never suspends: 0) either is right to well
+/// under a frame and the documented clock is kept; otherwise the timestamp is on the clock it
+/// is not ahead of (a frame is never older than the suspended time).
+pub(super) fn sensor_clock(
+    timestamp: u64,
+    monotonic_now: u64,
+    boottime_now: u64,
+) -> TimestampClock {
+    const SUSPENDED: u64 = 1_000_000_000;
+    if boottime_now.saturating_sub(monotonic_now) < SUSPENDED || timestamp > monotonic_now {
+        TimestampClock::Boottime
+    } else {
+        TimestampClock::Monotonic
+    }
+}
+
+/// What the capture worker knows of a completed request's frame.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Completed {
+    /// Its sensor timestamp, on `clock`.
+    pub timestamp: u64,
+    pub clock: TimestampClock,
+    /// To the configured timestamp clock (`None`: keep `clock`).
+    pub conversion: Option<ClockConversion>,
+    pub sequence: u32,
+    pub buffer_memory: &'static str,
+    /// When the worker took the completed request from libcamera (`Hop::Dequeued`).
+    pub dequeued: std::time::Instant,
+}
+
+/// The primary frame's metadata: timestamps (converted), backend metadata, sensor latency and
+/// its `Dequeued` hop; the queue stamps `Sensor` and `Queued` when it is delivered.
+pub(super) fn frame_meta(format: MediaFormat, c: &Completed) -> FrameMeta {
+    let mut meta = FrameMeta::new(format, c.timestamp)
+        .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
+            sequence: c.sequence,
+            buffer_memory: c.buffer_memory,
+        }))
+        .with_capture_instant(c.dequeued)
+        .with_sensor_latency(c.clock)
+        .in_clock(c.clock, c.conversion)
+        .with_transition(ResidencyTransition {
+            from: FrameResidency::Dmabuf,
+            to: FrameResidency::Dmabuf,
+            reason: ResidencyTransitionReason::Capture,
+            copied: false,
+        });
+    meta.hops
+        .set(Hop::Dequeued, CaptureInstant::from(c.dequeued).as_nanos());
+    meta
+}
+
+/// A companion's metadata (the ISP's second output of the same request): the primary's
+/// timestamp, so the two match.
+pub(super) fn companion_meta(format: MediaFormat, c: &Completed, sequence: u32) -> FrameMeta {
+    FrameMeta::new(format, c.timestamp)
+        .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
+            sequence,
+            buffer_memory: c.buffer_memory,
+        }))
+        .in_clock(c.clock, c.conversion)
+}

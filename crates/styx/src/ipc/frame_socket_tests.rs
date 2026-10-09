@@ -561,3 +561,122 @@ fn hops_travel_with_the_frame_and_statistics_are_served() {
     drop(socket);
     assert!(!stats_path(&path).exists());
 }
+
+/// Publishes frames `first..first + n`, `period` apart, from another thread.
+fn publish_later(
+    camera: &Arc<Camera>,
+    socket: &Arc<FrameSocket>,
+    first: u64,
+    n: u64,
+    period: Duration,
+) -> std::thread::JoinHandle<()> {
+    let (camera, socket) = (camera.clone(), socket.clone());
+    std::thread::spawn(move || {
+        for seq in first..first + n {
+            std::thread::sleep(period);
+            let frame = camera.capture(seq).expect("a free buffer");
+            socket.publish(&frame).unwrap();
+        }
+    })
+}
+
+#[test]
+fn fetch_next_gets_each_frame_once_as_it_is_published() {
+    let path = socket_path("next");
+    let socket = Arc::new(FrameSocket::bind(&path).unwrap());
+    assert!(super::next_path(&path).exists());
+    let camera = Camera::new(4);
+    let mut fetcher = super::FrameFetcher::new(&path);
+    let frames = 20;
+    let producer = publish_later(&camera, &socket, 1, frames, Duration::from_millis(15));
+    let mut seen: Vec<u64> = Vec::new();
+    while seen.last() != Some(&frames) {
+        let f = fetcher.fetch_next(Duration::from_secs(2)).unwrap();
+        // The pixels are the frame's own.
+        assert!(bytes(&f).iter().all(|&b| b == f.meta().timestamp as u8));
+        seen.push(f.meta().timestamp);
+    }
+    producer.join().unwrap();
+    // Each frame at most once, in order (one published while the consumer reconnects is
+    // skipped only if another followed it before it asked: not at this pace, normally).
+    assert!(seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
+    assert!(seen.len() as u64 > frames / 2, "{seen:?}");
+    let n = seen.len() as u64;
+    let stats = socket.stats();
+    assert_eq!((stats.served, stats.served_frames), (n, n));
+    assert_eq!(stats.repeated, 0);
+    let fetched = fetcher.stats();
+    assert_eq!(
+        (fetched.fetched, fetched.repeated, fetched.polled),
+        (n, 0, 0)
+    );
+
+    // With nothing new published it waits for the next frame rather than sending this one.
+    let t = Instant::now();
+    let producer = publish_later(&camera, &socket, 100, 1, Duration::from_millis(100));
+    let f = fetcher.fetch_next(Duration::from_secs(2)).unwrap();
+    assert_eq!(f.meta().timestamp, 100);
+    assert!(
+        t.elapsed() >= Duration::from_millis(90),
+        "{:?}",
+        t.elapsed()
+    );
+    producer.join().unwrap();
+    drop(f);
+    // A consumer that gives up before a new frame is not sent anything.
+    let err = fetcher.fetch_next(Duration::from_millis(50));
+    assert!(err.is_err());
+    wait_until("the waiting consumer is dropped", || {
+        socket.stats().unserved == 1
+    });
+    assert_eq!(socket.stats().served, n + 1);
+}
+
+#[test]
+fn polling_the_frame_socket_counts_repeated_sends() {
+    let path = socket_path("repeats");
+    let socket = Arc::new(FrameSocket::bind(&path).unwrap());
+    let camera = Camera::new(4);
+    socket.publish(&camera.capture(7).unwrap()).unwrap();
+    let mut fetcher = super::FrameFetcher::new(&path);
+    for _ in 0..3 {
+        let f = fetcher.fetch(Duration::from_secs(2)).unwrap();
+        assert_eq!(f.meta().timestamp, 7);
+    }
+    let stats = socket.stats();
+    assert_eq!(
+        (stats.served, stats.served_frames, stats.repeated),
+        (3, 1, 2)
+    );
+    assert_eq!(fetcher.stats().repeated, 2);
+    let m = socket.metrics();
+    assert_eq!((m.served, m.served_frames, m.repeated), (3, 1, 2));
+    assert!(m.prometheus_text().contains("event=\"repeated\""));
+}
+
+/// Against a server without `<path>.next` (an older Styx), `fetch_next` fetches the latest
+/// until it is a new frame.
+#[test]
+fn fetch_next_falls_back_to_the_frame_socket() {
+    let path = socket_path("next-fallback");
+    let socket = Arc::new(FrameSocket::bind(&path).unwrap());
+    std::fs::remove_file(super::next_path(&path)).unwrap();
+    let camera = Camera::new(4);
+    socket.publish(&camera.capture(1).unwrap()).unwrap();
+    let mut fetcher = super::FrameFetcher::new(&path);
+    assert_eq!(
+        fetcher
+            .fetch_next(Duration::from_secs(2))
+            .unwrap()
+            .meta()
+            .timestamp,
+        1
+    );
+    let producer = publish_later(&camera, &socket, 2, 1, Duration::from_millis(30));
+    let f = fetcher.fetch_next(Duration::from_secs(2)).unwrap();
+    assert_eq!(f.meta().timestamp, 2);
+    producer.join().unwrap();
+    let fetched = fetcher.stats();
+    assert_eq!(fetched.polled, 2);
+    assert!(fetched.repeated > 0, "{fetched:?}");
+}

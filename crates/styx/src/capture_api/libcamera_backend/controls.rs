@@ -6,7 +6,8 @@ use styx_core::controls::{ControlId, ControlValue};
 use crate::capture_api::CaptureError;
 use crate::capture_api::LIBCAMERA_FRAME_DURATION_LIMITS;
 
-use super::util::{classify_libcamera_control_apply_message, from_lc_value, to_lc_value};
+use super::lcraw::{self, RawValue};
+use super::util::{classify_libcamera_control_apply_message, to_lc_value};
 
 /// Build the control list passed to `Camera::start`.
 ///
@@ -31,6 +32,39 @@ pub(super) fn build_libcamera_controls(
     Ok(list)
 }
 
+/// Queue `req` with the controls Styx keeps applied (and the frame duration), written into its
+/// control list in place: nothing is allocated per request.
+/// The controls `Camera::start` gets (`None`: none) and the frame duration (µs) every request
+/// carries: the requested controls, and the frame duration limits pinned to `interval`.
+#[allow(clippy::type_complexity)]
+pub(super) fn start_controls(
+    controls: &[(ControlId, ControlValue)],
+    template: Option<&libcamera::request::Request>,
+    interval: Option<crate::prelude::Interval>,
+) -> Result<
+    (
+        Option<libcamera::utils::UniquePtr<LcControlList>>,
+        Option<i64>,
+    ),
+    CaptureError,
+> {
+    let mut list = build_libcamera_controls(controls, template)?;
+    let frame_duration = interval.map(|interval| {
+        let num = interval.numerator.get() as u64;
+        let den = interval.denominator.get() as u64;
+        let duration_us = num.saturating_mul(1_000_000).saturating_div(den.max(1));
+        duration_us.clamp(1, i64::MAX as u64) as i64
+    });
+    if let Some(duration) = frame_duration {
+        lcraw::set(
+            &mut list,
+            LIBCAMERA_FRAME_DURATION_LIMITS.0,
+            RawValue::Int64(&[duration, duration]),
+        );
+    }
+    Ok(((!list.is_empty()).then_some(list), frame_duration))
+}
+
 pub(super) fn queue_with_controls(
     cam: &libcamera::camera::ActiveCamera<'_>,
     mut req: libcamera::request::Request,
@@ -40,14 +74,13 @@ pub(super) fn queue_with_controls(
     {
         let list = req.controls_mut();
         for (id, val) in controls {
-            if let Ok(lc_val) = to_lc_value(val) {
-                let _ = list.set_raw(id.0, lc_val);
-            }
+            lcraw::set_styx(list, id.0, val);
         }
         if let Some(duration) = frame_duration {
-            let _ = list.set_raw(
+            lcraw::set(
+                list,
                 LIBCAMERA_FRAME_DURATION_LIMITS.0,
-                libcamera::control_value::ControlValue::from([duration, duration]),
+                RawValue::Int64(&[duration, duration]),
             );
         }
     }
@@ -117,38 +150,4 @@ pub(super) fn apply_control_updates(
             }
         }
     }
-}
-
-/// Timing from a completed request's metadata.
-pub(super) struct RequestTiming {
-    /// `SensorTimestamp`: start of exposure, `CLOCK_BOOTTIME`. Buffer timestamps on Raspberry Pi
-    /// mark ISP completion instead.
-    pub sensor_timestamp: Option<u64>,
-    /// `FrameDuration` in nanoseconds.
-    pub frame_duration_ns: Option<u64>,
-}
-
-/// Record a completed request's metadata as control readback and pick out its timing.
-pub(super) fn read_request_metadata(
-    req: &libcamera::request::Request,
-    readback: &mut HashMap<ControlId, ControlValue>,
-) -> RequestTiming {
-    let mut timing = RequestTiming {
-        sensor_timestamp: None,
-        frame_duration_ns: None,
-    };
-    for (id, val) in req.metadata() {
-        if let libcamera::control_value::ControlValue::Int64(v) = &val {
-            let first = v.first().and_then(|v| u64::try_from(*v).ok());
-            if id == libcamera::controls::ControlId::SensorTimestamp as u32 {
-                timing.sensor_timestamp = first;
-            } else if id == libcamera::controls::ControlId::FrameDuration as u32 {
-                timing.frame_duration_ns = first.map(|us| us * 1_000);
-            }
-        }
-        if let Some(val) = from_lc_value(&val) {
-            readback.insert(ControlId(id), val);
-        }
-    }
-    timing
 }

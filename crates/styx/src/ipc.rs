@@ -52,8 +52,8 @@ pub use self::controls::{
 };
 #[cfg(feature = "frame-socket")]
 pub use self::frame_socket::{
-    FRAME_SOCKET_TRANSPORT, FrameFetcher, FrameSocket, FrameSocketMetrics, FrameSocketOptions,
-    FrameSocketStats, fetch_frame,
+    FRAME_SOCKET_TRANSPORT, FetchStats, FrameFetcher, FrameSocket, FrameSocketMetrics,
+    FrameSocketOptions, FrameSocketStats, fetch_frame,
 };
 pub use self::service::{
     CameraService, CameraServiceHandle, CameraServiceStats, DEFAULT_MAX_CLIENTS,

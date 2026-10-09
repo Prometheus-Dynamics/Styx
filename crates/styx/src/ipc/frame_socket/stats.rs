@@ -23,10 +23,14 @@ const MAX_ANSWER: u64 = 16 << 20;
 pub struct FrameSocketMetrics {
     /// The frame socket's path.
     pub path: String,
-    /// Frames published, copied into a memfd to be sent, sent to consumers.
+    /// Frames published, copied into a memfd to be sent, sent to consumers (every send).
     pub published: u64,
     pub copied: u64,
     pub served: u64,
+    /// Distinct frames among those sent, and sends of a frame sent before on the frame socket
+    /// itself (consumers polling faster than frames are published).
+    pub served_frames: u64,
+    pub repeated: u64,
     /// Leases open now, and frames held for consumers besides the latest.
     pub leases: u64,
     pub held_frames: u64,
@@ -36,7 +40,8 @@ pub struct FrameSocketMetrics {
     pub unserved: u64,
     /// How long consumers held their leases: send to close (or revocation).
     pub hold: Window,
-    /// Hop times of the frames sent, sensor to the send, and their copies.
+    /// Hop times of the frames sent, sensor to the send, and their copies: each frame once per
+    /// consumer it was new to (a frame sent again is not counted again).
     pub hops: HopMetrics,
     /// The serving process: its cameras and itself (copies, dma-buf syncs).
     pub snapshot: MetricsSnapshot,
@@ -70,6 +75,8 @@ pub(super) fn metrics_of(shared: &Shared) -> FrameSocketMetrics {
         published: s.published,
         copied: s.copied,
         served: s.served,
+        served_frames: s.served_frames,
+        repeated: s.repeated,
         leases: s.leases as u64,
         held_frames: s.held_frames as u64,
         revoked: s.revoked,

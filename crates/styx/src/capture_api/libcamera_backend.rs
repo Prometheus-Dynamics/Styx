@@ -4,6 +4,7 @@ mod crop;
 mod emulation;
 mod frame;
 mod heap;
+mod lcraw;
 mod streams;
 mod util;
 
@@ -20,22 +21,21 @@ use styx_core::controls::ControlValue;
 use styx_core::prelude::*;
 
 use crate::capture_api::{
-    CaptureDescriptor, CaptureError, CaptureHandle, ControlApplyKind, ControlPlane,
-    LIBCAMERA_FRAME_DURATION_LIMITS, StyxConfig, TdnOutputMode, WorkerHandle,
+    CaptureDescriptor, CaptureError, CaptureHandle, ControlApplyKind, ControlPlane, StyxConfig,
+    TdnOutputMode, WorkerHandle,
 };
 use crate::metrics::{ExternalBackingTracker, StageMetrics};
 use crate::prelude::{Interval, Mode, ModeId};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
 use self::backing::{
-    LibcameraBacking, RequestPoolBackingLease, ShutdownGuard, wait_for_backings_to_drain,
+    LibcameraBacking, RequestPoolBackingLease, RequestSlot, ShutdownGuard,
+    wait_for_backings_to_drain,
 };
 pub use self::controls::{ControlMessage, PendingControlState};
-use self::controls::{
-    apply_control_updates, build_libcamera_controls, queue_with_controls, read_request_metadata,
-};
+use self::controls::{apply_control_updates, queue_with_controls, start_controls};
 use self::emulation::Emulation;
-use self::frame::completed_frame_parts;
+use self::frame::{Completed, companion_meta, completed_frame_parts, frame_meta, sensor_clock};
 use self::heap::{CaptureBuffer, request_buffer};
 use self::streams::{
     SecondStream, attach_companion, build_requests, choose_second_stream, configure_streams,
@@ -43,10 +43,11 @@ use self::streams::{
 };
 use self::util::{
     classify_libcamera_backend_message, classify_libcamera_control_apply_kind,
-    control_value_enabled, map_pixel_format_to_fourcc, normalize_requested_fourcc_for_libcamera,
-    pisp_disallowed_fourcc, stream_role_for_request, supports_frame_duration_limits,
+    map_pixel_format_to_fourcc, normalize_requested_fourcc_for_libcamera, pisp_disallowed_fourcc,
+    stream_role_for_request, supports_frame_duration_limits,
 };
-use super::handle::{CaptureQueue, enqueue_capture_frame, record_worker_error};
+use super::handle::{CaptureQueue, record_worker_error};
+use super::handle_metrics::deliver;
 pub(crate) use crop::OUTPUT_CROP;
 
 pub(super) fn stop_manager_if_idle(configured: bool) {
@@ -69,7 +70,6 @@ pub(super) fn start_libcamera(
     use libcamera::camera::CameraConfigurationStatus;
     use libcamera::geometry::Size;
     use std::sync::mpsc;
-    use std::sync::mpsc::RecvTimeoutError;
 
     let id = match &backend.handle {
         BackendHandle::Libcamera { id } => id.clone(),
@@ -85,31 +85,8 @@ pub(super) fn start_libcamera(
         .into_iter()
         .filter(|(id, _)| writable_controls.contains(id))
         .collect();
-    let requires_tdn_output = requested_controls.iter().any(|(id, value)| {
-        if !control_value_enabled(value) {
-            return false;
-        }
-        descriptor
-            .controls
-            .iter()
-            .find(|meta| meta.id == *id)
-            .is_some_and(|meta| meta.metadata.requires_tdn_output)
-    });
-    let enable_tdn_output = match tdn_output_mode {
-        TdnOutputMode::Off => false,
-        TdnOutputMode::Auto => requires_tdn_output,
-        TdnOutputMode::Force => true,
-    };
-    if enable_tdn_output && !util::is_rpi_pisp_sensor_i2c(&id) {
-        return Err(CaptureError::InvalidConfig(
-            "tdn output not supported for this device".into(),
-        ));
-    }
-    if requires_tdn_output && !enable_tdn_output {
-        return Err(CaptureError::InvalidConfig(
-            "tdn output required by requested controls".into(),
-        ));
-    }
+    let enable_tdn_output =
+        util::tdn_output(&descriptor, &requested_controls, tdn_output_mode, &id)?;
 
     let supports_frame_duration = supports_frame_duration_limits(&descriptor);
 
@@ -120,17 +97,16 @@ pub(super) fn start_libcamera(
     let interval_for_thread = interval;
     let supports_frame_duration_for_thread = supports_frame_duration;
 
-    let requested_fps = interval
-        .map(|i| i.denominator.get() as f64 / i.numerator.get().max(1) as f64)
-        .unwrap_or(0.0);
     let capture_tunables = config.capture_tunables();
     let timestamp_clock = capture_tunables.timestamp_clock;
     let extra_buffers = capture_tunables.extra_buffers;
     let sequence_gaps = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut sequence_tracker = crate::metrics::SequenceGapTracker::new(sequence_gaps.clone());
+    // Frames are recorded (and their hops stamped) as they enter the queue, as on every path.
+    let live = crate::metrics::CaptureMetrics::with_sequence_gaps(sequence_gaps.clone());
+    let live_worker = live.clone();
     let libcamera_config = config.libcamera_config();
     let queue_depth = capture_tunables.queue_depth;
-    let _ = requested_fps;
     let (tx, rx) = queue.unwrap_or_else(|| {
         styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow)
     });
@@ -160,6 +136,7 @@ pub(super) fn start_libcamera(
     let tdn_request_pool_tracker_for_thread = tdn_request_pool_tracker.clone();
     let worker_error_for_thread = worker_error.clone();
     let worker = thread::spawn(move || {
+        live_worker.register_thread();
         let lookup_timeout = Duration::from_millis(libcamera_config.lookup_timeout_ms);
         let lookup_poll = Duration::from_millis(libcamera_config.lookup_poll_ms);
         let requeue_stall_timeout =
@@ -201,9 +178,8 @@ pub(super) fn start_libcamera(
             if util::is_rpi_pisp_sensor_i2c(&id_for_thread)
                 && pisp_disallowed_fourcc(requested_code)
             {
-                return Err(CaptureError::Backend(format!(
-                    "{} unsupported on PiSP",
-                    requested_code
+                return Err(CaptureError::InvalidConfig(format!(
+                    "{requested_code} unsupported on PiSP"
                 )));
             }
             let libcamera_code = normalize_requested_fourcc_for_libcamera(requested_code);
@@ -286,7 +262,12 @@ pub(super) fn start_libcamera(
                 }
             }
             if matches!(status, CameraConfigurationStatus::Invalid) {
-                return Err(CaptureError::Backend("config invalid".into()));
+                return Err(match streams::offered(&cam, role) {
+                    Some(offered) => CaptureError::InvalidConfig(format!(
+                        "libcamera does not offer {requested_code} on this camera (offers {offered})"
+                    )),
+                    None => CaptureError::Backend("config invalid".into()),
+                });
             }
             cam.configure(&mut cfgs)
                 .map_err(|e| classify_libcamera_backend_message(e.to_string()))?;
@@ -436,30 +417,11 @@ pub(super) fn start_libcamera(
                 tdn_stream.as_ref(),
             )?;
 
-            let ctrl_list =
-                build_libcamera_controls(&requested_controls_for_thread, requests.first())?;
-            let mut ctrl_list = ctrl_list;
-            let mut frame_duration: Option<i64> = None;
-            if let Some(interval) = interval_for_thread
-                && supports_frame_duration_for_thread
-            {
-                let num = interval.numerator.get() as u64;
-                let den = interval.denominator.get() as u64;
-                let duration_us = num.saturating_mul(1_000_000).saturating_div(den.max(1));
-                let duration = duration_us.clamp(1, i64::MAX as u64) as i64;
-                frame_duration = Some(duration);
-                ctrl_list
-                    .set_raw(
-                        LIBCAMERA_FRAME_DURATION_LIMITS.0,
-                        libcamera::control_value::ControlValue::from([duration, duration]),
-                    )
-                    .map_err(|e| util::classify_libcamera_control_apply_message(e.to_string()))?;
-            }
-            let start_ctrls = if ctrl_list.is_empty() {
-                None
-            } else {
-                Some(ctrl_list)
-            };
+            let (start_ctrls, mut frame_duration) = start_controls(
+                &requested_controls_for_thread,
+                requests.first(),
+                interval_for_thread.filter(|_| supports_frame_duration_for_thread),
+            )?;
             let mut control_state: HashMap<ControlId, ControlValue> = HashMap::new();
             let mut readback_state: HashMap<ControlId, ControlValue> = HashMap::new();
             let mut controls_enabled = true;
@@ -467,8 +429,22 @@ pub(super) fn start_libcamera(
                 control_state.insert(*id, val.clone());
             }
             let mapping_cache = Arc::new(backing::MappingCache::default());
-            let req_rx = cam.subscribe_request_completed();
-            let (ret_tx, ret_rx) = mpsc::channel::<libcamera::request::Request>();
+            // Completed requests, through a queue with room for all of them (a channel would
+            // allocate as it goes).
+            let (req_tx, req_rx) = styx_core::queue::bounded(requests.len() + 1);
+            cam.on_request_completed(move |req| {
+                let _ = req_tx.send(req);
+            });
+            // One return slot per request (its cookie), reused by every frame it carries.
+            let slots: Vec<Arc<RequestSlot>> = (0..requests.len())
+                .map(|_| {
+                    RequestSlot::new(
+                        shutting_down.clone(),
+                        outstanding_backings_for_thread.clone(),
+                    )
+                })
+                .collect();
+            let mut sensor_timestamp_clock = None;
             if let Err(err) = cam.start(start_ctrls.as_deref()) {
                 let msg = err.to_string();
                 if start_ctrls.is_some()
@@ -491,17 +467,18 @@ pub(super) fn start_libcamera(
             let _ = setup_tx.send(Ok(validated_mode.clone()));
 
             let mut failure: Option<CaptureError> = None;
-            let mut pending_requeue: Vec<libcamera::request::Request> = Vec::new();
+            let mut pending_requeue: Vec<libcamera::request::Request> =
+                Vec::with_capacity(slots.len());
+            let mut still_pending = Vec::with_capacity(slots.len());
             let mut requeue_fail_since: Option<Instant> = None;
             // Stopped while idle: requests collect in `pending_requeue` until resumed.
             let mut paused = false;
             loop {
-                while let Ok(mut ret_req) = ret_rx.try_recv() {
+                for mut ret_req in slots.iter().filter_map(|slot| slot.take_returned()) {
                     ret_req.reuse(ReuseFlag::REUSE_BUFFERS);
                     pending_requeue.push(ret_req);
                 }
                 if !paused && !pending_requeue.is_empty() {
-                    let mut still_pending = Vec::with_capacity(pending_requeue.len());
                     for ret_req in pending_requeue.drain(..) {
                         match queue_with_controls(&cam, ret_req, &control_state, frame_duration) {
                             Ok(()) => {}
@@ -524,7 +501,7 @@ pub(super) fn start_libcamera(
                             break;
                         }
                     }
-                    pending_requeue = still_pending;
+                    std::mem::swap(&mut pending_requeue, &mut still_pending);
                 }
                 while let Ok(msg) = ctrl_rx.try_recv() {
                     match msg {
@@ -591,12 +568,18 @@ pub(super) fn start_libcamera(
                     break;
                 }
                 match req_rx.recv_timeout(request_poll) {
-                    Ok(mut req) if req.status() == libcamera::request::RequestStatus::Cancelled => {
+                    RecvWaitOutcome::Data(mut req)
+                        if req.status() == libcamera::request::RequestStatus::Cancelled =>
+                    {
                         req.reuse(ReuseFlag::REUSE_BUFFERS);
                         pending_requeue.push(req);
                     }
-                    Ok(req) => {
-                        let timing = read_request_metadata(&req, &mut readback_state);
+                    RecvWaitOutcome::Data(req) => {
+                        let dequeued = Instant::now();
+                        let timing = lcraw::record_metadata(
+                            lcraw::entries(req.metadata()),
+                            &mut readback_state,
+                        );
                         let shown = crop
                             .as_mut()
                             .filter(|_| controls_enabled)
@@ -639,13 +622,19 @@ pub(super) fn start_libcamera(
                                 }
                             }
                         });
+                        let Some(slot) = usize::try_from(req.cookie())
+                            .ok()
+                            .and_then(|i| slots.get(i))
+                        else {
+                            failure =
+                                Some(CaptureError::Backend("libcamera request cookie".into()));
+                            break;
+                        };
                         let backing = LibcameraBacking::new(
+                            slot,
                             req,
-                            ret_tx.clone(),
                             frame_parts.plane_views,
                             mapping_cache.clone(),
-                            shutting_down.clone(),
-                            outstanding_backings_for_thread.clone(),
                             outstanding_lease_tracker_for_thread.clone(),
                             mapped_lease_tracker_for_thread.clone(),
                             buffer_memory == "dma-heap",
@@ -657,30 +646,28 @@ pub(super) fn start_libcamera(
                             }
                             None => sequence_tracker.observe(frame_parts.sequence),
                         }
+                        // Decided on the first frame: the clock libcamera's timestamps are on.
+                        let clock = *sensor_timestamp_clock.get_or_insert_with(|| {
+                            let now = |c: TimestampClock| c.now_ns().unwrap_or(0);
+                            sensor_clock(
+                                timestamp,
+                                now(TimestampClock::Monotonic),
+                                now(TimestampClock::Boottime),
+                            )
+                        });
                         // One offset for the frame and its companion so their timestamps match.
-                        let conversion = timestamp_clock.conversion_from(TimestampClock::Boottime);
-                        let mut meta = FrameMeta::new(wire_format, timestamp)
-                            .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
-                                sequence: frame_parts.sequence,
-                                buffer_memory,
-                            }))
-                            .with_capture_instant(std::time::Instant::now())
-                            .with_sensor_latency(TimestampClock::Boottime)
-                            .in_clock(TimestampClock::Boottime, conversion)
-                            .with_transition(ResidencyTransition {
-                                from: FrameResidency::Dmabuf,
-                                to: FrameResidency::Dmabuf,
-                                reason: ResidencyTransitionReason::Capture,
-                                copied: false,
-                            });
+                        let completed = Completed {
+                            timestamp,
+                            clock,
+                            conversion: timestamp_clock.conversion_from(clock),
+                            sequence: frame_parts.sequence,
+                            buffer_memory,
+                            dequeued,
+                        };
+                        let mut meta = frame_meta(wire_format, &completed);
                         meta.crop = shown;
                         let companion_frame = companion_parts.map(|(kind, format, parts)| {
-                            let meta = FrameMeta::new(format, timestamp)
-                                .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
-                                    sequence: parts.sequence,
-                                    buffer_memory,
-                                }))
-                                .in_clock(TimestampClock::Boottime, conversion);
+                            let meta = companion_meta(format, &completed, parts.sequence);
                             let sibling = backing.sibling(parts.plane_views);
                             (
                                 kind,
@@ -714,17 +701,17 @@ pub(super) fn start_libcamera(
                         } else {
                             frame
                         };
-                        if enqueue_capture_frame(&tx, frame, "libcamera", queue_send_timeout) {
+                        if deliver(&live_worker, &tx, frame, "libcamera", queue_send_timeout) {
                             break;
                         }
                     }
-                    Err(RecvTimeoutError::Timeout) => {
+                    RecvWaitOutcome::Timeout => {
                         if stop_rx.try_recv().is_ok() {
                             shutting_down.store(true, Ordering::Release);
                             break;
                         }
                     }
-                    Err(RecvTimeoutError::Disconnected) => break,
+                    RecvWaitOutcome::Closed => break,
                 }
             }
             if let Some(err) = failure {
@@ -788,7 +775,7 @@ pub(super) fn start_libcamera(
         shutdown_stats: Default::default(),
         retry_metrics: Default::default(),
         sequence_gaps,
-        live: Default::default(),
+        live,
     })
 }
 

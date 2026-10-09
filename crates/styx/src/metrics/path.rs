@@ -289,12 +289,14 @@ pub(crate) fn frame_socket_text(m: &crate::ipc::frame_socket::FrameSocketMetrics
         ("published", m.published),
         ("copied", m.copied),
         ("served", m.served),
+        ("served_frames", m.served_frames),
+        ("repeated", m.repeated),
         ("revoked", m.revoked),
         ("unserved", m.unserved),
     ] {
         t.counter(
             "styx_frame_socket_events_total",
-            "Frame socket events: frames published, copied into a memfd, served; leases revoked; consumers unserved.",
+            "Frame socket events: frames published, copied into a memfd, served (sends), distinct frames served, repeated sends; leases revoked; consumers unserved.",
             &format!("{l},event=\"{what}\""),
             v,
         );

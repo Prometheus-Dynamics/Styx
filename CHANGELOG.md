@@ -97,6 +97,18 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `preview_encode_bench` (encode cost per encoder, size, quality and input; the whole preview
   path).
 
+- Frame socket: each frame once per consumer, without polling. The sibling endpoint
+  `<path>.next` (`frame_socket::next_path`, module `frame_socket::next`) answers a consumer's
+  line `"<timestamp>\n"` (the frame it has, `0` for none) with the first frame published whose
+  timestamp differs, as soon as there is one; same message and lease as the frame socket.
+  `FrameFetcher::fetch_next(wait)` uses it (falling back to fetching from the frame socket
+  until the frame is new against an older server) and `FrameFetcher::stats()`
+  (`FetchStats { fetched, repeated, polled }`) counts what it fetched. `FrameSocketStats` and
+  `FrameSocketMetrics` gain `served_frames` (distinct frames sent) and `repeated` (sends of a
+  frame already sent, on the frame socket itself); Prometheus `styx_frame_socket_events_total`
+  gains `event="served_frames"` and `event="repeated"`. The lease message (`styx-frame-lease-v1`)
+  is unchanged; the frame socket itself behaves as before.
+
 - Connection changes, in order with what a client receives (docs/frame-server.md "Connection
   changes"): `FrameClient::try_client_event()` and `ControlClient::try_client_event()` return
   `RecvOutcome<ClientEvent<T>>` (`T`: `FrameLease`, `ControlEvent`), with
@@ -545,6 +557,30 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 - The minifb preview window moved to `crates/styx/src/preview/window.rs`; its path
   (`styx::preview::PreviewWindow`, `styx::extras::preview_window`) is unchanged.
+
+- libcamera: frames carry hops (`FrameMeta::hops`) like the native path: `Sensor` (libcamera's
+  `SensorTimestamp`), `Dequeued` (the request completed), `Queued` and `Taken`, so in-process,
+  frame-socket and camera-service hop tables show sensor-to-consumer latency on libcamera too.
+  The capture records into its per-camera metrics (`CaptureHandle::camera_metrics`). The clock
+  of `SensorTimestamp` is decided on the first frame: libcamera documents `CLOCK_BOOTTIME`, V4L2
+  pipelines deliver the receiver's `CLOCK_MONOTONIC` buffer time; they differ only after a
+  suspend, and the clock the timestamp is not ahead of is taken then.
+- libcamera: a captured frame allocates one record (its lease) in steady state, as on the native
+  path (was about 6 per frame in-process, more through IPC): request metadata is read and
+  per-request controls written in place through libcamera's C API (no `ControlValue` per
+  entry), each request's return slot is made once (no return record or channel message per
+  frame), completed requests arrive through a preallocated queue, requeueing reuses its lists,
+  and `LibcameraBacking::export_into` exports into the sender's list.
+- libcamera: a buffer whose planes are on duplicates of one dma-buf (libcamera gives each plane
+  its own fd) is mapped once and synced once per read (one `DMA_BUF_IOCTL_SYNC` START and END
+  per frame, was one pair per plane).
+- `hop_breakdown`: the frame-socket consumer uses `fetch_next` (each frame once), prints the
+  server's sends, distinct frames and repeated sends, and allocations per frame are reported as
+  the median one-second window (steady state) besides the whole-run average (which includes
+  statistics requests and clients joining or leaving).
+- `libcamera_format_check`: formats the probe did not list are skipped; `--force` requests them
+  anyway.
+
 - `PackedChannelOrder::Xrgb` / `Xbgr` are now `Bgrx` / `Rgbx` (bytes in memory order, like
   `Rgba` / `Bgra`), and `Channel` has a `Padding` variant for the unused byte of `XR24` / `XB24`.
 - Rust 1.99.0: the pinned toolchain (`rust-toolchain.toml`), the MSRV (`rust-version = "1.99"`,
@@ -725,6 +761,19 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   (`FrameMeta::sequence()` on the client): only captures that stamp their hops when they
   deliver a frame (virtual, V4L2, native, UVC) sent it; the service now fills the hops trailer
   from the frame's backend metadata. No protocol change.
+
+- libcamera: requesting a format libcamera does not offer no longer aborts the process. Styx
+  set any requested pixel format on the stream and let `validate()` adjust it, and PiSP asserts
+  (`toPiSPImageFormat`, "Pixel format <INVALID> unsupported") on formats it has no V4L2 mapping
+  for, e.g. `RGBA` (DRM `AB24`): `libcamera_format_check` requested it after reporting it "not
+  among the probed modes", because neither it nor the backend checked. Every stream (all
+  pipelines) is now set only to a pixel format from libcamera's `StreamFormats` for it (the
+  requested role, else another role that offers it; raw requests get the offered format with
+  its packing modifier); otherwise the capture fails with `CaptureError::InvalidConfig`
+  ("libcamera does not offer RGBA on this camera (offers ...)") without asking libcamera.
+  `RGBA` and `BGRA` are also refused up front on PiSP sensors, as `InvalidConfig` (was
+  `Backend`, which is retried).
+
 - A control request right after the camera service restarted failed with a broken pipe on the
   kept control connection; it is now sent again on a fresh connection, like a reset one.
 - `XR24` and `XB24` byte order now follows V4L2 and DRM everywhere: `XR24` (V4L2 `XBGR32`, DRM

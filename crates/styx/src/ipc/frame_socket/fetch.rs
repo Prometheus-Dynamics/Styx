@@ -29,13 +29,36 @@ pub fn fetch_frame(path: impl AsRef<Path>, wait: Duration) -> Result<FrameLease,
 /// buffers, sent as new descriptors each time: mapping one costs more than reading it), so a
 /// fetch allocates one record (the frame's lease) and maps nothing in steady state. The hop
 /// times of the frames it fetched (sensor to import, with the server's hops) are recorded
-/// ([`FrameFetcher::hop_metrics`]).
+/// ([`FrameFetcher::hop_metrics`]), each frame once: a frame fetched again (same timestamp) is
+/// counted in [`FetchStats::repeated`] instead.
+///
+/// [`FrameFetcher::fetch`] gets the latest frame, whichever it is; [`FrameFetcher::fetch_next`]
+/// waits for a frame this fetcher has not had yet, so a consumer reading every frame calls it
+/// in a loop without polling.
 pub struct FrameFetcher {
     path: PathBuf,
+    next_path: PathBuf,
     bytes: Vec<u8>,
     fds: Vec<OwnedFd>,
     maps: Arc<MapCache>,
     hops: HopCounters,
+    /// Timestamp of the last frame fetched (`0`: none yet).
+    last: u64,
+    /// The last frame fetched was the one fetched before it.
+    repeat: bool,
+    stats: FetchStats,
+}
+
+/// What a [`FrameFetcher`] fetched.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FetchStats {
+    /// Frames received (every fetch that returned one).
+    pub fetched: u64,
+    /// Of those, the same frame as the fetch before (the server had published nothing new).
+    pub repeated: u64,
+    /// `fetch_next` calls answered on the frame socket itself because the server has no
+    /// `<path>.next` endpoint (an older Styx): each polled until a new frame came.
+    pub polled: u64,
 }
 
 impl FrameFetcher {
@@ -43,10 +66,14 @@ impl FrameFetcher {
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
+            next_path: super::next_path(path),
             bytes: Vec::new(),
             fds: Vec::new(),
             maps: Arc::new(MapCache::default()),
             hops: HopCounters::new(),
+            last: 0,
+            repeat: false,
+            stats: FetchStats::default(),
         }
     }
 
@@ -54,10 +81,60 @@ impl FrameFetcher {
         &self.path
     }
 
-    /// The latest frame (see [`fetch_frame`]); its hops are recorded here.
+    /// The latest frame (see [`fetch_frame`]); its hops are recorded here unless it is the frame
+    /// fetched before.
     pub fn fetch(&mut self, wait: Duration) -> Result<FrameLease, IpcError> {
         let socket = socket::connect_stream(&self.path)?;
+        self.receive(socket, Instant::now() + wait)
+    }
+
+    /// The next frame this fetcher has not had (the first: the latest), waiting up to `wait`
+    /// for the server to publish it: from the frame socket's `<path>.next` endpoint
+    /// ([`next_path`](super::next_path)), which sends each frame once, when it is published.
+    /// Against a server without that endpoint it fetches from the frame socket until the
+    /// frame is a new one, a few milliseconds apart ([`FetchStats::polled`]).
+    pub fn fetch_next(&mut self, wait: Duration) -> Result<FrameLease, IpcError> {
         let deadline = Instant::now() + wait;
+        match socket::connect_stream(&self.next_path) {
+            Ok(socket) => {
+                let mut line = [0u8; 24];
+                let line = super::next::request(self.last, &mut line);
+                let stream = std::os::unix::net::UnixStream::from(socket);
+                // A fresh connection's buffer takes a line without blocking.
+                std::io::Write::write_all(&mut &stream, line)?;
+                self.receive(OwnedFd::from(stream), deadline)
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                self.stats.polled += 1;
+                loop {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    let frame = self.fetch(left)?;
+                    if !self.repeat {
+                        return Ok(frame);
+                    }
+                    drop(frame);
+                    if left.is_zero() {
+                        return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
+                    }
+                    std::thread::sleep(left.min(Duration::from_millis(2)));
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// What this fetcher fetched.
+    pub fn stats(&self) -> FetchStats {
+        self.stats
+    }
+
+    /// Receives the frame message on `socket` (connected), up to `deadline`.
+    fn receive(&mut self, socket: OwnedFd, deadline: Instant) -> Result<FrameLease, IpcError> {
         self.bytes.clear();
         self.fds.clear();
         const HEADER: usize = lease_codec::HEADER_LEN;
@@ -101,7 +178,17 @@ impl FrameFetcher {
             Ok(()) | Err(FrameValidationError::UnknownStorageLayout) => {}
             Err(_) => return Err(FrameExportError::InvalidDescriptor.into()),
         }
-        self.hops.record(&frame.meta().hops);
+        let timestamp = frame.meta().timestamp;
+        let repeated = self.stats.fetched > 0 && timestamp == self.last;
+        self.stats.fetched += 1;
+        if repeated {
+            self.stats.repeated += 1;
+            self.repeat = true;
+        } else {
+            self.repeat = false;
+            self.hops.record(&frame.meta().hops);
+        }
+        self.last = timestamp;
         Ok(frame)
     }
 
