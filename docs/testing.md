@@ -8,10 +8,31 @@ The gate before merging to `dev` is `./scripts/gate.sh` ([development.md](develo
 
 - `cargo fmt --all --check`
 - `./scripts/check-file-sizes.sh`
-- `./scripts/check-test-targets.sh` (binaries marked `test = false` hold no tests)
+- `./scripts/check-test-targets.sh` (binaries marked `test = false` hold no tests; one
+  integration-test binary per package besides the listed exceptions)
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo doc --workspace --no-deps`
+
+## Integration Tests
+
+Each package's integration tests are one test binary, `tests/it/main.rs`, with a module per
+topic (`mod sim_ae;`, `mod camera_service;`), so an edit relinks one binary per package
+([development.md](development.md#the-gate)). New tests go into a module there, not into a new
+`tests/*.rs` file:
+
+- Shared helpers live in `tests/it/common/` (declared once in `main.rs`; the modules
+  `use crate::common;`).
+- A module that needs a feature or a platform is gated on its `mod` line
+  (`#[cfg(all(target_os = "linux", feature = "preview"))] mod preview;`), not with `#![cfg]` or
+  a `required-features` entry.
+- `cargo test` runs a binary's tests in threads of one process (nextest runs each test in its own
+  process). A test that touches process-wide state (a global pool or registry, environment
+  variables, the working directory) serialises with the tests it could disturb through a static
+  `Mutex`, or, when that is not enough, gets a binary of its own: a test that installs a
+  `#[global_allocator]`, or one that checks process-wide counts. Such a binary is listed with its
+  reason in `scripts/check-test-targets.sh`, which fails on any other second binary.
+- Run one module's tests with a filter: `cargo test -p styx --test it camera_service`.
 
 ## Facade Example Surface
 
@@ -31,7 +52,7 @@ These examples exercise the consumer-facing facade, capture layers, codec integr
 
 ## Docker Surface
 
-- `cargo test -p styx --test docker_facade_examples -- --ignored --nocapture`
+- `cargo test -p styx --test it docker_facade_examples -- --ignored --nocapture`
 
 The Docker suite uses [`testing/docker/styx-facade.Dockerfile`](../testing/docker/styx-facade.Dockerfile) and validates the virtual-camera facade flow inside a container.
 

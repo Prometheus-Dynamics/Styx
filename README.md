@@ -179,7 +179,7 @@ cargo run -p styx-examples --no-default-features --features codec-mozjpeg --bin 
 
 Optional Docker-backed facade validation:
 
-- `cargo test -p styx --test docker_facade_examples -- --ignored --nocapture`
+- `cargo test -p styx --test it docker_facade_examples -- --ignored --nocapture`
 
 ## Documentation Index
 

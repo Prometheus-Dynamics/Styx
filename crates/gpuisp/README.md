@@ -62,7 +62,7 @@ Against `styx-softisp` (this host: Ryzen, x86 with AVX2):
 
 | | integer arithmetic | tone quadratics (`IntPolyTone`, x86 default) | fp16 (`Half`, Cortex-A76 default) |
 |---|---|---|---|
-| synthetic chart (`tests/quality.rs`), R/G/B/Y/U/V | identical | 56.5-64 dB, max 1 code | 54.8-61.4 dB, max 2-5 codes, < 0.1% more than 2 apart |
+| synthetic chart (`tests/it/quality.rs`), R/G/B/Y/U/V | identical | 56.5-64 dB, max 1 code | 54.8-61.4 dB, max 2-5 codes, < 0.1% more than 2 apart |
 | 160 recorded frames (OV9782 BGGR 1280x800, the loop's settings, `native-pipeline gpu-quality`) | identical, statistics identical on 160/160 | 56.2-57.6 dB, max 1, statistics identical | 53.7-55.2 dB, max 2 codes (155 frames: 5 need gains above the integer path's limit of 16) |
 
 The fp16 figures are fp16 against the integer arithmetic (the GPU computes the latter); the
@@ -70,8 +70,8 @@ statistics differ from fp16's as the integer arithmetic's do (zone sums up to 5.
 the darkest zones, 0.6% of the histogram in a neighbouring bin). Bit-exactness is tested on
 every output, scale, demosaic, colour pattern and packing, with and without lens shading,
 colour matrix and tone curve, odd sizes, both histogram paths, parameter changes between
-frames and skipped statistics (`tests/equivalence.rs`), through dma-buf import and export
-(`tests/dmabuf.rs`), and through the whole 3A loop (`styx-pipeline/tests/gpu_loop.rs`), on
+frames and skipped statistics (`tests/it/equivalence.rs`), through dma-buf import and export
+(`tests/it/dmabuf.rs`), and through the whole 3A loop (`styx-pipeline/tests/it/gpu_loop.rs`), on
 RADV and llvmpipe.
 
 ## Performance

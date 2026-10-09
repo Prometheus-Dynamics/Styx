@@ -55,7 +55,7 @@ portable-atomic-util.workspace = true
 
 [dev-dependencies]
 styx-hal = { workspace = true, features = ["mock"] }
-# The compiled form in tests whatever the features (`tests/lens_format.rs`).
+# The compiled form in tests whatever the features (`tests/it/lens_format.rs`).
 postcard.workspace = true
 
 [lints]

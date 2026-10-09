@@ -526,6 +526,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Integration tests build into one binary per package (`tests/it/main.rs`, one module per
+  former file) instead of one per file: 53 integration-test binaries become 17 (styx 16 → 3,
+  styx-algo 9 → 1, styx-softisp 5 → 1, styx-sensor 5 → 2, styx-gpuisp 4 → 1). Binaries stay
+  separate only where a test needs its own process: a counting `#[global_allocator]`
+  (`zero_alloc`, `no_alloc`, `descriptor_allocations`, `heap`) or process-wide state
+  (styx `metrics`). The same tests run, checked by name (1017 default, 336 in the gate's
+  feature set). Run one file's tests with `cargo test -p <package> --test it <module>`.
+  `scripts/check-test-targets.sh` fails when a package gains a second integration-test binary
+  outside its documented exceptions.
+
 - Built and tested against Daedalus `dev` at `66659f7` (plugin ABI 9 unchanged; smaller
   `#[node]` expansions). No Styx code change; `ed7ddde` remains the minimum.
 

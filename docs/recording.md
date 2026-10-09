@@ -243,13 +243,13 @@ glibc and libgcc_s (and libcamera and libstdc++ with that feature).
 
 ## Tests
 
-`tools/styx-record/tests/record.rs` runs the recorder against cameras served by a Styx camera
+`tools/styx-record/tests/it/record.rs` runs the recorder against cameras served by a Styx camera
 service in the test process: a replayed NV12 camera with known Y planes and sequence gaps
 (byte-exact raw file, CSV rows and gaps, settings file), a virtual camera with controls next to
 another client (no restart, the other client keeps its frames, a control change recorded),
 stills on key and on a timer, direct mode with per-frame exposure, a "disk" (a pipe) that does
 not keep up, and Ctrl-C on the real binary (`SIGINT`, files finalised).
-`tools/styx-record/tests/no_drops.rs` records a replayed 30 fps camera directly, with only the
+`tools/styx-record/tests/it/no_drops.rs` records a replayed 30 fps camera directly, with only the
 delivery queue as slack, controls that take 400 ms to read and a disk that writes in bursts
 with 300 ms stalls, in every-frame and latest mode: no camera frame may be lost, and every
 frame is byte-exact and in order. The planner's tests cover grey on a PiSP camera that offers

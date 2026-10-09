@@ -39,4 +39,4 @@ jobs:
         env:
           STYX_SKIP_DOCKER_BUILD: "1"
           STYX_TEST_IMAGE: styx-facade-test:ci
-        run: cargo test -p styx --test docker_facade_examples -- --ignored --nocapture
+        run: cargo test -p styx --test it docker_facade_examples -- --ignored --nocapture

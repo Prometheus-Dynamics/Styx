@@ -70,6 +70,18 @@ How the gate keeps the work small:
 - **No empty test binaries.** Binaries without tests are `test = false` (`check-test-targets.sh`
   fails if one gains a test), and integration tests that need features name them in
   `required-features`, so `cargo test` no longer builds and links a harness with no tests in it.
+- **One integration-test binary per package.** Relinking test binaries is the largest write
+  after an edit: each one links the whole stack below it. A package's integration tests are
+  modules of `tests/it/main.rs` (one module per former `tests/*.rs` file, shared helpers in
+  `tests/it/common/`); a module that needs features or a platform has the `#[cfg]` on its `mod`
+  line instead of a `required-features` entry. A binary of its own is kept only for tests that
+  need their own process, each listed with its reason in `check-test-targets.sh` (which fails
+  when a package has a second binary that is not listed): the counting `#[global_allocator]`s
+  (`styx`'s `zero_alloc`, `styx-sensor`'s and `styx-runtime`'s `no_alloc`, `styx-core-rs`'s
+  `descriptor_allocations`, `styx-mcu-footprint`'s `heap`) and `styx`'s `metrics`, which checks
+  the process-wide count of camera service clients (under `cargo test` the other modules'
+  services would run beside it in the same process). Run one former file's tests with a filter
+  on its module: `cargo test -p styx-softisp --test it golden`. See the measurements below.
 - **Three release builds for the perf smoke instead of five**, grouped so that each binary keeps
   what it measures (see `check-perf-smoke.sh`); `check-mem-smoke.sh` shares the libjpeg-turbo +
   MCAP one in CI.

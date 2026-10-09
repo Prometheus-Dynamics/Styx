@@ -164,7 +164,7 @@ while let RecvOutcome::Data(e) = events.recv(Duration::from_secs(1)) { /* e.id, 
   travels in a memfd. A service that predates controls does not answer: the request times out.
 
 `camera_service controls [--camera NAME] [NAME VALUE]` (example) lists a camera's controls or
-sets one. Tests: `crates/styx/tests/service_controls.rs` (virtual cameras with controls:
+sets one. Tests: `crates/styx/tests/it/service_controls.rs` (virtual cameras with controls:
 `capture_api::make_virtual_device_with_controls`).
 
 ### Control clients (no frames)
@@ -212,7 +212,7 @@ controls.set_control_async(StandardControl::ExposureUs, ControlValue::Uint(8000)
   first), as before; the service looks the camera up once per connection.
 
 `service_controls` (example; `--demo` for a virtual camera) sets exposure and prints every
-change; `crates/styx/tests/control_client.rs` tests control clients (no plan change, no restart,
+change; `crates/styx/tests/it/control_client.rs` tests control clients (no plan change, no restart,
 no capture started, no frames sent, the policy) and non-blocking connections.
 
 ### Without a thread per client
@@ -267,7 +267,7 @@ poll_fn(|cx| {
 ```
 
 `examples/05_apps/camera_service_async.rs` runs both (`--demo`: three virtual cameras in the
-same process); `crates/styx/tests/frame_client_async.rs` tests them (three clients of two
+same process); `crates/styx/tests/it/frame_client_async.rs` tests them (three clients of two
 cameras on one thread, a service going away, a reconnecting client coming back).
 
 ### Reconnecting clients

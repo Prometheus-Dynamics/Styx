@@ -134,7 +134,7 @@ frames every 10-frame estimate could flip). libcamera has the same search, dampe
   5994 K); a real change of the light (tens of units) moves at once.
 
 On the recorded replay every scaling between 0.9 and 1.1 now stays at 2440 ± 10 K after
-start-up (was: 2533 K with 10-frame excursions to 6493 K). `tests/awb_continuity.rs` sweeps
+start-up (was: 2533 K with 10-frame excursions to 6493 K). `tests/it/awb_continuity.rs` sweeps
 the statistics' scale on a synthetic tie and on the recorded tie (`tests/data/awb-tie.jsonl`,
 with the libcamera tree's OV9782 tuning when present) and requires steps under 6 mired per
 0.1% (under 1 mired per 0.01% around the old flip), and checks that frames alternating
@@ -222,7 +222,7 @@ model predicts each frame's brightness from its exposure window, so the ISP can 
   `Flicker::Auto` does when avoidance is off, without quantising exposures) or `Auto` (the
   default: on when flicker avoidance is). Off while AE is (manual exposure and gain).
 
-Simulated (`tests/sim_deflicker.rs`, the device's timing, the room's lamp on mains 0.07 Hz off
+Simulated (`tests/it/sim_deflicker.rs`, the device's timing, the room's lamp on mains 0.07 Hz off
 nominal, output = raw mean × the gain from the frame before's parameters as on the PiSP path,
 steady state over seconds 3-10):
 
@@ -241,7 +241,7 @@ The residual 0.12% is the simulated frames' own noise. At 30 fps with short expo
 scenes) 50 and 100 Hz alias onto frequencies 0.09 Hz apart, which a second of frames cannot
 separate; the fit takes them as one and a few percent remain.
 
-Simulated (`tests/sim_flicker.rs`, the device's timing): under 100 Hz light whose beat puts
+Simulated (`tests/it/sim_flicker.rs`, the device's timing): under 100 Hz light whose beat puts
 ±7% (±12%) on 8.1 ms frames at 120 fps, AE without avoidance moves exposure × gain by 5.4%
 (7.8%) frame to frame and never locks; with avoidance it does not move after locking. Under
 the room's half-wave lamp (50 Hz ±25%, 100 Hz ±10%, 150 Hz ±3%): 13% (off) against 0 (auto)
@@ -319,7 +319,7 @@ Styx changes:
   in and uses the previous frame's contrast). Switching to manual applies `lens_position` at
   once. Pausing continuous AF (libcamera's `AfPause`) is not implemented.
 
-**Simulated** (`tests/sim_af.rs`, `sim::FocusSim`, run with `--nocapture`): Raspberry Pi's
+**Simulated** (`tests/it/sim_af.rs`, `sim::FocusSim`, run with `--nocapture`): Raspberry Pi's
 IMX708 `rpi.af` tuning; the lens is the IMX708 module's map (0 D → 445, 15 D → 925) on a
 10-bit VCM settling in 12 ms, with 4 codes of backlash and 0.5 codes of position noise; a
 subject filling the middle of the image against a background at infinity, the figure of merit
@@ -412,8 +412,8 @@ exposure) and the control scheduler's timing (per-control delays, requests from 
 written from `F + 2`, late landings counted). `sim::convergence` measures settle frames,
 overshoot and jitter. `SensorModel::black_error` adds a black level offset (luma not
 proportional to exposure). Results with the default 30–10 fps mode, delays 2/1/2, issue
-latency 2 (`tests/sim_ae.rs`), and with the OV9782's timing as the PiSP path drives it at 30
-fps (delays 2/2/1, written in the same frame: `tests/sim_start.rs`), run with `--nocapture`:
+latency 2 (`tests/it/sim_ae.rs`), and with the OV9782's timing as the PiSP path drives it at 30
+fps (delays 2/2/1, written in the same frame: `tests/it/sim_start.rs`), run with `--nocapture`:
 
 | Case | Result (issue latency 2) | Result (same-frame writes) |
 |---|---|---|
