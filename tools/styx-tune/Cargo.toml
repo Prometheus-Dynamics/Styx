@@ -12,6 +12,7 @@ publish = false
 [[bin]]
 name = "styx-tune"
 path = "src/main.rs"
+test = false
 
 [features]
 default = ["mcap"]

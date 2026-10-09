@@ -136,6 +136,32 @@ criterion = { version = "0.8.2", default-features = false, features = ["cargo_be
 # Without default features: Styx uses no `#[instrument]` (no tracing-attributes proc macro).
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
+# Debug and test builds (docs/development.md "The Gate"). Line tables only for the workspace's
+# crates (backtraces and debuggers keep file, line and function; no variable or type info) and no
+# debug info for dependencies: about half the bytes written to target/, and half the relinking
+# after an edit. `CARGO_PROFILE_DEV_DEBUG=true` gives the workspace full debug info (a rebuild).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# The numeric crates whose tests dominate the test run (AE/AWB/flicker simulations, tuning fits,
+# the software and GPU ISPs): optimised a little, which takes the workspace's test run from
+# about 190 to 70 CPU-seconds for 70 more seconds of compiling them. Overflow checks and debug
+# assertions stay on.
+[profile.dev.package.styx-algo]
+opt-level = 1
+
+[profile.dev.package.styx-tune]
+opt-level = 1
+
+[profile.dev.package.styx-softisp]
+opt-level = 1
+
+[profile.dev.package.styx-gpuisp]
+opt-level = 1
+
 # Firmware images measured for size (examples/mcu-footprint, docs/mcu.md): smallest code,
 # whole-program optimisation, no unwinding. `mcu-speed` is the same at `opt-level = "s"`.
 [profile.mcu]

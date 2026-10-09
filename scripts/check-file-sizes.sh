@@ -41,13 +41,16 @@ is_excluded() {
     return 1
 }
 
+# One pass over the sources: every Rust file's line count.
+line_counts="$(find "${scan_roots[@]}" -type f -name '*.rs' -print0 | xargs -0 wc -l | awk '$2 != "total"')"
+
 declare -a over_limit=()
 while IFS= read -r record; do
     lines="${record%% *}"
     path="${record#* }"
     rel_path="${path#$root_dir/}"
     over_limit+=("$lines $rel_path")
-done < <(find "${scan_roots[@]}" -type f -name '*.rs' -print0 | xargs -0 wc -l | awk -v limit="$limit" '$2 != "total" && $1 > limit { print $1 " " $2 }' | sort -nr)
+done < <(awk -v limit="$limit" '$1 > limit { print $1 " " $2 }' <<<"$line_counts" | sort -nr)
 
 declare -a near_limit_files=()
 while IFS= read -r record; do
@@ -55,7 +58,7 @@ while IFS= read -r record; do
     path="${record#* }"
     rel_path="${path#$root_dir/}"
     near_limit_files+=("$lines $rel_path")
-done < <(find "${scan_roots[@]}" -type f -name '*.rs' -print0 | xargs -0 wc -l | awk -v near_limit="$near_limit" -v limit="$limit" '$2 != "total" && $1 >= near_limit && $1 <= limit { print $1 " " $2 }' | sort -nr)
+done < <(awk -v near_limit="$near_limit" -v limit="$limit" '$1 >= near_limit && $1 <= limit { print $1 " " $2 }' <<<"$line_counts" | sort -nr)
 
 declare -a filtered=()
 for entry in "${over_limit[@]}"; do

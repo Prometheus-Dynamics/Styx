@@ -4,8 +4,11 @@ Styx splits validation into default workspace checks and facade-example coverage
 
 ## Default Surface
 
-- `cargo fmt -p styx-core-rs -p styx-capture -p styx-codec -p styx-libcamera -p styx -p styx-v4l2 -p styx-examples -- --check`
+The gate before merging to `dev` is `./scripts/gate.sh` ([development.md](development.md#the-gate)).
+
+- `cargo fmt --all --check`
 - `./scripts/check-file-sizes.sh`
+- `./scripts/check-test-targets.sh` (binaries marked `test = false` hold no tests)
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo doc --workspace --no-deps`

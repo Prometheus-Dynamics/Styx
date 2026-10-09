@@ -58,36 +58,43 @@ styx-pipeline = { workspace = true, optional = true }
 [[bin]]
 name = "native_capture"
 path = "04_performance/native_capture.rs"
+test = false
 required-features = ["native"]
 
 [[bin]]
 name = "uvc_capture"
 path = "04_performance/uvc_capture.rs"
+test = false
 required-features = ["uvc"]
 
 [[bin]]
 name = "native_processed"
 path = "04_performance/native_processed.rs"
+test = false
 required-features = ["native"]
 
 [[bin]]
 name = "hop_breakdown"
 path = "04_performance/hop_breakdown.rs"
+test = false
 required-features = ["frame-socket"]
 
 [[bin]]
 name = "native_roi"
 path = "04_performance/native_roi.rs"
+test = false
 required-features = ["native"]
 
 [[bin]]
 name = "native_regions"
 path = "04_performance/native_regions.rs"
+test = false
 required-features = ["native"]
 
 [[bin]]
 name = "libcamera_crops"
 path = "04_performance/libcamera_crops.rs"
+test = false
 required-features = ["libcamera"]
 
 [[bin]]
@@ -98,214 +105,260 @@ required-features = ["libcamera"]
 [[bin]]
 name = "native_isp_bench"
 path = "04_performance/native_isp_bench.rs"
+test = false
 required-features = ["native"]
 
 [[bin]]
 name = "preview_encode_bench"
 path = "04_performance/preview_encode_bench.rs"
+test = false
 required-features = ["preview-only"]
 
 [[bin]]
 name = "preview_server"
 path = "05_apps/preview_server.rs"
+test = false
 required-features = ["preview"]
 
 [[bin]]
 name = "list_cameras"
 path = "00_quickstart/list_cameras.rs"
+test = false
 
 [[bin]]
 name = "capture_frames"
 path = "00_quickstart/capture_frames.rs"
+test = false
 
 [[bin]]
 name = "async_capture"
 path = "01_capture/async_capture.rs"
+test = false
 required-features = ["async"]
 
 [[bin]]
 name = "camera_controls"
 path = "01_capture/camera_controls.rs"
+test = false
 required-features = ["native"]
 
 [[bin]]
 name = "two_consumers"
 path = "01_capture/two_consumers.rs"
+test = false
 
 [[bin]]
 name = "raw_processing"
 path = "01_capture/raw_processing.rs"
+test = false
 required-features = ["native", "replay-mcap"]
 
 [[bin]]
 name = "hotplug"
 path = "01_capture/hotplug.rs"
+test = false
 required-features = ["hotplug"]
 
 [[bin]]
 name = "frame_socket"
 path = "05_apps/frame_socket.rs"
+test = false
 required-features = ["frame-socket"]
 
 [[bin]]
 name = "sensor_check"
 path = "06_new_camera/sensor_check.rs"
+test = false
 required-features = ["native"]
 
 [[bin]]
 name = "quickstart_capture_virtual"
 path = "00_quickstart/capture_virtual.rs"
+test = false
 
 [[bin]]
 name = "quickstart_probe_and_select"
 path = "00_quickstart/probe_and_select.rs"
+test = false
 
 [[bin]]
 name = "quickstart_pipeline_health"
 path = "00_quickstart/pipeline_health.rs"
+test = false
 
 [[bin]]
 name = "quickstart_runtime_memory_report"
 path = "00_quickstart/runtime_memory_report.rs"
+test = false
 
 [[bin]]
 name = "watch_inventory"
 path = "01_capture/watch_inventory.rs"
+test = false
 
 [[bin]]
 name = "async_watch_inventory"
 path = "01_capture/async_watch_inventory.rs"
+test = false
 required-features = ["async"]
 
 [[bin]]
 name = "async_pipeline"
 path = "01_capture/async_pipeline.rs"
+test = false
 required-features = ["async"]
 
 [[bin]]
 name = "file_replay"
 path = "01_capture/file_replay.rs"
+test = false
 required-features = ["file-backend"]
 
 [[bin]]
 name = "netcam_capture"
 path = "01_capture/netcam_capture.rs"
+test = false
 required-features = ["netcam", "codec-jpeg-decoder"]
 
 [[bin]]
 name = "simulation_capture"
 path = "01_capture/simulation_capture.rs"
+test = false
 required-features = ["simulation-bevy"]
 
 [[bin]]
 name = "simulation_cycle_preview"
 path = "01_capture/simulation_cycle_preview.rs"
+test = false
 required-features = ["simulation-bevy", "preview-window"]
 
 [[bin]]
 name = "daedalus_frames"
 path = "02_graph/daedalus_frames.rs"
+test = false
 required-features = ["daedalus"]
 
 [[bin]]
 name = "daedalus_multicam"
 path = "02_graph/daedalus_multicam.rs"
+test = false
 required-features = ["daedalus"]
 
 [[bin]]
 name = "latest_frame_fanout"
 path = "02_graph/latest_frame_fanout.rs"
+test = false
 
 [[bin]]
 name = "mjpeg_decode"
 path = "03_codecs/mjpeg_decode.rs"
+test = false
 required-features = ["codec-jpeg-decoder"]
 
 [[bin]]
 name = "encode_perf"
 path = "03_codecs/encode_perf.rs"
+test = false
 required-features = ["codec-mozjpeg"]
 
 [[bin]]
 name = "ffmpeg_scale"
 path = "03_codecs/ffmpeg_scale.rs"
+test = false
 required-features = ["codec-ffmpeg"]
 
 [[bin]]
 name = "perf_smoke"
 path = "04_performance/perf_smoke.rs"
+test = false
 required-features = ["codec-jpeg-decoder"]
 
 [[bin]]
 name = "luma_perf"
 path = "04_performance/luma_perf.rs"
+test = false
 required-features = ["codec-turbojpeg"]
 
 [[bin]]
 name = "simd_perf"
 path = "04_performance/simd_perf.rs"
+test = false
 
 [[bin]]
 name = "shared_perf"
 path = "04_performance/shared_perf.rs"
+test = false
 required-features = ["codec-turbojpeg", "replay-mcap"]
 
 [[bin]]
 name = "mem_smoke"
 path = "04_performance/mem_smoke.rs"
+test = false
 required-features = ["codec-turbojpeg", "replay-mcap"]
 
 [[bin]]
 name = "file_replay_perf"
 path = "04_performance/file_replay_perf.rs"
+test = false
 required-features = ["file-backend"]
 
 [[bin]]
 name = "v4l2_hardware_bench"
 path = "04_performance/v4l2_hardware_bench.rs"
+test = false
 required-features = ["v4l2"]
 
 [[bin]]
 name = "v4l2request_dmabuf_validate"
 path = "04_performance/v4l2request_dmabuf_validate.rs"
+test = false
 required-features = ["v4l2", "codec-ffmpeg"]
 
 [[bin]]
 name = "low_latency_preview"
 path = "05_apps/low_latency_preview.rs"
+test = false
 required-features = ["preview-window"]
 
 [[bin]]
 name = "camera_service"
 path = "05_apps/camera_service.rs"
+test = false
 
 [[bin]]
 name = "camera_service_async"
 path = "05_apps/camera_service_async.rs"
+test = false
 
 [[bin]]
 name = "service_controls"
 path = "05_apps/service_controls.rs"
+test = false
 
 [[bin]]
 name = "metrics_top"
 path = "05_apps/metrics_top.rs"
+test = false
 
 [[bin]]
 name = "reliable_recording"
 path = "05_apps/reliable_recording.rs"
+test = false
 required-features = ["file-backend"]
 
 [[bin]]
 name = "libcamera_ffmpeg_preview"
 path = "05_apps/libcamera_ffmpeg_preview.rs"
+test = false
 required-features = ["libcamera", "codec-ffmpeg", "preview-window"]
 
 [[bin]]
 name = "still_capture"
 path = "01_capture/still_capture.rs"
+test = false
 
 [[bin]]
 name = "mcap_to_dng"
 path = "01_capture/mcap_to_dng.rs"
+test = false
 required-features = ["native", "replay-mcap"]

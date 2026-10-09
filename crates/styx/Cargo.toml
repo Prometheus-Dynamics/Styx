@@ -61,6 +61,32 @@ styx-graph = { workspace = true, optional = true }
 criterion.workspace = true
 image.workspace = true
 
+# Integration tests that need features: skipped without them (no empty test binaries to
+# build and link). Their `#![cfg]` lines keep the platform conditions.
+[[test]]
+name = "camera_service"
+required-features = ["codec-turbojpeg", "replay-mcap"]
+
+[[test]]
+name = "scaled_planning"
+required-features = ["codec-turbojpeg", "replay-mcap"]
+
+[[test]]
+name = "shared_planning"
+required-features = ["codec-turbojpeg", "replay-mcap"]
+
+[[test]]
+name = "encoded_frames"
+required-features = ["codec-ffmpeg"]
+
+[[test]]
+name = "preview"
+required-features = ["preview"]
+
+[[test]]
+name = "zero_alloc"
+required-features = ["frame-socket"]
+
 [[bench]]
 name = "v4l2_capture_paths"
 harness = false
@@ -77,6 +103,7 @@ harness = false
 [[bin]]
 name = "runtime_memory_probe"
 path = "src/bin/runtime_memory_probe.rs"
+test = false
 required-features = ["facade"]
 
 [features]

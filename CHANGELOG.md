@@ -737,6 +737,24 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - libcamera frame timestamps are now the sensor's start-of-exposure time (`SensorTimestamp`)
   instead of the buffer completion time, matching V4L2 (8.2 ms vs 0.05 ms old on arrival on a
   CM5). Pyramid companions share it.
+- Builds and CI do less work for the same checks (docs/development.md "The Gate"): the gate from
+  a clean `target/` takes 10-20% less CPU and writes 39% less (21.2 to 12.9 GB), after an
+  edit to `styx` 37% less CPU and 53% less written. `scripts/gate.sh` runs the manual gate with
+  `styx` compiled for three feature sets instead of five, nextest for the tests (doctests through
+  `cargo test --doc`) and `zero_alloc` once; `--full` adds the repeat stress run, every release
+  feature set, the all-feature clippy, the memory smoke and libtest; steps whose tools are missing
+  are skipped with a note. `[profile.dev]`: line tables only for the workspace, no debug info for
+  dependencies, and `opt-level = 1` for `styx-algo`, `styx-tune`, `styx-softisp` and
+  `styx-gpuisp` (the workspace's test run from about 190 to 70 CPU-seconds). Binaries without
+  tests are `test = false` and feature-gated integration tests name their `required-features`, so
+  `cargo test` builds no empty test binaries; `scripts/check-test-targets.sh` keeps the marking
+  honest. The perf smoke makes three release builds instead of five (the memory smoke shares
+  one); the file-size lint reads the sources once. CI drops the all-feature `cargo check` (the
+  all-feature clippy covers it) and Release Readiness's workspace check, runs fmt and clippy in
+  Release Readiness only on pushes (the CI workflow does them on pull requests), builds `styx`'s
+  recording, netcam-parser and planner tests once instead of three times, and formats with
+  `cargo fmt --all`. The gate now also runs `styx`'s `camera_service`, `scaled_planning`,
+  `shared_planning` and `preview` tests, which no gate or CI job ran.
 
 ### Deprecated
 
