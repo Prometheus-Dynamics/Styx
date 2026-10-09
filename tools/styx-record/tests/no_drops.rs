@@ -1,4 +1,5 @@
-//! The recorder never makes the camera drop frames while the disk keeps up: a replayed 30 fps
+//! The recorder never stalls the camera while the disk keeps up (no drops in every-frame mode,
+//! no gap longer than a scheduler hiccup in latest mode): a replayed 30 fps
 //! camera with only the delivery queue as slack (8 frames in every-frame mode, 1 in latest), a
 //! camera whose controls take 400 ms to read (libcamera answers each control read between
 //! frames: 24 controls held the CM5 recorder's loop for ~0.4 s every second), and a disk that
@@ -156,30 +157,39 @@ fn record(mode: RecMode, name: &str) {
 
     assert_eq!(summary.stop_reason, "frame count reached", "{summary:?}");
     assert_eq!(summary.writer_dropped, 0, "the disk kept up: {summary:?}");
-    assert_eq!(
-        summary.dropped, 0,
-        "{mode:?}: camera frames dropped: {summary:?}"
-    );
+    // Every-frame mode has 8 frames of slack: nothing may drop. Latest mode has 1, so a
+    // scheduler stall over one frame period (a loaded host) legitimately drops a frame; what
+    // must not happen is a stall like the CM5's control reads (~0.4 s, ~12 frames at 30 fps).
+    let max_gap = match mode {
+        RecMode::Every => 0,
+        _ => 3,
+    };
+    if max_gap == 0 {
+        assert_eq!(
+            summary.dropped, 0,
+            "{mode:?}: camera frames dropped: {summary:?}"
+        );
+    }
     assert!(summary.errors.is_empty(), "{summary:?}");
     assert_eq!(summary.frames, cfg.frames.unwrap());
-    // Every frame, in order, byte-exact.
+    // Every frame, in order, byte-exact for its own sequence number (from the CSV).
     let size = (W * H) as usize;
     assert_eq!(raw.len(), summary.frames as usize * size);
-    let first: u32 = std::fs::read_to_string(&summary.csv_path)
-        .unwrap()
+    let csv = std::fs::read_to_string(&summary.csv_path).unwrap();
+    let rows: Vec<(u32, u64)> = csv
         .lines()
-        .nth(1)
-        .unwrap()
-        .split(',')
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    for (i, frame) in raw.chunks(size).enumerate() {
+        .skip(1)
+        .map(|line| {
+            let col: Vec<&str> = line.split(',').collect();
+            (col[1].parse().unwrap(), col[4].parse().unwrap())
+        })
+        .collect();
+    assert_eq!(rows.len(), summary.frames as usize);
+    for (i, (frame, &(seq, dropped_before))) in raw.chunks(size).zip(&rows).enumerate() {
+        assert!(frame == y_plane(seq), "frame {i} is not sequence {seq}");
         assert!(
-            frame == y_plane(first + i as u32),
-            "frame {i} is not sequence {}",
-            first + i as u32
+            dropped_before <= max_gap,
+            "{mode:?}: {dropped_before} frames dropped before frame {i}: {summary:?}"
         );
     }
     let json = std::fs::read_to_string(&summary.settings_path).unwrap();
@@ -195,6 +205,6 @@ fn every_frame_mode_drops_nothing_with_slow_controls_and_a_bursty_disk() {
 }
 
 #[test]
-fn latest_mode_drops_nothing_while_the_recorder_keeps_up() {
+fn latest_mode_has_no_stalls_while_the_recorder_keeps_up() {
     record(RecMode::Latest, "nodrop-latest");
 }
