@@ -118,6 +118,9 @@ fn request(cfg: &Config) -> FrameRequest {
 /// `<code> decoded to grey`, or the camera's own grey format.
 pub fn source_stream(code: FourCc, luma_view: bool, decoded: bool, raw: bool, isp: bool) -> String {
     let via = if isp { " via ISP" } else { "" };
+    // FourCC codes pad to four characters ("R8  ", "Y16 "); the text names the format.
+    let code = code.to_string();
+    let code = code.trim_end();
     if luma_view {
         format!("{code} Y plane{via}")
     } else if decoded {
@@ -473,5 +476,22 @@ impl Source for DirectSource {
             plane: self.frames.capture().control_plane(),
             metas: self.metas.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_stream_names_formats_without_fourcc_padding() {
+        let r8 = FourCc::new(*b"R8  ");
+        let nv21 = FourCc::new(*b"NV21");
+        assert_eq!(source_stream(r8, false, false, true, true), "raw R8");
+        assert_eq!(
+            source_stream(nv21, true, false, false, true),
+            "NV21 Y plane via ISP"
+        );
+        assert_eq!(source_stream(r8, false, false, false, false), "R8");
     }
 }
