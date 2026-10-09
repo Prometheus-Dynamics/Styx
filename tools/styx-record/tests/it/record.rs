@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use crate::tmpdir::tmp;
 use styx::capture_api::make_virtual_device_with_controls;
 use styx::ipc::{CameraService, FrameClient};
 use styx::prelude::*;
@@ -16,13 +17,6 @@ const W: u32 = 64;
 const H: u32 = 48;
 /// Sequence numbers of the recorded camera: 3 frames missing at 5-6 and 12.
 const SEQUENCES: [u32; 17] = [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19];
-
-fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-record-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 /// The Y plane of the frame with sequence `seq`: every byte depends on the frame and pixel.
 fn y_plane(seq: u32) -> Vec<u8> {

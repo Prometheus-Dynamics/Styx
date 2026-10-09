@@ -5,3 +5,5 @@
 mod no_drops;
 #[cfg(target_os = "linux")]
 mod record;
+#[cfg(target_os = "linux")]
+mod tmpdir;

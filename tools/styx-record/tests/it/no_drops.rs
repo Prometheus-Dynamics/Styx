@@ -5,10 +5,11 @@
 //! frames: 24 controls held the CM5 recorder's loop for ~0.4 s every second), and a disk that
 //! writes in bursts with pauses but keeps up on average.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
+use crate::tmpdir::tmp;
 use styx::prelude::*;
 use styx_record::source::{Control, ControlReader, DirectSource, Next, Source, SourceInfo};
 use styx_record::{Config, Mode as RecMode};
@@ -17,13 +18,6 @@ const W: u32 = 320;
 const H: u32 = 240;
 /// Frames in the replay (contiguous sequence numbers: any gap is a drop).
 const FRAMES: u32 = 75;
-
-fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-record-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 fn y_plane(seq: u32) -> Vec<u8> {
     (0..W * H)
