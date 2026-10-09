@@ -611,3 +611,77 @@ fn raspberry_pi_isp_crops_the_region_through_libcamera() {
     let plan = plan_frames_with(&dev, &Frames::gray().overview(320, 200), &registry()).unwrap();
     assert!(!plan.delivered().hardware_overview, "{plan}");
 }
+
+/// The OV9782 on the PiSP as libcamera 0.7 offers it: the camera helper aliases it to the mono
+/// OV9281, so the raw role offers R8 (the Bayer mosaic) next to the ISP's NV12.
+#[cfg(feature = "libcamera")]
+fn pisp_ov9782(modes: Vec<Mode>) -> ProbedDevice {
+    device(
+        BackendKind::Libcamera,
+        BackendHandle::Libcamera {
+            id: "/base/axi/pcie@1000120000/rp1/i2c@88000/ov9782@60".into(),
+        },
+        modes,
+    )
+}
+
+#[cfg(feature = "libcamera")]
+#[test]
+fn grey_from_an_isp_camera_is_the_processed_y_plane_not_the_raw_stream() {
+    let dev = pisp_ov9782(vec![
+        mode(FourCc::R8, 1280, 800, 30),
+        mode(FourCc::NV12, 1280, 800, 30),
+    ]);
+    let plan = plan_frames_with(&dev, &Frames::gray().every_frame(8), &registry()).unwrap();
+    assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
+    assert!(matches!(plan.route, Route::LumaView));
+    assert!(!plan.raw_sensor_stream());
+    assert_eq!(plan.delivered().format, FourCc::GREY);
+    assert!(
+        plan.rejected
+            .iter()
+            .any(|r| r.candidate.contains("R8") && r.reason.contains("raw sensor stream")),
+        "{plan}"
+    );
+
+    // The raw stream when asked for by format, and the plan says what it is.
+    let raw = plan_frames_with(&dev, &Frames::formats([FourCc::R8]), &registry()).unwrap();
+    assert_eq!(raw.mode.format.code, FourCc::R8);
+    assert!(matches!(raw.route, Route::Direct));
+    assert!(raw.raw_sensor_stream());
+    assert!(raw.to_string().contains("raw sensor stream"), "{raw}");
+
+    // Without a processed mode, the raw stream is the only grey there is.
+    let only_raw = pisp_ov9782(vec![mode(FourCc::R8, 1280, 800, 30)]);
+    let plan = plan_frames_with(&only_raw, &Frames::gray(), &registry()).unwrap();
+    assert_eq!(plan.mode.format.code, FourCc::R8);
+}
+
+#[test]
+fn grey_cameras_without_an_isp_deliver_their_grey_frames() {
+    // A mono USB camera (or any camera without an ISP): GREY is its picture, taken as it is.
+    for code in [FourCc::GREY, FourCc::R8] {
+        let dev = device(
+            BackendKind::Virtual,
+            BackendHandle::Virtual,
+            vec![mode(code, 1280, 800, 30), mode(FourCc::NV12, 1280, 800, 30)],
+        );
+        let plan = plan_frames_with(&dev, &Frames::gray(), &registry()).unwrap();
+        assert!(
+            !plan
+                .rejected
+                .iter()
+                .any(|r| r.reason.contains("raw sensor stream")),
+            "{plan}"
+        );
+        assert!(!plan.raw_sensor_stream());
+        let grey = device(
+            BackendKind::Virtual,
+            BackendHandle::Virtual,
+            vec![mode(code, 1280, 800, 30)],
+        );
+        let plan = plan_frames_with(&grey, &Frames::gray(), &registry()).unwrap();
+        assert_eq!(plan.mode.format.code, code);
+        assert!(matches!(plan.route, Route::Direct));
+    }
+}

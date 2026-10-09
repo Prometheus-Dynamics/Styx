@@ -5,7 +5,8 @@ use styx::prelude::*;
 
 /// Copy `frame`'s luma into `out` (resized to `width * height`); returns the size. Grey frames
 /// and the Y plane of planar YUV are copied row by row without their stride padding; packed
-/// 4:2:2 has its Y bytes picked out.
+/// 4:2:2 has its Y bytes picked out. A raw 8-bit sensor frame (`--raw`: grey or 8-bit Bayer) is
+/// copied as it is.
 pub fn luma_into(frame: &FrameLease, out: &mut Vec<u8>) -> Result<(u32, u32), String> {
     let format = frame.meta().format;
     let (w, h) = (
@@ -19,7 +20,7 @@ pub fn luma_into(frame: &FrameLease, out: &mut Vec<u8>) -> Result<(u32, u32), St
     out.reserve(w * h);
     let code = format.code;
     // Bytes per row the Y samples span, and where the first Y byte of a pixel pair is.
-    let (row_bytes, packed_y) = if [FourCc::GREY, FourCc::R8].contains(&code)
+    let (row_bytes, packed_y) = if crate::source::RAW_FORMATS.contains(&code)
         || [
             FourCc::NV12,
             FourCc::NV21,

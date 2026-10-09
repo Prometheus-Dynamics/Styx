@@ -6,7 +6,7 @@ use styx_codec::{Codec, CodecDescriptor, CodecKind, CodecRegistryHandle};
 use styx_core::prelude::*;
 
 use super::cost::{self, StepCost, megapixels};
-use super::native::{self, native_isp, raw_bayer};
+use super::native::{self, has_processed_luma, native_isp, raw_bayer, raw_sensor_stream};
 use super::request::{FrameRequest, Hardware};
 use super::{PlanRejection, PlanStep, StepExecution, StepKind, rate};
 #[cfg(feature = "libcamera")]
@@ -277,10 +277,19 @@ pub(crate) fn candidate<'a>(
         ));
     }
 
+    let wants_luma = matches!(req.format, OutputFormat::Luma);
+    // Grey from a camera behind an ISP is the Y plane of its processed output; its raw sensor
+    // stream (R8 here is the Bayer mosaic of a colour sensor) only when asked for by format.
+    if wants_luma && raw_sensor_stream(backend, code) && has_processed_luma(backend) {
+        return Err(format!(
+            "{code} is the raw sensor stream: grey is the Y plane of the ISP's output (ask for \
+             {code} by format for the raw stream)"
+        ));
+    }
+
     let mut steps = vec![capture_step(backend, mode, fps)];
     let notes = Vec::new();
 
-    let wants_luma = matches!(req.format, OutputFormat::Luma);
     let route = if req.accepts(code) {
         Route::Direct
     } else if wants_luma && code.layout_info().planes.subsampling.is_some() {
@@ -528,6 +537,15 @@ fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanS
         return step;
     }
     let (execution, latency, how) = match backend.kind {
+        BackendKind::Libcamera
+            if has_isp_second_output(backend) && raw_sensor_stream(backend, mode.format.code) =>
+        {
+            (
+                StepExecution::Hardware,
+                cost::ISP_CAPTURE_LATENCY_MS,
+                "raw sensor stream, not processed by the ISP",
+            )
+        }
         BackendKind::Libcamera if has_isp_second_output(backend) => (
             StepExecution::Hardware,
             cost::ISP_CAPTURE_LATENCY_MS,

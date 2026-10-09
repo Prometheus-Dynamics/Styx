@@ -56,6 +56,28 @@ pub enum ControlPlane {
     Supervised(std::sync::Arc<super::supervisor::SupervisedCapture>),
 }
 
+impl ControlPlane {
+    /// A control's current value, as [`CaptureHandle::get_control`](super::CaptureHandle::get_control)
+    /// reads it, from any thread: a consumer can read controls off its frame thread (a
+    /// libcamera read waits for the capture thread, up to a frame period per control).
+    pub fn get_control(&self, id: ControlId) -> Result<ControlValue, CaptureError> {
+        read_control_from_plane(self, id)
+    }
+
+    /// Set a control, as [`CaptureHandle::set_control`](super::CaptureHandle::set_control)
+    /// does, from any thread.
+    pub fn set_control(&self, id: ControlId, value: ControlValue) -> Result<(), CaptureError> {
+        apply_control_to_plane(self, id, value)
+    }
+}
+
+impl super::CaptureHandle {
+    /// The capture's controls, to read or set from another thread ([`ControlPlane::get_control`]).
+    pub fn control_plane(&self) -> ControlPlane {
+        self.control.clone()
+    }
+}
+
 pub(crate) fn apply_control_to_plane(
     control: &ControlPlane,
     id: ControlId,

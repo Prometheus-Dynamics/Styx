@@ -363,6 +363,10 @@ impl Settings {
             .raw("width", opt(self.width, |v| v.to_string()))
             .raw("height", opt(self.height, |v| v.to_string()))
             .raw("frame_format", opt(self.frame_format.as_deref(), string))
+            .raw(
+                "source_stream",
+                opt(self.source.source_stream.as_deref(), string),
+            )
             .raw("frames", o.frames.to_string())
             .raw("raw_file", opt(o.raw_file.as_deref(), string))
             .raw("raw_gray_bytes", o.raw_gray_bytes.to_string())

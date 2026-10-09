@@ -1,10 +1,17 @@
 //! The recording loop: frames from the source, their Y planes to the disk writer, the sidecar
 //! rows and the settings file; stops on the duration, the frame count, the stills, Ctrl-C, or
 //! the source closing, and always finalises the files.
+//!
+//! The loop only takes frames: each frame's Y plane is copied into a writer buffer and the
+//! frame (the camera's buffer) is released at once, so the camera never waits for the disk.
+//! The camera's controls are read on their own thread ([`ControlPoller`]): a read can take a
+//! frame period per control (libcamera), and doing it here held frames back long enough for
+//! the capture queue to overflow.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use styx::prelude::*;
@@ -14,7 +21,7 @@ use crate::json::unix_ns_now;
 use crate::luma::luma_into;
 use crate::settings::Settings;
 use crate::sidecar::{GapSource, GapTracker, Row, clock_name};
-use crate::source::{DirectSource, ServiceSource, Source};
+use crate::source::{Control, ControlReader, DirectSource, ServiceSource, Source};
 use crate::writer::{Job, Layout, Writer};
 
 /// How long the loop waits for a frame before checking for Ctrl-C and triggers.
@@ -45,6 +52,57 @@ pub fn run(cfg: &Config, stop: &AtomicBool, keys: Option<Receiver<()>>) -> Resul
     record(cfg, source, stop, keys)
 }
 
+/// A control read: when it finished, and what it read.
+type ControlRead = (Instant, Result<Vec<Control>, String>);
+
+/// Reads the camera's controls on its own thread: at once, then every `period`.
+pub struct ControlPoller {
+    reads: Receiver<ControlRead>,
+    stop: Option<Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl ControlPoller {
+    pub fn start(mut reader: Box<dyn ControlReader>, period: Duration) -> Self {
+        let (tx, reads) = channel();
+        let (stop, stop_rx) = channel::<()>();
+        let thread = std::thread::Builder::new()
+            .name("styx-record-controls".into())
+            .spawn(move || {
+                loop {
+                    let read = reader.read();
+                    if tx.send((Instant::now(), read)).is_err() {
+                        break;
+                    }
+                    match stop_rx.recv_timeout(period) {
+                        Err(RecvTimeoutError::Timeout) => {}
+                        _ => break,
+                    }
+                }
+            })
+            .ok();
+        Self {
+            reads,
+            stop: Some(stop),
+            thread,
+        }
+    }
+
+    /// A read that has finished, if any (never waits).
+    pub fn try_read(&self) -> Option<ControlRead> {
+        self.reads.try_recv().ok()
+    }
+
+    /// Stop polling (after a read in progress) and return the reads not taken yet.
+    pub fn stop(mut self) -> Vec<ControlRead> {
+        drop(self.stop.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.reads.try_iter().collect()
+    }
+}
+
 struct Loop<'a> {
     cfg: &'a Config,
     started: Instant,
@@ -56,6 +114,9 @@ struct Loop<'a> {
     /// Rows recorded (frames or stills).
     index: u64,
     warned_disk: bool,
+    poller: Option<ControlPoller>,
+    /// A control read has arrived.
+    controls_read: bool,
 }
 
 /// Record from `source` (already open) until a stop condition; the files are finalised
@@ -72,11 +133,8 @@ pub fn record(
         (None, Mode::Latest) => "latest",
     };
     let started = Instant::now();
-    let mut settings = Settings::new(source.info().clone(), mode, unix_ns_now());
-    match source.controls() {
-        Ok(controls) => settings.controls(controls, 0, 0),
-        Err(err) => settings.outcome.errors.push(format!("controls: {err}")),
-    }
+    let settings = Settings::new(source.info().clone(), mode, unix_ns_now());
+    let poller = ControlPoller::start(source.control_reader(), cfg.settings_poll);
     let interval_ns = source
         .info()
         .fps
@@ -92,6 +150,8 @@ pub fn record(
         settings_path: cfg.out.join(format!("{}.json", cfg.name)),
         index: 0,
         warned_disk: false,
+        poller: Some(poller),
+        controls_read: false,
     };
     if !cfg.quiet {
         let info = source.info();
@@ -112,7 +172,6 @@ pub fn record(
     };
     // A still is due: take the first frame captured after this (CLOCK_MONOTONIC ns).
     let mut pending: Option<u64> = None;
-    let mut last_poll = Instant::now();
     let mut last_status = Instant::now();
     let mut result = Ok(());
     let reason = loop {
@@ -157,12 +216,8 @@ pub fn record(
             pending.get_or_insert_with(now_mono);
             *due += *period;
         }
-        if last_poll.elapsed() >= cfg.settings_poll {
-            last_poll = Instant::now();
-            if let Ok(controls) = source.controls() {
-                let at = l.started.elapsed().as_nanos() as u64;
-                l.settings.controls(controls, l.index, at);
-            }
+        while let Some(read) = l.poller.as_ref().and_then(ControlPoller::try_read) {
+            l.controls(read);
         }
         if !cfg.quiet && last_status.elapsed() >= STATUS_EVERY {
             last_status = Instant::now();
@@ -203,6 +258,25 @@ fn now_mono() -> u64 {
 }
 
 impl Loop<'_> {
+    /// A control read back: the first is the initial state (its error is reported), later ones
+    /// record changes.
+    fn controls(&mut self, (at, read): ControlRead) {
+        let first = !self.controls_read;
+        self.controls_read = true;
+        match read {
+            Ok(controls) => {
+                let at = at.saturating_duration_since(self.started).as_nanos() as u64;
+                self.settings.controls(controls, self.index, at);
+            }
+            Err(err) if first => self
+                .settings
+                .outcome
+                .errors
+                .push(format!("controls: {err}")),
+            Err(_) => {}
+        }
+    }
+
     /// Record `frame` (a video frame or a still).
     fn take(&mut self, frame: FrameLease) -> Result<(), String> {
         let res = frame.meta().format.resolution;
@@ -339,6 +413,11 @@ impl Loop<'_> {
     }
 
     fn finish(mut self, reason: String, restarts_caused: Option<u64>) -> Summary {
+        if let Some(poller) = self.poller.take() {
+            for read in poller.stop() {
+                self.controls(read);
+            }
+        }
         let written = self.writer.take().map(|w| {
             let (dropped, max_queued) = (w.dropped, w.max_queued);
             (w.finish(), dropped, max_queued)
@@ -426,13 +505,15 @@ fn still_meta(settings: &Settings, row: &Row, stem: &str, w: u32, h: u32, code: 
     format!(
         "width={w}\nheight={h}\nformat=R8\nsource_fourcc={code}\nframe_index={}\n\
          capture_index={}\nsequence={}\ntimestamp_ns={}\nclock={}\nraw={stem}.gray.raw\n\
-         pgm={stem}.pgm\ncamera={}\nexposure_us={}\nanalogue_gain={}\nstyx_commit={}\n",
+         pgm={stem}.pgm\ncamera={}\nsource_stream={}\nexposure_us={}\nanalogue_gain={}\n\
+         styx_commit={}\n",
         row.sequence.map_or(row.index, u64::from),
         row.index,
         opt(row.sequence.map(|s| s.to_string())),
         row.timestamp_ns,
         clock_name(row.clock),
         settings.source.camera,
+        settings.source.source_stream.as_deref().unwrap_or_default(),
         opt(row.exposure_us.map(|v| v.to_string())),
         opt(row.analogue_gain.map(|v| v.to_string())),
         settings.commit,

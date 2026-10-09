@@ -1,10 +1,11 @@
 //! Native cameras in the planner: raw Bayer formats, the ISP a camera's processed modes run on
 //! (its `isp` property) and their capture step, priced from the CM5 measurements in `cost`.
+//! Also which modes of a camera behind an ISP are its raw sensor stream.
 
 use styx_core::prelude::FourCc;
 
 use super::cost::{self, StepCost, megapixels};
-use super::routes::describe;
+use super::routes::{describe, has_isp_second_output};
 use super::{PlanStep, StepExecution, StepKind};
 use crate::BackendKind;
 use crate::prelude::{Mode, ProbedBackend};
@@ -37,6 +38,23 @@ pub(crate) fn raw_bayer(code: FourCc) -> bool {
                 | b"BYR2"
                 | b"BA81"
         )
+}
+
+/// Whether `code` is the sensor's raw stream rather than an ISP's processed output: raw Bayer on
+/// any camera, and GREY/R8 on a Raspberry Pi camera behind libcamera. libcamera offers 8-bit
+/// grey there only on its raw role, for sensors its camera helper calls mono, and that includes
+/// colour sensors aliased to a mono one (the OV9782 as the OV9281): the frames are then the
+/// Bayer mosaic, not grey.
+pub(crate) fn raw_sensor_stream(backend: &ProbedBackend, code: FourCc) -> bool {
+    raw_bayer(code) || (has_isp_second_output(backend) && matches!(code, FourCc::GREY | FourCc::R8))
+}
+
+/// Whether `backend` has a processed planar YUV mode, whose Y plane is grey without a copy.
+pub(crate) fn has_processed_luma(backend: &ProbedBackend) -> bool {
+    backend.descriptor.modes.iter().any(|m| {
+        m.format.code.layout_info().planes.subsampling.is_some()
+            && !raw_sensor_stream(backend, m.format.code)
+    })
 }
 
 /// The ISP a native camera's processed modes run on (its `isp` property).
