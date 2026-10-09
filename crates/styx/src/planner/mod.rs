@@ -528,6 +528,19 @@ impl FramePlan {
         }
     }
 
+    /// Whether frames are the sensor's raw stream (raw Bayer, or GREY/R8 from libcamera's raw
+    /// role on a Raspberry Pi camera), not an ISP's processed output.
+    pub fn raw_sensor_stream(&self) -> bool {
+        let code = self.mode.format.code;
+        self.device
+            .backends
+            .iter()
+            .find(|b| b.kind == self.backend)
+            .map_or(native::raw_bayer(code), |b| {
+                native::raw_sensor_stream(b, code)
+            })
+    }
+
     /// The encoder chosen for this plan, when the consumer wants compressed frames the camera
     /// does not produce.
     pub fn encoder(&self) -> Option<Arc<dyn styx_codec::Codec>> {

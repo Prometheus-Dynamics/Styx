@@ -15,6 +15,8 @@ pub const USAGE: &str = "usage:
     --mode every|latest       every frame, reporting drops (default), or the newest frame only
     --size WxH                frame size (default: the camera's largest mode, its native size)
     --fps N                   frame rate (direct mode; a service client takes the running rate)
+    --raw                     the sensor's raw 8-bit stream (R8/GREY or 8-bit Bayer) instead of
+                              the Y plane of the ISP's processed output (the default)
   how long (video):
     --seconds S               stop after S seconds
     --frames N                stop after N frames
@@ -70,6 +72,8 @@ pub struct Config {
     pub mode: Mode,
     pub size: Option<(u32, u32)>,
     pub fps: Option<u32>,
+    /// Record the sensor's raw 8-bit stream, not the Y plane of the ISP's output.
+    pub raw: bool,
     pub seconds: Option<f64>,
     pub frames: Option<u64>,
     pub stills: Option<Stills>,
@@ -94,6 +98,7 @@ impl Config {
             mode: Mode::Every,
             size: None,
             fps: None,
+            raw: false,
             seconds: None,
             frames: None,
             stills: None,
@@ -144,6 +149,7 @@ impl Config {
                     c.size = Some((num(&v, w)?, num(&v, h)?));
                 }
                 "--fps" => c.fps = Some(num("--fps", &value("a rate")?)?),
+                "--raw" => c.raw = true,
                 "--seconds" => {
                     let s: f64 = num("--seconds", &value("seconds")?)?;
                     if !(s > 0.0 && s.is_finite()) {
@@ -251,6 +257,8 @@ mod tests {
         let c = parse("--stills 3 --on-key --out d --size 1280x800").unwrap();
         assert_eq!(c.stills.unwrap().trigger, StillTrigger::Key);
         assert_eq!(c.size, Some((1280, 800)));
+        assert!(!c.raw);
+        assert!(parse("--direct --raw --out d").unwrap().raw);
     }
 
     #[test]

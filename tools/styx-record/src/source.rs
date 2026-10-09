@@ -4,13 +4,27 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use styx::capture_api::ControlPlane;
 use styx::ipc::{ClientOptions, ControlClient, FrameClient, IpcError, StandardControl};
+use styx::planner::StepKind;
 use styx::prelude::*;
 
 use crate::config::{Config, Mode};
 
 /// Frames queued for the recorder in every-frame mode (the camera service allows 8 at most).
 pub const EVERY_FRAME_QUEUE: usize = 8;
+
+/// The raw 8-bit sensor formats `--raw` takes (one byte per pixel, written as they come): grey
+/// (a mono sensor, or one libcamera calls mono) and 8-bit Bayer.
+pub const RAW_FORMATS: [FourCc; 7] = [
+    FourCc::R8,
+    FourCc::GREY,
+    FourCc::new(*b"BA81"),
+    FourCc::new(*b"BGGR"),
+    FourCc::new(*b"GBRG"),
+    FourCc::new(*b"GRBG"),
+    FourCc::new(*b"RGGB"),
+];
 
 /// A camera control and its value now.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +51,25 @@ pub struct SourceInfo {
     pub fps: Option<f32>,
     pub size: Option<(u32, u32)>,
     pub format: Option<String>,
+    /// What the recorded bytes are: `NV12 Y plane via ISP`, `raw R8`, `GREY`, ...
+    pub source_stream: Option<String>,
+}
+
+/// Reads the camera's controls; moved to its own thread by the recorder, so a slow read (a
+/// libcamera read waits for the capture thread, up to a frame period per control) never holds
+/// up frames.
+pub trait ControlReader: Send {
+    /// The camera's controls and their values now.
+    fn read(&mut self) -> Result<Vec<Control>, String>;
+}
+
+/// No controls to read.
+struct NoControls(String);
+
+impl ControlReader for NoControls {
+    fn read(&mut self) -> Result<Vec<Control>, String> {
+        Err(self.0.clone())
+    }
 }
 
 // A frame is moved straight out of it on every call; boxing it would allocate per frame.
@@ -51,8 +84,8 @@ pub enum Next {
 pub trait Source {
     fn info(&self) -> &SourceInfo;
     fn next(&mut self, wait: Duration) -> Next;
-    /// The camera's controls and their values now.
-    fn controls(&mut self) -> Result<Vec<Control>, String>;
+    /// The reader of the camera's controls (taken once; later calls may return one that fails).
+    fn control_reader(&mut self) -> Box<dyn ControlReader>;
     /// Captures of other clients the recorder's joining restarted (service only; `None`:
     /// unknown).
     fn restarts_caused(&self) -> Option<u64> {
@@ -61,7 +94,13 @@ pub trait Source {
 }
 
 fn request(cfg: &Config) -> FrameRequest {
-    let mut req = Frames::gray();
+    // Grey is the Y plane of the ISP's processed output (a zero-copy view); the raw sensor
+    // stream only when asked for.
+    let mut req = if cfg.raw {
+        Frames::formats(RAW_FORMATS)
+    } else {
+        Frames::gray()
+    };
     if let Some((w, h)) = cfg.size {
         req = req.size(w, h);
     }
@@ -72,6 +111,53 @@ fn request(cfg: &Config) -> FrameRequest {
         Mode::Every if cfg.stills.is_none() => req.every_frame(EVERY_FRAME_QUEUE),
         _ => req.latest(),
     }
+}
+
+/// What a plan's frames are, for the settings file and the CSV docs: `<code> Y plane via ISP`
+/// (the luma view of the ISP's processed output), `raw <code>` (the sensor's raw stream),
+/// `<code> decoded to grey`, or the camera's own grey format.
+pub fn source_stream(code: FourCc, luma_view: bool, decoded: bool, raw: bool, isp: bool) -> String {
+    let via = if isp { " via ISP" } else { "" };
+    if luma_view {
+        format!("{code} Y plane{via}")
+    } else if decoded {
+        format!("{code} decoded to grey")
+    } else if raw {
+        format!("raw {code}")
+    } else {
+        format!("{code}{via}")
+    }
+}
+
+/// [`source_stream`] from a printed plan (a camera service's): `frame plan for <camera> via
+/// <backend> <code> <W>x<H>...`, its steps and capture detail.
+pub fn source_stream_of_plan_text(plan: &str) -> Option<String> {
+    let first = plan.lines().next()?;
+    let after = &first[first.rfind(" via ")? + 5..];
+    let mut words = after.split_whitespace().skip(1);
+    let code = words.next()?;
+    let code = FourCc::new(code_bytes(code)?);
+    let capture = plan.lines().find(|l| l.contains(" capture "))?;
+    let isp = capture.contains("ISP") && !capture.contains("not processed by the ISP");
+    let raw = capture.contains("raw sensor stream") || code.is_bayer_raw();
+    Some(source_stream(
+        code,
+        plan.contains(" luma view "),
+        plan.contains(" decode "),
+        raw,
+        isp,
+    ))
+}
+
+/// A fourcc as printed (`R8`, `NV12`): padded with spaces to four bytes.
+fn code_bytes(code: &str) -> Option<[u8; 4]> {
+    let b = code.as_bytes();
+    if b.is_empty() || b.len() > 4 {
+        return None;
+    }
+    let mut out = [b' '; 4];
+    out[..b.len()].copy_from_slice(b);
+    Some(out)
 }
 
 /// Whether `name` (a `--camera` argument) picks a camera with this name and these keys: part of
@@ -148,6 +234,10 @@ impl ServiceSource {
             fps: delivered.as_ref().and_then(|d| d.fps),
             size: delivered.as_ref().map(|d| d.size),
             format: delivered.as_ref().map(|d| d.format.to_string()),
+            source_stream: client
+                .plan()
+                .as_deref()
+                .and_then(source_stream_of_plan_text),
         };
         Ok(Self {
             client,
@@ -191,9 +281,24 @@ impl Source for ServiceSource {
         }
     }
 
-    fn controls(&mut self) -> Result<Vec<Control>, String> {
-        let client = self.controls.as_ref().ok_or("no control connection")?;
-        let list = client.controls().map_err(|e| e.to_string())?;
+    fn control_reader(&mut self) -> Box<dyn ControlReader> {
+        match self.controls.take() {
+            Some(client) => Box::new(ServiceControls(client)),
+            None => Box::new(NoControls("no control connection".into())),
+        }
+    }
+
+    fn restarts_caused(&self) -> Option<u64> {
+        self.restarts_caused
+    }
+}
+
+/// The controls of a camera service's camera, over its control connection.
+struct ServiceControls(ControlClient);
+
+impl ControlReader for ServiceControls {
+    fn read(&mut self) -> Result<Vec<Control>, String> {
+        let list = self.0.controls().map_err(|e| e.to_string())?;
         Ok(list
             .into_iter()
             .map(|d| Control {
@@ -204,10 +309,6 @@ impl Source for ServiceSource {
             })
             .collect())
     }
-
-    fn restarts_caused(&self) -> Option<u64> {
-        self.restarts_caused
-    }
 }
 
 /// The camera opened by the recorder itself (no camera service).
@@ -215,6 +316,29 @@ pub struct DirectSource {
     frames: styx::planner::Frames,
     metas: Vec<ControlMeta>,
     info: SourceInfo,
+}
+
+/// The controls of a camera the recorder opened, read through its control plane.
+struct DirectControls {
+    plane: ControlPlane,
+    metas: Vec<ControlMeta>,
+}
+
+impl ControlReader for DirectControls {
+    fn read(&mut self) -> Result<Vec<Control>, String> {
+        Ok(self
+            .metas
+            .iter()
+            .map(|m| Control {
+                id: m.id.0,
+                name: m.name.clone(),
+                value: self.plane.get_control(m.id).ok(),
+                standard: StandardControl::ALL
+                    .into_iter()
+                    .find(|s| s.name() == m.name),
+            })
+            .collect())
+    }
 }
 
 impl DirectSource {
@@ -271,7 +395,20 @@ impl DirectSource {
             .find(|b| b.kind == backend)
             .map(|b| b.descriptor.controls.clone())
             .unwrap_or_default();
-        let delivered = frames.plan().delivered();
+        let plan = frames.plan();
+        let delivered = plan.delivered();
+        let has = |kind: StepKind| plan.steps.iter().any(|s| s.kind == kind);
+        let source_stream = source_stream(
+            plan.mode.format.code,
+            has(StepKind::LumaView),
+            has(StepKind::Decode),
+            plan.raw_sensor_stream(),
+            !plan.raw_sensor_stream()
+                && plan
+                    .steps
+                    .iter()
+                    .any(|s| s.kind == StepKind::Capture && s.detail.contains("ISP")),
+        );
         let info = SourceInfo {
             kind: "direct",
             socket: None,
@@ -284,6 +421,7 @@ impl DirectSource {
                 .or_else(|| frames.capture().interval().map(|i| i.fps())),
             size: Some(delivered.size),
             format: Some(delivered.format.to_string()),
+            source_stream: Some(source_stream),
         };
         Ok(Self {
             frames,
@@ -330,18 +468,10 @@ impl Source for DirectSource {
         }
     }
 
-    fn controls(&mut self) -> Result<Vec<Control>, String> {
-        Ok(self
-            .metas
-            .iter()
-            .map(|m| Control {
-                id: m.id.0,
-                name: m.name.clone(),
-                value: self.frames.get_control(m.id).ok(),
-                standard: StandardControl::ALL
-                    .into_iter()
-                    .find(|s| s.name() == m.name),
-            })
-            .collect())
+    fn control_reader(&mut self) -> Box<dyn ControlReader> {
+        Box::new(DirectControls {
+            plane: self.frames.capture().control_plane(),
+            metas: self.metas.clone(),
+        })
     }
 }

@@ -46,6 +46,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   sync of the OV9782/OV9281/OV9282 (FSIN trigger and strobe registers from the RPi `ov9282`
   driver, what needs the datasheet, what a CM5 carrier needs, a proposed `[sync]` sensor
   description section, expected software vs hardware sync quality).
+- `styx-record --raw`: record the sensor's raw 8-bit stream (R8/GREY or 8-bit Bayer) instead
+  of the ISP's Y plane. The settings file's `source_stream` (and a still's `.txt`) says what the
+  bytes are: `NV12 Y plane via ISP`, `raw R8`, `GREY`, ...
+- `ControlPlane::get_control` / `set_control` and `CaptureHandle::control_plane()`: read and set
+  a capture's controls from another thread.
 - `styx-record` (`tools/styx-record`, docs/recording.md): grey test recordings for Eidos. The
   Y plane at the camera's native size in Eidos's raw grey video layout
   (`<name>_<W>x<H>_gray.raw`: frames back to back, no header), a per-frame sidecar
@@ -756,6 +761,24 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   graph with Daedalus and feed it frames.
 
 ### Fixed
+
+- Planner: grey (`Frames::gray()`) from a Raspberry Pi camera behind libcamera is the Y plane of
+  the ISP's processed output (a zero-copy luma view of NV12/YUV420), never the raw sensor
+  stream. libcamera offers R8/GREY there only on its raw role, for sensors its camera helper
+  calls mono; the OV9782 is aliased to the mono OV9281, so `Frames::gray()` picked `libcamera
+  R8 1280x800`, the Bayer mosaic. Such modes are now rejected for grey requests ("the raw
+  sensor stream") when the camera has a processed YUV mode, and planned only when asked for by
+  format (`Frames::formats([FourCc::R8])`); their capture step says "raw sensor stream, not
+  processed by the ISP". Cameras without an ISP (mono USB, virtual, replays) still deliver
+  their GREY/R8 frames as they are. `FramePlan::raw_sensor_stream()` says whether a plan's
+  frames are a raw sensor stream.
+- `styx-record` records the Y plane of the ISP's output in direct mode (it recorded raw R8 on
+  the CM5), and no longer makes the camera drop frames: it read the camera's controls on its
+  frame loop every second, and a libcamera control read waits for the capture thread (up to a
+  frame period per control), so 24 controls held the loop for ~0.4 s and overflowed the
+  8-frame queue (36 frames lost in 9 gaps in 10 s on the CM5). Controls are now read on their
+  own thread (`source::ControlReader`, `record::ControlPoller`); the loop only copies each
+  frame's Y plane into a writer buffer and releases the frame at once.
 
 - Camera service frames from libcamera and replayed captures carry their sequence number
   (`FrameMeta::sequence()` on the client): only captures that stamp their hops when they

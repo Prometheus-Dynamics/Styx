@@ -19,6 +19,23 @@ It takes frames two ways:
   is refused with a clear message (`camera ... is busy: another process has it open
   (PhotonVision, ...)`); stop that process first.
 
+**What is recorded.** Grey is the Y plane of the ISP's processed output: the recorder asks for
+grey frames (`Frames::gray()`), and on a camera behind an ISP the planner takes NV12/YUV420 and
+hands over its Y plane as a zero-copy view, both through a service and directly. A raw sensor
+mode is never substituted: on a Raspberry Pi camera libcamera offers R8 on its raw role for
+sensors its camera helper calls mono, and the OV9782 is aliased to the mono OV9281, so that R8
+is the Bayer mosaic, not grey. `--raw` records the sensor's raw 8-bit stream instead (R8/GREY,
+or 8-bit Bayer), one byte per pixel as it comes. Cameras without an ISP (a mono USB camera)
+deliver their own GREY frames. The settings file's `source_stream` says which it was:
+
+| `source_stream` | The bytes are |
+|---|---|
+| `NV12 Y plane via ISP` (`YU12 ...`) | the luma of the ISP's processed output (the default on ISP cameras) |
+| `NV12 Y plane` | the Y plane of a camera's own NV12 (no ISP: USB, replays) |
+| `raw R8`, `raw BA81`, ... | the sensor's raw stream (`--raw`): a colour sensor's Bayer mosaic |
+| `GREY`, `R8` | a grey camera's own frames (mono, no ISP) |
+| `MJPG decoded to grey` | the luma of a decoded MJPEG stream |
+
 ## Usage
 
 ```text
@@ -36,6 +53,7 @@ styx-record --stills 20 --every-secs 2 --out /data/calib/b           # a still e
 | `--camera NAME` | the camera: its name, part of it, or an identity key (default: the first) |
 | `--mode every\|latest` | every frame, queued, with drops counted (default); or the newest frame only |
 | `--size WxH`, `--fps N` | frame size (default: the largest mode, the native size); frame rate (direct mode) |
+| `--raw` | the sensor's raw 8-bit stream (R8/GREY or 8-bit Bayer) instead of the ISP's Y plane |
 | `--seconds S`, `--frames N` | stop after S seconds or N frames (neither: until Ctrl-C) |
 | `--stills N` with `--on-key` or `--every-secs K` | N stills, one per Enter on stdin or every K seconds |
 | `--out DIR`, `--name NAME` | output directory (created); file name stem (default: the directory's name) |
@@ -76,7 +94,8 @@ in the name and in the settings file, not in the file.
 `<stem>.gray.raw` (one Y plane), `<stem>.pgm` (P5, the same bytes) and `<stem>.txt` with
 `key=value` lines: `width`, `height`, `format=R8`, `source_fourcc`, `frame_index` (the
 sequence number), `capture_index` (the still's number), `raw`, `pgm`, plus `sequence`,
-`timestamp_ns`, `clock`, `camera`, `exposure_us`, `analogue_gain`, `styx_commit`.
+`timestamp_ns`, `clock`, `camera`, `source_stream`, `exposure_us`, `analogue_gain`,
+`styx_commit`.
 `eidos_detect_image --input x_still000_1280x800.gray.raw --raw-luma 1280x800` reads them.
 
 ### `x.frames.csv`
@@ -102,7 +121,10 @@ frame,sequence,timestamp_ns,clock,dropped_before,gap_source,received_monotonic_n
 
 Drops are every frame the recording does not have, wherever it was lost: in the camera, in the
 service (a client too slow for its queue), or by the recorder when the disk did not keep up.
-With `--mode latest` gaps are expected (only the newest frame is taken).
+With `--mode latest` a gap means the recorder was busy for longer than a frame.
+
+The CSV rows are the frames of one stream; what that stream is (the ISP's Y plane or the raw
+sensor stream) is the settings file's `source_stream`.
 
 Through a camera service, frames carry the sequence number (the service sends it with each
 frame); the per-frame exposure and gain do not cross the socket, so the settings file has them
@@ -126,6 +148,7 @@ from the controls instead.
   "format": "R8",
   "width": 1280, "height": 800,
   "frame_format": "GREY",
+  "source_stream": "NV12 Y plane via ISP",
   "frames": 900,
   "raw_file": "x_1280x800_gray.raw",
   "raw_gray_bytes": 921600000,
@@ -150,12 +173,17 @@ from the controls instead.
 }
 ```
 
+- `source_stream`: what the bytes are (see "What is recorded" above): `NV12 Y plane via ISP`
+  (the ISP's luma), `raw R8` (`--raw`: the sensor's raw stream), `GREY` (a grey camera's own
+  frames), ...; `frame_format` is the format the frames reached the recorder in (`GREY` for a
+  luma view).
 - `settings`: what was in effect at the start. Exposure, gain and frame duration come from the
   frames' own metadata when they carry it, else from the camera's controls (Styx's standard
   controls through a service, libcamera's `ExposureTime`, `AnalogueGain`, `AeEnable`,
   `AwbEnable`, ... directly); `fps` from the plan the capture runs.
 - `controls`: every control and its value at the start. The controls are read again every
-  second while recording, and each value that changed is listed in `changes` with the frame it
+  second while recording, on their own thread (a libcamera read waits for the capture thread,
+  up to a frame period per control, so reading them between frames would hold frames back), and each value that changed is listed in `changes` with the frame it
   was seen at (`from: "control"`); changes in the frames' own exposure, gain and frame duration
   too (`from: "frame"`; the CSV has every frame's).
 - `width`, `height`, `frames`, `raw_gray_bytes`, `raw_gray_sha256` are the fields of an Eidos
@@ -171,7 +199,10 @@ from the controls instead.
 
 The disk writer runs on its own thread behind a bounded queue (`--queue`, 32 frames): the
 recorder copies each frame's Y plane into one of the writer's buffers and releases the frame at
-once, so a slow disk never holds camera buffers the service wants back. When the queue is full
+once, so a slow disk never holds camera buffers the service (or, directly, the camera) wants
+back. The recording loop does nothing else that waits: controls are read on another thread, so
+the camera's delivery queue (8 frames in every-frame mode, 1 with `--mode latest`) only has to
+cover the copy. When the queue is full
 the frame is dropped, counted (`writer_dropped_frames`) and shows up as a drop in the CSV; in
 every-frame mode the recorder prints `the disk is not keeping up` at the first one and the
 summary says so. At 1280x800 and 30 fps the video is 30.7 MB/s.
@@ -218,3 +249,8 @@ service in the test process: a replayed NV12 camera with known Y planes and sequ
 another client (no restart, the other client keeps its frames, a control change recorded),
 stills on key and on a timer, direct mode with per-frame exposure, a "disk" (a pipe) that does
 not keep up, and Ctrl-C on the real binary (`SIGINT`, files finalised).
+`tools/styx-record/tests/no_drops.rs` records a replayed 30 fps camera directly, with only the
+delivery queue as slack, controls that take 400 ms to read and a disk that writes in bursts
+with 300 ms stalls, in every-frame and latest mode: no camera frame may be lost, and every
+frame is byte-exact and in order. The planner's tests cover grey on a PiSP camera that offers
+raw R8 next to NV12 (the Y plane is chosen, R8 only by format) and grey cameras without an ISP.
