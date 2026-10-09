@@ -523,6 +523,18 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Added the `ipc_messages` fuzz target.
 - Added corruption tests for recordings, MJPEG decoders and the netcam parser, cargo-fuzz targets
   (`fuzz/`), and a public API compatibility check (`cargo-semver-checks`) in release CI.
+- Development tooling for faster local and device builds (docs/development.md): `scripts/gate.sh
+  --changed`, the dev loop, runs only the steps and tests of the packages a change since `dev`
+  can affect (`scripts/affected.sh`: the changed packages and their dependents);
+  `scripts/dev-env.sh` opts a shell into sccache and, with `STYX_BUILD_ROOT`, cargo's
+  intermediate files on a faster disk; `scripts/cross-aarch64.sh` builds for the CM5 against a
+  Buildroot sysroot (glibc) or statically with musl and rust-lld (no toolchain), one target
+  directory per sysroot, with `--bins`, `--out` and `--tests` (a test bundle);
+  `scripts/device-tests.sh` runs such a bundle on the device under the device lock (PhotonVision
+  stopped and restarted by a trap, everything under `/tmp`) or here under `qemu-aarch64`;
+  `[profile.device]`, release code built incrementally in many codegen units, for trying builds
+  on the device; `scripts/sweep-targets.sh` lists stale target directories and deletes them in
+  the background at idle disk priority (renamed aside first, btrfs subvolumes at once).
 
 ### Changed
 
@@ -755,6 +767,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   recording, netcam-parser and planner tests once instead of three times, and formats with
   `cargo fmt --all`. The gate now also runs `styx`'s `camera_service`, `scaled_planning`,
   `shared_planning` and `preview` tests, which no gate or CI job ran.
+- Faster checks and builds (docs/development.md "Faster local builds"): `check-nostd.sh` lints
+  the `no_std` crates in seven groups, one `cargo clippy` for all targets each, instead of one
+  run per crate, feature set and target (85 runs), and `--verify` (CI) proves that no crate
+  gets other features in its group than alone. `scripts/gate.sh --changed` runs only the steps
+  and tests a change since `dev` can affect. `[profile.device]` (release code generation,
+  incremental, 256 codegen units) is the default profile of `scripts/cross-aarch64.sh`; the
+  `release` profile is unchanged. CI cancels superseded runs of a pull request, skips
+  documentation-only pushes and pull requests (`paths-ignore`), and Release Readiness caches
+  Rust artifacts. Local build directories: `.gitignore` ignores the `target-*/` directories.
 
 ### Deprecated
 
