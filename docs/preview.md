@@ -237,7 +237,7 @@ the preview thread, subscribers ([metrics.md](metrics.md#previews)).
 
 ## Tests
 
-- `crates/styx/tests/preview.rs`: a vision client of the camera service and a preview whose
+- `crates/styx/tests/it/preview.rs`: a vision client of the camera service and a preview whose
   own request would have moved the capture to another mode: no restart, the vision client's
   plan unchanged (the service's plan text), its frames the same size and rate (more than 80%
   of its rate alone, no gap over 250 ms), the preview at its cap from the vision client's

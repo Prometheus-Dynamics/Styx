@@ -74,7 +74,7 @@ box (OV9782 1280x800) unless stated.
       scans with parabola fits, continuous mode with scene-change retriggering, windows with
       weights, manual / auto / continuous, `rpi.af` tuning import; Styx changes: frame-exact
       scan steps on lens reports, contrast relative to level, noise-aware peak tests, failed
-      scans back to hyperfocal, backlash-aware approach. Simulated (`tests/sim_af.rs`): one-shot
+      scans back to hyperfocal, backlash-aware approach. Simulated (`tests/it/sim_af.rs`): one-shot
       9 frames (48 with libcamera's frame counting), within 0.02 D; continuous refocus after a
       depth step in 20 frames with no hunting; PDAF 2 frames against 10; low light and blank
       walls fail cleanly (algorithms.md, "AF: autofocus").
@@ -285,7 +285,7 @@ box (OV9782 1280x800) unless stated.
       `styx_hal::Blocking` is `lemnos_hal::asynch::Blocking`; `styx_hal::mock::MockI2c` is
       `lemnos_hal::mock::MockI2c`; `styx_sensor::{VcmChip, VcmFormat}` are
       `lemnos_drivers_vcm::{VcmChip, OwnedVcmFormat}` (serde; descriptions and their compiled
-      form unchanged, `crates/sensor/tests/lens_format.rs`).
+      form unchanged, `crates/sensor/tests/it/lens_format.rs`).
 - [ ] Lemnos: Styx depends on the Lemnos `dev` branch by git (root `Cargo.toml`, `fuzz/Cargo.toml`);
       switch to crates.io 2.0 once it is published.
 - [ ] Lemnos: the native provider's hotplug polls sysfs on a timer (uevent wake-ups through

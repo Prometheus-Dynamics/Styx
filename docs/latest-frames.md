@@ -43,7 +43,7 @@ requests, 19.3 MB at 7).
 Decoding (and every later pipeline stage) runs when the consumer takes a frame, after the
 capture queue. A frame the queue drops for a slow consumer is released as the compressed or
 raw capture buffer it arrived in, without being decoded. With several cameras on a small CPU,
-the decoder does only the work that is used. `crates/styx/tests/lazy_decode.rs` checks this: a
+the decoder does only the work that is used. `crates/styx/tests/it/lazy_decode.rs` checks this: a
 200 fps camera and a consumer taking 25 ms per frame decode exactly the delivered frames.
 
 ## Before and after

@@ -98,7 +98,7 @@ fp16 against the integer reference, PSNR and largest difference in 8-bit codes:
   sample in a million more than 1 code apart. Five more frames of the recording (the dark
   start, digital gain 3.7-4) need white balance x digital gain x lens shading above 16 in the
   corners, which the integer path's Q12 gains clip and fp16 applies: they are left out.
-* **Synthetic chart** (`tests/quality.rs`: colour patches, ramps, a zone plate, clipped
+* **Synthetic chart** (`tests/it/quality.rs`: colour patches, ramps, a zone plate, clipped
   highlights and noise; three CFA orders, sRGB and a Raspberry Pi contrast curve, with and
   without lens shading, both scales, RGB24 and NV12): 54.7-61.4 dB; at most 2 codes on 99.9%
   of the samples of every channel (the test's bound), at most 2 codes everywhere with the
@@ -107,7 +107,7 @@ fp16 against the integer reference, PSNR and largest difference in 8-bit codes:
   half a unit in the integer path, and sRGB's steep start magnifies both).
 * **Statistics**: per-zone means within 0.05%; zone sums differ where a quad near the
   saturation threshold falls on the other side (up to 5% of a zone with few counted quads).
-* **Pinned**: `tests/golden.rs` pins both arithmetics' output bit for bit (the integer hashes
+* **Pinned**: `tests/it/golden.rs` pins both arithmetics' output bit for bit (the integer hashes
   are those of the code before this work); the fp16 hashes are the same from the scalar
   oracle on x86 and from the FP16 leaves on the A76.
 
@@ -116,7 +116,7 @@ fp16 against the integer reference, PSNR and largest difference in 8-bit codes:
 `SoftIsp::process_window` makes a window of the frame from its rows and columns plus the
 demosaic's neighbours (front rows from a multiple of 4 columns; 202 front rows for a 200-row
 window inside the frame), the same pixels as that window of the whole picture bit for bit
-(`tests/regions.rs`); `process_binned` makes the whole frame binned by an even factor with the
+(`tests/it/regions.rs`); `process_binned` makes the whole frame binned by an even factor with the
 statistics (the front end on 2/`factor` of the rows); `statistics` gathers them alone (the front
 end on the quad rows they sample). One 1280x800 RAW10 frame, NV12, lens shading, statistics on
 every fourth quad row, one thread (`benches/regions.rs`):
@@ -172,7 +172,7 @@ Two kernels now (Ryzen 9 5900X, AVX2, no AVX-512; medians of the benches on a bu
   contrast curves do, and all 150 adaptive contrast curves of the recorded OV9782 session
   (whole octaves missed by 2 codes on 149 of them); gamma 3 does not and keeps the table.
   1.05 -> 0.58 ms for three channels; the fit costs 26 us when the curve changes. Against
-  `Int`: at most 1 code everywhere, 81-93% of the samples equal (`tests/quality.rs`,
+  `Int`: at most 1 code everywhere, 81-93% of the samples equal (`tests/it/quality.rs`,
   RGB24/NV12/luma). Its scalar oracle, AVX2 and NEON leaves agree bit for bit.
 
 | x86 (Zen 3) | before | now |

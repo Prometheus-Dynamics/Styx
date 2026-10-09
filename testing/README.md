@@ -16,7 +16,7 @@ Styx splits validation into repo-local workspace checks, portable example smoke 
 
 ## Docker Surface
 
-- `cargo test -p styx --test docker_facade_examples -- --ignored --nocapture`
+- `cargo test -p styx --test it docker_facade_examples -- --ignored --nocapture`
 
 The Docker suite uses [`testing/docker/styx-facade.Dockerfile`](docker/styx-facade.Dockerfile) and validates virtual-camera facade examples inside a container.
 

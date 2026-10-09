@@ -3,6 +3,10 @@
 # Binaries without tests are marked so `cargo test` does not build and link an empty test
 # harness for each (docs/development.md#the-gate); this keeps the marking honest. Each such
 # target's source is searched with the modules it declares (`mod name;`).
+#
+# Also fails when a package has more than one integration-test binary besides those that need a
+# process of their own (listed below): each test binary is relinked after every edit below it,
+# so a package's integration tests are modules of one binary (`tests/it/main.rs`).
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,7 +37,31 @@ module_files() {
     done
 }
 
+# Integration-test binaries that need a process of their own, and why.
+declare -A own_process=(
+    [crates/core/tests/descriptor_allocations.rs]="a counting #[global_allocator]"
+    [crates/runtime/tests/no_alloc.rs]="a counting #[global_allocator]"
+    [crates/sensor/tests/no_alloc.rs]="a counting #[global_allocator]"
+    [crates/styx/tests/zero_alloc.rs]="a counting #[global_allocator]"
+    [crates/styx/tests/metrics.rs]="process-wide metrics (the count of camera service clients)"
+    [examples/mcu-footprint/tests/heap.rs]="a counting #[global_allocator]"
+)
+
 failures=0
+while IFS= read -r manifest; do
+    dir="$(dirname "$manifest")"
+    [[ "$dir" == . ]] && continue
+    declare -a binaries=()
+    for target in "$dir"/tests/*.rs "$dir"/tests/*/main.rs; do
+        [[ -f "$target" && -z "${own_process[$target]:-}" ]] && binaries+=("$target")
+    done
+    if ((${#binaries[@]} > 1)); then
+        echo "$dir has ${#binaries[@]} integration-test binaries (${binaries[*]}): make them modules of tests/it/main.rs, or list one in own_process with its reason" >&2
+        failures=$((failures + 1))
+    fi
+    unset binaries
+done < <(git ls-files '*Cargo.toml')
+
 while IFS= read -r manifest; do
     dir="$(dirname "$manifest")"
     # Each `test = false` table's `path` ([[bin]], [[example]], [lib]).

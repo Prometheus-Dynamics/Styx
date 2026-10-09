@@ -396,7 +396,7 @@ YUV like the PiSP's "jpeg" encoding). Raw recordings (`--record`) store each fra
 sensor values; `replay::VirtualSensor` re-exposes a recorded frame for whatever the loop asks
 (linear above black, clipped), with requests landing on their frames, so AE runs closed-loop on
 a host: `native-pipeline replay --recording <base>`, or `STYX_RAW_RECORDING=<base> cargo test
--p styx-pipeline --test replay_loop`.
+-p styx-pipeline --test it replay_loop`.
 
 ### Software path performance
 
@@ -491,8 +491,8 @@ and algorithms run on every eighth frame there.
 
 Quality against the integer arithmetic (the previous output): PSNR 53.9-55.3 dB per channel
 on 55 recorded frames with the loop's settings, at most 2 codes apart (one sample in a
-million more than 1); 54.7-61 dB on a synthetic chart (`crates/softisp/tests/quality.rs`).
-Both arithmetics' outputs are pinned bit for bit (`tests/golden.rs`). `native-pipeline quality
+million more than 1); 54.7-61 dB on a synthetic chart (`crates/softisp/tests/it/quality.rs`).
+Both arithmetics' outputs are pinned bit for bit (`tests/it/golden.rs`). `native-pipeline quality
 --recording BASE` repeats the comparison on any recording. On the replay of the 60 recorded
 frames the AE trajectory is unchanged but AWB ends at 4463 K instead of 2533 K with fp16: the
 Bayesian AWB is bistable on this scene (warm lamp, blue LED). The integer path flips the same
@@ -508,7 +508,7 @@ them (columns from a multiple of 4, so every packing's groups stay whole; neighb
 the frame reflected as for the whole frame), lens shading tables are read from the region's
 column, and the Bayer phase is the frame's (even origins). The region's pixels are the same as
 that region of the whole frame's picture, bit for bit, in both arithmetics and every output
-(4:2:0 chroma pairs from an even origin, as the whole frame's): `tests/regions.rs` checks every
+(4:2:0 chroma pairs from an even origin, as the whole frame's): `tests/it/regions.rs` checks every
 packing, demosaic, output, thread count and the frame's edges, and on the CM5
 `native-pipeline soft --roi X,Y,W,H --check-roi` processed each live frame whole again with the
 settings it had and found every region equal to its crop (150 frames each, NV12 and RGB24, at
@@ -611,7 +611,7 @@ loaded at run time (`ash`), so nothing links against it.
   and statistics, on RADV and llvmpipe; 56-58 dB / at most 1 code from x86's tone quadratics;
   53.7-55.2 dB / at most 2 codes from fp16 (what the A76 runs). The loop over a virtual sensor
   gives the same pictures, requests and settings frame by frame on CPU and GPU
-  (`styx-pipeline/tests/gpu_loop.rs`).
+  (`styx-pipeline/tests/it/gpu_loop.rs`).
 * **Performance** (`native-pipeline gpu-bench`, RX 6800 XT against `styx-softisp` on the same
   Ryzen host, HeliOS tuning, 1280x800): NV12 0.47 ms of process CPU per frame against 1.77 ms
   on one thread (1.96 ms on four), RGB24 0.62 against 1.80 ms; GPU time 0.21 (NV12) and 0.29 ms

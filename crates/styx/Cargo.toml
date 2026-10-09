@@ -61,28 +61,10 @@ styx-graph = { workspace = true, optional = true }
 criterion.workspace = true
 image.workspace = true
 
-# Integration tests that need features: skipped without them (no empty test binaries to
-# build and link). Their `#![cfg]` lines keep the platform conditions.
-[[test]]
-name = "camera_service"
-required-features = ["codec-turbojpeg", "replay-mcap"]
-
-[[test]]
-name = "scaled_planning"
-required-features = ["codec-turbojpeg", "replay-mcap"]
-
-[[test]]
-name = "shared_planning"
-required-features = ["codec-turbojpeg", "replay-mcap"]
-
-[[test]]
-name = "encoded_frames"
-required-features = ["codec-ffmpeg"]
-
-[[test]]
-name = "preview"
-required-features = ["preview"]
-
+# The integration tests are one binary (`tests/it`, modules gated on the features they need) and
+# two of their own: `zero_alloc` (a counting global allocator) and `metrics` (process-wide
+# counts). `zero_alloc` is skipped without `frame-socket` (no empty test binary to build and
+# link); its `#![cfg]` line keeps the platform condition.
 [[test]]
 name = "zero_alloc"
 required-features = ["frame-socket"]

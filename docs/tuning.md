@@ -185,7 +185,7 @@ to `/usr/share/libcamera/ipa/rpi/pisp/<sensor>.json` (or `LIBCAMERA_RPI_TUNING_F
 
 ## Validation
 
-### Synthetic sensor (`crates/tune/tests/synthetic.rs`)
+### Synthetic sensor (`crates/tune/tests/it/synthetic.rs`)
 
 `styx_tune::synth::SensorModel`: 640×400 BGGR, 10 bit, black 64-64.6 codes per channel rising
 0.3 codes per unit of gain, 2.5 e⁻/code, read noise 0.7 codes, two hot pixels, colour lens
@@ -214,7 +214,7 @@ fit on noise-free, unshaded patch values.
 No chart, flat field or lights of known temperature were available: on 2026-10-03 (device
 clock Aug 18) `styx-tune capture` recorded a black series (exposures 9.1 µs to 2 ms at gains
 1, 2, 4, 8, 15.5, lens uncovered, dim room) and 16-frame bursts of the static room at each gain
-(`target/device-tuning`, `crates/tune/tests/real_ov9782.rs` when present). Against the built-in
+(`target/device-tuning`, `crates/tune/tests/it/real_ov9782.rs` when present). Against the built-in
 `ov9782.json` (made with libcamera's `ctt`):
 
 | | `ov9782.json` | `styx-tune` | Notes |
