@@ -9,7 +9,7 @@
 #                needs QEMU_LD_PREFIX set to its sysroot) instead of on the device
 #   --only NAME  only the test binaries whose name starts with NAME (repeatable)
 #   -- args      passed to every test binary (a filter, --ignored, --test-threads 1, ...)
-#   DEVICE       the device (default root@helios), WAIT=1 to wait for the device lock
+#   DEVICE       the device, required (e.g. root@<host>); WAIT=1 to wait for the device lock
 #
 # On the device everything goes under /tmp: the bundle's sources at the same path they were
 # built from (STYX_DEVTEST_SRC, /tmp/styx-devtest-src by default; the tests find their fixtures
@@ -66,7 +66,7 @@ if ((qemu)); then
     exit "$failed"
 fi
 
-dev="${DEVICE:-root@helios}"
+dev="${DEVICE:?set DEVICE to the device to run on, e.g. DEVICE=root@<host>}"
 bin_dir=/tmp/styx-devtest-bin
 # The run, as one remote shell script: PhotonVision stopped if it runs and started again on
 # any exit, every binary from its package directory, the exit code 1 if any failed.

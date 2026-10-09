@@ -5,10 +5,7 @@ on:
     branches:
       - main
       - master
-    # Documentation only (crate READMEs are doctests, so only docs/ and the root's Markdown).
-    paths-ignore: ["docs/**", "*.md", "LICENSE-*"]
   pull_request:
-    paths-ignore: ["docs/**", "*.md", "LICENSE-*"]
   schedule:
     # Nightly: the fuzz smoke run (and everything else) against main.
     - cron: "17 3 * * *"

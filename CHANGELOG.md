@@ -783,9 +783,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   gets other features in its group than alone. `scripts/gate.sh --changed` runs only the steps
   and tests a change since `dev` can affect. `[profile.device]` (release code generation,
   incremental, 256 codegen units) is the default profile of `scripts/cross-aarch64.sh`; the
-  `release` profile is unchanged. CI cancels superseded runs of a pull request, skips
-  documentation-only pushes and pull requests (`paths-ignore`), and Release Readiness caches
-  Rust artifacts. Local build directories: `.gitignore` ignores the `target-*/` directories.
+  `release` profile is unchanged. CI cancels superseded runs of a pull request, and Release Readiness caches Rust artifacts.
+  `scripts/device-tests.sh` requires `DEVICE` (no default device). Local build directories: `.gitignore` ignores the `target-*/` directories.
 
 ### Deprecated
 
