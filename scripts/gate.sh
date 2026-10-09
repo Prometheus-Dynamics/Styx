@@ -9,6 +9,12 @@
 #                              clippy (both need FFmpeg's development files), the memory smoke,
 #                              and the tests in one process per test binary (cargo test)
 #                              besides nextest's one per test
+#   scripts/gate.sh --changed  the dev loop: only the steps, and only the tests, of the packages
+#                              a change since the merge base with dev can affect (changed
+#                              packages and every package depending on them; scripts/affected.sh;
+#                              `--changed=BASE` for another base); a change to Cargo.toml,
+#                              Cargo.lock, scripts/ or testing/ runs everything. Builds stay
+#                              --workspace, so they share every artifact with the full gate.
 #   scripts/gate.sh --list     the steps, without running them
 #   GATE_SKIP="fuzz cross"     skip steps by name (each skipped step is reported at the end)
 #
@@ -30,16 +36,19 @@ cd "$root_dir"
 
 full=0
 list=0
+changed=""
 for arg in "$@"; do
     case "$arg" in
     --full) full=1 ;;
     --list) list=1 ;;
+    --changed) changed=dev ;;
+    --changed=*) changed="${arg#--changed=}" ;;
     -h | --help)
         sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'
         exit 0
         ;;
     *)
-        echo "unknown argument: $arg (--full, --list)" >&2
+        echo "unknown argument: $arg (--full, --list, --changed[=BASE])" >&2
         exit 2
         ;;
     esac
@@ -60,14 +69,73 @@ cross_features="styx-record-cli/native,styx-record-cli/v4l2"
 have_nextest=0
 cargo nextest --version >/dev/null 2>&1 && have_nextest=1
 
+# --changed: the affected packages (" a b c ", or " ALL "), and the packages each step checks.
+affected=" ALL "
+if [[ -n "$changed" ]]; then
+    affected=" $(./scripts/affected.sh "$changed" | xargs) "
+    echo "affected since the merge base with $changed:${affected% }"
+fi
+nostd_packages="styx-core-rs styx-hal styx-runtime styx-pipeline styx-dng styx-pisp styx-algo \
+styx-sensor styx-softisp styx-nostd-smoke styx-nostd-camera styx-mcu-footprint"
+declare -A step_packages=(
+    [fmt]=any [clippy]=any [test]=any
+    [clippy-features]="styx styx-record-cli" [test-features]="styx styx-record-cli"
+    [nostd]="$nostd_packages" [perf-smoke]=styx-examples [fuzz]=styx-fuzz
+    [musl-clippy]="styx styx-native native-spike" [cross]="styx styx-record-cli"
+)
+# True when the step must run: no --changed, everything affected, or one of its packages.
+affects() {
+    local packages="${step_packages[$1]:-}" p
+    [[ -z "$packages" || "$affected" == " ALL " ]] && return 0
+    if [[ "$packages" == any ]]; then
+        [[ "$affected" != "  " && "$affected" != " styx-fuzz " ]]
+        return
+    fi
+    for p in $packages; do
+        [[ "$affected" == *" $p "* ]] && return 0
+    done
+    return 1
+}
+# With --changed, the affected workspace packages as nextest's filter expression.
+test_filter=()
+if [[ "$affected" != " ALL " ]]; then
+    expr=""
+    for p in $affected; do
+        [[ "$p" == styx-fuzz ]] && continue
+        expr+="${expr:+ | }package($p)"
+    done
+    test_filter=(--no-tests=pass -E "${expr:-none()}")
+fi
+
+# The doctests' arguments: they have no filter, so with --changed the call's scope narrows to the
+# affected packages it names (--workspace names all of them); --features passes through.
+doc_args() {
+    local arg p feature=0
+    if [[ "$affected" == " ALL " ]]; then
+        printf '%s\n' "$@"
+        return
+    fi
+    for p in $affected; do
+        [[ "$p" == styx-fuzz ]] && continue
+        if [[ " $* " == *" --workspace "* || " $* " == *" -p $p "* ]]; then printf '%s\n' -p "$p"; fi
+    done
+    for arg in "$@"; do
+        if ((feature)); then printf '%s\n' "$arg"; feature=0
+        elif [[ "$arg" == --features ]]; then printf '%s\n' "$arg"; feature=1; fi
+    done
+}
 # Runs the tests of the given packages: nextest when installed (every test binary in parallel,
 # each test in its own process), then the doctests, which nextest does not run.
 run_tests() {
+    local -a doc=()
+    mapfile -t doc < <(doc_args "$@")
     if ((have_nextest)); then
-        cargo nextest run --no-fail-fast --cargo-quiet --status-level slow "$@"
-        cargo test --doc -q "$@"
-    else
-        cargo test --no-fail-fast -q "$@"
+        cargo nextest run --no-fail-fast --cargo-quiet --status-level slow "${test_filter[@]}" "$@"
+        if [[ " ${doc[*]} " == *" -p "* || " ${doc[*]} " == *" --workspace "* ]]; then
+            cargo test --doc -q "${doc[@]}"
+        fi
+    elif [[ " ${doc[*]} " == *" -p "* || " ${doc[*]} " == *" --workspace "* ]]; then
+        cargo test --no-fail-fast -q "${doc[@]}"
     fi
 }
 
@@ -82,6 +150,10 @@ step() {
     fi
     if [[ " ${GATE_SKIP:-} " == *" $name "* ]]; then
         skipped+=("$name (GATE_SKIP)")
+        return 0
+    fi
+    if ! affects "$name"; then
+        skipped+=("$name (unaffected)")
         return 0
     fi
     printf '\n==> [%s] %s\n' "$name" "$*"
@@ -112,7 +184,23 @@ zero_alloc_stress() {
     done
 }
 
-step fmt cargo fmt --all --check
+# --changed: rustfmt on the changed Rust files (dev is formatted), not on every crate.
+changed_rust_files() {
+    local base
+    base="$(git merge-base HEAD "$changed")"
+    { git diff --name-only --diff-filter=d "$base" -- '*.rs'
+        git ls-files --others --exclude-standard -- '*.rs'; } | sort -u
+}
+fmt_changed() {
+    local -a files
+    mapfile -t files < <(changed_rust_files)
+    ((${#files[@]} == 0)) || rustfmt --check --edition 2024 "${files[@]}"
+}
+if [[ "$affected" == " ALL " ]]; then
+    step fmt cargo fmt --all --check
+else
+    step fmt fmt_changed
+fi
 step file-sizes ./scripts/check-file-sizes.sh
 step test-targets ./scripts/check-test-targets.sh
 step clippy cargo clippy --workspace --all-targets -- -D warnings

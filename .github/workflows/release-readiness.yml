@@ -7,6 +7,11 @@ on:
       - main
       - dev
 
+# A newer push to a pull request cancels its run in progress (pushes to branches finish).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   rust:
     name: Rust release checks
@@ -21,6 +26,9 @@ jobs:
         uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy, rustfmt
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
         run: |
