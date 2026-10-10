@@ -29,7 +29,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use smallvec::{SmallVec, smallvec};
 use styx_capture::prelude::*;
-use styx_core::prelude::{BackendFrameMeta, ExternalBacking, NativeFrameMeta, TimestampClock};
+use styx_core::prelude::{BackendFrameMeta, ClockConversion, ExternalBacking, NativeFrameMeta};
 use styx_native::{CameraInfo, NativeCamera, StreamSettings};
 use styx_pipeline::SensorValues;
 use styx_pipeline::device::{
@@ -247,12 +247,19 @@ fn native_meta(sequence: u64, s: &SensorValues) -> NativeFrameMeta {
     }
 }
 
-fn frame_meta(mode: &Mode, sequence: u64, timestamp: Duration, s: &SensorValues) -> FrameMeta {
-    let mut meta = FrameMeta::new(mode.format, timestamp.as_nanos() as u64)
-        .with_backend(BackendFrameMeta::Native(native_meta(sequence, s)))
-        .with_capture_instant(std::time::Instant::now());
-    meta.clock = Some(TimestampClock::Monotonic);
-    meta
+fn frame_meta(
+    mode: &Mode,
+    sequence: u64,
+    timestamp: Duration,
+    s: &SensorValues,
+    conversion: Option<ClockConversion>,
+) -> FrameMeta {
+    super::native_backend::stamp_clock(
+        FrameMeta::new(mode.format, timestamp.as_nanos() as u64)
+            .with_backend(BackendFrameMeta::Native(native_meta(sequence, s)))
+            .with_capture_instant(std::time::Instant::now()),
+        conversion,
+    )
 }
 
 /// A software path frame's raw rows held for a still.
@@ -343,6 +350,7 @@ pub(super) fn start_processed(
     let kind = isp_kind(camera.info());
     crate::trace::info!(backend = "native", isp = kind.name(), tuning = %source, "processed capture");
     let capture = config.capture_tunables();
+    let timestamp_clock = capture.timestamp_clock;
     // A queue the supervisor passed in belongs to the consumer and outlives this capture (a
     // reconnect starts the next one on it): only a queue made here is closed when it ends.
     let owns_queue = queue.is_none();
@@ -471,6 +479,7 @@ pub(super) fn start_processed(
                     loop_controls: loop_worker,
                     still,
                     live: live_worker,
+                    clock: timestamp_clock,
                 },
             )?;
             (controls, worker)
@@ -532,6 +541,7 @@ pub(super) fn start_processed(
                     loop_controls: loop_worker,
                     still,
                     live: live_worker,
+                    clock: timestamp_clock,
                     controls: controls.clone(),
                 },
             )?;

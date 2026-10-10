@@ -94,6 +94,7 @@ fn pisp_frames_reach_an_in_process_consumer_without_allocating_or_copying() {
                 &f,
                 &ret_tx,
                 &live,
+                None,
             )
         });
         let (closed, delivered) = allocations(|| {

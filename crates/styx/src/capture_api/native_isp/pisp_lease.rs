@@ -12,8 +12,8 @@ use smallvec::SmallVec;
 use styx_capture::prelude::*;
 use styx_core::buffer::CpuReadWindow;
 use styx_core::prelude::{
-    BackendFrameMeta, CaptureInstant, ExportedKind, ExternalBacking, FrameBackingExport,
-    FrameExportError, FrameFdPlane, FrameRect, FrameResidency, Hop, TimestampClock,
+    BackendFrameMeta, CaptureInstant, ClockConversion, ExportedKind, ExternalBacking,
+    FrameBackingExport, FrameExportError, FrameFdPlane, FrameRect, FrameResidency, Hop,
 };
 use styx_kernel::Mapping;
 use styx_kernel::dma_heap::{self, Access, DmaBuf};
@@ -21,6 +21,7 @@ use styx_pipeline::device::{PispFrame, PispPipeline};
 use styx_pisp::device::{BeFormat, BeOutputSetup};
 use styx_pisp::uapi::BeCropConfig;
 
+use super::super::native_backend::stamp_clock;
 use super::super::request::CaptureError;
 use super::{err, layouts, native_meta};
 use crate::metrics::CaptureMetrics;
@@ -261,6 +262,9 @@ pub(super) struct Leaser<'a> {
     pub(super) buffers: &'a mut Buffers,
     pub(super) returns: &'a Returns,
     pub(super) live: &'a CaptureMetrics,
+    /// How the frame's timestamp converts to the configured clock, sampled once for the frame
+    /// (its companions convert the same way).
+    pub(super) conversion: Option<ClockConversion>,
 }
 
 impl Leaser<'_> {
@@ -279,6 +283,7 @@ impl Leaser<'_> {
             self.f,
             self.returns,
             self.live,
+            self.conversion,
         ))
     }
 }
@@ -290,6 +295,7 @@ fn lease(
     f: &PispFrame,
     returns: &Returns,
     live: &CaptureMetrics,
+    conversion: Option<ClockConversion>,
 ) -> FrameLease {
     let spec = placed.spec;
     let (width, height) = placed.size.unwrap_or_else(|| {
@@ -310,10 +316,12 @@ fn lease(
         .collect();
     let res = Resolution::new(width, height).expect("non-zero output size");
     let format = MediaFormat::new(spec.code, res, ColorSpace::Srgb);
-    let mut meta = FrameMeta::new(format, f.timestamp.as_nanos() as u64)
-        .with_backend(BackendFrameMeta::Native(native_meta(f.sequence, &f.sensor)))
-        .with_capture_instant(std::time::Instant::now());
-    meta.clock = Some(TimestampClock::Monotonic);
+    let mut meta = stamp_clock(
+        FrameMeta::new(format, f.timestamp.as_nanos() as u64)
+            .with_backend(BackendFrameMeta::Native(native_meta(f.sequence, &f.sensor)))
+            .with_capture_instant(std::time::Instant::now()),
+        conversion,
+    );
     meta.crop = placed.crop;
     let dequeued = CaptureInstant::from(f.dequeued);
     meta.hops.set(Hop::Dequeued, dequeued.as_nanos());
@@ -403,6 +411,39 @@ mod tests {
     }
 
     #[test]
+    fn leases_carry_the_configured_clock() {
+        let (w, h) = (64, 32);
+        let spec = OutputSpec {
+            code: FourCc::NV12,
+            width: w as u32,
+            height: h as u32,
+        };
+        let (tx, _rx) = returns();
+        let live = CaptureMetrics::default();
+        let placed = || Placed {
+            spec,
+            stride: w,
+            size: None,
+            crop: None,
+        };
+        let f = frame();
+        let lease_in = |clock| {
+            let conversion = crate::capture_api::native_backend::native_conversion(clock);
+            lease(placed(), buffer(w, h), (0, 3), &f, &tx, &live, conversion)
+        };
+        let native = lease_in(ClockSource::Native);
+        assert_eq!(native.meta().clock, Some(TimestampClock::Monotonic));
+        assert_eq!(native.meta().timestamp, f.timestamp.as_nanos() as u64);
+        let boot = lease_in(ClockSource::Boottime);
+        assert_eq!(boot.meta().clock, Some(TimestampClock::Boottime));
+        let back = boot.meta().timestamp_in(TimestampClock::Monotonic).unwrap();
+        assert!(
+            back.abs_diff(f.timestamp.as_nanos() as u64) < 10_000_000,
+            "{back}"
+        );
+    }
+
+    #[test]
     fn nv12_leases_export_their_planes_and_return_the_buffer() {
         let (w, h) = (64, 32);
         let spec = OutputSpec {
@@ -418,7 +459,7 @@ mod tests {
             size: None,
             crop: None,
         };
-        let f = lease(placed, buffer(w, h), (0, 3), &frame(), &tx, &live);
+        let f = lease(placed, buffer(w, h), (0, 3), &frame(), &tx, &live, None);
         let planes = f.planes();
         assert_eq!(planes.len(), 2);
         assert!(planes[0].data().iter().all(|&v| v == 1));
@@ -465,7 +506,7 @@ mod tests {
             size: None,
             crop: Some(crop),
         };
-        let f = lease(placed, buffer(w, h), (0, 3), &frame(), &tx, &live);
+        let f = lease(placed, buffer(w, h), (0, 3), &frame(), &tx, &live, None);
         let res = f.meta().format.resolution;
         assert_eq!((res.width.get(), res.height.get()), (32, 16));
         assert_eq!(f.meta().crop, Some(crop));

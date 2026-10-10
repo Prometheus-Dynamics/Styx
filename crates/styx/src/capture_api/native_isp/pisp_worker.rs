@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use styx_capture::prelude::*;
-use styx_core::prelude::{CompanionKind, FrameRect};
+use styx_core::prelude::{ClockSource, CompanionKind, FrameRect};
 use styx_core::queue::BoundedTx;
 use styx_pipeline::PipelineError;
 use styx_pipeline::device::PispPipeline;
@@ -115,6 +115,8 @@ pub(super) struct Worker {
     pub(super) error: Arc<Mutex<Option<CaptureError>>>,
     pub(super) send_timeout: Duration,
     pub(super) timeout: Duration,
+    /// The clock the frames are stamped in.
+    pub(super) clock: ClockSource,
     /// The 3A loop's controls and state.
     pub(super) loop_controls: Arc<super::LoopControls>,
     /// Still requests.
@@ -138,6 +140,7 @@ fn frame_leases(
         buffers,
         returns,
         live: &w.live,
+        conversion: super::super::native_backend::native_conversion(w.clock),
     };
     let mut unleased = Vec::new();
     let placed = |i: usize, spec: OutputSpec| Placed {
