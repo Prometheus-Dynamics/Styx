@@ -27,6 +27,10 @@
 //! The camera is the first one the enabled backends probe (`--features frame-socket,native`
 //! for a native camera; `--features frame-socket,libcamera` probes libcamera only, so a
 //! libcamera camera, e.g. through the Raspberry Pi PiSP, is used).
+//!
+//! `STYX_ALLOC_TRACE=1` names the allocations: the call stacks of the allocations in a window of
+//! `STYX_ALLOC_TRACE_FRAMES` frames (default 60) of the steady state, grouped and sorted, printed
+//! after the table (`alloc_trace.rs`); `scripts/symbolize-alloc-trace.sh` names the call sites.
 
 #![allow(unsafe_code)]
 
@@ -38,6 +42,9 @@ use styx::ipc::{CameraService, FrameClient, FrameFetcher, FrameSocket, frame_soc
 use styx::metrics::{HopMetrics, PathMetrics};
 use styx::prelude::*;
 
+#[path = "hop_breakdown/alloc_trace.rs"]
+mod alloc_trace;
+
 /// Counts the process's heap allocations.
 struct Counting;
 
@@ -47,16 +54,19 @@ static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        alloc_trace::record();
         // SAFETY: forwarded unchanged.
         unsafe { System.alloc(layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        alloc_trace::record();
         // SAFETY: forwarded unchanged.
         unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        alloc_trace::record();
         // SAFETY: forwarded unchanged.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -84,6 +94,7 @@ struct AllocRate {
 impl AllocRate {
     /// Starts counting now, `frames` frames seen so far.
     fn start(frames: u64) -> Self {
+        alloc_trace::arm(frames);
         let now = (allocations(), frames);
         Self {
             start: now,
@@ -95,6 +106,7 @@ impl AllocRate {
 
     /// `frames` seen so far: closes a window when a second has passed.
     fn sample(&mut self, frames: u64) {
+        alloc_trace::frames(frames);
         if self.at.elapsed() < Duration::from_secs(1) {
             return;
         }
@@ -118,6 +130,7 @@ impl AllocRate {
             median.map_or_else(|| "-".into(), |m| format!("{m:.2}")),
             self.windows.len(),
         );
+        alloc_trace::report(frames);
     }
 }
 
@@ -388,6 +401,7 @@ fn service_client(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Er
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    alloc_trace::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
     let secs = |i: usize| arg(i).and_then(|s| s.parse().ok()).unwrap_or(20);

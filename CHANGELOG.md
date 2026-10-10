@@ -6,6 +6,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+### Added
+
+- **Allocation call sites for `hop_breakdown`:** `STYX_ALLOC_TRACE=1` records the call stack of
+  every heap allocation in a window of `STYX_ALLOC_TRACE_FRAMES` frames of the steady state
+  (unset: one relaxed atomic load per allocation) and prints the stacks grouped by count, as
+  `exe+0x...` offsets. `scripts/symbolize-alloc-trace.sh BINARY LOGFILE` names them from the
+  unstripped build (docs/metrics.md, "Finding allocations on a device").
+
 ### Changed
 
 - **Native PiSP processed path: no allocation per frame in steady state.** The algorithms,
