@@ -4,8 +4,6 @@
 //! the Raspberry Pi PiSP IPA, libcamera `src/ipa/rpi/pisp/pisp.cpp` (`packLscLut`,
 //! `resampleTable`; BSD-2-Clause, Copyright (C) 2023 Raspberry Pi Ltd), rewritten in Rust.
 
-use alloc::vec::Vec;
-
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
 use crate::uapi::{BE_LSC_LUT_SIZE, BeLscConfig};
@@ -59,25 +57,24 @@ pub fn resample_table(
     if src_w == 0 || src_h == 0 || src.len() < src_w * src_h {
         return out;
     }
-    let sample = |count: usize, len: usize| -> Vec<(usize, usize, f64)> {
-        let inc = len as f64 / (count - 1) as f64;
-        (0..count)
-            .map(|i| {
-                let p = -0.5 + i as f64 * inc;
-                let lo = p.floor();
-                let f = p - lo;
-                let lo = lo as isize;
-                let hi = if lo < len as isize - 1 {
-                    lo + 1
-                } else {
-                    len as isize - 1
-                };
-                (lo.max(0) as usize, hi.max(0) as usize, f)
-            })
-            .collect()
+    // The source positions of the grid's vertices: a fixed table (no allocation per table).
+    let sample = |len: usize| -> [(usize, usize, f64); BE_LSC_LUT_SIZE] {
+        let inc = len as f64 / (n - 1) as f64;
+        core::array::from_fn(|i| {
+            let p = -0.5 + i as f64 * inc;
+            let lo = p.floor();
+            let f = p - lo;
+            let lo = lo as isize;
+            let hi = if lo < len as isize - 1 {
+                lo + 1
+            } else {
+                len as isize - 1
+            };
+            (lo.max(0) as usize, hi.max(0) as usize, f)
+        })
     };
-    let xs = sample(n, src_w);
-    let ys = sample(n, src_h);
+    let xs = sample(src_w);
+    let ys = sample(src_h);
     for (j, &(y0, y1, yf)) in ys.iter().enumerate() {
         for (i, &(x0, x1, xf)) in xs.iter().enumerate() {
             let at = |x: usize, y: usize| src[y * src_w + x];

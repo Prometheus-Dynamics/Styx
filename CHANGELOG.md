@@ -6,6 +6,23 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+### Changed
+
+- **Native PiSP processed path: no allocation per frame in steady state.** The algorithms,
+  the back end config and the statistics reuse their buffers from frame to frame: contrast,
+  AGC, AWB (including the Bayesian search's buffers), ALSC (tables, adaptive solver) and the
+  params copy (`Params::clone_from`, `Pwl::clone_from`, `ZoneGrid`/`LensShading` buffers),
+  `Histogram::set_bins`, the controller's recycled step, the back end's gamma and lens-shading
+  tables. Outputs are bit-identical: a 240-frame digest of every frame's params, settings,
+  statistics and back end config matches the previous code. The copy of `Controls` for each
+  frame's metadata still allocates while the application names a metering, AWB, constraint or
+  exposure mode (`Controller::meta`).
+- **V4L2 buffers and controls:** `DequeuedBuffer::planes` and `QueueBuffer::planes` are an
+  inline `Planes` (up to `MAX_PLANES`) instead of a `Vec`; integer `VIDIOC_S_EXT_CTRLS` and
+  `VIDIOC_TRY_EXT_CTRLS` calls with up to 8 controls use a list on the stack, and
+  `SubdevBus::set_controls` builds its values the same way. The per-frame queue, dequeue and
+  control calls of the PiSP path no longer allocate.
+
 ### Fixed
 
 - **Kernel-driven OV9782 advertised impossible rates at 640x400.** The kernel path applied the

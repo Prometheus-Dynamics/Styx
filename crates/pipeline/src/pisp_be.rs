@@ -10,13 +10,14 @@
 
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::vec::Vec;
 
 use styx_algo::{LensShading, Pwl};
 use styx_pisp::be::BackEnd;
 use styx_pisp::uapi::{BeCropConfig, BeLscExtra, BeTilesConfig, ImageFormatConfig, bayer_enable};
 
 use crate::error::{PipelineError, Result};
-use crate::isp::{IspSettings, be_lens_shading, gamma_points, level16};
+use crate::isp::{IspSettings, be_lens_shading, gamma_points_into, level16};
 
 /// What [`BeConfigBuilder::update`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +51,8 @@ pub struct BeConfigBuilder {
     fresh: bool,
     lsc_on: bool,
     gamma: Option<Pwl>,
+    /// The tone curve's points on the 16-bit scale, as the back end takes them (scratch).
+    gamma_points: Vec<(u32, u32)>,
     lens_shading: Option<LensShading>,
     counts: BeUpdateCounts,
     /// Temporal denoise buffers exist (see [`Self::enable_tdn`]).
@@ -82,6 +85,7 @@ impl BeConfigBuilder {
             fresh: true,
             lsc_on: false,
             gamma: None,
+            gamma_points: Vec::new(),
             lens_shading: None,
             counts: BeUpdateCounts::default(),
             tdn: false,
@@ -202,7 +206,8 @@ impl BeConfigBuilder {
         w.set_wb_gains(g[0], g[1], g[2]);
         w.set_ccm(isp.ccm);
         if self.gamma != isp.gamma {
-            w.set_gamma_curve(&gamma_points(isp.gamma.as_ref()));
+            gamma_points_into(isp.gamma.as_ref(), &mut self.gamma_points);
+            w.set_gamma_curve(&self.gamma_points);
             self.gamma.clone_from(&isp.gamma);
         }
         if ls_changed {

@@ -28,8 +28,8 @@ mod format;
 pub(crate) mod raw;
 
 pub use buffer::{
-    BufferCapabilities, BufferFlags, BufferInfo, DequeuedBuffer, Memory, PlaneInfo, QueueBuffer,
-    QueuePlane, RequestedBuffers,
+    BufferCapabilities, BufferFlags, BufferInfo, DequeuedBuffer, MAX_PLANES, Memory, PlaneInfo,
+    Planes, QueueBuffer, QueuePlane, RequestedBuffers,
 };
 pub use capture::DmaBufAccess;
 pub use control::{

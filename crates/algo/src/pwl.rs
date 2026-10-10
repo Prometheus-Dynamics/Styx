@@ -11,16 +11,38 @@ use alloc::{format, vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AlgoError, Result};
-use crate::math::{keyed, sort_keyed};
+use crate::math::sort_keyed;
 
 /// A piecewise-linear function through points with strictly increasing x.
 ///
 /// Serialised as a flat list `[x0, y0, x1, y1, ...]` (the Raspberry Pi tuning form); a single
 /// number deserialises as a constant.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(try_from = "PwlRepr", into = "Vec<f64>")]
 pub struct Pwl {
     points: Vec<(f64, f64)>,
+}
+
+impl Clone for Pwl {
+    fn clone(&self) -> Self {
+        Self {
+            points: self.points.clone(),
+        }
+    }
+
+    /// Copies into this curve's own points (reusing their buffer: no allocation once it holds
+    /// as many points as `source`), so a curve kept across frames is copied without one.
+    fn clone_from(&mut self, source: &Self) {
+        self.points.clone_from(&source.points);
+    }
+}
+
+/// Scratch buffers for [`Pwl::compose_into`] and [`Pwl::combine_into`]: kept by the caller and
+/// reused, so a curve made every frame allocates nothing once they have grown.
+#[derive(Debug, Default, Clone)]
+pub struct PwlScratch {
+    xs: Vec<f64>,
+    keyed: Vec<(f64, u32)>,
 }
 
 #[derive(Deserialize)]
@@ -51,16 +73,17 @@ const EPS: f64 = 1e-6;
 impl Pwl {
     /// A function through `points` (x strictly increasing, all finite, at least one point).
     pub fn new(points: Vec<(f64, f64)>) -> Result<Self> {
-        if points.is_empty() {
-            return Err(AlgoError::tuning("curve has no points"));
-        }
-        if points.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
-            return Err(AlgoError::tuning("curve has a non-finite value"));
-        }
-        if points.windows(2).any(|w| w[1].0 <= w[0].0) {
-            return Err(AlgoError::tuning("curve x values must increase strictly"));
-        }
+        check(&points)?;
         Ok(Self { points })
+    }
+
+    /// Replaces the points with `points` (checked as [`Self::new`] checks them), keeping this
+    /// curve's buffer.
+    pub fn set_points(&mut self, points: &[(f64, f64)]) -> Result<()> {
+        check(points)?;
+        self.points.clear();
+        self.points.extend_from_slice(points);
+        Ok(())
     }
 
     /// From `[x0, y0, x1, y1, ...]`.
@@ -155,7 +178,16 @@ impl Pwl {
     /// `other(self(x))`, exact for piecewise-linear inputs: breakpoints are this curve's points
     /// plus the x where this curve crosses one of `other`'s breakpoints.
     pub fn compose(&self, other: &Pwl) -> Pwl {
-        let mut xs: Vec<f64> = self.points.iter().map(|p| p.0).collect();
+        let mut out = Pwl::default();
+        self.compose_into(other, &mut out, &mut PwlScratch::default());
+        out
+    }
+
+    /// [`Self::compose`] into `out` (its buffer reused), with `scratch` for the breakpoints.
+    pub fn compose_into(&self, other: &Pwl, out: &mut Pwl, scratch: &mut PwlScratch) {
+        let PwlScratch { xs, keyed } = scratch;
+        xs.clear();
+        xs.extend(self.points.iter().map(|p| p.0));
         for w in self.points.windows(2) {
             let ((x0, y0), (x1, y1)) = (w[0], w[1]);
             if (y1 - y0).abs() <= EPS {
@@ -168,26 +200,28 @@ impl Pwl {
                 }
             }
         }
-        Self::from_xs(xs, |x| other.eval(self.eval(x)))
+        from_xs_into(xs, keyed, &mut out.points, |x| other.eval(self.eval(x)));
     }
 
     /// `f(x, a(x), b(x))` over the union of both curves' breakpoints.
     pub fn combine(a: &Pwl, b: &Pwl, f: impl Fn(f64, f64, f64) -> f64) -> Pwl {
-        let xs = a.points.iter().chain(&b.points).map(|p| p.0).collect();
-        Self::from_xs(xs, |x| f(x, a.eval(x), b.eval(x)))
+        let mut out = Pwl::default();
+        Pwl::combine_into(a, b, f, &mut out, &mut PwlScratch::default());
+        out
     }
 
-    fn from_xs(xs: Vec<f64>, f: impl Fn(f64) -> f64) -> Pwl {
-        // Equal keys are equal values: the same order as any sort by value.
-        let mut xs = keyed(xs.into_iter());
-        sort_keyed(&mut xs);
-        let mut points: Vec<(f64, f64)> = Vec::with_capacity(xs.len());
-        for (x, _) in xs {
-            if points.last().is_none_or(|p| x - p.0 > EPS) {
-                points.push((x, f(x)));
-            }
-        }
-        Pwl { points }
+    /// [`Self::combine`] into `out` (its buffer reused), with `scratch` for the breakpoints.
+    pub fn combine_into(
+        a: &Pwl,
+        b: &Pwl,
+        f: impl Fn(f64, f64, f64) -> f64,
+        out: &mut Pwl,
+        scratch: &mut PwlScratch,
+    ) {
+        let PwlScratch { xs, keyed } = scratch;
+        xs.clear();
+        xs.extend(a.points.iter().chain(&b.points).map(|p| p.0));
+        from_xs_into(xs, keyed, &mut out.points, |x| f(x, a.eval(x), b.eval(x)));
     }
 
     /// Multiply every y by `k`.
@@ -202,9 +236,50 @@ impl Pwl {
         }
     }
 
+    /// [`Self::map_y`] in place.
+    pub fn map_y_in_place(&mut self, f: impl Fn(f64, f64) -> f64) {
+        for p in &mut self.points {
+            p.1 = f(p.0, p.1);
+        }
+    }
+
     /// Replace every x by `f(x)` (must keep x increasing).
     pub fn map_x(&self, f: impl Fn(f64) -> f64) -> Result<Pwl> {
         Pwl::new(self.points.iter().map(|&(x, y)| (f(x), y)).collect())
+    }
+}
+
+/// The checks [`Pwl::new`] makes.
+fn check(points: &[(f64, f64)]) -> Result<()> {
+    if points.is_empty() {
+        return Err(AlgoError::tuning("curve has no points"));
+    }
+    if points.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+        return Err(AlgoError::tuning("curve has a non-finite value"));
+    }
+    if points.windows(2).any(|w| w[1].0 <= w[0].0) {
+        return Err(AlgoError::tuning("curve x values must increase strictly"));
+    }
+    Ok(())
+}
+
+/// The points of `f` over the breakpoints `xs` (sorted, duplicates within [`EPS`] dropped),
+/// into `out`; `keyed` is scratch.
+fn from_xs_into(
+    xs: &[f64],
+    keyed: &mut Vec<(f64, u32)>,
+    out: &mut Vec<(f64, f64)>,
+    f: impl Fn(f64) -> f64,
+) {
+    // Equal keys are equal values: the same order as any sort by value.
+    keyed.clear();
+    keyed.extend(xs.iter().enumerate().map(|(i, &v)| (v, i as u32)));
+    sort_keyed(keyed);
+    out.clear();
+    for &(x, _) in keyed.iter() {
+        if out.last().is_none_or(|p| x - p.0 > EPS) {
+            out.push((x, f(x)));
+        }
     }
 }
 

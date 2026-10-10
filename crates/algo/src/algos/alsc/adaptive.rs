@@ -10,7 +10,7 @@
 //! tables) leave their input unchanged (their `std::for_each` lambdas return a value instead of
 //! assigning it), so this port does not rescale either: the results match what libcamera runs.
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
@@ -36,23 +36,34 @@ pub(super) struct Settings {
 /// it: already divided by any lens shading applied before the statistics.
 pub(super) type Zone = (f64, f64, f64, u32);
 
-/// R/G and B/G per zone, or [`INSUFFICIENT`] where the zone is too dark or too empty. The
-/// green and channel limits compare the mean on the 16-bit scale truncated to an integer, as
-/// the original does with its integer sums.
-fn cr_cb(zones: &[Zone], s: &Settings) -> (Vec<f64>, Vec<f64>) {
+/// Buffers the iterations use, kept across runs (no allocation per run once they have grown).
+#[derive(Debug, Default, Clone)]
+pub(super) struct Workspace {
+    cr: Vec<f64>,
+    cb: Vec<f64>,
+    weights: Vec<[f64; 4]>,
+    matrix: Vec<[f64; 4]>,
+    old: Vec<f64>,
+}
+
+/// R/G and B/G per zone into `cr` and `cb`, or [`INSUFFICIENT`] where the zone is too dark or
+/// too empty. The green and channel limits compare the mean on the 16-bit scale truncated to
+/// an integer, as the original does with its integer sums.
+fn cr_cb_into(zones: &[Zone], s: &Settings, cr: &mut Vec<f64>, cb: &mut Vec<f64>) {
     let min_g16 = s.min_g * 65536.0;
-    zones
-        .iter()
-        .map(|&(r, g, b, counted)| {
-            let n = f64::from(counted.max(1));
-            let low = |v: f64| (v / n * 65536.0).floor() <= min_g16;
-            if f64::from(counted) <= s.min_count || low(g) || low(r) || low(b) {
-                (INSUFFICIENT, INSUFFICIENT)
-            } else {
-                (r / g, b / g)
-            }
-        })
-        .unzip()
+    cr.clear();
+    cb.clear();
+    for &(r, g, b, counted) in zones {
+        let n = f64::from(counted.max(1));
+        let low = |v: f64| (v / n * 65536.0).floor() <= min_g16;
+        let (x, y) = if f64::from(counted) <= s.min_count || low(g) || low(r) || low(b) {
+            (INSUFFICIENT, INSUFFICIENT)
+        } else {
+            (r / g, b / g)
+        };
+        cr.push(x);
+        cb.push(y);
+    }
 }
 
 fn weight(ci: f64, cj: f64, sigma: f64) -> f64 {
@@ -63,57 +74,55 @@ fn weight(ci: f64, cj: f64, sigma: f64) -> f64 {
     (-d * d / 2.0).exp()
 }
 
-/// Neighbour weights, `[above, right, below, left]` per zone.
-fn weights(c: &[f64], w: usize, sigma: f64) -> Vec<[f64; 4]> {
+/// Neighbour weights, `[above, right, below, left]` per zone, into `out`.
+fn weights_into(out: &mut Vec<[f64; 4]>, c: &[f64], w: usize, sigma: f64) {
     let n = c.len();
-    (0..n)
-        .map(|i| {
-            [
-                if i >= w {
-                    weight(c[i], c[i - w], sigma)
-                } else {
-                    0.0
-                },
-                if i % w < w - 1 {
-                    weight(c[i], c[i + 1], sigma)
-                } else {
-                    0.0
-                },
-                if i < n - w {
-                    weight(c[i], c[i + w], sigma)
-                } else {
-                    0.0
-                },
-                if i % w != 0 {
-                    weight(c[i], c[i - 1], sigma)
-                } else {
-                    0.0
-                },
-            ]
-        })
-        .collect()
+    out.clear();
+    out.extend((0..n).map(|i| {
+        [
+            if i >= w {
+                weight(c[i], c[i - w], sigma)
+            } else {
+                0.0
+            },
+            if i % w < w - 1 {
+                weight(c[i], c[i + 1], sigma)
+            } else {
+                0.0
+            },
+            if i < n - w {
+                weight(c[i], c[i + w], sigma)
+            } else {
+                0.0
+            },
+            if i % w != 0 {
+                weight(c[i], c[i - 1], sigma)
+            } else {
+                0.0
+            },
+        ]
+    }));
 }
 
-/// The sparse matrix `M` (`M λ = λ`), diagonal divided out.
-fn matrix(c: &[f64], wts: &[[f64; 4]], w: usize) -> Vec<[f64; 4]> {
+/// The sparse matrix `M` (`M λ = λ`), diagonal divided out, into `out`.
+fn matrix_into(out: &mut Vec<[f64; 4]>, c: &[f64], wts: &[[f64; 4]], w: usize) {
     const EPSILON: f64 = 0.001;
     let n = c.len();
-    (0..n)
-        .map(|i| {
-            let has = [i >= w, i % w < w - 1, i < n - w, i % w != 0];
-            let m = has.iter().filter(|&&h| h).count() as f64;
-            let wt = wts[i];
-            let diagonal = (EPSILON + wt[0] + wt[1] + wt[2] + wt[3]) * c[i];
-            let nb = [i.wrapping_sub(w), i + 1, i + w, i.wrapping_sub(1)];
-            let mut row = [0.0; 4];
-            for k in 0..4 {
-                if has[k] {
-                    row[k] = (wt[k] * c[nb[k]] + EPSILON / m * c[i]) / diagonal;
-                }
+    out.clear();
+    out.extend((0..n).map(|i| {
+        let has = [i >= w, i % w < w - 1, i < n - w, i % w != 0];
+        let m = has.iter().filter(|&&h| h).count() as f64;
+        let wt = wts[i];
+        let diagonal = (EPSILON + wt[0] + wt[1] + wt[2] + wt[3]) * c[i];
+        let nb = [i.wrapping_sub(w), i + 1, i + w, i.wrapping_sub(1)];
+        let mut row = [0.0; 4];
+        for k in 0..4 {
+            if has[k] {
+                row[k] = (wt[k] * c[nb[k]] + EPSILON / m * c[i]) / diagonal;
             }
-            row
-        })
-        .collect()
+        }
+        row
+    }));
 }
 
 /// One zone's new value from its neighbours (zero coefficients where there are none).
@@ -158,11 +167,20 @@ fn sweep(m: &[[f64; 4]], omega: f64, l: &mut [f64], old: &mut [f64], w: usize, b
     max_diff
 }
 
-fn iterate(c: &[f64], lambda: &mut [f64], w: usize, sigma: f64, s: &Settings) -> u32 {
-    let m = matrix(c, &weights(c, w, sigma), w);
-    let mut old = vec![0.0; lambda.len()];
+fn iterate(
+    c: &[f64],
+    lambda: &mut [f64],
+    w: usize,
+    sigma: f64,
+    s: &Settings,
+    ws: &mut Workspace,
+) -> u32 {
+    weights_into(&mut ws.weights, c, w, sigma);
+    matrix_into(&mut ws.matrix, c, &ws.weights, w);
+    ws.old.clear();
+    ws.old.resize(lambda.len(), 0.0);
     for i in 0..s.n_iter {
-        if sweep(&m, s.omega, lambda, &mut old, w, s.lambda_bound).abs() < s.threshold {
+        if sweep(&ws.matrix, s.omega, lambda, &mut ws.old, w, s.lambda_bound).abs() < s.threshold {
             return i + 1;
         }
     }
@@ -179,9 +197,14 @@ pub(super) fn run(
     cal: (&[f64], &[f64]),
     lambda: (&mut [f64], &mut [f64]),
     s: &Settings,
+    ws: &mut Workspace,
 ) -> (u32, u32) {
     let w = grid.0 as usize;
-    let (mut cr, mut cb) = cr_cb(zones, s);
+    // The colour ratios are taken out of the workspace while the iterations run on them.
+    let (mut cr, mut cb) = (Vec::new(), Vec::new());
+    core::mem::swap(&mut cr, &mut ws.cr);
+    core::mem::swap(&mut cb, &mut ws.cb);
+    cr_cb_into(zones, s, &mut cr, &mut cb);
     for (c, t) in [(&mut cr, cal.0), (&mut cb, cal.1)] {
         for (v, k) in c.iter_mut().zip(t) {
             if *v != INSUFFICIENT {
@@ -189,33 +212,33 @@ pub(super) fn run(
             }
         }
     }
-    (
-        iterate(&cr, lambda.0, w, s.sigma_cr, s),
-        iterate(&cb, lambda.1, w, s.sigma_cb, s),
-    )
+    let done = (
+        iterate(&cr, lambda.0, w, s.sigma_cr, s, ws),
+        iterate(&cb, lambda.1, w, s.sigma_cb, s, ws),
+    );
+    ws.cr = cr;
+    ws.cb = cb;
+    done
 }
 
-/// The statistics as zones for [`run`], dividing out `applied` (r, g, b tables) when the
-/// statistics were taken after lens shading; `None` when the grid is not the tables' grid.
-pub(super) fn zones_of(
+/// The statistics as zones for [`run`] into `out`, dividing out `applied` (r, g, b tables)
+/// when the statistics were taken after lens shading; `false` (and `out` untouched) when the
+/// grid is not the tables' grid.
+pub(super) fn zones_of_into(
     colour: &ZoneGrid<crate::stats::ColourZone>,
     grid: (u32, u32),
     applied: Option<[&[f64]; 3]>,
-) -> Option<Vec<Zone>> {
+    out: &mut Vec<Zone>,
+) -> bool {
     if (colour.width, colour.height) != grid || !colour.is_valid() {
-        return None;
+        return false;
     }
-    Some(
-        colour
-            .zones
-            .iter()
-            .enumerate()
-            .map(|(i, z)| match applied {
-                Some([r, g, b]) => (z.r / r[i], z.g / g[i], z.b / b[i], z.counted),
-                None => (z.r, z.g, z.b, z.counted),
-            })
-            .collect(),
-    )
+    out.clear();
+    out.extend(colour.zones.iter().enumerate().map(|(i, z)| match applied {
+        Some([r, g, b]) => (z.r / r[i], z.g / g[i], z.b / b[i], z.counted),
+        None => (z.r, z.g, z.b, z.counted),
+    }));
+    true
 }
 
 #[cfg(test)]
@@ -253,7 +276,14 @@ mod tests {
             sigma_cr: 0.05,
             ..settings()
         };
-        run(&zones, (w, h), (&ones, &ones), (&mut lr, &mut lb), &s);
+        run(
+            &zones,
+            (w, h),
+            (&ones, &ones),
+            (&mut lr, &mut lb),
+            &s,
+            &mut Workspace::default(),
+        );
         let ratio = |i: usize| zones[i].0 / zones[i].1 * lr[i];
         let (left, right) = (ratio(2 * 8 + 1), ratio(2 * 8 + 6));
         assert!((right / left - 1.0).abs() < 0.01, "{left} {right}");
@@ -283,7 +313,14 @@ mod tests {
                 ..settings()
             };
             let mut lambda = vec![1.0; c.len()];
-            iterate(&c, &mut lambda, 32, case["sigma"].as_f64().unwrap(), &s);
+            iterate(
+                &c,
+                &mut lambda,
+                32,
+                case["sigma"].as_f64().unwrap(),
+                &s,
+                &mut Workspace::default(),
+            );
             let worst = lambda
                 .iter()
                 .zip(&want)
@@ -317,9 +354,11 @@ mod tests {
             (&ones, &ones),
             (&mut lr, &mut lb),
             &settings(),
+            &mut Workspace::default(),
         );
         assert!(lr.iter().chain(&lb).all(|v| (0.95..=1.05).contains(v)));
-        let (cr, _) = cr_cb(&zones, &settings());
+        let (mut cr, mut cb) = (Vec::new(), Vec::new());
+        cr_cb_into(&zones, &settings(), &mut cr, &mut cb);
         assert_eq!(cr[5], INSUFFICIENT);
     }
 }

@@ -85,7 +85,7 @@ pub struct AeStatus {
 }
 
 /// AWB state.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct AwbStatus {
     /// AWB is automatic (not manual gains or temperature).
     pub auto: bool,
@@ -95,6 +95,28 @@ pub struct AwbStatus {
     pub estimate: (f64, f64, f64),
     /// Filtered gains are within 1% of the estimate.
     pub converged: bool,
+}
+
+impl Clone for AwbStatus {
+    fn clone(&self) -> Self {
+        let mut out = Self::default();
+        out.clone_from(self);
+        out
+    }
+
+    /// Copies into this status' own mode string (reusing its buffer).
+    fn clone_from(&mut self, source: &Self) {
+        let Self {
+            auto,
+            mode,
+            estimate,
+            converged,
+        } = source;
+        self.auto = *auto;
+        self.mode.clone_from(mode);
+        self.estimate = *estimate;
+        self.converged = *converged;
+    }
 }
 
 /// Per-channel black levels, normalised to full scale 1.0.
@@ -109,7 +131,7 @@ pub struct BlackLevels {
 }
 
 /// Lens-shading gain tables, row-major over a grid covering the output image.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct LensShading {
     /// Cells across.
     pub width: u32,
@@ -121,6 +143,30 @@ pub struct LensShading {
     pub g: Vec<f64>,
     /// Blue gains.
     pub b: Vec<f64>,
+}
+
+impl Clone for LensShading {
+    fn clone(&self) -> Self {
+        let mut out = Self::default();
+        out.clone_from(self);
+        out
+    }
+
+    /// Copies into this table's own buffers (reusing them).
+    fn clone_from(&mut self, source: &Self) {
+        let Self {
+            width,
+            height,
+            r,
+            g,
+            b,
+        } = source;
+        self.width = *width;
+        self.height = *height;
+        self.r.clone_from(r);
+        self.g.clone_from(g);
+        self.b.clone_from(b);
+    }
 }
 
 /// Spatial denoise for the ISP (16-bit pixel scale, see [`crate::algos::denoise`]).
@@ -199,7 +245,7 @@ pub struct SharpenParams {
 }
 
 /// Everything the algorithms produce for a frame.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Params {
     /// Sensor settings to request, if AE produced any.
     pub sensor: Option<SensorRequest>,
@@ -246,6 +292,56 @@ pub struct Params {
     /// has a lens, [`crate::CameraConfig::lens`]); repeated unchanged while nothing moves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lens: Option<LensRequest>,
+}
+
+impl Clone for Params {
+    fn clone(&self) -> Self {
+        let mut out = Self::default();
+        out.clone_from(self);
+        out
+    }
+
+    /// Copies into this set of params, reusing the buffers of its curves, tables and strings
+    /// (a copy made every frame allocates nothing once they have grown). Every field is named
+    /// here, so a new field cannot be left out of the copy.
+    fn clone_from(&mut self, source: &Self) {
+        let Self {
+            sensor,
+            digital_gain,
+            ae,
+            lux,
+            colour_gains,
+            colour_temperature,
+            awb,
+            ccm,
+            gamma,
+            black_level,
+            lens_shading,
+            denoise,
+            sharpen,
+            histogram_weights,
+            deflicker,
+            af,
+            lens,
+        } = source;
+        self.sensor = *sensor;
+        self.digital_gain = *digital_gain;
+        self.ae = *ae;
+        self.lux = *lux;
+        self.colour_gains = *colour_gains;
+        self.colour_temperature = *colour_temperature;
+        self.awb.clone_from(awb);
+        self.ccm = *ccm;
+        self.gamma.clone_from(gamma);
+        self.black_level = *black_level;
+        self.lens_shading.clone_from(lens_shading);
+        self.denoise = *denoise;
+        self.sharpen = *sharpen;
+        self.histogram_weights.clone_from(histogram_weights);
+        self.deflicker.clone_from(deflicker);
+        self.af = *af;
+        self.lens = *lens;
+    }
 }
 
 /// The ISP's gain for one frame (see [`Params::frame_gain`]).

@@ -10,6 +10,85 @@ use crate::flags::flags;
 use crate::ioctl;
 use crate::{Error, Mapping, Result};
 
+/// The most planes a buffer has (`VIDEO_MAX_PLANES`).
+pub const MAX_PLANES: usize = raw::VIDEO_MAX_PLANES;
+
+/// A buffer's planes, held inline: no allocation per queue or dequeue. Derefs to the planes
+/// as a slice. A list longer than [`MAX_PLANES`] keeps the first ones and sets
+/// [`Planes::is_over`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Planes<T> {
+    len: usize,
+    over: bool,
+    items: [T; MAX_PLANES],
+}
+
+impl<T: Copy + Default> Planes<T> {
+    /// No planes.
+    pub fn new() -> Self {
+        Self {
+            len: 0,
+            over: false,
+            items: [T::default(); MAX_PLANES],
+        }
+    }
+
+    /// One plane.
+    pub fn one(p: T) -> Self {
+        let mut out = Self::new();
+        out.items[0] = p;
+        out.len = 1;
+        out
+    }
+
+    /// Whether more planes were given than fit (the buffer is then not queued).
+    pub fn is_over(&self) -> bool {
+        self.over
+    }
+}
+
+impl<T: Copy + Default> Default for Planes<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Copy + Default> FromIterator<T> for Planes<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut out = Self::new();
+        for p in iter {
+            if out.len == MAX_PLANES {
+                out.over = true;
+                break;
+            }
+            out.items[out.len] = p;
+            out.len += 1;
+        }
+        out
+    }
+}
+
+impl<T> std::ops::Deref for Planes<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        &self.items[..self.len]
+    }
+}
+
+impl<T> std::ops::DerefMut for Planes<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        &mut self.items[..self.len]
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Planes<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// How buffer memory is provided (`enum v4l2_memory`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
@@ -133,7 +212,7 @@ pub struct QueueBuffer<'fd> {
     /// Buffer index.
     pub index: u32,
     /// Planes (one for single-planar queues; may be empty for capture MMAP buffers).
-    pub planes: Vec<QueuePlane<'fd>>,
+    pub planes: Planes<QueuePlane<'fd>>,
     /// Queue the buffer into this media request instead of directly.
     pub request: Option<BorrowedFd<'fd>>,
     /// Field order (output queues; 0 lets the driver choose).
@@ -149,7 +228,7 @@ impl<'fd> QueueBuffer<'fd> {
             buf_type,
             memory: Memory::Mmap,
             index,
-            planes: Vec::new(),
+            planes: Planes::new(),
             request: None,
             field: 0,
             timestamp: Duration::ZERO,
@@ -186,7 +265,7 @@ pub struct DequeuedBuffer {
     /// Capture timestamp; `CLOCK_MONOTONIC` when `flags` has `TIMESTAMP_MONOTONIC`.
     pub timestamp: Duration,
     /// Per-plane payload: `(bytes_used, data_offset)`.
-    pub planes: Vec<(u32, u32)>,
+    pub planes: Planes<(u32, u32)>,
 }
 
 impl DequeuedBuffer {
@@ -320,11 +399,8 @@ impl VideoDevice {
     /// Queues a buffer (`VIDIOC_QBUF`).
     pub fn queue(&self, req: &QueueBuffer<'_>) -> Result<()> {
         let mut planes: [raw::v4l2_plane; raw::VIDEO_MAX_PLANES] = zeroed();
-        if req.planes.len() > raw::VIDEO_MAX_PLANES {
-            return Err(Error::Invalid(format!(
-                "{} planes (max 8)",
-                req.planes.len()
-            )));
+        if req.planes.is_over() {
+            return Err(Error::Invalid(format!("more than {MAX_PLANES} planes")));
         }
         let mut buf: raw::v4l2_buffer = zeroed();
         buf.index = req.index;
@@ -337,7 +413,7 @@ impl VideoDevice {
             buf.request_fd = request.as_raw_fd();
         }
         if req.buf_type.is_multiplanar() {
-            for (dst, src) in planes.iter_mut().zip(&req.planes) {
+            for (dst, src) in planes.iter_mut().zip(req.planes.iter()) {
                 dst.bytesused = src.bytes_used;
                 dst.length = src.length;
                 dst.data_offset = src.data_offset;
@@ -390,7 +466,7 @@ impl VideoDevice {
                 .map(|p| (p.bytesused, p.data_offset))
                 .collect()
         } else {
-            vec![(buf.bytesused, 0)]
+            Planes::one((buf.bytesused, 0))
         };
         Ok(Some(DequeuedBuffer {
             index: buf.index,

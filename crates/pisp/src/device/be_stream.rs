@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use styx_kernel::FourCc;
 use styx_kernel::media::MediaDevice;
 use styx_kernel::v4l2::{
-    BufType, BufferFlags, Format, Memory, MetaFormat, QueueBuffer, QueuePlane,
+    BufType, BufferFlags, Format, Memory, MetaFormat, Planes, QueueBuffer, QueuePlane,
 };
 
 use super::be::BE_CFG_FOURCC;
@@ -437,12 +437,12 @@ impl BackEndStream {
             }
         }
         let mut q = QueueBuffer::dmabuf(BufType::VideoOutputMplane, input, &[fd]);
-        q.planes = vec![QueuePlane {
+        q.planes = Planes::one(QueuePlane {
             dmabuf: Some(fd),
             length: self.input_len,
             bytes_used: self.input_len,
             data_offset: 0,
-        }];
+        });
         super::profile::time("pispbe-input", "qbuf", || self.input.queue(&q))?;
         let start = Instant::now();
         // The job starts when the config is queued (the driver writes it to the hardware).

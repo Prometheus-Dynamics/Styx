@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use styx_kernel::Mapping;
 use styx_kernel::dma_heap::{DmaBuf, DmaHeap};
-use styx_kernel::v4l2::{BufType, Memory, QueueBuffer, QueuePlane, VideoDevice};
+use styx_kernel::v4l2::{BufType, Memory, Planes, QueueBuffer, QueuePlane, VideoDevice};
 
 use super::{DeviceError, Queue, Result};
 
@@ -100,12 +100,12 @@ impl ConfigBuffer {
                 ..
             } => {
                 let mut q = QueueBuffer::dmabuf(*buf_type, 0, &[buf.as_fd()]);
-                q.planes = vec![QueuePlane {
+                q.planes = Planes::one(QueuePlane {
                     dmabuf: Some(buf.as_fd()),
                     length: buf.len() as u32,
                     bytes_used: used,
                     data_offset: 0,
-                }];
+                });
                 super::profile::time(name, "qbuf", || dev.queue(&q))?;
                 Ok(())
             }

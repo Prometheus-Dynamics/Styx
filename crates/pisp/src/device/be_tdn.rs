@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use styx_kernel::FourCc;
 use styx_kernel::dma_heap::DmaHeap;
-use styx_kernel::v4l2::{BufType, Format, Memory, QueueBuffer, QueuePlane, VideoDevice};
+use styx_kernel::v4l2::{BufType, Format, Memory, Planes, QueueBuffer, QueuePlane, VideoDevice};
 
 use super::{DeviceError, Result};
 use crate::uapi::bayer_enable;
@@ -122,12 +122,12 @@ impl TdnBuffers {
     fn queue_one(&self, dev: &VideoDevice, ty: BufType, slot: usize) -> Result<()> {
         let fd = self.fds[slot].as_fd();
         let mut q = QueueBuffer::dmabuf(ty, slot as u32, &[fd]);
-        q.planes = vec![QueuePlane {
+        q.planes = Planes::one(QueuePlane {
             dmabuf: Some(fd),
             length: self.len,
             bytes_used: if ty == IN { self.len } else { 0 },
             data_offset: 0,
-        }];
+        });
         super::profile::time("pispbe-tdn", "qbuf", || dev.queue(&q))?;
         Ok(())
     }
