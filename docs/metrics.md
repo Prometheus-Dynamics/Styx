@@ -251,6 +251,50 @@ CM5) and camera service clients mapped every memfd frame; the frame socket, the 
 clients built their messages, descriptor lists and frame records anew for every frame; the
 PiSP's buffer returns went through a channel that allocates in blocks.
 
+## Finding allocations on a device
+
+The allocation counts above say how many heap allocations a process makes per frame, not where
+they come from. `hop_breakdown` names them with `STYX_ALLOC_TRACE=1`: the call stack of every
+allocation (every thread) in a window of `STYX_ALLOC_TRACE_FRAMES` frames (default 60) after the
+warm-up, grouped by stack, most frequent first. Each stack prints its return addresses as
+`exe+0x...` (relative to the executable's load base, so the addresses are the same in the
+unstripped build), and `scripts/symbolize-alloc-trace.sh` names them offline. Unset, the counting
+hook costs one relaxed atomic load; set, it records each allocation's stack into a fixed table
+(no allocation: `_Unwind_Backtrace` reads `.eh_frame`, so release builds need no
+`-C force-frame-pointers` or other RUSTFLAGS, on glibc and musl alike).
+
+```sh
+# Build (musl, static, release; RUSTFLAGS not needed). --out copies a stripped binary, so keep
+# the unstripped one from the target directory:
+scripts/cross-aarch64.sh --musl -p styx-examples --features native,frame-socket \
+    --bins hop_breakdown --profile release
+# On the device, the same as the hop breakdown above (the stripped copy has the same offsets):
+scp target/aarch64-musl/aarch64-unknown-linux-musl/release/hop_breakdown root@helios:/tmp/
+scripts/with-device-lock.sh allocs '
+  cd /tmp && STYX_ALLOC_TRACE=1 STYX_ALLOC_TRACE_FRAMES=60 STYX_ALLOC_TRACE_TOP=20 ./hop_breakdown inproc 20' > alloc-trace.log
+# On the host, naming the call sites (the unstripped binary the device ran):
+scripts/symbolize-alloc-trace.sh target/aarch64-musl/aarch64-unknown-linux-musl/release/hop_breakdown alloc-trace.log
+```
+
+With `CARGO_TARGET_DIR` set, the binary is under `$CARGO_TARGET_DIR/aarch64-musl/`; the profile
+directory is the `--profile` name (`device` by default). The symbolizer needs `addr2line`
+(binutils) or `llvm-addr2line` on the host (`ADDR2LINE` picks another) and warns when no address
+has a symbol (a stripped binary). The output after the hop table:
+
+```text
+allocation call sites (STYX_ALLOC_TRACE): 13810 allocations in 60 frames (230.17 per frame; 13810 recorded, 0 dropped: table full, 0 unfinished), 5 distinct stacks
+#1   150.00 per frame (9000 allocations in 60 frames)
+      exe+0x1f9b5
+      exe+0x1eb28
+      ...
+```
+
+Each `#n` line gives the stack's count per frame; its frames follow, innermost first. The window
+holds `RECORDS` (16384) allocations; more are counted and reported as dropped. Frames in the
+tracer's own code are skipped; allocator internals (`RawVec`, `do_reserve_and_handle`) appear
+when the allocation is made through them. A call that is a tail call in release has no frame of
+its own, so the caller shows as the call site.
+
 ## Multi-camera sync
 
 Every named `styx::multicam::FrameGrouper` (docs/multi-camera-sync.md) is listed in
