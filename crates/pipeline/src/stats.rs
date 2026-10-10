@@ -74,10 +74,8 @@ pub fn from_pisp_raw(raw: &RawStatistics, out: &mut Statistics) {
             counted: z.counted,
         }));
     out.luma = None;
-    let mut bins: Vec<u64> = core::mem::take(&mut out.histogram).into();
-    bins.clear();
-    bins.extend(raw.agc.histogram.iter().map(|&c| u64::from(c)));
-    out.histogram = Histogram::from(bins);
+    out.histogram
+        .set_bins(raw.agc.histogram.iter().map(|&c| u64::from(c)));
     let focus_side = CDAF_STATS_SIZE as u32;
     let focus = out.focus.get_or_insert_with(Default::default);
     focus.width = focus_side;

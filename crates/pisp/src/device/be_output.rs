@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use styx_kernel::Mapping;
 use styx_kernel::dma_heap::DmaHeap;
-use styx_kernel::v4l2::{BufType, DequeuedBuffer, Memory, QueueBuffer, QueuePlane, VideoDevice};
+use styx_kernel::v4l2::{
+    BufType, DequeuedBuffer, Memory, Planes, QueueBuffer, QueuePlane, VideoDevice,
+};
 
 use super::{DeviceError, Result};
 
@@ -173,7 +175,7 @@ impl OutputQueue {
             _ => QueueBuffer::mmap(TYPE, index),
         };
         if q.planes.is_empty() {
-            q.planes = vec![QueuePlane::default()];
+            q.planes = Planes::one(QueuePlane::default());
         }
         super::profile::time(self.name, "qbuf", || self.dev.queue(&q))?;
         Ok(())

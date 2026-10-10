@@ -389,7 +389,9 @@ impl Algorithms {
         if let Some(l) = &step.lens {
             controls.lens(l)?;
         }
-        self.step = step;
+        // The step it replaces goes back to the controller, whose buffers the next one reuses.
+        let old = core::mem::replace(&mut self.step, step);
+        self.controller.recycle(old);
         self.stepped = true;
         self.isp_taken = false;
         self.last_run = Some(values.frame);

@@ -22,7 +22,7 @@ use std::time::Duration;
 use styx_graph::rt;
 use styx_kernel::dma_heap::DmaBuf;
 use styx_kernel::event::{Event, EventKind};
-use styx_kernel::v4l2::{BufferFlags, DequeuedBuffer, Memory, QueueBuffer};
+use styx_kernel::v4l2::{BufferFlags, DequeuedBuffer, Memory, Planes, QueueBuffer};
 use styx_kernel::{Mapping, Wait};
 
 use crate::device::CaptureDevice;
@@ -483,7 +483,7 @@ impl CaptureDevice for FakeVideo {
             flags,
             field: 1,
             timestamp: Duration::from_millis(u64::from(b.sequence) * 10),
-            planes: vec![(b.len as u32, 0)],
+            planes: Planes::one((b.len as u32, 0)),
         }))
     }
 

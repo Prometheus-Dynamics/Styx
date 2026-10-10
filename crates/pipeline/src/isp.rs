@@ -82,29 +82,41 @@ impl IspSettings {
     /// The settings the algorithms' `params` (from frame `frame`) ask for, with `digital_gain`
     /// for the frame being processed.
     pub fn from_params(p: &Params, frame: u64, digital_gain: f64) -> Self {
+        let mut s = Self::neutral(0.0);
+        s.set_from_params(p, frame, digital_gain);
+        s
+    }
+
+    /// [`Self::from_params`] into these settings, reusing their curve and table buffers.
+    pub fn set_from_params(&mut self, p: &Params, frame: u64, digital_gain: f64) {
         let bl = p.black_level;
         let g = p.colour_gains[1].max(1e-6);
-        Self {
-            from_frame: frame,
-            black_level: bl.r.min(bl.g).min(bl.b),
-            wb: [p.colour_gains[0] / g, 1.0, p.colour_gains[2] / g],
-            digital_gain: digital_gain * g,
-            flicker: 1.0,
-            flicker_bands: None,
-            ccm: p.ccm,
-            gamma: p.gamma.clone(),
-            lens_shading: p.lens_shading.clone(),
-            denoise: p.denoise,
-            sharpen: p.sharpen,
-            histogram_weights: p.histogram_weights.clone(),
-        }
+        // Every field is set here (a field left out would keep the old frame's value).
+        self.from_frame = frame;
+        self.black_level = bl.r.min(bl.g).min(bl.b);
+        self.wb = [p.colour_gains[0] / g, 1.0, p.colour_gains[2] / g];
+        self.digital_gain = digital_gain * g;
+        self.flicker = 1.0;
+        self.flicker_bands = None;
+        self.ccm = p.ccm;
+        self.gamma.clone_from(&p.gamma);
+        self.lens_shading.clone_from(&p.lens_shading);
+        self.denoise = p.denoise;
+        self.sharpen = p.sharpen;
+        self.histogram_weights.clone_from(&p.histogram_weights);
     }
 
     /// These settings with the spatial (SDN) and colour (CDN) denoise thresholds scaled by
     /// `scale` (both off at 0).
     pub fn with_spatial_denoise(mut self, scale: f64) -> Self {
+        self.scale_spatial_denoise(scale);
+        self
+    }
+
+    /// [`Self::with_spatial_denoise`] in place.
+    pub fn scale_spatial_denoise(&mut self, scale: f64) {
         if scale == 1.0 {
-            return self;
+            return;
         }
         let d = &mut self.denoise;
         if scale <= 0.0 {
@@ -119,7 +131,6 @@ impl IspSettings {
         if let Some(c) = &mut d.cdn {
             c.threshold *= scale;
         }
-        self
     }
 
     /// White balance times digital gain, per channel, as the back end applies them: with an
@@ -387,21 +398,25 @@ pub fn level16(v: f64) -> u16 {
 
 /// A tone curve as `(x, y)` points on 16-bit scales; the sRGB curve when `None`.
 pub fn gamma_points(curve: Option<&Pwl>) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    gamma_points_into(curve, &mut out);
+    out
+}
+
+/// [`gamma_points`] into `out` (its buffer reused).
+pub fn gamma_points_into(curve: Option<&Pwl>, out: &mut Vec<(u32, u32)>) {
     let to16 = |v: f64| (v.clamp(0.0, 1.0) * 65535.0).round() as u32;
+    out.clear();
     match curve {
-        Some(p) if p.points().len() >= 2 => p
-            .points()
-            .iter()
-            .map(|&(x, y)| (to16(x), to16(y)))
-            .collect(),
+        Some(p) if p.points().len() >= 2 => {
+            out.extend(p.points().iter().map(|&(x, y)| (to16(x), to16(y))));
+        }
         _ => {
             let srgb = soft::ToneCurve::Srgb;
-            (0..=64)
-                .map(|i| {
-                    let x = (i as f64 / 64.0).powi(2);
-                    (to16(x), to16(f64::from(srgb.eval(x as f32))))
-                })
-                .collect()
+            out.extend((0..=64).map(|i| {
+                let x = (i as f64 / 64.0).powi(2);
+                (to16(x), to16(f64::from(srgb.eval(x as f32))))
+            }));
         }
     }
 }

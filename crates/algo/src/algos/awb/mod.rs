@@ -25,14 +25,15 @@ pub mod tuning;
 use crate::config::CameraConfig;
 use crate::error::Result;
 use crate::frame::FrameMetadata;
-use crate::params::{AwbStatus, Params};
+use crate::params::Params;
 use crate::pipeline::Algorithm;
+use crate::pwl::{Pwl, PwlScratch};
 use crate::stats::Statistics;
 use crate::warm::WarmStart;
 
 #[cfg(feature = "awb-bayes")]
 use search::Search;
-use search::{Estimate, Zone};
+use search::{Estimate, SearchBuffers, Zone};
 use tuning::{AwbTuning, CtCurve};
 
 /// Colour temperature reported by grey world, which cannot estimate one.
@@ -57,6 +58,21 @@ pub struct Awb {
     anchor: Option<f64>,
     estimate: Estimate,
     filtered: Estimate,
+    /// Buffers the estimates reuse (kept across frames).
+    scratch: Scratch,
+}
+
+/// What an estimate builds, kept across estimates: no allocation per estimate once grown.
+#[derive(Debug, Default, Clone)]
+#[cfg_attr(not(feature = "awb-bayes"), allow(dead_code))]
+struct Scratch {
+    zones: Vec<Zone>,
+    ratios: Vec<(f64, f64)>,
+    prior: Pwl,
+    pwl: PwlScratch,
+    /// The grey world's sorts (R/G, B/G).
+    sorts: [Vec<(f64, u32)>; 2],
+    search: SearchBuffers,
 }
 
 impl Awb {
@@ -77,6 +93,7 @@ impl Awb {
             anchor: None,
             estimate: (DEFAULT_CT, 1.0, 1.0),
             filtered: (DEFAULT_CT, 1.0, 1.0),
+            scratch: Scratch::default(),
         };
         awb.reset();
         Ok(awb)
@@ -104,8 +121,9 @@ impl Awb {
         (ct, 1.0 / c.r.eval(ct), 1.0 / c.b.eval(ct))
     }
 
-    /// Usable zones: enough pixels, enough green, biased and shading-compensated as tuned.
-    fn zones(&self, stats: &Statistics, params: &Params) -> Vec<Zone> {
+    /// Usable zones into `out`: enough pixels, enough green, biased and shading-compensated as
+    /// tuned.
+    fn zones(&self, stats: &Statistics, params: &Params, out: &mut Vec<Zone>) {
         let t = &self.tuning;
         let bias = match (&self.curve, self.bayes && t.bias_proportion > 0.0) {
             (Some(c), true) => Some((c.r.eval(t.bias_ct), c.b.eval(t.bias_ct))),
@@ -116,7 +134,7 @@ impl Awb {
                 && (l.width, l.height) == (stats.colour.width, stats.colour.height)
                 && l.r.len() == stats.colour.len()
         });
-        let mut out = Vec::new();
+        out.clear();
         for (i, z) in stats.colour.zones.iter().enumerate() {
             if f64::from(z.counted) < t.min_pixels || z.counted == 0 {
                 continue;
@@ -135,24 +153,43 @@ impl Awb {
             }
             out.push((r * t.sensitivity_r, g, b * t.sensitivity_b));
         }
-        out
     }
 
-    #[cfg_attr(not(feature = "awb-bayes"), allow(unused_variables))]
+    /// One estimate from the statistics: (estimate, the temperature of its best minimum).
+    /// `None` when too few zones are usable. The buffers come from `self.scratch` (taken for
+    /// the call, so that the estimate can read `self`).
     fn estimate(
-        &self,
+        &mut self,
         stats: &Statistics,
         meta: &FrameMetadata,
         params: &Params,
     ) -> Option<(Estimate, f64)> {
-        let zones = self.zones(stats, params);
-        if zones.len() <= self.tuning.min_regions as usize {
+        let mut sc = core::mem::take(&mut self.scratch);
+        let found = self.estimate_with(&mut sc, stats, meta, params);
+        self.scratch = sc;
+        found
+    }
+
+    #[cfg_attr(not(feature = "awb-bayes"), allow(unused_variables))]
+    fn estimate_with(
+        &self,
+        sc: &mut Scratch,
+        stats: &Statistics,
+        meta: &FrameMetadata,
+        params: &Params,
+    ) -> Option<(Estimate, f64)> {
+        self.zones(stats, params, &mut sc.zones);
+        if sc.zones.len() <= self.tuning.min_regions as usize {
             return None;
         }
         match (&self.curve, self.bayes) {
             #[cfg(feature = "awb-bayes")]
-            (Some(c), true) => Some(self.search(c, &zones, stats, meta, params)),
-            _ => Some((search::grey_world(&zones, DEFAULT_CT), DEFAULT_CT)),
+            (Some(c), true) => Some(self.search(c, sc, stats, meta, params)),
+            _ => {
+                let [by_r, by_b] = &mut sc.sorts;
+                let est = search::grey_world_into(&sc.zones, DEFAULT_CT, by_r, by_b);
+                Some((est, DEFAULT_CT))
+            }
         }
     }
 
@@ -161,20 +198,23 @@ impl Awb {
     fn search(
         &self,
         curve: &CtCurve,
-        zones: &[Zone],
+        sc: &mut Scratch,
         stats: &Statistics,
         meta: &FrameMetadata,
         params: &Params,
     ) -> (Estimate, f64) {
         let t = &self.tuning;
-        let ratios: Vec<(f64, f64)> = zones
-            .iter()
-            .filter(|z| z.1 > 0.0)
-            .map(|z| (z.0 / z.1, z.2 / z.1))
-            .collect();
+        sc.ratios.clear();
+        sc.ratios.extend(
+            sc.zones
+                .iter()
+                .filter(|z| z.1 > 0.0)
+                .map(|z| (z.0 / z.1, z.2 / z.1)),
+        );
         let lux = meta.lux.unwrap_or(params.lux);
-        let scale = ratios.len() as f64 / stats.colour.len().max(1) as f64;
-        let prior = search::interpolate_prior(&t.priors, lux).scale_y(scale);
+        let scale = sc.ratios.len() as f64 / stats.colour.len().max(1) as f64;
+        search::interpolate_prior_into(&t.priors, lux, &mut sc.prior, &mut sc.pwl);
+        sc.prior.map_y_in_place(|_, y| y * scale);
         let mode = meta
             .controls
             .awb_mode
@@ -184,11 +224,11 @@ impl Awb {
         let s = Search {
             tuning: t,
             curve,
-            zones: &ratios,
-            prior,
+            zones: &sc.ratios,
+            prior: &sc.prior,
             anchor: self.anchor.map(|t| 1e6 / t),
         };
-        let ((ct, r, b), best) = s.run(*mode);
+        let ((ct, r, b), best) = s.run(*mode, &mut sc.search);
         ((ct, t.sensitivity_r / r, t.sensitivity_b / b), best)
     }
 
@@ -242,12 +282,6 @@ impl Algorithm for Awb {
     }
 
     fn process(&mut self, stats: &Statistics, meta: &FrameMetadata, params: &mut Params) {
-        let mode = meta
-            .controls
-            .awb_mode
-            .clone()
-            .filter(|m| self.tuning.modes.contains_key(m))
-            .unwrap_or_else(|| self.tuning.default_mode.clone());
         let auto;
         if let Some(m) = self.manual(meta) {
             // Manual values apply at once.
@@ -293,12 +327,18 @@ impl Algorithm for Awb {
         let close = |a: f64, b: f64| (a - b).abs() <= 0.01 * b.abs();
         params.colour_gains = [f.1, 1.0, f.2];
         params.colour_temperature = f.0;
-        params.awb = AwbStatus {
-            auto,
-            mode,
-            estimate: e,
-            converged: close(f.1, e.1) && close(f.2, e.2),
-        };
+        // The mode's name is copied into the status' own string (no allocation per frame).
+        let mode = meta
+            .controls
+            .awb_mode
+            .as_deref()
+            .filter(|m| self.tuning.modes.contains_key(*m))
+            .unwrap_or(self.tuning.default_mode.as_str());
+        params.awb.auto = auto;
+        params.awb.mode.clear();
+        params.awb.mode.push_str(mode);
+        params.awb.estimate = e;
+        params.awb.converged = close(f.1, e.1) && close(f.2, e.2);
     }
 }
 

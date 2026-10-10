@@ -91,6 +91,9 @@ pub struct Controller {
     started: bool,
     /// Scale of the spatial and colour denoise thresholds (see [`Self::set_spatial_denoise`]).
     spatial_denoise: f64,
+    /// The params and settings of the last step the loop gave back ([`Self::recycle`]), whose
+    /// buffers the next step's are copied into.
+    spare: Option<(Params, IspSettings)>,
 }
 
 impl core::fmt::Debug for Controller {
@@ -122,6 +125,7 @@ impl Controller {
             warm: None,
             started: false,
             spatial_denoise: 1.0,
+            spare: None,
         })
     }
 
@@ -252,7 +256,11 @@ impl Controller {
         }
         let mut meta = self.meta(sensor);
         meta.lens = lens;
-        let params = self.pipeline.process(stats, &meta).clone();
+        let (mut params, mut isp) = self
+            .spare
+            .take()
+            .unwrap_or_else(|| (Params::default(), IspSettings::neutral(0.0)));
+        params.clone_from(self.pipeline.process(stats, &meta));
         #[cfg(feature = "std")]
         if let Some(r) = &mut self.recorder {
             r.record(stats, &meta, Some(&params))?;
@@ -273,11 +281,12 @@ impl Controller {
         if let Some(l) = lens {
             self.last_lens = Some(l.position);
         }
+        self.isp_into(&mut isp, &params, sensor.frame, sensor);
         Ok(Step {
             frame: sensor.frame,
             sensor: sensor_request,
             lens,
-            isp: self.isp_for(&params, sensor.frame, sensor),
+            isp,
             params,
         })
     }
@@ -285,10 +294,29 @@ impl Controller {
     /// ISP settings from `params` (computed from frame `from_frame`) for processing the frame
     /// `sensor` describes, with that frame's digital gain ([`Self::retarget`]).
     pub fn isp_for(&self, params: &Params, from_frame: u64, sensor: &SensorValues) -> IspSettings {
-        let mut isp = IspSettings::from_params(params, from_frame, 1.0)
-            .with_spatial_denoise(self.spatial_denoise);
-        self.retarget(&mut isp, params, sensor);
+        let mut isp = IspSettings::neutral(0.0);
+        self.isp_into(&mut isp, params, from_frame, sensor);
         isp
+    }
+
+    /// [`Self::isp_for`] into `isp`, reusing its buffers.
+    fn isp_into(
+        &self,
+        isp: &mut IspSettings,
+        params: &Params,
+        from_frame: u64,
+        sensor: &SensorValues,
+    ) {
+        isp.set_from_params(params, from_frame, 1.0);
+        isp.scale_spatial_denoise(self.spatial_denoise);
+        self.retarget(isp, params, sensor);
+    }
+
+    /// Gives a step the loop has finished with back, so that the next step's params and
+    /// settings are copied into its buffers rather than new ones (no allocation per frame once
+    /// they have grown).
+    pub(crate) fn recycle(&mut self, step: Step) {
+        self.spare = Some((step.params, step.isp));
     }
 
     /// Sets what in `isp` (made from `params`) belongs to the frame `sensor` describes, which

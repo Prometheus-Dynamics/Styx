@@ -15,7 +15,7 @@ use crate::frame::FrameMetadata;
 use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Algorithm;
-use crate::pwl::Pwl;
+use crate::pwl::{Pwl, PwlScratch};
 use crate::stats::{Histogram, Statistics};
 
 /// Contrast tuning, all levels normalised to 1.0.
@@ -80,7 +80,21 @@ impl ContrastTuning {
 }
 
 /// The curve that pulls an empty histogram bottom down and top up, keeping the median.
+#[cfg(test)]
 fn stretch_curve(h: &Histogram, t: &ContrastTuning) -> Option<Pwl> {
+    let mut out = Pwl::default();
+    let mut points = Vec::new();
+    stretch_into(h, t, &mut points, &mut out).then_some(out)
+}
+
+/// [`stretch_curve`] into `out`, with `points` as its breakpoints' scratch; `false` if the
+/// curve is not valid (`out` is left as it was then).
+fn stretch_into(
+    h: &Histogram,
+    t: &ContrastTuning,
+    points: &mut Vec<(f64, f64)>,
+    out: &mut Pwl,
+) -> bool {
     let bins = h.len() as f64;
     let at = |q| h.quantile(q) / bins;
     let lo = at(t.lo_histogram)
@@ -97,25 +111,34 @@ fn stretch_curve(h: &Histogram, t: &ContrastTuning) -> Option<Pwl> {
         (hi, t.hi_level),
         (1.0, 1.0),
     ];
-    let mut out: Vec<(f64, f64)> = Vec::new();
+    points.clear();
     for p in pts {
-        if out.last().is_none_or(|l| p.0 > l.0 + 1e-9) {
-            out.push(p);
+        if points.last().is_none_or(|l| p.0 > l.0 + 1e-9) {
+            points.push(p);
         }
     }
-    Pwl::new(out).ok()
+    out.set_points(points).is_ok()
 }
 
 /// The contrast algorithm.
 #[derive(Debug, Clone)]
 pub struct Contrast {
     tuning: ContrastTuning,
+    /// Scratch for the stretch, reused every frame.
+    points: Vec<(f64, f64)>,
+    stretch: Pwl,
+    scratch: PwlScratch,
 }
 
 impl Contrast {
     /// A contrast algorithm.
     pub fn new(tuning: ContrastTuning) -> Self {
-        Self { tuning }
+        Self {
+            tuning,
+            points: Vec::new(),
+            stretch: Pwl::default(),
+            scratch: PwlScratch::default(),
+        }
     }
 }
 
@@ -133,20 +156,27 @@ impl Algorithm for Contrast {
     }
 
     fn process(&mut self, stats: &Statistics, meta: &FrameMetadata, params: &mut Params) {
-        let t = &self.tuning;
-        let mut curve = t.gamma_curve.clone();
+        let Self {
+            tuning: t,
+            points,
+            stretch,
+            scratch,
+        } = self;
+        // The curve is written into the params' own (kept across frames): no allocation.
+        let curve = params.gamma.get_or_insert_with(Pwl::default);
         if t.ce_enable
             && (t.lo_max != 0.0 || t.hi_max != 0.0)
             && stats.histogram.total() > 0
-            && let Some(s) = stretch_curve(&stats.histogram, t)
+            && stretch_into(&stats.histogram, t, points, stretch)
         {
-            curve = s.compose(&curve);
+            stretch.compose_into(&t.gamma_curve, curve, scratch);
+        } else {
+            curve.clone_from(&t.gamma_curve);
         }
         let (b, c) = (meta.controls.brightness, meta.controls.contrast);
         if b != 0.0 || c != 1.0 {
-            curve = curve.map_y(|_, y| ((y - 0.5) * c + 0.5 + b).clamp(0.0, 1.0));
+            curve.map_y_in_place(|_, y| ((y - 0.5) * c + 0.5 + b).clamp(0.0, 1.0));
         }
-        params.gamma = Some(curve);
     }
 }
 

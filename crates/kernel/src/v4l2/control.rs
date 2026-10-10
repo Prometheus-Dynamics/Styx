@@ -337,6 +337,10 @@ impl Slot {
 }
 
 /// Runs an extended-controls ioctl over `slots`.
+/// The most controls a set or try call holds on the stack (no allocation): a sensor's
+/// exposure, gain and frame length, with room to spare. More go through [`Slot`]s.
+const INLINE_CONTROLS: usize = 8;
+
 fn ext_ctrls(
     fd: BorrowedFd<'_>,
     req: ioctl::Ioctl,
@@ -347,6 +351,22 @@ fn ext_ctrls(
         slot.attach();
     }
     let mut ctrls: Vec<raw::v4l2_ext_control> = slots.iter().map(|s| s.ctrl).collect();
+    // The payload pointers in `ctrls` point into `slots[i].payload`, which are not touched
+    // until the call returns.
+    ext_ctrls_raw(fd, req, which, &mut ctrls)?;
+    for (slot, ctrl) in slots.iter_mut().zip(&ctrls) {
+        slot.ctrl = *ctrl;
+    }
+    Ok(())
+}
+
+/// One `VIDIOC_*_EXT_CTRLS` call over `ctrls`.
+fn ext_ctrls_raw(
+    fd: BorrowedFd<'_>,
+    req: ioctl::Ioctl,
+    which: ControlWhich<'_>,
+    ctrls: &mut [raw::v4l2_ext_control],
+) -> Result<()> {
     let (which, request_fd) = which.raw();
     let mut raw = raw::v4l2_ext_controls {
         which,
@@ -356,8 +376,7 @@ fn ext_ctrls(
         reserved: [0],
         controls: ctrls.as_mut_ptr(),
     };
-    // SAFETY: the ioctl takes a `v4l2_ext_controls` pointing to `count` controls in `ctrls`;
-    // payload pointers point into `slots[i].payload`, which are not touched until it returns.
+    // SAFETY: the ioctl takes a `v4l2_ext_controls` pointing to `count` controls in `ctrls`.
     let res = unsafe { ioctl::ioctl(fd, req, &mut raw) };
     if let Err(Error::Ioctl { name, errno }) = res {
         let idx = raw.error_idx as usize;
@@ -371,10 +390,27 @@ fn ext_ctrls(
         });
     }
     res?;
-    for (slot, ctrl) in slots.iter_mut().zip(&ctrls) {
-        slot.ctrl = *ctrl;
-    }
     Ok(())
+}
+
+/// Integer values (at most [`INLINE_CONTROLS`]) as controls on the stack, or `None` when the
+/// values need payloads or there are more of them.
+fn inline_integers(
+    values: &[(u32, ControlValue)],
+) -> Option<[raw::v4l2_ext_control; INLINE_CONTROLS]> {
+    if values.len() > INLINE_CONTROLS {
+        return None;
+    }
+    let mut ctrls: [raw::v4l2_ext_control; INLINE_CONTROLS] = core::array::from_fn(|_| zeroed());
+    for (c, (id, v)) in ctrls.iter_mut().zip(values) {
+        c.id = *id;
+        match v {
+            ControlValue::Integer(x) => c.u.value = *x,
+            ControlValue::Integer64(x) => c.u.value64 = *x,
+            _ => return None,
+        }
+    }
+    Some(ctrls)
 }
 
 /// The control API, shared by video nodes and subdevices.
@@ -480,6 +516,14 @@ pub trait Controls: AsFd {
     /// [`ControlWhich::Request`], the values are stored in the request and applied when it is
     /// queued.
     fn set_controls(&self, which: ControlWhich<'_>, values: &[(u32, ControlValue)]) -> Result<()> {
+        if let Some(mut ctrls) = inline_integers(values) {
+            return ext_ctrls_raw(
+                self.as_fd(),
+                raw::VIDIOC_S_EXT_CTRLS,
+                which,
+                &mut ctrls[..values.len()],
+            );
+        }
         let mut slots: Vec<Slot> = values.iter().map(|(id, v)| Slot::for_set(*id, v)).collect();
         ext_ctrls(self.as_fd(), raw::VIDIOC_S_EXT_CTRLS, which, &mut slots)
     }
@@ -487,6 +531,14 @@ pub trait Controls: AsFd {
     /// Checks whether values would be accepted, without applying them
     /// (`VIDIOC_TRY_EXT_CTRLS`).
     fn try_controls(&self, which: ControlWhich<'_>, values: &[(u32, ControlValue)]) -> Result<()> {
+        if let Some(mut ctrls) = inline_integers(values) {
+            return ext_ctrls_raw(
+                self.as_fd(),
+                raw::VIDIOC_TRY_EXT_CTRLS,
+                which,
+                &mut ctrls[..values.len()],
+            );
+        }
         let mut slots: Vec<Slot> = values.iter().map(|(id, v)| Slot::for_set(*id, v)).collect();
         ext_ctrls(self.as_fd(), raw::VIDIOC_TRY_EXT_CTRLS, which, &mut slots)
     }

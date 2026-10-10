@@ -15,7 +15,8 @@ use crate::math::Float as _;
 use crate::pwl::Pwl;
 
 use super::tuning::{AwbMode, AwbPrior, AwbTuning, CtCurve};
-use crate::math::{keyed, sort_keyed};
+use crate::math::sort_keyed;
+use crate::pwl::PwlScratch;
 
 /// A usable zone: mean (r, g, b).
 pub(crate) type Zone = (f64, f64, f64);
@@ -24,19 +25,44 @@ pub(crate) type Zone = (f64, f64, f64);
 pub(crate) type Estimate = (f64, f64, f64);
 
 /// Grey world: average the middle half of the zones sorted by R/G (and B/G).
+#[cfg(test)]
 pub(crate) fn grey_world(zones: &[Zone], default_ct: f64) -> Estimate {
+    grey_world_into(zones, default_ct, &mut Vec::new(), &mut Vec::new())
+}
+
+/// [`grey_world`] with the two sorts' buffers (`by_r`, `by_b`) kept by the caller.
+pub(crate) fn grey_world_into(
+    zones: &[Zone],
+    default_ct: f64,
+    by_r: &mut Vec<(f64, u32)>,
+    by_b: &mut Vec<(f64, u32)>,
+) -> Estimate {
     // By R/G and B/G (equal ratios in zone order); zones without green last (cross-multiplied
     // comparisons are no order with them: every such zone compares equal to every other, which
     // panicked the sort in a dark scene on the device).
     let ratio = |c: f64, g: f64| if g > 0.0 { c / g } else { f64::INFINITY };
-    let mut by_r = keyed(zones.iter().map(|z| ratio(z.0, z.1)));
-    let mut by_b = keyed(zones.iter().map(|z| ratio(z.2, z.1)));
-    sort_keyed(&mut by_r);
-    sort_keyed(&mut by_b);
+    by_r.clear();
+    by_r.extend(
+        zones
+            .iter()
+            .map(|z| ratio(z.0, z.1))
+            .enumerate()
+            .map(|(i, v)| (v, i as u32)),
+    );
+    by_b.clear();
+    by_b.extend(
+        zones
+            .iter()
+            .map(|z| ratio(z.2, z.1))
+            .enumerate()
+            .map(|(i, v)| (v, i as u32)),
+    );
+    sort_keyed(by_r);
+    sort_keyed(by_b);
     let discard = zones.len() / 4;
     let keep = zones.len() - 2 * discard;
     let (mut rr, mut rg, mut bb, mut bg) = (0.0, 0.0, 0.0, 0.0);
-    for (r, b) in by_r.iter().zip(&by_b).skip(discard).take(keep) {
+    for (r, b) in by_r.iter().zip(by_b.iter()).skip(discard).take(keep) {
         let (zr, zb) = (&zones[r.1 as usize], &zones[b.1 as usize]);
         rr += zr.0;
         rg += zr.1;
@@ -48,18 +74,50 @@ pub(crate) fn grey_world(zones: &[Zone], default_ct: f64) -> Estimate {
 }
 
 /// The prior for a lux level, interpolated between the tuned levels.
+#[cfg(test)]
 pub(crate) fn interpolate_prior(priors: &[AwbPrior], lux: f64) -> Pwl {
+    let mut out = Pwl::default();
+    interpolate_prior_into(priors, lux, &mut out, &mut PwlScratch::default());
+    out
+}
+
+/// [`interpolate_prior`] into `out` (its buffer reused), with `scratch` for the breakpoints.
+pub(crate) fn interpolate_prior_into(
+    priors: &[AwbPrior],
+    lux: f64,
+    out: &mut Pwl,
+    scratch: &mut PwlScratch,
+) {
     let (first, last) = (&priors[0], &priors[priors.len() - 1]);
     if lux <= first.lux {
-        return first.prior.clone();
+        out.clone_from(&first.prior);
+        return;
     }
     if lux >= last.lux {
-        return last.prior.clone();
+        out.clone_from(&last.prior);
+        return;
     }
     let i = priors.windows(2).position(|w| w[1].lux >= lux).unwrap_or(0);
     let (p0, p1) = (&priors[i], &priors[i + 1]);
     let f = (lux - p0.lux) / (p1.lux - p0.lux);
-    Pwl::combine(&p0.prior, &p1.prior, |_, y0, y1| y0 + (y1 - y0) * f)
+    Pwl::combine_into(
+        &p0.prior,
+        &p1.prior,
+        |_, y0, y1| y0 + (y1 - y0) * f,
+        out,
+        scratch,
+    );
+}
+
+/// The buffers of one search, kept across estimates (see [`Search::run`]).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SearchBuffers {
+    /// The coarse points: (temperature, cost).
+    points: Vec<(f64, f64)>,
+    /// Per step along the curve: (offset across, cost).
+    along: Vec<(f64, f64)>,
+    /// The offsets across the curve at one step: (offset, cost).
+    across: Vec<(f64, f64)>,
 }
 
 /// The Bayesian search over zones already reduced to (R/G, B/G).
@@ -67,7 +125,7 @@ pub(crate) struct Search<'a> {
     pub tuning: &'a AwbTuning,
     pub curve: &'a CtCurve,
     pub zones: &'a [(f64, f64)],
-    pub prior: Pwl,
+    pub prior: &'a Pwl,
     /// The temperature of the last estimate's best minimum (mired), which the hysteresis
     /// prefers.
     pub anchor: Option<f64>,
@@ -115,8 +173,9 @@ impl Search<'_> {
     /// weights its steps along the curve the same way. Softness 0 is Raspberry Pi's search:
     /// a parabola through the best coarse point and its neighbours, and the best fine step
     /// (refined here by a parabola too).
-    pub fn run(&self, mode: AwbMode) -> ((f64, f64, f64), f64) {
-        let mut points = Vec::new();
+    pub fn run(&self, mode: AwbMode, buffers: &mut SearchBuffers) -> ((f64, f64, f64), f64) {
+        let points = &mut buffers.points;
+        points.clear();
         let mut t = mode.lo;
         loop {
             points.push((t, self.cost(t, self.curve.r.eval(t), self.curve.b.eval(t))));
@@ -142,12 +201,13 @@ impl Search<'_> {
         } else {
             points[best].0
         };
-        (self.fine(t), points[best].0)
+        let best_t = points[best].0;
+        (self.fine(t, buffers), best_t)
     }
 
     /// Search around `t`, along and across the curve; returns (t, r, b), r and b being the
     /// grey's R/G and B/G.
-    fn fine(&self, t: f64) -> (f64, f64, f64) {
+    fn fine(&self, t: f64, buffers: &mut SearchBuffers) -> (f64, f64, f64) {
         let tu = self.tuning;
         let (cr, cb) = (&self.curve.r, &self.curve.b);
         let step = t / 10.0 * tu.coarse_step * 0.1;
@@ -165,12 +225,14 @@ impl Search<'_> {
         let num = ((range * 100.0 + 0.5).floor() as i32 + 1).clamp(3, 12);
         nsteps += num;
         // Per step along the curve: the best offset across it and its cost.
-        let mut along: Vec<(f64, f64)> = Vec::with_capacity(2 * nsteps as usize + 1);
+        let SearchBuffers { along, across, .. } = buffers;
+        along.clear();
         for i in -nsteps..=nsteps {
             let tt = t + f64::from(i) * step;
             let prior = self.log_prior(tt);
             let (rc, bc) = (cr.eval(tt), cb.eval(tt));
-            let mut pts = Vec::with_capacity(num as usize);
+            let pts = &mut *across;
+            pts.clear();
             let mut bp = 0;
             for j in 0..num {
                 let off = -tu.transverse_neg + range * f64::from(j) / f64::from(num - 1);

@@ -193,12 +193,24 @@ impl RegisterBus for SubdevBus {
 
 impl DriverBus for SubdevBus {
     fn set_controls(&mut self, controls: &[(KernelControl, i64)]) -> BusResult<()> {
+        let value = |v: i64| i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX });
+        // A sensor's few controls (exposure, gain, frame length) go through a list on the stack:
+        // this runs every frame.
+        const INLINE: usize = 8;
+        const NONE: (u32, ControlValue) = (0, ControlValue::Integer(0));
+        if controls.len() <= INLINE {
+            let mut values = [NONE; INLINE];
+            for (slot, (c, v)) in values.iter_mut().zip(controls) {
+                *slot = (c.cid(), ControlValue::Integer(value(*v)));
+            }
+            return Ok(self
+                .subdev
+                .set_controls(ControlWhich::Current, &values[..controls.len()])
+                .map_err(io::Error::from)?);
+        }
         let values: Vec<(u32, ControlValue)> = controls
             .iter()
-            .map(|(c, v)| {
-                let v = i32::try_from(*v).unwrap_or(if *v < 0 { i32::MIN } else { i32::MAX });
-                (c.cid(), ControlValue::Integer(v))
-            })
+            .map(|(c, v)| (c.cid(), ControlValue::Integer(value(*v))))
             .collect();
         Ok(self
             .subdev

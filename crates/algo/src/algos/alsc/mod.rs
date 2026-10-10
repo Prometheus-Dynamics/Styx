@@ -197,54 +197,84 @@ impl AlscTuning {
 }
 
 #[cfg(feature = "alsc")]
-/// Interpolate the calibrations at a temperature (unity when there are none).
-fn cal_table(cals: &[AlscCalibration], ct: f64, n: usize) -> Vec<f64> {
+/// Interpolate the calibrations at a temperature into `out` (unity when there are none).
+fn cal_table_into(cals: &[AlscCalibration], ct: f64, n: usize, out: &mut Vec<f64>) {
+    out.clear();
     match cals {
-        [] => vec![1.0; n],
-        [first, ..] if ct <= first.ct => first.table.clone(),
-        [.., last] if ct >= last.ct => last.table.clone(),
+        [] => out.resize(n, 1.0),
+        [first, ..] if ct <= first.ct => out.extend_from_slice(&first.table),
+        [.., last] if ct >= last.ct => out.extend_from_slice(&last.table),
         _ => {
             let i = cals.windows(2).position(|w| w[1].ct >= ct).unwrap_or(0);
             let (a, b) = (&cals[i], &cals[i + 1]);
-            a.table
-                .iter()
-                .zip(&b.table)
-                .map(|(x, y)| (x * (b.ct - ct) + y * (ct - a.ct)) / (b.ct - a.ct))
-                .collect()
+            out.extend(
+                a.table
+                    .iter()
+                    .zip(&b.table)
+                    .map(|(x, y)| (x * (b.ct - ct) + y * (ct - a.ct)) / (b.ct - a.ct)),
+            );
         }
     }
 }
 
 #[cfg(feature = "alsc")]
-/// Bilinear resampling of a full-array table to the crop, with flips.
-fn resample(t: &[f64], (w, h): (u32, u32), crop: Crop, hflip: bool, vflip: bool) -> Vec<f64> {
+/// The source positions along one axis of a resampling into `out`: (low, high, fraction).
+fn axis_into(out: &mut Vec<(usize, usize, f64)>, n: i64, off: f64, scale: f64, flip: bool) {
+    let mut v = 0.5 * scale + off * n as f64 - 0.5;
+    out.clear();
+    for _ in 0..n {
+        let lo = v.floor() as i64;
+        let f = v - lo as f64;
+        let (mut a, mut b) = (lo.max(0).min(n - 1), (lo + 1).min(n - 1).max(0));
+        if flip {
+            (a, b) = (n - 1 - a, n - 1 - b);
+        }
+        v += scale;
+        out.push((a as usize, b as usize, f));
+    }
+}
+
+#[cfg(feature = "alsc")]
+/// Bilinear resampling of a full-array table to the crop, with flips, into `out`; `axes` is
+/// scratch.
+fn resample_into(
+    t: &[f64],
+    (w, h): (u32, u32),
+    crop: Crop,
+    hflip: bool,
+    vflip: bool,
+    axes: &mut [Vec<(usize, usize, f64)>; 2],
+    out: &mut Vec<f64>,
+) {
     let (wi, hi) = (w as i64, h as i64);
-    let axis = |n: i64, off: f64, scale: f64, flip: bool| -> Vec<(usize, usize, f64)> {
-        let mut v = 0.5 * scale + off * n as f64 - 0.5;
-        (0..n)
-            .map(|_| {
-                let lo = v.floor() as i64;
-                let f = v - lo as f64;
-                let (mut a, mut b) = (lo.max(0).min(n - 1), (lo + 1).min(n - 1).max(0));
-                if flip {
-                    (a, b) = (n - 1 - a, n - 1 - b);
-                }
-                v += scale;
-                (a as usize, b as usize, f)
-            })
-            .collect()
-    };
-    let xs = axis(wi, crop.x, crop.width, hflip);
-    let ys = axis(hi, crop.y, crop.height, vflip);
-    let mut out = Vec::with_capacity(t.len());
-    for &(y0, y1, fy) in &ys {
-        for &(x0, x1, fx) in &xs {
+    let [xs, ys] = axes;
+    axis_into(xs, wi, crop.x, crop.width, hflip);
+    axis_into(ys, hi, crop.y, crop.height, vflip);
+    out.clear();
+    for &(y0, y1, fy) in ys.iter() {
+        for &(x0, x1, fx) in xs.iter() {
             let at = |y: usize, x: usize| t[y * w as usize + x];
             let above = at(y0, x0) * (1.0 - fx) + at(y0, x1) * fx;
             let below = at(y1, x0) * (1.0 - fx) + at(y1, x1) * fx;
             out.push(above * (1.0 - fy) + below * fy);
         }
     }
+}
+
+#[cfg(feature = "alsc")]
+/// The luminance table resampled to the mode (`config`'s crop and flips).
+fn resample_luminance(t: &AlscTuning, c: &CameraConfig) -> Vec<f64> {
+    let mut axes: [Vec<(usize, usize, f64)>; 2] = Default::default();
+    let mut out = Vec::new();
+    resample_into(
+        &t.luminance(),
+        t.grid,
+        c.crop,
+        c.hflip,
+        c.vflip,
+        &mut axes,
+        &mut out,
+    );
     out
 }
 
@@ -253,7 +283,75 @@ fn resample(t: &[f64], (w, h): (u32, u32), crop: Crop, hflip: bool, vflip: bool)
 const SNAP: f64 = 1e-3;
 
 #[cfg(feature = "alsc")]
-/// The ALSC algorithm.
+/// Buffers the algorithm reuses from run to run: no allocation per frame once they have grown
+/// (a run's temporary tables are made here too).
+#[derive(Debug, Default, Clone)]
+struct Scratch {
+    /// The calibrated red and blue tables for the colour temperature of the latest run.
+    cal: [Vec<f64>; 2],
+    /// A calibration table before it is resampled to the mode.
+    table: Vec<f64>,
+    /// The resampling's source positions, across and down.
+    axes: [Vec<(usize, usize, f64)>; 2],
+    /// The statistics as zones for the adaptive run.
+    zones: Vec<adaptive::Zone>,
+    /// The adaptive run's iteration buffers.
+    solver: adaptive::Workspace,
+    /// The adaptive colour gains before the luminance table is applied.
+    colour: Vec<f64>,
+}
+
+#[cfg(feature = "alsc")]
+/// Final tables from adaptive gains and calibrated tables into `out` (red, luminance, blue):
+/// their product normalised to a smallest gain of 1 (`compensateLambdasForCal`), times the
+/// luminance table at its strength (`addLuminanceToTables`).
+fn combine_into(
+    t: &AlscTuning,
+    luminance: &[f64],
+    lambda: &[Vec<f64>; 2],
+    cal: &[Vec<f64>; 2],
+    colour: &mut Vec<f64>,
+    out: &mut [Vec<f64>; 3],
+) {
+    let lum_of = |l: f64| (l - 1.0) * t.luminance_strength + 1.0;
+    let [red, lum, blue] = out;
+    let mut colour_into = |k: usize, dst: &mut Vec<f64>| {
+        colour.clear();
+        colour.extend(lambda[k].iter().zip(&cal[k]).map(|(l, c)| l * c));
+        let min = colour.iter().copied().fold(f64::INFINITY, f64::min);
+        dst.clear();
+        dst.extend(
+            colour
+                .iter()
+                .zip(luminance)
+                .map(|(x, l)| x / min * lum_of(*l)),
+        );
+    };
+    colour_into(0, red);
+    lum.clear();
+    lum.extend(luminance.iter().map(|&l| lum_of(l)));
+    colour_into(1, blue);
+}
+
+#[cfg(feature = "alsc")]
+/// The calibrated red and blue tables for the temperature `ct`, resampled to the mode, into
+/// `scratch.cal`.
+fn calibration_into(t: &AlscTuning, c: &CameraConfig, ct: f64, scratch: &mut Scratch) {
+    let n = t.cells();
+    let Scratch {
+        cal, table, axes, ..
+    } = scratch;
+    for (k, cals) in [&t.calibrations_cr, &t.calibrations_cb]
+        .into_iter()
+        .enumerate()
+    {
+        cal_table_into(cals, ct, n, table);
+        resample_into(table, t.grid, c.crop, c.hflip, c.vflip, axes, &mut cal[k]);
+    }
+}
+
+#[cfg(feature = "alsc")]
+/// The algorithm's state kept across frames.
 #[derive(Debug, Clone)]
 pub struct Alsc {
     tuning: AlscTuning,
@@ -263,8 +361,10 @@ pub struct Alsc {
     ct: f64,
     /// Adaptive red and blue gains (without the calibration), kept across runs.
     lambda: [Vec<f64>; 2],
-    /// The latest run's tables, not yet taken (`syncResults`).
-    pending: Option<[Vec<f64>; 3]>,
+    /// The latest run's tables (red, luminance, blue), not yet taken (`syncResults`); valid
+    /// while `pending_set`.
+    pending: [Vec<f64>; 3],
+    pending_set: bool,
     /// The latest result the filtered tables move towards.
     target: [Vec<f64>; 3],
     /// The tables in use (`prevSyncResults`).
@@ -277,6 +377,7 @@ pub struct Alsc {
     started: bool,
     /// Iterations of the last adaptive run (red, blue).
     last_iterations: (u32, u32),
+    scratch: Scratch,
 }
 
 #[cfg(feature = "alsc")]
@@ -290,7 +391,8 @@ impl Alsc {
             config: CameraConfig::default(),
             luminance: Vec::new(),
             lambda: [Vec::new(), Vec::new()],
-            pending: None,
+            pending: [Vec::new(), Vec::new(), Vec::new()],
+            pending_set: false,
             target: [Vec::new(), Vec::new(), Vec::new()],
             current: [Vec::new(), Vec::new(), Vec::new()],
             frame_count: 0,
@@ -298,41 +400,26 @@ impl Alsc {
             last_frame: None,
             started: false,
             last_iterations: (0, 0),
+            scratch: Scratch::default(),
         })
-    }
-
-    /// The calibrated red and blue tables for a temperature, resampled to the mode.
-    fn calibration(&self, ct: f64) -> [Vec<f64>; 2] {
-        let t = &self.tuning;
-        let c = &self.config;
-        let n = t.cells();
-        [&t.calibrations_cr, &t.calibrations_cb]
-            .map(|cals| resample(&cal_table(cals, ct, n), t.grid, c.crop, c.hflip, c.vflip))
-    }
-
-    /// Final tables from adaptive gains and calibrated tables: their product normalised to a
-    /// smallest gain of 1 (`compensateLambdasForCal`), times the luminance table at its
-    /// strength (`addLuminanceToTables`).
-    fn combine(&self, lambda: &[Vec<f64>; 2], cal: &[Vec<f64>; 2]) -> [Vec<f64>; 3] {
-        let t = &self.tuning;
-        let lum: Vec<f64> = self
-            .luminance
-            .iter()
-            .map(|l| (l - 1.0) * t.luminance_strength + 1.0)
-            .collect();
-        let colour = |k: usize| {
-            let v: Vec<f64> = lambda[k].iter().zip(&cal[k]).map(|(l, c)| l * c).collect();
-            let min = v.iter().copied().fold(f64::INFINITY, f64::min);
-            v.iter().zip(&lum).map(|(x, l)| x / min * l).collect()
-        };
-        [colour(0), lum.clone(), colour(1)]
     }
 
     /// Tables for a colour temperature from the calibration alone (no adaptive gains).
     pub fn tables(&self, ct: f64) -> LensShading {
         let n = self.tuning.cells();
+        let mut scratch = Scratch::default();
+        calibration_into(&self.tuning, &self.config, ct, &mut scratch);
         let ones = [vec![1.0; n], vec![1.0; n]];
-        self.shading(&self.combine(&ones, &self.calibration(ct)))
+        let mut out: [Vec<f64>; 3] = Default::default();
+        combine_into(
+            &self.tuning,
+            &self.luminance,
+            &ones,
+            &scratch.cal,
+            &mut scratch.colour,
+            &mut out,
+        );
+        self.shading(&out)
     }
 
     /// Iterations the last adaptive run took (red, blue); (0, 0) before the first.
@@ -350,19 +437,45 @@ impl Alsc {
         }
     }
 
+    /// Sets `out` to the tables in use (the same as [`Self::shading`] of them), reusing its
+    /// buffers.
+    fn write_shading(&self, out: &mut Option<LensShading>) {
+        let ls = out.get_or_insert_with(LensShading::default);
+        ls.width = self.tuning.grid.0;
+        ls.height = self.tuning.grid.1;
+        ls.r.clone_from(&self.current[0]);
+        ls.g.clone_from(&self.current[1]);
+        ls.b.clone_from(&self.current[2]);
+    }
+
+    /// The tables from the adaptive gains and the calibration at `self.ct`, as the tables in
+    /// use and the target (no pending run).
+    fn set_tables(&mut self) {
+        calibration_into(&self.tuning, &self.config, self.ct, &mut self.scratch);
+        combine_into(
+            &self.tuning,
+            &self.luminance,
+            &self.lambda,
+            &self.scratch.cal,
+            &mut self.scratch.colour,
+            &mut self.current,
+        );
+        for (target, current) in self.target.iter_mut().zip(&self.current) {
+            target.clone_from(current);
+        }
+    }
+
     /// A fresh start at the current temperature (`switchMode` with a table reset).
     fn reset_tables(&mut self) {
         let n = self.tuning.cells();
         self.lambda = [vec![1.0; n], vec![1.0; n]];
-        let tables = self.combine(&self.lambda, &self.calibration(self.ct));
-        self.target.clone_from(&tables);
-        self.current = tables;
-        self.pending = None;
+        self.set_tables();
+        self.pending_set = false;
     }
 
-    /// One adaptive run (`doAlsc`) on a frame's statistics: the next tables.
-    fn run(&mut self, stats: &Statistics) -> [Vec<f64>; 3] {
-        let cal = self.calibration(self.ct);
+    /// One adaptive run (`doAlsc`) on a frame's statistics: the next tables, into `pending`.
+    fn run(&mut self, stats: &Statistics) {
+        calibration_into(&self.tuning, &self.config, self.ct, &mut self.scratch);
         let t = &self.tuning;
         let applied = (!stats.before_lsc).then(|| {
             let [r, g, b] = &self.current;
@@ -378,14 +491,29 @@ impl Alsc {
             threshold: t.threshold,
             lambda_bound: t.lambda_bound,
         };
+        let scratch = &mut self.scratch;
         if t.iterations() > 0
-            && let Some(zones) = adaptive::zones_of(&stats.colour, t.grid, applied)
+            && adaptive::zones_of_into(&stats.colour, t.grid, applied, &mut scratch.zones)
         {
             let [lr, lb] = &mut self.lambda;
-            self.last_iterations =
-                adaptive::run(&zones, t.grid, (&cal[0], &cal[1]), (lr, lb), &settings);
+            self.last_iterations = adaptive::run(
+                &scratch.zones,
+                t.grid,
+                (&scratch.cal[0], &scratch.cal[1]),
+                (lr, lb),
+                &settings,
+                &mut scratch.solver,
+            );
         }
-        self.combine(&self.lambda, &cal)
+        combine_into(
+            t,
+            &self.luminance,
+            &self.lambda,
+            &scratch.cal,
+            &mut scratch.colour,
+            &mut self.pending,
+        );
+        self.pending_set = true;
     }
 }
 
@@ -403,18 +531,10 @@ impl Algorithm for Alsc {
             && (config.hflip, config.vflip) == (self.config.hflip, self.config.vflip);
         self.config = config.clone();
         let c = &self.config;
-        self.luminance = resample(
-            &self.tuning.luminance(),
-            self.tuning.grid,
-            c.crop,
-            c.hflip,
-            c.vflip,
-        );
+        self.luminance = resample_luminance(&self.tuning, c);
         if same {
-            let tables = self.combine(&self.lambda, &self.calibration(self.ct));
-            self.target.clone_from(&tables);
-            self.current = tables;
-            self.pending = None;
+            self.set_tables();
+            self.pending_set = false;
         } else {
             self.reset_tables();
         }
@@ -429,9 +549,7 @@ impl Algorithm for Alsc {
     fn warm_start(&mut self, warm: &WarmStart) {
         if warm.colour_temperature > 0.0 && (warm.colour_temperature - self.ct).abs() > 1e-9 {
             self.ct = warm.colour_temperature;
-            let tables = self.combine(&self.lambda, &self.calibration(self.ct));
-            self.target.clone_from(&tables);
-            self.current = tables;
+            self.set_tables();
         }
     }
 
@@ -450,8 +568,9 @@ impl Algorithm for Alsc {
         self.frame_count = (self.frame_count + frames).min(t.startup_frames);
         let startup = self.frame_count < t.startup_frames;
         // `prepare`: take the last run's result and move the tables towards it.
-        if let Some(next) = self.pending.take() {
-            self.target = next;
+        if self.pending_set {
+            core::mem::swap(&mut self.target, &mut self.pending);
+            self.pending_set = false;
         }
         let keep = if startup {
             0.0
@@ -475,12 +594,12 @@ impl Algorithm for Alsc {
                 };
             }
         }
-        params.lens_shading = Some(self.shading(&self.current));
+        self.write_shading(&mut params.lens_shading);
         // `process`: start a run on this frame's statistics when one is due.
         self.frame_phase = (self.frame_phase + frames).min(t.frame_period);
         if self.frame_phase >= t.frame_period || startup {
             self.ct = params.colour_temperature;
-            self.pending = Some(self.run(stats));
+            self.run(stats);
             self.frame_phase = 0;
         }
     }

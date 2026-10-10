@@ -227,38 +227,50 @@ impl Agc {
     }
 
     /// The metering mode in use (`average` is `matrix` unless tuned) and its tuned weights.
-    fn metering_mode(&self, meta: Option<&FrameMetadata>) -> (String, Option<&MeteringMode>) {
+    fn metering_mode<'a>(
+        &'a self,
+        meta: Option<&'a FrameMetadata>,
+    ) -> (&'a str, Option<&'a MeteringMode>) {
         let name = meta
-            .and_then(|m| m.controls.metering_mode.clone())
-            .unwrap_or_else(|| self.tuning.default_metering_mode.clone());
+            .and_then(|m| m.controls.metering_mode.as_deref())
+            .unwrap_or(self.tuning.default_metering_mode.as_str());
         let key = if name == "average" && !self.tuning.metering_modes.contains_key("average") {
             "matrix"
         } else {
-            name.as_str()
+            name
         };
         let tuned = self.tuning.metering_modes.get(key);
         (name, tuned)
     }
 
-    /// The histogram weights for the metering mode in use (see [`Params::histogram_weights`]).
-    fn histogram_weights(&mut self, meta: &FrameMetadata) -> ZoneGrid<f64> {
-        let (name, tuned) = self.metering_mode(Some(meta));
-        if let Some((n, g)) = &self.histogram
-            && *n == name
-        {
-            return g.clone();
+    /// Sets `out` to the histogram weights for the metering mode in use (see
+    /// [`Params::histogram_weights`]), reusing its buffer and the cached grid.
+    fn histogram_weights(&mut self, meta: &FrameMetadata, out: &mut Option<ZoneGrid<f64>>) {
+        let cached = {
+            let (name, _) = self.metering_mode(Some(meta));
+            matches!(&self.histogram, Some((n, _)) if n.as_str() == name)
+        };
+        if !cached {
+            let (name, tuned) = self.metering_mode(Some(meta));
+            let g = metering::histogram_grid(name, tuned);
+            self.histogram = Some((String::from(name), g));
         }
-        let g = metering::histogram_grid(&name, tuned);
-        self.histogram = Some((name, g.clone()));
-        g
+        if let Some((_, g)) = &self.histogram {
+            match out {
+                Some(o) => o.clone_from(g),
+                None => *out = Some(g.clone()),
+            }
+        }
     }
 
-    fn metering_weights(&mut self, stats: &Statistics, meta: &FrameMetadata) -> (bool, Vec<f64>) {
+    /// Makes the cached zone weights the ones for this frame (the metering mode, the grid's
+    /// size and whether luma zones are used); returns whether luma zones are used.
+    fn metering_weights(&mut self, stats: &Statistics, meta: &FrameMetadata) -> bool {
         let name = meta
             .controls
             .metering_mode
-            .clone()
-            .unwrap_or_else(|| self.tuning.default_metering_mode.clone());
+            .as_deref()
+            .unwrap_or(self.tuning.default_metering_mode.as_str());
         let use_luma = stats
             .luma
             .as_ref()
@@ -267,20 +279,28 @@ impl Agc {
             (Some(l), true) => (l.width, l.height),
             _ => (stats.colour.width, stats.colour.height),
         };
-        if let Some((n, cw, ch, cl, weights)) = &self.weights
-            && *n == name
-            && (*cw, *ch, *cl) == (w, h, use_luma)
-        {
-            return (use_luma, weights.clone());
+        let cached = matches!(
+            &self.weights,
+            Some((n, cw, ch, cl, _)) if n.as_str() == name && (*cw, *ch, *cl) == (w, h, use_luma)
+        );
+        if !cached {
+            let key = if name == "average" && !self.tuning.metering_modes.contains_key("average") {
+                "matrix"
+            } else {
+                name
+            };
+            let weights = metering::weights_for(key, self.tuning.metering_modes.get(key), w, h);
+            self.weights = Some((String::from(name), w, h, use_luma, weights));
         }
-        let key = if name == "average" && !self.tuning.metering_modes.contains_key("average") {
-            "matrix"
-        } else {
-            name.as_str()
-        };
-        let weights = metering::weights_for(key, self.tuning.metering_modes.get(key), w, h);
-        self.weights = Some((name, w, h, use_luma, weights.clone()));
-        (use_luma, weights)
+        use_luma
+    }
+
+    /// The zone weights [`Self::metering_weights`] made current.
+    fn weight_values(&self) -> &[f64] {
+        match &self.weights {
+            Some((_, _, _, _, weights)) => weights,
+            None => &[],
+        }
     }
 
     /// The gain needed relative to this frame, and the luma target in effect.
@@ -294,11 +314,12 @@ impl Agc {
         let ev_gain = 2f64.powf(meta.controls.ev) * self.tuning.base_ev;
         let mut target_y =
             (self.tuning.y_target.eval_clamped(lux) * ev_gain).min(EV_GAIN_Y_TARGET_LIMIT);
-        let (use_luma, weights) = self.metering_weights(stats, meta);
-        let measured = metering::weighted_y(stats, &weights, use_luma, p.colour_gains, 1.0);
+        let use_luma = self.metering_weights(stats, meta);
+        let weights = self.weight_values();
+        let measured = metering::weighted_y(stats, weights, use_luma, p.colour_gains, 1.0);
         let mut gain = 1.0;
         for _ in 0..8 {
-            let y = metering::weighted_y(stats, &weights, use_luma, p.colour_gains, gain);
+            let y = metering::weighted_y(stats, weights, use_luma, p.colour_gains, gain);
             let extra = (target_y / (y + 0.001)).min(10.0);
             gain *= extra;
             if extra < 1.01 {
@@ -525,14 +546,14 @@ impl Algorithm for Agc {
         params.ae.target_exposure = self.filtered;
         params.deflicker = None;
         let (name, tuned) = self.metering_mode(None);
-        params.histogram_weights = Some(metering::histogram_grid(&name, tuned));
+        params.histogram_weights = Some(metering::histogram_grid(name, tuned));
     }
 
     fn process(&mut self, stats: &Statistics, meta: &FrameMetadata, params: &mut Params) {
         self.frame_count = self.frame_count.saturating_add(1);
         let fixed = self.fixed(meta);
         let fixed_both = fixed.0.is_some() && fixed.1.is_some();
-        params.histogram_weights = Some(self.histogram_weights(meta));
+        self.histogram_weights(meta, &mut params.histogram_weights);
         let (gain, target_y, measured_y) = self.compute_gain(stats, meta, params);
         // Frames whose levels have not settled say nothing about the scene (see below).
         let unsettled = meta.frame < u64::from(self.config.unsettled_frames);

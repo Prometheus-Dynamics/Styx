@@ -67,7 +67,7 @@ pub struct PdafZone {
 }
 
 /// A row-major grid of zones, `zones.len() == width * height`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ZoneGrid<T> {
     /// Zones across.
     pub width: u32,
@@ -75,6 +75,23 @@ pub struct ZoneGrid<T> {
     pub height: u32,
     /// Row-major zones.
     pub zones: Vec<T>,
+}
+
+impl<T: Clone> Clone for ZoneGrid<T> {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            zones: self.zones.clone(),
+        }
+    }
+
+    /// Copies into this grid's own zones (reusing their buffer).
+    fn clone_from(&mut self, source: &Self) {
+        self.width = source.width;
+        self.height = source.height;
+        self.zones.clone_from(&source.zones);
+    }
 }
 
 impl<T: Clone + Default> ZoneGrid<T> {
@@ -126,6 +143,23 @@ impl From<Vec<u64>> for Histogram {
             cumulative.push(acc);
         }
         Self { bins, cumulative }
+    }
+}
+
+impl Histogram {
+    /// Replaces the bins with `bins` (the cumulative counts rebuilt in this histogram's own
+    /// buffers): the same histogram as `Histogram::from` gives, without allocating once the
+    /// buffers have grown to the bin count.
+    pub fn set_bins(&mut self, bins: impl IntoIterator<Item = u64>) {
+        self.bins.clear();
+        self.bins.extend(bins);
+        self.cumulative.clear();
+        self.cumulative.push(0);
+        let mut acc = 0u64;
+        for &b in &self.bins {
+            acc += b;
+            self.cumulative.push(acc);
+        }
     }
 }
 
