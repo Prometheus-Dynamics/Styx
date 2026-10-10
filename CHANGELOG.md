@@ -15,10 +15,6 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   mapping, shared, so the same units work on every backend. `set` / `get` take any
   `StandardControl`; setters answer `AppliedControl` (value in effect, clamped, landing frame).
   Native processed modes: exposure or gain fixes AE; a frame-rate change is an error.
-- **`examples/05_apps/pv_capture.rs`** (binary `pv_capture`): the reference flow for a
-  PhotonVision-style JNI driver (camera selection with `--kernel-sensor`, grey stream with
-  pyramid levels, per-frame access and timestamps, JPEG previews, runtime controls, clean
-  stop), with the JNI mapping table in its documentation. `--virtual` runs on a host.
 - **Multi-camera frame grouping by sensor timestamp** (docs/multi-camera-sync.md).
   `styx_core::multicam` (`no_std` + `alloc`, no clock of its own): `Grouper<T>` groups frames
   of N cameras whose timestamps lie within `GroupConfig::tolerance_ns` into `FrameGroup`s

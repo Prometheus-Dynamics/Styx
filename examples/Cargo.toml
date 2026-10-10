@@ -120,13 +120,6 @@ path = "05_apps/preview_server.rs"
 test = false
 required-features = ["preview"]
 
-# The PhotonVision-style reference flow (grey stream, JPEG previews, controls; docs/preview.md).
-[[bin]]
-name = "pv_capture"
-path = "05_apps/pv_capture.rs"
-test = false
-required-features = ["native", "preview", "codec-turbojpeg"]
-
 [[bin]]
 name = "list_cameras"
 path = "00_quickstart/list_cameras.rs"
