@@ -82,7 +82,7 @@ impl StandardControl {
     }
 
     /// Its libcamera name, where libcamera has it as one scalar control.
-    pub(super) fn libcamera_name(self) -> Option<&'static str> {
+    pub(crate) fn libcamera_name(self) -> Option<&'static str> {
         Some(match self {
             Self::ExposureUs => "ExposureTime",
             Self::Gain => "AnalogueGain",
