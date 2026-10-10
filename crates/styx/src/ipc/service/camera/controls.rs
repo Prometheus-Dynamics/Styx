@@ -10,6 +10,9 @@ use styx_core::prelude::*;
 
 use super::{Camera, State, restart};
 use crate::BackendKind;
+use crate::capture_api::standard_controls::{
+    Scale, find_standard, fit, from_backend, number, reads_back, to_backend,
+};
 use crate::capture_api::{CaptureError, CaptureHandle};
 use crate::ipc::controls::{
     AppliedControl, ControlCaller, ControlDescriptor, ControlEvent, ControlPolicy, ControlRefusal,
@@ -18,67 +21,12 @@ use crate::ipc::controls::{
 use crate::ipc::service::{Counters, ServiceConfig};
 use crate::ipc::socket;
 
-/// How a standard control's units become the backend's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Scale {
-    Same,
-    /// Microseconds to V4L2's 100 µs.
-    Per100Us,
-    /// Stops to V4L2's thousandths of a stop.
-    Milli,
-    /// AE on/off to V4L2's exposure menu: 3 aperture priority (auto), 1 manual.
-    AeMenu,
-    /// AF mode to V4L2's continuous autofocus on/off.
-    AfAuto,
-}
-
 /// The backend's control for a request.
 struct Resolved {
     id: ControlId,
     meta: Option<ControlMeta>,
     standard: Option<StandardControl>,
     scale: Scale,
-}
-
-/// V4L2 (and UVC) control ids of the standard controls, with their units.
-fn v4l2_cid(control: StandardControl) -> Option<(u32, Scale)> {
-    Some(match control {
-        StandardControl::ExposureUs => (0x009a_0902, Scale::Per100Us),
-        StandardControl::Gain => (0x0098_0913, Scale::Same),
-        StandardControl::AeEnable => (0x009a_0901, Scale::AeMenu),
-        StandardControl::ExposureValue => (0x009a_0913, Scale::Milli),
-        StandardControl::AwbEnable => (0x0098_090c, Scale::Same),
-        StandardControl::ColourTemperature => (0x0098_091a, Scale::Same),
-        StandardControl::RedGain => (0x0098_090e, Scale::Same),
-        StandardControl::BlueGain => (0x0098_090f, Scale::Same),
-        StandardControl::AfMode => (0x009a_090c, Scale::AfAuto),
-        StandardControl::LensPosition => (0x009a_090a, Scale::Same),
-        StandardControl::FrameRate | StandardControl::AfTrigger => return None,
-    })
-}
-
-/// The backend's control for `control`, if the camera has one.
-fn find_standard(
-    metas: &[ControlMeta],
-    backend: BackendKind,
-    control: StandardControl,
-) -> Option<(ControlMeta, Scale)> {
-    let named = |name: &str| metas.iter().find(|m| m.name == name).cloned();
-    if let Some(meta) = named(control.name()) {
-        return Some((meta, Scale::Same));
-    }
-    if let Some(meta) = control.libcamera_name().and_then(named) {
-        return Some((meta, Scale::Same));
-    }
-    if matches!(backend, BackendKind::V4l2 | BackendKind::Uvc)
-        && let Some((cid, scale)) = v4l2_cid(control)
-    {
-        return metas
-            .iter()
-            .find(|m| m.id.0 == cid)
-            .map(|m| (m.clone(), scale));
-    }
-    None
 }
 
 /// The standard control a backend control answers, if any.
@@ -128,87 +76,6 @@ fn resolve(
     }
 }
 
-fn number(v: &ControlValue) -> Option<f64> {
-    match v {
-        ControlValue::Bool(b) => Some(f64::from(u8::from(*b))),
-        ControlValue::Int(i) => Some(f64::from(*i)),
-        ControlValue::Uint(u) => Some(f64::from(*u)),
-        ControlValue::Float(f) => Some(f64::from(*f)),
-        _ => None,
-    }
-}
-
-/// A standard control's value in the backend's units.
-fn to_backend(scale: Scale, v: &ControlValue) -> ControlValue {
-    let Some(n) = number(v) else {
-        return v.clone();
-    };
-    match scale {
-        Scale::Same => v.clone(),
-        Scale::Per100Us => ControlValue::Int((n / 100.0).round() as i32),
-        Scale::Milli => ControlValue::Int((n * 1000.0).round() as i32),
-        Scale::AeMenu => ControlValue::Int(if n != 0.0 { 3 } else { 1 }),
-        Scale::AfAuto => ControlValue::Bool(n != 0.0),
-    }
-}
-
-/// A backend value in the standard control's units.
-fn from_backend(scale: Scale, v: ControlValue) -> ControlValue {
-    let Some(n) = number(&v) else {
-        return v;
-    };
-    match scale {
-        Scale::Same => v,
-        Scale::Per100Us => ControlValue::Uint((n * 100.0).max(0.0) as u32),
-        Scale::Milli => ControlValue::Float((n / 1000.0) as f32),
-        Scale::AeMenu => ControlValue::Bool(n != 1.0),
-        Scale::AfAuto => ControlValue::Int(if n != 0.0 { 2 } else { 0 }),
-    }
-}
-
-/// `value` as `meta`'s type, within its range and on its steps; whether it was clamped.
-fn fit(meta: &ControlMeta, value: ControlValue) -> Result<(ControlValue, bool), ControlRefusal> {
-    let invalid = |why: String| Err(ControlRefusal::Invalid(format!("{}: {why}", meta.name)));
-    if matches!(meta.kind, ControlKind::Rectangle) || meta.menu.is_some() {
-        return if meta.validate(&value) {
-            Ok((value, false))
-        } else {
-            invalid(format!("{value:?} is not one of its values"))
-        };
-    }
-    let Some(n) = number(&value) else {
-        return match meta.kind {
-            ControlKind::None | ControlKind::Unknown => Ok((value, false)),
-            _ => invalid(format!("{value:?} is not a number")),
-        };
-    };
-    let bound = |v: &ControlValue| number(v);
-    let (lo, hi) = (bound(&meta.min), bound(&meta.max));
-    let mut x = n;
-    if let (Some(lo), Some(hi)) = (lo, hi)
-        && lo <= hi
-    {
-        x = x.clamp(lo, hi);
-        if let Some(step) = meta.step.as_ref().and_then(bound)
-            && step > 0.0
-            && !matches!(meta.kind, ControlKind::Float)
-        {
-            x = (lo + ((x - lo) / step).round() * step).min(hi);
-        }
-    }
-    let fitted = match meta.kind {
-        ControlKind::Bool => ControlValue::Bool(x != 0.0),
-        ControlKind::Int | ControlKind::Menu | ControlKind::IntMenu => {
-            ControlValue::Int(x.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32)
-        }
-        ControlKind::Uint => ControlValue::Uint(x.round().clamp(0.0, f64::from(u32::MAX)) as u32),
-        ControlKind::Float => ControlValue::Float(x as f32),
-        _ => value.clone(),
-    };
-    let clamped = number(&fitted).is_some_and(|f| (f - n).abs() > 1e-6 * n.abs().max(1.0));
-    Ok((fitted, clamped))
-}
-
 fn refusal(err: CaptureError) -> ControlRefusal {
     match err {
         CaptureError::ControlUnsupported => {
@@ -216,14 +83,6 @@ fn refusal(err: CaptureError) -> ControlRefusal {
         }
         err => ControlRefusal::Failed(err.to_string()),
     }
-}
-
-/// Whether the backend reads back what was just set (others apply it with a later frame).
-fn reads_back(backend: BackendKind) -> bool {
-    matches!(
-        backend,
-        BackendKind::V4l2 | BackendKind::Uvc | BackendKind::Virtual
-    )
 }
 
 impl State {

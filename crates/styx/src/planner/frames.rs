@@ -11,6 +11,10 @@ use super::roi::RoiHandle;
 use super::session::Branch;
 use super::start::FramePreparer;
 use crate::capture_api::{CaptureError, CaptureHandle};
+#[cfg(all(feature = "facade", target_os = "linux"))]
+use crate::ipc::AfMode;
+#[cfg(all(feature = "facade", target_os = "linux"))]
+use crate::ipc::AppliedControl;
 use crate::session::MediaPipeline;
 
 /// A running stream of frames, as a [`FrameRequest`](super::FrameRequest) asked for: from
@@ -147,6 +151,89 @@ impl Frames {
     /// A camera control's current value.
     pub fn get_control(&self, id: ControlId) -> Result<ControlValue, CaptureError> {
         self.capture().get_control(id)
+    }
+
+    /// The standard controls of this capture, in their units (`set_exposure_us`, `set_gain`,
+    /// ... on every backend; see [`StandardControls`](crate::capture_api::StandardControls)).
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn standard_controls(&self) -> crate::capture_api::StandardControls {
+        self.capture().standard_controls()
+    }
+
+    /// Exposure time in microseconds (turn automatic exposure off for it to hold).
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_exposure_us(&self, us: u32) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().set_exposure_us(us)
+    }
+
+    /// Total gain as a ratio (1.0: none).
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_gain(&self, gain: f32) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().set_gain(gain)
+    }
+
+    /// Automatic exposure on or off.
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_ae(&self, on: bool) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().set_ae(on)
+    }
+
+    /// Exposure compensation in stops.
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_ev(&self, stops: f32) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().set_ev(stops)
+    }
+
+    /// Frame rate through the camera's own control; an error where it cannot change while streaming (restart the capture).
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_fps(&self, fps: f32) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().set_fps(fps)
+    }
+
+    /// Automatic white balance on or off.
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_awb(&self, on: bool) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().set_awb(on)
+    }
+
+    /// White balance colour temperature in kelvin (used while AWB is off).
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_colour_temperature(&self, kelvin: u32) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().set_colour_temperature(kelvin)
+    }
+
+    /// Manual red and blue gains, relative to green (used while AWB is off).
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_colour_gains(
+        &self,
+        red: f32,
+        blue: f32,
+    ) -> Result<(AppliedControl, AppliedControl), CaptureError> {
+        self.standard_controls().set_colour_gains(red, blue)
+    }
+
+    /// What drives the focus lens.
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_af_mode(&self, mode: AfMode) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().set_af_mode(mode)
+    }
+
+    /// Start an autofocus scan.
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn trigger_af(&self) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().trigger_af()
+    }
+
+    /// Cancel an autofocus scan.
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn cancel_af(&self) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().cancel_af()
+    }
+
+    /// Lens position in dioptres (0: infinity), in manual AF mode.
+    #[cfg(all(feature = "facade", target_os = "linux"))]
+    pub fn set_lens_position(&self, dioptres: f32) -> Result<AppliedControl, CaptureError> {
+        self.standard_controls().set_lens_position(dioptres)
     }
 
     /// Frames lost so far: dropped because this consumer did not take them in time (beyond its

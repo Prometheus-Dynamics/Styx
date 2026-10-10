@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use styx_capture::prelude::*;
-use styx_core::prelude::{CompanionKind, FrameRect, Hop};
+use styx_core::prelude::{ClockSource, CompanionKind, FrameRect, Hop};
 use styx_core::queue::BoundedTx;
 use styx_pipeline::device::SoftPipeline;
 use styx_pipeline::{SoftParts, SoftTarget};
@@ -40,6 +40,8 @@ pub(super) struct SoftWorker {
     pub(super) loop_controls: Arc<super::LoopControls>,
     pub(super) still: super::still_runner::StillRunner,
     pub(super) live: CaptureMetrics,
+    /// The clock the frames are stamped in.
+    pub(super) clock: ClockSource,
     /// The camera's controls (the lens position for the metrics).
     pub(super) controls: styx_native::CameraControls,
 }
@@ -194,7 +196,13 @@ pub(super) fn spawn(
                     &w.controls,
                     f.sensor.frame,
                 ));
-                let mut meta = frame_meta(&w.mode, f.sensor.frame, f.raw.timestamp, &f.sensor);
+                let mut meta = frame_meta(
+                    &w.mode,
+                    f.sensor.frame,
+                    f.raw.timestamp,
+                    &f.sensor,
+                    super::super::native_backend::native_conversion(w.clock),
+                );
                 let dequeued = styx_core::prelude::CaptureInstant::from(f.raw.dequeued);
                 meta.hops.set(Hop::Dequeued, dequeued.as_nanos());
                 meta.hops.set(Hop::IspDone, isp_done.as_nanos());

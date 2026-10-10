@@ -11,7 +11,9 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use smallvec::smallvec;
 use styx_capture::prelude::*;
-use styx_core::prelude::{BackendFrameMeta, NativeFrameMeta, TimestampClock};
+use styx_core::prelude::{
+    BackendFrameMeta, ClockConversion, ClockSource, NativeFrameMeta, TimestampClock,
+};
 use styx_native::{
     CameraControls, CameraInfo, CameraOptions, NativeError, NativeFrame, SensorLibrary, SensorMode,
     StreamSettings,
@@ -388,10 +390,25 @@ pub(crate) fn probe() -> (Vec<ProbedDevice>, Vec<String>) {
     )
 }
 
-/// Wraps a native frame as a frame lease (no copy).
+/// The conversion from a native frame's `CLOCK_MONOTONIC` timestamp to `clock`, sampled now.
+/// Sample it once per frame and pass it to every lease of that frame (its pyramid companions
+/// share the timestamp, so they must convert identically). `None` keeps monotonic.
+pub(crate) fn native_conversion(clock: ClockSource) -> Option<ClockConversion> {
+    clock.conversion_from(TimestampClock::Monotonic)
+}
+
+/// Stamps a native frame's timestamp, `CLOCK_MONOTONIC` (the V4L2 buffer's timestamp from the
+/// kernel, or the PiSP's or software ISP's own), converted by `conversion` from
+/// [`native_conversion`]. The default, [`ClockSource::Native`], keeps monotonic.
+pub(crate) fn stamp_clock(meta: FrameMeta, conversion: Option<ClockConversion>) -> FrameMeta {
+    meta.in_clock(TimestampClock::Monotonic, conversion)
+}
+
+/// Wraps a native frame as a frame lease (no copy), stamped in `clock`.
 pub(crate) fn frame_lease(
     frame: NativeFrame,
     live: &crate::metrics::CaptureMetrics,
+    clock: ClockSource,
 ) -> Option<FrameLease> {
     let res = Resolution::new(frame.width, frame.height)?;
     let format = MediaFormat::new(FourCc::from(frame.fourcc.0), res, ColorSpace::Unknown);
@@ -408,10 +425,12 @@ pub(crate) fn frame_lease(
         frame_length: c.map_or(0, |c| c.frame_length),
         verified: c.is_some_and(|c| c.verified),
     };
-    let mut meta = FrameMeta::new(format, frame.timestamp.as_nanos() as u64)
-        .with_backend(BackendFrameMeta::Native(native))
-        .with_capture_instant(frame.dequeued);
-    meta.clock = Some(TimestampClock::Monotonic);
+    let meta = stamp_clock(
+        FrameMeta::new(format, frame.timestamp.as_nanos() as u64)
+            .with_backend(BackendFrameMeta::Native(native))
+            .with_capture_instant(frame.dequeued),
+        native_conversion(clock),
+    );
     let layout = PlaneLayout {
         offset: 0,
         len,
@@ -518,6 +537,7 @@ pub(super) fn start_native(
     let mut stream = camera.start().map_err(native_err)?;
 
     let capture = config.capture_tunables();
+    let clock = capture.timestamp_clock;
     // A queue the supervisor passed in belongs to the consumer and outlives this capture (a
     // reconnect starts the next one on it): only a queue made here is closed when it ends.
     let owns_queue = queue.is_none();
@@ -542,7 +562,7 @@ pub(super) fn start_native(
                 }
                 match stream.next_blocking(poll) {
                     Ok(Some(frame)) => {
-                        let Some(lease) = frame_lease(frame, &live_worker) else {
+                        let Some(lease) = frame_lease(frame, &live_worker, clock) else {
                             continue;
                         };
                         if deliver(&live_worker, &tx, lease, "native", send_timeout) {
@@ -630,6 +650,46 @@ mod tests {
                 mode.intervals[1].denominator.get()
             ),
             (82901, 10_000_000)
+        );
+    }
+
+    #[test]
+    fn native_frames_stamp_monotonic_unless_another_clock_is_asked_for() {
+        let res = Resolution::new(2, 2).unwrap();
+        let format = MediaFormat::new(FourCc::GREY, res, ColorSpace::Unknown);
+        let stamp =
+            |clock| stamp_clock(FrameMeta::new(format, 1_000_000), native_conversion(clock));
+
+        // The default keeps the kernel's CLOCK_MONOTONIC value as it is.
+        let native = stamp(ClockSource::Native);
+        assert_eq!(native.clock, Some(TimestampClock::Monotonic));
+        assert_eq!(native.timestamp, 1_000_000);
+        let explicit = stamp(ClockSource::Monotonic);
+        assert_eq!(explicit.clock, Some(TimestampClock::Monotonic));
+        assert_eq!(explicit.timestamp, 1_000_000);
+
+        // Converted clocks: a frame stamped now (on CLOCK_MONOTONIC) reads as now on the target
+        // clock, within the sampling error of the two clock reads.
+        let mono_now = TimestampClock::Monotonic.now_ns().unwrap();
+        let now_stamp =
+            |clock| stamp_clock(FrameMeta::new(format, mono_now), native_conversion(clock));
+        let boot = now_stamp(ClockSource::Boottime);
+        assert_eq!(boot.clock, Some(TimestampClock::Boottime));
+        let boot_now = TimestampClock::Boottime.now_ns().unwrap();
+        assert!(
+            boot.timestamp.abs_diff(boot_now) < 10_000_000,
+            "{}",
+            boot.timestamp
+        );
+        let back = boot.timestamp_in(TimestampClock::Monotonic).unwrap();
+        assert!(back.abs_diff(mono_now) < 10_000_000, "{back}");
+        let real = now_stamp(ClockSource::Realtime);
+        assert_eq!(real.clock, Some(TimestampClock::Realtime));
+        let real_now = TimestampClock::Realtime.now_ns().unwrap();
+        assert!(
+            real.timestamp.abs_diff(real_now) < 10_000_000,
+            "{}",
+            real.timestamp
         );
     }
 

@@ -34,6 +34,8 @@ pub(super) mod native_isp;
 #[cfg(feature = "netcam")]
 pub(super) mod netcam_backend;
 mod replay_backend;
+#[cfg(all(feature = "facade", target_os = "linux"))]
+pub(crate) mod standard_controls;
 mod still;
 mod still_output;
 #[cfg(feature = "uvc")]
@@ -91,6 +93,8 @@ pub use request::{
     CaptureRequest, CaptureSource, CaptureStartPolicy, ControlApplyKind, SelectedCamera,
     TdnOutputMode, start_capture,
 };
+#[cfg(all(feature = "facade", target_os = "linux"))]
+pub use standard_controls::StandardControls;
 pub use still::{
     PendingStill, StillCapture, StillExposure, StillFormat, StillImage, StillMeta, StillRequest,
     StillShot,
