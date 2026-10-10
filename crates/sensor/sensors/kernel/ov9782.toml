@@ -20,6 +20,13 @@ delays = { exposure = 2, analog_gain = 2, frame_length = 1 }
 black_level = { value = 64, bits = 10, settle_frames = 1 }
 # A frame lasts VTS + 1 lines (VTS = height + VBLANK).
 frame_length_extra_lines = 1
+# Exposure is at most VTS - 25 lines: the driver's EXPOSURE maximum (ov9282.c,
+# OV9782_EXPOSURE_OFFSET = 25, `vblank + height - exposure_offset`). Given explicitly: without
+# it the margin is read from the report, which belongs to the mode the sensor was last set to,
+# so at 640x400 (VTS 457) it came out 0 and exposure ran to the full frame, past the guard band
+# (black frames at 4158 us). The Raspberry Pi 6.12 driver the board runs is not in this tree;
+# its offset is to be read on the board (see the board checks).
+exposure_margin = 25
 
 # Blanking per mode, as the driver sets it (the bridge description, ov9782.toml, has the same
 # values). The ranges the kernel reports belong to the mode the sensor is set to, and discovery

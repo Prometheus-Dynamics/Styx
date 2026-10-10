@@ -368,6 +368,13 @@ impl<B: AsyncDriverBus, P: AsyncSensorPins> DriverCore<B, P> {
             )
             .await?;
         }
+        if self.is_kernel() {
+            // Before VBLANK and the rest: a kernel driver keeps the HBLANK it was last given
+            // across a format change (its range update keeps an in-range value), so the mode's
+            // line length is written here, not left to the driver.
+            self.set_kernel(&[(KernelControl::Hblank, i64::from(timing.hblank))])
+                .await?;
+        }
         let fl = timing.frame_length_default();
         let exposure = ctl
             .exposure
@@ -400,19 +407,32 @@ impl<B: AsyncDriverBus, P: AsyncSensorPins> DriverCore<B, P> {
             self.state == DriverState::Powered,
             "set_hblank: not powered or streaming",
         )?;
-        let ll = self
-            .desc
-            .controls
-            .line_length
-            .ok_or(SensorError::NoRegister("line length"))?;
+        let line_length = if self.is_kernel() {
+            None
+        } else {
+            Some(
+                self.desc
+                    .controls
+                    .line_length
+                    .ok_or(SensorError::NoRegister("line length"))?,
+            )
+        };
         let mode = self
             .mode
             .as_mut()
             .ok_or(SensorError::State("set_hblank: no mode"))?;
         mode.timing = mode.timing.with_hblank(hblank);
         let t = mode.timing;
-        self.write_field(&ll.register, t.line_length() / ll.pixels_per_unit.max(1))
-            .await?;
+        match line_length {
+            Some(ll) => {
+                self.write_field(&ll.register, t.line_length() / ll.pixels_per_unit.max(1))
+                    .await?
+            }
+            None => {
+                self.set_kernel(&[(KernelControl::Hblank, i64::from(t.hblank))])
+                    .await?
+            }
+        }
         Ok(t)
     }
 

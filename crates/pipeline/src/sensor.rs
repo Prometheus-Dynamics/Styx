@@ -77,7 +77,12 @@ impl SensorInfo {
         let d = ctl.delays;
         let camera = CameraConfig {
             exposure_limits,
-            exposure_margin: t.lines_to_duration(f64::from(ctl.exposure.margin)),
+            // A frame lasts `frame length + extra` lines and exposure is at most `frame length -
+            // margin`: the algorithm's margin is the difference, or its limit runs one line past
+            // the sensor's (the scheduler clamps to the sensor's).
+            exposure_margin: t.lines_to_duration(f64::from(
+                ctl.exposure.margin + ctl.frame_length_extra_lines,
+            )),
             frame_duration_limits: (
                 t.frame_duration(t.frame_length_min()),
                 t.frame_duration(fl_max),
@@ -159,6 +164,26 @@ pub(crate) fn ov9782() -> SensorDescription {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With a frame of VTS + 1 lines (the kernel OV9782), the algorithm's longest exposure at a
+    /// frame duration is the sensor's own limit, VTS - margin: the margin it is given includes
+    /// the extra line, so the two agree.
+    #[test]
+    fn exposure_limit_at_a_frame_duration_is_the_sensors() {
+        let mut desc = ov9782();
+        desc.controls.frame_length_extra_lines = 1;
+        let s = SensorInfo::from_description(&desc, "1280x800", "raw10").unwrap();
+        let t = desc.timing("1280x800", "raw10").unwrap();
+        let vts = 3662;
+        let fd = t.frame_duration(vts);
+        let line = t.line_time().as_secs_f64();
+        let algorithm_max = (fd.as_secs_f64() - s.camera.exposure_margin.as_secs_f64()) / line;
+        let sensor_max = f64::from(vts - desc.controls.exposure.margin);
+        assert!(
+            (algorithm_max - sensor_max).abs() < 1e-6,
+            "{algorithm_max} vs {sensor_max}"
+        );
+    }
 
     #[test]
     fn ov9782_mode_for_the_algorithms() {
