@@ -200,8 +200,9 @@ impl SensorDescription {
     /// what `data` adds.
     ///
     /// Requires `PIXEL_RATE`, `EXPOSURE` and `ANALOGUE_GAIN`. Blanking ranges are those
-    /// reported at `current_size` and are used for every size (the kernel adjusts them per
-    /// mode; re-read them after changing the format). Codes and the colour filter are given
+    /// reported at `current_size` and are used for every size, except a mode the data file
+    /// gives its own blanking ([`KernelSensorData::modes`]): the kernel adjusts the ranges per
+    /// mode, and they are only read at one size here. Codes and the colour filter are given
     /// with the flips off (the report's are turned back when the flips change the layout).
     /// Without data, gain is assumed linear with `analogue_gain_unity` as 1× and delays are
     /// libcamera's defaults for unknown sensors; register fields are absent (the controls are
@@ -308,15 +309,23 @@ impl SensorDescription {
                 .filter(|f| f.sizes.contains(&Size::new(w, h)))
                 .map(|f| names[&f.code].clone())
                 .collect();
+            // The reported ranges are those of the mode the sensor is set to; a mode the data
+            // file gives its own blanking takes that.
+            let name = format!("{w}x{h}");
+            let (mode_hblank, mode_vblank) =
+                match data.and_then(|d| d.modes.iter().find(|m| m.mode == name)) {
+                    Some(m) => (m.hblank, m.vblank),
+                    None => (hblank, vblank),
+                };
             modes.push(Mode {
-                name: format!("{w}x{h}"),
+                name,
                 size: Size::new(w, h),
                 crop: active,
                 formats: (supported.len() != formats.len()).then_some(supported),
                 binning: [1, 1],
                 skipping: [1, 1],
-                hblank,
-                vblank,
+                hblank: mode_hblank,
+                vblank: mode_vblank,
                 pixel_rate: None,
                 registers: Vec::new(),
             });

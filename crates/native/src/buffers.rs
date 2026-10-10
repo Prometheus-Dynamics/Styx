@@ -320,7 +320,9 @@ impl styx_runtime::LeaseBuffer for V4l2Buffer {
 pub struct NativeFrame {
     /// Frame sequence number from the receiver (starts at 0 with each stream start).
     pub sequence: u32,
-    /// Capture timestamp (`CLOCK_MONOTONIC`, end of frame on most receivers).
+    /// Capture timestamp (`CLOCK_MONOTONIC`, the receiver's buffer timestamp). `rp1-cfe` stamps
+    /// the start of the frame (measured on a CM5: at 30 fps the raw buffer dequeues about 11 ms
+    /// after its timestamp, the readout time); other receivers may stamp the end instead.
     pub timestamp: Duration,
     /// When userspace dequeued the frame.
     pub dequeued: Instant,

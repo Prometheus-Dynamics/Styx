@@ -16,7 +16,7 @@ timestamp is expressed in.
 |---|---|---|
 | libcamera | `Boottime` | start of exposure (`SensorTimestamp`); pyramid companions share it |
 | V4L2 | `Monotonic` when the driver flags it, otherwise `clock` is `None` | driver capture time (start of frame for UVC) |
-| native | `Monotonic` (converted when `timestamp_clock` asks) | the V4L2 buffer timestamp, `CLOCK_MONOTONIC` from the kernel; the PiSP and software ISP outputs carry the raw frame's timestamp |
+| native | `Monotonic` (converted when `timestamp_clock` asks) | the V4L2 buffer timestamp, `CLOCK_MONOTONIC` from the kernel: start of frame on `rp1-cfe` (measured: 10.9 ms before dequeue at 30 fps); the PiSP and software ISP outputs carry the raw frame's timestamp |
 | netcam, virtual | `StreamRelative` | arrival in Styx |
 | file, simulation | `StreamRelative` | media time (presentation time or frame index / fps) |
 
@@ -37,10 +37,10 @@ let config = StyxConfig::new().timestamp_clock(ClockSource::Monotonic);
     frame arrives.
   - Native frames are `CLOCK_MONOTONIC` from the kernel and converted the same way as V4L2 frames,
     raw and processed (PiSP and software ISP) alike.
-- Whether `rp1-cfe` stamps a frame's start or its end is not verified yet: the code comments
-  disagree (`crates/pipeline/src/device/pisp/frame.rs` and `docs/native-stack/pipeline.md` say
-  start of frame, `crates/native/src/buffers.rs` says end of frame on most receivers). It is to be
-  measured on the device before a latency figure built on it is trusted.
+- The native backend's buffer timestamps mark the start of the frame on `rp1-cfe`. Measured on a
+  CM5 at 30 fps: the raw buffer dequeues 10.9 ms after its timestamp, which is the sensor's
+  readout time. Other receivers may stamp the end of the frame; check before trusting a latency
+  figure built on the timestamp from one.
 - File and simulation sources always report media time, so seeking and replay stay
   meaningful.
 

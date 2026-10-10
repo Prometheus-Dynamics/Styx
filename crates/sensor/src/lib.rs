@@ -208,7 +208,7 @@ pub use fallback::{
 };
 pub use fixed::FixedVec;
 pub use gain::{GainCode, GainSplit, Rounding, split_gain};
-pub use kernel_data::{BUILTIN_KERNEL_DATA, KernelSensorData};
+pub use kernel_data::{BUILTIN_KERNEL_DATA, KernelSensorData, ModeBlanking};
 /// Lemnos's hardware vocabulary (register maps, regulators, clocks, error kinds) and its VCM
 /// lens drivers, re-exported so users name the same versions.
 pub use lemnos_drivers_vcm;

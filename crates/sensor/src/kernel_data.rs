@@ -33,7 +33,7 @@ use alloc::{string::String, vec::Vec};
 
 use serde::Deserialize;
 
-use crate::desc::{BlackLevel, Delays, EmbeddedData, GainModel};
+use crate::desc::{BlackLevel, Blanking, Delays, EmbeddedData, GainModel};
 #[cfg(feature = "toml")]
 use crate::error::{Result, SensorError};
 
@@ -96,6 +96,25 @@ pub struct KernelSensorData {
     /// Phase detection data in the embedded data (`"imx708"`), for AF.
     #[serde(default)]
     pub pdaf: Option<String>,
+    /// Blanking of modes the driver's blanking ranges do not describe. A kernel driver's
+    /// `HBLANK` and `VBLANK` ranges belong to the mode the sensor is set to (they change with
+    /// the format), and discovery reads them at one size only; a mode listed here takes these
+    /// instead, and every other mode keeps the reported ranges.
+    #[serde(default)]
+    pub modes: Vec<ModeBlanking>,
+}
+
+/// The blanking of one mode, for [`KernelSensorData::modes`].
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModeBlanking {
+    /// The mode's name (`640x400`). An entry for a size the report does not have is unused: the
+    /// file describes the driver, not one device's modes.
+    pub mode: String,
+    /// Horizontal blanking (pixels).
+    pub hblank: Blanking,
+    /// Vertical blanking (lines).
+    pub vblank: Blanking,
 }
 
 /// The data files that ship with this crate (`sensors/kernel/*.toml`).
