@@ -6,6 +6,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+### Fixed
+
+- **Kernel-driven OV9782 advertised impossible rates at 640x400.** The kernel path applied the
+  blanking ranges read at 1280x800 to every mode, so 640x400 planned at 383.7 fps (its device
+  range is 2.116..259.787 fps). `KernelSensorData` takes per-mode blanking (`[[modes]]`), and
+  `kernel/ov9782.toml` lists the three modes' values from the bridge description. A regression
+  test in `styx-native` checks the kernel modes against the bridge's.
+- **rp1-cfe timestamps** are documented as start of frame (measured on a CM5 at 30 fps); the
+  `NativeFrame::timestamp` comment and `docs/timestamps.md` say so.
+
 ### Added
 
 - **In-process standard controls** (`StandardControls`, `CaptureHandle::standard_controls()`,

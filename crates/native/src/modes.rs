@@ -122,6 +122,13 @@ pub fn find_mode(modes: &[SensorMode], width: u32, height: u32, code: u32) -> Op
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use styx_sensor::{
+        ControlRange, KernelControl, KernelSensorData, MbusCode, Rect, Size, SubdevFormat,
+        SubdevReport,
+    };
+
     use super::*;
 
     fn ov9782() -> SensorDescription {
@@ -162,6 +169,102 @@ mod tests {
         );
         assert!(find_mode(&modes, 640, 400, 0x3001).is_some());
         assert!(find_mode(&modes, 640, 480, 0x3007).is_none());
+    }
+
+    /// What the `ov9282` driver reports for the OV9782 through the kernel path, with the three
+    /// modes of the bridge description. The blanking ranges are those of 1280x800, the size the
+    /// report is read at; the driver's per-mode ranges come from the data file.
+    fn kernel_report() -> SubdevReport {
+        let sizes = vec![
+            Size::new(1280, 800),
+            Size::new(1280, 720),
+            Size::new(640, 400),
+        ];
+        let range = |min: i64, max: i64, default: i64, value: Option<i64>| ControlRange {
+            min,
+            max,
+            step: 1,
+            default,
+            value,
+        };
+        SubdevReport {
+            name: "ov9282 10-0060".into(),
+            formats: vec![
+                SubdevFormat {
+                    code: MbusCode(0x3007),
+                    sizes: sizes.clone(),
+                },
+                SubdevFormat {
+                    code: MbusCode(0x3001),
+                    sizes,
+                },
+            ],
+            native_size: Some(Size::new(1296, 816)),
+            crop_bounds: Some(Rect {
+                left: 8,
+                top: 8,
+                width: 1280,
+                height: 800,
+            }),
+            current_size: Some(Size::new(1280, 800)),
+            controls: BTreeMap::from([
+                (KernelControl::Exposure, range(1, 3638, 642, None)),
+                (KernelControl::AnalogueGain, range(16, 255, 16, None)),
+                (KernelControl::Vblank, range(110, 51540, 1022, Some(2850))),
+                (KernelControl::Hblank, range(176, 31487, 176, None)),
+                (
+                    KernelControl::PixelRate,
+                    range(160_000_000, 160_000_000, 160_000_000, None),
+                ),
+                (KernelControl::LinkFreq, range(0, 0, 0, None)),
+            ]),
+            link_frequencies: vec![400_000_000],
+            ..Default::default()
+        }
+    }
+
+    /// Every mode of the kernel description (the kernel data file applied to the driver's
+    /// report) advertises rates the bridge description's mode accepts: the fastest is no faster
+    /// than the device's, and the raw10 rates (the pixel rate the report gives) are the same.
+    #[test]
+    fn kernel_mode_rates_match_the_bridge_description() {
+        let files = KernelSensorData::builtin();
+        let data =
+            KernelSensorData::find(&files, "ov9282 10-0060", true).expect("the ov9782 data file");
+        let kernel = SensorDescription::from_subdev_with(&kernel_report(), Some(data)).unwrap();
+        let kernel_modes = sensor_modes(&kernel);
+        let bridge_modes = sensor_modes(&ov9782());
+        assert_eq!(kernel_modes.len(), 6);
+        for m in &kernel_modes {
+            let b = bridge_modes
+                .iter()
+                .find(|b| b.mode == m.mode && b.format == m.format)
+                .expect("the same modes");
+            assert!(
+                m.max_fps() <= b.max_fps() + 1e-9,
+                "{} {}: {:.3} fps, the device {:.3}",
+                m.mode,
+                m.format,
+                m.max_fps(),
+                b.max_fps()
+            );
+            if m.format == "raw10" {
+                assert_eq!(m.min_interval, b.min_interval, "{} raw10", m.mode);
+                assert_eq!(m.max_interval, b.max_interval, "{} raw10", m.mode);
+                assert_eq!(m.default_interval, b.default_interval, "{} raw10", m.mode);
+            }
+        }
+        let m640 = kernel_modes
+            .iter()
+            .find(|m| m.mode == "640x400" && m.format == "raw10")
+            .unwrap();
+        assert!(
+            (m640.max_fps() - 259.787).abs() < 0.001,
+            "{}",
+            m640.max_fps()
+        );
+        assert!((m640.min_fps() - 2.116).abs() < 0.001, "{}", m640.min_fps());
+        assert!(!m640.allows(Fraction::from_fps(384)));
     }
 
     #[test]

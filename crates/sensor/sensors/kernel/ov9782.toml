@@ -20,3 +20,22 @@ delays = { exposure = 2, analog_gain = 2, frame_length = 1 }
 black_level = { value = 64, bits = 10, settle_frames = 1 }
 # A frame lasts VTS + 1 lines (VTS = height + VBLANK).
 frame_length_extra_lines = 1
+
+# Blanking per mode, as the driver sets it (the bridge description, ov9782.toml, has the same
+# values). The ranges the kernel reports belong to the mode the sensor is set to, and discovery
+# reads them at 1280x800: applied to 640x400 they gave a 816-pixel line and a 511-line frame,
+# 383.7 fps at 160 MHz, which the device rejects (its ranges are 2.116..259.787 fps there).
+[[modes]]
+mode = "1280x800"
+hblank = { min = 176, max = 31487, default = 176 }
+vblank = { min = 110, max = 51540, default = 1022 }
+
+[[modes]]
+mode = "1280x720"
+hblank = { min = 176, max = 31487, default = 176 }
+vblank = { min = 41, max = 51540, default = 1022 }
+
+[[modes]]
+mode = "640x400"
+hblank = { min = 816, max = 32127, default = 816 }
+vblank = { min = 22, max = 51540, default = 1022 }

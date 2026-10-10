@@ -233,7 +233,11 @@ impl FrameRequest {
         self
     }
 
-    /// At least `fps`: the camera's fastest rate ([`FrameRate::AtLeast`]).
+    /// At least `fps`: the fastest rate the chosen mode runs at, which must reach `fps`
+    /// ([`FrameRate::AtLeast`]). This is the highest rate the plan supports, not the lowest one
+    /// that reaches `fps`: a faster capture costs more per second (CPU, bandwidth, power) and
+    /// has the lower latency, which is why the planner asks for it. Use [`Self::fps`] for an
+    /// exact rate.
     pub fn fps_at_least(mut self, fps: u32) -> Self {
         self.fps = FrameRate::AtLeast(fps);
         self
