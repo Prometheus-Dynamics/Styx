@@ -8,6 +8,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **In-process standard controls** (`StandardControls`, `CaptureHandle::standard_controls()`,
+  `Frames::standard_controls()` and forwarding `Frames::set_exposure_us`, `set_gain`, `set_ae`,
+  `set_ev`, `set_fps`, `set_awb`, `set_colour_temperature`, `set_colour_gains`, `set_af_mode`,
+  `trigger_af`, `cancel_af`, `set_lens_position`): the camera service's `StandardControl`
+  mapping, shared, so the same units work on every backend. `set` / `get` take any
+  `StandardControl`; setters answer `AppliedControl` (value in effect, clamped, landing frame).
+  Native processed modes: exposure or gain fixes AE; a frame-rate change is an error.
+- **`examples/05_apps/pv_capture.rs`** (binary `pv_capture`): the reference flow for a
+  PhotonVision-style JNI driver (camera selection with `--kernel-sensor`, grey stream with
+  pyramid levels, per-frame access and timestamps, JPEG previews, runtime controls, clean
+  stop), with the JNI mapping table in its documentation. `--virtual` runs on a host.
 - **Multi-camera frame grouping by sensor timestamp** (docs/multi-camera-sync.md).
   `styx_core::multicam` (`no_std` + `alloc`, no clock of its own): `Grouper<T>` groups frames
   of N cameras whose timestamps lie within `GroupConfig::tolerance_ns` into `FrameGroup`s
@@ -538,6 +549,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **Native timestamps honour `StyxConfig::timestamp_clock`**: raw and processed (PiSP and
+  software ISP) native frames are converted from `CLOCK_MONOTONIC` the way V4L2 frames are. The
+  default (`ClockSource::Native`) is unchanged: monotonic. `docs/timestamps.md` has a native row.
 - Integration tests build into one binary per package (`tests/it/main.rs`, one module per
   former file) instead of one per file: 53 integration-test binaries become 17 (styx 16 → 3,
   styx-algo 9 → 1, styx-softisp 5 → 1, styx-sensor 5 → 2, styx-gpuisp 4 → 1). Binaries stay

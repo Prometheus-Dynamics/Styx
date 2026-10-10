@@ -108,3 +108,20 @@ fn daedalus_multicam_ticks_once_per_frame_group() {
     assert_eq!(stdout.matches("320x240 + 320x240").count(), 10, "{stdout}");
     assert!(stdout.contains("groups="), "{stdout}");
 }
+
+#[cfg(all(feature = "native", feature = "preview", feature = "codec-turbojpeg"))]
+#[test]
+fn pv_capture_virtual_streams_grey_levels_and_jpegs() {
+    let stdout = assert_success(
+        Command::new(env!("CARGO_BIN_EXE_pv_capture"))
+            .args(["--virtual", "--frames", "60"])
+            .output()
+            .expect("pv_capture should run"),
+        "pv_capture",
+    );
+
+    assert!(stdout.contains("camera: pv-virtual"));
+    assert!(stdout.contains("frames 60 in"));
+    assert!(stdout.contains("luma level 2: 320x200"));
+    assert!(stdout.contains("jpeg:"));
+}

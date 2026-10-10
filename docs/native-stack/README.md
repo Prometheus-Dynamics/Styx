@@ -111,6 +111,55 @@ embedded-data layout if any, tuning file. See `crates/sensor` docs.
 timing model answers: achievable fps range per mode, the vblank for a target fps, the exposure
 limits at that fps.
 
+## PhotonVision-style capture
+
+A host that captures for PhotonVision (a JNI crate, or any other driver) uses the native backend
+through the normal Rust API. [`examples/05_apps/pv_capture.rs`](../../examples/05_apps/pv_capture.rs)
+is the reference flow: its doc comment maps each call to the JNI names (`createCamera`,
+`startCamera`, `awaitNewFrame`, the grey frame and its pyramid levels, the JPEG, the frame capture
+time, the exposure, gain and white balance setters, `stop`).
+
+```rust
+let devices = [camera];
+let mut frames = Frames::gray().size_at_most(1280, 800).fps_at_least(30).pyramid(2)
+    .plan_best(&devices)?.start()?;
+let controls = frames.standard_controls();
+controls.set_exposure_us(8_000)?;            // processed modes: fixes AE at this value
+match frames.next_frame(Duration::from_millis(500)) {
+    RecvOutcome::Data(lease) => {
+        let luma = lease.luma_rows()?;        // level 0; `pyramid_level(1)`, `(2)` the same instant
+        let boot = lease.meta().timestamp_in(TimestampClock::Boottime);
+        preview.offer_owned(lease.into_shareable());  // the lease is released here
+    }
+    RecvOutcome::Empty | RecvOutcome::Closed => {}
+}
+```
+
+Two sensor modes, chosen by how the sensor is found:
+
+- **Kernel-driven** (`backend = kernel` in the probe's properties): the sensor's stock kernel
+  driver stays bound (the CM5's OV9782 under `ov9282`). Styx finds it through its V4L2 subdev,
+  sets exposure, gain and frame rate through the subdev's controls on the control schedule, and
+  drives the PiSP ISP with its own 3A, with no libcamera. The sensor description is
+  [`crates/sensor/sensors/kernel/ov9782.toml`](../../crates/sensor/sensors/kernel/ov9782.toml).
+  `pv_capture --kernel-sensor` requires this mode and fails when only a bridged camera exists.
+- **Bridge** (`backend = bridge`): a sensor without a kernel driver, driven by the Styx sensor
+  bridge. The same API; without `--kernel-sensor`, `pv_capture` takes it when no kernel sensor
+  exists.
+
+What to keep in mind:
+
+- Release leases promptly. The PiSP's output buffers (6 per output by default) are shared with
+  every consumer; when all are held, the ISP drops the next frame (`drops.isp_skipped`,
+  [pipeline.md](pipeline.md#pisp-path)). Copy what you need, then drop the lease.
+- Processed modes: exposure or gain fixes AE; `set_ae(true)` hands it back. A frame-rate change
+  is an error there, so restart the capture at the new rate.
+- Timestamps are the kernel's `CLOCK_MONOTONIC`, converted with `timestamp_clock` (default: as
+  is). Whether `rp1-cfe` stamps the start or the end of a frame is not measured yet
+  ([timestamps.md](../timestamps.md)).
+- A host without a sensor runs the same flow on the virtual camera (`pv_capture --virtual`). Its
+  frames are zero-filled and three bytes per pixel, so it proves the flow, not the image.
+
 ## Rules for work on this branch
 
 - Rust crates: no C dependencies, `libc` allowed. Unsafe only in `styx-kernel` and in the
