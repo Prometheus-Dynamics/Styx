@@ -27,7 +27,7 @@
 //! | `startCamera(size, fps)` | `Frames::gray().size_at_most(w, h).fps_at_least(fps).pyramid(2).plan_best(&devices)?` (or `.open_best(&devices)`), then `plan.start()?` for a `Frames` |
 //! | `awaitNewFrame(timeout)` | `frames.next_frame(timeout)`: `RecvOutcome::Data(lease)`; `Empty` is a timeout, `Closed` is the end |
 //! | grey frame (`getGreyFrame`) | `lease.luma_rows()`: `row(y)?.data()` per row, `stride()`, `visible_len()`; level 1 and 2 of the same instant: `lease.pyramid_level(1)`, `lease.pyramid_level(2)` (same timestamp) |
-//! | `takeColorFrame` / JPEG | `preview.offer(&lease)` (a JPEG at `PreviewConfig`'s size and rate cap), then `subscriber.recv(timeout)` gives `PreviewFrame::jpeg` |
+//! | `takeColorFrame` / JPEG | after reading the grey frame: `preview.offer_owned(lease.into_shareable())` (no copy; works for every backend, while `preview.offer(&lease)` only takes frames that are already shareable, as native ones are); a JPEG at `PreviewConfig`'s size and rate cap; then `subscriber.recv(timeout)` gives `PreviewFrame::jpeg` |
 //! | `getFrameCaptureTime` | `lease.meta().timestamp_in(TimestampClock::Boottime)` (the clock `FrameMeta::clock` says; the raw one is `lease.meta().timestamp`) |
 //! | `setExposure(us)` / `setGain(g)` / `setAwb(on)` / `setColourTemperature(k)` | `frames.standard_controls().set_exposure_us(us)`, `set_gain(g)`, `set_awb(on)`, `set_colour_temperature(k)`: each returns `AppliedControl` (value in effect, `clamped`, `frame` the change lands on) |
 //! | `release frame` | drop the `FrameLease` (at once: see the buffer rule in `main`) |
