@@ -22,6 +22,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `VIDIOC_TRY_EXT_CTRLS` calls with up to 8 controls use a list on the stack, and
   `SubdevBus::set_controls` builds its values the same way. The per-frame queue, dequeue and
   control calls of the PiSP path no longer allocate.
+- **`styx_kernel::poll_into`:** the readiness wait of a frame (the PiSP worker's statistics wait)
+  writes its results into the caller's list, without allocating for up to 8 descriptors; `poll`
+  keeps its `Vec` result.
 
 ### Fixed
 

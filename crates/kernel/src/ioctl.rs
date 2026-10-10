@@ -303,28 +303,61 @@ pub fn poll(
     fds: &[(BorrowedFd<'_>, Wait)],
     timeout: Option<std::time::Duration>,
 ) -> Result<Vec<Ready>> {
+    let mut ready = vec![Ready::default(); fds.len()];
+    poll_into(fds, timeout, &mut ready)?;
+    Ok(ready)
+}
+
+/// [`poll`] with the results written to `ready` (one per descriptor, in order), without
+/// allocating for up to 8 descriptors: a frame's wait runs on every frame.
+///
+/// # Panics
+///
+/// When `ready` is shorter than `fds`.
+pub fn poll_into(
+    fds: &[(BorrowedFd<'_>, Wait)],
+    timeout: Option<std::time::Duration>,
+    ready: &mut [Ready],
+) -> Result<()> {
+    assert!(
+        ready.len() >= fds.len(),
+        "poll_into: one result per descriptor"
+    );
+    const INLINE: usize = 8;
+    let unset = libc::pollfd {
+        fd: -1,
+        events: 0,
+        revents: 0,
+    };
     let timeout_ms = match timeout {
         None => -1,
         // Round up: a 0.5 ms wait must not become a busy loop.
         Some(t) => t.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32,
     };
-    let mut pfds: Vec<libc::pollfd> = fds
-        .iter()
-        .map(|(fd, wait)| libc::pollfd {
+    let mut inline = [unset; INLINE];
+    let mut spilled: Vec<libc::pollfd> = Vec::new();
+    let pfds: &mut [libc::pollfd] = if fds.len() <= INLINE {
+        &mut inline[..fds.len()]
+    } else {
+        spilled.resize(fds.len(), unset);
+        &mut spilled
+    };
+    for (p, (fd, wait)) in pfds.iter_mut().zip(fds) {
+        *p = libc::pollfd {
             fd: fd.as_raw_fd(),
             events: wait.events(),
             revents: 0,
-        })
-        .collect();
+        };
+    }
     loop {
         // SAFETY: `pfds` is a valid array of `pfds.len()` pollfds for the duration of the call,
         // and the descriptors are borrowed for it.
         let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms) };
         if ret >= 0 {
-            return Ok(pfds
-                .iter()
-                .map(|p| Ready::from_revents(p.revents))
-                .collect());
+            for (r, p) in ready.iter_mut().zip(pfds.iter()) {
+                *r = Ready::from_revents(p.revents);
+            }
+            return Ok(());
         }
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(libc::EINTR) {
@@ -360,10 +393,72 @@ pub(crate) fn cstr_field(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod poll_tests {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
     use std::io::Write;
     use std::os::fd::AsFd;
 
     use super::*;
+
+    thread_local! {
+        static COUNTING: Cell<bool> = const { Cell::new(false) };
+        static ALLOCS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Counts the allocations of the thread that arms it (const thread-locals, which never
+    /// allocate).
+    struct Counting;
+
+    // SAFETY: forwards to the system allocator unchanged.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            if COUNTING.try_with(Cell::get).unwrap_or(false) {
+                let _ = ALLOCS.try_with(|a| a.set(a.get() + 1));
+            }
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOC: Counting = Counting;
+
+    /// Allocations on this thread while `f` runs.
+    fn allocations<T>(f: impl FnOnce() -> T) -> (T, u64) {
+        let before = ALLOCS.with(Cell::get);
+        COUNTING.with(|c| c.set(true));
+        let v = f();
+        COUNTING.with(|c| c.set(false));
+        (v, ALLOCS.with(Cell::get) - before)
+    }
+
+    #[test]
+    fn poll_into_does_not_allocate_for_a_frames_descriptors() {
+        let (a, mut aw) = std::io::pipe().unwrap();
+        let (b, _bw) = std::io::pipe().unwrap();
+        let (c, _cw) = std::io::pipe().unwrap();
+        aw.write_all(b"x").unwrap();
+        let fds = [
+            (a.as_fd(), Wait::READABLE),
+            (b.as_fd(), Wait::PRIORITY),
+            (c.as_fd(), Wait::NONE),
+        ];
+        let t = Some(std::time::Duration::ZERO);
+        let mut ready = [Ready::default(); 3];
+        for _ in 0..3 {
+            let (r, n) = allocations(|| poll_into(&fds, t, &mut ready));
+            r.unwrap();
+            assert_eq!(n, 0, "poll_into allocates");
+        }
+        assert!(ready[0].readable && !ready[1].readable && !ready[2].readable);
+        // The Vec form keeps its contract: the same answers, in order (and it does allocate,
+        // which shows the counter sees this thread's allocations).
+        let (v, n) = allocations(|| poll(&fds, t));
+        assert_eq!(v.unwrap()[..], ready[..]);
+        assert!(n > 0, "the counter sees no allocation");
+    }
 
     #[test]
     fn polls_several_descriptors() {

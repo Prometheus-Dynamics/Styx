@@ -190,10 +190,13 @@ fn wait_for_statistics(
         if left.is_zero() {
             return Ok(());
         }
-        let ready = profile::time("loop", "wait", || {
-            styx_kernel::poll(
+        // Two descriptors, in a list on the stack: this waits on every frame.
+        let mut ready = [styx_kernel::Ready::default(); 2];
+        profile::time("loop", "wait", || {
+            styx_kernel::poll_into(
                 &[(fe_dev.stats_fd(), Wait::READABLE), (sync, Wait::PRIORITY)],
                 Some(left),
+                &mut ready,
             )
         })
         .map_err(|e| PipelineError::Device(format!("waiting for the front end: {e}")))?;
