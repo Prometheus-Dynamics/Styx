@@ -620,6 +620,9 @@ fn styx_kernel_fourcc(code: FourCc) -> styx_native::KernelFourCc {
     styx_native::KernelFourCc(code.to_u32())
 }
 
+mod landing;
+pub(crate) use landing::processed_landing;
+
 #[cfg(test)]
 mod tests {
     use super::*;

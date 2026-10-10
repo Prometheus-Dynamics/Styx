@@ -131,9 +131,12 @@ pub struct AppliedControl {
     /// The value asked for was outside the control's range (or between its steps) and was
     /// clamped to `value`.
     pub clamped: bool,
-    /// Frame-exact backends (a native camera's raw modes): the first frame using the value, as
-    /// its sensor sequence (`NativeFrameMeta::sequence`); frames carry the exposure and gain
-    /// they used in their metadata.
+    /// Frame-exact backends (a native camera's raw modes, and a processed mode's fixed exposure
+    /// or gain): the first frame using the value, as its sensor sequence
+    /// (`NativeFrameMeta::sequence`); frames carry the exposure and gain they used in their
+    /// metadata. A prediction on every sensor (see `docs/native-stack/pipeline.md`, controls):
+    /// the sensor's delay from the frame in progress, not a read-back. `None` where no frame is
+    /// fixed (AE, EV, AWB, and 0 handing a control back to AE).
     pub frame: Option<u64>,
     /// The camera is not streaming: the value is applied when it starts.
     pub deferred: bool,

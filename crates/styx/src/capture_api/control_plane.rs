@@ -171,8 +171,13 @@ pub(crate) fn apply_control_landing(
             processed,
         } => {
             let started = Instant::now();
+            // A processed mode's exposure or gain is written by its 3A loop during the frame in
+            // progress: its landing is predicted from the description's delays (AE, EV and AWB
+            // fix no frame, so they answer `None`).
             let result = match processed.as_ref().and_then(|p| p.apply(id, &value)) {
-                Some(result) => result.map(|()| None),
+                Some(result) => {
+                    result.map(|()| super::native_backend::processed_landing(controls, id, &value))
+                }
                 None => super::native_backend::apply_control_landing(controls, id, &value),
             };
             log_control_result("native", id, "set", started, &result);

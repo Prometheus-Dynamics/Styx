@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **Processed captures answered no landing frame.** `StandardControls::set_exposure_us` and
+  `set_gain` (and the camera service's `set_control_landing`) on a processed native mode (the
+  3A loop) returned `frame: None`. A fixed exposure or gain now reports the frame in progress
+  plus the control's delay from the sensor description (`ControlHandle::landing_now`); a
+  prediction, not a confirmation. AE, EV, AWB and 0 (back to AE) still report `None`.
 - **Kernel-driven OV9782 advertised impossible rates at 640x400.** The kernel path applied the
   blanking ranges read at 1280x800 to every mode, so 640x400 planned at 383.7 fps (its device
   range is 2.116..259.787 fps). `KernelSensorData` takes per-mode blanking (`[[modes]]`), and

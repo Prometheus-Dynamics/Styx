@@ -173,6 +173,18 @@ impl<B: DriverBus, P: SensorPins> ControlHandle<B, P> {
         Ok(self.inner.set_frame_rate(fps)?)
     }
 
+    /// The frame a value written now takes effect on: the frame in progress (the last one
+    /// started) plus `control`'s delay from the description. Before streaming it is frame 0.
+    ///
+    /// This is the predicted landing of a write made during the current frame (what
+    /// [`Self::request_at_now`] schedules when it can write in time); a write that misses the
+    /// current frame lands one frame later. It is a prediction, not a confirmation: the frame's
+    /// [`FrameControls::verified`] says whether the values were read back.
+    pub fn landing_now(&self, control: Control) -> u64 {
+        let current = lock(self.shared()).current_frame();
+        current.map_or(0, |s| s + u64::from(self.delay(control)))
+    }
+
     /// The values predicted for the latest started frame.
     pub fn current(&self) -> Option<FrameControls> {
         self.inner.current()
