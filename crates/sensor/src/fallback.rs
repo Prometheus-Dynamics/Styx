@@ -574,10 +574,11 @@ mod tests {
         drv.init().unwrap();
         drv.set_mode("1280x800", "raw10").unwrap();
         let bus = drv.bus();
-        // The mode's defaults: VBLANK first, alone, then exposure and gain; flips off.
-        assert_eq!(bus.control_log[0], vec![(KernelControl::Vblank, 2850)]);
+        // The mode's defaults: HBLANK, then VBLANK, each alone, then exposure and gain; flips off.
+        assert_eq!(bus.control_log[0], vec![(KernelControl::Hblank, 176)]);
+        assert_eq!(bus.control_log[1], vec![(KernelControl::Vblank, 2850)]);
         assert_eq!(
-            bus.control_log[1],
+            bus.control_log[2],
             vec![
                 (KernelControl::Exposure, 642),
                 (KernelControl::AnalogueGain, 16)
@@ -641,6 +642,125 @@ mod tests {
         r.controls.remove(&KernelControl::PixelRate);
         let e = SensorDescription::from_subdev(&r).unwrap_err().to_string();
         assert!(e.contains("PIXEL_RATE"), "{e}");
+    }
+
+    /// The OV9782 report with the three modes' sizes (`ov9282.c`'s modes; the driver reports the
+    /// blanking ranges of the mode it is set to, here 1280x800).
+    fn helios_ov9782_all_modes() -> SubdevReport {
+        let mut r = helios_ov9782();
+        for f in &mut r.formats {
+            f.sizes = vec![
+                Size::new(1280, 800),
+                Size::new(1280, 720),
+                Size::new(640, 400),
+            ];
+        }
+        r
+    }
+
+    fn ov9782_kernel_description() -> SensorDescription {
+        let r = helios_ov9782_all_modes();
+        let data = KernelSensorData::find(&KernelSensorData::builtin(), &r.name, true)
+            .unwrap()
+            .clone();
+        SensorDescription::from_subdev_with(&r, Some(&data)).unwrap()
+    }
+
+    /// Every mode runs at the frame rate asked for, whatever mode the sensor was in before: the
+    /// driver keeps the HBLANK it was last given when the format changes (its range update keeps
+    /// an in-range value), so the sensor's line length is the one Styx writes, not the last one.
+    #[test]
+    fn requested_frame_rates_hold_at_every_mode() {
+        use crate::{ControlRequest, MockBus, NoPins, SensorDriver};
+        use core::time::Duration;
+
+        let mut drv = SensorDriver::new(
+            std::sync::Arc::new(ov9782_kernel_description()),
+            MockBus::new(),
+            NoPins,
+        );
+        drv.power_up().unwrap();
+        drv.init().unwrap();
+        // Mode changes in both directions: 640x400 leaves HBLANK at 816 for 1280x800.
+        for (mode, w, h, fps) in [
+            ("1280x800", 1280u32, 800u32, 30.0),
+            ("1280x800", 1280, 800, 60.0),
+            ("1280x800", 1280, 800, 120.0),
+            ("640x400", 640, 400, 60.0),
+            ("640x400", 640, 400, 120.0),
+            ("640x400", 640, 400, 240.0),
+            ("1280x800", 1280, 800, 30.0),
+        ] {
+            drv.set_mode(mode, "raw10").unwrap();
+            drv.request(
+                0,
+                &ControlRequest {
+                    frame_duration: Some(Duration::from_secs_f64(1.0 / fps)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            drv.start_streaming().unwrap();
+            let bus = drv.bus();
+            let hblank = bus
+                .control(KernelControl::Hblank)
+                .expect("HBLANK is written with the mode") as f64;
+            let vblank = bus.control(KernelControl::Vblank).unwrap() as f64;
+            // One line beyond VTS, as the sensor runs it (measured; the driver's formula omits it).
+            let duration = (f64::from(w) + hblank) * (f64::from(h) + vblank + 1.0) / 160e6;
+            assert!(
+                (duration * fps - 1.0).abs() < 1e-3,
+                "{mode} at {fps} fps runs at {:.3} ms ({:.3} fps)",
+                duration * 1e3,
+                1.0 / duration
+            );
+            drv.stop_streaming().unwrap();
+        }
+    }
+
+    /// The driver's EXPOSURE maximum is its frame length minus the guard band (`ov9282.c`:
+    /// `vblank + height - exposure_offset`, 25 lines for the OV9782). An exposure past it on the
+    /// 640x400 mode, where the frame is 457 lines, gives black frames on the device.
+    #[test]
+    fn exposure_stays_inside_the_frame_at_every_mode() {
+        use crate::{ControlRequest, MockBus, NoPins, SensorDriver};
+        use core::time::Duration;
+
+        let d = ov9782_kernel_description();
+        assert_eq!(
+            d.controls.exposure.margin, 25,
+            "the driver's exposure offset"
+        );
+        let mut drv = SensorDriver::new(std::sync::Arc::new(d), MockBus::new(), NoPins);
+        drv.power_up().unwrap();
+        drv.init().unwrap();
+        drv.set_mode("640x400", "raw10").unwrap();
+        drv.request(
+            0,
+            &ControlRequest {
+                exposure: Some(Duration::from_millis(10)),
+                frame_duration: Some(Duration::from_secs_f64(1.0 / 240.0)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        drv.start_streaming().unwrap();
+        let a = drv.applied(0).unwrap();
+        assert_eq!(a.frame_length, 457, "VTS at 240 fps");
+        assert!(
+            a.exposure_lines <= 432.0 + 1e-9,
+            "exposure {} lines in a {}-line frame",
+            a.exposure_lines,
+            a.frame_length
+        );
+        let bus = drv.bus();
+        let vblank = bus.control(KernelControl::Vblank).unwrap();
+        let exposure = bus.control(KernelControl::Exposure).unwrap();
+        assert!(
+            exposure <= 400 + vblank - 25,
+            "EXPOSURE {exposure} with VBLANK {vblank}"
+        );
+        drv.stop_streaming().unwrap();
     }
 
     #[test]

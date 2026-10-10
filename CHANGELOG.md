@@ -35,6 +35,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   range is 2.116..259.787 fps). `KernelSensorData` takes per-mode blanking (`[[modes]]`), and
   `kernel/ov9782.toml` lists the three modes' values from the bridge description. A regression
   test in `styx-native` checks the kernel modes against the bridge's.
+- **Kernel-driven OV9782 ran at the wrong frame rate after a mode change.** Styx never wrote
+  `HBLANK` on the kernel path, and the driver keeps the last `HBLANK` it was given across a
+  format change, so 1280x800 after 640x400 ran with the 640x400 line (2096 pixels): 1280x800 at
+  30 fps delivered 20.98 fps. The mode's own `HBLANK` is written before `VBLANK` at every mode
+  set, and `set_hblank` writes it on kernel sensors too.
+- **Kernel-driven OV9782 went black at 640x400 with long exposures.** The exposure ceiling came
+  out as the whole frame (margin 0), past the driver's guard band of 25 lines. `kernel/ov9782.toml`
+  gives `exposure_margin = 25`, and the algorithm's exposure limit includes the frame's extra
+  line, so it agrees with the sensor's.
 - **rp1-cfe timestamps** are documented as start of frame (measured on a CM5 at 30 fps); the
   `NativeFrame::timestamp` comment and `docs/timestamps.md` say so.
 
