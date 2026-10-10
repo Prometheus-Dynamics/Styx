@@ -299,6 +299,27 @@ and `FRAME_DURATION_US` are refused (restart at another rate); on raw captures t
 exposure and gain, go to the sensor's control schedule. `examples/01_capture/camera_controls.rs`
 shows each, with the frame it landed on.
 
+**Landing frames.** `AppliedControl::frame` (the in-process setters, and the camera service's
+`set_control_landing`) is the first sensor sequence that uses the value, as
+`NativeFrameMeta::sequence`. It is either *predicted* or *confirmed*:
+
+- *Raw captures* ask the sensor's control schedule (`ControlScheduler::request`): a value is
+  predicted to land at the request's frame or later, `delay` frames after the frame it is issued
+  in. On a kernel-driven sensor (no embedded data, e.g. the stock OV9782) that prediction is what
+  the frames show, but nothing reads it back: `NativeFrameMeta::verified` is `false`.
+- *Processed captures* (the 3A loop): the loop writes a fixed exposure or gain during the frame
+  in progress, so the landing is the frame in progress plus the control's delay from the
+  description (`ControlHandle::landing_now`; gain takes the later of its analogue and digital
+  delays). The value is handed to the loop on the worker thread, so the write can miss the
+  current frame and land one frame later; that is the only way the prediction is off.
+- *Confirmed* means the frame's values were read back from embedded data (a bridge sensor with
+  embedded data, `NativeFrameMeta::verified`). The setter returns before the frame exists, so
+  it never has a confirmed landing to return; it returns the prediction above on every sensor.
+  Read the frame's own metadata to confirm.
+- AE on or off, EV, AWB, colour temperature and colour gains fix no frame (the loop chooses
+  them each frame), so their setters answer `frame: None`. Exposure or gain set to 0 (handed
+  back to AE) answers `None` too.
+
 `OUTPUT_CROP` (`Rect`, PiSP, main output at the mode's size) crops the back end's main output to
 a region of the frame at full resolution, from the next frame; the worker hands it to
 `PispPipeline::set_output_crop`, which re-prepares the back end config (tiles included, ~60 µs).

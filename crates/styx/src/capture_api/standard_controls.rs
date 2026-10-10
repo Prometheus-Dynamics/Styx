@@ -171,8 +171,14 @@ pub(crate) fn reads_back(backend: BackendKind) -> bool {
 /// what is in effect now ([`AppliedControl`]): the value clamped to the control's range, and the
 /// first frame that uses it on frame-exact backends (`NativeFrameMeta::sequence`).
 ///
+/// That `frame` is a prediction on every sensor, not a read-back: the sensor's delay for the
+/// control from the frame in progress (`pipeline.md`, controls, has the semantics). `None` where
+/// no frame is fixed: AE, EV, AWB and colour settings on a processed mode, and any backend that
+/// is not frame-exact.
+///
 /// Native processed modes (the PiSP or software ISP with the 3A loop): setting exposure or gain
-/// fixes AE at that value; [`Self::set_ae`] (`true`) hands exposure back to AE. A frame rate or
+/// fixes AE at that value and answers the frame it is predicted to take effect on;
+/// [`Self::set_ae`] (`true`) hands exposure back to AE and answers `None`. A frame rate or
 /// frame duration cannot change on a processed mode: [`Self::set_fps`] then returns an error, and
 /// the capture has to be restarted at the new rate.
 #[derive(Debug, Clone)]
@@ -233,22 +239,25 @@ impl StandardControls {
         read_control_from_plane(&self.plane, meta.id).map(|v| from_backend(scale, v))
     }
 
-    /// Exposure time in microseconds (turn automatic exposure off for it to hold).
+    /// Exposure time in microseconds (turn automatic exposure off for it to hold). `frame` is
+    /// the predicted first frame at this exposure (the sensor's delay from the frame in progress),
+    /// `None` on a processed mode only when set to 0 (back to AE).
     pub fn set_exposure_us(&self, us: u32) -> Result<AppliedControl, CaptureError> {
         self.set(StandardControl::ExposureUs, ControlValue::Uint(us))
     }
 
-    /// Total gain as a ratio (1.0: none).
+    /// Total gain as a ratio (1.0: none). `frame` is the predicted first frame at this gain,
+    /// as [`Self::set_exposure_us`].
     pub fn set_gain(&self, gain: f32) -> Result<AppliedControl, CaptureError> {
         self.set(StandardControl::Gain, ControlValue::Float(gain))
     }
 
-    /// Automatic exposure on or off.
+    /// Automatic exposure on or off. `frame` is always `None`: AE chooses the frames' exposures.
     pub fn set_ae(&self, on: bool) -> Result<AppliedControl, CaptureError> {
         self.set(StandardControl::AeEnable, ControlValue::Bool(on))
     }
 
-    /// Exposure compensation in stops.
+    /// Exposure compensation in stops. `frame` is always `None`: AE applies it every frame.
     pub fn set_ev(&self, stops: f32) -> Result<AppliedControl, CaptureError> {
         self.set(StandardControl::ExposureValue, ControlValue::Float(stops))
     }

@@ -112,3 +112,55 @@ fn the_handle_reports_errors_as_native_errors() {
     assert!(lock(h.shared()).clock().is_some());
     assert_eq!(h.frame_time_left(), None);
 }
+
+#[test]
+fn a_fixed_exposure_lands_on_the_frame_the_handle_predicts() {
+    let mut c = control();
+    c.bring_up("1280x800", "raw10").unwrap();
+    c.expect_start(EXPECTED);
+    c.serve(&request(StreamAction::Start, 1)).unwrap();
+    let h = ControlHandle::new(Arc::new(Mutex::new(c)), None);
+    // Writes made during a frame have time left to land in it (the margin is what the loop
+    // uses to decide between writing now and at the next frame start).
+    h.set_write_margin(Some(Duration::ZERO));
+    let now = lock(h.shared()).now();
+    lock(h.shared()).frame_start_at(10, Some(now)).unwrap();
+
+    // Before any frame the value applies from frame 0; during frame 10 it is the frame plus the
+    // exposure's delay from the description.
+    let delay = u64::from(h.delay(Control::Exposure));
+    assert_eq!(h.landing_now(Control::Exposure), 10 + delay);
+    assert_eq!(
+        h.landing_now(Control::AnalogGain),
+        10 + u64::from(h.delay(Control::AnalogGain))
+    );
+
+    let exposure = Duration::from_millis(4);
+    let req = ControlRequest {
+        exposure: Some(exposure),
+        gain: None,
+        frame_duration: None,
+    };
+    let landed = h.request_at_now(11, &req).unwrap();
+    let exposure_landing = landed
+        .iter()
+        .find(|l| l.control == Control::Exposure)
+        .unwrap()
+        .frame;
+    assert_eq!(exposure_landing, h.landing_now(Control::Exposure));
+
+    // Frames from the landing on carry the new exposure; the frame before it does not.
+    for seq in 11..=exposure_landing {
+        lock(h.shared()).frame_start_at(seq, Some(now)).unwrap();
+    }
+    // The sensor rounds exposure to whole lines (4 ms comes out as 4.004 ms here).
+    let near = |d: Duration| d.abs_diff(exposure) < Duration::from_micros(50);
+    let before = h.applied(exposure_landing - 1).unwrap();
+    let after = h.applied(exposure_landing).unwrap();
+    assert!(
+        !near(before.exposure),
+        "{:?} before the landing",
+        before.exposure
+    );
+    assert!(near(after.exposure), "{:?} at the landing", after.exposure);
+}
