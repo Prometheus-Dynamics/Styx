@@ -33,5 +33,5 @@ pub use clock::monotonic_now;
 pub use error::{Error, Result};
 pub use fourcc::FourCc;
 pub use geometry::{Fraction, Rect};
-pub use ioctl::{Ready, Wait, poll};
+pub use ioctl::{Ready, Wait, poll, poll_into};
 pub use mapping::Mapping;
