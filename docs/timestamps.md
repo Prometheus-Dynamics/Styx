@@ -14,7 +14,7 @@ timestamp is expressed in.
 
 | Backend | Native clock | Timestamp marks |
 |---|---|---|
-| libcamera | `Boottime` | start of exposure (`SensorTimestamp`); pyramid companions share it |
+| libcamera | `Boottime` | `SensorTimestamp`, which libcamera documents as the start of exposure; on Raspberry Pi pipelines it is the CSI-2 receiver's buffer timestamp, the start of frame (`pipeline/rpi/pisp/pisp.cpp`: `sensorTimestamp = buffer->metadata().timestamp`), as for native; pyramid companions share it |
 | V4L2 | `Monotonic` when the driver flags it, otherwise `clock` is `None` | driver capture time (start of frame for UVC) |
 | native | `Monotonic` (converted when `timestamp_clock` asks) | the V4L2 buffer timestamp, `CLOCK_MONOTONIC` from the kernel: start of frame on `rp1-cfe` (measured: 10.9 ms before dequeue at 30 fps); the PiSP and software ISP outputs carry the raw frame's timestamp |
 | netcam, virtual | `StreamRelative` | arrival in Styx |
@@ -43,6 +43,35 @@ let config = StyxConfig::new().timestamp_clock(ClockSource::Monotonic);
   figure built on the timestamp from one.
 - File and simulation sources always report media time, so seeking and replay stay
   meaningful.
+
+## When the exposure happened
+
+`FrameMeta::timestamp` on the native and libcamera backends is the receiver's start of frame:
+the first line arriving over CSI-2, right after the exposure ends. To line a frame up with
+other sensors (odometry, an IMU), use the middle of its exposure instead:
+
+```rust
+let mid = frame.meta().exposure_midpoint_in(TimestampClock::Monotonic); // Option<u64>
+```
+
+`FrameMeta::exposure_midpoint()` is `timestamp - exposure / 2`, with the exposure the frame was
+actually taken with (`NativeFrameMeta::exposure_ns`, libcamera's per-frame `ExposureTime`), on
+the frame's clock; `exposure_midpoint_in(clock)` converts it like `timestamp_in`. It is `None`
+when the backend does not report the exposure per frame (V4L2, UVC) or the timestamp is
+stream-relative.
+
+- **Global shutter** (the OV9782): every row is exposed at once, so this is the frame's
+  exposure midpoint. Checked on the CM5: a native frame's age on arrival does not move with the
+  exposure (9.56 ms p50 at 1, 8 and 20 ms, 1280x800 at 30 fps), so the timestamp is after the
+  exposure, not before it.
+- **Rolling shutter** (IMX219, IMX477, IMX708, OV5647): it is the first row's exposure midpoint;
+  row `r` is `r` line times later.
+- Any fixed delay between the end of exposure and the receiver's frame start (the sensor's own
+  frame-valid delay) is not subtracted: the OV9282 driver and the documentation Styx has give
+  none, and it is at most a few line times (9.1 µs each on the OV9782).
+
+The same applies to latency: `now - timestamp` measures from the end of the exposure; from the
+midpoint add half the exposure (4 ms at 8 ms).
 
 To compare a single frame against another clock, use `FrameMeta::timestamp_in(clock)`. It returns
 `None` for stream-relative timestamps. `FrameMeta::latency()` reports how old a frame is,

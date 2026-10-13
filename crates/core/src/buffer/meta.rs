@@ -120,6 +120,16 @@ impl BackendFrameMeta {
         }
     }
 
+    /// The exposure the frame was taken with, in nanoseconds, when the backend reports it
+    /// per frame (native and libcamera).
+    pub fn exposure_ns(&self) -> Option<u64> {
+        match self {
+            Self::Native(meta) => Some(meta.exposure_ns),
+            Self::Libcamera(meta) => meta.exposure_ns,
+            Self::V4l2(_) | Self::Uvc(_) => None,
+        }
+    }
+
     /// Driver frame sequence number, when the backend reports one.
     pub fn sequence(&self) -> u32 {
         match self {
@@ -459,6 +469,27 @@ impl FrameMeta {
         Some(conversion.apply(self.timestamp))
     }
 
+    /// When the frame's exposure was half done, on [`FrameMeta::clock`]: the timestamp minus
+    /// half the frame's applied exposure (docs/timestamps.md). The time to align a frame with
+    /// other sensors (odometry, an IMU). For the native and libcamera backends, whose timestamp
+    /// is the receiver's start of frame, right after the exposure ends; `None` for backends
+    /// that do not report the exposure per frame, and for stream-relative timestamps. On a
+    /// global shutter sensor (the OV9782) it is the whole frame's midpoint; on a rolling
+    /// shutter one it is the first row's, each later row's being a line time later.
+    pub fn exposure_midpoint(&self) -> Option<u64> {
+        if matches!(self.clock?, TimestampClock::StreamRelative) {
+            return None;
+        }
+        let exposure = self.backend.as_ref()?.exposure_ns()?;
+        self.timestamp.checked_sub(exposure / 2)
+    }
+
+    /// [`FrameMeta::exposure_midpoint`] converted to `target` (as [`FrameMeta::timestamp_in`]).
+    pub fn exposure_midpoint_in(&self, target: TimestampClock) -> Option<u64> {
+        let conversion = ClockConversion::new(self.clock?, target)?;
+        Some(conversion.apply(self.exposure_midpoint()?))
+    }
+
     /// Latency summary as of now.
     #[cfg(feature = "std")]
     pub fn latency(&self) -> FrameLatency {
@@ -644,5 +675,70 @@ mod timing_tests {
         let elapsed = TimestampClock::Monotonic.elapsed_since(ts).unwrap();
         assert!(elapsed < Duration::from_secs(1));
         assert!(TimestampClock::Monotonic.elapsed_since(u64::MAX).is_none());
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod exposure_midpoint_tests {
+    use super::*;
+    use crate::format::{ColorSpace, FourCc, MediaFormat, Resolution};
+
+    fn meta(
+        ts: u64,
+        clock: Option<TimestampClock>,
+        backend: Option<BackendFrameMeta>,
+    ) -> FrameMeta {
+        let res = Resolution::new(2, 2).unwrap();
+        let mut m = FrameMeta::new(MediaFormat::new(FourCc::GREY, res, ColorSpace::Unknown), ts);
+        m.clock = clock;
+        m.backend = backend;
+        m
+    }
+
+    #[test]
+    fn the_midpoint_is_half_the_applied_exposure_before_the_start_of_frame() {
+        let native = BackendFrameMeta::Native(NativeFrameMeta {
+            exposure_ns: 8_000_000,
+            ..Default::default()
+        });
+        let m = meta(1_000_000_000, Some(TimestampClock::Monotonic), Some(native));
+        assert_eq!(m.exposure_midpoint(), Some(996_000_000));
+        assert_eq!(
+            m.exposure_midpoint_in(TimestampClock::Monotonic),
+            Some(996_000_000)
+        );
+        // Converted like the timestamp: the same offset between the two.
+        let (t, mid) = (
+            m.timestamp_in(TimestampClock::Boottime).unwrap(),
+            m.exposure_midpoint_in(TimestampClock::Boottime).unwrap(),
+        );
+        assert!((t - mid).abs_diff(4_000_000) < 1_000, "{t} {mid}");
+
+        let lc = BackendFrameMeta::Libcamera(LibcameraFrameMeta {
+            exposure_ns: Some(3_931_000),
+            ..Default::default()
+        });
+        let m = meta(10_000_000, Some(TimestampClock::Boottime), Some(lc));
+        assert_eq!(m.exposure_midpoint(), Some(10_000_000 - 1_965_500));
+    }
+
+    #[test]
+    fn no_midpoint_without_an_exposure_or_a_system_clock() {
+        let native = || {
+            Some(BackendFrameMeta::Native(NativeFrameMeta {
+                exposure_ns: 1_000_000,
+                ..Default::default()
+            }))
+        };
+        assert_eq!(meta(5_000_000, None, native()).exposure_midpoint(), None);
+        let relative = meta(5_000_000, Some(TimestampClock::StreamRelative), native());
+        assert_eq!(relative.exposure_midpoint(), None);
+        let unreported = BackendFrameMeta::Libcamera(LibcameraFrameMeta::default());
+        let m = meta(5_000_000, Some(TimestampClock::Boottime), Some(unreported));
+        assert_eq!(m.exposure_midpoint(), None);
+        assert_eq!(
+            meta(5_000_000, Some(TimestampClock::Monotonic), None).exposure_midpoint(),
+            None
+        );
     }
 }

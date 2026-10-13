@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Exposure midpoint timestamps:** `FrameMeta::exposure_midpoint()` and
+  `exposure_midpoint_in(clock)`, the frame's timestamp minus half its applied exposure, for the
+  native and libcamera backends (both stamp the receiver's start of frame, just after the
+  exposure ends); `BackendFrameMeta::exposure_ns()`. The time to align vision with odometry: the
+  start of frame is half an exposure late (4 ms at 8 ms). docs/timestamps.md also corrects what
+  libcamera's `SensorTimestamp` marks on a Raspberry Pi (the start of frame, not of exposure).
+
 - **PiSP config dumps for debugging:** `STYX_PISP_BE_DUMP=DIR[:N,...]` and
   `STYX_PISP_FE_DUMP=DIR[:N,...]` write the back-end and front-end configs of jobs N (default 30
   and 90) as the raw `pisp_be_tiles_config` / `pisp_fe_config` bytes the kernel receives, for
