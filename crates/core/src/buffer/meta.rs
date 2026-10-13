@@ -231,14 +231,50 @@ impl PartialEq for NativeFrameMeta {
 
 impl Eq for NativeFrameMeta {}
 
-/// libcamera per-frame metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// libcamera per-frame metadata: the buffer, and the exposure and gain the request's metadata
+/// reports for the frame (`None` where libcamera did not report one, e.g. in a recording made
+/// before these were kept).
+#[derive(Debug, Clone, Copy, Default)]
 pub struct LibcameraFrameMeta {
     /// Frame sequence number from the capture device; gaps indicate dropped frames.
     pub sequence: u32,
     /// Where the capture buffer memory came from, e.g. `dma-heap` or `libcamera-allocator`.
     pub buffer_memory: &'static str,
+    /// `ExposureTime` as applied to the frame, in nanoseconds.
+    pub exposure_ns: Option<u64>,
+    /// `AnalogueGain` as applied to the frame.
+    pub analogue_gain: Option<f32>,
+    /// `DigitalGain` as applied to the frame (1 without one).
+    pub digital_gain: Option<f32>,
+    /// `FrameDuration` of the frame, in nanoseconds.
+    pub frame_duration_ns: Option<u64>,
 }
+
+impl LibcameraFrameMeta {
+    /// Total gain (analogue times digital), when libcamera reported the analogue gain.
+    pub fn gain(&self) -> Option<f32> {
+        self.analogue_gain
+            .map(|analogue| analogue * self.digital_gain.unwrap_or(1.0))
+    }
+}
+
+impl PartialEq for LibcameraFrameMeta {
+    fn eq(&self, o: &Self) -> bool {
+        let bits = |m: &Self| {
+            (
+                m.sequence,
+                m.buffer_memory,
+                m.exposure_ns,
+                m.analogue_gain.map(f32::to_bits),
+                m.digital_gain.map(f32::to_bits),
+                m.frame_duration_ns,
+            )
+        };
+        bits(self) == bits(o)
+    }
+}
+
+impl Eq for LibcameraFrameMeta {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct V4l2FrameMeta {

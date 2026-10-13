@@ -253,6 +253,7 @@ fn frames_carry_hops_and_allocate_only_their_lease() {
                 sequence: n as u32,
                 buffer_memory: "dma-heap",
                 dequeued,
+                applied: timing,
             };
             let backing = LibcameraBacking::new(
                 &slots[req],
@@ -354,4 +355,76 @@ fn planes_on_duplicated_fds_share_one_mapping() {
         },
     ];
     assert_eq!(backing::mappings_for(&planes), Some(2));
+}
+
+/// A frame's libcamera metadata carries what its request applied: the exposure and gains the
+/// request's metadata reports, and its frame duration. Without them, the fields are `None`.
+#[test]
+fn frame_meta_carries_the_applied_exposure_and_gain() {
+    use frame::{Completed, companion_meta, frame_meta};
+
+    let format = MediaFormat::new(
+        FourCc::GREY,
+        Resolution::new(64, 32).unwrap(),
+        ColorSpace::Unknown,
+    );
+    let mut readback = HashMap::new();
+    let ts = [1_000_000i64];
+    let applied = lcraw::record_metadata(
+        [
+            (
+                libcamera::controls::ControlId::SensorTimestamp as u32,
+                lcraw::RawValue::Int64(&ts),
+            ),
+            (
+                libcamera::controls::ControlId::FrameDuration as u32,
+                lcraw::RawValue::Int64(&[33_333]),
+            ),
+            (
+                libcamera::controls::ControlId::ExposureTime as u32,
+                lcraw::RawValue::Int32(&[8_000]),
+            ),
+            (
+                libcamera::controls::ControlId::AnalogueGain as u32,
+                lcraw::RawValue::Float(&[7.75]),
+            ),
+            (
+                libcamera::controls::ControlId::DigitalGain as u32,
+                lcraw::RawValue::Float(&[1.0]),
+            ),
+        ],
+        &mut readback,
+    );
+    let completed = Completed {
+        timestamp: 1_000_000,
+        clock: TimestampClock::Monotonic,
+        conversion: None,
+        sequence: 7,
+        buffer_memory: "dma-heap",
+        dequeued: Instant::now(),
+        applied,
+    };
+    let meta = frame_meta(format, &completed);
+    let lc = meta.libcamera().expect("a libcamera frame");
+    assert_eq!(lc.sequence, 7);
+    assert_eq!(lc.exposure_ns, Some(8_000_000));
+    assert_eq!(lc.analogue_gain, Some(7.75));
+    assert_eq!(lc.digital_gain, Some(1.0));
+    assert_eq!(lc.frame_duration_ns, Some(33_333_000));
+    assert_eq!(lc.gain(), Some(7.75));
+    let companion = companion_meta(format, &completed, 8);
+    assert_eq!(
+        companion.libcamera().and_then(|m| m.exposure_ns),
+        Some(8_000_000)
+    );
+
+    let bare = Completed {
+        applied: lcraw::RequestTiming::default(),
+        ..completed
+    };
+    let lc = frame_meta(format, &bare)
+        .libcamera()
+        .copied()
+        .expect("libcamera");
+    assert_eq!((lc.exposure_ns, lc.analogue_gain), (None, None));
 }

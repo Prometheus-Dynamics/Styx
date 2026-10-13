@@ -663,6 +663,7 @@ pub(super) fn start_libcamera(
                             sequence: frame_parts.sequence,
                             buffer_memory,
                             dequeued,
+                            applied: timing,
                         };
                         let mut meta = frame_meta(wire_format, &completed);
                         meta.crop = shown;

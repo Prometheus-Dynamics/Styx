@@ -49,6 +49,7 @@ pub(super) fn frame(index: u32, timestamp: u64) -> FrameLease {
     meta.backend = Some(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
         sequence: 100 + index,
         buffer_memory: "dma-heap",
+        ..Default::default()
     }));
     meta.timing.sensor_to_capture = Some(Duration::from_micros(8_200));
     frame
