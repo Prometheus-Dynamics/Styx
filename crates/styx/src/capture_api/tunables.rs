@@ -104,9 +104,7 @@ mod uvc;
 #[cfg(feature = "netcam")]
 pub(crate) use capture::PoolLimits;
 pub use capture::{CaptureConfig, CaptureTunables, IdleStop, ReconnectPolicy};
-pub use native::{
-    MAX_NATIVE_REGIONS, NativeDeflicker, NativeFlicker, NativeIspConfig, NativeRegion,
-};
+pub use native::*;
 pub use uvc::UvcConfig;
 
 #[derive(Clone, Copy, Debug)]

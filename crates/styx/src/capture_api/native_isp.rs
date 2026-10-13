@@ -497,6 +497,7 @@ pub(super) fn start_processed(
                     still,
                     live: live_worker,
                     clock: timestamp_clock,
+                    prep: pisp_lease::CpuPrep::new(&config.backends.native),
                 },
             )?;
             (controls, worker)

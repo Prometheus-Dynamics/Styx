@@ -95,6 +95,11 @@ fn pisp_frames_reach_an_in_process_consumer_without_allocating_or_copying() {
                 &ret_tx,
                 &live,
                 None,
+                // The default: access started on the capture thread (no allocation either).
+                CpuPrep {
+                    sync: true,
+                    prefetch: crate::capture_api::NativeCpuPrefetch::L3,
+                },
             )
         });
         let (closed, delivered) = allocations(|| {

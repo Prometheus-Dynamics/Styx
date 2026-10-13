@@ -123,6 +123,8 @@ pub(super) struct Worker {
     pub(super) still: super::still_runner::StillRunner,
     /// The capture's metrics.
     pub(super) live: CaptureMetrics,
+    /// What the capture thread does to cached buffers before handing them over.
+    pub(super) prep: super::pisp_lease::CpuPrep,
 }
 
 /// Frame `f` as delivered: the main output's lease with its companions (the second output's,
@@ -141,6 +143,7 @@ fn frame_leases(
         returns,
         live: &w.live,
         conversion: super::super::native_backend::native_conversion(w.clock),
+        prep: w.prep,
     };
     let mut unleased = Vec::new();
     let placed = |i: usize, spec: OutputSpec| Placed {

@@ -4,6 +4,24 @@ use styx_core::prelude::{FourCc, FrameRect};
 
 use super::StyxConfig;
 
+/// Prefetch of a native processed frame's pixels by the capture thread, before the frame is
+/// handed over (see [`NativeIspConfig::cpu_prefetch`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum NativeCpuPrefetch {
+    /// None (the default): the consumer's first reads come from memory.
+    #[default]
+    Off,
+    /// The capture thread reads one byte of every cache line of each output's first plane,
+    /// waiting for them (the frame is handed over once its first plane is in the caches).
+    Touch,
+    /// The capture thread issues a level-3 prefetch hint (`PRFM PLDL3KEEP` on 64-bit Arm; a
+    /// touch elsewhere) for every cache line of each output's first plane and hands the frame
+    /// over without waiting; the lines arrive in the shared cache while the consumer starts.
+    L3,
+}
+
 /// Flicker avoidance of a native camera's processed modes (their AE): exposures of whole
 /// flicker periods when they are a period or longer, and AE metering against the mean light
 /// so shorter ones (8 ms at 120 fps) do not chase the beat flickering light puts on the frames.
@@ -151,6 +169,18 @@ pub struct NativeIspConfig {
     /// software ISP this is the raw capture's buffers (the receiver's MMAP buffers cost the
     /// software ISP 0.6 ms more per 1280x800 frame on the CM5).
     pub driver_buffers: bool,
+    /// Start CPU access to each cached back end buffer (`DMA_BUF_IOCTL_SYNC`, about 23 µs per
+    /// 1280x800 NV12 frame on the CM5) on the capture thread as the frame is leased, so the
+    /// consumer's first read does not pay it (`true`, the default). `false`: on the first CPU
+    /// read, so frames that are only passed on as dma-bufs never pay it. Overridden by
+    /// `STYX_NATIVE_EARLY_SYNC=0|1`. No effect with [`Self::driver_buffers`].
+    pub early_cpu_sync: bool,
+    /// Prefetch each output's first plane (the Y plane of NV12) on the capture thread before
+    /// handing the frame over (default [`NativeCpuPrefetch::Off`]): a fresh frame is read from
+    /// memory at about a third of cached speed, the first time. Implies
+    /// [`Self::early_cpu_sync`]; cached buffers only. Overridden by
+    /// `STYX_NATIVE_PREFETCH=off|touch|l3`.
+    pub cpu_prefetch: NativeCpuPrefetch,
     /// Threads of the software ISP (cameras without a PiSP). `None` (default): half the
     /// cores, at most 4 (2 on the CM5). More can hang a CM5 at 2.4 GHz within seconds (three
     /// at 120 fps, four at any rate: `docs/native-stack/pipeline.md`, "All four cores").
@@ -189,6 +219,8 @@ impl Default for NativeIspConfig {
             overview: None,
             regions: [None; MAX_NATIVE_REGIONS],
             driver_buffers: false,
+            early_cpu_sync: true,
+            cpu_prefetch: NativeCpuPrefetch::Off,
             soft_threads: None,
             temporal_denoise: true,
             spatial_denoise_percent: 100,
@@ -292,6 +324,20 @@ impl StyxConfig {
     /// [`NativeIspConfig::driver_buffers`]).
     pub fn native_driver_buffers(mut self, driver: bool) -> Self {
         self.backends.native.driver_buffers = driver;
+        self
+    }
+
+    /// Start CPU access to native back end buffers on the capture thread (see
+    /// [`NativeIspConfig::early_cpu_sync`]).
+    pub fn native_early_cpu_sync(mut self, early: bool) -> Self {
+        self.backends.native.early_cpu_sync = early;
+        self
+    }
+
+    /// Prefetch native processed frames on the capture thread (see
+    /// [`NativeIspConfig::cpu_prefetch`]).
+    pub fn native_cpu_prefetch(mut self, prefetch: NativeCpuPrefetch) -> Self {
+        self.backends.native.cpu_prefetch = prefetch;
         self
     }
 
