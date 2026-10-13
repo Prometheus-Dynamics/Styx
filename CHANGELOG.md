@@ -47,6 +47,20 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **OV9782: calibrated black level by default.** A built-in tuning overlay
+  (`crates/pipeline/tuning/ov9782.overlay.json`, `styx_pipeline::tuning::BUILTIN_OVERLAYS`)
+  applies the mean black level per analogue gain from a dark sweep (65.2 at 1×, 64.0 to 64.3 at 2×
+  and above, in 10 bits) over the stock `ov9782.json`, which stays byte-identical to libcamera's.
+  It removes the 1× black lift (dark mean 2.6 → 0.4 of 255, a grey glow in dark areas that the lens
+  shading amplified toward the corners) and costs no detail. An overlay file (configuration,
+  `STYX_TUNING_OVERLAY` or `<sensor>.overlay.json`) replaces it; the log says
+  `overlay=builtin:ov9782.overlay.json`.
+- **Native PiSP: Lanczos 3 for resampled outputs.** A resample that is not a trapezoidal
+  downscale (above 2.1×) now uses Lanczos 3, the filter libpisp starts every resampler with and
+  libcamera's outputs keep, instead of libpisp's smart selection. At 1280x800 → 640x400 (a
+  1279/639 = 2.0016 factor) that selection picked Mitchell-Netravali, which left the half-size
+  pyramid level with 87–94 % of libcamera's edge energy; it now measures 100 %.
+
 - **Native PiSP: temporal denoise refused by the device is logged.** When the back end's TDN
   buffers cannot be set up the frames run without temporal denoise (spatial denoise at its
   no-TDN values), and the native capture now logs a warning once at start instead of only

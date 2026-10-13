@@ -196,7 +196,10 @@ Styx loads an overlay for a sensor from, first match:
 1. the configuration: `StyxConfig::new().tuning_overlay("/path/ov9782.overlay.json")`;
 2. the environment: `STYX_TUNING_OVERLAY=/path/ov9782.overlay.json`;
 3. `<sensor>.overlay.json` in a tuning directory: `/etc/styx/tuning/ov9782.overlay.json` (or
-   `STYX_TUNING_PATH`, `~/.config/styx/tuning`, the other system directories).
+   `STYX_TUNING_PATH`, `~/.config/styx/tuning`, the other system directories);
+4. the built-in overlay for the sensor, when built-in tunings are on. The OV9782 has one
+   (`crates/pipeline/tuning/ov9782.overlay.json`): the mean black level per gain from the
+   2026-10-13 dark sweep below, without the defect list. Any of 1–3 replaces it.
 
 ```sh
 sudo install -D calibration/ov9782/ov9782.overlay.json /etc/styx/tuning/ov9782.overlay.json
@@ -211,10 +214,11 @@ An overlay is used only when:
   another sensor is skipped.
 
 When a capture starts, the log names the tuning and the overlay: `tuning=builtin:ov9782.json
-overlay=/etc/styx/tuning/ov9782.overlay.json`. If an overlay is found but does not parse, the log
+overlay=/etc/styx/tuning/ov9782.overlay.json` (or `overlay=builtin:ov9782.overlay.json`). If an overlay is found but does not parse, the log
 says `overlay-rejected=<path>: <reason>` and the tuning is used without it.
 
-With no overlay installed, nothing changes: the tuning, and so every trace, is the same as before.
+With no overlay installed and no built-in one for the sensor, nothing changes: the tuning, and so
+every trace, is the same as before.
 
 ## What the ISP does with the levels
 
@@ -248,6 +252,20 @@ So the overlay's defaults are the mean of the four channels per gain and no `rpi
 per-channel black level stays in the PiSP back end and the pipeline, tested, for other sensors or a
 later fix; it is not the default for the OV9782. The measurements are in the overlay's `measured`
 block either way.
+
+A lit-scene check after the back-end tiling fix (8 ms, 7.75×, the AprilTag scene, edge energy of
+100-frame means against libcamera's) decided the defaults:
+
+| Overlay | Tags | Blinds | Whole | Temporal noise | AprilTag C |
+|---|---|---|---|---|---|
+| none | 100 % | 101 % | 110 % | 0.90 | tags 1, 3, 5 at 100 %, tag 6 36 % |
+| mean black per gain | 101 % | 102 % | 111 % | 0.85 | tags 1, 3, 5 at 100 %, tag 6 45 % |
+| black + noise model | 98 % | 95 % | 100 % | 0.57 | — |
+
+(Tag 6 is distant and oblique and sits at the decision-margin cut in every set, libcamera's
+included: 47 %.) The black level per gain costs no detail, so it is the OV9782's built-in overlay.
+The noise model loses 5 % on fine detail (the blinds), short of the 98 % bar, so it stays opt-in
+(`--noise-model`).
 
 ## Limits
 

@@ -28,7 +28,9 @@
 //! 1. the configuration's `tuning_overlay` (a file; `StyxConfig::tuning_overlay`);
 //! 2. [`OVERLAY_ENV`] (`STYX_TUNING_OVERLAY`), a file;
 //! 3. `<sensor>.overlay.json` in the directories above (for example
-//!    `/etc/styx/tuning/ov9782.overlay.json`).
+//!    `/etc/styx/tuning/ov9782.overlay.json`);
+//! 4. the built-in overlay for the sensor ([`BUILTIN_OVERLAYS`], when built-in tunings are on):
+//!    the OV9782's calibrated black level per gain.
 //!
 //! The source string of the tuning (logged when a capture starts) names the overlay applied,
 //! or says why one was not.
@@ -76,6 +78,13 @@ pub const LIBCAMERA_TUNING_DIRS: &[&str] = &[
 /// Tunings compiled into this crate: `(file name, contents)`.
 pub const BUILTIN_TUNINGS: &[(&str, &str)] =
     &[("ov9782.json", include_str!("../tuning/ov9782.json"))];
+
+/// Overlays compiled into this crate, used for their sensor when no overlay file is found:
+/// `(file name, contents)`. The OV9782's carries its calibrated black level per gain.
+pub const BUILTIN_OVERLAYS: &[(&str, &str)] = &[(
+    "ov9782.overlay.json",
+    include_str!("../tuning/ov9782.overlay.json"),
+)];
 
 /// The generic tuning (styx-algo TOML), for sensors without one of their own.
 pub const GENERIC_TUNING: &str = include_str!("../tuning/generic.toml");
@@ -230,7 +239,11 @@ impl TuningLibrary {
             }
             return Some((p, text));
         }
-        None
+        let name = format!("{sensor}{OVERLAY_SUFFIX}");
+        BUILTIN_OVERLAYS
+            .iter()
+            .find(|(n, _)| self.builtin && *n == name)
+            .map(|(n, text)| (PathBuf::from(format!("builtin:{n}")), (*text).to_owned()))
     }
 }
 
@@ -290,10 +303,30 @@ mod tests {
         styx_algo::Pipeline::from_tuning(&g).unwrap();
     }
 
+    /// The built-in OV9782 tuning's source with its built-in overlay.
+    const BUILTIN_OV9782: &str = "builtin:ov9782.json overlay=builtin:ov9782.overlay.json";
+
+    #[test]
+    fn the_builtin_ov9782_overlay_sets_the_calibrated_black_level_by_gain() {
+        let (t, src) = lib().find(Some("ov9782.json"));
+        assert_eq!(src, BUILTIN_OV9782);
+        let b = t.black_level.unwrap();
+        let gains: Vec<f64> = b.by_gain.iter().map(|g| g.gain).collect();
+        assert_eq!(gains, [1.0, 2.0, 4.0, 7.75, 10.0, 15.88]);
+        // 1x: 4172.8 of 65536 (65.2 in 10 bits), above the tuning's 64 the sensor never sits at.
+        assert!((b.by_gain[0].g * 65536.0 - 4172.8).abs() < 0.01);
+        assert_eq!((b.gr, b.gb), (None, None));
+        // Without built-in tunings there is no built-in overlay either.
+        let mut l = lib();
+        l.builtin = false;
+        l.fallback_dirs.clear();
+        assert_eq!(l.find(Some("ov9782.json")).1, "defaults");
+    }
+
     #[test]
     fn search_order_is_files_then_builtin_then_fallback_then_generic() {
         let (_, src) = lib().find(Some("ov9782.json"));
-        assert_eq!(src, "builtin:ov9782.json");
+        assert_eq!(src, BUILTIN_OV9782);
         let (_, src) = lib().find(Some("imx219.json"));
         assert_eq!(src, "builtin:generic");
         let (_, src) = lib().find(None);
@@ -312,7 +345,7 @@ mod tests {
             ..lib()
         };
         // A broken file is skipped; the built-in one wins over the fallback directory.
-        assert_eq!(l.find(Some("ov9782.json")).1, "builtin:ov9782.json");
+        assert_eq!(l.find(Some("ov9782.json")).1, BUILTIN_OV9782);
         let (_, src) = l.find(Some("imx219.json"));
         assert!(src.starts_with(fallback.to_str().unwrap()), "{src}");
         std::fs::write(
@@ -372,7 +405,8 @@ mod tests {
             let mut l = lib();
             l.overlay = Some(path);
             let (t, src) = l.find(Some("ov9782.json"));
-            assert_eq!(src, "builtin:ov9782.json");
+            // Skipped: the built-in overlay applies instead (uniform black, no split green).
+            assert_eq!(src, BUILTIN_OV9782);
             assert_eq!(t.black_level.unwrap().gr, None);
         }
         std::fs::remove_dir_all(&dir).unwrap();
