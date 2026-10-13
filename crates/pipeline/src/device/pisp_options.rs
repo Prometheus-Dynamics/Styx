@@ -35,6 +35,9 @@ pub struct PispOptions {
     /// Run the back end's temporal denoise when the tuning has it (two extra buffers of the
     /// raw frame's size, read and written by every job).
     pub temporal_denoise: bool,
+    /// Keep the temporal-denoise average compressed (8-bit PiSP mode 1, as libcamera does: half
+    /// the TDN memory traffic) rather than 16-bit.
+    pub tdn_compressed: bool,
     /// Spatial and colour denoise thresholds times this (1: as tuned, 0: off; see
     /// [`crate::Controller::set_spatial_denoise`]).
     pub spatial_denoise: f64,
@@ -67,6 +70,7 @@ impl PispOptions {
             settled_rate_hz: Some(15.0),
             output_memory: OutputMemory::CachedHeap,
             temporal_denoise: true,
+            tdn_compressed: true,
             spatial_denoise: 1.0,
             pass_tdn: Default::default(),
         }

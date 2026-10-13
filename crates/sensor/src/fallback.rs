@@ -284,12 +284,15 @@ impl SensorDescription {
                 short
             };
             names.insert(f.code, name.clone());
+            let rate = data
+                .and_then(|d| d.pixel_rates.get(&name).copied())
+                .unwrap_or(pixel_rate);
             formats.insert(
                 name,
                 Format {
                     code: f.code,
                     bit_depth: None,
-                    pixel_rate,
+                    pixel_rate: rate,
                     link_frequency,
                     registers: Vec::new(),
                     embedded_data: true,
@@ -386,6 +389,7 @@ impl SensorDescription {
                 chip_id: None,
                 clocks: BTreeMap::new(),
                 tuning: data.and_then(|d| d.tuning.clone()),
+                processed_format: data.and_then(|d| d.processed_format.clone()),
             },
             pixel_array: PixelArray {
                 size,
@@ -451,10 +455,10 @@ pub fn kernel_controls(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn range(min: i64, max: i64, default: i64, value: Option<i64>) -> ControlRange {
+    pub(crate) fn range(min: i64, max: i64, default: i64, value: Option<i64>) -> ControlRange {
         ControlRange {
             min,
             max,

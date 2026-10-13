@@ -21,6 +21,10 @@ pub mod tiling;
 use crate::math::Float as _;
 use crate::uapi::*;
 
+/// Offset of the compressed temporal-denoise average (libcamera's PiSP pipeline uses 2048 for
+/// its mode-1 TDN buffers).
+const TDN_COMPRESS_OFFSET: u16 = 2048;
+
 pub use prepare::PrepareError;
 
 /// Maximum tile width of the BCM2712 back end (libpisp `BackEndMaxTileWidth`).
@@ -205,6 +209,23 @@ impl BackEnd {
     pub fn set_tdn_format(&mut self, f: ImageFormatConfig) {
         self.cfg.tdn_input_format = f;
         self.cfg.tdn_output_format = f;
+        // Compressed (8-bit mode 1, as libcamera keeps its average): half the memory traffic.
+        let comp = image_format::is_compressed(f.format);
+        let (offset, mode) = if comp {
+            (TDN_COMPRESS_OFFSET, 1)
+        } else {
+            (0, 0)
+        };
+        self.cfg.tdn_compress = CompressConfig {
+            offset,
+            pad: 0,
+            mode,
+        };
+        self.cfg.tdn_decompress = DecompressConfig {
+            offset,
+            pad: 0,
+            mode,
+        };
     }
 
     /// Temporal denoise (`None`: off). `input`: read the long-term average written by the
@@ -214,8 +235,11 @@ impl BackEnd {
         self.cfg.tdn = tdn.unwrap_or_default();
         self.cfg.tdn.black_level = self.denoise_black_level();
         let on = tdn.is_some();
+        let comp = image_format::is_compressed(self.cfg.tdn_output_format.format);
         self.enable_bayer(bayer_enable::TDN | bayer_enable::TDN_OUTPUT, on);
         self.enable_bayer(bayer_enable::TDN_INPUT, on && input);
+        self.enable_bayer(bayer_enable::TDN_COMPRESS, on && comp);
+        self.enable_bayer(bayer_enable::TDN_DECOMPRESS, on && input && comp);
     }
 
     /// The default sharpening scaled as the Raspberry Pi IPA scales it: thresholds by

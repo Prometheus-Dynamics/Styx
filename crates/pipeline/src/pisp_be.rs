@@ -178,7 +178,7 @@ impl BeConfigBuilder {
             self.lsc_on
         };
         // Blocks switched on or off (other than reading the temporal average) re-prepare.
-        let mask = !bayer_enable::TDN_INPUT;
+        let mask = !(bayer_enable::TDN_INPUT | bayer_enable::TDN_DECOMPRESS);
         let mut probe = self.work.clone();
         isp.apply_be_detail(&mut probe);
         probe.set_tdn(tdn_cfg.map(|t| t.0), tdn_cfg.is_some_and(|t| t.1));

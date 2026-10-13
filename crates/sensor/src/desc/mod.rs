@@ -101,6 +101,10 @@ pub struct Identity {
     /// Tuning file name (looked up by the algorithms layer).
     #[serde(default)]
     pub tuning: Option<String>,
+    /// The format (`raw8`, `raw10`) processed capture reads by default, when not the first
+    /// one a mode lists (the OV9782's kernel data: `raw8`, whose lines read faster).
+    #[serde(default)]
+    pub processed_format: Option<String>,
 }
 
 fn sixteen() -> u8 {

@@ -205,21 +205,30 @@ impl BackEnd {
         }
         let tdn = bayer_enable::TDN | bayer_enable::TDN_INPUT | bayer_enable::TDN_OUTPUT;
         if g.bayer_enables & tdn != 0 {
-            if g.bayer_enables & (bayer_enable::TDN_DECOMPRESS | bayer_enable::TDN_COMPRESS) != 0 {
-                return fail("compressed TDN buffers are not supported by this builder yet");
-            }
-            for (f, name) in [
-                (self.cfg.tdn_input_format, "TDN input"),
-                (self.cfg.tdn_output_format, "TDN output"),
+            for (f, name, bit) in [
+                (
+                    self.cfg.tdn_input_format,
+                    "TDN input",
+                    bayer_enable::TDN_DECOMPRESS,
+                ),
+                (
+                    self.cfg.tdn_output_format,
+                    "TDN output",
+                    bayer_enable::TDN_COMPRESS,
+                ),
             ] {
+                let comp = f::is_compressed(f.format);
                 if (f.width, f.height) != (input.width, input.height)
                     || f.stride & 15 != 0
                     || f.stride == 0
-                    || f::is_compressed(f.format)
+                    || (comp && f.format & f::BPS_MASK != f::BPS_8)
                 {
                     return fail(format!(
-                        "{name} format must be the input's size, uncompressed"
+                        "{name} format must be the input's size, 16-byte rows, 8-bit if compressed"
                     ));
+                }
+                if g.bayer_enables & bit != 0 && !comp {
+                    return fail(format!("{name}: (de)compression on an uncompressed format"));
                 }
             }
         }
