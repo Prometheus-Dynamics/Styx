@@ -117,9 +117,8 @@ pub struct Agc {
     detect_since: Vec<Option<f64>>,
     /// The mains frequency detected automatically.
     detected: Option<f64>,
-    /// Flicker periods exposures are quantised to (seconds, longest first: the first one the
-    /// exposure reaches), for [`Self::divide`].
-    periods: Vec<f64>,
+    /// The flicker period exposures are quantised to (seconds), for [`Self::divide`].
+    period: Option<f64>,
     /// The lamp was seen flickering at the mains frequency: its period (seconds).
     mains_period_seen: Option<f64>,
     /// The fit of the mains frequency in use (index into `fits`).
@@ -160,7 +159,7 @@ impl Agc {
             fits: Vec::new(),
             detect_since: Vec::new(),
             detected: None,
-            periods: Vec::new(),
+            period: None,
             mains_period_seen: None,
             in_use: None,
             deflicker: DeflickerState::default(),
@@ -381,20 +380,13 @@ impl Agc {
                 }
             }
         }
-        let periods = if self.periods.is_empty() {
-            controls
-                .flicker
-                .period()
-                .map(|p| p.as_secs_f64())
-                .into_iter()
-                .collect()
-        } else {
-            self.periods.clone()
-        };
+        let period = self
+            .period
+            .or_else(|| controls.flicker.period().map(|p| p.as_secs_f64()));
         if fixed.0.is_none()
             && fixed.1.is_none()
             && controls.flicker != Flicker::Off
-            && let Some(&period) = periods.iter().find(|&&p| t >= p)
+            && let Some(period) = period.filter(|&p| t >= p)
         {
             let n = (t / period).floor();
             if n >= 1.0 {
@@ -441,12 +433,7 @@ impl Agc {
     /// The deflicker correction after this frame (see [`deflicker`]): from the fit of the
     /// mains in use, else (detecting) the most significant one.
     #[cfg(feature = "flicker")]
-    fn deflicker_for(
-        &mut self,
-        meta: &FrameMetadata,
-        fixed_both: bool,
-        highlight: f64,
-    ) -> Option<deflicker::FlickerCorrection> {
+    fn deflicker_for(&mut self, meta: &FrameMetadata, fixed_both: bool, highlight: f64) {
         let c = &meta.controls;
         let enabled = c.deflicker.enabled(c.flicker) && c.ae_enable && !fixed_both;
         let model = self.in_use.and_then(|i| self.fits[i].model()).or_else(|| {
@@ -464,19 +451,12 @@ impl Agc {
             meta.exposure.as_secs_f64(),
             self.config.readout.as_secs_f64(),
             highlight,
-        )
+        );
     }
 
     /// No deflicker without feature `flicker`.
     #[cfg(not(feature = "flicker"))]
-    fn deflicker_for(
-        &mut self,
-        _meta: &FrameMetadata,
-        _fixed_both: bool,
-        _highlight: f64,
-    ) -> Option<deflicker::FlickerCorrection> {
-        None
-    }
+    fn deflicker_for(&mut self, _meta: &FrameMetadata, _fixed_both: bool, _highlight: f64) {}
 
     fn frame_duration_for(&self, exposure: f64, meta: Option<&FrameMetadata>) -> Duration {
         let (fd_lo, fd_hi) = self.frame_duration_limits(meta);
@@ -508,7 +488,7 @@ impl Algorithm for Agc {
         self.fits.clear();
         self.detect_since.clear();
         self.detected = None;
-        self.periods.clear();
+        self.period = None;
         self.mains_period_seen = None;
         self.in_use = None;
         self.deflicker = DeflickerState::default();
@@ -587,8 +567,8 @@ impl Algorithm for Agc {
             };
             top / white * applied / flicker_k
         };
-        let deflicker = self.deflicker_for(meta, fixed_both, highlight);
-        let headroom = deflicker.as_ref().map_or(1.0, |d| d.headroom);
+        self.deflicker_for(meta, fixed_both, highlight);
+        let headroom = self.deflicker.correction().map_or(1.0, |d| d.headroom);
         // The total exposures AE can reach, and whether the scene wants one beyond them.
         let mut reach = (0.0, f64::INFINITY);
         let target = if fixed_both {
@@ -742,7 +722,7 @@ impl Algorithm for Agc {
         self.last_headroom = headroom;
         params.sensor = Some(request);
         params.digital_gain = split.digital_gain;
-        params.deflicker = deflicker;
+        self.deflicker.write(&mut params.deflicker);
         params.ae = AeStatus {
             locked: self.lock_count >= LOCK_FRAMES,
             target_exposure: target,
@@ -750,7 +730,7 @@ impl Algorithm for Agc {
             target_y,
             measured_y,
             desaturating,
-            flicker_period: self.periods.first().map(|&p| Duration::from_secs_f64(p)),
+            flicker_period: self.period.map(Duration::from_secs_f64),
             flicker_detected: self.detected.map(|hz| Duration::from_secs_f64(0.5 / hz)),
             flicker_modulation: flicker_k - 1.0,
             at_limit,

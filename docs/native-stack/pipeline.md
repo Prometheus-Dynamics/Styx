@@ -307,11 +307,13 @@ shows each, with the frame it landed on.
   predicted to land at the request's frame or later, `delay` frames after the frame it is issued
   in. On a kernel-driven sensor (no embedded data, e.g. the stock OV9782) that prediction is what
   the frames show, but nothing reads it back: `NativeFrameMeta::verified` is `false`.
-- *Processed captures* (the 3A loop): the loop writes a fixed exposure or gain during the frame
-  in progress, so the landing is the frame in progress plus the control's delay from the
-  description (`ControlHandle::landing_now`; gain takes the later of its analogue and digital
-  delays). The value is handed to the loop on the worker thread, so the write can miss the
-  current frame and land one frame later; that is the only way the prediction is off.
+- *Processed captures* (the 3A loop): the loop writes a fixed exposure or gain for a frame, so
+  the landing is the frame in progress plus the control's delay from the description plus the
+  loop's latency (`ControlHandle::landing_processed`; gain takes the later of its analogue and
+  digital delays). The loop takes a value at its next step (the worker thread, so one frame
+  later at the earliest), and that step's write goes out at the next frame start rather than in
+  the frame it runs in: `PROCESSED_LOOP_LATENCY` is 2 frames, measured on a CM5 at 30 fps (set
+  in frame 60 with delay 2, first seen in 64). Other frame rates are not measured yet.
 - *Confirmed* means the frame's values were read back from embedded data (a bridge sensor with
   embedded data, `NativeFrameMeta::verified`). The setter returns before the frame exists, so
   it never has a confirmed landing to return; it returns the prediction above on every sensor.
