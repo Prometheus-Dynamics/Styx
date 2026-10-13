@@ -116,8 +116,7 @@ mod tests {
         assert!(recall(key).is_none());
         remember(key, w);
         assert_eq!(recall(key), Some(w));
-        let dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target"))
-            .join(format!("styx-warm-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("styx-warm-test-{}", std::process::id()));
         set_state_dir(Some(dir.clone()));
         remember(key, w);
         lock().memory.clear();

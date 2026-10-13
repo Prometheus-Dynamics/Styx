@@ -210,11 +210,8 @@ mod tests {
     const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../sensor/sensors/ov9782.toml");
 
     fn scratch(tag: &str) -> PathBuf {
-        let dir = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../target/test-scratch"
-        ))
-        .join(format!("styx-native-lib-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("styx-native-lib-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

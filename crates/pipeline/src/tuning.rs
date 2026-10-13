@@ -270,13 +270,8 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        // The build directory when one is set (the NVMe target), else the repository's.
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target")));
-        let dir = target
-            .join("test-scratch")
-            .join(format!("styx-tuning-{tag}-{}", std::process::id()));
+        // The system temp dir, not the source tree (whose target/ may be on a slow disk).
+        let dir = std::env::temp_dir().join(format!("styx-tuning-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
