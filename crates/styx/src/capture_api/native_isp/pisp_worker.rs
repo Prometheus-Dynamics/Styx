@@ -13,7 +13,7 @@ use styx_capture::prelude::*;
 use styx_core::prelude::{ClockSource, CompanionKind, FrameRect};
 use styx_core::queue::BoundedTx;
 use styx_pipeline::PipelineError;
-use styx_pipeline::device::PispPipeline;
+use styx_pipeline::device::{PispEvent, PispPipeline};
 
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
@@ -125,16 +125,19 @@ pub(super) struct Worker {
     pub(super) live: CaptureMetrics,
     /// What the capture thread does to cached buffers before handing them over.
     pub(super) prep: super::pisp_lease::CpuPrep,
+    /// Hand sliced frames out at their first slice (`NativeIspConfig::deliver_slices`).
+    pub(super) slices: bool,
 }
 
 /// Frame `f` as delivered: the main output's lease with its companions (the second output's,
 /// the extra passes'). Buffers not leased go back through `returns`. `None`: no main output.
-fn frame_leases(
+pub(super) fn frame_leases(
     p: &PispPipeline,
     f: &styx_pipeline::device::PispFrame,
     buffers: &mut Buffers,
     w: &Worker,
     returns: &super::pisp_lease::Returns,
+    progress: Option<std::sync::Arc<styx_core::buffer::FrameProgress>>,
 ) -> Result<Option<FrameLease>, String> {
     let mut leaser = Leaser {
         p,
@@ -145,6 +148,7 @@ fn frame_leases(
         conversion: super::super::native_backend::native_conversion(w.clock),
         prep: w.prep,
         window: p.sensor_window(),
+        progress,
     };
     let mut unleased = Vec::new();
     let placed = |i: usize, spec: OutputSpec| Placed {
@@ -220,12 +224,17 @@ pub(super) fn spawn(
             let (ret_tx, ret_rx) = super::pisp_lease::returns();
             let mut buffers = Buffers::default();
             let mut held_drops = 0u64;
+            let mut sliced: Option<super::pisp_sliced::SlicedOut> = None;
             loop {
                 if w.stop.try_recv().is_ok() {
                     break;
                 }
                 while let RecvOutcome::Data((i, index)) = ret_rx.recv() {
-                    p.release_output(i, index);
+                    // A sliced frame's buffers stay the back end's until the frame is done.
+                    match sliced.as_mut() {
+                        Some(o) if o.holds(i, index) => o.defer(i, index),
+                        _ => p.release_output(i, index),
+                    }
                 }
                 if let Some(c) = w.loop_controls.take() {
                     p.controller().set_controls(c);
@@ -241,12 +250,35 @@ pub(super) fn spawn(
                     }
                 }
                 w.regions.apply(&mut p, &w.loop_controls.regions, w.crop);
-                let mut f = match p.next(w.timeout) {
-                    Ok(f) => f,
+                let event = p.next_event(w.timeout, w.slices);
+                let mut f = match event {
+                    Ok(PispEvent::Frame(f)) => f,
+                    Ok(PispEvent::Slice(s)) => {
+                        if let Some(prev) = sliced.take() {
+                            prev.fail(&mut p);
+                        }
+                        match super::pisp_sliced::slice_leases(&p, &s, &mut buffers, &w, &ret_tx) {
+                            Ok(Some((frame, out))) => {
+                                sliced = Some(out);
+                                if deliver(&w.live, tx, frame, "native-pisp", w.send_timeout) {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                *w.error.lock() = Some(err(e));
+                                break;
+                            }
+                        }
+                        continue;
+                    }
                     // Consumers hold every output buffer: this frame is dropped (never wait
                     // for them: the camera keeps running), the next one after a buffer comes
                     // back is processed.
                     Err(PipelineError::OutputsHeld(output)) => {
+                        if let Some(prev) = sliced.take() {
+                            prev.fail(&mut p);
+                        }
                         held_drops += 1;
                         w.live.isp_skipped();
                         if held_drops == 1 {
@@ -261,6 +293,9 @@ pub(super) fn spawn(
                         continue;
                     }
                     Err(e) => {
+                        if let Some(prev) = sliced.take() {
+                            prev.fail(&mut p);
+                        }
                         *w.error.lock() = Some(err(e));
                         break;
                     }
@@ -278,7 +313,16 @@ pub(super) fn spawn(
                 w.live.isp_time(f.times.be_job, f.times.total);
                 w.live
                     .aaa(&aaa_sample(&p.step().params, p.controls(), f.sequence));
-                let frame = match frame_leases(&p, &f, &mut buffers, &w, &ret_tx) {
+                // A frame already handed out at its first slice: complete it (its leases are
+                // the consumer's), deliver nothing more.
+                if let Some(out) = sliced.take_if(|o| o.sequence == f.sequence) {
+                    out.complete(&buffers, &mut p);
+                    continue;
+                }
+                if let Some(prev) = sliced.take() {
+                    prev.fail(&mut p);
+                }
+                let frame = match frame_leases(&p, &f, &mut buffers, &w, &ret_tx, None) {
                     Ok(Some(frame)) => frame,
                     Ok(None) => continue,
                     Err(e) => {

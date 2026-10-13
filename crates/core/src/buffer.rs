@@ -18,6 +18,7 @@ mod layout;
 mod meta;
 mod plane;
 mod pool;
+mod progress;
 mod views;
 
 pub use cpu_access::{CpuAccess, CpuReadWindow};
@@ -31,6 +32,7 @@ pub use meta::{
 pub use plane::{
     FrameAllocation, FrameLeaseDescriptor, FramePlaneDescriptor, FrameValidationError, PlaneLayout,
 };
+pub use progress::{FrameProgress, FrameProgressRef, ProgressWait};
 pub use views::{
     FramePlaneShape, Plane, PlaneMut, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
 };

@@ -749,6 +749,7 @@ static void cfe_lines_event(struct cfe_node *node)
 	l->sequence = node->fs_count - 1;
 	l->lines = cfe->fe.ilines[node->id - FE_OUT0];
 	l->timestamp_ns = ktime_get_ns();
+	l->sof_ns = node->ts;
 	v4l2_event_queue(&node->video_dev, &event);
 }
 

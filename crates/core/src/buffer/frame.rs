@@ -70,6 +70,12 @@ pub trait ExternalBacking: Send + Sync {
     /// Whether [`ExternalBacking::plane_data`] reads the planes, and at what cost. Host memory
     /// is readable and cached; a dma-buf or GPU memory is not readable unless the backing says
     /// so (one that maps a dma-buf reports whether the mapping is cached).
+    /// The frame's progress when its buffers are handed out while still being written (top to
+    /// bottom; see [`super::FrameProgress`]); `None` (default): complete.
+    fn progress(&self) -> Option<super::FrameProgressRef<'_>> {
+        None
+    }
+
     fn cpu_access(&self) -> CpuAccess {
         match self.residency() {
             FrameResidency::HostOwned
@@ -333,6 +339,14 @@ impl FrameLease {
 
     pub fn layout_info(&self) -> FrameLayoutInfo {
         self.meta.format.code.layout_info()
+    }
+
+    /// How far the frame is written when it was handed out before its buffers were complete
+    /// (sliced native frames: `Frames::sliced`): read only rows above
+    /// [`super::FrameProgressRef::rows`] until it [`is_complete`](super::FrameProgressRef::is_complete).
+    /// `None`: complete, as every other frame.
+    pub fn progress(&self) -> Option<super::FrameProgressRef<'_>> {
+        self.external.as_ref()?.progress()
     }
 
     /// Whether the CPU can read the planes, and at what cost ([`CpuAccess`]). Frames in their

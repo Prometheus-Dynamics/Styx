@@ -31,21 +31,22 @@ use styx_kernel::subdev::MbusCode;
 use styx_native::{
     CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
 };
-use styx_pisp::device::{BackEndStream, BeJob, FrontEndDevice, FrontEndSetup, QueuedJob, profile};
+use styx_pisp::device::{BackEndStream, BeJob, FrontEndDevice, FrontEndSetup, profile};
 use styx_pisp::fe::FrontEnd;
 use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
 use styx_softisp::CfaPattern;
 
+use super::pisp_isp::{BackEnd, FeStats};
 use super::pisp_options::PispOptions;
+use super::pisp_slices::{PispEvent, Waited};
 use super::{Profiled, sensor_values};
-use crate::controller::{Controller, SensorValues, Step};
+use crate::controller::{Controller, Step};
 use crate::error::{PipelineError, Result};
-use crate::isp::{IspSettings, be_template, level16};
+use crate::isp::{be_template, level16};
 use crate::pisp_be::{BeConfigBuilder, BeUpdateCounts};
 use crate::pisp_passes::PassConfigs;
-use crate::process::{Algorithms, FrameIsp, InlineIsp};
+use crate::process::Algorithms;
 use crate::sensor::{ISSUE_LATENCY, SensorInfo};
-use crate::stats;
 
 fn bayer(c: CfaPattern) -> BayerOrder {
     match c {
@@ -337,6 +338,14 @@ impl PispPipeline {
         self.sensor_window
     }
 
+    /// The sensor values of frame `seq` before it completes (a sliced frame's first slice):
+    /// what the control schedule applied, else predicts, else the previous frame's.
+    pub fn frame_values(&self, seq: u64) -> Option<crate::controller::SensorValues> {
+        let s = self.sensor.as_ref()?;
+        let c = s.applied(seq).or_else(|| s.applied(seq.checked_sub(1)?))?;
+        Some(sensor_values(seq, &c))
+    }
+
     /// The sensor mode.
     pub fn info(&self) -> &SensorInfo {
         &self.info
@@ -506,6 +515,17 @@ impl PispPipeline {
     /// documentation](self)), its statistics through the algorithms meanwhile, their sensor
     /// request to the control schedule.
     pub fn next(&mut self, timeout: Duration) -> Result<PispFrame> {
+        loop {
+            if let PispEvent::Frame(f) = self.next_event(timeout, false)? {
+                return Ok(f);
+            }
+        }
+    }
+
+    /// As [`Self::next`], and with `slices` (while slicing: [`PispOptions::slice_line`]) a
+    /// sliced frame's first rows as soon as they are final ([`PispEvent::Slice`]), before the
+    /// frame itself.
+    pub fn next_event(&mut self, timeout: Duration, slices: bool) -> Result<PispEvent> {
         let (Some(fe_dev), Some(be_dev), Some(sensor)) = (
             self.fe_dev.as_mut(),
             self.be_dev.as_mut(),
@@ -520,7 +540,11 @@ impl PispPipeline {
             .slicing
             .as_mut()
             .map(|s| (s, &mut *be_dev, &mut self.be));
-        super::pisp_slices::wait_for_statistics(fe_dev, sensor, timeout, slice)?;
+        if let Waited::Slice(s) =
+            super::pisp_slices::wait_for_statistics(fe_dev, sensor, timeout, slice, slices)?
+        {
+            return Ok(PispEvent::Slice(s));
+        }
         let held =
             fe_dev.next_held_raw(&mut self.fe, timeout, run.then_some(&mut *self.raw_stats))?;
         let dequeued = Instant::now();
@@ -614,7 +638,7 @@ impl PispPipeline {
         if profile::enabled() {
             profile::record("loop", "dequeued_to_return", dequeued.elapsed());
         }
-        result
+        result.map(PispEvent::Frame)
     }
 
     /// Copies the raw frame of every frame `want` accepts (given what produced it) into its
@@ -727,73 +751,5 @@ impl PispPipeline {
 fn profile_record(what: &'static str, op: &'static str, d: Duration) {
     if profile::enabled() {
         profile::record(what, op, d);
-    }
-}
-
-/// The back end as the loop's [`FrameIsp`]: the config patched for the frame's settings and
-/// exposure, the job queued with the front end's raw buffer as input, then waited for.
-struct BackEnd<'a> {
-    dev: &'a mut BackEndStream,
-    builder: &'a mut BeConfigBuilder,
-    timeout: Duration,
-    /// Updating the config (and its tiles, when they change).
-    prepare: Duration,
-    /// Frames split into two jobs, the first started at the line event.
-    slicing: Option<&'a mut super::pisp_slices::Slicing>,
-}
-
-impl FrameIsp for BackEnd<'_> {
-    type Input<'a> = u32;
-    type Job = QueuedJob;
-    type Output = BeJob;
-
-    fn submit(
-        &mut self,
-        index: u32,
-        settings: &IspSettings,
-        values: &SensorValues,
-        _statistics: bool,
-    ) -> Result<QueuedJob> {
-        if let Some(s) = self.slicing.as_deref_mut()
-            && let Some(job) = s.submit_rest(index, settings, self.dev, self.timeout)?
-        {
-            self.prepare = Duration::ZERO;
-            return Ok(job);
-        }
-        let t = Instant::now();
-        // Temporal denoise scales its average by the frame's light: exposure, gain and the
-        // flicker deflicker predicts.
-        let exposure = values.exposure.as_secs_f64() * values.analogue_gain * settings.flicker;
-        profile::time("loop", "be_update", || {
-            self.builder.update_frame(settings, exposure)
-        })?;
-        self.prepare = t.elapsed();
-        Ok(self.dev.process_queued(index, self.builder.config())?)
-    }
-
-    fn finish(&mut self, job: QueuedJob) -> Result<BeJob> {
-        Ok(self.dev.wait_job(job, self.timeout)?)
-    }
-
-    fn discard(&mut self, job: &BeJob) {
-        self.dev.release(job);
-    }
-}
-
-/// The front end as the loop's [`InlineIsp`]: the statistics copied out at the dequeue (when
-/// the algorithms run), settings queued with its next config.
-struct FeStats<'a> {
-    raw: &'a RawStatistics,
-    fe: &'a mut FrontEnd,
-}
-
-impl InlineIsp for FeStats<'_> {
-    fn statistics(&mut self, out: &mut Statistics) -> bool {
-        stats::from_pisp_raw(self.raw, out);
-        true
-    }
-
-    fn set_settings(&mut self, settings: &IspSettings) {
-        settings.apply_fe(self.fe);
     }
 }

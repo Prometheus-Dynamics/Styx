@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
-use styx_core::buffer::CpuReadWindow;
+use styx_core::buffer::{CpuReadWindow, FrameProgress, FrameProgressRef};
 use styx_core::prelude::{
     BackendFrameMeta, CaptureInstant, ClockConversion, ExportedKind, ExternalBacking,
     FrameBackingExport, FrameExportError, FrameFdPlane, FrameRect, FrameResidency, Hop,
@@ -165,6 +165,8 @@ struct BeBacking {
     /// drops, or bracketed (Daedalus's `daedalus:frame` access).
     window: CpuReadWindow,
     returns: Returns,
+    /// A sliced frame's progress (shared by its leases) and this output's index in it.
+    progress: Option<(Arc<FrameProgress>, usize)>,
 }
 
 impl ExternalBacking for BeBacking {
@@ -208,6 +210,10 @@ impl ExternalBacking for BeBacking {
             fd: self.buffer.fd.as_fd(),
             offset,
         })
+    }
+
+    fn progress(&self) -> Option<FrameProgressRef<'_>> {
+        self.progress.as_ref().map(|(p, i)| p.output(*i))
     }
 
     fn cpu_access(&self) -> CpuAccess {
@@ -285,6 +291,13 @@ pub(super) struct Buffers {
 }
 
 impl Buffers {
+    /// Output `i`'s buffer `index`'s dma-buf and whether it is cached, when mapped already.
+    pub(super) fn fd(&self, i: usize, index: u32) -> Option<(std::os::fd::BorrowedFd<'_>, bool)> {
+        self.cache
+            .get(&(i, index))
+            .map(|b| (b.fd.as_fd(), b.cached))
+    }
+
     fn get(&mut self, p: &PispPipeline, i: usize, index: u32) -> Result<BeBuffer, String> {
         if let Some(b) = self.cache.get(&(i, index)) {
             return Ok(b.clone());
@@ -338,6 +351,8 @@ pub(super) struct Leaser<'a> {
     /// The window of the sensor's field the mode reads, if it reads one: frame crops are
     /// reported in the field's coordinates.
     pub(super) window: Option<styx_pisp::device::SensorWindow>,
+    /// A sliced frame's progress, for leases handed out before the frame completes.
+    pub(super) progress: Option<Arc<FrameProgress>>,
 }
 
 impl Leaser<'_> {
@@ -358,6 +373,7 @@ impl Leaser<'_> {
             self.live,
             self.conversion,
             self.prep,
+            self.progress.clone(),
         ))
         .map(|mut l| {
             if let Some(w) = self.window {
@@ -379,6 +395,7 @@ fn lease(
     live: &CaptureMetrics,
     conversion: Option<ClockConversion>,
     prep: CpuPrep,
+    progress: Option<Arc<FrameProgress>>,
 ) -> FrameLease {
     let spec = placed.spec;
     let (width, height) = placed.size.unwrap_or_else(|| {
@@ -419,6 +436,7 @@ fn lease(
         index,
         window: CpuReadWindow::new(),
         returns: returns.clone(),
+        progress: progress.map(|p| (p, output)),
     };
     if prep.sync && backing.buffer.cached {
         // Held from now until the lease drops: the consumer's reads find access started.
@@ -534,6 +552,7 @@ mod tests {
                 &live,
                 conversion,
                 CpuPrep::LAZY,
+                None,
             )
         };
         let native = lease_in(ClockSource::Native);
@@ -573,6 +592,7 @@ mod tests {
             &live,
             None,
             CpuPrep::LAZY,
+            None,
         );
         let planes = f.planes();
         assert_eq!(planes.len(), 2);
@@ -635,6 +655,7 @@ mod tests {
                 &live,
                 None,
                 prep,
+                None,
             );
             assert!(f.planes()[0].data().iter().all(|&v| v == 1), "{prefetch:?}");
             drop(f);
@@ -648,6 +669,7 @@ mod tests {
             index: 1,
             window: CpuReadWindow::new(),
             returns: tx.clone(),
+            progress: None,
         };
         assert!(!lazy.window.is_open());
         lazy.window.hold(|| lazy.sync(true));
@@ -716,6 +738,7 @@ mod tests {
             &live,
             None,
             CpuPrep::LAZY,
+            None,
         );
         let res = f.meta().format.resolution;
         assert_eq!((res.width.get(), res.height.get()), (32, 16));

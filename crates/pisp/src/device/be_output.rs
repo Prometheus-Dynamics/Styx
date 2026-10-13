@@ -199,6 +199,11 @@ impl OutputQueue {
     }
 
     /// Starts streaming.
+    /// The node's descriptor: readable when a job's buffer is done.
+    pub(super) fn fd(&self) -> BorrowedFd<'_> {
+        self.dev.as_fd()
+    }
+
     pub(super) fn stream_on(&self) -> Result<()> {
         Ok(self.dev.stream_on(TYPE)?)
     }

@@ -569,6 +569,12 @@ impl BackEndStream {
     }
 
     /// Hands a job's output buffers back for reuse.
+    /// Output `i`'s node descriptor: readable once a queued job has written its buffer (to
+    /// wait for a job without blocking, e.g. alongside other descriptors).
+    pub fn output_fd(&self, i: usize) -> Option<BorrowedFd<'_>> {
+        self.outputs.get(i)?.as_ref().map(|o| o.queue.fd())
+    }
+
     pub fn release(&mut self, job: &BeJob) {
         for (o, b) in self.outputs.iter_mut().zip(job.outputs) {
             if let (Some(o), Some(b)) = (o, b)

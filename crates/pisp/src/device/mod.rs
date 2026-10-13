@@ -26,7 +26,9 @@ pub use be::{BackEndDevice, BeOutput};
 pub use be_output::OutputMemory;
 pub use be_stream::{BackEndStream, BeFormat, BeJob, BeOutputSetup, QueuedJob};
 pub use config_buf::CONFIG_HEAP_ENV;
-pub use fe::{FeFrame, FeHeld, FeHeldRaw, FrontEndDevice, FrontEndSetup, HeldImage, SensorWindow};
+pub use fe::{
+    FeFrame, FeHeld, FeHeldRaw, FrontEndDevice, FrontEndSetup, HeldImage, LineEvent, SensorWindow,
+};
 pub use queue::Queue;
 
 /// A device error.

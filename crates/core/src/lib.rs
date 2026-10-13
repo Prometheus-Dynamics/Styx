@@ -27,10 +27,11 @@ pub mod prelude {
         buffer::{
             BackendFrameMeta, CaptureInstant, ClockConversion, ClockSource, CpuAccess,
             FrameAllocation, FrameHops, FrameLatency, FrameLeaseDescriptor, FrameMeta,
-            FrameMutability, FramePlaneDescriptor, FramePlaneShape, FrameResidency, FrameTiming,
-            FrameValidationError, Hop, HopRecord, LibcameraFrameMeta, NativeFrameMeta, Plane,
-            PlaneLayout, PlaneMut, ResidencyTransition, ResidencyTransitionReason, TimestampClock,
-            UvcFrameMeta, V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
+            FrameMutability, FramePlaneDescriptor, FramePlaneShape, FrameProgress,
+            FrameProgressRef, FrameResidency, FrameTiming, FrameValidationError, Hop, HopRecord,
+            LibcameraFrameMeta, NativeFrameMeta, Plane, PlaneLayout, PlaneMut, ProgressWait,
+            ResidencyTransition, ResidencyTransitionReason, TimestampClock, UvcFrameMeta,
+            V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
             plane_layout_from_dims, plane_layout_with_stride,
         },
         controls::{

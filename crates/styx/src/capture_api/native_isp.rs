@@ -12,6 +12,7 @@ mod crop_control;
 mod loop_controls;
 mod pisp_lease;
 mod pisp_regions;
+mod pisp_sliced;
 mod pisp_worker;
 mod soft_worker;
 mod still_process;
@@ -493,6 +494,7 @@ pub(super) fn start_processed(
                 },
                 temporal_denoise: config.backends.native.temporal_denoise,
                 tdn_compressed: config.backends.native.tdn_compressed,
+                slice_line: config.backends.native.slice_line,
                 spatial_denoise: f64::from(config.backends.native.spatial_denoise_percent) / 100.0,
                 be_buffers,
                 pass_buffers,
@@ -540,6 +542,7 @@ pub(super) fn start_processed(
                     live: live_worker,
                     clock: timestamp_clock,
                     prep: pisp_lease::CpuPrep::new(&config.backends.native),
+                    slices: config.backends.native.deliver_slices,
                 },
             )?;
             (controls, worker)
