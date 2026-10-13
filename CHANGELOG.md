@@ -58,6 +58,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **libcamera holds a manual exposure and gain.** `set_exposure_us` and `set_gain` on the
+  libcamera backend sent `ExposureTime` / `AnalogueGain` with auto exposure still on, so the AE
+  algorithm overwrote them every frame. A held value now comes with its mode (`ExposureTimeMode`
+  / `AnalogueGainMode` = Manual) in every request, `set_ae(false)` sets both modes manual and
+  `set_ae(true)` drops the held values and hands both back to AE. Each frame's libcamera metadata
+  (`LibcameraFrameMeta`) now carries the exposure, analogue and digital gain and frame duration
+  its request reports (the recording format is unchanged; recorded frames read these as `None`).
+
 - **Processed captures answered no landing frame.** `StandardControls::set_exposure_us` and
   `set_gain` (and the camera service's `set_control_landing`) on a processed native mode (the
   3A loop) returned `frame: None`. A fixed exposure or gain now reports the frame in progress

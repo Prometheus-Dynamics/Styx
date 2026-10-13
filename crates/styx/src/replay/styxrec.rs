@@ -281,6 +281,7 @@ fn read_backend(r: &mut impl Read) -> Result<Option<BackendFrameMeta>, ReplayErr
                 "libcamera-allocator" => "libcamera-allocator",
                 _ => "recorded",
             },
+            ..Default::default()
         })),
         3 => Some(BackendFrameMeta::Native(NativeFrameMeta {
             sequence: read_u32(r)?,

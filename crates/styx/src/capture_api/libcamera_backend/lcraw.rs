@@ -17,9 +17,12 @@ use libcamera_sys::*;
 use smallvec::SmallVec;
 use styx_core::controls::{ControlId, ControlRect, ControlValue};
 
-/// libcamera's `SensorTimestamp` and `FrameDuration` control ids.
+/// libcamera's timing and exposure control ids, as metadata reports them.
 const SENSOR_TIMESTAMP: u32 = libcamera::controls::ControlId::SensorTimestamp as u32;
 const FRAME_DURATION: u32 = libcamera::controls::ControlId::FrameDuration as u32;
+const EXPOSURE_TIME: u32 = libcamera::controls::ControlId::ExposureTime as u32;
+const ANALOGUE_GAIN: u32 = libcamera::controls::ControlId::AnalogueGain as u32;
+const DIGITAL_GAIN: u32 = libcamera::controls::ControlId::DigitalGain as u32;
 
 /// A control value's elements, borrowed from the list holding it.
 #[derive(Clone, Copy, Debug)]
@@ -37,8 +40,8 @@ pub(super) enum RawValue<'a> {
     Other,
 }
 
-/// Timing from a completed request's metadata.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Timing and exposure from a completed request's metadata.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct RequestTiming {
     /// `SensorTimestamp`: start of exposure of the first line, in nanoseconds. libcamera
     /// documents `CLOCK_BOOTTIME`; on V4L2 pipelines it is the receiver's buffer timestamp
@@ -46,6 +49,11 @@ pub(super) struct RequestTiming {
     pub sensor_timestamp: Option<u64>,
     /// `FrameDuration` in nanoseconds.
     pub frame_duration_ns: Option<u64>,
+    /// `ExposureTime` applied to the frame, in nanoseconds (libcamera reports µs).
+    pub exposure_ns: Option<u64>,
+    /// `AnalogueGain` and `DigitalGain` applied to the frame.
+    pub analogue_gain: Option<f32>,
+    pub digital_gain: Option<f32>,
 }
 
 fn rect(r: &libcamera_rectangle_t) -> ControlRect {
@@ -113,13 +121,21 @@ pub(super) fn record_metadata<'a>(
 ) -> RequestTiming {
     let mut timing = RequestTiming::default();
     for (id, value) in entries {
-        if let RawValue::Int64(v) = value {
-            let first = v.first().and_then(|v| u64::try_from(*v).ok());
-            if id == SENSOR_TIMESTAMP {
-                timing.sensor_timestamp = first;
-            } else if id == FRAME_DURATION {
-                timing.frame_duration_ns = first.map(|us| us * 1_000);
+        match value {
+            RawValue::Int64(v) => {
+                let first = v.first().and_then(|v| u64::try_from(*v).ok());
+                if id == SENSOR_TIMESTAMP {
+                    timing.sensor_timestamp = first;
+                } else if id == FRAME_DURATION {
+                    timing.frame_duration_ns = first.map(|us| us * 1_000);
+                }
             }
+            RawValue::Int32([us]) if id == EXPOSURE_TIME => {
+                timing.exposure_ns = u64::try_from(*us).ok().map(|us| us * 1_000);
+            }
+            RawValue::Float([gain]) if id == ANALOGUE_GAIN => timing.analogue_gain = Some(*gain),
+            RawValue::Float([gain]) if id == DIGITAL_GAIN => timing.digital_gain = Some(*gain),
+            _ => {}
         }
         store(readback, id, value);
     }
@@ -289,6 +305,30 @@ mod tests {
         ]
     }
 
+    /// The exposure and gain a frame was made with come out of its metadata, in ns and as
+    /// the gains; without them the timing says nothing about them.
+    #[test]
+    fn metadata_reports_exposure_and_gain() {
+        let mut readback = HashMap::new();
+        let timing = record_metadata(
+            [
+                (EXPOSURE_TIME, RawValue::Int32(&[8_000])),
+                (ANALOGUE_GAIN, RawValue::Float(&[7.75])),
+                (DIGITAL_GAIN, RawValue::Float(&[1.0])),
+            ],
+            &mut readback,
+        );
+        assert_eq!(timing.exposure_ns, Some(8_000_000));
+        assert_eq!(timing.analogue_gain, Some(7.75));
+        assert_eq!(timing.digital_gain, Some(1.0));
+        assert_eq!(
+            readback.get(&ControlId(EXPOSURE_TIME)),
+            Some(&ControlValue::Int(8_000))
+        );
+        let none = record_metadata(std::iter::empty(), &mut HashMap::new());
+        assert_eq!(none, RequestTiming::default());
+    }
+
     #[test]
     fn metadata_becomes_readback_and_timing() {
         let rects = [lc_rect(0), lc_rect(8)];
@@ -299,6 +339,9 @@ mod tests {
             RequestTiming {
                 sensor_timestamp: Some(123_000),
                 frame_duration_ns: Some(33_333_000),
+                exposure_ns: None,
+                analogue_gain: None,
+                digital_gain: None,
             }
         );
         assert_eq!(

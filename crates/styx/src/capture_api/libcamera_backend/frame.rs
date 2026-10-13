@@ -3,6 +3,7 @@ use smallvec::SmallVec;
 use styx_core::prelude::*;
 
 use super::backing::{self, BackingPlaneView};
+use super::lcraw::RequestTiming;
 use super::util::plane_height_for_format;
 use crate::capture_api::CaptureError;
 
@@ -173,16 +174,27 @@ pub(super) struct Completed {
     pub buffer_memory: &'static str,
     /// When the worker took the completed request from libcamera (`Hop::Dequeued`).
     pub dequeued: std::time::Instant,
+    /// The exposure, gain and frame duration the request's metadata reports.
+    pub applied: RequestTiming,
+}
+
+/// The libcamera metadata of a frame: its buffer's memory and what the request applied.
+fn libcamera_meta(sequence: u32, c: &Completed) -> LibcameraFrameMeta {
+    LibcameraFrameMeta {
+        sequence,
+        buffer_memory: c.buffer_memory,
+        exposure_ns: c.applied.exposure_ns,
+        analogue_gain: c.applied.analogue_gain,
+        digital_gain: c.applied.digital_gain,
+        frame_duration_ns: c.applied.frame_duration_ns,
+    }
 }
 
 /// The primary frame's metadata: timestamps (converted), backend metadata, sensor latency and
 /// its `Dequeued` hop; the queue stamps `Sensor` and `Queued` when it is delivered.
 pub(super) fn frame_meta(format: MediaFormat, c: &Completed) -> FrameMeta {
     let mut meta = FrameMeta::new(format, c.timestamp)
-        .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
-            sequence: c.sequence,
-            buffer_memory: c.buffer_memory,
-        }))
+        .with_backend(BackendFrameMeta::Libcamera(libcamera_meta(c.sequence, c)))
         .with_capture_instant(c.dequeued)
         .with_sensor_latency(c.clock)
         .in_clock(c.clock, c.conversion)
@@ -201,9 +213,6 @@ pub(super) fn frame_meta(format: MediaFormat, c: &Completed) -> FrameMeta {
 /// timestamp, so the two match.
 pub(super) fn companion_meta(format: MediaFormat, c: &Completed, sequence: u32) -> FrameMeta {
     FrameMeta::new(format, c.timestamp)
-        .with_backend(BackendFrameMeta::Libcamera(LibcameraFrameMeta {
-            sequence,
-            buffer_memory: c.buffer_memory,
-        }))
+        .with_backend(BackendFrameMeta::Libcamera(libcamera_meta(sequence, c)))
         .in_clock(c.clock, c.conversion)
 }

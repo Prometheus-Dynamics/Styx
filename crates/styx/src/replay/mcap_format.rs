@@ -429,6 +429,7 @@ pub(super) fn decode_meta(data: &[u8]) -> Result<PartMeta, ReplayError> {
                 "libcamera-allocator" => "libcamera-allocator",
                 _ => "recorded",
             },
+            ..Default::default()
         })),
         3 => Some(BackendFrameMeta::Native(NativeFrameMeta {
             sequence,
