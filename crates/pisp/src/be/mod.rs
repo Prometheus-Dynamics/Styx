@@ -15,6 +15,7 @@
 pub mod defaults;
 pub mod lsc;
 mod prepare;
+mod slices;
 pub mod tiling;
 
 #[cfg(not(feature = "std"))]
@@ -26,6 +27,7 @@ use crate::uapi::*;
 const TDN_COMPRESS_OFFSET: u16 = 2048;
 
 pub use prepare::PrepareError;
+pub use slices::{SplitJobs, split_tiles};
 
 /// Maximum tile width of the BCM2712 back end (libpisp `BackEndMaxTileWidth`).
 pub const MAX_TILE_WIDTH: u16 = 640;
@@ -322,6 +324,14 @@ impl BackEnd {
     /// Limits the tile width (for testing tiling; at most [`MAX_TILE_WIDTH`]).
     pub fn set_max_tile_width(&mut self, w: u16) {
         self.max_tile_width = w.clamp(BE_MIN_TILE_WIDTH as u16, MAX_TILE_WIDTH);
+    }
+
+    /// Splits tiles into horizontal stripes of at most `h` output rows (libpisp's
+    /// `max_stripe_height`; default [`MAX_STRIPE_HEIGHT`], one stripe for any frame Styx
+    /// makes). With stripes a frame's tiles divide into the rows above a line and the rest,
+    /// which can run as separate jobs into the same output buffers.
+    pub fn set_max_stripe_height(&mut self, h: u16) {
+        self.max_stripe_height = h.clamp(BE_MIN_TILE_HEIGHT as u16, MAX_STRIPE_HEIGHT);
     }
 
     /// A fixed Bayer-to-output pipeline: black level, white balance gains, demosaic, CCM

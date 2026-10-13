@@ -158,6 +158,10 @@ pub struct FrontEndDevice {
     _media: MediaDevice,
     /// The slice-timing debug probe (`STYX_PISP_FE_LINES_PROBE=1`).
     lines_probe: Option<super::lines_probe::LinesProbe>,
+    /// Raw buffers queued to the front end, oldest (being written or next) first.
+    queued: std::cell::RefCell<std::collections::VecDeque<u32>>,
+    /// Subscribed to the line event (Styx's rp1-cfe module): [`Self::enable_line_events`].
+    line_events: bool,
     sensor_window: Option<SensorWindow>,
     stats: Queue,
     config: Queue,
@@ -326,6 +330,8 @@ impl FrontEndDevice {
         };
         Ok(Self {
             lines_probe,
+            queued: Default::default(),
+            line_events: false,
             stats: Queue::new(stats_dev, BufType::MetaCapture, setup.buffers, "fe_stats")?,
             config: Queue::new(cfg_dev, BufType::MetaOutput, setup.buffers, "fe_config")?,
             image,
@@ -373,6 +379,7 @@ impl FrontEndDevice {
         if let Some(q) = &self.image {
             for i in 0..q.len() as u32 {
                 q.queue(i, &[])?;
+                self.queued.borrow_mut().push_back(i);
             }
         }
         let n = configs.clamp(1, self.config.len()) as u32;
@@ -398,8 +405,10 @@ impl FrontEndDevice {
         let raw = match &self.image {
             Some(q) => {
                 let r = q.dequeue(timeout)?;
+                self.queued.borrow_mut().retain(|i| *i != r.index);
                 let data = q.maps[r.index as usize][0].as_slice()[..r.bytes_used()].to_vec();
                 q.queue(r.index, &[])?;
+                self.queued.borrow_mut().push_back(r.index);
                 Some((r.sequence, data))
             }
             None => None,
@@ -491,6 +500,7 @@ impl FrontEndDevice {
         let image = match &self.image {
             Some(q) => {
                 let r = q.dequeue(timeout)?;
+                self.queued.borrow_mut().retain(|i| *i != r.index);
                 if let (Some(p), Some(m)) =
                     (&mut self.lines_probe, q.maps[r.index as usize].first())
                 {
@@ -529,9 +539,59 @@ impl FrontEndDevice {
     /// Gives a raw frame from [`Self::next_held`] back to the front end.
     pub fn release_image(&self, index: u32) -> Result<()> {
         match &self.image {
-            Some(q) => q.queue(index, &[]),
+            Some(q) => {
+                q.queue(index, &[])?;
+                self.queued.borrow_mut().push_back(index);
+                Ok(())
+            }
             None => Ok(()),
         }
+    }
+
+    /// The raw buffer the front end writes now (or next): the oldest one queued. A line event
+    /// (see [`Self::enable_line_events`]) is about this buffer's frame.
+    pub fn image_in_flight(&self) -> Option<u32> {
+        self.queued.borrow().front().copied()
+    }
+
+    /// Subscribes to the front end's line event on the raw output (Styx's rp1-cfe module,
+    /// `STYX_CFE_EVENT_LINES`); fails with the stock driver. Poll [`Self::line_event_fd`] for
+    /// priority and read them with [`Self::take_line_event`].
+    pub fn enable_line_events(&mut self) -> Result<()> {
+        use styx_kernel::event::{EventType, Events, SubscribeFlags};
+        let q = self
+            .image
+            .as_ref()
+            .ok_or_else(|| DeviceError::Setup("no raw output".into()))?;
+        q.dev.subscribe(
+            EventType::Private(super::lines_probe::LINES_EVENT_OFFSET),
+            0,
+            SubscribeFlags::empty(),
+        )?;
+        self.line_events = true;
+        Ok(())
+    }
+
+    /// The raw output node's descriptor: priority when a line event is pending.
+    pub fn line_event_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        use std::os::fd::AsFd;
+        self.line_events
+            .then(|| self.image.as_ref().map(|q| q.dev.as_fd()))
+            .flatten()
+    }
+
+    /// The next pending line event: (frame sequence, line). `None` when none is pending.
+    pub fn take_line_event(&self) -> Option<(u32, u32)> {
+        use styx_kernel::event::{EventKind, Events};
+        let q = self.image.as_ref()?;
+        while let Ok(Some(ev)) = q.dev.dequeue_event() {
+            if let EventKind::Private { data, .. } = ev.kind {
+                let seq = u32::from_ne_bytes(data[0..4].try_into().ok()?);
+                let line = u32::from_ne_bytes(data[4..8].try_into().ok()?);
+                return Some((seq, line));
+            }
+        }
+        None
     }
 
     /// Stops streaming and frees the buffers.

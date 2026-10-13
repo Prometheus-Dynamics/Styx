@@ -8,6 +8,26 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Native PiSP: frames processed in two jobs during readout (opt-in).**
+  `PispOptions::slice_line` / `STYX_PISP_SLICE_LINE=N` needs Styx's rp1-cfe module
+  (`kernel-modules/rp1-cfe`), which forwards the front end's mid-frame line interrupt as
+  `STYX_CFE_EVENT_LINES`.
+  - At that event, rows up to the line are final in memory: every frame of 400 at lines 400,
+    600 and 700 on the CM5.
+  - The back end then runs the tiles above the line, from horizontal stripes
+    (`BackEnd::set_max_stripe_height`, `styx_pisp::be::split_tiles`), on the raw buffer still
+    being written. At the frame's end it runs the rest into the same output buffers
+    (`BackEndStream::process_queued_part`); the temporal-denoise average is shared across the
+    two jobs.
+  - On the CM5 at 1280x800@120 (RAW8, 8 ms), start of frame to delivery goes from 7.80 to
+    6.92 ms with the line at 600, with the same image: temporal noise 0.566 against 0.563, no
+    seam at the stripe boundary. Stripes alone cost 0.03 ms.
+  - The two jobs share the config prepared at the event, from the previous frame's settings: a
+    sliced stream applies the algorithms' settings one frame later.
+  - Without the module, slicing stays off and the open records why.
+  - Also: `FrontEnd::set_ilines`, `FrontEndDevice::{image_in_flight, enable_line_events,
+    line_event_fd, take_line_event}`, and a debug probe (`STYX_PISP_FE_LINES_PROBE=1`).
+
 - **OV9782 1280x480 window (Styx's ov9282 module).** `kernel-modules/ov9282` is the Raze image's
   own ov9282 driver plus a 1280x480 mode centred on the array (rows 160..639 of the 1280x800
   frame), reading 40% fewer lines.
