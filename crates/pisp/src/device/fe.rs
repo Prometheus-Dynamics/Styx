@@ -156,6 +156,8 @@ impl SensorWindow {
 
 pub struct FrontEndDevice {
     _media: MediaDevice,
+    /// The slice-timing debug probe (`STYX_PISP_FE_LINES_PROBE=1`).
+    lines_probe: Option<super::lines_probe::LinesProbe>,
     sensor_window: Option<SensorWindow>,
     stats: Queue,
     config: Queue,
@@ -310,7 +312,20 @@ impl FrontEndDevice {
         } else {
             None
         };
+        let lines_probe = match (&image, &image_path) {
+            (Some(q), Some(path)) => super::lines_probe::LinesProbe::start(
+                path,
+                q.maps
+                    .iter()
+                    .filter_map(|m| m.first())
+                    .map(|m| (m.as_ptr(), m.len()))
+                    .collect(),
+                image_format.stride as usize,
+            ),
+            _ => None,
+        };
         Ok(Self {
+            lines_probe,
             stats: Queue::new(stats_dev, BufType::MetaCapture, setup.buffers, "fe_stats")?,
             config: Queue::new(cfg_dev, BufType::MetaOutput, setup.buffers, "fe_config")?,
             image,
@@ -476,6 +491,16 @@ impl FrontEndDevice {
         let image = match &self.image {
             Some(q) => {
                 let r = q.dequeue(timeout)?;
+                if let (Some(p), Some(m)) =
+                    (&mut self.lines_probe, q.maps[r.index as usize].first())
+                {
+                    p.check(
+                        r.sequence,
+                        r.index,
+                        m.as_slice(),
+                        self.image_format.stride as usize,
+                    );
+                }
                 Some(HeldImage {
                     index: r.index,
                     sequence: r.sequence,

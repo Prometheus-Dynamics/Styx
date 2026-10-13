@@ -203,6 +203,14 @@ impl FrontEnd {
         self.dirty(fe_enable::output(i));
     }
 
+    /// The line output `i` raises its line interrupt at (`ilines`; 0: the driver's choice,
+    /// 3/4 of the height). Only Styx's rp1-cfe module keeps a value set here and reports the
+    /// interrupt (`STYX_CFE_EVENT_LINES`); the stock driver overwrites it.
+    pub fn set_ilines(&mut self, i: usize, line: u16) {
+        self.cfg.ch[i].output.ilines = line;
+        self.dirty(fe_enable::output(i));
+    }
+
     /// The statistics set-up libcamera's PiSP IPA uses at start: statistics crop to the whole
     /// input, AWB over the frame with pixels above 98% excluded, uniform AGC weights,
     /// Gr/Gb CDAF, the first floating region over the whole frame, and RGB-to-Y weights for

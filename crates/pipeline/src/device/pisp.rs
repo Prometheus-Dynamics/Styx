@@ -93,6 +93,13 @@ impl Isp {
         let mut fe = FrontEnd::new(info.width as u16, info.height as u16, order);
         fe.default_stats(level16(info.black_level), 1.0, 1.0);
         fe.set_output_format(0, input);
+        // Debug: the line the raw output's line interrupt fires at (Styx's rp1-cfe module).
+        if let Some(n) = std::env::var("STYX_PISP_FE_ILINES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            fe.set_ilines(0, n);
+        }
         fe.enable(fe_enable::OUTPUT0, true);
         let input_len = input.stride as u32 * u32::from(input.height);
         let mut be_dev = BackEndStream::open_with(

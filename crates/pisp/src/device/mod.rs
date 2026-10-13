@@ -15,6 +15,7 @@ mod be_tdn;
 mod config_buf;
 mod config_dump;
 mod fe;
+mod lines_probe;
 pub mod profile;
 mod queue;
 
