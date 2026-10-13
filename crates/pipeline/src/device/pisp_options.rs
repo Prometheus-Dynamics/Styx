@@ -43,6 +43,11 @@ pub struct PispOptions {
     pub spatial_denoise: f64,
     /// What extra passes ([`super::PispPipeline::set_pass`]) do with temporal denoise.
     pub pass_tdn: crate::pisp_passes::PassTdn,
+    /// Process each frame in two back end jobs, the first once the raw frame's first `line`
+    /// rows are in (Styx's rp1-cfe module's line event), the rest at its end: the frame is
+    /// ready sooner after its readout. `None` (default): one job at the end. Without the
+    /// module the stream runs whole. Overridden by `STYX_PISP_SLICE_LINE`.
+    pub slice_line: Option<u16>,
 }
 
 impl PispOptions {
@@ -73,6 +78,7 @@ impl PispOptions {
             tdn_compressed: true,
             spatial_denoise: 1.0,
             pass_tdn: Default::default(),
+            slice_line: None,
         }
     }
 }

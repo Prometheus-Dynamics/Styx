@@ -281,3 +281,50 @@ fn compressed_tdn_sets_its_blocks_and_byte_offsets() {
     assert_eq!(en & bayer_enable::TDN_DECOMPRESS, 0);
     assert_ne!(en & bayer_enable::TDN_COMPRESS, 0);
 }
+
+#[test]
+fn striped_tiles_split_at_a_line_into_two_jobs() {
+    // 1280x800 with 576-row stripes, split where the line event says rows 0..600 are in.
+    let mut be = simple(formats::NV12);
+    be.set_max_stripe_height(576);
+    let t = be.prepare().unwrap();
+    let all = &t.tiles[..t.num_tiles as usize];
+    assert!(all.iter().any(|x| x.input_offset_y > 0), "no second stripe");
+    let s = split_tiles(&t, 600).unwrap();
+    let (a, b) = (
+        &s.first.tiles[..s.first.num_tiles as usize],
+        &s.rest.tiles[..s.rest.num_tiles as usize],
+    );
+    assert_eq!(a.len() + b.len(), all.len());
+    assert!(
+        a.iter()
+            .all(|x| u32::from(x.input_offset_y) + u32::from(x.input_height) <= 600)
+    );
+    assert!(
+        b.iter()
+            .all(|x| u32::from(x.input_offset_y) + u32::from(x.input_height) > 600)
+    );
+    // Output 0's rows above the second stripe are final after the first job; every output row
+    // is written by exactly one of the two.
+    // (The tiler balances stripes, so the boundary sits at or above the 576 limit.)
+    let first_rest_row = b
+        .iter()
+        .map(|x| u32::from(x.output_offset_y[0]))
+        .min()
+        .unwrap();
+    assert_eq!(s.rows_after_first[0], first_rest_row);
+    assert!(
+        (400..=576).contains(&s.rows_after_first[0]),
+        "{}",
+        s.rows_after_first[0]
+    );
+    let rows = |ts: &[Tile]| -> u32 {
+        ts.iter()
+            .map(|x| u32::from(x.output_width[0]) * u32::from(x.output_height[0]))
+            .sum()
+    };
+    assert_eq!(rows(a) + rows(b), 1280 * 800);
+    // Above the first stripe's input, or below the frame: one job.
+    assert!(split_tiles(&t, 100).is_none());
+    assert!(split_tiles(&t, 900).is_none());
+}

@@ -64,6 +64,9 @@ struct Isp {
     be: BeConfigBuilder,
     /// Why temporal denoise could not be set up, if it was wanted.
     tdn_error: Option<String>,
+    /// The line frames are split at ([`PispOptions::slice_line`]), when the front end reports
+    /// it; else why not.
+    slice: std::result::Result<Option<u16>, String>,
 }
 
 impl Isp {
@@ -78,7 +81,12 @@ impl Isp {
     ) -> Result<(Self, Duration, Duration)> {
         let t = Instant::now();
         let order = bayer(info.cfa);
-        let fe_dev = FrontEndDevice::open(&FrontEndSetup {
+        let want_slice = std::env::var("STYX_PISP_SLICE_LINE")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .or(options.slice_line)
+            .filter(|l| *l > 0 && u32::from(*l) < info.height);
+        let mut fe_dev = FrontEndDevice::open(&FrontEndSetup {
             width: info.width,
             height: info.height,
             sensor_code: MbusCode(code),
@@ -93,6 +101,24 @@ impl Isp {
         let mut fe = FrontEnd::new(info.width as u16, info.height as u16, order);
         fe.default_stats(level16(info.black_level), 1.0, 1.0);
         fe.set_output_format(0, input);
+        // Slicing: the front end's line event (Styx's rp1-cfe module) at the slice line.
+        let slice = match want_slice {
+            Some(line) => match fe_dev.enable_line_events() {
+                Ok(()) => {
+                    fe.set_ilines(0, line);
+                    Ok(Some(line))
+                }
+                Err(e) => Err(format!("no line events from the front end: {e}")),
+            },
+            None => Ok(None),
+        };
+        // Debug: the line the raw output's line interrupt fires at (Styx's rp1-cfe module).
+        if let Some(n) = std::env::var("STYX_PISP_FE_ILINES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            fe.set_ilines(0, n);
+        }
         fe.enable(fe_enable::OUTPUT0, true);
         let input_len = input.stride as u32 * u32::from(input.height);
         let mut be_dev = BackEndStream::open_with(
@@ -114,6 +140,16 @@ impl Isp {
             info.black_level,
             [be_dev.output_format(0), be_dev.output_format(1)],
         )?;
+        // Debug: horizontal stripes of at most N rows (measuring what slicing costs).
+        if let Some(n) = std::env::var("STYX_PISP_BE_STRIPE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            be.set_max_stripe_height(n);
+        }
+        if let Ok(Some(line)) = slice {
+            be.set_max_stripe_height(super::pisp_slices::stripe_height(line));
+        }
         for (i, crop) in options.crop.iter().enumerate() {
             be.set_crop(i, crop.unwrap_or_default());
         }
@@ -133,6 +169,7 @@ impl Isp {
                 be_dev,
                 be,
                 tdn_error,
+                slice,
             },
             fe_open,
             t.elapsed(),
@@ -150,6 +187,10 @@ pub struct PispPipeline {
     algo: Algorithms,
     fe: FrontEnd,
     fe_dev: Option<FrontEndDevice>,
+    /// Frames split into two back end jobs ([`PispOptions::slice_line`]), when on.
+    slicing: Option<super::pisp_slices::Slicing>,
+    /// Why slicing is off although asked for.
+    slice_error: Option<String>,
     /// The window of the sensor's field the mode reads, if it reads one.
     sensor_window: Option<styx_pisp::device::SensorWindow>,
     be_dev: Option<BackEndStream>,
@@ -170,43 +211,6 @@ pub struct PispPipeline {
     raw_copy: Option<super::RawCopy>,
     /// Extra back end passes over every frame (regions of interest).
     passes: PassConfigs,
-}
-
-/// Serves the sensor side until the front end's statistics are ready: frame starts are only
-/// waited for while sensor writes wait for one (a request whose values land a frame apart,
-/// e.g. frame length after exposure); otherwise the statistics are the only wake of the frame
-/// (`next_held_raw` waits for them) and the frame start is read when they arrive.
-fn wait_for_statistics(
-    fe_dev: &FrontEndDevice,
-    sensor: &SensorStream,
-    timeout: Duration,
-) -> Result<()> {
-    use styx_kernel::Wait;
-    let deadline = Instant::now() + timeout;
-    loop {
-        sensor.service();
-        let Some(sync) = sensor.frame_start_fd() else {
-            return Ok(());
-        };
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Ok(());
-        }
-        // Two descriptors, in a list on the stack: this waits on every frame.
-        let mut ready = [styx_kernel::Ready::default(); 2];
-        profile::time("loop", "wait", || {
-            styx_kernel::poll_into(
-                &[(fe_dev.stats_fd(), Wait::READABLE), (sync, Wait::PRIORITY)],
-                Some(left),
-                &mut ready,
-            )
-        })
-        .map_err(|e| PipelineError::Device(format!("waiting for the front end: {e}")))?;
-        // Statistics ready, or either node failing (the dequeue below reports it).
-        if ready[0].readable || ready.iter().any(|r| r.error || r.hangup) {
-            return Ok(());
-        }
-    }
 }
 
 /// Time from the end of a frame's readout until its statistics have been through the
@@ -298,6 +302,13 @@ impl PispPipeline {
             raw_stats: bytemuck::allocation::zeroed_box(),
             want_tdn,
             tdn_error: isp.tdn_error,
+            slicing: isp
+                .slice
+                .clone()
+                .ok()
+                .flatten()
+                .map(super::pisp_slices::Slicing::new),
+            slice_error: isp.slice.err(),
             last_seq: None,
             raw_copy: None,
             passes,
@@ -407,6 +418,13 @@ impl PispPipeline {
                 self.want_tdn,
             )?;
             self.tdn_error = isp.tdn_error;
+            self.slicing = isp
+                .slice
+                .clone()
+                .ok()
+                .flatten()
+                .map(super::pisp_slices::Slicing::new);
+            self.slice_error = isp.slice.clone().err();
             if isp.be_dev.tdn_enabled() != self.info.camera.temporal_denoise {
                 self.info.camera.temporal_denoise = isp.be_dev.tdn_enabled();
                 self.algo
@@ -498,7 +516,11 @@ impl PispPipeline {
         // Settled: the algorithms (and the statistics they read) only every few frames. Decided
         // for the frame expected next, before its statistics are copied out.
         let run = self.algo.due(self.last_seq.map(|s| s + 1));
-        wait_for_statistics(fe_dev, sensor, timeout)?;
+        let slice = self
+            .slicing
+            .as_mut()
+            .map(|s| (s, &mut *be_dev, &mut self.be));
+        super::pisp_slices::wait_for_statistics(fe_dev, sensor, timeout, slice)?;
         let held =
             fe_dev.next_held_raw(&mut self.fe, timeout, run.then_some(&mut *self.raw_stats))?;
         let dequeued = Instant::now();
@@ -520,6 +542,7 @@ impl PispPipeline {
                 builder: &mut self.be,
                 timeout,
                 prepare: Duration::ZERO,
+                slicing: self.slicing.as_mut(),
             };
             let mut fe = FeStats {
                 raw: &self.raw_stats,
@@ -715,6 +738,8 @@ struct BackEnd<'a> {
     timeout: Duration,
     /// Updating the config (and its tiles, when they change).
     prepare: Duration,
+    /// Frames split into two jobs, the first started at the line event.
+    slicing: Option<&'a mut super::pisp_slices::Slicing>,
 }
 
 impl FrameIsp for BackEnd<'_> {
@@ -729,6 +754,12 @@ impl FrameIsp for BackEnd<'_> {
         values: &SensorValues,
         _statistics: bool,
     ) -> Result<QueuedJob> {
+        if let Some(s) = self.slicing.as_deref_mut()
+            && let Some(job) = s.submit_rest(index, settings, self.dev, self.timeout)?
+        {
+            self.prepare = Duration::ZERO;
+            return Ok(job);
+        }
         let t = Instant::now();
         // Temporal denoise scales its average by the frame's light: exposure, gain and the
         // flicker deflicker predicts.

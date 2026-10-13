@@ -28,6 +28,8 @@ pub(super) struct TdnBuffers {
     last_written: Option<usize>,
     /// What the job in flight queued: (read slot, written slot).
     in_flight: (Option<usize>, Option<usize>),
+    /// The slots of a frame split into several jobs, from its first job on.
+    frame: (Option<usize>, Option<usize>),
 }
 
 fn set_format(
@@ -89,6 +91,7 @@ impl TdnBuffers {
             len: len as u32,
             last_written: None,
             in_flight: (None, None),
+            frame: (None, None),
         })
     }
 
@@ -97,8 +100,30 @@ impl TdnBuffers {
         self.last_written = None;
     }
 
+    /// Queues the buffers a job with `bayer_enables` uses: a frame's first job picks the slots
+    /// (`first`), the frame's further jobs reuse them (each reads and writes its own rows).
+    pub(super) fn queue_part(&mut self, bayer_enables: u32, first: bool) -> Result<()> {
+        if first {
+            self.queue(bayer_enables)?;
+            self.frame = self.in_flight;
+            return Ok(());
+        }
+        let (r, w) = self.frame;
+        if let Some(slot) = r.filter(|_| bayer_enables & bayer_enable::TDN_INPUT != 0) {
+            self.queue_one(&self.input, IN, slot)?;
+        }
+        if let Some(slot) = w.filter(|_| bayer_enables & bayer_enable::TDN_OUTPUT != 0) {
+            self.queue_one(&self.output, OUT, slot)?;
+        }
+        self.in_flight = (
+            r.filter(|_| bayer_enables & bayer_enable::TDN_INPUT != 0),
+            w.filter(|_| bayer_enables & bayer_enable::TDN_OUTPUT != 0),
+        );
+        Ok(())
+    }
+
     /// Queues the buffers a job with `bayer_enables` uses.
-    pub(super) fn queue(&mut self, bayer_enables: u32) -> Result<()> {
+    fn queue(&mut self, bayer_enables: u32) -> Result<()> {
         let write = bayer_enables & bayer_enable::TDN_OUTPUT != 0;
         let read = bayer_enables & bayer_enable::TDN_INPUT != 0;
         let r = if read {
@@ -134,14 +159,21 @@ impl TdnBuffers {
 
     /// Dequeues what [`Self::queue`] queued once the job is done; the written buffer is the
     /// next one read.
-    pub(super) fn complete(&mut self, timeout: Duration) -> Result<()> {
+    /// `last`: the frame's final job (a frame split into several jobs keeps reading the
+    /// previous average until its last job is done).
+    pub(super) fn complete(&mut self, timeout: Duration, last: bool) -> Result<()> {
         let (r, w) = std::mem::take(&mut self.in_flight);
         if r.is_some() {
             dequeue(&self.input, IN, timeout)?;
         }
         if w.is_some() {
             dequeue(&self.output, OUT, timeout)?;
-            self.last_written = w;
+        }
+        if last {
+            if let Some(w) = self.frame.1.or(w) {
+                self.last_written = Some(w);
+            }
+            self.frame = (None, None);
         }
         Ok(())
     }
@@ -149,6 +181,7 @@ impl TdnBuffers {
     /// Drops a job that failed: nothing it wrote is trusted.
     pub(super) fn abandon(&mut self) {
         self.in_flight = (None, None);
+        self.frame = (None, None);
         self.last_written = None;
     }
 

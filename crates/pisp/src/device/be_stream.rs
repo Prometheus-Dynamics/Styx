@@ -78,6 +78,8 @@ pub struct BeJob {
 pub struct QueuedJob {
     outputs: [Option<u32>; 2],
     start: Instant,
+    /// The frame's last job (its only one, unless split: [`BackEndStream::process_queued_part`]).
+    last: bool,
 }
 
 struct Output {
@@ -374,6 +376,21 @@ impl BackEndStream {
     /// [`Self::wait_job`] (the caller can work meanwhile: the job takes about 0.8 ms for
     /// 1280x800).
     pub fn process_queued(&mut self, input: u32, cfg: &BeTilesConfig) -> Result<QueuedJob> {
+        self.process_queued_part(input, cfg, None, true)
+    }
+
+    /// Queues one job of a frame split into several (`styx_pisp::be::split_tiles`): the first
+    /// (`held: None`) takes output buffers and the temporal-denoise slots as a whole frame
+    /// does; the next ones pass the outputs the first returned ([`BeJob::outputs`]) and write
+    /// into the same buffers and slots, each its own tiles. `last`: the frame's final job, whose
+    /// completion makes the average it wrote the one the next frame reads.
+    pub fn process_queued_part(
+        &mut self,
+        input: u32,
+        cfg: &BeTilesConfig,
+        held: Option<[Option<u32>; 2]>,
+        last: bool,
+    ) -> Result<QueuedJob> {
         let patched = super::config_dump::be_patch(cfg);
         let cfg = patched.as_deref().unwrap_or(cfg);
         let bytes = cfg.as_bytes();
@@ -382,9 +399,10 @@ impl BackEndStream {
         // Only the outputs the config enables get a buffer (a job can write one of them, e.g.
         // an extra pass for a region of the frame).
         let enabled = cfg.config.global.rgb_enables;
-        let mut picked = [None, None];
+        let mut picked = held.unwrap_or_default();
         for (i, o) in self.outputs.iter_mut().enumerate() {
-            if let Some(o) = o
+            if held.is_none()
+                && let Some(o) = o
                 && enabled & rgb_enable::output(i) != 0
             {
                 let Some(b) = o.free.pop_front() else {
@@ -395,7 +413,7 @@ impl BackEndStream {
             }
         }
         if let Some(t) = &mut self.tdn
-            && let Err(e) = t.queue(cfg.config.global.bayer_enables)
+            && let Err(e) = t.queue_part(cfg.config.global.bayer_enables, held.is_none())
         {
             t.abandon();
             self.give_back(picked);
@@ -406,6 +424,7 @@ impl BackEndStream {
             Ok(start) => Ok(QueuedJob {
                 outputs: picked,
                 start,
+                last,
             }),
             Err(e) => {
                 self.give_back(picked);
@@ -420,7 +439,7 @@ impl BackEndStream {
         if let Some(t) = &mut self.tdn {
             match &result {
                 Ok(_) => {
-                    if let Err(e) = t.complete(timeout) {
+                    if let Err(e) = t.complete(timeout, job.last) {
                         t.abandon();
                         result = Err(e);
                     }

@@ -9,6 +9,7 @@
 
 mod pisp;
 mod pisp_options;
+mod pisp_slices;
 mod soft;
 mod still_be;
 
