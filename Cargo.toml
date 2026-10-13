@@ -26,6 +26,7 @@ members = [
     "tools/compare",
     "tools/styx-tune",
     "tools/styx-record",
+    "tools/iq-compare",
     "examples",
     "examples/nostd-smoke",
     "examples/nostd-camera",

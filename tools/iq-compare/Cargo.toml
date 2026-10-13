@@ -1,0 +1,19 @@
+[package]
+name = "styx-iq-compare"
+version.workspace = true
+edition.workspace = true
+description = "Image-quality comparison of two raw grey (Y8) captures: temporal and spatial noise on a static patch, and sharpness and contrast on an edge region."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "styx-iq-compare"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

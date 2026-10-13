@@ -411,6 +411,31 @@ pass, so per-consumer denoise would need a merge rule, and a `FrameRequest`
 `PispOptions::temporal_denoise` / `spatial_denoise`, `Controller::set_spatial_denoise`,
 `IspSettings::with_spatial_denoise`; `native-pipeline pisp --no-tdn` / `--spatial-denoise K`.
 
+### libcamera equivalence (denoise, sharpen, contrast)
+
+The denoise, sharpening, GEQ, DPC and contrast blocks follow libcamera's PiSP IPA
+(`noise.cpp`, `denoise.cpp`, `geq.cpp`, `dpc.cpp`, `sharpen.cpp`, `contrast.cpp`, and the
+`apply*` functions in `pisp/pisp.cpp`) with no default changed. At the same gain the back end
+config is the same:
+
+* noise profile: tuning × √gain (`rpi.noise`); libcamera also divides by the sensor mode's
+  noise factor, which Styx does not model (1 for the full-resolution OV9782 modes; binned
+  modes are unverified);
+* SDN and CDN start at their no-TDN deviations and back off by 0.75 per frame to the TDN ones;
+  CDN with TDN defaults to a third of its no-TDN deviation;
+* TDN: first frame starts the average (input off, reset); the exposure ratio resets it at
+  4 or more. Styx also multiplies the flicker factor into the exposure (libcamera does not;
+  1 unless deflicker is on);
+* sharpening: thresholds × threshold / 4, strengths × strength, limits × limit (libcamera's
+  `applySharpen`), `set_sharpen_scaled`;
+* contrast: histogram stretch then the tuning's gamma curve (`contrast.cpp`); the LUT is built
+  from the same points, not diffed against libcamera's `generateLut`.
+
+`pisp_be`'s `ov9782_*` tests pin these values at gain 7.5 for the ov9782 tuning. A refused TDN
+buffer is logged once at start (`native_isp`), not only reported by `temporal_denoise()`.
+Not verified here: the kernel's `pispbe-tdn_*` nodes on the device, and the luma at 7.5× on
+hardware (the live A/B is the check).
+
 ## Software path
 
 `SoftPipeline` captures packed RAW10 from `rp1-cfe-csi2_ch0` (or any raw node), the software
