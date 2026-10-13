@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **PiSP config dumps for debugging:** `STYX_PISP_BE_DUMP=DIR[:N,...]` and
+  `STYX_PISP_FE_DUMP=DIR[:N,...]` write the back-end and front-end configs of jobs N (default 30
+  and 90) as the raw `pisp_be_tiles_config` / `pisp_fe_config` bytes the kernel receives, for
+  diffing against another stack's (libpisp's `BackEnd::GetJsonConfig` reads the same bytes).
+  `STYX_PISP_BE_PATCH=REF.bin:block,...` copies named blocks of a reference config into every
+  back-end job (`tdn-reset`, `-sdn`, `-cdn` switch those off), to find which block makes two
+  images differ (docs/runtime-debugging.md).
 - **Sensor calibration from dark frames:** `tools/styx-calibrate` (`styx-calibrate`, a library
   and a command line) measures a sensor's black level per CFA channel (R, Gr, Gb, B), read noise
   and its gain dependence, dark current, fixed pattern and row/column noise, and hot, stuck and
@@ -76,6 +83,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   keeps its `Vec` result.
 
 ### Fixed
+
+- **Native PiSP: soft image right of the first back-end tile.** The back-end tiler aligned tile
+  starts to 2 pixels, where libpisp also aligns them to 16 bytes whenever the temporal denoise
+  (or stitch) output is written. At 1280x800 with a second, resampled output the second tile
+  started at x=494, so each tile past the first wrote the TDN average a few pixels off and the
+  next frame blended it in shifted: on the OV9782 the image right of x≈494 had about 75% of
+  libcamera's edge energy (58% on fine detail) and three times its temporal noise, and AprilTags
+  there went undetected. Tiles now follow libpisp's rules (4 bytes; 8 pixels for any compressed
+  Bayer input; 16 bytes for a TDN or stitch output). With the fix the same scene measures
+  98–102% of libcamera's edge energy across the frame at lower temporal noise.
 
 - **libcamera holds a manual exposure and gain.** `set_exposure_us` and `set_gain` on the
   libcamera backend sent `ExposureTime` / `AnalogueGain` with auto exposure still on, so the AE

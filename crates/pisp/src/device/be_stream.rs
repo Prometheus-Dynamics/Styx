@@ -357,8 +357,11 @@ impl BackEndStream {
     /// [`Self::wait_job`] (the caller can work meanwhile: the job takes about 0.8 ms for
     /// 1280x800).
     pub fn process_queued(&mut self, input: u32, cfg: &BeTilesConfig) -> Result<QueuedJob> {
+        let patched = super::config_dump::be_patch(cfg);
+        let cfg = patched.as_deref().unwrap_or(cfg);
         let bytes = cfg.as_bytes();
         super::profile::time("pispbe-config", "copy", || self.config.write(bytes));
+        super::config_dump::be_config(bytes);
         // Only the outputs the config enables get a buffer (a job can write one of them, e.g.
         // an extra pass for a region of the frame).
         let enabled = cfg.config.global.rgb_enables;

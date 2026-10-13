@@ -13,6 +13,7 @@ mod be_output;
 mod be_stream;
 mod be_tdn;
 mod config_buf;
+mod config_dump;
 mod fe;
 pub mod profile;
 mod queue;

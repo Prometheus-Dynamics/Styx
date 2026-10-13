@@ -319,9 +319,32 @@ impl BackEnd {
             };
             Length2::new(lcm(pixel_alignment(fmt, BE_INPUT_ALIGN), 2) as i32, y)
         } else {
+            // As libpisp's calculate_input_alignment: 4 bytes for the input; 8 pixels when any
+            // Bayer input (main, TDN, stitch) is compressed; 16 bytes when the TDN or stitch
+            // output is written, since each tile writes those at its own input offset. Without
+            // the last, a tile starting mid-burst wrote the TDN average a few pixels off and
+            // the next frame blended it in shifted: a soft image right of the first tile edge.
+            let b = c.global.bayer_enables;
             let mut a = pixel_alignment(c.input_format.format, BE_INPUT_ALIGN);
-            if f::is_compressed(c.input_format.format) {
+            let compressed_in = f::is_compressed(c.input_format.format)
+                || (b & bayer_enable::TDN_INPUT != 0
+                    && f::is_compressed(c.tdn_input_format.format))
+                || (b & bayer_enable::STITCH_INPUT != 0
+                    && f::is_compressed(c.stitch_input_format.format));
+            if compressed_in {
                 a = lcm(a, BE_COMPRESSED_ALIGN);
+            }
+            if b & bayer_enable::TDN_OUTPUT != 0 {
+                a = lcm(
+                    a,
+                    pixel_alignment(c.tdn_output_format.format, BE_OUTPUT_MIN_ALIGN),
+                );
+            }
+            if b & bayer_enable::STITCH_OUTPUT != 0 {
+                a = lcm(
+                    a,
+                    pixel_alignment(c.stitch_output_format.format, BE_OUTPUT_MIN_ALIGN),
+                );
             }
             Length2::new(a as i32, 2)
         };

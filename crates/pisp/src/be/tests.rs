@@ -169,3 +169,46 @@ fn per_channel_black_levels_reach_the_blc_and_the_denoise_blocks() {
     assert_eq!(one.config().sdn.black_level, four.config().sdn.black_level);
     assert_eq!(one.config().tdn.black_level, 64);
 }
+
+#[test]
+fn tdn_output_tiles_start_16_byte_aligned() {
+    // The OV9782 case: 1280x800 16-bit Bayer in, NV12 out, TDN on. Every tile writes the TDN
+    // average at its own input offset, which libpisp aligns to 16 bytes (8 pixels here); at 2
+    // pixels the second tile started at x=494 and the average landed shifted.
+    let mut be = simple(formats::NV12);
+    let g = be.config().global;
+    be.set_global(
+        g.bayer_enables,
+        g.rgb_enables | rgb_enable::OUTPUT1,
+        BayerOrder::Bggr,
+    );
+    let nv12 = BeOutputFormatConfig {
+        image: ImageFormatConfig {
+            format: formats::NV12,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    be.set_output_format(1, nv12);
+    be.set_smart_resize(1, 640, 400);
+    be.set_tdn_format(bayer16(1280, 800));
+    be.set_tdn(Some(BeTdnConfig::default()), true);
+    for max in [0, 256, 400] {
+        if max > 0 {
+            be.set_max_tile_width(max);
+        }
+        let t = be.prepare().unwrap();
+        let tiles = &t.tiles[..t.num_tiles as usize];
+        assert!(tiles.len() > 1, "max {max}: one tile");
+        for tile in tiles {
+            assert_eq!(
+                tile.input_offset_x % 8,
+                0,
+                "max {max}: tile at x={}",
+                tile.input_offset_x
+            );
+            assert_eq!(tile.tdn_output_addr_offset % 16, 0, "max {max}");
+            assert_eq!(tile.tdn_input_addr_offset % 16, 0, "max {max}");
+        }
+    }
+}

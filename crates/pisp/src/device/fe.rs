@@ -276,6 +276,7 @@ impl FrontEndDevice {
 
     fn queue_config(&mut self, index: u32, cfg: &FeConfig) -> Result<()> {
         let bytes = cfg.as_bytes();
+        super::config_dump::fe_config(bytes);
         self.config.maps[index as usize][0].as_mut_slice()[..bytes.len()].copy_from_slice(bytes);
         self.config.queue(index, &[bytes.len() as u32])
     }
