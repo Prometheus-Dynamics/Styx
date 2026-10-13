@@ -39,6 +39,7 @@
 /* Chip ID */
 #define OV9282_REG_ID		CCI_REG16(0x300a)
 #define OV9282_ID		0x9281
+#define OV9782_ID		0x9782
 
 /* Output enable registers */
 #define OV9282_REG_OUTPUT_ENABLE4	CCI_REG8(0x3004)
@@ -68,6 +69,7 @@
 #define OV9282_EXPOSURE_MIN	1
 #define OV9282_EXPOSURE_OFFSET	25
 #define OV9282_EXPOSURE_STEP	1
+#define OV9782_EXPOSURE_OFFSET	25
 #define OV9282_EXPOSURE_DEFAULT	0x0282
 
 /* AEC/AGC manual */
@@ -160,6 +162,24 @@ struct ov9282_reg_list {
 };
 
 /**
+ * struct ov9282_variant - sensor-family variant data
+ * @name: subdev name
+ * @chip_ids: accepted chip ID values for this compatible
+ * @num_chip_ids: number of accepted chip IDs
+ * @code_10bit: 10-bit media bus code exposed by this variant
+ * @code_8bit: 8-bit media bus code exposed by this variant
+ * @exposure_offset: maximum exposure guard band in row periods
+ */
+struct ov9282_variant {
+	const char *name;
+	const u16 *chip_ids;
+	unsigned int num_chip_ids;
+	u32 code_10bit;
+	u32 code_8bit;
+	u32 exposure_offset;
+};
+
+/**
  * struct ov9282_mode - ov9282 sensor mode structure
  * @width: Frame width
  * @height: Frame height
@@ -188,6 +208,7 @@ struct ov9282_mode {
  * struct ov9282 - ov9282 sensor device structure
  * @dev: Pointer to generic device
  * @sd: V4L2 sub-device
+ * @variant: Selected sensor-family variant
  * @regmap: Regmap for sensor register access
  * @pad: Media pad. Only one pad supported
  * @reset_gpio: Sensor reset gpio
@@ -210,6 +231,7 @@ struct ov9282_mode {
 struct ov9282 {
 	struct device *dev;
 	struct v4l2_subdev sd;
+	const struct ov9282_variant *variant;
 	struct regmap *regmap;
 	struct media_pad pad;
 	struct gpio_desc *reset_gpio;
@@ -230,6 +252,36 @@ struct ov9282 {
 	const struct ov9282_mode *cur_mode;
 	u32 code;
 	int trigger_mode;
+};
+
+static const u16 ov928x_chip_ids[] = { OV9282_ID };
+static const u16 ov9782_chip_ids[] = { OV9782_ID, OV9282_ID };
+
+static const struct ov9282_variant ov9281_variant = {
+	.name = "ov9281",
+	.chip_ids = ov928x_chip_ids,
+	.num_chip_ids = ARRAY_SIZE(ov928x_chip_ids),
+	.code_10bit = MEDIA_BUS_FMT_Y10_1X10,
+	.code_8bit = MEDIA_BUS_FMT_Y8_1X8,
+	.exposure_offset = OV9282_EXPOSURE_OFFSET,
+};
+
+static const struct ov9282_variant ov9282_variant = {
+	.name = "ov9282",
+	.chip_ids = ov928x_chip_ids,
+	.num_chip_ids = ARRAY_SIZE(ov928x_chip_ids),
+	.code_10bit = MEDIA_BUS_FMT_Y10_1X10,
+	.code_8bit = MEDIA_BUS_FMT_Y8_1X8,
+	.exposure_offset = OV9282_EXPOSURE_OFFSET,
+};
+
+static const struct ov9282_variant ov9782_variant = {
+	.name = "ov9782",
+	.chip_ids = ov9782_chip_ids,
+	.num_chip_ids = ARRAY_SIZE(ov9782_chip_ids),
+	.code_10bit = MEDIA_BUS_FMT_SBGGR10_1X10,
+	.code_8bit = MEDIA_BUS_FMT_SBGGR8_1X8,
+	.exposure_offset = OV9782_EXPOSURE_OFFSET,
 };
 
 static const s64 link_freq[] = {
@@ -502,7 +554,7 @@ static int ov9282_update_controls(struct ov9282 *ov9282,
 	if (ret)
 		return ret;
 
-	pixel_rate = (fmt->format.code == MEDIA_BUS_FMT_Y10_1X10) ?
+	pixel_rate = (fmt->format.code == ov9282->variant->code_10bit) ?
 		OV9282_PIXEL_RATE_10BIT : OV9282_PIXEL_RATE_8BIT;
 	ret = __v4l2_ctrl_modify_range(ov9282->pixel_rate, pixel_rate,
 				       pixel_rate, 1, pixel_rate);
@@ -557,9 +609,16 @@ static int ov9282_update_exp_gain(struct ov9282 *ov9282, u32 exposure, u32 gain)
 	if (ret)
 		goto error_release_group_hold;
 
+	/*
+	 * The strobe can't outlast the exposure. Short exposures (a few rows,
+	 * under OV9282_STROBE_FRAME_SPAN_DEFAULT us) must not move the default
+	 * outside the new range: that fails with -ERANGE, so the exposure
+	 * control was never committed and stream start failed.
+	 */
 	ret = __v4l2_ctrl_modify_range(ov9282->flash_duration,
 				       0, exposure_us, 1,
-				       OV9282_STROBE_FRAME_SPAN_DEFAULT);
+				       min_t(u32, exposure_us,
+					     OV9282_STROBE_FRAME_SPAN_DEFAULT));
 
 error_release_group_hold:
 	ret_hold = cci_write(ov9282->regmap, OV9282_REG_HOLD, 0, NULL);
@@ -601,6 +660,7 @@ static int ov9282_set_ctrl(struct v4l2_ctrl *ctrl)
 		container_of(ctrl->handler, struct ov9282, ctrl_handler);
 	u32 analog_gain;
 	u32 exposure;
+	u32 exposure_max;
 	u32 lpfr;
 	int ret;
 
@@ -612,12 +672,21 @@ static int ov9282_set_ctrl(struct v4l2_ctrl *ctrl)
 			ov9282->vblank,
 			ov9282->vblank + ov9282->cur_mode->height);
 
+		/*
+		 * Short frames (640x400 with a small vblank) give a maximum
+		 * below OV9282_EXPOSURE_DEFAULT; keep the default inside the
+		 * range, or the update fails with -ERANGE and the exposure
+		 * limit silently stays at the previous frame length.
+		 */
+		exposure_max = ov9282->vblank + ov9282->cur_mode->height -
+			       ov9282->variant->exposure_offset;
 		ret = __v4l2_ctrl_modify_range(ov9282->exp_ctrl,
 					       OV9282_EXPOSURE_MIN,
-					       ov9282->vblank +
-					       ov9282->cur_mode->height -
-					       OV9282_EXPOSURE_OFFSET,
-					       1, OV9282_EXPOSURE_DEFAULT);
+					       exposure_max, 1,
+					       min_t(u32, exposure_max,
+						     OV9282_EXPOSURE_DEFAULT));
+		if (ret)
+			return ret;
 		break;
 	}
 
@@ -706,12 +775,14 @@ static int ov9282_enum_mbus_code(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
+	struct ov9282 *ov9282 = to_ov9282(sd);
+
 	switch (code->index) {
 	case 0:
-		code->code = MEDIA_BUS_FMT_Y10_1X10;
+		code->code = ov9282->variant->code_10bit;
 		break;
 	case 1:
-		code->code = MEDIA_BUS_FMT_Y8_1X8;
+		code->code = ov9282->variant->code_8bit;
 		break;
 	default:
 		return -EINVAL;
@@ -732,11 +803,13 @@ static int ov9282_enum_frame_size(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_frame_size_enum *fsize)
 {
+	struct ov9282 *ov9282 = to_ov9282(sd);
+
 	if (fsize->index >= ARRAY_SIZE(supported_modes))
 		return -EINVAL;
 
-	if (fsize->code != MEDIA_BUS_FMT_Y10_1X10 &&
-	    fsize->code != MEDIA_BUS_FMT_Y8_1X8)
+	if (fsize->code != ov9282->variant->code_10bit &&
+	    fsize->code != ov9282->variant->code_8bit)
 		return -EINVAL;
 
 	fsize->min_width = supported_modes[fsize->index].width;
@@ -803,10 +876,10 @@ static int ov9282_set_pad_format(struct v4l2_subdev *sd,
 				      width, height,
 				      fmt->format.width,
 				      fmt->format.height);
-	if (fmt->format.code == MEDIA_BUS_FMT_Y8_1X8)
-		code = MEDIA_BUS_FMT_Y8_1X8;
+	if (fmt->format.code == ov9282->variant->code_8bit)
+		code = ov9282->variant->code_8bit;
 	else
-		code = MEDIA_BUS_FMT_Y10_1X10;
+		code = ov9282->variant->code_10bit;
 
 	ov9282_fill_pad_format(ov9282, mode, code, fmt);
 
@@ -965,7 +1038,7 @@ static int ov9282_enable_streams(struct v4l2_subdev *sd,
 		goto err_pm_put;
 	}
 
-	bitdepth_index = ov9282->code == MEDIA_BUS_FMT_Y10_1X10 ? 0 : 1;
+	bitdepth_index = ov9282->code == ov9282->variant->code_10bit ? 0 : 1;
 	ret = cci_multi_reg_write(ov9282->regmap,
 				  bitdepth_regs[bitdepth_index], 2, NULL);
 	if (ret) {
@@ -1041,6 +1114,7 @@ static int ov9282_disable_streams(struct v4l2_subdev *sd,
  */
 static int ov9282_detect(struct ov9282 *ov9282)
 {
+	unsigned int i;
 	int ret;
 	u64 val, msb;
 
@@ -1052,13 +1126,19 @@ static int ov9282_detect(struct ov9282 *ov9282)
 		return ret;
 
 	val |= (msb << 8);
-	if (val != OV9282_ID) {
-		dev_err(ov9282->dev, "chip id mismatch: %x!=%llx",
-			OV9282_ID, val);
-		return -ENXIO;
+	for (i = 0; i < ov9282->variant->num_chip_ids; i++) {
+		if (val == ov9282->variant->chip_ids[i]) {
+			if (ov9282->variant == &ov9782_variant && val == OV9282_ID)
+				dev_warn(ov9282->dev,
+					 "OV9782 compatible reports OV9281 chip id\n");
+			return 0;
+		}
 	}
 
-	return 0;
+	dev_err(ov9282->dev, "%s chip id mismatch: got %llx\n",
+		ov9282->variant->name, val);
+
+	return -ENXIO;
 }
 
 static int ov9282_configure_regulators(struct ov9282 *ov9282)
@@ -1270,7 +1350,7 @@ static int ov9282_init_controls(struct ov9282 *ov9282)
 					     &ov9282_ctrl_ops,
 					     V4L2_CID_EXPOSURE,
 					     OV9282_EXPOSURE_MIN,
-					     lpfr - OV9282_EXPOSURE_OFFSET,
+					     lpfr - ov9282->variant->exposure_offset,
 					     OV9282_EXPOSURE_STEP,
 					     OV9282_EXPOSURE_DEFAULT);
 
@@ -1362,12 +1442,15 @@ static int ov9282_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	ov9282->dev = &client->dev;
+	ov9282->variant = device_get_match_data(ov9282->dev);
+	if (!ov9282->variant)
+		return -EINVAL;
 
 	/* Initialize subdev */
 	v4l2_i2c_subdev_init(&ov9282->sd, client, &ov9282_subdev_ops);
 	ov9282->sd.internal_ops = &ov9282_internal_ops;
 	v4l2_i2c_subdev_set_name(&ov9282->sd, client,
-				 device_get_match_data(ov9282->dev), NULL);
+				 ov9282->variant->name, NULL);
 
 	ret = ov9282_parse_hw_config(ov9282);
 	if (ret) {
@@ -1394,7 +1477,7 @@ static int ov9282_probe(struct i2c_client *client)
 
 	/* Set default mode to first mode */
 	ov9282->cur_mode = &supported_modes[DEFAULT_MODE];
-	ov9282->code = MEDIA_BUS_FMT_Y10_1X10;
+	ov9282->code = ov9282->variant->code_10bit;
 	ov9282->vblank = ov9282->cur_mode->vblank;
 
 	ret = of_property_read_u32(client->dev.of_node,
@@ -1472,8 +1555,9 @@ static const struct dev_pm_ops ov9282_pm_ops = {
 };
 
 static const struct of_device_id ov9282_of_match[] = {
-	{ .compatible = "ovti,ov9281", .data = "ov9281" },
-	{ .compatible = "ovti,ov9282", .data = "ov9282" },
+	{ .compatible = "ovti,ov9281", .data = &ov9281_variant },
+	{ .compatible = "ovti,ov9282", .data = &ov9282_variant },
+	{ .compatible = "ovti,ov9782", .data = &ov9782_variant },
 	{ }
 };
 
