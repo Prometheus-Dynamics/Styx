@@ -86,7 +86,7 @@ pub const HEADROOM_DECAY: f64 = 0.1;
 const MIN_READOUT_SINC: f64 = 0.3;
 
 /// The flicker correction for coming frames. See the [module documentation](self).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlickerCorrection {
     /// Fundamental frequency (Hz, as tracked).
     pub hz: f64,
@@ -103,6 +103,32 @@ pub struct FlickerCorrection {
     pub headroom: f64,
     /// Rolling shutter readout (seconds; 0 for a global shutter).
     pub readout: f64,
+}
+
+impl Clone for FlickerCorrection {
+    fn clone(&self) -> Self {
+        Self {
+            hz: self.hz,
+            reference: self.reference,
+            terms: self.terms.clone(),
+            clock: self.clock,
+            strength: self.strength,
+            headroom: self.headroom,
+            readout: self.readout,
+        }
+    }
+
+    /// Copies `source` into `self`, reusing the terms' buffer (the state copies its correction
+    /// into the frame's parameters every frame).
+    fn clone_from(&mut self, source: &Self) {
+        self.hz = source.hz;
+        self.reference = source.reference;
+        self.terms.clone_from(&source.terms);
+        self.clock = source.clock;
+        self.strength = source.strength;
+        self.headroom = source.headroom;
+        self.readout = source.readout;
+    }
 }
 
 impl FlickerCorrection {
@@ -198,26 +224,41 @@ impl FlickerCorrection {
 
     /// The brightest frame an exposure of `exposure` seconds can be, as corrected.
     pub fn peak(&self, exposure: f64) -> f64 {
-        let w = 2.0 * PI * self.hz;
-        1.0 + self.strength
-            * self
-                .terms
-                .iter()
-                .map(|t| (sinc(t.0 as f64 * w * exposure / 2.0) * t.1.hypot(t.2)).abs())
-                .sum::<f64>()
+        peak_at(self.hz, &self.terms, self.strength, exposure)
     }
 }
 
+/// [`FlickerCorrection::peak`] of the terms at fundamental `hz` and `strength`.
+fn peak_at(hz: f64, terms: &[(usize, f64, f64)], strength: f64, exposure: f64) -> f64 {
+    let w = 2.0 * PI * hz;
+    1.0 + strength
+        * terms
+            .iter()
+            .map(|t| (sinc(t.0 as f64 * w * exposure / 2.0) * t.1.hypot(t.2)).abs())
+            .sum::<f64>()
+}
+
 /// AGC's deflicker state.
+///
+/// The smoothed model and the correction for the coming frames are kept in buffers of their own
+/// (`smoothed_on`, `out_on`: whether there is one now): a buffer is never freed while the state
+/// lives, so updating allocates nothing once the first correction has been made.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct DeflickerState {
     strength: f64,
     headroom: f64,
     /// The largest headroom needed lately (decaying).
     needed: f64,
-    /// The smoothed model (its frequency, reference time and terms).
-    smoothed: Option<FlickerCorrection>,
+    /// The smoothed model (its frequency, reference time and terms), when `smoothed_on`.
+    smoothed: FlickerCorrection,
+    smoothed_on: bool,
     last_time: Option<f64>,
+    /// The correction for the coming frames, when `out_on`.
+    out: FlickerCorrection,
+    out_on: bool,
+    /// A terms buffer for the next smoothed model (blended in, then swapped with the smoothed
+    /// one's).
+    spare: Vec<(usize, f64, f64)>,
 }
 
 impl Default for DeflickerState {
@@ -226,8 +267,28 @@ impl Default for DeflickerState {
             strength: 0.0,
             headroom: 1.0,
             needed: 1.0,
-            smoothed: None,
+            smoothed: FlickerCorrection {
+                hz: 0.0,
+                reference: 0.0,
+                terms: Vec::new(),
+                clock: (0, 0.0),
+                strength: 1.0,
+                headroom: 1.0,
+                readout: 0.0,
+            },
+            smoothed_on: false,
             last_time: None,
+            out: FlickerCorrection {
+                hz: 0.0,
+                reference: 0.0,
+                terms: Vec::new(),
+                clock: (0, 0.0),
+                strength: 0.0,
+                headroom: 1.0,
+                readout: 0.0,
+            },
+            out_on: false,
+            spare: Vec::new(),
         }
     }
 }
@@ -253,12 +314,56 @@ fn rotate(terms: &mut [(usize, f64, f64)], hz: f64, from: f64, to: f64) {
 }
 
 impl DeflickerState {
+    /// The correction the latest update made for the coming frames, if any.
+    pub(super) fn correction(&self) -> Option<&FlickerCorrection> {
+        self.out_on.then_some(&self.out)
+    }
+
+    /// Writes the latest correction into `slot` (its buffers reused).
+    pub(super) fn write(&self, slot: &mut Option<FlickerCorrection>) {
+        match self.correction() {
+            Some(d) => match slot {
+                Some(s) => s.clone_from(d),
+                None => *slot = Some(d.clone()),
+            },
+            None => *slot = None,
+        }
+    }
+
+    /// Blends the model `m` (this frame's, starting at `time`) into the smoothed one, rotated to
+    /// the model's reference (the model itself when there is no smoothed one yet).
+    fn blend(&mut self, m: &FlickerModel, (frame, time): (u64, f64), readout: f64) {
+        let sm = &mut self.smoothed;
+        self.spare.clear();
+        self.spare.extend_from_slice(&m.terms);
+        if self.smoothed_on {
+            rotate(&mut sm.terms, m.hz, sm.reference, m.reference);
+            for t in &mut self.spare {
+                let (a, b) = sm
+                    .terms
+                    .iter()
+                    .find(|o| o.0 == t.0)
+                    .map_or((0.0, 0.0), |o| (o.1, o.2));
+                t.1 = a + SMOOTHING * (t.1 - a);
+                t.2 = b + SMOOTHING * (t.2 - b);
+            }
+        }
+        core::mem::swap(&mut sm.terms, &mut self.spare);
+        sm.hz = m.hz;
+        sm.reference = m.reference;
+        sm.clock = (frame, time);
+        sm.strength = 1.0;
+        sm.headroom = 1.0;
+        sm.readout = readout;
+        self.smoothed_on = true;
+    }
+
     /// Updates the state with this frame (number `frame`, starting at `time` on the fit's
     /// clock, `frame_duration` and `exposure` seconds) and the fit of the mains in use;
     /// `enabled`: deflicker on and AE free to leave headroom; `highlight`: the frame's
     /// highlights on the output's scale under the mean light (1: white; infinite when they
-    /// clipped). Returns the correction for the coming frames, `None` when there is nothing to
-    /// correct (so the algorithms can run at their settled rate).
+    /// clipped). The correction for the coming frames is then [`Self::correction`]: none when
+    /// there is nothing to correct (so the algorithms can run at their settled rate).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn update(
         &mut self,
@@ -269,37 +374,16 @@ impl DeflickerState {
         exposure: f64,
         readout: f64,
         highlight: f64,
-    ) -> Option<FlickerCorrection> {
+    ) {
         if !enabled {
             *self = Self::default();
-            return None;
+            return;
         }
         let dt = self.last_time.map_or(0.0, |t| (time - t).clamp(0.0, 0.1));
         self.last_time = Some(time);
         let good = model.filter(|m| confident(m, frame_duration));
         if let Some(m) = good {
-            let mut terms = m.terms.clone();
-            if let Some(old) = &mut self.smoothed {
-                rotate(&mut old.terms, m.hz, old.reference, m.reference);
-                for t in &mut terms {
-                    let (a, b) = old
-                        .terms
-                        .iter()
-                        .find(|o| o.0 == t.0)
-                        .map_or((0.0, 0.0), |o| (o.1, o.2));
-                    t.1 = a + SMOOTHING * (t.1 - a);
-                    t.2 = b + SMOOTHING * (t.2 - b);
-                }
-            }
-            self.smoothed = Some(FlickerCorrection {
-                hz: m.hz,
-                reference: m.reference,
-                terms,
-                clock: (frame, time),
-                strength: 1.0,
-                headroom: 1.0,
-                readout,
-            });
+            self.blend(m, (frame, time), readout);
         }
         let step = if dt > 0.0 { dt / FADE } else { 1.0 / 16.0 };
         self.strength = if good.is_some() {
@@ -307,30 +391,27 @@ impl DeflickerState {
         } else {
             (self.strength - step).max(0.0)
         };
-        let Some(smoothed) = &self.smoothed else {
+        if !self.smoothed_on {
             // Flickering but not (yet) confident: nothing to correct, but the algorithms
             // should see every frame.
-            return model.filter(|m| m.significant).map(|m| FlickerCorrection {
-                hz: m.hz,
-                reference: m.reference,
-                terms: Vec::new(),
-                clock: (frame, time),
-                strength: 0.0,
-                headroom: 1.0,
-                readout,
-            });
-        };
+            self.out_on = false;
+            if let Some(m) = model.filter(|m| m.significant) {
+                self.out.hz = m.hz;
+                self.out.reference = m.reference;
+                self.out.terms.clear();
+                self.out.clock = (frame, time);
+                self.out.strength = 0.0;
+                self.out.headroom = 1.0;
+                self.out.readout = readout;
+                self.out_on = true;
+            }
+            return;
+        }
+        let smoothed = &self.smoothed;
         // Headroom for the highlights in the brightest frame at full strength (it does not
         // follow the fade, so fading moves no sensor values).
-        let full = FlickerCorrection {
-            clock: (frame, time),
-            strength: 1.0,
-            headroom: 1.0,
-            readout,
-            ..smoothed.clone()
-        };
         if good.is_some() {
-            let peak = full.peak(exposure).min(MAX_GAIN);
+            let peak = peak_at(smoothed.hz, &smoothed.terms, 1.0, exposure).min(MAX_GAIN);
             let wanted = peak * highlight * HIGHLIGHT_MARGIN;
             let needed = if wanted > 1.0 {
                 wanted.min(peak) * HEADROOM_MARGIN
@@ -350,14 +431,18 @@ impl DeflickerState {
             self.needed = 1.0;
         }
         if self.strength == 0.0 && !model.is_some_and(|m| m.significant) {
-            self.smoothed = None;
-            return None;
+            self.smoothed_on = false;
+            self.out_on = false;
+            return;
         }
-        Some(FlickerCorrection {
-            strength: self.strength,
-            headroom: self.headroom,
-            ..full
-        })
+        self.out.hz = smoothed.hz;
+        self.out.reference = smoothed.reference;
+        self.out.terms.clone_from(&smoothed.terms);
+        self.out.clock = (frame, time);
+        self.out.strength = self.strength;
+        self.out.headroom = self.headroom;
+        self.out.readout = readout;
+        self.out_on = true;
     }
 }
 

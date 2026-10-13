@@ -164,3 +164,82 @@ fn a_fixed_exposure_lands_on_the_frame_the_handle_predicts() {
     );
     assert!(near(after.exposure), "{:?} at the landing", after.exposure);
 }
+
+#[test]
+fn a_processed_fixed_exposure_lands_on_the_frame_the_handle_predicts() {
+    // The 3A loop's timing as the board measured it (see `PROCESSED_LOOP_LATENCY`): exposure set
+    // in frame 10 is taken by the loop's step during frame 11, whose write misses frame 11 (the
+    // margin is not left in it), so it is scheduled for the start of frame 12. The step asks for
+    // frame 13: its statistics are frame 11's, the controller's issue latency is 0 at 30 fps and
+    // the exposure's delay is 2.
+    let mut c = control();
+    c.bring_up("1280x800", "raw10").unwrap();
+    c.expect_start(EXPECTED);
+    c.serve(&request(StreamAction::Start, 1)).unwrap();
+    let h = ControlHandle::new(Arc::new(Mutex::new(c)), None);
+    let now = lock(h.shared()).now();
+    let fd = Duration::from_nanos(33_333_333);
+    let at = |seq: u64| now + fd * seq as u32;
+    lock(h.shared()).frame_start_at(10, Some(at(10))).unwrap();
+    let predicted = h.landing_processed(Control::Exposure);
+    assert_eq!(
+        predicted,
+        10 + u64::from(h.delay(Control::Exposure)) + PROCESSED_LOOP_LATENCY
+    );
+
+    // The step during frame 11: no margin is left in the frame, so the write waits for frame 12.
+    h.set_write_margin(None);
+    lock(h.shared()).frame_start_at(11, Some(at(11))).unwrap();
+    let exposure = Duration::from_millis(4);
+    let req = ControlRequest {
+        exposure: Some(exposure),
+        gain: None,
+        frame_duration: None,
+    };
+    h.request_at_now(13, &req).unwrap();
+    for seq in 12..=predicted {
+        lock(h.shared()).frame_start_at(seq, Some(at(seq))).unwrap();
+    }
+    let near = |d: Duration| d.abs_diff(exposure) < Duration::from_micros(50);
+    assert!(
+        !near(h.applied(predicted - 1).unwrap().exposure),
+        "the value shows before the predicted frame {predicted}"
+    );
+    assert!(
+        near(h.applied(predicted).unwrap().exposure),
+        "the value does not show on the predicted frame {predicted}"
+    );
+}
+
+#[test]
+fn the_exposure_limit_is_the_frame_less_the_margin_at_the_frame_length_in_effect() {
+    // 640x400 at 240 fps (a 4.17 ms frame): the longest exposure is the frame less the sensor's
+    // 25-line margin, about 3.9 ms, where 1280x800 at 30 fps allows about its whole frame.
+    let mut c = control();
+    c.bring_up("640x400", "raw10").unwrap();
+    c.expect_start(ExpectedStart {
+        code: 0x3007,
+        width: 640,
+        height: 400,
+        link_freq: 400_000_000,
+    });
+    let mut req = request(StreamAction::Start, 1);
+    req.width = 640;
+    req.height = 400;
+    c.serve(&req).unwrap();
+    let h = ControlHandle::new(Arc::new(Mutex::new(c)), None);
+    let now = lock(h.shared()).now();
+    let frame = Duration::from_nanos(4_166_667);
+    h.set_write_margin(Some(Duration::ZERO));
+    h.set_frame_rate(240.0).unwrap();
+    for seq in 10..=20u64 {
+        lock(h.shared())
+            .frame_start_at(seq, Some(now + frame * seq as u32))
+            .unwrap();
+    }
+    let (_, max) = h.exposure_range().unwrap();
+    assert!(
+        max > Duration::from_micros(3_500) && max < frame,
+        "{max:?} at 240 fps"
+    );
+}

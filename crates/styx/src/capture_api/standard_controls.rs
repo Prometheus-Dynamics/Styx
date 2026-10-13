@@ -155,6 +155,35 @@ pub(crate) fn fit(
     Ok((fitted, clamped))
 }
 
+/// The longest exposure, in µs, a native camera allows for the exposure control `id` at the frame
+/// length in effect (the sensor's limit at that frame length, see `ControlHandle::exposure_range`);
+/// `None` for other controls and backends.
+#[cfg(feature = "native")]
+fn native_exposure_limit_us(plane: &ControlPlane, id: ControlId) -> Option<f64> {
+    if id != super::native_backend::controls::EXPOSURE_TIME_US {
+        return None;
+    }
+    match plane {
+        ControlPlane::Native { controls, .. } => controls
+            .exposure_range()
+            .map(|(_, max)| max.as_secs_f64() * 1e6),
+        _ => None,
+    }
+}
+
+#[cfg(not(feature = "native"))]
+fn native_exposure_limit_us(_plane: &ControlPlane, _id: ControlId) -> Option<f64> {
+    None
+}
+
+/// An exposure in µs held to `max_us`: the value in effect, and whether it was held.
+pub(crate) fn clamp_exposure_us(value: ControlValue, max_us: f64) -> (ControlValue, bool) {
+    match number(&value) {
+        Some(n) if n > max_us => (ControlValue::Uint(max_us.floor().max(0.0) as u32), true),
+        _ => (value, false),
+    }
+}
+
 /// Whether the backend reads back what was just set (others apply it with a later frame).
 pub(crate) fn reads_back(backend: BackendKind) -> bool {
     matches!(
@@ -214,6 +243,15 @@ impl StandardControls {
         }
         let (fitted, clamped) = fit(&meta, to_backend(scale, &value))
             .map_err(|refusal| CaptureError::control_apply(refusal.to_string()))?;
+        // A native camera's longest exposure depends on the frame length in effect (the frame
+        // less the sensor's margin): what is set above it is held to it, and reported as such.
+        let (fitted, clamped) = match native_exposure_limit_us(&self.plane, meta.id) {
+            Some(max_us) => {
+                let (held, held_now) = clamp_exposure_us(fitted, max_us);
+                (held, clamped || held_now)
+            }
+            None => (fitted, clamped),
+        };
         let frame = apply_control_landing(&self.plane, meta.id, fitted.clone())?;
         let in_effect = match reads_back(self.backend)
             .then(|| read_control_from_plane(&self.plane, meta.id).ok())
@@ -417,6 +455,24 @@ mod tests {
         ];
         let device = make_virtual_device_with_controls("standard", [mode], metas);
         CaptureRequest::new(&device).start().unwrap()
+    }
+
+    #[test]
+    fn an_exposure_above_the_sensors_limit_is_held_to_it() {
+        // 640x400 at 240 fps on the OV9782: the frame less the sensor's 25-line margin allows
+        // 3931 µs, and a request for 10 ms is in effect at that.
+        assert_eq!(
+            clamp_exposure_us(ControlValue::Uint(10_000), 3931.4),
+            (ControlValue::Uint(3931), true)
+        );
+        assert_eq!(
+            clamp_exposure_us(ControlValue::Uint(3931), 3931.4),
+            (ControlValue::Uint(3931), false)
+        );
+        assert_eq!(
+            clamp_exposure_us(ControlValue::Uint(2_000), 3931.4),
+            (ControlValue::Uint(2_000), false)
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::time::Duration;
 
-use styx_algo::{Statistics, Tuning};
+use styx_algo::{Deflicker, Flicker, Statistics, Tuning};
 use styx_pipeline::Result;
 use styx_pipeline::controller::{Controller, SensorValues};
 use styx_pipeline::isp::IspSettings;
@@ -203,9 +203,14 @@ mod trace {
 // --- the scene and the stand-ins for the device ------------------------------------------------
 
 const FRAMES: u64 = 240;
-const WARM: u64 = 60;
-/// Frames with name-bearing controls set (metering, constraint and AWB mode names).
-const MODE_WINDOW: (u64, u64) = (150, 201);
+/// Frames before the steady state: the algorithms settle, and the first confident flicker fit
+/// and deflicker correction create their buffers (the state keeps them from then on).
+const WARM: u64 = 100;
+/// Frames of a mode change: the name-bearing controls set (metering, constraint and AWB mode
+/// names, from frame 150, cleared at 200) and the frames after the clearing, while the flicker
+/// fit and the algorithms settle again (the scene change the names make: a re-fit, and the
+/// correction's buffer on frame 206). Outside these the steady state is measured.
+const MODE_WINDOW: (u64, u64) = (150, 210);
 
 fn fmt(w: u16, h: u16, format: u32) -> ImageFormatConfig {
     let mut f = ImageFormatConfig {
@@ -230,18 +235,35 @@ fn info() -> SensorInfo {
         .unwrap()
 }
 
+/// The room's light flickering as a frame integrates it: lamps at 100 Hz (full-wave) and 50 Hz
+/// (half-wave) of the mains, averaged over the frame's exposure `exposure`, which ends at `end`
+/// seconds. Exposures of whole periods see none of it; others see part (the sinc of the
+/// exposure), which is what the flicker fits and the deflicker work on.
+fn flicker_gain(end: f64, exposure: f64) -> f64 {
+    const LAMPS: [(f64, f64); 2] = [(100.0, 0.3), (50.0, 0.2)];
+    1.0 + LAMPS
+        .iter()
+        .map(|&(hz, depth)| {
+            let w = 2.0 * std::f64::consts::PI * hz;
+            depth * ((w * end).sin() - (w * (end - exposure)).sin()) / (w * exposure)
+        })
+        .sum::<f64>()
+}
+
 /// The front end statistics of frame `n` for a scene of light `light` at `exposure` × `gain`
 /// (a grey scene with a warm cast; the device copies them out at the dequeue, here they are
 /// written in place).
 fn fill_stats(raw: &mut RawStatistics, n: u64, light: f64, exposure: f64) {
     let _ = n;
     let level = (light * exposure / 0.01).clamp(0.0, 0.95);
+    // Sums over the zone's counted pixels (the mean of a zone is its sum over its count).
     for (i, z) in raw.awb.zones[..AWB_STATS_NUM_ZONES].iter_mut().enumerate() {
         let k = 1.0 + (i % 7) as f64 * 0.01;
-        z.r_sum = (level * 0.8 * 65536.0 * k) as u32;
-        z.g_sum = (level * 65536.0) as u32;
-        z.b_sum = (level * 0.5 * 65536.0 / k) as u32;
-        z.counted = 1024;
+        let counted = 1024.0;
+        z.counted = counted as u32;
+        z.r_sum = (level * 0.8 * 65536.0 * k * counted) as u32;
+        z.g_sum = (level * 65536.0 * counted) as u32;
+        z.b_sum = (level * 0.5 * 65536.0 * counted / k) as u32;
     }
     for (i, b) in raw.agc.histogram.iter_mut().enumerate() {
         let d = (i as f64 / 1024.0 - level).abs();
@@ -305,6 +327,8 @@ struct Totals {
     /// the names).
     window: u64,
     passes: u64,
+    /// Steady-state frames outside the mode window.
+    steady_frames: u64,
 }
 
 /// A hash of a frame's outputs (their `Debug` text, which prints every float exactly).
@@ -356,6 +380,12 @@ fn the_pisp_processed_path_allocates_per_frame() {
         format: None,
     };
     passes.set(0, Some(region), &be.builder).unwrap();
+    // Mains flicker avoidance and deflicker on: both fit the frames' brightness every frame (the
+    // fits and their detection are the steady state's work on a flickering scene).
+    let mut c = algo.controller_ref().controls().clone();
+    c.flicker = Flicker::Auto;
+    c.deflicker = Deflicker::On;
+    algo.controller().set_controls(c);
     let mut raw = bytemuck::allocation::zeroed_box::<RawStatistics>();
     let mut totals = Totals::default();
     let mut last_seq: Option<u64> = None;
@@ -373,7 +403,8 @@ fn the_pisp_processed_path_allocates_per_frame() {
     for n in 0..FRAMES {
         let steady = n >= WARM;
         let run = algo.due(last_seq.map(|s| s + 1));
-        let light = 0.25 + 0.2 * ((n as f64) / 25.0).sin();
+        let light = (0.25 + 0.2 * ((n as f64) / 25.0).sin())
+            * flicker_gain((n + 1) as f64 / 30.0, exposure.as_secs_f64());
         // A change of mode for a stretch of frames: the metering, constraint and AWB names
         // the tuning has (the string paths of the algorithms).
         if n == 150 || n == 200 {
@@ -448,6 +479,7 @@ fn the_pisp_processed_path_allocates_per_frame() {
             writeln!(d, "{n} {h:016x}").unwrap();
         }
         if steady && !(MODE_WINDOW.0..MODE_WINDOW.1).contains(&n) {
+            totals.steady_frames += 1;
             totals.frame += frame + pass_allocs;
             totals.passes += pass_allocs;
         } else if steady {
@@ -458,9 +490,10 @@ fn the_pisp_processed_path_allocates_per_frame() {
         }
     }
     std::hint::black_box(sum);
-    let measured = (FRAMES - WARM) as f64;
+    let measured = totals.steady_frames.max(1) as f64;
     println!(
-        "PiSP processed path, steady state: {:.2} allocations per frame (passes {:.2})",
+        "PiSP processed path, steady state ({} frames): {:.2} allocations per frame (passes {:.2})",
+        totals.steady_frames,
         totals.frame as f64 / measured,
         totals.passes as f64 / measured,
     );

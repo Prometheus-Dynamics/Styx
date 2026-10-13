@@ -25,6 +25,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   statistics and back end config matches the previous code. The copy of `Controls` for each
   frame's metadata still allocates while the application names a metering, AWB, constraint or
   exposure mode (`Controller::meta`).
+- **Mains flicker fits and deflicker allocate nothing per frame.** The AGC's flicker fit keeps its
+  buffers from frame to frame (sized once from the frame window and the harmonics, flat arrays in
+  place of the `Vec<Vec<f64>>` and `collect`s it built each frame) and updates its model in place;
+  deflicker writes its correction into the frame's parameters with the terms' buffer reused
+  (`FlickerCorrection::clone_from`), and the flicker period is an `Option` rather than a collected
+  `Vec`. A scene flickering at 100 and 50 Hz with flicker avoidance on and deflicker on allocated
+  43.65 times per frame before (42 of them in the fit, the rest in the AGC and deflicker);
+  `pisp_alloc` now runs that path and asserts none. Outputs are bit-identical: a golden dump of
+  every frame's fit (eleven flickering scenes, 50 and 60 Hz mains, 90 to 240 fps, frequency
+  tracking, scene changes) and the 240-frame pipeline digest match the previous code.
 - **V4L2 buffers and controls:** `DequeuedBuffer::planes` and `QueueBuffer::planes` are an
   inline `Planes` (up to `MAX_PLANES`) instead of a `Vec`; integer `VIDIOC_S_EXT_CTRLS` and
   `VIDIOC_TRY_EXT_CTRLS` calls with up to 8 controls use a list on the stack, and
@@ -41,6 +51,18 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   3A loop) returned `frame: None`. A fixed exposure or gain now reports the frame in progress
   plus the control's delay from the sensor description (`ControlHandle::landing_now`); a
   prediction, not a confirmation. AE, EV, AWB and 0 (back to AE) still report `None`.
+- **Processed captures' predicted landing was two frames early.** `StandardControls::set_exposure_us`
+  and `set_gain` on a processed native mode predicted the frame in progress plus the control's delay,
+  but the 3A loop takes a set at its next step, and that step's write goes out at the next frame
+  start. At 30 fps on a CM5 an exposure set in frame 60 (delay 2) first showed in frame 64, where the
+  prediction said 62. `ControlHandle::landing_processed` adds `PROCESSED_LOOP_LATENCY` (2 frames) for
+  a processed mode's fixed exposure and gain. Still a prediction: the timing was measured at one frame
+  rate on one sensor.
+- **`set_exposure_us` did not report a clamped exposure on native cameras.** The control's maximum
+  is the sensor's exposure limit at the longest frame length. At 640x400 and 240 fps a request for
+  10 ms was reported as in effect with `clamped: false`, while the sensor used 3931 µs (the frame less
+  the sensor's 25-line margin). The setter now holds the value to the limit at the frame length in
+  effect, sends the held value, and reports it with `clamped: true`.
 - **Kernel-driven OV9782 advertised impossible rates at 640x400.** The kernel path applied the
   blanking ranges read at 1280x800 to every mode, so 640x400 planned at 383.7 fps (its device
   range is 2.116..259.787 fps). `KernelSensorData` takes per-mode blanking (`[[modes]]`), and

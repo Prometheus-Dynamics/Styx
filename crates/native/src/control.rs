@@ -19,6 +19,14 @@ pub use styx_runtime::{
     BlankingHook, BringUpTimes, DEFAULT_WRITE_MARGIN, FrameControls, standby_problems,
 };
 
+/// Frames a processed mode's fixed value takes on top of the control's delay, from the frame in
+/// progress when it is set. The 3A loop takes a set at its next process step, one frame later at
+/// the earliest, and that step's write goes out at the next frame start rather than in the frame
+/// it runs in (too little of that frame is left for the write margin). The board measured the
+/// two together: at 30 fps a value set in frame 60 (delay 2) first showed in frame 64, where the
+/// prediction without this said 62.
+pub const PROCESSED_LOOP_LATENCY: u64 = 2;
+
 /// The sensor driver plus the per-stream bookkeeping around it (the runtime's
 /// [`SensorState`]). Build it with [`sensor_control`] (it then runs on `CLOCK_MONOTONIC`).
 pub type SensorControl<B, P> = SensorState<B, P>;
@@ -183,6 +191,16 @@ impl<B: DriverBus, P: SensorPins> ControlHandle<B, P> {
     pub fn landing_now(&self, control: Control) -> u64 {
         let current = lock(self.shared()).current_frame();
         current.map_or(0, |s| s + u64::from(self.delay(control)))
+    }
+
+    /// The frame a processed mode's fixed value set now first takes effect on: the frame in
+    /// progress plus the control's delay, plus [`PROCESSED_LOOP_LATENCY`] for the 3A loop. Before
+    /// streaming it is frame 0, as [`Self::landing_now`].
+    pub fn landing_processed(&self, control: Control) -> u64 {
+        let current = lock(self.shared()).current_frame();
+        current.map_or(0, |s| {
+            s + u64::from(self.delay(control)) + PROCESSED_LOOP_LATENCY
+        })
     }
 
     /// The values predicted for the latest started frame.
