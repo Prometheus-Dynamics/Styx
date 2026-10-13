@@ -142,3 +142,30 @@ fn narrow_tiles_when_limited() {
             .all(|t| t.input_width <= 256)
     );
 }
+
+#[test]
+fn per_channel_black_levels_reach_the_blc_and_the_denoise_blocks() {
+    let mut be = simple(formats::NV12);
+    be.set_black_levels([64, 66, 65, 63]);
+    let c = be.config();
+    assert_eq!(
+        (
+            c.blc.black_level_r,
+            c.blc.black_level_gr,
+            c.blc.black_level_gb,
+            c.blc.black_level_b
+        ),
+        (64, 66, 65, 63)
+    );
+    assert_eq!(c.blc.output_black_level, 0);
+    // The denoise blocks take one level: the mean of the four, rounded (258 / 4 → 65).
+    assert_eq!((c.sdn.black_level, c.tdn.black_level), (65, 65));
+    // The single-value path is the same as four equal levels.
+    let mut one = simple(formats::NV12);
+    one.set_black_level(64);
+    let mut four = simple(formats::NV12);
+    four.set_black_levels([64; 4]);
+    assert_eq!(one.config().blc, four.config().blc);
+    assert_eq!(one.config().sdn.black_level, four.config().sdn.black_level);
+    assert_eq!(one.config().tdn.black_level, 64);
+}

@@ -120,6 +120,11 @@ impl Clone for AwbStatus {
 }
 
 /// Per-channel black levels, normalised to full scale 1.0.
+///
+/// `g` is green in general (the mean of the two greens when they differ). `gr` and `gb` are
+/// set only where a tuning splits the greens (Styx's per-channel black level, from a
+/// calibration overlay); `None` means both are `g`, which is what every tuning without a split
+/// gives, so their serialised form is unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct BlackLevels {
     /// Red.
@@ -128,6 +133,41 @@ pub struct BlackLevels {
     pub g: f64,
     /// Blue.
     pub b: f64,
+    /// Green on the red row, when it differs from `g`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gr: Option<f64>,
+    /// Green on the blue row, when it differs from `g`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gb: Option<f64>,
+}
+
+impl BlackLevels {
+    /// Levels with one value for every channel.
+    pub const fn uniform(v: f64) -> Self {
+        Self {
+            r: v,
+            g: v,
+            b: v,
+            gr: None,
+            gb: None,
+        }
+    }
+
+    /// The four CFA channels in sensor order: red, green on the red row, green on the blue
+    /// row, blue.
+    pub fn cfa(&self) -> [f64; 4] {
+        [
+            self.r,
+            self.gr.unwrap_or(self.g),
+            self.gb.unwrap_or(self.g),
+            self.b,
+        ]
+    }
+
+    /// Whether the two greens differ (the levels are per channel rather than per colour).
+    pub fn splits_green(&self) -> bool {
+        self.gr.is_some() || self.gb.is_some()
+    }
 }
 
 /// Lens-shading gain tables, row-major over a grid covering the output image.

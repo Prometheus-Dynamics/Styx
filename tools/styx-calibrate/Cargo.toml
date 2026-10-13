@@ -1,0 +1,24 @@
+[package]
+name = "styx-calibrate"
+version.workspace = true
+edition.workspace = true
+description = "styx-calibrate: a sensor's black level, noise and defect profile from raw dark-frame captures, and the tuning overlay Styx loads over the builtin tuning."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "styx-calibrate"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+styx-algo.workspace = true
+
+[lints]
+workspace = true

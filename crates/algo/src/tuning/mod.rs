@@ -27,7 +27,8 @@ pub use crate::algos::black_level::{BlackLevelTuning, GainBlackLevel};
 pub use crate::algos::ccm::{CcmTuning, CtCcm};
 pub use crate::algos::contrast::ContrastTuning;
 pub use crate::algos::denoise::{
-    CdnTuning, DenoiseTuning, GeqTuning, NoiseTuning, SdnTuning, SharpenTuning, TdnTuning,
+    CdnTuning, DenoiseTuning, GeqTuning, NoiseGain, NoiseTuning, SdnTuning, SharpenTuning,
+    TdnTuning,
 };
 pub use crate::algos::lux::LuxTuning;
 #[cfg(feature = "toml")]
@@ -92,6 +93,17 @@ impl Tuning {
     /// used.
     pub fn from_rpi_json_str(text: &str) -> Result<RpiImport> {
         let import = rpi::convert(&json::parse(text)?)?;
+        import.tuning.validate()?;
+        Ok(import)
+    }
+
+    /// [`Self::from_rpi_json_str`] with an overlay merged over the file first: its algorithm
+    /// blocks deep-merge into the blocks of the same name (see the overlay format in
+    /// `docs/calibration.md`). The report lists what was not used, as for the file alone.
+    pub fn from_rpi_json_str_with_overlay(text: &str, overlay: &str) -> Result<RpiImport> {
+        let mut doc = json::parse(text)?;
+        rpi::merge_overlay(&mut doc, &json::parse(overlay)?)?;
+        let import = rpi::convert(&doc)?;
         import.tuning.validate()?;
         Ok(import)
     }

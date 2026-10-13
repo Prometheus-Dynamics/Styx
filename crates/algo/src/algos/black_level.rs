@@ -30,6 +30,12 @@ pub struct GainBlackLevel {
     pub g: f64,
     /// Blue.
     pub b: f64,
+    /// Green on the red row (Styx; `None`: `g`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gr: Option<f64>,
+    /// Green on the blue row (Styx; `None`: `g`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gb: Option<f64>,
 }
 
 /// Black level tuning, normalised.
@@ -42,9 +48,17 @@ pub struct BlackLevelTuning {
     pub g: f64,
     /// Blue.
     pub b: f64,
-    /// Styx: levels by analogue gain, in increasing gain. When present they replace `r`, `g`,
-    /// `b` (which stay the levels for tools that read one value): linear in gain between the
-    /// entries, the nearest entry outside them.
+    /// Styx: green on the red row, when it differs from `g` (`None`: `g`). With `gr` and
+    /// `gb`, the back end's black level correction subtracts a level per CFA channel
+    /// (R, Gr, Gb, B) rather than one for all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gr: Option<f64>,
+    /// Styx: green on the blue row, when it differs from `g` (`None`: `g`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gb: Option<f64>,
+    /// Styx: levels by analogue gain, in increasing gain. When present they replace the
+    /// levels above (which stay the levels for tools that read one value): linear in gain
+    /// between the entries, the nearest entry outside them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub by_gain: Vec<GainBlackLevel>,
 }
@@ -52,13 +66,7 @@ pub struct BlackLevelTuning {
 impl Default for BlackLevelTuning {
     /// 64 in 10 bits.
     fn default() -> Self {
-        let v = 4096.0 / 65536.0;
-        Self {
-            r: v,
-            g: v,
-            b: v,
-            by_gain: Vec::new(),
-        }
+        Self::uniform(4096.0 / 65536.0)
     }
 }
 
@@ -69,6 +77,8 @@ impl BlackLevelTuning {
             r: v,
             g: v,
             b: v,
+            gr: None,
+            gb: None,
             by_gain: Vec::new(),
         }
     }
@@ -76,8 +86,14 @@ impl BlackLevelTuning {
     /// Check the tuning.
     pub fn validate(&self) -> Result<()> {
         let ok = |v: f64| (0.0..1.0).contains(&v);
+        let opt = |v: Option<f64>| v.is_none_or(ok);
         if ![self.r, self.g, self.b].into_iter().all(ok)
-            || !self.by_gain.iter().all(|l| ok(l.r) && ok(l.g) && ok(l.b))
+            || !opt(self.gr)
+            || !opt(self.gb)
+            || !self
+                .by_gain
+                .iter()
+                .all(|l| ok(l.r) && ok(l.g) && ok(l.b) && opt(l.gr) && opt(l.gb))
         {
             return Err(AlgoError::tuning("black_level: levels must be in [0, 1)"));
         }
@@ -94,32 +110,42 @@ impl BlackLevelTuning {
         Ok(())
     }
 
-    /// The levels at an analogue gain.
+    /// Whether any level splits green (the back end then gets one level per CFA channel).
+    pub fn splits_green(&self) -> bool {
+        self.gr.is_some()
+            || self.gb.is_some()
+            || self
+                .by_gain
+                .iter()
+                .any(|e| e.gr.is_some() || e.gb.is_some())
+    }
+
+    /// The levels at an analogue gain. The greens are split only where the tuning splits them
+    /// (see [`BlackLevels::splits_green`]); otherwise `gr` and `gb` are `None`.
     pub fn at_gain(&self, gain: f64) -> BlackLevels {
         let l = &self.by_gain;
-        let pick = |e: &GainBlackLevel| BlackLevels {
-            r: e.r,
-            g: e.g,
-            b: e.b,
+        let split = self.splits_green();
+        let cfa = |r: f64, g: f64, b: f64, gr: Option<f64>, gb: Option<f64>| {
+            [r, gr.unwrap_or(g), gb.unwrap_or(g), b]
         };
-        match l.iter().position(|e| e.gain >= gain) {
-            _ if l.is_empty() => BlackLevels {
-                r: self.r,
-                g: self.g,
-                b: self.b,
-            },
+        let pick = |e: &GainBlackLevel| cfa(e.r, e.g, e.b, e.gr, e.gb);
+        let levels = match l.iter().position(|e| e.gain >= gain) {
+            _ if l.is_empty() => cfa(self.r, self.g, self.b, self.gr, self.gb),
             Some(0) => pick(&l[0]),
             None => pick(&l[l.len() - 1]),
             Some(i) => {
-                let (a, b) = (&l[i - 1], &l[i]);
-                let t = (gain - a.gain) / (b.gain - a.gain);
-                let mix = |x: f64, y: f64| x + (y - x) * t;
-                BlackLevels {
-                    r: mix(a.r, b.r),
-                    g: mix(a.g, b.g),
-                    b: mix(a.b, b.b),
-                }
+                let (a, b) = (pick(&l[i - 1]), pick(&l[i]));
+                let t = (gain - l[i - 1].gain) / (l[i].gain - l[i - 1].gain);
+                [0, 1, 2, 3].map(|c| a[c] + (b[c] - a[c]) * t)
             }
+        };
+        BlackLevels {
+            r: levels[0],
+            // Both greens are `g` unless split, so this is `g` where nothing splits.
+            g: (levels[1] + levels[2]) / 2.0,
+            b: levels[3],
+            gr: split.then_some(levels[1]),
+            gb: split.then_some(levels[2]),
         }
     }
 }
@@ -154,7 +180,7 @@ impl Algorithm for BlackLevel {
             Some(t) => t.at_gain(1.0),
             None => {
                 let v = config.black_level.unwrap_or(BlackLevelTuning::default().r);
-                BlackLevels { r: v, g: v, b: v }
+                BlackLevels::uniform(v)
             }
         };
         Ok(())
@@ -183,6 +209,8 @@ mod tests {
             r: v,
             g: v,
             b: v,
+            gr: None,
+            gb: None,
         };
         let t = BlackLevelTuning {
             by_gain: vec![at(1.0, 0.06), at(4.0, 0.09)],
@@ -196,6 +224,28 @@ mod tests {
         let bad = BlackLevelTuning {
             by_gain: vec![at(4.0, 0.06), at(1.0, 0.06)],
             ..t
+        };
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn green_is_split_only_where_the_tuning_splits_it() {
+        let plain = BlackLevelTuning::uniform(0.0625);
+        assert!(!plain.splits_green());
+        assert_eq!(plain.at_gain(1.0).gr, None);
+        let split = BlackLevelTuning {
+            gr: Some(0.0630),
+            gb: Some(0.0640),
+            ..BlackLevelTuning::uniform(0.0625)
+        };
+        split.validate().unwrap();
+        let l = split.at_gain(1.0);
+        assert_eq!((l.gr, l.gb), (Some(0.0630), Some(0.0640)));
+        assert!((l.g - 0.0635).abs() < 1e-12, "g is the mean of the greens");
+        assert_eq!(l.cfa(), [0.0625, 0.0630, 0.0640, 0.0625]);
+        let bad = BlackLevelTuning {
+            gb: Some(1.5),
+            ..split
         };
         assert!(bad.validate().is_err());
     }

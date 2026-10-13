@@ -17,7 +17,7 @@ use styx_pisp::be::BackEnd;
 use styx_pisp::uapi::{BeCropConfig, BeLscExtra, BeTilesConfig, ImageFormatConfig, bayer_enable};
 
 use crate::error::{PipelineError, Result};
-use crate::isp::{IspSettings, be_lens_shading, gamma_points_into, level16};
+use crate::isp::{IspSettings, be_lens_shading, gamma_points_into};
 
 /// What [`BeConfigBuilder::update`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,7 +199,7 @@ impl BeConfigBuilder {
             return Ok(BeUpdate::Rebuilt);
         }
         let w = &mut self.work;
-        w.set_black_level(level16(isp.black_level));
+        w.set_black_levels(isp.black_cfa16());
         isp.apply_be_detail(w);
         w.set_tdn(tdn_cfg.map(|t| t.0), tdn_cfg.is_some_and(|t| t.1));
         let g = isp.channel_gains();
@@ -322,6 +322,44 @@ mod tests {
             g: vec![1.25; 192],
             b: vec![1.0 + k; 192],
         }
+    }
+
+    /// A per-channel black level is patched in and taken out again, as a fresh prepare gives.
+    #[test]
+    fn per_channel_black_levels_patch_in_and_out() {
+        let mut b = BeConfigBuilder::new(template()).unwrap();
+        let mut s = IspSettings::from_params(&Params::default(), 0, 1.0);
+        b.update(&s).unwrap();
+        s.black_level = 63.0 / 1024.0;
+        s.black_channels = Some([64.0, 66.0, 65.0, 63.0].map(|v: f64| v / 1024.0));
+        assert_eq!(b.update(&s).unwrap(), BeUpdate::Patched);
+        let blc = b.config().config.blc;
+        assert_eq!(
+            (
+                blc.black_level_r,
+                blc.black_level_gr,
+                blc.black_level_gb,
+                blc.black_level_b
+            ),
+            (4096, 4224, 4160, 4032)
+        );
+        let mut fresh = BeConfigBuilder::new(template()).unwrap();
+        fresh.update(&s).unwrap();
+        assert_eq!(b.config().config.blc, fresh.config().config.blc);
+        assert_eq!(b.config().config.sdn, fresh.config().config.sdn);
+        s.black_channels = None;
+        s.black_level = 64.0 / 1024.0;
+        b.update(&s).unwrap();
+        let blc = b.config().config.blc;
+        assert_eq!(
+            (
+                blc.black_level_r,
+                blc.black_level_gr,
+                blc.black_level_gb,
+                blc.black_level_b
+            ),
+            (4096, 4096, 4096, 4096)
+        );
     }
 
     /// Patching must give exactly what preparing from the template gives.

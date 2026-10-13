@@ -16,6 +16,23 @@
 //! Styx's own directories a `.json` name is looked for as `<stem>.toml` first (what
 //! `styx-tune` writes, with the Styx-only settings the JSON cannot hold), then as named.
 //!
+//! # Overlays
+//!
+//! A tuning overlay is a JSON file of calibrated settings (written by `styx-calibrate`) merged
+//! over a Raspberry Pi (JSON) tuning, whichever one it is: the built-in one or a file found by
+//! the search above. Its algorithm blocks deep-merge into the blocks of the same name (see
+//! [`styx_algo::Tuning::from_rpi_json_str_with_overlay`]); a block the tuning lacks is added.
+//! The overlay is used when its `sensor` key (if it has one) names the tuning's sensor, which
+//! is the file name's stem (`ov9782` for `ov9782.json`). Where it comes from, first match:
+//!
+//! 1. the configuration's `tuning_overlay` (a file; `StyxConfig::tuning_overlay`);
+//! 2. [`OVERLAY_ENV`] (`STYX_TUNING_OVERLAY`), a file;
+//! 3. `<sensor>.overlay.json` in the directories above (for example
+//!    `/etc/styx/tuning/ov9782.overlay.json`).
+//!
+//! The source string of the tuning (logged when a capture starts) names the overlay applied,
+//! or says why one was not.
+//!
 //! Built in:
 //!
 //! * `ov9782.json`: the HeliOS OV9782 tuning for the PiSP (HeliOS
@@ -28,12 +45,19 @@
 use std::path::{Path, PathBuf};
 
 use styx_algo::Tuning;
+use styx_algo::tuning::json;
 
 /// Environment variable naming a tuning file to use instead of searching.
 pub const TUNING_ENV: &str = "STYX_TUNING";
 
 /// Environment variable holding extra tuning directories, searched first.
 pub const TUNING_PATH_ENV: &str = "STYX_TUNING_PATH";
+
+/// Environment variable naming a tuning overlay file (see the [module documentation](self)).
+pub const OVERLAY_ENV: &str = "STYX_TUNING_OVERLAY";
+
+/// The name of a sensor's overlay in a tuning directory: `<sensor>.overlay.json`.
+pub const OVERLAY_SUFFIX: &str = ".overlay.json";
 
 /// Styx's own system tuning directories, after [`TUNING_PATH_ENV`] and the user's
 /// configuration directory.
@@ -58,14 +82,17 @@ pub const GENERIC_TUNING: &str = include_str!("../tuning/generic.toml");
 
 /// Parses tuning text: `.json` names a Raspberry Pi file, anything else styx-algo's TOML.
 pub fn parse_tuning(name: &str, text: &str) -> styx_algo::Result<Tuning> {
-    if Path::new(name)
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-    {
+    if is_json(name) {
         Ok(Tuning::from_rpi_json_str(text)?.tuning)
     } else {
         Tuning::from_toml_str(text)
     }
+}
+
+fn is_json(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
 }
 
 /// A tuning search path (see the [module documentation](self)).
@@ -79,6 +106,9 @@ pub struct TuningLibrary {
     pub builtin: bool,
     /// Directories searched after the built-in tunings.
     pub fallback_dirs: Vec<PathBuf>,
+    /// An overlay file, tried before the per-sensor overlays in `dirs` (see the module
+    /// documentation). From the configuration or [`OVERLAY_ENV`].
+    pub overlay: Option<PathBuf>,
 }
 
 impl TuningLibrary {
@@ -100,42 +130,39 @@ impl TuningLibrary {
             dirs,
             builtin: true,
             fallback_dirs: LIBCAMERA_TUNING_DIRS.iter().map(PathBuf::from).collect(),
+            overlay: std::env::var_os(OVERLAY_ENV).map(PathBuf::from),
         }
     }
 
     /// The tuning named `name` (a sensor description's `tuning`), and where it came from (a
-    /// path, `builtin:<name>`, `builtin:generic` or `defaults`). Files that do not parse are
-    /// skipped.
+    /// path, `builtin:<name>`, `builtin:generic` or `defaults`, with the overlay applied to it
+    /// or why none was). Files that do not parse are skipped.
     pub fn find(&self, name: Option<&str>) -> (Tuning, String) {
-        let load = |p: &Path| p.is_file().then(|| Tuning::load(p).ok()).flatten();
         if let Some(p) = &self.file
-            && let Some(t) = load(p)
+            && let Some(found) = self.load(p)
         {
-            return (t, p.display().to_string());
+            return found;
         }
         // A plain file name only: a description cannot point outside the search path.
         if let Some(name) = name.filter(|n| !n.is_empty() && !n.contains('/')) {
-            let own = Path::new(name)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-                .then(|| Path::new(name).with_extension("toml"));
+            let own = is_json(name).then(|| Path::new(name).with_extension("toml"));
             for dir in &self.dirs {
                 for p in own.iter().map(|o| dir.join(o)).chain([dir.join(name)]) {
-                    if let Some(t) = load(&p) {
-                        return (t, p.display().to_string());
+                    if let Some(found) = self.load(&p) {
+                        return found;
                     }
                 }
             }
             if self.builtin
                 && let Some((n, text)) = BUILTIN_TUNINGS.iter().find(|(n, _)| *n == name)
-                && let Ok(t) = parse_tuning(n, text)
+                && let Some((t, extra)) = self.parse(n, text)
             {
-                return (t, format!("builtin:{n}"));
+                return (t, format!("builtin:{n}{extra}"));
             }
             for dir in &self.fallback_dirs {
                 let p = dir.join(name);
-                if let Some(t) = load(&p) {
-                    return (t, p.display().to_string());
+                if let Some(found) = self.load(&p) {
+                    return found;
                 }
             }
         }
@@ -146,6 +173,65 @@ impl TuningLibrary {
         }
         (Tuning::default(), "defaults".into())
     }
+
+    /// The tuning file at `p`, if it parses: the tuning and its source (the path, and the
+    /// overlay note).
+    fn load(&self, p: &Path) -> Option<(Tuning, String)> {
+        if !p.is_file() {
+            return None;
+        }
+        let text = std::fs::read_to_string(p).ok()?;
+        let file = p.file_name()?.to_string_lossy().into_owned();
+        let (t, extra) = self.parse(&file, &text)?;
+        Some((t, format!("{}{extra}", p.display())))
+    }
+
+    /// `text` (a tuning file named `file`) parsed, with the overlay for its sensor merged over
+    /// it when the tuning is Raspberry Pi JSON. The note says which overlay was applied, or
+    /// why one was not. `None` when the text does not parse.
+    fn parse(&self, file: &str, text: &str) -> Option<(Tuning, String)> {
+        let plain = || parse_tuning(file, text).ok().map(|t| (t, String::new()));
+        if !is_json(file) {
+            return plain();
+        }
+        let sensor = Path::new(file).file_stem()?.to_string_lossy().into_owned();
+        let Some((path, overlay)) = self.overlay_for(&sensor) else {
+            return plain();
+        };
+        match Tuning::from_rpi_json_str_with_overlay(text, &overlay) {
+            Ok(import) => Some((import.tuning, format!(" overlay={}", path.display()))),
+            Err(e) => {
+                plain().map(|(t, _)| (t, format!(" overlay-rejected={}: {e}", path.display())))
+            }
+        }
+    }
+
+    /// The overlay for `sensor` (its path and text), from [`Self::overlay`] first, then the
+    /// `<sensor>.overlay.json` files of [`Self::dirs`]. An overlay that names another sensor is
+    /// skipped.
+    fn overlay_for(&self, sensor: &str) -> Option<(PathBuf, String)> {
+        let explicit = self.overlay.iter().cloned();
+        let per_sensor = self
+            .dirs
+            .iter()
+            .map(|d| d.join(format!("{sensor}{OVERLAY_SUFFIX}")));
+        for p in explicit.chain(per_sensor) {
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            // Not JSON, or naming another sensor: not for this tuning.
+            let Ok(doc) = json::parse(&text) else {
+                continue;
+            };
+            match doc.get("sensor") {
+                None => {}
+                Some(v) if v.as_str() == Some(sensor) => {}
+                Some(_) => continue,
+            }
+            return Some((p, text));
+        }
+        None
+    }
 }
 
 /// The tuning for a sensor description, from [`TuningLibrary::system`].
@@ -153,16 +239,31 @@ pub fn find_tuning(desc: &styx_sensor::SensorDescription) -> (Tuning, String) {
     TuningLibrary::system().find(desc.sensor.tuning.as_deref())
 }
 
+/// [`find_tuning`] with an overlay file named by the configuration (`overlay`), which takes
+/// the place of [`OVERLAY_ENV`].
+pub fn find_tuning_with(
+    desc: &styx_sensor::SensorDescription,
+    overlay: Option<&Path>,
+) -> (Tuning, String) {
+    let mut lib = TuningLibrary::system();
+    if let Some(o) = overlay {
+        lib.overlay = Some(o.to_path_buf());
+    }
+    lib.find(desc.sensor.tuning.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        let dir = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../target/test-scratch"
-        ))
-        .join(format!("styx-tuning-{tag}-{}", std::process::id()));
+        // The build directory when one is set (the NVMe target), else the repository's.
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target")));
+        let dir = target
+            .join("test-scratch")
+            .join(format!("styx-tuning-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -233,5 +334,84 @@ mod tests {
         assert_eq!(t.description.as_deref(), Some("mine"));
         std::fs::remove_dir_all(&styx).unwrap();
         std::fs::remove_dir_all(&fallback).unwrap();
+    }
+
+    /// The overlay's test blocks: a split green on the built-in ov9782.
+    const SPLIT: &str = r#"{"sensor": "ov9782", "algorithms": [
+        {"rpi.black_level": {"black_level_gr": 4100, "black_level_gb": 4104}}]}"#;
+
+    #[test]
+    fn an_overlay_naming_the_sensor_merges_over_the_builtin_tuning() {
+        let dir = scratch("overlay-named");
+        let path = dir.join("calibrated.json");
+        std::fs::write(&path, SPLIT).unwrap();
+        let mut l = lib();
+        l.overlay = Some(path.clone());
+        let (t, src) = l.find(Some("ov9782.json"));
+        assert!(src.starts_with("builtin:ov9782.json overlay="), "{src}");
+        assert!(src.contains(&path.display().to_string()), "{src}");
+        let b = t.black_level.clone().unwrap();
+        assert_eq!(b.gr, Some(4100.0 / 65536.0));
+        assert_eq!(b.gb, Some(4104.0 / 65536.0));
+        // The rest of the builtin tuning is there.
+        assert!(t.awb.is_some() && t.ccm.is_some());
+        // An overlay is for its sensor: a tuning of another name is not overlaid.
+        let (_, src) = l.find(Some("imx219.json"));
+        assert_eq!(src, "builtin:generic");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_overlay_for_another_sensor_or_not_json_is_skipped() {
+        let dir = scratch("overlay-other");
+        let other = dir.join("other.json");
+        std::fs::write(&other, SPLIT.replace("ov9782", "imx219")).unwrap();
+        let garbage = dir.join("garbage.json");
+        std::fs::write(&garbage, "{not json").unwrap();
+        for path in [other, garbage] {
+            let mut l = lib();
+            l.overlay = Some(path);
+            let (t, src) = l.find(Some("ov9782.json"));
+            assert_eq!(src, "builtin:ov9782.json");
+            assert_eq!(t.black_level.unwrap().gr, None);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_sensor_overlay_in_a_tuning_directory_is_found_by_name() {
+        let dir = scratch("overlay-dir");
+        std::fs::write(
+            dir.join("ov9782.overlay.json"),
+            r#"{"algorithms": [{"rpi.black_level": {"black_level_gr": 4100}}]}"#,
+        )
+        .unwrap();
+        let mut l = lib();
+        l.dirs = vec![dir.clone()];
+        let (t, src) = l.find(Some("ov9782.json"));
+        assert!(src.starts_with("builtin:ov9782.json overlay="), "{src}");
+        assert_eq!(t.black_level.unwrap().gr, Some(4100.0 / 65536.0));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_rejected_overlay_leaves_the_tuning_and_says_so() {
+        let dir = scratch("overlay-rejected");
+        let path = dir.join("bad.json");
+        std::fs::write(
+            &path,
+            r#"{"sensor": "ov9782", "algorithms": [{"rpi.black_level": {"black_level": 70000}}]}"#,
+        )
+        .unwrap();
+        let mut l = lib();
+        l.overlay = Some(path);
+        let (t, src) = l.find(Some("ov9782.json"));
+        assert!(
+            src.starts_with("builtin:ov9782.json overlay-rejected="),
+            "{src}"
+        );
+        let builtin = parse_tuning("ov9782.json", BUILTIN_TUNINGS[0].1).unwrap();
+        assert_eq!(t, builtin);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

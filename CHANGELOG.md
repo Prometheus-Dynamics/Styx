@@ -8,6 +8,25 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Sensor calibration from dark frames:** `tools/styx-calibrate` (`styx-calibrate`, a library
+  and a command line) measures a sensor's black level per CFA channel (R, Gr, Gb, B), read noise
+  and its gain dependence, dark current, fixed pattern and row/column noise, and hot, stuck and
+  noisy pixels from raw dark captures. `styx-calibrate dark` writes a report and a tuning
+  overlay; `styx-calibrate check-processed` reports the clipped fraction of processed dark frames
+  (docs/calibration.md). The overlay carries the mean black level per gain by default; the
+  per-channel black level and the noise model are opt-in (`--per-channel-black`,
+  `--noise-model`).
+
+- **Tuning overlays:** a calibration overlay (JSON, merged over a Raspberry Pi JSON tuning by
+  algorithm block) is loaded from `StyxConfig::tuning_overlay`, `STYX_TUNING_OVERLAY`, or
+  `<sensor>.overlay.json` in the tuning directories; the log names the overlay applied or why it
+  was not (docs/calibration.md, docs/tuning.md).
+
+- **Per-channel black level:** the PiSP back end's black level correction takes one level per
+  CFA channel (R, Gr, Gb, B) through `set_black_levels`; the SDN and TDN denoise use their mean.
+  `rpi.black_level` accepts `black_level_gr`, `black_level_gb` and a `by_gain` list, and
+  `rpi.noise` a `by_gain` list of constants. Tunings without them are unchanged.
+
 - **Image-quality comparison tool:** `tools/iq-compare` (`styx-iq-compare`) reports the
   temporal noise (mean, median, p90, per-frame brightness std), spatial noise and edge
   contrast and gradient of two raw grey captures, side by side (docs/testing.md, "Image quality

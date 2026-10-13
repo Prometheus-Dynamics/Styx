@@ -230,6 +230,13 @@ impl NativeIspConfig {
 }
 
 impl StyxConfig {
+    /// Merge the tuning overlay at `path` over the native sensor's tuning (see
+    /// [`StyxConfig::tuning_overlay`]).
+    pub fn tuning_overlay(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.tuning_overlay = Some(path.into());
+        self
+    }
+
     /// Have a native camera's PiSP also crop these regions from every frame (see
     /// [`NativeIspConfig::regions`]; at most [`MAX_NATIVE_REGIONS`], the rest are ignored).
     pub fn native_regions(mut self, regions: &[NativeRegion]) -> Self {

@@ -107,16 +107,34 @@ impl BackEnd {
 
     /// Black level correction (16-bit scale, one level for all channels).
     pub fn set_black_level(&mut self, level: u16) {
+        self.set_black_levels([level; 4]);
+    }
+
+    /// Black level correction with one level per CFA channel, in sensor order: red, green on
+    /// the red row, green on the blue row, blue (16-bit scale). The spatial and temporal
+    /// denoise, which take one level, use their mean.
+    pub fn set_black_levels(&mut self, levels: [u16; 4]) {
         self.cfg.blc = BlaConfig {
-            black_level_r: level,
-            black_level_gr: level,
-            black_level_gb: level,
-            black_level_b: level,
+            black_level_r: levels[0],
+            black_level_gr: levels[1],
+            black_level_gb: levels[2],
+            black_level_b: levels[3],
             output_black_level: 0,
             pad: [0; 2],
         };
-        self.cfg.sdn.black_level = level;
-        self.cfg.tdn.black_level = level;
+        let mean = self.denoise_black_level();
+        self.cfg.sdn.black_level = mean;
+        self.cfg.tdn.black_level = mean;
+    }
+
+    /// The one black level the denoise blocks use: the mean of the four channels, rounded.
+    fn denoise_black_level(&self) -> u16 {
+        let b = &self.cfg.blc;
+        let sum = u32::from(b.black_level_r)
+            + u32::from(b.black_level_gr)
+            + u32::from(b.black_level_gb)
+            + u32::from(b.black_level_b);
+        ((sum + 2) / 4) as u16
     }
 
     /// White balance (and digital) gains.
@@ -172,7 +190,7 @@ impl BackEnd {
     /// Spatial denoise (`None`: off); its black level follows [`Self::set_black_level`].
     pub fn set_sdn(&mut self, sdn: Option<BeSdnConfig>) {
         self.cfg.sdn = sdn.unwrap_or_default();
-        self.cfg.sdn.black_level = self.cfg.blc.black_level_r;
+        self.cfg.sdn.black_level = self.denoise_black_level();
         self.enable_bayer(bayer_enable::SDN, sdn.is_some());
     }
 
@@ -194,7 +212,7 @@ impl BackEnd {
     /// [`Self::set_black_level`].
     pub fn set_tdn(&mut self, tdn: Option<BeTdnConfig>, input: bool) {
         self.cfg.tdn = tdn.unwrap_or_default();
-        self.cfg.tdn.black_level = self.cfg.blc.black_level_r;
+        self.cfg.tdn.black_level = self.denoise_black_level();
         let on = tdn.is_some();
         self.enable_bayer(bayer_enable::TDN | bayer_enable::TDN_OUTPUT, on);
         self.enable_bayer(bayer_enable::TDN_INPUT, on && input);
