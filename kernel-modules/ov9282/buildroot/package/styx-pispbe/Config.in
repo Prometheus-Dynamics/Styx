@@ -1,0 +1,18 @@
+config BR2_PACKAGE_STYX_PISPBE
+	bool "styx-pispbe"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Styx's build of the PiSP back end driver (pisp_be): the image
+	  kernel's own driver with a cheaper per-job config write (about
+	  7 us of CPU per job instead of about 120 us). It starts every back
+	  end job about 0.11 ms sooner; the hardware sees the same register
+	  values. Installed to /lib/modules/<release>/updates/, where it
+	  takes precedence over the kernel's own pisp-be.ko; the kernel
+	  itself is not changed. For Styx images.
+
+	  The build fails when the kernel's own pisp_be sources are not the
+	  ones the Styx driver was made from (re-import them:
+	  kernel-modules/pispbe).
+
+comment "styx-pispbe needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL
