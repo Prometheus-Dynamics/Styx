@@ -362,6 +362,7 @@ static const struct cci_reg_sequence common_regs[] = {
 #define MODE_1280_800		0
 #define MODE_1280_720		1
 #define MODE_640_400		2
+#define MODE_1280_480		3
 
 #define DEFAULT_MODE		MODE_1280_720
 
@@ -458,6 +459,42 @@ static const struct cci_reg_sequence mode_640x400_regs[] = {
 	{CCI_REG8(0x4509), 0x80},
 };
 
+static const struct cci_reg_sequence mode_1280x480_regs[] = {
+	/*
+	 * Styx: a 1280x480 window centred on the 1280x800 array (output rows
+	 * 168..647), at full pitch, flips off as in the 1280x800 mode. The
+	 * sensor reads rows 160..655 only: 40% less readout per frame.
+	 */
+	{CCI_REG8(0x3778), 0x00},
+	{CCI_REG8(0x3800), 0x00},
+	{CCI_REG8(0x3801), 0x00},
+	{CCI_REG8(0x3802), 0x00},
+	{CCI_REG8(0x3803), 0xa0},
+	{CCI_REG8(0x3804), 0x05},
+	{CCI_REG8(0x3805), 0x0f},
+	{CCI_REG8(0x3806), 0x02},
+	{CCI_REG8(0x3807), 0x8f},
+	{CCI_REG8(0x3808), 0x05},
+	{CCI_REG8(0x3809), 0x00},
+	{CCI_REG8(0x380a), 0x01},
+	{CCI_REG8(0x380b), 0xe0},
+	{CCI_REG8(0x3810), 0x00},
+	{CCI_REG8(0x3811), 0x08},
+	{CCI_REG8(0x3812), 0x00},
+	{CCI_REG8(0x3813), 0x08},
+	{CCI_REG8(0x3814), 0x11},
+	{CCI_REG8(0x3815), 0x11},
+	{OV9282_REG_TIMING_FORMAT_1, 0x40},
+	{OV9282_REG_TIMING_FORMAT_2, 0x00},
+	{CCI_REG8(0x4003), 0x40},
+	{CCI_REG8(0x4008), 0x04},
+	{CCI_REG8(0x4009), 0x0b},
+	{CCI_REG8(0x400c), 0x00},
+	{CCI_REG8(0x400d), 0x07},
+	{CCI_REG8(0x4507), 0x00},
+	{CCI_REG8(0x4509), 0x00},
+};
+
 /* Supported sensor mode configurations */
 static const struct ov9282_mode supported_modes[] = {
 	[MODE_1280_800] = {
@@ -519,6 +556,25 @@ static const struct ov9282_mode supported_modes[] = {
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_640x400_regs),
 			.regs = mode_640x400_regs,
+		},
+	},
+	[MODE_1280_480] = {
+		.width = 1280,
+		.height = 480,
+		.hblank_min = { 250, 176 },
+		.vblank = 1022,
+		.vblank_min = 41,
+		.vblank_max = 51540,
+		.link_freq_idx = 0,
+		.crop = {
+			.left = OV9282_PIXEL_ARRAY_LEFT,
+			.top = OV9282_PIXEL_ARRAY_TOP + 160,
+			.width = 1280,
+			.height = 480
+		},
+		.reg_list = {
+			.num_of_regs = ARRAY_SIZE(mode_1280x480_regs),
+			.regs = mode_1280x480_regs,
 		},
 	},
 };

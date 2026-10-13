@@ -1,0 +1,16 @@
+config BR2_PACKAGE_STYX_OV9282
+	bool "styx-ov9282"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Styx's build of the ov9282 sensor driver (OV9281/OV9282/OV9782):
+	  the image kernel's own driver plus a 1280x480 mode centred on the
+	  array, which reads 40% fewer lines than 1280x800. Installed to
+	  /lib/modules/<release>/updates/, where it takes precedence over the
+	  kernel's own ov9282.ko; the kernel itself is not changed. For Styx
+	  images only (images using libcamera keep the stock driver).
+
+	  The build fails when the kernel's own ov9282.c is not the one the
+	  Styx driver was made from (re-import it: kernel-modules/ov9282).
+
+comment "styx-ov9282 needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL
