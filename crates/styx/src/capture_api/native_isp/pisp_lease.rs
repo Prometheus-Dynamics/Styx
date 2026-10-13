@@ -335,6 +335,9 @@ pub(super) struct Leaser<'a> {
     pub(super) conversion: Option<ClockConversion>,
     /// What the capture thread does to a cached buffer before handing it over.
     pub(super) prep: CpuPrep,
+    /// The window of the sensor's field the mode reads, if it reads one: frame crops are
+    /// reported in the field's coordinates.
+    pub(super) window: Option<styx_pisp::device::SensorWindow>,
 }
 
 impl Leaser<'_> {
@@ -356,6 +359,13 @@ impl Leaser<'_> {
             self.conversion,
             self.prep,
         ))
+        .map(|mut l| {
+            if let Some(w) = self.window {
+                let crop = in_field(w, l.meta().crop);
+                l.meta_mut().crop = Some(crop);
+            }
+            l
+        })
     }
 }
 
@@ -418,6 +428,15 @@ fn lease(
         }
     }
     FrameLease::from_external(meta, plane_layouts, Arc::new(live.track(backing)))
+}
+
+/// `crop` (of the frame the sensor's window `w` reads; `None`: all of it) in the coordinates of
+/// the sensor's full field.
+pub(super) fn in_field(w: styx_pisp::device::SensorWindow, crop: Option<FrameRect>) -> FrameRect {
+    match crop {
+        Some(c) => FrameRect::new(w.x + c.x, w.y + c.y, c.width, c.height),
+        None => FrameRect::new(w.x, w.y, w.width, w.height),
+    }
 }
 
 /// `rect` as the back end's crop config.
@@ -651,6 +670,22 @@ mod tests {
             );
             assert!(CpuPrep::new(&Default::default()).sync);
         }
+    }
+
+    /// A sensor window (Styx's OV9782 1280x480: rows 160..639 of the 1280x800 field) places
+    /// a frame, and any back end crop of it, in the field's coordinates.
+    #[test]
+    fn crops_are_reported_in_the_sensors_field() {
+        let w = styx_pisp::device::SensorWindow {
+            x: 0,
+            y: 160,
+            width: 1280,
+            height: 480,
+            field: (1280, 800),
+        };
+        assert_eq!(in_field(w, None), FrameRect::new(0, 160, 1280, 480));
+        let roi = FrameRect::new(100, 20, 256, 128);
+        assert_eq!(in_field(w, Some(roi)), FrameRect::new(100, 180, 256, 128));
     }
 
     /// A crop sits in the top left of the full-size buffer: the planes keep the buffer's stride

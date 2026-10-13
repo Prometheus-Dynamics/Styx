@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
+# Same object and module name as the in-tree driver (ov9282.ko, module ov9282), so the
+# copy in /lib/modules/<release>/updates/ is the one modprobe loads.
+obj-m += ov9282.o

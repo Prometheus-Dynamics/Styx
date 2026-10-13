@@ -6,7 +6,7 @@ use std::time::Duration;
 use styx_kernel::FourCc;
 use styx_kernel::media::{LinkFlags, MediaDevice, PadRef, Topology};
 use styx_kernel::subdev::{MbusCode, MbusFormat, Subdev, Which};
-use styx_kernel::v4l2::{BufType, Format, MetaFormat, PixFormat, VideoDevice};
+use styx_kernel::v4l2::{BufType, Format, MetaFormat, PixFormat, SelectionTarget, VideoDevice};
 
 use super::{DeviceError, Queue, Result, bayer16_fourcc, find_media};
 use crate::fe::FrontEnd;
@@ -103,8 +103,60 @@ pub struct FeHeldRaw {
 }
 
 /// The front end path, set up and holding its buffers.
+/// The part of the sensor's field a mode reads, when it reads a window of it (a mode of
+/// fewer lines at full pitch, e.g. the OV9782's 1280x480 in Styx's ov9282 module): its
+/// position and size in the field's coordinates (the full mode's frame, e.g. 1280x800).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SensorWindow {
+    /// Left edge in the field.
+    pub x: u32,
+    /// Top edge in the field.
+    pub y: u32,
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+    /// The field's size.
+    pub field: (u32, u32),
+}
+
+impl SensorWindow {
+    /// The sensor's crop against its crop bounds (`VIDIOC_SUBDEV_G_SELECTION`) on `pad`, as set
+    /// for the current mode; `None` for a mode of the whole field (binned modes included) or a
+    /// driver without the selection API.
+    pub fn read(sd: &Subdev, pad: u32) -> Option<Self> {
+        let crop = sd
+            .selection(pad, Which::Active, SelectionTarget::Crop)
+            .ok()?;
+        let bounds = sd
+            .selection(pad, Which::Active, SelectionTarget::CropBounds)
+            .ok()?;
+        Self::from_rects(
+            (crop.left, crop.top, crop.width, crop.height),
+            (bounds.left, bounds.top, bounds.width, bounds.height),
+        )
+    }
+
+    /// From the crop and the crop bounds as `(left, top, width, height)`.
+    pub fn from_rects(crop: (i32, i32, u32, u32), bounds: (i32, i32, u32, u32)) -> Option<Self> {
+        if (crop.2, crop.3) == (bounds.2, bounds.3) || crop.2 == 0 || crop.3 == 0 {
+            return None;
+        }
+        let x = u32::try_from(crop.0.checked_sub(bounds.0)?).ok()?;
+        let y = u32::try_from(crop.1.checked_sub(bounds.1)?).ok()?;
+        (x + crop.2 <= bounds.2 && y + crop.3 <= bounds.3).then_some(Self {
+            x,
+            y,
+            width: crop.2,
+            height: crop.3,
+            field: (bounds.2, bounds.3),
+        })
+    }
+}
+
 pub struct FrontEndDevice {
     _media: MediaDevice,
+    sensor_window: Option<SensorWindow>,
     stats: Queue,
     config: Queue,
     image: Option<Queue>,
@@ -192,6 +244,7 @@ impl FrontEndDevice {
                 sf.width, sf.height, sf.code.0
             )));
         }
+        let sensor_window = SensorWindow::read(&sensor_sd, sensor.index);
         let csi = subdev(&t, csi2)?;
         csi.set_format(0, Which::Active, &sf)?;
         let code16 = mbus16(setup.bayer);
@@ -265,7 +318,13 @@ impl FrontEndDevice {
             image_path,
             free_configs: Vec::new(),
             _media: media,
+            sensor_window,
         })
+    }
+
+    /// The window of the sensor's field the mode reads ([`SensorWindow`]), if it reads one.
+    pub fn sensor_window(&self) -> Option<SensorWindow> {
+        self.sensor_window
     }
 
     /// The format of the raw output node (for `FrontEnd::set_output_format(0, ..)` and as
@@ -465,5 +524,30 @@ impl FrontEndDevice {
             first.get_or_insert(e);
         }
         first.map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::SensorWindow;
+
+    /// What the ov9282 driver reports: crop bounds 1280x800 at (8, 8); Styx's 1280x480 mode
+    /// crops array rows 168..647.
+    #[test]
+    fn a_windowed_mode_is_placed_in_the_full_field() {
+        let bounds = (8, 8, 1280, 800);
+        let w = SensorWindow::from_rects((8, 168, 1280, 480), bounds).unwrap();
+        assert_eq!(
+            (w.x, w.y, w.width, w.height, w.field),
+            (0, 160, 1280, 480, (1280, 800))
+        );
+        // The full mode, and a binned one (640x400 reading the whole 1280x800): no window.
+        assert_eq!(SensorWindow::from_rects((8, 8, 1280, 800), bounds), None);
+        // The stock 1280x720 mode: the top 720 lines.
+        let top = SensorWindow::from_rects((8, 8, 1280, 720), bounds).unwrap();
+        assert_eq!((top.x, top.y, top.height), (0, 0, 720));
+        // Outside the bounds: not trusted.
+        assert_eq!(SensorWindow::from_rects((8, 400, 1280, 480), bounds), None);
+        assert_eq!(SensorWindow::from_rects((0, 168, 1280, 480), bounds), None);
     }
 }

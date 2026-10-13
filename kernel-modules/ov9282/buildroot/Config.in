@@ -1,0 +1,1 @@
+source "$BR2_EXTERNAL_STYX_KMODS_PATH/package/styx-ov9282/Config.in"
