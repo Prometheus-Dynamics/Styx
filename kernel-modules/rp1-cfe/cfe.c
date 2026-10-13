@@ -735,11 +735,29 @@ static void cfe_eof_isr_handler(struct cfe_node *node)
 	clear_state(cfe, FS_INT, node->id);
 }
 
+/*
+ * Styx: an FE image output has written its ILINES lines of the frame being
+ * received (see STYX_CFE_EVENT_LINES).
+ */
+static void cfe_lines_event(struct cfe_node *node)
+{
+	struct cfe_device *cfe = node->cfe;
+	struct v4l2_event event = { .type = STYX_CFE_EVENT_LINES };
+	struct styx_cfe_lines_event *l = (void *)event.u.data;
+
+	BUILD_BUG_ON(sizeof(*l) > sizeof(event.u.data));
+	l->sequence = node->fs_count - 1;
+	l->lines = cfe->fe.ilines[node->id - FE_OUT0];
+	l->timestamp_ns = ktime_get_ns();
+	v4l2_event_queue(&node->video_dev, &event);
+}
+
 static irqreturn_t cfe_isr(int irq, void *dev)
 {
 	struct cfe_device *cfe = dev;
 	unsigned int i;
 	bool sof[NUM_NODES] = {0}, eof[NUM_NODES] = {0};
+	bool lines[2] = {0};
 	u32 sts;
 
 	sts = cfg_reg_read(cfe, MIPICFG_INTS);
@@ -749,9 +767,16 @@ static irqreturn_t cfe_isr(int irq, void *dev)
 
 	if (sts & MIPICFG_INT_PISP_FE)
 		pisp_fe_isr(&cfe->fe, sof + CSI2_NUM_CHANNELS,
-			    eof + CSI2_NUM_CHANNELS);
+			    eof + CSI2_NUM_CHANNELS, lines);
 
 	spin_lock(&cfe->state_lock);
+
+	for (i = 0; i < 2; i++) {
+		struct cfe_node *node = &cfe->node[FE_OUT0 + i];
+
+		if (lines[i] && check_state(cfe, NODE_STREAMING, node->id))
+			cfe_lines_event(node);
+	}
 
 	for (i = 0; i < NUM_NODES; i++) {
 		struct cfe_node *node = &cfe->node[i];
@@ -1585,6 +1610,11 @@ static int cfe_subscribe_event(struct v4l2_fh *fh,
 			break;
 
 		return v4l2_event_subscribe(fh, sub, 2, NULL);
+	case STYX_CFE_EVENT_LINES:
+		if (node->id != FE_OUT0 && node->id != FE_OUT1)
+			break;
+
+		return v4l2_event_subscribe(fh, sub, 4, NULL);
 	case V4L2_EVENT_SOURCE_CHANGE:
 		if (!node_supports_image_output(node) &&
 		    !node_supports_meta_output(node))

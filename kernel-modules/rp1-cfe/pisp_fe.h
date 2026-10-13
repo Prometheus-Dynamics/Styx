@@ -28,6 +28,8 @@ enum pisp_fe_pads {
 };
 
 struct pisp_fe_device {
+	/* Styx: the ILINES threshold last queued, per image output */
+	u32 ilines[2];
 	/* Parent V4l2 device */
 	struct v4l2_device *v4l2_dev;
 	void __iomem *base;
@@ -38,7 +40,21 @@ struct pisp_fe_device {
 	struct v4l2_subdev sd;
 };
 
-void pisp_fe_isr(struct pisp_fe_device *fe, bool *sof, bool *eof);
+void pisp_fe_isr(struct pisp_fe_device *fe, bool *sof, bool *eof, bool *lines);
+
+/*
+ * Styx: the FE's ILINES interrupt (one per image output per frame, once the
+ * output has written `ilines` lines), queued on the output's video node as this
+ * private event. Userspace sets the line in the FE config it queues
+ * (ch[i].output.ilines, 0 < ilines < height); 0 keeps the driver's 3/4 height.
+ */
+#define STYX_CFE_EVENT_LINES	(V4L2_EVENT_PRIVATE_START + 0x5354)
+
+struct styx_cfe_lines_event {
+	__u32 sequence;		/* the frame's sequence (as its buffer's) */
+	__u32 lines;		/* the ILINES threshold the frame was queued with */
+	__u64 timestamp_ns;	/* CLOCK_MONOTONIC, as the buffer timestamps */
+};
 int pisp_fe_validate_config(struct pisp_fe_device *fe,
 			    struct pisp_fe_config *cfg,
 			    struct v4l2_format const *f0,

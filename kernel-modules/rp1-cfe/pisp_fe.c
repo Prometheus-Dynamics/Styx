@@ -194,7 +194,7 @@ static void pisp_config_write(struct pisp_fe_device *fe,
 					  *cfg);
 }
 
-void pisp_fe_isr(struct pisp_fe_device *fe, bool *sof, bool *eof)
+void pisp_fe_isr(struct pisp_fe_device *fe, bool *sof, bool *eof, bool *lines)
 {
 	u32 status, int_status, out_status, frame_status, error_status;
 	unsigned int i;
@@ -217,6 +217,9 @@ void pisp_fe_isr(struct pisp_fe_device *fe, bool *sof, bool *eof)
 		sof[i] = !!(int_status & FE_INT_SOF);
 		eof[i] = !!(int_status & FE_INT_EOF);
 	}
+	/* Styx: the ILINES interrupts of the two image outputs. */
+	lines[0] = !!(int_status & FE_INT_LINES0);
+	lines[1] = !!(int_status & FE_INT_LINES1);
 }
 
 static bool pisp_fe_validate_output(struct pisp_fe_config const *cfg,
@@ -333,11 +336,17 @@ void pisp_fe_submit_job(struct pisp_fe_device *fe, struct vb2_buffer **vb2_bufs,
 		cfg->stats_buffer.addr_hi = addr >> 32;
 	}
 
-	/* Set up ILINES interrupts 3/4 of the way down each output */
-	cfg->ch[0].output.ilines =
-		max(0x80u, (3u * cfg->ch[0].output.format.height) >> 2);
-	cfg->ch[1].output.ilines =
-		max(0x80u, (3u * cfg->ch[1].output.format.height) >> 2);
+	/*
+	 * Set up ILINES interrupts 3/4 of the way down each output, unless the
+	 * config asks for its own line (Styx: the end of a slice).
+	 */
+	for (unsigned int c = 0; c < 2; c++) {
+		u32 h = cfg->ch[c].output.format.height;
+
+		if (!cfg->ch[c].output.ilines || cfg->ch[c].output.ilines >= h)
+			cfg->ch[c].output.ilines = max(0x80u, (3u * h) >> 2);
+		fe->ilines[c] = cfg->ch[c].output.ilines;
+	}
 
 	/*
 	 * The hardware must have consumed the previous config by now.
