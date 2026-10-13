@@ -1,8 +1,9 @@
 //! Frames leased straight from the PiSP back end's output buffers: each buffer is mapped and
 //! exported once (cached per buffer index) and shared by the leases that hold it; a lease
 //! returns its buffer to the back end when it drops, so the outputs of a job (and its extra
-//! passes) can live for different times. The CPU-access sync (`DMA_BUF_IOCTL_SYNC`) happens
-//! only when someone reads the pixels, not for frames handed on as dma-bufs.
+//! passes) can live for different times. The CPU-access sync (`DMA_BUF_IOCTL_SYNC`) of a
+//! cached buffer starts on the capture thread as the frame is leased ([`CpuPrep`], the
+//! default), or else when someone first reads the pixels.
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
@@ -39,6 +40,73 @@ const RETURNS: usize = 256;
 /// A ring for buffers coming back.
 pub(super) fn returns() -> (Returns, ReturnsRx) {
     styx_core::queue::bounded(RETURNS)
+}
+
+/// What the capture thread does to a cached buffer before handing its lease over
+/// (`NativeIspConfig::early_cpu_sync` and `cpu_prefetch`, or their environment overrides).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CpuPrep {
+    /// Start CPU access (the cache sync) now rather than on the consumer's first read.
+    pub(super) sync: bool,
+    /// Then prefetch the first plane.
+    pub(super) prefetch: crate::capture_api::NativeCpuPrefetch,
+}
+
+impl CpuPrep {
+    /// From the configuration, with `STYX_NATIVE_EARLY_SYNC=0|1` and
+    /// `STYX_NATIVE_PREFETCH=off|touch|l3` overriding it (for measurements).
+    pub(super) fn new(cfg: &crate::capture_api::NativeIspConfig) -> Self {
+        use crate::capture_api::NativeCpuPrefetch as P;
+        let sync = match std::env::var("STYX_NATIVE_EARLY_SYNC").as_deref() {
+            Ok("0") => false,
+            Ok("1") => true,
+            _ => cfg.early_cpu_sync,
+        };
+        let prefetch = match std::env::var("STYX_NATIVE_PREFETCH").as_deref() {
+            Ok("off") => P::Off,
+            Ok("touch") => P::Touch,
+            Ok("l3") => P::L3,
+            _ => cfg.cpu_prefetch,
+        };
+        // Reading before the sync would cache stale lines: a prefetch starts CPU access.
+        Self {
+            sync: sync || prefetch != P::Off,
+            prefetch,
+        }
+    }
+
+    /// Nothing early: the sync on the first read.
+    #[cfg(test)]
+    pub(super) const LAZY: Self = Self {
+        sync: false,
+        prefetch: crate::capture_api::NativeCpuPrefetch::Off,
+    };
+}
+
+/// Brings `bytes` into the caches: a load of every 64-byte line (`Touch`), or a level-3
+/// prefetch hint for each (`L3`, which does not wait for the data).
+fn prefetch(bytes: &[u8], how: crate::capture_api::NativeCpuPrefetch) {
+    use crate::capture_api::NativeCpuPrefetch as P;
+    const LINE: usize = 64;
+    match how {
+        P::Off => {}
+        #[cfg(target_arch = "aarch64")]
+        P::L3 => {
+            for line in bytes.chunks(LINE) {
+                // SAFETY: a prefetch hint only; the address is inside `bytes`.
+                unsafe {
+                    core::arch::asm!("prfm pldl3keep, [{0}]", in(reg) line.as_ptr(), options(nostack, readonly, preserves_flags));
+                }
+            }
+        }
+        _ => {
+            let mut acc = 0u8;
+            for line in bytes.chunks(LINE) {
+                acc ^= line[0];
+            }
+            std::hint::black_box(acc);
+        }
+    }
 }
 
 /// One back end output as the capture delivers it.
@@ -265,6 +333,8 @@ pub(super) struct Leaser<'a> {
     /// How the frame's timestamp converts to the configured clock, sampled once for the frame
     /// (its companions convert the same way).
     pub(super) conversion: Option<ClockConversion>,
+    /// What the capture thread does to a cached buffer before handing it over.
+    pub(super) prep: CpuPrep,
 }
 
 impl Leaser<'_> {
@@ -284,10 +354,12 @@ impl Leaser<'_> {
             self.returns,
             self.live,
             self.conversion,
+            self.prep,
         ))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lease(
     placed: Placed,
     buffer: BeBuffer,
@@ -296,6 +368,7 @@ fn lease(
     returns: &Returns,
     live: &CaptureMetrics,
     conversion: Option<ClockConversion>,
+    prep: CpuPrep,
 ) -> FrameLease {
     let spec = placed.spec;
     let (width, height) = placed.size.unwrap_or_else(|| {
@@ -329,18 +402,22 @@ fn lease(
     // front end's buffers were dequeued.
     let done = CaptureInstant::from(f.dequeued + f.times.total);
     meta.hops.set(Hop::IspDone, done.as_nanos());
-    FrameLease::from_external(
-        meta,
-        plane_layouts,
-        Arc::new(live.track(BeBacking {
-            buffer,
-            planes,
-            output,
-            index,
-            window: CpuReadWindow::new(),
-            returns: returns.clone(),
-        })),
-    )
+    let backing = BeBacking {
+        buffer,
+        planes,
+        output,
+        index,
+        window: CpuReadWindow::new(),
+        returns: returns.clone(),
+    };
+    if prep.sync && backing.buffer.cached {
+        // Held from now until the lease drops: the consumer's reads find access started.
+        backing.window.hold(|| backing.sync(true));
+        if let Some(first) = backing.bytes(0) {
+            prefetch(first, prep.prefetch);
+        }
+    }
+    FrameLease::from_external(meta, plane_layouts, Arc::new(live.track(backing)))
 }
 
 /// `rect` as the back end's crop config.
@@ -429,7 +506,16 @@ mod tests {
         let f = frame();
         let lease_in = |clock| {
             let conversion = crate::capture_api::native_backend::native_conversion(clock);
-            lease(placed(), buffer(w, h), (0, 3), &f, &tx, &live, conversion)
+            lease(
+                placed(),
+                buffer(w, h),
+                (0, 3),
+                &f,
+                &tx,
+                &live,
+                conversion,
+                CpuPrep::LAZY,
+            )
         };
         let native = lease_in(ClockSource::Native);
         assert_eq!(native.meta().clock, Some(TimestampClock::Monotonic));
@@ -459,7 +545,16 @@ mod tests {
             size: None,
             crop: None,
         };
-        let f = lease(placed, buffer(w, h), (0, 3), &frame(), &tx, &live, None);
+        let f = lease(
+            placed,
+            buffer(w, h),
+            (0, 3),
+            &frame(),
+            &tx,
+            &live,
+            None,
+            CpuPrep::LAZY,
+        );
         let planes = f.planes();
         assert_eq!(planes.len(), 2);
         assert!(planes[0].data().iter().all(|&v| v == 1));
@@ -487,6 +582,77 @@ mod tests {
         assert!(matches!(rx.recv(), RecvOutcome::Data((0, 3))));
     }
 
+    /// With early access (the default), the lease is handed over with CPU access already
+    /// started: the consumer's reads find the window open; it closes when the lease drops.
+    /// A prefetch reads the same pixels the lease shows.
+    #[test]
+    fn early_access_opens_the_window_on_the_capture_thread() {
+        use crate::capture_api::NativeCpuPrefetch as P;
+        let (w, h) = (64, 32);
+        let spec = OutputSpec {
+            code: FourCc::NV12,
+            width: w as u32,
+            height: h as u32,
+        };
+        let (tx, rx) = returns();
+        let live = CaptureMetrics::default();
+        let placed = Placed {
+            spec,
+            stride: w,
+            size: None,
+            crop: None,
+        };
+        for prefetch in [P::Off, P::Touch, P::L3] {
+            let prep = CpuPrep {
+                sync: true,
+                prefetch,
+            };
+            let f = lease(
+                placed,
+                buffer(w, h),
+                (0, 3),
+                &frame(),
+                &tx,
+                &live,
+                None,
+                prep,
+            );
+            assert!(f.planes()[0].data().iter().all(|&v| v == 1), "{prefetch:?}");
+            drop(f);
+            assert!(matches!(rx.recv(), RecvOutcome::Data((0, 3))));
+        }
+        // Lazy: nothing until a read.
+        let lazy = BeBacking {
+            buffer: buffer(w, h),
+            planes: SmallVec::from_slice(&[(0, w * h)]),
+            output: 0,
+            index: 1,
+            window: CpuReadWindow::new(),
+            returns: tx.clone(),
+        };
+        assert!(!lazy.window.is_open());
+        lazy.window.hold(|| lazy.sync(true));
+        assert!(lazy.window.is_open());
+        // A prefetch implies the sync: reading first would cache stale lines.
+        let cfg = crate::capture_api::NativeIspConfig {
+            early_cpu_sync: false,
+            cpu_prefetch: P::L3,
+            ..Default::default()
+        };
+        if std::env::var_os("STYX_NATIVE_EARLY_SYNC").is_none()
+            && std::env::var_os("STYX_NATIVE_PREFETCH").is_none()
+        {
+            assert_eq!(
+                CpuPrep::new(&cfg),
+                CpuPrep {
+                    sync: true,
+                    prefetch: P::L3
+                }
+            );
+            assert!(CpuPrep::new(&Default::default()).sync);
+        }
+    }
+
     /// A crop sits in the top left of the full-size buffer: the planes keep the buffer's stride
     /// and the chroma plane its offset.
     #[test]
@@ -506,7 +672,16 @@ mod tests {
             size: None,
             crop: Some(crop),
         };
-        let f = lease(placed, buffer(w, h), (0, 3), &frame(), &tx, &live, None);
+        let f = lease(
+            placed,
+            buffer(w, h),
+            (0, 3),
+            &frame(),
+            &tx,
+            &live,
+            None,
+            CpuPrep::LAZY,
+        );
         let res = f.meta().format.resolution;
         assert_eq!((res.width.get(), res.height.get()), (32, 16));
         assert_eq!(f.meta().crop, Some(crop));

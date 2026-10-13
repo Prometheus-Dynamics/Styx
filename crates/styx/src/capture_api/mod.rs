@@ -113,8 +113,8 @@ pub use tunables::{
     DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH, DEFAULT_V4L2_ERROR_BACKOFF_MS,
     DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig, IdleStop,
     LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, MAX_NATIVE_REGIONS,
-    NativeDeflicker, NativeFlicker, NativeIspConfig, NativeRegion, NetcamConfig, NetcamTunables,
-    ReconnectPolicy, StyxConfig, TransformConfig, UvcConfig, V4l2Config,
+    NativeCpuPrefetch, NativeDeflicker, NativeFlicker, NativeIspConfig, NativeRegion, NetcamConfig,
+    NetcamTunables, ReconnectPolicy, StyxConfig, TransformConfig, UvcConfig, V4l2Config,
 };
 #[cfg(feature = "uvc")]
 pub(crate) use uvc_backend::probe_into as probe_uvc_into;

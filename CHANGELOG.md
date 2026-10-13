@@ -47,6 +47,20 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **Native PiSP: CPU access starts on the capture thread.** The cache sync of a cached back end
+  buffer (`DMA_BUF_IOCTL_SYNC` start, 23 µs per 1280x800 NV12 frame on the CM5) now runs as the
+  frame is leased instead of on the consumer's first read, so a detector reading the frame no
+  longer pays it: on the CM5 a consumer reading the Y plane and pyramid level went from 264 to
+  240 µs p50 per frame at the same end-to-end time and CPU. `NativeIspConfig::early_cpu_sync`
+  (default `true`; `false` keeps the sync for frames whose pixels are read, for captures that
+  only pass dma-bufs on), `STYX_NATIVE_EARLY_SYNC=0|1`.
+- **Native PiSP: opt-in prefetch of fresh frames.** `NativeIspConfig::cpu_prefetch`
+  (`NativeCpuPrefetch::Touch` / `L3`, `STYX_NATIVE_PREFETCH`) has the capture thread pull each
+  output's first plane into the caches before handing the frame over. Off by default: on the
+  CM5 touching every line saved the consumer about 45 µs but delayed the frame by about 90 µs,
+  and the level-3 hint saved about 20 µs for about 35 µs; a fresh frame's first read comes from
+  memory either way.
+
 - **OV9782: calibrated black level by default.** A built-in tuning overlay
   (`crates/pipeline/tuning/ov9782.overlay.json`, `styx_pipeline::tuning::BUILTIN_OVERLAYS`)
   applies the mean black level per analogue gain from a dark sweep (65.2 at 1×, 64.0 to 64.3 at 2×
