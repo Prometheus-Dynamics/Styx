@@ -156,7 +156,11 @@ impl BackEnd {
                     }
                 }
             } else {
-                coef = defaults::resample_filter_for(sx);
+                // Lanczos 3, the filter libpisp starts every resampler with and libcamera's
+                // outputs keep (its 640x400 from 1280x800 included). libpisp's smart selection
+                // (`defaults::resample_filter_for`) would pick Mitchell-Netravali for 2.0016x,
+                // a centre tap of ~600/1024 that measurably softens the half-size level.
+                coef = defaults::LANCZOS3;
             }
             self.cfg.resample[i].coef = coef;
             self.resample_extra[i].scaled_width = out_w;

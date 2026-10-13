@@ -170,7 +170,8 @@ to `/usr/share/libcamera/ipa/rpi/pisp/<sensor>.json` (or `LIBCAMERA_RPI_TUNING_F
 
 A tuning overlay (black levels per channel and by gain, the noise profile from dark frames,
 defect pixels; `styx-calibrate`) merges over a JSON tuning: `STYX_TUNING_OVERLAY`, the
-configuration's `tuning_overlay`, or `/etc/styx/tuning/<sensor>.overlay.json`. The log names the
+configuration's `tuning_overlay`, `/etc/styx/tuning/<sensor>.overlay.json`, or the sensor's
+built-in overlay (the OV9782 has one: its calibrated black level per gain). The log names the
 overlay applied. See [calibration.md](calibration.md).
 
 ## Compared with `ctt`

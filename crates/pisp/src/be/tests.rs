@@ -212,3 +212,29 @@ fn tdn_output_tiles_start_16_byte_aligned() {
         }
     }
 }
+
+#[test]
+fn half_size_output_uses_lanczos3_as_libcamera() {
+    // libcamera's 640x400 from 1280x800 keeps libpisp's default Lanczos 3 (dumped on the CM5);
+    // smart selection would have picked Mitchell-Netravali for the 1279/639 = 2.0016 factor.
+    let mut be = simple(formats::NV12);
+    let g = be.config().global;
+    be.set_global(
+        g.bayer_enables,
+        g.rgb_enables | rgb_enable::OUTPUT1,
+        BayerOrder::Bggr,
+    );
+    let nv12 = BeOutputFormatConfig {
+        image: ImageFormatConfig {
+            format: formats::NV12,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    be.set_output_format(1, nv12);
+    be.set_smart_resize(1, 640, 400);
+    let t = be.prepare().unwrap();
+    assert_eq!(t.config.global.rgb_enables & rgb_enable::DOWNSCALE1, 0);
+    assert_ne!(t.config.global.rgb_enables & rgb_enable::RESAMPLE1, 0);
+    assert_eq!(t.config.resample[1].coef, defaults::LANCZOS3);
+}

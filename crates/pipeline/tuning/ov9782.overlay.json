@@ -1,0 +1,183 @@
+{
+  "algorithms": [
+    {
+      "rpi.black_level": {
+        "black_level": 4172.8,
+        "by_gain": [
+          {
+            "black_level": 4172.8,
+            "gain": 1.0
+          },
+          {
+            "black_level": 4106.45,
+            "gain": 2.0
+          },
+          {
+            "black_level": 4114.99,
+            "gain": 4.0
+          },
+          {
+            "black_level": 4117.76,
+            "gain": 7.75
+          },
+          {
+            "black_level": 4116.05,
+            "gain": 10.0
+          },
+          {
+            "black_level": 4096.43,
+            "gain": 15.88
+          }
+        ]
+      }
+    }
+  ],
+  "date": "2026-10-13",
+  "measured": {
+    "dark_current": [
+      {
+        "dn_per_s": 8.102,
+        "exposures": 3,
+        "gain": 1.0
+      },
+      {
+        "dn_per_s": 2.67,
+        "exposures": 3,
+        "gain": 2.0
+      },
+      {
+        "dn_per_s": 0.085,
+        "exposures": 3,
+        "gain": 4.0
+      },
+      {
+        "dn_per_s": 0.009,
+        "exposures": 3,
+        "gain": 7.75
+      },
+      {
+        "dn_per_s": 3.38,
+        "exposures": 3,
+        "gain": 10.0
+      },
+      {
+        "dn_per_s": 9.732,
+        "exposures": 3,
+        "gain": 15.88
+      }
+    ],
+    "gains": [
+      {
+        "black_raw_dn": [
+          65.49,
+          65.49,
+          64.91,
+          64.91
+        ],
+        "captures": 3,
+        "gain": 1.0,
+        "read_noise_raw_dn": [
+          0.68,
+          0.68,
+          0.69,
+          0.69
+        ]
+      },
+      {
+        "black_raw_dn": [
+          64.03,
+          64.04,
+          64.28,
+          64.31
+        ],
+        "captures": 3,
+        "gain": 2.0,
+        "read_noise_raw_dn": [
+          1.11,
+          1.1,
+          1.15,
+          1.15
+        ]
+      },
+      {
+        "black_raw_dn": [
+          64.03,
+          64.01,
+          64.56,
+          64.59
+        ],
+        "captures": 3,
+        "gain": 4.0,
+        "read_noise_raw_dn": [
+          1.83,
+          1.83,
+          1.9,
+          1.9
+        ]
+      },
+      {
+        "black_raw_dn": [
+          64.01,
+          63.99,
+          64.61,
+          64.75
+        ],
+        "captures": 3,
+        "gain": 7.75,
+        "read_noise_raw_dn": [
+          3.21,
+          3.21,
+          3.32,
+          3.32
+        ]
+      },
+      {
+        "black_raw_dn": [
+          63.8,
+          63.75,
+          64.83,
+          64.88
+        ],
+        "captures": 3,
+        "gain": 10.0,
+        "read_noise_raw_dn": [
+          3.99,
+          3.98,
+          4.12,
+          4.11
+        ]
+      },
+      {
+        "black_raw_dn": [
+          63.19,
+          63.19,
+          64.79,
+          64.87
+        ],
+        "captures": 3,
+        "gain": 15.88,
+        "read_noise_raw_dn": [
+          5.5,
+          5.52,
+          5.64,
+          5.61
+        ]
+      }
+    ],
+    "read_noise_fit_raw_dn": {
+      "constant": 0.51,
+      "slope_per_gain": 0.33
+    }
+  },
+  "overlay_version": 1,
+  "sensor": "ov9782",
+  "source": "styx-calibrate dark: 18 captures, 6 gains, 10-bit raw",
+  "styx_commit": "9f5d244",
+  "temperature_c": {
+    "max": 54.55,
+    "min": 47.95
+  },
+  "unit": "raze-cm5",
+  "units": "black levels and noise constants on the 16-bit scale (raw x 2^(16 - bits)); exposure in microseconds",
+  "note": "Built-in default for the OV9782: the mean black level per analogue gain from a dark sweep of one Raze CM5 module (styx-calibrate dark, 2026-10-13). On the processed path it removes the 1x black lift (dark mean 2.6 -> 0.4 of 255) and changes nothing at higher gains. Per-channel black and the noise model were measured but are not applied (docs/calibration.md). A per-unit overlay replaces this one."
+}
