@@ -241,9 +241,8 @@ mod tests {
 
     #[test]
     fn recordings_round_trip() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/test-tmp")
-            .join(format!("rawrec-{}", std::process::id()));
+        // The system temp dir, not the source tree (whose target/ may be on a slow disk).
+        let dir = std::env::temp_dir().join(format!("styx-rawrec-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let base = dir.join("rec");
         let info = SensorInfo::from_description(&ov9782(), "640x400", "raw10").unwrap();
