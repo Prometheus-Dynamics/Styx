@@ -385,6 +385,8 @@ mod tests {
                 r: 64.0 / 1024.0,
                 g: 64.0 / 1024.0,
                 b: 65.0 / 1024.0,
+                gr: None,
+                gb: None,
             },
             colour_temperature: 4100.0,
             ..Params::default()

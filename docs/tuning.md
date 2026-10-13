@@ -168,6 +168,11 @@ looks for it in order:
 So: `install -D tuned/ov9782.toml /etc/styx/tuning/ov9782.toml`. For libcamera, the JSON goes
 to `/usr/share/libcamera/ipa/rpi/pisp/<sensor>.json` (or `LIBCAMERA_RPI_TUNING_FILE`).
 
+A tuning overlay (black levels per channel and by gain, the noise profile from dark frames,
+defect pixels; `styx-calibrate`) merges over a JSON tuning: `STYX_TUNING_OVERLAY`, the
+configuration's `tuning_overlay`, or `/etc/styx/tuning/<sensor>.overlay.json`. The log names the
+overlay applied. See [calibration.md](calibration.md).
+
 ## Compared with `ctt`
 
 | | `ctt` (Raspberry Pi, Python) | `styx-tune` |

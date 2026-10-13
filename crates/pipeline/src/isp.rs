@@ -26,6 +26,11 @@ pub struct IspSettings {
     pub from_frame: u64,
     /// Black level to subtract (the smallest of the per-channel levels).
     pub black_level: f64,
+    /// Per-channel black levels (red, green on the red row, green on the blue row, blue), when
+    /// a tuning gives them and they are not all equal (see [`Self::black_cfa`]). `None`: every
+    /// channel is `black_level`, and the field is left out of the serialised settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub black_channels: Option<[f64; 4]>,
     /// White balance gains, green 1.
     pub wb: [f64; 3],
     /// Digital gain on top of the white balance (exposure the sensor could not provide, the
@@ -66,6 +71,7 @@ impl IspSettings {
         Self {
             from_frame: 0,
             black_level,
+            black_channels: None,
             wb: [1.0; 3],
             digital_gain: 1.0,
             flicker: 1.0,
@@ -93,7 +99,9 @@ impl IspSettings {
         let g = p.colour_gains[1].max(1e-6);
         // Every field is set here (a field left out would keep the old frame's value).
         self.from_frame = frame;
-        self.black_level = bl.r.min(bl.g).min(bl.b);
+        let cfa = bl.cfa();
+        self.black_level = cfa.into_iter().fold(f64::INFINITY, f64::min);
+        self.black_channels = cfa.iter().any(|v| *v != cfa[0]).then_some(cfa);
         self.wb = [p.colour_gains[0] / g, 1.0, p.colour_gains[2] / g];
         self.digital_gain = digital_gain * g;
         self.flicker = 1.0;
@@ -176,13 +184,24 @@ impl IspSettings {
         }
     }
 
+    /// The black level of each CFA channel (red, green on the red row, green on the blue row,
+    /// blue), normalised.
+    pub fn black_cfa(&self) -> [f64; 4] {
+        self.black_channels.unwrap_or([self.black_level; 4])
+    }
+
+    /// [`Self::black_cfa`] on the 16-bit scale the back end takes.
+    pub fn black_cfa16(&self) -> [u16; 4] {
+        self.black_cfa().map(level16)
+    }
+
     /// The back end blocks these settings drive: black level (BLC), lens shading (LSC, the
     /// tables resampled to the back end's 33x33 vertices over the input), white balance and
     /// digital gain (WBG), CCM, gamma, defective pixels (DPC), green equalisation (GEQ),
     /// spatial and colour denoise (SDN, CDN) and sharpening. Temporal denoise needs the
     /// frame's exposure and buffers: see [`Self::be_tdn`] and [`crate::BeConfigBuilder`].
     pub fn apply_be(&self, be: &mut BackEnd) {
-        be.set_black_level(level16(self.black_level));
+        be.set_black_levels(self.black_cfa16());
         self.apply_be_detail(be);
         if let Some(ls) = &self.lens_shading
             && let Some(cfg) = be_lens_shading(ls)
@@ -494,6 +513,8 @@ mod tests {
                 r: 0.0625,
                 g: 0.0625,
                 b: 0.07,
+                gr: None,
+                gb: None,
             },
             gamma: Some(Pwl::new(vec![(0.0, 0.0), (0.5, 0.75), (1.0, 1.0)]).unwrap()),
             ..Params::default()
@@ -634,6 +655,55 @@ mod tests {
         let srgb = gamma_points(None);
         assert_eq!((srgb[0], srgb[64]), ((0, 0), (65535, 65535)));
         assert!(srgb[16].1 > srgb[16].0);
+    }
+
+    #[test]
+    fn per_channel_black_levels_reach_the_back_end_only_when_they_differ() {
+        let level = |r, gr, gb, b| BlackLevels {
+            r: r / 1024.0,
+            g: (gr + gb) / 2.0 / 1024.0,
+            b: b / 1024.0,
+            gr: Some(gr / 1024.0),
+            gb: Some(gb / 1024.0),
+        };
+        // Uniform levels: no per-channel set, nothing in the serialised settings.
+        let uniform = IspSettings::from_params(
+            &Params {
+                black_level: BlackLevels::uniform(64.0 / 1024.0),
+                ..Params::default()
+            },
+            0,
+            1.0,
+        );
+        assert_eq!(uniform.black_channels, None);
+        assert_eq!(uniform.black_cfa16(), [4096; 4]);
+        // Split greens: the back end gets each channel's level; the front end keeps the
+        // lowest as its pedestal, as before.
+        let split = IspSettings::from_params(
+            &Params {
+                black_level: level(64.0, 66.0, 65.0, 63.0),
+                ..Params::default()
+            },
+            0,
+            1.0,
+        );
+        assert_eq!(
+            split.black_channels,
+            Some([64.0, 66.0, 65.0, 63.0].map(|v| v / 1024.0))
+        );
+        assert_eq!(split.black_level, 63.0 / 1024.0);
+        let mut be = BackEnd::new();
+        split.apply_be(&mut be);
+        let blc = be.config().blc;
+        assert_eq!(
+            (
+                blc.black_level_r,
+                blc.black_level_gr,
+                blc.black_level_gb,
+                blc.black_level_b
+            ),
+            (4096, 4224, 4160, 4032)
+        );
     }
 
     #[test]

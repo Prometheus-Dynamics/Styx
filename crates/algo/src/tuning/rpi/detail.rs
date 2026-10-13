@@ -9,10 +9,26 @@ use super::*;
 pub(super) fn merge(s: &Section, d: &mut DenoiseTuning, ig: &mut Vec<String>) -> Result<bool> {
     match s.name.as_str() {
         "rpi.noise" => {
-            s.unknown(&["reference_constant", "reference_slope"], ig);
+            s.unknown(&["reference_constant", "reference_slope", "by_gain"], ig);
+            let mut by_gain = Vec::new();
+            // Styx's extension: the constant measured at several gains (see `NoiseTuning`).
+            if let Some(list) = s.get("by_gain") {
+                let entries = list
+                    .as_array()
+                    .ok_or_else(|| s.err("by_gain must be a list"))?;
+                for e in entries {
+                    let es = s.sub("by_gain", e);
+                    es.unknown(&["gain", "reference_constant"], ig);
+                    by_gain.push(NoiseGain {
+                        gain: es.need("gain")?,
+                        reference_constant: es.need("reference_constant")?,
+                    });
+                }
+            }
             d.noise = NoiseTuning {
                 reference_constant: s.need("reference_constant")?,
                 reference_slope: s.need("reference_slope")?,
+                by_gain,
             };
         }
         "rpi.denoise" => {

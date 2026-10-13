@@ -111,6 +111,53 @@ impl<'a> Section<'a> {
     }
 }
 
+/// Merges a Styx overlay into a Raspberry Pi tuning document, in place. Each overlay algorithm
+/// block (a one-key object, as in the file) deep-merges into the block of the same name:
+/// objects merge key by key, anything else (numbers, strings, lists) replaces the base's. A
+/// block the base does not have is appended. The overlay's other keys (sensor, unit, date, ...)
+/// are not part of the tuning and are ignored here.
+pub(super) fn merge_overlay(base: &mut Value, overlay: &Value) -> Result<()> {
+    fn deep(dst: &mut Value, src: &Value) {
+        match (dst, src) {
+            (Value::Object(d), Value::Object(s)) => {
+                for (k, v) in s {
+                    match d.iter_mut().find(|(dk, _)| dk == k) {
+                        Some((_, dv)) => deep(dv, v),
+                        None => d.push((k.clone(), v.clone())),
+                    }
+                }
+            }
+            (dst, src) => *dst = src.clone(),
+        }
+    }
+    let Some(blocks) = overlay.get("algorithms") else {
+        return Ok(());
+    };
+    let blocks = blocks
+        .as_array()
+        .ok_or_else(|| AlgoError::tuning("overlay: algorithms must be a list"))?;
+    let Value::Object(doc) = base else {
+        return Err(AlgoError::tuning("tuning must be a JSON object"));
+    };
+    let Some((_, Value::Array(algorithms))) = doc.iter_mut().find(|(k, _)| k == "algorithms")
+    else {
+        return Err(AlgoError::tuning("algorithms must be a list"));
+    };
+    for block in blocks {
+        let Some([(name, body)]) = block.as_object() else {
+            return Err(AlgoError::tuning(
+                "overlay: each algorithm must be a one-key object",
+            ));
+        };
+        let same = |a: &Value| matches!(a.as_object(), Some([(n, _)]) if n == name);
+        match algorithms.iter_mut().find(|a| same(a)) {
+            Some(Value::Object(o)) => deep(&mut o[0].1, body),
+            _ => algorithms.push(block.clone()),
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn convert(doc: &Value) -> Result<RpiImport> {
     let version = doc.get("version").and_then(Value::as_f64);
     if version != Some(2.0) {
@@ -161,22 +208,75 @@ pub(super) fn convert(doc: &Value) -> Result<RpiImport> {
     })
 }
 
+/// `rpi.black_level`. The per-channel `black_level_gr` and `black_level_gb` and the `by_gain`
+/// list (entries with `gain` and the same keys, falling back to the block's levels) are Styx's
+/// extensions; a libcamera tuning has none of them. Levels are 16-bit, as in the file.
 fn black_level(s: &Section, ig: &mut Vec<String>) -> Result<BlackLevelTuning> {
     s.unknown(
         &[
             "black_level",
             "black_level_r",
             "black_level_g",
+            "black_level_gr",
+            "black_level_gb",
             "black_level_b",
+            "by_gain",
         ],
         ig,
     );
     let all = s.num_or("black_level", 4096.0)?;
+    let (top_r, top_g, top_b) = (
+        s.num_or("black_level_r", all)?,
+        s.num_or("black_level_g", all)?,
+        s.num_or("black_level_b", all)?,
+    );
+    let (top_gr, top_gb) = (s.num("black_level_gr")?, s.num("black_level_gb")?);
+    let mut by_gain = Vec::new();
+    if let Some(list) = s.get("by_gain") {
+        let entries = list
+            .as_array()
+            .ok_or_else(|| s.err("by_gain must be a list"))?;
+        for e in entries {
+            let es = s.sub("by_gain", e);
+            if e.as_object().is_none() {
+                return Err(es.err("each entry must be an object"));
+            }
+            es.unknown(
+                &[
+                    "gain",
+                    "black_level",
+                    "black_level_r",
+                    "black_level_g",
+                    "black_level_gr",
+                    "black_level_gb",
+                    "black_level_b",
+                ],
+                ig,
+            );
+            let entry_all = es.num("black_level")?;
+            let pick = |key: &str, fallback: f64| -> Result<f64> {
+                Ok(es.num(key)?.or(entry_all).unwrap_or(fallback) / FULL)
+            };
+            let pick_opt = |key: &str, fallback: Option<f64>| -> Result<Option<f64>> {
+                Ok(es.num(key)?.or(entry_all).or(fallback).map(|v| v / FULL))
+            };
+            by_gain.push(GainBlackLevel {
+                gain: es.need("gain")?,
+                r: pick("black_level_r", top_r)?,
+                g: pick("black_level_g", top_g)?,
+                b: pick("black_level_b", top_b)?,
+                gr: pick_opt("black_level_gr", top_gr)?,
+                gb: pick_opt("black_level_gb", top_gb)?,
+            });
+        }
+    }
     Ok(BlackLevelTuning {
-        r: s.num_or("black_level_r", all)? / FULL,
-        g: s.num_or("black_level_g", all)? / FULL,
-        b: s.num_or("black_level_b", all)? / FULL,
-        by_gain: Vec::new(),
+        r: top_r / FULL,
+        g: top_g / FULL,
+        b: top_b / FULL,
+        gr: top_gr.map(|v| v / FULL),
+        gb: top_gb.map(|v| v / FULL),
+        by_gain,
     })
 }
 

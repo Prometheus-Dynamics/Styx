@@ -383,6 +383,8 @@ fn assemble(c: &Calibration, base: &Tuning, opts: &Options, shots: &[Shot]) -> T
             r,
             g,
             b: bl,
+            gr: None,
+            gb: None,
             by_gain: if b.by_gain.len() > 1 {
                 b.by_gain
                     .iter()
@@ -393,6 +395,8 @@ fn assemble(c: &Calibration, base: &Tuning, opts: &Options, shots: &[Shot]) -> T
                             r,
                             g,
                             b,
+                            gr: None,
+                            gb: None,
                         }
                     })
                     .collect()
@@ -474,6 +478,7 @@ fn assemble(c: &Calibration, base: &Tuning, opts: &Options, shots: &[Shot]) -> T
             d.noise = NoiseTuning {
                 reference_constant: n.constant,
                 reference_slope: n.slope,
+                by_gain: Vec::new(),
             };
         }
         if let Some(g) = &c.geq {

@@ -33,7 +33,8 @@ use styx_core::prelude::{BackendFrameMeta, ClockConversion, ExternalBacking, Nat
 use styx_native::{CameraInfo, NativeCamera, StreamSettings};
 use styx_pipeline::SensorValues;
 use styx_pipeline::device::{
-    IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning, isp_kind, soft_capture_memory,
+    IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning_with, isp_kind,
+    soft_capture_memory,
 };
 use styx_pisp::device::OutputMemory;
 use styx_softisp::Scale;
@@ -346,7 +347,8 @@ pub(super) fn start_processed(
     );
     let fraction =
         interval.map(|i| styx_native::Fraction::new(i.numerator.get(), i.denominator.get()));
-    let (tuning, source) = find_tuning(&camera.info().description);
+    let (tuning, source) =
+        find_tuning_with(&camera.info().description, config.tuning_overlay.as_deref());
     let kind = isp_kind(camera.info());
     crate::trace::info!(backend = "native", isp = kind.name(), tuning = %source, "processed capture");
     let capture = config.capture_tunables();

@@ -27,17 +27,36 @@ use crate::params::{
     CdnParams, DenoiseParams, GeqParams, Params, SdnParams, SharpenParams, TdnParams,
 };
 use crate::pipeline::Algorithm;
+use alloc::vec::Vec;
+
 use crate::pwl::Pwl;
 use crate::stats::Statistics;
 
 /// The sensor's noise profile at unity gain: noise ≈ constant + slope × √level.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NoiseTuning {
     /// Constant part (16-bit scale).
     pub reference_constant: f64,
     /// Slope.
     pub reference_slope: f64,
+    /// Styx: the constant measured at several analogue gains (from dark frames), in increasing
+    /// gain, each referred to unity gain (the measured noise at that gain over √gain). The
+    /// constant at a frame's gain is linear in gain between the entries, the nearest entry
+    /// outside them; the frame's `√gain` scaling then applies as for `reference_constant`,
+    /// which is used when this list is empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_gain: Vec<NoiseGain>,
+}
+
+/// The noise constant measured at one analogue gain (see [`NoiseTuning::by_gain`]).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoiseGain {
+    /// Analogue gain.
+    pub gain: f64,
+    /// The constant at unity gain's scale (16-bit scale).
+    pub reference_constant: f64,
 }
 
 impl Default for NoiseTuning {
@@ -46,6 +65,24 @@ impl Default for NoiseTuning {
         Self {
             reference_constant: 0.0,
             reference_slope: 3.0,
+            by_gain: Vec::new(),
+        }
+    }
+}
+
+impl NoiseTuning {
+    /// The unity-gain constant at an analogue gain (see [`NoiseTuning::by_gain`]).
+    pub fn constant_at(&self, gain: f64) -> f64 {
+        let l = &self.by_gain;
+        match l.iter().position(|e| e.gain >= gain) {
+            _ if l.is_empty() => self.reference_constant,
+            Some(0) => l[0].reference_constant,
+            None => l[l.len() - 1].reference_constant,
+            Some(i) => {
+                let (a, b) = (l[i - 1], l[i]);
+                let t = (gain - a.gain) / (b.gain - a.gain);
+                a.reference_constant + (b.reference_constant - a.reference_constant) * t
+            }
         }
     }
 }
@@ -198,6 +235,12 @@ impl DenoiseTuning {
         if !(n.reference_constant >= 0.0 && n.reference_slope >= 0.0) {
             return err("noise reference values must be >= 0");
         }
+        if n.by_gain.iter().any(|e| {
+            !(e.gain > 0.0 && e.reference_constant >= 0.0 && e.reference_constant.is_finite())
+        }) || n.by_gain.windows(2).any(|w| w[1].gain <= w[0].gain)
+        {
+            return err("noise by_gain must be in increasing gain, with constants >= 0");
+        }
         Ok(())
     }
 }
@@ -280,7 +323,7 @@ impl Algorithm for Denoise {
         let gain = meta.analogue_gain.max(1.0);
         let factor = gain.sqrt();
         let (constant, slope) = (
-            t.noise.reference_constant * factor,
+            t.noise.constant_at(gain) * factor,
             t.noise.reference_slope * factor,
         );
         let (sdn_dev, sdn_str, sdn_dev2, cdn_dev) = self.targets();
@@ -348,6 +391,7 @@ mod tests {
             noise: NoiseTuning {
                 reference_constant: 10.0,
                 reference_slope: 4.0,
+                by_gain: Vec::new(),
             },
             sdn: Some(SdnTuning {
                 deviation: 0.6,

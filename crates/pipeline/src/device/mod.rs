@@ -209,7 +209,7 @@ pub fn soft_capture_memory() -> styx_native::BufferMemory {
     }
 }
 
-pub use crate::tuning::{TUNING_ENV, find_tuning};
+pub use crate::tuning::{OVERLAY_ENV, TUNING_ENV, find_tuning, find_tuning_with};
 
 /// CPU time of this process (user + system) and its peak resident set, for measurements.
 pub fn process_usage() -> (std::time::Duration, u64) {

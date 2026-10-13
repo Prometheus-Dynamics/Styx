@@ -381,6 +381,12 @@ pub struct StyxConfig {
     pub transforms: TransformConfig,
     pub backends: BackendConfig,
     pub codecs: CodecConfig,
+    /// Tuning overlay (`styx-calibrate` JSON) for the native sensor's tuning; see `docs/calibration.md`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub tuning_overlay: Option<std::path::PathBuf>,
     /// Buffers to capture into (see [`StyxConfig::capture_into`]).
     #[cfg(target_os = "linux")]
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -395,6 +401,7 @@ impl StyxConfig {
             transforms: TransformConfig::default(),
             backends: BackendConfig::default(),
             codecs: CodecConfig::default(),
+            tuning_overlay: None,
             #[cfg(target_os = "linux")]
             capture_buffers: None,
         }
