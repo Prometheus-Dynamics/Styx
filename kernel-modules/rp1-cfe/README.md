@@ -12,10 +12,11 @@ three things:
 - **Forwards the interrupt** to userspace as `STYX_CFE_EVENT_LINES`
   (`V4L2_EVENT_PRIVATE_START + 0x5354`). It is queued on the output's video node
   (`rp1-cfe-fe_image0` / `fe_image1`). The payload in `u.data` is
-  `struct styx_cfe_lines_event { u32 sequence; u32 lines; u64 timestamp_ns; }`:
+  `struct styx_cfe_lines_event { u32 sequence; u32 lines; u64 timestamp_ns; u64 sof_ns; }`:
   - `sequence` is the frame's sequence, as its buffer will carry;
   - `lines` is the threshold the frame was queued with;
-  - `timestamp_ns` is `CLOCK_MONOTONIC`, like the buffer timestamps.
+  - `timestamp_ns` is `CLOCK_MONOTONIC`, like the buffer timestamps;
+  - `sof_ns` is the frame's start, the timestamp its buffer will carry.
 - **Keeps the threshold** that the FE config sets (`ch[i].output.ilines`, 0 < ilines < height),
   so userspace picks the slice line. 0 keeps the driver's 3/4 of the height.
 - **Allows subscribing** to the event on the two FE image nodes. Any file handle on the node can

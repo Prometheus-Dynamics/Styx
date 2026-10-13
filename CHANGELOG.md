@@ -8,6 +8,25 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Sliced frames handed out at their first slice.** With `NativeIspConfig::slice_line` and
+  `deliver_slices` (`StyxConfig::native_slice_line` / `native_deliver_slices`), a native PiSP
+  frame's leases (the frame and its ISP pyramid level) go to the consumer once the back end's
+  first job has written their top rows. `FrameLease::progress()` (`FrameProgressRef`) gives
+  the rows final so far per lease, and waits for more, for completion, or for failure
+  (`ProgressWait`). The frame completes on the same leases.
+  - Rows below the count must not be read until it covers them. Leases of frames handed out
+    complete return `None`.
+  - Before completing, Styx invalidates the buffers' caches again, and keeps their buffers from
+    the back end's free list until the frame is done, even if the consumer drops a lease
+    early.
+  - On the CM5 at 1280x800@120 with the line at 600, measured after start of frame:
+    - the first slice (rows 0..552, level rows 0..274) arrives at 6.15 ms, before the readout
+      ends;
+    - the frame completes at 7.02 ms, against 7.80 ms unsliced.
+  - The line event now also carries the frame's start (`LineEvent::frame_start`), so a slice's
+    timestamp is the frame's; `PispPipeline::next_event` delivers `PispEvent::Slice` /
+    `Frame`.
+
 - **Native PiSP: frames processed in two jobs during readout (opt-in).**
   `PispOptions::slice_line` / `STYX_PISP_SLICE_LINE=N` needs Styx's rp1-cfe module
   (`kernel-modules/rp1-cfe`), which forwards the front end's mid-frame line interrupt as

@@ -8,6 +8,7 @@
 //! schedule, on the frame each request names.
 
 mod pisp;
+mod pisp_isp;
 mod pisp_options;
 mod pisp_slices;
 mod soft;
@@ -19,6 +20,7 @@ use styx_native::{CameraControls, FrameControls, NativeCamera, NativeError};
 
 pub use pisp::{PispFrame, PispPipeline, PispStartup, PispTimes};
 pub use pisp_options::PispOptions;
+pub use pisp_slices::{PispEvent, PispSlice, SliceCounts};
 pub use soft::{SoftFrame, SoftPipeline};
 pub use still_be::StillBackEnd;
 

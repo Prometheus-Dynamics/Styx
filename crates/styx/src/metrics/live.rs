@@ -520,6 +520,10 @@ impl<B: ExternalBacking> ExternalBacking for MeteredBacking<B> {
         self.inner.residency()
     }
 
+    fn progress(&self) -> Option<styx_core::buffer::FrameProgressRef<'_>> {
+        self.inner.progress()
+    }
+
     fn cpu_access(&self) -> styx_core::prelude::CpuAccess {
         self.inner.cpu_access()
     }

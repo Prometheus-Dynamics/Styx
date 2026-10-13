@@ -54,6 +54,7 @@ struct styx_cfe_lines_event {
 	__u32 sequence;		/* the frame's sequence (as its buffer's) */
 	__u32 lines;		/* the ILINES threshold the frame was queued with */
 	__u64 timestamp_ns;	/* CLOCK_MONOTONIC, as the buffer timestamps */
+	__u64 sof_ns;		/* the frame's start: the timestamp its buffer will carry */
 };
 int pisp_fe_validate_config(struct pisp_fe_device *fe,
 			    struct pisp_fe_config *cfg,

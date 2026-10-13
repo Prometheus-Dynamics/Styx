@@ -193,6 +193,16 @@ pub struct NativeIspConfig {
     /// the same AprilTag jitter and recall (`true`, the default). `false`: 16-bit. Overridden
     /// by `STYX_PISP_TDN_COMPRESS=0|1`.
     pub tdn_compressed: bool,
+    /// Process each frame in two back end jobs, the first once the raw frame's first
+    /// `slice_line` rows are in (needs Styx's rp1-cfe module, `kernel-modules/rp1-cfe`; without
+    /// it frames run whole): the frame is ready sooner after its readout (1280x800@120 on the
+    /// OV9782: 7.80 → 6.85 ms at line 640). `None` (default): off. `STYX_PISP_SLICE_LINE`
+    /// overrides it. The algorithms' settings then apply one frame later.
+    pub slice_line: Option<u16>,
+    /// With [`Self::slice_line`], hand each frame out at its first slice: its leases carry a
+    /// `FrameLease::progress` saying how many rows are final, and complete on the same leases
+    /// (default `false`: frames are handed out complete).
+    pub deliver_slices: bool,
     /// Threads of the software ISP (cameras without a PiSP). `None` (default): half the
     /// cores, at most 4 (2 on the CM5). More can hang a CM5 at 2.4 GHz within seconds (three
     /// at 120 fps, four at any rate: `docs/native-stack/pipeline.md`, "All four cores").
@@ -235,6 +245,8 @@ impl Default for NativeIspConfig {
             cpu_prefetch: NativeCpuPrefetch::Off,
             raw_bits: None,
             tdn_compressed: true,
+            slice_line: None,
+            deliver_slices: false,
             soft_threads: None,
             temporal_denoise: true,
             spatial_denoise_percent: 100,
@@ -345,6 +357,20 @@ impl StyxConfig {
     /// [`NativeIspConfig::early_cpu_sync`]).
     pub fn native_early_cpu_sync(mut self, early: bool) -> Self {
         self.backends.native.early_cpu_sync = early;
+        self
+    }
+
+    /// Process native frames in two back end jobs from input row `line` (see
+    /// [`NativeIspConfig::slice_line`]).
+    pub fn native_slice_line(mut self, line: Option<u16>) -> Self {
+        self.backends.native.slice_line = line;
+        self
+    }
+
+    /// Hand sliced native frames out at their first slice (see
+    /// [`NativeIspConfig::deliver_slices`]).
+    pub fn native_deliver_slices(mut self, deliver: bool) -> Self {
+        self.backends.native.deliver_slices = deliver;
         self
     }
 

@@ -103,6 +103,20 @@ pub struct FeHeldRaw {
 }
 
 /// The front end path, set up and holding its buffers.
+/// The front end's line event (`STYX_CFE_EVENT_LINES`, Styx's rp1-cfe module): frame
+/// `sequence`'s raw output has `line` rows in memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineEvent {
+    /// The frame's sequence (its buffer's).
+    pub sequence: u32,
+    /// Rows in memory.
+    pub line: u32,
+    /// When (`CLOCK_MONOTONIC`).
+    pub at: Duration,
+    /// The frame's start: the timestamp its buffer will carry (`CLOCK_MONOTONIC`).
+    pub frame_start: Duration,
+}
+
 /// The part of the sensor's field a mode reads, when it reads a window of it (a mode of
 /// fewer lines at full pitch, e.g. the OV9782's 1280x480 in Styx's ov9282 module): its
 /// position and size in the field's coordinates (the full mode's frame, e.g. 1280x800).
@@ -580,15 +594,20 @@ impl FrontEndDevice {
             .flatten()
     }
 
-    /// The next pending line event: (frame sequence, line). `None` when none is pending.
-    pub fn take_line_event(&self) -> Option<(u32, u32)> {
+    /// The next pending line event. `None` when none is pending.
+    pub fn take_line_event(&self) -> Option<LineEvent> {
         use styx_kernel::event::{EventKind, Events};
         let q = self.image.as_ref()?;
         while let Ok(Some(ev)) = q.dev.dequeue_event() {
             if let EventKind::Private { data, .. } = ev.kind {
-                let seq = u32::from_ne_bytes(data[0..4].try_into().ok()?);
-                let line = u32::from_ne_bytes(data[4..8].try_into().ok()?);
-                return Some((seq, line));
+                let u32_at = |o: usize| u32::from_ne_bytes(data[o..o + 4].try_into().unwrap());
+                let u64_at = |o: usize| u64::from_ne_bytes(data[o..o + 8].try_into().unwrap());
+                return Some(LineEvent {
+                    sequence: u32_at(0),
+                    line: u32_at(4),
+                    at: Duration::from_nanos(u64_at(8)),
+                    frame_start: Duration::from_nanos(u64_at(16)),
+                });
             }
         }
         None
