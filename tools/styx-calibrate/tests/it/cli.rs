@@ -96,7 +96,9 @@ fn dark_writes_a_report_and_an_overlay_that_styx_reads() {
     .expect("styx reads the overlay")
     .tuning;
     let black = t.black_level.expect("black level");
-    assert!((black.gb.unwrap() - 65.0 / 1024.0).abs() < 1e-3);
+    // The default is one level for the four channels (mean 64.5), and no noise profile.
+    assert!((black.g - 64.5 / 1024.0).abs() < 1e-3, "g {}", black.g);
+    assert_eq!(black.gb, None, "greens are not split by default");
     assert_eq!(black.by_gain.len(), 0, "the level holds across gains");
     let json: serde_json::Value = serde_json::from_str(&overlay).unwrap();
     assert_eq!(json["unit"], "raze-03");

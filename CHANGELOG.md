@@ -13,7 +13,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   and its gain dependence, dark current, fixed pattern and row/column noise, and hot, stuck and
   noisy pixels from raw dark captures. `styx-calibrate dark` writes a report and a tuning
   overlay; `styx-calibrate check-processed` reports the clipped fraction of processed dark frames
-  (docs/calibration.md).
+  (docs/calibration.md). The overlay carries the mean black level per gain by default; the
+  per-channel black level and the noise model are opt-in (`--per-channel-black`,
+  `--noise-model`).
 
 - **Tuning overlays:** a calibration overlay (JSON, merged over a Raspberry Pi JSON tuning by
   algorithm block) is loaded from `StyxConfig::tuning_overlay`, `STYX_TUNING_OVERLAY`, or

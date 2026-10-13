@@ -32,6 +32,8 @@ pub struct RunOptions {
     pub date: Option<String>,
     /// The Styx commit; `unknown` when `None`.
     pub styx_commit: Option<String>,
+    /// What the overlay carries beyond the defaults (see [`overlay::Choices`]).
+    pub overlay: overlay::Choices,
 }
 
 /// The result of a dark run: the report, the overlay, and the sweep it came from.
@@ -84,7 +86,7 @@ pub fn run_dark(dirs: &[PathBuf], opts: &RunOptions) -> Result<DarkRun> {
             }
         }
     }
-    let overlay = overlay::build(&sweep, &prov, &defects)?;
+    let overlay = overlay::build_with(&sweep, &prov, &defects, opts.overlay)?;
     let report = report::dark(&sweep, &prov, &defects);
     Ok(DarkRun {
         report,

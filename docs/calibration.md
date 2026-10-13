@@ -67,6 +67,9 @@ Across captures:
    - `--unit ID`: the unit's serial or name, written into the overlay;
    - `--cfa BGGR`, `--size WxH`, `--bits N`: overrides for what the capture files do not say;
    - `--hot-k K` (default 6), `--black-move LSB` (default 0.5): the analysis thresholds;
+   - `--per-channel-black`: write each channel's black level, Gr and Gb apart, instead of the
+     mean of the four (see "The board finding");
+   - `--noise-model`: write the `rpi.noise` block (the read-noise constants; off by default);
    - `--styx-commit HASH`, `--date YYYY-MM-DD`: provenance (the commit defaults to the checkout's
      `HEAD`, the date to today).
 
@@ -101,65 +104,75 @@ command fails.
 
 ### The overlay format
 
+By default the overlay carries one black level per gain (the mean of the four channels) and the
+provenance and measurements. Shortened, with the numbers of the OV9782 run of 2026-10-13:
+
 ```json
 {
   "overlay_version": 1,
   "sensor": "ov9782",
-  "unit": "raze-03",
-  "date": "2026-10-12",
-  "styx_commit": "43a9517c1f2e",
-  "temperature_c": { "min": 39.8, "max": 41.2 },
-  "source": "styx-calibrate dark: 8 captures, 4 gains, 10-bit raw",
+  "unit": "raze-cm5",
+  "date": "2026-10-13",
+  "styx_commit": "43a9517cbd7e",
+  "temperature_c": { "min": 47.95, "max": 54.55 },
+  "source": "styx-calibrate dark: 18 captures, 6 gains, 10-bit raw",
   "units": "black levels and noise constants on the 16-bit scale (raw x 2^(16 - bits)); exposure in microseconds",
   "algorithms": [
     { "rpi.black_level": {
-        "black_level": 4096, "black_level_r": 4096, "black_level_g": 4160,
-        "black_level_gr": 4160, "black_level_gb": 4160, "black_level_b": 4032,
+        "black_level": 4172.8,
         "by_gain": [
-          { "gain": 1.0, "black_level_r": 4096, "black_level_gr": 4160, "black_level_gb": 4160,
-            "black_level_g": 4160, "black_level_b": 4032, "black_level": 4112 },
-          { "gain": 4.0, "black_level_r": 4224, "black_level_gr": 4288, "black_level_gb": 4288,
-            "black_level_g": 4288, "black_level_b": 4160, "black_level": 4240 }
-        ] } },
-    { "rpi.noise": {
-        "reference_constant": 129.5,
-        "by_gain": [
-          { "gain": 1.0, "reference_constant": 129.5 },
-          { "gain": 4.0, "reference_constant": 131.0 }
+          { "gain": 1.0, "black_level": 4172.8 },
+          { "gain": 2.0, "black_level": 4106.45 },
+          { "gain": 4.0, "black_level": 4114.99 },
+          { "gain": 7.75, "black_level": 4117.76 },
+          { "gain": 10.0, "black_level": 4116.06 },
+          { "gain": 15.88, "black_level": 4096.43 }
         ] } }
   ],
   "defect_pixels": [[12, 14], [640, 401]],
   "measured": {
-    "gains": [ { "gain": 1.0, "captures": 2, "black_raw_dn": [64, 65, 65, 63],
-                 "read_noise_raw_dn": [2.0, 2.0, 2.0, 2.0] } ],
-    "dark_current": [ { "gain": 1.0, "exposures": 2, "dn_per_s": 12.5 } ],
-    "read_noise_fit_raw_dn": { "constant": 2.0, "slope_per_gain": 0.0 }
+    "gains": [ { "gain": 1.0, "captures": 3, "black_raw_dn": [65.5, 65.5, 64.9, 64.9],
+                 "read_noise_raw_dn": [0.66, 0.66, 0.66, 0.66] } ],
+    "dark_current": [ { "gain": 1.0, "exposures": 3, "dn_per_s": 12.5 } ],
+    "read_noise_fit_raw_dn": { "constant": 0.2, "slope_per_gain": 0.3 }
   }
 }
 ```
 
-(The numbers are illustrative.)
+(The black levels are from the 2026-10-13 run. The `measured` block is abridged, and its numbers
+are illustrative.)
 
 - `algorithms` holds the Raspberry Pi tuning's blocks, so a merge into a libcamera-style tuning
-  means what it means there. Black levels and noise constants are on the **16-bit scale** (the raw
-  value times `2^(16 - bits)`, so 64 at 10 bits is 4096), as the tuning files use.
-- `rpi.black_level`: `black_level_r`, `black_level_g`, `black_level_b` are libcamera's keys.
-  `black_level_gr` and `black_level_gb` (Styx's, not in libcamera's files) give the two greens
-  separately; `black_level_g` is their mean. `by_gain` lists the levels per gain (Styx's) and is
-  written only when the level moves with gain by more than `--black-move`. Otherwise the
-  top-level levels are the mean over gains.
-- `rpi.noise`: see the mapping below. The overlay sets `reference_constant` and (where there are
-  several gains) `by_gain`; it does not set `reference_slope`, which the tuning keeps.
+  means what it means there. Black levels are on the **16-bit scale** (the raw value times
+  `2^(16 - bits)`, so 64 at 10 bits is 4096), as the tuning files use.
+- `rpi.black_level`: `black_level` is the level, the mean of the four channels. `by_gain` lists it
+  per gain and is written only when the level moves with gain by more than `--black-move` (0.5 raw
+  DN by default). Otherwise the top-level level is the mean over gains.
 - `defect_pixels`: sensor coordinates `[x, y]` of the hot, stuck and noisy pixels found in any
   capture. Styx reads it but does not yet apply it (the back end's defective pixel correction has
   no per-pixel table); it is kept for the tools.
 - `measured`, `temperature_c`, `unit`, `date`, `styx_commit`, `source`: provenance and the raw
-  numbers. Styx ignores them.
+  numbers. Styx ignores them. `measured` keeps the per-channel black levels and the read noise
+  per gain whether or not they are written to the blocks above.
+
+Two blocks are written only on request:
+
+- `--per-channel-black`: each channel's level in the `rpi.black_level` block, with the greens
+  apart: `black_level_r`, `black_level_gr`, `black_level_gb`, `black_level_b` (Styx's
+  `black_level_gr` and `black_level_gb` are not in libcamera's files), and `black_level_g` (their
+  mean), at the top level and in each `by_gain` entry. See "The board finding" below before using
+  it: it is not the default for the OV9782.
+- `--noise-model`: an `rpi.noise` block with `reference_constant` (the read noise at unity gain's
+  scale, see the mapping below) and, where there are several gains, a `by_gain` list of constants.
+  The overlay never sets `reference_slope`, which the tuning keeps. It is off by default: see
+  "The board finding".
 
 Overlay blocks deep-merge over the tuning's blocks of the same name (keys merge key by key;
 lists such as `by_gain` are replaced whole). A block the tuning lacks is added.
 
 ### The noise mapping
+
+Written only with `--noise-model` (see "The board finding").
 
 The denoise code models the noise of a pixel of level `L` (on the 16-bit scale) as
 `constant + slope × √L`, and scales both by `√gain` for each frame
@@ -205,14 +218,36 @@ With no overlay installed, nothing changes: the tuning, and so every trace, is t
 
 ## What the ISP does with the levels
 
-- **Per-channel black level.** The PiSP back end's black level correction subtracts one level per
-  CFA channel (R, Gr, Gb, B). The SDN and TDN denoise blocks, which take one level, use the mean of
-  the four.
+- **Per-channel black level.** The PiSP back end's black level correction can subtract one level
+  per CFA channel (R, Gr, Gb, B), written with `--per-channel-black`. The SDN and TDN denoise
+  blocks, which take one level, use the mean of the four. For the OV9782 the per-channel level is
+  not the default (see "The board finding"): the overlay's default is the mean of the four.
 - **Front end and statistics.** The front end keeps the lowest of the four levels as its pedestal,
   as before, so the raw output and the statistics are unchanged for a uniform tuning.
 - **Software ISP.** Uses one level (the lowest); a per-channel level is a PiSP feature for now.
 - **Per gain.** A `by_gain` list is interpolated linearly in gain between its entries, the nearest
   one outside them. Noise constants per gain work the same way.
+
+## The board finding (OV9782, 2026-10-13)
+
+A board A/B on the processed Y at 8 ms, gains 1, 7.75 and 15.9, compared the overlay's two
+options:
+
+- **Per-channel black level over-corrects on the processed path.** With the greens apart, the
+  output carried an even/odd row stripe of +0.31, −0.36 and −0.93 8-bit levels at those gains.
+  Swapping Gr with Gb and R with B flipped the sign, so the stripe follows the Bayer phase. The mean
+  of the four channels per gain leaves about 0.00 at every gain. The raw row-parity offset in the
+  dump does not reach the back end the same way, so the per-channel correction is wrong on this
+  path. Both options lift the 1× floor by the same amount (mean 2.61 → 0.41, zeros 0 % → 70 %).
+- **The dark-frame noise constants make the denoise much stronger.** With the `rpi.noise` block
+  (44 to 89 on the 16-bit scale, where the builtin tuning has 0), the processed temporal noise fell
+  by 4 to 6 times. That is a denoise retune, not a calibration fix. It needs a lit-scene check for
+  detail before any use.
+
+So the overlay's defaults are the mean of the four channels per gain and no `rpi.noise` block. The
+per-channel black level stays in the PiSP back end and the pipeline, tested, for other sensors or a
+later fix; it is not the default for the OV9782. The measurements are in the overlay's `measured`
+block either way.
 
 ## Limits
 

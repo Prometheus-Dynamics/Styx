@@ -28,13 +28,39 @@ pub struct Provenance {
     pub styx_commit: String,
 }
 
+/// What the overlay carries beyond the defaults.
+///
+/// The defaults are what the OV9782 board A/B supports. A per-channel black level over-corrects
+/// on the processed path: with Gr and Gb swapped it leaves a row-parity stripe of up to
+/// about 0.9 8-bit levels, where the uniform per-gain level leaves none. The noise constants
+/// from dark frames make the spatial and temporal denoise much stronger, a retune that needs a
+/// lit-scene detail check first. Both are opt-in; the measurements stay in `measured` either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Choices {
+    /// Write each channel's black level (Gr and Gb apart) instead of the mean of the four.
+    pub per_channel_black: bool,
+    /// Write `rpi.noise` (the read noise as the denoise constant, per gain).
+    pub noise_model: bool,
+}
+
 /// Rounds to two decimals, so the file is readable and stable.
 fn r2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// The tuning overlay for `sweep`, as JSON. Fails if the overlay would not parse in Styx.
+/// The tuning overlay for `sweep`, as JSON, with the defaults of [`Choices`]. Fails if the
+/// overlay would not parse in Styx.
 pub fn build(sweep: &Sweep, prov: &Provenance, defects: &[DefectPixel]) -> Result<Value> {
+    build_with(sweep, prov, defects, Choices::default())
+}
+
+/// [`build`] with the choices made.
+pub fn build_with(
+    sweep: &Sweep,
+    prov: &Provenance,
+    defects: &[DefectPixel],
+    choices: Choices,
+) -> Result<Value> {
     let first = sweep
         .captures
         .first()
@@ -53,15 +79,30 @@ pub fn build(sweep: &Sweep, prov: &Provenance, defects: &[DefectPixel]) -> Resul
         m
     };
 
+    // The black level of one gain: the mean of the four channels (the default, which is what
+    // the board A/B supports), or each channel's with its greens apart.
+    let block_for = |b: [f64; 4]| -> Map<String, Value> {
+        if choices.per_channel_black {
+            level_block(b)
+        } else {
+            let mut m = Map::new();
+            m.insert(
+                "black_level".into(),
+                json!(r2(b.iter().sum::<f64>() / 4.0 * scale)),
+            );
+            m
+        }
+    };
+
     // Black levels: one set where the level holds across gains, else the reference gain's
     // (the lowest) with a list per gain.
     let black = if sweep.black_moves && sweep.gains.len() >= 2 {
-        let mut m = level_block(sweep.gains[0].black);
+        let mut m = block_for(sweep.gains[0].black);
         let list: Vec<Value> = sweep
             .gains
             .iter()
             .map(|g| {
-                let mut e = level_block(g.black);
+                let mut e = block_for(g.black);
                 e.insert("gain".into(), json!(r2(g.gain)));
                 Value::Object(e)
             })
@@ -72,15 +113,15 @@ pub fn build(sweep: &Sweep, prov: &Provenance, defects: &[DefectPixel]) -> Resul
         let n = sweep.gains.len() as f64;
         let avg: [f64; 4] =
             std::array::from_fn(|c| sweep.gains.iter().map(|g| g.black[c]).sum::<f64>() / n);
-        level_block(avg)
+        block_for(avg)
     };
 
-    // Noise: the constant at the reference gain (unity gain's scale: read noise over √gain),
-    // and per gain where there are several.
+    // Noise (opt-in): the constant at the reference gain (unity gain's scale: read noise over
+    // √gain), and per gain where there are several.
     let noise_at = |gain: f64, read: f64| r2(read * scale / gain.max(1e-9).sqrt());
     let mut noise = Map::new();
     let reference = sweep.gains.first().map(|g| (g.gain, g.read_noise_all()));
-    if let Some((g0, read0)) = reference {
+    if let (true, Some((g0, read0))) = (choices.noise_model, reference) {
         noise.insert("reference_constant".into(), json!(noise_at(g0, read0)));
         if sweep.gains.len() >= 2 {
             let list: Vec<Value> = sweep

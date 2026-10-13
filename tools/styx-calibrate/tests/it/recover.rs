@@ -149,8 +149,7 @@ fn dark_current_slope_and_black_by_gain_come_from_the_sweep() {
     assert!(c.is_finite() && s.is_finite());
 }
 
-#[test]
-fn overlay_parses_in_styx_with_the_levels_and_the_noise() {
+fn two_capture_sweep() -> (dark::Sweep, Vec<dark::DefectPixel>) {
     let mut spec = Spec::base();
     spec.black = [64.0, 66.0, 65.0, 63.0];
     let mut captures = vec![analyse(&spec)];
@@ -163,17 +162,66 @@ fn overlay_parses_in_styx_with_the_levels_and_the_noise() {
         .iter()
         .flat_map(|c| c.defects.clone())
         .collect();
-    let prov = Provenance {
+    (sweep, defects)
+}
+
+fn provenance() -> Provenance {
+    Provenance {
         sensor: "ov9782".into(),
         unit: Some("unit-7".into()),
         date: "2026-10-12".into(),
         styx_commit: "test".into(),
+    }
+}
+
+/// The defaults: one black level (the mean of the channels), no greens split, no noise
+/// profile; the defect list and the provenance are there.
+#[test]
+fn the_default_overlay_is_uniform_black_without_a_noise_model() {
+    let (sweep, defects) = two_capture_sweep();
+    let doc = overlay::build(&sweep, &provenance(), &defects).expect("overlay");
+    let t = styx_algo::Tuning::from_rpi_json_str_with_overlay(
+        overlay::VALIDATION_BASE,
+        &doc.to_string(),
+    )
+    .expect("styx parses the overlay")
+    .tuning;
+    let b = t.black_level.expect("black level");
+    // The mean of 64, 66, 65, 63 is 64.5 raw: 64.5 × 64 on the 16-bit scale.
+    let mean = 64.5 / 1024.0;
+    assert!((b.r - mean).abs() < 1e-3 && (b.g - mean).abs() < 1e-3 && (b.b - mean).abs() < 1e-3);
+    assert_eq!(
+        (b.gr, b.gb),
+        (None, None),
+        "greens are not split by default"
+    );
+    assert!(b.by_gain.is_empty(), "one gain: no list");
+    // The validation base's noise profile is untouched: the overlay writes none.
+    assert_eq!(t.denoise.expect("denoise").noise.reference_constant, 0.0);
+    assert_eq!(doc["defect_pixels"][0], serde_json::json!([40, 40]));
+    assert_eq!(doc["sensor"], "ov9782");
+    assert_eq!(doc["unit"], "unit-7");
+    assert!(
+        doc["measured"]["gains"].is_array(),
+        "measurements stay in the overlay"
+    );
+}
+
+/// The opt-in blocks: each channel's level with the greens apart, and the noise constant.
+#[test]
+fn per_channel_black_and_the_noise_model_are_opt_in() {
+    let (sweep, defects) = two_capture_sweep();
+    let choices = overlay::Choices {
+        per_channel_black: true,
+        noise_model: true,
     };
-    let doc = overlay::build(&sweep, &prov, &defects).expect("overlay");
-    let text = doc.to_string();
-    let t = styx_algo::Tuning::from_rpi_json_str_with_overlay(overlay::VALIDATION_BASE, &text)
-        .expect("styx parses the overlay")
-        .tuning;
+    let doc = overlay::build_with(&sweep, &provenance(), &defects, choices).expect("overlay");
+    let t = styx_algo::Tuning::from_rpi_json_str_with_overlay(
+        overlay::VALIDATION_BASE,
+        &doc.to_string(),
+    )
+    .expect("styx parses the overlay")
+    .tuning;
     let b = t.black_level.expect("black level");
     // 10-bit raw × 64 is the 16-bit scale: 64 → 4096 → 0.0625.
     assert!((b.r - 64.0 / 1024.0).abs() < 1e-3, "r {}", b.r);
@@ -188,7 +236,6 @@ fn overlay_parses_in_styx_with_the_levels_and_the_noise() {
         b.gb
     );
     assert!((b.b - 63.0 / 1024.0).abs() < 1e-3, "b {}", b.b);
-    assert!(b.by_gain.is_empty(), "one gain: no list");
     let n = t.denoise.expect("denoise").noise;
     // The read noise (≈ 2 DN) is the constant at unity gain: 2 × 64 on the 16-bit scale.
     assert!(
@@ -196,8 +243,4 @@ fn overlay_parses_in_styx_with_the_levels_and_the_noise() {
         "constant {}",
         n.reference_constant
     );
-    // The defect list is in the overlay for the tools that use it.
-    assert_eq!(doc["defect_pixels"][0], serde_json::json!([40, 40]));
-    assert_eq!(doc["sensor"], "ov9782");
-    assert_eq!(doc["unit"], "unit-7");
 }

@@ -4,6 +4,7 @@
 //! styx-calibrate dark DIR... [--out DIR] [--sensor NAME] [--unit ID] [--cfa BGGR]
 //!                [--size WxH] [--bits N] [--hot-k K] [--black-move LSB]
 //!                [--styx-commit HASH] [--date YYYY-MM-DD]
+//!                [--per-channel-black] [--noise-model]
 //! styx-calibrate check-processed DIR... [--out FILE]
 //! styx-calibrate help
 //! ```
@@ -22,6 +23,7 @@ const USAGE: &str = "usage:
   styx-calibrate dark DIR... [--out DIR] [--sensor NAME] [--unit ID] [--cfa BGGR]
                      [--size WxH] [--bits N] [--hot-k K] [--black-move LSB]
                      [--styx-commit HASH] [--date YYYY-MM-DD]
+                     [--per-channel-black] [--noise-model]
   styx-calibrate check-processed DIR... [--out FILE]
 
 A dark DIR holds one raw dump (frames_<W>x<H>_bggr16.raw) with frames.csv and meta.txt, taken
@@ -57,6 +59,8 @@ fn parse(args: &[String]) -> styx_calibrate::Result<Args> {
             "--cfa" => a.run.raw.cfa = Some(value(&mut i)?),
             "--date" => a.run.date = Some(value(&mut i)?),
             "--styx-commit" => a.run.styx_commit = Some(value(&mut i)?),
+            "--per-channel-black" => a.run.overlay.per_channel_black = true,
+            "--noise-model" => a.run.overlay.noise_model = true,
             "--size" => {
                 let v = value(&mut i)?;
                 let (w, h) = v
