@@ -190,3 +190,29 @@ For low-memory deployments, start with these knobs:
 - For FFmpeg preview encoders, prefer explicit `FfmpegEncoderOptions` when the application can
   accept constrained output, for example `thread_count: Some(1)` or a smaller `output_resolution`.
   These are encoder choices, not Styx memory modes.
+
+## PiSP Back-End And Front-End Configs
+
+To compare the native PiSP path with another stack (libcamera) block by block, dump the configs
+Styx submits:
+
+```sh
+STYX_PISP_BE_DUMP=/tmp/cfg:30,90 STYX_PISP_FE_DUMP=/tmp/cfg:30,90 ./your-app
+```
+
+writes `/tmp/cfg/styx_be_<N>.bin` and `styx_fe_<N>.bin` for jobs N (counted from 0 over the
+process; default 30 and 90): the raw `pisp_be_tiles_config` (16720 bytes) and `pisp_fe_config`
+(632 bytes) the kernel receives. libpisp's `BackEnd::GetJsonConfig` turns either stack's back-end
+bytes into the same JSON, so the two diff field by field, tiles included.
+
+To find which block makes two images differ, `STYX_PISP_BE_PATCH=REF.bin:block,...` copies the
+named blocks of a reference back-end config into every job: `dpc`, `geq`, `tdn`, `sdn`, `blc`,
+`lsc`, `wbg`, `cdn`, `cac`, `debin`, `tonemap`, `demosaic`, `ccm`, `ycbcr`, `sharpen`,
+`false_colour`, `sh_fc_combine`, `ycbcr_inverse`, `gamma`, `resample`, `bayer_enables`,
+`rgb_enables`. `tdn-reset`, `-sdn` and `-cdn` switch those blocks off instead. Copy only blocks
+whose buffers and formats match Styx's (not the input or TDN formats). Unset, each variable costs
+one load per job.
+
+The tile misalignment fixed after 2.0.0 was found this way: every IQ block copied from libcamera
+left Styx as soft as before, `tdn-reset` made it as sharp as libcamera, and the tile tables
+showed the second tile starting at an unaligned x=494.
