@@ -455,6 +455,21 @@ pub(super) fn start_processed(
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;
+            // Temporal denoise was asked for but the device refused its buffers: the frames
+            // run without it (spatial denoise at its no-TDN values), so say so.
+            let (temporal, tdn_error) = p.temporal_denoise();
+            match tdn_error {
+                Some(why) => crate::trace::warn!(
+                    backend = "native",
+                    error = %why,
+                    "temporal denoise unavailable; frames run without it"
+                ),
+                None => crate::trace::info!(
+                    backend = "native",
+                    temporal_denoise = temporal,
+                    "processed capture: temporal denoise state"
+                ),
+            }
             if let Some(c) = loop_controls.take() {
                 p.controller().set_controls(c);
             }

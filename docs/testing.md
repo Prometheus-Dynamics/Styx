@@ -76,3 +76,31 @@ and a `tracing` subscriber:
 - Copy pressure: `copy_count`, `bytes_moved`, and `recent_residency_transitions`.
 - Async worker behavior: `capture_async_send_waits`, `capture_async_recv_waits`, and tracing fields
   `worker`, `receive`, and `processing`.
+
+## Image quality comparisons
+
+`tools/iq-compare` (crate `styx-iq-compare`) puts numbers on two raw grey (Y8) captures of the same
+scene: frames back to back, no padding (the layout of `styx-record` and the libcamera recorder's
+`.raw` files). It needs no dependencies and streams the frames.
+
+```sh
+cargo run -p styx-iq-compare -- \
+  /home/sozo/styx-tag-frames-2026-10-12/frames_1280x800_gray.raw \
+  /home/sozo/libcamera-tag-frames-2026-10-12/frames_1280x800_gray.raw
+```
+
+Options: `--width`, `--height` (default 1280x800), `--skip N` and `--frames N` to select frames,
+`--noise-roi` (default `560,120,760,300`, the static wall patch) and `--edge-roi` (default
+`622,180,658,222`, AprilTag 5). Each file is one column. The measures:
+
+* temporal std: per-pixel sample standard deviation over frames on the noise patch (mean, median,
+  90th percentile), and the per-frame patch mean's std (`frame mean std`, global brightness change
+  such as light flicker);
+* spatial sigma: RMS of `x - mean(4 neighbours)` on one frame, the largest 1% left out, divided by
+  `sqrt(1.25)`, averaged over frames (includes static texture: use it on a flat patch);
+* edge: 10th and 90th percentiles of the edge region's mean image, their difference, and the
+  central-difference gradient energy (mean of gx² + gy²).
+
+Compare captures at matched exposure and gain: a gain difference alone changes the noise. With
+the default regions the Styx capture (7998 µs, 7.5x) gives temporal std 1.68 (median 0.71) and
+the libcamera capture (AE, 29993 µs, 1.5x) 0.33, so the two are not a like-for-like noise test.

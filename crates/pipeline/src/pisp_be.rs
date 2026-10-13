@@ -283,10 +283,10 @@ impl BeConfigBuilder {
 #[cfg(test)]
 mod tests {
     use styx_algo::{
-        CdnParams, DenoiseParams, GeqParams, Params, SdnParams, SharpenParams, TdnParams,
+        Algorithm, CdnParams, DenoiseParams, GeqParams, Params, SdnParams, SharpenParams, TdnParams,
     };
     use styx_pisp::format::{compute_stride_align, formats};
-    use styx_pisp::uapi::{BayerOrder, ImageFormatConfig};
+    use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, rgb_enable};
 
     use super::*;
     use crate::isp::be_template;
@@ -458,6 +458,155 @@ mod tests {
         s.denoise = detail(0.0);
         b.update_frame(&s, 4.5).unwrap();
         assert_eq!(b.config().config.tdn.reset, 1);
+    }
+
+    /// The ov9782's own denoise tuning (`rpi.denoise` normal, `rpi.dpc`, `rpi.geq`,
+    /// `rpi.sharpen`) run through its denoise algorithm as the Raspberry Pi IPA runs it, at
+    /// `gain` and a 10 ms exposure: the back end config of each of `frames` frames, with the
+    /// temporal denoise buffers there when `on`.
+    fn ov9782_frames(on: bool, gain: f64, frames: u64) -> Vec<BeTilesConfig> {
+        let text = crate::tuning::BUILTIN_TUNINGS[0].1;
+        let tuning = crate::tuning::parse_tuning("ov9782.json", text).unwrap();
+        let mut d = styx_algo::algos::denoise::Denoise::new(tuning.denoise.unwrap()).unwrap();
+        let config = styx_algo::CameraConfig {
+            temporal_denoise: on,
+            ..Default::default()
+        };
+        d.prepare(&config).unwrap();
+        let t = template();
+        let mut b = BeConfigBuilder::new(t.clone()).unwrap();
+        if on {
+            let mut fmt = t.config().input_format;
+            fmt.stride = 2560;
+            b.enable_tdn(fmt);
+        }
+        (0..frames)
+            .map(|i| {
+                let meta = styx_algo::FrameMetadata::new(
+                    i,
+                    core::time::Duration::from_millis(10),
+                    gain,
+                    core::time::Duration::from_millis(33),
+                );
+                let mut p = Params::default();
+                d.process(&styx_algo::stats::Statistics::default(), &meta, &mut p);
+                let s = IspSettings::from_params(&p, i, 1.0);
+                b.update_frame(&s, 0.010 * gain).unwrap();
+                *b.config()
+            })
+            .collect()
+    }
+
+    /// The ov9782 at gain 7.5 with temporal denoise on the default native path: frame 0 starts
+    /// the average (TDN input off, reset), later frames read it, spatial denoise backs off from
+    /// its no-TDN values to the tuned ones, colour denoise likewise to a third of its no-TDN
+    /// threshold, and the sharpening thresholds are scaled by 0.65 / 4 (libcamera's
+    /// `applySharpen`). Expected values are the Raspberry Pi IPA's arithmetic at 16/12/8-bit
+    /// fixed point.
+    #[test]
+    fn ov9782_back_end_runs_temporal_spatial_colour_denoise_and_scaled_sharpen() {
+        let gain = 7.5;
+        let frames = ov9782_frames(true, gain, 60);
+        let slope = 5.38 * gain.sqrt();
+        let fixed = |v: f64, frac: i32| (v * f64::from(1 << frac)).round() as i32;
+        let first = &frames[0];
+        let en = first.config.global.bayer_enables;
+        for bit in [
+            bayer_enable::DPC,
+            bayer_enable::GEQ,
+            bayer_enable::SDN,
+            bayer_enable::CDN,
+            bayer_enable::TDN,
+            bayer_enable::TDN_OUTPUT,
+        ] {
+            assert_ne!(en & bit, 0, "bit {bit:#x} on the first frame");
+        }
+        assert_eq!(
+            en & bayer_enable::TDN_INPUT,
+            0,
+            "the first frame starts the average"
+        );
+        assert_eq!(
+            (first.config.tdn.reset, first.config.tdn.ratio),
+            (1, 1 << 14)
+        );
+        assert_eq!(first.config.tdn.threshold as i32, fixed(0.08, 16));
+        assert_eq!(first.config.tdn.noise_slope as i32, fixed(slope, 8));
+        // The first frame's spatial denoise is at its no-TDN deviation (3.2), strength 0.82.
+        let sdn = first.config.sdn;
+        assert_eq!(sdn.noise_slope as i32, fixed(slope * 3.2, 8));
+        assert_eq!(sdn.noise_slope2 as i32, fixed(slope * 3.2, 8));
+        assert_eq!(sdn.leakage as i32, fixed(1.0 - 0.82, 8));
+        assert_eq!(first.config.cdn.thresh as i32, fixed(200.0 * slope, 0));
+        assert_eq!(first.config.cdn.iir_strength as i32, fixed(0.22, 8));
+        // Green equalisation: the tuning's offset and slope times the gain.
+        assert_eq!(first.config.geq.offset as i32, fixed(239.0 * gain, 0));
+        assert_eq!(
+            first.config.geq.slope_sharper as i32,
+            fixed(0.00766 * gain, 10)
+        );
+        // Sharpening: thresholds (offset, slope) scaled by 0.65 * 0.25, strengths by 1.25 and
+        // limits by 0.6.
+        let sh = first.config.sharpen;
+        assert_ne!(first.config.global.rgb_enables & rgb_enable::SHARPEN, 0);
+        assert_eq!(sh.thresholds[0][0] as i32, fixed(100.0 * 0.1625, 0));
+        assert_eq!(sh.thresholds[0][1] as i32, fixed(614.0 * 0.1625, 0));
+        assert_eq!(sh.thresholds[4][0] as i32, fixed(200.0 * 0.1625, 0));
+        assert_eq!(sh.thresholds[4][1] as i32, fixed(552.0 * 0.1625, 0));
+        assert_eq!(sh.positive_strength as i32, fixed(76.0 * 1.25, 0));
+        assert_eq!(sh.negative_strength as i32, fixed(102.0 * 1.25, 0));
+        assert_eq!(sh.positive_pre_limit as i32, fixed(2000.0 * 0.6, 0));
+        assert_eq!(sh.positive_limit as i32, fixed(4000.0 * 0.6, 0));
+        assert_eq!(sh.negative_limit as i32, fixed(4000.0 * 0.6, 0));
+
+        // The second frame reads the average at the same light: ratio 1, no reset.
+        let second = &frames[1];
+        assert_ne!(
+            second.config.global.bayer_enables & bayer_enable::TDN_INPUT,
+            0
+        );
+        assert_eq!(
+            (second.config.tdn.reset, second.config.tdn.ratio),
+            (0, 1 << 14)
+        );
+
+        // After the backoff the spatial and colour denoise sit at their tuned values
+        // (deviation 0.6 for SDN, a third of 200 for CDN), within a unit of the fixed point.
+        let last = &frames[59].config;
+        let near = |got: u16, want: i32| (i32::from(got) - want).abs() <= 1;
+        assert!(
+            near(last.sdn.noise_slope, fixed(slope * 0.6, 8)),
+            "{}",
+            last.sdn.noise_slope
+        );
+        assert!(
+            near(last.sdn.noise_slope2, fixed(slope * 3.2, 8)),
+            "{}",
+            last.sdn.noise_slope2
+        );
+        assert!(
+            near(last.cdn.thresh, fixed(200.0 / 3.0 * slope, 0)),
+            "{}",
+            last.cdn.thresh
+        );
+        assert_ne!(last.global.bayer_enables & bayer_enable::TDN_INPUT, 0);
+    }
+
+    /// Without temporal denoise buffers (the device refused them, or the tuning has none) the
+    /// back end has no TDN, and spatial and colour denoise keep their no-TDN values: nothing
+    /// backs off.
+    #[test]
+    fn ov9782_without_temporal_buffers_keeps_the_no_tdn_denoise() {
+        let slope = 5.38 * 7.5f64.sqrt();
+        let frames = ov9782_frames(false, 7.5, 60);
+        for c in &frames {
+            assert_eq!(c.config.global.bayer_enables & bayer_enable::TDN, 0);
+            assert_eq!(
+                c.config.sdn.noise_slope as i32,
+                (slope * 3.2 * 256.0).round() as i32
+            );
+            assert_eq!(c.config.cdn.thresh as i32, (200.0 * slope).round() as i32);
+        }
     }
 
     /// A crop of output 0 at full resolution: the output is the crop's size in the buffer's

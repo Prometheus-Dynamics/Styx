@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Image-quality comparison tool:** `tools/iq-compare` (`styx-iq-compare`) reports the
+  temporal noise (mean, median, p90, per-frame brightness std), spatial noise and edge
+  contrast and gradient of two raw grey captures, side by side (docs/testing.md, "Image quality
+  comparisons").
+
 - **Allocation call sites for `hop_breakdown`:** `STYX_ALLOC_TRACE=1` records the call stack of
   every heap allocation in a window of `STYX_ALLOC_TRACE_FRAMES` frames of the steady state
   (unset: one relaxed atomic load per allocation) and prints the stacks grouped by count, as
@@ -15,6 +20,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   unstripped build (docs/metrics.md, "Finding allocations on a device").
 
 ### Changed
+
+- **Native PiSP: temporal denoise refused by the device is logged.** When the back end's TDN
+  buffers cannot be set up the frames run without temporal denoise (spatial denoise at its
+  no-TDN values), and the native capture now logs a warning once at start instead of only
+  reporting it through `temporal_denoise()`. The ov9782 denoise, sharpening and TDN values
+  (libcamera's PiSP IPA arithmetic) are pinned by `styx-pipeline` tests; no default changed
+  (docs/native-stack/pipeline.md, "libcamera equivalence").
 
 - **Native PiSP processed path: no allocation per frame in steady state.** The algorithms,
   the back end config and the statistics reuse their buffers from frame to frame: contrast,
