@@ -29,6 +29,7 @@ Everything else is unchanged: module name, uAPI and register programming.
 | `*.c`, `*.h` | The driver. Git history has two commits: the unchanged import, then the Styx patch (`./build.sh diff`) |
 | `Kbuild` | Out-of-tree build, object `rp1-cfe-downstream.ko` |
 | `build.sh` | Builds against an image's own kernel tree. `verify` checks vermagic and the `struct module` size against a device |
+| `../ov9282/buildroot/package/styx-rp1-cfe` | The Buildroot package, in the `STYX_KMODS` external tree shared with `styx-ov9282` |
 
 ## Provenance
 
@@ -55,3 +56,18 @@ rmmod rp1_cfe_downstream && insmod ./rp1-cfe-downstream.ko     # Styx's
 rmmod rp1_cfe_downstream && modprobe rp1_cfe_downstream         # back to the image's
 systemctl start photonvision
 ```
+
+## Images (Gaia, Styx variants only)
+
+The package is `styx-rp1-cfe` (`BR2_PACKAGE_STYX_RP1_CFE=y`), in the same external tree as
+`styx-ov9282` (`kernel-modules/ov9282/buildroot`, `STYX_KMODS`). It works the same way:
+- Built with Buildroot's `kernel-module` infrastructure against the image's own `linux` build.
+- Installed with `INSTALL_MOD_DIR=updates`, so `depmod` picks it over the kernel's own
+  `rp1-cfe-downstream.ko`. The kernel image and every other module are unchanged.
+- The build stops if the kernel's `rp1_cfe` sources are not the import above. The gate hashes
+  the 13 `.c`/`.h` files, concatenated in a fixed order (`STYX_RP1_CFE_BASE_FILES`), sha256
+  `578084f9…8dd0a`.
+
+Without the module (stock receiver, or a libcamera image), Styx's slicing option has no line
+events. Frames are then delivered whole (`FrameLease::progress()` is `None`), with one warning
+at open, and the processing is the same as with slicing off.

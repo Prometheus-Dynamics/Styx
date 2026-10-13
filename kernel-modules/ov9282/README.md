@@ -19,7 +19,7 @@ stock driver.
 | `Kbuild` | Out-of-tree build, object `ov9282.ko` |
 | `build.sh` | Builds against an image's own kernel tree. `verify` checks vermagic and the `struct module` size against a device |
 | `install/swap.sh` | Dev box only: swaps the running driver (stock ↔ Styx) |
-| `buildroot/` | A `BR2_EXTERNAL` tree (`STYX_KMODS`) with the `styx-ov9282` package, for Styx images |
+| `buildroot/` | A `BR2_EXTERNAL` tree (`STYX_KMODS`) with the `styx-ov9282` package, and `styx-rp1-cfe` (`kernel-modules/rp1-cfe`), for Styx images |
 
 ## Provenance
 
@@ -86,6 +86,7 @@ Add the external tree to the Styx layer and enable the package:
 external_tree = "<the base's trees>:@source:styx/kernel-modules/ov9282/buildroot"
 # defconfig fragment
 BR2_PACKAGE_STYX_OV9282=y
+BR2_PACKAGE_STYX_RP1_CFE=y   # the receiver with the line event (kernel-modules/rp1-cfe)
 ```
 
 How the package behaves:

@@ -1,0 +1,18 @@
+config BR2_PACKAGE_STYX_RP1_CFE
+	bool "styx-rp1-cfe"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Styx's build of the Raspberry Pi 5 / CM5 camera receiver driver
+	  (rp1-cfe-downstream): the image kernel's own driver plus a
+	  mid-frame line event, which lets Styx process a frame in slices
+	  during readout. Installed to /lib/modules/<release>/updates/,
+	  where it takes precedence over the kernel's own
+	  rp1-cfe-downstream.ko; the kernel itself is not changed. For Styx
+	  images only (images using libcamera keep the stock driver).
+
+	  The build fails when the kernel's own rp1_cfe sources are not the
+	  ones the Styx driver was made from (re-import them:
+	  kernel-modules/rp1-cfe).
+
+comment "styx-rp1-cfe needs a Linux kernel to be built"
+	depends on !BR2_LINUX_KERNEL
