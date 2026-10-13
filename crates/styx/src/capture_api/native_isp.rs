@@ -327,6 +327,47 @@ fn cma_free() -> Option<u64> {
     Some(kib * 1024)
 }
 
+/// The media bus code of the sensor mode of `(w, h)` at the configured raw depth
+/// (`NativeIspConfig::raw_bits`, or `STYX_NATIVE_RAW_BITS`); `None` without one (the first mode
+/// of the size).
+fn raw_code(
+    info: &styx_native::CameraInfo,
+    (w, h): (u32, u32),
+    cfg: &crate::capture_api::NativeIspConfig,
+) -> Result<Option<u32>, CaptureError> {
+    let bits = match std::env::var("STYX_NATIVE_RAW_BITS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        Some(b) => Some(b),
+        None => cfg.raw_bits,
+    };
+    let at_size = |m: &&styx_native::SensorMode| (m.width, m.height) == (w, h);
+    let Some(bits) = bits else {
+        // The sensor's own preference (its description's `processed_format`), when it has a
+        // mode of the size in that format; else the first mode.
+        let preferred = info.description.sensor.processed_format.as_deref();
+        return Ok(preferred.and_then(|f| {
+            info.modes
+                .iter()
+                .filter(at_size)
+                .find(|m| m.format == f)
+                .map(|m| m.code)
+        }));
+    };
+    info.modes
+        .iter()
+        .filter(at_size)
+        .find(|m| m.bits == bits)
+        .map(|m| Some(m.code))
+        .ok_or_else(|| {
+            err(format!(
+                "{} has no {bits}-bit {w}x{h} mode",
+                info.location.sensor_name
+            ))
+        })
+}
+
 /// Most buffers per back end output (V4L2 allows 64; each is a frame of the output's size).
 const MAX_OUTPUT_BUFFERS: u32 = 32;
 
@@ -419,7 +460,7 @@ pub(super) fn start_processed(
                 width: w,
                 height: h,
                 fourcc: None,
-                code: None,
+                code: raw_code(camera.info(), (w, h), &config.backends.native)?,
                 interval: fraction,
             };
             let (specs, second_kind) = pisp_worker::output_specs(&mode, &config.backends.native)?;
@@ -451,6 +492,7 @@ pub(super) fn start_processed(
                     OutputMemory::CachedHeap
                 },
                 temporal_denoise: config.backends.native.temporal_denoise,
+                tdn_compressed: config.backends.native.tdn_compressed,
                 spatial_denoise: f64::from(config.backends.native.spatial_denoise_percent) / 100.0,
                 be_buffers,
                 pass_buffers,

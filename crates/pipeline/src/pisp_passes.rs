@@ -266,6 +266,9 @@ fn pass_blocks(main: &BeConfig, pass: &BeConfig, tdn: PassTdn) -> BeConfig {
     if main_tdn && tdn == PassTdn::Read {
         // The average the main pass just wrote is of this frame, at its exposure.
         c.global.bayer_enables |= bayer_enable::TDN | bayer_enable::TDN_INPUT;
+        if main.global.bayer_enables & bayer_enable::TDN_COMPRESS != 0 {
+            c.global.bayer_enables |= bayer_enable::TDN_DECOMPRESS;
+        }
         c.tdn.reset = 0;
         c.tdn.ratio = 1 << 14;
     }

@@ -316,8 +316,25 @@ impl BackEndStream {
     }
 
     /// The format of the TDN buffers (the input's).
-    pub fn tdn_format(&self) -> ImageFormatConfig {
+    ///
+    /// `compressed`: 8-bit PiSP mode 1 (as libcamera keeps it: half the TDN memory traffic), in
+    /// the same buffers; `STYX_PISP_TDN_COMPRESS=0|1` overrides it.
+    pub fn tdn_format(&self, compressed: bool) -> ImageFormatConfig {
         let (w, h, _, stride) = self.input_layout;
+        let compressed = match std::env::var("STYX_PISP_TDN_COMPRESS").as_deref() {
+            Ok("0") => false,
+            Ok("1") => true,
+            _ => compressed,
+        };
+        if compressed {
+            return ImageFormatConfig {
+                width: w as u16,
+                height: h as u16,
+                format: formats::PISP_COMP1,
+                stride: w.next_multiple_of(16) as i32,
+                stride2: 0,
+            };
+        }
         ImageFormatConfig {
             width: w as u16,
             height: h as u16,

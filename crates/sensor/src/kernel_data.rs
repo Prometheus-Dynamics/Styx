@@ -29,7 +29,7 @@
 
 #[cfg(feature = "toml")]
 use alloc::{borrow::ToOwned, format, string::ToString};
-use alloc::{string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 use serde::Deserialize;
 
@@ -59,6 +59,9 @@ pub struct KernelSensorData {
     /// Tuning file name.
     #[serde(default)]
     pub tuning: Option<String>,
+    /// The format processed capture reads by default (`raw8`), when not the first.
+    #[serde(default)]
+    pub processed_format: Option<String>,
     /// Applies only when the driver reports colour (`true`: Bayer) or mono (`false`) codes; a
     /// driver for a family (`ov9282` drives the mono OV9281/OV9282 and the colour OV9782) is
     /// told apart by this.
@@ -102,6 +105,13 @@ pub struct KernelSensorData {
     /// instead, and every other mode keeps the reported ranges.
     #[serde(default)]
     pub modes: Vec<ModeBlanking>,
+    /// Pixel rates (Hz) by format name (`raw8`, `raw10`). A kernel driver reports
+    /// `PIXEL_RATE` for the format the sensor is set to, and discovery reads it once, so
+    /// without this every format gets the rate of whichever one the sensor was left in; and a
+    /// driver's figure can be wrong (the ov9282 driver says 200 MHz for RAW8, where the OV9782
+    /// runs at 192). Formats not listed keep the reported rate.
+    #[serde(default)]
+    pub pixel_rates: BTreeMap<String, u64>,
 }
 
 /// The blanking of one mode, for [`KernelSensorData::modes`].
@@ -205,5 +215,36 @@ mod tests {
     fn unknown_fields_are_rejected() {
         let e = KernelSensorData::from_toml_str("name = \"x\"\ngain = 1\n", "t").unwrap_err();
         assert!(e.to_string().contains("unknown field"), "{e}");
+    }
+
+    /// The driver reports PIXEL_RATE for the format the sensor is set to: probed while in
+    /// RAW8 it says 200 MHz. The data file's per-format rates give each format its own (RAW8
+    /// measured at 192 MHz), so a frame length planned in either format lands at its rate.
+    #[test]
+    fn per_format_pixel_rates_come_from_the_data_file() {
+        use crate::SensorDescription;
+        use crate::fallback::KernelControl;
+        use crate::fallback::tests::{helios_ov9782, range};
+        let mut r = helios_ov9782();
+        r.controls.insert(
+            KernelControl::PixelRate,
+            range(200_000_000, 200_000_000, 200_000_000, None),
+        );
+        let without = SensorDescription::from_subdev(&r).unwrap();
+        assert_eq!(without.formats["raw10"].pixel_rate, 200_000_000);
+        let all = KernelSensorData::builtin();
+        let data = KernelSensorData::find(&all, &r.name, true).unwrap();
+        let d = SensorDescription::from_subdev_with(&r, Some(data)).unwrap();
+        assert_eq!(d.formats["raw10"].pixel_rate, 160_000_000);
+        assert_eq!(d.formats["raw8"].pixel_rate, 192_000_000);
+        let line_us = |f: &str| {
+            let t = d.timing("1280x800", f).unwrap();
+            f64::from(t.line_length()) / t.pixel_rate as f64 * 1e6
+        };
+        assert!(
+            (line_us("raw8") - 7.583).abs() < 0.01,
+            "{}",
+            line_us("raw8")
+        );
     }
 }

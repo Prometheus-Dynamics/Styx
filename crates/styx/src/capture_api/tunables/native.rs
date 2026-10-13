@@ -181,6 +181,18 @@ pub struct NativeIspConfig {
     /// [`Self::early_cpu_sync`]; cached buffers only. Overridden by
     /// `STYX_NATIVE_PREFETCH=off|touch|l3`.
     pub cpu_prefetch: NativeCpuPrefetch,
+    /// Bits per sample of the sensor's raw stream for processed capture (the PiSP path):
+    /// `None` (default) takes the sensor's preferred format (its description's
+    /// `processed_format`: RAW8 on the OV9782, whose 8-bit lines read in 7.58 µs against
+    /// 9.1 µs, 1.28 ms less readout at 1280x800 on the CM5), else its first mode of the size;
+    /// `Some(10)` or `Some(8)` that depth. Overridden by `STYX_NATIVE_RAW_BITS`. A depth the
+    /// sensor has no mode of fails the open.
+    pub raw_bits: Option<u8>,
+    /// Keep the PiSP's temporal-denoise average compressed (8-bit mode 1, as libcamera does):
+    /// half its memory traffic, 0.55 ms less back end time per 1280x800 frame on the CM5, with
+    /// the same AprilTag jitter and recall (`true`, the default). `false`: 16-bit. Overridden
+    /// by `STYX_PISP_TDN_COMPRESS=0|1`.
+    pub tdn_compressed: bool,
     /// Threads of the software ISP (cameras without a PiSP). `None` (default): half the
     /// cores, at most 4 (2 on the CM5). More can hang a CM5 at 2.4 GHz within seconds (three
     /// at 120 fps, four at any rate: `docs/native-stack/pipeline.md`, "All four cores").
@@ -221,6 +233,8 @@ impl Default for NativeIspConfig {
             driver_buffers: false,
             early_cpu_sync: true,
             cpu_prefetch: NativeCpuPrefetch::Off,
+            raw_bits: None,
+            tdn_compressed: true,
             soft_threads: None,
             temporal_denoise: true,
             spatial_denoise_percent: 100,
@@ -331,6 +345,12 @@ impl StyxConfig {
     /// [`NativeIspConfig::early_cpu_sync`]).
     pub fn native_early_cpu_sync(mut self, early: bool) -> Self {
         self.backends.native.early_cpu_sync = early;
+        self
+    }
+
+    /// Raw bits per sample for native processed capture (see [`NativeIspConfig::raw_bits`]).
+    pub fn native_raw_bits(mut self, bits: Option<u8>) -> Self {
+        self.backends.native.raw_bits = bits;
         self
     }
 

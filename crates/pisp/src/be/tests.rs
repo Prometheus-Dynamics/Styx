@@ -238,3 +238,46 @@ fn half_size_output_uses_lanczos3_as_libcamera() {
     assert_ne!(t.config.global.rgb_enables & rgb_enable::RESAMPLE1, 0);
     assert_eq!(t.config.resample[1].coef, defaults::LANCZOS3);
 }
+
+#[test]
+fn compressed_tdn_sets_its_blocks_and_byte_offsets() {
+    // The average kept as libcamera keeps it: 8-bit mode 1, offset 2048, one byte per pixel.
+    let mut be = simple(formats::NV12);
+    let comp = ImageFormatConfig {
+        width: 1280,
+        height: 800,
+        format: formats::PISP_COMP1,
+        stride: 1280,
+        stride2: 0,
+    };
+    be.set_tdn_format(comp);
+    be.set_tdn(Some(BeTdnConfig::default()), true);
+    be.set_max_tile_width(400);
+    let t = be.prepare().unwrap();
+    let en = t.config.global.bayer_enables;
+    for bit in [
+        bayer_enable::TDN_COMPRESS,
+        bayer_enable::TDN_DECOMPRESS,
+        bayer_enable::TDN_INPUT,
+        bayer_enable::TDN_OUTPUT,
+    ] {
+        assert_ne!(en & bit, 0, "{bit:#x}");
+    }
+    assert_eq!(
+        (t.config.tdn_compress.offset, t.config.tdn_compress.mode),
+        (2048, 1)
+    );
+    assert_eq!(
+        (t.config.tdn_decompress.offset, t.config.tdn_decompress.mode),
+        (2048, 1)
+    );
+    for tile in &t.tiles[..t.num_tiles as usize] {
+        assert_eq!(tile.input_offset_x % 8, 0);
+        assert_eq!(tile.tdn_output_addr_offset, u32::from(tile.input_offset_x));
+    }
+    // Without input (after a reset) nothing is decompressed.
+    be.set_tdn(Some(BeTdnConfig::default()), false);
+    let en = be.prepare().unwrap().config.global.bayer_enables;
+    assert_eq!(en & bayer_enable::TDN_DECOMPRESS, 0);
+    assert_ne!(en & bayer_enable::TDN_COMPRESS, 0);
+}

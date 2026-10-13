@@ -122,7 +122,7 @@ impl Isp {
         let mut tdn_error = None;
         if want_tdn && options.temporal_denoise {
             match be_dev.enable_tdn() {
-                Ok(()) => be.enable_tdn(be_dev.tdn_format()),
+                Ok(()) => be.enable_tdn(be_dev.tdn_format(options.tdn_compressed)),
                 Err(e) => tdn_error = Some(e.to_string()),
             }
         }

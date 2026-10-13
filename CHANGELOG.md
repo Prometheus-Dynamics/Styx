@@ -8,6 +8,23 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Native processed capture: the sensor's preferred raw depth.** `NativeIspConfig::raw_bits`
+  (`StyxConfig::native_raw_bits`, `STYX_NATIVE_RAW_BITS`) picks the raw depth; `None` (default)
+  takes the sensor's `processed_format` (a new field of the sensor identity and the kernel sensor
+  data), else its first mode. The OV9782 prefers RAW8: 7.58 µs lines against 9.1 µs, start of
+  frame to delivery 9.65 → 8.36 ms at 1280x800@120 on the CM5. `Some(10)` opts out.
+- **Kernel sensor data: per-format pixel rates** (`pixel_rates = { raw8 = ..., raw10 = ... }`).
+  A driver reports `PIXEL_RATE` for the format the sensor is set to, and discovery reads one; the
+  ov9282 driver also says 200 MHz for RAW8 where the OV9782 runs at 192. Without this, RAW8 frames
+  and exposures came 4.2 % long (8.683 ms for 8.335), and a sensor left in RAW8 gave RAW10 the
+  wrong rate.
+- **PiSP: compressed temporal-denoise average by default** (8-bit mode 1, as libcamera keeps
+  it): half the TDN memory traffic, 0.55 ms less back end time per 1280x800 frame on the CM5.
+  `NativeIspConfig::tdn_compressed` (default `true`), `STYX_PISP_TDN_COMPRESS=0|1`.
+- **OV9782 native path 1.82 ms faster:** RAW8 and the compressed average together take start of
+  frame to delivery from 9.64 to 7.82 ms at 1280x800@120 on the CM5. On the tag scene AprilTag C
+  and Eidos kept recall, decision margins and corner jitter (e.g. Eidos tag 1: 0.027 → 0.024 px).
+
 - **Exposure midpoint timestamps:** `FrameMeta::exposure_midpoint()` and
   `exposure_midpoint_in(clock)`, the frame's timestamp minus half its applied exposure, for the
   native and libcamera backends (both stamp the receiver's start of frame, just after the

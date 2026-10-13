@@ -28,6 +28,18 @@ frame_length_extra_lines = 1
 # its offset is to be read on the board (see the board checks).
 exposure_margin = 25
 
+# Processed capture reads RAW8: 7.58 us lines against 9.1 us (1.28 ms less readout at 1280x800).
+# The two low bits it drops cost nothing measurable: on the CM5 tag scene AprilTag C and Eidos
+# held recall, decision margins and corner jitter (with the compressed TDN average), and the
+# temporal denoise keeps dark areas from banding. NativeIspConfig::raw_bits = Some(10) opts out.
+processed_format = "raw8"
+
+# Pixel rate per format. The driver reports PIXEL_RATE for the format the sensor is set to
+# (160 MHz in RAW10, 200 MHz in RAW8), and discovery reads one. RAW8 measured on the CM5 at
+# 192 MHz: frames planned at the driver's 200 MHz came 4.2% long (8.683 ms for 8.335) at the
+# same 1456-pixel line, i.e. 7.58 us lines; the bridge description (../ov9782.toml) has 192 MHz.
+pixel_rates = { raw10 = 160_000_000, raw8 = 192_000_000 }
+
 # Blanking per mode, as the driver sets it (the bridge description, ov9782.toml, has the same
 # values). The ranges the kernel reports belong to the mode the sensor is set to, and discovery
 # reads them at 1280x800: applied to 640x400 they gave a 816-pixel line and a 511-line frame,
@@ -39,6 +51,13 @@ vblank = { min = 110, max = 51540, default = 1022 }
 
 [[modes]]
 mode = "1280x720"
+hblank = { min = 176, max = 31487, default = 176 }
+vblank = { min = 41, max = 51540, default = 1022 }
+
+# A 1280x480 window centred on the array: not in the stock driver, only in Styx's patched
+# ov9282 module (kernel-modules/ov9282); the blanking is the 1280-wide modes'.
+[[modes]]
+mode = "1280x480"
 hblank = { min = 176, max = 31487, default = 176 }
 vblank = { min = 41, max = 51540, default = 1022 }
 
