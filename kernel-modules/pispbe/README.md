@@ -114,6 +114,23 @@ For images, the driver belongs in the kernel build rather than an out-of-tree mo
 `BR2_LINUX_KERNEL_EXT_STYX_PISPBE` that replaces the kernel's `pisp_be.c` when it is the stock
 file this one was made from (sha256 above) and otherwise keeps the kernel's driver.
 
+## Images (Gaia, Styx variants only)
+
+The package is `styx-pispbe` (`BR2_PACKAGE_STYX_PISPBE=y`), in the `STYX_KMODS` external tree
+with `styx-ov9282` and `styx-rp1-cfe` (`kernel-modules/ov9282/buildroot`). It works like them:
+- Built with Buildroot's `kernel-module` infrastructure against the image's own `linux` build.
+- Installed with `INSTALL_MOD_DIR=updates`, so `depmod` picks it over the kernel's own
+  `pisp-be.ko`.
+- The build stops if the kernel's `pisp_be.c` and `pisp_be_formats.h`, concatenated in that
+  order, do not hash to the rpi-7.2.y import (sha256 `ed9762e6…9584e`).
+
+Measured on the CM5 with the Raze PhotonVision r45 image, OV9782 1280x800 RAW8 at 120 fps, frames
+sliced at line 600, alternating stock and Styx module runs:
+- The config qbuf that starts a job: 121 µs → 6.8 µs.
+- First slice: 6.17 → 6.06 ms after the start of frame.
+- Complete: 7.02 → 6.91 ms.
+- Every back end job starts about 0.11 ms sooner, so whole frames gain the same.
+
 ## Upstreaming
 
 Upstreamable as three small patches to `drivers/media/platform/raspberrypi/pisp_be/pisp_be.c`

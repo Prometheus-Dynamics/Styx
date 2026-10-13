@@ -607,6 +607,10 @@ impl PispPipeline {
                 },
             )?;
             let be_prepare = p.times.settings + be.prepare;
+            if profile::enabled() {
+                profile::record("loop", "algorithms", p.times.algorithms);
+                profile::record("loop", "be_finish_wait", p.times.finish);
+            }
             let t_passes = Instant::now();
             let passes =
                 match passes::run(be.dev, &mut self.passes, be.builder, image.index, timeout) {
