@@ -150,6 +150,8 @@ pub struct PispPipeline {
     algo: Algorithms,
     fe: FrontEnd,
     fe_dev: Option<FrontEndDevice>,
+    /// The window of the sensor's field the mode reads, if it reads one.
+    sensor_window: Option<styx_pisp::device::SensorWindow>,
     be_dev: Option<BackEndStream>,
     be: BeConfigBuilder,
     sensor: Option<SensorStream>,
@@ -285,6 +287,7 @@ impl PispPipeline {
             },
             info,
             fe: isp.fe,
+            sensor_window: isp.fe_dev.sensor_window(),
             fe_dev: Some(isp.fe_dev),
             be_dev: Some(isp.be_dev),
             be: isp.be,
@@ -314,6 +317,13 @@ impl PispPipeline {
     /// The configuration in effect.
     pub fn configured(&self) -> &Configured {
         &self.configured
+    }
+
+    /// The window of the sensor's field the mode reads (a mode of fewer lines at full pitch),
+    /// `None` when it reads the whole field. Frames report their `FrameMeta::crop` in the full
+    /// field's coordinates from it.
+    pub fn sensor_window(&self) -> Option<styx_pisp::device::SensorWindow> {
+        self.sensor_window
     }
 
     /// The sensor mode.

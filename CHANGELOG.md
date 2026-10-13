@@ -8,6 +8,26 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **OV9782 1280x480 window (Styx's ov9282 module).** `kernel-modules/ov9282` is the Raze image's
+  own ov9282 driver plus a 1280x480 mode centred on the array (rows 160..639 of the 1280x800
+  frame), reading 40% fewer lines.
+  - On the CM5, start of frame to delivery is 4.85 ms against 7.79 ms at 1280x800, and it runs
+    at 200 fps. The sensor's black level holds, and AprilTag C detects every tag in the band
+    with unchanged jitter.
+  - It ships in Styx images only, as the `styx-ov9282` Buildroot package (`STYX_KMODS` external
+    tree). That package uses the kernel-module infra against the image's own kernel, installs
+    to `updates/`, and is gated on the kernel's driver source.
+  - `build.sh` verifies vermagic and the `struct module` size against a device;
+    `install/swap.sh` swaps the driver on a dev box.
+- **Frame crops for sensor windows.** A processed native frame from a mode that reads a window
+  of the sensor's field reports it in `FrameMeta::crop`, in the full field's coordinates: Styx's
+  OV9782 1280x480 gives `FrameRect { x: 0, y: 160, width: 1280, height: 480 }`. Back end crops
+  and regions of it are offset into the same coordinates.
+  - The window is read from the driver's selection API (crop against crop bounds;
+    `styx_pisp::device::SensorWindow`, `PispPipeline::sensor_window`).
+  - A calibration made at the full mode stays valid: shift the principal point by the crop
+    (`cy − 160`).
+
 - **Native processed capture: the sensor's preferred raw depth.** `NativeIspConfig::raw_bits`
   (`StyxConfig::native_raw_bits`, `STYX_NATIVE_RAW_BITS`) picks the raw depth; `None` (default)
   takes the sensor's `processed_format` (a new field of the sensor identity and the kernel sensor

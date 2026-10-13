@@ -144,6 +144,7 @@ fn frame_leases(
         live: &w.live,
         conversion: super::super::native_backend::native_conversion(w.clock),
         prep: w.prep,
+        window: p.sensor_window(),
     };
     let mut unleased = Vec::new();
     let placed = |i: usize, spec: OutputSpec| Placed {
