@@ -1,2 +1,2 @@
 name: STYX_KMODS
-desc: Styx kernel modules for Styx images (kernel-modules/ov9282)
+desc: Styx kernel modules for Styx images (kernel-modules/ov9282, kernel-modules/rp1-cfe)

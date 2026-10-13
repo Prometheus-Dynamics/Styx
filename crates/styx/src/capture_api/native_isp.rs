@@ -516,6 +516,9 @@ pub(super) fn start_processed(
                     "processed capture: temporal denoise state"
                 ),
             }
+            if let Some(why) = p.slice_error() {
+                crate::trace::warn!(backend = "native", error = %why, "frames delivered whole");
+            }
             if let Some(c) = loop_controls.take() {
                 p.controller().set_controls(c);
             }

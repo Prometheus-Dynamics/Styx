@@ -321,6 +321,12 @@ impl PispPipeline {
         (self.info.camera.temporal_denoise, self.tdn_error.as_deref())
     }
 
+    /// Why frames are not split although [`PispOptions::slice_line`] asked for it (no line
+    /// events: the receiver is not Styx's rp1-cfe module). They are delivered whole.
+    pub fn slice_error(&self) -> Option<&str> {
+        self.slice_error.as_deref()
+    }
+
     /// Where opening and the last start spent their time.
     pub fn startup(&self) -> &PispStartup {
         &self.startup
