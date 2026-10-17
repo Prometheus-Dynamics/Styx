@@ -28,6 +28,12 @@
 //! for a native camera; `--features frame-socket,libcamera` probes libcamera only, so a
 //! libcamera camera, e.g. through the Raspberry Pi PiSP, is used).
 //!
+//! `STYX_HOPS_REQUEST=gray-pyramid` asks for luma with ISP pyramid level 1 (a vision client)
+//! instead of NV12; `STYX_HOPS_PRIORITY=low` makes the service client low-priority (it joins
+//! a running capture without restarting it, e.g. to measure a service other clients use). Each
+//! process also prints its CPU time per frame (user + system, every
+//! thread) over the measured window.
+//!
 //! `STYX_ALLOC_TRACE=1` names the allocations: the call stacks of the allocations in a window of
 //! `STYX_ALLOC_TRACE_FRAMES` frames (default 60) of the steady state, grouped and sorted, printed
 //! after the table (`alloc_trace.rs`); `scripts/symbolize-alloc-trace.sh` names the call sites.
@@ -139,7 +145,29 @@ const HEIGHT: u32 = 800;
 const FPS: u32 = 30;
 
 fn request() -> FrameRequest {
-    Frames::nv12().size(WIDTH, HEIGHT).fps(FPS)
+    match std::env::var("STYX_HOPS_REQUEST").as_deref() {
+        Ok("gray-pyramid") => Frames::gray().size(WIDTH, HEIGHT).pyramid(1).fps(FPS),
+        _ => Frames::nv12().size(WIDTH, HEIGHT).fps(FPS),
+    }
+}
+
+/// This process's CPU time so far (user + system, every thread).
+fn cpu_time() -> Duration {
+    // SAFETY: `getrusage` fills the zeroed struct for the calling process.
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+    let tv = |t: libc::timeval| Duration::new(t.tv_sec as u64, t.tv_usec as u32 * 1000);
+    tv(u.ru_utime) + tv(u.ru_stime)
+}
+
+/// CPU per frame (and share of one core) since `start` (CPU time, wall time).
+fn print_cpu(title: &str, start: (Duration, Instant), frames: u64) {
+    let (cpu, wall) = (cpu_time() - start.0, start.1.elapsed());
+    println!(
+        "{title}: {:.3} ms CPU per frame ({:.1}% of a core, {frames} frames)",
+        cpu.as_secs_f64() * 1e3 / frames.max(1) as f64,
+        100.0 * cpu.as_secs_f64() / wall.as_secs_f64().max(1e-9)
+    );
 }
 
 /// Touches one byte per page of every plane, as a consumer reading the frame would.
@@ -223,6 +251,7 @@ fn inproc(seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
     }
     let before = styx::metrics::path();
     let mut allocs = AllocRate::start(0);
+    let cpu = (cpu_time(), Instant::now());
     let end = Instant::now() + Duration::from_secs(seconds);
     let mut n = 0u64;
     let mut x = 0u8;
@@ -233,6 +262,7 @@ fn inproc(seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
         }
         allocs.sample(n);
     }
+    print_cpu("process", cpu, n);
     allocs.print("process", n);
     let after = styx::metrics::path();
     let m = frames.capture().camera_metrics();
@@ -291,6 +321,7 @@ fn socket_fetch(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Erro
     let mut fetcher = FrameFetcher::new(path);
     let before = styx::metrics::path();
     let mut allocs = AllocRate::start(0);
+    let cpu = (cpu_time(), Instant::now());
     let end = Instant::now() + Duration::from_secs(seconds);
     let (mut n, mut x) = (0u64, 0u8);
     while Instant::now() < end {
@@ -300,6 +331,7 @@ fn socket_fetch(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Erro
         drop(frame);
         allocs.sample(n);
     }
+    print_cpu("consumer process", cpu, n);
     allocs.print("consumer process", n);
     let after = styx::metrics::path();
     let server = frame_socket::fetch_metrics(path)?;
@@ -340,11 +372,13 @@ fn service_serve(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Err
     // Clients connect and warm up meanwhile; allocations are counted from then on.
     std::thread::sleep(Duration::from_secs(5.min(seconds)));
     let mut allocs = AllocRate::start(service.stats().sent);
+    let (cpu, sent) = ((cpu_time(), Instant::now()), service.stats().sent);
     let end = Instant::now() + Duration::from_secs(seconds.saturating_sub(5));
     while Instant::now() < end {
         std::thread::sleep(Duration::from_millis(100));
         allocs.sample(service.stats().sent);
     }
+    print_cpu("service process", cpu, service.stats().sent - sent);
     allocs.print("service process, after 5 s", service.stats().sent);
     let m = service.metrics();
     for c in &m.client_metrics {
@@ -356,7 +390,12 @@ fn service_serve(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Err
 }
 
 fn service_client(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
-    let client = FrameClient::request(path, &Frames::nv12().size(WIDTH, HEIGHT).fps(FPS))?;
+    let options = FrameClient::options(path);
+    let client = match std::env::var("STYX_HOPS_PRIORITY").as_deref() {
+        Ok("low") => options.low_priority(),
+        _ => options,
+    }
+    .request(&request())?;
     print!("{}", client.plan().unwrap_or_default());
     let warm = Instant::now() + Duration::from_secs(2);
     while Instant::now() < warm {
@@ -365,6 +404,7 @@ fn service_client(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Er
     let server_before = FrameClient::service_metrics(path)?.snapshot.process.path;
     let before = styx::metrics::path();
     let mut allocs = AllocRate::start(0);
+    let cpu = (cpu_time(), Instant::now());
     let end = Instant::now() + Duration::from_secs(seconds);
     let (mut n, mut x) = (0u64, 0u8);
     while Instant::now() < end {
@@ -374,6 +414,7 @@ fn service_client(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Er
         }
         allocs.sample(n);
     }
+    print_cpu("client process", cpu, n);
     allocs.print("client process", n);
     let after = styx::metrics::path();
     let service = FrameClient::service_metrics(path)?;

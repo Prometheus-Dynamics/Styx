@@ -685,3 +685,17 @@ fn grey_cameras_without_an_isp_deliver_their_grey_frames() {
         assert!(matches!(plan.route, Route::Direct));
     }
 }
+
+#[test]
+fn exportable_captures_leave_the_cpu_cache_sync_to_their_readers() {
+    let camera = device(
+        BackendKind::Virtual,
+        BackendHandle::Virtual,
+        vec![mode(FourCc::NV12, 1280, 720, 30)],
+    );
+    let reqs = [Frames::gray().size(1280, 720)];
+    let plan = plan_many_with(&camera, &reqs, &registry()).unwrap();
+    assert!(plan.capture_config(1).backends.native.early_cpu_sync);
+    let exported = plan.exportable();
+    assert!(!exported.capture_config(1).backends.native.early_cpu_sync);
+}

@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **`hop_breakdown`: vision-client requests, low priority and CPU per frame.**
+  - `STYX_HOPS_REQUEST=gray-pyramid` asks for luma with ISP pyramid level 1.
+  - `STYX_HOPS_PRIORITY=low` joins a camera service as a low-priority client, so a service
+    other clients use can be measured without restarting its capture.
+  - Each process prints its CPU time per frame.
+
 - **`CameraService::spare_clients`.** Sets how many clients each capture is sized for beyond
   those connected when it starts (default `DEFAULT_SPARE_CLIENTS`, 1, as before). A
   low-priority client never restarts a capture, so with every spare taken it was refused (for
@@ -136,6 +142,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   unstripped build (docs/metrics.md, "Finding allocations on a device").
 
 ### Changed
+
+- **Camera services no longer sync native ISP buffers for the CPU on the capture thread.**
+  `SharedFramePlan::exportable` captures (every `CameraService` capture) turn
+  `NativeIspConfig::early_cpu_sync` off. Their frames only leave as descriptors, and the
+  receiving process syncs whatever it reads.
+  - Measured before, on the CM5 (HeliOS's camera service, 1280x800 gray + pyramid level 1 at
+    30 fps, a low-priority `hop_breakdown` client): the service process did 4 dma-buf syncs
+    per frame, 67.7 µs of its 0.8 ms CPU per frame. Each client did 2 more for its own reads.
+    After: no syncs in the service.
 
 - **Native PiSP: CPU access starts on the capture thread.** The cache sync of a cached back end
   buffer (`DMA_BUF_IOCTL_SYNC` start, 23 µs per 1280x800 NV12 frame on the CM5) now runs as the
