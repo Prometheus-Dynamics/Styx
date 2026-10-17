@@ -18,6 +18,11 @@
 //! Frames carry their hops (sensor to send) and releases the client's receive and import times
 //! as a trailer older peers ignore (`hops.rs`).
 //!
+//! Sliced frames (a camera service's frames sent before they are complete) add a trailer to the
+//! request (the client takes them) and to each such frame (its slot in the connection's progress
+//! page, sent once as a descriptor), both ignored by older peers (`progress.rs`,
+//! `progress_ring.rs`).
+//!
 //! Client to server:
 //! - Release: the id of a frame the client dropped (and its receive and import times).
 //! - Request (camera service): the consumer's `FrameRequest`, and optionally which camera; a
@@ -32,6 +37,7 @@ use styx_core::prelude::*;
 mod controls;
 mod delivered;
 mod hops;
+mod progress;
 mod request;
 
 pub(super) use self::controls::{
@@ -45,7 +51,9 @@ use self::controls::{
 use self::delivered::{read_delivered, write_delivered};
 pub(super) use self::hops::ClientHops;
 use self::hops::{read_frame_hops, read_release_hops, write_frame_hops};
-pub(in crate::ipc) use self::request::encode_request;
+pub(in crate::ipc) use self::progress::{NO_OUTPUT, WireProgress};
+use self::progress::{read_frame_progress, read_slices_wanted, write_frame_progress};
+pub(in crate::ipc) use self::request::{encode_request, encode_request_with};
 use self::request::{read_priority, read_request};
 use super::IpcError;
 use crate::planner::{Delivered, FrameRequest};
@@ -103,8 +111,14 @@ pub(super) struct WireFrame {
 pub(super) enum ClientMessage {
     /// A frame the client dropped, and when it received and imported it.
     Release(u64, Option<ClientHops>),
-    /// These frames, from the named camera (or the service's first), at this priority.
-    Request(Box<FrameRequest>, Option<String>, super::ClientPriority),
+    /// These frames, from the named camera (or the service's first), at this priority, and
+    /// whether sliced frames may come before they are complete.
+    Request(
+        Box<FrameRequest>,
+        Option<String>,
+        super::ClientPriority,
+        bool,
+    ),
     /// The regions of interest now, region 0 first (empty: the whole frame).
     Roi(Vec<FrameRect>),
     List,
@@ -486,6 +500,15 @@ pub(super) fn decode_frame_into(
     bytes: &[u8],
     frame: &mut WireFrame,
 ) -> Result<Option<u64>, IpcError> {
+    decode_frame_with_progress(bytes, frame, &mut None)
+}
+
+/// [`decode_frame_into`], with a sliced frame's progress trailer into `progress`.
+pub(super) fn decode_frame_with_progress(
+    bytes: &[u8],
+    frame: &mut WireFrame,
+    progress: &mut Option<WireProgress>,
+) -> Result<Option<u64>, IpcError> {
     let (mut r, kind) = Reader::start(bytes)?;
     if kind != KIND_FRAME {
         return Ok(None);
@@ -495,6 +518,7 @@ pub(super) fn decode_frame_into(
     if let Some(hops) = read_frame_hops(&mut r)? {
         frame.meta.hops = hops;
     }
+    *progress = read_frame_progress(&mut r)?;
     Ok(Some(id))
 }
 
@@ -523,11 +547,28 @@ pub(super) fn release_bytes(id: u64, hops: ClientHops) -> [u8; RELEASE_LEN] {
 
 /// A frame message into `out` (cleared first; its room reused), with `hops` as its trailer
 /// (the frame's own, with the send time).
+#[cfg(test)]
 pub(super) fn encode_frame_into(id: u64, frame: &WireFrame, hops: &FrameHops, out: &mut Vec<u8>) {
+    encode_frame_with_progress(id, frame, hops, None, out);
+}
+
+/// [`encode_frame_into`], with a sliced frame's progress trailer.
+pub(super) fn encode_frame_with_progress(
+    id: u64,
+    frame: &WireFrame,
+    hops: &FrameHops,
+    progress: Option<&WireProgress>,
+    out: &mut Vec<u8>,
+) {
     let mut w = Writer::reuse(std::mem::take(out), KIND_FRAME);
     w.u64(id);
     write_frame(&mut w, frame);
+    // The progress trailer goes after the hops one: when a frame has no hops, a reader that
+    // predates both takes the progress tag for an unknown hops tag and stops there.
     write_frame_hops(&mut w, hops);
+    if let Some(p) = progress {
+        write_frame_progress(&mut w, p);
+    }
     *out = w.0;
 }
 
@@ -673,10 +714,12 @@ pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
         KIND_REQUEST => {
             let camera = r.opt(Reader::text)?;
             let request = read_request(&mut r)?;
+            let priority = read_priority(&mut r)?;
             Ok(ClientMessage::Request(
                 Box::new(request),
                 camera,
-                read_priority(&mut r)?,
+                priority,
+                read_slices_wanted(&mut r)?,
             ))
         }
         KIND_LIST => Ok(ClientMessage::List),

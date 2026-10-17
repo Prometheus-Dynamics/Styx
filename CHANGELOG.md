@@ -8,6 +8,29 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Sliced frames through the camera service.** A client that asks for them
+  (`ClientOptions::sliced_frames`) gets a sliced native frame when its first rows are final,
+  with the same `FrameLease::progress()` as in-process: rows final so far, `wait`,
+  `wait_complete`, `ready`, failure.
+  - How it works: the service sends the frame's descriptors at once, then mirrors its
+    progress into a page shared with the client (a memfd sent once per connection, a slot per
+    frame, woken through a futex). The client re-syncs the buffers for the CPU when the frame
+    completes.
+  - The service's captures slice with `CameraService::capture_config`, e.g.
+    `StyxConfig::new().native_slice_line(Some(600)).native_deliver_slices(true)`. Clients that
+    do not ask (and older clients) get the frame once complete.
+  - Wire-compatible: request and frame trailers that older peers ignore; the protocol version
+    is unchanged.
+  - `ProgressSource` and `ProgressState` let a `FrameProgress` read progress written
+    elsewhere. `FrameProgressRef` gains `output`, `all_rows` and `state`.
+  - CM5, a camera service with 1280x800 gray + pyramid level 1 at 30 fps, measured after the
+    frame's start, 300 frames per client:
+    - unsliced: complete at p50 8.02 ms (p99 10.64);
+    - slicing at line 600, a sliced client: the frame arrives at 6.06 ms with 552 of 800
+      rows final, and is complete at 6.98 ms (p99 8.23);
+    - a client that takes whole frames from the same service: complete at 6.95 ms
+      (p99 8.14). The first back end job runs during readout.
+
 - **`hop_breakdown`: vision-client requests, low priority and CPU per frame.**
   - `STYX_HOPS_REQUEST=gray-pyramid` asks for luma with ISP pyramid level 1.
   - `STYX_HOPS_PRIORITY=low` joins a camera service as a low-priority client, so a service

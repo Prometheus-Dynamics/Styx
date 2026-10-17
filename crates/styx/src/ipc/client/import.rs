@@ -1,15 +1,65 @@
 //! Importing a received frame over its descriptors: the cached mappings, and the release the
 //! server gets once the frame and its companions are dropped.
 
-use std::os::fd::OwnedFd;
-use std::sync::Arc;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::sync::{Arc, OnceLock};
 
+use parking_lot::Mutex;
 use smallvec::SmallVec;
+use styx_core::buffer::FrameProgress;
 use styx_core::prelude::*;
 
 use super::super::mapcache::{CachedDmabuf, Fds, Inner, MapCache};
-use super::super::wire::{self, ClientHops, WireBacking, WireFrame};
+use super::super::progress_ring::{ProgressRing, SlotSource};
+use super::super::wire::{self, ClientHops, NO_OUTPUT, WireBacking, WireFrame, WireProgress};
 use super::super::{IpcError, socket};
+
+/// The progress page sliced frames came with on the current connection (`progress_ring.rs`),
+/// keyed by the connection's socket.
+#[derive(Default)]
+pub(super) struct Rings(Mutex<Option<(usize, Arc<ProgressRing>)>>);
+
+/// A sliced frame's progress, as the frame message gave it.
+pub(super) struct Sliced {
+    ring: Arc<ProgressRing>,
+    progress: WireProgress,
+    id: u64,
+}
+
+impl Rings {
+    /// The progress of frame `id` received on `socket`, when it has a trailer: its page is the
+    /// last of `fds` with the connection's first sliced frame, its slot names where to read.
+    pub(super) fn take(
+        &self,
+        socket: &Arc<OwnedFd>,
+        progress: Option<&WireProgress>,
+        fds: &mut Vec<OwnedFd>,
+        id: u64,
+    ) -> Result<Option<Sliced>, IpcError> {
+        let Some(progress) = progress else {
+            return Ok(None);
+        };
+        let key = Arc::as_ptr(socket) as usize;
+        let mut rings = self.0.lock();
+        if progress.ring_attached {
+            let fd = fds
+                .pop()
+                .ok_or(IpcError::Malformed("progress page missing"))?;
+            *rings = Some((key, Arc::new(ProgressRing::from_fd(fd)?)));
+        }
+        match rings.as_ref() {
+            Some((k, ring)) if *k == key => Ok(Some(Sliced {
+                ring: ring.clone(),
+                progress: progress.clone(),
+                id,
+            })),
+            // Without its page the frame's rows cannot be known: not read before complete.
+            _ => Err(IpcError::Malformed(
+                "sliced frame without its progress page",
+            )),
+        }
+    }
+}
 
 /// `frame` over the descriptors `fds` yields, released on the server with `release` once it
 /// and its companions are dropped. Its hops get the receive (from `release`) and import times.
@@ -18,6 +68,7 @@ pub(super) fn import(
     fds: &mut impl Iterator<Item = OwnedFd>,
     mut release: Release,
     maps: &Arc<MapCache>,
+    sliced: Option<Sliced>,
 ) -> Result<FrameLease, IpcError> {
     let imported = CaptureInstant::try_now().map(CaptureInstant::as_nanos);
     release.hops.imported = imported;
@@ -37,13 +88,52 @@ pub(super) fn import(
         ReleaseHandle::Shared(r) => Some(r.clone()),
         ReleaseHandle::Own(_) => None,
     };
-    let mut out = import_part(frame, meta, fds, handle, maps)?;
-    for (kind, companion) in &frame.companions {
+    // A sliced frame: its leases share progress read from the service's page; once complete,
+    // the dma-bufs are synced for the CPU again (rows below the first slice may have been
+    // cached before the service's ISP wrote them).
+    // (Only sliced frames allocate for this: other frames keep to the one allocation.)
+    let resync: Option<Arc<OnceLock<Vec<OwnedFd>>>> = sliced.as_ref().map(|_| Arc::default());
+    let progress = sliced.as_ref().map(|s| {
+        let fds = resync.clone().unwrap_or_default();
+        let source = SlotSource::new(
+            s.ring.clone(),
+            usize::from(s.progress.slot),
+            s.id,
+            s.progress.heights,
+            Box::new(move || {
+                for fd in fds.get().into_iter().flatten() {
+                    let _ = styx_core::buffer::dmabuf_end_cpu_read(fd.as_raw_fd());
+                    let _ = styx_core::buffer::dmabuf_begin_cpu_read(fd.as_raw_fd());
+                }
+            }),
+        );
+        Arc::new(FrameProgress::with_source(Arc::new(source)))
+    });
+    let lease_progress = |i: usize| {
+        let (p, s) = (progress.as_ref()?, sliced.as_ref()?);
+        let o = *s.progress.outputs.get(i)?;
+        (o != NO_OUTPUT).then(|| (p.clone(), usize::from(o)))
+    };
+    let mut synced = Vec::new();
+    let (mut out, dmabuf) = import_part(frame, meta, fds, handle, maps, lease_progress(0))?;
+    synced.extend(dmabuf);
+    for (i, (kind, companion)) in frame.companions.iter().enumerate() {
         let release = ReleaseHandle::Shared(shared.clone().expect("shared with companions"));
-        let part = import_part(companion, companion.meta.clone(), fds, release, maps)?;
+        let (part, dmabuf) = import_part(
+            companion,
+            companion.meta.clone(),
+            fds,
+            release,
+            maps,
+            lease_progress(i + 1),
+        )?;
+        synced.extend(dmabuf);
         out = out
             .with_companion(*kind, part)
             .map_err(|_| IpcError::Malformed("companion does not match its frame"))?;
+    }
+    if let Some(resync) = resync {
+        let _ = resync.set(synced);
     }
     Ok(out)
 }
@@ -54,12 +144,18 @@ fn import_part(
     fds: &mut impl Iterator<Item = OwnedFd>,
     release: ReleaseHandle,
     maps: &Arc<MapCache>,
-) -> Result<FrameLease, IpcError> {
+    progress: Option<(Arc<FrameProgress>, usize)>,
+) -> Result<(FrameLease, Option<OwnedFd>), IpcError> {
     let count = frame.backing.fd_count();
     let own: Fds = fds.by_ref().take(count).collect();
     if own.len() != count {
         return Err(IpcError::Malformed("descriptors missing"));
     }
+    // A sliced frame's dma-buf, to sync again once the frame is complete.
+    let dmabuf = match (&progress, &frame.backing) {
+        (Some(_), WireBacking::Dmabuf(_)) => own.first().and_then(|fd| fd.try_clone().ok()),
+        _ => None,
+    };
     let layouts: SmallVec<[PlaneLayout; 3]> = frame.layouts.iter().copied().collect();
     let inner = match &frame.backing {
         WireBacking::Dmabuf(spans) => {
@@ -101,15 +197,17 @@ fn import_part(
             }
         }
     };
-    Ok(FrameLease::from_external(
+    let lease = FrameLease::from_external(
         meta,
         layouts,
         Arc::new(Released {
             inner,
             _release: release,
             cpu_access: frame.cpu_access,
+            progress,
         }),
-    ))
+    );
+    Ok((lease, dmabuf))
 }
 
 fn external(frame: &FrameLease) -> Result<Arc<dyn ExternalBacking>, IpcError> {
@@ -145,6 +243,8 @@ struct Released {
     _release: ReleaseHandle,
     /// As the sender reported it for its memory.
     cpu_access: CpuAccess,
+    /// A sliced frame's progress (shared by its leases) and this lease's output in it.
+    progress: Option<(Arc<FrameProgress>, usize)>,
 }
 
 impl ExternalBacking for Released {
@@ -166,6 +266,10 @@ impl ExternalBacking for Released {
 
     fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
         self.inner.backing().host_spans(span)
+    }
+
+    fn progress(&self) -> Option<FrameProgressRef<'_>> {
+        self.progress.as_ref().map(|(p, i)| p.output(*i))
     }
 
     fn backing_kind(&self) -> &'static str {

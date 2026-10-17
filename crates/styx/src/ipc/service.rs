@@ -62,6 +62,7 @@ pub(crate) struct ServiceConfig {
     max_hold: Option<Duration>,
     max_clients: usize,
     spare_clients: usize,
+    capture: Option<crate::capture_api::StyxConfig>,
     authorize: Option<Authorize>,
     socket_mode: Option<u32>,
     controls: super::ControlPolicy,
@@ -103,6 +104,7 @@ impl CameraService {
                 max_hold: Some(DEFAULT_MAX_HOLD),
                 max_clients: DEFAULT_MAX_CLIENTS,
                 spare_clients: DEFAULT_SPARE_CLIENTS,
+                capture: None,
                 authorize: None,
                 socket_mode: None,
                 controls: super::ControlPolicy::default(),
@@ -161,6 +163,17 @@ impl CameraService {
     /// with an NV12 640x400 second output is 1.9 MB per buffer, so 5.8 MB per spare.
     pub fn spare_clients(mut self, clients: usize) -> Self {
         self.config.spare_clients = clients;
+        self
+    }
+
+    /// Settings for the captures the service starts (default: the defaults), e.g. sliced
+    /// frames for clients that take them early ([`ClientOptions::sliced_frames`]):
+    /// `StyxConfig::new().native_slice_line(Some(600)).native_deliver_slices(true)`. Clients
+    /// that do not take sliced frames still get complete frames.
+    ///
+    /// [`ClientOptions::sliced_frames`]: super::ClientOptions::sliced_frames
+    pub fn capture_config(mut self, config: crate::capture_api::StyxConfig) -> Self {
+        self.config.capture = Some(config);
         self
     }
 
@@ -478,7 +491,10 @@ fn serve_client(service: &Service, mut conn: Connection) {
         return;
     };
     let (request, priority, selector) = match request {
-        First::Frames(request, priority) => (*request, priority, selector),
+        First::Frames(request, priority, slices) => {
+            conn.slices = slices;
+            (*request, priority, selector)
+        }
         First::Control(control) => {
             control_conn::serve(service, &mut conn, *control);
             return;
@@ -523,7 +539,12 @@ fn serve_client(service: &Service, mut conn: Connection) {
 
 /// What a connection is for: frames, or camera controls.
 enum First {
-    Frames(Box<crate::planner::FrameRequest>, super::ClientPriority),
+    /// The request, its priority, and whether the client takes sliced frames early.
+    Frames(
+        Box<crate::planner::FrameRequest>,
+        super::ClientPriority,
+        bool,
+    ),
     Control(Box<wire::ControlRequest>),
 }
 
@@ -534,8 +555,8 @@ fn handshake(service: &Service, conn: &mut Connection) -> Option<(First, Option<
         let messages = conn.poll(Duration::from_millis(100)).ok()?;
         for message in messages {
             match message {
-                ClientMessage::Request(request, camera, priority) => {
-                    return Some((First::Frames(request, priority), camera));
+                ClientMessage::Request(request, camera, priority, slices) => {
+                    return Some((First::Frames(request, priority, slices), camera));
                 }
                 ClientMessage::Control(control) => return Some((First::Control(control), None)),
                 ClientMessage::List => {
@@ -586,6 +607,52 @@ impl Service {
         }
         self.camera(request.camera.as_deref())
             .map(|camera| (camera, caller))
+    }
+}
+
+/// Longest a sliced frame may take to complete after its first slice.
+const SLICED_WAIT: Duration = Duration::from_millis(500);
+
+/// Sends `frame` (a sliced frame not yet complete) to a client that takes those, then follows
+/// its progress into the connection's progress page until it completes or fails.
+fn send_sliced(
+    conn: &mut Connection,
+    frame: &FrameLease,
+    exported: &connection::Exported,
+    p: FrameProgressRef<'_>,
+) -> std::io::Result<bool> {
+    let lease_output = |f: &FrameLease| {
+        f.progress()
+            .map_or(wire::NO_OUTPUT, |p| p.output().min(1) as u8)
+    };
+    let mut progress = wire::WireProgress::default();
+    let mut note = |f: &FrameLease| {
+        let o = lease_output(f);
+        if o != wire::NO_OUTPUT {
+            progress.heights[usize::from(o)] = f.meta().format.resolution.height.get();
+        }
+        progress.outputs.push(o);
+    };
+    note(frame);
+    for (_, companion) in frame.companions() {
+        note(companion);
+    }
+    let Some(slot) = conn.send_sliced_frame(exported, progress, p.all_rows())? else {
+        return Ok(false);
+    };
+    let deadline = Instant::now() + SLICED_WAIT;
+    loop {
+        let rows = p.all_rows();
+        let left = deadline.saturating_duration_since(Instant::now());
+        let state = match p.wait(rows[p.output().min(1)] + 1, left) {
+            ProgressWait::Complete => ProgressState::Complete,
+            ProgressWait::Rows(_) => ProgressState::Running,
+            ProgressWait::Failed | ProgressWait::TimedOut => ProgressState::Failed,
+        };
+        conn.progress(slot, p.all_rows(), state);
+        if state != ProgressState::Running {
+            return Ok(true);
+        }
     }
 }
 
@@ -648,13 +715,28 @@ fn send_frames(
         if awaiting_keyframe && delta {
             continue;
         }
+        // A sliced frame handed out before it is complete (`NativeIspConfig::deliver_slices`):
+        // a client that takes those gets it now and its progress after; any other once it is
+        // complete.
+        let early = frame
+            .progress()
+            .is_some_and(|p| p.state() == ProgressState::Running);
+        if early && !conn.slices {
+            let done = frame.progress().map(|p| p.wait_complete(SLICED_WAIT));
+            if done != Some(ProgressWait::Complete) {
+                continue;
+            }
+        }
         if let Err(err) = connection::export_into(&frame, &mut exported) {
             crate::trace::warn!(error = %err, "frame not sent");
             exported.clear();
             continue;
         }
+        let sent = match (early && conn.slices, frame.progress()) {
+            (true, Some(p)) => send_sliced(conn, &frame, &exported, p),
+            _ => conn.send_frame(&exported),
+        };
         drop(frame);
-        let sent = conn.send_frame(&exported);
         let copied = exported.copied;
         // The client's copy keeps the buffers it needs; this one lets go.
         exported.clear();

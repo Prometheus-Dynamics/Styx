@@ -256,6 +256,10 @@ impl Camera {
             None => request,
         };
         let plan = plan_many(&self.device, request)?.exportable();
+        let plan = match &config.capture {
+            Some(capture) => plan.config(capture.clone()),
+            None => plan,
+        };
         Ok(match config.idle {
             Some((after, IdleStop::Pause)) => plan.pause_when_idle(after),
             Some((after, _)) => plan.stop_when_idle(after),
@@ -434,7 +438,7 @@ pub(in crate::ipc) fn fuzz_request(bytes: &[u8]) {
     use crate::prelude::Mode;
 
     static CAMERAS: OnceLock<Vec<ProbedDevice>> = OnceLock::new();
-    let Ok(ClientMessage::Request(request, _, _)) = decode_client(bytes) else {
+    let Ok(ClientMessage::Request(request, _, _, _)) = decode_client(bytes) else {
         return;
     };
     if check_request(&request).is_err() {

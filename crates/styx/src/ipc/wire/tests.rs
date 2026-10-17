@@ -25,7 +25,7 @@ fn requests_survive_the_wire() {
         .forbid("ffmpeg")
         .decode_threads(2)
         .strict();
-    let ClientMessage::Request(back, camera, priority) = decode_client(&encode_request(
+    let ClientMessage::Request(back, camera, priority, _) = decode_client(&encode_request(
         &req,
         Some("ov9782"),
         crate::ipc::ClientPriority::Normal,
@@ -41,7 +41,7 @@ fn requests_survive_the_wire() {
     let low = encode_request(&req, Some("ov9782"), crate::ipc::ClientPriority::Low);
     let normal = encode_request(&req, Some("ov9782"), crate::ipc::ClientPriority::Normal);
     assert!(low.starts_with(&normal) && low.len() == normal.len() + 2);
-    let ClientMessage::Request(back, _, priority) = decode_client(&low).unwrap() else {
+    let ClientMessage::Request(back, _, priority, _) = decode_client(&low).unwrap() else {
         panic!("not a request");
     };
     assert_eq!(*back, req);
@@ -51,7 +51,7 @@ fn requests_survive_the_wire() {
         Frames::any().fps_at_least(15),
         Frames::rgb(),
     ] {
-        let ClientMessage::Request(back, None, _) = decode_client(&encode_request(
+        let ClientMessage::Request(back, None, _, _) = decode_client(&encode_request(
             &req,
             None,
             crate::ipc::ClientPriority::Normal,
@@ -120,4 +120,57 @@ fn requests_survive_the_wire() {
         decode_server(&encode_metrics_reply(MetricsFormat::Json, 1234)),
         Ok(ServerMessage::Metrics(MetricsFormat::Json, 1234))
     ));
+}
+
+#[test]
+fn sliced_frame_trailers_survive_the_wire_and_older_readers_skip_them() {
+    use crate::ipc::ClientPriority;
+    use crate::planner::Frames;
+
+    // The request: the slices flag after the priority trailer, alone or with it.
+    let req = Frames::gray().size(1280, 800).pyramid(1);
+    for priority in [ClientPriority::Normal, ClientPriority::Low] {
+        let plain = encode_request(&req, None, priority);
+        let sliced = encode_request_with(&req, None, priority, true);
+        assert!(sliced.starts_with(&plain) && sliced.len() == plain.len() + 2);
+        let ClientMessage::Request(back, _, p, slices) = decode_client(&sliced).unwrap() else {
+            panic!("not a request");
+        };
+        assert_eq!((*back == req, p, slices), (true, priority, true));
+        let ClientMessage::Request(_, _, _, slices) = decode_client(&plain).unwrap() else {
+            panic!("not a request");
+        };
+        assert!(!slices);
+    }
+    // The frame: the progress trailer after the hops one, with or without hops.
+    let progress = WireProgress {
+        slot: 5,
+        heights: [800, 400],
+        ring_attached: true,
+        outputs: smallvec::smallvec![0, 1],
+    };
+    let mut frame = WireFrame::empty();
+    frame.layouts.push(PlaneLayout {
+        offset: 0,
+        len: 16,
+        stride: 4,
+    });
+    frame.backing = WireBacking::Memfd { len: 16 };
+    let mut hops = FrameHops::new();
+    hops.set(Hop::Sensor, 1_000);
+    for hops in [hops, FrameHops::new()] {
+        let mut bytes = Vec::new();
+        encode_frame_with_progress(9, &frame, &hops, Some(&progress), &mut bytes);
+        let (mut back, mut got) = (WireFrame::empty(), None);
+        assert_eq!(
+            decode_frame_with_progress(&bytes, &mut back, &mut got).unwrap(),
+            Some(9)
+        );
+        assert_eq!(got.as_ref(), Some(&progress));
+        assert_eq!(back.meta.hops.get(Hop::Sensor), hops.get(Hop::Sensor));
+        // A reader that takes no progress still reads the frame.
+        let mut plain = WireFrame::empty();
+        assert_eq!(decode_frame_into(&bytes, &mut plain).unwrap(), Some(9));
+        assert_eq!(plain.layouts, frame.layouts);
+    }
 }
