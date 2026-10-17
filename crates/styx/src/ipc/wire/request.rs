@@ -15,6 +15,17 @@ pub(in crate::ipc) fn encode_request(
     camera: Option<&str>,
     priority: ClientPriority,
 ) -> Vec<u8> {
+    encode_request_with(req, camera, priority, false)
+}
+
+/// [`encode_request`], and with `slices` the trailer asking for sliced frames before they are
+/// complete (`progress.rs`).
+pub(in crate::ipc) fn encode_request_with(
+    req: &FrameRequest,
+    camera: Option<&str>,
+    priority: ClientPriority,
+    slices: bool,
+) -> Vec<u8> {
     let mut w = Writer::new(KIND_REQUEST);
     w.opt(camera, Writer::text);
     match &req.format {
@@ -89,14 +100,19 @@ pub(in crate::ipc) fn encode_request(
         w.u8(PRIORITY_TAG);
         w.u8(1);
     }
+    if slices {
+        super::progress::write_slices_wanted(&mut w);
+    }
     w.0
 }
 
 /// The priority trailer after a request (none: normal; an unknown tag is ignored).
 pub(super) fn read_priority(r: &mut Reader<'_>) -> Result<ClientPriority, IpcError> {
-    if r.0.is_empty() || r.u8()? != PRIORITY_TAG {
+    // Peeked: another trailer may follow in its place.
+    if r.0.first() != Some(&PRIORITY_TAG) {
         return Ok(ClientPriority::Normal);
     }
+    r.u8()?;
     Ok(match r.u8()? {
         0 => ClientPriority::Normal,
         _ => ClientPriority::Low,

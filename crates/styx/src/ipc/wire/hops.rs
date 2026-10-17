@@ -39,12 +39,11 @@ pub(super) fn write_frame_hops(w: &mut Writer, hops: &FrameHops) {
 
 /// The trailer, if there is one (a frame from a server that sends none reads as `None`).
 pub(super) fn read_frame_hops(r: &mut Reader<'_>) -> Result<Option<FrameHops>, IpcError> {
-    if r.0.is_empty() {
+    // Peeked: another trailer may follow in its place.
+    if r.0.first() != Some(&TAG) {
         return Ok(None);
     }
-    if r.u8()? != TAG {
-        return Ok(None);
-    }
+    r.u8()?;
     let mask = r.u8()?;
     let mut hops = FrameHops::new();
     for hop in Hop::ALL {

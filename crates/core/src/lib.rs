@@ -29,9 +29,9 @@ pub mod prelude {
             FrameAllocation, FrameHops, FrameLatency, FrameLeaseDescriptor, FrameMeta,
             FrameMutability, FramePlaneDescriptor, FramePlaneShape, FrameProgress,
             FrameProgressRef, FrameResidency, FrameTiming, FrameValidationError, Hop, HopRecord,
-            LibcameraFrameMeta, NativeFrameMeta, Plane, PlaneLayout, PlaneMut, ProgressWait,
-            ResidencyTransition, ResidencyTransitionReason, TimestampClock, UvcFrameMeta,
-            V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
+            LibcameraFrameMeta, NativeFrameMeta, Plane, PlaneLayout, PlaneMut, ProgressState,
+            ProgressWait, ResidencyTransition, ResidencyTransitionReason, TimestampClock,
+            UvcFrameMeta, V4l2FrameMeta, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
             plane_layout_from_dims, plane_layout_with_stride,
         },
         controls::{

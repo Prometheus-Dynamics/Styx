@@ -30,6 +30,7 @@ mod controls;
 pub mod frame_socket;
 mod mapcache;
 mod metrics;
+mod progress_ring;
 mod service;
 mod socket;
 mod wire;
@@ -281,12 +282,12 @@ impl Drop for FrameServer {
 /// processes; requests must survive being encoded again. For fuzzing.
 #[doc(hidden)]
 pub fn fuzz_messages(bytes: &[u8]) {
-    if let Ok(wire::ClientMessage::Request(requirements, camera, priority)) =
+    if let Ok(wire::ClientMessage::Request(requirements, camera, priority, _)) =
         wire::decode_client(bytes)
     {
         let again = wire::encode_request(&requirements, camera.as_deref(), priority);
         match wire::decode_client(&again) {
-            Ok(wire::ClientMessage::Request(back, back_camera, back_priority)) => {
+            Ok(wire::ClientMessage::Request(back, back_camera, back_priority, _)) => {
                 assert_eq!(back, requirements);
                 assert_eq!(back_camera, camera);
                 assert_eq!(back_priority, priority);

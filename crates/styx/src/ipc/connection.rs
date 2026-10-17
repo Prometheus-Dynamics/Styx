@@ -175,6 +175,11 @@ pub(super) struct Connection {
     rx_fds: Vec<OwnedFd>,
     /// This client in the camera service's metrics.
     pub(super) stats: Option<Arc<crate::metrics::ConsumerStats>>,
+    /// The client takes sliced frames before they are complete (`progress_ring.rs`).
+    pub(super) slices: bool,
+    /// The progress page shared with the client, once a sliced frame went out, and whether
+    /// the client has its descriptor.
+    ring: Option<super::progress_ring::ProgressRing>,
 }
 
 impl Connection {
@@ -187,6 +192,8 @@ impl Connection {
             rx: Vec::new(),
             rx_fds: Vec::new(),
             stats: None,
+            slices: false,
+            ring: None,
         }
     }
 
@@ -198,13 +205,67 @@ impl Connection {
     /// Send a frame without blocking; `Ok(false)` when the client's socket is full. The frame's
     /// hops go with it, the send time added.
     pub(super) fn send_frame(&mut self, frame: &Exported) -> io::Result<bool> {
+        self.send_frame_with(frame, None)
+    }
+
+    /// Sends a sliced frame before it is complete (to a client that takes those): `progress`
+    /// has its heights and outputs; its slot in the connection's progress page is started
+    /// with `rows` final. Returns the slot, `None` when the frame was not sent (as
+    /// [`Self::send_frame`] returns `false`).
+    pub(super) fn send_sliced_frame(
+        &mut self,
+        frame: &Exported,
+        mut progress: wire::WireProgress,
+        rows: [u32; 2],
+    ) -> io::Result<Option<usize>> {
+        use super::progress_ring::{ProgressRing, SLOTS};
+        let attach = self.ring.is_none();
+        if attach {
+            self.ring = Some(ProgressRing::create()?);
+        }
+        let slot = (self.next_id % SLOTS as u64) as usize;
+        progress.slot = slot as u8;
+        progress.ring_attached = attach;
+        if let Some(ring) = &self.ring {
+            ring.begin(slot, self.next_id, rows);
+        }
+        let sent = self.send_frame_with(frame, Some(&progress))?;
+        if !sent && attach {
+            // The client never got the page: send it with the next sliced frame.
+            self.ring = None;
+        }
+        Ok(sent.then_some(slot))
+    }
+
+    /// The sliced frame in `slot` has `rows` final and is in `state` now.
+    pub(super) fn progress(
+        &self,
+        slot: usize,
+        rows: [u32; 2],
+        state: styx_core::buffer::ProgressState,
+    ) {
+        if let Some(ring) = &self.ring {
+            ring.update(slot, rows, state);
+        }
+    }
+
+    fn send_frame_with(
+        &mut self,
+        frame: &Exported,
+        progress: Option<&wire::WireProgress>,
+    ) -> io::Result<bool> {
         let id = self.next_id;
         let fds = &frame.fds;
         let mut raw: SmallVec<[RawFd; 8]> = SmallVec::new();
         raw.extend(fds.iter().map(AsRawFd::as_raw_fd));
+        if let (Some(p), Some(ring)) = (progress, &self.ring)
+            && p.ring_attached
+        {
+            raw.push(ring.fd().as_raw_fd());
+        }
         let mut hops = frame.frame.meta.hops;
         hops.mark(Hop::Sent);
-        wire::encode_frame_into(id, &frame.frame, &hops, &mut self.out);
+        wire::encode_frame_with_progress(id, &frame.frame, &hops, progress, &mut self.out);
         if !socket::send(&self.socket, &self.out, &raw)? {
             return Ok(false);
         }

@@ -69,6 +69,8 @@ pub struct FrameClient {
     hops: HopCounters,
     /// Readiness for consumers without a thread of their own.
     poll: PollSet,
+    /// The progress page of sliced frames on the current connection (keyed by its socket).
+    ring: import::Rings,
     /// The control connection (opened on first use), to where the client connected.
     control: ControlChannel,
 }
@@ -96,6 +98,8 @@ struct Request {
     camera: Option<String>,
     frames: FrameRequest,
     priority: ClientPriority,
+    /// Take sliced frames before they are complete ([`ClientOptions::sliced_frames`]).
+    slices: bool,
     /// How long each (re)connection may take.
     timeout: Duration,
 }
@@ -163,7 +167,12 @@ fn open(request: &Request) -> Result<Opened, IpcError> {
     let socket = socket::connect_until(&request.path, deadline)?;
     socket::send(
         &socket,
-        &wire::encode_request(&request.frames, request.camera.as_deref(), request.priority),
+        &wire::encode_request_with(
+            &request.frames,
+            request.camera.as_deref(),
+            request.priority,
+            request.slices,
+        ),
         &[],
     )?;
     accepted(answer(&socket, deadline)?).map(|accepted| (socket, accepted))
@@ -190,7 +199,12 @@ async fn open_async(request: &Request) -> Result<Opened, IpcError> {
         let socket = connecting.into_socket();
         socket::send(
             &socket,
-            &wire::encode_request(&request.frames, request.camera.as_deref(), request.priority),
+            &wire::encode_request_with(
+                &request.frames,
+                request.camera.as_deref(),
+                request.priority,
+                request.slices,
+            ),
             &[],
         )?;
         let fd = tokio::io::unix::AsyncFd::with_interest(
@@ -244,9 +258,21 @@ pub struct ClientOptions {
     timeout: Duration,
     reconnect: bool,
     priority: ClientPriority,
+    slices: bool,
 }
 
 impl ClientOptions {
+    /// Take a camera service's sliced frames as soon as their first rows are final, with
+    /// their progress ([`FrameLease::progress`]: rows final so far, waits for more), rather
+    /// than once complete. The service slices frames when its capture does
+    /// ([`CameraService::capture_config`](super::CameraService::capture_config) with
+    /// `native_slice_line` and `native_deliver_slices`). Services that predate this, and
+    /// captures that do not slice, send complete frames (`progress()` is `None`).
+    pub fn sliced_frames(mut self) -> Self {
+        self.slices = true;
+        self
+    }
+
     /// Ask at low priority ([`ClientPriority::Low`]): the camera service never changes what
     /// its other clients get, or restarts their capture, for this client; it may get a share
     /// of another client's frames instead of the format and size it asked for (see
@@ -293,6 +319,7 @@ impl ClientOptions {
             camera: self.camera.clone(),
             frames,
             priority: self.priority,
+            slices: self.slices,
             timeout: self.timeout,
         }
     }
@@ -392,6 +419,7 @@ impl FrameClient {
             timeout: DEFAULT_OPEN_TIMEOUT,
             reconnect: false,
             priority: ClientPriority::Normal,
+            slices: false,
         }
     }
 
@@ -462,6 +490,7 @@ impl FrameClient {
             scratch: Mutex::new(Scratch::default()),
             hops: HopCounters::new(),
             poll,
+            ring: import::Rings::default(),
             control: ControlChannel::new(&options.path, options.timeout),
         })
     }
@@ -682,22 +711,27 @@ impl FrameClient {
     /// frame's release record) for a frame on one dma-buf. Other messages: `Empty`.
     fn frame(&self, socket: &Arc<OwnedFd>, scratch: &mut Scratch) -> RecvOutcome<FrameLease> {
         let received = CaptureInstant::try_now().map(CaptureInstant::as_nanos);
+        let mut progress = None;
         let imported =
-            wire::decode_frame_into(&scratch.bytes, &mut scratch.frame).and_then(|id| match id {
-                Some(id) => {
-                    let release = Release {
-                        socket: socket.clone(),
-                        id,
-                        hops: ClientHops {
-                            received,
-                            imported: None,
-                        },
-                    };
-                    let mut fds = scratch.fds.drain(..);
-                    import(&scratch.frame, &mut fds, release, &self.maps).map(Some)
-                }
-                None => Ok(None),
-            });
+            wire::decode_frame_with_progress(&scratch.bytes, &mut scratch.frame, &mut progress)
+                .and_then(|id| match id {
+                    Some(id) => {
+                        let sliced =
+                            self.ring
+                                .take(socket, progress.as_ref(), &mut scratch.fds, id)?;
+                        let release = Release {
+                            socket: socket.clone(),
+                            id,
+                            hops: ClientHops {
+                                received,
+                                imported: None,
+                            },
+                        };
+                        let mut fds = scratch.fds.drain(..);
+                        import(&scratch.frame, &mut fds, release, &self.maps, sliced).map(Some)
+                    }
+                    None => Ok(None),
+                });
         match imported {
             Ok(Some(frame)) => {
                 self.hops.record(&frame.meta().hops);
