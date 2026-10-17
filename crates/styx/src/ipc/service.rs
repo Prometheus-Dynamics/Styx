@@ -28,6 +28,10 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Clients served at once unless [`CameraService::max_clients`] says otherwise.
 pub const DEFAULT_MAX_CLIENTS: usize = 16;
 
+/// Clients a capture is sized for beyond those connected when it starts (see
+/// [`CameraService::spare_clients`]).
+pub const DEFAULT_SPARE_CLIENTS: usize = 1;
+
 type Authorize = Arc<dyn Fn(&PeerCredentials) -> bool + Send + Sync>;
 
 /// Serves cameras to [`FrameClient`](super::FrameClient)s in other processes.
@@ -57,6 +61,7 @@ pub(crate) struct ServiceConfig {
     max_in_flight: usize,
     max_hold: Option<Duration>,
     max_clients: usize,
+    spare_clients: usize,
     authorize: Option<Authorize>,
     socket_mode: Option<u32>,
     controls: super::ControlPolicy,
@@ -97,6 +102,7 @@ impl CameraService {
                 max_in_flight: DEFAULT_MAX_IN_FLIGHT,
                 max_hold: Some(DEFAULT_MAX_HOLD),
                 max_clients: DEFAULT_MAX_CLIENTS,
+                spare_clients: DEFAULT_SPARE_CLIENTS,
                 authorize: None,
                 socket_mode: None,
                 controls: super::ControlPolicy::default(),
@@ -141,6 +147,20 @@ impl CameraService {
     /// refused.
     pub fn max_clients(mut self, clients: usize) -> Self {
         self.config.max_clients = clients.max(1);
+        self
+    }
+
+    /// Clients each capture is sized for beyond those connected when it starts (default
+    /// [`DEFAULT_SPARE_CLIENTS`]), so that many more can join without restarting it. A
+    /// low-priority client never restarts a capture, so with every spare taken it is refused.
+    ///
+    /// Memory: each spare costs one more set of camera buffers per capture, allocated when
+    /// the capture starts whether or not a client joins: the deepest client queue plus
+    /// [`Self::max_in_flight`] buffers of every output the capture produces (3 for clients
+    /// that take the latest frame, at the default `max_in_flight`). For example, NV12 1280x800
+    /// with an NV12 640x400 second output is 1.9 MB per buffer, so 5.8 MB per spare.
+    pub fn spare_clients(mut self, clients: usize) -> Self {
+        self.config.spare_clients = clients;
         self
     }
 

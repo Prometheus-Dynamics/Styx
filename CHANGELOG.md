@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **`CameraService::spare_clients`.** Sets how many clients each capture is sized for beyond
+  those connected when it starts (default `DEFAULT_SPARE_CLIENTS`, 1, as before). A
+  low-priority client never restarts a capture, so with every spare taken it was refused (for
+  example a calibration client joining a vision client and a preview).
+  - Each spare costs one more set of camera buffers per capture: the deepest client queue
+    plus `max_in_flight` buffers of every output.
+
 - **Sliced frames handed out at their first slice.** With `NativeIspConfig::slice_line` and
   `deliver_slices` (`StyxConfig::native_slice_line` / `native_deliver_slices`), a native PiSP
   frame's leases (the frame and its ISP pyramid level) go to the consumer once the back end's
@@ -194,6 +201,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   keeps its `Vec` result.
 
 ### Fixed
+
+- **Alias checks on received and descriptor frames.** Frames from a `CameraService` /
+  `FrameServer` (mapped dma-bufs and memfds) and frames over shared descriptors now report
+  their mapped memory (`ExternalBacking::host_spans`). `FrameLease::may_alias` against an
+  owned buffer then answers, where it returned `FrameValidationError::AliasUnknown` before:
+  for example a detector checking that its outputs do not alias its input.
 
 - **Native PiSP: soft image right of the first back-end tile.** The back-end tiler aligned tile
   starts to 2 pixels, where libpisp also aligns them to 16 bytes whenever the temporal denoise

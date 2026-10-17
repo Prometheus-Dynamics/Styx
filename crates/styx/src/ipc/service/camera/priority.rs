@@ -193,6 +193,7 @@ mod tests {
 
     use super::*;
     use crate::capture_api::make_virtual_device;
+    use crate::ipc::ClientPriority;
     use crate::ipc::service::CameraService;
     use crate::prelude::Mode;
 
@@ -307,5 +308,35 @@ mod tests {
         assert_eq!(gray.roi, None, "regions are the other client's own");
         let nv12 = shared_request(&plan, &Frames::nv12().size(320, 200)).unwrap();
         assert_eq!(nv12.size, Some((1280, 800)));
+    }
+
+    #[test]
+    fn spare_clients_size_the_capture_for_more_low_priority_clients() {
+        let join = |spare: usize| {
+            let camera = camera();
+            let config = CameraService::new(make_virtual_device("unused", []))
+                .spare_clients(spare)
+                .config;
+            let counters = crate::ipc::service::Counters::default();
+            let vision = Frames::gray().size(1280, 800);
+            camera
+                .join(vision, ClientPriority::Normal, &config, &counters)
+                .unwrap();
+            let low = || Frames::gray().latest().size(1280, 800);
+            camera
+                .join(low(), ClientPriority::Low, &config, &counters)
+                .unwrap();
+            let third = camera
+                .join(low(), ClientPriority::Low, &config, &counters)
+                .map(|_| ());
+            camera.shut_down();
+            third
+        };
+        let refused = join(1).unwrap_err();
+        assert!(
+            refused.contains("no buffers for another client"),
+            "{refused}"
+        );
+        join(2).unwrap();
     }
 }

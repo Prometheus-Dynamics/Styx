@@ -22,10 +22,6 @@ use crate::planner::{
 };
 use crate::prelude::ProbedDevice;
 
-/// Clients a capture is sized for beyond those connected when it starts, so another can join
-/// without restarting it.
-const SPARE_CLIENTS: usize = 1;
-
 pub(super) type FramesSlot = Arc<Mutex<Option<Frames>>>;
 
 pub(super) struct Camera {
@@ -335,7 +331,7 @@ fn restart(
         client.frames.lock().take();
     }
     state.running = None;
-    let capacity = plan.consumers.len() + SPARE_CLIENTS;
+    let capacity = plan.consumers.len() + config.spare_clients;
     let session = plan
         .start_session(capacity, config.max_in_flight)
         .map_err(|err| format!("the camera did not start: {err}"))?;

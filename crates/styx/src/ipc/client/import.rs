@@ -164,6 +164,10 @@ impl ExternalBacking for Released {
         self.inner.backing().backing_bytes()
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        self.inner.backing().host_spans(span)
+    }
+
     fn backing_kind(&self) -> &'static str {
         "ipc"
     }
