@@ -40,7 +40,8 @@ pub const OUTPUT_MEMORY_ENV: &str = "STYX_PISP_OUTPUT_MEMORY";
 /// The heaps [`OutputMemory::CachedHeap`] tries, in order.
 const CACHED_HEAPS: [&str; 2] = ["linux,cma", "system"];
 
-/// One output node's buffers, all mapped and exported.
+/// One output node's buffers, all mapped and exported. Cached heap buffers can start fewer than
+/// the node's buffer slots and grow into them ([`OutputQueue::grow`]).
 pub(super) struct OutputQueue {
     dev: VideoDevice,
     memory: Memory,
@@ -48,16 +49,23 @@ pub(super) struct OutputQueue {
     maps: Vec<Mapping>,
     fds: Vec<OwnedFd>,
     len: u32,
+    /// Buffer slots the node has (`maps.len()` up to this).
+    slots: usize,
+    /// Where more cached buffers come from.
+    heaps: Vec<DmaHeap>,
 }
 
 const TYPE: BufType = BufType::VideoCaptureMplane;
 
 impl OutputQueue {
-    /// `count` buffers of at least `size` bytes on `dev` (format set).
+    /// `count` buffer slots for buffers of at least `size` bytes on `dev` (format set): cached
+    /// heap buffers for `initial` of them now, the rest as [`Self::grow`] asks; the driver's
+    /// buffers all at once.
     pub(super) fn new(
         dev: VideoDevice,
         memory: OutputMemory,
         count: u32,
+        initial: u32,
         size: usize,
         name: &'static str,
     ) -> Result<Self> {
@@ -76,51 +84,30 @@ impl OutputQueue {
         };
         match (memory, heaps.is_empty()) {
             (OutputMemory::CachedHeap | OutputMemory::CachedHeapContiguousUpTo(_), false) => {
-                let size = size.next_multiple_of(4096);
-                let mut maps = Vec::new();
-                let mut fds = Vec::new();
-                for i in 0..count {
-                    // Contiguous memory first; the system heap when it runs out (the CM5 has
-                    // 64 MiB of it, which many buffers of extra passes can exhaust), or for
-                    // the buffers beyond `contiguous`.
-                    let mut last = None;
-                    let mut order: Vec<&DmaHeap> = heaps.iter().collect();
-                    if i >= contiguous {
-                        order.reverse();
-                    }
-                    let buf = order.iter().find_map(|heap| match heap.allocate(size) {
-                        Ok(buf) => Some(buf),
-                        Err(e) => {
-                            last = Some(e);
-                            None
-                        }
-                    });
-                    let buf = match (buf, last) {
-                        (Some(buf), _) => buf,
-                        (None, Some(e)) => return Err(e.into()),
-                        (None, None) => {
-                            return Err(DeviceError::Setup(format!("{name}: no dma-heap")));
-                        }
-                    };
-                    maps.push(buf.map()?);
-                    fds.push(buf.into_fd());
-                }
                 let got = dev.request_buffers(TYPE, Memory::DmaBuf, count)?;
-                if (got.count as usize) < fds.len() {
+                if got.count < count {
                     let _ = dev.free_buffers(TYPE, Memory::DmaBuf);
                     return Err(DeviceError::Setup(format!(
                         "{name}: {} of {count} buffer slots",
                         got.count
                     )));
                 }
-                Ok(Self {
+                let mut queue = Self {
                     dev,
                     memory: Memory::DmaBuf,
                     name,
-                    maps,
-                    fds,
-                    len: size as u32,
-                })
+                    maps: Vec::new(),
+                    fds: Vec::new(),
+                    len: size.next_multiple_of(4096) as u32,
+                    slots: count as usize,
+                    heaps,
+                };
+                for i in 0..initial.clamp(1, count) {
+                    // Contiguous memory first, the system heap for the buffers beyond
+                    // `contiguous`.
+                    queue.allocate(i >= contiguous)?;
+                }
+                Ok(queue)
             }
             // The driver's buffers, also when no cached heap exists.
             _ => {
@@ -145,15 +132,55 @@ impl OutputQueue {
                     dev,
                     memory: Memory::Mmap,
                     name,
+                    slots: maps.len(),
                     maps,
                     fds,
                     len,
+                    heaps: Vec::new(),
                 })
             }
         }
     }
 
-    /// Number of buffers.
+    /// One more cached heap buffer: contiguous memory first, the system heap when it runs out
+    /// (the CM5 has 64 MiB of it, which many buffers of extra passes can exhaust).
+    fn allocate(&mut self, system_first: bool) -> Result<u32> {
+        let size = self.len as usize;
+        let mut last = None;
+        let mut order: Vec<&DmaHeap> = self.heaps.iter().collect();
+        if system_first {
+            order.reverse();
+        }
+        let buf = order.iter().find_map(|heap| match heap.allocate(size) {
+            Ok(buf) => Some(buf),
+            Err(e) => {
+                last = Some(e);
+                None
+            }
+        });
+        let buf = match (buf, last) {
+            (Some(buf), _) => buf,
+            (None, Some(e)) => return Err(e.into()),
+            (None, None) => {
+                return Err(DeviceError::Setup(format!("{}: no dma-heap", self.name)));
+            }
+        };
+        self.maps.push(buf.map()?);
+        self.fds.push(buf.into_fd());
+        Ok(self.maps.len() as u32 - 1)
+    }
+
+    /// A new buffer in a free slot (cached heap buffers only): its index, `None` when every
+    /// slot has one or the memory ran out.
+    pub(super) fn grow(&mut self) -> Option<u32> {
+        if self.memory != Memory::DmaBuf || self.maps.len() >= self.slots {
+            return None;
+        }
+        // The system heap first: contiguous memory can take 10-20 ms to allocate when it is
+        // short (compaction), too long between two frames.
+        super::profile::time(self.name, "grow", || self.allocate(true)).ok()
+    }
+
     /// Whether the buffers come from a cached dma-heap (CPU reads at memory speed) rather than
     /// the driver (uncached).
     pub(super) fn cached(&self) -> bool {

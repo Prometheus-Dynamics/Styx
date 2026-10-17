@@ -122,7 +122,8 @@ impl Isp {
         }
         fe.enable(fe_enable::OUTPUT0, true);
         let input_len = input.stride as u32 * u32::from(input.height);
-        let mut be_dev = BackEndStream::open_with(
+        let initial = options.be_buffers_initial.unwrap_or(options.be_buffers);
+        let mut be_dev = BackEndStream::open_with_initial(
             options.be_group,
             input,
             order,
@@ -133,6 +134,7 @@ impl Isp {
                 options.be_buffers + options.pass_buffers,
                 options.be_buffers,
             ],
+            [initial + options.pass_buffers, initial],
             options.output_memory,
         )?;
         let mut be = be_template(
@@ -675,6 +677,15 @@ impl PispPipeline {
     /// Output `i`'s dma-buf for a frame's job.
     pub fn output_dmabuf(&self, i: usize, job: &BeJob) -> Option<std::os::fd::BorrowedFd<'_>> {
         self.be_dev.as_ref()?.output_dmabuf(i, job.outputs[i]?)
+    }
+
+    /// Allocates a back end buffer for each output whose buffers are all out, while it has
+    /// slots for more (`PispOptions::be_buffers_initial`): call between frames, so the next
+    /// frame does not wait for the allocation.
+    pub fn top_up_outputs(&mut self) {
+        if let Some(b) = self.be_dev.as_mut() {
+            b.top_up();
+        }
     }
 
     /// Gives output `i`'s buffer `index` back (one output of a job, e.g. when its two outputs

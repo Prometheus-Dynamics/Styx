@@ -158,6 +158,27 @@ impl BackEndStream {
         buffers: [u32; 2],
         memory: OutputMemory,
     ) -> Result<Self> {
+        Self::open_with_initial(
+            group, input, bayer, inputs, input_len, outputs, buffers, buffers, memory,
+        )
+    }
+
+    /// [`Self::open_with`], allocating only `initial[i]` of output `i`'s `buffers[i]`
+    /// [`OutputMemory::CachedHeap`] buffers now: a job that finds no free buffer allocates
+    /// another, up to `buffers[i]` (the driver's buffers are all allocated at once). Buffers
+    /// that consumers never hold at once are then never allocated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_initial(
+        group: usize,
+        input: ImageFormatConfig,
+        bayer: BayerOrder,
+        inputs: Vec<OwnedFd>,
+        input_len: u32,
+        outputs: [Option<BeOutputSetup>; 2],
+        buffers: [u32; 2],
+        initial: [u32; 2],
+        memory: OutputMemory,
+    ) -> Result<Self> {
         if outputs[0].is_none() || inputs.is_empty() {
             return Err(DeviceError::Setup("need output 0 and input buffers".into()));
         }
@@ -244,7 +265,8 @@ impl BackEndStream {
                 "pispbe-output1"
             };
             let size = g.planes[0].size_image as usize;
-            let queue = OutputQueue::new(dev, memory, buffers[i].max(2), size, name)?;
+            let count = buffers[i].max(2);
+            let queue = OutputQueue::new(dev, memory, count, initial[i].min(count), size, name)?;
             let free = (0..queue.len() as u32).collect();
             outs[i] = Some(Output {
                 queue,
@@ -408,7 +430,8 @@ impl BackEndStream {
                 && let Some(o) = o
                 && enabled & rgb_enable::output(i) != 0
             {
-                let Some(b) = o.free.pop_front() else {
+                // Every buffer is out: another one, while the output has slots for it.
+                let Some(b) = o.free.pop_front().or_else(|| o.queue.grow()) else {
                     self.give_back(picked);
                     return Err(DeviceError::OutputsHeld(i));
                 };
@@ -571,6 +594,20 @@ impl BackEndStream {
     pub fn output_dmabuf(&self, i: usize, index: u32) -> Option<BorrowedFd<'_>> {
         let o = self.outputs.get(i)?.as_ref()?;
         o.queue.dmabuf(index)
+    }
+
+    /// Allocates a buffer for each output that has none free, while it has slots for more
+    /// ([`Self::open_with_initial`]). Call between frames: a job that finds no free buffer
+    /// allocates one itself, which delays that frame by the allocation (milliseconds for
+    /// contiguous memory).
+    pub fn top_up(&mut self) {
+        for o in self.outputs.iter_mut().flatten() {
+            if o.free.is_empty()
+                && let Some(b) = o.queue.grow()
+            {
+                o.free.push_back(b);
+            }
+        }
     }
 
     /// Hands output `i`'s buffer `index` back for reuse (outputs of one job can be held for
