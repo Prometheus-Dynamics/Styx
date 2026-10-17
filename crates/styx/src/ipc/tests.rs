@@ -64,11 +64,17 @@ fn clients_get_frames_and_release_them() {
     assert_eq!(frame.meta().format.code, FourCc::GREY);
     let rows = frame.luma_rows().unwrap();
     assert_eq!(rows.row(1).unwrap().data()[0], 64u8.wrapping_add(3));
+    // A received frame's memory is a known mapping: it can be told apart from owned buffers
+    // (detectors check their outputs do not alias their input).
+    let owned = FrameLease::allocate_host_owned(frame.meta().format, 1).unwrap();
+    assert_eq!(frame.may_alias(&owned), Ok(false));
+    assert_eq!(owned.may_alias(&frame), Ok(false));
     // Heap frames are copied once; memfd frames are passed as they are.
     assert_eq!(server.stats().copied, 1);
     server.publish(&memfd_frame()).unwrap();
     let shared = recv(&client);
     assert_eq!(shared.planes()[0].data()[0], 7);
+    assert_eq!(shared.may_alias(&owned), Ok(false));
     assert_eq!(server.stats().copied, 1);
 
     // Holding two frames: the next one is skipped until one is dropped.

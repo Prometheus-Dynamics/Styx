@@ -293,6 +293,24 @@ impl ExternalBacking for SharedFdBacking {
         }
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        // The mappings (made, not read, when not mapped yet); unknown when a plane with bytes
+        // could not be mapped.
+        let mapped = self.mapped();
+        let all = self
+            .planes
+            .iter()
+            .zip(&mapped.plane_range)
+            .all(|(plane, range)| plane.len == 0 || range.is_some());
+        if !all {
+            return false;
+        }
+        for range in &mapped.ranges {
+            span(range.ptr as usize, range.map_len);
+        }
+        true
+    }
+
     fn backing_kind(&self) -> &'static str {
         match self.kind {
             SharedFdBackingKind::Memfd(_) => "memfd",
@@ -488,6 +506,27 @@ mod tests {
         assert!(frame.planes()[0].data().is_empty());
         assert!(frame.visible_rows(0).is_err());
         assert!(frame.to_visible_vec().is_err());
+    }
+
+    #[test]
+    fn mapped_descriptors_report_their_memory_for_alias_checks() {
+        let fd = create_memfd("styx-alias").unwrap();
+        // SAFETY: `fd` is a valid memfd.
+        assert_eq!(unsafe { libc::ftruncate(fd.as_raw_fd(), 16) }, 0);
+        let fmt = MediaFormat::new(
+            FourCc::GREY,
+            Resolution::new(4, 4).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let layout = PlaneLayout {
+            offset: 0,
+            len: 16,
+            stride: 4,
+        };
+        let frame = FrameLease::from_memfd(FrameMeta::new(fmt, 0), smallvec::smallvec![layout], fd);
+        let owned = FrameLease::allocate_host_owned(fmt, 1).unwrap();
+        assert_eq!(frame.may_alias(&owned), Ok(false));
+        assert_eq!(owned.may_alias(&frame), Ok(false));
     }
 
     fn descriptor(

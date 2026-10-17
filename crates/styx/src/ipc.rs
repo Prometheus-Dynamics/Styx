@@ -57,6 +57,7 @@ pub use self::frame_socket::{
 };
 pub use self::service::{
     CameraService, CameraServiceHandle, CameraServiceStats, DEFAULT_MAX_CLIENTS,
+    DEFAULT_SPARE_CLIENTS,
 };
 pub use self::socket::PeerCredentials;
 pub use self::wire::CameraInfo;

@@ -288,6 +288,17 @@ impl ExternalBacking for CachedDmabuf {
         self.planes.iter().map(|(o, l)| o + l).max()
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        // The buffer's mapping (made, not read, when not mapped yet): frames of the same buffer
+        // share it, so they overlap.
+        let Some(map) = self.mapped() else {
+            return false;
+        };
+        let bytes = map.bytes();
+        span(bytes.as_ptr() as usize, bytes.len());
+        true
+    }
+
     fn backing_kind(&self) -> &'static str {
         if self.memfd { "memfd_import" } else { "dmabuf" }
     }
