@@ -75,7 +75,7 @@ window, `max_ever_ms` since the start.
 | `latency.sensor_to_delivery` | sensor timestamp to the frame entering the consumer queue (exposure end/readout, receiver, ISP, Styx) | `clock_gettime` of the frame's timestamp clock (`FrameMeta::clock`) minus the timestamp, when the clock is a system clock (monotonic, boottime, realtime; not stream-relative sources) |
 | `latency.sensor_to_receive` | the same up to the consumer taking the frame (adds the time in the queue) | the same, in `recv*` |
 | `isp.kind` | `pisp`, `software` or `gpu` | the ISP the processed capture runs |
-| `isp.isp` | PiSP back end job (config queued to output dequeued), or the software/GPU ISP pass | `PispTimes::be_job`, `SoftTiming::isp` |
+| `isp.isp` | PiSP back end job on the hardware (config queued to the driver's completion stamp; `processing` minus this is the CPU work that outlasted it), or the software/GPU ISP pass | `PispTimes::be_job`, `SoftTiming::isp` |
 | `isp.processing` | raw frame dequeued to outputs ready: statistics, algorithms, ISP | `PispTimes::total`; software: settings + ISP + statistics + algorithms |
 | `cpu.threads`, `cpu.total_ns` | CPU time of the capture's worker threads | each worker registers its thread id; a snapshot reads `/proc/self/task/<tid>/schedstat` (falls back to `stat` ticks), keeping the last reading of threads that ended. Threads of the software ISP's own pool and kernel time of drivers are not included; `ProcessMetrics::cpu_ns` covers the process |
 | `cpu.per_frame_us` | `total_ns` / `captured`, since the start | `metrics_top` shows it since the previous refresh |

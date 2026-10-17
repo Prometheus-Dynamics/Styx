@@ -143,6 +143,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **PiSP back end job time is the hardware's.** `BeJob::elapsed` (and the `isp.isp` capture
+  metric, `PispTimes::be_job`) now ends at the driver's completion timestamp, not when the
+  capture thread dequeued the outputs. Before, it also counted 3A work that outlasted the job.
+  `processing` minus `isp` is now the CPU overhang.
+  - On the CM5 (1280x800 gray + pyramid level 1 at 30 fps, auto exposure, 600 frames), this
+    showed the ISP step's p99 tail is the hardware job. From queueing to the driver's stamp:
+    p50 1.59 ms, p99 2.50 ms, max 5.71 ms. The dequeue was 10 µs behind the stamp (p99
+    41 µs), and 3A (p99 0.74 ms) overlapped the job.
+
 - **Camera services no longer sync native ISP buffers for the CPU on the capture thread.**
   `SharedFramePlan::exportable` captures (every `CameraService` capture) turn
   `NativeIspConfig::early_cpu_sync` off. Their frames only leave as descriptors, and the
