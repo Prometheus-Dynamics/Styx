@@ -137,7 +137,7 @@ pub(super) fn frame_leases(
     buffers: &mut Buffers,
     w: &Worker,
     returns: &super::pisp_lease::Returns,
-    progress: Option<std::sync::Arc<styx_core::buffer::FrameProgress>>,
+    progress: Option<std::sync::Arc<super::pisp_sliced::SliceState>>,
 ) -> Result<Option<FrameLease>, String> {
     let mut leaser = Leaser {
         p,
