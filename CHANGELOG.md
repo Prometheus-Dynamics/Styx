@@ -226,6 +226,20 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **Native PiSP: consumers holding what the planner allows no longer starve the camera.**
+  When contiguous memory was short, the back end got fewer buffers than the planner
+  reserved: at most half of the free contiguous memory. A client holding 10 or more frames
+  then timed out, and the restart came back with even fewer buffers.
+  - The capture now gets every buffer the planner reserves. Contiguous memory still holds
+    at most the same share, and the rest come from the `system` heap
+    (`OutputMemory::CachedHeapContiguousUpTo`).
+  - On the CM5 (slot 8, 1280x800 gray + pyramid level 1 at 30 fps, queue 1 and 12 extra
+    buffers, a client holding 0 → 12 → 0 frames, 35.7 MB of contiguous memory free):
+    - before: 24–48 timeouts per 60 frames at 10–12 held, then 31 dma-bufs left;
+    - after: no timeouts, 69 dma-bufs throughout (70.6 MiB against 48.6 MiB: the extra
+      22 MiB is system memory);
+    - dequeued → received p50 1.68 ms against 1.70 ms.
+
 - **Alias checks on received and descriptor frames.** Frames from a `CameraService` /
   `FrameServer` (mapped dma-bufs and memfds) and frames over shared descriptors now report
   their mapped memory (`ExternalBacking::host_spans`). `FrameLease::may_alias` against an

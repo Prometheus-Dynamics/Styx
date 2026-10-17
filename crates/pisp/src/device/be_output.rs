@@ -27,6 +27,10 @@ pub enum OutputMemory {
     /// Buffers from a cached dma-heap (`linux,cma`, else, or when it runs out, `system`):
     /// cached CPU reads, cache maintenance per job.
     CachedHeap,
+    /// As [`Self::CachedHeap`], with at most this many buffers per output from contiguous
+    /// memory (`linux,cma`) and the rest from the `system` heap first, so a capture with many
+    /// buffers leaves contiguous memory to the front end and other devices.
+    CachedHeapContiguousUpTo(u32),
 }
 
 /// Environment variable overriding where output buffers come from: `driver` or `cached`
@@ -66,16 +70,25 @@ impl OutputQueue {
             .iter()
             .filter_map(|h| DmaHeap::open(h).ok())
             .collect();
+        let contiguous = match memory {
+            OutputMemory::CachedHeapContiguousUpTo(n) => n,
+            _ => u32::MAX,
+        };
         match (memory, heaps.is_empty()) {
-            (OutputMemory::CachedHeap, false) => {
+            (OutputMemory::CachedHeap | OutputMemory::CachedHeapContiguousUpTo(_), false) => {
                 let size = size.next_multiple_of(4096);
                 let mut maps = Vec::new();
                 let mut fds = Vec::new();
-                for _ in 0..count {
+                for i in 0..count {
                     // Contiguous memory first; the system heap when it runs out (the CM5 has
-                    // 64 MiB of it, which many buffers of extra passes can exhaust).
+                    // 64 MiB of it, which many buffers of extra passes can exhaust), or for
+                    // the buffers beyond `contiguous`.
                     let mut last = None;
-                    let buf = heaps.iter().find_map(|heap| match heap.allocate(size) {
+                    let mut order: Vec<&DmaHeap> = heaps.iter().collect();
+                    if i >= contiguous {
+                        order.reverse();
+                    }
+                    let buf = order.iter().find_map(|heap| match heap.allocate(size) {
                         Ok(buf) => Some(buf),
                         Err(e) => {
                             last = Some(e);
