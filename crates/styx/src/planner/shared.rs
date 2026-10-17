@@ -369,7 +369,8 @@ impl SharedFramePlan {
     }
 
     /// Put frames consumers' plans decode or copy into memfd buffers, for other processes (see
-    /// [`FramePlan::exportable`]).
+    /// [`FramePlan::exportable`]). The capture then leaves the CPU cache sync of native ISP
+    /// buffers to the processes that read them (`NativeIspConfig::early_cpu_sync` off).
     pub fn exportable(mut self) -> Self {
         for consumer in &mut self.consumers {
             consumer.exportable = true;
@@ -453,29 +454,39 @@ impl SharedFramePlan {
     /// The capture request: this plan's mode and interval, the ISP outputs its consumers use,
     /// and `held` device buffers beyond the queue.
     fn capture_request(&self, held: usize) -> CaptureRequest<'_> {
+        let mut request = CaptureRequest::new(&self.device)
+            .backend(self.backend)
+            .mode(self.mode.id.clone())
+            .config(self.capture_config(held));
+        if let Some(interval) = self.interval {
+            request = request.interval(interval);
+        }
+        request
+    }
+
+    /// The capture's settings: the consumers' own, their ISP outputs and regions, the idle
+    /// policy, and `held` device buffers beyond the queue.
+    pub(super) fn capture_config(&self, held: usize) -> StyxConfig {
         // Consumers' own capture settings: the first that has some.
         let base = self.consumers.iter().find_map(|p| p.config.clone());
         let mut config = base
             .unwrap_or_default()
             .capture_queue_depth(1)
             .capture_extra_buffers(held);
+        // Frames that only leave as descriptors (a camera service's) are read, and synced, by
+        // the processes that get them: syncing them on the capture thread too is wasted.
+        if self.consumers.iter().all(|p| p.exportable) {
+            config = config.native_early_cpu_sync(false);
+        }
         config = region_shared::region_config(
             &self.consumers,
             outputs_config(&self.consumers, &self.mode, config),
         );
-        config = match self.stop_when_idle {
+        match self.stop_when_idle {
             Some((after, IdleStop::Pause)) => config.pause_when_idle(after),
             Some((after, _)) => config.stop_when_idle(after),
             None => config,
-        };
-        let mut request = CaptureRequest::new(&self.device)
-            .backend(self.backend)
-            .mode(self.mode.id.clone())
-            .config(config);
-        if let Some(interval) = self.interval {
-            request = request.interval(interval);
         }
-        request
     }
 }
 
