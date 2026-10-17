@@ -92,6 +92,10 @@ impl ExternalBacking for Heap {
     fn backing_bytes(&self) -> Option<usize> {
         Some(self.0.len())
     }
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        span(self.0.as_ptr() as usize, self.0.len());
+        true
+    }
 }
 
 #[test]
@@ -104,6 +108,9 @@ fn buffers_are_counted_while_frames_hold_them() {
         smallvec::smallvec![plane_layout_from_dims(res.width, res.height, 1)],
         Arc::new(m.track(Heap(vec![7; 16]))),
     );
+    // Tracking keeps the backing's memory known to alias checks.
+    let owned = FrameLease::allocate_host_owned(format, 1).unwrap();
+    assert_eq!(frame.may_alias(&owned), Ok(false));
     let share = frame.into_shareable();
     let other = share.share().unwrap();
     assert_eq!(other.planes()[0].data()[0], 7);

@@ -524,6 +524,10 @@ impl<B: ExternalBacking> ExternalBacking for MeteredBacking<B> {
         self.inner.progress()
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        self.inner.host_spans(span)
+    }
+
     fn cpu_access(&self) -> styx_core::prelude::CpuAccess {
         self.inner.cpu_access()
     }

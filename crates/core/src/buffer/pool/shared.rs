@@ -258,6 +258,11 @@ impl ExternalBacking for SharedBufferBacking {
         "memfd_pool"
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        span(self.ptr.as_ptr() as usize, self.len);
+        true
+    }
+
     fn can_export(&self) -> bool {
         true
     }
@@ -370,5 +375,28 @@ mod tests {
             lease.try_resize(1).unwrap();
             assert_eq!(lease.as_slice()[0], expected);
         }
+    }
+
+    /// Pooled memfd frames report their memory, so alias checks against owned buffers and
+    /// against each other answer.
+    #[test]
+    fn pooled_frames_report_their_memory_for_alias_checks() {
+        use crate::buffer::{FrameLease, FrameMeta};
+        use crate::format::{ColorSpace, FourCc, MediaFormat, Resolution};
+        let fmt = MediaFormat::new(
+            FourCc::GREY,
+            Resolution::new(4, 4).unwrap(),
+            ColorSpace::Srgb,
+        );
+        let pool = SharedBufferPool::with_capacity(2, 16).unwrap();
+        let frame = |p: &SharedBufferPool| {
+            FrameLease::single_plane_shared(FrameMeta::new(fmt, 0), p.lease().unwrap(), 16, 4)
+                .unwrap()
+        };
+        let (a, b) = (frame(&pool), frame(&pool));
+        let owned = FrameLease::allocate_host_owned(fmt, 1).unwrap();
+        assert_eq!(a.may_alias(&owned), Ok(false));
+        assert_eq!(owned.may_alias(&a), Ok(false));
+        assert_eq!(a.may_alias(&b), Ok(false));
     }
 }

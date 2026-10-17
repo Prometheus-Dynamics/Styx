@@ -282,6 +282,11 @@ impl ExternalBacking for UvcBacking {
         "uvc_usbfs"
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        span(self.frame.data.as_ptr() as usize, self.frame.data.len());
+        true
+    }
+
     fn residency(&self) -> FrameResidency {
         FrameResidency::HostExternal
     }

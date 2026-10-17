@@ -300,6 +300,10 @@ impl ExternalBacking for Fetched {
         "frame_socket"
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        self.inner.backing().host_spans(span)
+    }
+
     fn can_export(&self) -> bool {
         self.inner.backing().can_export()
     }
