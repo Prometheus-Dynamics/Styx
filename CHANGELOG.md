@@ -207,6 +207,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   their mapped memory (`ExternalBacking::host_spans`). `FrameLease::may_alias` against an
   owned buffer then answers, where it returned `FrameValidationError::AliasUnknown` before:
   for example a detector checking that its outputs do not alias its input.
+  - In-process frames too: native PiSP back end and software-ISP heap leases, V4L2 mmap, UVC,
+    libcamera, imported and frame-socket buffers, and pooled memfd frames. The capture metrics
+    wrapper forwards the spans. Every capture backend's frames can now be checked against
+    owned buffers.
 
 - **Native PiSP: soft image right of the first back-end tile.** The back-end tiler aligned tile
   starts to 2 pixels, where libpisp also aligns them to 16 bytes whenever the temporal denoise

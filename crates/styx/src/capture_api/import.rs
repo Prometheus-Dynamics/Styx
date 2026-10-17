@@ -264,6 +264,14 @@ impl ExternalBacking for Imported {
         "imported"
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        let Some(bytes) = self.buffers.bytes(self.index) else {
+            return false;
+        };
+        span(bytes.as_ptr() as usize, bytes.len());
+        true
+    }
+
     fn can_export(&self) -> bool {
         true
     }

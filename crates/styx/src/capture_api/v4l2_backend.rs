@@ -68,6 +68,14 @@ impl ExternalBacking for V4l2MmapBacking {
         "v4l2_mmap"
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        let Some(bytes) = (*self.index.lock()).and_then(|i| self.manager.mapped_plane(i)) else {
+            return false;
+        };
+        span(bytes.as_ptr() as usize, bytes.len());
+        true
+    }
+
     fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
         let Some(index) = *self.index.lock() else {
             return Err(FrameExportError::InvalidDescriptor);

@@ -592,6 +592,19 @@ impl<R: Send + 'static> ExternalBacking for LibcameraBacking<R> {
         Some(self.backing_bytes)
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        // Each plane in its mapping (made, not read or synced, when not mapped yet).
+        for index in 0..self.planes.len() {
+            let Some((_, bytes)) = self.mapped_plane(index) else {
+                return false;
+            };
+            if !bytes.is_empty() {
+                span(bytes.as_ptr() as usize, bytes.len());
+            }
+        }
+        true
+    }
+
     fn backing_kind(&self) -> &'static str {
         "libcamera_dmabuf"
     }

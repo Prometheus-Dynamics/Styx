@@ -196,6 +196,12 @@ impl ExternalBacking for BeBacking {
         "pispbe_dmabuf"
     }
 
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        let bytes = self.buffer.map.as_slice();
+        span(bytes.as_ptr() as usize, bytes.len());
+        true
+    }
+
     fn can_export(&self) -> bool {
         true
     }

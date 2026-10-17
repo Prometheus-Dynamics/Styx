@@ -163,6 +163,11 @@ impl ExternalBacking for HeapBacking {
     fn backing_kind(&self) -> &'static str {
         "softisp_heap"
     }
+
+    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
+        let data = self.data.as_deref();
+        data.map(|b| span(b.as_ptr() as usize, b.len())).is_some()
+    }
 }
 
 impl Drop for HeapBacking {
