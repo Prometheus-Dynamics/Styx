@@ -166,6 +166,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **Sliced frames: the completion cache sync only when the CPU read early.** A sliced native
+  frame's buffers are synced for the CPU again on completion only if one of its leases was
+  read (or prefetched) before it completed. A camera service only passes frames on, so it no
+  longer pays the sync.
+  - On the CM5 (HeliOS's service slicing at line 600, 30 fps), this was 2 dma-buf syncs per
+    frame, 32 µs of the service's CPU.
+  - `docs/metrics.md` explains the hops of sliced frames: `dequeued` and `isp_done` are the
+    first slice, and a service's wait for completion shows in `taken -> sent`.
+
 - **PiSP back end job time is the hardware's.** `BeJob::elapsed` (and the `isp.isp` capture
   metric, `PispTimes::be_job`) now ends at the driver's completion timestamp, not when the
   capture thread dequeued the outputs. Before, it also counted 3A work that outlasted the job.

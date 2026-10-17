@@ -181,6 +181,13 @@ records (Daedalus, Eidos) join on the frame's sequence number with its sensor ti
 | `received` | the consumer process received the message and its descriptors | `FrameFetcher`/`fetch_frame`, `FrameClient::recv` |
 | `imported` | the consumer built the frame over the descriptors (camera service clients and frame socket fetches: the buffer's mapping comes from a cache of each buffer's mapping, made on the first read of a buffer not seen before) | the same |
 
+Sliced native frames (`NativeIspConfig::deliver_slices`) are handed out at their first slice,
+so `dequeued` and `isp_done` are that moment, and `dequeued -> isp_done` reads about 0. A camera
+service holds such a frame for a client that takes only complete frames: the wait for the rest
+of the frame then shows in `taken -> sent`. Clients that take sliced frames
+(`ClientOptions::sliced_frames`) get it at once and follow `FrameLease::progress()`. The
+`total` (sensor to the last hop) is the real latency either way.
+
 Hop deltas are aggregated where a frame's record is complete for a path, in windows of the last
 `WINDOW` frames (p50/p95/p99/max, as `Window`):
 

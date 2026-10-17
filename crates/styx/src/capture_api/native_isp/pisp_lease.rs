@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
-use styx_core::buffer::{CpuReadWindow, FrameProgress, FrameProgressRef};
+use styx_core::buffer::{CpuReadWindow, FrameProgressRef};
+
+use super::pisp_sliced::SliceState;
 use styx_core::prelude::{
     BackendFrameMeta, CaptureInstant, ClockConversion, ExportedKind, ExternalBacking,
     FrameBackingExport, FrameExportError, FrameFdPlane, FrameRect, FrameResidency, Hop,
@@ -165,8 +167,8 @@ struct BeBacking {
     /// drops, or bracketed (Daedalus's `daedalus:frame` access).
     window: CpuReadWindow,
     returns: Returns,
-    /// A sliced frame's progress (shared by its leases) and this output's index in it.
-    progress: Option<(Arc<FrameProgress>, usize)>,
+    /// A sliced frame's state (shared by its leases) and this output's index in its progress.
+    progress: Option<(Arc<SliceState>, usize)>,
 }
 
 impl ExternalBacking for BeBacking {
@@ -174,13 +176,13 @@ impl ExternalBacking for BeBacking {
         let bytes = self.bytes(index)?;
         // The pixels are about to be read on the CPU: sync once (a no-op for the driver's
         // uncached buffers, cache maintenance for cached ones).
-        self.window.hold(|| self.sync(true));
+        self.window.hold(|| self.start_read());
         Some(bytes)
     }
 
     fn begin_cpu_read(&self, index: usize) -> Option<&[u8]> {
         let bytes = self.bytes(index)?;
-        self.window.begin(|| self.sync(true));
+        self.window.begin(|| self.start_read());
         Some(bytes)
     }
 
@@ -219,7 +221,7 @@ impl ExternalBacking for BeBacking {
     }
 
     fn progress(&self) -> Option<FrameProgressRef<'_>> {
-        self.progress.as_ref().map(|(p, i)| p.output(*i))
+        self.progress.as_ref().map(|(s, i)| s.progress.output(*i))
     }
 
     fn cpu_access(&self) -> CpuAccess {
@@ -275,6 +277,14 @@ impl BeBacking {
             .map
             .as_slice()
             .get(offset..offset.checked_add(len)?)
+    }
+
+    /// Starts CPU reads of the buffer (marking a sliced frame read early).
+    fn start_read(&self) {
+        if let Some((s, _)) = &self.progress {
+            s.read.store(true, std::sync::atomic::Ordering::Release);
+        }
+        self.sync(true);
     }
 
     /// Starts (`true`) or ends CPU reads of the buffer.
@@ -358,7 +368,7 @@ pub(super) struct Leaser<'a> {
     /// reported in the field's coordinates.
     pub(super) window: Option<styx_pisp::device::SensorWindow>,
     /// A sliced frame's progress, for leases handed out before the frame completes.
-    pub(super) progress: Option<Arc<FrameProgress>>,
+    pub(super) progress: Option<Arc<SliceState>>,
 }
 
 impl Leaser<'_> {
@@ -401,7 +411,7 @@ fn lease(
     live: &CaptureMetrics,
     conversion: Option<ClockConversion>,
     prep: CpuPrep,
-    progress: Option<Arc<FrameProgress>>,
+    progress: Option<Arc<SliceState>>,
 ) -> FrameLease {
     let spec = placed.spec;
     let (width, height) = placed.size.unwrap_or_else(|| {
@@ -446,7 +456,7 @@ fn lease(
     };
     if prep.sync && backing.buffer.cached {
         // Held from now until the lease drops: the consumer's reads find access started.
-        backing.window.hold(|| backing.sync(true));
+        backing.window.hold(|| backing.start_read());
         if let Some(first) = backing.bytes(0) {
             prefetch(first, prep.prefetch);
         }

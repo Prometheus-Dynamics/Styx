@@ -4,6 +4,7 @@
 //! completes (or fails) on the same leases when the rest is written.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use smallvec::SmallVec;
@@ -16,10 +17,18 @@ use super::pisp_lease::{Buffers, Returns};
 use super::pisp_worker::{Worker, frame_leases};
 use styx_capture::prelude::FrameLease;
 
+/// A sliced frame's state shared by its leases: its progress, and whether any of them was read
+/// on the CPU before it completed (only then can the CPU hold stale lines of rows below the
+/// first slice, so only then are the buffers synced again on completion).
+pub(super) struct SliceState {
+    pub(super) progress: FrameProgress,
+    pub(super) read: AtomicBool,
+}
+
 /// A sliced frame out with the consumer before it completes.
 pub(super) struct SlicedOut {
     pub(super) sequence: u64,
-    progress: Arc<FrameProgress>,
+    state: Arc<SliceState>,
     /// (output, buffer) of its leases.
     buffers: [Option<(usize, u32)>; 2],
     heights: [u32; 2],
@@ -44,22 +53,25 @@ impl SlicedOut {
         }
     }
 
-    /// The frame is written: the buffers' caches are invalidated again (the CPU may have
-    /// prefetched rows below the first slice before the back end wrote them), then the leases
-    /// see every row.
+    /// The frame is written: if a lease was read on the CPU meanwhile, the buffers' caches are
+    /// invalidated again (the CPU may have prefetched rows below the first slice before the back
+    /// end wrote them), then the leases see every row. Frames only passed on (a camera
+    /// service's) skip the sync.
     pub(super) fn complete(mut self, buffers: &Buffers, p: &mut PispPipeline) {
-        for &(i, index) in self.buffers.iter().flatten() {
-            if let Some((fd, true)) = buffers.fd(i, index) {
-                let _ = dma_heap::sync(fd, Access::Read, true);
+        if self.state.read.load(Ordering::Acquire) {
+            for &(i, index) in self.buffers.iter().flatten() {
+                if let Some((fd, true)) = buffers.fd(i, index) {
+                    let _ = dma_heap::sync(fd, Access::Read, true);
+                }
             }
         }
-        self.progress.complete(self.heights);
+        self.state.progress.complete(self.heights);
         self.release(p);
     }
 
     /// The frame will not complete (it failed, or a newer one overtook it).
     pub(super) fn fail(mut self, p: &mut PispPipeline) {
-        self.progress.fail();
+        self.state.progress.fail();
         self.release(p);
     }
 }
@@ -96,8 +108,11 @@ pub(super) fn slice_leases(
         raw: None,
         passes: Vec::new(),
     };
-    let progress = Arc::new(FrameProgress::new(s.rows));
-    let Some(lease) = frame_leases(p, &f, buffers, w, returns, Some(progress.clone()))? else {
+    let state = Arc::new(SliceState {
+        progress: FrameProgress::new(s.rows),
+        read: AtomicBool::new(false),
+    });
+    let Some(lease) = frame_leases(p, &f, buffers, w, returns, Some(state.clone()))? else {
         return Ok(None);
     };
     let heights = [0, 1].map(|i| w.specs[i].map_or(0, |o| o.height));
@@ -106,7 +121,7 @@ pub(super) fn slice_leases(
         lease,
         SlicedOut {
             sequence: s.sequence,
-            progress,
+            state,
             buffers: bufs,
             heights,
             deferred: SmallVec::new(),
