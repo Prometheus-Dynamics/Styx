@@ -68,7 +68,8 @@ pub struct BeJob {
     /// Output buffer index per output (`None` for an output that is not set up or that the
     /// job's config does not enable).
     pub outputs: [Option<u32>; 2],
-    /// From queueing the config to output 0 (or 1) completing.
+    /// From queueing the config to output 0 (or 1) completing: the hardware's time, from the
+    /// driver's completion timestamp (when the outputs were done, not when Styx took them).
     pub elapsed: Duration,
 }
 
@@ -78,6 +79,8 @@ pub struct BeJob {
 pub struct QueuedJob {
     outputs: [Option<u32>; 2],
     start: Instant,
+    /// `start` on `CLOCK_MONOTONIC`, the clock of the driver's completion timestamps.
+    start_mono: Duration,
     /// The frame's last job (its only one, unless split: [`BackEndStream::process_queued_part`]).
     last: bool,
 }
@@ -421,9 +424,10 @@ impl BackEndStream {
         }
         let queued = self.queue_job(input, picked, bytes.len() as u32);
         match queued {
-            Ok(start) => Ok(QueuedJob {
+            Ok((start, start_mono)) => Ok(QueuedJob {
                 outputs: picked,
                 start,
+                start_mono,
                 last,
             }),
             Err(e) => {
@@ -464,7 +468,12 @@ impl BackEndStream {
         }
     }
 
-    fn queue_job(&self, input: u32, picked: [Option<u32>; 2], cfg_len: u32) -> Result<Instant> {
+    fn queue_job(
+        &self,
+        input: u32,
+        picked: [Option<u32>; 2],
+        cfg_len: u32,
+    ) -> Result<(Instant, Duration)> {
         let fd = self
             .inputs
             .get(input as usize)
@@ -483,10 +492,10 @@ impl BackEndStream {
             data_offset: 0,
         });
         super::profile::time("pispbe-input", "qbuf", || self.input.queue(&q))?;
-        let start = Instant::now();
+        let (start, start_mono) = (Instant::now(), styx_kernel::monotonic_now());
         // The job starts when the config is queued (the driver writes it to the hardware).
         self.config.queue(cfg_len)?;
-        Ok(start)
+        Ok((start, start_mono))
     }
 
     fn wait(&self, job: &QueuedJob, timeout: Duration) -> Result<BeJob> {
@@ -496,7 +505,14 @@ impl BackEndStream {
             let (Some(o), Some(_)) = (o, b) else { continue };
             let done = o.queue.dequeue(timeout)?;
             error |= done.flags.contains(BufferFlags::ERROR);
-            elapsed.get_or_insert(job.start.elapsed());
+            // The driver stamps the outputs when the hardware finishes (`CLOCK_MONOTONIC`); the
+            // time until here also counts whatever this thread did meanwhile (the 3A
+            // algorithms run while the job does).
+            let hw = done
+                .timestamp
+                .checked_sub(job.start_mono)
+                .filter(|_| !done.timestamp.is_zero());
+            elapsed.get_or_insert_with(|| hw.unwrap_or_else(|| job.start.elapsed()));
         }
         // The input and config buffers completed with the outputs.
         let deadline = Instant::now() + timeout;
