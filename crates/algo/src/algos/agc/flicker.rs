@@ -61,7 +61,12 @@ use crate::math::Float as _;
 use crate::stats::Statistics;
 
 mod fit;
-use fit::{Fit, Scratch, depth, fit_samples};
+use fit::{Fit, MAX_HARMONICS, Scratch, Trig, depth, fit_samples, trig};
+
+#[cfg(test)]
+mod compare;
+#[cfg(test)]
+mod reference;
 
 /// Mains frequencies.
 pub const MAINS_HZ: [f64; 2] = [50.0, 60.0];
@@ -116,6 +121,8 @@ struct Sample {
     level: f64,
     /// Time of the frame start, seconds.
     time: f64,
+    /// The frame's trigonometry at the fit's current frequency (see [`FlickerFit::trig_hz`]).
+    trig: Trig,
 }
 
 /// A fitted flicker model.
@@ -199,6 +206,10 @@ pub struct FlickerFit {
     offset: f64,
     harmonics: usize,
     samples: VecDeque<Sample>,
+    /// The fundamental the samples' [`Sample::trig`] are at. A fit at the same frequency as
+    /// the last one reuses them (no trigonometry per frame while the frequency is steady);
+    /// frequency tracking changes it, and then they are recomputed.
+    trig_hz: f64,
     model: Option<FlickerModel>,
     /// The model last dropped, kept for its buffers (a fit that fails and then succeeds again).
     spare: Option<FlickerModel>,
@@ -212,13 +223,16 @@ pub(super) fn sinc(x: f64) -> f64 {
 
 impl FlickerFit {
     /// A fit for light flickering at harmonics `1..=harmonics` of `mains` hertz.
+    ///
+    /// At most [`MAX_HARMONICS`] harmonics are fitted.
     pub fn new(mains: f64, harmonics: usize) -> Self {
-        let harmonics = harmonics.max(1);
+        let harmonics = harmonics.clamp(1, MAX_HARMONICS);
         Self {
             mains,
             offset: 0.0,
             harmonics,
             samples: VecDeque::with_capacity(MAX_SAMPLES + 1),
+            trig_hz: f64::NAN,
             model: None,
             spare: None,
             scratch: Scratch::new(harmonics),
@@ -309,11 +323,14 @@ impl FlickerFit {
         if expected.is_some_and(|(e, limit)| (level / e - 1.0).abs() > limit) {
             self.reset();
         }
+        let hz = self.hz();
+        self.ensure_trig(hz);
         self.samples.push_back(Sample {
             centre,
             exposure,
             level,
             time,
+            trig: trig(hz, centre, exposure),
         });
         while self.samples.len() > MAX_SAMPLES
             || self.samples.front().is_some_and(|f| time - f.time > WINDOW)
@@ -343,8 +360,20 @@ impl FlickerFit {
         }
     }
 
+    /// Makes the samples' trigonometry the one at `hz` (recomputed only when `hz` changed).
+    fn ensure_trig(&mut self, hz: f64) {
+        if self.trig_hz == hz {
+            return;
+        }
+        for x in &mut self.samples {
+            x.trig = trig(hz, x.centre, x.exposure);
+        }
+        self.trig_hz = hz;
+    }
+
     /// The fit of the frames at fundamental `hz` (see [`fit_samples`]).
     fn fit_now(&mut self, hz: f64, only: Option<&[usize]>) -> Option<Fit> {
+        self.ensure_trig(hz);
         let FlickerFit {
             samples,
             harmonics,
