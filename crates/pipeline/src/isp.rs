@@ -158,7 +158,10 @@ impl IspSettings {
             .round()
             .clamp(0.0, full - 1.0);
         let m = self.ccm.map(|v| v.clamp(-3.99, 3.99) as f32);
+        let (denoise, sharpen) = crate::soft::post_stages(&self.denoise, self.sharpen);
         soft::IspParams {
+            denoise,
+            sharpen,
             black_level: Some(soft::BlackLevel::uniform(level as u16)),
             white_balance: Some(soft::WhiteBalance {
                 r: self.wb[0] as f32,
