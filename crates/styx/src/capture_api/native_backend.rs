@@ -94,6 +94,13 @@ pub mod controls {
     pub const AF_RANGE: ControlId = ControlId(0xF400_0026);
     /// AF speed (`Int`): 0 normal, 1 fast.
     pub const AF_SPEED: ControlId = ControlId(0xF400_0027);
+    /// Continuous AF pause (`Int`, write; libcamera's `AfPause`): 0 immediate (the lens holds
+    /// where it is), 1 deferred (the scan in progress finishes, then it holds), 2 resume.
+    /// Continuous mode only; other modes ignore it.
+    pub const AF_PAUSE: ControlId = ControlId(0xF400_0028);
+    /// Continuous AF's pause state (`Int`, read only, libcamera's `AfPauseState`): 0 running,
+    /// 1 pause requested (a deferred pause waits for the scan), 2 paused.
+    pub const AF_PAUSE_STATE: ControlId = ControlId(0xF400_0029);
     /// Processed modes on the PiSP with the main output at the mode's size, or on the software
     /// ISP at a sensor mode's size: deliver this region of the frame at full resolution
     /// (`Rect` in frame pixels, rounded out to even pixels, at least 16x16; zero size: the

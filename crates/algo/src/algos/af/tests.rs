@@ -111,3 +111,196 @@ fn generic_map_spans_the_lens_range() {
     };
     assert_eq!(Af::lens_map(&t, &LensConfig::default()).eval(0.0), 445.0);
 }
+
+/// Contrast of a scene whose focus peak is at `peak` dioptres, `k` times as strong (a
+/// change of `k` is a scene change), read at the lens position `d`.
+fn scene(d: f64, peak: f64, k: f64) -> Statistics {
+    let v = k / (1.0 + ((d - peak) / 1.5).powi(2));
+    stats(v)
+}
+
+const PEAK: f64 = 5.0;
+
+/// One frame: the contrast of the scene at the lens position AF last commanded.
+fn step(af: &mut Af, p: &mut Params, frame: &mut u64, c: &Controls, k: f64) {
+    let d = p.af.lens_position.unwrap_or(1.0);
+    af.process(&scene(d, PEAK, k), &meta(*frame, c), p);
+    *frame += 1;
+}
+
+fn continuous() -> Controls {
+    Controls {
+        af_mode: AfMode::Continuous,
+        ..Controls::default()
+    }
+}
+
+fn started() -> (Af, Params, u64) {
+    let mut af = Af::new(AfTuning::default()).unwrap();
+    af.prepare(&config()).unwrap();
+    (af, Params::default(), 0)
+}
+
+/// Runs continuous AF on the scene until a scan has focused on the peak and stopped.
+fn focus_on_peak(af: &mut Af, p: &mut Params, frame: &mut u64) {
+    let c = continuous();
+    for _ in 0..400 {
+        step(af, p, frame, &c, 1.0);
+        if p.af.state == AfState::Focused {
+            break;
+        }
+    }
+    assert_eq!(p.af.state, AfState::Focused);
+    assert!((p.af.lens_position.unwrap() - PEAK).abs() < 0.5);
+}
+
+#[test]
+fn an_immediate_pause_holds_the_lens_and_suppresses_retriggers() {
+    let (mut af, mut p, mut f) = started();
+    focus_on_peak(&mut af, &mut p, &mut f);
+    let held = p.af.lens_position;
+    let held_code = p.lens.unwrap().position;
+    let mut c = continuous();
+    c.af_pause = Some(AfPause::Immediate);
+    step(&mut af, &mut p, &mut f, &c, 2.0);
+    assert_eq!(p.af.pause, AfPauseState::Paused);
+    // The scene is now twice as strong: unpaused, continuous AF would scan again (see the
+    // next test). Paused, it holds.
+    c.af_pause = None;
+    for _ in 0..80 {
+        step(&mut af, &mut p, &mut f, &c, 2.0);
+        assert_eq!(p.af.pause, AfPauseState::Paused);
+        assert_ne!(p.af.state, AfState::Scanning);
+        assert_eq!(p.af.lens_position, held);
+        assert_eq!(p.lens.unwrap().position, held_code);
+    }
+}
+
+#[test]
+fn without_a_pause_the_same_scene_change_retriggers_a_scan() {
+    let (mut af, mut p, mut f) = started();
+    focus_on_peak(&mut af, &mut p, &mut f);
+    let c = continuous();
+    let mut scanned = false;
+    for _ in 0..80 {
+        step(&mut af, &mut p, &mut f, &c, 2.0);
+        scanned |= p.af.state == AfState::Scanning;
+    }
+    assert!(scanned);
+}
+
+#[test]
+fn an_immediate_pause_abandons_a_running_scan() {
+    let (mut af, mut p, mut f) = started();
+    let c = continuous();
+    while p.af.state != AfState::Scanning {
+        step(&mut af, &mut p, &mut f, &c, 1.0);
+    }
+    for _ in 0..3 {
+        step(&mut af, &mut p, &mut f, &c, 1.0);
+    }
+    let mut c2 = c.clone();
+    c2.af_pause = Some(AfPause::Immediate);
+    step(&mut af, &mut p, &mut f, &c2, 1.0);
+    assert_eq!(p.af.pause, AfPauseState::Paused);
+    assert_eq!(p.af.state, AfState::Idle);
+    let held = p.af.lens_position;
+    c2.af_pause = None;
+    for _ in 0..40 {
+        step(&mut af, &mut p, &mut f, &c2, 1.0);
+        assert_eq!(p.af.lens_position, held);
+        assert_eq!(p.af.state, AfState::Idle);
+    }
+}
+
+#[test]
+fn a_deferred_pause_completes_the_running_scan_first() {
+    let (mut af, mut p, mut f) = started();
+    let c = continuous();
+    focus_on_peak(&mut af, &mut p, &mut f);
+    // A scene change starts a scan.
+    while p.af.state != AfState::Scanning {
+        step(&mut af, &mut p, &mut f, &c, 2.0);
+    }
+    let mut c2 = c.clone();
+    c2.af_pause = Some(AfPause::Deferred);
+    step(&mut af, &mut p, &mut f, &c2, 2.0);
+    // The scan is still running: the pause waits for it.
+    assert_eq!(p.af.pause, AfPauseState::PauseRequested);
+    assert_eq!(p.af.state, AfState::Scanning);
+    c2.af_pause = None;
+    let mut frames = 0;
+    while p.af.pause != AfPauseState::Paused {
+        step(&mut af, &mut p, &mut f, &c2, 2.0);
+        frames += 1;
+        assert!(frames < 400, "the scan never finished");
+    }
+    // It finished on the peak, and holds there.
+    assert_eq!(p.af.state, AfState::Focused);
+    assert!((p.af.lens_position.unwrap() - PEAK).abs() < 0.5);
+    let held = p.af.lens_position;
+    for _ in 0..40 {
+        step(&mut af, &mut p, &mut f, &c2, 2.0);
+        assert_eq!(p.af.lens_position, held);
+        assert_ne!(p.af.state, AfState::Scanning);
+    }
+}
+
+#[test]
+fn resume_continues_continuous_af() {
+    let (mut af, mut p, mut f) = started();
+    focus_on_peak(&mut af, &mut p, &mut f);
+    let mut c = continuous();
+    c.af_pause = Some(AfPause::Immediate);
+    step(&mut af, &mut p, &mut f, &c, 2.0);
+    assert_eq!(p.af.pause, AfPauseState::Paused);
+    c.af_pause = Some(AfPause::Resume);
+    step(&mut af, &mut p, &mut f, &c, 2.0);
+    assert_eq!(p.af.pause, AfPauseState::Running);
+    // The scene (now twice as strong) is scanned again, and the lens finds the peak.
+    let mut scanned = false;
+    for _ in 0..400 {
+        step(&mut af, &mut p, &mut f, &c, 2.0);
+        scanned |= p.af.state == AfState::Scanning;
+        if scanned && p.af.state == AfState::Focused {
+            break;
+        }
+    }
+    assert!(scanned);
+    assert_eq!(p.af.state, AfState::Focused);
+    assert!((p.af.lens_position.unwrap() - PEAK).abs() < 0.5);
+}
+
+#[test]
+fn pause_has_no_effect_in_auto_or_manual_modes() {
+    // Auto: a triggered scan still runs and focuses while a pause is requested.
+    let (mut af, mut p, mut f) = started();
+    let mut c = Controls {
+        af_mode: AfMode::Auto,
+        af_pause: Some(AfPause::Immediate),
+        af_trigger: 1,
+        ..Controls::default()
+    };
+    for _ in 0..400 {
+        step(&mut af, &mut p, &mut f, &c, 1.0);
+        assert_eq!(p.af.pause, AfPauseState::Running);
+        if p.af.state == AfState::Focused {
+            break;
+        }
+    }
+    assert_eq!(p.af.state, AfState::Focused);
+    assert!((p.af.lens_position.unwrap() - PEAK).abs() < 0.5);
+
+    // Manual: the lens position control still moves the lens.
+    let (mut af, mut p, mut f) = started();
+    c = Controls {
+        af_pause: Some(AfPause::Deferred),
+        lens_position: Some(3.0),
+        ..Controls::default()
+    };
+    for _ in 0..4 {
+        step(&mut af, &mut p, &mut f, &c, 1.0);
+        assert_eq!(p.af.pause, AfPauseState::Running);
+    }
+    assert_eq!(p.af.lens_position, Some(3.0));
+}

@@ -9,7 +9,9 @@ use parking_lot::Mutex;
 use styx_capture::prelude::{
     Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlRect, ControlValue,
 };
-use styx_pipeline::styx_algo::{AfMode, AfRange, AfSpeed, AfState, AfWindow, Controls, Params};
+use styx_pipeline::styx_algo::{
+    AfMode, AfPause, AfPauseState, AfRange, AfSpeed, AfState, AfWindow, Controls, Params,
+};
 
 use super::super::native_backend::controls as ids;
 use super::super::request::CaptureError;
@@ -26,6 +28,8 @@ pub(crate) struct AfReport {
     metering_windows: Mutex<bool>,
     /// The camera has a focus lens (else the AF controls are not supported).
     lens: AtomicBool,
+    /// Continuous AF's pause state (0 running, 1 pause requested, 2 paused).
+    pause_state: AtomicI32,
 }
 
 impl Default for AfReport {
@@ -37,6 +41,7 @@ impl Default for AfReport {
             windows: Mutex::new(Vec::new()),
             metering_windows: Mutex::new(false),
             lens: AtomicBool::new(false),
+            pause_state: AtomicI32::new(0),
         }
     }
 }
@@ -64,6 +69,8 @@ pub(crate) fn is_af(id: ControlId) -> bool {
         ids::AF_METERING,
         ids::AF_RANGE,
         ids::AF_SPEED,
+        ids::AF_PAUSE,
+        ids::AF_PAUSE_STATE,
     ]
     .contains(&id)
 }
@@ -176,7 +183,15 @@ pub(crate) fn apply(
             }
             *r.windows.lock() = rects;
         }
-        ids::AF_STATE => return bad("AF state is read only"),
+        ids::AF_PAUSE => {
+            c.af_pause = match int(value) {
+                Some(0) => Some(AfPause::Immediate),
+                Some(1) => Some(AfPause::Deferred),
+                Some(2) => Some(AfPause::Resume),
+                _ => return bad("AF pause: 0 immediate, 1 deferred, 2 resume"),
+            }
+        }
+        ids::AF_STATE | ids::AF_PAUSE_STATE => return bad("AF state is read only"),
         _ => return None,
     }
     Some(Ok(()))
@@ -194,6 +209,13 @@ pub(crate) fn read(r: &AfReport, id: ControlId, c: &Controls) -> Option<ControlV
             AfMode::Continuous => 2,
         }),
         ids::AF_STATE => ControlValue::Int(r.state.load(Ordering::Acquire)),
+        ids::AF_PAUSE_STATE => ControlValue::Int(r.pause_state.load(Ordering::Acquire)),
+        // The last request in effect (2, resume, when none was made).
+        ids::AF_PAUSE => ControlValue::Int(match c.af_pause {
+            Some(AfPause::Immediate) => 0,
+            Some(AfPause::Deferred) => 1,
+            Some(AfPause::Resume) | None => 2,
+        }),
         ids::AF_RANGE => ControlValue::Int(c.af_range as i32),
         ids::AF_SPEED => ControlValue::Int(c.af_speed as i32),
         ids::AF_METERING => ControlValue::Int(i32::from(*r.metering_windows.lock())),
@@ -219,6 +241,12 @@ pub(crate) fn report(r: &AfReport, params: &Params) {
         AfState::Failed => 3,
     };
     r.state.store(state, Ordering::Release);
+    let pause = match params.af.pause {
+        AfPauseState::Running => 0,
+        AfPauseState::PauseRequested => 1,
+        AfPauseState::Paused => 2,
+    };
+    r.pause_state.store(pause, Ordering::Release);
     if let Some(p) = params.af.lens_position {
         r.lens_position
             .store((p as f32).to_bits(), Ordering::Release);
@@ -251,6 +279,11 @@ pub(crate) fn metas(limits: (f64, f64)) -> Vec<ControlMeta> {
         int(ids::AF_TRIGGER, "af_trigger", 1, 0),
         int(ids::AF_RANGE, "af_range", 2, 0),
         int(ids::AF_SPEED, "af_speed", 1, 0),
+        int(ids::AF_PAUSE, "af_pause", 2, 2),
+        ControlMeta {
+            access: Access::ReadOnly,
+            ..int(ids::AF_PAUSE_STATE, "af_pause_state", 2, 0)
+        },
         int(ids::AF_METERING, "af_metering", 1, 0),
         ControlMeta {
             access: Access::ReadOnly,
@@ -353,6 +386,26 @@ mod tests {
             Some(ControlValue::Float(2.25))
         );
         assert_eq!(read(&r, ids::AF_MODE, &c), Some(ControlValue::Int(1)));
-        assert_eq!(metas((0.0, 15.0)).len(), 8);
+        // Pause: a request is applied as libcamera's AfPause; the state comes back per frame.
+        ok(apply(&r, ids::AF_PAUSE, &ControlValue::Int(1), &mut c));
+        assert_eq!(c.af_pause, Some(AfPause::Deferred));
+        assert_eq!(read(&r, ids::AF_PAUSE, &c), Some(ControlValue::Int(1)));
+        assert!(
+            apply(&r, ids::AF_PAUSE, &ControlValue::Int(3), &mut c)
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            apply(&r, ids::AF_PAUSE_STATE, &ControlValue::Int(0), &mut c)
+                .unwrap()
+                .is_err()
+        );
+        p.af.pause = AfPauseState::Paused;
+        report(&r, &p);
+        assert_eq!(
+            read(&r, ids::AF_PAUSE_STATE, &c),
+            Some(ControlValue::Int(2))
+        );
+        assert_eq!(metas((0.0, 15.0)).len(), 10);
     }
 }
