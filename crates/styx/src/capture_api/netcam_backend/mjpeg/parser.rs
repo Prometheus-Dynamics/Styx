@@ -162,20 +162,19 @@ impl<'a> BoundaryBodyReader<'a> {
             };
         }
 
+        // The pending bytes and the chunk are searched and copied in place (each payload byte is
+        // copied once, into `buf`); only the boundary's own bytes are carried over.
         let pending_len = self.pending.len();
-        let mut combined = Vec::with_capacity(pending_len + data.len());
-        combined.extend_from_slice(&self.pending);
-        combined.extend_from_slice(data);
+        let total = pending_len + data.len();
 
-        if let Some(boundary_idx) = find_subslice(&combined, self.boundary) {
+        if let Some(boundary_idx) = find_boundary(&self.pending, data, self.boundary) {
             let after_boundary = boundary_idx.saturating_add(self.boundary.len());
-            if after_boundary >= combined.len()
-                || (combined.get(after_boundary) == Some(&b'\r')
-                    && after_boundary + 1 >= combined.len())
-            {
-                buf.extend_from_slice(&combined[..boundary_idx]);
-                self.pending.clear();
-                self.pending.extend_from_slice(&combined[boundary_idx..]);
+            let incomplete = after_boundary >= total
+                || (joined_at(&self.pending, data, after_boundary) == Some(b'\r')
+                    && after_boundary + 1 >= total);
+            append_joined(buf, &self.pending, data, boundary_idx);
+            if incomplete {
+                retain_from(&mut self.pending, data, boundary_idx);
                 crate::trace::trace!(
                     backend = "netcam",
                     stream = "mjpeg",
@@ -187,14 +186,9 @@ impl<'a> BoundaryBodyReader<'a> {
                 );
                 return (data.len(), BoundaryRead::Continue);
             }
-            buf.extend_from_slice(&combined[..boundary_idx]);
+            let consume =
+                consumed_data_for_boundary(&self.pending, data, boundary_idx, self.boundary.len());
             self.pending.clear();
-            let consume = consumed_data_for_boundary(
-                &combined,
-                pending_len,
-                boundary_idx,
-                self.boundary.len(),
-            );
             crate::trace::trace!(
                 backend = "netcam",
                 stream = "mjpeg",
@@ -208,12 +202,56 @@ impl<'a> BoundaryBodyReader<'a> {
             return (consume, BoundaryRead::HitBoundary);
         }
 
-        let keep = self.boundary.len().saturating_sub(1).min(combined.len());
-        let emit_len = combined.len().saturating_sub(keep);
-        buf.extend_from_slice(&combined[..emit_len]);
-        self.pending.clear();
-        self.pending.extend_from_slice(&combined[emit_len..]);
+        let keep = self.boundary.len().saturating_sub(1).min(total);
+        let emit_len = total - keep;
+        append_joined(buf, &self.pending, data, emit_len);
+        retain_from(&mut self.pending, data, emit_len);
         (data.len(), BoundaryRead::Continue)
+    }
+}
+
+/// The index (in `pending` then `data`, as one run of bytes) of the first boundary: one that
+/// starts in `pending` (it may run on into `data`), else one in `data`.
+fn find_boundary(pending: &[u8], data: &[u8], boundary: &[u8]) -> Option<usize> {
+    let p = pending.len();
+    for start in 0..p {
+        let head = (p - start).min(boundary.len());
+        let rest = boundary.len() - head;
+        if pending[start..start + head] == boundary[..head]
+            && data.len() >= rest
+            && data[..rest] == boundary[head..]
+        {
+            return Some(start);
+        }
+    }
+    find_subslice(data, boundary).map(|i| p + i)
+}
+
+/// The byte at `index` of `pending` then `data`, as one run of bytes.
+fn joined_at(pending: &[u8], data: &[u8], index: usize) -> Option<u8> {
+    if index < pending.len() {
+        pending.get(index).copied()
+    } else {
+        data.get(index - pending.len()).copied()
+    }
+}
+
+/// Appends the first `end` bytes of `pending` then `data` to `buf`.
+fn append_joined(buf: &mut Vec<u8>, pending: &[u8], data: &[u8], end: usize) {
+    let head = end.min(pending.len());
+    buf.extend_from_slice(&pending[..head]);
+    buf.extend_from_slice(&data[..end - head]);
+}
+
+/// Replaces `pending` with the bytes of `pending` then `data` from `start` on.
+fn retain_from(pending: &mut Vec<u8>, data: &[u8], start: usize) {
+    let p = pending.len();
+    if start < p {
+        pending.drain(..start);
+        pending.extend_from_slice(data);
+    } else {
+        pending.clear();
+        pending.extend_from_slice(&data[start - p..]);
     }
 }
 
@@ -278,24 +316,26 @@ impl MjpegContentLength {
     }
 }
 
+/// How many bytes of `data` the boundary at `boundary_idx` (in `pending` then `data`) uses up,
+/// its line break included.
 fn consumed_data_for_boundary(
-    combined: &[u8],
-    pending_len: usize,
+    pending: &[u8],
+    data: &[u8],
     boundary_idx: usize,
     boundary_len: usize,
 ) -> usize {
-    let mut consumed = boundary_idx
-        .saturating_add(boundary_len)
-        .saturating_sub(pending_len);
     let after_boundary = boundary_idx.saturating_add(boundary_len);
-    if combined.get(after_boundary) == Some(&b'\r')
-        && combined.get(after_boundary + 1) == Some(&b'\n')
-    {
-        consumed = consumed.saturating_add(2);
-    } else if combined.get(after_boundary) == Some(&b'\n') {
-        consumed = consumed.saturating_add(1);
-    }
-    consumed.min(combined.len().saturating_sub(pending_len))
+    let at = |index| joined_at(pending, data, index);
+    // The end of the line break, in the joined bytes: a `\r` carried over in `pending` (its
+    // `\n` arriving with this chunk) is not counted again.
+    let end = if at(after_boundary) == Some(b'\r') && at(after_boundary + 1) == Some(b'\n') {
+        after_boundary + 2
+    } else if at(after_boundary) == Some(b'\n') {
+        after_boundary + 1
+    } else {
+        after_boundary
+    };
+    end.saturating_sub(pending.len()).min(data.len())
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -405,6 +445,74 @@ mod tests {
                 assert!(buf.len() <= fed, "emitted more than was fed");
             }
             let _ = body.append_chunk(&[], &mut buf);
+        }
+    }
+
+    /// The frames of a multipart stream fed in chunks of `chunk` bytes (each part's body as the
+    /// parser's caller sees it: the bytes up to the next boundary).
+    fn frames_in_chunks(stream: &[u8], chunk: usize) -> Vec<Vec<u8>> {
+        let parser = MjpegMultipartParser::new("--frame", 1 << 20);
+        let mut body = parser.body_reader();
+        let mut buf = Vec::new();
+        let mut frames = Vec::new();
+        for piece in stream.chunks(chunk) {
+            let mut rest = piece;
+            while !rest.is_empty() {
+                let (take, outcome) = body.append_chunk(rest, &mut buf);
+                assert!(take <= rest.len());
+                rest = &rest[take..];
+                match outcome {
+                    BoundaryRead::HitBoundary => {
+                        frames.push(std::mem::take(&mut buf));
+                        body = parser.body_reader();
+                    }
+                    BoundaryRead::Continue => {}
+                    BoundaryRead::End => break,
+                }
+            }
+        }
+        frames
+    }
+
+    /// A multipart stream whose parts hold `payloads` (with boundary-like bytes in them), and the
+    /// frames it must yield: each payload, with the line break that precedes the boundary.
+    fn multipart_stream(payloads: &[Vec<u8>]) -> (Vec<u8>, Vec<Vec<u8>>) {
+        let mut stream = Vec::new();
+        let mut frames = Vec::new();
+        for payload in payloads {
+            stream.extend_from_slice(payload);
+            stream.extend_from_slice(b"\r\n--frame\r\n");
+            let mut frame = payload.clone();
+            frame.extend_from_slice(b"\r\n");
+            frames.push(frame);
+        }
+        (stream, frames)
+    }
+
+    #[test]
+    fn multipart_frames_are_identical_in_odd_chunk_sizes() {
+        let mut seed = 0x6a70_6567u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let payloads: Vec<Vec<u8>> = (0..12)
+            .map(|i| {
+                let mut p: Vec<u8> = (0..(next() % 900 + 1)).map(|_| next() as u8).collect();
+                // Boundary-like bytes, including a prefix at the end of a payload.
+                p.extend_from_slice(if i % 2 == 0 { b"--fram" } else { b"--fra-x\r" });
+                p
+            })
+            .collect();
+        let (stream, expected) = multipart_stream(&payloads);
+        for chunk in [1, 7, 4096, stream.len()] {
+            assert_eq!(
+                frames_in_chunks(&stream, chunk),
+                expected,
+                "chunk size {chunk}"
+            );
         }
     }
 }

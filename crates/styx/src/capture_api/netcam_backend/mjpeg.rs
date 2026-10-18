@@ -548,7 +548,7 @@ where
         start,
         clock,
         frame_idx,
-        stream: _,
+        stream,
         send_timeout: _,
         max_jpeg_bytes,
         retry_metrics: _,
@@ -565,10 +565,21 @@ where
         );
         return None;
     }
-    let res = Resolution::new(width, height)
+    // Neither the stream's size nor the frame's header gives one: the frame is skipped (not
+    // delivered as a made-up size); the first one says so.
+    let Some(res) = Resolution::new(width, height)
         .or_else(|| jpeg_dimensions(buf).and_then(|(w, h)| Resolution::new(w, h)))
-        .or_else(|| Resolution::new(1, 1))
-        .unwrap();
+    else {
+        if !UNKNOWN_SIZE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            crate::trace::warn!(
+                backend = "netcam",
+                stream,
+                parser_event = "unknown_frame_size",
+                "dropping mjpeg frames whose size is unknown (no configured size, no JPEG header)"
+            );
+        }
+        return None;
+    };
     let layout = PlaneLayout {
         offset: 0,
         len: buf.len(),
@@ -585,12 +596,16 @@ where
         from: FrameResidency::CompressedPacket,
         to: FrameResidency::CompressedPacket,
         reason: ResidencyTransitionReason::NetcamIngress,
-        copied: false,
+        // The bytes are copied into the frame's buffer (counted by `frame_from_jpeg`).
+        copied: true,
     });
     let frame = pool.frame_from_jpeg(meta, layout, buf)?;
     *frame_idx = frame_idx.saturating_add(1);
     Some(frame)
 }
+
+/// Set once a frame was dropped for its unknown size (the warning is said once).
+static UNKNOWN_SIZE_WARNED: AtomicBool = AtomicBool::new(false);
 
 trait MjpegFramePool {
     fn frame_from_jpeg(
@@ -605,13 +620,18 @@ trait MjpegFramePool {
 impl MjpegFramePool for SharedBufferPool {
     fn frame_from_jpeg(
         &self,
-        meta: FrameMeta,
+        mut meta: FrameMeta,
         layout: PlaneLayout,
         buf: &[u8],
     ) -> Option<FrameLease> {
         let mut lease = self.lease().ok()?;
         lease.try_resize(buf.len()).ok()?;
         lease.as_mut_slice().copy_from_slice(buf);
+        styx_core::metrics::copied_frame(
+            &mut meta,
+            styx_core::metrics::CopySite::Capture,
+            buf.len(),
+        );
         FrameLease::single_plane_shared(meta, lease, layout.len, layout.stride).ok()
     }
 }
@@ -674,107 +694,24 @@ fn jpeg_dimensions(buf: &[u8]) -> Option<(u32, u32)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct TestPool;
-
-    impl MjpegFramePool for TestPool {
-        fn frame_from_jpeg(
-            &self,
-            meta: FrameMeta,
-            layout: PlaneLayout,
-            buf: &[u8],
-        ) -> Option<FrameLease> {
-            let pool = BufferPool::with_limits(1, layout.len.max(1), 1);
-            let mut lease = pool.lease();
-            lease.resize(layout.len);
-            lease.as_mut_slice().copy_from_slice(buf);
-            Some(FrameLease::single_plane(
-                meta,
-                lease,
-                layout.len,
-                layout.stride,
-            ))
-        }
-    }
-
-    #[test]
-    fn build_mjpeg_frame_respects_configured_size_limit() {
-        let mut frame_idx = 0;
-        let start = Instant::now();
-        let under_limit = build_mjpeg_frame(
-            &TestPool,
-            &[0xff, 0xd8, 0xff],
-            MjpegFrameEmit {
-                width: 1,
-                height: 1,
-                start: &start,
-                clock: ClockSource::Native,
-                frame_idx: &mut frame_idx,
-                stream: "test",
-                send_timeout: Duration::from_millis(1),
-                max_jpeg_bytes: 4,
-                retry_metrics: Default::default(),
-            },
-        );
-        assert!(under_limit.is_some());
-        assert_eq!(frame_idx, 1);
-
-        let oversized = build_mjpeg_frame(
-            &TestPool,
-            &[0xff, 0xd8, 0xff, 0x00],
-            MjpegFrameEmit {
-                width: 1,
-                height: 1,
-                start: &start,
-                clock: ClockSource::Native,
-                frame_idx: &mut frame_idx,
-                stream: "test",
-                send_timeout: Duration::from_millis(1),
-                max_jpeg_bytes: 4,
-                retry_metrics: Default::default(),
-            },
-        );
-        assert!(oversized.is_none());
-        assert_eq!(frame_idx, 1);
-    }
-
-    #[test]
-    fn mjpeg_packet_pool_uses_compressed_packet_sizing() {
-        assert_eq!(mjpeg_packet_pool_bytes(640, 480, 32 << 20), 230_400);
-        assert_eq!(
-            mjpeg_packet_pool_bytes(1280, 800, 32 << 20),
-            crate::frame_sizing::MAX_COMPRESSED_PACKET_POOL_BYTES
-        );
-        assert_eq!(mjpeg_packet_pool_bytes(1280, 800, 128 * 1024), 128 * 1024);
-    }
-
-    #[test]
-    fn mjpeg_packet_pool_limits_do_not_use_raw_rgb_or_generic_pool_bytes() {
-        let limits = mjpeg_packet_pool_limits(Default::default(), 1280, 800, 32 << 20);
-        assert_eq!(limits.min, 4);
-        assert_eq!(
-            limits.bytes,
-            crate::frame_sizing::MAX_COMPRESSED_PACKET_POOL_BYTES
-        );
-        assert_eq!(limits.spare, 8);
-        assert!(limits.bytes < 1280 * 800 * 3);
-        assert!(limits.bytes < crate::capture_api::DEFAULT_POOL_BYTES);
-    }
-}
+mod tests;
 
 #[cfg(not(target_os = "linux"))]
 impl MjpegFramePool for BufferPool {
     fn frame_from_jpeg(
         &self,
-        meta: FrameMeta,
+        mut meta: FrameMeta,
         layout: PlaneLayout,
         buf: &[u8],
     ) -> Option<FrameLease> {
         let mut lease = self.lease();
         lease.resize(buf.len());
         lease.as_mut_slice().copy_from_slice(buf);
+        styx_core::metrics::copied_frame(
+            &mut meta,
+            styx_core::metrics::CopySite::Capture,
+            buf.len(),
+        );
         Some(FrameLease::single_plane(
             meta,
             lease,
