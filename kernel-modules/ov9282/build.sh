@@ -9,8 +9,8 @@
 #   ./build.sh build    ov9282.ko into $OUT (default <scratch>/styx-ov9282/<release>)
 #   ./build.sh verify   vermagic, and with DEVICE=root@host the .gnu.linkonce.this_module
 #                       size against the device's own ov9282.ko (read-only over ssh)
-#   ./build.sh diff     the Styx patch against the Raze image's driver (git history has the
-#                       stock import and the Raze patches as their own commits)
+#   ./build.sh diff     the Styx patch against the CM5 image's driver (git history has the
+#                       stock import and the image patches as their own commits)
 #   ./build.sh all      build + verify
 #
 # KERNEL_TREE  required: the device image's Buildroot linux-custom (a built tree);
@@ -71,8 +71,9 @@ case "${1:-all}" in
 build) build ;;
 verify) verify ;;
 diff)
-    raze="$(git -C "$here" log -1 --format=%h --grep="Raze image's OV9782 patches" -- ov9282.c)"
-    git -C "$here" diff "$raze" -- ov9282.c ;;
+    # the grep matches the subject of the historical commit that added the image patches
+    base="$(git -C "$here" log -1 --format=%h --grep="Raze image's OV9782 patches" -- ov9282.c)"
+    git -C "$here" diff "$base" -- ov9282.c ;;
 all) build; verify ;;
 *) die "unknown command $1 (build|verify|diff|all)" ;;
 esac

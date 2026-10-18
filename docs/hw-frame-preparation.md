@@ -9,8 +9,8 @@ Goal: frames should reach Eidos already in the shape it wants: Y8, stride-aligne
 **Evidence labels used throughout**
 
 - **[M]** Measured on the x86 dev host (details in [Measurements](#measurements)).
-- **[M-CM5]** Measured on the `helios` CM5 (Cortex-A76 @ 2.4 GHz, OV9782 CSI sensor, libcamera
-  0.6.0+rpt, kernel 6.12.47), see [On-device measurements](#on-device-measurements-helios-cm5).
+- **[M-CM5]** Measured on the CM5 dev board (Cortex-A76 @ 2.4 GHz, OV9782 CSI sensor, libcamera
+  0.6.0+rpt, kernel 6.12.47), see [On-device measurements](#on-device-measurements-cm5).
 - **[C]** Read from the Styx source (file references given).
 - **[D]** From vendor docs or general platform knowledge. Not verified on hardware here. Items
   marked *verify* are the ones I'm least sure about and should be checked on the device first.
@@ -28,7 +28,7 @@ CPU. See [frame-planning.md](frame-planning.md#region-of-interest).
 
 ## Implemented (2026-09-26)
 
-All numbers below were measured on `helios` (CM5, OV9782 1280×800, libcamera 0.6) through the
+All numbers below were measured on the CM5 dev board (OV9782 1280×800, libcamera 0.6) through the
 real Styx `CaptureRequest` / `Codec` APIs.
 
 | Change | Where | Result on CM5 |
@@ -71,7 +71,7 @@ sampling do.
   `STYX_LIBCAMERA_STOP_WHEN_IDLE`/`stop_when_idle` is off, which is the default. This was not
   changed here.
 
-**Second round (2026-09-26), also verified on `helios`:**
+**Second round (2026-09-26), also verified on the CM5 dev board:**
 
 | Change | Result |
 |---|---|
@@ -82,7 +82,7 @@ sampling do.
 | libcamera manager stopped at exit | 0 orphaned IPA helpers after exit (was 1 per process) |
 | NV12/I420 on single-planar V4L2 | Unit-tested; no NV12 UVC camera on hand |
 
-**Regions of interest (2026-10-04), verified on `helios`** (details in
+**Regions of interest (2026-10-04), verified on the CM5 dev board** (details in
 [frame-planning.md](frame-planning.md#region-of-interest)):
 
 | Change | Result |
@@ -204,7 +204,7 @@ Hardware [D]:
 - **No hardware JPEG or H.264 decode.** Pi 5 only has an HEVC decoder (stateless V4L2, `rpi-hevc-dec`).
   USB MJPEG on a Pi 5 is therefore always a CPU decode.
 
-Your questions, answered on `helios` [M-CM5] unless marked:
+Your questions, answered on the CM5 dev board [M-CM5] unless marked:
 
 - **Y8 or grayscale stream?**
   - No direct Y8 from the ISP for a colour sensor. Requesting `R8` validates as *Adjusted* to
@@ -385,7 +385,7 @@ Effort: S ≈ ≤3 days, M ≈ 1–2 weeks, L ≈ 3+ weeks (including on-device 
 
 ## 4. Ranked plan
 
-0. **Cached, synced libcamera buffers (S–M, Pi 5 CSI, and HeliOS today).**
+0. **Cached, synced libcamera buffers (S–M, Pi 5 CSI, and the CM5 image today).**
    - Why first: every CSI frame Eidos sees on the CM5 today is in uncached memory, where scalar
      per-pixel reads are ~15× slower than heap memory [M-CM5]. Eidos' 1 ms figure only holds if its
      input is cached.
@@ -411,7 +411,7 @@ Effort: S ≈ ≤3 days, M ≈ 1–2 weeks, L ≈ 3+ weeks (including on-device 
    - Propagate the libcamera sequence number.
 3. **libcamera dual-stream pyramid + Y-plane view + ScalerCrop (M, Pi 5 CSI).**
    - This makes Pi CSI cameras effectively free: zero decode, zero-copy Y8, and a hardware ½ or ¼
-     image with the same timestamp. All of this is confirmed on `helios`.
+     image with the same timestamp. All of this is confirmed on the CM5 dev board.
    - It reuses the TDN two-stream code and needs the `FrameLease` companion API (Section 5).
 4. **RK3588 MPP MJPEG decode via `ffmpeg-rockchip` + RGA pyramid (M).**
    - Weakest-CPU-to-best-hardware ratio among the ARM targets, and it reuses Styx's DRM PRIME code.
@@ -636,16 +636,16 @@ For 4:2:2 input, the surface download is followed by a CPU swscale conversion, w
 A Styx implementation that maps the Y plane directly would sit near the GPU-only column plus a
 ~1 MB (720p) or ~2 MB (1080p) read of the Y plane.
 
-## On-device measurements (helios CM5)
+## On-device measurements (CM5)
 
 **Device:** Raspberry Pi CM5, 4× Cortex-A76 @ 2.4 GHz (`performance` governor, 38–44 °C), 2 GB,
-HeliOS v2026.2.0 (Buildroot, glibc 2.41), kernel 6.12.47-v8-16k, libcamera 0.6.0+rpt20251202,
+CM5 image v2026.2.0 (Buildroot, glibc 2.41), kernel 6.12.47-v8-16k, libcamera 0.6.0+rpt20251202,
 libturbojpeg 3.1.0. Sensor: OV9782 (1280×800 colour global shutter) on CSI.
 
 **Setup:**
 - `<camera service>` was stopped during the camera tests and restarted afterwards (confirmed
   active, camera re-acquired).
-- Binaries were cross-compiled with the HeliOS Buildroot toolchain and run from `/tmp/styx-probe`.
+- Binaries were cross-compiled with the image's Buildroot toolchain and run from `/tmp/styx-probe`.
 - There was no USB MJPEG camera. For "real" frames, 30 OV9782 NV12 frames were captured on the
   device and MJPEG-encoded with FFmpeg (4:2:2 and 4:2:0, q3/q6: 43–73 KiB/frame).
 

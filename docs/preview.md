@@ -1,7 +1,7 @@
 # Camera previews for user interfaces
 
 `styx::preview` (feature `preview`, Linux) makes a low-latency preview of a camera for a user
-interface (HeliOS's API: one per camera): small JPEG frames at a capped rate, served as MJPEG
+interface (a downstream service's API: one per camera): small JPEG frames at a capped rate, served as MJPEG
 over HTTP or as WebSocket messages, with **no effect on the camera's real consumer** (a vision
 pipeline): its format, size, frame rate, latency and capture stay as they are, the preview
 never restarts the capture or takes its frames, its CPU is bounded and it drops preview frames
@@ -193,7 +193,7 @@ ws.onmessage = (e) => {
 };
 ```
 
-### HeliOS integration (axum)
+### Downstream integration (axum)
 
 ```rust
 use axum::{body::Body, extract::{Path, State, ws::{Message, WebSocketUpgrade}},
@@ -252,7 +252,7 @@ the preview thread, subscribers ([metrics.md](metrics.md#previews)).
 
 ## CM5 measurement plan
 
-On helios (CM5, OV9782 on the native stack and through libcamera), release builds:
+On the CM5 dev board (OV9782 on the native stack and through libcamera), release builds:
 
 1. **Encoder cost:** `preview_encode_bench --frames 300` (`--features preview,image`, and
    `--features preview-only,codec-mozjpeg` for mozjpeg, which does not link next to

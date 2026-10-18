@@ -475,7 +475,7 @@ pub(crate) mod tests {
     /// What the device's `ov9282` kernel driver reported for the OV9782 (read with
     /// `VIDIOC_QUERY_EXT_CTRL` / `VIDIOC_SUBDEV_ENUM_*`). The current VBLANK value was not read;
     /// 2850 is implied by the exposure maximum 3638 with the driver's 12-line margin.
-    pub(crate) fn helios_ov9782() -> SubdevReport {
+    pub(crate) fn cm5_ov9782() -> SubdevReport {
         let sizes = vec![Size::new(1280, 800)];
         SubdevReport {
             name: "ov9782 10-0060".into(),
@@ -515,7 +515,7 @@ pub(crate) mod tests {
 
     #[test]
     fn description_from_the_devices_report() {
-        let d = SensorDescription::from_subdev(&helios_ov9782()).unwrap();
+        let d = SensorDescription::from_subdev(&cm5_ov9782()).unwrap();
         assert_eq!(d.sensor.name, "ov9782");
         assert_eq!(d.sensor.backend, Backend::Kernel);
         assert_eq!(d.pixel_array.color_filter, crate::ColorFilter::Bggr);
@@ -536,7 +536,7 @@ pub(crate) mod tests {
 
     #[test]
     fn data_files_and_flips_complete_the_description() {
-        let mut r = helios_ov9782();
+        let mut r = cm5_ov9782();
         // The driver's default flips (both on) turn BGGR into RGGB and change the layout.
         r.formats[0].code = MbusCode(0x300f);
         r.formats[1].code = MbusCode(0x3014);
@@ -572,7 +572,7 @@ pub(crate) mod tests {
 
         use crate::{ControlRequest, MockBus, NoPins, SensorDriver};
 
-        let mut r = helios_ov9782();
+        let mut r = cm5_ov9782();
         r.controls
             .insert(KernelControl::HFlip, range(0, 1, 1, Some(1)));
         let d = Arc::new(SensorDescription::from_subdev(&r).unwrap());
@@ -629,7 +629,7 @@ pub(crate) mod tests {
             .find(|d| d.name == "imx219")
             .unwrap();
         data.embedded_data.as_mut().unwrap().packing = crate::EmbeddedPacking::None;
-        let d = SensorDescription::from_subdev_with(&helios_ov9782(), Some(&data)).unwrap();
+        let d = SensorDescription::from_subdev_with(&cm5_ov9782(), Some(&data)).unwrap();
         // 0x0157 = 0x80 (gain), 0x015a..b = 0x0400 (exposure), 0x0160..1 = 0x0d78 (VTS).
         let line = [
             0x0a, 0xaa, 0x01, 0xa5, 0x57, 0x5a, 0x80, 0x55, 0, 0x55, 0, 0x5a, 0x04, 0x5a, 0x00,
@@ -646,7 +646,7 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_controls_are_reported() {
-        let mut r = helios_ov9782();
+        let mut r = cm5_ov9782();
         r.controls.remove(&KernelControl::PixelRate);
         let e = SensorDescription::from_subdev(&r).unwrap_err().to_string();
         assert!(e.contains("PIXEL_RATE"), "{e}");
@@ -654,8 +654,8 @@ pub(crate) mod tests {
 
     /// The OV9782 report with the three modes' sizes (`ov9282.c`'s modes; the driver reports the
     /// blanking ranges of the mode it is set to, here 1280x800).
-    fn helios_ov9782_all_modes() -> SubdevReport {
-        let mut r = helios_ov9782();
+    fn cm5_ov9782_all_modes() -> SubdevReport {
+        let mut r = cm5_ov9782();
         for f in &mut r.formats {
             f.sizes = vec![
                 Size::new(1280, 800),
@@ -667,7 +667,7 @@ pub(crate) mod tests {
     }
 
     fn ov9782_kernel_description() -> SensorDescription {
-        let r = helios_ov9782_all_modes();
+        let r = cm5_ov9782_all_modes();
         let data = KernelSensorData::find(&KernelSensorData::builtin(), &r.name, true)
             .unwrap()
             .clone();

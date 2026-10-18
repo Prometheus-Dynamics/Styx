@@ -175,7 +175,7 @@ config buffer comes from a cached heap too (the driver copies it with the CPU at
 
 ### PiSP path performance
 
-CM5, OV9782 1280x800, the scene above, HeliOS tuning, 300 frames, 2026-10-02. "Before" is
+CM5, OV9782 1280x800, the scene above, the OV9782 tuning, 300 frames, 2026-10-02. "Before" is
 `582d885` on the same device (the tool; through the Styx API the old code no longer runs on
 today's bridge, its last measurement is quoted). CPU is per frame for the whole process
 (scheduler run time of every thread); latency is the frame's capture timestamp (frame start)
@@ -239,7 +239,7 @@ and embedded data to the control schedule itself when it wakes for a frame
 so the request knows how much of the current frame is left). It waits for a frame start only
 while a write waits for one (`SensorStream::frame_start_fd`: a request whose controls land a
 frame apart, e.g. frame length after exposure); exposure and gain requests from the statistics
-of frame F are still written during F with ≥ 4 ms left. Measured (CM5, 300 frames, HeliOS
+of frame F are still written during F with ≥ 4 ms left. Measured (CM5, 300 frames, OV9782
 tuning, 2026-10-02, `native-pipeline pisp --no-read` / `native_isp_bench single`):
 
 | | before | after |
@@ -264,7 +264,7 @@ driver patched to write with relaxed MMIO, skip words equal to the last ones wri
 the config from a cached copy ([README](../../kernel-modules/pispbe/README.md)). On the dev box
 it is installed as an override of the image's `pisp_be` (`updates/`, loaded at boot).
 
-Measured 2026-10-03 (CM5, HeliOS tuning with temporal denoise, 3 rounds alternating the stock
+Measured 2026-10-03 (CM5, the OV9782 tuning with temporal denoise, 3 rounds alternating the stock
 and the patched module by `rmmod`/`insmod` in one session; Styx API = `native_isp_bench single`,
 process CPU per frame; tool = `native-pipeline pisp --no-read --profile`, pipeline thread):
 
@@ -474,7 +474,7 @@ cheap (details and kernel timings in `crates/softisp/PERFORMANCE.md`):
 * Embedded data decoded from only the bytes the layout reads (`styx-sensor`, the PiSP round):
   the event thread went from 1.3-1.5 ms per frame to 0.03 ms on this path too.
 
-CM5, OV9782 1280x800 RAW10 with the HeliOS tuning (lens shading, CCM, adaptive contrast,
+CM5, OV9782 1280x800 RAW10 with the OV9782 tuning (lens shading, CCM, adaptive contrast,
 statistics), `native-pipeline soft --quiet`, 150 frames at 30 fps / 600 at 120 fps, 2026-10-02
 (device time 2026-08-17). CPU is the whole process per frame (capture, ISP, 3A, the tool's
 per-frame output level on every eighth row and column); latency is the sensor's frame-start
@@ -661,7 +661,7 @@ loaded at run time (`ash`), so nothing links against it.
   gives the same pictures, requests and settings frame by frame on CPU and GPU
   (`styx-pipeline/tests/it/gpu_loop.rs`).
 * **Performance** (`native-pipeline gpu-bench`, RX 6800 XT against `styx-softisp` on the same
-  Ryzen host, HeliOS tuning, 1280x800): NV12 0.47 ms of process CPU per frame against 1.77 ms
+  Ryzen host, the OV9782 tuning, 1280x800): NV12 0.47 ms of process CPU per frame against 1.77 ms
   on one thread (1.96 ms on four), RGB24 0.62 against 1.80 ms; GPU time 0.21 (NV12) and 0.29 ms
   (RGB24); loop wall time 0.77 ms (NV12), as four CPU threads (0.72) and less than one (1.83).
   Same per frame at 120 fps (0.46 ms, 5.5% of a core against 20.4%). What is left on the CPU
@@ -670,7 +670,7 @@ loaded at run time (`ash`), so nothing links against it.
 * **Planner**: with `gpu-isp` and a device, processed native modes without a PiSP cost
   0.3 ms/MP of CPU and 0.6 ms/MP of latency (plus the 3A) instead of the software ISP's
   2.9 ms/MP (`planner/cost.rs`, `GPUISP_*`), executed as `Hardware`.
-* **CM5 / Pi 5**: the HeliOS image has no Vulkan driver. Mesa's v3dv (V3D 7.1) would need
+* **CM5 / Pi 5**: the CM5 image has no Vulkan driver. Mesa's v3dv (V3D 7.1) would need
   Mesa with the broadcom Vulkan driver, the Vulkan loader and its ICD file, the `v3d` DRM
   driver and render-node access (README, "Raspberry Pi 5"). Estimated at 4-8 ms of GPU per
   1280x800 frame, V3D would not beat the A76's fp16 NEON path (2.6-3.0 ms on one core) on
@@ -719,7 +719,7 @@ for NV12, RG24 or luma (NV12's Y plane) on the native OV9782 picks the PiSP mode
 and the software ISP mode elsewhere. Tuning (`styx_pipeline::tuning`): `STYX_TUNING` (one file), else the
 description's `tuning` file in `$STYX_TUNING_PATH`, `~/.config/styx/tuning`, `/etc/styx/tuning`,
 `/usr/{local/,}share/styx/tuning`, then the tunings built into `styx-pipeline` (`tuning/`: the
-HeliOS `ov9782.json`), then libcamera's `/usr/{local/,}share/libcamera/ipa/rpi/pisp` (read at
+OV9782 `ov9782.json`), then libcamera's `/usr/{local/,}share/libcamera/ipa/rpi/pisp` (read at
 run time), else Styx's built-in generic tuning (`tuning/generic.toml`: grey world,
 centre-weighted AE, default tone curve, spatial and colour denoise, no TDN).
 
@@ -732,7 +732,7 @@ AE at 30 and 60 fps as on the bridge, CPU the same, first frame 8 ms later).
 
 ## Results on the CM5 (OV9782 1280x800 at 30 fps, bridge with embedded data)
 
-Scene: a ceiling lit by a warm ceiling lamp, a blue LED and posters. Tuning: the HeliOS
+Scene: a ceiling lit by a warm ceiling lamp, a blue LED and posters. Tuning: the OV9782
 `ov9782.json` read from the device at run time. "Brightness steps" force the exposure to ¼
 (darker) or 3× (brighter) of the converged value for 10 frames and then hand back to AE (as
 AE sees it, a step of the scene's brightness). Settling = exposure × gain (from embedded data)
@@ -867,7 +867,7 @@ from the remembered state.)
 | dequeue → output ready | 0.86 ms (back end job 0.84; 1.71 before) | 14.2 ms (9.1 with CMA buffers) |
 | CPU per frame (whole process) | 0.26 ms (0.8% of a core); 0.47 ms reading the output (3.1 ms before) | 15.8 ms (47%); 10.7 ms (32%) with CMA buffers |
 | peak RSS | 17.8 MiB (Styx API; 27.4 before) | 12.7 MiB (7.9 with CMA buffers) |
-| AWB (Bayesian, HeliOS tuning) | 2533 K, output R/G 1.19 B/G 0.91 | 2557 K, R/G 1.24 B/G 0.90 |
+| AWB (Bayesian, the OV9782 tuning) | 2533 K, output R/G 1.19 B/G 0.91 | 2557 K, R/G 1.24 B/G 0.90 |
 
 Run of 2026-10-01 with lens shading on both paths (the PiSP's LSC block since then), after the
 fixes below; an earlier run without PiSP lens shading gave the same rates and convergence
@@ -909,7 +909,7 @@ thread had gone (fixed here: stop it first). No stop timeouts since, on either p
 
 ## Quality vs libcamera
 
-CM5, OV9782 1280x800 at 30 fps, 2026-10-02 (device clock: Aug 17), the HeliOS tuning
+CM5, OV9782 1280x800 at 30 fps, 2026-10-02 (device clock: Aug 17), the OV9782 tuning
 (`/usr/share/libcamera/ipa/rpi/pisp/ov9782.json`, the same as libcamera's
 `src/ipa/rpi/pisp/data/ov9782.json`). Scene: a dim room lit by a warm lamp and a blue LED
 (AE ends at 33 ms × 10). Both paths at a fixed 33 ms × 8, NV12 output 0 saved packed:

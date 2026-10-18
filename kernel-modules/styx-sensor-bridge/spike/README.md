@@ -1,6 +1,6 @@
 # Native stack spike: OV9782 through the sensor bridge, at runtime
 
-Raw OV9782 frames from `rp1-cfe` on the HeliOS CM5 (`root@<device>`, kernel `6.12.47-v8-16k`),
+Raw OV9782 frames from `rp1-cfe` on a CM5 dev board (`root@<device>`, kernel `6.12.47-v8-16k`),
 with the sensor driven from userspace Rust over I²C and `styx_sensor_bridge.ko` standing in
 for the sensor driver. Everything happens at runtime: nothing touches `/boot`, the A/B
 squashfs images or the updater, and **a reboot restores everything**.
@@ -20,7 +20,7 @@ squashfs images or the updater, and **a reboot restores everything**.
 | 5 | bind `rp1-cfe`; it finds the bridge as its sensor | unbind |
 
 The overlay (`../dts/styx-sensor-bridge-cm5-runtime-overlay.dts`) goes on top of the live tree,
-which has the HeliOS `ov9782-overlay` applied at boot on cam0 (`cam0,clk-continuous`):
+which has the image's `ov9782-overlay` applied at boot on cam0 (`cam0,clk-continuous`):
 
 1. `i2c_csi_dsi0` (`i2c@88000`, `/dev/i2c-10`) `ov9782@60`: `status = "disabled"`. The i2c
    core unregisters client `10-0060`, so `I2C_SLAVE` on address `0x60` works (it fails with
@@ -140,7 +140,7 @@ ssh root@<device> 'cd /proc/device-tree && tar cf - .' | tar xf - -C live-fs   #
 `check-overlay.sh` applies the overlay with `fdtoverlay` and checks the merged tree: bridge
 node enabled; csi0 endpoint → bridge endpoint (and no back-reference); ov9782 client disabled;
 bridge clock, supplies, lanes, link frequency and I²C bus equal the sensor node's; clock mode
-the same at both ends. `test-check-overlay.sh` runs it on a HeliOS-shaped tree, on broken
+the same at both ends. `test-check-overlay.sh` runs it on a CM5-shaped tree, on broken
 variants (which must fail) and on the live copy.
 
 ## Known risks

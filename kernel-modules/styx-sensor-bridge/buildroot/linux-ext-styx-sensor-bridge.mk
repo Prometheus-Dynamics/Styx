@@ -1,8 +1,8 @@
 ################################################################################
 # Linux extension: build the Styx sensor bridge into the kernel tree
 #
-# For a Buildroot external tree (the Raze device package's
-# devices/raze/gaia/buildroot-external, or HeliOS gaia/assets/buildroot): copy
+# For a Buildroot external tree (a device package's buildroot-external tree, or a
+# CM5 image's Buildroot tree): copy
 # the whole kernel-modules/styx-sensor-bridge directory to
 # linux/styx-sensor-bridge in the external tree, then place this file (and the
 # Config.ext.in entries) in linux/ next to it. Buildroot includes
@@ -10,8 +10,8 @@
 # copy kernel-modules/pispbe to linux/pispbe as well.
 #
 # Kernel-agnostic: the module is staged as drivers/media/platform/styx/ of
-# whatever kernel the package builds (Raspberry Pi 6.12 for Raze 1.0.x,
-# rpi-7.2.y for Raze 1.1.0) and built as part of it (=m), so it is built with
+# whatever kernel the package builds (Raspberry Pi 6.12 for image release 1.0.x,
+# rpi-7.2.y for 1.1.0) and built as part of it (=m), so it is built with
 # that kernel's own Module.symvers, config and compiler and always matches the
 # image. The overlays are compiled by that kernel's dtc.
 ################################################################################

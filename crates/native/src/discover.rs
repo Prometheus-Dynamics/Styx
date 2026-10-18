@@ -71,8 +71,8 @@ impl CameraInfo {
     /// Human-readable name, e.g. `ov9782 (styx bridge i2c 10-0060)` or
     /// `ov9782 (kernel driver i2c 10-0060)`. It names the sensor's I²C location when known,
     /// which stays the same when the bridge or driver is rebound; the subdev node does not
-    /// (`/dev/v4l-subdev2` came back as `v4l-subdev3` after the bridge went down and up under
-    /// HeliOS), and applications key cameras by this name.
+    /// (`/dev/v4l-subdev2` came back as `v4l-subdev3` after the bridge went down and up across a
+    /// camera service restart), and applications key cameras by this name.
     pub fn display_name(&self) -> String {
         display_name(&self.location, self.kernel.is_some())
     }

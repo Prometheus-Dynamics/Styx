@@ -297,7 +297,7 @@ counter, below).
 
 ### Linux is unchanged by the runtime
 
-CM5 (OV9782 1280x800, native mode, HeliOS tuning), `dev` fcc4343 (before) against
+CM5 (OV9782 1280x800, native mode, the OV9782 tuning), `dev` fcc4343 (before) against
 `native/runtime` (after), built alike and run alternately; syscalls and allocations per frame
 from an `LD_PRELOAD` counter of libc calls (150- and 450-frame runs, the difference over 300
 frames; `strace` is not on the device), CPU from the thread's scheduler time:

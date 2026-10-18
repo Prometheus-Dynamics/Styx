@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0
 # Shared settings and helpers for up.sh and down.sh (sourced; POSIX sh, BusyBox).
 #
-# Everything here is specific to the HeliOS CM5 image with the OV9782 on cam0
+# Everything here is specific to a CM5 image with the OV9782 on cam0
 # (kernel 6.12.47-v8-16k). Nothing touches /boot, the A/B images or the updater.
 
 SPIKE_DIR="${SPIKE_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
 # The kernel the module was built for (KERNEL_RELEASE=7.2.9-v8-16k for an rpi-7.2.y image).
 KERNEL_RELEASE="${KERNEL_RELEASE:-6.12.47-v8-16k}"
-SERVICE="helios-peripherals"
+# The image's camera service unit (STYX_CAMERA_SERVICE). Unset: no service is stopped or started.
+SERVICE="${STYX_CAMERA_SERVICE:-}"
 
 MODULE="styx_sensor_bridge"
 MODULE_KO="$SPIKE_DIR/styx_sensor_bridge.ko"
@@ -40,7 +41,14 @@ dt_hex() { [ -f "$1" ] && od -An -tx1 "$1" | tr -s ' \n' ' ' | sed 's/^ //; s/ $
 # String property without the trailing NUL.
 dt_str() { [ -f "$1" ] && tr -d '\000' <"$1"; }
 
-service_active() { systemctl is-active --quiet "$SERVICE"; }
+service_active() { [ -n "$SERVICE" ] && systemctl is-active --quiet "$SERVICE"; }
+service_state() {
+    if [ -z "$SERVICE" ]; then
+        echo "no camera service (STYX_CAMERA_SERVICE unset)"
+    else
+        echo "$SERVICE $(systemctl is-active "$SERVICE" 2>/dev/null)"
+    fi
+}
 module_loaded() { grep -q "^$MODULE " /proc/modules; }
 bound() { [ -e "/sys/bus/$1/drivers/$2/$3" ]; }
 overlay_applied() { [ -d "$OVERLAY_DIR" ] && [ "$(cat "$OVERLAY_DIR/status" 2>/dev/null)" = "applied" ]; }

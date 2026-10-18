@@ -26,7 +26,7 @@
 #
 # Optional pieces, skipped with a note when missing: cargo-nextest (else cargo test), the nightly
 # toolchain (the fuzz project's check), and a linker for aarch64-unknown-linux-gnu with a glibc
-# sysroot (CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER, e.g. the HeliOS buildroot's
+# sysroot (CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER, e.g. a Buildroot toolchain's
 # aarch64-linux-gcc) for the glibc cross build. The aarch64 musl clippy needs only the rustup
 # target.
 set -euo pipefail

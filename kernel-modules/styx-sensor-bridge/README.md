@@ -10,8 +10,8 @@ driven from userspace by Styx. Written once; no sensor-specific code, no I²C ac
 | `styx_sensor_bridge.c` | The module (platform driver, compatible `styx,sensor-bridge`) |
 | `styx_sensor_bridge.h` | Userspace ABI: event id, payload, private controls |
 | `PROTOCOL.md` | Device tree binding, controls, events, acknowledgement, start/stop order |
-| `dts/styx-sensor-bridge-cm5-overlay.dts` | CM5/Pi 5 camera-port overlay with the HeliOS OV9782 wiring |
-| `dts/styx-sensor-bridge-cm5-runtime-overlay.dts` | The same, applied at runtime (configfs) on top of a HeliOS tree booted with `ov9782-overlay` on cam0 (`-runtime-emb`: with the embedded data pad) |
+| `dts/styx-sensor-bridge-cm5-overlay.dts` | CM5/Pi 5 camera-port overlay with the OV9782 wiring |
+| `dts/styx-sensor-bridge-cm5-runtime-overlay.dts` | The same, applied at runtime (configfs) on top of a CM5 image tree booted with `ov9782-overlay` on cam0 (`-runtime-emb`: with the embedded data pad) |
 | `dts/styx-cam0-i2c-fast-overlay.dts` | cam0's I²C bus at a faster clock |
 | `spike/` | The first on-device spike: `up.sh`/`down.sh`, offline overlay checks, [`spike/README.md`](spike/README.md) |
 | `install/` | Dev-box install: `install.sh` (boot overlay and module), `camera-mode.sh` (native / libcamera switch), `styx-bridge.service` (the runtime path, libcamera mode only) |
@@ -28,26 +28,25 @@ uses is the same in both, and the platform driver's `remove()` already returns `
 
 | Kernel | Images | Release | Tree for `build.sh` |
 |---|---|---|---|
-| Raspberry Pi `stable_20250916` | HeliOS, Raze 1.0.x | `6.12.47-v8-16k` | `STYX_KERNEL=6.12` (default): the HeliOS Gaia Buildroot `linux-custom` |
-| Raspberry Pi `rpi-7.2.y` | Raze 1.1.0 | `7.2.9-v8-16k` (`53679a5`) | `STYX_KERNEL=7.2`: an O= build at `../linux-rpi-7.2/build`, or the image's `linux-custom` via `KERNEL_TREE` |
+| Raspberry Pi `stable_20250916` | CM5 image 1.0.x | `6.12.47-v8-16k` | `STYX_KERNEL=6.12` (default): the image's Buildroot `linux-custom` |
+| Raspberry Pi `rpi-7.2.y` | CM5 image 1.1.0 | `7.2.9-v8-16k` (`53679a5`) | `STYX_KERNEL=7.2`: an O= build at `../linux-rpi-7.2/build`, or the image's `linux-custom` via `KERNEL_TREE` |
 
 Both are `bcm2712_defconfig` with 4K pages despite the `-v8-16k` release name: Buildroot sets
 `CONFIG_ARM64_4K_PAGES` (its default `BR2_ARM64_PAGE_SIZE_4K`) over the defconfig's 16K
 (`-v8-16k` is only the defconfig's `LOCALVERSION`; confirmed on the 7.2.9 device image:
-`KernelPageSize: 4 kB` in `/proc/self/smaps`), and the Raze package adds `VIDEO_OV9282=m`. The Raze kernel is defined by the Raze device package in
-Atlas-Hardware-Manager `dev` (`devices/raze/gaia`, `RAZE_PKG` in `kernel-env.sh`); the older
-`Atlas-raze` checkout is stale. A 7.2 tree that matches the Raze 1.1.0 kernel's config
-and compiler (the HeliOS Buildroot GCC 14.3):
+`KernelPageSize: 4 kB` in `/proc/self/smaps`), and the CM5 image's package adds `VIDEO_OV9282=m`. The 7.2 kernel is defined by the device package that builds that image
+(its OV9782 patches are named by `PATCH_PKG` in `kernel-env.sh`). A 7.2 tree that matches the image's 7.2 kernel config
+and compiler (the image's Buildroot GCC 14.3):
 
 ```sh
-# The commit the Raze package pins (rpi-7.2.y, Linux 7.2.9)
+# The commit the device package pins (rpi-7.2.y, Linux 7.2.9)
 git init ../linux-rpi-7.2/linux && cd ../linux-rpi-7.2/linux
 git fetch --depth 1 https://github.com/raspberrypi/linux.git 53679a5788f7912272b412fd78029bccae6f2b1a
 git checkout FETCH_HEAD
-# The Raze package's ov9782 patches (Atlas-Hardware-Manager dev, Raze 1.1.0 / fd52491)
-RAZE_PKG=../../Atlas-Hardware-Manager/devices/raze/gaia
-for p in "$RAZE_PKG"/buildroot-external/linux/ov9782/*.patch; do git apply "$p"; done
-CC=<HeliOS Gaia output>/host/bin/aarch64-linux-
+# The device package's ov9782 patches (image release 1.1.0, commit fd52491)
+PATCH_PKG=<path to that device package>
+for p in "$PATCH_PKG"/buildroot-external/linux/ov9782/*.patch; do git apply "$p"; done
+CC=<image build output>/host/bin/aarch64-linux-
 make O=../build ARCH=arm64 CROSS_COMPILE=$CC bcm2712_defconfig
 scripts/config --file ../build/.config --enable ARM64_4K_PAGES --disable ARM64_16K_PAGES \
     --module VIDEO_OV9282
@@ -87,17 +86,16 @@ firmware's `__overrides__`, e.g. `cam0`, are not evaluated there).
 
 `STYX_KERNEL`, `KERNEL_TREE`, `KERNEL_SRC`, `BR_HOST`, `CROSS_COMPILE`, `KERNEL_RELEASE` and
 `STYX_KBUILD_ROOT` override the defaults (see the script header and `../kernel-env.sh`). The
-default 6.12 `KERNEL_TREE` is the Gaia build of `HeliOS-architecture-overhaul`
-(`helios-full-cm5`), whose `Module.symvers` matches the device image
-`6.12.47-v8-16k #1 SMP PREEMPT Thu May 7 00:00:13 PDT 2026`. (The older
-`HeliOS/gaia/build/buildroot/output-cm5` tree has the same release string but different CRCs:
-modules built against it would be rejected.)
+default 6.12 `KERNEL_TREE` is the Buildroot kernel build of the CM5 image,
+whose `Module.symvers` matches the device image
+`6.12.47-v8-16k #1 SMP PREEMPT Thu May 7 00:00:13 PDT 2026`. (An older build tree of the same
+release string has different CRCs: modules built against it would be rejected.)
 
 For images built from now on, `buildroot/linux-ext-styx-sensor-bridge.mk` builds the module as
-part of whatever kernel the image uses (6.12 or 7.2, e.g. in the Raze 1.1.0 device package's
+part of whatever kernel the image uses (6.12 or 7.2, e.g. in the 1.1.0 device package's
 external tree) instead, so it always matches.
 
-## On the HeliOS CM5 dev box
+## On a CM5 dev board
 
 The dev box boots as an image would (the shipping configuration): `config.txt` has
 `dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous` in place of
@@ -124,3 +122,18 @@ libcamera mode, disables it in native mode. In libcamera mode the runtime path s
 back); in native mode it does not apply. Measured 2026-10-02: boot to the bridge bound 5.6 s,
 `rp1-cfe` nodes registered at 6.0 s, `native-pipeline pisp` 30 and 60 fps with embedded data on
 every frame, open to first frame 30 ms; libcamera mode and back each boot in about 20 s.
+
+### Camera service name
+
+The image's camera service (the unit that owns cam0 in libcamera mode) is not named in this
+repository. Set `STYX_CAMERA_SERVICE=<unit>` where the scripts run: `install.sh` passes it to the
+device, and `camera-mode.sh`, `spike/up.sh` and `spike/down.sh` read it. Unset, they stop, start
+and enable no service and say so. `styx-bridge.service` has no `Conflicts=` line for the same
+reason. To keep systemd from running it alongside your camera service, add a drop-in:
+
+```sh
+ssh root@<device> systemctl edit styx-bridge
+# in the editor, add:
+#   [Unit]
+#   Conflicts=<your camera service>
+```

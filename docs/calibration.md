@@ -3,7 +3,7 @@
 `styx-calibrate` measures a sensor's black level, noise and defect pixels from raw dark frames,
 and writes them as a **tuning overlay**: a JSON file Styx merges over the sensor's builtin tuning
 at start-up. It is a library (`tools/styx-calibrate`, crate `styx-calibrate`, for other tools such
-as an Atlas action) and a command line (`styx-calibrate`). The camera tuning itself (colour, AWB,
+as a downstream app's action) and a command line (`styx-calibrate`). The camera tuning itself (colour, AWB,
 AGC, CCM) stays with [`styx-tune`](tuning.md); the overlay carries only what a dark frame can tell.
 
 ## What the dark sweep measures
@@ -31,7 +31,7 @@ Across captures:
 ## The dark flow
 
 1. **Capture dark frames** on the board, with no light reaching the sensor (lens capped or the
-   camera face-down, every board LED off; on the Raze CM5 the activity LED is active-low, so
+   camera face-down, every board LED off; on the CM5 dev board the activity LED is active-low, so
    `brightness=1` turns it off). Take 60 frames after about 40 settling frames, at every
    combination of analogue gain and exposure you want the overlay to cover. A sensible grid for
    the OV9782 is gains 1, 2, 4, 8 by exposures 8 ms and 30 ms. Each setting goes in its own

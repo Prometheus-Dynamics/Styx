@@ -11,7 +11,7 @@
 //! ```
 //!
 //! `fetch SOCKET COUNT HOLD_MS` takes COUNT frames, holds each for HOLD_MS and checks that its
-//! pixels did not change meanwhile. The wire format is HeliOS's `styx-frame-lease-v1`.
+//! pixels did not change meanwhile. The wire format is `styx-frame-lease-v1`.
 
 use std::time::{Duration, Instant};
 

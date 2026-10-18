@@ -142,7 +142,7 @@ ForwardMatrix(T) = Bradford(D65 → D50) · A · M,     rows scaled so (1,1,1) �
 calibration from DNGs); tests check that the light's white maps to the neutral and that the
 round trip gives the CCM back. A tuning without an AWB curve gets one calibration from the
 shot itself (its CCM and neutral at the D65 slot). The OV9782 tuning's CCM is the identity
-(the HeliOS tuning), so its DNGs carry identity-CCM matrices: the colour is the ISP's.
+(the OV9782 tuning), so its DNGs carry identity-CCM matrices: the colour is the ISP's.
 
 ### The reader
 

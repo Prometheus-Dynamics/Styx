@@ -96,12 +96,16 @@ if ! bound platform "$CFE_DRIVER" "$CFE_DEV"; then
 fi
 wait_for 50 bound platform "$CFE_DRIVER" "$CFE_DEV" && ok "$CFE_DRIVER bound" || bad "$CFE_DRIVER not bound"
 
-say "step 7 (start $SERVICE)"
-service_active || systemctl start "$SERVICE" || bad "systemctl start $SERVICE"
-wait_for 50 service_active && ok "$SERVICE active" || bad "$SERVICE not active"
+if [ -z "$SERVICE" ]; then
+    say "step 7 (no camera service: STYX_CAMERA_SERVICE unset, nothing to start)"
+else
+    say "step 7 (start $SERVICE)"
+    service_active || systemctl start "$SERVICE" || bad "systemctl start $SERVICE"
+    wait_for 50 service_active && ok "$SERVICE active" || bad "$SERVICE not active"
+fi
 
 if [ "$failures" -gt 0 ]; then
     say "down: $failures step(s) failed. A reboot restores everything (nothing here persists)."
     exit 1
 fi
-say "down: done, the camera is back with ov9282 and $SERVICE"
+say "down: done, the camera is back with ov9282${SERVICE:+ and $SERVICE}"

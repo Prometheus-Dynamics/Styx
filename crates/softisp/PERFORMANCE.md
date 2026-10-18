@@ -92,7 +92,7 @@ for plain RGB24). The MHC demosaic, RAW12 and inputs above 10 bits stay integer.
 
 fp16 against the integer reference, PSNR and largest difference in 8-bit codes:
 
-* **Recorded frames** (55 OV9782 frames processed with the HeliOS tuning's settings as the 3A
+* **Recorded frames** (55 OV9782 frames processed with the OV9782 tuning's settings as the 3A
   loop applied them: lens shading, CCM, adaptive contrast curve; `native-pipeline quality`):
   R 53.9 dB, G 54.0 dB, B 54.0 dB, NV12 Y 54.6 dB, UV 55.3 dB; largest difference 2 codes, one
   sample in a million more than 1 code apart. Five more frames of the recording (the dark

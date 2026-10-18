@@ -3,8 +3,8 @@
 `styx-record` (`tools/styx-record`) records what a camera sees as raw grey video (the Y plane,
 at the camera's native size) in the layout Eidos reads its robot video in, with a per-frame
 sidecar (sensor timestamp, clock, sequence number, dropped frames) and a JSON file of the camera
-settings in effect. It is a small binary without codecs, for capturing test recordings on a Raze
-device (CM5, OV9782).
+settings in effect. It is a small binary without codecs, for capturing test recordings on a CM5 dev
+board (OV9782).
 
 It takes frames two ways:
 

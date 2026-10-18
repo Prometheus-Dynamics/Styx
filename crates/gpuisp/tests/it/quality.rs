@@ -78,7 +78,7 @@ fn shading() -> LensShading {
     ls
 }
 
-/// The HeliOS tuning's (Raspberry Pi) contrast curve, 16-bit points.
+/// The OV9782 tuning's (Raspberry Pi) contrast curve, 16-bit points.
 fn contrast_curve() -> ToneCurve {
     const P: [u32; 64] = [
         0, 0, 512, 2518, 1024, 5033, 1536, 7175, 2048, 9309, 2560, 10814, 3072, 12312, 3584, 13773,

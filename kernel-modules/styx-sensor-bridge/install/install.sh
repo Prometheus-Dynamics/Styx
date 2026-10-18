@@ -1,8 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
 #
-# Installs the bridge on a HeliOS CM5 dev box the way an image would boot it: the boot overlay
-# in config.txt in place of the HeliOS ov9782 overlay, the module loaded at boot.
+# Installs the bridge on a CM5 dev board the way an image would boot it: the boot overlay
+# in config.txt in place of the image's ov9782 overlay, the module loaded at boot.
 #
 #   - styx_sensor_bridge.ko -> /lib/modules/<release>/updates/ + depmod (on the persistent root
 #     overlay's upper layer; the read-only lower root is not touched). udev loads it at boot by
@@ -16,6 +16,8 @@
 #   install.sh [--reboot] [root@<device>] [kbuild-out-dir]    (or DEVICE=root@<device>)
 #
 # KERNEL_RELEASE (default 6.12.47-v8-16k) picks the default kbuild-out-dir, e.g. 7.2.9-v8-16k.
+# STYX_CAMERA_SERVICE (the image's camera service unit) is passed on to camera-mode.sh on the
+# device; unset, camera-mode.sh changes no service.
 #
 # Run under the device lock. Rerun after rebuilding the module to update it (then reboot, or
 # unbind rp1-cfe, rmmod/modprobe, rebind). Back to the image's camera (ov9282, libcamera):
@@ -35,6 +37,7 @@ dev="${1:-${DEVICE:-}}"
 }
 out="${2:-$here/../../../target/kbuild/out/${KERNEL_RELEASE:-6.12.47-v8-16k}}"
 dst=/usr/local/lib/styx-bridge
+cam_svc="${STYX_CAMERA_SERVICE:-}"
 
 ssh "$dev" "mkdir -p $dst"
 for f in "$out/styx_sensor_bridge.ko" "$out/styx-sensor-bridge-cm5.dtbo" \
@@ -58,4 +61,4 @@ ssh "$dev" "set -e
     umount \$mnt
     rmdir \$mnt
     systemctl daemon-reload
-    sh $dst/camera-mode.sh native $reboot"
+    STYX_CAMERA_SERVICE=$cam_svc sh $dst/camera-mode.sh native $reboot"

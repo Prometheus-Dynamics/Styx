@@ -25,7 +25,7 @@ A platform device node (not an I²C client, so address and bus stay free for i2c
 | `styx,embedded-data` | no | `<width lines>`: adds a second source pad for the sensor's embedded data (see below) |
 | `styx,embedded-data-type` | no | CSI-2 data type of the embedded data (default `0x12`) |
 
-`dts/styx-sensor-bridge-cm5-overlay.dts` is the CM5 camera-port overlay with the HeliOS OV9782
+`dts/styx-sensor-bridge-cm5-overlay.dts` is the CM5 camera-port overlay with the OV9782
 wiring.
 
 ### sysfs (on the platform device, `/sys/class/video4linux/v4l-subdevN/device/`)
@@ -195,7 +195,7 @@ receiver is streaming.
 
 ## Notes for the sensor side
 
-- With `clock-noncontinuous` absent (HeliOS uses `clk-continuous`), the sensor drives a
+- With `clock-noncontinuous` absent (the CM5 image uses `clk-continuous`), the sensor drives a
   continuous HS clock once streaming starts; the receiver's D-PHY must already be enabled,
   which the order above guarantees. The sensor must not stream before the start event.
 - Sensor I²C accesses go through i2c-dev; the bridge leaves the address unclaimed so

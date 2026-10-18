@@ -228,7 +228,7 @@ stream.
   the aspect ratio and never upscales) and the element renegotiates to what arrives.
 - dma-buf caps are offered for V4L2, native and libcamera cameras before knowing whether the
   buffers can be exported; an export failure costs one renegotiation.
-- The Raspberry Pi CM5 (HeliOS image) has neither GStreamer nor PipeWire, so neither bridge has
+- The Raspberry Pi CM5 (downstream image) has neither GStreamer nor PipeWire, so neither bridge has
   run on the OV9782 yet.
 - `styx-pipewire` copies frames that do not come straight from a camera that imports its
   buffers (see "Buffers and zero copy"). The pool's dma-bufs come from `udmabuf` (page-backed,

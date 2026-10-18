@@ -40,7 +40,7 @@ it; `scripts/gate.sh --list` prints its steps:
 | `perf-smoke` | `check-perf-smoke.sh` |
 | `fuzz` | `cargo +nightly check` in `fuzz/` (skipped without nightly) |
 | `musl-clippy` | `styx` (native) and `styx-native`, `native-spike` (all targets) for `aarch64-unknown-linux-musl` |
-| `cross` | a release build of `styx` and `styx-record-cli` (native, V4L2) for `aarch64-unknown-linux-gnu`, when `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER` names an aarch64 glibc linker (e.g. the HeliOS buildroot's `aarch64-linux-gcc`) |
+| `cross` | a release build of `styx` and `styx-record-cli` (native, V4L2) for `aarch64-unknown-linux-gnu`, when `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER` names an aarch64 glibc linker (e.g. a Buildroot toolchain's `aarch64-linux-gcc`) |
 
 `scripts/gate.sh --full` adds what is rarely needed: `zero_alloc` repeated
 (`GATE_STRESS_RUNS`, default 10), every release feature set of `styx`
