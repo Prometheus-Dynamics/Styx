@@ -166,6 +166,38 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **Code review, batch 2** (merges 271400f, 45de85a, and the IPC/netcam merge after them):
+  - The release profile uses thin LTO, one codegen unit and strips debuginfo.
+    `hop_breakdown` (x86_64) shrinks 24%, 8.7 MB to 6.6 MB; the `device` profile keeps LTO
+    off.
+  - The root `Cargo.lock` is committed, with daedalus-rs pinned at 66659f7.
+  - `framelease` (styx), `vendor_rpi` (libcamera), `rayon` (softisp) and `async` (core) are
+    labelled as no-ops kept for compatibility; use `default-features = false` instead of
+    enabling `framelease`.
+  - `scripts/cross-aarch64.sh` notes the profile it uses and gains `--cortex-a76`.
+  - Stale doc references are fixed.
+  - GPU ISP: parameter builds no longer clone the lens-shading grid or the statistics setup.
+    It already submitted each frame's work once.
+  - Software ISP (integer path):
+    - The lens-shading gain rows are kept while the grid is within the tolerance and white
+      balance, digital gain and black levels are unchanged.
+    - Tone tables are shared rather than copied.
+    - The statistics merge takes the first worker's accumulator instead of cloning it.
+  - `styx-algo`'s simulator is behind a new `sim` feature (off by default).
+  - A frame that cannot be exported is copied once into a pooled memfd, instead of twice
+    into a new memfd per frame.
+  - A camera service holds a client's frames lock in 5 ms slices while waiting for a frame,
+    so a quiet client no longer delays leaves and restarts by up to 50 ms.
+  - Receives with a zero wait skip `poll(2)`, and the client reads its timer only when it is
+    armed.
+  - The sliced-frame progress page is keyed by connection generation.
+  - Recordings keep the index file open and write each line once.
+  - Netcam MJPEG:
+    - The parser scans only new bytes, with no combined buffer per network chunk.
+    - It no longer drops a payload byte when a boundary's CRLF is split across chunks.
+    - Its copy is counted in the copy metrics.
+    - Frames of unknown size are skipped with a warning instead of becoming 1x1.
+
 - **Code review, batch 1** (merges 9ad725c, 379d5f4, 4f5d53c, 42c5f67):
   - Buffer pools keep a recycled buffer's bytes and length. `lease_sized` zero-fills only
     growth, so a reused 1280x800 decode buffer is no longer cleared every frame; `lease()`
