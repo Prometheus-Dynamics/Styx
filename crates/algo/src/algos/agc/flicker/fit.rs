@@ -8,13 +8,59 @@ use core::f64::consts::PI;
 
 use super::{
     MAX_PHASE_RESULTANT, MAX_SAMPLES, MIN_COLUMN, MIN_DOF, MIN_F, MIN_INDEPENDENT, MIN_SAMPLES,
-    MIN_VISIBLE, Sample, sinc,
+    MIN_VISIBLE, Sample,
 };
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Most harmonics a fit takes (the per-frame trigonometry is stored in fixed arrays of this
+/// size).
+pub(super) const MAX_HARMONICS: usize = 3;
+
+/// The trigonometry of one frame at one fundamental: per harmonic `k` (index `k - 1`), the
+/// cosine and sine of `kω · centre` (absolute, the fit's clock) and `sinc(kωT/2)`.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Trig {
+    cos: [f64; MAX_HARMONICS],
+    sin: [f64; MAX_HARMONICS],
+    sinc: [f64; MAX_HARMONICS],
+}
+
+/// `sin(kx)` and `cos(kx)` for `k = 1..=MAX_HARMONICS`, from `sin x` and `cos x` by the
+/// Chebyshev recurrences `f(k + 1) = 2 cos x · f(k) − f(k − 1)`.
+fn multiples(sin_x: f64, cos_x: f64) -> ([f64; MAX_HARMONICS], [f64; MAX_HARMONICS]) {
+    let (mut s, mut c) = ([0.0; MAX_HARMONICS], [0.0; MAX_HARMONICS]);
+    let (mut s_prev, mut s_cur) = (0.0, sin_x);
+    let (mut c_prev, mut c_cur) = (1.0, cos_x);
+    for k in 0..MAX_HARMONICS {
+        s[k] = s_cur;
+        c[k] = c_cur;
+        (s_prev, s_cur) = (s_cur, 2.0 * cos_x * s_cur - s_prev);
+        (c_prev, c_cur) = (c_cur, 2.0 * cos_x * c_cur - c_prev);
+    }
+    (s, c)
+}
+
+/// The [`Trig`] of a frame whose exposure `exposure` is centred on `centre`, at `hz`.
+pub(super) fn trig(hz: f64, centre: f64, exposure: f64) -> Trig {
+    let w = 2.0 * PI * hz;
+    let (sn, cn) = (w * centre).rem_euclid(2.0 * PI).sin_cos();
+    let (sa, ca) = (w * exposure / 2.0).sin_cos();
+    let (sin_k, cos_k) = multiples(sn, cn);
+    let (sin_ka, _) = multiples(sa, ca);
+    let mut out = Trig::default();
+    for k in 0..MAX_HARMONICS {
+        // sinc(x) with x = (k + 1) ωT/2 = (k + 1) a; sin(x) from the recurrence.
+        let x = (k + 1) as f64 * (w * exposure / 2.0);
+        out.sinc[k] = if x.abs() < 1e-9 { 1.0 } else { sin_ka[k] / x };
+        out.cos[k] = cos_k[k];
+        out.sin[k] = sin_k[k];
+    }
+    out
 }
 
 /// The scalars of a fit (its terms are in the scratch until the model takes them).
@@ -81,16 +127,15 @@ impl Scratch {
     }
 }
 
-/// Appends the columns of a frame whose exposure is centred `t` seconds after the reference:
-/// `sinc · cos` and `sinc · sin` per harmonic `1..=harmonics` of `hz`.
-fn push_columns(hz: f64, t: f64, exposure: f64, harmonics: usize, out: &mut Vec<f64>) {
-    let w = 2.0 * PI * hz;
-    for k in 1..=harmonics {
-        let kw = k as f64 * w;
-        let s = sinc(kw * exposure / 2.0);
-        let (sn, cn) = (kw * t).rem_euclid(2.0 * PI).sin_cos();
-        out.push(s * cn);
-        out.push(s * sn);
+/// Appends the columns of a frame, `sinc · cos` and `sinc · sin` per harmonic `1..=harmonics`,
+/// with the phases relative to the reference: `rot[k - 1]` is the cosine and sine of `kω`
+/// times the reference, and the frame's cached trigonometry is rotated by it (the angle
+/// subtraction of `kω(centre − reference)`).
+fn push_columns(t: &Trig, rot: &[(f64, f64)], harmonics: usize, out: &mut Vec<f64>) {
+    for (k, &(cr, sr)) in rot.iter().enumerate().take(harmonics) {
+        let (c, s) = (t.cos[k], t.sin[k]);
+        out.push(t.sinc[k] * (c * cr + s * sr));
+        out.push(t.sinc[k] * (s * cr - c * sr));
     }
 }
 
@@ -123,21 +168,25 @@ pub(super) fn fit_samples(
     let mean = samples.iter().map(|s| s.level).sum::<f64>() / nf;
     s.y.clear();
     s.y.extend(samples.iter().map(|x| x.level / mean));
+    // The cosine and sine of kω times the reference, per harmonic.
+    let w = 2.0 * PI * hz;
+    let mut rot = [(0.0, 0.0); MAX_HARMONICS];
+    for (k, r) in rot.iter_mut().enumerate().take(harmonics) {
+        let (sn, cn) = (((k + 1) as f64 * w * reference).rem_euclid(2.0 * PI)).sin_cos();
+        *r = (cn, sn);
+    }
     // Candidate columns (constant first, frame-major).
     s.rows.clear();
     for x in samples {
-        push_columns(hz, x.centre - reference, x.exposure, harmonics, &mut s.rows);
+        push_columns(&x.trig, &rot, harmonics, &mut s.rows);
     }
-    // The phases the frames sample, per harmonic: a harmonic on one phase is aliased to zero.
-    let w = 2.0 * PI * hz;
+    // The phases the frames sample, per harmonic: a harmonic on one phase is aliased to zero
+    // (the phasor's length does not change with the reference).
     s.sampled.clear();
     s.sampled.push(false);
-    for k in 1..=harmonics {
+    for k in 0..harmonics {
         let (c, sn) = samples.iter().fold((0.0, 0.0), |(c, sn), x| {
-            let (sin, cos) = (k as f64 * w * (x.centre - reference))
-                .rem_euclid(2.0 * PI)
-                .sin_cos();
-            (c + cos, sn + sin)
+            (c + x.trig.cos[k], sn + x.trig.sin[k])
         });
         s.sampled.push(c.hypot(sn) / nf <= MAX_PHASE_RESULTANT);
     }

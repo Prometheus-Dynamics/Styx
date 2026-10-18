@@ -15,6 +15,7 @@ use crate::math::Float as _;
 use crate::pwl::Pwl;
 
 use super::tuning::{AwbMode, AwbPrior, AwbTuning, CtCurve};
+use super::zones::ZoneCost;
 use crate::math::sort_keyed;
 use crate::pwl::PwlScratch;
 
@@ -120,29 +121,22 @@ pub(crate) struct SearchBuffers {
     across: Vec<(f64, f64)>,
 }
 
-/// The Bayesian search over zones already reduced to (R/G, B/G).
-pub(crate) struct Search<'a> {
+/// The Bayesian search over zones already reduced to (R/G, B/G), summed by `Z` (see
+/// [`ZoneCost`]).
+pub(crate) struct Search<'a, Z: ZoneCost> {
     pub tuning: &'a AwbTuning,
     pub curve: &'a CtCurve,
-    pub zones: &'a [(f64, f64)],
+    pub zones: &'a Z,
     pub prior: &'a Pwl,
     /// The temperature of the last estimate's best minimum (mired), which the hysteresis
     /// prefers.
     pub anchor: Option<f64>,
 }
 
-impl Search<'_> {
+impl<Z: ZoneCost> Search<'_, Z> {
     /// Sum of capped squared colour errors (non-greyness) for gains.
     fn delta2_sum(&self, gain_r: f64, gain_b: f64) -> f64 {
-        let t = self.tuning;
-        self.zones
-            .iter()
-            .map(|&(r, b)| {
-                let dr = gain_r * r - 1.0 - t.whitepoint_r;
-                let db = gain_b * b - 1.0 - t.whitepoint_b;
-                (dr * dr + db * db).min(t.delta_limit)
-            })
-            .sum()
+        self.zones.delta2_sum(self.tuning, gain_r, gain_b)
     }
 
     /// The prior log likelihood at `t` minus the hysteresis cost of leaving the anchor.

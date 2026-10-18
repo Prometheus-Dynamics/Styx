@@ -21,6 +21,7 @@ use alloc::vec::Vec;
 
 mod search;
 pub mod tuning;
+mod zones;
 
 use crate::config::CameraConfig;
 use crate::error::Result;
@@ -35,6 +36,7 @@ use crate::warm::WarmStart;
 use search::Search;
 use search::{Estimate, SearchBuffers, Zone};
 use tuning::{AwbTuning, CtCurve};
+use zones::Binned;
 
 /// Colour temperature reported by grey world, which cannot estimate one.
 const DEFAULT_CT: f64 = 4500.0;
@@ -73,6 +75,8 @@ struct Scratch {
     /// The grey world's sorts (R/G, B/G).
     sorts: [Vec<(f64, u32)>; 2],
     search: SearchBuffers,
+    /// The zones binned for the search.
+    bins: Binned,
 }
 
 impl Awb {
@@ -221,10 +225,11 @@ impl Awb {
             .as_ref()
             .and_then(|m| t.modes.get(m))
             .unwrap_or(&t.modes[&t.default_mode]);
+        sc.bins.fill(&sc.ratios);
         let s = Search {
             tuning: t,
             curve,
-            zones: &sc.ratios,
+            zones: &sc.bins,
             prior: &sc.prior,
             anchor: self.anchor.map(|t| 1e6 / t),
         };
