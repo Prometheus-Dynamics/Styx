@@ -166,6 +166,50 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **Code review, batch 1** (merges 9ad725c, 379d5f4, 4f5d53c, 42c5f67):
+  - Buffer pools keep a recycled buffer's bytes and length. `lease_sized` zero-fills only
+    growth, so a reused 1280x800 decode buffer is no longer cleared every frame; `lease()`
+    returns the chunk size for reused buffers too. Reused bytes are unspecified.
+    `NewestTx::send` drops the replaced value outside its lock.
+  - The firmware images are smaller on thumbv7em (core-only A 10,948 → 10,784 bytes;
+    B/C/D -200 to -300 bytes) and within their limits on thumbv6m. styx-graph's mock
+    provider, sample graphs and mock channel are behind a new `mock` feature.
+  - Native and PiSP code paths:
+    - The event thread waits without allocating.
+    - Sliced frames reuse their split buffers instead of boxing and copying the 16.7 KB
+      config per frame.
+    - The back end config builder no longer clones itself per frame.
+    - `from_pisp` and `from_pisp_raw` share one filler.
+  - The PiSP debug hooks (config dumps, `STYX_PISP_BE_PATCH`, the lines probe) are behind
+    the off-by-default `pisp-debug-hooks` feature (styx-pisp `debug-hooks`). An unknown
+    `STYX_PISP_BE_PATCH` block now refuses the patch. Sensor register writes of flips or
+    test patterns to the placeholder address 0 are refused.
+  - Codecs:
+    - zune-jpeg MJPEG decodes straight into pooled buffers.
+    - The TurboJPEG luma decoder reuses per-thread handles and runs restart-interval slices
+      on the codec pool instead of spawning threads per frame.
+    - FFmpeg's APP-segment strip no longer copies frames without APP segments, and its
+      pixel-format lookup no longer allocates. These two FFmpeg changes were not compiled on
+      the review host.
+    - With both `codec-turbojpeg` and `codec-mozjpeg`, turbojpeg takes precedence
+      (documented).
+  - DNG: the lossless-JPEG and strip/tile readers check sizes against the data before
+    allocating, so a malformed file is an error instead of a multi-GiB allocation. Lossless
+    JPEG decodes through a 9-bit Huffman lookup table with identical output.
+  - **Breaking:** the placeholder `LibcameraCapture` (it never delivered frames) is removed
+    from `styx_libcamera::prelude` and `styx::prelude`. Use the capture API's libcamera
+    backend.
+  - Downstream-specific details removed:
+    - `scripts/with-device-lock.sh`, `scripts/device-tests.sh` and the kernel-module install
+      scripts require `DEVICE` (no default device).
+    - The kernel-module build scripts require `KERNEL_TREE` (no sibling-checkout defaults).
+    - `scripts/device-tests.sh` and `tools/compare/device-run.sh` stop and restart the units
+      in `STYX_STOP_SERVICES`, none by default.
+    - Tests read `STYX_TUNING_DIR` (was `STYX_HELIOS_DIR`) and `STYX_SOFTISP_FRAME`, and
+      skip when they are unset.
+    - `docs/native-stack/helios-trial.md` is removed; docs and comments use neutral device
+      names. The OV9782 tuning and its overlay stay built in.
+
 - **Sliced frames: the completion cache sync only when the CPU read early.** A sliced native
   frame's buffers are synced for the CPU again on completion only if one of its leases was
   read (or prefetched) before it completed. A camera service only passes frames on, so it no
