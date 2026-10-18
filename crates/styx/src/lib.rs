@@ -708,9 +708,7 @@ pub mod prelude {
     pub use styx_core::prelude::*;
     pub use styx_core::prelude::{FrameTransform, Rotation90};
     #[cfg(all(feature = "facade", feature = "libcamera"))]
-    pub use styx_libcamera::prelude::{
-        LibcameraCapture, LibcameraDeviceInfo, probe_devices as probe_libcamera,
-    };
+    pub use styx_libcamera::prelude::{LibcameraDeviceInfo, probe_devices as probe_libcamera};
     #[cfg(all(feature = "facade", feature = "v4l2"))]
     pub use styx_v4l2::prelude::{V4l2DeviceInfo, probe_devices as probe_v4l2};
 }

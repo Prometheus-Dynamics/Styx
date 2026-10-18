@@ -253,7 +253,6 @@ fn image(t: &Tiff<'_>, ifd: &Ifd, (w, h, spp): (usize, usize, usize)) -> Result<
         .and_then(|v| v.checked_mul(spp))
         .filter(|&v| v <= MAX_SAMPLES && v > 0)
         .ok_or_else(|| malformed(format!("image {w}x{h}x{spp}")))?;
-    let mut out = vec![0u16; total];
     let (tw, th, offsets, counts) = if let Some(tw) = ifd.u32(tag::TILE_WIDTH) {
         (
             tw as usize,
@@ -283,8 +282,28 @@ fn image(t: &Tiff<'_>, ifd: &Ifd, (w, h, spp): (usize, usize, usize)) -> Result<
             offsets.len()
         )));
     }
+    // Check every block's bytes against the file before sizing anything from the header. A
+    // valid block takes at least one bit per sample, so it holds at most eight samples per
+    // byte, and the image is no larger than the blocks that carry it.
+    let mut blocks_data = Vec::with_capacity(blocks);
     for i in 0..blocks {
         let data = t.slice(offsets[i] as usize, counts[i] as usize)?;
+        if tw.saturating_mul(th).saturating_mul(spp) > data.len().saturating_mul(8) {
+            return Err(malformed(format!(
+                "{} bytes for a {tw}x{th}x{spp} strip or tile",
+                data.len()
+            )));
+        }
+        blocks_data.push(data);
+    }
+    let block_bytes: usize = blocks_data.iter().map(|d| d.len()).sum();
+    if total > block_bytes.saturating_mul(8) {
+        return Err(malformed(format!(
+            "image {w}x{h}x{spp} from {block_bytes} bytes of strips or tiles"
+        )));
+    }
+    let mut out = vec![0u16; total];
+    for (i, data) in blocks_data.into_iter().enumerate() {
         let block = decode_block(data, compression, (tw, th, spp), bits, t.order)?;
         let (x0, y0) = ((i % across) * tw, (i / across) * th);
         let cols = tw.min(w - x0) * spp;

@@ -15,18 +15,22 @@ unsafe impl Send for SendSyncScalingContext {}
 // this type is not exposed as a public shared mutable API.
 unsafe impl Sync for SendSyncScalingContext {}
 
+const PIXEL_FORMATS_BY_FOURCC: [(FourCc, PixelFormat); 8] = [
+    (FourCc::NV12, PixelFormat::NV12),
+    (FourCc::I420, PixelFormat::YUV420P),
+    (FourCc::YUYV, PixelFormat::YUYV422),
+    (FourCc::RG24, PixelFormat::RGB24),
+    (FourCc::RGBA, PixelFormat::RGBA),
+    (FourCc::BGR3, PixelFormat::BGR24),
+    (FourCc::BGRA, PixelFormat::BGRA),
+    (FourCc::GREY, PixelFormat::GRAY8),
+];
+
 pub(crate) fn pixel_format_for_fourcc(fourcc: FourCc) -> Option<PixelFormat> {
-    match fourcc.to_string().as_str() {
-        "NV12" => Some(PixelFormat::NV12),
-        "I420" => Some(PixelFormat::YUV420P),
-        "YUYV" => Some(PixelFormat::YUYV422),
-        "RG24" => Some(PixelFormat::RGB24),
-        "RGBA" => Some(PixelFormat::RGBA),
-        "BGR3" => Some(PixelFormat::BGR24),
-        "BGRA" => Some(PixelFormat::BGRA),
-        "GREY" => Some(PixelFormat::GRAY8),
-        _ => None,
-    }
+    PIXEL_FORMATS_BY_FOURCC
+        .iter()
+        .find(|(code, _)| *code == fourcc)
+        .map(|(_, format)| *format)
 }
 
 pub(crate) fn bytes_per_pixel(fmt: PixelFormat) -> Option<usize> {
