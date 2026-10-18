@@ -26,7 +26,7 @@ generic (register maps, i2c-dev, GPIO, uevents, VCM drivers, regulators and cloc
 | 9 | `styx-core` frame path `no_std` | **landed** (branch `work/core-nostd`): `FrameLease`, `BufferPool`, shared views, `MemoryRegion` (static or DMA memory, `RegionHooks` for cache maintenance and release), bounded queues (non-blocking and waker-based; blocking waits with `std`), transforms and metrics `no_std` + `alloc`; spin locks, or critical sections with feature `critical-section` (which also builds core for targets without compare-and-swap, `Arc` from `portable-atomic-util`); parking_lot, memfd / dma-buf and OS clocks stay with `std`. One metrics module: `styx_core::metrics` (the runtime's counters moved there; `styx_runtime::metrics` re-exports it). `styx-runtime`: `Frame::into_lease` hands a frame on as a `FrameLease` over the receiver's buffer (`LeaseBuffer` describes the buffer), used by `styx`'s native capture; `Frame` stays the stream item. See [portability.md](portability.md#the-frame-path-without-std-styx-core) |
 
 CM5, steps 4-6 against `dev` (fcc4343, the same code before the runtime), alternating builds,
-OV9782 1280x800, HeliOS tuning: see [portability.md](portability.md#linux-is-unchanged-by-the-runtime)
+OV9782 1280x800, tuning: see [portability.md](portability.md#linux-is-unchanged-by-the-runtime)
 for the table. Same syscalls and allocations per frame on the PiSP, raw and software paths;
 CPU and latency within the run-to-run spread; open → first frame and AE lock unchanged;
 `camera_controls`, `capture_frames` NV12/RGB/luma, `still_capture` (PiSP, bracket landed on
@@ -91,7 +91,7 @@ Linux types. The plan is to separate the two with a small hardware abstraction l
 the logic into a runtime that builds without `std`:
 
 ```
- apps, HeliOS, PipeWire/GStreamer          (Linux)          your firmware            (MCU)
+ apps, services, PipeWire/GStreamer        (Linux)          your firmware            (MCU)
  styx  facade, planner, service, IPC       std, Linux       -
  ─────────────────────────────────────────────────────────────────────────────────────────
  styx-native   Linux platform: V4L2/media/bridge receiver,  styx-port-<chip>: DCMI/LCD_CAM
@@ -853,7 +853,7 @@ the supervisor, `Busy` for exclusive open, `Timeout` for the bridge acknowledgem
 sensor-level error (`SensorError` from `styx-sensor`: chip id mismatch, invalid mode) maps
 to `InvalidConfig`/`NotFound` with its static context. `styx-native` keeps `NativeError`
 (with its `String` contexts and `Display`) as its public error, built from `Error` with a
-`From` impl, so `styx` and HeliOS see no change. Faults during streaming keep today's
+`From` impl, so `styx` and downstream services see no change. Faults during streaming keep today's
 semantics: one error item, then the stream ends; the camera still has to be stopped or
 dropped, which puts the sensor in standby and powers it down whatever failed.
 
@@ -1168,7 +1168,7 @@ can stop there if the review prefers. Steps 4-5 are where the code actually move
 | A regression in the bridge/`rp1-cfe` start/stop handshake (stop timeouts, a start oops) | step 5 moves `events.rs` and the quiesce gate verbatim into `V4l2Receiver`; `fault_tests` run on the mock before the CM5; the hardening runs and the soak twice |
 | Hidden per-frame cost from generic code (extra clones, locks taken twice) | syscall counts and CPU per frame in every Gate B; `cargo llvm-lines` |
 | The HAL fits Linux and DCMI but not the next receiver | review the traits against three more receivers on paper before step 5 (ESP32 LCD_CAM, ESP32-P4/STM32N6 CSI, rkisp1); `styx-hal` stays 0.x |
-| HeliOS breaks | public API kept; HeliOS's `styx-native-trial` branch built against each step |
+| Downstream breaks | public API kept; the downstream trial branch built against each step |
 | `no_std` creep fails late (a dependency pulls `std`) | step 1 adds the `thumbv7em` CI build; each later step keeps it green |
 | 64-bit atomics on 32-bit MCUs (Cortex-M, ESP32-C3) | `portable-atomic` with the `critical-section` fallback for counters |
 | Description/tuning parsing on MCUs | build-time compilation (step 2) instead of `toml` on target |
@@ -1272,5 +1272,5 @@ Answered by the review:
 1. Async I²C now or later (8.6)? **Now** (landed with step 2).
 2. Keep `styx-native` as the Linux crate's name or rename to `styx-linux`? **Keep.**
 3. Ports in-tree (`ports/`) or separate repositories? **In-tree, under `ports/`.**
-4. Should steps 1-3 land before the HeliOS ship? **Steps 1-3 now; 4-6 after the HeliOS image
+4. Should steps 1-3 land before the downstream ship? **Steps 1-3 now; 4-6 after the downstream image
    proof.**

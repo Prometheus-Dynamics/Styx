@@ -1,7 +1,7 @@
 # ov9282: the OV9782 sensor driver with a centred 1280x480 window
 
 This is Styx's build of the kernel's `ov9282` sensor driver, which drives the OV9281, OV9282 and
-OV9782. It is the Raze image kernel's own driver plus one mode:
+OV9782. It is the CM5 image kernel's own driver plus one mode:
 
 - **1280x480, centred on the array.** It covers array rows 168..647, which are rows 160..639 of
   the 1280x800 frame.
@@ -15,7 +15,7 @@ stock driver.
 
 | File | What |
 |---|---|
-| `ov9282.c` | The driver. Git history has three separate commits: the stock import, the Raze patches, and the Styx mode |
+| `ov9282.c` | The driver. Git history has three separate commits: the stock import, the image patches, and the Styx mode |
 | `Kbuild` | Out-of-tree build, object `ov9282.ko` |
 | `build.sh` | Builds against an image's own kernel tree. `verify` checks vermagic and the `struct module` size against a device |
 | `install/swap.sh` | Dev box only: swaps the running driver (stock ↔ Styx) |
@@ -25,10 +25,10 @@ stock driver.
 
 1. **Stock.** `drivers/media/i2c/ov9282.c` of raspberrypi/linux `rpi-7.2.y` at `53679a578`
    (7.2.9), sha256 `a3d85f3e…1c23`.
-2. **Raze.** Atlas-Hardware-Manager `devices/raze/gaia/buildroot-external/linux/ov9782`
-   (`8eb2f29`): `0001-media-i2c-ov9282-add-ov9782-variant-draft.patch` and
+2. **Image patches.** The CM5 device package's `buildroot-external/linux/ov9782`
+   (commit `8eb2f29`): `0001-media-i2c-ov9282-add-ov9782-variant-draft.patch` and
    `0002-media-i2c-ov9282-keep-control-defaults-inside-ranges.patch`.
-   - The result is byte-identical to the Raze image kernel's `ov9282.c`: sha256
+   - The result is byte-identical to the CM5 image kernel's `ov9282.c`: sha256
      `2e148740…c25c9c`, checked against the device image's Buildroot `linux-custom`.
    - The Buildroot package refuses any other base.
 3. **Styx.** `MODE_1280_480` and `mode_1280x480_regs` (`./build.sh diff` prints it).
@@ -76,7 +76,7 @@ still differ in `struct module`; the image kernel has tracing off, for example. 
 refuses the module ("section size must match the kernel's"). `DEVICE=root@host ./build.sh all`
 checks both.
 
-## Images (Gaia, Styx variants only)
+## Images (Styx variants only)
 
 Add the external tree to the Styx layer and enable the package:
 

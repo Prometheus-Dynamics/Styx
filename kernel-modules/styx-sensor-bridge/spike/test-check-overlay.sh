@@ -5,7 +5,7 @@
 #
 #   test-check-overlay.sh [LIVE]   LIVE: optional copy of a device's /proc/device-tree (or .dtb)
 #
-# Builds a small base tree shaped like a HeliOS CM5 booted with the ov9782
+# Builds a small base tree shaped like a CM5 image booted with the ov9782
 # overlay on cam0 (same labels and paths), then checks that the runtime overlay
 # passes on it, that the base alone fails, and that broken variants (receiver
 # not redirected, bridge pointing back, sensor left enabled, link frequency
@@ -16,10 +16,9 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 check="$here/check-overlay.sh"
 src="$here/../dts/styx-sensor-bridge-cm5-runtime-overlay.dts"
-workspace="$(cd "$here/../../../.." && pwd)"
-host_bin="$workspace/HeliOS-architecture-overhaul/gaia/build/helios-full-cm5/image/buildroot-output/host/bin"
+host_bin="${BUILDROOT_HOST_BIN:-}"
 if [[ -z "${DTC:-}" ]]; then
-    if [[ -x "$host_bin/dtc" ]]; then DTC="$host_bin/dtc"; else DTC=dtc; fi
+    if [[ -n "$host_bin" && -x "$host_bin/dtc" ]]; then DTC="$host_bin/dtc"; else DTC=dtc; fi
 fi
 command -v "$DTC" >/dev/null || { echo "SKIP: no dtc"; exit 0; }
 
@@ -92,7 +91,7 @@ EOF
 "$DTC" -@ -q -I dts -O dtb -o "$tmp/base.dtb" "$tmp/base.dts" || { echo "FAIL base tree"; exit 1; }
 "$DTC" -@ -q -I dts -O dtb -o "$tmp/overlay.dtbo" "$src" || { echo "FAIL overlay compile"; exit 1; }
 
-expect "runtime overlay passes on a HeliOS-shaped tree" 0 "$check" "$tmp/base.dtb" "$tmp/overlay.dtbo"
+expect "runtime overlay passes on a CM5-shaped tree" 0 "$check" "$tmp/base.dtb" "$tmp/overlay.dtbo"
 expect "base tree alone fails" 1 "$check" --merged "$tmp/base.dtb"
 
 grep -v 'remote-endpoint = <&bridge_ep>;' "$src" >"$tmp/noreceiver.dts"

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Styx sensor bridge on a Raspberry Pi 5 / CM5 camera port.
 //
-// Wired like the HeliOS OV9782 camera overlay (ov9782-overlay.dts): 2 data
+// Wired like the image's OV9782 camera overlay (ov9782-overlay.dts): 2 data
 // lanes, 400 MHz link, 24 MHz fixed clock, avdd from the port's cam regulator.
 // Instead of an I2C client node for the sensor it adds a platform node bound
 // by styx_sensor_bridge.ko, so address 0x60 stays free for i2c-dev and the
@@ -42,7 +42,7 @@
 				styx,min-size = <16 16>;
 				/* Embedded data pad: 16384 bytes x 1 line (the size rp1-cfe's
 				 * csi2 defaults its pad 1 to), as the runtime -emb overlay the
-				 * HeliOS trial ran with: frames report the exposure and gain
+				 * earlier trial ran with: frames report the exposure and gain
 				 * read back from the sensor. */
 				styx,embedded-data = <16384 1>;
 

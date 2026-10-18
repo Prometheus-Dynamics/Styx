@@ -19,13 +19,13 @@
 #   CROSS_COMPILE     toolchain prefix (default: $BR_HOST/bin/aarch64-linux-, else aarch64-linux-gnu-)
 #   KERNEL_RELEASE    expected release (6.12: 6.12.47-v8-16k; 7.2: read from $KERNEL_TREE)
 #   STYX_KBUILD_ROOT  work dir outside the git tree (default: ../linux-build-styx next to the repo)
-#   RAZE_PKG          optional path to a device package with extra driver patches; no default
+#   PATCH_PKG          optional path to a device package with extra driver patches; no default
 
 # shellcheck shell=bash
 # Callers set $workspace (the directory containing the repository).
 
 STYX_KERNEL="${STYX_KERNEL:-6.12}"
-RAZE_PKG="${RAZE_PKG:-}"
+PATCH_PKG="${PATCH_PKG:-}"
 KERNEL_TREE="${KERNEL_TREE:?set KERNEL_TREE to the built kernel tree of the device image (see kernel-modules/README)}"
 
 case "$STYX_KERNEL" in
@@ -79,4 +79,4 @@ kernel_vermagic() {
     echo "$KERNEL_RELEASE SMP preempt mod_unload modversions aarch64"
 }
 
-export STYX_KERNEL RAZE_PKG KERNEL_TREE KERNEL_SRC KERNEL_RELEASE BR_HOST CROSS_COMPILE STYX_KBUILD_ROOT
+export STYX_KERNEL PATCH_PKG KERNEL_TREE KERNEL_SRC KERNEL_RELEASE BR_HOST CROSS_COMPILE STYX_KBUILD_ROOT

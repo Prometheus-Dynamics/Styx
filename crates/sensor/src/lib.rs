@@ -233,7 +233,7 @@ pub use timing::{ExposureLimits, ExposureSpec, ExposureValue, FrameLength, Timin
 /// Programs embed them as the last entry of their search path, so a file of the same name
 /// installed on the system (or on `STYX_SENSOR_PATH`) overrides them.
 ///
-/// * `ov9782`: register values from the HeliOS `ov9782.c` driver, cleared for use in Styx by
+/// * `ov9782`: register values from the OV9782 kernel driver (`ov9782.c`), cleared for use in Styx by
 ///   its author (see the file's header).
 pub const BUILTIN_DESCRIPTIONS: &[(&str, &str)] =
     &[("ov9782", include_str!("../sensors/ov9782.toml"))];

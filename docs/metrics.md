@@ -230,7 +230,7 @@ the same as `styx_consumer_*` for camera service clients and frame sockets
 
 `FrameSocket::metrics()` (`FrameSocketMetrics`): the counters (`published`, `copied`, `served`,
 `leases`, `held_frames`, `revoked`, `unserved`), the lease hold times (send to close),
-`HopMetrics` of the frames sent and the snapshot of the serving process. Another process (HeliOS's
+`HopMetrics` of the frames sent and the snapshot of the serving process. Another process (a downstream
 profiler) reads them while the socket serves, without touching the frame socket itself (a
 connection to it is always a frame lease): the sibling endpoint `<path>.stats`
 (`frame_socket::stats_path`) answers each connection that writes `json` or `prometheus` with
@@ -452,7 +452,7 @@ CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld cargo build --release \
     --target aarch64-unknown-linux-musl -p styx-examples --features native,v4l2 \
     --bin hop_breakdown --bin metrics_top
 scp target/aarch64-unknown-linux-musl/release/{hop_breakdown,metrics_top} root@<device>:/tmp/
-DMESG_LOG=target/helios-dmesg-hops.log WAIT=1 scripts/with-device-lock.sh hops '
+DMESG_LOG=target/cm5-dmesg-hops.log WAIT=1 scripts/with-device-lock.sh hops '
   cd /tmp && ./metrics_top --overhead && ./hop_breakdown inproc 20 &&
   { ./hop_breakdown socket-serve /tmp/hops.sock 30 & sleep 3; ./hop_breakdown socket-fetch /tmp/hops.sock 20; wait; } &&
   { ./hop_breakdown service-serve /tmp/hops-svc.sock 32 & sleep 3; ./hop_breakdown service-client /tmp/hops-svc.sock 20; wait; }'

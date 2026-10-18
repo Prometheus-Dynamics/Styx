@@ -1,7 +1,7 @@
 # pispbe: the PiSP back end driver with a cheaper per-job config write
 
 A patched build of the Raspberry Pi PiSP back end driver (`pisp_be`, GPL-2.0) that replaces the
-image's module (Raspberry Pi 6.12 for HeliOS / Raze 1.0.x, rpi-7.2.y for Raze 1.1.0). Same module name, same uAPI, same hardware programming; the hardware sees the
+image's module (Raspberry Pi 6.12 for image release 1.0.x, rpi-7.2.y for 1.1.0). Same module name, same uAPI, same hardware programming; the hardware sees the
 same register values for every job. It only writes them faster: per job the stock driver spent
 117 µs of CPU in `pispbe_schedule()`, this one 7-8 µs. See
 [pisp.md](../../docs/native-stack/pisp.md#back-end-per-job) and
@@ -19,7 +19,7 @@ measurements.
 
 - Source: `drivers/media/platform/raspberrypi/pisp_be/{pisp_be.c,pisp_be_formats.h}` of
   raspberrypi/linux branch `rpi-7.2.y` at commit `53679a578` ("misc: rp1-pio: Minor cyclic DMA
-  error path fixes", `make kernelversion` 7.2.9), the kernel of Raze 1.1.0.
+  error path fixes", `make kernelversion` 7.2.9), the kernel of image release 1.1.0.
   sha256 of the originals: `pisp_be.c` 6d36c1076af7276aeb5b3f5f9d8f3f88ee6a3deb16477d1e3a977ca2459adbce,
   `pisp_be_formats.h` 2315e82cb18e89020e83220d3e3b7b13b64818ade5a70603021ea21dce635835
   (`pisp_be_formats.h` is unchanged). The directory's `pisp_be_config.h` is not used by the
@@ -114,7 +114,7 @@ For images, the driver belongs in the kernel build rather than an out-of-tree mo
 `BR2_LINUX_KERNEL_EXT_STYX_PISPBE` that replaces the kernel's `pisp_be.c` when it is the stock
 file this one was made from (sha256 above) and otherwise keeps the kernel's driver.
 
-## Images (Gaia, Styx variants only)
+## Images (Styx variants only)
 
 The package is `styx-pispbe` (`BR2_PACKAGE_STYX_PISPBE=y`), in the `STYX_KMODS` external tree
 with `styx-ov9282` and `styx-rp1-cfe` (`kernel-modules/ov9282/buildroot`). It works like them:

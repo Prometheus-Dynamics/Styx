@@ -1,7 +1,7 @@
 # rp1-cfe: the receiver driver with a mid-frame line event
 
 This is Styx's build of the Raspberry Pi 5 / CM5 camera receiver driver: the downstream
-`rp1_cfe` that the Raze image loads as `rp1-cfe-downstream`. It is the image's own driver plus
+`rp1_cfe` that the CM5 image loads as `rp1-cfe-downstream`. It is the image's own driver plus
 one event, which lets Styx start processing a frame before it has all arrived (see the slice
 plan in `docs/native-stack/`).
 
@@ -57,7 +57,7 @@ rmmod rp1_cfe_downstream && modprobe rp1_cfe_downstream         # back to the im
 systemctl start <your camera service>
 ```
 
-## Images (Gaia, Styx variants only)
+## Images (Styx variants only)
 
 The package is `styx-rp1-cfe` (`BR2_PACKAGE_STYX_RP1_CFE=y`), in the same external tree as
 `styx-ov9282` (`kernel-modules/ov9282/buildroot`, `STYX_KMODS`). It works the same way:

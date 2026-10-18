@@ -15,7 +15,7 @@ STYX_OV9282_LICENSE = GPL-2.0
 STYX_OV9282_MODULE_MAKE_OPTS = INSTALL_MOD_DIR=updates
 
 # The kernel's own ov9282.c the Styx driver was made from: rpi-7.2.y 53679a578 with
-# the Raze image's two OV9782 patches (see kernel-modules/ov9282/README.md).
+# the CM5 image's two OV9782 patches (see kernel-modules/ov9282/README.md).
 STYX_OV9282_BASE_SHA256 = 2e148740bc18e49454cd38396c614851cc5462d85234f2108755dee9c0c25c9c
 
 define STYX_OV9282_CHECK_BASE

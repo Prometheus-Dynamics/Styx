@@ -8,7 +8,7 @@ different underneath, and what was measured. Runnable Styx versions of every tas
 |---|---|---|---|---|
 | What it is | Rust camera stack: probing, planning, capture, ISP + 3A, sharing, codecs | C++ camera stack: pipeline handlers, IPA (3A) modules | Kernel API (ioctls on `/dev/video*`, `/dev/v4l-subdev*`) | Media framework elements over V4L2 / libcamera |
 | Cameras | USB/V4L2 (`v4l2`), CSI sensors driven from Rust through one generic kernel module or through their own kernel driver (`native`), libcamera cameras (optional `libcamera` backend) | Sensors with a libcamera-compatible kernel driver on supported pipelines (Raspberry Pi, Rockchip, IPU3, simple, ...), UVC | Whatever has a kernel driver; for raw CSI sensors you write the ISP and 3A yourself | What V4L2 / libcamera give |
-| Language, dependencies | Rust, `libc` only in the core | C++17, libstdc++, libyaml (on the HeliOS image also lttng-ust, libdw, gnutls); IPA modules run in-process when signed, else in a proxy process | C | C, GLib |
+| Language, dependencies | Rust, `libc` only in the core | C++17, libstdc++, libyaml (on the CM5 image also lttng-ust, libdw, gnutls); IPA modules run in-process when signed, else in a proxy process | C | C, GLib |
 | Processes | one (yours), plus an optional camera service for sharing | yours, plus an IPA proxy process for isolated (unsigned) IPAs | yours | yours |
 
 ## The same tasks side by side
@@ -262,7 +262,7 @@ which request, and when to re-queue).
 
 Styx: a camera service plans one shared capture for all clients, each asking for its own
 format and size, and passes frames as dma-bufs (`camera_service`); or the latest frame on a
-socket with a lease per consumer (`frame_socket`, HeliOS's `styx-frame-lease-v1`).
+socket with a lease per consumer (`frame_socket`, the `styx-frame-lease-v1` wire format).
 
 ```rust
 // camera process
@@ -322,8 +322,8 @@ the application's job (libcamera-rs: a closure that you typically forward into a
 ## Measured
 
 All on the CM5 dev box (OV9782 1280x800, NV12 through the PiSP) unless stated; libcamera is
-v0.6.0 on the same device with the same tuning file (HeliOS `ov9782.json`), through Styx's
-libcamera backend (`tools/compare`, one process per path) or the installed HeliOS service.
+v0.6.0 on the same device with the same tuning file (`ov9782.json`), through Styx's
+libcamera backend (`tools/compare`, one process per path) or the installed camera service.
 
 Fresh side by side (2026-10-02, device clock Aug 17): `tools/compare` (`styx-compare run
 --format NV12 --fps 30 --frames 300`, one process per run, three runs each, cold: nothing
@@ -367,11 +367,11 @@ Earlier measurements (same device, a brighter scene; sources in the last column)
 What is not comparable:
 
 * **Different sensor drivers and registers.** libcamera drives the OV9782 through the
-  `ov9282` kernel driver; Styx through the bridge with the HeliOS register set, which gives
+  `ov9282` kernel driver; Styx through the bridge with the image's OV9782 register set, which gives
   12-15% more signal at the same exposure and gain code (adding-a-camera.md). Styx under the
   same kernel driver is the closer comparison for start-up (its first frame is 8 ms later than
   through the bridge).
-* **Processes.** On the HeliOS image libcamera runs the Raspberry Pi IPA isolated in a proxy
+* **Processes.** On the CM5 image libcamera runs the Raspberry Pi IPA isolated in a proxy
   process (its modules are not signed there); `tools/compare` counts it (the "children" CPU).
   A build with signed IPA modules runs them in-process and saves that process's 1.5% and
   part of its memory.
@@ -402,7 +402,7 @@ From [TODO.md](../TODO.md) and what these examples found:
 * **Sensors**: the OV9782 is verified (bridge and kernel driver); the IMX219, IMX477, IMX708
   and OV5647 data files are unverified on hardware; one bridged sensor so far. libcamera has
   tuned helpers for many sensors.
-* **Tuning**: the OV9782 uses the HeliOS (libcamera) tuning; Styx has no tuning tool of its own
+* **Tuning**: the OV9782 uses the libcamera tuning; Styx has no tuning tool of its own
   (libcamera's Raspberry Pi tuning files are read as they are).
 * **Image quality**: black level at high gain differs from libcamera's by ~2.4 codes (10-bit)
   at 8x, unconfirmed; AE at 120 fps can chase 100 Hz flicker (anti-flicker in progress).

@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
 #
-# Installs the patched PiSP back end driver on a HeliOS CM5 dev box as an override of the
+# Installs the patched PiSP back end driver on a CM5 dev board as an override of the
 # image's module: pisp-be.ko -> /lib/modules/<release>/updates/ + depmod (the persistent root
 # overlay's upper layer; the read-only image is not touched). modprobe and udev then load it
 # instead of kernel/drivers/media/platform/raspberrypi/pisp_be/pisp-be.ko.xz (kmod searches

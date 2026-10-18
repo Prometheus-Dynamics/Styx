@@ -7,7 +7,7 @@ copying them.
   service plans one shared capture for all of them.
 - **`FrameServer`** publishes frames your own code produces to whoever connects.
 - **`FrameSocket`** (feature `frame-socket`) serves the latest frame, leased, in the
-  `styx-frame-lease-v1` format HeliOS uses (see [Frame socket](#frame-socket-styx-frame-lease-v1)).
+  `styx-frame-lease-v1` format a downstream camera service uses (see [Frame socket](#frame-socket-styx-frame-lease-v1)).
 
 The first two deliver to a `FrameClient`, which receives ordinary `FrameLease`s.
 
@@ -234,7 +234,7 @@ A `FrameClient` need not have a thread blocked in `recv`:
 - **The same cost:** one allocation per frame (its release record), no copies, nothing on the
   reactor's thread (`tests/zero_alloc.rs`).
 
-Many cameras on one thread (for HeliOS: N cameras into Daedalus host inputs):
+Many cameras on one thread (for a downstream service: N cameras into Daedalus host inputs):
 
 ```rust
 let clients: Vec<FrameClient> = ["front", "left", "right"].iter()
@@ -391,7 +391,7 @@ Clients connect with `FrameClient::connect` and get every published frame they h
 use styx::ipc::{FrameSocket, fetch_frame, lease_codec};
 
 let socket = FrameSocket::bind("/run/styx/front-frames.sock")?;
-// Advertise it (an Orion `ResourceEndpoint::Custom`: scheme `styx-frame-lease+unix`, the
+// Advertise it (a discovery service's `ResourceEndpoint::Custom`: scheme `styx-frame-lease+unix`, the
 // path as payload): "styx-frame-lease+unix:///run/styx/front-frames.sock".
 let uri = lease_codec::endpoint_uri(socket.path());
 for frame in &mut frames {
@@ -404,7 +404,7 @@ let frame = fetch_frame("/run/styx/front-frames.sock", Duration::from_secs(1))?;
 
 Each connection gets the latest frame once, as a little-endian `u32` length, a JSON payload and
 the frame's descriptors (`SCM_RIGHTS`) in one `sendmsg`. Styx owns the message and the lease:
-discovery (Orion) carries only the endpoint record, never frame bytes or lease state.
+discovery carries only the endpoint record, never frame bytes or lease state.
 
 **The message** is `styx_core::lease_codec` (feature `lease-codec` of `styx-core-rs`, unix;
 re-exported as `styx::ipc::lease_codec`), so a consumer needs no more of Styx:

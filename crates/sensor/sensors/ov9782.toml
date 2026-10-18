@@ -1,7 +1,7 @@
 # OmniVision OV9782: 1 MP (1280x800) global shutter colour sensor, 2-lane MIPI CSI-2.
 #
-# Provenance: register addresses, values and timing constants were read from the HeliOS kernel
-# driver `gaia/assets/buildroot/linux/ov9782/drivers/media/i2c/ov9782.c`, written by the
+# Provenance: register addresses, values and timing constants were read from the OV9782 kernel
+# driver (`drivers/media/i2c/ov9782.c` in a CM5 image's kernel tree), written by the
 # project owner, who cleared their use in Styx (2026-10-01). No code was copied.
 #
 # Values marked "not from the driver" come from elsewhere and are unverified.
@@ -42,7 +42,7 @@ black_level = { value = 64, bits = 10, settle_frames = 1 }
 # The driver enables avdd/dovdd/dvdd, waits 400-600 us, sets reset (logical 1), enables the
 # 24 MHz clock, waits 400-600 us, then writes MIPI_CTRL00. Supplies, reset and clock are
 # optional here because boards (the Raspberry Pi CM5 overlay among them) often manage them in
-# firmware or the kernel; the HeliOS overlay has no reset line.
+# firmware or the kernel; the CM5 image's overlay has no reset line.
 power_up = [
     { supply = "avdd", on = true, optional = true },
     { supply = "dovdd", on = true, optional = true },

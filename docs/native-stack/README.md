@@ -25,7 +25,7 @@ camera service, IPC, codecs) sits on top unchanged.
 ## Layers
 
 ```
-Apps and services     HeliOS, detectors, recorders, PipeWire / GStreamer bridges
+Apps and services     Downstream services, detectors, recorders, PipeWire / GStreamer bridges
 Styx API              Frames requests, async frame streams, typed controls     (exists, extended)
 Planner and service   shared captures, many processes                          (exists)
 Session runtime       buffers, fences, per-frame control timing
@@ -125,7 +125,7 @@ limits at that fps.
   `camera-mode.sh` switches), the A/B images and the updater alone; anything else may be changed
   as needed (say so in your report).
   - The baseline: the device boots the shipping configuration, the bridge overlay in
-    `config.txt` (`dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous` in place of HeliOS's
+    `config.txt` (`dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous` in place of the image's
     `ov9782-overlay`; `overlays/styx-sensor-bridge-cm5.dtbo`) with `styx_sensor_bridge.ko` in
     `/lib/modules/$(uname -r)/updates/` (on the root overlay's upper layer, `depmod`ed: udev
     loads it at boot). The patched back end driver `pisp-be.ko` is there too, overriding the
@@ -166,10 +166,10 @@ limits at that fps.
     (`native-pipeline --threads 4`, `StyxConfig::native_soft_threads(4)`; three at 120 fps;
     see [pipeline.md](pipeline.md#all-four-cores)); the software ISP defaults to two threads.
     While you hold the lock, stream its kernel log to a file on the host
-    (`ssh root@<device> dmesg -w > <worktree>/target/helios-dmesg-<time>.log &`) so a reboot
+    (`ssh root@<device> dmesg -w > <worktree>/target/cm5-dmesg-<time>.log &`) so a reboot
     leaves evidence; if it reboots or hangs, stop device work and report what you were doing.
-    Other (HeliOS) workloads also run on the box without this lock (`helios-vision-probe`,
-    `eidos-eval-fast-neon` were seen on 2026-10-03): check `ps` before a long run.
+    Other workloads also run on the box without this lock (`eidos-eval-fast-neon`
+    were seen on 2026-10-03): check `ps` before a long run.
 - Licensing: Styx is MIT/Apache. The OV9782 driver register values in `ov9782.toml` were
   cleared for use by their author. The OV9782 tuning (`crates/pipeline/tuning/ov9782.json`) is
   built into Styx under the same clearance. The bridge module is

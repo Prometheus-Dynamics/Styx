@@ -131,7 +131,7 @@ fn codec(kind: CodecKind, output: FourCc, impl_name: &'static str) -> Arc<TestCo
 #[test]
 fn lookups_without_a_kind_pick_a_decoder_over_an_encoder() {
     // As registered with FFmpeg: YUYV has encoders ("ffmpeg" sorts before "yuyv-cpu") and a
-    // decoder. HeliOS's `process(YUYV, frame)` got the MJPEG encoder.
+    // decoder. A downstream caller's `process(YUYV, frame)` got the MJPEG encoder.
     let registry = CodecRegistry::new();
     registry.register(
         FourCc::YUYV,

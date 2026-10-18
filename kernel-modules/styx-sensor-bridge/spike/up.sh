@@ -55,7 +55,7 @@ else
 fi
 
 if [ "${1:-}" = "--check" ]; then
-    say "state: $SERVICE $(systemctl is-active "$SERVICE")," \
+    say "state: $(service_state)," \
         "$SENSOR_DRIVER $(bound i2c "$SENSOR_DRIVER" "$SENSOR_CLIENT" && echo bound || echo unbound)," \
         "$CFE_DRIVER $(bound platform "$CFE_DRIVER" "$CFE_DEV" && echo bound || echo unbound)," \
         "overlay $(overlay_applied && echo applied || echo absent)," \
@@ -66,13 +66,17 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 # 1 --------------------------------------------------------------------------
-step="step 1 (stop $SERVICE)"
+step="step 1 (stop the camera service)"
 say "$step"
-if service_active; then
-    systemctl stop "$SERVICE" || fail "systemctl stop $SERVICE"
+if [ -z "$SERVICE" ]; then
+    say "STYX_CAMERA_SERVICE is unset: no camera service to stop"
+else
+    if service_active; then
+        systemctl stop "$SERVICE" || fail "systemctl stop $SERVICE"
+    fi
+    service_active && fail "$SERVICE is still active"
+    ok "$SERVICE stopped"
 fi
-service_active && fail "$SERVICE is still active"
-ok "$SERVICE stopped"
 wait_for 50 no_camera_users ||
     fail "camera nodes still open by PID(s): $(camera_users)"
 ok "no process holds the camera nodes"

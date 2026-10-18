@@ -37,9 +37,8 @@
 //!
 //! Built in:
 //!
-//! * `ov9782.json`: the HeliOS OV9782 tuning for the PiSP (HeliOS
-//!   `gaia/assets/hardware/runtime/usr/share/libcamera/ipa/rpi/pisp/ov9782.json`, now shipped by
-//!   the Atlas Raze device package), written by the project owner, who cleared its use in Styx;
+//! * `ov9782.json`: the OV9782 tuning for the PiSP (the copy shipped in a CM5 image's
+//!   libcamera `ipa/rpi/pisp` directory), written by the project owner, who cleared its use in Styx;
 //!   unchanged (md5 `f06d0ac91ed7c5f96b436d8912bd6daf`).
 //! * `generic.toml`: grey world, centre weighted, default tone curve, spatial and colour
 //!   denoise with the Raspberry Pi IPA's assumptions for an unknown sensor.

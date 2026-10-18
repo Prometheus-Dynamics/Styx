@@ -50,7 +50,7 @@ drives through its sensor bridge) or [`example_sensor.kernel.toml`](06_new_camer
 
 ### Where they ran
 
-2026-10-02, release builds: a Raspberry Pi CM5 (HeliOS image) with an OV9782 behind the Styx
+2026-10-02, release builds: a Raspberry Pi CM5 (downstream image) with an OV9782 behind the Styx
 sensor bridge (PiSP, embedded data) and a Logitech C270 on USB, in a dim room; and an x86
 desktop with a v4l2loopback camera fed by GStreamer (`gst-launch-1.0 videotestsrc ! v4l2sink`,
 `STYX_V4L2_ALLOW_VIRTUAL=1`). All of them ran on the CM5; on the desktop all but

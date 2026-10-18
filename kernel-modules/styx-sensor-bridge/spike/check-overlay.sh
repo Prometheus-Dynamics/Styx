@@ -15,16 +15,14 @@
 # lanes and link frequencies; styx,i2c-bus is the sensor's adapter; both ends
 # agree on the clock mode. Exits 1 on any failure.
 #
-# Tools: DTC, FDTOVERLAY, FDTGET (default: the HeliOS Buildroot host tools
-# next to this repository, else PATH).
+# Tools: DTC, FDTOVERLAY, FDTGET (from BUILDROOT_HOST_BIN if set, else PATH).
 
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-workspace="$(cd "$here/../../../.." && pwd)"
-host_bin="$workspace/HeliOS-architecture-overhaul/gaia/build/helios-full-cm5/image/buildroot-output/host/bin"
+host_bin="${BUILDROOT_HOST_BIN:-}"
 tool() {
-    if [[ -x "$host_bin/$1" ]]; then echo "$host_bin/$1"; else echo "$1"; fi
+    if [[ -n "$host_bin" && -x "$host_bin/$1" ]]; then echo "$host_bin/$1"; else echo "$1"; fi
 }
 DTC="${DTC:-$(tool dtc)}"
 FDTOVERLAY="${FDTOVERLAY:-$(tool fdtoverlay)}"

@@ -593,7 +593,7 @@ pub fn decode_message(
 
 /// The endpoint record URI of a frame socket at `path`: `styx-frame-lease+unix://` and the
 /// path (so `styx-frame-lease+unix:///run/styx/front.sock`). `None` for a relative or
-/// non-UTF-8 path. An Orion `ResourceEndpoint::Custom` carries the scheme
+/// non-UTF-8 path. A discovery service's `ResourceEndpoint::Custom` carries the scheme
 /// ([`ENDPOINT_SCHEME`]) and the path (the payload) apart; [`endpoint_payload`] gives the latter.
 pub fn endpoint_uri(path: &Path) -> Option<String> {
     Some(format!("{ENDPOINT_SCHEME}://{}", endpoint_payload(path)?))

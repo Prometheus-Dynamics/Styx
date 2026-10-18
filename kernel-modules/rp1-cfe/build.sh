@@ -10,8 +10,8 @@
 #   ./build.sh build    rp1-cfe-downstream.ko into $OUT (default <scratch>/styx-rp1-cfe/<release>)
 #   ./build.sh verify   vermagic, and with DEVICE=root@host the .gnu.linkonce.this_module
 #                       size against the device's own rp1-cfe-downstream.ko (read-only over ssh)
-#   ./build.sh diff     the Styx patch against the Raze image's driver (git history has the
-#                       stock import and the Raze patches as their own commits)
+#   ./build.sh diff     the Styx patch against the CM5 image's driver (git history has the
+#                       stock import and the image patches as their own commits)
 #   ./build.sh all      build + verify
 #
 # KERNEL_TREE  required: the device image's Buildroot linux-custom (a built tree);

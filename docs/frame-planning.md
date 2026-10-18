@@ -324,7 +324,7 @@ How regions are made (`RoiCrop`):
   ISP (not `gpu-isp`); one region (the others are views); shared with other consumers, the
   region is a view as below.
 - **A Raspberry Pi ISP through libcamera (`RoiCrop::Isp`):** per-output crops
-  (`rpi::ScalerCrops`, in HeliOS's libcamera 0.6.0 `+rpt20251202`): the main output
+  (`rpi::ScalerCrops`, in the CM5 image's libcamera 0.6.0 `+rpt20251202`): the main output
   shows the region, at the first region's size (even, at least 16x16), the second output the
   whole frame as the overview. Frames say which region they show (`FrameMeta::crop`, from the
   request's metadata). A new region shows 2-3 frames (~100 ms at 30 fps) after it is set,

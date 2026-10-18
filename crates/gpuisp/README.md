@@ -77,7 +77,7 @@ RADV and llvmpipe.
 ## Performance
 
 AMD Radeon RX 6800 XT (RADV, Mesa 26.2.3) against `styx-softisp` on the same host,
-`native-pipeline gpu-bench` over the recording with the HeliOS tuning (lens shading 32x32,
+`native-pipeline gpu-bench` over the recording with the OV9782 tuning (lens shading 32x32,
 CCM, adaptive contrast, statistics every fourth row, 3A at 15 Hz once settled), frames paced
 at the rate, 300 frames after 10 of warm-up. CPU is the whole process per frame (ISP,
 settings, 3A, the Vulkan driver's threads), wall the loop's `process` call:
@@ -100,7 +100,7 @@ latency equals four CPU threads' at a quarter of one thread's CPU. With a captur
 
 ## Raspberry Pi 5 / CM5 (V3D 7.1)
 
-The HeliOS image has no Vulkan driver. Mesa's **v3dv** supports the Pi 5's V3D 7.1 (Vulkan
+The CM5 image has no Vulkan driver. Mesa's **v3dv** supports the Pi 5's V3D 7.1 (Vulkan
 1.3, `storageBuffer8BitAccess`, `VK_EXT_external_memory_dma_buf`). An image would need:
 Mesa with `-Dvulkan-drivers=broadcom` (Buildroot `BR2_PACKAGE_MESA3D` +
 `BR2_PACKAGE_MESA3D_VULKAN_DRIVER_BROADCOM`; no Gallium/GL needed), the Vulkan loader

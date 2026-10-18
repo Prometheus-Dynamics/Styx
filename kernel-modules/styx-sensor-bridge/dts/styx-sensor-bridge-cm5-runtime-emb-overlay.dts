@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Styx sensor bridge on the HeliOS CM5 camera port, applied at runtime, with an
+// Styx sensor bridge on the CM5 camera port, applied at runtime, with an
 // embedded data pad: identical to styx-sensor-bridge-cm5-runtime-overlay.dts
 // except for styx,embedded-data below. The bridge then has a second source
 // pad (MEDIA_BUS_FMT_SENSOR_DATA, CSI-2 data type 0x12), which rp1-cfe links
@@ -7,7 +7,7 @@
 // OVERLAY_DTBO=styx-sensor-bridge-cm5-runtime-emb.dtbo sh up.sh.
 //
 // Unlike styx-sensor-bridge-cm5-overlay.dts (a boot overlay used in place of
-// ov9782-overlay), this one goes on top of the live device tree of a HeliOS
+// ov9782-overlay), this one goes on top of the live device tree of a CM5
 // image that booted with `dtoverlay=ov9782,cam0,clk-continuous`, through
 // configfs (/sys/kernel/config/device-tree/overlays/). Removing it restores
 // the original tree. It is fixed to that wiring: no parameters, because the

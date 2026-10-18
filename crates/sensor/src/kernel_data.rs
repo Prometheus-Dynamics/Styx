@@ -224,8 +224,8 @@ mod tests {
     fn per_format_pixel_rates_come_from_the_data_file() {
         use crate::SensorDescription;
         use crate::fallback::KernelControl;
-        use crate::fallback::tests::{helios_ov9782, range};
-        let mut r = helios_ov9782();
+        use crate::fallback::tests::{cm5_ov9782, range};
+        let mut r = cm5_ov9782();
         r.controls.insert(
             KernelControl::PixelRate,
             range(200_000_000, 200_000_000, 200_000_000, None),

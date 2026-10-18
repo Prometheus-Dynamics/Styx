@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
 #
-# Switches the HeliOS CM5 dev box between the two cam0 configurations, by the overlay line in
+# Switches the CM5 dev board between the two cam0 configurations, by the overlay line in
 # config.txt (boot partition /dev/mmcblk0p1), then reboots:
 #
 #   native     dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous: the OV9782 behind the Styx
@@ -14,6 +14,8 @@
 #
 #   camera-mode.sh native|libcamera|status [--no-reboot]
 #
+# <camera service> is the unit named by STYX_CAMERA_SERVICE; unset, no service is changed.
+#
 # Only that one line of config.txt is changed; the first switch keeps the original as
 # config.txt.pre-styx-bridge-boot. Run under the device lock.
 
@@ -22,7 +24,8 @@ set -eu
 NATIVE_LINE="dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous"
 LIBCAMERA_LINE="dtoverlay=ov9782-overlay,cam0,clk-continuous"
 BOOT_DEV="${BOOT_DEV:-/dev/mmcblk0p1}"
-SERVICE="helios-peripherals"
+# The image's camera service unit (STYX_CAMERA_SERVICE). Unset: none is stopped, started or enabled.
+SERVICE="${STYX_CAMERA_SERVICE:-}"
 
 say() { printf '[camera-mode] %s\n' "$*"; }
 die() {
@@ -63,7 +66,11 @@ status)
     else
         say "configured: unknown (no cam0 line of either kind in config.txt)"
     fi
-    say "running: $(running_mode); $SERVICE $(systemctl is-enabled "$SERVICE" 2>/dev/null || true)"
+    if [ -n "$SERVICE" ]; then
+        say "running: $(running_mode); $SERVICE $(systemctl is-enabled "$SERVICE" 2>/dev/null || true)"
+    else
+        say "running: $(running_mode); no camera service (STYX_CAMERA_SERVICE unset)"
+    fi
     exit 0
     ;;
 native)
@@ -103,12 +110,16 @@ sync
 # The runtime bridge (styx-bridge.service) needs the ov9782 boot overlay; it is never enabled
 # at boot here.
 systemctl disable styx-bridge.service >/dev/null 2>&1 || true
-if [ "$mode" = native ]; then
-    systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+if [ -z "$SERVICE" ]; then
+    say "STYX_CAMERA_SERVICE is unset: no camera service enabled or disabled"
 else
-    systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+    if [ "$mode" = native ]; then
+        systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+    else
+        systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+    fi
+    say "$SERVICE: $(systemctl is-enabled "$SERVICE" 2>/dev/null || true) at boot"
 fi
-say "$SERVICE: $(systemctl is-enabled "$SERVICE" 2>/dev/null || true) at boot"
 
 cleanup
 trap - EXIT

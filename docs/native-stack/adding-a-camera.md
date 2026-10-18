@@ -266,7 +266,7 @@ The same OV9782 on cam0, once under the upstream `ov9282` driver (Raspberry Pi k
 6.12.47; `systemctl stop styx-bridge`, `<camera service>` stopped; entity
 `ov9782 10-0060`, no metadata pad, so no embedded data) and once behind the bridge (with
 embedded data), back to back in the same scene (a dim room, warm lamp, 100 Hz light) on
-2026-10-02 (device clock Aug 17), the HeliOS tuning (`ov9782.json`), PiSP path (NV12
+2026-10-02 (device clock Aug 17), the OV9782 tuning (`ov9782.json`), PiSP path (NV12
 1280x800 + RGB 640x400, temporal denoise on), `native-pipeline pisp` unless noted. The data
 file is the built-in `ov9782.toml` (delays 2/2/1, the bridge's measured values).
 
@@ -307,7 +307,7 @@ Notes:
   EV -4, without it AE never locked in 150 frames, with it at frames 19-28 and moved
   exposure × gain by 2% in steady state instead of 11% (pipeline.md, "Flicker").
 * The driver's register set gives the sensor about 12-15% less signal than the bridge's
-  (HeliOS) registers at the same exposure and gain code; AE makes up for it with gain.
+  (CM5 image) registers at the same exposure and gain code; AE makes up for it with gain.
 * Starting is slower by 8 ms: the driver writes the whole mode at `STREAMON` on the 100 kHz
   bus, where the bridge path writes it while the ISP opens.
 * Found on the way: the PiSP path set its start values after the control schedule had
