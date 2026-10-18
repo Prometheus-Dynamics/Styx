@@ -3,7 +3,7 @@
 //! consumer, delivered through memfds without copying.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use styx::DeviceIdentity;
 use styx::ipc::{CameraService, FrameClient, IpcError};
@@ -172,6 +172,59 @@ fn clients_come_and_go_concurrently() {
     assert!(service.plan().is_none());
     drop(service);
     let _ = std::fs::remove_file(recording);
+}
+
+/// Join and first frame, with a quiet client connected. Old worst case: the join's capture
+/// restart waited for the quiet client's frames lock, which a client held for a whole
+/// `FRAME_WAIT` (50 ms) per wait; here a 10 fps camera makes most waits run out. The bound
+/// (300 ms) is about six frame intervals plus the restart, so it holds on a loaded CI machine.
+const JOIN_BOUND: Duration = Duration::from_millis(300);
+
+/// Dropping a client until the service counts it gone. The service notices a closed socket
+/// between its waits for frames (at most one `FRAME_WAIT` away); 100 ms leaves room for that
+/// and for a loaded machine.
+const LEAVE_BOUND: Duration = Duration::from_millis(100);
+
+#[test]
+fn a_quiet_client_does_not_hold_up_a_join_or_a_leave() {
+    let camera = VirtualSourceConfig::new()
+        .name("virtual-slow")
+        .format(FourCc::RG24)
+        .resolution(320, 180)
+        .fps(10)
+        .into_device();
+    let socket = socket_path("quiet");
+    // No spare captures: every join restarts the capture, which takes each client's frames.
+    let service = CameraService::new(camera)
+        .keep_streaming()
+        .spare_clients(0)
+        .serve(&socket)
+        .unwrap();
+    let request = Frames::formats([FourCc::RG24]).size(320, 180);
+
+    // Connected, and never reads a frame.
+    let quiet = FrameClient::request(&socket, &request).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+
+    let start = Instant::now();
+    let joiner = FrameClient::request(&socket, &request).unwrap();
+    let RecvOutcome::Data(_) = joiner.recv(Duration::from_secs(2)) else {
+        panic!("the joining client got no frame");
+    };
+    let join = start.elapsed();
+    assert!(join < JOIN_BOUND, "join and first frame took {join:?}");
+
+    let third = FrameClient::request(&socket, &request).unwrap();
+    assert_eq!(service.stats().clients, 3);
+    let start = Instant::now();
+    drop(third);
+    while service.stats().clients != 2 && start.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let leave = start.elapsed();
+    assert_eq!(service.stats().clients, 2);
+    assert!(leave < LEAVE_BOUND, "leave took {leave:?}");
+    drop((quiet, joiner));
 }
 
 #[cfg(feature = "async")]

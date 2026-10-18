@@ -48,6 +48,10 @@ impl Codec for MozjpegEncoder {
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
+        self.process_ref(&input)
+    }
+
+    fn process_ref(&self, input: &FrameLease) -> Result<FrameLease, CodecError> {
         let meta = input.meta();
         if meta.format.code != self.descriptor.input {
             return Err(CodecError::FormatMismatch {
@@ -72,8 +76,12 @@ impl Codec for MozjpegEncoder {
             .start_compress(Vec::new())
             .map_err(|e| CodecError::Codec(e.to_string()))?;
         for y in 0..height {
-            let line = &plane.data()[y * stride..];
-            dest.write_scanlines(&line[..width * 3])
+            let line = plane
+                .data()
+                .get(y * stride..)
+                .and_then(|line| line.get(..width * 3))
+                .ok_or_else(|| CodecError::Codec("encoder frame plane too short".into()))?;
+            dest.write_scanlines(line)
                 .map_err(|e| CodecError::Codec(e.to_string()))?;
         }
         let jpeg = dest
@@ -133,8 +141,12 @@ impl Codec for MozjpegEncoder {
             .start_compress(Vec::new())
             .map_err(|e| CodecError::Codec(e.to_string()))?;
         for y in 0..height {
-            let line = &plane.data()[y * stride..];
-            dest.write_scanlines(&line[..width * 3])
+            let line = plane
+                .data()
+                .get(y * stride..)
+                .and_then(|line| line.get(..width * 3))
+                .ok_or_else(|| CodecError::Codec("encoder frame plane too short".into()))?;
+            dest.write_scanlines(line)
                 .map_err(|e| CodecError::Codec(e.to_string()))?;
         }
         let jpeg = dest
