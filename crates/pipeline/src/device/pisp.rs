@@ -694,6 +694,13 @@ impl PispPipeline {
             .map_or([0; 2], BackEndStream::spare_misses)
     }
 
+    /// Spare buffers adopted per output without a prepare (see [`BackEndStream::spare_unprepared`]).
+    pub fn spare_unprepared(&self) -> [u64; 2] {
+        self.be_dev
+            .as_ref()
+            .map_or([0; 2], BackEndStream::spare_unprepared)
+    }
+
     /// Gives output `i`'s buffer `index` back (one output of a job, e.g. when its two outputs
     /// go to different consumers).
     pub fn release_output(&mut self, i: usize, index: u32) {

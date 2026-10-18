@@ -11,7 +11,7 @@
 //! channels. Dropping the grower ends the helper after its current allocation and joins it.
 
 use std::collections::VecDeque;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 
@@ -61,15 +61,23 @@ impl Allocate for HeapAllocator {
     }
 }
 
-/// A buffer ready to adopt: mapped and exported.
+/// Maps a dma-buf as a queue's buffer, ahead of its first queueing (`VIDIOC_PREPARE_BUF`), so
+/// the queueing does not attach and map it.
+pub(super) trait Prepare: Send + 'static {
+    /// Maps `dmabuf` (of `len` bytes) as buffer `index`.
+    fn prepare(&mut self, index: u32, dmabuf: BorrowedFd<'_>, len: usize) -> Result<()>;
+}
+
+/// A buffer ready to adopt: mapped and exported, and prepared when `prepared`.
 pub(super) struct Spare {
     len: usize,
     map: Mapping,
     fd: OwnedFd,
+    prepared: bool,
 }
 
 impl Spare {
-    /// Maps and exports `buf`.
+    /// Maps and exports `buf`; not prepared yet.
     pub(super) fn new(buf: DmaBuf) -> Result<Self> {
         let len = buf.len();
         let map = buf.map()?;
@@ -77,7 +85,13 @@ impl Spare {
             len,
             map,
             fd: buf.into_fd(),
+            prepared: false,
         })
+    }
+
+    /// Whether the queue has the buffer prepared (queueing it then skips the mapping).
+    pub(super) fn prepared(&self) -> bool {
+        self.prepared
     }
 
     /// The mapping and the dma-buf, for the output's lists.
@@ -89,8 +103,8 @@ impl Spare {
 /// The helper thread of one output and the handoff with it. At most one spare is in flight or
 /// ready at a time.
 pub(super) struct SpareGrower {
-    /// Requests to the helper; dropped to stop it.
-    jobs: Option<Sender<()>>,
+    /// Requests to the helper (the buffer index the spare is for); dropped to stop it.
+    jobs: Option<Sender<u32>>,
     /// Results from the helper, one per request.
     results: Receiver<Result<Spare>>,
     helper: Option<JoinHandle<()>>,
@@ -101,16 +115,29 @@ pub(super) struct SpareGrower {
 }
 
 impl SpareGrower {
-    /// Starts the helper thread, which allocates `len`-byte spares from `alloc` on request.
-    pub(super) fn spawn<A: Allocate>(mut alloc: A, len: usize, name: &'static str) -> Result<Self> {
-        let (jobs, job_rx) = mpsc::channel::<()>();
+    /// Starts the helper thread, which allocates `len`-byte spares from `alloc` on request,
+    /// maps each with `prep` as the requested buffer index, and sends it back.
+    pub(super) fn spawn<A: Allocate, P: Prepare>(
+        mut alloc: A,
+        mut prep: P,
+        len: usize,
+        name: &'static str,
+    ) -> Result<Self> {
+        let (jobs, job_rx) = mpsc::channel::<u32>();
         let (result_tx, results) = mpsc::channel();
         let helper = thread::Builder::new()
             .name(format!("pisp-grow-{name}"))
             .spawn(move || {
-                for _ in job_rx {
+                for index in job_rx {
                     let spare = profile::time(name, "grow", || {
                         alloc.allocate(len, true).and_then(Spare::new)
+                    })
+                    .map(|mut spare| {
+                        // A failed prepare still leaves a usable buffer: the queueing maps it.
+                        let fd = spare.fd.as_fd();
+                        spare.prepared =
+                            profile::time(name, "prepare", || prep.prepare(index, fd, len)).is_ok();
+                        spare
                     });
                     // The grower was dropped: the spare goes with it.
                     if result_tx.send(spare).is_err() {
@@ -144,13 +171,14 @@ impl SpareGrower {
         }
     }
 
-    /// Asks for one more spare, unless one is ready or in flight. Never waits.
-    pub(super) fn request(&mut self) {
+    /// Asks for one more spare for buffer `index`, unless one is ready or in flight. Never
+    /// waits.
+    pub(super) fn request(&mut self, index: u32) {
         self.poll();
         if self.requested || self.ready.is_some() {
             return;
         }
-        self.requested = self.jobs.as_ref().is_some_and(|j| j.send(()).is_ok());
+        self.requested = self.jobs.as_ref().is_some_and(|j| j.send(index).is_ok());
     }
 
     /// The ready spare, if one arrived and is `len` bytes (a spare of another size, from before
@@ -216,8 +244,8 @@ pub(super) fn top_up_free(free: &mut VecDeque<u32>, spares: &mut impl Spares) {
 #[cfg(test)]
 mod tests {
     use std::os::fd::AsFd;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -270,6 +298,37 @@ mod tests {
         }
     }
 
+    /// Records the buffer indices it prepared; fails when `fail` is set; blocked on `gate` when
+    /// given.
+    struct FakePrepare {
+        calls: Arc<Mutex<Vec<u32>>>,
+        fail: Arc<AtomicBool>,
+        gate: Option<Receiver<()>>,
+    }
+
+    impl FakePrepare {
+        fn new() -> Self {
+            Self {
+                calls: Arc::default(),
+                fail: Arc::default(),
+                gate: None,
+            }
+        }
+    }
+
+    impl Prepare for FakePrepare {
+        fn prepare(&mut self, index: u32, _dmabuf: BorrowedFd<'_>, _len: usize) -> Result<()> {
+            if let Some(gate) = &self.gate {
+                let _ = gate.recv();
+            }
+            self.calls.lock().unwrap().push(index);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(DeviceError::Setup("fake: prepare failed".into()));
+            }
+            Ok(())
+        }
+    }
+
     const LEN: usize = 4096;
 
     /// Waits (up to 5 s) for a spare of `LEN` bytes; the test thread may wait, the capture
@@ -289,9 +348,9 @@ mod tests {
 
     #[test]
     fn a_requested_spare_is_adopted_once_ready() {
-        let mut g = SpareGrower::spawn(Fake::new(), LEN, "t").unwrap();
+        let mut g = SpareGrower::spawn(Fake::new(), FakePrepare::new(), LEN, "t").unwrap();
         assert!(g.take(LEN).is_none(), "nothing requested yet");
-        g.request();
+        g.request(0);
         let spare = wait_take(&mut g).expect("spare");
         let (map, fd) = spare.into_parts();
         assert_eq!(map.len(), LEN);
@@ -306,14 +365,50 @@ mod tests {
     }
 
     #[test]
+    fn the_spare_is_prepared_for_the_index_it_is_requested_for() {
+        let prep = FakePrepare::new();
+        let calls = prep.calls.clone();
+        let mut g = SpareGrower::spawn(Fake::new(), prep, LEN, "t").unwrap();
+        g.request(3);
+        let spare = wait_take(&mut g).expect("spare");
+        assert!(spare.prepared());
+        assert_eq!(*calls.lock().unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn a_spare_is_not_adopted_before_its_prepare_returns() {
+        let (open, gate) = mpsc::channel();
+        let prep = FakePrepare {
+            gate: Some(gate),
+            ..FakePrepare::new()
+        };
+        let mut g = SpareGrower::spawn(Fake::new(), prep, LEN, "t").unwrap();
+        g.request(0);
+        thread::sleep(Duration::from_millis(20));
+        assert!(g.take(LEN).is_none(), "the prepare is still running");
+        open.send(()).unwrap();
+        assert!(wait_take(&mut g).expect("spare").prepared());
+    }
+
+    #[test]
+    fn a_failed_prepare_is_adopted_unprepared() {
+        let prep = FakePrepare::new();
+        prep.fail.store(true, Ordering::SeqCst);
+        let mut g = SpareGrower::spawn(Fake::new(), prep, LEN, "t").unwrap();
+        g.request(0);
+        let spare = wait_take(&mut g).expect("spare");
+        assert!(!spare.prepared());
+    }
+
+    #[test]
     fn take_never_waits_for_the_allocator() {
         let (open, gate) = mpsc::channel();
         let fake = Fake {
             gate: Some(gate),
             ..Fake::new()
         };
-        let mut g = SpareGrower::spawn(fake, LEN, "t").unwrap();
-        g.request();
+        let mut g = SpareGrower::spawn(fake, FakePrepare::new(), LEN, "t").unwrap();
+        g.request(0);
         let start = Instant::now();
         assert!(g.take(LEN).is_none());
         assert!(
@@ -328,13 +423,13 @@ mod tests {
     fn one_allocation_per_request() {
         let fake = Fake::new();
         let allocs = fake.allocs.clone();
-        let mut g = SpareGrower::spawn(fake, LEN, "t").unwrap();
-        g.request();
-        g.request();
-        g.request();
+        let mut g = SpareGrower::spawn(fake, FakePrepare::new(), LEN, "t").unwrap();
+        g.request(0);
+        g.request(0);
+        g.request(0);
         let _ = wait_take(&mut g).expect("spare");
         assert_eq!(allocs.load(Ordering::SeqCst), 1);
-        g.request();
+        g.request(0);
         let _ = wait_take(&mut g).expect("second spare");
         assert_eq!(allocs.load(Ordering::SeqCst), 2);
     }
@@ -343,13 +438,13 @@ mod tests {
     fn a_failed_allocation_is_not_adopted_and_is_retried() {
         let fake = Fake::new();
         let fail = fake.fail.clone();
-        let mut g = SpareGrower::spawn(fake, LEN, "t").unwrap();
+        let mut g = SpareGrower::spawn(fake, FakePrepare::new(), LEN, "t").unwrap();
         fail.store(true, Ordering::SeqCst);
-        g.request();
+        g.request(0);
         thread::sleep(Duration::from_millis(50));
         assert!(g.take(LEN).is_none());
         fail.store(false, Ordering::SeqCst);
-        g.request();
+        g.request(0);
         assert!(wait_take(&mut g).is_some());
     }
 
@@ -359,8 +454,8 @@ mod tests {
             extra: LEN,
             ..Fake::new()
         };
-        let mut g = SpareGrower::spawn(fake, LEN, "t").unwrap();
-        g.request();
+        let mut g = SpareGrower::spawn(fake, FakePrepare::new(), LEN, "t").unwrap();
+        g.request(0);
         thread::sleep(Duration::from_millis(50));
         assert!(g.take(LEN).is_none());
         assert!(g.take(2 * LEN).is_none(), "the discarded spare is gone");
@@ -370,8 +465,8 @@ mod tests {
     fn dropping_the_grower_joins_the_helper() {
         let fake = Fake::new();
         let dropped = fake.dropped();
-        let mut g = SpareGrower::spawn(fake, LEN, "t").unwrap();
-        g.request();
+        let mut g = SpareGrower::spawn(fake, FakePrepare::new(), LEN, "t").unwrap();
+        g.request(0);
         drop(g);
         assert!(
             dropped.load(Ordering::SeqCst),
@@ -383,7 +478,7 @@ mod tests {
     fn dropping_an_idle_grower_joins_the_helper() {
         let fake = Fake::new();
         let dropped = fake.dropped();
-        drop(SpareGrower::spawn(fake, LEN, "t").unwrap());
+        drop(SpareGrower::spawn(fake, FakePrepare::new(), LEN, "t").unwrap());
         assert!(dropped.load(Ordering::SeqCst));
     }
 

@@ -16,7 +16,7 @@ use styx_kernel::v4l2::{
     BufType, DequeuedBuffer, Memory, Planes, QueueBuffer, QueuePlane, VideoDevice,
 };
 
-use super::be_spare::{Allocate, HeapAllocator, Spare, SpareGrower, Spares};
+use super::be_spare::{Allocate, HeapAllocator, Prepare, Spare, SpareGrower, Spares};
 use super::{DeviceError, Result};
 
 /// Where a back end output's buffers come from.
@@ -55,6 +55,21 @@ pub(super) struct OutputQueue {
     slots: usize,
     /// The helper that allocates spares; `None` when every slot has a buffer (or no growth).
     grower: Option<SpareGrower>,
+    /// Spares adopted without being prepared (the queueing maps them).
+    unprepared: u64,
+}
+
+/// Prepares the queue's buffers through the helper's own handle on the node (the same queue).
+struct QueuePrepare {
+    dev: VideoDevice,
+}
+
+impl Prepare for QueuePrepare {
+    fn prepare(&mut self, index: u32, dmabuf: BorrowedFd<'_>, len: usize) -> Result<()> {
+        let mut q = QueueBuffer::dmabuf(TYPE, index, &[dmabuf]);
+        q.planes[0].length = len as u32;
+        Ok(self.dev.prepare(&q)?)
+    }
 }
 
 const TYPE: BufType = BufType::VideoCaptureMplane;
@@ -96,6 +111,11 @@ impl OutputQueue {
                 }
                 let bytes = size.next_multiple_of(4096);
                 let initial = initial.clamp(1, count);
+                let spare_dev = if initial < count {
+                    Some(dev.try_clone()?)
+                } else {
+                    None
+                };
                 let mut queue = Self {
                     dev,
                     memory: Memory::DmaBuf,
@@ -105,6 +125,7 @@ impl OutputQueue {
                     len: bytes as u32,
                     slots: count as usize,
                     grower: None,
+                    unprepared: 0,
                 };
                 let mut allocator = HeapAllocator::new(heaps, name);
                 for i in 0..initial {
@@ -113,8 +134,9 @@ impl OutputQueue {
                     let buf = allocator.allocate(bytes, i >= contiguous)?;
                     queue.push(Spare::new(buf)?);
                 }
-                if initial < count {
-                    queue.grower = Some(SpareGrower::spawn(allocator, bytes, name)?);
+                if let Some(dev) = spare_dev {
+                    let prep = QueuePrepare { dev };
+                    queue.grower = Some(SpareGrower::spawn(allocator, prep, bytes, name)?);
                 }
                 Ok(queue)
             }
@@ -146,6 +168,7 @@ impl OutputQueue {
                     fds,
                     len,
                     grower: None,
+                    unprepared: 0,
                 })
             }
         }
@@ -157,6 +180,11 @@ impl OutputQueue {
         self.maps.push(map);
         self.fds.push(fd);
         self.maps.len() as u32 - 1
+    }
+
+    /// Spares adopted without being prepared since the queue opened.
+    pub(super) fn unprepared(&self) -> u64 {
+        self.unprepared
     }
 
     /// Whether the buffers come from a cached dma-heap (CPU reads at memory speed) rather than
@@ -243,14 +271,18 @@ impl OutputQueue {
 impl Spares for OutputQueue {
     fn adopt(&mut self) -> Option<u32> {
         let spare = self.grower.as_mut()?.take(self.len as usize)?;
+        if !spare.prepared() {
+            self.unprepared += 1;
+        }
         Some(self.push(spare))
     }
 
     fn request(&mut self) {
+        // The spare becomes buffer `maps.len()`: adoption is the only way it grows.
         if self.maps.len() < self.slots
             && let Some(g) = self.grower.as_mut()
         {
-            g.request();
+            g.request(self.maps.len() as u32);
         }
     }
 }

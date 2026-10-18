@@ -297,6 +297,20 @@ impl VideoDevice {
         })
     }
 
+    /// Another handle on the same node (a dup of the descriptor): the same queues, so buffer
+    /// operations on either handle apply to one queue. For a helper thread.
+    pub fn try_clone(&self) -> Result<Self> {
+        let fd = self.fd.try_clone().map_err(|e| crate::Error::Sys {
+            call: "dup",
+            source: e,
+        })?;
+        Ok(Self {
+            fd,
+            path: self.path.clone(),
+            caps: self.caps.clone(),
+        })
+    }
+
     /// Opens a video node read-only (non-blocking, close-on-exec): enough for querying,
     /// enumerating and reading controls; most drivers refuse changes on such a handle.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {

@@ -623,6 +623,13 @@ impl BackEndStream {
             .map(|o| o.as_ref().map_or(0, |o| o.misses))
     }
 
+    /// Spare buffers per output adopted before their prepare (the queueing mapped them).
+    pub fn spare_unprepared(&self) -> [u64; 2] {
+        self.outputs
+            .each_ref()
+            .map(|o| o.as_ref().map_or(0, |o| o.queue.unprepared()))
+    }
+
     /// Hands output `i`'s buffer `index` back for reuse (outputs of one job can be held for
     /// different times).
     pub fn release_output(&mut self, i: usize, index: u32) {

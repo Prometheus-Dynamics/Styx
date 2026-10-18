@@ -291,7 +291,8 @@ pub(super) fn spawn(
                             );
                         } else {
                             let spare_misses = p.spare_misses();
-                            crate::trace::debug!(backend = "native", output, held_drops, ?spare_misses, "frame dropped: buffers held");
+                            let spare_unprepared = p.spare_unprepared();
+                            crate::trace::debug!(backend = "native", output, held_drops, ?spare_misses, ?spare_unprepared, "frame dropped: buffers held");
                         }
                         continue;
                     }

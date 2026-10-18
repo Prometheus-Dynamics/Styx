@@ -347,6 +347,7 @@ ioctls! {
     VIDIOC_REQBUFS = iowr::<v4l2_requestbuffers>(b'V', 8);
     VIDIOC_QUERYBUF = iowr::<v4l2_buffer>(b'V', 9);
     VIDIOC_QBUF = iowr::<v4l2_buffer>(b'V', 15);
+    VIDIOC_PREPARE_BUF = iowr::<v4l2_buffer>(b'V', 93);
     VIDIOC_EXPBUF = iowr::<v4l2_exportbuffer>(b'V', 16);
     VIDIOC_DQBUF = iowr::<v4l2_buffer>(b'V', 17);
     VIDIOC_STREAMON = iow::<libc::c_int>(b'V', 18);
@@ -452,6 +453,7 @@ mod tests {
         assert_eq!(VIDIOC_REQBUFS.nr, 0xc014_5608);
         assert_eq!(VIDIOC_QUERYBUF.nr, 0xc058_5609);
         assert_eq!(VIDIOC_QBUF.nr, 0xc058_560f);
+        assert_eq!(VIDIOC_PREPARE_BUF.nr, 0xc058_565d);
         assert_eq!(VIDIOC_EXPBUF.nr, 0xc040_5610);
         assert_eq!(VIDIOC_DQBUF.nr, 0xc058_5611);
         assert_eq!(VIDIOC_STREAMON.nr, 0x4004_5612);
