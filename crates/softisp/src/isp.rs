@@ -195,7 +195,8 @@ impl SoftIsp {
     /// change). Rebuilding costs about a third of a millisecond at 1280x800 on a Cortex-A76,
     /// and adaptive lens shading changes its grid a little on most frames. Only the fp16
     /// arithmetic keeps tables across white balance and gain changes; the integer
-    /// arithmetic rebuilds them whenever any gain changes.
+    /// arithmetic folds the gains into its rows, so it keeps them only while the white
+    /// balance, digital gain and black levels are unchanged, and rebuilds them otherwise.
     pub fn set_lens_shading_tolerance(&mut self, tolerance: f32) {
         self.lsc_tolerance = tolerance.max(0.0);
     }
@@ -366,13 +367,13 @@ impl SoftIsp {
         for qy in quad_rows {
             w.stats_pair(p, src, &g, 2 * qy);
         }
-        let part = w.stats.as_ref()?;
+        let part = w.stats.take()?;
         Some(match acc {
             Some(mut acc) => {
-                acc.merge(part);
+                acc.merge(&part);
                 acc
             }
-            None => part.clone(),
+            None => part,
         })
     }
 
@@ -471,7 +472,8 @@ impl SoftIsp {
         Ok(p.stats.as_ref().filter(|_| stats).map(|_| {
             let mut ws = self.workers[..used].iter_mut().map(worker_mut);
             let first = ws.next().expect("one worker at least");
-            let mut acc = first.stats.clone().expect("stats prepared");
+            // Taken, not cloned: `begin_frame` makes the accumulator anew for the next frame.
+            let mut acc = first.stats.take().expect("stats prepared");
             for w in ws {
                 acc.merge(w.stats.as_ref().expect("stats prepared"));
             }

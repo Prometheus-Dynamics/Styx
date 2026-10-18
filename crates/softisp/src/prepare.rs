@@ -1,11 +1,12 @@
 //! Parameters compiled into the fixed-point tables the row loop uses.
 
-use alloc::{boxed::Box, format, vec, vec::Vec};
+use alloc::{format, vec, vec::Vec};
+use styx_core::sync::Arc;
 
 use crate::format::{CfaPattern, Channel, RawFormat};
 use crate::params::ToneCurve;
 use crate::params::{Arithmetic, Demosaic, IspParams, LensShading, YuvMatrix};
-use crate::prepare_half::HalfPrep;
+use crate::prepare_half::{HalfPrep, close};
 use crate::simd::poly::PolyTone;
 use crate::simd::scalar::WORK_MAX;
 use crate::simd::{ToneLut, YuvCoeffs};
@@ -57,14 +58,26 @@ pub(crate) struct IntPrep {
     pub shift: u32,
     /// `black[row parity][column parity]`.
     pub black: [[u16; 2]; 2],
-    pub gains: GainRows,
+    /// Shared with the previous tables when they are still valid ([`GainSource`]).
+    pub gains: Arc<GainRows>,
+    /// What `gains` was built from.
+    gain_src: GainSource,
     /// Q12 colour matrix.
     pub ccm: Option<[i16; 9]>,
-    pub lut: Option<ToneLut>,
+    pub lut: Option<Arc<ToneLut>>,
     /// The table as quadratics ([`Arithmetic::IntPolyTone`]), when they fit it.
-    pub poly: Option<Box<PolyTone>>,
+    pub poly: Option<Arc<PolyTone>>,
     /// The curve `lut` came from, and whether quadratics were wanted for it.
-    curve: (Option<ToneCurve>, bool),
+    curve: (Option<Arc<ToneCurve>>, bool),
+}
+
+/// What [`IntPrep::gains`] was built from: the cell gains (channel gains with the black
+/// levels' range loss, as bit patterns: they are folded into the Q12 values) and the lens
+/// shading grid, if any.
+#[derive(Clone, Debug)]
+struct GainSource {
+    cells: [u32; 4],
+    grid: Option<Arc<LensShading>>,
 }
 
 /// Statistics geometry.
@@ -182,7 +195,13 @@ impl Prepared {
                     Arith::Int(i) => Some(i),
                     Arith::Half(_) => None,
                 });
-                Arith::Int(IntPrep::new(format, params, channel_gains, previous)?)
+                Arith::Int(IntPrep::new(
+                    format,
+                    params,
+                    channel_gains,
+                    previous,
+                    lsc_tolerance,
+                )?)
             }
         };
         let yuv = match params.yuv {
@@ -218,6 +237,7 @@ impl IntPrep {
         params: &IspParams,
         channel_gains: [f32; 3],
         previous: Option<&IntPrep>,
+        lsc_tolerance: f32,
     ) -> Result<Self, IspError> {
         let w = format.width as usize;
         let bits = format.packing.bit_depth();
@@ -230,9 +250,29 @@ impl IntPrep {
             channel_gains[channel_index(pattern.channel_at(x, y))] * full / (full - bl)
         };
         let black = [0, 1].map(|y| [0, 1].map(|x| black_cells[pattern.cell_at(x, y)]));
-        let gains = match &params.lens_shading {
-            None => GainRows::Flat([0, 1].map(|y| (0..w).map(|x| q12(cell_gain(x, y))).collect())),
-            Some(ls) => shaded_gains(ls, format, &cell_gain)?,
+        let cells = [0, 1, 2, 3].map(|i| cell_gain(i & 1, i >> 1).to_bits());
+        // Kept while the cell gains are the same and the grid is within `lsc_tolerance` of the
+        // one the rows were built from (as the fp16 path keeps its lens shading).
+        let kept = previous.filter(|p| {
+            p.gain_src.cells == cells
+                && match (&p.gain_src.grid, &params.lens_shading) {
+                    (None, None) => true,
+                    (Some(old), Some(ls)) => close(old, ls, lsc_tolerance),
+                    _ => false,
+                }
+        });
+        let (gains, gain_src) = match kept {
+            Some(p) => (Arc::clone(&p.gains), p.gain_src.clone()),
+            None => {
+                let rows = match &params.lens_shading {
+                    None => GainRows::Flat(
+                        [0, 1].map(|y| (0..w).map(|x| q12(cell_gain(x, y))).collect()),
+                    ),
+                    Some(ls) => shaded_gains(ls, format, &cell_gain)?,
+                };
+                let grid = params.lens_shading.clone().map(Arc::new);
+                (Arc::new(rows), GainSource { cells, grid })
+            }
         };
         let ccm = params.ccm.map(|c| {
             let mut m = [0i16; 9];
@@ -248,32 +288,34 @@ impl IntPrep {
                 Arithmetic::Auto => crate::simd::poly_preferred(),
                 Arithmetic::Int | Arithmetic::Half => false,
             };
-        // The same curve keeps its table and quadratics (fitting costs tens of microseconds).
-        let (lut, poly) = match previous {
-            Some(p) if p.curve.0 == params.tone && p.curve.1 == poly_wanted => {
-                (p.lut.clone(), p.poly.clone())
+        // The same curve keeps its table and quadratics (fitting costs tens of microseconds),
+        // shared rather than copied.
+        let (lut, poly, curve) = match previous {
+            Some(p) if p.curve.1 == poly_wanted && p.curve.0.as_deref() == params.tone.as_ref() => {
+                (p.lut.clone(), p.poly.clone(), p.curve.0.clone())
             }
             _ => {
                 let lut = params
                     .tone
                     .as_ref()
-                    .map(|curve| ToneLut::from_curve(|x| curve.eval(x)));
+                    .map(|curve| Arc::new(ToneLut::from_curve(|x| curve.eval(x))));
                 let poly = lut
                     .as_ref()
                     .filter(|_| poly_wanted)
                     .and_then(|l| PolyTone::fit(l.full()))
-                    .map(Box::new);
-                (lut, poly)
+                    .map(Arc::new);
+                (lut, poly, params.tone.clone().map(Arc::new))
             }
         };
         Ok(Self {
             shift: 16 - bits as u32,
             black,
             gains,
+            gain_src,
             ccm,
             lut,
             poly,
-            curve: (params.tone.clone(), poly_wanted),
+            curve: (curve, poly_wanted),
         })
     }
 }
@@ -460,5 +502,63 @@ mod tests {
                 .collect();
             assert_eq!(grid_map(n, nodes), want, "{n} {nodes}");
         }
+    }
+
+    /// Integer tables keep their shaded gains while the lens shading grid moves by less than
+    /// the tolerance, and are rebuilt for a larger move or for new cell gains.
+    #[test]
+    fn int_gains_reused_within_tolerance() {
+        let format = RawFormat::new(
+            64,
+            48,
+            CfaPattern::Rggb,
+            crate::format::RawPacking::Csi2Raw10,
+        );
+        let build = |ls: &LensShading, digital: f32, prev: Option<&Prepared>| {
+            let params = IspParams {
+                lens_shading: Some(ls.clone()),
+                digital_gain: digital,
+                arithmetic: Arithmetic::Int,
+                ..IspParams::default()
+            };
+            Prepared::new(&format, &params, prev, 0.002).unwrap()
+        };
+        let gains = |p: &Prepared| match &p.arith {
+            Arith::Int(i) => Arc::clone(&i.gains),
+            Arith::Half(_) => panic!("integer arithmetic"),
+        };
+        let base = LensShading::radial(8, 6, 0.5);
+        let p0 = build(&base, 1.0, None);
+        // 0.05 % on one node: within the 0.2 % tolerance.
+        let mut tiny = base.clone();
+        tiny.r[5] *= 1.0005;
+        let p1 = build(&tiny, 1.0, Some(&p0));
+        assert!(
+            Arc::ptr_eq(&gains(&p0), &gains(&p1)),
+            "a tiny change rebuilt the gains"
+        );
+        // 5 % on one node: rebuilt.
+        let mut big = base.clone();
+        big.r[5] *= 1.05;
+        let p2 = build(&big, 1.0, Some(&p1));
+        assert!(
+            !Arc::ptr_eq(&gains(&p1), &gains(&p2)),
+            "a large change reused the gains"
+        );
+        // The same grid with another digital gain: the gains fold it in, so rebuilt.
+        let p3 = build(&tiny, 1.5, Some(&p1));
+        assert!(
+            !Arc::ptr_eq(&gains(&p1), &gains(&p3)),
+            "new cell gains reused the gains"
+        );
+        // Flat gains (no lens shading) are shared as well.
+        let flat = IspParams {
+            digital_gain: 1.0,
+            arithmetic: Arithmetic::Int,
+            ..IspParams::default()
+        };
+        let f0 = Prepared::new(&format, &flat, None, 0.0).unwrap();
+        let f1 = Prepared::new(&format, &flat, Some(&f0), 0.0).unwrap();
+        assert!(Arc::ptr_eq(&gains(&f0), &gains(&f1)));
     }
 }
