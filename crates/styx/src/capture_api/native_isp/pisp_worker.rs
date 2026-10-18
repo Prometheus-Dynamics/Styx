@@ -290,7 +290,8 @@ pub(super) fn spawn(
                                 "consumers hold every back end buffer: dropping frames until one is released"
                             );
                         } else {
-                            crate::trace::debug!(backend = "native", output, held_drops, "frame dropped: buffers held");
+                            let spare_misses = p.spare_misses();
+                            crate::trace::debug!(backend = "native", output, held_drops, ?spare_misses, "frame dropped: buffers held");
                         }
                         continue;
                     }

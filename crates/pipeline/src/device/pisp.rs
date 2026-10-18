@@ -679,13 +679,19 @@ impl PispPipeline {
         self.be_dev.as_ref()?.output_dmabuf(i, job.outputs[i]?)
     }
 
-    /// Allocates a back end buffer for each output whose buffers are all out, while it has
-    /// slots for more (`PispOptions::be_buffers_initial`): call between frames, so the next
-    /// frame does not wait for the allocation.
+    /// Adopts the back end's spare buffers (`PispOptions::be_buffers_initial`) and asks for the
+    /// next ones: call between frames. Never allocates on the calling thread.
     pub fn top_up_outputs(&mut self) {
         if let Some(b) = self.be_dev.as_mut() {
             b.top_up();
         }
+    }
+
+    /// Frames dropped per output because no back end buffer was free or ready.
+    pub fn spare_misses(&self) -> [u64; 2] {
+        self.be_dev
+            .as_ref()
+            .map_or([0; 2], BackEndStream::spare_misses)
     }
 
     /// Gives output `i`'s buffer `index` back (one output of a job, e.g. when its two outputs

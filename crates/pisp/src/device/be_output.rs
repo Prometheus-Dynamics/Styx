@@ -16,6 +16,7 @@ use styx_kernel::v4l2::{
     BufType, DequeuedBuffer, Memory, Planes, QueueBuffer, QueuePlane, VideoDevice,
 };
 
+use super::be_spare::{Allocate, HeapAllocator, Spare, SpareGrower, Spares};
 use super::{DeviceError, Result};
 
 /// Where a back end output's buffers come from.
@@ -41,7 +42,8 @@ pub const OUTPUT_MEMORY_ENV: &str = "STYX_PISP_OUTPUT_MEMORY";
 const CACHED_HEAPS: [&str; 2] = ["linux,cma", "system"];
 
 /// One output node's buffers, all mapped and exported. Cached heap buffers can start fewer than
-/// the node's buffer slots and grow into them ([`OutputQueue::grow`]).
+/// the node's buffer slots and grow into them: a spare is allocated off the capture thread
+/// ([`SpareGrower`]) and adopted ([`Spares`]).
 pub(super) struct OutputQueue {
     dev: VideoDevice,
     memory: Memory,
@@ -51,16 +53,16 @@ pub(super) struct OutputQueue {
     len: u32,
     /// Buffer slots the node has (`maps.len()` up to this).
     slots: usize,
-    /// Where more cached buffers come from.
-    heaps: Vec<DmaHeap>,
+    /// The helper that allocates spares; `None` when every slot has a buffer (or no growth).
+    grower: Option<SpareGrower>,
 }
 
 const TYPE: BufType = BufType::VideoCaptureMplane;
 
 impl OutputQueue {
     /// `count` buffer slots for buffers of at least `size` bytes on `dev` (format set): cached
-    /// heap buffers for `initial` of them now, the rest as [`Self::grow`] asks; the driver's
-    /// buffers all at once.
+    /// heap buffers for `initial` of them now, the rest from a background allocator as the
+    /// buffers run out; the driver's buffers all at once.
     pub(super) fn new(
         dev: VideoDevice,
         memory: OutputMemory,
@@ -92,20 +94,27 @@ impl OutputQueue {
                         got.count
                     )));
                 }
+                let bytes = size.next_multiple_of(4096);
+                let initial = initial.clamp(1, count);
                 let mut queue = Self {
                     dev,
                     memory: Memory::DmaBuf,
                     name,
                     maps: Vec::new(),
                     fds: Vec::new(),
-                    len: size.next_multiple_of(4096) as u32,
+                    len: bytes as u32,
                     slots: count as usize,
-                    heaps,
+                    grower: None,
                 };
-                for i in 0..initial.clamp(1, count) {
+                let mut allocator = HeapAllocator::new(heaps, name);
+                for i in 0..initial {
                     // Contiguous memory first, the system heap for the buffers beyond
                     // `contiguous`.
-                    queue.allocate(i >= contiguous)?;
+                    let buf = allocator.allocate(bytes, i >= contiguous)?;
+                    queue.push(Spare::new(buf)?);
+                }
+                if initial < count {
+                    queue.grower = Some(SpareGrower::spawn(allocator, bytes, name)?);
                 }
                 Ok(queue)
             }
@@ -136,49 +145,18 @@ impl OutputQueue {
                     maps,
                     fds,
                     len,
-                    heaps: Vec::new(),
+                    grower: None,
                 })
             }
         }
     }
 
-    /// One more cached heap buffer: contiguous memory first, the system heap when it runs out
-    /// (the CM5 has 64 MiB of it, which many buffers of extra passes can exhaust).
-    fn allocate(&mut self, system_first: bool) -> Result<u32> {
-        let size = self.len as usize;
-        let mut last = None;
-        let mut order: Vec<&DmaHeap> = self.heaps.iter().collect();
-        if system_first {
-            order.reverse();
-        }
-        let buf = order.iter().find_map(|heap| match heap.allocate(size) {
-            Ok(buf) => Some(buf),
-            Err(e) => {
-                last = Some(e);
-                None
-            }
-        });
-        let buf = match (buf, last) {
-            (Some(buf), _) => buf,
-            (None, Some(e)) => return Err(e.into()),
-            (None, None) => {
-                return Err(DeviceError::Setup(format!("{}: no dma-heap", self.name)));
-            }
-        };
-        self.maps.push(buf.map()?);
-        self.fds.push(buf.into_fd());
-        Ok(self.maps.len() as u32 - 1)
-    }
-
-    /// A new buffer in a free slot (cached heap buffers only): its index, `None` when every
-    /// slot has one or the memory ran out.
-    pub(super) fn grow(&mut self) -> Option<u32> {
-        if self.memory != Memory::DmaBuf || self.maps.len() >= self.slots {
-            return None;
-        }
-        // The system heap first: contiguous memory can take 10-20 ms to allocate when it is
-        // short (compaction), too long between two frames.
-        super::profile::time(self.name, "grow", || self.allocate(true)).ok()
+    /// Appends a mapped spare as the next buffer; its index.
+    fn push(&mut self, spare: Spare) -> u32 {
+        let (map, fd) = spare.into_parts();
+        self.maps.push(map);
+        self.fds.push(fd);
+        self.maps.len() as u32 - 1
     }
 
     /// Whether the buffers come from a cached dma-heap (CPU reads at memory speed) rather than
@@ -248,8 +226,10 @@ impl OutputQueue {
         Ok(self.dev.stream_on(TYPE)?)
     }
 
-    /// Stops streaming and frees the buffers (mappings and exports dropped first).
+    /// Stops streaming and frees the buffers (mappings and exports dropped first). The spare
+    /// helper ends first.
     pub(super) fn close(mut self) -> Result<()> {
+        self.grower = None;
         let r = self.dev.stream_off(TYPE);
         self.maps.clear();
         self.fds.clear();
@@ -257,5 +237,20 @@ impl OutputQueue {
         r?;
         f?;
         Ok(())
+    }
+}
+
+impl Spares for OutputQueue {
+    fn adopt(&mut self) -> Option<u32> {
+        let spare = self.grower.as_mut()?.take(self.len as usize)?;
+        Some(self.push(spare))
+    }
+
+    fn request(&mut self) {
+        if self.maps.len() < self.slots
+            && let Some(g) = self.grower.as_mut()
+        {
+            g.request();
+        }
     }
 }

@@ -14,6 +14,7 @@ use styx_kernel::v4l2::{
 
 use super::be::BE_CFG_FOURCC;
 use super::be_output::{OutputMemory, OutputQueue};
+use super::be_spare::{take_buffer, top_up_free};
 use super::be_tdn::TdnBuffers;
 use super::config_buf::ConfigBuffer;
 use super::{DeviceError, Result, bayer16_fourcc, find_media};
@@ -92,6 +93,15 @@ struct Output {
     /// (and possibly exported as dma-bufs that consumers still read, e.g. a frame server's
     /// latest frame) is written again only after every other free buffer.
     free: VecDeque<u32>,
+    /// Jobs dropped because no buffer was free or ready (the spare was not ready yet).
+    misses: u64,
+}
+
+impl Output {
+    /// A buffer for a job, without waiting: a free one, else a ready spare.
+    fn take(&mut self) -> Option<u32> {
+        take_buffer(&mut self.free, &mut self.queue, &mut self.misses)
+    }
 }
 
 /// The back end set up for a stream. See the [module documentation](self).
@@ -272,6 +282,7 @@ impl BackEndStream {
                 queue,
                 format,
                 free,
+                misses: 0,
             });
         }
         let cfg_dev = node("pispbe-config")?;
@@ -430,8 +441,8 @@ impl BackEndStream {
                 && let Some(o) = o
                 && enabled & rgb_enable::output(i) != 0
             {
-                // Every buffer is out: another one, while the output has slots for it.
-                let Some(b) = o.free.pop_front().or_else(|| o.queue.grow()) else {
+                // Every buffer is out and no spare is ready: the frame is dropped, not waited for.
+                let Some(b) = o.take() else {
                     self.give_back(picked);
                     return Err(DeviceError::OutputsHeld(i));
                 };
@@ -596,18 +607,20 @@ impl BackEndStream {
         o.queue.dmabuf(index)
     }
 
-    /// Allocates a buffer for each output that has none free, while it has slots for more
-    /// ([`Self::open_with_initial`]). Call between frames: a job that finds no free buffer
-    /// allocates one itself, which delays that frame by the allocation (milliseconds for
-    /// contiguous memory).
+    /// Keeps the spare buffers coming ([`Self::open_with_initial`]): adopts a ready spare for
+    /// each output with no free buffer, and asks for the next spare while an output's free
+    /// list is low. Call between frames. Never allocates on this thread.
     pub fn top_up(&mut self) {
         for o in self.outputs.iter_mut().flatten() {
-            if o.free.is_empty()
-                && let Some(b) = o.queue.grow()
-            {
-                o.free.push_back(b);
-            }
+            top_up_free(&mut o.free, &mut o.queue);
         }
+    }
+
+    /// Jobs dropped per output because no buffer was free or ready, since the stream opened.
+    pub fn spare_misses(&self) -> [u64; 2] {
+        self.outputs
+            .each_ref()
+            .map(|o| o.as_ref().map_or(0, |o| o.misses))
     }
 
     /// Hands output `i`'s buffer `index` back for reuse (outputs of one job can be held for
