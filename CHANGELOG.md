@@ -8,6 +8,39 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Code review, batch 3: features.**
+  - **Pause continuous AF** (libcamera's `AfPause`): immediate (the lens holds, a scan is
+    abandoned), deferred (a running scan finishes first) and resume. `Controls::af_pause`,
+    `AfStatus::pause` (`AfPauseState`); native controls `AF_PAUSE` and `AF_PAUSE_STATE` with
+    libcamera's values. Manual and one-shot modes ignore it.
+  - **GPU ISP windows:** `GpuIsp::process_window` (and `process_window_input`) processes a
+    window of the frame at full or half scale, bit for bit the CPU ISP's window; `statistics`
+    runs the statistics pass alone. The pipeline serves regions on the GPU ISP, and a crop of a
+    full-size software mode is now honoured there (it was ignored).
+  - **Software ISP image quality, off unless asked:** `Demosaic::EdgeDirected` (integer, 5x5),
+    and denoise (`IspParams::denoise`: luma sigma filter, chroma low-pass) and sharpening
+    (`IspParams::sharpen`: unsharp mask) of the output picture, behind softisp's `post` feature
+    (in `std`; firmware images leave it out, +6.5 KB for image D). The tuning's `[denoise]`
+    and sharpening blocks reach them only when asked: `SoftLoop::set_post_stages`,
+    `NativeIspConfig::soft_post_stages` / `native_soft_post_stages(true)`. The GPU ISP runs
+    `EdgeDirected` as bilinear and skips the output stages.
+  - **Lazy PiSP back end buffers, opt-in** (`NativeIspConfig::lazy_output_buffers` /
+    `native_lazy_output_buffers(true)`, default off): the buffers beyond `output_buffers` are
+    allocated, mapped and prepared (`VIDIOC_PREPARE_BUF`) by a helper thread as frames are
+    held. CM5, 1280x800 gray + pyramid 1 at 30 fps, a client holding 0 -> 12 -> 0 frames:
+    37.6 MiB at up to 2 held against 70.6 MiB eager, no timeouts; growth steps up to about
+    2.4 ms, except one late frame (6.6-15.4 ms) the first time several buffers are added.
+    `BackEndStream::open_with_initial`, `PispOptions::be_buffers_initial`.
+  - **`PispOptions::config_memory`** (`ConfigMemory`, default the cached heap as before): what
+    `STYX_PISP_CONFIG_HEAP` chose.
+  - **`Codec::process_ref(&FrameLease)`:** encode a borrowed frame. The default copies and calls
+    `process`; the TurboJPEG and mozjpeg encoders read in place, so encoded recordings no
+    longer copy every frame.
+  - Test: a camera-service client that never reads does not hold up another client's join or
+    leave.
+  - Example `daedalus_gpu_node` (features `daedalus-gpu`, `preview-window`): a WGSL node on
+    Styx frames, moved here from Daedalus.
+
 - **Sliced frames through the camera service.** A client that asks for them
   (`ClientOptions::sliced_frames`) gets a sliced native frame when its first rows are final,
   with the same `FrameLease::progress()` as in-process: rows final so far, `wait`,
@@ -165,6 +198,32 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   unstripped build (docs/metrics.md, "Finding allocations on a device").
 
 ### Changed
+
+- **Code review, batch 3** (merges 5d0ffb3 to d3ec1fb):
+  - **Measured on the CM5** (Styx dev before the review vs after, same benchmark binary):
+    camera service CPU about -24% per frame (0.49 -> 0.37 ms, three runs; runs vary
+    0.30-0.61 ms), sensor-to-client p50 about 0.2 ms better; the aarch64 release build of
+    `hop_breakdown` 7,995,664 -> 6,068,064 bytes (-24.1%).
+  - **AWB search** sums the zones' colour error per cell of zones, in closed form where a cell
+    is wholly under or over the cap (equal up to rounding): 263 -> 111 us per search on the
+    CM5 (1024 zones).
+  - **Flicker detection** reuses each frame's trigonometry while the frequency holds (equal
+    within 1e-7 relative, identical decisions): `add()` on the CM5 76 -> 35 us with strong
+    flicker at 120 fps, 33 -> 16 us at 30 fps, 24 -> 6.8 us without flicker.
+  - **PiSP environment variables no longer override options.** `STYX_PISP_SLICE_LINE`,
+    `STYX_PISP_OUTPUT_MEMORY`, `STYX_PISP_TDN_COMPRESS`, `STYX_NATIVE_EARLY_SYNC`,
+    `STYX_NATIVE_PREFETCH`, `STYX_NATIVE_RAW_BITS` and the measurement knobs
+    (`STYX_PISP_FE_ILINES`, `STYX_PISP_BE_STRIPE`, `STYX_PISP_SLICE_LOG`,
+    `STYX_PISP_CONFIG_HEAP`) are read only with the off-by-default `pisp-debug-hooks` (styx,
+    styx-pipeline) / `debug-hooks` (styx-pisp) features. docs/runtime-debugging.md lists them.
+  - **Downstream names removed** from comments, docs and scripts. sensor-bridge: the camera
+    service to stop and start is named by `STYX_CAMERA_SERVICE` (unset: none);
+    `styx-bridge.service` drops its `Conflicts=`; the overlay checks take
+    `BUILDROOT_HOST_BIN`; `kernel-env.sh`'s `RAZE_PKG` is now `PATCH_PKG`. Tuning data is
+    unchanged.
+  - **Daedalus** `dev` at `89836d1` (plugin ABI 10) in `Cargo.lock`; Styx loads no plugin
+    dylibs, so the ABI change does not affect it.
+  - tokio 1.53.3 (`AsyncFd::register_with_interest`).
 
 - **Code review, batch 2** (merges 271400f, 45de85a, and the IPC/netcam merge after them):
   - The release profile uses thin LTO, one codegen unit and strips debuginfo.
@@ -333,6 +392,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   keeps its `Vec` result.
 
 ### Fixed
+
+- mozjpeg encoder: a plane shorter than its height is an error instead of a panic.
 
 - **Native PiSP: consumers holding what the planner allows no longer starve the camera.**
   When contiguous memory was short, the back end got fewer buffers than the planner
