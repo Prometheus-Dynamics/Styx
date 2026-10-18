@@ -49,7 +49,10 @@ impl<T: Clone> NewestTx<T> {
         if self.inner.closed.load(Ordering::Acquire) {
             return SendOutcome::Closed;
         }
-        *self.inner.slot.write() = Some(value);
+        // The previous value is dropped after the write lock is released: dropping it can take
+        // other locks (a `FrameLease` returns its buffer to a pool).
+        let previous = self.inner.slot.write().replace(value);
+        drop(previous);
         SendOutcome::Ok
     }
 
@@ -75,6 +78,10 @@ pub struct NewestRx<T> {
 
 impl<T: Clone> NewestRx<T> {
     /// Get the latest value if present.
+    ///
+    /// The value is cloned while the read lock is held, so a concurrent `send` waits for the
+    /// clone. Cloning outside the lock would need the slot to hold an `Arc<T>` (one extra
+    /// allocation per send), so the clone stays under the lock.
     pub fn recv(&self) -> RecvOutcome<T> {
         let read = self.inner.slot.read();
         if let Some(value) = read.as_ref() {

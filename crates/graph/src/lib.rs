@@ -5,9 +5,11 @@
 //! - [`DeviceGraph`]: [`Node`]s with [`Port`]s joined by [`Link`]s; [`GraphPath`]s from a
 //!   sensor to the sinks where frames land in memory, and the [`LinkPlan`] that activates them.
 //! - [`Provider`] / [`Device`]: discovery, hotplug, configuring paths and streaming frames of a
-//!   provider-chosen type. [`MockProvider`] makes up a camera for tests.
+//!   provider-chosen type. With the `mock` feature, [`MockProvider`] makes up a camera for tests.
 //! - [`rt`]: an epoll reactor thread, readiness futures, timers and `block_on`, usable from any
 //!   executor.
+//!
+//! The example needs the `mock` feature.
 //!
 //! ```
 //! use styx_graph::{Device, FourCc, Fraction, MockProvider, Provider, Size, StreamConfig, rt};
@@ -30,12 +32,15 @@
 #![deny(unsafe_code)]
 
 mod caps;
+#[cfg(feature = "mock")]
 mod chan;
 mod graph;
+#[cfg(feature = "mock")]
 mod mock;
 mod path;
 mod provider;
 pub mod rt;
+#[cfg(feature = "mock")]
 pub mod sample;
 
 pub use caps::{
@@ -46,6 +51,7 @@ pub use graph::{
     ComputeKind, DeviceGraph, Direction, GraphError, Link, LinkFlags, LinkId, LinkMedium, Node,
     NodeId, NodeKind, Port, PortPurpose, PortRef, ReceiverKind,
 };
+#[cfg(feature = "mock")]
 pub use mock::{DEFAULT_MOCK_FPS, MockDevice, MockFrame, MockProvider};
 pub use path::{GraphPath, LinkPlan};
 pub use provider::{
