@@ -94,9 +94,10 @@ Feature-gated modules such as
 `styx::imports::graph::*` and `styx::imports::recording::*` are available with their matching
 features.
 
-Crates that only need `FrameLease` can depend on Styx without capture or codec:
+Crates that only need `FrameLease` can depend on Styx without capture or codec by turning default
+features off (the `framelease` feature is kept for compatibility and does nothing):
 ```toml
-styx = { version = "2.0.0", default-features = false, features = ["framelease"] }
+styx = { version = "2.0.0", default-features = false }
 ```
 
 For simple capture, start with `CameraRequest::new().start()` when physical backends are enabled, or
@@ -128,7 +129,7 @@ blocking task/thread, then use async receive/control APIs for coordination.
 - `preview`: low-latency JPEG camera previews for user interfaces (`styx::preview`): a
   low-priority camera service client that never changes the vision consumer's capture, MJPEG
   and WebSocket serving helpers, metrics; JPEG from `codec-turbojpeg` ([docs/preview.md](docs/preview.md)).
-- `raw-decoders`: CPU raw/YUV/Bayer conversion stack; this enables Rayon and `yuvutils-rs`.
+- `raw-decoders`: CPU raw/YUV/Bayer conversion stack; this enables `yuvutils-rs` and `styx-softisp` (no Rayon).
 - `codec-jpeg-decoder`: pure-Rust MJPEG/JPEG decode via `jpeg-decoder`.
 - `codec-ffmpeg`, `codec-mozjpeg`, `codec-turbojpeg`, `codec-zune`: alternate codec integrations; FFmpeg and native JPEG backends add their respective system/library dependency surface.
 - `netcam-video`: FFmpeg-backed network video stream fallback; use only when multipart MJPEG is not enough.

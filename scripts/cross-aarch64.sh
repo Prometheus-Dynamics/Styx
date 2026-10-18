@@ -12,15 +12,19 @@
 #
 #   scripts/cross-aarch64.sh [--sysroot DIR | --musl] [-p PKG]... [--features F]
 #                            [--bins a,b] [--examples a,b] [--profile P] [--out DIR] [--tests]
-#                            [-- cargo args]
+#                            [--cortex-a76] [-- cargo args]
 #
 #   -p PKG        package to build (repeatable; default styx-record-cli)
 #   --features F  cargo features (e.g. styx-record-cli/libcamera)
 #   --bins a,b    only these binaries (default: every binary of the packages)
 #   --examples    these examples of the packages
 #   --profile P   cargo profile: `device` (default; release code, built in a fraction of the
-#                 time, for trying things on the device) or `release` (what ships)
+#                 time, for trying things on the device) or `release` (what ships). With --out
+#                 and no --profile the script says which profile it used.
 #   --out DIR     copy the binaries there, stripped, with a SHA256SUMS file
+#   --cortex-a76  opt in to `-C target-cpu=cortex-a76` (the CM5's cores) for this target. Off by
+#                 default, so the binaries run on any AArch64 Linux. Appended to the target's
+#                 rustflags, so the glibc build keeps its --sysroot link flag.
 #   --tests       build the packages' test binaries instead (dev profile unless --profile) as a
 #                 bundle for scripts/device-tests.sh, in target/device-tests/<build name>/; the
 #                 sources are mirrored to STYX_DEVTEST_SRC (default /tmp/styx-devtest-src) and
@@ -40,6 +44,8 @@ buildroot="${STYX_AARCH64_BUILDROOT:-}"
 musl=0
 tests=0
 profile=""
+profile_set=0
+cortex_a76=0
 features=""
 out=""
 declare -a packages=() selectors=() extra=()
@@ -51,9 +57,10 @@ while (($#)); do
     --features) features="$2"; shift ;;
     --bins) IFS=, read -r -a list <<<"$2"; for b in "${list[@]}"; do selectors+=(--bin "$b"); done; shift ;;
     --examples) IFS=, read -r -a list <<<"$2"; for b in "${list[@]}"; do selectors+=(--example "$b"); done; shift ;;
-    --profile) profile="$2"; shift ;;
+    --profile) profile="$2"; profile_set=1; shift ;;
     --out) out="$2"; shift ;;
     --tests) tests=1 ;;
+    --cortex-a76) cortex_a76=1 ;;
     --) shift; extra=("$@"); break ;;
     -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1 (--help)" >&2; exit 2 ;;
@@ -62,6 +69,9 @@ while (($#)); do
 done
 ((${#packages[@]})) || packages=(styx-record-cli)
 if ((tests)); then profile="${profile:-dev}"; else profile="${profile:-device}"; fi
+if [[ -n "$out" ]] && ((!profile_set)); then
+    echo "cross-aarch64.sh: no --profile given, using the '$profile' profile (the shipped binaries are 'release'; pass --profile release for those)" >&2
+fi
 
 target_root="${CARGO_TARGET_DIR:-$root_dir/target}"
 host="$(rustc -vV | sed -n 's/^host: //p')"
@@ -119,6 +129,13 @@ else
         grep -v -e "^ $sysroot" -e include-fixed | sed 's/^ //')
     export BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu="--target=aarch64-linux-gnu --sysroot=$sysroot$isystem"
     strip_tool="$hostbin/aarch64-linux-strip"
+fi
+if ((cortex_a76)); then
+    # The target's own rustflags variable, not RUSTFLAGS: a global RUSTFLAGS would replace the
+    # glibc build's --sysroot link flag (cargo ignores target rustflags when RUSTFLAGS is set).
+    rf_var="CARGO_TARGET_$(printf '%s' "$triple" | tr 'a-z-' 'A-Z_')_RUSTFLAGS"
+    rf_cur="${!rf_var:-}"
+    export "$rf_var=${rf_cur:+$rf_cur }-C target-cpu=cortex-a76"
 fi
 # --target-dir rather than CARGO_TARGET_DIR: sccache counts CARGO_* variables in its key, so the
 # variable would keep it from sharing dependencies between these builds.

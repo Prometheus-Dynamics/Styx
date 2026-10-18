@@ -11,11 +11,11 @@ The end-user entry point that re-exports the layered stack (`styx-core`, `styx-c
 styx = "2.0.0"
 ```
 
-For a `FrameLease`-only dependency path, disable default features and enable
-`framelease`:
+For a `FrameLease`-only dependency path, disable default features (the `framelease` feature
+is kept for compatibility and does nothing):
 ```toml
 [dependencies]
-styx = { version = "2.0.0", default-features = false, features = ["framelease"] }
+styx = { version = "2.0.0", default-features = false }
 ```
 
 ```rust

@@ -95,6 +95,9 @@ default = ["facade", "tracing"]
 replay-mcap = ["facade", "dep:mcap"]
 # Experimental compact Styx-only recording format (`.styxrec`).
 replay-styxrec = ["facade"]
+# Kept for compatibility, does nothing: `FrameLease` is in `styx::imports::framelease` with or
+# without it. For a FrameLease-only dependency, use `default-features = false` (no capture, codec,
+# backend, service or preview modules).
 framelease = []
 # `ipc::FrameSocket`: the latest frame, leased, in the frame-lease wire format (`styx-frame-lease-v1`).
 frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde", "styx-core/lease-codec", "metrics-serde"]

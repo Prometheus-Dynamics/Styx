@@ -43,8 +43,8 @@ critical-section = ["dep:critical-section", "portable-atomic/critical-section"]
 # `std` (at compile time from the target features without it).
 neon = []
 x86 = []
-# The async sends and receives are always there (waker-based, any executor); kept for
-# compatibility.
+# Kept for compatibility, does nothing (it only enables `std`): the async sends and receives are
+# always there (waker-based, any executor).
 async = ["std"]
 serde = ["dep:serde", "smallvec/serde"]
 # The `styx-frame-lease-v1` frame message (`lease_codec`, unix): what Styx's frame socket sends,

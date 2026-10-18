@@ -15,7 +15,7 @@ styx-libcamera = "2.0.0"
 
 ## Features
 - `probe`: enable libcamera probing and descriptor construction.
-- `vendor_rpi`: include Raspberry Pi vendor draft controls when probing.
+- `vendor_rpi`: kept for compatibility, does nothing (Raspberry Pi vendor controls are not built; upstream generation is broken in libcamera 0.7).
 
 ## Usage
 Enable the `libcamera` feature on the `styx` crate to access probing helpers:

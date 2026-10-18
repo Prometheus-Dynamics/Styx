@@ -84,13 +84,13 @@ For `--out /data/rec/x` (name `x`), a 1280x800 camera:
 **The raw video is Eidos's robot video layout.** Eidos's pinned robot video is
 `recording_7d7ca24f_1280x800_gray.raw` (Eidos `fixtures/benchmarks/recording_7d7ca24f.json`:
 `raw_gray_bytes` 2091008000 = 2042 frames x 1280 x 800, no header), read by
-`eidos_detect_raw_stream --input FILE --width W --height H` (Eidos
-`examples/eidos-detectors/detect_raw_stream.rs`, which reads `width*height` bytes per frame and
-refuses a partial frame at the end) through `scripts/cm5-video-secondary-test.sh`. The size is
+`eidos_detect_raw_stream --input FILE --width W --height H` (in the Eidos repository, not here:
+its `detect_raw_stream` example reads `width*height` bytes per frame and refuses a partial frame
+at the end), run by a CM5 test script that is also not in this repository. The size is
 in the name and in the settings file, not in the file.
 
-**Stills are Eidos's live-capture layout** (Eidos
-`crates/benches/src/bin/styx_aruco16h5_realtime/overlay.rs`, `testing/aruco16h5_webcam_cases`):
+**Stills are Eidos's live-capture layout** (written by Eidos's ArUco bench, in the Eidos
+repository, not here):
 `<stem>.gray.raw` (one Y plane), `<stem>.pgm` (P5, the same bytes) and `<stem>.txt` with
 `key=value` lines: `width`, `height`, `format=R8`, `source_fourcc`, `frame_index` (the
 sequence number), `capture_index` (the still's number), `raw`, `pgm`, plus `sequence`,
