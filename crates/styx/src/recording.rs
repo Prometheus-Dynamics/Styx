@@ -316,9 +316,7 @@ impl FrameRecorder {
         let encoder = self.encoder.as_ref().ok_or_else(|| {
             RecordingError::UnsupportedFormat(frame.meta().format.code.to_string())
         })?;
-        encoder
-            .process(frame.materialize_owned())
-            .map_err(RecordingError::from)
+        encoder.process_ref(frame).map_err(RecordingError::from)
     }
 }
 
@@ -580,5 +578,96 @@ mod tests {
             len,
             stride,
         )
+    }
+}
+
+// Recording through an encoder that reads its input in place: no per-frame copy, and the bytes
+// are those of the owned path. Under nextest each test is its own process, so the process-wide
+// copy counters see only this test's frames.
+#[cfg(all(test, feature = "codec-turbojpeg"))]
+mod encoder_copy_tests {
+    use super::*;
+    use styx_codec::mjpeg_turbojpeg::TurbojpegEncoder;
+    use styx_core::metrics::{CopySite, path_counters};
+    use styx_core::prelude::{BufferPool, ColorSpace, FrameMeta, MediaFormat, Resolution};
+
+    /// An encoder that keeps the default `process_ref` (so it copies, as recording did before).
+    struct CopyingEncoder(TurbojpegEncoder);
+
+    impl Codec for CopyingEncoder {
+        fn descriptor(&self) -> &styx_codec::CodecDescriptor {
+            self.0.descriptor()
+        }
+
+        fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
+            self.0.process(input)
+        }
+    }
+
+    fn rg24_frame(timestamp: u64) -> FrameLease {
+        let (w, h) = (16u32, 8u32);
+        let stride = w as usize * 3 + 8;
+        let len = stride * h as usize;
+        let mut lease = BufferPool::with_limits(1, len, 1).lease();
+        lease.resize(len);
+        for (i, byte) in lease.as_mut_slice().iter_mut().enumerate() {
+            *byte = (i * 13 % 251) as u8;
+        }
+        let res = Resolution::new(w, h).expect("resolution");
+        FrameLease::single_plane(
+            FrameMeta::new(
+                MediaFormat::new(FourCc::RG24, res, ColorSpace::Srgb),
+                timestamp,
+            ),
+            lease,
+            len,
+            stride,
+        )
+    }
+
+    fn materialize_copies() -> u64 {
+        path_counters().copies(CopySite::Materialize)
+    }
+
+    #[test]
+    fn encoder_with_process_ref_records_without_a_copy_and_same_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "styx-recorder-encoder-copy-{}-{}",
+            std::process::id(),
+            now_unix_ms()
+        ));
+        let options = RecordingOptions {
+            prefix: "enc".into(),
+            format: RecordingFormat::Auto,
+            ..Default::default()
+        };
+        let encoder = Arc::new(TurbojpegEncoder::new(FourCc::RG24, 90));
+        let mut recorder = FrameRecorder::new(&dir, options)
+            .expect("recorder")
+            .with_encoder(encoder.clone());
+
+        let frame = rg24_frame(1);
+        let before = materialize_copies();
+        let path = recorder.record(&frame).expect("record frame");
+        assert_eq!(
+            materialize_copies(),
+            before,
+            "recording an encoded frame copied it"
+        );
+
+        // The bytes match what the owned path produces for the same input.
+        let expected = encoder
+            .process(frame.materialize_owned())
+            .expect("owned encode");
+        let expected_bytes = expected.planes()[0].data().to_vec();
+        assert_eq!(std::fs::read(&path).expect("recorded file"), expected_bytes);
+
+        // Control: an encoder on the default `process_ref` does copy once per frame.
+        let copying = CopyingEncoder(TurbojpegEncoder::new(FourCc::RG24, 90));
+        let before = materialize_copies();
+        copying.process_ref(&frame).expect("default process_ref");
+        assert_eq!(materialize_copies(), before + 1);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

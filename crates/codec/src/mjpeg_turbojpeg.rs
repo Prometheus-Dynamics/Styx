@@ -248,7 +248,11 @@ impl Codec for TurbojpegEncoder {
     }
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
-        self.encode(&input, |meta, encoded| {
+        self.process_ref(&input)
+    }
+
+    fn process_ref(&self, input: &FrameLease) -> Result<FrameLease, CodecError> {
+        self.encode(input, |meta, encoded| {
             let mut buf = self.pool.lease();
             buf.resize(encoded.len());
             buf.as_mut_slice()[..encoded.len()].copy_from_slice(encoded);
@@ -457,6 +461,26 @@ mod tests {
         assert_eq!(encoded.meta().format.code, FourCc::MJPG);
         assert_eq!(encoded.meta().timestamp, 7);
         assert!(!plane.data().is_empty());
+    }
+
+    #[test]
+    fn turbojpeg_process_ref_matches_owned_process() {
+        // Padded rows (stride > width * 3), so the borrowed path must honour the stride.
+        let (w, h, stride) = (5u32, 4usize, 20usize);
+        let bytes: Vec<u8> = (0..stride * h).map(|i| (i * 7 % 251) as u8).collect();
+        let frame = frame(FourCc::RG24, w, h as u32, &bytes, stride);
+        let encoder = TurbojpegEncoder::new(FourCc::RG24, 90);
+
+        let borrowed = encoder.process_ref(&frame).expect("borrowed encode");
+        let owned = encoder
+            .process(frame.materialize_owned())
+            .expect("owned encode");
+
+        assert_eq!(borrowed.meta().format.code, FourCc::MJPG);
+        let a = borrowed.planes();
+        let b = owned.planes();
+        assert_eq!(a[0].data(), b[0].data());
+        assert!(!a[0].data().is_empty());
     }
 
     fn frame(code: FourCc, w: u32, h: u32, bytes: &[u8], stride: usize) -> FrameLease {

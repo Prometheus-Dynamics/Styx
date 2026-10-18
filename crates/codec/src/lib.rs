@@ -240,6 +240,13 @@ pub trait Codec: Any + Send + Sync + 'static {
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError>;
 
+    /// [`Codec::process`] for a frame the caller keeps. A codec that reads its input in place
+    /// overrides this and skips the copy. The default copies the frame into owned host memory
+    /// (`materialize_owned`, counted as `CopySite::Materialize`) and calls `process`.
+    fn process_ref(&self, input: &FrameLease) -> Result<FrameLease, CodecError> {
+        self.process(input.materialize_owned())
+    }
+
     fn memory_stats(&self) -> Option<BufferPoolStats> {
         None
     }
