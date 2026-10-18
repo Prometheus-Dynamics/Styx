@@ -5,7 +5,7 @@ use core::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::algos::af::{AfMode, AfRange, AfSpeed, AfWindow, LensState};
+use crate::algos::af::{AfMode, AfPause, AfRange, AfSpeed, AfWindow, LensState};
 
 /// Names of the metering modes found in tunings.
 pub mod metering {
@@ -130,6 +130,9 @@ pub struct Controls {
     /// Lens position in dioptres (1 / distance in metres; 0 is infinity) for
     /// [`AfMode::Manual`]; `None`: the tuning's default (hyperfocal) position.
     pub lens_position: Option<f64>,
+    /// Pauses or resumes continuous AF, applied when it changes (libcamera's `AfPause`). Only
+    /// in [`AfMode::Continuous`]; `None`: no change asked.
+    pub af_pause: Option<AfPause>,
 }
 
 impl Default for Controls {
@@ -159,6 +162,7 @@ impl Default for Controls {
             af_trigger: 0,
             af_cancel: 0,
             lens_position: None,
+            af_pause: None,
         }
     }
 }

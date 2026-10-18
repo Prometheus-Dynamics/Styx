@@ -261,3 +261,109 @@ fn errors_match_softisp() {
         assert_eq!(a.to_string(), b.to_string());
     }
 }
+
+/// Windows of the frame (the whole frame, edges, odd-sized halves, a 2x2 one) at both scales,
+/// with lens shading, colour matrix and tone curve: the same pixels as `process_window` of
+/// `styx-softisp`, bit for bit, and the whole frame's statistics as the CPU's.
+#[test]
+fn windows_bit_exact() {
+    let windows = [
+        Window::new(0, 0, 264, 100),
+        Window::new(22, 10, 100, 46),
+        Window::new(0, 0, 64, 32),
+        Window::new(200, 68, 64, 32),
+        Window::new(120, 40, 2, 2),
+        Window::new(100, 30, 22, 20),
+    ];
+    for ctx in contexts() {
+        for pattern in PATTERNS {
+            let (w, h) = (264, 100);
+            let m = frame(w, h, pattern, 10);
+            let (raw, stride) = pack(&m, w, h, RawPacking::Csi2Raw10);
+            let format = RawFormat::new(w as u32, h as u32, pattern, RawPacking::Csi2Raw10);
+            for demosaic in [Demosaic::Bilinear, Demosaic::Mhc] {
+                let p = params(demosaic, true, true, 64, 1);
+                let mut cpu = SoftIsp::new(format, p.clone()).unwrap();
+                let mut gpu = GpuIsp::with_context(&ctx, format, p).unwrap();
+                for win in windows {
+                    for scale in [Scale::Full, Scale::Half] {
+                        let (ow, oh) = cpu.window_size(win, scale);
+                        let size = (ow as usize, oh as usize);
+                        let (want, _) = all_outputs(size, &mut |o| {
+                            cpu.process_window(&raw, stride, win, scale, o).unwrap();
+                            None
+                        });
+                        let (got, _) = all_outputs(size, &mut |o| {
+                            gpu.process_window(&raw, stride, win, scale, o).unwrap();
+                            None
+                        });
+                        for ((name, a), (_, b)) in want.iter().zip(&got) {
+                            if a != b {
+                                let at = a.iter().zip(b).position(|(p, q)| p != q).unwrap_or(0);
+                                panic!(
+                                    "{}: {name} of {win:?} differs at byte {at} ({} vs {}), \
+                                     {format:?} {scale:?} {:?}",
+                                    ctx.info().name,
+                                    a[at],
+                                    b[at],
+                                    demosaic
+                                );
+                            }
+                        }
+                    }
+                }
+                assert_eq!(
+                    cpu.statistics(&raw, stride).unwrap(),
+                    gpu.statistics(&raw, stride).unwrap(),
+                    "{} statistics, {format:?}",
+                    ctx.info().name
+                );
+            }
+        }
+    }
+}
+
+/// The window checks `styx-softisp` makes, with the same errors.
+#[test]
+fn window_errors_match_softisp() {
+    for ctx in contexts() {
+        let format = RawFormat::new(64, 32, CfaPattern::Rggb, RawPacking::Csi2Raw10);
+        let p = IspParams::default();
+        let mut gpu = GpuIsp::with_context(&ctx, format, p.clone()).unwrap();
+        let mut cpu = SoftIsp::new(format, p).unwrap();
+        let raw = vec![0u8; 80 * 32];
+        for win in [
+            Window::new(1, 0, 8, 8),
+            Window::new(60, 0, 8, 8),
+            Window::new(0, 0, 0, 8),
+        ] {
+            let mut a = vec![0u8; 8 * 8 * 3];
+            let mut b = vec![0u8; 8 * 8 * 3];
+            let e1 = gpu
+                .process_window(
+                    &raw,
+                    80,
+                    win,
+                    Scale::Full,
+                    OutputBuffers::Rgb24 {
+                        data: &mut a,
+                        stride: 24,
+                    },
+                )
+                .unwrap_err();
+            let e2 = cpu
+                .process_window(
+                    &raw,
+                    80,
+                    win,
+                    Scale::Full,
+                    OutputBuffers::Rgb24 {
+                        data: &mut b,
+                        stride: 24,
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(e1.to_string(), e2.to_string(), "{win:?}");
+        }
+    }
+}

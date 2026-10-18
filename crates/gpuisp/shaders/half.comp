@@ -31,10 +31,12 @@ void main() {
             continue;
         }
         uint q[4];
-        q[0] = front(2u * ox, 2u * oy);
-        q[1] = front(2u * ox + 1u, 2u * oy);
-        q[2] = front(2u * ox, 2u * oy + 1u);
-        q[3] = front(2u * ox + 1u, 2u * oy + 1u);
+        // The quad at frame position (win_x, win_y) + 2 * (ox, oy).
+        uint sx = P.win_x + 2u * ox, sy = P.win_y + 2u * oy;
+        q[0] = front(sx, sy);
+        q[1] = front(sx + 1u, sy);
+        q[2] = front(sx, sy + 1u);
+        q[3] = front(sx + 1u, sy + 1u);
         if (P.out_kind == OUT_LUMA) {
             // `simd::scalar::quad_luma_row`.
             put(0u, ox, oy, tone((q[0] + q[1] + q[2] + q[3] + 2u) >> 2));

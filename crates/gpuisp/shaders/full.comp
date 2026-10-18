@@ -81,7 +81,9 @@ void put(uint plane, uint x, uint y, uint v) {
 }
 
 void main() {
-    ivec2 origin = ivec2(gl_WorkGroupID.xy) * ivec2(32, 16) - 2;
+    // Frame coordinates of the tile's first sample: the window origin, the workgroup's block,
+    // and a 2-sample border (reflected at the frame's edges, not the window's).
+    ivec2 origin = ivec2(P.win_x, P.win_y) + ivec2(gl_WorkGroupID.xy) * ivec2(32, 16) - 2;
     for (uint i = gl_LocalInvocationIndex; i < uint(TW * TH); i += 128u) {
         int tx = int(i) % TW;
         int ty = int(i) / TW;
@@ -90,7 +92,7 @@ void main() {
     barrier();
     uint x0 = gl_GlobalInvocationID.x * 2u;
     uint y0 = gl_GlobalInvocationID.y * 2u;
-    if (x0 >= P.width || y0 >= P.height) {
+    if (x0 >= P.out_width || y0 >= P.out_height) {
         return;
     }
     int lx = int(gl_LocalInvocationID.x) * 2 + 2;
@@ -105,9 +107,11 @@ void main() {
     uvec3 px[4];
     for (uint k = 0u; k < 4u; k++) {
         uint dx = k & 1u, dy = k >> 1;
+        // Colour parities of the frame's samples (the window's origin is even).
+        uint cx = (P.win_x + x0 + dx) & 1u, cy = (P.win_y + y0 + dy) & 1u;
         uvec3 rgb = P.demosaic == 0u
-            ? bilinear(lx + int(dx), ly + int(dy), (x0 + dx) & 1u, (y0 + dy) & 1u)
-            : mhc(lx + int(dx), ly + int(dy), (x0 + dx) & 1u, (y0 + dy) & 1u);
+            ? bilinear(lx + int(dx), ly + int(dy), cx, cy)
+            : mhc(lx + int(dx), ly + int(dy), cx, cy);
         px[k] = tone3(colour(rgb));
     }
     if (P.out_kind == OUT_RGB24) {

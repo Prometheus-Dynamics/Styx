@@ -52,6 +52,9 @@ pub(crate) struct Block {
     pub bins: u32,
     pub saturation: u32,
     pub row_step: u32,
+    /// The window's origin in the frame (0 for the whole frame).
+    pub win_x: u32,
+    pub win_y: u32,
 }
 
 impl Block {
@@ -392,9 +395,9 @@ fn stats_setup(c: StatsConfig, w: usize, h: usize) -> Result<StatsSetup, IspErro
 mod tests {
     use super::*;
 
-    /// The block's size matches the GLSL declaration (62 words).
+    /// The block's size matches the GLSL declaration (64 words).
     #[test]
     fn block_layout() {
-        assert_eq!(size_of::<Block>(), 62 * 4);
+        assert_eq!(size_of::<Block>(), 64 * 4);
     }
 }

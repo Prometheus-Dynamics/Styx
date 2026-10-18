@@ -187,23 +187,24 @@ impl Engine {
             SoftTarget::Frame(scale, out) => return self.process(raw, stride, scale, out),
             SoftTarget::Parts(parts) => parts,
         };
-        let (isp, b) = match (self, raw) {
-            (Self::Cpu(isp), RawFrame::Bytes(b)) => (isp, b),
-            #[cfg(feature = "gpu")]
-            _ => {
-                return Err(crate::PipelineError::Config(
-                    "regions of frames need the CPU ISP and frames in memory".into(),
-                ));
+        match (self, raw) {
+            (Self::Cpu(isp), RawFrame::Bytes(b)) => {
+                let stats = match parts.overview {
+                    Some((factor, out)) => isp.process_binned(b, stride, factor, out)?,
+                    None => isp.statistics(b, stride)?,
+                };
+                for (window, out) in parts.regions {
+                    isp.process_window(b, stride, window, Scale::Full, out)?;
+                }
+                Ok(stats)
             }
-        };
-        let stats = match parts.overview {
-            Some((factor, out)) => isp.process_binned(b, stride, factor, out)?,
-            None => isp.statistics(b, stride)?,
-        };
-        for (window, out) in parts.regions {
-            isp.process_window(b, stride, window, Scale::Full, out)?;
+            #[cfg(feature = "gpu")]
+            (Self::Gpu(g), raw) => g.process_parts(raw, stride, parts),
+            #[cfg(feature = "gpu")]
+            _ => Err(crate::PipelineError::Config(
+                "dma-buf frames of regions need the GPU ISP".into(),
+            )),
         }
-        Ok(stats)
     }
 
     pub fn process(
@@ -232,7 +233,7 @@ pub(crate) mod gpu {
     use styx_gpuisp::{GpuIsp, ImportId, Input};
     use styx_softisp::{IspStats, OutputBuffers, Scale};
 
-    use super::RawFrame;
+    use super::{RawFrame, SoftParts};
     use crate::error::Result;
 
     /// Imported capture buffers kept at most.
@@ -262,6 +263,29 @@ pub(crate) mod gpu {
             }
         }
 
+        /// The regions and overview of a frame ([`super::SoftTarget::Parts`]) on the GPU: the
+        /// statistics of the whole frame, then each region's picture. The binned overview is
+        /// the CPU ISP's.
+        pub fn process_parts(
+            &mut self,
+            raw: RawFrame<'_>,
+            stride: usize,
+            parts: SoftParts<'_>,
+        ) -> Result<Option<IspStats>> {
+            if parts.overview.is_some() {
+                return Err(crate::PipelineError::Config(
+                    "the binned overview needs the CPU ISP".into(),
+                ));
+            }
+            let input = self.input(raw)?;
+            let stats = self.isp.statistics_input(input, stride)?;
+            for (window, out) in parts.regions {
+                self.isp
+                    .process_window_input(input, stride, window, Scale::Full, out)?;
+            }
+            Ok(stats)
+        }
+
         pub fn process(
             &mut self,
             raw: RawFrame<'_>,
@@ -269,7 +293,13 @@ pub(crate) mod gpu {
             scale: Scale,
             out: OutputBuffers<'_>,
         ) -> Result<Option<IspStats>> {
-            let input = match raw {
+            let input = self.input(raw)?;
+            Ok(self.isp.process_input(input, stride, scale, out)?)
+        }
+
+        /// The GPU's input for a frame: its bytes, or the capture buffer's dma-buf imported.
+        fn input<'a>(&mut self, raw: RawFrame<'a>) -> Result<Input<'a>> {
+            Ok(match raw {
                 RawFrame::Bytes(b) => Input::Bytes(b),
                 RawFrame::DmaBuf { fd, len } => {
                     use std::os::unix::fs::MetadataExt;
@@ -294,8 +324,7 @@ pub(crate) mod gpu {
                     };
                     Input::DmaBuf { id, offset: 0 }
                 }
-            };
-            Ok(self.isp.process_input(input, stride, scale, out)?)
+            })
         }
     }
 }

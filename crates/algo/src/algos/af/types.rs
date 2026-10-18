@@ -58,6 +58,33 @@ pub enum AfState {
     Failed,
 }
 
+/// A continuous-AF pause or resume request (libcamera's `AfPause`). Only meaningful in
+/// [`AfMode::Continuous`]; other modes ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfPause {
+    /// Stop now and hold the lens where it is (a scan in progress is abandoned).
+    Immediate,
+    /// Finish the scan in progress, then hold the lens where it ends (with no scan running,
+    /// as [`AfPause::Immediate`]).
+    Deferred,
+    /// Continue continuous AF (scene changes retrigger scans again).
+    Resume,
+}
+
+/// Whether continuous AF is paused (libcamera's `AfPauseState`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfPauseState {
+    /// Continuous AF runs.
+    #[default]
+    Running,
+    /// A deferred pause is waiting for the scan in progress to finish.
+    PauseRequested,
+    /// Held: the lens stays put and no scan starts until resumed.
+    Paused,
+}
+
 /// A focus window: a rectangle as fractions of the output image (0..1), with a weight.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -143,4 +170,7 @@ pub struct AfStatus {
     pub contrast_noise: f64,
     /// Frame counter of the current scan (frames since it started), 0 when not scanning.
     pub scan_frames: u32,
+    /// Continuous AF's pause state (always `Running` outside continuous mode).
+    #[serde(default)]
+    pub pause: AfPauseState,
 }

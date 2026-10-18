@@ -50,7 +50,10 @@
 //! * Controls arrive with each frame ([`crate::Controls`]): a trigger or cancel is a counter
 //!   that changed, so recordings replay them. Switching to manual applies the lens position
 //!   control at once.
-//! * Pausing continuous AF is not implemented yet.
+//! * Continuous AF pauses ([`AfPause`]) as libcamera's `AfPause`: immediately (the lens holds
+//!   where it is, a scan in progress is abandoned), or deferred (the scan in progress
+//!   finishes, then the lens holds where it ended); resumed, it starts a scan. Only in
+//!   continuous mode.
 
 // The algorithm needs feature `af` (on with `std`); its types and tuning are always there.
 #[cfg(feature = "af")]
@@ -88,7 +91,10 @@ pub const MAX_WINDOWS: usize = 10;
 #[cfg(feature = "af")]
 use measure::{Measure, Measurement};
 pub use tuning::{AfRangeTuning, AfRanges, AfSpeedTuning, AfSpeeds, AfTuning};
-pub use types::{AfMode, AfRange, AfSpeed, AfState, AfStatus, AfWindow, LensRequest, LensState};
+pub use types::{
+    AfMode, AfPause, AfPauseState, AfRange, AfSpeed, AfState, AfStatus, AfWindow, LensRequest,
+    LensState,
+};
 
 #[cfg(feature = "af")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -130,6 +136,7 @@ pub struct Af {
     seen_trigger: u32,
     seen_cancel: u32,
     seen_lens_position: Option<f64>,
+    seen_pause: Option<AfPause>,
     // Working state, as af.cpp.
     scan: Scan,
     initted: bool,
@@ -168,6 +175,8 @@ pub struct Af {
     still_frames: u32,
     /// The peak an approach goes to.
     approach: f64,
+    /// Continuous AF's pause state.
+    pause: AfPauseState,
 }
 
 #[cfg(feature = "af")]
@@ -187,6 +196,7 @@ impl Af {
             seen_trigger: 0,
             seen_cancel: 0,
             seen_lens_position: None,
+            seen_pause: None,
             scan: Scan::Idle,
             initted: false,
             ir: false,
@@ -216,6 +226,7 @@ impl Af {
             still: None,
             still_frames: 0,
             approach: 0.0,
+            pause: AfPauseState::Running,
         })
     }
 
@@ -267,10 +278,47 @@ impl Af {
             self.mode = mode;
             if mode == AfMode::Continuous {
                 self.scan = Scan::Trigger;
-            } else if mode != AfMode::Auto || self.scan < Scan::Coarse1 {
-                self.go_idle();
+            } else {
+                self.pause = AfPauseState::Running;
+                if mode != AfMode::Auto || self.scan < Scan::Coarse1 {
+                    self.go_idle();
+                }
             }
         }
+    }
+
+    /// Libcamera's `AfPause`: only continuous AF pauses.
+    fn pause_control(&mut self, pause: AfPause) {
+        if self.mode != AfMode::Continuous {
+            return;
+        }
+        match pause {
+            AfPause::Immediate => self.hold(),
+            AfPause::Deferred if self.scan >= Scan::Coarse1 => {
+                self.pause = AfPauseState::PauseRequested;
+            }
+            AfPause::Deferred => self.hold(),
+            AfPause::Resume => {
+                // A deferred pause not yet taking hold is cancelled; a held lens starts again.
+                self.pause = AfPauseState::Running;
+                if self.scan == Scan::Idle {
+                    self.scan = Scan::Trigger;
+                }
+            }
+        }
+    }
+
+    /// Holds the lens where it is now: the target becomes the position, no scan runs.
+    fn hold(&mut self) {
+        if self.report == AfState::Scanning {
+            // The scan is abandoned: it has no result (a finished one keeps its report).
+            self.report = AfState::Idle;
+        }
+        self.scan = Scan::Idle;
+        self.scan_data.clear();
+        self.waiting_for_lens = false;
+        self.ftarget = self.fsmooth;
+        self.pause = AfPauseState::Paused;
     }
 
     fn trigger(&mut self) {
@@ -318,6 +366,12 @@ impl Af {
             self.seen_lens_position = c.lens_position;
             if let Some(d) = c.lens_position.filter(|d| d.is_finite()) {
                 self.set_lens_position(d);
+            }
+        }
+        if c.af_pause != self.seen_pause {
+            self.seen_pause = c.af_pause;
+            if let Some(p) = c.af_pause {
+                self.pause_control(p);
             }
         }
     }
@@ -395,6 +449,10 @@ impl Af {
         if self.mode == AfMode::Manual {
             return;
         }
+        if self.pause == AfPauseState::Paused {
+            // Held: no PDAF, no scan, no scene-change retrigger until resumed.
+            return;
+        }
         let s = self.speed_t();
         if self.scan == Scan::Pdaf {
             // PDAF closed loop while it has confidence; after `dropout_frames` without, a
@@ -455,11 +513,16 @@ impl Af {
                 if self.report == AfState::Failed {
                     self.ftarget = self.range_t().default;
                 }
-                self.scan = if self.mode == AfMode::Continuous && s.dropout_frames > 0 {
+                // A deferred pause takes hold where this scan ends.
+                let hold = self.pause == AfPauseState::PauseRequested;
+                self.scan = if !hold && self.mode == AfMode::Continuous && s.dropout_frames > 0 {
                     Scan::Pdaf
                 } else {
                     Scan::Idle
                 };
+                if hold {
+                    self.pause = AfPauseState::Paused;
+                }
                 self.drop_count = 0;
                 self.scene_change_count = 0;
                 self.old_scene_contrast = self.scan_max_contrast.max(contrast);
@@ -537,6 +600,7 @@ impl Af {
             } else {
                 0
             },
+            pause: self.pause,
         }
     }
 

@@ -55,7 +55,8 @@ pub mod tuning;
 mod warm;
 
 pub use algos::af::{
-    AfMode, AfRange, AfSpeed, AfState, AfStatus, AfWindow, LensRequest, LensState,
+    AfMode, AfPause, AfPauseState, AfRange, AfSpeed, AfState, AfStatus, AfWindow, LensRequest,
+    LensState,
 };
 pub use algos::agc::deflicker::FlickerCorrection;
 pub use config::{CameraConfig, ControlDelays, Crop, LensConfig};

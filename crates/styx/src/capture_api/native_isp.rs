@@ -549,7 +549,8 @@ pub(super) fn start_processed(
             }
             p.start().map_err(err)?;
             let controls = p.controls().clone();
-            // Regions and overviews need the CPU ISP (and a full-size mode to crop).
+            // Regions need a full-size mode to crop (the CPU or the GPU ISP); the binned
+            // overview needs the CPU ISP.
             let cpu = matches!(p.soft_loop().engine(), styx_pipeline::IspEngine::Cpu { .. });
             let overview = config
                 .backends
@@ -562,7 +563,7 @@ pub(super) fn start_processed(
                 soft_worker::SoftWorker {
                     mode: worker_mode,
                     scale,
-                    crops: cpu && scale == Scale::Full,
+                    crops: scale == Scale::Full,
                     overview: overview.filter(|_| scale == Scale::Full),
                     tx,
                     owns_queue,
