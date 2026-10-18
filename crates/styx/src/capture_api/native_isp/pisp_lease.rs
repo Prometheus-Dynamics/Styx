@@ -55,21 +55,10 @@ pub(super) struct CpuPrep {
 }
 
 impl CpuPrep {
-    /// From the configuration, with `STYX_NATIVE_EARLY_SYNC=0|1` and
-    /// `STYX_NATIVE_PREFETCH=off|touch|l3` overriding it (for measurements).
+    /// From the configuration.
     pub(super) fn new(cfg: &crate::capture_api::NativeIspConfig) -> Self {
         use crate::capture_api::NativeCpuPrefetch as P;
-        let sync = match std::env::var("STYX_NATIVE_EARLY_SYNC").as_deref() {
-            Ok("0") => false,
-            Ok("1") => true,
-            _ => cfg.early_cpu_sync,
-        };
-        let prefetch = match std::env::var("STYX_NATIVE_PREFETCH").as_deref() {
-            Ok("off") => P::Off,
-            Ok("touch") => P::Touch,
-            Ok("l3") => P::L3,
-            _ => cfg.cpu_prefetch,
-        };
+        let (sync, prefetch) = debug_override(cfg.early_cpu_sync, cfg.cpu_prefetch);
         // Reading before the sync would cache stale lines: a prefetch starts CPU access.
         Self {
             sync: sync || prefetch != P::Off,
@@ -83,6 +72,38 @@ impl CpuPrep {
         sync: false,
         prefetch: crate::capture_api::NativeCpuPrefetch::Off,
     };
+}
+
+/// Debug hook (feature `pisp-debug-hooks`): `STYX_NATIVE_EARLY_SYNC=0|1` and
+/// `STYX_NATIVE_PREFETCH=off|touch|l3` override the configured sync and prefetch (for
+/// measurements).
+#[cfg(feature = "pisp-debug-hooks")]
+fn debug_override(
+    sync: bool,
+    prefetch: crate::capture_api::NativeCpuPrefetch,
+) -> (bool, crate::capture_api::NativeCpuPrefetch) {
+    use crate::capture_api::NativeCpuPrefetch as P;
+    let sync = match std::env::var("STYX_NATIVE_EARLY_SYNC").as_deref() {
+        Ok("0") => false,
+        Ok("1") => true,
+        _ => sync,
+    };
+    let prefetch = match std::env::var("STYX_NATIVE_PREFETCH").as_deref() {
+        Ok("off") => P::Off,
+        Ok("touch") => P::Touch,
+        Ok("l3") => P::L3,
+        _ => prefetch,
+    };
+    (sync, prefetch)
+}
+
+/// Without the feature, the configuration stands.
+#[cfg(not(feature = "pisp-debug-hooks"))]
+fn debug_override(
+    sync: bool,
+    prefetch: crate::capture_api::NativeCpuPrefetch,
+) -> (bool, crate::capture_api::NativeCpuPrefetch) {
+    (sync, prefetch)
 }
 
 /// Brings `bytes` into the caches: a load of every 64-byte line (`Touch`), or a level-3
@@ -696,9 +717,11 @@ mod tests {
             cpu_prefetch: P::L3,
             ..Default::default()
         };
-        if std::env::var_os("STYX_NATIVE_EARLY_SYNC").is_none()
-            && std::env::var_os("STYX_NATIVE_PREFETCH").is_none()
-        {
+        // The environment overrides only with the debug hooks (and when unset).
+        let overridden = cfg!(feature = "pisp-debug-hooks")
+            && (std::env::var_os("STYX_NATIVE_EARLY_SYNC").is_some()
+                || std::env::var_os("STYX_NATIVE_PREFETCH").is_some());
+        if !overridden {
             assert_eq!(
                 CpuPrep::new(&cfg),
                 CpuPrep {
