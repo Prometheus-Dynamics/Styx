@@ -362,23 +362,26 @@ pub(super) fn recv_into(
     bytes: &mut Vec<u8>,
     fds: &mut Vec<OwnedFd>,
 ) -> io::Result<Got> {
-    let mut poll = libc::pollfd {
-        fd: socket.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let timeout = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: one valid `pollfd`.
-    let ready = unsafe { libc::poll(&mut poll, 1, timeout) };
-    if ready < 0 {
-        let err = io::Error::last_os_error();
-        return match err.kind() {
-            io::ErrorKind::Interrupted => Ok(Got::Nothing),
-            _ => Err(err),
+    // A zero wait needs no poll: the non-blocking receive below says whether a message waits.
+    if !wait.is_zero() {
+        let mut poll = libc::pollfd {
+            fd: socket.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
         };
-    }
-    if ready == 0 {
-        return Ok(Got::Nothing);
+        let timeout = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
+        // SAFETY: one valid `pollfd`.
+        let ready = unsafe { libc::poll(&mut poll, 1, timeout) };
+        if ready < 0 {
+            let err = io::Error::last_os_error();
+            return match err.kind() {
+                io::ErrorKind::Interrupted => Ok(Got::Nothing),
+                _ => Err(err),
+            };
+        }
+        if ready == 0 {
+            return Ok(Got::Nothing);
+        }
     }
     let start = bytes.len();
     bytes.reserve(MAX_MESSAGE);

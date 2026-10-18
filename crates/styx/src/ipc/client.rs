@@ -109,6 +109,9 @@ type Accepted = (String, Delivered, Option<ClientToken>);
 
 struct Link {
     socket: Option<Arc<OwnedFd>>,
+    /// Counts the client's connections: each (re)connection gets the next. Keys what is kept
+    /// per connection (its progress page), where a socket's address may be reused.
+    generation: u64,
     plan: Option<String>,
     delivered: Option<Delivered>,
     token: Option<ClientToken>,
@@ -118,7 +121,22 @@ struct Link {
     async_fd: Option<Arc<tokio::io::unix::AsyncFd<OwnedFd>>>,
 }
 
+/// The connection a receive reads: its socket and generation (taken together under the link's
+/// lock).
+struct Live {
+    socket: Arc<OwnedFd>,
+    generation: u64,
+}
+
 impl Link {
+    /// The connection to receive on, if one is up.
+    fn live(&self) -> Option<Live> {
+        self.socket.clone().map(|socket| Live {
+            socket,
+            generation: self.generation,
+        })
+    }
+
     /// Connected (again): whether it was a reconnection (not the first connection of a client
     /// made with [`ClientOptions::request_nonblocking`]).
     fn connected(&mut self, socket: OwnedFd, accepted: Option<Accepted>, poll: &PollSet) -> bool {
@@ -128,6 +146,7 @@ impl Link {
             poll.unwatch(&old);
         }
         self.socket = Some(Arc::new(socket));
+        self.generation = self.generation.wrapping_add(1);
         (self.plan, self.delivered, self.token) =
             accepted.map_or((None, None, None), |(p, d, t)| (Some(p), Some(d), t));
         #[cfg(feature = "async")]
@@ -467,6 +486,7 @@ impl FrameClient {
         let connecting = opened.is_none() && request.is_some();
         let mut link = Link {
             socket: None,
+            generation: 0,
             plan: None,
             delivered: None,
             token: None,
@@ -582,8 +602,8 @@ impl FrameClient {
     pub fn recv(&self, wait: Duration) -> RecvOutcome<FrameLease> {
         let deadline = Instant::now() + wait;
         loop {
-            let socket = self.link.lock().socket.clone();
-            let Some(socket) = socket else {
+            let live = self.link.lock().live();
+            let Some(live) = live else {
                 if !self.retries() {
                     return RecvOutcome::Closed;
                 }
@@ -599,7 +619,7 @@ impl FrameClient {
                 continue;
             };
             let remaining = deadline.saturating_duration_since(Instant::now());
-            match self.receive(&socket, remaining) {
+            match self.receive(&live, remaining) {
                 Some(outcome) => return outcome,
                 None if !self.reconnect => return RecvOutcome::Closed,
                 None => {}
@@ -609,7 +629,7 @@ impl FrameClient {
 
     /// One message from `socket`, waiting up to `wait`: a frame or `Empty`; `None` when the
     /// connection is gone (forgotten here).
-    fn receive(&self, socket: &Arc<OwnedFd>, wait: Duration) -> Option<RecvOutcome<FrameLease>> {
+    fn receive(&self, live: &Live, wait: Duration) -> Option<RecvOutcome<FrameLease>> {
         // Another thread receiving at the same time gets buffers of its own.
         let mut own = None;
         let mut guard = self.scratch.try_lock();
@@ -619,8 +639,9 @@ impl FrameClient {
         };
         scratch.bytes.clear();
         scratch.fds.clear();
-        let err = match socket::recv_into(socket, wait, &mut scratch.bytes, &mut scratch.fds) {
-            Ok(socket::Got::Message) => return Some(self.frame(socket, scratch)),
+        let err = match socket::recv_into(&live.socket, wait, &mut scratch.bytes, &mut scratch.fds)
+        {
+            Ok(socket::Got::Message) => return Some(self.frame(live, scratch)),
             Ok(socket::Got::Nothing) => return Some(RecvOutcome::Empty),
             Ok(socket::Got::Closed) => IpcError::Io(std::io::ErrorKind::ConnectionReset.into()),
             Err(err) => err.into(),
@@ -628,7 +649,11 @@ impl FrameClient {
         drop(guard);
         let mut link = self.link.lock();
         // Unless another thread already reconnected.
-        if link.socket.as_ref().is_some_and(|s| Arc::ptr_eq(s, socket)) {
+        if link
+            .socket
+            .as_ref()
+            .is_some_and(|s| Arc::ptr_eq(s, &live.socket))
+        {
             link.lost(&self.poll, self.reconnect, err);
         }
         None
@@ -641,12 +666,12 @@ impl FrameClient {
         loop {
             let connected = {
                 let mut link = self.link.lock();
-                match link.socket.clone() {
+                match link.live() {
                     None => None,
-                    Some(socket) => {
+                    Some(live) => {
                         let fd = match &link.async_fd {
                             Some(fd) => fd.clone(),
-                            None => match socket.try_clone().and_then(|dup| {
+                            None => match live.socket.try_clone().and_then(|dup| {
                                 tokio::io::unix::AsyncFd::with_interest(
                                     dup,
                                     tokio::io::Interest::READABLE,
@@ -656,11 +681,11 @@ impl FrameClient {
                                 Err(_) => return RecvOutcome::Closed,
                             },
                         };
-                        Some((socket, fd))
+                        Some((live, fd))
                     }
                 }
             };
-            let Some((socket, fd)) = connected else {
+            let Some((live, fd)) = connected else {
                 if !self.retries() {
                     return RecvOutcome::Closed;
                 }
@@ -670,7 +695,7 @@ impl FrameClient {
             let Ok(mut ready) = fd.readable().await else {
                 return RecvOutcome::Closed;
             };
-            match self.receive(&socket, Duration::ZERO) {
+            match self.receive(&live, Duration::ZERO) {
                 Some(RecvOutcome::Data(frame)) => return RecvOutcome::Data(frame),
                 Some(RecvOutcome::Empty) => ready.clear_ready(),
                 Some(RecvOutcome::Closed) => return RecvOutcome::Closed,
@@ -709,18 +734,21 @@ impl FrameClient {
 
     /// The frame message in `scratch` imported over its descriptors: one allocation (the
     /// frame's release record) for a frame on one dma-buf. Other messages: `Empty`.
-    fn frame(&self, socket: &Arc<OwnedFd>, scratch: &mut Scratch) -> RecvOutcome<FrameLease> {
+    fn frame(&self, live: &Live, scratch: &mut Scratch) -> RecvOutcome<FrameLease> {
         let received = CaptureInstant::try_now().map(CaptureInstant::as_nanos);
         let mut progress = None;
         let imported =
             wire::decode_frame_with_progress(&scratch.bytes, &mut scratch.frame, &mut progress)
                 .and_then(|id| match id {
                     Some(id) => {
-                        let sliced =
-                            self.ring
-                                .take(socket, progress.as_ref(), &mut scratch.fds, id)?;
+                        let sliced = self.ring.take(
+                            live.generation,
+                            progress.as_ref(),
+                            &mut scratch.fds,
+                            id,
+                        )?;
                         let release = Release {
-                            socket: socket.clone(),
+                            socket: live.socket.clone(),
                             id,
                             hops: ClientHops {
                                 received,

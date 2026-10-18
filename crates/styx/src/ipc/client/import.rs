@@ -15,9 +15,9 @@ use super::super::wire::{self, ClientHops, NO_OUTPUT, WireBacking, WireFrame, Wi
 use super::super::{IpcError, socket};
 
 /// The progress page sliced frames came with on the current connection (`progress_ring.rs`),
-/// keyed by the connection's socket.
+/// keyed by the connection's generation (a socket's address can be reused after a reconnect).
 #[derive(Default)]
-pub(super) struct Rings(Mutex<Option<(usize, Arc<ProgressRing>)>>);
+pub(super) struct Rings(Mutex<Option<(u64, Arc<ProgressRing>)>>);
 
 /// A sliced frame's progress, as the frame message gave it.
 pub(super) struct Sliced {
@@ -27,11 +27,12 @@ pub(super) struct Sliced {
 }
 
 impl Rings {
-    /// The progress of frame `id` received on `socket`, when it has a trailer: its page is the
-    /// last of `fds` with the connection's first sliced frame, its slot names where to read.
+    /// The progress of frame `id` received on connection `generation`, when it has a trailer:
+    /// its page is the last of `fds` with the connection's first sliced frame, its slot names
+    /// where to read.
     pub(super) fn take(
         &self,
-        socket: &Arc<OwnedFd>,
+        generation: u64,
         progress: Option<&WireProgress>,
         fds: &mut Vec<OwnedFd>,
         id: u64,
@@ -39,7 +40,7 @@ impl Rings {
         let Some(progress) = progress else {
             return Ok(None);
         };
-        let key = Arc::as_ptr(socket) as usize;
+        let key = generation;
         let mut rings = self.0.lock();
         if progress.ring_attached {
             let fd = fds

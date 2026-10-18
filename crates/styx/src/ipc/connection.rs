@@ -26,7 +26,13 @@ pub(super) struct Exported {
     pub(super) copied: bool,
     /// What a backing exported, before it goes into `fds` and the wire frame.
     exported: Vec<FrameFdPlane>,
+    /// The memfds copies are made in, reused once every client has released the copy (its
+    /// buffer goes back to the pool when the last of `keep` drops), with the size they hold.
+    pool: Option<(SharedBufferPool, usize)>,
 }
+
+/// Memfds a copy pool keeps for reuse (more are closed).
+const COPY_POOL_FREE: usize = 8;
 
 impl Default for Exported {
     fn default() -> Self {
@@ -36,6 +42,7 @@ impl Default for Exported {
             keep: Keep::new(),
             copied: false,
             exported: Vec::new(),
+            pool: None,
         }
     }
 }
@@ -63,6 +70,73 @@ pub(super) fn export_into(frame: &FrameLease, out: &mut Exported) -> Result<(), 
     filled
 }
 
+/// The frame's memory as descriptors in `out.exported`: its own backing when it exports, else a
+/// copy (whether it was copied).
+fn export_backing(
+    frame: &FrameLease,
+    out: &mut Exported,
+) -> Result<(ExportedKind, bool), IpcError> {
+    out.exported.clear();
+    match frame.export_backing_into(&mut out.exported) {
+        Ok(kind) => {
+            out.keep.extend(frame.external_backing_handle());
+            Ok((kind, false))
+        }
+        Err(FrameExportError::NotExportable) => copy_into_memfd(frame, out),
+        // The backing cannot hand out a descriptor (e.g. v4l2loopback has no VIDIOC_EXPBUF):
+        // send a copy rather than nothing.
+        Err(FrameExportError::Fd(err)) if frame.can_read_planes() => {
+            crate::trace::debug!(error = %err, "frame not exportable, copying it");
+            copy_into_memfd(frame, out)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Copies `frame`'s planes once into a memfd from the pool and exports that memfd. The copy is
+/// kept in `out.keep` for as long as a client holds the frame.
+fn copy_into_memfd(
+    frame: &FrameLease,
+    out: &mut Exported,
+) -> Result<(ExportedKind, bool), IpcError> {
+    let layouts = frame.layout_slice();
+    let len = layouts
+        .iter()
+        .map(|l| l.offset.saturating_add(l.len))
+        .max()
+        .unwrap_or(0);
+    let mut lease = copy_pool(out, len)?.lease()?;
+    lease.try_resize(len)?;
+    let dst = lease.as_mut_slice();
+    for (plane, layout) in frame.planes().into_iter().zip(layouts) {
+        let data = plane.data();
+        let copy_len = data.len().min(layout.len);
+        dst[layout.offset..layout.offset + copy_len].copy_from_slice(&data[..copy_len]);
+        styx_core::metrics::copied(styx_core::metrics::CopySite::MemfdExport, copy_len);
+    }
+    let copy = FrameLease::multi_plane_shared(
+        frame.meta().clone(),
+        lease,
+        layouts.iter().copied().collect(),
+    )?;
+    let kind = copy.export_backing_into(&mut out.exported)?;
+    out.keep.extend(copy.external_backing_handle());
+    Ok((kind, true))
+}
+
+/// The pool copies of `len` bytes come from: reused while its memfds hold `len`, else replaced.
+fn copy_pool(out: &mut Exported, len: usize) -> Result<&SharedBufferPool, FrameExportError> {
+    if !out.pool.as_ref().is_some_and(|(_, chunk)| *chunk >= len) {
+        let pool = SharedBufferPool::with_limits(0, len, COPY_POOL_FREE)?;
+        out.pool = Some((pool, len));
+    }
+    Ok(out
+        .pool
+        .as_ref()
+        .map(|(pool, _)| pool)
+        .expect("pool set above"))
+}
+
 fn export_part(
     frame: &FrameLease,
     out: &mut Exported,
@@ -70,26 +144,7 @@ fn export_part(
     top_level: bool,
 ) -> Result<(), IpcError> {
     let layouts = frame.layout_slice();
-    out.exported.clear();
-    let (kind, copied_here) = match frame.export_backing_into(&mut out.exported) {
-        Ok(kind) => {
-            out.keep.extend(frame.external_backing_handle());
-            (kind, false)
-        }
-        Err(FrameExportError::NotExportable) => {
-            out.exported.clear();
-            (frame.export_or_copy_memfd_into(&mut out.exported)?.1, true)
-        }
-        // The backing cannot hand out a descriptor (e.g. v4l2loopback has no VIDIOC_EXPBUF):
-        // send a copy rather than nothing.
-        Err(FrameExportError::Fd(err)) if frame.can_read_planes() => {
-            crate::trace::debug!(error = %err, "frame not exportable, copying it");
-            out.exported.clear();
-            let owned = frame.materialize_owned();
-            (owned.export_or_copy_memfd_into(&mut out.exported)?.1, true)
-        }
-        Err(err) => return Err(err.into()),
-    };
+    let (kind, copied_here) = export_backing(frame, out)?;
     out.copied |= copied_here;
     wire.backing = match kind {
         ExportedKind::Memfd => {

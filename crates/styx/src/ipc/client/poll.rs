@@ -13,6 +13,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::pin::Pin;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -30,6 +31,8 @@ pub(super) struct PollSet {
     timer: OwnedFd,
     /// The epoll descriptor registered with styx-graph's reactor (a duplicate), on first use.
     reactor: OnceLock<io::Result<AsyncFd<OwnedFd>>>,
+    /// The timer is set (and may have fired, its expiry not yet read): only then is it read.
+    armed: AtomicBool,
 }
 
 fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
@@ -56,6 +59,7 @@ impl PollSet {
             epoll,
             timer,
             reactor: OnceLock::new(),
+            armed: AtomicBool::new(false),
         };
         set.ctl(libc::EPOLL_CTL_ADD, set.timer.as_raw_fd())?;
         Ok(set)
@@ -101,6 +105,8 @@ impl PollSet {
         let _ = unsafe {
             libc::timerfd_settime(self.timer.as_raw_fd(), 0, &spec, std::ptr::null_mut())
         };
+        // Setting it again (or to zero, which disarms it) replaces any expiry not yet read.
+        self.armed.store(after.is_some(), Ordering::Relaxed);
     }
 
     /// The epoll descriptor: readable when the client has something to do.
@@ -115,15 +121,22 @@ impl PollSet {
 
     /// The timer fired: not readable for it any more.
     pub(super) fn clear_timer(&self) {
+        if !self.armed.load(Ordering::Relaxed) {
+            return;
+        }
         let mut expirations = 0u64;
         // SAFETY: reads 8 bytes into a u64 from a non-blocking timerfd.
-        let _ = unsafe {
+        let read = unsafe {
             libc::read(
                 self.timer.as_raw_fd(),
                 (&raw mut expirations).cast(),
                 std::mem::size_of::<u64>(),
             )
         };
+        // Expired (a one-shot timer): not armed any more. Still pending: read again later.
+        if read == std::mem::size_of::<u64>() as isize {
+            self.armed.store(false, Ordering::Relaxed);
+        }
     }
 
     pub(super) fn reactor(&self) -> io::Result<&AsyncFd<OwnedFd>> {
@@ -171,8 +184,8 @@ impl FrameClient {
             if news && self.link.lock().dial.news.pending() {
                 return RecvOutcome::Empty;
             }
-            let socket = self.link.lock().socket.clone();
-            let Some(socket) = socket else {
+            let live = self.link.lock().live();
+            let Some(live) = live else {
                 if !self.retries() {
                     // Stay readable: whoever polls learns it is closed.
                     self.poll.wake_at(Some(Instant::now()));
@@ -183,12 +196,12 @@ impl FrameClient {
                 }
                 return RecvOutcome::Empty;
             };
-            match self.receive(&socket, Duration::ZERO) {
+            match self.receive(&live, Duration::ZERO) {
                 Some(RecvOutcome::Data(frame)) => return RecvOutcome::Data(frame),
                 Some(RecvOutcome::Closed) => return RecvOutcome::Closed,
                 // Nothing there (or a message that is not a frame, read again).
                 Some(RecvOutcome::Empty) => {
-                    if !socket::readable(&socket, Duration::ZERO) {
+                    if !socket::readable(&live.socket, Duration::ZERO) {
                         return RecvOutcome::Empty;
                     }
                 }

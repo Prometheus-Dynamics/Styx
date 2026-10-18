@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -132,6 +132,8 @@ pub struct FrameRecorder {
     paths: Vec<PathBuf>,
     metadata: RecordingSessionMetadata,
     index_path: PathBuf,
+    /// The index file, open for the recorder's life: one write per frame line.
+    index_file: File,
     encoder: Option<Arc<dyn Codec>>,
     error_count: usize,
     last_error: Option<String>,
@@ -157,7 +159,7 @@ impl FrameRecorder {
         let metadata_path = dir.join("session.json");
         let index_path = dir.join("index.tsv");
         write_session_metadata(&metadata_path, &metadata)?;
-        write_index_header(&index_path)?;
+        let index_file = write_index_header(&index_path)?;
         Ok(Self {
             dir,
             index: options.start_index,
@@ -165,6 +167,7 @@ impl FrameRecorder {
             paths: Vec::new(),
             metadata,
             index_path,
+            index_file,
             encoder: None,
             error_count: 0,
             last_error: None,
@@ -263,7 +266,8 @@ impl FrameRecorder {
         }
 
         self.paths.push(path.clone());
-        append_index_entry(&self.index_path, &self.index_entry(frame, &path))?;
+        let entry = self.index_entry(frame, &path);
+        append_index_entry(&mut self.index_file, &entry)?;
         self.index = self.index.saturating_add(1);
         Ok(path)
     }
@@ -348,20 +352,24 @@ fn write_session_metadata(
     Ok(())
 }
 
-fn write_index_header(path: &Path) -> Result<(), RecordingError> {
+/// Creates the index with its header line, returning it open for the frame lines.
+fn write_index_header(path: &Path) -> Result<File, RecordingError> {
     let mut file = File::create(path)?;
     writeln!(
         file,
         "sequence\ttimestamp\tfourcc\twidth\theight\tpayload_bytes\tpath"
     )?;
-    Ok(())
+    Ok(file)
 }
 
-fn append_index_entry(path: &Path, entry: &RecordingFrameIndexEntry) -> Result<(), RecordingError> {
-    let mut file = OpenOptions::new().append(true).open(path)?;
-    writeln!(
-        file,
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+/// Appends one frame line with a single unbuffered write, so a crash loses at most the line
+/// being written.
+fn append_index_entry(
+    file: &mut File,
+    entry: &RecordingFrameIndexEntry,
+) -> Result<(), RecordingError> {
+    let line = format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
         entry.sequence,
         entry.timestamp,
         entry.fourcc,
@@ -369,7 +377,8 @@ fn append_index_entry(path: &Path, entry: &RecordingFrameIndexEntry) -> Result<(
         entry.height,
         entry.payload_bytes,
         entry.path.display()
-    )?;
+    );
+    file.write_all(line.as_bytes())?;
     Ok(())
 }
 

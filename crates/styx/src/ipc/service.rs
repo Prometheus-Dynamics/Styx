@@ -613,6 +613,29 @@ impl Service {
 /// Longest a sliced frame may take to complete after its first slice.
 const SLICED_WAIT: Duration = Duration::from_millis(500);
 
+/// How long one wait for a frame holds a client's frames lock: the rest of [`FRAME_WAIT`] is
+/// waited without it, so a leave or restart is not held up behind a quiet client.
+const FRAME_SLICE: Duration = Duration::from_millis(5);
+
+/// The client's next frame, waiting up to [`FRAME_WAIT`] (as `Frames::next_frame` does) in
+/// slices that each hold the frames lock only for their own length. `None`: the capture is
+/// restarting (the client has no frames now).
+fn next_frame_sliced(frames: &FramesSlot) -> Option<RecvOutcome<FrameLease>> {
+    let deadline = Instant::now() + FRAME_WAIT;
+    loop {
+        let slice = deadline
+            .saturating_duration_since(Instant::now())
+            .min(FRAME_SLICE);
+        let outcome = frames
+            .lock()
+            .as_mut()
+            .map(|frames| frames.next_frame(slice))?;
+        if !matches!(outcome, RecvOutcome::Empty) || Instant::now() >= deadline {
+            return Some(outcome);
+        }
+    }
+}
+
 /// Sends `frame` (a sliced frame not yet complete) to a client that takes those, then follows
 /// its progress into the connection's progress page until it completes or fails.
 fn send_sliced(
@@ -698,10 +721,7 @@ fn send_frames(
         if conn.in_flight() >= max_in_flight {
             continue;
         }
-        let outcome = frames
-            .lock()
-            .as_mut()
-            .map(|frames| frames.next_frame(FRAME_WAIT));
+        let outcome = next_frame_sliced(frames);
         let frame = match outcome {
             Some(RecvOutcome::Data(frame)) => frame,
             Some(_) => continue,
