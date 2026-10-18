@@ -227,7 +227,7 @@ fn parallel_bands_match_one_thread() {
     });
     let (bytes, stride) = pack(&m, w, h, RawPacking::Csi2Raw10);
     let format = RawFormat::new(w as u32, h as u32, CfaPattern::Bggr, RawPacking::Csi2Raw10);
-    for demosaic in [Demosaic::Bilinear, Demosaic::Mhc] {
+    for demosaic in [Demosaic::Bilinear, Demosaic::Mhc, Demosaic::EdgeDirected] {
         let params = IspParams {
             demosaic,
             stats: Some(StatsConfig::default()),

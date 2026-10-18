@@ -10,10 +10,10 @@ use styx_core::math::Float as _;
 
 use crate::time::now;
 
-use styx_algo::{LensState, PdafZone, Statistics, Tuning, ZoneGrid};
+use styx_algo::{DenoiseParams, LensState, PdafZone, SharpenParams, Statistics, Tuning, ZoneGrid};
 use styx_softisp::{
-    Demosaic, IspParams, OutputBuffers, RawFormat, RawPacking, Scale, SoftIsp, StatsConfig,
-    YuvMatrix,
+    ChromaDenoise, Demosaic, Denoise, IspParams, LumaDenoise, OutputBuffers, RawFormat, RawPacking,
+    Scale, Sharpen, SoftIsp, StatsConfig, YuvMatrix,
 };
 
 use crate::engine::{Engine, IspEngine, RawFrame, SoftTarget};
@@ -137,6 +137,48 @@ pub const LSC_TOLERANCE: f32 = 0.0025;
 /// this rate instead of on every frame (as the PiSP path, [`crate::device::PispOptions`]):
 /// every second frame at 30 fps. A frame that finds them unsettled goes back to every frame.
 pub const SETTLED_RATE_HZ: f64 = 15.0;
+
+/// The software ISP's sharpening at a tuning's factors of 1 (the PiSP's default sharpening
+/// has no direct counterpart): the unsharp gain, the detail threshold (8-bit codes) and the
+/// largest correction (8-bit codes). The tuning's factors multiply them.
+pub const SHARPEN_AMOUNT: f32 = 0.5;
+/// See [`SHARPEN_AMOUNT`].
+pub const SHARPEN_THRESHOLD: f32 = 2.0;
+/// See [`SHARPEN_AMOUNT`].
+pub const SHARPEN_LIMIT: f32 = 8.0;
+
+/// The output-picture stages of the software ISP that a tuning's denoise and sharpening ask
+/// for: spatial denoise (SDN: its noise profile and strength) as luma denoise, colour denoise
+/// (CDN: threshold and strength) as chroma denoise, and sharpening as [`SHARPEN_AMOUNT`] and
+/// the rest times the tuning's factors. A block the tuning leaves out, or whose strength is
+/// zero, is off.
+pub fn post_stages(
+    denoise: &DenoiseParams,
+    sharpen: Option<SharpenParams>,
+) -> (Option<Denoise>, Option<Sharpen>) {
+    let luma = denoise
+        .sdn
+        .filter(|s| s.strength > 0.0)
+        .map(|s| LumaDenoise {
+            constant: s.noise_constant as f32,
+            slope: s.noise_slope as f32,
+            strength: s.strength as f32,
+        });
+    let chroma = denoise
+        .cdn
+        .filter(|c| c.strength > 0.0)
+        .map(|c| ChromaDenoise {
+            threshold: c.threshold as f32,
+            strength: c.strength as f32,
+        });
+    let denoise = (luma.is_some() || chroma.is_some()).then_some(Denoise { luma, chroma });
+    let sharpen = sharpen.filter(|s| s.strength > 0.0).map(|s| Sharpen {
+        amount: SHARPEN_AMOUNT * s.strength as f32,
+        threshold: SHARPEN_THRESHOLD * s.threshold as f32,
+        limit: SHARPEN_LIMIT * s.limit as f32,
+    });
+    (denoise, sharpen)
+}
 
 /// Software ISP parameters the loop does not change: bilinear demosaic, full-range BT.601 YUV
 /// (as the PiSP back end's "jpeg" encoding), statistics on a 16x12 zone grid with a 256-bin
@@ -459,5 +501,64 @@ impl SoftLoop {
     ) -> Result<()> {
         self.isp.process(RawFrame::Bytes(raw), stride, scale, out)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod post_tests {
+    use super::*;
+    use styx_algo::{CdnParams, DenoiseParams, SdnParams, SharpenParams};
+
+    fn sdn(strength: f64) -> SdnParams {
+        SdnParams {
+            noise_constant: 0.0,
+            noise_slope: 9.6,
+            noise_constant2: 0.0,
+            noise_slope2: 9.6,
+            strength,
+        }
+    }
+
+    #[test]
+    fn tuning_denoise_and_sharpening_reach_the_stages() {
+        let d = DenoiseParams {
+            sdn: Some(sdn(0.25)),
+            cdn: Some(CdnParams {
+                threshold: 450.0,
+                strength: 0.2,
+            }),
+            ..Default::default()
+        };
+        let sharpen = SharpenParams {
+            threshold: 1.5,
+            strength: 2.0,
+            limit: 0.5,
+        };
+        let (denoise, sharpening) = post_stages(&d, Some(sharpen));
+        let denoise = denoise.expect("denoise on");
+        let luma = denoise.luma.expect("luma on");
+        assert_eq!((luma.slope, luma.strength), (9.6, 0.25));
+        let chroma = denoise.chroma.expect("chroma on");
+        assert_eq!((chroma.threshold, chroma.strength), (450.0, 0.2));
+        let sharpening = sharpening.expect("sharpening on");
+        assert_eq!(sharpening.amount, SHARPEN_AMOUNT * 2.0);
+        assert_eq!(sharpening.threshold, SHARPEN_THRESHOLD * 1.5);
+        assert_eq!(sharpening.limit, SHARPEN_LIMIT * 0.5);
+    }
+
+    #[test]
+    fn an_empty_tuning_or_zero_strengths_leave_the_stages_off() {
+        assert_eq!(post_stages(&DenoiseParams::default(), None), (None, None));
+        let d = DenoiseParams {
+            sdn: Some(sdn(0.0)),
+            cdn: None,
+            ..Default::default()
+        };
+        let off = SharpenParams {
+            threshold: 1.0,
+            strength: 0.0,
+            limit: 1.0,
+        };
+        assert_eq!(post_stages(&d, Some(off)), (None, None));
     }
 }

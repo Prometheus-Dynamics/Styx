@@ -95,6 +95,82 @@ pub fn demosaic_mhc_row(rows: [&[u16]; 5], out: [&mut [u16]; 3], width: usize, k
     }
 }
 
+/// [`crate::Demosaic::EdgeDirected`]: Hamilton-Adams style, in quarter units (the gradient
+/// corrections are on the centre's own colour at distance two, which is why the rows are five).
+///
+/// At a green site the red and blue are the horizontal (red or blue, by the row) and vertical
+/// averages of their neighbours, each corrected by the centre's second difference. At a red or
+/// blue site, green is the horizontal or vertical estimate with the smaller Hamilton-Adams
+/// gradient (`|d2| + |d2| + |d1|` along the axis); the opposite colour is the diagonal pair with
+/// the smaller gradient, corrected the same way. A flat field stays exact. Rows as in
+/// [`demosaic_mhc_row`].
+pub fn demosaic_edge_row(rows: [&[u16]; 5], out: [&mut [u16]; 3], width: usize, kind: RowKind) {
+    let [u2, u1, c0, d1, d2] = rows;
+    let [r, g, b] = out;
+    // Quarter units to a sample.
+    let quarter = |v4: i32| ((v4 + 2) >> 2).clamp(0, WORK_MAX as i32) as u16;
+    // Column `x` of each row is its window's centre (index 2) of five.
+    let windows = u2
+        .windows(5)
+        .zip(u1.windows(5))
+        .zip(c0.windows(5))
+        .zip(d1.windows(5))
+        .zip(d2.windows(5));
+    for (x, ((((n2, nw), row), sw), s2)) in windows.take(width).enumerate() {
+        let c = row[2] as i32;
+        let (w2, w1, e1, e2) = (row[0] as i32, row[1] as i32, row[3] as i32, row[4] as i32);
+        let (n1, s1) = (nw[2] as i32, sw[2] as i32);
+        let (n2, s2) = (n2[2] as i32, s2[2] as i32);
+        if kind.is_green(x) {
+            // Horizontal and vertical colours of a green site (red and blue, by the row).
+            let h4 = 2 * (w1 + e1) + (2 * c - w2 - e2);
+            let v4 = 2 * (n1 + s1) + (2 * c - n2 - s2);
+            let (hv, vv) = (quarter(h4), quarter(v4));
+            let (rv, bv) = if kind.x_is_red { (hv, vv) } else { (vv, hv) };
+            r[x] = rv;
+            g[x] = c as u16;
+            b[x] = bv;
+            continue;
+        }
+        // Green: the axis with the smaller gradient.
+        let gh4 = 2 * (w1 + e1) + (2 * c - w2 - e2);
+        let gv4 = 2 * (n1 + s1) + (2 * c - n2 - s2);
+        let dh = (w2 - c).abs() + (e2 - c).abs() + (w1 - e1).abs();
+        let dv = (n2 - c).abs() + (s2 - c).abs() + (n1 - s1).abs();
+        let g4 = match dh.cmp(&dv) {
+            core::cmp::Ordering::Less => gh4,
+            core::cmp::Ordering::Greater => gv4,
+            core::cmp::Ordering::Equal => (gh4 + gv4) >> 1,
+        };
+        // The opposite colour as colour differences: the diagonal pair's mean, corrected by the
+        // centre's green against the mean of the four green neighbours (whose own values lie
+        // inside the window). The diagonal with the smaller gradient (north-west to south-east,
+        // or north-east to south-west) decides.
+        let (nw1, se1) = (nw[1] as i32, sw[3] as i32);
+        let (ne1, sw1) = (nw[3] as i32, sw[1] as i32);
+        let g_sum = w1 + e1 + n1 + s1;
+        let y1 = g4 + 2 * (nw1 + se1) - g_sum;
+        let y2 = g4 + 2 * (ne1 + sw1) - g_sum;
+        let d_1 = 2 * (nw1 - se1).abs() + (w1 + n1 - e1 - s1).abs();
+        let d_2 = 2 * (ne1 - sw1).abs() + (e1 + n1 - w1 - s1).abs();
+        let y4 = match d_1.cmp(&d_2) {
+            core::cmp::Ordering::Less => y1,
+            core::cmp::Ordering::Greater => y2,
+            core::cmp::Ordering::Equal => (y1 + y2) >> 1,
+        };
+        let yv = quarter(y4);
+        let gv = quarter(g4);
+        if kind.x_is_red {
+            r[x] = c as u16;
+            b[x] = yv;
+        } else {
+            b[x] = c as u16;
+            r[x] = yv;
+        }
+        g[x] = gv;
+    }
+}
+
 /// The MHC kernels sum to 16: `(s + 8) >> 4` clamped to the working range.
 #[inline(always)]
 pub fn mhc_round(s: i32) -> u16 {

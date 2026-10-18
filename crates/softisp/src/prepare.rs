@@ -6,6 +6,7 @@ use styx_core::sync::Arc;
 use crate::format::{CfaPattern, Channel, RawFormat};
 use crate::params::ToneCurve;
 use crate::params::{Arithmetic, Demosaic, IspParams, LensShading, YuvMatrix};
+use crate::post::PostPrep;
 use crate::prepare_half::{HalfPrep, close};
 use crate::simd::poly::PolyTone;
 use crate::simd::scalar::WORK_MAX;
@@ -42,6 +43,8 @@ pub(crate) struct Prepared {
     pub stats: Option<StatsSetup>,
     /// White balance times digital gain, reported with the statistics.
     pub channel_gains: [f32; 3],
+    /// The output picture's denoise and sharpening, when they are on ([`crate::post`]).
+    pub post: Option<PostPrep>,
 }
 
 /// Tables of the arithmetic in use.
@@ -209,6 +212,7 @@ impl Prepared {
             YuvMatrix::Bt709Limited => YuvCoeffs::BT709_LIMITED,
         };
         let stats = params.stats.map(|c| stats_setup(c, w, h)).transpose()?;
+        let post = PostPrep::new(params.denoise.as_ref(), params.sharpen.as_ref(), yuv);
         Ok(Self {
             width: w,
             height: h,
@@ -218,6 +222,7 @@ impl Prepared {
             yuv,
             stats,
             channel_gains,
+            post,
         })
     }
 

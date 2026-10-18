@@ -254,8 +254,10 @@ impl Tables {
                 }
             };
         }
+        // The GPU has no edge-directed demosaic (nor the output stages: `IspParams::denoise` and
+        // `sharpen` are not applied here): it runs the bilinear one for it, as the CPU's default.
         b.demosaic = match params.demosaic {
-            styx_softisp::Demosaic::Bilinear => 0,
+            styx_softisp::Demosaic::Bilinear | styx_softisp::Demosaic::EdgeDirected => 0,
             styx_softisp::Demosaic::Mhc => 1,
         };
         if let Some(c) = &params.ccm {

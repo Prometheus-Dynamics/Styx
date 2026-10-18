@@ -418,6 +418,12 @@ impl Worker {
                         let [r, g, b] = &mut self.rgb16;
                         simd::demosaic_mhc_row(rows, [r, g, b], n, kind);
                     }
+                    Demosaic::EdgeDirected => {
+                        let s = self.window::<5>(p, src, g, my);
+                        let rows = s.map(|s| &self.slots[s][col - 2..]);
+                        let [r, g, b] = &mut self.rgb16;
+                        simd::scalar::demosaic_edge_row(rows, [r, g, b], n, kind);
+                    }
                 }
             }
             Sample::Quads { .. } => {
