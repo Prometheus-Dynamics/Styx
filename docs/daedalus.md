@@ -50,7 +50,7 @@ by its canonical git URL (`https://github.com/Prometheus-Dynamics/Daedalus.git`,
 in the root `Cargo.toml`). Apps and libraries that use Styx from git depend on Daedalus the same
 way, so both resolve to one `daedalus-rs` (a `Cargo.lock` fixes the commit; `cargo update -p
 daedalus-rs` moves it to the branch's head). Styx is built and tested against Daedalus `dev` at
-`66659f7` (plugin ABI 9, `daedalus:frame` v2). The root `Cargo.lock` is committed and pins that
+`89836d1` (plugin ABI 10, stable ABI 2, `daedalus:frame` v2). The root `Cargo.lock` is committed and pins that
 commit; to move it, run `cargo update -p daedalus-rs --precise <commit>` and record the new
 commit here. It needs at least `ed7ddde` (`daedalus:frame`
 v2). A Daedalus with `daedalus:frame` v1 does not build with
