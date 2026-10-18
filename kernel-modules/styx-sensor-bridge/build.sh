@@ -6,7 +6,7 @@
 # A module only loads if its vermagic and the CRCs of every symbol it imports
 # (CONFIG_MODVERSIONS) match the running kernel, so it must be built against
 # the configured and built kernel tree that produced the device image, not
-# just the same version. For HeliOS that tree is Buildroot's
+# just the same version. For a Buildroot image that tree is Buildroot's
 # output/build/linux-custom. This script never writes to that tree: `prepare`
 # copies the external-module build subset (headers, .config, Module.symvers,
 # host scripts) out of it with the kernel's own scripts/package/install-extmod-build.
@@ -18,19 +18,18 @@
 #   ./build.sh all       prepare (if needed) + build + verify
 #   ./build.sh clean
 #
-# Kernel: STYX_KERNEL=6.12 (default, HeliOS / Raze 1.0.x, 6.12.47-v8-16k) or 7.2 (Raze 1.1.0,
-# raspberrypi/linux rpi-7.2.y). See ../kernel-env.sh for the defaults each selects.
+# Kernel: STYX_KERNEL=6.12 (default, Raspberry Pi 6.12.47-v8-16k) or 7.2 (rpi-7.2.y,
+# 7.2.9-v8-16k). See ../kernel-env.sh for the defaults each selects.
 #
 # Environment:
 #   STYX_KERNEL       6.12 or 7.2 (selects the defaults below)
-#   KERNEL_TREE       built kernel tree, or the O= object tree of one (default: per STYX_KERNEL)
+#   KERNEL_TREE       required: built kernel tree, or the O= object tree of one
 #   KERNEL_SRC        its source tree (default: $KERNEL_TREE/source for an O= tree)
-#   BR_HOST           Buildroot host dir with the cross toolchain (default: derived from KERNEL_TREE,
-#                     else the HeliOS Gaia toolchain)
+#   BR_HOST           Buildroot host dir with the cross toolchain (default: derived from KERNEL_TREE)
 #   CROSS_COMPILE     toolchain prefix (default: $BR_HOST/bin/aarch64-linux-, else aarch64-linux-gnu-)
 #   KERNEL_RELEASE    expected release (default: 6.12.47-v8-16k; for 7.2 the tree's)
 #   STYX_KBUILD_ROOT  work dir outside the git tree (default: ../linux-build-styx next to the repo)
-#   DEVICE            ssh target for `verify` (optional, e.g. root@helios); read-only commands only
+#   DEVICE            ssh target for `verify` (optional, e.g. root@<device>); read-only commands only
 
 set -euo pipefail
 

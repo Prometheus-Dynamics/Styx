@@ -2,7 +2,7 @@
 //! captured raw frame through the back end to NV12 and RGB.
 //!
 //! Needs the normal kernel-driver path: the sensor driver (`ov9282`, OV9782 variant) bound,
-//! nothing else using `rp1-cfe` (stop `helios-peripherals`), under the device lock.
+//! nothing else using `rp1-cfe` (stop `<camera service>`), under the device lock.
 //!
 //! ```text
 //! pisp-spike [--frames N] [--out DIR] [--be-runs N] [--no-be] [--synthetic]

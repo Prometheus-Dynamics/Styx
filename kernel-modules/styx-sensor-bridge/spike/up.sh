@@ -4,7 +4,7 @@
 # Puts the OV9782 on cam0 behind the Styx sensor bridge, at runtime only:
 #
 #   0. preflight checks (read-only)
-#   1. stop helios-peripherals (it owns the cameras)
+#   1. stop <camera service> (it owns the cameras)
 #   2. unbind ov9282 from 10-0060 and rp1-cfe from 1f00110000.csi
 #   3. apply the runtime overlay through configfs
 #   4. insmod styx_sensor_bridge.ko

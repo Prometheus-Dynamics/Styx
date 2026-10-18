@@ -7,7 +7,7 @@
 #   check-overlay.sh --merged DTB  check an already merged tree
 #
 # BASE is a .dtb or a copy of a device's /proc/device-tree directory, e.g.
-#   ssh root@helios 'cd /proc/device-tree && tar cf - .' | tar xf - -C live-fs
+#   ssh root@<device> 'cd /proc/device-tree && tar cf - .' | tar xf - -C live-fs
 #
 # Checks: the bridge node exists and is enabled; the csi0 receiver endpoint
 # points at the bridge endpoint (and not back, see the overlay); the ov9782 I2C

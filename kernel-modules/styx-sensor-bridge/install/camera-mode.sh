@@ -6,10 +6,10 @@
 #
 #   native     dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous: the OV9782 behind the Styx
 #              sensor bridge (bound at boot, styx_sensor_bridge.ko from
-#              /lib/modules/$(uname -r)/updates), helios-peripherals disabled. The shipping
+#              /lib/modules/$(uname -r)/updates), <camera service> disabled. The shipping
 #              configuration and the dev-box baseline.
 #   libcamera  dtoverlay=ov9782-overlay,cam0,clk-continuous: the image's own configuration
-#              (ov9282 driver, libcamera), helios-peripherals enabled.
+#              (ov9282 driver, libcamera), <camera service> enabled.
 #   status     prints the configured and the running mode (nothing changed)
 #
 #   camera-mode.sh native|libcamera|status [--no-reboot]

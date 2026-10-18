@@ -4,7 +4,7 @@
 # Swaps the ov9282 driver on a running dev box (the image's root is read-only erofs, so
 # /lib/modules cannot change; an image ships the Styx module from its build instead, see
 # ../buildroot). Run on the device as root, under the device lock, with the camera's users
-# stopped (systemctl stop photonvision):
+# stopped (e.g. systemctl stop <your camera service>):
 #
 #   swap.sh styx ./ov9282.ko    the Styx module
 #   swap.sh stock               the image's own module back

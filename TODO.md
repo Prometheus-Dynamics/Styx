@@ -100,7 +100,7 @@ box (OV9782 1280x800) unless stated.
 ### Ecosystem (phase 5)
 - [x] GStreamer `styxsrc` + device provider (`crates/gst-styx`).
 - [x] PipeWire camera node daemon (`crates/pipewire-styx`).
-- [x] Frame socket with leases (`styx::ipc::FrameSocket`, HeliOS wire format).
+- [x] Frame socket with leases (`styx::ipc::FrameSocket`, frame-lease wire format).
 - [x] Public frame-lease codec (`styx_core::lease_codec`: message, descriptor order, limits,
       encode/decode, `styx-frame-lease+unix://` endpoint records) and the frame socket's hold and
       flow-control rules documented and tested (`docs/frame-server.md`).
@@ -131,10 +131,7 @@ box (OV9782 1280x800) unless stated.
       (`scripts/check-nostd.sh`); `examples/nostd-smoke` runs AE/AWB and the ISP without std
       as a host test. See [portability.md](docs/portability.md).
 
-### HeliOS
-- [x] `helios-peripherals` runs on the native stack (HeliOS branch `styx-native-trial`):
-      2 h with helios-engine consuming, 3.7 % CPU, 30 MB, no stalls; ship checklist in
-      [helios-trial.md](docs/native-stack/helios-trial.md).
+### Native stack
 - [x] CM5 dev box boots the bridge overlay (`camera-mode.sh native|libcamera|status`).
 
 ## TODO
@@ -143,19 +140,6 @@ box (OV9782 1280x800) unless stated.
 - [x] Default PiSP output buffer count: 6 (two frame-socket consumers holding 500 ms: 17 fps
       with 4, 30 with 6; +3.1 MB CMA for NV12 1280x800), plus the planner's extra buffers
       within half the free CMA (a slow shared consumer no longer slows the others).
-- [ ] When HeliOS drops libcamera (checklist in helios-trial.md).
-
-### HeliOS (branch `styx-native-trial`)
-- [ ] Merge the branch; build helios-peripherals without the `libcamera` feature.
-- [ ] Publish frames through `styx::ipc::FrameSocket` and keep the engine's connection open while
-      it holds a frame (real leases); advertise it to Orion as `styx-frame-lease+unix://<path>`
-      (`lease_codec::endpoint_uri`) and decode with `styx_core::lease_codec` (feature
-      `lease-codec`).
-- [ ] Image: drop libcamera/libpisp, add the bridge module (Buildroot snippet in
-      `kernel-modules/styx-sensor-bridge/buildroot`), config.txt overlay lines.
-- [ ] Not yet tested: a real CSI unplug, controls set by HeliOS, runs longer than 2 h.
-- [ ] Log or export `camera_metrics()` (or serve `styx::metrics::serve_http`) in
-      helios-peripherals in place of the `health_report`/`metrics` logging every 30 frames.
 
 ### Image quality
 - [x] Black level at high gain: not a black level difference. Zero-exposure levels through the
@@ -171,7 +155,7 @@ box (OV9782 1280x800) unless stated.
       Styx (`styx-tune capture`). Recovers a synthetic sensor's parameters (black within 0.02
       codes, shading tables 0.1%, CCM coefficients 0.011, noise 0.5%). See
       [docs/tuning.md](docs/tuning.md).
-- [ ] OV9782 tuning of our own (today: the HeliOS tuning, identity colour matrix): a real
+- [ ] OV9782 tuning of our own (today: the imported tuning, identity colour matrix): a real
       session (ColorChecker, 3-5 high-CRI lights 2700-6500 K with a colour meter, diffuser,
       lux meter, lens cap; docs/tuning.md). From the CM5 without a chart so far: black level by
       gain (65.5/64.9 codes by row at 1×) and the temporal noise (slope 2.75 + 38 against the
@@ -199,7 +183,7 @@ box (OV9782 1280x800) unless stated.
       (`PassSpec::size` / `format` exist) are not planned yet; a main-output crop that moves
       by more than half its size restarts the temporal average (a tracker's crop moving fast
       runs without temporal denoise on those frames).
-- [ ] Ship the `pispbe` patch in the HeliOS image (kernel patch) and/or send it upstream (draft
+- [ ] Ship the `pispbe` patch in a device image (kernel patch) and/or send it upstream (draft
       in `kernel-modules/pispbe/README.md`; ask Raspberry Pi whether the config registers are
       guaranteed to keep their values between jobs).
 - [ ] Software ISP: outside the image maths only ~0.3 ms of memory traffic and ~0.15 ms of
@@ -318,7 +302,7 @@ box (OV9782 1280x800) unless stated.
       outputs exportable, one submission per frame; `SoftLoop::use_gpu`, Styx feature
       `gpu-isp` with a planner cost. RX 6800 XT: 0.47 ms CPU per 1280x800 NV12 frame against
       1.77 ms for the software ISP on the same host, GPU 0.21 ms.
-- [ ] GPU ISP on the Pi 5 (v3dv): not on the HeliOS image (needs Mesa's broadcom Vulkan
+- [ ] GPU ISP on the Pi 5 (v3dv): not on the stock device image (needs Mesa's broadcom Vulkan
       driver, the loader, the v3d DRM driver); estimated slower than the A76 NEON path, so
       only to free the CPU. Untested on a real non-x86 GPU.
 - [ ] GPU ISP: tables (0.2 ms per settings change: lens shading gain rows rebuilt with the

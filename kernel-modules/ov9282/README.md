@@ -29,7 +29,7 @@ stock driver.
    (`8eb2f29`): `0001-media-i2c-ov9282-add-ov9782-variant-draft.patch` and
    `0002-media-i2c-ov9282-keep-control-defaults-inside-ranges.patch`.
    - The result is byte-identical to the Raze image kernel's `ov9282.c`: sha256
-     `2e148740…c25c9c`, checked against the PhotonVision Raze image's Buildroot `linux-custom`.
+     `2e148740…c25c9c`, checked against the device image's Buildroot `linux-custom`.
    - The Buildroot package refuses any other base.
 3. **Styx.** `MODE_1280_480` and `mode_1280x480_regs` (`./build.sh diff` prints it).
    - Window registers: rows 160..655 (0x3802..0x3807); output 1280x480 (0x3808..0x380b); ISP
@@ -42,7 +42,7 @@ stock driver.
 Licence: GPL-2.0 (SPDX header kept), Copyright the original authors. The changes are GPL-2.0
 too.
 
-## Measured (CM5, Raze PhotonVision r42 image, Styx 54b1c91: RAW8, compressed TDN)
+## Measured (CM5, OV9782 1280x800 RAW8, Styx 54b1c91: compressed TDN)
 
 - **Start of frame → delivery** (processed, 8 ms exposure): 4.85 ms at 1280x480, against 7.79 ms
   at 1280x800 (−2.94 ms).
@@ -58,8 +58,8 @@ too.
 
 ## Dev box
 
-The PhotonVision image's root is read-only (erofs), so `/lib/modules` cannot change there. To try
-the module, swap it at runtime as root, under the device lock, with PhotonVision stopped:
+The device image's root is read-only (erofs), so `/lib/modules` cannot change there. To try
+the module, swap it at runtime as root, under the device lock, with the camera service stopped:
 
 ```sh
 ./install/swap.sh styx ./ov9282.ko   # unbind rp1-cfe, rmmod, insmod, bind rp1-cfe
@@ -81,8 +81,8 @@ checks both.
 Add the external tree to the Styx layer and enable the package:
 
 ```toml
-# photon-image-modifier raze/photonvision-styx.toml: a layer's external_tree replaces the
-# earlier one, so list the base's trees too
+# image builder's layer config: a layer's external_tree replaces the earlier one,
+# so list the base's trees too
 external_tree = "<the base's trees>:@source:styx/kernel-modules/ov9282/buildroot"
 # defconfig fragment
 BR2_PACKAGE_STYX_OV9282=y

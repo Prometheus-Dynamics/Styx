@@ -519,11 +519,11 @@ pub struct FrameRequirements {
     pub formats: SmallVec<[FourCc; 4]>,
     /// Accept NV12/I420 and read plane 0 when GREY isn't native (zero-copy Y view).
     pub accept_luma_view: bool,
-    /// Row stride alignment in bytes (Eidos: 64). Also aligns plane base addresses.
+    /// Row stride alignment in bytes (a detector consumer, for example Eidos: 64). Also aligns plane base addresses.
     pub stride_alignment: Option<usize>,
     pub pyramid: Option<PyramidRequest>,
     pub roi: Option<Rect>,               // initial ROI in sensor or frame coordinates
-    pub residency: ResidencyRequirement, // HostReadable (Eidos) | Exportable | Any
+    pub residency: ResidencyRequirement, // HostReadable (a detector consumer, for example Eidos) | Exportable | Any
 }
 
 #[derive(Clone, Debug)]
@@ -643,7 +643,7 @@ HeliOS v2026.2.0 (Buildroot, glibc 2.41), kernel 6.12.47-v8-16k, libcamera 0.6.0
 libturbojpeg 3.1.0. Sensor: OV9782 (1280×800 colour global shutter) on CSI.
 
 **Setup:**
-- `helios-peripherals` was stopped during the camera tests and restarted afterwards (confirmed
+- `<camera service>` was stopped during the camera tests and restarted afterwards (confirmed
   active, camera re-acquired).
 - Binaries were cross-compiled with the HeliOS Buildroot toolchain and run from `/tmp/styx-probe`.
 - There was no USB MJPEG camera. For "real" frames, 30 OV9782 NV12 frames were captured on the

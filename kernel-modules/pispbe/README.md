@@ -85,22 +85,22 @@ Not changed: the per-job `kzalloc` of the job descriptor (~0.2 µs) and the addr
 sharpening, LSC and sharpening blocks disabled and enabled again, repeats, in an order that
 changes and restores blocks): every NV12 output identical (md5) between the stock driver (twice),
 the patched driver with and without `skip_unchanged_config`, after loading by `insmod` and
-after booting with it. libcamera (`helios-peripherals`, `styx-compare --backend libcamera`) runs
+after booting with it. libcamera (`<camera service>`, `styx-compare --backend libcamera`) runs
 on it unchanged.
 
 ## Build, install, uninstall
 
 ```sh
 ../styx-sensor-bridge/build.sh prepare         # once per kernel build (shared kbuild subset)
-DEVICE=root@helios ./build.sh all              # -> target/kernel-modules/6.12.47-v8-16k/pisp-be.ko
+DEVICE=root@<device> ./build.sh all              # -> target/kernel-modules/6.12.47-v8-16k/pisp-be.ko
                                                #    vermagic + imported symbol CRCs vs the device
 STYX_KERNEL=7.2 ../styx-sensor-bridge/build.sh prepare
 STYX_KERNEL=7.2 ./build.sh all                 # -> target/kernel-modules/7.2.9-v8-16k/pisp-be.ko
 # under the device lock (scripts/with-device-lock.sh):
-install/install.sh --reboot root@helios        # updates/pisp-be.ko + depmod, reboot into it
-install/install.sh --reload root@helios        # or swap the running module (no back end users:
-                                               # nothing streaming, helios-peripherals stopped)
-install/uninstall.sh --reboot root@helios      # back to the image's module
+install/install.sh --reboot root@<device>        # updates/pisp-be.ko + depmod, reboot into it
+install/install.sh --reload root@<device>        # or swap the running module (no back end users:
+                                               # nothing streaming, <camera service> stopped)
+install/uninstall.sh --reboot root@<device>      # back to the image's module
 ```
 
 `install.sh` takes the module of `$KERNEL_RELEASE` (default 6.12.47-v8-16k) or an explicit path
@@ -124,7 +124,7 @@ with `styx-ov9282` and `styx-rp1-cfe` (`kernel-modules/ov9282/buildroot`). It wo
 - The build stops if the kernel's `pisp_be.c` and `pisp_be_formats.h`, concatenated in that
   order, do not hash to the rpi-7.2.y import (sha256 `ed9762e6…9584e`).
 
-Measured on the CM5 with the Raze PhotonVision r45 image, OV9782 1280x800 RAW8 at 120 fps, frames
+Measured on a CM5 (OV9782, 1280x800 RAW8) at 120 fps, frames
 sliced at line 600, alternating stock and Styx module runs:
 - The config qbuf that starts a job: 121 µs → 6.8 µs.
 - First slice: 6.17 → 6.06 ms after the start of frame.

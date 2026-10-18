@@ -1,6 +1,6 @@
-//! Raspberry Pi tuning conversion: a checked-in fixture, and every tuning file of a libcamera
-//! and a HeliOS checkout next to this repository when present (skipped otherwise). Set
-//! `STYX_LIBCAMERA_DIR` / `STYX_HELIOS_DIR` to point elsewhere.
+//! Raspberry Pi tuning conversion: a checked-in fixture, every tuning file of a libcamera
+//! checkout next to this repository when present, and every `*.json` file in `STYX_TUNING_DIR`
+//! when set (skipped otherwise). Set `STYX_LIBCAMERA_DIR` to point the libcamera lookup elsewhere.
 
 use crate::common;
 
@@ -126,15 +126,14 @@ fn libcamera_tunings_convert() {
 }
 
 #[test]
-fn helios_ov9782_tunings_convert() {
-    let root = sibling("STYX_HELIOS_DIR", "HeliOS").join("gaia/assets/libcamera/ipa/rpi");
-    let files: Vec<PathBuf> = ["pisp", "vc4"]
-        .iter()
-        .map(|t| root.join(t).join("ov9782.json"))
-        .filter(|p| p.exists())
-        .collect();
+fn extra_tunings_convert() {
+    let Some(dir) = std::env::var_os("STYX_TUNING_DIR").map(PathBuf::from) else {
+        eprintln!("skipped: STYX_TUNING_DIR is not set");
+        return;
+    };
+    let files = json_files(&dir);
     if files.is_empty() {
-        eprintln!("skipped: no HeliOS checkout at {}", root.display());
+        eprintln!("skipped: no *.json tunings in {}", dir.display());
     }
     for f in files {
         let ignored = exercise(&f);

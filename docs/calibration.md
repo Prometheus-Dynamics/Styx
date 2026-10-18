@@ -111,7 +111,7 @@ provenance and measurements. Shortened, with the numbers of the OV9782 run of 20
 {
   "overlay_version": 1,
   "sensor": "ov9782",
-  "unit": "raze-cm5",
+  "unit": "my-cm5",
   "date": "2026-10-13",
   "styx_commit": "43a9517cbd7e",
   "temperature_c": { "min": 47.95, "max": 54.55 },

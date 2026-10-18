@@ -96,7 +96,7 @@ replay-mcap = ["facade", "dep:mcap"]
 # Experimental compact Styx-only recording format (`.styxrec`).
 replay-styxrec = ["facade"]
 framelease = []
-# `ipc::FrameSocket`: the latest frame, leased, in the frame-lease transport HeliOS uses.
+# `ipc::FrameSocket`: the latest frame, leased, in the frame-lease wire format (`styx-frame-lease-v1`).
 frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde", "styx-core/lease-codec", "metrics-serde"]
 # `styx::preview`: low-latency JPEG previews for user interfaces (a low-priority camera service
 # client or offered frames, MJPEG and WebSocket serving helpers). The JPEG encoder comes from

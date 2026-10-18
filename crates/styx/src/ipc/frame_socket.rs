@@ -1,6 +1,6 @@
-//! The latest frame on a Unix socket, leased: the frame-lease transport HeliOS uses between its
-//! camera service and its consumers (`styx-frame-lease-v1`), served so a consumer's frame is
-//! not written again while the consumer holds it.
+//! The latest frame on a Unix socket, leased: the frame-lease wire format (`styx-frame-lease-v1`)
+//! that a camera service serves to its consumers, so a consumer's frame is not written again
+//! while the consumer holds it.
 //!
 //! # Wire format
 //!
@@ -31,8 +31,8 @@
 //! - **Released** when the consumer closes the connection, or sends any byte on it (the
 //!   server then closes it); when the consumer's process exits or dies, the kernel closes its
 //!   descriptors, which is the same close. The buffer is kept [`FrameSocketOptions::linger`]
-//!   longer (default zero) for consumers that close at once and read afterwards (as
-//!   helios-engine did): those are otherwise protected only while their frame is the latest.
+//!   longer (default zero) for consumers that close at once and read afterwards: those are
+//!   otherwise protected only while their frame is the latest.
 //! - **Expiry:** a consumer holding the frame longer than [`FrameSocketOptions::max_hold`]
 //!   (default 2 s, [`DEFAULT_MAX_HOLD`](super::DEFAULT_MAX_HOLD); `None`: no limit) loses
 //!   the lease: the server closes the connection (the consumer reads end of stream, or a reset
@@ -108,7 +108,7 @@ pub use self::next::next_path;
 pub use self::stats::{FrameSocketMetrics, fetch_metrics, fetch_metrics_text, stats_path};
 use super::{IpcError, socket};
 
-/// The transport name helios-peripherals writes in its stream metadata
+/// The transport name a frame socket writes in its stream metadata
 /// ([`lease_codec::TRANSPORT`]).
 pub const FRAME_SOCKET_TRANSPORT: &str = lease_codec::TRANSPORT;
 

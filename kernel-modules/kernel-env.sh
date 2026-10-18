@@ -2,43 +2,37 @@
 #
 # Kernel selection shared by styx-sensor-bridge/build.sh and pispbe/build.sh (sourced, bash).
 #
-# Two Raspberry Pi kernels are in the field:
+# Two Raspberry Pi kernels are supported:
 #
-#   STYX_KERNEL=6.12  (default) the HeliOS / Raze 1.0.x image kernel: Raspberry Pi tag
-#                     stable_20250916, release 6.12.47-v8-16k, built by the HeliOS Gaia
-#                     Buildroot (helios-full-cm5) next to this repository.
-#   STYX_KERNEL=7.2   Raze 1.1.0: raspberrypi/linux rpi-7.2.y. The default tree is a
-#                     configured and built O= tree at ../linux-rpi-7.2/build next to the
-#                     repository (bcm2712_defconfig with Buildroot's 4K pages and VIDEO_OV9282=m,
-#                     see the README); point KERNEL_TREE at the Buildroot linux-custom of the
-#                     image instead to match a device. The Raze 1.1.0 kernel (commit, hash,
-#                     ov9782 patches) is defined by the Raze device package in
-#                     Atlas-Hardware-Manager (dev), $RAZE_PKG.
+#   STYX_KERNEL=6.12  (default) Raspberry Pi tag stable_20250916, release 6.12.47-v8-16k.
+#   STYX_KERNEL=7.2   raspberrypi/linux rpi-7.2.y (7.2.9-v8-16k). An O= build of a configured
+#                     tree works (bcm2712_defconfig with 4K pages and VIDEO_OV9282=m; see the
+#                     README).
 #
-# Every variable can still be set directly:
+# KERNEL_TREE is required: the configured and built kernel tree of the device's image (for
+# example the image's Buildroot linux-custom). The modules must match its config and symbols.
+#
+# Every variable can be set directly:
 #   KERNEL_TREE       built kernel tree (in-tree build, or the O= object tree of an out-of-tree one)
 #   KERNEL_SRC        its source tree (default: $KERNEL_TREE/source for an O= tree, else $KERNEL_TREE)
 #   BR_HOST           Buildroot host dir with the cross toolchain
 #   CROSS_COMPILE     toolchain prefix (default: $BR_HOST/bin/aarch64-linux-, else aarch64-linux-gnu-)
 #   KERNEL_RELEASE    expected release (6.12: 6.12.47-v8-16k; 7.2: read from $KERNEL_TREE)
 #   STYX_KBUILD_ROOT  work dir outside the git tree (default: ../linux-build-styx next to the repo)
-#   RAZE_PKG          the Raze device package (default: ../Atlas-Hardware-Manager/devices/raze/gaia;
-#                     not the old Atlas-raze checkout)
+#   RAZE_PKG          optional path to a device package with extra driver patches; no default
 
 # shellcheck shell=bash
 # Callers set $workspace (the directory containing the repository).
 
 STYX_KERNEL="${STYX_KERNEL:-6.12}"
-helios_br="$workspace/HeliOS-architecture-overhaul/gaia/build/helios-full-cm5/image/buildroot-output"
-RAZE_PKG="${RAZE_PKG:-$workspace/Atlas-Hardware-Manager/devices/raze/gaia}"
+RAZE_PKG="${RAZE_PKG:-}"
+KERNEL_TREE="${KERNEL_TREE:?set KERNEL_TREE to the built kernel tree of the device image (see kernel-modules/README)}"
 
 case "$STYX_KERNEL" in
 6.12)
-    KERNEL_TREE="${KERNEL_TREE:-$helios_br/build/linux-custom}"
     KERNEL_RELEASE="${KERNEL_RELEASE:-6.12.47-v8-16k}"
     ;;
 7.2)
-    KERNEL_TREE="${KERNEL_TREE:-$workspace/linux-rpi-7.2/build}"
     if [[ -z "${KERNEL_RELEASE:-}" ]]; then
         KERNEL_RELEASE="$(cat "$KERNEL_TREE/include/config/kernel.release" 2>/dev/null || true)"
         [[ -n "$KERNEL_RELEASE" ]] ||
@@ -60,10 +54,8 @@ if [[ -z "${KERNEL_SRC:-}" ]]; then
 fi
 
 if [[ -z "${BR_HOST:-}" ]]; then
-    # A Buildroot linux-custom sits in <output>/build/; otherwise use the HeliOS toolchain
-    # (the compiler the Raze images are built with).
+    # A Buildroot linux-custom sits in <output>/build/; its host dir is then the toolchain.
     BR_HOST="$(cd "$KERNEL_TREE/../.." 2>/dev/null && pwd)/host"
-    [[ -x "$BR_HOST/bin/aarch64-linux-gcc" ]] || BR_HOST="$helios_br/host"
 fi
 if [[ -z "${CROSS_COMPILE:-}" ]]; then
     if [[ -x "$BR_HOST/bin/aarch64-linux-gcc" ]]; then

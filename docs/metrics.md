@@ -276,7 +276,7 @@ hook costs one relaxed atomic load; set, it records each allocation's stack into
 scripts/cross-aarch64.sh --musl -p styx-examples --features native,frame-socket \
     --bins hop_breakdown --profile release
 # On the device, the same as the hop breakdown above (the stripped copy has the same offsets):
-scp target/aarch64-musl/aarch64-unknown-linux-musl/release/hop_breakdown root@helios:/tmp/
+scp target/aarch64-musl/aarch64-unknown-linux-musl/release/hop_breakdown root@<device>:/tmp/
 scripts/with-device-lock.sh allocs '
   cd /tmp && STYX_ALLOC_TRACE=1 STYX_ALLOC_TRACE_FRAMES=60 STYX_ALLOC_TRACE_TOP=20 ./hop_breakdown inproc 20' > alloc-trace.log
 # On the host, naming the call sites (the unstripped binary the device ran):
@@ -451,7 +451,7 @@ service. Built static, so it runs on the device as it is:
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld cargo build --release \
     --target aarch64-unknown-linux-musl -p styx-examples --features native,v4l2 \
     --bin hop_breakdown --bin metrics_top
-scp target/aarch64-unknown-linux-musl/release/{hop_breakdown,metrics_top} root@helios:/tmp/
+scp target/aarch64-unknown-linux-musl/release/{hop_breakdown,metrics_top} root@<device>:/tmp/
 DMESG_LOG=target/helios-dmesg-hops.log WAIT=1 scripts/with-device-lock.sh hops '
   cd /tmp && ./metrics_top --overhead && ./hop_breakdown inproc 20 &&
   { ./hop_breakdown socket-serve /tmp/hops.sock 30 & sleep 3; ./hop_breakdown socket-fetch /tmp/hops.sock 20; wait; } &&

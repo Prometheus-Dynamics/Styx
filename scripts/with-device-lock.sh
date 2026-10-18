@@ -2,7 +2,7 @@
 # Runs a command on the dev device while holding the shared device lock, then releases it.
 #
 #   scripts/with-device-lock.sh <owner> <remote shell command>
-#   DEVICE=root@helios DMESG_LOG=target/helios-dmesg-x.log WAIT=1 scripts/with-device-lock.sh ...
+#   DEVICE=root@<device> DMESG_LOG=target/dmesg-x.log WAIT=1 scripts/with-device-lock.sh ...
 #
 # - The lock is taken atomically (mkdir) with a random token in its owner file; the command runs
 #   only if that succeeded.
@@ -16,7 +16,7 @@ set -u
 owner="${1:?owner}"
 shift
 cmd="${1:?remote command}"
-dev="${DEVICE:-root@helios}"
+dev="${DEVICE:?set DEVICE to the device to lock, e.g. DEVICE=root@<device>}"
 lock=/tmp/styx-device-lock
 token="$owner $(date +%s)-$$-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
 

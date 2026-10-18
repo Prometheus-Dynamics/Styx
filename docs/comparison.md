@@ -219,7 +219,7 @@ firmware runs AE/AWB and Styx exposes its controls as they are (`camera_controls
 | Styx, any mode | `Frames::nv12().fps(30)`, or `CaptureRequest::interval(Interval::from_fps(30)?)` | exact: 30.000 fps measured (`fps = pixel rate / (line length × frame length)`, frame length chosen per rate) |
 | Styx, raw capture | `set_control(FRAME_RATE, Float(60.0))` while streaming | lands on a predicted frame (`camera_controls`: 33.33 ms then 16.67 ms intervals) |
 | Styx, processed capture | open again at another rate (or `CaptureHandle::reconfigure`) (the loop holds the rate it started with; AE chooses exposures within it) | 72 ms from the restart to the first frame at 60 fps |
-| libcamera | `FrameDurationLimits` min = max at `start()` or in a request; min < max lets AE stretch frames in low light | the HeliOS service, asking for no rate, ran at 50 then 30 fps as the light changed ([helios-trial.md](native-stack/helios-trial.md)) |
+| libcamera | `FrameDurationLimits` min = max at `start()` or in a request; min < max lets AE stretch frames in low light | a camera service asking for no rate ran at 50 then 30 fps as the light changed (downstream trial log, not in this repository) |
 | raw V4L2 | `VIDIOC_S_PARM` for UVC; `V4L2_CID_VBLANK` on a sensor subdevice (compute it yourself) | |
 
 ### Two streams of one camera
@@ -356,8 +356,8 @@ Earlier measurements (same device, a brighter scene; sources in the last column)
 | open → exposure settled | 223.4-290.0 ms | 530.4-541.9 ms | same |
 | restart, camera kept open: stop → first frame / AE locked | 42 ms / frame 2 (109 ms) | — | same |
 | CPU per frame, NV12 1280x800 at 30 fps, one consumer | 0.26 ms (0.8% of a core) | — | [pipeline.md](native-stack/pipeline.md#pisp-path-performance) |
-| frame start → frame in the consumer's hands | 8.3 ms (9.9 ms with temporal denoise) | 31.9 ms through the HeliOS service (preview encode included) | pipeline.md, [helios-trial.md](native-stack/helios-trial.md) |
-| HeliOS service, capture only (preview off): CPU, RSS / PSS | 0.62 ms per frame (60 fps), 28.0 / 26.4 MiB | 0.80 ms per frame (30 fps), 37.1-37.5 / 31.7-32.2 MiB | helios-trial.md |
+| frame start → frame in the consumer's hands | 8.3 ms (9.9 ms with temporal denoise) | 31.9 ms through a camera service (preview encode included) | pipeline.md |
+| Camera service, capture only (preview off): CPU, RSS / PSS | 0.62 ms per frame (60 fps), 28.0 / 26.4 MiB | 0.80 ms per frame (30 fps), 37.1-37.5 / 31.7-32.2 MiB | downstream trial log (not in this repository) |
 | image quality, same exposure and tuning: luma shading, R/G, B/G per zone, tone, flat-area noise | within about twice libcamera's own session-to-session difference; noise 0.22-0.23 vs 0.12-0.28 (0..255) | (reference) | [pipeline.md](native-stack/pipeline.md#quality-vs-libcamera) |
 | AWB in the same scene | 2543 K / 2643 K | 2488-2491 K / 2596-2602 K | same |
 | sensor under its kernel driver (`ov9282`) instead of the bridge: open → first frame, AE locked | 37.5-39.8 ms, 237.6-243.6 ms | — | [adding-a-camera.md](native-stack/adding-a-camera.md#the-ov9782-on-the-cm5-kernel-driver-against-the-bridge) |

@@ -350,14 +350,16 @@ fn params_round_trip_through_serde_json_shape() {
 }
 
 /// A real OV9782 frame (1280x800 `pBAA`, stride 1600), when present: a dark frame, so this is
-/// only a smoke test. Set `STYX_SOFTISP_FRAME` to use another file.
+/// only a smoke test. Runs only when `STYX_SOFTISP_FRAME` names a raw file; skipped otherwise.
 #[test]
 fn device_frame_smoke_test() {
-    let path = std::env::var("STYX_SOFTISP_FRAME").unwrap_or_else(|_| {
-        "/tmp/claude-1000/-run-media-sozo-bd1d96d9-fa81-4fac-b25e-193cfcac2dcb-Github-Styx/4e901f50-3dbf-41b1-aef6-680fc511fa44/scratchpad/frame.raw".into()
-    });
+    let Some(path) = std::env::var_os("STYX_SOFTISP_FRAME") else {
+        eprintln!("STYX_SOFTISP_FRAME is not set; skipped");
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
     let Ok(raw) = std::fs::read(&path) else {
-        eprintln!("no device frame at {path}; skipped");
+        eprintln!("no device frame at {}; skipped", path.display());
         return;
     };
     let format = RawFormat::new(1280, 800, CfaPattern::Bggr, RawPacking::Csi2Raw10);
