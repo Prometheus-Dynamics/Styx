@@ -13,7 +13,13 @@ futures-core = "0.3.34"
 libc = "0.2"
 thiserror = "2.0.21"
 
+# `MockProvider` and the `sample` graphs: a synthetic camera for tests, docs and tools. Off by
+# default; the crate's own tests and doc example turn it on through the dev-dependency below.
+[features]
+mock = []
+
 [dev-dependencies]
+styx-graph = { path = ".", features = ["mock"] }
 tokio = { version = "1.53.2", features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [lints]

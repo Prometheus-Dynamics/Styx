@@ -75,6 +75,12 @@ impl Drop for BufferLease {
     }
 }
 
+/// A pool of heap buffers, reused across leases.
+///
+/// Reused bytes are unspecified: a buffer from the free list still holds the bytes of its
+/// previous lease, and no lease clears them. Leases set the length: `lease` gives the chunk
+/// size, `lease_sized` the requested one. Bytes are zero-filled only where a length grows past
+/// the reused buffer's, so a caller must write every byte it reads back.
 #[derive(Clone)]
 pub struct BufferPool {
     inner: Arc<PoolInner>,
@@ -133,18 +139,22 @@ impl BufferPool {
         }
     }
 
+    /// A buffer of the chunk size (contents unspecified, see [`BufferPool`]).
     pub fn lease(&self) -> BufferLease {
-        let buf = self
-            .inner
-            .free
-            .lock()
-            .pop()
-            .inspect(|_| self.metrics.hit())
-            .unwrap_or_else(|| {
+        // Popped under the lock, resized after it: zero-filling growth is not done under it.
+        let reused = self.inner.free.lock().pop();
+        let buf = match reused {
+            Some(mut buf) => {
+                self.metrics.hit();
+                buf.resize(self.inner.chunk_size, 0);
+                buf
+            }
+            None => {
                 self.metrics.miss();
                 self.metrics.alloc();
                 vec![0; self.inner.chunk_size]
-            });
+            }
+        };
         self.metrics.lease_acquired();
         BufferLease {
             pool: self.inner.clone(),
@@ -152,9 +162,10 @@ impl BufferPool {
         }
     }
 
-    /// A buffer of exactly `len` bytes: a free one reused (grown if needed), else a new
-    /// allocation of `len` bytes rather than the pool's chunk size, so a pool serving frames
-    /// smaller than its chunk (e.g. scaled decodes) does not allocate and touch the whole chunk.
+    /// A buffer of exactly `len` bytes: a free one reused (its length adjusted, zero-filled
+    /// only where it grows), else a new allocation of `len` bytes rather than the pool's chunk
+    /// size, so a pool serving frames smaller than its chunk (e.g. scaled decodes) does not
+    /// allocate and touch the whole chunk. Contents unspecified, see [`BufferPool`].
     pub fn lease_sized(&self, len: usize) -> BufferLease {
         let reused = self.inner.free.lock().pop();
         let buf = match reused {
@@ -214,8 +225,9 @@ pub(super) struct PoolInner {
 }
 
 impl PoolInner {
-    pub(super) fn recycle(&self, mut buf: Vec<u8>) {
-        buf.clear();
+    /// Returns a buffer to the free list with its length and bytes as they are: the next lease
+    /// sets the length, zero-filling only growth, so a reused buffer is not cleared.
+    pub(super) fn recycle(&self, buf: Vec<u8>) {
         let mut free = self.free.lock();
         if free.len() < self.max_free {
             free.push(buf);
@@ -237,5 +249,36 @@ impl BufferPoolMetrics {
 
     pub fn allocations(&self) -> u64 {
         self.0.allocations()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BufferPool;
+
+    #[test]
+    fn reused_buffers_keep_their_bytes_and_lengths_adjust_without_clearing() {
+        let pool = BufferPool::lazy(8, 4);
+        let mut lease = pool.lease_sized(8);
+        lease
+            .as_mut_slice()
+            .copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        drop(lease);
+
+        // Reused and truncated: the bytes kept are the previous lease's, not zeros.
+        let shrunk = pool.lease_sized(4);
+        assert_eq!(shrunk.as_slice(), &[1, 2, 3, 4]);
+        drop(shrunk);
+
+        // Reused and grown: only the growth is zero-filled.
+        let grown = pool.lease_sized(6);
+        assert_eq!(grown.as_slice(), &[1, 2, 3, 4, 0, 0]);
+        drop(grown);
+
+        // `lease` gives the chunk size, as a fresh buffer does.
+        let chunk = pool.lease();
+        assert_eq!(chunk.len(), 8);
+        assert_eq!(&chunk.as_slice()[..4], &[1, 2, 3, 4]);
+        assert_eq!(pool.stats().hits, 3);
     }
 }
