@@ -406,7 +406,7 @@ All 67 pisp and vc4 tuning files in libcamera and both OV9782 tuning files conve
 AF's `LensRequest`s move it with the settle time, backlash and noise of the model, and frames
 carry the lens control's predicted report.
 
-`sim::Simulation` models a scene (lux and colour temperature over frames, mains flicker with
+`sim::Simulation` (feature `sim`, off by default) models a scene (lux and colour temperature over frames, mains flicker with
 any number of components and a start phase (`Simulation::set_time`), reflectances), a sensor (CT response, responsivity, shot and read noise, texture, line-quantised
 exposure) and the control scheduler's timing (per-control delays, requests from frame `F`
 written from `F + 2`, late landings counted). `sim::convergence` measures settle frames,

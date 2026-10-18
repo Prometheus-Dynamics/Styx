@@ -171,7 +171,7 @@ impl GpuIsp {
 
     /// Replace the parameters.
     pub fn set_params(&mut self, params: IspParams) -> Result<(), GpuError> {
-        self.tables = Tables::new(&self.format, &params, Some(&self.tables))?;
+        self.tables = Tables::new(&self.format, &params, Some((&self.tables, &self.params)))?;
         self.params = params;
         self.upload_tables()
     }
@@ -524,7 +524,7 @@ impl GpuIsp {
         self.check_input(input, stride)?;
         let bytes = frame_bytes(&self.format, stride);
         let (in_set, in_offset, copy_in) = self.bind_input(input, bytes)?;
-        let stats = self.tables.stats.clone().filter(|_| self.statistics);
+        let stats = self.tables.stats.as_ref().filter(|_| self.statistics);
         let mut block = self.tables.block;
         block.in_stride = stride as u32;
         block.in_offset = in_offset as u32;
@@ -566,7 +566,7 @@ impl GpuIsp {
             },
             copy_in: copy_in.map(|(b, o)| (b, o as u64, bytes as u64)),
             copy_out: copy_out.map(|(s, d)| (s, d, layout.size as u64)),
-            stats: stats.as_ref().map(|s| {
+            stats: stats.map(|s| {
                 let host = self.stats_host.as_ref().map(|h| h.buffer);
                 (
                     (s.config.zones_x, s.config.zones_y),
@@ -579,7 +579,7 @@ impl GpuIsp {
         };
         let dev_in = self.dev_in.as_ref().map(|d| d.buffer.buffer);
         self.gpu_time = self.k.run(&plan, self.stats_dev.buffer, dev_in)?;
-        Ok(match &stats {
+        Ok(match stats {
             Some(s) => {
                 let buf = self.stats_host.as_ref().unwrap_or(&self.stats_dev);
                 buf.invalidate()?;

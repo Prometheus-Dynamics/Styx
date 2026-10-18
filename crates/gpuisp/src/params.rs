@@ -7,7 +7,7 @@ use std::sync::Arc;
 use styx_softisp::simd::{RowKind, ToneLut, YuvCoeffs};
 use styx_softisp::{
     CfaPattern, Channel, IspError, IspParams, LensShading, RawFormat, RawPacking, StatsConfig,
-    ToneCurve, YuvMatrix,
+    YuvMatrix,
 };
 
 /// Q12 gain limit (16x), as the integer arithmetic.
@@ -84,9 +84,9 @@ pub(crate) struct Tables {
     /// on the device).
     pub lut_fresh: bool,
     pub lsc_fresh: bool,
-    /// What the tables were built from: the curve, and the grid with the cell gains.
-    tone_key: Option<ToneCurve>,
-    lsc_key: Option<(LensShading, [u32; 4])>,
+    /// The cell gains (bit patterns) the lens shading was built with: the grid is compared
+    /// with the previous parameters' in place.
+    lsc_cells: [u32; 4],
     pub stats: Option<StatsSetup>,
     /// White balance times digital gain, reported with the statistics.
     pub channel_gains: [f32; 3],
@@ -181,13 +181,13 @@ fn validate(format: &RawFormat, params: &IspParams) -> Result<(), IspError> {
 }
 
 impl Tables {
-    /// Tables for `params`; those of `previous` are reused when what they depend on is
-    /// unchanged (the 3A loop changes the gains on most frames, the curve and the lens
-    /// shading less often).
+    /// Tables for `params`; those of `previous` (built from the parameters beside them) are
+    /// reused when what they depend on is unchanged (the 3A loop changes the gains on most
+    /// frames, the curve and the lens shading less often).
     pub fn new(
         format: &RawFormat,
         params: &IspParams,
-        previous: Option<&Tables>,
+        previous: Option<(&Tables, &IspParams)>,
     ) -> Result<Self, IspError> {
         validate(format, params)?;
         let (w, h) = (format.width as usize, format.height as usize);
@@ -231,7 +231,6 @@ impl Tables {
             CfaPattern::Gbrg => [2, 0, 3, 1],
         };
         let cells = [0, 1, 2, 3].map(|i| cell_gain(i & 1, i >> 1).to_bits());
-        let lsc_key = params.lens_shading.as_ref().map(|ls| (ls.clone(), cells));
         let (mut lsc, mut lsc_fresh) = (None, false);
         if let Some(ls) = &params.lens_shading {
             let ymap = (2 * format.width as usize * ls.height as usize).div_ceil(2) as u32;
@@ -239,7 +238,11 @@ impl Tables {
             b.lsc_rows = ls.height;
             b.lsc_ymap = ymap;
             lsc = match previous {
-                Some(p) if p.lsc_key == lsc_key => p.lsc.clone(),
+                Some((p, prev))
+                    if prev.lens_shading == params.lens_shading && p.lsc_cells == cells =>
+                {
+                    p.lsc.clone()
+                }
                 _ => {
                     lsc_fresh = true;
                     let (words, at) = shaded_gains(ls, format, &cell_gain);
@@ -260,7 +263,7 @@ impl Tables {
         }
         b.tone_lut = u32::from(params.tone.is_some());
         let (lut, lut_fresh) = match (previous, &params.tone) {
-            (Some(p), Some(_)) if p.tone_key == params.tone => (p.lut.clone(), false),
+            (Some((p, prev)), Some(_)) if prev.tone == params.tone => (p.lut.clone(), false),
             (_, Some(curve)) => {
                 let lut = ToneLut::from_curve(|x| curve.eval(x));
                 (
@@ -292,8 +295,7 @@ impl Tables {
             lsc,
             lut_fresh,
             lsc_fresh,
-            tone_key: params.tone.clone(),
-            lsc_key,
+            lsc_cells: cells,
             stats,
             channel_gains,
         })

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Compile the GPU ISP's compute shaders to the SPIR-V the crate embeds (`src/shaders.rs`).
+# Compile the GPU ISP's compute shaders to the SPIR-V the crate embeds (`src/kernels.rs`).
 # Needs `glslc` (shaderc); the outputs are committed, so building the crate does not.
 set -eu
 cd "$(dirname "$0")"

@@ -140,7 +140,7 @@ impl HalfPrep {
 }
 
 /// Whether every node of `b` is within `tolerance` (relative) of `a`'s.
-fn close(a: &LensShading, b: &LensShading, tolerance: f32) -> bool {
+pub(crate) fn close(a: &LensShading, b: &LensShading, tolerance: f32) -> bool {
     if (a.width, a.height) != (b.width, b.height) {
         return false;
     }

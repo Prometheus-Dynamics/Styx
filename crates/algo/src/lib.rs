@@ -11,10 +11,11 @@
 //! * [`Algorithm`]: `prepare(config)` then `process(&stats, &meta, &mut params)` per frame.
 //!   [`Pipeline`] runs an ordered set over one shared `Params`.
 //! * [`Tuning`]: typed tuning, from our TOML or from Raspberry Pi tuning JSON (version 2).
-//! * [`sim`]: a synthetic sensor and scene with control delays, noise and flicker, for testing
-//!   convergence; [`replay`]: record and replay statistics sequences.
+//! * `sim` (feature `sim`): a synthetic sensor and scene with control delays, noise and
+//!   flicker, for testing convergence; [`replay`]: record and replay statistics sequences.
 //!
 //! ```
+//! # #[cfg(feature = "sim")] {
 //! use styx_algo::{CameraConfig, FrameMetadata, Pipeline, Tuning, sim};
 //!
 //! let mut pipeline = Pipeline::from_tuning(&Tuning::default()).unwrap();
@@ -23,6 +24,7 @@
 //! let mut run = sim::Simulation::new(sim::SensorModel::default(), sim::Scene::constant(200.0, 5000.0), &config);
 //! let frames = run.run(&mut pipeline, 60);
 //! assert!(frames.last().unwrap().params.ae.locked);
+//! # }
 //! ```
 //!
 //! See `docs/native-stack/algorithms.md` for adding an algorithm and the tuning mapping.
@@ -46,6 +48,7 @@ mod pipeline;
 pub mod pwl;
 #[cfg(feature = "std")]
 pub mod replay;
+#[cfg(feature = "sim")]
 pub mod sim;
 pub mod stats;
 pub mod tuning;

@@ -38,6 +38,10 @@ lux = []
 # Our TOML tuning format (`Tuning::from_toml_str`, `to_toml_string`). Raspberry Pi JSON
 # (`from_rpi_json_str`) needs no parser crate and is always there.
 toml = ["dep:toml"]
+# The simulator (`sim`): a synthetic sensor and scene for tests, examples and tools. Off by
+# default, so firmware builds do not compile it; the crate's own tests and doc tests enable it
+# through the dev-dependency below.
+sim = []
 
 [dependencies]
 serde = { workspace = true, features = ["alloc"] }
@@ -45,6 +49,9 @@ serde_json = { workspace = true, optional = true, features = ["float_roundtrip"]
 thiserror.workspace = true
 toml = { version = "1.1", default-features = false, features = ["serde", "parse", "display"], optional = true }
 libm.workspace = true
+
+[dev-dependencies]
+styx-algo = { path = ".", features = ["sim"] }
 
 [lints]
 workspace = true
