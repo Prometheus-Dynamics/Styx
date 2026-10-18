@@ -53,6 +53,10 @@ layout(set = 0, binding = 0, std430) readonly buffer Params {
     uint bins;
     uint saturation;
     uint row_step;
+    // Window origin in the frame (even; 0 for the whole frame): the picture's outputs are the
+    // window's, its samples the frame's (out_width/out_height are the window's size).
+    uint win_x;
+    uint win_y;
 } P;
 
 layout(set = 0, binding = 1, std430) readonly buffer Lut {

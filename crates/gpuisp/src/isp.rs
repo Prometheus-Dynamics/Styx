@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ash::vk;
-use styx_softisp::{Arithmetic, IspError, IspParams, IspStats, OutputBuffers, RawFormat, Scale};
+use styx_softisp::{
+    Arithmetic, IspError, IspParams, IspStats, OutputBuffers, RawFormat, Scale, Window,
+};
 
 use crate::context::{DeviceSelect, GpuContext, Inner};
 use crate::error::GpuError;
@@ -248,11 +250,115 @@ impl GpuIsp {
         let layout = self.layout(kind, scale)?;
         let dst = layout::destination(&mut out, &layout)?;
         self.ensure_slot(Target::Host, layout.size)?;
-        let stats = self.run(input, stride, scale, &layout, Target::Host)?;
+        let stats = self.run(input, stride, scale, &layout, Target::Host, Region::Frame)?;
         let host = self.host_out.as_ref().expect("made by ensure_slot");
         host.buffer.invalidate()?;
         layout::copy_out(host.buffer.bytes(), &layout, dst);
         Ok(stats)
+    }
+
+    /// Process only `window` of the frame, at `scale`, into `out` (sized
+    /// [`Self::window_size`]), as [`styx_softisp::SoftIsp::process_window`]: the same pixels
+    /// as that window of [`Self::process`]'s picture, bit for bit. No statistics: those of the
+    /// whole frame come from [`Self::statistics`] or [`Self::process`].
+    pub fn process_window(
+        &mut self,
+        input: &[u8],
+        stride: usize,
+        window: Window,
+        scale: Scale,
+        out: OutputBuffers<'_>,
+    ) -> Result<(), GpuError> {
+        self.process_window_input(Input::Bytes(input), stride, window, scale, out)
+    }
+
+    /// [`Self::process_window`] from any [`Input`].
+    pub fn process_window_input(
+        &mut self,
+        input: Input<'_>,
+        stride: usize,
+        window: Window,
+        scale: Scale,
+        mut out: OutputBuffers<'_>,
+    ) -> Result<(), GpuError> {
+        let Window {
+            x,
+            y,
+            width,
+            height,
+        } = window;
+        let (w, h) = (self.format.width, self.format.height);
+        if width == 0
+            || height == 0
+            || !(x | y | width | height).is_multiple_of(2)
+            || x + width > w
+            || y + height > h
+        {
+            return Err(IspError::Unsupported(format!(
+                "window {width}x{height} at ({x}, {y}): even origin and size within the \
+                 {w}x{h} frame"
+            ))
+            .into());
+        }
+        self.check_input(input, stride)?;
+        let (ow, oh) = self.window_size(window, scale);
+        let kind = OutputKind::of(&out);
+        let layout = self.layout_of(kind, ow, oh)?;
+        let dst = layout::destination(&mut out, &layout)?;
+        self.ensure_slot(Target::Host, layout.size)?;
+        self.run(
+            input,
+            stride,
+            scale,
+            &layout,
+            Target::Host,
+            Region::Window { x, y },
+        )?;
+        let host = self.host_out.as_ref().expect("made by ensure_slot");
+        host.buffer.invalidate()?;
+        layout::copy_out(host.buffer.bytes(), &layout, dst);
+        Ok(())
+    }
+
+    /// The output size of [`Self::process_window`] of `window` at `scale`.
+    pub fn window_size(&self, window: Window, scale: Scale) -> (u32, u32) {
+        match scale {
+            Scale::Full => (window.width, window.height),
+            Scale::Half => (window.width / 2, window.height / 2),
+        }
+    }
+
+    /// Only the frame's statistics (as [`styx_softisp::SoftIsp::statistics`]): no picture is
+    /// made, only the statistics pass runs.
+    pub fn statistics(
+        &mut self,
+        input: &[u8],
+        stride: usize,
+    ) -> Result<Option<IspStats>, GpuError> {
+        self.statistics_input(Input::Bytes(input), stride)
+    }
+
+    /// [`Self::statistics`] from any [`Input`].
+    pub fn statistics_input(
+        &mut self,
+        input: Input<'_>,
+        stride: usize,
+    ) -> Result<Option<IspStats>, GpuError> {
+        self.check_input(input, stride)?;
+        if !self.statistics || self.tables.stats.is_none() {
+            return Ok(None);
+        }
+        // Nothing is written to it: a slot of any size will do.
+        let layout = Layout::new(OutputKind::Luma, 2, 2, self.stride_align);
+        self.ensure_slot(Target::Host, layout.size)?;
+        self.run(
+            input,
+            stride,
+            Scale::Full,
+            &layout,
+            Target::Host,
+            Region::Stats,
+        )
     }
 
     /// Process one frame into the next buffer of the export ring and leave it there:
@@ -271,7 +377,14 @@ impl GpuIsp {
         let layout = self.layout(kind, scale)?;
         let slot = self.ring_next;
         self.ensure_slot(Target::Ring(slot), layout.size)?;
-        let stats = self.run(input, stride, scale, &layout, Target::Ring(slot))?;
+        let stats = self.run(
+            input,
+            stride,
+            scale,
+            &layout,
+            Target::Ring(slot),
+            Region::Frame,
+        )?;
         self.ring_next = (slot + 1) % self.ring_len;
         Ok(ExportedFrame {
             slot,
@@ -334,6 +447,11 @@ impl GpuIsp {
 
     fn layout(&self, kind: OutputKind, scale: Scale) -> Result<Layout, GpuError> {
         let (ow, oh) = self.output_size(scale);
+        self.layout_of(kind, ow, oh)
+    }
+
+    /// The layout of a `kind` output of `ow`x`oh`.
+    fn layout_of(&self, kind: OutputKind, ow: u32, oh: u32) -> Result<Layout, GpuError> {
         let (ow, oh) = (ow as usize, oh as usize);
         if matches!(kind, OutputKind::Nv12 | OutputKind::I420) && (ow % 2 != 0 || oh % 2 != 0) {
             return Err(
@@ -520,14 +638,22 @@ impl GpuIsp {
         scale: Scale,
         layout: &Layout,
         target: Target,
+        region: Region,
     ) -> Result<Option<IspStats>, GpuError> {
         self.check_input(input, stride)?;
         let bytes = frame_bytes(&self.format, stride);
         let (in_set, in_offset, copy_in) = self.bind_input(input, bytes)?;
-        let stats = self.tables.stats.as_ref().filter(|_| self.statistics);
+        let stats = match region {
+            Region::Window { .. } => None,
+            Region::Frame | Region::Stats => self.tables.stats.as_ref().filter(|_| self.statistics),
+        };
         let mut block = self.tables.block;
         block.in_stride = stride as u32;
         block.in_offset = in_offset as u32;
+        (block.win_x, block.win_y) = match region {
+            Region::Window { x, y } => (x, y),
+            Region::Frame | Region::Stats => (0, 0),
+        };
         block.out_kind = layout.kind.code();
         block.out_width = layout.width as u32;
         block.out_height = layout.height as u32;
@@ -554,12 +680,9 @@ impl GpuIsp {
                 Scale::Full => self.k.full,
                 Scale::Half => self.k.half,
             },
-            groups: match scale {
-                Scale::Full => (
-                    self.format.width.div_ceil(32),
-                    self.format.height.div_ceil(16),
-                ),
-                Scale::Half => (
+            groups: match region {
+                Region::Stats => (0, 0),
+                Region::Frame | Region::Window { .. } => (
                     (layout.width as u32).div_ceil(32),
                     (layout.height as u32).div_ceil(16),
                 ),
@@ -593,6 +716,17 @@ impl GpuIsp {
 /// The input set the shaders read, the byte offset of the frame in it, and the buffer and
 /// offset to copy it from into device memory (devices with their own).
 type BoundInput = (vk::DescriptorSet, usize, Option<(vk::Buffer, usize)>);
+
+/// What a pass makes of the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Region {
+    /// The whole picture, with the statistics the parameters ask for.
+    Frame,
+    /// The picture of the window at frame position (`x`, `y`) (even), no statistics.
+    Window { x: u32, y: u32 },
+    /// The statistics alone: no picture (no picture workgroups).
+    Stats,
+}
 
 /// Where a frame's output goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

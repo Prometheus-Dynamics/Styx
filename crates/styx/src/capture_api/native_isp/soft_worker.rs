@@ -26,7 +26,7 @@ pub(super) struct SoftWorker {
     pub(super) mode: Mode,
     /// The ISP's scale: half for a binned mode.
     pub(super) scale: Scale,
-    /// The capture can crop: the CPU ISP on a full-size mode.
+    /// The capture can crop: a full-size mode (the CPU or the GPU ISP processes the region).
     pub(super) crops: bool,
     /// The overview's binning factor.
     pub(super) overview: Option<u32>,
