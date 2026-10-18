@@ -105,7 +105,7 @@ smallvec = "1.16.2"
 # want `std` ask for it; docs/portability.md). libm: float maths for no_std builds.
 thiserror = { version = "2.0.21", default-features = false }
 libm = "0.2.16"
-tokio = "1.53.2"
+tokio = "1.53.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 # FFmpeg types only: Styx calls FFmpeg through libraries it loads at runtime
 # (styx-codec `ffmpeg::ff`), so binaries do not link FFmpeg.

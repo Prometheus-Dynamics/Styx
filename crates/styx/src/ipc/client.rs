@@ -226,10 +226,15 @@ async fn open_async(request: &Request) -> Result<Opened, IpcError> {
             ),
             &[],
         )?;
-        let fd = tokio::io::unix::AsyncFd::with_interest(
-            socket.try_clone()?,
-            tokio::io::Interest::READABLE,
-        )?;
+        // SAFETY: the duplicated descriptor is owned by the `AsyncFd` and closed only when it
+        // drops; nothing else replaces or closes it.
+        let fd = unsafe {
+            tokio::io::unix::AsyncFd::register_with_interest(
+                socket.try_clone()?,
+                tokio::io::Interest::READABLE,
+            )
+            .map_err(std::io::Error::from)?
+        };
         loop {
             let mut ready = fd.readable().await?;
             match socket::recv(&socket, Duration::ZERO)? {
@@ -671,11 +676,13 @@ impl FrameClient {
                     Some(live) => {
                         let fd = match &link.async_fd {
                             Some(fd) => fd.clone(),
-                            None => match live.socket.try_clone().and_then(|dup| {
-                                tokio::io::unix::AsyncFd::with_interest(
+                            // SAFETY: as above, the duplicate is owned by the `AsyncFd`.
+                            None => match live.socket.try_clone().and_then(|dup| unsafe {
+                                tokio::io::unix::AsyncFd::register_with_interest(
                                     dup,
                                     tokio::io::Interest::READABLE,
                                 )
+                                .map_err(std::io::Error::from)
                             }) {
                                 Ok(fd) => link.async_fd.insert(Arc::new(fd)).clone(),
                                 Err(_) => return RecvOutcome::Closed,

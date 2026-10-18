@@ -20,7 +20,7 @@ mock = []
 
 [dev-dependencies]
 styx-graph = { path = ".", features = ["mock"] }
-tokio = { version = "1.53.2", features = ["rt", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.53.3", features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [lints]
 workspace = true
