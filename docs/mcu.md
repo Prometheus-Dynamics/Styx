@@ -61,6 +61,7 @@ What the optional parts cost (Cortex-M7, added to the C and D images above):
 | all five | +25.2 KB | +40.7 KB | (D 245.9 KB) |
 | `styx-softisp/fp16` | | +11.1 KB | fp16 arithmetic (fast only on ARMv8.2+ cores) |
 | `styx-softisp/poly-tone` | | +2.7 KB | tone curve as quadratics (fast with AVX2) |
+| `styx-softisp/post` | | +6.5 KB | the output picture's denoise and sharpening |
 | `toml` (`styx-algo`, `styx-sensor`) | +0.2 KB | +0.9 KB | the TOML formats; the parser is linked only when called |
 
 `alsc` is in D above (C has no lens shading). With `std` every one of these is on, so Linux

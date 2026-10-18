@@ -299,7 +299,7 @@ impl SoftIsp {
             crate::params::Demosaic::Bilinear => 1,
             crate::params::Demosaic::Mhc | crate::params::Demosaic::EdgeDirected => 2,
         };
-        if self.prepared.post.is_some() {
+        if self.post_on() {
             // The output stages look two pixels around each output pixel: the window is
             // processed with that much more of the frame, and the margin cropped away.
             let halo = match scale {
@@ -462,11 +462,16 @@ impl SoftIsp {
         oh: usize,
         out: OutputBuffers<'_>,
     ) -> Result<Option<StatsAccum>, IspError> {
-        if self.prepared.post.is_some() {
+        if self.post_on() {
             let ow = g.ow;
             return self.run_post(src, g, oh, (ow, oh), Crop { x0: 0, y0: 0 }, out);
         }
         self.run_pipeline(src, g, oh, out)
+    }
+
+    /// Whether the output stages run (never without the `post` feature, so their code stays out).
+    fn post_on(&self) -> bool {
+        cfg!(feature = "post") && self.prepared.post.is_some()
     }
 
     /// The output stages: the pipeline's RGB picture of `g` (`picture_h` rows), denoised and

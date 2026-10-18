@@ -205,6 +205,10 @@ pub struct NativeIspConfig {
     /// cores, at most 4 (2 on the CM5). More can hang a CM5 at 2.4 GHz within seconds (three
     /// at 120 fps, four at any rate: `docs/native-stack/pipeline.md`, "All four cores").
     pub soft_threads: Option<usize>,
+    /// The tuning's denoise and sharpening in the software ISP (`false`, default: off; they are
+    /// three more passes over the picture, see the soft ISP's `PERFORMANCE.md`). Cameras with a
+    /// PiSP denoise and sharpen there regardless.
+    pub soft_post_stages: bool,
     /// Temporal denoise in the PiSP's back end when the tuning has it (`true`, the default):
     /// a running average of the frame, two extra raw-sized buffers read and written by every
     /// job; it brings flat-area noise down to libcamera's (4x lower than spatial denoise
@@ -253,6 +257,7 @@ impl Default for NativeIspConfig {
             slice_line: None,
             deliver_slices: false,
             soft_threads: None,
+            soft_post_stages: false,
             temporal_denoise: true,
             spatial_denoise_percent: 100,
             output_buffers: 6,
@@ -316,6 +321,13 @@ impl StyxConfig {
     /// [`NativeIspConfig::soft_threads`]).
     pub fn native_soft_threads(mut self, threads: usize) -> Self {
         self.backends.native.soft_threads = Some(threads.max(1));
+        self
+    }
+
+    /// Turn the software ISP's denoise and sharpening on or off (see
+    /// [`NativeIspConfig::soft_post_stages`]).
+    pub fn native_soft_post_stages(mut self, on: bool) -> Self {
+        self.backends.native.soft_post_stages = on;
         self
     }
 

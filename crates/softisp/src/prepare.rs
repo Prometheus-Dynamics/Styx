@@ -212,7 +212,11 @@ impl Prepared {
             YuvMatrix::Bt709Limited => YuvCoeffs::BT709_LIMITED,
         };
         let stats = params.stats.map(|c| stats_setup(c, w, h)).transpose()?;
-        let post = PostPrep::new(params.denoise.as_ref(), params.sharpen.as_ref(), yuv);
+        let post = if cfg!(feature = "post") {
+            PostPrep::new(params.denoise.as_ref(), params.sharpen.as_ref(), yuv)
+        } else {
+            None
+        };
         Ok(Self {
             width: w,
             height: h,

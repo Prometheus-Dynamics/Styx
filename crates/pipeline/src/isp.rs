@@ -152,13 +152,19 @@ impl IspSettings {
 
     /// Software ISP parameters for `bits`-bit samples, keeping `base`'s demosaic, YUV
     /// matrix and statistics settings.
+    ///
+    /// The tuning's denoise and sharpening apply only where `base` has them on (any value: the
+    /// tuning's strengths replace it), so they cost nothing unless asked for.
     pub fn softisp(&self, bits: u8, base: &soft::IspParams) -> soft::IspParams {
         let full = f64::from((1u32 << bits) - 1);
         let level = (self.black_level * f64::from(1u32 << bits))
             .round()
             .clamp(0.0, full - 1.0);
         let m = self.ccm.map(|v| v.clamp(-3.99, 3.99) as f32);
+        // The output stages run only where `base` asks for them; their strengths are the tuning's.
         let (denoise, sharpen) = crate::soft::post_stages(&self.denoise, self.sharpen);
+        let denoise = denoise.filter(|_| base.denoise.is_some());
+        let sharpen = sharpen.filter(|_| base.sharpen.is_some());
         soft::IspParams {
             denoise,
             sharpen,
@@ -543,6 +549,24 @@ mod tests {
         let s = IspSettings::from_params(&params(), 0, 1.0);
         let p = s.softisp(10, &soft::IspParams::default());
         assert_eq!(p.black_level, Some(soft::BlackLevel::uniform(64)));
+        // The output stages stay off unless the base asks for them.
+        let mut s = s;
+        s.sharpen = Some(styx_algo::SharpenParams {
+            threshold: 1.0,
+            strength: 1.0,
+            limit: 1.0,
+        });
+        assert_eq!(s.softisp(10, &soft::IspParams::default()).sharpen, None);
+        let on = soft::IspParams {
+            sharpen: Some(soft::Sharpen {
+                amount: 0.0,
+                threshold: 0.0,
+                limit: 0.0,
+            }),
+            ..Default::default()
+        };
+        assert!(s.softisp(10, &on).sharpen.is_some_and(|x| x.amount > 0.0));
+        let p = s.softisp(10, &soft::IspParams::default());
         assert_eq!(p.digital_gain, 1.25);
         assert_eq!(p.ccm.unwrap().m[0], [1.5, -0.25, -0.25]);
         let Some(soft::ToneCurve::Points { points }) = p.tone.clone() else {

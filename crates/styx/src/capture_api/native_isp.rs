@@ -543,6 +543,8 @@ pub(super) fn start_processed(
                 .unwrap_or_else(crate::planner::cost::default_softisp_threads);
             crate::trace::info!(backend = "native", threads, "software ISP threads");
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
+            p.soft_loop()
+                .set_post_stages(config.backends.native.soft_post_stages);
             #[cfg(feature = "gpu-isp")]
             if let Some(ctx) = crate::gpu_isp::context() {
                 match p.use_gpu(&ctx) {

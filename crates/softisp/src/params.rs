@@ -26,7 +26,8 @@ pub struct IspParams {
     pub tone: Option<ToneCurve>,
     /// Edge-preserving noise reduction of the output picture (after the tone curve). `None`: off.
     pub denoise: Option<Denoise>,
-    /// Unsharp-mask sharpening of the output picture's luma (after denoise). `None`: off.
+    /// Unsharp-mask sharpening of the output picture's luma (after denoise). `None`: off. Both
+    /// need the `post` feature (on with `std`).
     pub sharpen: Option<Sharpen>,
     /// RGB to YCbCr matrix of the YUV outputs.
     pub yuv: YuvMatrix,

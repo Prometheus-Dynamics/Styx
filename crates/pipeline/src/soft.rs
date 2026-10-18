@@ -258,6 +258,18 @@ impl SoftLoop {
         self.applied = None;
     }
 
+    /// Turns the tuning's denoise and sharpening of the output picture on or off (default off:
+    /// they are three more passes over the picture, see the soft ISP's `PERFORMANCE.md`).
+    pub fn set_post_stages(&mut self, on: bool) {
+        self.base.denoise = on.then(Denoise::default);
+        self.base.sharpen = on.then_some(Sharpen {
+            amount: 0.0,
+            threshold: 0.0,
+            limit: 0.0,
+        });
+        self.applied = None;
+    }
+
     /// Whether raw rows are copied into a cached buffer before unpacking (default: yes, for
     /// buffers the CPU maps uncached; frames in cached memory need no copy). See
     /// [`SoftIsp::set_copy_input`].
