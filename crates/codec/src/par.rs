@@ -52,6 +52,28 @@ pub(crate) fn for_each_row(dst: &mut [u8], row_bytes: usize, f: impl Fn(usize, &
     drop(guard);
 }
 
+/// Runs `f(i)` for every `i` in `0..n` on the persistent pool, spreading the indices over its
+/// threads. Returns `false`, without running anything, when there is no pool or another loop
+/// holds it; the caller then runs its work another way.
+pub(crate) fn try_for_each_index(n: usize, f: impl Fn(usize) + Sync) -> bool {
+    let Some(pool) = pool() else {
+        return false;
+    };
+    let guard = match pool.busy.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(TryLockError::WouldBlock) => return false,
+    };
+    let bands = n.min(pool.helpers() + 1);
+    pool.run(bands, &|band| {
+        for i in (band..n).step_by(bands) {
+            f(i);
+        }
+    });
+    drop(guard);
+    true
+}
+
 /// Runs `f` once on every helper thread of the pool (if it has started) and on the caller.
 #[cfg(feature = "image")]
 pub(crate) fn broadcast(f: impl Fn() + Sync) {

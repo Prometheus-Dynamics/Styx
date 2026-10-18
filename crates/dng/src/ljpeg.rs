@@ -24,6 +24,9 @@ pub struct Decoded {
     pub samples: Vec<u16>,
 }
 
+/// Codes up to this many bits decode with one lookup; longer codes take the bit loop.
+const LUT_BITS: usize = 9;
+
 /// A Huffman table (T.81 F.2.2.3: `maxcode`, `valptr`, `mincode` by code length).
 #[derive(Clone, Debug, Default)]
 struct Huffman {
@@ -31,6 +34,9 @@ struct Huffman {
     maxcode: [i32; 18],
     valptr: [i32; 17],
     values: Vec<u8>,
+    /// Indexed by the next `LUT_BITS` bits: `(code length, value)`, length 0 when the bit loop
+    /// must decide. Empty for a default table, which then always takes the bit loop.
+    lut: Vec<(u8, u8)>,
 }
 
 impl Huffman {
@@ -57,7 +63,25 @@ impl Huffman {
             code <<= 1;
         }
         h.maxcode[17] = i32::MAX;
+        h.lut = (0..1usize << LUT_BITS).map(|peek| h.lookup(peek)).collect();
         Ok(h)
+    }
+
+    /// The code that the bit loop finds first in the `LUT_BITS`-bit window `peek`, applying the
+    /// loop's own rule to the window, so the table agrees with the loop for every table.
+    fn lookup(&self, peek: usize) -> (u8, u8) {
+        for len in 1..=LUT_BITS {
+            let code = (peek >> (LUT_BITS - len)) as i32;
+            if code <= self.maxcode[len] {
+                let i = self.valptr[len] + code - self.mincode[len];
+                return match usize::try_from(i).ok().and_then(|i| self.values.get(i)) {
+                    Some(&value) => (len as u8, value),
+                    // Out of range: the bit loop reports the error.
+                    None => (0, 0),
+                };
+            }
+        }
+        (0, 0)
     }
 }
 
@@ -118,6 +142,21 @@ impl<'a> Bits<'a> {
     }
 
     fn decode(&mut self, h: &Huffman) -> Result<u8> {
+        if self.n < LUT_BITS as u32 {
+            self.fill();
+        }
+        let peek = (self.acc >> (64 - LUT_BITS)) as usize;
+        match h.lut.get(peek) {
+            Some(&(len, value)) if len > 0 => {
+                self.bits(u32::from(len));
+                Ok(value)
+            }
+            _ => self.decode_slow(h),
+        }
+    }
+
+    /// Reads one code bit by bit (T.81 F.2.2.3). The lookup table must match this exactly.
+    fn decode_slow(&mut self, h: &Huffman) -> Result<u8> {
         let mut code = 0i32;
         for len in 1..=16 {
             code = (code << 1) | self.bits(1) as i32;
@@ -274,6 +313,14 @@ fn decode_scan(
         .checked_mul(height)
         .filter(|&t| t <= 1 << 30)
         .ok_or_else(|| err("image too large"))?;
+    // Every sample takes at least one bit of scan data, so a header promising more than eight
+    // samples per byte cannot be satisfied. Check before sizing the output from the header.
+    if total > scan.len().saturating_mul(8) {
+        return Err(err(format!(
+            "{width}x{height}x{ns} samples in {} bytes of scan data",
+            scan.len()
+        )));
+    }
     let mut out = vec![0u16; total];
     let mut bits = Bits::new(scan);
     let mask = (1u32 << precision) - 1;
@@ -476,5 +523,58 @@ pub(crate) mod tests {
         let mut b = encode(&[1, 2, 3, 4], 2, 2, 1, 12, 1);
         b[3] = 0xc0;
         assert!(decode(&b).is_err());
+    }
+
+    /// A one-component lossless JPEG whose header promises `width` x `height` samples and whose
+    /// scan is `scan`, with no sample data behind it.
+    fn header_only(width: u16, height: u16, scan: &[u8]) -> Vec<u8> {
+        let mut out = vec![0xff, 0xd8, 0xff, 0xc3, 0, 14, 16];
+        out.extend_from_slice(&height.to_be_bytes());
+        out.extend_from_slice(&width.to_be_bytes());
+        out.extend_from_slice(&[1, 0, 0x11, 0]);
+        // DHT: table 0 with 17 five-bit codes for categories 0..=16.
+        let mut counts = [0u8; 16];
+        counts[4] = 17;
+        out.extend_from_slice(&[0xff, 0xc4, 0, 36, 0]);
+        out.extend_from_slice(&counts);
+        out.extend(0..=16u8);
+        // SOS: one component, table 0, predictor 1, no point transform.
+        out.extend_from_slice(&[0xff, 0xda, 0, 8, 1, 0, 0, 1, 0, 0]);
+        out.extend_from_slice(scan);
+        out.extend_from_slice(&[0xff, 0xd9]);
+        out
+    }
+
+    #[test]
+    fn headers_promising_more_samples_than_scan_bits_are_rejected() {
+        // 2^30 samples, the largest the decoder accepts, behind four bytes of scan data. This
+        // used to allocate 2 GiB before failing.
+        let e = decode(&header_only(32768, 32768, &[0x12, 0x34, 0x56, 0x78])).unwrap_err();
+        assert!(matches!(e, DngError::Malformed(_)), "{e}");
+        // Eight samples per byte is the most a valid scan can hold.
+        assert!(decode(&header_only(17, 1, &[0xff, 0x00])).is_err());
+        assert!(decode(&header_only(16384, 16384, &[0; 1000])).is_err());
+    }
+
+    #[test]
+    fn lookup_table_decodes_exactly_like_the_bit_loop() {
+        // Codes of 2, 3, 4, 5, 9, 12 and 16 bits: some decode from the table, the rest take
+        // the bit loop, and the random bits also hit unassigned patterns.
+        let counts = [0u8, 1, 1, 1, 2, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1];
+        let total: usize = counts.iter().map(|&c| usize::from(c)).sum();
+        let table = Huffman::new(&counts, (0..total as u8).collect()).unwrap();
+        let mut seed = 0x2545_f491u32;
+        let data: Vec<u8> = (0..4096)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                // 0xff is a marker or stuffing, which the reader treats separately.
+                let b = (seed >> 24) as u8;
+                if b == 0xff { 0xfe } else { b }
+            })
+            .collect();
+        let (mut fast, mut slow) = (Bits::new(&data), Bits::new(&data));
+        for _ in 0..8000 {
+            assert_eq!(fast.decode(&table).ok(), slow.decode_slow(&table).ok());
+        }
     }
 }

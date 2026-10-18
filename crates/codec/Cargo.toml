@@ -49,6 +49,8 @@ image = ["dep:yuvutils-rs"]
 codec-jpeg-decoder = ["dep:jpeg-decoder"]
 raw-decoders = ["dep:yuvutils-rs", "dep:styx-softisp"]
 codec-zune = ["zune-jpeg", "zune-core"]
+# When both codec-turbojpeg and codec-mozjpeg are on, turbojpeg wins: all mozjpeg code paths are
+# compiled out. mozjpeg-sys is still built in that case, so enable only one of the two.
 codec-mozjpeg = ["mozjpeg"]
 codec-turbojpeg = ["turbojpeg"]
 codec-ffmpeg = ["dep:ffmpeg-sys-next", "dep:libc"]

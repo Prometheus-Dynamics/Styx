@@ -326,3 +326,15 @@ fn not_dngs_are_errors() {
     let bytes = write_dng(&bayer(8, 8), &DngMetadata::default()).unwrap();
     assert!(read_dng(&bytes[..bytes.len() - 10]).is_err());
 }
+
+#[test]
+fn headers_promising_more_samples_than_their_strips_hold_are_rejected() {
+    // A 30000x30000 16-bit raw in one 4-byte strip. Sizing the output from the header first
+    // used to allocate 1.8 GB before the strip was looked at.
+    let mut t = camera_like(30_000, 30_000);
+    t.shorts(tag::BITS_PER_SAMPLE, &[16]);
+    t.shorts(tag::COMPRESSION, &[1]);
+    t.blobs.push(vec![0; 4]);
+    let e = read_dng(&t.build(tag::STRIP_OFFSETS, tag::STRIP_BYTE_COUNTS)).unwrap_err();
+    assert!(matches!(e, DngError::Malformed(_)), "{e}");
+}

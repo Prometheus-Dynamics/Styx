@@ -71,6 +71,7 @@ Selection can be influenced via:
 - `raw-decoders`: raw color converters: YUYV/NV12/I420 -> RGB, RGBA/BGRA/BGR -> RGB, Bayer, mono, and related CPU conversions.
 - Optional FFmpeg (`codec-ffmpeg`): H264/H265/MJPEG encoders/decoders.
 - Optional JPEG (`codec-mozjpeg`, `codec-turbojpeg`, `codec-zune`): alternate MJPEG backends.
+  - `codec-turbojpeg` takes precedence when both `codec-turbojpeg` and `codec-mozjpeg` are enabled: every mozjpeg code path is compiled out, so the encoder and decoders use libjpeg-turbo. The `mozjpeg-sys` native library is still built, though, so drop `codec-mozjpeg` to avoid that cost.
 - Optional `dynamic-image` feature: compatibility helpers for `DynamicImage` conversions.
 
 See `examples/03_codecs/mjpeg_decode.rs` for an end-to-end registry/decode usage example.

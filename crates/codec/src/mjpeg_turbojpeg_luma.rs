@@ -5,14 +5,51 @@
 //! On a Cortex-A76 this decodes 1280x800 camera frames in ~2.4 ms versus ~4.5 ms for RGB with
 //! the same library and ~20 ms for `jpeg-decoder` RGB.
 
+use std::cell::RefCell;
 use std::ffi::c_int;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use smallvec::smallvec;
 use styx_core::prelude::*;
 use turbojpeg::raw;
 
+use crate::jpeg_slices::JpegSlice;
+use crate::par;
 use crate::turbojpeg_raw::{JpegHeader, TjDecompressor};
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind, DEFAULT_CODEC_POOL_SPARE};
+
+thread_local! {
+    /// Per-thread `tj3` handle, reused across frames. Handles are not `Sync`, and the decoder
+    /// is shared, so each thread (the caller and the pool helpers) keeps its own.
+    static DECOMPRESSOR: RefCell<Option<TjDecompressor>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` with this thread's cached decompressor, creating it on first use. The handle is
+/// taken out while `f` runs, so a nested call on the same thread just creates a spare one.
+/// Callers must set every parameter they rely on: settings persist across calls.
+fn with_decompressor<R>(
+    f: impl FnOnce(&TjDecompressor) -> Result<R, CodecError>,
+) -> Result<R, CodecError> {
+    let handle = match DECOMPRESSOR.with(|slot| slot.borrow_mut().take()) {
+        Some(handle) => handle,
+        None => TjDecompressor::new()?,
+    };
+    let result = f(&handle);
+    DECOMPRESSOR.with(|slot| *slot.borrow_mut() = Some(handle));
+    result
+}
+
+/// One restart-marker slice and the rows of the output it decodes into.
+type SliceSlot<'a, 'b> = Mutex<Option<(&'a JpegSlice, &'b mut [u8])>>;
+
+/// `LumaDecodeOptions::threads` with `0` resolved to the automatic thread count.
+fn resolve_threads(requested: usize) -> usize {
+    match requested {
+        0 => std::thread::available_parallelism().map_or(1, |n| usize::from(n).min(4)),
+        n => n,
+    }
+}
 
 /// DCT-domain downscale applied while decoding (by [`TurbojpegLumaDecoder`] and
 /// [`TurbojpegDecoder`](crate::mjpeg_turbojpeg::TurbojpegDecoder)).
@@ -111,6 +148,8 @@ pub struct TurbojpegLumaDecoder {
     /// Recycled buffers for box-filter pyramid levels.
     pyramid_pool: BufferPool,
     options: LumaDecodeOptions,
+    /// `options.threads` resolved once at construction (`0` means automatic).
+    threads: usize,
 }
 
 impl TurbojpegLumaDecoder {
@@ -119,17 +158,18 @@ impl TurbojpegLumaDecoder {
     }
 
     pub fn with_options(options: LumaDecodeOptions) -> Self {
-        Self::with_pool(
-            options,
-            BufferPool::lazy(1280 * 800 + 64, DEFAULT_CODEC_POOL_SPARE),
-        )
+        // Frames are leased with `lease_sized` at their exact decoded length, so the pool's
+        // chunk size is never used for decode buffers and needs no per-resolution guess.
+        Self::with_pool(options, BufferPool::lazy(0, DEFAULT_CODEC_POOL_SPARE))
     }
 
     pub fn with_pool(mut options: LumaDecodeOptions, pool: BufferPool) -> Self {
         if !options.stride_alignment.is_power_of_two() {
             options.stride_alignment = 1;
         }
+        let threads = resolve_threads(options.threads);
         Self {
+            threads,
             descriptor: CodecDescriptor {
                 kind: CodecKind::Decoder,
                 input: FourCc::MJPG,
@@ -185,30 +225,25 @@ impl TurbojpegLumaDecoder {
 
     fn decode_into(
         &self,
-        handle: &TjDecompressor,
         jpeg: &[u8],
         plan: &DecodePlan,
         dst: &mut [u8],
     ) -> Result<(), CodecError> {
-        if let Some(()) = self.decode_parallel(jpeg, plan, dst)? {
+        if self.decode_parallel(jpeg, plan, dst)?.is_some() {
             return Ok(());
         }
-        handle.set(raw::TJPARAM_TJPARAM_FASTDCT, self.options.fast_dct as c_int)?;
-        handle.set_scaling(self.options.scale.denom())?;
-        handle.set_crop(plan.crop)?;
-        handle.decompress(jpeg, dst, plan.stride, raw::TJPF_TJPF_GRAY)
+        with_decompressor(|handle| {
+            handle.set(raw::TJPARAM_TJPARAM_FASTDCT, self.options.fast_dct as c_int)?;
+            handle.set_scaling(self.options.scale.denom())?;
+            handle.set_crop(plan.crop)?;
+            handle.decompress(jpeg, dst, plan.stride, raw::TJPF_TJPF_GRAY)
+        })
     }
 }
 
 impl TurbojpegLumaDecoder {
-    fn thread_count(&self) -> usize {
-        match self.options.threads {
-            0 => std::thread::available_parallelism().map_or(1, |n| usize::from(n).min(4)),
-            n => n,
-        }
-    }
-
-    /// Decode restart-marker slices on separate threads straight into their rows of `dst`.
+    /// Decode restart-marker slices in parallel straight into their rows of `dst`, on the
+    /// persistent codec pool (or on scoped threads when the pool is busy).
     /// `Ok(None)` means the frame is not splittable and the caller should decode it whole.
     fn decode_parallel(
         &self,
@@ -216,7 +251,7 @@ impl TurbojpegLumaDecoder {
         plan: &DecodePlan,
         dst: &mut [u8],
     ) -> Result<Option<()>, CodecError> {
-        let threads = self.thread_count();
+        let threads = self.threads;
         if threads < 2 || plan.crop.is_some() {
             return Ok(None);
         }
@@ -246,30 +281,42 @@ impl TurbojpegLumaDecoder {
         if !rest.is_empty() {
             return Ok(None);
         }
-        let results: Vec<Result<(), CodecError>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = work
-                .into_iter()
-                .map(|(slice, rows)| {
-                    scope.spawn(move || {
-                        let handle = TjDecompressor::new()?;
-                        handle.set(raw::TJPARAM_TJPARAM_FASTDCT, fast_dct as c_int)?;
-                        handle.read_header(&slice.jpeg)?;
-                        if scale != LumaDecodeScale::Full {
-                            handle.set_scaling(scale.denom())?;
-                        }
-                        handle.decompress(&slice.jpeg, rows, stride, raw::TJPF_TJPF_GRAY)
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Err(CodecError::Codec("decode thread panicked".into())))
-                })
-                .collect()
+
+        let failed = AtomicBool::new(false);
+        let decode_slice = |slice: &JpegSlice, rows: &mut [u8]| {
+            let result = with_decompressor(|handle| {
+                handle.set(raw::TJPARAM_TJPARAM_FASTDCT, fast_dct as c_int)?;
+                handle.read_header(&slice.jpeg)?;
+                handle.set_scaling(scale.denom())?;
+                // Cached handles keep the previous frame's crop, so clear it for slices.
+                handle.set_crop(None)?;
+                handle.decompress(&slice.jpeg, rows, stride, raw::TJPF_TJPF_GRAY)
+            });
+            if result.is_err() {
+                failed.store(true, Ordering::Relaxed);
+            }
+        };
+        // Each slot is taken exactly once, by whichever thread runs its index.
+        let slots: Vec<SliceSlot<'_, '_>> = work.into_iter().map(|w| Mutex::new(Some(w))).collect();
+        let take = |i: usize| slots[i].lock().unwrap_or_else(|e| e.into_inner()).take();
+        let on_pool = par::try_for_each_index(slots.len(), |i| {
+            if let Some((slice, rows)) = take(i) {
+                decode_slice(slice, rows);
+            }
         });
-        if results.iter().any(Result::is_err) {
+        if !on_pool {
+            let (take, decode_slice) = (&take, &decode_slice);
+            std::thread::scope(|scope| {
+                for i in 0..slots.len() {
+                    scope.spawn(move || {
+                        if let Some((slice, rows)) = take(i) {
+                            decode_slice(slice, rows);
+                        }
+                    });
+                }
+            });
+        }
+        if failed.load(Ordering::Relaxed) {
             // Fall back to a whole-frame decode rather than dropping the frame.
             return Ok(None);
         }
@@ -314,8 +361,7 @@ impl Codec for TurbojpegLumaDecoder {
 
     fn process(&self, input: FrameLease) -> Result<FrameLease, CodecError> {
         let jpeg = mjpeg_payload(&input, &self.descriptor)?;
-        let handle = TjDecompressor::new()?;
-        let header = handle.read_header(jpeg)?;
+        let header = with_decompressor(|handle| handle.read_header(jpeg))?;
         crate::check_decoded_size(input.meta().format.resolution, header.width, header.height)?;
         let plan = self.plan(&header);
         let resolution = Resolution::new(plan.width, plan.height)
@@ -326,12 +372,7 @@ impl Codec for TurbojpegLumaDecoder {
         let mut buf = self.pool.lease_sized(len + align - 1);
         let base = buf.as_slice().as_ptr() as usize;
         let offset = base.next_multiple_of(align) - base;
-        self.decode_into(
-            &handle,
-            jpeg,
-            &plan,
-            &mut buf.as_mut_slice()[offset..offset + len],
-        )?;
+        self.decode_into(jpeg, &plan, &mut buf.as_mut_slice()[offset..offset + len])?;
 
         let format = MediaFormat::new(FourCc::GREY, resolution, input.meta().format.color);
         let meta = luma_meta(input.meta(), format);
@@ -354,8 +395,7 @@ impl Codec for TurbojpegLumaDecoder {
         pool: &SharedBufferPool,
     ) -> Result<Option<FrameLease>, CodecError> {
         let jpeg = mjpeg_payload(input, &self.descriptor)?;
-        let handle = TjDecompressor::new()?;
-        let header = handle.read_header(jpeg)?;
+        let header = with_decompressor(|handle| handle.read_header(jpeg))?;
         crate::check_decoded_size(input.meta().format.resolution, header.width, header.height)?;
         let plan = self.plan(&header);
         let resolution = Resolution::new(plan.width, plan.height)
@@ -368,7 +408,7 @@ impl Codec for TurbojpegLumaDecoder {
             .try_resize(len)
             .map_err(|err| CodecError::Codec(err.to_string()))?;
         // Shared leases are page-aligned mmaps, so the base already satisfies the alignment.
-        self.decode_into(&handle, jpeg, &plan, &mut lease.as_mut_slice()[..len])?;
+        self.decode_into(jpeg, &plan, &mut lease.as_mut_slice()[..len])?;
         let format = MediaFormat::new(FourCc::GREY, resolution, input.meta().format.color);
         let frame = FrameLease::single_plane_shared(
             luma_meta(input.meta(), format),

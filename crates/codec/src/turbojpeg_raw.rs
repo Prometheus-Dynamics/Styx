@@ -13,8 +13,8 @@ pub(crate) struct JpegHeader {
     pub mcu_width: u32,
 }
 
-/// Owned `tj3` decompression handle. Creating one costs well under a microsecond, so each call
-/// uses its own handle and the decoder stays lock-free across threads.
+/// Owned `tj3` decompression handle. Not `Sync`: the luma decoder keeps one per thread
+/// (see `mjpeg_turbojpeg_luma`), and parameters persist between calls on the same handle.
 pub(crate) struct TjDecompressor(raw::tjhandle);
 
 impl TjDecompressor {

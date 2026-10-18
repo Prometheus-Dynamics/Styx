@@ -82,10 +82,6 @@ fn probe_devices_inner(force_refresh: bool) -> (Vec<LibcameraDeviceInfo>, Vec<St
 
 #[cfg(feature = "probe")]
 fn collect_devices() -> (Vec<LibcameraDeviceInfo>, Vec<String>) {
-    if let Some(cached) = read_probe_cache() {
-        let _ = cached;
-    }
-
     let (devices, errors) = match with_manager(|manager| {
         let mut devices = Vec::new();
         let mut errors = Vec::new();
@@ -569,37 +565,14 @@ fn convert_value(val: &LcValue) -> ControlValue {
     }
 }
 
-/// Placeholder libcamera capture source.
-pub struct LibcameraCapture {
-    descriptor: CaptureDescriptor,
-}
-
-impl LibcameraCapture {
-    /// Create a new libcamera capture source with the provided descriptor.
-    pub fn new(descriptor: CaptureDescriptor) -> Self {
-        Self { descriptor }
-    }
-}
-
-impl CaptureSource for LibcameraCapture {
-    fn descriptor(&self) -> &CaptureDescriptor {
-        &self.descriptor
-    }
-
-    fn next_frame(&self) -> Option<FrameLease> {
-        // Stub: real implementation would poll libcamera streams.
-        None
-    }
-}
-
 pub mod prelude {
+    pub use crate::LibcameraDeviceInfo;
     #[cfg(feature = "probe")]
     pub use crate::{
         DEFAULT_LIBCAMERA_PROBE_CACHE_MS, LibcameraManagerConfig, manager_config, probe_devices,
         probe_devices_uncached, probe_devices_uncached_with_errors, probe_devices_with_errors,
         set_manager_config, subscribe_hotplug_events,
     };
-    pub use crate::{LibcameraCapture, LibcameraDeviceInfo};
     pub use styx_capture::prelude::*;
 }
 
