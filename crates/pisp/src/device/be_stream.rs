@@ -14,6 +14,7 @@ use styx_kernel::v4l2::{
 
 use super::be::BE_CFG_FOURCC;
 use super::be_output::{OutputMemory, OutputQueue};
+use super::be_spare::{take_buffer, top_up_free};
 use super::be_tdn::TdnBuffers;
 use super::config_buf::{ConfigBuffer, ConfigMemory};
 use super::{DeviceError, Result, bayer16_fourcc, find_media};
@@ -92,6 +93,15 @@ struct Output {
     /// (and possibly exported as dma-bufs that consumers still read, e.g. a frame server's
     /// latest frame) is written again only after every other free buffer.
     free: VecDeque<u32>,
+    /// Jobs dropped because no buffer was free or ready (the spare was not ready yet).
+    misses: u64,
+}
+
+impl Output {
+    /// A buffer for a job, without waiting: a free one, else a ready spare.
+    fn take(&mut self) -> Option<u32> {
+        take_buffer(&mut self.free, &mut self.queue, &mut self.misses)
+    }
 }
 
 /// The back end set up for a stream. See the [module documentation](self).
@@ -160,6 +170,27 @@ impl BackEndStream {
         buffers: [u32; 2],
         memory: OutputMemory,
         config: ConfigMemory,
+    ) -> Result<Self> {
+        Self::open_with_initial(
+            group, input, bayer, inputs, input_len, outputs, buffers, buffers, memory,
+        )
+    }
+
+    /// [`Self::open_with`], allocating only `initial[i]` of output `i`'s `buffers[i]`
+    /// [`OutputMemory::CachedHeap`] buffers now: a job that finds no free buffer allocates
+    /// another, up to `buffers[i]` (the driver's buffers are all allocated at once). Buffers
+    /// that consumers never hold at once are then never allocated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_initial(
+        group: usize,
+        input: ImageFormatConfig,
+        bayer: BayerOrder,
+        inputs: Vec<OwnedFd>,
+        input_len: u32,
+        outputs: [Option<BeOutputSetup>; 2],
+        buffers: [u32; 2],
+        initial: [u32; 2],
+        memory: OutputMemory,
     ) -> Result<Self> {
         if outputs[0].is_none() || inputs.is_empty() {
             return Err(DeviceError::Setup("need output 0 and input buffers".into()));
@@ -247,12 +278,14 @@ impl BackEndStream {
                 "pispbe-output1"
             };
             let size = g.planes[0].size_image as usize;
-            let queue = OutputQueue::new(dev, memory, buffers[i].max(2), size, name)?;
+            let count = buffers[i].max(2);
+            let queue = OutputQueue::new(dev, memory, count, initial[i].min(count), size, name)?;
             let free = (0..queue.len() as u32).collect();
             outs[i] = Some(Output {
                 queue,
                 format,
                 free,
+                misses: 0,
             });
         }
         let cfg_dev = node("pispbe-config")?;
@@ -412,7 +445,8 @@ impl BackEndStream {
                 && let Some(o) = o
                 && enabled & rgb_enable::output(i) != 0
             {
-                let Some(b) = o.free.pop_front() else {
+                // Every buffer is out and no spare is ready: the frame is dropped, not waited for.
+                let Some(b) = o.take() else {
                     self.give_back(picked);
                     return Err(DeviceError::OutputsHeld(i));
                 };
@@ -575,6 +609,29 @@ impl BackEndStream {
     pub fn output_dmabuf(&self, i: usize, index: u32) -> Option<BorrowedFd<'_>> {
         let o = self.outputs.get(i)?.as_ref()?;
         o.queue.dmabuf(index)
+    }
+
+    /// Keeps the spare buffers coming ([`Self::open_with_initial`]): adopts a ready spare for
+    /// each output with no free buffer, and asks for the next spare while an output's free
+    /// list is low. Call between frames. Never allocates on this thread.
+    pub fn top_up(&mut self) {
+        for o in self.outputs.iter_mut().flatten() {
+            top_up_free(&mut o.free, &mut o.queue);
+        }
+    }
+
+    /// Jobs dropped per output because no buffer was free or ready, since the stream opened.
+    pub fn spare_misses(&self) -> [u64; 2] {
+        self.outputs
+            .each_ref()
+            .map(|o| o.as_ref().map_or(0, |o| o.misses))
+    }
+
+    /// Spare buffers per output adopted before their prepare (the queueing mapped them).
+    pub fn spare_unprepared(&self) -> [u64; 2] {
+        self.outputs
+            .each_ref()
+            .map(|o| o.as_ref().map_or(0, |o| o.queue.unprepared()))
     }
 
     /// Hands output `i`'s buffer `index` back for reuse (outputs of one job can be held for

@@ -236,6 +236,8 @@ pub(super) fn spawn(
                         _ => p.release_output(i, index),
                     }
                 }
+                // Consumers hold every buffer of an output: another one now, between frames.
+                p.top_up_outputs();
                 if let Some(c) = w.loop_controls.take() {
                     p.controller().set_controls(c);
                 }
@@ -288,7 +290,9 @@ pub(super) fn spawn(
                                 "consumers hold every back end buffer: dropping frames until one is released"
                             );
                         } else {
-                            crate::trace::debug!(backend = "native", output, held_drops, "frame dropped: buffers held");
+                            let spare_misses = p.spare_misses();
+                            let spare_unprepared = p.spare_unprepared();
+                            crate::trace::debug!(backend = "native", output, held_drops, ?spare_misses, ?spare_unprepared, "frame dropped: buffers held");
                         }
                         continue;
                     }

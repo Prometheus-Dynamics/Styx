@@ -10,6 +10,7 @@
 
 mod be;
 mod be_output;
+mod be_spare;
 mod be_stream;
 mod be_tdn;
 mod config_buf;

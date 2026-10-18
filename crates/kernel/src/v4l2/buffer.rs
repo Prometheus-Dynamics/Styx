@@ -398,6 +398,17 @@ impl VideoDevice {
 
     /// Queues a buffer (`VIDIOC_QBUF`).
     pub fn queue(&self, req: &QueueBuffer<'_>) -> Result<()> {
+        self.queue_or_prepare(req, false)
+    }
+
+    /// Maps a buffer's dma-bufs into the queue without queueing it (`VIDIOC_PREPARE_BUF`).
+    /// The first queueing of a dma-buf otherwise attaches and maps it on the queueing thread;
+    /// a buffer prepared with the same dma-buf is queued later without that work.
+    pub fn prepare(&self, req: &QueueBuffer<'_>) -> Result<()> {
+        self.queue_or_prepare(req, true)
+    }
+
+    fn queue_or_prepare(&self, req: &QueueBuffer<'_>, prepare: bool) -> Result<()> {
         let mut planes: [raw::v4l2_plane; raw::VIDEO_MAX_PLANES] = zeroed();
         if req.planes.is_over() {
             return Err(Error::Invalid(format!("more than {MAX_PLANES} planes")));
@@ -437,7 +448,11 @@ impl VideoDevice {
         }
         // SAFETY: VIDIOC_QBUF takes a `v4l2_buffer`; `m.planes` (multi-planar) points to
         // `length` planes on this stack frame. Borrowed dma-buf fds stay open for the call.
-        unsafe { ioctl::ioctl(self.as_fd(), raw::VIDIOC_QBUF, &mut buf)? };
+        if prepare {
+            unsafe { ioctl::ioctl(self.as_fd(), raw::VIDIOC_PREPARE_BUF, &mut buf)? };
+        } else {
+            unsafe { ioctl::ioctl(self.as_fd(), raw::VIDIOC_QBUF, &mut buf)? };
+        }
         Ok(())
     }
 

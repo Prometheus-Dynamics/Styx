@@ -17,6 +17,10 @@ pub struct PispOptions {
     pub fe_buffers: u32,
     /// Back end buffers per output.
     pub be_buffers: u32,
+    /// Of [`Self::be_buffers`], how many cached heap buffers are allocated when the stream
+    /// opens; the rest by a background allocator as frames need them, one spare ahead
+    /// (`OutputMemory::CachedHeap` only). `None`: all, at open.
+    pub be_buffers_initial: Option<u32>,
     /// More buffers for output 0, for the extra passes that write into them
     /// ([`super::PispPipeline::set_pass`]).
     pub pass_buffers: u32,
@@ -72,6 +76,7 @@ impl PispOptions {
             crop: [None; 2],
             fe_buffers: 6,
             be_buffers: 6,
+            be_buffers_initial: None,
             pass_buffers: 0,
             be_group: 0,
             configs_ahead: 2,
