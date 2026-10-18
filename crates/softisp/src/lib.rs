@@ -9,15 +9,20 @@
 //! 2. **Black level** per CFA cell, **white balance and digital gain** per channel, and **lens
 //!    shading** from a coarse gain grid, all folded into one multiply per sample. Samples are
 //!    then 12-bit (0..=4095) whatever the input depth.
-//! 3. **Demosaic**: bilinear, or Malvar-He-Cutler gradient-corrected ([`Demosaic`]). With
-//!    [`Scale::Half`], each 2x2 quad becomes one pixel instead (no demosaic), the fast path to
-//!    half size.
+//! 3. **Demosaic**: bilinear, Malvar-He-Cutler gradient-corrected, or edge-directed
+//!    ([`Demosaic`]). With [`Scale::Half`], each 2x2 quad becomes one pixel instead (no
+//!    demosaic), the fast path to half size.
 //! 4. **Colour correction matrix**.
 //! 5. **Tone curve** (gamma, sRGB, or points) to 8 bits through a 4096-entry table (fp16:
 //!    48 interpolated segments).
-//! 6. **Output**: RGB24, NV12, I420 (BT.709 limited or BT.601 full range), or luma. Full-size
+//! 6. **Output stages** (off unless [`IspParams::denoise`] or [`IspParams::sharpen`] are set):
+//!    spatial luma denoise, chroma denoise and luma sharpening on the 8-bit picture, in YCbCr
+//!    (see [`Denoise`] and [`Sharpen`]). They look at neighbours, so [`SoftIsp::process_window`]
+//!    processes the window with a margin and crops it: its pixels are still the frame's.
+//! 7. **Output**: RGB24, NV12, I420 (BT.709 limited or BT.601 full range), or luma. Full-size
 //!    luma comes straight from the mosaic (`(R + 2G + B) / 4` by a 3x3 binomial filter),
-//!    without demosaic or colour correction.
+//!    without demosaic or colour correction. With the output stages on, every output is made
+//!    from the processed picture instead.
 //!
 //! **Statistics** for AE / AWB ([`IspStats`]) are gathered in the same pass when
 //! [`IspParams::stats`] asks: per-zone R/G/B sums and counts of unclipped quads, per-zone mean
@@ -63,6 +68,7 @@ pub mod params;
 mod pipeline;
 #[cfg(feature = "std")]
 mod pool;
+mod post;
 mod prepare;
 mod prepare_half;
 pub mod simd;
@@ -72,7 +78,7 @@ pub use format::{BAYER_FOURCCS, CfaPattern, Channel, RawFormat, RawPacking, baye
 pub use isp::{IspError, SoftIsp, Window, process};
 pub use output::{OutputBuffers, Scale};
 pub use params::{
-    Arithmetic, BlackLevel, ColorMatrix, Demosaic, IspParams, LensShading, StatsConfig, ToneCurve,
-    WhiteBalance, YuvMatrix,
+    Arithmetic, BlackLevel, ChromaDenoise, ColorMatrix, Demosaic, Denoise, IspParams, LensShading,
+    LumaDenoise, Sharpen, StatsConfig, ToneCurve, WhiteBalance, YuvMatrix,
 };
 pub use stats::{IspStats, ZoneStats};

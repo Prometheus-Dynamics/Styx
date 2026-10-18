@@ -111,6 +111,57 @@ fp16 against the integer reference, PSNR and largest difference in 8-bit codes:
   are those of the code before this work); the fp16 hashes are the same from the scalar
   oracle on x86 and from the FP16 leaves on the A76.
 
+## Output stages and the edge-directed demosaic
+
+Off unless the parameters ask (`IspParams::demosaic`, `denoise`, `sharpen`); the defaults give the
+same pictures as before.
+
+* **Edge-directed demosaic** (`Demosaic::EdgeDirected`, 5x5 like MHC, integer, scalar): Hamilton-
+  Adams style. Green at red and blue sites is the horizontal or vertical estimate with the smaller
+  gradient (the Hamilton-Adams `|d2| + |d2| + |d1|` measure). Red and blue on green sites are the
+  gradient-corrected linear estimates. Red and blue on the other colour's sites are green plus the
+  colour difference of the diagonal pair with the smaller gradient, with green at the four
+  neighbours from the window. The fp16 path keeps the bilinear demosaic (its eligibility test), and
+  the GPU runs bilinear for it.
+* **Output stages** (`IspParams::denoise`, `IspParams::sharpen`) work on the 8-bit picture after
+  the tone curve, as JFIF YCbCr planes; the outputs are then made from the processed RGB with the
+  output's own matrix. Luma denoise is a 3x3 sigma filter: a neighbour counts when it is within the
+  noise threshold of the centre, where the noise standard deviation is `sqrt(C + S x)` for 16-bit
+  code `x` (the tuning's SDN profile; the SDN strength blends the result). Chroma denoise is the 3x3
+  binomial low-pass, taken only where it stays within the CDN threshold (so colour edges stay).
+  Sharpening is an unsharp mask on luma with the blur `[1 2 1] x [1 2 1] / 16`, the detail cored by
+  its threshold and the correction limited. The tuning's sharpen factors multiply 0.5 (amount),
+  2 codes (threshold) and 8 codes (limit) (`pipeline::soft::SHARPEN_*`).
+* **Windows**: `process_window` processes the window with a margin of 2 output pixels (4 mosaic
+  pixels at half scale) and crops it, so its pixels are the frame's bit for bit
+  (`tests/it/stages.rs`). Binned overviews filter the overview picture.
+* **Threads**: each stage runs in row bands on the same pool as the rest of the pipeline; bands
+  read the whole source planes, so they need no halo. The output does not depend on the thread
+  count (tested).
+* **Quality on synthetic edges** (grey steps, the same in every channel, so the error is that of
+  luminance; MSE in 8-bit codes, bilinear then edge-directed): vertical 20.8 then 6.9, horizontal
+  32.3 then 10.8, slanted 28.5 then 16.3, a zipper of 2x2 blocks 1667 then 417. On saturated colour
+  steps and on coloured checkerboards bilinear has the lower MSE (a one-pixel chroma transition is
+  ambiguous in the Bayer mosaic whatever the interpolation); the edge-directed demosaic is chosen
+  for the luminance detail and zipper, not for those.
+* **Cost at 1280x800, one thread, integer arithmetic, RGB24** (`cargo bench -p styx-softisp --bench
+  stages`; host numbers, relative only; the CM5 is the target and was not measured for these):
+
+  | configuration | ms per frame |
+  | --- | --- |
+  | bilinear, colour matrix, sRGB tone (baseline) | 1.44 |
+  | Malvar-He-Cutler demosaic | 1.69 |
+  | edge-directed demosaic (scalar) | 11.7 |
+  | output path: RGB to YCbCr planes, a sharpen pass, back to the output | 8.5 |
+  | ... with chroma denoise | 8.4 |
+  | ... with sharpening | 8.75 |
+  | ... with luma denoise | 26.4 |
+  | all three output stages | 36.6 |
+
+  The output path costs about 7 ms of its own (the planes round trip and the RGB intermediate);
+  the luma sigma filter is about 18 ms, scalar. Neither meets 30 fps on a Cortex-A76 without SIMD:
+  NEON for the luma sigma filter and a planar output path are the next steps.
+
 ## Regions and binned overviews
 
 `SoftIsp::process_window` makes a window of the frame from its rows and columns plus the

@@ -24,6 +24,10 @@ pub struct IspParams {
     pub ccm: Option<ColorMatrix>,
     /// Tone / gamma curve from linear light to 8-bit output. `None`: linear.
     pub tone: Option<ToneCurve>,
+    /// Edge-preserving noise reduction of the output picture (after the tone curve). `None`: off.
+    pub denoise: Option<Denoise>,
+    /// Unsharp-mask sharpening of the output picture's luma (after denoise). `None`: off.
+    pub sharpen: Option<Sharpen>,
     /// RGB to YCbCr matrix of the YUV outputs.
     pub yuv: YuvMatrix,
     /// 3A statistics gathered in the same pass.
@@ -42,11 +46,63 @@ impl Default for IspParams {
             demosaic: Demosaic::Bilinear,
             ccm: None,
             tone: None,
+            denoise: None,
+            sharpen: None,
             yuv: YuvMatrix::Bt709Limited,
             stats: None,
             arithmetic: Arithmetic::Auto,
         }
     }
+}
+
+/// Noise reduction of the output picture, in its YCbCr (JFIF) form. Luma: a sigma filter over
+/// the 3x3 neighbourhood (a neighbour counts when it differs from the centre by at most the
+/// threshold, so edges larger than the noise stay sharp). Chroma: the 3x3 binomial low-pass,
+/// taken only where it differs from the sample by at most the threshold (so colour edges stay).
+/// Each is blended in by its strength.
+///
+/// Thresholds are on the 16-bit scale of the tuning's denoise parameters (a code is 257 here).
+/// Units and the filters are the soft ISP's own choice: see `PERFORMANCE.md`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Denoise {
+    /// Luma: the noise variance at 16-bit code `x` is `constant + slope * x`; the threshold is
+    /// its square root. Off with `None`.
+    pub luma: Option<LumaDenoise>,
+    /// Chroma: one threshold for both Cb and Cr (a low-pass, see [`Denoise`]). Off with `None`.
+    pub chroma: Option<ChromaDenoise>,
+}
+
+/// The luma part of [`Denoise`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LumaDenoise {
+    /// Noise variance at code zero (16-bit codes squared).
+    pub constant: f32,
+    /// Noise variance per 16-bit code.
+    pub slope: f32,
+    /// 0 (no change) to 1 (the filtered value).
+    pub strength: f32,
+}
+
+/// The chroma part of [`Denoise`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChromaDenoise {
+    /// Largest Cb or Cr difference (16-bit codes) that counts as noise.
+    pub threshold: f32,
+    /// 0 (no change) to 1 (the filtered value).
+    pub strength: f32,
+}
+
+/// Unsharp-mask sharpening of luma: `Y + amount * (Y - blur(Y))`, the detail cored by
+/// `threshold` (smaller details are left alone) and the correction limited to `limit`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Sharpen {
+    /// Gain on the detail (0.5 is gentle, 1 strong).
+    pub amount: f32,
+    /// Detail below this many 8-bit codes is not sharpened.
+    pub threshold: f32,
+    /// Largest correction, in 8-bit codes.
+    pub limit: f32,
 }
 
 /// How the per-pixel stages compute. They give pictures within a code or two of each
@@ -160,6 +216,12 @@ pub enum Demosaic {
     /// Much less colour fringing and zipper on edges; about 1.8 ms more per 1280x800 frame on
     /// a Cortex-A76.
     Mhc,
+    /// Edge-directed, gradient-corrected (Hamilton-Adams style, 5x5): green is interpolated
+    /// along the horizontal or vertical direction with the smaller gradient, and red or blue
+    /// at the other sites along the diagonal with the smaller gradient. Fewer zipper and
+    /// colour artefacts on edges than [`Self::Mhc`]'s fixed kernels, at a higher cost (scalar).
+    /// Integer arithmetic only (the fp16 path keeps the bilinear demosaic).
+    EdgeDirected,
 }
 
 /// A 3x3 matrix; row `k` gives output channel `k` (R, G, B) from input R, G, B. Coefficients

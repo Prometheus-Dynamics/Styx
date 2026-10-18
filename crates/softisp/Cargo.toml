@@ -45,5 +45,9 @@ harness = false
 name = "regions"
 harness = false
 
+[[bench]]
+name = "stages"
+harness = false
+
 [lints]
 workspace = true

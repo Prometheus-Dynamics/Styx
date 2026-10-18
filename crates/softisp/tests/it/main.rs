@@ -7,4 +7,5 @@ mod golden;
 mod pipeline;
 mod quality;
 mod regions;
+mod stages;
 mod stats;

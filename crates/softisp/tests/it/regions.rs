@@ -120,6 +120,8 @@ fn params(arithmetic: Arithmetic, demosaic: Demosaic, row_step: u32) -> IspParam
         digital_gain: 1.2,
         lens_shading: Some(LensShading::radial(9, 7, 0.7)),
         demosaic,
+        denoise: None,
+        sharpen: None,
         ccm: Some(ColorMatrix {
             m: [[1.6, -0.4, -0.2], [-0.3, 1.5, -0.2], [-0.1, -0.5, 1.6]],
         }),
@@ -153,7 +155,7 @@ const WINDOWS: [(u32, u32, u32, u32); 7] = [
 fn windows_are_the_frame_cropped_bit_for_bit() {
     let mut checked = 0;
     for arithmetic in [Arithmetic::Int, Arithmetic::Half, Arithmetic::IntPolyTone] {
-        for demosaic in [Demosaic::Bilinear, Demosaic::Mhc] {
+        for demosaic in [Demosaic::Bilinear, Demosaic::Mhc, Demosaic::EdgeDirected] {
             for (pattern, packing) in [
                 (CfaPattern::Bggr, RawPacking::Csi2Raw10),
                 (CfaPattern::Grbg, RawPacking::Csi2Raw12),

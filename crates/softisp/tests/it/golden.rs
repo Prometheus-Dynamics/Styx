@@ -49,6 +49,8 @@ fn params(demosaic: Demosaic, shaded: bool, stats: bool, arithmetic: Arithmetic)
         digital_gain: 1.3,
         lens_shading: shaded.then(|| LensShading::radial(9, 7, 0.7)),
         demosaic,
+        denoise: None,
+        sharpen: None,
         ccm: Some(ColorMatrix {
             m: [[1.6, -0.4, -0.2], [-0.3, 1.5, -0.2], [-0.1, -0.5, 1.6]],
         }),

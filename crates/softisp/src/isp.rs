@@ -8,6 +8,7 @@ use crate::params::{Arithmetic, IspParams};
 use crate::pipeline::{Geom, Source, Worker};
 #[cfg(feature = "std")]
 use crate::pool::Pool;
+use crate::post::{self, Band, Crop};
 use crate::prepare::Prepared;
 use crate::stats::{IspStats, StatsAccum};
 #[cfg(feature = "std")]
@@ -69,6 +70,16 @@ pub enum IspError {
     OutputTooSmall(String),
 }
 
+/// [`run_jobs`] on `$self`'s helper threads (one thread without `std`).
+macro_rules! run_jobs_of {
+    ($self:ident, $threads:expr, $jobs:expr, $f:expr $(,)?) => {{
+        #[cfg(feature = "std")]
+        run_jobs(&mut $self.pool, $threads, $jobs, $f);
+        #[cfg(not(feature = "std"))]
+        run_jobs($threads, $jobs, $f);
+    }};
+}
+
 /// A software ISP configured for one raw format: tables prepared from the parameters and
 /// scratch rows reused from frame to frame.
 ///
@@ -93,6 +104,15 @@ pub struct SoftIsp {
     copy_input: bool,
     lsc_tolerance: f32,
     statistics: bool,
+    /// Scratch of the output picture's stages (RGB, then the planes of two passes).
+    post_scratch: PostScratch,
+}
+
+/// Buffers of [`SoftIsp::run_post`], kept from frame to frame.
+#[derive(Default)]
+struct PostScratch {
+    rgb: Vec<u8>,
+    planes: [Vec<u8>; 2],
 }
 
 impl core::fmt::Debug for SoftIsp {
@@ -120,6 +140,7 @@ impl SoftIsp {
             copy_input: true,
             lsc_tolerance: 0.0,
             statistics: true,
+            post_scratch: PostScratch::default(),
         })
     }
 
@@ -275,9 +296,39 @@ impl SoftIsp {
             )));
         }
         let margin = match self.prepared.demosaic {
-            crate::params::Demosaic::Mhc => 2,
             crate::params::Demosaic::Bilinear => 1,
+            crate::params::Demosaic::Mhc | crate::params::Demosaic::EdgeDirected => 2,
         };
+        if self.prepared.post.is_some() {
+            // The output stages look two pixels around each output pixel: the window is
+            // processed with that much more of the frame, and the margin cropped away.
+            let halo = match scale {
+                Scale::Full => 2,
+                Scale::Half => 4,
+            };
+            let ex0 = (x as usize).saturating_sub(halo);
+            let ey0 = (y as usize).saturating_sub(halo);
+            let ex1 = (x as usize + width as usize + halo).min(w as usize);
+            let ey1 = (y as usize + height as usize + halo).min(h as usize);
+            let (ew, eh) = (ex1 - ex0, ey1 - ey0);
+            let g = Geom::window(w as usize, (ex0, ey0, ew), scale, margin);
+            let picture_h = match scale {
+                Scale::Full => eh,
+                Scale::Half => eh / 2,
+            };
+            let div = match scale {
+                Scale::Full => 1,
+                Scale::Half => 2,
+            };
+            let crop = Crop {
+                x0: (x as usize - ex0) / div,
+                y0: (y as usize - ey0) / div,
+            };
+            let (cw, ch) = self.window_size(window, scale);
+            return self
+                .run_post(&src, g, picture_h, (cw as usize, ch as usize), crop, out)
+                .map(drop);
+        }
         let g = Geom::window(
             w as usize,
             (x as usize, y as usize, width as usize),
@@ -285,7 +336,7 @@ impl SoftIsp {
             margin,
         );
         let (_, oh) = self.window_size(window, scale);
-        self.run(&src, g, oh as usize, out).map(drop)
+        self.run_pipeline(&src, g, oh as usize, out).map(drop)
     }
 
     /// The output size of `window` at `scale`.
@@ -402,9 +453,111 @@ impl SoftIsp {
         })
     }
 
+    /// `oh` output rows of `g` into `out`: through the output stages when they are on, else the
+    /// pipeline alone. The statistics when `g` gathers them and the parameters ask.
+    fn run(
+        &mut self,
+        src: &Source<'_>,
+        g: Geom,
+        oh: usize,
+        out: OutputBuffers<'_>,
+    ) -> Result<Option<StatsAccum>, IspError> {
+        if self.prepared.post.is_some() {
+            let ow = g.ow;
+            return self.run_post(src, g, oh, (ow, oh), Crop { x0: 0, y0: 0 }, out);
+        }
+        self.run_pipeline(src, g, oh, out)
+    }
+
+    /// The output stages: the pipeline's RGB picture of `g` (`picture_h` rows), denoised and
+    /// sharpened in planes, then `cw` x `ch` of it at `crop` written into `out`, in bands on the
+    /// threads.
+    fn run_post(
+        &mut self,
+        src: &Source<'_>,
+        g: Geom,
+        picture_h: usize,
+        (cw, ch): (usize, usize),
+        crop: Crop,
+        out: OutputBuffers<'_>,
+    ) -> Result<Option<StatsAccum>, IspError> {
+        out.validate(cw, ch)?;
+        if matches!(out.kind(), Kind::Nv12 | Kind::I420)
+            && (!cw.is_multiple_of(2) || !ch.is_multiple_of(2))
+        {
+            return Err(IspError::Unsupported(format!(
+                "4:2:0 output of odd size {cw}x{ch}"
+            )));
+        }
+        let (w, h) = (g.ow, picture_h);
+        let threads = self.thread_count();
+        let band = band_rows(h, threads);
+        let mut rgb = core::mem::take(&mut self.post_scratch.rgb);
+        let [mut a, mut b] = core::mem::take(&mut self.post_scratch.planes);
+        rgb.resize(3 * w * h, 0);
+        a.resize(3 * w * h, 0);
+        b.resize(3 * w * h, 0);
+        let acc = self.run_pipeline(
+            src,
+            g,
+            h,
+            OutputBuffers::Rgb24 {
+                data: &mut rgb,
+                stride: 3 * w,
+            },
+        )?;
+        let p = &self.prepared;
+        let post = p.post.as_ref().expect("output stages on");
+        run_jobs_of!(
+            self,
+            threads,
+            post::bands(&mut a, w, h, band),
+            |mut band: Band<'_>| post::to_planes(&rgb, w, &mut band),
+        );
+        // `in_b`: the current planes are `b`'s.
+        let mut in_b = false;
+        if post.denoises() {
+            run_jobs_of!(
+                self,
+                threads,
+                post::bands(&mut b, w, h, band),
+                |mut band: Band<'_>| post::denoise_band(post, &a, w, h, &mut band),
+            );
+            in_b = true;
+        }
+        if post.sharpens() {
+            let (dst, src_planes) = if in_b { (&mut a, &b) } else { (&mut b, &a) };
+            run_jobs_of!(
+                self,
+                threads,
+                post::bands(dst, w, h, band),
+                |mut band: Band<'_>| post::sharpen_band(post, src_planes, w, h, &mut band),
+            );
+            in_b = !in_b;
+        }
+        let planes: &[u8] = if in_b { &b } else { &a };
+        let out_bands = out.into_bands(band_rows(ch, threads), ch);
+        let rows_per_band = band_rows(ch, threads);
+        run_jobs_of!(
+            self,
+            threads,
+            out_bands.into_iter().enumerate().collect(),
+            |(k, out): (usize, OutputBuffers<'_>)| {
+                let o0 = k * rows_per_band;
+                let rows = rows_per_band.min(ch - o0);
+                post::write_output(&post.out, planes, (w, h), &crop, (cw, o0, rows), out);
+            },
+        );
+        self.post_scratch = PostScratch {
+            rgb,
+            planes: [a, b],
+        };
+        Ok(acc)
+    }
+
     /// `oh` output rows of `g` into `out`, in bands on the threads; the statistics when `g`
     /// gathers them and the parameters ask.
-    fn run(
+    fn run_pipeline(
         &mut self,
         src: &Source<'_>,
         g: Geom,
@@ -495,6 +648,39 @@ impl SoftIsp {
             1
         }
     }
+}
+
+/// Run `f` on each job: on the pool's threads when there are several and `std` is on, else in
+/// turn. A job writes its own rows of a picture, so the jobs are independent.
+#[cfg(feature = "std")]
+fn run_jobs<T: Send>(pool: &mut Option<Pool>, threads: usize, jobs: Vec<T>, f: impl Fn(T) + Sync) {
+    let used = threads.min(jobs.len()).max(1);
+    if used <= 1 {
+        jobs.into_iter().for_each(f);
+        return;
+    }
+    let pool = match pool {
+        Some(pool) if pool.helpers() + 1 >= used => pool,
+        slot => slot.insert(Pool::new(threads - 1)),
+    };
+    let slots: Vec<Mutex<Option<T>>> = jobs.into_iter().map(|j| Mutex::new(Some(j))).collect();
+    let next = AtomicUsize::new(0);
+    pool.run(used, &|_| {
+        loop {
+            let k = next.fetch_add(1, Ordering::Relaxed);
+            let Some(slot) = slots.get(k) else { break };
+            let job = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(job) = job {
+                f(job);
+            }
+        }
+    });
+}
+
+/// [`run_jobs`] without `std`: in turn.
+#[cfg(not(feature = "std"))]
+fn run_jobs<T>(_threads: usize, jobs: Vec<T>, f: impl Fn(T)) {
+    jobs.into_iter().for_each(f);
 }
 
 /// Output rows per band: all of them on one thread, else two bands per thread (claimed by

@@ -27,7 +27,7 @@ fn flat_colours_round_trip_for_every_pattern_packing_and_demosaic() {
                 let format = RawFormat::new(W as u32, H as u32, pattern, packing);
                 let want = c8.map(|c| c as u8);
                 for (arithmetic, tol) in ARITHMETICS {
-                    for demosaic in [Demosaic::Bilinear, Demosaic::Mhc] {
+                    for demosaic in [Demosaic::Bilinear, Demosaic::Mhc, Demosaic::EdgeDirected] {
                         let params = IspParams {
                             demosaic,
                             arithmetic,
