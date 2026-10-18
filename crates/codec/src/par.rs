@@ -11,10 +11,12 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError};
 /// Threads per loop, the caller included: memory bandwidth, not cores, bounds these loops.
 const MAX_THREADS: usize = 8;
 /// Fewer rows than this per band are not worth a wake-up.
+#[cfg(any(feature = "image", feature = "raw-decoders"))]
 const MIN_ROWS_PER_BAND: usize = 32;
 
 /// Runs `f(y, row)` for every `row_bytes`-sized row of `dst` (the last one may be shorter),
 /// rows in parallel bands. Like `dst.chunks_mut(row_bytes).enumerate().for_each(..)`.
+#[cfg(any(feature = "image", feature = "raw-decoders"))]
 pub(crate) fn for_each_row(dst: &mut [u8], row_bytes: usize, f: impl Fn(usize, &mut [u8]) + Sync) {
     if row_bytes == 0 || dst.is_empty() {
         return;
@@ -55,6 +57,7 @@ pub(crate) fn for_each_row(dst: &mut [u8], row_bytes: usize, f: impl Fn(usize, &
 /// Runs `f(i)` for every `i` in `0..n` on the persistent pool, spreading the indices over its
 /// threads. Returns `false`, without running anything, when there is no pool or another loop
 /// holds it; the caller then runs its work another way.
+#[cfg(feature = "codec-turbojpeg")]
 pub(crate) fn try_for_each_index(n: usize, f: impl Fn(usize) + Sync) -> bool {
     let Some(pool) = pool() else {
         return false;
@@ -240,7 +243,7 @@ fn helper(shared: &Shared, index: usize) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "image", feature = "raw-decoders")))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
