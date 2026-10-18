@@ -27,8 +27,28 @@ fn input_end(t: &Tile) -> u32 {
 /// and the rest. `None` when either part would be empty (the line is above the first stripe's
 /// input, or below the whole frame): the frame then runs as one job.
 pub fn split_tiles(cfg: &BeTilesConfig, line: u32) -> Option<SplitJobs> {
-    let tiles = &cfg.tiles[..cfg.num_tiles as usize];
     let (mut first, mut rest) = (*cfg, *cfg);
+    let rows_after_first = split_tiles_into(cfg, line, &mut first, &mut rest)?;
+    Some(SplitJobs {
+        first,
+        rest,
+        rows_after_first,
+    })
+}
+
+/// [`split_tiles`] written into `first` and `rest` (both overwritten: whole configs, the
+/// tiles of each part first), so a caller can keep them and split every frame without
+/// allocating. Returns the rows of each output final after `first`; `None` as
+/// [`split_tiles`] (then `first` and `rest` are not meaningful).
+pub fn split_tiles_into(
+    cfg: &BeTilesConfig,
+    line: u32,
+    first: &mut BeTilesConfig,
+    rest: &mut BeTilesConfig,
+) -> Option<[u32; BE_NUM_OUTPUTS]> {
+    let tiles = &cfg.tiles[..cfg.num_tiles as usize];
+    *first = *cfg;
+    *rest = *cfg;
     let (mut nf, mut nr) = (0usize, 0usize);
     let mut rows = [u32::MAX; BE_NUM_OUTPUTS];
     for t in tiles {
@@ -60,9 +80,5 @@ pub fn split_tiles(cfg: &BeTilesConfig, line: u32) -> Option<SplitJobs> {
                 .unwrap_or(0);
         }
     }
-    Some(SplitJobs {
-        first,
-        rest,
-        rows_after_first: rows,
-    })
+    Some(rows)
 }

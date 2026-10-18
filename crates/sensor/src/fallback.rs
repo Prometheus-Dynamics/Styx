@@ -342,6 +342,10 @@ impl SensorDescription {
             }
             g
         };
+        // Placeholder registers: these descriptions are kernel-backed, so flips and the test
+        // pattern are set through the driver's V4L2 controls and never written to these
+        // addresses. The driver refuses a register write to address 0 (`write_flip`,
+        // `set_test_pattern`), so a placeholder cannot reach the bus.
         let flip = |c| {
             ctl(c).map(|_| Flip {
                 address: 0,

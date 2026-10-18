@@ -27,7 +27,7 @@ use crate::uapi::*;
 const TDN_COMPRESS_OFFSET: u16 = 2048;
 
 pub use prepare::PrepareError;
-pub use slices::{SplitJobs, split_tiles};
+pub use slices::{SplitJobs, split_tiles, split_tiles_into};
 
 /// Maximum tile width of the BCM2712 back end (libpisp `BackEndMaxTileWidth`).
 pub const MAX_TILE_WIDTH: u16 = 640;

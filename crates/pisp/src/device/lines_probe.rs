@@ -14,8 +14,7 @@ use std::time::Duration;
 use styx_kernel::event::{EventKind, EventType, Events, SubscribeFlags};
 use styx_kernel::v4l2::VideoDevice;
 
-/// `STYX_CFE_EVENT_LINES - V4L2_EVENT_PRIVATE_START` (kernel-modules/rp1-cfe).
-pub const LINES_EVENT_OFFSET: u32 = 0x5354;
+use super::LINES_EVENT_OFFSET;
 
 /// Rows sampled, relative to the event's line.
 const OFFSETS: [i32; 10] = [-128, -64, -32, -16, -8, -4, -1, 0, 4, 16];

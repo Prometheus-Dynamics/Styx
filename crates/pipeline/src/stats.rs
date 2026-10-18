@@ -22,66 +22,59 @@ const SOFT_SCALE: f64 = 4095.0;
 /// 8x8 CDAF figures of merit the focus values. The front end applies neither white balance
 /// nor (here) lens shading before the statistics.
 pub fn from_pisp(s: &PispStatistics) -> Statistics {
-    let side = AWB_STATS_SIZE as u32;
-    let zones = s
-        .awb_zones
-        .iter()
-        .map(|z| ColourZone {
+    let mut out = Statistics::default();
+    fill_pisp(
+        &mut out,
+        s.awb_zones.iter().map(|z| ColourZone {
             r: f64::from(z.r_sum) / PISP_SCALE,
             g: f64::from(z.g_sum) / PISP_SCALE,
             b: f64::from(z.b_sum) / PISP_SCALE,
             counted: z.counted,
-        })
-        .collect();
-    let focus_side = CDAF_STATS_SIZE as u32;
-    Statistics {
-        colour: ZoneGrid {
-            width: side,
-            height: side,
-            zones,
-        },
-        luma: None,
-        histogram: Histogram::from(
-            s.histogram
-                .iter()
-                .map(|&c| u64::from(c))
-                .collect::<Vec<_>>(),
-        ),
-        focus: Some(ZoneGrid {
-            width: focus_side,
-            height: focus_side,
-            zones: s.focus.iter().map(|&f| f as f64).collect(),
         }),
-        pdaf: None,
-        before_wb: true,
-        before_lsc: true,
-    }
+        s.histogram.iter().map(|&c| u64::from(c)),
+        s.focus.iter().map(|&f| f as f64),
+    );
+    out
 }
 
 /// [`from_pisp`] straight from the raw buffer layout into `out`, reusing its buffers (no
 /// allocation once `out` has held PiSP statistics).
 pub fn from_pisp_raw(raw: &RawStatistics, out: &mut Statistics) {
-    let side = AWB_STATS_SIZE as u32;
-    out.colour.width = side;
-    out.colour.height = side;
-    out.colour.zones.clear();
-    out.colour
-        .zones
-        .extend(raw.awb.zones.iter().map(|z| ColourZone {
+    fill_pisp(
+        out,
+        raw.awb.zones.iter().map(|z| ColourZone {
             r: f64::from(z.r_sum) / PISP_SCALE,
             g: f64::from(z.g_sum) / PISP_SCALE,
             b: f64::from(z.b_sum) / PISP_SCALE,
             counted: z.counted,
-        }));
+        }),
+        raw.agc.histogram.iter().map(|&c| u64::from(c)),
+        raw.cdaf.foms.iter().map(|&f| f as f64),
+    );
+}
+
+/// The PiSP statistics as [`Statistics`], written into `out` (the layouts of both entry points
+/// feed it): the colour zones, the histogram and the focus values, with the front end's
+/// convention (before white balance and lens shading).
+fn fill_pisp(
+    out: &mut Statistics,
+    colour: impl IntoIterator<Item = ColourZone>,
+    histogram: impl IntoIterator<Item = u64>,
+    focus: impl IntoIterator<Item = f64>,
+) {
+    let side = AWB_STATS_SIZE as u32;
+    out.colour.width = side;
+    out.colour.height = side;
+    out.colour.zones.clear();
+    out.colour.zones.extend(colour);
     out.luma = None;
-    out.histogram
-        .set_bins(raw.agc.histogram.iter().map(|&c| u64::from(c)));
+    out.histogram.set_bins(histogram);
     let focus_side = CDAF_STATS_SIZE as u32;
-    let focus = out.focus.get_or_insert_with(Default::default);
-    focus.width = focus_side;
-    focus.height = focus_side;
-    focus.zones.clear();
-    focus.zones.extend(raw.cdaf.foms.iter().map(|&f| f as f64));
+    let grid = out.focus.get_or_insert_with(Default::default);
+    grid.width = focus_side;
+    grid.height = focus_side;
+    grid.zones.clear();
+    grid.zones.extend(focus);
     out.before_wb = true;
     out.before_lsc = true;
 }
