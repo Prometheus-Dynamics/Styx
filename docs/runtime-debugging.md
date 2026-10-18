@@ -116,8 +116,10 @@ combines:
   `/sys/kernel/debug/dma_buf/bufinfo` is readable, and CMA total/free/used bytes when the kernel
   exposes `CmaTotal` and `CmaFree` in `/proc/meminfo`.
 
-For target validation runs, use `scripts/run-runtime-memory-validation.sh`. It executes the probe
-binary modes and writes a markdown report to `target/runtime-memory-validation.md` by default. The
+For target validation runs, drive the probe binary (`runtime_memory_probe`, `styx-runtime`'s
+memory probe) through its modes yourself; the wrapper script this page used to name is not in
+this repository. Its markdown report, when produced by such a wrapper, is written to
+`target/runtime-memory-validation.md` by default. The
 report starts with a summary table for PSS/RSS, Styx tracked backings, libcamera request pools,
 outstanding leases, PiSP memfd PSS, fd counts, and unexplained PSS. Override
 `STYX_RUNTIME_MEMORY_FEATURES` and `STYX_RUNTIME_MEMORY_FRAMES` to match the target build and

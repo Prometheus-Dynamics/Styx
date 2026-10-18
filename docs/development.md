@@ -405,7 +405,7 @@ Accepted dependency risks for the current release surface:
 - Duplicate `thiserror`, `rustix`, `nix`, and `toml_edit` versions are currently pulled by optional backend, preview, graph, and build-time dependency trees. Keep them visible in release notes unless upstream dependency upgrades collapse them.
 - Heavy dependencies remain feature-scoped: Bevy under `simulation-bevy`, FFmpeg under FFmpeg codec/video features, Minifb under `preview-window`, and Reqwest under netcam/async paths.
 - Keep release examples and docs on `--no-default-features` plus the narrow feature set they need. Avoid grouping `simulation-bevy`, `preview-window`, `netcam-video`, `codec-ffmpeg`, and `libcamera` together unless the example explicitly demonstrates that combined stack.
-- Rayon is an intentional `styx-codec` core dependency for raw pixel conversion throughput and thread-local decode pool cleanup; do not feature-gate it unless a measured single-threaded codec profile becomes a release target.
+- Rayon is not a dependency of the workspace. The raw-pixel conversion stack (`styx-codec`'s `raw-decoders`) uses `yuvutils-rs` and `styx-softisp`; the software ISP's row bands run on its own persistent helper threads (`SoftIsp::with_threads`), and the codec's parallel decode uses its own pool.
 
 Accepted runtime behavior for the current async surface:
 

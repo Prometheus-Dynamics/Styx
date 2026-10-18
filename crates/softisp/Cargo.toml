@@ -33,8 +33,8 @@ poly-tone = []
 # SIMD backends, as in `styx-core::simd`: AArch64 NEON, x86 SSE2/SSSE3/AVX2 chosen at run time.
 neon = ["styx-core/neon"]
 x86 = ["styx-core/x86"]
-# No effect: kept for compatibility. Row bands run in parallel on the ISP's own persistent
-# helper threads (`SoftIsp::with_threads`) without it.
+# Kept for compatibility, does nothing. Row bands run in parallel on the ISP's own persistent
+# helper threads (`SoftIsp::with_threads`); there is no Rayon dependency.
 rayon = []
 
 [[bench]]

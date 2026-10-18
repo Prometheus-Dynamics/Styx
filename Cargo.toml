@@ -164,14 +164,25 @@ opt-level = 1
 [profile.dev.package.styx-gpuisp]
 opt-level = 1
 
+# What ships (the binaries under tools/ and examples/, the perf smoke): thin LTO across the
+# workspace and its dependencies, one codegen unit, debug line tables stripped. `panic` stays
+# `unwind`: `catch_unwind` is used by the software ISP pool, the codec's parallel decode and the
+# facade's worker threads.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
 # Device builds to try things on (scripts/cross-aarch64.sh's default, docs/development.md
 # "Building for the device"): release code generation, but incremental and in many codegen
 # units, so the first build takes less CPU and a rebuild after an edit a fraction of a release
-# build's. `release` stays what ships and what the perf smoke measures.
+# build's. No LTO here (it would undo the incremental rebuilds). `release` stays what ships and
+# what the perf smoke measures.
 [profile.device]
 inherits = "release"
 incremental = true
 codegen-units = 256
+lto = false
 
 # Firmware images measured for size (examples/mcu-footprint, docs/mcu.md): smallest code,
 # whole-program optimisation, no unwinding. `mcu-speed` is the same at `opt-level = "s"`.

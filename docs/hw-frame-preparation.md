@@ -511,7 +511,7 @@ Notes:
 `Frames::...`: see [frame-planning.md](frame-planning.md).)
 
 ```rust
-// crates/core (so Eidos can depend on the `framelease` feature only)
+// crates/core (so Eidos can depend on styx with default features off)
 
 #[derive(Clone, Debug, Default)]
 pub struct FrameRequirements {

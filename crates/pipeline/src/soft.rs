@@ -160,7 +160,7 @@ pub fn base_params() -> IspParams {
 
 impl SoftLoop {
     /// A loop for frames of `info`'s mode stored with `packing`, with the algorithms of
-    /// `tuning`; `threads` row bands per frame (needs `styx-softisp`'s `rayon` feature).
+    /// `tuning`; `threads` row bands per frame, run on the ISP's own helper threads.
     pub fn new(
         info: SensorInfo,
         packing: RawPacking,

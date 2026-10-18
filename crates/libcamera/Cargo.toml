@@ -28,8 +28,8 @@ tracing.workspace = true
 default = []
 # Enable stable libcamera probing support.
 probe = ["libcamera", "libcamera-sys", "dep:libc"]
-# Keep the feature surface stable without forcing upstream vendor control generation, which is
-# currently broken in libcamera 0.7 on this toolchain/configuration.
+# Kept for compatibility, does nothing beyond `probe`: upstream vendor control generation is
+# broken in libcamera 0.7 on this toolchain/configuration, so no vendor controls are built.
 vendor_rpi = ["probe"]
 
 [lints]

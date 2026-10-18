@@ -218,8 +218,8 @@ the rpi CNN and `ControlListSequence` controls, named through libcamera's own id
   "power" 50 ms after; the next owner's receiver never saw an LP-11 → HS start of frame, so
   its first stream got no frame-start events and no frames (the start was acknowledged), and
   only its stop put the sensor in standby for the stream after. Bring-up now writes the
-  description's `stream_off` right after the chip id, before init. `native_harden killed`
-  checks it (kills a streaming owner at 15-120 fps, opens after 0, 0.2 and 2.5 s: first frame
+  description's `stream_off` right after the chip id, before init. The kill-owner hardening run
+  (not in this repository) checks it (kills a streaming owner at 15-120 fps, opens after 0, 0.2 and 2.5 s: first frame
   35 ms after open every time; all five missed before).
 - Unbinding `rp1-cfe` after it bound to the bridge leaks a reference to the bridge's device
   tree node (no `v4l2_async_nf_cleanup`): removing the overlay logs "OF: ERROR: memory leak".

@@ -30,7 +30,7 @@ OV9782 1280x800, HeliOS tuning: see [portability.md](portability.md#linux-is-unc
 for the table. Same syscalls and allocations per frame on the PiSP, raw and software paths;
 CPU and latency within the run-to-run spread; open → first frame and AE lock unchanged;
 `camera_controls`, `capture_frames` NV12/RGB/luma, `still_capture` (PiSP, bracket landed on
-consecutive frames), `regcheck` (the same 91 of 93), `native_harden restart`/`killed`, the
+consecutive frames), `regcheck` (the same 91 of 93), the restart and kill hardening runs (not in this repository), the
 camera service with two clients all pass.
 
 CM5 (OV9782, native mode, baseline a178a44 against step 3, alternating runs): open → first
@@ -787,7 +787,7 @@ none), which is static dispatch already.
 What "zero cost" is checked with (each restructuring step, section 7):
 
 1. **Syscalls per frame equal**: `strace -c -f` over 300 frames of `native-pipeline pisp` and
-   `examples/landing`; the counts of `ioctl`, `poll`, `read`, `write` must match the baseline
+   a landing run (not in this repository); the counts of `ioctl`, `poll`, `read`, `write` must match the baseline
    (`~20` V4L2 ioctls and two waits per frame on the PiSP path).
 2. **CPU per frame within noise**: `native-pipeline pisp --no-read --profile` 0.26 ms at
    30 fps, 0.22 ms at 120; Styx API NV12 0.26 ms; software ISP RGB24 2.9 ms one thread;
@@ -1129,13 +1129,13 @@ bit for bit, the virtual-sensor closed loop), fuzz smoke (`scripts/fuzz.sh` shor
 |---|---|---|
 | bring-up registers | `native-pipeline regcheck` | all 93 registers read back identical |
 | start-up | `native-pipeline pisp` (startup table) | open → first frame ≤ 35 ms; AE lock ≤ frame 6 cold, ≤ 2 warm |
-| landing | `examples/landing` (30/60/120 fps) | exposure/gain land on the predicted frame, verified by embedded data |
+| landing | a landing run at 30/60/120 fps (not in this repository) | exposure/gain land on the predicted frame, verified by embedded data |
 | PiSP CPU and latency | `native-pipeline pisp --no-read --profile`, 300 frames, 30 and 120 fps | ≤ 0.27 / 0.23 ms per frame; latency median ≤ 8.40 ms |
 | Styx API | `examples` NV12 1280x800 and NV12 + RG24 two consumers | ≤ 0.27 / 0.33 ms per frame |
 | software ISP | `native-pipeline soft`, RGB24, 1 thread | ≤ 3.0 ms per frame |
 | syscalls | `strace -c -f`, 300 frames, PiSP and raw | counts equal to the baseline run |
 | back end configs | `native-pipeline be-replay` on a recording | byte-identical configs |
-| robustness | `examples/native_harden` (killed owner, restart with held frames, reconnect), 15 min soak | first frame after kill ≤ 40 ms; no fd, dma-buf or RSS growth |
+| robustness | a hardening run (killed owner, restart with held frames, reconnect), 15 min soak (not in this repository) | first frame after kill ≤ 40 ms; no fd, dma-buf or RSS growth |
 | stills | `examples/01_capture/still_capture` bracket | 3 shots on consecutive frames, `landed` |
 | metrics | `metrics_top --overhead` | ≤ 300 ns per frame |
 | comparison | `tools/compare/device-run.sh` | no row worse than the last report beyond its spread |
@@ -1165,7 +1165,7 @@ can stop there if the review prefers. Steps 4-5 are where the code actually move
 
 | risk | mitigation |
 |---|---|
-| A regression in the bridge/`rp1-cfe` start/stop handshake (stop timeouts, a start oops) | step 5 moves `events.rs` and the quiesce gate verbatim into `V4l2Receiver`; `fault_tests` run on the mock before the CM5; `native_harden` and the soak twice |
+| A regression in the bridge/`rp1-cfe` start/stop handshake (stop timeouts, a start oops) | step 5 moves `events.rs` and the quiesce gate verbatim into `V4l2Receiver`; `fault_tests` run on the mock before the CM5; the hardening runs and the soak twice |
 | Hidden per-frame cost from generic code (extra clones, locks taken twice) | syscall counts and CPU per frame in every Gate B; `cargo llvm-lines` |
 | The HAL fits Linux and DCMI but not the next receiver | review the traits against three more receivers on paper before step 5 (ESP32 LCD_CAM, ESP32-P4/STM32N6 CSI, rkisp1); `styx-hal` stays 0.x |
 | HeliOS breaks | public API kept; HeliOS's `styx-native-trial` branch built against each step |
