@@ -221,6 +221,13 @@ pub struct NativeIspConfig {
     /// (1.5 MB for NV12 1280x800). A capture queue or extra buffers beyond the defaults (the
     /// planner reserves every consumer's queue of a shared capture this way) add theirs.
     pub output_buffers: u32,
+    /// Allocate only [`Self::output_buffers`] back end buffers per output when the capture
+    /// starts, and the rest a capture reserves (for clients that may join, queues, held frames)
+    /// only as they are held, from a helper thread (`false`, default: all at start). Saves the
+    /// memory of buffers never held at once (33 MiB for a camera service with 2 spare clients
+    /// at 1280x800 on the CM5), at the cost of one late frame (about 15 ms on the CM5) the first
+    /// time the pool grows by several buffers.
+    pub lazy_output_buffers: bool,
     /// Flicker avoidance of the 3A loop (default [`NativeFlicker::Auto`]).
     pub flicker: NativeFlicker,
     /// Deflicker of the 3A loop (default [`NativeDeflicker::Auto`]: on with flicker
@@ -249,6 +256,7 @@ impl Default for NativeIspConfig {
             temporal_denoise: true,
             spatial_denoise_percent: 100,
             output_buffers: 6,
+            lazy_output_buffers: false,
             flicker: NativeFlicker::Auto,
             deflicker: NativeDeflicker::Auto,
         }
@@ -322,6 +330,13 @@ impl StyxConfig {
     /// [`NativeIspConfig::output_buffers`]).
     pub fn native_output_buffers(mut self, buffers: u32) -> Self {
         self.backends.native.output_buffers = buffers.max(2);
+        self
+    }
+
+    /// Grow the PiSP back end's buffers as they are held, from a helper thread (see
+    /// [`NativeIspConfig::lazy_output_buffers`]).
+    pub fn native_lazy_output_buffers(mut self, lazy: bool) -> Self {
+        self.backends.native.lazy_output_buffers = lazy;
         self
     }
 

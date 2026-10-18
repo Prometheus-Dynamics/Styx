@@ -153,12 +153,11 @@ impl BackEndStream {
             outputs,
             [buffers; 2],
             OutputMemory::Driver,
-            ConfigMemory::default(),
         )
     }
 
-    /// [`Self::open`] with the output buffers from `memory`, `buffers[i]` for output `i`, and the
-    /// config buffer from `config`.
+    /// [`Self::open`] with the output buffers from `memory`, `buffers[i]` for output `i` (the
+    /// config buffer from the default [`ConfigMemory`]).
     #[allow(clippy::too_many_arguments)]
     pub fn open_with(
         group: usize,
@@ -169,17 +168,26 @@ impl BackEndStream {
         outputs: [Option<BeOutputSetup>; 2],
         buffers: [u32; 2],
         memory: OutputMemory,
-        config: ConfigMemory,
     ) -> Result<Self> {
         Self::open_with_initial(
-            group, input, bayer, inputs, input_len, outputs, buffers, buffers, memory,
+            group,
+            input,
+            bayer,
+            inputs,
+            input_len,
+            outputs,
+            buffers,
+            buffers,
+            memory,
+            ConfigMemory::default(),
         )
     }
 
     /// [`Self::open_with`], allocating only `initial[i]` of output `i`'s `buffers[i]`
     /// [`OutputMemory::CachedHeap`] buffers now: a job that finds no free buffer allocates
     /// another, up to `buffers[i]` (the driver's buffers are all allocated at once). Buffers
-    /// that consumers never hold at once are then never allocated.
+    /// that consumers never hold at once are then never allocated. The config buffer comes from
+    /// `config`.
     #[allow(clippy::too_many_arguments)]
     pub fn open_with_initial(
         group: usize,
@@ -191,6 +199,7 @@ impl BackEndStream {
         buffers: [u32; 2],
         initial: [u32; 2],
         memory: OutputMemory,
+        config: ConfigMemory,
     ) -> Result<Self> {
         if outputs[0].is_none() || inputs.is_empty() {
             return Err(DeviceError::Setup("need output 0 and input buffers".into()));
