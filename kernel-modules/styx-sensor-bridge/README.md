@@ -33,7 +33,7 @@ uses is the same in both, and the platform driver's `remove()` already returns `
 
 Both are `bcm2712_defconfig` with 4K pages despite the `-v8-16k` release name: Buildroot sets
 `CONFIG_ARM64_4K_PAGES` (its default `BR2_ARM64_PAGE_SIZE_4K`) over the defconfig's 16K
-(`-v8-16k` is only the defconfig's `LOCALVERSION`; confirmed on the 7.2.9 PhotonVision image:
+(`-v8-16k` is only the defconfig's `LOCALVERSION`; confirmed on the 7.2.9 device image:
 `KernelPageSize: 4 kB` in `/proc/self/smaps`), and the Raze package adds `VIDEO_OV9282=m`. The Raze kernel is defined by the Raze device package in
 Atlas-Hardware-Manager `dev` (`devices/raze/gaia`, `RAZE_PKG` in `kernel-env.sh`); the older
 `Atlas-raze` checkout is stale. A 7.2 tree that matches the Raze 1.1.0 kernel's config
@@ -77,7 +77,7 @@ works too (its `source` link gives the source tree).
 ```sh
 ./build.sh prepare               # once per kernel build (slow on a busy disk)
 ./build.sh build                 # -> ../linux-build-styx/out/<release>/{styx_sensor_bridge.ko,*.dtbo}
-DEVICE=root@helios ./build.sh verify   # vermagic + CRC comparison, read-only on the device
+DEVICE=root@<device> ./build.sh verify   # vermagic + CRC comparison, read-only on the device
 STYX_KERNEL=7.2 ./build.sh all   # the same for rpi-7.2.y
 ```
 
@@ -111,14 +111,14 @@ slot starts from a fresh overlay (rerun `install.sh` there).
 
 ```sh
 ./build.sh build                                    # module and overlays
-install/install.sh [--reboot] [root@helios]         # under the device lock
-ssh root@helios sh /usr/local/lib/styx-bridge/camera-mode.sh status
-ssh root@helios sh /usr/local/lib/styx-bridge/camera-mode.sh libcamera   # ov9282 + libcamera, reboots
-ssh root@helios sh /usr/local/lib/styx-bridge/camera-mode.sh native      # back, reboots
+install/install.sh [--reboot] [root@<device>]         # under the device lock
+ssh root@<device> sh /usr/local/lib/styx-bridge/camera-mode.sh status
+ssh root@<device> sh /usr/local/lib/styx-bridge/camera-mode.sh libcamera   # ov9282 + libcamera, reboots
+ssh root@<device> sh /usr/local/lib/styx-bridge/camera-mode.sh native      # back, reboots
 ```
 
 `camera-mode.sh` changes only the cam0 overlay line of `config.txt` (the first switch keeps the
-original as `config.txt.pre-styx-bridge-boot`) and enables `helios-peripherals` at boot in
+original as `config.txt.pre-styx-bridge-boot`) and enables `<camera service>` at boot in
 libcamera mode, disables it in native mode. In libcamera mode the runtime path still works
 (`styx-bridge.service`: `spike/up.sh` with the runtime overlay, `down.sh` to hand the camera
 back); in native mode it does not apply. Measured 2026-10-02: boot to the bridge bound 5.6 s,

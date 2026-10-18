@@ -10,13 +10,14 @@
 #   --only NAME  only the test binaries whose name starts with NAME (repeatable)
 #   -- args      passed to every test binary (a filter, --ignored, --test-threads 1, ...)
 #   DEVICE       the device, required (e.g. root@<host>); WAIT=1 to wait for the device lock
+#   STYX_STOP_SERVICES  space-separated systemd units that hold the camera, default none; each
+#                one that is active is stopped before the tests and started again on exit
 #
 # On the device everything goes under /tmp: the bundle's sources at the same path they were
 # built from (STYX_DEVTEST_SRC, /tmp/styx-devtest-src by default; the tests find their fixtures
 # there), the binaries in /tmp/styx-devtest-bin. The run holds the device lock
-# (scripts/with-device-lock.sh); PhotonVision, when it runs, is stopped first and started again
-# by a trap on any exit. Each binary runs from its package's directory, as cargo test does. The
-# exit code is 0 when every binary passed.
+# (scripts/with-device-lock.sh). Each binary runs from its package's directory, as cargo test
+# does. The exit code is 0 when every binary passed.
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -68,14 +69,20 @@ fi
 
 dev="${DEVICE:?set DEVICE to the device to run on, e.g. DEVICE=root@<host>}"
 bin_dir=/tmp/styx-devtest-bin
-# The run, as one remote shell script: PhotonVision stopped if it runs and started again on
-# any exit, every binary from its package directory, the exit code 1 if any failed.
+# The run, as one remote shell script: the STYX_STOP_SERVICES units that are active stopped and
+# started again on any exit, every binary from its package directory, the exit code 1 if any
+# failed.
+svc_words=""
+for s in ${STYX_STOP_SERVICES:-}; do svc_words+=" $(printf '%q' "$s")"; done
 remote="set -u
-pv=\$(systemctl is-active photonvision 2>/dev/null || true)
-if [ \"\$pv\" = active ]; then
-    trap 'systemctl start photonvision' EXIT
+active=''
+for svc in${svc_words}; do
+    [ \"\$(systemctl is-active \"\$svc\" 2>/dev/null || true)\" = active ] && active=\"\$active \$svc\"
+done
+if [ -n \"\$active\" ]; then
+    trap 'for svc in \$active; do systemctl start \"\$svc\"; done' EXIT
     trap 'exit 130' INT TERM HUP
-    systemctl stop photonvision
+    for svc in \$active; do systemctl stop \"\$svc\"; done
     sleep 2
 fi
 failed=0
@@ -87,7 +94,7 @@ while IFS=$'\t' read -r dir exe; do
 done <<<"$selected"
 remote+='exit $failed'
 
-# Copying is plain file transfer into /tmp (no camera, no PhotonVision), between locked steps.
+# Copying is plain file transfer into /tmp (no camera touched), between locked steps.
 echo "==> copying the bundle and its sources to $dev:/tmp"
 ssh -o BatchMode=yes "$dev" "mkdir -p '$src' $bin_dir"
 (cd "$src" && tar -cf - --exclude=./target .) | ssh -o BatchMode=yes "$dev" "tar -xf - -C '$src'"

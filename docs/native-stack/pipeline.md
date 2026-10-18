@@ -843,7 +843,7 @@ the bridge.
 
 Through the Styx API (`styx-compare run --format NV12 --fps 30 --frames 90`, native with
 `--ae-state-control 0xF4000010`, the AE state the processed native modes now publish;
-libcamera with `systemctl stop styx-bridge` and `helios-peripherals` stopped, same scene):
+libcamera with `systemctl stop styx-bridge` and `<camera service>` stopped, same scene):
 
 | | native, cold (3 processes) | native, 4 opens in one process | libcamera (3 processes) | libcamera, 4 opens in one process |
 |---|---|---|---|---|

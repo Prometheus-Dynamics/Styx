@@ -202,7 +202,7 @@ to the end of the register window, so harmless).
 ## Results on the CM5 (OV9782, kernel driver path)
 
 `pisp-spike` (kernel `ov9282` driver in its OV9782 variant, `SBGGR10_1X10` 1280x800,
-`helios-peripherals` stopped, under the device lock; `tools/pisp-spike`):
+`<camera service>` stopped, under the device lock; `tools/pisp-spike`):
 
 - **Front end**: configured entirely from Rust; first frame 91 ms after `STREAMON`; frames
   every 33.34 ms (30 fps; 66.89 ms at the driver's default timing on the first boot), raw

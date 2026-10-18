@@ -288,7 +288,7 @@ runtime there is unknown until it runs on the device. Ship and benchmark `releas
 
 ```bash
 scripts/cross-aarch64.sh --musl --tests -p styx-core-rs -p styx-sensor   # or --sysroot DIR
-scripts/device-tests.sh target/device-tests/musl                        # on DEVICE (root@helios)
+scripts/device-tests.sh target/device-tests/musl                        # on DEVICE (root@<device>)
 scripts/device-tests.sh target/device-tests/musl --qemu                 # here, under qemu-aarch64
 scripts/device-tests.sh target/device-tests/musl --only styx_core -- simd
 ```
@@ -299,7 +299,7 @@ scripts/device-tests.sh target/device-tests/musl --only styx_core -- simd
 (`env!("CARGO_MANIFEST_DIR")`), and the run script copies the same mirror to the same path on the
 device. `device-tests.sh` copies the bundle into `/tmp` on the device, then runs every binary from
 its package's directory inside `scripts/with-device-lock.sh` (`WAIT=1` waits for the lock),
-stopping PhotonVision first when it runs and starting it again from a trap on any exit. Arguments
+stopping the services listed in `STYX_STOP_SERVICES` (space-separated units, none by default) first when they are active, and starting them again from a trap on any exit. Arguments
 after `--` go to every test binary (a filter, `--ignored` for the hardware tests). The exit code
 is 0 when every binary passed. `--qemu` runs a musl bundle here instead (the NEON kernels
 included): `styx-core-rs` and `styx-sensor`'s 242 tests take 13 s.

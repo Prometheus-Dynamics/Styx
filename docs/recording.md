@@ -14,10 +14,10 @@ It takes frames two ways:
   camera's full-size mode (the recorder checks the service's restart counter and warns
   otherwise). Controls are read through a `ControlClient`, which never touches the capture.
 - **Directly** (`--source direct`): the recorder opens the camera itself through Styx's
-  libcamera or native backend, for devices where no Styx camera service runs (the PhotonVision
-  image, where PhotonVision owns the camera through libcamera). A camera another process holds
-  is refused with a clear message (`camera ... is busy: another process has it open
-  (PhotonVision, ...)`); stop that process first.
+  libcamera or native backend, for devices where no Styx camera service runs (for example an
+  image where another process owns the camera through libcamera). A camera another process
+  holds is refused with a clear message (`camera ... is busy: another process has it open`);
+  stop that process first.
 
 **What is recorded.** Grey is the Y plane of the ISP's processed output: the recorder asks for
 grey frames (`Frames::gray()`), and on a camera behind an ISP the planner takes NV12/YUV420 and
@@ -216,27 +216,23 @@ cargo build --release -p styx-record-cli --features native       # + direct mode
 ```
 
 Without features the binary is a camera service client only: it links neither libcamera nor
-libstdc++, only glibc and libgcc_s (HeliOS, with or without libcamera). `libcamera` adds
-direct mode through libcamera and links `libcamera.so`, `libcamera-base.so` and libstdc++ (the
-PhotonVision image has them); `native` adds the native stack (sensors Styx drives), `v4l2` USB
+libstdc++, only glibc and libgcc_s (with or without libcamera). `libcamera` adds
+direct mode through libcamera and links `libcamera.so`, `libcamera-base.so` and libstdc++ (an
+image with libcamera has them); `native` adds the native stack (sensors Styx drives), `v4l2` USB
 cameras. The commit in the settings file is taken from `git` at build time, or from
 `$STYX_COMMIT` when building outside a checkout.
 
-### Buildroot / Gaia packaging
+### Buildroot / embedded images
 
-Both Raze images are Buildroot-based (aarch64, glibc), so the binary is cross-built against the
-image's sysroot and installed as `/usr/bin/styx-record`:
+A Buildroot-based aarch64 (glibc) image gets the binary cross-built against its sysroot and
+installed as `/usr/bin/styx-record`:
 
-- **HeliOS**: build without features (a Styx camera service runs there); package it as a
-  `cargo`-built Buildroot package in the device's `buildroot-external` (or next to the
-  `helios-peripherals` package that builds Styx), `STYX_COMMIT` set from the pinned Styx
-  revision, installed to `$(TARGET_DIR)/usr/bin/styx-record`. Release builds as gaia builds them
-  (`opt-level = "z"`, fat LTO) are smaller still.
-- **PhotonVision (Raze) image**: build with `--features libcamera` against the image's
-  `buildroot-output/staging` sysroot (libcamera 0.7) with the image's toolchain; bindgen needs
-  the toolchain's libstdc++ headers (`BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu`, as in
-  the CM5 prep's `build-aarch64.sh`). Run it with PhotonVision stopped (it owns the camera), or
-  record the frames PhotonVision publishes instead.
+- **With a camera service running**: build without features; the recorder is then a camera
+  service client. Set `STYX_COMMIT` to the pinned Styx revision when building outside a checkout.
+- **Direct camera access (libcamera)**: build with `--features libcamera` against the image's
+  `buildroot-output/staging` sysroot with the image's toolchain; bindgen needs the toolchain's
+  libstdc++ headers (`BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu`). Stop the process that
+  owns the camera before recording, or record the frames that process publishes instead.
 
 No configuration files, services or data are needed; the binary is self-contained apart from
 glibc and libgcc_s (and libcamera and libstdc++ with that feature).

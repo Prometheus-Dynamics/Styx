@@ -85,8 +85,8 @@ scene: frames back to back, no padding (the layout of `styx-record` and the libc
 
 ```sh
 cargo run -p styx-iq-compare -- \
-  /home/sozo/styx-tag-frames-2026-10-12/frames_1280x800_gray.raw \
-  /home/sozo/libcamera-tag-frames-2026-10-12/frames_1280x800_gray.raw
+  <styx-frames-dir>/frames_1280x800_gray.raw \
+  <libcamera-frames-dir>/frames_1280x800_gray.raw
 ```
 
 Options: `--width`, `--height` (default 1280x800), `--skip N` and `--frames N` to select frames,

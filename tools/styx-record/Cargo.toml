@@ -21,7 +21,7 @@ test = false
 [features]
 default = []
 # Direct mode (`--source direct`) through libcamera, for devices where no Styx camera service
-# runs and libcamera owns the camera (the PhotonVision image). Links libcamera.
+# runs and libcamera owns the camera (another camera service's image). Links libcamera.
 libcamera = ["styx/libcamera"]
 # Direct mode through Styx's native stack (sensors Styx drives itself).
 native = ["styx/native"]

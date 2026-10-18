@@ -258,7 +258,7 @@ fn a_consumer_holding_too_long_loses_its_lease() {
 }
 
 #[test]
-fn consumers_closing_at_once_get_the_wire_format_helios_reads() {
+fn consumers_closing_at_once_get_the_wire_format_readers_expect() {
     let path = socket_path("wire");
     let socket = FrameSocket::bind_with(
         &path,
@@ -270,7 +270,7 @@ fn consumers_closing_at_once_get_the_wire_format_helios_reads() {
     .unwrap();
     let camera = Camera::new(4);
     socket.publish(&camera.capture(9).unwrap()).unwrap();
-    // As helios-engine reads it (Orion's fd frame): length, JSON, descriptors; then it closes.
+    // As a consumer reads it (length, JSON, descriptors); then it closes.
     let mut stream = std::os::unix::net::UnixStream::connect(&path).unwrap();
     let mut header = [0u8; 4];
     std::io::Read::read_exact(&mut stream, &mut header).unwrap();

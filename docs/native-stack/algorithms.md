@@ -13,7 +13,7 @@ dependency on other Styx crates; the session runtime converts between it and `st
 | libcamera `src/ipa/libipa/pwl.cpp` | BSD-2-Clause, Raspberry Pi Ltd / Ideas on Board | Semantics of `Pwl` (written anew) |
 | Raspberry Pi tuning files `src/ipa/rpi/{pisp,vc4}/data/*.json` | BSD-2-Clause (libcamera `REUSE.toml`) | Format read by the loader; imx219 CT curve, priors and CCMs used as simulator and test data (marked in the files) |
 | libcamera core and most of `libipa` | LGPL-2.1-or-later | Not used |
-| HeliOS OV9782 PiSP tuning (`ipa/rpi/pisp/ov9782.json`, HeliOS before 6f9832f, now in the Atlas Raze device package) | The project owner's own tuning, cleared by them for use in Styx (2026-10-02); built on Raspberry Pi's tuning format and data (BSD-2-Clause) | Embedded unchanged in `styx-pipeline` (`tuning/ov9782.json`, md5 f06d0ac9…) as the OV9782's built-in tuning |
+| OV9782 PiSP tuning (`ipa/rpi/pisp/ov9782.json`) | An OV9782 tuning file, cleared for use in Styx by its author (2026-10-02); built on Raspberry Pi's tuning format and data (BSD-2-Clause) | Embedded unchanged in `styx-pipeline` (`tuning/ov9782.json`, md5 f06d0ac9…) as the OV9782's built-in tuning |
 
 ## Framework
 
@@ -380,7 +380,7 @@ key order (the first mode listed is the default), as libcamera's YAML-based read
 | `rpi.af.ranges.{normal,macro,full}.{min,max,default}`, `speeds.{normal,fast}.*` (`step_coarse`, `step_fine`, `contrast_ratio`, `retrigger_ratio`, `retrigger_delay`, `pdaf_gain`, `pdaf_squelch`, `max_slew`, `pdaf_frames`, `dropout_frames`, `step_frames`), `conf_epsilon`, `conf_thresh`, `conf_clip`, `skip_frames`, `check_for_ir`, `map` | `af` with the same names (`macro` from `normal`, `full` from their union, `fast` from `normal`, as libcamera); `frame_exact` is Styx's own (true) |
 | `rpi.hdr`, `rpi.cac`, `rpi.sync`, `rpi.nn.awb`, … | ignored (not implemented yet) |
 
-All 67 pisp and vc4 tuning files in libcamera and both HeliOS OV9782 files convert and run.
+All 67 pisp and vc4 tuning files in libcamera and both OV9782 tuning files convert and run.
 
 ## Adding an algorithm
 

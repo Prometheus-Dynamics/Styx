@@ -10,10 +10,10 @@
 #   - styx-sensor-bridge-cm5.dtbo -> the boot partition's overlays/
 #   - camera-mode.sh, the runtime overlays, up.sh/down.sh and styx-bridge.service (disabled) ->
 #     /usr/local/lib/styx-bridge, for switching back to libcamera and for runtime tests
-#   - camera-mode.sh native (config.txt line swapped, helios-peripherals disabled); add --reboot
+#   - camera-mode.sh native (config.txt line swapped, <camera service> disabled); add --reboot
 #     to reboot into it
 #
-#   install.sh [--reboot] [root@helios] [kbuild-out-dir]
+#   install.sh [--reboot] [root@<device>] [kbuild-out-dir]    (or DEVICE=root@<device>)
 #
 # KERNEL_RELEASE (default 6.12.47-v8-16k) picks the default kbuild-out-dir, e.g. 7.2.9-v8-16k.
 #
@@ -28,7 +28,11 @@ if [ "${1:-}" = "--reboot" ]; then
     reboot=""
     shift
 fi
-dev="${1:-root@helios}"
+dev="${1:-${DEVICE:-}}"
+[ -n "$dev" ] || {
+    echo "usage: install.sh [--reboot] root@<device> [kbuild-out-dir]  (or set DEVICE=root@<device>)" >&2
+    exit 2
+}
 out="${2:-$here/../../../target/kbuild/out/${KERNEL_RELEASE:-6.12.47-v8-16k}}"
 dst=/usr/local/lib/styx-bridge
 

@@ -78,7 +78,7 @@ fn dark_writes_a_report_and_an_overlay_that_styx_reads() {
             "--date",
             "2026-10-12",
             "--unit",
-            "raze-03",
+            "unit-a",
         ])
         .status()
         .unwrap();
@@ -101,7 +101,7 @@ fn dark_writes_a_report_and_an_overlay_that_styx_reads() {
     assert_eq!(black.gb, None, "greens are not split by default");
     assert_eq!(black.by_gain.len(), 0, "the level holds across gains");
     let json: serde_json::Value = serde_json::from_str(&overlay).unwrap();
-    assert_eq!(json["unit"], "raze-03");
+    assert_eq!(json["unit"], "unit-a");
     assert_eq!(json["defect_pixels"], serde_json::json!([[12, 14]]));
 }
 

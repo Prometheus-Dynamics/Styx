@@ -9,7 +9,7 @@
 #   4. remove the runtime overlay (ov9782@60 comes back as I2C client 10-0060)
 #   5. bind ov9282 to 10-0060 (if the i2c core did not already)
 #   6. bind rp1-cfe (it finds the ov9782 again)
-#   7. start helios-peripherals
+#   7. start <camera service>
 #
 # Idempotent and best effort: every step runs even if an earlier one failed.
 # If anything fails, a reboot restores everything (nothing here persists).

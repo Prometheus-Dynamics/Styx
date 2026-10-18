@@ -1,6 +1,6 @@
 //! The comparison path: raw frames through `rp1-cfe-csi2_ch0` with the normal kernel sensor
 //! driver (`ov9282`) bound, its exposure, gain and blanking set through its V4L2 controls.
-//! Run with the device lock held and `helios-peripherals` stopped, before `up.sh`. Nothing is
+//! Run with the device lock held and `<camera service>` stopped, before `up.sh`. Nothing is
 //! written to the sensor except through the kernel driver.
 
 use std::path::{Path, PathBuf};

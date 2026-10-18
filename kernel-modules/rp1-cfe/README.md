@@ -34,11 +34,11 @@ Everything else is unchanged: module name, uAPI and register programming.
 ## Provenance
 
 `drivers/media/platform/raspberrypi/rp1_cfe/` of raspberrypi/linux `rpi-7.2.y` at `53679a578`
-(7.2.9). It is byte-identical to the PhotonVision Raze image's Buildroot `linux-custom` tree.
+(7.2.9). It is byte-identical to the device image's Buildroot `linux-custom` tree.
 `Makefile.stock` is the in-tree Makefile. GPL-2.0, Copyright Raspberry Pi Ltd; the changes are
 GPL-2.0 too.
 
-## Measured (CM5, Raze PhotonVision r42, OV9782 1280x800 RAW8 at 120 fps)
+## Measured (CM5, OV9782 1280x800 RAW8 at 120 fps)
 
 At the driver's default threshold (line 600 of 800), the event lands **4.777 ms after the
 frame's start**, with p10–p90 4.777–4.778 ms and max 4.784 over 300 frames. That is 600 lines ×
@@ -51,10 +51,10 @@ With the camera's users stopped, the module can be swapped directly: unloading t
 tears the whole graph down, and the sensor driver stays loaded.
 
 ```sh
-systemctl stop photonvision
+systemctl stop <your camera service>     # stop the camera's users first
 rmmod rp1_cfe_downstream && insmod ./rp1-cfe-downstream.ko     # Styx's
 rmmod rp1_cfe_downstream && modprobe rp1_cfe_downstream         # back to the image's
-systemctl start photonvision
+systemctl start <your camera service>
 ```
 
 ## Images (Gaia, Styx variants only)

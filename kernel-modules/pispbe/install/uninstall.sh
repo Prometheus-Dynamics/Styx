@@ -3,7 +3,7 @@
 #
 # Removes the override installed by install.sh: the image's own pisp_be is used again.
 #
-#   uninstall.sh [--reload|--reboot] [root@helios]
+#   uninstall.sh [--reload|--reboot] [root@<device>]    (or DEVICE=root@<device>)
 #
 # Run under the device lock (scripts/with-device-lock.sh).
 
@@ -15,7 +15,11 @@ case "${1:-}" in
     shift
     ;;
 esac
-dev="${1:-root@helios}"
+dev="${1:-${DEVICE:-}}"
+[ -n "$dev" ] || {
+    echo "usage: uninstall.sh [--reload|--reboot] root@<device>  (or set DEVICE=root@<device>)" >&2
+    exit 2
+}
 # shellcheck disable=SC2029 # expanded on the device on purpose
 ssh "$dev" "set -e
     r=\$(uname -r)

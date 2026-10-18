@@ -120,7 +120,7 @@ limits at that fps.
   exists and skip cleanly where it does not (e.g. `/dev/video*`, `/dev/media*`).
 - `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test` pass; files
   stay under 800 lines (`scripts/check-file-sizes.sh`).
-- The device (`ssh root@helios`, a Raspberry Pi CM5). Never enter passwords. Work only in `/tmp`
+- The device (`ssh root@<device>`, a Raspberry Pi CM5). Never enter passwords. Work only in `/tmp`
   on the device. It is a disposable dev box: leave `/boot` (except the cam0 overlay line, which
   `camera-mode.sh` switches), the A/B images and the updater alone; anything else may be changed
   as needed (say so in your report).
@@ -131,7 +131,7 @@ limits at that fps.
     loads it at boot). The patched back end driver `pisp-be.ko` is there too, overriding the
     image's `pisp_be` in both camera modes (`kernel-modules/pispbe/install/`; `uninstall.sh`
     goes back to the image's). The bridge is bound at boot, `ov9282` is not,
-    `helios-peripherals` and
+    `<camera service>` and
     `styx-bridge.service` are disabled. Installed by
     `kernel-modules/styx-sensor-bridge/install/install.sh` (rerun it after rebuilding the
     module, then reboot).
@@ -140,17 +140,17 @@ limits at that fps.
     (`WAIT=1` to queue, `DMESG_LOG=<file>` to stream the kernel log). It takes the lock
     atomically, runs nothing if that fails, and releases only its own lock. Hand-written
     `mkdir … ; … ; rm -rf` chains have deleted other agents' locks three times.
-  - Anything that uses a camera or changes device state (stopping `helios-peripherals`,
+  - Anything that uses a camera or changes device state (stopping `<camera service>`,
     binding/unbinding drivers, runtime overlays via configfs, loading our modules, streaming,
     switching the camera mode, rebooting) needs the device lock, taken atomically with
-    `ssh root@helios 'mkdir /tmp/styx-device-lock && echo "<agent> $(date)" > /tmp/styx-device-lock/owner'`
+    `ssh root@<device> 'mkdir /tmp/styx-device-lock && echo "<agent> $(date)" > /tmp/styx-device-lock/owner'`
     (retry every 60 s while it exists; never delete someone else's lock). Chain every device step
     after the lock with `&&` or `set -e` so nothing runs if taking the lock fails. A reboot wipes
     `/tmp`, the lock with it: take it again when the device is back. Keep it only as long as
     needed, and before releasing it (`rm -rf /tmp/styx-device-lock`) restore the device to its
     baseline (`sh /usr/local/lib/styx-bridge/camera-mode.sh status` says `configured: native`,
     `running: native (bridge bound at boot)`; if not, `camera-mode.sh native` reboots into it).
-  - For libcamera runs (`ov9282`, libcamera, the installed `helios-peripherals`):
+  - For libcamera runs (`ov9282`, libcamera, the installed `<camera service>`):
     `sh /usr/local/lib/styx-bridge/camera-mode.sh libcamera` swaps the overlay line and reboots;
     `camera-mode.sh native` goes back (reboots). In libcamera mode the older runtime path still
     works (`systemctl start styx-bridge`: `spike/up.sh` with the runtime overlay over the
@@ -166,21 +166,21 @@ limits at that fps.
     (`native-pipeline --threads 4`, `StyxConfig::native_soft_threads(4)`; three at 120 fps;
     see [pipeline.md](pipeline.md#all-four-cores)); the software ISP defaults to two threads.
     While you hold the lock, stream its kernel log to a file on the host
-    (`ssh root@helios dmesg -w > <worktree>/target/helios-dmesg-<time>.log &`) so a reboot
+    (`ssh root@<device> dmesg -w > <worktree>/target/helios-dmesg-<time>.log &`) so a reboot
     leaves evidence; if it reboots or hangs, stop device work and report what you were doing.
     Other (HeliOS) workloads also run on the box without this lock (`helios-vision-probe`,
     `eidos-eval-fast-neon` were seen on 2026-10-03): check `ps` before a long run.
-- Licensing: Styx is MIT/Apache. Register values in `ov9782.toml` come from the HeliOS
-  `ov9782.c` driver; the project owner wrote it and cleared their use. Both it and the HeliOS
-  OV9782 tuning (`crates/pipeline/tuning/ov9782.json`, the owner's) are built into Styx. The bridge module is
+- Licensing: Styx is MIT/Apache. The OV9782 driver register values in `ov9782.toml` were
+  cleared for use by their author. The OV9782 tuning (`crates/pipeline/tuning/ov9782.json`) is
+  built into Styx under the same clearance. The bridge module is
   GPL-2.0 (kernel module) and lives apart from the Rust crates.
 - Commits: concise messages ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
   Never push.
 
 ## Kernels: Raspberry Pi 6.12 and rpi-7.2.y
 
-Two kernels are in the field: HeliOS / Raze 1.0.x run Raspberry Pi `stable_20250916`
-(6.12.47-v8-16k), Raze 1.1.0 moves to `rpi-7.2.y` (7.2.9-v8-16k at `53679a5`). Both
+Two kernels are in use: Raspberry Pi `stable_20250916` (6.12.47-v8-16k), and `rpi-7.2.y`
+(7.2.9-v8-16k at `53679a5`). Both
 `kernel-modules/` builds take `STYX_KERNEL=6.12|7.2` (`kernel-modules/kernel-env.sh`); the
 bridge and the PiSP back end use one source for both. Checked on the host for 7.2 (no device
 run yet): the bridge builds unchanged (`W=1` and checkpatch clean, the subdev, async, fwnode,

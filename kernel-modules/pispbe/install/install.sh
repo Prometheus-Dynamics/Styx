@@ -7,12 +7,12 @@
 # instead of kernel/drivers/media/platform/raspberrypi/pisp_be/pisp-be.ko.xz (kmod searches
 # updates/ first).
 #
-#   install.sh [--reload|--reboot] [root@helios] [module]
+#   install.sh [--reload|--reboot] [root@<device>] [module]    (or DEVICE=root@<device>)
 #
 #   KERNEL_RELEASE (default 6.12.47-v8-16k) picks the default module, e.g. 7.2.9-v8-16k.
 #
 #   --reload  swap the running module now (refused while the back end is in use: stop
-#             libcamera users first, e.g. helios-peripherals in libcamera mode)
+#             libcamera users first, e.g. <camera service> in libcamera mode)
 #   --reboot  reboot into it
 #
 # Run under the device lock (scripts/with-device-lock.sh). Undo: uninstall.sh.
@@ -26,7 +26,11 @@ case "${1:-}" in
     shift
     ;;
 esac
-dev="${1:-root@helios}"
+dev="${1:-${DEVICE:-}}"
+[ -n "$dev" ] || {
+    echo "usage: install.sh [--reload|--reboot] root@<device> [module]  (or set DEVICE=root@<device>)" >&2
+    exit 2
+}
 ko="${2:-$here/../../../target/kernel-modules/${KERNEL_RELEASE:-6.12.47-v8-16k}/pisp-be.ko}"
 [ -f "$ko" ] || { echo "no $ko; run ../build.sh first" >&2; exit 1; }
 

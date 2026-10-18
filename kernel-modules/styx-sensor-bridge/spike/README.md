@@ -1,19 +1,19 @@
 # Native stack spike: OV9782 through the sensor bridge, at runtime
 
-Raw OV9782 frames from `rp1-cfe` on the HeliOS CM5 (`root@helios`, kernel `6.12.47-v8-16k`),
+Raw OV9782 frames from `rp1-cfe` on the HeliOS CM5 (`root@<device>`, kernel `6.12.47-v8-16k`),
 with the sensor driven from userspace Rust over I²C and `styx_sensor_bridge.ko` standing in
 for the sensor driver. Everything happens at runtime: nothing touches `/boot`, the A/B
 squashfs images or the updater, and **a reboot restores everything**.
 
 **Nothing here has been run on the device except the read-only parts** (`up.sh --check`,
 `native-spike --dry-run`). Running `up.sh` needs the owner's approval: it stops
-`helios-peripherals`, unbinds drivers, applies an overlay and loads a module.
+`<camera service>`, unbinds drivers, applies an overlay and loads a module.
 
 ## What changes on the device
 
 | Step | Change | Undone by |
 |---|---|---|
-| 1 | `systemctl stop helios-peripherals` (it holds `/dev/media0`, `/dev/video*`) | `systemctl start` |
+| 1 | `systemctl stop <camera service>` (it holds `/dev/media0`, `/dev/video*`) | `systemctl start` |
 | 2 | unbind `ov9282` from `10-0060`, unbind `rp1-cfe` from `1f00110000.csi` | rebind |
 | 3 | configfs overlay `styx-sensor-bridge` (`styx-sensor-bridge-cm5-runtime.dtbo`) | `rmdir` of the overlay |
 | 4 | `insmod styx_sensor_bridge.ko` | `rmmod` |
@@ -45,16 +45,16 @@ Into one directory under `/tmp` (the device's `/tmp` is a tmpfs; `scp` does not 
 ```sh
 D=/tmp/styx-spike
 OUT=../linux-build-styx/out/6.12.47-v8-16k          # from build.sh
-ssh root@helios "mkdir -p $D"
+ssh root@<device> "mkdir -p $D"
 for f in up.sh down.sh spike-env.sh; do
-    ssh root@helios "cat > $D/$f" < kernel-modules/styx-sensor-bridge/spike/$f
+    ssh root@<device> "cat > $D/$f" < kernel-modules/styx-sensor-bridge/spike/$f
 done
 for f in styx_sensor_bridge.ko styx-sensor-bridge-cm5-runtime.dtbo; do
-    ssh root@helios "cat > $D/$f" < $OUT/$f
+    ssh root@<device> "cat > $D/$f" < $OUT/$f
 done
-ssh root@helios "cat > $D/native-spike && chmod +x $D/native-spike $D/*.sh" \
+ssh root@<device> "cat > $D/native-spike && chmod +x $D/native-spike $D/*.sh" \
     < target/aarch64-unknown-linux-gnu/release/native-spike
-ssh root@helios "cat > $D/ov9782.toml" < crates/sensor/sensors/ov9782.toml
+ssh root@<device> "cat > $D/ov9782.toml" < crates/sensor/sensors/ov9782.toml
 ```
 
 Build: `./kernel-modules/styx-sensor-bridge/build.sh build` (module and both overlays), and
@@ -125,14 +125,14 @@ before `up.sh`) for comparison. `--embedded` needs the `-emb` overlay.
 
 1. SIGINT to a running `native-spike`; 2. unbind `rp1-cfe`; 3. `rmmod styx_sensor_bridge`
 (switches the bridge's supplies off); 4. `rmdir` the overlay; 5. bind `ov9282` to `10-0060` if
-the i2c core did not already; 6. bind `rp1-cfe`; 7. `systemctl start helios-peripherals`.
+the i2c core did not already; 6. bind `rp1-cfe`; 7. `systemctl start <camera service>`.
 
 If any step fails it says so: **reboot** (nothing here persists).
 
 ## Offline checks (host)
 
 ```sh
-ssh root@helios 'cd /proc/device-tree && tar cf - .' | tar xf - -C live-fs   # read-only copy
+ssh root@<device> 'cd /proc/device-tree && tar cf - .' | tar xf - -C live-fs   # read-only copy
 ./check-overlay.sh live-fs ../linux-build-styx/out/6.12.47-v8-16k/styx-sensor-bridge-cm5-runtime.dtbo
 ./test-check-overlay.sh live-fs
 ```

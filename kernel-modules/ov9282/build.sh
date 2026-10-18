@@ -13,14 +13,13 @@
 #                       stock import and the Raze patches as their own commits)
 #   ./build.sh all      build + verify
 #
-# KERNEL_TREE  the image's Buildroot linux-custom (default: the PhotonVision Raze image next to
-#              the repository); BR_HOST its host dir (default: KERNEL_TREE/../../host).
+# KERNEL_TREE  required: the device image's Buildroot linux-custom (a built tree);
+#              BR_HOST its host dir (default: KERNEL_TREE/../../host).
 # OUT          output directory (outside the repository: build output never goes to its disk).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-workspace="$(cd "$here/../../.." && pwd)"
-KERNEL_TREE="${KERNEL_TREE:-$workspace/photon-image-modifier/build/gaia/photonvision-full-raze/image/buildroot-output/build/linux-custom}"
+KERNEL_TREE="${KERNEL_TREE:?set KERNEL_TREE to the built linux-custom tree of the device image}"
 BR_HOST="${BR_HOST:-$KERNEL_TREE/../../host}"
 CROSS_COMPILE="${CROSS_COMPILE:-$BR_HOST/bin/aarch64-linux-}"
 release="$(cat "$KERNEL_TREE/include/config/kernel.release" 2>/dev/null || true)"

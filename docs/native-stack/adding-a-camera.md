@@ -263,7 +263,7 @@ libcamera's `ctt`: [docs/tuning.md](../tuning.md).
 ## The OV9782 on the CM5: kernel driver against the bridge
 
 The same OV9782 on cam0, once under the upstream `ov9282` driver (Raspberry Pi kernel
-6.12.47; `systemctl stop styx-bridge`, `helios-peripherals` stopped; entity
+6.12.47; `systemctl stop styx-bridge`, `<camera service>` stopped; entity
 `ov9782 10-0060`, no metadata pad, so no embedded data) and once behind the bridge (with
 embedded data), back to back in the same scene (a dim room, warm lamp, 100 Hz light) on
 2026-10-02 (device clock Aug 17), the HeliOS tuning (`ov9782.json`), PiSP path (NV12

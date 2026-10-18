@@ -201,7 +201,7 @@ impl ServiceSource {
         let cameras = options().cameras().map_err(|err| {
             format!(
                 "no Styx camera service at {}: {err}. Is it running (--socket, $STYX_SOCKET)? \
-                 On a device without one (e.g. PhotonVision), use --source direct",
+                 On a device without one (another camera service owns the camera), use --source direct",
                 cfg.socket.display()
             )
         })?;
@@ -446,8 +446,8 @@ fn open_error(camera: &str, err: &styx::planner::OpenError) -> String {
     let text = err.to_string();
     if busy || text.to_ascii_lowercase().contains("busy") {
         format!(
-            "camera {camera} is busy: another process has it open (PhotonVision, a Styx camera \
-             service, a libcamera app). Stop it first, or record through its Styx camera \
+            "camera {camera} is busy: another process has it open (a camera service, a Styx camera \
+             service, or a libcamera app). Stop it first, or record through its Styx camera \
              service (--source service). ({text})"
         )
     } else {

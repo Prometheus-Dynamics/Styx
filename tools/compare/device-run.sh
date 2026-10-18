@@ -1,17 +1,17 @@
 #!/bin/sh
-# Runs the comparison set on the HeliOS CM5. Run as root from a /tmp directory holding:
+# Runs the comparison set on a CM5. Run as root from a /tmp directory holding:
 #   styx-compare (built with --features libcamera,native), ov9782.toml,
 #   up.sh down.sh spike-env.sh styx_sensor_bridge.ko styx-sensor-bridge-cm5-runtime.dtbo
 # while holding the device lock (docs/native-stack/README.md), with the kernel log streamed
 # to the host.
 #
-#   1. stop helios-peripherals (it owns the camera)
+#   1. stop the services in STYX_STOP_SERVICES (space-separated units that own the camera)
 #   2. libcamera: processed NV12, then raw BYR2
 #   3. up.sh (sensor bridge), native raw pBAA, down.sh (restores the device)
-#   4. start helios-peripherals, merge the results into compare.json and compare.md
+#   4. start those services again, merge the results into compare.json and compare.md
 #
 # Settings: FPS (30), FRAMES (300), REPEAT (3), NATIVE (1; 0 skips the bridge), OUT
-# (./results).
+# (./results), STYX_STOP_SERVICES (none by default).
 
 set -u
 D="$(cd "$(dirname "$0")" && pwd)"
@@ -37,7 +37,21 @@ run() {
     fi
 }
 
-systemctl stop helios-peripherals
+stop_services() {
+    for svc in ${STYX_STOP_SERVICES:-}; do
+        if [ "$(systemctl is-active "$svc" 2>/dev/null || true)" = active ]; then
+            systemctl stop "$svc"
+            STOPPED="$STOPPED $svc"
+        fi
+    done
+}
+start_services() {
+    for svc in $STOPPED; do systemctl start "$svc"; done
+    for svc in $STOPPED; do echo "[compare] $svc $(systemctl is-active "$svc")"; done
+    STOPPED=""
+}
+STOPPED=""
+stop_services
 run libcamera-nv12 --backend libcamera --format NV12
 run libcamera-raw --backend libcamera --format BYR2
 if [ "${NATIVE:-1}" = 1 ]; then
@@ -52,8 +66,7 @@ if [ "${NATIVE:-1}" = 1 ]; then
         tail -5 "$OUT/down.log"
     }
 fi
-systemctl start helios-peripherals
-echo "[compare] helios-peripherals $(systemctl is-active helios-peripherals)"
+start_services
 # shellcheck disable=SC2086 # one path per word
 [ -n "$results" ] && ./styx-compare report --json "$OUT/compare.json" --md "$OUT/compare.md" $results
 [ -f "$OUT/compare.md" ] && cat "$OUT/compare.md"
