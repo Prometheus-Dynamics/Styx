@@ -33,8 +33,9 @@ pub enum OutputMemory {
     CachedHeapContiguousUpTo(u32),
 }
 
-/// Environment variable overriding where output buffers come from: `driver` or `cached`
-/// (for measurements).
+/// Debug hook (feature `debug-hooks`): `STYX_PISP_OUTPUT_MEMORY=driver|cached` overrides the
+/// `memory` the output buffers are opened with (for measurements).
+#[cfg(feature = "debug-hooks")]
 pub const OUTPUT_MEMORY_ENV: &str = "STYX_PISP_OUTPUT_MEMORY";
 
 /// The heaps [`OutputMemory::CachedHeap`] tries, in order.
@@ -61,6 +62,7 @@ impl OutputQueue {
         size: usize,
         name: &'static str,
     ) -> Result<Self> {
+        #[cfg(feature = "debug-hooks")]
         let memory = match std::env::var(OUTPUT_MEMORY_ENV).as_deref() {
             Ok("driver") => OutputMemory::Driver,
             Ok("cached") => OutputMemory::CachedHeap,

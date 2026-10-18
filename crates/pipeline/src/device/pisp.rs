@@ -57,6 +57,19 @@ fn bayer(c: CfaPattern) -> BayerOrder {
     }
 }
 
+/// Debug hook (feature `pisp-debug-hooks`): the environment variable `name`, parsed. Without
+/// the feature it is ignored, so the options are the only way to set these.
+#[cfg(feature = "pisp-debug-hooks")]
+fn debug_var<T: std::str::FromStr>(name: &str) -> Option<T> {
+    std::env::var(name).ok()?.parse().ok()
+}
+
+/// See the feature-enabled version: the environment is not read.
+#[cfg(not(feature = "pisp-debug-hooks"))]
+fn debug_var<T>(_name: &str) -> Option<T> {
+    None
+}
+
 /// The front and back end, opened for a sensor mode.
 struct Isp {
     fe: FrontEnd,
@@ -82,9 +95,7 @@ impl Isp {
     ) -> Result<(Self, Duration, Duration)> {
         let t = Instant::now();
         let order = bayer(info.cfa);
-        let want_slice = std::env::var("STYX_PISP_SLICE_LINE")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
+        let want_slice = debug_var::<u16>("STYX_PISP_SLICE_LINE")
             .or(options.slice_line)
             .filter(|l| *l > 0 && u32::from(*l) < info.height);
         let mut fe_dev = FrontEndDevice::open(&FrontEndSetup {
@@ -114,10 +125,7 @@ impl Isp {
             None => Ok(None),
         };
         // Debug: the line the raw output's line interrupt fires at (Styx's rp1-cfe module).
-        if let Some(n) = std::env::var("STYX_PISP_FE_ILINES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-        {
+        if let Some(n) = debug_var::<u16>("STYX_PISP_FE_ILINES") {
             fe.set_ilines(0, n);
         }
         fe.enable(fe_enable::OUTPUT0, true);
@@ -134,6 +142,7 @@ impl Isp {
                 options.be_buffers,
             ],
             options.output_memory,
+            options.config_memory,
         )?;
         let mut be = be_template(
             input,
@@ -142,10 +151,7 @@ impl Isp {
             [be_dev.output_format(0), be_dev.output_format(1)],
         )?;
         // Debug: horizontal stripes of at most N rows (measuring what slicing costs).
-        if let Some(n) = std::env::var("STYX_PISP_BE_STRIPE")
-            .ok()
-            .and_then(|v| v.parse().ok())
-        {
+        if let Some(n) = debug_var::<u16>("STYX_PISP_BE_STRIPE") {
             be.set_max_stripe_height(n);
         }
         if let Ok(Some(line)) = slice {

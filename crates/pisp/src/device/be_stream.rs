@@ -15,7 +15,7 @@ use styx_kernel::v4l2::{
 use super::be::BE_CFG_FOURCC;
 use super::be_output::{OutputMemory, OutputQueue};
 use super::be_tdn::TdnBuffers;
-use super::config_buf::ConfigBuffer;
+use super::config_buf::{ConfigBuffer, ConfigMemory};
 use super::{DeviceError, Result, bayer16_fourcc, find_media};
 use crate::format::formats;
 use crate::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig, rgb_enable};
@@ -143,10 +143,12 @@ impl BackEndStream {
             outputs,
             [buffers; 2],
             OutputMemory::Driver,
+            ConfigMemory::default(),
         )
     }
 
-    /// [`Self::open`] with the output buffers from `memory`, `buffers[i]` for output `i`.
+    /// [`Self::open`] with the output buffers from `memory`, `buffers[i]` for output `i`, and the
+    /// config buffer from `config`.
     #[allow(clippy::too_many_arguments)]
     pub fn open_with(
         group: usize,
@@ -157,6 +159,7 @@ impl BackEndStream {
         outputs: [Option<BeOutputSetup>; 2],
         buffers: [u32; 2],
         memory: OutputMemory,
+        config: ConfigMemory,
     ) -> Result<Self> {
         if outputs[0].is_none() || inputs.is_empty() {
             return Err(DeviceError::Setup("need output 0 and input buffers".into()));
@@ -265,6 +268,7 @@ impl BackEndStream {
             BufType::MetaOutput,
             size_of::<BeTilesConfig>(),
             "pispbe-config",
+            config,
         )?;
         let s = Self {
             _media: media,
@@ -323,9 +327,10 @@ impl BackEndStream {
     /// The format of the TDN buffers (the input's).
     ///
     /// `compressed`: 8-bit PiSP mode 1 (as libcamera keeps it: half the TDN memory traffic), in
-    /// the same buffers; `STYX_PISP_TDN_COMPRESS=0|1` overrides it.
+    /// the same buffers. With `debug-hooks`, `STYX_PISP_TDN_COMPRESS=0|1` overrides it.
     pub fn tdn_format(&self, compressed: bool) -> ImageFormatConfig {
         let (w, h, _, stride) = self.input_layout;
+        #[cfg(feature = "debug-hooks")]
         let compressed = match std::env::var("STYX_PISP_TDN_COMPRESS").as_deref() {
             Ok("0") => false,
             Ok("1") => true,
@@ -356,8 +361,7 @@ impl BackEndStream {
         }
     }
 
-    /// Where the config buffer comes from (`mmap`, or a dma-heap: see
-    /// [`super::CONFIG_HEAP_ENV`]).
+    /// Where the config buffer comes from (`mmap`, or a dma-heap: [`ConfigMemory`]).
     pub fn config_source(&self) -> String {
         self.config.source()
     }

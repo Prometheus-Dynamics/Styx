@@ -256,7 +256,10 @@ impl Slicing {
 
 impl Drop for Slicing {
     fn drop(&mut self) {
-        if std::env::var("STYX_PISP_SLICE_LOG").as_deref() == Ok("1") {
+        // Debug hook (feature `pisp-debug-hooks`): `STYX_PISP_SLICE_LOG=1` logs the split.
+        if cfg!(feature = "pisp-debug-hooks")
+            && std::env::var("STYX_PISP_SLICE_LOG").as_deref() == Ok("1")
+        {
             eprintln!("pisp slicing at line {}: {:?}", self.line, self.counts);
         }
     }

@@ -1,6 +1,6 @@
 //! How the PiSP path is set up.
 
-use styx_pisp::device::{BeFormat, BeOutputSetup, OutputMemory};
+use styx_pisp::device::{BeFormat, BeOutputSetup, ConfigMemory, OutputMemory};
 use styx_pisp::uapi::BeCropConfig;
 
 /// How the PiSP path is set up.
@@ -32,6 +32,9 @@ pub struct PispOptions {
     /// reads at memory speed, bracketed by [`super::PispPipeline::sync_output`]) or the driver's
     /// (mapped uncached).
     pub output_memory: OutputMemory,
+    /// Where the back end's config buffer comes from: a cached dma-heap (the default) or the
+    /// driver's (mapped uncached). The driver copies each job's config out of it.
+    pub config_memory: ConfigMemory,
     /// Run the back end's temporal denoise when the tuning has it (two extra buffers of the
     /// raw frame's size, read and written by every job).
     pub temporal_denoise: bool,
@@ -46,7 +49,7 @@ pub struct PispOptions {
     /// Process each frame in two back end jobs, the first once the raw frame's first `line`
     /// rows are in (Styx's rp1-cfe module's line event), the rest at its end: the frame is
     /// ready sooner after its readout. `None` (default): one job at the end. Without the
-    /// module the stream runs whole. Overridden by `STYX_PISP_SLICE_LINE`.
+    /// module the stream runs whole.
     pub slice_line: Option<u16>,
 }
 
@@ -74,6 +77,7 @@ impl PispOptions {
             configs_ahead: 2,
             settled_rate_hz: Some(15.0),
             output_memory: OutputMemory::CachedHeap,
+            config_memory: ConfigMemory::CachedHeap,
             temporal_denoise: true,
             tdn_compressed: true,
             spatial_denoise: 1.0,

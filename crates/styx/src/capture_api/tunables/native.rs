@@ -172,32 +172,30 @@ pub struct NativeIspConfig {
     /// Start CPU access to each cached back end buffer (`DMA_BUF_IOCTL_SYNC`, about 23 µs per
     /// 1280x800 NV12 frame on the CM5) on the capture thread as the frame is leased, so the
     /// consumer's first read does not pay it (`true`, the default). `false`: on the first CPU
-    /// read, so frames that are only passed on as dma-bufs never pay it. Overridden by
-    /// `STYX_NATIVE_EARLY_SYNC=0|1`. No effect with [`Self::driver_buffers`].
+    /// read, so frames that are only passed on as dma-bufs never pay it. No effect with
+    /// [`Self::driver_buffers`].
     pub early_cpu_sync: bool,
     /// Prefetch each output's first plane (the Y plane of NV12) on the capture thread before
     /// handing the frame over (default [`NativeCpuPrefetch::Off`]): a fresh frame is read from
     /// memory at about a third of cached speed, the first time. Implies
-    /// [`Self::early_cpu_sync`]; cached buffers only. Overridden by
-    /// `STYX_NATIVE_PREFETCH=off|touch|l3`.
+    /// [`Self::early_cpu_sync`]; cached buffers only.
     pub cpu_prefetch: NativeCpuPrefetch,
     /// Bits per sample of the sensor's raw stream for processed capture (the PiSP path):
     /// `None` (default) takes the sensor's preferred format (its description's
     /// `processed_format`: RAW8 on the OV9782, whose 8-bit lines read in 7.58 µs against
     /// 9.1 µs, 1.28 ms less readout at 1280x800 on the CM5), else its first mode of the size;
-    /// `Some(10)` or `Some(8)` that depth. Overridden by `STYX_NATIVE_RAW_BITS`. A depth the
+    /// `Some(10)` or `Some(8)` that depth. A depth the
     /// sensor has no mode of fails the open.
     pub raw_bits: Option<u8>,
     /// Keep the PiSP's temporal-denoise average compressed (8-bit mode 1, as libcamera does):
     /// half its memory traffic, 0.55 ms less back end time per 1280x800 frame on the CM5, with
-    /// the same AprilTag jitter and recall (`true`, the default). `false`: 16-bit. Overridden
-    /// by `STYX_PISP_TDN_COMPRESS=0|1`.
+    /// the same AprilTag jitter and recall (`true`, the default). `false`: 16-bit.
     pub tdn_compressed: bool,
     /// Process each frame in two back end jobs, the first once the raw frame's first
     /// `slice_line` rows are in (needs Styx's rp1-cfe module, `kernel-modules/rp1-cfe`; without
     /// it frames run whole): the frame is ready sooner after its readout (1280x800@120 on the
-    /// OV9782: 7.80 → 6.85 ms at line 640). `None` (default): off. `STYX_PISP_SLICE_LINE`
-    /// overrides it. The algorithms' settings then apply one frame later.
+    /// OV9782: 7.80 → 6.85 ms at line 640). `None` (default): off. The algorithms' settings
+    /// then apply one frame later.
     pub slice_line: Option<u16>,
     /// With [`Self::slice_line`], hand each frame out at its first slice: its leases carry a
     /// `FrameLease::progress` saying how many rows are final, and complete on the same leases

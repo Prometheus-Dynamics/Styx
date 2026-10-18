@@ -15,11 +15,29 @@ use styx_kernel::v4l2::{BufType, Memory, Planes, QueueBuffer, QueuePlane, VideoD
 
 use super::{DeviceError, Queue, Result};
 
-/// Environment variable naming the dma-heap config buffers come from (`mmap` for the
-/// driver's own buffers); by default `linux,cma`, then `system`, then MMAP.
+/// Where a config buffer comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConfigMemory {
+    /// A cached dma-heap (`linux,cma`, else `system`), else the driver's own buffers.
+    #[default]
+    CachedHeap,
+    /// The driver's own buffers (V4L2 MMAP, mapped uncached).
+    Driver,
+}
+
+/// Debug hook (feature `debug-hooks`): `STYX_PISP_CONFIG_HEAP` names one dma-heap to use
+/// (`mmap` for the driver's buffers), in place of [`ConfigMemory`].
+#[cfg(feature = "debug-hooks")]
 pub const CONFIG_HEAP_ENV: &str = "STYX_PISP_CONFIG_HEAP";
 
 const HEAPS: [&str; 2] = ["linux,cma", "system"];
+
+fn default_heaps(memory: ConfigMemory) -> Vec<&'static str> {
+    match memory {
+        ConfigMemory::CachedHeap => HEAPS.to_vec(),
+        ConfigMemory::Driver => Vec::new(),
+    }
+}
 
 /// One config buffer, from a dma-heap or the driver.
 pub(super) enum ConfigBuffer {
@@ -40,13 +58,18 @@ impl ConfigBuffer {
         buf_type: BufType,
         len: usize,
         name: &'static str,
+        memory: ConfigMemory,
     ) -> Result<Self> {
-        let wanted = std::env::var(CONFIG_HEAP_ENV).ok();
-        let heaps: Vec<&str> = match wanted.as_deref() {
+        #[cfg(feature = "debug-hooks")]
+        let env = std::env::var(CONFIG_HEAP_ENV).ok();
+        #[cfg(feature = "debug-hooks")]
+        let heaps: Vec<&str> = match env.as_deref() {
             Some("mmap") => Vec::new(),
             Some(h) => vec![h],
-            None => HEAPS.to_vec(),
+            None => default_heaps(memory),
         };
+        #[cfg(not(feature = "debug-hooks"))]
+        let heaps = default_heaps(memory);
         let len = len.next_multiple_of(4096);
         for heap in heaps {
             let Ok(buf) = DmaHeap::open(heap).and_then(|h| h.allocate(len)) else {
