@@ -17,6 +17,8 @@ codec-turbojpeg = ["styx/codec-turbojpeg"]
 file-backend = ["styx/file-backend"]
 # Styx frames in Daedalus graphs (`styx::core::daedalus`); the engine for the example host.
 daedalus = ["styx/daedalus", "dep:daedalus"]
+# Daedalus GPU nodes (wgpu) for `daedalus_gpu_node`.
+daedalus-gpu = ["daedalus", "daedalus/gpu-wgpu"]
 hotplug = ["styx/hotplug"]
 libcamera = ["styx/libcamera"]
 netcam = ["styx/netcam"]
@@ -243,6 +245,12 @@ name = "daedalus_multicam"
 path = "02_graph/daedalus_multicam.rs"
 test = false
 required-features = ["daedalus"]
+
+[[bin]]
+name = "daedalus_gpu_node"
+path = "02_graph/daedalus_gpu_node.rs"
+test = false
+required-features = ["daedalus-gpu", "preview-window"]
 
 [[bin]]
 name = "latest_frame_fanout"
