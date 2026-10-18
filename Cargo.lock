@@ -5166,6 +5166,7 @@ dependencies = [
  "libm",
  "serde",
  "serde_json",
+ "styx-algo",
  "thiserror 2.0.21",
  "toml",
 ]
