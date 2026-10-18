@@ -328,3 +328,28 @@ fn striped_tiles_split_at_a_line_into_two_jobs() {
     assert!(split_tiles(&t, 100).is_none());
     assert!(split_tiles(&t, 900).is_none());
 }
+
+#[test]
+fn split_into_reused_buffers_equal_split_tiles() {
+    // The pipeline splits every sliced frame into the same two buffers: each result must equal
+    // a fresh `split_tiles`, including after a split that did not fit (the buffers then hold
+    // whatever the last one wrote).
+    let mut be = simple(formats::NV12);
+    be.set_max_stripe_height(576);
+    let t = be.prepare().unwrap();
+    let (mut first, mut rest) = (*t, *t);
+    for line in [600, 100, 900, 400, 600] {
+        match (
+            split_tiles(&t, line),
+            split_tiles_into(&t, line, &mut first, &mut rest),
+        ) {
+            (Some(want), Some(rows)) => {
+                assert_eq!(want.first, first, "line {line}");
+                assert_eq!(want.rest, rest, "line {line}");
+                assert_eq!(want.rows_after_first, rows, "line {line}");
+            }
+            (None, None) => {}
+            (want, got) => panic!("line {line}: {:?} vs {:?}", want.is_some(), got),
+        }
+    }
+}

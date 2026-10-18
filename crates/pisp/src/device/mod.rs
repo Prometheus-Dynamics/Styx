@@ -13,14 +13,52 @@ mod be_output;
 mod be_stream;
 mod be_tdn;
 mod config_buf;
+#[cfg(feature = "debug-hooks")]
 mod config_dump;
+#[cfg(not(feature = "debug-hooks"))]
+mod config_dump {
+    //! Debug hooks off (feature `debug-hooks`): the config dumps and the patch do nothing.
+    use crate::uapi::BeTilesConfig;
+
+    pub(super) fn be_config(_bytes: &[u8]) {}
+
+    pub(super) fn fe_config(_bytes: &[u8]) {}
+
+    pub(super) fn be_patch(_cfg: &BeTilesConfig) -> Option<Box<BeTilesConfig>> {
+        None
+    }
+}
 mod fe;
+#[cfg(feature = "debug-hooks")]
 mod lines_probe;
+#[cfg(not(feature = "debug-hooks"))]
+mod lines_probe {
+    //! Debug hooks off (feature `debug-hooks`): no probe thread, no samples.
+    use std::path::Path;
+
+    pub(super) struct LinesProbe;
+
+    impl LinesProbe {
+        pub(super) fn start(
+            _node: &Path,
+            _bufs: Vec<(*const u8, usize)>,
+            _stride: usize,
+        ) -> Option<Self> {
+            None
+        }
+
+        pub(super) fn check(&mut self, _seq: u32, _index: u32, _data: &[u8], _stride: usize) {}
+    }
+}
 pub mod profile;
 mod queue;
 
 use std::fmt;
 use std::path::PathBuf;
+
+/// `STYX_CFE_EVENT_LINES - V4L2_EVENT_PRIVATE_START` (kernel-modules/rp1-cfe): the front end's
+/// line event, subscribed to for slicing (and by the lines probe).
+const LINES_EVENT_OFFSET: u32 = 0x5354;
 
 pub use be::{BackEndDevice, BeOutput};
 pub use be_output::OutputMemory;

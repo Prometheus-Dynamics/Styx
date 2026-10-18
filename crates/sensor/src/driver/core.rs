@@ -531,6 +531,11 @@ impl<B: AsyncDriverBus, P: AsyncSensorPins> DriverCore<B, P> {
 
     async fn write_flip(&mut self, flip: Option<Flip>, on: bool) -> Result<()> {
         let Some(f) = flip else { return Ok(()) };
+        // A kernel-backed description's flips carry the placeholder address 0 (see
+        // `SensorDescription::from_subdev_with`): never a register write to 0x0000.
+        if f.address == 0 {
+            return Err(SensorError::NoRegister("flip"));
+        }
         let current = self.read(f.address, 1).await?;
         let mask = u32::from(f.mask);
         let value = if on { current | mask } else { current & !mask };
@@ -592,6 +597,10 @@ impl<B: AsyncDriverBus, P: AsyncSensorPins> DriverCore<B, P> {
             return self
                 .set_kernel(&[(KernelControl::TestPattern, i64::from(value))])
                 .await;
+        }
+        if tp.register.address == 0 {
+            // The kernel-backed placeholder (see `write_flip`): no register to write.
+            return Err(SensorError::NoRegister("test pattern"));
         }
         self.write_field(&tp.register, value).await
     }

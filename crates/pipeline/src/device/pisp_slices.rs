@@ -12,7 +12,7 @@
 use std::time::{Duration, Instant};
 
 use styx_native::SensorStream;
-use styx_pisp::be::split_tiles;
+use styx_pisp::be::split_tiles_into;
 use styx_pisp::device::{BackEndStream, BeJob, FrontEndDevice, LineEvent, QueuedJob, profile};
 use styx_pisp::uapi::BeTilesConfig;
 
@@ -34,7 +34,6 @@ pub(super) fn stripe_height(line: u16) -> u16 {
 struct Pending {
     sequence: u32,
     input: u32,
-    rest: Box<BeTilesConfig>,
     first: Option<QueuedJob>,
     /// The first job, once done (taken while waiting for the frame's statistics).
     done: Option<BeJob>,
@@ -42,7 +41,6 @@ struct Pending {
     rows_after_first: [u32; 2],
     /// The frame's start (its buffer's timestamp to be).
     frame_start: Duration,
-    at: Instant,
 }
 
 /// What [`super::PispPipeline::next_event`] delivers.
@@ -96,6 +94,12 @@ pub(super) struct Slicing {
     /// them (kept with `clone_from`, so no allocation per frame once warm).
     last: Option<IspSettings>,
     pending: Option<Pending>,
+    /// The split of the frame in flight, written in place at its line event (allocated once
+    /// here, not per frame). `first` is read while its job is queued (the back end copies the
+    /// config then); `rest` waits for the frame's end, and is only written while no frame is
+    /// pending.
+    first: Box<BeTilesConfig>,
+    rest: Box<BeTilesConfig>,
     pub(super) counts: SliceCounts,
 }
 
@@ -105,6 +109,8 @@ impl Slicing {
             line: u32::from(line),
             last: None,
             pending: None,
+            first: Box::new(bytemuck::Zeroable::zeroed()),
+            rest: Box::new(bytemuck::Zeroable::zeroed()),
             counts: SliceCounts::default(),
         }
     }
@@ -148,20 +154,20 @@ impl Slicing {
         let values = sensor_values(seq, &controls);
         let exposure = values.exposure.as_secs_f64() * values.analogue_gain * settings.flicker;
         builder.update_frame(settings, exposure)?;
-        let Some(split) = split_tiles(builder.config(), line) else {
+        let Some(rows_after_first) =
+            split_tiles_into(builder.config(), line, &mut self.first, &mut self.rest)
+        else {
             self.counts.no_split += 1;
             return Ok(());
         };
-        let first = be.process_queued_part(input, &split.first, None, false)?;
+        let first = be.process_queued_part(input, &self.first, None, false)?;
         self.pending = Some(Pending {
             sequence,
             input,
-            rest: Box::new(split.rest),
             first: Some(first),
             done: None,
-            rows_after_first: split.rows_after_first,
+            rows_after_first,
             frame_start: ev.frame_start,
-            at: Instant::now(),
         });
         Ok(())
     }
@@ -195,10 +201,9 @@ impl Slicing {
             (None, None) => return Ok(None),
         };
         self.counts.sliced += 1;
-        let _ = p.at;
         Ok(Some(be.process_queued_part(
             input,
-            &p.rest,
+            &self.rest,
             Some(first.outputs),
             true,
         )?))

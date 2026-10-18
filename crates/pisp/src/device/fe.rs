@@ -578,7 +578,7 @@ impl FrontEndDevice {
             .as_ref()
             .ok_or_else(|| DeviceError::Setup("no raw output".into()))?;
         q.dev.subscribe(
-            EventType::Private(super::lines_probe::LINES_EVENT_OFFSET),
+            EventType::Private(super::LINES_EVENT_OFFSET),
             0,
             SubscribeFlags::empty(),
         )?;

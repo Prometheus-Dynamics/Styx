@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use styx_kernel::bus::{StreamAction, StreamRequest};
 use styx_kernel::event::EventKind;
-use styx_kernel::{Wait, poll};
+use styx_kernel::{Ready, Wait, poll_into};
 use styx_runtime::styx_hal::{Instant as HalInstant, SyncEvent};
 use styx_runtime::{SensorSide, SyncSource, serve_sync};
 
@@ -364,27 +364,28 @@ fn run(s: &EventSources, wake: &PipeReader, stop: &AtomicBool, gate: &Gate, noti
         } else {
             Wait::NONE
         };
-        let mut fds = vec![
-            (wake.as_fd(), Wait::READABLE),
-            (s.bridge.as_fd(), s.bridge.request_wait()),
-        ];
+        // Up to four descriptors, in a list on the stack: this wait runs on every wakeup.
+        let mut fds = [(wake.as_fd(), Wait::READABLE); 4];
+        fds[1] = (s.bridge.as_fd(), s.bridge.request_wait());
+        let mut n = 2;
         if poll_video {
             if shared_fd {
-                fds.push((video.as_fd(), frames.union(events)));
+                fds[n] = (video.as_fd(), frames.union(events));
+                n += 1;
             } else {
-                fds.push((video.as_fd(), frames));
-                fds.push((video.event_fd(), events));
+                fds[n] = (video.as_fd(), frames);
+                fds[n + 1] = (video.event_fd(), events);
+                n += 2;
             }
         }
-        let ready = poll(&fds, backoff.map(|t| t - now));
-        trace!("quiet {quiet} polled {} fds: {ready:?}", fds.len());
-        let ready = match ready {
-            Ok(r) => r,
-            Err(e) => {
-                fail(fault_from_io("waiting for events", &e.into()));
-                return;
-            }
-        };
+        let mut polled = [Ready::default(); 4];
+        let waited = poll_into(&fds[..n], backoff.map(|t| t - now), &mut polled[..n]);
+        let ready = &polled[..n];
+        trace!("quiet {quiet} polled {n} fds: {ready:?}");
+        if let Err(e) = waited {
+            fail(fault_from_io("waiting for events", &e.into()));
+            return;
+        }
         if ready[0].readable {
             let mut buf = [0u8; 64];
             let _ = (&*wake).read(&mut buf);

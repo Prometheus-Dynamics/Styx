@@ -15,6 +15,10 @@ default = ["std"]
 std = []
 # Drive the front end (`rp1-cfe`) and back end (`pispbe`) device nodes through styx-kernel.
 device = ["std", "dep:styx-kernel"]
+# Debug hooks on the device path: the config dumps (`STYX_PISP_BE_DUMP`, `STYX_PISP_FE_DUMP`),
+# the back-end block patch (`STYX_PISP_BE_PATCH`) and the lines probe
+# (`STYX_PISP_FE_LINES_PROBE`). Off, they compile to no-ops.
+debug-hooks = ["device"]
 
 [dependencies]
 bytemuck = { version = "1.25", features = ["derive", "min_const_generics", "extern_crate_alloc"] }

@@ -179,16 +179,29 @@ impl BeConfigBuilder {
         };
         // Blocks switched on or off (other than reading the temporal average) re-prepare.
         let mask = !(bayer_enable::TDN_INPUT | bayer_enable::TDN_DECOMPRESS);
-        let mut probe = self.work.clone();
-        isp.apply_be_detail(&mut probe);
-        probe.set_tdn(tdn_cfg.map(|t| t.0), tdn_cfg.is_some_and(|t| t.1));
+        // The detail and temporal denoise settings are applied to `work` in place (the non-rebuild
+        // path below applies them again, after the black levels, as before). Only the enables
+        // are compared, so no copy of the whole back end is made per frame.
         let enables = |g: styx_pisp::uapi::BeGlobalConfig| (g.bayer_enables & mask, g.rgb_enables);
-        let blocks_changed = enables(probe.config().global) != enables(self.work.config().global);
+        let before = enables(self.work.config().global);
+        isp.apply_be_detail(&mut self.work);
+        self.work
+            .set_tdn(tdn_cfg.map(|t| t.0), tdn_cfg.is_some_and(|t| t.1));
+        let blocks_changed = enables(self.work.config().global) != before;
         if self.fresh || lsc_on != self.lsc_on || blocks_changed {
             let mut be = self.template.clone();
             isp.apply_be(&mut be);
             be.set_tdn(tdn_cfg.map(|t| t.0), tdn_cfg.is_some_and(|t| t.1));
-            self.cfg = be.prepare().map_err(config_error)?;
+            let prepared = be.prepare();
+            self.cfg = match prepared {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    // `work` now holds these settings without the rebuild: rebuild from the
+                    // template next time, as the failed one would have.
+                    self.fresh = true;
+                    return Err(config_error(e));
+                }
+            };
             self.work = be;
             self.fresh = false;
             self.lsc_on = lsc_on;

@@ -140,6 +140,9 @@ native = [
 # Native cameras without a PiSP process on a Vulkan GPU when one exists (styx-gpuisp: Vulkan
 # loaded at run time, the software ISP otherwise; `STYX_GPU_ISP=0` turns it off).
 gpu-isp = ["native", "styx-pipeline/gpu"]
+# The PiSP debug hooks (`STYX_PISP_BE_DUMP`, `STYX_PISP_BE_PATCH`, `STYX_PISP_FE_LINES_PROBE`;
+# styx-pisp's `debug-hooks`). Off by default; not for production builds.
+pisp-debug-hooks = ["native", "styx-pipeline/pisp-debug-hooks"]
 # UVC cameras driven from userspace over usbfs (`styx-uvc`), without `uvcvideo`. Opt-in:
 # where `uvcvideo` also has the camera, it stays the default backend (docs/uvc.md).
 uvc = ["facade", "dep:styx-uvc", "styx-kernel"]

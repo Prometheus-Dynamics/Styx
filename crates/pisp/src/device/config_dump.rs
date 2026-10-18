@@ -4,6 +4,7 @@
 //! `STYX_PISP_BE_DUMP=DIR[:N,N,...]` writes the config of back-end jobs N (default 30 and 90,
 //! counted from 0 over the process) to `DIR/styx_be_<N>.bin`; `STYX_PISP_FE_DUMP` does the same
 //! for front-end configs (`DIR/styx_fe_<N>.bin`). Unset, each costs one load per config.
+//! Built only with the `debug-hooks` feature (the device module has no-op stubs otherwise).
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -60,6 +61,35 @@ fn dump(t: &'static Target, var: &str, jobs: &AtomicU64, what: &str, bytes: &[u8
 /// submits, to find which block makes an image differ. Unset, it costs one load per job.
 static PATCH: OnceLock<Option<(Box<BeTilesConfig>, Vec<String>)>> = OnceLock::new();
 
+/// The block names `STYX_PISP_BE_PATCH` accepts (see [`be_patch`]).
+const BLOCKS: &[&str] = &[
+    "dpc",
+    "geq",
+    "tdn",
+    "sdn",
+    "blc",
+    "lsc",
+    "wbg",
+    "cdn",
+    "cac",
+    "debin",
+    "tonemap",
+    "demosaic",
+    "ccm",
+    "ycbcr",
+    "sharpen",
+    "false_colour",
+    "sh_fc_combine",
+    "ycbcr_inverse",
+    "gamma",
+    "resample",
+    "bayer_enables",
+    "rgb_enables",
+    "tdn-reset",
+    "-sdn",
+    "-cdn",
+];
+
 fn patch_target() -> Option<&'static (Box<BeTilesConfig>, Vec<String>)> {
     PATCH
         .get_or_init(|| {
@@ -76,6 +106,13 @@ fn patch_target() -> Option<&'static (Box<BeTilesConfig>, Vec<String>)> {
                 return None;
             };
             let blocks: Vec<String> = blocks.split(',').map(|s| s.trim().to_owned()).collect();
+            // An unknown name would silently patch nothing: refuse the whole patch instead.
+            if let Some(bad) = blocks.iter().find(|b| !BLOCKS.contains(&b.as_str())) {
+                eprintln!(
+                    "pisp: STYX_PISP_BE_PATCH {path}: unknown block {bad:?} (not patched at all)"
+                );
+                return None;
+            }
             eprintln!("pisp: patching back-end blocks {blocks:?} from {path}");
             Some((Box::new(r), blocks))
         })
@@ -115,6 +152,7 @@ pub(super) fn be_patch(cfg: &BeTilesConfig) -> Option<Box<BeTilesConfig>> {
             "tdn-reset" => c.tdn.reset = 1,
             "-sdn" => c.global.bayer_enables &= !bayer_enable::SDN,
             "-cdn" => c.global.bayer_enables &= !bayer_enable::CDN,
+            // Unknown names were refused when the patch was loaded (`BLOCKS`).
             _ => {}
         }
     }
