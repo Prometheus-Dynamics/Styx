@@ -47,7 +47,11 @@ mod mcap_host;
 #[cfg(feature = "replay-mcap")]
 mod mcap_native;
 #[cfg(feature = "replay-mcap")]
+mod raw_storage;
+#[cfg(feature = "replay-mcap")]
 mod recording;
+#[cfg(feature = "replay-mcap")]
+pub use raw_storage::RawStorage;
 #[cfg(feature = "replay-mcap")]
 pub use recording::{ChannelId, ChannelSchema, RecordCompression, RecorderOptions, RecorderStats};
 #[cfg(feature = "replay-styxrec")]
@@ -142,6 +146,9 @@ pub struct StreamRecorder {
     /// Write counters when there is no writer thread (it keeps its own).
     #[cfg(feature = "replay-mcap")]
     counters: recording::Counters,
+    /// How 16-bit Bayer frames are stored.
+    #[cfg(feature = "replay-mcap")]
+    raw_storage: RawStorage,
 }
 
 #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
@@ -214,6 +221,8 @@ impl StreamRecorder {
             host_sequences: Vec::new(),
             #[cfg(feature = "replay-mcap")]
             counters: recording::Counters::default(),
+            #[cfg(feature = "replay-mcap")]
+            raw_storage: RawStorage::AsIs,
         }
     }
 
@@ -233,7 +242,9 @@ impl StreamRecorder {
             0 => RecorderOutput::Mcap(Box::new(out)),
             capacity => RecorderOutput::McapQueued(recording::Background::start(out, capacity)?),
         };
-        Ok(Self::with_output(out, path))
+        let mut rec = Self::with_output(out, path);
+        rec.raw_storage = options.raw_storage;
+        Ok(rec)
     }
 
     /// Append one frame with its metadata and companions. With a writer thread the frame is
@@ -244,7 +255,9 @@ impl StreamRecorder {
         match &mut self.out {
             #[cfg(feature = "replay-mcap")]
             RecorderOutput::Mcap(out) => {
-                let msgs = mcap_format::McapRecorder::encode_frame(frame)?;
+                let converted = raw_storage::convert(frame, self.raw_storage)?;
+                let msgs =
+                    mcap_format::McapRecorder::encode_frame(converted.as_ref().unwrap_or(frame))?;
                 recording::apply(
                     out,
                     recording::Item::Frame { sequence, msgs },
@@ -253,7 +266,9 @@ impl StreamRecorder {
             }
             #[cfg(feature = "replay-mcap")]
             RecorderOutput::McapQueued(out) => {
-                let msgs = mcap_format::McapRecorder::encode_frame(frame)?;
+                let converted = raw_storage::convert(frame, self.raw_storage)?;
+                let msgs =
+                    mcap_format::McapRecorder::encode_frame(converted.as_ref().unwrap_or(frame))?;
                 out.push(recording::Item::Frame { sequence, msgs })?
             }
             #[cfg(feature = "replay-styxrec")]

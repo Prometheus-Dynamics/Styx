@@ -632,6 +632,10 @@ fn ros_encoding(code: FourCc) -> String {
         FourCc::BGGR => "bayer_bggr8".into(),
         FourCc::GBRG => "bayer_gbrg8".into(),
         FourCc::GRBG => "bayer_grbg8".into(),
+        c if &c.to_u32().to_le_bytes() == b"RG16" => "bayer_rggb16".into(),
+        c if matches!(&c.to_u32().to_le_bytes(), b"BYR2" | b"BG16") => "bayer_bggr16".into(),
+        c if &c.to_u32().to_le_bytes() == b"GB16" => "bayer_gbrg16".into(),
+        c if &c.to_u32().to_le_bytes() == b"GR16" => "bayer_grbg16".into(),
         other => format!("styx:{other}"),
     }
 }

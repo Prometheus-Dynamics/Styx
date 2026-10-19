@@ -656,7 +656,7 @@ pub mod prelude {
     #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
     pub use crate::replay::StreamRecorder;
     #[cfg(feature = "replay-mcap")]
-    pub use crate::replay::{RecordCompression, RecorderOptions, RecorderStats};
+    pub use crate::replay::{RawStorage, RecordCompression, RecorderOptions, RecorderStats};
     #[cfg(feature = "facade")]
     pub use crate::replay::{
         RecordingHeader, ReplayError, ReplayPacing, ReplaySourceConfig, StreamFormat,

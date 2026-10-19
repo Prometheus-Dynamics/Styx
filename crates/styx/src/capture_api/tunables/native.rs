@@ -212,9 +212,10 @@ pub struct NativeIspConfig {
     /// Every processed frame of the PiSP carries the raw frame it was made from as a
     /// `CompanionKind::SensorRaw` companion: the front end's buffer the back end read, leased
     /// as it is (16-bit Bayer, the sensor's value in the top bits; no copy). The front end gets
-    /// two more buffers for raw frames consumers hold; a consumer holding more makes the front
-    /// end drop frames (counted). `false` (default): no raw companion. Set by the planner for a
-    /// `Frames::sensor_raw()` consumer.
+    /// four more buffers (2 MB each at 1280x800) for raw frames consumers hold; with four out,
+    /// frames go without their raw one (`Drops::raw_skipped`) and the stream is unaffected.
+    /// `false` (default): no raw companion. Set by the planner for a `Frames::sensor_raw()`
+    /// consumer.
     pub sensor_raw: bool,
     /// Temporal denoise in the PiSP's back end when the tuning has it (`true`, the default):
     /// a running average of the frame, two extra raw-sized buffers read and written by every

@@ -68,4 +68,4 @@ impl PispOptions {
 }
 
 /// See [`PispOptions::RAW_LEASE_BUFFERS`].
-pub const RAW_LEASE_BUFFERS: u32 = 2;
+pub const RAW_LEASE_BUFFERS: u32 = 4;

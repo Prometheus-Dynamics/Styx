@@ -46,6 +46,8 @@ pub struct RecorderOptions {
     /// the start and then every period (default 1 s), so timestamps on one clock can be put on
     /// another offline. `None`: none.
     pub clock_period: Option<Duration>,
+    /// How 16-bit Bayer frames (`Frames::sensor_raw`) are stored (default as they are).
+    pub raw_storage: super::RawStorage,
 }
 
 impl Default for RecorderOptions {
@@ -56,6 +58,7 @@ impl Default for RecorderOptions {
             chunk_size: None,
             queue_bytes: 64 << 20,
             clock_period: Some(Duration::from_secs(1)),
+            raw_storage: super::RawStorage::AsIs,
         }
     }
 }

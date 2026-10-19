@@ -123,14 +123,20 @@ fn client(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let applied = vision.set_control(ctl::AE_EXPOSURE_MAX_US, ControlValue::Uint(2000))?;
     println!("set ae_exposure_max_us 2000: {applied:?}");
     std::thread::sleep(Duration::from_millis(500));
-    let (_, _, last) = read(&vision, 1.0, false);
-    if let Some(n) = last.as_ref().and_then(|f| f.meta().native().copied()) {
-        println!(
-            "capped: exposure {} us, gain {:.2}x{:.2}",
-            n.exposure_ns / 1000,
-            n.analog_gain,
-            n.digital_gain
-        );
+    // A few frames' metadata, a few frames apart: what produced each.
+    for _ in 0..6 {
+        let (_, _, last) = read(&vision, 0.2, false);
+        if let Some(f) = last {
+            let n = f.meta().native().copied().unwrap_or_default();
+            println!(
+                "capped frame {}: exposure {} us, gain {:.2}x{:.2}, verified {}",
+                n.sequence,
+                n.exposure_ns / 1000,
+                n.analog_gain,
+                n.digital_gain,
+                n.verified
+            );
+        }
     }
     show("capped")?;
     let over = vision.set_control(ctl::EXPOSURE_TIME_US, ControlValue::Uint(100_000))?;
