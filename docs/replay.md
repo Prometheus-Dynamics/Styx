@@ -88,7 +88,7 @@ The profile is `ros2`, and messages are CDR-encoded with `ros2msg` schemas:
 | `/styx/image` | `sensor_msgs/msg/Image` | Raw frames. `encoding` is the ROS name (`mono8`, `rgb8`, `yuv422_yuy2`, ...) or `styx:<FOURCC>` for formats without one, e.g. NV12. The data is the visible rows, tightly packed, plane after plane. |
 | `/styx/image/compressed` | `sensor_msgs/msg/CompressedImage` | Compressed frames (`jpeg`, `h264`, `h265`) as captured. |
 | `/styx/pyramid/<level>` | `sensor_msgs/msg/Image` | Pyramid levels. |
-| `/styx/frame_meta` | `styx/msg/FrameMeta` | One message per image message: exact format, clock, backend sequence, crop and timing. The definition is embedded in the file, so Foxglove shows the fields. |
+| `/styx/frame_meta` | `styx/msg/FrameMeta` | One message per image message: exact format, clock, backend sequence, crop and timing; for native cameras the exposure, gains and frame timing, the end of frame, and the 3A record (white balance gains, colour temperature, lux, AE/AWB state, flicker, lens). The definition is embedded in the file, so Foxglove shows the fields. |
 
 - Messages of one frame share its MCAP `sequence` (the frame index) and `log_time` (the frame
   timestamp).

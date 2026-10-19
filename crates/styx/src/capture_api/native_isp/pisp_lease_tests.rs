@@ -77,6 +77,7 @@ fn leases_carry_the_configured_clock() {
             conversion,
             CpuPrep::LAZY,
             None,
+            Default::default(),
         )
     };
     let native = lease_in(ClockSource::Native);
@@ -117,6 +118,7 @@ fn nv12_leases_export_their_planes_and_return_the_buffer() {
         None,
         CpuPrep::LAZY,
         None,
+        Default::default(),
     );
     let planes = f.planes();
     assert_eq!(planes.len(), 2);
@@ -180,6 +182,7 @@ fn early_access_opens_the_window_on_the_capture_thread() {
             None,
             prep,
             None,
+            Default::default(),
         );
         assert!(f.planes()[0].data().iter().all(|&v| v == 1), "{prefetch:?}");
         drop(f);
@@ -265,6 +268,7 @@ fn cropped_leases_cover_the_crop_in_the_full_size_buffer() {
         None,
         CpuPrep::LAZY,
         None,
+        Default::default(),
     );
     let res = f.meta().format.resolution;
     assert_eq!((res.width.get(), res.height.get()), (32, 16));

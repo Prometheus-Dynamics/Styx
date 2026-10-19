@@ -164,6 +164,8 @@ impl Rig {
             frame_duration_ns: c.frame_duration.as_nanos() as u64,
             frame_length: c.frame_length,
             verified: c.verified,
+            frame_end_ns: 0,
+            aaa: None,
         };
         let meta = FrameMeta::new(format, instant_duration(frame.timestamp).as_nanos() as u64)
             .with_backend(BackendFrameMeta::Native(native));

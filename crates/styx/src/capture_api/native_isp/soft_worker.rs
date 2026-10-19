@@ -18,7 +18,7 @@ use styx_softisp::{OutputBuffers, Scale, Window};
 
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
-use super::{HeapBacking, aaa_sample, err, frame_meta, hold_soft, layouts};
+use super::{HeapBacking, aaa_sample, err, frame_meta, hold_soft, layouts, native_aaa};
 use crate::metrics::CaptureMetrics;
 
 /// What the worker needs besides the pipeline.
@@ -191,11 +191,8 @@ pub(super) fn spawn(
                 let t = &f.output.timing;
                 w.live
                     .isp_time(t.isp, t.settings + t.isp + t.stats + t.algorithms);
-                w.live.aaa(&aaa_sample(
-                    &f.output.step.params,
-                    &w.controls,
-                    f.sensor.frame,
-                ));
+                let sample = aaa_sample(&f.output.step.params, &w.controls, f.sensor.frame);
+                w.live.aaa(&sample);
                 let mut meta = frame_meta(
                     &w.mode,
                     f.sensor.frame,
@@ -204,6 +201,10 @@ pub(super) fn spawn(
                     super::super::native_backend::native_conversion(w.clock),
                 );
                 let dequeued = styx_core::prelude::CaptureInstant::from(f.raw.dequeued);
+                if let Some(BackendFrameMeta::Native(n)) = meta.backend.as_mut() {
+                    n.frame_end_ns = dequeued.as_nanos();
+                    n.aaa = Some(native_aaa(&sample, f.output.applied.wb));
+                }
                 meta.hops.set(Hop::Dequeued, dequeued.as_nanos());
                 meta.hops.set(Hop::IspDone, isp_done.as_nanos());
                 drop(f);

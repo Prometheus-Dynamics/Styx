@@ -174,3 +174,63 @@ fn sliced_frame_trailers_survive_the_wire_and_older_readers_skip_them() {
         assert_eq!(plain.layouts, frame.layouts);
     }
 }
+
+#[test]
+fn native_metadata_and_its_3a_record_cross_the_wire() {
+    let aaa = NativeAaa {
+        colour_gains: [1.9, 1.0, 1.6],
+        colour_temperature_k: 3665.0,
+        lux: 210.5,
+        ae_locked: true,
+        awb_converged: true,
+        flicker_period_ns: 10_000_000,
+        lens: Some(NativeLens {
+            position_dioptres: 2.5,
+            af_state: NativeAfState::Focused,
+            settled: Some(true),
+        }),
+    };
+    let native = NativeFrameMeta {
+        sequence: 77,
+        exposure_ns: 8_100_000,
+        analog_gain: 2.0,
+        digital_gain: 1.25,
+        frame_duration_ns: 8_333_333,
+        verified: true,
+        frame_end_ns: 123_456_789,
+        aaa: Some(aaa),
+        ..Default::default()
+    };
+    let mut frame = WireFrame::empty();
+    frame.layouts.push(PlaneLayout {
+        offset: 0,
+        len: 16,
+        stride: 4,
+    });
+    frame.backing = WireBacking::Memfd { len: 16 };
+    let progress = WireProgress {
+        slot: 1,
+        heights: [800, 400],
+        ring_attached: false,
+        outputs: smallvec::smallvec![0],
+    };
+    for (lens, progress) in [(true, Some(&progress)), (false, None)] {
+        let mut n = native;
+        if !lens {
+            n.aaa = Some(NativeAaa { lens: None, ..aaa });
+        }
+        frame.meta.backend = Some(BackendFrameMeta::Native(n));
+        let mut bytes = Vec::new();
+        encode_frame_with_progress(3, &frame, &FrameHops::new(), progress, &mut bytes);
+        let (mut back, mut got) = (WireFrame::empty(), None);
+        decode_frame_with_progress(&bytes, &mut back, &mut got).unwrap();
+        assert_eq!(back.meta.backend, Some(BackendFrameMeta::Native(n)));
+        assert_eq!(got.is_some(), progress.is_some());
+        // A frame without the trailer (another backend, an older service) has no native meta,
+        // also when the frame it is decoded into had some.
+        frame.meta.backend = None;
+        encode_frame_with_progress(4, &frame, &FrameHops::new(), progress, &mut bytes);
+        decode_frame_with_progress(&bytes, &mut back, &mut got).unwrap();
+        assert_eq!(back.meta.backend, None);
+    }
+}

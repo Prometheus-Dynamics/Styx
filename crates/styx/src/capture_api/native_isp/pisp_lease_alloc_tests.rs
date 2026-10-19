@@ -101,6 +101,7 @@ fn pisp_frames_reach_an_in_process_consumer_without_allocating_or_copying() {
                     prefetch: crate::capture_api::NativeCpuPrefetch::L3,
                 },
                 None,
+                Default::default(),
             )
         });
         let (closed, delivered) = allocations(|| {

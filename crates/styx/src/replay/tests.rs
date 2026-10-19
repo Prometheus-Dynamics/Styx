@@ -103,6 +103,10 @@ fn round_trip(format: StreamFormat) {
     );
     let nv12_bytes: Vec<u8> = (0..64 * 32 * 3 / 2).map(|i| (i * 7) as u8).collect();
     let nv12 = FrameLease::from_visible_bytes(nv12_format, 3_000, &nv12_bytes).unwrap();
+    #[cfg(feature = "replay-mcap")]
+    let mcap = format == StreamFormat::Mcap;
+    #[cfg(not(feature = "replay-mcap"))]
+    let mcap = false;
     // A frame of a sensor Styx drives: its exposure, gains and frame timing are kept.
     let mut native = frame(4, 4_000);
     native.meta_mut().clock = Some(TimestampClock::Monotonic);
@@ -116,6 +120,21 @@ fn round_trip(format: StreamFormat) {
         frame_duration_ns: 33_333_000,
         frame_length: 3662,
         verified: true,
+        // MCAP keeps the end of frame and the 3A record too (.styxrec does not).
+        frame_end_ns: if mcap { 4_008_000 } else { 0 },
+        aaa: mcap.then_some(NativeAaa {
+            colour_gains: [1.9, 1.0, 1.6],
+            colour_temperature_k: 3665.0,
+            lux: 120.0,
+            ae_locked: true,
+            awb_converged: false,
+            flicker_period_ns: 10_000_000,
+            lens: Some(NativeLens {
+                position_dioptres: 1.5,
+                af_state: NativeAfState::Scanning,
+                settled: Some(false),
+            }),
+        }),
     }));
     let originals = [frame(0, 0), with_pyramid, mjpeg, nv12, native];
     let mut recorder = StreamRecorder::with_format(&path, &header(grey(64, 32)), format).unwrap();

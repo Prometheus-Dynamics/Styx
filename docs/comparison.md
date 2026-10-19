@@ -171,7 +171,9 @@ if let RecvOutcome::Data(frame) = handle.recv_blocking(Duration::from_secs(1)) {
     let m = frame.meta().native().unwrap();            // NativeFrameMeta
     // m.sequence, m.exposure_ns, m.analog_gain, m.digital_gain, m.frame_duration_ns,
     // m.verified: read back from the sensor's embedded data (else predicted from the delays);
-    // frame.meta().timestamp: frame start, CLOCK_MONOTONIC
+    // frame.meta().timestamp: frame start, m.frame_end_ns: its last row, both CLOCK_MONOTONIC;
+    // m.aaa (processed captures): white balance gains, colour temperature, lux, AE/AWB state,
+    // flicker, and the lens (position, AF state, settled)
 }
 ```
 

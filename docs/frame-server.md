@@ -131,7 +131,8 @@ while let RecvOutcome::Data(e) = events.recv(Duration::from_secs(1)) { /* e.id, 
   100 µs and EV in thousandths converted; gains and lens positions in the device's units).
 - **The answer:** `AppliedControl`: the value in effect (read back where the backend applies
   at once: V4L2, UVC, virtual; else the value applied, which later frames carry in their
-  metadata: `NativeFrameMeta` exposure and gains), `clamped` when the value was outside the
+  metadata: `NativeFrameMeta` exposure and gains, which reach service clients too, with the 3A
+  record and the end of frame), `clamped` when the value was outside the
   control's range or between its steps (numbers of any type are taken for the control's type),
   `frame`: on a native camera's raw modes the sensor sequence of the first frame using it,
   `deferred` while the camera is stopped (applied when it starts), `restarted` for a frame

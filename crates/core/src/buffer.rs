@@ -8,6 +8,7 @@
 //! giving the buffer back) or over any [`ExternalBacking`], shared views and companions. With `std` on unix: memfd / dma-buf
 //! backings, their export and import, the memfd pool ([`SharedBufferPool`], Linux).
 
+mod aaa;
 mod clock;
 mod cpu_access;
 #[cfg(all(feature = "std", target_os = "linux"))]
@@ -21,6 +22,7 @@ mod pool;
 mod progress;
 mod views;
 
+pub use aaa::{NativeAaa, NativeAfState, NativeLens};
 pub use cpu_access::{CpuAccess, CpuReadWindow};
 pub use layout::{plane_layout_from_dims, plane_layout_with_stride};
 pub use meta::{

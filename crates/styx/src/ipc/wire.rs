@@ -37,6 +37,7 @@ use styx_core::prelude::*;
 mod controls;
 mod delivered;
 mod hops;
+mod native;
 mod progress;
 mod request;
 
@@ -519,6 +520,7 @@ pub(super) fn decode_frame_with_progress(
         frame.meta.hops = hops;
     }
     *progress = read_frame_progress(&mut r)?;
+    frame.meta.backend = native::read_native(&mut r)?.map(BackendFrameMeta::Native);
     Ok(Some(id))
 }
 
@@ -568,6 +570,9 @@ pub(super) fn encode_frame_with_progress(
     write_frame_hops(&mut w, hops);
     if let Some(p) = progress {
         write_frame_progress(&mut w, p);
+    }
+    if let Some(BackendFrameMeta::Native(n)) = &frame.meta.backend {
+        native::write_native(&mut w, n);
     }
     *out = w.0;
 }

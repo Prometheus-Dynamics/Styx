@@ -292,6 +292,8 @@ fn read_backend(r: &mut impl Read) -> Result<Option<BackendFrameMeta>, ReplayErr
             frame_duration_ns: read_u64(r)?,
             frame_length: read_u32(r)?,
             verified: read_u8(r)? != 0,
+            frame_end_ns: 0,
+            aaa: None,
             error: read_u8(r)? != 0,
         })),
         _ => return Err(ReplayError::Corrupt("unknown backend metadata")),

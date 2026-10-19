@@ -81,7 +81,21 @@ float32 native_digital_gain
 uint64 native_frame_duration_ns
 uint32 native_frame_length   # lines
 bool native_verified         # read back from the frame's embedded data, not predicted
-bool native_error            # the receiver flagged the frame";
+bool native_error            # the receiver flagged the frame
+# What the 3A loop knew of the frame (processed native captures). Absent in earlier version 2
+# recordings.
+uint64 native_frame_end_ns   # its last row received, CLOCK_MONOTONIC; 0: unknown
+bool aaa_valid
+float32[3] aaa_colour_gains  # white balance (red, green, blue) the ISP applied
+float32 aaa_colour_temperature_k
+float32 aaa_lux
+bool aaa_ae_locked
+bool aaa_awb_converged
+uint64 aaa_flicker_period_ns # 0: no flicker detected
+bool lens_valid
+float32 lens_dioptres
+uint8 lens_af_state          # 0 idle, 1 scanning, 2 focused, 3 failed
+uint8 lens_settled           # 0 unknown, 1 no, 2 yes";
 
 fn image_def() -> String {
     format!(
@@ -400,6 +414,7 @@ pub(super) fn encode_meta(meta: &FrameMeta, topic: &str, levels: &[u8]) -> Vec<u
     w.u32(n.frame_length);
     w.bool(n.verified);
     w.bool(n.error);
+    super::mcap_native::encode_aaa(&mut w, &n);
     w.finish()
 }
 
@@ -543,6 +558,14 @@ pub(super) fn decode_meta(data: &[u8]) -> Result<PartMeta, ReplayError> {
                 error,
                 ..*m
             };
+        }
+        // Later version 2 recordings append the 3A record.
+        if !r.at_end() {
+            let (frame_end_ns, aaa) = super::mcap_native::decode_aaa(&mut r)?;
+            if let Some(BackendFrameMeta::Native(m)) = &mut part.backend {
+                m.frame_end_ns = frame_end_ns;
+                m.aaa = aaa;
+            }
         }
     } else if matches!(part.backend, Some(BackendFrameMeta::Native(_))) {
         return Err(ReplayError::Corrupt(
@@ -712,6 +735,8 @@ mod tests {
             frame_duration_ns: 33_333_333,
             frame_length: 3662,
             verified: true,
+            frame_end_ns: 0,
+            aaa: None,
         };
         meta.backend = Some(BackendFrameMeta::Native(native));
         let part = decode_meta(&encode_meta(&meta, IMAGE_TOPIC, &[1, 2])).unwrap();

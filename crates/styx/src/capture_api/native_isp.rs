@@ -242,6 +242,31 @@ fn aaa_sample(
     }
 }
 
+/// What the 3A loop knew of frame `seq` for its metadata ([`NativeFrameMeta::aaa`]): its
+/// metrics sample with the white balance gains `wb` the ISP applied.
+fn native_aaa(s: &AaaSample, wb: [f64; 3]) -> styx_core::buffer::NativeAaa {
+    use crate::metrics::AfStateKind;
+    use styx_core::buffer::{NativeAaa, NativeAfState, NativeLens};
+    NativeAaa {
+        colour_gains: wb.map(|g| g as f32),
+        colour_temperature_k: s.colour_temperature as f32,
+        lux: s.lux as f32,
+        ae_locked: s.ae_locked,
+        awb_converged: s.awb_converged,
+        flicker_period_ns: s.flicker_period.map_or(0, |d| d.as_nanos() as u64),
+        lens: s.af.map(|af| NativeLens {
+            position_dioptres: af.lens_dioptres.unwrap_or(0.0) as f32,
+            af_state: match af.state {
+                AfStateKind::Idle => NativeAfState::Idle,
+                AfStateKind::Scanning => NativeAfState::Scanning,
+                AfStateKind::Focused => NativeAfState::Focused,
+                AfStateKind::Failed => NativeAfState::Failed,
+            },
+            settled: af.lens_settled,
+        }),
+    }
+}
+
 fn native_meta(sequence: u64, s: &SensorValues) -> NativeFrameMeta {
     NativeFrameMeta {
         sequence: sequence as u32,
@@ -253,6 +278,8 @@ fn native_meta(sequence: u64, s: &SensorValues) -> NativeFrameMeta {
         frame_duration_ns: s.frame_duration.as_nanos() as u64,
         frame_length: 0,
         verified: s.verified,
+        frame_end_ns: 0,
+        aaa: None,
     }
 }
 

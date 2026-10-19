@@ -26,7 +26,7 @@ use styx_pisp::uapi::BeCropConfig;
 
 use super::super::native_backend::stamp_clock;
 use super::super::request::CaptureError;
-use super::{err, layouts, native_meta};
+use super::{aaa_sample, err, layouts, native_aaa, native_meta};
 use crate::metrics::CaptureMetrics;
 
 /// Where leases give their output buffers back to the worker: a fixed lock-free ring (sending
@@ -409,6 +409,10 @@ impl Leaser<'_> {
         (i, index): (usize, u32),
     ) -> Result<FrameLease, String> {
         let buffer = self.buffers.get(self.p, i, index)?;
+        let aaa = native_aaa(
+            &aaa_sample(&self.p.step().params, self.p.controls(), self.f.sequence),
+            self.p.step().isp.wb,
+        );
         Ok(lease(
             placed,
             buffer,
@@ -419,6 +423,7 @@ impl Leaser<'_> {
             self.conversion,
             self.prep,
             self.progress.clone(),
+            aaa,
         ))
         .map(|mut l| {
             if let Some(w) = self.window {
@@ -441,6 +446,7 @@ fn lease(
     conversion: Option<ClockConversion>,
     prep: CpuPrep,
     progress: Option<Arc<SliceState>>,
+    aaa: styx_core::buffer::NativeAaa,
 ) -> FrameLease {
     let spec = placed.spec;
     let (width, height) = placed.size.unwrap_or_else(|| {
@@ -463,7 +469,11 @@ fn lease(
     let format = MediaFormat::new(spec.code, res, ColorSpace::Srgb);
     let mut meta = stamp_clock(
         FrameMeta::new(format, f.timestamp.as_nanos() as u64)
-            .with_backend(BackendFrameMeta::Native(native_meta(f.sequence, &f.sensor)))
+            .with_backend(BackendFrameMeta::Native(NativeFrameMeta {
+                frame_end_ns: CaptureInstant::from(f.dequeued).as_nanos(),
+                aaa: Some(aaa),
+                ..native_meta(f.sequence, &f.sensor)
+            }))
             .with_capture_instant(std::time::Instant::now()),
         conversion,
     );

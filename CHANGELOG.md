@@ -8,6 +8,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Per-frame 3A record on native frames.** `NativeFrameMeta` gains `aaa: Option<NativeAaa>`
+  (white balance gains the ISP applied, colour temperature, lux, AE locked, AWB converged,
+  flicker period, and the lens: position, `NativeAfState`, settled) and `frame_end_ns` (the last
+  row received, `CLOCK_MONOTONIC`, next to the frame-start timestamp), on PiSP and software ISP
+  captures.
+  - Camera service clients get `NativeFrameMeta` now (it was not sent: no exposure or gains
+    either), as a frame trailer older peers skip; the protocol version is unchanged.
+  - MCAP recordings keep it (appended to `styx/msg/FrameMeta`, still format version 2: older
+    readers ignore the new fields).
+
 - **MCAP recording on a device** (`StreamRecorder::mcap`, `RecorderOptions`; docs/replay.md):
   - a writer thread behind a bounded queue (`queue_bytes`, default 64 MiB): frames and host
     messages are dropped and counted when the disk falls behind (`stats()`: written, dropped,

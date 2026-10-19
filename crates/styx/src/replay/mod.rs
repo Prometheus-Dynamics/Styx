@@ -45,6 +45,8 @@ mod mcap_frames;
 #[cfg(feature = "replay-mcap")]
 mod mcap_host;
 #[cfg(feature = "replay-mcap")]
+mod mcap_native;
+#[cfg(feature = "replay-mcap")]
 mod recording;
 #[cfg(feature = "replay-mcap")]
 pub use recording::{ChannelId, ChannelSchema, RecordCompression, RecorderOptions, RecorderStats};

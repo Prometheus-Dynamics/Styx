@@ -204,6 +204,11 @@ pub struct NativeFrameMeta {
     pub frame_length: u32,
     /// The values were read back from the frame rather than predicted.
     pub verified: bool,
+    /// When the frame's last row was received (its raw buffer dequeued), in `CLOCK_MONOTONIC`
+    /// nanoseconds; the frame's timestamp is its start. 0: unknown.
+    pub frame_end_ns: u64,
+    /// What the 3A loop knew of the frame (processed native captures; `None` otherwise).
+    pub aaa: Option<super::NativeAaa>,
 }
 
 impl NativeFrameMeta {
@@ -225,6 +230,7 @@ impl PartialEq for NativeFrameMeta {
             self.frame_duration_ns,
             self.frame_length,
             self.verified,
+            self.frame_end_ns,
         ) == (
             o.sequence,
             o.bytes_used,
@@ -235,7 +241,8 @@ impl PartialEq for NativeFrameMeta {
             o.frame_duration_ns,
             o.frame_length,
             o.verified,
-        )
+            o.frame_end_ns,
+        ) && self.aaa == o.aaa
     }
 }
 

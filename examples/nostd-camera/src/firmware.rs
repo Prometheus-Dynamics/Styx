@@ -225,6 +225,8 @@ where
             frame_duration_ns: values.frame_duration.as_nanos() as u64,
             frame_length: 0,
             verified: values.verified,
+            frame_end_ns: 0,
+            aaa: None,
         };
         let meta = FrameMeta::new(format, instant_duration(frame.timestamp).as_nanos() as u64)
             .with_backend(BackendFrameMeta::Native(native))

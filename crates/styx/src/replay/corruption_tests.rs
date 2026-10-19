@@ -194,6 +194,8 @@ fn write_fuzz_seeds() {
                 frame_duration_ns: 33_333_000,
                 frame_length: 3662,
                 verified: true,
+                frame_end_ns: 0,
+                aaa: None,
             }));
             recorder.record(&f).unwrap();
         }

@@ -431,6 +431,8 @@ pub(crate) fn frame_lease(
         frame_duration_ns: c.map_or(0, |c| c.frame_duration.as_nanos() as u64),
         frame_length: c.map_or(0, |c| c.frame_length),
         verified: c.is_some_and(|c| c.verified),
+        frame_end_ns: 0,
+        aaa: None,
     };
     let meta = stamp_clock(
         FrameMeta::new(format, frame.timestamp.as_nanos() as u64)
