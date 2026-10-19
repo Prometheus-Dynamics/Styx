@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 
 use styx::ipc::FrameClient;
 use styx::prelude::*;
-use styx::replay::{RecordCompression, RecorderOptions, RecordingHeader, StreamRecorder};
+use styx::replay::{
+    RawStorage, RecordCompression, RecorderOptions, RecordingHeader, StreamRecorder,
+};
 
 const MIN_FREE: u64 = 2 << 30;
 
@@ -51,9 +53,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.split_once('x'))
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280u32, 800u32));
+    // `STYX_BENCH_RAW=1`: the raw sensor frames (16-bit Bayer), stored as they are and packed
+    // to 10 bits, at 15 and 30 fps.
+    let raw = std::env::var("STYX_BENCH_RAW").as_deref() == Ok("1");
     let client = FrameClient::options(socket)
         .low_priority()
-        .request(&Frames::gray().size(w, h))?;
+        .request(&if raw {
+            Frames::sensor_raw()
+        } else {
+            Frames::gray().size(w, h)
+        })?;
     // The camera's rate, from a second of frames.
     let t = Instant::now();
     let mut n = 0u32;
@@ -96,15 +105,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cpu_ms/f",
         "maxq_MB"
     );
-    for rate in [30u32, 60, 120] {
+    let storages: &[(&str, RawStorage)] = if raw {
+        &[("16", RawStorage::AsIs), ("p10", RawStorage::Packed10)]
+    } else {
+        &[("", RawStorage::AsIs)]
+    };
+    let rates: &[u32] = if raw { &[15, 30] } else { &[30, 60, 120] };
+    let runs = storages.iter().flat_map(|&s| {
+        codecs
+            .iter()
+            .take(if raw { 2 } else { 4 })
+            .map(move |&c| (s, c))
+    });
+    let runs: Vec<_> = runs.collect();
+    for &rate in rates {
         let every = (camera_fps / f64::from(rate)).round().max(1.0) as u32;
-        for (name, compression) in codecs {
+        for &((storage_name, raw_storage), (codec, compression)) in &runs {
+            let name = format!("{storage_name}{codec}");
             if free_bytes(dir) < MIN_FREE + seconds * 130 * (1 << 20) {
                 println!("stopping: less than 2 GB would stay free under {dir}");
                 return Ok(());
             }
             let options = RecorderOptions {
                 compression,
+                raw_storage,
                 ..Default::default()
             };
             let mut rec = match StreamRecorder::mcap(&path, &header, options) {
