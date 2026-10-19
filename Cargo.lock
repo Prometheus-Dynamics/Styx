@@ -5373,6 +5373,7 @@ dependencies = [
  "styx-sensor",
  "styx-softisp",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

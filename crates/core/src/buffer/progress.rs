@@ -102,17 +102,26 @@ impl FrameProgress {
     fn refresh(&self) {
         #[cfg(feature = "std")]
         if let Some(Source(source)) = &self.source {
+            // Complete and failed are final: a source that later reads otherwise (a camera
+            // service's slot reused for a later frame) does not change them.
+            if self.state.load(Ordering::Acquire) != RUNNING {
+                return;
+            }
             let (rows, state) = source.read();
             for (a, r) in self.rows.iter().zip(rows) {
                 a.fetch_max(r, Ordering::Release);
             }
             match state {
                 ProgressState::Running => {}
-                ProgressState::Complete => self.state.store(COMPLETE, Ordering::Release),
-                ProgressState::Failed => {
+                ProgressState::Complete | ProgressState::Failed => {
+                    let end = if state == ProgressState::Complete {
+                        COMPLETE
+                    } else {
+                        FAILED
+                    };
                     let _ = self.state.compare_exchange(
                         RUNNING,
-                        FAILED,
+                        end,
                         Ordering::AcqRel,
                         Ordering::Acquire,
                     );
@@ -129,19 +138,29 @@ impl FrameProgress {
         self.notify();
     }
 
-    /// Every row is final: `rows` is each output's height.
+    /// Every row is final: `rows` is each output's height. Nothing changes once the frame
+    /// failed.
     pub fn complete(&self, rows: [u32; 2]) {
-        for (a, r) in self.rows.iter().zip(rows) {
-            a.fetch_max(r, Ordering::Release);
+        if self.end(COMPLETE) {
+            for (a, r) in self.rows.iter().zip(rows) {
+                a.fetch_max(r, Ordering::Release);
+            }
         }
-        self.state.store(COMPLETE, Ordering::Release);
         self.notify();
     }
 
-    /// The frame will not complete.
+    /// The frame will not complete. Nothing changes once it completed.
     pub fn fail(&self) {
-        self.state.store(FAILED, Ordering::Release);
+        self.end(FAILED);
         self.notify();
+    }
+
+    /// Running to `end`; `false` when the frame had already ended (complete and failed are
+    /// final).
+    fn end(&self, end: u8) -> bool {
+        self.state
+            .compare_exchange(RUNNING, end, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     fn notify(&self) {
@@ -158,6 +177,32 @@ impl FrameProgress {
             progress: self,
             output: output.min(1),
         }
+    }
+}
+
+/// One output's progress, owned ([`super::FrameLease::progress_handle`]): it outlives the
+/// lease, so a consumer that hands the frame on can still tell whether the camera completed or
+/// failed it. It holds only the progress, never the frame's buffers.
+#[cfg(feature = "std")]
+#[derive(Clone, Debug)]
+pub struct FrameProgressHandle {
+    progress: alloc::sync::Arc<FrameProgress>,
+    output: usize,
+}
+
+#[cfg(feature = "std")]
+impl FrameProgressHandle {
+    /// Output `output`'s progress of `progress`.
+    pub fn new(progress: alloc::sync::Arc<FrameProgress>, output: usize) -> Self {
+        Self {
+            progress,
+            output: output.min(1),
+        }
+    }
+
+    /// The view the lease's [`super::FrameLease::progress`] gives.
+    pub fn get(&self) -> FrameProgressRef<'_> {
+        self.progress.output(self.output)
     }
 }
 
@@ -290,8 +335,13 @@ mod tests {
         p.complete([800, 400]);
         assert_eq!(t.join().unwrap(), ProgressWait::Complete);
         assert_eq!((main.rows(), level.rows()), (800, 400));
+        // Final: a completed frame does not fail, a failed one does not complete.
+        p.fail();
+        assert!(main.is_complete());
         let f = FrameProgress::new([0, 0]);
         f.fail();
+        f.complete([800, 400]);
+        assert_eq!((f.output(0).is_failed(), f.output(0).rows()), (true, 0));
         assert_eq!(
             f.output(0).wait(10, Duration::from_secs(1)),
             ProgressWait::Failed
@@ -336,5 +386,15 @@ mod tests {
             std::sync::Condvar::new(),
         )));
         assert!(failed.output(0).is_failed());
+        // Final states stay: a source read as complete later (its slot reused) changes nothing.
+        let shared = Arc::new(Shared(
+            Mutex::new(([10, 5], ProgressState::Failed)),
+            std::sync::Condvar::new(),
+        ));
+        let handle =
+            FrameProgressHandle::new(Arc::new(FrameProgress::with_source(shared.clone())), 1);
+        *shared.0.lock().unwrap() = ([800, 400], ProgressState::Complete);
+        assert_eq!(handle.clone().get().state(), ProgressState::Failed);
+        assert_eq!(handle.get().output(), 1);
     }
 }

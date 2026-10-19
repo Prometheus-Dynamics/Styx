@@ -524,6 +524,10 @@ impl<B: ExternalBacking> ExternalBacking for MeteredBacking<B> {
         self.inner.progress()
     }
 
+    fn progress_handle(&self) -> Option<styx_core::buffer::FrameProgressHandle> {
+        self.inner.progress_handle()
+    }
+
     fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
         self.inner.host_spans(span)
     }

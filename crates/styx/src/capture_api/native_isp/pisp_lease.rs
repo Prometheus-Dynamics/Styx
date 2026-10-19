@@ -245,6 +245,14 @@ impl ExternalBacking for BeBacking {
         self.progress.as_ref().map(|(s, i)| s.progress.output(*i))
     }
 
+    fn progress_handle(&self) -> Option<styx_core::buffer::FrameProgressHandle> {
+        let (s, i) = self.progress.as_ref()?;
+        Some(styx_core::buffer::FrameProgressHandle::new(
+            s.progress.clone(),
+            *i,
+        ))
+    }
+
     fn cpu_access(&self) -> CpuAccess {
         if self.buffer.cached {
             CpuAccess::Cached

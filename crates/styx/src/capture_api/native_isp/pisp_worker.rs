@@ -257,6 +257,7 @@ pub(super) fn spawn(
                     Ok(PispEvent::Frame(f)) => f,
                     Ok(PispEvent::Slice(s)) => {
                         if let Some(prev) = sliced.take() {
+                            crate::trace::debug!(backend = "native", sliced = prev.sequence, next = s.sequence, "sliced frame failed: the next frame's slice came first");
                             prev.fail(&mut p);
                         }
                         match super::pisp_sliced::slice_leases(&p, &s, &mut buffers, &w, &ret_tx) {
@@ -279,6 +280,7 @@ pub(super) fn spawn(
                     // back is processed.
                     Err(PipelineError::OutputsHeld(output)) => {
                         if let Some(prev) = sliced.take() {
+                            crate::trace::debug!(backend = "native", sliced = prev.sequence, output, "sliced frame failed: back end buffers held");
                             prev.fail(&mut p);
                         }
                         held_drops += 1;
@@ -298,6 +300,7 @@ pub(super) fn spawn(
                     }
                     Err(e) => {
                         if let Some(prev) = sliced.take() {
+                            crate::trace::debug!(backend = "native", sliced = prev.sequence, error = %e, "sliced frame failed: frame error");
                             prev.fail(&mut p);
                         }
                         *w.error.lock() = Some(err(e));
@@ -324,6 +327,7 @@ pub(super) fn spawn(
                     continue;
                 }
                 if let Some(prev) = sliced.take() {
+                    crate::trace::debug!(backend = "native", sliced = prev.sequence, frame = f.sequence, "sliced frame failed: another frame completed");
                     prev.fail(&mut p);
                 }
                 let frame = match frame_leases(&p, &f, &mut buffers, &w, &ret_tx, None) {
@@ -337,6 +341,12 @@ pub(super) fn spawn(
                 if deliver(&w.live, tx, frame, "native-pisp", w.send_timeout) {
                     break;
                 }
+            }
+            // A sliced frame still being written never will be: its consumers (and a camera
+            // service's clients, a later client among them) must not wait for it.
+            if let Some(prev) = sliced.take() {
+                crate::trace::debug!(backend = "native", sliced = prev.sequence, "sliced frame failed: the capture stopped");
+                prev.fail(&mut p);
             }
             // Leases still out return their buffers to a closed channel; the back end frees
             // its buffers once they are dropped.

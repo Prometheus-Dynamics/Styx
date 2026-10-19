@@ -33,6 +33,8 @@ raw-decoders = ["styx/raw-decoders"]
 image = ["styx/image"]
 # The native stack; also brings `frame-socket` and the sensor / software ISP crates the
 # `sensor_check` and `raw_processing` examples use directly.
+# Styx's debug log on stderr (sliced_rejoin).
+trace-log = ["styx/tracing", "dep:tracing-subscriber"]
 native = ["styx/native", "frame-socket", "dep:styx-sensor", "dep:styx-softisp", "dep:styx-dng", "dep:styx-pipeline"]
 frame-socket = ["styx/frame-socket"]
 # Camera previews (`styx::preview`) with libjpeg-turbo: the `preview_server` (a tiny std HTTP
@@ -45,6 +47,7 @@ preview = ["preview-only", "codec-turbojpeg"]
 uvc = ["styx/uvc", "v4l2"]
 
 [dependencies]
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"], optional = true }
 styx = { workspace = true, default-features = false, features = ["hooks"] }
 styx-codec.workspace = true
 daedalus = { workspace = true, features = ["engine", "plugins"], optional = true }
@@ -74,6 +77,12 @@ name = "native_processed"
 path = "04_performance/native_processed.rs"
 test = false
 required-features = ["native"]
+
+[[bin]]
+name = "sliced_rejoin"
+path = "04_performance/sliced_rejoin.rs"
+test = false
+required-features = ["native", "trace-log"]
 
 [[bin]]
 name = "hop_breakdown"

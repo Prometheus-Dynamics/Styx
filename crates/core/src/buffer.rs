@@ -32,9 +32,9 @@ pub use meta::{
 pub use plane::{
     FrameAllocation, FrameLeaseDescriptor, FramePlaneDescriptor, FrameValidationError, PlaneLayout,
 };
-#[cfg(feature = "std")]
-pub use progress::ProgressSource;
 pub use progress::{FrameProgress, FrameProgressRef, ProgressState, ProgressWait};
+#[cfg(feature = "std")]
+pub use progress::{FrameProgressHandle, ProgressSource};
 pub use views::{
     FramePlaneShape, Plane, PlaneMut, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
 };

@@ -21,7 +21,7 @@ use styx_capture::prelude::FrameLease;
 /// on the CPU before it completed (only then can the CPU hold stale lines of rows below the
 /// first slice, so only then are the buffers synced again on completion).
 pub(super) struct SliceState {
-    pub(super) progress: FrameProgress,
+    pub(super) progress: Arc<FrameProgress>,
     pub(super) read: AtomicBool,
 }
 
@@ -76,6 +76,14 @@ impl SlicedOut {
     }
 }
 
+impl Drop for SlicedOut {
+    /// A frame dropped without [`SlicedOut::complete`] or [`SlicedOut::fail`] (a worker that
+    /// ended) fails, so nothing waits for it; after either, this changes nothing.
+    fn drop(&mut self) {
+        self.state.progress.fail();
+    }
+}
+
 /// The leases of a sliced frame's first slice, and what completes them later. `None` when the
 /// frame's sensor values are unknown (the frame then just arrives whole).
 pub(super) fn slice_leases(
@@ -109,7 +117,7 @@ pub(super) fn slice_leases(
         passes: Vec::new(),
     };
     let state = Arc::new(SliceState {
-        progress: FrameProgress::new(s.rows),
+        progress: Arc::new(FrameProgress::new(s.rows)),
         read: AtomicBool::new(false),
     });
     let Some(lease) = frame_leases(p, &f, buffers, w, returns, Some(state.clone()))? else {

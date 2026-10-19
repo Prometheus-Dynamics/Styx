@@ -273,6 +273,11 @@ impl ExternalBacking for Released {
         self.progress.as_ref().map(|(p, i)| p.output(*i))
     }
 
+    fn progress_handle(&self) -> Option<styx_core::buffer::FrameProgressHandle> {
+        let (p, i) = self.progress.as_ref()?;
+        Some(styx_core::buffer::FrameProgressHandle::new(p.clone(), *i))
+    }
+
     fn backing_kind(&self) -> &'static str {
         "ipc"
     }

@@ -670,7 +670,14 @@ fn send_sliced(
         let state = match p.wait(rows[p.output().min(1)] + 1, left) {
             ProgressWait::Complete => ProgressState::Complete,
             ProgressWait::Rows(_) => ProgressState::Running,
-            ProgressWait::Failed | ProgressWait::TimedOut => ProgressState::Failed,
+            ProgressWait::Failed => {
+                crate::trace::debug!(rows = ?p.all_rows(), "sliced frame failed by the camera");
+                ProgressState::Failed
+            }
+            ProgressWait::TimedOut => {
+                crate::trace::debug!(rows = ?p.all_rows(), "sliced frame not complete in time: sent as failed");
+                ProgressState::Failed
+            }
         };
         conn.progress(slot, p.all_rows(), state);
         if state != ProgressState::Running {
@@ -733,6 +740,12 @@ fn send_frames(
         };
         let delta = frame.meta().delta;
         if awaiting_keyframe && delta {
+            continue;
+        }
+        // A sliced frame the camera failed (one still queued from a capture that stopped, for
+        // a client joining after an idle stop) is not sent: it will never complete.
+        if frame.progress().is_some_and(|p| p.is_failed()) {
+            counters.skipped.fetch_add(1, Ordering::Relaxed);
             continue;
         }
         // A sliced frame handed out before it is complete (`NativeIspConfig::deliver_slices`):

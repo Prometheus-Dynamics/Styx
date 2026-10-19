@@ -76,6 +76,12 @@ pub trait ExternalBacking: Send + Sync {
         None
     }
 
+    /// [`Self::progress`], owned (it outlives the lease); `None` (default) without progress.
+    #[cfg(feature = "std")]
+    fn progress_handle(&self) -> Option<super::FrameProgressHandle> {
+        None
+    }
+
     fn cpu_access(&self) -> CpuAccess {
         match self.residency() {
             FrameResidency::HostOwned
@@ -347,6 +353,14 @@ impl FrameLease {
     /// `None`: complete, as every other frame.
     pub fn progress(&self) -> Option<super::FrameProgressRef<'_>> {
         self.external.as_ref()?.progress()
+    }
+
+    /// [`Self::progress`], owned: kept after the lease is dropped or handed on, to tell a frame
+    /// the camera failed (its rows stopped being written) from a failure of the consumer's own,
+    /// without holding the frame's buffers.
+    #[cfg(feature = "std")]
+    pub fn progress_handle(&self) -> Option<super::FrameProgressHandle> {
+        self.external.as_ref()?.progress_handle()
     }
 
     /// Whether the CPU can read the planes, and at what cost ([`CpuAccess`]). Frames in their
