@@ -200,6 +200,11 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
         menu: None,
         metadata: ControlMetadata::default(),
     };
+    // An `Int` control whose values are `labels`' indices, listed as its menu.
+    let menu = |m: ControlMeta, labels: &[&str]| ControlMeta {
+        menu: Some(labels.iter().map(|l| l.to_string()).collect()),
+        ..m
+    };
     vec![
         meta(
             controls::EXPOSURE_TIME_US,
@@ -292,23 +297,29 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
             ControlValue::Float(0.0),
             ControlValue::Float(0.01),
         ),
-        meta(
-            controls::AE_FLICKER_MODE,
-            "ae_flicker_mode",
-            ControlKind::Int,
-            ControlValue::Int(0),
-            ControlValue::Int(3),
-            ControlValue::Int(3),
-            ControlValue::Int(1),
+        menu(
+            meta(
+                controls::AE_FLICKER_MODE,
+                "ae_flicker_mode",
+                ControlKind::Int,
+                ControlValue::Int(0),
+                ControlValue::Int(3),
+                ControlValue::Int(3),
+                ControlValue::Int(1),
+            ),
+            &["off", "50 Hz", "60 Hz", "auto"],
         ),
-        meta(
-            controls::AE_DEFLICKER_MODE,
-            "ae_deflicker_mode",
-            ControlKind::Int,
-            ControlValue::Int(0),
-            ControlValue::Int(2),
-            ControlValue::Int(2),
-            ControlValue::Int(1),
+        menu(
+            meta(
+                controls::AE_DEFLICKER_MODE,
+                "ae_deflicker_mode",
+                ControlKind::Int,
+                ControlValue::Int(0),
+                ControlValue::Int(2),
+                ControlValue::Int(2),
+                ControlValue::Int(1),
+            ),
+            &["off", "on", "with flicker avoidance"],
         ),
         ControlMeta {
             access: Access::ReadOnly,
@@ -324,14 +335,17 @@ fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
         },
         ControlMeta {
             access: Access::ReadOnly,
-            ..meta(
-                controls::AE_STATE,
-                "ae_state",
-                ControlKind::Int,
-                ControlValue::Int(0),
-                ControlValue::Int(2),
-                ControlValue::Int(1),
-                ControlValue::Int(1),
+            ..menu(
+                meta(
+                    controls::AE_STATE,
+                    "ae_state",
+                    ControlKind::Int,
+                    ControlValue::Int(0),
+                    ControlValue::Int(2),
+                    ControlValue::Int(1),
+                    ControlValue::Int(1),
+                ),
+                &["inactive", "searching", "converged"],
             )
         },
     ]

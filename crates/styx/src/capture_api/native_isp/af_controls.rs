@@ -256,16 +256,17 @@ pub(crate) fn report(r: &AfReport, params: &Params) {
 /// The AF controls a camera with a focus lens lists (`limits`: the lens position range in
 /// dioptres).
 pub(crate) fn metas(limits: (f64, f64)) -> Vec<ControlMeta> {
-    let int = |id, name: &str, max: i32, default: i32| ControlMeta {
+    // An `Int` control whose values are `labels`' indices (listed as its menu).
+    let int = |id, name: &str, labels: &[&str], default: i32| ControlMeta {
         id,
         name: name.into(),
         kind: ControlKind::Int,
         access: Access::ReadWrite,
         min: ControlValue::Int(0),
-        max: ControlValue::Int(max),
+        max: ControlValue::Int(labels.len() as i32 - 1),
         default: ControlValue::Int(default),
         step: Some(ControlValue::Int(1)),
-        menu: None,
+        menu: Some(labels.iter().map(|l| l.to_string()).collect()),
         metadata: ControlMetadata::default(),
     };
     let rect = ControlRect {
@@ -275,19 +276,39 @@ pub(crate) fn metas(limits: (f64, f64)) -> Vec<ControlMeta> {
         height: 65535,
     };
     vec![
-        int(ids::AF_MODE, "af_mode", 2, 2),
-        int(ids::AF_TRIGGER, "af_trigger", 1, 0),
-        int(ids::AF_RANGE, "af_range", 2, 0),
-        int(ids::AF_SPEED, "af_speed", 1, 0),
-        int(ids::AF_PAUSE, "af_pause", 2, 2),
+        int(
+            ids::AF_MODE,
+            "af_mode",
+            &["manual", "auto", "continuous"],
+            2,
+        ),
+        int(ids::AF_TRIGGER, "af_trigger", &["start", "cancel"], 0),
+        int(ids::AF_RANGE, "af_range", &["normal", "macro", "full"], 0),
+        int(ids::AF_SPEED, "af_speed", &["normal", "fast"], 0),
+        int(
+            ids::AF_PAUSE,
+            "af_pause",
+            &["immediate", "deferred", "resume"],
+            2,
+        ),
         ControlMeta {
             access: Access::ReadOnly,
-            ..int(ids::AF_PAUSE_STATE, "af_pause_state", 2, 0)
+            ..int(
+                ids::AF_PAUSE_STATE,
+                "af_pause_state",
+                &["running", "pause requested", "paused"],
+                0,
+            )
         },
-        int(ids::AF_METERING, "af_metering", 1, 0),
+        int(ids::AF_METERING, "af_metering", &["auto", "windows"], 0),
         ControlMeta {
             access: Access::ReadOnly,
-            ..int(ids::AF_STATE, "af_state", 3, 0)
+            ..int(
+                ids::AF_STATE,
+                "af_state",
+                &["idle", "scanning", "focused", "failed"],
+                0,
+            )
         },
         ControlMeta {
             id: ids::LENS_POSITION,

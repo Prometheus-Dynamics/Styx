@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Native camera controls with enumerated values list their labels as the control's `menu`
+  (values unchanged, still `Int`): `ae_flicker_mode` (off, 50 Hz, 60 Hz, auto),
+  `ae_deflicker_mode`, `ae_state`, and the AF controls (`af_mode`, `af_trigger`, `af_range`,
+  `af_speed`, `af_pause`, `af_pause_state`, `af_metering`, `af_state`).
+
 - **Per-frame 3A record on native frames.** `NativeFrameMeta` gains `aaa: Option<NativeAaa>`
   (white balance gains the ISP applied, colour temperature, lux, AE locked, AWB converged,
   flicker period, and the lens: position, `NativeAfState`, settled) and `frame_end_ns` (the last
