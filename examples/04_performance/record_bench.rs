@@ -9,8 +9,9 @@
 //! Luma frames of the size (default 1280x800: the bytes of a RAW8 frame of the OV9782) are
 //! taken at the camera's rate and every n-th recorded for 30, 60 and 120 fps; each run writes
 //! `DIR/bench.mcap` and deletes it. Per run: frames recorded and dropped (queue full), the rate
-//! sustained, MB/s to disk, the compression ratio and this process's CPU per frame (its writer
-//! and compression included). Runs stop when the disk under DIR has less than 2 GB free.
+//! recorded, MB/s to disk over the run and the flush after it (`flush_s`: draining the queue
+//! and syncing the file), the compression ratio (message bytes, companions included, over file
+//! bytes) and this process's CPU per frame (its writer and compression included). Runs stop when the disk under DIR has less than 2 GB free.
 
 use std::time::{Duration, Instant};
 
@@ -83,8 +84,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("zstd3", RecordCompression::Zstd { level: 3 }),
     ];
     println!(
-        "{:>4} {:>6} {:>8} {:>8} {:>8} {:>7} {:>7} {:>9} {:>9}",
-        "fps", "codec", "recorded", "dropped", "fps_out", "MB/s", "ratio", "cpu_ms/f", "maxq_MB"
+        "{:>4} {:>6} {:>8} {:>8} {:>8} {:>7} {:>7} {:>7} {:>9} {:>9}",
+        "fps",
+        "codec",
+        "recorded",
+        "dropped",
+        "fps_rec",
+        "MB/s",
+        "flush_s",
+        "ratio",
+        "cpu_ms/f",
+        "maxq_MB"
     );
     for rate in [30u32, 60, 120] {
         let every = (camera_fps / f64::from(rate)).round().max(1.0) as u32;
@@ -117,21 +127,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let stats = rec.stats();
-            // The queue drains into the file before `finish` returns: counted in the time.
-            rec.finish()?;
+            let recorded = start.elapsed().as_secs_f64();
+            // Finish (the queue drains into the file, then it is synced) on another thread while
+            // this one keeps taking frames: a client that stops reading is disconnected.
+            let flushing = std::thread::spawn(move || rec.finish());
+            while !flushing.is_finished() {
+                let _ = client.recv(Duration::from_millis(20));
+            }
+            flushing.join().map_err(|_| "finish panicked")??;
             let took = start.elapsed().as_secs_f64();
             let cpu = (cpu_time() - cpu).as_secs_f64();
             let size = std::fs::metadata(&path).map_or(0, |m| m.len());
             let _ = std::fs::remove_file(&path);
             let written = offered - stats.frames_dropped;
-            let raw_bytes = written * u64::from(w) * u64::from(h);
             println!(
-                "{rate:>4} {name:>6} {:>8} {:>8} {:>8.1} {:>7.1} {:>7.2} {:>9.2} {:>9.1}",
+                "{rate:>4} {name:>6} {:>8} {:>8} {:>8.1} {:>7.1} {:>7.2} {:>7.2} {:>9.2} {:>9.1}",
                 written,
                 stats.frames_dropped,
-                written as f64 / took,
+                written as f64 / recorded,
                 size as f64 / took / 1e6,
-                raw_bytes as f64 / size.max(1) as f64,
+                took - recorded,
+                stats.bytes_written.max(1) as f64 / size.max(1) as f64,
                 cpu * 1e3 / written.max(1) as f64,
                 stats.max_queued_bytes as f64 / 1e6,
             );
