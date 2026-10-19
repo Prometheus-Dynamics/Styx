@@ -35,6 +35,39 @@ let handle = replay.open()?;             // or: Frames::nv12().open(replay.devic
 For frames whose format differs from the capture mode (pipeline or planner output), create
 the recorder with `StreamRecorder::with_header` and the output format.
 
+## Recording on a device
+
+`StreamRecorder::mcap(path, &header, RecorderOptions)` is for recording alongside a live
+system:
+
+- **Writer thread.** Each frame is copied and encoded on the caller's thread (no lease is
+  held while the disk catches up), then written from a background thread.
+- **Bounded queue.** `queue_bytes` (default 64 MiB) caps what waits for the disk. When it is
+  full, frames and host messages are dropped instead of blocking the caller, and counted:
+  `stats()` gives frames and messages written and dropped, bytes, the deepest the queue got,
+  and the writer's time. Channels, metadata and attachments are never dropped. `queue_bytes: 0`
+  writes on the caller's thread instead.
+- **Chunk compression.** `RecordCompression::Lz4` (feature `replay-mcap-lz4`) or
+  `::Zstd { level }` (feature `replay-mcap-zstd`). Each builds a C library, so a C compiler for
+  the target is needed (for `scripts/cross-aarch64.sh --musl`, a musl one in
+  `CC_aarch64_unknown_linux_musl`). Builds without these features do not grow. Replay reads
+  compressed chunks with the same feature.
+- **The host's own data.**
+  - `add_channel(topic, schema, message_encoding, metadata)` returns a `ChannelId`, and
+    `write(channel, log_time_ns, bytes)` writes to it. Use it for IMU samples, detections as
+    JSON, and so on.
+  - `add_metadata(name, map)` adds a metadata record, e.g. for calibration or a camera mount.
+  - `add_attachment(name, media_type, log_time_ns, bytes)` stores a file whole, e.g. a field
+    layout.
+  - Replay skips channels it does not know.
+- **Clocks.** `/styx/clock` (`styx/msg/ClockSample`) holds the monotonic, boot-time and
+  real-time clocks read together, at the start, every `clock_period` (default 1 s) and at the
+  end. Use it to put frames (native cameras stamp `CLOCK_MONOTONIC`) and data stamped on
+  another clock (e.g. `CLOCK_BOOTTIME`) on one time line offline.
+
+`examples/04_performance/record_bench.rs` measures what a device sustains: it records a camera
+service's frames at several rates and compressions.
+
 ## Formats
 
 - **MCAP** (`.mcap`, feature `replay-mcap`, opt-in): the open recording format used by
@@ -60,7 +93,8 @@ The profile is `ros2`, and messages are CDR-encoded with `ros2msg` schemas:
 - Messages of one frame share its MCAP `sequence` (the frame index) and `log_time` (the frame
   timestamp).
 - A metadata record, `styx.recording`, holds the device identity, backend, format and interval.
-- Compression is off.
+- Compression is off unless `RecorderOptions::compression` asks for it.
+- `/styx/clock` and the host's channels (above), when used.
 - Checked with Foxglove's reference Python reader and ROS 2 decoder (`mcap`,
   `mcap-ros2-support`): every message in the CM5 recordings decodes, including `FrameMeta`.
 

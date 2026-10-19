@@ -43,6 +43,8 @@ bytes = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 mcap = { workspace = true, optional = true }
+lz4 = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive", "std"], optional = true }
 serde_json = { workspace = true, optional = true }
@@ -93,6 +95,11 @@ default = ["facade", "tracing"]
 # Recordings as MCAP files with ROS 2 message types (the main recording format). Opt-in: the
 # MCAP reader brings binrw, enumset and their proc macros.
 replay-mcap = ["facade", "dep:mcap"]
+# Chunk compression of MCAP recordings (`RecordCompression::Lz4`, `::Zstd`), written and read
+# back. Each builds a C library (lz4, zstd): a C compiler for the target is needed, and builds
+# without them stay pure Rust and their size.
+replay-mcap-lz4 = ["replay-mcap", "mcap/lz4", "dep:lz4"]
+replay-mcap-zstd = ["replay-mcap", "mcap/zstd", "dep:zstd"]
 # Experimental compact Styx-only recording format (`.styxrec`).
 replay-styxrec = ["facade"]
 # Kept for compatibility, does nothing: `FrameLease` is in `styx::imports::framelease` with or

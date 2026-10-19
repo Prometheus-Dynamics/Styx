@@ -98,22 +98,48 @@ pub(super) fn pyramid_topic(level: u8) -> String {
 }
 
 pub(crate) struct McapRecorder {
-    writer: mcap::Writer<BufWriter<File>>,
+    pub(super) writer: mcap::Writer<BufWriter<File>>,
     image_schema: u16,
     compressed_schema: u16,
     meta_channel: u16,
     /// Image channels by topic, added when first used so recordings have no empty topics.
     channels: HashMap<String, u16>,
-    frame: u32,
+    /// `/styx/clock`, when clock samples are on ([`super::RecorderOptions::clock_period`]).
+    pub(super) clock: Option<super::mcap_host::ClockRecord>,
+}
+
+/// Where an encoded message goes.
+pub(crate) enum Target {
+    Meta,
+    Image { topic: String, compressed: bool },
+}
+
+/// One message of a frame, encoded ([`McapRecorder::encode_frame`]).
+pub(crate) struct EncodedMsg {
+    target: Target,
+    log_time: u64,
+    pub(super) data: Vec<u8>,
 }
 
 impl McapRecorder {
     pub(crate) fn create(path: &Path, header: &RecordingHeader) -> Result<Self, ReplayError> {
+        let options = super::RecorderOptions {
+            clock_period: None,
+            ..Default::default()
+        };
+        Self::create_with(path, header, &options)
+    }
+
+    pub(crate) fn create_with(
+        path: &Path,
+        header: &RecordingHeader,
+        options: &super::RecorderOptions,
+    ) -> Result<Self, ReplayError> {
+        let write_options = super::mcap_host::write_options(options)?;
         let file = BufWriter::with_capacity(1 << 20, File::create(path)?);
-        let mut writer = mcap::WriteOptions::new()
+        let mut writer = write_options
             .profile("ros2")
             .library(concat!("styx ", env!("CARGO_PKG_VERSION")))
-            .compression(None)
             .create(file)
             .map_err(mcap_error)?;
         writer
@@ -139,24 +165,31 @@ impl McapRecorder {
         let meta_channel = writer
             .add_channel(meta_schema, META_TOPIC, "cdr", &no_metadata)
             .map_err(mcap_error)?;
-        Ok(Self {
+        let clock = options
+            .clock_period
+            .map(|period| super::mcap_host::ClockRecord::add(&mut writer, period))
+            .transpose()?;
+        let mut out = Self {
             writer,
             image_schema,
             compressed_schema,
             meta_channel,
             channels: HashMap::new(),
-            frame: 0,
-        })
+            clock,
+        };
+        out.clock_if_due()?;
+        Ok(out)
     }
 
-    pub(crate) fn record(&mut self, frame: &FrameLease) -> Result<(), ReplayError> {
+    /// `frame`'s messages: its metadata and pixels, then each pyramid level's (other companions
+    /// are not recorded). Needs nothing of the recorder, so it runs on the caller's thread.
+    pub(crate) fn encode_frame(frame: &FrameLease) -> Result<Vec<EncodedMsg>, ReplayError> {
         let compressed = frame.meta().format.code.layout_info().compressed;
         let topic = if compressed {
             COMPRESSED_TOPIC
         } else {
             IMAGE_TOPIC
         };
-        // Pyramid levels have their own topics; other companions are not recorded.
         let pyramid: Vec<(u8, &FrameLease)> = frame
             .companions()
             .filter_map(|(kind, companion)| match kind {
@@ -167,11 +200,35 @@ impl McapRecorder {
             })
             .collect();
         let levels: Vec<u8> = pyramid.iter().map(|(level, _)| *level).collect();
-        self.write_part(frame, topic, &levels)?;
+        let mut msgs = Vec::with_capacity(2 + 2 * pyramid.len());
+        encode_part(&mut msgs, frame, topic.to_string(), &levels)?;
         for (level, companion) in pyramid {
-            self.write_part(companion, &pyramid_topic(level), &[])?;
+            encode_part(&mut msgs, companion, pyramid_topic(level), &[])?;
         }
-        self.frame = self.frame.wrapping_add(1);
+        Ok(msgs)
+    }
+
+    /// Writes a frame's messages under MCAP `sequence`.
+    pub(crate) fn write_encoded(
+        &mut self,
+        sequence: u32,
+        msgs: &[EncodedMsg],
+    ) -> Result<(), ReplayError> {
+        for m in msgs {
+            let channel_id = match &m.target {
+                Target::Meta => self.meta_channel,
+                Target::Image { topic, compressed } => self.channel(topic, *compressed)?,
+            };
+            let header = MessageHeader {
+                channel_id,
+                sequence,
+                log_time: m.log_time,
+                publish_time: m.log_time,
+            };
+            self.writer
+                .write_to_known_channel(&header, &m.data)
+                .map_err(mcap_error)?;
+        }
         Ok(())
     }
 
@@ -191,42 +248,40 @@ impl McapRecorder {
         Ok(id)
     }
 
-    fn write_part(
-        &mut self,
-        frame: &FrameLease,
-        topic: &str,
-        levels: &[u8],
-    ) -> Result<(), ReplayError> {
-        let compressed = frame.meta().format.code.layout_info().compressed;
-        let channel = self.channel(topic, compressed)?;
-        let meta = frame.meta();
-        let header = |channel_id| MessageHeader {
-            channel_id,
-            sequence: self.frame,
-            log_time: meta.timestamp,
-            publish_time: meta.timestamp,
-        };
-        let meta_msg = encode_meta(meta, topic, levels);
-        self.writer
-            .write_to_known_channel(&header(self.meta_channel), &meta_msg)
-            .map_err(mcap_error)?;
-        let image_msg = if compressed {
-            encode_compressed(frame)?
-        } else {
-            encode_image(frame)?
-        };
-        self.writer
-            .write_to_known_channel(&header(channel), &image_msg)
-            .map_err(mcap_error)?;
-        Ok(())
-    }
-
     pub(crate) fn finish(mut self) -> Result<(), ReplayError> {
+        self.clock_now()?;
         self.writer.finish().map_err(mcap_error)?;
         let file = self.writer.into_inner();
         file.get_ref().sync_all()?;
         Ok(())
     }
+}
+
+/// One image part's metadata and pixel messages.
+fn encode_part(
+    msgs: &mut Vec<EncodedMsg>,
+    frame: &FrameLease,
+    topic: String,
+    levels: &[u8],
+) -> Result<(), ReplayError> {
+    let compressed = frame.meta().format.code.layout_info().compressed;
+    let log_time = frame.meta().timestamp;
+    msgs.push(EncodedMsg {
+        target: Target::Meta,
+        log_time,
+        data: encode_meta(frame.meta(), &topic, levels),
+    });
+    let data = if compressed {
+        encode_compressed(frame)?
+    } else {
+        encode_image(frame)?
+    };
+    msgs.push(EncodedMsg {
+        target: Target::Image { topic, compressed },
+        log_time,
+        data,
+    });
+    Ok(())
 }
 
 fn header_to_map(header: &RecordingHeader) -> BTreeMap<String, String> {

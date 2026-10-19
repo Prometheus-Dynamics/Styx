@@ -42,6 +42,12 @@ mod cdr;
 mod mcap_format;
 #[cfg(feature = "replay-mcap")]
 mod mcap_frames;
+#[cfg(feature = "replay-mcap")]
+mod mcap_host;
+#[cfg(feature = "replay-mcap")]
+mod recording;
+#[cfg(feature = "replay-mcap")]
+pub use recording::{ChannelId, ChannelSchema, RecordCompression, RecorderOptions, RecorderStats};
 #[cfg(feature = "replay-styxrec")]
 mod styxrec;
 
@@ -128,12 +134,21 @@ pub struct StreamRecorder {
     out: RecorderOutput,
     path: PathBuf,
     frames: u64,
+    /// MCAP sequence of each host channel's next message, by id from the first.
+    #[cfg(feature = "replay-mcap")]
+    host_sequences: Vec<u32>,
+    /// Write counters when there is no writer thread (it keeps its own).
+    #[cfg(feature = "replay-mcap")]
+    counters: recording::Counters,
 }
 
 #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
 enum RecorderOutput {
     #[cfg(feature = "replay-mcap")]
     Mcap(Box<mcap_format::McapRecorder>),
+    /// Written from a background thread ([`StreamRecorder::mcap`]).
+    #[cfg(feature = "replay-mcap")]
+    McapQueued(recording::Background),
     #[cfg(feature = "replay-styxrec")]
     Styxrec(std::io::BufWriter<File>),
 }
@@ -185,23 +200,168 @@ impl StreamRecorder {
                 RecorderOutput::Styxrec(out)
             }
         };
-        Ok(Self {
+        Ok(Self::with_output(out, path))
+    }
+
+    fn with_output(out: RecorderOutput, path: PathBuf) -> Self {
+        Self {
             out,
             path,
             frames: 0,
-        })
+            #[cfg(feature = "replay-mcap")]
+            host_sequences: Vec::new(),
+            #[cfg(feature = "replay-mcap")]
+            counters: recording::Counters::default(),
+        }
     }
 
-    /// Append one frame with its metadata and companions.
+    /// An MCAP recording written as `options` say: from a background thread with a bounded
+    /// queue (frames dropped and counted when the disk falls behind), with chunk compression,
+    /// clock samples, and the host's own channels ([`Self::add_channel`]), metadata and
+    /// attachments.
+    #[cfg(feature = "replay-mcap")]
+    pub fn mcap(
+        path: impl AsRef<Path>,
+        header: &RecordingHeader,
+        options: RecorderOptions,
+    ) -> Result<Self, ReplayError> {
+        let path = path.as_ref().to_path_buf();
+        let out = mcap_format::McapRecorder::create_with(&path, header, &options)?;
+        let out = match options.queue_bytes {
+            0 => RecorderOutput::Mcap(Box::new(out)),
+            capacity => RecorderOutput::McapQueued(recording::Background::start(out, capacity)?),
+        };
+        Ok(Self::with_output(out, path))
+    }
+
+    /// Append one frame with its metadata and companions. With a writer thread the frame is
+    /// copied and queued (or dropped when the queue is full, see [`Self::stats`]).
     pub fn record(&mut self, frame: &FrameLease) -> Result<(), ReplayError> {
+        #[cfg(feature = "replay-mcap")]
+        let sequence = self.frames as u32;
         match &mut self.out {
             #[cfg(feature = "replay-mcap")]
-            RecorderOutput::Mcap(out) => out.record(frame)?,
+            RecorderOutput::Mcap(out) => {
+                let msgs = mcap_format::McapRecorder::encode_frame(frame)?;
+                recording::apply(
+                    out,
+                    recording::Item::Frame { sequence, msgs },
+                    &self.counters,
+                )?
+            }
+            #[cfg(feature = "replay-mcap")]
+            RecorderOutput::McapQueued(out) => {
+                let msgs = mcap_format::McapRecorder::encode_frame(frame)?;
+                out.push(recording::Item::Frame { sequence, msgs })?
+            }
             #[cfg(feature = "replay-styxrec")]
             RecorderOutput::Styxrec(out) => styxrec::write_frame(out, frame)?,
         }
         self.frames += 1;
         Ok(())
+    }
+
+    /// Frames and host messages written and dropped so far (MCAP recordings).
+    #[cfg(feature = "replay-mcap")]
+    pub fn stats(&self) -> RecorderStats {
+        match &self.out {
+            RecorderOutput::McapQueued(out) => out.stats(),
+            _ => self.counters.snapshot(0),
+        }
+    }
+
+    /// Adds a channel of the host's own on `topic` (an MCAP recording only): its messages'
+    /// encoding (`json`, `cdr`, `protobuf`, ...), their schema if they have one, and the
+    /// channel's metadata. Replay ignores channels it does not know.
+    #[cfg(feature = "replay-mcap")]
+    pub fn add_channel(
+        &mut self,
+        topic: &str,
+        schema: Option<ChannelSchema>,
+        message_encoding: &str,
+        metadata: std::collections::BTreeMap<String, String>,
+    ) -> Result<ChannelId, ReplayError> {
+        let id = u16::try_from(self.host_sequences.len())
+            .ok()
+            .and_then(|n| recording::FIRST_HOST_CHANNEL.checked_add(n))
+            .ok_or_else(|| ReplayError::Mcap("too many host channels".into()))?;
+        self.send(recording::Item::Channel {
+            id,
+            topic: topic.to_string(),
+            schema,
+            message_encoding: message_encoding.to_string(),
+            metadata,
+        })?;
+        self.host_sequences.push(0);
+        Ok(ChannelId(id))
+    }
+
+    /// A message on a host channel at `log_time_ns` (on the clock the host keeps; the frames'
+    /// clock and `/styx/clock` relate it to the others). Dropped and counted like frames when
+    /// the queue is full.
+    #[cfg(feature = "replay-mcap")]
+    pub fn write(
+        &mut self,
+        channel: ChannelId,
+        log_time_ns: u64,
+        data: &[u8],
+    ) -> Result<(), ReplayError> {
+        let slot = usize::from(channel.0.wrapping_sub(recording::FIRST_HOST_CHANNEL));
+        let Some(sequence) = self.host_sequences.get_mut(slot) else {
+            return Err(ReplayError::Mcap("unknown host channel".into()));
+        };
+        let item = recording::Item::Message {
+            channel: channel.0,
+            sequence: *sequence,
+            log_time: log_time_ns,
+            publish_time: log_time_ns,
+            data: data.to_vec(),
+        };
+        *sequence = sequence.wrapping_add(1);
+        self.send(item)
+    }
+
+    /// A metadata record (e.g. calibration, mount, field layout as key/value pairs).
+    #[cfg(feature = "replay-mcap")]
+    pub fn add_metadata(
+        &mut self,
+        name: &str,
+        metadata: std::collections::BTreeMap<String, String>,
+    ) -> Result<(), ReplayError> {
+        self.send(recording::Item::Metadata {
+            name: name.to_string(),
+            metadata,
+        })
+    }
+
+    /// An attachment: a file stored whole in the recording (`media_type` e.g.
+    /// `application/json`).
+    #[cfg(feature = "replay-mcap")]
+    pub fn add_attachment(
+        &mut self,
+        name: &str,
+        media_type: &str,
+        log_time_ns: u64,
+        data: Vec<u8>,
+    ) -> Result<(), ReplayError> {
+        self.send(recording::Item::Attachment {
+            name: name.to_string(),
+            media_type: media_type.to_string(),
+            log_time: log_time_ns,
+            data,
+        })
+    }
+
+    #[cfg(feature = "replay-mcap")]
+    fn send(&mut self, item: recording::Item) -> Result<(), ReplayError> {
+        match &mut self.out {
+            RecorderOutput::Mcap(out) => recording::apply(out, item, &self.counters),
+            RecorderOutput::McapQueued(out) => out.push(item),
+            #[cfg(feature = "replay-styxrec")]
+            RecorderOutput::Styxrec(_) => Err(ReplayError::Mcap(
+                "host channels, metadata and attachments need an MCAP recording".into(),
+            )),
+        }
     }
 
     pub fn frames(&self) -> u64 {
@@ -218,6 +378,8 @@ impl StreamRecorder {
         match self.out {
             #[cfg(feature = "replay-mcap")]
             RecorderOutput::Mcap(out) => out.finish()?,
+            #[cfg(feature = "replay-mcap")]
+            RecorderOutput::McapQueued(out) => out.finish()?,
             #[cfg(feature = "replay-styxrec")]
             RecorderOutput::Styxrec(mut out) => {
                 use std::io::Write;
@@ -451,5 +613,7 @@ pub(crate) fn frame_from_payload(
 
 #[cfg(all(test, any(feature = "replay-mcap", feature = "replay-styxrec")))]
 mod corruption_tests;
+#[cfg(all(test, feature = "replay-mcap"))]
+mod recording_tests;
 #[cfg(all(test, any(feature = "replay-mcap", feature = "replay-styxrec")))]
 mod tests;

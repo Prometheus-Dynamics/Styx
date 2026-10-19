@@ -23,6 +23,8 @@ hotplug = ["styx/hotplug"]
 libcamera = ["styx/libcamera"]
 netcam = ["styx/netcam"]
 replay-mcap = ["styx/replay-mcap"]
+replay-mcap-lz4 = ["replay-mcap", "styx/replay-mcap-lz4"]
+replay-mcap-zstd = ["replay-mcap", "styx/replay-mcap-zstd"]
 preview-window = ["styx/preview-window"]
 simulation-bevy = ["styx/simulation-bevy"]
 # USB cameras deliver YUYV or MJPEG: the CPU converters come with them, so the planner can turn
@@ -83,6 +85,12 @@ name = "sliced_rejoin"
 path = "04_performance/sliced_rejoin.rs"
 test = false
 required-features = ["native", "trace-log"]
+
+[[bin]]
+name = "record_bench"
+path = "04_performance/record_bench.rs"
+test = false
+required-features = ["frame-socket", "replay-mcap"]
 
 [[bin]]
 name = "hop_breakdown"

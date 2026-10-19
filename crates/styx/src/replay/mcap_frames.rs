@@ -3,9 +3,12 @@
 //! Records are read here, one at a time, with every length checked against what the file
 //! actually holds; the mcap crate only parses the few records Styx uses. (mcap 0.25's reader
 //! buffers whatever a damaged chunk header asks for, and a damaged record length inside a chunk
-//! underflows a counter, which panics in debug builds.) Styx writes uncompressed chunks, so
-//! their records are streamed like top-level ones, and a recording cut short mid-chunk still
-//! yields every frame written before the cut.
+//! underflows a counter, which panics in debug builds.) Uncompressed chunks (Styx's default) are
+//! streamed like top-level records, so a recording cut short mid-chunk still yields every frame
+//! written before the cut; a compressed chunk (features `replay-mcap-lz4`, `replay-mcap-zstd`)
+//! is inflated whole, within the record limit, and its records read from memory.
+//!
+//! Only the frame topics are read: other channels (`/styx/clock`, the host's) are skipped.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{self, Read};
@@ -103,6 +106,9 @@ impl Assembler {
                     .get(&header.channel_id)
                     .ok_or(ReplayError::Corrupt("message on unknown channel"))?
                     .clone();
+                if !frame_topic(&topic) {
+                    return Ok(());
+                }
                 let sequence = header.sequence;
                 if !self.pending.contains_key(&sequence) && self.pending.len() >= MAX_PENDING_FRAMES
                 {
@@ -128,6 +134,16 @@ impl Assembler {
     }
 }
 
+/// Whether messages on `topic` are part of frames (the others are the clock's or the host's).
+fn frame_topic(topic: &str) -> bool {
+    topic == META_TOPIC
+        || topic == IMAGE_TOPIC
+        || topic == COMPRESSED_TOPIC
+        || topic
+            .strip_prefix("/styx/pyramid/")
+            .is_some_and(|l| l.parse::<u8>().is_ok())
+}
+
 /// Streams frames out of an MCAP recording without loading it into memory (one record at a
 /// time).
 pub(crate) struct McapFrames<R: Read> {
@@ -140,6 +156,8 @@ pub(crate) struct McapFrames<R: Read> {
     /// Record bytes left in the chunk being read, and padding after them.
     chunk_left: u64,
     chunk_padding: u64,
+    /// A compressed chunk's records, inflated, being read.
+    inflated: Option<io::Cursor<Vec<u8>>>,
     pub(crate) offset: u64,
     done: bool,
 }
@@ -166,6 +184,7 @@ impl<R: Read> McapFrames<R> {
             record: Vec::new(),
             chunk_left: 0,
             chunk_padding: 0,
+            inflated: None,
             offset: 0,
             done: false,
         };
@@ -183,6 +202,28 @@ impl<R: Read> McapFrames<R> {
     /// Process one record; `false` at the end of the data (or where the file was cut short).
     fn step(&mut self) -> Result<bool, ReplayError> {
         let corrupt = |what| Err(ReplayError::Corrupt(what));
+        if let Some(chunk) = self.inflated.as_mut() {
+            let mut head = [0u8; 9];
+            if !read_full(chunk, &mut head)? {
+                self.inflated = None;
+                return Ok(true);
+            }
+            let len = u64::from_le_bytes(head[1..].try_into().expect("8 bytes"));
+            let left = chunk.get_ref().len() as u64 - chunk.position();
+            if len > left {
+                return corrupt("MCAP record longer than its chunk");
+            }
+            let at = chunk.position() as usize;
+            chunk.set_position(chunk.position() + len);
+            let record =
+                &self.inflated.as_ref().expect("reading it").get_ref()[at..][..len as usize];
+            if head[0] == op::CHUNK {
+                return corrupt("MCAP chunk inside a chunk");
+            }
+            let record = record.to_vec();
+            self.assembler.record(head[0], &record)?;
+            return Ok(true);
+        }
         if self.chunk_left == 0 && self.chunk_padding > 0 {
             let padding = std::mem::take(&mut self.chunk_padding);
             if io::copy(&mut (&mut self.source).take(padding), &mut io::sink())? < padding {
@@ -213,8 +254,9 @@ impl<R: Read> McapFrames<R> {
                 if len < CHUNK_HEADER_LEN || !read_full(&mut self.source, &mut header)? {
                     return Ok(false);
                 }
-                if header[28..32] != [0; 4] {
-                    return corrupt("compressed MCAP chunks are not supported");
+                let name_len = u32::from_le_bytes(header[28..32].try_into().expect("4 bytes"));
+                if name_len != 0 {
+                    return self.inflate(len, &header);
                 }
                 let records = u64::from_le_bytes(header[32..40].try_into().expect("8 bytes"));
                 let Some(padding) = (len - CHUNK_HEADER_LEN).checked_sub(records) else {
@@ -243,6 +285,86 @@ impl<R: Read> McapFrames<R> {
         }
         self.assembler.record(opcode, &self.record)?;
         Ok(true)
+    }
+}
+
+impl<R: Read> McapFrames<R> {
+    /// A compressed chunk of `len` bytes whose fixed header up to the compression name's length
+    /// was read (with 8 bytes past it in `header`): its records inflated, to read from memory.
+    fn inflate(
+        &mut self,
+        len: u64,
+        header: &[u8; CHUNK_HEADER_LEN as usize],
+    ) -> Result<bool, ReplayError> {
+        let corrupt = |what| Err(ReplayError::Corrupt(what));
+        let name_len = u32::from_le_bytes(header[28..32].try_into().expect("4 bytes")) as usize;
+        if name_len > 16 {
+            return corrupt("MCAP chunk compression name too long");
+        }
+        // The 8 bytes read as the records' size begin the name.
+        let mut rest = vec![0u8; name_len + 8];
+        let have = 8.min(rest.len());
+        rest[..have].copy_from_slice(&header[32..32 + have]);
+        let more = rest.len() - have;
+        if more > 0 && !read_full(&mut self.source, &mut rest[have..][..more])? {
+            return Ok(false);
+        }
+        let name = std::str::from_utf8(&rest[..name_len])
+            .map_err(|_| ReplayError::Corrupt("MCAP chunk compression name"))?
+            .to_string();
+        let records = u64::from_le_bytes(rest[name_len..].try_into().expect("8 bytes"));
+        let fixed = 32 + name_len as u64 + 8;
+        let Some(padding) = len.checked_sub(fixed).and_then(|l| l.checked_sub(records)) else {
+            return corrupt("MCAP chunk shorter than its records");
+        };
+        let uncompressed = u64::from_le_bytes(header[16..24].try_into().expect("8 bytes"));
+        let (records, uncompressed) =
+            match (usize::try_from(records), usize::try_from(uncompressed)) {
+                (Ok(r), Ok(u))
+                    if r <= self.record_limit && u <= self.record_limit.saturating_mul(4) =>
+                {
+                    (r, u)
+                }
+                _ => return corrupt("MCAP chunk larger than the file allows"),
+            };
+        let mut compressed = Vec::new();
+        if (&mut self.source)
+            .take(records as u64)
+            .read_to_end(&mut compressed)?
+            < records
+        {
+            return Ok(false);
+        }
+        if io::copy(&mut (&mut self.source).take(padding), &mut io::sink())? < padding {
+            return Ok(false);
+        }
+        let data = decompress(&name, &compressed, uncompressed)?;
+        if data.len() != uncompressed {
+            return corrupt("MCAP chunk inflated to another size");
+        }
+        self.inflated = Some(io::Cursor::new(data));
+        Ok(true)
+    }
+}
+
+/// `data` inflated with `compression` (an MCAP chunk's), `size` bytes.
+fn decompress(compression: &str, data: &[u8], size: usize) -> Result<Vec<u8>, ReplayError> {
+    let _ = (data, size);
+    match compression {
+        #[cfg(feature = "replay-mcap-zstd")]
+        "zstd" => zstd::bulk::decompress(data, size)
+            .map_err(|_| ReplayError::Corrupt("damaged zstd chunk")),
+        #[cfg(feature = "replay-mcap-lz4")]
+        "lz4" => {
+            let mut out = Vec::with_capacity(size);
+            lz4::Decoder::new(data)
+                .and_then(|mut d| (&mut d).take(size as u64 + 1).read_to_end(&mut out))
+                .map_err(|_| ReplayError::Corrupt("damaged lz4 chunk"))?;
+            Ok(out)
+        }
+        other => Err(ReplayError::Mcap(format!(
+            "{other} compressed chunks need feature replay-mcap-{other}"
+        ))),
     }
 }
 

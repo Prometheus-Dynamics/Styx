@@ -8,6 +8,20 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **MCAP recording on a device** (`StreamRecorder::mcap`, `RecorderOptions`; docs/replay.md):
+  - a writer thread behind a bounded queue (`queue_bytes`, default 64 MiB): frames and host
+    messages are dropped and counted when the disk falls behind (`stats()`: written, dropped,
+    bytes, deepest queue, write time);
+  - chunk compression, `RecordCompression::Lz4` / `::Zstd { level }` (features
+    `replay-mcap-lz4`, `replay-mcap-zstd`: C libraries, opt-in; replay reads them back);
+  - the host's own data: `add_channel` + `write` (IMU, detections as JSON, ...),
+    `add_metadata`, `add_attachment`. Replay skips channels it does not know;
+  - `/styx/clock`: monotonic, boot time and real time read together, every second, to align
+    frames with data stamped on other clocks.
+  - Example `record_bench` measures what a device sustains.
+  - `scripts/cross-aarch64.sh --musl` takes a musl C compiler from
+    `CC_aarch64_unknown_linux_musl`, and fails when nothing was built (it waited on stdin).
+
 - **`FrameLease::progress_handle`** (`FrameProgressHandle`): a sliced frame's progress, owned.
   It outlives the lease, so a consumer that hands the frame on can still tell a frame the
   camera failed from a failure of its own, without holding the frame's buffers.

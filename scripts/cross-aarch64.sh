@@ -83,8 +83,11 @@ if ((musl)); then
     # Static, self-contained: rustup's musl target brings the C runtime and libc.a.
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld
     # C code without libc headers (criterion's alloca, a test dependency): the host's clang,
-    # freestanding. C code that needs a libc needs the glibc build.
-    if command -v clang >/dev/null 2>&1; then
+    # freestanding. C code that needs a libc (e.g. styx's replay-mcap-lz4/-zstd) needs a musl C
+    # compiler in CC_aarch64_unknown_linux_musl (e.g. a script running
+    # `zig cc -target aarch64-linux-musl` with the cc crate's `--target=...` left out), or the
+    # glibc build.
+    if [[ -z "${CC_aarch64_unknown_linux_musl:-}" ]] && command -v clang >/dev/null 2>&1; then
         export CC_aarch64_unknown_linux_musl=clang
         export CFLAGS_aarch64_unknown_linux_musl="--target=aarch64-linux-musl -ffreestanding -nostdlibinc"
         export AR_aarch64_unknown_linux_musl="$llvm_bin/llvm-ar"
@@ -157,6 +160,12 @@ if ((!tests)); then
         ${features:+--features "$features"} "${selectors[@]}" "${extra[@]}" \
         --message-format=json-render-diagnostics |
         jq -r 'select(.reason == "compiler-artifact" and .executable != null) | .executable')
+    # The build runs in a process substitution, so its failure does not stop the script: no
+    # executables means it failed (or selected nothing).
+    if ((${#bins[@]} == 0)); then
+        echo "cross-aarch64: nothing was built (see the errors above)" >&2
+        exit 1
+    fi
     printf 'built: %s\n' "${bins[@]}"
     if [[ -n "$out" ]]; then
         mkdir -p "$out"
