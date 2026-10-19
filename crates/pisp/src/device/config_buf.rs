@@ -25,11 +25,6 @@ pub enum ConfigMemory {
     Driver,
 }
 
-/// Debug hook (feature `debug-hooks`): `STYX_PISP_CONFIG_HEAP` names one dma-heap to use
-/// (`mmap` for the driver's buffers), in place of [`ConfigMemory`].
-#[cfg(feature = "debug-hooks")]
-pub const CONFIG_HEAP_ENV: &str = "STYX_PISP_CONFIG_HEAP";
-
 const HEAPS: [&str; 2] = ["linux,cma", "system"];
 
 fn default_heaps(memory: ConfigMemory) -> Vec<&'static str> {
@@ -60,15 +55,6 @@ impl ConfigBuffer {
         name: &'static str,
         memory: ConfigMemory,
     ) -> Result<Self> {
-        #[cfg(feature = "debug-hooks")]
-        let env = std::env::var(CONFIG_HEAP_ENV).ok();
-        #[cfg(feature = "debug-hooks")]
-        let heaps: Vec<&str> = match env.as_deref() {
-            Some("mmap") => Vec::new(),
-            Some(h) => vec![h],
-            None => default_heaps(memory),
-        };
-        #[cfg(not(feature = "debug-hooks"))]
         let heaps = default_heaps(memory);
         let len = len.next_multiple_of(4096);
         for heap in heaps {

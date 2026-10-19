@@ -222,10 +222,12 @@ showed the second tile starting at an unaligned x=494.
 ## PiSP Environment Variables
 
 The PiSP path reads its options from `PispOptions` (styx-pipeline) and `NativeIspConfig` (styx).
-Environment variables never change a build's options: the variables below are read only in builds
-with the feature named in the table (`pisp-debug-hooks` on `styx`, `styx-pipeline` or
-`styx-pisp`'s `debug-hooks`), and are ignored otherwise. Set the option instead, and use the
-feature only for measurements or for the debug dumps. These hooks are not for production builds.
+Environment variables never change a build's options: the variables below are diagnostics (config
+dumps, probes, timing logs) read only in builds with the feature named in the table
+(`pisp-debug-hooks` on `styx`, `styx-pipeline` or `styx-pisp`'s `debug-hooks`), and ignored
+otherwise. To try another slice line, buffer memory, TDN format, CPU sync or prefetch, or raw
+depth, set the option (`NativeIspConfig`, `PispOptions`). These hooks are not for production
+builds.
 
 | Variable | Effect | Feature needed |
 | --- | --- | --- |
@@ -233,17 +235,10 @@ feature only for measurements or for the debug dumps. These hooks are not for pr
 | `STYX_PISP_FE_DUMP=DIR[:N,...]` | Writes the front-end configs of jobs N to `DIR/styx_fe_N.bin` | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
 | `STYX_PISP_BE_PATCH=REF.bin:blocks` | Copies the named back-end blocks of a reference config into every job | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
 | `STYX_PISP_FE_LINES_PROBE=1` | Samples raw rows around the front-end line event (needs the rp1-cfe module) | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
-| `STYX_PISP_SLICE_LINE=N` | Overrides `PispOptions::slice_line` (and `NativeIspConfig::slice_line`) | `pisp-debug-hooks` (styx-pipeline) |
 | `STYX_PISP_FE_ILINES=N` | Sets the line at which the front end's raw output interrupt fires | `pisp-debug-hooks` (styx-pipeline) |
 | `STYX_PISP_BE_STRIPE=N` | Splits back-end jobs into horizontal stripes of at most N rows (slicing cost) | `pisp-debug-hooks` (styx-pipeline) |
 | `STYX_PISP_SLICE_LOG=1` | Logs the slice line and counts when a slicing run ends | `pisp-debug-hooks` (styx-pipeline) |
-| `STYX_PISP_OUTPUT_MEMORY=driver\|cached` | Overrides `PispOptions::output_memory` | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
-| `STYX_PISP_CONFIG_HEAP=HEAP\|mmap` | Overrides `PispOptions::config_memory` with one named dma-heap (`mmap`: the driver's) | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
-| `STYX_PISP_TDN_COMPRESS=0\|1` | Overrides `tdn_compressed` (the temporal-denoise format) | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
-| `STYX_NATIVE_EARLY_SYNC=0\|1` | Overrides `NativeIspConfig::early_cpu_sync` | `pisp-debug-hooks` (styx) |
-| `STYX_NATIVE_PREFETCH=off\|touch\|l3` | Overrides `NativeIspConfig::cpu_prefetch` | `pisp-debug-hooks` (styx) |
-| `STYX_NATIVE_RAW_BITS=N` | Overrides `NativeIspConfig::raw_bits` (8 or 10) | `pisp-debug-hooks` (styx) |
 
-The options that the overriding variables stand in for are the ones to use in code:
+The options for those settings:
 `PispOptions::{slice_line, output_memory, config_memory, tdn_compressed}`, and
 `NativeIspConfig::{early_cpu_sync, cpu_prefetch, raw_bits, tdn_compressed, slice_line}`.

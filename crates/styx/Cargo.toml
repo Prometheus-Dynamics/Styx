@@ -151,9 +151,8 @@ native = [
 # loaded at run time, the software ISP otherwise; `STYX_GPU_ISP=0` turns it off).
 gpu-isp = ["native", "styx-pipeline/gpu"]
 # The PiSP debug hooks: styx-pisp's and styx-pipeline's `debug-hooks` (`STYX_PISP_BE_DUMP`,
-# `STYX_PISP_BE_PATCH`, `STYX_PISP_FE_LINES_PROBE`, ...), and the native env overrides
-# (`STYX_NATIVE_EARLY_SYNC`, `STYX_NATIVE_PREFETCH`, `STYX_NATIVE_RAW_BITS`). Off by default: the
-# variables are then ignored. Not for production builds. docs/runtime-debugging.md lists them.
+# `STYX_PISP_BE_PATCH`, `STYX_PISP_FE_LINES_PROBE`, ...). Off by default: the variables are then
+# ignored. Not for production builds. docs/runtime-debugging.md lists them.
 pisp-debug-hooks = ["native", "styx-pipeline/pisp-debug-hooks"]
 # UVC cameras driven from userspace over usbfs (`styx-uvc`), without `uvcvideo`. Opt-in:
 # where `uvcvideo` also has the camera, it stays the default backend (docs/uvc.md).

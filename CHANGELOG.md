@@ -1339,6 +1339,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Removed
 
+- The PiSP environment variables that only overrode an option (with the `pisp-debug-hooks` /
+  `debug-hooks` features): `STYX_PISP_SLICE_LINE`, `STYX_PISP_OUTPUT_MEMORY`,
+  `STYX_PISP_CONFIG_HEAP`, `STYX_PISP_TDN_COMPRESS`, `STYX_NATIVE_EARLY_SYNC`,
+  `STYX_NATIVE_PREFETCH`, `STYX_NATIVE_RAW_BITS`, and `styx_pisp::device::CONFIG_HEAP_ENV`. Set
+  the option instead (`PispOptions`, `NativeIspConfig`). The diagnostics (config dumps, block
+  patch, lines probe, `STYX_PISP_FE_ILINES`, `STYX_PISP_BE_STRIPE`, `STYX_PISP_SLICE_LOG`) stay.
 - `styx-native`'s `regbus.rs` and `native-spike`'s copy of it (the I²C register bus is
   `I2cRegisters<lemnos_linux::hal::I2cBus>`; the spike takes `BridgePins` from `styx-native`),
   and Styx's own `RegisterBus`/`AsyncRegisterBus` traits with their adapters (now Lemnos's).

@@ -326,18 +326,6 @@ fn hold_soft(
     })
 }
 
-/// Debug hook (feature `pisp-debug-hooks`): `STYX_NATIVE_RAW_BITS` overrides the raw depth.
-#[cfg(feature = "pisp-debug-hooks")]
-fn debug_raw_bits() -> Option<u8> {
-    std::env::var("STYX_NATIVE_RAW_BITS").ok()?.parse().ok()
-}
-
-/// Without the feature, the environment is not read.
-#[cfg(not(feature = "pisp-debug-hooks"))]
-fn debug_raw_bits() -> Option<u8> {
-    None
-}
-
 /// The media bus code of the sensor mode of `(w, h)` at the configured raw depth
 /// (`NativeIspConfig::raw_bits`); `None` without one (the first mode of the size).
 fn raw_code(
@@ -345,7 +333,7 @@ fn raw_code(
     (w, h): (u32, u32),
     cfg: &crate::capture_api::NativeIspConfig,
 ) -> Result<Option<u32>, CaptureError> {
-    let bits = debug_raw_bits().or(cfg.raw_bits);
+    let bits = cfg.raw_bits;
     let at_size = |m: &&styx_native::SensorMode| (m.width, m.height) == (w, h);
     let Some(bits) = bits else {
         // The sensor's own preference (its description's `processed_format`), when it has a

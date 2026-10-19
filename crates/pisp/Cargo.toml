@@ -16,9 +16,8 @@ std = []
 # Drive the front end (`rp1-cfe`) and back end (`pispbe`) device nodes through styx-kernel.
 device = ["std", "dep:styx-kernel"]
 # Debug hooks on the device path: the config dumps (`STYX_PISP_BE_DUMP`, `STYX_PISP_FE_DUMP`),
-# the back-end block patch (`STYX_PISP_BE_PATCH`), the lines probe (`STYX_PISP_FE_LINES_PROBE`),
-# and the env overrides `STYX_PISP_OUTPUT_MEMORY`, `STYX_PISP_CONFIG_HEAP`,
-# `STYX_PISP_TDN_COMPRESS`. Off, they compile to no-ops and the variables are ignored.
+# the back-end block patch (`STYX_PISP_BE_PATCH`) and the lines probe
+# (`STYX_PISP_FE_LINES_PROBE`). Off, they compile to no-ops and the variables are ignored.
 debug-hooks = ["device"]
 
 [dependencies]

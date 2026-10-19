@@ -64,8 +64,6 @@ const LINES_EVENT_OFFSET: u32 = 0x5354;
 pub use be::{BackEndDevice, BeOutput};
 pub use be_output::OutputMemory;
 pub use be_stream::{BackEndStream, BeFormat, BeJob, BeOutputSetup, QueuedJob};
-#[cfg(feature = "debug-hooks")]
-pub use config_buf::CONFIG_HEAP_ENV;
 pub use config_buf::ConfigMemory;
 pub use fe::{
     FeFrame, FeHeld, FeHeldRaw, FrontEndDevice, FrontEndSetup, HeldImage, LineEvent, SensorWindow,

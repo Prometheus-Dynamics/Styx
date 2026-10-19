@@ -208,20 +208,14 @@ fn early_access_opens_the_window_on_the_capture_thread() {
         cpu_prefetch: P::L3,
         ..Default::default()
     };
-    // The environment overrides only with the debug hooks (and when unset).
-    let overridden = cfg!(feature = "pisp-debug-hooks")
-        && (std::env::var_os("STYX_NATIVE_EARLY_SYNC").is_some()
-            || std::env::var_os("STYX_NATIVE_PREFETCH").is_some());
-    if !overridden {
-        assert_eq!(
-            CpuPrep::new(&cfg),
-            CpuPrep {
-                sync: true,
-                prefetch: P::L3
-            }
-        );
-        assert!(CpuPrep::new(&Default::default()).sync);
-    }
+    assert_eq!(
+        CpuPrep::new(&cfg),
+        CpuPrep {
+            sync: true,
+            prefetch: P::L3
+        }
+    );
+    assert!(CpuPrep::new(&Default::default()).sync);
 }
 
 /// A sensor window (Styx's OV9782 1280x480: rows 160..639 of the 1280x800 field) places

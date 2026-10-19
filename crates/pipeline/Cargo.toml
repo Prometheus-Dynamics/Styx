@@ -31,9 +31,8 @@ std = [
 device = ["std", "dep:styx-native", "dep:styx-kernel", "styx-pisp/device"]
 # The software path on a Vulkan GPU (`styx-gpuisp`; loads libvulkan at run time).
 gpu = ["std", "dep:styx-gpuisp"]
-# The PiSP debug hooks: styx-pisp's `debug-hooks` (config dumps, block patch, lines probe, and
-# the env overrides of the config and output memory and TDN format), and the slicing and timing
-# knobs (`STYX_PISP_SLICE_LINE`, `STYX_PISP_FE_ILINES`, `STYX_PISP_BE_STRIPE`, `STYX_PISP_SLICE_LOG`).
+# The PiSP debug hooks: styx-pisp's `debug-hooks` (config dumps, block patch, lines probe), and
+# the slicing and timing probes (`STYX_PISP_FE_ILINES`, `STYX_PISP_BE_STRIPE`, `STYX_PISP_SLICE_LOG`).
 pisp-debug-hooks = ["device", "styx-pisp/debug-hooks"]
 
 # Path dependencies without default features (the workspace entries keep theirs for the std

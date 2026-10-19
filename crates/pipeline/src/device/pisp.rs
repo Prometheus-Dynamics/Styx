@@ -97,8 +97,8 @@ impl Isp {
     ) -> Result<(Self, Duration, Duration)> {
         let t = Instant::now();
         let order = bayer(info.cfa);
-        let want_slice = debug_var::<u16>("STYX_PISP_SLICE_LINE")
-            .or(options.slice_line)
+        let want_slice = options
+            .slice_line
             .filter(|l| *l > 0 && u32::from(*l) < info.height);
         let mut fe_dev = FrontEndDevice::open(&FrontEndSetup {
             width: info.width,
