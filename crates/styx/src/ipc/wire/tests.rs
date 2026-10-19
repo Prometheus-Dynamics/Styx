@@ -234,3 +234,49 @@ fn native_metadata_and_its_3a_record_cross_the_wire() {
         assert_eq!(back.meta.backend, None);
     }
 }
+
+#[test]
+fn effective_ranges_follow_the_control_list_and_older_readers_stop_before_them() {
+    use super::controls::{decode_control_list, encode_control_list};
+    use crate::ipc::ControlDescriptor;
+    let meta = |id, name: &str, max| ControlMeta {
+        id: ControlId(id),
+        name: name.into(),
+        kind: ControlKind::Uint,
+        access: Access::ReadWrite,
+        min: ControlValue::Uint(1),
+        max: ControlValue::Uint(max),
+        default: ControlValue::Uint(1),
+        step: None,
+        menu: None,
+        metadata: ControlMetadata::default(),
+    };
+    let plain = ControlDescriptor {
+        meta: meta(1, "plain", 10),
+        current: None,
+        standard: None,
+        writable: true,
+        effective_min: None,
+        effective_max: None,
+    };
+    let exposure = ControlDescriptor {
+        meta: meta(2, "exposure_time_us", 476_066),
+        effective_min: Some(ControlValue::Uint(14)),
+        effective_max: Some(ControlValue::Uint(8_142)),
+        ..plain.clone()
+    };
+    let list = vec![plain.clone(), exposure];
+    let ranges = |l: &[ControlDescriptor]| -> Vec<_> {
+        l.iter()
+            .map(|d| (d.meta.id, d.effective_min.clone(), d.effective_max.clone()))
+            .collect()
+    };
+    let bytes = encode_control_list(&list);
+    assert_eq!(ranges(&decode_control_list(&bytes).unwrap()), ranges(&list));
+    // Without ranges nothing follows the list (as older services sent it).
+    let only = encode_control_list(std::slice::from_ref(&plain));
+    assert_eq!(
+        ranges(&decode_control_list(&only).unwrap()),
+        ranges(&[plain])
+    );
+}

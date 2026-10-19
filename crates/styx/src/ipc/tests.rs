@@ -284,6 +284,8 @@ fn control_seeds() -> Vec<(&'static str, Vec<u8>)> {
         current: Some(ControlValue::Int(1)),
         standard: Some(StandardControl::AeEnable),
         writable: true,
+        effective_min: None,
+        effective_max: None,
     }];
     vec![
         (

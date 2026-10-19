@@ -154,6 +154,12 @@ while let RecvOutcome::Data(e) = events.recv(Duration::from_secs(1)) { /* e.id, 
   StandardControl)`: that one stays as it is. `allow(|caller, id| ...)`: an allow-list given
   the caller's process credentials, client id and ownership. Reading and listing are always
   allowed; `ControlDescriptor::writable` says what this client may change.
+- **Ranges now:** a descriptor's `meta.min`/`max` are the device's limits. Where the range
+  depends on how the camera runs, `effective_min`/`effective_max` give it. On a native camera
+  the exposure time's range is the current frame duration less the exposure margin (about
+  8.1 ms at 120 fps on the OV9782, against 476 ms at the longest frame), and the gain's is what
+  AE may use. A value set outside it is clamped (`clamped: true`). In-process:
+  `CaptureHandle::control_plane().effective_range(id)`.
 - **Events:** `control_events()` opens a connection that gets every accepted change on the
   camera (`ControlEvent`: id, standard control, value in effect, frame, and `by`, the client
   that made it, as `FrameClient::client_id` names clients); readable (`AsFd`) when one waits.

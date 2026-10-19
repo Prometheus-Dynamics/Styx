@@ -175,6 +175,12 @@ pub struct ControlDescriptor {
     pub standard: Option<StandardControl>,
     /// The service's policy lets this client change it.
     pub writable: bool,
+    /// The range it takes now, when that is narrower than `meta`'s (which holds the device's
+    /// limits) because of how the camera runs: a native camera's exposure time at the current
+    /// frame duration (frame duration less the exposure margin), the gain AE may use. Values
+    /// outside it are clamped (`AppliedControl::clamped`). `None`: `meta`'s range applies.
+    pub effective_min: Option<ControlValue>,
+    pub effective_max: Option<ControlValue>,
 }
 
 /// A control a client of the camera changed, sent to every client that subscribed

@@ -74,6 +74,13 @@ pub struct AeStatus {
     /// on that mains (10 ms for 50 Hz mains, 8.33 ms for 60 Hz).
     #[serde(default)]
     pub flicker_detected: Option<Duration>,
+    /// The exposure times the sensor can take at this frame's frame duration (its frame
+    /// duration limit less the exposure margin): what a manual exposure is clamped to.
+    #[serde(default)]
+    pub exposure_range: (Duration, Duration),
+    /// The total (analogue × digital) gains AE may use.
+    #[serde(default)]
+    pub gain_range: (f64, f64),
     /// How much brighter (relative) than the mean light the flicker made this frame, as AE
     /// estimated and metered it (0 without a flicker fit).
     #[serde(default)]

@@ -64,6 +64,20 @@ impl ControlPlane {
         read_control_from_plane(self, id)
     }
 
+    /// The range `id` takes now when it depends on the stream, narrower than its descriptor's
+    /// (`ControlMeta` holds the sensor's limits): a native camera's exposure time at the
+    /// current frame duration, and the gain AE may use. `None` for other controls and
+    /// backends.
+    #[cfg_attr(not(feature = "native"), allow(clippy::only_used_in_recursion))]
+    pub fn effective_range(&self, id: ControlId) -> Option<(ControlValue, ControlValue)> {
+        match self {
+            ControlPlane::Supervised(shared) => shared.current_control().ok()?.effective_range(id),
+            #[cfg(feature = "native")]
+            ControlPlane::Native { processed, .. } => processed.as_ref()?.effective_range(id),
+            _ => None,
+        }
+    }
+
     /// Set a control, as [`CaptureHandle::set_control`](super::CaptureHandle::set_control)
     /// does, from any thread.
     pub fn set_control(&self, id: ControlId, value: ControlValue) -> Result<(), CaptureError> {

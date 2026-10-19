@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Effective control ranges.** `ControlDescriptor::effective_min` / `effective_max`: the
+  range a control takes now when it is narrower than the device's (`meta.min`/`max`): on native
+  cameras the exposure time at the current frame duration (frame duration less the exposure
+  margin) and the gain AE may use (`AeStatus::exposure_range`, `gain_range`). The camera service
+  sends them after the control list (older clients stop before), and clamps a value set outside
+  them (`AppliedControl::clamped`). In-process: `ControlPlane::effective_range`.
+
 - Native camera controls with enumerated values list their labels as the control's `menu`
   (values unchanged, still `Int`): `ae_flicker_mode` (off, 50 Hz, 60 Hz, auto),
   `ae_deflicker_mode`, `ae_state`, and the AF controls (`af_mode`, `af_trigger`, `af_range`,

@@ -734,6 +734,14 @@ impl Algorithm for Agc {
             flicker_detected: self.detected.map(|hz| Duration::from_secs_f64(0.5 / hz)),
             flicker_modulation: flicker_k - 1.0,
             at_limit,
+            exposure_range: {
+                let (lo, hi) = self.exposure_limits(Some(meta));
+                (Duration::from_secs_f64(lo), Duration::from_secs_f64(hi))
+            },
+            gain_range: {
+                let (lo, hi) = self.config.analogue_gain_limits;
+                (lo, hi * self.tuning.max_digital_gain)
+            },
         };
     }
 }

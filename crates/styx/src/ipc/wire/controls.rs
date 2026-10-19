@@ -355,6 +355,22 @@ pub(in crate::ipc) fn encode_control_list(controls: &[ControlDescriptor]) -> Vec
         w.opt(c.standard, |w, s| w.u8(s as u8));
         w.bool(c.writable);
     }
+    // After the list, so readers that predate it stop before it: the effective ranges, as
+    // tag 1, a count, then each one's index in the list, minimum and maximum.
+    let ranged: Vec<(usize, &ControlValue, &ControlValue)> = controls
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| Some((i, c.effective_min.as_ref()?, c.effective_max.as_ref()?)))
+        .collect();
+    if !ranged.is_empty() {
+        w.u8(1);
+        w.u16(ranged.len() as u16);
+        for (i, lo, hi) in ranged {
+            w.u16(i as u16);
+            write_value(&mut w, lo);
+            write_value(&mut w, hi);
+        }
+    }
     w.0
 }
 
@@ -409,7 +425,20 @@ pub(in crate::ipc) fn decode_control_list(
             current: r.opt(read_value)?,
             standard: r.opt(read_standard)?,
             writable: r.bool()?,
+            effective_min: None,
+            effective_max: None,
         });
+    }
+    if r.0.first() == Some(&1) {
+        r.u8()?;
+        for _ in 0..r.u16()? {
+            let i = usize::from(r.u16()?);
+            let (lo, hi) = (read_value(&mut r)?, read_value(&mut r)?);
+            let d = out
+                .get_mut(i)
+                .ok_or(IpcError::Malformed("effective range of no control"))?;
+            (d.effective_min, d.effective_max) = (Some(lo), Some(hi));
+        }
     }
     Ok(out)
 }

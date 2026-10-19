@@ -26,6 +26,10 @@ pub struct LoopControls {
     colour_temperature: AtomicU32,
     /// The flicker period automatic flicker avoidance detected, in microseconds (0: none).
     flicker_detected: AtomicI32,
+    /// The exposure range at the current frame duration, in microseconds, and the total gain
+    /// range AE may use (`f32` bits); zero until the loop has run.
+    exposure_range: [AtomicU32; 2],
+    gain_range: [AtomicU32; 2],
     /// Still requests for the worker.
     stills: Mutex<Vec<super::still_runner::StillJob>>,
     /// What AF reported, and the AF windows as set.
@@ -43,6 +47,8 @@ impl Default for LoopControls {
             pending: Mutex::new(None),
             ae_state: AtomicI32::new(1),
             colour_temperature: AtomicU32::new(0),
+            exposure_range: [AtomicU32::new(0), AtomicU32::new(0)],
+            gain_range: [AtomicU32::new(0), AtomicU32::new(0)],
             flicker_detected: AtomicI32::new(0),
             stills: Mutex::new(Vec::new()),
             af: Default::default(),
@@ -279,6 +285,39 @@ impl LoopControls {
             .flicker_detected
             .map_or(0, |p| i32::try_from(p.as_micros()).unwrap_or(i32::MAX));
         self.flicker_detected.store(us, Ordering::Release);
+        let (lo, hi) = params.ae.exposure_range;
+        for (a, d) in self.exposure_range.iter().zip([lo, hi]) {
+            a.store(
+                u32::try_from(d.as_micros()).unwrap_or(u32::MAX),
+                Ordering::Release,
+            );
+        }
+        let (lo, hi) = params.ae.gain_range;
+        for (a, g) in self.gain_range.iter().zip([lo, hi]) {
+            a.store((g as f32).to_bits(), Ordering::Release);
+        }
+    }
+
+    /// The range `id` takes now, where it depends on the stream (exposure: the frame duration;
+    /// gain: what AE may use); `None` for other controls, or before the first frame.
+    pub(crate) fn effective_range(&self, id: ControlId) -> Option<(ControlValue, ControlValue)> {
+        match id {
+            ids::EXPOSURE_TIME_US => {
+                let [lo, hi] = self
+                    .exposure_range
+                    .each_ref()
+                    .map(|a| a.load(Ordering::Acquire));
+                (hi > 0).then_some((ControlValue::Uint(lo), ControlValue::Uint(hi)))
+            }
+            ids::GAIN => {
+                let [lo, hi] = self
+                    .gain_range
+                    .each_ref()
+                    .map(|a| f32::from_bits(a.load(Ordering::Acquire)));
+                (hi > 0.0).then_some((ControlValue::Float(lo), ControlValue::Float(hi)))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -356,5 +395,24 @@ mod tests {
             l.read(ids::AE_FLICKER_DETECTED),
             Some(ControlValue::Int(10_000))
         );
+    }
+
+    #[test]
+    fn exposure_and_gain_ranges_follow_the_loop() {
+        let l = LoopControls::default();
+        assert_eq!(l.effective_range(ids::EXPOSURE_TIME_US), None);
+        let mut p = Params::default();
+        p.ae.exposure_range = (Duration::from_micros(14), Duration::from_micros(8_142));
+        p.ae.gain_range = (1.0, 15.5);
+        l.report(&p);
+        assert_eq!(
+            l.effective_range(ids::EXPOSURE_TIME_US),
+            Some((ControlValue::Uint(14), ControlValue::Uint(8_142)))
+        );
+        assert_eq!(
+            l.effective_range(ids::GAIN),
+            Some((ControlValue::Float(1.0), ControlValue::Float(15.5)))
+        );
+        assert_eq!(l.effective_range(ids::AE_ENABLE), None);
     }
 }

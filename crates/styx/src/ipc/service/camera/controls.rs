@@ -158,6 +158,22 @@ impl Camera {
             Some(meta) => fit(meta, backend_value)?,
             None => (backend_value, false),
         };
+        // Within the range it takes now (e.g. an exposure at most the frame duration allows).
+        let effective = state
+            .capture()
+            .and_then(|c| c.control_plane().effective_range(r.id));
+        let (fitted, clamped) = match (effective, &r.meta) {
+            (Some((min, max)), Some(meta)) => {
+                let now = ControlMeta {
+                    min,
+                    max,
+                    ..meta.clone()
+                };
+                let (v, narrowed) = fit(&now, fitted)?;
+                (v, clamped || narrowed)
+            }
+            _ => (fitted, clamped),
+        };
         let mut applied = AppliedControl {
             id: r.id,
             requested: value.clone(),
@@ -330,12 +346,17 @@ impl Camera {
                     Some(capture) => capture.get_control(meta.id).ok(),
                     None => state.remembered(meta.id),
                 };
+                let effective = state
+                    .capture()
+                    .and_then(|c| c.control_plane().effective_range(meta.id));
                 ControlDescriptor {
                     meta: meta.clone(),
                     current,
                     standard,
                     writable: meta.access == Access::ReadWrite
                         && policy.check(caller, meta.id, standard).is_ok(),
+                    effective_min: effective.as_ref().map(|r| r.0.clone()),
+                    effective_max: effective.map(|r| r.1),
                 }
             })
             .collect();
@@ -385,6 +406,8 @@ impl Camera {
             current: self.frame_rate(state).map(ControlValue::Float),
             standard,
             writable: policy.check(caller, SERVICE_FRAME_RATE, standard).is_ok(),
+            effective_min: None,
+            effective_max: None,
         }
     }
 
