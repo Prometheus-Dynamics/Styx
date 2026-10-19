@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **AE limits, modes and metering region** on processed native captures (docs/native-stack/
+  algorithms.md): controls `AE_EXPOSURE_MAX_US` (an exposure ceiling AE keeps to, e.g. against
+  motion blur), `AE_GAIN_MAX`, `AE_EXPOSURE_MODE` (normal/short/long) and `AE_METERING_MODE`
+  (centre-weighted/spot/matrix) as menus, and `AE_METERING_REGION` (a rectangle in output
+  pixels: only its zones are metered). `styx-algo`: `Controls::exposure_max`, `gain_max`,
+  `metering_region` (`MeteringRegion`); the effective exposure and gain ranges include them.
+
 - **Effective control ranges.** `ControlDescriptor::effective_min` / `effective_max`: the
   range a control takes now when it is narrower than the device's (`meta.min`/`max`): on native
   cameras the exposure time at the current frame duration (frame duration less the exposure

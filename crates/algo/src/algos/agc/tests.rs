@@ -236,3 +236,79 @@ fn unsettled_first_frames_are_left_out() {
     agc.process(&grey(0.48), &meta(0, 1.0, 1.0), &mut p);
     assert_eq!(p.sensor, start);
 }
+
+#[test]
+fn exposure_and_gain_caps_hold_ae_below_them() {
+    let agc = prepared(no_constraints());
+    let mut m = meta(0, 1.0, 1.0);
+    m.controls.exposure_max = Some(Duration::from_millis(4));
+    m.controls.gain_max = Some(3.0);
+    // 20 ms wanted: time stops at 4 ms, gain at 3 (analogue and digital together).
+    let s = agc.divide(0.020, 0.020, (None, None), Some(&m));
+    assert!((s.exposure - 0.004).abs() < 1e-9, "{s:?}");
+    assert!(s.analogue_gain * s.digital_gain <= 3.0 + 1e-9, "{s:?}");
+    // A manual exposure is clamped to the ceiling too; the ranges reported say so.
+    m.controls.exposure = Some(Duration::from_millis(9));
+    let mut agc = prepared(no_constraints());
+    let mut p = Params::default();
+    agc.process(&grey(0.04), &m, &mut p);
+    assert_eq!(p.sensor.unwrap().exposure, Duration::from_millis(4));
+    assert_eq!(p.ae.exposure_range.1, Duration::from_millis(4));
+    assert_eq!(p.ae.gain_range.1, 3.0);
+}
+
+#[test]
+fn a_metering_region_weighs_only_its_zones() {
+    let w = metering::region_weights(
+        MeteringRegion {
+            x: 0.5,
+            y: 0.0,
+            width: 0.5,
+            height: 0.5,
+        },
+        4,
+        2,
+    );
+    assert_eq!(w, vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+    // Smaller than a zone: the zone under its centre.
+    let w = metering::region_weights(
+        MeteringRegion {
+            x: 0.1,
+            y: 0.6,
+            width: 0.01,
+            height: 0.01,
+        },
+        4,
+        2,
+    );
+    assert_eq!(w, vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+    // AE follows the region: a bright quarter metered alone asks for less exposure.
+    let bright_quarter = {
+        let mut a = StatsAccumulator::new(4, 3, 64, 1.0);
+        for zy in 0..3 {
+            for zx in 0..4 {
+                let y = if zx >= 2 && zy == 0 { 0.8 } else { 0.04 };
+                for _ in 0..4 {
+                    a.add(zx, zy, y, y, y);
+                }
+            }
+        }
+        a.finish()
+    };
+    let total = |region| {
+        let mut agc = prepared(no_constraints());
+        let mut m = meta(7, 10.0, 1.0);
+        m.controls.metering_region = region;
+        let mut p = Params::default();
+        agc.process(&bright_quarter, &m, &mut p);
+        let r = p.sensor.unwrap();
+        r.exposure.as_secs_f64() * r.analogue_gain * p.digital_gain
+    };
+    let quarter = Some(MeteringRegion {
+        x: 0.5,
+        y: 0.0,
+        width: 0.5,
+        height: 1.0 / 3.0,
+    });
+    assert!(total(quarter) < total(None) / 2.0);
+}

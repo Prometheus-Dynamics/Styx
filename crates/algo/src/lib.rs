@@ -61,7 +61,7 @@ pub use algos::af::{
 pub use algos::agc::deflicker::FlickerCorrection;
 pub use config::{CameraConfig, ControlDelays, Crop, LensConfig};
 pub use error::{AlgoError, Result};
-pub use frame::{Controls, Deflicker, Flicker, FrameMetadata, metering};
+pub use frame::{Controls, Deflicker, Flicker, FrameMetadata, MeteringRegion, metering};
 pub use params::{
     AeStatus, AwbStatus, BlackLevels, CdnParams, DenoiseParams, FrameGain, GeqParams, IDENTITY,
     LensShading, Matrix3, Params, SdnParams, SensorRequest, SharpenParams, TdnParams, mat_mul,

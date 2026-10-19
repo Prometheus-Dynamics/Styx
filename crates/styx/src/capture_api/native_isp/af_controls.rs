@@ -48,6 +48,11 @@ impl Default for AfReport {
 
 impl AfReport {
     /// The output size AF windows are given in.
+    /// The output size windows are given in.
+    pub(crate) fn output(&self) -> (u32, u32) {
+        *self.output.lock()
+    }
+
     pub(crate) fn set_output(&self, width: u32, height: u32) {
         *self.output.lock() = (width, height);
     }

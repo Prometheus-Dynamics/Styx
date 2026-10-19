@@ -153,6 +153,26 @@ fn histogram_y(h: &Histogram, gain: f64) -> f64 {
     sum / total / bins
 }
 
+/// Zone weights for metering only `region` of a `w` x `h` grid: 1 for the zones whose centre is
+/// in it, 0 elsewhere; the zone nearest its centre when it covers no zone's centre.
+pub(crate) fn region_weights(region: crate::frame::MeteringRegion, w: u32, h: u32) -> Vec<f64> {
+    let centre = |i: u32, n: u32| (f64::from(i) + 0.5) / f64::from(n.max(1));
+    let mut weights: Vec<f64> = (0..h)
+        .flat_map(|y| (0..w).map(move |x| (x, y)))
+        .map(|(x, y)| f64::from(u8::from(region.contains(centre(x, w), centre(y, h)))))
+        .collect();
+    if !weights.is_empty() && weights.iter().all(|&v| v == 0.0) {
+        let (cx, cy) = (
+            region.x + region.width / 2.0,
+            region.y + region.height / 2.0,
+        );
+        let zx = ((cx * f64::from(w)) as u32).min(w.saturating_sub(1));
+        let zy = ((cy * f64::from(h)) as u32).min(h.saturating_sub(1));
+        weights[(zy * w + zx) as usize] = 1.0;
+    }
+    weights
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

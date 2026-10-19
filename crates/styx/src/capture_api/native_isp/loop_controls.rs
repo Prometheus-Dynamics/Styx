@@ -34,6 +34,8 @@ pub struct LoopControls {
     stills: Mutex<Vec<super::still_runner::StillJob>>,
     /// What AF reported, and the AF windows as set.
     pub(crate) af: super::af_controls::AfReport,
+    /// AE's metering region as set.
+    ae_region: super::ae_controls::AeRegion,
     /// The main output's crop (`OUTPUT_CROP`).
     pub(crate) crop: super::crop_control::CropControl,
     /// The other regions' crops (`region_crop(index)`).
@@ -52,6 +54,7 @@ impl Default for LoopControls {
             flicker_detected: AtomicI32::new(0),
             stills: Mutex::new(Vec::new()),
             af: Default::default(),
+            ae_region: Default::default(),
             crop: Default::default(),
             regions: Default::default(),
         }
@@ -153,6 +156,15 @@ impl LoopControls {
         if let Some(index) = ids::region_crop_index(id) {
             return Some(self.regions.apply(index, value));
         }
+        if super::ae_controls::is_ae(id) {
+            let mut c = self.current.lock();
+            let r =
+                super::ae_controls::apply(&self.ae_region, self.af.output(), id, value, &mut c)?;
+            if r.is_ok() {
+                *self.pending.lock() = Some(c.clone());
+            }
+            return Some(r);
+        }
         if super::af_controls::is_af(id) {
             let mut c = self.current.lock();
             let r = super::af_controls::apply(&self.af, id, value, &mut c)?;
@@ -230,6 +242,9 @@ impl LoopControls {
         }
         let c = self.current.lock();
         if let Some(v) = super::af_controls::read(&self.af, id, &c) {
+            return Some(v);
+        }
+        if let Some(v) = super::ae_controls::read(&self.ae_region, id, &c) {
             return Some(v);
         }
         Some(match id {

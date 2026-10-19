@@ -50,7 +50,7 @@ use core::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::error::Result;
-use crate::frame::{Controls, Flicker, FrameMetadata};
+use crate::frame::{Controls, Flicker, FrameMetadata, MeteringRegion};
 #[cfg(not(feature = "std"))]
 use crate::math::Float as _;
 use crate::params::{AeStatus, Params, SensorRequest};
@@ -79,6 +79,10 @@ const DETECT_SAMPLES: usize = 16;
 #[cfg(feature = "flicker")]
 const DETECT_VISIBLE: f64 = 0.008;
 
+/// Cached zone weights: the metering mode's name, the grid's width and height, whether luma
+/// zones are used, the metering region, and the weights.
+type ZoneWeights = (String, u32, u32, bool, Option<MeteringRegion>, Vec<f64>);
+
 /// The AGC algorithm. See the [module documentation](self).
 #[derive(Debug, Clone)]
 // Without `flicker` the fit state is kept (and reset) but not read.
@@ -86,7 +90,9 @@ const DETECT_VISIBLE: f64 = 0.008;
 pub struct Agc {
     tuning: AgcTuning,
     config: CameraConfig,
-    weights: Option<(String, u32, u32, bool, Vec<f64>)>,
+    /// The zone weights in use: for the metering mode by name, the grid's size, whether luma
+    /// zones are used, and the metering region if one was set.
+    weights: Option<ZoneWeights>,
     /// The metering mode's weights for the ISP's histogram, by mode name.
     histogram: Option<(String, ZoneGrid<f64>)>,
     frame_count: u32,
@@ -183,8 +189,28 @@ impl Agc {
     fn exposure_limits(&self, meta: Option<&FrameMetadata>) -> (f64, f64) {
         let (lo, hi) = self.config.exposure_limits;
         let fd_max = self.frame_duration_limits(meta).1 - self.config.exposure_margin.as_secs_f64();
-        let hi = hi.as_secs_f64().min(fd_max).max(lo.as_secs_f64());
+        let asked = meta
+            .and_then(|m| m.controls.exposure_max)
+            .map_or(f64::INFINITY, |d| d.as_secs_f64());
+        let hi = hi
+            .as_secs_f64()
+            .min(fd_max)
+            .min(asked)
+            .max(lo.as_secs_f64());
         (lo.as_secs_f64(), hi)
+    }
+
+    /// The total gain AE may use: the sensor's analogue range times the digital gain the
+    /// tuning allows, capped by `Controls::gain_max`.
+    fn gain_limits(&self, meta: Option<&FrameMetadata>) -> (f64, f64) {
+        let (lo, hi) = self.config.analogue_gain_limits;
+        let hi = (hi * self.tuning.max_digital_gain)
+            .min(
+                meta.and_then(|m| m.controls.gain_max)
+                    .unwrap_or(f64::INFINITY),
+            )
+            .max(lo);
+        (lo, hi)
     }
 
     fn limit_exposure(&self, t: f64, meta: Option<&FrameMetadata>) -> f64 {
@@ -192,9 +218,9 @@ impl Agc {
         t.clamp(lo, hi)
     }
 
-    fn limit_gain(&self, g: f64) -> f64 {
-        let (lo, hi) = self.config.analogue_gain_limits;
-        g.clamp(lo, hi * self.tuning.max_digital_gain)
+    fn limit_gain(&self, g: f64, meta: Option<&FrameMetadata>) -> f64 {
+        let (lo, hi) = self.gain_limits(meta);
+        g.clamp(lo, hi)
     }
 
     fn profile(&self, controls: &Controls) -> &ExposureProfile {
@@ -221,7 +247,7 @@ impl Agc {
         let gain = c
             .analogue_gain
             .or(frozen.map(|f| f.1))
-            .map(|g| self.limit_gain(g));
+            .map(|g| self.limit_gain(g, Some(meta)));
         (exposure, gain)
     }
 
@@ -278,9 +304,11 @@ impl Agc {
             (Some(l), true) => (l.width, l.height),
             _ => (stats.colour.width, stats.colour.height),
         };
+        let region = meta.controls.metering_region;
         let cached = matches!(
             &self.weights,
-            Some((n, cw, ch, cl, _)) if n.as_str() == name && (*cw, *ch, *cl) == (w, h, use_luma)
+            Some((n, cw, ch, cl, r, _))
+                if n.as_str() == name && (*cw, *ch, *cl) == (w, h, use_luma) && *r == region
         );
         if !cached {
             let key = if name == "average" && !self.tuning.metering_modes.contains_key("average") {
@@ -288,8 +316,11 @@ impl Agc {
             } else {
                 name
             };
-            let weights = metering::weights_for(key, self.tuning.metering_modes.get(key), w, h);
-            self.weights = Some((String::from(name), w, h, use_luma, weights));
+            let weights = match region {
+                Some(r) => metering::region_weights(r, w, h),
+                None => metering::weights_for(key, self.tuning.metering_modes.get(key), w, h),
+            };
+            self.weights = Some((String::from(name), w, h, use_luma, region, weights));
         }
         use_luma
     }
@@ -297,7 +328,7 @@ impl Agc {
     /// The zone weights [`Self::metering_weights`] made current.
     fn weight_values(&self) -> &[f64] {
         match &self.weights {
-            Some((_, _, _, _, weights)) => weights,
+            Some((_, _, _, _, _, weights)) => weights,
             None => &[],
         }
     }
@@ -360,7 +391,9 @@ impl Agc {
         let profile = self.profile(controls);
         let stage_t = |i: usize| self.limit_exposure(profile.exposure_us[i] * 1e-6, meta);
         let mut t = fixed.0.unwrap_or_else(|| stage_t(0));
-        let mut g = fixed.1.unwrap_or_else(|| self.limit_gain(profile.gain[0]));
+        let mut g = fixed
+            .1
+            .unwrap_or_else(|| self.limit_gain(profile.gain[0], meta));
         if t * g < total_no_dg {
             for stage in 1..profile.gain.len() {
                 if fixed.0.is_none() {
@@ -376,7 +409,7 @@ impl Agc {
                         g = total_no_dg / t;
                         break;
                     }
-                    g = self.limit_gain(profile.gain[stage]);
+                    g = self.limit_gain(profile.gain[stage], meta);
                 }
             }
         }
@@ -395,9 +428,16 @@ impl Agc {
                 t = snapped;
             }
         }
-        let analogue_gain = g.min(self.config.analogue_gain_limits.1);
+        let gain_max = self.gain_limits(meta).1;
+        let analogue_gain = g.min(self.config.analogue_gain_limits.1).min(gain_max);
         let no_dg = analogue_gain * t;
-        let digital_gain = (total / no_dg).clamp(1.0, self.tuning.max_digital_gain);
+        let digital_gain = (total / no_dg).clamp(
+            1.0,
+            self.tuning
+                .max_digital_gain
+                .min(gain_max / analogue_gain)
+                .max(1.0),
+        );
         Split {
             exposure: t,
             analogue_gain,
@@ -412,7 +452,7 @@ impl Agc {
         }
         let exposure = self.limit_exposure(self.tuning.default_exposure_us * 1e-6, None);
         let gain = self
-            .limit_gain(self.tuning.default_analogue_gain)
+            .limit_gain(self.tuning.default_analogue_gain, None)
             .min(self.config.analogue_gain_limits.1);
         (exposure, gain)
     }
@@ -581,9 +621,9 @@ impl Algorithm for Agc {
                     Some(meta),
                 )
             });
-            let max_g = fixed
-                .1
-                .unwrap_or_else(|| self.limit_gain(profile.gain[profile.gain.len() - 1]));
+            let max_g = fixed.1.unwrap_or_else(|| {
+                self.limit_gain(profile.gain[profile.gain.len() - 1], Some(meta))
+            });
             let min_t = fixed.0.unwrap_or(self.exposure_limits(Some(meta)).0);
             let min_g = fixed.1.unwrap_or(self.config.analogue_gain_limits.0);
             reach = (min_t * min_g, max_t * max_g);
@@ -738,10 +778,7 @@ impl Algorithm for Agc {
                 let (lo, hi) = self.exposure_limits(Some(meta));
                 (Duration::from_secs_f64(lo), Duration::from_secs_f64(hi))
             },
-            gain_range: {
-                let (lo, hi) = self.config.analogue_gain_limits;
-                (lo, hi * self.tuning.max_digital_gain)
-            },
+            gain_range: self.gain_limits(Some(meta)),
         };
     }
 }

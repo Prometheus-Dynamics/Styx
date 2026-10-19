@@ -7,6 +7,8 @@
 //! from the back end's output buffers (mapped once, exported as dma-bufs, returned to the back
 //! end when the lease drops); software ISP frames are written into recycled heap buffers.
 
+mod ae_controls;
+pub(crate) use ae_controls::{EXPOSURE_MODES, METERING_MODES};
 mod af_controls;
 mod crop_control;
 mod loop_controls;

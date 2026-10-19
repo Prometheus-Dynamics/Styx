@@ -76,6 +76,22 @@ impl Deflicker {
     }
 }
 
+/// A part of the image, in fractions of its width and height.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct MeteringRegion {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl MeteringRegion {
+    /// Whether the point (`x`, `y`) (fractions) is in it.
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+}
+
 /// What the application asks for. Recorded per frame, so replays reproduce control changes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -90,6 +106,15 @@ pub struct Controls {
     pub ev: f64,
     /// Metering mode by tuning name (see [`metering`]); `None` is the tuning's default.
     pub metering_mode: Option<String>,
+    /// Meter only this part of the image (its zones count equally, the others not at all),
+    /// instead of the metering mode's weights.
+    pub metering_region: Option<MeteringRegion>,
+    /// The longest exposure time AE may use (e.g. to limit motion blur); `None`: the exposure
+    /// mode's and the frame duration's limits only. Manual exposures are clamped to it too.
+    pub exposure_max: Option<Duration>,
+    /// The highest total gain (analogue × digital) AE may use; `None`: the sensor's and the
+    /// tuning's limits only.
+    pub gain_max: Option<f64>,
     /// Exposure mode (shutter/gain profile) by tuning name.
     pub exposure_mode: Option<String>,
     /// Constraint mode by tuning name.
@@ -143,6 +168,9 @@ impl Default for Controls {
             analogue_gain: None,
             ev: 0.0,
             metering_mode: None,
+            metering_region: None,
+            exposure_max: None,
+            gain_max: None,
             exposure_mode: None,
             constraint_mode: None,
             flicker: Flicker::Off,

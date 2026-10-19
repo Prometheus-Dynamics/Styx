@@ -181,6 +181,22 @@ room's lamp: exposure × gain spread 10%, never locked). Styx's AGC (`agc/flicke
   (`NativeIspConfig::flicker`, control `AE_FLICKER_MODE`, detected period
   `AE_FLICKER_DETECTED`); `Controls::default()` keeps it off.
 
+### AE: limits, modes and metering
+
+Controls of a processed native capture (all live, AE stays on):
+
+| Control | Value | Effect |
+|---|---|---|
+| `AE_EXPOSURE_MAX_US` | µs, 0 none | AE never exposes longer (e.g. against motion blur on fast targets); the extra light comes from gain. Manual exposures are clamped to it. |
+| `AE_GAIN_MAX` | total gain, 0 none | AE never uses more analogue × digital gain; past both limits the image gets darker. |
+| `AE_EXPOSURE_MODE` | 0 normal, 1 short, 2 long | The tuning's shutter/gain ladder (`rpi.agc` exposure modes). |
+| `AE_METERING_MODE` | 0 centre-weighted, 1 spot, 2 matrix | The tuning's zone weights; setting it clears a metering region. |
+| `AE_METERING_REGION` | rect in output pixels | Only the zones whose centre is in it count (the one under its centre if it covers none). |
+
+The exposure and gain ranges in effect, frame duration and these limits included, are reported
+per frame (`AeStatus::exposure_range`, `gain_range`) and as the controls' `effective_min` /
+`effective_max`.
+
 ### Deflicker
 
 Exposures shorter than a period keep the flicker in the frames: AE meters against the mean
