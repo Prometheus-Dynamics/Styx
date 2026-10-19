@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **`FrameLease::progress_handle`** (`FrameProgressHandle`): a sliced frame's progress, owned.
+  It outlives the lease, so a consumer that hands the frame on can still tell a frame the
+  camera failed from a failure of its own, without holding the frame's buffers.
+- Example `sliced_rejoin` (features `native`, `trace-log`): sliced frames through a camera
+  service across idle stops, with Styx's debug log naming why a sliced frame failed.
+
 - **Code review, batch 3: features.**
   - **Pause continuous AF** (libcamera's `AfPause`): immediate (the lens holds, a scan is
     abandoned), deferred (a running scan finishes first) and resume. `Controls::af_pause`,
@@ -393,6 +399,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **Sliced frames after an idle stop.** A camera service client joining after the camera
+  stopped for idle got the previous capture's last sliced frame, stuck at its first slice and
+  marked failed 500 ms later (CM5: every rejoin). The PiSP worker now fails a sliced frame still
+  in flight when it stops, the service skips frames the camera failed, and a frame's complete
+  or failed state is final (a camera service's progress slot reused for a later frame no longer
+  turns a failed frame complete).
 - mozjpeg encoder: a plane shorter than its height is an error instead of a panic.
 
 - **Native PiSP: consumers holding what the planner allows no longer starve the camera.**
