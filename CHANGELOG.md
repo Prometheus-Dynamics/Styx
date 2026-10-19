@@ -8,6 +8,18 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Raw sensor frames next to processed ones, zero-copy** (`Frames::sensor_raw()`): on a
+  native PiSP camera a consumer gets the raw frame the ISP reads (16-bit Bayer `BYR2`/`GB16`/
+  `GR16`/`RG16`, the sensor's value in the top bits), as a lease of the front end's dma-buf,
+  while other consumers of the capture get processed frames (also through the camera service).
+  At most four are out at once; frames beyond that go without (`Drops::raw_skipped`), never
+  stalling the stream. In-process: `StyxConfig::native_sensor_raw`, `CompanionKind::SensorRaw`.
+  CM5: raw and gray + pyramid clients both at 30 fps.
+- `RecorderOptions::raw_storage` (`RawStorage`): 16-bit Bayer frames recorded as they are,
+  packed to 10 bits or their top 8. CM5, 1280x800 raw at 30 fps on the eMMC: as-is with lz4
+  19.4 MB/s (ratio 2.24, 9.2 ms CPU a frame), packed 10-bit with lz4 14.8 MB/s (1.74,
+  12.1 ms), as-is uncompressed 41.4 MB/s; no drops in any.
+
 - **AE limits, modes and metering region** on processed native captures (docs/native-stack/
   algorithms.md): controls `AE_EXPOSURE_MAX_US` (an exposure ceiling AE keeps to, e.g. against
   motion blur), `AE_GAIN_MAX`, `AE_EXPOSURE_MODE` (normal/short/long) and `AE_METERING_MODE`
