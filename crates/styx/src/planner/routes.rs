@@ -95,6 +95,9 @@ pub(crate) struct Candidate<'a> {
     /// The ISP delivers this processed format instead of the capture mode's (a native camera's
     /// PiSP on a shared capture; `mode` is then this consumer's view of the capture).
     pub isp_format: Option<FourCc>,
+    /// The raw frames of a native PiSP's processed capture, not an ISP output
+    /// (`super::sensor_raw`; `isp_format` is then their format, `mode` the processed one).
+    pub sensor_raw: bool,
     /// How the region of interest and overview reach the frames.
     pub region: super::region::Region,
     pub notes: Vec<String>,
@@ -229,6 +232,10 @@ pub(crate) fn candidates<'a>(
         }
         for mode in &backend.descriptor.modes {
             let label = describe(backend, mode);
+            if let Some(c) = super::sensor_raw::candidate(backend, mode, req, registry) {
+                out.push(c);
+                continue;
+            }
             match candidate(backend, mode, req, registry) {
                 Ok(candidate) => out.push(candidate),
                 Err(reason) => rejected.push(PlanRejection {
@@ -469,6 +476,7 @@ fn finish<'a>(
         decode_scale,
         isp_output,
         isp_format: None,
+        sensor_raw: false,
         region,
         notes,
     })

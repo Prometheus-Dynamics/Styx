@@ -225,6 +225,9 @@ pub(super) fn spawn(
             let mut buffers = Buffers::default();
             let mut held_drops = 0u64;
             let mut sliced: Option<super::pisp_sliced::SlicedOut> = None;
+            // Raw frames out with consumers (`NativeIspConfig::sensor_raw`): at most the
+            // front end's extra buffers, so a slow raw consumer never starves the stream.
+            let mut raw_out = 0u32;
             loop {
                 if w.stop.try_recv().is_ok() {
                     break;
@@ -233,6 +236,10 @@ pub(super) fn spawn(
                     // A sliced frame's buffers stay the back end's until the frame is done.
                     match sliced.as_mut() {
                         Some(o) if o.holds(i, index) => o.defer(i, index),
+                        _ if i == super::pisp_lease::RAW_OUTPUT => {
+                            raw_out = raw_out.saturating_sub(1);
+                            let _ = p.release_raw(index);
+                        }
                         _ => p.release_output(i, index),
                     }
                 }
@@ -322,8 +329,17 @@ pub(super) fn spawn(
                     .aaa(&aaa_sample(&p.step().params, p.controls(), f.sequence));
                 // A frame already handed out at its first slice: complete it (its leases are
                 // the consumer's), deliver nothing more.
+                // The raw frame, held for a raw consumer (`NativeIspConfig::sensor_raw`):
+                // leased with the frame below, else given back.
+                let raw_image = f.raw_image;
+                let give_back_raw = |p: &mut PispPipeline| {
+                    if let Some(i) = raw_image {
+                        let _ = p.release_raw(i);
+                    }
+                };
                 if let Some(out) = sliced.take_if(|o| o.sequence == f.sequence) {
                     out.complete(&buffers, &mut p);
+                    give_back_raw(&mut p);
                     continue;
                 }
                 if let Some(prev) = sliced.take() {
@@ -332,10 +348,37 @@ pub(super) fn spawn(
                 }
                 let frame = match frame_leases(&p, &f, &mut buffers, &w, &ret_tx, None) {
                     Ok(Some(frame)) => frame,
-                    Ok(None) => continue,
+                    Ok(None) => {
+                        give_back_raw(&mut p);
+                        continue;
+                    }
                     Err(e) => {
+                        give_back_raw(&mut p);
                         *w.error.lock() = Some(err(e));
                         break;
+                    }
+                };
+                let conversion = super::super::native_backend::native_conversion(w.clock);
+                let room = raw_out < styx_pipeline::device::RAW_LEASE_BUFFERS;
+                if raw_image.is_some() && !room {
+                    w.live.raw_skipped();
+                }
+                let raw = raw_image.filter(|_| room).and_then(|_| {
+                    super::pisp_lease::raw_lease(&p, &mut buffers, &f, &ret_tx, &w.live, conversion)
+                });
+                raw_out += u32::from(raw.is_some());
+                let frame = match raw {
+                    // A raw lease that cannot join the frame goes back when it drops.
+                    Some(raw) => match frame.with_companion(CompanionKind::SensorRaw, raw) {
+                        Ok(frame) => frame,
+                        Err(e) => {
+                            *w.error.lock() = Some(err(format!("raw companion: {e}")));
+                            break;
+                        }
+                    },
+                    None => {
+                        give_back_raw(&mut p);
+                        frame
                     }
                 };
                 if deliver(&w.live, tx, frame, "native-pisp", w.send_timeout) {

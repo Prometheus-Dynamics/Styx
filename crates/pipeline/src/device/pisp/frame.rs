@@ -81,6 +81,10 @@ pub struct PispFrame {
     pub times: PispTimes,
     /// The raw frame, copied when [`super::PispPipeline::set_raw_copy`] asked for it.
     pub raw: Option<Box<crate::still::HeldRaw>>,
+    /// The front end buffer holding the raw frame, still dequeued, with
+    /// [`super::PispOptions::raw_lease`]: lease it ([`super::PispPipeline::raw_dmabuf`]) and
+    /// give it back with [`super::PispPipeline::release_raw`].
+    pub raw_image: Option<u32>,
     /// The extra passes over this frame's raw input, by slot ([`super::PispPipeline::set_pass`];
     /// `None`: no pass in the slot, or no free buffer for it this frame). Their buffers go back
     /// with [`super::PispPipeline::release_output`].

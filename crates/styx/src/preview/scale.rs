@@ -99,7 +99,7 @@ pub(super) fn source(frame: &FrameLease, target: (u32, u32)) -> &FrameLease {
         let usable = match kind {
             CompanionKind::Pyramid { .. } | CompanionKind::Scaled => frame.meta().crop.is_none(),
             CompanionKind::Overview => true,
-            CompanionKind::Region { .. } => false,
+            CompanionKind::Region { .. } | CompanionKind::SensorRaw => false,
         };
         if usable && kind_of(companion.meta().format.code).is_some() {
             candidates.push(companion);

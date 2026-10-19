@@ -1,5 +1,6 @@
 //! The back end's outputs: how their buffers read on the CPU, and their crops.
 
+use styx_pisp::device::{BackEndStream, BeJob};
 use styx_pisp::uapi::BeCropConfig;
 
 use super::PispPipeline;
@@ -49,6 +50,65 @@ impl PispPipeline {
         self.be.set_output_crop(i, crop)?;
         self.options.crop[i] = crop;
         Ok(())
+    }
+}
+
+impl PispPipeline {
+    /// Output `i`'s bytes for a frame's job.
+    pub fn output(&self, i: usize, job: &BeJob) -> Option<&[u8]> {
+        self.be_dev.as_ref()?.output_data(i, job.outputs[i]?)
+    }
+
+    /// Brackets CPU reads of output `i` of a frame's job: call with `start` before reading
+    /// [`Self::output`] and without after (see [`BackEndStream::sync_output`]).
+    pub fn sync_output(&self, i: usize, job: &BeJob, start: bool) -> Result<()> {
+        let (Some(b), Some(index)) = (self.be_dev.as_ref(), job.outputs.get(i).copied().flatten())
+        else {
+            return Ok(());
+        };
+        Ok(b.sync_output(i, index, start)?)
+    }
+
+    /// Output `i`'s dma-buf for a frame's job.
+    pub fn output_dmabuf(&self, i: usize, job: &BeJob) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.be_dev.as_ref()?.output_dmabuf(i, job.outputs[i]?)
+    }
+
+    /// Adopts the back end's spare buffers (`PispOptions::be_buffers_initial`) and asks for the
+    /// next ones: call between frames. Never allocates on the calling thread.
+    pub fn top_up_outputs(&mut self) {
+        if let Some(b) = self.be_dev.as_mut() {
+            b.top_up();
+        }
+    }
+
+    /// Frames dropped per output because no back end buffer was free or ready.
+    pub fn spare_misses(&self) -> [u64; 2] {
+        self.be_dev
+            .as_ref()
+            .map_or([0; 2], BackEndStream::spare_misses)
+    }
+
+    /// Spare buffers adopted per output without a prepare (see [`BackEndStream::spare_unprepared`]).
+    pub fn spare_unprepared(&self) -> [u64; 2] {
+        self.be_dev
+            .as_ref()
+            .map_or([0; 2], BackEndStream::spare_unprepared)
+    }
+
+    /// Gives output `i`'s buffer `index` back (one output of a job, e.g. when its two outputs
+    /// go to different consumers).
+    pub fn release_output(&mut self, i: usize, index: u32) {
+        if let Some(b) = self.be_dev.as_mut() {
+            b.release_output(i, index);
+        }
+    }
+
+    /// Gives a frame's output buffers back.
+    pub fn release(&mut self, job: &BeJob) {
+        if let Some(b) = self.be_dev.as_mut() {
+            b.release(job);
+        }
     }
 }
 

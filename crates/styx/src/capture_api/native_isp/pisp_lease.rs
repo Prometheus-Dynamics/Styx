@@ -347,11 +347,21 @@ impl Buffers {
         if let Some(b) = self.cache.get(&(i, index)) {
             return Ok(b.clone());
         }
-        let fd = p
-            .output_buffer_dmabuf(i, index)
+        let (fd, size) = if i == RAW_OUTPUT {
+            let layout = p.raw_layout().ok_or("no raw layout")?;
+            (
+                p.raw_dmabuf(index),
+                layout.stride as usize * layout.height as usize,
+            )
+        } else {
+            (
+                p.output_buffer_dmabuf(i, index),
+                p.output_buffer(i, index).map_or(0, <[u8]>::len),
+            )
+        };
+        let fd = fd
             .and_then(|fd| fd.try_clone_to_owned().ok())
             .ok_or("no dma-buf")?;
-        let size = p.output_buffer(i, index).map_or(0, <[u8]>::len);
         let dup = fd.try_clone().map_err(|e| e.to_string())?;
         let map = DmaBuf::from_fd(dup, size)
             .map()
@@ -359,7 +369,8 @@ impl Buffers {
         let b = BeBuffer {
             map: Arc::new(map),
             fd: Arc::new(fd),
-            cached: p.output_cached(i),
+            // The front end's raw buffers are the driver's, uncached.
+            cached: i != RAW_OUTPUT && p.output_cached(i),
         };
         self.cache.insert((i, index), b.clone());
         Ok(b)
@@ -501,6 +512,68 @@ fn lease(
         }
     }
     FrameLease::from_external(meta, plane_layouts, Arc::new(live.track(backing)))
+}
+
+/// The pseudo-output the front end's raw buffers come back to the worker as (the back end's
+/// outputs are 0 and 1).
+pub(super) const RAW_OUTPUT: usize = 2;
+
+/// A lease of the frame's raw front end buffer ([`PispFrame::raw_image`]): 16-bit Bayer
+/// samples (the sensor's value in the top bits), as the back end read them. `None` when the
+/// frame has no held raw buffer or it cannot be mapped (the caller gives it back then).
+pub(super) fn raw_lease(
+    p: &PispPipeline,
+    buffers: &mut Buffers,
+    f: &PispFrame,
+    returns: &Returns,
+    live: &CaptureMetrics,
+    conversion: Option<ClockConversion>,
+) -> Option<FrameLease> {
+    let index = f.raw_image?;
+    let layout = p.raw_layout()?;
+    let buffer = buffers.get(p, RAW_OUTPUT, index).ok()?;
+    let code = FourCc::new(*match layout.cfa {
+        styx_softisp::CfaPattern::Bggr => b"BYR2",
+        styx_softisp::CfaPattern::Gbrg => b"GB16",
+        styx_softisp::CfaPattern::Grbg => b"GR16",
+        styx_softisp::CfaPattern::Rggb => b"RG16",
+    });
+    let len = layout.stride as usize * layout.height as usize;
+    let format = MediaFormat::new(
+        code,
+        Resolution::new(layout.width, layout.height)?,
+        ColorSpace::Unknown,
+    );
+    let mut meta = stamp_clock(
+        FrameMeta::new(format, f.timestamp.as_nanos() as u64)
+            .with_backend(BackendFrameMeta::Native(NativeFrameMeta {
+                frame_end_ns: CaptureInstant::from(f.dequeued).as_nanos(),
+                ..native_meta(f.sequence, &f.sensor)
+            }))
+            .with_capture_instant(std::time::Instant::now()),
+        conversion,
+    );
+    meta.hops
+        .set(Hop::Dequeued, CaptureInstant::from(f.dequeued).as_nanos());
+    let backing = BeBacking {
+        buffer,
+        planes: smallvec::smallvec![(0, len)],
+        output: RAW_OUTPUT,
+        index,
+        window: CpuReadWindow::new(),
+        returns: returns.clone(),
+        progress: None,
+    };
+    let layouts = smallvec::smallvec![PlaneLayout {
+        offset: 0,
+        len,
+        stride: layout.stride as usize,
+    }];
+    Some(FrameLease::from_external(
+        meta,
+        layouts,
+        Arc::new(live.track(backing)),
+    ))
 }
 
 /// `crop` (of the frame the sensor's window `w` reads; `None`: all of it) in the coordinates of

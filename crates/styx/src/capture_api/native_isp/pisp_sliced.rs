@@ -114,6 +114,7 @@ pub(super) fn slice_leases(
         flicker: 1.0,
         times: Default::default(),
         raw: None,
+        raw_image: None,
         passes: Vec::new(),
     };
     let state = Arc::new(SliceState {

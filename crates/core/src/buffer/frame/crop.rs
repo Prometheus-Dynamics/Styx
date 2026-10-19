@@ -69,7 +69,9 @@ impl FrameLease {
         for (kind, companion) in companions {
             let region = match kind {
                 CompanionKind::Pyramid { level } => rect.scaled_down(level),
-                CompanionKind::Overview | CompanionKind::Region { .. } => {
+                CompanionKind::Overview
+                | CompanionKind::Region { .. }
+                | CompanionKind::SensorRaw => {
                     frame = frame.with_companion(kind, companion)?;
                     continue;
                 }

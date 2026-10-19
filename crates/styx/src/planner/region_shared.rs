@@ -48,7 +48,10 @@ pub(crate) fn assign(
         }
         return Ok(());
     }
-    let isp: Vec<bool> = candidates.iter().map(|c| c.region.isp()).collect();
+    let isp: Vec<bool> = candidates
+        .iter()
+        .map(|c| c.region.isp() && !c.sensor_raw)
+        .collect();
     if !isp.iter().any(|&b| b) {
         return Ok(());
     }
@@ -58,7 +61,11 @@ pub(crate) fn assign(
         .zip(requests)
         .map(|(&isp, req)| isp && !req.all_regions().is_empty())
         .collect();
-    let whole = takes_regions.iter().any(|&b| !b);
+    // A raw consumer (`sensor_raw`) takes no ISP output.
+    let whole = takes_regions
+        .iter()
+        .zip(candidates.iter())
+        .any(|(&b, c)| !b && !c.sensor_raw);
     let overview = candidates
         .iter()
         .filter_map(|c| c.region.isp_overview())

@@ -504,6 +504,13 @@ pub(super) fn start_processed(
                     .lazy_output_buffers
                     .then(|| config.backends.native.output_buffers.clamp(2, be_buffers)),
                 pass_buffers,
+                raw_lease: config.backends.native.sensor_raw,
+                fe_buffers: PispOptions::nv12_and_half_rgb(w, h).fe_buffers
+                    + if config.backends.native.sensor_raw {
+                        PispOptions::RAW_LEASE_BUFFERS
+                    } else {
+                        0
+                    },
                 ..PispOptions::nv12_and_half_rgb(w, h)
             };
             let mut p = PispPipeline::open(camera, &settings, &tuning, options).map_err(err)?;

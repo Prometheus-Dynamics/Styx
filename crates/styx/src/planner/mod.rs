@@ -37,6 +37,7 @@ mod region_soft;
 mod request;
 mod roi;
 mod routes;
+mod sensor_raw;
 mod session;
 pub(crate) use session::{SharedSession, same_plan};
 mod shared;
@@ -151,6 +152,8 @@ pub struct FramePlan {
     pub(crate) isp_format: Option<FourCc>,
     /// On a shared capture: frames come from the ISP's second output (at `isp_output`).
     pub(crate) isp_second_output: bool,
+    /// The raw frames of a native PiSP's processed capture (`sensor_raw`).
+    pub(crate) sensor_raw: bool,
     /// How the region of interest and overview reach the frames.
     pub(crate) region: region::Region,
     /// Frames the preparer makes go into memfd buffers other processes can map.
@@ -383,6 +386,7 @@ pub(crate) fn plan_from(
         decode_scale: chosen.decode_scale,
         isp_output: chosen.isp_output,
         isp_format: chosen.isp_format,
+        sensor_raw: chosen.sensor_raw,
         region: chosen.region,
         isp_second_output: false,
         exportable: false,

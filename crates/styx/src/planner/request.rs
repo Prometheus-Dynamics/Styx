@@ -176,6 +176,15 @@ impl Frames {
     pub fn any() -> FrameRequest {
         FrameRequest::default()
     }
+
+    /// The camera's raw sensor frames, 16-bit Bayer (`BYR2`, `GB16`, `GR16` or `RG16`, by its
+    /// colour filter; the sensor's value in the top bits). On a native camera with the PiSP
+    /// these are the frames its ISP reads, handed out as they are (no copy) next to the
+    /// processed frames other consumers of the capture get: a raw recorder alongside a vision
+    /// pipeline.
+    pub fn sensor_raw() -> FrameRequest {
+        FrameRequest::formats(super::sensor_raw::SENSOR_RAW_CODES)
+    }
 }
 
 impl FrameRequest {

@@ -36,6 +36,7 @@ const COMPANION_PYRAMID: u8 = 1;
 const COMPANION_SCALED: u8 = 2;
 const COMPANION_OVERVIEW: u8 = 3;
 const COMPANION_REGION: u8 = 4;
+const COMPANION_SENSOR_RAW: u8 = 5;
 const PAYLOAD_VISIBLE: u8 = 0;
 const PAYLOAD_BITSTREAM: u8 = 1;
 
@@ -166,6 +167,7 @@ fn write_body(w: &mut impl Write, frame: &FrameLease) -> Result<(), ReplayError>
             CompanionKind::Scaled => w.write_all(&[COMPANION_SCALED, 0])?,
             CompanionKind::Overview => w.write_all(&[COMPANION_OVERVIEW, 0])?,
             CompanionKind::Region { index } => w.write_all(&[COMPANION_REGION, index])?,
+            CompanionKind::SensorRaw => w.write_all(&[COMPANION_SENSOR_RAW, 0])?,
         }
         write_body(w, companion)?;
     }
@@ -221,6 +223,7 @@ fn read_body(r: &mut impl Read, offset: u64, top_level: bool) -> Result<FrameLea
             (COMPANION_SCALED, _) => CompanionKind::Scaled,
             (COMPANION_OVERVIEW, _) => CompanionKind::Overview,
             (COMPANION_REGION, index) => CompanionKind::Region { index },
+            (COMPANION_SENSOR_RAW, _) => CompanionKind::SensorRaw,
             _ => return Err(ReplayError::Corrupt("unknown companion kind")),
         };
         let companion = read_body(r, offset, false)?;

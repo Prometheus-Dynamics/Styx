@@ -41,6 +41,7 @@ pub(super) fn frame() -> PispFrame {
         request_lands: None,
         settings_from: Some(6),
         raw: None,
+        raw_image: None,
         digital_gain: 1.0,
         flicker: 1.0,
         times: PispTimes::default(),

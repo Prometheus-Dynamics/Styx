@@ -122,8 +122,11 @@ fn plan_shared(
                 .iter()
                 .enumerate()
                 .map(|(i, req)| {
-                    // A native PiSP makes the other processed format on an output of its own.
-                    match routes::isp_format_candidate(backend, mode, req, registry) {
+                    // A native PiSP makes the other processed format on an output of its own,
+                    // and hands out the raw frame it reads.
+                    match super::sensor_raw::candidate(backend, mode, req, registry)
+                        .or_else(|| routes::isp_format_candidate(backend, mode, req, registry))
+                    {
                         Some(c) => Ok(c),
                         None => routes::candidate(backend, mode, req, registry),
                     }
@@ -170,8 +173,13 @@ fn plan_shared(
             c.isp_format.unwrap_or(code),
         )
     };
+    // Raw consumers take no ISP output.
     let outputs_of = |candidates: &[Candidate<'_>]| {
-        let mut outs: Vec<((u32, u32), FourCc)> = candidates.iter().map(delivered).collect();
+        let mut outs: Vec<((u32, u32), FourCc)> = candidates
+            .iter()
+            .filter(|c| !c.sensor_raw)
+            .map(delivered)
+            .collect();
         outs.sort_by_key(|&((w, h), c)| {
             (std::cmp::Reverse(u64::from(w) * u64::from(h)), c != code)
         });
@@ -214,7 +222,7 @@ fn plan_shared(
     }
     if !fits(&outputs_of(&candidates)) {
         for (i, req) in requests.iter().enumerate() {
-            if candidates[i].isp_format.is_some() {
+            if candidates[i].isp_format.is_some() && !candidates[i].sensor_raw {
                 let mut req = req.clone();
                 if full_size[i] {
                     req.size = None;
@@ -238,7 +246,8 @@ fn plan_shared(
         .into_iter()
         .zip(requests)
         .map(|(candidate, req)| {
-            let second = second_output.is_some_and(|out| delivered(&candidate) == out);
+            let second = !candidate.sensor_raw
+                && second_output.is_some_and(|out| delivered(&candidate) == out);
             let mut plan = plan_from(device, candidate, req, interval, Vec::new());
             if second {
                 plan.isp_second_output = true;
@@ -440,13 +449,14 @@ impl SharedFramePlan {
         let main = self
             .consumers
             .iter()
-            .find(|p| !p.isp_second_output)
+            .find(|p| !p.isp_second_output && !p.sensor_raw)
             .map(output);
         let pyramid = self.consumers.iter().find_map(|p| p.isp_pyramid_level);
         let region = region_shared::layout_key(&self.consumers);
+        let raw = self.consumers.iter().any(|p| p.sensor_raw);
         format!(
             "{:?} {:?} {:?} main={main:?} second={second:?} pyramid={pyramid:?} region={region} \
-             idle={:?}",
+             raw={raw} idle={:?}",
             self.backend, self.mode.id, self.interval, self.stop_when_idle
         )
     }
@@ -498,7 +508,9 @@ fn outputs_config(consumers: &[FramePlan], mode: &Mode, mut config: StyxConfig) 
             .libcamera_pyramid_level(level)
             .native_pyramid_level(level);
     }
-    let main = consumers.iter().find(|p| !p.isp_second_output);
+    let main = consumers
+        .iter()
+        .find(|p| !p.isp_second_output && !p.sensor_raw);
     if let Some((width, height)) = main.and_then(|p| p.isp_output) {
         config = config
             .libcamera_output_size(width, height)
@@ -506,6 +518,9 @@ fn outputs_config(consumers: &[FramePlan], mode: &Mode, mut config: StyxConfig) 
     }
     if let Some(format) = main.and_then(|p| p.isp_format) {
         config = config.native_output_format(format);
+    }
+    if consumers.iter().any(|p| p.sensor_raw) {
+        config = config.native_sensor_raw(true);
     }
     if let Some(second) = consumers.iter().find(|p| p.isp_second_output) {
         let res = mode.format.resolution;

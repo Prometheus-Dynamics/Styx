@@ -699,3 +699,36 @@ fn exportable_captures_leave_the_cpu_cache_sync_to_their_readers() {
     let exported = plan.exportable();
     assert!(!exported.capture_config(1).backends.native.early_cpu_sync);
 }
+
+#[cfg(feature = "native")]
+#[test]
+fn a_raw_consumer_shares_a_native_pisp_capture_with_processed_ones() {
+    let mut dev = device(
+        BackendKind::Native,
+        BackendHandle::Native {
+            key: "bridge:/dev/v4l-subdev2".into(),
+        },
+        vec![
+            mode(FourCc::new(*b"pRAA"), 1280, 800, 30),
+            mode(FourCc::NV12, 1280, 800, 30),
+            mode(FourCc::RG24, 1280, 800, 30),
+        ],
+    );
+    dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
+    let vision = Frames::gray().size(1280, 800).pyramid(1);
+    let recorder = Frames::sensor_raw();
+    let plan = plan_many_with(&dev, &[vision, recorder.clone()], &registry()).unwrap();
+    // One processed capture; the recorder takes its raw frames, not an ISP output.
+    assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
+    let (main, raw) = (&plan.consumers[0], &plan.consumers[1]);
+    assert!(!main.sensor_raw && raw.sensor_raw, "{plan}");
+    assert!(!raw.isp_second_output, "{plan}");
+    assert_eq!(raw.output_format(), FourCc::new(*b"RG16"));
+    assert_eq!(raw.output_resolution(), (1280, 800));
+    assert!(raw.total.cpu_ms < 0.5, "{plan}");
+    // Alone too: the processed mode, its raw frames.
+    let plan = plan_frames_with(&dev, &recorder, &registry()).unwrap();
+    assert!(plan.sensor_raw, "{plan}");
+    assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
+    assert_eq!(plan.output_format(), FourCc::new(*b"RG16"));
+}

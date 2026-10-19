@@ -209,6 +209,13 @@ pub struct NativeIspConfig {
     /// three more passes over the picture, see the soft ISP's `PERFORMANCE.md`). Cameras with a
     /// PiSP denoise and sharpen there regardless.
     pub soft_post_stages: bool,
+    /// Every processed frame of the PiSP carries the raw frame it was made from as a
+    /// `CompanionKind::SensorRaw` companion: the front end's buffer the back end read, leased
+    /// as it is (16-bit Bayer, the sensor's value in the top bits; no copy). The front end gets
+    /// two more buffers for raw frames consumers hold; a consumer holding more makes the front
+    /// end drop frames (counted). `false` (default): no raw companion. Set by the planner for a
+    /// `Frames::sensor_raw()` consumer.
+    pub sensor_raw: bool,
     /// Temporal denoise in the PiSP's back end when the tuning has it (`true`, the default):
     /// a running average of the frame, two extra raw-sized buffers read and written by every
     /// job; it brings flat-area noise down to libcamera's (4x lower than spatial denoise
@@ -258,6 +265,7 @@ impl Default for NativeIspConfig {
             deliver_slices: false,
             soft_threads: None,
             soft_post_stages: false,
+            sensor_raw: false,
             temporal_denoise: true,
             spatial_denoise_percent: 100,
             output_buffers: 6,
@@ -321,6 +329,13 @@ impl StyxConfig {
     /// [`NativeIspConfig::soft_threads`]).
     pub fn native_soft_threads(mut self, threads: usize) -> Self {
         self.backends.native.soft_threads = Some(threads.max(1));
+        self
+    }
+
+    /// Give a native camera's processed frames their raw frame as a companion (see
+    /// [`NativeIspConfig::sensor_raw`]).
+    pub fn native_sensor_raw(mut self, on: bool) -> Self {
+        self.backends.native.sensor_raw = on;
         self
     }
 

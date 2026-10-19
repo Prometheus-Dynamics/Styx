@@ -401,6 +401,10 @@ fn write_frame(w: &mut Writer, frame: &WireFrame) {
                 w.u8(4);
                 w.u8(*index);
             }
+            CompanionKind::SensorRaw => {
+                w.u8(5);
+                w.u8(0);
+            }
         }
         write_frame(w, companion);
     }
@@ -470,6 +474,7 @@ fn read_frame_into(
             (2, _) => CompanionKind::Scaled,
             (3, _) => CompanionKind::Overview,
             (4, index) => CompanionKind::Region { index },
+            (5, _) => CompanionKind::SensorRaw,
             _ => return Err(IpcError::Malformed("unknown companion kind")),
         };
         if frame.companions.len() == i {

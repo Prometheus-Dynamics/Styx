@@ -98,6 +98,10 @@ pub struct Drops {
     pub corrupted: u64,
     /// The ISP had no output buffer (consumers held them all).
     pub isp_skipped: u64,
+    /// Raw frames a raw consumer (`Frames::sensor_raw`) did not get: it held as many as the
+    /// front end can spare. Not in `total` (the other consumers got the frame).
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub raw_skipped: u64,
     pub total: u64,
 }
 
@@ -332,6 +336,7 @@ impl CaptureMetrics {
             queue_overflow: queue.send_timeouts + queue.evictions,
             corrupted: both(&|m| m.0.counters.rt.corrupted.get()),
             isp_skipped: both(&|m| m.0.counters.rt.isp_skipped.get()),
+            raw_skipped: both(&|m| m.0.counters.rt.raw_skipped.get()),
             total: 0,
         };
         let drops = Drops {

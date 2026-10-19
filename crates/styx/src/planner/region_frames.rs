@@ -17,8 +17,8 @@ fn codec_err(e: impl std::fmt::Display) -> CodecError {
     CodecError::Codec(e.to_string())
 }
 
-/// `frame` as `plan`'s consumer gets it from the capture: its second output (a consumer on
-/// it), or its region 0 (the main output, or the region companion its slot makes) with its
+/// `frame` as `plan`'s consumer gets it from the capture: its raw frame (`sensor_raw`), its
+/// second output (a consumer on it), or its region 0 (the main output, or the region companion its slot makes) with its
 /// other regions as `CompanionKind::Region { index }` in its own numbering, the overview, and
 /// the ISP's pyramid levels when they are of its frame. Other consumers' outputs are dropped.
 pub(crate) fn consumer_frame(
@@ -26,6 +26,13 @@ pub(crate) fn consumer_frame(
     plan: &FramePlan,
 ) -> Result<FrameLease, CodecError> {
     let companions = frame.take_companions();
+    if plan.sensor_raw {
+        return companions
+            .into_iter()
+            .find(|(kind, _)| *kind == CompanionKind::SensorRaw)
+            .map(|(_, frame)| frame)
+            .ok_or_else(|| codec_err("frame without its raw frame"));
+    }
     if plan.isp_second_output {
         return companions
             .into_iter()

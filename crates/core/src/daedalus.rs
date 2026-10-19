@@ -176,6 +176,7 @@ impl FrameDescriptor {
                         CompanionKind::Scaled => ("scaled", 0),
                         CompanionKind::Overview => ("overview", 0),
                         CompanionKind::Region { index } => ("region", u32::from(index)),
+                        CompanionKind::SensorRaw => ("sensor_raw", 0),
                     };
                     CompanionDescriptor {
                         kind: kind.into(),

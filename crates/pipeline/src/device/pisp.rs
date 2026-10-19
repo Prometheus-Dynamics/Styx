@@ -21,6 +21,8 @@
 
 mod frame;
 mod outputs;
+mod raw_lease;
+pub use raw_lease::{RAW_LEASE_BUFFERS, RawLayout};
 mod passes;
 
 pub use frame::{PassOutput, PispFrame, PispStartup, PispTimes};
@@ -31,7 +33,7 @@ use styx_kernel::subdev::MbusCode;
 use styx_native::{
     CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
 };
-use styx_pisp::device::{BackEndStream, BeJob, FrontEndDevice, FrontEndSetup, profile};
+use styx_pisp::device::{BackEndStream, FrontEndDevice, FrontEndSetup, profile};
 use styx_pisp::fe::FrontEnd;
 use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
 use styx_softisp::CfaPattern;
@@ -220,6 +222,8 @@ pub struct PispPipeline {
     raw_copy: Option<super::RawCopy>,
     /// Extra back end passes over every frame (regions of interest).
     passes: PassConfigs,
+    /// The front end's raw buffers as dma-bufs, with [`PispOptions::raw_lease`].
+    raw_fds: Vec<std::os::fd::OwnedFd>,
 }
 
 /// Time from the end of a frame's readout until its statistics have been through the
@@ -289,7 +293,7 @@ impl PispPipeline {
             [isp.be_dev.output_format(0), isp.be_dev.output_format(1)],
             options.pass_tdn,
         );
-        Ok(Self {
+        let mut p = Self {
             camera,
             controls,
             configured,
@@ -320,8 +324,11 @@ impl PispPipeline {
             slice_error: isp.slice.err(),
             last_seq: None,
             raw_copy: None,
+            raw_fds: Vec::new(),
             passes,
-        })
+        };
+        p.export_raw()?;
+        Ok(p)
     }
 
     /// Whether the back end runs temporal denoise, and why not if the tuning asked for it.
@@ -458,6 +465,7 @@ impl PispPipeline {
             // A new builder: the passes prepare again against it.
             self.passes.invalidate();
             self.fe_dev = Some(isp.fe_dev);
+            self.export_raw()?;
             self.be_dev = Some(isp.be_dev);
             (self.startup.fe_open, self.startup.be_open) = (fe_open, be_open);
         }
@@ -649,10 +657,14 @@ impl PispPipeline {
                     passes: passes_took,
                 },
                 raw,
+                raw_image: self.options.raw_lease.then_some(image.index),
                 passes,
             })
         })();
-        fe_dev.release_image(image.index)?;
+        // Held for its consumer with `raw_lease` (it gives it back with `release_raw`).
+        if !(self.options.raw_lease && result.is_ok()) {
+            fe_dev.release_image(image.index)?;
+        }
         if profile::enabled() {
             profile::record("loop", "dequeued_to_return", dequeued.elapsed());
         }
@@ -663,63 +675,6 @@ impl PispPipeline {
     /// [`PispFrame::raw`] while the back end processes it (`None`: none).
     pub fn set_raw_copy(&mut self, want: Option<super::RawCopy>) {
         self.raw_copy = want;
-    }
-
-    /// Output `i`'s bytes for a frame's job.
-    pub fn output(&self, i: usize, job: &BeJob) -> Option<&[u8]> {
-        self.be_dev.as_ref()?.output_data(i, job.outputs[i]?)
-    }
-
-    /// Brackets CPU reads of output `i` of a frame's job: call with `start` before reading
-    /// [`Self::output`] and without after (see [`BackEndStream::sync_output`]).
-    pub fn sync_output(&self, i: usize, job: &BeJob, start: bool) -> Result<()> {
-        let (Some(b), Some(index)) = (self.be_dev.as_ref(), job.outputs.get(i).copied().flatten())
-        else {
-            return Ok(());
-        };
-        Ok(b.sync_output(i, index, start)?)
-    }
-
-    /// Output `i`'s dma-buf for a frame's job.
-    pub fn output_dmabuf(&self, i: usize, job: &BeJob) -> Option<std::os::fd::BorrowedFd<'_>> {
-        self.be_dev.as_ref()?.output_dmabuf(i, job.outputs[i]?)
-    }
-
-    /// Adopts the back end's spare buffers (`PispOptions::be_buffers_initial`) and asks for the
-    /// next ones: call between frames. Never allocates on the calling thread.
-    pub fn top_up_outputs(&mut self) {
-        if let Some(b) = self.be_dev.as_mut() {
-            b.top_up();
-        }
-    }
-
-    /// Frames dropped per output because no back end buffer was free or ready.
-    pub fn spare_misses(&self) -> [u64; 2] {
-        self.be_dev
-            .as_ref()
-            .map_or([0; 2], BackEndStream::spare_misses)
-    }
-
-    /// Spare buffers adopted per output without a prepare (see [`BackEndStream::spare_unprepared`]).
-    pub fn spare_unprepared(&self) -> [u64; 2] {
-        self.be_dev
-            .as_ref()
-            .map_or([0; 2], BackEndStream::spare_unprepared)
-    }
-
-    /// Gives output `i`'s buffer `index` back (one output of a job, e.g. when its two outputs
-    /// go to different consumers).
-    pub fn release_output(&mut self, i: usize, index: u32) {
-        if let Some(b) = self.be_dev.as_mut() {
-            b.release_output(i, index);
-        }
-    }
-
-    /// Gives a frame's output buffers back.
-    pub fn release(&mut self, job: &BeJob) {
-        if let Some(b) = self.be_dev.as_mut() {
-            b.release(job);
-        }
     }
 
     /// Sets the stopped camera up for other settings (e.g. another frame rate) without powering

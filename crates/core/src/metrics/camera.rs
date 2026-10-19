@@ -408,6 +408,8 @@ pub struct Counters {
     pub corrupted: Counter,
     /// Frames the ISP dropped (its output buffers were all held).
     pub isp_skipped: Counter,
+    /// Raw frames a raw consumer did not get (it held as many as the front end can spare).
+    pub raw_skipped: Counter,
     /// Frames missing from the sequence that the ISP did not skip (lost by the sensor or the
     /// receiver), when the caller adds [`Self::frame`]'s result here.
     pub sequence_gaps: Counter,
@@ -450,6 +452,7 @@ impl Counters {
             received: Counter::new(),
             corrupted: Counter::new(),
             isp_skipped: Counter::new(),
+            raw_skipped: Counter::new(),
             sequence_gaps: Counter::new(),
             intervals: Ring::new(),
             delivery: Ring::new(),
@@ -593,6 +596,7 @@ impl Counters {
             (&previous.received, &self.received),
             (&previous.corrupted, &self.corrupted),
             (&previous.isp_skipped, &self.isp_skipped),
+            (&previous.raw_skipped, &self.raw_skipped),
             (&previous.sequence_gaps, &self.sequence_gaps),
         ] {
             b.add(a.get());

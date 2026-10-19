@@ -320,6 +320,12 @@ impl CaptureMetrics {
         self.received(meta);
     }
 
+    /// A raw frame its raw consumer did not get (see `Drops::raw_skipped`).
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    pub(crate) fn raw_skipped(&self) {
+        self.0.counters.rt.raw_skipped.incr();
+    }
+
     /// The ISP dropped a frame (all its output buffers were held by consumers).
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn isp_skipped(&self) {

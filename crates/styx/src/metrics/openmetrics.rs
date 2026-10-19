@@ -103,6 +103,7 @@ impl Text {
             ("queue_overflow", d.queue_overflow),
             ("corrupted", d.corrupted),
             ("isp_skipped", d.isp_skipped),
+            ("raw_skipped", d.raw_skipped),
         ] {
             self.counter(
                 "styx_camera_drops_total",

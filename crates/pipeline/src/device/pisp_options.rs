@@ -55,6 +55,10 @@ pub struct PispOptions {
     /// ready sooner after its readout. `None` (default): one job at the end. Without the
     /// module the stream runs whole.
     pub slice_line: Option<u16>,
+    /// Keep each frame's raw front end buffer dequeued after the back end read it, for a
+    /// consumer of the raw frame (`PispFrame::raw_image`, [`super::PispPipeline::release_raw`]);
+    /// give the front end extra `fe_buffers` for those held. `false` (default): requeued at once.
+    pub raw_lease: bool,
 }
 
 impl PispOptions {
@@ -88,6 +92,7 @@ impl PispOptions {
             spatial_denoise: 1.0,
             pass_tdn: Default::default(),
             slice_line: None,
+            raw_lease: false,
         }
     }
 }

@@ -30,6 +30,9 @@ pub enum CompanionKind {
     /// is region 0), cropped by the ISP from the same raw frame: `meta().crop` says where.
     /// Crops leave it alone.
     Region { index: u8 },
+    /// The raw sensor frame the primary was processed from (a native camera's ISP input, as
+    /// the ISP read it), for a consumer that records or processes raw frames.
+    SensorRaw,
 }
 
 impl FrameLease {

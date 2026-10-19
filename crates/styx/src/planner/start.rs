@@ -39,6 +39,9 @@ impl FramePlan {
                 .libcamera_output_size(width, height)
                 .native_output_size(width, height);
         }
+        if self.sensor_raw {
+            config = config.native_sensor_raw(true);
+        }
         config = self.region_config(config);
         config = match self.stop_when_idle {
             Some((after, IdleStop::Pause)) => config.pause_when_idle(after),
@@ -118,7 +121,7 @@ impl FramePreparer {
             Route::Decode { decoder, .. } => decoder.descriptor().output,
             Route::Encode { encoder, .. } => encoder.descriptor().output,
             _ if luma => FourCc::GREY,
-            _ => plan.mode.format.code,
+            _ => plan.isp_format.unwrap_or(plan.mode.format.code),
         };
         #[cfg(feature = "codec-turbojpeg")]
         let uses_turbojpeg = matches!(&plan.route, Route::Decode { decoder, .. }
@@ -165,7 +168,7 @@ impl FramePreparer {
             route,
             luma,
             isp_crop: plan.region.frames_cropped(),
-            isp_regions: plan.region.isp().then(|| Box::new(plan.clone())),
+            isp_regions: (plan.region.isp() || plan.sensor_raw).then(|| Box::new(plan.clone())),
             view_overview: plan
                 .region
                 .overview

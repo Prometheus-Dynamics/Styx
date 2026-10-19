@@ -81,6 +81,12 @@ test = false
 required-features = ["native"]
 
 [[bin]]
+name = "raw_controls_check"
+path = "04_performance/raw_controls_check.rs"
+test = false
+required-features = ["native"]
+
+[[bin]]
 name = "sliced_rejoin"
 path = "04_performance/sliced_rejoin.rs"
 test = false
