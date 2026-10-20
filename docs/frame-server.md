@@ -154,6 +154,11 @@ while let RecvOutcome::Data(e) = events.recv(Duration::from_secs(1)) { /* e.id, 
   StandardControl)`: that one stays as it is. `allow(|caller, id| ...)`: an allow-list given
   the caller's process credentials, client id and ownership. Reading and listing are always
   allowed; `ControlDescriptor::writable` says what this client may change.
+- **Modes:** `FrameClient::cameras` lists each camera's modes (`CameraInfo::modes`: size,
+  format, frame rate range, and for native cameras the part of the pixel array read
+  (`field`) and the binning and skipping), so a client can offer a mode picker. A request
+  picks a mode from its size and rate; `Frames::...().sensor_mode(w, h)` pins one (e.g. the
+  binned 640x400 rather than 1280x800 scaled by the ISP), and `.size()` still scales from it.
 - **Ranges now:** a descriptor's `meta.min`/`max` are the device's limits. Where the range
   depends on how the camera runs, `effective_min`/`effective_max` give it. On a native camera
   the exposure time's range is the current frame duration less the exposure margin (about

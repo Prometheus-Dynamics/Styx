@@ -408,6 +408,7 @@ impl Service {
                 in_use: cameras
                     .iter()
                     .any(|c| same_camera(&c.device, device) && c.clients() > 0),
+                modes: super::wire::camera_modes(device),
             })
             .collect()
     }

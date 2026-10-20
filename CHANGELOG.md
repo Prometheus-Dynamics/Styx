@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Camera modes over the camera service and pinned modes**: `CameraInfo::modes`
+  (`CameraMode`: size, format, frame rate range, and for native cameras the pixel array field,
+  binning and skipping; a trailer older peers skip) and `FrameRequest::sensor_mode(w, h)`, which
+  runs the camera in that mode (a request trailer older services ignore). styx-native's
+  `SensorMode` gains `crop`, `binning` and `skipping`.
+- Replay plays directories of PNG images (RGB24) with feature `image` or `file-backend`.
+
 - **Video playback without ffmpeg**: `ReplaySourceConfig` also plays Motion JPEG streams
   (`.mjpeg`), AVI files of Motion JPEG and directories of JPEG images, as `MJPG` frames with the
   playback controls (`ReplaySourceConfig::frame_rate` for files without a rate).

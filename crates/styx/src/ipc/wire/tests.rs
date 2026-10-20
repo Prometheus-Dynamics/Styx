@@ -65,6 +65,7 @@ fn requests_survive_the_wire() {
         name: "ov9782".into(),
         keys: vec!["i2c:ov9782".into()],
         in_use: true,
+        modes: Vec::new(),
     }];
     let ServerMessage::Cameras(back) = decode_server(&encode_cameras(&cameras)).unwrap() else {
         panic!("not a camera list");
@@ -279,4 +280,26 @@ fn effective_ranges_follow_the_control_list_and_older_readers_stop_before_them()
         ranges(&decode_control_list(&only).unwrap()),
         ranges(&[plain])
     );
+}
+
+#[test]
+fn a_sensor_mode_crosses_the_wire_after_the_other_trailers() {
+    use crate::ipc::ClientPriority;
+    use crate::planner::Frames;
+    let req = Frames::gray().size(320, 200).sensor_mode(1280, 800);
+    for (priority, slices) in [(ClientPriority::Normal, false), (ClientPriority::Low, true)] {
+        let bytes = encode_request_with(&req, None, priority, slices);
+        let ClientMessage::Request(back, _, p, s) = decode_client(&bytes).unwrap() else {
+            panic!("not a request");
+        };
+        assert_eq!(
+            (back.sensor_mode, p, s),
+            (Some((1280, 800)), priority, slices)
+        );
+    }
+    let plain = encode_request(&Frames::gray(), None, ClientPriority::Normal);
+    let ClientMessage::Request(back, ..) = decode_client(&plain).unwrap() else {
+        panic!("not a request");
+    };
+    assert_eq!(back.sensor_mode, None);
 }

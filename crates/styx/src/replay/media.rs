@@ -1,7 +1,8 @@
 //! Video files a replay plays besides recordings, without ffmpeg: Motion JPEG streams
 //! (`.mjpeg`: JPEG images back to back), AVI files of Motion JPEG (`MJPG`), and directories of
 //! JPEG images (in name order). Frames are delivered as `MJPG` (the planner decodes them as it
-//! does a webcam's), timestamped by the AVI's frame interval or the given rate.
+//! does a webcam's), timestamped by the AVI's frame interval or the given rate. Directories of
+//! PNG images (without JPEGs) play as RGB24 with feature `image` or `file-backend`.
 
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -46,20 +47,49 @@ enum Media {
     /// Positioned in the `movi` list.
     Avi(BufReader<File>),
     Dir(std::vec::IntoIter<PathBuf>),
+    /// PNG images, decoded to RGB24.
+    PngDir(std::vec::IntoIter<PathBuf>),
+}
+
+/// Whether PNG images can be decoded (the `image` crate is in).
+const PNG: bool = cfg!(any(feature = "image", feature = "file-backend"));
+
+/// A PNG image as RGB24 rows, and its size.
+fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), ReplayError> {
+    #[cfg(any(feature = "image", feature = "file-backend"))]
+    {
+        let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+            .map_err(|e| ReplayError::Frame(format!("PNG: {e}")))?
+            .to_rgb8();
+        let (w, h) = img.dimensions();
+        Ok((w, h, img.into_raw()))
+    }
+    #[cfg(not(any(feature = "image", feature = "file-backend")))]
+    {
+        let _ = bytes;
+        Err(ReplayError::NoFormat)
+    }
 }
 
 impl Media {
     fn dir(path: &Path) -> Result<Self, ReplayError> {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(path)?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "jpg" | "jpeg"))
-            })
-            .collect();
-        files.sort();
-        Ok(Media::Dir(files.into_iter()))
+        let list = |exts: &[&str]| -> Result<Vec<PathBuf>, ReplayError> {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(path)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| exts.contains(&e.to_ascii_lowercase().as_str()))
+                })
+                .collect();
+            files.sort();
+            Ok(files)
+        };
+        let jpegs = list(&["jpg", "jpeg"])?;
+        if jpegs.is_empty() && PNG {
+            return Ok(Media::PngDir(list(&["png"])?.into_iter()));
+        }
+        Ok(Media::Dir(jpegs.into_iter()))
     }
 
     /// The next JPEG image (`None` at the end).
@@ -67,7 +97,7 @@ impl Media {
         match self {
             Media::Mjpeg(r) => read_jpeg(r),
             Media::Avi(r) => avi_frame(r),
-            Media::Dir(files) => files
+            Media::Dir(files) | Media::PngDir(files) => files
                 .next()
                 .map(std::fs::read)
                 .transpose()
@@ -79,6 +109,8 @@ impl Media {
 /// Frames of a video file.
 pub(crate) struct MediaFrames {
     media: Media,
+    /// PNG images: decoded to RGB24 (all must be the first one's size).
+    png: bool,
     format: MediaFormat,
     interval_ns: u64,
     index: u64,
@@ -93,13 +125,20 @@ impl MediaFrames {
         fps: f32,
         path: &Path,
     ) -> Result<(RecordingHeader, RecordingFrames), ReplayError> {
+        let png = matches!(media, Media::PngDir(_));
         let first = media
             .next_jpeg()?
-            .ok_or(ReplayError::Corrupt("no JPEG image"))?;
-        let (w, h) =
-            jpeg_size(&first).ok_or(ReplayError::Corrupt("JPEG without a frame header"))?;
-        let resolution = Resolution::new(w, h).ok_or(ReplayError::Corrupt("JPEG of no size"))?;
-        let format = MediaFormat::new(FourCc::MJPG, resolution, ColorSpace::Srgb);
+            .ok_or(ReplayError::Corrupt("no JPEG or PNG image"))?;
+        let ((w, h), code) = if png {
+            let (w, h, _) = decode_png(&first)?;
+            ((w, h), FourCc::RG24)
+        } else {
+            let size =
+                jpeg_size(&first).ok_or(ReplayError::Corrupt("JPEG without a frame header"))?;
+            (size, FourCc::MJPG)
+        };
+        let resolution = Resolution::new(w, h).ok_or(ReplayError::Corrupt("image of no size"))?;
+        let format = MediaFormat::new(code, resolution, ColorSpace::Srgb);
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
             |n| n.to_string_lossy().into(),
@@ -115,6 +154,7 @@ impl MediaFrames {
         };
         let frames = MediaFrames {
             media,
+            png,
             format,
             interval_ns: (1e9 / f64::from(fps)) as u64,
             index: 0,
@@ -139,6 +179,18 @@ impl Iterator for MediaFrames {
         };
         let timestamp = self.offset + self.index * self.interval_ns;
         self.index += 1;
+        if self.png {
+            return Some(decode_png(&jpeg).and_then(|(w, h, rgb)| {
+                let r = self.format.resolution;
+                if (w, h) != (r.width.get(), r.height.get()) {
+                    return Err(ReplayError::Frame(format!(
+                        "PNG of {w}x{h} in a sequence of {}x{}",
+                        r.width, r.height
+                    )));
+                }
+                frame_from_payload(self.format, timestamp, &rgb, false)
+            }));
+        }
         Some(frame_from_payload(self.format, timestamp, &jpeg, true))
     }
 }
@@ -379,6 +431,31 @@ mod tests {
             .collect();
         assert_eq!(got.len(), images.len());
         assert_eq!(&got[1][..], &images[1][..]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(all(test, any(feature = "image", feature = "file-backend")))]
+mod png_tests {
+    use super::*;
+
+    #[test]
+    fn png_directories_replay_as_rgb24() {
+        let dir = std::env::temp_dir().join(format!("styx-media-png-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..3u8 {
+            let img = image::RgbImage::from_fn(8, 4, |x, y| image::Rgb([i, x as u8, y as u8]));
+            img.save(dir.join(format!("f{i}.png"))).unwrap();
+        }
+        let (header, frames) = open_source(&dir, Some(5.0)).unwrap();
+        assert_eq!(header.format.code, FourCc::RG24);
+        let frames: Vec<FrameLease> = frames.map(Result::unwrap).collect();
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[2].meta().timestamp, 400_000_000);
+        // Pixel (3, 1) of image 2: (2, 3, 1).
+        let rgb = frames[2].to_visible_vec().unwrap();
+        assert_eq!(&rgb[(8 + 3) * 3..][..3], &[2, 3, 1]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

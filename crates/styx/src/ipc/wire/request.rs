@@ -103,7 +103,25 @@ pub(in crate::ipc) fn encode_request_with(
     if slices {
         super::progress::write_slices_wanted(&mut w);
     }
+    // The sensor mode trailer, after the others: older services ignore it.
+    if let Some((width, height)) = req.sensor_mode {
+        w.u8(SENSOR_MODE_TAG);
+        w.u32(width);
+        w.u32(height);
+    }
     w.0
+}
+
+/// Tag of the request's sensor mode trailer.
+const SENSOR_MODE_TAG: u8 = 3;
+
+/// The sensor mode trailer, after the slices one (none: any mode).
+pub(super) fn read_sensor_mode(r: &mut Reader<'_>) -> Result<Option<(u32, u32)>, IpcError> {
+    if r.0.first() != Some(&SENSOR_MODE_TAG) {
+        return Ok(None);
+    }
+    r.u8()?;
+    Ok(Some((r.u32()?, r.u32()?)))
 }
 
 /// The priority trailer after a request (none: normal; an unknown tag is ignored).

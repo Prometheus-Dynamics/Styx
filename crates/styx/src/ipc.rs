@@ -61,7 +61,7 @@ pub use self::service::{
     DEFAULT_SPARE_CLIENTS,
 };
 pub use self::socket::PeerCredentials;
-pub use self::wire::CameraInfo;
+pub use self::wire::{CameraInfo, CameraMode};
 /// The `styx-frame-lease-v1` message codec the frame socket uses (styx-core's
 /// `lease_codec`; a consumer that needs nothing else depends on `styx-core-rs` with the
 /// `lease-codec` feature).

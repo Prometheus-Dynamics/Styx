@@ -32,6 +32,12 @@ pub struct SensorMode {
     pub default_interval: Fraction,
     /// Timing model of the mode.
     pub timing: Timing,
+    /// The area of the pixel array it reads out (left, top, width, height), before binning
+    /// and skipping.
+    pub crop: [u32; 4],
+    /// Horizontal and vertical binning, and skipping (subsampling), factors.
+    pub binning: [u32; 2],
+    pub skipping: [u32; 2],
 }
 
 impl SensorMode {
@@ -107,6 +113,9 @@ pub fn sensor_modes(desc: &SensorDescription) -> Vec<SensorMode> {
                 max_interval: frame_interval(&timing, timing.frame_length_max()),
                 default_interval: frame_interval(&timing, timing.frame_length_default()),
                 timing,
+                crop: [m.crop.left, m.crop.top, m.crop.width, m.crop.height],
+                binning: m.binning,
+                skipping: m.skipping,
             });
         }
     }

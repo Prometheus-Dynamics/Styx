@@ -34,6 +34,7 @@
 
 use styx_core::prelude::*;
 
+mod cameras;
 mod controls;
 mod delivered;
 mod hops;
@@ -41,6 +42,9 @@ mod native;
 mod progress;
 mod request;
 
+use self::cameras::read_cameras;
+pub use self::cameras::{CameraInfo, CameraMode};
+pub(in crate::ipc) use self::cameras::{camera_modes, encode_cameras};
 pub(super) use self::controls::{
     ControlOp, ControlReply, ControlRequest, MAX_CONTROL_LIST, decode_control_list, encode_control,
     encode_control_event, encode_control_list, encode_control_reply,
@@ -55,7 +59,7 @@ use self::hops::{read_frame_hops, read_release_hops, write_frame_hops};
 pub(in crate::ipc) use self::progress::{NO_OUTPUT, WireProgress};
 use self::progress::{read_frame_progress, read_slices_wanted, write_frame_progress};
 pub(in crate::ipc) use self::request::{encode_request, encode_request_with};
-use self::request::{read_priority, read_request};
+use self::request::{read_priority, read_request, read_sensor_mode};
 use super::IpcError;
 use crate::planner::{Delivered, FrameRequest};
 
@@ -162,17 +166,6 @@ pub(super) struct ClientToken {
 
 /// Tag of the accept message's client token trailer.
 const TOKEN_TAG: u8 = 1;
-
-/// A camera a [`CameraService`](super::CameraService) serves.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CameraInfo {
-    /// Its display name (e.g. `ov9782` or `046d:0825`); requests may name it by any part.
-    pub name: String,
-    /// Identity keys (USB vendor/product, bus path, sensor path); requests may name one.
-    pub keys: Vec<String>,
-    /// Clients are receiving frames from it.
-    pub in_use: bool,
-}
 
 struct Writer(Vec<u8>);
 
@@ -648,44 +641,6 @@ pub(super) fn encode_list() -> Vec<u8> {
     Writer::new(KIND_LIST).0
 }
 
-pub(super) fn encode_cameras(cameras: &[CameraInfo]) -> Vec<u8> {
-    let mut w = Writer::new(KIND_CAMERAS);
-    w.u8(cameras.len().min(MAX_CAMERAS) as u8);
-    for camera in cameras.iter().take(MAX_CAMERAS) {
-        w.text(&camera.name);
-        w.u8(camera.keys.len().min(usize::from(MAX_KEYS)) as u8);
-        for key in camera.keys.iter().take(usize::from(MAX_KEYS)) {
-            w.text(key);
-        }
-        w.bool(camera.in_use);
-    }
-    w.0
-}
-
-fn read_cameras(r: &mut Reader<'_>) -> Result<Vec<CameraInfo>, IpcError> {
-    let count = usize::from(r.u8()?);
-    if count > MAX_CAMERAS {
-        return Err(IpcError::Malformed("too many cameras"));
-    }
-    (0..count)
-        .map(|_| {
-            let name = r.text()?;
-            let count = r.u8()?;
-            if count > MAX_KEYS {
-                return Err(IpcError::Malformed("too many identity keys"));
-            }
-            let keys = (0..count)
-                .map(|_| r.text())
-                .collect::<Result<_, IpcError>>()?;
-            Ok(CameraInfo {
-                name,
-                keys,
-                in_use: r.bool()?,
-            })
-        })
-        .collect()
-}
-
 fn format_tag(format: MetricsFormat) -> u8 {
     match format {
         MetricsFormat::Json => 0,
@@ -723,13 +678,15 @@ pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
         }
         KIND_REQUEST => {
             let camera = r.opt(Reader::text)?;
-            let request = read_request(&mut r)?;
+            let mut request = read_request(&mut r)?;
             let priority = read_priority(&mut r)?;
+            let slices = read_slices_wanted(&mut r)?;
+            request.sensor_mode = read_sensor_mode(&mut r)?;
             Ok(ClientMessage::Request(
                 Box::new(request),
                 camera,
                 priority,
-                read_slices_wanted(&mut r)?,
+                slices,
             ))
         }
         KIND_LIST => Ok(ClientMessage::List),

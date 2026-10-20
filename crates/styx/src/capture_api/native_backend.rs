@@ -195,6 +195,18 @@ pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
     modes.extend(processed);
     let mut properties = info.properties();
     properties.push(("isp".into(), super::native_isp::isp_name(info).into()));
+    // Each sensor mode's field of the pixel array and binning (`mode_properties`).
+    for m in &info.modes {
+        let key = format!("mode:{}x{}", m.width, m.height);
+        if !properties.iter().any(|(k, _)| *k == key) {
+            let [l, t, w, h] = m.crop;
+            let v = format!(
+                "crop={l},{t},{w},{h} binning={}x{} skipping={}x{}",
+                m.binning[0], m.binning[1], m.skipping[0], m.skipping[1]
+            );
+            properties.push((key, v));
+        }
+    }
     let descriptor = CaptureDescriptor::new(modes).with_controls(control_metas(info));
     ProbedDevice {
         identity: DeviceIdentity {

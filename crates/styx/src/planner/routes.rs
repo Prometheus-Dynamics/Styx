@@ -270,6 +270,15 @@ pub(crate) fn candidate<'a>(
         return Err(format!("above maximum resolution {max_w}x{max_h}"));
     }
     let fps = mode_fps(mode);
+    if let Some((w, h)) = req.sensor_mode
+        && (w, h)
+            != (
+                mode.format.resolution.width.get(),
+                mode.format.resolution.height.get(),
+            )
+    {
+        return Err(format!("not the requested sensor mode {w}x{h}"));
+    }
 
     let mp = megapixels(width, height);
     // A native camera with an ISP processes raw frames itself, with the 3A loop: a raw mode

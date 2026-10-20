@@ -138,6 +138,8 @@ pub struct FrameRequest {
     pub decode_threads: Option<usize>,
     /// Fail rather than deliver frames that do not meet the request ([`FrameRequest::strict`]).
     pub strict: bool,
+    /// Only the camera mode of this size ([`FrameRequest::sensor_mode`]).
+    pub sensor_mode: Option<(u32, u32)>,
 }
 
 /// Regions of interest a request can ask for ([`FrameRequest::regions`]): the frame and 15
@@ -208,6 +210,7 @@ impl FrameRequest {
             forbid: Vec::new(),
             decode_threads: None,
             strict: false,
+            sensor_mode: None,
         }
     }
 
@@ -374,6 +377,14 @@ impl FrameRequest {
     /// Route control: decode threads per frame (0 = automatic).
     pub fn decode_threads(mut self, threads: usize) -> Self {
         self.decode_threads = Some(threads);
+        self
+    }
+
+    /// Run the camera in its mode of `width` x `height` (as `CameraInfo::modes` and the
+    /// device's modes list them), e.g. a binned 640x400 rather than 1280x800 scaled down;
+    /// [`Self::size`] still scales the frames from it. Planning fails for a camera without one.
+    pub fn sensor_mode(mut self, width: u32, height: u32) -> Self {
+        self.sensor_mode = Some((width, height));
         self
     }
 
@@ -623,6 +634,7 @@ mod legacy {
                 forbid: o.forbid.clone(),
                 decode_threads: o.decode_threads,
                 strict: old.strict,
+                sensor_mode: None,
             };
             // The priority set the threads (automatic for latency), not the queue depth: keep
             // them where the delivery would now choose others.

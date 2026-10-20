@@ -65,7 +65,8 @@ is kept. Seeking reads the recording from its start up to the frame.
 
 - Motion JPEG streams (`.mjpeg`: JPEG images back to back) and AVI files of Motion JPEG
   (`MJPG`, at the AVI's own rate),
-- directories of JPEG images (`.jpg`/`.jpeg`, in name order).
+- directories of JPEG images (`.jpg`/`.jpeg`, in name order), or of PNG images (as RGB24; with
+  feature `image` or `file-backend`).
 
 Frames are `MJPG` (the planner decodes them as it does a webcam's), timestamped from 0 at the
 file's rate, or `.frame_rate(fps)` for streams and directories (default 30).

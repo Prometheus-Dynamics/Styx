@@ -732,3 +732,28 @@ fn a_raw_consumer_shares_a_native_pisp_capture_with_processed_ones() {
     assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
     assert_eq!(plan.output_format(), FourCc::new(*b"RG16"));
 }
+
+#[cfg(feature = "native")]
+#[test]
+fn a_sensor_mode_pins_the_capture_mode() {
+    let mut dev = device(
+        BackendKind::Native,
+        BackendHandle::Native {
+            key: "bridge:/dev/v4l-subdev2".into(),
+        },
+        vec![
+            mode(FourCc::NV12, 1280, 800, 30),
+            mode(FourCc::NV12, 640, 400, 30),
+        ],
+    );
+    dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
+    // Unpinned, the ISP scales the full mode; pinned, the camera runs the 640x400 one.
+    let small = Frames::gray().size(320, 200);
+    let plan = plan_frames_with(&dev, &small, &registry()).unwrap();
+    assert_eq!(plan.mode.format.resolution.width.get(), 1280, "{plan}");
+    let pinned = small.clone().sensor_mode(640, 400);
+    let plan = plan_frames_with(&dev, &pinned, &registry()).unwrap();
+    assert_eq!(plan.mode.format.resolution.width.get(), 640, "{plan}");
+    assert_eq!(plan.output_resolution(), (320, 200));
+    assert!(plan_frames_with(&dev, &small.sensor_mode(1920, 1080), &registry()).is_err());
+}

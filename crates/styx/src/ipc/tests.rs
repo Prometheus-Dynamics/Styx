@@ -157,6 +157,7 @@ fn write_fuzz_seeds() {
         name: "cam".into(),
         keys: vec!["native:ov9782".into()],
         in_use: false,
+        modes: Vec::new(),
     }];
     let delivered = crate::planner::Delivered {
         format: FourCc::GREY,
