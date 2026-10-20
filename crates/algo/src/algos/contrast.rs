@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::CameraConfig;
 use crate::error::{AlgoError, Result};
 use crate::frame::FrameMetadata;
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "std-core"))]
 use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Algorithm;

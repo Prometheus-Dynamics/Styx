@@ -31,7 +31,7 @@ use core::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::frame::{Controls, FrameMetadata};
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "std-core"))]
 use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Pipeline;

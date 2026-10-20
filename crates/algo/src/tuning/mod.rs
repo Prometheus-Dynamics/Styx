@@ -14,7 +14,7 @@ use alloc::string::ToString;
 pub mod json;
 mod rpi;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "std-core")]
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -116,7 +116,7 @@ impl Tuning {
     }
 
     /// Load a file: `.json` as a Raspberry Pi tuning, anything else as our TOML.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "std-core")]
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path)?;

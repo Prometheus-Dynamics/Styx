@@ -33,7 +33,7 @@ pub enum AlgoError {
         message: String,
     },
     /// I/O.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "std-core")]
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

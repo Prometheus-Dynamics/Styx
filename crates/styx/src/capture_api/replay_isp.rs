@@ -10,10 +10,14 @@
 use styx_capture::prelude::*;
 use styx_pipeline::styx_algo::Controls;
 use styx_pipeline::{SensorInfo, SensorValues, SoftLoop};
-use styx_sensor::{BUILTIN_DESCRIPTIONS, SensorDescription};
+use styx_sensor::SensorDescription;
 use styx_softisp::{OutputBuffers, RawFormat, Scale};
 
 use crate::replay::{ReplayError, ReplayIsp};
+
+/// The built-in sensor descriptions (`styx_sensor::BUILTIN_DESCRIPTIONS`), compiled by the
+/// build script: decoded without the TOML parser's code for them in the binary.
+const COMPILED: &[(&str, &[u8])] = &[("ov9782", styx_sensor::include_description!("ov9782"))];
 
 /// The software ISP of a replay, set up on its first raw frame.
 pub(crate) struct ReplayProcessor {
@@ -109,11 +113,11 @@ impl ReplayProcessor {
     /// The loop for `raw` frames of the configured sensor.
     fn open(&self, raw: RawFormat) -> Result<SoftLoop, ReplayError> {
         let name = &self.config.sensor;
-        let (_, toml) = BUILTIN_DESCRIPTIONS
+        let (_, bytes) = COMPILED
             .iter()
             .find(|(n, _)| n == name)
             .ok_or_else(|| err(format!("no built-in description of sensor {name}")))?;
-        let desc = SensorDescription::from_toml_str(toml, name).map_err(err)?;
+        let desc = SensorDescription::from_compiled(bytes).map_err(err)?;
         let mode = format!("{}x{}", raw.width, raw.height);
         let mut info = ["raw10", "raw12", "raw8"]
             .iter()
@@ -127,5 +131,25 @@ impl ReplayProcessor {
             SoftLoop::new(info, raw.packing, &tuning, self.config.threads.max(1)).map_err(err)?;
         soft.start().map_err(err)?;
         Ok(soft)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every built-in description is compiled in, and decodes to what its TOML says.
+    #[test]
+    fn the_compiled_descriptions_are_the_builtin_ones() {
+        for (name, toml) in styx_sensor::BUILTIN_DESCRIPTIONS {
+            let (_, bytes) = COMPILED
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} is not compiled in"));
+            assert_eq!(
+                SensorDescription::from_compiled(bytes).unwrap(),
+                SensorDescription::from_toml_str(toml, name).unwrap()
+            );
+        }
     }
 }

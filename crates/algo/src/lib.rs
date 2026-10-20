@@ -34,7 +34,7 @@
 //! Without the default `std` feature the crate is `no_std` + `alloc`: everything but
 //! [`Tuning::load`] (files) and [`replay`] (docs/portability.md).
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(feature = "std-core"), no_std)]
 
 extern crate alloc;
 
@@ -46,7 +46,7 @@ mod math;
 mod params;
 mod pipeline;
 pub mod pwl;
-#[cfg(feature = "std")]
+#[cfg(feature = "std-core")]
 pub mod replay;
 #[cfg(feature = "sim")]
 pub mod sim;

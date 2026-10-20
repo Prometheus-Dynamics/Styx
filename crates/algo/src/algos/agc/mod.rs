@@ -51,7 +51,7 @@ use core::time::Duration;
 use crate::config::CameraConfig;
 use crate::error::Result;
 use crate::frame::{Controls, Flicker, FrameMetadata, MeteringRegion};
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "std-core"))]
 use crate::math::Float as _;
 use crate::params::{AeStatus, Params, SensorRequest};
 use crate::pipeline::Algorithm;

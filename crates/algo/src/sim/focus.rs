@@ -27,7 +27,7 @@ use core::time::Duration;
 
 use super::Rng;
 use crate::algos::af::{AfWindow, LensRequest, LensState};
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "std-core"))]
 use crate::math::Float as _;
 use crate::pwl::Pwl;
 use crate::stats::{PdafZone, Statistics, ZoneGrid};

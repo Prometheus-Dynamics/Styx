@@ -5,7 +5,7 @@ use alloc::{format, string::String, vec::Vec};
 
 use super::*;
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "std-core"))]
 use crate::math::Float as _;
 
 const RANGE_KEYS: [&str; 3] = ["min", "max", "default"];

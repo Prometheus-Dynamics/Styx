@@ -16,7 +16,10 @@ default = ["std"]
 # asked for (docs/portability.md, docs/mcu.md): black level, AE (exposure profiles, metering,
 # flicker avoidance by whole periods for a given mains frequency), grey-world AWB, CCM and
 # contrast are always in.
-std = ["dep:serde_json", "serde/std", "thiserror/std", "toml?/std", "all-algorithms", "toml"]
+std = ["std-core", "all-algorithms"]
+# `std` without the optional algorithms (a build that asks for the ones it runs, e.g. a replay
+# with the recorded exposure and white balance: styx's `replay-softisp`).
+std-core = ["dep:serde_json", "serde/std", "thiserror/std", "toml?/std", "toml"]
 # Every optional algorithm (what `std` has).
 all-algorithms = ["af", "alsc", "awb-bayes", "denoise", "flicker", "lux"]
 # Autofocus (contrast detection and PDAF over a focus lens). Without it `Pipeline::from_tuning`

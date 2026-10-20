@@ -207,12 +207,19 @@ The `.styxrec` layout is documented in `crates/styx/src/replay/styxrec.rs`.
 
 A replay player needs neither the native capture stack nor an image library:
 `replay-mcap` (with `replay-mcap-lz4` for compressed recordings), `replay-softisp` for raw
-recordings (the software ISP, 3A and the built-in sensor descriptions and tunings, without
-styx-native or the PiSP devices), `replay-png` for PNG folders and `codec-turbojpeg` to decode
-Motion JPEG, AVI and JPEG folders (their frames are `MJPG`; the codec decodes them for a
-consumer that asks for NV12 or RGB). A minimal replay camera service and client
-(aarch64 musl, release, stripped) is 4.74 MB with `replay-softisp, replay-png,
-codec-turbojpeg, replay-mcap, replay-mcap-lz4, preview, facade, metrics-serde`, against
-7.03 MB with `native, file-backend` in place of the first two (2026-10-19). Of the 4.74 MB the
-software ISP is 2.15 MB (its 3A algorithms about 0.65 MB of code, parsing the sensor
-description about 0.45 MB) and turbojpeg 0.61 MB.
+recordings, `replay-png` for PNG folders and `codec-turbojpeg` to decode Motion JPEG, AVI and
+JPEG folders (their frames are `MJPG`; the codec decodes them for a consumer that asks for NV12
+or RGB). `replay-softisp` brings the software ISP and the built-in sensor descriptions and
+tunings without styx-native or the PiSP devices, and of the 3A only what processing recorded
+frames needs: the core (black level, AE, grey-world AWB, CCM, contrast), lens shading and the
+Bayesian AWB's colour temperature curve (it turns the recorded gains into the temperature the
+CCM and lens shading follow; without it the pictures differ). AF, denoise, flicker fitting and
+lux stay out (the frames are the same with them, checked). The sensor descriptions are compiled
+at build time (`build.rs`), so the binary has no TOML deserializer for them.
+
+A minimal replay camera service, a preview of it and a client (aarch64 musl, release,
+stripped), with `replay-softisp, replay-png, codec-turbojpeg, replay-mcap, replay-mcap-lz4,
+preview, facade, metrics-serde`: 4.21 MB, against 7.03 MB with `native, file-backend` in place
+of the first two (2026-10-19). Of it, styx is about 730 KiB of code (the camera service and its
+wire format, the planner, metrics, the replay backend), styx-algo 600 KiB, the software ISP
+170 KiB and turbojpeg 140 KiB.

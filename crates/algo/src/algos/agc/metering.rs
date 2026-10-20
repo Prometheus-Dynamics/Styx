@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "std-core"))]
 use crate::math::Float as _;
 use crate::stats::{Histogram, Statistics, ZoneGrid, rec601};
 

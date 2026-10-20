@@ -1,7 +1,7 @@
 //! Float functions `core` lacks, for `no_std` builds.
 //!
 //! [`Float`] gives `f32` / `f64` the std methods this crate calls, through `libm`. Modules
-//! import it only without `std` (`#[cfg(not(feature = "std"))] use crate::math::Float as _;`):
+//! import it only without `std` (`#[cfg(not(feature = "std-core"))] use crate::math::Float as _;`):
 //! with `std` the inherent methods are used, so std builds are unchanged.
 
 // Without std not every method is used by every build; with std none are.

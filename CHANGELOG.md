@@ -12,6 +12,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   ISP without the native capture stack (`native` includes it), and `replay-png` reads PNG
   folders with the `png` crate alone. `jpeg-decoder` is built without rayon. A minimal replay
   service binary (aarch64 musl) goes from 7.03 MB (`native`, `file-backend`) to 4.74 MB.
+  `replay-softisp` now takes only the 3A parts a replay needs (lens shading and the Bayesian
+  AWB's colour temperature curve besides the core; replayed frames are unchanged) and decodes
+  the built-in sensor descriptions from their compiled form (styx's new `build.rs`), so the
+  binary carries no TOML deserializer for them: the minimal player is 4.21 MB.
+  styx-algo gains `std-core` (`std` without the optional algorithms); styx-pipeline gains
+  `all-algorithms` (default, and in `device`), `alsc` and `awb-bayes`.
 - **Camera modes over the camera service and pinned modes**: `CameraInfo::modes`
   (`CameraMode`: size, format, frame rate range, and for native cameras the pixel array field,
   binning and skipping; a trailer older peers skip) and `FrameRequest::sensor_mode(w, h)`, which

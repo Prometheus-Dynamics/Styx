@@ -365,7 +365,7 @@ mod fit {
         MAX_PHASE_RESULTANT, MAX_SAMPLES, MIN_COLUMN, MIN_DOF, MIN_F, MIN_INDEPENDENT, MIN_SAMPLES,
         MIN_VISIBLE, Sample, sinc,
     };
-    #[cfg(not(feature = "std"))]
+    #[cfg(not(feature = "std-core"))]
     use crate::math::Float as _;
 
     fn dot(a: &[f64], b: &[f64]) -> f64 {

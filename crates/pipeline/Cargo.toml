@@ -9,7 +9,7 @@ homepage.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["std"]
+default = ["std", "all-algorithms"]
 # Recordings (raw recordings, algorithm replays), tunings and warm starts on disk, measurements,
 # the software ISP's helper threads, timings, DNG dates, I/O errors, float maths from std.
 # Without it the core (the 3A loop runner, ISP settings for the PiSP and the software ISP,
@@ -18,7 +18,7 @@ default = ["std"]
 std = [
     "dep:serde_json",
     "serde/std",
-    "styx-algo/std",
+    "styx-algo/std-core",
     "styx-core/std",
     "styx-dng/std",
     "styx-pisp/std",
@@ -27,8 +27,18 @@ std = [
     "styx-softisp/std",
     "thiserror/std",
 ]
+# Every optional algorithm of styx-algo (AF, adaptive lens shading, Bayesian AWB, denoise,
+# flicker fitting, lux); in the defaults and in `device`. Without it the 3A loop has what styx-algo
+# always has (black level, AE, grey-world AWB, CCM, contrast) and the ones asked for below
+# (styx's `replay-softisp`: `alsc`, `awb-bayes`).
+all-algorithms = ["styx-algo/all-algorithms"]
+# Lens shading correction and the Bayesian AWB's colour temperature curve: what processing
+# recorded frames with their recorded exposure and white balance needs besides the core (the
+# curve turns the recorded gains into the colour temperature the CCM and lens shading follow).
+alsc = ["styx-algo/alsc"]
+awb-bayes = ["styx-algo/awb-bayes"]
 # Run on the device: native cameras (styx-native) and the PiSP nodes (styx-pisp/device).
-device = ["std", "dep:styx-native", "dep:styx-kernel", "styx-pisp/device"]
+device = ["std", "all-algorithms", "dep:styx-native", "dep:styx-kernel", "styx-pisp/device"]
 # The software path on a Vulkan GPU (`styx-gpuisp`; loads libvulkan at run time).
 gpu = ["std", "dep:styx-gpuisp"]
 # The PiSP debug hooks: styx-pisp's `debug-hooks` (config dumps, block patch, lines probe), and

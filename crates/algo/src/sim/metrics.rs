@@ -1,6 +1,6 @@
 //! Convergence measurements over a series of per-frame values.
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "std-core"))]
 use crate::math::Float as _;
 
 /// How a series settled after a change.

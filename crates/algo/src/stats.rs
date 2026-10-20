@@ -15,7 +15,7 @@ use alloc::{vec, vec::Vec};
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "std-core"))]
 use crate::math::Float as _;
 
 /// Rec.601 luma of linear RGB.

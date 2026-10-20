@@ -74,7 +74,7 @@ use crate::config::{CameraConfig, LensConfig};
 use crate::error::Result;
 #[cfg(feature = "af")]
 use crate::frame::{Controls, FrameMetadata};
-#[cfg(all(feature = "af", not(feature = "std")))]
+#[cfg(all(feature = "af", not(feature = "std-core")))]
 use crate::math::Float as _;
 #[cfg(feature = "af")]
 use crate::params::Params;
