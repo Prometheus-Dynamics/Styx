@@ -151,8 +151,9 @@ while let RecvOutcome::Data(e) = events.recv(Duration::from_secs(1)) { /* e.id, 
   once for every client, as for a frame rate (with `ControlPolicy::no_restart()` it refuses;
   low-priority clients may not). The picture is mirrored by the sensor at no cost; raw frames
   carry the flipped Bayer order's format, and the ISP and lens shading follow. Intrinsics
-  calibrated unflipped hold with `cx' = width - 1 - cx` for `hflip` and `cy' = height - 1 - cy`
-  for `vflip`; distortion coefficients hold as they are. In-process:
+  calibrated unflipped hold with `cx' = width - 1 - cx` and Brown-Conrady `p2' = -p2` for
+  `hflip`, `cy' = height - 1 - cy` and `p1' = -p1` for `vflip` (both for a 180-degree turn);
+  `fx`, `fy` and the radial terms stay. In-process:
   `StyxConfig::native_flips(h, v)` (`NativeIspConfig::hflip`, `vflip`), which the service's
   capture settings also start the controls from.
 - **Kept:** controls clients set are applied again whenever the capture restarts (a client

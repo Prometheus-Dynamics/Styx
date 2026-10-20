@@ -247,9 +247,10 @@ pub struct NativeIspConfig {
     pub deflicker: NativeDeflicker,
     /// Mirror the picture left-right on the sensor (raw and processed modes; both flips turn
     /// it by 180 degrees). The sensor reads its rows the other way, at no cost, so the
-    /// picture is a mirror image of the unflipped one: intrinsics calibrated unflipped hold
-    /// with `cx' = width - 1 - cx` (and `cy' = height - 1 - cy` for [`Self::vflip`]), and
-    /// distortion holds as it is. On a colour sensor it changes the Bayer order: raw frames
+    /// picture is a mirror image of the unflipped one. Intrinsics calibrated unflipped hold
+    /// with `cx' = width - 1 - cx` and Brown-Conrady `p2' = -p2` (for [`Self::vflip`]:
+    /// `cy' = height - 1 - cy`, `p1' = -p1`); `fx`, `fy` and the radial terms stay. On a
+    /// colour sensor it changes the Bayer order: raw frames
     /// then carry the flipped order's format (`pBAA` becomes `pRAA` with both flips), and the
     /// ISP and lens shading follow. The capture refuses to start on a sensor without the
     /// flip. Changed only by a restart (the camera service's `hflip` control restarts it).
