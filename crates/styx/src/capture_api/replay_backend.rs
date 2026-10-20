@@ -39,10 +39,10 @@ pub(super) fn start_replay(
     };
     let (path, pacing, loop_forever) = (path.clone(), *pacing, *loop_forever);
     let (timestamps, hold_at_end, isp, fps) = replay_options(&backend.properties);
-    #[cfg(not(feature = "native"))]
+    #[cfg(not(feature = "replay-softisp"))]
     if isp.is_some() {
         return Err(CaptureError::Backend(
-            "replay: processing raw frames needs feature `native`".into(),
+            "replay: processing raw frames needs feature `replay-softisp`".into(),
         ));
     }
     let replay_error = |err: ReplayError| CaptureError::Backend(format!("replay: {err}"));
@@ -97,7 +97,7 @@ pub(super) fn start_replay(
             loop_offset: 0,
             anchor: None,
             pending: None,
-            #[cfg(feature = "native")]
+            #[cfg(feature = "replay-softisp")]
             isp: isp.map(super::replay_isp::ReplayProcessor::new),
         };
         if let Err(err) = player.run(&tx, &stop_rx) {
@@ -185,7 +185,7 @@ struct Player {
     /// A frame read but not delivered yet (its time had not come), with its index.
     pending: Option<(FrameLease, u64)>,
     /// Raw frames processed by the software ISP (`ReplaySourceConfig::soft_isp`).
-    #[cfg(feature = "native")]
+    #[cfg(feature = "replay-softisp")]
     isp: Option<super::replay_isp::ReplayProcessor>,
 }
 
@@ -273,7 +273,7 @@ impl Player {
             }
             self.controls.set_state(if t.playing { 0 } else { 1 });
             let first = self.first.unwrap_or(raw);
-            #[cfg(feature = "native")]
+            #[cfg(feature = "replay-softisp")]
             let frame = match self.isp.as_mut() {
                 Some(isp) => isp.process(frame)?,
                 None => frame,

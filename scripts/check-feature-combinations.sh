@@ -10,6 +10,7 @@ declare -a checks=(
     "facade-no-tracing::cargo check -p styx --no-default-features --features facade"
     "lean-camera-no-tracing::cargo check -p styx --no-default-features --features native,v4l2,uvc,hotplug,async"
     "replay-mcap::cargo check -p styx --no-default-features --features replay-mcap"
+    "replay-lean::cargo check -p styx --no-default-features --features replay-mcap,replay-softisp,replay-png,codec-turbojpeg"
     "replay-styxrec::cargo check -p styx --no-default-features --features replay-styxrec"
     "hotplug::cargo check -p styx --no-default-features --features v4l2,hotplug"
     "async::cargo check -p styx --no-default-features --features async"

@@ -436,7 +436,7 @@ pub struct ReplaySourceConfig {
     /// At the end (not looping), keep the capture open, paused on the last frame, for a seek
     /// or a loop (a player); `false` (default): the capture ends, consumers see `Closed`.
     pub hold_at_end: bool,
-    /// Process raw Bayer frames with the software ISP (feature `native`): the replay then
+    /// Process raw Bayer frames with the software ISP (feature `replay-softisp`, in `native`): the replay then
     /// delivers NV12. `None` (default): frames as recorded.
     pub isp: Option<ReplayIsp>,
     /// The rate (fps) of video files without one (`.mjpeg` streams, JPEG directories; an AVI

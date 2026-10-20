@@ -23,7 +23,8 @@ styx-libcamera = { workspace = true, optional = true, features = ["probe"] }
 styx-v4l2 = { workspace = true, optional = true }
 styx-native = { workspace = true, optional = true }
 styx-uvc = { workspace = true, optional = true }
-styx-pipeline = { workspace = true, optional = true, features = ["device"] }
+styx-pipeline = { workspace = true, optional = true }
+styx-sensor = { workspace = true, optional = true }
 styx-pisp = { workspace = true, optional = true, features = ["device"] }
 styx-softisp = { workspace = true, optional = true }
 styx-dng = { workspace = true, optional = true }
@@ -35,6 +36,7 @@ libcamera-sys = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"], optional = true }
 image = { workspace = true, optional = true }
 jpeg-decoder = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 minifb = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
@@ -95,6 +97,13 @@ default = ["facade", "tracing"]
 # Recordings as MCAP files with ROS 2 message types (the main recording format). Opt-in: the
 # MCAP reader brings binrw, enumset and their proc macros.
 replay-mcap = ["facade", "dep:mcap"]
+# Raw recordings replayed as processed frames (`ReplaySourceConfig::soft_isp`): the software
+# ISP, the 3A algorithms and the built-in sensor descriptions and tunings, without the native
+# capture stack (styx-native, the PiSP devices); `native` includes it.
+replay-softisp = ["facade", "dep:styx-pipeline", "dep:styx-softisp", "dep:styx-sensor"]
+# Directories of PNG images in replay (`ReplaySourceConfig`), with the `png` crate alone
+# (`image` and `file-backend` read them too).
+replay-png = ["facade", "dep:png"]
 # Chunk compression of MCAP recordings (`RecordCompression::Lz4`, `::Zstd`), written and read
 # back. Each builds a C library (lz4, zstd): a C compiler for the target is needed, and builds
 # without them stay pure Rust and their size.
@@ -139,8 +148,10 @@ v4l2 = ["facade", "styx-v4l2", "styx-kernel"]
 # Sensors driven by Styx through the Styx sensor bridge (the native stack).
 native = [
     "facade",
+    "replay-softisp",
     "dep:styx-native",
     "dep:styx-pipeline",
+    "styx-pipeline/device",
     "dep:styx-pisp",
     "dep:styx-softisp",
     "dep:styx-dng",

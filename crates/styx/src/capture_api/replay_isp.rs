@@ -8,9 +8,9 @@
 //! `NativeFrameMeta` and its 3A record); only its format becomes NV12.
 
 use styx_capture::prelude::*;
-use styx_native::styx_sensor::{BUILTIN_DESCRIPTIONS, SensorDescription};
 use styx_pipeline::styx_algo::Controls;
 use styx_pipeline::{SensorInfo, SensorValues, SoftLoop};
+use styx_sensor::{BUILTIN_DESCRIPTIONS, SensorDescription};
 use styx_softisp::{OutputBuffers, RawFormat, Scale};
 
 use crate::replay::{ReplayError, ReplayIsp};

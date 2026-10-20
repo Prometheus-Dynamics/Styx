@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Lean replay features**: `replay-softisp` gives `ReplaySourceConfig::soft_isp` the software
+  ISP without the native capture stack (`native` includes it), and `replay-png` reads PNG
+  folders with the `png` crate alone. `jpeg-decoder` is built without rayon. A minimal replay
+  service binary (aarch64 musl) goes from 7.03 MB (`native`, `file-backend`) to 4.74 MB.
 - **Camera modes over the camera service and pinned modes**: `CameraInfo::modes`
   (`CameraMode`: size, format, frame rate range, and for native cameras the pixel array field,
   binning and skipping; a trailer older peers skip) and `FrameRequest::sensor_mode(w, h)`, which

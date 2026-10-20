@@ -66,7 +66,7 @@ is kept. Seeking reads the recording from its start up to the frame.
 - Motion JPEG streams (`.mjpeg`: JPEG images back to back) and AVI files of Motion JPEG
   (`MJPG`, at the AVI's own rate),
 - directories of JPEG images (`.jpg`/`.jpeg`, in name order), or of PNG images (as RGB24; with
-  feature `image` or `file-backend`).
+  feature `replay-png`, the `png` crate alone, or `image` / `file-backend`).
 
 Frames are `MJPG` (the planner decodes them as it does a webcam's), timestamped from 0 at the
 file's rate, or `.frame_rate(fps)` for streams and directories (default 30).
@@ -85,7 +85,7 @@ compresses. It runs the host's `ffmpeg` and `ffprobe`.)
 
 A recording of raw sensor frames (`Frames::sensor_raw()`: `BYR2`, `RG16`, ..., or packed `pBAA`)
 replays as the camera would have processed it with `ReplaySourceConfig::soft_isp("ov9782")`
-(feature `native`): each frame goes through the software ISP with the sensor's description and
+(feature `replay-softisp`, included in `native`): each frame goes through the software ISP with the sensor's description and
 tuning, at the frame's recorded exposure, gains and white balance (`NativeAaa::colour_gains`; AE
 and AWB do not run), and comes out in NV12 with its recorded metadata, the 3A record included.
 The replay device then offers an NV12 mode, so gray, NV12 and pyramids are planned as for the
@@ -202,3 +202,17 @@ A real-time replay of a 3.54 s recording took 3.54 s. The planner produced outpu
 the live run from the replayed Y8 recording.
 
 The `.styxrec` layout is documented in `crates/styx/src/replay/styxrec.rs`.
+
+## A lean player
+
+A replay player needs neither the native capture stack nor an image library:
+`replay-mcap` (with `replay-mcap-lz4` for compressed recordings), `replay-softisp` for raw
+recordings (the software ISP, 3A and the built-in sensor descriptions and tunings, without
+styx-native or the PiSP devices), `replay-png` for PNG folders and `codec-turbojpeg` to decode
+Motion JPEG, AVI and JPEG folders (their frames are `MJPG`; the codec decodes them for a
+consumer that asks for NV12 or RGB). A minimal replay camera service and client
+(aarch64 musl, release, stripped) is 4.74 MB with `replay-softisp, replay-png,
+codec-turbojpeg, replay-mcap, replay-mcap-lz4, preview, facade, metrics-serde`, against
+7.03 MB with `native, file-backend` in place of the first two (2026-10-19). Of the 4.74 MB the
+software ISP is 2.15 MB (its 3A algorithms about 0.65 MB of code, parsing the sensor
+description about 0.45 MB) and turbojpeg 0.61 MB.

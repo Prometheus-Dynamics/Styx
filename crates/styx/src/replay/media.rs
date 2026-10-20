@@ -52,11 +52,22 @@ enum Media {
 }
 
 /// Whether PNG images can be decoded (the `image` crate is in).
-const PNG: bool = cfg!(any(feature = "image", feature = "file-backend"));
+const PNG: bool = cfg!(any(
+    feature = "replay-png",
+    feature = "image",
+    feature = "file-backend"
+));
 
 /// A PNG image as RGB24 rows, and its size.
 fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), ReplayError> {
-    #[cfg(any(feature = "image", feature = "file-backend"))]
+    #[cfg(feature = "replay-png")]
+    {
+        decode_png_alone(bytes)
+    }
+    #[cfg(all(
+        not(feature = "replay-png"),
+        any(feature = "image", feature = "file-backend")
+    ))]
     {
         let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
             .map_err(|e| ReplayError::Frame(format!("PNG: {e}")))?
@@ -64,11 +75,45 @@ fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), ReplayError> {
         let (w, h) = img.dimensions();
         Ok((w, h, img.into_raw()))
     }
-    #[cfg(not(any(feature = "image", feature = "file-backend")))]
+    #[cfg(not(any(feature = "replay-png", feature = "image", feature = "file-backend")))]
     {
         let _ = bytes;
         Err(ReplayError::NoFormat)
     }
+}
+
+/// [`decode_png`] with the `png` crate: grey, grey and alpha, RGB or RGBA, 8 or 16 bits.
+#[cfg(feature = "replay-png")]
+fn decode_png_alone(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), ReplayError> {
+    let err = |e: png::DecodingError| ReplayError::Frame(format!("PNG: {e}"));
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(err)?;
+    let len = reader
+        .output_buffer_size()
+        .ok_or_else(|| ReplayError::Frame("PNG: too large".into()))?;
+    let mut buf = vec![0u8; len];
+    let info = reader.next_frame(&mut buf).map_err(err)?;
+    let (w, h) = (info.width, info.height);
+    let channels = match info.color_type {
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        png::ColorType::Indexed => {
+            return Err(ReplayError::Frame("PNG: palette not expanded".into()));
+        }
+    };
+    let mut rgb = Vec::with_capacity(w as usize * h as usize * 3);
+    for row in buf.chunks_exact(info.line_size).take(h as usize) {
+        for px in row.chunks_exact(channels).take(w as usize) {
+            match channels {
+                1 | 2 => rgb.extend_from_slice(&[px[0]; 3]),
+                _ => rgb.extend_from_slice(&px[..3]),
+            }
+        }
+    }
+    Ok((w, h, rgb))
 }
 
 impl Media {
@@ -435,9 +480,31 @@ mod tests {
     }
 }
 
-#[cfg(all(test, any(feature = "image", feature = "file-backend")))]
+#[cfg(all(
+    test,
+    any(feature = "replay-png", feature = "image", feature = "file-backend")
+))]
 mod png_tests {
     use super::*;
+
+    /// The `png` crate path reads grey and RGBA images as RGB24.
+    #[cfg(feature = "replay-png")]
+    #[test]
+    fn png_alone_reads_grey_and_rgba() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::GrayImage::from_fn(3, 2, |x, y| image::Luma([(x + 3 * y) as u8 * 10]))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let (w, h, rgb) = decode_png_alone(bytes.get_ref()).unwrap();
+        assert_eq!((w, h), (3, 2));
+        assert_eq!(&rgb[..6], &[0, 0, 0, 10, 10, 10]);
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 4]))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let (_, _, rgb) = decode_png_alone(bytes.get_ref()).unwrap();
+        assert_eq!(rgb, [1, 2, 3].repeat(4));
+    }
 
     #[test]
     fn png_directories_replay_as_rgb24() {

@@ -157,7 +157,7 @@ fn speed_paces_and_rebased_timestamps_are_delivery_times() {
 
 /// A recording of the PiSP's raw frames (16-bit BGGR) replays processed: NV12 frames that keep
 /// the recorded metadata, 3A record included.
-#[cfg(feature = "native")]
+#[cfg(feature = "replay-softisp")]
 #[test]
 fn raw_recordings_replay_through_the_software_isp() {
     let path = temp_path("raw-isp.mcap");
