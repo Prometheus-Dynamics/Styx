@@ -573,9 +573,10 @@ impl PispPipeline {
             .slicing
             .as_mut()
             .map(|s| (s, &mut *be_dev, &mut self.be));
-        if let Waited::Slice(s) =
+        if let Waited::Slice(mut s) =
             super::pisp_slices::wait_for_statistics(fe_dev, sensor, timeout, slice, slices)?
         {
+            s.raw_image = s.raw_image.filter(|_| self.options.raw_lease);
             return Ok(PispEvent::Slice(s));
         }
         let held =

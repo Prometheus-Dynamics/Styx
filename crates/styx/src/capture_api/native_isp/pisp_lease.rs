@@ -496,6 +496,7 @@ pub(super) fn raw_lease(
     returns: &Returns,
     live: &CaptureMetrics,
     conversion: Option<ClockConversion>,
+    progress: Option<Arc<SliceState>>,
 ) -> Option<FrameLease> {
     let index = f.raw_image?;
     let layout = p.raw_layout()?;
@@ -530,7 +531,7 @@ pub(super) fn raw_lease(
         index,
         window: CpuReadWindow::new(),
         returns: returns.clone(),
-        progress: None,
+        progress: progress.map(|p| (p, 0)),
     };
     let layouts = smallvec::smallvec![PlaneLayout {
         offset: 0,

@@ -496,6 +496,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **Raw frames of sliced captures:** with `deliver_slices`, frames went out at their first
+  slice without their raw companion, so a `Frames::sensor_raw()` consumer of a sliced PiSP
+  capture got no frames (a camera service's raw recorder joining a running vision capture got
+  none since its own raw consumer replaced the share it had). The raw frame is now leased at the
+  first slice with a progress of its own, complete with the frame (consumers that do not take
+  slices, a camera service's clients among them, get it once complete); a frame that fails
+  leaves its buffer to the front end. On the CM5 (1280x800 at 120 fps, sliced, lazy buffers)
+  the raw client gets 120 fps next to a 120 fps vision client. On-device check:
+  `sliced_raw_check` (styx-examples).
+
 - **Raw clients of a camera service:** a low-priority `Frames::sensor_raw()` client of a running
   native PiSP capture (a recorder next to a vision pipeline) got a share of the vision client's
   frames, and `FrameClient::delivered()` said `GREY`, even with the service keeping the raw

@@ -228,18 +228,29 @@ pub(super) fn spawn(
             // Raw frames out with consumers (`NativeIspConfig::sensor_raw`): at most the
             // front end's extra buffers, so a slow raw consumer never starves the stream.
             let mut raw_out = 0u32;
+            // Raw leases of sliced frames that failed: the front end has their buffers back,
+            // so their returns are not given to it again.
+            let mut orphans: smallvec::SmallVec<[u32; 4]> = smallvec::SmallVec::new();
             loop {
                 if w.stop.try_recv().is_ok() {
                     break;
                 }
                 while let RecvOutcome::Data((i, index)) = ret_rx.recv() {
+                    let raw = i == super::pisp_lease::RAW_OUTPUT;
+                    if raw {
+                        raw_out = raw_out.saturating_sub(1);
+                    }
                     // A sliced frame's buffers stay the back end's until the frame is done.
                     match sliced.as_mut() {
                         Some(o) if o.holds(i, index) => o.defer(i, index),
-                        _ if i == super::pisp_lease::RAW_OUTPUT => {
-                            raw_out = raw_out.saturating_sub(1);
-                            let _ = p.release_raw(index);
-                        }
+                        _ if raw => match orphans.iter().position(|&o| o == index) {
+                            Some(k) => {
+                                orphans.swap_remove(k);
+                            }
+                            None => {
+                                let _ = p.release_raw(index);
+                            }
+                        },
                         _ => p.release_output(i, index),
                     }
                 }
@@ -265,10 +276,12 @@ pub(super) fn spawn(
                     Ok(PispEvent::Slice(s)) => {
                         if let Some(prev) = sliced.take() {
                             crate::trace::debug!(backend = "native", sliced = prev.sequence, next = s.sequence, "sliced frame failed: the next frame's slice came first");
-                            prev.fail(&mut p);
+                            orphans.extend(prev.fail(&mut p));
                         }
-                        match super::pisp_sliced::slice_leases(&p, &s, &mut buffers, &w, &ret_tx) {
+                        let room = raw_out < styx_pipeline::device::RAW_LEASE_BUFFERS;
+                        match super::pisp_sliced::slice_leases(&p, &s, &mut buffers, &w, &ret_tx, room) {
                             Ok(Some((frame, out))) => {
+                                raw_out += u32::from(out.has_raw());
                                 sliced = Some(out);
                                 if deliver(&w.live, tx, frame, "native-pisp", w.send_timeout) {
                                     break;
@@ -288,7 +301,7 @@ pub(super) fn spawn(
                     Err(PipelineError::OutputsHeld(output)) => {
                         if let Some(prev) = sliced.take() {
                             crate::trace::debug!(backend = "native", sliced = prev.sequence, output, "sliced frame failed: back end buffers held");
-                            prev.fail(&mut p);
+                            orphans.extend(prev.fail(&mut p));
                         }
                         held_drops += 1;
                         w.live.isp_skipped();
@@ -308,7 +321,7 @@ pub(super) fn spawn(
                     Err(e) => {
                         if let Some(prev) = sliced.take() {
                             crate::trace::debug!(backend = "native", sliced = prev.sequence, error = %e, "sliced frame failed: frame error");
-                            prev.fail(&mut p);
+                            orphans.extend(prev.fail(&mut p));
                         }
                         *w.error.lock() = Some(err(e));
                         break;
@@ -338,13 +351,16 @@ pub(super) fn spawn(
                     }
                 };
                 if let Some(out) = sliced.take_if(|o| o.sequence == f.sequence) {
-                    out.complete(&buffers, &mut p);
-                    give_back_raw(&mut p);
+                    let (raw_taken, orphan) = out.complete(&buffers, &mut p, raw_image);
+                    orphans.extend(orphan);
+                    if !raw_taken {
+                        give_back_raw(&mut p);
+                    }
                     continue;
                 }
                 if let Some(prev) = sliced.take() {
                     crate::trace::debug!(backend = "native", sliced = prev.sequence, frame = f.sequence, "sliced frame failed: another frame completed");
-                    prev.fail(&mut p);
+                    orphans.extend(prev.fail(&mut p));
                 }
                 let frame = match frame_leases(&p, &f, &mut buffers, &w, &ret_tx, None) {
                     Ok(Some(frame)) => frame,
@@ -364,7 +380,7 @@ pub(super) fn spawn(
                     w.live.raw_skipped();
                 }
                 let raw = raw_image.filter(|_| room).and_then(|_| {
-                    super::pisp_lease::raw_lease(&p, &mut buffers, &f, &ret_tx, &w.live, conversion)
+                    super::pisp_lease::raw_lease(&p, &mut buffers, &f, &ret_tx, &w.live, conversion, None)
                 });
                 raw_out += u32::from(raw.is_some());
                 let frame = match raw {
@@ -389,7 +405,7 @@ pub(super) fn spawn(
             // service's clients, a later client among them) must not wait for it.
             if let Some(prev) = sliced.take() {
                 crate::trace::debug!(backend = "native", sliced = prev.sequence, "sliced frame failed: the capture stopped");
-                prev.fail(&mut p);
+                orphans.extend(prev.fail(&mut p));
             }
             // Leases still out return their buffers to a closed channel; the back end frees
             // its buffers once they are dropped.

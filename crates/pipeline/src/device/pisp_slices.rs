@@ -67,6 +67,11 @@ pub struct PispSlice {
     pub outputs: [Option<u32>; 2],
     /// Rows final in each output.
     pub rows: [u32; 2],
+    /// With `PispOptions::raw_lease`: the front end buffer the frame's raw image is being
+    /// written into (complete when the frame is). The frame, when it comes, holds it as
+    /// [`super::PispFrame::raw_image`] (given back with `release_raw`); a frame that never comes
+    /// gives it back to the front end itself.
+    pub raw_image: Option<u32>,
 }
 
 /// What slicing has done (for logs and metrics).
@@ -248,6 +253,7 @@ impl Slicing {
             timestamp: p.frame_start,
             outputs: done.outputs,
             rows: p.rows_after_first,
+            raw_image: Some(p.input),
         };
         p.done = Some(done);
         Ok(Some(slice))
