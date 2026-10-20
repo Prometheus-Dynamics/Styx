@@ -8,6 +8,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Replay playback controls** (`capture_api::replay_controls`, docs/replay.md): a replay
+  capture plays, pauses, changes speed (0.25-4x, 0 as fast as consumers), loops, seeks by time or
+  frame (also while paused), steps one frame, and reports its position, duration, frame count and
+  state, as controls, also through a camera service serving the replay.
+  `ReplaySourceConfig::hold_at_end` keeps a finished replay open for a seek;
+  `ReplaySourceConfig::timestamps(ReplayTimestamps::Rebased)` stamps frames with their delivery
+  time (`CLOCK_MONOTONIC`) instead of the recorded one.
+
 - **Raw sensor frames next to processed ones, zero-copy** (`Frames::sensor_raw()`): on a
   native PiSP camera a consumer gets the raw frame the ISP reads (16-bit Bayer `BYR2`/`GB16`/
   `GR16`/`RG16`, the sensor's value in the top bits), as a lease of the front end's dma-buf,

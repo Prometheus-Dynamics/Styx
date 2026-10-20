@@ -54,6 +54,8 @@ pub enum ControlPlane {
     /// A reconnecting capture: controls go to whichever backend capture is running and are
     /// re-applied after a reconnect.
     Supervised(std::sync::Arc<super::supervisor::SupervisedCapture>),
+    /// A replay: its playback controls.
+    Replay(std::sync::Arc<super::replay_controls::ReplayControls>),
 }
 
 impl ControlPlane {
@@ -125,6 +127,7 @@ pub(crate) fn apply_control_to_plane(
         },
         ControlPlane::None | ControlPlane::Virtual => Err(CaptureError::ControlUnsupported),
         ControlPlane::VirtualControls(state) => state.apply(id, _value),
+        ControlPlane::Replay(state) => state.apply(id, _value),
         #[cfg(feature = "v4l2")]
         ControlPlane::V4l2 { path } => apply_v4l2_controls(path, &[(id, _value)]),
         #[cfg(feature = "libcamera")]
@@ -283,6 +286,7 @@ pub(crate) fn read_control_from_plane(
             simulation_backend::read_simulation_control(state, id)
         }
         ControlPlane::VirtualControls(state) => state.read(id),
+        ControlPlane::Replay(state) => state.read(id),
         _ => Err(CaptureError::ControlUnsupported),
     };
     log_control_result(backend, id, "get", started, &result);
@@ -294,6 +298,7 @@ fn control_plane_backend(control: &ControlPlane) -> &'static str {
         ControlPlane::None => "none",
         ControlPlane::Supervised(_) => "supervised",
         ControlPlane::Virtual | ControlPlane::VirtualControls(_) => "virtual",
+        ControlPlane::Replay(_) => "replay",
         #[cfg(feature = "native")]
         ControlPlane::Native { .. } => "native",
         #[cfg(feature = "v4l2")]

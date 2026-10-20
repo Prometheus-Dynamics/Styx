@@ -35,6 +35,30 @@ let handle = replay.open()?;             // or: Frames::nv12().open(replay.devic
 For frames whose format differs from the capture mode (pipeline or planner output), create
 the recorder with `StreamRecorder::with_header` and the output format.
 
+## Playback
+
+A replay capture plays like a video, with controls (`capture_api::replay_controls::ids`, also
+listed and set through a camera service, so a `CameraService` of a replay device is a camera
+clients bind to as to a live one):
+
+| Control | Value |
+|---|---|
+| `replay_playing` | `Bool`: play or pause |
+| `replay_speed` | `Float`: 0.25 to 4 times the recorded rate; 0: every frame as fast as consumers take them |
+| `replay_loop` | `Bool` |
+| `replay_seek_ms`, `replay_seek_frame` | `Uint` (write): the frame there comes next, also while paused |
+| `replay_step` | write: one frame, then paused |
+| `replay_position_ms`, `replay_frame` | `Uint` (read): the last frame delivered |
+| `replay_duration_ms`, `replay_frame_count` | `Uint` (read): found by a scan at start (0 until then) |
+| `replay_state` | menu (read): playing, paused, ended |
+
+`ReplaySourceConfig::hold_at_end(true)` keeps the capture open at the end (paused there, ended,
+for a seek), as a player wants; without it the capture ends and consumers see `Closed`.
+`.timestamps(ReplayTimestamps::Rebased)` gives each frame its delivery time on
+`CLOCK_MONOTONIC` (consistent with live frames, pauses, seeks and the speed) instead of the
+recorded time. Either way the recorded per-frame metadata (`NativeFrameMeta` and its 3A record)
+is kept. Seeking reads the recording from its start up to the frame.
+
 ## Recording on a device
 
 `StreamRecorder::mcap(path, &header, RecorderOptions)` is for recording alongside a live

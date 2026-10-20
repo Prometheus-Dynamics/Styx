@@ -409,14 +409,50 @@ impl StreamRecorder {
     }
 }
 
-/// A recording to replay as a camera.
+/// The timestamps replayed frames carry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ReplayTimestamps {
+    /// As recorded (on the recording's clock), increasing across loops.
+    #[default]
+    Recorded,
+    /// When each frame is delivered (`CLOCK_MONOTONIC`): consistent with live frames and with
+    /// pausing, seeking and the speed.
+    Rebased,
+}
+
+/// A recording to replay as a camera. Its capture has playback controls
+/// (`capture_api::replay_controls`): play/pause, speed, loop, seek, step, position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplaySourceConfig {
     pub path: PathBuf,
+    /// The speed it starts at: the recorded rate, or every frame as fast as consumers take
+    /// them (the `replay_speed` control changes it).
     pub pacing: ReplayPacing,
     /// Start again from the first frame at the end. Timestamps keep increasing across loops.
     pub loop_forever: bool,
+    pub timestamps: ReplayTimestamps,
+    /// At the end (not looping), keep the capture open, paused on the last frame, for a seek
+    /// or a loop (a player); `false` (default): the capture ends, consumers see `Closed`.
+    pub hold_at_end: bool,
 }
+
+/// The replay options carried in a replay backend's properties (`timestamps`, `hold_at_end`).
+pub(crate) fn replay_options(properties: &[(String, String)]) -> (ReplayTimestamps, bool) {
+    let get = |k: &str| {
+        properties
+            .iter()
+            .find(|(p, _)| p == k)
+            .map(|(_, v)| v.as_str())
+    };
+    let timestamps = match get(TIMESTAMPS_PROPERTY) {
+        Some("rebased") => ReplayTimestamps::Rebased,
+        _ => ReplayTimestamps::Recorded,
+    };
+    (timestamps, get(END_PROPERTY) == Some("hold"))
+}
+
+const TIMESTAMPS_PROPERTY: &str = "replay_timestamps";
+const END_PROPERTY: &str = "replay_end";
 
 impl ReplaySourceConfig {
     pub fn new(path: impl Into<PathBuf>) -> Self {
@@ -424,7 +460,19 @@ impl ReplaySourceConfig {
             path: path.into(),
             pacing: ReplayPacing::Realtime,
             loop_forever: false,
+            timestamps: ReplayTimestamps::Recorded,
+            hold_at_end: false,
         }
+    }
+
+    pub fn timestamps(mut self, timestamps: ReplayTimestamps) -> Self {
+        self.timestamps = timestamps;
+        self
+    }
+
+    pub fn hold_at_end(mut self, hold: bool) -> Self {
+        self.hold_at_end = hold;
+        self
     }
 
     pub fn pacing(mut self, pacing: ReplayPacing) -> Self {
@@ -464,9 +512,23 @@ impl ReplaySourceConfig {
                 },
                 descriptor: CaptureDescriptor {
                     modes: vec![mode],
-                    controls: Vec::new(),
+                    controls: crate::capture_api::replay_controls::metas(),
                 },
-                properties: vec![("recorded_backend".into(), header.backend)],
+                properties: vec![
+                    ("recorded_backend".into(), header.backend),
+                    (
+                        TIMESTAMPS_PROPERTY.into(),
+                        match self.timestamps {
+                            ReplayTimestamps::Recorded => "recorded",
+                            ReplayTimestamps::Rebased => "rebased",
+                        }
+                        .into(),
+                    ),
+                    (
+                        END_PROPERTY.into(),
+                        if self.hold_at_end { "hold" } else { "close" }.into(),
+                    ),
+                ],
             }],
         })
     }
@@ -630,6 +692,8 @@ pub(crate) fn frame_from_payload(
 
 #[cfg(all(test, any(feature = "replay-mcap", feature = "replay-styxrec")))]
 mod corruption_tests;
+#[cfg(all(test, feature = "replay-mcap"))]
+mod playback_tests;
 #[cfg(all(test, feature = "replay-mcap"))]
 mod recording_tests;
 #[cfg(all(test, any(feature = "replay-mcap", feature = "replay-styxrec")))]

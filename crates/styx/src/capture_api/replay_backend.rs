@@ -1,4 +1,5 @@
-//! Replays a `.styxrec` recording as a camera (see [`crate::replay`]).
+//! Replays a recording as a camera (see [`crate::replay`]), with playback controls
+//! ([`super::replay_controls`]): play and pause, speed, loop, seek, step.
 
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -9,11 +10,17 @@ use styx_capture::prelude::*;
 
 use super::control_plane::ControlPlane;
 use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle, enqueue_capture_frame};
+use super::replay_controls::{ReplayControls, Seek};
 use super::request::CaptureError;
 use super::tunables::StyxConfig;
 use crate::metrics::StageMetrics;
-use crate::replay::{ReplayError, ReplayPacing, open_recording};
+use crate::replay::{
+    RecordingFrames, ReplayError, ReplayPacing, ReplayTimestamps, open_recording, replay_options,
+};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
+
+/// The longest the worker waits without looking at its stop channel.
+const POLL: Duration = Duration::from_millis(50);
 
 pub(super) fn start_replay(
     backend: &ProbedBackend,
@@ -32,15 +39,17 @@ pub(super) fn start_replay(
         return Err(CaptureError::BackendUnavailable(BackendKind::Replay));
     };
     let (path, pacing, loop_forever) = (path.clone(), *pacing, *loop_forever);
+    let (timestamps, hold_at_end) = replay_options(&backend.properties);
     let replay_error = |err: ReplayError| CaptureError::Backend(format!("replay: {err}"));
     // Fail at start, not in the worker, for a missing or foreign file.
     open_recording(&path).map_err(replay_error)?;
 
     let capture = config.capture_tunables();
-    // Unpaced replay delivers every frame, so it waits for room instead of dropping.
-    let overflow = match pacing {
-        ReplayPacing::Realtime => capture.queue_overflow,
-        ReplayPacing::Unpaced => QueueOverflow::Backpressure,
+    // Unpaced replay delivers every frame, so it waits for room instead of dropping; so does
+    // a held replay (a player), whose speed 0 means as fast as the consumers.
+    let overflow = match (pacing, hold_at_end) {
+        (ReplayPacing::Unpaced, _) | (_, true) => QueueOverflow::Backpressure,
+        (ReplayPacing::Realtime, false) => capture.queue_overflow,
     };
     let (tx, rx) = queue
         .unwrap_or_else(|| styx_core::queue::bounded_with(capture.queue_depth.max(1), overflow));
@@ -51,25 +60,39 @@ pub(super) fn start_replay(
     let fallback_interval = interval
         .map(|i| Duration::from_secs_f32(1.0 / i.fps().max(0.01)))
         .unwrap_or(Duration::from_millis(33));
+    let speed = match pacing {
+        ReplayPacing::Realtime => 1.0,
+        ReplayPacing::Unpaced => 0.0,
+    };
+    let controls = Arc::new(ReplayControls::new(speed, loop_forever));
+    // The length, for the duration and frame count controls: one scan, beside the playback.
+    {
+        let (path, controls) = (path.clone(), controls.clone());
+        thread::spawn(move || {
+            if let Ok((frames, duration)) = scan(&path) {
+                controls.set_length(duration, frames);
+            }
+        });
+    }
+    let player_controls = controls.clone();
     let worker = thread::spawn(move || {
-        let mut replay = Replay {
-            pacing,
+        let mut player = Player {
+            path,
+            controls: player_controls,
+            timestamps,
+            hold_at_end,
             fallback_interval,
-            first_timestamp: None,
-            last_timestamp: 0,
+            send_timeout,
+            frames: None,
+            first: None,
+            index: 0,
+            last_raw: 0,
             last_delta: fallback_interval,
             loop_offset: 0,
-            started: Instant::now(),
+            anchor: None,
+            pending: None,
         };
-        let result = loop {
-            match replay.play_once(&path, &tx, &stop_rx, send_timeout) {
-                Ok(Played::Stopped) => break Ok(()),
-                Ok(Played::Finished) if loop_forever => replay.next_loop(),
-                Ok(Played::Finished) => break Ok(()),
-                Err(err) => break Err(err),
-            }
-        };
-        if let Err(err) = result {
+        if let Err(err) = player.run(&tx, &stop_rx) {
             crate::trace::warn!(backend = "replay", error = %err, "replay failed");
             *worker_error_for_thread.lock() = Some(CaptureError::Backend(format!("replay: {err}")));
         }
@@ -78,7 +101,7 @@ pub(super) fn start_replay(
     });
     Ok(CaptureHandle {
         backend: BackendKind::Replay,
-        control: ControlPlane::None,
+        control: ControlPlane::Replay(controls),
         descriptor,
         mode,
         interval,
@@ -101,61 +124,197 @@ pub(super) fn start_replay(
     })
 }
 
-enum Played {
-    Finished,
-    Stopped,
+/// The recording's frames and its length (first to last timestamp).
+fn scan(path: &std::path::Path) -> Result<(u64, Duration), ReplayError> {
+    let (_, frames) = open_recording(path)?;
+    let (mut n, mut first, mut last) = (0u64, None, 0u64);
+    for f in frames {
+        let ts = f?.meta().timestamp;
+        first.get_or_insert(ts);
+        last = ts;
+        n += 1;
+    }
+    Ok((
+        n,
+        Duration::from_nanos(last.saturating_sub(first.unwrap_or(last))),
+    ))
 }
 
-struct Replay {
-    pacing: ReplayPacing,
+/// What the worker does next, from the controls.
+struct Turn {
+    playing: bool,
+    speed: f32,
+    looping: bool,
+    seek: Option<Seek>,
+    step: bool,
+    stopped: bool,
+    generation: u64,
+}
+
+struct Player {
+    path: std::path::PathBuf,
+    controls: Arc<ReplayControls>,
+    timestamps: ReplayTimestamps,
+    hold_at_end: bool,
     fallback_interval: Duration,
-    /// First recorded timestamp; frames are scheduled relative to it.
-    first_timestamp: Option<u64>,
-    last_timestamp: u64,
+    send_timeout: Duration,
+    /// The pass being played (`None`: open the recording again).
+    frames: Option<RecordingFrames>,
+    /// The recording's first timestamp (positions are from it).
+    first: Option<u64>,
+    /// The next frame's index in the pass.
+    index: u64,
+    /// The last frame's recorded timestamp, and the interval before it.
+    last_raw: u64,
     last_delta: Duration,
     /// Added to recorded timestamps so they keep increasing across loops.
     loop_offset: u64,
-    started: Instant,
+    /// When the frame with this recorded timestamp was (or would have been) due: frames are
+    /// paced from it at the speed. Cleared by anything that breaks the pace.
+    anchor: Option<(Instant, u64)>,
+    /// A frame read but not delivered yet (its time had not come), with its index.
+    pending: Option<(FrameLease, u64)>,
 }
 
-impl Replay {
-    fn play_once(
+impl Player {
+    fn turn(&self) -> Turn {
+        let mut r = self.controls.requests.lock();
+        let step = r.steps > 0;
+        if step {
+            r.steps -= 1;
+        }
+        Turn {
+            playing: r.playing,
+            speed: r.speed,
+            looping: r.looping,
+            seek: r.seek.take(),
+            step,
+            stopped: r.stopped,
+            generation: r.generation,
+        }
+    }
+
+    /// Waits up to `wait` for a control to change (or the poll interval).
+    fn wait_change(&self, generation: u64, wait: Duration) {
+        let mut r = self.controls.requests.lock();
+        if r.generation == generation {
+            let _ = self.controls.changed.wait_for(&mut r, wait.min(POLL));
+        }
+    }
+
+    fn run(
         &mut self,
-        path: &std::path::Path,
         tx: &BoundedTx<FrameLease>,
         stop_rx: &mpsc::Receiver<()>,
-        send_timeout: Duration,
-    ) -> Result<Played, ReplayError> {
-        let (_, frames) = open_recording(path)?;
-        for frame in frames.with_timestamp_offset(self.loop_offset) {
-            let mut frame = frame?;
-            let timestamp = frame.meta().timestamp;
-            let first = *self.first_timestamp.get_or_insert(timestamp);
-            if timestamp > self.last_timestamp && self.last_timestamp != 0 {
-                self.last_delta = Duration::from_nanos(timestamp - self.last_timestamp);
-            }
-            self.last_timestamp = timestamp;
-            if self.pacing == ReplayPacing::Realtime {
-                let due = self.started + Duration::from_nanos(timestamp.saturating_sub(first));
-                let wait = due.saturating_duration_since(Instant::now());
-                if !wait.is_zero() && stop_rx.recv_timeout(wait).is_ok() {
-                    return Ok(Played::Stopped);
-                }
-            }
+    ) -> Result<(), ReplayError> {
+        loop {
             if stop_rx.try_recv().is_ok() {
-                return Ok(Played::Stopped);
+                return Ok(());
             }
-            // Recorded metadata is kept; only the delivery time is new.
-            frame.meta_mut().capture_instant = Some(Instant::now().into());
-            let closed = match self.pacing {
-                ReplayPacing::Realtime => enqueue_capture_frame(tx, frame, "replay", send_timeout),
-                ReplayPacing::Unpaced => send_every_frame(tx, frame, stop_rx),
+            let t = self.turn();
+            if t.stopped {
+                return Ok(());
+            }
+            // A seek shows its frame even while paused.
+            let mut show = t.step;
+            if let Some(seek) = t.seek {
+                self.seek(seek)?;
+                show = true;
+            }
+            if !t.playing && !show {
+                self.controls.set_state(1);
+                self.anchor = None;
+                self.wait_change(t.generation, POLL);
+                continue;
+            }
+            let (frame, index) = match self.pending.take() {
+                Some(p) => p,
+                None => match self.next()? {
+                    Some(p) => p,
+                    None if t.looping => {
+                        self.next_loop();
+                        continue;
+                    }
+                    None if self.hold_at_end => {
+                        self.controls.set_state(2);
+                        self.anchor = None;
+                        self.wait_change(t.generation, POLL);
+                        continue;
+                    }
+                    None => return Ok(()),
+                },
             };
-            if closed {
-                return Ok(Played::Stopped);
+            let raw = frame.meta().timestamp.saturating_sub(self.loop_offset);
+            // Paced: wait for its time (a control change in the meantime is looked at first).
+            if t.speed > 0.0 && t.playing && !show {
+                let (at, from) = *self.anchor.get_or_insert((Instant::now(), raw));
+                let due = at + Duration::from_nanos(raw.saturating_sub(from)).div_f32(t.speed);
+                let wait = due.saturating_duration_since(Instant::now());
+                if !wait.is_zero() {
+                    self.pending = Some((frame, index));
+                    self.wait_change(t.generation, wait);
+                    continue;
+                }
+            } else {
+                self.anchor = None;
             }
+            self.controls.set_state(if t.playing { 0 } else { 1 });
+            let first = self.first.unwrap_or(raw);
+            if self.deliver(frame, t.speed, tx, stop_rx) {
+                return Ok(());
+            }
+            self.controls
+                .delivered(index, Duration::from_nanos(raw.saturating_sub(first)));
         }
-        Ok(Played::Finished)
+    }
+
+    /// The next frame of the pass and its index (`None` at the end).
+    fn next(&mut self) -> Result<Option<(FrameLease, u64)>, ReplayError> {
+        if self.frames.is_none() {
+            let (_, frames) = open_recording(&self.path)?;
+            self.frames = Some(frames.with_timestamp_offset(self.loop_offset));
+            self.index = 0;
+        }
+        let Some(frame) = self.frames.as_mut().and_then(Iterator::next) else {
+            return Ok(None);
+        };
+        let frame = frame?;
+        let raw = frame.meta().timestamp.saturating_sub(self.loop_offset);
+        self.first.get_or_insert(raw);
+        if raw > self.last_raw && self.last_raw != 0 && self.index > 0 {
+            self.last_delta = Duration::from_nanos(raw - self.last_raw);
+        }
+        self.last_raw = raw;
+        let index = self.index;
+        self.index += 1;
+        Ok(Some((frame, index)))
+    }
+
+    /// Goes back to the start of the recording and forward to `seek`: the frame there is read
+    /// and kept to deliver next.
+    fn seek(&mut self, seek: Seek) -> Result<(), ReplayError> {
+        self.frames = None;
+        self.pending = None;
+        self.anchor = None;
+        self.loop_offset = 0;
+        self.last_raw = 0;
+        let mut last = None;
+        while let Some((frame, index)) = self.next()? {
+            let raw = frame.meta().timestamp;
+            let first = self.first.unwrap_or(raw);
+            let reached = match seek {
+                Seek::Time(ns) => raw.saturating_sub(first) >= ns,
+                Seek::Frame(n) => index >= n,
+            };
+            if reached {
+                self.pending = Some((frame, index));
+                return Ok(());
+            }
+            last = Some((frame, index));
+        }
+        // Past the end: the last frame.
+        self.pending = last;
+        Ok(())
     }
 
     fn next_loop(&mut self) {
@@ -164,13 +323,38 @@ impl Replay {
         } else {
             self.last_delta
         };
-        // The next loop's first frame follows the last one by one frame interval. The first
-        // recorded timestamp was read without an offset.
-        let first = self.first_timestamp.unwrap_or(0);
-        self.loop_offset = self
-            .last_timestamp
+        // The next pass's first frame follows the last one by one frame interval.
+        let first = self.first.unwrap_or(0);
+        self.loop_offset = (self.last_raw + self.loop_offset)
             .saturating_add(gap.as_nanos() as u64)
             .saturating_sub(first);
+        self.frames = None;
+        self.anchor = None;
+    }
+
+    /// Sends `frame` (as fast as the consumers take frames at speed 0); `true` when the
+    /// replay should stop.
+    fn deliver(
+        &self,
+        mut frame: FrameLease,
+        speed: f32,
+        tx: &BoundedTx<FrameLease>,
+        stop_rx: &mpsc::Receiver<()>,
+    ) -> bool {
+        let now = Instant::now();
+        let meta = frame.meta_mut();
+        // Recorded metadata (and the native 3A record) is kept; only the delivery time is new,
+        // and with rebased timestamps the frame's time is its delivery.
+        meta.capture_instant = Some(now.into());
+        if self.timestamps == ReplayTimestamps::Rebased {
+            meta.timestamp = CaptureInstant::from(now).as_nanos();
+            meta.clock = Some(TimestampClock::Monotonic);
+        }
+        if speed == 0.0 {
+            send_every_frame(tx, frame, stop_rx)
+        } else {
+            enqueue_capture_frame(tx, frame, "replay", self.send_timeout)
+        }
     }
 }
 
@@ -181,7 +365,7 @@ fn send_every_frame(
     stop_rx: &mpsc::Receiver<()>,
 ) -> bool {
     loop {
-        match tx.send_timeout(frame, Duration::from_millis(50)) {
+        match tx.send_timeout(frame, POLL) {
             SendWaitOutcome::Ok => return false,
             SendWaitOutcome::Closed(_) => return true,
             SendWaitOutcome::Timeout(back) => {

@@ -463,3 +463,50 @@ async fn opening_asynchronously_can_time_out_or_be_dropped() {
         .unwrap();
     assert_eq!(client.delivered().unwrap().format, FourCc::RG24);
 }
+
+#[test]
+fn a_replay_camera_is_played_through_the_service_controls() {
+    use styx::capture_api::replay_controls::ids;
+    let recording = c270_recording("service-playback");
+    let socket =
+        std::env::temp_dir().join(format!("styx-service-playback-{}.sock", std::process::id()));
+    let device = CaptureRequest::replay_source(
+        ReplaySourceConfig::new(&recording)
+            .pacing(ReplayPacing::Realtime)
+            .hold_at_end(true),
+    )
+    .unwrap()
+    .into_device();
+    let service = CameraService::new(device)
+        .keep_streaming()
+        .serve(&socket)
+        .unwrap();
+    let client = FrameClient::request(&socket, &Frames::any()).unwrap();
+    frame(&client);
+    // The playback controls are listed with the camera's and work as camera controls.
+    let names: Vec<String> = client
+        .controls()
+        .unwrap()
+        .into_iter()
+        .map(|d| d.meta.name)
+        .collect();
+    assert!(names.iter().any(|n| n == "replay_seek_frame"), "{names:?}");
+    client
+        .set_control(ids::REPLAY_PLAYING, ControlValue::Bool(false))
+        .unwrap();
+    client
+        .set_control(ids::REPLAY_SEEK_FRAME, ControlValue::Uint(1))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        client.get_control(ids::REPLAY_FRAME).unwrap(),
+        ControlValue::Uint(1)
+    );
+    assert_eq!(
+        client.get_control(ids::REPLAY_STATE).unwrap(),
+        ControlValue::Int(1)
+    );
+    drop(client);
+    drop(service);
+    let _ = std::fs::remove_file(recording);
+}
