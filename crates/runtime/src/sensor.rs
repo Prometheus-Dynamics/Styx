@@ -182,6 +182,9 @@ pub struct SensorState<B, P> {
     clock: Option<Clock>,
     lens: Option<LensControl>,
     pdaf: PdafFrames,
+    /// Frames a processing loop takes from a frame's start to writing what was asked during
+    /// it, beyond the next frame (see [`Self::set_loop_latency`]).
+    loop_latency: Option<u32>,
 }
 
 impl<B: DriverBus, P: SensorPins> SensorState<B, P> {
@@ -197,6 +200,7 @@ impl<B: DriverBus, P: SensorPins> SensorState<B, P> {
             last_start_at: None,
             write_margin: Some(DEFAULT_WRITE_MARGIN),
             clock: None,
+            loop_latency: None,
             lens: None,
             pdaf: PdafFrames::default(),
         }
@@ -436,6 +440,37 @@ impl<B: DriverBus, P: SensorPins> SensorState<B, P> {
     /// The last frame start seen in this stream.
     pub fn current_frame(&self) -> Option<u64> {
         self.last_start
+    }
+
+    /// The frame the sensor is in now: the last frame start seen, moved on by the frames that
+    /// have started since by the clock (frame starts are seen late when the thread that serves
+    /// them is busy). `None` before the first frame start.
+    pub fn frame_in_progress(&self) -> Option<u64> {
+        let seq = self.last_start?;
+        let (Some(at), Some(_)) = (self.last_start_at, self.clock) else {
+            return Some(seq);
+        };
+        let duration = self
+            .applied(seq)
+            .map_or(Duration::ZERO, |a| a.frame_duration);
+        if duration.is_zero() {
+            return Some(seq);
+        }
+        let since = self.now().saturating_sub(at);
+        Some(seq + (since.as_nanos() / duration.as_nanos()) as u64)
+    }
+
+    /// How many frames after the next one a processing loop (a 3A loop over the frames'
+    /// statistics) writes what was asked during a frame: the frames from a frame's statistics to
+    /// the write (`SensorInfo::issue_latency`). Set by the loop when it starts; `None`
+    /// (default) before.
+    pub fn set_loop_latency(&mut self, frames: Option<u32>) {
+        self.loop_latency = frames;
+    }
+
+    /// See [`Self::set_loop_latency`].
+    pub fn loop_latency(&self) -> Option<u32> {
+        self.loop_latency
     }
 
     /// Frame starts seen since the camera was opened.

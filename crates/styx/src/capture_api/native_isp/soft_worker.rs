@@ -140,7 +140,7 @@ pub(super) fn spawn(
                     break;
                 }
                 if let Some(c) = w.loop_controls.take() {
-                    p.soft_loop().controller().set_controls(c);
+                    p.soft_loop().set_controls(c);
                 }
                 if w.crops
                     && let Some(c) = w.loop_controls.crop.take()
@@ -180,6 +180,7 @@ pub(super) fn spawn(
                 let isp_done = styx_core::prelude::CaptureInstant::now();
                 count_isp_copies(&mut p, &f, image_bytes(code, size));
                 w.loop_controls.report(&f.output.step.params);
+                w.loop_controls.processed(f.sensor.frame);
                 let raw = w
                     .still
                     .wants(&f.sensor)

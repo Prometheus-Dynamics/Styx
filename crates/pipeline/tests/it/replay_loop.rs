@@ -193,6 +193,66 @@ fn the_loop_converges_on_a_virtual_sensor_and_replays() {
     assert_eq!(again.totals, r.totals);
 }
 
+/// Settled, the algorithms skip frames; a control change (a fixed exposure) is taken on the very
+/// next frame all the same, so its write is not held back by the cadence.
+#[test]
+fn a_control_change_runs_the_algorithms_on_the_next_frame() {
+    let rec = recording();
+    let mut sensor = VirtualSensor::new(&rec);
+    let format = sensor.format();
+    let mut soft = SoftLoop::new(
+        rec.header.sensor.clone(),
+        format.packing,
+        &Tuning::default(),
+        1,
+    )
+    .unwrap()
+    .with_settled_rate(Some(5.0));
+    if let Some(r) = soft.start().unwrap().sensor {
+        sensor.request(&r);
+    }
+    let (w, h) = (format.width as usize, format.height as usize);
+    let mut rgb = vec![0u8; w * h * 3];
+    let mut skipped_settled = false;
+    let fixed = Duration::from_millis(5);
+    for i in 0..60u64 {
+        if i == 50 {
+            let mut c = soft.controller().controls().clone();
+            c.exposure = Some(fixed);
+            soft.set_controls(c);
+        }
+        let stride = sensor.stride();
+        let (raw, values) = sensor.next_frame();
+        let raw = raw.to_vec();
+        let o = soft
+            .process(
+                &raw,
+                stride,
+                &values,
+                Scale::Full,
+                OutputBuffers::Rgb24 {
+                    data: &mut rgb,
+                    stride: w * 3,
+                },
+            )
+            .unwrap();
+        let ran = !o.stats.colour.zones.is_empty();
+        skipped_settled |= (30..50).contains(&i) && !ran;
+        if i == 50 {
+            assert!(ran, "the algorithms skipped the frame after the change");
+            let r = o.step.sensor.expect("a request for the fixed exposure");
+            assert_eq!(r.exposure, fixed, "{r:?}");
+        }
+        if let Some(r) = &o.step.sensor {
+            sensor.request(r);
+        }
+    }
+    assert!(
+        skipped_settled,
+        "the loop never settled into skipping frames"
+    );
+}
+
 #[test]
 fn recorded_frames_replay_when_given() {
     let Some(base) = std::env::var_os("STYX_RAW_RECORDING") else {

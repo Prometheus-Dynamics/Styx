@@ -257,7 +257,7 @@ pub(super) fn spawn(
                 // Consumers hold every buffer of an output: another one now, between frames.
                 p.top_up_outputs();
                 if let Some(c) = w.loop_controls.take() {
-                    p.controller().set_controls(c);
+                    p.set_controls(c);
                 }
                 w.still.before_frame(&mut p);
                 if let Some(crop) = w.loop_controls.crop.take() {
@@ -328,6 +328,7 @@ pub(super) fn spawn(
                     }
                 };
                 w.loop_controls.report(&p.step().params);
+                w.loop_controls.processed(f.sequence);
                 let step = p.step();
                 let ae = (step.params.ae.total_exposure, step.params.ae.locked);
                 let request = step.sensor;

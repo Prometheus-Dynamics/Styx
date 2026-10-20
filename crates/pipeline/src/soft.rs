@@ -331,6 +331,11 @@ impl SoftLoop {
         self.algo.controller()
     }
 
+    /// New controls from the next frame on (see [`Algorithms::set_controls`]).
+    pub fn set_controls(&mut self, controls: styx_algo::Controls) {
+        self.algo.set_controls(controls);
+    }
+
     /// The 3A side of the loop.
     pub fn algorithms(&mut self) -> &mut Algorithms {
         &mut self.algo

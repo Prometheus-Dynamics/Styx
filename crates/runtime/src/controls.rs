@@ -128,6 +128,16 @@ impl<B: DriverBus, P: SensorPins> Controls<B, P> {
         lock(&self.inner).set_write_margin(margin);
     }
 
+    /// See [`SensorState::frame_in_progress`].
+    pub fn frame_in_progress(&self) -> Option<u64> {
+        lock(&self.inner).frame_in_progress()
+    }
+
+    /// See [`SensorState::set_loop_latency`].
+    pub fn set_loop_latency(&self, frames: Option<u32>) {
+        lock(&self.inner).set_loop_latency(frames);
+    }
+
     /// See [`SensorState::frame_time_left`] (now).
     pub fn frame_time_left(&self) -> Option<Duration> {
         let c = lock(&self.inner);

@@ -27,18 +27,19 @@ pub(crate) fn fixed_sensor_controls(
     }
 }
 
-/// The first frame a processed mode's fixed exposure or gain takes effect on: the frame in
-/// progress plus the control's delay plus the 3A loop's latency (see
-/// [`CameraControls::landing_processed`]). A prediction: a sensor with embedded data reports the
-/// frame's values with `NativeFrameMeta::verified`. `None` where no frame is fixed (AE, EV, AWB).
+/// The first frame a processed mode's fixed exposure or gain takes effect on (see
+/// [`CameraControls::landing_processed`]; `loop_processed`: the last frame the 3A loop
+/// processed). A prediction: a sensor with embedded data reports the frame's values with
+/// `NativeFrameMeta::verified`. `None` where no frame is fixed (AE, EV, AWB).
 pub(crate) fn processed_landing(
     controls: &CameraControls,
     id: ControlId,
     value: &ControlValue,
+    loop_processed: Option<u64>,
 ) -> Option<u64> {
     fixed_sensor_controls(id, value).map(|cs| {
         cs.iter()
-            .map(|c| controls.landing_processed(*c))
+            .map(|c| controls.landing_processed(*c, loop_processed))
             .max()
             .unwrap_or(0)
     })

@@ -388,6 +388,11 @@ impl PispPipeline {
         self.algo.controller()
     }
 
+    /// New controls from the next frame on (see [`crate::Algorithms::set_controls`]).
+    pub fn set_controls(&mut self, controls: styx_algo::Controls) {
+        self.algo.set_controls(controls);
+    }
+
     /// The camera's controls.
     pub fn controls(&self) -> &CameraControls {
         &self.controls
@@ -502,6 +507,7 @@ impl PispPipeline {
         };
         self.sensor = Some(sensor);
         self.algo.controller().set_issue_latency(latency);
+        self.controls.set_loop_latency(Some(latency));
         let warm = match self.warm_override.take() {
             Some(w) => w,
             None => crate::warm::recall(&self.camera.info().key),

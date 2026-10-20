@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use styx_sensor::{Control, MockBus, MockPins, RegWrite};
@@ -297,4 +297,36 @@ fn bring_up_stops_a_sensor_left_streaming_before_init() {
         .position(|w| *w == RegWrite::byte(0x0302, 0x32))
         .expect("init written");
     assert!(off < init, "stream_off at {off}, init at {init}");
+}
+
+/// The frame in progress follows the clock: frame starts served late (a busy thread) still give
+/// the frame the sensor is in.
+#[test]
+fn the_frame_in_progress_follows_the_clock() {
+    static NOW_NS: AtomicU64 = AtomicU64::new(0);
+    fn now() -> Duration {
+        Duration::from_nanos(NOW_NS.load(Ordering::Relaxed))
+    }
+    let mut c = control().with_clock(now);
+    c.bring_up("1280x800", "raw10").unwrap();
+    let t = c.timing().unwrap();
+    let thirty = t.frame_length_for_fps(30.0);
+    c.request(&ControlRequest {
+        frame_duration: Some(thirty.duration),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(c.frame_in_progress(), None);
+    c.serve_start(Some(&EXPECTED)).unwrap();
+    let start = Duration::from_secs(1);
+    c.frame_start_at(5, Some(start)).unwrap();
+    NOW_NS.store(start.as_nanos() as u64, Ordering::Relaxed);
+    assert_eq!(c.frame_in_progress(), Some(5));
+    // Three and a half frames later, with no frame start seen meanwhile.
+    let later = start + thirty.duration * 7 / 2;
+    NOW_NS.store(later.as_nanos() as u64, Ordering::Relaxed);
+    assert_eq!(c.current_frame(), Some(5));
+    assert_eq!(c.frame_in_progress(), Some(8));
+    c.set_loop_latency(Some(2));
+    assert_eq!(c.loop_latency(), Some(2));
 }

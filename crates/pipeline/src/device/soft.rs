@@ -151,6 +151,7 @@ impl SoftPipeline {
         };
         let c = self.soft.controller();
         c.set_issue_latency(latency);
+        self.controls.set_loop_latency(Some(latency));
         c.set_warm_start(warm);
         self.soft.start_with(&self.controls)?;
         self.stream = Some(self.camera.start()?);

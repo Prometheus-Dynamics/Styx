@@ -4,7 +4,7 @@
 //! temperature). Shared between the capture's
 //! control plane and its worker, which hands a changed set to the loop before its next frame.
 
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -40,6 +40,8 @@ pub struct LoopControls {
     pub(crate) crop: super::crop_control::CropControl,
     /// The other regions' crops (`region_crop(index)`).
     pub(crate) regions: super::crop_control::RegionCrops,
+    /// The last frame the loop processed (`u64::MAX`: none yet).
+    processed: AtomicU64,
 }
 
 impl Default for LoopControls {
@@ -57,6 +59,7 @@ impl Default for LoopControls {
             ae_region: Default::default(),
             crop: Default::default(),
             regions: Default::default(),
+            processed: AtomicU64::new(u64::MAX),
         }
     }
 }
@@ -289,6 +292,16 @@ impl LoopControls {
     }
 
     /// Records what the loop made of a frame.
+    /// The loop processed frame `seq`.
+    pub(crate) fn processed(&self, seq: u64) {
+        self.processed.store(seq, Ordering::Release);
+    }
+
+    /// The last frame the loop processed, if any.
+    pub(crate) fn last_processed(&self) -> Option<u64> {
+        Some(self.processed.load(Ordering::Acquire)).filter(|&f| f != u64::MAX)
+    }
+
     pub(crate) fn report(&self, params: &Params) {
         super::af_controls::report(&self.af, params);
         self.ae_state

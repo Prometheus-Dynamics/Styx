@@ -167,7 +167,7 @@ fn a_fixed_exposure_lands_on_the_frame_the_handle_predicts() {
 
 #[test]
 fn a_processed_fixed_exposure_lands_on_the_frame_the_handle_predicts() {
-    // The 3A loop's timing as the board measured it (see `PROCESSED_LOOP_LATENCY`): exposure set
+    // The 3A loop's timing as the board measured it (see `landing_processed`): exposure set
     // in frame 10 is taken by the loop's step during frame 11, whose write misses frame 11 (the
     // margin is not left in it), so it is scheduled for the start of frame 12. The step asks for
     // frame 13: its statistics are frame 11's, the controller's issue latency is 0 at 30 fps and
@@ -181,10 +181,10 @@ fn a_processed_fixed_exposure_lands_on_the_frame_the_handle_predicts() {
     let fd = Duration::from_nanos(33_333_333);
     let at = |seq: u64| now + fd * seq as u32;
     lock(h.shared()).frame_start_at(10, Some(at(10))).unwrap();
-    let predicted = h.landing_processed(Control::Exposure);
+    let predicted = h.landing_processed(Control::Exposure, None);
     assert_eq!(
         predicted,
-        10 + u64::from(h.delay(Control::Exposure)) + PROCESSED_LOOP_LATENCY
+        10 + 1 + PROCESSED_LOOP_LATENCY + u64::from(h.delay(Control::Exposure))
     );
 
     // The step during frame 11: no margin is left in the frame, so the write waits for frame 12.

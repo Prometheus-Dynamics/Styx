@@ -192,9 +192,10 @@ pub(crate) fn apply_control_landing(
             // progress: its landing is predicted from the description's delays (AE, EV and AWB
             // fix no frame, so they answer `None`).
             let result = match processed.as_ref().and_then(|p| p.apply(id, &value)) {
-                Some(result) => {
-                    result.map(|()| super::native_backend::processed_landing(controls, id, &value))
-                }
+                Some(result) => result.map(|()| {
+                    let processed = processed.as_ref().and_then(|p| p.last_processed());
+                    super::native_backend::processed_landing(controls, id, &value, processed)
+                }),
                 None => super::native_backend::apply_control_landing(controls, id, &value),
             };
             log_control_result("native", id, "set", started, &result);

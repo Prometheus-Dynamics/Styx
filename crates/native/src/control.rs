@@ -19,13 +19,9 @@ pub use styx_runtime::{
     BlankingHook, BringUpTimes, DEFAULT_WRITE_MARGIN, FrameControls, standby_problems,
 };
 
-/// Frames a processed mode's fixed value takes on top of the control's delay, from the frame in
-/// progress when it is set. The 3A loop takes a set at its next process step, one frame later at
-/// the earliest, and that step's write goes out at the next frame start rather than in the frame
-/// it runs in (too little of that frame is left for the write margin). The board measured the
-/// two together: at 30 fps a value set in frame 60 (delay 2) first showed in frame 64, where the
-/// prediction without this said 62.
-pub const PROCESSED_LOOP_LATENCY: u64 = 2;
+/// The 3A loop's latency [`ControlHandle::landing_processed`] assumes before the loop says
+/// (`set_loop_latency`): one frame, the PiSP's at 60 to 120 fps.
+pub const PROCESSED_LOOP_LATENCY: u64 = 1;
 
 /// The sensor driver plus the per-stream bookkeeping around it (the runtime's
 /// [`SensorState`]). Build it with [`sensor_control`] (it then runs on `CLOCK_MONOTONIC`).
@@ -193,14 +189,32 @@ impl<B: DriverBus, P: SensorPins> ControlHandle<B, P> {
         current.map_or(0, |s| s + u64::from(self.delay(control)))
     }
 
-    /// The frame a processed mode's fixed value set now first takes effect on: the frame in
-    /// progress plus the control's delay, plus [`PROCESSED_LOOP_LATENCY`] for the 3A loop. Before
-    /// streaming it is frame 0, as [`Self::landing_now`].
-    pub fn landing_processed(&self, control: Control) -> u64 {
-        let current = lock(self.shared()).current_frame();
-        current.map_or(0, |s| {
-            s + u64::from(self.delay(control)) + PROCESSED_LOOP_LATENCY
-        })
+    /// The frame a processed mode's fixed value set now first takes effect on. The 3A loop takes
+    /// it with the next frame's statistics it processes: those of the frame in progress (frame 0
+    /// before streaming), or of the one after `loop_processed` (the last frame the loop
+    /// processed) when the loop is already past it. It processes them during the frame after,
+    /// writes its loop latency later (the frames from statistics to the write,
+    /// `set_loop_latency`; [`PROCESSED_LOOP_LATENCY`] before the loop says), and the value lands
+    /// the control's delay after the write. Measured on the CM5 (kernel OV9782, PiSP, with the
+    /// algorithms running on the frame after a control change): exact before streaming at 30,
+    /// 120 and 240 fps (frames 3, 4, 5) and while streaming at 120 and 240 fps.
+    pub fn landing_processed(&self, control: Control, loop_processed: Option<u64>) -> u64 {
+        let c = lock(self.shared());
+        let now = c.frame_in_progress().unwrap_or(0);
+        let next = loop_processed.map_or(now, |l| now.max(l + 1));
+        let latency = c.loop_latency().map_or(PROCESSED_LOOP_LATENCY, u64::from);
+        drop(c);
+        next + 1 + latency + u64::from(self.delay(control))
+    }
+
+    /// See [`styx_runtime::SensorState::frame_in_progress`].
+    pub fn frame_in_progress(&self) -> Option<u64> {
+        self.inner.frame_in_progress()
+    }
+
+    /// See [`styx_runtime::SensorState::set_loop_latency`].
+    pub fn set_loop_latency(&self, frames: Option<u32>) {
+        self.inner.set_loop_latency(frames);
     }
 
     /// The values predicted for the latest started frame.

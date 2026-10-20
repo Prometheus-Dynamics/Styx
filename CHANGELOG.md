@@ -502,6 +502,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **Fixed exposure and gain on processed native modes land sooner, on the predicted frame:**
+  with AE settled, the 3A loop runs its algorithms only every few frames, and a fixed exposure
+  or gain waited for the next run (up to 11 frames at 240 fps on the CM5). A control change now
+  runs them on the next frame (`Algorithms::set_controls`, `PispPipeline::set_controls`,
+  `SoftLoop::set_controls`). The landing `AppliedControl::frame` predicts follows the 3A loop:
+  from the frame in progress by the clock (`SensorState::frame_in_progress`) or the loop's
+  next frame, plus the loop's latency (`set_loop_latency`, set by the pipelines from their issue
+  latency) and the control's delay. CM5 (PiSP, 30/120/240 fps), predicted vs actual: before
+  streaming 3/4/5 (was predicted 0), while streaming exact (was 1, 4 and 12 frames early, and
+  then 1 early).
+
 - **Exposure clamping on planned captures:** a native camera's exposure above the frame's limit
   was held to it only on a capture started directly; every planned (`Frames`, camera service)
   capture is supervised, and there the limit was never looked up, so the setter answered

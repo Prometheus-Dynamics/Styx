@@ -260,6 +260,14 @@ impl Algorithms {
         &self.controller
     }
 
+    /// New controls, taken by the algorithms on the next frame even while settled (they run
+    /// only every few frames then): a fixed exposure or gain is written as soon as it would be
+    /// with the algorithms running on every frame.
+    pub fn set_controls(&mut self, controls: styx_algo::Controls) {
+        self.controller.set_controls(controls);
+        self.last_run = None;
+    }
+
     /// The newest output (from the statistics of frame `step().frame`, or the start-up values).
     pub fn step(&self) -> &Step {
         &self.step
