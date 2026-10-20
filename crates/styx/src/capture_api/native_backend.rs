@@ -195,6 +195,16 @@ pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
     modes.extend(processed);
     let mut properties = info.properties();
     properties.push(("isp".into(), super::native_isp::isp_name(info).into()));
+    // The flips the sensor has (`NativeIspConfig::hflip`, `vflip`): `h`, `v`, `hv`; the camera
+    // service lists its flip controls from this.
+    let c = &info.description.controls;
+    let flips: String = [(c.hflip.is_some(), 'h'), (c.vflip.is_some(), 'v')]
+        .into_iter()
+        .filter_map(|(has, f)| has.then_some(f))
+        .collect();
+    if !flips.is_empty() {
+        properties.push(("flips".into(), flips));
+    }
     // Each sensor mode's field of the pixel array and binning (`mode_properties`).
     for m in &info.modes {
         let key = format!("mode:{}x{}", m.width, m.height);
@@ -373,6 +383,8 @@ pub(super) fn start_native(
         code: None,
         interval: interval
             .map(|i| styx_native::Fraction::new(i.numerator.get(), i.denominator.get())),
+        hflip: config.backends.native.hflip,
+        vflip: config.backends.native.vflip,
     };
     camera.configure(&settings).map_err(native_err)?;
     let controls = camera.controls();

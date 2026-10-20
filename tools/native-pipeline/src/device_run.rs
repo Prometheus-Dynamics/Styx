@@ -41,7 +41,9 @@ pub(crate) fn open_camera(a: &Args) -> Result<(NativeCamera, Instant), String> {
 }
 
 pub(crate) fn settings(a: &Args) -> StreamSettings {
-    StreamSettings::new(1280, 800).fps(a.fps.round() as u32)
+    StreamSettings::new(1280, 800)
+        .fps(a.fps.round() as u32)
+        .flips(a.flips.0, a.flips.1)
 }
 
 /// Phase means of a raw frame's 2x2 cells (0..1), to check the colour filter order: the two
@@ -238,8 +240,8 @@ pub fn soft(a: &Args) -> Result<(), String> {
             v.insert(
                 v.len() - 1,
                 format!(
-                    "raw 2x2 cell means (TL, TR, BL, BR) {:.4} {:.4} {:.4} {:.4}",
-                    last_phase[0], last_phase[1], last_phase[2], last_phase[3]
+                    "raw 2x2 cell means (TL, TR, BL, BR) {:.4} {:.4} {:.4} {:.4}, order {:?}",
+                    last_phase[0], last_phase[1], last_phase[2], last_phase[3], format.pattern
                 ),
             );
             v

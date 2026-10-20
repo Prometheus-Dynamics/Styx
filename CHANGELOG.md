@@ -14,6 +14,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   runs the camera in that mode (a request trailer older services ignore). styx-native's
   `SensorMode` gains `crop`, `binning` and `skipping`.
 - Replay plays directories of PNG images (RGB24) with feature `image` or `file-backend`.
+- **Sensor flips on native cameras**: `NativeIspConfig::hflip` / `vflip`
+  (`StyxConfig::native_flips`; both: turned by 180 degrees) flip the picture on the sensor, raw
+  and processed. Raw frames carry the flipped Bayer order's format, and the PiSP, the software
+  ISP and lens shading follow it. The camera service lists `hflip`, `vflip` and `rotation`
+  (0/180) controls for sensors with flips (`SERVICE_HFLIP`, `SERVICE_VFLIP`,
+  `SERVICE_ROTATION`) and sets them by restarting the capture. styx-native gains
+  `StreamSettings::hflip` / `vflip` / `flips()`, `Configured::hflip` / `vflip` and
+  `NativeCamera::bus_code`. Kernel sensor data gains `flips_change_bayer_order`, set for the
+  OV9782 under the `ov9282` driver. `native-pipeline --flip h|v|hv`.
 
 - **Video playback without ffmpeg**: `ReplaySourceConfig` also plays Motion JPEG streams
   (`.mjpeg`), AVI files of Motion JPEG and directories of JPEG images, as `MJPG` frames with the

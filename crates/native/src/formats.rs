@@ -120,6 +120,23 @@ pub fn raw_format(fourcc: FourCc) -> Option<RawFormat> {
         .copied()
 }
 
+/// The pixel format of the same layout as `fourcc` for colour filter order `order` (a flipped
+/// sensor's frames under the name of their order); `None` for formats this table does not
+/// know or orders it has no format for.
+pub fn with_color_filter(fourcc: FourCc, order: styx_sensor::ColorFilter) -> Option<FourCc> {
+    let (code, format) = TABLE
+        .iter()
+        .find_map(|(c, f)| f.iter().find(|f| f.fourcc == fourcc).map(|f| (*c, *f)))?;
+    let code = styx_sensor::MbusCode(code);
+    code.color_filter()
+        .filter(|c| *c != styx_sensor::ColorFilter::Mono)?;
+    let code = code.with_color_filter(order)?;
+    memory_formats(code.0)
+        .iter()
+        .find(|f| f.packing == format.packing)
+        .map(|f| f.fourcc)
+}
+
 /// Picks the format to capture in: the first of the table's formats for `code` that the node
 /// offers (`offered` empty means "not known": the table's first), else the node's first.
 pub fn choose(code: u32, offered: &[FourCc]) -> Option<FourCc> {
@@ -137,6 +154,16 @@ pub fn choose(code: u32, offered: &[FourCc]) -> Option<FourCc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_format_takes_the_name_of_its_flipped_order() {
+        use styx_sensor::ColorFilter::*;
+        let f = |c: &[u8; 4]| FourCc::new(c);
+        assert_eq!(with_color_filter(f(b"pBAA"), Rggb), Some(f(b"pRAA")));
+        assert_eq!(with_color_filter(f(b"BG10"), Gbrg), Some(f(b"GB10")));
+        assert_eq!(with_color_filter(f(b"pBAA"), Bggr), Some(f(b"pBAA")));
+        assert_eq!(with_color_filter(f(b"Y10P"), Rggb), None);
+    }
 
     #[test]
     fn packed_formats_come_first_and_lines_have_the_right_size() {

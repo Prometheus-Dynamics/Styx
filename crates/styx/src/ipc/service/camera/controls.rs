@@ -153,6 +153,9 @@ impl Camera {
         if r.id == SERVICE_FRAME_RATE {
             return self.restart_at(&mut state, value, caller, config, counters);
         }
+        if super::flips::is_flip(r.id) {
+            return self.set_flip(&mut state, r.id, value, caller, config, counters);
+        }
         let backend_value = to_backend(r.scale, &value);
         let (fitted, clamped) = match &r.meta {
             Some(meta) => fit(meta, backend_value)?,
@@ -305,6 +308,9 @@ impl Camera {
         let state = self.state.lock();
         let (metas, backend) = self.metas(&state);
         let r = resolve(&metas, backend, target)?;
+        if super::flips::is_flip(r.id) {
+            return Ok((r.id, self.flip_value(r.id)));
+        }
         if r.id == SERVICE_FRAME_RATE {
             return self
                 .frame_rate(&state)
@@ -366,6 +372,7 @@ impl Camera {
         if !has_rate && policy.restarts() {
             out.push(self.frame_rate_descriptor(&state, caller, policy));
         }
+        out.extend(self.flip_descriptors(caller, policy));
         out
     }
 
@@ -426,7 +433,7 @@ impl Camera {
     }
 
     /// Tell every subscriber (a full socket misses the event; a closed one is forgotten).
-    fn broadcast(&self, state: &mut State, event: &ControlEvent) {
+    pub(super) fn broadcast(&self, state: &mut State, event: &ControlEvent) {
         if state.subscribers.is_empty() {
             return;
         }

@@ -351,7 +351,8 @@ impl SensorDescription {
                 address: 0,
                 mask: 1,
                 default: false,
-                changes_bayer_order: report.flips_modify_layout,
+                changes_bayer_order: report.flips_modify_layout
+                    || data.is_some_and(|d| d.flips_change_bayer_order),
             })
         };
         let test_pattern = ctl(KernelControl::TestPattern)

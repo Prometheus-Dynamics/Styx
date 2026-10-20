@@ -451,6 +451,8 @@ pub(super) fn start_processed(
                 fourcc: None,
                 code: raw_code(camera.info(), (w, h), &config.backends.native)?,
                 interval: fraction,
+                hflip: config.backends.native.hflip,
+                vflip: config.backends.native.vflip,
             };
             let (specs, second_kind) = pisp_worker::output_specs(&mode, &config.backends.native)?;
             let main = specs[0].ok_or_else(|| err("no main output"))?;
@@ -559,6 +561,8 @@ pub(super) fn start_processed(
                 fourcc: None,
                 code: None,
                 interval: fraction,
+                hflip: config.backends.native.hflip,
+                vflip: config.backends.native.vflip,
             };
             let threads = config
                 .backends

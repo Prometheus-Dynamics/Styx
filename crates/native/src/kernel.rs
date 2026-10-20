@@ -427,25 +427,49 @@ impl NativeCamera {
             ..*settings
         };
         let chosen = select_mode(&self.info.modes, &any_rate, &self.info.raw_formats)?.clone();
+        crate::camera::check_flips(&self.info.description, settings)?;
+        // The flips before the format: a driver whose codes follow its flips takes the
+        // flipped code only once they are set.
+        let (hflip, vflip) = (settings.hflip, settings.vflip);
+        let flips: Vec<(KernelControl, i64)> = [
+            (
+                self.info.description.controls.hflip,
+                KernelControl::HFlip,
+                hflip,
+            ),
+            (
+                self.info.description.controls.vflip,
+                KernelControl::VFlip,
+                vflip,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(f, c, on)| f.map(|_| (c, i64::from(on))))
+        .collect();
+        if !flips.is_empty() {
+            let mut bus = SubdevBus::new(Arc::clone(&sd));
+            styx_sensor::DriverBus::set_controls(&mut bus, &flips).step("set the flips")?;
+        }
+        let code = self.bus_code(chosen.code, hflip, vflip);
         let pad = self.info.route.sensor_pad;
         let mut f = sd.format(pad, Which::Active).step("sensor format")?;
         f.width = chosen.width;
         f.height = chosen.height;
-        f.code = styx_kernel::subdev::MbusCode(chosen.code);
+        f.code = styx_kernel::subdev::MbusCode(code);
         let got = sd
             .set_format(pad, Which::Active, &f)
             .step("set the sensor format")?;
-        if (got.width, got.height, got.code.0) != (chosen.width, chosen.height, chosen.code) {
+        if (got.width, got.height, got.code.0) != (chosen.width, chosen.height, code) {
             return Err(NativeError::InvalidConfig(format!(
                 "the sensor chose {}x{} code {:#x} for {}x{} code {:#x}",
-                got.width, got.height, got.code.0, chosen.width, chosen.height, chosen.code
+                got.width, got.height, got.code.0, chosen.width, chosen.height, code
             )));
         }
         // The driver's ranges (pixel rate, blanking, exposure) are those of this mode now.
         let report = read_report(&sd, pad, &ks.entity)?;
         let desc = Arc::new(describe(&report, ks.data.as_ref(), Some(chosen.code))?);
         let modes = sensor_modes(&desc);
-        let mode = modes
+        let mut mode = modes
             .iter()
             .find(|m| m.mode == chosen.mode && m.format == chosen.format)
             .cloned()
@@ -473,12 +497,15 @@ impl NativeCamera {
             let mut c = lock(&self.control);
             c.driver_mut().set_description(desc)?;
             c.bring_up(&mode.mode, &mode.format)?;
+            c.driver_mut().set_flips(hflip, vflip)?;
             let fl = crate::camera::start_frame_length(&mut c, settings)?;
             // Set now: the driver applies what is set when the receiver starts it, and with
             // another device's capture the schedule starts only after that.
             c.driver_mut().issue_now()?;
             fl
         };
+        // The receiver takes the code the pad carries.
+        mode.code = code;
         Ok((mode, frame_length))
     }
 }

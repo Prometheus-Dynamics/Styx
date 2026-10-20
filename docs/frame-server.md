@@ -145,8 +145,18 @@ while let RecvOutcome::Data(e) = events.recv(Duration::from_secs(1)) { /* e.id, 
   answered as `SERVICE_FRAME_RATE`), or, with `ControlPolicy::no_restart()`, refuses with that
   reason. A rate the camera cannot give is refused with the planner's reason and the old
   capture continues.
+- **Flips:** a native camera whose sensor has them lists `hflip`, `vflip` (bool) and `rotation`
+  (0 or 180: both flips; 90 and 270 are refused) as `SERVICE_HFLIP`, `SERVICE_VFLIP` and
+  `SERVICE_ROTATION`. The sensor flips only while stopped, so the service restarts the capture
+  once for every client, as for a frame rate (with `ControlPolicy::no_restart()` it refuses;
+  low-priority clients may not). The picture is mirrored by the sensor at no cost; raw frames
+  carry the flipped Bayer order's format, and the ISP and lens shading follow. Intrinsics
+  calibrated unflipped hold with `cx' = width - 1 - cx` for `hflip` and `cy' = height - 1 - cy`
+  for `vflip`; distortion coefficients hold as they are. In-process:
+  `StyxConfig::native_flips(h, v)` (`NativeIspConfig::hflip`, `vflip`), which the service's
+  capture settings also start the controls from.
 - **Kept:** controls clients set are applied again whenever the capture restarts (a client
-  joining with another setup, a frame rate); an AF trigger is not repeated.
+  joining with another setup, a frame rate, a flip); an AF trigger is not repeated.
 - **Who may:** `CameraService::control_policy(ControlPolicy)`. By default any client may
   change any writable control; conflicting writes: the last one wins, and every subscribed
   client is told. `ControlPolicy::owner_only()`: only the camera's owner, its longest-connected

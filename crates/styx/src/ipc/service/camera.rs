@@ -1,11 +1,12 @@
 //! One camera of a camera service: its clients and the shared capture planned for them.
 
 mod controls;
+mod flips;
 mod priority;
 
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -27,7 +28,12 @@ pub(super) type FramesSlot = Arc<Mutex<Option<Frames>>>;
 pub(super) struct Camera {
     pub(super) device: ProbedDevice,
     state: Mutex<State>,
+    /// The flips clients set (`hflip`, `vflip` controls): 0 for none set (the service's
+    /// capture settings hold), else `FLIPS_SET | h | v << 1`. Read when planning.
+    flips: AtomicU8,
 }
+
+const FLIPS_SET: u8 = 0x80;
 
 struct State {
     clients: Vec<Client>,
@@ -106,7 +112,19 @@ impl Camera {
                 subscribers: Vec::new(),
                 next_subscriber: 0,
             }),
+            flips: AtomicU8::new(0),
         }
+    }
+
+    /// The flips clients set, if any.
+    pub(super) fn flips(&self) -> Option<(bool, bool)> {
+        let f = self.flips.load(Ordering::Relaxed);
+        (f & FLIPS_SET != 0).then_some((f & 1 != 0, f & 2 != 0))
+    }
+
+    pub(super) fn set_flips(&self, flips: Option<(bool, bool)>) {
+        let f = flips.map_or(0, |(h, v)| FLIPS_SET | u8::from(h) | u8::from(v) << 1);
+        self.flips.store(f, Ordering::Relaxed);
     }
 
     pub(super) fn clients(&self) -> usize {
@@ -256,9 +274,12 @@ impl Camera {
             None => request,
         };
         let plan = plan_many(&self.device, request)?.exportable();
-        let plan = match &config.capture {
-            Some(capture) => plan.config(capture.clone()),
-            None => plan,
+        let plan = match (&config.capture, self.flips()) {
+            (capture, Some((h, v))) => {
+                plan.config(capture.clone().unwrap_or_default().native_flips(h, v))
+            }
+            (Some(capture), None) => plan.config(capture.clone()),
+            (None, None) => plan,
         };
         Ok(match config.idle {
             Some((after, IdleStop::Pause)) => plan.pause_when_idle(after),

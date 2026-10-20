@@ -203,6 +203,16 @@ pub struct ControlEvent {
 /// capture (the camera has no control for it).
 pub const SERVICE_FRAME_RATE: ControlId = ControlId(0xF5F0_0001);
 
+/// A native camera's horizontal flip (`hflip`, a bool), which the service sets by restarting
+/// the capture with the sensor flipped (`NativeIspConfig::hflip`); listed for cameras whose
+/// sensor has the flip, when the service restarts captures for its clients.
+pub const SERVICE_HFLIP: ControlId = ControlId(0xF5F0_0002);
+/// A native camera's vertical flip (`vflip`, a bool), as [`SERVICE_HFLIP`].
+pub const SERVICE_VFLIP: ControlId = ControlId(0xF5F0_0003);
+/// A native camera's rotation (`rotation`, 0 or 180 degrees): both flips, as
+/// [`SERVICE_HFLIP`]. Reads 180 when both flips are on.
+pub const SERVICE_ROTATION: ControlId = ControlId(0xF5F0_0004);
+
 /// Who may change a camera's controls when several clients share it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ControlWriters {

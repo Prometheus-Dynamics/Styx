@@ -1,7 +1,7 @@
 //! Camera controls over a camera service's socket, against virtual cameras with controls:
 //! accepted, clamped, refused (unsupported, read only, not permitted), read back, listed, kept
-//! across a capture restart, a frame rate set by restarting the capture, and change events to
-//! the other clients.
+//! across a capture restart, a frame rate and flips set by restarting the capture, and change
+//! events to the other clients.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use styx::capture_api::make_virtual_device_with_controls;
 use styx::ipc::{
     CameraService, ControlCaller, ControlPolicy, ControlRefusal, FrameClient, FrameServer,
-    IpcError, SERVICE_FRAME_RATE, StandardControl,
+    IpcError, SERVICE_FRAME_RATE, SERVICE_HFLIP, SERVICE_ROTATION, SERVICE_VFLIP, StandardControl,
 };
 use styx::prelude::*;
 
@@ -196,6 +196,77 @@ fn controls_are_applied_clamped_refused_and_announced() {
             (SHARPNESS, b.client_id()),
             (ControlId(0xF400_0005), b.client_id()),
         ]
+    );
+}
+
+#[test]
+fn flips_restart_the_capture() {
+    let path = socket("flips");
+    // A camera whose sensor has both flips (a native camera's `flips` property).
+    let mut device = camera("cam");
+    device.backends[0]
+        .properties
+        .push(("flips".into(), "hv".into()));
+    let service = CameraService::new(device)
+        .keep_streaming()
+        .serve(&path)
+        .unwrap();
+    let a = FrameClient::request(&path, &Frames::nv12()).unwrap();
+    drop(frame(&a));
+    let restarts = service.stats().restarts;
+
+    let applied = a
+        .set_control(SERVICE_HFLIP, ControlValue::Bool(true))
+        .unwrap();
+    assert!(applied.restarted, "{applied:?}");
+    assert_eq!(applied.value, ControlValue::Bool(true));
+    assert_eq!(service.stats().restarts, restarts + 1);
+    assert_eq!(
+        a.get_control(SERVICE_ROTATION).unwrap(),
+        ControlValue::Int(0)
+    );
+    drop(frame(&a));
+
+    let applied = a
+        .set_control(SERVICE_ROTATION, ControlValue::Int(180))
+        .unwrap();
+    assert_eq!(applied.value, ControlValue::Int(180));
+    assert_eq!(
+        a.get_control(SERVICE_VFLIP).unwrap(),
+        ControlValue::Bool(true)
+    );
+    // Setting what is in effect does not restart.
+    let again = a
+        .set_control(SERVICE_VFLIP, ControlValue::Bool(true))
+        .unwrap();
+    assert!(!again.restarted);
+    assert!(matches!(
+        refusal(a.set_control(SERVICE_ROTATION, ControlValue::Int(90))),
+        ControlRefusal::Invalid(_)
+    ));
+    let list = a.controls().unwrap();
+    for id in [SERVICE_HFLIP, SERVICE_VFLIP, SERVICE_ROTATION] {
+        let d = list.iter().find(|d| d.meta.id == id).unwrap();
+        assert!(d.writable, "{d:?}");
+    }
+    drop(frame(&a));
+
+    // A camera without flips lists none and refuses them.
+    let path = socket("no-flips");
+    let _service = CameraService::new(camera("cam"))
+        .keep_streaming()
+        .serve(&path)
+        .unwrap();
+    let b = FrameClient::request(&path, &Frames::nv12()).unwrap();
+    assert!(matches!(
+        refusal(b.set_control(SERVICE_HFLIP, ControlValue::Bool(true))),
+        ControlRefusal::Unsupported(_)
+    ));
+    assert!(
+        b.controls()
+            .unwrap()
+            .iter()
+            .all(|d| d.meta.id != SERVICE_HFLIP)
     );
 }
 

@@ -245,6 +245,17 @@ pub struct NativeIspConfig {
     /// Deflicker of the 3A loop (default [`NativeDeflicker::Auto`]: on with flicker
     /// avoidance).
     pub deflicker: NativeDeflicker,
+    /// Mirror the picture left-right on the sensor (raw and processed modes; both flips turn
+    /// it by 180 degrees). The sensor reads its rows the other way, at no cost, so the
+    /// picture is a mirror image of the unflipped one: intrinsics calibrated unflipped hold
+    /// with `cx' = width - 1 - cx` (and `cy' = height - 1 - cy` for [`Self::vflip`]), and
+    /// distortion holds as it is. On a colour sensor it changes the Bayer order: raw frames
+    /// then carry the flipped order's format (`pBAA` becomes `pRAA` with both flips), and the
+    /// ISP and lens shading follow. The capture refuses to start on a sensor without the
+    /// flip. Changed only by a restart (the camera service's `hflip` control restarts it).
+    pub hflip: bool,
+    /// Flip the picture upside down on the sensor (see [`Self::hflip`]).
+    pub vflip: bool,
 }
 
 impl Default for NativeIspConfig {
@@ -273,6 +284,8 @@ impl Default for NativeIspConfig {
             lazy_output_buffers: false,
             flicker: NativeFlicker::Auto,
             deflicker: NativeDeflicker::Auto,
+            hflip: false,
+            vflip: false,
         }
     }
 }
@@ -391,6 +404,14 @@ impl StyxConfig {
     /// [`NativeIspConfig::driver_buffers`]).
     pub fn native_driver_buffers(mut self, driver: bool) -> Self {
         self.backends.native.driver_buffers = driver;
+        self
+    }
+
+    /// Flip a native camera's sensor (see [`NativeIspConfig::hflip`]); `(true, true)` turns
+    /// the picture by 180 degrees.
+    pub fn native_flips(mut self, hflip: bool, vflip: bool) -> Self {
+        self.backends.native.hflip = hflip;
+        self.backends.native.vflip = vflip;
         self
     }
 

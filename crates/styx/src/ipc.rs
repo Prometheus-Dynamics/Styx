@@ -49,7 +49,8 @@ pub use self::client::{
 use self::connection::Connection;
 pub use self::controls::{
     AppliedControl, ControlCaller, ControlDescriptor, ControlEvent, ControlPolicy, ControlRefusal,
-    ControlTarget, ControlWriters, SERVICE_FRAME_RATE, StandardControl,
+    ControlTarget, ControlWriters, SERVICE_FRAME_RATE, SERVICE_HFLIP, SERVICE_ROTATION,
+    SERVICE_VFLIP, StandardControl,
 };
 #[cfg(feature = "frame-socket")]
 pub use self::frame_socket::{

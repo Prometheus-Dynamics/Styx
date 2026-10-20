@@ -97,6 +97,13 @@ impl Isp {
     ) -> Result<(Self, Duration, Duration)> {
         let t = Instant::now();
         let order = bayer(info.cfa);
+        // The receiver's and front end's device formats carry the order of the sensor pad's
+        // code, which a kernel driver keeps when its flips change the data's order; the front
+        // and back end configuration, the data's.
+        let device_order = styx_sensor::MbusCode(code)
+            .color_filter()
+            .and_then(|c| crate::sensor::cfa(c).ok())
+            .map_or(order, bayer);
         let want_slice = options
             .slice_line
             .filter(|l| *l > 0 && u32::from(*l) < info.height);
@@ -104,7 +111,7 @@ impl Isp {
             width: info.width,
             height: info.height,
             sensor_code: MbusCode(code),
-            bayer: order,
+            bayer: device_order,
             image_output: true,
             buffers: options.fe_buffers,
             keep_embedded: true,
@@ -254,14 +261,17 @@ impl PispPipeline {
         let mut startup = PispStartup::default();
         let mode = select_mode(&camera.info().modes, settings, &camera.info().raw_formats)?.clone();
         let desc = std::sync::Arc::clone(&camera.info().description);
-        let sensor_info = SensorInfo::from_description(&desc, &mode.mode, &mode.format)?;
+        let sensor_info = SensorInfo::from_description(&desc, &mode.mode, &mode.format)?
+            .with_flips(&desc, settings.hflip, settings.vflip)?;
+        // The code the front end's input carries (the receiver checks it against the sensor's).
+        let code = camera.bus_code(mode.code, settings.hflip, settings.vflip);
         let (configured, isp) = std::thread::scope(|scope| {
             let sensor = scope.spawn(|| {
                 let t = Instant::now();
                 let c = camera.configure_external(settings);
                 (c, t.elapsed())
             });
-            let isp = Isp::open(&sensor_info, mode.code, &options, want_tdn);
+            let isp = Isp::open(&sensor_info, code, &options, want_tdn);
             let (configured, took) = sensor.join().unwrap_or((
                 Err(styx_native::NativeError::State("sensor set-up panicked")),
                 Duration::ZERO,
@@ -281,6 +291,7 @@ impl PispPipeline {
         let desc = std::sync::Arc::clone(&camera.info().description);
         let mut info =
             SensorInfo::from_description(&desc, &configured.mode.mode, &configured.mode.format)?
+                .with_flips(&desc, configured.hflip, configured.vflip)?
                 .with_fps(fps, fps)?;
         info.camera.temporal_denoise = isp.be_dev.tdn_enabled();
         info.camera.lens = super::lens_config(&camera);
@@ -692,12 +703,22 @@ impl PispPipeline {
             &configured.mode.mode,
             &configured.mode.format,
         )?
+        .with_flips(
+            &self.camera.info().description,
+            configured.hflip,
+            configured.vflip,
+        )?
         .with_fps(fps, fps)?;
         let mut info = info;
         info.camera.temporal_denoise = self.info.camera.temporal_denoise;
         self.algo.controller().set_config(info.camera.clone())?;
-        if (info.width, info.height, configured.mode.code)
-            != (self.info.width, self.info.height, self.configured.mode.code)
+        if (info.width, info.height, info.cfa, configured.mode.code)
+            != (
+                self.info.width,
+                self.info.height,
+                self.info.cfa,
+                self.configured.mode.code,
+            )
         {
             self.fe_dev = None;
             self.be_dev = None;

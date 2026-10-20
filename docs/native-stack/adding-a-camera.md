@@ -90,8 +90,13 @@ What happens when it runs (`crates/native/src/kernel.rs`):
   processes; it is busy while libcamera holds the media device's lock, which it takes while
   it has a camera acquired) and the flips are set to the description's defaults (off) before
   anything sets a format.
-* **configure**: the sensor format is set, the ranges re-read, the mode's defaults and the
-  start frame duration set as controls (`VBLANK`, `EXPOSURE`, `ANALOGUE_GAIN`).
+* **configure**: the flips asked for (`StreamSettings::hflip`, `vflip`) are set, then the
+  sensor format (with the flipped order's code when the driver flags its flips
+  `MODIFY_LAYOUT`), the ranges re-read, the mode's defaults and the start frame duration set as
+  controls (`VBLANK`, `EXPOSURE`, `ANALOGUE_GAIN`). A driver whose flips change the order
+  without the flag (the `ov9282` driver with the colour OV9782) keeps its codes on the pads;
+  its data file says `flips_change_bayer_order = true`, and the frames carry the flipped
+  order's format.
 * **start**: values asked for before the stream are set at once (the driver applies what is
   set when it starts), then the receiver's `STREAMON` starts the sensor (`s_stream`) and the
   control schedule runs from frame 0. There is no bridge to serve. With the PiSP front end

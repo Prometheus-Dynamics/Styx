@@ -145,6 +145,8 @@ impl NativeCamera {
             stride: 0,
             size_image: 0,
             frame_length,
+            hflip: settings.hflip,
+            vflip: settings.vflip,
         };
         self.configured = Some(configured.clone());
         Ok(configured)

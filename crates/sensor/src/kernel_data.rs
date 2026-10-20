@@ -89,6 +89,11 @@ pub struct KernelSensorData {
     /// Lines a frame lasts beyond `height + VBLANK`.
     #[serde(default)]
     pub frame_length_extra_lines: u32,
+    /// `HFLIP` / `VFLIP` change the Bayer order of the data though the driver does not flag
+    /// them `MODIFY_LAYOUT` (its codes stay those with the flips off): a colour sensor under a
+    /// driver written for its mono sibling.
+    #[serde(default)]
+    pub flips_change_bayer_order: bool,
     /// Embedded data layout, when the driver sends it on a metadata pad.
     #[serde(default)]
     pub embedded_data: Option<EmbeddedData>,

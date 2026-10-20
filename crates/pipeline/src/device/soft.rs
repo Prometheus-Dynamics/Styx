@@ -77,6 +77,7 @@ impl SoftPipeline {
             &configured.mode.mode,
             &configured.mode.format,
         )?
+        .with_flips(&info.description, configured.hflip, configured.vflip)?
         .with_fps(fps, fps)?;
         let mut sensor = sensor;
         sensor.camera.lens = super::lens_config(&camera);

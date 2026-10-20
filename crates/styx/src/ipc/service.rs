@@ -431,7 +431,7 @@ impl Service {
         if let Some(camera) = cameras.iter().find(|c| same_camera(&c.device, device)) {
             return Ok(camera.clone());
         }
-        let camera = Arc::new(Camera::new(device.clone()));
+        let camera = Arc::new(Camera::new(device.clone()).with_flips(self.config.capture.as_ref()));
         cameras.push(camera.clone());
         Ok(camera)
     }

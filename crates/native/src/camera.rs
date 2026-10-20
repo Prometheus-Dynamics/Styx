@@ -106,6 +106,12 @@ pub struct StreamSettings {
     pub code: Option<u32>,
     /// Frame interval; `None` keeps the mode's default.
     pub interval: Option<Fraction>,
+    /// Mirror the image left-right on the sensor (both flips: turned by 180 degrees). On a
+    /// colour sensor a flip changes the Bayer order of the frames: [`Configured::fourcc`] and
+    /// [`Configured::mode`]'s code are the flipped ones. Refused when the sensor has no flip.
+    pub hflip: bool,
+    /// Flip the image upside down on the sensor (see [`Self::hflip`]).
+    pub vflip: bool,
 }
 
 impl StreamSettings {
@@ -117,7 +123,15 @@ impl StreamSettings {
             fourcc: None,
             code: None,
             interval: None,
+            hflip: false,
+            vflip: false,
         }
+    }
+
+    /// With these flips (`true, true`: turned by 180 degrees).
+    pub fn flips(mut self, hflip: bool, vflip: bool) -> Self {
+        (self.hflip, self.vflip) = (hflip, vflip);
+        self
     }
 
     /// At this frame rate.
@@ -154,6 +168,9 @@ pub struct Configured {
     pub interval: Fraction,
     /// Frame length in lines.
     pub frame_length: u32,
+    /// The flips in effect ([`StreamSettings::hflip`], [`StreamSettings::vflip`]).
+    pub hflip: bool,
+    pub vflip: bool,
 }
 
 /// Picks the mode for the settings.
@@ -216,6 +233,25 @@ pub(crate) fn start_frame_length(
         }
         None => t.frame_length_default(),
     })
+}
+
+/// Refuses flips the sensor does not have.
+pub(crate) fn check_flips(
+    desc: &styx_sensor::SensorDescription,
+    settings: &StreamSettings,
+) -> Result<()> {
+    for (wanted, has, name) in [
+        (settings.hflip, desc.controls.hflip.is_some(), "horizontal"),
+        (settings.vflip, desc.controls.vflip.is_some(), "vertical"),
+    ] {
+        if wanted && !has {
+            return Err(NativeError::InvalidConfig(format!(
+                "{} has no {name} flip",
+                desc.sensor.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// An open camera. Exclusive: a second open of the same bridge fails with
@@ -412,19 +448,48 @@ impl NativeCamera {
         self.kernel.is_some()
     }
 
+    /// The media bus code the sensor's pad carries for a mode's `code` (with the flips off)
+    /// with these flips: the flipped order's, except from a kernel driver whose codes do not
+    /// follow its flips (`V4L2_CTRL_FLAG_MODIFY_LAYOUT` unset), whose pad keeps `code`.
+    pub fn bus_code(&self, code: u32, hflip: bool, vflip: bool) -> u32 {
+        let follows = self
+            .info
+            .kernel
+            .as_ref()
+            .is_none_or(|k| k.report.flips_modify_layout);
+        if !follows {
+            return code;
+        }
+        let order = self.info.description.color_filter(hflip, vflip);
+        let code = styx_sensor::MbusCode(code);
+        code.color_filter()
+            .filter(|c| *c != styx_sensor::ColorFilter::Mono)
+            .and_then(|_| code.with_color_filter(order))
+            .unwrap_or(code)
+            .0
+    }
+
     /// Powers and configures the sensor, the bridge and the receiver path for `settings`.
     /// Fails with [`NativeError::Busy`] while streaming.
     pub fn configure(&mut self, settings: &StreamSettings) -> Result<Configured> {
         let (mode, frame_length) = self.configure_sensor(settings)?;
         self.configure_receiver(&mode)?;
         let (fourcc, stride, size_image) = self.configure_video(&mode, settings.fourcc)?;
+        // A kernel driver that does not say its flips change the order (its codes stay those
+        // with the flips off) has the receiver write a format named for the wrong order.
+        let order = self
+            .info
+            .description
+            .color_filter(settings.hflip, settings.vflip);
         let configured = Configured {
             interval: crate::modes::frame_interval(&mode.timing, frame_length),
             mode,
-            fourcc,
+            fourcc: formats::with_color_filter(fourcc, order).unwrap_or(fourcc),
             stride,
             size_image,
             frame_length,
+            hflip: settings.hflip,
+            vflip: settings.vflip,
         };
         self.configured = Some(configured.clone());
         Ok(configured)
@@ -445,7 +510,8 @@ impl NativeCamera {
             return self.configure_kernel_sensor(settings);
         }
         let bridge = self.bridge.clone().ok_or(NativeError::State("no bridge"))?;
-        let mode = select_mode(&self.info.modes, settings, &self.info.raw_formats)?.clone();
+        check_flips(&self.info.description, settings)?;
+        let mut mode = select_mode(&self.info.modes, settings, &self.info.raw_formats)?.clone();
         let format = self
             .info
             .description
@@ -456,8 +522,11 @@ impl NativeCamera {
         let frame_length = {
             let mut c = lock(&self.control);
             c.bring_up(&mode.mode, &mode.format)?;
+            c.driver_mut().set_flips(settings.hflip, settings.vflip)?;
             start_frame_length(&mut c, settings)?
         };
+        // The bridge passes on the code it is given: the one the flipped sensor sends.
+        mode.code = self.bus_code(mode.code, settings.hflip, settings.vflip);
         let t = mode.timing;
         let freqs = bridge.link_frequencies().to_vec();
         let index = match format.link_frequency {
@@ -585,6 +654,14 @@ impl NativeCamera {
             self.video = Some(video);
         }
         let video = self.video.as_ref().expect("opened above");
+        // A format asked for by the mode's name (the order with the flips off) in the order
+        // the pad carries.
+        let want = want.map(|f| {
+            styx_sensor::MbusCode(mode.code)
+                .color_filter()
+                .and_then(|order| formats::with_color_filter(f, order))
+                .unwrap_or(f)
+        });
         let offered: Vec<FourCc> = video
             .formats_for_mbus_code(CAPTURE, mode.code)
             .step("enumerate formats")?

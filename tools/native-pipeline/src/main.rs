@@ -35,6 +35,8 @@
 //!   --overview F         (soft) also the whole frame binned by F (even), with the statistics
 //!   --check-roi          (soft) with --roi: process each frame whole again with its settings
 //!                        and compare the region with its crop (adds that work to the CPU)
+//!   --flip h|v|hv        (soft, pisp) flip the sensor (hv: turned by 180 degrees); soft prints
+//!                        the raw frames' colour filter order with their 2x2 cell means
 //!   --heap NAME          (soft) capture into buffers from this dma-heap (default: linux,cma
 //!                        when it exists: cached, synced per frame)
 //!   --no-read            (pisp) do not read the output on the CPU (no per-frame output mean)
@@ -139,6 +141,8 @@ pub struct Args {
     pub roi: Option<styx_softisp::Window>,
     pub overview: Option<u32>,
     pub check_roi: bool,
+    /// Sensor flips (`--flip h|v|hv`).
+    pub flips: (bool, bool),
 }
 
 fn parse() -> Result<Args, String> {
@@ -188,6 +192,7 @@ fn parse() -> Result<Args, String> {
         roi: None,
         overview: None,
         check_roi: false,
+        flips: (false, false),
     };
     while let Some(x) = it.next() {
         let mut val = || it.next().ok_or(format!("{x} needs a value"));
@@ -208,6 +213,13 @@ fn parse() -> Result<Args, String> {
             "--roi" => a.roi = Some(parse_rect(&val()?)?),
             "--overview" => a.overview = Some(num(val()?)? as u32),
             "--check-roi" => a.check_roi = true,
+            "--flip" => {
+                let v = val()?;
+                if v.is_empty() || !v.chars().all(|c| c == 'h' || c == 'v') {
+                    return Err(format!("--flip: h, v or hv, not {v}"));
+                }
+                a.flips = (v.contains('h'), v.contains('v'));
+            }
             "--output" => a.output = output::parse(&val()?)?,
             "--arithmetic" => {
                 a.arithmetic = match val()?.as_str() {

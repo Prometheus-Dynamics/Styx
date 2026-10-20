@@ -179,6 +179,8 @@ impl Device for NativeDevice {
             fourcc: Some(FourCc(config.format.0)),
             code: None,
             interval: config.interval,
+            hflip: false,
+            vflip: false,
         };
         self.camera.configure(&settings)?;
         self.info.graph = self.camera.info().graph.graph.clone();

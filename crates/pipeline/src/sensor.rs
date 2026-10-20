@@ -40,7 +40,7 @@ pub struct SensorInfo {
 /// [`SensorInfo::issue_latency`] for requests written as soon as they are made.
 pub const ISSUE_LATENCY: u32 = 2;
 
-fn cfa(c: ColorFilter) -> Result<CfaPattern> {
+pub(crate) fn cfa(c: ColorFilter) -> Result<CfaPattern> {
     Ok(match c {
         ColorFilter::Bggr => CfaPattern::Bggr,
         ColorFilter::Gbrg => CfaPattern::Gbrg,
@@ -109,6 +109,20 @@ impl SensorInfo {
             camera,
             readout: t.lines_to_duration(f64::from(lines)),
         })
+    }
+
+    /// The same mode with the sensor flipped: the flipped colour filter order, and the
+    /// algorithms told (lens shading tables, calibrated unflipped, are mirrored to match).
+    pub fn with_flips(
+        mut self,
+        desc: &SensorDescription,
+        hflip: bool,
+        vflip: bool,
+    ) -> Result<Self> {
+        self.cfa = cfa(desc.color_filter(hflip, vflip))?;
+        self.camera.hflip = hflip;
+        self.camera.vflip = vflip;
+        Ok(self)
     }
 
     /// Frames from a frame's statistics to the frame in which requests made from them are
