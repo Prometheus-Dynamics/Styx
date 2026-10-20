@@ -30,6 +30,31 @@ fn raw16(code: FourCc) -> Option<FourCc> {
     Some(SENSOR_RAW_CODES[order])
 }
 
+/// Bayer formats by family, in colour filter order BGGR, GBRG, GRBG, RGGB: horizontal flips
+/// swap neighbours (index ^ 1), vertical ones pairs (index ^ 2).
+const FAMILIES: [[&[u8; 4]; 4]; 7] = [
+    [b"BA81", b"GBRG", b"GRBG", b"RGGB"],
+    [b"pBAA", b"pGAA", b"pgAA", b"pRAA"],
+    [b"pBCC", b"pGCC", b"pgCC", b"pRCC"],
+    [b"BG10", b"GB10", b"BA10", b"RG10"],
+    [b"BG12", b"GB12", b"BA12", b"RG12"],
+    [b"BYR2", b"GB16", b"GR16", b"RG16"],
+    [b"BG16", b"GB16", b"GR16", b"RG16"],
+];
+
+/// Bayer format `code` as a sensor flipped this way sends it (other formats as they are).
+pub(crate) fn flipped(code: FourCc, hflip: bool, vflip: bool) -> FourCc {
+    let bytes = code.to_u32().to_le_bytes();
+    FAMILIES
+        .iter()
+        .find_map(|f| {
+            let i = f.iter().position(|c| **c == bytes)?;
+            let j = i ^ usize::from(hflip) ^ (usize::from(vflip) << 1);
+            Some(FourCc::new(*f[j]))
+        })
+        .unwrap_or(code)
+}
+
 /// The camera's raw frames' format through its PiSP, from its raw modes' colour filter.
 fn sensor_raw_code(backend: &ProbedBackend) -> Option<FourCc> {
     backend
@@ -80,5 +105,15 @@ mod tests {
         assert_eq!(raw16(FourCc::new(*b"BA81")), Some(FourCc::new(*b"BYR2")));
         assert_eq!(raw16(FourCc::new(*b"BA10")), Some(FourCc::new(*b"GR16")));
         assert_eq!(raw16(FourCc::NV12), None);
+    }
+
+    #[test]
+    fn flips_rename_bayer_formats() {
+        let f = |c: &[u8; 4]| FourCc::new(*c);
+        assert_eq!(flipped(f(b"BYR2"), true, true), f(b"RG16"));
+        assert_eq!(flipped(f(b"pBAA"), true, false), f(b"pGAA"));
+        assert_eq!(flipped(f(b"pBAA"), false, true), f(b"pgAA"));
+        assert_eq!(flipped(f(b"RG10"), true, true), f(b"BG10"));
+        assert_eq!(flipped(FourCc::NV12, true, true), FourCc::NV12);
     }
 }

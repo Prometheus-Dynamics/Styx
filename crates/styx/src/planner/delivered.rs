@@ -6,6 +6,7 @@ use std::fmt;
 use styx_core::prelude::*;
 
 use super::{FramePlan, FrameRequest, RoiCrop, Route};
+use crate::BackendKind;
 
 /// A part of a request a plan does not meet. Frames still come, as [`Delivered`] describes,
 /// unless the request is [`FrameRequest::strict`], which turns any of these into a planning
@@ -102,7 +103,16 @@ impl FramePlan {
             Route::Decode { decoder, .. } => decoder.descriptor().output,
             Route::Encode { encoder, .. } => encoder.descriptor().output,
             _ if matches!(self.request.format, OutputFormat::Luma) => FourCc::GREY,
-            _ => self.isp_format.unwrap_or(self.mode.format.code),
+            _ => {
+                // A flipped native sensor sends its raw frames in the flipped order.
+                let code = self.isp_format.unwrap_or(self.mode.format.code);
+                match self.config.as_ref().map(|c| &c.backends.native) {
+                    Some(n) if self.backend == BackendKind::Native => {
+                        super::sensor_raw::flipped(code, n.hflip, n.vflip)
+                    }
+                    _ => code,
+                }
+            }
         }
     }
 

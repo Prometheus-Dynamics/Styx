@@ -401,6 +401,12 @@ impl FrameRequest {
         self.format.accepts(code)
     }
 
+    /// Whether it asks only for raw sensor frames ([`Frames::sensor_raw`]'s formats).
+    pub(crate) fn raw_only(&self) -> bool {
+        matches!(&self.format, OutputFormat::Formats(f) if !f.is_empty()
+            && f.iter().all(|c| super::sensor_raw::SENSOR_RAW_CODES.contains(c)))
+    }
+
     /// Decode threads per frame: the explicit choice, else from the delivery.
     pub(crate) fn threads(&self) -> usize {
         self.decode_threads.unwrap_or(match self.delivery {

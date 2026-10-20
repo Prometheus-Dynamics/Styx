@@ -165,9 +165,12 @@ fn no_cpu(plan: &FramePlan) -> bool {
 /// H.265) are never shared.
 pub(super) fn shared_request(plan: &SharedFramePlan, own: &FrameRequest) -> Option<FrameRequest> {
     let target = own.size.unwrap_or((1, 1));
+    // Raw frames come only from the capture's raw companions: a processed share is no stand-in.
+    let raw_only = own.raw_only();
     plan.consumers
         .iter()
         .filter(|consumer| !consumer.inter_coded())
+        .filter(|consumer| !raw_only || own.format.accepts(consumer.delivered().format))
         .min_by_key(|consumer| {
             let (w, h) = consumer.output_resolution();
             let area = u64::from(w) * u64::from(h);
@@ -338,5 +341,63 @@ mod tests {
             "{refused}"
         );
         join(2).unwrap();
+    }
+
+    /// A low-priority raw client of a running native PiSP capture (a recorder next to a vision
+    /// pipeline) gets the raw frames, and is told so, when the service keeps the raw companions
+    /// on; otherwise it is refused rather than given processed frames in their place.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_low_priority_raw_client_gets_raw_frames_or_none() {
+        let mode = |code: FourCc| {
+            Mode::with_interval(
+                MediaFormat::new(code, Resolution::new(1280, 800).unwrap(), ColorSpace::Srgb),
+                Interval::from_fps(30).unwrap(),
+            )
+        };
+        let mut dev = make_virtual_device(
+            "pisp",
+            [
+                mode(FourCc::new(*b"pBAA")),
+                mode(FourCc::NV12),
+                mode(FourCc::RG24),
+            ],
+        );
+        dev.backends[0].kind = crate::BackendKind::Native;
+        dev.backends[0].handle = crate::BackendHandle::Native {
+            key: "bridge:/dev/v4l-subdev2".into(),
+        };
+        dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
+        let camera = Camera::new(dev.clone());
+        let vision = Frames::gray().size(1280, 800);
+        let raw = Frames::sensor_raw().every_frame(8);
+        let join_low = |config: &ServiceConfig| {
+            // The running capture: the vision client's.
+            let running = camera
+                .plan_clients(&[(vision.clone(), false)], None, None, config)
+                .unwrap()
+                .plan
+                .setup_key();
+            let planned = camera
+                .plan_clients(
+                    &[(vision.clone(), false), (raw.clone(), true)],
+                    None,
+                    Some(&running),
+                    config,
+                )
+                .unwrap();
+            planned.consumers[1].map(|i| planned.plan.consumers[i].delivered())
+        };
+        let keeps_raw = CameraService::new(dev.clone())
+            .capture_config(crate::capture_api::StyxConfig::default().native_sensor_raw(true))
+            .config;
+        let delivered = join_low(&keeps_raw).expect("raw frames");
+        assert_eq!(delivered.format, FourCc::new(*b"BYR2"));
+        assert_eq!(delivered.size, (1280, 800));
+        assert_eq!(
+            join_low(&config()),
+            None,
+            "a processed share in place of raw"
+        );
     }
 }

@@ -492,6 +492,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **Raw clients of a camera service:** a low-priority `Frames::sensor_raw()` client of a running
+  native PiSP capture (a recorder next to a vision pipeline) got a share of the vision client's
+  frames, and `FrameClient::delivered()` said `GREY`, even with the service keeping the raw
+  companions on (`native_sensor_raw(true)`): the capture's setup now counts them, so it gets
+  the raw frames and `delivered()` names their format (`BYR2`, or the flipped order's, e.g.
+  `RG16` with both flips, as do raw native modes). Without them on it is refused rather than
+  given processed frames.
+
 - **Sliced frames after an idle stop.** A camera service client joining after the camera
   stopped for idle got the previous capture's last sliced frame, stuck at its first slice and
   marked failed 500 ms later (CM5: every rejoin). The PiSP worker now fails a sliced frame still
