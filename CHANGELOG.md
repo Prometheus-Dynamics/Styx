@@ -502,6 +502,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **Exposure clamping on planned captures:** a native camera's exposure above the frame's limit
+  was held to it only on a capture started directly; every planned (`Frames`, camera service)
+  capture is supervised, and there the limit was never looked up, so the setter answered
+  `clamped: false` with the value asked for while the sensor ran at its limit. On the CM5, 100 ms
+  asked at 30/120/240 fps now answers 33139/8136/3966 µs, clamped, as the frames run.
+
 - **Stale preview frames:** a preview that idles while nobody watches (`encode_unwatched` off,
   the default) kept its last JPEG, so a viewer opening later (after a capture restart, a
   rotation) got that old picture first. It now forgets it when the last viewer leaves, and a

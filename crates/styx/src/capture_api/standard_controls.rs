@@ -167,6 +167,10 @@ fn native_exposure_limit_us(plane: &ControlPlane, id: ControlId) -> Option<f64> 
         ControlPlane::Native { controls, .. } => controls
             .exposure_range()
             .map(|(_, max)| max.as_secs_f64() * 1e6),
+        // A reconnecting capture (every planned capture): the running one's.
+        ControlPlane::Supervised(shared) => {
+            native_exposure_limit_us(&shared.current_control().ok()?, id)
+        }
         _ => None,
     }
 }
