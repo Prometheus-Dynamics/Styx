@@ -27,6 +27,10 @@ libcamera = ["styx/libcamera"]
 native = ["styx/native"]
 # Direct mode for V4L2 (USB) cameras.
 v4l2 = ["styx/v4l2"]
+# `styx-record convert`: video files to MCAP recordings (runs the host's ffmpeg and ffprobe).
+convert = ["styx/replay-mcap"]
+# ... with `--lz4` chunk compression (builds the lz4 C library).
+convert-lz4 = ["convert", "styx/replay-mcap-lz4"]
 
 [dependencies]
 # The facade without codecs: the camera service client (`styx::ipc`) and the planner.

@@ -6,6 +6,8 @@
 #![cfg(target_os = "linux")]
 
 pub mod config;
+#[cfg(feature = "convert")]
+pub mod convert;
 pub mod json;
 pub mod luma;
 pub mod record;

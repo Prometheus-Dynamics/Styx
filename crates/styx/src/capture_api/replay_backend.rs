@@ -14,9 +14,8 @@ use super::replay_controls::{ReplayControls, Seek};
 use super::request::CaptureError;
 use super::tunables::StyxConfig;
 use crate::metrics::StageMetrics;
-use crate::replay::{
-    RecordingFrames, ReplayError, ReplayPacing, ReplayTimestamps, open_recording, replay_options,
-};
+use crate::replay::open_source;
+use crate::replay::{RecordingFrames, ReplayError, ReplayPacing, ReplayTimestamps, replay_options};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
 /// The longest the worker waits without looking at its stop channel.
@@ -39,7 +38,7 @@ pub(super) fn start_replay(
         return Err(CaptureError::BackendUnavailable(BackendKind::Replay));
     };
     let (path, pacing, loop_forever) = (path.clone(), *pacing, *loop_forever);
-    let (timestamps, hold_at_end, isp) = replay_options(&backend.properties);
+    let (timestamps, hold_at_end, isp, fps) = replay_options(&backend.properties);
     #[cfg(not(feature = "native"))]
     if isp.is_some() {
         return Err(CaptureError::Backend(
@@ -48,7 +47,7 @@ pub(super) fn start_replay(
     }
     let replay_error = |err: ReplayError| CaptureError::Backend(format!("replay: {err}"));
     // Fail at start, not in the worker, for a missing or foreign file.
-    open_recording(&path).map_err(replay_error)?;
+    open_source(&path, fps).map_err(replay_error)?;
 
     let capture = config.capture_tunables();
     // Unpaced replay delivers every frame, so it waits for room instead of dropping; so does
@@ -75,7 +74,7 @@ pub(super) fn start_replay(
     {
         let (path, controls) = (path.clone(), controls.clone());
         thread::spawn(move || {
-            if let Ok((frames, duration)) = scan(&path) {
+            if let Ok((frames, duration)) = scan(&path, fps) {
                 controls.set_length(duration, frames);
             }
         });
@@ -84,6 +83,7 @@ pub(super) fn start_replay(
     let worker = thread::spawn(move || {
         let mut player = Player {
             path,
+            fps,
             controls: player_controls,
             timestamps,
             hold_at_end,
@@ -133,8 +133,8 @@ pub(super) fn start_replay(
 }
 
 /// The recording's frames and its length (first to last timestamp).
-fn scan(path: &std::path::Path) -> Result<(u64, Duration), ReplayError> {
-    let (_, frames) = open_recording(path)?;
+fn scan(path: &std::path::Path, fps: Option<f32>) -> Result<(u64, Duration), ReplayError> {
+    let (_, frames) = open_source(path, fps)?;
     let (mut n, mut first, mut last) = (0u64, None, 0u64);
     for f in frames {
         let ts = f?.meta().timestamp;
@@ -161,6 +161,8 @@ struct Turn {
 
 struct Player {
     path: std::path::PathBuf,
+    /// The rate of video files without one.
+    fps: Option<f32>,
     controls: Arc<ReplayControls>,
     timestamps: ReplayTimestamps,
     hold_at_end: bool,
@@ -287,7 +289,7 @@ impl Player {
     /// The next frame of the pass and its index (`None` at the end).
     fn next(&mut self) -> Result<Option<(FrameLease, u64)>, ReplayError> {
         if self.frames.is_none() {
-            let (_, frames) = open_recording(&self.path)?;
+            let (_, frames) = open_source(&self.path, self.fps)?;
             self.frames = Some(frames.with_timestamp_offset(self.loop_offset));
             self.index = 0;
         }

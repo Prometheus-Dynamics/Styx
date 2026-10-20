@@ -9,6 +9,9 @@ fn main() -> ExitCode {
 
     use styx_record::{Config, StillTrigger, record, signal};
 
+    if std::env::args().nth(1).as_deref() == Some("convert") {
+        return convert(std::env::args().skip(2));
+    }
     let cfg = match Config::parse(std::env::args().skip(1)) {
         Ok(cfg) => cfg,
         Err(msg) => {
@@ -52,6 +55,43 @@ fn main() -> ExitCode {
             eprintln!("styx-record: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `styx-record convert`: a video file to an MCAP recording (feature `convert`).
+#[cfg(target_os = "linux")]
+fn convert(args: impl Iterator<Item = String>) -> ExitCode {
+    #[cfg(feature = "convert")]
+    {
+        let a = match styx_record::convert::parse(args) {
+            Ok(a) => a,
+            Err(msg) => {
+                eprintln!("{msg}");
+                return ExitCode::from(2);
+            }
+        };
+        match styx_record::convert::run(&a) {
+            Ok(done) => {
+                eprintln!(
+                    "{} frames, {}x{}: {}",
+                    done.frames,
+                    done.width,
+                    done.height,
+                    a.output.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("styx-record convert: {err}");
+                ExitCode::FAILURE
+            }
+        }
+    }
+    #[cfg(not(feature = "convert"))]
+    {
+        let _ = args;
+        eprintln!("styx-record was built without `convert` (feature `convert`)");
+        ExitCode::from(2)
     }
 }
 

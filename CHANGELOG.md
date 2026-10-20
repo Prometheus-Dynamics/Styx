@@ -8,6 +8,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Video playback without ffmpeg**: `ReplaySourceConfig` also plays Motion JPEG streams
+  (`.mjpeg`), AVI files of Motion JPEG and directories of JPEG images, as `MJPG` frames with the
+  playback controls (`ReplaySourceConfig::frame_rate` for files without a rate).
+- **`styx-record convert IN OUT.mcap [--gray|--nv12] [--size WxH] [--lz4]`** (feature
+  `convert`): any video ffmpeg reads (H.264/MP4, ...) to an MCAP recording of grey or NV12 frames
+  with the video's timestamps, for replay on devices without ffmpeg (runs the host's `ffmpeg`).
+- CM5: raw replay through the software ISP (`soft_isp`) costs 10.7 ms a 1280x800 frame on two
+  threads (19.5 ms CPU).
+
 - **Raw recordings replayed as processed frames** (`ReplaySourceConfig::soft_isp(sensor)`,
   `ReplayIsp`; feature `native`): raw Bayer frames go through the software ISP with the sensor's
   description and tuning at each frame's recorded exposure, gains and white balance, and come out

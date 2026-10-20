@@ -46,6 +46,8 @@ mod mcap_frames;
 mod mcap_host;
 #[cfg(feature = "replay-mcap")]
 mod mcap_native;
+#[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+pub(crate) mod media;
 #[cfg(feature = "replay-mcap")]
 mod raw_storage;
 #[cfg(feature = "replay-mcap")]
@@ -437,6 +439,9 @@ pub struct ReplaySourceConfig {
     /// Process raw Bayer frames with the software ISP (feature `native`): the replay then
     /// delivers NV12. `None` (default): frames as recorded.
     pub isp: Option<ReplayIsp>,
+    /// The rate (fps) of video files without one (`.mjpeg` streams, JPEG directories; an AVI
+    /// has its own). `None` (default): 30.
+    pub frame_rate: Option<u32>,
 }
 
 /// Raw frames of a recording processed as the camera would (`ReplaySourceConfig::soft_isp`):
@@ -454,7 +459,7 @@ pub struct ReplayIsp {
 /// `isp`).
 pub(crate) fn replay_options(
     properties: &[(String, String)],
-) -> (ReplayTimestamps, bool, Option<ReplayIsp>) {
+) -> (ReplayTimestamps, bool, Option<ReplayIsp>, Option<f32>) {
     let get = |k: &str| {
         properties
             .iter()
@@ -465,14 +470,17 @@ pub(crate) fn replay_options(
         Some("rebased") => ReplayTimestamps::Rebased,
         _ => ReplayTimestamps::Recorded,
     };
+    let fps = get(FPS_PROPERTY).and_then(|f| f.parse().ok());
     let isp = get(ISP_SENSOR_PROPERTY).map(|sensor| ReplayIsp {
         sensor: sensor.to_string(),
         threads: get(ISP_THREADS_PROPERTY)
             .and_then(|t| t.parse().ok())
             .unwrap_or(2),
     });
-    (timestamps, get(END_PROPERTY) == Some("hold"), isp)
+    (timestamps, get(END_PROPERTY) == Some("hold"), isp, fps)
 }
+
+const FPS_PROPERTY: &str = "replay_fps";
 
 const ISP_SENSOR_PROPERTY: &str = "replay_isp_sensor";
 const ISP_THREADS_PROPERTY: &str = "replay_isp_threads";
@@ -489,7 +497,14 @@ impl ReplaySourceConfig {
             timestamps: ReplayTimestamps::Recorded,
             hold_at_end: false,
             isp: None,
+            frame_rate: None,
         }
+    }
+
+    /// The rate of video files without one (see [`Self::frame_rate`]).
+    pub fn frame_rate(mut self, fps: u32) -> Self {
+        self.frame_rate = Some(fps);
+        self
     }
 
     /// Process raw frames as the camera's ISP would (see [`ReplayIsp`]), with sensor `sensor`'s
@@ -525,7 +540,7 @@ impl ReplaySourceConfig {
     /// A device for the recording: the recorded camera's identity with a single replay
     /// backend offering the recorded format.
     pub fn into_device(self) -> Result<ProbedDevice, ReplayError> {
-        let header = read_header(&self.path)?;
+        let header = open_source(&self.path, self.frame_rate.map(|f| f as f32))?.0;
         let mut format = header.format;
         // Processed raw frames come out in NV12.
         if self.isp.is_some() && format.code.is_bayer_raw() {
@@ -571,6 +586,10 @@ impl ReplaySourceConfig {
                     ),
                 ]
                 .into_iter()
+                .chain(
+                    self.frame_rate
+                        .map(|f| (FPS_PROPERTY.to_string(), f.to_string())),
+                )
                 .chain(self.isp.iter().flat_map(|isp| {
                     [
                         (ISP_SENSOR_PROPERTY.into(), isp.sensor.clone()),
@@ -586,6 +605,21 @@ impl ReplaySourceConfig {
 /// Read a recording's header.
 pub fn read_header(path: impl AsRef<Path>) -> Result<RecordingHeader, ReplayError> {
     open_recording(path).map(|(header, _)| header)
+}
+
+/// A recording, or a video file a replay plays (`media`: Motion JPEG, AVI, JPEG directories;
+/// `fps` for files without a rate).
+pub(crate) fn open_source(
+    path: &Path,
+    fps: Option<f32>,
+) -> Result<(RecordingHeader, RecordingFrames), ReplayError> {
+    #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+    return media::open_source(path, fps);
+    #[cfg(not(any(feature = "replay-mcap", feature = "replay-styxrec")))]
+    {
+        let _ = fps;
+        open_recording(path)
+    }
 }
 
 /// Open a recording for reading frames directly (without a capture handle). The format is
@@ -678,6 +712,8 @@ enum Frames {
     Mcap(Box<mcap_frames::McapFrames<Source>>),
     #[cfg(feature = "replay-styxrec")]
     Styxrec { reader: Source, offset: u64 },
+    #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+    Media(Box<media::MediaFrames>),
 }
 
 impl RecordingFrames {
@@ -695,8 +731,15 @@ impl RecordingFrames {
             Frames::Mcap(frames) => frames.offset = offset,
             #[cfg(feature = "replay-styxrec")]
             Frames::Styxrec { offset: o, .. } => *o = offset,
+            #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+            Frames::Media(frames) => frames.offset = offset,
         }
         self
+    }
+
+    #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+    pub(crate) fn media(frames: media::MediaFrames) -> Self {
+        Self(Frames::Media(Box::new(frames)))
     }
 }
 
@@ -711,6 +754,8 @@ impl Iterator for RecordingFrames {
             Frames::Mcap(frames) => frames.next(),
             #[cfg(feature = "replay-styxrec")]
             Frames::Styxrec { reader, offset } => styxrec::read_frame(reader, *offset).transpose(),
+            #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+            Frames::Media(frames) => frames.next(),
         }
     }
 }

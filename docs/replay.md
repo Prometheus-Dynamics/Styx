@@ -59,6 +59,27 @@ for a seek), as a player wants; without it the capture ends and consumers see `C
 recorded time. Either way the recorded per-frame metadata (`NativeFrameMeta` and its 3A record)
 is kept. Seeking reads the recording from its start up to the frame.
 
+### Video files
+
+`ReplaySourceConfig` also plays video without ffmpeg, with the same playback controls:
+
+- Motion JPEG streams (`.mjpeg`: JPEG images back to back) and AVI files of Motion JPEG
+  (`MJPG`, at the AVI's own rate),
+- directories of JPEG images (`.jpg`/`.jpeg`, in name order).
+
+Frames are `MJPG` (the planner decodes them as it does a webcam's), timestamped from 0 at the
+file's rate, or `.frame_rate(fps)` for streams and directories (default 30).
+
+Other video (H.264/H.265 in MP4, MKV, ...) converts on a PC with ffmpeg to an MCAP recording of
+grey or NV12 frames with the video's timestamps:
+
+```sh
+cargo run -p styx-record-cli --features convert -- convert in.mp4 out.mcap --gray --size 640x400
+```
+
+(`--nv12`, the default, or `--gray`; `--size WxH` scales; `--lz4` with feature `convert-lz4`
+compresses. It runs the host's `ffmpeg` and `ffprobe`.)
+
 ### Raw recordings as processed frames
 
 A recording of raw sensor frames (`Frames::sensor_raw()`: `BYR2`, `RG16`, ..., or packed `pBAA`)
