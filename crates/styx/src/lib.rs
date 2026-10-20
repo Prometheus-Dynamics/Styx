@@ -659,8 +659,8 @@ pub mod prelude {
     pub use crate::replay::{RawStorage, RecordCompression, RecorderOptions, RecorderStats};
     #[cfg(feature = "facade")]
     pub use crate::replay::{
-        RecordingHeader, ReplayError, ReplayPacing, ReplaySourceConfig, ReplayTimestamps,
-        StreamFormat,
+        RecordingHeader, ReplayError, ReplayIsp, ReplayPacing, ReplaySourceConfig,
+        ReplayTimestamps, StreamFormat,
     };
     #[cfg(feature = "facade")]
     pub use crate::runtime_codec::{

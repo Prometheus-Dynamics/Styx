@@ -39,7 +39,13 @@ pub(super) fn start_replay(
         return Err(CaptureError::BackendUnavailable(BackendKind::Replay));
     };
     let (path, pacing, loop_forever) = (path.clone(), *pacing, *loop_forever);
-    let (timestamps, hold_at_end) = replay_options(&backend.properties);
+    let (timestamps, hold_at_end, isp) = replay_options(&backend.properties);
+    #[cfg(not(feature = "native"))]
+    if isp.is_some() {
+        return Err(CaptureError::Backend(
+            "replay: processing raw frames needs feature `native`".into(),
+        ));
+    }
     let replay_error = |err: ReplayError| CaptureError::Backend(format!("replay: {err}"));
     // Fail at start, not in the worker, for a missing or foreign file.
     open_recording(&path).map_err(replay_error)?;
@@ -91,6 +97,8 @@ pub(super) fn start_replay(
             loop_offset: 0,
             anchor: None,
             pending: None,
+            #[cfg(feature = "native")]
+            isp: isp.map(super::replay_isp::ReplayProcessor::new),
         };
         if let Err(err) = player.run(&tx, &stop_rx) {
             crate::trace::warn!(backend = "replay", error = %err, "replay failed");
@@ -174,6 +182,9 @@ struct Player {
     anchor: Option<(Instant, u64)>,
     /// A frame read but not delivered yet (its time had not come), with its index.
     pending: Option<(FrameLease, u64)>,
+    /// Raw frames processed by the software ISP (`ReplaySourceConfig::soft_isp`).
+    #[cfg(feature = "native")]
+    isp: Option<super::replay_isp::ReplayProcessor>,
 }
 
 impl Player {
@@ -260,6 +271,11 @@ impl Player {
             }
             self.controls.set_state(if t.playing { 0 } else { 1 });
             let first = self.first.unwrap_or(raw);
+            #[cfg(feature = "native")]
+            let frame = match self.isp.as_mut() {
+                Some(isp) => isp.process(frame)?,
+                None => frame,
+            };
             if self.deliver(frame, t.speed, tx, stop_rx) {
                 return Ok(());
             }

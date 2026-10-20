@@ -35,6 +35,8 @@ pub(super) mod native_isp;
 pub(super) mod netcam_backend;
 mod replay_backend;
 pub mod replay_controls;
+#[cfg(feature = "native")]
+mod replay_isp;
 #[cfg(all(feature = "facade", target_os = "linux"))]
 pub(crate) mod standard_controls;
 mod still;

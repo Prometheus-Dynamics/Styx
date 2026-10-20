@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Raw recordings replayed as processed frames** (`ReplaySourceConfig::soft_isp(sensor)`,
+  `ReplayIsp`; feature `native`): raw Bayer frames go through the software ISP with the sensor's
+  description and tuning at each frame's recorded exposure, gains and white balance, and come out
+  as NV12 keeping the recorded metadata and 3A record; the replay device offers an NV12 mode.
+
 - **Replay playback controls** (`capture_api::replay_controls`, docs/replay.md): a replay
   capture plays, pauses, changes speed (0.25-4x, 0 as fast as consumers), loops, seeks by time or
   frame (also while paused), steps one frame, and reports its position, duration, frame count and

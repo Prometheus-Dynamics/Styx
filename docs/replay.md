@@ -59,6 +59,16 @@ for a seek), as a player wants; without it the capture ends and consumers see `C
 recorded time. Either way the recorded per-frame metadata (`NativeFrameMeta` and its 3A record)
 is kept. Seeking reads the recording from its start up to the frame.
 
+### Raw recordings as processed frames
+
+A recording of raw sensor frames (`Frames::sensor_raw()`: `BYR2`, `RG16`, ..., or packed `pBAA`)
+replays as the camera would have processed it with `ReplaySourceConfig::soft_isp("ov9782")`
+(feature `native`): each frame goes through the software ISP with the sensor's description and
+tuning, at the frame's recorded exposure, gains and white balance (`NativeAaa::colour_gains`; AE
+and AWB do not run), and comes out in NV12 with its recorded metadata, the 3A record included.
+The replay device then offers an NV12 mode, so gray, NV12 and pyramids are planned as for the
+live camera. Other recordings replay as they are.
+
 ## Recording on a device
 
 `StreamRecorder::mcap(path, &header, RecorderOptions)` is for recording alongside a live

@@ -434,10 +434,27 @@ pub struct ReplaySourceConfig {
     /// At the end (not looping), keep the capture open, paused on the last frame, for a seek
     /// or a loop (a player); `false` (default): the capture ends, consumers see `Closed`.
     pub hold_at_end: bool,
+    /// Process raw Bayer frames with the software ISP (feature `native`): the replay then
+    /// delivers NV12. `None` (default): frames as recorded.
+    pub isp: Option<ReplayIsp>,
 }
 
-/// The replay options carried in a replay backend's properties (`timestamps`, `hold_at_end`).
-pub(crate) fn replay_options(properties: &[(String, String)]) -> (ReplayTimestamps, bool) {
+/// Raw frames of a recording processed as the camera would (`ReplaySourceConfig::soft_isp`):
+/// the software ISP with the sensor's description and tuning, and each frame's recorded
+/// exposure, gains and white balance (no AE or AWB). Frames keep their recorded metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayIsp {
+    /// A built-in sensor description's name (e.g. `ov9782`), for its modes and tuning.
+    pub sensor: String,
+    /// Threads of the software ISP.
+    pub threads: usize,
+}
+
+/// The replay options carried in a replay backend's properties (`timestamps`, `hold_at_end`,
+/// `isp`).
+pub(crate) fn replay_options(
+    properties: &[(String, String)],
+) -> (ReplayTimestamps, bool, Option<ReplayIsp>) {
     let get = |k: &str| {
         properties
             .iter()
@@ -448,8 +465,17 @@ pub(crate) fn replay_options(properties: &[(String, String)]) -> (ReplayTimestam
         Some("rebased") => ReplayTimestamps::Rebased,
         _ => ReplayTimestamps::Recorded,
     };
-    (timestamps, get(END_PROPERTY) == Some("hold"))
+    let isp = get(ISP_SENSOR_PROPERTY).map(|sensor| ReplayIsp {
+        sensor: sensor.to_string(),
+        threads: get(ISP_THREADS_PROPERTY)
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(2),
+    });
+    (timestamps, get(END_PROPERTY) == Some("hold"), isp)
 }
+
+const ISP_SENSOR_PROPERTY: &str = "replay_isp_sensor";
+const ISP_THREADS_PROPERTY: &str = "replay_isp_threads";
 
 const TIMESTAMPS_PROPERTY: &str = "replay_timestamps";
 const END_PROPERTY: &str = "replay_end";
@@ -462,7 +488,18 @@ impl ReplaySourceConfig {
             loop_forever: false,
             timestamps: ReplayTimestamps::Recorded,
             hold_at_end: false,
+            isp: None,
         }
+    }
+
+    /// Process raw frames as the camera's ISP would (see [`ReplayIsp`]), with sensor `sensor`'s
+    /// description and tuning, on two threads. Recordings of other formats replay as they are.
+    pub fn soft_isp(mut self, sensor: &str) -> Self {
+        self.isp = Some(ReplayIsp {
+            sensor: sensor.to_string(),
+            threads: 2,
+        });
+        self
     }
 
     pub fn timestamps(mut self, timestamps: ReplayTimestamps) -> Self {
@@ -489,7 +526,11 @@ impl ReplaySourceConfig {
     /// backend offering the recorded format.
     pub fn into_device(self) -> Result<ProbedDevice, ReplayError> {
         let header = read_header(&self.path)?;
-        let format = header.format;
+        let mut format = header.format;
+        // Processed raw frames come out in NV12.
+        if self.isp.is_some() && format.code.is_bayer_raw() {
+            format = MediaFormat::new(FourCc::NV12, format.resolution, ColorSpace::Srgb);
+        }
         let mode = Mode {
             id: ModeId {
                 format,
@@ -528,7 +569,15 @@ impl ReplaySourceConfig {
                         END_PROPERTY.into(),
                         if self.hold_at_end { "hold" } else { "close" }.into(),
                     ),
-                ],
+                ]
+                .into_iter()
+                .chain(self.isp.iter().flat_map(|isp| {
+                    [
+                        (ISP_SENSOR_PROPERTY.into(), isp.sensor.clone()),
+                        (ISP_THREADS_PROPERTY.into(), isp.threads.to_string()),
+                    ]
+                }))
+                .collect(),
             }],
         })
     }

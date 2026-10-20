@@ -154,3 +154,69 @@ fn speed_paces_and_rebased_timestamps_are_delivery_times() {
     assert!(now >= stamps[9] && now - stamps[9] < 2_000_000_000);
     let _ = std::fs::remove_file(path);
 }
+
+/// A recording of the PiSP's raw frames (16-bit BGGR) replays processed: NV12 frames that keep
+/// the recorded metadata, 3A record included.
+#[cfg(feature = "native")]
+#[test]
+fn raw_recordings_replay_through_the_software_isp() {
+    let path = temp_path("raw-isp.mcap");
+    let (w, h) = (640u32, 400u32);
+    let format = MediaFormat::new(
+        FourCc::new(*b"BYR2"),
+        Resolution::new(w, h).unwrap(),
+        ColorSpace::Unknown,
+    );
+    let aaa = NativeAaa {
+        colour_gains: [1.6, 1.0, 1.9],
+        colour_temperature_k: 4000.0,
+        lux: 300.0,
+        ae_locked: true,
+        awb_converged: true,
+        flicker_period_ns: 0,
+        lens: None,
+    };
+    let mut rec = StreamRecorder::with_header(&path, &header(format)).unwrap();
+    for i in 0..3u32 {
+        // A mid grey of the 10-bit sensor, in the top bits.
+        let bytes: Vec<u8> = (0..w * h)
+            .flat_map(|_| (300u16 << 6).to_le_bytes())
+            .collect();
+        let mut f =
+            FrameLease::from_visible_bytes(format, u64::from(i) * 33_000_000, &bytes).unwrap();
+        f.meta_mut().backend = Some(BackendFrameMeta::Native(NativeFrameMeta {
+            sequence: i,
+            exposure_ns: 8_000_000,
+            analog_gain: 2.0,
+            digital_gain: 1.0,
+            frame_duration_ns: 33_333_333,
+            aaa: Some(aaa),
+            ..Default::default()
+        }));
+        rec.record(&f).unwrap();
+    }
+    rec.finish().unwrap();
+    let source = CaptureRequest::replay_source(
+        ReplaySourceConfig::new(&path)
+            .pacing(ReplayPacing::Unpaced)
+            .soft_isp("ov9782"),
+    )
+    .unwrap();
+    assert_eq!(
+        source.device().backends[0].descriptor.modes[0].format.code,
+        FourCc::NV12
+    );
+    let handle = source.open().unwrap();
+    let f = next(&handle);
+    let meta = f.meta();
+    assert_eq!(meta.format.code, FourCc::NV12);
+    assert_eq!(meta.format.resolution, Resolution::new(w, h).unwrap());
+    assert_eq!(meta.timestamp, 0);
+    let native = meta.native().copied().unwrap();
+    assert_eq!((native.exposure_ns, native.aaa), (8_000_000, Some(aaa)));
+    // A picture, not black: the grey comes through.
+    let y = f.planes()[0].data()[(w * h / 2 + w / 2) as usize];
+    assert!(y > 20, "luma {y}");
+    handle.stop();
+    let _ = std::fs::remove_file(path);
+}
