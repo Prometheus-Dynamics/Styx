@@ -36,9 +36,21 @@ pub(super) struct Output {
     /// Signalled when the subscriber count changes, for the encoder thread.
     pub(super) watchers: Condvar,
     pub(super) watch_lock: Mutex<()>,
+    /// Forget the latest frame when the last subscriber leaves: the preview then stops
+    /// encoding (`PreviewConfig::encode_unwatched` off), so that frame only gets older (a
+    /// capture may restart meanwhile) and must not be a later viewer's first.
+    pub(super) forget_unwatched: bool,
 }
 
 impl Output {
+    /// See [`Self::forget_unwatched`].
+    pub(super) fn new(forget_unwatched: bool) -> Self {
+        Self {
+            forget_unwatched,
+            ..Self::default()
+        }
+    }
+
     /// Publish `frame` as the latest and wake every waiting subscriber.
     pub(super) fn publish(&self, frame: PreviewFrame) {
         let wakers: Vec<Waker> = {
@@ -60,6 +72,11 @@ impl Output {
         self.ready.notify_all();
         wakers.into_iter().for_each(Waker::wake);
         self.watchers.notify_all();
+    }
+
+    /// Forget the latest frame (its source went away): the next viewer waits for a new one.
+    pub(super) fn forget(&self) {
+        self.slot.lock().latest = None;
     }
 
     pub(super) fn latest(&self) -> Option<PreviewFrame> {
@@ -194,8 +211,14 @@ impl Clone for PreviewSubscriber {
 
 impl Drop for PreviewSubscriber {
     fn drop(&mut self) {
-        self.output.slot.lock().wakers.remove(&self.id);
-        self.output.subscribers.fetch_sub(1, Ordering::AcqRel);
+        {
+            let mut slot = self.output.slot.lock();
+            slot.wakers.remove(&self.id);
+            let last = self.output.subscribers.fetch_sub(1, Ordering::AcqRel) == 1;
+            if last && self.output.forget_unwatched {
+                slot.latest = None;
+            }
+        }
         self.output.notify_watchers();
     }
 }

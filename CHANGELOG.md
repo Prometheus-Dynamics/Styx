@@ -496,6 +496,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **Stale preview frames:** a preview that idles while nobody watches (`encode_unwatched` off,
+  the default) kept its last JPEG, so a viewer opening later (after a capture restart, a
+  rotation) got that old picture first. It now forgets it when the last viewer leaves, and a
+  camera service preview also when its client goes away; a new viewer waits for a new frame.
+
 - **Raw frames of sliced captures:** with `deliver_slices`, frames went out at their first
   slice without their raw companion, so a `Frames::sensor_raw()` consumer of a sliced PiSP
   capture got no frames (a camera service's raw recorder joining a running vision capture got

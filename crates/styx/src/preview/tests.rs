@@ -109,6 +109,41 @@ fn offered_frames_are_encoded_on_the_preview_thread() {
     assert_eq!(frame.meta().timestamp, 42);
 }
 
+/// A preview that idles unwatched forgets its last frame when the last viewer leaves: a later
+/// viewer (after a capture restart, say) waits for a new frame instead of starting on the old
+/// one. One that encodes unwatched keeps it (it stays current).
+#[test]
+fn a_new_viewer_never_starts_on_a_frame_from_before_it_watched() {
+    if !encoders() {
+        return;
+    }
+    for encode_unwatched in [false, true] {
+        let preview = Preview::new(
+            PreviewConfig::new()
+                .size(320, 200)
+                .max_fps(0.0)
+                .encode_unwatched(encode_unwatched),
+        )
+        .unwrap();
+        let mut first = preview.subscribe();
+        assert!(preview.offer(&nv12(640, 400, 1)));
+        assert_eq!(first.recv(Duration::from_secs(10)).unwrap().timestamp_ns, 1);
+        drop(first);
+        let mut later = preview.subscribe();
+        if encode_unwatched {
+            assert_eq!(later.try_recv().unwrap().timestamp_ns, 1);
+            continue;
+        }
+        assert!(preview.latest().is_none());
+        assert!(
+            later.recv(Duration::from_millis(50)).is_none(),
+            "an old frame"
+        );
+        assert!(preview.offer(&nv12(640, 400, 2)));
+        assert_eq!(later.recv(Duration::from_secs(10)).unwrap().timestamp_ns, 2);
+    }
+}
+
 #[test]
 fn only_the_latest_frame_waits_and_viewers_get_the_newest() {
     if !encoders() {

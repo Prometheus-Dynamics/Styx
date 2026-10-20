@@ -294,8 +294,8 @@ mod api {
                 PreviewCounters::new(config.name.clone(), encoder.backend().name().into());
             let shared = Arc::new(Shared {
                 gate: Mutex::new(RateGate::new(config.max_fps)),
+                output: Arc::new(Output::new(!config.encode_unwatched)),
                 config,
-                output: Arc::default(),
                 input: Mutex::new(None),
                 input_ready: Condvar::new(),
                 stop: AtomicBool::new(false),
@@ -367,7 +367,11 @@ mod api {
             drop(replaced);
         }
 
-        /// A new viewer: the newest frame it has not seen, each time it asks.
+        /// A new viewer: the newest frame it has not seen, each time it asks. Its first frame is
+        /// one encoded while someone watched: a preview that idles unwatched forgets its last
+        /// frame when the last viewer leaves, and one of a camera service when its client goes
+        /// away, so a new viewer never starts on a picture from before (e.g. from before the
+        /// capture restarted).
         pub fn subscribe(&self) -> PreviewSubscriber {
             self.shared.output.subscribe()
         }
@@ -377,7 +381,8 @@ mod api {
             MjpegStream::new(self.subscribe())
         }
 
-        /// The latest frame, if any (without subscribing).
+        /// The latest frame, if any (without subscribing; see [`Self::subscribe`] for when it is
+        /// forgotten).
         pub fn latest(&self) -> Option<PreviewFrame> {
             self.shared.output.latest()
         }

@@ -151,6 +151,7 @@ fn service(shared: &Shared, options: &ClientOptions, encoder: &mut Encoder) {
             if client.is_some() && since.elapsed() >= shared.config.idle_disconnect {
                 // Nobody watches: let the camera idle (and the service forget this client).
                 client = None;
+                shared.output.forget();
             }
         }
         let Some(frames) = &client else {
@@ -162,6 +163,7 @@ fn service(shared: &Shared, options: &ClientOptions, encoder: &mut Encoder) {
             RecvOutcome::Empty => continue,
             RecvOutcome::Closed => {
                 client = None;
+                shared.output.forget();
                 continue;
             }
         };
