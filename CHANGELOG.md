@@ -19,12 +19,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `/etc/styx/sim-cameras` (`ov9782,scene=chart`, `ov9782,recording=clip.mcap,drop=0.01`, ...),
   keyed `sim:<sensor>:<n>`, or made with `styx::sim::device`. Builds and runs on x86_64 without
   a PiSP. styx-native gains feature `sim` (`styx_native::sim`).
-- **AprilTag scenes for simulated cameras** (`scene=tags`, docs/simulation.md#tags): AprilTag
-  36h11 tags at their poses (a WPILib field layout or a Limelight `.fmap`) seen through the
-  camera's calibrated lens (HeliOS's calibration JSON: fisheye or pinhole) from a pose or a
-  looped trajectory, with motion blur over the exposure, and each frame's ground truth (`truth=`:
-  the camera's pose and every visible tag's corners in the delivered frame, by sequence).
-  `styx_native::sim` gains plugin scenes (`register_scene`), `FrameContext` and `GroundTruth`.
+- **glTF scenes for simulated cameras** (`scene=gltf,path=...`, docs/simulation.md#gltf-scenes):
+  a glTF 2.0 scene the application builds (the file the Bevy simulation backend loads) seen
+  through the camera's lens (OpenCV fisheye or pinhole from the spec's keys, or the glTF
+  camera's field of view) from its camera node, animated and looped, with motion blur over the
+  exposure, and each frame's ground truth (`truth=`: the camera's pose and every visible
+  `truth:<name>` node's pixel in the delivered frame, by sequence). `styx_native::sim` gains
+  plugin scenes (`register_scene`), `FrameContext` and `GroundTruth`.
 - **Raw frames from the software ISP path:** a native camera without a PiSP (a simulated one,
   or a board with another receiver) hands `Frames::sensor_raw()` consumers each frame's raw
   frame (`NativeIspConfig::sensor_raw`) as the PiSP path does: 16-bit Bayer with the value in the

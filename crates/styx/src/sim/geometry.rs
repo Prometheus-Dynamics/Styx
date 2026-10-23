@@ -1,7 +1,5 @@
-//! Poses and the lens of a simulated camera: WPILib's frames (X forward, Y left, Z up; a
-//! rotation as roll about X, then pitch about Y, then yaw about Z, each about the fixed axes)
-//! and OpenCV's camera models (the equidistant fisheye, and the pinhole with radial and
-//! tangential distortion), as HeliOS's calibrations give them.
+//! Rotations and the lens of a simulated camera: OpenCV's camera models (the equidistant
+//! fisheye, and the pinhole with rational radial and tangential distortion).
 
 /// A 3x3 matrix, rows.
 pub(crate) type Mat3 = [[f64; 3]; 3];
@@ -15,29 +13,8 @@ pub(crate) fn mul_t(a: &Mat3, v: Vec3) -> Vec3 {
     [0, 1, 2].map(|i| a[0][i] * v[0] + a[1][i] * v[1] + a[2][i] * v[2])
 }
 
-pub(crate) fn matmul(a: &Mat3, b: &Mat3) -> Mat3 {
-    [0, 1, 2].map(|i| [0, 1, 2].map(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
-}
-
 pub(crate) fn sub(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-pub(crate) fn dot(a: Vec3, b: Vec3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// The rotation of roll, pitch and yaw (radians) as WPILib's `Rotation3d` composes them:
-/// `Rz(yaw) · Ry(pitch) · Rx(roll)`.
-pub(crate) fn from_rpy(roll: f64, pitch: f64, yaw: f64) -> Mat3 {
-    let (sr, cr) = roll.sin_cos();
-    let (sp, cp) = pitch.sin_cos();
-    let (sy, cy) = yaw.sin_cos();
-    [
-        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-        [-sp, cp * sr, cp * cr],
-    ]
 }
 
 /// The rotation of a unit quaternion (w, x, y, z).
@@ -100,44 +77,6 @@ pub(crate) fn to_quaternion(m: &Mat3) -> [f64; 4] {
         ]
     }
 }
-
-/// A pose: where a body is and how it is turned (body to world).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Pose {
-    pub(crate) position: Vec3,
-    pub(crate) rotation: Mat3,
-}
-
-impl Pose {
-    pub(crate) fn rpy_degrees(position: Vec3, [roll, pitch, yaw]: [f64; 3]) -> Self {
-        Self {
-            position,
-            rotation: from_rpy(roll.to_radians(), pitch.to_radians(), yaw.to_radians()),
-        }
-    }
-
-    /// Between `self` (at 0) and `other` (at 1): positions linearly, rotations along the
-    /// shortest arc.
-    pub(crate) fn lerp(&self, other: &Self, t: f64) -> Self {
-        let p = [0, 1, 2].map(|i| self.position[i] + (other.position[i] - self.position[i]) * t);
-        let (a, mut b) = (
-            to_quaternion(&self.rotation),
-            to_quaternion(&other.rotation),
-        );
-        if (0..4).map(|i| a[i] * b[i]).sum::<f64>() < 0.0 {
-            b = b.map(|v| -v);
-        }
-        let q = [0, 1, 2, 3].map(|i| a[i] + (b[i] - a[i]) * t);
-        Self {
-            position: p,
-            rotation: from_quaternion(q),
-        }
-    }
-}
-
-/// The optical frame (x right, y down, z forward) in a WPILib camera body (X forward, Y left,
-/// Z up): `body = OPTICAL · optical`.
-pub(crate) const OPTICAL: Mat3 = [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]];
 
 /// A lens model and its coefficients.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -282,19 +221,17 @@ mod tests {
 
     #[test]
     fn rotations_and_quaternions_agree() {
-        let m = from_rpy(0.1, -0.3, 1.2);
-        let back = from_quaternion(to_quaternion(&m));
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(close(m[i][j], back[i][j]));
-            }
+        let q = [0.9, 0.1, -0.3, 0.2];
+        let n = (q.iter().map(|v: &f64| v * v).sum::<f64>()).sqrt();
+        let q = q.map(|v| v / n);
+        let m = from_quaternion(q);
+        let back = to_quaternion(&m);
+        for i in 0..4 {
+            assert!(close(q[i], back[i]), "{q:?} {back:?}");
         }
-        // Yaw 90 degrees turns X (forward) to Y (left).
-        let yaw = from_rpy(0.0, 0.0, std::f64::consts::FRAC_PI_2);
-        let v = mul(&yaw, [1.0, 0.0, 0.0]);
+        // A quarter turn about Z takes X to Y.
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let v = mul(&from_quaternion([h, 0.0, 0.0, h]), [1.0, 0.0, 0.0]);
         assert!(close(v[0], 0.0) && close(v[1], 1.0));
-        // The optical frame's z (forward) is the body's X.
-        assert_eq!(mul(&OPTICAL, [0.0, 0.0, 1.0]), [1.0, 0.0, 0.0]);
-        assert_eq!(mul(&OPTICAL, [1.0, 0.0, 0.0]), [0.0, -1.0, 0.0]);
     }
 }

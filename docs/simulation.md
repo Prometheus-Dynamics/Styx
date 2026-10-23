@@ -31,7 +31,7 @@ Each camera is keyed `sim:<sensor>:<n>` (`n` counts the cameras of that sensor f
 
 | key | meaning | default |
 |---|---|---|
-| `scene` | `chart` (grey ramp, colour checker, fine checkerboard, a moving bright square), `flat`, or `tags` (AprilTags in 3D, [below](#tags)) | `chart` |
+| `scene` | `chart` (grey ramp, colour checker, fine checkerboard, a moving bright square), `flat`, or `gltf` (a glTF scene in 3D, [below](#gltf-scenes)) | `chart` |
 | `light` | scene brightness (1: mid grey at 18% of full scale at 10 ms, gain 1) | 1 |
 | `grey` | `flat`'s reflectance | 0.18 |
 | `recording` | a raw recording (MCAP or styxrec of Bayer frames, e.g. `Frames::sensor_raw()`), looped | |
@@ -43,7 +43,7 @@ Each camera is keyed `sim:<sensor>:<n>` (`n` counts the cameras of that sensor f
 | `unplug_every_s` | the sensor disappears every this long while streaming ... | off |
 | `unplug_for_s` | ... for this long (not listed, does not open), then comes back | 2 |
 | `seed` | seed of the faults and the noise | 0 |
-| `truth` | where each frame's ground truth goes (JSON Lines; scenes that know it: `tags`) | |
+| `truth` | where each frame's ground truth goes (JSON Lines; scenes that know it: `gltf`) | |
 
 Examples:
 
@@ -54,33 +54,50 @@ ov9782,recording=/data/clips/field.mcap
 ov9782,drop=0.01,jitter_ms=1.5,fail_every_s=60,unplug_every_s=300,unplug_for_s=5
 ```
 
-## Tags
+## glTF scenes
 
-`scene=tags` renders AprilTag 36h11 tags at their poses in 3D, seen through the camera's lens
-from its pose or along a trajectory, so tag detection, multi-tag pose and mapping run in the
-sim. Each pixel's ray comes from the calibration's lens model (the equidistant fisheye or the
-pinhole with radial and tangential distortion, as OpenCV and HeliOS define them); inside each
-tag's projected bounds it meets the tag's plane and reads the tag's cell (2x2 samples per
-pixel); elsewhere it meets a floor (z = 0, a 1 m checker) or a plain wall. With a moving camera
-the tags blur over the exposure (one pose per 2 ms, up to 8).
+`scene=gltf,path=<scene.gltf or .glb>` renders a glTF 2.0 scene in 3D, seen through the camera's
+lens from the scene's camera node, so detection, pose estimation and mapping run in the sim on
+whatever the application puts in the scene. Styx knows nothing about what the scene shows: the
+application builds it (from a field map, a test rig, ...) and Styx loads it. The same file
+loads in the Bevy simulation backend (`simulation-bevy`), so the GPU and CPU renders can be
+compared.
+
+Each pixel's ray comes from the lens model (OpenCV's equidistant fisheye, or the pinhole with
+radial and tangential distortion) and meets the nearest triangle; the light it sees is the
+material's base colour (factor times texture; sRGB textures decoded, the sampler's filter and
+wrap honoured) times the brightness, unlit. With a moving camera the frame blurs over the
+exposure (one pose per 2 ms, up to `blur_samples`); a still camera's frame is rendered once.
 
 | key | meaning | default |
 |---|---|---|
-| `layout` | the tags: a WPILib AprilTag field layout (`.json`: `tags` with `ID` and `pose`) or a Limelight map (`.fmap`: `fiducials` with `id`, `size` in mm, a row-major 4x4 `transform`) | four tags (ids 1 to 4) on a wall 3 m ahead |
-| `tag_size` | the black square's side (m), for WPILib layouts | 0.1651 (FRC) |
-| `calibration` | the camera's calibration, HeliOS's JSON: `width`, `height`, `model` (`fisheye` or `pinhole`), `fx`, `fy`, `cx`, `cy`, `distortion` (`k1`..`k6`, `p1`, `p2`) | a fisheye, f = 560 px at 1280x800 |
-| `camera` | a JSON file: `{"pose": {...}}` or `{"trajectory": [{"t": 0, ...}, ...]}` (looped), each pose `x`, `y`, `z` (m) and `roll`, `pitch`, `yaw` (degrees) | |
-| `pose` | the camera's pose inline: `x:y:z:roll:pitch:yaw` | `0:0:0.5:0:0:0` |
-| `light` | brightness (1: white paper at 80% of full scale at 10 ms, gain 1) | 1 |
-| `antialias`, `blur` | `on` or `off` | on |
+| `path` | the scene: `.gltf` (with its buffers and images) or `.glb` | required |
+| `camera` | the camera node's name | the first node with a camera |
+| `lens` | `fisheye` or `pinhole` | `pinhole` |
+| `fx`, `fy`, `cx`, `cy` | the lens's focal lengths and principal point (px; `fy` defaults to `fx`) | |
+| `lens_width`, `lens_height` | the size the lens keys describe (the whole pixel array) | required with `fx` |
+| `k1`..`k6`, `p1`, `p2` | distortion: `k1`..`k4` for the fisheye; `k1`..`k6`, `p1`, `p2` for the pinhole | 0 |
+| `light` | brightness (1: a base colour of 0.8 at 80% of full scale at 10 ms, gain 1) | 1 |
+| `background` | what a ray that meets nothing sees (reflectance) | 0.3 |
+| `antialias`, `blur` | `on` or `off` (antialiasing: 2x2 samples per pixel of a still camera) | on |
+| `blur_samples` | poses per frame at most, for blur | 4 |
+| `threads` | render threads | the cores, up to 8 |
 
-Frames are WPILib's: X forward, Y left, Z up; a rotation is roll about X, then pitch about Y,
-then yaw about Z, about the fixed axes. The camera looks along its +X. A tag faces its +X; seen
-from the front, its +Y is to the right and +Z up. The calibration covers the whole pixel array
-at its size; a mode of another size or field (a binned or cropped mode) is mapped onto it.
+Without the lens keys, the lens is a pinhole without distortion from the glTF camera's
+`yfov`; a scene without a perspective camera then needs them. The lens keys describe the whole
+pixel array at `lens_width` x `lens_height`; a mode of another size or field (binned, cropped)
+is mapped onto it.
+
+What the scene carries, in glTF's conventions (metres, +Y up, right-handed):
+
+- **The camera**: the camera node (or `camera=<name>`) with its ancestors' transforms. It looks
+  along its -Z with +Y up, as glTF cameras do. Translation and rotation animations on it or its
+  ancestors move it, looped over the longest animation.
+- **Ground truth points**: nodes named `truth:<name>` (e.g. `truth:tag7/tl`); the point is the
+  node's origin.
 
 ```text
-ov9782,scene=tags,layout=/usr/share/helios/fields/2025-reefscape.json,calibration=/data/cal/cam0.json,camera=/data/sim/drive.json,truth=/tmp/truth.jsonl
+ov9782,scene=gltf,path=/data/sim/field.glb,lens=fisheye,lens_width=1280,lens_height=800,fx=560,fy=560,cx=639.5,cy=399.5,k1=0.03,truth=/tmp/truth.jsonl
 ```
 
 ### Ground truth
@@ -88,15 +105,10 @@ ov9782,scene=tags,layout=/usr/share/helios/fields/2025-reefscape.json,calibratio
 With `truth=<path>`, each frame appends one line of JSON: `sequence` (the frame's
 `NativeFrameMeta::sequence`; it starts at 0 with each stream), `timestamp_ns` (the frame's start,
 `CLOCK_MONOTONIC`), `width`, `height`, `hflip`, `vflip`, `camera` (`position` m and
-`orientation_wxyz`, the camera body in the layout's frame at the middle of the exposure) and
-`tags`: each visible tag's `id` and `corners`, the black square's top left, top right, bottom
-right and bottom left as printed, in pixels of the delivered frame (flips applied; pixel centres
-at integers, as OpenCV's). A tag is listed when all four corners are in the frame.
-
-Checked with OpenCV 4.13's AprilTag 36h11 detector (`DICT_APRILTAG_36h11`, sub-pixel corners) on
-four views of the default tags at 1280x800: every tag found with its id, corners within 0.4 to
-1.4 px of the truth on tags about 30 px across. Rendering a moving camera's frame with blur
-takes about 15 ms at 1280x800 (release, the dev PC); a still camera's frame is made once.
+`orientation_wxyz`, the camera node in the scene's frame at the middle of the exposure) and
+`points`: each `truth:` point's `name` (without `truth:`) and `x`, `y` in pixels of the
+delivered frame (flips applied; pixel centres at integers, as OpenCV's). A point is listed when
+it is in the frame and nothing in the scene is in front of it.
 
 ## What is simulated, and how faithfully
 

@@ -12,10 +12,8 @@
 //! e.g. `ov9782,scene=chart` or `ov9782,recording=/data/clip.mcap,drop=0.01`), keyed
 //! `sim:<sensor>:<n>`, or from the program with [`device`].
 
-mod files;
 mod geometry;
-mod tag36h11;
-mod tags;
+mod gltf_scene;
 
 #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
 use std::path::Path;
@@ -46,11 +44,11 @@ pub fn device_from(text: &str) -> Result<ProbedDevice, String> {
     device(SimSpec::parse(text)?)
 }
 
-/// Lets simulated cameras play recordings (the replay readers this build has) and render
-/// `scene=tags` (see [`tags`]).
+/// Lets simulated cameras play recordings (the replay readers this build has) and render glTF
+/// scenes (`scene=gltf`, see [`gltf_scene`]).
 pub(crate) fn install_scenes() {
-    styx_native::sim::register_scene("tags", |params| {
-        tags::TagsScene::from_params(params).map(|s| Arc::new(s) as Arc<dyn SimScene>)
+    styx_native::sim::register_scene("gltf", |params| {
+        gltf_scene::GltfScene::from_params(params).map(|s| Arc::new(s) as Arc<dyn SimScene>)
     });
     #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
     styx_native::sim::set_recording_loader(|path| {

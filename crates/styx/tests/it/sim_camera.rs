@@ -145,14 +145,15 @@ fn a_raw_client_records_a_simulated_camera() {
     assert!(got >= 5, "{got} raw frames");
 }
 
-/// `scene=tags`: AprilTags through the lens, frames at the sensor's exposure, and each frame's
-/// ground truth (the camera's pose, the tags' corners in the delivered frame) by sequence.
+/// `scene=gltf`: a glTF scene through the lens, frames at the sensor's exposure, and each frame's
+/// ground truth (the camera's pose, the `truth:` points in the delivered frame) by sequence.
 #[test]
-fn a_tags_scene_writes_each_frames_truth() {
+fn a_gltf_scene_writes_each_frames_truth() {
     let truth = std::env::temp_dir().join(format!("styx-sim-truth-{}.jsonl", std::process::id()));
     let _ = std::fs::remove_file(&truth);
     let device = styx::sim::device_from(&format!(
-        "ov9782,scene=tags,pose=0:0:0.5:0:0:0,truth={}",
+        "ov9782,scene=gltf,path={}/tests/data/sim_scene.gltf,truth={}",
+        env!("CARGO_MANIFEST_DIR"),
         truth.display()
     ))
     .unwrap();
@@ -170,15 +171,16 @@ fn a_tags_scene_writes_each_frames_truth() {
     let text = std::fs::read_to_string(&truth).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines.len() >= sequences.len(), "{} lines", lines.len());
-    // Every delivered frame has its truth, with the four default tags in view.
+    // Every delivered frame has its truth: the square's four corners, not the hidden point.
     for seq in &sequences {
         let line = lines
             .iter()
             .find(|l| l.starts_with(&format!("{{\"sequence\":{seq},")))
             .unwrap_or_else(|| panic!("no truth for frame {seq}"));
-        assert_eq!(line.matches("\"id\":").count(), 4, "{line}");
+        assert_eq!(line.matches("\"name\":\"square/").count(), 4, "{line}");
+        assert!(!line.contains("\"hidden\""), "{line}");
         assert!(
-            line.contains("\"position\":[0.000000,0.000000,0.500000]"),
+            line.contains("\"position\":[0.000000,0.000000,0.000000]"),
             "{line}"
         );
     }

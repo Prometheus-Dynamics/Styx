@@ -45,7 +45,7 @@ pub(crate) struct SimRig {
     truth: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
 }
 
-/// One frame's ground truth as a line of JSON, its corners in the delivered frame (mirrored as
+/// One frame's ground truth as a line of JSON, its points in the delivered frame (mirrored as
 /// the flips read the array out).
 fn truth_line(
     seq: u32,
@@ -56,7 +56,7 @@ fn truth_line(
 ) -> String {
     let (p, q) = t.camera;
     let mut line = format!(
-        "{{\"sequence\":{seq},\"timestamp_ns\":{},\"width\":{w},\"height\":{h},\"hflip\":{hflip},\"vflip\":{vflip},\"camera\":{{\"position\":[{:.6},{:.6},{:.6}],\"orientation_wxyz\":[{:.8},{:.8},{:.8},{:.8}]}},\"tags\":[",
+        "{{\"sequence\":{seq},\"timestamp_ns\":{},\"width\":{w},\"height\":{h},\"hflip\":{hflip},\"vflip\":{vflip},\"camera\":{{\"position\":[{:.6},{:.6},{:.6}],\"orientation_wxyz\":[{:.8},{:.8},{:.8},{:.8}]}},\"points\":[",
         timestamp.as_nanos(),
         p[0],
         p[1],
@@ -66,25 +66,14 @@ fn truth_line(
         q[2],
         q[3]
     );
-    for (i, (id, corners)) in t.tags.iter().enumerate() {
-        if i > 0 {
-            line.push(',');
-        }
-        line.push_str(&format!("{{\"id\":{id},\"corners\":["));
-        for (j, c) in corners.iter().enumerate() {
-            let x = if hflip {
-                f64::from(w) - 1.0 - c[0]
-            } else {
-                c[0]
-            };
-            let y = if vflip {
-                f64::from(h) - 1.0 - c[1]
-            } else {
-                c[1]
-            };
-            line.push_str(&format!("{}[{x:.3},{y:.3}]", if j > 0 { "," } else { "" }));
-        }
-        line.push_str("]}");
+    for (i, (name, [x, y])) in t.points.iter().enumerate() {
+        let x = if hflip { f64::from(w) - 1.0 - x } else { *x };
+        let y = if vflip { f64::from(h) - 1.0 - y } else { *y };
+        let name = name.replace('\\', "\\\\").replace('"', "\\\"");
+        line.push_str(&format!(
+            "{}{{\"name\":\"{name}\",\"x\":{x:.3},\"y\":{y:.3}}}",
+            if i > 0 { "," } else { "" }
+        ));
     }
     line.push_str("]}\n");
     line

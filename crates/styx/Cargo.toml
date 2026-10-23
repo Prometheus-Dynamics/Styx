@@ -37,6 +37,7 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "tim
 image = { workspace = true, optional = true }
 jpeg-decoder = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
+gltf = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 minifb = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
@@ -107,7 +108,7 @@ replay-mcap = ["facade", "dep:mcap"]
 # Simulated cameras (`styx::sim`): native cameras on a simulated sensor, bridge and capture
 # queue, through the software ISP, from a chart or a raw recording, with injected faults; listed
 # by `STYX_SIM_CAMERAS` or `/etc/styx/sim-cameras` (docs/simulation.md).
-sim = ["native", "styx-native/sim", "dep:serde_json"]
+sim = ["native", "styx-native/sim", "dep:gltf"]
 replay-softisp = [
     "facade",
     "dep:styx-pipeline",

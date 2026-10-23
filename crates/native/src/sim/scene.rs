@@ -60,17 +60,16 @@ pub struct FrameContext {
     pub field: [f32; 4],
 }
 
-/// The truth about a frame, for scoring what is detected in it: where the camera was and
-/// where the tags' corners fall in the image (array pixels of the unflipped mode image; the
-/// camera maps them to the delivered frame).
+/// The truth about a frame, for scoring what is seen in it: where the camera was, and where
+/// the scene's named points fall in the image (pixels of the unflipped mode image; the camera
+/// maps them to the delivered frame).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GroundTruth {
-    /// The camera's pose in the scene's frame: position (m) and orientation (a unit quaternion,
+    /// The camera's pose in the scene's frame: position and orientation (a unit quaternion,
     /// w, x, y, z), at the middle of the exposure.
     pub camera: ([f64; 3], [f64; 4]),
-    /// Each tag in view: its id and its corners (top left, top right, bottom right, bottom left
-    /// of the tag as printed) in pixels, at the middle of the exposure.
-    pub tags: Vec<(u32, [[f64; 2]; 4])>,
+    /// Each named point in view (in the frame and not hidden): its name and pixel.
+    pub points: Vec<(String, [f64; 2])>,
 }
 
 /// What a simulated camera sees.

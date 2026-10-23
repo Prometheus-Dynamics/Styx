@@ -109,6 +109,8 @@ thiserror = { version = "2.0.21", default-features = false }
 libm = "0.2.16"
 tokio = "1.53.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+# glTF scenes for simulated cameras (styx `sim`).
+gltf = { version = "1.4.1", default-features = false, features = ["import", "utils", "names"] }
 # FFmpeg types only: Styx calls FFmpeg through libraries it loads at runtime
 # (styx-codec `ffmpeg::ff`), so binaries do not link FFmpeg.
 ffmpeg-sys-next = { version = "9.0.0", default-features = false, features = ["avcodec", "avformat", "swscale"] }
