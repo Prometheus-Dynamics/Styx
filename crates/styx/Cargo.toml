@@ -38,6 +38,7 @@ image = { workspace = true, optional = true }
 jpeg-decoder = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
 gltf = { workspace = true, optional = true }
+styx-wgpu = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 minifb = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
@@ -178,6 +179,10 @@ native = [
 # Native cameras without a PiSP process on a Vulkan GPU when one exists (styx-gpuisp: Vulkan
 # loaded at run time, the software ISP otherwise; `STYX_GPU_ISP=0` turns it off).
 gpu-isp = ["native", "styx-pipeline/gpu"]
+# GPU frame preparation on wgpu (Vulkan, Metal, DX12, GLES), opted into per request:
+# `PyramidSource::Gpu` makes pyramid levels in a compute pass, bit for bit the CPU's box filter.
+# The CPU and the ISP stay the default; without a GPU the levels fall back to the CPU.
+gpu-wgpu = ["dep:styx-wgpu"]
 # The PiSP debug hooks: styx-pisp's and styx-pipeline's `debug-hooks` (`STYX_PISP_BE_DUMP`,
 # `STYX_PISP_BE_PATCH`, `STYX_PISP_FE_LINES_PROBE`, ...). Off by default: the variables are then
 # ignored. Not for production builds. docs/runtime-debugging.md lists them.

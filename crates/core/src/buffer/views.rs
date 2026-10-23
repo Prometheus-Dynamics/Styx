@@ -89,6 +89,11 @@ impl<'a> VisibleRows<'a> {
         self.row_bytes.saturating_mul(self.rows)
     }
 
+    /// The rows' bytes: row `i` at `i * stride`, the last row at least `row_bytes` long.
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.data
+    }
+
     pub fn row(&self, index: usize) -> Option<VisibleRow<'a>> {
         if index >= self.rows {
             return None;

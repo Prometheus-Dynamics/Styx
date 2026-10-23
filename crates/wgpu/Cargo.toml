@@ -1,0 +1,22 @@
+[package]
+name = "styx-wgpu"
+version.workspace = true
+edition.workspace = true
+description = "Optional GPU frame preparation for Styx on wgpu (Vulkan, Metal, DX12, GLES): an exact box-filter pyramid, bit for bit the CPU's."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["camera", "gpu", "wgpu", "pyramid", "compute"]
+categories = ["multimedia::images", "computer-vision"]
+rust-version.workspace = true
+readme = "README.md"
+
+[dependencies]
+# The version and features Daedalus's GPU crate uses, so an application with both builds one
+# wgpu and can share its device (`Gpu::from_device`).
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "vulkan", "gles", "metal", "dx12"] }
+pollster = "0.4.0"
+thiserror = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

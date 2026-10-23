@@ -124,6 +124,8 @@ JPEG with restart markers; `every_frame`: one), unless `decode_threads` says oth
     computes deeper levels with box filters.
   - `HardwareOnly` fails without an ISP output. The ISP provides a single level.
   - `Software` always uses box filters.
+  - `Gpu` makes every level on the GPU (feature `gpu-wgpu`, crates/wgpu), bit for bit the
+    box filters. It falls back to the CPU where there is no GPU.
 
 ## The previous request
 

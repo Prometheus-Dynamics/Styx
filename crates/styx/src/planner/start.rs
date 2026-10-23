@@ -103,6 +103,9 @@ pub(crate) struct FramePreparer {
     decode_threads: usize,
     roi: RoiHandle,
     pyramid_pool: BufferPool,
+    /// The GPU's pyramid levels (`PyramidSource::Gpu`), where there is a GPU.
+    #[cfg(feature = "gpu-wgpu")]
+    gpu_pyramid: Option<super::gpu_pyramid::GpuPyramid>,
     /// For exportable plans: memfd buffers for the frames this stage makes, created on first use.
     #[cfg(target_os = "linux")]
     shared_pool: Option<std::sync::OnceLock<Option<SharedBufferPool>>>,
@@ -193,6 +196,12 @@ impl FramePreparer {
             decode_threads: plan.decode_threads,
             roi,
             pyramid_pool: BufferPool::lazy(0, 8),
+            #[cfg(feature = "gpu-wgpu")]
+            gpu_pyramid: plan
+                .request
+                .pyramid
+                .filter(|p| p.levels > 0 && p.source == PyramidSource::Gpu)
+                .and_then(|_| super::gpu_pyramid::GpuPyramid::new()),
             #[cfg(target_os = "linux")]
             shared_pool: plan.exportable.then(std::sync::OnceLock::new),
             #[cfg(target_os = "linux")]
@@ -378,6 +387,27 @@ impl FramePreparer {
         if self.pyramid_levels == 0 {
             return Ok(frame);
         }
+        #[cfg(feature = "gpu-wgpu")]
+        let frame = match self.gpu_pyramid.as_ref().map(|gpu| {
+            gpu.levels(
+                &frame,
+                self.pyramid_levels,
+                self.alignment.unwrap_or(64),
+                &self.pyramid_pool,
+            )
+        }) {
+            Some(Ok(levels)) => levels.into_iter().try_fold(frame, |frame, (level, f)| {
+                frame
+                    .with_companion(CompanionKind::Pyramid { level }, f)
+                    .map_err(|e| CodecError::Codec(e.to_string()))
+            })?,
+            Some(Err(e)) => {
+                // The CPU makes the levels.
+                crate::trace::warn!(error = %e, "GPU pyramid failed: levels on the CPU");
+                frame
+            }
+            None => frame,
+        };
         frame
             .with_box_pyramid_in(
                 self.pyramid_levels,

@@ -174,12 +174,39 @@ pub fn box_downscale_luma_in(
     stride_alignment: usize,
     pool: &BufferPool,
 ) -> Result<FrameLease, FrameValidationError> {
+    let rows = source.luma_rows()?;
+    let (width, height) = (rows.row_bytes() / 2, rows.len() / 2);
+    luma_level_in(
+        source,
+        1,
+        width,
+        height,
+        stride_alignment,
+        pool,
+        |y, out| {
+            if let (Some(top), Some(bottom)) = (rows.row(2 * y), rows.row(2 * y + 1)) {
+                crate::simd::box2_row(top.data(), bottom.data(), out, width);
+            }
+        },
+    )
+}
+
+/// A GREY frame for pyramid level `level` of `source` (`width` x `height`, rows aligned to
+/// `stride_alignment`, in a buffer from `pool`), each row written by `fill(y, row)`: the
+/// metadata of `source` with its crop scaled down. For producers of levels made elsewhere
+/// (e.g. on a GPU) that attach them as [`CompanionKind::Pyramid`].
+pub fn luma_level_in(
+    source: &FrameLease,
+    level: u8,
+    width: usize,
+    height: usize,
+    stride_alignment: usize,
+    pool: &BufferPool,
+    mut fill: impl FnMut(usize, &mut [u8]),
+) -> Result<FrameLease, FrameValidationError> {
     if !stride_alignment.is_power_of_two() {
         return Err(FrameValidationError::InvalidAlignment(stride_alignment));
     }
-    let rows = source.luma_rows()?;
-    let width = rows.row_bytes() / 2;
-    let height = rows.len() / 2;
     let resolution =
         Resolution::new(width as u32, height as u32).ok_or(FrameValidationError::ZeroDimensions)?;
     let stride = width.next_multiple_of(stride_alignment);
@@ -191,17 +218,14 @@ pub fn box_downscale_luma_in(
     let offset = base.next_multiple_of(stride_alignment) - base;
     let dst = &mut buf.as_mut_slice()[offset..offset + len];
     for (y, out) in dst.chunks_exact_mut(stride).enumerate() {
-        let (Some(top), Some(bottom)) = (rows.row(2 * y), rows.row(2 * y + 1)) else {
-            break;
-        };
-        crate::simd::box2_row(top.data(), bottom.data(), &mut out[..width], width);
+        fill(y, &mut out[..width]);
     }
 
     let format = MediaFormat::new(FourCc::GREY, resolution, source.meta.format.color);
     let mut meta = FrameMeta::new(format, source.meta.timestamp);
     meta.backend = source.meta.backend.clone();
     meta.capture_instant = source.meta.capture_instant;
-    meta.crop = source.meta.crop.map(|crop| crop.scaled_down(1));
+    meta.crop = source.meta.crop.map(|crop| crop.scaled_down(level));
     Ok(FrameLease::multi_plane(
         meta,
         smallvec![buf],

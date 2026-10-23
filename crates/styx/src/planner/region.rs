@@ -173,7 +173,9 @@ pub(crate) fn isp_region_pyramid(
     let mut req = req.clone();
     if let Some(p) = &mut req.pyramid {
         if isp != IspCrop::Pisp {
-            p.source = PyramidSource::Software;
+            if p.source != PyramidSource::Gpu {
+                p.source = PyramidSource::Software;
+            }
             return req;
         }
         let pass = cost::score(cost::pisp_pass(region.0, region.1));
@@ -183,9 +185,9 @@ pub(crate) fn isp_region_pyramid(
         let hardware = match p.source {
             PyramidSource::HardwareOnly => true,
             PyramidSource::PreferHardware => pass < boxed,
-            PyramidSource::Software => false,
+            PyramidSource::Software | PyramidSource::Gpu => false,
         };
-        if !hardware {
+        if !hardware && p.source != PyramidSource::Gpu {
             p.source = PyramidSource::Software;
         }
     }

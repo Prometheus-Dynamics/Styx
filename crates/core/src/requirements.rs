@@ -104,6 +104,9 @@ pub enum PyramidSource {
     HardwareOnly,
     /// Always CPU box filters.
     Software,
+    /// A GPU compute pass (Styx's `gpu-wgpu` feature): every level bit for bit the CPU's box
+    /// filter, off the CPU. CPU box filters where the feature is off or there is no GPU.
+    Gpu,
 }
 
 /// Pyramid companions to attach (`levels` = 2 means ½ and ¼): smaller copies of each frame

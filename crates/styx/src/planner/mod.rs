@@ -27,6 +27,8 @@
 pub(crate) mod cost;
 mod delivered;
 mod frames;
+#[cfg(feature = "gpu-wgpu")]
+mod gpu_pyramid;
 mod native;
 mod pyramid;
 mod rate;
@@ -79,6 +81,8 @@ pub enum StepExecution {
     Hardware,
     /// Host CPU.
     Cpu,
+    /// A GPU compute pass (feature `gpu-wgpu`).
+    Gpu,
 }
 
 /// What a plan step does.
@@ -211,6 +215,7 @@ impl fmt::Display for FramePlan {
                 StepExecution::ZeroCopy => "zero-copy",
                 StepExecution::Hardware => "hardware",
                 StepExecution::Cpu => "cpu",
+                StepExecution::Gpu => "gpu",
             };
             writeln!(
                 f,

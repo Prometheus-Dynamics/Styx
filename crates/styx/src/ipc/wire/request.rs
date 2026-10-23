@@ -71,6 +71,7 @@ pub(in crate::ipc) fn encode_request_with(
             PyramidSource::PreferHardware => 0,
             PyramidSource::HardwareOnly => 1,
             PyramidSource::Software => 2,
+            PyramidSource::Gpu => 3,
         });
     });
     w.opt(req.roi, Writer::rect);
@@ -174,6 +175,7 @@ pub(super) fn read_request(r: &mut Reader<'_>) -> Result<FrameRequest, IpcError>
             source: match r.u8()? {
                 1 => PyramidSource::HardwareOnly,
                 2 => PyramidSource::Software,
+                3 => PyramidSource::Gpu,
                 _ => PyramidSource::PreferHardware,
             },
         })

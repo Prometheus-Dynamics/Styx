@@ -1,5 +1,6 @@
 //! Pyramid levels: from the ISP's second output (or an extra pass of an ISP-cropped region),
-//! else 2x2 box filters on the CPU.
+//! else 2x2 box filters on the CPU, or on the GPU when asked (`PyramidSource::Gpu`, feature
+//! `gpu-wgpu`).
 
 use styx_core::prelude::*;
 
@@ -29,7 +30,7 @@ pub(crate) fn add_pyramid_steps(
         && matches!(route, Route::Direct | Route::LumaView)
         && !matches!(req.hardware, Hardware::Off);
     let isp_level = match pyramid.source {
-        PyramidSource::Software => None,
+        PyramidSource::Software | PyramidSource::Gpu => None,
         PyramidSource::PreferHardware => isp_possible.then_some(1),
         PyramidSource::HardwareOnly => {
             if !isp_possible {
@@ -52,6 +53,17 @@ pub(crate) fn add_pyramid_steps(
                 execution: StepExecution::Hardware,
                 detail: format!("{w}x{h} from the ISP's second output"),
                 cost: StepCost::ZERO,
+            });
+        } else if pyramid.source == PyramidSource::Gpu && cfg!(feature = "gpu-wgpu") {
+            let source_mp = megapixels(width >> (level - 1), height >> (level - 1));
+            steps.push(PlanStep {
+                kind: StepKind::Pyramid { level },
+                execution: StepExecution::Gpu,
+                detail: format!("{w}x{h} 2x2 box filter on the GPU (CPU where there is none)"),
+                cost: StepCost::offloaded(
+                    cost::GPU_LEVEL_MS_PER_MP * source_mp,
+                    cost::GPU_COPY_MS_PER_MP * source_mp,
+                ),
             });
         } else {
             let source_mp = megapixels(width >> (level - 1), height >> (level - 1));

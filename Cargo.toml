@@ -16,6 +16,7 @@ members = [
     "crates/native",
     "crates/softisp",
     "crates/gpuisp",
+    "crates/wgpu",
     "crates/pipeline",
     "crates/uvc",
     "crates/dng",
@@ -86,6 +87,7 @@ styx-algo = { path = "crates/algo", version = "2.0.0" }
 styx-native = { path = "crates/native", version = "2.0.0" }
 styx-softisp = { path = "crates/softisp", version = "2.0.0" }
 styx-gpuisp = { path = "crates/gpuisp", version = "2.0.0" }
+styx-wgpu = { path = "crates/wgpu", version = "2.0.0" }
 styx-pipeline = { path = "crates/pipeline", version = "2.0.0" }
 styx-uvc = { path = "crates/uvc", version = "2.0.0" }
 styx-dng = { path = "crates/dng", version = "2.0.0" }

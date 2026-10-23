@@ -186,3 +186,48 @@ fn a_gltf_scene_writes_each_frames_truth() {
     }
     let _ = std::fs::remove_file(truth);
 }
+
+/// Pyramid levels from the GPU (`PyramidSource::Gpu`): planned as GPU steps, attached to each
+/// frame, and bit for bit the CPU's box filter of the frame.
+#[cfg(feature = "gpu-wgpu")]
+#[test]
+fn gpu_pyramid_levels_are_the_cpus() {
+    let device = styx::sim::device(spec()).unwrap();
+    let req = Frames::gray()
+        .size(1280, 800)
+        .fps(30)
+        .pyramid(3)
+        .pyramid_source(PyramidSource::Gpu);
+    let plan = styx::planner::plan_frames(&device, &req).unwrap();
+    let gpu_steps = plan
+        .steps
+        .iter()
+        .filter(|s| s.execution == styx::planner::StepExecution::Gpu)
+        .count();
+    assert_eq!(gpu_steps, 3, "{plan}");
+    let mut frames = plan.start().unwrap();
+    let mut checked = 0;
+    for _ in 0..10 {
+        let RecvOutcome::Data(f) = frames.next_frame(Duration::from_secs(3)) else {
+            continue;
+        };
+        let mut above = None::<FrameLease>;
+        for level in 1..=3u8 {
+            let got = f.pyramid_level(level).expect("level attached");
+            let want = box_downscale_luma(above.as_ref().unwrap_or(&f), 1).unwrap();
+            let (g, w) = (got.luma_rows().unwrap(), want.luma_rows().unwrap());
+            assert_eq!((g.row_bytes(), g.len()), (w.row_bytes(), w.len()));
+            assert_eq!(g.row_bytes(), 1280 >> level);
+            for y in 0..g.len() {
+                assert_eq!(
+                    g.row(y).unwrap(),
+                    w.row(y).unwrap(),
+                    "level {level} row {y}"
+                );
+            }
+            above = Some(want);
+        }
+        checked += 1;
+    }
+    assert!(checked >= 5, "{checked} frames");
+}

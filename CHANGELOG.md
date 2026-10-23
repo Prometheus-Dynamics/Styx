@@ -19,6 +19,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `/etc/styx/sim-cameras` (`ov9782,scene=chart`, `ov9782,recording=clip.mcap,drop=0.01`, ...),
   keyed `sim:<sensor>:<n>`, or made with `styx::sim::device`. Builds and runs on x86_64 without
   a PiSP. styx-native gains feature `sim` (`styx_native::sim`).
+- **Optional wgpu GPU backend** (`styx-wgpu`, feature `gpu-wgpu`): a headless wgpu device
+  of its own or shared with the application's (Daedalus, Bevy), and a first kernel: pyramid
+  levels by the rounded 2x2 box filter, bit for bit the CPU's, opted into per request with
+  `PyramidSource::Gpu` (plan steps run `gpu`; the CPU makes the levels where there is no GPU).
+  The CPU and the ISP stay the default. styx-core gains `PyramidSource::Gpu` (wire value 3),
+  `luma_level_in` and `VisibleRows::as_bytes`.
 - **Lockstep time for simulated cameras** (`clock=lockstep`, docs/simulation.md#lockstep-time):
   each frame's timestamp and scene time step by exactly the frame period however long the scene
   takes to render, and frames wait for a free buffer, so a slow scene runs slower than real time
