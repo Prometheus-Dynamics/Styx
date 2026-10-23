@@ -39,5 +39,7 @@ mod scaled_planning;
 mod service_controls;
 #[cfg(all(feature = "codec-turbojpeg", feature = "replay-mcap"))]
 mod shared_planning;
+#[cfg(all(feature = "sim", feature = "simulation-bevy"))]
+mod sim_bevy_cross;
 #[cfg(feature = "sim")]
 mod sim_camera;

@@ -96,6 +96,13 @@ What the scene carries, in glTF's conventions (metres, +Y up, right-handed):
   ancestors move it, looped over the longest animation.
 - **Ground truth points**: nodes named `truth:<name>` (e.g. `truth:tag7/tl`); the point is the
   node's origin.
+- **Materials**: mark them unlit (`KHR_materials_unlit`) so that the Bevy backend, which
+  lights the scene, shows the base colour as the simulated cameras do (they ignore lights).
+
+`sim_bevy_cross` (crates/styx/tests/it, features `sim` and `simulation-bevy`, ignored without
+a GPU: `--run-ignored all`) renders the test scene with Bevy and checks that the square lands
+where the simulated cameras' lens model puts it (edge within a pixel) with its texture the
+right way round.
 
 ```text
 ov9782,scene=gltf,path=/data/sim/field.glb,lens=fisheye,lens_width=1280,lens_height=800,fx=560,fy=560,cx=639.5,cy=399.5,k1=0.03,truth=/tmp/truth.jsonl

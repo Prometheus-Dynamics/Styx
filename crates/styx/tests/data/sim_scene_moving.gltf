@@ -108,12 +108,18 @@
    ]
   }
  ],
+ "extensionsUsed": [
+  "KHR_materials_unlit"
+ ],
  "materials": [
   {
    "pbrMetallicRoughness": {
     "baseColorTexture": {
      "index": 0
     }
+   },
+   "extensions": {
+    "KHR_materials_unlit": {}
    }
   },
   {
@@ -124,6 +130,9 @@
      0.2,
      1
     ]
+   },
+   "extensions": {
+    "KHR_materials_unlit": {}
    }
   }
  ],

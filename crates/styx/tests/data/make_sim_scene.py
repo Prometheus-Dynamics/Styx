@@ -61,8 +61,13 @@ def scene(moving):
         "cameras": [{"type": "perspective", "perspective": {"yfov": 0.9, "znear": 0.05, "aspectRatio": 1.6}}],
         "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 2}, "indices": 4, "material": 0}]},
                    {"primitives": [{"attributes": {"POSITION": 1, "TEXCOORD_0": 3}, "indices": 5, "material": 1}]}],
-        "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}},
-                      {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.2, 0.2, 1]}}],
+        # Unlit (KHR_materials_unlit), so a renderer with lights (Bevy) shows the base colour as
+        # Styx's CPU renderer does.
+        "extensionsUsed": ["KHR_materials_unlit"],
+        "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+                       "extensions": {"KHR_materials_unlit": {}}},
+                      {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.2, 0.2, 1]},
+                       "extensions": {"KHR_materials_unlit": {}}}],
         "textures": [{"source": 0, "sampler": 0}],
         "samplers": [{"magFilter": 9728, "minFilter": 9728}],
         "images": [{"uri": "data:image/png;base64," + tex}],
