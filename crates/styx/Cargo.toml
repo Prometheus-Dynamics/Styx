@@ -107,7 +107,7 @@ replay-mcap = ["facade", "dep:mcap"]
 # Simulated cameras (`styx::sim`): native cameras on a simulated sensor, bridge and capture
 # queue, through the software ISP, from a chart or a raw recording, with injected faults; listed
 # by `STYX_SIM_CAMERAS` or `/etc/styx/sim-cameras` (docs/simulation.md).
-sim = ["native", "styx-native/sim"]
+sim = ["native", "styx-native/sim", "dep:serde_json"]
 replay-softisp = [
     "facade",
     "dep:styx-pipeline",

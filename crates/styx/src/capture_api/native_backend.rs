@@ -237,7 +237,7 @@ pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
 /// Bridged cameras and the problems met while looking.
 pub(crate) fn probe() -> (Vec<ProbedDevice>, Vec<String>) {
     #[cfg(feature = "sim")]
-    crate::sim::install_recording_loader();
+    crate::sim::install_scenes();
     let (cameras, errors) = styx_native::discover(&SensorLibrary::system());
     (
         cameras.iter().map(probed_device).collect(),

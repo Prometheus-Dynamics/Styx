@@ -31,7 +31,7 @@ Each camera is keyed `sim:<sensor>:<n>` (`n` counts the cameras of that sensor f
 
 | key | meaning | default |
 |---|---|---|
-| `scene` | `chart` (grey ramp, colour checker, fine checkerboard, a moving bright square) or `flat` | `chart` |
+| `scene` | `chart` (grey ramp, colour checker, fine checkerboard, a moving bright square), `flat`, or `tags` (AprilTags in 3D, [below](#tags)) | `chart` |
 | `light` | scene brightness (1: mid grey at 18% of full scale at 10 ms, gain 1) | 1 |
 | `grey` | `flat`'s reflectance | 0.18 |
 | `recording` | a raw recording (MCAP or styxrec of Bayer frames, e.g. `Frames::sensor_raw()`), looped | |
@@ -43,6 +43,7 @@ Each camera is keyed `sim:<sensor>:<n>` (`n` counts the cameras of that sensor f
 | `unplug_every_s` | the sensor disappears every this long while streaming ... | off |
 | `unplug_for_s` | ... for this long (not listed, does not open), then comes back | 2 |
 | `seed` | seed of the faults and the noise | 0 |
+| `truth` | where each frame's ground truth goes (JSON Lines; scenes that know it: `tags`) | |
 
 Examples:
 
@@ -52,6 +53,50 @@ ov9782,scene=chart,light=0.5
 ov9782,recording=/data/clips/field.mcap
 ov9782,drop=0.01,jitter_ms=1.5,fail_every_s=60,unplug_every_s=300,unplug_for_s=5
 ```
+
+## Tags
+
+`scene=tags` renders AprilTag 36h11 tags at their poses in 3D, seen through the camera's lens
+from its pose or along a trajectory, so tag detection, multi-tag pose and mapping run in the
+sim. Each pixel's ray comes from the calibration's lens model (the equidistant fisheye or the
+pinhole with radial and tangential distortion, as OpenCV and HeliOS define them); inside each
+tag's projected bounds it meets the tag's plane and reads the tag's cell (2x2 samples per
+pixel); elsewhere it meets a floor (z = 0, a 1 m checker) or a plain wall. With a moving camera
+the tags blur over the exposure (one pose per 2 ms, up to 8).
+
+| key | meaning | default |
+|---|---|---|
+| `layout` | the tags: a WPILib AprilTag field layout (`.json`: `tags` with `ID` and `pose`) or a Limelight map (`.fmap`: `fiducials` with `id`, `size` in mm, a row-major 4x4 `transform`) | four tags (ids 1 to 4) on a wall 3 m ahead |
+| `tag_size` | the black square's side (m), for WPILib layouts | 0.1651 (FRC) |
+| `calibration` | the camera's calibration, HeliOS's JSON: `width`, `height`, `model` (`fisheye` or `pinhole`), `fx`, `fy`, `cx`, `cy`, `distortion` (`k1`..`k6`, `p1`, `p2`) | a fisheye, f = 560 px at 1280x800 |
+| `camera` | a JSON file: `{"pose": {...}}` or `{"trajectory": [{"t": 0, ...}, ...]}` (looped), each pose `x`, `y`, `z` (m) and `roll`, `pitch`, `yaw` (degrees) | |
+| `pose` | the camera's pose inline: `x:y:z:roll:pitch:yaw` | `0:0:0.5:0:0:0` |
+| `light` | brightness (1: white paper at 80% of full scale at 10 ms, gain 1) | 1 |
+| `antialias`, `blur` | `on` or `off` | on |
+
+Frames are WPILib's: X forward, Y left, Z up; a rotation is roll about X, then pitch about Y,
+then yaw about Z, about the fixed axes. The camera looks along its +X. A tag faces its +X; seen
+from the front, its +Y is to the right and +Z up. The calibration covers the whole pixel array
+at its size; a mode of another size or field (a binned or cropped mode) is mapped onto it.
+
+```text
+ov9782,scene=tags,layout=/usr/share/helios/fields/2025-reefscape.json,calibration=/data/cal/cam0.json,camera=/data/sim/drive.json,truth=/tmp/truth.jsonl
+```
+
+### Ground truth
+
+With `truth=<path>`, each frame appends one line of JSON: `sequence` (the frame's
+`NativeFrameMeta::sequence`; it starts at 0 with each stream), `timestamp_ns` (the frame's start,
+`CLOCK_MONOTONIC`), `width`, `height`, `hflip`, `vflip`, `camera` (`position` m and
+`orientation_wxyz`, the camera body in the layout's frame at the middle of the exposure) and
+`tags`: each visible tag's `id` and `corners`, the black square's top left, top right, bottom
+right and bottom left as printed, in pixels of the delivered frame (flips applied; pixel centres
+at integers, as OpenCV's). A tag is listed when all four corners are in the frame.
+
+Checked with OpenCV 4.13's AprilTag 36h11 detector (`DICT_APRILTAG_36h11`, sub-pixel corners) on
+four views of the default tags at 1280x800: every tag found with its id, corners within 0.4 to
+1.4 px of the truth on tags about 30 px across. Rendering a moving camera's frame with blur
+takes about 15 ms at 1280x800 (release, the dev PC); a still camera's frame is made once.
 
 ## What is simulated, and how faithfully
 

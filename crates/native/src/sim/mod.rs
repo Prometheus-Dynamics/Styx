@@ -34,7 +34,9 @@ use styx_kernel::media::{
 
 pub use self::bus::{SimBus, SimPower};
 pub(crate) use self::rig::{SimRig, configure, open};
-pub use self::scene::{ChartScene, FlatScene, SceneFrame, SimScene};
+pub use self::scene::{
+    ChartScene, FlatScene, FrameContext, GroundTruth, SceneFrame, SimScene, Spot,
+};
 use crate::discover::CameraInfo;
 use crate::error::{NativeError, Result};
 use crate::fake::lock;
@@ -60,6 +62,12 @@ pub enum SimSource {
     /// A recording of raw frames, looped (read by the loader the application registers with
     /// [`set_recording_loader`]: styx's MCAP and styxrec readers).
     Recording(PathBuf),
+    /// A scene the application provides ([`register_scene`]), by name, with the spec's other
+    /// keys (styx's `tags`: AprilTags in 3D through the lens).
+    Plugin {
+        name: String,
+        params: Vec<(String, String)>,
+    },
 }
 
 /// Faults a simulated camera injects.
@@ -94,6 +102,8 @@ pub struct SimSpec {
     pub faults: SimFaults,
     /// Sensor noise (on by default; off gives exact frames, for tests).
     pub noise: bool,
+    /// Where each frame's ground truth goes (JSON Lines), for scenes that know it.
+    pub truth: Option<PathBuf>,
 }
 
 impl SimSpec {
@@ -105,6 +115,7 @@ impl SimSpec {
             source: SimSource::Chart { light: 1.0 },
             faults: SimFaults::default(),
             noise: true,
+            truth: None,
         }
     }
 
@@ -113,10 +124,10 @@ impl SimSpec {
         format!("{SIM_PREFIX}{}:{}", self.sensor, self.index)
     }
 
-    /// Parses `<sensor>[,key=value]...`: `scene=chart|flat`, `light=<f>`, `grey=<f>`,
-    /// `recording=<path>`, `noise=on|off`, and the faults `drop=<p>`, `corrupt=<p>`,
-    /// `jitter_ms=<f>`, `fail_every_s=<f>`, `unplug_every_s=<f>`, `unplug_for_s=<f>`,
-    /// `seed=<n>`.
+    /// Parses `<sensor>[,key=value]...`: `scene=chart|flat|<plugin>`, `light=<f>`, `grey=<f>`,
+    /// `recording=<path>`, `noise=on|off`, `truth=<path>`, and the faults `drop=<p>`,
+    /// `corrupt=<p>`, `jitter_ms=<f>`, `fail_every_s=<f>`, `unplug_every_s=<f>`,
+    /// `unplug_for_s=<f>`, `seed=<n>`. A plugin scene takes the other keys as its parameters.
     pub fn parse(text: &str) -> std::result::Result<Self, String> {
         let mut parts = text.split(',').map(str::trim);
         let sensor = parts
@@ -125,6 +136,7 @@ impl SimSpec {
             .ok_or_else(|| format!("\"{text}\": the sensor name first"))?;
         let mut spec = Self::new(sensor);
         let (mut light, mut grey, mut scene) = (1.0f32, 0.18f32, "chart".to_owned());
+        let mut extra: Vec<(String, String)> = Vec::new();
         let num = |k: &str, v: &str| {
             v.parse::<f64>()
                 .ok()
@@ -149,15 +161,29 @@ impl SimSpec {
                 "unplug_every_s" => spec.faults.unplug_every = Some(secs(k, v)?),
                 "unplug_for_s" => spec.faults.unplug_for = secs(k, v)?,
                 "seed" => spec.faults.seed = num(k, v)? as u64,
-                _ => return Err(format!("unknown key {k}")),
+                "truth" => spec.truth = Some(PathBuf::from(v)),
+                _ => extra.push((k.to_owned(), v.to_owned())),
             }
         }
         if !matches!(spec.source, SimSource::Recording(_)) {
             spec.source = match scene.as_str() {
                 "chart" => SimSource::Chart { light },
                 "flat" => SimSource::Flat { grey, light },
-                other => return Err(format!("scene={other}: chart or flat")),
+                name => {
+                    let mut params = extra;
+                    params.push(("light".into(), light.to_string()));
+                    return Ok(Self {
+                        source: SimSource::Plugin {
+                            name: name.to_owned(),
+                            params,
+                        },
+                        ..spec
+                    });
+                }
             };
+        }
+        if let Some((k, _)) = extra.first() {
+            return Err(format!("unknown key {k}"));
         }
         if spec.faults.unplug_every.is_some() && spec.faults.unplug_for.is_zero() {
             spec.faults.unplug_for = Duration::from_secs(2);
@@ -230,8 +256,32 @@ pub fn set_recording_loader(loader: RecordingLoader) {
     let _ = RECORDING_LOADER.set(loader);
 }
 
+/// Makes a plugin scene from its parameters (registered by the application).
+pub type SceneLoader = fn(&[(String, String)]) -> std::result::Result<Arc<dyn SimScene>, String>;
+
+static SCENES: Mutex<Vec<(String, SceneLoader)>> = Mutex::new(Vec::new());
+
+/// Registers the scene `name` (`scene=<name>` in a spec). A name registered again is replaced.
+pub fn register_scene(name: &str, loader: SceneLoader) {
+    let mut scenes = lock(&SCENES);
+    scenes.retain(|(n, _)| n != name);
+    scenes.push((name.to_owned(), loader));
+}
+
 pub(crate) fn scene_for(spec: &SimSpec) -> Result<Arc<dyn SimScene>> {
     Ok(match &spec.source {
+        SimSource::Plugin { name, params } => {
+            let loader = lock(&SCENES)
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, l)| *l)
+                .ok_or_else(|| {
+                    NativeError::InvalidConfig(format!(
+                        "scene={name}: chart, flat or a registered scene"
+                    ))
+                })?;
+            loader(params).map_err(|e| NativeError::InvalidConfig(format!("scene={name}: {e}")))?
+        }
         SimSource::Chart { light } => Arc::new(ChartScene::new(*light)),
         SimSource::Flat { grey, light } => Arc::new(FlatScene::new(*grey, *light)),
         SimSource::Recording(path) => {

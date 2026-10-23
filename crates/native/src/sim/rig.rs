@@ -8,7 +8,7 @@ use styx_kernel::FourCc;
 use styx_kernel::bus::{StreamAction, StreamRequest};
 use styx_sensor::{SensorDescription, SensorDriver, Step};
 
-use super::scene::{Exposure, Readout, SimScene, render};
+use super::scene::{Exposure, FrameContext, GroundTruth, Readout, SimScene, render};
 use super::{SimBus, SimSpec, present, scene_for, spec_of, unplug};
 use crate::camera::{
     Configured, NativeCamera, StreamSettings, check_flips, select_mode, start_frame_length,
@@ -41,6 +41,53 @@ pub(crate) struct SimRig {
     readout: Mutex<Option<(Readout, [f32; 4])>>,
     control: Arc<Mutex<crate::control::SensorControl<crate::camera::Bus, crate::camera::Pins>>>,
     stop: AtomicBool,
+    /// Where each frame's ground truth goes (`SimSpec::truth`).
+    truth: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
+}
+
+/// One frame's ground truth as a line of JSON, its corners in the delivered frame (mirrored as
+/// the flips read the array out).
+fn truth_line(
+    seq: u32,
+    timestamp: Duration,
+    (w, h): (u32, u32),
+    (hflip, vflip): (bool, bool),
+    t: &GroundTruth,
+) -> String {
+    let (p, q) = t.camera;
+    let mut line = format!(
+        "{{\"sequence\":{seq},\"timestamp_ns\":{},\"width\":{w},\"height\":{h},\"hflip\":{hflip},\"vflip\":{vflip},\"camera\":{{\"position\":[{:.6},{:.6},{:.6}],\"orientation_wxyz\":[{:.8},{:.8},{:.8},{:.8}]}},\"tags\":[",
+        timestamp.as_nanos(),
+        p[0],
+        p[1],
+        p[2],
+        q[0],
+        q[1],
+        q[2],
+        q[3]
+    );
+    for (i, (id, corners)) in t.tags.iter().enumerate() {
+        if i > 0 {
+            line.push(',');
+        }
+        line.push_str(&format!("{{\"id\":{id},\"corners\":["));
+        for (j, c) in corners.iter().enumerate() {
+            let x = if hflip {
+                f64::from(w) - 1.0 - c[0]
+            } else {
+                c[0]
+            };
+            let y = if vflip {
+                f64::from(h) - 1.0 - c[1]
+            } else {
+                c[1]
+            };
+            line.push_str(&format!("{}[{x:.3},{y:.3}]", if j > 0 { "," } else { "" }));
+        }
+        line.push_str("]}");
+    }
+    line.push_str("]}\n");
+    line
 }
 
 impl Drop for SimRig {
@@ -158,6 +205,18 @@ pub(crate) fn open_spec(
         opened,
         None,
     );
+    let truth = match &spec.truth {
+        Some(path) => Some(std::io::BufWriter::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| {
+                    NativeError::InvalidConfig(format!("truth file {}: {e}", path.display()))
+                })?,
+        )),
+        None => None,
+    };
     let rig = Arc::new(SimRig {
         key: key.clone(),
         spec,
@@ -169,6 +228,7 @@ pub(crate) fn open_spec(
         readout: Mutex::new(None),
         control,
         stop: AtomicBool::new(false),
+        truth: Mutex::new(truth),
     });
     claim.0 = None;
     let weak = Arc::downgrade(&rig);
@@ -426,9 +486,35 @@ impl SimRig {
             flip(&self.desc.controls.hflip),
             flip(&self.desc.controls.vflip),
         );
-        let scene = self
-            .scene
-            .frame(u64::from(seq), readout.width, readout.height, field);
+        let ctx = FrameContext {
+            index: u64::from(seq),
+            time: now.duration_since(since).as_secs_f64(),
+            exposure: exposure.as_secs_f64(),
+            width: readout.width,
+            height: readout.height,
+            field,
+        };
+        let (scene, truth) = self.scene.frame_at(&ctx);
+        if let Some(t) = truth {
+            let mut out = lock(&self.truth);
+            if let Some(file) = out.as_mut() {
+                use std::io::Write;
+                let line = truth_line(
+                    seq,
+                    styx_kernel::monotonic_now(),
+                    (readout.width, readout.height),
+                    (hflip, vflip),
+                    &t,
+                );
+                if file
+                    .write_all(line.as_bytes())
+                    .and_then(|()| file.flush())
+                    .is_err()
+                {
+                    *out = None;
+                }
+            }
+        }
         let e = Exposure {
             seconds: exposure.as_secs_f32(),
             gain: gain as f32,

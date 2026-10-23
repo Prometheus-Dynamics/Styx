@@ -44,11 +44,49 @@ pub struct Spot {
     pub light: [f32; 3],
 }
 
+/// One frame a scene is asked for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameContext {
+    /// The frame's sequence in its stream (from 0 at each start).
+    pub index: u64,
+    /// Seconds from the stream's start to the frame's start.
+    pub time: f64,
+    /// The frame's exposure, in seconds (a moving scene blurs over it).
+    pub exposure: f64,
+    /// The image size of the mode ...
+    pub width: u32,
+    pub height: u32,
+    /// ... and the part of the pixel array it reads: left, top, right, bottom as fractions.
+    pub field: [f32; 4],
+}
+
+/// The truth about a frame, for scoring what is detected in it: where the camera was and
+/// where the tags' corners fall in the image (array pixels of the unflipped mode image; the
+/// camera maps them to the delivered frame).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroundTruth {
+    /// The camera's pose in the scene's frame: position (m) and orientation (a unit quaternion,
+    /// w, x, y, z), at the middle of the exposure.
+    pub camera: ([f64; 3], [f64; 4]),
+    /// Each tag in view: its id and its corners (top left, top right, bottom right, bottom left
+    /// of the tag as printed) in pixels, at the middle of the exposure.
+    pub tags: Vec<(u32, [[f64; 2]; 4])>,
+}
+
 /// What a simulated camera sees.
 pub trait SimScene: Send + Sync {
     /// Frame `index` of the scene as a `width`×`height` image of the part of the pixel array
     /// a mode reads (`field`: left, top, right, bottom as fractions of the array).
     fn frame(&self, index: u64, width: u32, height: u32, field: [f32; 4]) -> Arc<SceneFrame>;
+
+    /// The frame for `ctx` and its ground truth, if the scene knows it. By default
+    /// [`Self::frame`] without truth; a scene that moves or holds targets overrides it.
+    fn frame_at(&self, ctx: &FrameContext) -> (Arc<SceneFrame>, Option<GroundTruth>) {
+        (
+            self.frame(ctx.index, ctx.width, ctx.height, ctx.field),
+            None,
+        )
+    }
 }
 
 /// sRGB (0..1) to linear light.

@@ -12,8 +12,16 @@
 //! e.g. `ov9782,scene=chart` or `ov9782,recording=/data/clip.mcap,drop=0.01`), keyed
 //! `sim:<sensor>:<n>`, or from the program with [`device`].
 
+mod files;
+mod geometry;
+mod tag36h11;
+mod tags;
+
+#[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
+use std::sync::Mutex;
 
 use styx_native::SensorLibrary;
 use styx_native::discover::discover_key;
@@ -27,7 +35,7 @@ use crate::ProbedDevice;
 /// A simulated camera for this process (registered, numbered after the others of its sensor),
 /// probed as a native camera: open it with the planner, a capture request or a camera service.
 pub fn device(spec: SimSpec) -> Result<ProbedDevice, String> {
-    install_recording_loader();
+    install_scenes();
     let spec = register(spec);
     let info = discover_key(&spec.key(), &SensorLibrary::system()).map_err(|e| e.to_string())?;
     Ok(crate::capture_api::native_backend::probed_device(&info))
@@ -38,8 +46,12 @@ pub fn device_from(text: &str) -> Result<ProbedDevice, String> {
     device(SimSpec::parse(text)?)
 }
 
-/// Lets simulated cameras play recordings (the replay readers this build has).
-pub(crate) fn install_recording_loader() {
+/// Lets simulated cameras play recordings (the replay readers this build has) and render
+/// `scene=tags` (see [`tags`]).
+pub(crate) fn install_scenes() {
+    styx_native::sim::register_scene("tags", |params| {
+        tags::TagsScene::from_params(params).map(|s| Arc::new(s) as Arc<dyn SimScene>)
+    });
     #[cfg(any(feature = "replay-mcap", feature = "replay-styxrec"))]
     styx_native::sim::set_recording_loader(|path| {
         RecordingScene::open(path).map(|s| Arc::new(s) as Arc<dyn SimScene>)

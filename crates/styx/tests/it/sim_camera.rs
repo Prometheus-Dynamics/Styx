@@ -144,3 +144,43 @@ fn a_raw_client_records_a_simulated_camera() {
     }
     assert!(got >= 5, "{got} raw frames");
 }
+
+/// `scene=tags`: AprilTags through the lens, frames at the sensor's exposure, and each frame's
+/// ground truth (the camera's pose, the tags' corners in the delivered frame) by sequence.
+#[test]
+fn a_tags_scene_writes_each_frames_truth() {
+    let truth = std::env::temp_dir().join(format!("styx-sim-truth-{}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&truth);
+    let device = styx::sim::device_from(&format!(
+        "ov9782,scene=tags,pose=0:0:0.5:0:0:0,truth={}",
+        truth.display()
+    ))
+    .unwrap();
+    let plan =
+        styx::planner::plan_frames(&device, &Frames::gray().size(1280, 800).fps(30)).unwrap();
+    let mut frames = plan.start().unwrap();
+    let mut sequences = Vec::new();
+    for _ in 0..10 {
+        if let RecvOutcome::Data(f) = frames.next_frame(Duration::from_secs(3)) {
+            sequences.push(f.meta().native().map(|n| n.sequence).unwrap());
+        }
+    }
+    drop(frames);
+    assert!(sequences.len() >= 5, "{sequences:?}");
+    let text = std::fs::read_to_string(&truth).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.len() >= sequences.len(), "{} lines", lines.len());
+    // Every delivered frame has its truth, with the four default tags in view.
+    for seq in &sequences {
+        let line = lines
+            .iter()
+            .find(|l| l.starts_with(&format!("{{\"sequence\":{seq},")))
+            .unwrap_or_else(|| panic!("no truth for frame {seq}"));
+        assert_eq!(line.matches("\"id\":").count(), 4, "{line}");
+        assert!(
+            line.contains("\"position\":[0.000000,0.000000,0.500000]"),
+            "{line}"
+        );
+    }
+    let _ = std::fs::remove_file(truth);
+}
