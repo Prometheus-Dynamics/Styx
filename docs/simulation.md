@@ -66,6 +66,10 @@ ov9782,drop=0.01,jitter_ms=1.5,fail_every_s=60,unplug_every_s=300,unplug_for_s=5
 | bridge | the bridge's start and stop requests with acknowledgements | the session's start, stop and restart paths |
 | ISP | the software ISP with the 3A loop and the sensor's tuning | raw frames for `Frames::sensor_raw()` consumers (`native_sensor_raw`), 16-bit Bayer as the PiSP gives them (a copy here); PiSP-only features do not run: sliced delivery, lazy back end buffers, the second output; embedded data is not sent |
 
+Rendering a 1280x800 frame takes about 4.6 ms on one x86 core (7.3 ms with noise; release
+build, 2026-10-23, the dev PC), so a simulated camera keeps up with 120 fps; the software ISP
+after it costs more than the sensor.
+
 A recording is played one recorded frame per sensor frame, with each recorded frame's exposure,
 gain and black level taken out, so AE and manual exposure act on it as on a live scene. A
 recording of another size is scaled to the mode.

@@ -16,11 +16,13 @@ use crate::formats::RawPacking;
 /// A frame of a scene: the light on each pixel of a `width`×`height` image.
 #[derive(Clone, Debug)]
 pub enum SceneFrame {
-    /// Per pixel, red, green and blue (fraction of full scale per second at gain 1).
+    /// Per pixel, red, green and blue (fraction of full scale per second at gain 1), shared
+    /// between frames, with a bright `spot` over it (the moving part of the scene).
     Rgb {
         width: u32,
         height: u32,
-        light: Vec<[f32; 3]>,
+        light: Arc<Vec<[f32; 3]>>,
+        spot: Option<Spot>,
     },
     /// One colour per pixel in the colour filter order `order` of the unflipped array (a raw
     /// recording's frames, with their exposure and gain taken out).
@@ -30,6 +32,16 @@ pub enum SceneFrame {
         order: ColorFilter,
         light: Vec<f32>,
     },
+}
+
+/// A rectangle of even light over a scene frame (pixels `x0..x1`, `y0..y1`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spot {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
+    pub light: [f32; 3],
 }
 
 /// What a simulated camera sees.
@@ -141,28 +153,29 @@ impl SimScene for ChartScene {
                 }
             }
         };
-        // The moving square: across and back in 4 s at 30 fps (120 frames).
-        let mut light = (*base).clone();
+        // The moving square: across and back in 8 s at 30 fps (240 frames).
         let phase = (index % 240) as f32 / 120.0;
         let pos = if phase < 1.0 { phase } else { 2.0 - phase };
         let (sx, sy, side) = (0.05 + 0.8 * pos, 0.86, 0.08);
-        let scale = CHART_LIGHT * self.light;
-        for y in 0..height {
-            let v = field[1] + (field[3] - field[1]) * (y as f32 + 0.5) / height as f32;
-            if !(sy..sy + side).contains(&v) {
-                continue;
-            }
-            for x in 0..width {
-                let u = field[0] + (field[2] - field[0]) * (x as f32 + 0.5) / width as f32;
-                if (sx..sx + side * 0.625).contains(&u) {
-                    light[(y * width + x) as usize] = [0.9 * scale; 3];
-                }
-            }
-        }
+        let to_x = |u: f32| {
+            ((u - field[0]) / (field[2] - field[0]) * width as f32).clamp(0.0, width as f32) as u32
+        };
+        let to_y = |v: f32| {
+            ((v - field[1]) / (field[3] - field[1]) * height as f32).clamp(0.0, height as f32)
+                as u32
+        };
+        let spot = Spot {
+            x0: to_x(sx),
+            x1: to_x(sx + side * 0.625),
+            y0: to_y(sy),
+            y1: to_y(sy + side),
+            light: [0.9 * CHART_LIGHT * self.light; 3],
+        };
         Arc::new(SceneFrame::Rgb {
             width,
             height,
-            light,
+            light: base,
+            spot: (spot.x0 < spot.x1 && spot.y0 < spot.y1).then_some(spot),
         })
     }
 }
@@ -200,7 +213,8 @@ impl SimScene for FlatScene {
         Arc::new(SceneFrame::Rgb {
             width,
             height,
-            light: vec![[l; 3]; (width * height) as usize],
+            light: Arc::new(vec![[l; 3]; (width * height) as usize]),
+            spot: None,
         })
     }
 }
@@ -261,10 +275,16 @@ fn light_at(scene: &SceneFrame, px: u32, py: u32, colour: usize, (w, h): (u32, u
             width,
             height,
             light,
+            spot,
         } => {
             let x = (px * width / w).min(width - 1);
             let y = (py * height / h).min(height - 1);
-            light[(y * width + x) as usize][colour]
+            match spot {
+                Some(s) if (s.x0..s.x1).contains(&x) && (s.y0..s.y1).contains(&y) => {
+                    s.light[colour]
+                }
+                _ => light[(y * width + x) as usize][colour],
+            }
         }
         SceneFrame::Mosaic {
             width,
@@ -293,20 +313,58 @@ pub(crate) fn render(out: &mut [u8], scene: &SceneFrame, readout: &Readout, e: &
     let (w, h) = (readout.width, readout.height);
     let full = ((1u32 << readout.bits) - 1) as f32;
     let k = e.seconds * e.gain;
+    let (base, span) = (readout.black * full, (1.0 - readout.black) * full);
+    // Shot noise grows with the signal; read noise is a floor (both scaled by gain).
+    let (shot, read) = (0.00002 * e.gain, 0.000004 * e.gain * e.gain);
+    // Noise: a fast generator per row, seeded from the row and the frame.
+    let mut rng = 0u32;
+    let sample = |v: f32, rng: &mut u32| -> u16 {
+        let mut v = v * k;
+        if e.noise.is_some() {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 17;
+            *rng ^= *rng << 5;
+            let u = (*rng >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+            v += u * (shot * v.max(0.0) + read).sqrt() * 3.46;
+        }
+        (base + v.clamp(0.0, 1.0) * span).round().min(full) as u16
+    };
+    // The colour of each 2x2 cell position.
+    let cell = [0, 1, 2, 3].map(|i| colour_at(readout.order, i & 1, i >> 1));
     let mut row = vec![0u16; w as usize];
     for y in 0..h {
         let py = if e.vflip { h - 1 - y } else { y };
-        for x in 0..w {
-            let px = if e.hflip { w - 1 - x } else { x };
-            let c = colour_at(readout.order, px, py);
-            let mut v = light_at(scene, px, py, c, (w, h)) * k;
-            if let Some(seed) = e.noise {
-                // Shot noise grows with the signal; read noise is a floor (both scaled by gain).
-                let sigma = (0.00002 * v.max(0.0) * e.gain + 0.000004 * e.gain * e.gain).sqrt();
-                v += hash_noise(px, py, seed) * sigma * 3.46;
+        let cells = &cell[(py as usize & 1) * 2..][..2];
+        if let Some(seed) = e.noise {
+            rng = (hash_noise(0, py, seed).to_bits() | 1).wrapping_mul(0x9E37_79B9);
+        }
+        match scene {
+            // The common case: a scene of the frame's size, read straight.
+            SceneFrame::Rgb {
+                width,
+                height,
+                light,
+                spot,
+            } if (*width, *height) == (w, h) => {
+                let line = &light[(py * w) as usize..][..w as usize];
+                let spot = spot.filter(|s| (s.y0..s.y1).contains(&py));
+                for (x, o) in row.iter_mut().enumerate() {
+                    let px = if e.hflip { w - 1 - x as u32 } else { x as u32 };
+                    let c = cells[px as usize & 1];
+                    let v = match spot {
+                        Some(s) if (s.x0..s.x1).contains(&px) => s.light[c],
+                        _ => line[px as usize][c],
+                    };
+                    *o = sample(v, &mut rng);
+                }
             }
-            let v = (readout.black + v * (1.0 - readout.black)).clamp(0.0, 1.0);
-            row[x as usize] = (v * full).round() as u16;
+            _ => {
+                for (x, o) in row.iter_mut().enumerate() {
+                    let px = if e.hflip { w - 1 - x as u32 } else { x as u32 };
+                    let c = cells[px as usize & 1];
+                    *o = sample(light_at(scene, px, py, c, (w, h)), &mut rng);
+                }
+            }
         }
         let start = y as usize * readout.stride;
         let Some(line) = out.get_mut(start..start + readout.stride) else {
@@ -394,7 +452,8 @@ mod tests {
         let red = Arc::new(SceneFrame::Rgb {
             width: 4,
             height: 2,
-            light: vec![[100.0, 0.0, 0.0]; 8],
+            light: Arc::new(vec![[100.0, 0.0, 0.0]; 8]),
+            spot: None,
         });
         let r = readout(RawPacking::Unpacked16, 8);
         let mut out = vec![0u8; 16];
@@ -435,5 +494,53 @@ mod tests {
             10,
         );
         assert_eq!(line, [0xff, 0x00, 0x80, 0x55, 0b01_00_01_11]);
+    }
+}
+
+#[cfg(test)]
+mod speed {
+    use super::*;
+
+    /// Render time of a 1280x800 CSI-2 RAW10 frame of the chart with noise (`cargo test --release
+    /// -p styx-native render_speed -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn render_speed() {
+        let (w, h) = (1280, 800);
+        let scene = ChartScene::new(1.0).frame(0, w, h, [0.0, 0.0, 1.0, 1.0]);
+        let r = Readout {
+            width: w,
+            height: h,
+            stride: 1600,
+            packing: RawPacking::Csi2Packed10,
+            bits: 10,
+            order: ColorFilter::Bggr,
+            black: 0.06,
+        };
+        let mut out = vec![0u8; 1600 * 800];
+        for noise in [None, Some(1)] {
+            let e = Exposure {
+                seconds: 0.01,
+                gain: 2.0,
+                hflip: false,
+                vflip: false,
+                noise,
+            };
+            let t = std::time::Instant::now();
+            for _ in 0..20 {
+                render(&mut out, &scene, &r, &e);
+            }
+            let chart = std::time::Instant::now();
+            let scenes = ChartScene::new(1.0);
+            for i in 0..20 {
+                std::hint::black_box(scenes.frame(i, w, h, [0.0, 0.0, 1.0, 1.0]));
+            }
+            eprintln!(
+                "noise {}: render {:.2} ms, chart frame {:.2} ms (the first one drawn)",
+                noise.is_some(),
+                (chart - t).as_secs_f64() * 1e3 / 20.0,
+                chart.elapsed().as_secs_f64() * 1e3 / 20.0
+            );
+        }
     }
 }

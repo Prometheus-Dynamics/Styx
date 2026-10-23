@@ -197,7 +197,8 @@ impl SimScene for RecordingScene {
             Arc::new(SceneFrame::Rgb {
                 width,
                 height,
-                light: vec![[0.0; 3]; (width * height) as usize],
+                light: Arc::new(vec![[0.0; 3]; (width * height) as usize]),
+                spot: None,
             })
         })
     }
