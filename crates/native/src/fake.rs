@@ -217,16 +217,25 @@ impl FakeQueue {
 
     /// [`Self::tick`], the frame's bytes written by `render` (the buffer, the sequence).
     pub(crate) fn tick_with(&self, render: impl FnOnce(&mut [u8], u32)) -> Option<u32> {
+        self.tick_at(None, render)
+    }
+
+    /// [`Self::tick_with`] with the frame's timestamp given (else as `real_time` says).
+    pub(crate) fn tick_at(
+        &self,
+        at: Option<Duration>,
+        render: impl FnOnce(&mut [u8], u32),
+    ) -> Option<u32> {
         let mut q = lock(&self.inner);
         if !q.streaming || q.gone {
             return None;
         }
         let seq = q.sequence;
         q.sequence += 1;
-        let timestamp = if q.real_time {
-            styx_kernel::monotonic_now()
-        } else {
-            Duration::from_millis(u64::from(seq) * 10)
+        let timestamp = match at {
+            Some(t) => t,
+            None if q.real_time => styx_kernel::monotonic_now(),
+            None => Duration::from_millis(u64::from(seq) * 10),
         };
         if q.frame_sync {
             q.events.push_back((seq, timestamp));
@@ -273,6 +282,14 @@ impl FakeQueue {
     /// Timestamps from `CLOCK_MONOTONIC` (see `QueueInner::real_time`).
     pub(crate) fn set_real_time(&self, on: bool) {
         lock(&self.inner).real_time = on;
+    }
+
+    /// Whether a buffer is queued for the next frame.
+    pub(crate) fn has_free_buffer(&self) -> bool {
+        lock(&self.inner)
+            .buffers
+            .iter()
+            .any(|b| b.state == BufState::Queued)
     }
 
     /// The sequence the next frame gets.

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -154,6 +155,8 @@ fn specs_parse() {
     assert_eq!(specs[1].faults.unplug_for, Duration::from_secs(2));
     assert!(SimSpec::parse("ov9782,bogus=1").is_err());
     assert!(SimSpec::parse("scene=chart").is_err());
+    assert!(SimSpec::parse("ov9782,clock=lockstep").unwrap().lockstep);
+    assert!(SimSpec::parse("ov9782,clock=fast").is_err());
 }
 
 /// Faults: lost frames leave gaps in the sequence; a sensor that disappears ends the stream,
@@ -196,4 +199,91 @@ fn lost_frames_and_a_sensor_that_goes_away() {
     std::thread::sleep(Duration::from_millis(500));
     assert!(present(&key));
     let _again = open(spec, 12);
+}
+
+/// A scene slower than the frame rate: 50 ms per frame, the camera's position its time.
+struct SlowScene(FlatScene);
+
+impl SimScene for SlowScene {
+    fn frame(&self, index: u64, width: u32, height: u32, field: [f32; 4]) -> Arc<SceneFrame> {
+        std::thread::sleep(Duration::from_millis(50));
+        self.0.frame(index, width, height, field)
+    }
+
+    fn frame_at(&self, ctx: &FrameContext) -> (Arc<SceneFrame>, Option<GroundTruth>) {
+        let truth = GroundTruth {
+            camera: ([ctx.time, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]),
+            points: Vec::new(),
+        };
+        (
+            self.frame(ctx.index, ctx.width, ctx.height, ctx.field),
+            Some(truth),
+        )
+    }
+}
+
+/// Lockstep: a scene slower than the frame rate still gives frames one frame period apart in
+/// their timestamps and in the scene's time, the truth stamped as the frames; the stream runs
+/// slower than real time.
+#[test]
+fn lockstep_frames_are_one_period_apart_however_slow_the_scene() {
+    register_scene("slow-test", |_| {
+        Ok(Arc::new(SlowScene(FlatScene::new(0.18, 1.0))))
+    });
+    let truth = std::env::temp_dir().join(format!("styx-lockstep-{}.jsonl", std::process::id()));
+    let _ = std::fs::remove_file(&truth);
+    let mut spec = SimSpec::parse(&format!(
+        "ov9782,scene=slow-test,clock=lockstep,noise=off,truth={}",
+        truth.display()
+    ))
+    .unwrap();
+    assert!(spec.lockstep);
+    spec.index = 13;
+    let mut cam = open(spec, 13);
+    cam.configure(&StreamSettings::new(640, 400).fps(60))
+        .unwrap();
+    let mut stream = cam.start().unwrap();
+    let began = Instant::now();
+    let frames: Vec<(u32, Duration)> = (0..8)
+        .map(|_| {
+            let f = next(&mut stream);
+            (f.sequence, f.timestamp)
+        })
+        .collect();
+    let wall = began.elapsed();
+    drop(stream);
+    cam.stop().unwrap();
+    assert!(wall > Duration::from_millis(300), "{wall:?}");
+    // After the first frames (before the schedule applied the mode's frame length).
+    let steps: Vec<f64> = frames[3..]
+        .windows(2)
+        .map(|w| (w[1].1 - w[0].1).as_secs_f64() / f64::from(w[1].0 - w[0].0))
+        .collect();
+    for s in &steps {
+        assert!((s - 1.0 / 60.0).abs() < 1e-3, "{steps:?}");
+        assert!((s - steps[0]).abs() < 1e-6, "{steps:?}");
+    }
+    let text = std::fs::read_to_string(&truth).unwrap();
+    let _ = std::fs::remove_file(&truth);
+    let line_of = |seq: u32| {
+        text.lines()
+            .find(|l| l.starts_with(&format!("{{\"sequence\":{seq},")))
+            .unwrap_or_else(|| panic!("no truth for {seq}"))
+            .to_owned()
+    };
+    let field = |line: &str, key: &str| -> f64 {
+        let rest = &line[line.find(key).unwrap() + key.len()..];
+        rest[..rest.find([',', '}', ']']).unwrap()].parse().unwrap()
+    };
+    let (s0, t0) = frames[3];
+    let (s1, t1) = frames[7];
+    let (a, b) = (line_of(s0), line_of(s1));
+    assert_eq!(field(&a, "\"timestamp_ns\":") as u128, t0.as_nanos());
+    assert_eq!(field(&b, "\"timestamp_ns\":") as u128, t1.as_nanos());
+    let scene_time = field(&b, "\"position\":[") - field(&a, "\"position\":[");
+    assert!(
+        (scene_time - (t1 - t0).as_secs_f64()).abs() < 1e-5,
+        "{scene_time} vs {:?}",
+        t1 - t0
+    );
 }

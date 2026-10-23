@@ -44,6 +44,7 @@ Each camera is keyed `sim:<sensor>:<n>` (`n` counts the cameras of that sensor f
 | `unplug_for_s` | ... for this long (not listed, does not open), then comes back | 2 |
 | `seed` | seed of the faults and the noise | 0 |
 | `truth` | where each frame's ground truth goes (JSON Lines; scenes that know it: `gltf`) | |
+| `clock` | `real`, or `lockstep` ([below](#lockstep-time)) | `real` |
 
 Examples:
 
@@ -109,6 +110,21 @@ With `truth=<path>`, each frame appends one line of JSON: `sequence` (the frame'
 `points`: each `truth:` point's `name` (without `truth:`) and `x`, `y` in pixels of the
 delivered frame (flips applied; pixel centres at integers, as OpenCV's). A point is listed when
 it is in the frame and nothing in the scene is in front of it.
+
+## Lockstep time
+
+With `clock=real` frames come every frame period by the monotonic clock; a scene slower than
+the frame rate gives fewer frames, further apart. With `clock=lockstep` each frame's timestamp
+and scene time are exactly one frame period (the frame length the control schedule applied)
+after the last frame's, however long rendering takes, and a frame waits for a free buffer (up
+to 500 ms, then it is dropped as on the device) instead of being dropped at once. A slow scene
+then runs slower than real time, but frame N shows the scene at N frame periods, so trackers
+see the sensor's true frame spacing.
+
+Lockstep timestamps start at the monotonic clock when the stream starts and never run ahead of
+it; frame metadata, frame-start events and the truth file carry the same timestamp. Faults run
+on the same clock: jitter moves the timestamp and scene time, a lost frame still takes its
+period, and `fail_every_s` and `unplug_every_s` count stream time.
 
 ## What is simulated, and how faithfully
 

@@ -365,7 +365,12 @@ pub(crate) fn configure(
 struct Pace {
     next: Option<Instant>,
     streaming_since: Option<Instant>,
-    last_fail: Option<Instant>,
+    /// When the last capture error came, in stream time.
+    last_fail: Option<Duration>,
+    /// Lockstep: the stream's first timestamp and the next frame's time after it.
+    clock: Option<(Duration, Duration)>,
+    /// Lockstep: since when the next frame has waited for a free buffer.
+    starved: Option<Instant>,
     rng: u64,
 }
 
@@ -384,6 +389,8 @@ fn produce(rig: &Weak<SimRig>) {
         next: None,
         streaming_since: None,
         last_fail: None,
+        clock: None,
+        starved: None,
         rng: 0x2545_F491_4F6C_DD1D,
     };
     let mut seeded = false;
@@ -413,6 +420,9 @@ impl SimRig {
         let Some(queue) = queue.filter(|q| q.is_streaming()) else {
             pace.next = None;
             pace.streaming_since = None;
+            pace.clock = None;
+            pace.starved = None;
+            pace.last_fail = None;
             return Some(Duration::from_millis(2));
         };
         let Some((readout, field)) = *lock(&self.readout) else {
@@ -420,6 +430,14 @@ impl SimRig {
         };
         let now = Instant::now();
         let since = *pace.streaming_since.get_or_insert(now);
+        let lockstep = self.spec.lockstep;
+        if lockstep && !queue.has_free_buffer() {
+            let starved = *pace.starved.get_or_insert(now);
+            if now.duration_since(starved) < super::LOCKSTEP_STALL {
+                return Some(Duration::from_millis(1));
+            }
+        }
+        pace.starved = None;
         let seq = queue.next_sequence();
         let applied = lock(&self.control).applied(u64::from(seq));
         let (exposure, gain, period) = applied.map_or(
@@ -445,21 +463,34 @@ impl SimRig {
             return Some(start - now);
         }
         pace.next = Some(due + period);
+        // The frame's timestamp and its time in the stream: lockstep, one period after the
+        // last frame's (jitter included); else the clock's.
+        let (stamp, elapsed) = if lockstep {
+            let (base, sim) = *pace
+                .clock
+                .get_or_insert((styx_kernel::monotonic_now(), Duration::ZERO));
+            pace.clock = Some((base, sim + period));
+            let t = Duration::from_secs_f64((sim.as_secs_f64() + offset).max(0.0));
+            (base + t, t)
+        } else {
+            (styx_kernel::monotonic_now(), now.duration_since(since))
+        };
         let faults = &self.spec.faults;
         if let Some(every) = faults.unplug_every
-            && now.duration_since(since) >= every
+            && elapsed >= every
         {
             // The sensor goes away: listed again after `unplug_for`.
             unplug(&self.key, faults.unplug_for);
             queue.unplug();
             self.bridge.unplug();
             pace.streaming_since = None;
+            pace.clock = None;
             return Some(Duration::from_millis(2));
         }
         if let Some(every) = faults.fail_every
-            && now.duration_since(pace.last_fail.unwrap_or(since)) >= every
+            && elapsed.saturating_sub(pace.last_fail.unwrap_or_default()) >= every
         {
-            pace.last_fail = Some(now);
+            pace.last_fail = Some(elapsed);
             queue.fail();
             return None;
         }
@@ -477,7 +508,7 @@ impl SimRig {
         );
         let ctx = FrameContext {
             index: u64::from(seq),
-            time: now.duration_since(since).as_secs_f64(),
+            time: elapsed.as_secs_f64(),
             exposure: exposure.as_secs_f64(),
             width: readout.width,
             height: readout.height,
@@ -490,7 +521,7 @@ impl SimRig {
                 use std::io::Write;
                 let line = truth_line(
                     seq,
-                    styx_kernel::monotonic_now(),
+                    stamp,
                     (readout.width, readout.height),
                     (hflip, vflip),
                     &t,
@@ -514,7 +545,7 @@ impl SimRig {
                 .noise
                 .then(|| faults.seed ^ u64::from(seq).wrapping_mul(0x2545_F491_4F6C_DD1D)),
         };
-        queue.tick_with(|buf, _| render(buf, &scene, &readout, &e));
+        queue.tick_at(Some(stamp), |buf, _| render(buf, &scene, &readout, &e));
         None
     }
 }

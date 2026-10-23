@@ -19,6 +19,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `/etc/styx/sim-cameras` (`ov9782,scene=chart`, `ov9782,recording=clip.mcap,drop=0.01`, ...),
   keyed `sim:<sensor>:<n>`, or made with `styx::sim::device`. Builds and runs on x86_64 without
   a PiSP. styx-native gains feature `sim` (`styx_native::sim`).
+- **Lockstep time for simulated cameras** (`clock=lockstep`, docs/simulation.md#lockstep-time):
+  each frame's timestamp and scene time step by exactly the frame period however long the scene
+  takes to render, and frames wait for a free buffer, so a slow scene runs slower than real time
+  at the sensor's true frame spacing. The truth file's `timestamp_ns` is now the frame's own
+  timestamp in both clocks (it was read separately, microseconds apart).
 - **glTF scenes for simulated cameras** (`scene=gltf,path=...`, docs/simulation.md#gltf-scenes):
   a glTF 2.0 scene the application builds (the file the Bevy simulation backend loads) seen
   through the camera's lens (OpenCV fisheye or pinhole from the spec's keys, or the glTF

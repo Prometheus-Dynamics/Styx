@@ -63,7 +63,7 @@ pub enum SimSource {
     /// [`set_recording_loader`]: styx's MCAP and styxrec readers).
     Recording(PathBuf),
     /// A scene the application provides ([`register_scene`]), by name, with the spec's other
-    /// keys (styx's `tags`: AprilTags in 3D through the lens).
+    /// keys (styx's `gltf`: a glTF scene in 3D through the lens).
     Plugin {
         name: String,
         params: Vec<(String, String)>,
@@ -104,7 +104,15 @@ pub struct SimSpec {
     pub noise: bool,
     /// Where each frame's ground truth goes (JSON Lines), for scenes that know it.
     pub truth: Option<PathBuf>,
+    /// Lockstep time: each frame's timestamp and scene time are one frame period after the
+    /// last frame's however long rendering takes, and a frame waits for a free buffer (up to
+    /// [`LOCKSTEP_STALL`]) instead of being dropped, so a slow scene runs slower than real
+    /// time at the mode's true frame spacing. Off: frames are paced and stamped by the clock.
+    pub lockstep: bool,
 }
+
+/// How long a lockstep frame waits for a free buffer before it is dropped as on the device.
+pub const LOCKSTEP_STALL: Duration = Duration::from_millis(500);
 
 impl SimSpec {
     /// A camera of `sensor` seeing the test chart.
@@ -116,6 +124,7 @@ impl SimSpec {
             faults: SimFaults::default(),
             noise: true,
             truth: None,
+            lockstep: false,
         }
     }
 
@@ -125,7 +134,7 @@ impl SimSpec {
     }
 
     /// Parses `<sensor>[,key=value]...`: `scene=chart|flat|<plugin>`, `light=<f>`, `grey=<f>`,
-    /// `recording=<path>`, `noise=on|off`, `truth=<path>`, and the faults `drop=<p>`,
+    /// `recording=<path>`, `noise=on|off`, `truth=<path>`, `clock=real|lockstep`, and the faults `drop=<p>`,
     /// `corrupt=<p>`, `jitter_ms=<f>`, `fail_every_s=<f>`, `unplug_every_s=<f>`,
     /// `unplug_for_s=<f>`, `seed=<n>`. A plugin scene takes the other keys as its parameters.
     pub fn parse(text: &str) -> std::result::Result<Self, String> {
@@ -162,6 +171,13 @@ impl SimSpec {
                 "unplug_for_s" => spec.faults.unplug_for = secs(k, v)?,
                 "seed" => spec.faults.seed = num(k, v)? as u64,
                 "truth" => spec.truth = Some(PathBuf::from(v)),
+                "clock" => {
+                    spec.lockstep = match v {
+                        "real" => false,
+                        "lockstep" => true,
+                        _ => return Err(format!("clock={v}: real or lockstep")),
+                    }
+                }
                 _ => extra.push((k.to_owned(), v.to_owned())),
             }
         }
