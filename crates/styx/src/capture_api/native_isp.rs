@@ -617,6 +617,7 @@ pub(super) fn start_processed(
                     live: live_worker,
                     clock: timestamp_clock,
                     controls: controls.clone(),
+                    sensor_raw: config.backends.native.sensor_raw,
                 },
             )?;
             (controls, worker)

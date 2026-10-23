@@ -156,6 +156,14 @@ pub(crate) fn native_isp_outputs(backend: &ProbedBackend, mode: &Mode) -> bool {
         && !raw_bayer(mode.format.code)
 }
 
+/// A native camera's processed mode that hands out each frame's raw frame with it (the
+/// `sensor_raw` companion): the PiSP's, or the software ISP's (a copy).
+pub(crate) fn native_raw_companions(backend: &ProbedBackend, mode: &Mode) -> bool {
+    backend.kind == BackendKind::Native
+        && matches!(native_isp(backend), Some("pisp" | "software"))
+        && !raw_bayer(mode.format.code)
+}
+
 /// Processed formats a native camera's ISP makes.
 const NATIVE_ISP_FORMATS: [FourCc; 2] = [FourCc::NV12, FourCc::RG24];
 

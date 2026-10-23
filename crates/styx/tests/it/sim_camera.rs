@@ -102,3 +102,45 @@ fn a_camera_service_serves_a_simulated_camera() {
     }
     assert!(after >= 5, "{after} frames after the rotation");
 }
+
+/// The raw frames of a simulated camera's processed capture: a low-priority raw client (a
+/// recorder) next to a vision client, the service keeping the raw companions on, gets 16-bit
+/// Bayer frames of the sensor mode, named as `delivered()` says.
+#[test]
+fn a_raw_client_records_a_simulated_camera() {
+    let device = styx::sim::device(spec()).unwrap();
+    let path = std::env::temp_dir().join(format!("styx-sim-raw-{}.sock", std::process::id()));
+    let config = styx::capture_api::StyxConfig::default().native_sensor_raw(true);
+    let _service = CameraService::new(device)
+        .keep_streaming()
+        .capture_config(config)
+        .serve(&path)
+        .unwrap();
+    // A vision client at the sensor's full size, as HeliOS runs (a low-priority client never
+    // changes the capture, so a vision client on a smaller mode leaves no raw frames of it).
+    let vision = FrameClient::request(&path, &Frames::gray().size(1280, 800).fps(30)).unwrap();
+    assert!(matches!(
+        vision.recv(Duration::from_secs(3)),
+        RecvOutcome::Data(_)
+    ));
+    let raw = FrameClient::options(&path)
+        .low_priority()
+        .request(&Frames::sensor_raw().every_frame(4))
+        .unwrap();
+    let delivered = raw.delivered().expect("delivered");
+    assert_eq!(delivered.format, FourCc::new(*b"BYR2"));
+    let mut got = 0;
+    for _ in 0..10 {
+        let _ = vision.recv(Duration::from_millis(10));
+        if let RecvOutcome::Data(f) = raw.recv(Duration::from_secs(3)) {
+            let fmt = f.meta().format;
+            assert_eq!(fmt.code, FourCc::new(*b"BYR2"));
+            let size = (fmt.resolution.width.get(), fmt.resolution.height.get());
+            assert_eq!(size, delivered.size);
+            let bytes: usize = f.planes().iter().map(|p| p.data().len()).sum();
+            assert_eq!(bytes, (size.0 * size.1 * 2) as usize);
+            got += 1;
+        }
+    }
+    assert!(got >= 5, "{got} raw frames");
+}

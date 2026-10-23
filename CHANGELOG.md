@@ -19,6 +19,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `/etc/styx/sim-cameras` (`ov9782,scene=chart`, `ov9782,recording=clip.mcap,drop=0.01`, ...),
   keyed `sim:<sensor>:<n>`, or made with `styx::sim::device`. Builds and runs on x86_64 without
   a PiSP. styx-native gains feature `sim` (`styx_native::sim`).
+- **Raw frames from the software ISP path:** a native camera without a PiSP (a simulated one,
+  or a board with another receiver) hands `Frames::sensor_raw()` consumers each frame's raw
+  frame (`NativeIspConfig::sensor_raw`) as the PiSP path does: 16-bit Bayer with the value in the
+  top bits (`BYR2` and relatives), here a copy.
 - `scripts/install-sensors.sh DESTDIR [--sim [SPEC]]`: the sensor descriptions at
   `/usr/share/styx/sensors/<sensor>.toml` (kernel data as `<sensor>.kernel.toml`), the tunings at
   `/usr/share/styx/tuning/`, and with `--sim` `/etc/styx/sim-cameras`, for images (Gaia's sim

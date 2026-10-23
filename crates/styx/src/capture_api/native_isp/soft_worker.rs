@@ -44,6 +44,47 @@ pub(super) struct SoftWorker {
     pub(super) clock: ClockSource,
     /// The camera's controls (the lens position for the metrics).
     pub(super) controls: styx_native::CameraControls,
+    /// Attach each frame's raw frame (`NativeIspConfig::sensor_raw`): 16-bit Bayer, the
+    /// sensor's value in the top bits, as the PiSP path hands out (a copy here).
+    pub(super) sensor_raw: bool,
+}
+
+/// `f`'s raw frame as 16-bit Bayer with the sensor's value in the top bits (`BYR2` and
+/// relatives, by the frame's colour filter order), with `meta` but that format.
+fn raw16(
+    f: &styx_pipeline::device::SoftFrame,
+    format: styx_softisp::RawFormat,
+    meta: &FrameMeta,
+) -> Option<FrameLease> {
+    let (w, h) = (format.width as usize, format.height as usize);
+    let code = FourCc::new(*match format.pattern {
+        styx_softisp::CfaPattern::Bggr => b"BYR2",
+        styx_softisp::CfaPattern::Gbrg => b"GB16",
+        styx_softisp::CfaPattern::Grbg => b"GR16",
+        styx_softisp::CfaPattern::Rggb => b"RG16",
+    });
+    let shift = 16u32.saturating_sub(u32::from(format.packing.bit_depth()));
+    let stride = f.raw.stride as usize;
+    let data = f.raw.data();
+    let mut row = vec![0u16; w];
+    let mut bytes = Vec::with_capacity(w * h * 2);
+    for y in 0..h {
+        let line = data.get(y * stride..)?;
+        styx_pipeline::rawrec::unpack_row(format.packing, line, w, &mut row);
+        bytes.extend(row.iter().flat_map(|v| (v << shift).to_le_bytes()));
+    }
+    styx_core::metrics::copied(styx_core::metrics::CopySite::Raw, bytes.len());
+    let format = MediaFormat::new(
+        code,
+        Resolution::new(format.width, format.height)?,
+        ColorSpace::Unknown,
+    );
+    let mut lease = FrameLease::from_visible_bytes(format, meta.timestamp, &bytes).ok()?;
+    *lease.meta_mut() = FrameMeta {
+        format,
+        ..meta.clone()
+    };
+    Some(lease)
 }
 
 /// Bytes per row of a `code` image `w` pixels wide in the path's buffers.
@@ -208,6 +249,11 @@ pub(super) fn spawn(
                 }
                 meta.hops.set(Hop::Dequeued, dequeued.as_nanos());
                 meta.hops.set(Hop::IspDone, isp_done.as_nanos());
+                // The raw frame for a raw consumer, before its buffer goes back.
+                let raw_frame = w
+                    .sensor_raw
+                    .then(|| raw16(&f, p.soft_loop().format(), &meta))
+                    .flatten();
                 drop(f);
                 w.still
                     .after_frame(&mut p, &sensor, (lands, request), ae, raw);
@@ -217,6 +263,15 @@ pub(super) fn spawn(
                 if let (Some((_, s)), Some(b)) = (overview, ov_buf) {
                     let ov = self::lease(meta, s, b, &ov_tx, &w.live);
                     lease = match lease.with_companion(CompanionKind::Overview, ov) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            *w.error.lock() = Some(err(e));
+                            break;
+                        }
+                    };
+                }
+                if let Some(raw) = raw_frame {
+                    lease = match lease.with_companion(CompanionKind::SensorRaw, raw) {
                         Ok(l) => l,
                         Err(e) => {
                             *w.error.lock() = Some(err(e));

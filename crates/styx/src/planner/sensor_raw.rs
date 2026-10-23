@@ -73,7 +73,7 @@ pub(crate) fn candidate<'a>(
     req: &FrameRequest,
     registry: &CodecRegistryHandle,
 ) -> Option<Candidate<'a>> {
-    if !routes::native_isp_outputs(backend, mode) {
+    if !routes::native_raw_companions(backend, mode) {
         return None;
     }
     let code = sensor_raw_code(backend).filter(|&c| req.accepts(c))?;
