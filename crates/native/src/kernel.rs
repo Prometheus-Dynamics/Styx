@@ -400,7 +400,7 @@ impl NativeCamera {
             control,
             session,
             opened,
-            lock,
+            Some(lock),
         ))
     }
 

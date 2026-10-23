@@ -8,6 +8,21 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Simulated cameras** (feature `sim`, `styx::sim`, docs/simulation.md): a sensor from its
+  description on a simulated bridge, bus and capture queue, behind the same native camera,
+  session, sensor driver and control schedule (ranges, clamping, delays, frame rate limits per
+  mode, flips), the software ISP with the 3A loop and the camera service as on the device; frames
+  rendered per frame from a test chart, a flat field or a raw recording at the exposure and gain
+  applied to that frame, read out as the flip registers say. Faults on request: lost frames,
+  timing jitter, corrupted frames, capture errors (the capture restarts), a sensor that
+  disappears and comes back. Listed by `probe_all` from `STYX_SIM_CAMERAS` or
+  `/etc/styx/sim-cameras` (`ov9782,scene=chart`, `ov9782,recording=clip.mcap,drop=0.01`, ...),
+  keyed `sim:<sensor>:<n>`, or made with `styx::sim::device`. Builds and runs on x86_64 without
+  a PiSP. styx-native gains feature `sim` (`styx_native::sim`).
+- `scripts/install-sensors.sh DESTDIR [--sim [SPEC]]`: the sensor descriptions at
+  `/usr/share/styx/sensors/<sensor>.toml` (kernel data as `<sensor>.kernel.toml`), the tunings at
+  `/usr/share/styx/tuning/`, and with `--sim` `/etc/styx/sim-cameras`, for images (Gaia's sim
+  platform layer and hardware check).
 - **Lean replay features**: `replay-softisp` gives `ReplaySourceConfig::soft_isp` the software
   ISP without the native capture stack (`native` includes it), and `replay-png` reads PNG
   folders with the `png` crate alone. `jpeg-decoder` is built without rayon. A minimal replay

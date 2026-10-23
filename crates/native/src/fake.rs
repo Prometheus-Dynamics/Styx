@@ -11,6 +11,8 @@
 //!
 //! Readiness goes through pipes (readable = a request, a frame or an event is pending; the
 //! write end closed = hang-up), so the reactor waits on them as on the real nodes.
+// Shared with the simulated cameras (feature `sim`), which use a part of it.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::VecDeque;
 use std::io::{self, PipeReader, PipeWriter, Read, Write};
@@ -26,7 +28,9 @@ use styx_kernel::v4l2::{BufferFlags, DequeuedBuffer, Memory, Planes, QueueBuffer
 use styx_kernel::{Mapping, Wait};
 
 use crate::device::CaptureDevice;
-pub(crate) use crate::fake_bridge::{BridgeState, FakeBridge};
+#[cfg(test)]
+pub(crate) use crate::fake_bridge::BridgeState;
+pub(crate) use crate::fake_bridge::FakeBridge;
 
 pub(crate) fn errno(e: i32) -> io::Error {
     io::Error::from_raw_os_error(e)
@@ -86,6 +90,8 @@ struct FakeBuffer {
     len: usize,
     sequence: u32,
     error: bool,
+    /// When the frame started (its V4L2 timestamp).
+    timestamp: Duration,
 }
 
 struct QueueInner {
@@ -94,10 +100,14 @@ struct QueueInner {
     owner: Option<u64>,
     streaming: bool,
     done: VecDeque<u32>,
-    events: VecDeque<u32>,
+    /// Frame starts not dequeued yet: sequence and time.
+    events: VecDeque<(u32, Duration)>,
     sequence: u32,
     // Knobs.
     frame_sync: bool,
+    /// Timestamps from `CLOCK_MONOTONIC` at each frame start (the simulated camera), instead of
+    /// 10 ms per frame from 0.
+    real_time: bool,
     corrupt: bool,
     fatal: bool,
     gone: bool,
@@ -161,6 +171,7 @@ impl FakeQueue {
                 events: VecDeque::new(),
                 sequence: 0,
                 frame_sync: true,
+                real_time: false,
                 corrupt: false,
                 fatal: false,
                 gone: false,
@@ -201,14 +212,24 @@ impl FakeQueue {
     /// One frame period: a frame-start event (if enabled), then the frame into the first
     /// queued buffer (or dropped without one). Returns the sequence, if streaming.
     pub(crate) fn tick(&self) -> Option<u32> {
+        self.tick_with(fill)
+    }
+
+    /// [`Self::tick`], the frame's bytes written by `render` (the buffer, the sequence).
+    pub(crate) fn tick_with(&self, render: impl FnOnce(&mut [u8], u32)) -> Option<u32> {
         let mut q = lock(&self.inner);
         if !q.streaming || q.gone {
             return None;
         }
         let seq = q.sequence;
         q.sequence += 1;
+        let timestamp = if q.real_time {
+            styx_kernel::monotonic_now()
+        } else {
+            Duration::from_millis(u64::from(seq) * 10)
+        };
         if q.frame_sync {
-            q.events.push_back(seq);
+            q.events.push_back((seq, timestamp));
             self.events.raise();
         }
         let corrupt = q.corrupt;
@@ -221,10 +242,11 @@ impl FakeQueue {
             && let Ok(dup) = fd.try_clone()
             && let Ok(mut map) = DmaBuf::from_fd(dup, b.len).map()
         {
-            fill(map.as_mut_slice(), seq);
+            render(map.as_mut_slice(), seq);
         }
         b.state = BufState::Done;
         b.sequence = seq;
+        b.timestamp = timestamp;
         b.error = corrupt;
         q.done.push_back(i as u32);
         q.frames += 1;
@@ -245,6 +267,30 @@ impl FakeQueue {
         Producer {
             stop,
             handle: Some(handle),
+        }
+    }
+
+    /// Timestamps from `CLOCK_MONOTONIC` (see `QueueInner::real_time`).
+    pub(crate) fn set_real_time(&self, on: bool) {
+        lock(&self.inner).real_time = on;
+    }
+
+    /// The sequence the next frame gets.
+    pub(crate) fn next_sequence(&self) -> u32 {
+        lock(&self.inner).sequence
+    }
+
+    /// The size of each buffer.
+    pub(crate) fn buffer_len(&self) -> usize {
+        self.buffer_len
+    }
+
+    /// A frame lost on the link: its sequence is used, nothing arrives (no frame start, no
+    /// buffer), as a frame the receiver never saw.
+    pub(crate) fn lose_frame(&self) {
+        let mut q = lock(&self.inner);
+        if q.streaming && !q.gone {
+            q.sequence += 1;
         }
     }
 
@@ -401,6 +447,7 @@ impl CaptureDevice for FakeVideo {
                 len: self.queue.buffer_len,
                 sequence: 0,
                 error: false,
+                timestamp: Duration::ZERO,
             });
         }
         q.owner = Some(self.file);
@@ -482,7 +529,7 @@ impl CaptureDevice for FakeVideo {
             sequence: b.sequence,
             flags,
             field: 1,
-            timestamp: Duration::from_millis(u64::from(b.sequence) * 10),
+            timestamp: b.timestamp,
             planes: Planes::one((b.len as u32, 0)),
         }))
     }
@@ -537,7 +584,7 @@ impl CaptureDevice for FakeVideo {
         let _node = lock(&self.queue.node);
         let mut q = lock(&self.queue.inner);
         self.check(&q)?;
-        let Some(seq) = q.events.pop_front() else {
+        let Some((seq, timestamp)) = q.events.pop_front() else {
             return Ok(None);
         };
         self.queue.events.lower();
@@ -547,7 +594,7 @@ impl CaptureDevice for FakeVideo {
             },
             pending: q.events.len() as u32,
             sequence: seq,
-            timestamp: Duration::ZERO,
+            timestamp,
             id: 0,
         }))
     }

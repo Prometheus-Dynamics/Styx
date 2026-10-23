@@ -1,6 +1,8 @@
 //! The fake sensor bridge (see `fake.rs`): stream requests queued on start/stop with a bounded
 //! wait for the acknowledgement (`ETIMEDOUT`, `ESTALE` for late acks), power refused while not
 //! idle, and unplugging (`ENODEV`, hang-up).
+// Shared with the simulated cameras (feature `sim`), which use a part of it.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::VecDeque;
 use std::io;
@@ -80,6 +82,11 @@ impl FakeBridge {
             acked: Condvar::new(),
             signal: Signal::new(),
         })
+    }
+
+    /// The stream request the bridge sends from now on (the format and timing configured).
+    pub(crate) fn set_template(&self, template: StreamRequest) {
+        lock(&self.inner).template = template;
     }
 
     pub(crate) fn state(&self) -> BridgeState {
@@ -207,6 +214,14 @@ impl FakeBridge {
             return Err(errno(-status));
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Debug for FakeBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeBridge")
+            .field("state", &self.state())
+            .finish_non_exhaustive()
     }
 }
 

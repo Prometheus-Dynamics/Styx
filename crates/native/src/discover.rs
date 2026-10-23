@@ -125,7 +125,7 @@ impl CameraInfo {
     }
 }
 
-fn graph_for(info: &CameraInfo) -> GraphMap {
+pub(crate) fn graph_for(info: &CameraInfo) -> GraphMap {
     let node = if info.kernel.is_some() {
         "subdev"
     } else {
@@ -223,6 +223,12 @@ pub fn discover(library: &SensorLibrary) -> (Vec<CameraInfo>, Vec<NativeError>) 
     let (kernel, kernel_errors) = crate::kernel::discover_kernel(library);
     found.extend(kernel);
     errors.extend(kernel_errors);
+    #[cfg(any(test, feature = "sim"))]
+    {
+        let (sim, sim_errors) = crate::sim::cameras(library);
+        found.extend(sim);
+        errors.extend(sim_errors);
+    }
     (found, errors)
 }
 
@@ -248,6 +254,10 @@ pub fn discover_key(key: &str, library: &SensorLibrary) -> Result<CameraInfo> {
     if key.starts_with("sensor:") {
         return crate::kernel::discover_key(key, library);
     }
+    #[cfg(any(test, feature = "sim"))]
+    if crate::sim::is_sim_key(key) {
+        return crate::sim::find(key, library);
+    }
     let (_, loc) = bridge_keys()
         .into_iter()
         .find(|(k, _)| k == key)
@@ -259,6 +269,13 @@ pub fn discover_key(key: &str, library: &SensorLibrary) -> Result<CameraInfo> {
 pub fn camera_keys() -> Vec<String> {
     let mut keys: Vec<String> = bridge_keys().into_iter().map(|(k, _)| k).collect();
     keys.extend(crate::kernel::kernel_keys());
+    #[cfg(any(test, feature = "sim"))]
+    keys.extend(
+        crate::sim::specs()
+            .iter()
+            .map(crate::sim::SimSpec::key)
+            .filter(|k| crate::sim::present(k)),
+    );
     keys
 }
 
@@ -272,6 +289,14 @@ pub fn bridge_keys() -> Vec<(String, BridgeLocation)> {
 }
 
 fn display_name(location: &BridgeLocation, kernel: bool) -> String {
+    #[cfg(any(test, feature = "sim"))]
+    if location.subdev.to_string_lossy().starts_with("sim:") {
+        return format!(
+            "{} (simulated {})",
+            location.sensor_name,
+            location.subdev.display()
+        );
+    }
     let how = if kernel {
         "kernel driver"
     } else {

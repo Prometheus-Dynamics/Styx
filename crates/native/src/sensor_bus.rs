@@ -227,6 +227,9 @@ pub enum SensorBus {
     I2c(I2cRegisters<I2cBus>),
     /// A kernel driver's V4L2 controls.
     Kernel(SubdevBus),
+    /// A simulated sensor's registers (feature `sim`).
+    #[cfg(any(test, feature = "sim"))]
+    Sim(crate::sim::SimBus),
 }
 
 /// A Lemnos register error on i2c-dev as a [`BusError`], keeping the errno (`EREMOTEIO`, a
@@ -247,6 +250,8 @@ impl RegisterBus for SensorBus {
         match self {
             SensorBus::I2c(b) => on_i2c(b.read_burst(address, buf)),
             SensorBus::Kernel(b) => b.read_burst(address, buf),
+            #[cfg(any(test, feature = "sim"))]
+            SensorBus::Sim(b) => b.read_burst(address, buf),
         }
     }
 
@@ -254,6 +259,8 @@ impl RegisterBus for SensorBus {
         match self {
             SensorBus::I2c(b) => on_i2c(b.write_burst(address, data)),
             SensorBus::Kernel(b) => b.write_burst(address, data),
+            #[cfg(any(test, feature = "sim"))]
+            SensorBus::Sim(b) => b.write_burst(address, data),
         }
     }
 
@@ -261,6 +268,8 @@ impl RegisterBus for SensorBus {
         match self {
             SensorBus::I2c(b) => on_i2c(b.read(address, bytes)),
             SensorBus::Kernel(b) => b.read(address, bytes),
+            #[cfg(any(test, feature = "sim"))]
+            SensorBus::Sim(b) => b.read(address, bytes),
         }
     }
 
@@ -268,6 +277,8 @@ impl RegisterBus for SensorBus {
         match self {
             SensorBus::I2c(b) => on_i2c(b.write(address, bytes, value)),
             SensorBus::Kernel(b) => b.write(address, bytes, value),
+            #[cfg(any(test, feature = "sim"))]
+            SensorBus::Sim(b) => b.write(address, bytes, value),
         }
     }
 
@@ -275,6 +286,8 @@ impl RegisterBus for SensorBus {
         match self {
             SensorBus::I2c(b) => on_i2c(b.write_sequence(writes)),
             SensorBus::Kernel(b) => b.write_sequence(writes),
+            #[cfg(any(test, feature = "sim"))]
+            SensorBus::Sim(b) => b.write_sequence(writes),
         }
     }
 }
@@ -284,6 +297,8 @@ impl DriverBus for SensorBus {
         match self {
             SensorBus::I2c(b) => DriverBus::set_controls(b, controls),
             SensorBus::Kernel(b) => b.set_controls(controls),
+            #[cfg(any(test, feature = "sim"))]
+            SensorBus::Sim(b) => b.set_controls(controls),
         }
     }
 }
@@ -296,6 +311,9 @@ pub enum CameraPins {
     Bridge(BridgePins<Arc<SensorBridge>>),
     /// Nothing to switch: every role is absent (optional steps are skipped).
     None(styx_sensor::NoPins),
+    /// A simulated sensor's bridge (feature `sim`).
+    #[cfg(any(test, feature = "sim"))]
+    Sim(BridgePins<crate::sim::SimPower>),
 }
 
 impl DelayNs for CameraPins {
@@ -303,6 +321,8 @@ impl DelayNs for CameraPins {
         match self {
             CameraPins::Bridge(p) => p.delay_ns(ns),
             CameraPins::None(p) => p.delay_ns(ns),
+            #[cfg(any(test, feature = "sim"))]
+            CameraPins::Sim(p) => p.delay_ns(ns),
         }
     }
 }
@@ -314,6 +334,8 @@ impl SensorPins for CameraPins {
         match self {
             CameraPins::Bridge(p) => p.set_gpio(role, value),
             CameraPins::None(p) => p.set_gpio(role, value),
+            #[cfg(any(test, feature = "sim"))]
+            CameraPins::Sim(p) => p.set_gpio(role, value),
         }
     }
 
@@ -321,6 +343,8 @@ impl SensorPins for CameraPins {
         match self {
             CameraPins::Bridge(p) => p.set_clock(role, rate_hz),
             CameraPins::None(p) => p.set_clock(role, rate_hz),
+            #[cfg(any(test, feature = "sim"))]
+            CameraPins::Sim(p) => p.set_clock(role, rate_hz),
         }
     }
 
@@ -328,6 +352,8 @@ impl SensorPins for CameraPins {
         match self {
             CameraPins::Bridge(p) => p.set_supply(role, on),
             CameraPins::None(p) => p.set_supply(role, on),
+            #[cfg(any(test, feature = "sim"))]
+            CameraPins::Sim(p) => p.set_supply(role, on),
         }
     }
 }

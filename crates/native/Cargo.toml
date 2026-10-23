@@ -8,6 +8,12 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 
+[features]
+# Simulated cameras (`sim`): sensors from their descriptions on a simulated bridge and capture
+# queue, with frames rendered from a scene or a recording at each frame's exposure, gain and
+# flips, and injected faults (docs/simulation.md).
+sim = []
+
 [dependencies]
 futures-core.workspace = true
 # The generic hardware under the camera: i2c-dev buses (each address claimed, never forced) and

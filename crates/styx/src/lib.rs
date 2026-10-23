@@ -25,6 +25,8 @@ pub use styx_v4l2 as v4l2;
     )
 ))]
 pub mod preview;
+#[cfg(feature = "sim")]
+pub mod sim;
 
 #[cfg(feature = "facade")]
 pub use thiserror;

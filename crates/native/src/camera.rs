@@ -268,7 +268,10 @@ pub struct NativeCamera {
     pub(crate) configured: Option<Configured>,
     pub(crate) session: Session,
     opened: Instant,
-    _lock: File,
+    _lock: Option<File>,
+    /// A simulated camera's sensor, bridge and capture queue (feature `sim`).
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) sim: Option<Arc<crate::sim::SimRig>>,
 }
 
 impl NativeCamera {
@@ -281,7 +284,7 @@ impl NativeCamera {
         control: Arc<Mutex<SensorControl<Bus, Pins>>>,
         session: Session,
         opened: Instant,
-        lock: File,
+        lock: Option<File>,
     ) -> Self {
         Self {
             info,
@@ -294,6 +297,8 @@ impl NativeCamera {
             session,
             opened,
             _lock: lock,
+            #[cfg(any(test, feature = "sim"))]
+            sim: None,
         }
     }
 
@@ -302,6 +307,10 @@ impl NativeCamera {
     /// until [`Self::configure`].
     pub fn open(info: CameraInfo, options: CameraOptions) -> Result<Self> {
         let opened = Instant::now();
+        #[cfg(any(test, feature = "sim"))]
+        if crate::sim::is_sim_key(&info.key) {
+            return crate::sim::open(info, options, opened);
+        }
         let loc = &info.location;
         let lock = File::open(&loc.subdev).step("open bridge")?;
         if lock.try_lock().is_err() {
@@ -399,7 +408,7 @@ impl NativeCamera {
             control,
             session,
             opened,
-            lock,
+            Some(lock),
         ))
     }
 
@@ -472,6 +481,10 @@ impl NativeCamera {
     /// Powers and configures the sensor, the bridge and the receiver path for `settings`.
     /// Fails with [`NativeError::Busy`] while streaming.
     pub fn configure(&mut self, settings: &StreamSettings) -> Result<Configured> {
+        #[cfg(any(test, feature = "sim"))]
+        if self.sim.is_some() {
+            return crate::sim::configure(self, settings);
+        }
         let (mode, frame_length) = self.configure_sensor(settings)?;
         self.configure_receiver(&mode)?;
         let (fourcc, stride, size_image) = self.configure_video(&mode, settings.fourcc)?;
@@ -762,38 +775,5 @@ impl std::fmt::Debug for NativeCamera {
 }
 
 #[cfg(test)]
-mod tests {
-    use styx_sensor::SensorDescription;
-
-    use super::*;
-    use crate::modes::sensor_modes;
-
-    #[test]
-    fn modes_are_selected_by_size_format_and_rate() {
-        let desc = SensorDescription::from_file(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../sensor/sensors/ov9782.toml"
-        ))
-        .unwrap();
-        let modes = sensor_modes(&desc);
-        let offered = [(0x3007, vec![FourCc::new(b"pBAA")])];
-        let m = select_mode(&modes, &StreamSettings::new(1280, 800).fps(120), &offered).unwrap();
-        assert_eq!((m.mode.as_str(), m.format.as_str()), ("1280x800", "raw10"));
-        let s = StreamSettings::new(1280, 800).fourcc(FourCc::new(b"BA81"));
-        assert_eq!(select_mode(&modes, &s, &offered).unwrap().format, "raw8");
-        // The node offers only pBAA for raw10.
-        let s = StreamSettings::new(1280, 800).fourcc(FourCc::new(b"BG10"));
-        assert!(select_mode(&modes, &s, &offered).is_err());
-        let s = StreamSettings::new(1280, 800).fps(121);
-        assert!(
-            select_mode(&modes, &s, &offered)
-                .unwrap_err()
-                .to_string()
-                .contains("outside")
-        );
-        assert!(select_mode(&modes, &StreamSettings::new(1920, 1080), &offered).is_err());
-        let exact = StreamSettings::new(1280, 800).interval(Fraction::new(82901, 10_000_000));
-        assert!(select_mode(&modes, &exact, &offered).is_ok());
-        assert_eq!(CameraOptions::default().buffers, 4);
-    }
-}
+#[path = "camera_tests.rs"]
+mod tests;

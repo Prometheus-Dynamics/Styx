@@ -41,9 +41,9 @@ mod embedded;
 mod error;
 mod events;
 pub mod external;
-#[cfg(test)]
+#[cfg(any(test, feature = "sim"))]
 mod fake;
-#[cfg(test)]
+#[cfg(any(test, feature = "sim"))]
 mod fake_bridge;
 #[cfg(test)]
 mod fault_tests;
@@ -74,6 +74,8 @@ pub mod regbus {
 }
 pub mod sensor_bus;
 mod session;
+#[cfg(any(test, feature = "sim"))]
+pub mod sim;
 mod stream;
 pub mod topology;
 

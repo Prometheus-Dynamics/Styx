@@ -104,6 +104,10 @@ replay-mcap = ["facade", "dep:mcap"]
 # Raw recordings replayed as processed frames (`ReplaySourceConfig::soft_isp`): the software
 # ISP, the 3A algorithms and the built-in sensor descriptions and tunings, without the native
 # capture stack (styx-native, the PiSP devices); `native` includes it.
+# Simulated cameras (`styx::sim`): native cameras on a simulated sensor, bridge and capture
+# queue, through the software ISP, from a chart or a raw recording, with injected faults; listed
+# by `STYX_SIM_CAMERAS` or `/etc/styx/sim-cameras` (docs/simulation.md).
+sim = ["native", "styx-native/sim"]
 replay-softisp = [
     "facade",
     "dep:styx-pipeline",
