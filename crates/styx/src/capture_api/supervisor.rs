@@ -373,6 +373,12 @@ fn run(
             last_sent = sent;
             last_progress = Instant::now();
             retry_metrics.record_successful_frame();
+            // Frames again: the disconnect is history (the retry metrics keep it, with its
+            // time), not the capture's error now.
+            let mut error = worker_error.lock();
+            if error.is_some() {
+                *error = None;
+            }
             continue;
         }
         let Some(reason) = failure(

@@ -231,3 +231,25 @@ fn gpu_pyramid_levels_are_the_cpus() {
     }
     assert!(checked >= 5, "{checked} frames");
 }
+
+/// A capture error the capture recovers from stays in the metrics as history (its time, and
+/// `recovered` once frames come again), not as the capture's error now.
+#[test]
+fn a_recovered_capture_error_is_history() {
+    let mut s = spec();
+    s.faults.fail_every = Some(Duration::from_millis(400));
+    let device = styx::sim::device(s).unwrap();
+    let plan = styx::planner::plan_frames(&device, &Frames::gray().size(640, 400).fps(30)).unwrap();
+    let mut frames = plan.start().unwrap();
+    let mut recovered = None;
+    for _ in 0..200 {
+        let _ = frames.next_frame(Duration::from_millis(100));
+        let r = frames.metrics().restarts;
+        if r.last_error.is_some() && r.recovered {
+            recovered = Some(r);
+            break;
+        }
+    }
+    let r = recovered.unwrap_or_else(|| panic!("{:?}", frames.metrics().restarts));
+    assert!(r.last_error_unix_ms.is_some(), "{r:?}");
+}

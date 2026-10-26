@@ -539,6 +539,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **A disconnect a supervised capture recovered from no longer reads as its error now.**
+  `CaptureHandle::last_error` (and `CameraMetrics::restarts.last_error` through it) kept
+  "camera disconnected: no frames for 2001 ms" while frames flowed again. It is cleared when
+  frames resume. The metrics keep it as history: `restarts.last_error` is the last retry's
+  error, with `last_error_unix_ms` (its time; `CaptureRetryStats::last_retry_error_unix_ms`)
+  and `recovered` (frames arrived since).
+
 - **USB camera controls through the camera service** (found on a Logitech C270, SystemCore):
   - A control that answers a standard control is listed in that control's units and type:
     V4L2's exposure as `ExposureUs` microseconds (it was 100 µs units, while reads and writes

@@ -12,6 +12,8 @@ pub struct CaptureRetryStats {
     pub last_reconnect_downtime_ms: Option<u64>,
     pub last_retry_reason: Option<String>,
     pub last_retry_error: Option<String>,
+    /// When `last_retry_error` came (Unix ms).
+    pub last_retry_error_unix_ms: Option<u128>,
     pub last_successful_frame_unix_ms: Option<u128>,
     /// Times streaming stopped because nobody pulled frames (`StyxConfig::stop_when_idle`).
     pub idle_stops: u64,
@@ -35,6 +37,7 @@ impl CaptureRetryMetrics {
         stats.start_retry_count = stats.start_retry_count.saturating_add(1);
         stats.last_retry_reason = Some(reason.into());
         stats.last_retry_error = Some(error.into());
+        stats.last_retry_error_unix_ms = Some(now_unix_ms());
     }
 
     /// Start the downtime of the next reconnect at `since` (the last frame) unless one is
@@ -58,6 +61,7 @@ impl CaptureRetryMetrics {
         stats.reconnect_attempts = stats.reconnect_attempts.saturating_add(1);
         stats.last_retry_reason = Some(reason.into());
         stats.last_retry_error = Some(error.into());
+        stats.last_retry_error_unix_ms = Some(now_unix_ms());
     }
 
     pub(crate) fn record_idle_stop(&self) {
@@ -116,6 +120,7 @@ impl CaptureRetryMetrics {
         }
         if snapshot.last_retry_error.is_some() {
             stats.last_retry_error = snapshot.last_retry_error;
+            stats.last_retry_error_unix_ms = snapshot.last_retry_error_unix_ms;
         }
         if snapshot.last_successful_frame_unix_ms.is_some() {
             stats.last_successful_frame_unix_ms = snapshot.last_successful_frame_unix_ms;

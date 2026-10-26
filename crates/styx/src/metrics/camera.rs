@@ -187,7 +187,15 @@ pub struct Restarts {
     pub reconnect_attempts: u64,
     pub reconnects: u64,
     pub idle_stops: u64,
+    /// The capture's error now, else the last error a restart or reconnect followed (history:
+    /// see `recovered`).
     pub last_error: Option<String>,
+    /// When `last_error` came (Unix ms); `None` for the capture's error now.
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub last_error_unix_ms: Option<u128>,
+    /// Frames arrived after `last_error`: it is history, not the camera's state now.
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub recovered: bool,
 }
 
 /// Capture buffers and the consumer queue.
@@ -427,6 +435,16 @@ impl CaptureMetrics {
                 reconnect_attempts: retry.reconnect_attempts,
                 reconnects: retry.reconnects,
                 idle_stops: retry.idle_stops,
+                recovered: last_error.is_none()
+                    && retry.last_retry_error_unix_ms.is_some_and(|at| {
+                        retry
+                            .last_successful_frame_unix_ms
+                            .is_some_and(|frame| frame > at)
+                    }),
+                last_error_unix_ms: match &last_error {
+                    Some(_) => None,
+                    None => retry.last_retry_error_unix_ms,
+                },
                 last_error: last_error.or(retry.last_retry_error),
             },
             buffers: Buffers {
