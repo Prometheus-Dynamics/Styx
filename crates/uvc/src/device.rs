@@ -238,10 +238,15 @@ impl UvcDevice {
         let mut info = [0u8; 1];
         self.entity_request(request::GET_INFO, entity, def.selector, &mut info)?;
         let default = self.query(def, request::GET_DEF).unwrap_or(0);
+        let mut menu_values = 0u64;
         let (min, max, step) = match def.kind {
             Kind::Bool => (0, 1, 1),
             Kind::AeMode => {
                 let menu = ControlDef::ae_menu(self.query(def, request::GET_RES)? as u8);
+                menu_values = menu
+                    .iter()
+                    .filter(|v| (0..64).contains(*v))
+                    .fold(0, |m, v| m | 1 << v);
                 (*menu.first().unwrap_or(&0), *menu.last().unwrap_or(&0), 1)
             }
             Kind::Menu => (
@@ -255,6 +260,9 @@ impl UvcDevice {
                 self.query(def, request::GET_RES).unwrap_or(1).max(1),
             ),
         };
+        if def.kind == Kind::Menu {
+            menu_values = (min.clamp(0, 63)..=max.clamp(0, 63)).fold(0, |m, v| m | 1 << v);
+        }
         Ok(ControlInfo {
             def,
             min,
@@ -262,6 +270,7 @@ impl UvcDevice {
             step,
             default,
             info: Info(info[0]),
+            menu_values,
         })
     }
 

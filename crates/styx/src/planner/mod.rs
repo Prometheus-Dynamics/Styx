@@ -408,6 +408,9 @@ pub(crate) fn plan_from(
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub(crate) struct RankKey {
     pub(crate) resolution: f64,
+    /// An uncompressed USB mode that takes much of its bus ([`usb_overloaded`]): a compressed
+    /// mode of the same size ranks first.
+    pub(crate) usb_overload: u8,
     pub(crate) score: f32,
     pub(crate) fps: f32,
     pub(crate) backend: u8,
@@ -439,6 +442,7 @@ fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequest) -> RankKey {
             (None, Some(false)) => 1e15 - area,
             (None, None) => -area,
         },
+        usb_overload: u8::from(usb_overloaded(candidate)),
         score: cost::score(candidate.total),
         fps: -candidate.fps.unwrap_or(0.0),
         // Prefer V4L2 over libcamera's UVC pipeline for the same USB camera; ISP paths already
@@ -449,6 +453,55 @@ fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequest) -> RankKey {
         },
         isp_formats: u8::from(candidate.isp_format.is_some()),
     }
+}
+
+/// Whether `candidate` is an uncompressed mode of a USB camera that needs more than half of
+/// what its bus carries for one camera (a high-speed isochronous endpoint: 3 x 1024 bytes per
+/// 125 µs microframe, 24.6 MB/s). Such a mode works alone on the bus, but a hub or another
+/// device sharing it starves it: a Logitech C270's YUYV 640x480 at 30 fps (18 MB/s) delivered
+/// no frames behind a shared hub where its MJPG at 1280x960 ran.
+pub(crate) fn usb_overloaded(candidate: &routes::Candidate<'_>) -> bool {
+    let code = candidate.mode.format.code;
+    let bytes_per_pixel = match code {
+        _ if code.is_compressed() => return false,
+        FourCc::YUYV | FourCc::UYVY | FourCc::YVYU | FourCc::VYUY => 2.0,
+        FourCc::NV12 | FourCc::YU12 => 1.5,
+        FourCc::GREY | FourCc::R8 => 1.0,
+        FourCc::RG24 | FourCc::BG24 => 3.0,
+        _ => 2.0,
+    };
+    let prop = |key: &str| {
+        candidate
+            .backend
+            .properties
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    // The bus's speed in Mbit/s; `None`: not USB.
+    let mbps = match candidate.backend.kind {
+        BackendKind::Uvc => match prop("speed") {
+            Some("Super" | "SuperPlus") => 5000.0,
+            Some("Full" | "Low") => 12.0,
+            _ => 480.0,
+        },
+        BackendKind::V4l2 if prop("bus").is_some_and(|b| b.starts_with("usb")) => {
+            prop("usb_speed_mbps")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(480.0)
+        }
+        _ => return false,
+    };
+    if mbps > 480.0 {
+        return false;
+    }
+    // Half of a high-speed isochronous endpoint (3 x 1024 B per 125 µs); a full-speed one
+    // carries at most 1023 B per 1 ms.
+    let budget = if mbps > 12.0 { 24.576e6 } else { 1.023e6 } / 2.0;
+    let res = candidate.mode.format.resolution;
+    let fps = f64::from(candidate.fps.unwrap_or(DEFAULT_FPS as f32));
+    let rate = f64::from(res.width.get()) * f64::from(res.height.get()) * bytes_per_pixel * fps;
+    rate > budget
 }
 
 /// The frame rate a camera that runs at any rate in a range (a sensor Styx drives) runs at when
@@ -577,3 +630,5 @@ mod region_tests;
 mod request_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod usb_tests;

@@ -296,6 +296,10 @@ pub struct ControlInfo {
     pub step: i64,
     pub default: i64,
     pub info: Info,
+    /// Menus: bit `n` set when `n` is a value the control takes (an exposure mode menu takes
+    /// only the modes the camera announces, e.g. 1 manual and 3 aperture priority); 0 for other
+    /// controls.
+    pub menu_values: u64,
 }
 
 /// The controls an entity's `bmControls` announces.

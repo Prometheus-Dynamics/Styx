@@ -17,6 +17,18 @@ fn read_node_name(path: &std::path::Path) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// The USB link's speed in Mbit/s (sysfs `speed` of the node's USB device: 12, 480, 5000, ...),
+/// for USB cameras.
+fn read_usb_speed(path: &std::path::Path) -> Option<String> {
+    let node = path.file_name()?.to_string_lossy();
+    // `device` is the video interface; its parent the USB device.
+    let sysfs = format!("/sys/class/video4linux/{node}/device/../speed");
+    std::fs::read_to_string(sysfs)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Whether virtual capture nodes (v4l2loopback, "OBS Virtual Camera", ...) are kept: set
 /// `STYX_V4L2_ALLOW_VIRTUAL=1`. They are skipped by default because they are usually fed by
 /// another application rather than being cameras; they are useful for testing.
@@ -149,19 +161,27 @@ fn build_info(path: &std::path::Path) -> Result<Probed, Box<dyn std::error::Erro
     };
 
     let descriptor = CaptureDescriptor { modes, controls };
+    let mut properties = vec![
+        ("path".into(), path.display().to_string()),
+        ("name".into(), node_name.clone().unwrap_or_default()),
+        ("driver".into(), driver.clone()),
+        ("card".into(), card.clone()),
+        ("bus".into(), bus_info.clone()),
+    ];
+    if let Some(speed) = bus_info
+        .starts_with("usb")
+        .then(|| read_usb_speed(path))
+        .flatten()
+    {
+        properties.push(("usb_speed_mbps".into(), speed));
+    }
     Ok(Probed::Camera(V4l2DeviceInfo {
         path: path.display().to_string(),
         name: node_name.clone(),
         card: card.clone(),
         driver: driver.clone(),
-        bus_info: bus_info.clone(),
-        properties: vec![
-            ("path".into(), path.display().to_string()),
-            ("name".into(), node_name.unwrap_or_default()),
-            ("driver".into(), driver),
-            ("card".into(), card),
-            ("bus".into(), bus_info),
-        ],
+        bus_info,
+        properties,
         descriptor,
     }))
 }
@@ -264,16 +284,22 @@ fn map_control(dev: &VideoDevice, ctrl: ControlInfo) -> Option<ControlMeta> {
         Access::ReadWrite
     };
 
-    // Menu items the driver skips (VIDIOC_QUERYMENU fails) are left out.
+    // Indexed by value (`ControlMeta::menu`): the indexes the driver skips (VIDIOC_QUERYMENU
+    // fails, e.g. a UVC camera's exposure menu with only 1 manual and 3 aperture priority)
+    // are empty names, values the control does not take.
     let menu = ctrl.is_menu().then(|| {
-        dev.query_menu(&ctrl)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|item| match item.value {
+        let mut menu: Vec<String> = Vec::new();
+        for item in dev.query_menu(&ctrl).unwrap_or_default() {
+            let index = item.index as usize;
+            if menu.len() <= index {
+                menu.resize(index + 1, String::new());
+            }
+            menu[index] = match item.value {
                 MenuValue::Name(name) => name,
                 MenuValue::Integer(value) => value.to_string(),
-            })
-            .collect()
+            };
+        }
+        menu
     });
 
     let step = match ctrl.control_type {

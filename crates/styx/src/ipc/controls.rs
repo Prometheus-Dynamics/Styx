@@ -166,7 +166,10 @@ pub enum ControlRefusal {
 }
 
 /// A camera control as the service lists it: the backend's description, its value now, and
-/// the standard control it answers, if any.
+/// the standard control it answers, if any. A control that answers a standard control is
+/// described, read and written in the standard control's units and type (e.g. V4L2's exposure
+/// in 100 µs as `ExposureUs` microseconds, its exposure menu as `AeEnable` on or off), by its
+/// id too; the others in the backend's.
 #[derive(Clone, Debug)]
 pub struct ControlDescriptor {
     pub meta: ControlMeta,

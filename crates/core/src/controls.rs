@@ -74,7 +74,9 @@ pub struct ControlMeta {
     /// Optional step size for ranged controls.
     #[cfg_attr(feature = "serde", serde(default))]
     pub step: Option<ControlValue>,
-    /// Optional enumerated menu entries (for menu controls).
+    /// Optional enumerated menu entries (for menu controls), indexed by the value that selects
+    /// them. An empty name is a value the control does not take (a sparse menu: a V4L2 driver
+    /// that skips indexes, e.g. a UVC exposure menu of 1 manual and 3 aperture priority).
     #[cfg_attr(feature = "serde", serde(default))]
     pub menu: Option<Vec<String>>,
     /// Optional metadata flags.
@@ -267,13 +269,22 @@ impl ControlMeta {
     /// ```
     pub fn validate(&self, candidate: &ControlValue) -> bool {
         if let Some(menu) = &self.menu {
-            // For menus, only None/Uint within menu length or Int for IntMenu.
-            if let ControlValue::Uint(idx) = candidate {
-                return (*idx as usize) < menu.len();
-            }
-            if let ControlValue::Int(idx) = candidate {
-                return (*idx >= 0) && ((*idx as usize) < menu.len());
-            }
+            // A menu's value is an index with an entry: within the menu and the control's range,
+            // not a gap of a sparse menu.
+            let idx = match candidate {
+                ControlValue::Uint(idx) => i64::from(*idx),
+                ControlValue::Int(idx) => i64::from(*idx),
+                _ => return false,
+            };
+            let bound = |v: &ControlValue| match v {
+                ControlValue::Uint(n) => Some(i64::from(*n)),
+                ControlValue::Int(n) => Some(i64::from(*n)),
+                _ => None,
+            };
+            return idx >= 0
+                && bound(&self.min).is_none_or(|lo| idx >= lo)
+                && bound(&self.max).is_none_or(|hi| idx <= hi)
+                && menu.get(idx as usize).is_some_and(|name| !name.is_empty());
         }
 
         if self.kind == ControlKind::Rectangle {

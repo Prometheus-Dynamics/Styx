@@ -5,7 +5,7 @@ use super::*;
 use crate::DeviceIdentity;
 use crate::prelude::{BackendHandle, ProbedBackend};
 
-fn mode(code: FourCc, width: u32, height: u32, fps: u32) -> Mode {
+pub(super) fn mode(code: FourCc, width: u32, height: u32, fps: u32) -> Mode {
     let format = MediaFormat::with_default_color(code, Resolution::new(width, height).unwrap());
     Mode {
         id: ModeId {
@@ -18,7 +18,7 @@ fn mode(code: FourCc, width: u32, height: u32, fps: u32) -> Mode {
     }
 }
 
-fn device(kind: BackendKind, handle: BackendHandle, modes: Vec<Mode>) -> ProbedDevice {
+pub(super) fn device(kind: BackendKind, handle: BackendHandle, modes: Vec<Mode>) -> ProbedDevice {
     ProbedDevice {
         identity: DeviceIdentity {
             display: "test-camera".into(),
@@ -36,7 +36,7 @@ fn device(kind: BackendKind, handle: BackendHandle, modes: Vec<Mode>) -> ProbedD
     }
 }
 
-fn registry() -> CodecRegistryHandle {
+pub(super) fn registry() -> CodecRegistryHandle {
     CodecRegistry::with_enabled_codecs().unwrap().handle()
 }
 

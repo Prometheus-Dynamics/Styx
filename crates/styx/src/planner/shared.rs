@@ -344,6 +344,7 @@ fn shared_rank(candidates: &[Candidate<'_>], requests: &[FrameRequest]) -> RankK
     };
     RankKey {
         resolution,
+        usb_overload: u8::from(super::usb_overloaded(first)),
         score: candidates.iter().map(|c| cost::score(c.total)).sum(),
         fps: -first.fps.unwrap_or(0.0),
         backend: match first.backend.kind {

@@ -136,7 +136,21 @@ fn control_metas(dev: &UvcDevice) -> Vec<ControlMeta> {
                         .to_vec(),
                 ),
                 _ => None,
-            };
+            }
+            // Indexed by value: the values the camera does not take are empty names.
+            .map(|names| {
+                names
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, n)| {
+                        if c.menu_values & (1 << i) != 0 {
+                            n
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .collect()
+            });
             ControlMeta {
                 id: ControlId(c.def.id),
                 name: c.def.name.into(),

@@ -539,6 +539,24 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- **USB camera controls through the camera service** (found on a Logitech C270, SystemCore):
+  - A control that answers a standard control is listed in that control's units and type:
+    V4L2's exposure as `ExposureUs` microseconds (it was 100 µs units, while reads and writes
+    were in µs), its exposure menu as `AeEnable` on or off (it was the raw menu), its
+    thousandths of a stop as stops. Reads and writes by its id now take the same units.
+  - Sparse V4L2 menus keep their values: `ControlMeta::menu` is indexed by value, with empty
+    names for the indexes a driver skips (a UVC exposure menu of only 1 manual and 3 aperture
+    priority). `ControlMeta::validate` refuses those gaps and values outside the control's range.
+    The userspace UVC backend blanks the exposure modes a camera does not announce.
+  - Turning automatic exposure on writes a mode the camera has (aperture priority, else full
+    auto, else shutter priority). Before, 3 was refused, so AE could not be turned on.
+- **Uncompressed USB modes that would load the bus heavily rank after a compressed mode of the
+  same size.** A mode qualifies when it needs more than half of a high-speed isochronous
+  endpoint (12.3 MB/s): YUYV 640x480 at 30 fps (18.4 MB/s) gives way to MJPG 640x480. Lighter
+  modes, USB 3 cameras and non-USB devices keep the cheaper route. A C270's YUYV 640x480
+  delivered no frames behind a shared hub, where its MJPG ran. V4L2 devices on USB now list
+  `usb_speed_mbps` (sysfs) among their properties.
+
 - **Fixed exposure and gain on processed native modes land sooner, on the predicted frame:**
   with AE settled, the 3A loop runs its algorithms only every few frames, and a fixed exposure
   or gain waited for the next run (up to 11 frames at 240 fps on the CM5). A control change now

@@ -95,6 +95,19 @@ pub(crate) fn to_backend(scale: Scale, v: &ControlValue) -> ControlValue {
     }
 }
 
+/// [`to_backend`] for the control `meta` describes: automatic exposure on is the first
+/// automatic mode its menu has (aperture priority, full auto, shutter priority; webcams often
+/// offer only aperture priority, some cameras only full auto).
+pub(crate) fn to_backend_for(meta: &ControlMeta, scale: Scale, v: &ControlValue) -> ControlValue {
+    if scale == Scale::AeMenu && number(v).is_some_and(|n| n != 0.0) {
+        let has = |m: i32| meta.validate(&ControlValue::Int(m));
+        if let Some(mode) = [3, 0, 2].into_iter().find(|&m| has(m)) {
+            return ControlValue::Int(mode);
+        }
+    }
+    to_backend(scale, v)
+}
+
 /// A backend value in the standard control's units.
 pub(crate) fn from_backend(scale: Scale, v: ControlValue) -> ControlValue {
     let Some(n) = number(&v) else {
@@ -106,6 +119,48 @@ pub(crate) fn from_backend(scale: Scale, v: ControlValue) -> ControlValue {
         Scale::Milli => ControlValue::Float((n / 1000.0) as f32),
         Scale::AeMenu => ControlValue::Bool(n != 1.0),
         Scale::AfAuto => ControlValue::Int(if n != 0.0 { 2 } else { 0 }),
+    }
+}
+
+/// `meta` in the standard control's units and type (`scale`), as a camera service lists it:
+/// V4L2's exposure in 100 µs as µs, its exposure menu as automatic exposure on or off, its
+/// thousandths of a stop as stops. `Scale::Same` leaves it as it is.
+pub(crate) fn standard_meta(meta: &ControlMeta, scale: Scale) -> ControlMeta {
+    let conv = |v: &ControlValue| from_backend(scale, v.clone());
+    let scaled = |kind: ControlKind| ControlMeta {
+        kind,
+        min: conv(&meta.min),
+        max: conv(&meta.max),
+        default: conv(&meta.default),
+        step: meta.step.as_ref().map(conv),
+        menu: None,
+        ..meta.clone()
+    };
+    match scale {
+        Scale::Same => meta.clone(),
+        Scale::Per100Us => scaled(ControlKind::Uint),
+        Scale::Milli => scaled(ControlKind::Float),
+        Scale::AeMenu => {
+            let has = |m: i32| meta.validate(&ControlValue::Int(m));
+            ControlMeta {
+                kind: ControlKind::Bool,
+                min: ControlValue::Bool(!has(1)),
+                max: ControlValue::Bool([3, 0, 2].into_iter().any(has)),
+                default: conv(&meta.default),
+                step: None,
+                menu: None,
+                ..meta.clone()
+            }
+        }
+        Scale::AfAuto => ControlMeta {
+            kind: ControlKind::Int,
+            min: ControlValue::Int(0),
+            max: ControlValue::Int(2),
+            default: conv(&meta.default),
+            step: None,
+            menu: None,
+            ..meta.clone()
+        },
     }
 }
 
@@ -245,7 +300,7 @@ impl StandardControls {
                 meta.name
             )));
         }
-        let (fitted, clamped) = fit(&meta, to_backend(scale, &value))
+        let (fitted, clamped) = fit(&meta, to_backend_for(&meta, scale, &value))
             .map_err(|refusal| CaptureError::control_apply(refusal.to_string()))?;
         // A native camera's longest exposure depends on the frame length in effect (the frame
         // less the sensor's margin): what is set above it is held to it, and reported as such.
@@ -579,5 +634,82 @@ mod tests {
         );
         // Only by id on V4L2 and UVC: a virtual camera does not answer to it.
         assert!(find_standard(&metas, BackendKind::Virtual, StandardControl::ExposureUs).is_none());
+    }
+
+    /// A UVC camera's exposure menu as V4L2 lists it: only 1 (manual) and 3 (aperture
+    /// priority), the other indexes empty names. Automatic exposure on is 3, a value it takes;
+    /// a camera with only full auto gets 0; the gaps and values past the range are refused.
+    #[test]
+    fn sparse_exposure_menus_take_their_own_values() {
+        let mut ae = control(
+            0x009a_0901,
+            "Auto Exposure",
+            ControlKind::Menu,
+            ControlValue::Uint(0),
+            ControlValue::Uint(3),
+        );
+        ae.default = ControlValue::Uint(3);
+        ae.menu = Some(vec![
+            String::new(),
+            "Manual Mode".into(),
+            String::new(),
+            "Aperture Priority Mode".into(),
+        ]);
+        for (v, ok) in [(0, false), (1, true), (2, false), (3, true), (4, false)] {
+            assert_eq!(ae.validate(&ControlValue::Int(v)), ok, "{v}");
+        }
+        let on = to_backend_for(&ae, Scale::AeMenu, &ControlValue::Bool(true));
+        assert_eq!(fit(&ae, on).unwrap(), (ControlValue::Int(3), false));
+        let off = to_backend_for(&ae, Scale::AeMenu, &ControlValue::Bool(false));
+        assert_eq!(fit(&ae, off).unwrap(), (ControlValue::Int(1), false));
+        let mut full_auto = ae.clone();
+        full_auto.menu = Some(vec!["Auto Mode".into(), "Manual Mode".into()]);
+        full_auto.max = ControlValue::Uint(1);
+        assert_eq!(
+            to_backend_for(&full_auto, Scale::AeMenu, &ControlValue::Bool(true)),
+            ControlValue::Int(0)
+        );
+        // Listed as automatic exposure on or off.
+        let listed = standard_meta(&ae, Scale::AeMenu);
+        assert_eq!(listed.kind, ControlKind::Bool);
+        assert!(listed.menu.is_none());
+        assert_eq!(
+            (listed.min, listed.max, listed.default),
+            (
+                ControlValue::Bool(false),
+                ControlValue::Bool(true),
+                ControlValue::Bool(true)
+            )
+        );
+    }
+
+    /// V4L2's exposure in 100 µs is listed in microseconds.
+    #[test]
+    fn standard_meta_is_in_the_standard_units() {
+        let mut exposure = control(
+            0x009a_0902,
+            "Exposure Time, Absolute",
+            ControlKind::Int,
+            ControlValue::Int(1),
+            ControlValue::Int(10_000),
+        );
+        exposure.default = ControlValue::Int(166);
+        exposure.step = Some(ControlValue::Uint(1));
+        let listed = standard_meta(&exposure, Scale::Per100Us);
+        assert_eq!(listed.kind, ControlKind::Uint);
+        assert_eq!(
+            (listed.min, listed.max, listed.default, listed.step),
+            (
+                ControlValue::Uint(100),
+                ControlValue::Uint(1_000_000),
+                ControlValue::Uint(16_600),
+                Some(ControlValue::Uint(100))
+            )
+        );
+        assert_eq!(listed.id, exposure.id);
+        assert!(matches!(
+            standard_meta(&exposure, Scale::Same).kind,
+            ControlKind::Int
+        ));
     }
 }

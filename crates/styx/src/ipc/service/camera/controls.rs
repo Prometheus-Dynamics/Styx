@@ -11,7 +11,8 @@ use styx_core::prelude::*;
 use super::{Camera, State, restart};
 use crate::BackendKind;
 use crate::capture_api::standard_controls::{
-    Scale, find_standard, fit, from_backend, number, reads_back, to_backend,
+    Scale, find_standard, fit, from_backend, number, reads_back, standard_meta, to_backend,
+    to_backend_for,
 };
 use crate::capture_api::{CaptureError, CaptureHandle};
 use crate::ipc::controls::{
@@ -30,14 +31,17 @@ struct Resolved {
 }
 
 /// The standard control a backend control answers, if any.
+/// The standard control the backend's control `id` answers, and how its units convert.
 fn standard_of(
     metas: &[ControlMeta],
     backend: BackendKind,
     id: ControlId,
-) -> Option<StandardControl> {
-    StandardControl::ALL
-        .into_iter()
-        .find(|s| find_standard(metas, backend, *s).is_some_and(|(m, _)| m.id == id))
+) -> Option<(StandardControl, Scale)> {
+    StandardControl::ALL.into_iter().find_map(|s| {
+        find_standard(metas, backend, s)
+            .filter(|(m, _)| m.id == id)
+            .map(|(_, scale)| (s, scale))
+    })
 }
 
 fn resolve(
@@ -47,12 +51,14 @@ fn resolve(
 ) -> Result<Resolved, ControlRefusal> {
     match target {
         ControlTarget::Id(id) => {
-            // A backend id takes the backend's own units.
+            // A backend id takes the standard control's units when it answers one (as the list
+            // shows it), else the backend's own.
+            let standard = standard_of(metas, backend, id);
             Ok(Resolved {
                 id,
                 meta: metas.iter().find(|m| m.id == id).cloned(),
-                standard: standard_of(metas, backend, id),
-                scale: Scale::Same,
+                standard: standard.map(|(s, _)| s),
+                scale: standard.map_or(Scale::Same, |(_, scale)| scale),
             })
         }
         ControlTarget::Standard(s) => match find_standard(metas, backend, s) {
@@ -156,7 +162,10 @@ impl Camera {
         if super::flips::is_flip(r.id) {
             return self.set_flip(&mut state, r.id, value, caller, config, counters);
         }
-        let backend_value = to_backend(r.scale, &value);
+        let backend_value = match &r.meta {
+            Some(meta) => to_backend_for(meta, r.scale, &value),
+            None => to_backend(r.scale, &value),
+        };
         let (fitted, clamped) = match &r.meta {
             Some(meta) => fit(meta, backend_value)?,
             None => (backend_value, false),
@@ -347,16 +356,23 @@ impl Camera {
         let mut out: Vec<ControlDescriptor> = metas
             .iter()
             .map(|meta| {
-                let standard = standard_of(&metas, backend, meta.id);
+                // A standard control's in its units and type (what its value, events and
+                // writes are in), the others as the backend has them.
+                let (standard, scale) = match standard_of(&metas, backend, meta.id) {
+                    Some((s, scale)) => (Some(s), scale),
+                    None => (None, Scale::Same),
+                };
                 let current = match state.capture() {
                     Some(capture) => capture.get_control(meta.id).ok(),
                     None => state.remembered(meta.id),
-                };
+                }
+                .map(|v| from_backend(scale, v));
                 let effective = state
                     .capture()
-                    .and_then(|c| c.control_plane().effective_range(meta.id));
+                    .and_then(|c| c.control_plane().effective_range(meta.id))
+                    .map(|(lo, hi)| (from_backend(scale, lo), from_backend(scale, hi)));
                 ControlDescriptor {
-                    meta: meta.clone(),
+                    meta: standard_meta(meta, scale),
                     current,
                     standard,
                     writable: meta.access == Access::ReadWrite
@@ -578,5 +594,11 @@ mod tests {
         );
         let r = resolve(&metas, BackendKind::V4l2, StandardControl::FrameRate.into()).unwrap();
         assert_eq!(r.id, SERVICE_FRAME_RATE);
+        // By its id it takes the standard control's units too, as the list shows it.
+        let r = resolve(&metas, BackendKind::V4l2, ControlId(0x009a_0902).into()).unwrap();
+        assert_eq!(
+            (r.standard, r.scale),
+            (Some(StandardControl::ExposureUs), Scale::Per100Us)
+        );
     }
 }
