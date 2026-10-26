@@ -345,6 +345,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **Dev versions:** every crate is `2.0.1-dev` (semver with a `-dev` suffix; only the patch
+  moves before a release). The git dependencies on Lemnos and Daedalus carry no version
+  requirement. Consumers on Styx's git `dev` should drop `version = "2.0.0"`, which does not
+  match `2.0.1-dev`.
+
 - **Code review, batch 3** (merges 5d0ffb3 to d3ec1fb):
   - **Measured on the CM5** (Styx dev before the review vs after, same benchmark binary):
     camera service CPU about -24% per frame (0.49 -> 0.37 ms, three runs; runs vary

@@ -3762,7 +3762,7 @@ dependencies = [
 
 [[package]]
 name = "native-pipeline"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "bytemuck",
  "libc",
@@ -3777,7 +3777,7 @@ dependencies = [
 
 [[package]]
 name = "native-spike"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "lemnos-linux",
  "libc",
@@ -4359,7 +4359,7 @@ dependencies = [
 
 [[package]]
 name = "pisp-spike"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "styx-kernel",
  "styx-pisp",
@@ -5266,7 +5266,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "styx"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "bevy",
  "bytes",
@@ -5315,7 +5315,7 @@ dependencies = [
 
 [[package]]
 name = "styx-algo"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "libm",
  "serde",
@@ -5327,7 +5327,7 @@ dependencies = [
 
 [[package]]
 name = "styx-calibrate"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "serde_json",
  "styx-algo",
@@ -5335,7 +5335,7 @@ dependencies = [
 
 [[package]]
 name = "styx-capture"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "serde",
  "smallvec",
@@ -5345,7 +5345,7 @@ dependencies = [
 
 [[package]]
 name = "styx-codec"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "criterion",
  "ffmpeg-sys-next",
@@ -5369,7 +5369,7 @@ dependencies = [
 
 [[package]]
 name = "styx-compare"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -5379,7 +5379,7 @@ dependencies = [
 
 [[package]]
 name = "styx-core-rs"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "criterion",
  "critical-section",
@@ -5401,7 +5401,7 @@ dependencies = [
 
 [[package]]
 name = "styx-dng"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "libm",
  "thiserror 2.0.21",
@@ -5409,7 +5409,7 @@ dependencies = [
 
 [[package]]
 name = "styx-examples"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "daedalus-rs",
  "image",
@@ -5427,7 +5427,7 @@ dependencies = [
 
 [[package]]
 name = "styx-gpuisp"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "ash",
  "libc",
@@ -5438,7 +5438,7 @@ dependencies = [
 
 [[package]]
 name = "styx-graph"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "futures-core",
  "libc",
@@ -5449,7 +5449,7 @@ dependencies = [
 
 [[package]]
 name = "styx-hal"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -5459,18 +5459,18 @@ dependencies = [
 
 [[package]]
 name = "styx-iq-compare"
-version = "2.0.0"
+version = "2.0.1-dev"
 
 [[package]]
 name = "styx-kernel"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "styx-libcamera"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "libc",
  "libcamera",
@@ -5483,7 +5483,7 @@ dependencies = [
 
 [[package]]
 name = "styx-mcu-footprint"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -5502,7 +5502,7 @@ dependencies = [
 
 [[package]]
 name = "styx-native"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "futures-core",
  "lemnos-drivers-vcm",
@@ -5519,7 +5519,7 @@ dependencies = [
 
 [[package]]
 name = "styx-nostd-camera"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "portable-atomic",
  "smallvec",
@@ -5534,7 +5534,7 @@ dependencies = [
 
 [[package]]
 name = "styx-nostd-smoke"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "styx-algo",
  "styx-core-rs",
@@ -5546,7 +5546,7 @@ dependencies = [
 
 [[package]]
 name = "styx-pipeline"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "bytemuck",
  "serde",
@@ -5566,7 +5566,7 @@ dependencies = [
 
 [[package]]
 name = "styx-pisp"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "bytemuck",
  "libm",
@@ -5575,7 +5575,7 @@ dependencies = [
 
 [[package]]
 name = "styx-record-cli"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "libc",
  "styx",
@@ -5583,7 +5583,7 @@ dependencies = [
 
 [[package]]
 name = "styx-runtime"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "smallvec",
  "styx-core-rs",
@@ -5595,7 +5595,7 @@ dependencies = [
 
 [[package]]
 name = "styx-sensor"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -5612,7 +5612,7 @@ dependencies = [
 
 [[package]]
 name = "styx-softisp"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "criterion",
  "serde",
@@ -5622,7 +5622,7 @@ dependencies = [
 
 [[package]]
 name = "styx-tune"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -5637,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "styx-tune-cli"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "styx",
  "styx-algo",
@@ -5648,7 +5648,7 @@ dependencies = [
 
 [[package]]
 name = "styx-uvc"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "lemnos-linux",
  "libc",
@@ -5661,7 +5661,7 @@ dependencies = [
 
 [[package]]
 name = "styx-v4l2"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "libc",
  "smallvec",
@@ -5673,7 +5673,7 @@ dependencies = [
 
 [[package]]
 name = "styx-wgpu"
-version = "2.0.0"
+version = "2.0.1-dev"
 dependencies = [
  "pollster 0.4.0",
  "thiserror 2.0.21",

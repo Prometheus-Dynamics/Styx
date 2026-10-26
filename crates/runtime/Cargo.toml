@@ -19,19 +19,19 @@ mock = ["styx-hal/mock"]
 [dependencies]
 # Path dependencies without default features (the workspace entries keep theirs for the std
 # crates), as examples/nostd-smoke does.
-styx-hal = { path = "../hal", version = "2.0.0" }
-styx-sensor = { path = "../sensor", version = "2.0.0", default-features = false }
+styx-hal = { path = "../hal", version = "2.0.1-dev" }
+styx-sensor = { path = "../sensor", version = "2.0.1-dev", default-features = false }
 # Frames handed to consumers (`Frame::into_lease`) and the metrics counters.
-styx-core = { package = "styx-core-rs", path = "../core", version = "2.0.0", default-features = false }
+styx-core = { package = "styx-core-rs", path = "../core", version = "2.0.1-dev", default-features = false }
 smallvec.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 # The tests' frames go through `Frame::into_lease` on the mock platform.
 styx-runtime = { path = ".", features = ["mock"] }
-styx-core = { package = "styx-core-rs", path = "../core", version = "2.0.0" }
-styx-hal = { path = "../hal", version = "2.0.0", features = ["mock"] }
-styx-sensor = { path = "../sensor", version = "2.0.0" }
+styx-core = { package = "styx-core-rs", path = "../core", version = "2.0.1-dev" }
+styx-hal = { path = "../hal", version = "2.0.1-dev", features = ["mock"] }
+styx-sensor = { path = "../sensor", version = "2.0.1-dev" }
 
 [lints]
 workspace = true
