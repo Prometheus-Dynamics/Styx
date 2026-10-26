@@ -163,11 +163,12 @@ pub(crate) const YUYV_LUMA_MS_PER_MP: f32 = 0.35;
 pub(crate) const RGB_LUMA_MS_PER_MP: f32 = 1.2;
 /// 2x2 box pyramid level, per megapixel of the level's source (1280x800 → 640x400: 0.16 ms).
 pub(crate) const BOX_LEVEL_MS_PER_MP: f32 = 0.16;
-/// A box filter level on the GPU, its upload and readback included (an estimate: not yet
-/// measured on the CM5's V3D).
-pub(crate) const GPU_LEVEL_MS_PER_MP: f32 = 0.5;
-/// The CPU's part of a GPU level: copying the frame in and the level out (an estimate).
-pub(crate) const GPU_COPY_MS_PER_MP: f32 = 0.05;
+/// A box filter level on the GPU, its upload and readback included. CM5 (V3D 7.1, wgpu on
+/// Mesa v3dv, 2026-10-26): levels 1-3 of 1280x800 (1.34 MP of source) take 1.67 ms (p50).
+pub(crate) const GPU_LEVEL_MS_PER_MP: f32 = 1.25;
+/// The CPU's part of a GPU level (copying the frame in and the levels out, submitting,
+/// waiting): 0.38 ms for the same three levels on the CM5, more than the CPU's box filters.
+pub(crate) const GPU_COPY_MS_PER_MP: f32 = 0.28;
 /// Copying a frame to realign its rows.
 pub(crate) const REALIGN_MS_PER_MP: f32 = 0.3;
 /// libx264 low latency (`superfast`, `zerolatency`) on a Cortex-A76: 14.5 ms per 720p frame.

@@ -23,8 +23,8 @@ Where there is no GPU, or a GPU pass fails, the CPU makes the levels.
   odd sizes.
 - Frames are copied in (`write_buffer`) and the levels copied out. Zero-copy dma-buf import
   (as styx-gpuisp does with ash) is not in wgpu's public API.
-- Not yet measured on the Raspberry Pi 5's V3D. The planner's cost (0.5 ms per source MP,
-  0.05 ms of it CPU) is an estimate.
-- A box pyramid is cheap on the CPU too (about 0.16 ms per MP), so it is a correctness
-  reference for the backend, not a saving on its own. Heavier preparation work is what the
-  backend is for.
+- Exact on the Raspberry Pi 5's V3D 7.1 (Mesa v3dv) too. There, levels 1 to 3 of 1280x800
+  take 1.67 ms (p50; p95 1.98 ms) and 0.38 ms of the calling thread's CPU (`device` profile,
+  2026-10-26, `--ignored time_three_levels_of_1280x800`). The CPU's box filters take less of
+  both, so on the Pi 5 the pyramid is a correctness reference for the backend, not a saving.
+  Upload and readback dominate: work worth moving to this GPU must be much heavier per pixel.

@@ -115,3 +115,58 @@ fn eprintln_adapter(gpu: &Gpu) {
     use std::io::Write;
     let _ = writeln!(std::io::stderr(), "adapter: {}", gpu.name());
 }
+
+/// Levels 1 to 3 of a 1280x800 frame: wall time per frame (median and 95th percentile of 200,
+/// after warm-up) and the CPU time of the calling thread. Run on the device:
+/// `--ignored --nocapture time_three_levels`.
+#[test]
+#[ignore = "timing, on the device"]
+fn time_three_levels_of_1280x800() {
+    let Some(gpu) = gpu() else { return };
+    eprintln_adapter(&gpu);
+    let mut pyramid = BoxPyramid::new(&gpu);
+    let data = image(800, 1280, 7);
+    let src = Luma {
+        data: &data,
+        width: 1280,
+        height: 800,
+        stride: 1280,
+    };
+    let cpu = || {
+        let mut ts = Timespec { sec: 0, nsec: 0 };
+        // SAFETY: clock_gettime writes the timespec (CLOCK_THREAD_CPUTIME_ID = 3).
+        unsafe { clock_gettime(3, &mut ts) };
+        ts.sec as f64 * 1e3 + ts.nsec as f64 / 1e6
+    };
+    for _ in 0..20 {
+        pyramid.run(src, 3, |_| {}).unwrap();
+    }
+    let mut walls = Vec::new();
+    let cpu0 = cpu();
+    for _ in 0..200 {
+        let t = std::time::Instant::now();
+        pyramid.run(src, 3, |_| {}).unwrap();
+        walls.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    let cpu_ms = (cpu() - cpu0) / 200.0;
+    walls.sort_by(f64::total_cmp);
+    use std::io::Write;
+    let _ = writeln!(
+        std::io::stderr(),
+        "3 levels of 1280x800: wall p50 {:.3} ms, p95 {:.3} ms; calling thread CPU {:.3} ms",
+        walls[100],
+        walls[190],
+        cpu_ms
+    );
+}
+
+/// `struct timespec` on 64-bit Linux.
+#[repr(C)]
+struct Timespec {
+    sec: i64,
+    nsec: i64,
+}
+
+unsafe extern "C" {
+    fn clock_gettime(clock: i32, ts: *mut Timespec) -> i32;
+}
