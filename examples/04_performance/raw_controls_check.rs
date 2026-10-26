@@ -91,6 +91,9 @@ fn client(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("vision meta: no NativeFrameMeta");
     }
+    // Let the frames go: a client holding one past the service's longest hold is disconnected
+    // (and the capture stops with its last client).
+    drop((vlast, rlast));
     let names = [
         "exposure_time_us",
         "gain",
