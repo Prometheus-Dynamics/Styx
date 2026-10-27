@@ -1,4 +1,4 @@
-//! `daedalus:frame` v2 for [`FrameLease`]: Daedalus nodes take `FrameView<'_>` of a Styx frame,
+//! `daedalus:frame` v3 for [`FrameLease`]: Daedalus nodes take `FrameView<'_>` of a Styx frame,
 //! including nodes in separately built plugins that know nothing of Styx, without a copy.
 //!
 //! The view reads the lease itself through Daedalus's generated vtable. Metadata (geometry,
@@ -9,13 +9,13 @@
 //! and its buffer alive for as long as the view lives.
 
 use ::daedalus::transport::{
-    DRM_FORMAT_MOD_INVALID, FrameFormatKind, FramePlane, FrameResidency as ViewResidency,
-    FrameSource, PlaneMapping,
+    ColorRange, DRM_FORMAT_MOD_INVALID, FrameColorimetry, FrameFormatKind, FramePlane,
+    FrameResidency as ViewResidency, FrameSource, PlaneMapping, frame_meta,
 };
 
-use crate::buffer::{CpuAccess, FrameLease, FrameResidency};
-use crate::format::FourCc;
+use crate::buffer::{BackendFrameMeta, CpuAccess, FrameLease, FrameResidency};
 use crate::format::drm::{self, DRM_FORMAT_INVALID, DrmRegistry};
+use crate::format::{ColorSpace, FourCc, MediaFormat};
 
 /// Where a view says `frame`'s memory lives: frames in their own host memory (and compressed
 /// packets) are `Cpu`, memory owned elsewhere (dma-bufs, driver, memfd and caller buffers) is
@@ -60,7 +60,64 @@ pub fn format_kind(code: FourCc) -> FrameFormatKind {
     }
 }
 
-/// The frame as `daedalus:frame` v2 (docs/foreign-frame-interface.md in Daedalus).
+/// How a view says `format`'s values map to colour (H.273 code points and range):
+///
+/// - Bayer data and H.264/H.265 packets (which carry their own) are unspecified; JPEG is JFIF,
+///   `SYCC` (BT.601 matrix, full range).
+/// - RGB formats: the label's primaries and transfer, identity matrix, full range.
+/// - YUV and luma labelled `Srgb` are `SYCC`: what the native ISPs (PiSP and the software ISP)
+///   write, what libcamera's full-range spaces map to, and what Styx's own YUV decoders assume.
+///   `Bt709` and `Bt2020` are limited range; `Unknown` is unspecified.
+pub fn colorimetry(format: &MediaFormat) -> FrameColorimetry {
+    let code = format.code;
+    if code.is_jpeg_encoded() {
+        return FrameColorimetry::SYCC;
+    }
+    if code.is_compressed() || code.is_bayer_raw() {
+        return FrameColorimetry::UNSPECIFIED;
+    }
+    let c = match format.color {
+        ColorSpace::Srgb => FrameColorimetry::SYCC,
+        ColorSpace::Bt709 => FrameColorimetry::BT709,
+        ColorSpace::Bt2020 => FrameColorimetry::BT2020,
+        ColorSpace::Unknown => return FrameColorimetry::UNSPECIFIED,
+    };
+    let rgb = code.info().default_color_space == Some(ColorSpace::Srgb);
+    if rgb {
+        FrameColorimetry {
+            matrix: FrameColorimetry::MATRIX_IDENTITY,
+            ..c.with_range(ColorRange::Full)
+        }
+    } else {
+        c
+    }
+}
+
+/// The frame's capture metadata under `key` ([`frame_meta`]), from what its backend reported:
+/// exposure, analogue and digital gain, frame duration (native and libcamera), and colour
+/// temperature (native, from AWB).
+pub fn metadata_u64(backend: &BackendFrameMeta, key: u32) -> Option<u64> {
+    let gain = |g: f32| f64::from(g).to_bits();
+    match (backend, key) {
+        (_, frame_meta::EXPOSURE_NS) => backend.exposure_ns(),
+        (BackendFrameMeta::Native(m), frame_meta::ANALOGUE_GAIN) => Some(gain(m.analog_gain)),
+        (BackendFrameMeta::Native(m), frame_meta::DIGITAL_GAIN) => Some(gain(m.digital_gain)),
+        (BackendFrameMeta::Native(m), frame_meta::FRAME_DURATION_NS) => {
+            (m.frame_duration_ns > 0).then_some(m.frame_duration_ns)
+        }
+        (BackendFrameMeta::Native(m), frame_meta::COLOR_TEMPERATURE_K) => m
+            .aaa
+            .map(|a| a.colour_temperature_k)
+            .filter(|&k| k > 0.0)
+            .map(|k| k.round() as u64),
+        (BackendFrameMeta::Libcamera(m), frame_meta::ANALOGUE_GAIN) => m.analogue_gain.map(gain),
+        (BackendFrameMeta::Libcamera(m), frame_meta::DIGITAL_GAIN) => m.digital_gain.map(gain),
+        (BackendFrameMeta::Libcamera(m), frame_meta::FRAME_DURATION_NS) => m.frame_duration_ns,
+        _ => None,
+    }
+}
+
+/// The frame as `daedalus:frame` v3 (docs/foreign-frame-interface.md in Daedalus).
 ///
 /// - `format` / `format_kind` / `modifier`: the DRM code of the frame's FourCC
 ///   ([`drm::to_drm`]), `Pixel` or `Bayer` ([`format_kind`]; libcamera's
@@ -77,6 +134,9 @@ pub fn format_kind(code: FourCc) -> FrameFormatKind {
 ///   [`FrameLease::end_cpu_read`], the lease's own bytes in place, mapped on first use and
 ///   synced while reads are open; nothing when the CPU cannot read them (a GPU texture, an
 ///   unmapped dma-buf), never a pointer into unmapped memory.
+/// - v3: `colorimetry` from the format's label ([`colorimetry`]), `metadata_u64` from the
+///   backend's frame metadata ([`metadata_u64`]); no byte metadata (a lease does not know its
+///   camera's id).
 impl FrameSource for FrameLease {
     fn width(&self) -> u32 {
         self.meta().format.resolution.width.get()
@@ -136,6 +196,14 @@ impl FrameSource for FrameLease {
 
     fn end_cpu_access(&self, index: u32) {
         self.end_cpu_read(index as usize);
+    }
+
+    fn colorimetry(&self) -> FrameColorimetry {
+        colorimetry(&self.meta().format)
+    }
+
+    fn metadata_u64(&self, key: u32) -> Option<u64> {
+        metadata_u64(self.meta().backend.as_ref()?, key)
     }
 }
 

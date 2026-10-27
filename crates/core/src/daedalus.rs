@@ -14,13 +14,14 @@
 //! - [`push_group`] / [`group_payloads`]: a multi-camera [`FrameGroup`](crate::multicam::FrameGroup)
 //!   pushed as one atomic host batch, so the graph ticks once per synchronized set, with its
 //!   [`FrameGroupInfo`] (`styx:frame_group`: spread, offsets, cameras present).
-//! - `FrameLease: FrameSource`: Daedalus's generic `daedalus:frame` v2 view ([`FrameView`]),
+//! - `FrameLease: FrameSource`: Daedalus's generic `daedalus:frame` v3 view ([`FrameView`]),
 //!   registered as a provider by the plugin, so nodes that know nothing of Styx (separately
 //!   built plugins included) read a Styx frame in place: DRM format, modifier and format kind
 //!   ([`crate::format::drm`]), the planes' dma-bufs, offsets, strides and lengths without
 //!   touching the pixels, and the lease's own bytes through bracketed CPU reads
 //!   ([`FrameLease::begin_cpu_read`]: mapped on first use, dma-bufs synced while read), never
-//!   a host pointer the CPU cannot read. [`frame_view`] views a lease directly.
+//!   a host pointer the CPU cannot read; v3's colorimetry ([`colorimetry`]) and capture
+//!   metadata ([`metadata_u64`]). [`frame_view`] views a lease directly.
 //!
 //! ```ignore
 //! let mut registry = daedalus::runtime::plugins::PluginRegistry::new();
@@ -270,7 +271,7 @@ pub fn frame_view(frame: &FrameLease) -> FrameView<'_> {
 }
 
 mod frame_view;
-pub use frame_view::{format_kind, plane_mapping, view_residency};
+pub use frame_view::{colorimetry, format_kind, metadata_u64, plane_mapping, view_residency};
 
 mod group;
 pub use group::{FrameGroupInfo, GROUP_INFO_TYPE_KEY, GroupPorts, group_payloads, push_group};

@@ -378,4 +378,57 @@ mod frame_views {
         drop(payload);
         assert_eq!(Arc::strong_count(&frame), 1);
     }
+
+    #[test]
+    fn colorimetry_and_capture_metadata_travel_with_the_frame() {
+        use ::daedalus::transport::{ColorRange, FrameColorimetry as C, frame_meta};
+
+        use crate::buffer::{BackendFrameMeta, NativeAaa, NativeFrameMeta};
+        use crate::daedalus::frame_view::colorimetry;
+
+        let res = Resolution::new(16, 8).unwrap();
+        let of = |code, color| colorimetry(&MediaFormat::new(code, res, color));
+        // Styx's `Srgb` YUV (the ISPs' JFIF output) is sYCC: BT.601, full range.
+        assert_eq!(of(FourCc::NV12, ColorSpace::Srgb), C::SYCC);
+        assert_eq!(of(FourCc::GREY, ColorSpace::Bt709), C::BT709);
+        assert_eq!(of(FourCc::YUYV, ColorSpace::Bt2020), C::BT2020);
+        assert_eq!(of(FourCc::NV12, ColorSpace::Unknown), C::UNSPECIFIED);
+        // RGB: no matrix, full range.
+        let rgb = of(FourCc::RG24, ColorSpace::Srgb);
+        assert_eq!(rgb, C::SRGB);
+        let rgb709 = of(FourCc::RG24, ColorSpace::Bt709);
+        assert_eq!(rgb709.matrix, C::MATRIX_IDENTITY);
+        assert_eq!(rgb709.color_range(), ColorRange::Full);
+        // JPEG is JFIF whatever the label; Bayer and H.264 say nothing.
+        assert_eq!(of(FourCc::MJPG, ColorSpace::Unknown), C::SYCC);
+        assert_eq!(of(FourCc::H264, ColorSpace::Bt709), C::UNSPECIFIED);
+        assert_eq!(of(FourCc::BGGR, ColorSpace::Srgb), C::UNSPECIFIED);
+
+        let mut frame = grey(16, 8, 3).into_shareable();
+        assert_eq!(
+            frame_view(&frame).metadata_u64(frame_meta::EXPOSURE_NS),
+            None
+        );
+        frame.meta_mut().backend = Some(BackendFrameMeta::Native(NativeFrameMeta {
+            exposure_ns: 2_002_000,
+            analog_gain: 2.5,
+            digital_gain: 1.0,
+            frame_duration_ns: 8_333_333,
+            aaa: Some(NativeAaa {
+                colour_temperature_k: 5003.4,
+                ..NativeAaa::default()
+            }),
+            ..NativeFrameMeta::default()
+        }));
+        let view = frame_view(&frame);
+        assert_eq!(view.colorimetry(), C::BT709);
+        assert_eq!(view.exposure_ns(), Some(2_002_000));
+        assert_eq!(view.analogue_gain(), Some(2.5));
+        let get = |key| view.metadata_u64(key);
+        assert_eq!(get(frame_meta::DIGITAL_GAIN), Some(1.0f64.to_bits()));
+        assert_eq!(get(frame_meta::FRAME_DURATION_NS), Some(8_333_333));
+        assert_eq!(get(frame_meta::COLOR_TEMPERATURE_K), Some(5003));
+        assert_eq!(get(frame_meta::VENDOR_BASE), None);
+        assert_eq!(view.sensor_id(), None);
+    }
 }

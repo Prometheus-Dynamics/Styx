@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Daedalus `daedalus:frame` v3 for `FrameLease`** (Daedalus `d543c6c`): frames carry their
+  colorimetry (H.273 code points and range, `styx_core::daedalus::colorimetry`: `Srgb` YUV is
+  sYCC, BT.601 full range, as the ISPs write it) and their capture metadata
+  (`styx_core::daedalus::metadata_u64`: exposure, analogue and digital gain, frame duration,
+  and the native AWB's colour temperature) to every `FrameView` / `SharedFrame` consumer,
+  separately built plugins included.
 - **Simulated cameras** (feature `sim`, `styx::sim`, docs/simulation.md): a sensor from its
   description on a simulated bridge, bus and capture queue, behind the same native camera,
   session, sensor driver and control schedule (ranges, clamping, delays, frame rate limits per

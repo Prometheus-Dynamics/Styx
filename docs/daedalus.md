@@ -23,7 +23,7 @@ it Styx frames as below.
 | `frame_payload(frame)`, `shared_frame_payload(arc)` | A frame as a Daedalus `Payload` without copying it. The payload owns the frame, and with it the camera buffer, until the graph drops it. |
 | `payload_residency(&frame)` | Maps the frame's memory to a Daedalus `Residency`: host-owned memory and compressed packets → `Cpu`; dma-bufs and driver or memfd buffers → `External`; GPU textures → `Gpu`. |
 | `cpu_readable(&frame)` | Whether a node can read the planes in place (`CpuAccess` is not `None`). |
-| `FrameLease: FrameSource` | Daedalus's generic frame view, `daedalus:frame` v2: nodes take `FrameView<'_>` of a Styx frame without knowing Styx (see [Generic frame view](#generic-frame-view)). The plugin registers it as a provider (`daedalus.foreign:styx:framelease->daedalus:frame`, a `View` adapter). |
+| `FrameLease: FrameSource` | Daedalus's generic frame view, `daedalus:frame` v3: nodes take `FrameView<'_>` of a Styx frame without knowing Styx (see [Generic frame view](#generic-frame-view)). The plugin registers it as a provider (`daedalus.foreign:styx:framelease->daedalus:frame`, a `View` adapter). |
 | `frame_view(&frame)`, `view_residency(&frame)`, `plane_mapping(&frame)`, `format_kind(code)` | A lease as a `FrameView` directly (borrowed, nothing allocated), and the residency, plane mapping and format kind it reports. `FrameView`, `FrameInterface`, `FrameFormatKind` and `PlaneMapping` are re-exported. |
 
 ## Enabling it
@@ -50,7 +50,7 @@ by its canonical git URL (`https://github.com/Prometheus-Dynamics/Daedalus.git`,
 in the root `Cargo.toml`). Apps and libraries that use Styx from git depend on Daedalus the same
 way, so both resolve to one `daedalus-rs` (a `Cargo.lock` fixes the commit; `cargo update -p
 daedalus-rs` moves it to the branch's head). Styx is built and tested against Daedalus `dev` at
-`89836d1` (plugin ABI 10, stable ABI 2, `daedalus:frame` v2). The root `Cargo.lock` is committed and pins that
+`d543c6c` (plugin ABI 10, stable ABI 2, `daedalus:frame` v3). The root `Cargo.lock` is committed and pins that
 commit; to move it, run `cargo update -p daedalus-rs --precise <commit>` and record the new
 commit here. It needs at least `ed7ddde` (`daedalus:frame`
 v2). A Daedalus with `daedalus:frame` v1 does not build with
@@ -121,7 +121,7 @@ ticks once per group and never mixes instants. See
 
 ## Generic frame view
 
-Daedalus's `daedalus:frame` v2 interface (`FrameSource` / `FrameView`, Daedalus's
+Daedalus's `daedalus:frame` v3 interface (`FrameSource` / `FrameView`, Daedalus's
 `docs/foreign-frame-interface.md`) is how a node reads any library's frames, including a node in
 a plugin built separately from Styx. A node takes `frame: FrameView<'_>`; fed a
 `styx:framelease` payload, the planner inserts Styx's provider, which retypes the payload in
@@ -150,6 +150,8 @@ What the view reports:
 | plane `dmabuf_fd`, `offset` | The dma-buf the plane lies in (`FrameLease::dmabuf_plane`, borrowed from the backing: duplicate it to keep it) and the plane's offset in it (`u64`), for `ExternalFrameDescriptor::from_frame_view` / `GpuContextHandle::import_dmabuf` or KMS. Without a dma-buf, no fd and `offset` is the layout's offset in its buffer. |
 | plane `mapping` | From `FrameLease::cpu_access`: `Cached`, `Uncached` (uncached or write-combined memory: readable but slow, copy once if you read it more than once), or `Unmapped` (`CpuAccess::None`: `plane_bytes` gives nothing). |
 | `plane_bytes(i)` | `FrameLease::begin_cpu_read` / `end_cpu_read`: the lease's own bytes in place, `None` when the CPU cannot read them (no host pointer is handed out for such memory). |
+| `colorimetry` (v3) | From the format's `ColorSpace` (`styx_core::daedalus::colorimetry`). YUV and luma labelled `Srgb` are `SYCC` (BT.601, full range): the PiSP and software ISP write JFIF YCbCr, libcamera's full-range spaces map to `Srgb`, and Styx's own YUV decoders read it so. `Bt709` / `Bt2020` are limited range. RGB formats get the identity matrix, full range. JPEG is `SYCC`; Bayer, H.264/H.265 and `Unknown` are unspecified. A V4L2/UVC camera's YUYV is labelled from the driver's colorspace (`uvcvideo`: sRGB), which V4L2 defines as limited range; Styx treats it as full range like the others, unverified per camera. |
+| `metadata_u64` (v3) | From the frame's backend metadata (`styx_core::daedalus::metadata_u64`): `EXPOSURE_NS`, `ANALOGUE_GAIN`, `DIGITAL_GAIN`, `FRAME_DURATION_NS` (native and libcamera) and `COLOR_TEMPERATURE_K` (native, from AWB). V4L2 and UVC frames report none. No byte metadata: a lease does not know its camera's id. |
 
 Reading metadata touches nothing, so a consumer that only forwards the planes' dma-bufs (a GPU
 importer) costs no `mmap` and no cache maintenance. A CPU read is a bracketed access, counted by
