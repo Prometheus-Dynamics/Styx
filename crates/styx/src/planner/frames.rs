@@ -37,10 +37,6 @@ enum Source {
     Branch(Box<Branch>),
 }
 
-/// The previous name of [`Frames`].
-#[deprecated(note = "renamed to Frames")]
-pub type PlannedFrames = Frames;
-
 impl Frames {
     /// The frames of a plan's own capture, prepared by `preparer`.
     pub(crate) fn of_pipeline(

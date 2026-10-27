@@ -64,8 +64,6 @@ pub use request::{
 };
 pub(crate) use routes::Route;
 pub use shared::{SharedFramePlan, plan_many, plan_many_with};
-#[allow(deprecated)]
-pub use start::PlannedFrames;
 pub use start::{Frames, RoiHandle};
 
 use crate::BackendKind;
@@ -255,8 +253,8 @@ fn default_registry() -> Result<CodecRegistryHandle, PlanError> {
         .map_err(|err| PlanError::Registry(err.to_string()))
 }
 
-/// Plan for one device using the default codec registry. Takes a [`FrameRequest`] (or the
-/// deprecated `FrameRequirements`); [`FrameRequest::plan`] is the same.
+/// Plan for one device using the default codec registry. Takes a [`FrameRequest`];
+/// [`FrameRequest::plan`] is the same.
 pub fn plan_frames<R: Clone + Into<FrameRequest>>(
     device: &ProbedDevice,
     request: &R,

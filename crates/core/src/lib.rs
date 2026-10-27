@@ -46,10 +46,6 @@ pub mod prelude {
         requirements::{FrameRect, OutputFormat, PyramidRequest, PyramidSource},
     };
 
-    // The previous frame request, kept for one release (see `requirements`).
-    #[allow(deprecated)]
-    pub use crate::requirements::{FrameRequirements, HardwarePolicy, PlanOverrides, Priority};
-
     pub use crate::{
         buffer::{
             BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats, CompanionKind,

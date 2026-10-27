@@ -542,6 +542,24 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   writes its results into the caller's list, without allocating for up to 8 descriptors; `poll`
   keeps its `Vec` result.
 
+### Removed
+
+Breaking, for 3.0: the shims deprecated in 2.0 are gone.
+
+- `styx_core::prelude::{FrameRequirements, Priority, HardwarePolicy, PlanOverrides}` and
+  `FrameRequest: From<FrameRequirements>`: build the request with `styx::prelude::Frames`
+  (`Priority::Latency` → `.latest()`, `Throughput` → `.every_frame(4)`, `Power` →
+  `.every_frame(3)`, `Power` with `min_fps(x)` → `.fps(x)`, `min_fps(x)` otherwise →
+  `.fps_at_least(x)`; the overrides are `.backend`, `.hardware`, `.decoder`, `.forbid`,
+  `.decode_threads`).
+- `styx::planner::PlannedFrames`: it is `Frames`.
+- `styx_native::regbus`: `styx_sensor::I2cRegisters` and `styx_native::sensor_bus::{BridgePins,
+  PowerSwitch}`.
+- `styx_sensor::Registers`: implement `DriverBus` for the register map and pass it directly.
+- `styx_sensor::lens::{VcmChipLemnos, VcmFormatWithLemnos}`: `VcmChip` is Lemnos's
+  (`builtin_format`), and `VcmFormat::with_format`.
+- gst-styx's `priority` property: `queue-depth` (0 or 1 the newest frame, N every frame up to N).
+
 ### Fixed
 
 - **A disconnect a supervised capture recovered from no longer reads as its error now.**

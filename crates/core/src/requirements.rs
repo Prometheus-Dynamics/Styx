@@ -5,17 +5,10 @@
 //! frames are delivered), is `styx::planner::FrameRequest` in the `styx` crate, built with
 //! `styx::prelude::Frames`: `Frames::nv12().size(1280, 800).fps(30).open(&camera)`. The planner
 //! turns it into a concrete capture, decode and preparation plan for a device.
-//!
-//! [`FrameRequirements`] and [`Priority`] are the previous form of that request, kept for one
-//! release as deprecated shims; `styx` converts them to a `FrameRequest`.
 
 use alloc::vec::Vec;
 
 use crate::format::FourCc;
-
-mod legacy;
-#[allow(deprecated)]
-pub use legacy::{FrameRequirements, HardwarePolicy, PlanOverrides, Priority};
 
 /// A rectangle in full-frame pixel coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

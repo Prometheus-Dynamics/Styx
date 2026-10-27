@@ -215,10 +215,7 @@ pub use lemnos_drivers_vcm;
 pub use lemnos_hal;
 pub use lens::{LensDescription, LensFrame, LensMotion, LensSchedule, VcmChip, VcmFormat, VcmI2c};
 pub use mbus::{ColorFilter, MbusCode};
-#[allow(deprecated)]
-pub use registers::{
-    AddressWidth, Endian, I2cRegisters, MAX_BURST, Registers, SpiRegisters, read_bytewise,
-};
+pub use registers::{AddressWidth, Endian, I2cRegisters, MAX_BURST, SpiRegisters, read_bytewise};
 pub use schedule::{
     Applied, Control, ControlScheduler, ControlSet, ExposureLimit, IssueBatch, Landing, Landings,
     Mismatch, Mismatches,

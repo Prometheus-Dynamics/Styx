@@ -143,34 +143,6 @@ pub use vcm::MAX_VCM_WRITES;
 /// `serde`; `refs().format()` or `with_format` lend it as Lemnos's borrowed `VcmFormat`).
 pub type VcmFormat = vcm::OwnedVcmFormat;
 
-/// `VcmChip::lemnos` from when [`VcmChip`] was Styx's own mirror type.
-#[deprecated(note = "`VcmChip` is Lemnos's now: use it directly (`builtin_format` for its format)")]
-pub trait VcmChipLemnos {
-    /// The chip itself; `None` for [`VcmChip::Custom`].
-    fn lemnos(self) -> Option<VcmChip>;
-}
-
-#[allow(deprecated)]
-impl VcmChipLemnos for VcmChip {
-    fn lemnos(self) -> Option<VcmChip> {
-        self.builtin_format().map(|_| self)
-    }
-}
-
-/// `VcmFormat::with_lemnos` from when [`VcmFormat`] was Styx's own type.
-#[deprecated(note = "`VcmFormat` is Lemnos's `OwnedVcmFormat` now: use `with_format`")]
-pub trait VcmFormatWithLemnos {
-    /// Runs `f` with this format as Lemnos's (borrowing the messages; nothing allocated).
-    fn with_lemnos<R>(&self, f: impl FnOnce(&vcm::VcmFormat<'_>) -> R) -> R;
-}
-
-#[allow(deprecated)]
-impl VcmFormatWithLemnos for VcmFormat {
-    fn with_lemnos<R>(&self, f: impl FnOnce(&vcm::VcmFormat<'_>) -> R) -> R {
-        self.with_format(f)
-    }
-}
-
 /// The format's problems, in the description's words.
 fn check_format(format: &VcmFormat) -> Result<(), String> {
     if format.power_up.len() > MAX_VCM_WRITES || format.power_down.len() > MAX_VCM_WRITES {
@@ -461,15 +433,6 @@ mod tests {
         assert!(lens(VcmChip::Custom, None).check().is_err());
         let bad = VcmFormat { bytes: 1, ..custom };
         assert!(lens(VcmChip::Custom, Some(bad)).check().is_err());
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn the_old_vcm_methods_still_work() {
-        assert_eq!(VcmChip::Dw9817.lemnos(), Some(VcmChip::Dw9817));
-        assert_eq!(VcmChip::Custom.lemnos(), None);
-        let format = VcmFormat::for_chip(VcmChip::Ak7375).unwrap();
-        assert_eq!(format.with_lemnos(|f| f.max_position()), 4095);
     }
 
     #[test]

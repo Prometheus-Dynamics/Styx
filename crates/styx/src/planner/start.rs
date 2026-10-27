@@ -14,8 +14,6 @@ use styx_codec::{Codec, CodecDescriptor, CodecError, CodecKind};
 use styx_core::prelude::*;
 
 pub use super::frames::Frames;
-#[allow(deprecated)]
-pub use super::frames::PlannedFrames;
 pub use super::roi::RoiHandle;
 use super::{FramePlan, Route};
 use crate::capture_api::{CaptureError, CaptureRequest, IdleStop};

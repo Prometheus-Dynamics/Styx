@@ -57,8 +57,7 @@ How it works:
   size (`size`, `size_at_least`, `size_at_most`), with the rate as `fps_at_least`; the planner
   picks mode and route, and the element runs at the negotiated rate when the mode lists it. The
   `plan` property shows what was chosen. `queue-depth` sets the delivery: 1 the newest frame only
-  (`latest()`), N every frame up to N (`every_frame(N)`); 0 (default) takes it from the
-  deprecated `priority` property (latency: newest only, throughput: 4, power: 3).
+  (`latest()`, also 0, the default), N every frame up to N (`every_frame(N)`).
 - **Zero copy.** Frames are wrapped, not copied: camera buffers (V4L2 mmap, libcamera, native)
   and decoder output become `GstMemory` that keeps the Styx frame (and its camera buffer) until
   GStreamer frees it, one memory per plane with a `GstVideoMeta` for strides and offsets. With

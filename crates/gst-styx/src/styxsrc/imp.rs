@@ -31,7 +31,6 @@ struct Settings {
     camera: Option<String>,
     service: Option<String>,
     extra_controls: Option<gst::Structure>,
-    priority: String,
     queue_depth: u32,
     timeout_ms: u32,
     export_dmabuf: bool,
@@ -43,7 +42,6 @@ impl Default for Settings {
             camera: None,
             service: None,
             extra_controls: None,
-            priority: "latency".into(),
             queue_depth: 0,
             timeout_ms: DEFAULT_TIMEOUT_MS,
             export_dmabuf: false,
@@ -52,15 +50,9 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// `queue-depth` 1 is the newest frame only, N every frame up to N; 0 takes it from the
-    /// (deprecated) `priority`: latency the newest frame, throughput 4 frames, power 3.
+    /// `queue-depth` 1 (or 0) is the newest frame only, N every frame up to N.
     fn delivery(&self) -> Delivery {
-        let depth = match (self.queue_depth, self.priority.as_str()) {
-            (0, "throughput") => 4,
-            (0, "power") => 3,
-            (0, _) => 1,
-            (n, _) => n as usize,
-        };
+        let depth = self.queue_depth as usize;
         if depth > 1 {
             Delivery::EveryFrame(depth)
         } else {
@@ -295,20 +287,11 @@ impl ObjectImpl for StyxSrc {
                     )
                     .mutable_playing()
                     .build(),
-                glib::ParamSpecString::builder("priority")
-                    .nick("Priority")
-                    .blurb(
-                        "Deprecated, use queue-depth: frames queued when queue-depth is 0 \
-                         (latency: the newest only, throughput: 4, power: 3)",
-                    )
-                    .default_value(Some("latency"))
-                    .mutable_ready()
-                    .build(),
                 glib::ParamSpecUInt::builder("queue-depth")
                     .nick("Queue depth")
                     .blurb(
                         "Frames queued for the element: 1 = the newest frame only, N = every \
-                         frame up to N (0 = from priority)",
+                         frame up to N (0 = the newest frame only)",
                     )
                     .maximum(8)
                     .mutable_ready()
@@ -351,10 +334,6 @@ impl ObjectImpl for StyxSrc {
                     self.apply_controls(&mut state, &controls);
                 }
             }
-            "priority" => {
-                let priority: Option<String> = value.get().expect("type checked upstream");
-                settings.priority = priority.unwrap_or_else(|| "latency".into());
-            }
             "queue-depth" => settings.queue_depth = value.get().expect("type checked upstream"),
             "timeout" => settings.timeout_ms = value.get().expect("type checked upstream"),
             "export-dmabuf" => settings.export_dmabuf = value.get().expect("type checked upstream"),
@@ -368,7 +347,6 @@ impl ObjectImpl for StyxSrc {
             "camera" => settings.camera.to_value(),
             "service" => settings.service.to_value(),
             "extra-controls" => settings.extra_controls.to_value(),
-            "priority" => settings.priority.to_value(),
             "queue-depth" => settings.queue_depth.to_value(),
             "timeout" => settings.timeout_ms.to_value(),
             "export-dmabuf" => settings.export_dmabuf.to_value(),

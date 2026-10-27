@@ -71,8 +71,7 @@ impl fmt::Display for SharedFramePlan {
 
 /// Plan `requests` (one per consumer) on one capture of `device`, using the default codec
 /// registry. Each consumer gets its own format, size, delivery and route; they share the mode
-/// and the frame rate (the one every request accepts). Takes [`FrameRequest`]s (or the
-/// deprecated `FrameRequirements`).
+/// and the frame rate (the one every request accepts). Takes [`FrameRequest`]s.
 pub fn plan_many<R: Clone + Into<FrameRequest>>(
     device: &ProbedDevice,
     requests: &[R],
