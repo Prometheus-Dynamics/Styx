@@ -39,6 +39,7 @@ impl fmt::Display for Issues {
 
 /// Errors from this crate.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SensorError {
     /// The TOML did not parse or did not match the schema (unknown field, wrong type, ...).
     #[error("{source_name}: {message}")]

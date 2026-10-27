@@ -10,6 +10,7 @@ mod sync;
 pub type AsyncWatchResult<T> = Result<T, AsyncWatchError>;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AsyncWatchError {
     #[error(transparent)]
     Watch(#[from] super::WatchError),

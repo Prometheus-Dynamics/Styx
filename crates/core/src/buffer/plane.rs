@@ -80,6 +80,7 @@ pub struct FrameAllocation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum FrameValidationError {
     #[error("frame is not host-readable: residency is {0}")]
     NotHostReadable(FrameResidency),

@@ -50,6 +50,7 @@ pub enum Backing {
 
 /// Why a frame could not become a buffer.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum BufferError {
     /// The frame has no readable planes.
     Empty,

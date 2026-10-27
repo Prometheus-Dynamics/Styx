@@ -72,6 +72,7 @@ pub use queue::Queue;
 
 /// A device error.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DeviceError {
     /// A kernel call failed.
     Kernel(styx_kernel::Error),

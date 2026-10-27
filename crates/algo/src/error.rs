@@ -6,6 +6,7 @@ use thiserror::Error;
 
 /// Errors from tuning, configuration and replay.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AlgoError {
     /// Tuning data is malformed or inconsistent. The string names what and where.
     #[error("tuning: {0}")]

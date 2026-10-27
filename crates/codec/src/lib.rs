@@ -328,6 +328,7 @@ pub(crate) fn check_decoded_size(
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CodecError {
     #[error("format mismatch: expected {expected}, got {actual}")]
     FormatMismatch { expected: FourCc, actual: FourCc },
@@ -338,6 +339,7 @@ pub enum CodecError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RegistryError {
     #[error("codec not registered for {0}")]
     NotFound(FourCc),

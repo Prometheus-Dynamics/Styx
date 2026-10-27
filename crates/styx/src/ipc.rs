@@ -97,6 +97,7 @@ pub const DEFAULT_MAX_IN_FLIGHT: usize = 2;
 pub const DEFAULT_MAX_HOLD: Duration = Duration::from_secs(2);
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum IpcError {
     #[error("socket error: {0}")]
     Io(#[from] std::io::Error),

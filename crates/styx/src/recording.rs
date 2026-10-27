@@ -89,6 +89,7 @@ pub struct RecordingFrameIndexEntry {
 
 /// Errors emitted by the recording helpers.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RecordingError {
     #[error("recording io error: {0}")]
     Io(#[from] std::io::Error),

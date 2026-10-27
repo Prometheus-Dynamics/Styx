@@ -9,6 +9,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// An error from a kernel interface.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// An ioctl failed. `name` is the ioctl's uAPI name (e.g. `VIDIOC_S_FMT`).
     Ioctl {

@@ -2,6 +2,7 @@
 
 /// What can go wrong reading captures or calibrating.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TuneError {
     /// A file could not be read or written.
     #[error("{path}: {source}")]

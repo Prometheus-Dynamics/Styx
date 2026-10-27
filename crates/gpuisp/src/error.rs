@@ -3,6 +3,7 @@ use styx_softisp::IspError;
 
 /// Why the GPU ISP could not start or process a frame.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GpuError {
     /// No Vulkan loader (`libvulkan.so.1`), or it could not make an instance.
     #[error("Vulkan is not available: {0}")]

@@ -59,6 +59,7 @@ impl Window {
 
 /// Why a frame could not be processed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum IspError {
     #[error("invalid ISP parameters: {0}")]
     InvalidParams(String),

@@ -45,6 +45,7 @@ pub type HotplugStream = Pin<Box<dyn Stream<Item = HotplugEvent> + Send>>;
 pub type FrameStream<F> = Pin<Box<dyn Stream<Item = Result<F, ProviderError>> + Send>>;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProviderError {
     #[error("no device {0}")]
     NotFound(DeviceKey),

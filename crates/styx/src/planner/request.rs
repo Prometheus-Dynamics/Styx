@@ -43,6 +43,7 @@ use crate::prelude::ProbedDevice;
 /// The frame rate a consumer asks for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum FrameRate {
     /// The camera's default: [`DEFAULT_FPS`](super::DEFAULT_FPS) (30) on a camera that runs at
     /// any rate in a range (a sensor Styx drives), clamped to the range; on a camera with a list
@@ -61,6 +62,7 @@ pub enum FrameRate {
 /// How frames are handed to the consumer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Delivery {
     /// The newest frame only: a frame not taken before the next one arrives is dropped. The
     /// lowest latency, for consumers that want the present (preview, control loops, detection).
@@ -84,6 +86,7 @@ impl Delivery {
 /// Whether hardware blocks (ISP scaling, hardware decoders and encoders) may be used.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Hardware {
     /// Hardware whose feature is enabled and whose runtime probe succeeds.
     #[default]
@@ -440,6 +443,7 @@ impl FrameRequest {
 
 /// Why frames could not be opened: no route meets the request, or the camera did not start.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum OpenError {
     #[error(transparent)]
     Plan(#[from] PlanError),

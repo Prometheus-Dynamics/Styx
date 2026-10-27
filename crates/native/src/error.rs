@@ -6,6 +6,7 @@ use styx_graph::ProviderError;
 
 /// What can go wrong driving a native camera.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum NativeError {
     /// A kernel interface failed (`what` says which step).
     #[error("{what}: {source}")]

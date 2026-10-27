@@ -105,6 +105,7 @@ impl Default for StreamFormat {
 
 /// Errors writing or reading a recording.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ReplayError {
     #[error("recording io error: {0}")]
     Io(#[from] std::io::Error),

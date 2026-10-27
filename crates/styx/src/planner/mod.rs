@@ -72,6 +72,7 @@ use crate::prelude::{Interval, Mode, ProbedDevice};
 
 /// Where a plan step runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StepExecution {
     /// No pixels are touched (views, driver buffers).
     ZeroCopy,
@@ -85,6 +86,7 @@ pub enum StepExecution {
 
 /// What a plan step does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StepKind {
     Capture,
     Decode,
@@ -115,6 +117,7 @@ pub struct PlanRejection {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum PlanError {
     #[error("no devices to plan for")]
     NoDevices,

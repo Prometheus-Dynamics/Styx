@@ -40,6 +40,7 @@ pub use sysfs::{UsbCameraInfo, enumerate};
 
 /// Errors of this crate.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum UvcError {
     #[error("descriptors: {0}")]
     Descriptor(String),

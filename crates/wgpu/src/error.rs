@@ -1,5 +1,6 @@
 /// Why a GPU kernel could not start or run.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GpuError {
     /// No adapter (no GPU driver, or none matches `WGPU_BACKEND` / `WGPU_ADAPTER_NAME`).
     #[error("no GPU adapter: {0}")]

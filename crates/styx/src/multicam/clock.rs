@@ -37,6 +37,7 @@ impl Default for ClockMode {
 
 /// Why a frame's timestamp could not be put on the grouper's clock.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ClockError {
     #[error("camera `{camera}`: frame has no timestamp clock, so it cannot be compared")]
     Unknown { camera: String },

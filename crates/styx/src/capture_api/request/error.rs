@@ -13,6 +13,7 @@ use styx_capture::prelude::*;
 /// assert_eq!(err.code(), "backend_missing");
 /// ```
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum CaptureError {
     #[error("device has no backends")]
     NoBackend,

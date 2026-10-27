@@ -4,6 +4,7 @@ use alloc::string::String;
 
 /// What went wrong.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PipelineError {
     /// The algorithms refused a configuration or tuning.
     #[error("algorithms: {0}")]

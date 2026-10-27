@@ -132,6 +132,7 @@ pub struct ProbedBackend {
 #[cfg(feature = "facade")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub enum BackendKind {
     V4l2,
     Libcamera,
@@ -160,6 +161,7 @@ pub enum BackendKind {
 #[derive(Debug, Clone)]
 #[cfg(feature = "facade")]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub enum BackendHandle {
     #[cfg(feature = "v4l2")]
     V4l2 {

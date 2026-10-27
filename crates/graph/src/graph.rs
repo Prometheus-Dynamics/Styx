@@ -226,6 +226,7 @@ pub struct Link {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GraphError {
     #[error("no node {0:?}")]
     UnknownNode(NodeId),

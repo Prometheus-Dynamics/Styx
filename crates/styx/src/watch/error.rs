@@ -1,4 +1,5 @@
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum WatchError {
     #[error("watcher io error: {0}")]
     Io(#[from] std::io::Error),

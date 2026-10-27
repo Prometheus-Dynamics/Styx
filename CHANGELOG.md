@@ -345,6 +345,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **Breaking, for 3.0: error enums and the planner's choice enums are `#[non_exhaustive]`.**
+  Every crate's public error enum (`PlanError`, `OpenError`, `CaptureError`, `NativeError`,
+  `SensorError`, `CodecError`, `IpcError`, ...) and `BackendKind`, `BackendHandle`,
+  `StepExecution`, `StepKind`, `FrameRate`, `Delivery`, `Hardware`: a `match` outside Styx
+  needs a `_` arm, and new variants are no longer breaking. `PyramidSource` (a wire value) and
+  `styx_runtime::RunError` (one of two errors) stay exhaustive.
+
 - **Dev versions:** every crate is `2.0.1-dev` (semver with a `-dev` suffix; only the patch
   moves before a release). The git dependencies on Lemnos and Daedalus carry no version
   requirement. Consumers on Styx's git `dev` should drop `version = "2.0.0"`, which does not

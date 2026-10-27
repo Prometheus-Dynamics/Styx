@@ -62,6 +62,7 @@ pub use writer::{ColorCalibration, DngMetadata, Preview, write_dng};
 
 /// Errors writing or reading DNG files.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DngError {
     /// The input image or metadata is inconsistent (sizes, bit depths).
     #[error("invalid input: {0}")]

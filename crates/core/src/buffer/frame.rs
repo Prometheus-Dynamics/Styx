@@ -200,6 +200,7 @@ pub fn shared_backing<B: ExternalBacking + 'static>(backing: B) -> Arc<dyn Exter
 
 #[cfg(all(feature = "std", unix))]
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FrameExportError {
     #[error("frame backing is process-local and cannot be exported without copying")]
     NotExportable,

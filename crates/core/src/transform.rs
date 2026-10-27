@@ -41,6 +41,7 @@ impl FrameTransform {
 
 /// Errors produced by packed-frame transforms.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum TransformError {
     UnsupportedFormat(FourCc),
     UnsupportedLayout,

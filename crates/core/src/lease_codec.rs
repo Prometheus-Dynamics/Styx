@@ -93,6 +93,7 @@ pub struct LeasePlane {
 
 /// Why a frame message could not be encoded or decoded.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LeaseCodecError {
     #[error("frame message payload of {0} bytes is larger than {MAX_PAYLOAD}")]
     PayloadTooLarge(usize),
