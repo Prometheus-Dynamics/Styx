@@ -6,6 +6,21 @@ use styx_core::prelude::*;
 use crate::CodecError;
 use crate::{CodecDescriptor, CodecKind};
 
+/// The YUV range and matrix the decoders convert a frame labelled `color` with. `Srgb` YUV
+/// is full-range BT.601 (sYCC: JFIF, the native ISPs' output, libcamera's full-range spaces);
+/// `Unknown` is far more likely limited-range BT.709 than full-range BT.601.
+#[cfg(any(feature = "image", feature = "raw-decoders"))]
+pub(crate) fn yuv_colorspace(
+    color: ColorSpace,
+) -> (yuvutils_rs::YuvRange, yuvutils_rs::YuvStandardMatrix) {
+    use yuvutils_rs::{YuvRange, YuvStandardMatrix};
+    match color {
+        ColorSpace::Bt709 | ColorSpace::Unknown => (YuvRange::Limited, YuvStandardMatrix::Bt709),
+        ColorSpace::Bt2020 => (YuvRange::Limited, YuvStandardMatrix::Bt2020),
+        ColorSpace::Srgb => (YuvRange::Full, YuvStandardMatrix::Bt601),
+    }
+}
+
 #[cfg(feature = "raw-decoders")]
 mod bayer;
 #[cfg(feature = "raw-decoders")]

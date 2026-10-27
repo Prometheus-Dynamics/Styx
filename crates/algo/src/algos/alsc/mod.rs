@@ -28,12 +28,12 @@ use serde::{Deserialize, Serialize};
 use crate::config::{CameraConfig, Crop};
 use crate::error::{AlgoError, Result};
 use crate::frame::FrameMetadata;
-#[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
 use crate::params::{LensShading, Params};
 use crate::pipeline::Algorithm;
 use crate::stats::Statistics;
 use crate::warm::WarmStart;
+#[cfg(not(feature = "std-core"))]
+use styx_math::Float as _;
 
 /// A calibrated colour table at a temperature.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 use crate::config::CameraConfig;
 use crate::error::{AlgoError, Result};
 use crate::frame::FrameMetadata;
-#[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Algorithm;
 use crate::pwl::{Pwl, PwlScratch};
 use crate::stats::{Histogram, Statistics};
+#[cfg(not(feature = "std-core"))]
+use styx_math::Float as _;
 
 /// Contrast tuning, all levels normalised to 1.0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -46,7 +46,6 @@ use alloc::string::String;
 
 pub mod color;
 pub mod ljpeg;
-mod math;
 pub mod opcode;
 mod raw;
 mod reader;

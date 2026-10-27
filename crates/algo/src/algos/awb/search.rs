@@ -10,9 +10,9 @@
 
 use alloc::vec::Vec;
 
-#[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
 use crate::pwl::Pwl;
+#[cfg(not(feature = "std-core"))]
+use styx_math::Float as _;
 
 use super::tuning::{AwbMode, AwbPrior, AwbTuning, CtCurve};
 use super::zones::ZoneCost;

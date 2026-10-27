@@ -31,12 +31,12 @@ use core::time::Duration;
 
 use crate::config::CameraConfig;
 use crate::frame::{Controls, FrameMetadata};
-#[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
 use crate::params::Params;
 use crate::pipeline::Pipeline;
 use crate::pwl::Pwl;
 use crate::stats::{Statistics, StatsAccumulator};
+#[cfg(not(feature = "std-core"))]
+use styx_math::Float as _;
 
 pub use focus::{FocusScene, FocusSim, LensModel, Optics, PdafModel};
 pub use metrics::{Convergence, convergence};

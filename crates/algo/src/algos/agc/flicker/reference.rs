@@ -366,7 +366,7 @@ mod fit {
         MIN_VISIBLE, Sample, sinc,
     };
     #[cfg(not(feature = "std-core"))]
-    use crate::math::Float as _;
+    use styx_math::Float as _;
 
     fn dot(a: &[f64], b: &[f64]) -> f64 {
         a.iter().zip(b).map(|(x, y)| x * y).sum()

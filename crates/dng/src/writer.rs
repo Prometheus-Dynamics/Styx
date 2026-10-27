@@ -4,12 +4,12 @@ use alloc::{format, string::String, vec, vec::Vec};
 use core::time::Duration;
 
 use crate::color::{Illuminant, Matrix3};
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use crate::opcode::{self, Opcode};
 use crate::raw::{RawImage, SampleLayout};
 use crate::tiff::{Ifd, Value, rational, srational, tag};
 use crate::{Result, invalid};
+#[cfg(not(feature = "std"))]
+use styx_math::Float as _;
 
 /// Colour calibration under one light.
 #[derive(Clone, Debug, PartialEq)]

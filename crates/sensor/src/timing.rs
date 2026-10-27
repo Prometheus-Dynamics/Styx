@@ -7,7 +7,7 @@ use core::time::Duration;
 
 use crate::desc::{Blanking, Exposure, Format, Mode};
 #[cfg(not(feature = "std"))]
-use crate::math::Float as _;
+use styx_math::Float as _;
 
 /// Timing of one mode and format at a chosen horizontal blanking.
 #[derive(Debug, Clone, Copy, PartialEq)]

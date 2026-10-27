@@ -180,7 +180,6 @@ mod frame_map;
 mod gain;
 mod kernel_data;
 pub mod lens;
-mod math;
 mod mbus;
 mod registers;
 pub mod schedule;

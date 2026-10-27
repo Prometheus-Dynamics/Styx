@@ -5317,10 +5317,10 @@ dependencies = [
 name = "styx-algo"
 version = "2.0.1-dev"
 dependencies = [
- "libm",
  "serde",
  "serde_json",
  "styx-algo",
+ "styx-math",
  "thiserror 2.0.21",
  "toml",
 ]
@@ -5386,7 +5386,6 @@ dependencies = [
  "crossbeam-queue",
  "daedalus-rs",
  "libc",
- "libm",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",
@@ -5394,6 +5393,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "spin 0.12.3",
+ "styx-math",
  "thiserror 2.0.21",
  "tokio",
  "utoipa",
@@ -5403,7 +5403,7 @@ dependencies = [
 name = "styx-dng"
 version = "2.0.1-dev"
 dependencies = [
- "libm",
+ "styx-math",
  "thiserror 2.0.21",
 ]
 
@@ -5479,6 +5479,13 @@ dependencies = [
  "styx-capture",
  "styx-core-rs",
  "tracing",
+]
+
+[[package]]
+name = "styx-math"
+version = "2.0.1-dev"
+dependencies = [
+ "libm",
 ]
 
 [[package]]
@@ -5569,8 +5576,8 @@ name = "styx-pisp"
 version = "2.0.1-dev"
 dependencies = [
  "bytemuck",
- "libm",
  "styx-kernel",
+ "styx-math",
 ]
 
 [[package]]
@@ -5601,11 +5608,11 @@ dependencies = [
  "embedded-hal-async",
  "lemnos-drivers-vcm",
  "lemnos-hal",
- "libm",
  "portable-atomic-util",
  "postcard",
  "serde",
  "styx-hal",
+ "styx-math",
  "thiserror 2.0.21",
  "toml",
 ]

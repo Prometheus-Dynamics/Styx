@@ -7,15 +7,6 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
     let code = meta.format.code;
     let planes = frame.planes();
 
-    #[inline(always)]
-    fn map_colorspace(color: ColorSpace) -> (YuvRange, YuvStandardMatrix) {
-        match color {
-            ColorSpace::Bt709 => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-            ColorSpace::Bt2020 => (YuvRange::Limited, YuvStandardMatrix::Bt2020),
-            ColorSpace::Srgb => (YuvRange::Full, YuvStandardMatrix::Bt601),
-            ColorSpace::Unknown => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-        }
-    }
 
     fn copy_tightly_packed(src: &[u8], len: usize) -> Vec<u8> {
         let mut out = vec![0u8; len];
@@ -225,7 +216,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
                 width,
                 height,
             };
-            let (range, matrix) = map_colorspace(color);
+            let (range, matrix) = crate::decoder::raw::yuv_colorspace(color);
             if yuvutils_rs::yuyv422_to_rgb(&packed, &mut rgb, dst_stride as u32, range, matrix)
                 .is_err()
             {
@@ -293,7 +284,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
                 width,
                 height,
             };
-            let (range, matrix) = map_colorspace(color);
+            let (range, matrix) = crate::decoder::raw::yuv_colorspace(color);
             let mode = preferred_yuv_conversion_mode();
             let is_nv12 = c == FourCc::NV12;
             let ok = if is_nv12 {
@@ -359,7 +350,7 @@ pub fn frame_to_dynamic_image(frame: &FrameLease) -> Option<DynamicImage> {
                 width,
                 height,
             };
-            let (range, matrix) = map_colorspace(color);
+            let (range, matrix) = crate::decoder::raw::yuv_colorspace(color);
             if yuvutils_rs::yuv420_to_rgb(&planar, &mut rgb, dst_stride as u32, range, matrix)
                 .is_err()
             {

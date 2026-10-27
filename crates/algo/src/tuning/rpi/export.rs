@@ -14,10 +14,10 @@ use alloc::{format, string::String, vec, vec::Vec};
 
 use super::{FULL, alsc_grid};
 use crate::algos::agc::metering;
-#[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
 use crate::pwl::Pwl;
 use crate::tuning::*;
+#[cfg(not(feature = "std-core"))]
+use styx_math::Float as _;
 
 /// A JSON value with ordered object keys.
 enum J {

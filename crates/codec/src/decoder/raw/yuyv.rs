@@ -4,7 +4,7 @@ use crate::decoder::raw::yuv_to_rgb;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
-use yuvutils_rs::{YuvPackedImage, YuvRange, YuvStandardMatrix};
+use yuvutils_rs::YuvPackedImage;
 
 #[inline]
 fn normalized_packed_stride(
@@ -21,18 +21,6 @@ fn normalized_packed_stride(
         stride = min_stride;
     }
     stride
-}
-
-#[inline(always)]
-fn map_colorspace(color: ColorSpace) -> (YuvRange, YuvStandardMatrix) {
-    match color {
-        ColorSpace::Bt709 => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-        ColorSpace::Bt2020 => (YuvRange::Limited, YuvStandardMatrix::Bt2020),
-        // In our frame metadata `Srgb` is used as a "full-range output" hint; libcamera often
-        // reports `sYCC` for PiSP outputs, which uses a Rec.601 YCbCr matrix.
-        ColorSpace::Srgb => (YuvRange::Full, YuvStandardMatrix::Bt601),
-        ColorSpace::Unknown => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-    }
 }
 
 /// CPU YUYV422 → RGB24 decoder.
@@ -104,7 +92,7 @@ impl YuyvToRgbDecoder {
             width: width as u32,
             height: height as u32,
         };
-        let (range, matrix) = map_colorspace(color);
+        let (range, matrix) = crate::decoder::raw::yuv_colorspace(color);
         if yuvutils_rs::yuyv422_to_rgb(&packed, dst, row_bytes as u32, range, matrix).is_err() {
             for y in 0..height {
                 let src_line = &src[y * stride..][..width * 2];

@@ -8,7 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::{string::String, vec, vec::Vec};
 
 #[cfg(not(feature = "std"))]
-use crate::math::Float as _;
+use styx_math::Float as _;
 
 /// TIFF field types.
 pub(crate) mod kind {

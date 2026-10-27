@@ -4,17 +4,7 @@ use crate::decoder::raw::yuv_to_rgb;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
-use yuvutils_rs::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
-
-#[inline(always)]
-fn map_colorspace(color: ColorSpace) -> (YuvRange, YuvStandardMatrix) {
-    match color {
-        ColorSpace::Bt709 => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-        ColorSpace::Bt2020 => (YuvRange::Limited, YuvStandardMatrix::Bt2020),
-        ColorSpace::Srgb => (YuvRange::Full, YuvStandardMatrix::Bt601),
-        ColorSpace::Unknown => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-    }
-}
+use yuvutils_rs::YuvPlanarImage;
 
 /// CPU I420 (YUV420 planar) → RGB24 decoder.
 pub struct I420ToRgbDecoder {
@@ -108,7 +98,7 @@ impl I420ToRgbDecoder {
             width: width as u32,
             height: height as u32,
         };
-        let (range, matrix) = map_colorspace(color);
+        let (range, matrix) = crate::decoder::raw::yuv_colorspace(color);
         if yuvutils_rs::yuv420_to_rgb(&planar, dst, row_bytes as u32, range, matrix).is_err() {
             crate::par::for_each_row(&mut dst[..], row_bytes, |y, dst_line| {
                 let y_line = &y_plane.data()[y * y_stride..][..width];

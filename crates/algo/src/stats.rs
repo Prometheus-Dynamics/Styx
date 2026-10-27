@@ -16,7 +16,7 @@ use alloc::{vec, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
+use styx_math::Float as _;
 
 /// Rec.601 luma of linear RGB.
 pub fn rec601(r: f64, g: f64, b: f64) -> f64 {

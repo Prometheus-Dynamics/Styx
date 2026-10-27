@@ -3,7 +3,7 @@
 //! for the derivation.
 
 #[cfg(not(feature = "std"))]
-use crate::math::Float as _;
+use styx_math::Float as _;
 
 /// A 3x3 row-major matrix.
 pub type Matrix3 = [f64; 9];

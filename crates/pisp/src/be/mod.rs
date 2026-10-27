@@ -18,9 +18,9 @@ mod prepare;
 mod slices;
 pub mod tiling;
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use crate::uapi::*;
+#[cfg(not(feature = "std"))]
+use styx_math::Float as _;
 
 /// Offset of the compressed temporal-denoise average (libcamera's PiSP pipeline uses 2048 for
 /// its mode-1 TDN buffers).

@@ -199,13 +199,15 @@ fn build_info(camera: &Camera) -> Result<LibcameraDeviceInfo, Box<dyn std::error
     })
 }
 
+/// Whether libcamera camera `id` is a sensor on a Raspberry Pi's I²C bus (a PiSP camera).
 #[cfg(feature = "probe")]
-fn is_rpi_pisp_sensor_i2c(id: &str) -> bool {
+pub fn is_rpi_pisp_sensor_i2c(id: &str) -> bool {
     id.starts_with("/base/") && id.contains("/i2c@")
 }
 
+/// Whether the PiSP pipeline cannot be configured with `code` (libcamera asserts on it).
 #[cfg(feature = "probe")]
-fn pisp_disallowed_fourcc(code: FourCc) -> bool {
+pub fn pisp_disallowed_fourcc(code: FourCc) -> bool {
     // PiSP asserts on several formats during configuration validation.
     matches!(
         &code.to_u32().to_le_bytes(),
@@ -224,8 +226,9 @@ fn pisp_disallowed_fourcc(code: FourCc) -> bool {
     )
 }
 
+/// The Styx format of a libcamera pixel format (a DRM fourcc and modifier), by memory layout.
 #[cfg(feature = "probe")]
-fn map_pixel_format_to_fourcc(pf: libcamera::pixel_format::PixelFormat) -> FourCc {
+pub fn map_pixel_format_to_fourcc(pf: libcamera::pixel_format::PixelFormat) -> FourCc {
     // libcamera names formats by DRM fourcc and modifier: map by memory layout (DRM `RG24` is
     // Styx `BG24`, `AB24` is `RGBA`, `XR24` is `XR24`, CSI-2 packed raw is `pBAA` and friends).
     if let Some(code) = styx_core::format::drm::from_drm(pf.fourcc(), pf.modifier()) {

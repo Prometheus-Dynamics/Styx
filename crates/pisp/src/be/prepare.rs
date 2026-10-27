@@ -10,10 +10,10 @@ use core::fmt;
 use super::tiling::{self, Interval, Interval2, Length2, TilingConfig};
 use super::{BackEnd, defaults};
 use crate::format::{addr_offset, compute_stride_align};
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use crate::uapi::image_format as f;
 use crate::uapi::*;
+#[cfg(not(feature = "std"))]
+use styx_math::Float as _;
 
 const SCALE_PRECISION: u32 = 12;
 const UNITY_SCALE: u32 = 1 << SCALE_PRECISION;

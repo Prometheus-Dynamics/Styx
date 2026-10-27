@@ -13,9 +13,9 @@
 use alloc::{format, string::String};
 
 use crate::format::compute_stride_align;
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use crate::uapi::*;
+#[cfg(not(feature = "std"))]
+use styx_math::Float as _;
 
 /// Front end LSC interpolation precision (libpisp `FrontEnd::InterpPrecision`).
 const LSC_INTERP_PRECISION: u32 = 6;

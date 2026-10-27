@@ -12,9 +12,9 @@
 
 use alloc::vec::Vec;
 
-#[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
 use crate::stats::ZoneGrid;
+#[cfg(not(feature = "std-core"))]
+use styx_math::Float as _;
 
 /// Marks a zone without usable colour statistics.
 const INSUFFICIENT: f64 = -1.0;

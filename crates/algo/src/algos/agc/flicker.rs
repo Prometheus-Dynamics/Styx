@@ -56,9 +56,9 @@ use core::f64::consts::PI;
 #[cfg(feature = "flicker")]
 use super::{DETECT_F, DETECT_SAMPLES, DETECT_TIME, DETECT_VISIBLE};
 use crate::frame::{Deflicker, Flicker, FrameMetadata};
-#[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
 use crate::stats::Statistics;
+#[cfg(not(feature = "std-core"))]
+use styx_math::Float as _;
 
 mod fit;
 use fit::{Fit, MAX_HARMONICS, Scratch, Trig, depth, fit_samples, trig};

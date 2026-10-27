@@ -63,7 +63,7 @@ serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 serde_json = { workspace = true, optional = true }
 utoipa = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
-libm.workspace = true
+styx-math.workspace = true
 daedalus = { workspace = true, optional = true, features = ["plugins"] }
 portable-atomic.workspace = true
 critical-section = { workspace = true, optional = true }

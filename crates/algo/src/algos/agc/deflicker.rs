@@ -54,7 +54,7 @@ use serde::{Deserialize, Serialize};
 use super::flicker::{FlickerFit, FlickerModel, modulation, sinc};
 
 #[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
+use styx_math::Float as _;
 
 /// Seconds the correction takes to fade in or out.
 pub const FADE: f64 = 0.25;

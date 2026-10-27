@@ -4,20 +4,7 @@ use crate::decoder::raw::yuv_to_rgb;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
-use yuvutils_rs::{YuvBiPlanarImage, YuvConversionMode, YuvRange, YuvStandardMatrix};
-
-#[inline(always)]
-fn map_colorspace(color: ColorSpace) -> (YuvRange, YuvStandardMatrix) {
-    match color {
-        ColorSpace::Bt709 => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-        ColorSpace::Bt2020 => (YuvRange::Limited, YuvStandardMatrix::Bt2020),
-        // When color is marked as `Srgb` in our metadata it usually means "full-range output".
-        // libcamera often reports `sYCC` for PiSP outputs; `sYCC` uses a Rec.601 matrix.
-        ColorSpace::Srgb => (YuvRange::Full, YuvStandardMatrix::Bt601),
-        // Unknown is far more likely to be limited-range BT.709 than full-range BT.601.
-        ColorSpace::Unknown => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-    }
-}
+use yuvutils_rs::{YuvBiPlanarImage, YuvConversionMode};
 
 #[inline(always)]
 fn preferred_yuv_conversion_mode() -> YuvConversionMode {
@@ -142,7 +129,7 @@ impl Nv12ToRgbDecoder {
         let dst = &mut dst[..out_len];
 
         let color = meta.format.color;
-        let (range, matrix) = map_colorspace(color);
+        let (range, matrix) = crate::decoder::raw::yuv_colorspace(color);
         let bi = YuvBiPlanarImage {
             y_plane: y_plane_data,
             y_stride: y_stride as u32,
@@ -474,7 +461,7 @@ impl Nv12ToBgrDecoder {
         let dst = &mut dst[..out_len];
 
         let color = meta.format.color;
-        let (range, matrix) = map_colorspace(color);
+        let (range, matrix) = crate::decoder::raw::yuv_colorspace(color);
         let bi = YuvBiPlanarImage {
             y_plane: y_plane_data,
             y_stride: y_stride as u32,

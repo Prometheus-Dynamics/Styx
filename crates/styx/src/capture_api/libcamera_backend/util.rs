@@ -197,28 +197,6 @@ pub(super) fn stream_role_for_request(
     }
 }
 
-pub(super) fn is_rpi_pisp_sensor_i2c(id: &str) -> bool {
-    id.starts_with("/base/") && id.contains("/i2c@")
-}
-
-pub(super) fn pisp_disallowed_fourcc(code: FourCc) -> bool {
-    matches!(
-        &code.to_u32().to_le_bytes(),
-        b"YV12"
-            | b"XB24"
-            | b"XR24"
-            | b"YU16"
-            | b"YV16"
-            | b"YU24"
-            | b"YV24"
-            | b"YVYU"
-            | b"VYUY"
-            // DRM `AB24` / `AR24`: no PiSP output format; `toPiSPImageFormat` asserts on them.
-            | b"RGBA"
-            | b"BGRA"
-    )
-}
-
 /// The format to ask libcamera for. libcamera names formats by DRM fourcc, so this maps by
 /// memory layout (`styx_core::format::drm`): `RG24` (bytes R, G, B) is DRM `BG24`, `RGBA` is
 /// `AB24`, `XR24` / `XB24` are themselves. Formats outside the kernel's DRM table (raw Bayer,
@@ -240,40 +218,9 @@ pub(super) fn is_rgb24_request(code: FourCc) -> bool {
     )
 }
 
-/// The Styx format of a libcamera pixel format (a DRM fourcc and modifier), by memory layout.
-pub(super) fn map_pixel_format_to_fourcc(pf: libcamera::pixel_format::PixelFormat) -> FourCc {
-    if let Some(code) = styx_core::format::drm::from_drm(pf.fourcc(), pf.modifier()) {
-        return code;
-    }
-    let base = FourCc::from(pf.fourcc());
-    let Some(info) = pf.info() else {
-        return base;
-    };
-    if !info.packed || info.colour_encoding != libcamera::pixel_format::ColourEncoding::Raw {
-        return base;
-    }
-
-    const RG10: [u8; 4] = *b"RG10";
-    const BG10: [u8; 4] = *b"BG10";
-    const GB10: [u8; 4] = *b"GB10";
-    const BA10: [u8; 4] = *b"BA10";
-    const RG12: [u8; 4] = *b"RG12";
-    const BG12: [u8; 4] = *b"BG12";
-    const GB12: [u8; 4] = *b"GB12";
-    const BA12: [u8; 4] = *b"BA12";
-
-    match (base.to_u32().to_le_bytes(), info.bits_per_pixel) {
-        (RG10, 10) => FourCc::new(*b"pRAA"),
-        (BG10, 10) => FourCc::new(*b"pBAA"),
-        (GB10, 10) => FourCc::new(*b"pGAA"),
-        (BA10, 10) => FourCc::new(*b"pgAA"),
-        (RG12, 12) => FourCc::new(*b"pRCC"),
-        (BG12, 12) => FourCc::new(*b"pBCC"),
-        (GB12, 12) => FourCc::new(*b"pGCC"),
-        (BA12, 12) => FourCc::new(*b"pgCC"),
-        _ => base,
-    }
-}
+pub(super) use styx_libcamera::{
+    is_rpi_pisp_sensor_i2c, map_pixel_format_to_fourcc, pisp_disallowed_fourcc,
+};
 
 pub(super) fn plane_height_for_format(code: FourCc, plane_idx: usize, height: usize) -> usize {
     const NV12: FourCc = FourCc::NV12;

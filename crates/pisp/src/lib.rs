@@ -61,6 +61,5 @@ pub mod be;
 pub mod device;
 pub mod fe;
 pub mod format;
-mod math;
 pub mod stats;
 pub mod uapi;

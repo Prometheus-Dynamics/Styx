@@ -2,9 +2,9 @@
 
 use alloc::vec::Vec;
 
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use crate::uapi::*;
+#[cfg(not(feature = "std"))]
+use styx_math::Float as _;
 
 /// One white balance zone: channel sums over the pixels counted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -25,10 +25,10 @@ pub use step::{RegWrite, Step, show_write};
 pub use types::{Blanking, Field, Rect, Size};
 
 use crate::error::{Result, SensorError};
-#[cfg(not(feature = "std"))]
-use crate::math::Float as _;
 use crate::mbus::{ColorFilter, MbusCode};
 use crate::timing::Timing;
+#[cfg(not(feature = "std"))]
+use styx_math::Float as _;
 
 /// A complete sensor description.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

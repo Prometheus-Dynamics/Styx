@@ -33,7 +33,7 @@ use lemnos_drivers_vcm as vcm;
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(feature = "std"))]
-use crate::math::Float as _;
+use styx_math::Float as _;
 
 /// A focus lens.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

@@ -27,10 +27,10 @@ use core::time::Duration;
 
 use super::Rng;
 use crate::algos::af::{AfWindow, LensRequest, LensState};
-#[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
 use crate::pwl::Pwl;
 use crate::stats::{PdafZone, Statistics, ZoneGrid};
+#[cfg(not(feature = "std-core"))]
+use styx_math::Float as _;
 
 /// The scene's depth.
 #[derive(Debug, Clone, PartialEq)]

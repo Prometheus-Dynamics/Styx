@@ -357,6 +357,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **Duplicate code merged (API cleanup).** The `no_std` float shim, until now five copies in
+  styx-core, styx-algo, styx-pisp, styx-sensor and styx-dng, is one crate, `styx-math`.
+  `styx_core::math` re-exports it, so that path is unchanged. styx-libcamera's
+  `map_pixel_format_to_fourcc`, `pisp_disallowed_fourcc` and `is_rpi_pisp_sensor_i2c` are
+  public now and the libcamera backend uses them instead of its own copies. The codec's six
+  YUV colour-space mappings are one function.
 - **Breaking, for 3.0: error enums and the planner's choice enums are `#[non_exhaustive]`.**
   Every crate's public error enum (`PlanError`, `OpenError`, `CaptureError`, `NativeError`,
   `SensorError`, `CodecError`, `IpcError`, ...) and `BackendKind`, `BackendHandle`,

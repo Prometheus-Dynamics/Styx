@@ -4,20 +4,7 @@ use crate::decoder::raw::yuv_to_rgb;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
-use yuvutils_rs::{
-    YuvBiPlanarImage, YuvConversionMode, YuvPackedImage, YuvPlanarImage, YuvRange,
-    YuvStandardMatrix,
-};
-
-#[inline(always)]
-fn map_colorspace(color: ColorSpace) -> (YuvRange, YuvStandardMatrix) {
-    match color {
-        ColorSpace::Bt709 => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-        ColorSpace::Bt2020 => (YuvRange::Limited, YuvStandardMatrix::Bt2020),
-        ColorSpace::Srgb => (YuvRange::Full, YuvStandardMatrix::Bt601),
-        ColorSpace::Unknown => (YuvRange::Limited, YuvStandardMatrix::Bt709),
-    }
-}
+use yuvutils_rs::{YuvBiPlanarImage, YuvConversionMode, YuvPackedImage, YuvPlanarImage};
 
 #[derive(Clone, Copy)]
 enum UvOrder {
@@ -123,7 +110,7 @@ impl NvToRgbDecoder {
         }
         let dst = &mut dst[..out_len];
 
-        let (range, matrix) = map_colorspace(meta.format.color);
+        let (range, matrix) = crate::decoder::raw::yuv_colorspace(meta.format.color);
         let y_plane_data = &y_plane.data()[..y_required];
         let uv_plane_data = &uv_plane.data()[..uv_required];
         let bi = YuvBiPlanarImage {
@@ -373,7 +360,7 @@ impl PlanarYuvToRgbDecoder {
         }
         let dst = &mut dst[..out_len];
 
-        let (range, matrix) = map_colorspace(meta.format.color);
+        let (range, matrix) = crate::decoder::raw::yuv_colorspace(meta.format.color);
         let y_plane_data = &y_plane.data()[..y_required];
         let u_plane_data = &u_plane.data()[..u_required];
         let v_plane_data = &v_plane.data()[..v_required];
@@ -562,7 +549,7 @@ impl Packed422ToRgbDecoder {
 
         let src = plane.data();
         let src_required = &src[..required];
-        let (range, matrix) = map_colorspace(meta.format.color);
+        let (range, matrix) = crate::decoder::raw::yuv_colorspace(meta.format.color);
         let packed = YuvPackedImage {
             yuy: src_required,
             yuy_stride: stride as u32,

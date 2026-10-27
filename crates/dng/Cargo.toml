@@ -18,7 +18,7 @@ std = ["thiserror/std"]
 
 [dependencies]
 thiserror.workspace = true
-libm.workspace = true
+styx-math.workspace = true
 
 [lints]
 workspace = true

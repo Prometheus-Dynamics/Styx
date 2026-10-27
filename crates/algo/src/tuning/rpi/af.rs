@@ -6,7 +6,7 @@ use alloc::{format, string::String, vec::Vec};
 use super::*;
 
 #[cfg(not(feature = "std-core"))]
-use crate::math::Float as _;
+use styx_math::Float as _;
 
 const RANGE_KEYS: [&str; 3] = ["min", "max", "default"];
 const SPEED_KEYS: [&str; 11] = [

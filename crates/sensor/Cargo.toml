@@ -44,7 +44,7 @@ lemnos-drivers-vcm = { workspace = true, features = ["alloc", "serde"] }
 serde = { workspace = true, features = ["alloc"] }
 thiserror.workspace = true
 toml = { version = "1.1", default-features = false, features = ["serde", "parse", "display"], optional = true }
-libm.workspace = true
+styx-math.workspace = true
 postcard = { workspace = true, optional = true }
 
 # `Arc` where `alloc::sync` does not exist (no compare-and-swap: Cortex-M0+), the same one

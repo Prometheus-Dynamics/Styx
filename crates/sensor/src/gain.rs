@@ -2,7 +2,7 @@
 
 use crate::desc::{Gain, GainModel};
 #[cfg(not(feature = "std"))]
-use crate::math::Float as _;
+use styx_math::Float as _;
 
 /// How to quantise a gain that falls between codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

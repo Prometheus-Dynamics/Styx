@@ -1,0 +1,17 @@
+[package]
+name = "styx-math"
+version.workspace = true
+edition.workspace = true
+description = "std's float methods for no_std builds (through libm), shared by the Styx crates: exact where IEEE fixes the result, libm's transcendental functions otherwise."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["no-std", "float", "libm", "math"]
+categories = ["no-std", "mathematics"]
+
+[dependencies]
+libm.workspace = true
+
+[lints]
+workspace = true

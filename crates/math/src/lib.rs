@@ -2,7 +2,7 @@
 //! consumers) can share.
 //!
 //! [`Float`] gives `f32` / `f64` std's float methods under the same names, through `libm`.
-//! Bring it into scope unnamed (`use styx_core::math::Float as _;`) and write `x.sqrt()` as with
+//! Bring it into scope unnamed (`use styx_math::Float as _;`) and write `x.sqrt()` as with
 //! std. Inherent methods win over trait methods, so wherever `std` is linked the std methods
 //! run exactly as before and the trait only answers in a build without `std`; importing it only
 //! there (`#[cfg(not(feature = "std"))]`) avoids an unused-import warning, nothing else. (std's
@@ -26,11 +26,13 @@
 //!
 //! ```
 //! #[allow(unused_imports)]
-//! use styx_core::math::Float as _;
+//! use styx_math::Float as _;
 //!
 //! assert_eq!(2.0f32.sqrt(), core::f32::consts::SQRT_2);
-//! assert_eq!(styx_core::math::Float::round(2.5f64), 3.0);
+//! assert_eq!(styx_math::Float::round(2.5f64), 3.0);
 //! ```
+
+#![no_std]
 
 mod sealed {
     pub trait Sealed {}
@@ -258,6 +260,9 @@ float_impl!(
     f64, sqrt, floor, ceil, round, roundeven, trunc, fma, pow, exp, exp2, log, log1p, log2, log10,
     cbrt, hypot, sin, cos, tan, sincos, asin, acos, atan, atan2, tanh
 );
+
+#[cfg(test)]
+extern crate std;
 
 #[cfg(test)]
 mod tests;
