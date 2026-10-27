@@ -240,6 +240,13 @@ pub(crate) fn candidates<'a>(
         }
         for mode in &backend.descriptor.modes {
             let label = describe(backend, mode);
+            if let Err(reason) = super::stalled::check(device, backend.kind, &mode.id) {
+                rejected.push(PlanRejection {
+                    candidate: label,
+                    reason,
+                });
+                continue;
+            }
             if let Some(c) = super::sensor_raw::candidate(backend, mode, req, registry) {
                 out.push(c);
                 continue;

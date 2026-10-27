@@ -68,6 +68,12 @@ impl FramePlan {
         #[cfg(target_os = "linux")]
         let builder = builder.shared_decode_output(false);
         let pipeline = builder.start()?;
+        super::stalled::confirm_first_frame(
+            pipeline.capture(),
+            &self.device,
+            &self.mode,
+            self.interval,
+        )?;
         if self.region.isp() {
             roi.crop_in_isp(pipeline.capture(), self.region.places.clone());
         }

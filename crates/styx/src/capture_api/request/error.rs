@@ -54,6 +54,11 @@ pub enum CaptureError {
     /// The camera went away while capturing (unplugged, driver reset).
     #[error("camera disconnected: {0}")]
     Disconnected(String),
+    /// The camera started streaming a mode and delivered no frame, with the likely cause. The
+    /// planner leaves the mode out for this camera from then on, so planning again picks
+    /// another.
+    #[error("camera delivered no frames: {0}")]
+    NoFrames(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +107,7 @@ impl CaptureError {
             }
             CaptureError::Backend(_) => "backend_error",
             CaptureError::Disconnected(_) => "disconnected",
+            CaptureError::NoFrames(_) => "no_frames",
         }
     }
 

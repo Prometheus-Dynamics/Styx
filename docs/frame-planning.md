@@ -93,11 +93,21 @@ Candidates are filtered by the size bounds, the frame rate and the route choices
 
 1. size: the smallest mode at or above `size_at_least` when it is set, else the route
    delivering the smallest frames that cover `size` when that is set, otherwise the largest mode;
+   between modes of that size, an uncompressed USB mode that needs more than half of a
+   high-speed isochronous endpoint (12.3 MB/s) comes after a compressed one;
 2. cost: CPU milliseconds plus half the latency milliseconds per frame. A hardware block (ISP,
    hardware decoder) that adds a few milliseconds but almost no CPU beats the same work on the
    CPU; between CPU routes the faster one wins. Every plan prints its cost and this rule;
 3. frame rate: the faster mode;
 4. V4L2 over libcamera's UVC pipeline for the same USB camera.
+
+Starting an uncompressed mode of a USB camera waits for its first frame (2 s, or four frame
+intervals when longer). A camera behind a hub shared with other devices can stream such a mode
+and never deliver a frame. When none comes, the start fails with `CaptureError::NoFrames` and
+the cause (format, size, bus speed). The mode is then left out for that camera for the rest of
+the process, and its rejection reads `delivered no frames when started: ...`.
+`FrameRequest::open`, `open_best` and the camera service plan again once, which picks the next
+mode (MJPG of the same size on a webcam). `FramePlan::start` returns the error.
 
 A mode is rejected for its rate only when it could deliver the frames otherwise, so a
 `PlanError::FrameRate` lists the rates of modes that would have worked. Costs come from

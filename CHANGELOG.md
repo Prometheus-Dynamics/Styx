@@ -599,6 +599,13 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
   modes, USB 3 cameras and non-USB devices keep the cheaper route. A C270's YUYV 640x480
   delivered no frames behind a shared hub, where its MJPG ran. V4L2 devices on USB now list
   `usb_speed_mbps` (sysfs) among their properties.
+- **A USB mode that streams but delivers no frame falls back to the next mode, with the cause
+  in the error.** Starting an uncompressed USB mode waits up to 2 s for its first frame. When
+  none comes, the start fails with the new `CaptureError::NoFrames` ("YUYV 640x480 on a 480
+  Mbit/s USB bus: no frame in 2000 ms; uncompressed USB modes starve when a hub or another
+  device shares the bus"). The planner then leaves that mode out for the camera, and its
+  rejection says why. `FrameRequest::open`/`open_best` and the camera service plan again once
+  and get the MJPG mode.
 
 - **Fixed exposure and gain on processed native modes land sooner, on the predicted frame:**
   with AE settled, the 3A loop runs its algorithms only every few frames, and a fixed exposure

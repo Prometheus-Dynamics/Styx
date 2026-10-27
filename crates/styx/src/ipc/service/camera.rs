@@ -228,7 +228,19 @@ impl Camera {
             frames
         } else {
             let restarting = state.running.is_some();
-            match restart(state, planned, config) {
+            let tried = (planned.plan.backend, planned.plan.mode.id.clone());
+            let started = match restart(state, planned, config) {
+                // The mode delivered no frame and is left out now: plan again once.
+                Err(_)
+                    if crate::planner::stalled::check(&self.device, tried.0, &tried.1).is_err() =>
+                {
+                    self.plan_clients(&all, fps, None, config)
+                        .map_err(|err| describe(&err))
+                        .and_then(|planned| restart(state, planned, config))
+                }
+                started => started,
+            };
+            match started {
                 Ok(frames) => {
                     if restarting {
                         counters.restarts.fetch_add(1, Ordering::Relaxed);

@@ -64,3 +64,42 @@ fn heavy_uncompressed_usb_modes_rank_after_mjpg() {
         FourCc::YUYV
     );
 }
+
+/// A mode that started and delivered no frame is left out for that camera from then on: single
+/// and shared plans pick the next mode, and the rejection says why. Other cameras keep it.
+#[test]
+fn a_mode_that_delivered_no_frames_is_left_out() {
+    let mut dev = uvc_webcam("usb-xhci-hcd.1-1.1", Some("480"));
+    // Its own identity: the record is process-wide.
+    dev.identity.keys = vec!["test:stalled-webcam".into()];
+    let req = Frames::any().size(320, 240).fps(30);
+    let plan = plan_frames_with(&dev, &req, &registry()).unwrap();
+    assert_eq!(plan.mode.format.code, FourCc::YUYV);
+    let backend = &dev.backends[0];
+    assert!(stalled::may_starve(backend, &plan.mode));
+    assert!(!stalled::may_starve(backend, &backend.descriptor.modes[3]));
+
+    stalled::mark(
+        &dev,
+        BackendKind::V4l2,
+        &plan.mode.id,
+        "no frame in 2000 ms",
+    );
+    let plan = plan_frames_with(&dev, &req, &registry()).unwrap();
+    assert_eq!(plan.mode.format.code, FourCc::MJPG);
+    let reason = plan
+        .rejected
+        .iter()
+        .find(|r| r.candidate.contains("YUYV 320x240"))
+        .map(|r| r.reason.as_str());
+    assert_eq!(
+        reason,
+        Some("delivered no frames when started: no frame in 2000 ms")
+    );
+    let shared = plan_many_with(&dev, std::slice::from_ref(&req), &registry()).unwrap();
+    assert_eq!(shared.mode.format.code, FourCc::MJPG);
+
+    let other = uvc_webcam("usb-xhci-hcd.1-1.2", Some("480"));
+    let plan = plan_frames_with(&other, &req, &registry()).unwrap();
+    assert_eq!(plan.mode.format.code, FourCc::YUYV);
+}

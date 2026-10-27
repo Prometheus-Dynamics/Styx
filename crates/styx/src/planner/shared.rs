@@ -110,7 +110,9 @@ fn plan_shared(
             continue;
         }
         for mode in &backend.descriptor.modes {
-            if let Err(reason) = rate::check(mode, fps) {
+            if let Err(reason) = rate::check(mode, fps)
+                .and_then(|()| super::stalled::check(device, backend.kind, &mode.id))
+            {
                 rejected.push(PlanRejection {
                     candidate: describe(backend, mode),
                     reason,
@@ -405,6 +407,7 @@ impl SharedFramePlan {
         // buffers), so no consumer starves the camera of buffers.
         let held = group_depths.iter().sum::<usize>() + depths.iter().sum::<usize>() + depths.len();
         let session = SharedSession::new(self.capture_request(held).start()?);
+        self.confirm_first_frame(&session)?;
         let mut frames: Vec<Option<super::Frames>> =
             (0..self.consumers.len()).map(|_| None).collect();
         for members in &self.groups {
@@ -434,7 +437,19 @@ impl SharedFramePlan {
             .unwrap_or(1);
         let per_consumer = depth + held;
         let request = self.capture_request(consumers.max(1) * per_consumer);
-        Ok(SharedSession::new(request.start()?))
+        let session = SharedSession::new(request.start()?);
+        self.confirm_first_frame(&session)?;
+        Ok(session)
+    }
+
+    /// See [`super::stalled::confirm_first_frame`].
+    fn confirm_first_frame(&self, session: &SharedSession) -> Result<(), CaptureError> {
+        super::stalled::confirm_first_frame(
+            session.capture(),
+            &self.device,
+            &self.mode,
+            self.interval,
+        )
     }
 
     /// What the capture is started with: consumers whose plans have the same key can join a

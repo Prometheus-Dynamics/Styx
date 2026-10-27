@@ -43,6 +43,7 @@ mod sensor_raw;
 mod session;
 pub(crate) use session::{SharedSession, same_plan};
 mod shared;
+pub(crate) mod stalled;
 mod start;
 
 use std::fmt;
@@ -471,27 +472,8 @@ pub(crate) fn usb_overloaded(candidate: &routes::Candidate<'_>) -> bool {
         FourCc::RG24 | FourCc::BG24 => 3.0,
         _ => 2.0,
     };
-    let prop = |key: &str| {
-        candidate
-            .backend
-            .properties
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
-    };
-    // The bus's speed in Mbit/s; `None`: not USB.
-    let mbps = match candidate.backend.kind {
-        BackendKind::Uvc => match prop("speed") {
-            Some("Super" | "SuperPlus") => 5000.0,
-            Some("Full" | "Low") => 12.0,
-            _ => 480.0,
-        },
-        BackendKind::V4l2 if prop("bus").is_some_and(|b| b.starts_with("usb")) => {
-            prop("usb_speed_mbps")
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(480.0)
-        }
-        _ => return false,
+    let Some(mbps) = usb_bus_mbps(candidate.backend) else {
+        return false;
     };
     if mbps > 480.0 {
         return false;
@@ -503,6 +485,31 @@ pub(crate) fn usb_overloaded(candidate: &routes::Candidate<'_>) -> bool {
     let fps = f64::from(candidate.fps.unwrap_or(DEFAULT_FPS as f32));
     let rate = f64::from(res.width.get()) * f64::from(res.height.get()) * bytes_per_pixel * fps;
     rate > budget
+}
+
+/// The speed of the USB bus `backend`'s camera is on, in Mbit/s; `None` when it is not a USB
+/// camera.
+pub(crate) fn usb_bus_mbps(backend: &crate::ProbedBackend) -> Option<f64> {
+    let prop = |key: &str| {
+        backend
+            .properties
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    match backend.kind {
+        BackendKind::Uvc => Some(match prop("speed") {
+            Some("Super" | "SuperPlus") => 5000.0,
+            Some("Full" | "Low") => 12.0,
+            _ => 480.0,
+        }),
+        BackendKind::V4l2 if prop("bus").is_some_and(|b| b.starts_with("usb")) => Some(
+            prop("usb_speed_mbps")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(480.0),
+        ),
+        _ => None,
+    }
 }
 
 /// The frame rate a camera that runs at any rate in a range (a sensor Styx drives) runs at when
