@@ -105,6 +105,12 @@ test = false
 required-features = ["native"]
 
 [[bin]]
+name = "service_leave_check"
+path = "04_performance/service_leave_check.rs"
+test = false
+required-features = ["native"]
+
+[[bin]]
 name = "replay_isp_bench"
 path = "04_performance/replay_isp_bench.rs"
 test = false
