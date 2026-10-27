@@ -535,7 +535,7 @@ fn serve_client(service: &Service, mut conn: Connection) {
         send_frames(service, &camera, &mut conn, id, &frames);
         super::metrics::client_left(&mut conn);
     }
-    camera.leave(id, &service.config);
+    camera.leave(id, &service.config, &service.counters);
 }
 
 /// What a connection is for: frames, or camera controls.

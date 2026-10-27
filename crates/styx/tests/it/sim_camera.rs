@@ -307,3 +307,41 @@ fn the_software_isp_processes_every_region() {
     let f = got.expect("the moved region");
     assert_eq!(size(f.region(1).unwrap()), (64, 64));
 }
+
+/// A client that leaves gives the others back the capture planned for them alone: the mode a
+/// larger client moved the camera to does not outlast it.
+#[test]
+fn a_leaving_client_gives_the_others_their_own_mode_back() {
+    let device = styx::sim::device(spec()).unwrap();
+    let path = std::env::temp_dir().join(format!("styx-sim-leave-{}.sock", std::process::id()));
+    let service = CameraService::new(device)
+        .keep_streaming()
+        .serve(&path)
+        .unwrap();
+    let mode = || {
+        let plan = service.plan().unwrap_or_default();
+        plan.lines().next().unwrap_or_default().to_string()
+    };
+    let small = FrameClient::request(&path, &Frames::gray().size(640, 400).fps(30)).unwrap();
+    let _ = small.recv(Duration::from_secs(3));
+    let alone = mode();
+    let big = FrameClient::request(&path, &Frames::gray().size(1280, 800).fps(30)).unwrap();
+    let _ = big.recv(Duration::from_secs(3));
+    let both = mode();
+    assert_ne!(alone, both, "the larger client should move the mode");
+    drop(big);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while service.stats().clients != 1 && std::time::Instant::now() < deadline {
+        let _ = small.recv(Duration::from_millis(50));
+    }
+    assert_eq!(service.stats().clients, 1);
+    assert_eq!(mode(), alone, "the mode stayed the departed client's");
+    let mut got = 0;
+    for _ in 0..10 {
+        if let RecvOutcome::Data(f) = small.recv(Duration::from_secs(3)) {
+            assert_eq!(f.meta().format.resolution.width.get(), 640);
+            got += 1;
+        }
+    }
+    assert!(got >= 5, "{got} frames after the other left");
+}

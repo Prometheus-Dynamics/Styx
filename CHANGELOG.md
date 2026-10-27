@@ -591,6 +591,12 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- **A client leaving the camera service gives the others their own capture back.** The
+  capture stayed as planned for everyone, the departed client included, until the next join
+  or frame-rate change. So a mode a larger client had moved the camera to (1280x800 for a
+  client of 640x400) outlasted it, sometimes by minutes. Now the remaining clients are planned
+  again when one leaves, and the capture restarts only when their plan sets the camera up
+  differently (counted in `ServiceStats::restarts`).
 - **A disconnect a supervised capture recovered from no longer reads as its error now.**
   `CaptureHandle::last_error` (and `CameraMetrics::restarts.last_error` through it) kept
   "camera disconnected: no frames for 2001 ms" while frames flowed again. It is cleared when

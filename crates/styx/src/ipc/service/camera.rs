@@ -300,7 +300,7 @@ impl Camera {
         })
     }
 
-    pub(super) fn leave(&self, id: u64, config: &ServiceConfig) {
+    pub(super) fn leave(&self, id: u64, config: &ServiceConfig, counters: &Counters) {
         let mut state = self.state.lock();
         if let Some(i) = state.clients.iter().position(|c| c.id == id) {
             let client = state.clients.remove(i);
@@ -316,6 +316,41 @@ impl Camera {
         if state.clients.is_empty() && !pause {
             state.running = None;
         }
+        if self.replan_remaining(&mut state, config) {
+            counters.restarts.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// After a client left: the others get the capture planned for them alone when that sets
+    /// the camera up differently (a mode a larger client moved it to does not outlast that
+    /// client). Kept as it is when it already fits, or when the new plan does not start.
+    /// Whether the capture restarted.
+    fn replan_remaining(&self, state: &mut State, config: &ServiceConfig) -> bool {
+        let Some(setup) = state.running.as_ref().map(|r| r.setup.clone()) else {
+            return false;
+        };
+        if state.clients.is_empty() {
+            return false;
+        }
+        let all: Vec<(FrameRequest, bool)> = state
+            .clients
+            .iter()
+            .map(|c| (c.request.clone(), c.low))
+            .collect();
+        let fps = state.fps_override;
+        let Ok(planned) = self.plan_clients(&all, fps, None, config) else {
+            return false;
+        };
+        if planned.plan.setup_key() == setup {
+            return false;
+        }
+        if let Err(err) = restart(state, planned, config) {
+            crate::trace::warn!(error = %err, "replanning after a client left; keeping the old setup");
+            if let Ok(planned) = self.plan_clients(&all, fps, Some(&setup), config) {
+                let _ = restart(state, planned, config);
+            }
+        }
+        true
     }
 
     /// A client's regions of interest now (region 0 first; empty: the whole frame).
