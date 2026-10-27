@@ -336,12 +336,14 @@ fn a_leaving_client_gives_the_others_their_own_mode_back() {
     }
     assert_eq!(service.stats().clients, 1);
     assert_eq!(mode(), alone, "the mode stayed the departed client's");
+    // Frames queued before the restart may still be of the old mode; then the client's own.
     let mut got = 0;
-    for _ in 0..10 {
-        if let RecvOutcome::Data(f) = small.recv(Duration::from_secs(3)) {
-            assert_eq!(f.meta().format.resolution.width.get(), 640);
+    for _ in 0..20 {
+        if let RecvOutcome::Data(f) = small.recv(Duration::from_secs(3))
+            && f.meta().format.resolution.width.get() == 640
+        {
             got += 1;
         }
     }
-    assert!(got >= 5, "{got} frames after the other left");
+    assert!(got >= 5, "{got} frames of 640x400 after the other left");
 }
