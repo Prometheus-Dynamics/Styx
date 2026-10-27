@@ -570,7 +570,9 @@ The 3A statistics come from that pass, over the whole frame and the same quad ro
 (statistics identical to the whole frame's, checked on every live frame above); without an
 overview they have a pass of their own (`SoftIsp::statistics`, the front end on the quarter of
 the rows they read). AE and AWB therefore behave as with whole frames. Several regions per
-frame are `SoftParts::regions` (`SoftPipeline::next_target`); the native backend asks for one.
+frame are `SoftParts::regions` (`SoftPipeline::next_target`): the native backend processes the
+main output's crop and every region of `NativeIspConfig::regions` in the frame's one pass, each
+a `CompanionKind::Region` companion.
 
 CM5, OV9782 1280x800 RAW10, NV12, one ISP thread, 30 fps, 300 frames from a cold start
 (`native-pipeline soft --output nv12 --cold`), process CPU per frame and the ISP's own time:

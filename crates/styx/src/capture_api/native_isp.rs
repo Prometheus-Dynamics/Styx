@@ -406,11 +406,25 @@ pub(super) fn start_processed(
             .crop
             .enable((w, h), config.backends.native.crop);
     }
-    // The software ISP processes a crop alone, at full resolution, on a full-size mode.
+    // The software ISP processes a crop alone, at full resolution, on a full-size mode, and
+    // the regions (`NativeIspConfig::regions`) in the same pass, in the frame's format.
     if kind == IspKind::Software && soft_capture_size(camera.info(), (w, h)).1 == Scale::Full {
         loop_controls
             .crop
             .enable((w, h), config.backends.native.crop);
+        for (k, region) in config.backends.native.regions.iter().enumerate() {
+            let (Some(region), Some(control)) = (region, loop_controls.regions.slot(k)) else {
+                continue;
+            };
+            if region.format.is_some_and(|f| f != mode.format.code) {
+                return Err(err(format!(
+                    "region {}: the software ISP makes regions in the frame's format ({})",
+                    k + 1,
+                    mode.format.code
+                )));
+            }
+            control.enable((w, h), region.rect);
+        }
     }
     for (id, value) in initial {
         loop_controls

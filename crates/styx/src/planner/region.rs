@@ -13,7 +13,7 @@
 
 use styx_core::prelude::*;
 
-use crate::capture_api::{NativeRegion, StyxConfig};
+use crate::capture_api::{MAX_NATIVE_REGIONS, NativeRegion, StyxConfig};
 use crate::prelude::{Mode, ProbedBackend};
 
 use super::cost::{self, StepCost};
@@ -345,17 +345,27 @@ pub(crate) fn region_steps(
         }),
         None => {}
     }
+    let soft = isp == Some(IspCrop::Software);
     for (kind, execution, what) in [
         (
             RoiCrop::Isp,
             StepExecution::Hardware,
             "cropped by the ISP's second output",
         ),
-        (
-            RoiCrop::IspPass,
-            StepExecution::Hardware,
-            "cropped by extra ISP passes over the same raw frame",
-        ),
+        if soft {
+            (
+                RoiCrop::IspPass,
+                StepExecution::Cpu,
+                "processed by the software ISP at full resolution in the frame's pass (priced in \
+                 the capture step)",
+            )
+        } else {
+            (
+                RoiCrop::IspPass,
+                StepExecution::Hardware,
+                "cropped by extra ISP passes over the same raw frame",
+            )
+        },
         (
             RoiCrop::View,
             StepExecution::ZeroCopy,
@@ -369,6 +379,7 @@ pub(crate) fn region_steps(
             continue;
         }
         let cost = match kind {
+            RoiCrop::IspPass if soft => StepCost::ZERO,
             RoiCrop::IspPass => of_kind
                 .iter()
                 .map(|&i| pass(rects.get(i)))
@@ -387,7 +398,8 @@ pub(crate) fn region_steps(
 
 /// How `req`'s regions and overview reach frames of `frame` size in `code` (before any crop)
 /// on `route` for a consumer alone on its capture, `isp` cropping (the PiSP: region 0 in the
-/// main output, the others in extra passes; the software ISP or libcamera: region 0 only),
+/// main output, the others in extra passes; the software ISP: every region in its one pass;
+/// libcamera: region 0 only),
 /// adding their steps and notes. Fails when an overview is asked of encoded frames.
 pub(crate) fn plan(
     req: &FrameRequest,
@@ -407,7 +419,9 @@ pub(crate) fn plan(
     for i in 0..req.all_regions().len() {
         let (crop, place) = match (isp, i) {
             (Some(_), 0) => (Some(RoiCrop::Isp), Some(IspPlace::Main)),
-            (Some(IspCrop::Pisp), i) => (Some(RoiCrop::IspPass), Some(IspPlace::Slot(i as u8 - 1))),
+            (Some(IspCrop::Pisp | IspCrop::Software), i) if i <= MAX_NATIVE_REGIONS => {
+                (Some(RoiCrop::IspPass), Some(IspPlace::Slot(i as u8 - 1)))
+            }
             _ if luma && !encoded => (Some(RoiCrop::View), None),
             _ => (None, None),
         };

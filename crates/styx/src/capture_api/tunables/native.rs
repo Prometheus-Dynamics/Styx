@@ -153,8 +153,9 @@ pub struct NativeIspConfig {
     /// (default): off. With [`Self::pyramid_level`] too, the pyramid level comes from an extra
     /// back end pass (of the main output's region, following it), as with [`Self::crop`].
     pub overview: Option<(u32, u32)>,
-    /// PiSP, with the main output at the mode's size: more regions of the frame, each cropped
-    /// at full resolution from the same raw frame and attached to every frame as a
+    /// PiSP with the main output at the mode's size, or the software ISP on a full-size mode
+    /// (every region processed in the frame's pass, in its format): more regions of the
+    /// frame, each cropped at full resolution from the same raw frame and attached to every frame as a
     /// `CompanionKind::Region { index }` companion (`FrameLease::region`; region `k` of this
     /// list is index `k + 1`, the main output index 0), moved while running by the
     /// `region_crop(index)` controls. The first comes from the second output when nothing else

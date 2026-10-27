@@ -101,15 +101,30 @@ fn one_consumer_crops_its_first_region_in_the_main_output_and_passes_the_others(
         plan.to_string().contains("extra ISP pass of the region"),
         "{plan}"
     );
-    // The software ISP processes region 0 alone; the other luma regions are views, others
-    // unmet.
+    // The software ISP processes every region in the frame's one pass, in any format, region 0
+    // as the frame and the others in the capture's region slots; all priced in the capture.
     let soft = pisp("software");
     let gray = Frames::gray().regions([rect(0), rect(200)]);
-    let views = plan_frames_with(&soft, &gray, &registry()).unwrap();
-    if !views.to_string().contains("GPU ISP") {
-        assert_eq!(views.delivered().regions, vec![Some(Isp), Some(View)]);
+    let crops = plan_frames_with(&soft, &gray, &registry()).unwrap();
+    if !crops.to_string().contains("GPU ISP") {
+        assert_eq!(crops.delivered().regions, vec![Some(Isp), Some(IspPass)]);
         let nv12 = plan_frames_with(&soft, &req, &registry()).unwrap();
-        assert_eq!(nv12.delivered().unmet, vec![Unmet::Roi]);
+        let d = nv12.delivered();
+        assert_eq!(d.regions, vec![Some(Isp), Some(IspPass), Some(IspPass)]);
+        assert!(d.unmet.is_empty(), "{:?}", d.unmet);
+        let native = nv12.region_config(Default::default()).backends.native;
+        assert_eq!(native.crop, Some(rect(0)));
+        assert_eq!(native.regions[1].unwrap().rect, Some(rect(400)));
+        assert!(
+            nv12.to_string()
+                .contains("2 more regions processed by the software ISP"),
+            "{nv12}"
+        );
+        // Three 128x128 regions cost more than one, far less than the whole frame.
+        let one = plan_frames_with(&soft, &Frames::nv12().roi(rect(0)), &registry()).unwrap();
+        let whole = plan_frames_with(&soft, &Frames::nv12(), &registry()).unwrap();
+        assert!(one.total.cpu_ms < nv12.total.cpu_ms, "{one}\n{nv12}");
+        assert!(nv12.total.cpu_ms < whole.total.cpu_ms, "{nv12}\n{whole}");
     }
     // Without an ISP to crop, luma regions are views.
     let usb = plan_frames_with(&virtual_camera(), &gray, &registry()).unwrap();

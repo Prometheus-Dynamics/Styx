@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Several regions per consumer on the software ISP** (native cameras without a PiSP, and
+  simulated ones): every region is processed at full resolution in the frame's one pass, in
+  the frame's format (NV12 or RGB24, not only luma views), and attached as a
+  `CompanionKind::Region` companion. Regions move with `region_crop(i)`/`RoiHandle::set_regions`,
+  and the plan prices each by its area. Several consumers sharing such a capture still get
+  views.
 - **Daedalus `daedalus:frame` v3 for `FrameLease`** (Daedalus `d543c6c`): frames carry their
   colorimetry (H.273 code points and range, `styx_core::daedalus::colorimetry`: `Srgb` YUV is
   sYCC, BT.601 full range, as the ISPs write it) and their capture metadata

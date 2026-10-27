@@ -253,3 +253,57 @@ fn a_recovered_capture_error_is_history() {
     let r = recovered.unwrap_or_else(|| panic!("{:?}", frames.metrics().restarts));
     assert!(r.last_error_unix_ms.is_some(), "{r:?}");
 }
+
+/// Several regions on the software ISP: region 0 is the frame and the others its region
+/// companions, each processed at full resolution in the frame's pass, in NV12, and moved
+/// while running.
+#[test]
+fn the_software_isp_processes_every_region() {
+    let device = styx::sim::device(spec()).unwrap();
+    let (a, b) = (
+        FrameRect::new(64, 64, 128, 128),
+        FrameRect::new(640, 400, 256, 128),
+    );
+    let req = Frames::nv12().regions([a, b]).fps(30).skip_stale_regions();
+    let plan = styx::planner::plan_frames(&device, &req).unwrap();
+    assert_eq!(
+        plan.delivered().regions,
+        vec![
+            Some(styx::planner::RoiCrop::Isp),
+            Some(styx::planner::RoiCrop::IspPass)
+        ],
+        "{plan}"
+    );
+    let mut frames = plan.start().unwrap();
+    let mut seen = None;
+    for _ in 0..30 {
+        if let RecvOutcome::Data(f) = frames.next_frame(Duration::from_secs(3)) {
+            seen = Some(f);
+        }
+    }
+    let f = seen.expect("frames");
+    let size = |f: &FrameLease| {
+        let r = f.meta().format.resolution;
+        (r.width.get(), r.height.get())
+    };
+    assert_eq!((size(&f), f.meta().crop), ((128, 128), Some(a)));
+    let region = f.region(1).expect("region 1");
+    assert_eq!(region.meta().format.code, FourCc::NV12);
+    assert_eq!((size(region), region.meta().crop), ((256, 128), Some(b)));
+    assert_eq!(region.meta().timestamp, f.meta().timestamp);
+    assert!((20.0..230.0).contains(&luma_mean(region)));
+
+    let moved = FrameRect::new(320, 200, 64, 64);
+    frames.roi().set_regions(&[a, moved]);
+    let mut got = None;
+    for _ in 0..30 {
+        if let RecvOutcome::Data(f) = frames.next_frame(Duration::from_secs(3))
+            && f.region(1).and_then(|r| r.meta().crop) == Some(moved)
+        {
+            got = Some(f);
+            break;
+        }
+    }
+    let f = got.expect("the moved region");
+    assert_eq!(size(f.region(1).unwrap()), (64, 64));
+}

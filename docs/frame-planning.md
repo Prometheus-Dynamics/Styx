@@ -333,8 +333,10 @@ How regions are made (`RoiCrop`):
   frame (from the overview's pass, or a pass of their own), so AE and AWB behave as before.
   The plan's capture step is priced for the region and the overview. A new region applies from
   the next frame the ISP processes. It needs a full-size mode (not a binned one) and the CPU
-  ISP (not `gpu-isp`); one region (the others are views); shared with other consumers, the
-  region is a view as below.
+  ISP (not `gpu-isp`). The other regions are processed the same way in the same pass, at full
+  resolution in the frame's format, as region companions in the capture's region slots (up to
+  15), each priced by its area; they move with `region_crop(i)` like the PiSP's. Shared with
+  other consumers, the regions are views as below.
 - **A Raspberry Pi ISP through libcamera (`RoiCrop::Isp`):** per-output crops
   (`rpi::ScalerCrops`, in the CM5 image's libcamera 0.6.0 `+rpt20251202`): the main output
   shows the region, at the first region's size (even, at least 16x16), the second output the

@@ -158,8 +158,12 @@ fn a_preview_never_changes_the_vision_clients_capture() {
     assert!(with.iter().all(|(_, size, _)| *size == (1280, 800)));
     let rate =
         |frames: &[&(Instant, (u32, u32), Option<Duration>)], span: f64| frames.len() as f64 / span;
+    // The window without the preview is as long as the preview took to start, less a second.
     let (r0, r1) = (
-        rate(&without, 1.0),
+        rate(
+            &without,
+            (during - Duration::from_secs(1) - before).as_secs_f64(),
+        ),
         rate(&with, (after - during).as_secs_f64()),
     );
     assert!(r0 > 20.0, "vision alone: {r0} fps");

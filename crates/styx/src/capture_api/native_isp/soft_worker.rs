@@ -1,7 +1,9 @@
 //! The software ISP path's worker: each raw frame through the 3A loop into recycled heap
 //! buffers. With a crop (`OUTPUT_CROP`) the ISP processes only that region of the frame, at
-//! full resolution; with an overview the whole frame binned (`NativeIspConfig::overview`), from
-//! whose pass the statistics come; without either the whole frame. A region and an overview of
+//! full resolution, and the regions (`NativeIspConfig::regions`, moved by `region_crop(i)`) in
+//! the same pass, each attached as a `CompanionKind::Region` companion; with an overview the
+//! whole frame binned (`NativeIspConfig::overview`), from whose pass the statistics come;
+//! without any the whole frame. A region and an overview of
 //! a 1280x800 frame cost a fraction of the whole frame (`docs/native-stack/pipeline.md`).
 
 use std::sync::{Arc, mpsc};
@@ -18,6 +20,7 @@ use styx_softisp::{OutputBuffers, Scale, Window};
 
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
+use super::super::tunables::MAX_NATIVE_REGIONS;
 use super::{HeapBacking, aaa_sample, err, frame_meta, hold_soft, layouts, native_aaa};
 use crate::metrics::CaptureMetrics;
 
@@ -176,17 +179,27 @@ pub(super) fn spawn(
             let (ret_tx, ret_rx) = mpsc::channel::<Vec<u8>>();
             let (ov_tx, ov_rx) = mpsc::channel::<Vec<u8>>();
             let mut crop: Option<FrameRect> = None;
-            loop {
+            // Each region slot's rectangle, and its buffers coming back.
+            let mut regions: [Option<FrameRect>; MAX_NATIVE_REGIONS] = [None; MAX_NATIVE_REGIONS];
+            let region_returns: Vec<_> = (0..MAX_NATIVE_REGIONS)
+                .map(|_| mpsc::channel::<Vec<u8>>())
+                .collect();
+            'frames: loop {
                 if w.stop.try_recv().is_ok() {
                     break;
                 }
                 if let Some(c) = w.loop_controls.take() {
                     p.soft_loop().set_controls(c);
                 }
-                if w.crops
-                    && let Some(c) = w.loop_controls.crop.take()
-                {
-                    crop = c;
+                if w.crops {
+                    if let Some(c) = w.loop_controls.crop.take() {
+                        crop = c;
+                    }
+                    for (k, region) in regions.iter_mut().enumerate() {
+                        if let Some(c) = w.loop_controls.regions.slot(k).and_then(|c| c.take()) {
+                            *region = c;
+                        }
+                    }
                 }
                 w.still.before_frame(&mut p);
                 let size = crop.map_or(frame, |c| (c.width, c.height));
@@ -196,14 +209,32 @@ pub(super) fn spawn(
                         .try_recv()
                         .unwrap_or_else(|_| vec![0u8; image_bytes(code, s)])
                 });
+                let mut region_bufs: Vec<(usize, FrameRect, Vec<u8>)> = regions
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(k, r)| r.map(|r| (k, r)))
+                    .map(|(k, r)| {
+                        let bytes = image_bytes(code, (r.width, r.height));
+                        let mut b = region_returns[k]
+                            .1
+                            .try_recv()
+                            .unwrap_or_else(|_| vec![0u8; bytes]);
+                        b.resize(bytes, 0);
+                        (k, r, b)
+                    })
+                    .collect();
                 let out = buffers(code, size, &mut buf);
+                let window = |c: FrameRect| Window::new(c.x, c.y, c.width, c.height);
                 let target = match (crop, overview, ov_buf.as_mut()) {
-                    (None, None, _) => SoftTarget::Frame(w.scale, out),
+                    (None, None, _) if region_bufs.is_empty() => SoftTarget::Frame(w.scale, out),
                     (crop, overview, ov_buf) => {
                         let c = crop.unwrap_or(FrameRect::new(0, 0, frame.0, frame.1));
-                        let window = Window::new(c.x, c.y, c.width, c.height);
+                        let mut parts = vec![(window(c), out)];
+                        parts.extend(region_bufs.iter_mut().map(|(_, r, b)| {
+                            (window(*r), buffers(code, (r.width, r.height), b))
+                        }));
                         SoftTarget::Parts(SoftParts {
-                            regions: vec![(window, out)],
+                            regions: parts,
                             overview: overview
                                 .zip(ov_buf)
                                 .map(|((f, s), b)| (f, buffers(code, s, b))),
@@ -260,6 +291,25 @@ pub(super) fn spawn(
                 let mut main_meta = meta.clone();
                 main_meta.crop = crop;
                 let mut lease = lease(main_meta, size, buf, &ret_tx, &w.live);
+                for (k, r, b) in region_bufs {
+                    let mut region_meta = meta.clone();
+                    region_meta.crop = Some(r);
+                    let region = self::lease(
+                        region_meta,
+                        (r.width, r.height),
+                        b,
+                        &region_returns[k].0,
+                        &w.live,
+                    );
+                    let kind = CompanionKind::Region { index: k as u8 + 1 };
+                    lease = match lease.with_companion(kind, region) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            *w.error.lock() = Some(err(e));
+                            break 'frames;
+                        }
+                    };
+                }
                 if let (Some((_, s)), Some(b)) = (overview, ov_buf) {
                     let ov = self::lease(meta, s, b, &ov_tx, &w.live);
                     lease = match lease.with_companion(CompanionKind::Overview, ov) {

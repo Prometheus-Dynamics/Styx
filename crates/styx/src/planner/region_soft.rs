@@ -21,7 +21,7 @@ pub(crate) fn soft_overview_size(frame: (u32, u32), factor: u32) -> (u32, u32) {
     ((frame.0 / factor) & !1, (frame.1 / factor) & !1)
 }
 
-/// The software ISP's milliseconds per frame for `req`'s region (the whole frame without one;
+/// The software ISP's milliseconds per frame for `req`'s regions (the whole frame without one;
 /// a region set later is priced as the whole frame) and its overview binned by `factor` (else
 /// the statistics on their own) from `frame`.
 pub(crate) fn soft_region_ms(
@@ -33,7 +33,14 @@ pub(crate) fn soft_region_ms(
     let region = req
         .roi
         .and_then(|r| r.clipped_to(frame.0, frame.1))
-        .map_or(mp(frame.0, frame.1), |r| mp(r.width, r.height));
+        .map_or(mp(frame.0, frame.1), |r| mp(r.width, r.height))
+        + req
+            .extra_regions
+            .iter()
+            .take(crate::capture_api::MAX_NATIVE_REGIONS)
+            .filter_map(|r| r.clipped_to(frame.0, frame.1))
+            .map(|r| mp(r.width, r.height))
+            .sum::<f32>();
     let raw = mp(frame.0, frame.1);
     let overview = match factor {
         Some(f) => {

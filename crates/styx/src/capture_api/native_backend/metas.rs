@@ -259,7 +259,7 @@ pub(super) fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
     .chain(
         match super::super::native_isp::isp_name(info) {
             "pisp" => Some(super::super::native_isp::crop_metas(info, true)),
-            "software" => Some(super::super::native_isp::crop_metas(info, false)),
+            "software" => Some(super::super::native_isp::crop_metas(info, true)),
             _ => None,
         }
         .into_iter()
