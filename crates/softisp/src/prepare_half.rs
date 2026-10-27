@@ -9,7 +9,7 @@ use styx_core::sync::Arc;
 
 use crate::format::RawFormat;
 use crate::params::{Arithmetic, ColorMatrix, Demosaic, IspParams, LensShading, ToneCurve};
-use crate::prepare::{channel_index, grid_map};
+use crate::prepare::grid_map;
 use crate::simd::half::{ColourCoeffs, HalfTone};
 use crate::simd::{RowKind, f16, half};
 
@@ -113,7 +113,7 @@ impl HalfPrep {
         let black = [0, 1].map(|y| [0, 1].map(|x| f16::from_f64(1024.0 + cell(x, y))));
         let gain = [0, 1].map(|y| {
             [0, 1].map(|x| {
-                let g = f64::from(channel_gains[channel_index(pattern.channel_at(x, y))]);
+                let g = f64::from(channel_gains[pattern.channel_at(x, y).index()]);
                 f16::from_f64(g * half::FULL / (full - cell(x, y)))
             })
         });
@@ -170,7 +170,7 @@ impl HalfLsc {
         let mut d = [Vec::with_capacity(gh), Vec::with_capacity(gh)];
         let (mut cur, mut next, mut diff) = (vec![0f32; w], vec![0f32; w], vec![0f32; w]);
         for parity in 0..2 {
-            let grid = [0, 1].map(|x| grids[channel_index(format.pattern.channel_at(x, parity))]);
+            let grid = [0, 1].map(|x| grids[format.pattern.channel_at(x, parity).index()]);
             // Gains along grid row `gy` (`x` interpolated between its nodes).
             let along = |gy: usize, out: &mut [f32]| {
                 let nodes = grid.map(|g| &g[gy * gw..][..gw]);

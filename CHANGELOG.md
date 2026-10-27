@@ -363,6 +363,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `map_pixel_format_to_fourcc`, `pisp_disallowed_fourcc` and `is_rpi_pisp_sensor_i2c` are
   public now and the libcamera backend uses them instead of its own copies. The codec's six
   YUV colour-space mappings are one function.
+  Also: `ColorSpace::code`/`from_code` and `TimestampClock::code`/`from_code` (the wire bytes
+  recordings, the camera service and previews share, until now four copies),
+  `FourCc::has_luma_plane` (two copies), `Channel::index` (the software and GPU ISPs), and the
+  GPU ISP's lens-shading and plane-check helpers are the software ISP's.
 - **Breaking, for 3.0: error enums and the planner's choice enums are `#[non_exhaustive]`.**
   Every crate's public error enum (`PlanError`, `OpenError`, `CaptureError`, `NativeError`,
   `SensorError`, `CodecError`, `IpcError`, ...) and `BackendKind`, `BackendHandle`,

@@ -4,20 +4,14 @@
 //! [`FrameGrouper::try_event`](super::FrameGrouper::try_event) has something to do.
 
 use std::io;
+
+use crate::ipc::socket::check;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, OnceLock};
 use std::task::{Wake, Waker};
 use std::time::Duration;
 
 use styx_graph::rt::AsyncFd;
-
-fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
-    if ret < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(ret)
-    }
-}
 
 fn owned(ret: libc::c_int) -> io::Result<OwnedFd> {
     // SAFETY: a non-negative result of the creating syscall is a new descriptor we own.

@@ -3,7 +3,7 @@
 use smallvec::smallvec;
 
 use super::{FrameLease, FrameValidationError, VisibleRows};
-use crate::format::{BitDepth, FourCc, FrameStorageKind, MediaFormat};
+use crate::format::{FourCc, MediaFormat};
 
 impl FrameLease {
     /// Whether [`FrameLease::into_luma`] can produce a GREY view without copying.
@@ -11,7 +11,7 @@ impl FrameLease {
     /// True for GREY/R8 and for 8-bit planar or semi-planar YUV (NV12, NV21, NV16, I420, YV12,
     /// ...), whose first plane is a full-resolution Y8 image.
     pub fn has_luma_plane(&self) -> bool {
-        luma_plane_available(self.meta.format.code)
+        self.meta.format.code.has_luma_plane()
     }
 
     /// Visible rows of the Y8 plane: plane 0 of GREY/R8 or planar/semi-planar YUV frames.
@@ -69,7 +69,7 @@ impl FrameLease {
         if matches!(code, FourCc::GREY | FourCc::R8) {
             return Ok(self);
         }
-        if !luma_plane_available(code) {
+        if !code.has_luma_plane() {
             return Err(FrameValidationError::NoLumaPlane(code));
         }
         let luma_layout = *self.layouts.first().ok_or(FrameValidationError::NoPlanes)?;
@@ -84,20 +84,6 @@ impl FrameLease {
         self.meta.format = MediaFormat::new(FourCc::GREY, format.resolution, format.color);
         Ok(self)
     }
-}
-
-fn luma_plane_available(code: FourCc) -> bool {
-    if matches!(code, FourCc::GREY | FourCc::R8) {
-        return true;
-    }
-    let info = code.layout_info();
-    matches!(
-        info.storage,
-        FrameStorageKind::Planar | FrameStorageKind::SemiPlanar
-    ) && !matches!(
-        info.bit_depth,
-        BitDepth::U16 | BitDepth::U16x3 | BitDepth::F32
-    )
 }
 
 #[cfg(test)]

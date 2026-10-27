@@ -3,7 +3,7 @@
 use alloc::{format, vec, vec::Vec};
 use styx_core::sync::Arc;
 
-use crate::format::{CfaPattern, Channel, RawFormat};
+use crate::format::{CfaPattern, RawFormat};
 use crate::params::ToneCurve;
 use crate::params::{Arithmetic, Demosaic, IspParams, LensShading, YuvMatrix};
 use crate::post::PostPrep;
@@ -93,19 +93,11 @@ pub(crate) struct StatsSetup {
     pub saturation: u16,
 }
 
-pub(crate) fn channel_index(c: Channel) -> usize {
-    match c {
-        Channel::Red => 0,
-        Channel::Green => 1,
-        Channel::Blue => 2,
-    }
-}
-
 /// `round(g 4096)` (halves away from zero), clamped to `0..=65535`. Truncation plus a
 /// comparison: the same result as `f32::round`, which x86 without SSE4.1 calls `roundf` for
 /// (a lens shading table rebuild took 0.27 instead of 0.03 ms on Zen 3).
 #[inline]
-fn q12(g: f32) -> u16 {
+pub fn q12(g: f32) -> u16 {
     let y = g.clamp(0.0, GAIN_MAX) * 4096.0;
     // Exact for 0 <= y < 2^24: `y - trunc(y)` is representable.
     let r = y as i32;
@@ -113,7 +105,7 @@ fn q12(g: f32) -> u16 {
 }
 
 /// Sample positions of `n` output points spread over `nodes` grid nodes: index and Q16 weight.
-pub(crate) fn grid_map(n: usize, nodes: usize) -> Vec<(u16, u32)> {
+pub fn grid_map(n: usize, nodes: usize) -> Vec<(u16, u32)> {
     (0..n)
         .map(|i| {
             if nodes < 2 || n < 2 {
@@ -256,7 +248,7 @@ impl IntPrep {
         // Gain of CFA cell (x & 1, y & 1), with the black level's range loss made up.
         let cell_gain = |x: usize, y: usize| {
             let bl = black_cells[pattern.cell_at(x, y)] as f32;
-            channel_gains[channel_index(pattern.channel_at(x, y))] * full / (full - bl)
+            channel_gains[pattern.channel_at(x, y).index()] * full / (full - bl)
         };
         let black = [0, 1].map(|y| [0, 1].map(|x| black_cells[pattern.cell_at(x, y)]));
         let cells = [0, 1, 2, 3].map(|i| cell_gain(i & 1, i >> 1).to_bits());
@@ -387,7 +379,7 @@ fn shaded_gains(
     let rows = [0, 1].map(|parity| {
         // Everything but the shading depends on the column's parity only.
         let gain = [0, 1].map(|x| cell_gain(x, parity));
-        let grid = [0, 1].map(|x| grids[channel_index(format.pattern.channel_at(x, parity))]);
+        let grid = [0, 1].map(|x| grids[format.pattern.channel_at(x, parity).index()]);
         let mut half = [vec![0u16; w.div_ceil(2)], vec![0u16; w / 2]];
         (0..gh)
             .map(|gy| {

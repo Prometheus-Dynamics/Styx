@@ -72,6 +72,13 @@ mod post;
 mod prepare;
 mod prepare_half;
 pub mod simd;
+/// Fixed-point helpers `styx-gpuisp` shares with this crate (its shaders take the same tables).
+/// Not a stable API.
+#[doc(hidden)]
+pub mod shared {
+    pub use crate::output::check as check_plane;
+    pub use crate::prepare::{grid_map, q12};
+}
 mod stats;
 
 pub use format::{BAYER_FOURCCS, CfaPattern, Channel, RawFormat, RawPacking, bayer_fourcc};

@@ -102,6 +102,33 @@ pub enum TimestampClock {
     StreamRelative,
 }
 
+impl TimestampClock {
+    /// The byte recordings, the camera service's wire and previews carry for a frame's clock
+    /// (stable: 0 none, 1 monotonic, 2 boottime, 3 realtime, 4 stream-relative).
+    pub const fn code(clock: Option<Self>) -> u8 {
+        match clock {
+            None => 0,
+            Some(Self::Monotonic) => 1,
+            Some(Self::Boottime) => 2,
+            Some(Self::Realtime) => 3,
+            Some(Self::StreamRelative) => 4,
+        }
+    }
+
+    /// The clock of [`TimestampClock::code`] `code` (`Some(None)` for 0); `None` for codes it
+    /// does not know.
+    pub const fn from_code(code: u8) -> Option<Option<Self>> {
+        Some(match code {
+            0 => None,
+            1 => Some(Self::Monotonic),
+            2 => Some(Self::Boottime),
+            3 => Some(Self::Realtime),
+            4 => Some(Self::StreamRelative),
+            _ => return None,
+        })
+    }
+}
+
 /// A platform's clocks, for builds and targets without an OS clock: the time on `clock` in
 /// nanoseconds, or `None` when the platform does not keep it. A firmware passes its timer
 /// (`set_platform_clock(|c| matches!(c, TimestampClock::Monotonic).then(ticks_ns))`), as it

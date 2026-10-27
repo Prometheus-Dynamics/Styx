@@ -42,6 +42,8 @@ use shared_fd::SharedFdBacking;
 #[cfg(all(feature = "std", target_os = "linux"))]
 use shared_fd::create_memfd;
 #[cfg(all(feature = "std", unix))]
+pub(crate) use shared_fd::dup_owned_fd;
+#[cfg(all(feature = "std", unix))]
 pub(crate) use shared_fd::fd_size;
 
 /// External backing for frames when zero-copy sharing external memory.

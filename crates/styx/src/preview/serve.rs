@@ -144,33 +144,13 @@ pub const WS_HEADER_LEN: usize = 32;
 const FLAG_GRAY: u8 = 1;
 const FLAG_PASSTHROUGH: u8 = 2;
 
-fn clock_tag(clock: Option<TimestampClock>) -> u8 {
-    match clock {
-        None => 0,
-        Some(TimestampClock::Monotonic) => 1,
-        Some(TimestampClock::Boottime) => 2,
-        Some(TimestampClock::Realtime) => 3,
-        Some(TimestampClock::StreamRelative) => 4,
-    }
-}
-
-fn clock_from(tag: u8) -> Option<TimestampClock> {
-    match tag {
-        1 => Some(TimestampClock::Monotonic),
-        2 => Some(TimestampClock::Boottime),
-        3 => Some(TimestampClock::Realtime),
-        4 => Some(TimestampClock::StreamRelative),
-        _ => None,
-    }
-}
-
 /// A frame as one binary WebSocket message: the 32-byte header (see the [module](self)), then
 /// the JPEG. One allocation and one copy of the JPEG; send it as a binary message.
 pub fn ws_message(frame: &PreviewFrame) -> Bytes {
     let mut out = BytesMut::with_capacity(WS_HEADER_LEN + frame.jpeg.len());
     out.put_slice(&WS_MAGIC);
     out.put_u16_le(WS_HEADER_LEN as u16);
-    out.put_u8(clock_tag(frame.clock));
+    out.put_u8(TimestampClock::code(frame.clock));
     out.put_u8(
         if frame.gray { FLAG_GRAY } else { 0 }
             | if frame.passthrough {
@@ -219,7 +199,7 @@ pub fn parse_ws_message(message: &[u8]) -> Option<(WsHeader, &[u8])> {
         WsHeader {
             sequence: u64_at(8)?,
             timestamp_ns: u64_at(16)?,
-            clock: clock_from(*message.get(6)?),
+            clock: TimestampClock::from_code(*message.get(6)?).flatten(),
             width: u16_at(24)?,
             height: u16_at(26)?,
             gray: flags & FLAG_GRAY != 0,

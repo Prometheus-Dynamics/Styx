@@ -52,7 +52,14 @@ pub(crate) enum Kind {
     Luma,
 }
 
-fn check(name: &str, len: usize, stride: usize, row: usize, rows: usize) -> Result<(), IspError> {
+/// A plane `name` of `len` bytes holds `rows` rows of `row` bytes at `stride`.
+pub fn check(
+    name: &str,
+    len: usize,
+    stride: usize,
+    row: usize,
+    rows: usize,
+) -> Result<(), IspError> {
     let need = if rows == 0 {
         0
     } else {

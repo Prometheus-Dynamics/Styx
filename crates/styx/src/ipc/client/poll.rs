@@ -10,6 +10,8 @@
 
 use std::future::Future;
 use std::io;
+
+use crate::ipc::socket::check;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::pin::Pin;
 use std::sync::OnceLock;
@@ -33,14 +35,6 @@ pub(super) struct PollSet {
     reactor: OnceLock<io::Result<AsyncFd<OwnedFd>>>,
     /// The timer is set (and may have fired, its expiry not yet read): only then is it read.
     armed: AtomicBool,
-}
-
-fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
-    if ret < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(ret)
-    }
 }
 
 impl PollSet {

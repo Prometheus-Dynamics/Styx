@@ -23,6 +23,17 @@ pub enum Channel {
     Blue,
 }
 
+impl Channel {
+    /// Its index into `[red, green, blue]` arrays.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Red => 0,
+            Self::Green => 1,
+            Self::Blue => 2,
+        }
+    }
+}
+
 impl CfaPattern {
     /// The colour at column `x`, row `y`.
     pub fn channel_at(self, x: usize, y: usize) -> Channel {

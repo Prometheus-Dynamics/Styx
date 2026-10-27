@@ -1,5 +1,6 @@
 //! Output kinds and the plane layout the GPU writes them in.
 
+use styx_softisp::shared::check_plane;
 use styx_softisp::{IspError, OutputBuffers};
 
 /// The kind of output, without buffers (as [`OutputBuffers`]).
@@ -99,20 +100,6 @@ impl Layout {
     }
 }
 
-fn check(name: &str, len: usize, stride: usize, row: usize, rows: usize) -> Result<(), IspError> {
-    let need = if rows == 0 {
-        0
-    } else {
-        stride * (rows - 1) + row
-    };
-    if stride < row || len < need {
-        return Err(IspError::OutputTooSmall(format!(
-            "{name}: {len} bytes with stride {stride}, need stride >= {row} and {need} bytes"
-        )));
-    }
-    Ok(())
-}
-
 /// The caller's planes (data, stride), checked against `layout` as `styx-softisp` checks them.
 pub(crate) fn destination<'a, 'b>(
     out: &'b mut OutputBuffers<'a>,
@@ -149,7 +136,7 @@ pub(crate) fn destination<'a, 'b>(
             OutputKind::Nv12 if k == 1 => "uv",
             _ => names[k],
         };
-        check(name, data.len(), *stride, p.row, p.rows)?;
+        check_plane(name, data.len(), *stride, p.row, p.rows)?;
     }
     Ok(planes)
 }

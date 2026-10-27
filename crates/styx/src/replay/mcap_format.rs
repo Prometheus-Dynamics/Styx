@@ -310,7 +310,7 @@ fn header_to_map(header: &RecordingHeader) -> BTreeMap<String, String> {
         ("fourcc_name".into(), format.code.to_string()),
         ("width".into(), format.resolution.width.to_string()),
         ("height".into(), format.resolution.height.to_string()),
-        ("color".into(), color_tag(format.color).to_string()),
+        ("color".into(), format.color.code().to_string()),
         (
             "interval".into(),
             header
@@ -355,7 +355,7 @@ pub(super) fn header_from_map(
         format: MediaFormat::new(
             FourCc::from(num("fourcc")?),
             resolution,
-            color_from_tag(num("color")? as u8),
+            ColorSpace::from_code(num("color")? as u8),
         ),
         interval,
     })
@@ -426,9 +426,9 @@ fn encode_meta_v1_fields(w: &mut CdrWriter, meta: &FrameMeta, topic: &str, level
     w.string(&meta.format.code.to_string());
     w.u32(meta.format.resolution.width.get());
     w.u32(meta.format.resolution.height.get());
-    w.u8(color_tag(meta.format.color));
+    w.u8(meta.format.color.code());
     w.u64(meta.timestamp);
-    w.u8(clock_tag(meta.clock));
+    w.u8(TimestampClock::code(meta.clock));
     let (backend, sequence, v4l2, memory) = match meta.backend {
         None => (0, 0, None, ""),
         Some(BackendFrameMeta::V4l2(m)) => (1, m.sequence, Some(m), ""),
@@ -477,9 +477,9 @@ pub(super) fn decode_meta(data: &[u8]) -> Result<PartMeta, ReplayError> {
     let _name = r.string()?;
     let resolution =
         Resolution::new(r.u32()?, r.u32()?).ok_or(ReplayError::Corrupt("zero resolution"))?;
-    let format = MediaFormat::new(code, resolution, color_from_tag(r.u8()?));
+    let format = MediaFormat::new(code, resolution, ColorSpace::from_code(r.u8()?));
     let timestamp = r.u64()?;
-    let clock = clock_from_tag(r.u8()?)?;
+    let clock = TimestampClock::from_code(r.u8()?).ok_or(ReplayError::Corrupt("unknown clock"))?;
     let backend_tag = r.u8()?;
     let sequence = r.u32()?;
     let (bytes_used, field, flags, zero_copy) = (r.u32()?, r.u32()?, r.u32()?, r.bool()?);
@@ -647,45 +647,6 @@ fn ros_compressed_format(code: FourCc) -> String {
         FourCc::H265 | FourCc::HEVC => "h265".into(),
         other => format!("styx:{other}"),
     }
-}
-
-fn color_tag(color: ColorSpace) -> u8 {
-    match color {
-        ColorSpace::Srgb => 0,
-        ColorSpace::Bt709 => 1,
-        ColorSpace::Bt2020 => 2,
-        ColorSpace::Unknown => 3,
-    }
-}
-
-fn color_from_tag(tag: u8) -> ColorSpace {
-    match tag {
-        0 => ColorSpace::Srgb,
-        1 => ColorSpace::Bt709,
-        2 => ColorSpace::Bt2020,
-        _ => ColorSpace::Unknown,
-    }
-}
-
-fn clock_tag(clock: Option<TimestampClock>) -> u8 {
-    match clock {
-        None => 0,
-        Some(TimestampClock::Monotonic) => 1,
-        Some(TimestampClock::Boottime) => 2,
-        Some(TimestampClock::Realtime) => 3,
-        Some(TimestampClock::StreamRelative) => 4,
-    }
-}
-
-fn clock_from_tag(tag: u8) -> Result<Option<TimestampClock>, ReplayError> {
-    Ok(match tag {
-        0 => None,
-        1 => Some(TimestampClock::Monotonic),
-        2 => Some(TimestampClock::Boottime),
-        3 => Some(TimestampClock::Realtime),
-        4 => Some(TimestampClock::StreamRelative),
-        _ => return Err(ReplayError::Corrupt("unknown clock")),
-    })
 }
 
 #[cfg(test)]

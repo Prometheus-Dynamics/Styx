@@ -427,7 +427,7 @@ impl fmt::Debug for SharedFdBacking {
     }
 }
 
-fn dup_owned_fd(fd: &OwnedFd) -> Result<OwnedFd, FrameExportError> {
+pub(crate) fn dup_owned_fd(fd: &OwnedFd) -> Result<OwnedFd, FrameExportError> {
     let duplicated = unsafe { libc::dup(fd.as_raw_fd()) };
     if duplicated < 0 {
         return Err(FrameExportError::Fd(std::io::Error::last_os_error()));

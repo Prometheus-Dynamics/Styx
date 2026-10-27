@@ -232,7 +232,7 @@ fn cpu_or_isp_overview(
     if isp {
         return (overview_size(frame, wanted), true);
     }
-    if has_luma(code) {
+    if code.has_luma_plane() {
         notes.push(format!(
             "the overview is box-filtered from the {}x{} frame's luma (no ISP here to scale it)",
             frame.0, frame.1
@@ -245,21 +245,6 @@ fn cpu_or_isp_overview(
         ));
         (frame, false)
     }
-}
-
-/// Frames in `code` have a luma plane (grey, planar or semi-planar YUV of 8 bits).
-pub(crate) fn has_luma(code: FourCc) -> bool {
-    if matches!(code, FourCc::GREY | FourCc::R8) {
-        return true;
-    }
-    let info = code.layout_info();
-    matches!(
-        info.storage,
-        FrameStorageKind::Planar | FrameStorageKind::SemiPlanar
-    ) && !matches!(
-        info.bit_depth,
-        BitDepth::U16 | BitDepth::U16x3 | BitDepth::F32
-    )
 }
 
 /// The overview step: from the ISP's second output, box-filtered from `frame` (`scaled`), or

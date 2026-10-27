@@ -4,14 +4,13 @@
 
 use std::sync::Arc;
 
+use styx_softisp::shared::{grid_map, q12};
 use styx_softisp::simd::{RowKind, ToneLut, YuvCoeffs};
 use styx_softisp::{
-    CfaPattern, Channel, IspError, IspParams, LensShading, RawFormat, RawPacking, StatsConfig,
-    YuvMatrix,
+    CfaPattern, IspError, IspParams, LensShading, RawFormat, RawPacking, StatsConfig, YuvMatrix,
 };
 
 /// Q12 gain limit (16x), as the integer arithmetic.
-const GAIN_MAX: f32 = 65535.0 / 4096.0;
 const WORK_MAX: u16 = 4095;
 
 /// The shaders' parameter block (`shaders/common.glsl`, `Params`): 32-bit words in the same
@@ -95,37 +94,6 @@ pub(crate) struct Tables {
     pub channel_gains: [f32; 3],
 }
 
-fn channel_index(c: Channel) -> usize {
-    match c {
-        Channel::Red => 0,
-        Channel::Green => 1,
-        Channel::Blue => 2,
-    }
-}
-
-/// `round(g 4096)`, clamped to `0..=65535` (`styx-softisp`'s `q12`).
-fn q12(g: f32) -> u16 {
-    let y = g.clamp(0.0, GAIN_MAX) * 4096.0;
-    let r = y as i32;
-    (r + i32::from(y - r as f32 >= 0.5)) as u16
-}
-
-/// Sample positions of `n` output points over `nodes` grid nodes: index and Q16 weight.
-fn grid_map(n: usize, nodes: usize) -> Vec<(u16, u32)> {
-    (0..n)
-        .map(|i| {
-            if nodes < 2 || n < 2 {
-                return (0, 0);
-            }
-            let pos = i as f64 * (nodes - 1) as f64 / (n - 1) as f64;
-            let idx = (pos as usize).min(nodes - 2);
-            let y = (pos - idx as f64) * 65536.0;
-            let frac = y as u32 + u32::from(y - f64::from(y as u32) >= 0.5);
-            (idx as u16, frac.min(65536))
-        })
-        .collect()
-}
-
 fn invalid(s: impl Into<String>) -> IspError {
     IspError::InvalidParams(s.into())
 }
@@ -203,7 +171,7 @@ impl Tables {
         // Gain of CFA cell (x & 1, y & 1), with the black level's range loss made up.
         let cell_gain = |x: usize, y: usize| {
             let bl = black_cells[pattern.cell_at(x, y)] as f32;
-            channel_gains[channel_index(pattern.channel_at(x, y))] * full / (full - bl)
+            channel_gains[pattern.channel_at(x, y).index()] * full / (full - bl)
         };
         let mut b = Block {
             width: w as u32,
@@ -333,7 +301,7 @@ fn shaded_gains(
     let mut words: Vec<u32> = Vec::with_capacity(gh * w + h);
     for parity in 0..2 {
         let gain = [0, 1].map(|x| cell_gain(x, parity));
-        let grid = [0, 1].map(|x| grids[channel_index(format.pattern.channel_at(x, parity))]);
+        let grid = [0, 1].map(|x| grids[format.pattern.channel_at(x, parity).index()]);
         let g: Vec<f32> = (0..w).map(|x| gain[x & 1]).collect();
         for gy in 0..gh {
             for (x, &(i, j, _)) in x_map.iter().enumerate() {

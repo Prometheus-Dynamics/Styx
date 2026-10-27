@@ -296,6 +296,22 @@ impl FourCc {
         self.info().jpeg_encoded
     }
 
+    /// Whether frames in this format have an 8-bit luma plane: grey, or planar or semi-planar
+    /// YUV of 8 bits.
+    pub fn has_luma_plane(self) -> bool {
+        if matches!(self, Self::GREY | Self::R8) {
+            return true;
+        }
+        let info = self.layout_info();
+        matches!(
+            info.storage,
+            FrameStorageKind::Planar | FrameStorageKind::SemiPlanar
+        ) && !matches!(
+            info.bit_depth,
+            BitDepth::U16 | BitDepth::U16x3 | BitDepth::F32
+        )
+    }
+
     /// Whether this FourCC names a raw Bayer mosaic format: 8-bit (V4L2's `BA81` is 8-bit
     /// BGGR), 10 to 16 bits in 16-bit words, or MIPI CSI-2 packed RAW10 / RAW12 (`pBAA`,
     /// `pBCC` and their other orders).
@@ -569,7 +585,9 @@ impl FromStr for FourCc {
     }
 }
 
+mod color;
 pub mod drm;
+pub use color::ColorSpace;
 #[cfg(feature = "serde")]
 mod fourcc_serde;
 #[cfg(test)]
@@ -704,21 +722,6 @@ impl IntervalStepwise {
         let steps = ((cand_fps - min_fps) / step_fps).round();
         ((cand_fps - min_fps) - steps * step_fps).abs() < 0.001
     }
-}
-
-/// Basic color space hints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub enum ColorSpace {
-    /// Standard sRGB.
-    Srgb,
-    /// Rec. 709.
-    Bt709,
-    /// Rec. 2020.
-    Bt2020,
-    /// Unspecified/unknown.
-    Unknown,
 }
 
 /// Media format including code and geometry.

@@ -129,7 +129,7 @@ fn write_body(w: &mut impl Write, frame: &FrameLease) -> Result<(), ReplayError>
     let meta = frame.meta();
     write_format(w, &meta.format)?;
     w.write_all(&meta.timestamp.to_le_bytes())?;
-    w.write_all(&[clock_tag(meta.clock)])?;
+    w.write_all(&[TimestampClock::code(meta.clock)])?;
     write_backend(w, meta.backend.as_ref())?;
     match meta.crop {
         Some(rect) => {
@@ -178,7 +178,8 @@ fn write_body(w: &mut impl Write, frame: &FrameLease) -> Result<(), ReplayError>
 fn read_body(r: &mut impl Read, offset: u64, top_level: bool) -> Result<FrameLease, ReplayError> {
     let format = read_format(r)?;
     let timestamp = read_u64(r)?.saturating_add(offset);
-    let clock = clock_from_tag(read_u8(r)?)?;
+    let clock =
+        TimestampClock::from_code(read_u8(r)?).ok_or(ReplayError::Corrupt("unknown clock"))?;
     let backend = read_backend(r)?;
     let crop = match read_u8(r)? {
         0 => None,
@@ -300,27 +301,6 @@ fn read_backend(r: &mut impl Read) -> Result<Option<BackendFrameMeta>, ReplayErr
             error: read_u8(r)? != 0,
         })),
         _ => return Err(ReplayError::Corrupt("unknown backend metadata")),
-    })
-}
-
-fn clock_tag(clock: Option<TimestampClock>) -> u8 {
-    match clock {
-        None => 0,
-        Some(TimestampClock::Monotonic) => 1,
-        Some(TimestampClock::Boottime) => 2,
-        Some(TimestampClock::Realtime) => 3,
-        Some(TimestampClock::StreamRelative) => 4,
-    }
-}
-
-fn clock_from_tag(tag: u8) -> Result<Option<TimestampClock>, ReplayError> {
-    Ok(match tag {
-        0 => None,
-        1 => Some(TimestampClock::Monotonic),
-        2 => Some(TimestampClock::Boottime),
-        3 => Some(TimestampClock::Realtime),
-        4 => Some(TimestampClock::StreamRelative),
-        _ => return Err(ReplayError::Corrupt("unknown clock")),
     })
 }
 

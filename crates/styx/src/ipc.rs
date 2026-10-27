@@ -32,7 +32,7 @@ mod mapcache;
 mod metrics;
 mod progress_ring;
 mod service;
-mod socket;
+pub(crate) mod socket;
 mod wire;
 
 use std::path::{Path, PathBuf};

@@ -25,7 +25,8 @@ pub(super) enum Received {
     Closed,
 }
 
-fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
+/// `ret`, or the OS error a negative return reports.
+pub(crate) fn check(ret: libc::c_int) -> io::Result<libc::c_int> {
     if ret < 0 {
         Err(io::Error::last_os_error())
     } else {

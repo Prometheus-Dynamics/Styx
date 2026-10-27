@@ -5,7 +5,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use super::super::frame::{ExternalBacking, FrameBackingExport, FrameExportError};
+use super::super::frame::{ExternalBacking, FrameBackingExport, FrameExportError, dup_owned_fd};
 use crate::metrics::Metrics;
 use parking_lot::Mutex;
 
@@ -345,14 +345,6 @@ fn unmap_ptr(ptr: NonNull<u8>, len: usize) {
     unsafe {
         libc::munmap(ptr.as_ptr().cast(), len);
     }
-}
-
-fn dup_owned_fd(fd: &OwnedFd) -> Result<OwnedFd, FrameExportError> {
-    let duplicated = unsafe { libc::dup(fd.as_raw_fd()) };
-    if duplicated < 0 {
-        return Err(FrameExportError::Fd(std::io::Error::last_os_error()));
-    }
-    Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
 }
 
 #[cfg(test)]

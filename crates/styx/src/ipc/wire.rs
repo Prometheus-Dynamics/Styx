@@ -302,52 +302,14 @@ impl Reader<'_> {
     }
 }
 
-fn color_tag(color: ColorSpace) -> u8 {
-    match color {
-        ColorSpace::Srgb => 0,
-        ColorSpace::Bt709 => 1,
-        ColorSpace::Bt2020 => 2,
-        ColorSpace::Unknown => 3,
-    }
-}
-
-fn color_from(tag: u8) -> ColorSpace {
-    match tag {
-        0 => ColorSpace::Srgb,
-        1 => ColorSpace::Bt709,
-        2 => ColorSpace::Bt2020,
-        _ => ColorSpace::Unknown,
-    }
-}
-
-fn clock_tag(clock: Option<TimestampClock>) -> u8 {
-    match clock {
-        None => 0,
-        Some(TimestampClock::Monotonic) => 1,
-        Some(TimestampClock::Boottime) => 2,
-        Some(TimestampClock::Realtime) => 3,
-        Some(TimestampClock::StreamRelative) => 4,
-    }
-}
-
-fn clock_from(tag: u8) -> Option<TimestampClock> {
-    match tag {
-        1 => Some(TimestampClock::Monotonic),
-        2 => Some(TimestampClock::Boottime),
-        3 => Some(TimestampClock::Realtime),
-        4 => Some(TimestampClock::StreamRelative),
-        _ => None,
-    }
-}
-
 fn write_frame(w: &mut Writer, frame: &WireFrame) {
     let format = frame.meta.format;
     w.u32(format.code.to_u32());
     w.u32(format.resolution.width.get());
     w.u32(format.resolution.height.get());
-    w.u8(color_tag(format.color));
+    w.u8(format.color.code());
     w.u64(frame.meta.timestamp);
-    w.u8(clock_tag(frame.meta.clock));
+    w.u8(TimestampClock::code(frame.meta.clock));
     w.bool(frame.meta.delta);
     w.u8(match frame.cpu_access {
         CpuAccess::None => 0,
@@ -412,9 +374,9 @@ fn read_frame_into(
     let code = FourCc::new(r.u32()?.to_le_bytes());
     let resolution =
         Resolution::new(r.u32()?, r.u32()?).ok_or(IpcError::Malformed("zero-sized frame"))?;
-    let color = color_from(r.u8()?);
+    let color = ColorSpace::from_code(r.u8()?);
     let mut meta = FrameMeta::new(MediaFormat::new(code, resolution, color), r.u64()?);
-    meta.clock = clock_from(r.u8()?);
+    meta.clock = TimestampClock::from_code(r.u8()?).flatten();
     meta.delta = r.bool()?;
     frame.cpu_access = match r.u8()? {
         0 => CpuAccess::None,
