@@ -28,26 +28,138 @@ struct Stalled {
 
 static STALLED: Mutex<Vec<Stalled>> = Mutex::new(Vec::new());
 
+/// How long a mode the bus refused stays out of the plans. Bandwidth frees up when another
+/// camera stops, so the mode is tried again after this.
+const BUS_FULL_FOR: Duration = Duration::from_secs(10);
+
+/// Most modes a fallback starts before it gives up (each refusal or dead mode is left out).
+const MAX_FALLBACKS: usize = 16;
+
+struct BusFull {
+    keys: Vec<String>,
+    backend: BackendKind,
+    mode: ModeId,
+    until: Instant,
+    cause: String,
+}
+
+static BUS_FULL: Mutex<Vec<BusFull>> = Mutex::new(Vec::new());
+
 /// Whether starting `mode` on `backend` waits for its first frame: uncompressed modes of USB
 /// cameras.
 pub(crate) fn may_starve(backend: &ProbedBackend, mode: &Mode) -> bool {
     !mode.format.code.is_compressed() && super::usb_bus_mbps(backend).is_some()
 }
 
-/// `Err(reason)` when `mode` started on `device` before and delivered no frame.
+/// `Err(reason)` when `mode` started on `device` before and delivered no frame, or the bus
+/// refused it lately.
 pub(crate) fn check(
     device: &ProbedDevice,
     backend: BackendKind,
     mode: &ModeId,
 ) -> Result<(), String> {
     let stalled = STALLED.lock();
-    match stalled
+    if let Some(s) = stalled
         .iter()
         .find(|s| s.backend == backend && s.mode == *mode && shares_key(&s.keys, device))
     {
-        Some(s) => Err(format!("delivered no frames when started: {}", s.cause)),
+        return Err(format!("delivered no frames when started: {}", s.cause));
+    }
+    drop(stalled);
+    let now = Instant::now();
+    let full = BUS_FULL.lock();
+    match full.iter().find(|b| {
+        b.until > now && b.backend == backend && b.mode == *mode && shares_key(&b.keys, device)
+    }) {
+        Some(b) => Err(format!("not enough USB bandwidth on this bus; {}", b.cause)),
         None => Ok(()),
     }
+}
+
+/// Whether a backend's error text is the driver refusing a stream for lack of bus bandwidth
+/// (ENOSPC from `VIDIOC_STREAMON` or an alternate-setting selection).
+fn is_bus_full(text: &str) -> bool {
+    text.contains("No space left on device") || text.contains("os error 28")
+}
+
+fn is_usb(device: &ProbedDevice, backend: BackendKind) -> bool {
+    device
+        .backends
+        .iter()
+        .find(|b| b.kind == backend)
+        .and_then(super::usb_bus_mbps)
+        .is_some()
+}
+
+/// A start failure as the caller sees it: on a USB camera the bus refusing the stream becomes
+/// [`CaptureError::NotEnoughBandwidth`], and the mode is kept out of the plans for a while
+/// (logged once when it is first refused). Other errors are returned as they are.
+pub(crate) fn start_failed(
+    device: &ProbedDevice,
+    backend: BackendKind,
+    mode: &ModeId,
+    err: CaptureError,
+) -> CaptureError {
+    let CaptureError::Backend(text) = &err else {
+        return err;
+    };
+    if !is_bus_full(text) || !is_usb(device, backend) {
+        return err;
+    }
+    let cause = format!(
+        "{mode:?} does not fit the bus now (the driver refused it: {text}); lower modes are \
+         tried, and this one again in {} s",
+        BUS_FULL_FOR.as_secs()
+    );
+    let now = Instant::now();
+    let mut full = BUS_FULL.lock();
+    full.retain(|b| b.until > now);
+    let fresh = !full
+        .iter()
+        .any(|b| b.backend == backend && b.mode == *mode && shares_key(&b.keys, device));
+    if fresh {
+        full.push(BusFull {
+            keys: device.identity.keys.clone(),
+            backend,
+            mode: mode.clone(),
+            until: now + BUS_FULL_FOR,
+            cause: cause.clone(),
+        });
+        crate::trace::warn!(camera = %device.identity.display, %cause, "not enough USB bandwidth on this bus");
+    }
+    CaptureError::NotEnoughBandwidth(cause)
+}
+
+/// Plan and start again while the bus refuses a mode or a mode delivers no frame: each such
+/// mode is left out, so the next plan is the next mode (lower modes of the same camera). Stops
+/// at the first mode that streams. When nothing fits, the bus error (if any) is returned, since
+/// bandwidth may free up.
+pub(crate) fn open_with_fallback<P, T>(
+    plan: impl Fn() -> Result<P, super::PlanError>,
+    start: impl Fn(&P) -> Result<T, CaptureError>,
+) -> Result<T, super::OpenError> {
+    let mut no_frames_retried = false;
+    let mut bus: Option<CaptureError> = None;
+    for _ in 0..MAX_FALLBACKS {
+        let planned = match plan() {
+            Ok(planned) => planned,
+            Err(err) => {
+                return Err(match bus {
+                    Some(bus) => super::OpenError::Capture(bus),
+                    None => super::OpenError::Plan(err),
+                });
+            }
+        };
+        match start(&planned) {
+            Ok(started) => return Ok(started),
+            Err(err @ CaptureError::NotEnoughBandwidth(_)) => bus = Some(err),
+            Err(CaptureError::NoFrames(_)) if !no_frames_retried => no_frames_retried = true,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Err(bus
+        .unwrap_or_else(|| CaptureError::NoFrames("no mode delivered frames".into()))
+        .into())
 }
 
 fn shares_key(keys: &[String], device: &ProbedDevice) -> bool {
@@ -99,7 +211,7 @@ pub(crate) fn confirm_first_frame(
                 return Ok(());
             }
             if !matches!(err, CaptureError::Disconnected(_)) {
-                return Err(err);
+                return Err(start_failed(device, backend, &mode.id, err));
             }
         }
         std::thread::sleep(Duration::from_millis(10));

@@ -59,6 +59,10 @@ pub enum CaptureError {
     /// another.
     #[error("camera delivered no frames: {0}")]
     NoFrames(String),
+    /// The bus has no bandwidth left for the stream of a USB camera (the driver refused it with
+    /// ENOSPC). Another mode may fit: the planner tries lower ones.
+    #[error("not enough USB bandwidth on this bus; {0}")]
+    NotEnoughBandwidth(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +112,7 @@ impl CaptureError {
             CaptureError::Backend(_) => "backend_error",
             CaptureError::Disconnected(_) => "disconnected",
             CaptureError::NoFrames(_) => "no_frames",
+            CaptureError::NotEnoughBandwidth(_) => "not_enough_bandwidth",
         }
     }
 
@@ -122,6 +127,7 @@ impl CaptureError {
                 | CaptureError::LibcameraTdnOutputUnavailable
                 | CaptureError::Backend(_)
                 | CaptureError::Disconnected(_)
+                | CaptureError::NotEnoughBandwidth(_)
         )
     }
 

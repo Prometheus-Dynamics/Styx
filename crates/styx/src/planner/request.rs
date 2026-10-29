@@ -431,21 +431,17 @@ impl FrameRequest {
     }
 
     /// Plan these frames from `camera` and start capturing. A mode that starts but delivers
-    /// no frame ([`CaptureError::NoFrames`]) is left out and the frames are planned again once.
+    /// no frame ([`CaptureError::NoFrames`]) is left out and the frames are planned again once;
+    /// a mode the USB bus refuses ([`CaptureError::NotEnoughBandwidth`]) is left out, and lower
+    /// modes are tried until one streams or none fits.
     pub fn open(&self, camera: &ProbedDevice) -> Result<Frames, OpenError> {
-        match self.plan(camera)?.start() {
-            Err(CaptureError::NoFrames(_)) => Ok(self.plan(camera)?.start()?),
-            started => Ok(started?),
-        }
+        super::stalled::open_with_fallback(|| self.plan(camera), |plan| plan.start())
     }
 
-    /// Plan these frames from the best of `cameras` and start capturing (planned again once,
-    /// as [`FrameRequest::open`]).
+    /// Plan these frames from the best of `cameras` and start capturing (with the fallbacks of
+    /// [`FrameRequest::open`]).
     pub fn open_best(&self, cameras: &[ProbedDevice]) -> Result<Frames, OpenError> {
-        match self.plan_best(cameras)?.start() {
-            Err(CaptureError::NoFrames(_)) => Ok(self.plan_best(cameras)?.start()?),
-            started => Ok(started?),
-        }
+        super::stalled::open_with_fallback(|| self.plan_best(cameras), |plan| plan.start())
     }
 }
 

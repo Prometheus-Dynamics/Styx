@@ -406,7 +406,10 @@ impl SharedFramePlan {
         // frames and the one it is working on (frames that are views of the capture hold its
         // buffers), so no consumer starves the camera of buffers.
         let held = group_depths.iter().sum::<usize>() + depths.iter().sum::<usize>() + depths.len();
-        let session = SharedSession::new(self.capture_request(held).start()?);
+        let started = self.capture_request(held).start();
+        let session = SharedSession::new(started.map_err(|err| {
+            super::stalled::start_failed(&self.device, self.backend, &self.mode.id, err)
+        })?);
         self.confirm_first_frame(&session)?;
         let mut frames: Vec<Option<super::Frames>> =
             (0..self.consumers.len()).map(|_| None).collect();
@@ -437,7 +440,10 @@ impl SharedFramePlan {
             .unwrap_or(1);
         let per_consumer = depth + held;
         let request = self.capture_request(consumers.max(1) * per_consumer);
-        let session = SharedSession::new(request.start()?);
+        let started = request.start();
+        let session = SharedSession::new(started.map_err(|err| {
+            super::stalled::start_failed(&self.device, self.backend, &self.mode.id, err)
+        })?);
         self.confirm_first_frame(&session)?;
         Ok(session)
     }

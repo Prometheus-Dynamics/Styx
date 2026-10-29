@@ -67,7 +67,9 @@ impl FramePlan {
         // not memfd/dma-buf exports for other processes.
         #[cfg(target_os = "linux")]
         let builder = builder.shared_decode_output(false);
-        let pipeline = builder.start()?;
+        let pipeline = builder.start().map_err(|err| {
+            super::stalled::start_failed(&self.device, self.backend, &self.mode.id, err)
+        })?;
         super::stalled::confirm_first_frame(
             pipeline.capture(),
             &self.device,
