@@ -156,3 +156,29 @@ fn status_is_answered_during_a_fallback() {
         .expect("join thread")
         .expect("the fallback streams");
 }
+
+/// A USB camera's mode the supervisor found stalled after its start: a client that joins again
+/// gets the next lighter mode, not the same one.
+#[test]
+fn a_rejoin_after_a_stall_found_later_plans_the_next_mode() {
+    let name = "join-rejoin-usb2";
+    let camera = Camera::new(usb2_webcam(name));
+    let text = join(&camera, Frames::nv12(), ClientPriority::Normal).expect("joins");
+    assert!(text.contains("MJPG 2560x1440"), "{text}");
+    let mode = camera.device.backends[0]
+        .descriptor
+        .modes
+        .iter()
+        .find(|m| m.format.resolution.width.get() == 2560 && m.format.code == FourCc::MJPG)
+        .expect("the 2560 mode")
+        .id
+        .clone();
+    crate::planner::stalled::record_stall(
+        &camera.device,
+        BackendKind::V4l2,
+        &mode,
+        "no frames for 2002 ms",
+    );
+    let text = join(&camera, Frames::nv12(), ClientPriority::Normal).expect("joins again");
+    assert!(text.contains("MJPG 1920x1080"), "{text}");
+}

@@ -77,7 +77,8 @@ fn a_mode_that_delivered_no_frames_is_left_out() {
     assert_eq!(plan.mode.format.code, FourCc::YUYV);
     let backend = &dev.backends[0];
     assert!(stalled::may_starve(backend, &plan.mode));
-    assert!(!stalled::may_starve(backend, &backend.descriptor.modes[3]));
+    // Compressed USB modes wait for their first frame too.
+    assert!(stalled::may_starve(backend, &backend.descriptor.modes[3]));
 
     stalled::mark(
         &dev,
@@ -433,4 +434,20 @@ fn a_refused_stream_excludes_heavier_uncompressed_modes() {
         heavier.is_some_and(|r| r.contains("not enough USB bandwidth")),
         "{heavier:?}"
     );
+}
+
+/// Every mode of a USB camera, compressed included, waits for its first frame when started (a
+/// compressed one can stall too); other cameras do not.
+#[test]
+fn compressed_usb_modes_are_checked_for_frames_when_started() {
+    let usb = camera_with(
+        "starve-check",
+        "480",
+        vec![mode(FourCc::MJPG, 640, 480, 30)],
+    );
+    let mjpg = &usb.backends[0].descriptor.modes[0];
+    assert!(stalled::may_starve(&usb.backends[0], mjpg));
+    let mut other = usb.clone();
+    other.backends[0].properties.clear();
+    assert!(!stalled::may_starve(&other.backends[0], mjpg));
 }

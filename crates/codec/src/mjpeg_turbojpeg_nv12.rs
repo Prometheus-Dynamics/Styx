@@ -1,15 +1,19 @@
 //! MJPEG → NV12 (4:2:0 semi-planar) decoding with libturbojpeg's planar YUV output.
 //!
-//! A camera's MJPEG frames are 4:2:0 JPEGs: libjpeg-turbo writes their luma and chroma planes
-//! as they are (no colour conversion), and the chroma planes are interleaved into NV12. Without
-//! this decoder an NV12 consumer of a USB camera gets only the uncompressed modes (YUYV at full
-//! size, 221 MB/s for a 2560x1440 mode on a 480 Mbit/s bus), where the camera's MJPEG modes would
-//! stream.
+//! A camera's MJPEG frames are 4:2:2 (many webcams: C270, C922) or 4:2:0 JPEGs: libjpeg-turbo
+//! writes their luma and chroma planes as they are (no colour conversion), and the chroma is
+//! averaged into NV12's 4:2:0 layout. Without this decoder an NV12 consumer of a USB camera gets
+//! only the uncompressed modes (YUYV at full size, 221 MB/s for a 2560x1440 mode on a 480 Mbit/s
+//! bus), where the camera's MJPEG modes would stream.
 
 use std::cell::RefCell;
 
 use smallvec::smallvec;
 use styx_core::prelude::*;
+
+use std::ffi::c_int;
+
+use turbojpeg::raw;
 
 use crate::turbojpeg_raw::TjDecompressor;
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind, DEFAULT_CODEC_POOL_SPARE};
@@ -94,12 +98,17 @@ impl TurbojpegNv12Decoder {
                 "NV12 from MJPEG needs even dimensions".into(),
             ));
         }
-        if !tj.is_420() {
+        // Chroma as the JPEG holds it: 4:2:0 (`cw` x `ch` = w/2 x h/2) or 4:2:2 (w/2 x h).
+        let subsamp = tj.subsamp();
+        let (cw, ch) = if subsamp == raw::TJSAMP_TJSAMP_420 as c_int {
+            (w / 2, h / 2)
+        } else if subsamp == raw::TJSAMP_TJSAMP_422 as c_int {
+            (w / 2, h)
+        } else {
             return Err(CodecError::Codec(
-                "NV12 from MJPEG needs 4:2:0 subsampling".into(),
+                "NV12 from MJPEG needs 4:2:0 or 4:2:2 subsampling".into(),
             ));
-        }
-        let (cw, ch) = (w / 2, h / 2);
+        };
         CHROMA.with(|scratch| {
             let mut scratch = scratch.borrow_mut();
             let (cb, cr) = &mut *scratch;
@@ -110,17 +119,27 @@ impl TurbojpegNv12Decoder {
                 [&mut y[..w * h], &mut cb[..], &mut cr[..]],
                 [w, cw, cw],
             )?;
-            for r in 0..ch {
+            for r in 0..h / 2 {
+                // The chroma row of NV12 row `r`: one source row (4:2:0), or the mean of two
+                // (4:2:2 rows 2r and 2r+1).
+                let rows = if subsamp == raw::TJSAMP_TJSAMP_420 as c_int {
+                    [r, r]
+                } else {
+                    [2 * r, 2 * r + 1]
+                };
                 let out = &mut uv[r * w..][..w];
-                for ((pair, u), v) in out
-                    .as_chunks_mut::<2>()
-                    .0
-                    .iter_mut()
-                    .zip(&cb[r * cw..][..cw])
-                    .zip(&cr[r * cw..][..cw])
-                {
-                    pair[0] = *u;
-                    pair[1] = *v;
+                for (i, pair) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                    let at = |row: usize, plane: &[u8]| u16::from(plane[row * cw + i]);
+                    let (u, v) = (&cb[..], &cr[..]);
+                    let mean = |plane: &[u8]| {
+                        if rows[0] == rows[1] {
+                            at(rows[0], plane)
+                        } else {
+                            (at(rows[0], plane) + at(rows[1], plane)).div_ceil(2)
+                        }
+                    };
+                    pair[0] = mean(u) as u8;
+                    pair[1] = mean(v) as u8;
                 }
             }
             Ok(())
@@ -230,12 +249,23 @@ mod tests {
         }
     }
 
-    /// YUYV encodes 4:2:2: NV12 cannot carry those chroma rows, so the decoder refuses them.
+    /// YUYV encodes 4:2:2 (as webcams' MJPEG does): its chroma rows average into NV12's.
     #[test]
-    fn mjpeg_422_is_refused_as_nv12() {
+    fn mjpeg_422_decodes_to_nv12_planes() {
         let jpeg = TurbojpegEncoder::new(FourCc::YUYV, 95)
             .process(uniform(FourCc::YUYV, 64, 48))
             .expect("encode yuyv as mjpeg");
-        assert!(TurbojpegNv12Decoder::new().process(jpeg).is_err());
+        let nv12 = TurbojpegNv12Decoder::new()
+            .process(jpeg)
+            .expect("decode 4:2:2 mjpeg to nv12");
+        let planes = nv12.planes();
+        let (y, uv) = (planes[0].data(), planes[1].data());
+        assert!(y[..64 * 48].iter().all(|&v| v.abs_diff(81) <= 4), "luma");
+        for pair in uv[..64 * 24].as_chunks::<2>().0 {
+            assert!(
+                pair[0].abs_diff(90) <= 6 && pair[1].abs_diff(240) <= 6,
+                "chroma {pair:?}"
+            );
+        }
     }
 }

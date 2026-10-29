@@ -27,6 +27,13 @@ mod frame_client_async;
 mod frame_delivery;
 #[cfg(feature = "facade")]
 mod lazy_decode;
+#[cfg(all(
+    target_os = "linux",
+    feature = "preview",
+    feature = "codec-turbojpeg",
+    feature = "replay-mcap"
+))]
+mod mjpeg_preview;
 #[cfg(target_os = "linux")]
 mod multicam;
 #[cfg(all(target_os = "linux", feature = "preview"))]

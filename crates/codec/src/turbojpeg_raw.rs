@@ -122,9 +122,9 @@ impl TjDecompressor {
         })
     }
 
-    /// Whether the header read last is 4:2:0 subsampled (the layout NV12 carries).
-    pub(crate) fn is_420(&self) -> bool {
-        self.get(raw::TJPARAM_TJPARAM_SUBSAMP) == raw::TJSAMP_TJSAMP_420 as c_int
+    /// The chroma subsampling of the header read last (`TJSAMP_*`).
+    pub(crate) fn subsamp(&self) -> c_int {
+        self.get(raw::TJPARAM_TJPARAM_SUBSAMP)
     }
 
     /// Decompress into planar YUV 4:2:0 without a colour conversion: `y` (`strides[0]` bytes per

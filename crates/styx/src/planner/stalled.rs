@@ -51,10 +51,11 @@ struct BusFull {
 
 static BUS_FULL: Mutex<Vec<BusFull>> = Mutex::new(Vec::new());
 
-/// Whether starting `mode` on `backend` waits for its first frame: uncompressed modes of USB
-/// cameras.
-pub(crate) fn may_starve(backend: &ProbedBackend, mode: &Mode) -> bool {
-    !mode.format.code.is_compressed() && super::usb_bus_mbps(backend).is_some()
+/// Whether starting `mode` on `backend` waits for its first frame: every mode of a USB camera.
+/// A compressed mode can stall too (a bus that delivers nothing, a camera that stops sending);
+/// the wait ends at its first frame, so a camera that streams starts without delay.
+pub(crate) fn may_starve(backend: &ProbedBackend, _mode: &Mode) -> bool {
+    super::usb_bus_mbps(backend).is_some()
 }
 
 /// `Err(reason)` when `mode` started on `device` before and delivered no frame, or the bus
@@ -90,7 +91,7 @@ pub(crate) fn check(
 
 /// Whether a backend's error text is the driver refusing a stream for lack of bus bandwidth
 /// (ENOSPC from `VIDIOC_STREAMON` or an alternate-setting selection).
-fn is_bus_full(text: &str) -> bool {
+pub(crate) fn is_bus_full(text: &str) -> bool {
     text.contains("No space left on device") || text.contains("os error 28")
 }
 
@@ -179,6 +180,17 @@ pub(crate) fn open_with_fallback<P, T>(
 
 fn shares_key(keys: &[String], device: &ProbedDevice) -> bool {
     device.identity.keys.iter().any(|k| keys.contains(k))
+}
+
+/// A USB camera's mode that started and then delivered no frames (found by the capture
+/// supervisor, after the start): left out of the plans for this camera from now on.
+pub(crate) fn record_stall(
+    device: &ProbedDevice,
+    backend: BackendKind,
+    mode: &ModeId,
+    cause: &str,
+) {
+    record(device, backend, mode, cause);
 }
 
 fn record(device: &ProbedDevice, backend: BackendKind, mode: &ModeId, cause: &str) {
