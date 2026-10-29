@@ -68,7 +68,7 @@ impl FramePlan {
         #[cfg(target_os = "linux")]
         let builder = builder.shared_decode_output(false);
         let pipeline = builder.start().map_err(|err| {
-            super::stalled::start_failed(&self.device, self.backend, &self.mode.id, err)
+            super::stalled::start_failed(&self.device, self.backend, &self.mode, err)
         })?;
         super::stalled::confirm_first_frame(
             pipeline.capture(),

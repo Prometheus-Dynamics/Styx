@@ -121,6 +121,36 @@ impl TjDecompressor {
             )
         })
     }
+
+    /// Whether the header read last is 4:2:0 subsampled (the layout NV12 carries).
+    pub(crate) fn is_420(&self) -> bool {
+        self.get(raw::TJPARAM_TJPARAM_SUBSAMP) == raw::TJSAMP_TJSAMP_420 as c_int
+    }
+
+    /// Decompress into planar YUV 4:2:0 without a colour conversion: `y` (`strides[0]` bytes per
+    /// row, `height` rows), `cb` and `cr` (`strides[1]` and `[2]`, ⌈height/2⌉ rows). The planes
+    /// must hold those rows for the header's dimensions; the caller checks them against the frame.
+    pub(crate) fn decompress_to_yuv_planes(
+        &self,
+        jpeg: &[u8],
+        planes: [&mut [u8]; 3],
+        strides: [usize; 3],
+    ) -> Result<(), CodecError> {
+        let [y, cb, cr] = planes;
+        let mut ptrs: [*mut u8; 3] = [y.as_mut_ptr(), cb.as_mut_ptr(), cr.as_mut_ptr()];
+        let mut strides = strides.map(|s| s as c_int);
+        // SAFETY: each plane is live for the call and holds `strides[i]` bytes for each of its
+        // rows (the caller sizes them from the header), and `strides` has one entry per plane.
+        self.check(unsafe {
+            raw::tj3DecompressToYUVPlanes8(
+                self.0,
+                jpeg.as_ptr(),
+                jpeg.len() as _,
+                ptrs.as_mut_ptr(),
+                strides.as_mut_ptr(),
+            )
+        })
+    }
 }
 
 impl Drop for TjDecompressor {

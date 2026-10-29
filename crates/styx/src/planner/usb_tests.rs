@@ -117,7 +117,7 @@ fn start_on_a_full_bus(
         return Err(stalled::start_failed(
             dev,
             BackendKind::V4l2,
-            &plan.mode.id,
+            &plan.mode,
             CaptureError::Backend("uvc: No space left on device (os error 28)".into()),
         ));
     }
@@ -166,7 +166,7 @@ fn when_no_mode_fits_the_bus_error_says_so() {
             Err::<(), _>(stalled::start_failed(
                 &dev,
                 BackendKind::V4l2,
-                &plan.mode.id,
+                &plan.mode,
                 CaptureError::Backend("uvc: No space left on device (os error 28)".into()),
             ))
         },
@@ -325,7 +325,7 @@ fn enospc_fallback_tries_mjpg_before_smaller_yuyv() {
                 return Err(stalled::start_failed(
                     &dev,
                     BackendKind::V4l2,
-                    &plan.mode.id,
+                    &plan.mode,
                     CaptureError::Backend("uvc: No space left on device (os error 28)".into()),
                 ));
             }
@@ -382,4 +382,55 @@ fn stalls_keep_replanning_until_a_mode_delivers() {
     .expect("the third mode delivers");
     assert_eq!(width, 320);
     assert_eq!(attempts.get(), 3);
+}
+
+/// A bus that refuses an uncompressed mode refuses every uncompressed mode carrying at least as
+/// many bytes per second, without a start for each: here YUYV 1920x1080 (124 MB/s) after the
+/// refused YUYV 1280x720 (28 MB/s). A lighter mode (YUYV 640x480, 18 MB/s) is still tried.
+#[test]
+fn a_refused_stream_excludes_heavier_uncompressed_modes() {
+    use crate::capture_api::CaptureError;
+    let mut dev = camera_with(
+        "rate-class",
+        "480",
+        vec![
+            mode(FourCc::YUYV, 1920, 1080, 30),
+            mode(FourCc::YUYV, 1280, 720, 30),
+            mode(FourCc::YUYV, 640, 480, 30),
+            mode(FourCc::MJPG, 320, 240, 30),
+        ],
+    );
+    dev.identity.keys = vec!["test:rate-class".into()];
+    let req = Frames::any().fps(30);
+    let refused = dev.backends[0]
+        .descriptor
+        .modes
+        .iter()
+        .find(|m| m.format.code == FourCc::YUYV && m.format.resolution.width.get() == 1280)
+        .cloned()
+        .expect("the 1280x720 mode");
+    let _ = stalled::start_failed(
+        &dev,
+        BackendKind::V4l2,
+        &refused,
+        CaptureError::Backend("uvc: No space left on device (os error 28)".into()),
+    );
+    let plan = plan_frames_with(&dev, &req, &registry()).unwrap();
+    assert_eq!(
+        (
+            plan.mode.format.code,
+            plan.mode.format.resolution.width.get()
+        ),
+        (FourCc::YUYV, 640),
+        "{plan}"
+    );
+    let heavier = plan
+        .rejected
+        .iter()
+        .find(|r| r.candidate == "v4l2 YUYV 1920x1080")
+        .map(|r| r.reason.as_str());
+    assert!(
+        heavier.is_some_and(|r| r.contains("not enough USB bandwidth")),
+        "{heavier:?}"
+    );
 }

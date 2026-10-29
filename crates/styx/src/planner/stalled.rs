@@ -42,6 +42,9 @@ struct BusFull {
     keys: Vec<String>,
     backend: BackendKind,
     mode: ModeId,
+    /// The bytes per second the refused mode carries, when it is uncompressed: every uncompressed
+    /// mode at least as heavy is refused too, without another start (see [`check`]).
+    rate: Option<f64>,
     until: Instant,
     cause: String,
 }
@@ -55,24 +58,30 @@ pub(crate) fn may_starve(backend: &ProbedBackend, mode: &Mode) -> bool {
 }
 
 /// `Err(reason)` when `mode` started on `device` before and delivered no frame, or the bus
-/// refused it lately.
+/// refused it lately: the same mode, or an uncompressed mode carrying at least as many bytes per
+/// second as one the bus refused. Such a mode would be refused as well, and each refused start
+/// costs the driver a burst of messages, so it is not tried.
 pub(crate) fn check(
     device: &ProbedDevice,
     backend: BackendKind,
-    mode: &ModeId,
+    mode: &Mode,
 ) -> Result<(), String> {
     let stalled = STALLED.lock();
     if let Some(s) = stalled
         .iter()
-        .find(|s| s.backend == backend && s.mode == *mode && shares_key(&s.keys, device))
+        .find(|s| s.backend == backend && s.mode == mode.id && shares_key(&s.keys, device))
     {
         return Err(format!("delivered no frames when started: {}", s.cause));
     }
     drop(stalled);
     let now = Instant::now();
+    let rate = super::uncompressed_bytes_per_second(mode);
     let full = BUS_FULL.lock();
     match full.iter().find(|b| {
-        b.until > now && b.backend == backend && b.mode == *mode && shares_key(&b.keys, device)
+        b.until > now
+            && b.backend == backend
+            && shares_key(&b.keys, device)
+            && (b.mode == mode.id || matches!((b.rate, rate), (Some(r), Some(m)) if m >= r))
     }) {
         Some(b) => Err(format!("not enough USB bandwidth on this bus; {}", b.cause)),
         None => Ok(()),
@@ -100,7 +109,7 @@ fn is_usb(device: &ProbedDevice, backend: BackendKind) -> bool {
 pub(crate) fn start_failed(
     device: &ProbedDevice,
     backend: BackendKind,
-    mode: &ModeId,
+    mode: &Mode,
     err: CaptureError,
 ) -> CaptureError {
     let CaptureError::Backend(text) = &err else {
@@ -110,8 +119,9 @@ pub(crate) fn start_failed(
         return err;
     }
     let cause = format!(
-        "{mode:?} does not fit the bus now (the driver refused it: {text}); lower modes are \
+        "{:?} does not fit the bus now (the driver refused it: {text}); lower modes are \
          tried, and this one again in {} s",
+        mode.id,
         BUS_FULL_FOR.as_secs()
     );
     let now = Instant::now();
@@ -119,12 +129,13 @@ pub(crate) fn start_failed(
     full.retain(|b| b.until > now);
     let fresh = !full
         .iter()
-        .any(|b| b.backend == backend && b.mode == *mode && shares_key(&b.keys, device));
+        .any(|b| b.backend == backend && b.mode == mode.id && shares_key(&b.keys, device));
     if fresh {
         full.push(BusFull {
             keys: device.identity.keys.clone(),
             backend,
-            mode: mode.clone(),
+            mode: mode.id.clone(),
+            rate: super::uncompressed_bytes_per_second(mode),
             until: now + BUS_FULL_FOR,
             cause: cause.clone(),
         });
@@ -215,7 +226,7 @@ pub(crate) fn confirm_first_frame(
                 return Ok(());
             }
             if !matches!(err, CaptureError::Disconnected(_)) {
-                return Err(start_failed(device, backend, &mode.id, err));
+                return Err(start_failed(device, backend, mode, err));
             }
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -235,7 +246,134 @@ pub(crate) fn confirm_first_frame(
     Err(CaptureError::NoFrames(cause))
 }
 
+/// What a start of `mode` on `device` does instead of the driver, in tests (see
+/// [`script`]); `None` runs the real start. Production always runs it.
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn start_hook(
+    _device: &ProbedDevice,
+    _backend: BackendKind,
+    _mode: &Mode,
+) -> Option<Result<CaptureHandle, CaptureError>> {
+    None
+}
+
+/// The start seam, for tests: a USB camera's start is refused, stalled, delayed, or streams from
+/// a virtual device (the driver is not there), as a script says. Every start of one is logged.
+#[cfg(test)]
+pub(crate) fn start_hook(
+    device: &ProbedDevice,
+    backend: BackendKind,
+    mode: &Mode,
+) -> Option<Result<CaptureHandle, CaptureError>> {
+    use crate::capture_api::CaptureRequest;
+    use crate::capture_api::make_virtual_device;
+    if !is_usb(device, backend) {
+        return None;
+    }
+    let camera = device.identity.display.clone();
+    let (code, width) = (mode.format.code, mode.format.resolution.width.get());
+    script::STARTS.lock().push((camera.clone(), code, width));
+    let delay = script::DELAY
+        .lock()
+        .iter()
+        .find(|(name, _)| *name == camera)
+        .map(|(_, d)| *d);
+    if let Some(delay) = delay {
+        std::thread::sleep(delay);
+    }
+    let outcome = script::RULES
+        .lock()
+        .iter()
+        .find(|r| r.camera == camera && r.code == code && r.width == width)
+        .map(|r| r.outcome);
+    match outcome {
+        Some(script::Outcome::Refuse) => Some(Err(CaptureError::Backend(
+            "uvc: No space left on device (os error 28)".into(),
+        ))),
+        Some(script::Outcome::Stall) => {
+            let cause = format!("{code} {width}: no frame (scripted)");
+            record(device, backend, &mode.id, &cause);
+            Some(Err(CaptureError::NoFrames(cause)))
+        }
+        None => {
+            let virtual_device = make_virtual_device(&camera, [mode.clone()]);
+            Some(
+                CaptureRequest::new(&virtual_device)
+                    .mode(mode.id.clone())
+                    .start(),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn mark(device: &ProbedDevice, backend: BackendKind, mode: &ModeId, cause: &str) {
     record(device, backend, mode, cause);
+}
+
+/// The scripted starts of [`start_hook`] (tests only). Cameras are told apart by display name,
+/// so tests running in parallel each use their own.
+#[cfg(test)]
+#[cfg_attr(
+    not(all(feature = "codec-turbojpeg", feature = "raw-decoders")),
+    allow(dead_code)
+)]
+pub(crate) mod script {
+    use parking_lot::Mutex;
+    use std::time::Duration;
+
+    use styx_core::prelude::FourCc;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) enum Outcome {
+        /// The bus refuses the stream (ENOSPC).
+        Refuse,
+        /// The stream starts and delivers no frame.
+        Stall,
+    }
+
+    pub(crate) struct Rule {
+        pub(crate) camera: String,
+        pub(crate) code: FourCc,
+        pub(crate) width: u32,
+        pub(crate) outcome: Outcome,
+    }
+
+    pub(crate) static RULES: Mutex<Vec<Rule>> = Mutex::new(Vec::new());
+    /// Every start: camera, format and width, in order.
+    pub(crate) static STARTS: Mutex<Vec<(String, FourCc, u32)>> = Mutex::new(Vec::new());
+    /// A delay before each start of the camera.
+    pub(crate) static DELAY: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
+
+    /// The starts of `camera` so far, as `(format, width)`.
+    pub(crate) fn starts(camera: &str) -> Vec<(FourCc, u32)> {
+        STARTS
+            .lock()
+            .iter()
+            .filter(|(name, _, _)| name == camera)
+            .map(|(_, code, width)| (*code, *width))
+            .collect()
+    }
+
+    pub(crate) fn refuse(camera: &str, code: FourCc, width: u32) {
+        rule(camera, code, width, Outcome::Refuse);
+    }
+
+    pub(crate) fn stall(camera: &str, code: FourCc, width: u32) {
+        rule(camera, code, width, Outcome::Stall);
+    }
+
+    fn rule(camera: &str, code: FourCc, width: u32, outcome: Outcome) {
+        RULES.lock().push(Rule {
+            camera: camera.to_string(),
+            code,
+            width,
+            outcome,
+        });
+    }
+
+    pub(crate) fn delay(camera: &str, by: Duration) {
+        DELAY.lock().push((camera.to_string(), by));
+    }
 }

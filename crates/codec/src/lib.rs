@@ -368,6 +368,8 @@ pub mod mjpeg;
 pub mod mjpeg_turbojpeg;
 #[cfg(feature = "codec-turbojpeg")]
 pub mod mjpeg_turbojpeg_luma;
+#[cfg(feature = "codec-turbojpeg")]
+pub mod mjpeg_turbojpeg_nv12;
 #[cfg(feature = "codec-zune")]
 pub mod mjpeg_zune;
 #[cfg(any(

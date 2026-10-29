@@ -240,7 +240,7 @@ pub(crate) fn candidates<'a>(
         }
         for mode in &backend.descriptor.modes {
             let label = describe(backend, mode);
-            if let Err(reason) = super::stalled::check(device, backend.kind, &mode.id) {
+            if let Err(reason) = super::stalled::check(device, backend.kind, mode) {
                 rejected.push(PlanRejection {
                     candidate: label,
                     reason,

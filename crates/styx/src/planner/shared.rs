@@ -124,7 +124,7 @@ fn plan_shared(
         for mode in &backend.descriptor.modes {
             let demoted = super::shared_bus_uncompressed(backend, mode, sizeless, compressed_area);
             if let Err(reason) = rate::check(mode, fps)
-                .and_then(|()| super::stalled::check(device, backend.kind, &mode.id))
+                .and_then(|()| super::stalled::check(device, backend.kind, mode))
             {
                 rejected.push(PlanRejection {
                     candidate: describe(backend, mode),
@@ -424,9 +424,12 @@ impl SharedFramePlan {
         // frames and the one it is working on (frames that are views of the capture hold its
         // buffers), so no consumer starves the camera of buffers.
         let held = group_depths.iter().sum::<usize>() + depths.iter().sum::<usize>() + depths.len();
-        let started = self.capture_request(held).start();
+        let started = match super::stalled::start_hook(&self.device, self.backend, &self.mode) {
+            Some(started) => started,
+            None => self.capture_request(held).start(),
+        };
         let session = SharedSession::new(started.map_err(|err| {
-            super::stalled::start_failed(&self.device, self.backend, &self.mode.id, err)
+            super::stalled::start_failed(&self.device, self.backend, &self.mode, err)
         })?);
         self.confirm_first_frame(&session)?;
         let mut frames: Vec<Option<super::Frames>> =
@@ -458,9 +461,12 @@ impl SharedFramePlan {
             .unwrap_or(1);
         let per_consumer = depth + held;
         let request = self.capture_request(consumers.max(1) * per_consumer);
-        let started = request.start();
+        let started = match super::stalled::start_hook(&self.device, self.backend, &self.mode) {
+            Some(started) => started,
+            None => request.start(),
+        };
         let session = SharedSession::new(started.map_err(|err| {
-            super::stalled::start_failed(&self.device, self.backend, &self.mode.id, err)
+            super::stalled::start_failed(&self.device, self.backend, &self.mode, err)
         })?);
         self.confirm_first_frame(&session)?;
         Ok(session)

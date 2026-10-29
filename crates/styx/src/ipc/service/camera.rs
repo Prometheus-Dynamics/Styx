@@ -3,6 +3,9 @@
 mod controls;
 mod flips;
 mod priority;
+// The MJPG and YUYV routes to NV12 these tests plan need the decoders of the production build.
+#[cfg(all(test, feature = "codec-turbojpeg", feature = "raw-decoders"))]
+mod usb_join_tests;
 
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
@@ -228,20 +231,21 @@ impl Camera {
         let Some(Some(index)) = planned.consumers.last().copied() else {
             return Err(LOW_REFUSED.into());
         };
-        let new = &planned.plan.consumers[index];
-        let text = new.to_string();
-        let delivered = new.delivered();
         let fits = running.is_some_and(|(setup, capacity)| {
             setup == planned.plan.setup_key() && capacity >= planned.plan.consumers.len()
         });
-        let frames = if fits {
+        let new_id = state.next_id;
+        let (frames, text, delivered) = if fits {
+            let new = &planned.plan.consumers[index];
+            let text = new.to_string();
+            let delivered = new.delivered();
             let owners = owners(state, &planned.consumers, state.next_id);
             let running = state.running.as_mut().expect("checked above");
             let frames = running.session.attach(new, true);
             running.plan = planned.plan;
             running.requests = planned.requests;
             running.owners = owners;
-            frames
+            (frames, text, delivered)
         } else {
             // The bus refused a start recently: refuse without trying again until the wait ends.
             if let Some((at, _)) = state.retry {
@@ -255,7 +259,7 @@ impl Camera {
                 }
             }
             let restarting = state.running.is_some();
-            let mut tried = (planned.plan.backend, planned.plan.mode.id.clone());
+            let mut tried = (planned.plan.backend, planned.plan.mode.clone());
             let mut started = restart(state, planned, config);
             // A mode the bus refused, or that delivered no frame, is left out now: plan again
             // with the next lower one. When nothing is left, the first error stands.
@@ -268,7 +272,7 @@ impl Camera {
                 let Ok(next) = self.plan_clients(&all, fps, None, config) else {
                     break;
                 };
-                tried = (next.plan.backend, next.plan.mode.id.clone());
+                tried = (next.plan.backend, next.plan.mode.clone());
                 started = restart(state, next, config);
             }
             match started {
@@ -278,7 +282,17 @@ impl Camera {
                     }
                     state.retry = None;
                     *counters.last_error.lock() = None;
-                    frames.expect("a consumer for the new client")
+                    let frames = frames.expect("a consumer for the new client");
+                    // The plan the new client gets is the one that started: after a fallback,
+                    // not the first one tried.
+                    let running = state.running.as_ref().expect("the capture just started");
+                    let consumer = running
+                        .owners
+                        .iter()
+                        .position(|&id| id == new_id)
+                        .expect("the new client's consumer");
+                    let new = &running.plan.consumers[consumer];
+                    (frames, new.to_string(), new.delivered())
                 }
                 Err(err) => {
                     let bus = err.contains("not enough USB bandwidth");

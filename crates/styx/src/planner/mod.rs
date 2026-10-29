@@ -518,13 +518,8 @@ fn rank_key(
 /// no frames behind a shared hub where its MJPG at 1280x960 ran.
 pub(crate) fn usb_overloaded(candidate: &routes::Candidate<'_>) -> bool {
     let code = candidate.mode.format.code;
-    let bytes_per_pixel = match code {
-        _ if code.is_compressed() => return false,
-        FourCc::YUYV | FourCc::UYVY | FourCc::YVYU | FourCc::VYUY => 2.0,
-        FourCc::NV12 | FourCc::YU12 => 1.5,
-        FourCc::GREY | FourCc::R8 => 1.0,
-        FourCc::RG24 | FourCc::BG24 => 3.0,
-        _ => 2.0,
+    let Some(bytes_per_pixel) = uncompressed_bytes_per_pixel(code) else {
+        return false;
     };
     let Some(mbps) = usb_bus_mbps(candidate.backend) else {
         return false;
@@ -539,6 +534,34 @@ pub(crate) fn usb_overloaded(candidate: &routes::Candidate<'_>) -> bool {
     let fps = f64::from(candidate.fps.unwrap_or(DEFAULT_FPS as f32));
     let rate = f64::from(res.width.get()) * f64::from(res.height.get()) * bytes_per_pixel * fps;
     rate > budget
+}
+
+/// Bytes per pixel of an uncompressed format on the bus (`None` for compressed ones).
+pub(crate) fn uncompressed_bytes_per_pixel(code: FourCc) -> Option<f64> {
+    Some(match code {
+        _ if code.is_compressed() => return None,
+        FourCc::YUYV | FourCc::UYVY | FourCc::YVYU | FourCc::VYUY => 2.0,
+        FourCc::NV12 | FourCc::YU12 => 1.5,
+        FourCc::GREY | FourCc::R8 => 1.0,
+        FourCc::RG24 | FourCc::BG24 => 3.0,
+        _ => 2.0,
+    })
+}
+
+/// The bytes per second an uncompressed mode carries at its highest rate (`None` for a
+/// compressed one, whose size depends on the scene).
+pub(crate) fn uncompressed_bytes_per_second(mode: &Mode) -> Option<f64> {
+    let bpp = uncompressed_bytes_per_pixel(mode.format.code)?;
+    let fps = mode
+        .intervals
+        .iter()
+        .map(|i| f64::from(i.fps()))
+        .fold(None, |best: Option<f64>, fps| {
+            Some(best.map_or(fps, |b| b.max(fps)))
+        })
+        .or_else(|| mode.interval_stepwise.map(|s| f64::from(s.min.fps())))?;
+    let res = mode.format.resolution;
+    Some(f64::from(res.width.get()) * f64::from(res.height.get()) * bpp * fps)
 }
 
 /// The speed of the USB bus `backend`'s camera is on, in Mbit/s; `None` when it is not a USB
