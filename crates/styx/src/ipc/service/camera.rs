@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use styx_core::prelude::*;
 
 use self::priority::Planned;
@@ -28,6 +28,10 @@ pub(super) type FramesSlot = Arc<Mutex<Option<Frames>>>;
 pub(super) struct Camera {
     pub(super) device: ProbedDevice,
     state: Mutex<State>,
+    /// Held by whatever starts or stops the capture (a join, a leave, a control that restarts
+    /// it), in this order before `state`. The state lock is released while the camera opens
+    /// ([`restart`]), so status queries and metrics are answered during a start or a fallback.
+    start_gate: Mutex<()>,
     /// The flips clients set (`hflip`, `vflip` controls): 0 for none set (the service's
     /// capture settings hold), else `FLIPS_SET | h | v << 1`. Read when planning.
     flips: AtomicU8,
@@ -122,6 +126,7 @@ impl Camera {
                 next_subscriber: 0,
                 retry: None,
             }),
+            start_gate: Mutex::new(()),
             flips: AtomicU8::new(0),
         }
     }
@@ -160,6 +165,7 @@ impl Camera {
         config: &ServiceConfig,
         counters: &Counters,
     ) -> Result<(ClientToken, String, Delivered, FramesSlot), String> {
+        let _gate = self.start_gate.lock();
         let mut state = self.state.lock();
         let low = priority == ClientPriority::Low;
         let (frames, text, delivered) =
@@ -186,7 +192,7 @@ impl Camera {
     /// running capture if that fits, else restart the capture for everyone.
     fn join_planned(
         &self,
-        state: &mut State,
+        state: &mut MutexGuard<'_, State>,
         request: &FrameRequest,
         low: bool,
         config: &ServiceConfig,
@@ -346,6 +352,7 @@ impl Camera {
     }
 
     pub(super) fn leave(&self, id: u64, config: &ServiceConfig, counters: &Counters) {
+        let _gate = self.start_gate.lock();
         let mut state = self.state.lock();
         if let Some(i) = state.clients.iter().position(|c| c.id == id) {
             let client = state.clients.remove(i);
@@ -370,7 +377,7 @@ impl Camera {
     /// the camera up differently (a mode a larger client moved it to does not outlast that
     /// client). Kept as it is when it already fits, or when the new plan does not start.
     /// Whether the capture restarted.
-    fn replan_remaining(&self, state: &mut State, config: &ServiceConfig) -> bool {
+    fn replan_remaining(&self, state: &mut MutexGuard<'_, State>, config: &ServiceConfig) -> bool {
         let Some(setup) = state.running.as_ref().map(|r| r.setup.clone()) else {
             return false;
         };
@@ -422,6 +429,7 @@ impl Camera {
 
     /// Disconnect every client and stop the capture.
     pub(super) fn shut_down(&self) {
+        let _gate = self.start_gate.lock();
         let mut state = self.state.lock();
         for client in state.clients.drain(..) {
             client.frames.lock().take();
@@ -444,7 +452,7 @@ fn new_token(id: u64) -> u64 {
 /// until the next restart), the controls clients set are applied again, and when the plan has
 /// an entry more than there are clients, its frames (for the new client) are returned.
 fn restart(
-    state: &mut State,
+    state: &mut MutexGuard<'_, State>,
     planned: Planned,
     config: &ServiceConfig,
 ) -> Result<Option<Frames>, String> {
@@ -460,14 +468,11 @@ fn restart(
     }
     state.running = None;
     let capacity = plan.consumers.len() + config.spare_clients;
-    let session = plan
-        .start_session(capacity, config.max_in_flight)
-        .map_err(|err| format!("the camera did not start: {err}"))?;
-    for (id, value) in &state.controls {
-        if let Err(err) = session.capture().set_control(*id, value.clone()) {
-            crate::trace::warn!(control = id.0, error = %err, "control not applied again");
-        }
-    }
+    // The camera opens (and may try several modes, each waiting for its first frame) with the
+    // state unlocked, so the service answers its status queries meanwhile. The start gate the
+    // caller holds keeps other starts out.
+    let controls = state.controls.clone();
+    let session = MutexGuard::unlocked(state, || open_session(&plan, capacity, config, &controls))?;
     for (client, consumer) in state.clients.iter().zip(&consumers) {
         match consumer {
             Some(i) => *client.frames.lock() = Some(session.attach(&plan.consumers[*i], true)),
@@ -491,6 +496,25 @@ fn restart(
         owners,
     });
     Ok(frames)
+}
+
+/// Open `plan`'s capture with buffers for `capacity` consumers, and apply the controls clients
+/// set to it.
+fn open_session(
+    plan: &SharedFramePlan,
+    capacity: usize,
+    config: &ServiceConfig,
+    controls: &[(ControlId, ControlValue)],
+) -> Result<SharedSession, String> {
+    let session = plan
+        .start_session(capacity, config.max_in_flight)
+        .map_err(|err| format!("the camera did not start: {err}"))?;
+    for (id, value) in controls {
+        if let Err(err) = session.capture().set_control(*id, value.clone()) {
+            crate::trace::warn!(control = id.0, error = %err, "control not applied again");
+        }
+    }
+    Ok(session)
 }
 
 fn describe(err: &PlanError) -> String {

@@ -4,7 +4,10 @@
 //! waits for its first frame; when none comes, the mode is remembered for the camera with the
 //! cause, the planner leaves it out from then on (its rejection says why), and
 //! [`FrameRequest::open`](super::FrameRequest::open) and the camera service plan again, which
-//! picks the next mode (MJPG of the same size).
+//! picks the next mode: on a USB 2 camera the compressed modes come first (MJPG, see
+//! `planner::shared_bus_uncompressed`), then the smaller uncompressed ones. The fallback keeps
+//! planning until a mode streams or none is left; a refused or stalled mode is never started
+//! again while the record lasts.
 
 use std::time::{Duration, Instant};
 
@@ -130,34 +133,35 @@ pub(crate) fn start_failed(
     CaptureError::NotEnoughBandwidth(cause)
 }
 
-/// Plan and start again while the bus refuses a mode or a mode delivers no frame: each such
-/// mode is left out, so the next plan is the next mode (lower modes of the same camera). Stops
-/// at the first mode that streams. When nothing fits, the bus error (if any) is returned, since
-/// bandwidth may free up.
+/// Plan and start again while a mode is refused or delivers no frame: each such mode is left
+/// out, so the next plan is the next mode. The planner ranks the camera's compressed modes first
+/// (see `planner::shared_bus_uncompressed`), so a fallback tries MJPG before smaller uncompressed
+/// modes. Stops at the first mode that streams; after [`MAX_FALLBACKS`] modes, or when no mode
+/// is left to plan, the last error is returned, since bandwidth may free up.
 pub(crate) fn open_with_fallback<P, T>(
     plan: impl Fn() -> Result<P, super::PlanError>,
     start: impl Fn(&P) -> Result<T, CaptureError>,
 ) -> Result<T, super::OpenError> {
-    let mut no_frames_retried = false;
-    let mut bus: Option<CaptureError> = None;
+    let mut last: Option<CaptureError> = None;
     for _ in 0..MAX_FALLBACKS {
         let planned = match plan() {
             Ok(planned) => planned,
             Err(err) => {
-                return Err(match bus {
-                    Some(bus) => super::OpenError::Capture(bus),
+                return Err(match last {
+                    Some(last) => super::OpenError::Capture(last),
                     None => super::OpenError::Plan(err),
                 });
             }
         };
         match start(&planned) {
             Ok(started) => return Ok(started),
-            Err(err @ CaptureError::NotEnoughBandwidth(_)) => bus = Some(err),
-            Err(CaptureError::NoFrames(_)) if !no_frames_retried => no_frames_retried = true,
+            Err(err @ (CaptureError::NotEnoughBandwidth(_) | CaptureError::NoFrames(_))) => {
+                last = Some(err);
+            }
             Err(err) => return Err(err.into()),
         }
     }
-    Err(bus
+    Err(last
         .unwrap_or_else(|| CaptureError::NoFrames("no mode delivered frames".into()))
         .into())
 }

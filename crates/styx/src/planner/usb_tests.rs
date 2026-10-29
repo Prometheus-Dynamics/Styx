@@ -181,3 +181,205 @@ fn when_no_mode_fits_the_bus_error_says_so() {
     // Each mode was started once (the plans left the refused ones out), not a loop.
     assert!(starts.get() <= 4, "{} starts", starts.get());
 }
+
+/// A USB camera offering `modes`, on a bus of `speed_mbps`, with its own identity (the stall and
+/// bus records are process-wide).
+fn camera_with(name: &str, speed_mbps: &str, modes: Vec<Mode>) -> ProbedDevice {
+    let mut dev = device(BackendKind::V4l2, BackendHandle::Virtual, modes);
+    dev.backends[0].properties = vec![
+        ("bus".into(), "usb-xhci-hcd.1-1.1".into()),
+        ("usb_speed_mbps".into(), speed_mbps.into()),
+    ];
+    dev.identity.keys = vec![format!("test:{name}")];
+    dev
+}
+
+/// A Streaming-Webcam-like camera: YUYV at 2560x1440 (221 MB/s, more than a high-speed bus
+/// carries), MJPG at 1920x1080, and smaller modes of both.
+fn webcam_modes() -> Vec<Mode> {
+    vec![
+        mode(FourCc::YUYV, 2560, 1440, 30),
+        mode(FourCc::MJPG, 1920, 1080, 30),
+        mode(FourCc::YUYV, 1280, 720, 30),
+        mode(FourCc::MJPG, 640, 480, 30),
+    ]
+}
+
+/// On a USB 2 camera with no pinned size, the compressed mode at a suitable size is planned
+/// before the largest uncompressed one: the uncompressed mode is what starves a shared bus.
+/// USB 3 cameras, cameras without a compressed mode and cameras whose compressed modes are much
+/// smaller keep the largest mode.
+#[test]
+fn a_usb2_camera_prefers_mjpg_over_a_larger_yuyv_mode() {
+    let req = Frames::any().fps(30);
+    let usb2 = camera_with("mjpg-pref-usb2", "480", webcam_modes());
+    let plan = plan_frames_with(&usb2, &req, &registry()).unwrap();
+    assert_eq!(
+        (
+            plan.mode.format.code,
+            plan.mode.format.resolution.width.get()
+        ),
+        (FourCc::MJPG, 1920),
+        "{plan}"
+    );
+    let shared = plan_many_with(&usb2, std::slice::from_ref(&req), &registry()).unwrap();
+    assert_eq!(shared.mode.format.code, FourCc::MJPG);
+    assert_eq!(shared.mode.format.resolution.width.get(), 1920);
+
+    // USB 3: the bus carries the uncompressed mode, so the largest one stays first.
+    let usb3 = camera_with("mjpg-pref-usb3", "5000", webcam_modes());
+    let plan = plan_frames_with(&usb3, &req, &registry()).unwrap();
+    assert_eq!(
+        (
+            plan.mode.format.code,
+            plan.mode.format.resolution.width.get()
+        ),
+        (FourCc::YUYV, 2560)
+    );
+
+    // Uncompressed modes only (nothing to prefer): the largest on USB 2.
+    let yuyv_only = camera_with(
+        "mjpg-pref-yuyv-only",
+        "480",
+        vec![
+            mode(FourCc::YUYV, 2560, 1440, 30),
+            mode(FourCc::YUYV, 640, 480, 30),
+        ],
+    );
+    let plan = plan_frames_with(&yuyv_only, &req, &registry()).unwrap();
+    assert_eq!(plan.mode.format.resolution.width.get(), 2560);
+
+    // An MJPG mode much smaller than the YUYV one is no suitable size: YUYV stays first.
+    let tiny_mjpg = camera_with(
+        "mjpg-pref-tiny",
+        "480",
+        vec![
+            mode(FourCc::YUYV, 2560, 1440, 30),
+            mode(FourCc::MJPG, 320, 240, 30),
+        ],
+    );
+    let plan = plan_frames_with(&tiny_mjpg, &req, &registry()).unwrap();
+    assert_eq!(plan.mode.format.code, FourCc::YUYV);
+}
+
+/// A USB 2 camera whose YUYV 2560x1440 stalls: the next plan is MJPG, not the smaller YUYV modes.
+#[test]
+fn a_stalled_yuyv_2560_falls_back_to_mjpg() {
+    let req = Frames::any().fps(30);
+    let dev = camera_with(
+        "stall-yuyv-2560",
+        "480",
+        vec![
+            mode(FourCc::YUYV, 2560, 1440, 30),
+            mode(FourCc::MJPG, 640, 480, 30),
+            mode(FourCc::YUYV, 640, 480, 30),
+            mode(FourCc::YUYV, 320, 240, 30),
+        ],
+    );
+    let first = plan_frames_with(&dev, &req, &registry()).unwrap();
+    assert_eq!(
+        (
+            first.mode.format.code,
+            first.mode.format.resolution.width.get()
+        ),
+        (FourCc::YUYV, 2560),
+        "no compressed mode is a suitable size for it, so it is planned first"
+    );
+    stalled::mark(
+        &dev,
+        BackendKind::V4l2,
+        &first.mode.id,
+        "no frame in 2000 ms",
+    );
+    let next = plan_frames_with(&dev, &req, &registry()).unwrap();
+    assert_eq!(next.mode.format.code, FourCc::MJPG, "{next}");
+    assert_eq!(next.mode.format.resolution.width.get(), 640);
+}
+
+/// Fallback order when the bus refuses uncompressed modes: the largest YUYV first, then the MJPG
+/// mode, and only then the smaller YUYV. Each mode is started once, and the one that streams
+/// ends the fallback.
+#[test]
+fn enospc_fallback_tries_mjpg_before_smaller_yuyv() {
+    use crate::capture_api::CaptureError;
+    let req = Frames::any().fps(30);
+    let dev = camera_with(
+        "enospc-order",
+        "480",
+        vec![
+            mode(FourCc::YUYV, 2560, 1440, 30),
+            mode(FourCc::MJPG, 640, 480, 30),
+            mode(FourCc::YUYV, 320, 240, 30),
+        ],
+    );
+    let attempts = std::cell::RefCell::new(Vec::new());
+    let (code, width, _) = stalled::open_with_fallback(
+        || plan_frames_with(&dev, &req, &registry()),
+        |plan| {
+            let res = plan.mode.format.resolution;
+            attempts
+                .borrow_mut()
+                .push((plan.mode.format.code, res.width.get()));
+            // The bus refuses the 2560 and the MJPG 640; the smallest YUYV streams.
+            if res.width.get() >= 640 {
+                return Err(stalled::start_failed(
+                    &dev,
+                    BackendKind::V4l2,
+                    &plan.mode.id,
+                    CaptureError::Backend("uvc: No space left on device (os error 28)".into()),
+                ));
+            }
+            Ok((plan.mode.format.code, res.width.get(), res.height.get()))
+        },
+    )
+    .expect("the smallest YUYV streams");
+    assert_eq!((code, width), (FourCc::YUYV, 320));
+    assert_eq!(
+        attempts.into_inner(),
+        vec![
+            (FourCc::YUYV, 2560),
+            (FourCc::MJPG, 640),
+            (FourCc::YUYV, 320)
+        ],
+        "one start per mode, MJPG before the smaller YUYV"
+    );
+}
+
+/// No-frames stalls are not limited to one retry: each stalled mode is left out and the next
+/// one is tried, until a mode delivers.
+#[test]
+fn stalls_keep_replanning_until_a_mode_delivers() {
+    use crate::capture_api::CaptureError;
+    let req = Frames::any().fps(30);
+    let dev = camera_with(
+        "stall-keeps-replanning",
+        "480",
+        vec![
+            mode(FourCc::YUYV, 2560, 1440, 30),
+            mode(FourCc::MJPG, 640, 480, 30),
+            mode(FourCc::YUYV, 320, 240, 30),
+        ],
+    );
+    let attempts = std::cell::Cell::new(0);
+    let width = stalled::open_with_fallback(
+        || plan_frames_with(&dev, &req, &registry()),
+        |plan| {
+            attempts.set(attempts.get() + 1);
+            let res = plan.mode.format.resolution;
+            if res.width.get() > 320 {
+                // What confirm_first_frame records for a mode that delivers nothing.
+                stalled::mark(
+                    &dev,
+                    BackendKind::V4l2,
+                    &plan.mode.id,
+                    "no frame in 2000 ms",
+                );
+                return Err(CaptureError::NoFrames("no frame in 2000 ms".into()));
+            }
+            Ok(res.width.get())
+        },
+    )
+    .expect("the third mode delivers");
+    assert_eq!(width, 320);
+    assert_eq!(attempts.get(), 3);
+}

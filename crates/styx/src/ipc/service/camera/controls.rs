@@ -3,6 +3,7 @@
 //! capture starts), restarting the capture for a frame rate the camera cannot change while
 //! streaming, and telling subscribed clients.
 
+use parking_lot::MutexGuard;
 use std::os::fd::OwnedFd;
 use std::sync::atomic::Ordering;
 
@@ -147,6 +148,7 @@ impl Camera {
         config: &ServiceConfig,
         counters: &Counters,
     ) -> Result<AppliedControl, ControlRefusal> {
+        let _gate = self.start_gate.lock();
         let mut state = self.state.lock();
         let (metas, backend) = self.metas(&state);
         let r = resolve(&metas, backend, target)?;
@@ -233,7 +235,7 @@ impl Camera {
     /// Plan every client's frames at `value` frames per second and restart the capture.
     fn restart_at(
         &self,
-        state: &mut State,
+        state: &mut MutexGuard<'_, State>,
         value: ControlValue,
         caller: &ControlCaller,
         config: &ServiceConfig,

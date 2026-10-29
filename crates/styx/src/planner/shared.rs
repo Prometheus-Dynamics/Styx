@@ -101,6 +101,11 @@ fn plan_shared(
     let fps = rate::combine(&rates).map_err(PlanError::FrameRate)?;
     let mut rejected = Vec::new();
     let mut best: Option<(RankKey, &ProbedBackend, &Mode, Vec<Candidate<'_>>)> = None;
+    // Unsized consumers: the compressed modes of a camera rank before its uncompressed ones
+    // on a USB 2 bus (see `super::shared_bus_uncompressed`).
+    let sizeless = requests
+        .iter()
+        .all(|req| req.size.is_none() && req.min_size.is_none());
     for backend in &device.backends {
         // Every consumer's backend override must allow it.
         if requests
@@ -109,7 +114,15 @@ fn plan_shared(
         {
             continue;
         }
+        let compressed_area = backend
+            .descriptor
+            .modes
+            .iter()
+            .filter(|m| m.format.code.is_compressed() && rate::check(m, fps).is_ok())
+            .map(super::mode_area)
+            .fold(0.0, f64::max);
         for mode in &backend.descriptor.modes {
+            let demoted = super::shared_bus_uncompressed(backend, mode, sizeless, compressed_area);
             if let Err(reason) = rate::check(mode, fps)
                 .and_then(|()| super::stalled::check(device, backend.kind, &mode.id))
             {
@@ -146,7 +159,7 @@ fn plan_shared(
             });
             match candidates {
                 Ok(candidates) => {
-                    let key = shared_rank(&candidates, requests);
+                    let key = shared_rank(&candidates, requests, demoted);
                     if best.as_ref().is_none_or(|(best_key, ..)| key < *best_key) {
                         best = Some((key, backend, mode, candidates));
                     }
@@ -310,7 +323,11 @@ fn plan_shared(
 
 /// Rank a mode for all consumers: the smallest mode covering every stated size when all state
 /// one (else the largest), then the total cost, frame rate and backend.
-fn shared_rank(candidates: &[Candidate<'_>], requests: &[FrameRequest]) -> RankKey {
+fn shared_rank(
+    candidates: &[Candidate<'_>],
+    requests: &[FrameRequest],
+    shared_bus_uncompressed: bool,
+) -> RankKey {
     let first = &candidates[0];
     let res = first.mode.format.resolution;
     let area = f64::from(res.width.get()) * f64::from(res.height.get());
@@ -344,6 +361,7 @@ fn shared_rank(candidates: &[Candidate<'_>], requests: &[FrameRequest]) -> RankK
         -area
     };
     RankKey {
+        shared_bus_uncompressed: u8::from(shared_bus_uncompressed),
         resolution,
         usb_overload: u8::from(super::usb_overloaded(first)),
         score: candidates.iter().map(|c| cost::score(c.total)).sum(),

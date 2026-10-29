@@ -2,6 +2,7 @@
 //! sensor flips only while stopped (a colour sensor's Bayer order changes with them), so the
 //! service sets them by restarting the capture for every client, as it does a frame rate.
 
+use parking_lot::MutexGuard;
 use std::sync::atomic::Ordering;
 
 use styx_core::prelude::*;
@@ -89,7 +90,7 @@ impl Camera {
     /// Set a flip control: restarts the capture for every client with the sensor flipped.
     pub(super) fn set_flip(
         &self,
-        state: &mut State,
+        state: &mut MutexGuard<'_, State>,
         id: ControlId,
         value: ControlValue,
         caller: &ControlCaller,
@@ -163,7 +164,11 @@ impl Camera {
     }
 
     /// Plan every client again and restart the capture for them.
-    fn restart_clients(&self, state: &mut State, config: &ServiceConfig) -> Result<(), String> {
+    fn restart_clients(
+        &self,
+        state: &mut MutexGuard<'_, State>,
+        config: &ServiceConfig,
+    ) -> Result<(), String> {
         let requests: Vec<_> = state
             .clients
             .iter()

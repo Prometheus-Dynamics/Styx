@@ -299,6 +299,7 @@ fn plan_devices(
     let mut rejected = Vec::new();
     let mut best: Option<(RankKey, &ProbedDevice, routes::Candidate<'_>)> = None;
     for device in devices {
+        let mut candidates = Vec::new();
         for candidate in routes::candidates(device, req, registry, &mut rejected) {
             let unmet = candidate.unmet(req);
             if req.strict && !unmet.is_empty() {
@@ -308,7 +309,16 @@ fn plan_devices(
                 });
                 continue;
             }
-            let key = rank_key(&candidate, req);
+            candidates.push(candidate);
+        }
+        // The largest compressed mode of this camera that the request allows.
+        let compressed_area = candidates
+            .iter()
+            .filter(|c| c.mode.format.code.is_compressed())
+            .map(|c| mode_area(&c.mode))
+            .fold(0.0, f64::max);
+        for candidate in candidates {
+            let key = rank_key(&candidate, req, compressed_area);
             if best.as_ref().is_none_or(|(best_key, _, _)| key < *best_key) {
                 best = Some((key, device, candidate));
             }
@@ -409,6 +419,11 @@ pub(crate) fn plan_from(
 /// Lexicographic rank; smaller is better.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub(crate) struct RankKey {
+    /// An uncompressed mode of a USB 2 camera with a compressed mode at a suitable size
+    /// ([`shared_bus_uncompressed`]): after every other mode, so the compressed one is planned
+    /// (and a fallback from a stalled one tries the compressed modes before the smaller
+    /// uncompressed ones).
+    pub(crate) shared_bus_uncompressed: u8,
     pub(crate) resolution: f64,
     /// An uncompressed USB mode that takes much of its bus ([`usb_overloaded`]): a compressed
     /// mode of the same size ranks first.
@@ -421,7 +436,40 @@ pub(crate) struct RankKey {
     pub(crate) isp_formats: u8,
 }
 
-fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequest) -> RankKey {
+/// Pixels of a mode's frame.
+pub(crate) fn mode_area(mode: &Mode) -> f64 {
+    let res = mode.format.resolution;
+    f64::from(res.width.get()) * f64::from(res.height.get())
+}
+
+/// Whether an uncompressed mode ranks after the compressed modes of its camera: the mode of a
+/// USB 2 camera (its bus at most 480 Mbit/s) when the request pins no size (`sizeless`), and the
+/// camera offers a compressed mode at a suitable size, at least half the mode's area
+/// (`compressed_area`: the largest compressed mode the request allows).
+///
+/// Unsized, the largest mode wins, and the largest uncompressed one is what starves a shared
+/// bus: a YUYV 2560x1440 at 30 fps is 221 MB/s, more than a 480 Mbit/s bus carries, while its
+/// MJPG at 1920x1080 streams. A pinned size is already matched by the resolution key (the
+/// smallest mode covering it), so it is left alone. A USB 3 camera, a camera off USB and a
+/// camera without a suitable compressed mode keep the order. The planner cannot see the other
+/// devices on a hub, so every USB 2 camera counts as shared.
+pub(crate) fn shared_bus_uncompressed(
+    backend: &crate::ProbedBackend,
+    mode: &Mode,
+    sizeless: bool,
+    compressed_area: f64,
+) -> bool {
+    !mode.format.code.is_compressed()
+        && sizeless
+        && usb_bus_mbps(backend).is_some_and(|mbps| mbps <= 480.0)
+        && 2.0 * compressed_area >= mode_area(mode)
+}
+
+fn rank_key(
+    candidate: &routes::Candidate<'_>,
+    req: &FrameRequest,
+    compressed_area: f64,
+) -> RankKey {
     let res = candidate.mode.format.resolution;
     let area = f64::from(res.width.get()) * f64::from(res.height.get());
     let covers_output = req
@@ -434,6 +482,12 @@ fn rank_key(candidate: &routes::Candidate<'_>, req: &FrameRequest) -> RankKey {
         res.height.get().div_ceil(scale),
     ));
     RankKey {
+        shared_bus_uncompressed: u8::from(shared_bus_uncompressed(
+            candidate.backend,
+            &candidate.mode,
+            req.size.is_none() && req.min_size.is_none(),
+            compressed_area,
+        )),
         // With a minimum: the smallest mode that satisfies it. With an output size: the route
         // delivering the smallest frames that cover it (so an ISP scaling a wide mode beats a
         // smaller mode of another aspect ratio), else the largest mode. Otherwise: the largest.
