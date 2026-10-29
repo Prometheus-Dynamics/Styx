@@ -1,4 +1,25 @@
+/// The key of a USB camera's physical device: its vendor:product on its bus port (`bus`, the
+/// V4L2 `bus_info` such as `usb-xhci-hcd.1-1.1.1`, which every node of the camera shares).
+///
+/// Two identical cameras without serials share a vendor:product, and `uvcvideo` and the card
+/// name are shared by every UVC camera, so none of those identify a camera. The port does.
+pub(crate) fn usb_key(bus: &str, vendor: &str, product: &str) -> String {
+    format!("{}:{}@{}", vendor.trim(), product.trim(), bus.trim())
+}
+
+/// The keys of the device a node or backend belongs to. A USB camera's keys name only that
+/// camera: its bus port and its vendor:product on that port. Other devices get the properties
+/// that identify them (bus, model, vendor:product) as before.
 pub(crate) fn derive_keys(id: &str, props: &[(String, String)]) -> Vec<String> {
+    if let Some(bus) = prop(props, "bus").filter(|bus| bus.starts_with("usb")) {
+        let mut keys = vec![bus.to_string()];
+        if let (Some(vendor), Some(product)) =
+            (prop(props, "usb_vendor"), prop(props, "usb_product"))
+        {
+            keys.push(usb_key(bus, vendor, product));
+        }
+        return keys;
+    }
     let mut keys = Vec::new();
     if !id.starts_with("/dev/video") {
         keys.push(id.to_string());
@@ -36,21 +57,23 @@ pub(crate) fn pick_display_id(id: &str, props: &[(String, String)]) -> String {
     if let Some(vidpid) = props.iter().find_map(|(_, v)| extract_vid_pid(v)) {
         return vidpid;
     }
-    if let Some(bus) = props
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("bus"))
-        .map(|(_, v)| v.clone())
-    {
-        return bus;
+    // The node's own card name before its bus port: a USB camera's port is no name for it.
+    if let Some(card) = prop(props, "card") {
+        return card.to_string();
     }
-    if let Some(card) = props
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("card"))
-        .map(|(_, v)| v.clone())
-    {
-        return card;
+    if let Some(bus) = prop(props, "bus") {
+        return bus.to_string();
     }
     id.to_string()
+}
+
+/// The first non-empty value of a property, by name (ASCII case-insensitive), trimmed.
+fn prop<'a>(props: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    props
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.trim())
+        .filter(|v| !v.is_empty())
 }
 
 fn is_identity_property(key: &str) -> bool {
@@ -75,3 +98,7 @@ fn extract_vid_pid(s: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+#[path = "device_identity_tests.rs"]
+mod tests;

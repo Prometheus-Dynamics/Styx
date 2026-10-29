@@ -69,7 +69,10 @@ fn v4l2_device() -> ProbedDevice {
     ProbedDevice {
         identity: DeviceIdentity {
             display: "UVC Camera (046d:0825)".into(),
-            keys: vec!["usb-xhci-hcd.1-1".into(), "046d:0825".into()],
+            keys: vec![
+                "usb-xhci-hcd.1-1".into(),
+                "046d:0825@usb-xhci-hcd.1-1".into(),
+            ],
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::V4l2,
@@ -107,4 +110,67 @@ fn uvcvideo_stays_the_default() {
     let plan =
         crate::planner::plan_frames(&alone[0], &crate::planner::Frames::formats([yuyv])).unwrap();
     assert_eq!(plan.backend, BackendKind::Uvc);
+}
+
+/// A Creative Live! Cam Sync V3 on the same hub as the C270 (`c270()`'s function descriptors
+/// stand in for its own: the merge reads only the camera's identity).
+fn creative(port: &str, bus_info: &str) -> UsbCameraInfo {
+    UsbCameraInfo {
+        port: port.into(),
+        sysfs: format!("/sys/bus/usb/devices/{port}").into(),
+        vendor_id: 0x041e,
+        product_id: 0x40a3,
+        serial: None,
+        bus_info: bus_info.into(),
+        interfaces: Vec::new(),
+        ..c270()
+    }
+}
+
+/// Two different cameras on one hub stay two devices, each with its own UVC backend.
+#[test]
+fn two_cameras_on_one_hub_stay_two_devices() {
+    let c = c270();
+    let cr = creative("3-1.3", "usb-xhci-hcd.1-1.3");
+    let mut devices = vec![v4l2_device()];
+    merge(&mut devices, &c, backend_for(&c, Vec::new()));
+    merge(&mut devices, &cr, backend_for(&cr, Vec::new()));
+    assert_eq!(devices.len(), 2);
+    let (c270_dev, creative_dev) = (&devices[0], &devices[1]);
+    assert_eq!(c270_dev.backends.len(), 2);
+    assert_eq!(creative_dev.backends.len(), 1);
+    assert_eq!(creative_dev.backends[0].kind, BackendKind::Uvc);
+    assert_eq!(creative_dev.identity.display, "UVC Camera (041e:40a3)");
+    for k in &creative_dev.identity.keys {
+        assert!(!c270_dev.identity.keys.contains(k), "{k} is shared");
+    }
+    assert!(
+        creative_dev
+            .identity
+            .keys
+            .contains(&"usb:3-1.3".to_string())
+    );
+}
+
+/// Identical cameras on different ports stay two devices: the port tells them apart.
+#[test]
+fn identical_cameras_on_different_ports_stay_two_devices() {
+    // The same C270 model and serial, on the port next to the first one's.
+    let second = UsbCameraInfo {
+        port: "3-1.2".into(),
+        bus_info: "usb-xhci-hcd.1-1.2".into(),
+        ..c270()
+    };
+    let mut devices = vec![v4l2_device()];
+    merge(&mut devices, &second, backend_for(&second, Vec::new()));
+    assert_eq!(devices.len(), 2);
+    assert_eq!(devices[0].backends.len(), 1);
+    assert_eq!(devices[1].backends.len(), 1);
+    assert!(
+        devices[1]
+            .identity
+            .keys
+            .iter()
+            .all(|k| !devices[0].identity.keys.contains(k))
+    );
 }

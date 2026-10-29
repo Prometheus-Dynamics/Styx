@@ -30,6 +30,7 @@ use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle};
 use super::handle_metrics::deliver;
 use super::request::CaptureError;
 use super::tunables::StyxConfig;
+use crate::device_identity;
 use crate::metrics::StageMetrics;
 use crate::{BackendHandle, BackendKind, DeviceIdentity, ProbedBackend, ProbedDevice};
 
@@ -233,14 +234,17 @@ fn backend_for(info: &UsbCameraInfo, controls: Vec<ControlMeta>) -> ProbedBacken
     }
 }
 
-/// Adds a camera's backend to the V4L2 device of the same camera (same bus id), after its
-/// backends, or as a device of its own.
+/// Adds a camera's backend to the V4L2 device of the same physical camera (the same bus port
+/// and vendor:product, see `device_identity::usb_key`), after its backends, or as a device of
+/// its own.
 fn merge(devices: &mut Vec<ProbedDevice>, info: &UsbCameraInfo, backend: ProbedBackend) {
     let key = info.key();
-    match devices
-        .iter_mut()
-        .find(|d| d.identity.keys.contains(&info.bus_info))
-    {
+    let usb = device_identity::usb_key(
+        &info.bus_info,
+        &format!("{:04x}", info.vendor_id),
+        &format!("{:04x}", info.product_id),
+    );
+    match devices.iter_mut().find(|d| d.identity.keys.contains(&usb)) {
         Some(d) => {
             d.backends.push(backend);
             if !d.identity.keys.contains(&key) {
@@ -250,7 +254,7 @@ fn merge(devices: &mut Vec<ProbedDevice>, info: &UsbCameraInfo, backend: ProbedB
         None => devices.push(ProbedDevice {
             identity: DeviceIdentity {
                 display: info.name(),
-                keys: vec![info.bus_info.clone(), key],
+                keys: vec![info.bus_info.clone(), usb, key],
             },
             backends: vec![backend],
         }),
