@@ -151,3 +151,65 @@ fn metrics_are_served_over_http() {
     assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
     assert!(answer.contains("styx_process_cameras_open"), "{answer}");
 }
+
+#[test]
+fn a_service_lists_only_its_own_captures() {
+    let pid = std::process::id();
+    let busy_path = std::env::temp_dir().join(format!("styx-scope-busy-{pid}.sock"));
+    let idle_path = std::env::temp_dir().join(format!("styx-scope-idle-{pid}.sock"));
+    // Both services in this process: one streams, the other is idle (no client, no capture).
+    let busy = CameraService::new(virtual_camera("scope-busy", 60))
+        .keep_streaming()
+        .serve(&busy_path)
+        .unwrap();
+    let idle = CameraService::new(virtual_camera("scope-idle", 60))
+        .serve(&idle_path)
+        .unwrap();
+    let client = FrameClient::request(&busy_path, &Frames::rgb()).unwrap();
+    let mut got = 0;
+    while got < 10 {
+        if let RecvOutcome::Data(frame) = client.recv(Duration::from_millis(500)) {
+            drop(frame);
+            got += 1;
+        }
+    }
+    // The process has both captures' metrics; each service lists its own only.
+    let all = styx::metrics::snapshot();
+    assert!(all.cameras.iter().any(|c| c.name == "scope-busy"));
+    let cameras = busy.metrics().snapshot.cameras;
+    let names: Vec<&str> = cameras.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["scope-busy"], "{cameras:?}");
+    assert!(cameras[0].frames.captured > 0);
+    assert!(
+        idle.metrics().snapshot.cameras.is_empty(),
+        "an idle service lists another service's capture"
+    );
+    drop(client);
+    busy.stop();
+    idle.stop();
+}
+
+#[cfg(feature = "frame-socket")]
+#[test]
+fn a_frame_socket_lists_only_the_capture_it_serves() {
+    use styx::ipc::FrameSocket;
+    let served = CaptureRequest::new(&virtual_camera("scope-served", 60))
+        .start()
+        .unwrap();
+    let _other = CaptureRequest::new(&virtual_camera("scope-unserved", 60))
+        .start()
+        .unwrap();
+    let path = std::env::temp_dir().join(format!("styx-scope-socket-{}.sock", std::process::id()));
+    let socket = FrameSocket::bind(&path).unwrap();
+    assert!(socket.metrics().snapshot.cameras.is_empty());
+    socket.set_source(&served);
+    let frame = loop {
+        if let RecvOutcome::Data(frame) = served.recv_blocking(Duration::from_millis(500)) {
+            break frame;
+        }
+    };
+    socket.publish(&frame).unwrap();
+    let cameras = socket.metrics().snapshot.cameras;
+    let names: Vec<&str> = cameras.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["scope-served"], "{cameras:?}");
+}

@@ -83,7 +83,9 @@ pub(super) fn metrics_of(shared: &Shared) -> FrameSocketMetrics {
         unserved: s.unserved,
         hold: shared.hold.window(),
         hops: HopMetrics::of(&shared.hops),
-        snapshot: crate::metrics::snapshot(),
+        snapshot: crate::metrics::snapshot_of(
+            &shared.source.get().cloned().into_iter().collect::<Vec<_>>(),
+        ),
     }
 }
 

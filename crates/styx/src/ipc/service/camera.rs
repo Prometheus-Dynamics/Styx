@@ -364,6 +364,17 @@ impl Camera {
         }
     }
 
+    /// The live metrics of the capture this camera runs now (none while idle).
+    pub(super) fn captures(&self) -> Vec<crate::metrics::CaptureMetrics> {
+        self.state
+            .lock()
+            .running
+            .as_ref()
+            .map(|r| r.session.capture().live_metrics())
+            .into_iter()
+            .collect()
+    }
+
     /// Disconnect every client and stop the capture.
     pub(super) fn shut_down(&self) {
         let mut state = self.state.lock();

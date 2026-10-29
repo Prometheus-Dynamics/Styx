@@ -294,6 +294,12 @@ impl Service {
 
     fn metrics(&self) -> crate::metrics::ServiceMetrics {
         let stats = self.stats();
+        let owned: Vec<crate::metrics::CaptureMetrics> = self
+            .cameras
+            .lock()
+            .iter()
+            .flat_map(|c| c.captures())
+            .collect();
         crate::metrics::ServiceMetrics {
             clients: stats.clients,
             rejected: stats.rejected,
@@ -304,7 +310,8 @@ impl Service {
             skipped: stats.skipped,
             revoked: stats.revoked,
             client_metrics: self.client_metrics.snapshot(),
-            snapshot: crate::metrics::snapshot(),
+            // Only this service's captures: the process runs other services' too.
+            snapshot: crate::metrics::snapshot_of(&owned),
         }
     }
 }

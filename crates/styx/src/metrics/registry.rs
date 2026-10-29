@@ -136,13 +136,19 @@ pub(crate) fn service_client(connected: bool) {
 /// [`CaptureRequest`](crate::capture_api::CaptureRequest), the planner or a camera service), and
 /// of the process.
 pub fn snapshot() -> MetricsSnapshot {
-    let mut cameras: Vec<CameraMetrics> = captures().iter().map(|c| c.snapshot()).collect();
+    snapshot_of(&captures())
+}
+
+/// A snapshot listing only `owned` captures (a camera service's own, for its reply). The process
+/// numbers stay the process's.
+pub(crate) fn snapshot_of(owned: &[CaptureMetrics]) -> MetricsSnapshot {
+    let mut cameras: Vec<CameraMetrics> = owned.iter().map(|c| c.snapshot()).collect();
     cameras.sort_by_key(|c| c.id);
     MetricsSnapshot {
         unix_ms: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64),
-        process: process_with(cameras.len()),
+        process: process_with(captures().len()),
         cameras,
         sync_groups: super::sync::sync_groups(),
         previews: super::preview::previews(),

@@ -59,7 +59,7 @@ pub use path::{CopySiteMetrics, HopMetrics, HopWindow, PathMetrics, hop_lines, p
 pub(crate) use preview::PreviewCounters;
 pub use preview::PreviewMetrics;
 pub use registry::{MetricsSnapshot, ProcessMetrics, ServiceMetrics, process, snapshot};
-pub(crate) use registry::{register, service_client};
+pub(crate) use registry::{register, service_client, snapshot_of};
 pub use retry::{CaptureRetryMetrics, CaptureRetryStats};
 #[cfg(any(feature = "libcamera", feature = "v4l2"))]
 pub(crate) use sequence_gaps::SequenceGapTracker;

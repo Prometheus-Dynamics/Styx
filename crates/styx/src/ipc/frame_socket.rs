@@ -258,6 +258,8 @@ struct Shared {
     /// Hop times (up to the send) and copies of the frames sent.
     hops: HopCounters,
     path: PathBuf,
+    /// The capture whose frames this socket serves (see [`FrameSocket::set_source`]).
+    source: std::sync::OnceLock<crate::metrics::CaptureMetrics>,
 }
 
 /// Serves the latest published frame on a Unix socket in the `styx-frame-lease-v1` format, with
@@ -318,6 +320,7 @@ impl FrameSocket {
             hold: Ring::new(),
             hops: HopCounters::new(),
             path: path.clone(),
+            source: std::sync::OnceLock::new(),
         });
         let thread = {
             let shared = shared.clone();
@@ -376,6 +379,13 @@ impl FrameSocket {
 
     pub fn stats(&self) -> FrameSocketStats {
         stats_of(&self.shared)
+    }
+
+    /// Name `capture` as the source of this socket's frames: its metrics are what the statistics
+    /// list as cameras. A socket without one lists none (the process's other captures are not
+    /// its own).
+    pub fn set_source(&self, capture: &crate::capture_api::CaptureHandle) {
+        let _ = self.shared.source.set(capture.live_metrics());
     }
 
     /// Counters, lease hold times, hop times and copies of the frames sent, and this process's
