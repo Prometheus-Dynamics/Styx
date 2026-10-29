@@ -111,8 +111,8 @@ pub(crate) fn check(
         }
         if heavier(mode, &f.mode) {
             return Err(format!(
-                "heavier than {:?}, which {}",
-                f.mode.id,
+                "heavier than {}, which {}",
+                super::mode_label(&f.mode),
                 if f.bus {
                     "the bus refused"
                 } else {
@@ -122,8 +122,8 @@ pub(crate) fn check(
         }
         if usb2 && !mode.format.code.is_compressed() && f.mode.format.code.is_compressed() {
             return Err(format!(
-                "{:?} failed on this bus; an uncompressed mode would starve it too",
-                f.mode.id
+                "{} failed on this bus; an uncompressed mode would starve it too",
+                super::mode_label(&f.mode)
             ));
         }
     }
@@ -160,14 +160,10 @@ pub(crate) fn start_failed(
     if !is_bus_full(text) || !is_usb(device, backend) {
         return err;
     }
-    let cause = format!(
-        "{:?} does not fit the bus now (the driver refused it: {text}); lower modes are \
-         tried, and this one again in {} s",
-        mode.id,
-        BUS_FULL_FOR.as_secs()
-    );
+    // Consumers read the mode; the driver's own words go to the log.
+    let cause = format!("{} refused by the bus", super::mode_label(mode));
     remember(device, backend, mode, &cause, true, BUS_FULL_FOR);
-    crate::trace::warn!(camera = %device.identity.display, %cause, "not enough USB bandwidth on this bus");
+    crate::trace::debug!(camera = %device.identity.display, driver = %text, %cause, "not enough USB bandwidth on this bus");
     CaptureError::NotEnoughBandwidth(cause)
 }
 

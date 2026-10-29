@@ -260,6 +260,8 @@ impl Camera {
             }
             let restarting = state.running.is_some();
             let mut tried = (planned.plan.backend, planned.plan.mode.clone());
+            // The modes tried, in order, for the error when none of them streams.
+            let mut labels = vec![crate::planner::mode_label(&planned.plan.mode)];
             let mut started = restart(state, planned, config);
             // A mode the bus refused, or that delivered no frame, is left out now: plan again
             // with the next lower one. When nothing is left, the first error stands.
@@ -273,6 +275,7 @@ impl Camera {
                     break;
                 };
                 tried = (next.plan.backend, next.plan.mode.clone());
+                labels.push(crate::planner::mode_label(&next.plan.mode));
                 started = restart(state, next, config);
             }
             match started {
@@ -302,10 +305,18 @@ impl Camera {
                         .backends
                         .iter()
                         .any(|b| crate::planner::usb_bus_mbps(b).is_some());
-                    let err = if usb && err.contains("delivered no frames") {
+                    let err = if usb
+                        && (err.contains("delivered no frames")
+                            || err.contains("not enough USB bandwidth"))
+                    {
+                        let range = match labels.as_slice() {
+                            [only] => only.clone(),
+                            [first, .., last] => format!("{first} down to {last}"),
+                            [] => String::new(),
+                        };
                         format!(
-                            "not enough USB bandwidth on this bus: too many cameras share it, and \
-                             no lighter mode streams ({err})"
+                            "not enough USB bandwidth on this bus: too many cameras share it \
+                             (tried {range})"
                         )
                     } else {
                         err

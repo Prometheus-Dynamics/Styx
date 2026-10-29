@@ -220,6 +220,9 @@ fn when_no_lighter_mode_streams_the_join_reports_the_bus() {
     }
     let camera = Camera::new(usb2_webcam(name));
     let err = join(&camera, Frames::nv12(), ClientPriority::Normal).expect_err("nothing streams");
-    assert!(err.contains("not enough USB bandwidth"), "{err}");
-    assert!(err.contains("too many cameras"), "{err}");
+    assert_eq!(
+        err,
+        "not enough USB bandwidth on this bus: too many cameras share it (tried MJPG 2560x1440 \
+         @30 fps down to MJPG 640x480 @30 fps)"
+    );
 }

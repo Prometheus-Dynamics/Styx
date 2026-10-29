@@ -536,6 +536,25 @@ pub(crate) fn usb_overloaded(candidate: &routes::Candidate<'_>) -> bool {
     rate > budget
 }
 
+/// A mode as a user reads it: "MJPG 160x120", with "@30 fps" when its rate is known.
+pub(crate) fn mode_label(mode: &Mode) -> String {
+    let res = mode.format.resolution;
+    let fps = mode
+        .intervals
+        .iter()
+        .map(|i| i.fps())
+        .fold(None, |best: Option<f32>, fps| {
+            Some(best.map_or(fps, |b| b.max(fps)))
+        });
+    match fps {
+        Some(fps) => format!(
+            "{} {}x{} @{:.0} fps",
+            mode.format.code, res.width, res.height, fps
+        ),
+        None => format!("{} {}x{}", mode.format.code, res.width, res.height),
+    }
+}
+
 /// Bytes per pixel of an uncompressed format on the bus (`None` for compressed ones).
 pub(crate) fn uncompressed_bytes_per_pixel(code: FourCc) -> Option<f64> {
     Some(match code {

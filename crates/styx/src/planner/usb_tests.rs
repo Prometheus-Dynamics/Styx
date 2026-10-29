@@ -170,7 +170,8 @@ fn when_no_mode_fits_the_bus_error_says_so() {
     .expect_err("nothing fits");
     match err {
         crate::planner::OpenError::Capture(CaptureError::NotEnoughBandwidth(msg)) => {
-            assert!(msg.contains("lower modes are tried"), "{msg}");
+            assert!(msg.contains("refused by the bus"), "{msg}");
+            assert!(!msg.contains("ModeId") && !msg.contains("Mode {"), "{msg}");
         }
         other => panic!("expected the bus error, got {other:?}"),
     }
