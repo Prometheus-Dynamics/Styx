@@ -15,6 +15,11 @@ use crate::capture_api::{
     CaptureDescriptor, CaptureError, CaptureHandle, ControlPlane, StyxConfig, WorkerHandle,
 };
 use crate::metrics::{ExternalBackingTracker, StageMetrics};
+
+/// Longest wait between two dequeue retries after errors, and how many errors in a row end the
+/// capture (about ten seconds of retries).
+const MAX_DEQUEUE_WAIT: Duration = Duration::from_millis(250);
+const MAX_DEQUEUE_ERRORS: u32 = 40;
 use crate::prelude::{Interval, Mode};
 use crate::{BackendHandle, BackendKind, ProbedBackend};
 
@@ -251,6 +256,8 @@ pub(super) fn start_v4l2(
         .map_err(backend_err)?,
     };
     let manager = Arc::new(manager);
+    // Streaming starts here, not on the capture thread: a refusal is this start's error.
+    manager.start_stream().map_err(backend_err)?;
     let queue_depth = capture_tunables.queue_depth;
     let (tx, rx) = queue.unwrap_or_else(|| {
         styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow)
@@ -272,6 +279,7 @@ pub(super) fn start_v4l2(
             SharedBufferPool::with_limits(pool_limits.min, pool_limits.bytes, pool_limits.spare);
         let height = mode_clone.format.resolution.height.get() as usize;
         let width = mode_clone.format.resolution.width.get() as usize;
+        let mut consecutive_errors: u32 = 0;
         loop {
             drain_recycled_buffers(&manager_for_worker, &recycle_rx);
             if stop_rx.try_recv().is_ok() {
@@ -281,6 +289,7 @@ pub(super) fn start_v4l2(
             }
             match manager_for_worker.dequeue() {
                 Ok(Some((index, meta))) => {
+                    consecutive_errors = 0;
                     let mapped_len = manager_for_worker.mapped_bytes(index).unwrap_or_default();
                     let bytes_used = meta.bytes_used().min(mapped_len);
                     let Some(layout_plan) = plan_v4l2_single_plane_layout(
@@ -403,7 +412,20 @@ pub(super) fn start_v4l2(
                     record_worker_error(&worker_error_for_thread, &err);
                     break;
                 }
-                Err(_) => thread::sleep(error_backoff),
+                Err(err) => {
+                    // Retry with a growing wait; a stream that keeps failing ends the capture
+                    // (the supervisor reports it) instead of calling the driver every few ms.
+                    consecutive_errors += 1;
+                    if consecutive_errors > MAX_DEQUEUE_ERRORS {
+                        let err = CaptureError::Backend(to_io(err).to_string());
+                        crate::trace::warn!(backend = "v4l2", error = %err, "v4l2 capture failing; stopped");
+                        record_worker_error(&worker_error_for_thread, &err);
+                        break;
+                    }
+                    thread::sleep(
+                        (error_backoff * 2u32.pow(consecutive_errors.min(6))).min(MAX_DEQUEUE_WAIT),
+                    );
+                }
             }
         }
     });

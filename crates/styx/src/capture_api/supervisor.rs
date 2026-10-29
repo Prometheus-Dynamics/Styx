@@ -458,7 +458,7 @@ fn run(
                     crate::planner::stalled::record_stall(
                         &recipe.device,
                         recipe.backend,
-                        &recipe.mode,
+                        mode,
                         &reason,
                     );
                     reason.clone()

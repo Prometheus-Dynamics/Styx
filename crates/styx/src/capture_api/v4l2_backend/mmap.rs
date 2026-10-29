@@ -127,6 +127,18 @@ impl V4l2MmapManager {
         }
     }
 
+    /// Queues every buffer and starts streaming now, so a refused start (the bus has no
+    /// bandwidth left: ENOSPC) fails the caller rather than the capture thread.
+    pub(super) fn start_stream(&self) -> styx_kernel::Result<()> {
+        let mut state = self.state.lock();
+        for index in 0..state.queued.len() {
+            if !state.queued[index] && !state.checked_out[index] {
+                self.queue_locked(index, &mut state)?;
+            }
+        }
+        self.stream_on_locked(&mut state)
+    }
+
     /// Waits up to the poll timeout for a filled buffer and dequeues it; `Ok(None)` when none
     /// arrived. Starts streaming first when needed.
     pub(super) fn dequeue(&self) -> styx_kernel::Result<Option<(usize, DequeuedBuffer)>> {

@@ -35,6 +35,11 @@ pub(crate) fn start_backend(
     config: &StyxConfig,
     _queue: Option<CaptureQueue>,
 ) -> Result<CaptureHandle, CaptureError> {
+    // Tests: a fake bus that refuses every start of a camera that asks for it (see `script`).
+    #[cfg(test)]
+    if let Some(err) = crate::planner::stalled::script::fake_bus(backend) {
+        return Err(err);
+    }
     match backend.kind {
         BackendKind::Virtual => {
             virtual_backend::start_virtual(mode, interval, descriptor, _controls, config, _queue)

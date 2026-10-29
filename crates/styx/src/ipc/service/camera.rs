@@ -295,6 +295,21 @@ impl Camera {
                     (frames, new.to_string(), new.delivered())
                 }
                 Err(err) => {
+                    // Every lighter mode failed too: on a USB camera that is the bus being full
+                    // (too many cameras share it), which the consumers can act on.
+                    let usb = self
+                        .device
+                        .backends
+                        .iter()
+                        .any(|b| crate::planner::usb_bus_mbps(b).is_some());
+                    let err = if usb && err.contains("delivered no frames") {
+                        format!(
+                            "not enough USB bandwidth on this bus: too many cameras share it, and \
+                             no lighter mode streams ({err})"
+                        )
+                    } else {
+                        err
+                    };
                     let bus = err.contains("not enough USB bandwidth");
                     {
                         let mut last = counters.last_error.lock();

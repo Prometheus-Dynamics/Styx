@@ -171,7 +171,6 @@ fn a_rejoin_after_a_stall_found_later_plans_the_next_mode() {
         .iter()
         .find(|m| m.format.resolution.width.get() == 2560 && m.format.code == FourCc::MJPG)
         .expect("the 2560 mode")
-        .id
         .clone();
     crate::planner::stalled::record_stall(
         &camera.device,
@@ -181,4 +180,46 @@ fn a_rejoin_after_a_stall_found_later_plans_the_next_mode() {
     );
     let text = join(&camera, Frames::nv12(), ClientPriority::Normal).expect("joins again");
     assert!(text.contains("MJPG 1920x1080"), "{text}");
+}
+
+/// A refused camera, joined again and again (its clients reconnect), starts each of its modes
+/// once and then waits: the bus refused every start, so the refused modes stay out for their
+/// expiry, and the driver is not asked again in a loop.
+#[test]
+fn a_refused_camera_is_started_once_per_mode_not_in_a_loop() {
+    let name = "join-streamon-count";
+    let mut device = usb2_webcam(name);
+    device.backends[0]
+        .properties
+        .push(("test-bus".into(), name.into()));
+    let modes = device.backends[0].descriptor.modes.len();
+    let camera = Camera::new(device);
+    let started = Instant::now();
+    let mut joins = 0;
+    while started.elapsed() < Duration::from_secs(6) {
+        let _ = join(&camera, Frames::nv12(), ClientPriority::Normal);
+        joins += 1;
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let streamons = script::streamons(name);
+    assert!(joins > streamons, "joins were made: {joins}");
+    assert!(
+        streamons <= modes,
+        "{streamons} STREAMONs for {modes} modes"
+    );
+    assert!(streamons >= 1, "the camera was tried");
+}
+
+/// Every lighter mode of a USB camera stalled: the join gives up with the bandwidth error, so
+/// the consumers can say that too many cameras share the bus.
+#[test]
+fn when_no_lighter_mode_streams_the_join_reports_the_bus() {
+    let name = "join-exhausted-usb2";
+    for width in [2560, 1920, 1280, 800, 640] {
+        script::stall(name, FourCc::MJPG, width);
+    }
+    let camera = Camera::new(usb2_webcam(name));
+    let err = join(&camera, Frames::nv12(), ClientPriority::Normal).expect_err("nothing streams");
+    assert!(err.contains("not enough USB bandwidth"), "{err}");
+    assert!(err.contains("too many cameras"), "{err}");
 }

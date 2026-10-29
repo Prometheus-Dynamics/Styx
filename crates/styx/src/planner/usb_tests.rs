@@ -80,12 +80,7 @@ fn a_mode_that_delivered_no_frames_is_left_out() {
     // Compressed USB modes wait for their first frame too.
     assert!(stalled::may_starve(backend, &backend.descriptor.modes[3]));
 
-    stalled::mark(
-        &dev,
-        BackendKind::V4l2,
-        &plan.mode.id,
-        "no frame in 2000 ms",
-    );
+    stalled::mark(&dev, BackendKind::V4l2, &plan.mode, "no frame in 2000 ms");
     let plan = plan_frames_with(&dev, &req, &registry()).unwrap();
     assert_eq!(plan.mode.format.code, FourCc::MJPG);
     let reason = plan
@@ -286,12 +281,7 @@ fn a_stalled_yuyv_2560_falls_back_to_mjpg() {
         (FourCc::YUYV, 2560),
         "no compressed mode is a suitable size for it, so it is planned first"
     );
-    stalled::mark(
-        &dev,
-        BackendKind::V4l2,
-        &first.mode.id,
-        "no frame in 2000 ms",
-    );
+    stalled::mark(&dev, BackendKind::V4l2, &first.mode, "no frame in 2000 ms");
     let next = plan_frames_with(&dev, &req, &registry()).unwrap();
     assert_eq!(next.mode.format.code, FourCc::MJPG, "{next}");
     assert_eq!(next.mode.format.resolution.width.get(), 640);
@@ -310,6 +300,7 @@ fn enospc_fallback_tries_mjpg_before_smaller_yuyv() {
         vec![
             mode(FourCc::YUYV, 2560, 1440, 30),
             mode(FourCc::MJPG, 640, 480, 30),
+            mode(FourCc::MJPG, 320, 240, 30),
             mode(FourCc::YUYV, 320, 240, 30),
         ],
     );
@@ -321,7 +312,7 @@ fn enospc_fallback_tries_mjpg_before_smaller_yuyv() {
             attempts
                 .borrow_mut()
                 .push((plan.mode.format.code, res.width.get()));
-            // The bus refuses the 2560 and the MJPG 640; the smallest YUYV streams.
+            // The bus refuses the 2560 and the MJPG 640; the MJPG 320 streams.
             if res.width.get() >= 640 {
                 return Err(stalled::start_failed(
                     &dev,
@@ -333,16 +324,16 @@ fn enospc_fallback_tries_mjpg_before_smaller_yuyv() {
             Ok((plan.mode.format.code, res.width.get(), res.height.get()))
         },
     )
-    .expect("the smallest YUYV streams");
-    assert_eq!((code, width), (FourCc::YUYV, 320));
+    .expect("the MJPG 320 streams");
+    assert_eq!((code, width), (FourCc::MJPG, 320));
     assert_eq!(
         attempts.into_inner(),
         vec![
             (FourCc::YUYV, 2560),
             (FourCc::MJPG, 640),
-            (FourCc::YUYV, 320)
+            (FourCc::MJPG, 320)
         ],
-        "one start per mode, MJPG before the smaller YUYV"
+        "one start per mode; after a compressed refusal on USB 2, no uncompressed mode is tried"
     );
 }
 
@@ -358,7 +349,7 @@ fn stalls_keep_replanning_until_a_mode_delivers() {
         vec![
             mode(FourCc::YUYV, 2560, 1440, 30),
             mode(FourCc::MJPG, 640, 480, 30),
-            mode(FourCc::YUYV, 320, 240, 30),
+            mode(FourCc::MJPG, 320, 240, 30),
         ],
     );
     let attempts = std::cell::Cell::new(0);
@@ -369,12 +360,7 @@ fn stalls_keep_replanning_until_a_mode_delivers() {
             let res = plan.mode.format.resolution;
             if res.width.get() > 320 {
                 // What confirm_first_frame records for a mode that delivers nothing.
-                stalled::mark(
-                    &dev,
-                    BackendKind::V4l2,
-                    &plan.mode.id,
-                    "no frame in 2000 ms",
-                );
+                stalled::mark(&dev, BackendKind::V4l2, &plan.mode, "no frame in 2000 ms");
                 return Err(CaptureError::NoFrames("no frame in 2000 ms".into()));
             }
             Ok(res.width.get())
@@ -450,4 +436,79 @@ fn compressed_usb_modes_are_checked_for_frames_when_started() {
     let mut other = usb.clone();
     other.backends[0].properties.clear();
     assert!(!stalled::may_starve(&other.backends[0], mjpg));
+}
+
+/// After a compressed mode of a USB 2 camera failed (it stalled while the bus was crowded), no
+/// uncompressed mode is tried for it: the C270's MJPG 1280x960 stalling used to fall back to YUYV
+/// 960x720, which starves the bus. The camera's lighter MJPG modes are tried; the record expires.
+#[test]
+fn a_failed_compressed_mode_never_falls_back_to_uncompressed_on_usb2() {
+    let mut dev = camera_with(
+        "no-compressed-to-uncompressed",
+        "480",
+        vec![
+            mode(FourCc::MJPG, 1280, 960, 30),
+            mode(FourCc::MJPG, 640, 480, 30),
+            mode(FourCc::YUYV, 960, 720, 30),
+            mode(FourCc::YUYV, 640, 480, 30),
+        ],
+    );
+    dev.identity.keys = vec!["test:no-compressed-to-uncompressed".into()];
+    let req = Frames::any().fps(30);
+    let first = plan_frames_with(&dev, &req, &registry()).unwrap();
+    assert_eq!(first.mode.format.code, FourCc::MJPG);
+    assert_eq!(first.mode.format.resolution.width.get(), 1280);
+    stalled::mark(&dev, BackendKind::V4l2, &first.mode, "no frame in 2000 ms");
+    let next = plan_frames_with(&dev, &req, &registry()).unwrap();
+    assert_eq!(
+        (
+            next.mode.format.code,
+            next.mode.format.resolution.width.get()
+        ),
+        (FourCc::MJPG, 640),
+        "{next}"
+    );
+    // Once the record expires the camera gets its best mode back.
+    stalled::forget(&dev);
+    let back = plan_frames_with(&dev, &req, &registry()).unwrap();
+    assert_eq!(back.mode.format.resolution.width.get(), 1280);
+}
+
+/// A fallback only tries lighter modes than the one that failed: the Creative-era 1d6c:0103
+/// stalling on MJPG 640x480 went up to MJPG 1024x768. A heavier mode is left out; lighter ones
+/// (MJPG 320x240) remain.
+#[test]
+fn a_fallback_tries_only_lighter_modes() {
+    let mut dev = camera_with(
+        "lighter-only",
+        "480",
+        vec![
+            mode(FourCc::MJPG, 1024, 768, 30),
+            mode(FourCc::MJPG, 640, 480, 30),
+            mode(FourCc::MJPG, 320, 240, 30),
+        ],
+    );
+    dev.identity.keys = vec!["test:lighter-only".into()];
+    let req = Frames::any().fps(30);
+    // MJPG 640x480 stalled (the 1d6c:0103 case): the next plan is lighter, never MJPG 1024x768.
+    let _ = plan_frames_with(&dev, &req, &registry()).unwrap();
+    let middle = dev.backends[0]
+        .descriptor
+        .modes
+        .iter()
+        .find(|m| m.format.resolution.width.get() == 640)
+        .expect("640")
+        .clone();
+    stalled::mark(&dev, BackendKind::V4l2, &middle, "no frame in 2000 ms");
+    let next = plan_frames_with(&dev, &req, &registry()).unwrap();
+    assert_eq!(next.mode.format.resolution.width.get(), 320, "{next}");
+    let heavier = next
+        .rejected
+        .iter()
+        .find(|r| r.candidate == "v4l2 MJPG 1024x768")
+        .map(|r| r.reason.as_str());
+    assert!(
+        heavier.is_some_and(|r| r.contains("heavier")),
+        "{heavier:?}"
+    );
 }
