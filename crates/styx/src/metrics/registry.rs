@@ -59,6 +59,10 @@ pub struct ServiceMetrics {
     pub revoked: u64,
     /// Each connected client: frames sent to it, dropped for it, held by it.
     pub client_metrics: Vec<super::camera::ConsumerMetrics>,
+    /// The last camera start that failed, and why (the bus had no room, no frame came); cleared
+    /// when a start succeeds.
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub last_error: Option<String>,
     /// The service process: its cameras (with their consumers) and itself.
     pub snapshot: MetricsSnapshot,
 }

@@ -310,6 +310,7 @@ impl Service {
             skipped: stats.skipped,
             revoked: stats.revoked,
             client_metrics: self.client_metrics.snapshot(),
+            last_error: self.counters.last_error.lock().clone(),
             // Only this service's captures: the process runs other services' too.
             snapshot: crate::metrics::snapshot_of(&owned),
         }
@@ -363,6 +364,8 @@ impl Drop for CameraServiceHandle {
 
 #[derive(Default)]
 pub(crate) struct Counters {
+    /// The last camera start that failed, with why (cleared when one starts).
+    last_error: Mutex<Option<String>>,
     rejected: AtomicU64,
     unauthorized: AtomicU64,
     restarts: AtomicU64,

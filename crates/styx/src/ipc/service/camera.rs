@@ -7,7 +7,7 @@ mod priority;
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use styx_core::prelude::*;
@@ -47,7 +47,16 @@ struct State {
     /// Control connections that subscribed to changes (their key, a duplicate of the socket).
     subscribers: Vec<(u64, OwnedFd)>,
     next_subscriber: u64,
+    /// After the bus refused a start: when the next start may be tried, and the wait it was
+    /// set with (doubled on each refusal, up to [`MAX_RETRY_WAIT`]).
+    retry: Option<(Instant, Duration)>,
 }
+
+/// The first wait after the bus refused a start; doubled on each refusal, up to the maximum.
+const FIRST_RETRY_WAIT: Duration = Duration::from_secs(1);
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
+/// Most modes a join tries after a start fails for lack of bus bandwidth or for no frames.
+const MAX_REPLANS: usize = 16;
 
 struct Client {
     id: u64,
@@ -111,6 +120,7 @@ impl Camera {
                 fps_override: None,
                 subscribers: Vec::new(),
                 next_subscriber: 0,
+                retry: None,
             }),
             flips: AtomicU8::new(0),
         }
@@ -227,27 +237,62 @@ impl Camera {
             running.owners = owners;
             frames
         } else {
-            let restarting = state.running.is_some();
-            let tried = (planned.plan.backend, planned.plan.mode.id.clone());
-            let started = match restart(state, planned, config) {
-                // The mode delivered no frame and is left out now: plan again once.
-                Err(_)
-                    if crate::planner::stalled::check(&self.device, tried.0, &tried.1).is_err() =>
-                {
-                    self.plan_clients(&all, fps, None, config)
-                        .map_err(|err| describe(&err))
-                        .and_then(|planned| restart(state, planned, config))
+            // The bus refused a start recently: refuse without trying again until the wait ends.
+            if let Some((at, _)) = state.retry {
+                let wait = at.saturating_duration_since(Instant::now());
+                if !wait.is_zero() {
+                    let last = counters.last_error.lock().clone().unwrap_or_default();
+                    return Err(format!(
+                        "{last}; the next start is tried in {} s",
+                        wait.as_secs_f32().ceil() as u64
+                    ));
                 }
-                started => started,
-            };
+            }
+            let restarting = state.running.is_some();
+            let mut tried = (planned.plan.backend, planned.plan.mode.id.clone());
+            let mut started = restart(state, planned, config);
+            // A mode the bus refused, or that delivered no frame, is left out now: plan again
+            // with the next lower one. When nothing is left, the first error stands.
+            for _ in 0..MAX_REPLANS {
+                if started.is_ok()
+                    || crate::planner::stalled::check(&self.device, tried.0, &tried.1).is_ok()
+                {
+                    break;
+                }
+                let Ok(next) = self.plan_clients(&all, fps, None, config) else {
+                    break;
+                };
+                tried = (next.plan.backend, next.plan.mode.id.clone());
+                started = restart(state, next, config);
+            }
             match started {
                 Ok(frames) => {
                     if restarting {
                         counters.restarts.fetch_add(1, Ordering::Relaxed);
                     }
+                    state.retry = None;
+                    *counters.last_error.lock() = None;
                     frames.expect("a consumer for the new client")
                 }
                 Err(err) => {
+                    let bus = err.contains("not enough USB bandwidth");
+                    {
+                        let mut last = counters.last_error.lock();
+                        if last.as_deref() != Some(err.as_str()) {
+                            crate::trace::warn!(
+                                camera = %self.device.identity.display,
+                                error = %err,
+                                "camera did not start"
+                            );
+                            *last = Some(err.clone());
+                        }
+                    }
+                    state.retry = bus.then(|| {
+                        let wait = state
+                            .retry
+                            .map_or(FIRST_RETRY_WAIT, |(_, wait)| (wait * 2).min(MAX_RETRY_WAIT));
+                        (Instant::now() + wait, wait)
+                    });
                     // Keep serving the clients that were there.
                     let existing = &all[..all.len() - 1];
                     if !existing.is_empty()
