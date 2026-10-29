@@ -29,6 +29,17 @@ fn read_usb_speed(path: &std::path::Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// A USB camera's vendor or product id (sysfs `idVendor` / `idProduct`, four hex digits) of the
+/// node's USB device, which is the same for every node of the camera.
+fn read_usb_id(path: &std::path::Path, attr: &str) -> Option<String> {
+    let node = path.file_name()?.to_string_lossy();
+    let sysfs = format!("/sys/class/video4linux/{node}/device/../{attr}");
+    std::fs::read_to_string(sysfs)
+        .ok()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| s.len() == 4 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Whether virtual capture nodes (v4l2loopback, "OBS Virtual Camera", ...) are kept: set
 /// `STYX_V4L2_ALLOW_VIRTUAL=1`. They are skipped by default because they are usually fed by
 /// another application rather than being cameras; they are useful for testing.
@@ -174,6 +185,16 @@ fn build_info(path: &std::path::Path) -> Result<Probed, Box<dyn std::error::Erro
         .flatten()
     {
         properties.push(("usb_speed_mbps".into(), speed));
+    }
+    if bus_info.starts_with("usb") {
+        // The camera's own ids, as the UVC backend reports them: the identity of the physical
+        // device together with its bus port (`styx::device_identity`).
+        if let Some(vendor) = read_usb_id(path, "idVendor") {
+            properties.push(("usb_vendor".into(), vendor));
+        }
+        if let Some(product) = read_usb_id(path, "idProduct") {
+            properties.push(("usb_product".into(), product));
+        }
     }
     Ok(Probed::Camera(V4l2DeviceInfo {
         path: path.display().to_string(),
