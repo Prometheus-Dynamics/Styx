@@ -1,5 +1,5 @@
 //! On a device: a native camera service with sliced delivery, lazy back end buffers and raw
-//! companions (`native_slice_line`, `native_deliver_slices`, `native_lazy_output_buffers`,
+//! companions (`native_slice_line`, `native_deliver_slices`,
 //! `native_sensor_raw`): a 120 fps NV12 vision client, a low-priority raw client joining the
 //! running capture (it must get frames), then rotation 180 (the picture must turn).
 //!
@@ -66,7 +66,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let camera = probe_all().into_iter().next().ok_or("no camera")?;
     let config = StyxConfig::default()
         .native_sensor_raw(true)
-        .native_lazy_output_buffers(true)
         .native_slice_line(sliced.then_some(400))
         .native_deliver_slices(sliced);
     let _service = CameraService::new(camera)

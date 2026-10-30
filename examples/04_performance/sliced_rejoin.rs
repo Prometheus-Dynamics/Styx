@@ -4,12 +4,12 @@
 //!
 //! ```text
 //! sliced_rejoin serve PATH [SECONDS]     a camera service slicing at line 600, frames handed
-//!                                        out at their first slice, lazy back end buffers,
+//!                                        out at their first slice,
 //!                                        pausing 1 s after its last reading client
 //! sliced_rejoin client PATH [JOINS]      join JOINS times (default 5), 1.5 s apart
 //! ```
 //!
-//! `STYX_REJOIN_EAGER=1` allocates every back end buffer at start instead. Styx's debug log
+//! Styx's debug log
 //! goes to stderr (why a sliced frame failed: the camera, or the service's wait for it).
 
 use std::time::{Duration, Instant};
@@ -22,16 +22,14 @@ const FRAMES_PER_JOIN: usize = 10;
 
 fn serve(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
     let camera = probe_all().into_iter().next().ok_or("no camera")?;
-    let lazy = std::env::var("STYX_REJOIN_EAGER").as_deref() != Ok("1");
     let config = StyxConfig::new()
         .native_slice_line(Some(600))
-        .native_deliver_slices(true)
-        .native_lazy_output_buffers(lazy);
+        .native_deliver_slices(true);
     let _service = CameraService::new(camera)
         .capture_config(config)
         .pause_when_idle(Duration::from_secs(1))
         .serve(path)?;
-    println!("camera service on {path} for {seconds} s (lazy back end buffers: {lazy})");
+    println!("camera service on {path} for {seconds} s");
     std::thread::sleep(Duration::from_secs(seconds));
     Ok(())
 }

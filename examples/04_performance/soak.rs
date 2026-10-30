@@ -10,11 +10,11 @@
 //! else the first camera):
 //!
 //! ```text
-//! STYX_SIM_CAMERAS=ov9782 soak [minutes] [fps] [lean]
+//! STYX_SIM_CAMERAS=ov9782 soak [minutes] [fps] [raw buffers] [output buffers]
 //! soak 30 120
 //! ```
 //!
-//! `lean` runs the camera with `StyxConfig::lean_memory` (a small device's buffers).
+//! The buffer counts default to `StyxConfig`'s (`native_raw_buffers`, `native_output_buffers`).
 
 use std::time::{Duration, Instant};
 
@@ -64,7 +64,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let minutes: f64 = args.next().map_or(Ok(30.0), |a| a.parse())?;
     let fps: u32 = args.next().map_or(Ok(120), |a| a.parse())?;
-    let lean = args.next().as_deref() == Some("lean");
+    let raw: Option<u32> = args.next().map(|a| a.parse()).transpose()?;
+    let out: Option<u32> = args.next().map(|a| a.parse()).transpose()?;
     let cameras = styx::probe_all();
     let camera = cameras
         .iter()
@@ -75,13 +76,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "camera: {}, {minutes} min at {fps} fps{}",
         camera.identity.display,
-        if lean { ", lean memory" } else { "" }
+        raw.map_or(String::new(), |r| format!(
+            ", {r} raw and {} output buffers",
+            out.map_or("default".into(), |o| o.to_string())
+        ))
     );
     let path = std::env::temp_dir().join(format!("styx-soak-{}.sock", std::process::id()));
     let mut service = CameraService::new(camera).keep_streaming();
-    if lean {
-        service = service.capture_config(StyxConfig::default().lean_memory());
+    let mut config = StyxConfig::default();
+    if let Some(r) = raw {
+        config = config.native_raw_buffers(r);
     }
+    if let Some(o) = out {
+        config = config.native_output_buffers(o);
+    }
+    service = service.capture_config(config);
     let service = service.serve(&path)?;
     let vision = FrameClient::request(&path, &Frames::gray().size(640, 400).fps(fps))?;
 

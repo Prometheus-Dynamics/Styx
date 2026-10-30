@@ -503,12 +503,10 @@ pub(super) fn start_processed(
                 slice_line: config.backends.native.slice_line,
                 spatial_denoise: f64::from(config.backends.native.spatial_denoise_percent) / 100.0,
                 be_buffers,
-                // Lazily (opt-in): the base set now, the rest as they are held.
-                be_buffers_initial: config
-                    .backends
-                    .native
-                    .lazy_output_buffers
-                    .then(|| config.backends.native.output_buffers.clamp(2, be_buffers)),
+                // The base set now, the rest as they are held.
+                be_buffers_initial: Some(
+                    config.backends.native.output_buffers.clamp(2, be_buffers),
+                ),
                 pass_buffers,
                 raw_lease: config.backends.native.sensor_raw,
                 fe_buffers: PispOptions::nv12_and_half_rgb(w, h).fe_buffers

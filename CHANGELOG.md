@@ -23,11 +23,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   with the ISP picks it (`IspKind::Rkisp`, `isp=rkisp`; NV12 modes; the planner prices it as
   hardware). Written against the uAPI; not yet run on a board.
 
-- **`StyxConfig::lean_memory`, for small devices (a 128 MB camera):** 3 raw capture buffers
-  (`NativeIspConfig::raw_buffers`, new, default 4; `native_raw_buffers`), 3 output buffers
-  allocated as held, a capture queue of 1, RAW8 where the sensor has it. The software ISP now
-  keeps at most `output_buffers` spare output buffers per output and frees the rest (it kept
-  every buffer ever held at once for the whole capture). `soak ... lean` runs with it.
+- **Small-device buffer knobs** (no preset; set each per device): `native_raw_buffers`
+  (`NativeIspConfig::raw_buffers`, new, default 4), `native_output_buffers` and
+  `capture_queue_depth`. The software ISP now keeps at most `output_buffers` spare output
+  buffers per output and frees the rest (it kept every buffer ever held at once for the whole
+  capture). Raze (CM5, OV9782 1280x800 gray at 120 fps, served, 12 s): 2 raw and 2 output
+  buffers with a queue of 1 still deliver 120.0 fps with no sequence gaps and hold 26.5 MiB of
+  dma-bufs against 34.0 MiB at the defaults; the process's resident memory is 18 MiB either
+  way (12 MiB of it the mapped buffers, 4 MiB code). `memory_check` (new example) reports
+  the frame rate, gaps and that breakdown for given counts; `soak` takes the counts.
 
 - **RISC-V with vectors in the gate** (`scripts/check-riscv.sh`, step `riscv`): the software
   ISP and the 3A algorithms built for riscv64 musl with RVV (`+v,+zvfh`), the compiler's
@@ -388,6 +392,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   unstripped build (docs/metrics.md, "Finding allocations on a device").
 
 ### Changed
+
+- **PiSP back end buffers beyond `output_buffers` are always allocated as held** (one spare
+  ahead, from a helper thread); `NativeIspConfig::lazy_output_buffers` /
+  `native_lazy_output_buffers` and `StyxConfig::lean_memory` are gone. Raze, 1280x800 gray at
+  120 fps served: 34.0 MiB of dma-bufs at the defaults against 43.0 MiB eager, and a
+  2.5-minute soak with a second 1280x800 client joining and leaving (7 restarts) had no gaps.
 
 - `styx_pipeline::device::IspKind` is `#[non_exhaustive]` and has an `Rkisp` variant.
 - **One MMAP buffer queue and one media-device lookup for the ISP drivers (duplicate
