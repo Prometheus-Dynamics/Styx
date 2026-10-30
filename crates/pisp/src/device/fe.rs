@@ -372,7 +372,7 @@ impl FrontEndDevice {
         let bytes = cfg.as_bytes();
         super::config_dump::fe_config(bytes);
         self.config.maps[index as usize][0].as_mut_slice()[..bytes.len()].copy_from_slice(bytes);
-        self.config.queue(index, &[bytes.len() as u32])
+        Ok(self.config.queue(index, &[bytes.len() as u32])?)
     }
 
     fn feed_configs(&mut self, fe: &mut FrontEnd) -> Result<()> {

@@ -55,6 +55,13 @@ pub fn record(what: &'static str, op: &'static str, elapsed: Duration) {
     }
 }
 
+/// [`record`] when timing is on (a queue's timer).
+pub(super) fn record_if_on(what: &'static str, op: &'static str, elapsed: Duration) {
+    if enabled() {
+        record(what, op, elapsed);
+    }
+}
+
 /// Runs `f`, timing it as `(what, op)` when timing is on.
 #[inline]
 pub fn time<T>(what: &'static str, op: &'static str, f: impl FnOnce() -> T) -> T {

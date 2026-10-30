@@ -100,7 +100,7 @@ impl ConfigBuffer {
     /// Queues the buffer with `used` bytes of payload.
     pub(super) fn queue(&self, used: u32) -> Result<()> {
         match self {
-            Self::Mmap(q) => q.queue(0, &[used]),
+            Self::Mmap(q) => Ok(q.queue(0, &[used])?),
             Self::Heap {
                 dev,
                 buf_type,
@@ -153,7 +153,7 @@ impl ConfigBuffer {
     /// Starts streaming.
     pub(super) fn stream_on(&self) -> Result<()> {
         match self {
-            Self::Mmap(q) => q.stream_on(),
+            Self::Mmap(q) => Ok(q.stream_on()?),
             Self::Heap { dev, buf_type, .. } => Ok(dev.stream_on(*buf_type)?),
         }
     }

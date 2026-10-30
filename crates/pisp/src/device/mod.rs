@@ -55,7 +55,6 @@ pub mod profile;
 mod queue;
 
 use std::fmt;
-use std::path::PathBuf;
 
 /// `STYX_CFE_EVENT_LINES - V4L2_EVENT_PRIVATE_START` (kernel-modules/rp1-cfe): the front end's
 /// line event, subscribed to for slicing (and by the lines probe).
@@ -111,18 +110,7 @@ impl From<styx_kernel::Error> for DeviceError {
 pub type Result<T> = std::result::Result<T, DeviceError>;
 
 /// Media devices whose driver is `driver` (e.g. `rp1-cfe`, `pispbe`), in path order.
-pub fn find_media(driver: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = styx_kernel::media::list_media_devices()
-        .into_iter()
-        .filter(|p| {
-            styx_kernel::media::MediaDevice::open_read_only(p)
-                .and_then(|m| m.device_info())
-                .is_ok_and(|i| i.driver == driver)
-        })
-        .collect();
-    v.sort();
-    v
-}
+pub use styx_kernel::media::find_media_by_driver as find_media;
 
 /// `V4L2_PIX_FMT_SBGGR16` and friends: 16-bit Bayer fourcc for a PiSP Bayer order.
 pub fn bayer16_fourcc(order: crate::uapi::BayerOrder) -> styx_kernel::FourCc {

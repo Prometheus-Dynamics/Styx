@@ -390,6 +390,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Changed
 
 - `styx_pipeline::device::IspKind` is `#[non_exhaustive]` and has an `Rkisp` variant.
+- **One MMAP buffer queue and one media-device lookup for the ISP drivers (duplicate
+  merge).** `styx_kernel::v4l2::MmapQueue` (every buffer mapped; `dequeue_within`, an optional
+  `QueueTimer`) is what `styx_pisp::device::Queue` wraps (timed into the PiSP profile, a
+  timeout as `DeviceError::Timeout`) and what `styx_rkisp::device` uses;
+  `styx_kernel::media::find_media_devices` / `find_media_by_driver` replace the PiSP's and the
+  Rockchip path's own scans (`styx_pisp::device::find_media` is `find_media_by_driver`). A
+  queue the driver gives no buffers is now a `Kernel(Invalid)` error, not `Setup`.
 
 - **Duplicate code merged (API cleanup).** The `no_std` float shim, until now five copies in
   styx-core, styx-algo, styx-pisp, styx-sensor and styx-dng, is one crate, `styx-math`.

@@ -25,6 +25,7 @@ mod capture;
 pub mod cid;
 mod control;
 mod format;
+mod mmap_queue;
 pub(crate) mod raw;
 
 pub use buffer::{
@@ -40,6 +41,7 @@ pub use format::{
     Format, FormatDesc, FormatFlags, FrameIntervals, FrameSize, FrameSizes, MetaFormat, PixFormat,
     PixFormatMplane, PlaneFormat, SelectionTarget, StepwiseSize, StreamParams,
 };
+pub use mmap_queue::{MmapQueue, QueueTimer};
 
 /// The kind of buffer queue an operation applies to (`enum v4l2_buf_type`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -13,17 +13,15 @@
 
 use std::path::PathBuf;
 use std::string::String;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::vec::Vec;
 use std::{fmt, format};
 
 use styx_kernel::FourCc;
-use styx_kernel::Mapping;
 use styx_kernel::media::{LinkFlags, MediaDevice, PadRef, Topology};
 use styx_kernel::subdev::{MbusCode, MbusFormat, Subdev, Which};
 use styx_kernel::v4l2::{
-    BufType, DequeuedBuffer, Format, Memory, MetaFormat, PixFormatMplane, QueueBuffer, QueuePlane,
-    VideoDevice,
+    BufType, DequeuedBuffer, Format, MetaFormat, MmapQueue, PixFormatMplane, VideoDevice,
 };
 
 use crate::Params;
@@ -88,18 +86,11 @@ pub type Result<T> = core::result::Result<T, DeviceError>;
 /// Media devices with an rkisp ISP subdevice ([`ISP_ENTITY`]), in path order (one per ISP
 /// instance, `rkisp-vir0`, `rkisp-vir1`, ...).
 pub fn find_isps() -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = styx_kernel::media::list_media_devices()
-        .into_iter()
-        .filter(|p| {
-            styx_kernel::media::MediaDevice::open_read_only(p)
-                .and_then(|m| Ok((m.device_info()?, m.topology()?)))
-                .is_ok_and(|(i, t)| {
-                    i.driver.starts_with("rkisp") && t.entity_by_name(ISP_ENTITY).is_some()
-                })
-        })
-        .collect();
-    v.sort();
-    v
+    styx_kernel::media::find_media_devices(|m| {
+        m.device_info().is_ok_and(|i| i.driver.starts_with("rkisp"))
+            && m.topology()
+                .is_ok_and(|t| t.entity_by_name(ISP_ENTITY).is_some())
+    })
 }
 
 /// What to set up.
@@ -133,72 +124,10 @@ pub struct OutputFrame {
     pub error: bool,
 }
 
-/// An MMAP buffer queue on one node.
-struct Queue {
-    dev: VideoDevice,
-    buf_type: BufType,
-    maps: Vec<Vec<Mapping>>,
-    name: &'static str,
-}
-
-impl Queue {
-    fn new(dev: VideoDevice, buf_type: BufType, count: u32, name: &'static str) -> Result<Self> {
-        let got = dev.request_buffers(buf_type, Memory::Mmap, count)?;
-        if got.count == 0 {
-            return Err(DeviceError::Setup(format!("{name}: no buffers")));
-        }
-        let maps = (0..got.count)
-            .map(|i| dev.map_buffer(buf_type, i))
-            .collect::<styx_kernel::Result<Vec<_>>>()?;
-        Ok(Self {
-            dev,
-            buf_type,
-            maps,
-            name,
-        })
-    }
-
-    fn len(&self) -> u32 {
-        self.maps.len() as u32
-    }
-
-    fn queue(&self, index: u32, bytes_used: u32) -> Result<()> {
-        let mut q = QueueBuffer::mmap(self.buf_type, index);
-        if self.buf_type.is_multiplanar() || bytes_used > 0 {
-            q.planes = styx_kernel::v4l2::Planes::one(QueuePlane {
-                bytes_used,
-                ..Default::default()
-            });
-        }
-        Ok(self.dev.queue(&q)?)
-    }
-
-    fn try_dequeue(&self) -> Result<Option<DequeuedBuffer>> {
-        Ok(self.dev.dequeue(self.buf_type, Memory::Mmap)?)
-    }
-
-    fn dequeue(&self, timeout: Duration) -> Result<DequeuedBuffer> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(b) = self.try_dequeue()? {
-                return Ok(b);
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(DeviceError::Timeout(self.name));
-            }
-            self.dev.wait(Some(left))?;
-        }
-    }
-
-    fn close(mut self) -> Result<()> {
-        let r = self.dev.stream_off(self.buf_type);
-        self.maps.clear();
-        let f = self.dev.free_buffers(self.buf_type, Memory::Mmap);
-        r?;
-        f?;
-        Ok(())
-    }
+/// [`MmapQueue::dequeue_within`] with the timeout as an error.
+fn dequeue(q: &MmapQueue, timeout: Duration) -> Result<DequeuedBuffer> {
+    q.dequeue_within(timeout)?
+        .ok_or(DeviceError::Timeout(q.name))
 }
 
 fn entity(t: &Topology, name: &str) -> Result<u32> {
@@ -215,9 +144,9 @@ fn devnode(t: &Topology, id: u32, what: &str) -> Result<PathBuf> {
 /// The ISP path, set up and holding its buffers.
 pub struct IspDevice {
     _media: MediaDevice,
-    params: Queue,
-    stats: Queue,
-    output: Queue,
+    params: MmapQueue,
+    stats: MmapQueue,
+    output: MmapQueue,
     /// Parameter buffers not queued.
     free_params: Vec<u32>,
     /// The main path's line stride and size.
@@ -299,17 +228,18 @@ impl IspDevice {
             ));
         }
 
-        let meta = |node: u32, ty: BufType, fourcc: FourCc, name: &'static str| -> Result<Queue> {
-            let dev = VideoDevice::open(devnode(&t, node, name)?)?;
-            dev.set_format(
-                ty,
-                &Format::Meta(MetaFormat {
-                    fourcc,
-                    ..Default::default()
-                }),
-            )?;
-            Queue::new(dev, ty, setup.buffers, name)
-        };
+        let meta =
+            |node: u32, ty: BufType, fourcc: FourCc, name: &'static str| -> Result<MmapQueue> {
+                let dev = VideoDevice::open(devnode(&t, node, name)?)?;
+                dev.set_format(
+                    ty,
+                    &Format::Meta(MetaFormat {
+                        fourcc,
+                        ..Default::default()
+                    }),
+                )?;
+                Ok(MmapQueue::new(dev, ty, setup.buffers, name)?)
+            };
         let params = meta(params, BufType::MetaOutput, PARAMS_FOURCC, PARAMS_ENTITY)?;
         let stats = meta(stats, BufType::MetaCapture, STATS_FOURCC, STATS_ENTITY)?;
         let output_path = devnode(&t, main, MAINPATH_ENTITY)?;
@@ -337,14 +267,14 @@ impl IspDevice {
             )));
         }
         let stride = p.planes[0].bytes_per_line;
-        let output = Queue::new(
+        let output = MmapQueue::new(
             dev,
             BufType::VideoCaptureMplane,
             setup.buffers,
             MAINPATH_ENTITY,
         )?;
         Ok(Self {
-            free_params: (0..params.len()).rev().collect(),
+            free_params: (0..params.len() as u32).rev().collect(),
             _media: media,
             params,
             stats,
@@ -377,15 +307,15 @@ impl IspDevice {
         if !self.queue_params(first)? {
             return Err(DeviceError::Setup("no parameter buffer".into()));
         }
-        for i in 0..self.stats.len() {
-            self.stats.queue(i, 0)?;
+        for i in 0..self.stats.len() as u32 {
+            self.stats.queue(i, &[])?;
         }
-        for i in 0..self.output.len() {
-            self.output.queue(i, 0)?;
+        for i in 0..self.output.len() as u32 {
+            self.output.queue(i, &[])?;
         }
-        self.params.dev.stream_on(self.params.buf_type)?;
-        self.stats.dev.stream_on(self.stats.buf_type)?;
-        self.output.dev.stream_on(self.output.buf_type)?;
+        self.params.stream_on()?;
+        self.stats.stream_on()?;
+        self.output.stream_on()?;
         self.streaming = true;
         Ok(())
     }
@@ -410,7 +340,7 @@ impl IspDevice {
             )));
         };
         dst.copy_from_slice(bytes);
-        self.params.queue(i, bytes.len() as u32)?;
+        self.params.queue(i, &[bytes.len() as u32])?;
         Ok(true)
     }
 
@@ -422,16 +352,16 @@ impl IspDevice {
         timeout: Duration,
         read: impl FnOnce(&[u8]) -> R,
     ) -> Result<(u32, Duration, R)> {
-        let b = self.stats.dequeue(timeout)?;
+        let b = dequeue(&self.stats, timeout)?;
         let data = self.stats.maps[b.index as usize][0].as_slice();
         let r = read(&data[..b.bytes_used().min(data.len())]);
-        self.stats.queue(b.index, 0)?;
+        self.stats.queue(b.index, &[])?;
         Ok((b.sequence, b.timestamp, r))
     }
 
     /// Waits for the next output frame and leaves it dequeued.
     pub fn next_output(&mut self, timeout: Duration) -> Result<OutputFrame> {
-        let b = self.output.dequeue(timeout)?;
+        let b = dequeue(&self.output, timeout)?;
         Ok(OutputFrame {
             index: b.index,
             sequence: b.sequence,
@@ -449,7 +379,7 @@ impl IspDevice {
 
     /// Gives an output frame back to the driver.
     pub fn release(&self, frame: &OutputFrame) -> Result<()> {
-        self.output.queue(frame.index, 0)
+        Ok(self.output.queue(frame.index, &[])?)
     }
 
     /// Stops streaming and frees the buffers.
@@ -458,7 +388,7 @@ impl IspDevice {
         let o = self.output.close();
         let s = self.stats.close();
         let p = self.params.close();
-        o.and(s).and(p)
+        Ok(o.and(s).and(p)?)
     }
 
     /// Whether [`Self::start`] has run.

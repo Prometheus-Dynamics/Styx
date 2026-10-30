@@ -308,3 +308,16 @@ impl AsRawFd for Request {
 pub fn list_media_devices() -> Vec<PathBuf> {
     ioctl::list_dev_nodes("media")
 }
+
+/// The `/dev/media*` nodes, sorted by number, that open (read-only) and that `select` takes.
+pub fn find_media_devices(select: impl Fn(&MediaDevice) -> bool) -> Vec<PathBuf> {
+    list_media_devices()
+        .into_iter()
+        .filter(|p| MediaDevice::open_read_only(p).is_ok_and(|m| select(&m)))
+        .collect()
+}
+
+/// The media devices whose driver is `driver` (e.g. `rp1-cfe`, `pispbe`), sorted by number.
+pub fn find_media_by_driver(driver: &str) -> Vec<PathBuf> {
+    find_media_devices(|m| m.device_info().is_ok_and(|i| i.driver == driver))
+}
