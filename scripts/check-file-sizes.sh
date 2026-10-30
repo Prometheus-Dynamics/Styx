@@ -38,6 +38,9 @@ is_excluded() {
             return 0
         fi
     done
+    # Generated code (`@generated` in its first lines, e.g. bindgen's uAPI layouts) is not
+    # written by hand, so the limit does not apply.
+    head -n 3 "$root_dir/$rel_path" 2>/dev/null | grep -q '@generated' && return 0
     return 1
 }
 

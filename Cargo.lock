@@ -5589,6 +5589,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "styx-rkisp"
+version = "2.0.1-dev"
+dependencies = [
+ "bytemuck",
+ "styx-algo",
+ "styx-math",
+]
+
+[[package]]
 name = "styx-runtime"
 version = "2.0.1-dev"
 dependencies = [

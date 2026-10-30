@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **`styx-rkisp`: the Rockchip ISP30 (RK3588 / RK3588S) from Rust** (docs/rockchip.md):
+  the vendor kernel's parameter and statistics buffer layouts (bindgen from the MIT-licensed
+  uAPI headers, `scripts/rkisp-bindgen.sh`; sizes and offsets checked against C), a
+  per-frame parameter builder (`Params`: statistics windows, black level, white balance gains,
+  colour matrix, gamma) and statistics decoding into `styx_algo::Statistics`. `no_std`.
+  Groundwork for a hardware-ISP backend; not yet run on an RK3588.
+
 - **`StyxConfig::lean_memory`, for small devices (a 128 MB camera):** 3 raw capture buffers
   (`NativeIspConfig::raw_buffers`, new, default 4; `native_raw_buffers`), 3 output buffers
   allocated as held, a capture queue of 1, RAW8 where the sensor has it. The software ISP now

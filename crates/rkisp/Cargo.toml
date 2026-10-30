@@ -13,6 +13,7 @@ categories = ["multimedia::images", "hardware-support"]
 [dependencies]
 bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 styx-algo = { workspace = true, default-features = false }
+styx-math.workspace = true
 
 [lints]
 workspace = true
