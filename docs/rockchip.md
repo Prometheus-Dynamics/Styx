@@ -26,6 +26,7 @@ The NEON software ISP already runs on any Rockchip ARM board.
   module bits of `module_ens` are written out by hand (`uapi::module`).
 - `Params`: one frame's parameters: the statistics Styx reads (`measure`: the big raw AE
   block's 15x15 zone means, the big raw histogram of luma), black level, white balance gains,
+  lens shading (the tuning's table resampled to the 17x17 vertices of 16x16 equal sectors),
   colour matrix, output gamma.
 - `statistics`: a statistics buffer into `styx_algo::Statistics` (colour zones and histogram,
   before white balance and lens shading).
@@ -33,7 +34,8 @@ The NEON software ISP already runs on any Rockchip ARM board.
 The fixed-point formats the headers do not state are named constants taken from how
 Rockchip's 3A fills the same fields, to be confirmed on the device: white balance gains with 8
 fractional bits (`GAIN_ONE`), matrix coefficients with 7 (`CCM_ONE`), 12-bit gamma output
-(`GAMMA_OUT_MAX`), AE zone means of 10 bits for red and blue and 12 for green (`AE_RB_FULL`,
+(`GAMMA_OUT_MAX`), lens shading gains with 10 (`LSC_ONE`, 12-bit samples; the sectors
+sized over the Bayer quads, half the frame), AE zone means of 10 bits for red and blue and 12 for green (`AE_RB_FULL`,
 `AE_G_FULL`).
 
 ## The capture path
@@ -50,7 +52,7 @@ sensor ─► rkcif ─► rkisp-isp-subdev ─► rkisp-statistics ─► styx_
   statistics node, sets the pad and node formats (`RK1P` / `RK1S` meta, NV12 on the main path)
   and allocates MMAP buffers; parameter buffers are reclaimed as the driver returns them.
 - `styx_pipeline::rkisp`: ISP settings to a parameter buffer (black level on 12 bits, white
-  balance times digital gain, colour matrix, gamma) and a statistics buffer to the 3A input.
+  balance times digital gain, lens shading, colour matrix, gamma) and a statistics buffer to the 3A input.
 - `styx_pipeline::device::RkispPipeline`: the camera's sensor side only
   (`configure_external` / `start_external`, the main path's node for frame timing); per frame,
   statistics through the algorithms, their sensor request to the control schedule, their
@@ -67,7 +69,7 @@ sensor ─► rkcif ─► rkisp-isp-subdev ─► rkisp-statistics ─► styx_
    against `media-ctl -p`, then the frame timing (the main path sends no `FRAME_SYNC`, so the
    control schedule runs on its own timing) and the parameter frame ids.
 2. Confirm the fixed-point constants against captured frames.
-3. Lens shading, denoise and sharpening blocks; tuning from the ColorChecker session.
+3. Denoise and sharpening blocks; tuning from the ColorChecker session.
 4. Up to four cameras on one SoC: the two ISP30 units time-shared between cameras (the vendor
    driver's multi-camera mode).
 

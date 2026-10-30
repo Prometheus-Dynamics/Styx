@@ -5,7 +5,7 @@
 //! - [`uapi`]: the buffers' layouts, from the kernel's `rk-isp3-config.h` (MIT), checked
 //!   against the C compiler's.
 //! - [`Params`]: a parameter buffer for a frame: the statistics Styx's 3A reads, black level,
-//!   white balance gains, colour matrix, output gamma.
+//!   white balance gains, lens shading, colour matrix, output gamma.
 //! - [`statistics`]: a statistics buffer as [`styx_algo::Statistics`].
 //! - `device` (feature `device`): the vendor driver's ISP, parameter, statistics and main
 //!   path nodes.
@@ -28,7 +28,7 @@ mod params;
 mod stats;
 pub mod uapi;
 
-pub use params::{CCM_ONE, GAIN_ONE, GAMMA_OUT_MAX, Params};
+pub use params::{CCM_ONE, GAIN_ONE, GAMMA_OUT_MAX, LSC_ONE, Params};
 pub use stats::{AE_G_FULL, AE_RB_FULL, AE_ZONES, statistics};
 
 #[cfg(test)]

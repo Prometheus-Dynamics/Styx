@@ -2,8 +2,8 @@
 //! the algorithms' input ([`statistics`]).
 //!
 //! The ISP30 blocks these settings drive: black level (BLS), white balance and digital gain
-//! (AWB gain), the colour matrix (CCM) and the output gamma (GOC). Lens shading, denoise and
-//! sharpening stay at the driver's defaults for now.
+//! (AWB gain), lens shading (LSC, when the tuning calibrates it), the colour matrix (CCM) and
+//! the output gamma (GOC). Denoise and sharpening stay at the driver's defaults for now.
 
 use styx_algo::Statistics;
 #[allow(unused_imports)]
@@ -25,8 +25,16 @@ pub fn params(settings: &IspSettings, frame: u32, width: u32, height: u32) -> Pa
     let m = settings.ccm.map(|c| c as f32);
     let ccm = [[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]];
     let curve = settings.gamma.clone();
-    Params::new()
-        .frame(frame)
+    let mut p = Params::new();
+    if let Some(ls) = &settings.lens_shading {
+        p = p.lens_shading(
+            dim(width),
+            dim(height),
+            (ls.width as usize, ls.height as usize),
+            [&ls.r, &ls.g, &ls.b],
+        );
+    }
+    p.frame(frame)
         .measure(dim(width), dim(height))
         .black_level(settings.black_cfa().map(level))
         .white_balance(wb)

@@ -12,7 +12,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   the vendor kernel's parameter and statistics buffer layouts (bindgen from the MIT-licensed
   uAPI headers, `scripts/rkisp-bindgen.sh`; sizes and offsets checked against C), a
   per-frame parameter builder (`Params`: statistics windows, black level, white balance gains,
-  colour matrix, gamma) and statistics decoding into `styx_algo::Statistics`. `no_std`.
+  lens shading, colour matrix, gamma) and statistics decoding into `styx_algo::Statistics`. `no_std`.
   Not yet run on an RK3588.
 
 - **The Rockchip ISP30 as a native capture path** (docs/rockchip.md): `styx-rkisp`'s

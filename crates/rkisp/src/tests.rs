@@ -73,3 +73,39 @@ fn statistics_become_colour_zones_and_a_histogram() {
     // Too short a buffer is refused.
     assert!(statistics(&[0u8; 100], 100, &mut out).is_none());
 }
+
+#[test]
+fn lens_shading_is_resampled_to_the_vertex_grid() {
+    // A 2x2 table: corners take the corner cells' gains, the middle their mean.
+    let r = [1.0, 1.5, 2.0, 2.5];
+    let flat = [1.0; 4];
+    let p = Params::new().lens_shading(1280, 800, (2, 2), [&r, &flat, &flat]);
+    let c = p.config();
+    assert_eq!({ c.module_ens }, module::LSC);
+    let lsc = c.others.lsc_cfg;
+    let t = { lsc.r_data_tbl };
+    let one = LSC_ONE as u16;
+    assert_eq!(
+        (t[0], t[16], t[16 * 17], t[16 * 17 + 16]),
+        (one, 1536, 2 * one, 2560)
+    );
+    assert_eq!(t[8 * 17 + 8], (1.75 * LSC_ONE) as u16);
+    assert_eq!({ lsc.gr_data_tbl }[100], one);
+    // 16 sectors over the 640x400 Bayer quads.
+    let xs = { lsc.x_size_tbl };
+    assert_eq!(xs.iter().map(|&v| u32::from(v)).sum::<u32>(), 640);
+    assert_eq!(
+        { lsc.y_size_tbl }
+            .iter()
+            .map(|&v| u32::from(v))
+            .sum::<u32>(),
+        400
+    );
+    assert_eq!({ lsc.x_grad_tbl }[0], 819, "32768 / 40");
+    // Gains beyond the 12-bit sample's 4.0 are clamped.
+    let p = Params::new().lens_shading(1280, 800, (1, 1), [&[5.0], &[1.0], &[1.0]]);
+    assert_eq!({ p.config().others.lsc_cfg.r_data_tbl }[0], 4095);
+    // A table of the wrong size changes nothing.
+    let p = Params::new().lens_shading(1280, 800, (3, 3), [&r, &flat, &flat]);
+    assert_eq!({ p.config().module_ens }, 0);
+}

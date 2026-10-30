@@ -15,6 +15,13 @@ pub const GAIN_ONE: f32 = 256.0;
 pub const CCM_ONE: f32 = 128.0;
 /// Full scale of the output gamma curve's samples (12 bits).
 pub const GAMMA_OUT_MAX: f32 = 4095.0;
+/// Lens shading gain 1.0 (10 fractional bits in a 12-bit sample, as Rockchip's 3A writes
+/// them).
+pub const LSC_ONE: f64 = 1024.0;
+
+/// The lens shading grid: 16x16 sectors, 17x17 vertices (`sector_16x16`).
+const LSC_SECTORS: usize = 16;
+const LSC_VERTICES: usize = LSC_SECTORS + 1;
 
 /// The big raw AE block's window grid: 15x15 zones (`wnd_num` 2).
 const AE_GRID_15X15: u8 = 2;
@@ -126,6 +133,50 @@ impl Params {
         self
     }
 
+    /// Lens shading gains over a `width` x `height` raw frame, from tables of `grid.0` x
+    /// `grid.1` cells (sampled at the cell centres, row by row) for red, green and blue:
+    /// resampled bilinearly to the 17x17 vertices of 16x16 equal sectors.
+    pub fn lens_shading(
+        mut self,
+        width: u16,
+        height: u16,
+        grid: (usize, usize),
+        [r, g, b]: [&[f64]; 3],
+    ) -> Self {
+        let (gw, gh) = grid;
+        if gw == 0 || gh == 0 || [r, g, b].iter().any(|t| t.len() != gw * gh) {
+            return self;
+        }
+        let lsc = &mut self.cfg.others.lsc_cfg;
+        lsc.sector_16x16 = 1;
+        // The sectors cover the frame's Bayer quads: half its size, split as evenly as it goes.
+        let sizes = |len: u16| -> [u16; LSC_SECTORS] {
+            let half = usize::from(len / 2);
+            core::array::from_fn(|i| {
+                ((half * (i + 1)) / LSC_SECTORS - (half * i) / LSC_SECTORS) as u16
+            })
+        };
+        let grad = |s: [u16; LSC_SECTORS]| {
+            s.map(|v| ((32768 + u32::from(v) / 2) / u32::from(v.max(1))) as u16)
+        };
+        let (xs, ys) = (sizes(width), sizes(height));
+        lsc.x_size_tbl = xs;
+        lsc.y_size_tbl = ys;
+        lsc.x_grad_tbl = grad(xs);
+        lsc.y_grad_tbl = grad(ys);
+        let (rt, gt, bt) = (
+            vertices(r, gw, gh),
+            vertices(g, gw, gh),
+            vertices(b, gw, gh),
+        );
+        lsc.r_data_tbl = rt;
+        lsc.gr_data_tbl = gt;
+        lsc.gb_data_tbl = gt;
+        lsc.b_data_tbl = bt;
+        self.enable(module::LSC);
+        self
+    }
+
     /// The output gamma: `curve` from 0..=1 to 0..=1, sampled at the 49 equally spaced points
     /// of the 12-bit input (`equ_segm`).
     pub fn gamma(mut self, curve: impl Fn(f32) -> f32) -> Self {
@@ -153,4 +204,34 @@ impl Params {
     pub fn config(&self) -> &isp3x_isp_params_cfg {
         &self.cfg
     }
+}
+
+/// A table of `w` x `h` cells (gains at the cell centres) at the 17x17 grid vertices (the
+/// frame's corners and sector edges), bilinearly, clamped at the edges; as samples of
+/// [`LSC_ONE`], padded to the uAPI's 290.
+fn vertices(src: &[f64], w: usize, h: usize) -> [u16; 290] {
+    let at = |len: usize, i: usize| -> (usize, usize, f64) {
+        let p = -0.5 + i as f64 * len as f64 / LSC_SECTORS as f64;
+        let lo = p.floor();
+        let f = p - lo;
+        let lo = lo.max(0.0) as usize;
+        (
+            lo.min(len - 1),
+            (lo + 1).min(len - 1),
+            if p < 0.0 { 0.0 } else { f },
+        )
+    };
+    let mut out = [LSC_ONE as u16; 290];
+    for j in 0..LSC_VERTICES {
+        let (y0, y1, fy) = at(h, j);
+        for i in 0..LSC_VERTICES {
+            let (x0, x1, fx) = at(w, i);
+            let v = |x: usize, y: usize| src[y * w + x];
+            let top = v(x0, y0) * (1.0 - fx) + v(x1, y0) * fx;
+            let bottom = v(x0, y1) * (1.0 - fx) + v(x1, y1) * fx;
+            let gain = top * (1.0 - fy) + bottom * fy;
+            out[j * LSC_VERTICES + i] = (gain * LSC_ONE).round().clamp(0.0, 4095.0) as u16;
+        }
+    }
+    out
 }
