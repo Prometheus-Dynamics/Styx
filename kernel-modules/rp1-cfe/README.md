@@ -57,6 +57,18 @@ rmmod rp1_cfe_downstream && modprobe rp1_cfe_downstream         # back to the im
 systemctl start <your camera service>
 ```
 
+## Known issues
+
+- **Sensor unbind with open handles oopses (low priority, after the feature freeze).** On a
+  Raze CM5 (2026-10-30), unbinding the ov9282 i2c driver (`10-0060`) for 5 s while a process
+  held the camera's nodes open, then binding it again, oopsed the kernel. The rebind
+  (`ov9282_probe` → rp1-cfe registering its nodes again) oopsed four times on `LIST_POISON`
+  pointers (`dead000000000152`). The holding process's exit (`subdev_close` → `v4l2_release`)
+  oopsed on the freed subdev. The board needed a reboot. The graph's nodes are torn down while
+  still referenced: the receiver's async unbind has to keep them (and the subdev) alive until
+  the last handle closes. Until fixed, do not unbind the sensor driver on a shared board; test
+  unplug with USB cameras (`/sys/bus/usb/devices/<port>/authorized`).
+
 ## Images (Styx variants only)
 
 The package is `styx-rp1-cfe` (`BR2_PACKAGE_STYX_RP1_CFE=y`), in the same external tree as
