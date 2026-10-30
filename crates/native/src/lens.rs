@@ -31,7 +31,7 @@ use styx_sensor::{DriverBus, LensDescription, SensorPins, VcmI2c};
 pub use styx_runtime::styx_hal::LensActuator;
 pub use styx_runtime::{LensControl, PdafFrames};
 
-use crate::control::{SensorControl, lock};
+use crate::control::{SensorState, lock};
 use crate::error::{NativeError, Result};
 
 /// Where a camera's lens is driven from.
@@ -262,7 +262,7 @@ pub fn open_actuator(info: &LensInfo) -> Result<Box<dyn LensDrive>> {
 /// its data names. A lens that cannot be opened leaves the camera without one.
 pub(crate) fn attach<B: DriverBus, P: SensorPins>(
     info: &crate::CameraInfo,
-    control: &std::sync::Mutex<SensorControl<B, P>>,
+    control: &std::sync::Mutex<SensorState<B, P>>,
 ) {
     let mut c = lock(control);
     if let Some(l) = &info.lens

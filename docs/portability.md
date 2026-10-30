@@ -192,7 +192,7 @@ memory, so frames outlive a receiver's release.
 
 ### Linux as the reference platform
 
-`styx-native` is the `Linux` platform: `SensorControl` is `SensorState` on `CLOCK_MONOTONIC`
+`styx-native` is the `Linux` platform: `SensorState` is `SensorState` on `CLOCK_MONOTONIC`
 (`sensor_control`), the bridge's requests are served through it (`BridgeServe`), and
 `V4l2Receiver` implements `Receiver` over the capture node with everything `rp1-cfe` needs
 inside it, unchanged: the event thread with its own `poll(2)` and the quiesce around
@@ -555,7 +555,7 @@ The last Styx register-bus code went (CHANGELOG, Unreleased):
   associated `BusError`. The driver's bound is the new `DriverBus` / `AsyncDriverBus`
   (`RegisterBus` plus `set_controls`): `SensorDriver<B: DriverBus, P>`,
   `AsyncSensorDriver<B: AsyncDriverBus, P>`, and so `SensorState`, `Controls`,
-  `SensorControl`, `ControlHandle`. Porting a bus: implement `read_burst`/`write_burst` (and
+  `SensorState`, `ControlHandle`. Porting a bus: implement `read_burst`/`write_burst` (and
   `read`/`write` where one value is one transfer), then `impl DriverBus for MyBus {}`; a bus
   with V4L2 controls moves `set_controls` into that impl. `MockBus` keeps its log and its
   `BusError` (as the map's `BusError`).
@@ -658,10 +658,10 @@ The `styx` API is unchanged (`CameraMetrics`, still requests and results as befo
 The `styx` API is unchanged; so are `NativeCamera`, `NativeFrame`, `FrameStream`,
 `CameraControls`, `PispPipeline`, `SoftPipeline` and `SoftLoop` (new methods only).
 
-- `styx_native::SensorControl<B, P>` is `styx_runtime::SensorState<B, P>`: build it with
+- `styx_native::SensorState<B, P>` is `styx_runtime::SensorState<B, P>`: build it with
   `styx_native::control::sensor_control(driver)`; its methods return `styx_runtime::Error`
   (`NativeError: From` it, losslessly); `serve`/`serve_detailed` come from the `BridgeServe`
-  trait; `ExpectedStart` is `StartFormat` (same fields). `FrameControls`, `BringUpTimes`,
+  trait; `StartFormat` is `StartFormat` (same fields). `FrameControls`, `BringUpTimes`,
   `standby_problems`, `DEFAULT_WRITE_MARGIN` are the runtime's, re-exported.
 - `styx_native::LensActuator` is `styx_hal::LensActuator` (`Error = io::Error` for the Linux
   actuators); `LensControl::new` takes any actuator (`boxed` a `Box<dyn LensDrive>`),

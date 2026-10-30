@@ -16,7 +16,7 @@ fn desc() -> Arc<SensorDescription> {
     )
 }
 
-type Mock = SensorControl<MockBus, MockPins>;
+type Mock = SensorState<MockBus, MockPins>;
 
 fn control() -> Mock {
     let bus = MockBus::new().with_register(0x300a, 2, 0x9782);
@@ -40,7 +40,7 @@ fn request(action: StreamAction, sequence: u32) -> StreamRequest {
     }
 }
 
-const EXPECTED: ExpectedStart = ExpectedStart {
+const EXPECTED: StartFormat = StartFormat {
     code: 0x3007,
     width: 1280,
     height: 800,
@@ -217,7 +217,7 @@ fn the_exposure_limit_is_the_frame_less_the_margin_at_the_frame_length_in_effect
     // 25-line margin, about 3.9 ms, where 1280x800 at 30 fps allows about its whole frame.
     let mut c = control();
     c.bring_up("640x400", "raw10").unwrap();
-    c.expect_start(ExpectedStart {
+    c.expect_start(StartFormat {
         code: 0x3007,
         width: 640,
         height: 400,

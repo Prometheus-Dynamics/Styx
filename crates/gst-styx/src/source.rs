@@ -52,25 +52,7 @@ pub fn pick(devices: Vec<ProbedDevice>, selector: &str) -> Option<ProbedDevice> 
 }
 
 fn virtual_camera(spec: &str) -> Result<ProbedDevice, String> {
-    let mut config = VirtualSourceConfig::new().name("virtual").fps(30);
-    if let Some(rest) = spec.strip_prefix(':') {
-        let (size, format) = rest.split_once(':').unwrap_or((rest, ""));
-        let (w, h) = size
-            .split_once('x')
-            .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
-            .ok_or_else(|| format!("bad virtual camera size \"{size}\" (want WIDTHxHEIGHT)"))?;
-        config = config.resolution(w, h);
-        if !format.is_empty() {
-            let bytes: [u8; 4] = format
-                .as_bytes()
-                .try_into()
-                .map_err(|_| format!("bad virtual camera format \"{format}\" (want a fourcc)"))?;
-            config = config.format(FourCc::new(bytes));
-        }
-    } else if !spec.is_empty() {
-        return Err(format!("unknown camera \"virtual{spec}\""));
-    }
-    Ok(CaptureRequest::virtual_source(config).into_device())
+    Ok(CaptureRequest::virtual_source(VirtualSourceConfig::from_spec(spec)?).into_device())
 }
 
 /// A running stream of frames.

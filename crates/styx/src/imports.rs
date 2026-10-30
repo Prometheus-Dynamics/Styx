@@ -22,13 +22,12 @@ pub mod capture {
     #[cfg(feature = "netcam")]
     pub use crate::capture_api::make_netcam_device;
     pub use crate::capture_api::{
-        BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy,
-        CaptureConfig, CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest,
-        CaptureSource, CaptureStartPolicy, CaptureTunables, FileBackendConfig,
-        LibcameraBufferMemory, LibcameraConfig, NetcamConfig, NetcamTunables, ReconnectPolicy,
-        SelectedCamera, StyxConfig, TdnOutputMode, TransformConfig, V4l2Config,
-        VirtualCaptureConfig, VirtualSourceConfig, make_virtual_device, make_virtual_rgb_device,
-        open_best_camera, open_virtual_rgb, start_capture,
+        BackendConfig, CameraFormat, CameraIntervalPreference, CameraRequest, CaptureConfig,
+        CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest, CaptureSource,
+        CaptureStartPolicy, FileBackendConfig, LibcameraBufferMemory, LibcameraConfig,
+        NetcamConfig, ReconnectPolicy, SelectedCamera, StyxConfig, TdnOutputMode,
+        TransformPoolConfig, V4l2Config, VirtualSourceConfig, make_virtual_device,
+        make_virtual_rgb_device, open_best_camera, open_virtual_rgb, start_capture,
     };
     pub use crate::{BackendHandle, BackendKind, ProbedBackend, ProbedDevice};
     pub use styx_capture::prelude::{

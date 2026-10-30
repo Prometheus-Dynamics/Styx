@@ -13,7 +13,7 @@ use super::{SimBus, SimSpec, present, scene_for, spec_of, unplug};
 use crate::camera::{
     Configured, NativeCamera, StreamSettings, check_flips, select_mode, start_frame_length,
 };
-use crate::control::{ExpectedStart, lock};
+use crate::control::{StartFormat, lock};
 use crate::device::{BridgeDevice, CaptureDevice};
 use crate::discover::CameraInfo;
 use crate::error::{NativeError, Result};
@@ -39,7 +39,14 @@ pub(crate) struct SimRig {
     queue: Mutex<Option<Arc<FakeQueue>>>,
     /// How frames are written, and the part of the array the mode reads.
     readout: Mutex<Option<(Readout, [f32; 4])>>,
-    control: Arc<Mutex<crate::control::SensorControl<crate::camera::Bus, crate::camera::Pins>>>,
+    control: Arc<
+        Mutex<
+            crate::control::SensorState<
+                crate::sensor_bus::SensorBus,
+                crate::sensor_bus::CameraPins,
+            >,
+        >,
+    >,
     stop: AtomicBool,
     /// Where each frame's ground truth goes (`SimSpec::truth`).
     truth: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
@@ -262,7 +269,7 @@ pub(crate) fn configure(
         .and_then(|f| f.link_frequency)
         .unwrap_or(0);
     let t = mode.timing;
-    lock(&camera.control).expect_start(ExpectedStart {
+    lock(&camera.control).expect_start(StartFormat {
         code: mode.code,
         width: mode.width,
         height: mode.height,

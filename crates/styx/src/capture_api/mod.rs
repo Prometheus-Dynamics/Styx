@@ -92,9 +92,9 @@ pub use native_backend::controls as native_controls;
 #[cfg(feature = "native")]
 pub(crate) use native_backend::probe as probe_native;
 pub use request::{
-    CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, CaptureError,
-    CaptureRequest, CaptureSource, CaptureStartPolicy, ControlApplyKind, SelectedCamera,
-    TdnOutputMode, start_capture,
+    CameraFormat, CameraIntervalPreference, CameraRequest, CaptureError, CaptureRequest,
+    CaptureSource, CaptureStartPolicy, ControlApplyKind, SelectedCamera, TdnOutputMode,
+    start_capture,
 };
 #[cfg(all(feature = "facade", target_os = "linux"))]
 pub use standard_controls::StandardControls;
@@ -104,7 +104,7 @@ pub use still::{
 };
 pub use supervisor::SupervisedCapture;
 pub use tunables::{
-    BackendConfig, CaptureConfig, CaptureTunables, CodecConfig, DEFAULT_CAPTURE_IDLE_POLL_MS,
+    BackendConfig, CaptureConfig, CodecConfig, DEFAULT_CAPTURE_IDLE_POLL_MS,
     DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS, DEFAULT_LIBCAMERA_CONTROL_RESPONSE_TIMEOUT_MS,
     DEFAULT_LIBCAMERA_IDLE_DRAIN_POLL_MS, DEFAULT_LIBCAMERA_IDLE_DRAIN_TIMEOUT_MS,
     DEFAULT_LIBCAMERA_LOOKUP_POLL_MS, DEFAULT_LIBCAMERA_LOOKUP_TIMEOUT_MS,
@@ -117,7 +117,7 @@ pub use tunables::{
     DEFAULT_V4L2_MMAP_POLL_MS, DEFAULT_V4L2_SEND_TIMEOUT_MS, FileBackendConfig, IdleStop,
     LibcameraBufferMemory, LibcameraConfig, LibcameraProcessedStreamRole, MAX_NATIVE_REGIONS,
     NativeCpuPrefetch, NativeDeflicker, NativeFlicker, NativeIspConfig, NativeRegion, NetcamConfig,
-    NetcamTunables, ReconnectPolicy, StyxConfig, TransformConfig, UvcConfig, V4l2Config,
+    ReconnectPolicy, StyxConfig, TransformPoolConfig, UvcConfig, V4l2Config,
 };
 #[cfg(feature = "uvc")]
 pub(crate) use uvc_backend::probe_into as probe_uvc_into;
@@ -187,6 +187,29 @@ impl VirtualSourceConfig {
         self
     }
 
+    /// Parses the camera selector suffix after `virtual`: empty, or `:WIDTHxHEIGHT[:FOURCC]`
+    /// (`virtual:320x240:YUYV`), named `virtual` at 30 fps.
+    pub fn from_spec(spec: &str) -> Result<Self, String> {
+        let mut config = Self::new().name("virtual").fps(30);
+        if let Some(rest) = spec.strip_prefix(':') {
+            let (size, format) = rest.split_once(':').unwrap_or((rest, ""));
+            let (w, h) = size
+                .split_once('x')
+                .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                .ok_or_else(|| format!("bad virtual camera size \"{size}\" (want WIDTHxHEIGHT)"))?;
+            config = config.resolution(w, h);
+            if !format.is_empty() {
+                let bytes: [u8; 4] = format.as_bytes().try_into().map_err(|_| {
+                    format!("bad virtual camera format \"{format}\" (want a fourcc)")
+                })?;
+                config = config.format(FourCc::new(bytes));
+            }
+        } else if !spec.is_empty() {
+            return Err(format!("unknown camera \"virtual{spec}\""));
+        }
+        Ok(config)
+    }
+
     pub fn into_device(self) -> ProbedDevice {
         let format = MediaFormat::new(
             self.format,
@@ -200,8 +223,6 @@ impl VirtualSourceConfig {
         )
     }
 }
-
-pub type VirtualCaptureConfig = VirtualSourceConfig;
 
 #[cfg(feature = "netcam")]
 #[derive(Clone, Debug)]

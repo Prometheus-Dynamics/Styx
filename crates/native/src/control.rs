@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use styx_kernel::bus::{StreamAction, StreamRequest};
-use styx_runtime::{Controls, SensorState, StartFormat};
+use styx_runtime::Controls;
+pub use styx_runtime::{SensorState, StartFormat};
 use styx_sensor::{Control, ControlRequest, DriverBus, Landing, SensorDriver, SensorPins, Timing};
 
 use crate::error::Result;
@@ -23,17 +24,10 @@ pub use styx_runtime::{
 /// (`set_loop_latency`): one frame, the PiSP's at 60 to 120 fps.
 pub const PROCESSED_LOOP_LATENCY: u64 = 1;
 
-/// The sensor driver plus the per-stream bookkeeping around it (the runtime's
-/// [`SensorState`]). Build it with [`sensor_control`] (it then runs on `CLOCK_MONOTONIC`).
-pub type SensorControl<B, P> = SensorState<B, P>;
-
-/// What a start request must carry for the configuration userspace set up.
-pub type ExpectedStart = StartFormat;
-
 /// A sensor control on `CLOCK_MONOTONIC` (the clock of V4L2 buffer and event timestamps).
 pub fn sensor_control<B: DriverBus, P: SensorPins>(
     driver: SensorDriver<B, P>,
-) -> SensorControl<B, P> {
+) -> SensorState<B, P> {
     SensorState::new(driver).with_clock(styx_kernel::monotonic_now)
 }
 
@@ -102,14 +96,14 @@ impl<B, P> std::fmt::Debug for ControlHandle<B, P> {
 
 impl<B: DriverBus, P: SensorPins> ControlHandle<B, P> {
     /// A handle on a shared control.
-    pub fn new(inner: Arc<Mutex<SensorControl<B, P>>>, blanking: Option<BlankingHook>) -> Self {
+    pub fn new(inner: Arc<Mutex<SensorState<B, P>>>, blanking: Option<BlankingHook>) -> Self {
         Self {
             inner: Controls::new(inner, blanking),
         }
     }
 
     /// The shared control.
-    pub fn shared(&self) -> &Arc<Mutex<SensorControl<B, P>>> {
+    pub fn shared(&self) -> &Arc<Mutex<SensorState<B, P>>> {
         self.inner.shared()
     }
 

@@ -77,8 +77,6 @@ pub enum CameraIntervalPreference {
     None,
 }
 
-pub type CameraStartPolicy = CaptureStartPolicy;
-
 /// High-level camera selector for the common "open the best usable camera" path.
 ///
 /// `CameraRequest` keeps the same control as `CaptureRequest`, but moves probing,

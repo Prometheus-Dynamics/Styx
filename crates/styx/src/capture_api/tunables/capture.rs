@@ -11,7 +11,7 @@ use super::{
 /// Tunables for capture queues and buffer pools.
 ///
 /// Prefer `StyxConfig` builder methods for application configuration. If direct
-/// struct construction is needed, include `..CaptureTunables::default()` so new
+/// struct construction is needed, include `..CaptureConfig::default()` so new
 /// release tunables pick up their documented defaults.
 ///
 /// # Example
@@ -56,8 +56,6 @@ pub struct CaptureConfig {
     /// time (`TimestampClock::StreamRelative`).
     pub timestamp_clock: ClockSource,
 }
-
-pub type CaptureTunables = CaptureConfig;
 
 /// How [`CaptureConfig::stop_when_idle_ms`] stops an idle camera.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

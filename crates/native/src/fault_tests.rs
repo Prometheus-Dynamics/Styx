@@ -19,7 +19,7 @@ use styx_sensor::{
 };
 
 use crate::buffers::NativeFrame;
-use crate::control::{ExpectedStart, SensorControl, lock};
+use crate::control::{SensorState, StartFormat, lock};
 use crate::device::{BridgeDevice, CaptureDevice};
 use crate::error::NativeError;
 use crate::fake::{BridgeState, FakeBridge, FakeQueue, pattern_of};
@@ -85,7 +85,7 @@ impl RegisterBus for FaultBus {
 
 impl DriverBus for FaultBus {}
 
-pub(crate) type Control = SensorControl<FaultBus, BridgePins<Arc<FakeBridge>>>;
+pub(crate) type Control = SensorState<FaultBus, BridgePins<Arc<FakeBridge>>>;
 
 /// A configured camera over fakes.
 pub(crate) struct Rig {
@@ -154,7 +154,7 @@ impl Rig {
         );
         let mut c = crate::control::sensor_control(SensorDriver::new(desc, bus.clone(), pins));
         c.bring_up("1280x800", "raw10").unwrap();
-        c.expect_start(ExpectedStart {
+        c.expect_start(StartFormat {
             code: 0x3007,
             width: 1280,
             height: 800,

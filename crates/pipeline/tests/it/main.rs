@@ -5,3 +5,4 @@
 mod gpu_loop;
 mod pisp_alloc;
 mod replay_loop;
+mod scene;

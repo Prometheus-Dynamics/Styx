@@ -616,6 +616,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
+- **Duplicate type aliases (API cleanup for 3.0).** One name per type now:
+  `VirtualCaptureConfig` → `VirtualSourceConfig`, `CameraStartPolicy` → `CaptureStartPolicy`,
+  `CaptureTunables` → `CaptureConfig`, `NetcamTunables` → `NetcamConfig`, `TransformConfig` →
+  `TransformPoolConfig` (in `styx`); `SensorControl` → `SensorState`, `ExpectedStart` →
+  `StartFormat`, `camera::Bus`/`camera::Pins` → `SensorBus`/`CameraPins` (in `styx-native`).
+  The GStreamer and PipeWire plugins share `VirtualSourceConfig::from_spec` (the
+  `virtual:WIDTHxHEIGHT[:FOURCC]` selector) instead of a copy each.
 - `styx_core::prelude::{FrameRequirements, Priority, HardwarePolicy, PlanOverrides}` and
   `FrameRequest: From<FrameRequirements>`: build the request with `styx::prelude::Frames`
   (`Priority::Latency` → `.latest()`, `Throughput` → `.every_frame(4)`, `Power` →

@@ -16,9 +16,7 @@ use crate::metrics::CaptureRetryMetrics;
 mod camera;
 mod error;
 mod source;
-pub use camera::{
-    CameraFormat, CameraIntervalPreference, CameraRequest, CameraStartPolicy, SelectedCamera,
-};
+pub use camera::{CameraFormat, CameraIntervalPreference, CameraRequest, SelectedCamera};
 pub use error::{CaptureError, ControlApplyKind};
 pub use source::CaptureSource;
 

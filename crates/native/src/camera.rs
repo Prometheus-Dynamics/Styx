@@ -25,7 +25,7 @@ use styx_kernel::v4l2::{BufType, Format, PixFormat, VideoDevice};
 use styx_sensor::{AddressWidth, ControlRequest, SensorDriver, Step};
 
 use crate::buffers::BufferMemory;
-use crate::control::{BlankingHook, ControlHandle, ExpectedStart, SensorControl, lock};
+use crate::control::{BlankingHook, ControlHandle, SensorState, StartFormat, lock};
 use crate::discover::{CameraInfo, find_media};
 use crate::embedded::{EmbeddedCapture, embedded_link};
 use crate::error::{KernelContext, NativeError, Result};
@@ -37,13 +37,8 @@ use crate::session::{BufferSource, Session, SessionOptions, StreamFormat};
 use crate::stream::{FrameStream, SensorSide};
 use crate::topology::{apply_plan, find_route, link_plan};
 
-/// The register bus of a camera: I²C for a bridged sensor, V4L2 controls for a kernel
-/// driver's.
-pub type Bus = SensorBus;
-/// The pins of a camera: the bridge's power control, or none.
-pub type Pins = CameraPins;
 /// Typed, frame-accurate controls of an open camera.
-pub type CameraControls = ControlHandle<Bus, Pins>;
+pub type CameraControls = ControlHandle<SensorBus, CameraPins>;
 
 const CAPTURE: BufType = BufType::VideoCapture;
 /// `V4L2_COLORSPACE_RAW`.
@@ -215,7 +210,7 @@ pub fn select_mode<'a>(
 /// Asks for the frame duration of `settings` from frame 0 on (the mode's default without
 /// one); returns the frame length that gives.
 pub(crate) fn start_frame_length(
-    c: &mut SensorControl<Bus, Pins>,
+    c: &mut SensorState<SensorBus, CameraPins>,
     settings: &StreamSettings,
 ) -> Result<u32> {
     let t = c.timing().ok_or(NativeError::State("no mode"))?;
@@ -263,7 +258,7 @@ pub struct NativeCamera {
     pub(crate) bridge: Option<Arc<SensorBridge>>,
     /// The sensor's subdevice (a sensor with a kernel driver).
     pub(crate) kernel: Option<Arc<Subdev>>,
-    pub(crate) control: Arc<Mutex<SensorControl<Bus, Pins>>>,
+    pub(crate) control: Arc<Mutex<SensorState<SensorBus, CameraPins>>>,
     pub(crate) video: Option<Arc<VideoDevice>>,
     pub(crate) configured: Option<Configured>,
     pub(crate) session: Session,
@@ -281,7 +276,7 @@ impl NativeCamera {
         options: CameraOptions,
         bridge: Option<Arc<SensorBridge>>,
         kernel: Option<Arc<Subdev>>,
-        control: Arc<Mutex<SensorControl<Bus, Pins>>>,
+        control: Arc<Mutex<SensorState<SensorBus, CameraPins>>>,
         session: Session,
         opened: Instant,
         lock: Option<File>,
@@ -572,7 +567,7 @@ impl NativeCamera {
         bridge
             .set_ack_timeout(self.options.ack_timeout)
             .step("bridge ack timeout")?;
-        lock(&self.control).expect_start(ExpectedStart {
+        lock(&self.control).expect_start(StartFormat {
             code: mode.code,
             width: mode.width,
             height: mode.height,

@@ -49,8 +49,8 @@ struct AsyncNetcamWorker {
     width: u32,
     height: u32,
     fps: u32,
-    tunables: crate::capture_api::NetcamTunables,
-    capture_tunables: crate::capture_api::CaptureTunables,
+    tunables: crate::capture_api::NetcamConfig,
+    capture_tunables: crate::capture_api::CaptureConfig,
     stop: Arc<AtomicBool>,
     worker_error: Arc<Mutex<Option<CaptureError>>>,
     retry_metrics: CaptureRetryMetrics,
@@ -600,8 +600,8 @@ fn ffmpeg_loop(
     start: &Instant,
     mut frame_idx: u64,
     stop: Arc<AtomicBool>,
-    capture_tunables: crate::capture_api::CaptureTunables,
-    netcam_tunables: crate::capture_api::NetcamTunables,
+    capture_tunables: crate::capture_api::CaptureConfig,
+    netcam_tunables: crate::capture_api::NetcamConfig,
     retry_metrics: CaptureRetryMetrics,
 ) -> Result<u64, CaptureError> {
     styx_codec::ffmpeg::ff::init().map_err(|e| CaptureError::Backend(e.to_string()))?;

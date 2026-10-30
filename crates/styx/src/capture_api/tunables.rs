@@ -1,6 +1,6 @@
 use styx_codec::prelude::{CodecRegistryConfig, DEFAULT_CODEC_MAX_HEIGHT, DEFAULT_CODEC_MAX_WIDTH};
 use styx_core::prelude::{ClockSource, FrameRect, QueueOverflow};
-use styx_core::transform::TransformPoolConfig;
+pub use styx_core::transform::TransformPoolConfig;
 
 /// Default capture queue depth (frames). Full queues drop their oldest frame, so a deeper queue
 /// mainly adds latency and device buffers.
@@ -103,7 +103,7 @@ mod native;
 mod uvc;
 #[cfg(feature = "netcam")]
 pub(crate) use capture::PoolLimits;
-pub use capture::{CaptureConfig, CaptureTunables, IdleStop, ReconnectPolicy};
+pub use capture::{CaptureConfig, IdleStop, ReconnectPolicy};
 pub use native::*;
 pub use uvc::UvcConfig;
 
@@ -257,7 +257,7 @@ impl Default for FileBackendConfig {
 /// Tunables for netcam polling/backoff behavior.
 ///
 /// Prefer `StyxConfig::netcam_*` builder methods for application configuration.
-/// If direct struct construction is needed, include `..NetcamTunables::default()`
+/// If direct struct construction is needed, include `..NetcamConfig::default()`
 /// so new release tunables pick up their documented defaults.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -280,8 +280,6 @@ pub struct NetcamConfig {
     /// Maximum accepted MJPEG frame size, in bytes.
     pub max_jpeg_bytes: usize,
 }
-
-pub type NetcamTunables = NetcamConfig;
 
 impl Default for NetcamConfig {
     fn default() -> Self {
@@ -329,8 +327,6 @@ pub struct BackendConfig {
     pub uvc: UvcConfig,
 }
 
-pub type TransformConfig = TransformPoolConfig;
-
 /// Runtime codec registration limits.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -376,7 +372,7 @@ impl CodecConfig {
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct StyxConfig {
     pub capture: CaptureConfig,
-    pub transforms: TransformConfig,
+    pub transforms: TransformPoolConfig,
     pub backends: BackendConfig,
     pub codecs: CodecConfig,
     /// Tuning overlay (`styx-calibrate` JSON) for the native sensor's tuning; see `docs/calibration.md`.
@@ -396,7 +392,7 @@ impl StyxConfig {
     pub fn new() -> Self {
         Self {
             capture: CaptureConfig::default(),
-            transforms: TransformConfig::default(),
+            transforms: TransformPoolConfig::default(),
             backends: BackendConfig::default(),
             codecs: CodecConfig::default(),
             tuning_overlay: None,
@@ -470,7 +466,7 @@ impl StyxConfig {
 
     /// Override the process-wide packed-transform pool sizing applied at capture startup.
     pub fn transform_pool(mut self, min: usize, bytes: usize, spare: usize) -> Self {
-        self.transforms = TransformConfig { min, bytes, spare };
+        self.transforms = TransformPoolConfig { min, bytes, spare };
         self
     }
 
@@ -496,7 +492,7 @@ impl StyxConfig {
         self
     }
 
-    pub fn with_transforms(mut self, transforms: TransformConfig) -> Self {
+    pub fn with_transforms(mut self, transforms: TransformPoolConfig) -> Self {
         self.transforms = transforms;
         self
     }
@@ -670,7 +666,7 @@ impl StyxConfig {
     }
 
     /// Return the sanitized capture tunables carried by this config.
-    pub fn capture_tunables(&self) -> CaptureTunables {
+    pub fn capture_tunables(&self) -> CaptureConfig {
         self.capture.sanitized()
     }
 
@@ -687,7 +683,7 @@ impl StyxConfig {
     }
 
     /// Return the sanitized netcam tunables carried by this config.
-    pub fn netcam_tunables(&self) -> NetcamTunables {
+    pub fn netcam_tunables(&self) -> NetcamConfig {
         self.backends.netcam.sanitized()
     }
 

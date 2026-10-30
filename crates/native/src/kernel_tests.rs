@@ -12,7 +12,7 @@ use styx_sensor::{
     SensorDescription, SensorDriver, Size, SubdevFormat, SubdevReport,
 };
 
-use crate::control::{ControlHandle, SensorControl, lock};
+use crate::control::{ControlHandle, SensorState, lock};
 use crate::device::{BridgeDevice, CaptureDevice};
 use crate::fake::{FakeQueue, pattern_of};
 use crate::fake_bridge::FakeBridge;
@@ -50,7 +50,7 @@ fn report() -> SubdevReport {
     }
 }
 
-type Control = SensorControl<MockBus, NoPins>;
+type Control = SensorState<MockBus, NoPins>;
 
 #[test]
 fn a_kernel_driven_sensor_streams_with_scheduled_controls() {

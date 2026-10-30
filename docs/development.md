@@ -327,7 +327,7 @@ See [`testing.md`](testing.md) for the default and example-focused validation su
 
 ## Runtime Tunables
 
-Runtime timing and capacity defaults should be named near `StyxConfig`/`CaptureTunables`/`NetcamTunables`, not embedded as anonymous sleeps in backend workers. The current configurable surfaces include:
+Runtime timing and capacity defaults should be named near `StyxConfig`/`CaptureConfig`/`NetcamConfig`, not embedded as anonymous sleeps in backend workers. The current configurable surfaces include:
 
 - capture queue depth and pool sizing
 - V4L2 mmap poll timeout, send timeout, and worker error backoff
@@ -351,8 +351,8 @@ facade test harness and should not become runtime configuration.
 
 Frame pacing derived from advertised media FPS may remain local to file, simulation, and MJPEG pacing code because the device/media format is the source of truth.
 
-Prefer `StyxConfig` builder methods in examples and application code. Direct `CaptureTunables` or
-`NetcamTunables` literals should include `..Default::default()` so release-added fields inherit safe
+Prefer `StyxConfig` builder methods in examples and application code. Direct `CaptureConfig` or
+`NetcamConfig` literals should include `..Default::default()` so release-added fields inherit safe
 defaults.
 
 Capture receive naming is intentionally explicit for this release:

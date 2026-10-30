@@ -291,7 +291,7 @@ pub(crate) struct VideoDecodeOptions {
     pub playback_speed: f32,
     pub start_frame: u32,
     pub stop_frame: u32,
-    pub capture_tunables: crate::capture_api::CaptureTunables,
+    pub capture_tunables: crate::capture_api::CaptureConfig,
 }
 
 #[cfg(feature = "file-backend-video")]

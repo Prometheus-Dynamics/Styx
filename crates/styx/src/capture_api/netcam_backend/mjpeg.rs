@@ -39,8 +39,8 @@ pub(super) struct MjpegLoopContext<'a> {
     pub(super) start: &'a Instant,
     pub(super) frame_idx: &'a mut u64,
     pub(super) stop: &'a AtomicBool,
-    pub(super) capture_tunables: crate::capture_api::CaptureTunables,
-    pub(super) netcam_tunables: crate::capture_api::NetcamTunables,
+    pub(super) capture_tunables: crate::capture_api::CaptureConfig,
+    pub(super) netcam_tunables: crate::capture_api::NetcamConfig,
     pub(super) retry_metrics: CaptureRetryMetrics,
 }
 
@@ -428,7 +428,7 @@ fn expected_pixels(width: u32, height: u32) -> usize {
 }
 
 fn mjpeg_packet_pool_limits(
-    capture_tunables: crate::capture_api::CaptureTunables,
+    capture_tunables: crate::capture_api::CaptureConfig,
     width: u32,
     height: u32,
     max_jpeg_bytes: usize,
