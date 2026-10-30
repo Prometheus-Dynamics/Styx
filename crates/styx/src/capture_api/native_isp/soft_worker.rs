@@ -103,7 +103,7 @@ fn row_bytes(code: FourCc, w: u32) -> usize {
 }
 
 /// Bytes of a `code` image of `w`x`h`.
-fn image_bytes(code: FourCc, (w, h): (u32, u32)) -> usize {
+pub(super) fn image_bytes(code: FourCc, (w, h): (u32, u32)) -> usize {
     layouts(code, h as usize, row_bytes(code, w))
         .iter()
         .map(|l| l.offset + l.len)
@@ -128,7 +128,7 @@ fn buffers(code: FourCc, (w, h): (u32, u32), buf: &mut [u8]) -> OutputBuffers<'_
 }
 
 /// A lease of `buf`, a `code` image of `size` with `meta`, recycled through `returns`.
-fn lease(
+pub(super) fn lease(
     mut meta: FrameMeta,
     size: (u32, u32),
     buf: Vec<u8>,
@@ -165,7 +165,7 @@ fn count_isp_copies(p: &mut SoftPipeline, f: &styx_pipeline::device::SoftFrame, 
 /// A buffer of `len` bytes: one that came back through `returns`, else a new one. At most
 /// `keep` buffers stay spare; more are freed, so frames once held at the same time do not keep
 /// their memory for the rest of the capture.
-fn reuse(
+pub(super) fn reuse(
     returns: &mpsc::Receiver<Vec<u8>>,
     spare: &mut Vec<Vec<u8>>,
     keep: usize,

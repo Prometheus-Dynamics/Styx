@@ -190,11 +190,15 @@ pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
             modes.extend(capture_mode(m, f.0));
         }
     }
-    let binned = super::native_isp::isp_name(info) == "software";
-    let processed = super::native_isp::processed_modes(&modes, binned);
+    let isp = super::native_isp::isp_name(info);
+    let mut processed = super::native_isp::processed_modes(&modes, isp == "software");
+    // The Rockchip ISP's main path gives NV12 only.
+    if isp == "rkisp" {
+        processed.retain(|m| m.format.code == FourCc::NV12);
+    }
     modes.extend(processed);
     let mut properties = info.properties();
-    properties.push(("isp".into(), super::native_isp::isp_name(info).into()));
+    properties.push(("isp".into(), isp.into()));
     // The flips the sensor has (`NativeIspConfig::hflip`, `vflip`): `h`, `v`, `hv`; the camera
     // service lists its flip controls from this.
     let c = &info.description.controls;

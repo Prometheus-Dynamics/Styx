@@ -10,9 +10,16 @@ rust-version.workspace = true
 keywords = ["rockchip", "isp", "camera", "rk3588"]
 categories = ["multimedia::images", "hardware-support"]
 
+[features]
+# Links std (for `device`); the rest of the crate is `no_std` + `alloc` either way.
+std = []
+# Drive the vendor `rkisp` driver's nodes through styx-kernel.
+device = ["std", "dep:styx-kernel"]
+
 [dependencies]
 bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 styx-algo = { workspace = true, default-features = false }
+styx-kernel = { workspace = true, optional = true }
 styx-math.workspace = true
 
 [lints]

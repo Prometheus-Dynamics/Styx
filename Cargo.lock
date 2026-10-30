@@ -5565,6 +5565,7 @@ dependencies = [
  "styx-kernel",
  "styx-native",
  "styx-pisp",
+ "styx-rkisp",
  "styx-runtime",
  "styx-sensor",
  "styx-softisp",
@@ -5594,6 +5595,7 @@ version = "2.0.1-dev"
 dependencies = [
  "bytemuck",
  "styx-algo",
+ "styx-kernel",
  "styx-math",
 ]
 

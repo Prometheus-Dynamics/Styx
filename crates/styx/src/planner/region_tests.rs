@@ -323,3 +323,24 @@ fn overviews_box_filter_to_their_size() {
     let rows = odd.luma_rows().unwrap();
     assert!(rows.row(319).unwrap().data().iter().all(|&v| v == 77));
 }
+
+/// The Rockchip ISP: processing in hardware, but no crops, regions or second output there yet
+/// (the worker hands out the main path's whole frame): an NV12 region is reported unmet.
+#[test]
+fn the_rockchip_isp_processes_in_hardware_without_regions() {
+    let dev = pisp("rkisp");
+    let plan = plan_frames_with(&dev, &Frames::nv12(), &registry()).unwrap();
+    let capture = plan
+        .steps
+        .iter()
+        .find(|s| s.detail.contains("Rockchip"))
+        .unwrap_or_else(|| panic!("{plan}"));
+    assert_eq!(capture.execution, StepExecution::Hardware);
+    let req = Frames::nv12().regions([rect(0)]);
+    let plan = plan_frames_with(&dev, &req, &registry()).unwrap();
+    let d = plan.delivered();
+    assert_eq!(d.regions, vec![None], "{plan}");
+    assert!(d.unmet.contains(&Unmet::Roi), "{:?}", d.unmet);
+    let native = plan.region_config(Default::default()).backends.native;
+    assert!(native.regions.iter().all(Option::is_none), "{plan}");
+}

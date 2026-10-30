@@ -3,6 +3,8 @@
 //! * [`SoftPipeline`]: raw frames from the receiver's raw node, processed by the software ISP.
 //! * [`PispPipeline`]: raw frames through the PiSP front end (statistics every frame) into the
 //!   back end (two outputs), the raw buffers passed as dma-bufs.
+//! * [`RkispPipeline`]: raw frames through the Rockchip ISP30 (statistics and parameters per
+//!   frame) into its main path.
 //!
 //! Both apply the algorithms' sensor requests through the camera's frame-exact control
 //! schedule, on the frame each request names.
@@ -11,6 +13,7 @@ mod pisp;
 mod pisp_isp;
 mod pisp_options;
 mod pisp_slices;
+mod rkisp;
 mod soft;
 mod still_be;
 
@@ -21,6 +24,7 @@ use styx_native::{CameraControls, FrameControls, NativeCamera, NativeError};
 pub use pisp::{PispFrame, PispPipeline, PispStartup, PispTimes, RAW_LEASE_BUFFERS, RawLayout};
 pub use pisp_options::PispOptions;
 pub use pisp_slices::{PispEvent, PispSlice, SliceCounts};
+pub use rkisp::{RKISP_BUFFERS, RkispFrame, RkispPipeline, has_rkisp};
 pub use soft::{SoftFrame, SoftPipeline};
 pub use still_be::StillBackEnd;
 
@@ -158,29 +162,35 @@ pub fn apply_lens(controls: &CameraControls, r: &LensRequest) -> crate::Result<(
 
 /// Which ISP processes a native camera's frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum IspKind {
     /// The Raspberry Pi 5 / CM5 PiSP: the receiver has a `pisp-fe` front end and a `pispbe`
     /// back end is present.
     Pisp,
+    /// The Rockchip ISP30 (RK3588 / RK3588S / RK3582, vendor kernel): an `rkisp` media device
+    /// with its ISP subdevice is present.
+    Rkisp,
     /// The software ISP (any raw sensor).
     Software,
 }
 
 impl IspKind {
-    /// For listings: `pisp` or `software`.
+    /// For listings: `pisp`, `rkisp` or `software`.
     pub fn name(self) -> &'static str {
         match self {
             Self::Pisp => "pisp",
+            Self::Rkisp => "rkisp",
             Self::Software => "software",
         }
     }
 }
 
-/// Environment variable forcing the software ISP (`software`) on cameras with a PiSP.
+/// Environment variable forcing the software ISP (`software`) on cameras with a hardware ISP.
 pub const ISP_ENV: &str = "STYX_NATIVE_ISP";
 
 /// The ISP a camera's frames can go through: the PiSP when its front end is in the camera's
-/// media graph and a back end exists, else (or with [`ISP_ENV`]`=software`) the software ISP.
+/// media graph and a back end exists, the Rockchip ISP when the system has one, else (or with
+/// [`ISP_ENV`]`=software`) the software ISP.
 pub fn isp_kind(info: &styx_native::CameraInfo) -> IspKind {
     if std::env::var(ISP_ENV).is_ok_and(|v| v == "software") {
         return IspKind::Software;
@@ -188,6 +198,8 @@ pub fn isp_kind(info: &styx_native::CameraInfo) -> IspKind {
     let fe = info.topology.entity_by_name("pisp-fe").is_some();
     if fe && !styx_pisp::device::find_media("pispbe").is_empty() {
         IspKind::Pisp
+    } else if has_rkisp() {
+        IspKind::Rkisp
     } else {
         IspKind::Software
     }

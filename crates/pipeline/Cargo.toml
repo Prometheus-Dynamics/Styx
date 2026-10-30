@@ -22,6 +22,7 @@ std = [
     "styx-core/std",
     "styx-dng/std",
     "styx-pisp/std",
+    "styx-rkisp/std",
     "styx-runtime/std",
     "styx-sensor/std",
     "styx-softisp/std",
@@ -37,8 +38,16 @@ all-algorithms = ["styx-algo/all-algorithms"]
 # curve turns the recorded gains into the colour temperature the CCM and lens shading follow).
 alsc = ["styx-algo/alsc"]
 awb-bayes = ["styx-algo/awb-bayes"]
-# Run on the device: native cameras (styx-native) and the PiSP nodes (styx-pisp/device).
-device = ["std", "all-algorithms", "dep:styx-native", "dep:styx-kernel", "styx-pisp/device"]
+# Run on the device: native cameras (styx-native), the PiSP nodes (styx-pisp/device) and the
+# Rockchip ISP's (styx-rkisp/device).
+device = [
+    "std",
+    "all-algorithms",
+    "dep:styx-native",
+    "dep:styx-kernel",
+    "styx-pisp/device",
+    "styx-rkisp/device",
+]
 # The software path on a Vulkan GPU (`styx-gpuisp`; loads libvulkan at run time).
 gpu = ["std", "dep:styx-gpuisp"]
 # The PiSP debug hooks: styx-pisp's `debug-hooks` (config dumps, block patch, lines probe), and
@@ -55,6 +64,7 @@ styx-algo = { path = "../algo", version = "2.0.1-dev", default-features = false 
 styx-core = { workspace = true, features = ["neon", "x86"] }
 styx-dng = { path = "../dng", version = "2.0.1-dev", default-features = false }
 styx-pisp = { path = "../pisp", version = "2.0.1-dev", default-features = false }
+styx-rkisp = { path = "../rkisp", version = "2.0.1-dev", default-features = false }
 styx-runtime = { path = "../runtime", version = "2.0.1-dev", default-features = false }
 styx-sensor = { path = "../sensor", version = "2.0.1-dev", default-features = false }
 styx-softisp = { path = "../softisp", version = "2.0.1-dev", default-features = false, features = ["neon", "x86"] }

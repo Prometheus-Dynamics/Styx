@@ -13,7 +13,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   uAPI headers, `scripts/rkisp-bindgen.sh`; sizes and offsets checked against C), a
   per-frame parameter builder (`Params`: statistics windows, black level, white balance gains,
   colour matrix, gamma) and statistics decoding into `styx_algo::Statistics`. `no_std`.
-  Groundwork for a hardware-ISP backend; not yet run on an RK3588.
+  Not yet run on an RK3588.
+
+- **The Rockchip ISP30 as a native capture path** (docs/rockchip.md): `styx-rkisp`'s
+  `device` feature drives the vendor driver's ISP, parameter, statistics and main path nodes
+  (`IspDevice`, `find_isps`); `styx_pipeline::rkisp` turns ISP settings into a parameter
+  buffer and statistics into the 3A input; `styx_pipeline::device::RkispPipeline` runs the
+  sensor side of the camera and the 3A loop per frame. A processed native capture on a system
+  with the ISP picks it (`IspKind::Rkisp`, `isp=rkisp`; NV12 modes; the planner prices it as
+  hardware). Written against the uAPI; not yet run on a board.
 
 - **`StyxConfig::lean_memory`, for small devices (a 128 MB camera):** 3 raw capture buffers
   (`NativeIspConfig::raw_buffers`, new, default 4; `native_raw_buffers`), 3 output buffers
@@ -380,6 +388,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   unstripped build (docs/metrics.md, "Finding allocations on a device").
 
 ### Changed
+
+- `styx_pipeline::device::IspKind` is `#[non_exhaustive]` and has an `Rkisp` variant.
 
 - **Duplicate code merged (API cleanup).** The `no_std` float shim, until now five copies in
   styx-core, styx-algo, styx-pisp, styx-sensor and styx-dng, is one crate, `styx-math`.

@@ -7,6 +7,8 @@
 //! - [`Params`]: a parameter buffer for a frame: the statistics Styx's 3A reads, black level,
 //!   white balance gains, colour matrix, output gamma.
 //! - [`statistics`]: a statistics buffer as [`styx_algo::Statistics`].
+//! - `device` (feature `device`): the vendor driver's ISP, parameter, statistics and main
+//!   path nodes.
 //!
 //! Status: built from the uAPI headers only; nothing here has run on an RK3588 yet. The
 //! fixed-point formats the headers do not state (gain and matrix scales, the statistics' bit
@@ -16,6 +18,11 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(feature = "device")]
+pub mod device;
 
 mod params;
 mod stats;

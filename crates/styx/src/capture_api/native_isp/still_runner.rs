@@ -63,6 +63,16 @@ impl StillHost for styx_pipeline::device::SoftPipeline {
     }
 }
 
+impl StillHost for styx_pipeline::device::RkispPipeline {
+    fn set_controls(&mut self, c: Controls) {
+        self.algorithms().controller().set_controls(c);
+    }
+
+    fn camera(&mut self) -> CameraConfig {
+        self.info().camera.clone()
+    }
+}
+
 /// The loop as the decisions drive it: the application's controls are the control plane's.
 struct Host<'a> {
     host: &'a mut dyn StillHost,

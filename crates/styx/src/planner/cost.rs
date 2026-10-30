@@ -64,6 +64,11 @@ pub(crate) fn native_capture_latency_ms(fps: Option<f32>) -> f32 {
 /// (0.12 ms of it the driver writing the back end config to the hardware).
 pub(crate) const PISP_PROCESS_LATENCY_MS: f32 = 0.9;
 pub(crate) const PISP_PROCESS_CPU_MS: f32 = 0.3;
+/// The Rockchip ISP30 (RK3588): an estimate until measured on a board. The ISP processes the
+/// frame as it arrives (its output ends about when the readout does); the host copies the
+/// NV12 frame out of the driver's buffer (1280x800: about 0.4 ms) and runs the 3A loop.
+pub(crate) const RKISP_PROCESS_LATENCY_MS: f32 = 1.0;
+pub(crate) const RKISP_PROCESS_CPU_MS: f32 = 0.6;
 /// An extra PiSP back end pass over a frame's raw input (a region of interest; CM5, OV9782,
 /// temporal denoise read, `native-pipeline pisp --passes`): 0.03 ms per job plus 1.35 ns per
 /// pixel of its region (128x128: 0.05 ms, 640x400: 0.41 ms, 1280x800: 1.39 ms) on the frame's

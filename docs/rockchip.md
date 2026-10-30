@@ -1,7 +1,7 @@
 # Rockchip (RK3588 / RK3588S)
 
-Status: groundwork. `styx-rkisp` holds the ISP30's parameter and statistics buffers and
-converts between them and Styx's 3A; nothing has run on an RK3588 yet (no board on the bench).
+Status: the capture path is written end to end against the vendor driver's uAPI; nothing has
+run on an RK3588 yet (no board on the bench).
 The NEON software ISP already runs on any Rockchip ARM board.
 
 ## Why Styx can drive the ISP itself
@@ -36,12 +36,37 @@ fractional bits (`GAIN_ONE`), matrix coefficients with 7 (`CCM_ONE`), 12-bit gam
 (`GAMMA_OUT_MAX`), AE zone means of 10 bits for red and blue and 12 for green (`AE_RB_FULL`,
 `AE_G_FULL`).
 
+## The capture path
+
+```text
+sensor ─► rkcif ─► rkisp-isp-subdev ─► rkisp-statistics ─► styx_pipeline::rkisp::statistics ─► 3A
+                       ▲     └─► rkisp_mainpath (NV12) ─► the capture's frames
+                       └──── rkisp-input-params ◄── styx_pipeline::rkisp::params ◄── 3A
+```
+
+- `styx_rkisp::device` (feature `device`): `find_isps` lists the media devices with an
+  `rkisp-isp-subdev`; `IspDevice::open` enables the links from whatever feeds the ISP's sink
+  pad (checking its format against the mode), the parameter node, the main path and the
+  statistics node, sets the pad and node formats (`RK1P` / `RK1S` meta, NV12 on the main path)
+  and allocates MMAP buffers; parameter buffers are reclaimed as the driver returns them.
+- `styx_pipeline::rkisp`: ISP settings to a parameter buffer (black level on 12 bits, white
+  balance times digital gain, colour matrix, gamma) and a statistics buffer to the 3A input.
+- `styx_pipeline::device::RkispPipeline`: the camera's sensor side only
+  (`configure_external` / `start_external`, the main path's node for frame timing); per frame,
+  statistics through the algorithms, their sensor request to the control schedule, their
+  settings into the next parameter buffer, then the main path's frame.
+- The `styx` crate picks it for a processed native capture when an ISP is present
+  (`isp_kind`, `isp=rkisp`; `STYX_NATIVE_ISP=software` forces the software ISP). It offers
+  NV12 modes; the worker copies each frame out of the driver's buffer into a recycled heap
+  buffer (handing out dma-bufs comes after the path has run on a board). No crops, regions or
+  second output yet: the planner reports a region unmet.
+
 ## Next, with an RK3588S board
 
-1. Capture: the sensor (OV9782, 2-lane CSI-2, RAW8) through `rkcif` and the ISP's media graph;
-   the parameter and statistics video nodes (`rkisp-input-params`, `rkisp-statistics`).
-2. A native backend that queues `Params` per frame and feeds `statistics` to the 3A loop, as
-   the PiSP path does; confirm the fixed-point constants against captured frames.
+1. Bring-up: the entity names and pad numbers above are the vendor driver's; check them
+   against `media-ctl -p`, then the frame timing (the main path sends no `FRAME_SYNC`, so the
+   control schedule runs on its own timing) and the parameter frame ids.
+2. Confirm the fixed-point constants against captured frames.
 3. Lens shading, denoise and sharpening blocks; tuning from the ColorChecker session.
 4. Up to four cameras on one SoC: the two ISP30 units time-shared between cameras (the vendor
    driver's multi-camera mode).

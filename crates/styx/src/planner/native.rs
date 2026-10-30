@@ -88,8 +88,8 @@ pub(crate) fn binned(backend: &ProbedBackend, mode: &Mode) -> bool {
     !raw(w, h) && raw(2 * w, 2 * h)
 }
 
-/// The capture step of a processed (`NV12` / `RG24`) native mode: the sensor plus the PiSP or
-/// the software ISP and the 3A loop. `None` for raw modes and other backends.
+/// The capture step of a processed (`NV12` / `RG24`) native mode: the sensor plus the PiSP, the
+/// Rockchip ISP or the software ISP and the 3A loop. `None` for raw modes and other backends.
 pub(crate) fn processed_capture_step(
     backend: &ProbedBackend,
     mode: &Mode,
@@ -111,6 +111,14 @@ pub(crate) fn processed_capture_step(
                 cost::PISP_PROCESS_CPU_MS,
             ),
             "PiSP front end statistics and back end, raw frames as dma-bufs, 3A in Styx",
+        ),
+        Some("rkisp") => (
+            StepExecution::Hardware,
+            StepCost::offloaded(
+                sensor + cost::RKISP_PROCESS_LATENCY_MS,
+                cost::RKISP_PROCESS_CPU_MS,
+            ),
+            "Rockchip ISP30 statistics and parameters per frame, 3A in Styx",
         ),
         _ if gpu_isp().is_some() => {
             // Binned modes read the whole raw frame too (half the GPU work, same copies in).
