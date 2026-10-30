@@ -4,7 +4,7 @@
 //! process's resident memory, open descriptors and threads, and the client's frames, gaps and
 //! timestamp step; at the end, each one's growth per hour and per million frames (a straight
 //! line fitted after the first minute, which warms the pools up, through the samples taken
-//! while the second client is away).
+//! while the second client has been away for a few seconds).
 //!
 //! On the PC with a simulated camera, or on a device with its camera (the first native one,
 //! else the first camera):
@@ -43,9 +43,13 @@ struct Sample {
     rss_kib: u64,
     fds: u64,
     threads: u64,
-    /// The second client was joined.
-    joined: bool,
+    /// How long the second client had been away (`None`: joined).
+    away: Option<Duration>,
 }
+
+/// How long after the second client leaves a sample counts as steady (the restart that
+/// follows takes a fraction of a second on the CM5).
+const SETTLED: Duration = Duration::from_secs(3);
 
 /// Least-squares slope of `y` against `x`.
 fn slope(x: &[f64], y: &[f64]) -> f64 {
@@ -89,6 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut next_sample = start;
     let mut next_churn = start + Duration::from_secs(20);
     let mut second: Option<FrameClient> = None;
+    let mut left_at = start;
     let mut churns = 0u32;
     while Instant::now() < end {
         if let RecvOutcome::Data(f) = vision.recv(Duration::from_millis(200)) {
@@ -114,7 +119,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             churns += 1;
             // Join and leave a larger client (a restart each way), and set and release the
             // exposure.
-            if second.take().is_none() {
+            if second.take().is_some() {
+                left_at = now;
+            } else {
                 match FrameClient::request(&path, &Frames::gray().size(1280, 800).fps(fps)) {
                     Ok(c) => second = Some(c),
                     Err(e) => println!("second client refused: {e}"),
@@ -133,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 rss_kib: proc_status("VmRSS:"),
                 fds: open_fds(),
                 threads: proc_status("Threads:"),
-                joined: second.is_some(),
+                away: second.is_none().then(|| now - left_at),
             };
             println!(
                 "{:7.0} s  frames {:9}  rss {:7} KiB  fds {:4}  threads {:3}  gaps {gaps}  \
@@ -154,10 +161,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let restarts = service.stats().restarts;
     service.stop();
 
-    // The same state each time (the second client away), so a capture's size is not a trend.
+    // The same state each time (the second client away, and long enough for the restart that
+    // gives its memory back to be over), so a capture's size is not a trend.
     let steady: Vec<&Sample> = samples
         .iter()
-        .filter(|s| s.secs >= 60.0 && !s.joined)
+        .filter(|s| s.secs >= 60.0 && s.away.is_some_and(|a| a >= SETTLED))
         .collect();
     if steady.len() < 3 {
         return Err("run too short for a slope (at least 2 minutes)".into());
