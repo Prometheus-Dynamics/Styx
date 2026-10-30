@@ -10,9 +10,11 @@
 //! else the first camera):
 //!
 //! ```text
-//! STYX_SIM_CAMERAS=ov9782 soak [minutes] [fps]
+//! STYX_SIM_CAMERAS=ov9782 soak [minutes] [fps] [lean]
 //! soak 30 120
 //! ```
+//!
+//! `lean` runs the camera with `StyxConfig::lean_memory` (a small device's buffers).
 
 use std::time::{Duration, Instant};
 
@@ -58,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let minutes: f64 = args.next().map_or(Ok(30.0), |a| a.parse())?;
     let fps: u32 = args.next().map_or(Ok(120), |a| a.parse())?;
+    let lean = args.next().as_deref() == Some("lean");
     let cameras = styx::probe_all();
     let camera = cameras
         .iter()
@@ -66,11 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("no camera")?
         .clone();
     println!(
-        "camera: {}, {minutes} min at {fps} fps",
-        camera.identity.display
+        "camera: {}, {minutes} min at {fps} fps{}",
+        camera.identity.display,
+        if lean { ", lean memory" } else { "" }
     );
     let path = std::env::temp_dir().join(format!("styx-soak-{}.sock", std::process::id()));
-    let service = CameraService::new(camera).keep_streaming().serve(&path)?;
+    let mut service = CameraService::new(camera).keep_streaming();
+    if lean {
+        service = service.capture_config(StyxConfig::default().lean_memory());
+    }
+    let service = service.serve(&path)?;
     let vision = FrameClient::request(&path, &Frames::gray().size(640, 400).fps(fps))?;
 
     let start = Instant::now();

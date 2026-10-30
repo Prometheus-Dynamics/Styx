@@ -131,6 +131,7 @@ pub(crate) fn open_for_isp(
         Some((info, memory @ styx_native::BufferMemory::DmaHeap(_))) => {
             let options = styx_native::CameraOptions {
                 memory,
+                buffers: config.backends.native.raw_buffers.max(2),
                 ..Default::default()
             };
             match NativeCamera::open(info, options) {
@@ -617,6 +618,7 @@ pub(super) fn start_processed(
                 p,
                 soft_worker::SoftWorker {
                     mode: worker_mode,
+                    keep: config.backends.native.output_buffers.max(2) as usize,
                     scale,
                     crops: scale == Scale::Full,
                     overview: overview.filter(|_| scale == Scale::Full),

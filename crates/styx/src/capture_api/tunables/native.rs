@@ -188,6 +188,11 @@ pub struct NativeIspConfig {
     /// `Some(10)` or `Some(8)` that depth. A depth the
     /// sensor has no mode of fails the open.
     pub raw_bits: Option<u8>,
+    /// Raw capture buffers the receiver cycles through (default 4, at least 2): the frames in
+    /// flight between the sensor and the ISP, each one raw frame's memory (1 MB for RAW8 at
+    /// 1280x800). 3 suits a small device ([`StyxConfig::lean_memory`]); fewer drop frames when
+    /// the ISP falls behind.
+    pub raw_buffers: u32,
     /// Keep the PiSP's temporal-denoise average compressed (8-bit mode 1, as libcamera does):
     /// half its memory traffic, 0.55 ms less back end time per 1280x800 frame on the CM5, with
     /// the same AprilTag jitter and recall (`true`, the default). `false`: 16-bit.
@@ -227,7 +232,8 @@ pub struct NativeIspConfig {
     /// Strength of the PiSP's spatial and colour denoise in percent of the tuning's: their
     /// noise thresholds are scaled by this (100, the default: as tuned; 0: off).
     pub spatial_denoise_percent: u16,
-    /// Buffers of each PiSP back end output (default 6, at least 2). Frames consumers hold
+    /// Buffers of each PiSP back end output (default 6, at least 2); with the software ISP,
+    /// the spare output buffers it keeps for reuse. Frames consumers hold
     /// (a frame server's latest frame, frames other processes have not released) keep theirs;
     /// when every one is held, frames are dropped until one comes back. More buffers let slow
     /// consumers hold frames without costing frames, at one output frame's memory each
@@ -274,6 +280,7 @@ impl Default for NativeIspConfig {
             early_cpu_sync: true,
             cpu_prefetch: NativeCpuPrefetch::Off,
             raw_bits: None,
+            raw_buffers: 4,
             tdn_compressed: true,
             slice_line: None,
             deliver_slices: false,
@@ -367,6 +374,25 @@ impl StyxConfig {
     pub fn native_temporal_denoise(mut self, on: bool) -> Self {
         self.backends.native.temporal_denoise = on;
         self
+    }
+
+    /// Give a native camera's receiver `buffers` raw capture buffers (see
+    /// [`NativeIspConfig::raw_buffers`]).
+    pub fn native_raw_buffers(mut self, buffers: u32) -> Self {
+        self.backends.native.raw_buffers = buffers.max(2);
+        self
+    }
+
+    /// A capture for a device with little memory (a 128 MB camera): 3 raw buffers, 3 output
+    /// buffers allocated as held, a capture queue of 1 and RAW8 where the sensor has it. About
+    /// 7 MB per camera at 1280x800 NV12, 2 MB at 640x400. With glibc, also run the process with
+    /// `MALLOC_ARENA_MAX=2`: every thread's malloc arena otherwise keeps what it once held.
+    pub fn lean_memory(self) -> Self {
+        self.native_raw_buffers(3)
+            .native_output_buffers(3)
+            .native_lazy_output_buffers(true)
+            .native_raw_bits(Some(8))
+            .capture_queue_depth(1)
     }
 
     /// Give each PiSP back end output `buffers` buffers (see

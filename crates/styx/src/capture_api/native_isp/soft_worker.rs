@@ -27,6 +27,9 @@ use crate::metrics::CaptureMetrics;
 /// What the worker needs besides the pipeline.
 pub(super) struct SoftWorker {
     pub(super) mode: Mode,
+    /// Spare output buffers kept for reuse per output (`NativeIspConfig::output_buffers`);
+    /// buffers coming back beyond them are freed.
+    pub(super) keep: usize,
     /// The ISP's scale: half for a binned mode.
     pub(super) scale: Scale,
     /// The capture can crop: a full-size mode (the CPU or the GPU ISP processes the region).
@@ -159,6 +162,22 @@ fn count_isp_copies(p: &mut SoftPipeline, f: &styx_pipeline::device::SoftFrame, 
     }
 }
 
+/// A buffer of `len` bytes: one that came back through `returns`, else a new one. At most
+/// `keep` buffers stay spare; more are freed, so frames once held at the same time do not keep
+/// their memory for the rest of the capture.
+fn reuse(
+    returns: &mpsc::Receiver<Vec<u8>>,
+    spare: &mut Vec<Vec<u8>>,
+    keep: usize,
+    len: usize,
+) -> Vec<u8> {
+    spare.extend(returns.try_iter());
+    spare.truncate(keep.max(1));
+    let mut b = spare.pop().unwrap_or_default();
+    b.resize(len, 0);
+    b
+}
+
 /// Runs the capture on its own thread until stopped or the queue closes.
 pub(super) fn spawn(
     mut p: SoftPipeline,
@@ -179,6 +198,8 @@ pub(super) fn spawn(
             let (ret_tx, ret_rx) = mpsc::channel::<Vec<u8>>();
             let (ov_tx, ov_rx) = mpsc::channel::<Vec<u8>>();
             let mut crop: Option<FrameRect> = None;
+            let (mut spare, mut ov_spare) = (Vec::new(), Vec::new());
+            let mut region_spare: [Vec<Vec<u8>>; MAX_NATIVE_REGIONS] = Default::default();
             // Each region slot's rectangle, and its buffers coming back.
             let mut regions: [Option<FrameRect>; MAX_NATIVE_REGIONS] = [None; MAX_NATIVE_REGIONS];
             let region_returns: Vec<_> = (0..MAX_NATIVE_REGIONS)
@@ -203,23 +224,16 @@ pub(super) fn spawn(
                 }
                 w.still.before_frame(&mut p);
                 let size = crop.map_or(frame, |c| (c.width, c.height));
-                let mut buf = ret_rx.try_recv().unwrap_or_else(|_| vec![0u8; len]);
-                let mut ov_buf = overview.map(|(_, s)| {
-                    ov_rx
-                        .try_recv()
-                        .unwrap_or_else(|_| vec![0u8; image_bytes(code, s)])
-                });
+                let mut buf = reuse(&ret_rx, &mut spare, w.keep, len);
+                let mut ov_buf =
+                    overview.map(|(_, s)| reuse(&ov_rx, &mut ov_spare, w.keep, image_bytes(code, s)));
                 let mut region_bufs: Vec<(usize, FrameRect, Vec<u8>)> = regions
                     .iter()
                     .enumerate()
                     .filter_map(|(k, r)| r.map(|r| (k, r)))
                     .map(|(k, r)| {
                         let bytes = image_bytes(code, (r.width, r.height));
-                        let mut b = region_returns[k]
-                            .1
-                            .try_recv()
-                            .unwrap_or_else(|_| vec![0u8; bytes]);
-                        b.resize(bytes, 0);
+                        let b = reuse(&region_returns[k].1, &mut region_spare[k], w.keep, bytes);
                         (k, r, b)
                     })
                     .collect();

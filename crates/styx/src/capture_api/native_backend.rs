@@ -368,8 +368,11 @@ pub(super) fn start_native(
     // A request without a rate runs at the planner's default (30 fps within the mode's range),
     // not the sensor's default frame length.
     let interval = interval.or_else(|| crate::planner::default_interval(&mode));
-    let provider = styx_native::NativeProvider::new(SensorLibrary::system())
-        .with_options(CameraOptions::default());
+    let provider =
+        styx_native::NativeProvider::new(SensorLibrary::system()).with_options(CameraOptions {
+            buffers: config.backends.native.raw_buffers.max(2),
+            ..CameraOptions::default()
+        });
     if super::native_isp::is_processed(mode.format.code) {
         let camera = super::native_isp::open_for_isp(&provider, key, config)?;
         // The 3A loop owns exposure and gain; initial controls go to the loop.

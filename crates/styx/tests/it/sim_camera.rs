@@ -352,3 +352,25 @@ fn a_leaving_client_gives_the_others_their_own_mode_back() {
     }
     assert!(got >= 5, "{got} frames of 640x400 after the other left");
 }
+
+/// The small-device preset still streams: 3 raw buffers, 3 output buffers, a queue of 1.
+#[test]
+fn the_lean_memory_preset_streams() {
+    let config = StyxConfig::default().lean_memory();
+    let native = &config.backends.native;
+    assert_eq!((native.raw_buffers, native.output_buffers), (3, 3));
+    assert!(native.lazy_output_buffers);
+    let device = styx::sim::device(spec()).unwrap();
+    let plan = styx::planner::plan_frames(&device, &Frames::nv12().size(1280, 800).fps(30))
+        .unwrap()
+        .config(config);
+    let mut frames = plan.start().unwrap();
+    let mut got = 0;
+    for _ in 0..30 {
+        if let RecvOutcome::Data(f) = frames.next_frame(Duration::from_secs(3)) {
+            assert_eq!(f.meta().format.resolution.width.get(), 1280);
+            got += 1;
+        }
+    }
+    assert!(got >= 20, "{got} frames");
+}

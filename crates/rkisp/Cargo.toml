@@ -1,0 +1,18 @@
+[package]
+name = "styx-rkisp"
+version.workspace = true
+edition.workspace = true
+description = "Rockchip ISP30 (RK3588/RK3588S) from Rust: the vendor kernel's parameter and statistics uAPI layouts, a parameter builder and statistics decoding into Styx's 3A input."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["rockchip", "isp", "camera", "rk3588"]
+categories = ["multimedia::images", "hardware-support"]
+
+[dependencies]
+bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
+styx-algo = { workspace = true, default-features = false }
+
+[lints]
+workspace = true
