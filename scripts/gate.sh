@@ -82,6 +82,7 @@ declare -A step_packages=(
     [clippy-features]="styx styx-record-cli" [test-features]="styx styx-record-cli"
     [nostd]="$nostd_packages" [perf-smoke]=styx-examples [fuzz]=styx-fuzz
     [musl-clippy]="styx styx-native native-spike" [cross]="styx styx-record-cli"
+    [riscv]="styx styx-softisp styx-algo styx-core-rs styx-native"
 )
 # True when the step must run: no --changed, everything affected, or one of its packages.
 affects() {
@@ -222,6 +223,13 @@ if rustup target list --installed 2>/dev/null | grep -qx aarch64-unknown-linux-m
     step musl-clippy musl_clippy
 else
     skip musl-clippy "rustup target add aarch64-unknown-linux-musl"
+fi
+
+if rustup target list --installed 2>/dev/null | grep -qx riscv64gc-unknown-linux-musl &&
+    command -v qemu-riscv64-static >/dev/null && command -v zig >/dev/null; then
+    step riscv ./scripts/check-riscv.sh
+else
+    skip riscv "rustup target add riscv64gc-unknown-linux-musl; qemu-riscv64-static; zig"
 fi
 
 if [[ -n "${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER:-}" ]]; then

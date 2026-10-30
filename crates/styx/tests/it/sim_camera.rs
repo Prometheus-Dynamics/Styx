@@ -335,6 +335,11 @@ fn a_leaving_client_gives_the_others_their_own_mode_back() {
         let _ = small.recv(Duration::from_millis(50));
     }
     assert_eq!(service.stats().clients, 1);
+    // The capture restarts for the one left (no plan while it does).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while mode() != alone && std::time::Instant::now() < deadline {
+        let _ = small.recv(Duration::from_millis(50));
+    }
     assert_eq!(mode(), alone, "the mode stayed the departed client's");
     // Frames queued before the restart may still be of the old mode; then the client's own.
     let mut got = 0;

@@ -8,6 +8,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **RISC-V with vectors in the gate** (`scripts/check-riscv.sh`, step `riscv`): the software
+  ISP and the 3A algorithms built for riscv64 musl with RVV (`+v,+zvfh`), the compiler's
+  vector code checked by their tests under QEMU (rv64, VLEN 128; 202 tests), and the native
+  stack linted for the target. Groundwork for the Kendryte K230D's C908 cores.
+- **`soak` example:** a camera service with a vision client, a second client joining and
+  leaving and the exposure set every 20 s, sampling the process's memory, descriptors,
+  threads, frames and gaps every 10 s and fitting their growth per hour and per million frames
+  (sim on the PC, or a device's camera). 30 min on the sim, 89 restarts: descriptors and
+  threads flat; resident memory 38 → 125 MB with glibc's per-thread malloc arenas, flat at
+  30 MB with `MALLOC_ARENA_MAX=1` (no leak; set it, or link musl, on small devices).
+
 - **Several regions per consumer on the software ISP** (native cameras without a PiSP, and
   simulated ones): every region is processed at full resolution in the frame's one pass, in
   the frame's format (NV12 or RGB24, not only luma views), and attached as a
