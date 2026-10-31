@@ -421,6 +421,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **PiSP back end output rows are 256-byte aligned** (`styx_pisp::device::OUTPUT_STRIDE_ALIGN`,
+  `output_stride`): every output plane, so pyramid levels and extra passes too, asks the
+  `pispbe` output nodes for a stride rounded up to 256 bytes, what GPU texture uploads take
+  directly (wgpu's row pitch; the V3D TFU's copy into a sampleable image, 0.7 ms at 1280x720
+  against 8.6 ms for a shader copy). A 320-wide GREY level pays 192 bytes a row. Frames carry
+  the stride as before.
+
 - **Typed menu entries (breaking).** `ControlMeta::menu` is `Option<Vec<MenuEntry>>`: each entry
   the value that selects it and a `MenuLabel` (`Name(String)`, or `Int(i64)` for integer
   menus such as link frequencies), only the values the control takes (sparse menus no longer

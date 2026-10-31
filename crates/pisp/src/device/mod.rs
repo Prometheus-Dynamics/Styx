@@ -62,7 +62,9 @@ const LINES_EVENT_OFFSET: u32 = 0x5354;
 
 pub use be::{BackEndDevice, BeOutput};
 pub use be_output::OutputMemory;
-pub use be_stream::{BackEndStream, BeFormat, BeJob, BeOutputSetup, QueuedJob};
+pub use be_stream::{
+    BackEndStream, BeFormat, BeJob, BeOutputSetup, OUTPUT_STRIDE_ALIGN, QueuedJob, output_stride,
+};
 pub use config_buf::ConfigMemory;
 pub use fe::{
     FeFrame, FeHeld, FeHeldRaw, FrontEndDevice, FrontEndSetup, HeldImage, LineEvent, SensorWindow,

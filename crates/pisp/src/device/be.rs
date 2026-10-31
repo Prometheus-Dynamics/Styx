@@ -112,7 +112,16 @@ impl BackEndDevice {
         let out_dev = node(&t, "pispbe-output0")?;
         let got = out_dev.set_format(
             BufType::VideoCaptureMplane,
-            &mplane(input.width, input.height, out.fourcc(), 0),
+            &mplane(
+                input.width,
+                input.height,
+                out.fourcc(),
+                super::be_stream::output_stride(
+                    u32::from(input.width),
+                    u32::from(input.height),
+                    out.pisp_format(),
+                ),
+            ),
         )?;
         let Format::Multi(g) = got else {
             return Err(DeviceError::Setup(

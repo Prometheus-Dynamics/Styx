@@ -117,6 +117,26 @@ pub struct BackEndStream {
     tdn: Option<TdnBuffers>,
 }
 
+/// Every output plane's rows start a multiple of this many bytes apart: what GPU texture uploads
+/// take directly (wgpu's row pitch alignment; on the Pi 5 the V3D's TFU copies such rows into a
+/// sampleable image without a shader pass). Pyramid levels and extra passes write into the same
+/// buffers, so they get it too. The padding costs little (a 320-wide GREY level: 192 bytes a
+/// row); the back end writes rows at any 16-byte-aligned stride, so it costs no speed.
+pub const OUTPUT_STRIDE_ALIGN: u32 = 256;
+
+/// The row stride to ask an output node for: `format`'s rows at `width` pixels, rounded up to
+/// [`OUTPUT_STRIDE_ALIGN`].
+pub fn output_stride(width: u32, height: u32, format: u32) -> u32 {
+    let mut f = ImageFormatConfig {
+        width: width as u16,
+        height: height as u16,
+        format,
+        ..Default::default()
+    };
+    crate::format::compute_stride_align(&mut f, OUTPUT_STRIDE_ALIGN);
+    f.stride.max(0) as u32
+}
+
 pub(super) fn mplane(w: u32, h: u32, fourcc: FourCc, bpl: u32) -> Format {
     Format::Multi(styx_kernel::v4l2::PixFormatMplane {
         width: w,
@@ -256,7 +276,12 @@ impl BackEndStream {
             let dev = node(&format!("pispbe-output{i}"))?;
             let Format::Multi(g) = dev.set_format(
                 BufType::VideoCaptureMplane,
-                &mplane(o.width, o.height, o.format.fourcc(), 0),
+                &mplane(
+                    o.width,
+                    o.height,
+                    o.format.fourcc(),
+                    output_stride(o.width, o.height, o.format.pisp_format()),
+                ),
             )?
             else {
                 return Err(DeviceError::Setup(format!(
@@ -685,5 +710,21 @@ impl BackEndStream {
             first.get_or_insert(e);
         }
         first.map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_rows_are_256_byte_aligned() {
+        let grey = BeFormat::Grey.pisp_format();
+        assert_eq!(output_stride(1280, 800, grey), 1280);
+        assert_eq!(output_stride(640, 400, grey), 768);
+        assert_eq!(output_stride(320, 200, grey), 512);
+        assert_eq!(output_stride(160, 100, grey), 256);
+        assert_eq!(output_stride(1280, 800, BeFormat::Nv12.pisp_format()), 1280);
+        assert_eq!(output_stride(640, 400, BeFormat::Rgb24.pisp_format()), 2048);
     }
 }
