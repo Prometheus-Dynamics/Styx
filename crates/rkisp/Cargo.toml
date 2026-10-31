@@ -2,12 +2,12 @@
 name = "styx-rkisp"
 version.workspace = true
 edition.workspace = true
-description = "Rockchip ISP30 (RK3588/RK3588S) from Rust: the vendor kernel's parameter and statistics uAPI layouts, a parameter builder and statistics decoding into Styx's 3A input."
+description = "Rockchip ISP21 (RK3566/RK3568) and ISP30 (RK3588/RK3588S) from Rust: the vendor kernel's parameter and statistics uAPI layouts, a parameter builder and statistics decoding into Styx's 3A input."
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
-keywords = ["rockchip", "isp", "camera", "rk3588"]
+keywords = ["rockchip", "isp", "camera", "rk3566", "rk3588"]
 categories = ["multimedia::images", "hardware-support"]
 
 [features]

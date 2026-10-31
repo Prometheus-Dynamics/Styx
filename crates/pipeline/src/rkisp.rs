@@ -8,7 +8,7 @@
 use styx_algo::Statistics;
 #[allow(unused_imports)]
 use styx_core::math::Float as _;
-use styx_rkisp::Params;
+use styx_rkisp::{Generation, Params};
 use styx_softisp::ToneCurve;
 
 use crate::isp::IspSettings;
@@ -25,7 +25,7 @@ pub fn params(settings: &IspSettings, frame: u32, width: u32, height: u32) -> Pa
     let m = settings.ccm.map(|c| c as f32);
     let ccm = [[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]];
     let curve = settings.gamma.clone();
-    let mut p = Params::new();
+    let mut p = Params::new(Generation::Isp30);
     if let Some(ls) = &settings.lens_shading {
         p = p.lens_shading(
             dim(width),
@@ -54,7 +54,7 @@ fn dim(v: u32) -> u16 {
 pub fn statistics(buf: &[u8], width: u32, height: u32, out: &mut Statistics) -> bool {
     let zones = styx_rkisp::AE_ZONES;
     let per_zone = (width / zones) * (height / zones);
-    styx_rkisp::statistics(buf, per_zone, out).is_some()
+    styx_rkisp::statistics(Generation::Isp30, buf, per_zone, out).is_some()
 }
 
 #[cfg(test)]
@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn the_settings_fill_their_blocks() {
         let p = params(&settings(), 7, 1280, 800);
-        let c = p.config();
+        let c = p.isp30().unwrap();
         assert_eq!({ c.frame_id }, 7);
         let bls = c.others.bls_cfg;
         assert_eq!({ bls.fixed_val.r }, 256, "64 of 10 bits is 256 of 12");
@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn no_curve_is_the_srgb_curve() {
         let p = params(&settings(), 0, 640, 400);
-        let g = { p.config().others.gammaout_cfg.gamma_y };
+        let g = { p.isp30().unwrap().others.gammaout_cfg.gamma_y };
         assert_eq!(g[0], 0);
         assert_eq!(*g.last().unwrap(), 4095);
         let mid = g[g.len() / 2];
