@@ -408,6 +408,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **Typed menu entries (breaking).** `ControlMeta::menu` is `Option<Vec<MenuEntry>>`: each entry
+  the value that selects it and a `MenuLabel` (`Name(String)`, or `Int(i64)` for integer
+  menus such as link frequencies), only the values the control takes (sparse menus no longer
+  list empty names). `ControlMeta::menu_entry(&value)`, `menu_entry_named(name)` (a name, or
+  an integer menu's number, ignoring ASCII case) and `menu_value(&entry)` (the value to set,
+  in the control's variant); `MenuEntry::names` for a 0..n menu. V4L2, UVC, libcamera (any
+  enumerated value list, not only 0..n), native, replay and simulation controls and the
+  camera service wire format carry them. Migration: `menu[i]` → `meta.menu_entry(&value)`,
+  a name → `entry.to_string()`.
+
 - **dma-heap buffers have 256 B of tail slack, rounded up to a page**
   (`dma_heap::TAIL_SLACK`, `padded_len`; `DmaBuf::len` is the padded size): Mesa's v3dv
   imports a linear dma-buf as a Vulkan storage buffer only if it is at least the frame plus

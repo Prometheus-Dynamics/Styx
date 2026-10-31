@@ -26,7 +26,7 @@ user; they do not block the tag unless the user says so.
       *Done when:* the C270 on the CM5 in a YUYV mode it cannot sustain falls back to MJPEG
       and the error names the cause (bandwidth / no frames). *Blocked by:* the C270
       plugged back in.
-- [ ] **Typed control-menu entry (kept: user decision).** *Why:* menu controls are integers with
+- [ ] **Typed control-menu entry (kept: user decision; API in, HeliOS UI next).** *Why:* menu controls are integers with
       labels; HeliOS's camera settings will show typed menu entries. *Done when:* every menu
       control (V4L2, UVC, native, camera service) reports its entries as typed values (named
       items and integer menus) through the control API, set and read back by entry, with

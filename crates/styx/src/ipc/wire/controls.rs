@@ -347,8 +347,19 @@ pub(in crate::ipc) fn encode_control_list(controls: &[ControlDescriptor]) -> Vec
         w.opt(m.menu.as_ref(), |w, menu| {
             let menu = &menu[..menu.len().min(MAX_MENU)];
             w.u8(menu.len() as u8);
+            // Each entry: its value, then a name (tag 0) or a number (tag 1).
             for entry in menu {
-                w.text(entry);
+                w.u64(entry.value as u64);
+                match &entry.label {
+                    MenuLabel::Name(name) => {
+                        w.u8(0);
+                        w.text(name);
+                    }
+                    MenuLabel::Int(n) => {
+                        w.u8(1);
+                        w.u64(*n as u64);
+                    }
+                }
             }
         });
         w.opt(c.current.as_ref(), write_value);
@@ -407,7 +418,17 @@ pub(in crate::ipc) fn decode_control_list(
             if n > MAX_MENU {
                 return Err(IpcError::Malformed("menu too long"));
             }
-            (0..n).map(|_| r.text()).collect::<Result<Vec<_>, _>>()
+            (0..n)
+                .map(|_| {
+                    let value = r.u64()? as i64;
+                    let label = match r.u8()? {
+                        0 => MenuLabel::Name(r.text()?),
+                        1 => MenuLabel::Int(r.u64()? as i64),
+                        _ => return Err(IpcError::Malformed("menu entry label")),
+                    };
+                    Ok(MenuEntry { value, label })
+                })
+                .collect::<Result<Vec<_>, _>>()
         })?;
         out.push(ControlDescriptor {
             meta: ControlMeta {

@@ -303,3 +303,43 @@ fn a_sensor_mode_crosses_the_wire_after_the_other_trailers() {
     };
     assert_eq!(back.sensor_mode, None);
 }
+
+#[test]
+fn menus_cross_the_wire_as_typed_entries() {
+    use super::controls::{decode_control_list, encode_control_list};
+    use crate::ipc::ControlDescriptor;
+    let meta = |id, kind, menu| ControlMeta {
+        id: ControlId(id),
+        name: "menu".into(),
+        kind,
+        access: Access::ReadWrite,
+        min: ControlValue::Int(0),
+        max: ControlValue::Int(3),
+        default: ControlValue::Int(1),
+        step: None,
+        menu: Some(menu),
+        metadata: ControlMetadata::default(),
+    };
+    let named = vec![
+        MenuEntry::named(1, "Manual Mode"),
+        MenuEntry::named(3, "Aperture Priority Mode"),
+    ];
+    let numbers = vec![MenuEntry::int(0, 456_000_000), MenuEntry::int(1, -5)];
+    let list: Vec<ControlDescriptor> = [
+        meta(1, ControlKind::Menu, named.clone()),
+        meta(2, ControlKind::IntMenu, numbers.clone()),
+    ]
+    .into_iter()
+    .map(|meta| ControlDescriptor {
+        meta,
+        current: None,
+        standard: None,
+        writable: true,
+        effective_min: None,
+        effective_max: None,
+    })
+    .collect();
+    let back = decode_control_list(&encode_control_list(&list)).unwrap();
+    assert_eq!(back[0].meta.menu.as_ref(), Some(&named));
+    assert_eq!(back[1].meta.menu.as_ref(), Some(&numbers));
+}

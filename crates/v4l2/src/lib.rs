@@ -305,22 +305,17 @@ fn map_control(dev: &VideoDevice, ctrl: ControlInfo) -> Option<ControlMeta> {
         Access::ReadWrite
     };
 
-    // Indexed by value (`ControlMeta::menu`): the indexes the driver skips (VIDIOC_QUERYMENU
-    // fails, e.g. a UVC camera's exposure menu with only 1 manual and 3 aperture priority)
-    // are empty names, values the control does not take.
+    // Only the entries the driver has (VIDIOC_QUERYMENU fails for the indexes it skips, e.g. a
+    // UVC camera's exposure menu with only 1 manual and 3 aperture priority).
     let menu = ctrl.is_menu().then(|| {
-        let mut menu: Vec<String> = Vec::new();
-        for item in dev.query_menu(&ctrl).unwrap_or_default() {
-            let index = item.index as usize;
-            if menu.len() <= index {
-                menu.resize(index + 1, String::new());
-            }
-            menu[index] = match item.value {
-                MenuValue::Name(name) => name,
-                MenuValue::Integer(value) => value.to_string(),
-            };
-        }
-        menu
+        dev.query_menu(&ctrl)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|item| match item.value {
+                MenuValue::Name(name) => MenuEntry::named(i64::from(item.index), name),
+                MenuValue::Integer(value) => MenuEntry::int(i64::from(item.index), value),
+            })
+            .collect::<Vec<_>>()
     });
 
     let step = match ctrl.control_type {

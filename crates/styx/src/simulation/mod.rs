@@ -133,12 +133,12 @@ pub fn make_simulation_device(
                 SimulationOutputMode::Segmentation => 3,
             }),
             step: Some(ControlValue::Uint(1)),
-            menu: Some(vec![
-                "rgb".into(),
-                "depth".into(),
-                "normals".into(),
-                "segmentation".into(),
-            ]),
+            menu: Some(MenuEntry::names([
+                "rgb",
+                "depth",
+                "normals",
+                "segmentation",
+            ])),
             metadata: ControlMetadata::default(),
         },
         ControlMeta {

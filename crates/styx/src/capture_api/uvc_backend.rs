@@ -120,36 +120,21 @@ fn control_metas(dev: &UvcDevice) -> Vec<ControlMeta> {
                     (ControlKind::Int, |v| ControlValue::Int(v as i32))
                 }
             };
-            let menu = match c.def.kind {
-                Kind::AeMode => Some(
-                    [
-                        "Auto Mode",
-                        "Manual Mode",
-                        "Shutter Priority Mode",
-                        "Aperture Priority Mode",
-                    ]
-                    .map(String::from)
-                    .to_vec(),
-                ),
-                Kind::Menu => Some(
-                    ["Disabled", "50 Hz", "60 Hz", "Auto"]
-                        .map(String::from)
-                        .to_vec(),
-                ),
-                _ => None,
-            }
-            // Indexed by value: the values the camera does not take are empty names.
-            .map(|names| {
-                names
+            let names: &[&str] = match c.def.kind {
+                Kind::AeMode => &[
+                    "Auto Mode",
+                    "Manual Mode",
+                    "Shutter Priority Mode",
+                    "Aperture Priority Mode",
+                ],
+                Kind::Menu => &["Disabled", "50 Hz", "60 Hz", "Auto"],
+                _ => &[],
+            };
+            // Only the values the camera takes.
+            let menu = (!names.is_empty()).then(|| {
+                MenuEntry::names(names.iter().copied())
                     .into_iter()
-                    .enumerate()
-                    .map(|(i, n)| {
-                        if c.menu_values & (1 << i) != 0 {
-                            n
-                        } else {
-                            String::new()
-                        }
-                    })
+                    .filter(|e| c.menu_values & (1 << e.value) != 0)
                     .collect()
             });
             ControlMeta {

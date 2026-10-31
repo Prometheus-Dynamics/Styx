@@ -279,7 +279,7 @@ fn control_seeds() -> Vec<(&'static str, Vec<u8>)> {
             max: ControlValue::Int(3),
             default: ControlValue::Int(3),
             step: Some(ControlValue::Int(1)),
-            menu: Some(vec!["off".into(), "50".into(), "60".into(), "auto".into()]),
+            menu: Some(MenuEntry::names(["off", "50", "60", "auto"])),
             metadata: ControlMetadata::default(),
         },
         current: Some(ControlValue::Int(1)),

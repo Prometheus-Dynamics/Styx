@@ -154,7 +154,7 @@ pub(crate) fn metas() -> Vec<ControlMeta> {
             ro,
         ),
         ControlMeta {
-            menu: Some(STATES.iter().map(|s| s.to_string()).collect()),
+            menu: Some(MenuEntry::names(STATES.iter().copied())),
             ..meta(
                 ids::REPLAY_STATE,
                 "replay_state",

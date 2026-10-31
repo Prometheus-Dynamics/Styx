@@ -85,6 +85,7 @@ criterion.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 # A critical-section implementation for the host tests of `--features critical-section`.
 critical-section = { workspace = true, features = ["std"] }
+serde_json.workspace = true
 
 [[bench]]
 name = "core"

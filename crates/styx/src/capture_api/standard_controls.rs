@@ -650,10 +650,8 @@ mod tests {
         );
         ae.default = ControlValue::Uint(3);
         ae.menu = Some(vec![
-            String::new(),
-            "Manual Mode".into(),
-            String::new(),
-            "Aperture Priority Mode".into(),
+            MenuEntry::named(1, "Manual Mode"),
+            MenuEntry::named(3, "Aperture Priority Mode"),
         ]);
         for (v, ok) in [(0, false), (1, true), (2, false), (3, true), (4, false)] {
             assert_eq!(ae.validate(&ControlValue::Int(v)), ok, "{v}");
@@ -663,7 +661,7 @@ mod tests {
         let off = to_backend_for(&ae, Scale::AeMenu, &ControlValue::Bool(false));
         assert_eq!(fit(&ae, off).unwrap(), (ControlValue::Int(1), false));
         let mut full_auto = ae.clone();
-        full_auto.menu = Some(vec!["Auto Mode".into(), "Manual Mode".into()]);
+        full_auto.menu = Some(MenuEntry::names(["Auto Mode", "Manual Mode"]));
         full_auto.max = ControlValue::Uint(1);
         assert_eq!(
             to_backend_for(&full_auto, Scale::AeMenu, &ControlValue::Bool(true)),

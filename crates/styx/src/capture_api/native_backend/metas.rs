@@ -39,7 +39,7 @@ pub(super) fn control_metas(info: &CameraInfo) -> Vec<ControlMeta> {
     };
     // An `Int` control whose values are `labels`' indices, listed as its menu.
     let menu = |m: ControlMeta, labels: &[&str]| ControlMeta {
-        menu: Some(labels.iter().map(|l| l.to_string()).collect()),
+        menu: Some(MenuEntry::names(labels.iter().copied())),
         ..m
     };
     vec![

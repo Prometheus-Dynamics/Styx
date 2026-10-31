@@ -74,14 +74,97 @@ pub struct ControlMeta {
     /// Optional step size for ranged controls.
     #[cfg_attr(feature = "serde", serde(default))]
     pub step: Option<ControlValue>,
-    /// Optional enumerated menu entries (for menu controls), indexed by the value that selects
-    /// them. An empty name is a value the control does not take (a sparse menu: a V4L2 driver
-    /// that skips indexes, e.g. a UVC exposure menu of 1 manual and 3 aperture priority).
+    /// The entries of a menu control ([`ControlKind::Menu`] or [`ControlKind::IntMenu`]), in
+    /// ascending value: only values the control takes, so a sparse menu (a V4L2 driver that
+    /// skips indexes, e.g. a UVC exposure menu of 1 manual and 3 aperture priority) lists just
+    /// those. Look entries up with [`ControlMeta::menu_entry`] and
+    /// [`ControlMeta::menu_entry_named`]; set one with [`ControlMeta::menu_value`].
     #[cfg_attr(feature = "serde", serde(default))]
-    pub menu: Option<Vec<String>>,
+    pub menu: Option<Vec<MenuEntry>>,
     /// Optional metadata flags.
     #[cfg_attr(feature = "serde", serde(default))]
     pub metadata: ControlMetadata,
+}
+
+/// One entry of a menu control: the control value that selects it and what it stands for.
+///
+/// # Example
+/// ```rust
+/// use styx_core::prelude::{MenuEntry, MenuLabel};
+///
+/// let modes = MenuEntry::names(["off", "50 Hz", "60 Hz", "auto"]);
+/// assert_eq!(modes[2], MenuEntry::named(2, "60 Hz"));
+/// let rates = MenuEntry::int(1, 456_000_000);
+/// assert_eq!(rates.label, MenuLabel::Int(456_000_000));
+/// assert_eq!(rates.to_string(), "456000000");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct MenuEntry {
+    /// The control value that selects the entry (a V4L2 menu index).
+    pub value: i64,
+    /// What the entry stands for.
+    pub label: MenuLabel,
+}
+
+/// What a menu entry stands for: a name ([`ControlKind::Menu`]) or a number
+/// ([`ControlKind::IntMenu`], e.g. a link frequency in Hz).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(tag = "kind", content = "value", rename_all = "snake_case")
+)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub enum MenuLabel {
+    Name(String),
+    Int(i64),
+}
+
+impl MenuEntry {
+    /// An entry named `name`, selected by `value`.
+    pub fn named(value: i64, name: impl Into<String>) -> Self {
+        Self {
+            value,
+            label: MenuLabel::Name(name.into()),
+        }
+    }
+
+    /// An integer-menu entry standing for `number`, selected by `value`.
+    pub fn int(value: i64, number: i64) -> Self {
+        Self {
+            value,
+            label: MenuLabel::Int(number),
+        }
+    }
+
+    /// Entries named `names`, selected by 0, 1, 2, ...
+    pub fn names<S: Into<String>>(names: impl IntoIterator<Item = S>) -> Vec<Self> {
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| Self::named(i as i64, name))
+            .collect()
+    }
+
+    /// The entry's name, if it has one.
+    pub fn name(&self) -> Option<&str> {
+        match &self.label {
+            MenuLabel::Name(name) => Some(name),
+            MenuLabel::Int(_) => None,
+        }
+    }
+}
+
+impl core::fmt::Display for MenuEntry {
+    /// The name, or the number in decimal.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match &self.label {
+            MenuLabel::Name(name) => f.write_str(name),
+            MenuLabel::Int(n) => write!(f, "{n}"),
+        }
+    }
 }
 
 /// Control kind/type metadata.
@@ -246,7 +329,43 @@ impl<'de> serde::Deserialize<'de> for ControlValue {
     }
 }
 
+/// A menu control's value as the index of an entry.
+fn menu_index(v: &ControlValue) -> Option<i64> {
+    match v {
+        ControlValue::Uint(n) => Some(i64::from(*n)),
+        ControlValue::Int(n) => Some(i64::from(*n)),
+        _ => None,
+    }
+}
+
 impl ControlMeta {
+    /// The menu entry `value` selects (`None`: not a menu control, or no such entry).
+    pub fn menu_entry(&self, value: &ControlValue) -> Option<&MenuEntry> {
+        let index = menu_index(value)?;
+        self.menu.as_ref()?.iter().find(|e| e.value == index)
+    }
+
+    /// The menu entry whose name (or, in an integer menu, number in decimal) is `name`,
+    /// ignoring ASCII case.
+    pub fn menu_entry_named(&self, name: &str) -> Option<&MenuEntry> {
+        self.menu.as_ref()?.iter().find(|e| match &e.label {
+            MenuLabel::Name(n) => n.eq_ignore_ascii_case(name),
+            MenuLabel::Int(n) => name.trim().parse::<i64>().is_ok_and(|v| v == *n),
+        })
+    }
+
+    /// The value that selects `entry`, in the variant the control takes (that of its minimum).
+    pub fn menu_value(&self, entry: &MenuEntry) -> ControlValue {
+        match self.min {
+            ControlValue::Uint(_) => {
+                ControlValue::Uint(entry.value.clamp(0, i64::from(u32::MAX)) as u32)
+            }
+            _ => {
+                ControlValue::Int(entry.value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32)
+            }
+        }
+    }
+
     /// Basic range validation respecting the variant.
     ///
     /// # Example
@@ -268,23 +387,14 @@ impl ControlMeta {
     /// assert!(meta.validate(&ControlValue::Int(5)));
     /// ```
     pub fn validate(&self, candidate: &ControlValue) -> bool {
-        if let Some(menu) = &self.menu {
-            // A menu's value is an index with an entry: within the menu and the control's range,
-            // not a gap of a sparse menu.
-            let idx = match candidate {
-                ControlValue::Uint(idx) => i64::from(*idx),
-                ControlValue::Int(idx) => i64::from(*idx),
-                _ => return false,
+        if self.menu.is_some() {
+            // A menu's value selects one of its entries, within the control's range.
+            let Some(idx) = menu_index(candidate) else {
+                return false;
             };
-            let bound = |v: &ControlValue| match v {
-                ControlValue::Uint(n) => Some(i64::from(*n)),
-                ControlValue::Int(n) => Some(i64::from(*n)),
-                _ => None,
-            };
-            return idx >= 0
-                && bound(&self.min).is_none_or(|lo| idx >= lo)
-                && bound(&self.max).is_none_or(|hi| idx <= hi)
-                && menu.get(idx as usize).is_some_and(|name| !name.is_empty());
+            return menu_index(&self.min).is_none_or(|lo| idx >= lo)
+                && menu_index(&self.max).is_none_or(|hi| idx <= hi)
+                && self.menu_entry(candidate).is_some();
         }
 
         if self.kind == ControlKind::Rectangle {
@@ -333,5 +443,88 @@ impl ControlMeta {
             (ControlValue::None, ControlValue::None, ControlValue::None) => true,
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    fn exposure_menu() -> ControlMeta {
+        ControlMeta {
+            id: ControlId(1),
+            name: "Auto Exposure".into(),
+            kind: ControlKind::Menu,
+            access: Access::ReadWrite,
+            min: ControlValue::Uint(0),
+            max: ControlValue::Uint(3),
+            default: ControlValue::Uint(3),
+            step: None,
+            // Sparse, as a UVC camera's: 1 manual and 3 aperture priority only.
+            menu: Some(vec![
+                MenuEntry::named(1, "Manual Mode"),
+                MenuEntry::named(3, "Aperture Priority Mode"),
+            ]),
+            metadata: ControlMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn menu_entries_are_found_by_value_and_by_name() {
+        let m = exposure_menu();
+        assert_eq!(
+            m.menu_entry(&ControlValue::Int(3))
+                .and_then(MenuEntry::name),
+            Some("Aperture Priority Mode")
+        );
+        assert!(m.menu_entry(&ControlValue::Uint(2)).is_none());
+        let manual = m.menu_entry_named("manual mode").unwrap();
+        assert_eq!(m.menu_value(manual), ControlValue::Uint(1));
+        assert!(m.menu_entry_named("Shutter Priority Mode").is_none());
+    }
+
+    #[test]
+    fn only_listed_entries_within_range_validate() {
+        let m = exposure_menu();
+        for (v, ok) in [(0, false), (1, true), (2, false), (3, true), (4, false)] {
+            assert_eq!(m.validate(&ControlValue::Int(v)), ok, "{v}");
+        }
+        assert!(!m.validate(&ControlValue::Bool(true)));
+        let mut narrowed = m.clone();
+        narrowed.max = ControlValue::Uint(2);
+        assert!(
+            !narrowed.validate(&ControlValue::Uint(3)),
+            "an entry beyond the range"
+        );
+    }
+
+    #[test]
+    fn integer_menus_look_up_by_number() {
+        let m = ControlMeta {
+            kind: ControlKind::IntMenu,
+            min: ControlValue::Int(0),
+            max: ControlValue::Int(1),
+            menu: Some(vec![
+                MenuEntry::int(0, 400_000_000),
+                MenuEntry::int(1, 456_000_000),
+            ]),
+            ..exposure_menu()
+        };
+        let e = m.menu_entry_named("456000000").unwrap();
+        assert_eq!(m.menu_value(e), ControlValue::Int(1));
+        assert_eq!(alloc::format!("{e}"), "456000000");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn menu_entries_serialize_with_their_label_kind() {
+        let e = MenuEntry::named(3, "Auto");
+        let json = serde_json::to_string(&e).unwrap();
+        assert_eq!(
+            json,
+            r#"{"value":3,"label":{"kind":"name","value":"Auto"}}"#
+        );
+        assert_eq!(serde_json::from_str::<MenuEntry>(&json).unwrap(), e);
     }
 }

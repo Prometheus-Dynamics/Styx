@@ -36,7 +36,8 @@ pub mod prelude {
             plane_layout_with_stride,
         },
         controls::{
-            Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlRect, ControlValue,
+            Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlRect,
+            ControlValue, MenuEntry, MenuLabel,
         },
         format::{
             BitDepth, Channel, ChromaSubsampling, ColorSpace, FormatInfo, FourCc, FrameLayoutInfo,

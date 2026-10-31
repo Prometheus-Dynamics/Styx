@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use parking_lot::Mutex;
 use styx_capture::prelude::{
     Access, ControlId, ControlKind, ControlMeta, ControlMetadata, ControlRect, ControlValue,
+    MenuEntry,
 };
 use styx_pipeline::styx_algo::{
     AfMode, AfPause, AfPauseState, AfRange, AfSpeed, AfState, AfWindow, Controls, Params,
@@ -271,7 +272,7 @@ pub(crate) fn metas(limits: (f64, f64)) -> Vec<ControlMeta> {
         max: ControlValue::Int(labels.len() as i32 - 1),
         default: ControlValue::Int(default),
         step: Some(ControlValue::Int(1)),
-        menu: Some(labels.iter().map(|l| l.to_string()).collect()),
+        menu: Some(MenuEntry::names(labels.iter().copied())),
         metadata: ControlMetadata::default(),
     };
     let rect = ControlRect {

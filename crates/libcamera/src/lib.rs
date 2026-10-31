@@ -341,10 +341,9 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
         let control_type = ControlType::from(&default_raw);
         let mut kind = kind_from_type(control_type);
 
-        // If libcamera provides a bounded list of accepted values, treat it as a menu.
-        // Note: We only surface a menu when the allowed values are a contiguous 0..N range.
-        // This preserves the existing "menu value == index" semantics used by the rest of Styx.
-        let mut menu: Option<Vec<String>> = None;
+        // A bounded list of accepted values is a menu: named entries where libcamera has
+        // enumerator names, numbers otherwise.
+        let mut menu: Option<Vec<MenuEntry>> = None;
         if !values.is_empty() {
             let mut allowed = values
                 .iter()
@@ -353,17 +352,17 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
                 .collect::<Vec<_>>();
             allowed.sort_unstable();
             allowed.dedup();
-            let contiguous = allowed.first().is_some_and(|first| *first == 0)
-                && allowed.iter().enumerate().all(|(idx, v)| *v == idx as i64);
-
-            if contiguous {
+            if !allowed.is_empty() {
                 let enumerators = LcControlId::from_id(id)
                     .map(|cid| cid.enumerators_map())
                     .unwrap_or_default();
                 menu = Some(
                     allowed
                         .iter()
-                        .map(|v| enumerators.get(&(*v as i32)).cloned().unwrap_or_default())
+                        .map(|&v| match enumerators.get(&(v as i32)) {
+                            Some(name) => MenuEntry::named(v, name.clone()),
+                            None => MenuEntry::int(v, v),
+                        })
                         .collect(),
                 );
                 kind = match kind {
@@ -380,17 +379,11 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
             // libcamera::controls::draft::NoiseReductionMode
             (id, "ctrl_10002", Some(existing))
                 if id == LIBCAMERA_NOISE_REDUCTION_MODE.0
-                    && existing.iter().all(|s| s.is_empty()) =>
+                    && existing.iter().all(|e| e.name().is_none()) =>
             {
                 (
                     "NoiseReductionMode".to_string(),
-                    Some(vec![
-                        "NoiseReductionModeOff".into(),
-                        "NoiseReductionModeFast".into(),
-                        "NoiseReductionModeHighQuality".into(),
-                        "NoiseReductionModeMinimal".into(),
-                        "NoiseReductionModeZSL".into(),
-                    ]),
+                    Some(noise_reduction_modes()),
                     ControlMetadata {
                         requires_tdn_output: true,
                     },
@@ -398,13 +391,7 @@ fn map_controls(map: &control::ControlInfoMap) -> Vec<ControlMeta> {
             }
             (id, "ctrl_10002", None) if id == LIBCAMERA_NOISE_REDUCTION_MODE.0 => (
                 "NoiseReductionMode".to_string(),
-                Some(vec![
-                    "NoiseReductionModeOff".into(),
-                    "NoiseReductionModeFast".into(),
-                    "NoiseReductionModeHighQuality".into(),
-                    "NoiseReductionModeMinimal".into(),
-                    "NoiseReductionModeZSL".into(),
-                ]),
+                Some(noise_reduction_modes()),
                 ControlMetadata {
                     requires_tdn_output: true,
                 },
@@ -597,4 +584,16 @@ mod format_tests {
         assert_eq!(map_pixel_format_to_fourcc(lc(b"RG24")), FourCc::BG24);
         assert_eq!(map_pixel_format_to_fourcc(lc(b"BG24")), FourCc::RG24);
     }
+}
+
+#[cfg(feature = "probe")]
+/// libcamera's draft `NoiseReductionMode` entries (libcamera-rs does not name them).
+fn noise_reduction_modes() -> Vec<MenuEntry> {
+    MenuEntry::names([
+        "NoiseReductionModeOff",
+        "NoiseReductionModeFast",
+        "NoiseReductionModeHighQuality",
+        "NoiseReductionModeMinimal",
+        "NoiseReductionModeZSL",
+    ])
 }

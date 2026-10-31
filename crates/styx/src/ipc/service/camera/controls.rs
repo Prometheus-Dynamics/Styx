@@ -540,7 +540,7 @@ mod tests {
             ControlValue::Int(0),
             ControlValue::Int(1),
         );
-        menu.menu = Some(vec!["a".into(), "b".into()]);
+        menu.menu = Some(MenuEntry::names(["a", "b"]));
         assert!(fit(&menu, ControlValue::Int(1)).is_ok());
         assert!(matches!(
             fit(&menu, ControlValue::Int(5)),
