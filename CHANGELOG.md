@@ -8,6 +8,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Rockchip ISP32 (RV1106) and ISP32-lite (RK3562) in `styx-rkisp`, written, untested on
+  board**: the uAPI layouts from the BSP's `rk-isp32-config.h` (sizes and offsets checked against
+  the C compiler's), a parameter builder per variant (statistics config, black level, white
+  balance, lens shading, colour matrix, output gamma; each variant's big histogram), statistics
+  decoding into `styx_algo::Statistics` (the full's packed zones, the lite's 16-bit zones), and
+  the video nodes each variant exposes, the selfpath and the 4x4 sampling outputs among them.
+  Not wired into the pipeline yet; the selfpath is named but not opened.
+
 - **armv7 NEON and RVV leaves for every `styx_core::simd` kernel**: the channel swizzles, luma,
   grey and RGB48 conversions, YUYV luma, the 2x2 box downscale of the luma pyramid, row
   reversal and the 8x8 tile transposes of the rotations run in NEON on 32-bit Arm Linux and in

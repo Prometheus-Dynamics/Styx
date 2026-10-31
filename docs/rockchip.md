@@ -1,7 +1,8 @@
-# Rockchip (RK3588 / RK3588S)
+# Rockchip (RK3588 / RK3588S, RK3562, RV1106)
 
 Status: the capture path is written end to end against the vendor driver's uAPI; nothing has
-run on an RK3588 yet (no board on the bench).
+run on an RK3588 yet (no board on the bench). The ISP32 of the RK3562 and the RV1106 is written,
+untested on board: see [RK3562 and RV1106](#rk3562-and-rv1106-isp32-and-isp32-lite-written-untested-on-board).
 The NEON software ISP already runs on any Rockchip ARM board.
 
 ## Why Styx can drive the ISP itself
@@ -75,3 +76,95 @@ sensor ─► rkcif ─► rkisp-isp-subdev ─► rkisp-statistics ─► styx_
 
 The RK3582 (a cut-down RK3588S, pin and package identical) keeps the ISP30 and four 2-lane
 CSI-2 ports per its datasheet, so the same backend covers it. RK3576 (another ISP generation) is a fallback; RK3566 is ruled out.
+
+## RK3562 and RV1106 (ISP32 and ISP32-lite): written, untested on board
+
+Status: written, untested on board. The buffers are the BSP's `rk-isp32-config.h`, their sizes
+and offsets checked against the C compiler's; the builder and the statistics are unit-tested
+against fabricated buffers (`crates/rkisp/src/isp32/tests.rs`). Nothing has run on an RV1106 or an
+RK3562. The code is `styx_rkisp::isp32`, selected by a `Variant`.
+
+### Generations (from the BSP)
+
+Rockchip's kernel, `drivers/media/platform/rockchip/isp/` in develop-6.1 (develop-5.10 agrees
+for the match data):
+
+- RK3562 is the ISP32-lite, `ISP_V32_L` (`common.h:79`): `rk3562_isp_match_data` in `hw.c:922-925`
+  (5.10: `hw.c:846-849`), compatible `rockchip,rk3562-rkisp` (`hw.c:980`).
+- RV1106 is the full ISP32, `ISP_V32` (`common.h:78`): `rv1106_isp_match_data` in `hw.c:889-892`
+  (5.10: `hw.c:824-827`), compatible `rockchip,rv1106-rkisp` (`hw.c:1013`).
+- The BSP's Kconfig groups them as "isp32 for rv1106 rk3562" (`Kconfig:39`). RV1103B is ISP33
+  (`hw.c:881`) and is not covered here.
+
+The uAPI header `rk-isp32-config.h` is byte-identical in develop-5.10 and develop-6.1. The
+`rk-isp2-config.h` differs between them only in API macros and `ISP2X_MESH_BUF_NUM`; the layouts
+the ISP32 structures use are identical (a C probe prints the same sizes and offsets for both).
+
+### What differs between the two
+
+| | RV1106 (ISP32) | RK3562 (ISP32-lite) |
+| --- | --- | --- |
+| Parameter buffer | `isp32_isp_params_cfg`, 11145 bytes | the same |
+| Statistics buffer | `rkisp32_isp_stat_buffer`, 13036 bytes | `rkisp32_lite_stat_buffer`, 3788 bytes |
+| AE zones (15x15) | `rawae3_0`: packed 4-byte zones, g 12 bits, b and r 10 bits (`isp32_rawae_meas_data`, `rk-isp32-config.h:1352`) | `rawae3`: 6-byte zones of three 16-bit fields (`isp2x_rawae_meas_data`) |
+| Big histogram | `rawhist1` (offset 5120) | `rawhist3` (offset 1924); `rawhist1` is masked out (`isp_params_v32.c:4269`, `:4323`) |
+| Outputs | mainpath, selfpath, bypasspath, mainpath and bypasspath 4x4 sampling, lumapath, iqtool | mainpath, selfpath, iqtool |
+
+The stream registration is `rkisp_register_stream_v32` (`capture_v32.c:2260-2285`); the path
+diagram is at `capture_v32.c:17-25`. The lite's AE and histogram readers are
+`rkisp_stats_get_rawae3_meas_lite` and `rkisp_stats_get_rawhst3_meas_lite` (`isp_stats_v32.c`).
+
+### Nodes and formats
+
+- The ISP subdevice is `rkisp-isp-subdev` (`rkisp.c:57`), its pads the ISP30 ones (`rkisp.h:115-119`):
+  the source pad carries every path (`rkisp.c:5292`, `capture.c:1910`).
+- The parameter node is `rkisp-input-params` (`isp_params.c:22`), format `RK1P`; the statistics
+  node is `rkisp-statistics` (`isp_stats.c:21`), format `RK1S` (`isp_params.c:477`,
+  `isp_stats.c:300`). The same names and fourccs as ISP30, so the [`device`](#styx-rkisp) layer should open them
+  unchanged (untested); the main path is `rkisp_mainpath`.
+- The path nodes are `rkisp_selfpath`, `rkisp_bypasspath`, `rkisp_mainpath_4x4sampling`,
+  `rkisp_bypasspath_4x4sampling`, `rkisp_lumapath` and `rkisp_iqtool` (`capture.h:46-53`);
+  `styx_rkisp::isp32::nodes` and `Variant::output_nodes` list them.
+
+### Pyramid levels (RV1106)
+
+- The selfpath is the second, scaled output (`rkisp_selfpath`, both variants).
+- The 4x4 sampling outputs are `rkisp_mainpath_4x4sampling` (MPDS) and
+  `rkisp_bypasspath_4x4sampling` (BPDS), full ISP32 only. They are the two sampled levels.
+- The BSP has no 8x8 pyramid path. The `RKISP_AIAWB_DS_8X8` in the 6.1 `rk-isp2-config.h` is an
+  AI-AWB downsample option, not a pyramid output.
+- Opening the selfpath as a second output of `IspDevice` is not implemented: see below.
+
+### Constants that are guesses
+
+The header states none of the fixed-point scales. They are ISP30's (`GAIN_ONE` 256,
+`CCM_ONE` 128, `GAMMA_OUT_MAX` 4095, `LSC_ONE` 1024, `AE_RB_FULL` 1023, `AE_G_FULL` 4095), taken
+from the same registers' formats, to confirm on a board. The lite's 16-bit zone fields are read
+with the same scales. The histogram mode, weights and the 15x15 window are ISP30's. The
+driver writes the AWB and CCM fields to the registers as given (`isp_awbgain_config`,
+`isp_ccm_config`), so the scales are the registers' own.
+
+- The driver refuses the whole AWB gain block when any gain is zero (`isp_params_v32.c:781-788`,
+  "awb gain is zero!"). The builder writes a gain that rounds to zero as 1/256. ISP30's builder
+  does not do this (`isp_params_v3x.c:721` refuses the same way); a latent issue there.
+- `bound_bit` and `right_bit` share one CCM register and the driver's comments do not say what
+  they scale; they are left at zero, as ISP30's are.
+
+### Not done
+
+- Pipeline: `styx_pipeline::rkisp` is ISP30-only; nothing selects `isp32` yet.
+- The selfpath as a second output: the ISP's source pad has no `MEDIA_PAD_FL_MULTIPLEX`
+  (`rkisp.c:5292`), so the selfpath link would be a second enabled link from the pad the main path
+  already uses. Whether the media core accepts that is unverified; needs a board.
+- The full ISP32's AF-AE mode (`afaemode_en`), which makes the driver skip the `rawae3` config
+  (`isp_params_v32.c:4293`, `:4346`): the builder does not set it.
+- Denoise, sharpening and the other modules stay at the driver's defaults, as on ISP30.
+
+### Next, with a board
+
+1. `media-ctl -p` on an RV1106 and an RK3562: the entity names, pad numbers and whether the
+   selfpath link can be enabled beside the main path.
+2. The node buffer sizes against the layouts (11145 parameter bytes; 13036 or 3788 statistics
+   bytes).
+3. The fixed-point constants on captured frames, the lite's zone scale included.
+4. The selfpath as a second output.

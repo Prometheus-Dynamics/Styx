@@ -2,7 +2,7 @@
 name = "styx-rkisp"
 version.workspace = true
 edition.workspace = true
-description = "Rockchip ISP30 (RK3588/RK3588S) from Rust: the vendor kernel's parameter and statistics uAPI layouts, a parameter builder and statistics decoding into Styx's 3A input."
+description = "Rockchip ISP30 (RK3588/RK3588S) and ISP32 (RV1106, RK3562) from Rust: the vendor kernel's parameter and statistics uAPI layouts, a parameter builder and statistics decoding into Styx's 3A input."
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
