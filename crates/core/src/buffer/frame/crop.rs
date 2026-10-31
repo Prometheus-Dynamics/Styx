@@ -163,6 +163,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")] // a 64-bit overflow
     fn crops_of_frames_with_absurd_strides_are_refused() {
         // Found by the `core_frame_layout` fuzz target: a 60288x65535 frame claiming a
         // 9.8e18-byte stride over a 29 KB plane overflowed computing the view.

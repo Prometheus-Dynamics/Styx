@@ -83,6 +83,7 @@ declare -A step_packages=(
     [nostd]="$nostd_packages" [perf-smoke]=styx-examples [fuzz]=styx-fuzz
     [musl-clippy]="styx styx-native native-spike" [cross]="styx styx-record-cli"
     [riscv]="styx styx-softisp styx-algo styx-core-rs styx-native"
+    [armv7]="styx styx-softisp styx-algo styx-core-rs styx-native"
 )
 # True when the step must run: no --changed, everything affected, or one of its packages.
 affects() {
@@ -230,6 +231,13 @@ if rustup target list --installed 2>/dev/null | grep -qx riscv64gc-unknown-linux
     step riscv ./scripts/check-riscv.sh
 else
     skip riscv "rustup target add riscv64gc-unknown-linux-musl; qemu-riscv64-static; zig"
+fi
+
+if rustup target list --installed 2>/dev/null | grep -qx armv7-unknown-linux-musleabihf &&
+    command -v qemu-arm-static >/dev/null && command -v zig >/dev/null; then
+    step armv7 ./scripts/check-armv7.sh
+else
+    skip armv7 "rustup target add armv7-unknown-linux-musleabihf; qemu-arm-static; zig"
 fi
 
 if [[ -n "${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER:-}" ]]; then

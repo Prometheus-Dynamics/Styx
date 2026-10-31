@@ -158,6 +158,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")] // a 64-bit overflow
     fn a_huge_stride_is_too_short_not_an_overflow() {
         // Found by the `core_frame_layout` fuzz target: stride × (height − 1) overflowed.
         let res = Resolution::new(60288, 65535).unwrap();

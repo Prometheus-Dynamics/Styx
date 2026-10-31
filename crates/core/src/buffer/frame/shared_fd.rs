@@ -560,6 +560,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")] // a 64-bit overflow
     fn imports_refuse_descriptors_their_memory_does_not_hold() {
         let nv12 = descriptor(FourCc::NV12, 4, 2, &[(0, 8, 4), (8, 4, 4)]);
         assert!(FrameLease::from_memfd_import(nv12.clone(), memfd(12)).is_ok());

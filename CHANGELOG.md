@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **armv7 gate lane** (`scripts/check-armv7.sh`, step `armv7`; Flame's RV1106G2, Cortex-A7):
+  styx-core-rs, the software ISP and the 3A algorithms built for armv7 musl hard-float with
+  NEON and tested under QEMU (Cortex-A7), and the camera-application feature sets linted with
+  their C dependencies. Three overflow regression tests are 64-bit only.
+
 - **`styx_kernel::v4l2::M2mSession`**: one stream through a memory-to-memory device (a
   scaler or converter such as vim2m, the Rockchip RGA or the K230's 2D unit; a stateful
   encoder such as vicodec or the K230's VPU): source frames copied into `OUTPUT` buffers,
