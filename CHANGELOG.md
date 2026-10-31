@@ -8,6 +8,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Native V4L2 memory-to-memory codecs** (`styx-codec` feature `codec-v4l2m2m`, facade
+  `codec-v4l2m2m`, Linux): `V4l2M2mEncoder` (stateful hardware encoders; bit rate, GOP and
+  forced keyframes through the driver's controls) and `V4l2M2mConverter` (scalers and format
+  converters) on `M2mSession`, with no FFmpeg. The registry offers the encoders for NV12, YU12
+  and YUYV whenever a device here produces H.264, HEVC or JPEG. `M2mSession::push_image` and
+  `image_planes` copy pictures at the device's strides, with colour planes in one buffer or one
+  each (`styx_kernel::v4l2::ImageRows`).
+
 - **armv7 gate lane** (`scripts/check-armv7.sh`, step `armv7`; Flame's RV1106G2, Cortex-A7):
   styx-core-rs, the software ISP and the 3A algorithms built for armv7 musl hard-float with
   NEON and tested under QEMU (Cortex-A7), and the camera-application feature sets linted with

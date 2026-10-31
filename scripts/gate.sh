@@ -56,13 +56,13 @@ done
 
 # styx's feature-set clippy: the native stack, V4L2, libcamera, Daedalus, the frame socket,
 # previews with libjpeg-turbo; styx-record-cli with all its features (a subset of these).
-clippy_features="styx/native,styx/sim,styx/v4l2,styx/async,styx/libcamera,styx/daedalus,styx/frame-socket,styx/preview,styx/codec-turbojpeg,styx-record-cli/libcamera,styx-record-cli/native,styx-record-cli/v4l2"
+clippy_features="styx/native,styx/sim,styx/v4l2,styx/async,styx/libcamera,styx/daedalus,styx/frame-socket,styx/preview,styx/codec-turbojpeg,styx/codec-v4l2m2m,styx-record-cli/libcamera,styx-record-cli/native,styx-record-cli/v4l2"
 # styx's feature tests in one build: the native features (every styx test, zero_alloc without
 # Daedalus included), zero_alloc with Daedalus, styx-record-cli with all its features, and the
 # integration tests that need libjpeg-turbo, MCAP replay or previews (camera_service,
 # scaled_planning, shared_planning, preview). The tests that need libjpeg-turbo absent run in
 # the workspace's default build (`test`).
-test_features="styx/native,styx/sim,styx/daedalus,styx/codec-turbojpeg,styx/replay-mcap,styx/preview,styx-record-cli/libcamera,styx-record-cli/native,styx-record-cli/v4l2"
+test_features="styx/native,styx/sim,styx/daedalus,styx/codec-turbojpeg,styx/codec-v4l2m2m,styx/replay-mcap,styx/preview,styx-record-cli/libcamera,styx-record-cli/native,styx-record-cli/v4l2"
 # The aarch64 glibc cross build: what goes to a Raspberry Pi CM5.
 cross_features="styx-record-cli/native,styx-record-cli/v4l2"
 

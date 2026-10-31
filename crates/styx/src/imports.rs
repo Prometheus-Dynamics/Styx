@@ -80,6 +80,8 @@ pub mod codec {
         FfmpegEncoderOptions, FfmpegH264Decoder, FfmpegH264Encoder, FfmpegH265Decoder,
         FfmpegH265Encoder, FfmpegMjpegDecoder, FfmpegMjpegEncoder,
     };
+    #[cfg(all(feature = "codec-v4l2m2m", target_os = "linux"))]
+    pub use styx_codec::v4l2m2m::{V4l2M2mConverter, V4l2M2mEncoder, V4l2M2mOptions};
     pub use styx_core::prelude::{FourCc, FrameLease, MediaFormat, Resolution};
 }
 

@@ -523,6 +523,26 @@ impl CodecRegistry {
             );
         }
 
+        // Hardware encoders on V4L2 memory-to-memory devices, driven without FFmpeg. The
+        // devices are looked for when an encoder is first asked for.
+        #[cfg(all(feature = "codec-v4l2m2m", target_os = "linux"))]
+        for input in [FourCc::NV12, FourCc::YU12, FourCc::YUYV] {
+            self.register_deferred(
+                input,
+                Box::new(move || {
+                    use crate::v4l2m2m::{V4l2M2mEncoder, V4l2M2mOptions};
+                    [FourCc::H264, FourCc::H265, FourCc::MJPG]
+                        .into_iter()
+                        .filter(|&output| V4l2M2mEncoder::available(input, output))
+                        .map(|output| {
+                            Arc::new(V4l2M2mEncoder::new(input, output, V4l2M2mOptions::default()))
+                                as Arc<dyn crate::Codec>
+                        })
+                        .collect()
+                }),
+            );
+        }
+
         #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
         self.register(
             FourCc::RG24,

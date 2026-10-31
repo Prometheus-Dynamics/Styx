@@ -381,6 +381,8 @@ mod par;
 pub mod prelude;
 #[cfg(feature = "codec-turbojpeg")]
 mod turbojpeg_raw;
+#[cfg(all(feature = "codec-v4l2m2m", target_os = "linux"))]
+pub mod v4l2m2m;
 
 #[cfg(all(
     test,

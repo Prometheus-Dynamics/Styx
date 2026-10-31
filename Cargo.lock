@@ -5358,6 +5358,7 @@ dependencies = [
  "smallvec",
  "styx-capture",
  "styx-core-rs",
+ "styx-kernel",
  "styx-softisp",
  "thiserror 2.0.21",
  "turbojpeg",

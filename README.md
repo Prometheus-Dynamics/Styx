@@ -131,6 +131,7 @@ blocking task/thread, then use async receive/control APIs for coordination.
   and WebSocket serving helpers, metrics; JPEG from `codec-turbojpeg` ([docs/preview.md](docs/preview.md)).
 - `raw-decoders`: CPU raw/YUV/Bayer conversion stack; this enables `yuvutils-rs` and `styx-softisp` (no Rayon).
 - `codec-jpeg-decoder`: pure-Rust MJPEG/JPEG decode via `jpeg-decoder`.
+- `codec-v4l2m2m`: hardware encoders, scalers and format converters on V4L2 memory-to-memory devices (vendor VPUs, the Rockchip RGA, the K230 2D unit), driven directly with no FFmpeg (Linux).
 - `codec-ffmpeg`, `codec-mozjpeg`, `codec-turbojpeg`, `codec-zune`: alternate codec integrations; FFmpeg and native JPEG backends add their respective system/library dependency surface.
 - `netcam-video`: FFmpeg-backed network video stream fallback; use only when multipart MJPEG is not enough.
 - `simulation-bevy`: Bevy/wgpu-based synthetic capture; useful for simulation, but intentionally kept out of default builds.

@@ -40,6 +40,70 @@ impl M2mFrame {
     }
 }
 
+/// One colour plane of an image: `rows` rows of `row_bytes` bytes, each `stride` bytes after
+/// the one before.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageRows<'a> {
+    /// The rows; the last needs only `row_bytes` bytes.
+    pub data: &'a [u8],
+    /// Bytes from one row's start to the next.
+    pub stride: usize,
+    /// Bytes of picture in a row.
+    pub row_bytes: usize,
+    /// Number of rows.
+    pub rows: usize,
+}
+
+/// Where one colour plane lies in a device buffer: its memory plane, its offset there and its
+/// stride.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Span {
+    buffer: usize,
+    offset: usize,
+    stride: usize,
+}
+
+/// The device's layout of an image's colour planes, each `(row_bytes, rows)`. Colour planes
+/// map one-to-one to memory planes while there are memory planes; the rest follow each other
+/// in the last memory plane (NV12 or YU12 in one buffer), their strides scaled from its
+/// stride by their row widths, as V4L2 lays them out.
+fn spans(format: &Format, shape: &[(usize, usize)]) -> Vec<Span> {
+    let strides: Vec<usize> = match format {
+        Format::Single(p) => vec![p.bytes_per_line as usize],
+        Format::Multi(m) => m.planes.iter().map(|p| p.bytes_per_line as usize).collect(),
+        Format::Meta(_) => Vec::new(),
+    };
+    let memory = strides.len().max(1);
+    let mut out = Vec::with_capacity(shape.len());
+    // The last memory plane's stride and row width, and the next free offset in it.
+    let (mut base, mut offset) = ((0usize, 0usize), 0usize);
+    for (i, &(row_bytes, rows)) in shape.iter().enumerate() {
+        let span = if i < memory {
+            let stride = strides.get(i).copied().unwrap_or(0).max(row_bytes);
+            base = (stride, row_bytes);
+            offset = 0;
+            Span {
+                buffer: i,
+                offset: 0,
+                stride,
+            }
+        } else {
+            let stride = match base {
+                (_, 0) => row_bytes,
+                (stride, width) => (stride * row_bytes / width).max(row_bytes),
+            };
+            Span {
+                buffer: memory - 1,
+                offset,
+                stride,
+            }
+        };
+        offset += span.stride * rows;
+        out.push(span);
+    }
+    out
+}
+
 /// One stream through a memory-to-memory device, MMAP buffers on both sides.
 pub struct M2mSession {
     source: MmapQueue,
@@ -148,6 +212,81 @@ impl M2mSession {
         Ok(true)
     }
 
+    /// Copies one picture into a free source buffer row by row, at the device's strides, and
+    /// queues it with `timestamp`. The planes are the picture's colour planes in their usual
+    /// order (Y then UV for NV12); the device may keep them in one buffer or one each.
+    /// `Ok(false)` when every source buffer is still queued; a picture that does not fit is an
+    /// error.
+    pub fn push_image(&mut self, planes: &[ImageRows<'_>], timestamp: Duration) -> Result<bool> {
+        self.reap()?;
+        let Some(index) = self.free.pop_front() else {
+            return Ok(false);
+        };
+        let shape: Vec<_> = planes.iter().map(|p| (p.row_bytes, p.rows)).collect();
+        let layout = spans(&self.source_format, &shape);
+        let maps = &mut self.source.maps[index as usize];
+        let mut used = [0u32; super::MAX_PLANES];
+        for (p, (plane, span)) in planes.iter().zip(&layout).enumerate() {
+            let Some(map) = maps.get_mut(span.buffer) else {
+                self.free.push_front(index);
+                return Err(Error::Invalid(format!(
+                    "m2m source: plane {p} has no buffer plane"
+                )));
+            };
+            let dst = map.as_mut_slice();
+            let end = span.offset + span.stride * plane.rows.saturating_sub(1) + plane.row_bytes;
+            let src_end = plane.stride * plane.rows.saturating_sub(1) + plane.row_bytes;
+            if plane.rows > 0 && (end > dst.len() || src_end > plane.data.len()) {
+                self.free.push_front(index);
+                return Err(Error::Invalid(format!(
+                    "m2m source: plane {p} ({} rows of {} bytes) does not fit",
+                    plane.rows, plane.row_bytes
+                )));
+            }
+            for r in 0..plane.rows {
+                let d = span.offset + r * span.stride;
+                let s = r * plane.stride;
+                dst[d..d + plane.row_bytes].copy_from_slice(&plane.data[s..s + plane.row_bytes]);
+            }
+            let filled = (span.offset + span.stride * plane.rows) as u32;
+            used[span.buffer] = used[span.buffer].max(filled.min(dst.len() as u32));
+        }
+        let memory = maps.len();
+        let mut q = super::QueueBuffer::mmap(self.source.buf_type, index);
+        q.timestamp = timestamp;
+        q.planes = used[..memory]
+            .iter()
+            .map(|&bytes_used| super::QueuePlane {
+                bytes_used,
+                ..Default::default()
+            })
+            .collect();
+        if let Err(e) = self.source.dev.queue(&q) {
+            self.free.push_front(index);
+            return Err(e);
+        }
+        Ok(true)
+    }
+
+    /// `frame`'s colour planes, each `(row_bytes, rows)` in `shape`, as `(bytes, stride)` at
+    /// the destination format's layout (see [`Self::push_image`]). A plane past the buffer's
+    /// end comes back empty.
+    pub fn image_planes(&self, frame: &M2mFrame, shape: &[(usize, usize)]) -> Vec<(&[u8], usize)> {
+        let maps = &self.dest.maps[frame.buffer.index as usize];
+        spans(&self.dest_format, shape)
+            .into_iter()
+            .zip(shape)
+            .map(|(span, &(row_bytes, rows))| {
+                let end = span.offset + span.stride * rows.saturating_sub(1) + row_bytes;
+                let data = maps
+                    .get(span.buffer)
+                    .and_then(|m| m.as_slice().get(span.offset..end))
+                    .unwrap_or(&[]);
+                (data, span.stride)
+            })
+            .collect()
+    }
+
     /// The next filled destination buffer, waiting up to `timeout`; `None` if none came.
     pub fn pull(&mut self, timeout: Duration) -> Result<Option<M2mFrame>> {
         let got = self.dest.dequeue_within(timeout)?;
@@ -240,6 +379,87 @@ mod tests {
             fourcc,
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn colour_planes_follow_each_other_in_one_buffer() {
+        let nv12 = Format::Single(PixFormat {
+            width: 100,
+            height: 10,
+            bytes_per_line: 128,
+            ..Default::default()
+        });
+        let s = spans(&nv12, &[(100, 10), (100, 5)]);
+        assert_eq!(
+            s,
+            [
+                Span {
+                    buffer: 0,
+                    offset: 0,
+                    stride: 128
+                },
+                Span {
+                    buffer: 0,
+                    offset: 1280,
+                    stride: 128
+                },
+            ]
+        );
+        // YU12: the chroma planes at half the luma stride.
+        let s = spans(&nv12, &[(100, 10), (50, 5), (50, 5)]);
+        assert_eq!(
+            s[1],
+            Span {
+                buffer: 0,
+                offset: 1280,
+                stride: 64
+            }
+        );
+        assert_eq!(
+            s[2],
+            Span {
+                buffer: 0,
+                offset: 1600,
+                stride: 64
+            }
+        );
+    }
+
+    #[test]
+    fn colour_planes_take_a_buffer_each_when_there_are_enough() {
+        let multi = Format::Multi(crate::v4l2::PixFormatMplane {
+            width: 100,
+            height: 10,
+            planes: vec![
+                crate::v4l2::PlaneFormat {
+                    bytes_per_line: 112,
+                    size_image: 1120,
+                },
+                crate::v4l2::PlaneFormat {
+                    bytes_per_line: 0,
+                    size_image: 560,
+                },
+            ],
+            ..Default::default()
+        });
+        let s = spans(&multi, &[(100, 10), (100, 5)]);
+        assert_eq!(
+            s[0],
+            Span {
+                buffer: 0,
+                offset: 0,
+                stride: 112
+            }
+        );
+        // A stride the driver left at 0 is the row width.
+        assert_eq!(
+            s[1],
+            Span {
+                buffer: 1,
+                offset: 0,
+                stride: 100
+            }
+        );
     }
 
     #[test]
