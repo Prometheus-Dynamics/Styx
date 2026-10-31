@@ -38,6 +38,14 @@ impl M2mFrame {
     pub fn is_keyframe(&self) -> bool {
         self.buffer.flags.contains(BufferFlags::KEYFRAME)
     }
+
+    /// Whether an encoder flagged this a predicted frame (P or B). Encoders that flag nothing
+    /// (vicodec) leave every frame not delta.
+    pub fn is_delta(&self) -> bool {
+        self.buffer
+            .flags
+            .intersects(BufferFlags::PFRAME | BufferFlags::BFRAME)
+    }
 }
 
 /// One colour plane of an image: `rows` rows of `row_bytes` bytes, each `stride` bytes after

@@ -47,10 +47,9 @@ user; they do not block the tag unless the user says so.
 - [x] **RVV pyramid downscale** (2fc1119). *Why:* the box downscale was ~48% of Eidos's
       RVV-lane instructions. *Done when:* `box2_row` has an RVV kernel identical to scalar,
       tested under QEMU at VLEN 128 and 256: passing. *Blocked by:* nothing.
-- [ ] **V4L2 M2M encoder: the vicodec run.** The backend is in (f165f4b: `V4l2M2mEncoder`,
-      `V4l2M2mConverter`); `vim2m_converts_frames` passed against the PC's `vim2m` on
-      2026-10-31. *Done when:* `vicodec_encodes_frames` passes on the PC (it skips without the
-      module). *Blocked by:* `sudo modprobe vicodec` (the user).
+- [x] **V4L2 M2M encoder and scaler backend** (f165f4b; delta flags fixed in this commit).
+      `V4l2M2mEncoder` and `V4l2M2mConverter`: `vim2m_converts_frames` and
+      `vicodec_encodes_frames` pass against the PC's `vim2m` and `vicodec` (2026-10-31).
 - [x] **dma-buf tail slack for Vulkan import.** *Why:* Mesa's v3dv imports a linear camera
       dma-buf as a storage buffer only if it is at least the frame plus 256 B (Daedalus's V3D
       bench). *Done when:* every dma-heap buffer Styx allocates (native capture, PiSP outputs,

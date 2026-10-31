@@ -423,7 +423,7 @@ impl Codec for V4l2M2mEncoder {
                 data.len(),
                 data.len(),
             );
-            packet.meta_mut().delta = inter && !frame.is_keyframe();
+            packet.meta_mut().delta = inter && frame.is_delta();
             Ok(packet)
         })
     }

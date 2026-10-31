@@ -43,7 +43,9 @@ let encoder = V4l2M2mEncoder::new(
 );
 ```
 
-`request_keyframe` sets the driver's force-keyframe control before the next frame. A result the
+`request_keyframe` sets the driver's force-keyframe control before the next frame. A packet is
+marked delta only when the driver flags it a P or B frame (an encoder that flags nothing, such
+as `vicodec`, has every packet marked a keyframe). A result the
 device has not returned within `V4l2M2mOptions::timeout` comes back later; meanwhile the call
 reports `CodecError::Backpressure`.
 
