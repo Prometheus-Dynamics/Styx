@@ -209,7 +209,7 @@ impl Params {
 /// A table of `w` x `h` cells (gains at the cell centres) at the 17x17 grid vertices (the
 /// frame's corners and sector edges), bilinearly, clamped at the edges; as samples of
 /// [`LSC_ONE`], padded to the uAPI's 290.
-fn vertices(src: &[f64], w: usize, h: usize) -> [u16; 290] {
+pub(crate) fn vertices(src: &[f64], w: usize, h: usize) -> [u16; 290] {
     let at = |len: usize, i: usize| -> (usize, usize, f64) {
         let p = -0.5 + i as f64 * len as f64 / LSC_SECTORS as f64;
         let lo = p.floor();

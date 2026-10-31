@@ -10,10 +10,13 @@
 //! - `device` (feature `device`): the vendor driver's ISP, parameter, statistics and main
 //!   path nodes.
 //!
-//! Status: built from the uAPI headers only; nothing here has run on an RK3588 yet. The
-//! fixed-point formats the headers do not state (gain and matrix scales, the statistics' bit
-//! depths) are named constants, taken from how Rockchip's own 3A fills the same fields, to be
-//! confirmed on the device.
+//! [`isp32`] is the same for the ISP32 of the RV1106 and the ISP32-lite of the RK3562 (its
+//! buffers differ; its builder and statistics take a [`isp32::Variant`]).
+//!
+//! Status: built from the uAPI headers only; nothing here has run on an RK3588, RV1106 or RK3562
+//! yet. The fixed-point formats the headers do not state (gain and matrix scales, the
+//! statistics' bit depths) are named constants, taken from how Rockchip's own 3A fills the same
+//! fields, to be confirmed on the device.
 
 #![no_std]
 
@@ -23,6 +26,7 @@ extern crate std;
 
 #[cfg(feature = "device")]
 pub mod device;
+pub mod isp32;
 
 mod params;
 mod stats;
