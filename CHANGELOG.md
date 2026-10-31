@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **`styx_kernel::v4l2::M2mSession`**: one stream through a memory-to-memory device (a
+  scaler or converter such as vim2m, the Rockchip RGA or the K230's 2D unit; a stateful
+  encoder such as vicodec or the K230's VPU): source frames copied into `OUTPUT` buffers,
+  destination buffers read in place and given back, the source timestamp carried over,
+  `drain` (`VIDIOC_ENCODER_CMD` stop) for the last buffer. The base for the hardware encoder
+  and scaler backends; its device test runs against `vim2m` when the module is loaded.
+
 - **RISC-V vector box filter for pyramid levels** (`styx_core::simd::box2_row`, so
   `box_downscale_luma_in` and every pyramid level made on the CPU): RVV 1.0 inline assembly
   (LMUL 2, 32 pixels a strip at VLEN 128, about 0.5 instructions a pixel against 14 for the
@@ -400,6 +407,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   unstripped build (docs/metrics.md, "Finding allocations on a device").
 
 ### Changed
+
+- **dma-heap buffers have 256 B of tail slack, rounded up to a page**
+  (`dma_heap::TAIL_SLACK`, `padded_len`; `DmaBuf::len` is the padded size): Mesa's v3dv
+  imports a linear dma-buf as a Vulkan storage buffer only if it is at least the frame plus
+  256 B. Capture, PiSP output, TDN and spare buffers all come from the heap.
 
 - **libjpeg-turbo builds on RISC-V** (`codec-turbojpeg`): its SIMD is required only on x86_64
   and aarch64 (a target-specific `require-simd`); elsewhere it builds without, since it has

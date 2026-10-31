@@ -42,11 +42,17 @@ fallback for each; CPU SIMD (NEON, AVX2, RVV) stays detected, as it changes no o
 - [x] **RVV pyramid downscale** (2fc1119). *Why:* the box downscale was ~48% of Eidos's
       RVV-lane instructions. *Done when:* `box2_row` has an RVV kernel identical to scalar,
       tested under QEMU at VLEN 128 and 256: passing. *Blocked by:* nothing.
-- [ ] **V4L2 M2M encoder and scaler backend** (in progress). *Why:* the K230's VPU (`mvx`) and 2D unit, and
+- [ ] **V4L2 M2M encoder and scaler backend** (in progress: `styx_kernel::v4l2::M2mSession`,
+      the two-queue session with the encoder drain, is in; the `styx-codec` backends are next). *Why:* the K230's VPU (`mvx`) and 2D unit, and
       mainline Rockchip RGA, are V4L2 memory-to-memory devices; one backend serves them all.
       *Done when:* a `styx-codec` backend encodes through a stateful M2M encoder and scales
       through an M2M scaler, with tests against `vicodec` / `vim2m` on the PC. *Blocked by:*
       nothing.
+- [x] **dma-buf tail slack for Vulkan import.** *Why:* Mesa's v3dv imports a linear camera
+      dma-buf as a storage buffer only if it is at least the frame plus 256 B (Daedalus's V3D
+      bench). *Done when:* every dma-heap buffer Styx allocates (native capture, PiSP outputs,
+      TDN, spares) is `dma_heap::padded_len`: 256 B more, rounded up to a page; unit-tested.
+      Daedalus to confirm the import on the Pi. *Blocked by:* nothing.
 - [ ] **Accelerator knobs.** *Why:* the user wants accelerators chosen explicitly per device,
       with platform defaults. *Done when:* `StyxConfig` has one knob each for the ISP path,
       the hardware encoder (VPU, MPP), the hardware scaler (RGA, the K230's 2D unit) and

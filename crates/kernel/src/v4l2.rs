@@ -25,6 +25,7 @@ mod capture;
 pub mod cid;
 mod control;
 mod format;
+mod m2m;
 mod mmap_queue;
 pub(crate) mod raw;
 
@@ -41,6 +42,7 @@ pub use format::{
     Format, FormatDesc, FormatFlags, FrameIntervals, FrameSize, FrameSizes, MetaFormat, PixFormat,
     PixFormatMplane, PlaneFormat, SelectionTarget, StepwiseSize, StreamParams,
 };
+pub use m2m::{M2mFrame, M2mSession};
 pub use mmap_queue::{MmapQueue, QueueTimer};
 
 /// The kind of buffer queue an operation applies to (`enum v4l2_buf_type`).

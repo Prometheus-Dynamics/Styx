@@ -141,12 +141,13 @@ impl DmaHeap {
         self.path.file_name().and_then(|n| n.to_str()).unwrap_or("")
     }
 
-    /// Allocates a dma-buf of `len` bytes (`DMA_HEAP_IOCTL_ALLOC`), read-write and
-    /// close-on-exec.
+    /// Allocates a dma-buf of at least `len` bytes (`DMA_HEAP_IOCTL_ALLOC`), read-write and
+    /// close-on-exec: [`padded_len`] (its [`DmaBuf::len`]).
     pub fn allocate(&self, len: usize) -> Result<DmaBuf> {
         if len == 0 {
             return Err(Error::Invalid("cannot allocate an empty dma-buf".into()));
         }
+        let len = padded_len(len);
         let mut raw = dma_heap_allocation_data {
             len: len as u64,
             fd_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
@@ -164,6 +165,17 @@ impl AsFd for DmaHeap {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.fd.as_fd()
     }
+}
+
+/// Bytes every dma-buf Styx allocates has beyond its contents: Vulkan drivers (Mesa's v3dv)
+/// import a linear dma-buf as a storage buffer only if it is at least this much larger than
+/// the frame.
+pub const TAIL_SLACK: usize = 256;
+
+/// The size Styx allocates for `len` bytes: [`TAIL_SLACK`] more, rounded up to 4 KiB pages
+/// (what the heaps allocate anyway, so the slack costs nothing for most sizes).
+pub const fn padded_len(len: usize) -> usize {
+    (len + TAIL_SLACK).next_multiple_of(4096)
 }
 
 /// Lists the heaps in `/dev/dma_heap`, sorted by name.
@@ -276,6 +288,14 @@ mod tests {
         // The descriptor is closed; both mappings still share the memory.
         assert_eq!(b.as_slice()[100], 7);
         assert!(DmaBuf::memfd("empty", 0).is_err());
+    }
+
+    #[test]
+    fn heap_buffers_have_tail_slack_in_whole_pages() {
+        assert_eq!(padded_len(1_228_800), 1_232_896); // 1280x800 GREY: v3dv wants 1_229_056
+        assert!(padded_len(1_228_800) >= 1_228_800 + TAIL_SLACK);
+        assert_eq!(padded_len(4096 - TAIL_SLACK), 4096);
+        assert_eq!(padded_len(4096), 8192);
     }
 
     #[test]

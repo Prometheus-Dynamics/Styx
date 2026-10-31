@@ -339,6 +339,15 @@ pub struct v4l2_event_subscription {
     pub reserved: [u32; 5],
 }
 
+/// `struct v4l2_encoder_cmd`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct v4l2_encoder_cmd {
+    pub cmd: u32,
+    pub flags: u32,
+    pub data: [u32; 8],
+}
+
 ioctls! {
     VIDIOC_QUERYCAP = ior::<v4l2_capability>(b'V', 0);
     VIDIOC_ENUM_FMT = iowr::<v4l2_fmtdesc>(b'V', 2);
@@ -368,6 +377,7 @@ ioctls! {
     VIDIOC_G_SELECTION = iowr::<v4l2_selection>(b'V', 94);
     VIDIOC_S_SELECTION = iowr::<v4l2_selection>(b'V', 95);
     VIDIOC_QUERY_EXT_CTRL = iowr::<v4l2_query_ext_ctrl>(b'V', 103);
+    VIDIOC_ENCODER_CMD = iowr::<v4l2_encoder_cmd>(b'V', 77);
 }
 
 /// Returns a zero-initialised uAPI struct.
@@ -393,6 +403,7 @@ pub(crate) fn from_bytes<T: Copy>(bytes: &[u8]) -> T {
 const _: () = {
     assert!(size_of::<v4l2_capability>() == 104);
     assert!(size_of::<v4l2_fmtdesc>() == 64);
+    assert!(size_of::<v4l2_encoder_cmd>() == 40);
     assert!(size_of::<v4l2_frmsizeenum>() == 44);
     assert!(size_of::<v4l2_frmivalenum>() == 52);
     assert!(size_of::<v4l2_pix_format>() == 48);
@@ -466,5 +477,6 @@ mod tests {
         assert_eq!(VIDIOC_SUBSCRIBE_EVENT.nr, 0x4020_565a);
         assert_eq!(VIDIOC_G_SELECTION.nr, 0xc040_565e);
         assert_eq!(VIDIOC_QUERY_EXT_CTRL.nr, 0xc0e8_5667);
+        assert_eq!(VIDIOC_ENCODER_CMD.nr, 0xc028_564d);
     }
 }
