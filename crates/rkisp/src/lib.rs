@@ -15,6 +15,10 @@
 //! lens shading (8x8 sectors on ISP21, 16x16 on ISP30) and the output gamma (45 samples on
 //! ISP21, 49 on ISP30) differ.
 //!
+//! [`isp32`] is the same for the ISP32 of the RV1106 and the ISP32-lite of the RK3562 (its
+//! buffers differ; its builder and statistics take a [`isp32::Variant`]), written, untested on
+//! board as well.
+//!
 //! Status: built from the uAPI headers and checked against the vendor driver's source; the
 //! ISP21 path is written and unit-tested against fabricated buffers, not yet run on an
 //! RK3566 (written, untested on board). The ISP30 path has not run on an RK3588 either. The
@@ -30,6 +34,7 @@ extern crate std;
 
 #[cfg(feature = "device")]
 pub mod device;
+pub mod isp32;
 
 mod params;
 mod stats;

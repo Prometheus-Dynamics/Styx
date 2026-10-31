@@ -309,7 +309,7 @@ fn shading<const S: usize>(
 /// A table of `grid` cells (gains at the cell centres) at the `S` + 1 vertices per axis (the
 /// frame's corners and sector edges), bilinearly, clamped at the edges; as samples of
 /// [`LSC_ONE`] in the table's [`LSC_STRIDE`]-wide layout.
-fn vertices<const S: usize>(src: &[f64], grid: (usize, usize)) -> [u16; LSC_DATA] {
+pub(crate) fn vertices<const S: usize>(src: &[f64], grid: (usize, usize)) -> [u16; LSC_DATA] {
     let (w, h) = grid;
     let at = |len: usize, i: usize| -> (usize, usize, f64) {
         let p = -0.5 + i as f64 * len as f64 / S as f64;

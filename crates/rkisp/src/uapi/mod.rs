@@ -8,6 +8,10 @@
 pub mod isp21;
 pub mod isp3x;
 
+/// The ISP32 layouts (RV1106's ISP32 and RK3562's ISP32-lite), from `rk-isp32-config.h`.
+pub mod isp32;
+mod isp32_layout;
+
 pub use isp3x::*;
 
 /// A module's bit in the parameter buffer's `module_*` masks (`ISP2X_ID_*` of
