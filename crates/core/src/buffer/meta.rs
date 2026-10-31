@@ -714,12 +714,13 @@ mod exposure_midpoint_tests {
             m.exposure_midpoint_in(TimestampClock::Monotonic),
             Some(996_000_000)
         );
-        // Converted like the timestamp: the same offset between the two.
+        // Converted like the timestamp: the same offset between the two (each conversion
+        // samples both clocks, so allow for the time between samples, long under emulation).
         let (t, mid) = (
             m.timestamp_in(TimestampClock::Boottime).unwrap(),
             m.exposure_midpoint_in(TimestampClock::Boottime).unwrap(),
         );
-        assert!((t - mid).abs_diff(4_000_000) < 1_000, "{t} {mid}");
+        assert!((t - mid).abs_diff(4_000_000) < 500_000, "{t} {mid}");
 
         let lc = BackendFrameMeta::Libcamera(LibcameraFrameMeta {
             exposure_ns: Some(3_931_000),

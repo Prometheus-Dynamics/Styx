@@ -641,3 +641,25 @@ fn box2_leaf(name: &str, leaf: impl Fn(&[u8], &[u8], &mut [u8], usize) -> usize)
         );
     }
 }
+
+#[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+#[test]
+fn rvv_leaves_match_scalar() {
+    assert!(rvv::available(), "the riscv gate runs QEMU with v=true");
+    box2_leaf("box2 rvv", |t, b, d, w| {
+        rvv::box2_row(t, b, d, w).map_or(0, |(_, done)| done)
+    });
+    // Saturated input: the widest sum (4 * 255 + 2) narrows back to 255.
+    let row = vec![255u8; 2 * 300];
+    let mut got = vec![GUARD; 300 + 64];
+    assert_eq!(
+        rvv::box2_row(&row, &row, &mut got, 300),
+        Some((SimdBackend::Rvv, 300))
+    );
+    assert!(got[..300].iter().all(|&b| b == 255));
+    assert!(
+        got[300..].iter().all(|&b| b == GUARD),
+        "nothing past the row"
+    );
+    assert_eq!(strongest_backend(), SimdBackend::Rvv);
+}

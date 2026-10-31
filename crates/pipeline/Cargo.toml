@@ -20,6 +20,7 @@ std = [
     "serde/std",
     "styx-algo/std-core",
     "styx-core/std",
+    "styx-core/rvv",
     "styx-dng/std",
     "styx-pisp/std",
     "styx-rkisp/std",

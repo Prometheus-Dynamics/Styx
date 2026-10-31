@@ -23,13 +23,21 @@ for a in "$@"; do
 done
 exec zig cc -target riscv64-linux-musl "$@"
 SH
+sed 's/zig cc/zig c++/' "$tools/cc" >"$tools/c++"
 printf '#!/bin/sh\nexec zig ar "$@"\n' >"$tools/ar"
-chmod +x "$tools/cc" "$tools/ar"
+chmod +x "$tools/cc" "$tools/c++" "$tools/ar"
 
 export "CARGO_TARGET_${var}_LINKER=rust-lld"
 export "CARGO_TARGET_${var}_RUSTFLAGS=-C target-feature=+v,+zvfh,+crt-static -C link-self-contained=yes"
 export "CARGO_TARGET_${var}_RUNNER=qemu-riscv64-static -cpu rv64,v=true,vlen=128,zvfh=true"
-export "CC_${triple//-/_}=$tools/cc" "AR_${triple//-/_}=$tools/ar"
+export "CC_${triple//-/_}=$tools/cc" "CXX_${triple//-/_}=$tools/c++" "AR_${triple//-/_}=$tools/ar"
 
-cargo test -q --release --target "$triple" -p styx-softisp -p styx-algo --lib --tests
+cargo test -q --release --target "$triple" -p styx-core-rs -p styx-softisp -p styx-algo --lib --tests
 cargo clippy -q --target "$triple" -p styx --features native -- -D warnings
+# What a K230 build of a camera application links, C dependencies included (libjpeg-turbo
+# without SIMD, lz4): an API process (preview, recordings) and a camera process.
+cargo clippy -q --target "$triple" -p styx --features \
+    facade,metrics-serde,preview,codec-turbojpeg,replay-mcap,replay-mcap-lz4,replay-softisp,replay-png \
+    -- -D warnings
+cargo clippy -q --target "$triple" -p styx --features \
+    native,v4l2,raw-decoders,serde,hotplug,async,codec-turbojpeg -- -D warnings

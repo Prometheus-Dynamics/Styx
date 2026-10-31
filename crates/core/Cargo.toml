@@ -17,7 +17,7 @@ name = "styx_core"
 path = "src/lib.rs"
 
 [features]
-default = ["std", "neon", "x86"]
+default = ["std", "neon", "x86", "rvv"]
 # Without it the crate is `no_std` + `alloc` (docs/portability.md): formats, layouts, frame
 # metadata, controls, the SIMD kernels, and the frame path itself: `FrameLease`, `BufferPool`
 # over heap memory, caller-provided (static or DMA) regions, shared views, the bounded queues
@@ -42,6 +42,8 @@ critical-section = ["dep:critical-section", "portable-atomic/critical-section"]
 # SIMD backends (see `simd`): AArch64 NEON, and x86 SSE2/SSSE3/AVX2, chosen at run time with
 # `std` (at compile time from the target features without it).
 neon = []
+# RISC-V vector kernels (RVV 1.0), used when the CPU reports the V extension (Linux, `std`).
+rvv = ["std"]
 x86 = []
 # Kept for compatibility, does nothing (it only enables `std`): the async sends and receives are
 # always there (waker-based, any executor).

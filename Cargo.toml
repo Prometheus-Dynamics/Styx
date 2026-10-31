@@ -137,7 +137,9 @@ png = "0.18.1"
 zune-jpeg = "0.5.15"
 zune-core = "0.5.3"
 mozjpeg = "0.10.13"
-turbojpeg = "1.5.1"
+# Without `require-simd`: libjpeg-turbo has no SIMD for RISC-V. styx-codec requires it on
+# x86_64 and aarch64, where a scalar build would be a silent slowdown.
+turbojpeg = { version = "1.5.1", default-features = false, features = ["cmake", "pkg-config"] }
 yuvutils-rs = { version = "0.8.3", features = ["fast_mode"] }
 reqwest = { version = "0.13.5", default-features = false }
 minifb = "0.29.0"

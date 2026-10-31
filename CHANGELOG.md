@@ -8,6 +8,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **RISC-V vector box filter for pyramid levels** (`styx_core::simd::box2_row`, so
+  `box_downscale_luma_in` and every pyramid level made on the CPU): RVV 1.0 inline assembly
+  (LMUL 2, 32 pixels a strip at VLEN 128, about 0.5 instructions a pixel against 14 for the
+  scalar loop), output identical to scalar. Chosen at run time when the kernel reports the V
+  extension (`AT_HWCAP`), since `target_feature = "v"` is not visible to `cfg` on stable Rust;
+  cargo feature `rvv` (default) in styx-core-rs and styx-softisp, `SimdBackend::Rvv`. Tested
+  under QEMU at VLEN 128 and 256 in the riscv gate lane, which now also runs styx-core-rs.
+
 - **`styx-rkisp`: the Rockchip ISP30 (RK3588 / RK3588S) from Rust** (docs/rockchip.md):
   the vendor kernel's parameter and statistics buffer layouts (bindgen from the MIT-licensed
   uAPI headers, `scripts/rkisp-bindgen.sh`; sizes and offsets checked against C), a
@@ -392,6 +400,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   unstripped build (docs/metrics.md, "Finding allocations on a device").
 
 ### Changed
+
+- **libjpeg-turbo builds on RISC-V** (`codec-turbojpeg`): its SIMD is required only on x86_64
+  and aarch64 (a target-specific `require-simd`); elsewhere it builds without, since it has
+  none for RISC-V. The riscv gate lane lints two camera-application feature sets with their
+  C dependencies (libjpeg-turbo, lz4, aws-lc): `facade, metrics-serde, preview,
+  codec-turbojpeg, replay-mcap, replay-mcap-lz4, replay-softisp, replay-png` and `native,
+  v4l2, raw-decoders, serde, hotplug, async, codec-turbojpeg`.
 
 - **PiSP back end buffers beyond `output_buffers` are always allocated as held** (one spare
   ahead, from a helper thread); `NativeIspConfig::lazy_output_buffers` /
