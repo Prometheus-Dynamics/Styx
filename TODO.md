@@ -5,6 +5,121 @@ underneath. No libcamera, no `v4l` crate, no per-sensor kernel driver. Design an
 [docs/native-stack/README.md](docs/native-stack/README.md). Numbers below are from the CM5 dev
 box (OV9782 1280x800) unless stated.
 
+## Next release (3.0.0)
+
+Everything that goes into 3.0: the 2026-10-27 feature freeze plus its last addition, hardware
+support on every board. Nothing else is added. The backlog below this section is not for 3.0.
+Each item: **what**, **why**, **done when**, **blocked by**. Accelerators are chosen through
+plain `StyxConfig` knobs per device (HeliOS sets them), with a default per platform and a CPU
+fallback for each; CPU SIMD (NEON, AVX2, RVV) stays detected, as it changes no output.
+
+### 1. Freeze items still open
+- [ ] **Anti-flicker verified at 120 fps.** *Why:* AE chased 100 Hz flicker at 120 fps under
+      mains lamps. *Done when:* `flicker_check` on the CM5/Raze under a 50 Hz lamp at 120 fps:
+      AE locks and the output frame-to-frame spread stays under 5% (flicker avoidance and
+      deflicker on, the defaults). *Blocked by:* a mains lamp at the bench in a Raze slot.
+- [ ] **YUYV no-frames fallback, with the cause in the error.** *Why:* a UVC camera that
+      negotiates YUYV and delivers nothing hangs a client instead of failing over to MJPEG.
+      *Done when:* the C270 on the CM5 in a YUYV mode it cannot sustain falls back to MJPEG
+      and the error names the cause (bandwidth / no frames). *Blocked by:* the C270
+      plugged back in.
+- [ ] **Typed control-menu entry, only if needed.** *Why:* menu controls are integers with
+      labels; a typed entry was frozen in for a consumer that needs it. *Done when:* a
+      consumer needs it and it ships, or it is cut. No consumer has needed it.
+      *Blocked by:* a user decision (cut or keep).
+- [ ] **OV9782 tuning of our own (held).** *Why:* the imported tuning has an identity colour
+      matrix. *Done when:* a `styx-tune` session (ColorChecker, 3-5 lights 2700-6500 K)
+      produces the TOML and colour error drops against the chart. *Blocked by:* the user's
+      ColorChecker kit and time.
+
+### 2. Hardware support (the freeze's last addition)
+- [x] **libjpeg-turbo on RISC-V and HeliOS's feature sets in the riscv gate lane** (2fc1119).
+      *Why:* the K230D could not build HeliOS (`require-simd` on a target without SIMD).
+      *Done when:* `scripts/check-riscv.sh` lints `facade, metrics-serde, preview,
+      codec-turbojpeg, replay-mcap, replay-mcap-lz4, replay-softisp, replay-png` and `native,
+      v4l2, raw-decoders, serde, hotplug, async, codec-turbojpeg` with their C deps: passing.
+      *Blocked by:* nothing.
+- [x] **RVV pyramid downscale** (2fc1119). *Why:* the box downscale was ~48% of Eidos's
+      RVV-lane instructions. *Done when:* `box2_row` has an RVV kernel identical to scalar,
+      tested under QEMU at VLEN 128 and 256: passing. *Blocked by:* nothing.
+- [ ] **V4L2 M2M encoder and scaler backend** (in progress). *Why:* the K230's VPU (`mvx`) and 2D unit, and
+      mainline Rockchip RGA, are V4L2 memory-to-memory devices; one backend serves them all.
+      *Done when:* a `styx-codec` backend encodes through a stateful M2M encoder and scales
+      through an M2M scaler, with tests against `vicodec` / `vim2m` on the PC. *Blocked by:*
+      nothing.
+- [ ] **Accelerator knobs.** *Why:* the user wants accelerators chosen explicitly per device,
+      with platform defaults. *Done when:* `StyxConfig` has one knob each for the ISP path,
+      the hardware encoder (VPU, MPP), the hardware scaler (RGA, the K230's 2D unit) and
+      hardware pyramid levels, each an explicit per-device choice with a per-platform default
+      and a CPU fallback, documented in docs/configuration.md, and the
+      planner honours them (tests). *Blocked by:* nothing.
+- [ ] **K230D: raw capture and the RVV software ISP on the board.** *Why:* the K230D camera
+      path; our own 3A and tuning on the OV9782. *Done when:* the OV9782 over CSI streams
+      1280x800 at 30 fps through `soft_worker` with 3A converged; `grep isa /proc/cpuinfo`
+      shows `v` and `SimdBackend::Rvv` is reported; CPU per frame and memory recorded.
+      *Blocked by:* a K230D board and Gaia's image (Linux-only SDK on the big core, option A).
+- [ ] **K230D: hardware ISP as a second backend (scoped, not built).** *Why:* the ISP8000 frees
+      the vision core and its scaled channels make pyramid levels for free; the RVV software
+      ISP (above) stays the written path, and HeliOS picks the backend per device through the
+      ISP knob. *Scope:* through Canaan's `isp_media_server` its 3A and tuning are the
+      vendor's (no OV9782 tuning). Running our own 3A on it is possible in principle: the
+      open `vvcam` kernel driver only passes register reads and writes through, and the
+      ISP8000's base register map matches mainline rkisp1, so Styx would program the ISP and
+      read its statistics itself (no vendor parameter/statistics uAPI exists as on rkisp).
+      *Done when:* the user decides who owns the OV9782 picture; then either the
+      `isp_media_server` path (`pyramid: 3` from the scaled channels, 1/8 from the smallest,
+      within a stated tolerance of the box filter) or our own register programming through
+      `vvcam`, with 3A converged on the board. *Blocked by:* a user decision (vendor or our
+      picture), then a K230D board.
+- [ ] **K230D: VPU encode (H.264/H.265/JPEG).** *Why:* preview and recording without the CPU.
+      *Done when:* the M2M backend drives `/dev/video0` (`mvx`) at 1280x800 30 fps with
+      dma-buf NV12 input, and the CPU fallback is used without it. *Blocked by:* a K230D
+      board, and the M2M backend above.
+- [ ] **K230D: 2D unit scaling.** *Why:* preview frames and levels without the CPU.
+      *Done when:* `/dev/video5` (`nonai-2d`) scales through the M2M backend within a stated
+      tolerance. *Blocked by:* a K230D board, and the M2M backend above.
+- [ ] **RK3588S: ISP30 bring-up of the written path.** *Why:* the Rockchip HVS boards.
+      *Done when:* the OV9782 through rkcif and the ISP streams NV12 at 120 fps with 3A
+      converged; entity names (`media-ctl -p`) and the fixed-point constants (gains, CCM,
+      LSC, statistics bit depths) confirmed. *Blocked by:* an RK3588S board on the vendor
+      6.1 BSP.
+- [ ] **Rockchip: rkcif graph per chip.** *Why:* capture feeds the ISP. *Done when:* each
+      chip's sensor-to-ISP media graph is set up by Styx and streams. *Blocked by:* boards.
+- [ ] **Rockchip: the ISP's self path for pyramid level 1 and preview.** *Why:* a second
+      scaled output costs nothing. *Done when:* level 1 comes from the self path, deeper
+      levels from it, within a stated tolerance of the box filter. *Blocked by:* an RK3588S.
+- [ ] **Rockchip: rkisp per chip generation** (RK3566 ISP21, RK3562 ISP32-lite, RK3576: confirm
+      the generation in the BSP's rkisp hardware table). *Why:* the other HVS candidates.
+      *Done when:* each generation's parameter and statistics structures, builder and parser
+      have tests, and the chip streams with 3A converged. *Blocked by:* boards for each chip.
+- [ ] **Rockchip: RGA scale, crop and convert.** *Why:* deeper pyramid levels and preview
+      frames without the CPU. *Done when:* the vendor multi-rga driver (ioctls, no librga)
+      scales within a stated tolerance, CPU fallback without it. *Blocked by:* a Rockchip board.
+- [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder.** *Why:* preview and recording
+      without turbojpeg on the CPU. *Done when:* a `styx-codec` backend over librockchip_mpp
+      encodes dma-buf NV12 from the ISP at 1280x800 120 fps, and the CPU fallback is used
+      without it. *Blocked by:* a Rockchip board on the vendor BSP (mpp_service).
+- [ ] **Flame (RV1106G2): bring-up.** *Why:* the Flame board. *Done when:* the RV1106's rkisp
+      generation (confirm in its BSP), rkcif graph and rkvenc encoder run the OV9782 within
+      the RV1106G2's memory, with the CPU fallbacks. *Blocked by:* a Flame board and its BSP.
+
+### 3. Release mechanics
+- [x] **API cleanup and duplicate merge** (b1af88a, b6444d3, fbe003e, a24ec85, 373d703).
+      *Why:* the freeze's cleanup pass. *Done when:* duplicate code merged and duplicate names
+      removed: done; only trait-impl repetition remains. *Blocked by:* nothing.
+- [ ] **Public API review against 2.0.** *Why:* 3.0 is the one chance for breaking changes.
+      *Done when:* a `cargo public-api` diff against 2.0.0 is reviewed and every removal is
+      listed in the CHANGELOG with its replacement, and HeliOS, PhotonVision and
+      photon-image-modifier build against it. *Blocked by:* nothing.
+- [ ] **Version 3.0.0.** *Why:* the release. *Done when:* every crate is 3.0.0 and the
+      intra-workspace versions match. *Blocked by:* the user calling the release.
+- [ ] **CHANGELOG.** *Done when:* Unreleased becomes 3.0.0 with the date and a migration
+      section. *Blocked by:* the version item.
+- [ ] **Gates at the release rev.** *Done when:* `scripts/gate.sh` (riscv lane included) and the
+      Raze device sweep pass at the tagged rev. *Blocked by:* a Raze slot.
+- [ ] **Tag and announce.** *Done when:* `v3.0.0` is tagged on main and pushed, and HeliOS,
+      Eidos and PhotonVision are told the rev. *Blocked by:* the user calling the release.
+
 ## Done
 
 ### Foundations and stand-alone (phases 0–1)
@@ -157,7 +272,7 @@ box (OV9782 1280x800) unless stated.
       Styx (`styx-tune capture`). Recovers a synthetic sensor's parameters (black within 0.02
       codes, shading tables 0.1%, CCM coefficients 0.011, noise 0.5%). See
       [docs/tuning.md](docs/tuning.md).
-- [ ] OV9782 tuning of our own (today: the imported tuning, identity colour matrix): a real
+- [ ] OV9782 tuning of our own (3.0 item above; today: the imported tuning, identity colour matrix): a real
       session (ColorChecker, 3-5 high-CRI lights 2700-6500 K with a colour meter, diffuser,
       lux meter, lens cap; docs/tuning.md). From the CM5 without a chart so far: black level by
       gain (65.5/64.9 codes by row at 1×) and the temporal noise (slope 2.75 + 38 against the
@@ -317,6 +432,9 @@ box (OV9782 1280x800) unless stated.
       sd); ~0.5-1% of a core more CPU. See [docs/uvc.md](docs/uvc.md).
 - [ ] Userspace UVC: a bulk / UVC 1.5 / SuperSpeed camera on hardware; status interrupt
       endpoint (control change events, button); still images; extension-unit controls.
+
+- [ ] CM5 HEVC decode for replay (V4L2 stateless decoder through ffmpeg's request hwaccel):
+      not for 3.0; only matters for HEVC recordings (Styx records MJPEG and raw).
 
 ### Stills and DNG
 - [x] Still capture on a running capture (`capture_still` / `request_still` on `CaptureHandle`
