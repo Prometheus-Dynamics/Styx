@@ -8,6 +8,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Canaan K230D's VeriSilicon ISP8000 in `styx-k230isp`, written, untested on board**: the
+  register map of the MRV-derived ISP (block bases from the struct's gap arithmetic, field masks and
+  shifts, MIT headers, cited per block), `Params` (a list of register writes: the AE grid's luma
+  means, the 16-bin histogram, the AWB means, black level, white balance, colour matrix and offsets,
+  gamma-out, lens shading over 8x8 sectors, applied through `RegisterAccess`), `stats` (the registers
+  read into `styx_algo::Statistics`), and the `vvcam-isp` device's ioctls (feature `device`). The
+  front end, the FUSA blocks and the K230's MI extensions have no layouts in the sources and are left
+  out. The fixed-point and offset constants the headers do not confirm are listed in docs/k230.md.
+
 - **armv7 NEON leaves for the software ISP's integer path** (`styx_softisp::simd`, 32-bit Arm
   Linux): the same 17 kernels as the RVV ones below, in inline NEON assembly, bit-exact with
   scalar and chosen at run time when the CPU reports NEON; the RV1106's Cortex-A7 runs the
