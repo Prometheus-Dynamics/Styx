@@ -15,7 +15,9 @@ Cell values:
 
 - **pass**: a leaf exists and is conformance-tested.
 - **gap**: still to do.
-- **n/a**: impossible or meaningless, with the reason given.
+- **n/a**: physically impossible, because the hardware lacks the feature; the reason is
+  given. "Probably slower" is not a reason: every variant is built, measured and kept as a
+  selectable backend, with its numbers per device.
 
 "lib" means a library's own SIMD: yuvutils-rs, libjpeg-turbo or x264.
 
@@ -39,13 +41,13 @@ The GPU column is `styx-gpuisp`, bit-exact with the CPU.
 | Colour matrix | pass | pass | pass | gap | gap | pass |
 | Narrow 16 → 8 bit | pass | pass | pass | gap | gap | pass |
 | Tone curve, 4096-entry table | pass | pass | pass | gap | gap | pass |
-| Tone curve, polynomial | pass | pass | pass | gap | gap | n/a¹ |
+| Tone curve, polynomial | pass | pass | pass | gap | gap | gap¹ |
 | Interleave RGB24 | pass | pass | pass | gap | gap | pass |
 | RGB → Y | pass | pass | pass | gap | gap | pass |
 | RGB → UV (4:2:0) | pass | pass | pass | gap | gap | pass |
 | 3A zone sums | pass | pass | pass | gap | gap | pass |
 | Luma histogram | pass | pass | pass | gap | gap | pass |
-| fp16 path (8 kernels) | pass² | n/a³ | pass | n/a⁴ | gap⁵ | n/a⁶ |
+| fp16 path (8 kernels) | pass² | gap³ | pass | n/a⁴ | gap⁵ | gap⁶ |
 
 ### Software ISP, output stages (`styx_softisp::post`)
 
@@ -95,14 +97,13 @@ The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`.
 
 Notes:
 
-1. The polynomial tone curve is an AVX2 speed variant of the same curve. The GPU computes
-   that curve from the table.
+1. The polynomial tone curve, as a GPU variant beside the table, to measure.
 2. Emulated fp16 on CPUs without fp16 arithmetic. `Arithmetic::Auto` does not choose it there.
-3. x86 has fp16 arithmetic only from AVX-512 FP16; F16C only converts. `Auto` picks the
-   integer or polynomial path, which is faster on x86 without it.
+3. AVX-512 FP16 (Sapphire Rapids, Zen 5) has the arithmetic; F16C converts only. Build
+   both, measure them, and keep them selectable.
 4. The Cortex-A7 has no fp16 arithmetic.
 5. Worth doing only if the K230D's C908 has Zvfh. Check that on the board.
-6. The GPU runs the integer path, bit-exact. fp16 is a CPU speed choice.
+6. GPUs have fp16 arithmetic: a `half` shader variant beside the bit-exact integer one.
 7. yuvutils-rs has no armv7 or RVV code. Styx's own kernels, with all leaves, replace it there.
 8. Upstream libjpeg-turbo and x264 have no RVV code. Styx needs its own colour and DCT
    leaves, or the board's encoder (see the fixed-function table below).
@@ -132,12 +133,12 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | Column | pass | gap | n/a |
 |---|---|---|---|
 | scalar | 43 | 0 | 0 |
-| x86 | 35 | 7 | 1 |
+| x86 | 35 | 8 | 0 |
 | NEON64 | 36 | 7 | 0 |
 | NEON32 | 15 | 27 | 1 |
 | RVV | 12 | 31 | 0 |
-| GPU | 18 | 23 | 2 |
-| **all** | **159** | **95** | **4** |
+| GPU | 18 | 25 | 0 |
+| **all** | **159** | **98** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
 
@@ -210,7 +211,7 @@ States:
 | RGA2 / RGA3 | scale, crop, convert, rotate | unused (board): mainline `rockchip-rga` fits `V4l2M2mConverter`; vendor multi-rga not written | `styx_core::simd` |
 | MPP / rkvenc, Hantro | H.264, H.265, JPEG encode | unused (board) | libjpeg-turbo, FFmpeg |
 | MPP / rkvdec | H.264, H.265 decode | unused (board) | FFmpeg software |
-| IEP | deinterlace, enhancement | n/a: cameras are progressive and the ISP denoises | — |
+| IEP | denoise, enhancement (deinterlace n/a: cameras are progressive) | unused (board) | software ISP denoise |
 
 ### RV1106 (Flame)
 
@@ -228,7 +229,7 @@ These totals cover the capability rows above.
 |---|---|---|---|---|
 | CM5 (PiSP, HEVC) | 9 | 4 | 7 | 0 |
 | K230D | 0 | 0 | 6 | 0 |
-| Rockchip | 0 | 0 | 6 | 1 |
+| Rockchip | 0 | 0 | 7 | 0 |
 | RV1106 | 0 | 0 | 3 | 0 |
 
 The rows that need no new board are all on the CM5:
