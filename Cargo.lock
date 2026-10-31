@@ -5463,6 +5463,15 @@ name = "styx-iq-compare"
 version = "2.0.1-dev"
 
 [[package]]
+name = "styx-k230isp"
+version = "2.0.1-dev"
+dependencies = [
+ "libc",
+ "styx-algo",
+ "styx-math",
+]
+
+[[package]]
 name = "styx-kernel"
 version = "2.0.1-dev"
 dependencies = [

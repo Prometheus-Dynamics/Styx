@@ -1,0 +1,25 @@
+[package]
+name = "styx-k230isp"
+version.workspace = true
+edition.workspace = true
+description = "Canaan K230D's VeriSilicon ISP8000 (the MRV-derived ISP behind /dev/vvcam-isp.0) from Rust: its register map, a parameter builder (black level, white balance, colour matrix, gamma, lens shading, AE, histogram and AWB windows) and statistics decoding into Styx's 3A input."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["k230", "canaan", "isp", "camera", "risc-v"]
+categories = ["multimedia::images", "hardware-support"]
+
+[features]
+# Links std (for `device`); the rest of the crate is `no_std` + `alloc` either way.
+std = []
+# Drive the vendor `vvcam-isp` misc device through `ioctl` (Linux).
+device = ["std", "dep:libc"]
+
+[dependencies]
+libc = { workspace = true, optional = true }
+styx-algo = { workspace = true, default-features = false }
+styx-math.workspace = true
+
+[lints]
+workspace = true

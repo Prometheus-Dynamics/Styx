@@ -18,6 +18,7 @@ This directory holds repository-level documentation for the Styx workspace.
 - [recording.md](recording.md): `styx-record`, grey test recordings (Y plane, Eidos raw video layout) with a timestamp/sequence sidecar and the camera settings, from a camera service or the camera directly; stills for calibration
 - [preview.md](preview.md): camera previews for user interfaces: small JPEGs (MJPEG over HTTP, WebSocket messages) from a low-priority camera service client that never changes the vision consumer's capture; encoder benchmarks and the CM5 measurement plan
 - [rockchip.md](rockchip.md): Rockchip RK3588 / RK3588S: why Styx can drive the ISP30 itself through the vendor kernel's uAPI, `styx-rkisp` (parameter and statistics buffers), and the steps left for a board
+- [k230.md](k230.md): Canaan K230D's VeriSilicon ISP8000 through `/dev/vvcam-isp.0`: the register map (MIT headers), `styx-k230isp` (parameter writes, statistics), the ioctls, the guesses and the steps left for a board
 - [ecosystem.md](ecosystem.md): Styx cameras in GStreamer (`styxsrc`) and PipeWire (optional bridge crates)
 - [encoding.md](encoding.md): FFmpeg encoders, low-latency defaults, and handing camera buffers to encoders without copies
 - [hw-frame-preparation.md](hw-frame-preparation.md): hardware frame-preparation investigation and on-device results
