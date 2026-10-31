@@ -104,10 +104,13 @@ user; they do not block the tag unless the user says so.
       when:* as RK3566. *Blocked by:* an RK3576 board.
 - [ ] **Rockchip: RGA scale, crop and convert** (RGA3 on RK3588S, RGA2 on the others). *Why:* deeper pyramid levels and preview
       frames without the CPU. Mainline's `rockchip-rga` is a V4L2 M2M device that
-      `V4l2M2mConverter` drives already; the vendor BSPs ship multi-rga instead. *Done when:*
-      the vendor multi-rga driver (ioctls, no librga) scales within a stated tolerance, the
-      conversion stage picks RGA (either driver) through the accelerator knob, CPU fallback
-      without it. *Blocked by:* a Rockchip board.
+      `V4l2M2mConverter` drives already; the vendor BSPs ship multi-rga instead, whose
+      `rga_req` layout is only in a GPL-2.0 header. One RGA binding for the stack, held by
+      Daedalus (librga, Apache-2.0, with version-checked struct sizes; the V4L2 M2M route
+      second); Styx adds no ioctl layer of its own. *Done when:* the conversion stage picks
+      RGA (mainline M2M now, Daedalus's backend for RGA3) through the accelerator knob, scaling
+      within a stated tolerance, CPU fallback without it. *Blocked by:* Daedalus's RGA backend
+      (RGA3); a Rockchip board to test.
 - [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder** (every chip with one). *Why:* preview and recording
       without turbojpeg on the CPU. *Done when:* a `styx-codec` backend over librockchip_mpp
       encodes dma-buf NV12 from the ISP at 1280x800 120 fps, and the CPU fallback is used
