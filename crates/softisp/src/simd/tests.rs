@@ -16,6 +16,13 @@ enum Runner {
     X86(X86FeatureSet),
     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
     Neon,
+    #[cfg(all(
+        feature = "neon",
+        feature = "std",
+        target_arch = "arm",
+        target_os = "linux"
+    ))]
+    Neon32,
     #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
     Rvv,
 }
@@ -38,6 +45,19 @@ fn runners() -> Vec<Runner> {
     }
     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
     out.push(Runner::Neon);
+    #[cfg(all(
+        feature = "neon",
+        feature = "std",
+        target_arch = "arm",
+        target_os = "linux"
+    ))]
+    {
+        assert!(
+            styx_core::simd::has_neon32(),
+            "the armv7 gate runs QEMU's Cortex-A7"
+        );
+        out.push(Runner::Neon32);
+    }
     #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
     {
         assert!(
@@ -62,6 +82,8 @@ macro_rules! leaf_call {
             Runner::X86(f) => pixels(x86::$name(f, $($arg),*)),
             #[cfg(all(feature = "neon", target_arch = "aarch64"))]
             Runner::Neon => pixels(neon::$name($($arg),*)),
+            #[cfg(all(feature = "neon", feature = "std", target_arch = "arm", target_os = "linux"))]
+            Runner::Neon32 => pixels(neon32::$name($($arg),*)),
             #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
             Runner::Rvv => pixels(rvv::$name($($arg),*)),
             Runner::Oracle | Runner::Dispatch => unreachable!(),
@@ -579,6 +601,13 @@ fn zone_sums_match() {
                     Runner::X86(f) => x86::zone_sums(f, rgb, width, sat),
                     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
                     Runner::Neon => neon::zone_sums(rgb, width, sat),
+                    #[cfg(all(
+                        feature = "neon",
+                        feature = "std",
+                        target_arch = "arm",
+                        target_os = "linux"
+                    ))]
+                    Runner::Neon32 => neon32::zone_sums(rgb, width, sat),
                     #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
                     Runner::Rvv => rvv::zone_sums(rgb, width, sat),
                     _ => None,

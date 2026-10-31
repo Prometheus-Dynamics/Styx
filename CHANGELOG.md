@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **armv7 NEON leaves for the software ISP's integer path** (`styx_softisp::simd`, 32-bit Arm
+  Linux): the same 17 kernels as the RVV ones below, in inline NEON assembly, bit-exact with
+  scalar and chosen at run time when the CPU reports NEON; the RV1106's Cortex-A7 runs the
+  whole integer ISP in vectors. Conformance-tested in the armv7 lane (QEMU Cortex-A7).
+
 - **RVV leaves for the software ISP's integer path** (`styx_softisp::simd`, riscv64 Linux): RAW10/12
   unpacking, the front end, bilinear and Malvar-He-Cutler demosaics, luma from the mosaic, the
   half-size quads, colour matrix, narrowing, the tone table (indexed loads) and quadratics,

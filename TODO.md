@@ -119,9 +119,9 @@ user; they do not block the tag unless the user says so.
       docs/acceleration.md has no gap cells; each leaf conformance-tested against scalar (guard
       bytes, odd widths) in the gate, on hardware or QEMU. armv7 NEON and RVV are inline
       assembly (their intrinsics are unstable). *Blocked by:* nothing for the CPU and GPU
-      columns; boards for the fixed-function rows marked so. *Progress:* 176 pass, 81 gaps,
-      1 n/a of 258 cells; every `styx_core::simd` kernel has armv7 NEON and RVV leaves, every
-      `styx_softisp::simd` integer kernel RVV ones.
+      columns; boards for the fixed-function rows marked so. *Progress:* 193 pass, 64 gaps,
+      1 n/a of 258 cells; every `styx_core::simd` kernel and every `styx_softisp::simd`
+      integer kernel has armv7 NEON and RVV leaves.
 - [ ] **RV1106: pyramid levels from the ISP.** *Why:* Eidos on Flame spends the most Styx time
       on the CPU pyramid downscale; the K230 makes scaled outputs in its ISP. *Done when:* the
       RV1106 rkisp's second output feeds `CompanionKind::Pyramid` like the PiSP's output 1: the

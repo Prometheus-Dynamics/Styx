@@ -29,24 +29,24 @@ The GPU column is `styx-gpuisp`, bit-exact with the CPU.
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
-| RAW10 unpack | pass | pass | pass | gap | pass | pass |
-| RAW12 unpack | pass | pass | pass | gap | pass | pass |
-| Front end (black, WB, gain, lens shading) | pass | pass | pass | gap | pass | pass |
-| Demosaic, bilinear | pass | pass | pass | gap | pass | pass |
-| Demosaic, Malvar-He-Cutler | pass | pass | pass | gap | pass | pass |
+| RAW10 unpack | pass | pass | pass | pass | pass | pass |
+| RAW12 unpack | pass | pass | pass | pass | pass | pass |
+| Front end (black, WB, gain, lens shading) | pass | pass | pass | pass | pass | pass |
+| Demosaic, bilinear | pass | pass | pass | pass | pass | pass |
+| Demosaic, Malvar-He-Cutler | pass | pass | pass | pass | pass | pass |
 | Demosaic, edge-directed | pass | gap | gap | gap | gap | gap |
-| Bayer luma (luma-only output) | pass | pass | pass | gap | pass | pass |
-| Half-size quad RGB | pass | pass | pass | gap | pass | pass |
-| Half-size quad luma | pass | pass | pass | gap | pass | pass |
-| Colour matrix | pass | pass | pass | gap | pass | pass |
-| Narrow 16 → 8 bit | pass | pass | pass | gap | pass | pass |
-| Tone curve, 4096-entry table | pass | pass | pass | gap | pass | pass |
-| Tone curve, polynomial | pass | pass | pass | gap | pass | gap¹ |
-| Interleave RGB24 | pass | pass | pass | gap | pass | pass |
-| RGB → Y | pass | pass | pass | gap | pass | pass |
-| RGB → UV (4:2:0) | pass | pass | pass | gap | pass | pass |
-| 3A zone sums | pass | pass | pass | gap | pass | pass |
-| Luma histogram | pass | pass | pass | gap | pass | pass |
+| Bayer luma (luma-only output) | pass | pass | pass | pass | pass | pass |
+| Half-size quad RGB | pass | pass | pass | pass | pass | pass |
+| Half-size quad luma | pass | pass | pass | pass | pass | pass |
+| Colour matrix | pass | pass | pass | pass | pass | pass |
+| Narrow 16 → 8 bit | pass | pass | pass | pass | pass | pass |
+| Tone curve, 4096-entry table | pass | pass | pass | pass | pass | pass |
+| Tone curve, polynomial | pass | pass | pass | pass | pass | gap¹ |
+| Interleave RGB24 | pass | pass | pass | pass | pass | pass |
+| RGB → Y | pass | pass | pass | pass | pass | pass |
+| RGB → UV (4:2:0) | pass | pass | pass | pass | pass | pass |
+| 3A zone sums | pass | pass | pass | pass | pass | pass |
+| Luma histogram | pass | pass | pass | pass | pass | pass |
 | fp16 path (8 kernels) | pass² | gap³ | pass | n/a⁴ | gap⁵ | gap⁶ |
 
 ### Software ISP, output stages (`styx_softisp::post`)
@@ -135,10 +135,10 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | scalar | 43 | 0 | 0 |
 | x86 | 35 | 8 | 0 |
 | NEON64 | 36 | 7 | 0 |
-| NEON32 | 15 | 27 | 1 |
+| NEON32 | 32 | 10 | 1 |
 | RVV | 29 | 14 | 0 |
 | GPU | 18 | 25 | 0 |
-| **all** | **176** | **81** | **1** |
+| **all** | **193** | **64** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
 
@@ -217,7 +217,7 @@ States:
 
 | Block | Capability | State | Software path today |
 |---|---|---|---|
-| rkisp | full ISP and 3A statistics | unused (board) | software ISP (integer path still scalar on armv7) |
+| rkisp | full ISP and 3A statistics | unused (board) | software ISP (armv7 NEON integer path) |
 | rkisp | selfpath scaler and 4x4/8x8 sampling outputs (pyramid) | unused (board) | `box2_row` (NEON) |
 | rkvenc | H.264, H.265 encode | unused (board) | FFmpeg / libjpeg-turbo (NEON) |
 

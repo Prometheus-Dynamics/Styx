@@ -1,6 +1,6 @@
 //! Row kernels of the software ISP, in the pattern of `styx_core::simd`: the scalar kernels
 //! ([`scalar`]) are the correctness oracle; x86 (SSE2, SSSE3, AVX2, chosen at run time from the
-//! CPU's features) and AArch64 NEON leaves must produce exactly the scalar result. A leaf handles
+//! CPU's features), AArch64 and 32-bit Arm NEON and RISC-V vector leaves must produce exactly the scalar result. A leaf handles
 //! a prefix of the row and the dispatcher finishes it with the scalar kernel. Cargo features
 //! `x86` and `neon` (on by default) compile the backends in.
 //!
@@ -21,6 +21,13 @@ use styx_core::math::Float as _;
 
 #[cfg(all(feature = "neon", target_arch = "aarch64"))]
 mod neon;
+#[cfg(all(
+    feature = "neon",
+    feature = "std",
+    target_arch = "arm",
+    target_os = "linux"
+))]
+mod neon32;
 #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
 mod rvv;
 #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
@@ -100,6 +107,10 @@ macro_rules! leaf {
         #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
         {
             outcome = x86::$name(X86FeatureSet::detect(), $($arg),*);
+        }
+        #[cfg(all(feature = "neon", feature = "std", target_arch = "arm", target_os = "linux"))]
+        {
+            outcome = neon32::$name($($arg),*);
         }
         #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
         {
@@ -476,6 +487,15 @@ pub fn zone_sums(rgb: [&[u16]; 3], width: usize, sat: u16) -> ([u32; 5], SimdBac
     #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
     {
         outcome = x86::zone_sums(X86FeatureSet::detect(), rgb, width, sat);
+    }
+    #[cfg(all(
+        feature = "neon",
+        feature = "std",
+        target_arch = "arm",
+        target_os = "linux"
+    ))]
+    {
+        outcome = neon32::zone_sums(rgb, width, sat);
     }
     #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
     {
