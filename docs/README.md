@@ -22,6 +22,7 @@ This directory holds repository-level documentation for the Styx workspace.
 - [encoding.md](encoding.md): FFmpeg encoders, low-latency defaults, and handing camera buffers to encoders without copies
 - [hw-frame-preparation.md](hw-frame-preparation.md): hardware frame-preparation investigation and on-device results
 - [performance.md](performance.md): benchmark surfaces and performance-validation notes
+- [acceleration.md](acceleration.md): every stage against every backend (scalar, x86, NEON64, NEON32, RVV, GPU, fixed-function units), pass / gap / n/a
 - [runtime-debugging.md](runtime-debugging.md): runtime tracing, health, queue, and teardown diagnostics
 - [metrics.md](metrics.md): per-camera health and performance metrics (rates, drops by cause, latency, ISP/CPU time, 3A, consumers), Prometheus text and the camera service's metrics request
 - [multi-camera-sync.md](multi-camera-sync.md): frames of several cameras grouped by sensor timestamp (`styx::multicam`), sync quality metrics, one Daedalus tick per group, and hardware frame sync (OV9782/OV9281 FSIN and strobe, what a CM5 carrier needs)

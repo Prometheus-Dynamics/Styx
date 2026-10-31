@@ -112,15 +112,15 @@ user; they do not block the tag unless the user says so.
       without turbojpeg on the CPU. *Done when:* a `styx-codec` backend over librockchip_mpp
       encodes dma-buf NV12 from the ISP at 1280x800 120 fps, and the CPU fallback is used
       without it. *Blocked by:* a Rockchip board on the vendor BSP (mpp_service).
-- [ ] **SIMD on every CPU the boards have.** *Why:* user decision: no half implementations.
-      *Done when:* every kernel in `styx_core::simd` and `styx_softisp::simd` has a leaf for
-      x86 (SSE2/SSSE3/AVX2), AArch64 NEON, armv7 NEON (Flame's Cortex-A7) and RVV (K230D),
-      or a measured note that the compiler's code is as fast; each leaf conformance-tested
-      against scalar (guard bytes, odd widths), on hardware or QEMU, in the gate (an armv7
-      lane like the riscv one). armv7 NEON intrinsics are unstable on stable Rust: inline
-      assembly, as for RVV. *Blocked by:* nothing (timing on Flame and the K230D: boards).
-      *Progress:* the armv7 lane is in the gate; `box2_row` (the luma pyramid's downscale, the
-      largest Styx cost in Eidos's Flame profile) has RVV and armv7 NEON leaves.
+- [ ] **Every stage accelerated on every backend** ([docs/acceleration.md](docs/acceleration.md)).
+      *Why:* user rule for 3.0: a stage that can be accelerated is, on every backend the
+      hardware offers: x86 SIMD, AArch64 NEON, armv7 NEON (Flame's Cortex-A7), RVV (K230D), the
+      GPU (gpuisp / wgpu) and each board's fixed-function units. *Done when:* the matrix in
+      docs/acceleration.md has no gap cells; each leaf conformance-tested against scalar (guard
+      bytes, odd widths) in the gate, on hardware or QEMU. armv7 NEON and RVV are inline
+      assembly (their intrinsics are unstable). *Blocked by:* nothing for the CPU and GPU
+      columns; boards for the fixed-function rows marked so. *Progress:* 137 pass, 117 gaps,
+      4 n/a of 258 cells.
 - [ ] **RV1106: pyramid levels from the ISP.** *Why:* Eidos on Flame spends the most Styx time
       on the CPU pyramid downscale; the K230 makes scaled outputs in its ISP. *Done when:* the
       RV1106 rkisp's second output feeds `CompanionKind::Pyramid` like the PiSP's output 1: the
