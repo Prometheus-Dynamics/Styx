@@ -7,9 +7,11 @@
 //!
 //! [`IspDevice`] routes whatever feeds the ISP's sink pad through it into the main path,
 //! sets the pad and node formats, and keeps three queues: parameter buffers in
-//! ([`Params`]), statistics and output frames out. The entity names and pad numbers are the
-//! vendor kernel's (`drivers/media/platform/rockchip/isp`); nothing here has run on an RK3588
-//! yet.
+//! ([`Params`]), statistics and output frames out. The entity names, pad numbers and meta
+//! formats are the vendor kernel's (`drivers/media/platform/rockchip/isp`, one driver for
+//! ISP21 and ISP30: `isp_params.c`, `isp_stats.c`, `rkisp.h`, `capture.h`), so the same
+//! node set serves both generations; [`Params`] carries the layout each one takes. Nothing
+//! here has run on a board yet (written, untested on board).
 
 use std::path::PathBuf;
 use std::string::String;
@@ -41,7 +43,8 @@ const PAD_PARAMS: u32 = 1;
 const PAD_SOURCE: u32 = 2;
 const PAD_STATS: u32 = 3;
 
-/// `V4L2_META_FMT_RK_ISP1_PARAMS`: the vendor driver's parameter format (the ISP30 layout).
+/// `V4L2_META_FMT_RK_ISP1_PARAMS`: the vendor driver's parameter format (the ISP21 and ISP30
+/// layouts).
 pub const PARAMS_FOURCC: FourCc = FourCc::new(b"RK1P");
 /// `V4L2_META_FMT_RK_ISP1_STAT_3A`.
 pub const STATS_FOURCC: FourCc = FourCc::new(b"RK1S");

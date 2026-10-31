@@ -8,6 +8,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Rockchip ISP21 (RK3566 / RK3568) in `styx-rkisp`, written, untested on board**: the ISP21
+  parameter and statistics layouts (`uapi::isp21`, bindgen from the vendor headers, sizes and
+  offsets checked against the C compiler), a `Generation` (`Isp21` / `Isp30`) that
+  `Params::new` and `statistics` take, so the parameter builder (statistics configuration,
+  black level, AWB gains, lens shading over 8x8 sectors, colour matrix, 45-sample gamma) and
+  the statistics decode cover both. The device layer's node names and meta formats are the
+  same on both generations. Unit-tested against fabricated buffers; the fixed-point constants
+  are to be confirmed on an RK3566 (docs/rockchip.md). `Params::new` and `statistics` now take
+  the generation, and `Params::config` is `isp30()` / `isp21()`.
+
 - **armv7 NEON and RVV leaves for every `styx_core::simd` kernel**: the channel swizzles, luma,
   grey and RGB48 conversions, YUYV luma, the 2x2 box downscale of the luma pyramid, row
   reversal and the 8x8 tile transposes of the rotations run in NEON on 32-bit Arm Linux and in

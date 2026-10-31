@@ -1,10 +1,11 @@
-//! The Rockchip ISP30 parameter and statistics buffers as the vendor kernel's `rkisp` driver
-//! takes and fills them (`rk-isp3-config.h`), with the module bits it reads from
-//! `module_ens` / `module_en_update` / `module_cfg_update`.
+//! The Rockchip ISP21 (`rk-isp21-config.h`) and ISP30 (`rk-isp3-config.h`) parameter and
+//! statistics buffers as the vendor kernel's `rkisp` driver takes and fills them, with the
+//! module bits it reads from `module_ens` / `module_en_update` / `module_cfg_update`.
 //!
-//! The layouts are bindgen's ([`isp3x`]); their sizes and the offsets of the blocks Styx uses
-//! are checked here against the C compiler's for the same headers.
+//! The layouts are bindgen's ([`isp21`], [`isp3x`]); their sizes and the offsets of the blocks
+//! Styx uses are checked here against the C compiler's for the same headers.
 
+pub mod isp21;
 pub mod isp3x;
 
 pub use isp3x::*;
@@ -51,6 +52,10 @@ unsafe impl bytemuck::Zeroable for isp3x_isp_params_cfg {}
 unsafe impl bytemuck::Pod for isp3x_isp_params_cfg {}
 unsafe impl bytemuck::Zeroable for rkisp3x_isp_stat_buffer {}
 unsafe impl bytemuck::Pod for rkisp3x_isp_stat_buffer {}
+unsafe impl bytemuck::Zeroable for isp21::isp21_isp_params_cfg {}
+unsafe impl bytemuck::Pod for isp21::isp21_isp_params_cfg {}
+unsafe impl bytemuck::Zeroable for isp21::rkisp_isp21_stat_buffer {}
+unsafe impl bytemuck::Pod for isp21::rkisp_isp21_stat_buffer {}
 
 /// The C compiler's sizes and offsets for the same headers (clang, aarch64 and x86-64 alike:
 /// the structures are packed).
@@ -75,4 +80,31 @@ const _: () = {
     assert!(offset_of!(isp3x_isp_meas_cfg, rawawb) == 191);
     assert!(offset_of!(isp3x_isp_meas_cfg, rawae0) == 1097);
     assert!(offset_of!(isp3x_isp_meas_cfg, rawhist1) == 1286);
+};
+
+/// The same for ISP21 (`rk-isp21-config.h`, `rk-isp2-config.h`).
+const _: () = {
+    use core::mem::{offset_of, size_of};
+    use isp21::*;
+    assert!(size_of::<isp21_isp_params_cfg>() == 10475);
+    assert!(size_of::<rkisp_isp21_stat_buffer>() == 13700);
+    assert!(size_of::<isp21_isp_meas_cfg>() == 2194);
+    assert!(size_of::<isp21_isp_other_cfg>() == 8253);
+    assert!(size_of::<isp21_stat>() == 13688);
+    assert!(size_of::<isp2x_lsc_cfg>() == 2384);
+    assert!(size_of::<isp2x_gammaout_cfg>() == 93);
+    assert!(offset_of!(isp21_isp_params_cfg, meas) == 28);
+    assert!(offset_of!(isp21_isp_params_cfg, others) == 2222);
+    assert!(offset_of!(isp21_isp_other_cfg, bls_cfg) == 0);
+    assert!(offset_of!(isp21_isp_other_cfg, lsc_cfg) == 222);
+    assert!(offset_of!(isp21_isp_other_cfg, awb_gain_cfg) == 2606);
+    assert!(offset_of!(isp21_isp_other_cfg, ccm_cfg) == 2715);
+    assert!(offset_of!(isp21_isp_other_cfg, gammaout_cfg) == 2781);
+    assert!(offset_of!(isp21_isp_meas_cfg, rawae3) == 988);
+    assert!(offset_of!(isp21_isp_meas_cfg, rawhist1) == 1229);
+    assert!(offset_of!(rkisp_isp21_stat_buffer, params) == 12);
+    assert!(offset_of!(isp21_stat, rawae3) == 6737);
+    assert!(offset_of!(isp21_stat, rawhist1) == 10344);
+    assert!(offset_of!(isp21_stat, bls) == 13544);
+    assert!(offset_of!(isp21_stat, dhaz) == 13552);
 };
