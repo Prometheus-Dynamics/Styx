@@ -16,6 +16,8 @@ enum Runner {
     X86(X86FeatureSet),
     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
     Neon,
+    #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+    Rvv,
 }
 
 fn runners() -> Vec<Runner> {
@@ -36,6 +38,14 @@ fn runners() -> Vec<Runner> {
     }
     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
     out.push(Runner::Neon);
+    #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+    {
+        assert!(
+            styx_core::simd::has_rvv(),
+            "the riscv gate runs QEMU with v=true"
+        );
+        out.push(Runner::Rvv);
+    }
     out
 }
 
@@ -52,6 +62,8 @@ macro_rules! leaf_call {
             Runner::X86(f) => pixels(x86::$name(f, $($arg),*)),
             #[cfg(all(feature = "neon", target_arch = "aarch64"))]
             Runner::Neon => pixels(neon::$name($($arg),*)),
+            #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+            Runner::Rvv => pixels(rvv::$name($($arg),*)),
             Runner::Oracle | Runner::Dispatch => unreachable!(),
         }
     };
@@ -567,6 +579,8 @@ fn zone_sums_match() {
                     Runner::X86(f) => x86::zone_sums(f, rgb, width, sat),
                     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
                     Runner::Neon => neon::zone_sums(rgb, width, sat),
+                    #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+                    Runner::Rvv => rvv::zone_sums(rgb, width, sat),
                     _ => None,
                 };
                 if let Some((_, done, sums)) = leaf {

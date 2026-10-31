@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **RVV leaves for the software ISP's integer path** (`styx_softisp::simd`, riscv64 Linux): RAW10/12
+  unpacking, the front end, bilinear and Malvar-He-Cutler demosaics, luma from the mosaic, the
+  half-size quads, colour matrix, narrowing, the tone table (indexed loads) and quadratics,
+  RGB interleaving, YCbCr, zone sums and the luma histogram, bit-exact with scalar; the
+  K230D's C908 runs the whole integer ISP in vectors. Conformance-tested in the riscv lane.
+
 - **armv7 NEON and RVV leaves for every `styx_core::simd` kernel**: the channel swizzles, luma,
   grey and RGB48 conversions, YUYV luma, the 2x2 box downscale of the luma pyramid, row
   reversal and the 8x8 tile transposes of the rotations run in NEON on 32-bit Arm Linux and in

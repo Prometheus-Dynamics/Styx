@@ -21,6 +21,8 @@ use styx_core::math::Float as _;
 
 #[cfg(all(feature = "neon", target_arch = "aarch64"))]
 mod neon;
+#[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+mod rvv;
 #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
 mod x86;
 
@@ -98,6 +100,10 @@ macro_rules! leaf {
         #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
         {
             outcome = x86::$name(X86FeatureSet::detect(), $($arg),*);
+        }
+        #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+        {
+            outcome = rvv::$name($($arg),*);
         }
         outcome
     }};
@@ -470,6 +476,10 @@ pub fn zone_sums(rgb: [&[u16]; 3], width: usize, sat: u16) -> ([u32; 5], SimdBac
     #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
     {
         outcome = x86::zone_sums(X86FeatureSet::detect(), rgb, width, sat);
+    }
+    #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+    {
+        outcome = rvv::zone_sums(rgb, width, sat);
     }
     let (backend, done, mut sums) = outcome.unwrap_or((SimdBackend::Scalar, 0, [0; 5]));
     let tail = scalar::zone_sums(rgb.map(|p| &p[done..]), width - done, sat);
