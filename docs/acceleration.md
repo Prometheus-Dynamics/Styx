@@ -140,3 +140,102 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | **all** | **159** | **95** | **4** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
+
+## Hardware blocks
+
+This section takes each imaging block on the boards and lists each of its capabilities,
+whether Styx uses it, and what does that job today when it doesn't. A software path of
+"none" means nothing does the job yet.
+
+States:
+
+- **used**;
+- **partly** (which part is missing is noted);
+- **unused**;
+- **n/a** (impossible or not applicable, with the reason).
+
+### CM5: PiSP front end (FE)
+
+| Capability | State | Software path today |
+|---|---|---|
+| AGC statistics (zones, histogram) | used | — |
+| AWB statistics | used | — |
+| CDAF statistics | partly: fixed 8x8 grid over the whole frame; `AF_WINDOWS` only weights its zones | window weighting in `styx-algo` |
+| Black level (BLA, BLC), DPC, decompand, decompress, LSC for statistics, RGBY, decimate, statistics crop | used | — |
+| Output 0 (raw to memory, compressed) | used | — |
+| Output 1 (cropped, downscaled raw: crop 1, downscale 1) | unused (builder-tested only) | none: no consumer wants low-resolution raw yet |
+
+### CM5: PiSP back end (BE)
+
+| Capability | State | Software path today |
+|---|---|---|
+| DPC, GEQ, SDN, BLC, LSC, WBG, CDN, demosaic | used | — |
+| TDN, with compressed TDN buffers | used | — |
+| Stitch (HDR merge of two exposures) | unused: the builder refuses it | none: no HDR mode |
+| Tonemap (local tone mapping for HDR) | unused | the global gamma curve only |
+| CAC (chromatic aberration correction) | unused: the builder refuses it | none |
+| Debin | unused | none: binned modes run without it |
+| CCM, YCbCr, false colour, sharpen, YCbCr inverse, gamma, CSC0/CSC1 | used | — |
+| Saturation control | unused | the saturation is folded into the CCM |
+| Output 0 and its downscale/resample | used | — |
+| Output 1 and its scaler | used: one pyramid level, regions, overview | — |
+| Downscaled pyramid levels | partly: one level from output 1 (or one extra pass); deeper levels are box-filtered on the CPU | `box2_row` (`with_box_pyramid`) |
+| Extra BE passes (regions) | partly: run one after another; scaled or other-format regions are not planned | — |
+| HOG output | unused | none |
+
+### CM5: HEVC decoder
+
+| Capability | State | Software path today |
+|---|---|---|
+| Stateless HEVC decode (`rpi-hevc-dec`) | partly: wired through FFmpeg's `v4l2request` hwaccel, which only Raspberry Pi's FFmpeg build has; not verified on the CM5 | FFmpeg software HEVC |
+
+### K230D
+
+| Block | Capability | State | Software path today |
+|---|---|---|---|
+| ISP8000 | demosaic, colour, tone, YUV out | unused (board) | RVV software ISP (integer path still scalar on RVV) |
+| ISP8000 | 3A statistics | unused (board) | software ISP statistics |
+| ISP8000 | scaled channels (pyramid levels) | unused (board) | `box2_row` (RVV) |
+| VPU (`mvx`, V4L2 M2M) | H.264, H.265, JPEG encode | unused (board): `V4l2M2mEncoder` should drive it | libjpeg-turbo (no SIMD on RISC-V), FFmpeg |
+| 2D unit (`nonai-2d`, V4L2 M2M) | scale, convert, rotate | unused (board): `V4l2M2mConverter` should drive it | `styx_core::simd` (RVV) |
+| DPU (structured-light depth) | depth maps | unused (board) | none: Styx has no depth output |
+
+### Rockchip (RK3566, RK3562, RK3576, RK3588S)
+
+| Block | Capability | State | Software path today |
+|---|---|---|---|
+| rkisp | main path (full ISP) | unused (board): parameter and statistics code exists for ISP30 only | software ISP |
+| rkisp | 3A statistics | unused (board) | software ISP statistics |
+| rkisp | self path (second scaled output) | unused (board) | `box2_row`, software scaling |
+| RGA2 / RGA3 | scale, crop, convert, rotate | unused (board): mainline `rockchip-rga` fits `V4l2M2mConverter`; vendor multi-rga not written | `styx_core::simd` |
+| MPP / rkvenc, Hantro | H.264, H.265, JPEG encode | unused (board) | libjpeg-turbo, FFmpeg |
+| MPP / rkvdec | H.264, H.265 decode | unused (board) | FFmpeg software |
+| IEP | deinterlace, enhancement | n/a: cameras are progressive and the ISP denoises | — |
+
+### RV1106 (Flame)
+
+| Block | Capability | State | Software path today |
+|---|---|---|---|
+| rkisp | full ISP and 3A statistics | unused (board) | software ISP (integer path still scalar on armv7) |
+| rkisp | selfpath scaler and 4x4/8x8 sampling outputs (pyramid) | unused (board) | `box2_row` (NEON) |
+| rkvenc | H.264, H.265 encode | unused (board) | FFmpeg / libjpeg-turbo (NEON) |
+
+### Hardware-block totals
+
+These totals cover the capability rows above.
+
+| Board | used | partly | unused | n/a |
+|---|---|---|---|---|
+| CM5 (PiSP, HEVC) | 9 | 4 | 7 | 0 |
+| K230D | 0 | 0 | 6 | 0 |
+| Rockchip | 0 | 0 | 6 | 1 |
+| RV1106 | 0 | 0 | 3 | 0 |
+
+The rows that need no new board are all on the CM5:
+
+- every pyramid level from the PiSP (extra BE passes at each level's size);
+- CDAF windows that follow `AF_WINDOWS`;
+- queued BE passes and scaled regions;
+- HEVC decode verified on the CM5.
+
+HDR stitch and tonemap need a sensor with two exposures, and CAC needs calibration.

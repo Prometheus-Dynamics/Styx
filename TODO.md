@@ -21,21 +21,21 @@ user; they do not block the tag unless the user says so.
       mains lamps. *Done when:* `flicker_check` on the CM5/Raze under a 50 Hz lamp at 120 fps:
       AE locks and the output frame-to-frame spread stays under 5% (flicker avoidance and
       deflicker on, the defaults). *Blocked by:* a mains lamp at the bench in a Raze slot.
-- [ ] **YUYV no-frames fallback, with the cause in the error** (paused: bench tests paused). *Why:* a UVC camera that
-      negotiates YUYV and delivers nothing hangs a client instead of failing over to MJPEG.
-      *Done when:* the C270 on the CM5 in a YUYV mode it cannot sustain falls back to MJPEG
-      and the error names the cause (bandwidth / no frames). *Blocked by:* the C270
-      plugged back in.
-- [ ] **Typed control-menu entry (kept: user decision; API in, HeliOS UI next).** *Why:* menu controls are integers with
-      labels; HeliOS's camera settings will show typed menu entries. *Done when:* every menu
-      control (V4L2, UVC, native, camera service) reports its entries as typed values (named
-      items and integer menus) through the control API, set and read back by entry, with
-      tests per backend, and HeliOS's UI shows them (HeliOS wires the UI once the API is
-      announced). *Blocked by:* nothing.
+- [ ] **YUYV no-frames fallback: the bench check** (paused: bench tests paused). *Why:* a UVC
+      camera that negotiates YUYV and delivers nothing hung a client. The fallback and the
+      cause in the error are in (302b1f6, 9cb7009: `planner/stalled.rs`, unit tests in
+      `planner/usb_tests.rs`). *Done when:* the C270 on the CM5 in a YUYV mode it cannot
+      sustain falls back to MJPEG and the error names the cause. *Blocked by:* the pause, and
+      the C270 plugged back in.
+- [x] **Typed control-menu entry** (45cb3a3; HeliOS aa44c4d3 shows `MenuEntry` in its API and
+      UI). Every menu control reports typed entries (named items and integer menus), set and
+      read back by entry, tested per backend.
 - [ ] **OV9782 tuning of our own (held until the user has a chart).** *Why:* the imported tuning has an identity colour
       matrix. *Done when:* a `styx-tune` session (ColorChecker, 3-5 lights 2700-6500 K)
-      produces the TOML and colour error drops against the chart. *Blocked by:* the user's
-      ColorChecker kit and time.
+      produces the TOML and colour error drops against the chart. From the CM5 without a
+      chart so far: black level by gain (65.5/64.9 codes by row at 1×) and the temporal noise
+      (slope 2.75 + 38 against the file's 5.38: `ctt`'s spatial estimate includes texture).
+      *Blocked by:* the user's ColorChecker kit and time.
 
 ### 2. Hardware support (the freeze's last addition)
 - [x] **libjpeg-turbo on RISC-V and HeliOS's feature sets in the riscv gate lane** (2fc1119).
@@ -47,12 +47,10 @@ user; they do not block the tag unless the user says so.
 - [x] **RVV pyramid downscale** (2fc1119). *Why:* the box downscale was ~48% of Eidos's
       RVV-lane instructions. *Done when:* `box2_row` has an RVV kernel identical to scalar,
       tested under QEMU at VLEN 128 and 256: passing. *Blocked by:* nothing.
-- [ ] **V4L2 M2M encoder and scaler backend** (in progress: `styx_kernel::v4l2::M2mSession`,
-      the two-queue session with the encoder drain, is in; the `styx-codec` backends are next). *Why:* the K230's VPU (`mvx`) and 2D unit, and
-      mainline Rockchip RGA, are V4L2 memory-to-memory devices; one backend serves them all.
-      *Done when:* a `styx-codec` backend encodes through a stateful M2M encoder and scales
-      through an M2M scaler, with tests against `vicodec` / `vim2m` on the PC. *Blocked by:*
-      nothing.
+- [ ] **V4L2 M2M encoder: the vicodec run.** The backend is in (f165f4b: `V4l2M2mEncoder`,
+      `V4l2M2mConverter`); `vim2m_converts_frames` passed against the PC's `vim2m` on
+      2026-10-31. *Done when:* `vicodec_encodes_frames` passes on the PC (it skips without the
+      module). *Blocked by:* `sudo modprobe vicodec` (the user).
 - [x] **dma-buf tail slack for Vulkan import.** *Why:* Mesa's v3dv imports a linear camera
       dma-buf as a storage buffer only if it is at least the frame plus 256 B (Daedalus's V3D
       bench). *Done when:* every dma-heap buffer Styx allocates (native capture, PiSP outputs,
@@ -83,10 +81,10 @@ user; they do not block the tag unless the user says so.
 - [ ] **K230D: VPU encode (H.264/H.265/JPEG).** *Why:* preview and recording without the CPU.
       *Done when:* the M2M backend drives `/dev/video0` (`mvx`) at 1280x800 30 fps with
       dma-buf NV12 input, and the CPU fallback is used without it. *Blocked by:* a K230D
-      board, and the M2M backend above.
+      board.
 - [ ] **K230D: 2D unit scaling.** *Why:* preview frames and levels without the CPU.
       *Done when:* `/dev/video5` (`nonai-2d`) scales through the M2M backend within a stated
-      tolerance. *Blocked by:* a K230D board, and the M2M backend above.
+      tolerance. *Blocked by:* a K230D board.
 - [ ] **RK3588S: ISP30 bring-up of the written path.** *Why:* the Rockchip HVS boards.
       *Done when:* the OV9782 through rkcif and the ISP streams NV12 at 120 fps with 3A
       converged; entity names (`media-ctl -p`) and the fixed-point constants (gains, CCM,
@@ -106,8 +104,11 @@ user; they do not block the tag unless the user says so.
 - [ ] **RK3576: rkisp, its generation** (confirm it in the BSP's rkisp hardware table). *Done
       when:* as RK3566. *Blocked by:* an RK3576 board.
 - [ ] **Rockchip: RGA scale, crop and convert** (RGA3 on RK3588S, RGA2 on the others). *Why:* deeper pyramid levels and preview
-      frames without the CPU. *Done when:* the vendor multi-rga driver (ioctls, no librga)
-      scales within a stated tolerance, CPU fallback without it. *Blocked by:* a Rockchip board.
+      frames without the CPU. Mainline's `rockchip-rga` is a V4L2 M2M device that
+      `V4l2M2mConverter` drives already; the vendor BSPs ship multi-rga instead. *Done when:*
+      the vendor multi-rga driver (ioctls, no librga) scales within a stated tolerance, the
+      conversion stage picks RGA (either driver) through the accelerator knob, CPU fallback
+      without it. *Blocked by:* a Rockchip board.
 - [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder** (every chip with one). *Why:* preview and recording
       without turbojpeg on the CPU. *Done when:* a `styx-codec` backend over librockchip_mpp
       encodes dma-buf NV12 from the ISP at 1280x800 120 fps, and the CPU fallback is used
@@ -146,7 +147,8 @@ user; they do not block the tag unless the user says so.
 - [ ] **CHANGELOG.** *Done when:* Unreleased becomes 3.0.0 with the date and a migration
       section. *Blocked by:* the version item.
 - [ ] **Gates at the release rev.** *Done when:* `scripts/gate.sh` (riscv lane included) and the
-      Raze device sweep pass at the tagged rev. *Blocked by:* a Raze slot.
+      Raze device sweep pass at the tagged rev. *Blocked by:* the release rev (Raze #1 is
+      available for the sweep).
 - [ ] **Tag and announce.** *Done when:* `v3.0.0` is tagged on main and pushed, and HeliOS,
       Eidos and PhotonVision are told the rev. *Blocked by:* the version item.
 
@@ -214,7 +216,7 @@ user; they do not block the tag unless the user says so.
       regions (luma only); a true 4x4 bin for the
       software overview beyond 2 (today every second quad of every second quad row); libcamera
       regions of a size other than the first are scaled to it (reconfigure, or a second crop
-      stream); the GPU ISP and binned software modes do not crop.
+      stream); binned software modes do not crop (the GPU ISP does, 21e1bf6).
 
 ### Autofocus (simulation only so far)
 - [x] AF in Rust (`styx-algo`, from Raspberry Pi's `af.cpp`): PDAF loop, coarse + fine contrast
@@ -240,7 +242,7 @@ user; they do not block the tag unless the user says so.
       and continuous AF times against libcamera's (`rpicam-hello --autofocus-mode`).
 - [ ] AF on a bridged sensor with an I²C VCM (no module here yet); the DW9807 busy flag is
       not polled.
-- [ ] AF pause (libcamera's `AfPause`); PDAF from sensors other than the IMX708; the GPU ISP's
+- [ ] PDAF from sensors other than the IMX708 (AF pause is in: b4687ae); the GPU ISP's
       focus statistics; CDAF windows on the PiSP follow the AF windows (today the 8×8 grid
       covers the frame and the windows weight its zones).
 
@@ -302,17 +304,8 @@ user; they do not block the tag unless the user says so.
       Styx (`styx-tune capture`). Recovers a synthetic sensor's parameters (black within 0.02
       codes, shading tables 0.1%, CCM coefficients 0.011, noise 0.5%). See
       [docs/tuning.md](docs/tuning.md).
-- [ ] OV9782 tuning of our own (3.0 item above; today: the imported tuning, identity colour matrix): a real
-      session (ColorChecker, 3-5 high-CRI lights 2700-6500 K with a colour meter, diffuser,
-      lux meter, lens cap; docs/tuning.md). From the CM5 without a chart so far: black level by
-      gain (65.5/64.9 codes by row at 1×) and the temporal noise (slope 2.75 + 38 against the
-      file's 5.38: `ctt`'s spatial estimate includes texture; its denoise strengths were tuned
-      against it).
-- [ ] Lux on the software ISP path: its statistics' luma is taken before white balance, the
-      PiSP's (and `styx-tune`'s lux reference, as `ctt`'s) after; lux estimates differ by the
-      white balance there.
-- [ ] `styx-tune`: DNG input through `styx-dng` once merged (`input::RawDecoder`); defective
-      pixel lists to the ISP; AWB priors from scene statistics; a covered-lens dark session on
+- [ ] `styx-tune` (DNG input through `styx-dng` is in: `input::StyxDng`): defective
+      pixel lists to the ISP (today hot pixels only turn DPC on); AWB priors from scene statistics; a covered-lens dark session on
       the OV9782 for the black level at high gain.
 
 ### Performance
@@ -327,9 +320,8 @@ user; they do not block the tag unless the user says so.
       service client joining with more regions than planned restarts the capture
       (`VIDIOC_CREATE_BUFS` could add them while streaming).
 - [ ] Regions: scaled regions and regions in another format than the main output's
-      (`PassSpec::size` / `format` exist) are not planned yet; a main-output crop that moves
-      by more than half its size restarts the temporal average (a tracker's crop moving fast
-      runs without temporal denoise on those frames).
+      (`PassSpec::size` / `format` exist; only the pyramid pass sets `size`) are not planned
+      yet.
 - [ ] Ship the `pispbe` patch in a device image (kernel patch) and/or send it upstream (draft
       in `kernel-modules/pispbe/README.md`; ask Raspberry Pi whether the config registers are
       guaranteed to keep their values between jobs).
@@ -380,9 +372,8 @@ user; they do not block the tag unless the user says so.
       `FrameLease::plane_data_mut`), the float shim public (`styx_core::math::Float`, used by
       `styx-pipeline` and `styx-softisp`), every atomic, the fences and `Weak` in
       `styx_core::sync`.
-- [ ] `styx-algo`, `styx-dng`, `styx-pisp` and `styx-sensor` keep private copies of the float
-      shim (they do not depend on `styx-core`); fold them into one if a lower crate ever holds
-      it (e.g. `styx-hal`).
+- [x] One `no_std` float shim (09e90d1): `styx-math`'s `Float`, used by `styx-algo`, `styx-dng`,
+      `styx-pisp`, `styx-sensor` and re-exported by `styx-core`.
 - [ ] The MCU port (`ports/stm32h7-dcmi`: swap `examples/mcu-footprint`'s `board` for a DCMI
       receiver, I²C and a timer) and an `rkisp1` board; run on real MCU hardware (cycle
       counts per frame: the footprint images are linked and sized, not yet run on a core).
@@ -449,13 +440,14 @@ user; they do not block the tag unless the user says so.
       outputs exportable, one submission per frame; `SoftLoop::use_gpu`, Styx feature
       `gpu-isp` with a planner cost. RX 6800 XT: 0.47 ms CPU per 1280x800 NV12 frame against
       1.77 ms for the software ISP on the same host, GPU 0.21 ms.
-- [ ] GPU ISP on the Pi 5 (v3dv): not on the stock device image (needs Mesa's broadcom Vulkan
-      driver, the loader, the v3d DRM driver); estimated slower than the A76 NEON path, so
-      only to free the CPU. Untested on a real non-x86 GPU.
+- [ ] GPU ISP on the Pi 5 (v3dv): untested there (the wgpu pyramid runs on the CM5's v3dv,
+      42fb407); not on the stock device image (needs Mesa's broadcom Vulkan driver, the
+      loader, the v3d DRM driver); estimated slower than the A76 NEON path, so only to free
+      the CPU. *Blocked by:* a CM5 with v3dv in a Raze slot.
 - [ ] GPU ISP: tables (0.2 ms per settings change: lens shading gain rows rebuilt with the
       gains, as the integer path does) could move the channel gains to the GPU at the cost
-      of bit-exactness; outputs as exported dma-bufs through the Styx capture (today copied
-      into heap frames).
+      of bit-exactness; outputs as exported dma-bufs through the Styx capture (`GpuIsp` exports
+      them since 869416a; the capture still copies into heap frames).
 - [x] Userspace UVC (optional): `styx-uvc` over usbfs, `BackendKind::Uvc` (feature `uvc`;
       `uvcvideo` stays the default where it has the camera). C270 on the CM5: YUYV and MJPEG
       at 30 fps, controls, replug, hotplug; PTS timestamps with no jitter (uvcvideo: 1.9 ms
@@ -479,13 +471,15 @@ user; they do not block the tag unless the user says so.
 - [ ] V4L2 stills at full resolution without a reconfigure; UVC still-image methods (still
       probe/commit, the still trigger); stills on a capture without a processed native mode
       leave the consumer one frame short.
-- [ ] Still JPEG encoding: the `image` crate takes most of the ~45 ms still thread time at
-      1280x800; turbojpeg (C) is faster where it is allowed.
+- [ ] Still JPEG encoding: the registry's RG24→MJPG encoder (mozjpeg, turbojpeg, FFmpeg) is
+      used when a codec feature is on, the `image` crate otherwise (the default features have
+      none); re-measure the ~45 ms still thread time with turbojpeg.
 - [ ] A per-camera DNG `NoiseProfile` from the tuning's noise model.
 
 ### Metrics
-- [ ] Producer-side metrics for libcamera, file, replay, netcam and simulation captures (today
-      counted as received); hold times for V4L2 and UVC buffers.
+- [ ] Producer-side metrics for file, replay, netcam and simulation captures (today counted as
+      received; libcamera, V4L2 and UVC have them); hold times for V4L2, UVC and libcamera
+      buffers.
 - [ ] Per-consumer hold times for in-process consumers of shared captures (today per capture
       buffer, and per camera service client); attribute a service client's queue drops to the
       client (they show on its consumer row of the camera).
@@ -494,7 +488,7 @@ user; they do not block the tag unless the user says so.
 - [ ] CPU of the software ISP's worker pool per capture.
 
 ### Fuzzing
-- [x] cargo-fuzz targets for every parser of untrusted bytes (UVC descriptors and streams, sensor
+- [x] cargo-fuzz targets for every parser of untrusted bytes but the netcam multipart parser (below) (UVC descriptors and streams, sensor
       descriptions, embedded data and kernel-driver reports, tuning files, PiSP statistics,
       kernel messages, raw and MJPEG decoders, imported frame layouts, frame socket and camera
       service messages and requests, recordings, raw recordings), `scripts/fuzz.sh`, nightly CI
@@ -503,7 +497,8 @@ user; they do not block the tag unless the user says so.
       imported descriptors, allocations sized from headers, overflow panics.
 - [ ] Fuzz the netcam multipart parser (network input; only unit tests today) and the
       libcamera/V4L2 control and metadata conversions.
-- [ ] The raw decoders still index with `get_unchecked` behind length checks (one was wrong);
+- [ ] The raw decoders still index with `get_unchecked` behind length checks (104 calls; the
+      wrong one was fixed in 1bf166d);
       replace with checked slices where it costs nothing measurable.
 - [ ] Longer runs (hours) and on AArch64 (the NEON paths are not fuzzed on x86).
 
