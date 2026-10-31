@@ -663,3 +663,37 @@ fn rvv_leaves_match_scalar() {
     );
     assert_eq!(strongest_backend(), SimdBackend::Rvv);
 }
+
+#[cfg(all(
+    feature = "neon",
+    feature = "std",
+    target_arch = "arm",
+    target_os = "linux"
+))]
+#[test]
+fn neon32_leaves_match_scalar() {
+    assert!(
+        neon32::available(),
+        "the armv7 gate runs QEMU on a Cortex-A7"
+    );
+    box2_leaf("box2 neon32", |t, b, d, w| {
+        neon32::box2_row(t, b, d, w).map_or(0, |(_, done)| done)
+    });
+    // Saturated input: the widest sum (4 * 255 + 2) narrows back to 255.
+    let row = vec![255u8; 2 * 300];
+    let mut got = vec![GUARD; 300 + 64];
+    assert_eq!(
+        neon32::box2_row(&row, &row, &mut got, 300),
+        Some((SimdBackend::Neon, 288))
+    );
+    assert!(got[..288].iter().all(|&b| b == 255));
+    assert!(
+        got[288..].iter().all(|&b| b == GUARD),
+        "nothing past the steps"
+    );
+    // The dispatcher finishes the tail.
+    let mut all = vec![0u8; 300];
+    assert_eq!(box2_row(&row, &row, &mut all, 300), SimdBackend::Neon);
+    assert!(all.iter().all(|&b| b == 255));
+    assert_eq!(strongest_backend(), SimdBackend::Neon);
+}

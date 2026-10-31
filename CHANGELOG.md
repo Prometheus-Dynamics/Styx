@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **armv7 NEON `box2_row`** (`styx_core::simd`, 32-bit Arm Linux): the 2x2 box downscale the
+  luma pyramid uses, 16 outputs a step in NEON when the CPU reports it (`AT_HWCAP`), the same
+  result as scalar; `strongest_backend` reports `Neon` there. Conformance-tested in the armv7
+  lane (QEMU Cortex-A7).
+
 - **Native V4L2 memory-to-memory codecs** (`styx-codec` feature `codec-v4l2m2m`, facade
   `codec-v4l2m2m`, Linux): `V4l2M2mEncoder` (stateful hardware encoders; bit rate, GOP and
   forced keyframes through the driver's controls) and `V4l2M2mConverter` (scalers and format

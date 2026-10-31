@@ -4,10 +4,10 @@
 //! Scalar kernels ([`scalar`]) are the correctness oracle. The x86 (SSE2, SSSE3, AVX2) and
 //! AArch64 NEON modules are backend slots only: they must produce exactly the scalar result.
 //! x86 leaves are chosen at run time from the detected CPU features (without `std`: at compile
-//! time, from the target features); NEON is part of the
-//! AArch64 baseline. RISC-V vector kernels run when the kernel reports the V extension
-//! (`AT_HWCAP`). Cargo features `x86`, `neon` and `rvv` (on by default) compile the backends
-//! in; without them everything runs the scalar kernels.
+//! time, from the target features); NEON is part of the AArch64 baseline. RISC-V vector
+//! kernels run when the kernel reports the V extension (`AT_HWCAP`), and so do the 32-bit Arm
+//! NEON kernels (ARMv7-A). Cargo features `x86`, `neon` and `rvv` (on by default) compile the
+//! backends in; without them everything runs the scalar kernels.
 //!
 //! Every dispatcher returns the [`SimdBackend`] that did the vector part of the work.
 
@@ -17,6 +17,13 @@ pub use scalar::ColorLayout;
 
 #[cfg(all(feature = "neon", target_arch = "aarch64"))]
 mod neon;
+#[cfg(all(
+    feature = "neon",
+    feature = "std",
+    target_arch = "arm",
+    target_os = "linux"
+))]
+mod neon32;
 #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
 mod rvv;
 #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
@@ -98,6 +105,15 @@ impl X86FeatureSet {
 /// The strongest backend compiled in and supported by this CPU.
 pub fn strongest_backend() -> SimdBackend {
     if cfg!(all(feature = "neon", target_arch = "aarch64")) {
+        return SimdBackend::Neon;
+    }
+    #[cfg(all(
+        feature = "neon",
+        feature = "std",
+        target_arch = "arm",
+        target_os = "linux"
+    ))]
+    if neon32::available() {
         return SimdBackend::Neon;
     }
     #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
@@ -239,7 +255,22 @@ pub fn box2_row(top: &[u8], bottom: &[u8], dst: &mut [u8], width: usize) -> Simd
     let (top, bottom, dst) = (&top[..width * 2], &bottom[..width * 2], &mut dst[..width]);
     #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
     let outcome = rvv::box2_row(top, bottom, dst, width);
-    #[cfg(not(all(feature = "rvv", target_arch = "riscv64", target_os = "linux")))]
+    #[cfg(all(
+        feature = "neon",
+        feature = "std",
+        target_arch = "arm",
+        target_os = "linux"
+    ))]
+    let outcome = neon32::box2_row(top, bottom, dst, width);
+    #[cfg(not(any(
+        all(feature = "rvv", target_arch = "riscv64", target_os = "linux"),
+        all(
+            feature = "neon",
+            feature = "std",
+            target_arch = "arm",
+            target_os = "linux"
+        )
+    )))]
     let outcome = leaf!(box2_row(top, bottom, dst, width));
     finish(outcome, width, |d, n| {
         scalar::box2_row(&top[d * 2..], &bottom[d * 2..], &mut dst[d..], n)

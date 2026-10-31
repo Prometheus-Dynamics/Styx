@@ -119,6 +119,15 @@ user; they do not block the tag unless the user says so.
       against scalar (guard bytes, odd widths), on hardware or QEMU, in the gate (an armv7
       lane like the riscv one). armv7 NEON intrinsics are unstable on stable Rust: inline
       assembly, as for RVV. *Blocked by:* nothing (timing on Flame and the K230D: boards).
+      *Progress:* the armv7 lane is in the gate; `box2_row` (the luma pyramid's downscale, the
+      largest Styx cost in Eidos's Flame profile) has RVV and armv7 NEON leaves.
+- [ ] **RV1106: pyramid levels from the ISP.** *Why:* Eidos on Flame spends the most Styx time
+      on the CPU pyramid downscale; the K230 makes scaled outputs in its ISP. *Done when:* the
+      RV1106 rkisp's second output feeds `CompanionKind::Pyramid` like the PiSP's output 1: the
+      selfpath's scaler for any level, or the vendor driver's 4x4/8x8 sampling outputs
+      (mainpath/bypasspath) for the lower ones, whichever the BSP exposes, in luma (GREY) or
+      NV12's Y plane at 256-byte strides; the CPU `box2_row` stays the fallback. *Blocked by:*
+      a Flame board and its BSP (which streams exist and their formats).
 - [ ] **Flame (RV1106G2): bring-up.** *Why:* the Flame board. *Done when:* the RV1106's rkisp
       generation (confirm in its BSP), rkcif graph and rkvenc encoder run the OV9782 within
       the RV1106G2's memory, with the CPU fallbacks. *Blocked by:* a Flame board and its BSP.
