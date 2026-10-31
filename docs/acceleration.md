@@ -63,18 +63,18 @@ The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`.
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
-| BGR ↔ RGB (24-bit) | pass | pass | pass | gap | gap | gap |
-| BGRA ↔ RGBA (32-bit) | pass | pass | pass | gap | gap | gap |
-| XRGB32 → RGB24 | pass | pass | pass | gap | gap | gap |
-| RGB → luma | pass | pass | pass | gap | gap | gap |
-| RGB24 → RGBA | pass | pass | pass | gap | gap | gap |
-| GREY → RGB24 | pass | pass | pass | gap | gap | gap |
-| Y16 → RGB24 | pass | pass | pass | gap | gap | gap |
-| RGB48 → RGB24 | pass | pass | pass | gap | gap | gap |
-| YUYV → luma | pass | pass | pass | gap | gap | gap |
+| BGR ↔ RGB (24-bit) | pass | pass | pass | pass | pass | gap |
+| BGRA ↔ RGBA (32-bit) | pass | pass | pass | pass | pass | gap |
+| XRGB32 → RGB24 | pass | pass | pass | pass | pass | gap |
+| RGB → luma | pass | pass | pass | pass | pass | gap |
+| RGB24 → RGBA | pass | pass | pass | pass | pass | gap |
+| GREY → RGB24 | pass | pass | pass | pass | pass | gap |
+| Y16 → RGB24 | pass | pass | pass | pass | pass | gap |
+| RGB48 → RGB24 | pass | pass | pass | pass | pass | gap |
+| YUYV → luma | pass | pass | pass | pass | pass | gap |
 | 2x2 box (luma pyramid) | pass | pass | pass | pass | pass | pass |
-| Row reverse (mirror) | pass | pass | pass | gap | gap | gap |
-| 8x8 transpose (90° rotation) | pass | pass | pass | gap | gap | gap |
+| Row reverse (mirror) | pass | pass | pass | pass | pass | gap |
+| 8x8 transpose (90° rotation) | pass | pass | pass | pass | pass | gap |
 
 ### Codec conversions (`styx-codec` raw decoders)
 
@@ -134,9 +134,9 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | scalar | 43 | 0 | 0 |
 | x86 | 35 | 7 | 1 |
 | NEON64 | 36 | 7 | 0 |
-| NEON32 | 4 | 38 | 1 |
-| RVV | 1 | 42 | 0 |
+| NEON32 | 15 | 27 | 1 |
+| RVV | 12 | 31 | 0 |
 | GPU | 18 | 23 | 2 |
-| **all** | **137** | **117** | **4** |
+| **all** | **159** | **95** | **4** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.

@@ -132,6 +132,29 @@ pub fn strongest_backend() -> SimdBackend {
     }
 }
 
+/// Whether 32-bit Arm NEON leaves run on this CPU (always false on other targets).
+pub fn has_neon32() -> bool {
+    #[cfg(all(
+        feature = "neon",
+        feature = "std",
+        target_arch = "arm",
+        target_os = "linux"
+    ))]
+    if neon32::available() {
+        return true;
+    }
+    false
+}
+
+/// Whether RISC-V vector leaves run on this CPU (always false on other targets).
+pub fn has_rvv() -> bool {
+    #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+    if rvv::available() {
+        return true;
+    }
+    false
+}
+
 /// The first compiled-in backend leaf's result: `Some((backend, pixels done))` when it handled a
 /// prefix of the row, `None` when no leaf applies (unsupported CPU, row too short).
 macro_rules! leaf {
@@ -145,6 +168,19 @@ macro_rules! leaf {
         #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
         {
             outcome = x86::$name($($arg),*);
+        }
+        #[cfg(all(
+            feature = "neon",
+            feature = "std",
+            target_arch = "arm",
+            target_os = "linux"
+        ))]
+        {
+            outcome = neon32::$name($($arg),*);
+        }
+        #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+        {
+            outcome = rvv::$name($($arg),*);
         }
         outcome
     }};
@@ -253,24 +289,6 @@ pub fn yuyv_luma_row(src: &[u8], dst: &mut [u8], width: usize) -> SimdBackend {
 /// 2x2 box average of two rows into `width` outputs.
 pub fn box2_row(top: &[u8], bottom: &[u8], dst: &mut [u8], width: usize) -> SimdBackend {
     let (top, bottom, dst) = (&top[..width * 2], &bottom[..width * 2], &mut dst[..width]);
-    #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
-    let outcome = rvv::box2_row(top, bottom, dst, width);
-    #[cfg(all(
-        feature = "neon",
-        feature = "std",
-        target_arch = "arm",
-        target_os = "linux"
-    ))]
-    let outcome = neon32::box2_row(top, bottom, dst, width);
-    #[cfg(not(any(
-        all(feature = "rvv", target_arch = "riscv64", target_os = "linux"),
-        all(
-            feature = "neon",
-            feature = "std",
-            target_arch = "arm",
-            target_os = "linux"
-        )
-    )))]
     let outcome = leaf!(box2_row(top, bottom, dst, width));
     finish(outcome, width, |d, n| {
         scalar::box2_row(&top[d * 2..], &bottom[d * 2..], &mut dst[d..], n)
@@ -289,6 +307,19 @@ pub fn reverse_row(src: &[u8], dst: &mut [u8], width: usize, bpp: usize) -> Simd
     #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
     {
         outcome = x86::reverse_row(src, dst, width, bpp);
+    }
+    #[cfg(all(
+        feature = "neon",
+        feature = "std",
+        target_arch = "arm",
+        target_os = "linux"
+    ))]
+    {
+        outcome = neon32::reverse_row(src, dst, width, bpp);
+    }
+    #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+    {
+        outcome = rvv::reverse_row(src, dst, width, bpp);
     }
     // The leaves reverse the source pixels in `done`; finish those before and after it.
     let (backend, done) = outcome.unwrap_or((SimdBackend::Scalar, 0..0));
@@ -337,6 +368,19 @@ fn transpose_tile_leaf(bpp: usize) -> (SimdBackend, TransposeTile) {
     }
     #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
     if let Some(leaf) = x86::transpose_tile(bpp) {
+        return leaf;
+    }
+    #[cfg(all(
+        feature = "neon",
+        feature = "std",
+        target_arch = "arm",
+        target_os = "linux"
+    ))]
+    if let Some(leaf) = neon32::transpose_tile(bpp) {
+        return leaf;
+    }
+    #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+    if let Some(leaf) = rvv::transpose_tile(bpp) {
         return leaf;
     }
     let tile: TransposeTile = match bpp {

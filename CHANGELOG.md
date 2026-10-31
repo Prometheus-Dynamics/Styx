@@ -8,10 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
-- **armv7 NEON `box2_row`** (`styx_core::simd`, 32-bit Arm Linux): the 2x2 box downscale the
-  luma pyramid uses, 16 outputs a step in NEON when the CPU reports it (`AT_HWCAP`), the same
-  result as scalar; `strongest_backend` reports `Neon` there. Conformance-tested in the armv7
-  lane (QEMU Cortex-A7).
+- **armv7 NEON and RVV leaves for every `styx_core::simd` kernel**: the channel swizzles, luma,
+  grey and RGB48 conversions, YUYV luma, the 2x2 box downscale of the luma pyramid, row
+  reversal and the 8x8 tile transposes of the rotations run in NEON on 32-bit Arm Linux and in
+  RVV 1.0 on riscv64 Linux when the CPU reports them (`AT_HWCAP`), with the scalar result
+  exactly; `has_neon32()` and `has_rvv()` say whether they run. Conformance-tested in the
+  armv7 lane (QEMU Cortex-A7) and the riscv lane (QEMU, VLEN 128; also checked at 256 and
+  512). The acceleration matrix (docs/acceleration.md) lists every stage against every backend.
 
 - **Native V4L2 memory-to-memory codecs** (`styx-codec` feature `codec-v4l2m2m`, facade
   `codec-v4l2m2m`, Linux): `V4l2M2mEncoder` (stateful hardware encoders; bit rate, GOP and

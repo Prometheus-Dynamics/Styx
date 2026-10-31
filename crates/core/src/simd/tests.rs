@@ -642,26 +642,114 @@ fn box2_leaf(name: &str, leaf: impl Fn(&[u8], &[u8], &mut [u8], usize) -> usize)
     }
 }
 
+/// Every row and tile leaf of a run-time-detected backend module (`neon32`, `rvv`) against
+/// the oracle; `$backend` is the one it reports.
+#[allow(unused_macros)]
+macro_rules! detected_leaves {
+    ($m:ident, $backend:expr) => {
+        let done = |r: Option<(SimdBackend, usize)>| {
+            r.map_or(0, |(b, n)| {
+                assert_eq!(b, $backend);
+                n
+            })
+        };
+        check_row(
+            "swap_rb24",
+            3,
+            3,
+            |s, d, w| done($m::swap_rb24_row(s, d, w)),
+            scalar::swap_rb24_row,
+        );
+        check_row(
+            "swap_rb32",
+            4,
+            4,
+            |s, d, w| done($m::swap_rb32_row(s, d, w)),
+            scalar::swap_rb32_row,
+        );
+        for swap in [false, true] {
+            check_row(
+                "x32",
+                4,
+                3,
+                |s, d, w| done($m::x32_to_rgb24_row(s, d, w, swap)),
+                |s, d, w| scalar::x32_to_rgb24_row(s, d, w, swap),
+            );
+            check_row(
+                "rgb48",
+                6,
+                3,
+                |s, d, w| done($m::rgb48le_to_rgb24_row(s, d, w, swap)),
+                |s, d, w| scalar::rgb48le_to_rgb24_row(s, d, w, swap),
+            );
+        }
+        for layout in LAYOUTS {
+            check_row(
+                "luma",
+                layout.bytes_per_pixel(),
+                1,
+                |s, d, w| done($m::rgb_to_luma_row(s, d, w, layout)),
+                |s, d, w| scalar::rgb_to_luma_row(s, d, w, layout),
+            );
+        }
+        check_row(
+            "rgba",
+            3,
+            4,
+            |s, d, w| done($m::rgb24_to_rgba_row(s, d, w)),
+            scalar::rgb24_to_rgba_row,
+        );
+        check_row(
+            "gray8",
+            1,
+            3,
+            |s, d, w| done($m::gray8_to_rgb24_row(s, d, w)),
+            scalar::gray8_to_rgb24_row,
+        );
+        check_row(
+            "gray16",
+            2,
+            3,
+            |s, d, w| done($m::gray16le_to_rgb24_row(s, d, w)),
+            scalar::gray16le_to_rgb24_row,
+        );
+        check_row(
+            "yuyv",
+            2,
+            1,
+            |s, d, w| done($m::yuyv_luma_row(s, d, w)),
+            scalar::yuyv_luma_row,
+        );
+        for bpp in 1..=4 {
+            check_row(
+                "reverse",
+                bpp,
+                bpp,
+                |s, d, w| match $m::reverse_row(s, d, w, bpp) {
+                    Some((_, range)) => finish_reverse(s, d, w, bpp, range),
+                    None => finish_reverse(s, d, w, bpp, 0..0),
+                },
+                |s, d, w| scalar::reverse_row(s, d, w, bpp),
+            );
+            let (backend, tile) = $m::transpose_tile(bpp).expect("a tile leaf");
+            assert_eq!(backend, $backend);
+            check_tile(stringify!($m), bpp, tile);
+        }
+        box2_leaf("box2", |t, b, d, w| done($m::box2_row(t, b, d, w)));
+        // Saturated input: the widest sum (4 * 255 + 2) narrows back to 255.
+        let row = vec![255u8; 2 * 300];
+        let mut all = vec![0u8; 300];
+        assert_eq!(box2_row(&row, &row, &mut all, 300), $backend);
+        assert!(all.iter().all(|&b| b == 255));
+        assert_eq!(strongest_backend(), $backend);
+    };
+}
+
 #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
 #[test]
 fn rvv_leaves_match_scalar() {
-    assert!(rvv::available(), "the riscv gate runs QEMU with v=true");
-    box2_leaf("box2 rvv", |t, b, d, w| {
-        rvv::box2_row(t, b, d, w).map_or(0, |(_, done)| done)
-    });
-    // Saturated input: the widest sum (4 * 255 + 2) narrows back to 255.
-    let row = vec![255u8; 2 * 300];
-    let mut got = vec![GUARD; 300 + 64];
-    assert_eq!(
-        rvv::box2_row(&row, &row, &mut got, 300),
-        Some((SimdBackend::Rvv, 300))
-    );
-    assert!(got[..300].iter().all(|&b| b == 255));
-    assert!(
-        got[300..].iter().all(|&b| b == GUARD),
-        "nothing past the row"
-    );
-    assert_eq!(strongest_backend(), SimdBackend::Rvv);
+    assert!(has_rvv(), "the riscv gate runs QEMU with v=true");
+    detected_leaves!(rvv, SimdBackend::Rvv);
 }
 
 #[cfg(all(
@@ -672,28 +760,6 @@ fn rvv_leaves_match_scalar() {
 ))]
 #[test]
 fn neon32_leaves_match_scalar() {
-    assert!(
-        neon32::available(),
-        "the armv7 gate runs QEMU on a Cortex-A7"
-    );
-    box2_leaf("box2 neon32", |t, b, d, w| {
-        neon32::box2_row(t, b, d, w).map_or(0, |(_, done)| done)
-    });
-    // Saturated input: the widest sum (4 * 255 + 2) narrows back to 255.
-    let row = vec![255u8; 2 * 300];
-    let mut got = vec![GUARD; 300 + 64];
-    assert_eq!(
-        neon32::box2_row(&row, &row, &mut got, 300),
-        Some((SimdBackend::Neon, 288))
-    );
-    assert!(got[..288].iter().all(|&b| b == 255));
-    assert!(
-        got[288..].iter().all(|&b| b == GUARD),
-        "nothing past the steps"
-    );
-    // The dispatcher finishes the tail.
-    let mut all = vec![0u8; 300];
-    assert_eq!(box2_row(&row, &row, &mut all, 300), SimdBackend::Neon);
-    assert!(all.iter().all(|&b| b == 255));
-    assert_eq!(strongest_backend(), SimdBackend::Neon);
+    assert!(has_neon32(), "the armv7 gate runs QEMU on a Cortex-A7");
+    detected_leaves!(neon32, SimdBackend::Neon);
 }
