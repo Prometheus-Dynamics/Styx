@@ -7,27 +7,32 @@ box (OV9782 1280x800) unless stated.
 
 ## Next release (3.0.0)
 
-Everything that goes into 3.0: the 2026-10-27 feature freeze plus its last addition, hardware
+3.0.0 confirmed by the user, tagged when this whole push is done. Everything that goes into 3.0: the 2026-10-27 feature freeze plus its last addition, hardware
 support on every board. Nothing else is added. The backlog below this section is not for 3.0.
 Each item: **what**, **why**, **done when**, **blocked by**. Accelerators are chosen through
 plain `StyxConfig` knobs per device (HeliOS sets them), with a default per platform and a CPU
 fallback for each; CPU SIMD (NEON, AVX2, RVV) stays detected, as it changes no output.
+No half implementations: every accelerator and SIMD path is complete wherever the hardware
+has it, with a CPU fallback and a conformance test. **Held** and **paused** items wait for the
+user; they do not block the tag unless the user says so.
 
 ### 1. Freeze items still open
-- [ ] **Anti-flicker verified at 120 fps.** *Why:* AE chased 100 Hz flicker at 120 fps under
+- [ ] **Anti-flicker verified at 120 fps** (paused: bench tests paused by the user). *Why:* AE chased 100 Hz flicker at 120 fps under
       mains lamps. *Done when:* `flicker_check` on the CM5/Raze under a 50 Hz lamp at 120 fps:
       AE locks and the output frame-to-frame spread stays under 5% (flicker avoidance and
       deflicker on, the defaults). *Blocked by:* a mains lamp at the bench in a Raze slot.
-- [ ] **YUYV no-frames fallback, with the cause in the error.** *Why:* a UVC camera that
+- [ ] **YUYV no-frames fallback, with the cause in the error** (paused: bench tests paused). *Why:* a UVC camera that
       negotiates YUYV and delivers nothing hangs a client instead of failing over to MJPEG.
       *Done when:* the C270 on the CM5 in a YUYV mode it cannot sustain falls back to MJPEG
       and the error names the cause (bandwidth / no frames). *Blocked by:* the C270
       plugged back in.
-- [ ] **Typed control-menu entry, only if needed.** *Why:* menu controls are integers with
-      labels; a typed entry was frozen in for a consumer that needs it. *Done when:* a
-      consumer needs it and it ships, or it is cut. No consumer has needed it.
-      *Blocked by:* a user decision (cut or keep).
-- [ ] **OV9782 tuning of our own (held).** *Why:* the imported tuning has an identity colour
+- [ ] **Typed control-menu entry (kept: user decision).** *Why:* menu controls are integers with
+      labels; HeliOS's camera settings will show typed menu entries. *Done when:* every menu
+      control (V4L2, UVC, native, camera service) reports its entries as typed values (named
+      items and integer menus) through the control API, set and read back by entry, with
+      tests per backend, and HeliOS's UI shows them (HeliOS wires the UI once the API is
+      announced). *Blocked by:* nothing.
+- [ ] **OV9782 tuning of our own (held until the user has a chart).** *Why:* the imported tuning has an identity colour
       matrix. *Done when:* a `styx-tune` session (ColorChecker, 3-5 lights 2700-6500 K)
       produces the TOML and colour error drops against the chart. *Blocked by:* the user's
       ColorChecker kit and time.
@@ -64,19 +69,17 @@ fallback for each; CPU SIMD (NEON, AVX2, RVV) stays detected, as it changes no o
       1280x800 at 30 fps through `soft_worker` with 3A converged; `grep isa /proc/cpuinfo`
       shows `v` and `SimdBackend::Rvv` is reported; CPU per frame and memory recorded.
       *Blocked by:* a K230D board and Gaia's image (Linux-only SDK on the big core, option A).
-- [ ] **K230D: hardware ISP as a second backend (scoped, not built).** *Why:* the ISP8000 frees
-      the vision core and its scaled channels make pyramid levels for free; the RVV software
-      ISP (above) stays the written path, and HeliOS picks the backend per device through the
-      ISP knob. *Scope:* through Canaan's `isp_media_server` its 3A and tuning are the
-      vendor's (no OV9782 tuning). Running our own 3A on it is possible in principle: the
-      open `vvcam` kernel driver only passes register reads and writes through, and the
-      ISP8000's base register map matches mainline rkisp1, so Styx would program the ISP and
-      read its statistics itself (no vendor parameter/statistics uAPI exists as on rkisp).
-      *Done when:* the user decides who owns the OV9782 picture; then either the
-      `isp_media_server` path (`pyramid: 3` from the scaled channels, 1/8 from the smallest,
-      within a stated tolerance of the box filter) or our own register programming through
-      `vvcam`, with 3A converged on the board. *Blocked by:* a user decision (vendor or our
-      picture), then a K230D board.
+- [ ] **K230D: the ISP8000 with our own 3A (user decision).** *Why:* the hardware ISP frees the
+      vision core and its scaled channels make pyramid levels, with our 3A and tuning on the
+      OV9782; the RVV software ISP is the fallback backend (the ISP knob picks). The open
+      `vvcam` kernel driver only passes register reads and writes through and the ISP8000's
+      base register map matches mainline rkisp1, so Styx programs the ISP and reads its
+      statistics itself, without Canaan's `isp_media_server`. *Done when:* the OV9782 streams
+      through the ISP8000 at 1280x800 30 fps with Styx's 3A converged; `pyramid: 3` comes from
+      the scaled channels (1/8 from the smallest) within a stated tolerance of the box
+      filter; the register programming has unit tests against recorded register dumps.
+      *Blocked by:* a K230D board (and its register map beyond the rkisp1 base: research
+      from the SDK sources first).
 - [ ] **K230D: VPU encode (H.264/H.265/JPEG).** *Why:* preview and recording without the CPU.
       *Done when:* the M2M backend drives `/dev/video0` (`mvx`) at 1280x800 30 fps with
       dma-buf NV12 input, and the CPU fallback is used without it. *Blocked by:* a K230D
@@ -90,21 +93,32 @@ fallback for each; CPU SIMD (NEON, AVX2, RVV) stays detected, as it changes no o
       LSC, statistics bit depths) confirmed. *Blocked by:* an RK3588S board on the vendor
       6.1 BSP.
 - [ ] **Rockchip: rkcif graph per chip.** *Why:* capture feeds the ISP. *Done when:* each
-      chip's sensor-to-ISP media graph is set up by Styx and streams. *Blocked by:* boards.
+      chip's (RK3588S, RK3576, RK3566, RK3562, RV1106) sensor-to-ISP media graph is set up by
+      Styx and streams. *Blocked by:* boards.
 - [ ] **Rockchip: the ISP's self path for pyramid level 1 and preview.** *Why:* a second
       scaled output costs nothing. *Done when:* level 1 comes from the self path, deeper
       levels from it, within a stated tolerance of the box filter. *Blocked by:* an RK3588S.
-- [ ] **Rockchip: rkisp per chip generation** (RK3566 ISP21, RK3562 ISP32-lite, RK3576: confirm
-      the generation in the BSP's rkisp hardware table). *Why:* the other HVS candidates.
-      *Done when:* each generation's parameter and statistics structures, builder and parser
-      have tests, and the chip streams with 3A converged. *Blocked by:* boards for each chip.
-- [ ] **Rockchip: RGA scale, crop and convert.** *Why:* deeper pyramid levels and preview
+- [ ] **RK3566: rkisp ISP21.** *Why:* user decision, both low-cost chips. *Done when:* the
+      ISP21 parameter and statistics structures, builder and parser have tests, and the chip
+      streams the OV9782 with 3A converged. *Blocked by:* an RK3566 board.
+- [ ] **RK3562: rkisp ISP32-lite.** *Why:* user decision, both low-cost chips. *Done when:* as
+      RK3566, for ISP32-lite. *Blocked by:* an RK3562 board.
+- [ ] **RK3576: rkisp, its generation** (confirm it in the BSP's rkisp hardware table). *Done
+      when:* as RK3566. *Blocked by:* an RK3576 board.
+- [ ] **Rockchip: RGA scale, crop and convert** (RGA3 on RK3588S, RGA2 on the others). *Why:* deeper pyramid levels and preview
       frames without the CPU. *Done when:* the vendor multi-rga driver (ioctls, no librga)
       scales within a stated tolerance, CPU fallback without it. *Blocked by:* a Rockchip board.
-- [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder.** *Why:* preview and recording
+- [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder** (every chip with one). *Why:* preview and recording
       without turbojpeg on the CPU. *Done when:* a `styx-codec` backend over librockchip_mpp
       encodes dma-buf NV12 from the ISP at 1280x800 120 fps, and the CPU fallback is used
       without it. *Blocked by:* a Rockchip board on the vendor BSP (mpp_service).
+- [ ] **SIMD on every CPU the boards have.** *Why:* user decision: no half implementations.
+      *Done when:* every kernel in `styx_core::simd` and `styx_softisp::simd` has a leaf for
+      x86 (SSE2/SSSE3/AVX2), AArch64 NEON, armv7 NEON (Flame's Cortex-A7) and RVV (K230D),
+      or a measured note that the compiler's code is as fast; each leaf conformance-tested
+      against scalar (guard bytes, odd widths), on hardware or QEMU, in the gate (an armv7
+      lane like the riscv one). armv7 NEON intrinsics are unstable on stable Rust: inline
+      assembly, as for RVV. *Blocked by:* nothing (timing on Flame and the K230D: boards).
 - [ ] **Flame (RV1106G2): bring-up.** *Why:* the Flame board. *Done when:* the RV1106's rkisp
       generation (confirm in its BSP), rkcif graph and rkvenc encoder run the OV9782 within
       the RV1106G2's memory, with the CPU fallbacks. *Blocked by:* a Flame board and its BSP.
@@ -118,13 +132,14 @@ fallback for each; CPU SIMD (NEON, AVX2, RVV) stays detected, as it changes no o
       listed in the CHANGELOG with its replacement, and HeliOS, PhotonVision and
       photon-image-modifier build against it. *Blocked by:* nothing.
 - [ ] **Version 3.0.0.** *Why:* the release. *Done when:* every crate is 3.0.0 and the
-      intra-workspace versions match. *Blocked by:* the user calling the release.
+      intra-workspace versions match. *Blocked by:* every other open item here except the held
+      and paused ones (the user confirmed 3.0.0, tagged when the push is done).
 - [ ] **CHANGELOG.** *Done when:* Unreleased becomes 3.0.0 with the date and a migration
       section. *Blocked by:* the version item.
 - [ ] **Gates at the release rev.** *Done when:* `scripts/gate.sh` (riscv lane included) and the
       Raze device sweep pass at the tagged rev. *Blocked by:* a Raze slot.
 - [ ] **Tag and announce.** *Done when:* `v3.0.0` is tagged on main and pushed, and HeliOS,
-      Eidos and PhotonVision are told the rev. *Blocked by:* the user calling the release.
+      Eidos and PhotonVision are told the rev. *Blocked by:* the version item.
 
 ## Done
 
