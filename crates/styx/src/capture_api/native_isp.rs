@@ -406,7 +406,8 @@ pub(super) fn start_processed(
     let worker_error = Arc::new(Mutex::new(None));
     let werr = Arc::clone(&worker_error);
     let send_timeout = Duration::from_millis(capture.queue_send_timeout_ms);
-    let timeout = Duration::from_secs(2);
+    // A longer stall timeout (a slow sensor, a simulated scene) holds here too.
+    let timeout = Duration::from_millis(capture.reconnect.stall_timeout_ms.max(2_000));
     let worker_mode = mode.clone();
     let still_ctx = Arc::new(still_process::StillContext {
         kind,

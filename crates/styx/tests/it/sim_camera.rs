@@ -157,17 +157,21 @@ fn a_gltf_scene_writes_each_frames_truth() {
         truth.display()
     ))
     .unwrap();
-    // The scene renders on the CPU: on a loaded machine a frame can take longer than the stall
-    // timeout, and each restart would throw the frames in progress away.
-    let config = styx::capture_api::StyxConfig::default()
-        .capture_reconnect(styx::capture_api::ReconnectPolicy::disabled());
+    // The scene renders on the CPU: its first frame takes about 2 s in a debug build, longer on
+    // a loaded machine, which the default stall timeout takes for a dead camera.
+    let config = styx::capture_api::StyxConfig::default().capture_reconnect(
+        styx::capture_api::ReconnectPolicy {
+            stall_timeout_ms: 60_000,
+            ..Default::default()
+        },
+    );
     let plan = styx::planner::plan_frames(&device, &Frames::gray().size(1280, 800).fps(30))
         .unwrap()
         .config(config);
     let mut frames = plan.start().unwrap();
     let mut sequences = Vec::new();
     for _ in 0..10 {
-        if let RecvOutcome::Data(f) = frames.next_frame(Duration::from_secs(3)) {
+        if let RecvOutcome::Data(f) = frames.next_frame(Duration::from_secs(20)) {
             sequences.push(f.meta().native().map(|n| n.sequence).unwrap());
         }
     }
