@@ -3,6 +3,8 @@
 
 mod common;
 
+#[cfg(feature = "daedalus")]
+mod daedalus;
 mod dmabuf;
 mod equivalence;
 mod quality;

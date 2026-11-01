@@ -76,11 +76,21 @@ pub enum DeviceSelect {
     Any,
 }
 
+/// How a frame's commands reach the GPU.
+pub(crate) enum Submit {
+    /// The context's own device and queue: begun, submitted and waited for here.
+    Own(Mutex<vk::Queue>),
+    /// Daedalus's device: recorded into its command buffer and submitted on its queue
+    /// (`GpuContextHandle::submit_raw`). Holding the handle keeps the device alive.
+    #[cfg(feature = "daedalus")]
+    Daedalus(daedalus_gpu::GpuContextHandle),
+}
+
 pub(crate) struct Inner {
     _entry: ash::Entry,
     pub instance: ash::Instance,
     pub device: ash::Device,
-    pub queue: Mutex<vk::Queue>,
+    pub submit: Submit,
     pub queue_family: u32,
     pub memory: vk::PhysicalDeviceMemoryProperties,
     pub limits: vk::PhysicalDeviceLimits,
@@ -91,6 +101,10 @@ pub(crate) struct Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
+        // A shared device is its owner's to destroy.
+        if !matches!(self.submit, Submit::Own(_)) {
+            return;
+        }
         // SAFETY: every object made from the device belongs to a `GpuIsp`, which holds an
         // `Arc` of this, so all are gone.
         unsafe {
@@ -301,7 +315,7 @@ impl GpuContext {
                 Ok(Self {
                     inner: Arc::new(Inner {
                         _entry: entry,
-                        queue: Mutex::new(queue),
+                        submit: Submit::Own(Mutex::new(queue)),
                         queue_family: chosen.family,
                         memory,
                         limits,
@@ -351,5 +365,63 @@ impl GpuContext {
     /// The device in use.
     pub fn info(&self) -> &DeviceInfo {
         &self.inner.info
+    }
+
+    /// Run on Daedalus's Vulkan device: frames are recorded into Daedalus's command buffers
+    /// and submitted on its queue, in order with its own work (`GpuContextHandle::submit_raw`),
+    /// and its imported frames are read in place ([`crate::ExternalBuffer::from_frame`]).
+    /// `Unsupported` when the context is not wgpu on Vulkan or its device was made without
+    /// what the shaders need (Vulkan 1.2, `storageBuffer8BitAccess`: Daedalus c572945 enables
+    /// it where supported).
+    #[cfg(feature = "daedalus")]
+    pub fn from_daedalus(gpu: &daedalus_gpu::GpuContextHandle) -> Result<Self, GpuError> {
+        // SAFETY: the handles are only used as the sync contract allows: work is submitted
+        // through `submit_raw`, nothing of Daedalus's is destroyed (`Inner::drop`), and the
+        // handle held in `Submit::Daedalus` keeps them valid.
+        let raw = unsafe { gpu.raw_vulkan() }
+            .ok_or_else(|| GpuError::Unsupported("Daedalus is not on Vulkan".into()))?;
+        if !raw.storage_buffer_8bit {
+            return Err(GpuError::Unsupported(
+                "Daedalus's device was made without storageBuffer8BitAccess".into(),
+            ));
+        }
+        let chosen = candidates(&raw.instance)?
+            .into_iter()
+            .find(|c| c.physical == raw.physical_device)
+            .ok_or_else(|| {
+                GpuError::Unsupported(
+                    "Daedalus's device lacks Vulkan 1.2 or 8-bit storage buffers".into(),
+                )
+            })?;
+        // SAFETY: plain queries of a live instance.
+        let (memory, limits) = unsafe {
+            (
+                raw.instance
+                    .get_physical_device_memory_properties(raw.physical_device),
+                raw.instance
+                    .get_physical_device_properties(raw.physical_device)
+                    .limits,
+            )
+        };
+        let external_fd = chosen
+            .info
+            .dmabuf
+            .then(|| ash::khr::external_memory_fd::Device::new(&raw.instance, &raw.device));
+        // Timestamps on Daedalus's queue family, which need not be the first compute one.
+        let timestamps = raw.timestamp_valid_bits > 0 && raw.timestamp_period_ns > 0.0;
+        Ok(Self {
+            inner: Arc::new(Inner {
+                _entry: raw.entry,
+                submit: Submit::Daedalus(gpu.clone()),
+                queue_family: raw.queue_family_index,
+                memory,
+                limits,
+                external_fd,
+                timestamps,
+                info: chosen.info,
+                device: raw.device,
+                instance: raw.instance,
+            }),
+        })
     }
 }

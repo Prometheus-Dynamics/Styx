@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ash::vk;
 
-use crate::context::Inner;
+use crate::context::{Inner, Submit};
 use crate::error::{GpuError, VkContext};
 
 /// SPIR-V of `shaders/*.comp` (`shaders/build.sh` makes them).
@@ -225,7 +225,8 @@ impl Kernels {
 
     /// Record `plan` into the command buffer, submit it and wait for it; returns the GPU
     /// time (timestamp queries). `stats_buf` is the statistics buffer, `dev_in` the device
-    /// input buffer of `plan.copy_in`.
+    /// input buffer of `plan.copy_in`. On Daedalus's device the commands go into its command
+    /// buffer, on its queue (`GpuContextHandle::submit_raw`).
     pub fn run(
         &self,
         plan: &Plan,
@@ -233,17 +234,58 @@ impl Kernels {
         dev_in: Option<vk::Buffer>,
     ) -> Result<Option<Duration>, GpuError> {
         let d = &self.ctx.device;
-        let cmd = self.cmd;
-        let mut gpu_time = None;
-        // SAFETY: the command buffer is idle (the last frame's fence was waited on); every
-        // handle recorded is alive until the wait below returns.
+        match &self.ctx.submit {
+            Submit::Own(queue) => {
+                let cmd = self.cmd;
+                // SAFETY: the command buffer is idle (the last frame's fence was waited on);
+                // every handle recorded is alive until the wait below returns.
+                unsafe {
+                    d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+                        .ctx("vkResetCommandBuffer")?;
+                    let begin = vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+                    d.begin_command_buffer(cmd, &begin)
+                        .ctx("vkBeginCommandBuffer")?;
+                    self.record(d, cmd, plan, stats_buf, dev_in);
+                    d.end_command_buffer(cmd).ctx("vkEndCommandBuffer")?;
+                    let cmds = [cmd];
+                    let submit = [vk::SubmitInfo::default().command_buffers(&cmds)];
+                    {
+                        let queue = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        d.queue_submit(*queue, &submit, self.fence)
+                            .ctx("vkQueueSubmit")?;
+                    }
+                    let waited = d.wait_for_fences(&[self.fence], true, u64::MAX);
+                    d.reset_fences(&[self.fence]).ctx("vkResetFences")?;
+                    waited.ctx("vkWaitForFences")?;
+                }
+            }
+            #[cfg(feature = "daedalus")]
+            Submit::Daedalus(gpu) => {
+                // SAFETY: the commands use this device's objects and the caller's buffers,
+                // all alive until the ticket's wait below returns.
+                let ticket = unsafe {
+                    gpu.submit_raw(|d, cmd| self.record(d, cmd, plan, stats_buf, dev_in))
+                }
+                .map_err(|e| GpuError::Unsupported(format!("Daedalus submit: {e}")))?;
+                ticket.wait();
+            }
+        }
+        Ok(self.gpu_time())
+    }
+
+    /// The commands of `plan`, recorded into `cmd`.
+    fn record(
+        &self,
+        d: &ash::Device,
+        cmd: vk::CommandBuffer,
+        plan: &Plan,
+        stats_buf: vk::Buffer,
+        dev_in: Option<vk::Buffer>,
+    ) {
+        // SAFETY: `cmd` is recording on this device; every handle in `plan` is alive until the
+        // caller's wait returns.
         unsafe {
-            d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
-                .ctx("vkResetCommandBuffer")?;
-            let begin = vk::CommandBufferBeginInfo::default()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-            d.begin_command_buffer(cmd, &begin)
-                .ctx("vkBeginCommandBuffer")?;
             if let Some(q) = self.queries {
                 d.cmd_reset_query_pool(cmd, q, 0, 2);
                 d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, q, 0);
@@ -335,29 +377,22 @@ impl Kernels {
             if let Some(q) = self.queries {
                 d.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, q, 1);
             }
-            d.end_command_buffer(cmd).ctx("vkEndCommandBuffer")?;
-            let cmds = [cmd];
-            let submit = [vk::SubmitInfo::default().command_buffers(&cmds)];
-            {
-                let queue = self.ctx.queue.lock().unwrap_or_else(|e| e.into_inner());
-                d.queue_submit(*queue, &submit, self.fence)
-                    .ctx("vkQueueSubmit")?;
-            }
-            let waited = d.wait_for_fences(&[self.fence], true, u64::MAX);
-            d.reset_fences(&[self.fence]).ctx("vkResetFences")?;
-            waited.ctx("vkWaitForFences")?;
-            if let Some(q) = self.queries {
-                let mut t = [0u64; 2];
-                if d.get_query_pool_results(q, 0, &mut t, vk::QueryResultFlags::TYPE_64)
-                    .is_ok()
-                {
-                    let ns =
-                        t[1].wrapping_sub(t[0]) as f64 * self.ctx.limits.timestamp_period as f64;
-                    gpu_time = Some(Duration::from_nanos(ns as u64));
-                }
-            }
         }
-        Ok(gpu_time)
+    }
+
+    /// The last frame's GPU time, from its timestamp queries (once it has completed).
+    fn gpu_time(&self) -> Option<Duration> {
+        let q = self.queries?;
+        let mut t = [0u64; 2];
+        // SAFETY: the frame that wrote the queries has completed.
+        unsafe {
+            self.ctx
+                .device
+                .get_query_pool_results(q, 0, &mut t, vk::QueryResultFlags::TYPE_64)
+        }
+        .ok()?;
+        let ns = t[1].wrapping_sub(t[0]) as f64 * self.ctx.limits.timestamp_period as f64;
+        Some(Duration::from_nanos(ns as u64))
     }
 }
 

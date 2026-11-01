@@ -11,21 +11,12 @@ use styx_softisp::{
 
 use crate::context::{DeviceSelect, GpuContext, Inner};
 use crate::error::GpuError;
+use crate::input::Input;
 use crate::kernels::{Kernels, Plan};
 use crate::layout::{self, Layout, OutputKind};
 use crate::memory::{Buffer, Place};
 use crate::params::Tables;
 use crate::stats;
-
-/// A raw frame for [`GpuIsp::process_input`].
-#[derive(Clone, Copy, Debug)]
-pub enum Input<'a> {
-    /// Bytes in memory: copied into a buffer the GPU reads (one `memcpy`).
-    Bytes(&'a [u8]),
-    /// A dma-buf registered with [`GpuIsp::import_dmabuf`], the frame starting `offset` bytes
-    /// in: read by the GPU in place (zero-copy).
-    DmaBuf { id: ImportId, offset: usize },
-}
 
 /// A dma-buf registered with a [`GpuIsp`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -79,6 +70,8 @@ pub struct GpuIsp {
     staging_in: Option<Slot>,
     dev_in: Option<Slot>,
     imports: Vec<Option<Imported>>,
+    /// The set [`Input::Buffer`] frames are read through (same-memory devices).
+    ext_set: Option<vk::DescriptorSet>,
     host_out: Option<Slot>,
     dev_out: Option<Slot>,
     ring: Vec<Slot>,
@@ -155,6 +148,7 @@ impl GpuIsp {
             staging_in: None,
             dev_in: None,
             imports: Vec::new(),
+            ext_set: None,
             host_out: None,
             dev_out: None,
             ring: Vec::new(),
@@ -582,6 +576,33 @@ impl GpuIsp {
                 }
                 (s.buffer.buffer, 0)
             }
+            Input::Buffer(b) => {
+                if b.device != self.ctx.device.handle() {
+                    return Err(GpuError::Unsupported(
+                        "a buffer of another device (make the ISP with GpuContext::from_daedalus)"
+                            .into(),
+                    ));
+                }
+                if b.len < bytes {
+                    return Err(IspError::InputTooShort(format!(
+                        "buffer of {} bytes past the frame's start, frame of {bytes}",
+                        b.len
+                    ))
+                    .into());
+                }
+                if !self.separate {
+                    // One set, pointed at this frame's buffer: the last frame has completed.
+                    let set = match self.ext_set {
+                        Some(set) => {
+                            self.k.write_set(set, &[b.buffer]);
+                            set
+                        }
+                        None => *self.ext_set.insert(self.k.set(1, &[b.buffer])?),
+                    };
+                    return Ok((set, b.offset, None));
+                }
+                (b.buffer, b.offset)
+            }
             Input::DmaBuf { id, offset } => {
                 let imp = self
                     .imports
@@ -620,6 +641,7 @@ impl GpuIsp {
         let len = match input {
             Input::Bytes(data) => data.len(),
             Input::DmaBuf { .. } => usize::MAX,
+            Input::Buffer(b) => b.len,
         };
         if stride < row || len < bytes {
             return Err(IspError::InputTooShort(format!(

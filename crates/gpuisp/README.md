@@ -134,5 +134,16 @@ let mut isp = GpuIsp::with_context(&ctx, format, IspParams::default())?;
 let stats = isp.process(&raw, 1600, Scale::Full, OutputBuffers::Rgb24 { data: &mut rgb, stride: 3840 })?;
 ```
 
+### On Daedalus's device (feature `daedalus`)
+
+`GpuContext::from_daedalus(&gpu)` runs the ISP on the Vulkan device behind a Daedalus
+`GpuContextHandle` (wgpu on Vulkan) instead of a device of its own: each frame's commands are
+recorded into Daedalus's command buffer and submitted on its queue (`submit_raw`, in order with
+the graph's own work; gpuisp never submits on that queue itself), and frames Daedalus imported
+(`GpuFrameImports::import`) are read in place with `Input::Buffer(ExternalBuffer::from_frame(&gpu,
+&frame))`. Daedalus's device must have `storageBuffer8BitAccess` enabled; `from_daedalus`
+refuses one without Vulkan 1.2 or the feature's support. `GpuContext::open` (a device of the
+ISP's own) is unchanged.
+
 `cargo run -p styx-gpuisp --example devices` lists the usable devices; `shaders/build.sh`
 recompiles the SPIR-V after a shader change.

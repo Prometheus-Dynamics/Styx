@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **GPU ISP on Daedalus's device** (`styx-gpuisp` feature `daedalus`):
+  `GpuContext::from_daedalus` records each frame into Daedalus's command buffer and submits on
+  its queue (`GpuContextHandle::submit_raw`, Daedalus 29ae351), and `Input::Buffer`
+  (`ExternalBuffer::from_frame`) reads Daedalus's imported frames in place. `Input` moves to
+  `styx_gpuisp::input` (still re-exported) and gains the variant (breaking).
+
 - **`CaptureConfig::gpu_import_pad`** (`StyxConfig::capture_gpu_import_pad`, default 256):
   the room past the last plane asked for in exported capture buffers (V4L2 sizeimage, PiSP
   and software ISP output buffers, Rockchip sizeimage) so a GPU can import them; was a fixed

@@ -17,6 +17,13 @@ readme = "README.md"
 ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
 styx-softisp.workspace = true
 thiserror = { workspace = true, features = ["std"] }
+daedalus-gpu = { workspace = true, optional = true, features = ["gpu-vulkan-raw"] }
+
+[features]
+default = []
+# Run on Daedalus's Vulkan device (`GpuContext::from_daedalus`) and read its imported frames
+# (`ExternalBuffer::from_frame`): one device for the graph and the ISP, no copy between them.
+daedalus = ["dep:daedalus-gpu"]
 
 [dev-dependencies]
 libc.workspace = true

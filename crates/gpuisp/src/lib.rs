@@ -29,6 +29,7 @@
 
 mod context;
 mod error;
+mod input;
 mod isp;
 mod kernels;
 mod layout;
@@ -38,5 +39,6 @@ mod stats;
 
 pub use context::{DeviceInfo, DeviceKind, DeviceSelect, GpuContext, devices};
 pub use error::GpuError;
-pub use isp::{ExportedFrame, GpuIsp, ImportId, Input};
+pub use input::{ExternalBuffer, Input};
+pub use isp::{ExportedFrame, GpuIsp, ImportId};
 pub use layout::{Layout, OutputKind, Plane};
