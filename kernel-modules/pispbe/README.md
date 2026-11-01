@@ -173,11 +173,13 @@ before taking a job and, when the hardware still holds one, leaves the job on th
 which schedules it. Written, untested on board. Styx refuses `PispOptions::pass_jobs` above 1
 (`unsafe_queued_passes` opts in, as `native-pipeline --pass-jobs` does) until it is.
 
-**Still to check:** the fixed module on the board. It must be built against the image's own
-Buildroot `linux-custom` tree: one built from the kbuild subset was refused ("section size
-must match the kernel's built struct module size"). Run `native-pipeline pisp --fps 120
---frames 600 --no-read --quiet --passes <the three regions> --pass-jobs 4` and watch
-`dmesg -w` for "not safe to queue" (expected: none, and no hang).
+**Fixed module on the board** (CM5, built against the image's own Buildroot `linux-custom`
+tree; one built from the kbuild subset is refused with "section size must match the kernel's
+built struct module size"): `native-pipeline pisp --fps 120 --frames 600 --no-read --quiet
+--passes <the three regions> --pass-jobs 4`, four runs: 0 "not safe to queue" messages, no hang,
+`STREAMOFF` returns. Queued passes now edge out serial ones: 0.251 vs 0.276 ms of pass time per
+frame, capture latency p50 8.53 vs 8.56 ms, CPU 0.1 ms per frame either way. Styx still refuses
+`pass_jobs > 1` by default (`PispOptions::unsafe_queued_passes`): the stock driver is what ships.
 
 **Upstream draft:**
 
@@ -196,7 +198,8 @@ must match the kernel's built struct module size"). Run `native-pipeline pisp --
 > Reproduced on a Raspberry Pi CM5 (rpi-7.2.y, stock driver): four short jobs (three
 > 320x320 regions after each 1280x800 frame) queued per frame at 120 fps log the error 455
 > times in 5 s; with a faster config write the overwritten job's completion was lost and
-> `STREAMOFF` hung.
+> `STREAMOFF` hung. With this change: no error and no hang over four 600-frame runs, and the
+> queued jobs finish sooner than one-at-a-time ones (0.25 vs 0.28 ms per frame).
 
 ## Upstreaming
 
