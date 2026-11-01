@@ -180,6 +180,11 @@ opt-level = 1
 [profile.dev.package.styx-gpuisp]
 opt-level = 1
 
+# The simulated camera renders its frames in real time (at 30 fps in its tests, which a busy
+# machine's unoptimised build misses).
+[profile.dev.package.styx-native]
+opt-level = 1
+
 # What ships (the binaries under tools/ and examples/, the perf smoke): thin LTO across the
 # workspace and its dependencies, one codegen unit, debug line tables stripped. `panic` stays
 # `unwind`: `catch_unwind` is used by the software ISP pool, the codec's parallel decode and the

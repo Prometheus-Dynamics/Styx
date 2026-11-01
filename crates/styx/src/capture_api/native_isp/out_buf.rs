@@ -35,6 +35,11 @@ pub(super) fn returns() -> (Returns, ReturnsRx) {
     styx_core::queue::bounded(RETURNS)
 }
 
+/// Bytes past the frame a GPU importing the dma-buf may read (v3dv rounds storage buffers up
+/// to 256 bytes; a 1280x800 NV12 frame is a whole number of pages, so page rounding alone
+/// leaves none).
+const GPU_PAD: usize = 256;
+
 /// Heaps tried for the buffers, cached ones first.
 const HEAPS: [&str; 2] = ["linux,cma", "system"];
 
@@ -88,7 +93,8 @@ impl OutBuf {
     fn capacity(&self) -> usize {
         match &self.mem {
             Mem::Heap(v) => v.capacity(),
-            Mem::Dma { map, .. } => map.len(),
+            // The padding stays past whatever frame the buffer holds.
+            Mem::Dma { map, .. } => map.len() - GPU_PAD,
         }
     }
 }
@@ -138,7 +144,7 @@ impl Spare {
 
 fn allocate(heap: Option<&DmaHeap>, len: usize) -> OutBuf {
     let dma = heap.and_then(|h| {
-        let buf = h.allocate(len.next_multiple_of(4096).max(4096)).ok()?;
+        let buf = h.allocate((len + GPU_PAD).next_multiple_of(4096)).ok()?;
         let map = buf.map().ok()?;
         Some(Mem::Dma { buf, map })
     });

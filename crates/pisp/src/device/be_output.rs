@@ -100,7 +100,9 @@ impl OutputQueue {
                         got.count
                     )));
                 }
-                let bytes = size.next_multiple_of(4096);
+                // Room past the image for a GPU importing the dma-buf: v3dv rounds storage
+                // buffers up to 256 bytes, and a 1280x800 NV12 image fills whole pages.
+                let bytes = (size + 256).next_multiple_of(4096);
                 let initial = initial.clamp(1, count);
                 let spare_dev = if initial < count {
                     Some(dev.try_clone()?)
