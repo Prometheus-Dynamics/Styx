@@ -157,8 +157,13 @@ fn a_gltf_scene_writes_each_frames_truth() {
         truth.display()
     ))
     .unwrap();
-    let plan =
-        styx::planner::plan_frames(&device, &Frames::gray().size(1280, 800).fps(30)).unwrap();
+    // The scene renders on the CPU: on a loaded machine a frame can take longer than the stall
+    // timeout, and each restart would throw the frames in progress away.
+    let config = styx::capture_api::StyxConfig::default()
+        .capture_reconnect(styx::capture_api::ReconnectPolicy::disabled());
+    let plan = styx::planner::plan_frames(&device, &Frames::gray().size(1280, 800).fps(30))
+        .unwrap()
+        .config(config);
     let mut frames = plan.start().unwrap();
     let mut sequences = Vec::new();
     for _ in 0..10 {
