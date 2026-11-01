@@ -333,7 +333,8 @@ user. Board items get tested on their boards.
       too (455 "not safe" in 5 s). The module now defers a job while the hardware holds one
       (CM5: 0 errors, no hang, 0.251 vs 0.276 ms per frame serial) and exports `queue_safe`;
       Styx allows `pass_jobs` > 1 only then. Upstream draft in `kernel-modules/pispbe/README.md`
-      "Queued jobs", kept there (the user: not filed). Pass buffers are allocated at start
+      "Queued jobs", kept there (the user: not filed). **The patch is carried locally: a kernel
+      bump stops the image build until it is redone.** Pass buffers are allocated at start
       (`PispOptions::pass_buffers`); a camera service client joining with more regions than
       planned restarts the capture (`VIDIOC_CREATE_BUFS` could add them while streaming).
 - [ ] Ship the `pispbe` patch in a device image (kernel patch) and/or send it upstream (draft
