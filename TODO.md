@@ -312,12 +312,10 @@ user; they do not block the tag unless the user says so.
       the OV9782 for the black level at high gain.
 
 ### Performance
-- [ ] **Zero copy: software ISP output into dma-heap buffers.** *Why:* the soft ISP writes
-      NV12/RGB24 into heap `Vec<u8>`s (`soft_worker.rs` `HeapBacking`), so a GPU consumer
-      (Daedalus `GpuFrameImports`) must upload each frame. *Done when:* the output buffers
-      come from the cached `linux,cma`/`system` heap (recycled as now), leases are
-      `FrameResidency::Dmabuf` with `DMA_BUF_IOCTL_SYNC` brackets around the ISP's writes,
-      the allocation test covers the path, and Daedalus imports them on the CM5.
+- [ ] **Zero copy: software ISP output into dma-heap buffers.** Written (`out_buf.rs`:
+      cached `linux,cma`/`system` heap, recycled, write-synced, exported as dma-bufs;
+      `driver_buffers` keeps heap memory). *Left:* an allocation-counting test of the soft
+      worker's frame path, and Daedalus importing the frames on the CM5.
 - [ ] **Zero copy: UVC bulk frames in one payload.** *Why:* the assembler copies every
       payload into a pooled frame (`crates/uvc/src/payload.rs`). Isochronous payloads carry a
       header per packet, so their copy stays (as `uvcvideo`'s). Bulk cameras whose

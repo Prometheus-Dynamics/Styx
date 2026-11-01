@@ -180,7 +180,9 @@ pub struct NativeIspConfig {
     /// 1280x800 frame in 1.9 ms on the CM5). `false` (default): cached dma-heap buffers, read
     /// at memory speed (cache maintenance only when a frame's pixels are read). With the
     /// software ISP this is the raw capture's buffers (the receiver's MMAP buffers cost the
-    /// software ISP 0.6 ms more per 1280x800 frame on the CM5).
+    /// software ISP 0.6 ms more per 1280x800 frame on the CM5), and its outputs (and the
+    /// Rockchip path's fallback copies) in heap memory instead of dma-heap buffers, which a GPU
+    /// or another process imports without a copy.
     pub driver_buffers: bool,
     /// Start CPU access to each cached back end buffer (`DMA_BUF_IOCTL_SYNC`, about 23 µs per
     /// 1280x800 NV12 frame on the CM5) on the capture thread as the frame is leased, so the

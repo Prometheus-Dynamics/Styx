@@ -17,8 +17,9 @@ use styx_pipeline::styx_algo::Tuning;
 
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
+use super::out_buf::{OutBuf, Spare, lease};
 use super::rkisp_lease::RkBuffers;
-use super::soft_worker::{image_bytes, lease, reuse};
+use super::soft_worker::image_bytes;
 use super::{aaa_sample, err, frame_meta, native_aaa};
 use crate::metrics::CaptureMetrics;
 
@@ -39,6 +40,9 @@ pub(super) struct RkispWorker {
     pub(super) live: CaptureMetrics,
     /// The clock the frames are stamped in.
     pub(super) clock: ClockSource,
+    /// Fallback copies into heap memory rather than dma-heap buffers
+    /// (`NativeIspConfig::driver_buffers`).
+    pub(super) driver_buffers: bool,
     /// The camera's controls (set by [`open`]).
     pub(super) controls: Option<styx_native::CameraControls>,
 }
@@ -111,8 +115,9 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
         .name("styx-native-rkisp".into())
         .spawn(move || {
             w.live.register_thread();
-            let (ret_tx, ret_rx) = mpsc::channel::<Vec<u8>>();
-            let mut spare = Vec::new();
+            let (ret_tx, ret_rx) = mpsc::channel::<OutBuf>();
+            let mut spare = Spare::default();
+            let heap = super::out_buf::out_heap(w.driver_buffers);
             let mut direct = RkBuffers::new(&p);
             if direct.is_none() {
                 crate::trace::warn!(backend = "native", "the main path's buffers do not export: copying every frame");
@@ -141,10 +146,12 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
                 let isp_done = styx_core::prelude::CaptureInstant::now();
                 // The driver's buffer itself while enough stay with the driver, else a copy.
                 let leased = !f.output.error && direct.as_ref().is_some_and(RkBuffers::can_lease);
-                let mut buf = Vec::new();
+                let mut buf = None;
                 if !leased {
-                    buf = reuse(&ret_rx, &mut spare, w.keep, len);
-                    let copied = copy_nv12(p.data(&f), size, stride, &mut buf);
+                    let b = buf.insert(spare.take(heap.as_deref(), &ret_rx, w.keep, len));
+                    b.sync_write(true);
+                    let copied = copy_nv12(p.data(&f), size, stride, b.as_mut_slice());
+                    b.sync_write(false);
                     if let Err(e) = p.release(&f) {
                         *w.error.lock() = Some(err(e));
                         break;
@@ -194,6 +201,7 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
                     };
                     l
                 } else {
+                    let Some(buf) = buf else { continue };
                     lease(meta, size, buf, &ret_tx, &w.live)
                 };
                 if deliver(&w.live, &w.tx, lease, "native-rkisp", w.send_timeout) {

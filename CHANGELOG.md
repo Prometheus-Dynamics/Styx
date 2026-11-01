@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Software ISP frames as dma-bufs**: the soft ISP's outputs (main, regions, overview) and
+  the Rockchip path's fallback copies are written into recycled buffers from the cached
+  `linux,cma` (else `system`) dma-heap, bracketed with `DMA_BUF_IOCTL_SYNC`, so consumers
+  (a GPU through Daedalus, another process) import them without a copy.
+  `NativeIspConfig::driver_buffers` keeps them in heap memory.
+
 - **Rockchip ISP frames without a copy** (written, untested on board): the main path's NV12
   buffers are exported once (`IspDevice::export_output`, `RkispPipeline::output_dmabuf`) and
   leased to consumers as dma-bufs, returned to the driver when the lease drops

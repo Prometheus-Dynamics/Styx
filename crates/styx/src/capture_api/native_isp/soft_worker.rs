@@ -1,5 +1,5 @@
-//! The software ISP path's worker: each raw frame through the 3A loop into recycled heap
-//! buffers. With a crop (`OUTPUT_CROP`) the ISP processes only that region of the frame, at
+//! The software ISP path's worker: each raw frame through the 3A loop into recycled output
+//! buffers (dma-bufs from a cached heap: [`super::out_buf`]). With a crop (`OUTPUT_CROP`) the ISP processes only that region of the frame, at
 //! full resolution, and the regions (`NativeIspConfig::regions`, moved by `region_crop(i)`) in
 //! the same pass, each attached as a `CompanionKind::Region` companion; with an overview the
 //! whole frame binned (`NativeIspConfig::overview`), from whose pass the statistics come;
@@ -21,7 +21,8 @@ use styx_softisp::{OutputBuffers, Scale, Window};
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
 use super::super::tunables::MAX_NATIVE_REGIONS;
-use super::{HeapBacking, aaa_sample, err, frame_meta, hold_soft, layouts, native_aaa};
+use super::out_buf::{OutBuf, Spare, lease, row_bytes};
+use super::{aaa_sample, err, frame_meta, hold_soft, layouts, native_aaa};
 use crate::metrics::CaptureMetrics;
 
 /// What the worker needs besides the pipeline.
@@ -53,6 +54,8 @@ pub(super) struct SoftWorker {
     /// Attach each frame's raw frame (`NativeIspConfig::sensor_raw`): 16-bit Bayer, the
     /// sensor's value in the top bits, as the PiSP path hands out (a copy here).
     pub(super) sensor_raw: bool,
+    /// Where output buffers come from (`None`: heap memory; [`super::out_buf::out_heap`]).
+    pub(super) heap: Option<Arc<styx_kernel::dma_heap::DmaHeap>>,
 }
 
 /// `f`'s raw frame as 16-bit Bayer with the sensor's value in the top bits (`BYR2` and
@@ -93,15 +96,6 @@ fn raw16(
     Some(lease)
 }
 
-/// Bytes per row of a `code` image `w` pixels wide in the path's buffers.
-fn row_bytes(code: FourCc, w: u32) -> usize {
-    if code == FourCc::NV12 {
-        w as usize
-    } else {
-        w as usize * 3
-    }
-}
-
 /// Bytes of a `code` image of `w`x`h`.
 pub(super) fn image_bytes(code: FourCc, (w, h): (u32, u32)) -> usize {
     layouts(code, h as usize, row_bytes(code, w))
@@ -127,27 +121,6 @@ fn buffers(code: FourCc, (w, h): (u32, u32), buf: &mut [u8]) -> OutputBuffers<'_
     }
 }
 
-/// A lease of `buf`, a `code` image of `size` with `meta`, recycled through `returns`.
-pub(super) fn lease(
-    mut meta: FrameMeta,
-    size: (u32, u32),
-    buf: Vec<u8>,
-    returns: &mpsc::Sender<Vec<u8>>,
-    live: &CaptureMetrics,
-) -> FrameLease {
-    let code = meta.format.code;
-    let res = Resolution::new(size.0, size.1).expect("non-zero image size");
-    meta.format = MediaFormat::new(code, res, meta.format.color);
-    FrameLease::from_external(
-        meta,
-        layouts(code, size.1 as usize, row_bytes(code, size.0)),
-        Arc::new(live.track(HeapBacking {
-            data: Some(buf),
-            returns: returns.clone(),
-        })),
-    )
-}
-
 /// The software ISP's copies of a frame: raw rows staged out of uncached receiver buffers, and
 /// a GPU ISP's upload and read-back of the frame.
 fn count_isp_copies(p: &mut SoftPipeline, f: &styx_pipeline::device::SoftFrame, out_bytes: usize) {
@@ -160,22 +133,6 @@ fn count_isp_copies(p: &mut SoftPipeline, f: &styx_pipeline::device::SoftFrame, 
     if matches!(soft.engine(), styx_pipeline::IspEngine::Gpu { .. }) {
         copied(CopySite::SoftIsp, out_bytes);
     }
-}
-
-/// A buffer of `len` bytes: one that came back through `returns`, else a new one. At most
-/// `keep` buffers stay spare; more are freed, so frames once held at the same time do not keep
-/// their memory for the rest of the capture.
-pub(super) fn reuse(
-    returns: &mpsc::Receiver<Vec<u8>>,
-    spare: &mut Vec<Vec<u8>>,
-    keep: usize,
-    len: usize,
-) -> Vec<u8> {
-    spare.extend(returns.try_iter());
-    spare.truncate(keep.max(1));
-    let mut b = spare.pop().unwrap_or_default();
-    b.resize(len, 0);
-    b
 }
 
 /// Runs the capture on its own thread until stopped or the queue closes.
@@ -195,15 +152,16 @@ pub(super) fn spawn(
         .name("styx-native-softisp".into())
         .spawn(move || {
             w.live.register_thread();
-            let (ret_tx, ret_rx) = mpsc::channel::<Vec<u8>>();
-            let (ov_tx, ov_rx) = mpsc::channel::<Vec<u8>>();
+            let (ret_tx, ret_rx) = mpsc::channel::<OutBuf>();
+            let (ov_tx, ov_rx) = mpsc::channel::<OutBuf>();
             let mut crop: Option<FrameRect> = None;
-            let (mut spare, mut ov_spare) = (Vec::new(), Vec::new());
-            let mut region_spare: [Vec<Vec<u8>>; MAX_NATIVE_REGIONS] = Default::default();
+            let (mut spare, mut ov_spare) = (Spare::default(), Spare::default());
+            let mut region_spare: [Spare; MAX_NATIVE_REGIONS] = Default::default();
+            let heap = w.heap.as_deref();
             // Each region slot's rectangle, and its buffers coming back.
             let mut regions: [Option<FrameRect>; MAX_NATIVE_REGIONS] = [None; MAX_NATIVE_REGIONS];
             let region_returns: Vec<_> = (0..MAX_NATIVE_REGIONS)
-                .map(|_| mpsc::channel::<Vec<u8>>())
+                .map(|_| mpsc::channel::<OutBuf>())
                 .collect();
             'frames: loop {
                 if w.stop.try_recv().is_ok() {
@@ -224,20 +182,24 @@ pub(super) fn spawn(
                 }
                 w.still.before_frame(&mut p);
                 let size = crop.map_or(frame, |c| (c.width, c.height));
-                let mut buf = reuse(&ret_rx, &mut spare, w.keep, len);
-                let mut ov_buf =
-                    overview.map(|(_, s)| reuse(&ov_rx, &mut ov_spare, w.keep, image_bytes(code, s)));
-                let mut region_bufs: Vec<(usize, FrameRect, Vec<u8>)> = regions
+                let mut buf = spare.take(heap, &ret_rx, w.keep, len);
+                let mut ov_buf = overview
+                    .map(|(_, s)| ov_spare.take(heap, &ov_rx, w.keep, image_bytes(code, s)));
+                let mut region_bufs: Vec<(usize, FrameRect, OutBuf)> = regions
                     .iter()
                     .enumerate()
                     .filter_map(|(k, r)| r.map(|r| (k, r)))
                     .map(|(k, r)| {
                         let bytes = image_bytes(code, (r.width, r.height));
-                        let b = reuse(&region_returns[k].1, &mut region_spare[k], w.keep, bytes);
+                        let b = region_spare[k].take(heap, &region_returns[k].1, w.keep, bytes);
                         (k, r, b)
                     })
                     .collect();
-                let out = buffers(code, size, &mut buf);
+                // The ISP's writes, bracketed for devices reading the dma-bufs.
+                buf.sync_write(true);
+                ov_buf.iter().for_each(|b| b.sync_write(true));
+                region_bufs.iter().for_each(|(_, _, b)| b.sync_write(true));
+                let out = buffers(code, size, buf.as_mut_slice());
                 let window = |c: FrameRect| Window::new(c.x, c.y, c.width, c.height);
                 let target = match (crop, overview, ov_buf.as_mut()) {
                     (None, None, _) if region_bufs.is_empty() => SoftTarget::Frame(w.scale, out),
@@ -245,13 +207,13 @@ pub(super) fn spawn(
                         let c = crop.unwrap_or(FrameRect::new(0, 0, frame.0, frame.1));
                         let mut parts = vec![(window(c), out)];
                         parts.extend(region_bufs.iter_mut().map(|(_, r, b)| {
-                            (window(*r), buffers(code, (r.width, r.height), b))
+                            (window(*r), buffers(code, (r.width, r.height), b.as_mut_slice()))
                         }));
                         SoftTarget::Parts(SoftParts {
                             regions: parts,
                             overview: overview
                                 .zip(ov_buf)
-                                .map(|((f, s), b)| (f, buffers(code, s, b))),
+                                .map(|((f, s), b)| (f, buffers(code, s, b.as_mut_slice()))),
                         })
                     }
                 };
@@ -263,6 +225,9 @@ pub(super) fn spawn(
                         break;
                     }
                 };
+                buf.sync_write(false);
+                ov_buf.iter().for_each(|b| b.sync_write(false));
+                region_bufs.iter().for_each(|(_, _, b)| b.sync_write(false));
                 let isp_done = styx_core::prelude::CaptureInstant::now();
                 count_isp_copies(&mut p, &f, image_bytes(code, size));
                 w.loop_controls.report(&f.output.step.params);

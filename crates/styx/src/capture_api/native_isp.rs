@@ -12,6 +12,7 @@ pub(crate) use ae_controls::{EXPOSURE_MODES, METERING_MODES};
 mod af_controls;
 mod crop_control;
 mod loop_controls;
+mod out_buf;
 mod output_buffers;
 mod pisp_lease;
 mod pisp_regions;
@@ -35,7 +36,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use smallvec::{SmallVec, smallvec};
 use styx_capture::prelude::*;
-use styx_core::prelude::{BackendFrameMeta, ClockConversion, ExternalBacking, NativeFrameMeta};
+use styx_core::prelude::{BackendFrameMeta, ClockConversion, NativeFrameMeta};
 use styx_native::{CameraInfo, NativeCamera, StreamSettings};
 use styx_pipeline::SensorValues;
 use styx_pipeline::device::{
@@ -150,39 +151,6 @@ pub(crate) fn open_for_isp(
 
 fn err(e: impl std::fmt::Display) -> CaptureError {
     CaptureError::Backend(format!("native ISP: {e}"))
-}
-
-/// A heap buffer of the software path, recycled through `returns` when its lease drops.
-struct HeapBacking {
-    data: Option<Vec<u8>>,
-    returns: mpsc::Sender<Vec<u8>>,
-}
-
-impl ExternalBacking for HeapBacking {
-    fn plane_data(&self, _index: usize) -> Option<&[u8]> {
-        self.data.as_deref()
-    }
-
-    fn backing_bytes(&self) -> Option<usize> {
-        self.data.as_ref().map(Vec::len)
-    }
-
-    fn backing_kind(&self) -> &'static str {
-        "softisp_heap"
-    }
-
-    fn host_spans(&self, span: &mut dyn FnMut(usize, usize)) -> bool {
-        let data = self.data.as_deref();
-        data.map(|b| span(b.as_ptr() as usize, b.len())).is_some()
-    }
-}
-
-impl Drop for HeapBacking {
-    fn drop(&mut self) {
-        if let Some(d) = self.data.take() {
-            let _ = self.returns.send(d);
-        }
-    }
 }
 
 /// Plane layouts of a `code` image of `w`x`h` with `stride` bytes per row in one buffer.
@@ -578,6 +546,7 @@ pub(super) fn start_processed(
             config,
             rkisp_worker::RkispWorker {
                 mode: worker_mode,
+                driver_buffers: config.backends.native.driver_buffers,
                 keep: config.backends.native.output_buffers.max(2) as usize,
                 tx,
                 owns_queue,
@@ -658,6 +627,7 @@ pub(super) fn start_processed(
                     clock: timestamp_clock,
                     controls: controls.clone(),
                     sensor_raw: config.backends.native.sensor_raw,
+                    heap: out_buf::out_heap(config.backends.native.driver_buffers),
                 },
             )?;
             (controls, worker)
