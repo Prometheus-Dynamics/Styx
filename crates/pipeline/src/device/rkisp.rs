@@ -244,6 +244,29 @@ impl RkispPipeline {
             .map_or(&[][..], |d| d.output_data(&frame.output))
     }
 
+    /// The main path's buffers.
+    pub fn output_buffers(&self) -> u32 {
+        self.dev.as_ref().map_or(0, IspDevice::output_buffers)
+    }
+
+    /// Main path buffer `index` as a dma-buf and its length, to hand frames out without a
+    /// copy (give each back with [`Self::release_index`] when its consumers are done).
+    pub fn output_dmabuf(&self, index: u32) -> Result<(std::os::fd::OwnedFd, usize)> {
+        let dev = self
+            .dev
+            .as_ref()
+            .ok_or_else(|| PipelineError::Device("not open".into()))?;
+        Ok(dev.export_output(index)?)
+    }
+
+    /// Gives main path buffer `index` back to the ISP.
+    pub fn release_index(&self, index: u32) -> Result<()> {
+        if let Some(d) = &self.dev {
+            d.release_index(index)?;
+        }
+        Ok(())
+    }
+
     /// Gives a frame's buffer back to the ISP.
     pub fn release(&self, frame: &RkispFrame) -> Result<()> {
         if let Some(d) = &self.dev {

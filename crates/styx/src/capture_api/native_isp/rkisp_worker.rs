@@ -1,7 +1,7 @@
-//! The Rockchip ISP path's worker: each main path frame (NV12) copied into a recycled heap
-//! buffer, the 3A loop run on its statistics. The copy keeps the ISP's few buffers moving
-//! while consumers hold frames; handing the driver's buffers out as dma-bufs is the next step
-//! once the path has run on a board.
+//! The Rockchip ISP path's worker: each main path frame (NV12) handed out as the driver's
+//! dma-buf ([`super::rkisp_lease`], no copy) while enough buffers stay with the driver, else
+//! copied into a recycled heap buffer so consumers holding frames never stall the ISP; the 3A
+//! loop runs on its statistics. Written, untested on board.
 
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -17,6 +17,7 @@ use styx_pipeline::styx_algo::Tuning;
 
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
+use super::rkisp_lease::RkBuffers;
 use super::soft_worker::{image_bytes, lease, reuse};
 use super::{aaa_sample, err, frame_meta, native_aaa};
 use crate::metrics::CaptureMetrics;
@@ -112,8 +113,18 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
             w.live.register_thread();
             let (ret_tx, ret_rx) = mpsc::channel::<Vec<u8>>();
             let mut spare = Vec::new();
+            let mut direct = RkBuffers::new(&p);
+            if direct.is_none() {
+                crate::trace::warn!(backend = "native", "the main path's buffers do not export: copying every frame");
+            }
             loop {
                 if w.stop.try_recv().is_ok() {
+                    break;
+                }
+                if let Some(d) = &mut direct
+                    && let Err(e) = d.take_returns(|i| p.release_index(i))
+                {
+                    *w.error.lock() = Some(err(e));
                     break;
                 }
                 if let Some(c) = w.loop_controls.take() {
@@ -128,17 +139,22 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
                     }
                 };
                 let isp_done = styx_core::prelude::CaptureInstant::now();
-                let mut buf = reuse(&ret_rx, &mut spare, w.keep, len);
-                let copied = copy_nv12(p.data(&f), size, stride, &mut buf);
-                if let Err(e) = p.release(&f) {
-                    *w.error.lock() = Some(err(e));
-                    break;
+                // The driver's buffer itself while enough stay with the driver, else a copy.
+                let leased = !f.output.error && direct.as_ref().is_some_and(RkBuffers::can_lease);
+                let mut buf = Vec::new();
+                if !leased {
+                    buf = reuse(&ret_rx, &mut spare, w.keep, len);
+                    let copied = copy_nv12(p.data(&f), size, stride, &mut buf);
+                    if let Err(e) = p.release(&f) {
+                        *w.error.lock() = Some(err(e));
+                        break;
+                    }
+                    if !copied || f.output.error {
+                        w.live.isp_skipped();
+                        continue;
+                    }
+                    styx_core::metrics::copied(styx_core::metrics::CopySite::Capture, len);
                 }
-                if !copied || f.output.error {
-                    w.live.isp_skipped();
-                    continue;
-                }
-                styx_core::metrics::copied(styx_core::metrics::CopySite::Capture, len);
                 let step = p.algorithms().step();
                 let params = step.params.clone();
                 let (ae, request) = ((params.ae.total_exposure, params.ae.locked), step.sensor);
@@ -162,7 +178,24 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
                 // the still runner times it out.
                 w.still
                     .after_frame(&mut p, &f.sensor, (f.request_lands, request), ae, None);
-                let lease = lease(meta, size, buf, &ret_tx, &w.live);
+                let lease = if leased {
+                    let index = f.output.index;
+                    let l = direct.as_mut().and_then(|d| {
+                        d.lease(meta, index, (size, stride as usize), &w.live)
+                    });
+                    let Some(l) = l else {
+                        // The buffer is smaller than the format says: back to the driver.
+                        if let Err(e) = p.release(&f) {
+                            *w.error.lock() = Some(err(e));
+                            break;
+                        }
+                        w.live.isp_skipped();
+                        continue;
+                    };
+                    l
+                } else {
+                    lease(meta, size, buf, &ret_tx, &w.live)
+                };
                 if deliver(&w.live, &w.tx, lease, "native-rkisp", w.send_timeout) {
                     break;
                 }

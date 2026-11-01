@@ -312,6 +312,21 @@ user; they do not block the tag unless the user says so.
       the OV9782 for the black level at high gain.
 
 ### Performance
+- [ ] **Zero copy: software ISP output into dma-heap buffers.** *Why:* the soft ISP writes
+      NV12/RGB24 into heap `Vec<u8>`s (`soft_worker.rs` `HeapBacking`), so a GPU consumer
+      (Daedalus `GpuFrameImports`) must upload each frame. *Done when:* the output buffers
+      come from the cached `linux,cma`/`system` heap (recycled as now), leases are
+      `FrameResidency::Dmabuf` with `DMA_BUF_IOCTL_SYNC` brackets around the ISP's writes,
+      the allocation test covers the path, and Daedalus imports them on the CM5.
+- [ ] **Zero copy: UVC bulk frames in one payload.** *Why:* the assembler copies every
+      payload into a pooled frame (`crates/uvc/src/payload.rs`). Isochronous payloads carry a
+      header per packet, so their copy stays (as `uvcvideo`'s). Bulk cameras whose
+      `dwMaxPayloadTransferSize` covers the frame deliver header + frame in one URB: lease the
+      URB slot (offset past the header) while the ring keeps spare slots, submit another.
+      *Done when:* a bulk camera's frames reach consumers with `CopySite::Capture` at zero.
+- [x] **Zero copy: rkisp main path handed out as dma-bufs** (written, untested on board):
+      `rkisp_lease.rs`; the copy remains as the fallback when fewer than two buffers would
+      stay with the driver.
 - [x] PiSP: 0.12 ms/frame was the `pispbe` driver writing its whole config per job with a
       barrier per word. Patched driver (`kernel-modules/pispbe`: relaxed MMIO, only changed
       words, cached config copy): 117 → 8 µs per job, Styx API 0.35 → 0.23-0.26 ms/frame at

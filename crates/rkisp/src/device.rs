@@ -382,7 +382,35 @@ impl IspDevice {
 
     /// Gives an output frame back to the driver.
     pub fn release(&self, frame: &OutputFrame) -> Result<()> {
-        Ok(self.output.queue(frame.index, &[])?)
+        self.release_index(frame.index)
+    }
+
+    /// Gives output buffer `index` back to the driver (a frame handed out by its dma-buf,
+    /// returned when its consumers are done).
+    pub fn release_index(&self, index: u32) -> Result<()> {
+        Ok(self.output.queue(index, &[])?)
+    }
+
+    /// The main path's buffers.
+    pub fn output_buffers(&self) -> u32 {
+        self.output.maps.len() as u32
+    }
+
+    /// Output buffer `index` as a dma-buf (`VIDIOC_EXPBUF`; NV12 in one plane, the chroma
+    /// after [`Self::output_size`]'s height of rows at [`Self::stride`]), and its length.
+    pub fn export_output(&self, index: u32) -> Result<(std::os::fd::OwnedFd, usize)> {
+        let len = self
+            .output
+            .maps
+            .get(index as usize)
+            .and_then(|m| m.first())
+            .map(|m| m.as_slice().len())
+            .ok_or_else(|| DeviceError::Setup(format!("no output buffer {index}")))?;
+        let fd = self
+            .output
+            .dev
+            .export_buffer(BufType::VideoCaptureMplane, index, 0)?;
+        Ok((fd, len))
     }
 
     /// Stops streaming and frees the buffers.

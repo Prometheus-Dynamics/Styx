@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Rockchip ISP frames without a copy** (written, untested on board): the main path's NV12
+  buffers are exported once (`IspDevice::export_output`, `RkispPipeline::output_dmabuf`) and
+  leased to consumers as dma-bufs, returned to the driver when the lease drops
+  (`release_index`); the worker copies into a heap buffer only when fewer than two buffers
+  would stay with the driver.
+
 - **PiSP extra back end passes queued back to back, scaled and other-format regions**
   (written, untested on board): `BackEndStream` takes up to `QUEUED_JOBS` jobs at once (config
   buffers used in turn, the raw input and the TDN average queued again at spare indices), and

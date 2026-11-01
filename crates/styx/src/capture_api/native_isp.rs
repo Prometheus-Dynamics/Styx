@@ -17,6 +17,7 @@ mod pisp_lease;
 mod pisp_regions;
 mod pisp_sliced;
 mod pisp_worker;
+mod rkisp_lease;
 mod rkisp_worker;
 mod soft_worker;
 mod still_process;
