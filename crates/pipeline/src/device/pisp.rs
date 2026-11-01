@@ -95,9 +95,13 @@ impl Isp {
         options: &PispOptions,
         want_tdn: bool,
     ) -> Result<(Self, Duration, Duration)> {
-        if options.pass_jobs > 1 && !options.unsafe_queued_passes {
+        if options.pass_jobs > 1
+            && !options.unsafe_queued_passes
+            && !styx_pisp::device::driver_queue_safe()
+        {
             return Err(PipelineError::Device(
-                "pass_jobs above 1 wedges the pisp_be driver (PispOptions::unsafe_queued_passes)"
+                "pass_jobs above 1 can wedge the stock pisp_be driver \
+                 (load kernel-modules/pispbe, or PispOptions::unsafe_queued_passes)"
                     .into(),
             ));
         }

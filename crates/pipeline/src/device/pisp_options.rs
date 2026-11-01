@@ -25,13 +25,16 @@ pub struct PispOptions {
     /// ([`super::PispPipeline::set_pass`]).
     pub pass_buffers: [u32; 2],
     /// Extra passes' jobs queued at once, up to [`styx_pisp::device::QUEUED_JOBS`]: `1`
-    /// (default) waits for each before queuing the next. More is refused unless
-    /// [`Self::unsafe_queued_passes`]: on the CM5 (2026-10-31) four short pass jobs queued at
-    /// once wedged the `pisp_be` driver ("not safe to queue new job!", then `STREAMOFF` stuck
-    /// in `vb2_wait_for_all_buffers` until a reboot; `kernel-modules/pispbe/README.md`
-    /// "Queued jobs"). Before that, queued passes were 0.12 ms slower per frame anyway.
+    /// (default) waits for each before queuing the next. More is refused unless the loaded
+    /// driver is our patched one ([`styx_pisp::device::driver_queue_safe`]) or
+    /// [`Self::unsafe_queued_passes`]: the stock driver overwrites a job the hardware still
+    /// holds ("not safe to queue new job!"), and on the CM5 (2026-10-31) a lost completion
+    /// left `STREAMOFF` stuck in `vb2_wait_for_all_buffers` until a reboot
+    /// (`kernel-modules/pispbe/README.md` "Queued jobs"). With the patched driver four queued
+    /// jobs took 0.251 ms per frame against 0.276 ms one at a time.
     pub pass_jobs: usize,
-    /// Allow [`Self::pass_jobs`] above 1 (reproducing the driver hang; may need a reboot).
+    /// Allow [`Self::pass_jobs`] above 1 on any driver (on the stock one it can hang; may
+    /// need a reboot).
     pub unsafe_queued_passes: bool,
     /// Back end node group (0 or 1).
     pub be_group: usize,

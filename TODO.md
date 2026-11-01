@@ -330,14 +330,12 @@ user; they do not block the tag unless the user says so.
       words, cached config copy): 117 → 8 µs per job, Styx API 0.35 → 0.23-0.26 ms/frame at
       30 fps (0.25 → 0.13-0.15 at 120), latency −0.11 ms, outputs bit-identical, libcamera
       unaffected. Installed on the dev box as an override of `pisp_be`.
-- [ ] Extra back end passes queued back to back (`pass_jobs` > 1): 0.40 against 0.28 ms per
-      frame on the CM5 with shared spare indices, and with fixed indices per buffer they wedged
-      the patched `pisp_be` (2026-10-31: "not safe to queue new job!" ×356, `STREAMOFF` stuck
-      in `vb2_wait_for_all_buffers`, reboot). Refused unless `unsafe_queued_passes`. The
-      module now defers a job while the hardware holds one (written, untested on board: needs
-      a build against the image's linux-custom tree). The stock driver overwrites too (455
-      "not safe" in 5 s, no hang): send the upstream draft in `kernel-modules/pispbe/README.md`
-      "Queued jobs", then measure queued against serial with the fix (stock: 0.46 vs 0.62 ms). Pass buffers are allocated at start
+- [x] Extra back end passes queued back to back (`pass_jobs` > 1): they wedged the patched
+      `pisp_be` with fixed indices (2026-10-31, reboot); the stock driver overwrites a held job
+      too (455 "not safe" in 5 s). The module now defers a job while the hardware holds one
+      (CM5: 0 errors, no hang, 0.251 vs 0.276 ms per frame serial) and exports `queue_safe`;
+      Styx allows `pass_jobs` > 1 only then. Upstream draft in `kernel-modules/pispbe/README.md`
+      "Queued jobs" (filing is the user's call). Pass buffers are allocated at start
       (`PispOptions::pass_buffers`); a camera service client joining with more regions than
       planned restarts the capture (`VIDIOC_CREATE_BUFS` could add them while streaming).
 - [ ] Ship the `pispbe` patch in a device image (kernel patch) and/or send it upstream (draft

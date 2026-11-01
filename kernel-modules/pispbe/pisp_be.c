@@ -80,6 +80,16 @@ module_param(skip_unchanged_config, bool, 0644);
 MODULE_PARM_DESC(skip_unchanged_config,
 		 "Write only the configuration words that changed since the last job (default: on)");
 
+/*
+ * Read only, always Y: pispbe_schedule() leaves a job on the list while the
+ * hardware still holds a queued one, so a client may queue several jobs at once
+ * (the stock driver overwrites the held job). Clients look for it in sysfs.
+ */
+static bool queue_safe = true;
+module_param(queue_safe, bool, 0444);
+MODULE_PARM_DESC(queue_safe,
+		 "Several queued jobs per client are safe with this driver (read only, always Y)");
+
 #define PISP_BE_VERSION_2712		0x02252700
 #define PISP_BE_VERSION_MINOR_BITS	0xf
 

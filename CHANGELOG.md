@@ -24,9 +24,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `NativeIspConfig::pass_jobs`, default 1): queued back to back they were 0.12 ms slower per
   frame on the CM5, and with the raw and TDN buffers at fixed V4L2 indices (so vb2 no longer
   re-maps them at every queue) four short jobs wedged the patched `pisp_be` until a reboot.
-  More than 1 is refused unless `PispOptions::unsafe_queued_passes`
-  (`native-pipeline pisp --pass-jobs N`). The patched module now holds a job back while the
-  hardware still has one queued (written, untested on board).
+  The patched module now holds a job back while the hardware still has one queued and
+  exports a read-only `queue_safe` parameter; more than 1 is allowed when it is loaded
+  (`styx_pisp::device::driver_queue_safe`) or with `PispOptions::unsafe_queued_passes`
+  (`native-pipeline pisp --pass-jobs N`). On the CM5 with the fix: no error or hang, 0.251
+  against 0.276 ms per frame serial.
 
 - **Software ISP frames as dma-bufs**: the soft ISP's outputs (main, regions, overview) and
   the Rockchip path's fallback copies are written into recycled buffers from the cached

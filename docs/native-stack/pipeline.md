@@ -353,7 +353,9 @@ vb2 keeps it mapped), waited for in order. On the CM5 (2026-10-31, three 320x320
 120 fps) queued jobs at shared spare indices took 0.40 ms per frame against 0.28 ms one at
 a time, 0.35 ms of it kernel time re-mapping the buffers; with the fixed indices four queued
 jobs wedged the patched `pisp_be` (`kernel-modules/pispbe/README.md` "Queued jobs"). One at a
-time, and more refused unless `PispOptions::unsafe_queued_passes`. Passes write into an
+time by default (`PispOptions::pass_jobs`); more is refused unless the loaded driver exports
+`/sys/module/pisp_be/parameters/queue_safe` (our patched one, which defers a job while the
+hardware holds one: 0.251 against 0.276 ms per frame) or `PispOptions::unsafe_queued_passes`. Passes write into an
 output's buffers, the main output's unless a region is in the second output's format
 (`PispOptions::pass_buffers` more of them per output; a capture gives each pass half as many again as an
 output has, at least 3), and a pass without a free buffer skips that frame. Cached output

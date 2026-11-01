@@ -179,7 +179,9 @@ built struct module size"): `native-pipeline pisp --fps 120 --frames 600 --no-re
 --passes <the three regions> --pass-jobs 4`, four runs: 0 "not safe to queue" messages, no hang,
 `STREAMOFF` returns. Queued passes now edge out serial ones: 0.251 vs 0.276 ms of pass time per
 frame, capture latency p50 8.53 vs 8.56 ms, CPU 0.1 ms per frame either way. Styx still refuses
-`pass_jobs > 1` by default (`PispOptions::unsafe_queued_passes`): the stock driver is what ships.
+`pass_jobs > 1` on the stock driver; this one exports a read-only parameter
+(`/sys/module/pisp_be/parameters/queue_safe`, always `Y`) and Styx allows queued passes when it
+is there (`styx_pisp::device::driver_queue_safe`).
 
 **Upstream draft:**
 
