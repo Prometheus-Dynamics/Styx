@@ -334,9 +334,10 @@ user; they do not block the tag unless the user says so.
       frame on the CM5 with shared spare indices, and with fixed indices per buffer they wedged
       the patched `pisp_be` (2026-10-31: "not safe to queue new job!" ×356, `STREAMOFF` stuck
       in `vb2_wait_for_all_buffers`, reboot). Refused unless `unsafe_queued_passes`. The
-      module now defers a job while the hardware holds one (written, untested on board): run
-      the stock-vs-patched repro in `kernel-modules/pispbe/README.md` "Queued jobs", send
-      upstream only what reproduces on stock, then measure queued against serial again. Pass buffers are allocated at start
+      module now defers a job while the hardware holds one (written, untested on board: needs
+      a build against the image's linux-custom tree). The stock driver overwrites too (455
+      "not safe" in 5 s, no hang): send the upstream draft in `kernel-modules/pispbe/README.md`
+      "Queued jobs", then measure queued against serial with the fix (stock: 0.46 vs 0.62 ms). Pass buffers are allocated at start
       (`PispOptions::pass_buffers`); a camera service client joining with more regions than
       planned restarts the capture (`VIDIOC_CREATE_BUFS` could add them while streaming).
 - [ ] Ship the `pispbe` patch in a device image (kernel patch) and/or send it upstream (draft

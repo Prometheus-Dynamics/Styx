@@ -158,8 +158,14 @@ job anyway, over the one the hardware holds; that job's completion never comes, 
 and the vb2 buffers stay owned by the driver. `pispbe_schedule()` let the job in because the
 ISR's "started" accounting had cleared `hw_busy` while the hardware still held a queued job.
 Jobs shorter than the interrupt latency, queued back to back from the driver's own list, are
-what this needs; the stock driver's 117 µs config write (longer than such a job) may hide it,
-this module's 7 µs does not. Not yet reproduced on the stock module.
+what this needs.
+
+**The stock module does it too** (same board and run, rpi-7.2.y `pisp-be.ko` loaded with
+`insmod`, 2026-10-31): `--pass-jobs 4` logged "not safe to queue new job!" 455 times in
+5 s, but all 600 frames and their passes completed; `--pass-jobs 1` logged none. So the
+overwrite is upstream's; with this module (7 µs config writes instead of 117) it also lost a
+completion and hung, once in one run. On stock, queued passes took 0.46 ms per frame against
+0.62 one at a time (its config write is what one at a time waits on).
 
 **Fix in this module:** `pispbe_schedule()` reads `PISP_BE_STATUS_QUEUED` under `hw_lock`
 before taking a job and, when the hardware still holds one, leaves the job on the list
@@ -167,13 +173,13 @@ before taking a job and, when the hardware still holds one, leaves the job on th
 which schedules it. Written, untested on board. Styx refuses `PispOptions::pass_jobs` above 1
 (`unsafe_queued_passes` opts in, as `native-pipeline --pass-jobs` does) until it is.
 
-**Repro plan (one slot, reboots allowed):** with this module, then with the image's stock
-`pisp-be.ko` (`install/uninstall.sh --reload`), each from a fresh boot:
-`native-pipeline pisp --fps 120 --frames 600 --no-read --quiet --passes <the three regions>
---pass-jobs 4`, watching `dmesg -w` for "not safe to queue". Stock and patched without the fix
-both hanging means it goes upstream; only the unfixed patched one, it stays ours.
+**Still to check:** the fixed module on the board. It must be built against the image's own
+Buildroot `linux-custom` tree: one built from the kbuild subset was refused ("section size
+must match the kernel's built struct module size"). Run `native-pipeline pisp --fps 120
+--frames 600 --no-read --quiet --passes <the three regions> --pass-jobs 4` and watch
+`dmesg -w` for "not safe to queue" (expected: none, and no hang).
 
-**Upstream draft** (only if the stock module hangs too):
+**Upstream draft:**
 
 > **media: raspberrypi: pisp_be: Don't queue a job over one the hardware still holds**
 >
@@ -187,8 +193,10 @@ both hanging means it goes upstream; only the unfixed patched one, it stays ours
 > Check the status in `pispbe_schedule()` under `hw_lock` and leave the job on the list when
 > the hardware is not ready for it; the queued job's "started" interrupt schedules it.
 >
-> Reproduced on a Raspberry Pi CM5 (rpi-7.2.y) with four ~84 µs jobs queued per frame at
-> 120 fps.
+> Reproduced on a Raspberry Pi CM5 (rpi-7.2.y, stock driver): four short jobs (three
+> 320x320 regions after each 1280x800 frame) queued per frame at 120 fps log the error 455
+> times in 5 s; with a faster config write the overwritten job's completion was lost and
+> `STREAMOFF` hung.
 
 ## Upstreaming
 
