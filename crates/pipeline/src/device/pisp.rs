@@ -33,7 +33,7 @@ use styx_kernel::subdev::MbusCode;
 use styx_native::{
     CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
 };
-use styx_pisp::device::{BackEndStream, FrontEndDevice, FrontEndSetup, profile};
+use styx_pisp::device::{BackEndStream, FrontEndDevice, FrontEndSetup, driver_queue_safe, profile};
 use styx_pisp::fe::FrontEnd;
 use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
 use styx_softisp::CfaPattern;
@@ -95,10 +95,7 @@ impl Isp {
         options: &PispOptions,
         want_tdn: bool,
     ) -> Result<(Self, Duration, Duration)> {
-        if options.pass_jobs > 1
-            && !options.unsafe_queued_passes
-            && !styx_pisp::device::driver_queue_safe()
-        {
+        if options.pass_jobs > 1 && !options.unsafe_queued_passes && !driver_queue_safe() {
             return Err(PipelineError::Device(
                 "pass_jobs above 1 can wedge the stock pisp_be driver \
                  (load kernel-modules/pispbe, or PispOptions::unsafe_queued_passes)"
@@ -261,9 +258,10 @@ impl PispPipeline {
         mut camera: NativeCamera,
         settings: &StreamSettings,
         tuning: &Tuning,
-        options: PispOptions,
+        mut options: PispOptions,
     ) -> Result<Self> {
         let t_open = Instant::now();
+        options.pass_jobs = options.pass_jobs_resolved();
         let want_tdn = tuning.denoise.as_ref().is_some_and(|d| d.tdn.is_some());
         let mut startup = PispStartup::default();
         let mode = select_mode(&camera.info().modes, settings, &camera.info().raw_formats)?.clone();

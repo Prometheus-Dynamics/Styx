@@ -24,9 +24,10 @@ pub struct PispOptions {
     /// More buffers per output, for the extra passes that write into them
     /// ([`super::PispPipeline::set_pass`]).
     pub pass_buffers: [u32; 2],
-    /// Extra passes' jobs queued at once, up to [`styx_pisp::device::QUEUED_JOBS`]: `1`
-    /// (default) waits for each before queuing the next. More is refused unless the loaded
-    /// driver is our patched one ([`styx_pisp::device::driver_queue_safe`]) or
+    /// Extra passes' jobs queued at once, up to [`styx_pisp::device::QUEUED_JOBS`]: `1` waits
+    /// for each before queuing the next; `0` (default) is `QUEUED_JOBS` on our patched driver
+    /// ([`styx_pisp::device::driver_queue_safe`]) and `1` on the stock one. More than 1 is
+    /// refused unless the loaded driver is the patched one or
     /// [`Self::unsafe_queued_passes`]: the stock driver overwrites a job the hardware still
     /// holds ("not safe to queue new job!"), and on the CM5 (2026-10-31) a lost completion
     /// left `STREAMOFF` stuck in `vb2_wait_for_all_buffers` until a reboot
@@ -74,6 +75,15 @@ pub struct PispOptions {
 }
 
 impl PispOptions {
+    /// [`Self::pass_jobs`] with `0` resolved for the loaded driver.
+    pub fn pass_jobs_resolved(&self) -> usize {
+        match self.pass_jobs {
+            0 if styx_pisp::device::driver_queue_safe() => styx_pisp::device::QUEUED_JOBS,
+            0 => 1,
+            n => n,
+        }
+    }
+
     /// NV12 at the sensor size on output 0 and RGB24 at half size on output 1.
     pub fn nv12_and_half_rgb(width: u32, height: u32) -> Self {
         Self {
@@ -96,7 +106,7 @@ impl PispOptions {
             be_buffers: 6,
             be_buffers_initial: None,
             pass_buffers: [0; 2],
-            pass_jobs: 1,
+            pass_jobs: 0,
             unsafe_queued_passes: false,
             be_group: 0,
             configs_ahead: 2,

@@ -28,7 +28,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   exports a read-only `queue_safe` parameter; more than 1 is allowed when it is loaded
   (`styx_pisp::device::driver_queue_safe`) or with `PispOptions::unsafe_queued_passes`
   (`native-pipeline pisp --pass-jobs N`). On the CM5 with the fix: no error or hang, 0.251
-  against 0.276 ms per frame serial.
+  against 0.276 ms per frame serial. The default, `0`, queues `QUEUED_JOBS` on the patched
+  driver and 1 on the stock one.
 
 - **Software ISP frames as dma-bufs**: the soft ISP's outputs (main, regions, overview) and
   the Rockchip path's fallback copies are written into recycled buffers from the cached
