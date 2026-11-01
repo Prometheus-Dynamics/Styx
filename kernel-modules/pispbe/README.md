@@ -183,7 +183,7 @@ frame, capture latency p50 8.53 vs 8.56 ms, CPU 0.1 ms per frame either way. Sty
 (`/sys/module/pisp_be/parameters/queue_safe`, always `Y`) and Styx allows queued passes when it
 is there (`styx_pisp::device::driver_queue_safe`).
 
-**Upstream draft:**
+**Upstream draft** (kept here, not filed; the user decided nothing gets sent):
 
 > **media: raspberrypi: pisp_be: Don't queue a job over one the hardware still holds**
 >
@@ -205,7 +205,7 @@ is there (`styx_pisp::device::driver_queue_safe`).
 
 ## Upstreaming
 
-Upstreamable as three small patches to `drivers/media/platform/raspberrypi/pisp_be/pisp_be.c`
+Kept here, not filed (the user decided nothing gets sent). Upstreamable as three small patches to `drivers/media/platform/raspberrypi/pisp_be/pisp_be.c`
 (the driver is in mainline since 6.11; check its current `pispbe_queue_job()` before sending).
 Draft:
 

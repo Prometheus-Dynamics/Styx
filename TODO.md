@@ -7,14 +7,14 @@ box (OV9782 1280x800) unless stated.
 
 ## Next release (3.0.0)
 
-3.0.0 confirmed by the user, tagged when this whole push is done. Everything that goes into 3.0: the 2026-10-27 feature freeze plus its last addition, hardware
+The user alone decides when a release is cut and tagged; versions stay `X.Y.Z-dev` until then. Everything that goes into 3.0: the 2026-10-27 feature freeze plus its last addition, hardware
 support on every board. Nothing else is added. The backlog below this section is not for 3.0.
 Each item: **what**, **why**, **done when**, **blocked by**. Accelerators are chosen through
 plain `StyxConfig` knobs per device (HeliOS sets them), with a default per platform and a CPU
 fallback for each; CPU SIMD (NEON, AVX2, RVV) stays detected, as it changes no output.
 No half implementations: every accelerator and SIMD path is complete wherever the hardware
 has it, with a CPU fallback and a conformance test. **Held** and **paused** items wait for the
-user; they do not block the tag unless the user says so.
+user. Board items get tested on their boards.
 
 ### 1. Freeze items still open
 - [ ] **Anti-flicker verified at 120 fps** (paused: bench tests paused by the user). *Why:* AE chased 100 Hz flicker at 120 fps under
@@ -144,16 +144,14 @@ user; they do not block the tag unless the user says so.
       *Done when:* a `cargo public-api` diff against 2.0.0 is reviewed and every removal is
       listed in the CHANGELOG with its replacement, and HeliOS, PhotonVision and
       photon-image-modifier build against it. *Blocked by:* nothing.
-- [ ] **Version 3.0.0.** *Why:* the release. *Done when:* every crate is 3.0.0 and the
-      intra-workspace versions match. *Blocked by:* every other open item here except the held
-      and paused ones (the user confirmed 3.0.0, tagged when the push is done).
+- [ ] **Version 3.0.0.** *Done when:* every crate is 3.0.0 and the intra-workspace versions
+      match. When the user calls the release.
 - [ ] **CHANGELOG.** *Done when:* Unreleased becomes 3.0.0 with the date and a migration
-      section. *Blocked by:* the version item.
+      section. When the user calls the release.
 - [ ] **Gates at the release rev.** *Done when:* `scripts/gate.sh` (riscv lane included) and the
-      Raze device sweep pass at the tagged rev. *Blocked by:* the release rev (Raze #1 is
-      available for the sweep).
+      Raze device sweep pass at the tagged rev. When the user calls the release.
 - [ ] **Tag and announce.** *Done when:* `v3.0.0` is tagged on main and pushed, and HeliOS,
-      Eidos and PhotonVision are told the rev. *Blocked by:* the version item.
+      Eidos and PhotonVision are told the rev. When the user calls the release.
 
 ## Done
 
@@ -335,7 +333,7 @@ user; they do not block the tag unless the user says so.
       too (455 "not safe" in 5 s). The module now defers a job while the hardware holds one
       (CM5: 0 errors, no hang, 0.251 vs 0.276 ms per frame serial) and exports `queue_safe`;
       Styx allows `pass_jobs` > 1 only then. Upstream draft in `kernel-modules/pispbe/README.md`
-      "Queued jobs" (filing is the user's call). Pass buffers are allocated at start
+      "Queued jobs", kept there (the user: not filed). Pass buffers are allocated at start
       (`PispOptions::pass_buffers`); a camera service client joining with more regions than
       planned restarts the capture (`VIDIOC_CREATE_BUFS` could add them while streaming).
 - [ ] Ship the `pispbe` patch in a device image (kernel patch) and/or send it upstream (draft
