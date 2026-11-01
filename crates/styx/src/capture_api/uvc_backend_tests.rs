@@ -174,3 +174,44 @@ fn identical_cameras_on_different_ports_stay_two_devices() {
             .all(|k| !devices[0].identity.keys.contains(k))
     );
 }
+
+/// A UVC frame's lease allocates its backing record, not its bytes: those are the pool's buffer,
+/// assembled in place and handed back when the frame is dropped.
+#[test]
+fn a_uvc_frame_lease_allocates_its_records_and_reuses_the_pool() {
+    use crate::test_alloc::allocations;
+    use std::time::{Duration, Instant};
+    let (w, h) = (640usize, 480usize);
+    let pool = styx_uvc::pool::BufferPool::new(w * h * 2, 4);
+    let config = StyxConfig::default();
+    let mut total = 0;
+    const FRAMES: u64 = 200;
+    for n in 0..FRAMES + 20 {
+        let mut data = pool.take();
+        data.extend_from_slice(&vec![n as u8; w * h * 2]);
+        let frame = UvcFrame {
+            data,
+            sequence: n as u32,
+            fourcc: *b"YUYV",
+            width: w as u32,
+            height: h as u32,
+            timestamp: Duration::from_millis(n),
+            timestamp_from_pts: false,
+            first_payload: Duration::from_millis(n),
+            last_payload: Duration::from_millis(n),
+            pts: None,
+            scr: None,
+            flags: Default::default(),
+            dequeued: Instant::now(),
+        };
+        let ((), count) = allocations(|| {
+            drop(frame_lease(frame, 48_000_000, &config).expect("a frame"));
+        });
+        if n >= 20 {
+            total += count;
+        }
+    }
+    assert_eq!(pool.allocations(), 1, "a frame's bytes come from the pool");
+    let per_frame = total as f64 / FRAMES as f64;
+    assert_eq!(per_frame, 1.0, "allocations per UVC lease");
+}

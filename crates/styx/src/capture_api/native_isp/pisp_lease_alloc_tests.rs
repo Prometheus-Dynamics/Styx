@@ -158,3 +158,64 @@ fn pisp_frames_reach_an_in_process_consumer_without_allocating_or_copying() {
     let names: Vec<_> = path.hops.iter().map(|h| h.to.as_str()).collect();
     assert_eq!(names, ["dequeued", "isp_done", "queued", "taken"]);
 }
+
+/// A companion (a pyramid level, a region, the raw frame) costs its own lease record, and its
+/// place on the main frame; nothing is copied.
+#[test]
+fn a_pisp_companion_costs_only_its_records() {
+    let live = CaptureMetrics::default();
+    let (ret_tx, ret_rx) = returns();
+    let buffers: Vec<BeBuffer> = (0..BUFFERS).map(|_| buffer(W, H)).collect();
+    let spec = OutputSpec {
+        code: FourCc::NV12,
+        width: W as u32,
+        height: H as u32,
+    };
+    let placed = Placed {
+        spec,
+        stride: W,
+        size: None,
+        crop: None,
+    };
+    let mut f = frame();
+    let prep = CpuPrep {
+        sync: false,
+        prefetch: crate::capture_api::NativeCpuPrefetch::Off,
+    };
+    let (mut main_allocs, mut with_companion_allocs) = (0u64, 0u64);
+    for n in 0..FRAMES + 100 {
+        while let RecvOutcome::Data(_) = ret_rx.recv() {}
+        f.sequence = n;
+        let make = |index: u32, f: &_| {
+            lease(
+                placed,
+                buffers[index as usize].clone(),
+                (0, index),
+                f,
+                &ret_tx,
+                &live,
+                None,
+                prep,
+                None,
+                Default::default(),
+            )
+        };
+        let (_, main) = allocations(|| drop(make(0, &f)));
+        let (_, both) = allocations(|| {
+            let frame = make(0, &f)
+                .with_companion(CompanionKind::Pyramid { level: 1 }, make(1, &f))
+                .expect("a companion");
+            drop(frame);
+        });
+        if n >= 100 {
+            main_allocs += main;
+            with_companion_allocs += both;
+        }
+    }
+    let (main, both) = (
+        main_allocs as f64 / FRAMES as f64,
+        with_companion_allocs as f64 / FRAMES as f64,
+    );
+    assert_eq!(main, 1.0);
+    assert_eq!(both, 3.0, "allocations with one companion");
+}
