@@ -150,11 +150,15 @@ memory when it runs.
       *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device
       for the worker loops; nothing for the rest. *Numbers:* asserted 0 (6a6c40d): PiSP lease with and
       without a companion, UVC frame lease, GPU ISP frame from memory, PiSP processed path on a host
-      (`pisp_alloc`). **Still 1 per frame by their own tests:** software ISP output
-      (`frames_allocate_only_their_lease_record`) and the rkisp lease, which do not use `BackingPool`
-      yet. **Not counted:** V4L2 zero-copy (uses the pool, its loop needs a device), PiSP raw and
-      sliced leases, GPU ISP `Input::Buffer`, the raw native lease (`native_backend.rs`), libcamera,
-      and every real worker loop on a board.
+      (`pisp_alloc`). Also asserted 0: software ISP output lease and rkisp lease
+      (`frames_allocate_nothing`, `BackingPool`); a `SoftIsp` frame at 1 and 4 threads, plain and post
+      stages, RGB24/NV12/I420, and with statistics when the caller uses `recycle_stats`
+      (`crates/softisp/tests/alloc.rs`). **Not 0:** the software ISP loop above it, 129.83 per frame
+      on a host with a moving scene and the algorithms on every frame: `SoftIsp::set_params`
+      rebuilding its tables on each change of settings, cloned settings and params, the statistics
+      conversion. **Not counted:** V4L2 zero-copy (uses the pool, its loop needs a device), PiSP raw
+      and sliced leases, GPU ISP `Input::Buffer` and its statistics, the raw native lease
+      (`native_backend.rs`), libcamera, and every real worker loop on a board.
 - [ ] **GPU import pad from Daedalus.** *Why:* `gpu_import_pad` is a fixed 256 B; Daedalus knows the
       device's need. *Done when:* with a Daedalus context the pad comes from
       `GpuFrameImports::required_len(end)` / `GpuStorage::dmabuf_import_len(gpu, len)`, 256 otherwise.

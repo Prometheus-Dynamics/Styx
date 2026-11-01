@@ -105,7 +105,8 @@ pub(crate) struct StatsAccum {
     bin_row: Vec<u16>,
     /// Focus: gradient energy per zone, and the previous sampled quad row's green.
     focus: Vec<u64>,
-    prev_green: Option<(usize, Vec<u16>)>,
+    prev_green: Vec<u16>,
+    prev_row: Option<usize>,
 }
 
 impl StatsAccum {
@@ -125,8 +126,17 @@ impl StatsAccum {
             } else {
                 Vec::new()
             },
-            prev_green: None,
+            prev_green: Vec::new(),
+            prev_row: None,
         }
+    }
+
+    /// Whether this accumulator has the shape `setup` gathers into.
+    pub fn fits(&self, setup: &StatsSetup) -> bool {
+        let zones = (setup.config.zones_x * setup.config.zones_y) as usize;
+        self.rgb.len() == zones
+            && self.bins == setup.config.histogram_bins as usize
+            && self.focus.is_empty() != setup.config.focus
     }
 
     pub fn reset(&mut self) {
@@ -137,7 +147,7 @@ impl StatsAccum {
         self.histogram.fill(0);
         self.samples = 0;
         self.focus.fill(0);
-        self.prev_green = None;
+        self.prev_row = None;
     }
 
     /// Green gradient energy of quad row `qy` (horizontal, and vertical against the row
@@ -149,10 +159,9 @@ impl StatsAccum {
         };
         let energy = |d: i32| (u64::from(d.unsigned_abs()).pow(2)).saturating_sub(t2);
         let above = self
-            .prev_green
-            .as_ref()
-            .filter(|(row, g)| *row + 1 == qy && g.len() == green.len())
-            .map(|(_, g)| g.as_slice());
+            .prev_row
+            .filter(|row| row + 1 == qy && self.prev_green.len() == green.len())
+            .map(|_| self.prev_green.as_slice());
         let zx_count = setup.config.zones_x as usize;
         for zx in 0..zx_count {
             let (c0, c1) = (
@@ -170,14 +179,9 @@ impl StatsAccum {
             }
             self.focus[zy * zx_count + zx] += e;
         }
-        match &mut self.prev_green {
-            Some((row, g)) => {
-                *row = qy;
-                g.clear();
-                g.extend_from_slice(green);
-            }
-            None => self.prev_green = Some((qy, green.to_vec())),
-        }
+        self.prev_row = Some(qy);
+        self.prev_green.clear();
+        self.prev_green.extend_from_slice(green);
     }
 
     /// Add quad row `qy` (R, G, B of each quad).
@@ -243,42 +247,39 @@ impl StatsAccum {
         self.samples += other.samples;
     }
 
-    pub fn finish(&self, setup: &StatsSetup, gains: [f32; 3]) -> IspStats {
-        let zones = (0..self.rgb.len())
-            .map(|z| ZoneStats {
-                r_sum: self.rgb[z][0],
-                g_sum: self.rgb[z][1],
-                b_sum: self.rgb[z][2],
-                count: self.count[z],
-                luma: if self.quads[z] == 0 {
+    /// The statistics, written into `out` (its buffers reused).
+    pub fn finish_into(&self, setup: &StatsSetup, gains: [f32; 3], out: &mut IspStats) {
+        out.zones_x = setup.config.zones_x;
+        out.zones_y = setup.config.zones_y;
+        out.zones.clear();
+        out.zones.extend((0..self.rgb.len()).map(|z| ZoneStats {
+            r_sum: self.rgb[z][0],
+            g_sum: self.rgb[z][1],
+            b_sum: self.rgb[z][2],
+            count: self.count[z],
+            luma: if self.quads[z] == 0 {
+                0.0
+            } else {
+                (self.luma[z] as f64 / (self.quads[z] as f64 * WORK_MAX as f64)) as f32
+            },
+        }));
+        out.histogram.clear();
+        out.histogram.extend((0..self.bins).map(|b| {
+            (0..4)
+                .map(|c| self.histogram[c * self.bins + b])
+                .sum::<u32>()
+        }));
+        out.samples = self.samples;
+        out.gains = gains;
+        out.focus.clear();
+        out.focus
+            .extend(self.focus.iter().zip(&self.quads).map(|(&e, &q)| {
+                let full = f64::from(WORK_MAX) * f64::from(WORK_MAX);
+                if q == 0 {
                     0.0
                 } else {
-                    (self.luma[z] as f64 / (self.quads[z] as f64 * WORK_MAX as f64)) as f32
-                },
-            })
-            .collect();
-        IspStats {
-            zones_x: setup.config.zones_x,
-            zones_y: setup.config.zones_y,
-            zones,
-            histogram: (0..self.bins)
-                .map(|b| (0..4).map(|c| self.histogram[c * self.bins + b]).sum())
-                .collect(),
-            samples: self.samples,
-            gains,
-            focus: self
-                .focus
-                .iter()
-                .zip(&self.quads)
-                .map(|(&e, &q)| {
-                    let full = f64::from(WORK_MAX) * f64::from(WORK_MAX);
-                    if q == 0 {
-                        0.0
-                    } else {
-                        e as f64 / (f64::from(q) * full)
-                    }
-                })
-                .collect(),
-        }
+                    e as f64 / (f64::from(q) * full)
+                }
+            }));
     }
 }

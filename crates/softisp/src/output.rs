@@ -1,6 +1,6 @@
 //! Output buffers and their validation and splitting into row bands.
 
-use alloc::{format, vec::Vec};
+use alloc::format;
 
 use crate::IspError;
 
@@ -113,50 +113,50 @@ impl<'a> OutputBuffers<'a> {
         }
     }
 
-    /// Split into bands of `band` rows each (the last may be shorter; `band` even).
-    pub(crate) fn into_bands(self, band: usize, h: usize) -> Vec<OutputBuffers<'a>> {
-        debug_assert!(band.is_multiple_of(2) || band >= h);
-        let starts: Vec<usize> = (0..h).step_by(band.max(1)).collect();
-        fn split(mut s: &mut [u8], stride: usize, rows: usize, n: usize) -> Vec<&mut [u8]> {
-            let mut out = Vec::with_capacity(n);
-            for i in 0..n {
-                if i + 1 == n {
-                    out.push(core::mem::take(&mut s));
-                } else {
-                    let t = core::mem::take(&mut s);
-                    let at = (stride * rows).min(t.len());
-                    let (a, b) = t.split_at_mut(at);
-                    out.push(a);
-                    s = b;
-                }
-            }
-            out
+    /// This output's first `rows` rows (`rows` even for 4:2:0), and the rest.
+    fn split_rows(self, rows: usize) -> (Self, Self) {
+        fn cut(s: &mut [u8], at: usize) -> (&mut [u8], &mut [u8]) {
+            let at = at.min(s.len());
+            s.split_at_mut(at)
         }
-        let n = starts.len();
         match self {
-            Self::Rgb24 { data, stride } => split(data, stride, band, n)
-                .into_iter()
-                .map(|data| OutputBuffers::Rgb24 { data, stride })
-                .collect(),
-            Self::Luma { data, stride } => split(data, stride, band, n)
-                .into_iter()
-                .map(|data| OutputBuffers::Luma { data, stride })
-                .collect(),
+            Self::Rgb24 { data, stride } => {
+                let (a, b) = cut(data, stride * rows);
+                (
+                    Self::Rgb24 { data: a, stride },
+                    Self::Rgb24 { data: b, stride },
+                )
+            }
+            Self::Luma { data, stride } => {
+                let (a, b) = cut(data, stride * rows);
+                (
+                    Self::Luma { data: a, stride },
+                    Self::Luma { data: b, stride },
+                )
+            }
             Self::Nv12 {
                 y,
                 y_stride,
                 uv,
                 uv_stride,
-            } => split(y, y_stride, band, n)
-                .into_iter()
-                .zip(split(uv, uv_stride, band / 2, n))
-                .map(|(y, uv)| OutputBuffers::Nv12 {
-                    y,
-                    y_stride,
-                    uv,
-                    uv_stride,
-                })
-                .collect(),
+            } => {
+                let (y0, y1) = cut(y, y_stride * rows);
+                let (uv0, uv1) = cut(uv, uv_stride * (rows / 2));
+                (
+                    Self::Nv12 {
+                        y: y0,
+                        y_stride,
+                        uv: uv0,
+                        uv_stride,
+                    },
+                    Self::Nv12 {
+                        y: y1,
+                        y_stride,
+                        uv: uv1,
+                        uv_stride,
+                    },
+                )
+            }
             Self::I420 {
                 y,
                 y_stride,
@@ -164,19 +164,71 @@ impl<'a> OutputBuffers<'a> {
                 u_stride,
                 v,
                 v_stride,
-            } => split(y, y_stride, band, n)
-                .into_iter()
-                .zip(split(u, u_stride, band / 2, n))
-                .zip(split(v, v_stride, band / 2, n))
-                .map(|((y, u), v)| OutputBuffers::I420 {
-                    y,
-                    y_stride,
-                    u,
-                    u_stride,
-                    v,
-                    v_stride,
-                })
-                .collect(),
+            } => {
+                let (y0, y1) = cut(y, y_stride * rows);
+                let (u0, u1) = cut(u, u_stride * (rows / 2));
+                let (v0, v1) = cut(v, v_stride * (rows / 2));
+                (
+                    Self::I420 {
+                        y: y0,
+                        y_stride,
+                        u: u0,
+                        u_stride,
+                        v: v0,
+                        v_stride,
+                    },
+                    Self::I420 {
+                        y: y1,
+                        y_stride,
+                        u: u1,
+                        u_stride,
+                        v: v1,
+                        v_stride,
+                    },
+                )
+            }
+        }
+    }
+
+    /// Bands of `band` rows each of an output of `h` rows (the last may be shorter; `band` even),
+    /// split off one at a time, so a frame allocates nothing for them.
+    pub(crate) fn into_bands(self, band: usize, h: usize) -> Bands<'a> {
+        debug_assert!(band.is_multiple_of(2) || band >= h);
+        Bands {
+            rest: Some(self),
+            band,
+            left: h.div_ceil(band.max(1)),
         }
     }
 }
+
+/// The bands of an output: see [`OutputBuffers::into_bands`].
+pub(crate) struct Bands<'a> {
+    rest: Option<OutputBuffers<'a>>,
+    band: usize,
+    left: usize,
+}
+
+impl<'a> Iterator for Bands<'a> {
+    type Item = OutputBuffers<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.left == 0 {
+            return None;
+        }
+        self.left -= 1;
+        let rest = self.rest.take()?;
+        if self.left == 0 {
+            return Some(rest);
+        }
+        let (head, tail) = rest.split_rows(self.band);
+        self.rest = Some(tail);
+        Some(head)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left, Some(self.left))
+    }
+}
+
+impl ExactSizeIterator for Bands<'_> {}

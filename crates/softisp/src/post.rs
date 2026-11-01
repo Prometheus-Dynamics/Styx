@@ -16,8 +16,6 @@
 //! unsharp mask with the blur `[1 2 1] x [1 2 1] / 16`, the detail cored by its threshold and
 //! the correction limited.
 
-use alloc::vec::Vec;
-
 use crate::output::OutputBuffers;
 use crate::params::{Denoise, Sharpen};
 use crate::simd::post::{self as kernels, Sharpening};
@@ -99,7 +97,12 @@ pub(crate) struct Band<'a> {
 
 /// Split the three planes of a `w x h` picture held in `buf` (`3 w h` bytes) into bands of
 /// `band` rows.
-pub(crate) fn bands(buf: &mut [u8], w: usize, h: usize, band: usize) -> Vec<Band<'_>> {
+pub(crate) fn bands(
+    buf: &mut [u8],
+    w: usize,
+    h: usize,
+    band: usize,
+) -> impl ExactSizeIterator<Item = Band<'_>> + Send {
     let plane = w * h;
     let (y, rest) = buf[..3 * plane].split_at_mut(plane);
     let (cb, cr) = rest.split_at_mut(plane);
@@ -108,12 +111,11 @@ pub(crate) fn bands(buf: &mut [u8], w: usize, h: usize, band: usize) -> Vec<Band
         .zip(cb.chunks_mut(step))
         .zip(cr.chunks_mut(step))
         .enumerate()
-        .map(|(k, ((y, cb), cr))| Band {
+        .map(move |(k, ((y, cb), cr))| Band {
             y0: k * band,
             rows: y.len() / w,
             planes: [y, cb, cr],
         })
-        .collect()
 }
 
 /// Mirror index `i` into `0..n` (as the demosaic's frame edges).

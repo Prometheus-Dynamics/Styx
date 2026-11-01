@@ -13,8 +13,6 @@ use crate::prepare::Prepared;
 use crate::stats::{IspStats, StatsAccum};
 #[cfg(feature = "std")]
 use std::sync::Mutex;
-#[cfg(feature = "std")]
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A worker's scratch state: behind a mutex with `std` (helper threads take it), plain without.
 #[cfg(feature = "std")]
@@ -98,6 +96,8 @@ pub struct SoftIsp {
     params: IspParams,
     prepared: Prepared,
     workers: Vec<WorkerSlot>,
+    /// A result handed back ([`Self::recycle_stats`]), written into next.
+    spare_stats: Option<IspStats>,
     #[cfg(feature = "std")]
     threads: usize,
     #[cfg(feature = "std")]
@@ -134,6 +134,7 @@ impl SoftIsp {
             params,
             prepared,
             workers: vec![WorkerSlot::default()],
+            spare_stats: None,
             #[cfg(feature = "std")]
             threads: 1,
             #[cfg(feature = "std")]
@@ -423,16 +424,28 @@ impl SoftIsp {
         Some(match acc {
             Some(mut acc) => {
                 acc.merge(&part);
+                w.spare_stats = Some(part);
                 acc
             }
             None => part,
         })
     }
 
-    /// The statistics of `acc`.
-    fn finish(&self, acc: Option<StatsAccum>) -> Option<IspStats> {
+    /// The statistics of `acc`, in the buffers of a recycled result if there is one
+    /// ([`Self::recycle_stats`]); the accumulator goes back to the first worker.
+    fn finish(&mut self, acc: Option<StatsAccum>) -> Option<IspStats> {
+        let acc = acc?;
         let p = &self.prepared;
-        Some(acc?.finish(p.stats.as_ref()?, p.channel_gains))
+        let mut out = self.spare_stats.take().unwrap_or_default();
+        acc.finish_into(p.stats.as_ref()?, p.channel_gains, &mut out);
+        worker_mut(&mut self.workers[0]).stats = Some(acc);
+        Some(out)
+    }
+
+    /// Hands a frame's statistics back when done with them: the next frame's are written
+    /// into their buffers, so a frame with statistics allocates nothing.
+    pub fn recycle_stats(&mut self, stats: IspStats) {
+        self.spare_stats = Some(stats);
     }
 
     /// The input checked against the format.
@@ -544,16 +557,14 @@ impl SoftIsp {
         let planes: &[u8] = if in_b { &b } else { &a };
         let out_bands = out.into_bands(band_rows(ch, threads), ch);
         let rows_per_band = band_rows(ch, threads);
-        run_jobs_of!(
-            self,
-            threads,
-            out_bands.into_iter().enumerate().collect(),
-            |(k, out): (usize, OutputBuffers<'_>)| {
-                let o0 = k * rows_per_band;
-                let rows = rows_per_band.min(ch - o0);
-                post::write_output(&post.out, planes, (w, h), &crop, (cw, o0, rows), out);
-            },
-        );
+        run_jobs_of!(self, threads, out_bands.enumerate(), |(k, out): (
+            usize,
+            OutputBuffers<'_>
+        )| {
+            let o0 = k * rows_per_band;
+            let rows = rows_per_band.min(ch - o0);
+            post::write_output(&post.out, planes, (w, h), &crop, (cw, o0, rows), out);
+        },);
         self.post_scratch = PostScratch {
             rgb,
             planes: [a, b],
@@ -595,7 +606,7 @@ impl SoftIsp {
         let g = &g;
         if used <= 1 {
             let w = worker_mut(&mut workers[0]);
-            for (k, o) in outs.into_iter().enumerate() {
+            for (k, o) in outs.enumerate() {
                 let o0 = k * bands;
                 w.run_band(p, src, g, o0, bands.min(oh - o0), o);
             }
@@ -608,20 +619,13 @@ impl SoftIsp {
                     slot => slot.insert(Pool::new(threads - 1)),
                 };
                 // Bands are claimed in order by whichever thread is free.
-                let jobs: Vec<Mutex<Option<OutputBuffers<'_>>>> =
-                    outs.into_iter().map(|o| Mutex::new(Some(o))).collect();
-                let next = AtomicUsize::new(0);
+                let jobs = Mutex::new(outs.enumerate());
                 let workers = &*workers;
                 pool.run(used, &|t| {
                     let mut w = workers[t].lock().unwrap_or_else(|e| e.into_inner());
                     loop {
-                        let k = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(job) = jobs.get(k) else { break };
-                        let out = job
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .take()
-                            .expect("each band is claimed once");
+                        let job = jobs.lock().unwrap_or_else(|e| e.into_inner()).next();
+                        let Some((k, out)) = job else { break };
                         let o0 = k * bands;
                         w.run_band(p, src, g, o0, bands.min(oh - o0), out);
                     }
@@ -631,7 +635,7 @@ impl SoftIsp {
         Ok(p.stats.as_ref().filter(|_| stats).map(|_| {
             let mut ws = self.workers[..used].iter_mut().map(worker_mut);
             let first = ws.next().expect("one worker at least");
-            // Taken, not cloned: `begin_frame` makes the accumulator anew for the next frame.
+            // Taken, not cloned: `finish` gives it back.
             let mut acc = first.stats.take().expect("stats prepared");
             for w in ws {
                 acc.merge(w.stats.as_ref().expect("stats prepared"));
@@ -657,36 +661,38 @@ impl SoftIsp {
 }
 
 /// Run `f` on each job: on the pool's threads when there are several and `std` is on, else in
-/// turn. A job writes its own rows of a picture, so the jobs are independent.
+/// turn. A job writes its own rows of a picture, so the jobs are independent; threads take the
+/// next one from `jobs` as they come free, so a frame allocates nothing for them.
 #[cfg(feature = "std")]
-fn run_jobs<T: Send>(pool: &mut Option<Pool>, threads: usize, jobs: Vec<T>, f: impl Fn(T) + Sync) {
+fn run_jobs<T>(
+    pool: &mut Option<Pool>,
+    threads: usize,
+    jobs: impl ExactSizeIterator<Item = T> + Send,
+    f: impl Fn(T) + Sync,
+) {
     let used = threads.min(jobs.len()).max(1);
     if used <= 1 {
-        jobs.into_iter().for_each(f);
+        jobs.for_each(f);
         return;
     }
     let pool = match pool {
         Some(pool) if pool.helpers() + 1 >= used => pool,
         slot => slot.insert(Pool::new(threads - 1)),
     };
-    let slots: Vec<Mutex<Option<T>>> = jobs.into_iter().map(|j| Mutex::new(Some(j))).collect();
-    let next = AtomicUsize::new(0);
+    let jobs = Mutex::new(jobs);
     pool.run(used, &|_| {
         loop {
-            let k = next.fetch_add(1, Ordering::Relaxed);
-            let Some(slot) = slots.get(k) else { break };
-            let job = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(job) = job {
-                f(job);
-            }
+            let job = jobs.lock().unwrap_or_else(|e| e.into_inner()).next();
+            let Some(job) = job else { break };
+            f(job);
         }
     });
 }
 
 /// [`run_jobs`] without `std`: in turn.
 #[cfg(not(feature = "std"))]
-fn run_jobs<T>(_threads: usize, jobs: Vec<T>, f: impl Fn(T)) {
-    jobs.into_iter().for_each(f);
+fn run_jobs<T>(_threads: usize, jobs: impl Iterator<Item = T>, f: impl Fn(T)) {
+    jobs.for_each(f);
 }
 
 /// Output rows per band: all of them on one thread, else two bands per thread (claimed by

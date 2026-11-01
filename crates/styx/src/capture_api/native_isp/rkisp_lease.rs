@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
-use styx_core::buffer::CpuReadWindow;
+use styx_core::buffer::{BackingPool, CpuReadWindow};
 use styx_core::prelude::{
     ExportedKind, ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane,
     FrameResidency,
@@ -22,7 +22,7 @@ use styx_kernel::dma_heap::{self, Access, DmaBuf};
 use styx_pipeline::device::RkispPipeline;
 
 use super::layouts;
-use crate::metrics::CaptureMetrics;
+use crate::metrics::{CaptureMetrics, MeteredBacking};
 
 /// Main path buffers always left with the driver (one being written, one queued next).
 pub(super) const DRIVER_MIN: u32 = 2;
@@ -41,6 +41,8 @@ pub(super) struct RkBuffers {
     /// Buffers coming back from consumers (a ring: no allocation per frame).
     returns: BoundedTx<u32>,
     returned: BoundedRx<u32>,
+    /// The leases' backing records, reused so a frame allocates none.
+    backings: BackingPool<MeteredBacking<RkBacking>>,
 }
 
 impl RkBuffers {
@@ -66,11 +68,13 @@ impl RkBuffers {
             })
             .collect::<Option<Vec<_>>>()?;
         let (returns, returned) = styx_core::queue::bounded(buffers.len().max(1));
+        let backings = BackingPool::new(buffers.len().max(1));
         Some(Self {
             buffers,
             held: 0,
             returns,
             returned,
+            backings,
         })
     }
 
@@ -125,7 +129,7 @@ impl RkBuffers {
         Some(FrameLease::from_external(
             meta,
             plane_layouts,
-            Arc::new(live.track(backing)),
+            self.backings.wrap(live.track(backing)),
         ))
     }
 }
@@ -281,8 +285,7 @@ mod tests {
         assert_eq!(released, [0]);
         assert!(b.can_lease());
         drop(second);
-        // After a warm-up, a frame costs its lease record only: the return and its release
-        // allocate nothing.
+        // After a warm-up a frame allocates nothing: its lease, the return and the release.
         for _ in 0..10 {
             drop(b.lease(meta(), 2, size, &live).unwrap());
             b.take_returns(|_| Ok::<_, ()>(())).unwrap();
@@ -293,6 +296,6 @@ mod tests {
             drop(l);
             b.take_returns(|_| Ok::<_, ()>(())).unwrap();
         });
-        assert_eq!((leased, back), (1, 0));
+        assert_eq!((leased, back), (0, 0));
     }
 }

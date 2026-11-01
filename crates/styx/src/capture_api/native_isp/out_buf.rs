@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
+use styx_core::buffer::BackingPool;
 use styx_core::prelude::{
     ExportedKind, ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane,
     FrameResidency,
@@ -18,11 +19,15 @@ use styx_kernel::Mapping;
 use styx_kernel::dma_heap::{self, Access, DmaBuf, DmaHeap};
 
 use super::layouts;
-use crate::metrics::CaptureMetrics;
+use crate::metrics::{CaptureMetrics, MeteredBacking};
 
 /// Where leases hand their buffers back (a ring: no allocation per frame; a buffer coming
-/// back to a full ring is freed).
-pub(super) type Returns = BoundedTx<OutBuf>;
+/// back to a full ring is freed), and their backing records, reused so a frame allocates none.
+#[derive(Clone)]
+pub(super) struct Returns {
+    tx: BoundedTx<OutBuf>,
+    backings: BackingPool<MeteredBacking<OutBacking>>,
+}
 
 /// The worker's end of [`Returns`].
 pub(super) type ReturnsRx = BoundedRx<OutBuf>;
@@ -32,7 +37,9 @@ const RETURNS: usize = 64;
 
 /// A ring for buffers coming back.
 pub(super) fn returns() -> (Returns, ReturnsRx) {
-    styx_core::queue::bounded(RETURNS)
+    let (tx, rx) = styx_core::queue::bounded(RETURNS);
+    let backings = BackingPool::new(RETURNS);
+    (Returns { tx, backings }, rx)
 }
 
 /// Heaps tried for the buffers, cached ones first.
@@ -184,10 +191,10 @@ pub(super) fn lease(
     FrameLease::from_external(
         meta,
         planes,
-        Arc::new(live.track(OutBacking {
+        returns.backings.wrap(live.track(OutBacking {
             buf: Some(buf),
             offsets,
-            returns: returns.clone(),
+            returns: returns.tx.clone(),
         })),
     )
 }
@@ -206,7 +213,7 @@ struct OutBacking {
     buf: Option<OutBuf>,
     /// Each plane's offset in the buffer.
     offsets: SmallVec<[usize; 3]>,
-    returns: Returns,
+    returns: BoundedTx<OutBuf>,
 }
 
 impl OutBacking {
@@ -350,8 +357,8 @@ mod tests {
     }
 
     /// The soft ISP's output path after a warm-up: a buffer back from the consumer, written,
-    /// leased, delivered, taken, read and dropped; each frame allocates its lease record only.
-    fn frames_allocate_only_their_lease_record(heap: Option<&OutHeap>) {
+    /// leased, delivered, taken, read and dropped; a frame allocates nothing, its lease included.
+    fn frames_allocate_nothing(heap: Option<&OutHeap>) {
         use crate::test_alloc::allocations;
         use styx_core::queue::RecvOutcome;
         const W: u32 = 320;
@@ -390,18 +397,18 @@ mod tests {
         }
         std::hint::black_box(xor);
         assert_eq!(path, 0, "the frame path allocates");
-        assert_eq!(leased, 250, "a lease allocates more than its record");
+        assert_eq!(leased, 0, "a lease allocates");
     }
 
     #[test]
-    fn heap_memory_frames_allocate_only_their_lease_record() {
-        frames_allocate_only_their_lease_record(None);
+    fn heap_memory_frames_allocate_nothing() {
+        frames_allocate_nothing(None);
     }
 
     #[test]
-    fn dmabuf_frames_allocate_only_their_lease_record() {
+    fn dmabuf_frames_allocate_nothing() {
         if let Some(heap) = out_heap(false, 256) {
-            frames_allocate_only_their_lease_record(Some(&heap));
+            frames_allocate_nothing(Some(&heap));
         }
     }
 }

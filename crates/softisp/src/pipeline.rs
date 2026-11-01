@@ -248,6 +248,8 @@ pub(crate) struct Worker {
     dec: [Vec<u16>; 2],
     stage: Stage,
     pub stats: Option<StatsAccum>,
+    /// An accumulator kept for a later frame gathering statistics.
+    pub spare_stats: Option<StatsAccum>,
 }
 
 impl Worker {
@@ -263,14 +265,14 @@ impl Worker {
             self.quad = core::array::from_fn(|_| vec![0; w / 2]);
             self.dec = core::array::from_fn(|_| vec![0; w]);
         }
-        match (p.stats.as_ref().filter(|_| stats), &mut self.stats) {
-            (Some(setup), Some(acc))
-                if acc.histogram.len() == 4 * setup.config.histogram_bins as usize =>
-            {
-                acc.reset()
+        let kept = self.stats.take().or_else(|| self.spare_stats.take());
+        match (p.stats.as_ref().filter(|_| stats), kept) {
+            (Some(setup), Some(mut acc)) if acc.fits(setup) => {
+                acc.reset();
+                self.stats = Some(acc);
             }
-            (Some(setup), acc) => *acc = Some(StatsAccum::new(setup)),
-            (None, acc) => *acc = None,
+            (Some(setup), _) => self.stats = Some(StatsAccum::new(setup)),
+            (None, kept) => self.spare_stats = kept,
         }
     }
 
