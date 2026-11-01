@@ -351,7 +351,9 @@ config buffers used in turn, the raw buffer and the TDN average queued again at 
 indices of their own (`buffer + buffers * k`, so an index always holds the same dma-buf and
 vb2 keeps it mapped), waited for in order. On the CM5 (2026-10-31, three 320x320 passes,
 120 fps) queued jobs at shared spare indices took 0.40 ms per frame against 0.28 ms one at
-a time, 0.35 ms of it kernel time re-mapping the buffers: hence one at a time by default. Passes write into an
+a time, 0.35 ms of it kernel time re-mapping the buffers; with the fixed indices four queued
+jobs wedged the patched `pisp_be` (`kernel-modules/pispbe/README.md` "Queued jobs"). One at a
+time, and more refused unless `PispOptions::unsafe_queued_passes`. Passes write into an
 output's buffers, the main output's unless a region is in the second output's format
 (`PispOptions::pass_buffers` more of them per output; a capture gives each pass half as many again as an
 output has, at least 3), and a pass without a free buffer skips that frame. Cached output

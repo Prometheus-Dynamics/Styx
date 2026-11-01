@@ -25,11 +25,14 @@ pub struct PispOptions {
     /// ([`super::PispPipeline::set_pass`]).
     pub pass_buffers: [u32; 2],
     /// Extra passes' jobs queued at once, up to [`styx_pisp::device::QUEUED_JOBS`]: `1`
-    /// (default) waits for each before queuing the next; more queue them back to back (fewer
-    /// round trips through the pipeline thread). On the CM5 with three 320x320 passes,
-    /// queued cost 0.12 ms more per frame than one at a time (2026-10-31, buffers re-attached at
-    /// shared V4L2 indices; to be measured again with an index set per buffer).
+    /// (default) waits for each before queuing the next. More is refused unless
+    /// [`Self::unsafe_queued_passes`]: on the CM5 (2026-10-31) four short pass jobs queued at
+    /// once wedged the `pisp_be` driver ("not safe to queue new job!", then `STREAMOFF` stuck
+    /// in `vb2_wait_for_all_buffers` until a reboot; `kernel-modules/pispbe/README.md`
+    /// "Queued jobs"). Before that, queued passes were 0.12 ms slower per frame anyway.
     pub pass_jobs: usize,
+    /// Allow [`Self::pass_jobs`] above 1 (reproducing the driver hang; may need a reboot).
+    pub unsafe_queued_passes: bool,
     /// Back end node group (0 or 1).
     pub be_group: usize,
     /// Front end configs queued ahead of the frames.
@@ -91,6 +94,7 @@ impl PispOptions {
             be_buffers_initial: None,
             pass_buffers: [0; 2],
             pass_jobs: 1,
+            unsafe_queued_passes: false,
             be_group: 0,
             configs_ahead: 2,
             settled_rate_hz: Some(15.0),

@@ -181,7 +181,7 @@ States:
 | Output 0 and its downscale/resample | used | — |
 | Output 1 and its scaler | used: one pyramid level, regions, overview | — |
 | Downscaled pyramid levels | used: level 1 from output 1, each deeper level from an extra pass at its size (`pyramid_all_levels`, which the planner picks for a hardware pyramid; written, untested on board) | `box2_row` (`with_box_pyramid`) when the PiSP is not asked |
-| Extra BE passes (regions) | used: one job at a time (CM5, 3 passes: 0.28 ms/frame), or queued back to back behind `pass_jobs` (0.40 ms with shared indices; fixed indices per buffer to be measured); regions scaled by the pass (`NativeRegion::size`) or in the second output's format | — |
+| Extra BE passes (regions) | used: one job at a time (CM5, 3 passes: 0.28 ms/frame), queued back to back refused (`pass_jobs`: 0.40 ms with shared indices, wedged `pisp_be` with fixed ones; driver fix written); regions scaled by the pass (`NativeRegion::size`) or in the second output's format | — |
 | HOG output | unused | none |
 
 ### CM5: HEVC decoder

@@ -95,6 +95,12 @@ impl Isp {
         options: &PispOptions,
         want_tdn: bool,
     ) -> Result<(Self, Duration, Duration)> {
+        if options.pass_jobs > 1 && !options.unsafe_queued_passes {
+            return Err(PipelineError::Device(
+                "pass_jobs above 1 wedges the pisp_be driver (PispOptions::unsafe_queued_passes)"
+                    .into(),
+            ));
+        }
         let t = Instant::now();
         let order = bayer(info.cfa);
         // The receiver's and front end's device formats carry the order of the sensor pad's

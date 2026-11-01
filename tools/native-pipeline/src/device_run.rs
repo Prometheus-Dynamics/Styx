@@ -299,6 +299,8 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     options.spatial_denoise = a.spatial_denoise;
     options.pass_tdn = crate::passes::parse_tdn(&a.pass_tdn)?;
     options.pass_jobs = a.pass_jobs;
+    // Asked for on the command line: the reproduction of the driver hang.
+    options.unsafe_queued_passes = a.pass_jobs > 1;
     options.pass_buffers[0] = crate::passes::parse(&a.passes)?.len() as u32;
     let mut run = crate::passes::PassRun::new(
         crate::passes::parse(&a.passes)?,

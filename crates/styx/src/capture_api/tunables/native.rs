@@ -176,8 +176,8 @@ pub struct NativeIspConfig {
     /// region (about 0.05 ms of back end time for a 128x128 region, 0.4 ms for 640x400, and
     /// 0.02 ms of CPU each on the CM5), in the main output's format. Empty slots make nothing.
     pub regions: [Option<NativeRegion>; MAX_NATIVE_REGIONS],
-    /// PiSP: the regions' back end jobs queued at once (1..=4): `1` (default) runs them one
-    /// at a time; more queue them back to back (`PispOptions::pass_jobs`).
+    /// PiSP: the regions' back end jobs queued at once: `1` (default) runs them one at a
+    /// time; more is refused at open (it wedged the `pisp_be` driver, `PispOptions::pass_jobs`).
     pub pass_jobs: u8,
     /// Use the ISP driver's own buffers, which the CPU reads uncached (the Y plane of a
     /// 1280x800 frame in 1.9 ms on the CM5). `false` (default): cached dma-heap buffers, read

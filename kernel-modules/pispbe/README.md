@@ -131,6 +131,65 @@ sliced at line 600, alternating stock and Styx module runs:
 - Complete: 7.02 → 6.91 ms.
 - Every back end job starts about 0.11 ms sooner, so whole frames gain the same.
 
+## Queued jobs
+
+**2026-10-31, CM5 (Raze bench, 7.2.9-v8-16k, this module):** four short back end jobs queued
+at once wedged the driver. `native-pipeline pisp --passes 320x320@96,96;320x320@864,96;320x320@480,400
+--pass-jobs 4` (1280x800 RAW8 at 120 fps, temporal denoise off; each frame's main job, then
+three ~84 µs pass jobs queued back to back by the same process on node group 0). 0.1 s after
+streaming started the driver logged `ERROR: not safe to queue new job!` 356 times within 3 s;
+then no job completed, and `VIDIOC_STREAMOFF` blocked for good:
+
+```
+INFO: task np-queued:1434757 blocked for more than 120 seconds.
+ vb2_wait_for_all_buffers+0x8c/0x100 [videobuf2_common]
+ pispbe_node_stop_streaming+0x7c/0x160 [pisp_be]
+ __vb2_queue_cancel+0x2c/0x2dc [videobuf2_common]
+ vb2_core_streamoff+0x24/0xc8 [videobuf2_common]
+```
+
+The process stayed in D state (SIGKILL had no effect) until a reboot. `--pass-jobs 1` (one
+job in the driver at a time) ran clean before and after it on the same boot, and queued jobs
+had run clean before when each `QBUF` took 0.35 ms longer (buffers re-attached at shared V4L2
+indices).
+
+Reading: `pispbe_queue_job()` only logs when `PISP_BE_STATUS_QUEUED` is set and writes the
+job anyway, over the one the hardware holds; that job's completion never comes, so `hw_busy`
+and the vb2 buffers stay owned by the driver. `pispbe_schedule()` let the job in because the
+ISR's "started" accounting had cleared `hw_busy` while the hardware still held a queued job.
+Jobs shorter than the interrupt latency, queued back to back from the driver's own list, are
+what this needs; the stock driver's 117 µs config write (longer than such a job) may hide it,
+this module's 7 µs does not. Not yet reproduced on the stock module.
+
+**Fix in this module:** `pispbe_schedule()` reads `PISP_BE_STATUS_QUEUED` under `hw_lock`
+before taking a job and, when the hardware still holds one, leaves the job on the list
+(`queue_deferred` counts them): that queued job's start raises the next "started" interrupt,
+which schedules it. Written, untested on board. Styx refuses `PispOptions::pass_jobs` above 1
+(`unsafe_queued_passes` opts in, as `native-pipeline --pass-jobs` does) until it is.
+
+**Repro plan (one slot, reboots allowed):** with this module, then with the image's stock
+`pisp-be.ko` (`install/uninstall.sh --reload`), each from a fresh boot:
+`native-pipeline pisp --fps 120 --frames 600 --no-read --quiet --passes <the three regions>
+--pass-jobs 4`, watching `dmesg -w` for "not safe to queue". Stock and patched without the fix
+both hanging means it goes upstream; only the unfixed patched one, it stays ours.
+
+**Upstream draft** (only if the stock module hangs too):
+
+> **media: raspberrypi: pisp_be: Don't queue a job over one the hardware still holds**
+>
+> `pispbe_queue_job()` checks `PISP_BE_STATUS_QUEUED` but only logs "not safe to queue new
+> job!" and writes the new job anyway. With jobs shorter than the interrupt latency queued
+> back to back (several small jobs per frame from one client), the ISR can clear `hw_busy`
+> while the hardware still holds a queued job; the new job overwrites it, its completion is
+> never signalled, and the next `VIDIOC_STREAMOFF` blocks forever in
+> `vb2_wait_for_all_buffers()` (task in D state until reboot).
+>
+> Check the status in `pispbe_schedule()` under `hw_lock` and leave the job on the list when
+> the hardware is not ready for it; the queued job's "started" interrupt schedules it.
+>
+> Reproduced on a Raspberry Pi CM5 (rpi-7.2.y) with four ~84 µs jobs queued per frame at
+> 120 fps.
+
 ## Upstreaming
 
 Upstreamable as three small patches to `drivers/media/platform/raspberrypi/pisp_be/pisp_be.c`

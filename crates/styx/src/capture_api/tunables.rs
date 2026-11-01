@@ -15,9 +15,6 @@ pub const DEFAULT_POOL_SPARE: usize = 8;
 /// with the driver, so a full queue never starves the camera. (On a CM5, 2 gives the same
 /// frame age as 3 with a slow consumer; 1 lets libcamera fall back to stale frames.)
 pub const DEFAULT_CAPTURE_EXTRA_BUFFERS: usize = 2;
-/// Default [`CaptureConfig::gpu_import_pad`]: what v3dv (the Raspberry Pi 5's GPU) needs; at
-/// least as much as RADV, NVIDIA and lavapipe (none).
-pub const DEFAULT_GPU_IMPORT_PAD: u32 = 256;
 /// Default frame enqueue timeout for generic capture workers (milliseconds).
 pub const DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS: u64 = 10;
 /// Default idle stop poll for virtual/generic capture workers (milliseconds).
@@ -106,7 +103,7 @@ mod native;
 mod uvc;
 #[cfg(feature = "netcam")]
 pub(crate) use capture::PoolLimits;
-pub use capture::{CaptureConfig, IdleStop, ReconnectPolicy};
+pub use capture::{CaptureConfig, DEFAULT_GPU_IMPORT_PAD, IdleStop, ReconnectPolicy};
 pub use native::*;
 pub use uvc::UvcConfig;
 
@@ -444,8 +441,7 @@ impl StyxConfig {
         self
     }
 
-    /// Bytes past the last plane asked for in exported capture buffers (see
-    /// [`CaptureConfig::gpu_import_pad`]).
+    /// Bytes past the frame in exported buffers ([`CaptureConfig::gpu_import_pad`]).
     pub fn capture_gpu_import_pad(mut self, pad: u32) -> Self {
         self.capture.gpu_import_pad = pad;
         self

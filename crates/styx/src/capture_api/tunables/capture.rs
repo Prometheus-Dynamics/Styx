@@ -4,9 +4,13 @@ use styx_core::prelude::{ClockSource, QueueOverflow};
 
 use super::{
     DEFAULT_CAPTURE_EXTRA_BUFFERS, DEFAULT_CAPTURE_IDLE_POLL_MS,
-    DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS, DEFAULT_GPU_IMPORT_PAD, DEFAULT_POOL_BYTES,
-    DEFAULT_POOL_MIN, DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH,
+    DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN,
+    DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH,
 };
+
+/// Default [`CaptureConfig::gpu_import_pad`]: what v3dv (the Raspberry Pi 5's GPU) needs; at
+/// least as much as RADV, NVIDIA and lavapipe (none).
+pub const DEFAULT_GPU_IMPORT_PAD: u32 = 256;
 
 /// Tunables for capture queues and buffer pools.
 ///

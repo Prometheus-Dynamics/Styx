@@ -261,6 +261,8 @@ struct pispbe_dev {
 	/* protects "hw_busy" flag, streaming_map and job_queue */
 	spinlock_t hw_lock;
 	bool hw_busy; /* non-zero if a job is queued or is being started */
+	/* jobs held back because the hardware still had one queued */
+	unsigned long queue_deferred;
 	struct list_head job_queue;
 	int irq;
 	u32 hw_version;
@@ -666,6 +668,19 @@ static void pispbe_schedule(struct pispbe_dev *pispbe, bool clear_hw_busy)
 					       queue);
 		if (!job)
 			return;
+
+		/*
+		 * The hardware holds one queued job besides the running one. If
+		 * it still has one (a "started" interrupt let us in early, e.g.
+		 * jobs shorter than the interrupt latency queued back to back),
+		 * writing this one would overwrite it and its completion would
+		 * never come. Leave it on the list: the next "started" interrupt
+		 * schedules it.
+		 */
+		if (pispbe_rd(pispbe, PISP_BE_STATUS_REG) & PISP_BE_STATUS_QUEUED) {
+			pispbe->queue_deferred++;
+			return;
+		}
 
 		list_del(&job->queue);
 

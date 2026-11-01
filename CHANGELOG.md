@@ -14,11 +14,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   256. `0` asks for nothing. Breaking: `BeOutputSetup::gpu_pad`, `IspSetup::gpu_pad`, and
   `RkispPipeline::open`/`open_on` take a `gpu_pad`.
 
-- **PiSP extra passes: `PispOptions::pass_jobs` / `NativeIspConfig::pass_jobs`** (default
-  1, one job at a time): queuing passes back to back measured 0.12 ms slower per frame on the
-  CM5 (three 320x320 passes at 120 fps). The raw and TDN buffers now keep a fixed set of V4L2
-  indices each, so vb2 no longer re-maps a dma-buf at every queue (written, to be measured
-  again on the CM5). `native-pipeline pisp --pass-jobs N`.
+- **PiSP extra passes run one job at a time** (`PispOptions::pass_jobs` /
+  `NativeIspConfig::pass_jobs`, default 1): queued back to back they were 0.12 ms slower per
+  frame on the CM5, and with the raw and TDN buffers at fixed V4L2 indices (so vb2 no longer
+  re-maps them at every queue) four short jobs wedged the patched `pisp_be` until a reboot.
+  More than 1 is refused unless `PispOptions::unsafe_queued_passes`
+  (`native-pipeline pisp --pass-jobs N`). The patched module now holds a job back while the
+  hardware still has one queued (written, untested on board).
 
 - **Software ISP frames as dma-bufs**: the soft ISP's outputs (main, regions, overview) and
   the Rockchip path's fallback copies are written into recycled buffers from the cached
