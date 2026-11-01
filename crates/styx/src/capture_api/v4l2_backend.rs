@@ -484,12 +484,26 @@ fn negotiate_format(dev: &VideoDevice, mode: &Mode) -> styx_kernel::Result<PixFo
     pix.ycbcr_enc = 0;
     pix.flags &= PIX_FMT_FLAG_PREMUL_ALPHA;
     dev.set_format(BufType::VideoCapture, &Format::Single(pix))?;
-    match dev.format(BufType::VideoCapture)? {
+    let read = || match dev.format(BufType::VideoCapture)? {
         Format::Single(pix) => Ok(pix),
         _ => Err(styx_kernel::Error::Invalid(
             "v4l2 capture node has no single-planar format".into(),
         )),
+    };
+    let mut got = read()?;
+    // Room past an uncompressed image for a GPU importing the exported buffers (v3dv-style
+    // drivers round storage buffers up to 256 bytes): asked for, kept if the driver allows.
+    if !is_encoded_bitstream(mode.format.code) && got.size_image > 0 {
+        let mut padded = got;
+        padded.size_image += 256;
+        if dev
+            .set_format(BufType::VideoCapture, &Format::Single(padded))
+            .is_ok()
+        {
+            got = read()?;
+        }
     }
+    Ok(got)
 }
 
 mod layout;
