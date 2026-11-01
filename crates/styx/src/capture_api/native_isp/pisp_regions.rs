@@ -1,5 +1,6 @@
 //! The regions a PiSP capture makes besides its main output (`NativeIspConfig::regions`), and
-//! a pyramid level from an extra pass when the second output makes the overview.
+//! the pyramid levels extra passes make (when the second output makes the overview, the main
+//! output is a crop, or every level comes from the ISP).
 //!
 //! Each region is made either by the second output of the frame's own pass (the first region,
 //! when nothing else takes the second output and the main output is the whole frame) or by an
@@ -34,16 +35,16 @@ pub(super) struct Regions {
     places: [Option<Place>; MAX_NATIVE_REGIONS],
     /// The region each slot's back end set-up makes now (`None`: none, no companion).
     applied: [Option<FrameRect>; MAX_NATIVE_REGIONS],
-    /// The pyramid level an extra pass makes, and that pass.
-    pyramid: Option<(u8, usize)>,
-    /// The main output's crop the pyramid pass was set up for.
+    /// The pyramid levels extra passes make, and their passes.
+    pyramid: Vec<(u8, usize)>,
+    /// The main output's crop the pyramid passes were set up for.
     pyramid_for: Option<Option<FrameRect>>,
     frame: (u32, u32),
 }
 
-/// Extra passes `cfg` runs over every frame (region passes and the pyramid pass).
+/// Extra passes `cfg` runs over every frame (region passes and the pyramid passes).
 pub(super) fn pass_count(cfg: &NativeIspConfig) -> usize {
-    cfg.pass_regions().count() + usize::from(cfg.pyramid_pass())
+    cfg.pass_regions().count() + cfg.pyramid_pass_levels().count()
 }
 
 impl Regions {
@@ -84,10 +85,8 @@ impl Regions {
                 c.enable(frame, region.rect);
             }
         }
-        let pyramid = cfg
-            .pyramid_pass()
-            .then(|| (cfg.pyramid_level.clamp(1, 3), passes));
-        if pyramid.is_some() && (main.width, main.height) != frame {
+        let pyramid: Vec<_> = cfg.pyramid_pass_levels().zip(passes..).collect();
+        if !pyramid.is_empty() && (main.width, main.height) != frame {
             return Err(err(
                 "a pyramid level from an extra back end pass needs the main output at the mode's \
                  size",
@@ -102,7 +101,7 @@ impl Regions {
         })
     }
 
-    /// Hands changed regions (and the main output's crop, `main_crop`, to the pyramid pass) to
+    /// Hands changed regions (and the main output's crop, `main_crop`, to the pyramid passes) to
     /// the back end before the next frame. A region the back end refuses reverts its control.
     pub(super) fn apply(
         &mut self,
@@ -129,24 +128,21 @@ impl Regions {
                 }
             }
         }
-        if let Some((level, i)) = self.pyramid
-            && self.pyramid_for != Some(main_crop)
-        {
+        if self.pyramid_for != Some(main_crop) {
             let crop = main_crop.unwrap_or(FrameRect::new(0, 0, self.frame.0, self.frame.1));
-            let side = |v: u32| ((v >> level) & !1).max(16).min(v & !1);
-            let size = (side(crop.width) as u16, side(crop.height) as u16);
-            let spec = PassSpec {
-                size: Some(size),
-                ..region_pass(crop)
-            };
-            match p.set_pass(i, Some(spec)) {
-                Ok(()) => self.pyramid_for = Some(main_crop),
-                Err(e) => {
-                    crate::trace::warn!(backend = "native", error = %e, "pyramid pass refused");
-                    self.pyramid_for = Some(main_crop);
+            for &(level, i) in &self.pyramid {
+                let side = |v: u32| ((v >> level) & !1).max(16).min(v & !1);
+                let size = (side(crop.width) as u16, side(crop.height) as u16);
+                let spec = PassSpec {
+                    size: Some(size),
+                    ..region_pass(crop)
+                };
+                if let Err(e) = p.set_pass(i, Some(spec)) {
+                    crate::trace::warn!(backend = "native", level, error = %e, "pyramid pass refused");
                     let _ = p.set_pass(i, None);
                 }
             }
+            self.pyramid_for = Some(main_crop);
         }
     }
 
@@ -196,20 +192,21 @@ impl Regions {
                 crop: Some(crop),
                 ..main
             };
-            let (kind, placed) = if let Some((level, _)) = self.pyramid.filter(|&(_, p)| p == i) {
-                // Where the level sits in the whole frame at its scale, as box filters say.
-                let whole = (crop.width, crop.height) == self.frame;
-                let crop = (!whole).then(|| crop.scaled_down(level));
-                (CompanionKind::Pyramid { level }, Placed { crop, ..placed })
-            } else {
-                match self.places.iter().position(|p| *p == Some(Place::Pass(i))) {
-                    Some(k) => (CompanionKind::Region { index: k as u8 + 1 }, placed),
-                    None => {
-                        unleased.push((pass.output, pass.index));
-                        continue;
+            let (kind, placed) =
+                if let Some(&(level, _)) = self.pyramid.iter().find(|&&(_, p)| p == i) {
+                    // Where the level sits in the whole frame at its scale, as box filters say.
+                    let whole = (crop.width, crop.height) == self.frame;
+                    let crop = (!whole).then(|| crop.scaled_down(level));
+                    (CompanionKind::Pyramid { level }, Placed { crop, ..placed })
+                } else {
+                    match self.places.iter().position(|p| *p == Some(Place::Pass(i))) {
+                        Some(k) => (CompanionKind::Region { index: k as u8 + 1 }, placed),
+                        None => {
+                            unleased.push((pass.output, pass.index));
+                            continue;
+                        }
                     }
-                }
-            };
+                };
             if failed.is_some() {
                 unleased.push((pass.output, pass.index));
                 continue;
@@ -329,7 +326,47 @@ mod tests {
         let regions =
             Regions::new(&cfg, main_spec(), (1280, 800), &RegionCrops::default()).unwrap();
         assert_eq!(regions.places[0], Some(Place::Pass(0)));
-        assert_eq!(regions.pyramid, Some((1, 1)));
+        assert_eq!(regions.pyramid, [(1, 1)]);
         assert_eq!(pass_count(&cfg), 2);
+    }
+
+    #[test]
+    fn every_pyramid_level_from_the_isp() {
+        // The second output makes level 1, a pass each the deeper ones.
+        let cfg = StyxConfig::default()
+            .native_pyramid_level(3)
+            .native_pyramid_all_levels(true)
+            .backends
+            .native;
+        assert_eq!(cfg.pyramid_output_level(), 1);
+        let regions =
+            Regions::new(&cfg, main_spec(), (1280, 800), &RegionCrops::default()).unwrap();
+        assert_eq!(regions.pyramid, [(2, 0), (3, 1)]);
+        assert_eq!(pass_count(&cfg), 2);
+        // With a crop, every level from a pass, after the regions'.
+        let region = NativeRegion {
+            rect: Some(FrameRect::new(0, 0, 64, 64)),
+            format: None,
+        };
+        let cfg = StyxConfig::default()
+            .native_crop(FrameRect::new(0, 0, 640, 400))
+            .native_pyramid_level(2)
+            .native_pyramid_all_levels(true)
+            .native_regions(&[region])
+            .backends
+            .native;
+        assert_eq!(cfg.pyramid_output_level(), 0);
+        let regions =
+            Regions::new(&cfg, main_spec(), (1280, 800), &RegionCrops::default()).unwrap();
+        assert_eq!(regions.pyramid, [(1, 1), (2, 2)]);
+        assert_eq!(pass_count(&cfg), 3);
+        // Only the deepest level otherwise, from the second output.
+        let cfg = StyxConfig::default()
+            .native_pyramid_level(3)
+            .backends
+            .native;
+        assert_eq!(cfg.pyramid_output_level(), 3);
+        assert!(!cfg.pyramid_pass());
+        assert_eq!(pass_count(&cfg), 0);
     }
 }

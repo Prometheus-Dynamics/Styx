@@ -451,12 +451,7 @@ fn finish<'a>(
         &mut steps,
     )?;
     if isp_region == Some(super::region::IspCrop::Pisp) && isp_pyramid_level.is_some() {
-        for step in steps.iter_mut().filter(|s| {
-            matches!(s.kind, StepKind::Pyramid { .. }) && s.execution == StepExecution::Hardware
-        }) {
-            step.detail = "level 1 from an extra ISP pass of the region".into();
-            step.cost = cost::pisp_pass(region_size.0, region_size.1);
-        }
+        super::pyramid::from_region_passes(&mut steps, region_size);
     }
     let encoded = matches!(route, Route::Encode { .. });
     if encoded && req.pyramid.is_some_and(|p| p.levels > 0) {

@@ -141,6 +141,12 @@ pub struct NativeIspConfig {
     /// output's size, in its format (1 = ½, 2 = ¼, 3 = ⅛; 0, the default, off), read with
     /// `FrameLease::pyramid_level`. Takes the second output: `second_output` is then ignored.
     pub pyramid_level: u8,
+    /// PiSP: every pyramid level `1..=pyramid_level` from the ISP, not only the deepest: the
+    /// second output makes level 1 (unless the overview or a crop takes it) and an extra back
+    /// end pass each deeper level, so no level is left to the CPU's box filter
+    /// (`FrameLease::with_box_pyramid_in`). Each pass reads the raw frame again. `false`
+    /// (default): the one level of [`Self::pyramid_level`].
+    pub pyramid_all_levels: bool,
     /// PiSP, with the main output at the mode's size: deliver this region of the frame at
     /// full resolution from the start (rounded out to even pixels, at least 16x16). The
     /// `OUTPUT_CROP` control changes it while running; frames carry it as `FrameMeta::crop`.
@@ -268,6 +274,7 @@ impl Default for NativeIspConfig {
             output_format: None,
             second_output: None,
             pyramid_level: 0,
+            pyramid_all_levels: false,
             crop: None,
             overview: None,
             regions: [None; MAX_NATIVE_REGIONS],
@@ -316,10 +323,37 @@ impl NativeIspConfig {
         (0..MAX_NATIVE_REGIONS).filter(move |&k| self.regions[k].is_some() && Some(k) != second)
     }
 
-    /// An extra back end pass makes the pyramid level: the second output makes the overview, or
-    /// the main output is a crop (the second output would scale the whole frame, not the crop).
+    /// The pyramid level the second output makes (0: none): the deepest, or level 1 with
+    /// [`Self::pyramid_all_levels`]; none when the overview takes the second output or the main
+    /// output is a crop (the second output would scale the whole frame, not the crop).
+    pub fn pyramid_output_level(&self) -> u8 {
+        let level = self.pyramid_level.min(3);
+        if level == 0 || self.overview.is_some() || self.crop.is_some() {
+            0
+        } else if self.pyramid_all_levels {
+            1
+        } else {
+            level
+        }
+    }
+
+    /// The pyramid levels extra back end passes make, one pass each (empty: none).
+    pub fn pyramid_pass_levels(&self) -> core::ops::RangeInclusive<u8> {
+        let level = self.pyramid_level.min(3);
+        // `first > last` is empty.
+        let (first, last) = match (self.pyramid_output_level(), self.pyramid_all_levels) {
+            _ if level == 0 => (1, 0),
+            (0, true) => (1, level),
+            (0, false) => (level, level),
+            (_, true) => (2, level),
+            (_, false) => (1, 0),
+        };
+        first..=last
+    }
+
+    /// Whether an extra back end pass makes a pyramid level (see [`Self::pyramid_pass_levels`]).
     pub fn pyramid_pass(&self) -> bool {
-        self.pyramid_level > 0 && (self.overview.is_some() || self.crop.is_some())
+        !self.pyramid_pass_levels().is_empty()
     }
 }
 
@@ -470,6 +504,13 @@ impl StyxConfig {
     /// [`NativeIspConfig::pyramid_level`]).
     pub fn native_pyramid_level(mut self, level: u8) -> Self {
         self.backends.native.pyramid_level = level.min(3);
+        self
+    }
+
+    /// Have a native camera's PiSP make every pyramid level up to
+    /// [`NativeIspConfig::pyramid_level`] (see [`NativeIspConfig::pyramid_all_levels`]).
+    pub fn native_pyramid_all_levels(mut self, all: bool) -> Self {
+        self.backends.native.pyramid_all_levels = all;
         self
     }
 

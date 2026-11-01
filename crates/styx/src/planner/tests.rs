@@ -418,7 +418,7 @@ fn native_pisp_serves_two_sizes_and_formats_from_one_pass() {
 
 #[cfg(feature = "native")]
 #[test]
-fn native_pisp_supplies_the_first_pyramid_level() {
+fn native_pisp_supplies_every_pyramid_level() {
     let mut dev = device(
         BackendKind::Native,
         BackendHandle::Native {
@@ -433,14 +433,27 @@ fn native_pisp_supplies_the_first_pyramid_level() {
     dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
     let plan = plan_frames_with(&dev, &Frames::gray().pyramid(2), &registry()).unwrap();
     assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
-    assert_eq!(plan.isp_pyramid_level, Some(1), "{plan}");
+    // Level 1 from the second output, level 2 from an extra pass.
+    assert_eq!(plan.isp_pyramid_level, Some(2), "{plan}");
     let pyramid: Vec<StepExecution> = plan
         .steps
         .iter()
         .filter(|s| matches!(s.kind, StepKind::Pyramid { .. }))
         .map(|s| s.execution)
         .collect();
-    assert_eq!(pyramid, vec![StepExecution::Hardware, StepExecution::Cpu]);
+    assert_eq!(
+        pyramid,
+        vec![StepExecution::Hardware, StepExecution::Hardware]
+    );
+    let config = plan.start_config();
+    assert!(config.backends.native.pyramid_all_levels, "{plan}");
+    assert_eq!(config.backends.native.pyramid_pass_levels(), 2..=2);
+    // Three levels required in hardware: the PiSP makes them all.
+    let three = Frames::formats([FourCc::NV12])
+        .pyramid(3)
+        .pyramid_source(PyramidSource::HardwareOnly);
+    let plan = plan_frames_with(&dev, &three, &registry()).unwrap();
+    assert_eq!(plan.isp_pyramid_level, Some(3), "{plan}");
     let hardware = Frames::formats([FourCc::NV12])
         .pyramid(1)
         .pyramid_source(PyramidSource::HardwareOnly);

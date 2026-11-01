@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **Every pyramid level from the PiSP** (`NativeIspConfig::pyramid_all_levels`,
+  `StyxConfig::native_pyramid_all_levels`): the second output makes level 1 and an extra back
+  end pass each deeper level (or every level from passes when the overview or a crop takes the
+  second output), so no level is box-filtered on the CPU. The planner asks for it for a native
+  PiSP's hardware pyramid (`PyramidSource::PreferHardware` or `HardwareOnly`, up to three
+  levels; `HardwareOnly` used to refuse more than one). Written, untested on board.
+
 - **Canaan K230D's VeriSilicon ISP8000 in `styx-k230isp`, written, untested on board**: the
   register map of the MRV-derived ISP (block bases from the struct's gap arithmetic, field masks and
   shifts, MIT headers, cited per block), `Params` (a list of register writes: the AE grid's luma

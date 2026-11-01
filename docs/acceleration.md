@@ -113,7 +113,7 @@ Notes:
 
 | Unit (board) | Stages it takes | State |
 |---|---|---|
-| PiSP FE + BE (CM5) | unpack, front end, demosaic, colour matrix, tone, denoise, sharpen, YUV/RGB out, scaling (pyramid output 1), 3A statistics | pass |
+| PiSP FE + BE (CM5) | unpack, front end, demosaic, colour matrix, tone, denoise, sharpen, YUV/RGB out, scaling (every pyramid level), 3A statistics | pass |
 | Sensor flips (all) | mirror, vertical flip | pass (`HFLIP`/`VFLIP` controls) |
 | Stateful V4L2 M2M encoders (Pi 4 bcm2835-codec, others) | H.264, H.265, JPEG encode | pass (`V4l2M2mEncoder`, FFmpeg `*_v4l2m2m`) |
 | Stateful V4L2 M2M decoders | H.264, H.265 decode | pass (FFmpeg `*_v4l2m2m`) |
@@ -180,7 +180,7 @@ States:
 | Saturation control | unused | the saturation is folded into the CCM |
 | Output 0 and its downscale/resample | used | — |
 | Output 1 and its scaler | used: one pyramid level, regions, overview | — |
-| Downscaled pyramid levels | partly: one level from output 1 (or one extra pass); deeper levels are box-filtered on the CPU | `box2_row` (`with_box_pyramid`) |
+| Downscaled pyramid levels | used: level 1 from output 1, each deeper level from an extra pass at its size (`pyramid_all_levels`, which the planner picks for a hardware pyramid; written, untested on board) | `box2_row` (`with_box_pyramid`) when the PiSP is not asked |
 | Extra BE passes (regions) | partly: run one after another; scaled or other-format regions are not planned | — |
 | HOG output | unused | none |
 
@@ -227,14 +227,13 @@ These totals cover the capability rows above.
 
 | Board | used | partly | unused | n/a |
 |---|---|---|---|---|
-| CM5 (PiSP, HEVC) | 9 | 4 | 7 | 0 |
+| CM5 (PiSP, HEVC) | 10 | 3 | 7 | 0 |
 | K230D | 0 | 0 | 6 | 0 |
 | Rockchip | 0 | 0 | 7 | 0 |
 | RV1106 | 0 | 0 | 3 | 0 |
 
 The rows that need no new board are all on the CM5:
 
-- every pyramid level from the PiSP (extra BE passes at each level's size);
 - CDAF windows that follow `AF_WINDOWS`;
 - queued BE passes and scaled regions;
 - HEVC decode verified on the CM5.

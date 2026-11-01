@@ -131,8 +131,11 @@ JPEG with restart markers; `every_frame`: one), unless `decode_threads` says oth
   - `Hardware::Required` fails planning for CPU-only paths.
 - `PyramidSource`:
   - `PreferHardware` (default) takes level 1 from the ISP's second output where possible and
-    computes deeper levels with box filters.
-  - `HardwareOnly` fails without an ISP output. The ISP provides a single level.
+    computes deeper levels with box filters. A native PiSP makes every level: level 1 from its
+    second output, each deeper one from an extra back end pass at that level's size
+    (`NativeIspConfig::pyramid_all_levels`).
+  - `HardwareOnly` fails without an ISP output, or for more levels than the ISP makes (a native
+    PiSP makes up to three; another ISP's second output one).
   - `Software` always uses box filters.
   - `Gpu` makes every level on the GPU (feature `gpu-wgpu`, crates/wgpu), bit for bit the
     box filters. It falls back to the CPU where there is no GPU.

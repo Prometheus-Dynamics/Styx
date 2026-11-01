@@ -16,12 +16,13 @@ use styx_core::prelude::*;
 pub use super::frames::Frames;
 pub use super::roi::RoiHandle;
 use super::{FramePlan, Route};
-use crate::capture_api::{CaptureError, CaptureRequest, IdleStop};
+use crate::capture_api::{CaptureError, CaptureRequest, IdleStop, StyxConfig};
 use crate::session::MediaPipelineBuilder;
 
 impl FramePlan {
-    /// Start capturing with this plan.
-    pub fn start(&self) -> Result<Frames, CaptureError> {
+    /// The capture settings the plan starts with: its own, with the ISP outputs, raw frames,
+    /// regions and idle behaviour it chose.
+    pub(crate) fn start_config(&self) -> StyxConfig {
         let mut config = self
             .config
             .clone()
@@ -30,7 +31,8 @@ impl FramePlan {
         if let Some(level) = self.isp_pyramid_level {
             config = config
                 .libcamera_pyramid_level(level)
-                .native_pyramid_level(level);
+                .native_pyramid_level(level)
+                .native_pyramid_all_levels(level > 1);
         }
         if let Some((width, height)) = self.isp_output {
             config = config
@@ -46,6 +48,13 @@ impl FramePlan {
             Some((after, _)) => config.stop_when_idle(after),
             None => config,
         };
+        config
+    }
+
+    /// Start capturing with this plan.
+    pub fn start(&self) -> Result<Frames, CaptureError> {
+        #[allow(unused_mut)]
+        let mut config = self.start_config();
         let roi = RoiHandle::default();
         roi.set_regions(&self.request.all_regions());
         let preparer = Arc::new(FramePreparer::new(self, roi.clone()));

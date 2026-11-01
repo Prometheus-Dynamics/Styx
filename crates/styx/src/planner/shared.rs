@@ -558,7 +558,8 @@ fn outputs_config(consumers: &[FramePlan], mode: &Mode, mut config: StyxConfig) 
     if let Some(level) = consumers.iter().find_map(|p| p.isp_pyramid_level) {
         config = config
             .libcamera_pyramid_level(level)
-            .native_pyramid_level(level);
+            .native_pyramid_level(level)
+            .native_pyramid_all_levels(level > 1);
     }
     let main = consumers
         .iter()

@@ -55,8 +55,8 @@ pub(super) fn output_specs(
         };
         return Ok(([Some(main), Some(overview)], CompanionKind::Overview));
     }
-    let level = cfg.pyramid_level.min(3);
-    if level > 0 && !cfg.pyramid_pass() {
+    let level = cfg.pyramid_output_level();
+    if level > 0 {
         if cfg.second_output.is_some() {
             crate::trace::warn!(
                 backend = "native",
@@ -489,5 +489,12 @@ mod tests {
             (specs[1].unwrap().width, specs[1].unwrap().height),
             (320, 180)
         );
+        // Every level from the ISP: the second output makes level 1, passes the rest.
+        let all = NativeIspConfig {
+            pyramid_all_levels: true,
+            ..quarter
+        };
+        let (_, kind) = output_specs(&mode, &all).unwrap();
+        assert_eq!(kind, CompanionKind::Pyramid { level: 1 });
     }
 }
