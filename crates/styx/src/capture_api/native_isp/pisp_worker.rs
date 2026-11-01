@@ -181,9 +181,9 @@ pub(super) fn frame_leases(
             }
         }
     }
-    let main_placed = w.specs[0].map(|s| placed(0, s));
-    let passes = match (main_placed, failed.is_none()) {
-        (Some(at), true) => w.regions.pass_companions(&mut leaser, f, at, &mut unleased),
+    let at = [0, 1].map(|i| w.specs[i].map(|s| placed(i, s)));
+    let passes = match (at[0], failed.is_none()) {
+        (Some(_), true) => w.regions.pass_companions(&mut leaser, f, at, &mut unleased),
         _ => {
             for pass in f.passes.iter().flatten() {
                 unleased.push((pass.output, pass.index));

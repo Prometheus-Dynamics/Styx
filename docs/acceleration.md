@@ -181,7 +181,7 @@ States:
 | Output 0 and its downscale/resample | used | — |
 | Output 1 and its scaler | used: one pyramid level, regions, overview | — |
 | Downscaled pyramid levels | used: level 1 from output 1, each deeper level from an extra pass at its size (`pyramid_all_levels`, which the planner picks for a hardware pyramid; written, untested on board) | `box2_row` (`with_box_pyramid`) when the PiSP is not asked |
-| Extra BE passes (regions) | partly: run one after another; scaled or other-format regions are not planned | — |
+| Extra BE passes (regions) | used: queued back to back (up to `QUEUED_JOBS`), regions scaled by the pass (`NativeRegion::size`) or in the second output's format; written, untested on board | — |
 | HOG output | unused | none |
 
 ### CM5: HEVC decoder
@@ -227,14 +227,11 @@ These totals cover the capability rows above.
 
 | Board | used | partly | unused | n/a |
 |---|---|---|---|---|
-| CM5 (PiSP, HEVC) | 11 | 2 | 7 | 0 |
+| CM5 (PiSP, HEVC) | 12 | 1 | 7 | 0 |
 | K230D | 0 | 0 | 6 | 0 |
 | Rockchip | 0 | 0 | 7 | 0 |
 | RV1106 | 0 | 0 | 3 | 0 |
 
-The rows that need no new board are all on the CM5:
-
-- queued BE passes and scaled regions;
-- HEVC decode verified on the CM5.
+The row that needs no new board is on the CM5: HEVC decode verified on the CM5.
 
 HDR stitch and tonemap need a sensor with two exposures, and CAC needs calibration.

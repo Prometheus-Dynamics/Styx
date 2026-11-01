@@ -106,8 +106,9 @@ impl NativeDeflicker {
 /// [`NativeIspConfig::regions`]).
 pub const MAX_NATIVE_REGIONS: usize = 15;
 
-/// A region of interest the PiSP crops at full resolution besides the main output, delivered
-/// with every frame as a `CompanionKind::Region` companion (see [`NativeIspConfig::regions`]).
+/// A region of interest the PiSP crops besides the main output (at full resolution, or scaled
+/// to [`Self::size`]), delivered with every frame as a `CompanionKind::Region` companion (see
+/// [`NativeIspConfig::regions`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -115,9 +116,14 @@ pub struct NativeRegion {
     /// Where it starts (frame pixels, rounded out to even pixels, at least 16x16). `None`: no
     /// region (no companion) until its control sets one.
     pub rect: Option<FrameRect>,
-    /// Its format, `NV12` or `RG24` (`None`: the main output's). Only the region the second
-    /// output makes can differ from the main output's.
+    /// Its format, `NV12` or `RG24` (`None`: the main output's). A region an extra pass makes
+    /// in another format than the main output's goes into the second output's buffers, which
+    /// must be in that format (the back end lays a pass's planes out as its buffers are).
     pub format: Option<FourCc>,
+    /// Deliver it at this size (`None`: full resolution): the back end scales it in the pass
+    /// that makes it, no CPU work. Such a region always comes from an extra pass, into buffers
+    /// that must hold it.
+    pub size: Option<(u32, u32)>,
 }
 
 /// What a native camera's ISP delivers for a processed (`NV12` / `RG24`) mode. The PiSP's
@@ -314,7 +320,11 @@ impl NativeIspConfig {
         if taken {
             return None;
         }
-        self.regions.iter().position(Option::is_some)
+        // The second output crops at its own (the mode's) size: a scaled region takes a pass.
+        let k = self.regions.iter().position(Option::is_some)?;
+        self.regions[k]
+            .is_some_and(|r| r.size.is_none())
+            .then_some(k)
     }
 
     /// The regions extra back end passes make (slots in [`Self::regions`]).
@@ -544,7 +554,7 @@ mod tests {
     fn the_second_output_makes_a_region_only_when_free_and_the_main_output_is_whole() {
         let r = NativeRegion {
             rect: Some(FrameRect::new(0, 0, 64, 64)),
-            format: None,
+            ..Default::default()
         };
         let c = StyxConfig::default().native_regions(&[r, r, r]);
         let n = c.backends.native;

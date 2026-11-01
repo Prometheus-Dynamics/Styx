@@ -16,6 +16,7 @@ mod be_tdn;
 mod config_buf;
 #[cfg(feature = "debug-hooks")]
 mod config_dump;
+mod slots;
 #[cfg(not(feature = "debug-hooks"))]
 mod config_dump {
     //! Debug hooks off (feature `debug-hooks`): the config dumps and the patch do nothing.
@@ -63,7 +64,8 @@ const LINES_EVENT_OFFSET: u32 = 0x5354;
 pub use be::{BackEndDevice, BeOutput};
 pub use be_output::OutputMemory;
 pub use be_stream::{
-    BackEndStream, BeFormat, BeJob, BeOutputSetup, OUTPUT_STRIDE_ALIGN, QueuedJob, output_stride,
+    BackEndStream, BeFormat, BeJob, BeOutputSetup, OUTPUT_STRIDE_ALIGN, QUEUED_JOBS, QueuedJob,
+    output_stride,
 };
 pub use config_buf::ConfigMemory;
 pub use fe::{

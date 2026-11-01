@@ -8,6 +8,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **PiSP extra back end passes queued back to back, scaled and other-format regions**
+  (written, untested on board): `BackEndStream` takes up to `QUEUED_JOBS` jobs at once (config
+  buffers used in turn, the raw input and the TDN average queued again at spare indices), and
+  the region and pyramid passes go to the back end together instead of one round trip each.
+  `NativeRegion::size` scales a region in its pass; a region in the second output's format
+  (but not the main output's) is made by a pass into that output's buffers. Breaking:
+  `NativeRegion` has a new field, `PispOptions::pass_buffers` is per output (`[u32; 2]`).
+
 - **PiSP focus statistics follow the AF windows**: AF reports the windows' bounding box
   (`AfStatus::measure_area`), the pipeline moves the front end's 8x8 CDAF grid there
   (`IspSettings::focus_area`) and the statistics say where the zones were

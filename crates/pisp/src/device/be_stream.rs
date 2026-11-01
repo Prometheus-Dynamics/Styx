@@ -17,6 +17,7 @@ use super::be_output::{OutputMemory, OutputQueue};
 use super::be_spare::{take_buffer, top_up_free};
 use super::be_tdn::TdnBuffers;
 use super::config_buf::{ConfigBuffer, ConfigMemory};
+use super::slots::Slots;
 use super::{DeviceError, Result, bayer16_fourcc, find_media};
 use crate::format::formats;
 use crate::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig, rgb_enable};
@@ -51,6 +52,10 @@ impl BeFormat {
         }
     }
 }
+
+/// How many jobs a stream can have queued at once ([`BackEndStream::process_queued`]
+/// before [`BackEndStream::wait_job`]): the main job's and the extra passes', back to back.
+pub const QUEUED_JOBS: usize = 4;
 
 /// One output: format and size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +114,8 @@ pub struct BackEndStream {
     _media: MediaDevice,
     input: styx_kernel::v4l2::VideoDevice,
     inputs: Vec<OwnedFd>,
+    /// The input's V4L2 indices queued (a raw buffer in several queued jobs).
+    input_slots: Slots,
     input_len: u32,
     outputs: [Option<Output>; 2],
     config: ConfigBuffer,
@@ -258,16 +265,17 @@ impl BackEndStream {
                 g.planes
             )));
         }
+        let input_slots = Slots::new(inputs.len() as u32, QUEUED_JOBS as u32 - 1);
         let got = in_dev.request_buffers(
             BufType::VideoOutputMplane,
             Memory::DmaBuf,
-            inputs.len() as u32,
+            input_slots.count(),
         )?;
-        if (got.count as usize) < inputs.len() {
+        if got.count < input_slots.count() {
             return Err(DeviceError::Setup(format!(
                 "pispbe-input gave {} of {} buffers",
                 got.count,
-                inputs.len()
+                input_slots.count()
             )));
         }
         let mut outs: [Option<Output>; 2] = [None, None];
@@ -334,6 +342,7 @@ impl BackEndStream {
             cfg_dev,
             BufType::MetaOutput,
             size_of::<BeTilesConfig>(),
+            QUEUED_JOBS,
             "pispbe-config",
             config,
         )?;
@@ -341,6 +350,7 @@ impl BackEndStream {
             _media: media,
             input: in_dev,
             inputs,
+            input_slots,
             input_len,
             outputs: outs,
             config,
@@ -382,6 +392,7 @@ impl BackEndStream {
             node("pispbe-tdn_input")?,
             node("pispbe-tdn_output")?,
             self.input_layout,
+            QUEUED_JOBS,
         )?);
         Ok(())
     }
@@ -442,7 +453,8 @@ impl BackEndStream {
 
     /// Queues one job on input buffer `input` with `cfg` and returns at once; finish it with
     /// [`Self::wait_job`] (the caller can work meanwhile: the job takes about 0.8 ms for
-    /// 1280x800).
+    /// 1280x800). Up to [`QUEUED_JOBS`] can be queued, the same input in several; wait for
+    /// them in the order they were queued.
     pub fn process_queued(&mut self, input: u32, cfg: &BeTilesConfig) -> Result<QueuedJob> {
         self.process_queued_part(input, cfg, None, true)
     }
@@ -459,6 +471,11 @@ impl BackEndStream {
         held: Option<[Option<u32>; 2]>,
         last: bool,
     ) -> Result<QueuedJob> {
+        if !self.config.free() || self.input_slots.pick(input).is_none() {
+            return Err(DeviceError::Setup(format!(
+                "{QUEUED_JOBS} back end jobs are already queued"
+            )));
+        }
         let patched = super::config_dump::be_patch(cfg);
         let cfg = patched.as_deref().unwrap_or(cfg);
         let bytes = cfg.as_bytes();
@@ -535,7 +552,7 @@ impl BackEndStream {
     }
 
     fn queue_job(
-        &self,
+        &mut self,
         input: u32,
         picked: [Option<u32>; 2],
         cfg_len: u32,
@@ -550,7 +567,11 @@ impl BackEndStream {
                 o.queue.queue(b)?;
             }
         }
-        let mut q = QueueBuffer::dmabuf(BufType::VideoOutputMplane, input, &[fd]);
+        let index = self
+            .input_slots
+            .pick(input)
+            .ok_or_else(|| DeviceError::Setup("every input slot is queued".into()))?;
+        let mut q = QueueBuffer::dmabuf(BufType::VideoOutputMplane, index, &[fd]);
         q.planes = Planes::one(QueuePlane {
             dmabuf: Some(fd),
             length: self.input_len,
@@ -558,13 +579,14 @@ impl BackEndStream {
             data_offset: 0,
         });
         super::profile::time("pispbe-input", "qbuf", || self.input.queue(&q))?;
+        self.input_slots.queued(index);
         let (start, start_mono) = (Instant::now(), styx_kernel::monotonic_now());
         // The job starts when the config is queued (the driver writes it to the hardware).
         self.config.queue(cfg_len)?;
         Ok((start, start_mono))
     }
 
-    fn wait(&self, job: &QueuedJob, timeout: Duration) -> Result<BeJob> {
+    fn wait(&mut self, job: &QueuedJob, timeout: Duration) -> Result<BeJob> {
         let mut elapsed = None;
         let mut error = false;
         for (o, b) in self.outputs.iter().zip(job.outputs) {
@@ -589,6 +611,7 @@ impl BackEndStream {
             })?
             .is_some()
             {
+                self.input_slots.dequeued();
                 break;
             }
             let left = deadline.saturating_duration_since(Instant::now());

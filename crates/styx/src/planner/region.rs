@@ -480,7 +480,7 @@ impl FramePlan {
             if let Some(slot) = config.backends.native.regions.get_mut(usize::from(k)) {
                 *slot = Some(NativeRegion {
                     rect: rects.get(i).copied(),
-                    format: None,
+                    ..Default::default()
                 });
             }
         }

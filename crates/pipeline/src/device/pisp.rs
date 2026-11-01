@@ -147,11 +147,8 @@ impl Isp {
             fe_dev.image_dmabufs()?,
             input_len,
             options.outputs,
-            [
-                options.be_buffers + options.pass_buffers,
-                options.be_buffers,
-            ],
-            [initial + options.pass_buffers, initial],
+            options.pass_buffers.map(|p| options.be_buffers + p),
+            options.pass_buffers.map(|p| initial + p),
             options.output_memory,
             options.config_memory,
         )?;

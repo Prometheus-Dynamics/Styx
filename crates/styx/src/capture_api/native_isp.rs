@@ -471,10 +471,9 @@ pub(super) fn start_processed(
                 vflip: config.backends.native.vflip,
             };
             let (specs, second_kind) = pisp_worker::output_specs(&mode, &config.backends.native)?;
-            let main = specs[0].ok_or_else(|| err("no main output"))?;
             let regions = pisp_regions::Regions::new(
                 &config.backends.native,
-                main,
+                specs,
                 (w, h),
                 &loop_controls.regions,
             )?;
@@ -484,13 +483,15 @@ pub(super) fn start_processed(
                 specs.iter().flatten().map(|s| s.bytes()).sum(),
                 cma_free().filter(|_| !config.backends.native.driver_buffers),
             );
-            // Extra passes write into the main output's buffers: half as many again per pass
-            // (at least 3: one being written, one queued, one read), within the limit (a pass
-            // without a free buffer skips a frame; buffers beyond the contiguous memory come
-            // from the system heap).
-            let passes = pisp_regions::pass_count(&config.backends.native) as u32;
-            let pass_buffers = (passes * (be_buffers / 2).max(3))
-                .min(MAX_OUTPUT_BUFFERS.saturating_sub(be_buffers));
+            // Extra passes write into an output's buffers (the main one's, unless a region is
+            // in the second output's format): half as many again per pass (at least 3: one
+            // being written, one queued, one read), within the limit (a pass without a free
+            // buffer skips a frame; buffers beyond the contiguous memory come from the system
+            // heap).
+            let pass_buffers = regions.passes_per_output().map(|passes| {
+                (passes * (be_buffers / 2).max(3))
+                    .min(MAX_OUTPUT_BUFFERS.saturating_sub(be_buffers))
+            });
             let options = PispOptions {
                 outputs: [setup(0)?, setup(1)?],
                 output_memory: if config.backends.native.driver_buffers {

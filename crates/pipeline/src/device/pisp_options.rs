@@ -21,9 +21,9 @@ pub struct PispOptions {
     /// opens; the rest by a background allocator as frames need them, one spare ahead
     /// (`OutputMemory::CachedHeap` only). `None`: all, at open.
     pub be_buffers_initial: Option<u32>,
-    /// More buffers for output 0, for the extra passes that write into them
+    /// More buffers per output, for the extra passes that write into them
     /// ([`super::PispPipeline::set_pass`]).
-    pub pass_buffers: u32,
+    pub pass_buffers: [u32; 2],
     /// Back end node group (0 or 1).
     pub be_group: usize,
     /// Front end configs queued ahead of the frames.
@@ -81,7 +81,7 @@ impl PispOptions {
             fe_buffers: 6,
             be_buffers: 6,
             be_buffers_initial: None,
-            pass_buffers: 0,
+            pass_buffers: [0; 2],
             be_group: 0,
             configs_ahead: 2,
             settled_rate_hz: Some(15.0),

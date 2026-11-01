@@ -3,9 +3,11 @@
 //! output is a crop, or every level comes from the ISP).
 //!
 //! Each region is made either by the second output of the frame's own pass (the first region,
-//! when nothing else takes the second output and the main output is the whole frame) or by an
-//! extra back end pass over the same raw frame (`PispPipeline::set_pass`), into the main
-//! output's buffers. Either way it comes with the frame it was cut from, as a
+//! when nothing else takes the second output, the main output is the whole frame and the
+//! region is not scaled) or by an extra back end pass over the same raw frame
+//! (`PispPipeline::set_pass`), into the main output's buffers (the second output's for a
+//! region in its format but not the main output's), scaled by the back end when the region
+//! has a size. Either way it comes with the frame it was cut from, as a
 //! `CompanionKind::Region { index }` companion whose `FrameMeta::crop` says where it is: frame,
 //! regions, overview and metadata always belong to one raw frame.
 
@@ -15,7 +17,7 @@ use styx_pipeline::device::{PispFrame, PispPipeline};
 use styx_pipeline::pisp_passes::PassSpec;
 
 use super::super::request::CaptureError;
-use super::super::tunables::{MAX_NATIVE_REGIONS, NativeIspConfig};
+use super::super::tunables::{MAX_NATIVE_REGIONS, NativeIspConfig, NativeRegion};
 use super::crop_control::RegionCrops;
 use super::err;
 use super::pisp_lease::{Leaser, OutputSpec, Placed, be_crop};
@@ -26,7 +28,16 @@ pub(super) enum Place {
     /// The second output of the frame's own pass.
     Second,
     /// Extra pass `i`.
-    Pass(usize),
+    Pass(usize, Shape),
+}
+
+/// What an extra pass makes of a region besides its crop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Shape {
+    /// The output whose buffers it writes.
+    output: usize,
+    /// Its size (`None`: the crop's).
+    size: Option<(u16, u16)>,
 }
 
 /// The capture's regions, as the worker keeps them. See the [module documentation](self).
@@ -43,19 +54,21 @@ pub(super) struct Regions {
 }
 
 /// Extra passes `cfg` runs over every frame (region passes and the pyramid passes).
-pub(super) fn pass_count(cfg: &NativeIspConfig) -> usize {
+#[cfg(test)]
+fn pass_count(cfg: &NativeIspConfig) -> usize {
     cfg.pass_regions().count() + cfg.pyramid_pass_levels().count()
 }
 
 impl Regions {
-    /// The regions of `cfg` for a capture of `frame` size whose main output is `main`; their
-    /// controls in `controls` are enabled, starting from `cfg`'s rectangles.
+    /// The regions of `cfg` for a capture of `frame` size whose outputs are `specs` (the main
+    /// one first); their controls in `controls` are enabled, starting from `cfg`'s rectangles.
     pub(super) fn new(
         cfg: &NativeIspConfig,
-        main: OutputSpec,
+        specs: [Option<OutputSpec>; 2],
         frame: (u32, u32),
         controls: &RegionCrops,
     ) -> Result<Self, CaptureError> {
+        let main = specs[0].ok_or_else(|| err("no main output"))?;
         let mut places = [None; MAX_NATIVE_REGIONS];
         let second = cfg.second_output_region();
         let mut passes = 0;
@@ -64,21 +77,16 @@ impl Regions {
             let place = if Some(k) == second {
                 Place::Second
             } else {
-                if (main.width, main.height) != frame {
+                let shape = pass_shape(k, *region, specs)?;
+                if shape.output == 0 && region.size.is_none() && (main.width, main.height) != frame
+                {
                     return Err(err(
-                        "regions from extra back end passes need the main output at the mode's size",
+                        "full-resolution regions from extra back end passes need the main output \
+                         at the mode's size",
                     ));
                 }
-                if region.format.is_some_and(|f| f != main.code) {
-                    return Err(err(format!(
-                        "region {}: an extra back end pass makes it in the main output's format \
-                         ({}); only the second output's region can differ",
-                        k + 1,
-                        main.code
-                    )));
-                }
                 passes += 1;
-                Place::Pass(passes - 1)
+                Place::Pass(passes - 1, shape)
             };
             places[k] = Some(place);
             if let Some(c) = controls.slot(k) {
@@ -101,6 +109,17 @@ impl Regions {
         })
     }
 
+    /// How many extra passes write into each output's buffers.
+    pub(super) fn passes_per_output(&self) -> [u32; 2] {
+        let mut n = [self.pyramid.len() as u32, 0];
+        for place in self.places.iter().flatten() {
+            if let Place::Pass(_, shape) = place {
+                n[shape.output] += 1;
+            }
+        }
+        n
+    }
+
     /// Hands changed regions (and the main output's crop, `main_crop`, to the pyramid passes) to
     /// the back end before the next frame. A region the back end refuses reverts its control.
     pub(super) fn apply(
@@ -118,7 +137,7 @@ impl Regions {
             };
             let applied = match place {
                 Place::Second => p.set_output_crop(1, change.map(be_crop)),
-                Place::Pass(i) => p.set_pass(i, change.map(region_pass)),
+                Place::Pass(i, shape) => p.set_pass(i, change.map(|c| shape.pass(c))),
             };
             match applied {
                 Ok(()) => self.applied[k] = change,
@@ -167,19 +186,23 @@ impl Regions {
         }
     }
 
-    /// The companions frame `f`'s extra passes made, leased from the main output's buffers
-    /// (laid out as `main`). On an error, the buffers not leased are handed back.
+    /// The companions frame `f`'s extra passes made, leased from the outputs' buffers (laid
+    /// out as `at`). On an error, the buffers not leased are handed back.
     pub(super) fn pass_companions(
         &self,
         leaser: &mut Leaser<'_>,
         f: &PispFrame,
-        main: Placed,
+        at: [Option<Placed>; 2],
         unleased: &mut Vec<(usize, u32)>,
     ) -> Result<Vec<(CompanionKind, FrameLease)>, String> {
         let mut out = Vec::new();
         let mut failed = None;
         for (i, pass) in f.passes.iter().enumerate() {
             let Some(pass) = pass else { continue };
+            let Some(buffer) = at.get(pass.output).copied().flatten() else {
+                unleased.push((pass.output, pass.index));
+                continue;
+            };
             let c = pass.spec.crop;
             let crop = FrameRect::new(
                 u32::from(c.offset_x),
@@ -190,23 +213,25 @@ impl Regions {
             let placed = Placed {
                 size: pass.spec.size.map(|(w, h)| (u32::from(w), u32::from(h))),
                 crop: Some(crop),
-                ..main
+                ..buffer
             };
-            let (kind, placed) =
-                if let Some(&(level, _)) = self.pyramid.iter().find(|&&(_, p)| p == i) {
-                    // Where the level sits in the whole frame at its scale, as box filters say.
-                    let whole = (crop.width, crop.height) == self.frame;
-                    let crop = (!whole).then(|| crop.scaled_down(level));
-                    (CompanionKind::Pyramid { level }, Placed { crop, ..placed })
-                } else {
-                    match self.places.iter().position(|p| *p == Some(Place::Pass(i))) {
-                        Some(k) => (CompanionKind::Region { index: k as u8 + 1 }, placed),
-                        None => {
-                            unleased.push((pass.output, pass.index));
-                            continue;
-                        }
+            let (kind, placed) = if let Some(&(level, _)) =
+                self.pyramid.iter().find(|&&(_, p)| p == i)
+            {
+                // Where the level sits in the whole frame at its scale, as box filters say.
+                let whole = (crop.width, crop.height) == self.frame;
+                let crop = (!whole).then(|| crop.scaled_down(level));
+                (CompanionKind::Pyramid { level }, Placed { crop, ..placed })
+            } else {
+                let made_by = |p: &Option<Place>| matches!(p, Some(Place::Pass(j, _)) if *j == i);
+                match self.places.iter().position(made_by) {
+                    Some(k) => (CompanionKind::Region { index: k as u8 + 1 }, placed),
+                    None => {
+                        unleased.push((pass.output, pass.index));
+                        continue;
                     }
-                };
+                }
+            };
             if failed.is_some() {
                 unleased.push((pass.output, pass.index));
                 continue;
@@ -236,6 +261,52 @@ fn region_pass(rect: FrameRect) -> PassSpec {
     }
 }
 
+impl Shape {
+    /// The pass making `rect` in this shape.
+    fn pass(self, rect: FrameRect) -> PassSpec {
+        PassSpec {
+            output: self.output,
+            size: self.size,
+            ..region_pass(rect)
+        }
+    }
+}
+
+/// How an extra pass makes region `k`: in the main output's buffers, or the second output's
+/// for a format only that one has (the back end lays a pass's planes out as its buffers are).
+fn pass_shape(
+    k: usize,
+    region: NativeRegion,
+    specs: [Option<OutputSpec>; 2],
+) -> Result<Shape, CaptureError> {
+    let main = specs[0].ok_or_else(|| err("no main output"))?;
+    let code = region.format.unwrap_or(main.code);
+    let output = if code == main.code {
+        0
+    } else if specs[1].is_some_and(|s| s.code == code) {
+        1
+    } else {
+        return Err(err(format!(
+            "region {}: an extra back end pass writes {code} only into an output in that format \
+             (main {}, second {})",
+            k + 1,
+            main.code,
+            specs[1].map_or("none".into(), |s| s.code.to_string())
+        )));
+    };
+    let size =
+        match region.size {
+            Some((w, h)) => {
+                let side = |v: u32| u16::try_from(v & !1).ok().filter(|&v| v >= 16);
+                Some(side(w).zip(side(h)).ok_or_else(|| {
+                    err(format!("region {}: size {w}x{h} is not 16..65534", k + 1))
+                })?)
+            }
+            None => None,
+        };
+    Ok(Shape { output, size })
+}
+
 /// Buffers a frame's extra passes leave unleased go back to the back end through `returns`
 /// (as a lease's drop does).
 pub(super) fn hand_back(returns: &super::pisp_lease::Returns, unleased: &[(usize, u32)]) {
@@ -247,7 +318,6 @@ pub(super) fn hand_back(returns: &super::pisp_lease::Returns, unleased: &[(usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture_api::tunables::NativeRegion;
     use crate::capture_api::{StyxConfig, native_controls};
 
     fn main_spec() -> OutputSpec {
@@ -258,24 +328,35 @@ mod tests {
         }
     }
 
+    fn specs(second: Option<OutputSpec>) -> [Option<OutputSpec>; 2] {
+        [Some(main_spec()), second]
+    }
+
+    fn full() -> Shape {
+        Shape {
+            output: 0,
+            size: None,
+        }
+    }
+
     #[test]
     fn regions_go_to_the_second_output_or_extra_passes() {
         let r = |x| NativeRegion {
             rect: Some(FrameRect::new(x, 0, 64, 64)),
-            format: None,
+            ..Default::default()
         };
         let cfg = StyxConfig::default()
             .native_regions(&[r(0), r(100), r(200)])
             .backends
             .native;
         let controls = RegionCrops::default();
-        let regions = Regions::new(&cfg, main_spec(), (1280, 800), &controls).unwrap();
+        let regions = Regions::new(&cfg, specs(None), (1280, 800), &controls).unwrap();
         assert_eq!(
             &regions.places[..4],
             &[
                 Some(Place::Second),
-                Some(Place::Pass(0)),
-                Some(Place::Pass(1)),
+                Some(Place::Pass(0, full())),
+                Some(Place::Pass(1, full())),
                 None
             ]
         );
@@ -315,7 +396,73 @@ mod tests {
             .native_regions(&[rgb])
             .backends
             .native;
-        assert!(Regions::new(&cfg, main_spec(), (1280, 800), &RegionCrops::default()).is_err());
+        assert!(Regions::new(&cfg, specs(None), (1280, 800), &RegionCrops::default()).is_err());
+        // ... or a second output in that format, whose buffers an extra pass writes into.
+        let second = OutputSpec {
+            code: FourCc::RG24,
+            width: 640,
+            height: 400,
+        };
+        let regions = Regions::new(
+            &cfg,
+            specs(Some(second)),
+            (1280, 800),
+            &RegionCrops::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            regions.places[0],
+            Some(Place::Pass(
+                0,
+                Shape {
+                    output: 1,
+                    ..full()
+                }
+            ))
+        );
+        assert_eq!(regions.passes_per_output(), [0, 1]);
+        // A scaled region takes a pass (the second output crops at its own size), and the
+        // main output need not be the whole frame for it.
+        let scaled = NativeRegion {
+            size: Some((129, 64)),
+            ..r(0)
+        };
+        let cfg = StyxConfig::default()
+            .native_regions(&[scaled])
+            .backends
+            .native;
+        assert_eq!(cfg.second_output_region(), None);
+        let small = OutputSpec {
+            width: 640,
+            height: 400,
+            ..main_spec()
+        };
+        let regions = Regions::new(
+            &cfg,
+            [Some(small), None],
+            (1280, 800),
+            &RegionCrops::default(),
+        )
+        .unwrap();
+        let shape = Shape {
+            size: Some((128, 64)),
+            ..full()
+        };
+        assert_eq!(regions.places[0], Some(Place::Pass(0, shape)));
+        let pass = shape.pass(FrameRect::new(0, 0, 256, 128));
+        assert_eq!(
+            (pass.output, pass.size, pass.crop.width),
+            (0, Some((128, 64)), 256)
+        );
+        let tiny = NativeRegion {
+            size: Some((8, 8)),
+            ..r(0)
+        };
+        let cfg = StyxConfig::default()
+            .native_regions(&[tiny])
+            .backends
+            .native;
+        assert!(Regions::new(&cfg, specs(None), (1280, 800), &RegionCrops::default()).is_err());
         // An overview with a pyramid level: the level from a pass after the regions'.
         let cfg = StyxConfig::default()
             .native_overview(320, 200)
@@ -324,8 +471,8 @@ mod tests {
             .backends
             .native;
         let regions =
-            Regions::new(&cfg, main_spec(), (1280, 800), &RegionCrops::default()).unwrap();
-        assert_eq!(regions.places[0], Some(Place::Pass(0)));
+            Regions::new(&cfg, specs(None), (1280, 800), &RegionCrops::default()).unwrap();
+        assert_eq!(regions.places[0], Some(Place::Pass(0, full())));
         assert_eq!(regions.pyramid, [(1, 1)]);
         assert_eq!(pass_count(&cfg), 2);
     }
@@ -340,13 +487,13 @@ mod tests {
             .native;
         assert_eq!(cfg.pyramid_output_level(), 1);
         let regions =
-            Regions::new(&cfg, main_spec(), (1280, 800), &RegionCrops::default()).unwrap();
+            Regions::new(&cfg, specs(None), (1280, 800), &RegionCrops::default()).unwrap();
         assert_eq!(regions.pyramid, [(2, 0), (3, 1)]);
         assert_eq!(pass_count(&cfg), 2);
         // With a crop, every level from a pass, after the regions'.
         let region = NativeRegion {
             rect: Some(FrameRect::new(0, 0, 64, 64)),
-            format: None,
+            ..Default::default()
         };
         let cfg = StyxConfig::default()
             .native_crop(FrameRect::new(0, 0, 640, 400))
@@ -357,7 +504,7 @@ mod tests {
             .native;
         assert_eq!(cfg.pyramid_output_level(), 0);
         let regions =
-            Regions::new(&cfg, main_spec(), (1280, 800), &RegionCrops::default()).unwrap();
+            Regions::new(&cfg, specs(None), (1280, 800), &RegionCrops::default()).unwrap();
         assert_eq!(regions.pyramid, [(1, 1), (2, 2)]);
         assert_eq!(pass_count(&cfg), 3);
         // Only the deepest level otherwise, from the second output.

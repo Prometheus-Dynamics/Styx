@@ -1,10 +1,11 @@
 //! Extra back end passes over each frame's raw input (see [`crate::pisp_passes`]): after the
-//! main job, while the front end still holds the raw buffer, one job per pass, so every
-//! region comes from the same raw frame, with the same settings, as the frame it goes with.
+//! main job, while the front end still holds the raw buffer, one job per pass (queued back to
+//! back), so every region comes from the same raw frame, with the same settings, as the frame
+//! it goes with.
 
 use std::time::Duration;
 
-use styx_pisp::device::{BackEndStream, DeviceError};
+use styx_pisp::device::{BackEndStream, DeviceError, QUEUED_JOBS, QueuedJob};
 
 use super::{PassOutput, PispPipeline};
 use crate::error::Result;
@@ -59,8 +60,11 @@ impl PispPipeline {
     }
 }
 
-/// Runs `passes` over raw buffer `input` after `main`'s job, one job at a time (the input
-/// buffer is queued once per job). A pass without a free output buffer is skipped this frame.
+/// Runs `passes` over raw buffer `input` after `main`'s job: their jobs are queued back to
+/// back (up to [`QUEUED_JOBS`] at once, the input buffer in each) and waited for in order, so
+/// the back end goes from one to the next without a round trip through this thread between
+/// them (written, untested on board). A pass without a free output buffer is skipped this
+/// frame.
 pub(super) fn run(
     dev: &mut BackEndStream,
     passes: &mut PassConfigs,
@@ -69,34 +73,98 @@ pub(super) fn run(
     timeout: Duration,
 ) -> Result<Vec<Option<PassOutput>>> {
     let mut out: Vec<Option<PassOutput>> = Vec::with_capacity(passes.len());
+    let mut queued = Ring::default();
+    let mut failed: Option<DeviceError> = None;
     for k in 0..passes.len() {
-        let Some(spec) = passes.spec(k) else {
-            out.push(None);
-            continue;
-        };
-        let job = match passes.config(k, main) {
-            Ok(Some(cfg)) => dev.process(input, cfg, timeout),
-            Ok(None) => {
-                out.push(None);
-                continue;
-            }
-            Err(e) => Err(DeviceError::Setup(e.to_string())),
-        };
-        match job {
-            Ok(job) => out.push(job.outputs[spec.output].map(|index| PassOutput {
-                output: spec.output,
-                index,
-                elapsed: job.elapsed,
-                spec,
-            })),
-            Err(DeviceError::OutputsHeld(_)) => out.push(None),
+        out.push(None);
+        let Some(spec) = passes.spec(k) else { continue };
+        let cfg = match passes.config(k, main) {
+            Ok(Some(cfg)) => cfg,
+            Ok(None) => continue,
             Err(e) => {
-                for p in out.iter().flatten() {
-                    dev.release_output(p.output, p.index);
-                }
-                return Err(e.into());
+                failed = Some(DeviceError::Setup(e.to_string()));
+                break;
+            }
+        };
+        if queued.len() == QUEUED_JOBS
+            && let Err(e) = finish(dev, &mut queued, &mut out, timeout)
+        {
+            failed = Some(e);
+            break;
+        }
+        match dev.process_queued(input, cfg) {
+            Ok(job) => queued.push((k, spec, job)),
+            Err(DeviceError::OutputsHeld(_)) => {}
+            Err(e) => {
+                failed = Some(e);
+                break;
             }
         }
     }
+    // Every queued job is waited for, even after a failure: its buffers are the device's
+    // until then.
+    while !queued.is_empty() {
+        if let Err(e) = finish(dev, &mut queued, &mut out, timeout) {
+            failed.get_or_insert(e);
+        }
+    }
+    if let Some(e) = failed {
+        for p in out.iter().flatten() {
+            dev.release_output(p.output, p.index);
+        }
+        return Err(e.into());
+    }
     Ok(out)
+}
+
+/// Queued pass jobs, oldest first: (pass slot, spec, job). On the stack: no allocation per
+/// frame.
+#[derive(Default)]
+struct Ring {
+    jobs: [Option<(usize, PassSpec, QueuedJob)>; QUEUED_JOBS],
+    head: usize,
+    len: usize,
+}
+
+impl Ring {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn push(&mut self, job: (usize, PassSpec, QueuedJob)) {
+        debug_assert!(self.len < QUEUED_JOBS);
+        self.jobs[(self.head + self.len) % QUEUED_JOBS] = Some(job);
+        self.len += 1;
+    }
+
+    fn pop_front(&mut self) -> Option<(usize, PassSpec, QueuedJob)> {
+        let job = self.jobs[self.head].take()?;
+        self.head = (self.head + 1) % QUEUED_JOBS;
+        self.len -= 1;
+        Some(job)
+    }
+}
+
+/// Waits for the oldest queued pass job and puts its output in its slot.
+fn finish(
+    dev: &mut BackEndStream,
+    queued: &mut Ring,
+    out: &mut [Option<PassOutput>],
+    timeout: Duration,
+) -> std::result::Result<(), DeviceError> {
+    let Some((k, spec, job)) = queued.pop_front() else {
+        return Ok(());
+    };
+    let job = dev.wait_job(job, timeout)?;
+    out[k] = job.outputs[spec.output].map(|index| PassOutput {
+        output: spec.output,
+        index,
+        elapsed: job.elapsed,
+        spec,
+    });
+    Ok(())
 }

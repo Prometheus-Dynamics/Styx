@@ -345,8 +345,11 @@ Its tiles are prepared when it is set (and again when the main config is re-prep
 frame copies the main config's blocks over (black level, gains, CCM, gamma, denoise, sharpening,
 lens shading), so a region is processed exactly as the main output. The 3A statistics are the
 front end's and untouched. Its output buffer comes with the frame (`PispFrame::passes`, a
-`PassOutput` with the spec it was made with); passes write into the main output's buffers
-(`PispOptions::pass_buffers` more of them; a capture gives each pass half as many again as an
+`PassOutput` with the spec it was made with). The passes' jobs are queued back to back (up to
+`styx_pisp::device::QUEUED_JOBS` at once: config buffers used in turn, the raw buffer and the
+TDN average queued again at spare V4L2 indices) and waited for in order. Passes write into an
+output's buffers, the main output's unless a region is in the second output's format
+(`PispOptions::pass_buffers` more of them per output; a capture gives each pass half as many again as an
 output has, at least 3), and a pass without a free buffer skips that frame. Cached output
 buffers come from the `linux,cma` heap, and from the `system` heap when it runs out (the CM5
 has 64 MiB of contiguous memory, which three consumers with passes nearly filled; the back end

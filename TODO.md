@@ -317,14 +317,11 @@ user; they do not block the tag unless the user says so.
       words, cached config copy): 117 → 8 µs per job, Styx API 0.35 → 0.23-0.26 ms/frame at
       30 fps (0.25 → 0.13-0.15 at 120), latency −0.11 ms, outputs bit-identical, libcamera
       unaffected. Installed on the dev box as an override of `pisp_be`.
-- [ ] Extra back end passes run one after another, each waited for: queue them together (the
-      raw buffer at more input slots, the TDN input buffer shared) to save ~0.03 ms of latency
-      per pass. Pass buffers are allocated at start (`PispOptions::pass_buffers`); a camera
-      service client joining with more regions than planned restarts the capture
-      (`VIDIOC_CREATE_BUFS` could add them while streaming).
-- [ ] Regions: scaled regions and regions in another format than the main output's
-      (`PassSpec::size` / `format` exist; only the pyramid pass sets `size`) are not planned
-      yet.
+- [ ] Extra back end passes are queued back to back and regions can be scaled or in the
+      second output's format (written, untested on board): measure the latency saved per pass
+      on the CM5 (expected ~0.03 ms). Pass buffers are allocated at start
+      (`PispOptions::pass_buffers`); a camera service client joining with more regions than
+      planned restarts the capture (`VIDIOC_CREATE_BUFS` could add them while streaming).
 - [ ] Ship the `pispbe` patch in a device image (kernel patch) and/or send it upstream (draft
       in `kernel-modules/pispbe/README.md`; ask Raspberry Pi whether the config registers are
       guaranteed to keep their values between jobs).
