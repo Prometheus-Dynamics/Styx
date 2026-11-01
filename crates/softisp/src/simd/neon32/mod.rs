@@ -34,6 +34,8 @@ macro_rules! neon {
     };
 }
 use neon;
+mod post;
+pub(super) use post::*;
 
 /// A 64-bit NEON register of four 16-bit lanes, as the `f64` an asm operand takes.
 fn lanes16(l: [u16; 4]) -> f64 {

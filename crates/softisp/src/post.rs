@@ -20,64 +20,53 @@ use alloc::vec::Vec;
 
 use crate::output::OutputBuffers;
 use crate::params::{Denoise, Sharpen};
-use crate::simd::YuvCoeffs;
-use crate::simd::scalar::chroma;
+use crate::simd::post::{self as kernels, Sharpening};
+use crate::simd::{YuvCoeffs, interleave_rgb_row, rgb_to_uv_row, rgb_to_y_row};
 
 #[cfg(not(feature = "std"))]
 use styx_core::math::Float as _;
 
 /// Quarter codes: thresholds are kept with two fractional bits.
 const Q4: f32 = 4.0;
-/// `round(65536 / n)` for the counts of the 3x3 sigma filter (1 to 9): the mean of `n` values
-/// with sum `s` is `(s RCP[n] + 2^15) >> 16`, exact for a flat field (`n RCP[n]` is within `n`
-/// of `2^16`).
-const RCP: [i32; 10] = [
-    0, 65536, 32768, 21845, 16384, 13107, 10923, 9362, 8192, 7282,
-];
-
 /// The stages' tables, from the parameters.
 #[derive(Debug)]
 pub(crate) struct PostPrep {
     /// Luma sigma threshold (quarter codes) per centre value, and the strength in Q8.
-    luma: Option<(Vec<i32>, i32)>,
+    luma: Option<([u16; 256], i16)>,
     /// Chroma threshold (quarter codes) and strength in Q8.
-    chroma: Option<(i32, i32)>,
-    /// Sharpening: amount in Q8, threshold and limit in codes.
-    sharpen: Option<(i32, i32, i32)>,
+    chroma: Option<(i16, i16)>,
+    /// Sharpening.
+    sharpen: Option<Sharpening>,
     /// The output's colour matrix.
     pub out: YuvCoeffs,
 }
 
-fn q8(s: f32) -> i32 {
-    (s.clamp(0.0, 1.0) * 256.0 + 0.5) as i32
+fn q8(s: f32) -> i16 {
+    (s.clamp(0.0, 1.0) * 256.0 + 0.5) as i16
 }
 
 impl PostPrep {
     /// The stages `d` and `s` ask for, or `None` when neither does anything.
     pub fn new(d: Option<&Denoise>, s: Option<&Sharpen>, out: YuvCoeffs) -> Option<Self> {
         let luma = d.and_then(|d| d.luma).map(|l| {
-            let table = (0..256)
-                .map(|c| {
-                    let x16 = (c * 257) as f32;
-                    let var = (l.constant + l.slope * x16).max(0.0);
-                    // Sigma in 16-bit codes, then in 8-bit codes, in quarters.
-                    ((var.sqrt() / 257.0 * Q4 + 0.5) as i32).min(255 * 4)
-                })
-                .collect();
+            let table = core::array::from_fn(|c| {
+                let x16 = (c * 257) as f32;
+                let var = (l.constant + l.slope * x16).max(0.0);
+                // Sigma in 16-bit codes, then in 8-bit codes, in quarters.
+                ((var.sqrt() / 257.0 * Q4 + 0.5) as u16).min(255 * 4)
+            });
             (table, q8(l.strength))
         });
         let chroma = d.and_then(|d| d.chroma).map(|c| {
             (
-                ((c.threshold.max(0.0) / 257.0 * Q4 + 0.5) as i32).min(255 * 4),
+                ((c.threshold.max(0.0) / 257.0 * Q4 + 0.5) as i16).clamp(0, 255 * 4),
                 q8(c.strength),
             )
         });
-        let sharpen = s.map(|s| {
-            (
-                (s.amount.max(0.0) * 256.0 + 0.5) as i32,
-                (s.threshold.max(0.0) + 0.5) as i32,
-                (s.limit.max(0.0) + 0.5) as i32,
-            )
+        let sharpen = s.map(|s| Sharpening {
+            amount: (s.amount.max(0.0) * 256.0 + 0.5) as i32,
+            threshold: (s.threshold.max(0.0) + 0.5) as i32,
+            limit: (s.limit.max(0.0) + 0.5) as i32,
         });
         if luma.is_none() && chroma.is_none() && sharpen.is_none() {
             return None;
@@ -145,28 +134,18 @@ fn reflect(i: isize, n: usize) -> usize {
 pub(crate) fn to_planes(rgb: &[u8], w: usize, band: &mut Band<'_>) {
     let [py, pcb, pcr] = &mut band.planes;
     for i in 0..band.rows {
-        let src = &rgb[(band.y0 + i) * 3 * w..][..3 * w];
-        let y = &mut py[i * w..][..w];
-        let cb = &mut pcb[i * w..][..w];
-        let cr = &mut pcr[i * w..][..w];
-        for (((px, y), cb), cr) in src
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .zip(y.iter_mut())
-            .zip(cb.iter_mut())
-            .zip(cr.iter_mut())
-        {
-            let (r, g, b) = (px[0] as i32, px[1] as i32, px[2] as i32);
-            *y = ((77 * r + 150 * g + 29 * b + 128) >> 8).clamp(0, 255) as u8;
-            *cb = (((-43 * r - 85 * g + 128 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
-            *cr = (((128 * r - 107 * g - 21 * b + 128) >> 8) + 128).clamp(0, 255) as u8;
-        }
+        kernels::rgb_to_planes_row(
+            &rgb[(band.y0 + i) * 3 * w..],
+            &mut py[i * w..],
+            &mut pcb[i * w..],
+            &mut pcr[i * w..],
+            w,
+        );
     }
 }
 
 /// RGB of a planes pixel (JFIF inverse, rounded and clamped).
-#[inline(always)]
+#[cfg(test)]
 pub(crate) fn rgb_of(y: i32, cb: i32, cr: i32) -> [i32; 3] {
     let (cb, cr) = (cb - 128, cr - 128);
     [
@@ -174,96 +153,6 @@ pub(crate) fn rgb_of(y: i32, cb: i32, cr: i32) -> [i32; 3] {
         ((256 * y - 88 * cb - 183 * cr + 128) >> 8).clamp(0, 255),
         ((256 * y + 454 * cb + 128) >> 8).clamp(0, 255),
     ]
-}
-
-/// One pixel of the sigma filter: centre `c`, its eight neighbours `n` (up-left, up, up-right,
-/// left, right, down-left, down, down-right), threshold `t` (quarter codes) and strength `s`
-/// (Q8).
-#[inline(always)]
-fn sigma_px(c: i32, t: i32, s: i32, n: [i32; 8]) -> u8 {
-    let (mut sum, mut cnt) = (c, 1i32);
-    for v in n {
-        let ok = ((v - c).abs() * 4 <= t) as i32;
-        sum += ok * v;
-        cnt += ok;
-    }
-    let avg = (sum * RCP[cnt as usize] + (1 << 15)) >> 16;
-    (c + (((avg - c) * s + 128) >> 8)).clamp(0, 255) as u8
-}
-
-/// One sigma-filter row: `dst` (`w` samples) from the source rows `up`, `cur`, `dn`; `table`
-/// holds the threshold (quarter codes) of each centre value.
-#[inline(always)]
-fn sigma_row(up: &[u8], cur: &[u8], dn: &[u8], dst: &mut [u8], table: &[i32], s: i32) {
-    let w = dst.len();
-    let edge = |x: usize| {
-        let (xl, xr) = (reflect(x as isize - 1, w), reflect(x as isize + 1, w));
-        let c = cur[x] as i32;
-        let n = [
-            up[xl], up[x], up[xr], cur[xl], cur[xr], dn[xl], dn[x], dn[xr],
-        ]
-        .map(|v| v as i32);
-        sigma_px(c, table[c as usize], s, n)
-    };
-    if w < 3 {
-        for (x, d) in dst.iter_mut().enumerate() {
-            *d = edge(x);
-        }
-        return;
-    }
-    dst[0] = edge(0);
-    dst[w - 1] = edge(w - 1);
-    // Interior: rows cut to the row length, so the indices need no bounds checks.
-    let (u, c, d) = (&up[..w], &cur[..w], &dn[..w]);
-    let out = &mut dst[..w];
-    for x in 1..w - 1 {
-        let cc = c[x] as i32;
-        let n = [
-            u[x - 1],
-            u[x],
-            u[x + 1],
-            c[x - 1],
-            c[x + 1],
-            d[x - 1],
-            d[x],
-            d[x + 1],
-        ]
-        .map(|v| v as i32);
-        out[x] = sigma_px(cc, table[(cc & 255) as usize], s, n);
-    }
-}
-
-/// One chroma row: the binomial low-pass `[1 2 1] x [1 2 1] / 16` of the three rows `up`, `cur`,
-/// `dn` at each sample, taken only where it differs from the sample by at most `t` (quarter
-/// codes): a colour edge larger than the noise stays. Blended in by strength `s` (Q8).
-#[inline(always)]
-fn chroma_row(up: &[u8], cur: &[u8], dn: &[u8], dst: &mut [u8], t: i32, s: i32) {
-    let w = dst.len();
-    // The vertical [1 2 1] sum of column `x`.
-    let vsum = |x: usize| up[x] as i32 + 2 * cur[x] as i32 + dn[x] as i32;
-    let blend = |c: i32, lo: i32, mid: i32, hi: i32| {
-        let l = (lo + 2 * mid + hi + 8) >> 4;
-        let ok = ((l - c).abs() * 4 <= t) as i32;
-        (c + ok * (((l - c) * s + 128) >> 8)).clamp(0, 255) as u8
-    };
-    if w < 3 {
-        for (x, d) in dst.iter_mut().enumerate() {
-            let (xl, xr) = (reflect(x as isize - 1, w), reflect(x as isize + 1, w));
-            *d = blend(cur[x] as i32, vsum(xl), vsum(x), vsum(xr));
-        }
-        return;
-    }
-    dst[0] = blend(cur[0] as i32, vsum(1), vsum(0), vsum(1));
-    dst[w - 1] = blend(cur[w - 1] as i32, vsum(w - 2), vsum(w - 1), vsum(w - 2));
-    let (u, c, d) = (&up[..w], &cur[..w], &dn[..w]);
-    for x in 1..w - 1 {
-        let vs = [
-            u[x - 1] as i32 + 2 * c[x - 1] as i32 + d[x - 1] as i32,
-            u[x] as i32 + 2 * c[x] as i32 + d[x] as i32,
-            u[x + 1] as i32 + 2 * c[x + 1] as i32 + d[x + 1] as i32,
-        ];
-        dst[x] = blend(c[x] as i32, vs[0], vs[1], vs[2]);
-    }
 }
 
 /// The denoise stage on one band: `src` the whole planes of the previous stage. A stage that
@@ -285,14 +174,16 @@ pub(crate) fn denoise_band(p: &PostPrep, src: &[u8], w: usize, h: usize, band: &
         }
         for (i, dst) in dst_all.chunks_exact_mut(w).enumerate() {
             let y = band.y0 + i;
-            let up = &src_plane[reflect(y as isize - 1, h) * w..][..w];
-            let cur = &src_plane[y * w..][..w];
-            let dn = &src_plane[reflect(y as isize + 1, h) * w..][..w];
+            let rows = [
+                &src_plane[reflect(y as isize - 1, h) * w..][..w],
+                &src_plane[y * w..][..w],
+                &src_plane[reflect(y as isize + 1, h) * w..][..w],
+            ];
             match (k, &p.luma, &p.chroma) {
-                (0, Some((table, s)), _) => sigma_row(up, cur, dn, dst, table, *s),
-                (_, _, Some((t, s))) => chroma_row(up, cur, dn, dst, *t, *s),
+                (0, Some((table, s)), _) => kernels::sigma_row(rows, dst, table, *s),
+                (_, _, Some((t, s))) => kernels::chroma_row(rows, dst, *t, *s),
                 _ => unreachable!("checked above"),
-            }
+            };
         }
     }
 }
@@ -300,7 +191,7 @@ pub(crate) fn denoise_band(p: &PostPrep, src: &[u8], w: usize, h: usize, band: &
 /// The sharpening stage on one band: luma unsharp-masked, the chroma planes copied.
 pub(crate) fn sharpen_band(p: &PostPrep, src: &[u8], w: usize, h: usize, band: &mut Band<'_>) {
     let plane = w * h;
-    let (amount, thr, limit) = p.sharpen.expect("sharpening on");
+    let sharpen = p.sharpen.expect("sharpening on");
     let rows = band.rows * w;
     let off = band.y0 * w;
     let [py, pcb, pcr] = &mut band.planes;
@@ -309,39 +200,12 @@ pub(crate) fn sharpen_band(p: &PostPrep, src: &[u8], w: usize, h: usize, band: &
     let luma = &src[..plane];
     for (i, dst) in py[..rows].chunks_exact_mut(w).enumerate() {
         let y = band.y0 + i;
-        let up = &luma[reflect(y as isize - 1, h) * w..][..w];
-        let cur = &luma[y * w..][..w];
-        let dn = &luma[reflect(y as isize + 1, h) * w..][..w];
-        // The sharpened sample at column `x`, its neighbours at `xl` and `xr`.
-        let correct = |x: usize, xl: usize, xr: usize| {
-            let c = cur[x] as i32;
-            let blur = (up[xl] as i32
-                + 2 * up[x] as i32
-                + up[xr] as i32
-                + 2 * cur[xl] as i32
-                + 4 * c
-                + 2 * cur[xr] as i32
-                + dn[xl] as i32
-                + 2 * dn[x] as i32
-                + dn[xr] as i32
-                + 8)
-                >> 4;
-            let detail = c - blur;
-            let cored = detail.signum() * (detail.abs() - thr).max(0);
-            let corr = ((amount * cored + 128) >> 8).clamp(-limit, limit);
-            (c + corr).clamp(0, 255) as u8
-        };
-        if w < 3 {
-            for (x, d) in dst.iter_mut().enumerate() {
-                *d = correct(x, reflect(x as isize - 1, w), reflect(x as isize + 1, w));
-            }
-            continue;
-        }
-        dst[0] = correct(0, 1, 1);
-        dst[w - 1] = correct(w - 1, w - 2, w - 2);
-        for (x, d) in dst[1..w - 1].iter_mut().enumerate() {
-            *d = correct(x + 1, x, x + 2);
-        }
+        let rows = [
+            &luma[reflect(y as isize - 1, h) * w..][..w],
+            &luma[y * w..][..w],
+            &luma[reflect(y as isize + 1, h) * w..][..w],
+        ];
+        kernels::sharpen_row(rows, dst, sharpen);
     }
 }
 
@@ -351,68 +215,70 @@ pub(crate) struct Crop {
     pub y0: usize,
 }
 
-/// RGB of picture row `row` (cropped at `crop`, of `w x h` planes), `dst.len() / 3` pixels.
-fn picture_rgb(planes: &[u8], (w, h): (usize, usize), crop: &Crop, row: usize, dst: &mut [u8]) {
+/// Pixels of output converted at a time, on the stack: even, so a chunk ends on a chroma pair.
+const CHUNK: usize = 256;
+
+/// One chunk of planar RGB.
+type Chunk = [[u8; CHUNK]; 3];
+
+/// `n` pixels of RGB from picture row `row` (cropped at `crop`, of `w x h` planes), column `x`.
+fn picture_rgb(
+    planes: &[u8],
+    (w, h): (usize, usize),
+    crop: &Crop,
+    (row, x, n): (usize, usize, usize),
+    out: &mut Chunk,
+) {
     let plane = w * h;
-    let n = dst.len() / 3;
-    let r = (crop.y0 + row) * w + crop.x0;
-    let (ys, cbs, crs) = (
-        &planes[r..][..n],
-        &planes[plane + r..][..n],
-        &planes[2 * plane + r..][..n],
+    let r = (crop.y0 + row) * w + crop.x0 + x;
+    let [red, green, blue] = out;
+    kernels::planes_to_rgb_row(
+        [
+            &planes[r..][..n],
+            &planes[plane + r..][..n],
+            &planes[2 * plane + r..][..n],
+        ],
+        [red, green, blue],
+        n,
     );
-    for (((px, &y), &cb), &cr) in dst
-        .as_chunks_mut::<3>()
-        .0
-        .iter_mut()
-        .zip(ys)
-        .zip(cbs)
-        .zip(crs)
-    {
-        let p = rgb_of(y as i32, cb as i32, cr as i32);
-        px[0] = p[0] as u8;
-        px[1] = p[1] as u8;
-        px[2] = p[2] as u8;
-    }
+}
+
+fn view(c: &Chunk) -> [&[u8]; 3] {
+    [&c[0], &c[1], &c[2]]
+}
+
+/// The columns of an `ow`-wide output, a chunk at a time, as `(x, n)`.
+fn chunks(ow: usize) -> impl Iterator<Item = (usize, usize)> {
+    (0..ow).step_by(CHUNK).map(move |x| (x, CHUNK.min(ow - x)))
 }
 
 /// Output rows `o0 .. o0 + rows` of an `ow`-wide output, one band of it, from the processed
-/// planes of `w x h` cropped at `crop`. Even `o0` and `rows` for 4:2:0.
+/// planes of `w x h` cropped at `crop`. Even `o0` and `rows` for 4:2:0. 4:2:0 chroma is the
+/// rounded mean of each 2x2 block.
 pub(crate) fn write_output(
     coeffs: &YuvCoeffs,
     planes: &[u8],
-    (w, h): (usize, usize),
+    dims: (usize, usize),
     crop: &Crop,
     (ow, o0, rows): (usize, usize, usize),
     out: OutputBuffers<'_>,
 ) {
-    let luma = |px: &[u8]| {
-        let s = coeffs.y[0] as i32 * px[0] as i32
-            + coeffs.y[1] as i32 * px[1] as i32
-            + coeffs.y[2] as i32 * px[2] as i32;
-        (((s + 128) >> 8) + coeffs.y_offset as i32).clamp(0, 255) as u8
-    };
+    let mut top: Chunk = [[0; CHUNK]; 3];
+    let mut bottom: Chunk = [[0; CHUNK]; 3];
     match out {
         OutputBuffers::Rgb24 { data, stride } => {
             for i in 0..rows {
-                picture_rgb(
-                    planes,
-                    (w, h),
-                    crop,
-                    o0 + i,
-                    &mut data[i * stride..][..3 * ow],
-                );
+                for (x, n) in chunks(ow) {
+                    picture_rgb(planes, dims, crop, (o0 + i, x, n), &mut top);
+                    interleave_rgb_row(view(&top), &mut data[i * stride + 3 * x..], n);
+                }
             }
         }
         OutputBuffers::Luma { data, stride } => {
-            let mut tmp = alloc::vec![0u8; 3 * ow];
             for i in 0..rows {
-                picture_rgb(planes, (w, h), crop, o0 + i, &mut tmp);
-                for (d, px) in data[i * stride..][..ow]
-                    .iter_mut()
-                    .zip(tmp.as_chunks::<3>().0.iter())
-                {
-                    *d = luma(px);
+                for (x, n) in chunks(ow) {
+                    picture_rgb(planes, dims, crop, (o0 + i, x, n), &mut top);
+                    rgb_to_y_row(view(&top), &mut data[i * stride + x..], n, coeffs);
                 }
             }
         }
@@ -422,19 +288,21 @@ pub(crate) fn write_output(
             uv,
             uv_stride,
         } => {
-            let mut tmp = alloc::vec![0u8; 6 * ow];
             for i in (0..rows).step_by(2) {
-                luma_pair(planes, (w, h), crop, o0 + i, &mut tmp, |r, px| {
-                    for (d, p) in y[(i + r) * y_stride..][..ow]
-                        .iter_mut()
-                        .zip(px.as_chunks::<3>().0.iter())
-                    {
-                        *d = luma(p);
-                    }
-                });
-                let row = &mut uv[i / 2 * uv_stride..][..ow];
-                for (j, pair) in row.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                    (pair[0], pair[1]) = chroma_quad(coeffs, &tmp, ow, 2 * j);
+                for (x, n) in chunks(ow) {
+                    picture_rgb(planes, dims, crop, (o0 + i, x, n), &mut top);
+                    picture_rgb(planes, dims, crop, (o0 + i + 1, x, n), &mut bottom);
+                    rgb_to_y_row(view(&top), &mut y[i * y_stride + x..], n, coeffs);
+                    rgb_to_y_row(view(&bottom), &mut y[(i + 1) * y_stride + x..], n, coeffs);
+                    rgb_to_uv_row(
+                        view(&top),
+                        view(&bottom),
+                        &mut uv[i / 2 * uv_stride + x..],
+                        &mut [],
+                        n / 2,
+                        coeffs,
+                        true,
+                    );
                 }
             }
         }
@@ -446,61 +314,25 @@ pub(crate) fn write_output(
             v,
             v_stride,
         } => {
-            let mut tmp = alloc::vec![0u8; 6 * ow];
             for i in (0..rows).step_by(2) {
-                luma_pair(planes, (w, h), crop, o0 + i, &mut tmp, |r, px| {
-                    for (d, p) in y[(i + r) * y_stride..][..ow]
-                        .iter_mut()
-                        .zip(px.as_chunks::<3>().0.iter())
-                    {
-                        *d = luma(p);
-                    }
-                });
-                for j in 0..ow / 2 {
-                    let (cu, cv) = chroma_quad(coeffs, &tmp, ow, 2 * j);
-                    u[i / 2 * u_stride + j] = cu;
-                    v[i / 2 * v_stride + j] = cv;
+                for (x, n) in chunks(ow) {
+                    picture_rgb(planes, dims, crop, (o0 + i, x, n), &mut top);
+                    picture_rgb(planes, dims, crop, (o0 + i + 1, x, n), &mut bottom);
+                    rgb_to_y_row(view(&top), &mut y[i * y_stride + x..], n, coeffs);
+                    rgb_to_y_row(view(&bottom), &mut y[(i + 1) * y_stride + x..], n, coeffs);
+                    rgb_to_uv_row(
+                        view(&top),
+                        view(&bottom),
+                        &mut u[i / 2 * u_stride + x / 2..],
+                        &mut v[i / 2 * v_stride + x / 2..],
+                        n / 2,
+                        coeffs,
+                        false,
+                    );
                 }
             }
         }
     }
-}
-
-/// The two picture rows `row` and `row + 1` as RGB in `tmp` (`ow` pixels each), handed to
-/// `each` with their index in the pair.
-fn luma_pair(
-    planes: &[u8],
-    dims: (usize, usize),
-    crop: &Crop,
-    row: usize,
-    tmp: &mut [u8],
-    mut each: impl FnMut(usize, &[u8]),
-) {
-    let half = tmp.len() / 2;
-    let (top, bottom) = tmp.split_at_mut(half);
-    picture_rgb(planes, dims, crop, row, top);
-    picture_rgb(planes, dims, crop, row + 1, bottom);
-    each(0, top);
-    each(1, bottom);
-}
-
-/// The chroma of the 2x2 block at column `x` of the two RGB rows in `tmp` (`ow` pixels each):
-/// the rounded mean of its four pixels, as the existing 4:2:0 output.
-fn chroma_quad(coeffs: &YuvCoeffs, tmp: &[u8], ow: usize, x: usize) -> (u8, u8) {
-    let mut sum = [0i32; 3];
-    for row in 0..2 {
-        for col in 0..2 {
-            let px = &tmp[(row * ow + x + col) * 3..][..3];
-            for k in 0..3 {
-                sum[k] += px[k] as i32;
-            }
-        }
-    }
-    let mean = sum.map(|s| (s + 2) >> 2);
-    (
-        chroma(&coeffs.u, mean[0], mean[1], mean[2]),
-        chroma(&coeffs.v, mean[0], mean[1], mean[2]),
-    )
 }
 
 #[cfg(test)]

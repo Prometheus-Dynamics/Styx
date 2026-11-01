@@ -7,6 +7,8 @@
 mod bayer;
 pub(super) mod color;
 pub(super) mod half;
+mod post;
+pub(super) use post::*;
 
 use super::{RowKind, SimdBackend, YuvCoeffs};
 use crate::format::CfaPattern;

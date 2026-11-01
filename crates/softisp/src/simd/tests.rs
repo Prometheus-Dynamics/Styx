@@ -9,7 +9,7 @@ const GUARD: u16 = 0xA5A7;
 
 /// Who runs a kernel.
 #[derive(Clone, Copy, Debug)]
-enum Runner {
+pub(super) enum Runner {
     Oracle,
     Dispatch,
     #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
@@ -27,7 +27,7 @@ enum Runner {
     Rvv,
 }
 
-fn runners() -> Vec<Runner> {
+pub(super) fn runners() -> Vec<Runner> {
     #[allow(unused_mut)]
     let mut out = vec![Runner::Dispatch];
     #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
@@ -70,7 +70,7 @@ fn runners() -> Vec<Runner> {
 }
 
 /// A leaf's outcome as pixels done (`None`: nothing).
-fn pixels(outcome: Option<(SimdBackend, usize)>) -> usize {
+pub(super) fn pixels(outcome: Option<(SimdBackend, usize)>) -> usize {
     outcome.map_or(0, |(_, n)| n)
 }
 
@@ -91,6 +91,8 @@ macro_rules! leaf_call {
     };
 }
 
+pub(super) use leaf_call;
+
 /// Deterministic random words below or at `max`; one seed in five gives only 0 and `max`.
 fn words(len: usize, seed: u64, max: u16) -> Vec<u16> {
     let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -109,7 +111,7 @@ fn words(len: usize, seed: u64, max: u16) -> Vec<u16> {
         .collect()
 }
 
-fn bytes(len: usize, seed: u64) -> Vec<u8> {
+pub(super) fn bytes(len: usize, seed: u64) -> Vec<u8> {
     words(len, seed, 255).into_iter().map(|w| w as u8).collect()
 }
 
@@ -119,7 +121,7 @@ fn widths() -> impl Iterator<Item = usize> {
 
 /// Run `run` for every runner and width: it gets fresh output planes of `units * width`
 /// values plus guards and returns the pixels it did; outputs must match the oracle's.
-fn check<T: Copy + PartialEq + std::fmt::Debug>(
+pub(super) fn check<T: Copy + PartialEq + std::fmt::Debug>(
     name: &str,
     planes: usize,
     units: usize,
@@ -152,7 +154,7 @@ fn check<T: Copy + PartialEq + std::fmt::Debug>(
     }
 }
 
-fn split3<T>(o: &mut [Vec<T>]) -> [&mut [T]; 3] {
+pub(super) fn split3<T>(o: &mut [Vec<T>]) -> [&mut [T]; 3] {
     let [a, b, c] = o else { panic!("three planes") };
     [a.as_mut_slice(), b.as_mut_slice(), c.as_mut_slice()]
 }

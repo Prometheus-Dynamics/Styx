@@ -34,6 +34,8 @@ mod rvv;
 mod x86;
 
 #[cfg(test)]
+mod post_tests;
+#[cfg(test)]
 mod tests;
 
 /// The colours of one mosaic row: which columns are green, and whether the other colour on the
@@ -119,6 +121,10 @@ macro_rules! leaf {
         outcome
     }};
 }
+
+use leaf;
+
+pub(crate) mod post;
 
 /// Finish the pixels after the leaf's prefix with the scalar kernel.
 fn finish(

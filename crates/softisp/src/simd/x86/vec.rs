@@ -26,7 +26,15 @@ pub(super) trait Vx: Copy {
     /// `pshufb` with the same 16-byte mask in every 128-bit half (SSSE3).
     unsafe fn shuffle_bytes(v: Self, mask: &[u8; 16]) -> Self;
     unsafe fn zero() -> Self;
+    /// A vector from `lo` (and, for AVX2, `hi` as its upper half).
+    ///
+    /// # Safety
+    /// 16 readable bytes at each pointer the vector uses.
+    unsafe fn load_halves(lo: *const u8, hi: *const u8) -> Self;
+    /// `pshufb` of the 16-byte `table` in every 128-bit half by `index` (SSSE3).
+    unsafe fn lookup_bytes(table: &[u8; 16], index: Self) -> Self;
     unsafe fn add16(a: Self, b: Self) -> Self;
+    unsafe fn sub16(a: Self, b: Self) -> Self;
     unsafe fn adds_u16(a: Self, b: Self) -> Self;
     unsafe fn subs_u16(a: Self, b: Self) -> Self;
     unsafe fn avg_u16(a: Self, b: Self) -> Self;
@@ -114,8 +122,22 @@ impl Vx for __m128i {
         unsafe { _mm_setzero_si128() }
     }
     #[inline(always)]
+    unsafe fn load_halves(lo: *const u8, _hi: *const u8) -> Self {
+        // SAFETY: the caller guarantees 16 readable bytes at `lo`.
+        unsafe { _mm_loadu_si128(lo.cast()) }
+    }
+    #[inline(always)]
+    unsafe fn lookup_bytes(table: &[u8; 16], index: Self) -> Self {
+        // SAFETY: an unaligned load of the 16-byte table.
+        unsafe { _mm_shuffle_epi8(_mm_loadu_si128(table.as_ptr().cast()), index) }
+    }
+    #[inline(always)]
     unsafe fn add16(a: Self, b: Self) -> Self {
         unsafe { _mm_add_epi16(a, b) }
+    }
+    #[inline(always)]
+    unsafe fn sub16(a: Self, b: Self) -> Self {
+        unsafe { _mm_sub_epi16(a, b) }
     }
     #[inline(always)]
     unsafe fn adds_u16(a: Self, b: Self) -> Self {
@@ -269,8 +291,30 @@ impl Vx for __m256i {
         unsafe { _mm256_setzero_si256() }
     }
     #[inline(always)]
+    unsafe fn load_halves(lo: *const u8, hi: *const u8) -> Self {
+        // SAFETY: the caller guarantees 16 readable bytes at each.
+        unsafe {
+            _mm256_inserti128_si256::<1>(
+                _mm256_castsi128_si256(_mm_loadu_si128(lo.cast())),
+                _mm_loadu_si128(hi.cast()),
+            )
+        }
+    }
+    #[inline(always)]
+    unsafe fn lookup_bytes(table: &[u8; 16], index: Self) -> Self {
+        // SAFETY: an unaligned load of the 16-byte table.
+        unsafe {
+            let t = _mm256_broadcastsi128_si256(_mm_loadu_si128(table.as_ptr().cast()));
+            _mm256_shuffle_epi8(t, index)
+        }
+    }
+    #[inline(always)]
     unsafe fn add16(a: Self, b: Self) -> Self {
         unsafe { _mm256_add_epi16(a, b) }
+    }
+    #[inline(always)]
+    unsafe fn sub16(a: Self, b: Self) -> Self {
+        unsafe { _mm256_sub_epi16(a, b) }
     }
     #[inline(always)]
     unsafe fn adds_u16(a: Self, b: Self) -> Self {

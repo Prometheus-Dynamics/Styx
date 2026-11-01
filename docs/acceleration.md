@@ -53,11 +53,11 @@ The GPU column is `styx-gpuisp`, bit-exact with the CPU.
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
-| RGB → YCbCr planes | pass | gap | gap | gap | gap | gap |
-| Luma denoise (sigma filter) | pass | gap | gap | gap | gap | gap |
-| Chroma denoise | pass | gap | gap | gap | gap | gap |
-| Sharpen (unsharp mask) | pass | gap | gap | gap | gap | gap |
-| Planes → output format | pass | gap | gap | gap | gap | gap |
+| RGB → YCbCr planes | pass | pass | pass | pass | pass | gap |
+| Luma denoise (sigma filter) | pass | pass | pass | pass | pass | gap |
+| Chroma denoise | pass | pass | pass | pass | pass | gap |
+| Sharpen (unsharp mask) | pass | pass | pass | pass | pass | gap |
+| Planes → output format | pass | pass | pass | pass | pass | gap |
 
 ### Packed conversions, pyramid and orientation (`styx_core::simd`)
 
@@ -133,12 +133,12 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | Column | pass | gap | n/a |
 |---|---|---|---|
 | scalar | 43 | 0 | 0 |
-| x86 | 35 | 8 | 0 |
-| NEON64 | 36 | 7 | 0 |
-| NEON32 | 32 | 10 | 1 |
-| RVV | 29 | 14 | 0 |
+| x86 | 40 | 3 | 0 |
+| NEON64 | 41 | 2 | 0 |
+| NEON32 | 37 | 5 | 1 |
+| RVV | 34 | 9 | 0 |
 | GPU | 18 | 25 | 0 |
-| **all** | **193** | **64** | **1** |
+| **all** | **213** | **44** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
 

@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Software ISP output stages (RGB to YCbCr planes, luma and chroma denoise, sharpening, planes to
+  output) have x86, NEON, armv7 NEON and RVV leaves, exact against scalar. Output conversion allocates
+  nothing per band.
 - **GPU ISP on Daedalus's device** (`styx-gpuisp` feature `daedalus`):
   `GpuContext::from_daedalus` records each frame into Daedalus's command buffer and submits on
   its queue (`GpuContextHandle::submit_raw`, Daedalus 29ae351), and `Input::Buffer`

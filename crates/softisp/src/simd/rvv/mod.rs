@@ -34,6 +34,8 @@ macro_rules! rvv {
     }};
 }
 use rvv;
+mod post;
+pub(super) use post::*;
 
 /// Strips over `units`: `strip(done, left)` does some of the `left` units after the first
 /// `done` and returns how many.

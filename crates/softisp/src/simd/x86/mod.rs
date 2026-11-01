@@ -30,6 +30,9 @@ macro_rules! pick {
     }};
 }
 
+mod post;
+pub(super) use post::*;
+
 fn unpack(
     f: X86FeatureSet,
     src: &[u8],

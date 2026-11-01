@@ -132,14 +132,14 @@ memory when it runs.
       GPU and each board's fixed-function units; losing variants stay behind knobs. *Done when:* the
       matrix has no gap cells; each leaf conformance-tested against scalar (guard bytes, odd widths)
       in the gate, on hardware or QEMU. *Blocked by:* nothing for the CPU and GPU columns; boards
-      for the fixed-function rows. *Numbers:* recounted from the matrix at 475e07a: **193 pass, 64
-      gaps, 1 n/a of 258 cells** (43 stages). Gaps by column: x86 8, NEON64 7, NEON32 10, RVV 14,
-      GPU 25. By stage: `post.rs` 5 stages (25 cells), YUYV → NV12 chroma (5), edge-directed demosaic
-      (5), armv7/RVV NV12, YUYV and I420 → RGB (6), the GPU column of the packed conversions (11)
-      and of those three → RGB (3), polynomial tone GPU (1), fp16 x86/RVV/GPU (3), JPEG/H.264 RVV (3),
-      JPEG GPU (2). Fixed-function: 5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves cover
-      every kernel in `styx_core::simd` and the integer kernels of `styx_softisp::simd` except the
-      edge-directed demosaic; `post.rs` has no leaves on any backend.
+      for the fixed-function rows. *Numbers:* recounted from the matrix: **213 pass, 44
+      gaps, 1 n/a of 258 cells** (43 stages). Gaps by column: x86 3, NEON64 2, NEON32 5, RVV 9, GPU 25.
+      By stage: the GPU column of `post.rs` (5), YUYV → NV12 chroma (5), edge-directed demosaic (5),
+      armv7/RVV NV12, YUYV and I420 → RGB (6), the GPU column of the packed conversions (11) and of
+      those three → RGB (3), polynomial tone GPU (1), fp16 x86/RVV/GPU (3), JPEG/H.264 RVV (3), JPEG GPU
+      (2). Fixed-function: 5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves cover every
+      kernel in `styx_core::simd` and the integer kernels of `styx_softisp::simd` except the
+      edge-directed demosaic.
 - [ ] **Software ISP: AVX-512 VBMI exact tone table.** Not written (no AVX-512 code in the tree; the
       old entry read as written, untested). *Why:* the fastest exact table on such hosts. *Done
       when:* a leaf passes the conformance tests. *Blocked by:* an AVX-512 host to run it.
@@ -154,8 +154,7 @@ memory when it runs.
       (`frames_allocate_only_their_lease_record`) and the rkisp lease, which do not use `BackingPool`
       yet. **Not counted:** V4L2 zero-copy (uses the pool, its loop needs a device), PiSP raw and
       sliced leases, GPU ISP `Input::Buffer`, the raw native lease (`native_backend.rs`), libcamera,
-      and every real worker loop on a board. `post::write_output` allocates a temporary row buffer per band for
-      luma and 4:2:0 outputs when the output stages are on.
+      and every real worker loop on a board.
 - [ ] **GPU import pad from Daedalus.** *Why:* `gpu_import_pad` is a fixed 256 B; Daedalus knows the
       device's need. *Done when:* with a Daedalus context the pad comes from
       `GpuFrameImports::required_len(end)` / `GpuStorage::dmabuf_import_len(gpu, len)`, 256 otherwise.
