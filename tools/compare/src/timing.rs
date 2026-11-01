@@ -9,6 +9,11 @@ pub struct FrameSample {
     pub sequence: Option<u32>,
     /// Frame timestamp from the backend, nanoseconds.
     pub timestamp_ns: u64,
+    /// From the sensor timestamp to the consumer taking the frame (`Hop::Sensor` to
+    /// `Hop::Taken`, both `CLOCK_MONOTONIC`), microseconds, when both are stamped.
+    pub latency_us: Option<f64>,
+    /// Frames waiting in the capture queue when this one was taken.
+    pub queue_depth: usize,
 }
 
 /// Rate and jitter of a run of frames.
@@ -34,6 +39,19 @@ pub struct TimingStats {
     /// Intervals longer than 1.5 median intervals, counted as `round(interval / median) - 1`
     /// missing frames.
     pub dropped_by_timestamp: u64,
+    /// Sensor timestamp to the consumer taking the frame, microseconds: median, 99th
+    /// percentile and worst (`None` when the backend stamps no sensor hop).
+    #[serde(default)]
+    pub latency_p50_us: Option<f64>,
+    #[serde(default)]
+    pub latency_p99_us: Option<f64>,
+    #[serde(default)]
+    pub latency_max_us: Option<f64>,
+    /// Frames waiting in the capture queue as each was taken: median and worst.
+    #[serde(default)]
+    pub queue_depth_p50: usize,
+    #[serde(default)]
+    pub queue_depth_max: usize,
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
@@ -83,6 +101,17 @@ pub fn timing_stats(frames: &[FrameSample], requested_fps: f64) -> TimingStats {
         .filter(|&&i| median > 0.0 && i > 1.5 * median)
         .map(|&i| (i / median).round() as u64 - 1)
         .sum();
+    let mut latency: Vec<f64> = frames.iter().filter_map(|f| f.latency_us).collect();
+    latency.sort_by(f64::total_cmp);
+    if !latency.is_empty() {
+        stats.latency_p50_us = Some(percentile(&latency, 0.5));
+        stats.latency_p99_us = Some(percentile(&latency, 0.99));
+        stats.latency_max_us = latency.last().copied();
+    }
+    let mut depth: Vec<usize> = frames.iter().map(|f| f.queue_depth).collect();
+    depth.sort_unstable();
+    stats.queue_depth_p50 = depth[depth.len() / 2];
+    stats.queue_depth_max = depth[depth.len() - 1];
     stats.dropped_by_sequence = frames
         .windows(2)
         .map(|w| Some(u64::from(w[1].sequence?.wrapping_sub(w[0].sequence?)).saturating_sub(1)))
@@ -166,6 +195,8 @@ mod tests {
             .map(|(i, &t)| FrameSample {
                 sequence: seqs.map(|s| s[i]),
                 timestamp_ns: t * 1_000,
+                latency_us: Some(1_000.0 + i as f64),
+                queue_depth: i % 3,
             })
             .collect()
     }
@@ -179,6 +210,11 @@ mod tests {
         assert!(st.interval_std_us < 1e-6);
         assert_eq!(st.dropped_by_sequence, Some(0));
         assert_eq!(st.dropped_by_timestamp, 0);
+        // Latency 1000..1030 µs, queue depth 0, 1, 2 in turn.
+        assert_eq!(st.latency_p50_us, Some(1_015.0));
+        assert_eq!(st.latency_p99_us, Some(1_030.0));
+        assert_eq!(st.latency_max_us, Some(1_030.0));
+        assert_eq!((st.queue_depth_p50, st.queue_depth_max), (1, 2));
     }
 
     #[test]

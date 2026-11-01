@@ -23,7 +23,8 @@ use styx_kernel::FourCc;
 use styx_kernel::media::{LinkFlags, MediaDevice, PadRef, Topology};
 use styx_kernel::subdev::{MbusCode, MbusFormat, Subdev, Which};
 use styx_kernel::v4l2::{
-    BufType, DequeuedBuffer, Format, MetaFormat, MmapQueue, PixFormatMplane, VideoDevice,
+    BufType, DequeuedBuffer, Format, MetaFormat, MmapQueue, PixFormatMplane, PlaneFormat,
+    VideoDevice,
 };
 
 use crate::Params;
@@ -125,6 +126,14 @@ pub struct OutputFrame {
     pub bytes_used: usize,
     /// The driver flagged the frame.
     pub error: bool,
+}
+
+/// Bytes past the image a GPU importing an output buffer may read.
+const GPU_PAD: u32 = 256;
+
+/// Bytes of a tightly packed NV12 image of `(w, h)`.
+fn nv12_bytes((w, h): (u32, u32)) -> u32 {
+    w * h + w * h.div_ceil(2)
 }
 
 /// [`MmapQueue::dequeue_within`] with the timeout as an error.
@@ -254,6 +263,13 @@ impl IspDevice {
                 height: setup.output.1,
                 fourcc: OUTPUT_FOURCC,
                 field: 1,
+                // Room past the image for a GPU importing the buffers (v3dv-style drivers
+                // round storage buffers up to 256 bytes); drivers that size planes themselves
+                // ignore it.
+                planes: alloc::vec![PlaneFormat {
+                    bytes_per_line: 0,
+                    size_image: nv12_bytes(setup.output) + GPU_PAD,
+                }],
                 ..Default::default()
             }),
         )?;

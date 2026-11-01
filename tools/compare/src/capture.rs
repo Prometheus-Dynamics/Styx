@@ -253,9 +253,15 @@ pub fn run(cfg: &RunConfig) -> Result<RunResult, CaptureError> {
     let mut last = None;
     for _ in 0..cfg.frames {
         let f = recv(&handle, Duration::from_secs(2))?;
+        let hops = f.meta().hops;
         frames.push(FrameSample {
             sequence: f.meta().sequence(),
             timestamp_ns: f.meta().timestamp,
+            latency_us: hops
+                .get(Hop::Sensor)
+                .zip(hops.get(Hop::Taken))
+                .map(|(s, t)| t.saturating_sub(s) as f64 / 1e3),
+            queue_depth: handle.queue_stats().depth as usize,
         });
         last = Some(f);
     }

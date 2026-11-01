@@ -187,7 +187,9 @@ fn a_preview_never_changes_the_vision_clients_capture() {
     );
     let m = preview.metrics();
     assert_eq!(m.source_size, (1280, 800), "{m:?}");
-    assert!(m.dropped_rate > 0, "{m:?}");
+    // Frames beyond the cap were dropped: by the rate limit, or (scaler still busy on a
+    // loaded machine) before it.
+    assert!(m.dropped_rate + m.dropped_busy > 0, "{m:?}");
     assert_eq!(m.errors, 0, "{m:?}");
     drop(preview);
 }

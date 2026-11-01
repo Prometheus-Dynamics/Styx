@@ -90,6 +90,21 @@ const ROWS: &[Row] = &[
             r.timing.frames
         )
     }),
+    ("latency sensor→consumer p50 / p99 / max (µs)", |r| {
+        let v = |x: Option<f64>| x.map_or("-".into(), |x| format!("{x:.0}"));
+        format!(
+            "{} / {} / {}",
+            v(r.timing.latency_p50_us),
+            v(r.timing.latency_p99_us),
+            v(r.timing.latency_max_us)
+        )
+    }),
+    ("capture queue depth p50 / max", |r| {
+        format!(
+            "{} / {}",
+            r.timing.queue_depth_p50, r.timing.queue_depth_max
+        )
+    }),
     ("CPU % of a core (process + children)", |r| {
         format!(
             "{:.1} ({:.1} + {:.1})",
