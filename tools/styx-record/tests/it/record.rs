@@ -473,7 +473,12 @@ fn a_disk_that_does_not_keep_up_drops_frames_and_says_so() {
             <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd)
         };
         let mut all = Vec::new();
-        std::io::Read::read_to_end(&mut pipe, &mut all).unwrap();
+        // With no writer connected yet (a loaded machine) a read is end of file at once, and
+        // closing the pipe then would leave the writer's open blocked for good.
+        while all.is_empty() {
+            std::io::Read::read_to_end(&mut pipe, &mut all).unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
         all
     });
     let camera = replay_camera_with(&dir, (w, h), true, ReplayPacing::Unpaced);
