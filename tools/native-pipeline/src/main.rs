@@ -62,6 +62,7 @@
 //!                        sessions (stop, reconfigure for another rate, start)
 //!   --passes REGIONS     (pisp) extra back end passes over every frame: WxH@X,Y[;...]
 //!   --pass-tdn MODE      (pisp) temporal denoise in the passes: read (default) or off
+//!   --pass-jobs N        (pisp) pass jobs queued at once, 1 (default) to 4
 //!   --pass-move PX       (pisp) move the regions PX pixels right every frame
 //!   --pass-probe         (pisp) measure the --passes regions in the main output, run none
 //!   --main-crops REGIONS (pisp) crop output 0 (and 1) of the main pass: WxH@X,Y[;WxH@X,Y]
@@ -135,6 +136,7 @@ pub struct Args {
     pub configs: Vec<PathBuf>,
     pub passes: String,
     pub pass_tdn: String,
+    pub pass_jobs: usize,
     pub pass_move: u16,
     pub pass_probe: bool,
     pub main_crops: String,
@@ -186,6 +188,7 @@ fn parse() -> Result<Args, String> {
         configs: Vec::new(),
         passes: String::new(),
         pass_tdn: "read".into(),
+        pass_jobs: 1,
         pass_move: 0,
         pass_probe: false,
         main_crops: String::new(),
@@ -232,6 +235,7 @@ fn parse() -> Result<Args, String> {
             }
             "--passes" => a.passes = val()?,
             "--pass-tdn" => a.pass_tdn = val()?,
+            "--pass-jobs" => a.pass_jobs = num(val()?)? as usize,
             "--pass-move" => a.pass_move = num(val()?)? as u16,
             "--pass-probe" => a.pass_probe = true,
             "--main-crops" => a.main_crops = val()?,

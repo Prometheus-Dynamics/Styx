@@ -60,18 +60,20 @@ impl PispPipeline {
     }
 }
 
-/// Runs `passes` over raw buffer `input` after `main`'s job: their jobs are queued back to
-/// back (up to [`QUEUED_JOBS`] at once, the input buffer in each) and waited for in order, so
-/// the back end goes from one to the next without a round trip through this thread between
-/// them (written, untested on board). A pass without a free output buffer is skipped this
-/// frame.
+/// Runs `passes` over raw buffer `input` after `main`'s job: up to `jobs` of them (at most
+/// [`QUEUED_JOBS`]) are queued back to back, the input buffer in each, and waited for in
+/// order, so the back end goes from one to the next without a round trip through this thread
+/// between them; `jobs` 1 runs them one at a time. A pass without a free output buffer is
+/// skipped this frame.
 pub(super) fn run(
     dev: &mut BackEndStream,
     passes: &mut PassConfigs,
     main: &BeConfigBuilder,
     input: u32,
+    jobs: usize,
     timeout: Duration,
 ) -> Result<Vec<Option<PassOutput>>> {
+    let jobs = jobs.clamp(1, QUEUED_JOBS);
     let mut out: Vec<Option<PassOutput>> = Vec::with_capacity(passes.len());
     let mut queued = Ring::default();
     let mut failed: Option<DeviceError> = None;
@@ -86,7 +88,7 @@ pub(super) fn run(
                 break;
             }
         };
-        if queued.len() == QUEUED_JOBS
+        if queued.len() == jobs
             && let Err(e) = finish(dev, &mut queued, &mut out, timeout)
         {
             failed = Some(e);

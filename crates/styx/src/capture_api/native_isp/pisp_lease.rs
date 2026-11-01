@@ -127,11 +127,13 @@ impl OutputSpec {
         }
     }
 
-    pub(super) fn setup(self) -> Result<BeOutputSetup, CaptureError> {
+    /// The back end output making this, `gpu_pad` bytes left past each image.
+    pub(super) fn setup(self, gpu_pad: u32) -> Result<BeOutputSetup, CaptureError> {
         Ok(BeOutputSetup {
             format: self.be_format()?,
             width: self.width,
             height: self.height,
+            gpu_pad,
         })
     }
 }

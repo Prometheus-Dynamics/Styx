@@ -330,9 +330,10 @@ user; they do not block the tag unless the user says so.
       words, cached config copy): 117 → 8 µs per job, Styx API 0.35 → 0.23-0.26 ms/frame at
       30 fps (0.25 → 0.13-0.15 at 120), latency −0.11 ms, outputs bit-identical, libcamera
       unaffected. Installed on the dev box as an override of `pisp_be`.
-- [ ] Extra back end passes are queued back to back and regions can be scaled or in the
-      second output's format (written, untested on board): measure the latency saved per pass
-      on the CM5 (expected ~0.03 ms). Pass buffers are allocated at start
+- [ ] Extra back end passes queued back to back (`pass_jobs` > 1) measured slower on the CM5
+      (2026-10-31: 0.40 against 0.28 ms per frame for three passes, kernel time re-mapping
+      dma-bufs at shared spare indices); each buffer now has fixed indices: measure again and
+      make it the default if it wins. Scaled and second-format regions ran there. Pass buffers are allocated at start
       (`PispOptions::pass_buffers`); a camera service client joining with more regions than
       planned restarts the capture (`VIDIOC_CREATE_BUFS` could add them while streaming).
 - [ ] Ship the `pispbe` patch in a device image (kernel patch) and/or send it upstream (draft

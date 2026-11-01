@@ -446,7 +446,8 @@ pub(super) fn start_processed(
                 (w, h),
                 &loop_controls.regions,
             )?;
-            let setup = |i: usize| specs[i].map(|s| s.setup()).transpose();
+            let gpu_pad = config.capture_tunables().gpu_import_pad;
+            let setup = |i: usize| specs[i].map(|s| s.setup(gpu_pad)).transpose();
             let (be_buffers, contiguous) = pisp_output_buffers(
                 config,
                 specs.iter().flatten().map(|s| s.bytes()).sum(),
@@ -478,6 +479,7 @@ pub(super) fn start_processed(
                     config.backends.native.output_buffers.clamp(2, be_buffers),
                 ),
                 pass_buffers,
+                pass_jobs: usize::from(config.backends.native.pass_jobs),
                 raw_lease: config.backends.native.sensor_raw,
                 fe_buffers: PispOptions::nv12_and_half_rgb(w, h).fe_buffers
                     + if config.backends.native.sensor_raw {
@@ -547,6 +549,7 @@ pub(super) fn start_processed(
             rkisp_worker::RkispWorker {
                 mode: worker_mode,
                 driver_buffers: config.backends.native.driver_buffers,
+                gpu_pad: config.capture_tunables().gpu_import_pad,
                 keep: config.backends.native.output_buffers.max(2) as usize,
                 tx,
                 owns_queue,
@@ -627,7 +630,10 @@ pub(super) fn start_processed(
                     clock: timestamp_clock,
                     controls: controls.clone(),
                     sensor_raw: config.backends.native.sensor_raw,
-                    heap: out_buf::out_heap(config.backends.native.driver_buffers),
+                    heap: out_buf::out_heap(
+                        config.backends.native.driver_buffers,
+                        config.capture_tunables().gpu_import_pad,
+                    ),
                 },
             )?;
             (controls, worker)

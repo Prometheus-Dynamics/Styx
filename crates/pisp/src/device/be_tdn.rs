@@ -76,8 +76,7 @@ impl TdnBuffers {
             .ok_or_else(|| DeviceError::Setup("no dma-heap for the TDN buffers".into()))?;
         let len = (stride as usize * h as usize).next_multiple_of(4096);
         let fds = [heap.allocate(len)?.into_fd(), heap.allocate(len)?.into_fd()];
-        let spare = jobs.max(1) as u32 - 1;
-        let (read_slots, write_slots) = (Slots::new(2, spare), Slots::new(2, spare));
+        let (read_slots, write_slots) = (Slots::new(2, jobs as u32), Slots::new(2, jobs as u32));
         for (dev, ty) in [(&input, IN), (&output, OUT)] {
             let want = read_slots.count();
             let got = dev.request_buffers(ty, Memory::DmaBuf, want)?;

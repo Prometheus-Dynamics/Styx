@@ -55,7 +55,7 @@ pub(super) struct SoftWorker {
     /// sensor's value in the top bits, as the PiSP path hands out (a copy here).
     pub(super) sensor_raw: bool,
     /// Where output buffers come from (`None`: heap memory; [`super::out_buf::out_heap`]).
-    pub(super) heap: Option<Arc<styx_kernel::dma_heap::DmaHeap>>,
+    pub(super) heap: Option<Arc<super::out_buf::OutHeap>>,
 }
 
 /// `f`'s raw frame as 16-bit Bayer with the sensor's value in the top bits (`BYR2` and

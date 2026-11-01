@@ -66,6 +66,10 @@ pub struct BeOutputSetup {
     pub width: u32,
     /// Height.
     pub height: u32,
+    /// Bytes past the image left in each cached heap buffer for a GPU importing the dma-buf
+    /// (Vulkan cannot clamp a storage buffer binding; v3dv rounds it up by 256 bytes, and a
+    /// 1280x800 NV12 image fills whole pages). The driver's buffers are sized by the driver.
+    pub gpu_pad: u32,
 }
 
 /// A finished job: which output buffers hold the results.
@@ -265,7 +269,7 @@ impl BackEndStream {
                 g.planes
             )));
         }
-        let input_slots = Slots::new(inputs.len() as u32, QUEUED_JOBS as u32 - 1);
+        let input_slots = Slots::new(inputs.len() as u32, QUEUED_JOBS as u32);
         let got = in_dev.request_buffers(
             BufType::VideoOutputMplane,
             Memory::DmaBuf,
@@ -319,7 +323,7 @@ impl BackEndStream {
             } else {
                 "pispbe-output1"
             };
-            let size = g.planes[0].size_image as usize;
+            let size = g.planes[0].size_image as usize + o.gpu_pad as usize;
             let count = buffers[i].max(2);
             let queue = OutputQueue::new(dev, memory, count, initial[i].min(count), size, name)?;
             let free = (0..queue.len() as u32).collect();

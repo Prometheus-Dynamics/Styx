@@ -160,7 +160,8 @@ pub(super) fn start_v4l2(
     let backend_err = |e: styx_kernel::Error| CaptureError::Backend(e.to_string());
     let dev = VideoDevice::open(&path).map_err(backend_err)?;
 
-    let fmt = negotiate_format(&dev, &mode).map_err(backend_err)?;
+    let fmt = negotiate_format(&dev, &mode, config.capture_tunables().gpu_import_pad)
+        .map_err(backend_err)?;
     let negotiated_code = FourCc::from(fmt.fourcc.to_u32());
     let negotiated_resolution = Resolution::new(fmt.width, fmt.height)
         .ok_or_else(|| CaptureError::Backend("v4l2 negotiated zero-sized frame".into()))?;
@@ -471,7 +472,11 @@ fn import_fits(buffers: &CaptureBuffers, mode: &Mode, stride: usize, size: usize
 
 /// Sets the capture format to `mode`'s size and pixel format, keeping the node's other
 /// format fields; returns the format the driver chose.
-fn negotiate_format(dev: &VideoDevice, mode: &Mode) -> styx_kernel::Result<PixFormat> {
+fn negotiate_format(
+    dev: &VideoDevice,
+    mode: &Mode,
+    gpu_pad: u32,
+) -> styx_kernel::Result<PixFormat> {
     const PIX_FMT_FLAG_PREMUL_ALPHA: u32 = 1;
     let Format::Single(mut pix) = dev.format(BufType::VideoCapture)? else {
         return Err(styx_kernel::Error::Invalid(
@@ -491,11 +496,11 @@ fn negotiate_format(dev: &VideoDevice, mode: &Mode) -> styx_kernel::Result<PixFo
         )),
     };
     let mut got = read()?;
-    // Room past an uncompressed image for a GPU importing the exported buffers (v3dv-style
-    // drivers round storage buffers up to 256 bytes): asked for, kept if the driver allows.
-    if !is_encoded_bitstream(mode.format.code) && got.size_image > 0 {
+    // Room past an uncompressed image for a GPU importing the exported buffers
+    // (`CaptureConfig::gpu_import_pad`): asked for, kept if the driver allows.
+    if gpu_pad > 0 && !is_encoded_bitstream(mode.format.code) && got.size_image > 0 {
         let mut padded = got;
-        padded.size_image += 256;
+        padded.size_image += gpu_pad;
         if dev
             .set_format(BufType::VideoCapture, &Format::Single(padded))
             .is_ok()

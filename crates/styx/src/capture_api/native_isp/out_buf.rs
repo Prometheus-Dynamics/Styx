@@ -35,23 +35,29 @@ pub(super) fn returns() -> (Returns, ReturnsRx) {
     styx_core::queue::bounded(RETURNS)
 }
 
-/// Bytes past the frame a GPU importing the dma-buf may read (v3dv rounds storage buffers up
-/// to 256 bytes; a 1280x800 NV12 frame is a whole number of pages, so page rounding alone
-/// leaves none).
-const GPU_PAD: usize = 256;
-
 /// Heaps tried for the buffers, cached ones first.
 const HEAPS: [&str; 2] = ["linux,cma", "system"];
 
-/// The heap output buffers come from: `None` for plain heap memory (`driver`, or no heap).
-pub(super) fn out_heap(driver: bool) -> Option<Arc<DmaHeap>> {
+/// A dma-heap output buffers come from, and the room left past each frame.
+pub(super) struct OutHeap {
+    heap: DmaHeap,
+    /// Bytes past the frame a GPU importing the dma-buf may read
+    /// (`CaptureConfig::gpu_import_pad`; a 1280x800 NV12 frame is a whole number of pages, so
+    /// page rounding alone leaves none).
+    pad: usize,
+}
+
+/// The heap output buffers come from, `gpu_pad` bytes left past each frame: `None` for plain
+/// heap memory (`driver`, or no heap).
+pub(super) fn out_heap(driver: bool, gpu_pad: u32) -> Option<Arc<OutHeap>> {
     if driver {
         return None;
     }
-    HEAPS
-        .iter()
-        .find_map(|n| DmaHeap::open(n).ok())
-        .map(Arc::new)
+    let heap = HEAPS.iter().find_map(|n| DmaHeap::open(n).ok())?;
+    Some(Arc::new(OutHeap {
+        heap,
+        pad: gpu_pad as usize,
+    }))
 }
 
 /// A buffer of [`Self::len`] bytes the CPU writes a frame into.
@@ -62,7 +68,11 @@ pub(super) struct OutBuf {
 
 enum Mem {
     Heap(Vec<u8>),
-    Dma { buf: DmaBuf, map: Mapping },
+    Dma {
+        buf: DmaBuf,
+        map: Mapping,
+        pad: usize,
+    },
 }
 
 impl OutBuf {
@@ -94,7 +104,7 @@ impl OutBuf {
         match &self.mem {
             Mem::Heap(v) => v.capacity(),
             // The padding stays past whatever frame the buffer holds.
-            Mem::Dma { map, .. } => map.len() - GPU_PAD,
+            Mem::Dma { map, pad, .. } => map.len() - pad,
         }
     }
 }
@@ -110,7 +120,7 @@ impl Spare {
     /// rest of the capture.
     pub(super) fn take(
         &mut self,
-        heap: Option<&DmaHeap>,
+        heap: Option<&OutHeap>,
         returns: &ReturnsRx,
         keep: usize,
         len: usize,
@@ -142,11 +152,15 @@ impl Spare {
     }
 }
 
-fn allocate(heap: Option<&DmaHeap>, len: usize) -> OutBuf {
+fn allocate(heap: Option<&OutHeap>, len: usize) -> OutBuf {
     let dma = heap.and_then(|h| {
-        let buf = h.allocate((len + GPU_PAD).next_multiple_of(4096)).ok()?;
+        let buf = h.heap.allocate((len + h.pad).next_multiple_of(4096)).ok()?;
         let map = buf.map().ok()?;
-        Some(Mem::Dma { buf, map })
+        Some(Mem::Dma {
+            buf,
+            map,
+            pad: h.pad,
+        })
     });
     OutBuf {
         mem: dma.unwrap_or_else(|| Mem::Heap(vec![0; len])),
@@ -313,7 +327,9 @@ mod tests {
     #[test]
     fn heap_buffers_are_dmabufs_consumers_import() {
         // Where no dma-heap is open to this user, the heap-memory path is what runs.
-        let Some(heap) = out_heap(false) else { return };
+        let Some(heap) = out_heap(false, 256) else {
+            return;
+        };
         let (tx, rx) = returns();
         let mut spare = Spare::default();
         let mut b = spare.take(Some(&heap), &rx, 2, 64 * 48);
@@ -335,7 +351,7 @@ mod tests {
 
     /// The soft ISP's output path after a warm-up: a buffer back from the consumer, written,
     /// leased, delivered, taken, read and dropped; each frame allocates its lease record only.
-    fn frames_allocate_only_their_lease_record(heap: Option<&DmaHeap>) {
+    fn frames_allocate_only_their_lease_record(heap: Option<&OutHeap>) {
         use crate::test_alloc::allocations;
         use styx_core::queue::RecvOutcome;
         const W: u32 = 320;
@@ -384,7 +400,7 @@ mod tests {
 
     #[test]
     fn dmabuf_frames_allocate_only_their_lease_record() {
-        if let Some(heap) = out_heap(false) {
+        if let Some(heap) = out_heap(false, 256) {
             frames_allocate_only_their_lease_record(Some(&heap));
         }
     }

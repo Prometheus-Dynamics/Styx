@@ -81,18 +81,20 @@ pub fn has_rkisp() -> bool {
 impl RkispPipeline {
     /// Opens `camera` for `settings` (a raw mode) through the first ISP of
     /// [`find_isps`](styx_rkisp::device::find_isps), its main path giving `output`-sized NV12,
-    /// with the algorithms of `tuning`.
+    /// with the algorithms of `tuning`; `gpu_pad` bytes are asked for past each output image
+    /// (`IspSetup::gpu_pad`).
     pub fn open(
         camera: NativeCamera,
         settings: &StreamSettings,
         tuning: &Tuning,
         output: (u32, u32),
+        gpu_pad: u32,
     ) -> Result<Self> {
         let media = find_isps()
             .into_iter()
             .next()
             .ok_or_else(|| PipelineError::Device("no rkisp media device".into()))?;
-        Self::open_on(&media, camera, settings, tuning, output)
+        Self::open_on(&media, camera, settings, tuning, output, gpu_pad)
     }
 
     /// [`Self::open`] through the ISP of media device `media`.
@@ -102,6 +104,7 @@ impl RkispPipeline {
         settings: &StreamSettings,
         tuning: &Tuning,
         output: (u32, u32),
+        gpu_pad: u32,
     ) -> Result<Self> {
         let mode = select_mode(&camera.info().modes, settings, &camera.info().raw_formats)?.clone();
         let code = camera.bus_code(mode.code, settings.hflip, settings.vflip);
@@ -114,6 +117,7 @@ impl RkispPipeline {
                 sensor_code: MbusCode(code),
                 output,
                 buffers: RKISP_BUFFERS,
+                gpu_pad,
             },
         )?;
         let fps = configured.interval.fps();

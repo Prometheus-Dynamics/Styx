@@ -4,8 +4,8 @@ use styx_core::prelude::{ClockSource, QueueOverflow};
 
 use super::{
     DEFAULT_CAPTURE_EXTRA_BUFFERS, DEFAULT_CAPTURE_IDLE_POLL_MS,
-    DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS, DEFAULT_POOL_BYTES, DEFAULT_POOL_MIN,
-    DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH,
+    DEFAULT_CAPTURE_QUEUE_SEND_TIMEOUT_MS, DEFAULT_GPU_IMPORT_PAD, DEFAULT_POOL_BYTES,
+    DEFAULT_POOL_MIN, DEFAULT_POOL_SPARE, DEFAULT_QUEUE_DEPTH,
 };
 
 /// Tunables for capture queues and buffer pools.
@@ -55,6 +55,13 @@ pub struct CaptureConfig {
     /// Clock live sources stamp frames with. File and simulation sources always report media
     /// time (`TimestampClock::StreamRelative`).
     pub timestamp_clock: ClockSource,
+    /// Bytes past the last plane asked for in the buffers a capture exports as dma-bufs (V4L2
+    /// sizeimage, the native ISP's output buffers), so a GPU can import them: Vulkan cannot
+    /// clamp a storage buffer binding, and some drivers round it up (v3dv by 256 bytes). Kept
+    /// where the driver allows; `0` asks for nothing extra. A consumer importing through
+    /// Daedalus can take it from the GPU: `GpuFrameImports::required_len(end) - end` (exact
+    /// on RADV, NVIDIA and lavapipe, 256 on v3dv).
+    pub gpu_import_pad: u32,
 }
 
 /// How [`CaptureConfig::stop_when_idle_ms`] stops an idle camera.
@@ -133,6 +140,7 @@ impl Default for CaptureConfig {
             stop_when_idle_ms: 0,
             idle_stop: IdleStop::Release,
             timestamp_clock: ClockSource::Native,
+            gpu_import_pad: DEFAULT_GPU_IMPORT_PAD,
         }
     }
 }
@@ -152,6 +160,7 @@ impl CaptureConfig {
             stop_when_idle_ms: self.stop_when_idle_ms,
             idle_stop: self.idle_stop,
             timestamp_clock: self.timestamp_clock,
+            gpu_import_pad: self.gpu_import_pad,
         }
     }
 

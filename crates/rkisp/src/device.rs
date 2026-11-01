@@ -110,6 +110,9 @@ pub struct IspSetup {
     pub output: (u32, u32),
     /// Buffers per queue.
     pub buffers: u32,
+    /// Bytes past the image asked for in each output buffer, for a GPU importing it (v3dv
+    /// rounds storage buffers up to 256 bytes); drivers that size planes themselves ignore it.
+    pub gpu_pad: u32,
 }
 
 /// An output frame left dequeued by [`IspDevice::next_output`]; give it back with
@@ -127,9 +130,6 @@ pub struct OutputFrame {
     /// The driver flagged the frame.
     pub error: bool,
 }
-
-/// Bytes past the image a GPU importing an output buffer may read.
-const GPU_PAD: u32 = 256;
 
 /// Bytes of a tightly packed NV12 image of `(w, h)`.
 fn nv12_bytes((w, h): (u32, u32)) -> u32 {
@@ -263,12 +263,9 @@ impl IspDevice {
                 height: setup.output.1,
                 fourcc: OUTPUT_FOURCC,
                 field: 1,
-                // Room past the image for a GPU importing the buffers (v3dv-style drivers
-                // round storage buffers up to 256 bytes); drivers that size planes themselves
-                // ignore it.
                 planes: alloc::vec![PlaneFormat {
                     bytes_per_line: 0,
-                    size_image: nv12_bytes(setup.output) + GPU_PAD,
+                    size_image: nv12_bytes(setup.output) + setup.gpu_pad,
                 }],
                 ..Default::default()
             }),

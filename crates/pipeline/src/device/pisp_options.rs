@@ -24,6 +24,12 @@ pub struct PispOptions {
     /// More buffers per output, for the extra passes that write into them
     /// ([`super::PispPipeline::set_pass`]).
     pub pass_buffers: [u32; 2],
+    /// Extra passes' jobs queued at once, up to [`styx_pisp::device::QUEUED_JOBS`]: `1`
+    /// (default) waits for each before queuing the next; more queue them back to back (fewer
+    /// round trips through the pipeline thread). On the CM5 with three 320x320 passes,
+    /// queued cost 0.12 ms more per frame than one at a time (2026-10-31, buffers re-attached at
+    /// shared V4L2 indices; to be measured again with an index set per buffer).
+    pub pass_jobs: usize,
     /// Back end node group (0 or 1).
     pub be_group: usize,
     /// Front end configs queued ahead of the frames.
@@ -70,11 +76,13 @@ impl PispOptions {
                     format: BeFormat::Nv12,
                     width,
                     height,
+                    gpu_pad: 256,
                 }),
                 Some(BeOutputSetup {
                     format: BeFormat::Rgb24,
                     width: width / 2,
                     height: height / 2,
+                    gpu_pad: 256,
                 }),
             ],
             crop: [None; 2],
@@ -82,6 +90,7 @@ impl PispOptions {
             be_buffers: 6,
             be_buffers_initial: None,
             pass_buffers: [0; 2],
+            pass_jobs: 1,
             be_group: 0,
             configs_ahead: 2,
             settled_rate_hz: Some(15.0),

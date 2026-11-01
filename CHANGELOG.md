@@ -8,6 +8,18 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **`CaptureConfig::gpu_import_pad`** (`StyxConfig::capture_gpu_import_pad`, default 256):
+  the room past the last plane asked for in exported capture buffers (V4L2 sizeimage, PiSP
+  and software ISP output buffers, Rockchip sizeimage) so a GPU can import them; was a fixed
+  256. `0` asks for nothing. Breaking: `BeOutputSetup::gpu_pad`, `IspSetup::gpu_pad`, and
+  `RkispPipeline::open`/`open_on` take a `gpu_pad`.
+
+- **PiSP extra passes: `PispOptions::pass_jobs` / `NativeIspConfig::pass_jobs`** (default
+  1, one job at a time): queuing passes back to back measured 0.12 ms slower per frame on the
+  CM5 (three 320x320 passes at 120 fps). The raw and TDN buffers now keep a fixed set of V4L2
+  indices each, so vb2 no longer re-maps a dma-buf at every queue (written, to be measured
+  again on the CM5). `native-pipeline pisp --pass-jobs N`.
+
 - **Software ISP frames as dma-bufs**: the soft ISP's outputs (main, regions, overview) and
   the Rockchip path's fallback copies are written into recycled buffers from the cached
   `linux,cma` (else `system`) dma-heap, bracketed with `DMA_BUF_IOCTL_SYNC`, so consumers

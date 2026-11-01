@@ -43,6 +43,8 @@ pub(super) struct RkispWorker {
     /// Fallback copies into heap memory rather than dma-heap buffers
     /// (`NativeIspConfig::driver_buffers`).
     pub(super) driver_buffers: bool,
+    /// Bytes past each frame for a GPU importing it (`CaptureConfig::gpu_import_pad`).
+    pub(super) gpu_pad: u32,
     /// The camera's controls (set by [`open`]).
     pub(super) controls: Option<styx_native::CameraControls>,
 }
@@ -85,7 +87,8 @@ pub(super) fn open(
         hflip: config.backends.native.hflip,
         vflip: config.backends.native.vflip,
     };
-    let mut p = RkispPipeline::open(camera, &settings, tuning, (width, height)).map_err(err)?;
+    let mut p =
+        RkispPipeline::open(camera, &settings, tuning, (width, height), w.gpu_pad).map_err(err)?;
     if let Some(c) = loop_controls.take() {
         p.algorithms().set_controls(c);
     }
@@ -117,7 +120,7 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
             w.live.register_thread();
             let (ret_tx, ret_rx) = returns();
             let mut spare = Spare::default();
-            let heap = super::out_buf::out_heap(w.driver_buffers);
+            let heap = super::out_buf::out_heap(w.driver_buffers, w.gpu_pad);
             let mut direct = RkBuffers::new(&p);
             if direct.is_none() {
                 crate::trace::warn!(backend = "native", "the main path's buffers do not export: copying every frame");

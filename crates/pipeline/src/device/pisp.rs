@@ -643,14 +643,21 @@ impl PispPipeline {
                 profile::record("loop", "be_finish_wait", p.times.finish);
             }
             let t_passes = Instant::now();
-            let passes =
-                match passes::run(be.dev, &mut self.passes, be.builder, image.index, timeout) {
-                    Ok(passes) => passes,
-                    Err(e) => {
-                        be.dev.release(&p.output);
-                        return Err(e);
-                    }
-                };
+            let jobs = self.options.pass_jobs;
+            let passes = match passes::run(
+                be.dev,
+                &mut self.passes,
+                be.builder,
+                image.index,
+                jobs,
+                timeout,
+            ) {
+                Ok(passes) => passes,
+                Err(e) => {
+                    be.dev.release(&p.output);
+                    return Err(e);
+                }
+            };
             let passes_took = t_passes.elapsed();
             Ok(PispFrame {
                 sequence: seq,
