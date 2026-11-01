@@ -97,7 +97,15 @@ pub fn contexts() -> Vec<styx_gpuisp::GpuContext> {
                 )
             })
         })
-        .map(|d| GpuContext::open(DeviceSelect::Index(d.index)).expect("listed device opens"))
+        .filter_map(|d| match GpuContext::open(DeviceSelect::Index(d.index)) {
+            Ok(context) => Some(context),
+            // A driver whose device is busy elsewhere can drop out between the listing and here.
+            Err(styx_gpuisp::GpuError::NoDevice(why)) => {
+                eprintln!("{} went away: {why}", d.name);
+                None
+            }
+            Err(e) => panic!("{}: {e}", d.name),
+        })
         .collect()
 }
 
