@@ -157,7 +157,8 @@ with its `/dev/video*` nodes after every run.
   `UvcDevice::usb()`), no pan/tilt, no status interrupt endpoint (asynchronous control changes,
   the button), no UVC metadata node equivalent beyond `UvcFrameMeta`.
 * Recordings keep the frame's V4L2-style metadata (sequence, size, error flag), not PTS/SCR.
-* Frames are host memory (one copy from the URB buffers, as `uvcvideo`); they cross processes
+* Frames are host memory (one copy from the URB buffers, as `uvcvideo`, except a bulk transfer
+  holding a whole frame, whose buffer becomes the frame: written, untested on a camera); they cross processes
   by copy to memfd, not as dma-bufs.
 * Controls are read at probe only while no driver holds the camera; with `uvcvideo` bound they
   are listed when the capture starts.

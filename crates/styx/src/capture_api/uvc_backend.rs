@@ -352,8 +352,16 @@ fn frame_lease(
     };
     let clock = TimestampClock::Monotonic;
     let target = config.capture_tunables().timestamp_clock;
-    // The payloads were copied into the frame as they arrived (the one copy of this path).
-    styx_core::metrics::copied(styx_core::metrics::CopySite::Capture, frame.data.len());
+    // The payloads were copied into the frame as they arrived (the one copy of this path), unless
+    // one transfer was the whole frame and its buffer became the frame.
+    let copied = if frame.data.in_place() {
+        0
+    } else {
+        frame.data.len()
+    };
+    if copied > 0 {
+        styx_core::metrics::copied(styx_core::metrics::CopySite::Capture, copied);
+    }
     let mut meta = FrameMeta::new(format, frame.timestamp.as_nanos() as u64)
         .with_capture_instant(frame.dequeued)
         .with_sensor_latency(clock)
@@ -365,7 +373,9 @@ fn frame_lease(
             copied: false,
         })
         .with_backend(BackendFrameMeta::Uvc(uvc));
-    meta.hops.copied(frame.data.len());
+    if copied > 0 {
+        meta.hops.copied(copied);
+    }
     Some(FrameLease::from_external(
         meta,
         planes,

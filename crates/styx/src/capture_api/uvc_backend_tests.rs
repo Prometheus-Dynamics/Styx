@@ -191,7 +191,7 @@ fn a_uvc_frame_lease_allocates_nothing() {
         let mut data = pool.take();
         data.extend_from_slice(&vec![n as u8; w * h * 2]);
         let frame = UvcFrame {
-            data,
+            data: data.into(),
             sequence: n as u32,
             fourcc: *b"YUYV",
             width: w as u32,

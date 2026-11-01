@@ -60,11 +60,44 @@ impl StreamConfig {
     }
 }
 
+/// A frame's bytes (a slice), in a buffer that goes back to its pool when dropped.
+#[derive(Debug)]
+pub struct FrameData {
+    buf: PooledBuffer,
+    start: usize,
+}
+
+impl FrameData {
+    /// The buffer's size, frame or not.
+    pub fn capacity(&self) -> usize {
+        self.buf.capacity()
+    }
+
+    /// Whether these are the transfer's own bytes: never copied in user space.
+    pub fn in_place(&self) -> bool {
+        self.start > 0
+    }
+}
+
+impl From<PooledBuffer> for FrameData {
+    fn from(buf: PooledBuffer) -> FrameData {
+        FrameData { buf, start: 0 }
+    }
+}
+
+impl std::ops::Deref for FrameData {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.buf[self.start..]
+    }
+}
+
 /// One frame.
 #[derive(Debug)]
 pub struct UvcFrame {
     /// The frame's bytes, assembled in place (no further copy on the way out).
-    pub data: PooledBuffer,
+    pub data: FrameData,
     /// Frames assembled since the start, damaged ones included (gaps: frames dropped).
     pub sequence: u32,
     pub fourcc: [u8; 4],
@@ -172,6 +205,8 @@ impl UvcStream {
             config.interval,
         )?;
         let capacity = frame_capacity(&format, &frame, &params);
+        let expected_bytes = format.frame_bytes(&frame).unwrap_or(capacity);
+        let mut pool_capacity = capacity;
         let info = dev.info();
         let speed = info.speed;
         let usb = dev.usb().clone();
@@ -202,9 +237,15 @@ impl UvcStream {
                 )
             }
             _ => {
-                let size = (params.max_payload_transfer_size as usize)
+                let mut size = (params.max_payload_transfer_size as usize)
                     .max(capacity.min(16 << 10))
                     .max(512);
+                // Transfers of a whole frame: as large as the frame buffers, so that a full URB
+                // buffer and an empty frame buffer can change places.
+                if size >= expected_bytes {
+                    size = size.max(capacity);
+                    pool_capacity = size;
+                }
                 if size * 2 > URB_MEMORY {
                     return Err(UvcError::Unsupported(format!(
                         "bulk payloads of {size} bytes"
@@ -272,7 +313,10 @@ impl UvcStream {
             config,
             ring: Some(ring),
             afd: None,
-            asm: Assembler::new(BufferPool::new(capacity, config.buffers.max(1)), expected),
+            asm: Assembler::new(
+                BufferPool::new(pool_capacity, config.buffers.max(1)),
+                expected,
+            ),
             bus: BusClock::new(interval_ns),
             clock: DeviceClock::new(clock_hz, per_sof),
             ready: VecDeque::new(),
@@ -363,15 +407,34 @@ impl UvcStream {
             } else {
                 let failed = !matches!(c.status, UrbStatus::Ok);
                 let stalled = c.status == UrbStatus::Error(libc::EPIPE);
-                self.asm.push(
-                    Payload {
-                        data: c.data(),
-                        failed,
-                        packet: self.packets,
-                        time_ns: reaped_ns,
-                    },
-                    &mut self.scratch,
-                );
+                let payload = Payload {
+                    data: c.data(),
+                    failed,
+                    packet: self.packets,
+                    time_ns: reaped_ns,
+                };
+                let whole = self.asm.whole_frame(&payload);
+                let filled = payload.data.len();
+                if !whole {
+                    self.asm.push(payload, &mut self.scratch);
+                } else {
+                    // Written, untested on a camera: no bulk UVC camera at the bench.
+                    match ring.exchange_buffer(slot, filled, self.asm.spare().into_vec()) {
+                        Ok(data) => {
+                            self.asm
+                                .push_whole(data, self.packets, reaped_ns, &mut self.scratch)
+                        }
+                        Err(_) => {
+                            let payload = Payload {
+                                data: ring.idle_data(slot, filled),
+                                failed,
+                                packet: self.packets,
+                                time_ns: reaped_ns,
+                            };
+                            self.asm.push(payload, &mut self.scratch);
+                        }
+                    }
+                }
                 self.packets += 1;
                 if stalled {
                     let _ = ring.device().clear_halt(ring.config().endpoint);
@@ -412,7 +475,10 @@ impl UvcStream {
             scr: f.scr_last,
             flags: f.flags,
             dequeued: Instant::now(),
-            data: f.data,
+            data: FrameData {
+                buf: f.data,
+                start: f.start,
+            },
         });
     }
 

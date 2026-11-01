@@ -253,3 +253,41 @@ fn reset_rejoins_at_the_next_boundary() {
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].0, b"ef");
 }
+
+/// A transfer holding a whole frame: its buffer becomes the frame, past the header.
+#[test]
+fn a_whole_frame_in_one_transfer_keeps_its_buffer() {
+    fn p(data: &[u8]) -> Payload<'_> {
+        Payload {
+            data,
+            failed: false,
+            packet: 0,
+            time_ns: 0,
+        }
+    }
+    let mut asm = Assembler::new(BufferPool::new(64, 2), Some(4));
+    let mut out = Vec::new();
+    // The end of a frame to join on.
+    asm.push(p(&payload(false, true, None, None, &[])), &mut out);
+    assert!(out.is_empty());
+
+    let bytes = payload(true, true, Some(9), None, &[1, 2, 3, 4]);
+    assert!(asm.whole_frame(&p(&bytes)));
+    let at = bytes.as_ptr();
+    asm.push_whole(bytes, 1, 7, &mut out);
+    let f = out.pop().expect("a frame");
+    assert_eq!(f.data.as_ptr(), at, "not copied");
+    assert_eq!(&f.data[f.start..], &[1u8, 2, 3, 4][..]);
+    assert_eq!(f.pts, Some(9));
+    assert!(!f.flags.damaged() && f.payloads == 1);
+
+    // The same FID again is not a new frame; the next one is.
+    assert!(!asm.whole_frame(&p(&payload(true, true, None, None, &[1, 2, 3, 4]))));
+    assert!(asm.whole_frame(&p(&payload(false, true, None, None, &[1, 2, 3, 4]))));
+    // Too short for the format, no end of frame: through `push`.
+    assert!(!asm.whole_frame(&p(&payload(false, true, None, None, &[1, 2, 3]))));
+    assert!(!asm.whole_frame(&p(&payload(false, false, None, None, &[1, 2, 3, 4]))));
+    // Nor while a frame is under way.
+    asm.push(p(&payload(false, false, None, None, &[1, 2])), &mut out);
+    assert!(!asm.whole_frame(&p(&payload(false, true, None, None, &[1, 2, 3, 4]))));
+}

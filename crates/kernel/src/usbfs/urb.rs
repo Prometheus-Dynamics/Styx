@@ -319,6 +319,49 @@ impl UrbRing {
         Ok(())
     }
 
+    /// The first `filled` bytes of idle URB `slot`, as its last completion left them.
+    pub fn idle_data(&self, slot: usize, filled: usize) -> &[u8] {
+        let Some(s) = self.slots.get(slot).filter(|s| !s.in_flight) else {
+            return &[];
+        };
+        // SAFETY: the URB is idle, so the kernel holds no reference to its buffer, and the last
+        // completion wrote its first `filled` bytes (at most the buffer's length here).
+        unsafe { std::slice::from_raw_parts(s.buffer.as_ptr().cast(), filled.min(s.buffer.len())) }
+    }
+
+    /// Takes the bytes of idle URB `slot`, `filled` of them written by its last completion, and
+    /// gives it `empty` to fill next, without copying a frame out of it. Refused (`empty` back)
+    /// on usbfs-mapped buffers, which cannot move, for a URB in flight, and unless `empty` holds
+    /// exactly the URB's buffer length.
+    pub fn exchange_buffer(
+        &mut self,
+        slot: usize,
+        filled: usize,
+        empty: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, Vec<u8>> {
+        if self.mapping.is_some() {
+            return Err(empty);
+        }
+        let Some(s) = self.slots.get_mut(slot) else {
+            return Err(empty);
+        };
+        let len = s.buffer.len();
+        if s.in_flight || empty.capacity() != len || filled > len {
+            return Err(empty);
+        }
+        let mut empty = std::mem::ManuallyDrop::new(empty);
+        let fresh = NonNull::slice_from_raw_parts(
+            NonNull::new(empty.as_mut_ptr()).expect("a Vec's pointer"),
+            len,
+        );
+        let old = std::mem::replace(&mut s.buffer, fresh);
+        // SAFETY: the URB is idle, so the kernel holds no reference to it or its buffer.
+        unsafe { (*s.storage.as_ptr()).urb.buffer = fresh.as_ptr().cast() };
+        // SAFETY: not mapped, so `old` is a boxed slice of `len` bytes (or an earlier `empty`, the
+        // same layout) that this ring owned and now gives up; the kernel wrote its first `filled`.
+        Ok(unsafe { Vec::from_raw_parts(old.as_ptr().cast(), filled, len) })
+    }
+
     /// Submits every idle URB.
     pub fn submit_all(&mut self) -> Result<()> {
         for i in 0..self.slots.len() {

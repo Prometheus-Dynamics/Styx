@@ -44,6 +44,14 @@ impl BufferPool {
         }
     }
 
+    /// `buf` as one of this pool's buffers: it comes back here when dropped.
+    pub(crate) fn adopt(&self, buf: Vec<u8>) -> PooledBuffer {
+        PooledBuffer {
+            buf,
+            pool: Some(self.inner.clone()),
+        }
+    }
+
     /// The buffers' capacity.
     pub fn capacity(&self) -> usize {
         self.inner.capacity
@@ -71,6 +79,12 @@ pub struct PooledBuffer {
 }
 
 impl PooledBuffer {
+    /// The bytes, out of the pool: they do not come back when dropped.
+    pub(crate) fn into_vec(mut self) -> Vec<u8> {
+        self.pool = None;
+        std::mem::take(&mut self.buf)
+    }
+
     /// A buffer that belongs to no pool.
     pub fn detached(buf: Vec<u8>) -> PooledBuffer {
         PooledBuffer { buf, pool: None }

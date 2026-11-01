@@ -26,6 +26,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   zero-copy leases and GPU ISP frames from memory allocate nothing once warm. `FrameLease` now
   implements `Drop`.
 
+- **UVC bulk: a frame in one transfer is not copied in user space** (written, untested on a
+  camera): the URB's buffer becomes the frame and the URB is resubmitted with an empty pool buffer
+  (`UrbRing::exchange_buffer`, not for usbfs-mapped URBs). Breaking: `UvcFrame::data` is a
+  `FrameData` (derefs to the frame's `[u8]`), since the frame starts after the payload header.
+
 - **Accelerator knobs**: `StyxConfig::accelerators` and `FrameRequest::accelerators`
   (`planner::Accelerators`) choose the hardware per device and stage: `isp`, `encoder`, `scaler`,
   `pyramid`, each `Hardware::Auto`, `Off` or `Required`. A camera service applies its capture

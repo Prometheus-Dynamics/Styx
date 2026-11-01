@@ -35,7 +35,7 @@ pub use descriptors::{Format, FormatKind, Frame, Intervals, StreamingInterface, 
 pub use device::{OpenOptions, UvcDevice, find_mode};
 pub use hotplug::{Hotplug, HotplugEvent};
 pub use payload::{FrameFlags, Scr};
-pub use stream::{StreamConfig, StreamFormat, StreamStats, UvcFrame, UvcStream};
+pub use stream::{FrameData, StreamConfig, StreamFormat, StreamStats, UvcFrame, UvcStream};
 pub use sysfs::{UsbCameraInfo, enumerate};
 
 /// Errors of this crate.

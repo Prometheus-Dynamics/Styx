@@ -117,6 +117,9 @@ impl FrameFlags {
 #[derive(Debug)]
 pub struct AssembledFrame {
     pub data: PooledBuffer,
+    /// Where the frame starts in `data`: past the payload header when `data` is the transfer's
+    /// own buffer ([`Assembler::push_whole`]), else 0.
+    pub start: usize,
     pub fid: bool,
     /// The frame's presentation time stamp (device clock), if the payloads carry one.
     pub pts: Option<u32>,
@@ -243,6 +246,7 @@ impl Assembler {
             self.building = Some(Building {
                 frame: AssembledFrame {
                     data,
+                    start: 0,
                     fid: h.fid,
                     pts: None,
                     scr_first: None,
@@ -289,6 +293,60 @@ impl Assembler {
         }
     }
 
+    /// Whether `p` alone is the next whole, undamaged frame, so its transfer's buffer can become
+    /// the frame ([`Self::push_whole`]) with no copy. Everything else goes through [`Self::push`].
+    pub fn whole_frame(&self, p: &Payload<'_>) -> bool {
+        if p.failed || !self.synced || self.pending_error || self.building.is_some() {
+            return false;
+        }
+        let Some(h) = PayloadHeader::parse(p.data) else {
+            return false;
+        };
+        let body = p.data.len() - h.len;
+        h.eof
+            && !h.error
+            && self.done_fid != Some(h.fid)
+            && body > 0
+            && self.expected.is_none_or(|e| body == e)
+    }
+
+    /// An empty buffer of the pool, for a transfer to fill in place of the one it gives up.
+    pub fn spare(&self) -> PooledBuffer {
+        self.pool.take()
+    }
+
+    /// `data`, a transfer's buffer that [`Self::whole_frame`] accepted, is a frame.
+    pub fn push_whole(
+        &mut self,
+        data: Vec<u8>,
+        packet: u64,
+        time_ns: u64,
+        out: &mut Vec<AssembledFrame>,
+    ) {
+        let Some(h) = PayloadHeader::parse(&data) else {
+            return;
+        };
+        self.prev_fid = Some(h.fid);
+        let frame = AssembledFrame {
+            start: h.len,
+            data: self.pool.adopt(data),
+            fid: h.fid,
+            pts: h.pts,
+            scr_first: h.scr,
+            scr_last: h.scr,
+            flags: FrameFlags {
+                still: h.still,
+                ..FrameFlags::default()
+            },
+            first_packet: packet,
+            last_packet: packet,
+            first_time_ns: time_ns,
+            last_time_ns: time_ns,
+            payloads: 1,
+        };
+        self.finish(Building { frame }, out);
+    }
+
     /// Drops the frame being built (stream stopped or restarted) and rejoins at the next
     /// frame boundary.
     pub fn reset(&mut self) {
@@ -306,7 +364,7 @@ impl Assembler {
             return;
         }
         if let Some(e) = self.expected
-            && f.data.len() < e
+            && f.data.len() - f.start < e
         {
             f.flags.short = true;
         }
