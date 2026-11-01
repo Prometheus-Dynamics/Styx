@@ -172,16 +172,38 @@ impl Buffer {
         // SAFETY: a valid fd; the call only reads it.
         unsafe { ext.get_memory_fd_properties(handle, fd.as_raw_fd(), &mut props) }
             .ctx("vkGetMemoryFdPropertiesKHR")?;
-        let mut ext_info = vk::ExternalMemoryBufferCreateInfo::default().handle_types(handle);
-        let info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(USAGE)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .push_next(&mut ext_info);
-        // SAFETY: valid create info.
-        let buffer = unsafe { d.create_buffer(&info, None) }.ctx("vkCreateBuffer")?;
-        // SAFETY: a buffer of this device.
-        let req = unsafe { d.get_buffer_memory_requirements(buffer) };
+        // The import covers the whole dma-buf (v3dv refuses any other size with
+        // ERROR_INVALID_EXTERNAL_HANDLE): its real size, which heaps round up to pages.
+        let whole = dmabuf_len(fd).ok();
+        let create = |len: u64| -> Result<(vk::Buffer, vk::MemoryRequirements), GpuError> {
+            let mut ext_info = vk::ExternalMemoryBufferCreateInfo::default().handle_types(handle);
+            let info = vk::BufferCreateInfo::default()
+                .size(len)
+                .usage(USAGE)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .push_next(&mut ext_info);
+            // SAFETY: valid create info.
+            let buffer = unsafe { d.create_buffer(&info, None) }.ctx("vkCreateBuffer")?;
+            // SAFETY: a buffer of this device.
+            Ok((buffer, unsafe { d.get_buffer_memory_requirements(buffer) }))
+        };
+        let mut size = whole.map_or(size, |w| size.min(w));
+        let (mut buffer, mut req) = create(size)?;
+        // A driver that rounds buffers up (v3dv by 256 bytes) needs the rounding inside the
+        // dma-buf: a shorter buffer then, the frames' bounds checked against what it covers.
+        if let Some(w) = whole.filter(|&w| req.size > w) {
+            // SAFETY: not in use.
+            unsafe { d.destroy_buffer(buffer, None) };
+            size = size.saturating_sub((req.size - w).next_multiple_of(4));
+            (buffer, req) = create(size)?;
+            if req.size > w || size == 0 {
+                // SAFETY: not in use.
+                unsafe { d.destroy_buffer(buffer, None) };
+                return Err(GpuError::Unsupported(format!(
+                    "dma-buf of {w} bytes is too short for this device's buffers"
+                )));
+            }
+        }
         let bits = req.memory_type_bits & props.memory_type_bits;
         let found = memory_type(
             ctx,
@@ -212,7 +234,7 @@ impl Buffer {
             .fd(raw);
         let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().buffer(buffer);
         let alloc = vk::MemoryAllocateInfo::default()
-            .allocation_size(req.size.max(size))
+            .allocation_size(whole.unwrap_or(req.size))
             .memory_type_index(index)
             .push_next(&mut import)
             .push_next(&mut dedicated);
@@ -299,4 +321,14 @@ impl Buffer {
         // SAFETY: the whole mapping; the GPU is idle on it (the owner waits on its fence).
         unsafe { std::slice::from_raw_parts(self.ptr, self.size as usize) }
     }
+}
+
+/// The size of the dma-buf `fd` (its end, as `lseek(SEEK_END)` reports it); the file position
+/// is put back to the start.
+fn dmabuf_len(fd: BorrowedFd<'_>) -> std::io::Result<u64> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = std::fs::File::from(fd.try_clone_to_owned()?);
+    let len = file.seek(SeekFrom::End(0))?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok(len)
 }
