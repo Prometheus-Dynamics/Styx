@@ -17,7 +17,7 @@ use styx_pipeline::styx_algo::Tuning;
 
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
-use super::out_buf::{OutBuf, Spare, lease};
+use super::out_buf::{Spare, lease, returns};
 use super::rkisp_lease::RkBuffers;
 use super::soft_worker::image_bytes;
 use super::{aaa_sample, err, frame_meta, native_aaa};
@@ -115,7 +115,7 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
         .name("styx-native-rkisp".into())
         .spawn(move || {
             w.live.register_thread();
-            let (ret_tx, ret_rx) = mpsc::channel::<OutBuf>();
+            let (ret_tx, ret_rx) = returns();
             let mut spare = Spare::default();
             let heap = super::out_buf::out_heap(w.driver_buffers);
             let mut direct = RkBuffers::new(&p);

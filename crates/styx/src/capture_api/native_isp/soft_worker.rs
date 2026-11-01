@@ -21,7 +21,7 @@ use styx_softisp::{OutputBuffers, Scale, Window};
 use super::super::handle_metrics::deliver;
 use super::super::request::CaptureError;
 use super::super::tunables::MAX_NATIVE_REGIONS;
-use super::out_buf::{OutBuf, Spare, lease, row_bytes};
+use super::out_buf::{OutBuf, Spare, lease, returns, row_bytes};
 use super::{aaa_sample, err, frame_meta, hold_soft, layouts, native_aaa};
 use crate::metrics::CaptureMetrics;
 
@@ -152,8 +152,8 @@ pub(super) fn spawn(
         .name("styx-native-softisp".into())
         .spawn(move || {
             w.live.register_thread();
-            let (ret_tx, ret_rx) = mpsc::channel::<OutBuf>();
-            let (ov_tx, ov_rx) = mpsc::channel::<OutBuf>();
+            let (ret_tx, ret_rx) = returns();
+            let (ov_tx, ov_rx) = returns();
             let mut crop: Option<FrameRect> = None;
             let (mut spare, mut ov_spare) = (Spare::default(), Spare::default());
             let mut region_spare: [Spare; MAX_NATIVE_REGIONS] = Default::default();
@@ -161,7 +161,7 @@ pub(super) fn spawn(
             // Each region slot's rectangle, and its buffers coming back.
             let mut regions: [Option<FrameRect>; MAX_NATIVE_REGIONS] = [None; MAX_NATIVE_REGIONS];
             let region_returns: Vec<_> = (0..MAX_NATIVE_REGIONS)
-                .map(|_| mpsc::channel::<OutBuf>())
+                .map(|_| returns())
                 .collect();
             'frames: loop {
                 if w.stop.try_recv().is_ok() {

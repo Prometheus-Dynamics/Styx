@@ -5,7 +5,7 @@
 //! drops, and a capture allocates only until its buffers go round.
 
 use std::os::fd::AsFd;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
@@ -13,11 +13,27 @@ use styx_core::prelude::{
     ExportedKind, ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane,
     FrameResidency,
 };
+use styx_core::queue::{BoundedRx, BoundedTx, RecvOutcome};
 use styx_kernel::Mapping;
 use styx_kernel::dma_heap::{self, Access, DmaBuf, DmaHeap};
 
 use super::layouts;
 use crate::metrics::CaptureMetrics;
+
+/// Where leases hand their buffers back (a ring: no allocation per frame; a buffer coming
+/// back to a full ring is freed).
+pub(super) type Returns = BoundedTx<OutBuf>;
+
+/// The worker's end of [`Returns`].
+pub(super) type ReturnsRx = BoundedRx<OutBuf>;
+
+/// Room for buffers coming back to one output (more than consumers hold at once).
+const RETURNS: usize = 64;
+
+/// A ring for buffers coming back.
+pub(super) fn returns() -> (Returns, ReturnsRx) {
+    styx_core::queue::bounded(RETURNS)
+}
 
 /// Heaps tried for the buffers, cached ones first.
 const HEAPS: [&str; 2] = ["linux,cma", "system"];
@@ -89,11 +105,13 @@ impl Spare {
     pub(super) fn take(
         &mut self,
         heap: Option<&DmaHeap>,
-        returns: &mpsc::Receiver<OutBuf>,
+        returns: &ReturnsRx,
         keep: usize,
         len: usize,
     ) -> OutBuf {
-        self.0.extend(returns.try_iter());
+        while let RecvOutcome::Data(b) = returns.recv() {
+            self.0.push(b);
+        }
         self.0.truncate(keep.max(1));
         match self.0.pop() {
             Some(mut b) if b.capacity() >= len => {
@@ -135,7 +153,7 @@ pub(super) fn lease(
     mut meta: FrameMeta,
     size: (u32, u32),
     buf: OutBuf,
-    returns: &mpsc::Sender<OutBuf>,
+    returns: &Returns,
     live: &CaptureMetrics,
 ) -> FrameLease {
     let code = meta.format.code;
@@ -168,7 +186,7 @@ struct OutBacking {
     buf: Option<OutBuf>,
     /// Each plane's offset in the buffer.
     offsets: SmallVec<[usize; 3]>,
-    returns: mpsc::Sender<OutBuf>,
+    returns: Returns,
 }
 
 impl OutBacking {
@@ -268,7 +286,7 @@ mod tests {
 
     #[test]
     fn buffers_come_back_and_grow_only_when_too_small() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = returns();
         let mut spare = Spare::default();
         let live = CaptureMetrics::default();
         let mut b = spare.take(None, &rx, 2, 64 * 48);
@@ -290,7 +308,7 @@ mod tests {
     fn heap_buffers_are_dmabufs_consumers_import() {
         // Where no dma-heap is open to this user, the heap-memory path is what runs.
         let Some(heap) = out_heap(false) else { return };
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = returns();
         let mut spare = Spare::default();
         let mut b = spare.take(Some(&heap), &rx, 2, 64 * 48);
         b.sync_write(true);
@@ -307,5 +325,61 @@ mod tests {
             planes.iter().map(|p| (p.offset, p.len)).collect::<Vec<_>>(),
             [(0, 64 * 32), (64 * 32, 64 * 16)]
         );
+    }
+
+    /// The soft ISP's output path after a warm-up: a buffer back from the consumer, written,
+    /// leased, delivered, taken, read and dropped; each frame allocates its lease record only.
+    fn frames_allocate_only_their_lease_record(heap: Option<&DmaHeap>) {
+        use crate::test_alloc::allocations;
+        use styx_core::queue::RecvOutcome;
+        const W: u32 = 320;
+        const H: u32 = 200;
+        let live = CaptureMetrics::default();
+        let (ret_tx, ret_rx) = returns();
+        let (queue_tx, queue_rx) = styx_core::queue::bounded(2);
+        let mut spare = Spare::default();
+        let format = MediaFormat::srgb(FourCc::NV12, W, H).unwrap();
+        let (mut leased, mut path) = (0u64, 0u64);
+        let mut xor = 0u8;
+        for n in 0..300 {
+            let (b, took) = allocations(|| {
+                let mut b = spare.take(heap, &ret_rx, 2, (W * H * 3 / 2) as usize);
+                b.sync_write(true);
+                b.as_mut_slice()[n % 64] = n as u8;
+                b.sync_write(false);
+                b
+            });
+            let (l, lease_allocs) =
+                allocations(|| lease(FrameMeta::new(format, n as u64), (W, H), b, &ret_tx, &live));
+            let (sent, delivered) = allocations(|| queue_tx.send(l));
+            assert!(matches!(sent, styx_core::queue::SendOutcome::Ok));
+            let ((), consumed) = allocations(|| {
+                let RecvOutcome::Data(frame) = queue_rx.recv() else {
+                    panic!("no frame");
+                };
+                for plane in frame.planes() {
+                    xor ^= plane.data().iter().step_by(4096).fold(0, |a, b| a ^ b);
+                }
+            });
+            if n >= 50 {
+                leased += lease_allocs;
+                path += took + delivered + consumed;
+            }
+        }
+        std::hint::black_box(xor);
+        assert_eq!(path, 0, "the frame path allocates");
+        assert_eq!(leased, 250, "a lease allocates more than its record");
+    }
+
+    #[test]
+    fn heap_memory_frames_allocate_only_their_lease_record() {
+        frames_allocate_only_their_lease_record(None);
+    }
+
+    #[test]
+    fn dmabuf_frames_allocate_only_their_lease_record() {
+        if let Some(heap) = out_heap(false) {
+            frames_allocate_only_their_lease_record(Some(&heap));
+        }
     }
 }

@@ -314,8 +314,8 @@ user; they do not block the tag unless the user says so.
 ### Performance
 - [ ] **Zero copy: software ISP output into dma-heap buffers.** Written (`out_buf.rs`:
       cached `linux,cma`/`system` heap, recycled, write-synced, exported as dma-bufs;
-      `driver_buffers` keeps heap memory). *Left:* an allocation-counting test of the soft
-      worker's frame path, and Daedalus importing the frames on the CM5.
+      `driver_buffers` keeps heap memory; the output path counted allocation-free after
+      warm-up besides each lease's record). *Left:* Daedalus importing the frames on the CM5.
 - [ ] **Zero copy: UVC bulk frames in one payload.** *Why:* the assembler copies every
       payload into a pooled frame (`crates/uvc/src/payload.rs`). Isochronous payloads carry a
       header per packet, so their copy stays (as `uvcvideo`'s). Bulk cameras whose
