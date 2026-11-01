@@ -376,7 +376,22 @@ impl Camera {
             }
             None => request,
         };
-        let plan = plan_many(&self.device, request)?.exportable();
+        // The device's accelerator choices hold for every client that sets none of its own.
+        let knobs = config
+            .capture
+            .as_ref()
+            .map_or(Default::default(), |c| c.accelerators);
+        let with_knobs: Vec<FrameRequest> = request
+            .iter()
+            .cloned()
+            .map(|mut r| {
+                if r.accelerators == Default::default() {
+                    r.accelerators = knobs;
+                }
+                r
+            })
+            .collect();
+        let plan = plan_many(&self.device, &with_knobs)?.exportable();
         let plan = match (&config.capture, self.flips()) {
             (capture, Some((h, v))) => {
                 plan.config(capture.clone().unwrap_or_default().native_flips(h, v))

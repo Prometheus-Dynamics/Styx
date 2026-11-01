@@ -55,12 +55,11 @@ user. Board items get tested on their boards.
       bench). *Done when:* every dma-heap buffer Styx allocates (native capture, PiSP outputs,
       TDN, spares) is `dma_heap::padded_len`: 256 B more, rounded up to a page; unit-tested.
       Daedalus to confirm the import on the Pi. *Blocked by:* nothing.
-- [ ] **Accelerator knobs.** *Why:* the user wants accelerators chosen explicitly per device,
-      with platform defaults. *Done when:* `StyxConfig` has one knob each for the ISP path,
-      the hardware encoder (VPU, MPP), the hardware scaler (RGA, the K230's 2D unit) and
-      hardware pyramid levels, each an explicit per-device choice with a per-platform default
-      and a CPU fallback, documented in docs/configuration.md, and the
-      planner honours them (tests). *Blocked by:* nothing.
+- [x] **Accelerator knobs.** `StyxConfig::accelerators` / `FrameRequest::accelerators`: `isp`,
+      `encoder`, `scaler`, `pyramid`, each `Auto`, `Off` or `Required`; planner and native
+      capture honour them, a camera service applies its config's to its clients
+      (docs/acceleration.md). The scaler knob covers the ISP's scalers until the RGA item below
+      adds an M2M scaling stage to the planner.
 - [ ] **K230D: raw capture and the RVV software ISP on the board.** *Why:* the K230D camera
       path; our own 3A and tuning on the OV9782. *Done when:* the OV9782 over CSI streams
       1280x800 at 30 fps through `soft_worker` with 3A converged; `grep isa /proc/cpuinfo`

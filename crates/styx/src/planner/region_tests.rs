@@ -9,7 +9,7 @@ use super::*;
 use crate::DeviceIdentity;
 use crate::prelude::{BackendHandle, ProbedBackend};
 
-fn pisp(isp: &str) -> ProbedDevice {
+pub(super) fn pisp(isp: &str) -> ProbedDevice {
     let mode = |code: FourCc, w, h| {
         let format = MediaFormat::with_default_color(code, Resolution::new(w, h).unwrap());
         Mode {

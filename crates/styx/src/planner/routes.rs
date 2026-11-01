@@ -415,6 +415,7 @@ fn finish<'a>(
         step.cost = StepCost::offloaded(step.cost.latency_ms * factor, step.cost.cpu_ms * factor);
     }
     let isp_output = isp_output(backend, &route, req, mode.format.code, (width, height));
+    super::accelerators::check_scaler(req, isp_output, (width, height))?;
     if let Some((w, h)) = isp_output {
         steps.push(PlanStep {
             kind: StepKind::Scale,
@@ -526,6 +527,7 @@ fn isp_output(
     if !scaling_isp
         || !scalable
         || matches!(req.hardware, Hardware::Off)
+        || matches!(req.accelerators.scaler, Hardware::Off)
         || (tw >= mode.0 && th >= mode.1)
     {
         return None;
@@ -687,6 +689,7 @@ fn encode_route(
             let encoder_ok = |d: &CodecDescriptor| {
                 d.kind == CodecKind::Encoder
                     && d.is_hardware_accelerated() == hardware
+                    && super::accelerators::encoder_allowed(req, hardware)
                     && codec_allowed(d, req)
             };
             let found = registry

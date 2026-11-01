@@ -116,6 +116,20 @@ pub(crate) fn soft_capture_size(info: &CameraInfo, (w, h): (u32, u32)) -> ((u32,
 /// receiver's own MMAP buffers uncached), unless the configuration asks for the driver's
 /// buffers. Falls back to the driver's buffers if the heap cannot be used. Returns the camera
 /// and whether its raw buffers are cached.
+/// The ISP a capture runs on: the camera's, as `StyxConfig::accelerators` allows.
+fn configured_isp(info: &CameraInfo, config: &StyxConfig) -> Result<IspKind, CaptureError> {
+    let detected = isp_kind(info);
+    match config.accelerators.isp {
+        crate::planner::Hardware::Off => Ok(IspKind::Software),
+        crate::planner::Hardware::Required if detected == IspKind::Software => {
+            Err(CaptureError::Backend(
+                "native ISP: a hardware ISP required, and this camera has none".into(),
+            ))
+        }
+        _ => Ok(detected),
+    }
+}
+
 pub(crate) fn open_for_isp(
     provider: &styx_native::NativeProvider,
     key: &str,
@@ -124,7 +138,8 @@ pub(crate) fn open_for_isp(
     let (cameras, _) = provider.discover_cameras();
     let memory = match cameras.into_iter().find(|c| c.key == key) {
         Some(info)
-            if isp_kind(&info) == IspKind::Software && !config.backends.native.driver_buffers =>
+            if configured_isp(&info, config)? == IspKind::Software
+                && !config.backends.native.driver_buffers =>
         {
             Some((info, soft_capture_memory()))
         }
@@ -350,7 +365,7 @@ pub(super) fn start_processed(
         interval.map(|i| styx_native::Fraction::new(i.numerator.get(), i.denominator.get()));
     let (tuning, source) =
         find_tuning_with(&camera.info().description, config.tuning_overlay.as_deref());
-    let kind = isp_kind(camera.info());
+    let kind = configured_isp(camera.info(), config)?;
     crate::trace::info!(backend = "native", isp = kind.name(), tuning = %source, "processed capture");
     let capture = config.capture_tunables();
     let timestamp_clock = capture.timestamp_clock;

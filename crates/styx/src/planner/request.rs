@@ -97,6 +97,26 @@ pub enum Hardware {
     Off,
 }
 
+/// Which hardware blocks a device's frames may use, stage by stage. Set it per device
+/// (`StyxConfig::accelerators` for the capture, [`FrameRequest::accelerators`] for the plan).
+/// [`Hardware::Auto`] (the default) is the platform's choice: the hardware where it exists, the
+/// CPU otherwise. [`Hardware::Off`] is the CPU path; [`Hardware::Required`] fails rather than
+/// falling back to it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct Accelerators {
+    /// A native camera's ISP (PiSP, Rockchip ISP) against the software ISP.
+    pub isp: Hardware,
+    /// Hardware encoders (V4L2 M2M, VA-API) against software ones.
+    pub encoder: Hardware,
+    /// Scaling to [`FrameRequest::size`] in the ISP against on the CPU.
+    pub scaler: Hardware,
+    /// Pyramid levels from the ISP against the CPU's box filter
+    /// ([`FrameRequest::pyramid_source`]; levels asked of the GPU stay there).
+    pub pyramid: Hardware,
+}
+
 /// What a consumer wants from a camera. Start with [`Frames::nv12`], [`Frames::rgb`],
 /// [`Frames::gray`], [`Frames::formats`] or [`Frames::any`]; see the [module](self) for what
 /// each choice means. Plain data: it can be stored, compared, sent to a camera service.
@@ -131,6 +151,8 @@ pub struct FrameRequest {
     /// Route control: only this capture backend.
     pub backend: Option<BackendKind>,
     pub hardware: Hardware,
+    /// Route control: the hardware blocks of each stage ([`Accelerators`]).
+    pub accelerators: Accelerators,
     /// Route control: exactly this decoder implementation (e.g. `"turbojpeg-luma"`).
     pub decoder: Option<String>,
     /// Route control: never these decoder or encoder implementations.
@@ -209,6 +231,7 @@ impl FrameRequest {
             row_alignment: None,
             backend: None,
             hardware: Hardware::Auto,
+            accelerators: Accelerators::default(),
             decoder: None,
             forbid: Vec::new(),
             decode_threads: None,
@@ -362,6 +385,13 @@ impl FrameRequest {
     /// Route control: whether hardware blocks may be used ([`Hardware::Auto`] by default).
     pub fn hardware(mut self, hardware: Hardware) -> Self {
         self.hardware = hardware;
+        self
+    }
+
+    /// Route control: the hardware blocks each stage may use, e.g. a device's
+    /// `StyxConfig::accelerators`. The plan's capture starts with them.
+    pub fn accelerators(mut self, accelerators: Accelerators) -> Self {
+        self.accelerators = accelerators;
         self
     }
 
@@ -539,6 +569,8 @@ impl<'a> CameraFrames<'a> {
         backend(backend: BackendKind);
         /// [`FrameRequest::hardware`].
         hardware(hardware: Hardware);
+        /// [`FrameRequest::accelerators`].
+        accelerators(accelerators: Accelerators);
         /// [`FrameRequest::decode_threads`].
         decode_threads(threads: usize);
         /// [`FrameRequest::strict`].

@@ -1,4 +1,4 @@
-use styx_codec::prelude::{CodecRegistryConfig, DEFAULT_CODEC_MAX_HEIGHT, DEFAULT_CODEC_MAX_WIDTH};
+use styx_codec::prelude::CodecRegistryConfig;
 use styx_core::prelude::{ClockSource, FrameRect, QueueOverflow};
 pub use styx_core::transform::TransformPoolConfig;
 
@@ -99,11 +99,13 @@ pub enum LibcameraBufferMemory {
 
 #[path = "tunables/capture.rs"]
 mod capture;
+mod codec;
 mod native;
 mod uvc;
 #[cfg(feature = "netcam")]
 pub(crate) use capture::PoolLimits;
 pub use capture::{CaptureConfig, DEFAULT_GPU_IMPORT_PAD, IdleStop, ReconnectPolicy};
+pub use codec::CodecConfig;
 pub use native::*;
 pub use uvc::UvcConfig;
 
@@ -327,35 +329,6 @@ pub struct BackendConfig {
     pub uvc: UvcConfig,
 }
 
-/// Runtime codec registration limits.
-#[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct CodecConfig {
-    /// Maximum encoded/decoded frame width advertised by built-in codecs.
-    pub max_width: u32,
-    /// Maximum encoded/decoded frame height advertised by built-in codecs.
-    pub max_height: u32,
-}
-
-impl Default for CodecConfig {
-    fn default() -> Self {
-        Self {
-            max_width: DEFAULT_CODEC_MAX_WIDTH,
-            max_height: DEFAULT_CODEC_MAX_HEIGHT,
-        }
-    }
-}
-
-impl CodecConfig {
-    pub(crate) fn sanitized(self) -> Self {
-        Self {
-            max_width: self.max_width.max(1),
-            max_height: self.max_height.max(1),
-        }
-    }
-}
-
 /// Builder for request-local Styx tunables.
 ///
 /// # Example
@@ -375,6 +348,8 @@ pub struct StyxConfig {
     pub transforms: TransformPoolConfig,
     pub backends: BackendConfig,
     pub codecs: CodecConfig,
+    /// The hardware blocks each stage may use on this device.
+    pub accelerators: crate::planner::Accelerators,
     /// Tuning overlay (`styx-calibrate` JSON) for the native sensor's tuning; see `docs/calibration.md`.
     #[cfg_attr(
         feature = "serde",
@@ -395,10 +370,17 @@ impl StyxConfig {
             transforms: TransformPoolConfig::default(),
             backends: BackendConfig::default(),
             codecs: CodecConfig::default(),
+            accelerators: Default::default(),
             tuning_overlay: None,
             #[cfg(target_os = "linux")]
             capture_buffers: None,
         }
+    }
+
+    /// The hardware blocks each stage may use on this device (`Default`: the platform's).
+    pub fn with_accelerators(mut self, accelerators: crate::planner::Accelerators) -> Self {
+        self.accelerators = accelerators;
+        self
     }
 
     /// Override capture queue depth.

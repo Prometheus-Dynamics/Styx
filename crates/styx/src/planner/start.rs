@@ -28,6 +28,9 @@ impl FramePlan {
             .clone()
             .unwrap_or_default()
             .capture_queue_depth(self.queue_depth);
+        if self.request.accelerators != Default::default() {
+            config.accelerators = self.request.accelerators;
+        }
         if let Some(level) = self.isp_pyramid_level {
             config = config
                 .libcamera_pyramid_level(level)

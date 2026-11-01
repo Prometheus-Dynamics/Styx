@@ -20,6 +20,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   256. `0` asks for nothing. Breaking: `BeOutputSetup::gpu_pad`, `IspSetup::gpu_pad`, and
   `RkispPipeline::open`/`open_on` take a `gpu_pad`.
 
+- **Accelerator knobs**: `StyxConfig::accelerators` and `FrameRequest::accelerators`
+  (`planner::Accelerators`) choose the hardware per device and stage: `isp`, `encoder`, `scaler`,
+  `pyramid`, each `Hardware::Auto`, `Off` or `Required`. A camera service applies its capture
+  config's to clients that set none. `CodecConfig` moved to its own file (same path).
+
 - **PiSP extra passes run one job at a time** (`PispOptions::pass_jobs` /
   `NativeIspConfig::pass_jobs`, default 1): queued back to back they were 0.12 ms slower per
   frame on the CM5, and with the raw and TDN buffers at fixed V4L2 indices (so vb2 no longer

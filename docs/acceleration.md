@@ -235,3 +235,22 @@ These totals cover the capability rows above.
 The row that needs no new board is on the CM5: HEVC decode verified on the CM5.
 
 HDR stitch and tonemap need a sensor with two exposures, and CAC needs calibration.
+
+## Choosing the hardware blocks per device
+
+`StyxConfig::accelerators` (`with_accelerators`, a `planner::Accelerators`) has one knob per stage,
+each a `Hardware`: `Auto` (the default: the hardware where it exists), `Off` (the CPU path) or
+`Required` (fail rather than fall back). A camera service applies its capture config's knobs to
+every client that sets none; a direct plan takes them with `FrameRequest::accelerators`, and its
+capture starts with them.
+
+| Knob | `Off` | `Required` |
+|------|-------|------------|
+| `isp` | a native camera runs the software ISP | a native camera with only the software ISP is rejected, in the plan and at capture |
+| `encoder` | software encoders only | hardware encoders only |
+| `scaler` | no scaling in the ISP | a smaller `size` must come from the ISP |
+| `pyramid` | levels from the CPU's box filter (levels asked of the GPU stay there) | levels from the ISP (`PyramidSource::HardwareOnly`) |
+
+The request-wide `FrameRequest::hardware` still applies on top. The scaler knob covers the ISP's
+scalers; the planner has no M2M scaling stage yet (`V4l2M2mConverter` is used directly), which
+the Rockchip RGA item in `TODO.md` adds.

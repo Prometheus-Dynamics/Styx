@@ -24,6 +24,7 @@
 //! for a recorder) share one capture: [`plan_many`] picks a mode and a rate that serve all of
 //! them and plans a branch per consumer.
 
+mod accelerators;
 pub(crate) mod cost;
 mod delivered;
 mod frames;
@@ -61,7 +62,7 @@ pub use region::RoiCrop;
 pub(crate) use region::{soft_overview_factor, soft_overview_size};
 
 pub use request::{
-    CameraFrames, Delivery, FrameRate, FrameRequest, Hardware, MAX_REGIONS, OpenError,
+    Accelerators, CameraFrames, Delivery, FrameRate, FrameRequest, Hardware, MAX_REGIONS, OpenError,
 };
 pub(crate) use routes::Route;
 pub use shared::{SharedFramePlan, plan_many, plan_many_with};
@@ -297,8 +298,14 @@ fn plan_devices(
         return Err(PlanError::NoDevices);
     }
     let mut rejected = Vec::new();
+    let req = &accelerators::request(req);
+    let devices: Vec<_> = devices
+        .iter()
+        .map(|d| accelerators::device(d, req.accelerators, &mut rejected))
+        .collect();
     let mut best: Option<(RankKey, &ProbedDevice, routes::Candidate<'_>)> = None;
-    for device in devices {
+    for device in &devices {
+        let device: &ProbedDevice = device;
         let mut candidates = Vec::new();
         for candidate in routes::candidates(device, req, registry, &mut rejected) {
             let unmet = candidate.unmet(req);

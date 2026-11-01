@@ -100,6 +100,9 @@ fn plan_shared(
     let rates: Vec<FrameRate> = requests.iter().map(|r| r.fps).collect();
     let fps = rate::combine(&rates).map_err(PlanError::FrameRate)?;
     let mut rejected = Vec::new();
+    let requests: Vec<FrameRequest> = requests.iter().map(super::accelerators::request).collect();
+    let requests = &requests[..];
+    let device = &*super::accelerators::device(device, requests[0].accelerators, &mut rejected);
     let mut best: Option<(RankKey, &ProbedBackend, &Mode, Vec<Candidate<'_>>)> = None;
     // Unsized consumers: the compressed modes of a camera rank before its uncompressed ones
     // on a USB 2 bus (see `super::shared_bus_uncompressed`).
