@@ -75,6 +75,14 @@ pub(super) struct FeStats<'a> {
 impl InlineIsp for FeStats<'_> {
     fn statistics(&mut self, out: &mut Statistics) -> bool {
         stats::from_pisp_raw(self.raw, out);
+        // Where the focus zones were (the front end's grid follows AF's windows).
+        let c = self.fe.config();
+        let (w, h) = if c.stats_crop.width > 0 {
+            (c.stats_crop.width, c.stats_crop.height)
+        } else {
+            (c.input.format.width, c.input.format.height)
+        };
+        out.focus_area = crate::focus_grid::cdaf_area(&c.cdaf_stats, w, h);
         true
     }
 

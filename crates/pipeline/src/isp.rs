@@ -6,6 +6,8 @@ use alloc::vec::Vec;
 use styx_core::math::Float as _;
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "all-algorithms")]
+use styx_algo::FocusArea;
 use styx_algo::{
     DenoiseParams, IDENTITY, LensShading, Matrix3, Params, Pwl, SharpenParams, ZoneGrid,
 };
@@ -59,6 +61,10 @@ pub struct IspSettings {
     /// Zone weights of the luma histogram (the metering mode's; `None`: uniform).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub histogram_weights: Option<ZoneGrid<f64>>,
+    /// Where the focus zones go (AF's windows; `None`: the whole frame).
+    #[cfg(feature = "all-algorithms")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_area: Option<FocusArea>,
 }
 
 fn one() -> f64 {
@@ -82,6 +88,8 @@ impl IspSettings {
             denoise: DenoiseParams::default(),
             sharpen: None,
             histogram_weights: None,
+            #[cfg(feature = "all-algorithms")]
+            focus_area: None,
         }
     }
 
@@ -112,6 +120,10 @@ impl IspSettings {
         self.denoise = p.denoise;
         self.sharpen = p.sharpen;
         self.histogram_weights.clone_from(&p.histogram_weights);
+        #[cfg(feature = "all-algorithms")]
+        {
+            self.focus_area = p.af.measure_area;
+        }
     }
 
     /// These settings with the spatial (SDN) and colour (CDN) denoise thresholds scaled by
@@ -309,20 +321,25 @@ impl IspSettings {
         } else {
             (c.input.format.width, c.input.format.height)
         };
+        let cdaf_now = c.cdaf_stats;
         let agc = histogram_weights(self.histogram_weights.as_ref(), w, h, &c.agc_stats);
         if c.agc_stats != agc {
             fe.set_agc_stats(agc);
         }
-        // The focus statistics' noise floor follows the frame's noise profile, as the
-        // Raspberry Pi IPA sets it (`applyFocusStats`: whole units of the 16-bit scale).
+        // The focus grid over AF's windows, and its noise floor following the frame's noise
+        // profile, as the Raspberry Pi IPA sets it (`applyFocusStats`: whole units of the
+        // 16-bit scale).
+        #[cfg(feature = "all-algorithms")]
+        let mut cdaf = crate::focus_grid::cdaf_grid(cdaf_now, self.focus_area, w, h);
+        #[cfg(not(feature = "all-algorithms"))]
+        let mut cdaf = cdaf_now;
         let n = &self.denoise;
         if n.noise_constant > 0.0 || n.noise_slope > 0.0 {
-            let mut cdaf = fe.config().cdaf_stats;
             cdaf.noise_constant = n.noise_constant.clamp(0.0, 65535.0) as u16;
             cdaf.noise_slope = n.noise_slope.clamp(0.0, 65535.0) as u16;
-            if fe.config().cdaf_stats != cdaf {
-                fe.set_cdaf_stats(cdaf);
-            }
+        }
+        if fe.config().cdaf_stats != cdaf {
+            fe.set_cdaf_stats(cdaf);
         }
     }
 }

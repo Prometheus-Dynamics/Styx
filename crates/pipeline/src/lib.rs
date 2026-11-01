@@ -50,6 +50,8 @@ pub mod controller;
 pub mod device;
 mod engine;
 mod error;
+#[cfg(feature = "all-algorithms")]
+mod focus_grid;
 pub mod isp;
 #[cfg(feature = "std")]
 pub mod measure;

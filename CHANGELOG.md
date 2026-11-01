@@ -8,6 +8,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- **PiSP focus statistics follow the AF windows**: AF reports the windows' bounding box
+  (`AfStatus::measure_area`), the pipeline moves the front end's 8x8 CDAF grid there
+  (`IspSettings::focus_area`) and the statistics say where the zones were
+  (`Statistics::focus_area`, `FocusArea`), so all 64 zones measure inside the windows instead
+  of the few whole-frame zones that overlap them; AF weights the zones within that area.
+  The new fields exist with `af` only (no flash cost for an image without AF); ISPs build
+  statistics with `Statistics::new`. Written, untested on board.
+
 - **Every pyramid level from the PiSP** (`NativeIspConfig::pyramid_all_levels`,
   `StyxConfig::native_pyramid_all_levels`): the second output makes level 1 and an extra back
   end pass each deeper level (or every level from passes when the overview or a crop takes the

@@ -161,7 +161,7 @@ States:
 |---|---|---|
 | AGC statistics (zones, histogram) | used | — |
 | AWB statistics | used | — |
-| CDAF statistics | partly: fixed 8x8 grid over the whole frame; `AF_WINDOWS` only weights its zones | window weighting in `styx-algo` |
+| CDAF statistics | used: the 8x8 grid moves to the AF windows' bounding box (`AfStatus::measure_area`, `Statistics::focus_area`; written, untested on board) | window weighting in `styx-algo` within the grid |
 | Black level (BLA, BLC), DPC, decompand, decompress, LSC for statistics, RGBY, decimate, statistics crop | used | — |
 | Output 0 (raw to memory, compressed) | used | — |
 | Output 1 (cropped, downscaled raw: crop 1, downscale 1) | unused (builder-tested only) | none: no consumer wants low-resolution raw yet |
@@ -227,14 +227,13 @@ These totals cover the capability rows above.
 
 | Board | used | partly | unused | n/a |
 |---|---|---|---|---|
-| CM5 (PiSP, HEVC) | 10 | 3 | 7 | 0 |
+| CM5 (PiSP, HEVC) | 11 | 2 | 7 | 0 |
 | K230D | 0 | 0 | 6 | 0 |
 | Rockchip | 0 | 0 | 7 | 0 |
 | RV1106 | 0 | 0 | 3 | 0 |
 
 The rows that need no new board are all on the CM5:
 
-- CDAF windows that follow `AF_WINDOWS`;
 - queued BE passes and scaled regions;
 - HEVC decode verified on the CM5.
 

@@ -75,6 +75,11 @@ fn fill_pisp(
     grid.height = focus_side;
     grid.zones.clear();
     grid.zones.extend(focus);
+    // The whole frame unless the caller knows where the front end's grid was.
+    #[cfg(feature = "all-algorithms")]
+    {
+        out.focus_area = None;
+    }
     out.before_wb = true;
     out.before_lsc = true;
 }
@@ -108,29 +113,28 @@ pub fn from_softisp(s: &IspStats, black_level: f64, with_lens_shading: bool) -> 
             counted: per_zone,
         })
         .collect();
-    Statistics {
-        colour: ZoneGrid {
+    let mut out = Statistics::new(
+        ZoneGrid {
             width: s.zones_x,
             height: s.zones_y,
             zones,
         },
-        luma: Some(ZoneGrid {
+        Some(ZoneGrid {
             width: s.zones_x,
             height: s.zones_y,
             zones: luma,
         }),
-        histogram: Histogram::from(rescale_histogram(&s.histogram, range / g[1])),
+        Histogram::from(rescale_histogram(&s.histogram, range / g[1])),
         // Gradient energy without the gains (squared) and on the black-subtracted scale, as
         // the colour zones.
-        focus: (s.focus.len() == s.zones.len() && !s.focus.is_empty()).then(|| ZoneGrid {
+        (s.focus.len() == s.zones.len() && !s.focus.is_empty()).then(|| ZoneGrid {
             width: s.zones_x,
             height: s.zones_y,
             zones: s.focus.iter().map(|f| f * (range / g[1]).powi(2)).collect(),
         }),
-        pdaf: None,
-        before_wb: true,
-        before_lsc: !with_lens_shading,
-    }
+    );
+    out.before_lsc = !with_lens_shading;
+    out
 }
 
 /// A histogram of values `v` turned into one of `v × factor` over the same bins (counts
@@ -211,6 +215,13 @@ mod tests {
             luma: Some(ZoneGrid::default()),
             histogram: Histogram::from(vec![1, 2, 3]),
             focus: None,
+            #[cfg(feature = "all-algorithms")]
+            focus_area: Some(styx_algo::FocusArea {
+                x: 0.5,
+                y: 0.5,
+                width: 0.1,
+                height: 0.1,
+            }),
             pdaf: None,
             before_wb: false,
             before_lsc: false,

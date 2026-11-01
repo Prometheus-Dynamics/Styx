@@ -6,7 +6,7 @@
 use alloc::{vec, vec::Vec};
 
 use super::types::AfWindow;
-use crate::stats::{PdafZone, Statistics, ZoneGrid};
+use crate::stats::{FocusArea, PdafZone, Statistics, ZoneGrid};
 
 use super::MAX_WINDOWS;
 
@@ -15,6 +15,8 @@ use super::MAX_WINDOWS;
 pub(crate) struct Weights {
     rows: u32,
     cols: u32,
+    /// The part of the frame the grid covers (`None`: all of it).
+    area: Option<FocusArea>,
     w: Vec<f64>,
     sum: f64,
 }
@@ -22,8 +24,21 @@ pub(crate) struct Weights {
 impl Weights {
     /// Each window's area overlap with each zone, times its weight; the default window when
     /// there is none (or nothing overlaps).
-    pub fn compute(rows: u32, cols: u32, windows: &[AfWindow]) -> Self {
+    pub fn compute(rows: u32, cols: u32, windows: &[AfWindow], area: Option<FocusArea>) -> Self {
         let (r, c) = (rows as usize, cols as usize);
+        let a = area.unwrap_or(FocusArea {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        });
+        // Zone `i` of `n` along an axis, in frame fractions.
+        let span = |i: usize, n: usize, at: f64, len: f64| {
+            (
+                at + len * i as f64 / n as f64,
+                at + len * (i + 1) as f64 / n as f64,
+            )
+        };
         let mut w = vec![0.0; r * c];
         let mut sum = 0.0;
         if r > 0 && c > 0 {
@@ -34,13 +49,13 @@ impl Weights {
                 }
                 let area = win.width * win.height;
                 for row in 0..r {
-                    let (y0, y1) = (row as f64 / r as f64, (row + 1) as f64 / r as f64);
+                    let (y0, y1) = span(row, r, a.y, a.height);
                     let dy = y1.min(win.y + win.height) - y0.max(win.y);
                     if dy <= 0.0 {
                         continue;
                     }
                     for col in 0..c {
-                        let (x0, x1) = (col as f64 / c as f64, (col + 1) as f64 / c as f64);
+                        let (x0, x1) = span(col, c, a.x, a.width);
                         let dx = x1.min(win.x + win.width) - x0.max(win.x);
                         if dx <= 0.0 {
                             continue;
@@ -62,11 +77,20 @@ impl Weights {
                 }
             }
         }
-        Self { rows, cols, w, sum }
+        Self {
+            rows,
+            cols,
+            area,
+            w,
+            sum,
+        }
     }
 
-    pub fn fits<T>(&self, g: &ZoneGrid<T>) -> bool {
-        self.rows == g.height && self.cols == g.width && self.w.len() == g.zones.len()
+    pub fn fits<T>(&self, g: &ZoneGrid<T>, area: Option<FocusArea>) -> bool {
+        self.rows == g.height
+            && self.cols == g.width
+            && self.w.len() == g.zones.len()
+            && self.area == area
     }
 
     #[cfg(test)]
@@ -110,13 +134,37 @@ impl Measure {
         }
     }
 
+    /// The part of the frame the windows span (their bounding box, within the frame), for an
+    /// ISP that can concentrate its focus zones there; `None` without windows.
+    pub fn area(&self) -> Option<FocusArea> {
+        let used = self
+            .windows
+            .iter()
+            .take(MAX_WINDOWS)
+            .filter(|w| w.weight > 0.0 && w.width > 0.0 && w.height > 0.0);
+        let (mut x0, mut y0, mut x1, mut y1) = (1.0f64, 1.0f64, 0.0f64, 0.0f64);
+        for w in used {
+            x0 = x0.min(w.x.max(0.0));
+            y0 = y0.min(w.y.max(0.0));
+            x1 = x1.max((w.x + w.width).min(1.0));
+            y1 = y1.max((w.y + w.height).min(1.0));
+        }
+        (x1 > x0 && y1 > y0).then_some(FocusArea {
+            x: x0,
+            y: y0,
+            width: x1 - x0,
+            height: y1 - y0,
+        })
+    }
+
     fn weights<'a, T>(
         cache: &'a mut Weights,
         windows: &[AfWindow],
         g: &ZoneGrid<T>,
+        area: Option<FocusArea>,
     ) -> &'a Weights {
-        if !cache.fits(g) {
-            *cache = Weights::compute(g.height, g.width, windows);
+        if !cache.fits(g, area) {
+            *cache = Weights::compute(g.height, g.width, windows, area);
         }
         cache
     }
@@ -135,7 +183,7 @@ impl Measure {
             .as_ref()
             .filter(|f| f.is_valid() && !f.is_empty())
         {
-            let w = Self::weights(&mut self.contrast, &self.windows, f);
+            let w = Self::weights(&mut self.contrast, &self.windows, f, stats.focus_area);
             let s: f64 = w.w.iter().zip(&f.zones).map(|(w, v)| w * v).sum();
             m.contrast = Some(if w.sum > 0.0 { s / w.sum } else { 0.0 });
         }
@@ -144,12 +192,12 @@ impl Measure {
             .as_ref()
             .filter(|p| p.is_valid() && !p.is_empty())
         {
-            let w = Self::weights(&mut self.phase, &self.windows, p);
+            let w = Self::weights(&mut self.phase, &self.windows, p, None);
             (m.phase, m.conf) = phase(w, p, conf_thresh, conf_clip);
         }
         let c = &stats.colour;
         if c.is_valid() && !c.is_empty() {
-            let w = Self::weights(&mut self.colour, &self.windows, c);
+            let w = Self::weights(&mut self.colour, &self.windows, c, None);
             let (mut sum, mut sw) = ([0.0; 3], 0.0);
             let (mut grey, mut all) = (0u64, 0u64);
             for (wt, z) in w.w.iter().zip(&c.zones) {
@@ -214,23 +262,23 @@ mod tests {
 
     #[test]
     fn default_area_and_windows() {
-        let w = Weights::compute(8, 8, &[]);
+        let w = Weights::compute(8, 8, &[], None);
         // Rows 2..6, columns 2..6.
         assert_eq!(w.total(), 16.0);
         assert_eq!(w.w[2 * 8 + 2], 1.0);
         assert_eq!(w.w[8 + 2], 0.0);
         // One window over the top-left quarter: the four zones there, weight 1 in total.
-        let w = Weights::compute(4, 4, &[AfWindow::new(0.0, 0.0, 0.5, 0.5)]);
+        let w = Weights::compute(4, 4, &[AfWindow::new(0.0, 0.0, 0.5, 0.5)], None);
         assert!((w.total() - 1.0).abs() < 1e-12);
         assert!((w.w[0] - 0.25).abs() < 1e-12 && w.w[2] == 0.0);
         // A window outside the image: the default area.
-        let w = Weights::compute(4, 4, &[AfWindow::new(2.0, 2.0, 0.5, 0.5)]);
+        let w = Weights::compute(4, 4, &[AfWindow::new(2.0, 2.0, 0.5, 0.5)], None);
         assert_eq!(w.total(), 4.0);
     }
 
     #[test]
     fn phase_needs_enough_confidence() {
-        let w = Weights::compute(2, 2, &[AfWindow::new(0.0, 0.0, 1.0, 1.0)]);
+        let w = Weights::compute(2, 2, &[AfWindow::new(0.0, 0.0, 1.0, 1.0)], None);
         let mut g = ZoneGrid::<PdafZone>::new(2, 2);
         g.zones.fill(PdafZone {
             phase: 10.0,
@@ -242,5 +290,24 @@ mod tests {
             z.conf = 4.0;
         }
         assert_eq!(phase(&w, &g, 16.0, 512.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn weights_follow_the_focus_area_and_the_area_spans_the_windows() {
+        let windows = [
+            AfWindow::new(0.25, 0.25, 0.25, 0.25),
+            AfWindow::new(0.5, 0.5, 0.25, 0.25),
+        ];
+        let mut m = Measure::default();
+        m.set_windows(&windows);
+        let area = m.area().unwrap();
+        assert_eq!(
+            (area.x, area.y, area.width, area.height),
+            (0.25, 0.25, 0.5, 0.5)
+        );
+        // A 2x2 grid over that area: each window fills one diagonal zone.
+        let w = Weights::compute(2, 2, &windows, Some(area));
+        assert_eq!(w.w, [1.0, 0.0, 0.0, 1.0]);
+        assert!(Measure::default().area().is_none());
     }
 }

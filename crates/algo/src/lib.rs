@@ -68,6 +68,8 @@ pub use params::{
 };
 pub use pipeline::{Algorithm, Pipeline};
 pub use pwl::Pwl;
+#[cfg(feature = "af")]
+pub use stats::FocusArea;
 pub use stats::{
     ColourZone, Histogram, LumaZone, PdafZone, Statistics, StatsAccumulator, ZoneGrid,
 };

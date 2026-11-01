@@ -257,6 +257,21 @@ impl Histogram {
     }
 }
 
+/// A rectangle of the frame in fractions of its width and height (`0..=1`). With `af` only (an
+/// image without AF does not carry it).
+#[cfg(feature = "af")]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FocusArea {
+    /// Left edge.
+    pub x: f64,
+    /// Top edge.
+    pub y: f64,
+    /// Width.
+    pub width: f64,
+    /// Height.
+    pub height: f64,
+}
+
 /// Everything the algorithms read from one frame's statistics.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Statistics {
@@ -270,6 +285,11 @@ pub struct Statistics {
     /// Focus figures of merit per zone, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<ZoneGrid<f64>>,
+    /// The part of the frame the focus zones cover (`None`: the whole frame), when the ISP
+    /// moves its focus grid to the AF windows ([`crate::AfStatus::measure_area`]).
+    #[cfg(feature = "af")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_area: Option<FocusArea>,
     /// Phase-detection data from the sensor (e.g. the IMX708's embedded PDAF line), for AF.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pdaf: Option<ZoneGrid<PdafZone>>,
@@ -286,6 +306,28 @@ fn yes() -> bool {
 }
 
 impl Statistics {
+    /// Statistics of these zones and histogram, taken before white balance and lens shading,
+    /// with no phase data and focus zones over the whole frame (the fields an ISP without
+    /// them leaves out, whichever of them this build has).
+    pub fn new(
+        colour: ZoneGrid<ColourZone>,
+        luma: Option<ZoneGrid<LumaZone>>,
+        histogram: Histogram,
+        focus: Option<ZoneGrid<f64>>,
+    ) -> Self {
+        Self {
+            colour,
+            luma,
+            histogram,
+            focus,
+            #[cfg(feature = "af")]
+            focus_area: None,
+            pdaf: None,
+            before_wb: true,
+            before_lsc: true,
+        }
+    }
+
     /// Mean luma of the whole image (no white balance applied), from the luma grid if present.
     pub fn mean_luma(&self) -> f64 {
         let (sum, n) = match &self.luma {
@@ -345,15 +387,12 @@ impl StatsAccumulator {
 
     /// The statistics (taken before white balance and lens shading).
     pub fn finish(self) -> Statistics {
-        Statistics {
-            colour: self.colour,
-            luma: Some(self.luma),
-            histogram: Histogram::from(self.bins),
-            focus: None,
-            pdaf: None,
-            before_wb: true,
-            before_lsc: true,
-        }
+        Statistics::new(
+            self.colour,
+            Some(self.luma),
+            Histogram::from(self.bins),
+            None,
+        )
     }
 }
 

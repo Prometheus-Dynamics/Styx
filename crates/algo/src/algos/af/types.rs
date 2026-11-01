@@ -173,4 +173,10 @@ pub struct AfStatus {
     /// Continuous AF's pause state (always `Running` outside continuous mode).
     #[serde(default)]
     pub pause: AfPauseState,
+    /// Where the ISP should put its focus zones: the AF windows' bounding box (`None`: no
+    /// windows, the whole frame). ISPs that can move their focus grid (the PiSP front end's
+    /// CDAF) follow it and report it as [`crate::Statistics::focus_area`].
+    #[cfg(feature = "af")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measure_area: Option<crate::FocusArea>,
 }

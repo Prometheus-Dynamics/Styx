@@ -601,6 +601,7 @@ impl Af {
                 0
             },
             pause: self.pause,
+            measure_area: self.measure.area(),
         }
     }
 
