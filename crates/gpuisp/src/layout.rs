@@ -100,22 +100,29 @@ impl Layout {
     }
 }
 
+/// The caller's planes (data, stride), the first of them in use; on the stack, as this is per frame.
+pub(crate) type Destination<'b> = [Option<(&'b mut [u8], usize)>; 3];
+
 /// The caller's planes (data, stride), checked against `layout` as `styx-softisp` checks them.
 pub(crate) fn destination<'a, 'b>(
     out: &'b mut OutputBuffers<'a>,
     layout: &Layout,
-) -> Result<Vec<(&'b mut [u8], usize)>, IspError> {
+) -> Result<Destination<'b>, IspError> {
     let names = ["y", "u", "v"];
-    let planes: Vec<(&'b mut [u8], usize)> = match out {
+    let planes: Destination<'b> = match out {
         OutputBuffers::Rgb24 { data, stride } | OutputBuffers::Luma { data, stride } => {
-            vec![(&mut **data, *stride)]
+            [Some((&mut **data, *stride)), None, None]
         }
         OutputBuffers::Nv12 {
             y,
             y_stride,
             uv,
             uv_stride,
-        } => vec![(&mut **y, *y_stride), (&mut **uv, *uv_stride)],
+        } => [
+            Some((&mut **y, *y_stride)),
+            Some((&mut **uv, *uv_stride)),
+            None,
+        ],
         OutputBuffers::I420 {
             y,
             y_stride,
@@ -123,13 +130,13 @@ pub(crate) fn destination<'a, 'b>(
             u_stride,
             v,
             v_stride,
-        } => vec![
-            (&mut **y, *y_stride),
-            (&mut **u, *u_stride),
-            (&mut **v, *v_stride),
+        } => [
+            Some((&mut **y, *y_stride)),
+            Some((&mut **u, *u_stride)),
+            Some((&mut **v, *v_stride)),
         ],
     };
-    for (k, ((data, stride), p)) in planes.iter().zip(layout.used()).enumerate() {
+    for (k, ((data, stride), p)) in planes.iter().flatten().zip(layout.used()).enumerate() {
         let name = match layout.kind {
             OutputKind::Rgb24 => "rgb",
             OutputKind::Luma => "luma",
@@ -142,8 +149,8 @@ pub(crate) fn destination<'a, 'b>(
 }
 
 /// Copy the planes of `src` (laid out as `layout`) into the caller's planes.
-pub(crate) fn copy_out(src: &[u8], layout: &Layout, dst: Vec<(&mut [u8], usize)>) {
-    for (p, (data, stride)) in layout.used().iter().zip(dst) {
+pub(crate) fn copy_out(src: &[u8], layout: &Layout, dst: Destination<'_>) {
+    for (p, (data, stride)) in layout.used().iter().zip(dst.into_iter().flatten()) {
         if stride == p.stride && p.stride == p.row {
             let n = p.row * p.rows;
             data[..n].copy_from_slice(&src[p.offset..][..n]);

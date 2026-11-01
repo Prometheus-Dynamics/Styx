@@ -31,7 +31,18 @@ use crate::metrics::CaptureMetrics;
 
 /// Where leases give their output buffers back to the worker: a fixed lock-free ring (sending
 /// allocates nothing, unlike a channel that grows in blocks), with room for every buffer.
-pub(super) type Returns = styx_core::queue::BoundedTx<(usize, u32)>;
+#[derive(Clone)]
+pub(super) struct Returns {
+    tx: styx_core::queue::BoundedTx<(usize, u32)>,
+    /// The leases' backing records, reused so a frame allocates none.
+    backings: styx_core::buffer::BackingPool<crate::metrics::MeteredBacking<BeBacking>>,
+}
+
+impl Returns {
+    pub(super) fn send(&self, returned: (usize, u32)) -> styx_core::queue::SendOutcome {
+        self.tx.send(returned)
+    }
+}
 
 /// The worker's end of [`Returns`].
 pub(super) type ReturnsRx = styx_core::queue::BoundedRx<(usize, u32)>;
@@ -41,7 +52,9 @@ const RETURNS: usize = 256;
 
 /// A ring for buffers coming back.
 pub(super) fn returns() -> (Returns, ReturnsRx) {
-    styx_core::queue::bounded(RETURNS)
+    let (tx, rx) = styx_core::queue::bounded(RETURNS);
+    let backings = styx_core::buffer::BackingPool::new(RETURNS);
+    (Returns { tx, backings }, rx)
 }
 
 /// What the capture thread does to a cached buffer before handing its lease over
@@ -157,7 +170,7 @@ struct BeBacking {
     /// CPU access to the buffer (`DMA_BUF_IOCTL_SYNC`): held by plain reads until the lease
     /// drops, or bracketed (Daedalus's `daedalus:frame` access).
     window: CpuReadWindow,
-    returns: Returns,
+    returns: styx_core::queue::BoundedTx<(usize, u32)>,
     /// A sliced frame's state (shared by its leases) and this output's index in its progress.
     progress: Option<(Arc<SliceState>, usize)>,
 }
@@ -471,7 +484,7 @@ fn lease(
         output,
         index,
         window: CpuReadWindow::new(),
-        returns: returns.clone(),
+        returns: returns.tx.clone(),
         progress: progress.map(|p| (p, output)),
     };
     if prep.sync && backing.buffer.cached {
@@ -481,7 +494,11 @@ fn lease(
             prefetch(first, prep.prefetch);
         }
     }
-    FrameLease::from_external(meta, plane_layouts, Arc::new(live.track(backing)))
+    FrameLease::from_external(
+        meta,
+        plane_layouts,
+        returns.backings.wrap(live.track(backing)),
+    )
 }
 
 /// The pseudo-output the front end's raw buffers come back to the worker as (the back end's
@@ -532,7 +549,7 @@ pub(super) fn raw_lease(
         output: RAW_OUTPUT,
         index,
         window: CpuReadWindow::new(),
-        returns: returns.clone(),
+        returns: returns.tx.clone(),
         progress: progress.map(|p| (p, 0)),
     };
     let layouts = smallvec::smallvec![PlaneLayout {
@@ -543,7 +560,7 @@ pub(super) fn raw_lease(
     Some(FrameLease::from_external(
         meta,
         layouts,
-        Arc::new(live.track(backing)),
+        returns.backings.wrap(live.track(backing)),
     ))
 }
 

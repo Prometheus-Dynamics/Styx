@@ -322,7 +322,12 @@ fn layouts(code: FourCc, w: usize, h: usize, len: usize) -> Option<SmallVec<[Pla
     (end <= len).then_some(layouts)
 }
 
-fn frame_lease(frame: UvcFrame, clock_hz: u32, config: &StyxConfig) -> Option<FrameLease> {
+fn frame_lease(
+    frame: UvcFrame,
+    clock_hz: u32,
+    config: &StyxConfig,
+    backings: &styx_core::buffer::BackingPool<UvcBacking>,
+) -> Option<FrameLease> {
     let code = FourCc::new(frame.fourcc);
     let res = Resolution::new(frame.width, frame.height)?;
     let format = MediaFormat::new(code, res, ColorSpace::Unknown);
@@ -364,7 +369,7 @@ fn frame_lease(frame: UvcFrame, clock_hz: u32, config: &StyxConfig) -> Option<Fr
     Some(FrameLease::from_external(
         meta,
         planes,
-        Arc::new(UvcBacking { frame }),
+        backings.wrap(UvcBacking { frame }),
     ))
 }
 
@@ -474,13 +479,16 @@ pub(super) fn start_uvc(
         .spawn(move || {
             live_worker.register_thread();
             crate::trace::debug!(backend = "uvc", "capture worker started");
+            let backings = styx_core::buffer::BackingPool::new(32);
             loop {
                 if stop_rx.try_recv().is_ok() {
                     break;
                 }
                 match stream.next_blocking(poll) {
                     Ok(frame) => {
-                        let Some(lease) = frame_lease(frame, clock_hz, &config_for_thread) else {
+                        let Some(lease) =
+                            frame_lease(frame, clock_hz, &config_for_thread, &backings)
+                        else {
                             continue;
                         };
                         if deliver(&live_worker, &tx, lease, "uvc", send_timeout) {

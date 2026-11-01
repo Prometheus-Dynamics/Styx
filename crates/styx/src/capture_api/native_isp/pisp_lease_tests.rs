@@ -196,7 +196,7 @@ fn early_access_opens_the_window_on_the_capture_thread() {
         output: 0,
         index: 1,
         window: CpuReadWindow::new(),
-        returns: tx.clone(),
+        returns: tx.tx.clone(),
         progress: None,
     };
     assert!(!lazy.window.is_open());

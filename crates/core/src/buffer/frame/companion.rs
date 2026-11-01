@@ -14,6 +14,40 @@ use crate::format::{FourCc, MediaFormat, Resolution};
 
 pub(super) type Companions = SmallVec<[(CompanionKind, FrameLease); 2]>;
 
+/// Empty companion lists for reuse: a frame with companions then allocates none per frame.
+#[cfg(feature = "std")]
+#[allow(clippy::vec_box)] // The boxes themselves are what frames reuse.
+static FREE_LISTS: crate::sync::Mutex<alloc::vec::Vec<Box<Companions>>> =
+    crate::sync::Mutex::new(alloc::vec::Vec::new());
+
+/// At most this many lists wait for reuse (the frames with companions in flight).
+#[cfg(feature = "std")]
+const KEEP_LISTS: usize = 32;
+
+fn take_list() -> Box<Companions> {
+    #[cfg(feature = "std")]
+    if let Some(list) = FREE_LISTS.lock().pop() {
+        return list;
+    }
+    Box::default()
+}
+
+/// A frame's companions are going: they drop, and their list is kept for another frame.
+#[cfg(feature = "std")]
+pub(super) fn recycle(list: Option<Box<Companions>>) {
+    let Some(mut list) = list else {
+        return;
+    };
+    list.clear();
+    let mut free = FREE_LISTS.lock();
+    if free.capacity() == 0 {
+        free.reserve_exact(KEEP_LISTS);
+    }
+    if free.len() < KEEP_LISTS {
+        free.push(list);
+    }
+}
+
 /// How a companion relates to its primary frame.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CompanionKind {
@@ -52,7 +86,7 @@ impl FrameLease {
         if companion.companions.is_some() {
             return Err(FrameValidationError::NestedCompanion);
         }
-        let companions = self.companions.get_or_insert_with(Default::default);
+        let companions = self.companions.get_or_insert_with(take_list);
         companions.retain(|(existing, _)| *existing != kind);
         companions.push((kind, companion));
         Ok(self)

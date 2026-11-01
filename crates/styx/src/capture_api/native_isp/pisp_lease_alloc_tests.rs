@@ -147,11 +147,8 @@ fn pisp_frames_reach_an_in_process_consumer_without_allocating_or_copying() {
         path_allocs as f64 / FRAMES as f64
     );
     assert_eq!(path_allocs, 0, "the frame path allocates");
-    // The lease record (the backing the frame's shares count) is the only allocation.
-    assert_eq!(
-        lease_allocs, FRAMES,
-        "a lease allocates more than its record"
-    );
+    // The lease record comes back too (`BackingPool`).
+    assert_eq!(lease_allocs, 0, "a lease allocates");
     // No frame was copied on the way (each frame's own count, carried in its hops).
     let path = handle.camera_metrics().path;
     assert_eq!((path.copied, path.zero_copy), (0, FRAMES + 100));
@@ -159,10 +156,10 @@ fn pisp_frames_reach_an_in_process_consumer_without_allocating_or_copying() {
     assert_eq!(names, ["dequeued", "isp_done", "queued", "taken"]);
 }
 
-/// A companion (a pyramid level, a region, the raw frame) costs its own lease record, and its
-/// place on the main frame; nothing is copied.
+/// A companion (a pyramid level, a region, the raw frame) allocates nothing either: its lease
+/// record and its place on the main frame are reused.
 #[test]
-fn a_pisp_companion_costs_only_its_records() {
+fn a_pisp_companion_allocates_nothing() {
     let live = CaptureMetrics::default();
     let (ret_tx, ret_rx) = returns();
     let buffers: Vec<BeBuffer> = (0..BUFFERS).map(|_| buffer(W, H)).collect();
@@ -216,6 +213,6 @@ fn a_pisp_companion_costs_only_its_records() {
         main_allocs as f64 / FRAMES as f64,
         with_companion_allocs as f64 / FRAMES as f64,
     );
-    assert_eq!(main, 1.0);
-    assert_eq!(both, 3.0, "allocations with one companion");
+    assert_eq!(main, 0.0, "allocations per lease");
+    assert_eq!(both, 0.0, "allocations with one companion");
 }

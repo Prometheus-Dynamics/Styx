@@ -38,15 +38,15 @@ impl V4l2MmapBacking {
         index: usize,
         tracker: Arc<ExternalBackingTracker>,
         bytes: usize,
-    ) -> Arc<Self> {
+    ) -> Self {
         tracker.acquire(bytes);
-        Arc::new(Self {
+        Self {
             manager,
             recycle_tx,
             index: Mutex::new(Some(index)),
             tracker,
             bytes,
-        })
+        }
     }
 }
 
@@ -281,6 +281,8 @@ pub(super) fn start_v4l2(
         let height = mode_clone.format.resolution.height.get() as usize;
         let width = mode_clone.format.resolution.width.get() as usize;
         let mut consecutive_errors: u32 = 0;
+        // Every driver buffer's frame can be out at once, 32 at most.
+        let backings = styx_core::buffer::BackingPool::new(32);
         loop {
             drain_recycled_buffers(&manager_for_worker, &recycle_rx);
             if stop_rx.try_recv().is_ok() {
@@ -350,7 +352,11 @@ pub(super) fn start_v4l2(
                             Arc::clone(&tracker_for_worker),
                             bytes_used,
                         );
-                        FrameLease::from_external(meta, layout_plan.planes.clone(), backing)
+                        FrameLease::from_external(
+                            meta,
+                            layout_plan.planes.clone(),
+                            backings.wrap(backing),
+                        )
                     } else if layout_plan.planes.len() > 1 {
                         let frame = manager_for_worker
                             .mapped_plane(index)

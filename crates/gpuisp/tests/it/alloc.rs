@@ -40,7 +40,7 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 #[test]
-fn a_frame_from_memory_allocates_once_at_most_when_warm() {
+fn a_frame_from_memory_allocates_nothing_when_warm() {
     let (w, h) = (128usize, 96usize);
     let m = mosaic(w, h, CfaPattern::Rggb, |x, y| {
         [
@@ -79,9 +79,5 @@ fn a_frame_from_memory_allocates_once_at_most_when_warm() {
         run();
     }
     let per_frame = (COUNT.with(Cell::get) - before) as f64 / FRAMES as f64;
-    println!("GPU ISP from memory, allocations per frame: {per_frame:.2}");
-    assert!(
-        per_frame <= 1.0,
-        "{per_frame} allocations per GPU ISP frame"
-    );
+    assert_eq!(per_frame, 0.0, "allocations per GPU ISP frame");
 }

@@ -23,6 +23,8 @@ mod construct;
 mod cpu_read;
 mod crop;
 mod luma;
+#[cfg(feature = "std")]
+mod recycle;
 mod region;
 mod share;
 mod visible;
@@ -34,6 +36,8 @@ use super::plane::{FrameAllocation, FrameLeaseDescriptor, FrameValidationError, 
 use super::views::{FramePlaneShape, Plane, PlaneMut, VisibleRows, VisibleRowsMut};
 
 pub use companion::{CompanionKind, box_downscale_luma, box_downscale_luma_in, luma_level_in};
+#[cfg(feature = "std")]
+pub use recycle::BackingPool;
 pub use region::{MemoryRegion, RegionHooks};
 #[cfg(all(feature = "std", unix))]
 mod shared_fd;
@@ -149,6 +153,10 @@ pub trait ExternalBacking: Send + Sync {
     /// maintenance so devices see the writes): the frame is about to be shared or handed out.
     /// Nothing when no window is open; default nothing.
     fn finish_cpu_write(&self) {}
+    /// The last [`FrameLease`] holding this backing is going, and nothing else holds it: give
+    /// the allocation back ([`BackingPool`]). Default: dropped with this reference.
+    #[cfg(feature = "std")]
+    fn recycle(self: Arc<Self>) {}
 
     /// Begins a bracketed CPU read of plane `index` and gives its memory, as
     /// [`ExternalBacking::plane_data`] does; every `Some` is followed by exactly one
@@ -246,6 +254,18 @@ pub struct FrameLease {
     layouts: SmallVec<[PlaneLayout; 3]>,
     external: Option<Arc<dyn ExternalBacking>>,
     companions: Option<Box<companion::Companions>>,
+}
+
+#[cfg(feature = "std")]
+impl Drop for FrameLease {
+    fn drop(&mut self) {
+        if let Some(mut backing) = self.external.take()
+            && Arc::get_mut(&mut backing).is_some()
+        {
+            backing.recycle();
+        }
+        companion::recycle(self.companions.take());
+    }
 }
 
 pub struct FrameLeaseParts {
@@ -622,21 +642,19 @@ impl FrameLease {
         self.layouts.iter().map(|l| l.stride).collect()
     }
 
-    pub fn into_parts(self) -> FrameLeaseParts {
-        let layouts = self.layouts.clone();
-        if self.external.is_some() {
-            FrameLeaseParts {
-                meta: self.meta,
-                layouts,
-                buffers: SmallVec::new(),
-            }
+    pub fn into_parts(mut self) -> FrameLeaseParts {
+        let buffers = if self.external.is_some() {
+            SmallVec::new()
         } else {
-            let buffers = self.buffers.into_iter().map(|lease| lease.take()).collect();
-            FrameLeaseParts {
-                meta: self.meta,
-                layouts,
-                buffers,
-            }
+            core::mem::take(&mut self.buffers)
+                .into_iter()
+                .map(|lease| lease.take())
+                .collect()
+        };
+        FrameLeaseParts {
+            meta: self.meta.clone(),
+            layouts: self.layouts.clone(),
+            buffers,
         }
     }
 

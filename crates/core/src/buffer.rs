@@ -41,6 +41,8 @@ pub use views::{
     FramePlaneShape, Plane, PlaneMut, VisibleRow, VisibleRowMut, VisibleRows, VisibleRowsMut,
 };
 
+#[cfg(feature = "std")]
+pub use frame::BackingPool;
 #[cfg(all(feature = "lease-codec", unix))]
 pub(crate) use frame::fd_size;
 pub use frame::{

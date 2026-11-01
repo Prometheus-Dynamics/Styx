@@ -20,6 +20,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   256. `0` asks for nothing. Breaking: `BeOutputSetup::gpu_pad`, `IspSetup::gpu_pad`, and
   `RkispPipeline::open`/`open_on` take a `gpu_pad`.
 
+- **No allocation per frame in a lease**: `styx_core::buffer::BackingPool` reuses a frame's
+  backing record (`ExternalBacking::recycle`, called when the last lease drops; the backing's own
+  `Drop` still runs then), and companion lists are reused. PiSP (with companions), UVC and V4L2
+  zero-copy leases and GPU ISP frames from memory allocate nothing once warm. `FrameLease` now
+  implements `Drop`.
+
 - **Accelerator knobs**: `StyxConfig::accelerators` and `FrameRequest::accelerators`
   (`planner::Accelerators`) choose the hardware per device and stage: `isp`, `encoder`, `scaler`,
   `pyramid`, each `Hardware::Auto`, `Off` or `Required`. A camera service applies its capture

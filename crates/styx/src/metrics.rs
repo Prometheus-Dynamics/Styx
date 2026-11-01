@@ -46,6 +46,8 @@ pub use export::{MetricKind, MetricSample, render_prometheus};
 #[cfg(feature = "native")]
 pub(crate) use live::AaaSample;
 pub(crate) use live::ConsumerStats;
+#[cfg(feature = "native")]
+pub(crate) use live::MeteredBacking;
 #[cfg(feature = "frame-socket")]
 pub(crate) use live::RingWindow;
 pub(crate) use live::stamp_queued;
