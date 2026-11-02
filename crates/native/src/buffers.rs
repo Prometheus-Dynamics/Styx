@@ -343,6 +343,9 @@ pub struct NativeFrame {
     frame: styx_runtime::Frame<V4l2Receiver>,
 }
 
+/// A native frame as a `styx_core` frame backing ([`NativeFrame::into_backing`]).
+pub type NativeBacking = styx_runtime::FrameBacking<V4l2Receiver>;
+
 impl NativeFrame {
     pub(crate) fn new(
         frame: styx_runtime::Frame<V4l2Receiver>,
@@ -398,7 +401,7 @@ impl NativeFrame {
     /// This frame as a `styx_core` frame backing whose payload is its first `len` bytes: read
     /// in place, exported as its dma-buf, the buffer given back when the last view of the
     /// frame is dropped (`styx_runtime::Frame::into_backing`).
-    pub fn into_backing(self, len: usize) -> styx_runtime::FrameBacking<V4l2Receiver> {
+    pub fn into_backing(self, len: usize) -> NativeBacking {
         self.frame.into_backing(len)
     }
 }

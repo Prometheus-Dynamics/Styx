@@ -34,7 +34,7 @@ pub use io::{AsyncFd, Readiness, priority, readable, writable};
 pub use reactor::Reactor;
 pub use stream::{Next, next};
 pub use sys::set_nonblocking;
-pub use time::{Elapsed, Sleep, Timeout, sleep, sleep_until, timeout};
+pub use time::{Elapsed, Sleep, Timeout, sleep, sleep_until, timeout, timeout_unpin};
 
 use std::fmt;
 use std::ops::BitOr;

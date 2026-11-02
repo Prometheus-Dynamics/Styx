@@ -57,7 +57,7 @@ impl FrameStream {
     /// Waits up to `timeout` for the next frame, blocking this thread. `Ok(None)` at the end of
     /// the stream, [`NativeError::Timeout`] when no frame came in time.
     pub fn next_blocking(&mut self, timeout: Duration) -> Result<Option<NativeFrame>> {
-        match rt::block_on(rt::timeout(timeout, rt::next(self))) {
+        match rt::block_on(rt::timeout_unpin(timeout, rt::next(self))) {
             Ok(Some(r)) => r.map(Some),
             Ok(None) => Ok(None),
             Err(_) => Err(NativeError::Timeout),

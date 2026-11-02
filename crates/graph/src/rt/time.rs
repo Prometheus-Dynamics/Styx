@@ -89,28 +89,34 @@ impl From<Elapsed> for std::io::Error {
     }
 }
 
-/// Run `future` for at most `duration`.
-pub fn timeout<F: Future>(duration: Duration, future: F) -> Timeout<F> {
+/// Run `future` for at most `duration`. The future is boxed (this crate pins without unsafe
+/// code); [`timeout_unpin`] takes an `Unpin` future as it is, without allocating.
+pub fn timeout<F: Future>(duration: Duration, future: F) -> Timeout<Pin<Box<F>>> {
+    timeout_unpin(duration, Box::pin(future))
+}
+
+/// [`timeout`] of an `Unpin` future (a [`next`](crate::rt::next) of a stream, a boxed
+/// future): nothing allocated but the reactor's timer when the future has to wait.
+pub fn timeout_unpin<F: Future + Unpin>(duration: Duration, future: F) -> Timeout<F> {
     Timeout {
-        future: Box::pin(future),
+        future,
         sleep: sleep(duration),
     }
 }
 
-/// The future of [`timeout`]. The wrapped future is boxed so this crate needs no unsafe pin
-/// projection.
+/// The future of [`timeout`] and [`timeout_unpin`].
 #[must_use = "futures do nothing unless polled"]
 pub struct Timeout<F> {
-    future: Pin<Box<F>>,
+    future: F,
     sleep: Sleep,
 }
 
-impl<F: Future> Future for Timeout<F> {
+impl<F: Future + Unpin> Future for Timeout<F> {
     type Output = Result<F::Output, Elapsed>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        if let Poll::Ready(output) = this.future.as_mut().poll(cx) {
+        if let Poll::Ready(output) = Pin::new(&mut this.future).poll(cx) {
             return Poll::Ready(Ok(output));
         }
         match Pin::new(&mut this.sleep).poll(cx) {

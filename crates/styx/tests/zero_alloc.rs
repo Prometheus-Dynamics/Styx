@@ -622,11 +622,11 @@ fn camera_service_without_a_thread() {
         per(counts[Kind::Reactor]),
     );
     assert_eq!(counts[Kind::Reactor], 0, "the reactor allocates");
-    // The frames' release records, and block_on's waker once.
+    // The frames' release records (block_on reuses its thread's waker).
     counts.assert_maps_only_new_buffers();
     assert_eq!(
         counts[Kind::Test],
-        FRAMES + 1 + counts.maps,
+        FRAMES + counts.maps,
         "next().await allocates {} times for {FRAMES} frames ({} buffers mapped)",
         counts[Kind::Test],
         counts.maps

@@ -1,6 +1,6 @@
 //! The reactor thread: one epoll instance, one timer, wakers for everything waiting on them.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::io;
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -46,10 +46,20 @@ pub(crate) struct Inner {
     timers: Mutex<Timers>,
 }
 
+/// Pending timers, few at a time (one per waiting `Sleep`): a list searched in full, which
+/// keeps its buffer, so adding and firing them allocates nothing once it has grown.
 #[derive(Default)]
 struct Timers {
-    entries: BTreeMap<(Instant, u64), Waker>,
+    entries: Vec<(Instant, u64, Waker)>,
     armed: Option<Instant>,
+}
+
+impl Timers {
+    fn find(&self, deadline: Instant, key: u64) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|&(d, k, _)| d == deadline && k == key)
+    }
 }
 
 impl Reactor {
@@ -124,7 +134,7 @@ impl Reactor {
         let inner = self.inner();
         let key = inner.next_token.fetch_add(1, Ordering::Relaxed);
         let mut timers = lock(&inner.timers);
-        timers.entries.insert((deadline, key), waker);
+        timers.entries.push((deadline, key, waker));
         if timers.armed.is_none_or(|armed| deadline < armed) {
             timers.armed = Some(deadline);
             inner.arm_timer(deadline);
@@ -135,8 +145,9 @@ impl Reactor {
     /// Replace the waker of a pending timer; false if it already fired.
     pub(crate) fn update_timer(&self, deadline: Instant, key: u64, waker: &Waker) -> bool {
         let mut timers = lock(&self.inner().timers);
-        match timers.entries.get_mut(&(deadline, key)) {
-            Some(existing) => {
+        match timers.find(deadline, key) {
+            Some(i) => {
+                let existing = &mut timers.entries[i].2;
                 if !existing.will_wake(waker) {
                     *existing = waker.clone();
                 }
@@ -147,7 +158,10 @@ impl Reactor {
     }
 
     pub(crate) fn cancel_timer(&self, deadline: Instant, key: u64) {
-        lock(&self.inner().timers).entries.remove(&(deadline, key));
+        let mut timers = lock(&self.inner().timers);
+        if let Some(i) = timers.find(deadline, key) {
+            timers.entries.swap_remove(i);
+        }
     }
 }
 
@@ -209,10 +223,19 @@ impl Inner {
         self.timer_fd.drain();
         let now = Instant::now();
         let mut timers = lock(&self.timers);
-        let later = timers.entries.split_off(&(now, u64::MAX));
-        let expired = std::mem::replace(&mut timers.entries, later);
-        wake.extend(expired.into_values());
-        timers.armed = timers.entries.keys().next().map(|(deadline, _)| *deadline);
+        let mut i = 0;
+        while i < timers.entries.len() {
+            if timers.entries[i].0 <= now {
+                wake.push(timers.entries.swap_remove(i).2);
+            } else {
+                i += 1;
+            }
+        }
+        timers.armed = timers
+            .entries
+            .iter()
+            .map(|&(deadline, _, _)| deadline)
+            .min();
         if let Some(next) = timers.armed {
             self.arm_timer(next);
         }

@@ -17,6 +17,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   the tables of the parameters before last are rebuilt in place. `SoftLoop::recycle`,
   `SoftPipeline::recycle` and `Algorithms::recycle_step`/`recycle_settings`/`recycle_statistics`
   hand outputs back. With them, the software ISP loop allocates nothing per frame.
+- `styx_graph::rt::timeout_unpin`: a timeout of an `Unpin` future without boxing it. With it,
+  `block_on` reusing its thread's waker and the reactor keeping its timers in a list, a blocking
+  frame loop (`NativeStream::next_blocking`) allocates nothing per frame; the native capture
+  worker's leases come from a `BackingPool`. Breaking: `timeout` returns `Timeout<Pin<Box<F>>>`.
 - **GPU ISP on Daedalus's device** (`styx-gpuisp` feature `daedalus`):
   `GpuContext::from_daedalus` records each frame into Daedalus's command buffer and submits on
   its queue (`GpuContextHandle::submit_raw`, Daedalus 29ae351), and `Input::Buffer`

@@ -65,7 +65,7 @@ pub mod sim;
 mod stream;
 pub mod topology;
 
-pub use buffers::{BufferMemory, NativeFrame, V4l2Buffer};
+pub use buffers::{BufferMemory, NativeBacking, NativeFrame, V4l2Buffer};
 pub use camera::{
     CameraControls, CameraOptions, Configured, NativeCamera, StreamSettings, select_mode,
 };

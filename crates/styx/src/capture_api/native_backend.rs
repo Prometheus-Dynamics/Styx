@@ -15,8 +15,8 @@ use styx_core::prelude::{
     BackendFrameMeta, ClockConversion, ClockSource, NativeFrameMeta, TimestampClock,
 };
 use styx_native::{
-    CameraControls, CameraInfo, CameraOptions, NativeError, NativeFrame, SensorLibrary, SensorMode,
-    StreamSettings,
+    CameraControls, CameraInfo, CameraOptions, NativeBacking, NativeError, NativeFrame,
+    SensorLibrary, SensorMode, StreamSettings,
 };
 
 use super::control_plane::ControlPlane;
@@ -263,11 +263,17 @@ pub(crate) fn stamp_clock(meta: FrameMeta, conversion: Option<ClockConversion>) 
     meta.in_clock(TimestampClock::Monotonic, conversion)
 }
 
-/// Wraps a native frame as a frame lease (no copy), stamped in `clock`.
+/// Backing records of raw native frames, reused frame after frame.
+pub(crate) type RawBackings =
+    styx_core::buffer::BackingPool<crate::metrics::MeteredBacking<NativeBacking>>;
+
+/// Wraps a native frame as a frame lease (no copy), stamped in `clock`; its backing record
+/// from `backings` (no allocation per frame).
 pub(crate) fn frame_lease(
     frame: NativeFrame,
     live: &crate::metrics::CaptureMetrics,
     clock: ClockSource,
+    backings: &RawBackings,
 ) -> Option<FrameLease> {
     let res = Resolution::new(frame.width, frame.height)?;
     let format = MediaFormat::new(FourCc::from(frame.fourcc.0), res, ColorSpace::Unknown);
@@ -300,7 +306,7 @@ pub(crate) fn frame_lease(
     Some(FrameLease::from_external(
         meta,
         smallvec![layout],
-        Arc::new(live.track(frame.into_backing(len))),
+        backings.wrap(live.track(frame.into_backing(len))),
     ))
 }
 
@@ -421,6 +427,8 @@ pub(super) fn start_native(
         .name("styx-native-capture".into())
         .spawn(move || {
             live_worker.register_thread();
+            // More than the frames a consumer holds at once.
+            let backings = RawBackings::new(32);
             crate::trace::debug!(backend = "native", "capture worker started");
             loop {
                 if stop_rx.try_recv().is_ok() {
@@ -428,7 +436,7 @@ pub(super) fn start_native(
                 }
                 match stream.next_blocking(poll) {
                     Ok(Some(frame)) => {
-                        let Some(lease) = frame_lease(frame, &live_worker, clock) else {
+                        let Some(lease) = frame_lease(frame, &live_worker, clock, &backings) else {
                             continue;
                         };
                         if deliver(&live_worker, &tx, lease, "native", send_timeout) {

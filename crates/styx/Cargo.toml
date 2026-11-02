@@ -70,14 +70,20 @@ styx-sensor = { path = "../sensor", version = "2.0.1-dev", optional = true, feat
 [dev-dependencies]
 criterion.workspace = true
 image.workspace = true
+libc.workspace = true
 
 # The integration tests are one binary (`tests/it`, modules gated on the features they need) and
-# two of their own: `zero_alloc` (a counting global allocator) and `metrics` (process-wide
-# counts). `zero_alloc` is skipped without `frame-socket` (no empty test binary to build and
-# link); its `#![cfg]` line keeps the platform condition.
+# three of their own: `zero_alloc` and `worker_alloc` (counting global allocators) and `metrics`
+# (process-wide counts). `zero_alloc` is skipped without `frame-socket`, `worker_alloc` without
+# `sim` (no empty test binary to build and link); their `#![cfg]` lines keep the platform
+# condition.
 [[test]]
 name = "zero_alloc"
 required-features = ["frame-socket"]
+
+[[test]]
+name = "worker_alloc"
+required-features = ["sim"]
 
 [[bench]]
 name = "v4l2_capture_paths"

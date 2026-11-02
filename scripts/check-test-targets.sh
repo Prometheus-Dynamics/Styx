@@ -44,6 +44,7 @@ declare -A own_process=(
     [crates/sensor/tests/no_alloc.rs]="a counting #[global_allocator]"
     [crates/softisp/tests/alloc.rs]="a counting #[global_allocator]"
     [crates/styx/tests/zero_alloc.rs]="a counting #[global_allocator]"
+    [crates/styx/tests/worker_alloc.rs]="a counting #[global_allocator]"
     [crates/styx/tests/metrics.rs]="process-wide metrics (the count of camera service clients)"
     [examples/mcu-footprint/tests/heap.rs]="a counting #[global_allocator]"
 )
