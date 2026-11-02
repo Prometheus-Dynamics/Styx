@@ -24,17 +24,26 @@ on a register bus, a clock) that a real port replaces. KB here is 1000 bytes.
 | Image | Before | After | Static RAM |
 |---|---|---|---|
 | A, Cortex-M7/M4F | 11.5 KB | 10.9 KB | 2.2 KB |
-| B, Cortex-M7/M4F | 116.2 KB | 89.4 KB (-23%) | 2.2 KB |
-| C, Cortex-M7/M4F | 191.4 KB | 128.2 KB (-33%) | 2.2 KB |
-| D, Cortex-M7/M4F | 298.3 KB | 216.1 KB (-28%) | 2.2 KB |
-| A, Cortex-M0+ | did not build (queues) | 10.7 KB | 36 B |
-| B, Cortex-M0+ | did not build (`Arc`, TOML) | 87.9 KB | 40 B |
-| C, Cortex-M0+ | did not build | 126.7 KB | 40 B |
-| D, Cortex-M0+ | did not build | 235.0 KB | 48 B |
+| B, Cortex-M7/M4F | 116.2 KB | 89.8 KB (-23%) | 2.2 KB |
+| C, Cortex-M7/M4F | 191.4 KB | 131.7 KB (-31%) | 2.2 KB |
+| D, Cortex-M7/M4F | 298.3 KB | 216.3 KB (-27%) | 2.2 KB |
+| A, Cortex-M0+ | did not build (queues) | 10.8 KB | 36 B |
+| B, Cortex-M0+ | did not build (`Arc`, TOML) | 87.6 KB | 40 B |
+| C, Cortex-M0+ | did not build | 129.6 KB | 40 B |
+| D, Cortex-M0+ | did not build | 235.2 KB | 48 B |
 
-D grew from 205.6 KB (Cortex-M0+: 223.4 KB) with the software ISP loop's recycling, which
-allocates nothing per frame (the spare parameters, tables and statistics, measured as of
-3.0's software ISP work). "Before" is `dev` at 0bee9e4 with the same configurations and the features it had (every
+"After" is `dev` at cb3f56e (2026-11-02). The software ISP loop's recycling (2c63b2d), which
+lets the loop allocate nothing per frame, added 1.1 KB to D (215.0 to 216.1 KB on the
+Cortex-M7). It does not depend on MCU features: it is how `SoftLoop` keeps its spare
+parameters, tables and statistics, and an MCU needs it more than a host does. A small fixed
+heap ([Heap](#heap)) fragments under per-frame allocation, and the old loop made 130
+allocations a frame. Earlier figures in this table (205.6 KB for D) cannot be reproduced:
+rebuilding the commit that wrote them (96dd205) gives 215.0 KB with today's toolchain, so the
+limits in `examples/mcu-footprint/size-limits.txt` derived from them left D 0.5% headroom, not
+the 5% the file states. D's limits (227,000 and 247,000 bytes) are its measured sizes plus about
+5% again. A-C keep their limits, which leave 2-11% headroom (C on the Cortex-M7 is the tightest
+at 1.7%).
+"Before" is `dev` at 0bee9e4 with the same configurations and the features it had (every
 algorithm in, descriptions validated again on the device). "After" is measured with Rust 1.99.0
 and the dependencies of October 2026 (with 1.94.0 they were 0.1-1.6% larger), with the sensor
 driver writing through Lemnos's register-map trait (`lemnos_hal::RegisterBus`; Styx's own
