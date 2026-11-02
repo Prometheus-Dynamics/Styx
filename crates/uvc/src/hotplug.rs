@@ -1,11 +1,12 @@
-//! Cameras coming and going: kernel uevents (netlink, through Lemnos's `lemnos_linux::uevent`)
+//! Cameras coming and going: kernel uevents (netlink, through Lemnos's device watcher)
 //! trigger a sysfs rescan, and the difference is reported. Without a netlink socket (some containers) it rescans on every
 //! poll instead.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use lemnos_linux::uevent::{UeventRecv, UeventSocket};
+use lemnos_linux::uevent::UeventRef;
+use lemnos_linux::{DeviceWatcher, Filter, LinuxPaths};
 
 use crate::sysfs::{self, UsbCameraInfo};
 
@@ -27,7 +28,8 @@ fn identity(c: &UsbCameraInfo) -> (u32, u32, String) {
 
 /// Watches for UVC cameras.
 pub struct Hotplug {
-    socket: Option<UeventSocket>,
+    /// Netlink uevents for `usb` devices. Inotify is not used: it misses driver binds.
+    socket: Option<DeviceWatcher>,
     known: BTreeMap<String, UsbCameraInfo>,
     /// uevents come in bursts (one per interface): wait this long after the last one.
     settle: Duration,
@@ -45,7 +47,7 @@ impl std::fmt::Debug for Hotplug {
 impl Hotplug {
     /// Starts watching; the cameras present now are [`Hotplug::cameras`].
     pub fn new() -> Hotplug {
-        let socket = UeventSocket::open()
+        let socket = DeviceWatcher::netlink(LinuxPaths::default(), Filter::subsystems(&["usb"]))
             .inspect_err(|_e| {
                 #[cfg(feature = "tracing")]
                 tracing::debug!(error = %_e, "uvc hotplug: no netlink, rescanning");
@@ -82,14 +84,13 @@ impl Hotplug {
         };
         let mut relevant = false;
         loop {
-            match sock.recv() {
-                Ok(Some(UeventRecv::Event(ev))) => {
-                    relevant |= ev.subsystem() == Some("usb");
-                    continue;
-                }
-                Ok(None) => {}
-                // Overrun (events lost) or a failed receive: something happened, rescan.
-                Ok(Some(UeventRecv::Overflow)) | Err(_) => relevant = true,
+            // Only `usb` events pass the filter; an overrun (events lost) or a failed receive
+            // means something happened too: rescan.
+            match sock
+                .read(|item| relevant |= matches!(item, UeventRef::Event(_) | UeventRef::Overflow))
+            {
+                Ok(_) => {}
+                Err(_) => relevant = true,
             }
             let now = Instant::now();
             let wait = if relevant {
