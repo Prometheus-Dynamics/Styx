@@ -903,6 +903,12 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- Software-ISP frames in dma-heap buffers (the simulated cameras, UVC Bayer, the K230D raw path)
+  said the CPU could not read them (`cpu_access` `None`, the dma-buf default), in process and
+  once received over IPC, so consumers that check `can_read_planes` (Eidos) refused every one.
+  They report `Cached` now (the CPU wrote them through a cached mapping). The rkisp main path's
+  leases report `Uncached` (mapped; written, untested on board). Every other dma-buf backing
+  already said.
 - A simulated camera whose glTF scene took over 2 s a frame to render (1280x800 under QEMU's
   emulated aarch64: about 1.4 s a frame there once delivered) delivered nothing: the capture
   took each slow frame for a stalled camera and restarted. Simulated cameras' stall timeout is

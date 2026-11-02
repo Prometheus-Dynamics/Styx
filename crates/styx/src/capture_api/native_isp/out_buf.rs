@@ -251,6 +251,13 @@ impl ExternalBacking for OutBacking {
         self.dma().is_some()
     }
 
+    /// The CPU wrote it through a cached mapping of the dma-heap buffer (or it is heap memory):
+    /// readable at memory speed. Without this the dma-buf counted as unreadable, and consumers
+    /// keyed on `can_read_planes` (Eidos) refused every software-ISP frame.
+    fn cpu_access(&self) -> CpuAccess {
+        CpuAccess::Cached
+    }
+
     fn residency(&self) -> FrameResidency {
         if self.dma().is_some() {
             FrameResidency::Dmabuf

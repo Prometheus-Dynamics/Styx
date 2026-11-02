@@ -196,6 +196,12 @@ impl ExternalBacking for RkBacking {
         FrameResidency::Dmabuf
     }
 
+    /// Mapped, so readable; the ISP's `mmap` of its buffers may be write-combined, so not
+    /// claimed cached (written, untested on board).
+    fn cpu_access(&self) -> CpuAccess {
+        CpuAccess::Uncached
+    }
+
     fn dmabuf_plane(&self, index: usize) -> Option<styx_core::buffer::DmabufPlane<'_>> {
         let &(offset, _) = self.planes.get(index)?;
         Some(styx_core::buffer::DmabufPlane {

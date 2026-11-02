@@ -103,6 +103,42 @@ fn a_camera_service_serves_a_simulated_camera() {
     assert!(after >= 5, "{after} frames after the rotation");
 }
 
+/// A software-ISP frame (a dma-heap buffer where the host has one) is readable on the CPU in
+/// process and once received over IPC: consumers that check `can_read_planes` (Eidos) refused
+/// every one when its dma-buf reported no CPU access.
+#[test]
+fn software_isp_frames_are_cpu_readable_in_process_and_over_ipc() {
+    let device = styx::sim::device(spec()).unwrap();
+    let path = std::env::temp_dir().join(format!("styx-sim-read-{}.sock", std::process::id()));
+    let _service = CameraService::new(device)
+        .keep_streaming()
+        .serve(&path)
+        .unwrap();
+    let client = FrameClient::request(&path, &Frames::gray().size(640, 400).fps(30)).unwrap();
+    let mut got = 0;
+    for _ in 0..10 {
+        if let RecvOutcome::Data(f) = client.recv(Duration::from_secs(3)) {
+            let residency = f.meta().residency;
+            assert!(
+                f.can_read_planes(),
+                "received {residency:?} frame not readable"
+            );
+            assert!(f.cpu_access().readable());
+            luma_mean(&f);
+            got += 1;
+        }
+    }
+    assert!(got >= 5, "{got} frames");
+    let device = styx::sim::device(spec()).unwrap();
+    let plan = styx::planner::plan_frames(&device, &Frames::gray().size(640, 400).fps(30)).unwrap();
+    let mut frames = plan.start().unwrap();
+    for _ in 0..5 {
+        if let RecvOutcome::Data(f) = frames.next_frame(Duration::from_secs(3)) {
+            assert!(f.can_read_planes(), "{:?} in process", f.meta().residency);
+        }
+    }
+}
+
 /// The raw frames of a simulated camera's processed capture: a low-priority raw client (a
 /// recorder) next to a vision client, the service keeping the raw companions on, gets 16-bit
 /// Bayer frames of the sensor mode, named as `delivered()` says.
