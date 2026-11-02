@@ -52,7 +52,8 @@ fn processes_on_daedalus_device_from_its_buffer() {
     let mut bytes = vec![0u8; 256];
     bytes.extend_from_slice(&raw);
     let storage = GpuStorage::with_data(&gpu, &bytes, Some("raw")).unwrap();
-    crate::common::flush_uploads(&gpu);
+    // wgpu submits `write_buffer` data only with its own next submit; RawSubmitter's is not.
+    gpu.flush_uploads().unwrap();
     // SAFETY: Daedalus's buffer on Daedalus's device, alive and unwritten for the call.
     let input = unsafe {
         let raw_vk = gpu.raw_vulkan().unwrap();

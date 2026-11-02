@@ -200,10 +200,14 @@ memory when it runs.
       `IspStats` and new tables per frame. `Input::Buffer` on Daedalus's device: 0, submitted
       through Daedalus's `RawSubmitter` (Daedalus fd18808); was 17 per frame in `submit_raw`
       and wgpu-core's submission.
-- [ ] **GPU import pad from Daedalus.** *Why:* `gpu_import_pad` is a fixed 256 B; Daedalus knows the
-      device's need. *Done when:* with a Daedalus context the pad comes from
-      `GpuFrameImports::required_len(end)` / `GpuStorage::dmabuf_import_len(gpu, len)`, 256 otherwise.
-      *Blocked by:* nothing. *Numbers:* v3dv needs frame + 256 B; 1280x800 GREY pads to 1 232 896 B.
+- [ ] **GPU import pad from the device** (written; v3dv untested). `GpuContext::import_pad(len)`
+      asks the GPU ISP's device what a dma-buf needs past its size; the native software ISP path
+      pads its output buffers to at least that when it has a GPU ISP device. A Daedalus consumer
+      takes it from `GpuStorage::dmabuf_import_len` and sets `capture_gpu_import_pad`; other
+      paths keep the configured 256. *Why:* the fixed 256 B is v3dv's need, not every
+      device's. *Done when:* `import_pads_are_what_the_device_says` reads 256 on the Raze's v3dv.
+      *Numbers:* 0 on RADV (RX 6800 XT), NVIDIA (RTX 4060) and llvmpipe. *Blocked by:* a Raze
+      slot.
 - [ ] **GPU ISP on the Pi 5: timing** (import and output verified on the Raze's v3dv at eeefd6d:
       dma-buf import and export pass, Daedalus buffer path and equivalence bit-exact, 0 validation
       messages). *Why:* an estimate is all we have (`crates/gpuisp/README.md` and

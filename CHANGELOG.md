@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `GpuContext::import_pad(len)`: the bytes the GPU ISP's device needs past a dma-buf to import
+  it whole. The native software ISP path pads its output buffers to at least that when it has
+  a GPU ISP device. Daedalus pinned at 6900b97 (`flush_uploads`).
 - `styx_gpuisp::vulkan_instance_lock`: held while the GPU ISP creates or destroys a Vulkan
   instance or device. The loader crashes when another thread does so at the same time; code
   making other instances in the process (wgpu, Daedalus) can hold it around theirs. The

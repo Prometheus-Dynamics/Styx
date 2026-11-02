@@ -129,3 +129,15 @@ fn import_and_export() {
         );
     }
 }
+
+/// What a device needs past a dma-buf to import it whole: none on RADV, NVIDIA and lavapipe,
+/// 256 bytes on v3dv; never more than a page here.
+#[test]
+fn import_pads_are_what_the_device_says() {
+    for ctx in crate::common::contexts() {
+        let pad = ctx.import_pad(1280 * 800 * 3 / 2);
+        eprintln!("{}: import pad {pad}", ctx.info().name);
+        assert!(pad <= 4096, "{}: {pad}", ctx.info().name);
+        assert_eq!(ctx.import_pad(0), 0);
+    }
+}

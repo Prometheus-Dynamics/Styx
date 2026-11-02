@@ -411,6 +411,34 @@ impl GpuContext {
         &self.inner.info
     }
 
+    /// Bytes a dma-buf of `len` bytes needs past `len` for this device to import it whole:
+    /// Vulkan binds a buffer only to memory covering its whole requirement, which some drivers
+    /// round past the size (v3dv by 256 bytes; RADV, NVIDIA and lavapipe not at all). 0 when
+    /// the device imports no dma-bufs. Size buffers this device reads to `len` plus this
+    /// (`CaptureConfig::gpu_import_pad`).
+    pub fn import_pad(&self, len: u64) -> u64 {
+        if !self.inner.info.dmabuf || len == 0 {
+            return 0;
+        }
+        let d = &self.inner.device;
+        let mut ext = vk::ExternalMemoryBufferCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        let info = vk::BufferCreateInfo::default()
+            .size(len)
+            .usage(crate::memory::USAGE)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .push_next(&mut ext);
+        // SAFETY: a valid create info; the buffer is only queried, then destroyed.
+        unsafe {
+            let Ok(buffer) = d.create_buffer(&info, None) else {
+                return 0;
+            };
+            let req = d.get_buffer_memory_requirements(buffer);
+            d.destroy_buffer(buffer, None);
+            req.size.saturating_sub(len)
+        }
+    }
+
     /// Run on Daedalus's Vulkan device: frames are recorded into Daedalus's command buffers
     /// and submitted on its queue, in order with its own work (Daedalus's `RawSubmitter`),
     /// and its imported frames are read in place ([`crate::ExternalBuffer::from_frame`]).

@@ -42,7 +42,7 @@ impl Drop for Buffer {
     }
 }
 
-const USAGE: vk::BufferUsageFlags = vk::BufferUsageFlags::from_raw(
+pub(crate) const USAGE: vk::BufferUsageFlags = vk::BufferUsageFlags::from_raw(
     vk::BufferUsageFlags::STORAGE_BUFFER.as_raw()
         | vk::BufferUsageFlags::TRANSFER_SRC.as_raw()
         | vk::BufferUsageFlags::TRANSFER_DST.as_raw(),

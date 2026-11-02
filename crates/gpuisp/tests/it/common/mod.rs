@@ -191,12 +191,3 @@ pub fn daedalus_gpu() -> Option<daedalus_gpu::GpuContextHandle> {
     }
     gpu.ok()
 }
-
-/// Submits `GpuStorage::with_data`'s upload: wgpu flushes `write_buffer` data only on its
-/// own next submit, and the GPU ISP submits on Daedalus's queue directly (`RawSubmitter`).
-/// Imported frames (dma-bufs) need nothing of the kind.
-#[cfg(feature = "daedalus")]
-pub fn flush_uploads(gpu: &daedalus_gpu::GpuContextHandle) {
-    // SAFETY: records nothing.
-    unsafe { gpu.submit_raw(|_, _| {}) }.unwrap().wait();
-}

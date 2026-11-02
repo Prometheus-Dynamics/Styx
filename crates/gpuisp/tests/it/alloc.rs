@@ -218,7 +218,8 @@ fn a_frame_from_a_device_buffer_allocates_nothing_when_warm() {
     let (raw, stride, format) = frame(w, h);
     let mut isp = GpuIsp::with_context(&ctx, format, three_a()).unwrap();
     let storage = GpuStorage::with_data(&gpu, &raw, Some("raw")).unwrap();
-    crate::common::flush_uploads(&gpu);
+    // wgpu submits `write_buffer` data only with its own next submit; RawSubmitter's is not.
+    gpu.flush_uploads().unwrap();
     // SAFETY: Daedalus's buffer on Daedalus's device, alive and unwritten for the calls.
     let input = unsafe {
         let raw_vk = gpu.raw_vulkan().unwrap();

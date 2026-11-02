@@ -601,8 +601,17 @@ pub(super) fn start_processed(
             let mut p = SoftPipeline::open(camera, &settings, &tuning, threads).map_err(err)?;
             p.soft_loop()
                 .set_post_stages(config.backends.native.soft_post_stages);
+            // Bytes past each output frame for a GPU importing it: at least what the GPU ISP's
+            // device needs, when there is one.
+            #[allow(unused_mut)]
+            let mut gpu_pad = config.capture_tunables().gpu_import_pad;
             #[cfg(feature = "gpu-isp")]
             if let Some(ctx) = crate::gpu_isp::context() {
+                let f = worker_mode.format;
+                let size = (f.resolution.width.get(), f.resolution.height.get());
+                let len = soft_worker::image_bytes(f.code, size);
+                gpu_pad =
+                    gpu_pad.max(u32::try_from(ctx.import_pad(len as u64)).unwrap_or(u32::MAX));
                 match p.use_gpu(&ctx) {
                     Ok(()) => {
                         live.set_isp("gpu");
@@ -647,10 +656,7 @@ pub(super) fn start_processed(
                     clock: timestamp_clock,
                     controls: controls.clone(),
                     sensor_raw: config.backends.native.sensor_raw,
-                    heap: out_buf::out_heap(
-                        config.backends.native.driver_buffers,
-                        config.capture_tunables().gpu_import_pad,
-                    ),
+                    heap: out_buf::out_heap(config.backends.native.driver_buffers, gpu_pad),
                 },
             )?;
             (controls, worker)
