@@ -98,6 +98,12 @@ rebuilds its gain rows then, 0.16 ms in `styx-softisp`) and the submission and w
 latency equals four CPU threads' at a quarter of one thread's CPU. With a capture dma-buf
 (`Input::DmaBuf`) the input copy goes; with an exported output, the output copy.
 
+A warm frame allocates nothing on the heap, with the 3A changing the parameters every frame:
+`GpuIsp::swap_params` rebuilds the tables of the parameters before last in place and
+`GpuIsp::recycle_stats` takes a frame's statistics back to read the next ones into
+(`tests/it/alloc.rs`). On Daedalus's device a frame from a Daedalus buffer costs 17
+allocations, all in wgpu-core's submission (`submit_raw`); Daedalus owns that fix.
+
 ## Raspberry Pi 5 / CM5 (V3D 7.1)
 
 The CM5 image (the Raze) has Mesa's **v3dv** for the Pi 5's V3D 7.1 (Vulkan 1.3,
