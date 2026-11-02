@@ -92,7 +92,7 @@ The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`; for the conversion
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
-| JPEG encode | pass | lib | lib | lib | pass⁸ | gap |
+| JPEG encode | pass | lib | lib | lib | pass⁸ | pass¹¹ |
 | JPEG decode | pass | lib | lib | lib | gap⁸ | gap |
 | H.264 / H.265 encode | pass | lib | lib | lib | gap⁸ | pass⁹ |
 
@@ -130,6 +130,12 @@ Notes:
 9. VA-API (`h264_vaapi`, `hevc_vaapi`) on x86 GPUs. There is no Vulkan Video encode yet.
 10. `GpuConvert::transform` gathers each output pixel rather than working on 8x8 tiles. It
     gives the bytes of `transform_packed` in all eight orientations, tested against it.
+11. `GpuConvert::jpeg_blocks` (`shaders/jpeg.comp`): JFIF colour, the DCT and quantisation, one
+    invocation per 8x8 block, bit-exact with `styx_core::simd::jpeg` (`tests/it/jpeg.rs`);
+    Huffman coding stays on the CPU (`styx_codec::styx_jpeg::GpuStyxJpeg`, feature `gpu-jpeg`,
+    the same bytes as the CPU encoder). 640x400 RGB at q70 on the dev PC: RADV (RX 6800 XT)
+    1.41 ms p50, NVIDIA (RTX 4060) 6.3 ms, llvmpipe 3.9 ms, against 4.6 ms for the scalar CPU
+    path. JPEG decode on the GPU is still a gap.
 
 ## Fixed-function units
 

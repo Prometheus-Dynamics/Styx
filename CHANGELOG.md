@@ -16,6 +16,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   `StyxJpegEncoder` is the codec (impl `styx-jpeg`), registered where no C encoder is compiled in
   and on RISC-V; `JpegBackend::Styx` is the preview backend (first on RISC-V). Exhaustive matches
   on `JpegBackend` need the new arm.
+- `styx_gpuisp::GpuConvert::jpeg_blocks` (`shaders/jpeg.comp`): JPEG colour, DCT and
+  quantisation on a Vulkan device, one invocation per block, bit-exact with
+  `styx_core::simd::jpeg` (RADV, NVIDIA, llvmpipe). `styx_codec::styx_jpeg::GpuStyxJpeg`
+  (feature `gpu-jpeg`, Linux) codes its blocks on the CPU: the CPU encoder's bytes.
+  `StyxJpeg::encode_blocks` codes blocks computed elsewhere.
 - `styx_codec::RgaConverter` (feature `codec-rga`, Linux): scale, crop and convert on the
   Rockchip RGA through Daedalus's `daedalus-rga` (no rotation yet). Dma-buf frames are read in
   place; host frames go through dma-heap buffers made once per layout. Written, untested on

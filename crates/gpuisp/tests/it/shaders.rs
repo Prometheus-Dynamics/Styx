@@ -9,7 +9,9 @@ fn spirv_is_up_to_date() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let out = std::env::temp_dir().join(format!("styx-gpuisp-spv-{}", std::process::id()));
     std::fs::create_dir_all(&out).unwrap();
-    for s in ["full", "half", "stats", "convert", "full16", "half16"] {
+    for s in [
+        "full", "half", "stats", "convert", "jpeg", "full16", "half16",
+    ] {
         let spv = out.join(format!("{s}.spv"));
         let status = Command::new("glslc")
             .args(["--target-env=vulkan1.2", "-O", "-o"])

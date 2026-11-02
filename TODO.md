@@ -159,12 +159,12 @@ memory when it runs.
       GPU and each board's fixed-function units; losing variants stay behind knobs. *Done when:* the
       matrix has no gap cells; each leaf conformance-tested against scalar (guard bytes, odd widths)
       in the gate, on hardware or QEMU. *Blocked by:* nothing for the CPU and GPU columns; boards
-      for the fixed-function rows. *Numbers:* recounted from the matrix: **228 pass, 29
-      gaps, 1 n/a of 258 cells** (43 stages). Gaps by column: x86 1, NEON64 0, NEON32 0, RVV 3, GPU 25.
+      for the fixed-function rows. *Numbers:* recounted from the matrix: **229 pass, 28
+      gaps, 1 n/a of 258 cells** (43 stages). Gaps by column: x86 1, NEON64 0, NEON32 0, RVV 3, GPU 24.
       The CPU gaps: fp16 on x86 and RVV, and JPEG decode and H.264 on RVV (JPEG encode: Styx's
       own encoder with RVV colour and DCT, written, untested on board). The GPU gaps: every
       stage of `post.rs` (5), the packed conversions (11), YUYV → NV12 chroma, NV12/YUYV/I420 → RGB
-      (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG (2). Fixed-function:
+      (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG decode. Fixed-function:
       5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves now cover every kernel in
       `styx_core::simd` and every integer kernel of `styx_softisp::simd`.
 - [ ] **Software ISP: AVX-512 VBMI exact tone table: correct under Intel SDE, never timed.**

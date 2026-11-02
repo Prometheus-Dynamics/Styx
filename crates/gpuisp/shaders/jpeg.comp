@@ -1,0 +1,174 @@
+#version 450
+// A baseline JPEG encoder's arithmetic, as `styx_core::simd::jpeg` computes it, bit for bit:
+// one invocation per 8x8 block, which reads its samples (JFIF colour from packed RGB, or
+// planes as they are), padded to whole MCUs by repeating the last row and column, then takes
+// the integer DCT and quantises. `src/jpeg.rs` lays the grid out and documents it.
+//
+// Grid: `grid_w` blocks a row. Rows `0..bh` are luma blocks; with chroma, each later row holds
+// the Cb blocks of one chroma block row, then its Cr blocks (`grid_w / 2` each). Block `i`
+// (row-major) writes its 64 coefficients, natural order, as 32 words at `32 i`: coefficient
+// `2k` in the low half of word `k`, `2k + 1` in the high half.
+
+#extension GL_EXT_shader_8bit_storage : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Src {
+    uint8_t src[];
+};
+
+layout(set = 0, binding = 1, std430) writeonly buffer Dst {
+    uint dst[];
+};
+
+// The 18 words `GpuConvert` pushes; words 8, 15, 16 and 17 unused here.
+layout(push_constant, std430) uniform Args {
+    uint kind;
+    uint grid_w;
+    uint grid_h;
+    uint stride0;
+    uint off1;
+    uint stride1;
+    uint off2;
+    uint stride2;
+    uint unused8;
+    // Bytes per packed pixel, flags (bit 0: BGR order), the image's height and width.
+    uint bpp;
+    uint flags;
+    uint height;
+    uint width;
+    // Byte offset in `src` of the quantisers (128 little-endian u16: luma, then chroma,
+    // natural order), and the luma block rows.
+    uint qoff;
+    uint bh;
+    uint unused15;
+    uint unused16;
+    uint unused17;
+} A;
+
+const uint KIND_PACKED = 0u;
+const uint KIND_GRAY = 1u;
+const uint KIND_I420 = 2u;
+const uint KIND_NV12 = 3u;
+
+// `styx_core::simd::jpeg::FDCT`, `[u][x]`.
+const int FDCT[64] = int[64](
+    5793, 5793, 5793, 5793, 5793, 5793, 5793, 5793,
+    8035, 6811, 4551, 1598, -1598, -4551, -6811, -8035,
+    7568, 3135, -3135, -7568, -7568, -3135, 3135, 7568,
+    6811, -1598, -8035, -4551, 4551, 8035, 1598, -6811,
+    5793, -5793, -5793, 5793, 5793, -5793, -5793, 5793,
+    4551, -8035, 1598, 6811, -6811, -1598, 8035, -4551,
+    3135, -7568, 7568, -3135, -3135, 7568, -7568, 3135,
+    1598, -4551, 6811, -8035, 8035, -6811, 4551, -1598);
+
+uint rd(uint i) {
+    return uint(src[i]);
+}
+
+// Red, green and blue of packed pixel (x, y).
+uvec3 rgb(uint x, uint y) {
+    uint s = y * A.stride0 + x * A.bpp;
+    uint r = (A.flags & 1u) != 0u ? 2u : 0u;
+    return uvec3(rd(s + r), rd(s + 1u), rd(s + 2u - r));
+}
+
+// Luma sample (x, y) of the padded image.
+int luma(uint x, uint y) {
+    x = min(x, A.width - 1u);
+    y = min(y, A.height - 1u);
+    if (A.kind != KIND_PACKED) {
+        return int(rd(y * A.stride0 + x));
+    }
+    uvec3 p = rgb(x, y);
+    return int((19595u * p.r + 38470u * p.g + 7471u * p.b + 32768u) >> 16);
+}
+
+// Chroma sample (x, y) of component `c` (1 Cb, 2 Cr) of the padded image.
+int chroma(uint c, uint x, uint y) {
+    uint cw = (A.width + 1u) / 2u;
+    uint ch = (A.height + 1u) / 2u;
+    // Columns past the end repeat the last pair.
+    x = min(x, cw - 1u);
+    if (A.kind == KIND_I420) {
+        uint off = c == 1u ? A.off1 : A.off2;
+        uint stride = c == 1u ? A.stride1 : A.stride2;
+        return int(rd(off + min(y, ch - 1u) * stride + x));
+    }
+    if (A.kind == KIND_NV12) {
+        return int(rd(A.off1 + min(y, ch - 1u) * A.stride1 + 2u * x + c - 1u));
+    }
+    // Packed: the 2x2 sum; rows and the odd last column past the end repeat the last.
+    uint x0 = 2u * x;
+    uint x1 = min(x0 + 1u, A.width - 1u);
+    uint y0 = min(2u * y, A.height - 1u);
+    uint y1 = min(2u * y + 1u, A.height - 1u);
+    ivec3 s = ivec3(rgb(x0, y0) + rgb(x1, y0) + rgb(x0, y1) + rgb(x1, y1));
+    int bias = (128 << 18) + (1 << 17) - 1;
+    int v = c == 1u ? -11059 * s.r - 21709 * s.g + 32768 * s.b
+                    : 32768 * s.r - 27439 * s.g - 5329 * s.b;
+    return (v + bias) >> 18;
+}
+
+uint quantiser(uint table, uint k) {
+    uint i = A.qoff + 2u * (64u * table + k);
+    return rd(i) | (rd(i + 1u) << 8);
+}
+
+// `sign(f) · ((|f| + q/2) / q)`.
+int quantize(int f, uint q) {
+    int sign = f >> 31;
+    uint a = uint((f ^ sign) - sign);
+    int m = int((a + q / 2u) / q);
+    return (m ^ sign) - sign;
+}
+
+void main() {
+    uint bx = gl_GlobalInvocationID.x;
+    uint by = gl_GlobalInvocationID.y;
+    if (bx >= A.grid_w || by >= A.grid_h) {
+        return;
+    }
+    uint c = 0u;
+    uint x0 = 8u * bx;
+    uint y0 = 8u * by;
+    if (by >= A.bh) {
+        uint half_w = A.grid_w / 2u;
+        c = bx < half_w ? 1u : 2u;
+        x0 = 8u * (bx - (c - 1u) * half_w);
+        y0 = 8u * (by - A.bh);
+    }
+    int s[64];
+    for (uint r = 0u; r < 8u; r++) {
+        for (uint x = 0u; x < 8u; x++) {
+            int v = c == 0u ? luma(x0 + x, y0 + r) : chroma(c, x0 + x, y0 + r);
+            s[8u * r + x] = v - 128;
+        }
+    }
+    int t[64];
+    for (uint r = 0u; r < 8u; r++) {
+        for (uint u = 0u; u < 8u; u++) {
+            int sum = 0;
+            for (uint x = 0u; x < 8u; x++) {
+                sum += FDCT[8u * u + x] * s[8u * r + x];
+            }
+            t[8u * r + u] = (sum + (1 << 10)) >> 11;
+        }
+    }
+    uint table = c == 0u ? 0u : 1u;
+    uint base = 32u * (by * A.grid_w + bx);
+    for (uint v = 0u; v < 8u; v++) {
+        for (uint u = 0u; u < 8u; u += 2u) {
+            int pair[2];
+            for (uint j = 0u; j < 2u; j++) {
+                int sum = 0;
+                for (uint r = 0u; r < 8u; r++) {
+                    sum += FDCT[8u * v + r] * t[8u * r + u + j];
+                }
+                uint k = 8u * v + u + j;
+                pair[j] = quantize((sum + (1 << 16)) >> 17, quantiser(table, k));
+            }
+            dst[base + (8u * v + u) / 2u] = (uint(pair[0]) & 0xFFFFu) | (uint(pair[1]) << 16);
+        }
+    }
+}

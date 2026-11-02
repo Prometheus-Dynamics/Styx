@@ -20,7 +20,7 @@ use crate::memory::{Buffer, Place};
 const CONVERT: &[u8] = include_bytes!("../shaders/convert.spv");
 
 /// Push-constant words of `convert.comp`'s `Args`, in its order.
-const ARG_WORDS: usize = 18;
+pub(crate) const ARG_WORDS: usize = 18;
 
 /// The op codes of `convert.comp` (`OP_*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,7 +80,7 @@ fn plane(img: Image<'_>, row: usize, rows: usize) -> Plane<'_> {
 }
 
 /// Asserts that `len` bytes hold `rows` rows of `row` bytes, `stride` apart.
-fn check_rows(what: &str, len: usize, stride: usize, row: usize, rows: usize) {
+pub(crate) fn check_rows(what: &str, len: usize, stride: usize, row: usize, rows: usize) {
     assert!(
         stride >= row,
         "{what}: stride {stride} below a row of {row} bytes"
@@ -136,15 +136,17 @@ pub struct GpuConvert {
     set_layout: vk::DescriptorSetLayout,
     layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    /// `shaders/jpeg.comp` (`src/jpeg.rs`), on the same layout.
+    pub(crate) jpeg: vk::Pipeline,
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
     cmd_pool: vk::CommandPool,
     cmd: vk::CommandBuffer,
     fence: vk::Fence,
     /// Source planes, copied in (mapped; the device reads them).
-    input: Option<Buffer>,
+    pub(crate) input: Option<Buffer>,
     /// Output rows, read back (mapped).
-    output: Option<Buffer>,
+    pub(crate) output: Option<Buffer>,
 }
 
 impl Drop for GpuConvert {
@@ -157,6 +159,7 @@ impl Drop for GpuConvert {
             d.destroy_command_pool(self.cmd_pool, None);
             d.destroy_descriptor_pool(self.pool, None);
             d.destroy_pipeline(self.pipeline, None);
+            d.destroy_pipeline(self.jpeg, None);
             d.destroy_pipeline_layout(self.layout, None);
             d.destroy_descriptor_set_layout(self.set_layout, None);
         }
@@ -177,6 +180,7 @@ impl GpuConvert {
             set_layout: vk::DescriptorSetLayout::null(),
             layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
+            jpeg: vk::Pipeline::null(),
             pool: vk::DescriptorPool::null(),
             set: vk::DescriptorSet::null(),
             cmd_pool: vk::CommandPool::null(),
@@ -214,25 +218,8 @@ impl GpuConvert {
         // SAFETY: as above.
         self.layout =
             unsafe { d.create_pipeline_layout(&info, None) }.ctx("vkCreatePipelineLayout")?;
-        let words = spirv(CONVERT);
-        let info = vk::ShaderModuleCreateInfo::default().code(&words);
-        // SAFETY: SPIR-V made by glslc for Vulkan 1.2.
-        let module = unsafe { d.create_shader_module(&info, None) }.ctx("vkCreateShaderModule")?;
-        let stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(module)
-            .name(c"main");
-        let infos = [vk::ComputePipelineCreateInfo::default()
-            .stage(stage)
-            .layout(self.layout)];
-        // SAFETY: valid create info; the module is not needed after this.
-        let made = unsafe { d.create_compute_pipelines(vk::PipelineCache::null(), &infos, None) };
-        // SAFETY: as above.
-        unsafe { d.destroy_shader_module(module, None) };
-        self.pipeline = made.map_err(|(_, e)| GpuError::Vulkan {
-            call: "vkCreateComputePipelines",
-            result: e,
-        })?[0];
+        self.pipeline = self.pipeline_from(CONVERT)?;
+        self.jpeg = self.pipeline_from(crate::jpeg::SPIRV)?;
         let sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::STORAGE_BUFFER,
             descriptor_count: 2,
@@ -265,9 +252,33 @@ impl GpuConvert {
         Ok(())
     }
 
+    /// A compute pipeline of `spv` on the layout.
+    fn pipeline_from(&self, spv: &[u8]) -> Result<vk::Pipeline, GpuError> {
+        let d = &self.ctx.device;
+        let words = spirv(spv);
+        let info = vk::ShaderModuleCreateInfo::default().code(&words);
+        // SAFETY: SPIR-V made by glslc for Vulkan 1.2.
+        let module = unsafe { d.create_shader_module(&info, None) }.ctx("vkCreateShaderModule")?;
+        let stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(module)
+            .name(c"main");
+        let infos = [vk::ComputePipelineCreateInfo::default()
+            .stage(stage)
+            .layout(self.layout)];
+        // SAFETY: valid create info; the module is not needed after this.
+        let made = unsafe { d.create_compute_pipelines(vk::PipelineCache::null(), &infos, None) };
+        // SAFETY: as above.
+        unsafe { d.destroy_shader_module(module, None) };
+        Ok(made.map_err(|(_, e)| GpuError::Vulkan {
+            call: "vkCreateComputePipelines",
+            result: e,
+        })?[0])
+    }
+
     /// Makes the buffers hold `input` and `output` bytes, growing them (and rebinding the
     /// descriptor set) only when they do not.
-    fn grow(&mut self, input: usize, output: usize) -> Result<(), GpuError> {
+    pub(crate) fn grow(&mut self, input: usize, output: usize) -> Result<(), GpuError> {
         let need_in = self
             .input
             .as_ref()
@@ -375,7 +386,7 @@ impl GpuConvert {
             chunk.copy_from_slice(&word.to_le_bytes());
         }
         let groups = (w.div_ceil(8) as u32, h.div_ceil(8) as u32);
-        self.dispatch(&bytes, groups)?;
+        self.dispatch(self.pipeline, &bytes, groups)?;
         let output = self.output.as_ref().expect("grown");
         output.invalidate()?;
         let out = output.bytes();
@@ -386,8 +397,13 @@ impl GpuConvert {
         Ok(())
     }
 
-    /// Records the dispatch with `args` as push constants, submits it and waits.
-    fn dispatch(&self, args: &[u8], groups: (u32, u32)) -> Result<(), GpuError> {
+    /// Records a dispatch of `pipeline` with `args` as push constants, submits it and waits.
+    pub(crate) fn dispatch(
+        &self,
+        pipeline: vk::Pipeline,
+        args: &[u8],
+        groups: (u32, u32),
+    ) -> Result<(), GpuError> {
         let d = &self.ctx.device;
         let Some(queue) = self.ctx.own_queue() else {
             return Err(GpuError::Unsupported(
@@ -404,7 +420,7 @@ impl GpuConvert {
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
             d.begin_command_buffer(cmd, &begin)
                 .ctx("vkBeginCommandBuffer")?;
-            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, pipeline);
             d.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::COMPUTE,

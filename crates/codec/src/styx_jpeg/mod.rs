@@ -7,12 +7,16 @@
 
 mod codec;
 mod entropy;
+#[cfg(all(feature = "gpu-jpeg", target_os = "linux"))]
+mod gpu;
 mod tables;
 #[cfg(test)]
 mod tests;
 
 pub use codec::StyxJpegEncoder;
 use entropy::{BitWriter, HuffCodes};
+#[cfg(all(feature = "gpu-jpeg", target_os = "linux"))]
+pub use gpu::GpuStyxJpeg;
 use styx_core::simd::jpeg::{fdct_quant_band, rgb_ycc420_rows};
 use styx_core::simd::{ColorLayout, SimdBackend};
 use tables::{HUFF, ZIGZAG, quant_tables};
@@ -205,23 +209,58 @@ impl StyxJpeg {
                 }
             }
             self.backend = backend;
-            let [ldc, lac, cdc, cac] = &self.huff;
-            if gray {
-                for x in 0..pw / 8 {
-                    bits.block(block(&self.coefs[0], x), &mut preds[0], ldc, lac);
-                }
-                continue;
-            }
-            // Blocks of the top luma band, then those of the bottom one (pw/8 blocks a band).
-            let (top, bottom) = self.coefs[0].split_at(8 * pw);
-            for x in 0..pw / 16 {
-                for band in [top, bottom] {
-                    bits.block(block(band, 2 * x), &mut preds[0], ldc, lac);
-                    bits.block(block(band, 2 * x + 1), &mut preds[0], ldc, lac);
-                }
-                bits.block(block(&self.coefs[1], x), &mut preds[1], cdc, cac);
-                bits.block(block(&self.coefs[2], x), &mut preds[2], cdc, cac);
-            }
+            let chroma = (!gray).then(|| (&self.coefs[1][..], &self.coefs[2][..]));
+            code_mcu_row(
+                &mut bits,
+                &self.huff,
+                &mut preds,
+                &self.coefs[0],
+                chroma,
+                pw / 8,
+            );
+        }
+        bits.flush();
+        out.extend_from_slice(&[0xFF, 0xD9]);
+        Ok(())
+    }
+
+    /// The quantisers (luma, chroma; natural order), for computing blocks elsewhere (the GPU's
+    /// `styx_gpuisp::GpuConvert::jpeg_blocks`).
+    pub fn quant(&self) -> &[[u16; 64]; 2] {
+        &self.quant
+    }
+
+    /// Codes blocks computed elsewhere with [`Self::quant`]: `blocks` laid out as
+    /// `styx_gpuisp::JpegGrid` has them for a `w` x `h` image (`width` = padded width / 8
+    /// blocks a row; the luma block rows, padded to whole MCUs; with chroma, then one row per
+    /// chroma block row, its Cb blocks then its Cr blocks).
+    pub fn encode_blocks(
+        &mut self,
+        (w, h): (usize, usize),
+        gray: bool,
+        blocks: &[i16],
+        out: &mut Vec<u8>,
+    ) -> Result<(), CodecError> {
+        let mcu = if gray { 8 } else { 16 };
+        let (pw, ph) = (w.next_multiple_of(mcu), h.next_multiple_of(mcu));
+        let (bw, luma_rows) = (pw / 8, ph / 8);
+        let rows = luma_rows + if gray { 0 } else { ph / 16 };
+        if !(1..=65535).contains(&w) || !(1..=65535).contains(&h) || blocks.len() < bw * rows * 64 {
+            return Err(CodecError::Codec(format!(
+                "jpeg blocks: {} coefficients for a {w}x{h} grid",
+                blocks.len()
+            )));
+        }
+        out.clear();
+        self.headers(w, h, gray, out);
+        let mut preds = [0i16; 3];
+        let mut bits = BitWriter::new(out);
+        let band = bw * 64;
+        for row in 0..ph / mcu {
+            let luma = &blocks[row * (mcu / 8) * band..][..(mcu / 8) * band];
+            let chroma =
+                (!gray).then(|| blocks[(luma_rows + row) * band..][..band].split_at(band / 2));
+            code_mcu_row(&mut bits, &self.huff, &mut preds, luma, chroma, bw);
         }
         bits.flush();
         out.extend_from_slice(&[0xFF, 0xD9]);
@@ -334,6 +373,35 @@ impl StyxJpeg {
             out.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11]);
         }
         out.extend_from_slice(&[0, 63, 0]);
+    }
+}
+
+/// One MCU row: `luma` holds one band (grey) or two of `bw` blocks each, `chroma` the Cb and
+/// Cr bands of `bw / 2` blocks.
+fn code_mcu_row(
+    bits: &mut BitWriter<'_>,
+    huff: &[HuffCodes; 4],
+    preds: &mut [i16; 3],
+    luma: &[i16],
+    chroma: Option<(&[i16], &[i16])>,
+    bw: usize,
+) {
+    let [ldc, lac, cdc, cac] = huff;
+    let Some((cb, cr)) = chroma else {
+        for x in 0..bw {
+            bits.block(block(luma, x), &mut preds[0], ldc, lac);
+        }
+        return;
+    };
+    // Blocks of the top luma band, then those of the bottom one.
+    let (top, bottom) = luma.split_at(bw * 64);
+    for x in 0..bw / 2 {
+        for band in [top, bottom] {
+            bits.block(block(band, 2 * x), &mut preds[0], ldc, lac);
+            bits.block(block(band, 2 * x + 1), &mut preds[0], ldc, lac);
+        }
+        bits.block(block(cb, x), &mut preds[1], cdc, cac);
+        bits.block(block(cr, x), &mut preds[2], cdc, cac);
     }
 }
 
