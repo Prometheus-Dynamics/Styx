@@ -1,7 +1,7 @@
 //! Codecs on V4L2 memory-to-memory devices, driven directly through `styx-kernel` (no FFmpeg):
 //! stateful encoders ([`V4l2M2mEncoder`]: H.264, HEVC, JPEG and VP8 hardware encoders, the
-//! K230's VPU, vicodec) and scalers or converters ([`V4l2M2mConverter`]: the Rockchip RGA, the
-//! K230's 2D unit, vim2m).
+//! K230's VPU, vicodec) and scalers or converters ([`V4l2M2mConverter`]: the K230's 2D unit, vim2m). The
+//! Rockchip RGA is Daedalus's (`daedalus-rga`, its one binding), not this converter's.
 //!
 //! Each codec opens its device on the first frame and reopens it when the frame size changes.
 //! A frame over dma-bufs at a layout the device reads (a capture buffer, a dma-heap frame) is

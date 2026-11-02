@@ -100,12 +100,14 @@ memory when it runs.
       is unconfirmed. *Why:* a supported chip. *Done when:* the generation is confirmed from the
       BSP's rkisp hardware table, then as RK3566. *Blocked by:* an RK3576 board and BSP.
 - [ ] **Rockchip: RGA scale, crop and convert** (RGA3 on RK3588S, RGA2 on the others). *Why:* deeper
-      pyramid levels and preview frames without the CPU. Mainline's `rockchip-rga` is an M2M device
-      `V4l2M2mConverter` drives; the vendor BSPs ship multi-rga, whose `rga_req` layout is only in a
-      GPL-2.0 header. One binding for the stack, in Daedalus; Styx adds no ioctl layer. The scaler
+      pyramid levels and preview frames without the CPU. The stack's one RGA binding is Daedalus's
+      `daedalus-rga` (agreed with Daedalus 2026-11-02): V4L2 M2M for mainline `rockchip-rga`, librga
+      for RGA3 (written, untested on board), no rotation yet. Styx calls it (directly, or by handing
+      a dma-buf frame to a Daedalus graph) and has no RGA code of its own; `V4l2M2mConverter` is
+      not for RGA. The scaler
       knob covers ISP scalers until this adds an M2M stage to the planner. *Done when:* the
       conversion stage picks RGA through the accelerator knob, scaling within a stated tolerance,
-      CPU fallback without it. *Blocked by:* Daedalus's RGA backend (RGA3); a Rockchip board.
+      CPU fallback without it. *Blocked by:* a Rockchip board.
 - [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder** (written, untested on board:
       `styx_codec::rkmpp::RkMppEncoder`, feature `codec-rkmpp`, MPP opened with `dlopen`). NV12 or
       YUYV in; the ISP's NV12 in one dma-buf is imported and encoded in place, other frames are
@@ -381,11 +383,10 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
       when:* a process that has Daedalus never makes a second device, and the default
       `GpuIsp::new` path either uses Daedalus's device when it exists or is documented as the
       no-Daedalus build. *Blocked by:* the user's go.
-- [ ] **Overlap the HeliOS list misses: V4L2 M2M and RGA.** `styx-kernel::v4l2::m2m`
-      (`M2mSession`) drives the codecs and `V4l2M2mConverter`, which can drive the mainline RGA
-      as a V4L2 M2M device, while the rule is one RGA binding, in Daedalus. Decide which
-      layer owns M2M scaling and colour conversion. The codec M2M (stateful encoders, Hantro,
-      rkvenc) stays Styx's.
+- [ ] **V4L2 M2M session onto Lemnos.** Agreed with Daedalus (2026-11-02): RGA is Daedalus's
+      (`daedalus-rga`); Styx keeps V4L2 M2M for codecs only (stateful encoders, Hantro, rkvenc).
+      After the release, if Lemnos takes `styx-kernel::v4l2::m2m` (`M2mSession`), `daedalus-rga`
+      builds its session on it and drops its own. *Blocked by:* the user's go.
 
 ## Done
 
