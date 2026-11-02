@@ -502,16 +502,7 @@ fn narrow_and_lut_match() {
 /// steps (0 next to 255 both ways), falling, flat.
 #[test]
 fn lut_every_code() {
-    let src: Vec<u16> = (0..4096 + 64)
-        .map(|x| if x < 4096 { x } else { u16::MAX - x })
-        .collect();
-    let shapes: [[u8; 257]; 5] = [
-        std::array::from_fn(|i| bytes(257, 7)[i]),
-        std::array::from_fn(|i| if i % 2 == 0 { 0 } else { 255 }),
-        std::array::from_fn(|i| 255 - (i as u32 * 255 / 256) as u8),
-        [200; 257],
-        std::array::from_fn(|i| if i < 128 { 0 } else { 255 }),
-    ];
+    let (src, shapes) = lut_cases();
     for nodes in shapes {
         let lut = ToneLut::from_nodes(nodes);
         let mut want = vec![0u8; src.len()];
@@ -529,6 +520,48 @@ fn lut_every_code() {
             assert_eq!(got[..done], want[..done], "{runner:?}");
         }
     }
+}
+
+/// Every input code (and some above 4095), and the node sets of [`lut_every_code`].
+fn lut_cases() -> (Vec<u16>, [[u8; 257]; 5]) {
+    let src = (0..4096 + 64)
+        .map(|x| if x < 4096 { x } else { u16::MAX - x })
+        .collect();
+    let shapes = [
+        std::array::from_fn(|i| bytes(257, 7)[i]),
+        std::array::from_fn(|i| if i % 2 == 0 { 0 } else { 255 }),
+        std::array::from_fn(|i| 255 - (i as u32 * 255 / 256) as u8),
+        [200; 257],
+        std::array::from_fn(|i| if i < 128 { 0 } else { 255 }),
+    ];
+    (src, shapes)
+}
+
+/// The AVX-512 VBMI tone table where the CPU has it, saying which happened: CI's log line
+/// ("ran on AVX-512 VBMI" or "skipped: no AVX-512 here") records whether a run exercised it.
+#[test]
+fn avx512vbmi_tone_leaf() {
+    #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        let f = X86FeatureSet::detect();
+        if !f.avx512vbmi {
+            eprintln!("skipped: no AVX-512 here");
+            return;
+        }
+        let (src, shapes) = lut_cases();
+        for nodes in shapes {
+            let lut = ToneLut::from_nodes(nodes);
+            let mut want = vec![0u8; src.len()];
+            scalar::lut_row(&src, &mut want, lut.full(), src.len());
+            let mut got = vec![0u8; src.len()];
+            let (backend, done) = x86::lut_row(f, &src, &mut got, &lut, src.len()).unwrap();
+            assert_eq!(backend, SimdBackend::X86Avx512Vbmi);
+            assert_eq!(got[..done], want[..done]);
+        }
+        eprintln!("ran on AVX-512 VBMI");
+    }
+    #[cfg(not(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64"))))]
+    eprintln!("skipped: no AVX-512 here");
 }
 
 /// The quadratic tone curve's leaves against its scalar evaluation, bit for bit: a fitted

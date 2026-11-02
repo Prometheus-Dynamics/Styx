@@ -160,14 +160,18 @@ memory when it runs.
       (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG (2). Fixed-function:
       5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves now cover every kernel in
       `styx_core::simd` and every integer kernel of `styx_softisp::simd`.
-- [ ] **Software ISP: AVX-512 VBMI exact tone table: written, untested on an AVX-512 host.**
+- [ ] **Software ISP: AVX-512 VBMI exact tone table: written, run under no AVX-512 host yet.**
       `simd/x86/tone512.rs`: both 256-entry node lookups as two `vpermi2b` and a blend, 64
       pixels at a time; dispatched where AVX-512 F, BW and VBMI are detected
       (`X86FeatureSet::avx512vbmi`, `SimdBackend::X86Avx512Vbmi`), and the AVX2 leaf still tested
       there. *Why:* the fastest exact table on such hosts. *Done when:* `lut_every_code` and the
       conformance tests pass on an AVX-512 VBMI CPU or under Intel SDE, and its time is in
       PERFORMANCE.md. *Blocked by:* a run there: the dev PC is a Zen 3 and QEMU 10.2's TCG has no
-      AVX-512; Intel SDE needs the user's OK to download. *Numbers:* none yet. Beside it: colour
+      AVX-512; Intel SDE needs the user's OK to download. CI's "AVX-512 VBMI tone leaf" step
+      runs `avx512vbmi_tone_leaf` on every push and prints the runner's CPU. It runs the leaf when
+      the CPU has VBMI (some hosted runners are Ice Lake or Zen 4) and prints "skipped: no
+      AVX-512 here" otherwise. Runs that exercised it: none yet; record the run id and CPU here
+      when one does. *Numbers:* none yet. Beside it: colour
       matrix 1.1 ms and tone table 1.5 ms per frame on the A76's integer path; never measured on
       a real Cortex-A72.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
@@ -334,6 +338,46 @@ Not on the freeze list. *Numbers:* none measured unless stated.
 - [ ] **Reject impossible frame-length reports.** *Why:* a value from embedded data is trusted even when
       impossible (VTS 4 on an 800-line mode). *Done when:* the control schedule rejects such reports.
       *Blocked by:* nothing.
+
+## After the release: dependency layers (slated, not started)
+
+HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: dependency layers",
+2026-11-02). Each item needs the user's go before it starts. No code moves before then.
+
+- [ ] **UVC onto Lemnos's one USB transport.** *What:* `styx-uvc` claims interfaces and streams
+      isochronous/bulk transfers through `styx-kernel`'s own usbfs (`usbfs.rs`, `usbfs/urb.rs`:
+      raw usbdevfs ioctls and URBs). It moves onto Lemnos's USB layer. *Why:* three USB stacks
+      (Lemnos rusb, Atlas nusb, Styx usbfs) become one. *Done when:* `styx-kernel` has no usbfs
+      module and UVC's no-drop and timestamp tests pass on Lemnos's transport. *Blocked by:* the
+      user's go, and Lemnos's transport supporting isochronous URBs with many packets in flight.
+      *Numbers:* `usbfs` is used only by `styx-uvc` (`device.rs`, `stream.rs`, `sysfs.rs`,
+      `hotplug.rs`) and `styx`'s UVC backend tests.
+- [x] **Uevent hotplug on Lemnos's.** Already done: `styx::watch` (`watch/linux.rs`) and
+      `styx-uvc`'s `Hotplug` both use `lemnos_linux::uevent`. Styx has no netlink code of its
+      own; I²C, GPIO and embedded-hal are Lemnos's as well (`styx-kernel/src/bus.rs`). The
+      HeliOS item "Styx's uevent watcher moves onto Lemnos's" has nothing left to do.
+- [ ] **dma-heap and dma-buf basics onto Lemnos.** *What:* `styx-kernel::dma_heap` (heap open
+      and allocate, `DMA_BUF_IOCTL_SYNC` CPU-access brackets, mmap, `dmabuf_id`, the dma-buf
+      length) moves onto Lemnos's DMA buffer basics. `BackingPool`, frame leases and pools stay
+      in Styx (`styx-core`). *Why:* two allocators (Styx, Daedalus) become one. *Done when:*
+      `styx-kernel` has no dma_heap module and the allocation-count tests still assert 0.
+      *Blocked by:* the user's go. *Numbers:* the dma-heap users are `styx`, `styx-pisp`,
+      `styx-native`, `styx-codec`, `styx-pipeline` and `tools/native-pipeline`. dma-buf fds also go
+      through `styx-core` (frame planes), `styx-gpuisp`, `styx-hal`, `gst-styx`, `pipewire-styx`
+      and `tools/compare`. Those only hand fds over and need no move.
+- [ ] **One Vulkan device and queue per process.** Partly true today. With its `daedalus`
+      feature, `styx-gpuisp` runs on Daedalus's device (`GpuContext::from_daedalus`), submits
+      through Daedalus's `RawSubmitter` on Daedalus's queue, and serialises Vulkan instance and
+      device create/destroy under Daedalus's `driver_lock()`. Without the feature (or when a
+      program calls `GpuContext::new`), gpuisp makes its own instance, device and queue. *Done
+      when:* a process that has Daedalus never makes a second device, and the default
+      `GpuIsp::new` path either uses Daedalus's device when it exists or is documented as the
+      no-Daedalus build. *Blocked by:* the user's go.
+- [ ] **Overlap the HeliOS list misses: V4L2 M2M and RGA.** `styx-kernel::v4l2::m2m`
+      (`M2mSession`) drives the codecs and `V4l2M2mConverter`, which can drive the mainline RGA
+      as a V4L2 M2M device, while the rule is one RGA binding, in Daedalus. Decide which
+      layer owns M2M scaling and colour conversion. The codec M2M (stateful encoders, Hantro,
+      rkvenc) stays Styx's.
 
 ## Done
 

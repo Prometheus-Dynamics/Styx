@@ -44,6 +44,13 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace
 
+      # Runs the AVX-512 VBMI tone leaf when the runner's CPU has it (some hosted runners are
+      # Ice Lake or Zen 4); the log says which CPU and whether it ran (TODO.md tracks it).
+      - name: AVX-512 VBMI tone leaf (when the CPU has it)
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          cargo test -p styx-softisp --lib avx512vbmi_tone_leaf -- --nocapture
+
       - name: Run SIMD kernels without backends (scalar only)
         run: cargo test -p styx-core-rs --no-default-features --features std --lib simd
 
